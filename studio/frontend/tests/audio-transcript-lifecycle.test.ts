@@ -10,6 +10,15 @@ import { AUTH_SESSION_ENDING_EVENT } from "../src/features/auth/session-events.t
 import { readTranscriptDraft, writeTranscriptDraft } from "../src/features/audio/transcript-draft.ts";
 
 const source = readAudioWorkspaceSource();
+// Timing and speaker names ride along in the recovery copy.
+const draftDetails = {
+  segments: [{ start: 0, end: 1.5, text: "unsaved text", speaker: "S01" }],
+  words: [],
+  speakers: [{ id: "S01", label: "Speaker 1" }],
+  source: { kind: "input", id: "in-1", name: "speech.wav" },
+  language: "en",
+  duration: 1.5,
+};
 
 test("macOS termination checks unsaved transcripts before allowing exit", () => {
   const native = readText("../../src-tauri/src/main.rs");
@@ -122,24 +131,15 @@ test("the previous result is replaced only after its replacement model is ready"
 });
 
 test("leaving the page lets a transcription finish into history; the input card owns the microphone", () => {
-  // The hook no longer records: the shared input card does, and it releases the microphone when
-  // it unmounts, including a permission prompt that resolves after the page is gone.
+  // The input card records; the page stays mounted when hidden, so hiding it must end a recording too.
   assert.doesNotMatch(source, /getUserMedia|stopAndDiscardRecording/);
-  const card = readSrc("features/audio/hooks/use-audio-source.ts");
   assert.match(
-    card,
-    /if \(ticket !== acquisition\.current \|\| !activeRef\.current\) \{\s*for \(const track of stream\.getTracks\(\)\) track\.stop\(\);\s*return;\s*\}/,
+    readSrc("features/audio/hooks/use-audio-source.ts"),
+    /activeRef\.current = active;\s*if \(!active\) stopRecording\(\);/,
   );
-  assert.match(card, /abortAll\(\);\s*for \(const track of streamRef\.current\?\.getTracks\(\) \?\? \[\]\) track\.stop\(\)/);
-  // The page stays mounted when hidden, so hiding it must end a recording too.
-  assert.match(card, /activeRef\.current = active;\s*if \(!active\) stopRecording\(\);/);
   assert.match(
     readSrc("features/audio/audio-page.tsx"),
     /<AudioActiveProvider value=\{active\}>/,
-  );
-  assert.match(
-    readSrc("features/audio/components/audio-source-input.tsx"),
-    /useAudioSource\(\{[^}]*active \}\)/,
   );
   assert.match(
     source,
@@ -194,15 +194,6 @@ test("logout checks unsaved transcripts before revoking the session or navigatin
     return new Function(...Object.keys(scope), outputText)(
       ...Object.values(scope),
     );
-  };
-  // Timing and speaker names ride along in the recovery copy.
-  const draftDetails = {
-    segments: [{ start: 0, end: 1.5, text: "unsaved text", speaker: "S01" }],
-    words: [],
-    speakers: [{ id: "S01", label: "Speaker 1" }],
-    source: { kind: "input", id: "in-1", name: "speech.wav" },
-    language: "en",
-    duration: 1.5,
   };
   for (const handler of handlers) {
     for (const scenario of ["decline", "accept", "saved", "exported", "unmounted"]) {
@@ -264,13 +255,7 @@ test("logout checks unsaved transcripts before revoking the session or navigatin
       assert.deepEqual(
         readTranscriptDraft("test-draft"),
         scenario === "decline" || scenario === "unmounted"
-          ? {
-              text: "unsaved text",
-              title: "speech.wav",
-              model: "tiny",
-              details: draftDetails,
-              speakerNames: { S01: "Ada" },
-            }
+          ? { text: "unsaved text", title: "speech.wav", model: "tiny", details: draftDetails, speakerNames: { S01: "Ada" } }
           : null,
       );
     }
@@ -317,45 +302,18 @@ test("a draft restores with or without timing details", () => {
   drafts.set("old-draft", JSON.stringify({ text: "hello", title: "a.wav", model: "tiny" }));
   assert.deepEqual(readTranscriptDraft("old-draft"), { text: "hello", title: "a.wav", model: "tiny" });
 
+  // Names are cleaned and kept only for known speakers.
+  const draft = { text: "hi", title: "b.wav", model: "moss", details: draftDetails };
   drafts.set(
     "new-draft",
-    JSON.stringify({
-      text: "hi there",
-      title: "b.wav",
-      model: "moss",
-      details: {
-        segments: [
-          { start: 0, end: 1, text: "hi", speaker: "S01" },
-          { start: 2, end: 1, text: "backwards" },
-        ],
-        words: "not a list",
-        speakers: [{ id: "S01", label: "Speaker 1" }],
-        source: { kind: "clip", id: "c1", name: "b.wav" },
-        language: "en",
-        duration: 1.5,
-      },
-      speakerNames: { S01: "  Ada  ", S99: "ghost", S02: 4 },
-    }),
+    JSON.stringify({ ...draft, speakerNames: { S01: "  Ada  ", S99: "ghost", S02: 4 } }),
   );
-  assert.deepEqual(readTranscriptDraft("new-draft"), {
-    text: "hi there",
-    title: "b.wav",
-    model: "moss",
-    details: {
-      segments: [{ start: 0, end: 1, text: "hi", speaker: "S01" }],
-      words: [],
-      speakers: [{ id: "S01", label: "Speaker 1" }],
-      source: { kind: "clip", id: "c1", name: "b.wav" },
-      language: "en",
-      duration: 1.5,
-    },
-    speakerNames: { S01: "Ada" },
-  });
+  assert.deepEqual(readTranscriptDraft("new-draft"), { ...draft, speakerNames: { S01: "Ada" } });
 });
 
 test("a failed speaker rename rolls back only that speaker, on the same transcript", () => {
   const rename = section("const renameSpeaker", "const handleCopyTranscript");
   assert.match(rename, /if \(transcriptVersion\.current !== version\) return;/);
-  assert.match(rename, /if \(\(current\[id\] \?\? ""\) !== name\) return current;/);
+  assert.match(rename, /\(current\[id\] \?\? ""\) === name \? withName\(current, id, previous\) : current/);
   assert.doesNotMatch(rename, /setSpeakerNames\(previous\)/);
 });

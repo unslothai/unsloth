@@ -3,17 +3,21 @@
 
 import { downloadFile, isDownloadCancelled } from "@/lib/native-files";
 import { toast } from "@/lib/toast";
-import { exportFileName } from "./transcript-export";
+import {
+  type TranscriptExport,
+  type TranscriptExportFormat,
+  exportFileName,
+  exportTranscript,
+} from "./transcript-export";
 
 /** false when it failed or the user cancelled the save dialog. */
-export async function downloadTranscriptFile(
-  text: string,
-  title: string,
-  ext: string,
-  mime: string,
+export async function downloadTranscript(
+  format: TranscriptExportFormat,
+  input: TranscriptExport,
 ): Promise<boolean> {
+  const { content: text, mime } = exportTranscript(format, input);
   try {
-    await downloadFile(text, exportFileName(title, ext), mime);
+    await downloadFile(text, exportFileName(input.title, format), mime);
     return true;
   } catch (error) {
     if (!isDownloadCancelled(error))

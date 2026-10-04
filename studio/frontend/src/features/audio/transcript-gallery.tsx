@@ -1,6 +1,22 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
+import { HugeiconsIcon } from "@hugeicons/react";
+import {
+  Archive02Icon,
+  Copy01Icon,
+  Delete02Icon,
+  Download01Icon,
+  MoreVerticalIcon,
+} from "@hugeicons/core-free-icons";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
@@ -9,35 +25,46 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import { downloadTranscript } from "./transcript-download";
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
-import {
-  Archive02Icon,
-  Copy01Icon,
-  Delete02Icon,
-  Download01Icon,
-  MoreVerticalIcon,
-} from "@hugeicons/core-free-icons";
-import { HugeiconsIcon } from "@hugeicons/react";
-import {
-  useCallback,
-  useEffect,
-  useLayoutEffect,
-  useRef,
-  useState,
-} from "react";
 import { archiveTranscript, deleteTranscript, listTranscripts } from "./api";
 import { getTranscript } from "./transcribe-api";
-import { downloadTranscriptFile } from "./transcript-download";
 import {
   TRANSCRIPT_EXPORT_FORMATS,
   type TranscriptExportFormat,
-  exportTranscript,
-  formatNeedsTimestamps,
 } from "./transcript-export";
 import { detailsFrom, formatTimestamp } from "./transcript-model";
 import type { TranscriptRecord } from "./transcript-stream";
+
+export function TranscriptExportItems({
+  timed,
+  label,
+  onExport,
+}: {
+  timed: boolean;
+  label: (format: TranscriptExportFormat) => ReactNode;
+  onExport: (format: TranscriptExportFormat) => void;
+}) {
+  return TRANSCRIPT_EXPORT_FORMATS.map((format) => {
+    const blocked = !timed && (format === "srt" || format === "vtt");
+    return (
+      <DropdownMenuItem
+        key={format}
+        disabled={blocked}
+        onClick={() => onExport(format)}
+      >
+        {label(format)}
+        {blocked ? (
+          <span className="ml-auto pl-3 text-ui-11p5 text-muted-foreground">
+            Needs timestamps
+          </span>
+        ) : null}
+      </DropdownMenuItem>
+    );
+  });
+}
 
 // The list carries counts only, so timed formats fetch the full record.
 async function downloadRecord(
@@ -55,14 +82,13 @@ async function downloadRecord(
       return;
     }
   }
-  const file = exportTranscript(format, {
+  await downloadTranscript(format, {
     title: full.title,
     text: full.text,
     model: full.model,
     details: detailsFrom(full),
     names: full.speaker_names ?? {},
   });
-  await downloadTranscriptFile(file.content, full.title, file.ext, file.mime);
 }
 
 function recordBadge(record: TranscriptRecord): string | null {
@@ -124,9 +150,7 @@ export function TranscriptGallery({
         setRecords([]);
         setCursor(null);
         toast.error(
-          error instanceof Error
-            ? error.message
-            : "Could not load transcripts.",
+          error instanceof Error ? error.message : "Could not load transcripts.",
         );
       })
       .finally(() => {
@@ -282,26 +306,16 @@ export function TranscriptGallery({
                 </Button>
               </DropdownMenuTrigger>
               <DropdownMenuContent align="end">
-                {TRANSCRIPT_EXPORT_FORMATS.map((format) => {
-                  const blocked =
-                    formatNeedsTimestamps(format) &&
-                    !((record.segment_count ?? 0) > 0);
-                  return (
-                    <DropdownMenuItem
-                      key={format}
-                      disabled={blocked}
-                      onClick={() => void downloadRecord(record, format)}
-                    >
+                <TranscriptExportItems
+                  timed={(record.segment_count ?? 0) > 0}
+                  label={(format) => (
+                    <>
                       <HugeiconsIcon icon={Download01Icon} />
                       Download .{format}
-                      {blocked ? (
-                        <span className="ml-auto pl-3 text-ui-11p5 text-muted-foreground">
-                          Needs timestamps
-                        </span>
-                      ) : null}
-                    </DropdownMenuItem>
-                  );
-                })}
+                    </>
+                  )}
+                  onExport={(format) => void downloadRecord(record, format)}
+                />
                 <DropdownMenuItem
                   onClick={() =>
                     void copyToClipboard(record.text).then((ok) =>

@@ -64,8 +64,7 @@ import {
 import { MusicOutput, MusicRail, musicPageModels } from "./pages/music-page";
 import { SpeakOutput, SpeakRail, speakPageModels } from "./pages/speak-page";
 import { type GenerateBlocker, TtsFooter } from "./pages/tts-workspace";
-import { TranscribeOutput } from "./pages/transcribe-output";
-import { TranscribeFooter, TranscribeRail } from "./pages/transcribe-page";
+import { TranscribeFooter, TranscribeOutput, TranscribeRail } from "./pages/transcribe-page";
 import { AUDIO_CPP_REPO, audioCppModelFor } from "./audio-cpp-catalog";
 import { selectionExpired } from "./audio-run-request";
 import type { AudioSourceInputHandle } from "./components/audio-source-input";
@@ -222,7 +221,6 @@ export function AudioPage({
     transcriptModel,
     transcriptRecord,
     transcriptExported,
-    transcriptVersion,
     transcriptionStartedAt,
     transcriptionFinishedAt,
     transcriptionStopping,
@@ -237,8 +235,8 @@ export function AudioPage({
     runTranscription,
     selectRecord,
     renameSpeaker,
-    markExported,
     handleCopyTranscript,
+    handleDownloadTranscript,
   } = useTranscription({
     activeRef,
     busyRef,
@@ -547,13 +545,15 @@ export function AudioPage({
         }
         if (!transitionWorkflow("transcribe")) return;
         // The clip goes in by id, as "From history" does; the run keeps the page's own settings.
-        useAudioTranscribeStore.getState().setSource({
-          kind: "clip",
-          id: clip.id,
-          name: clip.prompt || "Generated clip",
-          durationS: clip.duration_s,
-          transcript: clip.prompt || null,
-          language: null,
+        useAudioTranscribeStore.setState({
+          source: {
+            kind: "clip",
+            id: clip.id,
+            name: clip.prompt || "Generated clip",
+            durationS: clip.duration_s,
+            transcript: clip.prompt || null,
+            language: null,
+          },
         });
       },
     }),
@@ -726,17 +726,14 @@ export function AudioPage({
   const transcribeLoadsFirst = Boolean(
     transcribeRepo && !(sttSelected && sttReady),
   );
-  const transcribeNotice =
-    transcribeLoadsFirst &&
-    transcribeOptions.request.timestamps &&
-    transcribeCaps.caps?.aligner?.downloaded
+  const transcribeNotice = !transcribeLoadsFirst
+    ? transcribeOptions.notice
+    : transcribeOptions.request.timestamps &&
+        transcribeCaps.caps?.aligner?.downloaded
       ? `Loads ${transcribeModelName} with its timing aligner first.`
-      : [
-          transcribeLoadsFirst ? `Loads ${transcribeModelName} first.` : null,
-          transcribeOptions.notice,
-        ]
+      : [`Loads ${transcribeModelName} first.`, transcribeOptions.notice]
           .filter(Boolean)
-          .join(" ") || null;
+          .join(" ");
   const transcribeLanguages = transcribeLanguagesFor(
     audioCppModelFor(transcribeRepo)?.languages,
   );
@@ -762,10 +759,6 @@ export function AudioPage({
     label: `use ${model.name}`,
     onClick: () => void pickRecommendedModel(model.id),
   }));
-  const useSpeakersModel = useCallback(
-    () => void pickRecommendedModel(SPEAKERS_MODEL_REPO),
-    [pickRecommendedModel],
-  );
   const transcribeBlocker: GenerateBlocker | null =
     busy === "loading"
       ? { reason: "Waiting for the model to finish loading." }
@@ -797,7 +790,7 @@ export function AudioPage({
                     {
                       label: "Add it again",
                       onClick: () => {
-                        useAudioTranscribeStore.getState().setSource(null);
+                        useAudioTranscribeStore.setState({ source: null });
                         transcribeSourceHandle.current?.browse();
                       },
                     },
@@ -809,34 +802,22 @@ export function AudioPage({
                 : null;
   const canTranscribe =
     mode === "transcribe" && busy === null && transcribeBlocker === null;
-  const refreshTranscribeCaps = transcribeCaps.refresh;
-  const transcribeWithTimestamps = transcribeOptions.request.timestamps;
-  const transcribeWithSpeakers = transcribeOptions.request.speakers;
-  const handleTranscribe = useCallback(() => {
+  const handleTranscribe = () => {
     const source = useAudioTranscribeStore.getState().source;
     if (!source) return;
+    const { request } = transcribeOptions;
     void runTranscription(
       source,
-      {
-        language: transcribeLanguage,
-        timestamps: transcribeWithTimestamps,
-        speakers: transcribeWithSpeakers,
-      },
+      { language: transcribeLanguage, ...request },
       () => {
         setExpiredTranscribeSourceId(source.id);
         transcribeSourceHandle.current?.markExpired();
       },
     ).then(() => {
       // A timestamped run may have downloaded the aligner.
-      if (transcribeWithTimestamps) refreshTranscribeCaps();
+      if (request.timestamps) transcribeCaps.refresh();
     });
-  }, [
-    runTranscription,
-    transcribeLanguage,
-    transcribeWithTimestamps,
-    transcribeWithSpeakers,
-    refreshTranscribeCaps,
-  ]);
+  };
   const [transcribeAnnouncement, setTranscribeAnnouncement] = useState("");
   const lastTranscribeFinish = useRef<number | null>(transcriptionFinishedAt);
   useEffect(() => {
@@ -846,18 +827,17 @@ export function AudioPage({
     )
       return;
     lastTranscribeFinish.current = transcriptionFinishedAt;
-    if (transcriptError) {
-      setTranscribeAnnouncement(`Transcription failed. ${transcriptError}`);
-      return;
-    }
-    if (transcribeSourceExpired) {
-      setTranscribeAnnouncement("This upload expired. Add it again.");
-      return;
-    }
+    const failed = transcriptError || transcribeSourceExpired;
     setTranscribeAnnouncement(
-      transcript ? "Transcript ready." : "No speech was heard in that audio.",
+      transcriptError
+        ? `Transcription failed. ${transcriptError}`
+        : transcribeSourceExpired
+          ? "This upload expired. Add it again."
+          : transcript
+            ? "Transcript ready."
+            : "No speech was heard in that audio.",
     );
-    if (transcript && activeRef.current)
+    if (transcript && !failed && activeRef.current)
       document.getElementById("transcribe-result")?.focus();
   }, [
     transcriptionFinishedAt,
@@ -1204,7 +1184,9 @@ export function AudioPage({
                     onSourceStatusChange={setTranscribeSourceStatus}
                     switches={transcribeOptions}
                     languages={transcribeLanguages}
-                    onUseSpeakersModel={useSpeakersModel}
+                    onUseSpeakersModel={() =>
+                      void pickRecommendedModel(SPEAKERS_MODEL_REPO)
+                    }
                   />
                 </AudioActiveProvider>
               )}
@@ -1283,6 +1265,7 @@ export function AudioPage({
                 transcriptionAbort={transcriptionAbort}
                 transcript={transcript}
                 handleCopyTranscript={handleCopyTranscript}
+                handleDownloadTranscript={handleDownloadTranscript}
                 transcribedName={transcribedName}
                 transcriptModel={transcriptModel}
                 transcriptRecord={transcriptRecord}
@@ -1292,13 +1275,11 @@ export function AudioPage({
                 active={active}
                 mode={mode}
                 confirmTranscriptReplacement={confirmTranscriptReplacement}
-                transcriptVersion={transcriptVersion}
                 clearTranscript={clearTranscript}
                 transcriptDetails={transcriptDetails}
                 speakerNames={speakerNames}
                 renameSpeaker={renameSpeaker}
                 selectRecord={selectRecord}
-                markExported={markExported}
               />
               <output aria-live="polite" aria-atomic="true" className="sr-only">
                 {transcribeAnnouncement}

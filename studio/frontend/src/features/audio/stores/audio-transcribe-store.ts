@@ -16,37 +16,18 @@ interface AudioTranscribeState {
   timestamps: boolean;
   speakers: boolean;
   view: TranscriptView;
-  setSource: (source: AudioSourceSelection | null) => void;
-  setLanguage: (language: string) => void;
-  setTimestamps: (timestamps: boolean) => void;
-  setSpeakers: (speakers: boolean) => void;
-  setView: (view: TranscriptView) => void;
 }
 
+// Plain data, written with useAudioTranscribeStore.setState.
 export const useAudioTranscribeStore = create<AudioTranscribeState>()(
   persist(
-    (set) => ({
+    (): AudioTranscribeState => ({
       source: null,
       language: "",
       timestamps: false,
       speakers: true,
       view: "text",
-      setSource: (source) => set({ source }),
-      setLanguage: (language) => set({ language }),
-      setTimestamps: (timestamps) => set({ timestamps }),
-      setSpeakers: (speakers) => set({ speakers }),
-      setView: (view) => set({ view }),
     }),
-    {
-      name: AUDIO_TRANSCRIBE_STORAGE_KEY,
-      version: 1,
-      partialize: (state) => ({
-        source: state.source,
-        language: state.language,
-        timestamps: state.timestamps,
-        speakers: state.speakers,
-        view: state.view,
-      }),
-    },
+    { name: AUDIO_TRANSCRIBE_STORAGE_KEY, version: 1 },
   ),
 );

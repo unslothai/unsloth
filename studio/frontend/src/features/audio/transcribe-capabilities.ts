@@ -56,39 +56,31 @@ export function transcribeSwitches(
     };
   }
 
-  let timestamps: TranscribeSwitch;
-  let notice: string | null = null;
-  if (caps.timestamps === "always") {
-    timestamps = {
-      checked: true,
-      disabled: true,
-      always: true,
-      hint: "This model always adds timestamps.",
-    };
-  } else if (caps.timestamps === "on_request") {
-    const size =
-      caps.aligner && !caps.aligner.downloaded
-        ? formatSize(caps.aligner.size_bytes)
-        : null;
-    timestamps = {
-      checked: prefs.timestamps,
-      disabled: false,
-      hint: `Adds the time of each line, using a separate timing aligner.${size ? ` The first run downloads it (${size}).` : ""}`,
-    };
-    if (prefs.timestamps) {
-      notice = size
-        ? `Downloads the timing aligner (${size}) and reloads the model.`
-        : "Reloads the model with its timing aligner if it is not loaded yet.";
-    }
-  } else {
-    timestamps = {
-      checked: false,
-      disabled: true,
-      hint: `This model returns plain text. Timestamps need Qwen3-ASR (audio.cpp), Parakeet-TDT, ${SPEAKERS_MODEL_NAME} or VibeVoice-ASR.`,
-      suggestSpeakersModel: true,
-    };
-  }
-
+  const onRequest = caps.timestamps === "on_request";
+  const size =
+    onRequest && caps.aligner && !caps.aligner.downloaded
+      ? formatSize(caps.aligner.size_bytes)
+      : null;
+  const timestamps: TranscribeSwitch =
+    caps.timestamps === "always"
+      ? {
+          checked: true,
+          disabled: true,
+          always: true,
+          hint: "This model always adds timestamps.",
+        }
+      : onRequest
+        ? {
+            checked: prefs.timestamps,
+            disabled: false,
+            hint: `Adds the time of each line, using a separate timing aligner.${size ? ` The first run downloads it (${size}).` : ""}`,
+          }
+        : {
+            checked: false,
+            disabled: true,
+            hint: `This model returns plain text. Timestamps need Qwen3-ASR (audio.cpp), Parakeet-TDT, ${SPEAKERS_MODEL_NAME} or VibeVoice-ASR.`,
+            suggestSpeakersModel: true,
+          };
   const speakers: TranscribeSwitch = caps.speakers
     ? {
         checked: prefs.speakers,
@@ -101,20 +93,19 @@ export function transcribeSwitches(
         hint: `Only ${SPEAKERS_MODEL_NAME} and VibeVoice-ASR can tell speakers apart.`,
         suggestSpeakersModel: true,
       };
-
-  if (caps.cpu_only) {
-    notice = notice
-      ? `${notice} Runs on the CPU.`
-      : "This model runs on the CPU.";
-  }
-
-  return {
-    timestamps,
-    speakers,
-    notice,
-    request: {
-      timestamps: caps.timestamps === "on_request" && prefs.timestamps,
-      speakers: speakers.checked,
-    },
+  const request = {
+    timestamps: onRequest && prefs.timestamps,
+    speakers: speakers.checked,
   };
+  const aligner = !request.timestamps
+    ? null
+    : size
+      ? `Downloads the timing aligner (${size}) and reloads the model.`
+      : "Reloads the model with its timing aligner if it is not loaded yet.";
+  const notice = !caps.cpu_only
+    ? aligner
+    : aligner
+      ? `${aligner} Runs on the CPU.`
+      : "This model runs on the CPU.";
+  return { timestamps, speakers, notice, request };
 }

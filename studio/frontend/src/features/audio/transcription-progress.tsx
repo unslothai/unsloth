@@ -65,10 +65,7 @@ export function TranscriptionProgress({
                 : "Transcribing…"
             : "Elapsed"}
         </span>
-        <span
-          className="font-mono tabular-nums"
-          aria-label={`Elapsed time ${elapsed}`}
-        >
+        <span className="font-mono tabular-nums" aria-label={`Elapsed time ${elapsed}`}>
           {elapsed}
         </span>
         {running && (

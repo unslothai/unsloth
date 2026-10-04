@@ -4,17 +4,12 @@
 import {
   type TranscriptDetails,
   type TranscriptSegment,
+  hasSpeakers,
+  paragraphs,
   speakerLabel,
 } from "./transcript-model.ts";
 
 export type TranscriptExportFormat = "txt" | "srt" | "vtt" | "json";
-
-export const TRANSCRIPT_EXPORT_FORMATS: readonly TranscriptExportFormat[] = [
-  "txt",
-  "srt",
-  "vtt",
-  "json",
-];
 
 export interface TranscriptExport {
   title: string;
@@ -24,26 +19,8 @@ export interface TranscriptExport {
   names: Readonly<Record<string, string>>;
 }
 
-const MIME: Record<TranscriptExportFormat, string> = {
-  txt: "text/plain;charset=utf-8",
-  srt: "application/x-subrip;charset=utf-8",
-  vtt: "text/vtt;charset=utf-8",
-  json: "application/json;charset=utf-8",
-};
-
-export function formatNeedsTimestamps(format: TranscriptExportFormat): boolean {
-  return format === "srt" || format === "vtt";
-}
-
 function nameOf(input: TranscriptExport, id: string): string {
   return speakerLabel(id, input.details.speakers, input.names);
-}
-
-function speakersOn(input: TranscriptExport): boolean {
-  return (
-    input.details.speakers.length > 0 &&
-    input.details.segments.some((segment) => Boolean(segment.speaker))
-  );
 }
 
 // A blank line would end the cue early.
@@ -75,7 +52,7 @@ function cues(input: TranscriptExport) {
       : input.text.trim()
         ? [{ start: 0, end: duration ?? 0, text: input.text }]
         : [];
-  const on = speakersOn(input);
+  const on = hasSpeakers(input.details);
   return timed
     .map((segment) => ({
       segment,
@@ -86,21 +63,10 @@ function cues(input: TranscriptExport) {
 }
 
 export function toTxt(input: TranscriptExport): string {
-  if (!speakersOn(input)) return input.text;
-  const blocks: string[] = [];
-  let previous: string | undefined;
-  for (const segment of input.details.segments) {
-    const text = segment.text.trim();
-    if (!text) continue;
-    if (blocks.length > 0 && segment.speaker === previous) {
-      blocks[blocks.length - 1] += ` ${text}`;
-      continue;
-    }
-    previous = segment.speaker;
-    blocks.push(
-      segment.speaker ? `${nameOf(input, segment.speaker)}: ${text}` : text,
-    );
-  }
+  if (!hasSpeakers(input.details)) return input.text;
+  const blocks = paragraphs(input.details.segments).map(({ speaker, text }) =>
+    speaker ? `${nameOf(input, speaker)}: ${text}` : text,
+  );
   return `${blocks.join("\n\n")}\n`;
 }
 
@@ -158,17 +124,23 @@ export function exportFileName(title: string, ext: string): string {
   return `${base}.${ext}`;
 }
 
+const FORMATS: Record<
+  TranscriptExportFormat,
+  { mime: string; write: (input: TranscriptExport) => string }
+> = {
+  txt: { mime: "text/plain;charset=utf-8", write: toTxt },
+  srt: { mime: "application/x-subrip;charset=utf-8", write: toSrt },
+  vtt: { mime: "text/vtt;charset=utf-8", write: toVtt },
+  json: { mime: "application/json;charset=utf-8", write: toJson },
+};
+
+export const TRANSCRIPT_EXPORT_FORMATS = Object.keys(
+  FORMATS,
+) as TranscriptExportFormat[];
+
 export function exportTranscript(
   format: TranscriptExportFormat,
   input: TranscriptExport,
-): { content: string; ext: TranscriptExportFormat; mime: string } {
-  const content =
-    format === "srt"
-      ? toSrt(input)
-      : format === "vtt"
-        ? toVtt(input)
-        : format === "json"
-          ? toJson(input)
-          : toTxt(input);
-  return { content, ext: format, mime: MIME[format] };
+): { content: string; mime: string } {
+  return { content: FORMATS[format].write(input), mime: FORMATS[format].mime };
 }

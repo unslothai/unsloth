@@ -3,6 +3,12 @@
 
 import { Button } from "@/components/ui/button";
 import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
+import { Progress } from "@/components/ui/progress";
+import {
   Select,
   SelectContent,
   SelectItem,
@@ -10,9 +16,13 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
-import { StopIcon } from "@hugeicons/core-free-icons";
+import { cn } from "@/lib/utils";
+import {
+  Copy01Icon,
+  Download01Icon,
+  StopIcon,
+} from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { Progress } from "@/components/ui/progress";
 import { type Ref, useEffect, useState } from "react";
 import type { AudioGalleryClip } from "../api";
 import { RECORDING_MAX_SECONDS } from "../audio-workspace-constants";
@@ -22,8 +32,13 @@ import {
   AudioSourceInput,
   type AudioSourceInputHandle,
 } from "../components/audio-source-input";
+import { Field } from "../components/field";
+import { TranscriptView } from "../components/transcript-view";
+import { TranscriptExportItems, TranscriptGallery } from "../transcript-gallery";
+import { TranscriptionProgress } from "../transcription-progress";
 import type { AudioHostState } from "../hooks/audio-host-state";
 import type { AudioSourceStatus } from "../hooks/audio-source-state";
+import type { Transcription } from "../hooks/use-transcription";
 import { useAudioTranscribeStore } from "../stores/audio-transcribe-store";
 import {
   SPEAKERS_MODEL_NAME,
@@ -31,6 +46,8 @@ import {
   type TranscribeSwitches,
 } from "../transcribe-capabilities";
 import { transcribeLanguageFor } from "../transcribe-languages";
+import type { TranscriptExportFormat } from "../transcript-export";
+import { formatTimestamp } from "../transcript-model";
 import type { TranscriptProgress } from "../transcript-stream";
 import { GenerateActions, type GenerateBlocker } from "./tts-workspace";
 
@@ -38,20 +55,19 @@ import { GenerateActions, type GenerateBlocker } from "./tts-workspace";
 const AUTO = "__auto__";
 
 function SwitchRow({
-  id,
+  name,
   label,
   value,
-  onChange,
   disabled,
   onUseSpeakersModel,
 }: {
-  id: string;
+  name: "timestamps" | "speakers";
   label: string;
   value: TranscribeSwitch;
-  onChange: (checked: boolean) => void;
   disabled: boolean;
   onUseSpeakersModel?: () => void;
 }) {
+  const id = `transcribe-${name}`;
   return (
     <div className="grid gap-1.5">
       <label
@@ -71,7 +87,9 @@ function SwitchRow({
             id={id}
             checked={value.checked}
             disabled={disabled || value.disabled}
-            onCheckedChange={onChange}
+            onCheckedChange={(checked) =>
+              useAudioTranscribeStore.setState({ [name]: checked })
+            }
             aria-describedby={`${id}-hint`}
           />
         )}
@@ -114,11 +132,7 @@ export function TranscribeRail({
   onUseSpeakersModel?: () => void;
 }) {
   const source = useAudioTranscribeStore((state) => state.source);
-  const setSource = useAudioTranscribeStore((state) => state.setSource);
   const language = useAudioTranscribeStore((state) => state.language);
-  const setLanguage = useAudioTranscribeStore((state) => state.setLanguage);
-  const setTimestamps = useAudioTranscribeStore((state) => state.setTimestamps);
-  const setSpeakers = useAudioTranscribeStore((state) => state.setSpeakers);
   // A saved language the model no longer lists falls back to Auto rather than vanishing.
   const languageValue = transcribeLanguageFor(language, languages) || AUTO;
   return (
@@ -129,7 +143,7 @@ export function TranscribeRail({
           label="Audio"
           hint="Up to 30 minutes. Drop a file, record, or reuse a clip."
           value={source}
-          onChange={setSource}
+          onChange={(next) => useAudioTranscribeStore.setState({ source: next })}
           disabled={disabled}
           handleRef={sourceHandle}
           onStatusChange={onSourceStatusChange}
@@ -141,16 +155,18 @@ export function TranscribeRail({
       </div>
 
       {languages.length > 1 ? (
-        <div className="grid gap-1.5">
-          <label
-            className="text-ui-13 font-medium text-foreground"
-            htmlFor="transcribe-language"
-          >
-            Language
-          </label>
+        <Field
+          label="Language"
+          htmlFor="transcribe-language"
+          hint="Picking the spoken language helps with short or noisy clips."
+        >
           <Select
             value={languageValue}
-            onValueChange={(next) => setLanguage(next === AUTO ? "" : next)}
+            onValueChange={(next) =>
+              useAudioTranscribeStore.setState({
+                language: next === AUTO ? "" : next,
+              })
+            }
             disabled={disabled}
           >
             <SelectTrigger
@@ -168,33 +184,204 @@ export function TranscribeRail({
               ))}
             </SelectContent>
           </Select>
-          <p className="text-ui-11p5 leading-snug text-muted-foreground">
-            Picking the spoken language helps with short or noisy clips.
-          </p>
-        </div>
+        </Field>
       ) : null}
 
-      <SwitchRow
-        id="transcribe-timestamps"
-        label="Timestamps"
-        value={switches.timestamps}
-        onChange={setTimestamps}
-        disabled={disabled}
-        onUseSpeakersModel={onUseSpeakersModel}
-      />
-      <SwitchRow
-        id="transcribe-speakers"
-        label="Speakers"
-        value={switches.speakers}
-        onChange={setSpeakers}
-        disabled={disabled}
-        onUseSpeakersModel={
-          switches.timestamps.suggestSpeakersModel
-            ? undefined
-            : onUseSpeakersModel
-        }
-      />
+      {(["timestamps", "speakers"] as const).map((name) => (
+        <SwitchRow
+          key={name}
+          name={name}
+          label={name === "timestamps" ? "Timestamps" : "Speakers"}
+          value={switches[name]}
+          disabled={disabled}
+          // One "Use" link when both switches would offer the same model.
+          onUseSpeakersModel={
+            name === "speakers" && switches.timestamps.suggestSpeakersModel
+              ? undefined
+              : onUseSpeakersModel
+          }
+        />
+      ))}
     </AudioHistoryProvider>
+  );
+}
+
+const FORMAT_LABELS: Record<TranscriptExportFormat, string> = {
+  txt: "Text (.txt)",
+  srt: "Subtitles (.srt)",
+  vtt: "Web subtitles (.vtt)",
+  json: "JSON with timings (.json)",
+};
+
+export function TranscribeOutput({
+  transcriptionStartedAt,
+  transcriptionFinishedAt,
+  transcriptionStopping,
+  transcriptionProgress,
+  setTranscriptionStopping,
+  transcriptionAbort,
+  transcript,
+  handleCopyTranscript,
+  handleDownloadTranscript,
+  transcribedName,
+  transcriptModel,
+  transcriptRecord,
+  transcriptExported,
+  transcriptError,
+  busy,
+  active,
+  mode,
+  confirmTranscriptReplacement,
+  clearTranscript,
+  transcriptDetails,
+  speakerNames,
+  renameSpeaker,
+  selectRecord,
+}: Pick<
+  Transcription,
+  | "transcriptionStartedAt"
+  | "transcriptionFinishedAt"
+  | "transcriptionStopping"
+  | "transcriptionProgress"
+  | "setTranscriptionStopping"
+  | "transcriptionAbort"
+  | "transcript"
+  | "handleCopyTranscript"
+  | "handleDownloadTranscript"
+  | "transcribedName"
+  | "transcriptModel"
+  | "transcriptRecord"
+  | "transcriptExported"
+  | "transcriptError"
+  | "confirmTranscriptReplacement"
+  | "clearTranscript"
+  | "transcriptDetails"
+  | "speakerNames"
+  | "renameSpeaker"
+  | "selectRecord"
+> &
+  Pick<AudioHostState, "busy" | "active" | "mode">) {
+  const language = transcriptDetails.language ?? transcriptRecord?.language;
+  const duration = transcriptDetails.duration ?? transcriptRecord?.duration;
+  return (
+    <>
+      <div className="hover-scrollbar flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto">
+        {transcriptionStartedAt !== null && (
+          <TranscriptionProgress
+            startedAt={transcriptionStartedAt}
+            finishedAt={transcriptionFinishedAt}
+            stopping={transcriptionStopping}
+            progress={transcriptionProgress}
+            onCancel={() => {
+              setTranscriptionStopping(true);
+              transcriptionAbort.current?.abort();
+            }}
+          />
+        )}
+        {transcript ? (
+          // Focused and announced by the host after a run.
+          <section
+            id="transcribe-result"
+            tabIndex={-1}
+            aria-label="Transcript"
+            aria-busy={busy === "loading" ? true : undefined}
+            className={cn(
+              "flex flex-col gap-3 transition-opacity duration-150 focus-visible:outline-none motion-reduce:transition-none",
+              busy === "loading" && "opacity-50",
+            )}
+          >
+            <TranscriptView
+              text={transcript}
+              details={transcriptDetails}
+              names={speakerNames}
+              onRename={renameSpeaker}
+              durationS={duration ?? null}
+            >
+              <div className="flex flex-wrap items-center gap-2">
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  onClick={handleCopyTranscript}
+                >
+                  <HugeiconsIcon icon={Copy01Icon} className="mr-2 size-3.5" />
+                  Copy
+                </Button>
+                <DropdownMenu>
+                  <DropdownMenuTrigger asChild={true}>
+                    <Button variant="secondary" size="sm">
+                      <HugeiconsIcon
+                        icon={Download01Icon}
+                        className="mr-2 size-3.5"
+                      />
+                      Download
+                    </Button>
+                  </DropdownMenuTrigger>
+                  <DropdownMenuContent align="start">
+                    <TranscriptExportItems
+                      timed={transcriptDetails.segments.length > 0}
+                      label={(format) => <span>{FORMAT_LABELS[format]}</span>}
+                      onExport={(format) =>
+                        void handleDownloadTranscript(format)
+                      }
+                    />
+                  </DropdownMenuContent>
+                </DropdownMenu>
+              </div>
+              <div className="flex min-w-0 flex-wrap items-center gap-x-2 text-ui-11p5 text-muted-foreground">
+                <span className="min-w-0 truncate">{transcribedName}</span>
+                <span>·</span>
+                <span className="min-w-0 truncate" title={transcriptModel}>
+                  {transcriptModel.split("/").pop() || transcriptModel}
+                </span>
+                {language ? <span>· {language}</span> : null}
+                {duration ? (
+                  <span>
+                    ·{" "}
+                    <span className="font-mono tabular-nums">
+                      {formatTimestamp(duration)}
+                    </span>
+                  </span>
+                ) : null}
+                {!transcriptRecord && !transcriptExported && (
+                  <span>· Not saved</span>
+                )}
+              </div>
+            </TranscriptView>
+          </section>
+        ) : transcriptError ? (
+          <div className="flex flex-col gap-1" role="alert">
+            <p className="text-ui-13 font-medium text-destructive">
+              Could not transcribe {transcribedName ?? "that audio"}.
+            </p>
+            <p className="text-ui-13 text-muted-foreground">{transcriptError}</p>
+          </div>
+        ) : busy !== "transcribing" ? (
+          <p className="text-ui-13 text-muted-foreground">
+            Record or upload audio to transcribe. Completed transcripts are saved
+            to history.
+          </p>
+        ) : null}
+      </div>
+      <div className="shrink-0 pt-4">
+        <TranscriptGallery
+          autoSelect={!transcript && !transcribedName && busy === null}
+          active={active && mode === "transcribe"}
+          currentId={transcriptRecord?.id ?? null}
+          latest={transcriptRecord}
+          canSelect={confirmTranscriptReplacement}
+          onSelect={selectRecord}
+          onDelete={(ids) => {
+            if (
+              transcriptRecord &&
+              (ids === null
+                ? !transcriptRecord.archived
+                : ids.includes(transcriptRecord.id))
+            )
+              clearTranscript();
+          }}
+        />
+      </div>
+    </>
   );
 }
 
@@ -290,20 +477,13 @@ export function TranscribeFooter({
           )}
         </Button>
       </div>
-      {blocker && !running ? (
+      {(blocker || notice) && !running ? (
         <p
-          id="transcribe-blocker"
+          id={blocker ? "transcribe-blocker" : "transcribe-notice"}
           className="text-center text-ui-11p5 leading-snug text-muted-foreground"
         >
-          {blocker.reason}
-          <GenerateActions actions={blocker.actions} />
-        </p>
-      ) : notice && !running ? (
-        <p
-          id="transcribe-notice"
-          className="text-center text-ui-11p5 leading-snug text-muted-foreground"
-        >
-          {notice}
+          {blocker ? blocker.reason : notice}
+          <GenerateActions actions={blocker?.actions} />
         </p>
       ) : null}
     </div>

@@ -39,14 +39,7 @@ export interface TranscriptDetails {
   duration: number | null;
 }
 
-export const EMPTY_TRANSCRIPT_DETAILS: TranscriptDetails = {
-  segments: [],
-  words: [],
-  speakers: [],
-  source: null,
-  language: null,
-  duration: null,
-};
+export const EMPTY_TRANSCRIPT_DETAILS = detailsFrom({});
 
 export const SPEAKER_NAME_MAX_LENGTH = 40;
 
@@ -76,35 +69,27 @@ export function speakerLabel(
   return speakers.find((speaker) => speaker.id === id)?.label ?? id;
 }
 
-export function speakerIndex(
-  id: string,
-  speakers: readonly TranscriptSpeaker[],
-): number {
-  const index = speakers.findIndex((speaker) => speaker.id === id);
-  return index < 0 ? 1 : index + 1;
-}
-
-interface TranscriptParagraph {
-  speaker?: string;
-  start: number;
-  text: string;
+export function hasSpeakers({
+  speakers,
+  segments,
+}: TranscriptDetails): boolean {
+  return (
+    speakers.length > 0 && segments.some((segment) => Boolean(segment.speaker))
+  );
 }
 
 export function paragraphs(
   segments: readonly TranscriptSegment[],
-  speakersOn: boolean,
-): TranscriptParagraph[] {
-  const result: TranscriptParagraph[] = [];
-  for (const segment of segments) {
-    const speaker = speakersOn ? segment.speaker : undefined;
+): { speaker?: string; text: string }[] {
+  const result: { speaker?: string; text: string }[] = [];
+  for (const { speaker, text: raw } of segments) {
+    const text = raw.trim();
+    if (!text) continue;
     const last = result[result.length - 1];
-    if (last && speakersOn && last.speaker === speaker) {
-      last.text = `${last.text} ${segment.text}`.trim();
-    } else {
-      result.push({ speaker, start: segment.start, text: segment.text.trim() });
-    }
+    if (last && last.speaker === speaker) last.text += ` ${text}`;
+    else result.push({ speaker, text });
   }
-  return speakersOn ? result : [];
+  return result;
 }
 
 export function formatTimestamp(seconds: number): string {
@@ -115,10 +100,6 @@ export function formatTimestamp(seconds: number): string {
   return hours > 0
     ? `${hours}:${String(minutes).padStart(2, "0")}:${secs}`
     : `${minutes}:${secs}`;
-}
-
-export function hasTimestamps(details: TranscriptDetails | null): boolean {
-  return Boolean(details && details.segments.length > 0);
 }
 
 export function sanitizeSpeakerName(name: string): string {
@@ -132,14 +113,9 @@ function finiteSeconds(value: unknown): number | null {
 }
 
 /** From a stream result, saved record or draft; malformed entries are dropped. */
-export function detailsFrom(value: {
-  segments?: unknown;
-  words?: unknown;
-  speakers?: unknown;
-  source?: unknown;
-  language?: unknown;
-  duration?: unknown;
-}): TranscriptDetails {
+export function detailsFrom(
+  value: Partial<Record<keyof TranscriptDetails, unknown>>,
+): TranscriptDetails {
   const segments: TranscriptSegment[] = [];
   const words: TranscriptWord[] = [];
   for (const [list, key] of [
@@ -159,15 +135,13 @@ export function detailsFrom(value: {
       else segments.push({ start, end, text: item.text });
     }
   }
-  const speakers: TranscriptSpeaker[] = [];
-  if (Array.isArray(value.speakers)) {
-    for (const item of value.speakers) {
-      if (!item || typeof item !== "object") continue;
-      if (typeof item.id !== "string" || typeof item.label !== "string")
-        continue;
-      speakers.push({ id: item.id, label: item.label });
-    }
-  }
+  const speakers: TranscriptSpeaker[] = (
+    Array.isArray(value.speakers) ? value.speakers : []
+  )
+    .filter(
+      (item) => typeof item?.id === "string" && typeof item.label === "string",
+    )
+    .map(({ id, label }) => ({ id, label }));
   const raw = value.source as Partial<Record<string, unknown>> | null;
   const source: TranscriptSource | null =
     raw &&

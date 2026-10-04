@@ -15,6 +15,8 @@ import {
   renameTranscriptSpeakers,
   transcribeSourceWithProgress,
 } from "../transcribe-api";
+import { downloadTranscript } from "../transcript-download";
+import type { TranscriptExportFormat } from "../transcript-export";
 import {
   readTranscriptDraft,
   transcriptDraftKey,
@@ -31,6 +33,17 @@ import type {
 } from "../transcript-stream";
 import type { AudioHostState } from "./audio-host-state";
 import type { SttSidecar } from "./use-stt-sidecar";
+
+function withName(
+  names: Record<string, string>,
+  id: string,
+  name: string | undefined,
+): Record<string, string> {
+  const next = { ...names };
+  if (name) next[id] = name;
+  else delete next[id];
+  return next;
+}
 
 function toastFailure(what: string, error: unknown) {
   toast.error(
@@ -300,12 +313,7 @@ export function useTranscription({
   const renameSpeaker = useCallback(
     (id: string, name: string) => {
       const previous = speakerNames[id];
-      setSpeakerNames((current) => {
-        const next = { ...current };
-        if (name) next[id] = name;
-        else delete next[id];
-        return next;
-      });
+      setSpeakerNames((current) => withName(current, id, name));
       if (!transcriptRecord) return;
       const version = transcriptVersion.current;
       renameTranscriptSpeakers(transcriptRecord.id, {
@@ -313,13 +321,9 @@ export function useTranscription({
       }).catch((error: unknown) => {
         // Only this speaker, unless renamed since: a whole-map rollback erased saved renames.
         if (transcriptVersion.current !== version) return;
-        setSpeakerNames((current) => {
-          if ((current[id] ?? "") !== name) return current;
-          const next = { ...current };
-          if (previous) next[id] = previous;
-          else delete next[id];
-          return next;
-        });
+        setSpeakerNames((current) =>
+          (current[id] ?? "") === name ? withName(current, id, previous) : current,
+        );
         toastFailure("Could not rename the speaker", error);
       });
     },
@@ -334,9 +338,23 @@ export function useTranscription({
     );
   }, [transcript]);
 
-  const markExported = useCallback((version: number) => {
-    if (transcriptVersion.current === version) setTranscriptExported(true);
-  }, []);
+  const handleDownloadTranscript = useCallback(
+    async (format: TranscriptExportFormat) => {
+      const version = transcriptVersion.current;
+      if (
+        (await downloadTranscript(format, {
+          title: transcribedName ?? "transcript",
+          text: transcript,
+          model: transcriptModel,
+          details: transcriptDetails,
+          names: speakerNames,
+        })) &&
+        transcriptVersion.current === version
+      )
+        setTranscriptExported(true);
+    },
+    [transcript, transcribedName, transcriptModel, transcriptDetails, speakerNames],
+  );
 
   return {
     transcript,
@@ -366,8 +384,8 @@ export function useTranscription({
     runTranscription,
     selectRecord,
     renameSpeaker,
-    markExported,
     handleCopyTranscript,
+    handleDownloadTranscript,
   };
 }
 

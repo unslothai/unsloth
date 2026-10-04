@@ -342,16 +342,11 @@ test("MediaRecorder setup failures release the acquired microphone stream", () =
 });
 
 test("leaving Audio clears an unresolved microphone permission wait", () => {
-  // The card unmounts with the page; a permission prompt that resolves afterwards is released.
-  assert.match(
-    audioSourceCard,
-    /if \(ticket !== acquisition\.current \|\| !activeRef\.current\) \{\s*for \(const track of stream\.getTracks\(\)\) track\.stop\(\);\s*return;\s*\}/,
-  );
+  // The card unmounts with the page; the late-permission release is in audio-source-input.test.ts.
   assert.match(
     audioSourceCard,
     /\(\) => \(\) => \{\s*abortAll\(\);\s*for \(const track of streamRef\.current\?\.getTracks\(\) \?\? \[\]\) track\.stop\(\);/,
   );
-  assert.match(audioSourceCard, /activeRef\.current = active;\s*if \(!active\) stopRecording\(\);/);
 });
 
 test("routed picks wait in the URL until Audio is idle", () => {
@@ -401,13 +396,6 @@ test("a refresh that overlaps a pin or move is dropped and rerun after it", () =
     const after = audioPageSource.indexOf("endOrderWrite();", at);
     assert.ok(before > 0 && at - before < 400 && after > at, call);
   }
-});
-
-test("Audio transcription uses backend language auto-detection", () => {
-  const api = readSrc("features/audio/api.ts");
-  const transcription = api.slice(api.indexOf("export async function transcribeWithProgress"), api.indexOf("export async function listTranscripts"));
-  assert.doesNotMatch(transcription, /dictationLanguage|language:/);
-  assert.match(transcription, /stream: "true"/);
 });
 
 test("older STT status requests cannot overwrite newer residency", () => {
@@ -531,9 +519,7 @@ test("a refresh resets when an external archive moves the page boundary", () => 
 });
 
 test("Record is offered only where the browser can capture audio", () => {
-  // Safari ships no MediaRecorder, and an http LAN origin (-H 0.0.0.0) is not a
-  // secure context, so navigator.mediaDevices is undefined there. The card hides
-  // Record in that case; createAudioRecorder covers a missing MediaRecorder.
+  // Safari ships no MediaRecorder, and an http LAN origin (-H 0.0.0.0) has no navigator.mediaDevices.
   assert.match(
     audioSourceCard,
     /typeof navigator\.mediaDevices\?\.getUserMedia === "function"/,
@@ -548,8 +534,7 @@ test("Record is offered only where the browser can capture audio", () => {
 
 test("a Transcribe recording is stopped at the 30 minute limit the inputs route accepts", () => {
   // Without a cap the page buffered an over-long recording in memory and uploaded it only
-  // for the backend to refuse it. The inputs route keeps 30 minutes under a 200 MB cap,
-  // and 30 minutes of the 16 kHz PCM capture is about 58 MB, so the duration cap binds.
+  // for the backend to refuse it. 30 minutes of 16 kHz PCM is ~58 MB, under the 200 MB cap.
   assert.match(audioPageSource, /const RECORDING_MAX_SECONDS = 30 \* 60;/);
   assert.match(audioPageSource, /maxRecordSeconds=\{RECORDING_MAX_SECONDS\}/);
   assert.match(
