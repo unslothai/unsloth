@@ -391,6 +391,8 @@ def _mirrored_model_entry(model_info: dict, model_name: str) -> dict:
         "audio_reference_text": model_info.get("audio_reference_text"),
         "audio_required_inputs": model_info.get("audio_required_inputs"),
         "audio_clone": model_info.get("audio_clone"),
+        "audio_music": model_info.get("audio_music"),
+        "audio_cpp_backend": model_info.get("audio_cpp_backend"),
     }
 
 
@@ -3371,6 +3373,7 @@ class InferenceOrchestrator:
         audio_inputs: Optional[dict[str, str]] = None,
         reference_text: Optional[str] = None,
         speed: Optional[float] = None,
+        music: Optional[dict] = None,
         output_dir: Optional[str] = None,
         stats_holder: Optional[dict] = None,
     ) -> Tuple[bytes, int]:
@@ -3454,6 +3457,14 @@ class InferenceOrchestrator:
                     cmd["reference_text"] = reference_text
                 if speed is not None:
                     cmd["speed"] = float(speed)
+                if music is not None:
+                    cmd["music"] = dict(music)
+                    try:
+                        music_wait = float(music.get("timeout_s") or 0.0)
+                    except (TypeError, ValueError):
+                        music_wait = 0.0
+                    # Outlast the worker's wait so its error, not the watchdog, reaches the caller.
+                    generation_timeout = max(generation_timeout, music_wait + 60.0)
                 if output_dir is not None:
                     cmd["output_dir"] = str(output_dir)
 
@@ -3519,6 +3530,11 @@ class InferenceOrchestrator:
                                 return resp["outputs"], int(resp.get("sample_rate") or 0)
                             wav_bytes = base64.b64decode(resp["wav_base64"])
                             sample_rate = resp["sample_rate"]
+                            status_patch = resp.get("status_patch")
+                            if isinstance(status_patch, dict):
+                                live = self.models.get(expected_model)
+                                if live is not None and "audio_music" in status_patch:
+                                    live["audio_music"] = status_patch["audio_music"]
                             if stats_holder is not None:
                                 stats_holder["stats"] = resp.get("stats")
                             return wav_bytes, sample_rate

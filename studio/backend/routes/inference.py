@@ -8255,6 +8255,7 @@ def _llama_runtime_fields(llama_backend: LlamaCppBackend) -> dict:
         audio_workflows = None,
         audio_reference_text = None,
         audio_required_inputs = None,
+        audio_music = None,
         # Older/custom backend doubles predate this additive runtime field.
         preserve_thinking_default = bool(getattr(llama_backend, "preserve_thinking_default", False)),
         speculative_type = llama_backend.requested_spec_mode,
@@ -19169,6 +19170,7 @@ async def _load_model_impl(
             audio_workflows = _model_info.get("audio_workflows"),
             audio_reference_text = _model_info.get("audio_reference_text"),
             audio_required_inputs = _model_info.get("audio_required_inputs"),
+            audio_music = _model_info.get("audio_music"),
             is_mlx = bool(_model_info.get("is_mlx", False)),
             mlx_kv_quant = _model_info.get("mlx_kv_quant"),
             mlx_kv_quant_requested = _model_info.get("mlx_kv_quant_requested"),
@@ -21851,6 +21853,7 @@ async def _slot_status(current_subject: str):
             audio_workflows = model_info.get("audio_workflows"),
             audio_reference_text = model_info.get("audio_reference_text"),
             audio_required_inputs = model_info.get("audio_required_inputs"),
+            audio_music = model_info.get("audio_music"),
             gguf_variant = model_info.get("gguf_variant"),
             is_mlx = bool(model_info.get("is_mlx", False)),
             mlx_kv_quant = model_info.get("mlx_kv_quant"),
@@ -22000,6 +22003,9 @@ def _audio_cpp_music_request_problem(
         return "MiniMax Music 3 needs lyrics."
     if family == "yue2" and not str(description or "").strip():
         return "YuE2 needs a style description."
+    if family == "heartmula":
+        if not str(lyrics or "").strip() or not str(description or "").strip():
+            return "HeartMuLa needs lyrics and a description of the style."
     return None
 
 
@@ -22021,6 +22027,11 @@ def _audio_request_problem(
     workflows = model_info.get("audio_workflows")
     label = _audio_model_label(model_name)
     inputs = (run_inputs or {}).get("audio_inputs") or {}
+    if run_inputs and run_inputs.get("workflow") == "music":
+        # The model may have changed since the route checked the mode.
+        if not model_info.get("audio_music"):
+            return _audio_music_unavailable(label)
+        return None
     cloning = bool(run_inputs) and (run_inputs.get("workflow") == "clone" or bool(inputs))
     if cloning:
         if not workflows or "clone" not in workflows:
@@ -22161,7 +22172,8 @@ async def _generate_tts_wav(
             **{
                 key: value
                 for key, value in (run_inputs or {}).items()
-                if key in ("workflow", "audio_inputs", "reference_text", "speed")
+                if key
+                in ("workflow", "audio_inputs", "reference_text", "speed", "music", "output_dir")
                 and value is not None
             },
             stats_holder = stats_holder,
@@ -22184,7 +22196,7 @@ async def _generate_tts_wav(
         raise HTTPException(status_code = 400, detail = _request_problem)
     if audio_type == "minimax_music3" and not str(payload.audio_instructions or "").strip():
         raise HTTPException(status_code = 400, detail = _MINIMAX_NEEDS_DESCRIPTION)
-    if audio_type == "audiocpp_music":
+    if audio_type == "audiocpp_music" and (run_inputs or {}).get("workflow") != "music":
         _music_request_problem = _audio_cpp_music_request_problem(
             audio_family, text, payload.audio_instructions
         )
@@ -22423,20 +22435,347 @@ def _audio_run_settings(body: AudioRunRequest, reference_text_used: bool) -> dic
     }
 
 
+_REPAINT_BEYOND_END_S = 30.0
+_MUSIC_ONLY_FIELDS = ("mode", "lyrics", "instrumental", "duration_s", "variations", "edit")
+_MUSIC_MODE_NAMES = {"song": "songs", "sfx": "sound effects", "edit": "edits"}
+
+
+def _audio_music_unavailable(label: str) -> str:
+    return f"{label} does not work in the Music studio. Load an audio.cpp music model."
+
+
+def _music_mode_rules(rules: Optional[dict], mode: Optional[str]) -> Optional[dict]:
+    for entry in (rules or {}).get("modes") or []:
+        if isinstance(entry, dict) and entry.get("id") == mode:
+            return entry
+    return None
+
+
+def _audio_music_body_problem(
+    body: AudioRunRequest, rules: Optional[dict], label: str
+) -> Optional[str]:
+    """User-facing reason the loaded model cannot run this request, else None."""
+    if body.inputs.reference or body.inputs.emotion or body.inputs.reference_text:
+        return "Music takes a clip to edit, not a voice reference. Remove the reference."
+    if not rules:
+        return _audio_music_unavailable(label)
+    mode = _music_mode_rules(rules, body.mode)
+    if mode is None:
+        return f"{label} does not make {_MUSIC_MODE_NAMES.get(body.mode, body.mode)}."
+    text = body.text.strip()
+    if body.mode != "edit":
+        if body.edit is not None or body.inputs.source is not None:
+            return "A source clip and edit settings apply to Edit only."
+        variations = mode.get("variations")
+        if body.variations > 1 and not variations:
+            return f"{label} makes one take at a time. Set variations to 1."
+        if variations and body.variations > int(variations.get("max") or 1):
+            return f"{label} makes at most {variations.get('max')} variations at a time."
+        if body.mode == "sfx":
+            return None if text else "Describe the sound to make."
+        lyrics = (body.lyrics or "").strip()
+        if body.instrumental and mode.get("instrumental") == "never":
+            return f"{label} always sings. Turn off Instrumental and add lyrics."
+        if mode.get("lyrics") == "required" and not lyrics:
+            return f"{label} needs lyrics."
+        if mode.get("description") == "required" and not text:
+            return f"{label} needs a description of the music."
+        if not text and not lyrics:
+            return "Describe the music or add lyrics."
+        return None
+    if body.variations > 1:
+        return "An edit makes one take at a time. Set variations to 1."
+    source = body.inputs.source
+    if source is None:
+        return "Add a clip to edit."
+    if source.voice_id:
+        return "Edit an upload or a clip from history. Saved voices cannot be edited."
+    edit = body.edit
+    if edit is None:
+        return "Choose what to do to the clip."
+    if edit.action not in (mode.get("actions") or []):
+        return f"{label} cannot {edit.action} a clip."
+    if edit.action in ("repaint", "inpaint") and not edit.ranges:
+        return "Select the part of the clip to change."
+    if edit.action in ("extend", "cover", "continue", "restyle") and edit.ranges:
+        return f"{edit.action.capitalize()} changes the whole clip; clear the selected parts."
+    if len(edit.ranges) > int(mode.get("max_ranges") or 0):
+        return f"{label} changes at most {mode.get('max_ranges')} part(s) of a clip at a time."
+    if edit.action == "extend" and not edit.extend_s:
+        return "Choose how many seconds to add."
+    if not text:
+        return "Describe the change."
+    return None
+
+
+def _audio_music_source_problem(
+    body: AudioRunRequest, rules: dict, source_s: float, song_max: float
+) -> Optional[str]:
+    mode = _music_mode_rules(rules, "edit") or {}
+    max_source = float(mode.get("max_source_s") or 240.0)
+    if source_s > max_source + 0.05:
+        return f"Edit clips up to {_music_length_words(max_source)}. Trim it first."
+    edit = body.edit
+    for r in edit.ranges:
+        if r.start_s >= source_s:
+            return "A selected part starts after the clip ends. Select inside the clip."
+        if edit.action == "repaint" and r.end_s > song_max:
+            return f"A repaint can reach at most {_music_length_words(song_max)} into the song."
+        # The page draws at most this much tail past the clip; extend covers longer additions.
+        if edit.action == "repaint" and r.end_s > source_s + _REPAINT_BEYOND_END_S + 0.05:
+            return f"A repaint can reach at most {_REPAINT_BEYOND_END_S:g} s past the end."
+    if edit.action == "extend" and source_s + float(edit.extend_s or 0) > song_max + 0.05:
+        return f"The extended clip would pass {_music_length_words(song_max)}. Add fewer seconds."
+    return None
+
+
+def _music_length_words(seconds: float) -> str:
+    if seconds >= 60 and float(seconds) % 60 == 0:
+        minutes = int(seconds // 60)
+        return f"{minutes} minute{'s' if minutes != 1 else ''}"
+    return f"{seconds:g} s"
+
+
+def _audio_music_settings(
+    body: AudioRunRequest,
+    duration_s: Optional[float],
+    seed: Optional[int],
+    variation: Optional[int],
+    song: Optional[dict] = None,
+) -> dict[str, Any]:
+    """Scalars only: never a file or server path. Records what ran: an always-instrumental model
+    is instrumental and takes no lyrics, whatever the request said."""
+    instrumental = lyrics = None
+    if body.mode == "song":
+        how = (song or {}).get("instrumental")
+        instrumental = how == "always" or (body.instrumental and how != "never")
+        if (song or {}).get("lyrics") != "unused":
+            lyrics = body.lyrics
+    settings = _audio_run_settings(body, False)
+    settings.update(
+        {
+            "mode": body.mode,
+            "variation": variation,
+            "seed": seed,
+            "duration_s": duration_s,
+            "instrumental": instrumental,
+            "lyrics": lyrics,
+        }
+    )
+    if body.edit is not None:
+        settings["edit"] = {
+            "action": body.edit.action,
+            "ranges": [{"start_s": r.start_s, "end_s": r.end_s} for r in body.edit.ranges],
+            "strength": body.edit.strength,
+            "extend_s": body.edit.extend_s,
+        }
+    return settings
+
+
+def _read_music_outputs(run_dir: Path) -> list[tuple[bytes, int, Optional[int]]]:
+    """A listed file outside ``run_dir`` is never read."""
+    from core.inference.audio_task_outputs import wav_header
+
+    try:
+        manifest = json.loads((run_dir / "outputs.json").read_text(encoding = "utf-8"))
+    except (OSError, ValueError):
+        return []
+    root = run_dir.resolve()
+    outputs: list[tuple[bytes, int, Optional[int]]] = []
+    for entry in manifest if isinstance(manifest, list) else []:
+        if not isinstance(entry, dict) or not isinstance(entry.get("file"), str):
+            continue
+        path = (run_dir / entry["file"]).resolve()
+        if path.parent != root or not path.is_file():
+            logger.warning("audio.music: ignoring an output outside the run folder")
+            continue
+        data = path.read_bytes()
+        try:
+            rate = wav_header(data)[0]
+        except Exception:  # noqa: BLE001 - not a WAV
+            continue
+        seed = entry.get("seed")
+        outputs.append((data, rate, seed if isinstance(seed, int) else None))
+    return outputs
+
+
+async def _run_music_workflow(
+    body: AudioRunRequest, request: Request, current_subject: str
+) -> AudioRunResponse:
+    import base64
+    import shutil
+
+    from core.inference import audio_inputs
+    from core.inference.audio_cpp_models import MUSIC_SPECS
+    from core.inference.audio_cpp_music import frames_for, timeout_seconds
+
+    await _maybe_auto_switch_model(
+        _RELOAD_ONLY_MODEL,
+        request,
+        current_subject,
+        claim_resident = False,
+        require_speech = True,
+    )
+    backend = await asyncio.to_thread(get_inference_backend)
+    if not backend.active_model_name:
+        raise HTTPException(status_code = 400, detail = "Load a music model first.")
+    model_info = backend.models.get(backend.active_model_name, {}) or {}
+    label = _audio_model_label(_orchestrator_public_model_id(backend))
+    rules = model_info.get("audio_music")
+    problem = _audio_music_body_problem(body, rules, label)
+    if problem:
+        raise HTTPException(status_code = 400, detail = problem)
+    family = model_info.get("audio_family")
+    song = _music_mode_rules(rules, "song") or {}
+    song_max = float((song.get("duration") or {}).get("max") or 240.0)
+
+    run_dir = audio_inputs.inputs_dir() / "runs" / uuid.uuid4().hex
+    try:
+        source_path = None
+        source = None
+        seconds: Optional[float] = None
+        if body.mode == "edit":
+            spec = MUSIC_SPECS.get(str(family or ""))
+            rate = spec.edit_rate if spec is not None else None
+            if not rate:
+                raise HTTPException(status_code = 400, detail = f"{label} cannot edit a clip.")
+            try:
+                source = await asyncio.to_thread(
+                    audio_inputs.resolve_source, body.inputs.source.model_dump(exclude_none = True)
+                )
+                source_s = float(
+                    (await asyncio.to_thread(audio_inputs.wav_info, source.path))["duration_s"]
+                )
+                problem = _audio_music_source_problem(body, rules, source_s, song_max)
+                if problem:
+                    raise HTTPException(status_code = 400, detail = problem)
+                source_path = await asyncio.to_thread(
+                    audio_inputs.prepared_path, source, rate, None, True
+                )
+            except audio_inputs.AudioInputError as exc:
+                raise _audio_source_error(exc) from None
+            work_s = source_s + float(body.edit.extend_s or 0.0)
+            # A repaint range past the end pads the source out to it.
+            work_s = max([work_s, *(r.end_s for r in body.edit.ranges)])
+            if body.edit.action == "continue" and body.duration_s:
+                seconds = min(song_max, float(body.duration_s))
+                work_s = max(work_s, seconds)
+        else:
+            mode = _music_mode_rules(rules, body.mode) or {}
+            bounds = mode.get("duration") or {}
+            low = float(bounds.get("min") or 1.0)
+            high = float(bounds.get("max") or 240.0)
+            wanted = body.duration_s if body.duration_s is not None else bounds.get("default")
+            seconds = max(low, min(high, float(wanted if wanted is not None else low)))
+            work_s = seconds
+        variations = body.variations if body.mode != "edit" else 1
+        cpu = model_info.get("audio_cpp_backend") == "cpu"
+        music = {
+            "mode": body.mode,
+            "text": body.text,
+            "lyrics": body.lyrics,
+            "instrumental": body.instrumental,
+            "duration_s": seconds,
+            "variations": variations,
+            "edit": body.edit.model_dump() if body.edit is not None else None,
+            "timeout_s": timeout_seconds(family, work_s, variations, cpu),
+        }
+        run_dir.mkdir(parents = True, exist_ok = True)
+        payload = ChatCompletionRequest(
+            messages = [{"role": "user", "content": body.text or body.lyrics or ""}],
+            # Only scales the orchestrator's deadline.
+            max_tokens = max(1, min(8192, frames_for(work_s, variations))),
+            audio_options = body.options,
+            seed = body.seed,
+        )
+        wav_bytes, sample_rate, model_name, audio_type = await _generate_tts_wav(
+            body.text,
+            payload,
+            request,
+            current_subject,
+            run_inputs = {
+                "workflow": "music",
+                "audio_inputs": {"source": str(source_path)} if source_path else None,
+                "music": music,
+                "output_dir": str(run_dir),
+            },
+        )
+        outputs = await asyncio.to_thread(_read_music_outputs, run_dir)
+    finally:
+        await asyncio.to_thread(shutil.rmtree, run_dir, ignore_errors = True)
+    if not outputs:
+        outputs = [(wav_bytes, sample_rate, body.seed)]
+    group_id = uuid.uuid4().hex if len(outputs) > 1 else None
+    role = "edit" if body.mode == "edit" else ("variation" if len(outputs) > 1 else "output")
+    prompt = body.text.strip() or " ".join((body.lyrics or "").split())[:200]
+    clips = []
+    for index, (wav, rate, seed) in enumerate(outputs):
+        extra_meta: dict[str, Any] = {
+            "role": role,
+            "group_id": group_id,
+            "settings": _audio_music_settings(
+                body, seconds, seed, index + 1 if len(outputs) > 1 else None, song
+            ),
+        }
+        if source is not None:
+            extra_meta["reference_name"] = source.name
+            if source.kind == "clip":
+                extra_meta["source_clip_id"] = source.id
+        record = await asyncio.to_thread(
+            _persist_tts_clip, wav, rate, prompt, model_name, audio_type, extra_meta, "music"
+        )
+        if record is None:
+            if not clips:
+                return AudioRunResponse(
+                    clips = [],
+                    model = model_name,
+                    audio = {
+                        "data": base64.b64encode(wav).decode("ascii"),
+                        "format": "wav",
+                        "sample_rate": rate,
+                    },
+                )
+            continue
+        clips.append(
+            {
+                "id": record["id"],
+                "role": role,
+                "url": record["url"],
+                "sample_rate": record["sample_rate"],
+                "duration_s": record["duration_s"],
+                "workflow": record["workflow"],
+            }
+        )
+    return AudioRunResponse(clips = clips, group_id = group_id, model = model_name)
+
+
 @router.post("/audio/run", response_model = AudioRunResponse)
 async def run_audio_workflow(
     body: AudioRunRequest,
     request: Request,
     current_subject: str = Depends(get_current_subject),
 ):
-    """Clone, Speak in a saved voice, or Separate, and save the result to history. Audio is named
-    by id and resolved here in the caller's account; the worker gets a prepared copy's path, never
-    bytes."""
+    """Run one Audio page workflow (Clone, Speak in a saved voice, Music or Separate); clips go to
+    history. Audio is named by id and resolved here in the caller's account; the worker gets a
+    prepared copy's path, never bytes."""
     if body.workflow == "separate":
         return await _run_separation(body, request, current_subject)
     import base64
 
     from core.inference import audio_inputs
+
+    if body.workflow == "music":
+        return await _run_music_workflow(body, request, current_subject)
+    music_fields = sorted(
+        name
+        for name in _MUSIC_ONLY_FIELDS
+        if name in body.model_fields_set and getattr(body, name) not in (None, False, 1)
+    )
+    if music_fields or body.inputs.source is not None:
+        raise HTTPException(
+            status_code = 400,
+            detail = "A music mode, lyrics, variations, a source clip and edits apply to Music only.",
+        )
 
     if body.workflow == "clone" and body.inputs.reference is None:
         raise HTTPException(status_code = 400, detail = "Add a reference clip to clone.")
@@ -22581,7 +22920,7 @@ def _prepare_separation_source(ref: dict[str, Any]):
             detail = "Separate tracks up to 10 minutes long. This one is "
             f"{_clock(seconds)}. Pick a shorter track.",
         )
-    return source, audio_inputs.prepared_path(source, _SEPARATE_RATE, mono = channels != 2)
+    return source, audio_inputs.prepared_path(source, _SEPARATE_RATE, stereo = channels == 2)
 
 
 def _stem_rank(ids: list[str]):
@@ -22651,6 +22990,14 @@ async def _run_separation(
 
     if body.text is not None:
         raise HTTPException(status_code = 400, detail = "Separate takes no text.")
+    if any(
+        name in body.model_fields_set and getattr(body, name) not in (None, False, 1)
+        for name in _MUSIC_ONLY_FIELDS
+    ):
+        raise HTTPException(
+            status_code = 400,
+            detail = "A music mode, lyrics, variations and edits apply to Music only.",
+        )
     inputs = body.inputs
     if inputs.reference is not None or inputs.emotion is not None or inputs.reference_text:
         raise HTTPException(status_code = 400, detail = "Separate takes only a track.")

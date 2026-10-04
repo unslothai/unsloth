@@ -6,7 +6,9 @@ import { cn } from "@/lib/utils";
 import { PauseIcon, PlayIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import {
+  type CSSProperties,
   type KeyboardEvent,
+  type ReactNode,
   type Ref,
   useCallback,
   useEffect,
@@ -30,6 +32,8 @@ export function Waveform({
   src,
   label,
   className,
+  tailS = 0,
+  overlay,
   controlRef,
   onPositionChange,
 }: {
@@ -39,6 +43,8 @@ export function Waveform({
   src: string | null;
   label: string;
   className?: string;
+  tailS?: number;
+  overlay?: ReactNode;
   controlRef?: Ref<WaveformControl>;
   onPositionChange?: (seconds: number, playing: boolean) => void;
 }) {
@@ -99,6 +105,34 @@ export function Waveform({
     onPositionChange?.(position, playing);
   }, [onPositionChange, position, playing]);
 
+  const slider = (
+    <WaveformBars
+      peaks={peaks}
+      fraction={fraction}
+      label={label}
+      valueNow={position}
+      valueMax={duration}
+      disabled={!src}
+      style={tailS > 0 ? { flexGrow: duration > 0 ? duration : 1 } : undefined}
+      onSeek={(next) => seekTo(next * duration)}
+      onKeyDown={(event) => {
+        if (event.key === " ") {
+          event.preventDefault();
+          toggle();
+        } else if (event.key === "ArrowRight") {
+          event.preventDefault();
+          seekTo(position + SEEK_STEP_SECONDS);
+        } else if (event.key === "ArrowLeft") {
+          event.preventDefault();
+          seekTo(position - SEEK_STEP_SECONDS);
+        } else if (event.key === "Home") {
+          event.preventDefault();
+          seekTo(0);
+        }
+      }}
+    />
+  );
+
   return (
     <div className={cn("flex items-center gap-2", className)}>
       <Button
@@ -115,30 +149,21 @@ export function Waveform({
           className="size-3.5"
         />
       </Button>
-      <WaveformBars
-        peaks={peaks}
-        fraction={fraction}
-        label={label}
-        valueNow={position}
-        valueMax={duration}
-        disabled={!src}
-        onSeek={(next) => seekTo(next * duration)}
-        onKeyDown={(event) => {
-          if (event.key === " ") {
-            event.preventDefault();
-            toggle();
-          } else if (event.key === "ArrowRight") {
-            event.preventDefault();
-            seekTo(position + SEEK_STEP_SECONDS);
-          } else if (event.key === "ArrowLeft") {
-            event.preventDefault();
-            seekTo(position - SEEK_STEP_SECONDS);
-          } else if (event.key === "Home") {
-            event.preventDefault();
-            seekTo(0);
-          }
-        }}
-      />
+      {overlay !== undefined || tailS > 0 ? (
+        <div className="relative flex h-[calc(32px*var(--ui-space-scale,1))] min-w-0 flex-1">
+          {slider}
+          {tailS > 0 ? (
+            <div
+              aria-hidden="true"
+              className="h-full min-w-0 basis-0 rounded-md border border-dashed border-border bg-muted/40"
+              style={{ flexGrow: tailS }}
+            />
+          ) : null}
+          {overlay}
+        </div>
+      ) : (
+        slider
+      )}
       <span className="shrink-0 font-mono text-ui-11p5 tabular-nums text-muted-foreground">
         {position > 0 ? `${formatSeconds(position)} / ` : ""}
         {formatSeconds(duration)}
@@ -178,6 +203,7 @@ export function WaveformBars({
   onSeek,
   onKeyDown,
   className,
+  style,
 }: {
   peaks: readonly number[] | null;
   fraction: number;
@@ -188,6 +214,7 @@ export function WaveformBars({
   onSeek?: (fraction: number) => void;
   onKeyDown?: (event: KeyboardEvent<HTMLDivElement>) => void;
   className?: string;
+  style?: CSSProperties;
 }) {
   const bars = peaks && peaks.length > 0 ? peaks : null;
   const count = bars?.length ?? WAVEFORM_BARS;
@@ -201,6 +228,7 @@ export function WaveformBars({
       aria-valuenow={Math.round(valueNow)}
       aria-valuetext={`${formatSeconds(valueNow)} of ${formatSeconds(valueMax)}`}
       aria-disabled={disabled}
+      style={style}
       className={cn(
         "relative h-[calc(32px*var(--ui-space-scale,1))] min-w-0 flex-1 cursor-pointer rounded-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
         className,
