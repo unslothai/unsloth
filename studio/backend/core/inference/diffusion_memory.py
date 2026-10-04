@@ -2793,6 +2793,82 @@ def release_resident_groups(
         return None
 
 
+def resident_group_mib(pipe: Any) -> int:
+    """MiB an oversized request could release: every resident offload group of the pipeline's components."""
+    total = 0
+    for module in (getattr(pipe, "components", {}) or {}).values():
+        if not getattr(module, "_unsloth_resident_room", None):
+            continue
+        for group in _offload_groups(module) or []:
+            if getattr(group, "_unsloth_resident", False):
+                total += int(getattr(group, "_unsloth_resident_bytes", 0))
+    return total >> 20
+
+
+def hook_resident_denoiser(
+    pipe: Any,
+    device: Any,
+    logger: Any = None,
+) -> bool:
+    """Put a resident transformer that carries no offload hooks behind block-level group offloading with every group
+    kept resident, so release_resident_groups can stream part of it for this request. Done on demand rather than at
+    load: under the hooks every load recompiles on its second render, which a hookless transformer never pays.
+    torchao denoisers only (the measured placement); returns True when the hooks are installed."""
+    transformer = getattr(pipe, "transformer", None)
+    if (
+        transformer is None
+        or _offload_groups(transformer)
+        or not _pipe_denoisers_hold_torchao(pipe)
+    ):
+        return False
+    try:
+        import inspect
+
+        import torch
+        from diffusers.hooks import apply_group_offloading
+
+        onload = torch.device(device)
+        if onload.type != "cuda":
+            return False
+        install_group_offload_buffer_restore()
+        install_group_offload_hooks_eager()
+        gkwargs: dict[str, Any] = {
+            "onload_device": onload,
+            "offload_device": torch.device("cpu"),
+            "offload_type": "block_level",
+            "num_blocks_per_group": DEFAULT_GROUP_BLOCKS,
+            "use_stream": True,
+        }
+        params = inspect.signature(apply_group_offloading).parameters
+        for name in ("non_blocking", "record_stream"):
+            if name in params:
+                gkwargs[name] = True
+        dit_mib = _module_host_mib(transformer)
+        if "low_cpu_mem_usage" in params:
+            gkwargs["low_cpu_mem_usage"] = not _streamed_pin_plan(dit_mib, 0, logger)[0]
+        pinned_mib = [0]
+        apply_group_offloading(
+            transformer, **_torchao_group_offload_kwargs(transformer, gkwargs, pinned_mib)
+        )
+        if not _pin_top_level_group(transformer, logger, pinned_mib):
+            _skip_top_level_copy_back(transformer, logger)
+        if gkwargs.get("record_stream"):
+            install_group_prefetch(transformer, onload, logger)
+        kept = _keep_groups_resident(transformer, dit_mib + 1, onload, logger)
+    except Exception as exc:  # noqa: BLE001 - the guard still refuses what cannot fit
+        _remove_group_offload_hooks(transformer)
+        if logger is not None:
+            logger.warning("diffusion.memory: resident transformer left without hooks (%s)", exc)
+        return False
+    if logger is not None:
+        logger.info(
+            "diffusion.memory: the resident transformer takes offload hooks (%d MiB kept resident) so this request "
+            "can stream part of it",
+            kept,
+        )
+    return True
+
+
 def _is_text_encoder_module(pipe: Any, module: Any) -> bool:
     for name, component in (getattr(pipe, "components", {}) or {}).items():
         if component is module:

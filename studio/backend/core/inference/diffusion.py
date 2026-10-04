@@ -146,6 +146,8 @@ from .diffusion_memory import (
     refine_memory_plan_for_components,
     refine_plan_from_loaded_weights,
     release_resident_groups,
+    resident_group_mib,
+    hook_resident_denoiser,
     measured_request_extra_mib,
     settled_snapshot_device_memory,
     snapshot_device_memory,
@@ -9797,23 +9799,30 @@ class DiffusionBackend:
                     guard_batch = _activation_guard_batch(chunks)
                     guard_target = self._state_device_target(state)
                     # past what the measured placement reserved: stream resident groups again for this call
+                    request_condition_pixels = (
+                        int(
+                            (1 + len(ref_extra))
+                            * ref_resolution
+                            * ref_resolution
+                            * getattr(fam, "condition_pixel_weight", 1.0)
+                        )
+                        if ref_resolution is not None
+                        else 0
+                    )
                     extra_mib = measured_request_extra_mib(
                         state.pipe,
                         width = guard_width,
                         height = guard_height,
                         batch_size = guard_batch,
-                        condition_pixels = (
-                            int(
-                                (1 + len(ref_extra))
-                                * ref_resolution
-                                * ref_resolution
-                                * getattr(fam, "condition_pixel_weight", 1.0)
-                            )
-                            if ref_resolution is not None
-                            else 0
-                        ),
+                        condition_pixels = request_condition_pixels,
                     )
                     if extra_mib > 0:
+                        releasable_mib = resident_group_mib(state.pipe)
+                        if request_condition_pixels > 0 and extra_mib > releasable_mib:
+                            # A conditioned request is checked against free memory with no allowance for what the load
+                            # reserved, so when the releasable groups fall short a hookless resident transformer takes
+                            # its hooks and streams part of itself for this request.
+                            hook_resident_denoiser(state.pipe, guard_target.torch_device, logger)
                         restore_resident = release_resident_groups(state.pipe, extra_mib, logger)
                     guard_kwargs = dict(
                         # NOT the settled snapshot the load uses: that one calls empty_cache(), which is right once

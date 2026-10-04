@@ -513,6 +513,77 @@ def test_partial_release_frees_only_what_the_request_needs(monkeypatch):
     assert all(next(b.parameters()).device.type == "cuda" for b in net.blocks)
 
 
+def _resident_hooked(torch, net):
+    from diffusers.hooks import apply_group_offloading
+
+    apply_group_offloading(
+        net,
+        onload_device = torch.device("cuda"),
+        offload_device = torch.device("cpu"),
+        offload_type = "block_level",
+        num_blocks_per_group = 1,
+        use_stream = True,
+        record_stream = True,
+        non_blocking = True,
+    )
+    assert dm._keep_groups_resident(net, 1024, "cuda") > 0
+    return net
+
+
+def test_a_hookless_resident_transformer_takes_hooks_on_demand(monkeypatch):
+    """The 16 GB tier keeps the int8 transformer resident without offload hooks; an oversized request (an edit's
+    reference) gives it hooks, every group resident, so release_resident_groups can stream part of it."""
+    torch, _ = _cuda_offload_model()
+    pytest.importorskip("torchao")
+    from torchao.quantization import Int8DynamicActivationInt8WeightConfig, quantize_
+
+    monkeypatch.delenv("UNSLOTH_DIFFUSION_PARTIAL_RESIDENT", raising = False)
+    cfg = Int8DynamicActivationInt8WeightConfig(set_inductor_config = False)
+    if not hasattr(cfg, "version"):
+        pytest.skip("torchao predates versioned configs")
+    cfg.version = 2
+    torch.manual_seed(0)
+    net = (
+        torch.nn.Sequential(
+            torch.nn.Linear(256, 512),
+            torch.nn.Sequential(*[torch.nn.Linear(512, 512) for _ in range(3)]),
+        )
+        .cuda()
+        .to(torch.bfloat16)
+    )
+    quantize_(net[1], cfg)
+    net.requires_grad_(False)
+    x = torch.randn(64, 256, device = "cuda", dtype = torch.bfloat16)
+    with torch.no_grad():
+        ref = net(x)
+    pipe = types.SimpleNamespace(transformer = net, components = {"transformer": net})
+    assert dm.resident_group_mib(pipe) == 0
+    assert dm.hook_resident_denoiser(pipe, "cuda")
+    assert dm.resident_group_mib(pipe) > 0
+    assert not dm.hook_resident_denoiser(pipe, "cuda")  # already hooked
+    with torch.no_grad():
+        assert torch.equal(net(x), ref)
+        restore = dm.release_resident_groups(pipe, 1)
+        assert restore is not None
+        for _ in range(2):
+            assert torch.equal(net(x), ref)
+        restore()
+        assert torch.equal(net(x), ref)
+
+
+def test_generate_hooks_the_resident_transformer_only_when_the_release_falls_short():
+    src = (__import__("pathlib").Path(dm.__file__).parent / "diffusion.py").read_text(
+        encoding = "utf-8"
+    )
+    at = src.index(
+        "if request_condition_pixels > 0 and extra_mib > resident_group_mib(state.pipe):"
+    )
+    assert "hook_resident_denoiser(state.pipe," in src[at : at + 600]
+    assert (
+        src.index("restore_resident = release_resident_groups(state.pipe, extra_mib, logger)") > at
+    )
+
+
 def test_measured_request_extra(monkeypatch):
     monkeypatch.delenv("UNSLOTH_DIFFUSION_MEASURED_ACTIVATION", raising = False)
     pipe = types.SimpleNamespace(_unsloth_measured_reserve = (2304, "qwen-image-2.1", "default"))
