@@ -163,8 +163,13 @@ def function_params(
     """Param names of the first `def name(...)`; scoped to `class cls:` if given. None if absent."""
     tree = _parse(src)
     if tree is None:
-        # cls scoping isn't reliable via regex; degrade to module-level lookup.
-        return _re_function_params(src, name) if cls is None else None
+        if cls is not None:
+            # Regex fallback scopes to text after `class cls`: first matching def there.
+            m = re.search(rf"^\s*class\s+{re.escape(cls)}\b", src, re.MULTILINE)
+            if m is None:
+                return None
+            src = src[m.end() :]
+        return _re_function_params(src, name)
     scope: ast.AST | None = tree
     if cls is not None:
         scope = next(
