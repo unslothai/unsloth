@@ -50,10 +50,20 @@ def _target(dtype = "bf16"):
     return types.SimpleNamespace(device = "cuda", dtype = dtype, torch_device = "cuda")
 
 
-def _exact_sageattn(q, k, v, tensor_layout = "NHD", **_kw):
-    return torch.nn.functional.scaled_dot_product_attention(
-        *(t.float().transpose(1, 2) for t in (q, k, v))
-    ).transpose(1, 2).to(q.dtype)
+def _exact_sageattn(
+    q,
+    k,
+    v,
+    tensor_layout = "NHD",
+    **_kw,
+):
+    return (
+        torch.nn.functional.scaled_dot_product_attention(
+            *(t.float().transpose(1, 2) for t in (q, k, v))
+        )
+        .transpose(1, 2)
+        .to(q.dtype)
+    )
 
 
 @pytest.fixture(autouse = True)
@@ -82,7 +92,9 @@ def _engage(monkeypatch, probe_error = ""):
     monkeypatch.setattr(att, "_load_sage_hub_kernel", lambda: (_exact_sageattn, ""))
     monkeypatch.setattr(att, "_run_sage_probe", lambda d, dt, hd = 128, sageattn = None: probe_error)
     t, log = _Transformer(), _Logger()
-    engaged = apply_attention_backend(types.SimpleNamespace(transformer = t), "sage", logger = log, target = _target())
+    engaged = apply_attention_backend(
+        types.SimpleNamespace(transformer = t), "sage", logger = log, target = _target()
+    )
     return engaged, t, log
 
 
@@ -99,16 +111,25 @@ def test_sage_without_sageattention2_engages_the_kernels_hub_build(monkeypatch):
 
 @needs_sage_hub
 def test_sage_hub_probe_failure_keeps_the_default_and_says_why(monkeypatch):
-    engaged, t, log = _engage(monkeypatch, probe_error = "ValueError: Unsupported CUDA architecture: sm100")
+    engaged, t, log = _engage(
+        monkeypatch, probe_error = "ValueError: Unsupported CUDA architecture: sm100"
+    )
     assert engaged is None and "sage_hub" not in t.calls
-    assert any("sm100" in w and "source build or a community wheel" in w for w in log.warnings), log.warnings
+    assert any(
+        "sm100" in w and "source build or a community wheel" in w for w in log.warnings
+    ), log.warnings
 
 
 @needs_sage_hub
 def test_sage_hub_unloadable_keeps_the_default_and_says_why(monkeypatch):
     monkeypatch.setattr(att, "_load_sage_hub_kernel", lambda: (None, "no build for torch 2.13"))
     t, log = _Transformer(), _Logger()
-    assert apply_attention_backend(types.SimpleNamespace(transformer = t), "sage", logger = log, target = _target()) is None
+    assert (
+        apply_attention_backend(
+            types.SimpleNamespace(transformer = t), "sage", logger = log, target = _target()
+        )
+        is None
+    )
     assert t.calls == [] or t.calls == ["native"]
     assert any("no build for torch 2.13" in w and "PyPI" in w for w in log.warnings), log.warnings
 
@@ -139,7 +160,11 @@ def test_sage_hub_loader_prefers_the_version_2_builds(monkeypatch):
     # diffusers 0.40 asks for version 1, whose builds stop at torch 2.10; version 2 covers torch 2.9 to 2.12.
     asked: list = []
 
-    def _get_kernel(repo, version = None, **_kw):
+    def _get_kernel(
+        repo,
+        version = None,
+        **_kw,
+    ):
         asked.append((repo, version))
         if version == 2:
             raise FileNotFoundError("Cannot install kernel")
@@ -149,7 +174,10 @@ def test_sage_hub_loader_prefers_the_version_2_builds(monkeypatch):
     dispatch._HUB_KERNELS_REGISTRY[_HUB].kernel_fn = None
     fn, why = att._load_sage_hub_kernel()
     assert fn is _exact_sageattn and why == ""
-    assert asked == [("kernels-community/sage-attention", 2), ("kernels-community/sage-attention", 1)]
+    assert asked == [
+        ("kernels-community/sage-attention", 2),
+        ("kernels-community/sage-attention", 1),
+    ]
     assert dispatch._HUB_KERNELS_REGISTRY[_HUB].kernel_fn is _exact_sageattn
     asked.clear()
     assert att._load_sage_hub_kernel()[0] is _exact_sageattn and asked == []
@@ -157,7 +185,11 @@ def test_sage_hub_loader_prefers_the_version_2_builds(monkeypatch):
 
 @needs_sage_hub
 def test_sage_hub_loader_reports_every_failed_version(monkeypatch):
-    def _get_kernel(repo, version = None, **_kw):
+    def _get_kernel(
+        repo,
+        version = None,
+        **_kw,
+    ):
         raise FileNotFoundError(f"no variant v{version}")
 
     monkeypatch.setitem(sys.modules, "kernels", types.SimpleNamespace(get_kernel = _get_kernel))
@@ -165,7 +197,11 @@ def test_sage_hub_loader_reports_every_failed_version(monkeypatch):
     fn, why = att._load_sage_hub_kernel()
     assert fn is None and "no variant v2" in why and "no variant v1" in why
     # Remembered: the in-lock apply does not fetch again after the pre-install step failed.
-    monkeypatch.setitem(sys.modules, "kernels", types.SimpleNamespace(get_kernel = lambda *a, **k: pytest.fail("refetch")))
+    monkeypatch.setitem(
+        sys.modules,
+        "kernels",
+        types.SimpleNamespace(get_kernel = lambda *a, **k: pytest.fail("refetch")),
+    )
     assert att._load_sage_hub_kernel() == (None, why)
 
 
@@ -174,9 +210,14 @@ def test_a_pip_sageattention2_keeps_the_pip_path(monkeypatch):
     monkeypatch.setattr(att, "_sage_version_too_old", lambda: None)
     monkeypatch.setattr(att, "_install_sage_dispatch_guard", lambda: True)
     monkeypatch.setattr(att, "_run_sage_probe", lambda d, dt, hd = 128, sageattn = None: "")
-    monkeypatch.setattr(att, "_load_sage_hub_kernel", lambda: pytest.fail("the hub build is only the fallback"))
+    monkeypatch.setattr(
+        att, "_load_sage_hub_kernel", lambda: pytest.fail("the hub build is only the fallback")
+    )
     t = _Transformer()
-    assert apply_attention_backend(types.SimpleNamespace(transformer = t), "sage", target = _target()) == "sage"
+    assert (
+        apply_attention_backend(types.SimpleNamespace(transformer = t), "sage", target = _target())
+        == "sage"
+    )
 
 
 # --- installs ----------------------------------------------------------------------------------------------------
@@ -236,12 +277,16 @@ def test_sage_preinstall_fetches_the_hub_build_outside_the_lock(real_install, mo
     assert fetched == [1] and run.calls == []
 
 
-def test_flash4_installs_its_python_deps_with_cutlass_dsl_held_to_the_working_range(real_install, monkeypatch):
+def test_flash4_installs_its_python_deps_with_cutlass_dsl_held_to_the_working_range(
+    real_install, monkeypatch
+):
     run, dists = real_install
     import importlib.util
 
     dists["kernels"] = "0.12.1"
-    monkeypatch.setattr(importlib.util, "find_spec", lambda name: object() if name == "kernels" else None)
+    monkeypatch.setattr(
+        importlib.util, "find_spec", lambda name: object() if name == "kernels" else None
+    )
     att._ensure_attention_backend_installed("flash_4_hub")
     flat = [part for cmd in run.calls for part in cmd]
     assert "nvidia-cutlass-dsl>=4.4,<4.6" in flat
@@ -260,7 +305,9 @@ def test_flash4_deps_already_satisfied_install_nothing(real_install, monkeypatch
     run, dists = real_install
     import importlib.util
 
-    dists.update({"kernels": "0.12.3", "nvidia-cutlass-dsl": "4.5.3", "apache-tvm-ffi": "0.1.14.post1"})
+    dists.update(
+        {"kernels": "0.12.3", "nvidia-cutlass-dsl": "4.5.3", "apache-tvm-ffi": "0.1.14.post1"}
+    )
     monkeypatch.setattr(importlib.util, "find_spec", lambda name: object())
     assert att._ensure_attention_backend_installed("flash_4_hub") is None
     assert run.calls == []
@@ -270,8 +317,12 @@ def test_flash4_refuses_to_replace_an_out_of_range_cutlass_dsl(real_install, mon
     run, dists = real_install
     import importlib.util
 
-    dists.update({"kernels": "0.16.0", "nvidia-cutlass-dsl": "4.8.0", "apache-tvm-ffi": "0.1.14.post1"})
-    monkeypatch.setattr(att, "_cutlass_dsl_dependents", lambda: ["quack-kernels 0.6.5 (nvidia-cutlass-dsl>=4.7)"])
+    dists.update(
+        {"kernels": "0.16.0", "nvidia-cutlass-dsl": "4.8.0", "apache-tvm-ffi": "0.1.14.post1"}
+    )
+    monkeypatch.setattr(
+        att, "_cutlass_dsl_dependents", lambda: ["quack-kernels 0.6.5 (nvidia-cutlass-dsl>=4.7)"]
+    )
     monkeypatch.setattr(importlib.util, "find_spec", lambda name: object())
     log = _Logger()
     reason = att._ensure_attention_backend_installed("flash_4_hub", log)
@@ -292,7 +343,15 @@ def test_flash4_install_respects_the_off_switch(real_install, monkeypatch):
 
 @pytest.mark.parametrize(
     "version, ok",
-    [("4.3.5", False), ("4.4.0", True), ("4.4.2", True), ("4.5.3", True), ("4.6.0", False), ("4.8.0", False), (None, False)],
+    [
+        ("4.3.5", False),
+        ("4.4.0", True),
+        ("4.4.2", True),
+        ("4.5.3", True),
+        ("4.6.0", False),
+        ("4.8.0", False),
+        (None, False),
+    ],
 )
 def test_flash4_cutlass_dsl_range(version, ok):
     # Measured on a B200 (torch 2.11 / 2.12): 4.4.0 to 4.5.3 load; 4.6.3 to 4.8.0 lack cute.core.ThrMma.
@@ -302,7 +361,11 @@ def test_flash4_cutlass_dsl_range(version, ok):
 def test_studio_pins_a_kernels_release_diffusers_accepts_for_flash4():
     # diffusers' flash_4_hub raises below kernels 0.12.3.
     req = pathlib.Path(att.__file__).resolve().parents[2] / "requirements" / "extras-no-deps.txt"
-    pins = [line.split("==", 1)[1].strip() for line in req.read_text().splitlines() if line.startswith("kernels==")]
+    pins = [
+        line.split("==", 1)[1].strip()
+        for line in req.read_text().splitlines()
+        if line.startswith("kernels==")
+    ]
     assert pins and all(att._version_tuple(v) >= att.FA4_KERNELS_MIN for v in pins), pins
 
 
@@ -338,10 +401,15 @@ def test_a_pth_installed_mid_process_is_activated(monkeypatch, tmp_path):
 
     pkg_dir = tmp_path / "dsl_packages"
     pkg_dir.mkdir()
-    (tmp_path / "nvidia_cutlass_dsl_packages.pth").write_text(f"import sys; sys.path.insert(0, {str(pkg_dir)!r})\n")
+    (tmp_path / "nvidia_cutlass_dsl_packages.pth").write_text(
+        f"import sys; sys.path.insert(0, {str(pkg_dir)!r})\n"
+    )
 
     class _Dist:
-        files = [pathlib.PurePosixPath("nvidia_cutlass_dsl_packages.pth"), pathlib.PurePosixPath("pkg/__init__.py")]
+        files = [
+            pathlib.PurePosixPath("nvidia_cutlass_dsl_packages.pth"),
+            pathlib.PurePosixPath("pkg/__init__.py"),
+        ]
 
         def locate_file(self, entry):
             return tmp_path / entry
