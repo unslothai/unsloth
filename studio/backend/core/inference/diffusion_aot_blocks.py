@@ -461,7 +461,7 @@ class Registry:
                     if want == state and want_code == code and fn.guard_check(module, *args, **kwargs):
                         self.stats["hits"] += 1
                         return fn(module, *args, **kwargs)
-                self._note_miss(module, fns, state, code)
+                self._note_miss(module, fns, state, code, args, kwargs)
             except Exception as exc:  # noqa: BLE001
                 from .diffusion_batched import is_oom_error
 
@@ -489,7 +489,7 @@ class Registry:
             )
         return not any(dicts) and _hook_free_global()
 
-    def _note_miss(self, module: Any, fns: list, state: list, code: str) -> None:
+    def _note_miss(self, module: Any, fns: list, state: list, code: str, args: tuple, kwargs: dict) -> None:
         """Log once per class why no loaded artifact served it (a new shape is expected; anything else is not)."""
         cls = type(module).__name__
         if cls in self._noted:
@@ -497,7 +497,8 @@ class Registry:
         self._noted.add(cls)
         why = ("global state" if all(w != state for w, _c, _f in fns)
                else "code fingerprint" if all(c != code for _w, c, _f in fns)
-               else "guards (new input shape or attribute)")
+               else "guards: " + _failed_guard(next(f for w, c, f in fns if w == state and c == code), module, args,
+                                               kwargs))
         self.stats.setdefault("miss_reasons", {})[cls] = why
         self._log("info", "diffusion.aot_blocks: no loaded %s graph serves this call (%s)", cls, why)
 
@@ -619,6 +620,15 @@ class Registry:
                 getattr(self.logger, level)(msg, *args)
             except Exception:  # noqa: BLE001
                 pass
+
+
+def _failed_guard(fn: Any, module: Any, args: tuple, kwargs: dict) -> str:
+    """The first guard of a loaded artifact that rejects this call, for the log."""
+    try:
+        info = fn._artifacts.guard_manager.check_verbose(fn.prepare_f_locals(module, *args, **kwargs))
+        return "; ".join(str(p) for p in getattr(info, "verbose_code_parts", ()))[:400] or "unknown"
+    except Exception as exc:  # noqa: BLE001 - diagnostics only
+        return f"unknown ({type(exc).__name__})"
 
 
 def _compiler(fn: Callable, compile_kwargs: dict[str, Any]) -> Any:
