@@ -1031,7 +1031,6 @@ def test_write_codex_subagent_bridge_keeps_parent_credentials_out(tmp_path, monk
         "bypass_permissions": False,
     }
     if os.name != "nt":
-        # POSIX permission bits; Windows models only the read-only bit.
         assert path.stat().st_mode & 0o077 == 0
     profile = _parse_toml((tmp_path / "child" / "unsloth_api.config.toml").read_text())
     assert profile["model"] == local["id"]
@@ -1062,7 +1061,6 @@ def test_write_codex_parent_overlay_preserves_user_state_and_instructions(tmp_pa
     assert start._CODEX_SUBAGENT_ROUTING_INSTRUCTIONS in instructions
     assert not (overlay / "AGENTS.md").exists()
     if os.name != "nt":
-        # POSIX permission bits; Windows models only the read-only bit.
         assert (overlay / "AGENTS.override.md").stat().st_mode & 0o077 == 0
     assert (source / "AGENTS.override.md").read_text() == "Keep my existing instructions.\n"
 
@@ -2761,8 +2759,7 @@ def test_no_launch_last_line_is_self_contained(fake_studio, tmp_path):
     assert result.exit_code == 0, result.output
     last = [ln for ln in result.output.splitlines() if ln.strip()][-1]
     if os.name == "nt":
-        # PowerShell has no VAR=value prefix form; the recipe scopes the session
-        # through the $env: block instead, and the last line is the bare command.
+        # PowerShell has no VAR=value prefix form; env lives in the $env: block.
         _assert_env_set(result.output, "CODEX_HOME", str(tmp_path / "agents" / "codex"))
         assert '$env:UNSLOTH_STUDIO_AUTH_TOKEN = "sk-unsloth-' in result.output
         assert last.split()[0] == "codex"
@@ -2787,8 +2784,6 @@ def test_no_launch_claude_last_line_blanks_conflicting_auth(fake_studio):
     result = CliRunner().invoke(start.start_app, ["claude", "--no-launch"])
     assert result.exit_code == 0, result.output
     if os.name == "nt":
-        # No inline form in PowerShell; the conflicting vars are removed by the
-        # Remove-Item lines and the real key applied by its $env: line.
         _assert_env_unset(result.output, "ANTHROPIC_API_KEY")
         _assert_env_unset(result.output, "CLAUDE_CODE_OAUTH_TOKEN")
         assert '$env:ANTHROPIC_AUTH_TOKEN = "' in result.output
@@ -4424,8 +4419,7 @@ def test_start_studio_server_builds_command_and_waits(monkeypatch, capsys):
     )
     cmd = captured["command"]
     if sys.platform == "win32":
-        # Windows launches through this interpreter, not the `unsloth` launcher
-        # on PATH (issue #8490): sys.executable -X utf8 -c <entrypoint>.
+        # #8490: Windows re-execs via sys.executable, not the `unsloth` launcher.
         assert cmd[:3] == [sys.executable, "-X", "utf8"]
         assert cmd[cmd.index("-c") + 2] == "run"
     else:
@@ -4444,7 +4438,6 @@ def test_start_studio_server_builds_command_and_waits(monkeypatch, capsys):
     assert cmd[cmd.index("-p") + 1] == "8888"
     assert returned_base == "http://127.0.0.1:8888"
     assert start.LoadOptions().load_in_4bit is True and "--no-load-in-4bit" not in cmd
-    # Own process group, expressed per-platform.
     if os.name == "nt":
         assert captured["kwargs"].get("creationflags") == start.subprocess.CREATE_NEW_PROCESS_GROUP
     else:
@@ -6723,7 +6716,6 @@ def test_connect_pi_as_subagent_preserves_cloud_parent(fake_studio, tmp_path, yo
     assert result.exit_code == 0, result.output
     command = _launch_command(result.output)
     assert command[:2] == ["pi", "--extension"]
-    # as_posix: the extension path arrives with the host's separators.
     assert Path(command[2]).as_posix().endswith("unsloth_cli/pi_subagent.ts")
     assert ("--approve" in command) is yolo
     assert "--provider" not in command
