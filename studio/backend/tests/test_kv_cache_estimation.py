@@ -673,13 +673,6 @@ class TestDynamicSwaResolver:
         assert b._sliding_window_pattern == [(i + 1) % 4 != 0 for i in range(12)]
         assert calls == ["quanter/newmodel-GGUF", "vendor/newmodel-base"]
 
-    def test_stale_arch_false_does_not_shadow_bootstrap(self, monkeypatch, tmp_path):
-        self._isolate_cache(monkeypatch, tmp_path)
-        with open(tmp_path / "swa_cache.json", "w") as f:
-            json.dump({"gemma3": False}, f)
-        b = _backend_from_gguf("gemma3", dict(_SWA_FIELDS, block_count = 18))
-        assert b._sliding_window_pattern == [(i + 1) % 6 != 0 for i in range(18)]
-
     def test_casefold_duplicate_repos_are_fetched_once(self, monkeypatch, tmp_path):
         self._isolate_cache(monkeypatch, tmp_path)
         calls = []

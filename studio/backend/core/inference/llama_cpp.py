@@ -2548,8 +2548,7 @@ _BOOTSTRAP_SWA_DEFAULTS: dict[str, int] = {
 }
 
 # Process-wide cache backed by JSON on disk. Values are int period or
-# list[bool] mask. `__missed_repos__` is a list of casefolded Hub ids whose
-# config.json was read (or confirmed absent) and had no SWA field. Lazy-loaded.
+# list[bool] mask; `__missed_repos__` lists casefolded repos with no SWA field. Lazy-loaded.
 _SWA_CACHE: Optional[dict] = None
 _SWA_CACHE_LOCK = threading.Lock()
 
@@ -2731,7 +2730,6 @@ def _swa_entry_from_layer_types(lt) -> Optional[object]:
     return None
 
 
-# JSON-serializable: config.json was read or confirmed absent, and has no SWA field.
 _SWA_CONFIRMED_MISS = False
 _SWA_MISSED_REPOS_KEY = "__missed_repos__"
 
@@ -2745,11 +2743,11 @@ def _swa_missed_repos(cache: dict) -> set:
 
 def _remember_swa_repo_miss(cache: dict, repo_id: str) -> None:
     folded = repo_id.casefold()
-    missed = _swa_missed_repos(cache)
-    if folded in missed:
-        return
-    missed.add(folded)
     with _SWA_CACHE_LOCK:
+        missed = _swa_missed_repos(cache)
+        if folded in missed:
+            return
+        missed.add(folded)
         cache[_SWA_MISSED_REPOS_KEY] = sorted(missed)
     _save_swa_cache(cache)
 
@@ -2760,8 +2758,7 @@ def _fetch_swa_entry_from_hf(repo_id: str) -> Optional[object]:
         from utils.hf_cache_settings import active_hf_hub_cache
         from utils.hf_probe import hf_file_definitely_absent
 
-        # A confirmed 404 is a miss we can remember. Anything else (timeout,
-        # 429, gated, DNS) must stay None so the next load can retry.
+        # Only a confirmed 404 is a miss; timeouts, 429 and gated stay None so a later load retries.
         if hf_file_definitely_absent(repo_id, "config.json"):
             return _SWA_CONFIRMED_MISS
         cfg_path = call_hub_with_anonymous_retry(
@@ -2894,8 +2891,7 @@ def _resolve_swa_pattern(
         _persist(entry)
         return _entry_to_mask(entry)
 
-    # Tier 3: live HF fetch. Confirmed misses are remembered per repo so a
-    # later GGUF of the same arch can still try a new candidate.
+    # Tier 3: live HF fetch. Misses are keyed per repo, not arch: a new GGUF may name a new source.
     if allow_network:
         seen = set()
         missed = _swa_missed_repos(cache)
