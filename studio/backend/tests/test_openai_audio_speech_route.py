@@ -1437,3 +1437,38 @@ def test_a_foreign_resident_voice_is_not_served(monkeypatch):
     assert 'not account_access.resident_hidden("chat")' in tts[serves : serves + 400]
     stream = inspect.getsource(routes_module.openai_audio_speech_stream)
     assert stream.index('account_access.resident_hidden("chat")') < stream.index("loaded = [")
+
+
+def test_a_streaming_clip_counts_as_a_generation_while_it_plays(monkeypatch):
+    """The stream route registered no generation, so another account's /voice/unload passed the
+    foreign-generation gate and stopped the voice server mid-clip."""
+    from state import active_generations
+
+    counts = []
+
+    def _stream(**kwargs):
+        counts.append(active_generations.count())
+        yield b"\x00\x00"
+        counts.append(active_generations.count())
+
+    voice_backend = SimpleNamespace(
+        is_loaded = True,
+        _audio_type = "snac",
+        context_length = None,
+        _orpheus_voice_prefix_ok = lambda: True,
+        generate_audio_response_stream = _stream,
+    )
+    monkeypatch.setattr(routes_module, "get_voice_llama_backend", lambda: voice_backend)
+    monkeypatch.setattr(routes_module, "_llama_public_model_id", lambda _b: "voice")
+    request = SimpleNamespace(state = SimpleNamespace(skip_api_monitor = True))
+    before = active_generations.count()
+
+    async def _run():
+        response = await routes_module.openai_audio_speech_stream(
+            AudioSpeechRequest(input = "hello"), request, "tester"
+        )
+        return [chunk async for chunk in response.body_iterator]
+
+    assert asyncio.run(_run()) == [b"\x00\x00"]
+    assert counts == [before + 1, before + 1]
+    assert active_generations.count() == before

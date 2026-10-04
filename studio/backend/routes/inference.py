@@ -22868,36 +22868,42 @@ async def openai_audio_speech_stream(
     # The row is closed exactly once, on whichever arm the stream actually takes.
     # else runs only when no exception escaped, so "closed already" is structural
     # rather than a flag to keep in sync.
+    # Registered for the body's lifetime, like the blocking route: unregistered, the clip
+    # counted as no generation, so /voice/unload and /unload passed their foreign-generation
+    # gates and a forced swap stopped the server mid-stream. No cancel keys: nothing addresses it.
     def gen():
-        try:
-            yield from backend.generate_audio_response_stream(
-                text = text,
-                audio_type = "snac",
-                voice = voice_name,
-                max_new_tokens = max_new_tokens,
-                seed = body.seed if body.seed is not None else 42,
-            )
-        except GeneratorExit:
-            # The client went away mid-clip (a barge-in, a closed tab). Not a failure,
-            # and re-raising is mandatory: swallowing it makes the runtime complain
-            # that the generator ignored GeneratorExit.
-            api_monitor.finish(monitor_id, "cancelled")
-            raise
-        except Exception as e:
-            # The status line is long gone by the time synthesis can fail, so the only
-            # signal left on the wire is a short stream. Log it and mark the row failed
-            # rather than raising into the response body, which the client decodes as
-            # audio.
-            logger.error("Streaming speech error: %s", e, exc_info = True)
-            api_monitor.fail(monitor_id, _friendly_error(e))
-            # The route is a tracked inference path and this arm ends the stream cleanly
-            # at 200, so without the flag the keep-warm middleware would read the failed
-            # clip as a successful completion and claim a preview-owned chat slot.
-            from core.inference.llama_keepwarm import mark_current_response_failed
+        with _TrackedCancel(
+            threading.Event(), model = _llama_public_model_id(backend), kind = "audio"
+        ):
+            try:
+                yield from backend.generate_audio_response_stream(
+                    text = text,
+                    audio_type = "snac",
+                    voice = voice_name,
+                    max_new_tokens = max_new_tokens,
+                    seed = body.seed if body.seed is not None else 42,
+                )
+            except GeneratorExit:
+                # The client went away mid-clip (a barge-in, a closed tab). Not a failure,
+                # and re-raising is mandatory: swallowing it makes the runtime complain
+                # that the generator ignored GeneratorExit.
+                api_monitor.finish(monitor_id, "cancelled")
+                raise
+            except Exception as e:
+                # The status line is long gone by the time synthesis can fail, so the only
+                # signal left on the wire is a short stream. Log it and mark the row failed
+                # rather than raising into the response body, which the client decodes as
+                # audio.
+                logger.error("Streaming speech error: %s", e, exc_info = True)
+                api_monitor.fail(monitor_id, _friendly_error(e))
+                # The route is a tracked inference path and this arm ends the stream cleanly
+                # at 200, so without the flag the keep-warm middleware would read the failed
+                # clip as a successful completion and claim a preview-owned chat slot.
+                from core.inference.llama_keepwarm import mark_current_response_failed
 
-            mark_current_response_failed()
-        else:
-            api_monitor.finish(monitor_id)
+                mark_current_response_failed()
+            else:
+                api_monitor.finish(monitor_id)
 
     return StreamingResponse(
         gen(),

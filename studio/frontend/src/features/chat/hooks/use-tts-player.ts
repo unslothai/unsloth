@@ -498,7 +498,10 @@ export function useTtsPlayer(
           // scheduling the moment we are done.
           await gate.catch(() => {});
           openGate();
-          finish(true);
+          // A synthesis that failed after the headers ends as a 200 with no PCM, so a
+          // stream that scheduled nothing is a miss and the caller falls back to a blob.
+          // A stop or a newer request owns the silence and is not a miss.
+          finish(scheduledAny || requestIdRef.current !== reqId);
         })();
       });
     },
