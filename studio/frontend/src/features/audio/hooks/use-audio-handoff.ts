@@ -6,6 +6,7 @@ import { translate } from "@/i18n";
 import { loadGalleryUntil } from "@/lib/gallery-deep-link";
 import { toast } from "@/lib/toast";
 import { useNavigate, useSearch } from "@tanstack/react-router";
+import { audioWorkflowForPick } from "../route-search";
 import { useAudioWorkspaceStore } from "../stores/audio-workspace-store";
 import {
   audioWorkflowForTask,
@@ -78,7 +79,14 @@ export function useAudioHandoff({
     if (handledRouteModel.current === key) return;
     if (busyRef.current !== null) return;
     // Open the named page first: a staged or failed load otherwise left the user on another page.
-    const routedWorkflow = routeSearch.workflow;
+    // Without an explicit workflow, the task (and audio type) name the page the load is for.
+    const routedWorkflow = isAudioWorkflowId(routeSearch.workflow)
+      ? routeSearch.workflow
+      : audioWorkflowForPick({
+          id: wanted,
+          task: routeSearch.task,
+          audioType: routeSearch.audioType,
+        });
     if (
       isAudioWorkflowId(routedWorkflow) &&
       !transitionWorkflow(routedWorkflow)
