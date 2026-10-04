@@ -180,8 +180,7 @@ VAE_BF16_DECODE_MODES = ("weights", "autocast")
 
 
 def _vae_bf16_decode_request(gate: str) -> tuple[str, bool]:
-    """(mode, forced) for an UNSLOTH_VIDEO_VAE_BF16_DECODE value that is not off. "auto", "1" and any unknown value
-    cast the decoder weights; "autocast" keeps fp32 weights under bf16 autocast. "1" also allows non-ROCm CUDA."""
+    """(mode, forced) for a non-off UNSLOTH_VIDEO_VAE_BF16_DECODE; unknown values cast weights, "1" also forces."""
     if gate in VAE_BF16_DECODE_MODES:
         return gate, False
     return "weights", gate in _VAE_BF16_FORCE
@@ -205,20 +204,12 @@ def install_rocm_vae_bf16_decode(
     *,
     logger: Any = None,
 ) -> Optional[str]:
-    """Decode an fp32-pinned video VAE (Wan) in bf16 on ROCm RDNA3+ cards; returns the mode engaged, else None.
+    """Decode an fp32-pinned video VAE (Wan) in bf16 on ROCm gfx11 / gfx12; returns the mode engaged, else None.
 
-    In fp32, MIOpen runs Wan's 3D convolutions as im2col plus a small-tile fp32 GEMM with no matrix cores: on a gfx1151
-    a 1280x704x21 clip spent about 385 s there, against about 43 s for ComfyUI's whole non-denoise time (it decodes the
-    Wan 2.2 VAE in bf16 on these cards).
-
-    "weights" (the default) casts only the decode half (``post_quant_conv`` + ``decoder``) to bf16 once and feeds it
-    bf16 latents; the encoder stays fp32, so ``vae.dtype`` and every image-to-video encode are unchanged. "autocast"
-    keeps every weight fp32 and runs the decode under bf16 autocast. Both widen the output back to fp32, so every
-    consumer sees the dtype it sees today. bf16 keeps fp32's exponent range, so neither can overflow where fp32 did not.
-
-    ROCm gfx11 / gfx12 only by default; NVIDIA (which has its own fp16 decode in diffusion_speed) and every other
-    device keep the fp32 decode. UNSLOTH_VIDEO_VAE_BF16_DECODE: 0 off, auto / weights / autocast pick the mode, 1 also
-    allows it on any CUDA device with bf16."""
+    fp32 runs Wan's 3D convs as im2col plus a small-tile fp32 GEMM without matrix cores (~385 s of a 1280x704x21 clip on
+    gfx1151); ComfyUI decodes this VAE in bf16 on these cards. "weights" (default) casts only ``post_quant_conv`` +
+    ``decoder``, so ``vae.dtype`` and image-to-video encodes stay fp32; "autocast" keeps fp32 weights. Both return fp32.
+    UNSLOTH_VIDEO_VAE_BF16_DECODE: 0 off, auto / weights / autocast pick the mode, 1 also allows any bf16 CUDA device."""
     gate = os.environ.get(VAE_BF16_DECODE_ENV, "auto").strip().lower()
     if gate in _VAE_BF16_OFF or target.device != "cuda":
         return None
