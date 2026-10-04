@@ -60,7 +60,7 @@ const ParallelVoicesPicker: FC<{
   const setValue = useChatRuntimeStore((s) => s.setVoiceParallelN);
   return (
     <div className="flex items-center justify-between gap-2 px-2 py-1">
-      <span className="text-[13px] text-foreground">Parallel synthesis</span>
+      <span className="text-ui-13 text-foreground">Parallel synthesis</span>
       <div className="flex items-center gap-1">
         {[1, 2, 3, 4].map((n) => (
           <button
@@ -73,7 +73,7 @@ const ParallelVoicesPicker: FC<{
               if (reloadVoiceId) onReload(reloadVoiceId);
             }}
             className={cn(
-              "flex size-6 items-center justify-center rounded-md text-[13px] transition-colors",
+              "flex size-6 items-center justify-center rounded-md text-ui-13 transition-colors",
               value === n
                 ? "bg-[#ececec] text-foreground dark:bg-[var(--sidebar-accent)]"
                 : "text-muted-foreground hover:bg-[#ececec] dark:hover:bg-[var(--sidebar-accent)]",
@@ -179,7 +179,7 @@ export const VoiceModelSelector: FC<VoiceModelSelectorProps> = ({
             />
           )}
           <span className="flex min-w-0 items-baseline">
-            <span className="min-w-0 truncate font-heading text-[16px] font-medium leading-tight text-black dark:text-white">
+            <span className="min-w-0 truncate font-heading text-ui-16 font-medium leading-tight text-black dark:text-white">
               {nameText}
             </span>
             {metaText && (
@@ -209,7 +209,7 @@ export const VoiceModelSelector: FC<VoiceModelSelectorProps> = ({
             speechSynthesis used to sit at the top of this list; it is gone, so a
             reply is either spoken by a voice you loaded or not spoken at all. */}
         <div className="flex items-center justify-between gap-2 px-2 pb-1 pt-0.5">
-          <span className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+          <span className="text-ui-11 font-semibold uppercase tracking-wide text-muted-foreground">
             Speak with
           </span>
           <button
@@ -234,7 +234,7 @@ export const VoiceModelSelector: FC<VoiceModelSelectorProps> = ({
               reloadVoiceId={value && selectedModel?.isGguf ? value : null}
               onReload={(id) => onValueChange(id)}
             />
-            <p className="px-2 pb-1 text-[10px] leading-tight text-muted-foreground/70">
+            <p className="px-2 pb-1 text-ui-10 leading-tight text-muted-foreground/70">
               GGUF voices only.
             </p>
             <div className="my-1.5 h-px bg-[rgb(0_0_0_/_calc(0.08*var(--contrast-wash-gain,1)))] dark:bg-[rgb(255_255_255_/_calc(0.08*var(--contrast-wash-gain,1)))]" />
@@ -314,7 +314,7 @@ export const VoiceModelSelector: FC<VoiceModelSelectorProps> = ({
         })}
 
         {models.length === 0 && (
-          <p className="px-3 py-2 text-[12px] text-muted-foreground">
+          <p className="px-3 py-2 text-ui-12 text-muted-foreground">
             No TTS models found. Train or export a voice model first.
           </p>
         )}

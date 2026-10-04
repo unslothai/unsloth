@@ -39,7 +39,7 @@ export function VoiceNamePicker({ className }: { className?: string }) {
           aria-label="Voice speaker"
           className={cn(
             "flex h-8.5 shrink-0 items-center gap-1 rounded-lg pl-2.5 pr-1.5",
-            "text-[13.5px] text-foreground transition-colors hover:bg-accent/60",
+            "text-ui-13p5 text-foreground transition-colors hover:bg-accent/60",
             "focus-visible:outline-none",
             className,
           )}
@@ -49,7 +49,7 @@ export function VoiceNamePicker({ className }: { className?: string }) {
         </button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="start" className="min-w-37.5">
-        <DropdownMenuLabel className="text-[11px] font-normal text-muted-foreground">
+        <DropdownMenuLabel className="text-ui-11 font-normal text-muted-foreground">
           Orpheus voice
         </DropdownMenuLabel>
         {ORPHEUS_VOICES.map((v) => (

@@ -99,7 +99,7 @@ export const SttModelSelector: FC<SttModelSelectorProps> = ({
                   : "text-muted-foreground",
             )}
           />
-          <span className="min-w-0 truncate font-heading text-[16px] font-medium leading-tight text-black dark:text-white">
+          <span className="min-w-0 truncate font-heading text-ui-16 font-medium leading-tight text-black dark:text-white">
             {disabled ? "Select model first" : displayName}
           </span>
           <span className="flex size-4 shrink-0 items-center justify-center">
@@ -116,7 +116,7 @@ export const SttModelSelector: FC<SttModelSelectorProps> = ({
         sideOffset={6}
         className="unsloth-model-selector-menu menu-soft-surface w-85 gap-0 rounded-lg border-0 p-1.5 ring-0"
       >
-        <div className="px-2 pb-1 pt-0.5 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+        <div className="px-2 pb-1 pt-0.5 text-ui-11 font-semibold uppercase tracking-wide text-muted-foreground">
           Listen with
         </div>
 
@@ -135,7 +135,7 @@ export const SttModelSelector: FC<SttModelSelectorProps> = ({
               <span className="min-w-0 flex-1 truncate">{name}</span>
               <span className="ml-auto flex shrink-0 items-center gap-1.5">
                 {model.deviceSizeBytes != null && (
-                  <span className="shrink-0 text-[11px] text-muted-foreground">
+                  <span className="shrink-0 text-ui-11 text-muted-foreground">
                     {formatBytes(model.deviceSizeBytes)}
                   </span>
                 )}
@@ -161,7 +161,7 @@ export const SttModelSelector: FC<SttModelSelectorProps> = ({
         })}
 
         {models.length === 0 && (
-          <p className="px-3 py-2 text-[12px] text-muted-foreground">
+          <p className="px-3 py-2 text-ui-12 text-muted-foreground">
             No transcription models on device. Download one from the model
             dropdown.
           </p>

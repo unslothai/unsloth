@@ -350,7 +350,7 @@ export const VoiceOrb: FC = () => {
                 animate={{ opacity: 1, y: 0 }}
                 exit={{ opacity: 0, y: -6 }}
                 transition={{ duration: 0.22 }}
-                className="text-[13px] font-medium uppercase tracking-[0.28em] text-foreground/55"
+                className="text-ui-13 font-medium uppercase tracking-[0.28em] text-foreground/55"
                 style={{ fontFamily: "var(--font-heading)" }}
               >
                 {meta.label}
