@@ -1265,7 +1265,10 @@ def load_prequantized_transformer(
         del state_dict
         del ckpt
 
-        transformer = transformer.to(placement_device or device)
+        from .diffusion_fast_load import fast_upload
+
+        with fast_upload([transformer], placement_device or device, logger = logger):
+            transformer = transformer.to(placement_device or device)
         if declares_rotation(metadata):
             try:
                 import torch

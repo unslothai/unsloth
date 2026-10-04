@@ -6169,6 +6169,22 @@ def test_write_hermes_config_small_window_claims_floor(hermes_config):
     assert config["compression"] == {"enabled": True, "threshold": 0.5625}
     # The same floor check runs against the compression model mid-session.
     assert config["auxiliary"]["compression"]["context_length"] == 65536
+    # Newer Hermes checks a local server's floor against ollama_num_ctx, not context_length.
+    assert config["model"]["ollama_num_ctx"] == 65536
+
+
+def test_write_hermes_config_large_window_drops_claimed_num_ctx(hermes_config):
+    yaml = pytest.importorskip("yaml")
+    start.write_hermes_config(BASE, {"id": "small", "context_length": 40960}, hermes_config)
+    start.write_hermes_config(BASE, MODEL, hermes_config)
+    assert "ollama_num_ctx" not in yaml.safe_load(hermes_config.read_text())["model"]
+
+
+def test_write_hermes_config_keeps_user_num_ctx(hermes_config):
+    yaml = pytest.importorskip("yaml")
+    hermes_config.write_text(yaml.safe_dump({"model": {"ollama_num_ctx": 100000}}))
+    start.write_hermes_config(BASE, MODEL, hermes_config)
+    assert yaml.safe_load(hermes_config.read_text())["model"]["ollama_num_ctx"] == 100000
 
 
 def test_write_hermes_config_preserves_and_idempotent(hermes_config):

@@ -328,6 +328,11 @@ def model_fingerprint(
         dynamic_text = None
     if dynamic_text:
         fp["dynamic_text"] = dynamic_text
+    # Inductor keys graphs on dynamic_scale_rblock: an old bundle would hit, miss every graph, and never be rewritten.
+    from .diffusion_compile_config import reduction_blocks_pinned
+
+    if reduction_blocks_pinned():
+        fp["inductor"] = {"dynamic_scale_rblock": False}
     return fp
 
 
