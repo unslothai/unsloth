@@ -6,6 +6,8 @@
 Each case runs in a fresh interpreter: the variable is process-wide and torch reads it once, at the first SDPA
 dispatch, so only a clean process shows what an entry point really gets."""
 
+from __future__ import annotations
+
 import os
 import subprocess
 import sys
