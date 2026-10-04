@@ -2512,6 +2512,10 @@ def _keep_groups_resident(
             # a prefetching predecessor skips its own copy-stream wait and relies on this onload_ to do it
             def onload_(*args: Any, **kwargs: Any) -> None:
                 # with the event-fenced prefetch every streamed group waits for its own copy (diffusion_offload_prefetch)
+                # and the first resident block starts the forward's prefetch
+                kick = state.get("kick")
+                if callable(kick):
+                    kick()
                 if stream is not None and state["streamed"] and not state.get("fenced"):
                     stream.synchronize()
 

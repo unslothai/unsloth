@@ -53,7 +53,7 @@ def _cpu_prefetcher(names, nbytes = 10, depth = 2, window = None):
     pf.nbytes = {id(g): nbytes for g in groups}
     pf.window = window if window is not None else (depth + 1) * nbytes
     pf.ready, pf.inflight_bytes, pf.peak_inflight_bytes = {}, 0, 0
-    pf.order, pf.seen, pf.pos, pf.active, pf.on_order = [], [], 0, False, False
+    pf.order, pf.seen, pf.pos, pf.active, pf.on_order, pf.pending = [], [], 0, False, False, False
     pf.stats = {"forwards": 0, "copies": 0, "prefetched": 0, "missed": 0, "dropped": 0}
     log: list = []
 
@@ -102,10 +102,10 @@ def test_later_forwards_keep_depth_groups_in_flight_ahead():
     _forward(pf, groups)
     log.clear()
     pf.begin()
-    # the forward start already queues the first `depth` groups
-    assert [n for k, n in log if k == "copy"] == ["a", "b"]
+    # nothing at the forward start: a top-level upload on the compute stream must reach the copy engine first
+    assert not log
     pf.onload(groups[0])
-    # running a, b and c are in flight: depth 2 ahead
+    # the first block queues itself first; running a, b and c are in flight: depth 2 ahead
     assert [n for k, n in log if k == "copy"] == ["a", "b", "c"]
     for g in groups:
         if g is not groups[0]:
@@ -138,7 +138,11 @@ def test_resident_groups_are_skipped_and_not_counted():
         g.resident = True
     log.clear()
     pf.begin()
+    assert not log
+    pf.kick()  # the first resident block's onload
     # the streamed tail is queued while the resident head runs
+    assert [n for k, n in log if k == "copy"] == ["d", "e"]
+    pf.kick()  # later resident blocks queue nothing more
     assert [n for k, n in log if k == "copy"] == ["d", "e"]
     pf.end()
 
@@ -206,6 +210,12 @@ def test_resident_onload_skips_the_copy_stream_wait_when_fenced(monkeypatch):
     for g in groups:
         g.onload_()
     assert Stream.waits == 0
+    kicks = []
+    module._unsloth_stream_state["kick"] = lambda: kicks.append(1)
+    for g in groups:
+        g.onload_()
+    assert Stream.waits == 0 and len(kicks) == 2  # each resident onload may start the forward's prefetch
+    del module._unsloth_stream_state["kick"]
     module._unsloth_stream_state["fenced"] = False
     for g in groups:
         g.onload_()
@@ -285,6 +295,30 @@ def test_streamed_forward_is_bit_identical_with_no_host_sync(depth, resident_mib
     assert pf.stats["prefetched"] > 0 and pf.stats["missed"] == 0
     assert pf.peak_inflight_bytes <= pf.window
     assert net.blocks[-1].weight.device.type == "cpu"
+
+
+def test_dense_top_level_upload_is_queued_before_the_block_copies():
+    """The dense top-level group uploads on the compute stream at the forward start; block copies queued before it
+    would hold it back in the copy engine, so the first block copy of a forward is queued after it."""
+    _cuda()
+    torch.manual_seed(0)
+    net = _Net()
+    _streamed(net)
+    pf = op.module_prefetcher(net)
+    top = net._diffusers_hook.get_hook("group_offloading").group
+    assert top not in pf.groups and "onload_" in top.__dict__  # Studio's pinned compute-stream upload
+    log = []
+    top_onload, issue = top.onload_, pf._issue
+    top.onload_ = lambda *a, **k: (log.append("top"), top_onload(*a, **k))[1]
+    pf._issue = lambda g: (log.append("block"), issue(g))[1]
+    x = torch.randn(4, 64, device = "cuda")
+    with torch.no_grad():
+        net(x)  # records the order
+        log.clear()
+        net(x)
+        torch.cuda.synchronize()
+    assert log[0] == "top" and log.count("block") == len(net.blocks)
+    assert pf.stats["missed"] == 0
 
 
 def test_diffusers_stream_path_synchronizes_per_group(monkeypatch):

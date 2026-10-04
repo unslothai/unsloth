@@ -13,6 +13,11 @@ before, but the compute stream waits on a per-group CUDA event (``wait_event``) 
 stream, and up to ``depth`` streamed groups are in flight ahead of the running one, in the order the first forward
 recorded. No host wait, no ``.item()`` / ``.cpu()`` and no device synchronize on the per-group path.
 
+The first copies of a forward are queued at the first block's onload, not at the forward start: a dense top-level
+group uploads on the compute stream when the forward starts, and block copies queued ahead of it would hold that
+upload back in the copy engine (on a slow link, one or two whole block copies per forward). The first block's
+onload is either a streamed group's (``onload``) or a resident group's (``kick`` through the module's stream state).
+
 Device memory stays bounded without a host wait: a group's offload records an event on the compute stream and the
 copy stream waits on it before anything later is queued there, so a block freed by the offload can be handed to the
 next prefetch (allocated on the copy stream) at once and is written only after the compute that read it. The bytes
@@ -190,6 +195,7 @@ class GroupPrefetcher:
         self.pos = 0
         self.active = False
         self.on_order = False
+        self.pending = False
         self.stats = {"forwards": 0, "copies": 0, "prefetched": 0, "missed": 0, "dropped": 0}
 
     # ------------------------------------------------------------------------------------------------ per group
@@ -233,6 +239,7 @@ class GroupPrefetcher:
 
     def onload(self, group: Any) -> None:
         gid = id(group)
+        self.kick()  # first block of the forward: this group is order[pos], so it is queued first
         if self.active:
             self.seen.append(gid)
             if self.on_order and self.pos < len(self.order) and self.order[self.pos] == gid:
@@ -314,13 +321,20 @@ class GroupPrefetcher:
         self.pos = 0
         self.active = True
         self.on_order = bool(self.order)
-        self._fill()
+        self.pending = True  # the first copies wait for the first block's onload (module docstring)
+
+    def kick(self) -> None:
+        """First block onload of a forward (streamed or resident): queue the first ``depth`` streamed groups."""
+        if self.pending:
+            self.pending = False
+            self._fill()
 
     def end(self) -> None:
         if not self.active:
             return
         self.active = False
         self.on_order = False
+        self.pending = False
         self._forget_disowned()
         # A group copied ahead but not run (conditional block, exception mid-forward) goes back to its host copy.
         for gid in list(self.ready):
@@ -522,6 +536,7 @@ def install_group_prefetch(
             except AttributeError:
                 pass
         state["fenced"] = True
+        state["kick"] = pf.kick
         if logger is not None:
             logger.info(
                 "diffusion.memory: %s streams %d offload groups with event-fenced prefetch (%d ahead, %d MiB window)",
