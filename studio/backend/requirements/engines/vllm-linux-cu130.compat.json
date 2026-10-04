@@ -1,5 +1,5 @@
 {
- "lock_sha256": "4b7c3586fce16c66987c12dcf09e7f3764a77bcc6695aa079d66fb79f6477145",
+ "lock_sha256": "648332a77c94c8cd8ae0ee77c1afa705fa8f95fa6baa236b146d34d3ec29742e",
  "requires": {
   "agent-detector": [
    ">=1.1.0"
@@ -739,7 +739,7 @@
   "outlines-core": 2341051,
   "packaging": 129956,
   "partial-json-parser": 10877,
-  "pillow": 7082423,
+  "pillow": 6937129,
   "prometheus-client": 64494,
   "prometheus-fastapi-instrumentator": 19649,
   "propcache": 61534,
@@ -801,7 +801,7 @@
   "typer": 122874,
   "typing-extensions": 44614,
   "typing-inspection": 14693,
-  "urllib3": 131087,
+  "urllib3": 135717,
   "uvicorn": 79859,
   "uvloop": 4366890,
   "vllm": 303698761,

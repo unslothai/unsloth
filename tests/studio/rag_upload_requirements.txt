@@ -52,7 +52,7 @@ tabulate==0.10.0
 tqdm==4.70.0
 typing-extensions==4.16.0
 typing-inspection==0.4.4
-urllib3==2.7.0
+urllib3==2.8.0
 hypothesis==6.167.1
 playwright==1.62.0
 selenium==4.48.0

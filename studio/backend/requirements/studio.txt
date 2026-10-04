@@ -30,7 +30,8 @@ hf-xet>=1.5.2,<2.0; python_version >= "3.10" and (platform_machine == "x86_64" o
 # the only thing that wakes a read parked inside iter_content. It landed in 2.3.0;
 # below that the read is uninterruptible. The preflight abandons the reader either
 # way, so this is defence in depth, not the bound itself.
-urllib3>=2.3.0
+urllib3>=2.8.0; python_version >= "3.10"
+urllib3>=2.3.0; python_version < "3.10"
 # The safetensors reasoning-prefill probe renders chat templates in a Jinja sandbox. Transitive
 # via torch and transformers, declared because the route imports it directly and this set is
 # installed in every mode: without it the probe cannot render, falls back to always-prefill,
