@@ -134,37 +134,50 @@ const HUB_TASKS_BY_MODE = {
   transcribe: ["automatic-speech-recognition"],
 } as const;
 
+let reuseSeq = 0;
+
 const RECOMMENDED_MUSIC_MODELS = ["ACE-Step1.5-GGUF", "Stable-Audio-3-Small-Music-GGUF"];
 
 function reuseConvertInputs(clip: AudioGalleryClip) {
   const store = useAudioConvertStore.getState();
   const sourceId = clip.source_clip_id ?? clip.source_input_id ?? null;
   const name = clip.source_name ?? "Recording";
-  if (sourceId) {
-    store.setSource({
-      kind: clip.source_clip_id ? "clip" : "input",
-      id: sourceId,
-      name,
-      durationS: null,
-    });
-  }
+  const kept = sourceId
+    ? {
+        kind: clip.source_clip_id ? ("clip" as const) : ("input" as const),
+        id: sourceId,
+        name,
+        durationS: null,
+      }
+    : null;
   // An upload expires within a day; the clip kept what it converted, so upload that copy again.
-  if (!clip.source_clip_id && clip.source_saved) {
+  // The card stays empty until the live id is known: placed first, the old id let Generate race
+  // the upload and 404 on it. The kept id goes in only when the upload fails, so the card says so.
+  if (!clip.source_clip_id && clip.source_saved && sourceId) {
+    const seq = ++reuseSeq;
+    const untouched = () => seq === reuseSeq && useAudioConvertStore.getState().source === null;
+    store.setSource(null);
     void fetchAudioBlob(
       `/api/inference/audio/gallery/${encodeURIComponent(clip.id)}/source/file`,
     )
       .then((blob) => uploadAudioInput(blob, name))
-      .then((record) => {
-        if (useAudioConvertStore.getState().source?.id !== sourceId) return;
-        store.setSource({
-          kind: "input",
-          id: record.id,
-          name,
-          durationS: record.duration_s,
-          expiresAt: record.expires_at,
-        });
-      })
-      .catch(() => undefined);
+      .then(
+        (record) => {
+          if (!untouched()) return;
+          store.setSource({
+            kind: "input",
+            id: record.id,
+            name,
+            durationS: record.duration_s,
+            expiresAt: record.expires_at,
+          });
+        },
+        () => {
+          if (untouched()) store.setSource(kept);
+        },
+      );
+  } else if (kept) {
+    store.setSource(kept);
   }
   const target = clip.voice_id
     ? { kind: "voice" as const, id: clip.voice_id }

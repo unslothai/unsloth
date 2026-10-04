@@ -344,11 +344,14 @@ test("the Convert source card states Convert's own length cap", () => {
 
 test("Use again re-uploads a conversion's kept source instead of its expiring upload id", () => {
   const page = readSrc("features/audio/audio-page.tsx");
-  assert.match(page, /if \(!clip\.source_clip_id && clip\.source_saved\) \{/);
+  assert.match(page, /if \(!clip\.source_clip_id && clip\.source_saved && sourceId\) \{/);
   assert.match(
     page,
     /\/source\/file`,\s*\)\s*\.then\(\(blob\) => uploadAudioInput\(blob, name\)\)/,
   );
+  // The old id is not placed first: Generate could race the upload and 404 on it.
+  assert.match(page, /store\.setSource\(null\);\s*void fetchAudioBlob\(/);
+  assert.match(page, /\(\) => \{\s*if \(untouched\(\)\) store\.setSource\(kept\);/);
 });
 
 const SEND_TO_HAS_CONVERT = /convert: \(\) => handleSendToConvert\(clip\),/;
