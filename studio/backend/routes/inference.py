@@ -21076,13 +21076,15 @@ async def voice_load_model(
             )
 
             # Already loaded with the same resolved config — skip reload. Include the
-            # --parallel slot count so changing it in the UI forces a relaunch.
+            # --parallel slot count and the requested context (requested against requested,
+            # as /load dedupes) so changing either in the UI forces a relaunch.
             if (
                 voice_backend.is_loaded
                 and voice_backend.model_identifier
                 and voice_backend.model_identifier.lower() == config.identifier.lower()
                 and (not config.gguf_variant or voice_backend.hf_variant == config.gguf_variant)
                 and getattr(voice_backend, "_n_parallel", 1) == request.parallel
+                and int(getattr(voice_backend, "requested_n_ctx", 0) or 0) == int(request.n_ctx or 0)
                 and getattr(voice_backend, "_is_audio", False)
             ):
                 return {

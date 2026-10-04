@@ -1518,3 +1518,15 @@ def test_the_in_flight_marker_keeps_the_chat_claim_until_it_ends(monkeypatch):
         assert arb.current_owner() == arb.CHAT
     routes_module.release_chat_gpu_claim()
     assert arb.current_owner() is None
+
+
+def test_voice_load_with_a_new_context_size_is_not_already_loaded():
+    """The fast path compared model, variant and --parallel but not n_ctx, so a reload for a
+    bigger context answered already_loaded and the old server kept serving."""
+    import inspect
+
+    source = inspect.getsource(routes_module.voice_load_model)
+    fast_path = source.index('"status": "already_loaded"')
+    condition = source[source.rindex("if (", 0, fast_path) : fast_path]
+    assert 'getattr(voice_backend, "requested_n_ctx", 0)' in condition
+    assert "int(request.n_ctx or 0)" in condition
