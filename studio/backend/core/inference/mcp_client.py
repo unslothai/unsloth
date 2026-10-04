@@ -394,8 +394,8 @@ def _strip_client_id_under_basic_auth(auth) -> None:
 
 def _oauth(
     url: str,
-    client_id: Optional[str] = None,
-    client_secret: Optional[str] = None,
+    oauth_client_id: Optional[str] = None,
+    oauth_client_secret: Optional[str] = None,
 ):
     from fastmcp.client.auth import OAuth
 
@@ -403,8 +403,8 @@ def _oauth(
     auth = OAuth(
         mcp_url = url,
         token_storage = _oauth_store(),
-        client_id = client_id or None,
-        client_secret = client_secret or None,
+        client_id = oauth_client_id or None,
+        client_secret = oauth_client_secret or None,
     )
     _strip_client_id_under_basic_auth(auth)
     return auth
@@ -623,7 +623,11 @@ def _client(
     from fastmcp.client.transports import SSETransport, StreamableHttpTransport
     from fastmcp.mcp_config import infer_transport_type_from_url
 
-    auth = _oauth(url, oauth_client_id, oauth_client_secret) if use_oauth else None
+    auth = (
+        _oauth(url, **oauth_client_kwargs_from(oauth_client_id, oauth_client_secret))
+        if use_oauth
+        else None
+    )
 
     transport_cls = (
         SSETransport if infer_transport_type_from_url(url) == "sse" else StreamableHttpTransport
