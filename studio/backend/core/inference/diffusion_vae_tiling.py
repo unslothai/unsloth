@@ -40,7 +40,11 @@ def wide_tiles_disabled() -> bool:
     return (os.environ.get(WIDE_TILES_ENV) or "").strip().lower() in ("0", "off", "false", "no")
 
 
-def tile_starts(length: int, tile: int = TILE_LATENTS, overlap: int = OVERLAP_LATENTS) -> list[int]:
+def tile_starts(
+    length: int,
+    tile: int = TILE_LATENTS,
+    overlap: int = OVERLAP_LATENTS,
+) -> list[int]:
     """Start offsets of the fewest full-size tiles covering ``length`` with every neighbour overlap >= ``overlap``.
 
     The first tile starts at 0 and the last ends at ``length``; the rest are spread evenly between them."""
@@ -73,7 +77,9 @@ def axis_weights(
     overlap >= 16 latents, each pixel lies >= 8 latents inside some tile, so a margin under 8 keeps the sum positive;
     with margin 4 and ramp 8 a two-tile overlap of exactly 16 is a linear cross-fade over its middle 8 latents."""
     size = min(tile, length) * scale
-    pos = (torch.arange(size, dtype = torch.float64, device = device) + 0.5) / scale  # pixel centres, in latents
+    pos = (
+        torch.arange(size, dtype = torch.float64, device = device) + 0.5
+    ) / scale  # pixel centres, in latents
     total = torch.zeros(length * scale, dtype = torch.float64, device = device)
     weights = []
     for s in starts:
@@ -99,7 +105,11 @@ def _decode_tile(vae: Any, z: Any) -> Any:
         vae.use_tiling = prev
 
 
-def tiled_decode(vae: Any, z: Any, return_dict: bool = True) -> Any:
+def tiled_decode(
+    vae: Any,
+    z: Any,
+    return_dict: bool = True,
+) -> Any:
     """Decode ``z`` (B, C, T, H, W) in evenly spread 32-latent tiles with 16-latent overlaps."""
     import torch
     from diffusers.models.autoencoders.vae import DecoderOutput
@@ -126,7 +136,9 @@ def tiled_decode(vae: Any, z: Any, return_dict: bool = True) -> Any:
                         device = tile.device,
                     )
                 w = wy[i].view(-1, 1) * wx[j].view(1, -1)
-                out[..., y * ratio : (y + th) * ratio, x * ratio : (x + tw) * ratio].add_(tile.float() * w)
+                out[..., y * ratio : (y + th) * ratio, x * ratio : (x + tw) * ratio].add_(
+                    tile.float() * w
+                )
                 del tile
         dec = out.to(dtype)
         del out
@@ -160,7 +172,11 @@ def install(vae: Any, logger: Any = None) -> bool:
     own = vae.__dict__.get("tiled_decode")
     stock = vae.tiled_decode
 
-    def _tiled_decode(self: Any, z: Any, return_dict: bool = True) -> Any:
+    def _tiled_decode(
+        self: Any,
+        z: Any,
+        return_dict: bool = True,
+    ) -> Any:
         if wide_tiles_disabled():
             return stock(z, return_dict = return_dict)
         return tiled_decode(self, z, return_dict = return_dict)

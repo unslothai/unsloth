@@ -4102,7 +4102,9 @@ def vae_tile_side(vae: Any) -> Optional[int]:
         return None
     decode_side = getattr(vae, "_unsloth_decode_tile_side", None)
     if isinstance(decode_side, int) and not isinstance(decode_side, bool) and decode_side > 0:
-        return max(64, min(4096, decode_side))  # diffusion_vae_tiling decodes in wider tiles than the attributes
+        return max(
+            64, min(4096, decode_side)
+        )  # diffusion_vae_tiling decodes in wider tiles than the attributes
     sides: list[int] = []
     for attr in ("tile_sample_min_size", "tile_sample_min_height", "tile_sample_min_width"):
         value = getattr(vae, attr, None)
