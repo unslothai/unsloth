@@ -478,6 +478,12 @@ def h3_stream_prefetch_depth(block_bytes: list, default_depth: int) -> int:
     return max(1, min(int(default_depth), fits))
 
 
+def h3_stream_prefetch_window(top_bytes: int, block_bytes: list) -> int:
+    """Bytes the prefetcher may hold on the device: the top-level group plus two blocks, diffusers' own footprint."""
+    largest = max(block_bytes) if block_bytes else 0
+    return int(max(0, top_bytes) + 2 * largest)
+
+
 def install_h3_stream_prefetch(transformer: Any, device: Any, logger: Any = None) -> int:
     """Drive a block-streamed H3 denoiser's offload groups with the event-fenced prefetch (diffusion_offload_prefetch).
 
@@ -517,9 +523,15 @@ def install_h3_stream_prefetch(transformer: Any, device: Any, logger: Any = None
                 # owns() compares the instance onload_ with this: point it at the wrapped one
                 group._unsloth_prefetch_onload = group.__dict__.get("onload_")
         if prefetcher is not None:
-            # The residency plan reserves H3_STREAM_WINDOW_GB for streaming; the prefetcher sizes its window from the
-            # largest group, which is the 0.8 GB top-level group here. A group larger than the window still progresses.
-            prefetcher.window = min(int(prefetcher.window), int(H3_STREAM_WINDOW_GB * 1e9))
+            # The prefetcher sizes its window as (depth + 1) x its largest group, the 0.8 GB top-level group here.
+            # Bound it by what diffusers' own path holds instead: the top-level group (on the device for the whole
+            # forward while it streams) plus the running block and the next one. A streamed top-level group then still
+            # leaves room for one block ahead, and a resident one (not counted) for ``depth`` blocks ahead, which
+            # ``h3_stream_prefetch_depth`` keeps inside the H3_STREAM_WINDOW_GB the residency plan reserves.
+            prefetcher.window = h3_stream_prefetch_window(
+                group_payload_bytes(top) if top is not None else 0,
+                [group_payload_bytes(g) for g in blocks],
+            )
             # end() puts groups copied ahead but never run back on the host copy; kick() queues copies
             for name in ("end", "kick"):
                 setattr(prefetcher, name, _outside_inference_mode(getattr(prefetcher, name)))

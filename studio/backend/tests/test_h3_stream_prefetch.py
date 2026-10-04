@@ -47,6 +47,12 @@ def test_depth_keeps_the_prefetch_inside_the_reserved_stream_window():
     assert res.h3_stream_prefetch_depth([], 3) == 3
 
 
+def test_window_is_diffusers_footprint_top_plus_two_blocks():
+    assert res.h3_stream_prefetch_window(800, [390, 380]) == 800 + 2 * 390
+    assert res.h3_stream_prefetch_window(0, [390]) == 780
+    assert res.h3_stream_prefetch_window(0, []) == 0
+
+
 def test_resident_onload_kicks_the_prefetcher_and_stays_a_noop_without_one():
     calls = []
 
@@ -88,16 +94,19 @@ class _Block(torch.nn.Module):
 
 
 class _DiT(torch.nn.Module):
-    """H3's layout: top-level embedders / output and ``transformer_blocks``."""
+    """H3's layout: top-level embedders / output and ``transformer_blocks``; the top-level group is about twice a
+    block, like H3's 0.8 GB top-level group against 0.39 GB blocks."""
 
     def __init__(self, width = 1024, blocks = 8):
         super().__init__()
         self.proj_in = torch.nn.Linear(64, width)
+        self.embed = torch.nn.Linear(width, 2 * width)
         self.transformer_blocks = torch.nn.ModuleList(_Block(width) for _ in range(blocks))
         self.proj_out = torch.nn.Linear(width, 64)
 
     def forward(self, x):
         x = self.proj_in(x)
+        x = x + self.embed(x)[..., : x.shape[-1]]
         for block in self.transformer_blocks:
             x = block(x)
         return self.proj_out(x)
@@ -136,6 +145,31 @@ def _h3_streamed(net, monkeypatch, prefetch = True, outside_inference = True):
     return n
 
 
+def _count_late_copies(pf):
+    """Count block copies issued after their predecessor block was offloaded (serialized behind its compute)."""
+    late = {"n": 0, "offloaded": set()}
+    issue, offload, begin = pf._issue, pf.offload, pf.begin
+
+    def _begin():
+        late["offloaded"] = set()
+        return begin()
+
+    def _offload(group):
+        late["offloaded"].add(id(group))
+        return offload(group)
+
+    def _issue(group):
+        gid = id(group)
+        if pf.active and pf.on_order and gid in pf.order:
+            k = pf.order.index(gid)
+            if k > 0 and pf.order[k - 1] in late["offloaded"]:
+                late["n"] += 1
+        return issue(group)
+
+    pf.begin, pf.offload, pf._issue = _begin, _offload, _issue
+    return late
+
+
 def _count_syncs(fn):
     prev = torch.cuda.get_sync_debug_mode()
     torch.cuda.set_sync_debug_mode("warn")
@@ -157,22 +191,30 @@ def test_streamed_h3_forward_has_no_host_sync_and_is_bit_identical(resident, mon
     torch.manual_seed(0)
     net = _DiT().eval()
     ref = copy.deepcopy(net).cuda()
+    block = sum(p.numel() * p.element_size() for p in net.transformer_blocks[0].parameters())
+    # the 1.5 GB H3 reserve, scaled to these blocks: 3.85 blocks, as 1.5 GB is to H3's 0.39 GB blocks
+    monkeypatch.setattr(res, "H3_STREAM_WINDOW_GB", 3.85 * block / 1e9)
     covered = _h3_streamed(net, monkeypatch)
     assert covered == 1 + len(net.transformer_blocks)  # the pinned top group is one of them
     pf = module_prefetcher(net)
     assert pf is not None
     residency = res.H3Residency(net, "cuda")
     residency.apply(resident > 0, resident)
+    late = _count_late_copies(pf)
     x = torch.randn(4, 64, device = "cuda")
     with torch.no_grad():
         want = ref(x)
         assert torch.equal(net(x), want)  # records the order
+        late["n"] = 0
         for _ in range(3):
             got, syncs = _count_syncs(lambda: net(x))
             assert syncs == 0
             torch.cuda.synchronize()
             assert torch.equal(got, want)
     assert pf.stats["prefetched"] > 0 and pf.stats["missed"] == 0
+    # every block's copy is queued before its predecessor's offload fences the copy stream on that predecessor's
+    # compute; otherwise the copy runs after it and the GPU alternates copy and compute (no overlap)
+    assert late["n"] == 0, late
     assert pf.peak_inflight_bytes <= pf.window
     if resident:
         # the resident prefix kicks the prefetch, so the first streamed block is already in flight
