@@ -54,15 +54,26 @@ def test_room_shrinks_with_the_clip_and_never_goes_negative():
     est = dm.estimate_video_runtime_mib(width = 1280, height = 704, num_frames = 25)
     assert short == 9500 - (2500 + dm.DEFAULT_BASE_OVERHEAD_MIB + est)
     # already-resident bytes are demotable, so they count as available
-    assert vr.room_mib(width = 1280, height = 704, frames = 25, **{**common, "resident_mib_now": 4000}) == short + 4000
+    assert (
+        vr.room_mib(width = 1280, height = 704, frames = 25, **{**common, "resident_mib_now": 4000})
+        == short + 4000
+    )
     assert vr.room_mib(width = 1280, height = 704, frames = 25, **{**common, "free_mib": 0}) == 0
 
 
 def test_skipped_without_a_floor_or_a_denoiser():
-    assert vr.fit_for_request(types.SimpleNamespace(), device = "cuda", floor_mib = 1, width = 64, height = 64, frames = 1) is None
+    assert (
+        vr.fit_for_request(
+            types.SimpleNamespace(), device = "cuda", floor_mib = 1, width = 64, height = 64, frames = 1
+        )
+        is None
+    )
     net = types.SimpleNamespace()
     pipe = types.SimpleNamespace(transformer = net, components = {"transformer": net})
-    assert vr.fit_for_request(pipe, device = "cuda", floor_mib = None, width = 64, height = 64, frames = 1) is None
+    assert (
+        vr.fit_for_request(pipe, device = "cuda", floor_mib = None, width = 64, height = 64, frames = 1)
+        is None
+    )
 
 
 def test_video_request_path_fits_the_residency_before_the_vram_check():
@@ -95,14 +106,18 @@ def test_fit_failure_streams_everything_and_never_raises(monkeypatch):
         raise RuntimeError("no device")
 
     monkeypatch.setattr(vr, "resident_mib", boom)
-    monkeypatch.setattr(dm, "release_resident_groups", lambda pipe, need, *a, **k: released.append(need))
+    monkeypatch.setattr(
+        dm, "release_resident_groups", lambda pipe, need, *a, **k: released.append(need)
+    )
     torch = pytest.importorskip("torch")
     monkeypatch.setattr(torch.cuda, "mem_get_info", lambda *a: (1 << 30, 1 << 31))
     monkeypatch.setattr(torch.cuda, "memory_reserved", lambda *a: 0)
     monkeypatch.setattr(torch.cuda, "memory_allocated", lambda *a: 0)
     net = object()
     pipe = types.SimpleNamespace(transformer = net, components = {"transformer": net})
-    assert vr.fit_for_request(pipe, device = "cuda", floor_mib = 1, width = 64, height = 64, frames = 1) is None
+    assert (
+        vr.fit_for_request(pipe, device = "cuda", floor_mib = 1, width = 64, height = 64, frames = 1) is None
+    )
     assert released
 
 
@@ -120,7 +135,9 @@ def _streamed_net():
         def __init__(self):
             super().__init__()
             self.proj_in = torch.nn.Linear(64, 1024)
-            self.blocks = torch.nn.ModuleList(torch.nn.Linear(1024, 1024) for _ in range(6))  # ~4 MiB each
+            self.blocks = torch.nn.ModuleList(
+                torch.nn.Linear(1024, 1024) for _ in range(6)
+            )  # ~4 MiB each
             self.proj_out = torch.nn.Linear(1024, 64)
 
         def forward(self, x):
@@ -219,12 +236,17 @@ def test_blocks_kill_switch_keeps_only_the_top_level_group(monkeypatch):
 
 def test_measured_room_and_cover_lookup():
     common = dict(free_mib = 9000, unused_cache_mib = 500, resident_mib_now = 2000)
-    assert vr.measured_room_mib(peak_extra_mib = 2000, **common) == 11500 - int(2000 * vr.MEASURED_PEAK_MARGIN) - vr.MEASURED_SLACK_MIB
+    assert (
+        vr.measured_room_mib(peak_extra_mib = 2000, **common)
+        == 11500 - int(2000 * vr.MEASURED_PEAK_MARGIN) - vr.MEASURED_SLACK_MIB
+    )
     assert vr.measured_room_mib(peak_extra_mib = 20000, **common) == 0
     net = types.SimpleNamespace(_unsloth_video_peaks = {100: 1500, 300: 2500})
     assert vr._measured_extra_mib(net, 100) == 2500  # every recorded request at least this large
     assert vr._measured_extra_mib(net, 200) == 2500
-    assert vr._measured_extra_mib(net, 301) is None  # larger than anything measured: the estimate sizes it
+    assert (
+        vr._measured_extra_mib(net, 301) is None
+    )  # larger than anything measured: the estimate sizes it
     assert vr._measured_extra_mib(types.SimpleNamespace(), 1) is None
 
 
@@ -249,7 +271,9 @@ def test_measured_peak_widens_the_next_request(monkeypatch):
     torch, net, pipe, x, ref = _streamed_net()
     est = {"room": 1 + 4 + 1}  # top-level + 1 block from the estimate
     monkeypatch.setattr(vr, "room_mib", lambda **kw: est["room"])
-    fit = lambda: vr.fit_for_request(pipe, device = "cuda", floor_mib = 1, width = 64, height = 64, frames = 1)  # noqa: E731
+    fit = lambda: vr.fit_for_request(
+        pipe, device = "cuda", floor_mib = 1, width = 64, height = 64, frames = 1
+    )  # noqa: E731
     fit()
     assert _placed(net) == ["cuda"] + ["cpu"] * 5
     assert torch.equal(net(x.cuda()).cpu(), ref)

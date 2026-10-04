@@ -105,7 +105,6 @@ def resident_mib(module: Any) -> int:
 
 def _top_group_mib(module: Any) -> int:
     from .diffusion_memory import _offload_groups, _storage_nbytes
-
     for group in _offload_groups(module) or ():
         if getattr(group, "offload_leader", None) is module:
             seen: set = set()
@@ -146,11 +145,7 @@ def room_mib(
 
 
 def measured_room_mib(
-    *,
-    free_mib: int,
-    unused_cache_mib: int,
-    resident_mib_now: int,
-    peak_extra_mib: int,
+    *, free_mib: int, unused_cache_mib: int, resident_mib_now: int, peak_extra_mib: int
 ) -> int:
     """Room from a measured request peak: what the request allocated above its start, plus margin and slack."""
     available = int(free_mib) + max(0, int(unused_cache_mib)) + max(0, int(resident_mib_now))
@@ -299,7 +294,6 @@ def fit_for_request(
             logger.warning("video.dit_resident: streaming every group again (%s)", exc)
         try:
             from .diffusion_memory import release_resident_groups
-
             release_resident_groups(
                 pipe, 1 << 30, logger, denoisers_only = True, reason = "a residency failure"
             )
