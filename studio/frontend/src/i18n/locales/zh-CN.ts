@@ -3512,7 +3512,7 @@ export const zhCN = {
         jsonReply: "回复是有效的 JSON",
         length: "超过 {max} 个字符",
         unknown: "自定义规则",
-        python: "Python 函数 {entry}()",
+        python: "{entry}()",
         otherwise: "否则 {score}",
       },
     },

@@ -230,7 +230,7 @@ function ImportRewardDialog({
         </div>
         <Textarea
           rows={9}
-          className="font-mono text-xs"
+          className="max-h-[40vh] font-mono text-xs"
           value={markdown}
           placeholder={
             "---\nname: my-reward\nkind: rule\ndescription: ...\n---\ntype: regex\n..."

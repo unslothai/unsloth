@@ -3604,7 +3604,7 @@ export const ar = {
         jsonReply: "الرد JSON صالح",
         length: "أكثر من {max} حرف",
         unknown: "قاعدة مخصصة",
-        python: "دالة Python {entry}()",
+        python: "{entry}()",
         otherwise: "وإلا {score}",
       },
     },

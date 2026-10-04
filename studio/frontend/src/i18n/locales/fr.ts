@@ -3684,7 +3684,7 @@ export const fr = {
         jsonReply: "La réponse est du JSON valide",
         length: "Plus de {max} caractères",
         unknown: "Règle personnalisée",
-        python: "Fonction Python {entry}()",
+        python: "{entry}()",
         otherwise: "sinon {score}",
       },
     },

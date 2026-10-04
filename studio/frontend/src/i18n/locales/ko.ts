@@ -3598,7 +3598,7 @@ export const ko = {
         jsonReply: "답변이 유효한 JSON",
         length: "{max}자 초과",
         unknown: "사용자 규칙",
-        python: "Python 함수 {entry}()",
+        python: "{entry}()",
         otherwise: "아니면 {score}",
       },
     },

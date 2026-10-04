@@ -3552,7 +3552,7 @@ export const ja = {
         jsonReply: "返答が有効な JSON",
         length: "{max} 文字を超える",
         unknown: "カスタムルール",
-        python: "Python 関数 {entry}()",
+        python: "{entry}()",
         otherwise: "それ以外 {score}",
       },
     },

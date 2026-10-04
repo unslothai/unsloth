@@ -3673,7 +3673,7 @@ export const de = {
         jsonReply: "Antwort ist gültiges JSON",
         length: "Mehr als {max} Zeichen",
         unknown: "Eigene Regel",
-        python: "Python-Funktion {entry}()",
+        python: "{entry}()",
         otherwise: "sonst {score}",
       },
     },

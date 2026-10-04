@@ -3631,7 +3631,7 @@ export const ru = {
         jsonReply: "Ответ является корректным JSON",
         length: "Больше {max} символов",
         unknown: "Своё правило",
-        python: "Функция Python {entry}()",
+        python: "{entry}()",
         otherwise: "иначе {score}",
       },
     },

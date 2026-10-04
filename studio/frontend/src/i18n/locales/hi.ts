@@ -3611,7 +3611,7 @@ export const hi = {
         jsonReply: "जवाब मान्य JSON है",
         length: "{max} से ज़्यादा अक्षर",
         unknown: "कस्टम नियम",
-        python: "Python फ़ंक्शन {entry}()",
+        python: "{entry}()",
         otherwise: "वरना {score}",
       },
     },

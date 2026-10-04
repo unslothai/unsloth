@@ -3646,7 +3646,7 @@ export const en = {
         jsonReply: "Reply is valid JSON",
         length: "Over {max} characters",
         unknown: "Custom rule",
-        python: "Python function {entry}()",
+        python: "{entry}()",
         otherwise: "otherwise {score}",
       },
     },

@@ -3632,7 +3632,7 @@ export const ptBR = {
         jsonReply: "A resposta é JSON válido",
         length: "Mais de {max} caracteres",
         unknown: "Regra personalizada",
-        python: "Função Python {entry}()",
+        python: "{entry}()",
         otherwise: "senão {score}",
       },
     },
