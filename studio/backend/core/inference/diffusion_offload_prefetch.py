@@ -324,6 +324,7 @@ class GroupPrefetcher:
         self.slot_size = 0
         self.slot_bytes = 0
         self.slot_bytes_planned = 0
+        self.slot_streamed = 0
 
     def owns(self, group: Any) -> bool:
         return getattr(group, "__dict__", {}).get("onload_") is getattr(
@@ -529,6 +530,8 @@ class GroupPrefetcher:
         if not members:
             return 0
         count = min(self.depth + 1, len(members))
+        # pinned groups never fill their slot unless a release streams them again; the ring is allocated on first use
+        self.slot_streamed = sum(1 for g in members if not getattr(g, "_unsloth_resident", False))
         for i, group in enumerate(members):
             self.slot_of[id(group)] = i % count
         self.slot_size = size
@@ -575,6 +578,7 @@ class GroupPrefetcher:
         self.slot_size = 0
         self.slot_bytes = 0
         self.slot_bytes_planned = 0
+        self.slot_streamed = 0
 
     def begin(self) -> None:
         self.stats["forwards"] += 1

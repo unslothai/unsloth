@@ -459,6 +459,15 @@ def test_slots_are_shared_round_robin_and_sized_like_the_prefetch_window():
     assert [pf.slot_of[id(g)] for g in groups] == [0, 1, 2, 0, 1, 2, 0]
     # each slot holds the largest packed group (an (8, 4) float32 = 128 bytes): the ring is the prefetch window
     assert pf.slot_size == 128 and pf.slot_bytes_planned == 3 * 128
+    assert pf.slot_streamed == 7 and pf.slot_bytes == 0  # planned, allocated on first fill
+
+
+def test_a_pinned_denoiser_counts_no_streamed_slot_groups():
+    pf, groups, _ = _slot_prefetcher([(4, 4)] * 3, depth = 2)
+    for g in groups:
+        g._unsloth_resident = True
+    pf.enable_slots()
+    assert pf.slot_streamed == 0 and pf.slot_bytes == 0
 
 
 def test_slot_views_pack_leaves_aligned_and_mirror_the_sources():

@@ -646,6 +646,7 @@ class BlockGraphSet:
         self.enabled = True
         self.bypassed = False
         self.slots_mib = 0
+        self._prefetcher = None
         self.mode = "blocks"
         self.max_graphs = MAX_GRAPHS_PER_BLOCK
 
@@ -728,6 +729,7 @@ class BlockGraphSet:
             "max_graphs": self.max_graphs,
             "stats": s,
             "slot_ring_mib": int(self.slots_mib),
+            "slot_ring_allocated_mib": int(getattr(getattr(self, "_prefetcher", None), "slot_bytes", 0) or 0) >> 20,
             "pool_mib": int(self.shared.pool_bytes >> 20),
             "static_mib": int(self.shared.static_bytes >> 20),
             "capture_error": None
@@ -762,7 +764,9 @@ class BlockGraphSet:
 
     def held_bytes(self) -> int:
         """Device memory this layer holds that the caching allocator cannot hand to anything else."""
-        return int(self.shared.pool_bytes + self.shared.static_bytes + (self.slots_mib << 20))
+        pf = getattr(self, "_prefetcher", None)
+        slots = int(getattr(pf, "slot_bytes", 0) or 0) if pf is not None else 0
+        return int(self.shared.pool_bytes + self.shared.static_bytes + slots)
 
 
 def _release_cached() -> None:
@@ -872,7 +876,9 @@ def install_block_graphs(
             from .diffusion_offload_prefetch import module_prefetcher
             pf = module_prefetcher(transformer)
             if pf is not None:
-                handle.slots_mib = pf.enable_slots(logger = logger)
+                planned = pf.enable_slots(logger = logger)
+                handle._prefetcher = pf
+                handle.slots_mib = planned if getattr(pf, "slot_streamed", 1) else 0
         except Exception as exc:  # noqa: BLE001 - streamed blocks then simply churn and run their compute
             if logger is not None:
                 logger.warning("diffusion.block_graph: slot ring unavailable (%s)", exc)
