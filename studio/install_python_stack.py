@@ -308,16 +308,13 @@ _WINDOWS_ROCM_TORCH_PKG_SPECS: dict[str, tuple[str, str, str]] = {
 }
 # Windows RDNA arches install from AMD's multi-arch index (#11815, #11614): one URL, card picked by the
 # torch[device-gfxNNNN] extra, pinned to one exact tag inside <2.12.0 so nothing is kept (#11814).
-# rocm7.14.0, not 7.14.1: the 7.14.1 Windows wheels pair an AOTriton 0.12 runtime with 0.13 kernel
-# images, so every flash / memory-efficient SDPA call fails with hipErrorInvalidValue (ROCm/TheRock#7992,
-# #7315); 7.14.1 only changed RCCL and amdflang. The family map stays for family-layout mirrors and the
-# stale / mismatch classifiers. Linux unchanged.
+# Not rocm7.14.1: its Windows wheels pair an AOTriton 0.12 runtime with 0.13 kernels, so fused SDPA fails
+# (ROCm/TheRock#7992). The family map stays for family-layout mirrors and the classifiers. Linux unchanged.
 _ROCM_WINDOWS_MULTIARCH_INDEX_BASE = (
     os.environ.get("UNSLOTH_ROCM_WINDOWS_MULTIARCH_MIRROR")
     or "https://repo.amd.com/rocm/whl-multi-arch"
 )
 _ROCM_MULTIARCH_TAG = "rocm7.14.0"
-# Earlier pins whose installed build a standalone repair must replace, not keep.
 _ROCM_MULTIARCH_BROKEN_TAGS = frozenset({"rocm7.14.1"})
 _ROCM_MULTIARCH_TORCH_VERSION = "2.11.0"
 _ROCM_MULTIARCH_TORCHVISION_VERSION = "0.26.0"
