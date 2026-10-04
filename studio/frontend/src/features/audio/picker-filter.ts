@@ -3,17 +3,17 @@
 
 // Free of app imports so the node test runner can load it directly.
 
-import { AUDIO_CPP_SEP_AUDIO_TYPE, audioCppModelFor } from "./audio-cpp-catalog";
+import {
+  AUDIO_CPP_SEP_AUDIO_TYPE,
+  audioCppModelFor,
+  isCloneOnlyFamilyId,
+} from "./audio-cpp-catalog";
 import { isMusicGenerationModel } from "./catalog";
 import {
   type AudioWorkflowId,
   audioWorkflowForAudioType,
   audioWorkflowForTask,
 } from "./workflows";
-
-// Clone-only audio.cpp families outside AUDIO_CPP_MODELS (the backend's clone-only list).
-const CLONE_ONLY_FAMILY_HINT =
-  /miotts|vevo-?2|fireredtts-?3|firered-?audio|indextts-?2[._-]?5|confucius-?4/i;
 
 export interface AudioPickerRow {
   id?: string | null;
@@ -43,7 +43,7 @@ export function audioRowMatchesWorkflow(
     return catalogModel.workflows.includes(workflow);
   }
   // Hub search rows carry no backend workflows before download: name the clone-only families.
-  if (CLONE_ONLY_FAMILY_HINT.test(row.id ?? "")) {
+  if (isCloneOnlyFamilyId(row.id)) {
     return workflow === "clone";
   }
   const catalogTask = catalogModel?.task;
