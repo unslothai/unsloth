@@ -317,6 +317,8 @@ _ROCM_WINDOWS_MULTIARCH_INDEX_BASE = (
     or "https://repo.amd.com/rocm/whl-multi-arch"
 )
 _ROCM_MULTIARCH_TAG = "rocm7.14.0"
+# Earlier pins whose installed build a standalone repair must replace, not keep.
+_ROCM_MULTIARCH_BROKEN_TAGS = frozenset({"rocm7.14.1"})
 _ROCM_MULTIARCH_TORCH_VERSION = "2.11.0"
 _ROCM_MULTIARCH_TORCHVISION_VERSION = "0.26.0"
 _ROCM_MULTIARCH_TORCHAUDIO_VERSION = "2.11.0"
@@ -6087,6 +6089,17 @@ def _ensure_rocm_torch() -> "bool | None":
             _safe_print(
                 f"   installed ROCm torch has no {gfx_arch} device pack -- reinstalling from "
                 "AMD's multi-arch index"
+            )
+            _torch_already_rocm = False
+        if (
+            _torch_already_rocm
+            and _win_rocm_pin is None
+            and _windows_routes_multiarch(gfx_arch)
+            and (_version or "").lower().rpartition("+")[2] in _ROCM_MULTIARCH_BROKEN_TAGS
+        ):
+            _safe_print(
+                f"   installed ROCm torch {_version} cannot run fused attention -- reinstalling "
+                f"{_ROCM_MULTIARCH_TORCH_VERSION}+{_ROCM_MULTIARCH_TAG}"
             )
             _torch_already_rocm = False
         # A multi-arch route is judged by its packs alone: a migrated venv keeps the orphaned family runtime.
