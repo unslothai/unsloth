@@ -2511,7 +2511,11 @@ def _keep_groups_resident(
         def _resident_onload(stream: Any) -> Callable[[], None]:
             # a prefetching predecessor skips its own copy-stream wait and relies on this onload_ to do it
             def onload_(*args: Any, **kwargs: Any) -> None:
-                if stream is not None and state["streamed"]:
+                # event-fenced prefetch: streamed groups wait on their own copy; a resident block may start the forward's fill
+                kick = state.get("kick")
+                if callable(kick):
+                    kick()
+                if stream is not None and state["streamed"] and not state.get("fenced"):
                     stream.synchronize()
 
             return disable(onload_) if callable(disable) else onload_
@@ -3910,6 +3914,8 @@ def _apply_group_offload(
             installed += 1
             if use_stream and not _pin_top_level_group(module, logger, pinned_mib):
                 _skip_top_level_copy_back(module, logger)
+            if use_stream and gkwargs.get("record_stream"):
+                install_group_prefetch(module, onload, logger)
         if resident_transformer_mib:
             room = int(resident_transformer_mib)
             for module in streamed.values():
@@ -4469,6 +4475,16 @@ def raise_on_image_activation_shortfall(
 STREAMING_PREFETCH_ENV = "UNSLOTH_DIFFUSION_STREAMING_PREFETCH"
 
 
+def install_group_prefetch(
+    module: Any,
+    device: Any,
+    logger: Any = None,
+) -> int:
+    """Event-fenced, deeper prefetch for a block-streamed module's offload groups (diffusion_offload_prefetch)."""
+    from .diffusion_offload_prefetch import install_group_prefetch as _install
+    return _install(module, device, logger)
+
+
 def _streaming_prefetch_enabled() -> bool:
     """Kill switch for the streaming tier's overlapped onload (pinned host copies + record_stream); default on."""
     return (os.environ.get(STREAMING_PREFETCH_ENV) or "").strip().lower() not in (
@@ -4575,6 +4591,8 @@ def _apply_streaming_offload(
                 and not _pin_top_level_group(module, logger, pinned_mib)
             ):
                 _skip_top_level_copy_back(module, logger)
+            if use_stream and prefetch and offload_type == "block_level":
+                install_group_prefetch(module, onload, logger)
             if offload_type == "leaf_level":
                 _pin_vision_embedding_device(module)
         if resident_transformer_mib:
