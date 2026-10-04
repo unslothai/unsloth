@@ -763,9 +763,8 @@ async function syncInferenceStatusToStore(options?: {
         // status so attach gates survive a refresh.
         syncModelCapabilities(checkpointId, statusRes);
 
-        // History can load before this first status has a window, so its own recount
-        // never runs. A blank bar with a known window is enough; an empty prior pick
-        // is not required. The thread guard stops a null thread publishing.
+        // History can load before this status sets a window, so its own recount never runs, even
+        // with a checkpoint already selected (an API load). Null thread guard: no empty count.
         const hydrated = useChatRuntimeStore.getState();
         if (
           hydrated.contextUsage == null &&

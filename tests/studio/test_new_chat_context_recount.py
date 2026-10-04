@@ -136,12 +136,7 @@ def _store_reducers() -> str:
 
 
 def _status_poll_adoption_tail() -> str:
-    """The status poll's setCheckpoint-plus-recount tail, verbatim.
-
-    An API or CLI load hydrates through this path, not loadModel, so the recount after
-    adoption is this block. The start is the setCheckpoint this poll uses; the end is
-    the eviction branch that follows the checkpointId close.
-    """
+    """The status sync's setCheckpoint-plus-recount tail, verbatim (API / CLI loads hydrate here)."""
     return slice_between(
         read(RUNTIME),
         "        setCheckpoint(checkpointId, statusRes.gguf_variant);",
@@ -573,8 +568,6 @@ __FAST_PATH__
 
 HARNESS_STATUS_POLL = """
 
-// The status poll's adoption tail, verbatim. An API load hydrates through this path
-// rather than loadModel, so the recount after setCheckpoint is this block.
 export async function adoptServerStatus(statusRes: any): Promise<void> {
   const selectedCheckpoint: string = state.params?.checkpoint ?? "";
   const checkpointId: string | null =
@@ -1785,13 +1778,7 @@ def test_adopting_the_resident_gguf_reprices_the_open_thread():
 
 
 def test_status_poll_adoption_reprices_when_a_local_checkpoint_is_already_selected():
-    """#10337: a GGUF loaded via API hydrates through the status poll, not loadModel.
-
-    Studio already has that local checkpoint selected (a previous session, or the same
-    id the API just loaded). The poll still calls setCheckpoint, but the recount used
-    to require an empty prior pick (`!selectedCheckpoint`), so a blank bar with a
-    known window stayed blank until the next completion.
-    """
+    """#10337: an API-loaded GGUF already selected in Studio left the bar blank until the next reply."""
     out = _run(
         textwrap.dedent(
             """
