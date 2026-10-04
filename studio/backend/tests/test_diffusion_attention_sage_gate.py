@@ -106,9 +106,6 @@ def _engage_sage(monkeypatch, head_dim = 64):
     return engaged, t
 
 
-# --- calls Sage cannot take run native instead of raising -------------------------------------------------------
-
-
 def test_masked_call_runs_native_instead_of_raising(monkeypatch):
     engaged, t = _engage_sage(monkeypatch)
     assert engaged == "sage" and t.calls == ["sage"]
@@ -154,7 +151,7 @@ def test_servable_call_reaches_the_sage_kernel(monkeypatch):
     backends[dispatch.AttentionBackendName.SAGE] = _fake_sage
     assert att._install_sage_dispatch_guard() is True
     q, k, v = _qkv(head_dim = 128, dtype = torch.bfloat16)
-    # Every reason except the device is clear on CPU tensors, so this CPU call runs native ...
+    # Only the device reason fires on CPU ...
     assert att._sage_reroute_reason(q, k, v, None) == "device"
     torch.testing.assert_close(_dispatch_sage(q, k, v), _native(q, k, v))
     assert calls == []
@@ -200,8 +197,7 @@ def test_guarded_masked_call_traces_without_a_graph_break(monkeypatch):
     q, k, v = _qkv()
     mask = torch.ones((1, 1, 1, q.shape[1]), dtype = torch.bool)
     mask[..., :2] = False
-    # The registered (guarded) function itself, not dispatch_attention_fn: on torch 2.6 and 2.11 Dynamo cannot trace
-    # diffusers' own AttentionBackendName(...) lookup, with or without this guard.
+    # Not dispatch_attention_fn: Dynamo cannot trace diffusers' AttentionBackendName(...) lookup on torch 2.6 / 2.11.
     guarded = dispatch._AttentionBackendRegistry._backends[dispatch.AttentionBackendName.SAGE]
     torch._dynamo.reset()
     compiled = torch.compile(
@@ -224,9 +220,6 @@ def test_without_the_guard_sage_is_not_engaged(monkeypatch):
         is None
     )
     assert "sage" not in t.calls and any("masked attention" in w for w in log.warnings)
-
-
-# --- load-time refusals ----------------------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize("dtype", ["float32", "torch.float32", "fp32"])
@@ -292,9 +285,6 @@ def test_missing_package_falls_back_with_a_reason_and_is_not_cached(monkeypatch)
     assert att._sage_kernel_runs(_target()) is False and len(calls) == 2
 
 
-# --- the self-check verifies numbers, not just a launch ----------------------------------------------------------
-
-
 def _fake_sage(monkeypatch, fn):
     monkeypatch.setitem(sys.modules, "sageattention", types.SimpleNamespace(sageattn = fn))
 
@@ -349,10 +339,8 @@ def test_probe_head_dims_ignore_dims_sage_cannot_serve():
     assert att._sage_probe_head_dims({True, 96, 128}) == (96, 128)
 
 
-# --- ROCm: Sage is never chosen, explicitly or automatically ---------------------------------------------------
-# AMD measured SageAttention slower than AOTriton SDPA on gfx1151 (Wan2.2 T2V -36%, I2V -16%,
-# https://rocm.blogs.amd.com/software-tools-optimization/comfyui-fa-backends/README.html), and the upstream kernels
-# are CUDA-only, so a ROCm target keeps the default backend.
+# Sage is CUDA-only and slower than AOTriton SDPA on gfx1151:
+# https://rocm.blogs.amd.com/software-tools-optimization/comfyui-fa-backends/README.html
 
 
 @pytest.mark.parametrize(
@@ -376,12 +364,6 @@ def test_auto_never_selects_sage_on_nvidia(monkeypatch):
         monkeypatch.setattr(att, "_cuda_capability", lambda cap = cap: cap)
         for speed in (True, False):
             assert select_attention_backend(_target(), "auto", speed_active = speed) != "sage"
-
-
-# --- Sage stays inside a fullgraph compile --------------------------------------------------------------------
-# Upstream sageattn() reads the GPU arch through Python torch.cuda calls, which Dynamo rejects ("torch.* op returned
-# non-Tensor"): Studio's fullgraph compile then failed and the whole load ran eager. The guard calls it through an
-# opaque custom op instead.
 
 
 def _arch_reading_sage(
@@ -430,9 +412,6 @@ def test_unguarded_sage_call_breaks_a_fullgraph_compile():
     torch._dynamo.reset()
 
 
-# --- the engaged backend is recorded on each DiT, for the CUDA-graph eligibility check ---------------------------
-
-
 def test_engaged_backend_is_tagged_on_every_dit(monkeypatch):
     monkeypatch.setattr(att, "_run_sage_probe", lambda d, dt, hd = 128: "")
     t, t2 = _Transformer(128), _Transformer(128)
@@ -448,10 +427,6 @@ def test_engaged_backend_is_tagged_on_every_dit(monkeypatch):
     monkeypatch.setattr(att, "_SAGE_PROBE_CACHE", {})
     assert apply_attention_backend(pipe, "sage", target = _target()) is None
     assert t._unsloth_attention_backend is None and t2._unsloth_attention_backend is None
-
-
-# --- sageattention older than diffusers' floor (PyPI's 1.0.6) never engages --------------------------------------
-# 1.0.6 is the SageAttention 1 Triton kernel: diffusers refuses it, and on a B200 it is 4.7-6x slower than cuDNN.
 
 
 _REAL_SAGE_VERSION_TOO_OLD = getattr(att, "_sage_version_too_old", None)
@@ -525,9 +500,6 @@ def test_sm100_explicit_sage_falls_back_and_auto_never_picks_it(monkeypatch):
         is None
     )
     assert any("sm100" in w for w in log.warnings)
-
-
-# --- FlashAttention 4 (flash_4_hub): per-call guard and first-use probe -------------------------------------------
 
 
 def _engage_fa4(monkeypatch, probe = ""):

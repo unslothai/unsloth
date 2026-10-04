@@ -672,9 +672,7 @@ def graph_eligible(
     if not _denoiser_dits(pipe) and _denoiser_unet(pipe) is None:
         return False, "no denoiser transformer"
 
-    # SageAttention under a replayed graph renders noise (FLUX.1-schnell on A100: LPIPS 1.09 against the ungraphed
-    # render, which is itself correct), so a Sage load stays ungraphed.
-    # The kernels-hub build (sage_hub) is the same kernel.
+    # Sage (pip or hub build) under a replayed graph renders noise (FLUX.1-schnell, A100); ungraphed is correct.
     if any(
         getattr(m, "_unsloth_attention_backend", None) in ("sage", "sage_hub")
         for m in _denoiser_dits(pipe)
