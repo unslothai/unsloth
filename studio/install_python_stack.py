@@ -307,13 +307,15 @@ _WINDOWS_ROCM_TORCH_PKG_SPECS: dict[str, tuple[str, str, str]] = {
     "gfx1103": _ROCM_TORCH_PKG_SPECS["rocm7.2"],
 }
 # Windows RDNA arches install from AMD's multi-arch index (#11815, #11614): one URL, card picked by the
-# torch[device-gfxNNNN] extra, pinned to the newest tag inside <2.12.0 so nothing is kept (#11814).
-# The family map stays for family-layout mirrors and the stale / mismatch classifiers. Linux unchanged.
+# torch[device-gfxNNNN] extra, pinned to one exact tag inside <2.12.0 so nothing is kept (#11814).
+# Not rocm7.14.1: its Windows wheels pair an AOTriton 0.12 runtime with 0.13 kernels, so fused SDPA fails
+# (ROCm/TheRock#7992). The family map stays for family-layout mirrors and the classifiers. Linux unchanged.
 _ROCM_WINDOWS_MULTIARCH_INDEX_BASE = (
     os.environ.get("UNSLOTH_ROCM_WINDOWS_MULTIARCH_MIRROR")
     or "https://repo.amd.com/rocm/whl-multi-arch"
 )
-_ROCM_MULTIARCH_TAG = "rocm7.14.1"
+_ROCM_MULTIARCH_TAG = "rocm7.14.0"
+_ROCM_MULTIARCH_BROKEN_TAGS = frozenset({"rocm7.14.1"})
 _ROCM_MULTIARCH_TORCH_VERSION = "2.11.0"
 _ROCM_MULTIARCH_TORCHVISION_VERSION = "0.26.0"
 _ROCM_MULTIARCH_TORCHAUDIO_VERSION = "2.11.0"
@@ -6084,6 +6086,17 @@ def _ensure_rocm_torch() -> "bool | None":
             _safe_print(
                 f"   installed ROCm torch has no {gfx_arch} device pack -- reinstalling from "
                 "AMD's multi-arch index"
+            )
+            _torch_already_rocm = False
+        if (
+            _torch_already_rocm
+            and _win_rocm_pin is None
+            and _windows_routes_multiarch(gfx_arch)
+            and (_version or "").lower().rpartition("+")[2] in _ROCM_MULTIARCH_BROKEN_TAGS
+        ):
+            _safe_print(
+                f"   installed ROCm torch {_version} cannot run fused attention -- reinstalling "
+                f"{_ROCM_MULTIARCH_TORCH_VERSION}+{_ROCM_MULTIARCH_TAG}"
             )
             _torch_already_rocm = False
         # A multi-arch route is judged by its packs alone: a migrated venv keeps the orphaned family runtime.

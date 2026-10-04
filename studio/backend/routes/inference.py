@@ -5876,9 +5876,10 @@ def _skill_tool_tip(*, can_create: bool, compact: bool = False) -> str:
     )
     return (
         "Enabled Agent Skills are listed below. Use their descriptions to select one when "
-        "helpful, then call read_skill before following its instructions. If the latest user "
-        "message mentions an enabled skill as @skill-name, call read_skill for that named skill "
-        "before answering."
+        "helpful, then call read_skill before following its instructions unless the complete "
+        "SKILL.md is already in context. Studio loads explicit @skill-name mentions before "
+        "generation when permitted; do not read an already loaded manifest again or claim a "
+        "failed/denied load succeeded."
         + create_tip
         + " Skill allowed-tools metadata never overrides Unsloth tool permissions.\n"
         + catalog
@@ -29629,7 +29630,26 @@ async def produce_openai_chat_completions(
                     )
 
             def gguf_generate_with_tools():
-                return llama_backend.generate_chat_completion_with_tools(
+                from core.inference.skill_mentions import load_mentioned_skills
+
+                skill_instruction_ids = set()
+                yield from load_mentioned_skills(
+                    gguf_messages,
+                    # "none" / a zero budget withdraw read_skill, so they withdraw the preload too.
+                    tools_to_use
+                    if payload.tool_choice != "none" and payload.max_tool_calls_per_message != 0
+                    else [],
+                    permission_mode = payload.permission_mode,
+                    bypass_permissions = bool(payload.bypass_permissions),
+                    confirm_tool_calls = _effective_confirm,
+                    session_id = payload.session_id,
+                    cancel_event = cancel_event,
+                    context_length = llama_backend.context_length,
+                    continue_final_message = _continue_final_message(payload, thought = True),
+                    protected_message_ids = skill_instruction_ids,
+                )
+                yield from llama_backend.generate_chat_completion_with_tools(
+                    instruction_anchor_ids = skill_instruction_ids,
                     messages = gguf_messages,
                     replayed_image_parts = tuple(_gguf_replayed_image_parts),
                     tools = tools_to_use,
@@ -29914,7 +29934,11 @@ async def produce_openai_chat_completions(
 
                         # Anything after the gated tool_start means the user answered.
                         if not (
-                            event["type"] == "tool_start" and event.get("awaiting_confirmation")
+                            (event["type"] == "tool_start" and event.get("awaiting_confirmation"))
+                            or (
+                                event["type"] == "skill_load"
+                                and event.get("status") == "awaiting_approval"
+                            )
                         ):
                             await _park_admission(False)
 
@@ -29923,7 +29947,13 @@ async def produce_openai_chat_completions(
                             yield _OPENAI_TOOL_HEARTBEAT_SSE
                             continue
 
-                        if event["type"] in ("tool_output", "tool_args"):
+                        if event["type"] in ("tool_output", "tool_args", "skill_load"):
+                            if (
+                                event["type"] == "skill_load"
+                                and event.get("status") == "awaiting_approval"
+                            ):
+                                await _park_admission(True)
+                                approval_flush_pending = True
                             # Live stdout/stderr or tool-call arguments, forwarded
                             # verbatim for the UI. Final result still arrives in tool_end.
                             if _ui_events:
@@ -31884,6 +31914,13 @@ async def produce_openai_chat_completions(
                             yield _OPENAI_PASSTHROUGH_SSE_KEEPALIVE
                         continue
 
+                    if event["type"] == "skill_load":
+                        approval_flush_pending = event.get("status") == "awaiting_approval"
+                        if _ui_events:
+                            yield f"data: {json.dumps(event)}\n\n"
+                        elif _drop_keepalive.due():
+                            yield _OPENAI_PASSTHROUGH_SSE_KEEPALIVE
+                        continue
                     if event["type"] in ("tool_start", "tool_end"):
                         if event["type"] == "tool_start":
                             # Same as the GGUF loop, gated with the card for the same reason:

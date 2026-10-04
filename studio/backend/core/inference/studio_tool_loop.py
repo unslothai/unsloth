@@ -1280,6 +1280,39 @@ async def stream_with_studio_tools(
     confirm_tool_calls = policy.confirm_calls
     rag_scope = policy.rag_scope
 
+    from core.inference.skill_mentions import load_mentioned_skills
+
+    skill_loads = load_mentioned_skills(
+        conversation,
+        # "none" / a zero budget withdraw read_skill, so they withdraw the preload too.
+        tools if tool_choice != "none" and (unlimited or remaining > 0) else [],
+        permission_mode = permission_mode,
+        bypass_permissions = bypass_permissions,
+        confirm_tool_calls = confirm_tool_calls,
+        session_id = session_id,
+        cancel_event = cancel_event,
+        continue_final_message = run.continue_final_message,
+    )
+    load_task = None
+    flush_approval = False
+    try:
+        while True:
+            load_task = asyncio.ensure_future(asyncio.to_thread(next, skill_loads, _STEP_DONE))
+            # Same handshake as a gated tool card: early separate keepalive, then heartbeats while Ask waits.
+            timeout = _TOOL_APPROVAL_FLUSH_DELAY_S if flush_approval else TOOL_HEARTBEAT_INTERVAL_S
+            done, _pending = await asyncio.wait({load_task}, timeout = timeout)
+            while not done:
+                yield _SSE_KEEPALIVE
+                done, _pending = await asyncio.wait({load_task}, timeout = TOOL_HEARTBEAT_INTERVAL_S)
+            event = load_task.result()
+            load_task = None
+            if event is _STEP_DONE:
+                break
+            flush_approval = event.get("status") == "awaiting_approval"
+            yield _sse(event)
+    finally:
+        await _drain_step_task(load_task, cancel_event)
+        skill_loads.close()
     # The promotion allowlist is the selected catalog, never None: an unrestricted parse re-opens markerless tool-call
     # promotion.
     heal_names = (

@@ -92,6 +92,9 @@ class VideoFamily:
     vae_force_fp32: bool = False
     # False holds cudnn.benchmark off: its per-process conv pick makes servers decode the same latents differently.
     cudnn_benchmark: bool = True
+    # One config per reduction instead of a per-process benchmark that can change the render (diffusion_speed.
+    # pin_reduction_configs). Off by default: it can keep a slower config (HunyuanVideo-1.5 ~2% per step).
+    filter_reduction_configs: bool = False
     # Curated GGUF repo for the picker (the DiT as single-file GGUF quants).
     gguf_repo: Optional[str] = None
     # Hosted PRE-CAST text-encoder checkpoints as (scheme, component, repo_id); same semantics as
@@ -267,6 +270,8 @@ _FAMILIES: tuple[VideoFamily, ...] = (
         prequant_variant_repos = (("lightricks/ltx-2.3", "fp8", "unsloth/LTX-2.3-FP8"),),
         # no steady gain on LTX's VAE / vocoder convs, but a per-shape re-tune (first render 26 s vs 10 s)
         cudnn_benchmark = False,
+        # Block RMSNorm (hidden 4096) R0_BLOCK 4096 vs 2048 tie on B200: 3 of 6 cold servers rendered another clip.
+        filter_reduction_configs = True,
     ),
     # Wan2.2-TI2V-5B (diffusers >= 0.35, verified on 0.39): ~5B single-stream DiT (UMT5 encoder), no audio. Its VAE's
     # temporal compression 4 gives valid frame counts 4k+1. Defaults 20 steps / CFG 5 (ComfyUI's template).
