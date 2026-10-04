@@ -155,6 +155,25 @@ def project(grid: Any, weight: Any, bias: Any, patch: int) -> Any:
     return rgb.reshape(gh * patch, gw * patch, 3)
 
 
+def smooth_patch_grid(rgb: Any) -> Any:
+    """[1, 2, 1] x [1, 2, 1] / 16 blur of an (h, w, 3) picture, edges replicated.
+
+    A packed-token map predicts each 2x2 patch's four pixels with four separate rows, and their small
+    gain / bias mismatches print a period-2 grid over the upscaled preview. That pattern sits exactly
+    at the Nyquist frequency, where this kernel's response is zero, so it removes the grid and only
+    mildly softens everything else."""
+    import torch
+    import torch.nn.functional as F
+
+    chw = rgb.permute(2, 0, 1).unsqueeze(1)  # (3, 1, h, w): depthwise as a batch of 3
+    # Built on the device from scalars: a host tensor would be a pageable copy, which synchronises.
+    kernel = torch.full((1, 1, 3, 3), 1.0 / 16.0, device = rgb.device, dtype = rgb.dtype)
+    kernel[..., 1, :] *= 2.0
+    kernel[..., :, 1] *= 2.0
+    out = F.conv2d(F.pad(chw, (1, 1, 1, 1), mode = "replicate"), kernel)
+    return out.squeeze(1).permute(1, 2, 0)
+
+
 def to_uint8(rgb: Any, max_side: int = MAX_SIDE) -> Any:
     """Box-average down to ``max_side`` and quantise; (h, w, 3) uint8, contiguous, same device."""
     import torch
@@ -382,6 +401,8 @@ class LatentPreviewer:
                     return
                 pair = _sigma_pair(scheduler) if prev is not None else None
                 shown = x0_estimate(prev, cur, pair)
+                if self.spec.patch > 1:
+                    shown = smooth_patch_grid(shown)
                 img = to_uint8(shown, self.max_side)
                 n = img.numel()
                 if n > slot["host"].numel():

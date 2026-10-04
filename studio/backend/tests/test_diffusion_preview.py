@@ -220,3 +220,17 @@ def test_snapshots_are_planned_by_step_and_publishing_keeps_only_the_newest(monk
     # Rate limit of an hour: the first finished snapshot publishes, and finish() flushes the newest.
     assert got and got[-1] == 4
     assert len(got) <= 2
+
+
+def test_smoothing_removes_the_period_two_patch_grid():
+    # A flat picture with a 2x2 checker on top (the packed-patch artefact) comes back flat.
+    h = w = 16
+    yy, xx = torch.meshgrid(torch.arange(h), torch.arange(w), indexing = "ij")
+    checker = ((yy + xx) % 2).float() * 0.2 - 0.1
+    rgb = (0.5 + checker)[..., None].expand(h, w, 3).contiguous()
+    out = DP.smooth_patch_grid(rgb)
+    assert tuple(out.shape) == (h, w, 3)
+    assert float((out[1:-1, 1:-1] - 0.5).abs().max()) < 1e-6
+    # A smooth ramp passes through (interior; edges are replicated).
+    ramp = torch.linspace(0, 1, w).expand(h, w)[..., None].expand(h, w, 3).contiguous()
+    assert torch.allclose(DP.smooth_patch_grid(ramp)[2:-2, 2:-2], ramp[2:-2, 2:-2], atol = 1e-6)

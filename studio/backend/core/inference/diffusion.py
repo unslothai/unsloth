@@ -9650,6 +9650,55 @@ class DiffusionBackend:
                         total_steps = steps,
                     )
 
+                # Report the steps the GPU has FINISHED, not the ones the host has enqueued: with the denoiser
+                # replayed from a CUDA graph the loop enqueues every step long before the GPU runs them, so a
+                # host count ran the bar to N/N and flipped it to "decode" while the GPU was still denoising.
+                # Same machinery as the video path (per-step CUDA events polled with query(), never a sync).
+                from .video import (
+                    _BOUNDARY_MARK_ATTEMPTS,
+                    _BOUNDARY_MARK_RETRY_SECONDS,
+                    _CompletedStepTicker,
+                    _completed_step_poller,
+                    _hold_off_cuda_graph_capture,
+                )
+
+                # One ticker per chunk (replaced before each pipe() call): a finished chunk's boundary must not
+                # end the next chunk's denoise.
+                chunk_ticker = [_CompletedStepTicker(steps)]
+
+                def _report(done_in_chunk: int) -> None:
+                    """Publish completed steps. Monotonic, and silent once the chunk has left its denoise."""
+                    if gen.phase not in ("encode", "denoise"):
+                        return
+                    done = steps_done[0] + max(0, min(int(done_in_chunk), steps))
+                    if done <= gen.step:
+                        return
+                    gen.phase = "denoise"
+                    # Monotonic: a wall-clock adjustment (NTP) mid-denoise would skew the ETA.
+                    now = time.monotonic()
+                    gen.step = done
+                    if gen.first_step_at == 0.0:
+                        gen.first_step_at = now
+                    gen.eta_seconds = _estimate_eta(
+                        gen.total_steps, gen.step, gen.first_step_at, now
+                    )
+
+                def _flip_to_decode(gen = gen) -> None:
+                    _report(chunk_ticker[0].completed())
+                    gen.phase = "decode"
+                    gen.eta_seconds = None
+
+                def _pump() -> None:
+                    """One poll (inside the capture hold-off): advance from the GPU, and enter the decode only
+                    once the GPU has reached the marked end of the denoise."""
+                    if gen.phase not in ("encode", "denoise"):
+                        return
+                    ticker = chunk_ticker[0]
+                    if ticker.boundary_marked and ticker.boundary_reached():
+                        _flip_to_decode()
+                        return
+                    _report(ticker.completed())
+
                 def _on_step(pipe, step_index, timestep, callback_kwargs):
                     if static_skip:
                         mark_step_end(state.pipe)
@@ -9660,14 +9709,11 @@ class DiffusionBackend:
                         previewer.on_step(
                             callback_kwargs.get("latents"), getattr(pipe, "scheduler", None)
                         )
-                    # Monotonic: a wall-clock adjustment (NTP) mid-denoise would skew the ETA.
-                    now = time.monotonic()
-                    gen.step = steps_done[0] + step_index + 1
-                    if gen.first_step_at == 0.0:
-                        gen.first_step_at = now
-                    gen.eta_seconds = _estimate_eta(
-                        gen.total_steps, gen.step, gen.first_step_at, now
-                    )
+                    # diffusers calls this after scheduler.step, so the step's latent update is already enqueued.
+                    with _hold_off_cuda_graph_capture() as clear:
+                        if clear:
+                            chunk_ticker[0].record(step_index + 1)
+                            _report(chunk_ticker[0].completed())
                     if cancel.is_set():
                         pipe._interrupt = True
                     return callback_kwargs
@@ -9769,9 +9815,21 @@ class DiffusionBackend:
                             if gen.phase == "encode":
                                 gen.phase = "denoise"
 
-                        def _enter_decode_phase(gen = gen) -> None:
-                            gen.phase = "decode"
-                            gen.eta_seconds = None
+                        chunk_ticker[0] = _CompletedStepTicker(steps)
+
+                        def _enter_decode_phase() -> None:
+                            """The decoder was entered: a HOST position, possibly far ahead of the GPU. Mark the
+                            boundary in the stream and let the poller flip once the GPU reaches it; with no event
+                            to wait on (CPU, MPS) there is no queue to be ahead of, so flip now."""
+                            marked = False
+                            for _ in range(_BOUNDARY_MARK_ATTEMPTS):
+                                with _hold_off_cuda_graph_capture() as clear:
+                                    if clear:
+                                        marked = chunk_ticker[0].mark_boundary()
+                                        break
+                                time.sleep(_BOUNDARY_MARK_RETRY_SECONDS)
+                            if not marked:
+                                _flip_to_decode()
 
                         try:
                             # torchao aten.to fails torch's aliasing check under inference_mode once offloaded.
@@ -9784,10 +9842,15 @@ class DiffusionBackend:
                                 protect_ctx,
                                 denoise_phase(pipe, _enter_denoise_phase),
                                 decode_phase(pipe, _enter_decode_phase),
+                                _completed_step_poller(_pump),
                             ):
                                 out = render_thread.run(
                                     "diffusion", lambda: pipe(**chunk_kwargs).images
                                 )
+                            # pipe() returned decoded images, so the GPU is past the denoise whatever the
+                            # poller last saw.
+                            if gen.phase in ("encode", "denoise"):
+                                _flip_to_decode()
                         except Exception as exc:  # noqa: BLE001 - reraised unless a splittable OOM
                             oom = is_oom_error(exc)
                             if oom:

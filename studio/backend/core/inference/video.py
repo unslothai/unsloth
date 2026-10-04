@@ -8591,6 +8591,8 @@ class VideoBackend:
                     pipeline's is not, and Studio runs image and video renders side by side. A tick
                     skipped here costs that step its marker and nothing else: the step number travels
                     with the event, so the later ones do not shift, and the poller keeps reporting."""
+                    # The host is inside the denoise loop, whatever the GPU has finished: the encode is over.
+                    _enter_denoise()
                     with _hold_off_cuda_graph_capture() as clear:
                         if not clear:
                             return
