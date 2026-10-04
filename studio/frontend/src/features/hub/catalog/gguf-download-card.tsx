@@ -67,6 +67,7 @@ import {
 import {
   type GgufVariantFootprint,
   type MediaStudioPage,
+  awaitsCompanions,
   ggufVariantFootprint,
   useMediaCompanionBytes,
 } from "../hooks/use-media-companion-bytes";
@@ -298,6 +299,23 @@ function GgufVariantSizeLabel({
         <span className="ml-1 text-muted-foreground">
           · assets download on Run
         </span>
+      </TooltipContent>
+    </Tooltip>
+  );
+}
+
+/** Partial tag for a cached GGUF whose companions Run would still download. */
+function CompanionsPendingTag({ companionBytes }: { companionBytes: number }) {
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild={true}>
+        <span className="inline-flex">
+          <DotTag tone="warning" label="Partial" />
+        </span>
+      </TooltipTrigger>
+      <TooltipContent side="top" sideOffset={4}>
+        Model on device. {formatFootprintBytes(companionBytes)} of required
+        assets download on Run.
       </TooltipContent>
     </Tooltip>
   );
@@ -564,7 +582,13 @@ const GgufVariantMenuRow = memo(function GgufVariantMenuRow({
           variant="menu"
           tooltipMode="lazy"
         />
-        {item.downloaded && <DotTag tone="success" label="On device" />}
+        {awaitsCompanions(item.downloaded, item.footprint) ? (
+          <CompanionsPendingTag
+            companionBytes={item.footprint?.companionBytes ?? 0}
+          />
+        ) : (
+          item.downloaded && <DotTag tone="success" label="On device" />
+        )}
         {!item.downloaded && item.partial && (
           <Tooltip>
             <TooltipTrigger asChild={true}>
@@ -1147,7 +1171,13 @@ export function GgufDownloadCard({
                     Select quantization
                   </span>
                 )}
-                {selected?.downloaded && (
+                {awaitsCompanions(selected?.downloaded, selectedFootprint) && (
+                  <CompanionsPendingTag
+                    companionBytes={selectedFootprint?.companionBytes ?? 0}
+                  />
+                )}
+                {selected?.downloaded &&
+                  !awaitsCompanions(selected.downloaded, selectedFootprint) && (
                   // Dot only on phones.
                   <DotTag
                     tone="success"
