@@ -28,10 +28,12 @@ test("the host calls its hooks in the order their effects ran in the single page
 });
 
 test("only the page commits a workflow; the sidebar's request goes through the same gate", () => {
+  // A refused request is kept and retried when busy settles; the commit is what clears it.
   assert.match(
     host,
-    /useAudioWorkspaceStore\.getState\(\)\.clearRequestedWorkflow\(\);\s*transitionWorkflow\(requestedWorkflow\);/,
+    /if \(!active \|\| requestedWorkflow === null\) return;\s*transitionWorkflow\(requestedWorkflow\);\s*\}, \[active, busy, requestedWorkflow, transitionWorkflow\]\);/,
   );
+  assert.doesNotMatch(host, /clearRequestedWorkflow\(\)/);
   assert.match(
     slot,
     /\} else if \(!transitionMode\(slotForWorkflow\(next\)\)\) \{\s*return false;\s*\}\s*store\.commitWorkflow\(next\);/,
@@ -47,20 +49,13 @@ test("a loaded model opens the page that fits it", () => {
   assert.match(host, /adoptWorkflow\("music"\)/);
 });
 
-test("?workflow= names the page ahead of ?task=, and both clear the URL", () => {
-  const workflowAt = handoff.indexOf(
-    "const routedWorkflow = routeSearch.workflow;",
-  );
-  const taskAt = handoff.indexOf("const task = routeSearch.task;");
-  assert.ok(workflowAt > 0 && workflowAt < taskAt);
+test("?workflow= names the page ahead of ?task=, and both go through the workflow gate", () => {
+  // Task-only links take the same gate as ?workflow=, so a Speak/Music switch never skips the busy check.
   assert.match(
     handoff,
-    /if \(!transitionWorkflow\(routedWorkflow\)\) return;\s*void navigateSelf\(\{ to: "\/audio", search: \{\}, replace: true \}\);/,
+    /const routedWorkflow = audioRouteIntent\(routeSearch\);\s*if \(routedWorkflow === null\) return;[\s\S]{0,120}?if \(!transitionWorkflow\(routedWorkflow\)\) return;\s*void navigateSelf\(\{ to: "\/audio", search: \{\}, replace: true \}\);/,
   );
-  assert.match(
-    handoff,
-    /void navigateSelf\(\{ to: "\/audio", search: \{\}, replace: true \}\);\s*\/\/[^\n]*\n\s*useAudioWorkspaceStore\s*\.getState\(\)\s*\.commitWorkflow\(audioWorkflowForTask\(task\) \?\? intended\);/,
-  );
+  assert.doesNotMatch(handoff, /commitWorkflow\(/);
   assert.match(handoff, /transitionWorkflow\(clipWorkflow\(clip\)\)/);
 });
 
@@ -152,7 +147,7 @@ test("Send to lists the other Audio pages from the shared workflow list", () => 
   // Bytes first: a failed fetch must not leave the user on another page.
   assert.match(
     host,
-    /const blob = await fetchClipBlob\(clip\.url\);\s*if \(!transitionWorkflow\("transcribe"\)\) return;/,
+    /const blob = await fetchClipBlob\(clip\.url\);[\s\S]*?if \(!transitionWorkflow\("transcribe"\)\) return;/,
   );
 });
 
@@ -187,7 +182,7 @@ test("Send to waits for a running task instead of stopping it and dropping the c
   // transcription was refused and the clip silently dropped.
   assert.match(
     host,
-    /transcribe: \(\) => \{[\s\S]*?if \(busyRef\.current !== null\) \{\s*toast\.info\([^)]*\);\s*return;\s*\}\s*void \(async \(\) => \{/,
+    /transcribe: \(\) => \{[\s\S]*?const busyNow = \(\) => \{\s*if \(busyRef\.current === null\) return false;\s*toast\.info\([^)]*\);\s*return true;\s*\};\s*if \(busyNow\(\)\) return;/,
   );
 });
 
@@ -202,5 +197,22 @@ test("trained checkpoints are split between Speak and Music like the catalog", (
   assert.match(
     host,
     /trainedTtsModels\.filter\(\s*\(model\) =>\s*isMusicGenerationModel\(model\.id, model\.audioType\) ===\s*\(ttsWorkflow === "music"\),\s*\)/,
+  );
+});
+
+test("picking a clip on one page keeps the other page's unsaved clip", () => {
+  // A clip that failed to save exists only as the fallback; clicking a History row on the other
+  // page cleared it, so returning to its page lost the clip.
+  assert.match(
+    gallery,
+    /const otherPage =\s*clip !== undefined &&\s*fallbackClipRef\.current !== null &&\s*clipWorkflow\(clip\) !== fallbackClipRef\.current\.workflow;\s*if \(!keepFallback && !otherPage\) setFallbackClip\(null\);/,
+  );
+});
+
+test("Send to checks again after the clip downloads, before switching pages", () => {
+  // Generate pressed while the clip downloaded was stopped by the switch, and the clip dropped.
+  assert.match(
+    host,
+    /const blob = await fetchClipBlob\(clip\.url\);[\s\S]*?if \(busyNow\(\)\) return;\s*if \(!transitionWorkflow\("transcribe"\)\) return;/,
   );
 });

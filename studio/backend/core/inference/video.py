@@ -223,6 +223,7 @@ from .video_minimax_h3_te import (
     h3_te_quant_scheme,
     h3_te_resident_gb,
 )
+from .video_encode import encode_x264
 from .video_nvenc import encode_nvenc, nvenc_gpu
 from utils.hardware import clear_gpu_cache
 
@@ -6415,8 +6416,7 @@ class VideoBackend:
             if fam.name == "ltx-2" and applied.get("compiled"):
                 from .video_ltx2 import install_stg_compile_adapter
                 install_stg_compile_adapter(getattr(view, fam.denoiser_attr, None))
-            if fam.name == "ltx-2" and applied.get("cudnn_benchmark"):
-                # cudnn.benchmark: no steady gain on LTX's VAE / vocoder convs, but a per-shape re-tune (first render 26 s vs 10 s).
+            if not getattr(fam, "cudnn_benchmark", True) and applied.get("cudnn_benchmark"):
                 from .video_ltx2 import disable_cudnn_benchmark
                 if disable_cudnn_benchmark():
                     applied = {**applied, "cudnn_benchmark": False}
@@ -7407,16 +7407,53 @@ class VideoBackend:
             )
         except Exception:  # noqa: BLE001 -- optimisation only, never fail a load
             pass
+        h3_attn_levers: tuple = ()
         try:
+            from .video_minimax_h3_attn import (
+                fuse_h3_qkv_,
+                h3_attention_backend,
+                install_strided_attention,
+            )
+            h3_denoiser = getattr(pipe, denoiser_component, None)
+            # Resident only: a streamed denoiser's offload hooks are keyed to the three projections.
+            if (
+                effective_speed != SPEED_OFF
+                and denoiser_pinned
+                and not denoiser_streamed
+                and transformer_quant_engaged == "int8"
+                and h3_denoiser is not None
+                and fuse_h3_qkv_(h3_denoiser, logger = logger)
+            ):
+                h3_attn_levers += ("h3_fused_qkv",)
+        except Exception as exc:  # noqa: BLE001 -- optimisation only, the stock projections stay
+            logger.warning("video.h3_attn: QKV fusion skipped: %s", exc)
+        try:
+            h3_attn_backend = select_attention_backend(
+                umem_target, attention_backend, speed_active = effective_speed != SPEED_OFF
+            )
+            try:
+                h3_attn_backend = h3_attention_backend(h3_attn_backend, requested = attention_backend)
+            except Exception:  # noqa: BLE001 -- keep the generic pick
+                pass
             attention_engaged = apply_attention_backend(
                 speed_view,
-                select_attention_backend(
-                    umem_target, attention_backend, speed_active = effective_speed != SPEED_OFF
-                ),
+                h3_attn_backend,
                 logger = logger,
                 # The probe behind this must see the dtype the pipeline actually RUNS in.
                 target = types.SimpleNamespace(device = device, dtype = dtype),
             )
+            # speed off stays bit-identical: the fused q/k norm + RoPE only matches stock within a rounding step
+            if effective_speed != SPEED_OFF and attention_engaged in (
+                "_native_cudnn",
+                "_native_flash",
+            ):
+                try:
+                    if install_strided_attention(
+                        getattr(pipe, denoiser_component, None), logger = logger
+                    ):
+                        h3_attn_levers += ("h3_strided_attn",)
+                except Exception as exc:  # noqa: BLE001 -- stock processor stays
+                    logger.warning("video.h3_attn: strided attention skipped: %s", exc)
             applied = apply_speed_optims(
                 speed_view,
                 types.SimpleNamespace(
@@ -7435,11 +7472,22 @@ class VideoBackend:
                 # The conditioner and the VAEs stay in the rotation even when the denoiser is pinned, so the onload
                 # hooks are live and fullgraph has to drop.
                 offload_active = offload_policy != "none",
+                # a denoiser pinned under the others' offload rotation never moves, so the fused int8 GEMM can engage
+                denoiser_offloaded = bool(denoiser_streamed) or not denoiser_pinned,
                 cuda_graph_default = False,
                 logger = logger,
             )
-            speed_optims = tuple(k for k, v in applied.items() if v)
+            speed_optims = tuple(k for k, v in applied.items() if v) + h3_attn_levers
             if denoiser_streamed and "compiled" in speed_optims:
+                # before the first forward traces the blocks below their hooks
+                try:
+                    from .diffusion_int8_gemm import install as install_int8_gemm
+                    if install_int8_gemm(
+                        getattr(pipe, denoiser_component, None), logger, device = device
+                    ):
+                        speed_optims += ("int8_gemm",)
+                except Exception as exc:  # noqa: BLE001 -- optimisation only, the stock GEMM stays
+                    logger.warning("video.h3_int8_gemm: streamed install skipped: %s", exc)
                 from .video_minimax_h3_residency import compile_blocks_below_offload_hooks
                 compile_blocks_below_offload_hooks(
                     getattr(pipe, denoiser_component, None), logger = logger
@@ -9312,7 +9360,14 @@ class VideoBackend:
                 encode_kwargs.get("audio"),
                 encode_kwargs.get("audio_sample_rate"),
             ):
-                encode_video(video_frames, fps, tmp.name, **encode_kwargs)
+                if not encode_x264(
+                    video_frames,
+                    fps,
+                    tmp.name,
+                    encode_kwargs.get("audio"),
+                    encode_kwargs.get("audio_sample_rate"),
+                ):
+                    encode_video(video_frames, fps, tmp.name, **encode_kwargs)
             return Path(tmp.name).read_bytes()
         finally:
             try:

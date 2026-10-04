@@ -187,6 +187,14 @@
       "reason": "Module name comes from a fixed table or constant in this file, not from a model, request or download."
     },
     {
+      "file": "studio/backend/core/inference/video_wan_fused.py",
+      "rule": "dynamic-import",
+      "sink": "import_module",
+      "digest": "0d420008334333ee",
+      "count": 1,
+      "reason": "Imports the module-level _MODULE constant (diffusers' transformer_wan) to patch WanTransformerBlock; never a model, request or download name."
+    },
+    {
       "file": "studio/backend/core/inference/vllm_server.py",
       "rule": "dynamic-import",
       "sink": "import_module",

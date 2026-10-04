@@ -495,10 +495,8 @@ export function AudioPage({
     active,
     busy,
     busyRef,
-    mode,
     modeRef,
     handleModelSelect,
-    transitionMode,
     transitionWorkflow,
     refreshGallery,
     loadMore,
@@ -509,11 +507,11 @@ export function AudioPage({
   const requestedWorkflow = useAudioWorkspaceStore(
     (state) => state.requestedWorkflow,
   );
+  // A refused request stays pending (the commit clears it) and is retried when busy settles.
   useEffect(() => {
     if (!active || requestedWorkflow === null) return;
-    useAudioWorkspaceStore.getState().clearRequestedWorkflow();
     transitionWorkflow(requestedWorkflow);
-  }, [active, requestedWorkflow, transitionWorkflow]);
+  }, [active, busy, requestedWorkflow, transitionWorkflow]);
 
   // A failed Transcribe release puts `mode` back on Transcribe from inside the slot; the workflow follows.
   const syncedMode = useRef(mode);
@@ -567,13 +565,17 @@ export function AudioPage({
       transcribe: () => {
         // Switching mid-run stops the run, and the stopped run still holds the page busy, so the
         // transcription would be refused and the clip silently dropped.
-        if (busyRef.current !== null) {
+        const busyNow = () => {
+          if (busyRef.current === null) return false;
           toast.info("Wait for the current audio task to finish, then send the clip.");
-          return;
-        }
+          return true;
+        };
+        if (busyNow()) return;
         void (async () => {
           try {
             const blob = await fetchClipBlob(clip.url);
+            // Checked again: a run started while the clip downloaded would be stopped the same way.
+            if (busyNow()) return;
             if (!transitionWorkflow("transcribe")) return;
             const name = `${clip.prompt.trim().slice(0, 40) || "Audio clip"}.wav`;
             handleTranscribeFile(
@@ -1000,12 +1002,14 @@ export function AudioPage({
               />
             ) : null}
           </div>
-          <div className="pointer-events-none col-start-3 flex min-w-0 items-start justify-end pr-2 pt-[var(--studio-chat-header-padding-top,11px)]">
+          {/* Its own container: at a large UI size the column is too narrow for the label, which then
+              truncated to "Li…". The arrow drops first, then the label, leaving the named icon. */}
+          <div className="@container pointer-events-none col-start-3 flex min-w-0 items-start justify-end pr-2 pt-[var(--studio-chat-header-padding-top,11px)]">
             <div className="pointer-events-auto flex min-w-0 items-center gap-2">
               <LibraryPageLink
                 tab="audio"
-                labelClassName="hidden @[50rem]:inline"
-                arrowClassName="hidden @[50rem]:block"
+                labelClassName="hidden @[8.5rem]:inline"
+                arrowClassName="hidden @[10rem]:block"
               />
             </div>
           </div>

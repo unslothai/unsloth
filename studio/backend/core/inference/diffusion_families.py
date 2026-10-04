@@ -128,6 +128,8 @@ class DiffusionFamily:
     fp16_guard: Optional[str] = None
     # false only for a family whose denoiser block does not compile cleanly with regional torch.compile
     supports_torch_compile: bool = True
+    # False keeps cudnn.benchmark off (as VideoFamily.cudnn_benchmark): its per-process conv pick changes pixels.
+    cudnn_benchmark: bool = True
     # Optional pre-quantized transformer checkpoints as (scheme, repo_id): fetched instead of the dense bf16 (lower
     # load VRAM + download).
     prequant_repos: tuple[tuple[str, str], ...] = field(default_factory = tuple)
@@ -208,6 +210,7 @@ class DiffusionFamily:
 _FAMILIES: tuple[DiffusionFamily, ...] = (
     DiffusionFamily(
         name = "flux.1",
+        cudnn_benchmark = False,
         pipeline_class = "FluxPipeline",
         transformer_class = "FluxTransformer2DModel",
         base_repo = "black-forest-labs/FLUX.1-schnell",
@@ -373,6 +376,7 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         aliases = ("qwen_image", "qwenimage"),
         # fp16 overflows to NaN latents (black images)
         fp16_incompatible = True,
+        cudnn_benchmark = False,
         trainable = True,
         train_base_repos = ("unsloth/Qwen-Image-2512-unsloth-bnb-4bit", "Qwen/Qwen-Image"),
         img2img_pipeline_class = "QwenImageImg2ImgPipeline",
@@ -496,6 +500,7 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
     ),
     DiffusionFamily(
         name = "z-image",
+        cudnn_benchmark = False,
         comfy_flow_shift = 3.0,  # ComfyUI shift 3 for Turbo and base (Turbo already ships 3.0)
         pipeline_class = "ZImagePipeline",
         transformer_class = "ZImageTransformer2DModel",
@@ -631,6 +636,8 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
     # pipeline. img2img / inpaint / ControlNet are the standard SDXL pipelines. No GGUF path.
     DiffusionFamily(
         name = "sdxl",
+        # ~1.8% slower warm, but compiled-UNet renders then match across servers (ComfyUI's default)
+        cudnn_benchmark = False,
         pipeline_class = "StableDiffusionXLPipeline",
         transformer_class = "UNet2DConditionModel",
         base_repo = "stabilityai/stable-diffusion-xl-base-1.0",

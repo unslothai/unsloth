@@ -31,7 +31,9 @@ export const useAudioWorkspaceStore = create<AudioWorkspaceState>()(
       requestedWorkflow: null,
       navExpanded: false,
       lastModelByWorkflow: {},
-      commitWorkflow: (workflow) => set({ workflow, workflowChosen: true }),
+      // Any committed switch settles a pending request, so a stale one never fires later.
+      commitWorkflow: (workflow) =>
+        set({ workflow, workflowChosen: true, requestedWorkflow: null }),
       adoptWorkflow: (workflow) =>
         set((state) => (state.workflowChosen ? state : { workflow })),
       requestWorkflow: (requestedWorkflow) => set({ requestedWorkflow }),

@@ -249,8 +249,13 @@ export function useAudioGallery({
     (id: string, keepFallback = false) => {
       galleryCache.selectedId = id;
       setSelectedId(id);
-      if (!keepFallback) setFallbackClip(null);
       const clip = galleryCache.clips.find((candidate) => candidate.id === id);
+      // A clip picked on the other page leaves this page's unsaved clip alone: it may be the only copy.
+      const otherPage =
+        clip !== undefined &&
+        fallbackClipRef.current !== null &&
+        clipWorkflow(clip) !== fallbackClipRef.current.workflow;
+      if (!keepFallback && !otherPage) setFallbackClip(null);
       if (clip) void ensureClipSrc(clip);
     },
     [ensureClipSrc],

@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { Switch } from "@/components/ui/switch";
+import { useChatRuntimeStore } from "@/features/chat";
 import { formatBytes } from "@/features/hub/lib/format";
 import { useT } from "@/i18n";
 import { subscribeModelLifecycle } from "@/lib/model-lifecycle-events";
@@ -11,6 +12,10 @@ import {
   loadModelMemorySettings,
   updateModelMemorySettings,
 } from "../api/model-memory";
+import {
+  loadMultiModelEnabled,
+  updateMultiModelEnabled,
+} from "../api/multi-model";
 import { SettingsRow } from "./settings-row";
 import { SettingsSection } from "./settings-section";
 
@@ -61,6 +66,56 @@ export function ModelMemorySection() {
   const [isSaving, setIsSaving] = useState(false);
   // Bumped by every refresh and save: a read that resolves after either no longer describes the panel.
   const latestRef = useRef(0);
+  const multiModel = useChatRuntimeStore((s) => s.keepModelsLoaded);
+  const [multiModelRead, setMultiModelRead] = useState(false);
+  const [isSavingMultiModel, setIsSavingMultiModel] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    loadMultiModelEnabled(t("settings.resources.modelMemory.loadError")).then(
+      (enabled) => {
+        if (!cancelled) {
+          useChatRuntimeStore.getState().setKeepModelsLoaded(enabled);
+          setMultiModelRead(true);
+        }
+      },
+      (loadError) => {
+        if (!cancelled) {
+          setError(
+            loadError instanceof Error
+              ? loadError.message
+              : t("settings.resources.modelMemory.loadError"),
+          );
+        }
+      },
+    );
+    return () => {
+      cancelled = true;
+    };
+  }, [t]);
+
+  const persistMultiModel = async (enabled: boolean) => {
+    setIsSavingMultiModel(true);
+    setError(null);
+    try {
+      useChatRuntimeStore
+        .getState()
+        .setKeepModelsLoaded(
+          await updateMultiModelEnabled(
+            enabled,
+            t("settings.resources.modelMemory.saveError"),
+          ),
+        );
+    } catch (saveError) {
+      setError(
+        saveError instanceof Error
+          ? saveError.message
+          : t("settings.resources.modelMemory.saveError"),
+      );
+    } finally {
+      setIsSavingMultiModel(false);
+    }
+  };
 
   useEffect(() => {
     let cancelled = false;
@@ -144,6 +199,18 @@ export function ModelMemorySection() {
           checked={settings?.noRamReserve ?? false}
           disabled={!settings || isSaving}
           onCheckedChange={(noRamReserve) => void persist({ noRamReserve })}
+        />
+      </SettingsRow>
+      <SettingsRow
+        label={t("settings.resources.modelMemory.multiModel")}
+        description={t("settings.resources.modelMemory.multiModelDescription")}
+        hint={t("settings.resources.modelMemory.multiModelHint")}
+      >
+        <Switch
+          aria-label={t("settings.resources.modelMemory.multiModel")}
+          checked={multiModel}
+          disabled={!multiModelRead || isSavingMultiModel}
+          onCheckedChange={(enabled) => void persistMultiModel(enabled)}
         />
       </SettingsRow>
       {error ? (
