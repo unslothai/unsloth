@@ -13,11 +13,11 @@ from __future__ import annotations
 import json
 import os
 import re
-from dataclasses import dataclass
 import tempfile
 import urllib.error
 import urllib.request
 from pathlib import Path
+from typing import NamedTuple
 
 import pytest
 
@@ -383,8 +383,8 @@ def test_processing_utils_unpack_importable(tag: str):
     )
 
 
-@dataclass(frozen = True)
-class ModelingContract:
+# NamedTuple, not dataclass: test_transformers_cap_sites.py exec_module()s this file outside sys.modules.
+class ModelingContract(NamedTuple):
     name: str
     path: str
     classes: tuple[str, ...]
