@@ -93,6 +93,18 @@ def test_restart_and_kill_switch_never_spawn(monkeypatch):
     assert spawned == [{"device": 0}]
 
 
+def test_a_quit_during_the_load_never_starts_the_child(monkeypatch):
+    import multiprocessing as mp
+
+    from utils import process_lifetime
+
+    started = []
+    monkeypatch.setattr(mp, "get_context", lambda method: started.append(method))
+    monkeypatch.setattr(process_lifetime, "is_process_shutting_down", lambda: True)
+    assert prebuild._spawn({"name": "AutoencoderKL"}, None) is False
+    assert started == []
+
+
 _SCRIPT = textwrap.dedent(
     r"""
     import os, sys, json
@@ -146,11 +158,16 @@ def _run(tmp_path: Path, mode: str) -> dict:
     return json.loads(line[-1][len("RESULT ") :])
 
 
-@pytest.mark.skipif(not torch.cuda.is_available(), reason = "CUDA only")
+@pytest.mark.skipif(
+    not torch.cuda.is_available(),
+    reason = "the child JIT-compiles real Triton kernels, which needs a CUDA GPU",
+)
 def test_child_fills_the_triton_cache_the_full_size_decode_then_reads(tmp_path):
     child = _run(tmp_path, "child")
     if "skip" in child:
-        pytest.skip(child["skip"])
+        pytest.skip(
+            child["skip"]
+        )  # e.g. Triton absent / fused passes refuse this GPU: nothing to prebuild
     assert child["files"] > 0
     parent = _run(tmp_path, "parent")
     # A full-resolution decode in a fresh process compiles nothing new: every kernel came from the child's 64x64 decode.

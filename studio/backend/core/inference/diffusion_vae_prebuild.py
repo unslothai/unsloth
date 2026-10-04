@@ -120,7 +120,11 @@ def _spawn(job: dict, logger: Any) -> bool:
         native_path_secret_removed_for_child_start,
         run_without_native_path_secret,
     )
+    from utils.process_lifetime import adopt_pid, forget_pid, is_process_shutting_down
 
+    # A quit during the load: the sweep may already have run, so a child started now would outlive the server.
+    if is_process_shutting_down():
+        return False
     ctx = mp.get_context("spawn")
     with native_path_secret_removed_for_child_start():
         proc = ctx.Process(
@@ -130,10 +134,16 @@ def _spawn(job: dict, logger: Any) -> bool:
         )
         proc.start()
     try:
-        from utils.process_lifetime import adopt_pid
         adopt_pid(proc.pid)
     except Exception:  # noqa: BLE001
         pass
+    # Recheck once the pid is recorded: the latch can be set between the gate above and the adoption.
+    if is_process_shutting_down():
+        proc.kill()
+        proc.join(5.0)
+        if not proc.is_alive():
+            forget_pid(proc.pid)
+        return False
 
     def reap() -> None:
         proc.join(_CHILD_TIMEOUT_S)
@@ -141,7 +151,6 @@ def _spawn(job: dict, logger: Any) -> bool:
             proc.kill()
             proc.join(5.0)
         try:
-            from utils.process_lifetime import forget_pid
             if not proc.is_alive():
                 forget_pid(proc.pid)
         except Exception:  # noqa: BLE001
@@ -161,14 +170,16 @@ def _spawn(job: dict, logger: Any) -> bool:
 
 def _child_entry(job: dict) -> None:
     """Child side: same VAE class and config, no weights, the same fused passes, one decode of zeros."""
-    import importlib
-
+    import diffusers
     import torch
 
     from core.inference import diffusion_vae_fused
 
+    # Only diffusers' own exported VAE classes: the job names a class, it never picks a module to import.
+    cls = getattr(diffusers, job["name"], None)
+    if cls is None or getattr(cls, "__module__", None) != job["module"]:
+        return
     torch.cuda.set_device(job["device"])
-    cls = getattr(importlib.import_module(job["module"]), job["name"])
     dtype = getattr(torch, job["dtype"])
     vae = cls.from_config(job["config"]).to(device = f"cuda:{job['device']}", dtype = dtype).eval()
     if not diffusion_vae_fused.install(vae, None):
