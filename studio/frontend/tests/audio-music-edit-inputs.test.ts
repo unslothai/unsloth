@@ -204,7 +204,7 @@ test("which controls each action shows", () => {
   assert.equal(editMaxRanges(stableRule, "inpaint"), 3);
   assert.equal(editMaxRanges(stableRule, "repaint"), 1);
   assert.equal(editMaxRanges(stableRule, "restyle"), 0);
-  assert.equal(MUSIC_EDIT_ACTION_LABEL.continue, "Continue");
+  assert.equal(MUSIC_EDIT_ACTION_LABEL.continue, "Add parts");
 });
 
 test("the inputs reuse the source card and keep lyrics out of edit", () => {

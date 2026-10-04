@@ -12,7 +12,7 @@ export const MUSIC_EDIT_ACTION_LABEL: Record<MusicEditAction, string> = {
   repaint: "Repaint",
   extend: "Extend",
   cover: "Cover",
-  continue: "Continue",
+  continue: "Add parts",
   inpaint: "Inpaint",
   restyle: "Restyle",
 };

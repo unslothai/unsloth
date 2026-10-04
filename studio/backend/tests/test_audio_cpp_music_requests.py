@@ -286,10 +286,23 @@ def test_status_reports_the_music_studio_rules():
     }
     assert edit == {
         "id": "edit",
-        "actions": ["repaint", "extend", "cover", "continue"],
+        "actions": ["repaint", "extend", "cover"],
         "max_ranges": 1,
         "max_source_s": 240.0,
     }
+    # Upstream ACE-Step 1.5 offers "complete" and 1-200 steps on base only; turbo keeps 1-20.
+    base = _ace_base()
+    assert audio_cpp_backend.model_info_fields(base)["audio_music"]["modes"][1]["actions"] == [
+        "repaint",
+        "extend",
+        "cover",
+        "continue",
+    ]
+    steps = {o["name"]: o for o in base.options}["num_inference_steps"]
+    assert (steps["max"], steps["default"]) == (200, 32)
+    turbo = base.with_variant(AudioCppVariant("turbo/Q8_0", (), "ACE-Step1.5-GGUF/turbo/t.gguf"))
+    assert "continue" not in turbo.music.mode("edit").actions
+    assert {o["name"]: o for o in turbo.options}["num_inference_steps"]["max"] == 20
     stable = cm.music_rules(_model("stable_audio", "Stable-Audio-3-Medium-GGUF", strict = False))
     assert [m["id"] for m in stable["modes"]] == ["song", "sfx", "edit"]
     assert stable["modes"][0]["variations"] == {"max": 4, "how": "batch", "loaded": 1}
@@ -464,8 +477,8 @@ def test_sequential_variations_call_once_per_take_with_consecutive_seeds(tmp_pat
     assert all((run / m["file"]).is_file() for m in manifest)
     # The top valid seed wraps instead of passing MiDashengLM's 2**31 - 1 limit.
     top = _backend(_model("midashenglm_gen"))
-    _run(top, mode = "sfx", text = "rain", variations = 2, seed = 2**31 - 2)
-    assert [_request(top, i)["seed"] for i in range(2)] == [str(2**31 - 2), "0"]
+    _run(top, mode = "sfx", text = "rain", variations = 2, seed = 2**31 - 1)
+    assert [_request(top, i)["seed"] for i in range(2)] == [str(2**31 - 1), "0"]
 
 
 def test_a_fixed_seed_family_gets_a_recorded_random_seed(tmp_path):
@@ -524,8 +537,14 @@ def test_ace_step_repaint_has_no_duration_and_may_pass_the_end(source):
     assert "duration_seconds" not in set(_keys(request))
 
 
+def _ace_base():
+    return _model("ace_step", strict = False).with_variant(
+        AudioCppVariant("base/Q8_0", (), "ACE-Step1.5-GGUF/base/b.gguf")
+    )
+
+
 def test_ace_step_extend_cover_and_continue(source):
-    b = _backend(_model("ace_step", strict = False))
+    b = _backend(_ace_base())
     _run(b, mode = "edit", text = "outro", source = source, edit = {"action": "extend", "extend_s": 12.0})
     assert _request(b, 0)["options"] == {
         "route": "repaint",

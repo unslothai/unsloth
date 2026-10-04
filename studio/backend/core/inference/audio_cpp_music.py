@@ -43,7 +43,7 @@ def take_seed(seed: Optional[int], index: int) -> Optional[int]:
     """Seed of the ``index``-th sequential take; wraps so a valid seed never overflows the spec."""
     if seed is None:
         return None
-    return (seed + index) % _SEED_LIMIT if 0 <= seed < _SEED_LIMIT else seed + index
+    return (seed + index) % (_SEED_LIMIT + 1) if 0 <= seed <= _SEED_LIMIT else seed + index
 
 
 def seconds_text(value: float) -> str:

@@ -151,7 +151,7 @@ class MusicSpec:
 
 _STABLE_AUDIO_SONG = MusicMode("song", duration = (1.0, 120.0, 30.0), variations = "batch")
 _STABLE_AUDIO_SFX = MusicMode("sfx", duration = (1.0, 120.0, 8.0), variations = "batch")
-# Small's runtime window is ~120.7 s (sample_size / sample_rate): a longer edit comes back cut.
+# Small's runtime window is 120 s (sample_size / sample_rate): a longer edit comes back cut.
 _STABLE_AUDIO_EDIT = MusicMode(
     "edit", actions = ("inpaint", "restyle"), max_ranges = 8, max_source_s = 120.0
 )
@@ -159,7 +159,8 @@ MUSIC_SPECS: dict[str, MusicSpec] = {
     "ace_step": MusicSpec(
         (
             MusicMode("song", lyrics = "optional", instrumental = "toggle", section_case = "lower"),
-            MusicMode("edit", actions = ("repaint", "extend", "cover", "continue"), max_ranges = 1),
+            # "continue" (the runtime's "complete") is base-only upstream; with_variant adds it.
+            MusicMode("edit", actions = ("repaint", "extend", "cover"), max_ranges = 1),
         ),
         instrumental_lyrics = "[Instrumental]",
         edit_rate = 48000,
@@ -1850,7 +1851,28 @@ class AudioCppModel:
                 **dict(model_options.get("session_options") or {}),
                 **variant.session_options,
             }
-        return replace(self, variant = variant, model_options = model_options)
+        changes = _ace_step_variant(self, variant) if self.family == "ace_step" else {}
+        return replace(self, variant = variant, model_options = model_options, **changes)
+
+
+def _ace_step_variant(model: "AudioCppModel", variant: AudioCppVariant) -> dict[str, Any]:
+    """Base takes 1-200 steps (32-64 recommended) and the "complete" task; turbo 1-20 and no
+    "complete" (ACE-Step-1.5 acestep/constants.py TASK_TYPES_TURBO vs TASK_TYPES_BASE)."""
+    base = bool(re.search(r"(^|/)base(/|$)", f"{variant.key} {variant.primary}".lower()))
+    steps = {"max": 200, "default": 32} if base else {"max": 20, "default": 8}
+    options = tuple(
+        {**o, **steps} if o.get("name") == "num_inference_steps" else o for o in model.options
+    )
+    music = model.music
+    if music is not None:
+        modes = []
+        for m in music.modes:
+            if m.id == "edit":
+                actions = tuple(a for a in m.actions if a != "continue")
+                m = replace(m, actions = (*actions, "continue") if base else actions)
+            modes.append(m)
+        music = replace(music, modes = tuple(modes))
+    return {"options": options, "music": music}
 
 
 class AudioCppModelError(ValueError):
