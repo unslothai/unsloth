@@ -3709,6 +3709,8 @@ from models.inference import (
     AudioVoiceCreate,
     AudioVoiceListResponse,
     AudioVoicePatch,
+    TranscribeSourceRequest,
+    TranscriptPatch,
     LoadResponse,
     LoadProgressResponse,
     UnloadResponse,
@@ -23862,9 +23864,15 @@ async def _transcribe_audio_result(
     request: Optional[Request] = None,
     device: Optional[str] = None,
     on_progress = None,
+    *,
+    source_path: Optional[Path] = None,
+    timestamps: bool = False,
 ) -> dict:
     """STT for already-decoded bytes, sidecar errors mapped to HTTP statuses.
-    Returns the sidecar's result dict so callers own the response shape."""
+    Returns the sidecar's result dict so callers own the response shape.
+
+    ``source_path`` (a prepared WAV inside the account) replaces ``raw``: audio.cpp reads it in
+    place, with ``timestamps`` when asked; every other engine gets its bytes."""
     if account_access.managed_account():
         await asyncio.to_thread(
             account_access.require_model_access, _stt_repo_reference(model, engine)
@@ -23882,12 +23890,19 @@ async def _transcribe_audio_result(
         SttTranscriptionCancelledError,
     )
 
-    if not raw:
-        raise HTTPException(status_code = 400, detail = "Audio is empty.")
-    if len(raw) > _MAX_AUDIO_RAW_BYTES:
-        raise HTTPException(status_code = 413, detail = "Audio is too large.")
+    if source_path is None:
+        if not raw:
+            raise HTTPException(status_code = 400, detail = "Audio is empty.")
+        if len(raw) > _MAX_AUDIO_RAW_BYTES:
+            raise HTTPException(status_code = 413, detail = "Audio is too large.")
 
     serving_engine = _resolve_serving_stt_engine(engine)
+    if source_path is not None and serving_engine != "audiocpp":
+        # Prepared WAVs are capped at 30 min; the encoded-upload cap would refuse past ~13 min.
+        raw = await asyncio.to_thread(source_path.read_bytes)
+        source_path = None
+        if not raw:
+            raise HTTPException(status_code = 400, detail = "Audio is empty.")
     await asyncio.to_thread(
         _prepare_runtime_fallback_checkpoint,
         engine,
@@ -23909,13 +23924,37 @@ async def _transcribe_audio_result(
         # timers fired, which is what OOMs a device that fits either alone. A no-op once
         # the model is resident, so the steady state costs a residency check.
         load_stt, _ = _stt_lifecycle()
+        on_phase = (
+            (lambda phase: on_progress({"text": "", "phase": phase}))
+            if on_progress is not None and source_path is not None
+            else None
+        )
+        load_options = {"on_phase": on_phase} if on_phase is not None else {}
+        if source_path is not None and timestamps:
+            await asyncio.to_thread(sidecar.ensure_aligner, model, on_phase)
+            # Started with its aligner now, or transcribe_path would restart it.
+            load_options["timestamps"] = True
         await asyncio.to_thread(
-            functools.partial(load_stt, model, serving_engine, cancel_event, device = device)
+            functools.partial(
+                load_stt, model, serving_engine, cancel_event, device = device, **load_options
+            )
         )
         loaded = getattr(sidecar, "loaded_model", None)
         if loaded is not None and loaded == _stt_resolved_model_id(model, serving_engine):
             account_access.note_resident_account(f"stt:{serving_engine}", loaded)
-        if on_progress is not None and serving_engine in ("transformers", "mtmd"):
+        if source_path is not None:
+            result = await asyncio.to_thread(
+                functools.partial(
+                    sidecar.transcribe_path,
+                    source_path,
+                    model,
+                    language,
+                    timestamps = timestamps,
+                    cancel_event = cancel_event,
+                    on_phase = on_phase,
+                )
+            )
+        elif on_progress is not None and serving_engine in ("transformers", "mtmd"):
             result = await asyncio.to_thread(
                 sidecar.transcribe,
                 raw,
@@ -23973,6 +24012,10 @@ async def _transcribe_audio_result(
     finally:
         if disconnect_watcher is not None:
             await _stop_local_disconnect_cancel_watcher(disconnect_watcher)
+    speakers = result.get("speakers") if isinstance(result, dict) else None
+    if isinstance(speakers, list) and all(isinstance(s, str) for s in speakers):
+        from core.inference.stt_capabilities import label_speakers
+        result = {**result, "speakers": label_speakers(speakers)}
     return result
 
 
@@ -24049,6 +24092,86 @@ async def transcribe_audio_raw(
             b"".join(chunks), model, language, fast, engine, request, device
         )
     )
+
+
+def _source_transcript(result: dict, source, speakers: bool) -> dict:
+    out = dict(result)
+    if not (speakers and out.get("speakers")):
+        out.pop("speakers", None)
+        if out.get("segments"):
+            out["segments"] = [
+                {k: v for k, v in s.items() if k != "speaker"} for s in out["segments"]
+            ]
+    out["source"] = {"kind": source.kind, "id": source.id, "name": source.name}
+    out["timestamps"] = bool(out.get("segments"))
+    return out
+
+
+@studio_router.post("/audio/transcribe/source")
+async def transcribe_audio_source(
+    body: TranscribeSourceRequest, current_subject: str = Depends(get_current_subject)
+):
+    """Transcribe Audio page audio named by id, streamed as NDJSON and saved to history."""
+    from core.inference import audio_inputs, stt_capabilities, stt_details
+    from core.inference.transcript_stream import stream_transcript
+
+    engine = body.engine or await asyncio.to_thread(_stt_engine_for_model, body.model)
+    serving_engine = _resolve_serving_stt_engine(engine)
+    caps = await asyncio.to_thread(stt_capabilities.capabilities_for, body.model, serving_engine)
+    if body.timestamps and caps["timestamps"] == "unsupported":
+        raise HTTPException(
+            status_code = 422,
+            detail = "This model cannot add timestamps. Pick Qwen3-ASR (audio.cpp), Parakeet-TDT, "
+            "MOSS-Transcribe-Diarize or VibeVoice-ASR.",
+        )
+    if body.speakers and not caps["speakers"]:
+        raise HTTPException(
+            status_code = 422,
+            detail = "This model cannot tell speakers apart. Pick MOSS-Transcribe-Diarize or "
+            "VibeVoice-ASR.",
+        )
+    rate = stt_details.FIXED_SPAN_RATES.get(caps["family"], 16000)
+
+    def _prepare():
+        source = audio_inputs.resolve_source(body.source.model_dump(exclude_none = True))
+        return source, audio_inputs.prepared_path(source, rate)
+
+    try:
+        source, path = await asyncio.to_thread(_prepare)
+    except audio_inputs.AudioInputError as exc:
+        raise _audio_source_error(exc) from None
+
+    async def _run(on_progress):
+        result = await _transcribe_audio_result(
+            b"",
+            body.model,
+            body.language,
+            False,
+            engine,
+            None,
+            body.device,
+            on_progress,
+            source_path = path,
+            timestamps = body.timestamps,
+        )
+        return _source_transcript(result, source, body.speakers)
+
+    return StreamingResponse(
+        stream_transcript(_run, body.title or source.name),
+        media_type = "application/x-ndjson",
+        headers = {"Cache-Control": "no-store", "X-Accel-Buffering": "no"},
+    )
+
+
+@studio_router.get("/audio/stt/capabilities")
+async def stt_model_capabilities(
+    model: Optional[str] = Query(None, max_length = 512),
+    engine: Optional[str] = Query(None, max_length = 64),
+    current_subject: str = Depends(get_current_subject),
+):
+    """What ``model`` can add to a transcript (timestamps, speakers) and where it runs. Offline."""
+    from core.inference import stt_capabilities
+    return await asyncio.to_thread(stt_capabilities.capabilities_for, model, engine)
 
 
 # =====================================================================
@@ -45130,20 +45253,48 @@ async def list_gallery_transcripts(
     return await asyncio.to_thread(transcript_gallery.list_transcripts, limit, before, archived)
 
 
-@studio_router.patch("/audio/transcripts/{transcript_id}")
-async def archive_gallery_transcript(
-    transcript_id: str,
-    patch: AudioGalleryFlagsPatch,
-    current_subject: str = Depends(get_current_subject),
+@studio_router.get("/audio/transcripts/{transcript_id}")
+async def get_gallery_transcript(
+    transcript_id: str, current_subject: str = Depends(get_current_subject)
 ):
+    """One transcript in full: its segments, words and speakers included."""
     from core.inference import transcript_gallery
 
-    if patch.archived is None:
-        raise HTTPException(status_code = 422, detail = "Specify whether to archive this transcript.")
-    record = await asyncio.to_thread(transcript_gallery.set_archived, transcript_id, patch.archived)
+    record = await asyncio.to_thread(transcript_gallery.get, transcript_id)
     if record is None:
         raise HTTPException(status_code = 404, detail = "Transcript not found.")
     return record
+
+
+@studio_router.patch("/audio/transcripts/{transcript_id}")
+async def archive_gallery_transcript(
+    transcript_id: str,
+    patch: TranscriptPatch,
+    current_subject: str = Depends(get_current_subject),
+):
+    """Archive or restore a transcript, and name its speakers; returns its list row."""
+    from core.inference import transcript_gallery
+
+    if patch.archived is None and patch.speaker_names is None:
+        raise HTTPException(status_code = 422, detail = "Specify whether to archive this transcript.")
+    record = None
+    if patch.speaker_names is not None:
+        try:
+            record = await asyncio.to_thread(
+                transcript_gallery.set_speaker_names, transcript_id, patch.speaker_names
+            )
+        except transcript_gallery.TranscriptPatchError as exc:
+            raise HTTPException(status_code = 422, detail = str(exc)) from None
+        if record is None:
+            raise HTTPException(status_code = 404, detail = "Transcript not found.")
+    if patch.archived is not None:
+        archived = await asyncio.to_thread(
+            transcript_gallery.set_archived, transcript_id, patch.archived
+        )
+        if archived is None:
+            raise HTTPException(status_code = 404, detail = "Transcript not found.")
+        record = archived
+    return transcript_gallery.summary(record)
 
 
 @studio_router.delete("/audio/transcripts/{transcript_id}")

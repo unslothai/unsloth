@@ -304,3 +304,21 @@ def test_inputs_and_voices_live_in_the_accounts_audio_folder(tmp_path):
     assert run_as(BOB, audio_inputs.inputs_dir) == bob / "inputs"
     assert run_as(BOB, audio_voices.voices_dir) == bob / "voices"
     assert run_as(OWNER, audio_inputs.inputs_dir) == tmp_path / "audio" / "inputs"
+
+
+@pytest.mark.parametrize("account,other", [(ALICE, BOB), (BOB, ALICE)])
+def test_transcribe_sources_and_transcripts_do_not_resolve_another_accounts_ids(account, other):
+    from core.inference import transcript_gallery
+
+    clip_id = run_as(account, _save, "audio")["id"]
+    transcript = run_as(account, transcript_gallery.save, {"text": "t", "model": "m"}, "t")
+    with _client(other) as client:
+        for source in ({"input_id": _save_input(account)["id"]}, {"clip_id": clip_id}):
+            body = {"source": source, "model": "small"}
+            response = client.post("/api/inference/audio/transcribe/source", json = body)
+            assert response.status_code == 404, response.text
+        url = f"/api/inference/audio/transcripts/{transcript['id']}"
+        assert client.get(url).status_code == 404
+        assert client.patch(url, json = {"speaker_names": {"S01": "Mallory"}}).status_code == 404
+        assert client.patch(url, json = {"archived": True}).status_code == 404
+        assert transcript["id"] not in client.get("/api/inference/audio/transcripts").text
