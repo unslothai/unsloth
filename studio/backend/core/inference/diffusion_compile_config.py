@@ -53,7 +53,6 @@ def _device_capability() -> Any:
     """(major, minor) of the current CUDA device, or None (no CUDA, ROCm, or the query failed)."""
     try:
         import torch
-
         if not torch.cuda.is_available() or getattr(torch.version, "hip", None):
             return None
         return tuple(int(v) for v in torch.cuda.get_device_capability())

@@ -27,7 +27,6 @@ _IMAGE_FAMILIES = ("flux.1", "z-image", "qwen-image")
 
 def _family(name):
     from core.inference import diffusion_families, video_families
-
     for fam in (*video_families._FAMILIES, *diffusion_families._FAMILIES):
         if fam.name == name:
             return fam
@@ -66,9 +65,10 @@ def test_image_family_opts_in_on_the_measured_archs(monkeypatch, name, cap):
 
 def test_the_three_families_share_one_arch_list():
     from core.inference import diffusion_families
-
     for name in _IMAGE_FAMILIES:
-        assert _family(name).filter_reduction_configs_archs == diffusion_families._REDUCTION_RACE_ARCHS
+        assert (
+            _family(name).filter_reduction_configs_archs == diffusion_families._REDUCTION_RACE_ARCHS
+        )
     assert set(diffusion_families._REDUCTION_RACE_ARCHS) == set(_MEASURED_ARCHS)
 
 
@@ -98,7 +98,12 @@ def test_no_family_or_plain_object(monkeypatch):
     _on(monkeypatch, _SM120)
     assert cc.family_filters_reductions(None) is False
     assert cc.family_filters_reductions(types.SimpleNamespace()) is False
-    assert cc.family_filters_reductions(types.SimpleNamespace(filter_reduction_configs_archs = [[12, 0]])) is True
+    assert (
+        cc.family_filters_reductions(
+            types.SimpleNamespace(filter_reduction_configs_archs = [[12, 0]])
+        )
+        is True
+    )
 
 
 def test_capability_query_never_raises(monkeypatch):
