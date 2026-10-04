@@ -295,6 +295,15 @@ def _venv_snapshot() -> dict[str, str]:
     return out
 
 
+def _redact(text: str) -> str:
+    # Installer output can quote index URLs with credentials in them; it ends up in the status reason.
+    try:
+        from utils.log_redaction import redact_log_text
+        return redact_log_text(text)
+    except Exception:  # noqa: BLE001
+        return re.sub(r"://[^/\s@]+@", "://***@", text)
+
+
 def _kill_tree(proc: subprocess.Popen) -> None:
     try:
         os.killpg(proc.pid, 9)
@@ -314,6 +323,9 @@ def _run(
     timeout: int,
     cancel_event: Optional[threading.Event] = None,
 ) -> tuple[bool, str]:
+    env = _child_env()
+    # A symlinked or hardlinked target would break when uv's cache is pruned.
+    env["UV_LINK_MODE"] = "copy"
     try:
         proc = subprocess.Popen(
             cmd,
@@ -322,7 +334,7 @@ def _run(
             text = True,
             encoding = "utf-8",
             errors = "replace",
-            env = _child_env(),
+            env = env,
             start_new_session = True,
         )
     except Exception as exc:  # noqa: BLE001
@@ -339,7 +351,7 @@ def _run(
             if time.monotonic() >= deadline:
                 _kill_tree(proc)
                 return False, f"timed out after {timeout}s"
-    return proc.returncode == 0, (out or "").strip()[-2000:]
+    return proc.returncode == 0, _redact((out or "").strip()[-2000:])
 
 
 def _file_lock(path: Path):

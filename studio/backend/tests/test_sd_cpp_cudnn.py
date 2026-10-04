@@ -452,3 +452,17 @@ def test_the_installer_own_index_is_not_overridden(monkeypatch, tmp_path):
 def test_status_reason_is_redacted_for_remote_callers():
     from hub.utils.host_paths import HOST_PATH_TEXT_FIELDS
     assert "sd_cpp_cudnn_reason" in HOST_PATH_TEXT_FIELDS
+
+
+def test_installer_output_is_redacted_and_copies_files(monkeypatch):
+    """Index credentials in installer output never reach the status reason; uv copies, never links, the target."""
+
+    def fake_child_env():
+        return {"UV_LINK_MODE": "symlink", "PATH": os.environ.get("PATH", "")}
+
+    monkeypatch.setattr(cd, "_child_env", fake_child_env)
+    code = (
+        "import os; print('https://user:s3cret@mirror.example/simple', os.environ['UV_LINK_MODE'])"
+    )
+    ok, out = cd._run([sys.executable, "-c", code], 60)
+    assert ok and "s3cret" not in out and out.endswith("copy")
