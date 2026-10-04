@@ -1138,8 +1138,16 @@ class GraphedForward:
         skip = getattr(self.placement, "skip", None) if self.placement is not None else None
         skip_stats = dict(skip.stats) if skip is not None and isinstance(getattr(skip, "stats", None), dict) else None
         # Per-block graphs under the hooks run their compute while the whole step warms up and records.
+        # An offloaded key that already ran its timed eager steps (``_timed_eager``, same shapes, capture-like inputs)
+        # is warm: a side-stream warm-up would only cache a second set of activations beside the compute stream's
+        # (the cold render's peak), so it records straight away, after the flush ``torch.cuda.graph`` does.
+        warm = (
+            self.placement is not None
+            and key is not None
+            and int((getattr(self, "_judge", {}).get(key) or {}).get("seen", 0)) >= 1
+        )
         with _recording_step():
-            if not recapture:
+            if not recapture and not warm:
                 side = torch.cuda.Stream()
                 side.wait_stream(torch.cuda.current_stream())
                 with torch.cuda.stream(side):

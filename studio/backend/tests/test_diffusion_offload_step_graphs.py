@@ -474,3 +474,33 @@ def test_a_static_step_skip_under_the_hooks_is_replayed_past_only_while_it_plans
     assert isinstance(step.fallback_handle, bg.BlockGraphSet) and step.fallback_handle.stats["replays"] > 0
     step.free()
     sk.uninstall_static_step_skip(pipe)
+
+
+@pytest.mark.parametrize("timed", [True, False])
+def test_a_key_warmed_by_its_timed_eager_steps_records_without_another_warm_up(monkeypatch, timed):
+    _cuda()
+    if timed:
+        monkeypatch.delenv(cg.SPEED_CHECK_ENV)
+    ref = _net().cuda()
+    net, handle = _armed_streamed(monkeypatch)
+    recorded = []
+    real = handle.placement.recorder
+
+    def recorder(call):
+        inner = real(call)
+
+        def record(*a, **k):
+            recorded.append(torch.cuda.current_stream())
+            return inner(*a, **k)
+
+        return record
+
+    handle.placement.recorder = recorder
+    for seed in range(5):
+        assert torch.equal(_call(net, seed), _call(ref, seed))
+    assert handle.stats["captures"] == 1
+    # timed: 3 eager steps ran the key on capture-like inputs, so only the recording itself calls the step;
+    # untimed: the side-stream warm-ups run first, as for any first capture
+    assert len(recorded) == (1 if timed else 1 + cg.WARMUP_ITERS)
+    assert handle.stats["speed_eager"] == (3 if timed else 0)
+    handle.free()
