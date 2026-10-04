@@ -134,11 +134,8 @@ def _render_probe(chat_template: str, messages: list[dict], today: date) -> str:
     )
 
 
-@lru_cache(maxsize = 8)
-def template_default_system_prompt(chat_template: str | None, today: date) -> str:
-    """The system prompt a chat template renders on its own on ``today`` when the chat sends none."""
-    if not chat_template:
-        return ""
+def _probe_renders(chat_template: str, today: date) -> tuple[str, str] | None:
+    """A plain chat rendered without and with a system turn, when the template renders that turn."""
     # some templates read message text only from content parts, as a vision processor sends it.
     for content in (lambda text: text, lambda text: [{"type": "text", "text": text}]):
         user = {"role": "user", "content": content(_PROBE_USER)}
@@ -150,9 +147,30 @@ def template_default_system_prompt(chat_template: str | None, today: date) -> st
         except Exception:
             continue
         if with_system.count(_PROBE_SYSTEM) == 1:
-            break
-    else:
+            return bare, with_system
+    return None
+
+
+@lru_cache(maxsize = 8)
+def template_rejects_system_turn(chat_template: str | None) -> bool:
+    """A template that renders a plain chat but raises on, or drops, a system turn."""
+    if not chat_template:
+        return False
+    today = date.today()
+    try:
+        _render_probe(chat_template, [{"role": "user", "content": _PROBE_USER}], today)
+    except Exception:
+        return False
+    return _probe_renders(chat_template, today) is None
+
+
+@lru_cache(maxsize = 8)
+def template_default_system_prompt(chat_template: str | None, today: date) -> str:
+    """The system prompt a template renders on ``today`` when the chat sends none."""
+    renders = _probe_renders(chat_template, today) if chat_template else None
+    if renders is None:
         return ""
+    bare, with_system = renders
     head, tail = with_system.split(_PROBE_SYSTEM)
     if len(bare) <= len(head) + len(tail) or not bare.startswith(head) or not bare.endswith(tail):
         return ""

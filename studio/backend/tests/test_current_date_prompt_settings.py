@@ -419,6 +419,11 @@ _GEMMA_LIKE = (
 )
 
 
+_REFUSES_SYSTEM = (
+    "{% if messages[0]['role'] == 'system' %}{{ raise_exception('no system') }}{% endif %}"
+    + _CHATML
+)
+_DROPS_SYSTEM = "{% for m in messages if m['role'] != 'system' %}{{ m['content'] }}{% endfor %}"
 _DAY = date(2026, 10, 4)
 
 
@@ -451,12 +456,22 @@ class TestTemplateDefaultSystemPrompt:
         )
         assert current_date_settings.template_default_system_prompt(parts, _DAY) == "Be helpful."
 
+    @pytest.mark.parametrize(
+        ("template", "rejects"),
+        [
+            (_REFUSES_SYSTEM, True),
+            (_DROPS_SYSTEM, True),
+            (_CHATML, False),
+            (_QWEN25_LIKE, False),
+            ("{% if %}", False),
+            (None, False),
+        ],
+    )
+    def test_a_template_without_a_system_turn_is_recognised(self, template, rejects):
+        assert current_date_settings.template_rejects_system_turn(template) is rejects
+
     def test_a_template_that_refuses_a_system_turn_returns_nothing(self):
-        refuses = (
-            "{% if messages[0]['role'] == 'system' %}{{ raise_exception('no system') }}{% endif %}"
-            + _CHATML
-        )
-        assert current_date_settings.template_default_system_prompt(refuses, _DAY) == ""
+        assert current_date_settings.template_default_system_prompt(_REFUSES_SYSTEM, _DAY) == ""
 
 
 class TestDateStaysInTheSystemTurn:
@@ -505,6 +520,48 @@ class TestDateStaysInTheSystemTurn:
             self.inference._apply_current_date_prompt("", object(), include_api_key = True)
             == expected
         )
+
+    def test_a_tool_turn_states_the_date_without_the_template_default(self, monkeypatch):
+        monkeypatch.setattr(
+            self.inference, "_local_template_default_system_prompt", lambda _today: "You are Qwen."
+        )
+        assert (
+            self.inference._apply_current_date_prompt(
+                "", object(), include_api_key = True, template_default = False
+            )
+            == "The current date is 2026-10-04."
+        )
+
+    def test_a_template_without_a_system_turn_dates_the_first_user_turn(self, monkeypatch):
+        monkeypatch.setattr(self.inference, "_local_template_rejects_system_turn", lambda: True)
+        assert self.inference._apply_current_date_prompt("", object()) == ""
+        history = [
+            {"role": "user", "content": "Mike and Alexis are in bed."},
+            {"role": "assistant", "content": "ok"},
+            {"role": "user", "content": "Turn the story back to dinner."},
+        ]
+        first = "The current date is 2026-10-04.\n\nMike and Alexis are in bed."
+        assert self.inference._date_first_user_turn(history, "", object()) == [
+            {"role": "user", "content": first},
+            *history[1:],
+        ]
+        image_turn = [{"type": "image_url"}, {"type": "text", "text": "Hi"}]
+        parts = [{"role": "user", "content": image_turn}]
+        assert self.inference._date_first_user_turn(parts, "", object()) == [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "image_url"},
+                    {"type": "text", "text": "The current date is 2026-10-04.\n\nHi"},
+                ],
+            }
+        ]
+        # a system prompt the caller wrote is still theirs to send.
+        assert self.inference._date_first_user_turn(history, "Be terse.", object()) is history
+
+    def test_a_template_with_a_system_turn_leaves_user_turns_alone(self):
+        history = [{"role": "user", "content": "Hi"}]
+        assert self.inference._date_first_user_turn(history, "", object()) is history
 
     def test_a_named_template_list_is_probed_through_its_default(self, monkeypatch):
         from types import SimpleNamespace

@@ -3969,6 +3969,7 @@ from utils.current_date_prompt_settings import (
     contains_current_date_prompt_line,
     current_date_prompt_line,
     template_default_system_prompt,
+    template_rejects_system_turn,
     replace_current_date_prompt_lines,
 )
 
@@ -6494,7 +6495,8 @@ def _date_gate_blocks(request: Any, include_api_key: bool) -> bool:
     return False
 
 
-def _local_template_default_system_prompt(today: Any) -> str:
+def _local_chat_template() -> Optional[str]:
+    """The template the loaded local model renders a plain chat with, if any."""
     try:
         llama = get_llama_cpp_backend()
         if llama.is_loaded:
@@ -6515,8 +6517,16 @@ def _local_template_default_system_prompt(today: Any) -> str:
 
         selected = _selected_template_strings_from_value(template)
     except Exception:
-        return ""
-    return template_default_system_prompt(selected[0] if selected else None, today)
+        return None
+    return selected[0] if selected else None
+
+
+def _local_template_default_system_prompt(today: Any) -> str:
+    return template_default_system_prompt(_local_chat_template(), today)
+
+
+def _local_template_rejects_system_turn() -> bool:
+    return template_rejects_system_turn(_local_chat_template())
 
 
 def _apply_current_date_prompt(
@@ -6524,6 +6534,7 @@ def _apply_current_date_prompt(
     request: Any = None,
     *,
     include_api_key: bool = False,
+    template_default: bool = True,
 ) -> str:
     """Prefix the user's system prompt with the date when the setting is on.
 
@@ -6539,13 +6550,53 @@ def _apply_current_date_prompt(
     if stated:
         return refreshed_prompt
     if not system_prompt:
-        from datetime import date
+        if _local_template_rejects_system_turn():
+            # no system turn to carry it; _date_first_user_turn leads the first message instead.
+            return ""
+        if template_default:
+            from datetime import date
 
-        # a system turn displaces the chat template's default one, so carry that default along,
-        # rendered for the user's day rather than the server's.
-        today = date.fromisoformat(date_line[len(CURRENT_DATE_PROMPT_PREFIX) : -1])
-        system_prompt = _local_template_default_system_prompt(today)
+            # a system turn displaces the chat template's default one, so carry that default along,
+            # rendered for the user's day rather than the server's.
+            today = date.fromisoformat(date_line[len(CURRENT_DATE_PROMPT_PREFIX) : -1])
+            system_prompt = _local_template_default_system_prompt(today)
     return f"{date_line}\n\n{system_prompt.lstrip()}" if system_prompt else date_line
+
+
+def _date_first_user_turn(messages: list[dict], system_prompt: str, request: Any) -> list[dict]:
+    """Lead the first user turn with the date when the template has no system turn to carry it."""
+    if system_prompt or _date_gate_blocks(request, False):
+        return messages
+    date_line = current_date_prompt_line(request = request)
+    if not date_line or not _local_template_rejects_system_turn():
+        return messages
+    for index, message in enumerate(messages):
+        if not isinstance(message, dict) or message.get("role") != "user":
+            continue
+        content = message.get("content")
+        if isinstance(content, str):
+            content = f"{date_line}\n\n{content}"
+        elif isinstance(content, list):
+            text = next(
+                (
+                    i
+                    for i, part in enumerate(content)
+                    if isinstance(part, dict) and isinstance(part.get("text"), str)
+                ),
+                None,
+            )
+            if text is None:
+                content = [{"type": "text", "text": date_line}, *content]
+            else:
+                part = content[text]
+                dated = {**part, "text": f"{date_line}\n\n{part['text']}"}
+                content = [*content[:text], dated, *content[text + 1 :]]
+        else:
+            return messages
+        copied = list(messages)
+        copied[index] = {**message, "content": content}
+        return copied
+    return messages
 
 
 # Ollama applies the Modelfile SYSTEM only when `req.Messages[0].Role != "system"` (its
@@ -28335,6 +28386,7 @@ async def produce_openai_chat_completions(
                     payload.messages
                 )
                 system_prompt = _apply_current_date_prompt(system_prompt, request)
+                chat_messages = _date_first_user_turn(chat_messages, system_prompt, request)
             except _DecodedAudioTooLongError as e:
                 # A limit the caller can act on, not a server fault.
                 api_monitor.fail(monitor_id, str(e))
@@ -28797,7 +28849,9 @@ async def produce_openai_chat_completions(
             payload.messages, keep_tool_images = True
         )
     # applied once so both backends inherit it, with or without tools, and never state it twice.
+    _user_system_prompt = system_prompt
     system_prompt = _apply_current_date_prompt(system_prompt, request)
+    chat_messages = _date_first_user_turn(chat_messages, system_prompt, request)
 
     if not chat_messages:
         raise _reject(400, "At least one non-system message is required.")
@@ -28868,6 +28922,7 @@ async def produce_openai_chat_completions(
             _gguf_replayed_image_parts,
         )
         gguf_messages = _set_or_prepend_system_message(gguf_messages, system_prompt)
+        gguf_messages = _date_first_user_turn(gguf_messages, system_prompt, request)
         image_b64 = None
         for audio_b64, audio_format in prepared_audio:
             _inject_audio_part(gguf_messages, audio_b64, audio_format)
@@ -29018,10 +29073,12 @@ async def produce_openai_chat_completions(
                 )
             if _wants_multiple_choices(payload):
                 raise _reject_unsupported_n("GGUF tool chat completions")
+            # main's tool turn: the date and the caller's prompt, not the template's chat default.
             system_prompt = _apply_current_date_prompt(
-                system_prompt,
+                _user_system_prompt,
                 request,
                 include_api_key = True,
+                template_default = False,
             )
             gguf_messages = _set_or_prepend_system_message(gguf_messages, system_prompt)
             # ── Tool-use system prompt nudge ──────────────────────
@@ -30711,6 +30768,7 @@ async def produce_openai_chat_completions(
             payload.messages, _legacy_distinct
         ):
             chat_messages, served_images = _msgs, _payloads
+            chat_messages = _date_first_user_turn(chat_messages, system_prompt, request)
 
     # Decode image (from content parts OR legacy field)
     image_b64 = extracted_image_b64 or payload.image_base64
@@ -30740,6 +30798,7 @@ async def produce_openai_chat_completions(
             )
             if message.get("role") not in ("system", "developer")
         ]
+        chat_messages = _date_first_user_turn(chat_messages, system_prompt, request)
         if any(
             isinstance(message.get("content"), list)
             and any(part.get("type") == "image_url" for part in message["content"])
@@ -31145,9 +31204,10 @@ async def produce_openai_chat_completions(
         _sf_nudge = _apply_compaction_nudge(_sf_nudge, _sf_tools_to_use)
 
         _sf_system_prompt = _apply_current_date_prompt(
-            system_prompt,
+            _user_system_prompt,
             request,
             include_api_key = True,
+            template_default = False,
         )
         if _sf_nudge:
             if _sf_system_prompt:
@@ -31780,6 +31840,9 @@ async def produce_openai_chat_completions(
         # Re-derive from payload.messages so tool_calls / role="tool" history
         # survives templating; fold system/developer into one leading system
         # message (templates reject "developer") and clear prompt to avoid a dup.
+        _sf_client_system_prompt = _apply_current_date_prompt(
+            _user_system_prompt, request, template_default = False
+        )
         if served_images:
             # One pass over the conversation this renders, so markers and payloads stay in step.
             _sf_rebuilt, _sf_payloads = _conversation_with_image_markers(
@@ -31797,8 +31860,13 @@ async def produce_openai_chat_completions(
             gen_kwargs["images"] = await _decode_request_images(
                 backend, _sf_rebuilt_images, dict(zip(served_images, images)), reject = _reject
             )
-            gen_kwargs["messages"] = _set_or_prepend_system_message(
-                _structured_tool_history_for_local_template(_sf_rebuilt), system_prompt
+            gen_kwargs["messages"] = _date_first_user_turn(
+                _set_or_prepend_system_message(
+                    _structured_tool_history_for_local_template(_sf_rebuilt),
+                    _sf_client_system_prompt,
+                ),
+                _sf_client_system_prompt,
+                request,
             )
         else:
             #
@@ -31822,7 +31890,11 @@ async def produce_openai_chat_completions(
                 trim_mcp_image_turns(
                     _sf_rebuilt, _sf_rebuilt_images, limit = _MCP_MAX_TOTAL_MODEL_IMAGES - 1
                 )
-            gen_kwargs["messages"] = _set_or_prepend_system_message(_sf_rebuilt, system_prompt)
+            gen_kwargs["messages"] = _date_first_user_turn(
+                _set_or_prepend_system_message(_sf_rebuilt, _sf_client_system_prompt),
+                _sf_client_system_prompt,
+                request,
+            )
             gen_kwargs["images"] = _sf_rebuilt_images or None
         # Mark the turn that owns the image so the newest-user-turn scan does not move an
         # older picture onto a later question. Gated on _sf_renders_image, not on an image:
@@ -37775,8 +37847,10 @@ async def _mlx_count_chat_tokens(payload, request = None) -> Optional[JSONRespon
     system_prompt, messages, _image = await _extract_content_parts_async(payload.messages)
     # The completion applies this once for both non-GGUF backends before it branches.
     # Only with a request: the helper's requestless mode injects the date unconditionally.
+    _user_system_prompt = system_prompt
     if request is not None:
         system_prompt = _apply_current_date_prompt(system_prompt, request)
+        messages = _date_first_user_turn(messages, system_prompt, request)
 
     from state.tool_policy import get_tool_policy as _get_tool_policy_mlx
 
@@ -37891,7 +37965,13 @@ async def _mlx_count_chat_tokens(payload, request = None) -> Optional[JSONRespon
             ),
             vision = False,
         )
-        messages = _set_or_prepend_system_message(messages, system_prompt)
+        _client_system_prompt = _user_system_prompt
+        if request is not None:
+            _client_system_prompt = _apply_current_date_prompt(
+                _user_system_prompt, request, template_default = False
+            )
+            messages = _date_first_user_turn(messages, _client_system_prompt, request)
+        messages = _set_or_prepend_system_message(messages, _client_system_prompt)
         system_prompt = ""
     elif _tools_to_use:
         # A PENDING turn is the shape this loop answers from exactly these messages, splicing
@@ -37945,9 +38025,10 @@ async def _mlx_count_chat_tokens(payload, request = None) -> Optional[JSONRespon
         # so without this the count is short exactly that line for these completions.
         if request is not None:
             system_prompt = _apply_current_date_prompt(
-                system_prompt,
+                _user_system_prompt,
                 request,
                 include_api_key = True,
+                template_default = False,
             )
         if _nudge:
             system_prompt = (system_prompt.rstrip() + "\n\n" + _nudge) if system_prompt else _nudge
@@ -38152,8 +38233,10 @@ async def chat_count_tokens(
         openai_messages = _coalesce_consecutive_user_turns(openai_messages)
     _system_prompt, _, _ = await _extract_content_parts_async(payload.messages)
     # the verbatim passthrough carries no date line, so counting one here would overcount it.
+    _user_system_prompt = _system_prompt
     if not _takes_passthrough:
         _system_prompt = _apply_current_date_prompt(_system_prompt, request)
+        openai_messages = _date_first_user_turn(openai_messages, _system_prompt, request)
     openai_messages = _set_or_prepend_system_message(openai_messages, _system_prompt)
 
     # A PENDING turn (unanswered user message or tool result) is the one shape the tool loop
@@ -38222,9 +38305,10 @@ async def chat_count_tokens(
             openai_messages = _set_or_prepend_system_message(
                 openai_messages,
                 _apply_current_date_prompt(
-                    _system_prompt,
+                    _user_system_prompt,
                     request,
                     include_api_key = True,
+                    template_default = False,
                 ),
             )
             _count_nudge = await _apply_rag_nudge(
