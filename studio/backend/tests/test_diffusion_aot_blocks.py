@@ -220,6 +220,8 @@ def test_fingerprint_tracks_the_attention_processor_class_code():
 
 
 def test_a_class_that_does_not_serialise_is_refused_once_and_on_restart(tmp_path, monkeypatch):
+    if not hasattr(torch._dynamo.config, "enable_aot_compile"):
+        pytest.skip("this torch has no aot_compile (the feature stays off: supported() is False)")
     monkeypatch.setattr(aot, "supported", lambda: True)
     calls = []
 
