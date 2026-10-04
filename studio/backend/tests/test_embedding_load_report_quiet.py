@@ -5,7 +5,7 @@
 
 transformers >= 5 prints a multi-line, ANSI-coloured "<Model> LOAD REPORT" table
 through logger.warning plus a "Loading weights" tqdm bar. bge-small-en-v1.5 always
-trips it (legacy embeddings.position_ids key), so every Studio boot emitted ~7
+trips it (legacy embeddings.position_ids key), so every Unsloth boot emitted ~7
 unstructured lines into an otherwise JSON log. They are captured and re-emitted on
 our own logger instead: debug when benign, warning when the report mentions
 anything that could change the model.

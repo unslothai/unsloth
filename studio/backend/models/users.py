@@ -3,6 +3,8 @@
 
 """Pydantic models for authentication tokens."""
 
+from typing import Optional
+
 from pydantic import BaseModel, Field
 
 
@@ -21,4 +23,12 @@ class Token(BaseModel):
     )
     must_change_password: bool = Field(
         ..., description = "True when the user must change the seeded default password"
+    )
+    account_id: Optional[str] = Field(
+        None,
+        description = (
+            "Immutable id of the signed-in account, the same key storage is partitioned by. "
+            "Usernames are reusable, so a client that keeps per-account state must compare this "
+            "instead. Null only when an older server issued the credential."
+        ),
     )

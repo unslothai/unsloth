@@ -14,6 +14,7 @@ import pytest
 _backend = os.path.join(os.path.dirname(__file__), "..")
 sys.path.insert(0, _backend)
 
+from core.inference import llama_cpp
 from core.inference.llama_cpp import LlamaCppBackend, _LlamaStreamCancelled
 
 
@@ -160,33 +161,62 @@ class _StallUpstream:
                     return
 
 
-def test_cancel_interrupts_a_read_blocked_on_a_mid_stream_stall():
+def test_streams_reuse_ssl_setup_without_sharing_connections(monkeypatch):
+    backend = LlamaCppBackend(manages_processes = False)
+
+    def repeated_ssl_setup(*_args, **_kwargs):
+        pytest.fail("A later loopback request must not reload CA certificates")
+
+    with _StallUpstream() as first_server, _StallUpstream() as second_server:
+        with backend._open_stream(first_server.url, {}, None) as (first, _):
+            assert next(first.iter_text()) == "data: hello\n\n"
+            monkeypatch.setattr(llama_cpp.ssl, "create_default_context", repeated_ssl_setup)
+            with backend._open_stream(second_server.url, {}, None) as (second, _):
+                assert next(second.iter_text()) == "data: hello\n\n"
+                assert first.extensions["network_stream"] is not second.extensions["network_stream"]
+            assert second.is_closed
+            assert not first.is_closed
+        assert first.is_closed
+
+
+def test_route_upstream_clients_reuse_ssl_setup(monkeypatch):
+    import asyncio
+
+    from routes.inference import _cancelable_nonstreaming_client
+
+    llama_cpp._local_ssl_context()
+
+    def repeated_ssl_setup(*_args, **_kwargs):
+        pytest.fail("A passthrough request must not reload CA certificates")
+
+    monkeypatch.setattr(llama_cpp.ssl, "create_default_context", repeated_ssl_setup)
+    first, second = _cancelable_nonstreaming_client(), _cancelable_nonstreaming_client()
+    assert first is not second
+    asyncio.run(first.aclose())
+    asyncio.run(second.aclose())
+
+
+def test_cancel_interrupts_a_read_blocked_on_a_mid_stream_stall(monkeypatch):
     # Mid-stream stall: the reader is parked in recv() on a long bound read timeout,
     # so response.close() alone can't wake it; the watcher must shut the socket down.
     # Assert cancel lands in seconds, not at the far-off deadline (pre-fix: hung ~30s).
+    monkeypatch.setattr(llama_cpp, "_DEFAULT_FIRST_TOKEN_TIMEOUT_S", 30)
     with _StallUpstream() as server:
+        backend = LlamaCppBackend(manages_processes = False)
         cancel_event = threading.Event()
 
         def _cancel_soon():
             time.sleep(0.3)
             cancel_event.set()
 
-        threading.Thread(target = _cancel_soon, daemon = True).start()
-
         started = time.monotonic()
-        with httpx.Client(
-            limits = httpx.Limits(max_keepalive_connections = 0), trust_env = False
-        ) as client:
-            with pytest.raises(_LlamaStreamCancelled):
-                with LlamaCppBackend._stream_with_retry(
-                    client,
-                    server.url,
-                    {},
-                    cancel_event,
-                    first_token_deadline = started + 30,
-                ) as response:
-                    for _chunk in response.iter_text():
-                        pass  # first chunk arrives, then the read blocks silently
+        with pytest.raises(_LlamaStreamCancelled):
+            with backend._open_stream(server.url, {}, cancel_event) as (response, _):
+                chunks = response.iter_text()
+                assert next(chunks) == "data: hello\n\n"
+                threading.Thread(target = _cancel_soon, daemon = True).start()
+                for _chunk in chunks:
+                    pass  # the next read blocks silently until cancellation
         elapsed = time.monotonic() - started
 
     assert elapsed < 10, f"cancel took {elapsed:.1f}s; the blocked read was not interrupted"

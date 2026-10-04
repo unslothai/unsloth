@@ -9,15 +9,31 @@
 // unit test and only shows up under the hand.
 
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import test from "node:test";
 
-function source(path: string): string {
-  return readFileSync(new URL(`../src/${path}`, import.meta.url), "utf8");
-}
+import { readSrc } from "./helpers/kit.ts";
+
+test("both monitors use the hardware monitor's shared interaction hook", () => {
+  for (const path of ["components/floating-monitor.tsx", "features/api-monitor/api-monitor-overlay.tsx"]) {
+    const panel = readSrc(path);
+    assert.match(panel, /useFloatingPanelLayout\(/);
+    assert.match(panel, /onPointerMove=\{updateDrag\}/);
+    assert.match(panel, /onLostPointerCapture=\{finishDrag\}/);
+    assert.match(panel, /ref=\{scrollRef\}/);
+    assert.doesNotMatch(panel, /useDragControls|usePanelAnchor|useMotionValue/);
+  }
+});
+
+test("the API monitor can shrink at its opening corner and never dodges its own exiting panel", () => {
+  const panel = readSrc("features/api-monitor/api-monitor-overlay.tsx");
+  assert.match(panel, /minWidth: Math\.min\(MIN_PANEL_WIDTH, layout\.maxWidth\)/);
+  assert.match(panel, /minHeight: Math\.min\(MIN_PANEL_HEIGHT, layout\.maxHeight\)/);
+  assert.match(panel, /const isPresent = useIsPresent\(\);/);
+  assert.match(panel, /useFloatingPanelLayout\(\s*constraintsElement,\s*false,[^,]*!isPresent,/);
+});
 
 test("the card paints a drag frame through a transform", () => {
-  const hook = source("features/loaded-models/use-drag-position.ts");
+  const hook = readSrc("features/loaded-models/use-drag-position.ts");
   assert.match(hook, /panel\.style\.transform = `translate3d\(/);
   assert.match(hook, /frameRef\.current = requestAnimationFrame\(paint\)/);
   // The old path: one setPosition per pointermove, so one render per event.
@@ -28,13 +44,13 @@ test("the card paints a drag frame through a transform", () => {
 // disconnected the observer and built a new one, and observing re-measures,
 // which forces a synchronous layout.
 test("the card's reclamp observer outlives a drag frame", () => {
-  const hook = source("features/loaded-models/use-drag-position.ts");
+  const hook = readSrc("features/loaded-models/use-drag-position.ts");
   assert.match(hook, /\}, \[panelEl, reclamp\]\);/);
   assert.doesNotMatch(hook, /\}, \[position, panelEl, reclamp\]\);/);
 });
 
 test("the card hands the offset back to left/top on release", () => {
-  const hook = source("features/loaded-models/use-drag-position.ts");
+  const hook = readSrc("features/loaded-models/use-drag-position.ts");
   assert.match(hook, /panel\.style\.left = `\$\{session\.lastLeft\}px`/);
   assert.match(hook, /panel\.style\.transform = ""/);
   assert.match(
@@ -45,7 +61,7 @@ test("the card hands the offset back to left/top on release", () => {
 });
 
 test("the monitor paints a drag frame through a transform", () => {
-  const panel = source("components/floating-monitor.tsx");
+  const panel = readSrc("hooks/use-floating-panel-layout.ts");
   assert.match(panel, /monitor\.style\.transform = `translate3d\(/);
   assert.match(
     panel,
@@ -54,7 +70,7 @@ test("the monitor paints a drag frame through a transform", () => {
 });
 
 test("the monitor commits its position once, on release", () => {
-  const panel = source("components/floating-monitor.tsx");
+  const panel = readSrc("hooks/use-floating-panel-layout.ts");
   const finish = panel.slice(panel.indexOf("function finishDrag"));
   assert.match(finish, /monitor\.style\.transform = ""/);
   assert.match(finish, /setLayout\(\(current\) =>/);
@@ -63,7 +79,7 @@ test("the monitor commits its position once, on release", () => {
 // The measured box carries the drag's transform, so committing it mid-drag
 // would move the panel twice as far as the pointer went.
 test("a resize mid-drag does not commit the transformed box", () => {
-  const panel = source("components/floating-monitor.tsx");
+  const panel = readSrc("hooks/use-floating-panel-layout.ts");
   assert.match(panel, /const held = session && current \? current : null;/);
   assert.match(panel, /left: restLeft,/);
   assert.match(panel, /maxWidth: constraintsBox\.width - restLeft,/);
@@ -72,7 +88,7 @@ test("a resize mid-drag does not commit the transformed box", () => {
 // Every frame published the monitor's box to a shared store, and each write
 // re-rendered every overlay subscribed to it, the loaded models card included.
 test("dragging the monitor does not republish its frame per frame", () => {
-  const panel = source("components/floating-monitor.tsx");
+  const panel = readSrc("hooks/use-floating-panel-layout.ts");
   const update = panel.slice(
     panel.indexOf("function updateDrag"),
     panel.indexOf("function finishDrag"),

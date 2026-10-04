@@ -442,49 +442,100 @@ def test_reset_clears_the_cached_prefix_for_a_new_buffer():
     assert stripper.strip(second) == _reference_strip(second)
 
 
-def test_early_markup_is_not_slower_than_the_code_it_replaces():
+@pytest.mark.parametrize(
+    "prefix",
+    [
+        pytest.param(
+            '`x` <tool_call>{"name": "search", "arguments": {}}</tool_call> ', id = "near-front"
+        ),
+        pytest.param(
+            '<tool_call>{"name": "search", "arguments": {}}</tool_call> ', id = "at-offset-0"
+        ),
+    ],
+)
+def test_early_markup_is_not_slower_than_the_code_it_replaces(monkeypatch, prefix):
     """Once the cut is 0 and nothing is settled, both arms are the same strip.
 
     Paying the whole-buffer checks there cannot change the answer, and an answer with
     markup near its front would pay them on every token for the rest of the turn, which
     measured slower than the full rescan this replaces.
+
+    Counted, not timed. This used to compare CPU time against the reference with a 10%
+    margin, but the two arms do the same strip here, so their ratio sits at 1.0 and the
+    runner's noise alone spans 0.89 to 1.09: it failed on a PR that did not touch the
+    stripper (0.444s against 0.404s). Paying the checks on every token measured 1.11 to
+    1.33, overlapping that noise, so no margin separates the two.
+
+    The work is countable where it is done: the characters each arm hands to
+    ``strip_outside_think`` and ``strip_segment``, which hold the regex passes, and to the
+    blocked-body masking only the incremental arm runs. The incremental arm may read no
+    more of either than the reference, may mask each character at most once per strip, and
+    runs the whole-buffer checks on no token. A second strip or scan inside ``_full_strip``
+    doubles those counts. The at-offset-0 case reaches the degenerate branch, which the
+    timed version never did.
     """
-    import time
+    work = {}
 
-    prefix = '`x` <tool_call>{"name": "search", "arguments": {}}</tool_call> '
+    def counting(name, fn):
+        def wrapper(text, *args, **kwargs):
+            work[name] = work.get(name, 0) + len(text)
+            return fn(text, *args, **kwargs)
 
-    def elapsed(fn, count):
-        # process_time, not perf_counter: this compares how much work two code paths do,
-        # and wall clock also measures whatever else the machine is running. A 10% margin
-        # does not survive that. On a 4-vCPU CI runner with other test workers in flight
-        # the wall-clock version failed outright (1.451s against 1.316s) while the code
-        # under test had not changed. CPU time of this process is the quantity the
-        # assertion is actually about, and it is unaffected by neighbours.
-        text = prefix
-        start = time.process_time()
-        for _ in range(count):
-            text += "word "
-            fn(text)
-        return time.process_time() - start
+        return wrapper
+
+    # Both arms reach these through the same module objects, so one patch counts both.
+    monkeypatch.setattr(
+        tool_healing,
+        "strip_outside_think",
+        counting("strip_outside_think", tool_healing.strip_outside_think),
+    )
+    monkeypatch.setattr(tool_call_parser, "strip_segment", counting("strip_segment", strip_segment))
+    monkeypatch.setattr(
+        sys.modules[__name__], "strip_segment", counting("strip_segment", strip_segment)
+    )
+    monkeypatch.setattr(
+        tool_call_parser,
+        "_mask_blocked_bodies",
+        counting("mask", tool_call_parser._mask_blocked_bodies),
+    )
+    needs_whole_buffer = StreamingMarkupStripper._needs_whole_buffer
+
+    def counting_needs_whole_buffer(self, text):
+        work["whole_buffer_checks"] = work.get("whole_buffer_checks", 0) + 1
+        return needs_whole_buffer(self, text)
+
+    monkeypatch.setattr(StreamingMarkupStripper, "_needs_whole_buffer", counting_needs_whole_buffer)
 
     count = 1500
-    reference = min(elapsed(_reference_strip, count) for _ in range(3))
-    incremental = min(elapsed(StreamingMarkupStripper(ENABLED).strip, count) for _ in range(3))
 
-    # process_time has coarser granularity than perf_counter, and `0.0 <= 0.0 * 1.10` is
-    # true. Without a floor a clock that stopped reporting, or a `count` someone lowered,
-    # turns this into an assertion that cannot fail. 0.05s is far below the ~1.3s each arm
-    # actually takes and far above the clock's resolution.
-    assert (
-        reference > 0.05
-    ), f"reference arm measured {reference:.4f}s; too small to compare against"
-    assert (
-        incremental > 0.05
-    ), f"incremental arm measured {incremental:.4f}s; too small to compare against"
+    def run(strip):
+        work.clear()
+        text = prefix
+        outputs = []
+        for _ in range(count):
+            text += "word "
+            outputs.append(strip(text))
+        return dict(work), outputs
 
-    assert (
-        incremental <= reference * 1.10
-    ), f"early markup cost {incremental:.3f}s against the reference's {reference:.3f}s"
+    reference, expected = run(_reference_strip)
+    incremental, got = run(StreamingMarkupStripper(ENABLED).strip)
+
+    assert got == expected
+    # Not vacuous: the reference did one full strip per token, so the counters were live.
+    assert reference.get("strip_outside_think", 0) >= count * len(prefix)
+    assert reference.get("strip_segment", 0) > 0
+    assert not incremental.get("whole_buffer_checks"), (
+        f"{incremental['whole_buffer_checks']} of {count} tokens paid the whole-buffer checks "
+        "with markup at the front and nothing settled"
+    )
+    for name in ("strip_outside_think", "strip_segment"):
+        assert (
+            incremental.get(name, 0) <= reference[name]
+        ), f"{name} read {incremental.get(name, 0)} chars against the reference's {reference[name]}"
+    assert incremental.get("mask", 0) <= reference["strip_outside_think"], (
+        f"masked {incremental.get('mask', 0)} chars, more than one pass per strip "
+        f"({reference['strip_outside_think']})"
+    )
 
 
 def test_an_open_reasoning_block_is_scanned_incrementally():
@@ -673,3 +724,46 @@ def test_openers_far_past_the_closer_do_not_reopen_the_quadratic_scan():
 
     growth = elapsed(8000) / max(elapsed(2000), 1e-9)
     assert growth < 8.0, f"4x the openers cost {growth:.1f}x; expected roughly linear"
+
+
+def test_an_unterminated_blocked_body_is_not_rescanned_per_snapshot():
+    """A long blocked call keeps the stripper on its whole-buffer path, so anything quadratic
+    here stalls the display. Counted rather than timed, so it cannot flake: the body scan must
+    not run once per snapshot while the call is still unterminated."""
+    from core import tool_healing
+    from core.inference.tool_call_parser import StreamingMarkupStripper
+
+    calls = {"n": 0}
+    real = tool_healing._balanced_json_span
+
+    def counting(text, start):
+        calls["n"] += 1
+        return real(text, start)
+
+    text = 'terminal[ARGS]{"command":"%s"}' % ("A" * 2048)
+    snapshots = 0
+    tool_healing._balanced_json_span = counting
+    try:
+        stripper = StreamingMarkupStripper({"terminal", "python"})
+        i = 0
+        while i < len(text):
+            i += 16
+            stripper.strip(text[:i])
+            snapshots += 1
+    finally:
+        tool_healing._balanced_json_span = real
+
+    # Roughly one scan per snapshot is the design; two per snapshot means the kept call's
+    # body end is being resolved eagerly again, which is what made this quadratic.
+    assert calls["n"] < 1.5 * snapshots, f"{calls['n']} scans for {snapshots} snapshots"
+
+
+def test_a_body_scan_with_no_closing_brace_short_circuits():
+    """The span can only close on a ``}``; with none present the walk cannot succeed, so the
+    early return is exactly equivalent and keeps the streaming rescan cheap."""
+    from core.tool_healing import _balanced_json_span
+
+    assert _balanced_json_span('{"command":"' + "A" * 4096, 0) is None
+    assert _balanced_json_span('{"command":"x"}', 0) == 14
+    # A brace inside a string still does not close it.
+    assert _balanced_json_span('{"c":"}"}', 0) == 8

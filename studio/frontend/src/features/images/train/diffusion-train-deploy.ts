@@ -28,18 +28,12 @@ export function resolveDiffusionDeployBase(
   return trainedBase;
 }
 
-/**
- * The TRAINING base paired with a checkpoint that is currently loaded for inference, or null.
- *
- * The inverse of the mapping above, and it is what the Train panel needs to preselect: the
- * distilled variants a user generates with are not trainable, so a loaded `...klein-9B` never
- * appears in `base_repos` and an exact-match preselect silently falls through to the FIRST entry.
- * For FLUX.2 Klein that is the 4B base, so opening Train with the 9B model loaded started a 9B
- * workflow from 4B weights unless the user noticed the selector.
- *
- * Only a pairing the family actually declares is returned, and only when the paired training repo
- * is offered, so this can never invent a base the backend would refuse.
- */
+/** The TRAINING base paired with a checkpoint currently loaded for inference, or null. The inverse
+ *  of the mapping above, and what the Train panel needs to preselect: the distilled variants a
+ *  user generates with are not trainable, so a loaded `...klein-9B` never appears in `base_repos`
+ *  and an exact-match preselect falls through to the FIRST entry, which for FLUX.2 Klein is the
+ *  4B base. Only a pairing the family declares is returned, and only when the paired training
+ *  repo is offered, so this can never invent a base the backend would refuse. */
 export function resolveDiffusionTrainingBase(
   family: DiffusionTrainableFamily | undefined,
   loadedBase: string,
@@ -56,10 +50,9 @@ export function resolveDiffusionTrainingBase(
   );
   if (exact) return exact;
   // A checkpoint loaded from the ungated MIRROR pairs with the mirror training id, and
-  // /diffusion/info offers only the vendor ids, so the exact match above finds nothing and the
-  // panel falls back to the first base -- for Klein the 4B, which is the very mix-up this
-  // function exists to prevent, reached through Deploy's own mirror pairing. A mirror keeps the
-  // upstream repo NAME, so fold to that; still only ever returning a base the backend offers.
+  // /diffusion/info offers only the vendor ids, so the exact match finds nothing and the panel
+  // falls back to the first base -- for Klein the 4B, the very mix-up this function prevents. A
+  // mirror keeps the upstream repo NAME, so fold to that, still only returning an offered base.
   const name = normalizedRepo(trainingRepo.split("/").pop() ?? "");
   if (!name) return null;
   return (
