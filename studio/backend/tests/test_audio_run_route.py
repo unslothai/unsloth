@@ -921,3 +921,21 @@ def test_the_worker_keeps_run_fields_off_a_backend_without_them():
     error = replies.get_nowait()
     assert error["type"] == "audio_error" and error["status"] == 400
     assert seen == ["hi"]
+
+
+def test_a_repaint_past_the_end_sizes_its_work_to_the_range_end(stub):
+    backend = stub["use"](ACE_STEP, _music_info("ace_step", "ACE-Step1.5-GGUF"))
+    backend.__class__ = _MusicBackend
+    backend.takes, backend.run_dirs = 1, []
+    sources = _alice_sources()
+    with _client(ALICE) as client:
+        short = _edit(client, {"clip_id": sources["clip_id"]}, action = "repaint")
+        long = _edit(
+            client,
+            {"clip_id": sources["clip_id"]},
+            action = "repaint",
+            ranges = [{"start_s": 0.02, "end_s": 25.0}],
+        )
+    assert short.status_code == 200 and long.status_code == 200, long.text
+    first, second = backend.calls
+    assert second["music"]["timeout_s"] > first["music"]["timeout_s"]

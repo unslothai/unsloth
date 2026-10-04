@@ -22644,6 +22644,8 @@ async def _run_music_workflow(
             except audio_inputs.AudioInputError as exc:
                 raise _audio_source_error(exc) from None
             work_s = source_s + float(body.edit.extend_s or 0.0)
+            # A repaint range past the end pads the source out to it.
+            work_s = max([work_s, *(r.end_s for r in body.edit.ranges)])
             if body.edit.action == "continue" and body.duration_s:
                 seconds = min(song_max, float(body.duration_s))
                 work_s = max(work_s, seconds)
