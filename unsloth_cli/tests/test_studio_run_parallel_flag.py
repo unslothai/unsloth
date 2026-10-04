@@ -125,10 +125,8 @@ def test_typer_parallel_aliases_are_subset_of_backend_denylist():
     import inspect
     import importlib.util
 
-    # Load llama_server_args.py directly so the test doesn't need the
-    # backend's full runtime chain (fastapi / structlog / loggers /
-    # utils.hardware) installed -- the invariant is just about the
-    # _DENYLIST_GROUPS tuple.
+    # Load llama_server_args.py directly so the test does not need the backend's full runtime chain
+    # installed; the invariant is just about the _DENYLIST_GROUPS tuple.
     lsa_path = (
         Path(__file__).resolve().parents[2]
         / "studio"
@@ -156,14 +154,13 @@ def test_typer_parallel_aliases_are_subset_of_backend_denylist():
     )
 
 
-# test_in_venv_path_passes_parallel_to_run_server (below) is the runtime
-# equivalent of the retired source-text guard for hardcoded
-# `llama_parallel_slots = 4`.
+# test_in_venv_path_passes_parallel_to_run_server (below) is the runtime equivalent of the retired
+# source-text guard for hardcoded `llama_parallel_slots = 4`.
 
 
-# Re-exec arg-builder coverage. run() re-execs into the studio venv
-# (execvp on POSIX, Popen on Windows). Without explicit forwarding the
-# child reverts to typer defaults and silently drops the user's value.
+# Re-exec arg-builder coverage. run() re-execs into the studio venv (execvp on POSIX, Popen on
+# Windows), and without explicit forwarding the child reverts to typer defaults and silently drops
+# the user's value.
 
 
 class _ExecCaptured(SystemExit):
@@ -308,6 +305,57 @@ def test_reexeced_child_consumes_start_api_key_marker_env(monkeypatch):
     assert studio_mod._START_API_KEY_MARKER_ENV not in studio_mod.os.environ
 
 
+def test_in_venv_child_reports_bound_port_before_start_api_key(
+    monkeypatch, tmp_path, stub_tool_policy_state
+):
+    import types
+
+    studio_mod = _load_run_command()
+    fake_venv = tmp_path / "studio" / "venv" / "unsloth_studio"
+    monkeypatch.setattr(sys, "prefix", str(fake_venv))
+    monkeypatch.setattr(studio_mod, "STUDIO_HOME", fake_venv.parent)
+
+    from unsloth_cli import _tool_policy as _tp_mod
+
+    monkeypatch.setattr(_tp_mod, "resolve_tool_policy", lambda host, flag, yes, silent: False)
+
+    class _App:
+        class state:
+            server_port = 8889
+            server_request_host = "127.0.0.1"
+
+    backend = types.ModuleType("studio.backend.run")
+    backend.run_server = lambda **_kwargs: _App()
+    backend._server = object()
+    backend._graceful_shutdown = lambda server: None
+    monkeypatch.setitem(sys.modules, "studio.backend.run", backend)
+    monkeypatch.setattr(studio_mod, "_RUN_MODULE", backend)
+    monkeypatch.setattr(studio_mod, "_wait_for_server", lambda port, **_kwargs: True)
+    monkeypatch.setattr(studio_mod, "_create_api_key_inprocess", lambda name: "sk-unsloth-test")
+
+    def stop_before_load(**_kwargs):
+        raise RuntimeError("stopped before load")
+
+    monkeypatch.setattr(studio_mod, "_load_model_via_http", stop_before_load)
+
+    import typer as _typer
+
+    app = _typer.Typer()
+    app.command(
+        context_settings = {
+            "allow_extra_args": True,
+            "ignore_unknown_options": True,
+        },
+    )(studio_mod.run)
+    result = CliRunner().invoke(
+        app,
+        _BASE + ["--port", "8888", "--start-api-key-marker"],
+        catch_exceptions = True,
+    )
+
+    assert "UNSLOTH_START_PORT: 8889\nUNSLOTH_START_API_KEY: sk-unsloth-test\n" in result.output
+
+
 def test_run_default_sets_tool_call_env(monkeypatch):
     """Plain `unsloth run` enables healing and nudging via the inherited env
     (written before the re-exec so the child server picks them up at import)."""
@@ -416,7 +464,7 @@ def test_reexec_forwards_context_length_alias(monkeypatch):
 
 
 def test_reexec_forwards_manual_gpu_memory_mode(monkeypatch):
-    """An explicit manual policy must survive the Studio venv re-exec."""
+    """An explicit manual policy must survive the Unsloth venv re-exec."""
     result, captured = _invoke_run(
         monkeypatch,
         _BASE + ["--gpu-memory-mode", "manual"],
@@ -427,7 +475,7 @@ def test_reexec_forwards_manual_gpu_memory_mode(monkeypatch):
 
 
 def test_reexec_omits_default_gpu_memory_mode(monkeypatch):
-    """The default stays compatible with older Studio venv launchers."""
+    """The default stays compatible with older Unsloth venv launchers."""
     result, captured = _invoke_run(monkeypatch, _BASE)
     assert len(captured) == 1, result.output
     assert "--gpu-memory-mode" not in captured[0]["argv"]
@@ -512,7 +560,7 @@ def test_load_model_http_payload_for_gpu_memory_mode(monkeypatch, mode, expected
         captured["timeout"] = timeout
         return BytesIO(b'{"model": "owner/model-GGUF"}')
 
-    monkeypatch.setattr(studio_mod.urllib.request, "urlopen", urlopen)
+    monkeypatch.setattr(studio_mod, "_direct_urlopen", urlopen)
     result = studio_mod._load_model_via_http(
         port = 8888,
         api_key = "sk-test",
@@ -521,11 +569,92 @@ def test_load_model_http_payload_for_gpu_memory_mode(monkeypatch, mode, expected
         max_seq_length = 0,
         load_in_4bit = True,
         gpu_memory_mode = mode,
+        request_host = "::1",
     )
 
     assert result == {"model": "owner/model-GGUF"}
     assert json.loads(captured["request"].data) == expected
     assert captured["request"].get_header("Authorization") == "Bearer sk-test"
+    assert captured["request"].full_url == "http://[::1]:8888/api/inference/load"
+
+
+def test_health_poll_brackets_an_ipv6_request_host(monkeypatch):
+    studio_mod = _load_run_command()
+    urls = []
+
+    class _Healthy(BytesIO):
+        status = 200
+
+    def _urlopen(url, timeout):
+        urls.append((url, timeout))
+        return _Healthy()
+
+    monkeypatch.setattr(studio_mod, "_direct_urlopen", _urlopen)
+
+    assert studio_mod._wait_for_server(8888, timeout = 1, request_host = "::1") is True
+    assert urls == [("http://[::1]:8888/api/health", 2)]
+
+
+def test_internal_request_urls_encode_an_ipv6_scope(monkeypatch):
+    studio_mod = _load_run_command()
+    urls = []
+
+    class _Healthy(BytesIO):
+        status = 200
+
+    def _urlopen(url, timeout):
+        urls.append(url)
+        return _Healthy()
+
+    monkeypatch.setattr(studio_mod, "_direct_urlopen", _urlopen)
+
+    assert studio_mod._wait_for_server(8888, timeout = 1, request_host = "fe80::1234%7") is True
+    assert urls == ["http://[fe80::1234%257]:8888/api/health"]
+
+
+def test_process_local_http_opener_disables_proxies_and_redirects(monkeypatch):
+    studio_mod = _load_run_command()
+    handlers = []
+    opened = []
+
+    class _Opener:
+        def open(self, request, timeout):
+            opened.append((request, timeout))
+            return BytesIO(b"ok")
+
+    def _build_opener(*configured):
+        handlers.extend(configured)
+        return _Opener()
+
+    monkeypatch.setenv("HTTP_PROXY", "http://proxy.example:3128")
+    monkeypatch.setattr(studio_mod, "_direct_http_opener", None)
+    monkeypatch.setattr(studio_mod.urllib.request, "build_opener", _build_opener)
+
+    with studio_mod._direct_urlopen("http://192.0.2.24:8888/api/health", timeout = 2):
+        pass
+
+    proxy_handler = next(
+        handler
+        for handler in handlers
+        if isinstance(handler, studio_mod.urllib.request.ProxyHandler)
+    )
+    redirect_handler = next(
+        handler
+        for handler in handlers
+        if isinstance(handler, studio_mod.urllib.request.HTTPRedirectHandler)
+    )
+    assert proxy_handler.proxies == {}
+    assert opened == [("http://192.0.2.24:8888/api/health", 2)]
+    request = studio_mod.urllib.request.Request("http://192.0.2.24:8888/api/inference/load")
+    with pytest.raises(studio_mod.urllib.error.HTTPError, match = "refusing redirect"):
+        redirect_handler.redirect_request(
+            request,
+            None,
+            302,
+            "Found",
+            {},
+            "http://attacker.example/steal",
+        )
 
 
 def test_load_model_http_payload_for_dspark(monkeypatch):
@@ -536,7 +665,7 @@ def test_load_model_http_payload_for_dspark(monkeypatch):
         captured["request"] = request
         return BytesIO(b'{"model": "owner/model-GGUF"}')
 
-    monkeypatch.setattr(studio_mod.urllib.request, "urlopen", urlopen)
+    monkeypatch.setattr(studio_mod, "_direct_urlopen", urlopen)
     studio_mod._load_model_via_http(
         port = 8888,
         api_key = "sk-test",
@@ -568,7 +697,7 @@ def test_load_model_http_fails_on_a_deferred_error(monkeypatch):
             ).encode()
         )
 
-    monkeypatch.setattr(studio_mod.urllib.request, "urlopen", urlopen)
+    monkeypatch.setattr(studio_mod, "_direct_urlopen", urlopen)
     with pytest.raises(RuntimeError) as excinfo:
         studio_mod._load_model_via_http(
             port = 8888,
@@ -587,9 +716,7 @@ def test_load_model_http_rejects_a_truncated_padded_body(monkeypatch, body):
     """A 200 the load never finished under must fail like any other load failure."""
     studio_mod = _load_run_command()
 
-    monkeypatch.setattr(
-        studio_mod.urllib.request, "urlopen", lambda request, timeout: BytesIO(body)
-    )
+    monkeypatch.setattr(studio_mod, "_direct_urlopen", lambda request, timeout: BytesIO(body))
     with pytest.raises(RuntimeError) as excinfo:
         studio_mod._load_model_via_http(
             port = 8888,
@@ -606,8 +733,8 @@ def test_reexec_mixed_parallel_with_passthrough(monkeypatch):
     """--parallel + llama-server pass-through flags must all reach the child."""
     result, captured = _invoke_run(
         monkeypatch,
-        # --top-k is now a first-class sampling flag (routed via UNSLOTH_SAMPLING_*), so use
-        # --seed / --temp here, which remain genuine llama-server pass-through flags.
+        # --top-k is now a first-class sampling flag (routed via UNSLOTH_SAMPLING_*), so use --seed /
+        # --temp here, which remain genuine llama-server pass-through flags.
         _BASE + ["--parallel", "8", "--seed", "42", "--temp", "0.7"],
     )
     assert len(captured) == 1
@@ -656,9 +783,8 @@ def test_reexec_forwards_load_in_4bit_in_both_directions(monkeypatch, user_flag,
     assert other_polarity not in argv, f"unexpected {other_polarity} in child argv; got {argv}"
 
 
-# Runtime check: fake sys.prefix into the studio venv to bypass
-# re-exec, then assert run_server receives --parallel as
-# llama_parallel_slots.
+# Runtime check: fake sys.prefix into the studio venv to bypass re-exec, then assert run_server
+# receives --parallel as llama_parallel_slots.
 
 
 class _RunServerCaptured(SystemExit):
@@ -754,12 +880,16 @@ def test_studio_default_exposes_parallel_option():
 
 
 @pytest.mark.parametrize("value", [1, 4, 8, 64])
-def test_in_venv_path_passes_parallel_to_run_server(monkeypatch, value, stub_tool_policy_state):
+def test_in_venv_path_passes_parallel_to_run_server(
+    monkeypatch, tmp_path, value, stub_tool_policy_state
+):
     """In-venv path must forward --parallel to
     run_server(llama_parallel_slots=N), not the old hardcoded 4."""
     studio_mod = _load_run_command()
 
-    fake_venv = Path("/fake/studio/venv/unsloth_studio")
+    # A real directory, not /fake: the launch gate creates STUDIO_HOME and locks inside it, so an
+    # unwritable home aborts the run before run_server is reached.
+    fake_venv = tmp_path / "studio" / "venv" / "unsloth_studio"
     monkeypatch.setattr(sys, "prefix", str(fake_venv))
     # Pin STUDIO_HOME so sys.prefix.startswith() picks the in-venv branch.
     monkeypatch.setattr(studio_mod, "STUDIO_HOME", fake_venv.parent)
@@ -783,9 +913,9 @@ def test_in_venv_path_passes_parallel_to_run_server(monkeypatch, value, stub_too
     )
     fake_backend_run.run_server = fake_run_server
     fake_backend_run._resolve_external_ip = lambda: "127.0.0.1"
-    # run() loads the backend via _load_run_module() (by file path), which
-    # ignores a sys.modules mock with no matching __file__; inject it as the
-    # cached run module so the stubbed run_server is used.
+    # run() loads the backend via _load_run_module() (by file path), which ignores a sys.modules mock
+    # with no matching __file__; inject it as the cached run module so the stubbed run_server is
+    # used.
     monkeypatch.setattr(studio_mod, "_RUN_MODULE", fake_backend_run)
 
     import typer as _typer
@@ -848,12 +978,14 @@ def test_secure_api_only_is_refused_before_any_reexec(monkeypatch, tmp_path):
 
 @pytest.mark.parametrize("extra,expected", [(["--api-only"], True), ([], False)])
 def test_in_venv_path_passes_api_only_to_run_server(
-    monkeypatch, extra, expected, stub_tool_policy_state
+    monkeypatch, tmp_path, extra, expected, stub_tool_policy_state
 ):
     """In-venv path must forward --api-only to run_server(api_only=...)."""
     studio_mod = _load_run_command()
 
-    fake_venv = Path("/fake/studio/venv/unsloth_studio")
+    # A real directory, not /fake: the launch gate creates STUDIO_HOME and locks inside it, so an
+    # unwritable home aborts the run before run_server is reached.
+    fake_venv = tmp_path / "studio" / "venv" / "unsloth_studio"
     monkeypatch.setattr(sys, "prefix", str(fake_venv))
     monkeypatch.setattr(studio_mod, "STUDIO_HOME", fake_venv.parent)
 

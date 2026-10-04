@@ -11,16 +11,23 @@ import {
 } from "@/components/assistant-ui/code-themes";
 import { MascotImg } from "@/components/mascot-img";
 import { Button } from "@/components/ui/button";
+import { useT } from "@/i18n";
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import { downloadFile, isDownloadCancelled } from "@/lib/native-files";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
-import { CopyIcon, EyeIcon, Maximize2Icon, XIcon } from "lucide-react";
-import { Download01Icon } from "@hugeicons/core-free-icons";
+import { EyeIcon, TerminalIcon, XIcon } from "lucide-react";
+import {
+  Copy01Icon,
+  Download01Icon,
+  ExpandIcon,
+} from "@hugeicons/core-free-icons";
 import { Tick02Icon } from "@/lib/tick-icon";
+import { RefreshGlyph } from "@/lib/refresh-icon";
 import { HugeiconsIcon } from "@hugeicons/react";
 import {
   type KeyboardEvent,
+  useCallback,
   useEffect,
   useMemo,
   useRef,
@@ -45,9 +52,9 @@ function buildHtmlFence(source: string): string {
   const fence = "`".repeat(longestBacktickRun + 1);
   return `${fence}html\n${source}\n${fence}`;
 }
-// Sandboxed canvas iframes are deliberately outside the overlay focus trap:
-// granting same-origin sandbox privileges would weaken isolation, so reaching
-// interactive canvas content via keyboard is a known sandbox limitation.
+// Sandboxed canvas iframes are deliberately outside the overlay focus trap: granting same-origin
+// sandbox privileges would weaken isolation, so reaching interactive canvas content via keyboard
+// is a known sandbox limitation.
 const FOCUSABLE_SELECTOR =
   'a[href], button:not([disabled]), textarea:not([disabled]), input:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])';
 
@@ -107,9 +114,43 @@ export function ArtifactSurface({
   const [viewMode, setViewMode] = useState<ArtifactViewMode>("preview");
   // Follow the view the opener asked for (Preview vs Code button), per artifact.
   const requestedView = useChatArtifactsStore((state) => state.requestedView);
+  const setArtifactView = useChatArtifactsStore(
+    (state) => state.setArtifactView,
+  );
+  const stageFixPrompt = useChatArtifactsStore((state) => state.stageFixPrompt);
+  // Staged for the thread's composer, never sent; the overlay closes so that composer is reachable.
+  const fixWithModel = useCallback(
+    (prompt: string) => {
+      stageFixPrompt(prompt);
+      if (variant === "overlay") onClose();
+    },
+    [stageFixPrompt, variant, onClose],
+  );
+  // Keeps the card's open/hide toggle in step with the tab on screen.
+  const showView = useCallback(
+    (mode: ArtifactViewMode) => {
+      setViewMode(mode);
+      setArtifactView(mode);
+    },
+    [setArtifactView],
+  );
   const [copied, setCopied] = useState(false);
+  const t = useT();
+  const [consoleOpen, setConsoleOpen] = useState(false);
+  const [reloadNonce, setReloadNonce] = useState(0);
+  // Tagged with the artifact they came from: a panel switched to one with no frame yet keeps no badge.
+  const [outputCounts, setOutputCounts] = useState({ id: "", errors: 0 });
+  const reportOutputCounts = useCallback(
+    ({ errors }: { errors: number; total: number }) =>
+      setOutputCounts({ id: artifact.id, errors }),
+    [artifact.id],
+  );
+  const errorCount = outputCounts.id === artifact.id ? outputCounts.errors : 0;
+  const consoleLabel = t("settings.chat.artifacts.consoleTitle");
+  const reloadLabel = t("settings.chat.artifacts.reloadCanvas");
   const copyResetRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const surfaceRef = useRef<HTMLElement>(null);
+  const closeButtonRef = useRef<HTMLButtonElement>(null);
   const previousFocusRef = useRef<Element | null>(null);
   const filename = getArtifactFilename(artifact);
   const sourceMarkdown = useMemo(
@@ -119,6 +160,17 @@ export function ArtifactSurface({
   const hasArtifactCode = artifact.code.trim().length > 0;
   const isLoadingArtifact = Boolean(artifact.isStreaming);
   const effectiveViewMode = isLoadingArtifact ? "preview" : viewMode;
+  const [previewedId, setPreviewedId] = useState<string | null>(null);
+  // Only a finished preview mounts the frame: effectiveViewMode reads preview mid-stream, and viewMode lags a Code open by a render.
+  const previewing =
+    !isLoadingArtifact && viewMode === "preview" && requestedView === "preview";
+  const nextPreviewedId = previewing
+    ? artifact.id
+    : previewedId === artifact.id
+      ? previewedId
+      : null;
+  if (nextPreviewedId !== previewedId) setPreviewedId(nextPreviewedId);
+  const frameMounted = previewing || previewedId === artifact.id;
 
   useEffect(() => {
     return () => {
@@ -198,15 +250,20 @@ export function ArtifactSurface({
           ? "artifact-panel-shell mx-2 mb-8 overflow-visible rounded-[28px] border-t border-border/70 bg-card/95"
           : "h-[min(92dvh,900px)] w-[min(96vw,1200px)] overflow-hidden rounded-2xl border border-border shadow-xl",
       )}
-      // The chat-model notice is an absolute child of the chat content container, so
-      // it spans this column too, not just the thread pane. Its height is 0 whenever
-      // it is not on screen, which leaves the geometry this panel has always had.
-      // Both edges move, or the panel keeps its height and overflows the bottom.
+      // The chat-model notice is an absolute child of the chat content container, so it spans this
+      // column too, not just the thread pane. Its height is 0 whenever it is off screen, which leaves
+      // the geometry this panel has always had. Both edges move, or the panel overflows the bottom.
       style={
         variant === "panel"
           ? {
-              marginTop: "calc(90px + var(--studio-chat-notice-height, 0px))",
-              height: "calc(100% - 122px - var(--studio-chat-notice-height, 0px))",
+              // 90 above and 32 below, the same 32 the shell's mb-8 draws, so
+              // the three move together with the UI font size. The content
+              // inset inside the 90 is the window's titlebar band, which does
+              // not scale, so only the header and gap above the panel do.
+              marginTop:
+                "calc(var(--studio-content-top-inset, 0px) + (90px - var(--studio-content-top-inset, 0px)) * var(--ui-space-scale, 1) + var(--studio-chat-notice-height, 0px))",
+              height:
+                "calc(100% - var(--studio-content-top-inset, 0px) - (122px - var(--studio-content-top-inset, 0px)) * var(--ui-space-scale, 1) - var(--studio-chat-notice-height, 0px))",
             }
           : undefined
       }
@@ -232,7 +289,7 @@ export function ArtifactSurface({
                 type="button"
                 role="tab"
                 disabled={isLoadingArtifact && !isPreview}
-                onClick={() => setViewMode(mode)}
+                onClick={() => showView(mode)}
                 className={cn(
                   "flex size-8 items-center justify-center rounded-full text-muted-foreground transition-colors",
                   effectiveViewMode === mode
@@ -261,6 +318,51 @@ export function ArtifactSurface({
           })}
         </div>
         <div className="flex shrink-0 items-center gap-1">
+        <button
+          type="button"
+          disabled={isLoadingArtifact}
+          aria-label={reloadLabel}
+          title={reloadLabel}
+          onClick={() => {
+            if (effectiveViewMode !== "preview") showView("preview");
+            setReloadNonce((nonce) => nonce + 1);
+          }}
+          className={cn(
+            "flex size-8 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-muted/40 hover:text-foreground",
+            isLoadingArtifact && "cursor-not-allowed opacity-50",
+          )}
+        >
+          <RefreshGlyph className="size-4" />
+        </button>
+        <button
+          type="button"
+          disabled={isLoadingArtifact}
+          aria-pressed={consoleOpen && effectiveViewMode === "preview"}
+          aria-label={consoleLabel}
+          title={consoleLabel}
+          onClick={() => {
+            if (effectiveViewMode !== "preview") {
+              showView("preview");
+              setConsoleOpen(true);
+              return;
+            }
+            setConsoleOpen((open) => !open);
+          }}
+          className={cn(
+            "flex h-8 items-center gap-1.5 rounded-full px-2.5 text-muted-foreground transition-colors",
+            consoleOpen && effectiveViewMode === "preview"
+              ? "bg-muted/60 text-foreground"
+              : "hover:bg-muted/40 hover:text-foreground",
+            isLoadingArtifact && "cursor-not-allowed opacity-50",
+          )}
+        >
+          <TerminalIcon className="size-4" />
+          {errorCount > 0 ? (
+            <span className="rounded-full bg-destructive px-1.5 text-ui-10 font-medium leading-4 text-destructive-foreground">
+              {errorCount}
+            </span>
+          ) : null}
+        </button>
           <Button
             type="button"
             variant="ghost"
@@ -268,8 +370,8 @@ export function ArtifactSurface({
             className="size-8"
             disabled={isLoadingArtifact || !hasArtifactCode}
             onClick={() => {
-              // Route through the native save dialog on desktop; the plain
-              // blob-anchor download is silently dropped by the Tauri WebView2.
+              // Route through the native save dialog on desktop; the plain blob-anchor download is silently
+              // dropped by the Tauri WebView2.
               void downloadFile(
                 artifact.code,
                 filename,
@@ -296,7 +398,7 @@ export function ArtifactSurface({
             {copied ? (
               <HugeiconsIcon icon={Tick02Icon} strokeWidth={2} className="size-4" />
             ) : (
-              <CopyIcon className="size-4" />
+              <HugeiconsIcon icon={Copy01Icon} className="size-4" />
             )}
           </Button>
           {variant === "panel" && onOpenFullscreen ? (
@@ -308,10 +410,11 @@ export function ArtifactSurface({
               onClick={onOpenFullscreen}
               aria-label="Open canvas fullscreen"
             >
-              <Maximize2Icon className="size-4" />
+              <HugeiconsIcon icon={ExpandIcon} className="size-4" />
             </Button>
           ) : null}
           <Button
+            ref={closeButtonRef}
             type="button"
             variant="ghost"
             size="icon"
@@ -337,27 +440,47 @@ export function ArtifactSurface({
       >
         {isLoadingArtifact ? (
           <ArtifactGeneratingPanel />
-        ) : effectiveViewMode === "preview" ? (
-          <ArtifactHtmlFrame
-            key={artifact.id}
-            code={artifact.code}
-            title={artifact.title}
-            fill={true}
-            className="h-full"
-          />
         ) : (
-          <div className="h-full overflow-auto text-xs leading-relaxed [&_[data-streamdown=code-block]]:!my-0 [&_[data-streamdown=code-block]]:!gap-0 [&_[data-streamdown=code-block]]:!rounded-none [&_[data-streamdown=code-block]]:!border-0 [&_[data-streamdown=code-block]]:!bg-transparent [&_[data-streamdown=code-block]]:!p-0 [&_[data-streamdown=code-block-body]]:!border-0 [&_[data-streamdown=code-block-body]]:!bg-transparent [&_[data-streamdown=code-block-body]]:!p-0 [&_pre]:!m-0 [&_pre]:!bg-transparent [&_pre]:!p-0 [&_pre]:text-xs [&_pre]:leading-relaxed [&_code]:text-xs">
-            <Streamdown
-              // Only computed when the source view is actually on screen.
-              key={buildArtifactSourceKey(artifact)}
-              mode="streaming"
-              plugins={{ code: artifactSourceCodePlugin }}
-              controls={{ code: false }}
-              shikiTheme={[unslothLightTheme, unslothDarkTheme]}
+          <>
+            {/* Hidden, not unmounted, behind the source view: unmounting reruns the page and drops its console. */}
+            {frameMounted && (
+            <div
+              className={cn(
+                "h-full",
+                effectiveViewMode !== "preview" && "hidden",
+              )}
             >
-              {sourceMarkdown}
-            </Streamdown>
-          </div>
+              <ArtifactHtmlFrame
+                key={artifact.id}
+                code={artifact.code}
+                title={artifact.title}
+                fill={true}
+                className="h-full"
+                actionFocusTargetRef={
+                  variant === "overlay" ? closeButtonRef : undefined
+                }
+                consoleOpen={consoleOpen}
+                reloadNonce={reloadNonce}
+                onConsoleOpenChange={setConsoleOpen}
+                onOutputCountChange={reportOutputCounts}
+                onFixWithModel={fixWithModel}
+              />
+            </div>
+            )}
+            {effectiveViewMode === "preview" ? null : (
+              <div className="h-full overflow-auto px-3.5 pb-5 pt-3 text-xs leading-relaxed [&_[data-streamdown=code-block]]:!my-0 [&_[data-streamdown=code-block]]:!gap-0 [&_[data-streamdown=code-block]]:!rounded-none [&_[data-streamdown=code-block]]:!border-0 [&_[data-streamdown=code-block]]:!bg-transparent [&_[data-streamdown=code-block]]:!p-0 [&_[data-streamdown=code-block-body]]:!border-0 [&_[data-streamdown=code-block-body]]:!bg-transparent [&_[data-streamdown=code-block-body]]:!p-0 [&_pre]:!m-0 [&_pre]:!bg-transparent [&_pre]:!p-0 [&_pre]:text-xs [&_pre]:leading-relaxed [&_code]:text-xs">
+                <Streamdown
+                  key={buildArtifactSourceKey(artifact)}
+                  mode="streaming"
+                  plugins={{ code: artifactSourceCodePlugin }}
+                  controls={{ code: false }}
+                  shikiTheme={[unslothLightTheme, unslothDarkTheme]}
+                >
+                  {sourceMarkdown}
+                </Streamdown>
+              </div>
+            )}
+          </>
         )}
       </div>
     </section>

@@ -19,17 +19,13 @@
 // which is why it is pinned here rather than left to the build.
 
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import test from "node:test";
-import { fileURLToPath } from "node:url";
 
-function read(path: string): string {
-  return readFileSync(fileURLToPath(new URL(path, import.meta.url)), "utf8");
-}
+import { readText } from "./helpers/kit.ts";
 
-const BARREL = read("../src/features/loaded-models/index.ts");
-const GENERAL_TAB = read("../src/features/settings/tabs/general-tab.tsx");
-const INDICATOR = read(
+const BARREL = readText("../src/features/loaded-models/index.ts");
+const GENERAL_TAB = readText("../src/features/settings/tabs/general-tab.tsx");
+const INDICATOR = readText(
   "../src/features/loaded-models/loaded-models-indicator.tsx",
 );
 

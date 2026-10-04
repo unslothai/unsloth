@@ -7,10 +7,8 @@
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+. "$SCRIPT_DIR/_harness.sh"
 INSTALL_SH="$SCRIPT_DIR/../../install.sh"
-PASS=0
-FAIL=0
-
 # Extract the helper functions from install.sh and source them
 # (_torch_index_url_leaf is the shared leaf extractor the classifiers call).
 _FUNC_FILE=$(mktemp)
@@ -30,15 +28,6 @@ _FUNC_FILE=$(mktemp)
 # shellcheck disable=SC1090
 . "$_FUNC_FILE"
 rm -f "$_FUNC_FILE"
-
-assert_eq() {
-    _label="$1"; _expected="$2"; _actual="$3"
-    if [ "$_actual" = "$_expected" ]; then
-        echo "  PASS: $_label"; PASS=$((PASS + 1))
-    else
-        echo "  FAIL: $_label (expected '$_expected', got '$_actual')"; FAIL=$((FAIL + 1))
-    fi
-}
 
 echo "=== _torch_flavor_tag ==="
 assert_eq "cu130 wheel"        "cu130" "$(_torch_flavor_tag '2.10.0+cu130')"

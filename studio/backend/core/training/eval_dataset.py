@@ -18,7 +18,8 @@ def evaluation_enabled(value: Any) -> bool:
         return False
     try:
         interval = float(value)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
+        # OverflowError, not ValueError: float() refuses a JSON int too large to represent.
         return False
     return math.isfinite(interval) and interval > 0
 
@@ -31,5 +32,9 @@ def split_dataset_for_evaluation(dataset: Any, *, seed: int = 3407) -> Optional[
 
     eval_rows = max(MIN_EVAL_ROWS, min(128, int(0.05 * total_rows)))
     eval_rows = min(eval_rows, total_rows // 2)
+    if isinstance(dataset, list):
+        import numpy as np
+        order = np.random.default_rng(seed).permutation(total_rows)
+        return [dataset[i] for i in order[eval_rows:]], [dataset[i] for i in order[:eval_rows]]
     split = dataset.train_test_split(test_size = eval_rows, seed = seed)
     return split["train"], split["test"]

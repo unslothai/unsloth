@@ -36,6 +36,8 @@ from pathlib import Path
 import pytest
 import yaml
 
+from unsloth_pwsh_runner import pwsh_env, run_pwsh
+
 REPO = Path(__file__).resolve().parents[2]
 WORKFLOWS = REPO / ".github" / "workflows"
 ACTION = REPO / ".github" / "actions" / "install-unsloth-local" / "action.yml"
@@ -48,14 +50,12 @@ INSTALLERS = (
     REPO / "studio" / "setup.ps1",
 )
 
-# Markers of the two filter dialects, each paired with the log-writing stage that must
-# come before it in the same pipeline.
+# Markers of the two filter dialects, each paired with the log-writing stage that must come before it in the same
+# pipeline.
 POSIX_FILTER = "printf '[%4ds] %s\\n' \"$SECONDS\""
 PWSH_FILTER = "$sw.Elapsed.TotalSeconds"
 
 
-# --------------------------------------------------------------------------------------
-# The installers stay out of it
 # --------------------------------------------------------------------------------------
 
 
@@ -225,9 +225,8 @@ def test_a_failing_install_still_fails_its_step():
                 f"-- and a failed install passes"
             )
         if PWSH_FILTER in run:
-            # The comparison, not the bare variable name: `$child` already ends with
-            # `exit $LASTEXITCODE`, so a substring test for the name alone stays green
-            # after the outer check is deleted. Confirmed by mutation.
+            # The comparison, not the bare variable name: `$child` already ends with `exit $LASTEXITCODE`, so a
+            # substring test for the name alone stays green after the outer check is deleted.
             assert re.search(r"\$LASTEXITCODE\s+-ne\s+0", run), (
                 f"{path.name}:{jid}:{name} no longer throws on a non-zero $LASTEXITCODE "
                 f"after the pipeline. PowerShell does not fail a step for a native "
@@ -358,8 +357,14 @@ def test_the_elapsed_prefix_tracks_real_time_rather_than_printing_a_constant(tmp
 PWSH = None
 for _candidate in ("pwsh", "powershell"):
     try:
+        # pwsh_env, not run_pwsh: a probe run at import time, whose only question is whether
+        # this shell exists, must answer "no" rather than raise out of collection, which is
+        # what run_pwsh's exhausted retry loop would do. It still needs the private startup
+        # cache: a torn one makes this probe exit non-zero and silently skips the whole file.
         if (
-            subprocess.run([_candidate, "-NoProfile", "-Command", "exit 0"], timeout = 60).returncode
+            subprocess.run(
+                [_candidate, "-NoProfile", "-Command", "exit 0"], timeout = 60, env = pwsh_env()
+            ).returncode
             == 0
         ):
             PWSH = _candidate
@@ -368,35 +373,28 @@ for _candidate in ("pwsh", "powershell"):
         continue
 
 
-# The banner pwsh prints when the interpreter itself dies rather than the script failing.
-# Seen on a hosted ubuntu runner mid-run, with completely empty stdout: no "RC=" at all,
-# not a wrong one. Read as a normal failure it accuses the pipeline of losing
-# $LASTEXITCODE, which is a claim about install.ps1, so a runner hiccup arrives looking
-# like a product regression. Distinguish the two.
-_PWSH_CRASHED = "The PowerShell process will exit"
-
-
 def _run_pwsh(script: str, attempts: int = 2):
     """Run `script` under pwsh, retrying only an interpreter crash.
+
+    Delegates to the shared `run_pwsh`, which was generalised out of this function: it keeps
+    the crash banner (an interpreter that dies mid-run and still exits normally, seen here on
+    a hosted ubuntu runner with completely empty stdout) and adds the SIGABRT case this file
+    never covered, where .NET failfasts at pwsh startup and the process is killed by a signal
+    instead of printing anything at all.
 
     A crash yields no verdict either way, so retrying it is not papering over a failure:
     there is nothing to paper over yet. A run that reaches `RC=` is returned as-is on the
     first attempt, whatever the value, so a real regression is never retried into green.
+    That is what `verdict` says here. `PwshInterpreterCrash` is an `AssertionError`, so an
+    exhausted retry loop still surfaces as a failure naming the interpreter rather than
+    accusing install.ps1 of losing $LASTEXITCODE through the pipeline.
     """
-    proc = None
-    for _ in range(attempts):
-        proc = subprocess.run(
-            [PWSH, "-NoProfile", "-Command", script], capture_output = True, text = True
-        )
-        if "RC=" in proc.stdout:
-            return proc
-        if _PWSH_CRASHED not in (proc.stdout + proc.stderr):
-            return proc
-    raise AssertionError(
-        f"pwsh itself terminated abnormally on all {attempts} attempts and never reached "
-        f"the `RC=` line, so this run says nothing about whether $LASTEXITCODE survives "
-        f"the pipeline. That is the interpreter dying, not install.ps1 losing its exit "
-        f"code.\nstdout: {proc.stdout!r}\nstderr: {proc.stderr!r}"
+    return run_pwsh(
+        [PWSH, "-NoProfile", "-Command", script],
+        attempts = attempts,
+        verdict = "RC=",
+        capture_output = True,
+        text = True,
     )
 
 

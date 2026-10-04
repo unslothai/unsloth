@@ -1,4 +1,4 @@
-const GPU_FALLBACK_CACHE_TYPES = new Set(["q4_1", "q5_0", "q5_1", "iq4_nl"]);
+const GPU_FALLBACK_CACHE_TYPES = new Set(["iq4_nl"]);
 
 export function shouldWarnKvCacheGpuFallback({
   backend,

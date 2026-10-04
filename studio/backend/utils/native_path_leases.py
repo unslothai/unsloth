@@ -28,6 +28,8 @@ from pathlib import Path
 from typing import Any, Callable, Collection, Iterable, Iterator, Mapping
 
 LEASE_SECRET_ENV = "UNSLOTH_STUDIO_NATIVE_PATH_LEASE_SECRET"
+# Spelled out, not imported from utils/worker_stderr.py, to keep this module's import graph stdlib only.
+STDERR_MIRROR_KWARG = "unsloth_stderr_mirror_path"
 _MAX_NATIVE_PATH_REDACTIONS = 100
 _MAX_NATIVE_PATH_LABELS = 10_000
 _MIN_LEASE_SECRET_BYTES = 32
@@ -119,12 +121,28 @@ def run_without_native_path_secret(
 ) -> Any:
     """Run a multiprocessing child target without the native path lease secret."""
 
-    # Runs in the spawned child: bind it to the parent's death (Linux), since
-    # multiprocessing children cannot be given a preexec_fn by the parent. Shared
-    # entrypoint for the inference/export/training/data-recipe workers.
+    # First, before anything else can raise, so a child dying before its entrypoint is explainable (#7843).
+    _stderr_mirror_path = kwargs.pop(STDERR_MIRROR_KWARG, None)
+    if _stderr_mirror_path:
+        try:
+            from utils.worker_stderr import install_worker_stderr_mirror
+            install_worker_stderr_mirror(_stderr_mirror_path)
+        except Exception:
+            pass
+
+    # Runs in the spawned child to bind it to the parent's death, since multiprocessing children get no
+    # preexec_fn. Shared entrypoint for the inference/export/training/data-recipe workers. Two try
+    # blocks, because allow_child_processes is the newer name: on an older process_lifetime.py a
+    # combined import would lose the binding as well.
     try:
         from utils.process_lifetime import bind_current_process_to_parent_lifetime
         bind_current_process_to_parent_lifetime()
+    except Exception:
+        pass
+    try:
+        # Clear the worker's daemon policy so HF prefetch can spawn (#9094).
+        from utils.process_lifetime import allow_child_processes
+        allow_child_processes()
     except Exception:
         pass
 
@@ -136,6 +154,19 @@ def run_without_native_path_secret(
         function_name, environment, *args = args
         for key, value in environment.items():
             os.environ[key] = value
+
+    # Before the entrypoint module below, not after: a spawned child inherits no sys.modules, and
+    # every worker here imports transformers (fast-path hooks, version activation) long before it
+    # imports unsloth. A sentinel installed after that import leaves transformers saying
+    # sentencepiece is available while importing it fails, which sends tokenizer loads into the
+    # dummy-class path and its unguarded `import sentencepiece as spm`.
+    try:
+        from utils.sentencepiece_guard import disable_sentencepiece_on_windows
+        disable_sentencepiece_on_windows()
+    except Exception:
+        pass
+
+    if isinstance(target, str):
         target = getattr(importlib.import_module(target), function_name)
     return target(*args, **kwargs)
 
@@ -164,7 +195,10 @@ def verify_native_path_lease(
     expected_kind: str | None = None,
     expected_path_type: str | None = None,
     allowed_suffixes: Iterable[str] | None = None,
+    consume: bool = True,
 ) -> NativePathGrant:
+    """Check a grant and use it up. ``consume = False`` only checks it, for a caller that verifies
+    a whole batch before reading any of it, and verifies each again (consuming) when it reads."""
     if not lease:
         raise NativePathLeaseError("Native path grant is required.")
 
@@ -223,9 +257,19 @@ def verify_native_path_lease(
     current_identity = _validate_current_stat(grant, identity_options)
     if current_identity is not None:
         grant = replace(grant, device_id = current_identity[0], file_id = current_identity[1])
-    _consume_nonce(str(payload["nonce"]), grant.expires_at_ms)
+    if consume:
+        _consume_nonce(str(payload["nonce"]), grant.expires_at_ms)
     _remember_native_path_for_redaction(str(resolved), grant.display_label)
     return grant
+
+
+def release_native_path_lease(lease: str) -> None:
+    """Make a grant this caller consumed usable again, once it has undone everything it read with
+    it: a batch that failed part way and kept nothing, so its retry is not refused as a replay.
+    Only for a lease the caller verified itself; the grant still expires as signed."""
+    payload = _decode_payload(_split_lease(lease)[0])
+    with _REPLAY_LOCK:
+        _USED_NONCES.pop(str(payload.get("nonce")), None)
 
 
 def display_label_for_native_path(value: str | None) -> str | None:

@@ -4,7 +4,7 @@ import test from "node:test";
 import { shouldWarnKvCacheGpuFallback } from "../src/features/model-picker/model-config/kv-cache-gpu-warning.ts";
 
 const base = {
-  cacheType: "q4_1",
+  cacheType: "iq4_nl",
   gpuLayers: -1,
   isDiffusion: false,
 } as const;
@@ -52,6 +52,17 @@ test("KV cache advisory preserves silent negative space", () => {
     }),
     false,
   );
+  for (const cacheType of ["q4_1", "q5_0", "q5_1"]) {
+    assert.equal(
+      shouldWarnKvCacheGpuFallback({
+        ...base,
+        backend: "cuda",
+        cacheType,
+        gpuMemoryMode: "auto",
+      }),
+      false,
+    );
+  }
   assert.equal(
     shouldWarnKvCacheGpuFallback({
       ...base,

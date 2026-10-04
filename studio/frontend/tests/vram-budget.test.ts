@@ -2,12 +2,11 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import test from "node:test";
-import { fileURLToPath } from "node:url";
 
 import {
   installLocalStorageFake,
+  readSrc,
   registerBundlerResolver,
 } from "./helpers/kit.ts";
 
@@ -24,6 +23,8 @@ const {
 } = await import(
   "../src/features/model-picker/model-config/per-model-config.ts"
 );
+
+const VRAM_BUDGET = readSrc("features/settings/api/vram-budget.ts");
 
 test("percent and fraction round-trip exactly across the whole range", () => {
   // Every stop the slider can land on: a value that does not survive the trip
@@ -80,14 +81,8 @@ test("percentToFraction tolerates an off-grid slider value", () => {
 // chat-adapter tests do. The bug it guards: clearing the timer without sending the
 // pending fraction discarded a drag followed within 400ms by Run, the Advanced
 // toggle or closing the panel, and the server-wide budget lives nowhere else.
-const pageSource = readFileSync(
-  fileURLToPath(
-    new URL(
-      "../src/features/model-picker/components/model-config-page.tsx",
-      import.meta.url,
-    ),
-  ),
-  "utf8",
+const pageSource = readSrc(
+  "features/model-picker/components/model-config-page.tsx",
 );
 
 function vramBudgetRowSource(): string {
@@ -134,17 +129,11 @@ test("commit stages the fraction before arming the debounce", () => {
 
 test("the staged fraction is held outside the component that unmounts", () => {
   // The row unmounts on Run, so a ref inside it cannot be read by the load.
-  const client = readFileSync(
-    fileURLToPath(
-      new URL("../src/features/settings/api/vram-budget.ts", import.meta.url),
-    ),
-    "utf8",
-  );
-  assert.match(client, /export function stageVramBudgetSave/);
-  assert.match(client, /export function flushVramBudgetSave/);
+  assert.match(VRAM_BUDGET, /export function stageVramBudgetSave/);
+  assert.match(VRAM_BUDGET, /export function flushVramBudgetSave/);
   // Cleared as it sends, so two flushes cannot write the same edit twice.
-  const flush = client.slice(
-    client.indexOf("export function flushVramBudgetSave"),
+  const flush = VRAM_BUDGET.slice(
+    VRAM_BUDGET.indexOf("export function flushVramBudgetSave"),
   );
   assert.ok(
     flush.indexOf("stagedVramBudgetFraction = null") <
@@ -200,18 +189,12 @@ test("Run reports a rejected budget flush instead of voiding it", () => {
 });
 
 test("budget writes are serialised and only the newest publishes", () => {
-  const client = readFileSync(
-    fileURLToPath(
-      new URL("../src/features/settings/api/vram-budget.ts", import.meta.url),
-    ),
-    "utf8",
-  );
   // Two debounced saves can overlap on a slow link; out-of-order responses would
   // let the older edit win both the row and the stored value.
-  assert.match(client, /vramBudgetWriteChain/);
-  assert.match(client, /vramBudgetWriteGeneration/);
-  const update = client.slice(
-    client.indexOf("export function updateVramBudgetSettings"),
+  assert.match(VRAM_BUDGET, /vramBudgetWriteChain/);
+  assert.match(VRAM_BUDGET, /vramBudgetWriteGeneration/);
+  const update = VRAM_BUDGET.slice(
+    VRAM_BUDGET.indexOf("export function updateVramBudgetSettings"),
   );
   assert.match(
     update,
@@ -222,16 +205,10 @@ test("budget writes are serialised and only the newest publishes", () => {
 });
 
 test("Run also waits for a save the debounce already sent", () => {
-  const client = readFileSync(
-    fileURLToPath(
-      new URL("../src/features/settings/api/vram-budget.ts", import.meta.url),
-    ),
-    "utf8",
-  );
   // Pause past the 400 ms debounce, then click Load: nothing is staged any more,
   // but the PUT is still open and the load would use the fraction it replaces.
-  const settle = client.slice(
-    client.indexOf("export function settleVramBudgetSave"),
+  const settle = VRAM_BUDGET.slice(
+    VRAM_BUDGET.indexOf("export function settleVramBudgetSave"),
   );
   assert.match(settle, /flushVramBudgetSave\(\) \?\?/);
   assert.match(
@@ -239,20 +216,17 @@ test("Run also waits for a save the debounce already sent", () => {
     /vramBudgetWritesOpen > 0 \? vramBudgetNewestWrite : null/,
   );
   // The counter has to come back down however the write ends.
-  assert.match(client, /\.finally\(\(\) => \{\s*vramBudgetWritesOpen -= 1;/);
+  assert.match(
+    VRAM_BUDGET,
+    /\.finally\(\(\) => \{\s*vramBudgetWritesOpen -= 1;/,
+  );
 });
 
 test("a read waits behind an open write", () => {
-  const client = readFileSync(
-    fileURLToPath(
-      new URL("../src/features/settings/api/vram-budget.ts", import.meta.url),
-    ),
-    "utf8",
-  );
   // A remount right after a flushed drag can read before the PUT commits and
   // answer after it, repainting the row with the value the server just replaced.
-  const read = client.slice(
-    client.indexOf("export async function loadVramBudgetSettings"),
+  const read = VRAM_BUDGET.slice(
+    VRAM_BUDGET.indexOf("export async function loadVramBudgetSettings"),
   );
   assert.match(read, /vramBudgetWritesOpen > 0 \? vramBudgetWriteChain/);
   assert.ok(
@@ -276,17 +250,11 @@ test("the budget reads as a percentage and steps in tenths", () => {
 });
 
 test("a failed save is re-staged, but never over a newer edit", () => {
-  const client = readFileSync(
-    fileURLToPath(
-      new URL("../src/features/settings/api/vram-budget.ts", import.meta.url),
-    ),
-    "utf8",
-  );
   // The flush clears the staged value as it sends, so without putting it back the
   // control shows a fraction the server never took. It goes back only while it is
   // still the newest intent.
-  const update = client.slice(
-    client.indexOf("export function updateVramBudgetSettings"),
+  const update = VRAM_BUDGET.slice(
+    VRAM_BUDGET.indexOf("export function updateVramBudgetSettings"),
   );
   // Whitespace-collapsed: the formatter wraps this condition across lines.
   const rejection = update
@@ -345,13 +313,7 @@ test("a save that fails during Run is dropped, not left to race the load", () =>
 });
 
 test("only the retry is dropped, never a newer edit staged over it", () => {
-  const client = readFileSync(
-    fileURLToPath(
-      new URL("../src/features/settings/api/vram-budget.ts", import.meta.url),
-    ),
-    "utf8",
-  );
-  const flat = client.replace(/\s+/g, " ");
+  const flat = VRAM_BUDGET.replace(/\s+/g, " ");
   // Run drops the failed fraction so it cannot race the load, but a drag landing
   // during that PUT stages a newer one, and dropping that would discard the edit
   // the user is looking at.
@@ -367,13 +329,7 @@ test("only the retry is dropped, never a newer edit staged over it", () => {
 });
 
 test("a post-load read is not answered by one taken before the load finished", () => {
-  const client = readFileSync(
-    fileURLToPath(
-      new URL("../src/features/settings/api/vram-budget.ts", import.meta.url),
-    ),
-    "utf8",
-  );
-  const flat = client.replace(/\s+/g, " ");
+  const flat = VRAM_BUDGET.replace(/\s+/g, " ");
   // reloadRequired describes the running child, so an in-flight GET answers about
   // the child being replaced; sharing it republishes the stale notice.
   assert.match(flat, /if \(options\.force\) \{[^}]*inFlightVramBudget = null;/);
@@ -382,15 +338,7 @@ test("a post-load read is not answered by one taken before the load finished", (
     flat,
     /if \(inFlightVramBudget === read\) \{ inFlightVramBudget = null;/,
   );
-  const row = readFileSync(
-    fileURLToPath(
-      new URL(
-        "../src/features/model-picker/components/model-config-page.tsx",
-        import.meta.url,
-      ),
-    ),
-    "utf8",
-  );
+  const row = readSrc("features/model-picker/components/model-config-page.tsx");
   assert.match(row, /loadVramBudgetSettings\(\{ force: true \}\)/);
 });
 
@@ -445,29 +393,17 @@ test("Reload is reachable when only the server-wide budget changed", () => {
 });
 
 test("a read displaced by a forced one does not publish", () => {
-  const client = readFileSync(
-    fileURLToPath(
-      new URL("../src/features/settings/api/vram-budget.ts", import.meta.url),
-    ),
-    "utf8",
-  );
   // Clearing the handle is not enough: the displaced GET still resolves, and it
   // describes the child being replaced, so publishing would restore the notice and
   // the Reload button that the forced read had just cleared.
   assert.match(
-    client.replace(/\s+/g, " "),
+    VRAM_BUDGET.replace(/\s+/g, " "),
     /if \( inFlightVramBudget !== read \|\|/,
   );
 });
 
 test("settling before a load hears about the write that failed", () => {
-  const client = readFileSync(
-    fileURLToPath(
-      new URL("../src/features/settings/api/vram-budget.ts", import.meta.url),
-    ),
-    "utf8",
-  );
-  const flat = client.replace(/\s+/g, " ");
+  const flat = VRAM_BUDGET.replace(/\s+/g, " ");
   // The chain swallows rejections so one failed save cannot strand the ones behind
   // it, so a Run waiting on the chain was told the save succeeded and never
   // dropped the retry, which the teardown then flushed against the load.
@@ -482,13 +418,7 @@ test("settling before a load hears about the write that failed", () => {
 });
 
 test("a read does not repaint over a write issued while it was in the air", () => {
-  const client = readFileSync(
-    fileURLToPath(
-      new URL("../src/features/settings/api/vram-budget.ts", import.meta.url),
-    ),
-    "utf8",
-  );
-  const flat = client.replace(/\s+/g, " ");
+  const flat = VRAM_BUDGET.replace(/\s+/g, " ");
   // Waiting behind the writes open at read time says nothing about a save made
   // while the GET is in the air; that PUT can publish first and the late GET would
   // then restore the fraction the server no longer holds.
@@ -510,17 +440,11 @@ test("Manual with automatic layers still shows the budget", () => {
 });
 
 test("a superseded read is refused, not handed back to the caller", () => {
-  const client = readFileSync(
-    fileURLToPath(
-      new URL("../src/features/settings/api/vram-budget.ts", import.meta.url),
-    ),
-    "utf8",
-  );
   // Holding back the publish is not enough: the row applies the return value with
   // setSettings, so a read overtaken by a save would put back the isStored and
   // reloadRequired that save had just changed. Null is already this function's
   // "no usable answer", which every caller treats as keep what you have.
-  const flat = client.replace(/\s+/g, " ");
+  const flat = VRAM_BUDGET.replace(/\s+/g, " ");
   assert.match(flat, /throw new Error\("superseded"\); \}/);
   // The binding is optional: one caller inspects the error to tell an absent route from
   // a failed read, and the contract for everyone else is still null.

@@ -1,4 +1,4 @@
-# Multi-GPU (FSDP2) design for the Studio diffusion DiT trainer
+# Multi-GPU (FSDP2) design for the Unsloth diffusion DiT trainer
 
 Status: design only. No implementation in this document's scope.
 
@@ -21,7 +21,7 @@ Out of scope, explicitly:
 - nf4 (bitsandbytes): bnb 4-bit `Params4bit` are likewise incompatible with
   `fully_shard`. Multi-GPU QLoRA would need per-rank replicated bases (DDP on
   the LoRA params only), which is a separate, simpler design; noted below.
-- Pipeline/tensor/context parallelism. The Studio DiTs fit one node; FSDP2
+- Pipeline/tensor/context parallelism. The Unsloth DiTs fit one node; FSDP2
   data parallelism is the whole design.
 
 ## Wrapping plan (vendored, not imported)
@@ -125,7 +125,7 @@ flash-varlen attention masks). Mapped onto our trainable families:
 
 ## Launch and process model
 
-The Studio trainer runs as a spawned subprocess today. Multi-GPU wraps that
+The Unsloth trainer runs as a spawned subprocess today. Multi-GPU wraps that
 same entrypoint with `torchrun --nproc-per-node=N`; the event/stop protocol
 stays rank-0-only (ranks != 0 swallow events, poll the same stop flag file).
 Determinism: seed per rank as `cfg.seed + rank` for the noise/timestep draws

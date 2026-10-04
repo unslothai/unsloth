@@ -27,8 +27,7 @@ export async function buildArchivedChatExport() {
   return filterArchivedChatExport(await buildChatExport());
 }
 
-// Download only the archived chats. Returns how many were exported; skips the
-// download entirely when there are none.
+// Download only the archived chats. Returns how many were exported; skips the download entirely when there are none.
 export async function downloadArchivedChatExport(): Promise<number> {
   const { data, archivedCount } = await buildArchivedChatExport();
   if (archivedCount === 0) {
