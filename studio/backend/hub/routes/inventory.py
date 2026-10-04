@@ -10,6 +10,7 @@ from typing import Optional
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Query
 
+from auth import policy
 from auth.authentication import (
     allow_ambient_hf_token,
     authenticated_via_api_key,
@@ -380,8 +381,12 @@ async def delete_cached_model(
     )
 
 
+# Owner only: both write host paths and the shared models cache.
 @router.post(
-    "/export-model", response_model = PortableModelResponse, response_model_exclude_none = True
+    "/export-model",
+    response_model = PortableModelResponse,
+    response_model_exclude_none = True,
+    dependencies = [Depends(policy.require_owner)],
 )
 async def export_model(
     repo_id: str = Body(...),
@@ -391,8 +396,6 @@ async def export_model(
     via_api_key: bool = Depends(authenticated_via_api_key),
 ):
     """Copy a downloaded model's snapshot into a folder as plain files (#8798)."""
-    # The answer names the folder written, normalised, so an API-key caller gets it redacted
-    # like every other inventory path; a browser session keeps it.
     try:
         payload = await asyncio.to_thread(
             portable.export_cached_model,
@@ -408,7 +411,10 @@ async def export_model(
 
 
 @router.post(
-    "/import-model", response_model = PortableModelResponse, response_model_exclude_none = True
+    "/import-model",
+    response_model = PortableModelResponse,
+    response_model_exclude_none = True,
+    dependencies = [Depends(policy.require_owner)],
 )
 async def import_model(
     source: str = Body(..., embed = True),
@@ -428,7 +434,6 @@ async def import_model(
 
 
 def _redacted_portable_error(status_code: int, exc: Exception, via_api_key: bool) -> HTTPException:
-    """The error names the offending folder, so it goes through the same redaction."""
     return HTTPException(
         status_code = status_code,
         detail = redact_inventory_error_detail(str(exc), via_api_key = via_api_key),

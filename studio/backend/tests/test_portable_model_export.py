@@ -62,10 +62,32 @@ def test_export_dereferences_the_snapshot_and_writes_a_manifest(hub, tmp_path):
 
 
 def test_a_gguf_variant_exports_only_its_own_file_plus_sidecars(hub, tmp_path):
-    _cache_with(hub, "org/m-GGUF", {"m-Q4_K_M.gguf": b"4", "m-Q8_0.gguf": b"8", "README.md": b"r"})
-    out = portable.export_cached_model("org/m-GGUF", "Q4_K_M", str(tmp_path / "out"))
-    names = sorted(p.name for p in Path(out["path"]).iterdir() if p.name != portable.MANIFEST_NAME)
-    assert names == ["README.md", "m-Q4_K_M.gguf"]
+    _cache_with(
+        hub,
+        "org/m-GGUF",
+        {
+            "m-Q2_K.gguf": b"2",
+            "m-Q2_K_L.gguf": b"L",
+            "UD-Q2_K_XL/m-UD-Q2_K_XL.gguf": b"X",
+            "mmproj-F16.gguf": b"p",
+            "README.md": b"r",
+        },
+    )
+    out = portable.export_cached_model("org/m-GGUF", "Q2_K", str(tmp_path / "out"))
+    manifest = json.loads((Path(out["path"]) / portable.MANIFEST_NAME).read_text())
+    assert sorted(manifest["files"]) == ["README.md", "m-Q2_K.gguf", "mmproj-F16.gguf"]
+
+
+def test_a_second_variant_imports_into_a_snapshot_holding_another(hub, tmp_path, monkeypatch):
+    _cache_with(hub, "org/m-GGUF", {"m-Q2_K.gguf": b"2", "m-Q8_0.gguf": b"8", "README.md": b"r"})
+    out = portable.export_cached_model("org/m-GGUF", "Q8_0", str(tmp_path / "out"))
+    other = tmp_path / "hub2"
+    other.mkdir()
+    snapshot = _cache_with(other, "org/m-GGUF", {"m-Q2_K.gguf": b"2", "README.md": b"r"})
+    monkeypatch.setattr(portable, "_hub_cache", lambda: other)
+    assert portable.import_model_folder(out["path"])["status"] == "imported"
+    assert (snapshot / "m-Q8_0.gguf").read_bytes() == b"8"
+    assert (snapshot / "README.md").is_symlink(), "the cached file is kept, not replaced"
 
 
 def test_export_refuses_a_destination_inside_the_cache(hub, tmp_path):
@@ -168,3 +190,32 @@ def test_an_api_key_caller_gets_the_folder_redacted_and_a_session_keeps_it(hub, 
     )
     assert imported.status_code == 200
     assert imported.json()["path"] == ""
+
+
+def test_a_managed_account_is_refused(hub, tmp_path):
+    from auth.authentication import authenticated_via_api_key, get_current_subject
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+    from hub.routes import inventory as inventory_routes
+    from utils.account_context import AccountContext, bind_account, reset_account
+
+    _cache_with(hub, "org/model", {"config.json": b"{}"})
+    app = FastAPI()
+    app.include_router(inventory_routes.router, prefix = "/api/hub")
+    app.dependency_overrides[get_current_subject] = lambda: "bob"
+    app.dependency_overrides[authenticated_via_api_key] = lambda: False
+
+    async def as_managed(scope, receive, send):
+        token = bind_account(AccountContext("bob-id", "bob", "user"))
+        try:
+            await app(scope, receive, send)
+        finally:
+            reset_account(token)
+
+    client = TestClient(as_managed, raise_server_exceptions = False)
+    exported = client.post(
+        "/api/hub/export-model",
+        json = {"repo_id": "org/model", "destination": str(tmp_path / "out")},
+    )
+    assert exported.status_code == 403 and not (tmp_path / "out").exists()
+    assert client.post("/api/hub/import-model", json = {"source": str(tmp_path)}).status_code == 403

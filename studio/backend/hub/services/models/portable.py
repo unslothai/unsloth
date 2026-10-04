@@ -1,15 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Export a downloaded model to a plain folder, and import such a folder back (#8798).
-
-A model in the Hugging Face cache is a tree of symlinks into ``blobs/``, which survives
-neither a copy to an external drive nor a move to another computer. Export dereferences
-the newest snapshot into a folder of ordinary files beside a small manifest; import reads
-that manifest and writes the files back under the cache layout (``models--org--name/
-snapshots/<revision>/`` plus ``refs/main``) as regular files, which the loaders and the
-inventory scan both accept, so the model shows as downloaded without a re-download.
-"""
+"""Export a cached model to a plain folder (symlinks dereferenced) and import it back (#8798)."""
 
 from __future__ import annotations
 
@@ -21,13 +13,15 @@ import shutil
 from pathlib import Path
 from typing import Any, Optional
 
+from hub.utils import gguf_plan
+
 MANIFEST_NAME = "unsloth-export.json"
 _MANIFEST_FORMAT = "unsloth-export"
 _REPO_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*/[A-Za-z0-9][A-Za-z0-9._-]*$")
 
 
 class PortableModelError(ValueError):
-    """A refused export or import; the message is safe to show the user."""
+    pass
 
 
 def _hub_cache() -> Path:
@@ -36,7 +30,6 @@ def _hub_cache() -> Path:
 
 
 def _safe_relative(name: str) -> str:
-    """A manifest or snapshot entry, refused unless it stays inside its folder."""
     rel = name.replace("\\", "/")
     parts = rel.split("/")
     if not rel or rel.startswith("/") or any(part in ("", ".", "..") for part in parts):
@@ -49,7 +42,7 @@ def _cached_repo(repo_id: str, hub_cache: Path):
 
     try:
         scan = scan_cache_dir(hub_cache)
-    except Exception as exc:  # noqa: BLE001 -- huggingface_hub raises its own CacheNotFound
+    except Exception as exc:  # noqa: BLE001
         raise FileNotFoundError(f"no models cache at {hub_cache}") from exc
     for repo in scan.repos:
         if str(getattr(repo, "repo_type", "")) != "model":
@@ -68,13 +61,7 @@ def _newest_revision(repo):
 
 
 def _snapshot_files(revision, variant: Optional[str]) -> list[tuple[str, Path]]:
-    """(snapshot-relative name, readable source path) for one revision.
-
-    ponytail: a GGUF variant is matched by name, the way the picker labels it; the
-    mmproj/sidecar pairing the loader does is not reproduced here.
-    """
     snapshot = Path(revision.snapshot_path)
-    wanted = (variant or "").lower()
     files: list[tuple[str, Path]] = []
     for entry in getattr(revision, "files", ()):
         file_path = Path(entry.file_path)
@@ -82,7 +69,13 @@ def _snapshot_files(revision, variant: Optional[str]) -> list[tuple[str, Path]]:
             rel = file_path.relative_to(snapshot).as_posix()
         except ValueError:
             continue
-        if wanted and rel.lower().endswith(".gguf") and wanted not in rel.lower():
+        # Same selection as a variant download: its own shards plus mmproj / MTP companions.
+        if (
+            variant
+            and gguf_plan.is_gguf_filename(rel)
+            and not gguf_plan.is_main_gguf_variant_path(rel, variant)
+            and not gguf_plan.is_companion_gguf_path(rel)
+        ):
             continue
         source = Path(getattr(entry, "blob_path", None) or file_path)
         if source.is_file():
@@ -90,13 +83,20 @@ def _snapshot_files(revision, variant: Optional[str]) -> list[tuple[str, Path]]:
     return files
 
 
+def _target_in(folder: Path, rel: str) -> Path:
+    # Resolve the parent, not the target: an existing snapshot entry is a symlink into blobs/.
+    target = folder / _safe_relative(rel)
+    root = folder.resolve(strict = False)
+    parent = target.parent.resolve(strict = False)
+    if parent != root and root not in parent.parents:
+        raise PortableModelError(f"refusing to write outside {folder}: {rel!r}")
+    return target
+
+
 def _copy_tree(files: list[tuple[str, Path]], folder: Path) -> int:
     total = 0
-    root = folder.resolve(strict = False)
     for rel, source in files:
-        target = folder / _safe_relative(rel)
-        if root not in target.resolve(strict = False).parents:
-            raise PortableModelError(f"refusing to write outside {folder}: {rel!r}")
+        target = _target_in(folder, rel)
         target.parent.mkdir(parents = True, exist_ok = True)
         shutil.copy2(source, target, follow_symlinks = True)
         total += target.stat().st_size
@@ -104,20 +104,14 @@ def _copy_tree(files: list[tuple[str, Path]], folder: Path) -> int:
 
 
 def _place_in_cache(files: list[tuple[str, Path]], repo_dir: Path, snapshot: Path) -> int:
-    """Write files the way huggingface_hub does: content under ``blobs/<sha256>``, a symlink
-    from the snapshot, and a plain copy in the snapshot where symlinks are refused (Windows
-    without the privilege). The inventory scan requires a blob today; #12156 makes the copied
-    layout count too, so both readings see the model.
-    """
+    """huggingface_hub layout: ``blobs/<sha256>`` plus a snapshot symlink, or a plain copy where
+    symlinks are refused (Windows without the privilege)."""
     blobs = repo_dir / "blobs"
     blobs.mkdir(parents = True, exist_ok = True)
     snapshot.mkdir(parents = True, exist_ok = True)
-    root = snapshot.resolve(strict = False)
     total = 0
     for rel, source in files:
-        target = snapshot / _safe_relative(rel)
-        if root not in target.resolve(strict = False).parents:
-            raise PortableModelError(f"refusing to write outside {snapshot}: {rel!r}")
+        target = _target_in(snapshot, rel)
         digest = hashlib.sha256()
         with open(source, "rb") as handle:
             for chunk in iter(lambda: handle.read(1 << 20), b""):
@@ -126,7 +120,7 @@ def _place_in_cache(files: list[tuple[str, Path]], repo_dir: Path, snapshot: Pat
         if not blob.is_file():
             shutil.copy2(source, blob)
         target.parent.mkdir(parents = True, exist_ok = True)
-        if target.exists() or target.is_symlink():
+        if target.is_symlink():
             target.unlink()
         try:
             target.symlink_to(Path(os.path.relpath(blob, target.parent)))
@@ -137,7 +131,6 @@ def _place_in_cache(files: list[tuple[str, Path]], repo_dir: Path, snapshot: Pat
 
 
 def export_cached_model(repo_id: str, variant: Optional[str], destination: str) -> dict[str, Any]:
-    """Copy the newest cached snapshot of *repo_id* into ``destination/<org--name>``."""
     if not _REPO_ID.match(repo_id or ""):
         raise PortableModelError(f"not a model id: {repo_id!r}")
     hub_cache = _hub_cache()
@@ -196,7 +189,6 @@ def _read_manifest(source: Path) -> dict[str, Any]:
 
 
 def import_model_folder(source: str) -> dict[str, Any]:
-    """Copy an exported folder into the models cache so the model shows as downloaded."""
     src = Path(source).expanduser().resolve(strict = False)
     if not src.is_dir():
         raise FileNotFoundError(f"{src} is not a folder")
@@ -212,17 +204,16 @@ def import_model_folder(source: str) -> dict[str, Any]:
         raise PortableModelError("the manifest revision is not a valid snapshot name")
     repo_dir = hub_cache / f"models--{repo_id.replace('/', '--')}"
     snapshot = repo_dir / "snapshots" / revision
-    if all((snapshot / name).is_file() for name in files):
-        status = "already_present"
-        size = sum((snapshot / name).stat().st_size for name in files)
-    else:
-        size = _place_in_cache([(name, src / name) for name in files], repo_dir, snapshot)
-        status = "imported"
+    # Files already in the snapshot (another variant of the same revision) are kept as cached.
+    present = [name for name in files if (snapshot / name).is_file()]
+    todo = [(name, src / name) for name in files if name not in present]
+    size = sum((snapshot / name).stat().st_size for name in present)
+    if todo:
+        size += _place_in_cache(todo, repo_dir, snapshot)
+    status = "imported" if todo else "already_present"
     refs = repo_dir / "refs"
     refs.mkdir(parents = True, exist_ok = True)
     ref = refs / "main"
-    # ponytail: an existing ref is the cache's own truth and is left alone; only a repo
-    # this import created gets its ref written.
     if not ref.exists():
         ref.write_text(revision, encoding = "utf-8")
     return {
