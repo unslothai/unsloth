@@ -2901,12 +2901,12 @@ export function ChatPage({
   useEffect(() => {
     if (voiceMode === "off" || cachedGgufsFetchedRef.current) return;
     cachedGgufsFetchedRef.current = true;
-    // TTS-capable GGUFs for the voice slot: standalone TTS (bicodec/dac) plus the
-    // speech-LLMs (orpheus/snac, csm) -- those can double as a plain voice for a
-    // *different* chat model when picked here, in which case they only synthesize
-    // its replies rather than acting as the LLM. GGUF-only: the voice slot is a
-    // llama-server, so safetensors-only checkpoints (e.g. Spark's LLM) can't load.
-    const TTS_REPO_KEYWORDS = ["bicodec", "dac", "tts", "orpheus", "csm"];
+    // TTS-capable GGUFs for the voice slot: standalone TTS (bicodec/dac) plus Orpheus
+    // (snac), which can double as a plain voice for a *different* chat model when picked
+    // here, synthesizing its replies rather than acting as the LLM. No CSM: /voice/load
+    // refuses its codec. GGUF-only: the voice slot is a llama-server, so safetensors-only
+    // checkpoints (e.g. Spark's LLM) can't load.
+    const TTS_REPO_KEYWORDS = ["bicodec", "dac", "tts", "orpheus"];
     const lower = (s: string) => s.toLowerCase();
     const toOption = (repoId: string, isGguf: boolean): LoraModelOption => ({
       id: repoId,

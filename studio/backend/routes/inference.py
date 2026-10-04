@@ -574,6 +574,7 @@ def _tts_max_new_tokens(
     *,
     audio_type: Optional[str] = None,
     speech_api_default_max_tokens: bool = False,
+    context_length: Optional[int] = None,
 ) -> int:
     """Bound TTS work consistently across llama.cpp and subprocess backends.
 
@@ -585,7 +586,8 @@ def _tts_max_new_tokens(
     # audio.cpp music reads the budget as a duration at MiniMax's 25 frames per second, so it
     # shares MiniMax's defaults under its own 240-second ceiling.
     music_generation = audio_type in ("minimax_music3", "audiocpp_music")
-    context_length = _monitor_context_length() if moss_generation or prompt else None
+    if context_length is None and (moss_generation or prompt):
+        context_length = _monitor_context_length()
     token_ceiling = (
         context_length or MOSS_TTS_MAX_FRAMES
         if moss_generation
@@ -620,14 +622,16 @@ def _speech_budget_exhausted(context_length: int, prompt_tokens: int) -> bool:
     return context_length - prompt_tokens - _TTS_PROMPT_FORMAT_RESERVE < _MIN_SPEECH_OUTPUT_TOKENS
 
 
-def _raise_if_prompt_leaves_no_speech_budget(text: str) -> None:
+def _raise_if_prompt_leaves_no_speech_budget(
+    text: str, *, context_length: Optional[int] = None
+) -> None:
     """400 when the prompt alone consumes the loaded context.
 
     Shared by both TTS routes: the budget helper floors at one token so generation always
     has something to ask for, which on its own would send an over-context prompt into the
     backend to fail there or return a clip too short to hold codec tokens.
     """
-    context_length = _monitor_context_length()
+    context_length = context_length or _monitor_context_length()
     if not context_length:
         return
     if _speech_budget_exhausted(context_length, _prompt_token_estimate(text)):
@@ -8640,6 +8644,8 @@ _voice_llama_backend = LlamaCppBackend()
 # Its own pidfile record, so the two live llama-servers cannot overwrite each other's
 # and leave one unreachable to the orphan reaper after an unclean exit.
 _voice_llama_backend._pid_slot = "voice"
+# Beside a chat GGUF on the same GPU, each server's auto-fit must count the other's planned VRAM.
+register_serving_backend(_voice_llama_backend)
 
 # Audio types accepted by the voice slot (GGUF TTS via llama-server token generation)
 _VOICE_SLOT_AUDIO_TYPES: frozenset[str] = frozenset({"snac", "bicodec", "dac"})
@@ -22094,9 +22100,21 @@ async def _generate_tts_wav(
 
     ``voice`` names a speaker for models that have them (Orpheus/SNAC); it is
     ignored by codecs with a single fixed speaker."""
+    _voice_backend = get_voice_llama_backend()
+    _voice_slot_serves = bool(
+        requested_model == _RELOAD_ONLY_MODEL
+        and _voice_backend.is_loaded
+        and getattr(_voice_backend, "_is_audio", False)
+    )
+    # The voice slot runs its own (usually smaller) context; the chat slot's would misbudget it.
+    _speech_context = (
+        _positive_int_or_none(getattr(_voice_backend, "context_length", None))
+        if _voice_slot_serves
+        else None
+    )
     # A named target must be budgeted against its own context after preflight.
     if requested_model == _RELOAD_ONLY_MODEL:
-        _raise_if_prompt_leaves_no_speech_budget(text)
+        _raise_if_prompt_leaves_no_speech_budget(text, context_length = _speech_context)
     # Restore an idle-evicted GGUF before selecting a backend: this path is
     # keep-warm-tracked but had no reload hook, so a standalone idle TTL could
     # unload an audio GGUF the next request then failed to restore. Validation
@@ -22117,12 +22135,6 @@ async def _generate_tts_wav(
     # A caller that NAMES a model is never served from the voice slot: the switch below
     # is that request, and honouring it keeps /v1/audio/speech's named-model path exactly
     # as it is on main. The voice slot owns speech only for the resident-model form.
-    _voice_backend = get_voice_llama_backend()
-    _voice_slot_serves = bool(
-        requested_model == _RELOAD_ONLY_MODEL
-        and _voice_backend.is_loaded
-        and getattr(_voice_backend, "_is_audio", False)
-    )
     if not _voice_slot_serves:
         await _maybe_auto_switch_model(
             requested_model,
@@ -22144,7 +22156,7 @@ async def _generate_tts_wav(
     # restore so an invalid request never triggers a reload, but with nothing loaded it has
     # no context length and passes everything, so the first request after an idle eviction
     # would reach generation over-context and come back as a one-token clip.
-    _raise_if_prompt_leaves_no_speech_budget(text)
+    _raise_if_prompt_leaves_no_speech_budget(text, context_length = _speech_context)
 
     # Created before the backend pick so the GGUF lambda can close over it; the registration
     # that arms it is below, once the model name is known.
@@ -22181,6 +22193,7 @@ async def _generate_tts_wav(
                 prompt_for_budget,
                 audio_type = audio_type,
                 speech_api_default_max_tokens = speech_api_default_max_tokens,
+                context_length = _speech_context,
             ),
             repetition_penalty = payload.repetition_penalty,
             cancel_event = _audio_cancel,
@@ -22242,7 +22255,7 @@ async def _generate_tts_wav(
             payload.audio_instructions,
             payload.audio_language,
         )
-        _raise_if_prompt_leaves_no_speech_budget(prompt_for_budget)
+        _raise_if_prompt_leaves_no_speech_budget(prompt_for_budget, context_length = _speech_context)
 
     # Audio-capable backend confirmed. The middleware claims the slot on a 2xx, so no claim
     # here: claiming before the audio backend runs could strand a preview-owned checkpoint
@@ -22698,8 +22711,19 @@ async def openai_audio_speech_stream(
             ),
         )
 
+    # Same guard and cap as the blocking route, against the context of the server that speaks:
+    # past it the stream ends early, after a 200 has already gone out.
+    context_length = _positive_int_or_none(getattr(backend, "context_length", None))
+    if context_length:
+        _raise_if_prompt_leaves_no_speech_budget(text, context_length = context_length)
+
     voice_name = (body.voice or "").strip().lower() or "tara"
     max_new_tokens = body.max_new_tokens or AUDIO_GENERATION_MAX_TOKENS
+    if context_length:
+        max_new_tokens = min(
+            max_new_tokens,
+            context_length - _prompt_token_estimate(text) - _TTS_PROMPT_FORMAT_RESERVE,
+        )
 
     # The monitor row is driven by hand rather than through _monitored_media_request:
     # that closes the row when its block exits, and this route's block exits the moment

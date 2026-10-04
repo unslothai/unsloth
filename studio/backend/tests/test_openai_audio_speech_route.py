@@ -277,12 +277,75 @@ def test_a_loaded_voice_slot_serves_only_the_resident_model_form(monkeypatch, na
     assert str(error.value) == ("reached the switch" if named else "reached the voice slot")
 
 
+def test_the_voice_slot_budgets_speech_against_its_own_context(monkeypatch):
+    """The chat slot can hold a far larger context than the voice server; budgeting against
+    it admits text the voice server would then truncate or reject."""
+
+    def _picked_voice(_backend):
+        raise RuntimeError("reached the voice slot")
+
+    voice_backend = SimpleNamespace(
+        is_loaded = True, _is_audio = True, _audio_type = "snac", context_length = 512
+    )
+    monkeypatch.setattr(routes_module, "get_voice_llama_backend", lambda: voice_backend)
+    monkeypatch.setattr(routes_module, "_llama_public_model_id", _picked_voice)
+    monkeypatch.setattr(routes_module, "_monitor_context_length", lambda: 32768)
+    monkeypatch.setattr(routes_module, "_prompt_token_estimate", lambda _t: 600)
+    payload = SimpleNamespace(audio_instructions = None, audio_language = None)
+    request = SimpleNamespace(state = SimpleNamespace(skip_api_monitor = True))
+    with pytest.raises(HTTPException) as error:
+        asyncio.run(routes_module._generate_tts_wav("long text", payload, request, "tester"))
+    assert error.value.status_code == 400 and "512-token context" in error.value.detail
+    budget = routes_module._tts_max_new_tokens(
+        SimpleNamespace(max_completion_tokens = 8192, max_tokens = None), "x", context_length = 512
+    )
+    assert budget < 512
+
+
+@pytest.mark.parametrize("prompt_tokens, refused", [(100, False), (600, True)])
+def test_streaming_speech_fits_the_voice_servers_context(monkeypatch, prompt_tokens, refused):
+    """No max_new_tokens used to send the 8192 ceiling into a 4096 voice server, which ended
+    the stream early after a 200 had already gone out."""
+    seen = {}
+
+    def _stream(**kwargs):
+        seen.update(kwargs)
+        yield b"\x00\x00"
+
+    voice_backend = SimpleNamespace(
+        is_loaded = True,
+        _audio_type = "snac",
+        context_length = 512,
+        _orpheus_voice_prefix_ok = lambda: True,
+        generate_audio_response_stream = _stream,
+    )
+    monkeypatch.setattr(routes_module, "get_voice_llama_backend", lambda: voice_backend)
+    monkeypatch.setattr(routes_module, "_prompt_token_estimate", lambda _t: prompt_tokens)
+    request = SimpleNamespace(state = SimpleNamespace(skip_api_monitor = True))
+
+    async def _run():
+        response = await routes_module.openai_audio_speech_stream(
+            AudioSpeechRequest(input = "hello"), request, "tester"
+        )
+        return [chunk async for chunk in response.body_iterator]
+
+    if refused:
+        with pytest.raises(HTTPException) as error:
+            asyncio.run(_run())
+        assert error.value.status_code == 400 and "512-token context" in error.value.detail
+        assert seen == {}
+    else:
+        asyncio.run(_run())
+        reserve = routes_module._TTS_PROMPT_FORMAT_RESERVE
+        assert seen["max_new_tokens"] == 512 - prompt_tokens - reserve
+
+
 def test_the_shared_core_guards_before_generating():
     """Wired in _generate_tts_wav so /audio/generate inherits it, not only /audio/speech."""
     import inspect
 
     source = inspect.getsource(routes_module._generate_tts_wav)
-    assert "_raise_if_prompt_leaves_no_speech_budget(text)" in source
+    assert "_raise_if_prompt_leaves_no_speech_budget(text," in source
 
 
 def test_the_budget_is_rechecked_after_an_idle_model_is_restored():
@@ -296,7 +359,7 @@ def test_the_budget_is_rechecked_after_an_idle_model_is_restored():
     guards = [
         i
         for i, line in enumerate(source.splitlines())
-        if "_raise_if_prompt_leaves_no_speech_budget(text)" in line
+        if "_raise_if_prompt_leaves_no_speech_budget(text," in line
     ]
     restore = next(
         i for i, line in enumerate(source.splitlines()) if "await _maybe_auto_switch_model(" in line
