@@ -22516,7 +22516,6 @@ CONVERT_EXPIRED_DETAIL = {
 
 def _convert_role_error(exc, role: str):
     from core.inference.audio_inputs import AudioInputError
-
     if exc.status == 404 and exc.detail == "This reference expired. Add it again.":
         return AudioInputError(404, CONVERT_EXPIRED_DETAIL[role])
     return exc
