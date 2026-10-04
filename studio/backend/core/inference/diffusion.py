@@ -1898,6 +1898,12 @@ def _uninstall_fused_dit_patches() -> None:
         uninstall_flux2_rope()
     except Exception:  # noqa: BLE001 - teardown is best effort
         pass
+    try:
+        from .diffusion_rocm_fused import uninstall as uninstall_rocm_fused
+
+        uninstall_rocm_fused()
+    except Exception:  # noqa: BLE001 - teardown is best effort
+        pass
 
 
 def _clear_exception_frames(exc: BaseException) -> None:
@@ -6972,6 +6978,10 @@ class DiffusionBackend:
                     from .diffusion_flux2_rope import install_for_pipe as install_flux2_rope
 
                     install_flux2_rope(pipe, dtype, device, logger)
+                    # ROCm (auto) FLUX.1 / FLUX.2: one-kernel RoPE (bit-identical) and AdaLN modulation.
+                    from .diffusion_rocm_fused import install_for_pipe as install_rocm_fused
+
+                    install_rocm_fused(pipe, dtype, device, logger)
                     # fp16-only cards: a guarded family stays float16; patch its overflow sites.
                     from .diffusion_fp16_guard import family_fp16_guard, install_fp16_guard
 
