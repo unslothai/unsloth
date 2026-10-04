@@ -497,7 +497,6 @@ export function AudioPage({
     active,
     busy,
     busyRef,
-    modeRef,
     handleModelSelect,
     transitionWorkflow,
     refreshGallery,
