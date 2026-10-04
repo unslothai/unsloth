@@ -15,6 +15,8 @@ token context:
   stream failed".
 """
 
+import pytest
+
 from core.inference.stream_errors import (
     KV_STARVATION_MESSAGE,
     LlamaStreamError,
@@ -156,6 +158,141 @@ class TestSurvivesTheRouteLayer:
         # An overflow genuinely is one, so the client should compact here.
         assert routes._classify_llama_generation_error(error) is True
 
+    def test_a_pre_generation_context_refusal_is_a_client_error_not_a_server_failure(self):
+        from core.inference.context_refusal import ContextBudgetExceeded
+        from utils.utils import safe_error_detail
+
+        routes = self._routes()
+        refusal = ContextBudgetExceeded(8193, 8192)
+
+        assert routes._classify_llama_generation_error(refusal) is True
+        unworded = ContextBudgetExceeded(8193, 8192)
+        unworded.args = ("a phrasing the substring test cannot read",)
+        assert routes._classify_llama_generation_error(unworded) is True
+
+        assert routes._friendly_error(refusal) == str(refusal)
+        assert safe_error_detail(refusal) == str(refusal)
+
+        blocked = routes._context_budget_http_error(refusal)
+        assert blocked.status_code == 400
+        assert blocked.detail["error"]["code"] == "context_length_exceeded"
+        chunk = routes._openai_stream_error_chunk(refusal)
+        assert chunk["error"]["code"] == "context_length_exceeded"
+        assert "8192-token context window" in chunk["error"]["message"]
+
+    @staticmethod
+    def _raiser(exc):
+        def _generate(**_kwargs):
+            raise exc
+            yield  # pragma: no cover -- generator form, never reached
+
+        return _generate
+
+    def test_a_context_refusal_survives_the_worker_boundary_as_itself(self):
+        from types import SimpleNamespace
+
+        from core.inference import orchestrator as orch
+        from core.inference import worker as worker_mod
+        from core.inference.context_refusal import ContextBudgetExceeded
+
+        _raiser = self._raiser
+
+        def emitted(exc):
+            sent = []
+            backend = SimpleNamespace(
+                generate_chat_response = _raiser(exc),
+                last_generation_stats = None,
+            )
+            worker_mod._handle_generate(
+                backend,
+                {"request_id": "r1", "messages": [{"role": "user", "content": "hi"}]},
+                SimpleNamespace(put = sent.append),
+                None,
+            )
+            return [r for r in sent if r.get("type") == "gen_error"]
+
+        payloads = emitted(ContextBudgetExceeded(9000, 8192))
+        assert len(payloads) == 1
+        payload = payloads[0]
+        assert payload["context_budget"] == {"request_tokens": 9000, "context_tokens": 8192}
+        assert "context_budget" not in emitted(ValueError("boom"))[0]
+
+        consume = orch.InferenceOrchestrator._consume_token_stream
+        stream = consume(
+            SimpleNamespace(
+                _proc = None,
+                _resp_queue = None,
+                _mark_worker_started = lambda _event: None,
+                _forget_request = lambda *_a: None,
+            ),
+            lambda _timeout: payload,
+            lambda: None,
+            crash_context = "test",
+        )
+        with pytest.raises(ContextBudgetExceeded) as excinfo:
+            list(stream)
+        assert excinfo.value.request_tokens == 9000
+        assert excinfo.value.context_tokens == 8192
+        assert self._routes()._classify_llama_generation_error(excinfo.value) is True
+
+    def test_the_admission_budget_survives_the_worker_boundary_too(self, monkeypatch):
+        from types import SimpleNamespace
+
+        from core.inference import orchestrator as orch
+        from core.inference import worker as worker_mod
+
+        monkeypatch.setattr(
+            worker_mod,
+            "_build_model_config",
+            lambda _config: SimpleNamespace(
+                identifier = "org/Model",
+                display_name = "Model",
+                is_vision = True,
+                is_lora = False,
+                base_model = None,
+                audio_type = None,
+                is_audio = False,
+                has_audio_input = False,
+            ),
+        )
+        monkeypatch.setattr(worker_mod, "_run_security_gates", lambda *_a, **_k: True)
+        monkeypatch.setattr(
+            "core.inference.native_audio.native_audio_security_targets", lambda *_a, **_k: []
+        )
+        monkeypatch.setattr(
+            "utils.hf_xet_fallback.start_watchdog",
+            lambda **_k: SimpleNamespace(set = lambda: None),
+        )
+        backend = SimpleNamespace(
+            device = "mlx",
+            active_model_name = "org/Model",
+            models = {"org/Model": {"context_length": 8192, "mlx_context_budget": 8192}},
+            load_model = lambda **_k: True,
+        )
+        sent = []
+        worker_mod._handle_load(
+            backend,
+            {
+                "model_name": "org/Model",
+                "load_in_4bit": False,
+                "trust_remote_code": True,
+                "max_seq_length": 8192,
+            },
+            SimpleNamespace(put = sent.append),
+        )
+        loaded = [r for r in sent if r.get("type") == "loaded"]
+        assert loaded and loaded[0]["success"] is True, sent
+        assert loaded[0]["model_info"]["mlx_context_budget"] == 8192
+
+        mirrored = orch._mirrored_model_entry(
+            {"context_length": 8192, "context_length_enforced": False, "mlx_context_budget": 8192},
+            "org/Model",
+        )
+        assert mirrored["mlx_context_budget"] == 8192
+        assert (
+            orch._mirrored_model_entry({"context_length": 8192}, "m")["mlx_context_budget"] is None
+        )
+
     def test_an_unrelated_error_survives_verbatim(self):
         routes = self._routes()
         assert routes._friendly_error(self._error("tokenizer failed")) == "tokenizer failed"
@@ -224,3 +361,45 @@ class TestTheNonStreamingPathAlsoReportsTheCause:
             == "An internal error occurred"
         )
         assert "/srv/secret" not in safe_error_detail(RuntimeError("/srv/secret/path blew up"))
+
+
+class TestTheStarvationTextDoesNotReadAsAContextLimitOnTheClient:
+    """The chat client re-classifies by substring, so the wording is load bearing.
+
+    `studio/frontend/src/features/chat/api/chat-adapter.ts::isContextLimitError` decides
+    which toast a failed generation gets from the error message alone: the backend's
+    `code` never reaches it, because `chat-api.ts` turns an in-band error chunk into
+    `new Error(parsed.error.message)` and throws only the text. Any of the substrings
+    below wins the "Context limit reached" toast, whose advice is "The conversation has
+    filled the model's context window ... or start a new chat".
+
+    That is the wrong remedy for starvation, and it is the exact claim this message was
+    written to deny: nothing about the conversation was too long, so starting a new chat
+    fails identically while the other generation is still running. Asserted here rather
+    than in the frontend because the message lives here and the wording is what breaks.
+    """
+
+    # Mirrors isContextLimitError. Keep in step with chat-adapter.ts.
+    CLIENT_CONTEXT_LIMIT_MARKERS = (
+        "context size",
+        "context shift",
+        "exceeds the available context",
+        "message too long",
+        "context window",
+    )
+
+    def test_the_curated_starvation_message_avoids_the_client_heuristic(self):
+        lowered = KV_STARVATION_MESSAGE.lower()
+        assert [m for m in self.CLIENT_CONTEXT_LIMIT_MARKERS if m in lowered] == []
+
+    def test_the_message_still_names_the_cause_and_both_remedies(self):
+        lowered = KV_STARVATION_MESSAGE.lower()
+        assert "same time" in lowered
+        assert "fewer running at once" in lowered
+        assert "context length" in lowered
+
+    def test_the_server_wording_it_replaces_would_have_hit_the_heuristic(self):
+        """Guards the test itself: the raw text is what the rewrite exists to avoid."""
+        raw = "Context size has been exceeded."
+        assert any(m in raw.lower() for m in self.CLIENT_CONTEXT_LIMIT_MARKERS)
+        assert describe_stream_error(raw) == KV_STARVATION_MESSAGE

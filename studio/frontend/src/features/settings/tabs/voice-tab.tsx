@@ -22,19 +22,22 @@ import {
   type SttDownloadStatus,
   StudioModelDictationAdapter,
   StudioSpeechSynthesisAdapter,
-  cancelSttDownload,
   createConfiguredUtterance,
   curateSystemVoices,
   fetchSttStatus,
+  generateCustomTtsAudio,
   generateStudioTtsAudio,
+  isDecisionConnection,
   loadSttModel,
+  releaseTtsAudioUrl,
   startSttDownload,
+  sttEngineFor,
+  sttEngineStatusFor,
   unloadSttModel,
   useExternalProvidersStore,
   validateSttModel,
 } from "@/features/chat";
 import {
-  DownloadProgressBar,
   hfApiToken,
   useHfTokenStore,
   useHubModelSearch,
@@ -48,8 +51,8 @@ import { toast } from "@/lib/toast";
 import {
   AudioWave01Icon,
   Search01Icon,
-  VolumeHighIcon,
 } from "@hugeicons/core-free-icons";
+import { Volume02Icon } from "@/lib/volume-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useNavigate } from "@tanstack/react-router";
 import { SquareIcon } from "lucide-react";
@@ -65,6 +68,7 @@ import {
 } from "../lib/stt-download-mirror";
 import { useSettingsDialogStore } from "../stores/settings-dialog-store";
 import {
+  AUDIO_CPP_STT_MODELS,
   MTMD_STT_MODELS,
   RECOMMENDED_STT_MODELS,
   STT_MODELS,
@@ -75,6 +79,7 @@ import {
   isSttModelLanguageCompatible,
   sttModelName,
   sttModelSize,
+  type TtsEngine,
   useVoiceSettingsStore,
 } from "../stores/voice-settings-store";
 
@@ -104,9 +109,12 @@ const DICTATION_LANGUAGES: { value: string; label: string }[] = [
 const TTS_PREVIEW_TEXT =
   "Hello from Unsloth! This is a preview of the selected voice.";
 
-/** Source repository shown under a model row. Curated models download from
- * the Unsloth GGUF repos, mirrored by the backend (stt_ggml_sidecar.py). */
+/** Source repository shown under a model row. Curated Whisper models download
+ * from the Unsloth GGUF repos, mirrored by the backend (stt_ggml_sidecar.py).
+ * A package of the shared GGUF repo is already named after its folder, so its
+ * row shows the name alone. */
 function sttModelSource(model: SttModel): string {
+  if (AUDIO_CPP_STT_MODELS.has(model)) return sttModelName(model);
   return isCuratedSttModel(model) && !MTMD_STT_MODELS.has(model)
     ? `unslothai/whisper-${model}-GGUF`
     : getSttModelRepo(model);
@@ -178,7 +186,8 @@ function SttModelPicker({
     if (!isSttModelId(model) || validating) {
       return;
     }
-    if (!isCuratedSttModel(model)) {
+    // The validator checks Transformers Whisper checkpoints; a GGUF audio runtime repo is checked when it loads.
+    if (!isCuratedSttModel(model) && sttEngineFor(model) !== "audiocpp") {
       setValidating(true);
       try {
         await validateSttModel(model, hfApiToken(hfToken));
@@ -209,7 +218,7 @@ function SttModelPicker({
           type="button"
           data-testid="stt-model-trigger"
           aria-label={t("settings.voice.dictation.sttModelLabel")}
-          className="border-border bg-background hover:bg-accent/50 dark:border-transparent dark:bg-white/[0.06] dark:hover:bg-white/10 focus-visible:border-ring flex h-8 w-full cursor-pointer items-center justify-between gap-1.5 rounded-full border px-3.5 text-sm outline-none transition-colors"
+          className="border-border bg-background hover:bg-accent/50 dark:border-transparent dark:bg-[rgb(255_255_255_/_calc(0.06*var(--contrast-wash-gain,1)))] dark:hover:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))] focus-visible:border-ring flex h-8 w-full cursor-pointer items-center justify-between gap-1.5 rounded-full border px-3.5 text-sm outline-none transition-colors"
         >
           <span className="truncate">{sttModelName(value)}</span>
           <HugeiconsIcon
@@ -405,6 +414,9 @@ export function VoiceTab() {
   const setDictationEngine = useVoiceSettingsStore((s) => s.setDictationEngine);
   const sttModel = useVoiceSettingsStore((s) => s.sttModel);
   const setSttModel = useVoiceSettingsStore((s) => s.setSttModel);
+  // Named apart from the `sttDevice` state below, which the sidecar reports back.
+  const sttDevicePreference = useVoiceSettingsStore((s) => s.sttDevice);
+  const setSttDevicePreference = useVoiceSettingsStore((s) => s.setSttDevice);
   const sttProviderId = useVoiceSettingsStore((s) => s.sttProviderId);
   const setSttProviderId = useVoiceSettingsStore((s) => s.setSttProviderId);
   const sttProviderModel = useVoiceSettingsStore((s) => s.sttProviderModel);
@@ -421,13 +433,32 @@ export function VoiceTab() {
   const setTtsEngine = useVoiceSettingsStore((s) => s.setTtsEngine);
   const ttsVoiceURI = useVoiceSettingsStore((s) => s.ttsVoiceURI);
   const setTtsVoiceURI = useVoiceSettingsStore((s) => s.setTtsVoiceURI);
+  const ttsProviderId = useVoiceSettingsStore((s) => s.ttsProviderId);
+  const setTtsProviderId = useVoiceSettingsStore((s) => s.setTtsProviderId);
+  const ttsProviderModel = useVoiceSettingsStore((s) => s.ttsProviderModel);
+  const setTtsProviderModel = useVoiceSettingsStore(
+    (s) => s.setTtsProviderModel,
+  );
+  const ttsProviderVoice = useVoiceSettingsStore((s) => s.ttsProviderVoice);
+  const setTtsProviderVoice = useVoiceSettingsStore(
+    (s) => s.setTtsProviderVoice,
+  );
+  const connections = useExternalProvidersStore((s) => s.providers);
+  const ttsConnections = useMemo(
+    () =>
+      connections.filter((connection) => !isDecisionConnection(connection)),
+    [connections],
+  );
+  const hasSelectedTtsConnection = ttsConnections.some(
+    (connection) => connection.id === ttsProviderId,
+  );
   const ttsRate = useVoiceSettingsStore((s) => s.ttsRate);
   const setTtsRate = useVoiceSettingsStore((s) => s.setTtsRate);
   const ttsPitch = useVoiceSettingsStore((s) => s.ttsPitch);
   const setTtsPitch = useVoiceSettingsStore((s) => s.setTtsPitch);
   const ttsVolume = useVoiceSettingsStore((s) => s.ttsVolume);
   const setTtsVolume = useVoiceSettingsStore((s) => s.setTtsVolume);
-  const sttConnections = useExternalProvidersStore((s) => s.providers);
+  const sttConnections = ttsConnections;
   const connectionsEnabled = useExternalProvidersStore(
     (s) => s.connectionsEnabled,
   );
@@ -460,11 +491,20 @@ export function VoiceTab() {
     }
   }, [hasSelectedSttConnection, setSttProviderId, sttProviderId]);
 
+  // A deleted connection would otherwise stay selected and every read aloud would
+  // post the stale id, so drop it the way the dictation selection does.
+  useEffect(() => {
+    if (ttsProviderId && !hasSelectedTtsConnection) {
+      setTtsProviderId("");
+    }
+  }, [hasSelectedTtsConnection, setTtsProviderId, ttsProviderId]);
+
   const modelSttSupported = StudioModelDictationAdapter.isSupported();
   const ttsSupported = StudioSpeechSynthesisAdapter.isSupported();
   const systemTtsSupported =
     StudioSpeechSynthesisAdapter.systemVoicesSupported();
-  const effectiveTtsEngine = systemTtsSupported ? ttsEngine : "studio";
+  const effectiveTtsEngine: TtsEngine =
+    ttsEngine === "system" && !systemTtsSupported ? "studio" : ttsEngine;
 
   // Local STT stays on-demand. Track its phase without fetching model weights.
   type SttPhase =
@@ -476,30 +516,21 @@ export function VoiceTab() {
     | "ready"
     | "error";
   type SttDownloadAvailability =
-    | "checking"
-    | "missing"
-    | "downloaded"
-    | "error";
+    "checking" | "missing" | "downloaded" | "error";
   const [sttPhase, setSttPhase] = useState<SttPhase>("idle");
   const [sttDevice, setSttDevice] = useState<string | null>(null);
   const [statusNonce, setStatusNonce] = useState(0);
-  const [sttDownloadCancelling, setSttDownloadCancelling] = useState(false);
   const [sttUnloading, setSttUnloading] = useState(false);
   const isLocalEngine = dictationEngine === "model";
   const isCustomEngine = dictationEngine === "custom";
   // The model decides the backend: curated ids run GGML through whisper.cpp,
   // custom repos run through Transformers.
-  const isMtmdModel = MTMD_STT_MODELS.has(sttModel);
-  const isGgufModel = isCuratedSttModel(sttModel) && !isMtmdModel;
   // Progress of the selected engine's model download, from /stt/status.
   const [sttDownload, setSttDownload] = useState<SttDownloadStatus | null>(
     null,
   );
-  const [downloadBytesPerSec, setDownloadBytesPerSec] = useState(0);
-  // Last observed (bytes, time) so successive polls yield a transfer rate.
-  const downloadRateSampleRef = useRef<{ bytes: number; at: number } | null>(
-    null,
-  );
+  // Was a bare two-sample delta over ~800ms with no window or stability gate,
+  // so one throttled timer or bursty poll set the displayed speed outright.
   // Model whose download this tab watched; completion auto-loads it.
   const watchedDownloadRef = useRef<string | null>(null);
 
@@ -539,16 +570,11 @@ export function VoiceTab() {
       try {
         const status = await fetchSttStatus(statusNonce, sttModel);
         if (cancelled) return;
-        // A curated model prefers the GGUF (whisper.cpp) engine, but without
-        // whisper-server the backend serves it through Transformers instead of
-        // failing. Fall back to the Transformers status here too, or the model
-        // shows as unavailable and download is blocked even though it works.
-        // mtmd models run nowhere else, so they never fall back.
-        const engineStatus = isMtmdModel
-          ? status.mtmd
-          : isGgufModel && status.gguf?.available
-            ? status.gguf
-            : status.transformers;
+        // A curated model prefers the GGUF (whisper.cpp) engine, but without whisper-server the
+        // backend serves it through Transformers instead of failing. Fall back to the Transformers
+        // status here too, or the model shows as unavailable and download is blocked even though it
+        // works. mtmd and audio.cpp models run nowhere else, so they never fall back.
+        const engineStatus = sttEngineStatusFor(status, sttModel);
         if (!engineStatus?.available) {
           setSttPhase("unavailable");
           return;
@@ -570,24 +596,13 @@ export function VoiceTab() {
             trackSttDownload(download.model);
           }
           watchedDownloadRef.current = download.model;
-          const bytes = download.bytes_done ?? 0;
-          const sample = downloadRateSampleRef.current;
-          const now = Date.now();
-          if (sample && bytes > sample.bytes && now > sample.at) {
-            setDownloadBytesPerSec(
-              ((bytes - sample.bytes) * 1000) / (now - sample.at),
-            );
-          }
-          downloadRateSampleRef.current = { bytes, at: now };
-          // Keep the download progress fresh.
+          // Keep the status line fresh.
           window.setTimeout(() => {
             if (!cancelled) setStatusNonce((n) => n + 1);
           }, 800);
         } else {
           const finished = watchedDownloadRef.current;
           watchedDownloadRef.current = null;
-          downloadRateSampleRef.current = null;
-          setDownloadBytesPerSec(0);
           if (
             finished === sttModel &&
             engineStatus.downloaded_models.includes(sttModel) &&
@@ -632,8 +647,6 @@ export function VoiceTab() {
     };
   }, [
     isLocalEngine,
-    isGgufModel,
-    isMtmdModel,
     sttModel,
     sttRepoId,
     modelSttSupported,
@@ -650,9 +663,11 @@ export function VoiceTab() {
       case "on-demand":
         return t("settings.voice.dictation.sttOnDemand");
       case "ready":
-        // whisper.cpp and llama.cpp report a runtime name, not a device; show a
-        // plain "Loaded" rather than surfacing it.
-        return sttDevice && !STT_RUNTIME_NAMES.has(sttDevice)
+        // whisper.cpp, llama.cpp and audio.cpp report a runtime name, not a
+        // device; show a plain "Loaded" rather than surfacing it.
+        return sttDevice &&
+          !STT_RUNTIME_NAMES.has(sttDevice) &&
+          !sttDevice.startsWith("audio.cpp")
           ? t("settings.voice.dictation.sttReady", {
               device: sttDevice.toUpperCase(),
             })
@@ -705,10 +720,9 @@ export function VoiceTab() {
     try {
       await startSttDownload(sttModel, hfApiToken(hfToken));
       trackSttDownload(sttModel);
-      // The status effect only re-polls while it can see a download. Its last
-      // read was before this one existed, and the on-demand branch schedules
-      // nothing, so without a nudge the tab shows Download for the whole
-      // transfer.
+      // The status effect only re-polls while it can see a download. Its last read was before this
+      // one existed, and the on-demand branch schedules nothing, so without a nudge the tab shows
+      // Download for the whole transfer.
       setStatusNonce((nonce) => nonce + 1);
     } catch (error) {
       toast.error(t("settings.voice.dictation.sttDownloadFailed"), {
@@ -716,21 +730,6 @@ export function VoiceTab() {
       });
     } finally {
       setSttDownloadStarting(false);
-    }
-  };
-
-  const stopSttDownload = async () => {
-    setSttDownloadCancelling(true);
-    try {
-      await cancelSttDownload(sttDownload?.model ?? sttModel);
-      setSttDownload(null);
-      setStatusNonce((nonce) => nonce + 1);
-    } catch (error) {
-      toast.error(t("settings.voice.dictation.sttCancelDownloadFailed"), {
-        description: error instanceof Error ? error.message : undefined,
-      });
-    } finally {
-      setSttDownloadCancelling(false);
     }
   };
 
@@ -783,7 +782,9 @@ export function VoiceTab() {
   const releasePreviewAudio = useCallback(() => {
     if (previewAudioRef.current) {
       previewAudioRef.current.pause();
-      previewAudioRef.current.src = "";
+      releaseTtsAudioUrl(previewAudioRef.current.src);
+      // removeAttribute, not `src = ""`: an empty src fires a media error toasting "preview failed".
+      previewAudioRef.current.removeAttribute("src");
       previewAudioRef.current = null;
     }
   }, []);
@@ -808,18 +809,22 @@ export function VoiceTab() {
       stopPreview();
       return;
     }
-    if (effectiveTtsEngine === "studio") {
+    if (effectiveTtsEngine !== "system") {
       const controller = new AbortController();
       previewAbortRef.current = controller;
       ownsSystemPreviewRef.current = false;
       markPreviewing(true);
       setPreparingPreview(true);
       try {
-        const url = await generateStudioTtsAudio(
-          TTS_PREVIEW_TEXT,
-          controller.signal,
-        );
-        if (controller.signal.aborted) return;
+        const generate =
+          effectiveTtsEngine === "custom"
+            ? generateCustomTtsAudio
+            : generateStudioTtsAudio;
+        const url = await generate(TTS_PREVIEW_TEXT, controller.signal);
+        if (controller.signal.aborted) {
+          releaseTtsAudioUrl(url);
+          return;
+        }
         setPreparingPreview(false);
         const audio = new Audio(url);
         audio.playbackRate = ttsRate;
@@ -892,7 +897,7 @@ export function VoiceTab() {
   }
 
   return (
-    <div className="flex flex-col gap-6">
+    <div className="settings-page">
       <header className="flex flex-col gap-1">
         <h1 className="text-xl font-semibold font-heading">
           {t("settings.voice.title")}
@@ -1016,8 +1021,104 @@ export function VoiceTab() {
             <SettingsRow
               label={t("settings.voice.dictation.sttModelLabel")}
               description={t("settings.voice.dictation.sttModelDescription")}
+              // Progress lives in the shared downloads panel; a second bar here
+              // said the same thing twice.
+              below={
+                <div className="flex min-h-7 w-56 items-center justify-between gap-3">
+                  <span className="flex min-w-0 items-center gap-2 text-xs text-muted-foreground">
+                    {effectiveSttDownloadAvailability === "checking" ||
+                    sttPhase === "loading" ||
+                    sttPhase === "checking" ? (
+                      <span className="size-1.5 shrink-0 animate-pulse rounded-full bg-current" />
+                    ) : sttPhase === "ready" ||
+                      (effectiveSttDownloadAvailability === "downloaded" &&
+                        sttPhase === "on-demand") ? (
+                      <span className="size-1.5 shrink-0 rounded-full bg-emerald-500" />
+                    ) : effectiveSttDownloadAvailability === "error" ||
+                      sttPhase === "error" ? (
+                      <span className="size-1.5 shrink-0 rounded-full bg-destructive" />
+                    ) : null}
+                    <span>{sttModelStatusText}</span>
+                  </span>
+                  {sttPhase === "unavailable" ? (
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      className="h-7 px-2 text-xs"
+                      onClick={() => setStatusNonce((nonce) => nonce + 1)}
+                    >
+                      {t("settings.voice.dictation.sttRetry")}
+                    </Button>
+                  ) : effectiveSttDownloadAvailability === "error" ? (
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      className="h-7 px-2 text-xs"
+                      disabled={downloadingThisModel || sttDownloadStarting}
+                      // Restart: the sidecar error is sticky until a new
+                      // start(), so re-polling alone never clears it.
+                      onClick={() => void beginSttDownload()}
+                    >
+                      {t("settings.voice.dictation.sttRetry")}
+                    </Button>
+                  ) : effectiveSttDownloadAvailability === "missing" ? (
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="h-7 px-2.5 text-xs"
+                      disabled={downloadingThisModel || sttDownloadStarting}
+                      onClick={() => void beginSttDownload()}
+                    >
+                      {downloadingThisModel || sttDownloadStarting ? (
+                        <Spinner className="mr-1.5" />
+                      ) : null}
+                      {t("settings.voice.dictation.sttDownload")}
+                    </Button>
+                  ) : effectiveSttDownloadAvailability === "downloaded" ? (
+                    sttPhase === "ready" ? (
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        className="h-7 px-2.5 text-xs"
+                        disabled={sttUnloading}
+                        onClick={releaseSttModel}
+                      >
+                        {sttUnloading ? <Spinner className="mr-1.5" /> : null}
+                        {sttUnloading
+                          ? t("settings.voice.dictation.sttUnloading")
+                          : t("settings.voice.dictation.sttUnload")}
+                      </Button>
+                    ) : sttPhase === "loading" || sttPhase === "checking" ? (
+                      // The status line already says "Loading model…"; the
+                      // button only needs the spinner.
+                      <Button
+                        variant="outline"
+                        size="icon-sm"
+                        className="size-7"
+                        disabled={true}
+                        aria-label={t(
+                          "settings.voice.dictation.sttLoadingModel",
+                        )}
+                      >
+                        <Spinner />
+                      </Button>
+                    ) : (
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        className="h-7 px-2.5 text-xs"
+                        onClick={warmSttModel}
+                      >
+                        {sttPhase === "error"
+                          ? t("settings.voice.dictation.sttRetry")
+                          : t("settings.voice.dictation.sttLoad")}
+                      </Button>
+                    )
+                  ) : null}
+                </div>
+              }
             >
-              <div className="flex w-56 flex-col items-stretch gap-2">
+              <div className="w-56">
                 <SttModelPicker
                   value={sttModel}
                   language={dictationLanguage}
@@ -1029,132 +1130,6 @@ export function VoiceTab() {
                     setSttModel(next);
                   }}
                 />
-                {downloadingThisModel ? (
-                  <div className="rounded-md border border-border/60 bg-muted/20 px-2.5 pt-2">
-                    <div className="mb-1.5 flex items-center justify-between gap-3">
-                      <span className="text-xs text-muted-foreground">
-                        {sttModelStatusText}
-                      </span>
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        className="-mr-1.5 h-7 shrink-0 px-2 text-xs"
-                        disabled={sttDownloadCancelling}
-                        onClick={() => void stopSttDownload()}
-                      >
-                        {sttDownloadCancelling
-                          ? t("settings.voice.dictation.sttCancellingDownload")
-                          : t("settings.voice.dictation.sttCancelDownload")}
-                      </Button>
-                    </div>
-                    <DownloadProgressBar
-                      progress={{
-                        expectedBytes: sttDownload?.bytes_total ?? 0,
-                        downloadedBytes: sttDownload?.bytes_done ?? 0,
-                        fraction:
-                          sttDownload?.bytes_total &&
-                          sttDownload.bytes_total > 0
-                            ? (sttDownload.bytes_done ?? 0) /
-                              sttDownload.bytes_total
-                            : 0,
-                      }}
-                      bytesPerSec={downloadBytesPerSec}
-                    />
-                  </div>
-                ) : (
-                  <div className="flex min-h-7 items-center justify-between gap-3">
-                    <span className="flex min-w-0 items-center gap-2 text-xs text-muted-foreground">
-                      {effectiveSttDownloadAvailability === "checking" ||
-                      sttPhase === "loading" ||
-                      sttPhase === "checking" ? (
-                        <span className="size-1.5 shrink-0 animate-pulse rounded-full bg-current" />
-                      ) : sttPhase === "ready" ||
-                        (effectiveSttDownloadAvailability === "downloaded" &&
-                          sttPhase === "on-demand") ? (
-                        <span className="size-1.5 shrink-0 rounded-full bg-emerald-500" />
-                      ) : effectiveSttDownloadAvailability === "error" ||
-                        sttPhase === "error" ? (
-                        <span className="size-1.5 shrink-0 rounded-full bg-destructive" />
-                      ) : null}
-                      <span>{sttModelStatusText}</span>
-                    </span>
-                    {sttPhase === "unavailable" ? (
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        className="h-7 px-2 text-xs"
-                        onClick={() => setStatusNonce((nonce) => nonce + 1)}
-                      >
-                        {t("settings.voice.dictation.sttRetry")}
-                      </Button>
-                    ) : effectiveSttDownloadAvailability === "error" ? (
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        className="h-7 px-2 text-xs"
-                        disabled={downloadingThisModel || sttDownloadStarting}
-                        // Restart the download; the sidecar error is sticky until
-                        // a new start(), so re-polling alone never clears it.
-                        onClick={() => void beginSttDownload()}
-                      >
-                        {t("settings.voice.dictation.sttRetry")}
-                      </Button>
-                    ) : effectiveSttDownloadAvailability === "missing" ? (
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        className="h-7 px-2.5 text-xs"
-                        disabled={downloadingThisModel || sttDownloadStarting}
-                        onClick={() => void beginSttDownload()}
-                      >
-                        {downloadingThisModel || sttDownloadStarting ? (
-                          <Spinner className="mr-1.5" />
-                        ) : null}
-                        {t("settings.voice.dictation.sttDownload")}
-                      </Button>
-                    ) : effectiveSttDownloadAvailability === "downloaded" ? (
-                      sttPhase === "ready" ? (
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          className="h-7 px-2.5 text-xs"
-                          disabled={sttUnloading}
-                          onClick={releaseSttModel}
-                        >
-                          {sttUnloading ? <Spinner className="mr-1.5" /> : null}
-                          {sttUnloading
-                            ? t("settings.voice.dictation.sttUnloading")
-                            : t("settings.voice.dictation.sttUnload")}
-                        </Button>
-                      ) : sttPhase === "loading" || sttPhase === "checking" ? (
-                        // The status line already says "Loading model…"; the
-                        // button only needs the spinner.
-                        <Button
-                          variant="outline"
-                          size="icon-sm"
-                          className="size-7"
-                          disabled={true}
-                          aria-label={t(
-                            "settings.voice.dictation.sttLoadingModel",
-                          )}
-                        >
-                          <Spinner />
-                        </Button>
-                      ) : (
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          className="h-7 px-2.5 text-xs"
-                          onClick={warmSttModel}
-                        >
-                          {sttPhase === "error"
-                            ? t("settings.voice.dictation.sttRetry")
-                            : t("settings.voice.dictation.sttLoad")}
-                        </Button>
-                      )
-                    ) : null}
-                  </div>
-                )}
               </div>
             </SettingsRow>
           ) : (
@@ -1163,6 +1138,51 @@ export function VoiceTab() {
               description={t("settings.voice.dictation.sttModelUnsupported")}
             />
           )
+        ) : null}
+
+        {isLocalEngine && modelSttSupported ? (
+          <SettingsRow
+            label={t("settings.voice.dictation.sttDeviceLabel")}
+            description={
+              sttDevicePreference === "cpu"
+                ? t("settings.voice.dictation.sttDeviceCpuDescription")
+                : t("settings.voice.dictation.sttDeviceAutoDescription")
+            }
+          >
+            <Select
+              value={sttDevicePreference}
+              onValueChange={(value) => {
+                const next = value === "cpu" ? "cpu" : "auto";
+                if (next === sttDevicePreference) return;
+                // Scoped, so moving our placement cannot evict a model another surface
+                // swapped in. wait:false so a decoding dictation is not killed for a
+                // setting the next load applies anyway.
+                void unloadSttModel(sttEngineFor(sttModel), sttModel, {
+                  wait: false,
+                }).catch(() => {});
+                setSttPhase("on-demand");
+                setSttDevice(null);
+                setSttDevicePreference(next);
+              }}
+            >
+              <SelectTrigger
+                data-testid="stt-device-trigger"
+                aria-label={t("settings.voice.dictation.sttDeviceLabel")}
+                className="w-56"
+                size="sm"
+              >
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="auto" data-testid="stt-device-auto">
+                  {t("settings.voice.dictation.sttDeviceAuto")}
+                </SelectItem>
+                <SelectItem value="cpu" data-testid="stt-device-cpu">
+                  {t("settings.voice.dictation.sttDeviceCpu")}
+                </SelectItem>
+              </SelectContent>
+            </Select>
+          </SettingsRow>
         ) : null}
 
         <SettingsRow
@@ -1289,13 +1309,17 @@ export function VoiceTab() {
               description={
                 effectiveTtsEngine === "studio"
                   ? t("settings.voice.readAloud.engineStudioDescription")
-                  : t("settings.voice.readAloud.engineSystemDescription")
+                  : effectiveTtsEngine === "custom"
+                    ? t("settings.voice.readAloud.engineCustomDescription")
+                    : t("settings.voice.readAloud.engineSystemDescription")
               }
             >
               <Select
                 value={effectiveTtsEngine}
                 onValueChange={(value) =>
-                  setTtsEngine(value === "studio" ? "studio" : "system")
+                  setTtsEngine(
+                    value === "studio" || value === "custom" ? value : "system",
+                  )
                 }
               >
                 <SelectTrigger
@@ -1314,11 +1338,73 @@ export function VoiceTab() {
                   <SelectItem value="studio">
                     {t("settings.voice.readAloud.engineStudio")}
                   </SelectItem>
+                  <SelectItem value="custom">
+                    {t("settings.voice.readAloud.engineCustom")}
+                  </SelectItem>
                 </SelectContent>
               </Select>
             </SettingsRow>
 
-            {effectiveTtsEngine === "studio" ? (
+            {effectiveTtsEngine === "custom" ? (
+              <>
+                <SettingsRow
+                  label={t("settings.voice.readAloud.connectionLabel")}
+                  description={t(
+                    "settings.voice.readAloud.connectionDescription",
+                  )}
+                >
+                  <Select
+                    value={hasSelectedTtsConnection ? ttsProviderId : ""}
+                    onValueChange={setTtsProviderId}
+                    disabled={ttsConnections.length === 0}
+                  >
+                    <SelectTrigger
+                      aria-label={t("settings.voice.readAloud.connectionLabel")}
+                      className="min-w-56 max-w-72"
+                      size="sm"
+                    >
+                      <SelectValue
+                        placeholder={t(
+                          "settings.voice.readAloud.connectionPlaceholder",
+                        )}
+                      />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {ttsConnections.map((connection) => (
+                        <SelectItem key={connection.id} value={connection.id}>
+                          {connection.name}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </SettingsRow>
+                <SettingsRow
+                  label={t("settings.voice.readAloud.customModelLabel")}
+                >
+                  <Input
+                    value={ttsProviderModel}
+                    onChange={(e) => setTtsProviderModel(e.target.value)}
+                    placeholder="kokoro"
+                    className="h-8 w-56 max-w-72"
+                    aria-label={t("settings.voice.readAloud.customModelLabel")}
+                  />
+                </SettingsRow>
+                <SettingsRow
+                  label={t("settings.voice.readAloud.voiceLabel")}
+                  description={t(
+                    "settings.voice.readAloud.customVoiceDescription",
+                  )}
+                >
+                  <Input
+                    value={ttsProviderVoice}
+                    onChange={(e) => setTtsProviderVoice(e.target.value)}
+                    placeholder="alloy"
+                    className="h-8 w-56 max-w-72"
+                    aria-label={t("settings.voice.readAloud.voiceLabel")}
+                  />
+                </SettingsRow>
+              </>
+            ) : effectiveTtsEngine === "studio" ? (
               <SettingsRow
                 label={t("settings.voice.readAloud.modelLabel")}
                 description={t("settings.voice.readAloud.modelDescription")}
@@ -1356,7 +1442,7 @@ export function VoiceTab() {
                   >
                     <SelectValue />
                   </SelectTrigger>
-                  <SelectContent className="max-h-72">
+                  <SelectContent className="max-h-[min(--spacing(72),var(--radix-select-content-available-height))]">
                     <SelectItem value="default">
                       {t("settings.voice.dictation.systemDefault")}
                     </SelectItem>
@@ -1442,7 +1528,7 @@ export function VoiceTab() {
                 ) : (
                   <>
                     <HugeiconsIcon
-                      icon={VolumeHighIcon}
+                      icon={Volume02Icon}
                       className="mr-1.5 size-3.5"
                     />
                     {t("settings.voice.readAloud.previewAction")}

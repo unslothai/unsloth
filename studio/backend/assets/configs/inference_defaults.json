@@ -1,6 +1,20 @@
 {
   "_comment": "Per-model-family inference parameter defaults. Sources: (1) Ollama params blobs, (2) Existing Unsloth Studio YAML configs. Patterns ordered longest-match-first.",
   "families": {
+    "moss-tts-local-transformer-v1.5": {
+      "temperature": 1.7,
+      "top_p": 0.8,
+      "top_k": 25,
+      "min_p": 0.0,
+      "repetition_penalty": 1.0
+    },
+    "moss-tts-nano": {
+      "temperature": 1.7,
+      "top_p": 0.8,
+      "top_k": 25,
+      "min_p": 0.0,
+      "repetition_penalty": 1.0
+    },
     "qwen3.8": {
       "temperature": 0.7,
       "top_p": 0.8,
@@ -413,6 +427,7 @@
     }
   },
   "patterns": [
+    "moss-tts-local-transformer-v1.5", "moss-tts-nano",
     "qwen3.8", "qwen3.6", "qwen3.5",
     "qwen3-coder", "qwen3-next", "qwen3-vl", "qwen3",
     "qwen2.5-coder", "qwen2.5-vl", "qwen2.5-omni", "qwen2.5-math", "qwen2.5",

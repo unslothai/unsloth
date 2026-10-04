@@ -1,0 +1,200 @@
+#!/usr/bin/env pwsh
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+# Unit test for install.ps1's New-UnslothTorchOverridesFile, the Windows twin of install.sh's
+# _build_unsloth_torch_overrides. It folds a caller's UV_OVERRIDE file into the frozen torch-trio
+# pins without corrupting it: non-ASCII lines must survive, and every relative reference must come
+# across REBASED, since uv resolves them against the file that contains them.
+# Run: pwsh -NoProfile -File tests/studio/test_torch_overrides_merge.ps1
+
+$ErrorActionPreference = "Stop"
+$installPath = [System.IO.Path]::Combine($PSScriptRoot, "..", "..", "install.ps1")
+$installPath = (Resolve-Path $installPath).Path
+
+# Parse install.ps1 (also a syntax gate) and extract the helper.
+$tokens = $null; $errors = $null
+$ast = [System.Management.Automation.Language.Parser]::ParseFile($installPath, [ref]$tokens, [ref]$errors)
+if ($errors) { $errors | ForEach-Object { $_.ToString() }; throw "install.ps1 has parse errors" }
+
+$fn = $ast.FindAll({ param($n)
+    $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
+    $n.Name -eq "New-UnslothTorchOverridesFile"
+}, $true)
+if ($fn.Count -ne 1) { throw "expected exactly one New-UnslothTorchOverridesFile in install.ps1, found $($fn.Count)" }
+# PowerShell does not hoist, so the helpers the merge calls have to be defined here too.
+foreach ($helper in "Get-WoaRequirementEntries", "Resolve-WoaOverrideLine") {
+    $h = $ast.FindAll({ param($n)
+        $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq $helper
+    }, $true)
+    if ($h.Count -ne 1) { throw "expected exactly one $helper in install.ps1, found $($h.Count)" }
+    Invoke-Expression $h[0].Extent.Text
+}
+Invoke-Expression $fn[0].Extent.Text
+
+$failures = 0
+function Check($name, $cond) {
+    if ($cond) { Write-Host "  PASS  $name" }
+    else { Write-Host "  FAIL  $name" -ForegroundColor Red; $script:failures++ }
+}
+
+# The helper reads $SkipTorch from its enclosing scope.
+$SkipTorch = $false
+
+# Stand-in interpreter: the helper only runs `& $PythonExe -c` and reads `name==version` lines.
+$work = Join-Path ([System.IO.Path]::GetTempPath()) ("unsloth-ovtest-" + [guid]::NewGuid().ToString("N"))
+New-Item -ItemType Directory -Path $work -Force | Out-Null
+$onWindows = -not ($IsLinux -or $IsMacOS)
+if ($onWindows) {
+    # Windows starts a stand-in only through an extension it can execute.
+    $fakePy = Join-Path $work "fakepython.cmd"
+    Set-Content -LiteralPath $fakePy -Value @(
+        "@echo torch==2.11.0+cu130"
+        "@echo torchvision==0.26.0+cu130"
+        "@echo torchaudio==2.11.0+cu130"
+    ) -Encoding ascii
+} else {
+    $fakePy = Join-Path $work "fakepython"
+    Set-Content -LiteralPath $fakePy -Value @(
+        "#!/usr/bin/env bash"
+        "printf 'torch==2.11.0+cu130\ntorchvision==0.26.0+cu130\ntorchaudio==2.11.0+cu130\n'"
+    ) -Encoding ascii
+    & chmod +x $fakePy
+}
+
+$acute = [char]0x00E9   # e-acute, the cheapest non-ASCII requirement character
+$savedOverride = $env:UV_OVERRIDE
+$made = @()
+
+try {
+    $callerDir = Join-Path $work "callerdir"
+    New-Item -ItemType Directory -Path $callerDir -Force | Out-Null
+    $nested = Join-Path $callerDir "nested.txt"
+    Set-Content -LiteralPath $nested -Value "idna==3.6" -Encoding ascii
+    $callerOv = Join-Path $callerDir "over.txt"
+    [System.IO.File]::WriteAllText(
+        $callerOv,
+        "-r nested.txt`ncaf${acute}pkg==1.0`ntorch==1.0`ntorchvision==0.1`nplainpkg==2.0`n",
+        (New-Object System.Text.UTF8Encoding($false)))
+
+    $env:UV_OVERRIDE = $callerOv
+    $merged = New-UnslothTorchOverridesFile -PythonExe $fakePy
+    $made += $merged
+    Check "returns a merged overrides file" ($null -ne $merged -and (Test-Path -LiteralPath $merged))
+
+    $mergedText = [System.IO.File]::ReadAllText($merged)
+
+    Check "non-ASCII caller requirement survives the merge (no '?' substitution)" `
+        ($mergedText -match "caf${acute}pkg==1\.0" -and $mergedText -notmatch 'caf\?pkg')
+    Check "the caller's relative include is rebased, not carried as a relative line" `
+        ($mergedText -notmatch '(?m)^\s*-r\s')
+    Check "and its contents come across instead" ($mergedText -match '(?m)^idna==3\.6$')
+
+    # Guards on the behaviour that already worked, so the fix cannot regress it.
+    Check "frozen torch trio is pinned first" ($mergedText -match '^torch==2\.11\.0\+cu130')
+    Check "caller's torch-trio lines are dropped" `
+        ($mergedText -notmatch '(?m)^torch==1\.0$' -and $mergedText -notmatch '(?m)^torchvision==0\.1$')
+    Check "caller's ordinary requirements are carried over" ($mergedText -match '(?m)^plainpkg==2\.0$')
+    Check "merged file is newline terminated" ($mergedText.EndsWith("`n"))
+
+    $bytes = [System.IO.File]::ReadAllBytes($merged)
+    Check "merged file has no UTF-8 BOM" `
+        (-not ($bytes.Length -ge 3 -and $bytes[0] -eq 0xEF -and $bytes[1] -eq 0xBB -and $bytes[2] -eq 0xBF))
+
+    Remove-Item Env:UV_OVERRIDE -ErrorAction SilentlyContinue
+    $bare = New-UnslothTorchOverridesFile -PythonExe $fakePy
+    $made += $bare
+    Check "works with no caller override file" ($null -ne $bare -and (Test-Path -LiteralPath $bare))
+    if ($bare) {
+        $bareText = [System.IO.File]::ReadAllText($bare)
+        Check "bare merge carries the whole trio" `
+            ($bareText -match 'torch==2\.11\.0' -and $bareText -match 'torchvision==0\.26\.0' -and
+             $bareText -match 'torchaudio==2\.11\.0')
+    }
+
+    $SkipTorch = $true
+    Check "returns null under --no-torch" ($null -eq (New-UnslothTorchOverridesFile -PythonExe $fakePy))
+    $SkipTorch = $false
+
+    # ── a temp path with a space never reaches uv (#10722) ────────────────────────
+    # UV_OVERRIDE is space-separated itself, so only %TEMP% can hand the helper a spaced path.
+    if ($onWindows) {
+        $spacedTemp = Join-Path $work "John Doe"
+        New-Item -ItemType Directory -Path $spacedTemp -Force | Out-Null
+        $dirShort = $null
+        try { $dirShort = (New-Object -ComObject Scripting.FileSystemObject).GetFolder($spacedTemp).ShortPath } catch { }
+        # Captures the no-8.3 warning.
+        $script:substepCalls = @()
+        function substep { param($Message, $Color) $script:substepCalls += $Message }
+        Remove-Item Env:UV_OVERRIDE -ErrorAction SilentlyContinue
+        $savedTmp = $env:TMP
+        $env:TMP = $spacedTemp   # GetTempPath reads TMP first
+        try { $spaced = New-UnslothTorchOverridesFile -PythonExe $fakePy }
+        finally { $env:TMP = $savedTmp }
+        $made += $spaced
+        if ($dirShort -and -not $dirShort.Contains(" ")) {
+            Check "a spaced temp path comes back without a space" ($spaced -and -not $spaced.Contains(" "))
+            Check "the short path names a file in that same temp directory" (
+                $spaced -and (Test-Path -LiteralPath $spaced) -and ((Split-Path -Parent $spaced) -eq $dirShort))
+        } else {
+            Check "no 8.3 name: no overrides file is returned" ($null -eq $spaced)
+            Check "no 8.3 name: the file it created is removed" (@(Get-ChildItem -LiteralPath $spacedTemp).Count -eq 0)
+            Check "no 8.3 name: the fallback is announced" ($script:substepCalls.Count -gt 0)
+        }
+    } else {
+        Write-Host "  SKIP  spaced-path checks need Windows 8.3 names"
+    }
+
+    # ── the merged copy is tracked and locked down ────────────────────────────────
+    # The caller's non-torch lines land in this copy, one of which can be an authenticated URL.
+    # Three Windows-only hazards, so each is asserted behaviourally where it can be and
+    # structurally from the AST, which runs everywhere.
+
+    $env:UV_OVERRIDE = $callerOv
+    $script:TorchOverridesFile = $null
+    $merged = New-UnslothTorchOverridesFile -PythonExe $fakePy
+    $made += $merged
+    Check "the merged path is tracked for the outer cleanup" ($script:TorchOverridesFile -eq $merged)
+
+    $src = $fn[0].Extent.Text
+    $iTrack = $src.IndexOf('$script:TorchOverridesFile = $f')
+    $iWrite = $src.IndexOf('[System.IO.File]::WriteAllText(')
+    Check "the path is tracked BEFORE the write that can throw" (($iTrack -ge 0) -and ($iTrack -lt $iWrite))
+    Check "a failed write removes the file it created" ($src -match 'catch \{\s*\r?\n\s*Remove-UnslothTempFileQuietly -Path \$f')
+    # Space-free is not sufficient for an 8.3 alias: a volume can hand back a name that does not
+    # resolve, and this alias is both uv's --overrides argument and the caller's delete target, so
+    # an unresolvable one fails the install and then throws on the way out (#11290).
+    Check "the 8.3 alias is accepted only once it resolves" (
+        $src -match 'Test-Path -LiteralPath \$short -PathType Leaf')
+    Check "the give-up branch clears the path it just deleted" (
+        ([regex]::Matches($src, '\$script:TorchOverridesFile = \$null')).Count -eq 2)
+
+    # Get-Content decodes a BOM-less file with the ANSI code page on PS 5.1, which is where the
+    # mojibake came from. pwsh on Linux defaults to UTF-8, so the round trip cannot fail here
+    # even unfixed; the assertion holding the fix in place is the one on the reader.
+    # The reading moved into Get-WoaRequirementEntries; the non-ASCII check above holds it.
+    $scanSrc = ($ast.FindAll({ param($n)
+        $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
+        $n.Name -eq "Get-WoaRequirementEntries"
+    }, $true))[0].Extent.Text
+    Check "the caller's override is read as UTF-8, not by the shell's default codepage" (
+        ($scanSrc -match '\[System\.IO\.File\]::ReadAllLines\(') -and
+        ($src -notmatch 'Get-Content -LiteralPath \$ovFile')
+    )
+    Check "the inherited ACL is replaced rather than kept" (
+        ($src -match 'SetAccessRuleProtection\(\$true, \$false\)') -and ($src -match 'Set-Acl -LiteralPath \$f')
+    )
+}
+finally {
+    if ($null -eq $savedOverride) { Remove-Item Env:UV_OVERRIDE -ErrorAction SilentlyContinue }
+    else { $env:UV_OVERRIDE = $savedOverride }
+    foreach ($m in $made) { if ($m) { Remove-Item -LiteralPath $m -Force -ErrorAction SilentlyContinue } }
+    Remove-Item -LiteralPath $work -Recurse -Force -ErrorAction SilentlyContinue
+}
+
+Write-Host ""
+if ($failures -gt 0) {
+    Write-Host "FAILED ($failures)" -ForegroundColor Red
+    exit 1
+}
+Write-Host "All New-UnslothTorchOverridesFile checks passed" -ForegroundColor Green
+exit 0

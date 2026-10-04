@@ -75,7 +75,9 @@ def test_every_denial_route_reports_instead_of_proceeding():
     assert '$llamaGitState = Get-PathState -Path (Join-Path $LlamaCppDir ".git")' in SETUP_PS1
     assert '$llamaGitState -eq "Denied"' in SETUP_PS1
     assert "$pathState = Get-PathState -Path $Path -PathType Container" in SETUP_PS1
-    assert '$StudioHomeIsCustom -and $pathState -eq "Denied"' in SETUP_PS1
+    # $isCustomRoot is the parameter form of $StudioHomeIsCustom: the runtime children pass
+    # $RuntimeRootIsCustom, which a master root widens, and it defaults to the other flag.
+    assert '$isCustomRoot -and $pathState -eq "Denied"' in SETUP_PS1
     # The junction path replaces this destination, so it needs its own stop.
     assert "$destState = Get-PathState -Path $LlamaCppDir" in SETUP_PS1
     assert '$destState -eq "Denied"' in SETUP_PS1
@@ -125,11 +127,12 @@ def test_ownership_guard_distinguishes_denied_from_unowned():
         in guard
     )
     assert '$markerState -eq "Denied"' in guard
-    # The old wording blamed ownership, which is unknowable while the tree is
-    # unreadable; it must stay for the genuinely-unowned case only.
+    # The old wording blamed ownership, which is unknowable while the tree is unreadable; it must stay for the
+    # genuinely-unowned case only.
     assert "is not marked as an Unsloth-owned $Label" in guard
     # Both stops stay gated, so default-home installs behave exactly as before.
-    assert guard.count("$StudioHomeIsCustom -and") >= 3
+    assert "$isCustomRoot = $StudioHomeIsCustom" in guard
+    assert guard.count("$isCustomRoot -and") >= 3
 
 
 def test_no_bare_test_path_probes_inside_the_llama_install_tree():
@@ -321,7 +324,7 @@ def test_the_source_build_denial_never_advises_deleting_an_unproven_tree():
     block = _slice("$llamaBinState = ", "$WillBuildLlamaFromSource")
     denials = [ln.strip() for ln in block.splitlines() if "Exit-PathAccessDenied" in ln]
     assert len(denials) >= 2, denials
-    assert all(d.endswith("-OwnershipUnverified:$StudioHomeIsCustom") for d in denials), denials
+    assert all(d.endswith("-OwnershipUnverified:$RuntimeRootIsCustom") for d in denials), denials
     assert all(d.startswith("Exit-PathAccessDenied -Path $LlamaCppDir ") for d in denials), denials
 
 
@@ -362,17 +365,19 @@ def test_the_whisper_phase_survives_an_unreadable_whisper_tree():
         r'if \(\$NonFatal\) \{ return "Denied" \}\n\s*Exit-PathAccessDenied -Path \$Path', guard
     )
     assert len(paired) == guard.count("Exit-PathAccessDenied -Path $Path"), guard
-    # No unpaired return: one above the custom-home gate would call a fresh
-    # install unreadable.
+    # No unpaired return: one above the custom-home gate would call a fresh install unreadable.
     assert len(paired) == guard.count('if ($NonFatal) { return "Denied" }'), guard
     assert len(paired) >= 3, guard
     # Only the denial is handed back; an unowned tree must still stop.
     assert 'Exit-SetupFailure "$Label path is not an Unsloth-owned install' in guard
     whisper = _whisper_phase()
-    assert '-Label "whisper.cpp install" -NonFatal) -eq "Denied"' in whisper, whisper
+    assert (
+        '-Label "whisper.cpp install" -NonFatal -IsCustom $RuntimeRootIsCustom) -eq "Denied"'
+        in whisper
+    ), whisper
     # Scoped to the new branch: both phrases occur elsewhere in the phase, so a
     # phase-wide match proves nothing about this branch.
-    marker = '-NonFatal) -eq "Denied") {'
+    marker = '-NonFatal -IsCustom $RuntimeRootIsCustom) -eq "Denied") {'
     assert marker in whisper, whisper
     denial = whisper.split(marker, 1)[1].split("\n} elseif", 1)[0]
     assert re.search(r'^\s*step "whisper\.cpp" ', denial, re.M), denial
@@ -381,8 +386,7 @@ def test_the_whisper_phase_survives_an_unreadable_whisper_tree():
     # The whole point is that this stays non-fatal.
     assert "Exit-SetupFailure" not in denial, denial
     assert not re.search(r"\bexit \d", denial), denial
-    # The skip must precede the branch whose guard would exit. Anchored on that
-    # branch's body, which survives a hardening of its own probe.
+    # The skip must precede the branch whose guard would exit.
     body = "$whisperArgs = @("
     assert body in whisper, whisper
     assert whisper.index("-NonFatal") < whisper.index(body)
@@ -391,7 +395,7 @@ def test_the_whisper_phase_survives_an_unreadable_whisper_tree():
 def test_the_whisper_skip_stays_behind_the_installer_gate():
     """The guard used to live inside the installer branch, so a tree without the
     installer was a no-op. Hoisting it must not make that case fatal."""
-    marker = "-NonFatal) -eq"
+    marker = "-NonFatal -IsCustom $RuntimeRootIsCustom) -eq"
     whisper = _whisper_phase()
     assert marker in whisper, whisper
     head = whisper.split(marker, 1)[0]

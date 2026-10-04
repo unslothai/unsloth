@@ -23,11 +23,13 @@ from loggers import get_logger
 from models.data_recipe import RecipePayload, ValidateError, ValidateResponse
 from utils.utils import safe_error_detail, safe_curated_detail, log_and_http_error
 
+from .jobs import _resolve_seed_endpoint
+
 logger = get_logger(__name__)
 router = APIRouter()
 
-# A stdio provider is a command this host would run, so only a UI session may
-# supply one. Annotated, not a Depends default, so a direct call gets False.
+# A stdio provider is a command this host would run, so only a UI session may supply one. Annotated, not a
+# Depends default, so a direct call gets False.
 ViaApiKey = Annotated[bool, Depends(authenticated_via_api_key)]
 
 _GITHUB_VALIDATE_NOTE = (
@@ -78,6 +80,20 @@ def _validate_github_seed_static(source: dict[str, Any]) -> list[ValidateError]:
     return errors
 
 
+def _all_blocks_dropped_message(columns: list[Any]) -> str:
+    # Reword only: Data Designer's profiler also fails when no generated column is kept (#10836).
+    names = [
+        column.name
+        for column in columns
+        if getattr(column, "drop", False) and column.name != "_internal_row_id"
+    ]
+    listed = f" ({', '.join(names)})" if names else ""
+    return (
+        f'Every block is set to "Keep out of final dataset"{listed}. Turn that off on at least '
+        "one block: source data fields cannot be the only columns in the output."
+    )
+
+
 def _collect_validation_errors(recipe: dict[str, Any]) -> list[ValidateError]:
     try:
         from data_designer.engine.compiler import (
@@ -116,7 +132,10 @@ def _collect_validation_errors(recipe: dict[str, Any]) -> list[ValidateError]:
             continue
         code = getattr(violation.type, "value", None)
         path = violation.column if violation.column else None
-        message = str(violation.message).strip() or "Validation failed."
+        if code == "all_columns_dropped":
+            message = _all_blocks_dropped_message(config.columns)
+        else:
+            message = str(violation.message).strip() or "Validation failed."
         errors.append(
             ValidateError(
                 message = message,
@@ -128,11 +147,8 @@ def _collect_validation_errors(recipe: dict[str, Any]) -> list[ValidateError]:
 
 
 def _patch_local_providers(recipe: dict[str, Any]) -> None:
-    """Strip is_local and fill a dummy endpoint so validation doesn't choke.
-
-    Strict `is True` matches _inject_local_providers: truthy non-boolean values
-    aren't treated as local.
-    """
+    """Strip is_local and fill a dummy endpoint so validation doesn't choke. Strict `is True` matches
+    _inject_local_providers: truthy non-boolean values aren't treated as local."""
     for provider in recipe.get("model_providers", []):
         if not isinstance(provider, dict):
             continue
@@ -152,6 +168,7 @@ def validate(payload: RecipePayload, via_api_key: ViaApiKey = False) -> Validate
         require_ui_session_for_local_commands(via_api_key)
 
     _patch_local_providers(recipe)
+    _resolve_seed_endpoint(recipe)
 
     github_source = _github_seed_source(recipe)
     if github_source is not None:
@@ -161,10 +178,8 @@ def validate(payload: RecipePayload, via_api_key: ViaApiKey = False) -> Validate
         try:
             build_config_builder(recipe)
         except ModuleNotFoundError as exc:
-            # data_designer is an optional runtime dep; static validation passed
-            # and full validation is deferred to run start, so a missing import
-            # shouldn't block the recipe. Restrict the bypass to data_designer so
-            # other ImportErrors still surface as failures.
+            # data_designer is an optional runtime dep and full validation is deferred to run start, so only ITS
+            # ImportError is bypassed; others still fail.
             if not (exc.name or "").startswith("data_designer"):
                 raise
             logger.debug(
@@ -202,7 +217,12 @@ def validate(payload: RecipePayload, via_api_key: ViaApiKey = False) -> Validate
             exc_info = True,
         )
         detail = safe_curated_detail(exc, fallback = "Validation failed.")
-        parsed_errors = _collect_validation_errors(recipe)
+        try:
+            parsed_errors = _collect_validation_errors(recipe)
+        except Exception:
+            # It re-reads the seed, so an unreadable one raises here too; escaping turns an
+            # answerable "this recipe is wrong" into a 500.
+            parsed_errors = []
         return ValidateResponse(
             valid = False,
             errors = parsed_errors or [ValidateError(message = detail)],

@@ -4,7 +4,10 @@
 import { ArchiveIcon } from "lucide-react";
 import type { FC } from "react";
 
-import type { ContextTruncation } from "@/features/chat/utils/context-truncation";
+import {
+  type ContextTruncation,
+  promptWasShortened,
+} from "@/features/chat/utils/context-truncation";
 
 /**
  * Tells the user their conversation was compacted, on the turn where it STARTED.
@@ -16,12 +19,12 @@ import type { ContextTruncation } from "@/features/chat/utils/context-truncation
  *
  * Rendered once per COMPACTION, gated by the caller, not once per compacted turn: a
  * thread past its window refits on every request, so per-turn would mean a notice on
- * every reply forever. The caller shows this only when the eviction boundary moved.
+ * every reply forever. The caller shows this when the boundary moved or a checkpoint started.
  */
 export const CompactionNotice: FC<{ truncation: ContextTruncation }> = ({
   truncation,
 }) => {
-  if (!truncation?.fits || !truncation.dropped_messages) return null;
+  if (!promptWasShortened(truncation)) return null;
 
   const dropped = truncation.dropped_messages;
   const archived = truncation.archived_messages ?? 0;

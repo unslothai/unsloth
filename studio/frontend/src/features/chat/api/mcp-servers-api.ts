@@ -4,13 +4,29 @@
 import { authFetch } from "@/features/auth";
 import { formatFastApiDetail } from "@/lib/format-fastapi-error";
 
+import {
+  getMcpServerMutationEpoch,
+  readAfterPendingMcpServerMutations,
+  readMcpServerMutationSnapshot,
+  trackMcpServerMutation,
+} from "./mcp-server-mutation-tracker";
+
+export type McpImageInputMapping = {
+  tool: string;
+  field: string;
+  encoding: "base64" | "data_url";
+};
+
 export interface McpServerConfig {
   id: string;
+  builtin_id: string | null;
   display_name: string;
   url: string;
   headers: Record<string, string>;
   is_enabled: boolean;
   use_oauth: boolean;
+  image_input_mappings?: McpImageInputMapping[];
+  image_mappings_active?: boolean;
   created_at: string;
   updated_at: string;
 }
@@ -21,11 +37,70 @@ export interface McpServerProbeResult {
   error: string | null;
 }
 
+export interface McpBuiltinConfig {
+  builtin_id: "blender";
+  display_name: string;
+  server_id: string | null;
+  is_enabled: boolean;
+  available: boolean;
+  unavailable_reason: string | null;
+  port: number;
+  blender_path: string;
+  min_blender_version: string;
+}
+
+export interface BlenderMcpSettings {
+  port: number;
+  blender_path: string;
+}
+
+export function listMcpBuiltins(
+  waitForPendingMutations = true,
+): Promise<McpBuiltinConfig[]> {
+  const read = () => mcpRequest<McpBuiltinConfig[]>("/builtins");
+  return waitForPendingMutations
+    ? readAfterPendingMcpServerMutations(read)
+    : readMcpServerMutationSnapshot(read);
+}
+
+export function updateBlenderMcp(
+  payload: BlenderMcpSettings & { is_enabled: boolean; consent: boolean },
+): Promise<McpBuiltinConfig> {
+  return trackMcpServerMutation(
+    mcpRequest("/builtins/blender", { method: "PUT", body: payload }),
+  );
+}
+
+export function testBlenderMcp(
+  payload: BlenderMcpSettings & { consent: boolean },
+): Promise<
+  McpServerProbeResult & {
+    blender_ready?: boolean;
+    blender_error?: string | null;
+  }
+> {
+  return mcpRequest("/builtins/blender/test", {
+    method: "POST",
+    body: payload,
+  });
+}
+
 export interface McpServerImportResult {
   created: McpServerConfig[];
   skipped: string[];
   errors: string[];
 }
+
+export interface McpStdioCommand {
+  command: string;
+  arguments: string[];
+}
+
+let mcpServerListRequest: Promise<McpServerConfig[]> | null = null;
+let mcpServerSettlementListRequest: {
+  minimumEpoch: number;
+  promise: Promise<McpServerConfig[]>;
+} | null = null;
 
 function parseErrorText(status: number, body: unknown): string {
   if (body && typeof body === "object") {
@@ -53,8 +128,56 @@ async function mcpRequest<T>(
   return json as T;
 }
 
-export function listMcpServers(): Promise<McpServerConfig[]> {
-  return mcpRequest("/");
+export function listMcpServers({
+  waitForPendingMutations = true,
+  minimumMutationEpoch,
+}: {
+  waitForPendingMutations?: boolean;
+  minimumMutationEpoch?: number;
+} = {}): Promise<McpServerConfig[]> {
+  if (!waitForPendingMutations) {
+    const requestedEpoch = minimumMutationEpoch ?? getMcpServerMutationEpoch();
+    if (
+      mcpServerSettlementListRequest &&
+      mcpServerSettlementListRequest.minimumEpoch >= requestedEpoch
+    ) {
+      return mcpServerSettlementListRequest.promise;
+    }
+    const request = readMcpServerMutationSnapshot(() =>
+      mcpRequest<McpServerConfig[]>("/"),
+    );
+    const slot = { minimumEpoch: requestedEpoch, promise: request };
+    mcpServerSettlementListRequest = slot;
+    void request.then(
+      () => {
+        if (mcpServerSettlementListRequest === slot) {
+          mcpServerSettlementListRequest = null;
+        }
+      },
+      () => {
+        if (mcpServerSettlementListRequest === slot) {
+          mcpServerSettlementListRequest = null;
+        }
+      },
+    );
+    return request;
+  }
+
+  if (mcpServerListRequest) return mcpServerListRequest;
+
+  const request = readAfterPendingMcpServerMutations(() =>
+    mcpRequest<McpServerConfig[]>("/"),
+  );
+  mcpServerListRequest = request;
+  void request.then(
+    () => {
+      if (mcpServerListRequest === request) mcpServerListRequest = null;
+    },
+    () => {
+      if (mcpServerListRequest === request) mcpServerListRequest = null;
+    },
+  );
+  return request;
 }
 
 export function createMcpServer(payload: {
@@ -63,17 +186,21 @@ export function createMcpServer(payload: {
   headers?: Record<string, string>;
   isEnabled?: boolean;
   useOauth?: boolean;
+  imageInputMappings?: McpImageInputMapping[];
 }): Promise<McpServerConfig> {
-  return mcpRequest("/", {
-    method: "POST",
-    body: {
-      display_name: payload.displayName,
-      url: payload.url,
-      headers: payload.headers ?? null,
-      is_enabled: payload.isEnabled ?? true,
-      use_oauth: payload.useOauth ?? false,
-    },
-  });
+  return trackMcpServerMutation(
+    mcpRequest("/", {
+      method: "POST",
+      body: {
+        display_name: payload.displayName,
+        url: payload.url,
+        headers: payload.headers ?? null,
+        is_enabled: payload.isEnabled ?? true,
+        use_oauth: payload.useOauth ?? false,
+        image_input_mappings: payload.imageInputMappings ?? [],
+      },
+    }),
+  );
 }
 
 export function updateMcpServer(
@@ -85,25 +212,39 @@ export function updateMcpServer(
     headers?: Record<string, string> | null;
     isEnabled?: boolean;
     useOauth?: boolean;
+    imageInputMappings?: McpImageInputMapping[];
   },
 ): Promise<McpServerConfig> {
   const body: Record<string, unknown> = {};
-  if (payload.displayName !== undefined) body.display_name = payload.displayName;
+  if (payload.displayName !== undefined)
+    body.display_name = payload.displayName;
   if (payload.url !== undefined) body.url = payload.url;
   if (payload.headers !== undefined) body.headers = payload.headers;
   if (payload.isEnabled !== undefined) body.is_enabled = payload.isEnabled;
   if (payload.useOauth !== undefined) body.use_oauth = payload.useOauth;
-  return mcpRequest(`/${serverId}`, { method: "PUT", body });
+  if (payload.imageInputMappings !== undefined)
+    body.image_input_mappings = payload.imageInputMappings;
+  return trackMcpServerMutation(
+    mcpRequest(`/${serverId}`, { method: "PUT", body }),
+  );
 }
 
 export function deleteMcpServer(serverId: string): Promise<void> {
-  return mcpRequest(`/${serverId}`, { method: "DELETE" });
+  return trackMcpServerMutation(
+    mcpRequest(`/${serverId}`, { method: "DELETE" }),
+  );
 }
 
 export function refreshMcpServerTools(
   serverId: string,
 ): Promise<McpServerProbeResult> {
   return mcpRequest(`/${serverId}/refresh`, { method: "POST" });
+}
+
+export function listMcpServerTools(
+  serverId: string,
+): Promise<{ name: string; inputSchema?: unknown }[]> {
+  return mcpRequest(`/${serverId}/tools`);
 }
 
 export function testMcpServer(payload: {
@@ -121,11 +262,74 @@ export function testMcpServer(payload: {
   });
 }
 
-// Bulk-import servers from a standard mcpServers JSON config (Claude Desktop,
-// Cursor, Cline, VS Code). The backend skips duplicates and reports per-entry
-// errors instead of failing the whole batch.
+export function decodeMcpStdioCommand(url: string): Promise<McpStdioCommand> {
+  return mcpRequest("/stdio/decode", {
+    method: "POST",
+    body: { url },
+  });
+}
+
+export function encodeMcpStdioCommand(payload: McpStdioCommand): Promise<{
+  url: string;
+}> {
+  return mcpRequest("/stdio/encode", {
+    method: "POST",
+    body: payload,
+  });
+}
+
+// Bulk-import servers from a standard mcpServers JSON config (Claude Desktop, Cursor, Cline, VS
+// Code). The backend skips duplicates and reports per-entry errors instead of failing the batch.
 export function importMcpServers(
   config: unknown,
 ): Promise<McpServerImportResult> {
-  return mcpRequest("/import", { method: "POST", body: { config } });
+  return trackMcpServerMutation(
+    mcpRequest("/import", { method: "POST", body: { config } }),
+  );
+}
+
+export type McpUiCspField =
+  "connectDomains" | "resourceDomains" | "frameDomains" | "baseUriDomains";
+
+export interface McpUiResource {
+  uri: string;
+  mime_type: string;
+  text: string;
+  blob?: string | null;
+  ui: { csp?: Partial<Record<McpUiCspField, string[]>> };
+  contents?: { uri: string; mimeType?: string; text?: string; blob?: string }[];
+}
+
+export interface McpUiToolCallResult {
+  content: Record<string, unknown>[];
+  structured_content: Record<string, unknown> | null;
+  is_error: boolean;
+  meta: Record<string, unknown> | null;
+}
+
+export function readMcpUiResource(
+  serverId: string,
+  uri: string,
+  scope: { threadId?: string; sessionId?: string },
+): Promise<McpUiResource> {
+  const query = new URLSearchParams({ uri });
+  if (scope.threadId) query.set("thread_id", scope.threadId);
+  if (scope.sessionId) query.set("session_id", scope.sessionId);
+  return mcpRequest(`/${serverId}/ui-resource?${query}`);
+}
+
+/** `serverId` comes from the tool part that drew the frame, never the widget. A 409 rejects with
+ *  Error("approval_required"). */
+export function callMcpUiTool(
+  serverId: string,
+  body: {
+    tool_name: string;
+    arguments: Record<string, unknown>;
+    thread_id: string | null;
+    session_id: string | null;
+    permission_mode: string;
+    approved: boolean;
+  },
+): Promise<McpUiToolCallResult> {
+  return mcpRequest(`/${serverId}/ui-tool-call`, { method: "POST", body });
 }

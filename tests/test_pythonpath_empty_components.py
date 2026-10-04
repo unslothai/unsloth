@@ -55,11 +55,10 @@ def _stage(monkeypatch, tmp_path, pythonpath):
         IF, "importlib_version", lambda name: "0.18.0" if name == "torchao" else "0"
     )
     monkeypatch.setattr(IF, "_torch_really_has", lambda F, name: False)
-    # Keep the generated sitecustomize in tmp_path, so no staged directory
-    # is left behind in the real temp dir.
+    # Keep the generated sitecustomize in tmp_path, so no staged directory is left behind in the real temp dir.
     monkeypatch.setattr("tempfile.gettempdir", lambda: str(tmp_path))
-    # monkeypatch.setenv/delenv restores PYTHONPATH at teardown even though
-    # the function writes os.environ directly, so no restore fixture is needed.
+    # monkeypatch.setenv/delenv restores PYTHONPATH at teardown even though the function writes os.environ directly, so
+    # no restore fixture is needed.
     if pythonpath is None:
         monkeypatch.delenv("PYTHONPATH", raising = False)
     else:

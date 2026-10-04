@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Shared clipboard inspection. The file paste path and the long text paste path
-// must agree on what counts as a file, or a paste falls through both or neither.
+// Shared clipboard inspection. The file paste path and the long text paste path must agree on what
+// counts as a file, or a paste falls through both or neither.
 
 function clipboardTypes(clipboardData: DataTransfer): string[] {
   return Array.from(clipboardData.types, (type) => type.toLowerCase());
@@ -43,8 +43,8 @@ export function clipboardHasFileEntries(clipboardData: DataTransfer): boolean {
   return Array.from(clipboardData.items).some((item) => item.kind === "file");
 }
 
-// Native (Tauri) images and copied files are advertised by type only, with no
-// entry in files or items, and only pasteClipboardFiles can read them.
+// Native (Tauri) images and copied files are advertised by type only, with no entry in files or
+// items, and only pasteClipboardFiles can read them.
 export function clipboardAdvertisesFiles(clipboardData: DataTransfer): boolean {
   const types = clipboardTypes(clipboardData);
   return (

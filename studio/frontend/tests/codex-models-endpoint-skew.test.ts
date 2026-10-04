@@ -121,7 +121,7 @@ test("a body without a source field is not mistaken for a plan catalog", async (
 });
 
 test("a gateway 401 on the unknown path still keeps the selection", async () => {
-  // Kept last: authFetch reads every 401 as an expired Studio session and runs the
+  // Kept last: authFetch reads every 401 as an expired Unsloth session and runs the
   // refresh-and-retry path, which is why the backend answers a dead ChatGPT connection
   // with 200 + source:"reauthorization_required" instead of a 401. Whatever that path
   // decides, the picker must still land on the seed with the selection intact.
