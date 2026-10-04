@@ -1,16 +1,10 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""cuDNN fused attention for the Unsloth stable-diffusion.cpp fork.
+"""A CUDA 12 cuDNN for sd.cpp fork builds with cuDNN attention (sm80+ Linux), named to the child via GGML_CUDA_CUDNN_LIB.
 
-A fork build made with ``GGML_CUDA_CUDNN=ON`` opens ``libcudnn.so.9`` with ``dlopen`` the first time an attention op
-runs and falls back to the ggml kernels when it cannot. It only gets faster with a cuDNN 9 built for the SAME CUDA major
-as the binary: torch cu130's own cuDNN (CUDA 13) loads, builds no plan inside a CUDA 12 binary, and falls back.
-
-So for an NVIDIA sm80+ card on Linux, and only when the binary carries the cuDNN build, this module provides a
-matching cuDNN from PyPI in a Studio-managed directory (``pip install --target``, never the venv: the CUDA 12 and
-CUDA 13 wheels both write ``nvidia/cudnn/lib/libcudnn.so.9``, so installing one beside torch would replace torch's own)
-and names it to the sd.cpp child through ``GGML_CUDA_CUDNN_LIB``. Nothing here loads cuDNN into this process.
+torch cu130's cuDNN (CUDA 13) loads in a CUDA 12 binary but builds no plan. Installed with ``--target`` outside the venv:
+the cu12 and cu13 wheels both write ``nvidia/cudnn/lib/libcudnn.so.9``. Never loaded into this process.
 """
 
 from __future__ import annotations
@@ -32,24 +26,19 @@ from loggers import get_logger
 
 logger = get_logger(__name__)
 
-# auto (default) installs on demand; 0 / false / off never installs and never sets the env.
 CUDNN_INSTALL_ENV = "UNSLOTH_SD_CPP_CUDNN"
-# Read by the fork (cudnn-attn-graph.cpp): the library to dlopen. A user-exported value always wins.
 GGML_CUDNN_LIB_ENV = "GGML_CUDA_CUDNN_LIB"
-# The fork's own kill switch; 0 restores the ggml kernels everywhere.
 GGML_CUDNN_ATTN_ENV = "GGML_CUDA_CUDNN_ATTN"
-# The fork's eligibility floor (cc >= 80); below it the library is never opened.
+# The fork never opens cuDNN below cc 8.0.
 CUDNN_MIN_CC = (8, 0)
 
-# Present in every binary built with GGML_CUDA_CUDNN=ON (the getenv name), absent otherwise.
 _CUDNN_BUILD_MARKER = b"GGML_CUDA_CUDNN_LIB"
 _CUDART_MARKERS = {12: b"libcudart.so.12\x00", 13: b"libcudart.so.13\x00"}
 
 
 @dataclass(frozen = True)
 class CudnnRuntime:
-    """The exact wheels tested for one CUDA major. Exact pins, never a floor: a different cuDNN release can pick
-    other SDPA engines, and only this one was measured."""
+    """Exact pins, never a floor: another cuDNN release can pick other SDPA engines, and only this one was measured."""
 
     cuda_major: int
     cudnn_package: str
@@ -59,7 +48,6 @@ class CudnnRuntime:
 
     @property
     def cudnn_numeric(self) -> int:
-        # cudnnGetVersion(): major * 10000 + minor * 100 + patch
         major, minor, patch = (int(x) for x in self.cudnn_version.split(".")[:3])
         return major * 10000 + minor * 100 + patch
 
@@ -74,9 +62,7 @@ class CudnnRuntime:
         ]
 
 
-# The prebuilt is a CUDA 12.8 build. NVRTC is what cuDNN's runtime-compiled fused attention engines dlopen; the cuDNN
-# libraries find it through their RUNPATH ($ORIGIN/../../cuda_nvrtc/lib), so the two wheels share one --target dir.
-# cuBLAS (the other wheel dependency) is not installed: the binary already links the copy the prebuilt bundles.
+# cuDNN's runtime-compiled engines find NVRTC via RUNPATH ($ORIGIN/../../cuda_nvrtc/lib); cuBLAS is the prebuilt's own.
 CUDNN_RUNTIMES: dict[int, CudnnRuntime] = {
     12: CudnnRuntime(12, "nvidia-cudnn-cu12", "9.27.0.42", "nvidia-cuda-nvrtc-cu12", "12.8.93"),
 }
@@ -84,11 +70,9 @@ CUDNN_RUNTIMES: dict[int, CudnnRuntime] = {
 _LIB_RELPATH = Path("nvidia") / "cudnn" / "lib" / "libcudnn.so.9"
 _NVRTC_RELPATH = Path("nvidia") / "cuda_nvrtc" / "lib" / "libnvrtc.so.12"
 _MARKER_NAME = "unsloth-cudnn.json"
-# Two ~0.85 GB wheels unpack to ~1.4 GB; the staging copy and the download cache both sit on this volume.
 _MIN_FREE_BYTES = 4 << 30
 _INSTALL_TIMEOUT_S = 1800
 _VERIFY_TIMEOUT_S = 120
-# The holder installs, then verifies, then publishes.
 _LOCK_TIMEOUT_S = _INSTALL_TIMEOUT_S + _VERIFY_TIMEOUT_S + 120
 _PYPI_PROBE_URL = "https://pypi.org/simple/nvidia-cudnn-cu12/"
 _CANCELLED = "cancelled"
@@ -96,18 +80,18 @@ _CANCELLED = "cancelled"
 _SCAN_MEMO: dict[tuple[str, int, int], tuple[bool, Optional[int]]] = {}
 _SCAN_LOCK = threading.Lock()
 _INSTALL_LOCK = threading.Lock()
-# One failed install per process and runtime: a load must not retry a 0.85 GB download that just failed.
+# Never retry a 0.85 GB download that just failed in this process.
 _FAILED: dict[int, str] = {}
 
 StatusCb = Optional[Callable[[str], None]]
 
 
 class InstallCancelled(Exception):
-    """The load that asked for the install was cancelled; nothing is published or remembered as failed."""
+    """Not memoised: the next load installs."""
 
 
 class _Refused(str):
-    """A preflight refusal (disk, network): rechecked on the next load, never remembered."""
+    """Disk / network preflight refusal: rechecked next load, never memoised."""
 
 
 def _off(value: Optional[str]) -> bool:
@@ -120,7 +104,6 @@ def install_enabled(environ: Optional[dict] = None) -> bool:
 
 
 def _scan_file(path: Path) -> tuple[bool, Optional[int]]:
-    """(carries the cuDNN build marker, CUDA runtime major it links) for one ELF, by a streamed byte scan."""
     try:
         st = path.stat()
     except OSError:
@@ -154,8 +137,7 @@ def _scan_file(path: Path) -> tuple[bool, Optional[int]]:
 
 
 def binary_cudnn_build(binary: Optional[str]) -> tuple[bool, Optional[int]]:
-    """Whether ``binary`` (sd-cli or sd-server) was built with the fork's cuDNN attention, and the CUDA runtime major
-    it links. ggml may be linked in statically (local builds) or ship as ``libggml*.so`` beside the binary."""
+    """(built with cuDNN attention, linked CUDA major); ggml may be static or a ``libggml*.so`` beside the binary."""
     if not binary:
         return False, None
     path = Path(binary)
@@ -171,7 +153,6 @@ def binary_cudnn_build(binary: Optional[str]) -> tuple[bool, Optional[int]]:
         carries = carries or lib_carries
         major = major or lib_major
     if major is None:
-        # A dynamically linked binary names libcudart in its own NEEDED list; a bundle may also carry it beside.
         for m in _CUDART_MARKERS:
             if (path.resolve().parent / f"libcudart.so.{m}").exists():
                 major = m
@@ -198,7 +179,6 @@ def _verified_library(directory: Path, runtime: CudnnRuntime) -> Optional[str]:
 
 
 def installed_library(runtime: CudnnRuntime, root: Optional[Path] = None) -> Optional[str]:
-    """The verified managed library for ``runtime``, or None."""
     return _verified_library((root or managed_root()) / runtime.dirname, runtime)
 
 
@@ -230,8 +210,6 @@ def _reachable(url: str) -> bool:
 
 
 def _installer_config(uv: Optional[str]) -> dict[str, Any]:
-    """The NVFP4 installer's reading of env + uv / pip config files: ``mirror`` (pypi.org may not be the index) and
-    ``unprobed`` (a proxy urllib would not use)."""
     try:
         from .diffusion_nvfp4_install import _installer_config as read
         return read(uv, subprocess.run)
@@ -246,10 +224,8 @@ def install_command(
     *,
     own_index: bool = False,
 ) -> list[str]:
-    """``--target`` a Studio-managed dir, ``--no-deps``, wheels only: nothing in the venv can change."""
     try:
-        # Carries a pip-only mirror over to uv and a uv-only one over to pip (each ignores the other's env), unless
-        # the installer's own config already names its index.
+        # uv ignores PIP_INDEX_URL and pip ignores uv's; this carries each over.
         from .diffusion_nvfp4_install import _installer_prefix
         cmd = _installer_prefix(uv, own_index = own_index)
     except Exception:  # noqa: BLE001
@@ -272,7 +248,7 @@ def install_command(
 
 
 def _verify_command(lib: Path) -> list[str]:
-    # A fresh interpreter: a CUDA 12 cuDNN must never be mapped into this process beside torch's own.
+    # Fresh interpreter: a CUDA 12 cuDNN must never be mapped beside torch's own.
     code = (
         "import ctypes,sys;"
         "h=ctypes.CDLL(sys.argv[1],mode=ctypes.RTLD_LOCAL);"
@@ -282,7 +258,6 @@ def _verify_command(lib: Path) -> list[str]:
 
 
 def _venv_snapshot() -> dict[str, str]:
-    """torch and every nvidia-* distribution in this environment: the install must leave them all as they were."""
     try:
         import importlib.metadata as md
     except Exception:  # noqa: BLE001
@@ -296,7 +271,7 @@ def _venv_snapshot() -> dict[str, str]:
 
 
 def _redact(text: str) -> str:
-    # Installer output can quote index URLs with credentials in them; it ends up in the status reason.
+    # Index URLs in installer output can carry credentials.
     try:
         from utils.log_redaction import redact_log_text
         return redact_log_text(text)
@@ -324,7 +299,7 @@ def _run(
     cancel_event: Optional[threading.Event] = None,
 ) -> tuple[bool, str]:
     env = _child_env()
-    # A symlinked or hardlinked target would break when uv's cache is pruned.
+    # A linked target breaks when uv's cache is pruned.
     env["UV_LINK_MODE"] = "copy"
     try:
         proc = subprocess.Popen(
@@ -370,8 +345,7 @@ def ensure_library(
     root: Optional[Path] = None,
     cancel_event: Optional[threading.Event] = None,
 ) -> tuple[Optional[str], Optional[str]]:
-    """``(library path, None)`` once a verified copy exists, else ``(None, why not)``. Installs at most once per process
-    and runtime; every failure leaves the sd.cpp run on its ggml kernels."""
+    """``(library, None)`` or ``(None, why not)``; a failure leaves sd.cpp on its ggml kernels."""
     root = root or managed_root()
     dest = root / runtime.dirname
     found = _verified_library(dest, runtime)
@@ -402,21 +376,18 @@ def ensure_library(
                     break
                 except Exception as exc:  # noqa: BLE001
                     if type(exc).__name__ != "Timeout":
-                        # Unwritable or full volume: not contention, so do not wait out the timeout.
                         return None, _redact(f"cannot lock {root.name}: {exc}")
                     if cancel_event is not None and cancel_event.is_set():
                         return None, _CANCELLED
                     if time.monotonic() >= deadline:
                         return None, "another Studio process is installing cuDNN"
         try:
-            # Another process may have finished while this one waited.
             found = _verified_library(dest, runtime)
             if found:
                 return found, None
             try:
                 reason = _install_locked(runtime, root, dest, status_cb, cancel_event)
             except InstallCancelled:
-                # Not a failure: the next load installs.
                 return None, _CANCELLED
             found = _verified_library(dest, runtime)
             if found:
@@ -451,7 +422,6 @@ def _install_locked(
         )
     uv = _uv_executable()
     config = _installer_config(uv)
-    # A configured mirror or an ALL_PROXY-only proxy is the installer's to reach; it reports its own failure.
     if not (config.get("mirror") or config.get("unprobed")) and not _reachable(_PYPI_PROBE_URL):
         return _Refused("pypi.org is not reachable")
     staging = Path(tempfile.mkdtemp(prefix = ".staging-", dir = str(root)))
@@ -468,7 +438,6 @@ def _install_locked(
         ok, output = _run(cmd, _INSTALL_TIMEOUT_S, cancel_event)
         after = _venv_snapshot()
         if before != after:
-            # Cannot happen with --target; if it ever does, say so loudly rather than run on a moved torch stack.
             drift = {
                 k: (before.get(k), after.get(k))
                 for k in set(before) | set(after)
@@ -501,9 +470,7 @@ def _install_locked(
             shutil.rmtree(staging, ignore_errors = True)
 
 
-# ---------------------------------------------------------------------------------------------------------------
-# Status: whether the sd.cpp child actually ran cuDNN, read off the fork's own INFO lines (printed once per process /
-# per shape, no GGML_CUDA_CUDNN_ATTN_LOG needed).
+# The fork prints these once per process / shape.
 
 _LOADED_RE = re.compile(r"cuDNN (\d+) loaded from \S+ for attention")
 _PLAN_RE = re.compile(r"cuDNN SDPA plan b=\d+ hq=\d+ hk=\d+ sq=(\d+) skv=(\d+) d=(\d+)")
@@ -512,16 +479,14 @@ _EXEC_FAIL_RE = re.compile(r"cuDNN SDPA execute failed")
 _TOO_OLD_RE = re.compile(r"reports cuDNN \d+, need 9\.0 or newer")
 
 STATE_READY = "ready"  # library named to the child, no render seen yet
-STATE_ENGAGED = "engaged"  # at least one attention shape runs on cuDNN
-STATE_FALLBACK = "fallback"  # the child kept the ggml kernels
+STATE_ENGAGED = "engaged"
+STATE_FALLBACK = "fallback"
 STATE_UNAVAILABLE = "unavailable"  # eligible, but no CUDA 12 cuDNN could be provided
-STATE_OFF = "off"  # switched off by the user
+STATE_OFF = "off"
 
 
 @dataclass
 class CudnnAttention:
-    """One load's cuDNN attention state. ``env`` goes to every sd.cpp spawn of the load; ``feed`` reads its output."""
-
     state: Optional[str] = None
     reason: Optional[str] = None
     env: tuple[tuple[str, str], ...] = ()
@@ -554,7 +519,6 @@ class CudnnAttention:
                 self.state, self.reason = STATE_ENGAGED, None
                 return
             if _EXEC_FAIL_RE.search(line):
-                # A built plan that then fails to run leaves the ggml kernels doing that attention.
                 self._render["fallbacks"] = self._render.get("fallbacks", 0) + 1
                 self.state, self.reason = (
                     STATE_FALLBACK,
@@ -565,8 +529,7 @@ class CudnnAttention:
                 self._render["fallbacks"] = self._render.get("fallbacks", 0) + 1
 
     def end_render(self, ok: bool = True) -> None:
-        """Settle a render. A reused sd-server prints nothing again, so only a still-``ready`` state moves to
-        fallback here."""
+        """A reused sd-server prints nothing again, so only a still-``ready`` state settles here."""
         with self._lock:
             seen = self._render
             self._render = {}
@@ -597,10 +560,7 @@ def plan_cudnn_attention(
     root: Optional[Path] = None,
     cancel_event: Optional[threading.Event] = None,
 ) -> CudnnAttention:
-    """What one sd.cpp load should do about cuDNN attention. Inert (state None, no env) unless every condition holds:
-    Linux, a binary built with the fork's cuDNN attention, a known NVIDIA compute capability of 8.0 or newer, and a
-    tested runtime for the binary's CUDA major. Windows, macOS, AMD, Vulkan, CPU, Turing and older, and every
-    prebuilt without the cuDNN build come back untouched."""
+    """Inert (state None, no env) unless Linux, a cuDNN-attention build, a known cc >= 8.0 and a tested CUDA major."""
     platform = sys.platform if platform is None else platform
     environ = os.environ if environ is None else environ
     if not platform.startswith("linux") or not binary or cuda_cc is None:
@@ -614,7 +574,6 @@ def plan_cudnn_attention(
         return CudnnAttention(STATE_OFF, f"{GGML_CUDNN_ATTN_ENV}=0")
     user_lib = str(environ.get(GGML_CUDNN_LIB_ENV) or "").strip()
     if user_lib:
-        # Inherited by the child unchanged; the log decides whether it engaged.
         return CudnnAttention(STATE_READY, f"{GGML_CUDNN_LIB_ENV} set by the user")
     runtime = CUDNN_RUNTIMES.get(major) if major is not None else None
     if runtime is None:

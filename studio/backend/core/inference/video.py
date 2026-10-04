@@ -3574,8 +3574,6 @@ class VideoBackend:
         if native_device != "cpu":
             from .video_minimax_h3 import h3_quant_cublas_env
             native_env += h3_quant_cublas_env(native_cuda_cc, sage = h3_sage)
-        # A fork build with cuDNN attention gets a CUDA 12 cuDNN named for its children only; inert for every other
-        # build, platform and card (see sd_cpp_cudnn.plan_cudnn_attention).
         from .sd_cpp_cudnn import CudnnAttention, plan_cudnn_attention
 
         try:
