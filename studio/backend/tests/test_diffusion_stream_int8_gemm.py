@@ -29,7 +29,12 @@ class _DiT:
 def _record_install(monkeypatch):
     seen = []
 
-    def _install(transformer, logger = None, offload_active = False, device = None):
+    def _install(
+        transformer,
+        logger = None,
+        offload_active = False,
+        device = None,
+    ):
         seen.append({"offload_active": offload_active, "device": device})
         return 7
 
@@ -81,7 +86,7 @@ def test_onload_device_is_nvidia_cuda_only(target, expected):
 
 
 def _speed_calls(path: pathlib.Path) -> list:
-    tree = ast.parse(path.read_text())
+    tree = ast.parse(path.read_text(encoding = "utf-8"))
     return [
         node
         for node in ast.walk(tree)
@@ -97,7 +102,10 @@ def test_image_backend_asks_for_the_streamed_install():
     assert len(calls) == 2
     for call in calls:
         kw = {k.arg: k.value for k in call.keywords}
-        assert isinstance(kw.get("stream_int8_gemm"), ast.Constant) and kw["stream_int8_gemm"].value is True
+        assert (
+            isinstance(kw.get("stream_int8_gemm"), ast.Constant)
+            and kw["stream_int8_gemm"].value is True
+        )
     for call in _speed_calls(_INFERENCE / "video.py"):
         assert "stream_int8_gemm" not in {k.arg for k in call.keywords}
 
@@ -133,9 +141,6 @@ def test_apply_speed_optims_passes_the_onload_device_only_when_asked(monkeypatch
     assert seen == ["cuda:2", None, "cuda:2", None]
 
 
-# ------------------------------------------------------------------------------------------------ GPU
-
-
 def _cuda_ready() -> bool:
     if not torch.cuda.is_available() or getattr(torch.version, "hip", None):
         return False
@@ -149,7 +154,9 @@ def _cuda_ready() -> bool:
     return True
 
 
-needs_cuda = pytest.mark.skipif(not _cuda_ready(), reason = "needs NVIDIA sm80+ CUDA, Triton and torchao")
+needs_cuda = pytest.mark.skipif(
+    not _cuda_ready(), reason = "needs NVIDIA sm80+ CUDA, Triton and torchao"
+)
 
 
 @pytest.fixture

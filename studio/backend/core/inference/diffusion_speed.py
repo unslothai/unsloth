@@ -65,6 +65,7 @@ _INDUCTOR_FLAGS = (
 )
 _INDUCTOR_TRITON_FLAGS = (("unique_kernel_names", "inductor_triton_unique_kernel_names"),)
 _DYNAMO_MODULE = "torch._dynamo.config"
+REDUCTION_FILTER_OPTION = "test_configs.force_filter_reduction_configs"
 _INDUCTOR_MODULE = "torch._inductor.config"
 _INDUCTOR_TRITON_MODULE = "torch._inductor.config.triton"
 
@@ -473,6 +474,7 @@ def apply_speed_optims(
 
     on_cuda = getattr(target, "device", None) == "cuda"
     family_allows_compile = bool(getattr(family, "supports_torch_compile", True))
+    filter_reductions = bool(getattr(family, "filter_reduction_configs", False))
 
     applied["vae_single_frame"] = _vae_single_frame(pipe, logger)
     # Lossless: a channels-last VAE speeds up its convs with no numeric change.
@@ -518,6 +520,7 @@ def apply_speed_optims(
                 offload_active = offload_active,
                 denoiser_offloaded = denoiser_offloaded,
                 onload_device = _onload_device(target) if stream_int8_gemm else None,
+                filter_reductions = filter_reductions,
             )
     elif (
         mode == SPEED_MAX
@@ -532,6 +535,7 @@ def apply_speed_optims(
             offload_active = offload_active,
             denoiser_offloaded = denoiser_offloaded,
             onload_device = _onload_device(target) if stream_int8_gemm else None,
+            filter_reductions = filter_reductions,
         )
 
     if applied["compiled"]:
@@ -607,8 +611,7 @@ def apply_speed_optims(
 
 
 def _onload_device(target: Any) -> Optional[str]:
-    """The CUDA device an offloaded denoiser computes on (indexed when a card was selected), else None. NVIDIA only:
-    ROCm reports device "cuda" but runs int8 weight-only, which the fused GEMM never serves."""
+    """Onload device of an offloaded denoiser, else None. NVIDIA only: ROCm runs int8 weight-only, never this GEMM."""
     if getattr(target, "device", None) != "cuda" or getattr(target, "backend", "cuda") != "cuda":
         return None
     device = getattr(target, "torch_device", None)
@@ -883,6 +886,7 @@ def _compile_repeated_blocks(
     offload_active: bool = False,
     denoiser_offloaded: Optional[bool] = None,
     onload_device: Any = None,
+    filter_reductions: bool = False,
 ) -> bool:
     dits = [
         t for t in _denoiser_dits(pipe) if callable(getattr(t, "compile_repeated_blocks", None))
@@ -916,6 +920,8 @@ def _compile_repeated_blocks(
     }
     if max_autotune:
         kwargs["mode"] = "max-autotune-no-cudagraphs"
+    if filter_reductions:
+        pin_reduction_configs(kwargs, logger)
     try:
         import torch
 
@@ -959,6 +965,8 @@ def _compile_repeated_blocks(
         unet_kwargs: dict[str, Any] = {"fullgraph": kwargs["fullgraph"], "dynamic": False}
         if max_autotune:
             unet_kwargs["mode"] = "max-autotune-no-cudagraphs"
+        if filter_reductions:
+            pin_reduction_configs(unet_kwargs, logger)
         try:
             unet.compile(**unet_kwargs)
             return True
@@ -996,10 +1004,8 @@ def _compile_repeated_blocks(
         try:
             from .diffusion_int8_gemm import install as install_int8_gemm
 
-            # Keyed on the DENOISER's placement: a group plan that streams only the encoders keeps it resident. A
-            # denoiser that moves still runs every Linear on its onload device (the offload hooks place the weights
-            # before the forward reads them), so it installs against that device now; a weight found elsewhere at
-            # call time keeps the stock path.
+            # Keyed on the DENOISER's placement (an encoder-only stream keeps it resident). A moved denoiser installs
+            # against its onload device; a weight found elsewhere at call time keeps the stock path.
             moved = offload_active if denoiser_offloaded is None else bool(denoiser_offloaded)
             if moved and onload_device is not None:
                 transformer._unsloth_int8_gemm = install_int8_gemm(
@@ -1059,6 +1065,28 @@ def _compile_repeated_blocks(
         except Exception as exc:  # noqa: BLE001 - optimisation only
             _warn(logger, "cache-hook inner compile", exc)
     return engaged
+
+
+def pin_reduction_configs(kwargs: dict[str, Any], logger: Any = None) -> bool:
+    """Keep one config per multi-config reduction instead of a per-process benchmark whose pick changes the sum order
+    (LTX-2 block RMSNorm: R0_BLOCK 4096 vs 2048 tie on B200, half the servers rendered another clip). Per-compile
+    ``options`` (``mode`` folded in), never the global knob: HunyuanVideo-1.5 is ~2% slower per step with it.
+    config.deterministic is unusable: dynamo resets it after the first frame. Returns True when engaged."""
+    if not compile_config.reduction_config_filter_available():
+        return False
+    try:
+        options = dict(kwargs.get("options") or {})
+        mode = kwargs.get("mode")
+        if mode is not None:
+            from torch._inductor import list_mode_options
+            options = {**list_mode_options(mode, kwargs.get("dynamic")), **options}
+        options[REDUCTION_FILTER_OPTION] = True
+    except Exception as exc:  # noqa: BLE001 - optimisation only
+        _warn(logger, "reduction config filter", exc)
+        return False
+    kwargs.pop("mode", None)
+    kwargs["options"] = options
+    return True
 
 
 def _install_inductor_backports(logger: Any) -> bool:
