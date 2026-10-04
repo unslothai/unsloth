@@ -18,9 +18,12 @@ AUDIO_UNSUPPORTED_CODE = "audio_unsupported_backend"
 AUDIO_RUNTIME_ERROR_CODE = "audio_runtime_error"
 
 _MAX_RUNTIME_DETAIL_CHARS = 300
-# An absolute POSIX, drive-letter or UNC path. Not after a word character, ':' or '/', so a URL's
-# "//host" and a "family:name" pair stay as written.
-_ABSOLUTE_PATH_RE = re.compile(r"(?<![\w:/])(?:/|[A-Za-z]:[\\/]|\\\\)[^\s\"'`,;]+")
+# A network URL (kept: its tokens are redact_log_text's job), else an absolute POSIX, drive-letter,
+# UNC or file:// path, also after a ':' ("path:/home/..."). A "family:name" pair has no slash.
+_ABSOLUTE_PATH_RE = re.compile(
+    r"(?P<url>\b(?:https?|wss?|ftp)://[^\s\"'`,;]+)"
+    r"|(?<![\w/])(?:file://)?(?:/|[A-Za-z]:[\\/]|\\\\)[^\s\"'`,;]+"
+)
 
 
 class AudioGenerationCancelledError(RuntimeError):
@@ -97,6 +100,8 @@ def sanitize_runtime_tail(text: str, limit: int = 280) -> str:
 
 
 def _path_tail(match: "re.Match[str]") -> str:
+    if match.group("url"):
+        return match.group("url")
     tail = match.group(0).replace("\\", "/").rstrip("/").rsplit("/", 1)[-1]
     return tail or "..."
 

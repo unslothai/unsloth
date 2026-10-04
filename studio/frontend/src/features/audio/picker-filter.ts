@@ -11,6 +11,10 @@ import {
   audioWorkflowForTask,
 } from "./workflows";
 
+// Clone-only audio.cpp families outside AUDIO_CPP_MODELS (the backend's clone-only list).
+const CLONE_ONLY_FAMILY_HINT =
+  /miotts|vevo-?2|fireredtts-?3|firered-?audio|indextts-?2[._-]?5|confucius-?4/i;
+
 export interface AudioPickerRow {
   id?: string | null;
   task?: string | null;
@@ -37,6 +41,10 @@ export function audioRowMatchesWorkflow(
   const catalogModel = audioCppModelFor(row.id);
   if (catalogModel?.workflows) {
     return catalogModel.workflows.includes(workflow);
+  }
+  // Hub search rows carry no backend workflows before download: name the clone-only families.
+  if (CLONE_ONLY_FAMILY_HINT.test(row.id ?? "")) {
+    return workflow === "clone";
   }
   const catalogTask = catalogModel?.task;
   if (catalogTask === "music") {
