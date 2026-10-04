@@ -486,6 +486,29 @@ class TestDateStaysInTheSystemTurn:
         )
         assert self.inference._apply_current_date_prompt("", object()) == ""
 
+    def test_a_tool_nudge_that_displaces_a_dated_template_default_carries_the_date(
+        self, monkeypatch
+    ):
+        from utils.current_date_prompt_settings import TEMPLATE_DATE_PROBE
+
+        monkeypatch.setattr(
+            self.inference,
+            "_local_template_default_system_prompt",
+            lambda: f"Today's Date: {TEMPLATE_DATE_PROBE}.\nYou are Granite.",
+        )
+        system = self.inference._apply_current_date_prompt("", object(), include_api_key = True)
+        assert self.inference._append_tool_nudge(system, "Use the tools.", object()) == (
+            "The current date is 2026-10-04.\n\nUse the tools."
+        )
+        assert self.inference._append_tool_nudge("Be terse.", "Use the tools.", object()) == (
+            "Be terse.\n\nUse the tools."
+        )
+        assert self.inference._append_tool_nudge("", "", object()) == ""
+
+    def test_a_tool_nudge_alone_stays_undated_when_the_setting_is_off(self, monkeypatch):
+        monkeypatch.setattr(self.inference, "current_date_prompt_line", lambda **_kwargs: "")
+        assert self.inference._append_tool_nudge("", "Use the tools.", object()) == "Use the tools."
+
     def test_a_chat_started_days_ago_keeps_every_user_turn_verbatim(self):
         history = [
             {"role": "user", "content": "Mike and Alexis are in bed."},

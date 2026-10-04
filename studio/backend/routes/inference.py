@@ -6494,28 +6494,6 @@ def _date_gate_blocks(request: Any, include_api_key: bool) -> bool:
     return False
 
 
-def _is_folded_tool_json(text: Any) -> bool:
-    if not isinstance(text, str) or not text.lstrip().startswith("{"):
-        return False
-    try:
-        parsed = json.loads(text)
-    except ValueError:
-        return False
-    return isinstance(parsed, dict) and "tool_response" in parsed
-
-
-def _is_folded_tool_result(content: Any) -> bool:
-    # only a turn that is ALL folded result: a follow-up coalesced onto one is the user's text.
-    if isinstance(content, list):
-        texts = [
-            p.get("text")
-            for p in content
-            if isinstance(p, dict) and isinstance(p.get("text"), str) and p["text"].strip()
-        ]
-        return bool(texts) and all(_is_folded_tool_json(t) for t in texts)
-    return _is_folded_tool_json(content)
-
-
 def _local_template_default_system_prompt() -> str:
     try:
         llama = get_llama_cpp_backend()
@@ -6526,7 +6504,13 @@ def _local_template_default_system_prompt() -> str:
 
             backend = peek_inference_backend()
             info = (backend.models.get(backend.active_model_name) or {}) if backend else {}
-            template = (info.get("chat_template_info") or {}).get("template")
+            template = info.get("chat_template_override_requested")
+            if (
+                not isinstance(template, str)
+                or not template.strip()
+                or info.get("chat_template_override_reason")
+            ):
+                template = (info.get("chat_template_info") or {}).get("template")
     except Exception:
         return ""
     return template_default_system_prompt(template if isinstance(template, str) else None)
@@ -6558,6 +6542,17 @@ def _apply_current_date_prompt(
             # that default states today's date itself; sending none lets it.
             return ""
     return f"{date_line}\n\n{system_prompt.lstrip()}" if system_prompt else date_line
+
+
+def _append_tool_nudge(system_prompt: str, nudge: str, request: Any) -> str:
+    if not nudge:
+        return system_prompt
+    if system_prompt:
+        return system_prompt.rstrip() + "\n\n" + nudge
+    if request is None:
+        return nudge
+    # the nudge's system turn displaces a template default that dated itself, so it carries the date.
+    return _apply_current_date_prompt(nudge, request, include_api_key = True)
 
 
 # Ollama applies the Modelfile SYSTEM only when `req.Messages[0].Role != "system"` (its
@@ -29056,11 +29051,7 @@ async def produce_openai_chat_completions(
             )
 
             if _nudge:
-                # Append nudge to system prompt (preserve user's prompt)
-                if system_prompt:
-                    system_prompt = system_prompt.rstrip() + "\n\n" + _nudge
-                else:
-                    system_prompt = _nudge
+                system_prompt = _append_tool_nudge(system_prompt, _nudge, request)
                 gguf_messages = _set_or_prepend_system_message(gguf_messages, system_prompt)
 
             _gguf_auto_heal_tool_calls = (
@@ -31161,11 +31152,7 @@ async def produce_openai_chat_completions(
             request,
             include_api_key = True,
         )
-        if _sf_nudge:
-            if _sf_system_prompt:
-                _sf_system_prompt = _sf_system_prompt.rstrip() + "\n\n" + _sf_nudge
-            else:
-                _sf_system_prompt = _sf_nudge
+        _sf_system_prompt = _append_tool_nudge(_sf_system_prompt, _sf_nudge, request)
 
         _sf_auto_heal_tool_calls = (
             payload.auto_heal_tool_calls if payload.auto_heal_tool_calls is not None else True
@@ -37961,8 +37948,7 @@ async def _mlx_count_chat_tokens(payload, request = None) -> Optional[JSONRespon
                 request,
                 include_api_key = True,
             )
-        if _nudge:
-            system_prompt = (system_prompt.rstrip() + "\n\n" + _nudge) if system_prompt else _nudge
+        system_prompt = _append_tool_nudge(system_prompt, _nudge, request)
         _auto_heal = (
             payload.auto_heal_tool_calls if payload.auto_heal_tool_calls is not None else True
         )
@@ -38231,14 +38217,12 @@ async def chat_count_tokens(
         tools_to_use = tools_to_use + _mcp_tools
         if tools_to_use:
             openai_tools = tools_to_use
-            openai_messages = _set_or_prepend_system_message(
-                openai_messages,
-                _apply_current_date_prompt(
-                    _system_prompt,
-                    request,
-                    include_api_key = True,
-                ),
+            _count_system_prompt = _apply_current_date_prompt(
+                _system_prompt,
+                request,
+                include_api_key = True,
             )
+            openai_messages = _set_or_prepend_system_message(openai_messages, _count_system_prompt)
             _count_nudge = await _apply_rag_nudge(
                 _build_tool_action_nudge(
                     tools = tools_to_use,
@@ -38248,6 +38232,8 @@ async def chat_count_tokens(
                 tools_to_use,
                 rag_scope = payload.rag_scope,
             )
+            if not _count_system_prompt:
+                _count_nudge = _append_tool_nudge("", _count_nudge, request)
             openai_messages = _append_to_system_message(openai_messages, _count_nudge)
 
             # The GGUF tool path strips leaked markup from replayed history before rendering,
