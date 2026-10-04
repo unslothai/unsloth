@@ -147,8 +147,11 @@ def _resident_fast_path() -> str:
     """
     return slice_between(
         read(RUNTIME),
-        "          const confirmedStatus = await getInferenceStatus().catch(() => null);",
-        "      const lifecycleLease = useChatRuntimeStore",
+        "          const confirmedStatus = await readPickStatus();",
+        # The lease claim, which the tail must not run into: the pick here never starts a load.
+        # `lifecycleLease` sits inside a bounded retry loop, so its own declaration is the first
+        # line that is about the load this tail does not start rather than about the adoption.
+        "      let lifecycleLease: ModelLifecycleLease | null = null;",
     )
 
 
@@ -512,9 +515,15 @@ export async function adoptResidentModel(props: any): Promise<void> {
   // The residency decision, which this file does not measure: the caller seeds the
   // status it wants adopted. resident-model-match.test.ts covers the real predicate.
   const adoptable = (_status: any): boolean => true;
-  const bailIfLoadInFlight = (): boolean => false;
+  // The superseded-pick guards the tail sits behind: nothing here supersedes the pick, so the
+  // epoch still matches the id it was minted with and no rival holds the picker entry.
+  let modelSelectionIntentEpoch = 0;
+  const loadIntentId = 0;
+  const rivalLoadStarted = (): boolean => false;
+  let pendingReplacementRollback: any = null;
   const restorePreviousConfig = (): void => {};
   const getInferenceStatus = async (): Promise<any> => props.residentStatus;
+  const readPickStatus = async (): Promise<any> => props.residentStatus;
   const reconcilePersistedGpuIds = (ids: any): any => ids;
   const sameGpuSelection = (a: any, b: any): boolean =>
     JSON.stringify(a ?? null) === JSON.stringify(b ?? null);

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { useAppShellReadySignal } from "@/components/app-readiness";
 import { Button } from "@/components/ui/button";
 import { RecipeStudioPage, type RecipePayload } from "@/features/recipe-studio";
 import { useNavigate } from "@tanstack/react-router";
@@ -43,6 +44,7 @@ function RecipeLoadState({
 }
 
 export function EditRecipePage({ recipeId }: EditRecipePageProps): ReactElement {
+  const signalReady = useAppShellReadySignal();
   const navigate = useNavigate();
   const reloadReadySent = useRef(false);
   const [loadState, setLoadState] = useState<LoadState>(() => {
@@ -57,22 +59,29 @@ export function EditRecipePage({ recipeId }: EditRecipePageProps): ReactElement 
     let active = true;
     const cachedRecipe = getCachedRecipe(recipeId);
     if (cachedRecipe) {
+      // A later server read would replace edits already made in the open editor.
       setLoadState({ status: "ready", record: cachedRecipe });
-    } else {
-      setLoadState({ status: "loading" });
+      return;
     }
+    setLoadState({ status: "loading" });
 
-    void getRecipe(recipeId).then((record) => {
-      if (!active) {
-        return;
-      }
-      if (!record) {
-        setLoadState({ status: "missing" });
-        return;
-      }
-      primeRecipeCache(record);
-      setLoadState({ status: "ready", record });
-    });
+    getRecipe(recipeId)
+      .then((record) => {
+        if (!active) {
+          return;
+        }
+        if (!record) {
+          setLoadState({ status: "missing" });
+          return;
+        }
+        primeRecipeCache(record);
+        setLoadState({ status: "ready", record });
+      })
+      .catch((error) => {
+        // biome-ignore lint/suspicious/noConsole: the load state below is what the user sees
+        console.error("Load recipe failed:", error);
+        if (active) setLoadState({ status: "missing" });
+      });
     return () => {
       active = false;
     };
@@ -83,8 +92,15 @@ export function EditRecipePage({ recipeId }: EditRecipePageProps): ReactElement 
       return;
     }
     reloadReadySent.current = true;
-    window.dispatchEvent(new Event("unsloth:app-shell-ready"));
-  }, [loadState.status]);
+    signalReady();
+  }, [loadState.status, signalReady]);
+
+  // The version this editor is built on, so a save over another window's newer copy is refused.
+  const editedVersion = useRef<number | undefined>(undefined);
+  const loadedRecord = loadState.status === "ready" ? loadState.record : null;
+  useEffect(() => {
+    editedVersion.current = loadedRecord?.updatedAt;
+  }, [loadedRecord]);
 
   const handlePersist = useCallback(
     async (input: { id: string | null; name: string; payload: RecipePayload }) => {
@@ -92,7 +108,9 @@ export function EditRecipePage({ recipeId }: EditRecipePageProps): ReactElement 
         id: input.id ?? recipeId,
         name: input.name,
         payload: input.payload,
+        baseUpdatedAt: editedVersion.current,
       });
+      editedVersion.current = record.updatedAt;
       primeRecipeCache(record);
       return { id: record.id, updatedAt: record.updatedAt };
     },

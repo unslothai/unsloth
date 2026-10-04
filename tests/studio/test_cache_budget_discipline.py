@@ -63,6 +63,13 @@ WORKFLOWS = REPO / ".github" / "workflows"
 # splits the halves so the save can be gated on the default branch.
 PIP_CACHE_JOBS = {
     ("consolidated-tests-ci.yml", "consolidated"),
+    # The unsloth_zoo half of Core, split out so its 418s suite runs beside the rest
+    # instead of after it. It runs the same install as `consolidated` (both call
+    # .github/actions/core-cpu-setup), which is exactly the torch/transformers-class
+    # download this allowlist exists for, and it needs its OWN name rather than sharing
+    # `consolidated`'s: the save is gated on `cache-hit != 'true'`, so a shared key means
+    # whichever job finishes first on main writes it and the other never saves.
+    ("consolidated-tests-ci.yml", "consolidated-zoo"),
     ("consolidated-tests-ci.yml", "llama-cpp-smoke"),
     ("mlx-ci.yml", "dispatch"),
     ("notebooks-ci.yml", "api-introspect"),
@@ -77,6 +84,9 @@ PIP_CACHE_JOBS = {
     ("version-compat-ci.yml", "zoo-imports-under-spoof"),
     ("version-compat-ci.yml", "grpo-fake-run"),
 }
+
+# Partial saves on purpose: ccache checksums entries, so a truncated cache only costs misses.
+PARTIAL_SAVE_JOBS = {("prebuilt-cuda-wheels.yml", "warm")}
 
 HEAVY = re.compile(
     r"torch|transformers|trl|peft|vllm|bitsandbytes|sentence-transformers|diffusers"
@@ -257,7 +267,130 @@ def _composite_actions():
             yield f.parent.name, ((doc.get("runs") or {}).get("steps") or [])
 
 
+#: Triggers that can put a workflow on a ref other than `main`. `pull_request` and
+#: `pull_request_target` are the obvious two; `workflow_call` is here because a reusable
+#: workflow runs on the CALLER's ref, so one called from a pull_request workflow saves on
+#: the PR's ref as surely as if it declared the trigger itself.
+_PR_REACHABLE_TRIGGERS = frozenset({"pull_request", "pull_request_target", "workflow_call"})
+
+#: The only triggers that cannot put a workflow anywhere near a pull request's ref.
+#: `schedule` and `repository_dispatch` are documented to run the default branch and nothing
+#: else; `workflow_dispatch` takes a ref, but only from a human who asked for that ref by
+#: name, which is not the "every PR writes its own copy" harm this rule is about. Everything
+#: NOT named here -- `merge_group`, which runs on its own `gh-readonly-queue/...` ref, and
+#: any event added to Actions after this was written -- stays indicted, which is what the
+#: docstring below promises and what a guard whose failure mode is silence has to do.
+_REF_SAFE_TRIGGERS = frozenset({"schedule", "repository_dispatch", "workflow_dispatch"})
+
+
+def _triggers(doc: dict) -> dict:
+    """A workflow's `on:` block as a mapping, whatever shape it was written in.
+
+    YAML 1.1 reads a bare `on:` key as the boolean True (the Norway problem's cousin), so
+    the key is looked up both ways. `on: push`, `on: [push, workflow_dispatch]` and the
+    mapping form all normalise to a dict here so one reader handles all three.
+    """
+    raw = doc.get("on", doc.get(True))
+    if isinstance(raw, str):
+        return {raw: None}
+    if isinstance(raw, list):
+        return {event: None for event in raw}
+    return raw if isinstance(raw, dict) else {}
+
+
+def _pull_request_reachable(doc: dict) -> bool:
+    """Whether any pull request can cause this workflow to run.
+
+    The rule below exists because a save on a PR ref writes an entry only re-runs of that
+    same PR can ever restore, while competing for the shared budget against main's copy.
+    That harm needs a pull request to reach the workflow at all. A workflow no pull request
+    can trigger is therefore outside the rule -- but only if that is READ from its `on:`
+    block, never assumed, so the day it grows a `pull_request` trigger it comes straight
+    back under the rule with no one having to remember.
+
+    Conservative in both directions:
+      * a `push` with no `branches` filter runs on every branch pushed to this repo,
+        including the in-repo topic branches most pull requests here are opened from, so
+        it counts as reachable;
+      * a `push` restricted to `main` does not;
+      * anything unrecognised counts as reachable, because the cost of a wrong "exempt"
+        is a silently refilled cache and the cost of a wrong "reachable" is a comment.
+    """
+    triggers = _triggers(doc)
+    if not triggers:
+        # No parseable `on:` at all. Says nothing, so it does not get to say "exempt".
+        return True
+    for event, spec in triggers.items():
+        if event in _PR_REACHABLE_TRIGGERS:
+            return True
+        if event == "push":
+            branches = (spec or {}).get("branches") if isinstance(spec, dict) else None
+            if not branches or [b for b in branches if b != "main"]:
+                return True
+            continue
+        if event not in _REF_SAFE_TRIGGERS:
+            return True
+    return False
+
+
+@pytest.mark.parametrize(
+    ("on_block", "reachable"),
+    [
+        ({"workflow_dispatch": None}, False),
+        ({"schedule": [{"cron": "0 0 * * *"}]}, False),
+        ({"push": {"branches": ["main"]}}, False),
+        ({"workflow_dispatch": None, "push": {"branches": ["main"]}}, False),
+        ({"pull_request": None}, True),
+        ({"pull_request_target": {"types": ["opened"]}}, True),
+        # Reusable: it runs on the caller's ref, so a pull_request caller saves on the PR ref.
+        ({"workflow_call": None}, True),
+        # No `branches` filter means every branch, which is where PRs here come from.
+        ({"push": None}, True),
+        ({"push": {"branches": ["main", "release/**"]}}, True),
+        ({"push": {"tags": ["v*"]}}, True),
+        # A dispatch-only workflow that also builds every PR is not dispatch-only.
+        ({"workflow_dispatch": None, "pull_request": {"paths": ["x"]}}, True),
+        # Default-branch-only, so exempt for the same reason schedule is.
+        ({"repository_dispatch": {"types": ["x"]}}, False),
+        # The merge queue runs on refs/heads/gh-readonly-queue/..., which is not main.
+        ({"merge_group": None}, True),
+        # An event this predicate has never heard of says nothing about its ref.
+        ({"release": {"types": ["published"]}}, True),
+        # Unparseable says nothing, so it does not get to be called unreachable.
+        ({}, True),
+    ],
+)
+def test_the_pull_request_reachability_check_reads_the_trigger_block(on_block, reachable):
+    """The rule below is only as good as this predicate, so the predicate is tested too.
+
+    Mirrors test_the_main_only_expression_check_reads_the_expression above, and for the same
+    reason: the guard's failure mode is silence, so the thing that can make it silent is the
+    thing that most needs its own rows.
+    """
+    assert _pull_request_reachable({"on": on_block}) is reachable, on_block
+    # YAML 1.1 turns a bare `on:` key into True. Both spellings must read the same.
+    assert _pull_request_reachable({True: on_block}) is reachable, on_block
+
+
 def test_no_workflow_saves_a_cache_on_a_pull_request_ref():
+    """A cache save that can land on a pull request's ref, in anything a pull request reaches.
+
+    Scoped by TRIGGER, not by a list of excused filenames. The rule's harm needs a pull
+    request to reach the workflow: a PR-scoped entry is restorable only by re-runs of that
+    same PR while it evicts main's copy, which every PR can read. A workflow no pull request
+    can run writes no PR-scoped entry, and indicting one was this guard reporting a rule it
+    had not checked -- it read each step's `if:` and never read the workflow's `on:`.
+
+    Deliberately NOT an exemption list keyed on filename. Skipping a whole file would blind
+    this to every OTHER step in it, including a `setup-python` implicit save added later, and
+    the excuse would keep applying after the reason for it had gone. Reading `on:` cannot rot
+    that way: the day a workflow gains a `pull_request` or `pull_request_target` trigger,
+    every cache save in it is indicted on that same commit with nobody having to remember.
+
+    Composite actions stay indicted unconditionally, whatever calls them: an action is used
+    BY workflows, so it has no triggers of its own, and one `uses:`d from a pull_request job
+    saves on the PR's ref exactly as an inline step would.
+    """
     offenders = []
     for name, steps in _composite_actions():
         for step in steps:
@@ -266,25 +399,31 @@ def test_no_workflow_saves_a_cache_on_a_pull_request_ref():
                 continue
             if "refs/heads/main" not in str(step.get("if", "")):
                 offenders.append(f"action {name}: {step.get('name') or step.get('uses')}")
-    for name, jid, job in _jobs():
-        for step in job.get("steps") or []:
-            uses = _uses(step)
-            # setup-python's `cache:` is a save too, and an invisible one: the action
-            # registers a post-step (`post: dist/cache-save/index.js` in its own
-            # action.yml) that runs after the job on whatever ref it ran on, with no
-            # condition to gate it. A scan that only looked for `actions/cache` steps
-            # read as green while nine jobs wrote PR-scoped entries every run. Nothing
-            # is exempt now that all nine are converted.
-            if "setup-python" in uses and (step.get("with") or {}).get("cache"):
-                offenders.append(f"{name}:{jid}: setup-python implicit post-step save")
+    for name, doc in _workflows():
+        # Read once per workflow, then applied to every job in it.
+        if not _pull_request_reachable(doc):
+            continue
+        for jid, job in doc["jobs"].items():
+            if not isinstance(job, dict):
                 continue
-            if "actions/cache" not in uses:
-                continue
-            saves = "/restore@" not in uses  # read-write and /save@ both write
-            if not saves:
-                continue
-            if not _restricted_to_main(str(step.get("if", ""))):
-                offenders.append(f"{name}:{jid}: {step.get('name') or step.get('uses')}")
+            for step in job.get("steps") or []:
+                uses = _uses(step)
+                # setup-python's `cache:` is a save too, and an invisible one: the action
+                # registers a post-step (`post: dist/cache-save/index.js` in its own
+                # action.yml) that runs after the job on whatever ref it ran on, with no
+                # condition to gate it. A scan that only looked for `actions/cache` steps
+                # read as green while nine jobs wrote PR-scoped entries every run. Nothing
+                # is exempt now that all nine are converted.
+                if "setup-python" in uses and (step.get("with") or {}).get("cache"):
+                    offenders.append(f"{name}:{jid}: setup-python implicit post-step save")
+                    continue
+                if "actions/cache" not in uses:
+                    continue
+                saves = "/restore@" not in uses  # read-write and /save@ both write
+                if not saves:
+                    continue
+                if not _restricted_to_main(str(step.get("if", ""))):
+                    offenders.append(f"{name}:{jid}: {step.get('name') or step.get('uses')}")
     assert not offenders, (
         "these steps save a cache on whatever ref they run on, so every PR writes its own "
         "copy and evicts the copy on main that all PRs share:\n  " + "\n  ".join(offenders)
@@ -540,6 +679,8 @@ def test_a_cache_save_of_downloaded_artifacts_waits_for_the_download_to_succeed(
     """
     offenders = []
     for name, jid, job in _jobs():
+        if (name, jid) in PARTIAL_SAVE_JOBS:
+            continue
         steps = job.get("steps") or []
         producers = {
             s.get("id")
@@ -732,9 +873,9 @@ def _matrix_rows(job) -> list[dict]:
     """One substitution map per job the matrix can actually produce.
 
     The base lists are expanded, not just `include`. `ui-smoke` declares its shards in a
-    base `shard: [chat, extra, banner, picker]` and uses `include` only to attach
+    base `shard: [chat, extra]` and uses `include` only to attach
     `engines`/`engine_key` to each, so reading `include` alone happens to give the right
-    four rows today -- and would silently skip a shard added to the base list without a
+    rows today -- and would silently skip a shard added to the base list without a
     matching include entry, which GitHub still runs, with those fields empty. The empty
     engine set then trips the assertion in the caller, which is the point.
 

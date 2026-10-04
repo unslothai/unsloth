@@ -43,7 +43,7 @@ export const MAX_REFERENCE_BYTES: Record<ReferenceKind, number> = {
  *  is the picker one, .3gp included, because the picker reads a recording's
  *  tracks once it has the file and a clip is refused then. */
 export const REFERENCE_PICKER_ACCEPT: Record<ReferenceKind, string> = {
-  video: VIDEO_ACCEPT,
+  video: `${VIDEO_ACCEPT},.ts,.mts`,
   audio: AUDIO_PICKER_ACCEPT,
 };
 
@@ -73,9 +73,8 @@ export function referenceFileRejection(
   kind: ReferenceKind,
   file: { type: string; size: number; name?: string },
 ): string | null {
-  // Name as well as MIME, matching the accept list above and the native drop:
-  // the same recording chosen through the button used to be refused for the
-  // empty type the browser gave it.
+  // Name as well as MIME, matching the accept list above and the native drop: the same recording
+  // chosen through the button used to be refused for the empty type the browser gave it.
   const named = { type: file.type, name: file.name ?? "" };
   const matches = kind === "video" ? isVideoFile(named) : isAudioAttachmentFile(named);
   if (!matches) {

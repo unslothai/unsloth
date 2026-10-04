@@ -11,7 +11,12 @@ name: Publish Blackwell Docker image
 
 on:
   push:
-    branches: [main]
+    # Deliberately NOT branches: [main]. Publishing on every merge meant 23 runs on
+    # 2026-09-06 and 14 on 2026-09-05 against one scheduled run each day, and since
+    # each is a two-arch build of both images it was the bulk of the repo's Actions
+    # cache and a large share of its runner minutes. The daily cron below is the
+    # release cadence for main now. Tags still publish immediately: a release that
+    # produced no image until the next morning would be worse than the spend.
     tags: ['v*']
   schedule:
     # Daily. Actions cron is UTC with no DST handling, so this is 11:17 in San
@@ -50,14 +55,17 @@ env:
   # Not a secret, and named once so the four login steps cannot drift apart.
   REGISTRY_USERNAME: unsloth
 
-# Serialise per-ref runs, EXCEPT on main where each commit gets its own group: a
-# shared group does not queue a main burst, it DISCARDS it (GitHub cancels any PENDING
-# run the moment a newer one is queued), so the earlier commit would publish no image
-# at all. The accepted cost is that two main commits can race to retag :core/:latest,
-# which is self-correcting on the next push, where a cancelled run leaves that commit
-# with no image at all. Each published image is still internally coherent: the digest
-# handoff and the smoke test resolve this run's own tag, not tags[0], and verify it.
-# tests/studio/test_main_runs_survive_merge_bursts.py enforces this shape.
+# Serialise per-ref runs, EXCEPT on main where each run gets its own group: a shared
+# group does not queue a burst, it DISCARDS it (GitHub cancels any PENDING run the
+# moment a newer one is queued), so the earlier one would publish no image at all.
+# Merges no longer trigger this workflow, so the burst it now guards against is a
+# scheduled run overlapping a workflow_dispatch, rather than a merge burst. Keeping
+# the per-sha key costs nothing and still prevents a dispatch being discarded.
+# Each published image is internally coherent either way: the digest handoff and the
+# smoke test resolve this run's own tag, not tags[0], and verify it.
+# Dropping the main push trigger also drops this workflow out of the scan in
+# tests/studio/test_main_runs_survive_merge_bursts.py, which selects on
+# `push.branches` containing main, so no exemption is needed there.
 concurrency:
   group: docker-publish-${{ github.ref }}-${{ github.ref == 'refs/heads/main' && github.sha || '' }}
   cancel-in-progress: false
@@ -218,7 +226,7 @@ jobs:
       packages: write
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
       - name: Reclaim disk
         run: |
@@ -232,30 +240,37 @@ jobs:
           sudo docker image prune -af >/dev/null 2>&1 || true
           df -h /
 
-      - uses: docker/setup-buildx-action@v3
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f  # v3.12.0
 
       - name: Log in to Docker Hub
-        uses: docker/login-action@v3
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f  # v4.6.0
         with:
           username: ${{ env.REGISTRY_USERNAME }}
           password: ${{ secrets.DOCKER_API_KEY }}
 
       - name: Resolve labels
         id: meta
-        uses: docker/metadata-action@v5
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302  # v6.2.0
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          # The action copies the repo's Apache-2.0, but both images ship Studio (AGPL-3.0) too.
+          labels: |
+            org.opencontainers.image.licenses=Apache-2.0 AND AGPL-3.0-only
 
       - name: Build and push (per-arch by digest)
         id: build
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8  # v6.19.2
         with:
           context: ./docker
           file: ./docker/Dockerfile
           platforms: ${{ matrix.platform }}
           labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha,scope=build-${{ matrix.platform }}
-          cache-to:   type=gha,scope=build-${{ matrix.platform }},mode=max
+          # No cache-from / cache-to. The buildcache-core-* refs this used to write
+          # held 21.29GB (amd64) and 20.26GB (arm64) on the image's own Docker Hub
+          # repo, and prepare freezes UNSLOTH_REF / UNSLOTH_ZOO_REF to SHAs that move
+          # most nights, so the install layer they were meant to save is invalidated
+          # anyway. What is left is the base and apt layers, against a build whose
+          # wall time is dominated by exporting and pushing 27GB.
           outputs:    type=image,name=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }},push-by-digest=true,name-canonical=true,push=true
           # Keep prose OUT of build-args: build-push-action forwards every non-empty
           # line verbatim, so a #-line becomes a bogus --build-arg.
@@ -275,7 +290,7 @@ jobs:
           touch "/tmp/digests/${digest#sha256:}"
 
       - name: Upload digest
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:
           name: digests-core-${{ matrix.platform == 'linux/amd64' && 'amd64' || 'arm64' }}
           path: /tmp/digests/*
@@ -292,23 +307,23 @@ jobs:
     outputs:
       digest: ${{ steps.manifest_digest.outputs.digest }}
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
         with:
           path: /tmp/digests
           pattern: digests-core-*
           merge-multiple: true
 
-      - uses: docker/setup-buildx-action@v3
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f  # v3.12.0
 
       - name: Log in to Docker Hub
-        uses: docker/login-action@v3
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f  # v4.6.0
         with:
           username: ${{ env.REGISTRY_USERNAME }}
           password: ${{ secrets.DOCKER_API_KEY }}
 
       - name: Resolve tags
         id: meta
-        uses: docker/metadata-action@v5
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302  # v6.2.0
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
           # latest=auto would tag :latest on a v* push, colliding with the Studio image
@@ -403,7 +418,7 @@ jobs:
       contents: read
       packages: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
       - name: Reclaim disk
         run: |
@@ -417,31 +432,34 @@ jobs:
           sudo docker image prune -af >/dev/null 2>&1 || true
           df -h /
 
-      - uses: docker/setup-buildx-action@v3
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f  # v3.12.0
 
       - name: Log in to Docker Hub
-        uses: docker/login-action@v3
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f  # v4.6.0
         with:
           username: ${{ env.REGISTRY_USERNAME }}
           password: ${{ secrets.DOCKER_API_KEY }}
 
       - name: Resolve labels
         id: meta
-        uses: docker/metadata-action@v5
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302  # v6.2.0
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          # The action copies the repo's Apache-2.0, but both images ship Studio (AGPL-3.0) too.
+          labels: |
+            org.opencontainers.image.licenses=Apache-2.0 AND AGPL-3.0-only
 
       - name: Build and push (per-arch by digest)
         id: build
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8  # v6.19.2
         with:
           context: ./docker
           file: ./docker/Dockerfile.studio
           platforms: ${{ matrix.platform }}
           labels: ${{ steps.meta.outputs.labels }}
-          # mode=max here would blow the 10GB GHA quota and evict the base build's cache
-          cache-from: type=gha,scope=studio-${{ matrix.platform }}
-          cache-to:   type=gha,scope=studio-${{ matrix.platform }},mode=min
+          # No cache-from / cache-to, for the same reason as the core build above.
+          # The buildcache-studio-* refs held 13.90GB (amd64) and 13.48GB (arm64),
+          # and at mode=min they only carried the final layers in the first place.
           outputs:    type=image,name=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }},push-by-digest=true,name-canonical=true,push=true
           # the same values the base build baked, so Studio matches it even if upstream
           # moved mid-run (build-args must be KEY=VALUE only)
@@ -451,6 +469,22 @@ jobs:
             UNSLOTH_STUDIO_ZOO_REF=${{ needs.prepare.outputs.zoo_ref }}
             LLAMA_PREBUILT_TAG=${{ needs.prepare.outputs.llama_tag }}
 
+      # A GPU-free check on the artifact the registry serves, not on the Dockerfile
+      # text: an image-wide UNSLOTH_ALLOW_CPU reaches every process and turns off
+      # Unsloth's TRL trainer patches on GPU hosts (#10825), and the smoke-test job
+      # below needs a GPU runner this repo does not have. The image opts in to CPU
+      # hosts through UNSLOTH_IMAGE_ALLOW_CPU=1 instead; entrypoint.sh translates it.
+      - name: Assert the Studio image env cannot disable training
+        run: |
+          REF='${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ steps.build.outputs.digest }}'
+          ENV_JSON="$(docker buildx imagetools inspect "$REF" --format '{{json .Image}}' \
+                      | jq -c '[.. | objects | select(has("config")) | .config.Env // []] | add')"
+          echo "$ENV_JSON" | jq -r '.[] | select(startswith("UNSLOTH_"))'
+          echo "$ENV_JSON" | jq -e 'index("UNSLOTH_IMAGE_ALLOW_CPU=1") != null' >/dev/null \
+            || { echo "::error::Studio image env lacks UNSLOTH_IMAGE_ALLOW_CPU=1"; exit 1; }
+          echo "$ENV_JSON" | jq -e 'map(select(startswith("UNSLOTH_ALLOW_CPU="))) | length == 0' >/dev/null \
+            || { echo "::error::Studio image env carries UNSLOTH_ALLOW_CPU, which disables Unsloth's TRL patches on GPU hosts"; exit 1; }
+
       - name: Export digest
         run: |
           mkdir -p /tmp/digests
@@ -458,7 +492,7 @@ jobs:
           touch "/tmp/digests/${digest#sha256:}"
 
       - name: Upload digest
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:
           name: digests-studio-${{ matrix.platform == 'linux/amd64' && 'amd64' || 'arm64' }}
           path: /tmp/digests/*
@@ -475,23 +509,23 @@ jobs:
     outputs:
       digest: ${{ steps.studio_manifest_digest.outputs.digest }}
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
         with:
           path: /tmp/digests
           pattern: digests-studio-*
           merge-multiple: true
 
-      - uses: docker/setup-buildx-action@v3
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f  # v3.12.0
 
       - name: Log in to Docker Hub
-        uses: docker/login-action@v3
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f  # v4.6.0
         with:
           username: ${{ env.REGISTRY_USERNAME }}
           password: ${{ secrets.DOCKER_API_KEY }}
 
       - name: Resolve tags
         id: meta
-        uses: docker/metadata-action@v5
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302  # v6.2.0
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
           # latest=false disables the implicit latest=auto, which would emit :latest on
@@ -583,9 +617,15 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
       - name: Sync docker/DOCKERHUB.md to the Docker Hub page
+        # Key by env, not interpolated into the script: an expanded ${{ secrets.* }}
+        # is written into the step's temporary shell script on the runner and, in a
+        # command line, into the process argv table. Masking covers the log, not the
+        # places the value comes to rest.
+        env:
+          DOCKER_API_KEY: ${{ secrets.DOCKER_API_KEY }}
         run: |
           README=docker/DOCKERHUB.md
           test -s "$README"
@@ -595,9 +635,11 @@ jobs:
           # is not allowed", whatever its scopes. The token needs the repository
           # edit permission on ${IMAGE_NAME}.
           HUB="https://hub.docker.com/v2/namespaces/${IMAGE_NAME%%/*}/repositories/${IMAGE_NAME#*/}"
-          TOKEN="$(curl -sS -X POST https://hub.docker.com/v2/auth/token \
-            -H 'Content-Type: application/json' \
-            -d "{\"identifier\": \"${{ env.REGISTRY_USERNAME }}\", \"secret\": \"${{ secrets.DOCKER_API_KEY }}\"}" \
+          # Body built from the environment and handed to curl on stdin, so the key is
+          # never a command-line argument.
+          TOKEN="$(python3 -c 'import json,os,sys; sys.stdout.write(json.dumps({"identifier": os.environ["REGISTRY_USERNAME"], "secret": os.environ["DOCKER_API_KEY"]}))' \
+            | curl -sS -X POST https://hub.docker.com/v2/auth/token \
+              -H 'Content-Type: application/json' --data-binary @- \
             | python3 -c 'import json,sys; print(json.load(sys.stdin).get("access_token",""))')"
           if [ -z "$TOKEN" ]; then
             echo "::error::Could not exchange DOCKER_API_KEY for a Hub API token; the Hub page was not updated."
@@ -624,7 +666,7 @@ jobs:
     runs-on: [self-hosted, gpu]
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
       # Both images are pulled by the digest their merge job resolved and verified, so
       # there is no tag to re-derive here and no `enable=` expression to keep in step
@@ -670,11 +712,14 @@ jobs:
       - name: Remove this run's handle tags, prune old nightly pins
         env:
           NIGHTLY_KEEP_DAYS: "60"
+          DOCKER_API_KEY: ${{ secrets.DOCKER_API_KEY }}
         run: |
           HUB="https://hub.docker.com/v2/namespaces/${IMAGE_NAME%%/*}/repositories/${IMAGE_NAME#*/}"
-          TOKEN="$(curl -sS -X POST https://hub.docker.com/v2/auth/token \
-            -H 'Content-Type: application/json' \
-            -d "{\"identifier\": \"${{ env.REGISTRY_USERNAME }}\", \"secret\": \"${{ secrets.DOCKER_API_KEY }}\"}" \
+          # Body built from the environment and handed to curl on stdin, so the key is
+          # never a command-line argument.
+          TOKEN="$(python3 -c 'import json,os,sys; sys.stdout.write(json.dumps({"identifier": os.environ["REGISTRY_USERNAME"], "secret": os.environ["DOCKER_API_KEY"]}))' \
+            | curl -sS -X POST https://hub.docker.com/v2/auth/token \
+              -H 'Content-Type: application/json' --data-binary @- \
             | python3 -c 'import json,sys; print(json.load(sys.stdin).get("access_token",""))')"
           if [ -z "$TOKEN" ]; then
             echo "::error::Could not exchange DOCKER_API_KEY for a Hub API token; handle tags of run ${{ github.run_id }} were not removed."

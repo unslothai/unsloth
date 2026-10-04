@@ -1273,7 +1273,7 @@ def test_the_precision_recorded_for_h3_is_the_one_its_loop_runs_in():
 
     # The claim the equality rests on: the same weight-dtype rule in both loops, and no reader of
     # mixed_precision in the H3 one.
-    dtype_rule = 'weight_dtype = torch.bfloat16 if device == "cuda" else torch.float32'
+    dtype_rule = 'weight_dtype = torch.bfloat16 if device in ("cuda", "xpu") else torch.float32'
     h3_src = inspect.getsource(diffusion_h3_trainer)
     assert dtype_rule in h3_src
     assert dtype_rule in inspect.getsource(diffusion_dit_trainer)
@@ -1389,7 +1389,16 @@ def test_a_local_modular_h3_pipeline_is_an_acceptable_training_base(tmp_path):
 
     modular = tmp_path / "MiniMax-H3"
     modular.mkdir()
-    (modular / "modular_model_index.json").write_text("{}")
+    transformer = ["diffusers", "MiniMaxH3Transformer3DModel"]
+    manifest = {
+        "_class_name": "ModularPipeline",
+        "_blocks_class_name": "Blocks",
+        "transformer": transformer,
+    }
+    (modular / "modular_model_index.json").write_text(json.dumps(manifest))
+    (modular / "transformer").mkdir()
+    (modular / "transformer" / "config.json").write_text("{}")
+    (modular / "transformer" / "diffusion_pytorch_model.safetensors").write_bytes(b"x")
 
     _assert_trusted_base_model(str(modular), allow_modular = True)
     # Off by default: a conventional DiffusionPipeline load still needs the conventional index.

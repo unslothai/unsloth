@@ -7,9 +7,7 @@
 // not a change of name: the reported stream calls one tool three times.
 
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import test from "node:test";
-import { fileURLToPath } from "node:url";
 
 import ts from "typescript";
 
@@ -25,6 +23,8 @@ import {
   mintStreamedToolCallId,
   resolveToolCallPartId,
 } from "../src/features/chat/tool-call-id.ts";
+
+import { readSrc } from "./helpers/kit.ts";
 
 test("a slot holding one object is left as one object", () => {
   assert.deepEqual(splitTopLevelJsonObjects('{"url":"a"}'), {
@@ -141,12 +141,7 @@ test("arguments that are not one JSON object fall back rather than replay", () =
 // tests/pr9057-video-simulation.test.ts does: a re-implementation passes while
 // the adapter stays broken, which is how this defect survived
 // tool-call-delta-index.test.ts.
-const adapterSource = readFileSync(
-  fileURLToPath(
-    new URL("../src/features/chat/api/chat-adapter.ts", import.meta.url),
-  ),
-  "utf8",
-);
+const adapterSource = readSrc("features/chat/api/chat-adapter.ts");
 
 function liftBetween(what: string, from: string, to: string): string {
   const start = adapterSource.indexOf(from);
@@ -178,15 +173,24 @@ function liftDeltaLoop(): string {
     loopStart >= 0,
     "the delta.tool_calls loop moved in chat-adapter.ts",
   );
-  const gate = adapterSource.lastIndexOf(
-    "if (",
-    adapterSource.indexOf("addedToolCall ||", loopStart),
+  // Searching back for `if (` truncated the slice once the condition moved into a variable.
+  const gate = adapterSource.indexOf(
+    "if (forcePublish || canPublish(",
+    loopStart,
   );
   assert.ok(gate > loopStart, "the publish gate moved in chat-adapter.ts");
   const lifted = adapterSource.slice(loopStart, gate);
   assert.ok(
     lifted.includes("splitTopLevelJsonObjects"),
     "the loop no longer splits on JSON object boundaries",
+  );
+  assert.ok(
+    lifted.includes("endProviderTurn()"),
+    "the lifted loop stops before the turn ends, so it is not the loop production runs",
+  );
+  assert.ok(
+    lifted.includes("const forcePublish ="),
+    "the lifted loop stops before the publish decision it is supposed to reach",
   );
   return lifted;
 }

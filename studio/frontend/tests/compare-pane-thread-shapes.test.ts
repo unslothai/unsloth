@@ -2,7 +2,6 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import test from "node:test";
 import type { ModelType, ThreadRecord } from "../src/features/chat/types.ts";
 import {
@@ -13,14 +12,10 @@ import {
   resolveComparePaneThreadIds,
 } from "../src/features/chat/utils/compare-pane-threads.ts";
 
-const chatPageSource = readFileSync(
-  new URL("../src/features/chat/chat-page.tsx", import.meta.url),
-  "utf8",
-);
-const sharedComposerSource = readFileSync(
-  new URL("../src/features/chat/shared-composer.tsx", import.meta.url),
-  "utf8",
-);
+import { readSrc } from "./helpers/kit.ts";
+
+const chatPageSource = readSrc("features/chat/chat-page.tsx");
+const sharedComposerSource = readSrc("features/chat/shared-composer.tsx");
 
 const LORA_PANE_SOURCE = chatPageSource.slice(
   chatPageSource.indexOf("const LoraCompareContent"),
