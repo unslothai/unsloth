@@ -10,7 +10,7 @@ Every platform branch is driven explicitly, so the assertions hold on Linux,
 macOS, Windows and WSL alike: the host's own os.name never decides.
 """
 
-import ast, os
+import ast, os, types
 from contextlib import contextmanager
 
 import pytest
@@ -429,6 +429,7 @@ def _spare_ns():
         "_offload_embedding_unsupported_platform",
         "_embedding_dispatch_device",
         "_input_side_embeddings",
+        "_accelerator_device",
         "offload_spare_embeddings",
     )
     ns["_EXTRA_EMBEDDING_MIN_BYTES"] = 64 * 32 * 4  # the per-layer table above, no bigger
@@ -483,3 +484,22 @@ def test_headless_model_hooks_a_table_the_block_swap_load_left_on_cpu():
     with _as_platform("posix"):
         assert ns["offload_spare_embeddings"](model) == 0
     assert moved == []
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason = "needs a card to offload from")
+def test_headless_streamed_table_returns_rows_to_the_decoder_card():
+    ns = _load(
+        "_embeddings_are_tied",
+        "_input_side_embeddings",
+        "_accelerator_device",
+        "offload_input_embedding",
+    )
+    ns["_EXTRA_EMBEDDING_MIN_BYTES"] = 64 * 32 * 4
+    hooked = []
+    ns["_install_offload_embedding_hooks"] = lambda emb, out, device: hooked.append((emb, device))
+    ns["_pin_device_to_decoder"] = ns["clean_gpu_cache"] = lambda *a: None
+    ns["gc"] = types.SimpleNamespace(collect = lambda: None)
+    model = _HeadlessPerLayerModel("cuda").requires_grad_(False)
+    model.per_layer.to("cpu")
+    ns["offload_input_embedding"](model, [model.per_layer])
+    assert [(e is model.per_layer, d.type) for e, d in hooked] == [(True, "cuda")]

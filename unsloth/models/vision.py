@@ -868,6 +868,13 @@ def _input_side_embeddings(model):
     return found, out_embed
 
 
+def _accelerator_device(model):
+    # Headless backbones (AutoModel) have no head to say where the decoder runs.
+    return next(
+        (p.device for p in model.parameters() if p.device.type not in ("cpu", "meta")), None
+    )
+
+
 def offload_input_embedding(model, embeddings = None):
     """Move the input embeddings to host RAM: lookups run there and only the looked-up rows go back
     to the decoder's card. Returns the bytes moved."""
@@ -880,7 +887,9 @@ def offload_input_embedding(model, embeddings = None):
             # Streamed to host by the block swap load: hook it (home = head's card) and move its buffers (embed_scale).
             if getattr(embedding, "_unsloth_offload_hooks_installed", False):
                 continue
-            _embed_device = head.device if head is not None else torch.device("cpu")
+            _embed_device = head.device if head is not None else _accelerator_device(model)
+            if _embed_device is None:
+                _embed_device = torch.device("cpu")
             embedding.to("cpu")
         else:
             _embed_device = weight.device  # decoder device, before offload
@@ -911,8 +920,7 @@ def offload_spare_embeddings(model, require_frozen = True):
     if head is not None:
         accelerated = head.device.type not in ("cpu", "meta")
     else:
-        # Headless backbone (AutoModel): the decoder's own weights say whether it runs on an accelerator.
-        accelerated = any(p.device.type not in ("cpu", "meta") for p in model.parameters())
+        accelerated = _accelerator_device(model) is not None
     candidates = []
     for embedding in found:
         weight = getattr(embedding, "weight", None)
@@ -3096,7 +3104,9 @@ class FastBaseModel:
                 requested_device_map(device_map),
                 model_name,
                 max_seq_length = max_seq_length,
-                offload_embedding = bool(offload_embedding),
+                # Windows / WSL decline the offload later: a plan counting on it would leave a streamed table unhooked.
+                offload_embedding = bool(offload_embedding)
+                and _offload_embedding_unsupported_platform() is None,
                 planner_kwargs = planner_kwargs_with_max_memory(device_map_planner_kwargs, kwargs),
                 placement = "spread",
                 skip_reason = _planner_skip_reason
