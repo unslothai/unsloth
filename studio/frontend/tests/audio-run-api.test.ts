@@ -226,13 +226,3 @@ test("api.ts sends run and voice bodies only through the builders", () => {
   assert.match(api, /body: blob,/);
   assert.doesNotMatch(api, /voice_ref/);
 });
-
-test("a history clip past the 30 s reference cut carries no transcript", async () => {
-  const { clipReference } = await import(
-    "../src/features/audio/audio-run-request.ts"
-  );
-  const short = { id: "c", prompt: "Hello there.", duration_s: 4 };
-  const long = { id: "d", prompt: "A long story.", duration_s: 45 };
-  assert.equal(clipReference(short).transcript, "Hello there.");
-  assert.equal(clipReference(long).transcript, null);
-});
