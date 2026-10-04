@@ -36,7 +36,7 @@ import { type TranslationKey, useLocale, useT } from "@/i18n";
 import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import { StarPointedIcon } from "@/lib/hugeicons-derived";
 import { cn } from "@/lib/utils";
-import { type MediaZoom, MediaZoomStage } from "./media-zoom";
+import { type MediaInset, type MediaZoom, MediaZoomStage } from "./media-zoom";
 import { type MediaNoun, useProjectSubmenu } from "./project-submenu";
 
 export interface MediaViewerActions {
@@ -103,7 +103,7 @@ export function ScaleMenu({
           aria-label={t("library.viewer.scale")}
           className={cn(
             "mr-1 flex h-9 shrink-0 items-center gap-1 rounded-full bg-muted px-3.5 text-sm tabular-nums outline-none transition-colors hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring",
-            floating && cn("mr-0 h-10 px-4", FLOATING),
+            floating && cn("mr-0 h-10 pr-2.5 pl-4", FLOATING),
             className,
           )}
         >
@@ -132,6 +132,15 @@ export function ScaleMenu({
       </DropdownMenuContent>
     </DropdownMenu>
   );
+}
+
+/** The lightbox keeps its picture clear of the controls at fit; zoomed in, it may pass under them. */
+function lightboxInset(): MediaInset {
+  if (typeof window === "undefined") return { top: 0, right: 0, bottom: 0, left: 0 };
+  const root = getComputedStyle(document.documentElement);
+  const rem = (Number.parseFloat(root.fontSize) || 16) * (Number.parseFloat(root.getPropertyValue("--ui-space-scale")) || 1);
+  const side = window.innerWidth < 640 ? 12 : 7 * rem;
+  return { top: 6.5 * rem, right: side, bottom: 4.5 * rem, left: side };
 }
 
 function GalleryArrow({
@@ -369,7 +378,7 @@ export function MediaViewer({
         }}
         overlayClassName={
           lightbox
-            ? "bg-[color-mix(in_oklab,var(--background)_93%,transparent)] supports-backdrop-filter:backdrop-blur-[1.5px] duration-150"
+            ? "bg-[color-mix(in_oklab,var(--background)_55%,transparent)] supports-backdrop-filter:backdrop-blur-[1px] duration-150"
             : undefined
         }
         className={
@@ -383,7 +392,7 @@ export function MediaViewer({
           <>
             {/* Clicking around the picture closes, as it does in ChatGPT; a drag to pan never does. */}
             <div
-              className="absolute inset-x-[calc(7rem*var(--ui-space-scale,1))] top-[calc(6.5rem*var(--ui-space-scale,1))] bottom-[calc(4.5rem*var(--ui-space-scale,1))] flex max-sm:inset-x-3"
+              className="absolute inset-0 flex"
               onClick={(event) => {
                 const target = event.target;
                 if (!(target instanceof HTMLImageElement || target instanceof HTMLVideoElement)) {
@@ -392,7 +401,7 @@ export function MediaViewer({
               }}
             >
               {media ? (
-                <MediaZoomStage zoom={zoom} onFitScale={setFitScale}>
+                <MediaZoomStage zoom={zoom} onFitScale={setFitScale} inset={lightboxInset()}>
                   {children}
                 </MediaZoomStage>
               ) : (
@@ -401,18 +410,23 @@ export function MediaViewer({
             </div>
             {gallery && (gallery.onPrevious || gallery.onNext) ? (
               <>
-                <GalleryArrow
-                  label={t("imageViewer.previous")}
-                  icon={ArrowLeft02Icon}
-                  onClick={gallery.onPrevious}
-                  className="left-3"
-                />
-                <GalleryArrow
-                  label={t("imageViewer.next")}
-                  icon={ArrowRight02Icon}
-                  onClick={gallery.onNext}
-                  className="right-3"
-                />
+                {/* Only toward a picture: the end of the gallery has no arrow. */}
+                {gallery.onPrevious ? (
+                  <GalleryArrow
+                    label={t("imageViewer.previous")}
+                    icon={ArrowLeft02Icon}
+                    onClick={gallery.onPrevious}
+                    className="left-3"
+                  />
+                ) : null}
+                {gallery.onNext ? (
+                  <GalleryArrow
+                    label={t("imageViewer.next")}
+                    icon={ArrowRight02Icon}
+                    onClick={gallery.onNext}
+                    className="right-3"
+                  />
+                ) : null}
               </>
             ) : null}
             <div className="pointer-events-none absolute inset-x-0 top-0 flex items-start gap-2 p-3">

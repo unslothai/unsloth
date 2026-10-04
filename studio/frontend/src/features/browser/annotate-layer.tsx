@@ -2,11 +2,9 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { useT } from "@/i18n";
-import {
-  ArrowUp02Icon,
-  DragDropVerticalIcon,
-} from "@hugeicons/core-free-icons";
+import { DragDropVerticalIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
+import { ArrowUpIcon } from "lucide-react";
 import { cn } from "@/lib/utils";
 import {
   type PointerEvent as ReactPointerEvent,
@@ -569,9 +567,10 @@ function CommentForm({
         type="submit"
         aria-label={t("browser.annotate.save")}
         disabled={!canSave}
-        className="flex size-9 shrink-0 cursor-pointer items-center justify-center rounded-full bg-white text-neutral-900 transition-opacity disabled:cursor-default disabled:opacity-30"
+        // The chat composer's own send button.
+        className="flex size-9 shrink-0 cursor-pointer items-center justify-center rounded-full bg-primary text-primary-foreground transition-[background-color,opacity] hover:bg-primary/80 disabled:cursor-default disabled:opacity-40 disabled:hover:bg-primary"
       >
-        <HugeiconsIcon icon={ArrowUp02Icon} strokeWidth={2} className="size-4.5" />
+        <ArrowUpIcon className="size-[calc(21px*var(--ui-space-scale,1))] stroke-2" />
       </button>
     </form>
   );

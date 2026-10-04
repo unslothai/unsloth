@@ -219,7 +219,7 @@ const ImageGalleryDialog: FC<
           src={src}
           alt={current.name || "Image attachment"}
           onError={() => setFailedId(current.id)}
-          className="size-full object-contain"
+          className="size-full object-contain shadow-[0_1px_10px_rgba(0,0,0,0.08)] dark:shadow-[0_1px_10px_rgba(0,0,0,0.3)]"
         />
       ) : (
         <Spinner className="m-auto size-6" />
