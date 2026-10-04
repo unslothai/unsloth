@@ -27,80 +27,55 @@ const run = (...actions: Action[]): State =>
 const ROLES = ["vocals", "drums", "bass", "other"];
 const gains = (state: State) => ROLES.map((role) => effectiveGain(state, role));
 
-test("every stem starts at full level, unmuted, unsoloed", () => {
+test("gain follows solo, mute and volume; solo beats mute", () => {
+  const solo = (role: string): Action => ({ type: "toggleSolo", role });
+  const mute = (role: string): Action => ({ type: "toggleMute", role });
+  const vol = (role: string, volume: number): Action => ({
+    type: "setVolume",
+    role,
+    volume,
+  });
+  const cases: [string, Action[], number[]][] = [
+    ["initial", [], [1, 1, 1, 1]],
+    ["one solo silences the rest", [solo("vocals")], [1, 0, 0, 0]],
+    [
+      "solo toggled off restores",
+      [solo("vocals"), solo("vocals")],
+      [1, 1, 1, 1],
+    ],
+    [
+      "several solos play together",
+      [solo("vocals"), solo("bass")],
+      [1, 0, 1, 0],
+    ],
+    ["mute silences only that stem", [mute("drums")], [1, 0, 1, 1]],
+    ["mute toggled off restores", [mute("drums"), mute("drums")], [1, 1, 1, 1]],
+    ["solo beats mute", [mute("vocals"), solo("vocals")], [1, 0, 0, 0]],
+    [
+      "mute returns when the solo ends",
+      [mute("vocals"), solo("vocals"), solo("vocals")],
+      [0, 1, 1, 1],
+    ],
+    ["volume scales the gain", [vol("bass", 0.5)], [1, 1, 0.5, 1]],
+    ["volume clamps high", [vol("bass", 3)], [1, 1, 1, 1]],
+    ["volume clamps low", [vol("bass", -2)], [1, 1, 0, 1]],
+    [
+      "NaN volume is ignored",
+      [vol("bass", 0.5), vol("bass", Number.NaN)],
+      [1, 1, 0.5, 1],
+    ],
+    ["solo keeps the volume", [vol("bass", 0.5), solo("bass")], [0, 0, 0.5, 0]],
+  ];
+  for (const [name, actions, want] of cases) {
+    assert.deepEqual(gains(run(...actions)), want, name);
+  }
   assert.deepEqual(stemMix(INITIAL_STEM_MIXER_STATE, "vocals"), {
     volume: 1,
     muted: false,
     solo: false,
   });
-  assert.deepEqual(gains(INITIAL_STEM_MIXER_STATE), [1, 1, 1, 1]);
-});
-
-test("one solo silences every other stem; toggling it again restores them", () => {
-  const solo = run({ type: "toggleSolo", role: "vocals" });
-  assert.equal(anySolo(solo), true);
-  assert.deepEqual(gains(solo), [1, 0, 0, 0]);
-  const off = stemMixerReducer(solo, { type: "toggleSolo", role: "vocals" });
-  assert.equal(anySolo(off), false);
-  assert.deepEqual(gains(off), [1, 1, 1, 1]);
-});
-
-test("several solos play together", () => {
-  const state = run(
-    { type: "toggleSolo", role: "vocals" },
-    { type: "toggleSolo", role: "bass" },
-  );
-  assert.deepEqual(gains(state), [1, 0, 1, 0]);
-});
-
-test("mute silences only that stem", () => {
-  const state = run({ type: "toggleMute", role: "drums" });
-  assert.deepEqual(gains(state), [1, 0, 1, 1]);
-  assert.deepEqual(
-    gains(stemMixerReducer(state, { type: "toggleMute", role: "drums" })),
-    [1, 1, 1, 1],
-  );
-});
-
-test("solo beats mute, and mute comes back when the solo ends", () => {
-  const state = run(
-    { type: "toggleMute", role: "vocals" },
-    { type: "toggleSolo", role: "vocals" },
-  );
-  assert.equal(effectiveGain(state, "vocals"), 1);
-  assert.equal(effectiveGain(state, "drums"), 0);
-  const unsolo = stemMixerReducer(state, {
-    type: "toggleSolo",
-    role: "vocals",
-  });
-  assert.deepEqual(gains(unsolo), [0, 1, 1, 1]);
-});
-
-test("volume scales the gain and is clamped to 0..1", () => {
-  const half = run({ type: "setVolume", role: "bass", volume: 0.5 });
-  assert.equal(effectiveGain(half, "bass"), 0.5);
-  assert.equal(
-    stemMix(run({ type: "setVolume", role: "bass", volume: 3 }), "bass").volume,
-    1,
-  );
-  assert.equal(
-    stemMix(run({ type: "setVolume", role: "bass", volume: -2 }), "bass")
-      .volume,
-    0,
-  );
-  assert.equal(
-    stemMix(
-      stemMixerReducer(half, {
-        type: "setVolume",
-        role: "bass",
-        volume: Number.NaN,
-      }),
-      "bass",
-    ).volume,
-    0.5,
-  );
-  const soloHalf = stemMixerReducer(half, { type: "toggleSolo", role: "bass" });
-  assert.deepEqual(gains(soloHalf), [0, 0, 0.5, 0]);
+  assert.equal(anySolo(run(solo("vocals"))), true);
+  assert.equal(anySolo(run(solo("vocals"), solo("vocals"))), false);
 });
 
 test("reset returns to the initial levels; no-op actions keep the same object", () => {
@@ -111,22 +86,24 @@ test("reset returns to the initial levels; no-op actions keep the same object", 
   );
   const reset = stemMixerReducer(busy, { type: "reset" });
   assert.deepEqual(reset, INITIAL_STEM_MIXER_STATE);
-  assert.deepEqual(gains(reset), [1, 1, 1, 1]);
   assert.equal(stemMixerReducer(reset, { type: "reset" }), reset);
-  const same = stemMixerReducer(busy, {
-    type: "setVolume",
-    role: "bass",
-    volume: 0.2,
-  });
-  assert.equal(same, busy);
+  assert.equal(
+    stemMixerReducer(busy, { type: "setVolume", role: "bass", volume: 0.2 }),
+    busy,
+  );
 });
 
 test("stem file names read '<title> - <Label>.wav' and are safe on disk", () => {
-  assert.equal(stemFileName("My Song.mp3", "Vocals"), "My Song - Vocals.wav");
-  assert.equal(stemFileName('a/b:c*?"<>|', "Drums"), "a_b_c______ - Drums.wav");
-  assert.equal(stemFileName("  ", "Bass"), "Separated track - Bass.wav");
-  assert.equal(stemFileName("trailing...", "Other"), "trailing - Other.wav");
-  assert.equal(stemFileName("tab\there", "Piano"), "tab_here - Piano.wav");
+  const cases: [string, string, string][] = [
+    ["My Song.mp3", "Vocals", "My Song - Vocals.wav"],
+    ['a/b:c*?"<>|', "Drums", "a_b_c______ - Drums.wav"],
+    ["  ", "Bass", "Separated track - Bass.wav"],
+    ["trailing...", "Other", "trailing - Other.wav"],
+    ["tab\there", "Piano", "tab_here - Piano.wav"],
+  ];
+  for (const [title, label, want] of cases) {
+    assert.equal(stemFileName(title, label), want);
+  }
   const long = stemFileName("x".repeat(500), "Instrumental");
   assert.ok(long.endsWith(" - Instrumental.wav"));
   assert.ok(long.length <= 120 + " - Instrumental.wav".length);
