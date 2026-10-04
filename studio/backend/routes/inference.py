@@ -22689,18 +22689,21 @@ async def openai_audio_speech_stream(
     # chat slot holds the LLM. A named model must be one of the loaded SNAC voices: this
     # route never loads, and answering with a different voice than asked for is worse
     # than refusing.
-    requested = public_model_id(body.model) or (body.model or "").strip() or None
-    backend = None
-    for candidate in (get_voice_llama_backend(), get_llama_cpp_backend()):
-        if not (candidate.is_loaded and getattr(candidate, "_audio_type", None) == "snac"):
-            continue
-        if requested and requested not in (
-            _llama_public_model_id(candidate),
-            getattr(candidate, "model_identifier", None),
-        ):
-            continue
-        backend = candidate
-        break
+    raw_model = (body.model or "").strip() or None
+    requested = public_model_id(raw_model) or raw_model
+    loaded = [
+        candidate
+        for candidate in (get_voice_llama_backend(), get_llama_cpp_backend())
+        if candidate.is_loaded and getattr(candidate, "_audio_type", None) == "snac"
+    ]
+    # An exact path wins before the public id: two local GGUFs can share a basename.
+    backend = next(
+        (c for c in loaded if raw_model and raw_model == getattr(c, "model_identifier", None)),
+        None,
+    ) or next(
+        (c for c in loaded if not requested or requested == _llama_public_model_id(c)),
+        None,
+    )
     if backend is None:
         raise HTTPException(
             status_code = 400,

@@ -386,6 +386,16 @@ def test_streaming_speech_honours_the_requested_model(monkeypatch):
     assert "Spark-TTS-0.5B-GGUF" in error.value.detail and "Load it first" in error.value.detail
     assert len(spoken) == 3
 
+    # Two local GGUFs sharing a basename: the exact path picks the slot, not the public id.
+    voice.model_identifier = "/voices/a/model.gguf"
+    voice._openai_advertised_id = None
+    chat.model_identifier = "/voices/b/model.gguf"
+    chat._openai_advertised_id = None
+    spoken.clear()
+    asyncio.run(_run("/voices/b/model.gguf"))
+    asyncio.run(_run("/voices/a/model.gguf"))
+    assert spoken == ["me/my-orpheus-finetune-GGUF", "unsloth/orpheus-3b-0.1-ft-GGUF"]
+
 
 def test_the_shared_core_guards_before_generating():
     """Wired in _generate_tts_wav so /audio/generate inherits it, not only /audio/speech."""
