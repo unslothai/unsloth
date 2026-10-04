@@ -27,7 +27,11 @@ from pathlib import Path
 from typing import Any, Optional
 
 logger = get_logger(__name__)
-from core.inference.audio_errors import AUDIO_UNSUPPORTED_CODE
+from core.inference.audio_errors import (
+    AUDIO_RUNTIME_ERROR_CODE,
+    AUDIO_UNSUPPORTED_CODE,
+    AudioRuntimeError,
+)
 from core.inference.context_refusal import ContextBudgetExceeded
 from utils.hardware import apply_gpu_ids, is_apple_silicon
 
@@ -786,6 +790,10 @@ def _handle_load(backend, config: dict, resp_queue: Any) -> None:
                         "audio_family",
                         "audio_options",
                         "gguf_variant",
+                        "audio_workflows",
+                        "audio_reference_text",
+                        "audio_required_inputs",
+                        "audio_clone",
                     )
                     if k in _entry
                 }
@@ -1593,6 +1601,17 @@ def _handle_generate_audio(backend, cmd: dict, resp_queue: Any, cancel_event) ->
         logger.info("Starting audio generation for request_id=%s", request_id)
         # Only audio.cpp models take per-model options; other backends never see the keyword.
         extra = {"audio_options": cmd["audio_options"]} if cmd.get("audio_options") else {}
+        # Run fields reach only a backend that takes them: a Speak run on a native TTS model carries a
+        # workflow its backend has no keyword for.
+        params = inspect.signature(backend.generate_audio_response).parameters
+        takes_any = any(p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values())
+        for key in ("workflow", "audio_inputs", "reference_text", "speed"):
+            if cmd.get(key) is None:
+                continue
+            if takes_any or key in params:
+                extra[key] = cmd[key]
+            elif key == "audio_inputs":
+                raise AudioRuntimeError("This model cannot clone a voice.", status = 400)
         wav_bytes, sample_rate = backend.generate_audio_response(
             text = cmd["text"],
             temperature = cmd.get("temperature", 0.6),
@@ -1624,20 +1643,18 @@ def _handle_generate_audio(backend, cmd: dict, resp_queue: Any, cancel_event) ->
 
     except Exception as exc:
         logger.error("Audio generation error: %s", exc, exc_info = True)
-        _send_response(
-            resp_queue,
-            {
-                "type": "audio_error",
-                "request_id": request_id,
-                "error": str(exc),
-                # The route's own cancel event is not set when the worker's shared event is
-                # (an unload, a training admission, the GPU arbiter), so without this flag the
-                # orchestrator reports a cancellation as HTTP 500. Matching on the message text
-                # is what AudioGenerationCancelledError exists to avoid.
-                "cancelled": bool(cancel_event is not None and cancel_event.is_set()),
-                "stack": traceback.format_exc(limit = 20),
-            },
-        )
+        response = {
+            "type": "audio_error",
+            "request_id": request_id,
+            "error": str(exc),
+            # Flag a shared-event cancel (unload, training, arbiter) so the orchestrator does not report HTTP 500.
+            "cancelled": bool(cancel_event is not None and cancel_event.is_set()),
+            "stack": traceback.format_exc(limit = 20),
+        }
+        if isinstance(exc, AudioRuntimeError):
+            response["code"] = AUDIO_RUNTIME_ERROR_CODE
+            response["status"] = exc.status
+        _send_response(resp_queue, response)
 
 
 def _handle_generate_audio_input(backend, cmd: dict, resp_queue: Any, cancel_event) -> None:

@@ -5,10 +5,11 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import ts from "typescript";
 import { readSrc, readText } from "./helpers/kit.ts";
+import { readAudioWorkspaceSource } from "./helpers/audio-workspace.ts";
 import { AUTH_SESSION_ENDING_EVENT } from "../src/features/auth/session-events.ts";
 import { readTranscriptDraft, writeTranscriptDraft } from "../src/features/audio/transcript-draft.ts";
 
-const source = readSrc("features/audio/audio-page.tsx");
+const source = readAudioWorkspaceSource();
 
 test("macOS termination checks unsaved transcripts before allowing exit", () => {
   const native = readText("../../src-tauri/src/main.rs");
@@ -123,7 +124,7 @@ test("changing model residency preserves the transcript and its recorded origin"
   const refresh = section("const refreshSttStatus", "const sttSelected");
   const release = section(
     "const releaseTranscribeSelection",
-    "const ensureClipSrc",
+    "const ensureSttLoaded",
   );
   assert.doesNotMatch(refresh, /clearTranscript\(/);
   assert.doesNotMatch(release, /clearTranscript\(/);
