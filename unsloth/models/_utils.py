@@ -6044,10 +6044,10 @@ patch_hf_quantizer()
 
 def verify_fp8_support_if_applicable(model_config):
     quant_method = get_quant_type(model_config)
-    if quant_method in ["fbgemm_fp8", "fp8"] and DEVICE_TYPE != "cuda":
+    if quant_method in ["fbgemm_fp8", "fp8"] and DEVICE_TYPE not in ("cuda", "xpu"):
         # In case of block quantized, we allow L4 because we fall back to torchao kernels.
         raise ValueError(
-            f"Unsloth: FP8 quantization is only supported on CUDA GPUs. You are using {DEVICE_TYPE}."
+            f"Unsloth: FP8 quantization is only supported on CUDA and XPU GPUs. You are using {DEVICE_TYPE}."
         )
 
     if DEVICE_TYPE == "cuda":
