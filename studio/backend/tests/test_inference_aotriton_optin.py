@@ -1,10 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Importing Studio's inference package opts into ROCm AOTriton SDPA, without overriding a user value.
-
-Each case runs in a fresh interpreter: the variable is process-wide and torch reads it once, at the first SDPA
-dispatch, so only a clean process shows what an entry point really gets."""
+"""Fresh interpreter per case: torch latches the variable process-wide at the first SDPA dispatch."""
 
 from __future__ import annotations
 
