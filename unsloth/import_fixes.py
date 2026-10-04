@@ -4755,11 +4755,12 @@ def _pt2_unsafe_load_error(what):
 
 
 def _pt2_loader_caller(frame):
-    # Skip Unsloth's own torch.load wrappers (the rng guard may wrap this one).
+    # The export loader's frame, if it is among the few frames above this load: other torch.load
+    # wrappers (Unsloth's rng guard, or another library's patch installed later) sit in between.
     hops = 0
-    while frame is not None and hops < 4:
+    while frame is not None and hops < 8:
         name = frame.f_globals.get("__name__", "")
-        if not name.startswith(("unsloth.", "unsloth_zoo.")) and name != __name__:
+        if name in _PT2_LOADER_MODULES:
             return name
         frame = frame.f_back
         hops += 1
@@ -4780,6 +4781,65 @@ class _Pt2PickleModule(types.ModuleType):
         if _pt2_unsafe_load_allowed():
             return self._unsloth_pt2_real_pickle.loads(*args, **kwargs)
         raise _pt2_unsafe_load_error("unpickle an opaque object")
+
+
+_PT2_PACKAGE_MODULE = "torch.export.pt2_archive._package"
+_PT2_FINDER_SENTINEL = "_unsloth_pt2_package_finder"
+
+
+def _install_pt2_pickle_proxy(package):
+    real_pickle = getattr(package, "pickle", None)
+    if isinstance(real_pickle, types.ModuleType) and not isinstance(real_pickle, _Pt2PickleModule):
+        package.pickle = _Pt2PickleModule(real_pickle)
+        return True
+    return False
+
+
+class _Pt2PackageLoader(importlib.abc.Loader):
+    __slots__ = ("_loader",)
+
+    def __init__(self, loader):
+        self._loader = loader
+
+    def create_module(self, spec):
+        create_module = getattr(self._loader, "create_module", None)
+        return None if create_module is None else create_module(spec)
+
+    def exec_module(self, module):
+        self._loader.exec_module(module)
+        _install_pt2_pickle_proxy(module)
+
+    def __getattr__(self, name):
+        return getattr(self._loader, name)
+
+
+class _Pt2PackageFinder(importlib.abc.MetaPathFinder):
+    """Installs the pickle stand-in right after torch.export.pt2_archive._package first runs."""
+
+    def __init__(self):
+        setattr(self, _PT2_FINDER_SENTINEL, True)
+
+    def find_spec(
+        self,
+        fullname,
+        path = None,
+        target = None,
+    ):
+        if fullname != _PT2_PACKAGE_MODULE:
+            return None
+        for finder in sys.meta_path:
+            if finder is self or getattr(finder, _PT2_FINDER_SENTINEL, False):
+                continue
+            find_spec = getattr(finder, "find_spec", None)
+            try:
+                spec = find_spec(fullname, path, target) if find_spec is not None else None
+            except Exception:
+                spec = None
+            if spec is not None:
+                if spec.loader is not None and hasattr(spec.loader, "exec_module"):
+                    spec.loader = _Pt2PackageLoader(spec.loader)
+                return spec
+        return None
 
 
 def patch_torch_export_pt2_unsafe_load():
@@ -4820,17 +4880,13 @@ def patch_torch_export_pt2_unsafe_load():
         torch.load = _pt2_guarded_torch_load
         patched = True
 
-    # Opaque constants (newest torch) bypass torch.load. `import unsloth` has already imported
-    # the module; import it here only once dynamo is loaded, so a bare import stays cheap.
-    package = sys.modules.get("torch.export.pt2_archive._package")
-    if package is None and "torch._dynamo" in sys.modules:
-        try:
-            import torch.export.pt2_archive._package as package
-        except Exception:
-            package = None
-    real_pickle = getattr(package, "pickle", None)
-    if isinstance(real_pickle, types.ModuleType) and not isinstance(real_pickle, _Pt2PickleModule):
-        package.pickle = _Pt2PickleModule(real_pickle)
+    # Opaque constants (newest torch) bypass torch.load. Patch the module now if it is loaded,
+    # else when it is first imported, so a bare `import unsloth` never pays for the export stack.
+    package = sys.modules.get(_PT2_PACKAGE_MODULE)
+    if package is not None:
+        patched = _install_pt2_pickle_proxy(package) or patched
+    elif not any(getattr(finder, _PT2_FINDER_SENTINEL, False) for finder in sys.meta_path):
+        sys.meta_path.insert(0, _Pt2PackageFinder())
         patched = True
     if patched:
         logger.info("Unsloth: Hardened torch.export .pt2 loading (CVE-2026-4538).")

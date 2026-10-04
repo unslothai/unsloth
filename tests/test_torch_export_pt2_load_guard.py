@@ -68,9 +68,11 @@ def guarded(monkeypatch):
     original_load = torch.load
     package = sys.modules.get(_PACKAGE)
     original_pickle = getattr(package, "pickle", None)
+    original_meta_path = list(sys.meta_path)
     import_fixes.patch_torch_export_pt2_unsafe_load()
     yield
     torch.load = original_load
+    sys.meta_path[:] = original_meta_path
     package = sys.modules.get(_PACKAGE)
     if package is not None and original_pickle is not None:
         package.pickle = original_pickle
@@ -174,3 +176,37 @@ def test_export_roundtrip_and_compile_unchanged(guarded, tmp_path):
     assert torch.allclose(reloaded.module()(x), model(x))
     compiled = torch.compile(lambda a: torch.sin(a) * 2 + 1, backend = "eager")
     assert torch.allclose(compiled(x), torch.sin(x) * 2 + 1)
+
+
+def test_outer_torch_load_wrapper_does_not_hide_export_caller(guarded):
+    # Another library wrapping torch.load after Unsloth puts its own frame between the export
+    # loader and the guard.
+    inner = torch.load
+
+    def outer(*args, **kwargs):
+        return inner(*args, **kwargs)
+
+    torch.load = outer
+    with pytest.raises(pickle.UnpicklingError, match = "UNSLOTH_ALLOW_UNSAFE_PT2_LOAD=1"):
+        _load_from(_SERIALIZE)(_payload({"x": NotATensor()}))
+
+
+def test_package_imported_after_patch_is_hardened(guarded):
+    if importlib.util.find_spec("torch.export.pt2_archive") is None:
+        pytest.skip("this torch has no pt2_archive package")
+    parent = importlib.import_module("torch.export.pt2_archive")
+    saved_module = sys.modules.pop(_PACKAGE, None)
+    saved_attr = parent.__dict__.pop("_package", None)
+    try:
+        import_fixes.patch_torch_export_pt2_unsafe_load()
+        module = importlib.import_module(_PACKAGE)
+        if not isinstance(getattr(module, "pickle", None), types.ModuleType):
+            pytest.skip("this torch's _package does not use pickle")
+        assert isinstance(module.pickle, import_fixes._Pt2PickleModule)
+        with pytest.raises(pickle.UnpicklingError):
+            module.pickle.loads(pickle.dumps(1))
+    finally:
+        if saved_module is not None:
+            sys.modules[_PACKAGE] = saved_module
+        if saved_attr is not None:
+            parent._package = saved_attr
