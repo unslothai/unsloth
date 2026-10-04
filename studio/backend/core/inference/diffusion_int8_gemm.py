@@ -105,6 +105,7 @@ _SHAPE_TILES: dict = {
 }
 _SHAPE_MIN_M = 1024
 
+
 def int8_gemm_mode() -> str:
     """'off', 'force' or 'auto' from the environment."""
     raw = (os.environ.get(INT8_GEMM_ENV) or "").strip().lower()
@@ -612,7 +613,6 @@ def _linear_forward(self: Any, x: Any) -> Any:
     q = None
     if rotq:
         from .diffusion_convrot_quant import convrot_act_quant
-
         q = convrot_act_quant(x.reshape(-1, x.shape[-1]), group, kind == "v2")
     if q is not None:
         xq, xs = q
@@ -828,7 +828,13 @@ def _swap(
                 count += 1
                 continue
             # kind, rotation group, fused rotation + act quant on, the Parameter (no payload alias), fused GEMM on
-            module.__dict__[_REC] = (rec[0], rec[1], bool(rotq and rec[1] is not None), rec[3], gemm)
+            module.__dict__[_REC] = (
+                rec[0],
+                rec[1],
+                bool(rotq and rec[1] is not None),
+                rec[3],
+                gemm,
+            )
             module.__dict__[_MARK] = module.__dict__.get("forward", _NO_PREV)
             module.forward = types.MethodType(_linear_forward, module)
             count += 1

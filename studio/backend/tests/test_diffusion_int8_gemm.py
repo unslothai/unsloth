@@ -847,12 +847,16 @@ def test_every_shipped_shape_tile_is_bit_exact(forced, tile, ws32):
         except Exception as exc:  # noqa: BLE001 - a tile that does not fit this part is dropped by the probe
             if g8._probe(torch.cuda.current_device(), tile):
                 raise
-            pytest.skip(f"tile {tile} does not fit this part ({type(exc).__name__}); probe drops it")
+            pytest.skip(
+                f"tile {tile} does not fit this part ({type(exc).__name__}); probe drops it"
+            )
         assert torch.equal(out, g8.reference(a, w, xs, ws, None))
     a, w = g8.tie_operands(torch.device("cuda"))
     ones = torch.ones(a.shape[0], device = "cuda", dtype = torch.bfloat16)
     wones = torch.ones(w.shape[0], device = "cuda", dtype = torch.bfloat16)
-    assert torch.equal(g8._launch(a, w, ones, wones, None, tile), g8.reference(a, w, ones, wones, None))
+    assert torch.equal(
+        g8._launch(a, w, ones, wones, None, tile), g8.reference(a, w, ones, wones, None)
+    )
 
 
 # ---------------------------------------------------------------- fused rotation without the fused GEMM
@@ -884,7 +888,9 @@ def test_rotquant_mode_follows_its_own_switch_and_the_gemm_master(monkeypatch):
 @needs_cuda
 @pytest.mark.parametrize("version", [None, 2])
 @pytest.mark.parametrize("bias", [False, True])
-def test_rotated_linear_without_the_fused_gemm_is_bit_identical(rotq_only, monkeypatch, version, bias):
+def test_rotated_linear_without_the_fused_gemm_is_bit_identical(
+    rotq_only, monkeypatch, version, bias
+):
     """Fused GEMM off, rotation kernel on: only the ConvRot Linear is swapped; rotq + cuBLAS _int_mm + torchao's
     epilogue equals ConvRotLinear.forward eager, compiled fullgraph keeps one graph, the plain Linear stays stock."""
     from torch._dynamo.utils import counters

@@ -48,7 +48,8 @@ _ROTQ_GROUPS = (256,)
 # and Z-Image K); at K 10240 (40 groups: one row in 64, 62% used) the default's three rows in 128 win.
 _ROTQ_NARROW = (64, 32, 4, 3)
 _ROTQ_K_TILES: dict = {
-    cap: ((256, 8192, _ROTQ_NARROW), (11264, 16384, _ROTQ_NARROW)) for cap in ((8, 0), (8, 9), (12, 0))
+    cap: ((256, 8192, _ROTQ_NARROW), (11264, 16384, _ROTQ_NARROW))
+    for cap in ((8, 0), (8, 9), (12, 0))
 }
 
 # (QMIN, QMAX, DIV, EPS): v1 _int8_symm_per_token_reduced_range_quant, v2 Int8Tensor.from_hp(PerRow, SYMMETRIC).
@@ -319,7 +320,11 @@ def rotquant_supported(x2d: Any, group: int, cfg: Optional[tuple]) -> bool:
     return k % group == 0 and k >= group and _rotq_rows(k, group, cfg) >= 1
 
 
-def rotq_tile_for(index: Any, k: int, group: int = 256) -> Optional[tuple]:
+def rotq_tile_for(
+    index: Any,
+    k: int,
+    group: int = 256,
+) -> Optional[tuple]:
     """The probed tile this device quantizes a K-wide activation with: a per-K rule, else the arch default."""
     cfg = _ROTQ_DEVICE.get(index)
     if cfg is None:
@@ -397,7 +402,6 @@ def rotquant_device_config(index: int) -> Optional[tuple]:
     rules: tuple = ()
     try:
         import torch
-
         if (
             torch.cuda.is_available()
             and not getattr(torch.version, "hip", None)
