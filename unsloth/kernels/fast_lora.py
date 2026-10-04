@@ -13,7 +13,6 @@ import torch
 from unsloth_zoo.utils import Version
 from .utils import (
     _has_multiple_active_adapters,
-    _maybe_fake_quantize_activations,
     addmm_,
     fast_dequantize,
     QUANT_STATE,
@@ -36,6 +35,14 @@ def _apply(function, *args):
 
 if not TRACE_LORA_FUNCTIONS:
     _apply = torch._dynamo.disable(_apply)
+
+
+def _has_activation_fake_quantizer(proj):
+    # Fused LoRA skips per-layer activation fake quantizers; explicit children, as proj.modules() is slow per call.
+    for module in (getattr(proj, "base_layer", proj), *proj.lora_A.values(), *proj.lora_B.values()):
+        if module._modules.get("activation_fake_quantizer") is not None:
+            return True
+    return False
 
 
 class LoRA_MLP(torch.autograd.Function):
@@ -236,11 +243,10 @@ def apply_lora_mlp_swiglu(
     inplace = True,
 ):
     if any(
-        _has_multiple_active_adapters(proj)
+        _has_multiple_active_adapters(proj) or _has_activation_fake_quantizer(proj)
         for proj in (self.gate_proj, self.up_proj, self.down_proj)
     ):
         return self.down_proj(self.act_fn(self.gate_proj(X)) * self.up_proj(X))
-    X = _maybe_fake_quantize_activations(X, self.gate_proj)
     gateW, gateW_quant, gateA, gateB, gateS = get_lora_parameters(self.gate_proj)
     upW, upW_quant, upA, upB, upS = get_lora_parameters(self.up_proj)
     downW, downW_quant, downA, downB, downS = get_lora_parameters(self.down_proj)
@@ -278,11 +284,10 @@ def apply_lora_mlp_geglu_exact(
     inplace = True,
 ):
     if any(
-        _has_multiple_active_adapters(proj)
+        _has_multiple_active_adapters(proj) or _has_activation_fake_quantizer(proj)
         for proj in (self.gate_proj, self.up_proj, self.down_proj)
     ):
         return self.down_proj(self.act_fn(self.gate_proj(X)) * self.up_proj(X))
-    X = _maybe_fake_quantize_activations(X, self.gate_proj)
     gateW, gateW_quant, gateA, gateB, gateS = get_lora_parameters(self.gate_proj)
     upW, upW_quant, upA, upB, upS = get_lora_parameters(self.up_proj)
     downW, downW_quant, downA, downB, downS = get_lora_parameters(self.down_proj)
@@ -316,11 +321,10 @@ from .geglu import geglu_approx_forward_kernel, geglu_approx_backward_kernel
 
 def apply_lora_mlp_geglu_approx(self, X):
     if any(
-        _has_multiple_active_adapters(proj)
+        _has_multiple_active_adapters(proj) or _has_activation_fake_quantizer(proj)
         for proj in (self.gate_proj, self.up_proj, self.down_proj)
     ):
         return self.down_proj(self.act_fn(self.gate_proj(X)) * self.up_proj(X))
-    X = _maybe_fake_quantize_activations(X, self.gate_proj)
     gateW, gateW_quant, gateA, gateB, gateS = get_lora_parameters(self.gate_proj)
     upW, upW_quant, upA, upB, upS = get_lora_parameters(self.up_proj)
     downW, downW_quant, downA, downB, downS = get_lora_parameters(self.down_proj)
@@ -539,9 +543,11 @@ def apply_lora_qkv(
     X,
     inplace = True,
 ):
-    if any(_has_multiple_active_adapters(proj) for proj in (self.q_proj, self.k_proj, self.v_proj)):
+    if any(
+        _has_multiple_active_adapters(proj) or _has_activation_fake_quantizer(proj)
+        for proj in (self.q_proj, self.k_proj, self.v_proj)
+    ):
         return self.q_proj(X), self.k_proj(X), self.v_proj(X)
-    X = _maybe_fake_quantize_activations(X, self.q_proj)
     QW, QW_quant, QA, QB, QS = get_lora_parameters(self.q_proj)
     KW, KW_quant, KA, KB, KS = get_lora_parameters(self.k_proj)
     VW, VW_quant, VA, VB, VS = get_lora_parameters(self.v_proj)
@@ -643,9 +649,8 @@ class LoRA_W(torch.autograd.Function):
 
 
 def apply_lora_o(self, X):
-    if _has_multiple_active_adapters(self.o_proj):
+    if _has_multiple_active_adapters(self.o_proj) or _has_activation_fake_quantizer(self.o_proj):
         return self.o_proj(X)
-    X = _maybe_fake_quantize_activations(X, self.o_proj)
     OW, OW_quant, OA, OB, OS = get_lora_parameters(self.o_proj)
     O = _apply(LoRA_W, X, OW, OW_quant, OA, OB, OS)
     return O
