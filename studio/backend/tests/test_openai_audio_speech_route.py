@@ -1232,7 +1232,7 @@ def test_voice_load_claims_the_gpu_for_chat_before_spawning():
     # The in-flight marker covers the whole request, resolution and warm-up included, so an
     # unload or an Images/Video acquire anywhere in it finds a load to cancel.
     assert source.index("in_flight.__enter__()") < source.index("_resolve_config")
-    assert source.index("in_flight.__exit__(None, None, None)") > source.index('"status": "loaded"')
+    assert "_leave_in_flight()" in source[source.index('"status": "loaded"') :]
     unload = inspect.getsource(routes_module.voice_unload_model)
     assert "require_no_foreign_generations(scope)" in unload
 
@@ -1481,7 +1481,9 @@ def test_a_rejected_voice_load_gives_the_chat_claim_back():
 
     source = inspect.getsource(routes_module.voice_load_model)
     undo = source.index("async def _undo_load():")
-    assert "await asyncio.to_thread(release_chat_gpu_claim)" in source[undo : undo + 400]
+    body = source[undo : undo + 500]
+    # The marker counts as a live voice slot to the release predicate, so it ends first.
+    assert body.index("_leave_in_flight()") < body.index("await asyncio.to_thread(release_chat_gpu_claim)")
     for marker in (
         'detail = f"Failed to load voice model: {e}"',
         'detail = "Voice model failed to start."',
@@ -1489,3 +1491,21 @@ def test_a_rejected_voice_load_gives_the_chat_claim_back():
     ):
         at = source.index(marker)
         assert "await _undo_load()" in source[at - 400 : at + 200], marker
+
+
+def test_the_in_flight_marker_keeps_the_chat_claim_until_it_ends(monkeypatch):
+    """release_chat_gpu_claim treats a load still marked in flight as a live voice slot, so a
+    cleanup that releases inside the marker keeps the stale claim."""
+    import core.inference.gpu_arbiter as arb
+    from core.inference.llama_cpp import voice_load_in_flight
+
+    monkeypatch.setattr(arb, "_owner", None)
+    monkeypatch.setattr(arb, "_owner_account", None)
+    voice = type("Voice", (), {"is_active": False, "model_identifier": None})()
+    monkeypatch.setattr(routes_module, "get_voice_llama_backend", lambda: voice)
+    arb.acquire_for(arb.CHAT)
+    with voice_load_in_flight():
+        routes_module.release_chat_gpu_claim()
+        assert arb.current_owner() == arb.CHAT
+    routes_module.release_chat_gpu_claim()
+    assert arb.current_owner() is None

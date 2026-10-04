@@ -21015,6 +21015,13 @@ async def voice_load_model(
         
         in_flight = voice_load_in_flight()
         in_flight.__enter__()
+        in_flight_open = [True]
+
+        def _leave_in_flight():
+            if in_flight_open[0]:
+                in_flight_open[0] = False
+                in_flight.__exit__(None, None, None)
+
         try:
 
             # Resolve model config — auto-selects GGUF variant when gguf_variant is None,
@@ -21110,12 +21117,14 @@ async def voice_load_model(
 
             # A load this handler rejects after the claim must give the claim back too: left
             # as CHAT under the caller's account with nothing resident, every other account saw
-            # a hidden foreign model on an empty GPU.
+            # a hidden foreign model on an empty GPU. The in-flight marker counts as a live
+            # voice slot to the release predicate, so it is dropped first.
             async def _undo_load():
                 try:
                     await asyncio.to_thread(voice_backend.unload_model)
                 except Exception:
                     pass
+                _leave_in_flight()
                 await asyncio.to_thread(release_chat_gpu_claim)
 
             try:
@@ -21197,7 +21206,7 @@ async def voice_load_model(
                 "audio_type": audio_type,
             }
         finally:
-            in_flight.__exit__(None, None, None)
+            _leave_in_flight()
 
 
 @router.post("/voice/unload")
