@@ -69,7 +69,6 @@ import {
 } from "@/features/hub/inventory";
 import { modelIdsMatch } from "@/features/hub/lib/model-identity";
 import { ChatHeaderMenu } from "./components/chat-header-menu";
-import { useActiveChatMenuStore } from "./stores/active-chat-menu-store";
 import { DeleteChatFilesSwitch } from "./components/delete-chat-files-switch";
 import { chatLocalModelOptions } from "./local-model-options";
 import {
@@ -2566,8 +2565,6 @@ export function ChatPage({
   const setSettingsOpen = useChatRuntimeStore((s) => s.setSettingsPanelOpen);
   const incognito = useChatRuntimeStore((s) => s.incognito);
   const setIncognito = useChatRuntimeStore((s) => s.setIncognito);
-  // A saved chat is open: its header gets the "…" menu, and a line before the right panel's button.
-  const savedChatOpen = useActiveChatMenuStore((s) => s.menu !== null);
   const toggleIncognito = useCallback(() => {
     const store = useChatRuntimeStore.getState();
     const wasIncognito = store.incognito;
@@ -4714,12 +4711,6 @@ export function ChatPage({
                   Research activity
                 </TooltipContent>
               </Tooltip>
-            ) : null}
-            {!settingsOpen && view.mode === "single" && savedChatOpen && !incognito ? (
-              <span
-                aria-hidden={true}
-                className="mx-[calc(4px*var(--ui-space-scale,1))] h-5 w-px bg-border"
-              />
             ) : null}
             {!settingsOpen && (
               <Tooltip>
