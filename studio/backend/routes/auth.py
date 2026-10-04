@@ -456,9 +456,7 @@ def auth_status() -> AuthStatusResponse:
 def _login_failure_detail(request: Request | None = None) -> str:
     """Recovery hint for a rejected login. The name shown is a placeholder, not the submitted.
 
-    A browser on another machine is told where the command runs (#11388): "your terminal" is
-    the wrong box for it, and the hint must not suggest the host is reachable from there.
-    Loopback, and only loopback, is the person at the machine.
+    Only a loopback caller is told "your terminal"; anyone else is told which machine (#11388).
 
     PATH form only: this body is produced before any credential is verified and the browser-served
     default resolves CORS to ["*"], so an absolute path built from ``sys.executable`` would hand the
@@ -484,9 +482,7 @@ def _login_failure_detail(request: Request | None = None) -> str:
 
 
 def _client_is_loopback(request: Request | None) -> bool:
-    """Only the person at the machine. ``utils.client_ip`` rather than this module's
-    ``_client_ip``: the managed Cloudflare tunnel terminates on loopback and names the visitor
-    in ``CF-Connecting-IP``, and that visitor is the remote case this wording exists for."""
+    # Not _client_ip: the managed tunnel terminates on loopback and names the visitor in CF-Connecting-IP.
     from utils.client_ip import client_ip
     try:
         return ipaddress.ip_address(client_ip(request)).is_loopback

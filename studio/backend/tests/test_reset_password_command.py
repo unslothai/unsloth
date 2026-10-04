@@ -222,8 +222,6 @@ def test_a_loopback_login_failure_points_at_the_local_terminal(monkeypatch, auth
 
 @pytest.mark.parametrize("host", ["203.0.113.5", "192.168.1.20", "2001:db8::7", None])
 def test_a_remote_login_failure_names_the_host_machine_not_the_browser(monkeypatch, auth, host):
-    """A browser on another machine cannot run the command where it sits (#11388). The hint
-    says which machine, and still names no path on it."""
     monkeypatch.setattr(auth.policy, "installation_is_multi_user", lambda: False)
     detail = auth._login_failure_detail(_request_from(host))
     assert "on the machine Unsloth Studio is running on" in detail
@@ -233,7 +231,6 @@ def test_a_remote_login_failure_names_the_host_machine_not_the_browser(monkeypat
 
 
 def test_the_login_route_hands_its_request_to_the_hint(auth):
-    """The wording keys on the caller, so the route must pass the request through."""
     import inspect
 
     source = inspect.getsource(auth.login)
@@ -242,8 +239,6 @@ def test_the_login_route_hands_its_request_to_the_hint(auth):
 
 
 def test_a_tunnelled_visitor_is_remote_even_though_the_socket_peer_is_loopback(monkeypatch, auth):
-    """The managed Cloudflare tunnel terminates at 127.0.0.1 and names the visitor in
-    CF-Connecting-IP. That visitor is exactly who must not be told "your terminal"."""
     monkeypatch.setattr(auth.policy, "installation_is_multi_user", lambda: False)
     detail = auth._login_failure_detail(
         _request_from("127.0.0.1", {"cf-connecting-ip": "198.51.100.9"})
