@@ -61,10 +61,9 @@ async function readSttStatus(
   return (await response.json()) as SttStatusResponse;
 }
 
-// A runtime that accepts the connection and never answers would leave the whole
-// batch pending forever, and with it the in-flight guard gating every later
-// refresh. Well past a cold status probe, so a slow-but-healthy read still lands
-// and only a real hang trips it.
+// A runtime that accepts the connection and never answers would leave the whole batch pending
+// forever, and with it the in-flight guard gating every later refresh. Well past a cold status
+// probe, so a slow-but-healthy read still lands and only a real hang trips it.
 const READ_TIMEOUT_MS = 10_000;
 
 /** null on failure or timeout: one stalled runtime must not empty the list. */
@@ -207,10 +206,9 @@ export type EjectOutcome =
   | { status: "alreadyFree" }
   | { status: "replaced"; resident: string }
   | { status: "stillResident"; model: string }
-  // The unload was accepted but the read that confirms it did not answer, so
-  // neither "done" nor "failed" is true. Reported as its own outcome rather
-  // than collapsed into either, since the whole point of the confirming read is
-  // that a 200 from this endpoint is not evidence.
+  // The unload was accepted but the read that confirms it did not answer, so neither "done" nor
+  // "failed" is true. Reported as its own outcome rather than collapsed into either, since the
+  // whole point of the confirming read is that a 200 from this endpoint is not evidence.
   | { status: "unverified" };
 
 /** `unload` could not confirm what the runtime holds, which is not the same as
@@ -298,10 +296,9 @@ export async function ejectLoadedModel(
             { method: "POST" },
           );
           if (!response.ok) throw new Error(await readErrorDetail(response));
-          // The unload response body is a fixed {loaded_model: null}, and the
-          // backend silently serves `gguf` from the transformers engine when
-          // whisper-server is absent, so a 200 is not evidence this engine let
-          // go. Re-read and report what it actually holds.
+          // The unload response body is a fixed {loaded_model: null}, and the backend silently
+          // serves `gguf` from the transformers engine when whisper-server is absent, so a 200 is
+          // not evidence this engine let go. Re-read and report what it actually holds.
           const after = await bounded(readSttStatus);
           // A non-2xx read is null too, and reading that as "nothing left"
           // would toast success and drop the row for a model still holding

@@ -59,12 +59,12 @@ def test_explicit_xet_beats_an_unhealthy_verdict(monkeypatch):
     """An explicit choice is not overruled by the health verdict; it still gets the memory caps and
     the stall fallback."""
     monkeypatch.setattr(dl, "resolve_effective_use_xet", lambda requested: requested)
-    monkeypatch.setattr(dl, "resolve_auto_use_xet", lambda: (False, "demoted"))
+    monkeypatch.setattr(dl, "resolve_auto_use_xet", lambda **kw: (False, "demoted"))
     assert dl.resolve_requested_use_xet("xet", True)[0] is True
 
 
 def test_auto_defers_to_the_health_verdict(monkeypatch):
-    monkeypatch.setattr(dl, "resolve_auto_use_xet", lambda: (False, "Xet stalled twice"))
+    monkeypatch.setattr(dl, "resolve_auto_use_xet", lambda **kw: (False, "Xet stalled twice"))
     use_xet, reason = dl.resolve_requested_use_xet("auto", True)
     assert use_xet is False
     assert reason == "Xet stalled twice"

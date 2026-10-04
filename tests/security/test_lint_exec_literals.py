@@ -131,6 +131,20 @@ def test_a_magic_line_does_not_shift_the_reported_line_number(tmp_path):
     assert [f["line"] for f in found] == [4], found
 
 
+def test_a_generated_compile_cache_is_not_scanned(tmp_path, monkeypatch):
+    # Unsloth regenerates unsloth_compiled_cache/ wherever it runs; it is gitignored, so a call in
+    # it is not in any commit and must not fail the gate on a machine that has run Unsloth.
+    module = _module()
+    monkeypatch.setattr(module, "REPO_ROOT", tmp_path)
+    source = "def f(s):\n    exec(s)\n"
+    (tmp_path / "pkg" / "unsloth_compiled_cache").mkdir(parents = True)
+    (tmp_path / "pkg" / "unsloth_compiled_cache" / "moe_utils.py").write_text(
+        source, encoding = "utf-8"
+    )
+    (tmp_path / "pkg" / "real.py").write_text(source, encoding = "utf-8")
+    assert [f["file"] for f in module.collect(["pkg"])] == ["pkg/real.py"]
+
+
 def test_the_baseline_matches_the_tree_it_was_recorded_against():
     """A stale entry silently re-permits whatever lands on that digest next."""
     proc = subprocess.run(

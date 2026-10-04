@@ -5,6 +5,7 @@ import { HoverCard as HoverCardPrimitive } from "radix-ui";
 import type * as React from "react";
 
 import { cn } from "@/lib/utils";
+import { useWindowChromeCollisionPadding } from "@/lib/window-chrome";
 
 function HoverCard({
   ...props
@@ -24,16 +25,18 @@ function HoverCardContent({
   className,
   align = "center",
   sideOffset = 4,
+  collisionPadding,
   ...props
 }: React.ComponentProps<typeof HoverCardPrimitive.Content>) {
   return (
     <HoverCardPrimitive.Portal data-slot="hover-card-portal">
       <HoverCardPrimitive.Content
         data-slot="hover-card-content"
+        collisionPadding={useWindowChromeCollisionPadding(collisionPadding)}
         align={align}
         sideOffset={sideOffset}
         className={cn(
-          "data-open:animate-in data-closed:animate-out data-closed:fade-out-0 data-open:fade-in-0 data-closed:zoom-out-95 data-open:zoom-in-95 data-[side=bottom]:slide-in-from-top-2 data-[side=left]:slide-in-from-right-2 data-[side=right]:slide-in-from-left-2 data-[side=top]:slide-in-from-bottom-2 ring-foreground/5 bg-popover text-popover-foreground w-72 corner-squircle rounded-2xl p-4 text-sm shadow-2xl ring-1 duration-100 z-50 origin-(--radix-hover-card-content-transform-origin) outline-hidden",
+          "data-open:animate-in data-closed:animate-out data-closed:fade-out-0 data-open:fade-in-0 data-closed:zoom-out-95 data-open:zoom-in-95 data-[side=bottom]:slide-in-from-top-2 data-[side=left]:slide-in-from-right-2 data-[side=right]:slide-in-from-left-2 data-[side=top]:slide-in-from-bottom-2 ring-[color-mix(in_oklab,var(--foreground)_calc(5%*var(--contrast-edge-gain,1)),transparent)] bg-popover text-popover-foreground w-72 corner-squircle rounded-2xl p-4 text-sm shadow-2xl ring-1 duration-100 z-50 origin-(--radix-hover-card-content-transform-origin) outline-hidden",
           className,
         )}
         {...props}

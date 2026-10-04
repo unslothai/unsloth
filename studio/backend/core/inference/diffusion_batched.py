@@ -30,9 +30,8 @@ from __future__ import annotations
 
 from typing import Any, Callable, Optional
 
-# cap on images per call: a longer list is a client error, not an OOM to back off from
-# Upper bound on images per generation call (mirrors the route's cap): a longer prompt/seed list is a client error, not
-# an OOM to back off from.
+# Upper bound on images per generation call (mirrors the route's cap): a longer prompt/seed list is a client error,
+# not an OOM to back off from.
 MAX_BATCH_IMAGES = 32
 
 # Seeds stay in JS's safe-integer range so they round-trip through the JSON gallery recipes (a raw 64-bit seed loses
@@ -133,9 +132,18 @@ def uniform_prompt(chunk: list[tuple[str, int]]) -> Optional[str]:
 
 def is_oom_error(exc: BaseException) -> bool:
     """Whether an exception is a CUDA/accelerator out-of-memory, worth a smaller
-    retry. Matched structurally (class name across torch versions / devices) and
-    by message, so the caller needn't import torch to classify."""
-    for klass in type(exc).__mro__:
-        if klass.__name__ == "OutOfMemoryError":
+    retry. Matched structurally (class name across torch versions / devices, and
+    backend subclasses such as ``OutOfMemoryError_``) and by message, so the caller
+    needn't import torch to classify. Walks ``__cause__`` / ``__context__``: torch.compile
+    wraps an OOM hit while autotuning in a compiler error whose own message is generic,
+    and that allocation failure still deserves the smaller retry."""
+    seen = set()
+    cur: Optional[BaseException] = exc
+    while cur is not None and id(cur) not in seen:
+        seen.add(id(cur))
+        if any(klass.__name__.startswith("OutOfMemory") for klass in type(cur).__mro__):
             return True
-    return "out of memory" in str(exc).lower()
+        if "out of memory" in str(cur).lower():
+            return True
+        cur = cur.__cause__ or cur.__context__
+    return False

@@ -8,6 +8,39 @@ import sys
 from pathlib import Path
 from unittest import mock
 
+
+def _shared_setup_1(fake_run, step_messages):
+    with (
+        mock.patch.object(ips, "NO_TORCH", False),
+        mock.patch.object(ips, "IS_WINDOWS", False),
+        mock.patch.object(ips, "IS_MACOS", False),
+        mock.patch.object(
+            ips,
+            "probe_torch_wheel_env",
+            return_value = {
+                "python_tag": "cp313",
+                "torch_mm": "2.10",
+                "cuda_major": "13",
+                "cxx11abi": "TRUE",
+                "platform_tag": "linux_x86_64",
+            },
+        ),
+        mock.patch.object(ips, "url_exists", return_value = True),
+        mock.patch.object(
+            ips,
+            "install_wheel",
+            return_value = [("uv", subprocess.CompletedProcess(["uv"], 0, ""))],
+        ),
+        mock.patch.object(
+            ips,
+            "_step",
+            side_effect = lambda label, value, color_fn = None: step_messages.append((label, value)),
+        ),
+        mock.patch("subprocess.run", side_effect = fake_run),
+    ):
+        ips._ensure_flash_attn()
+
+
 STUDIO_DIR = Path(__file__).resolve().parents[2] / "studio"
 sys.path.insert(0, str(STUDIO_DIR))
 sys.path.insert(0, str(STUDIO_DIR / "backend"))
@@ -326,37 +359,7 @@ class TestEnsureFlashAttn:
                 return subprocess.CompletedProcess(cmd, 0)
             return self._import_check()
 
-        with (
-            mock.patch.object(ips, "NO_TORCH", False),
-            mock.patch.object(ips, "IS_WINDOWS", False),
-            mock.patch.object(ips, "IS_MACOS", False),
-            mock.patch.object(
-                ips,
-                "probe_torch_wheel_env",
-                return_value = {
-                    "python_tag": "cp313",
-                    "torch_mm": "2.10",
-                    "cuda_major": "13",
-                    "cxx11abi": "TRUE",
-                    "platform_tag": "linux_x86_64",
-                },
-            ),
-            mock.patch.object(ips, "url_exists", return_value = True),
-            mock.patch.object(
-                ips,
-                "install_wheel",
-                return_value = [("uv", subprocess.CompletedProcess(["uv"], 0, ""))],
-            ),
-            mock.patch.object(
-                ips,
-                "_step",
-                side_effect = lambda label, value, color_fn = None: step_messages.append(
-                    (label, value)
-                ),
-            ),
-            mock.patch("subprocess.run", side_effect = fake_run),
-        ):
-            ips._ensure_flash_attn()
+        _shared_setup_1(fake_run, step_messages)
 
         assert removals, "the rejected wheel must be uninstalled, not left in site-packages"
         assert any("flash-attn" in cmd for cmd in removals), removals
@@ -409,37 +412,7 @@ class TestEnsureFlashAttn:
                 return subprocess.CompletedProcess(cmd, 1)
             return self._import_check()
 
-        with (
-            mock.patch.object(ips, "NO_TORCH", False),
-            mock.patch.object(ips, "IS_WINDOWS", False),
-            mock.patch.object(ips, "IS_MACOS", False),
-            mock.patch.object(
-                ips,
-                "probe_torch_wheel_env",
-                return_value = {
-                    "python_tag": "cp313",
-                    "torch_mm": "2.10",
-                    "cuda_major": "13",
-                    "cxx11abi": "TRUE",
-                    "platform_tag": "linux_x86_64",
-                },
-            ),
-            mock.patch.object(ips, "url_exists", return_value = True),
-            mock.patch.object(
-                ips,
-                "install_wheel",
-                return_value = [("uv", subprocess.CompletedProcess(["uv"], 0, ""))],
-            ),
-            mock.patch.object(
-                ips,
-                "_step",
-                side_effect = lambda label, value, color_fn = None: step_messages.append(
-                    (label, value)
-                ),
-            ),
-            mock.patch("subprocess.run", side_effect = fake_run),
-        ):
-            ips._ensure_flash_attn()
+        _shared_setup_1(fake_run, step_messages)
 
         warnings = [value for _, value in step_messages]
         assert any("could not be removed" in value for value in warnings), warnings
@@ -455,37 +428,7 @@ class TestEnsureFlashAttn:
             import_calls.append(1)
             return self._import_check(1 if len(import_calls) == 1 else 0)
 
-        with (
-            mock.patch.object(ips, "NO_TORCH", False),
-            mock.patch.object(ips, "IS_WINDOWS", False),
-            mock.patch.object(ips, "IS_MACOS", False),
-            mock.patch.object(
-                ips,
-                "probe_torch_wheel_env",
-                return_value = {
-                    "python_tag": "cp313",
-                    "torch_mm": "2.10",
-                    "cuda_major": "13",
-                    "cxx11abi": "TRUE",
-                    "platform_tag": "linux_x86_64",
-                },
-            ),
-            mock.patch.object(ips, "url_exists", return_value = True),
-            mock.patch.object(
-                ips,
-                "install_wheel",
-                return_value = [("uv", subprocess.CompletedProcess(["uv"], 0, ""))],
-            ),
-            mock.patch.object(
-                ips,
-                "_step",
-                side_effect = lambda label, value, color_fn = None: step_messages.append(
-                    (label, value)
-                ),
-            ),
-            mock.patch("subprocess.run", side_effect = fake_run),
-        ):
-            ips._ensure_flash_attn()
+        _shared_setup_1(fake_run, step_messages)
 
         assert step_messages == []
         assert len(import_calls) == 2, "expected a verification import after the install"
@@ -580,6 +523,38 @@ class TestEnsureFlashAttn:
 
         mock_install_wheel.assert_not_called()
         assert ("warning", "No published flash-attn prebuilt wheel found") in step_messages
+
+    def test_an_unchecked_wheel_is_not_reported_as_unpublished(self):
+        step_messages = []
+
+        def fake_step(kind, message, *args, **kwargs):
+            step_messages.append((kind, message))
+
+        with (
+            mock.patch.object(ips, "NO_TORCH", False),
+            mock.patch.object(ips, "IS_WINDOWS", False),
+            mock.patch.object(ips, "IS_MACOS", False),
+            mock.patch.object(
+                ips,
+                "probe_torch_wheel_env",
+                return_value = {
+                    "python_tag": "cp313",
+                    "torch_mm": "2.10",
+                    "cuda_major": "13",
+                    "cxx11abi": "TRUE",
+                    "platform_tag": "linux_x86_64",
+                },
+            ),
+            mock.patch.object(ips, "url_exists", return_value = None),
+            mock.patch.object(ips, "install_wheel") as mock_install_wheel,
+            mock.patch.object(ips, "_step", side_effect = fake_step),
+            mock.patch("subprocess.run", return_value = self._import_check()),
+        ):
+            ips._ensure_flash_attn()
+
+        mock_install_wheel.assert_not_called()
+        assert ("warning", "No published flash-attn prebuilt wheel found") not in step_messages
+        assert any("could not" in message.lower() for _kind, message in step_messages)
 
     def test_skip_env_disables_setup_install(self):
         with (

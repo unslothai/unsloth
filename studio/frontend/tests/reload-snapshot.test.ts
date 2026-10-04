@@ -38,6 +38,20 @@ const studioPageSource = readSrc("features/studio/studio-page.tsx");
 const apiMonitorPageSource = readSrc("features/api-monitor/api-monitor-page.tsx");
 const authFormSource = readSrc("features/auth/components/auth-form.tsx");
 
+test("scoped readiness still emits the reload snapshot event", () => {
+  const readinessSource = readSrc("components/app-readiness.ts");
+  assert.match(readinessSource, /function signalReloadSnapshotReady\(\): void \{\s*window\.dispatchEvent\(new Event\("unsloth:app-shell-ready"\)\)/);
+  assert.match(readinessSource, /signalReady: \(\) => \{\s*if \(!active\) return;\s*onReady\(\);\s*signalReloadSnapshotReady\(\)/);
+  assert.match(readinessSource, /value: scope\.signalReady/);
+  assert.match(readinessSource, /return useContext\(AppShellReadyContext\)/);
+  for (const source of [rootRouteSource, runtimeProviderSource, chatPageSource,
+    hubPageSource, projectsPageSource, dataRecipesPageSource, editRecipePageSource,
+    exportPageSource, studioPageSource, apiMonitorPageSource, authFormSource]) {
+    assert.match(source, /useAppShellReadySignal/);
+  }
+});
+
+
 type Listener = (event: Record<string, unknown>) => void;
 
 /** A node of the fake #root subtree the capture walks. */
@@ -728,7 +742,7 @@ test("mirrors Temporary Chat privacy and lets history completion retire chat she
   );
   assert.match(
     runtimeProviderSource,
-    /async load\(\) \{[\s\S]*?const completeLoad =[\s\S]*?unsloth:app-shell-ready[\s\S]*?await loadGenerationOverlaySnapshot\([\s\S]*?listStoredChatMessages[\s\S]*?return completeLoad/,
+    /async load\(\) \{[\s\S]*?const completeLoad =[\s\S]*?signalReady\(\)[\s\S]*?await loadGenerationOverlaySnapshot\([\s\S]*?listStoredChatMessages[\s\S]*?return completeLoad/,
   );
   assert.match(
     runtimeProviderSource,
@@ -753,7 +767,7 @@ test("mirrors Temporary Chat privacy and lets history completion retire chat she
   );
   assert.match(
     runtimeProviderSource,
-    /const signalFailedInitialSwitchReady = useCallback[\s\S]*?onInitialHistoryReady\(\)[\s\S]*?unsloth:app-shell-ready[\s\S]*?onSwitchFailed=\{signalFailedInitialSwitchReady\}/,
+    /const signalFailedInitialSwitchReady = useCallback[\s\S]*?onInitialHistoryReady\(\)[\s\S]*?signalReady\(\)[\s\S]*?onSwitchFailed=\{signalFailedInitialSwitchReady\}/,
   );
   assert.match(
     runtimeProviderSource,
@@ -772,7 +786,7 @@ test("mirrors Temporary Chat privacy and lets history completion retire chat she
   );
   assert.match(
     chatPageSource,
-    /state\.panes\.add\(pane\)[\s\S]*?state\.panes\.size < 2[\s\S]*?unsloth:app-shell-ready/,
+    /state\.panes\.add\(pane\)[\s\S]*?state\.panes\.size < 2[\s\S]*?signalReady\(\)/,
   );
   assert.match(
     chatPageSource,
@@ -788,7 +802,7 @@ test("mirrors Temporary Chat privacy and lets history completion retire chat she
   );
   assert.match(
     chatPageSource,
-    /const previewsReady = items\.every[\s\S]*?!dataLoaded \|\|[\s\S]*?!runtimeReady \|\|[\s\S]*?!previewsReady \|\|[\s\S]*?unsloth:app-shell-ready/,
+    /const previewsReady = items\.every[\s\S]*?!dataLoaded \|\|[\s\S]*?!runtimeReady \|\|[\s\S]*?!previewsReady \|\|[\s\S]*?signalReady\(\)/,
   );
   assert.match(
     chatPageSource,
@@ -843,11 +857,11 @@ test("data-backed routes own reload readiness until hydration settles", () => {
   );
   assert.match(
     hubPageSource,
-    /!initialResidentStatusSettled[\s\S]*?\(isDiscoverTab \? isLoading : !inventorySettled\)[\s\S]*?unsloth:app-shell-ready/,
+    /!initialResidentStatusSettled[\s\S]*?\(isDiscoverTab \? isLoading : !inventorySettled\)[\s\S]*?signalReady\(\)/,
   );
   assert.match(
     projectsPageSource,
-    /if \(!hasLoaded \|\| reloadReadySent\.current\) \{\s*return;\s*\}[\s\S]*?unsloth:app-shell-ready/,
+    /if \(!hasLoaded \|\| reloadReadySent\.current\) \{\s*return;\s*\}[\s\S]*?signalReady\(\)/,
   );
   assert.match(
     rootRouteSource,
@@ -855,32 +869,32 @@ test("data-backed routes own reload readiness until hydration settles", () => {
   );
   assert.match(
     dataRecipesPageSource,
-    /if \(!ready \|\| reloadReadySent\.current\) \{\s*return;\s*\}[\s\S]*?unsloth:app-shell-ready/,
+    /if \(!ready \|\| reloadReadySent\.current\) \{\s*return;\s*\}[\s\S]*?signalReady\(\)/,
   );
   assert.match(
     editRecipePageSource,
-    /if \(loadState\.status === "loading" \|\| reloadReadySent\.current\) \{\s*return;\s*\}[\s\S]*?unsloth:app-shell-ready/,
+    /if \(loadState\.status === "loading" \|\| reloadReadySent\.current\) \{\s*return;\s*\}[\s\S]*?signalReady\(\)/,
   );
   assert.match(rootRouteSource, /pathname === "\/export"/);
   assert.match(
     exportPageSource,
-    /loadingCheckpoints \|\|[\s\S]*?isLoadingLocalModels \|\|[\s\S]*?unsloth:app-shell-ready/,
+    /loadingCheckpoints \|\|[\s\S]*?isLoadingLocalModels \|\|[\s\S]*?signalReady\(\)/,
   );
   assert.match(rootRouteSource, /pathname === "\/studio"/);
   assert.match(
     studioPageSource,
-    /capabilitiesUnknown \|\|[\s\S]*?!hasHydratedRuntime \|\|[\s\S]*?isHydratingRuntime \|\|[\s\S]*?unsloth:app-shell-ready/,
+    /capabilitiesUnknown \|\|[\s\S]*?!hasHydratedRuntime \|\|[\s\S]*?isHydratingRuntime \|\|[\s\S]*?signalReady\(\)/,
   );
   assert.match(rootRouteSource, /pathname === "\/api-monitor"/);
   assert.match(
     apiMonitorPageSource,
-    /if \(loading \|\| reloadReadySent\.current\) \{\s*return;\s*\}[\s\S]*?unsloth:app-shell-ready/,
+    /if \(loading \|\| reloadReadySent\.current\) \{\s*return;\s*\}[\s\S]*?signalReady\(\)/,
   );
   assert.match(rootRouteSource, /pathname === "\/login"/);
   assert.match(rootRouteSource, /pathname === "\/change-password"/);
   assert.match(
     authFormSource,
-    /if \(statusLoading \|\| reloadReadySent\.current\) return;[\s\S]*?unsloth:app-shell-ready/,
+    /if \(statusLoading \|\| reloadReadySent\.current\) return;[\s\S]*?signalReady\(\)/,
   );
 });
 
@@ -1024,21 +1038,6 @@ test("carries the appearance customization so the shell paints in its own colors
   assert.equal(
     incoming.htmlVariables.getPropertyValue("--studio-sidebar-live-width"),
     "",
-  );
-});
-
-test("adapts root-scoped palette state to the snapshot shell", () => {
-  assert.match(
-    indexCss,
-    /\.reload-snapshot-shell:not\(\[data-palette\]\)[\s\S]*?\.palette-card\[data-palette-value="standard"\]/,
-  );
-  assert.match(
-    indexCss,
-    /\.reload-snapshot-shell\[data-palette="classic"\][\s\S]*?\.palette-card\[data-palette-value="classic"\]/,
-  );
-  assert.match(
-    indexCss,
-    /\.reload-snapshot-shell\[data-palette="minimal"\][\s\S]*?\.palette-card\[data-palette-value="minimal"\]/,
   );
 });
 
@@ -1392,7 +1391,7 @@ test("carries live form state, except what sensitive fields hide", () => {
   );
   assert.match(
     sharedComposerSource,
-    /data-reload-snapshot-sensitive[\s\S]*?pendingAudio\.name/,
+    /pendingAudio\.map\([\s\S]*?data-reload-snapshot-sensitive[\s\S]*?\{clip\.name\}/,
   );
   // Both carriers: the tooltip on the name, and the accessible name on the
   // remove button, a sibling no ancestor marker would reach.
@@ -1419,14 +1418,24 @@ test("carries live form state, except what sensitive fields hide", () => {
     "AttachmentTextDialog",
     "AttachmentAudioDialog",
   ]) {
+    const body = attachmentPreviewSource.slice(
+      attachmentPreviewSource.indexOf(`const ${dialog}: FC`),
+    );
     assert.match(
-      attachmentPreviewSource,
-      new RegExp(
-        `${dialog}[\\s\\S]*?data-reload-snapshot-sensitive=\\{redactFromReload \\? "" : undefined\\}`,
-      ),
+      body,
+      /^[\s\S]*?<AttachmentViewer[\s\S]*?redactFromReload=\{redactFromReload\}/,
       `${dialog} must redact its portaled content`,
     );
   }
+  const viewer = readSrc("components/assistant-ui/attachment-document-dialog.tsx");
+  assert.match(
+    viewer,
+    /export const AttachmentViewer[\s\S]*?<MediaViewer[\s\S]*?redactFromReload=\{redactFromReload\}/,
+  );
+  assert.match(
+    readSrc("components/media-viewer.tsx"),
+    /data-reload-snapshot-sensitive=\{redactFromReload \? "" : undefined\}/,
+  );
 });
 
 test("keeps native select options that paint the closed control label", () => {

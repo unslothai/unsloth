@@ -467,3 +467,54 @@ test("partial builds replace a stale empty hint with a rows answer", async () =>
   );
   configureChatSearchHistoryStub({});
 });
+
+test("a chat past the message bound is still found by its title", async () => {
+  store.clear();
+  setAuthSessionEpochForTest(0);
+  const total = 201;
+  const threads = Array.from({ length: total }, (_, i) => ({
+    id: `thread-${i}`,
+    title: i === total - 1 ? "Zanzibar ledger" : `Chat ${i}`,
+    modelType: "text",
+    archived: false,
+    createdAt: total - i,
+  }));
+  configureChatSearchHistoryStub({
+    threads,
+    messagesByThread: new Map(
+      threads.map((thread, i) => [
+        thread.id,
+        [
+          {
+            id: `message-${i}`,
+            threadId: thread.id,
+            role: "user",
+            content: [{ type: "text", text: `body ${i} quokka` }],
+            createdAt: thread.createdAt,
+          },
+        ],
+      ]),
+    ),
+  });
+
+  const build = await buildChatSearchIndex();
+  assert.equal(build.complete, true);
+  assert.equal(build.items.length, total);
+  const oldest = build.items.find((item) => item.id === `thread-${total - 1}`);
+  assert.ok(oldest, "the oldest chat must not drop out of the index");
+  assert.equal(oldest.userSearchText, "zanzibar ledger");
+  assert.equal(
+    oldest.searchText,
+    "zanzibar ledger",
+    "its messages stay unloaded",
+  );
+  for (const i of [0, total - 2]) {
+    assert.ok(
+      build.items
+        .find((item) => item.id === `thread-${i}`)
+        ?.searchText.includes(`body ${i} quokka`),
+      `chat ${i}, inside the bound, keeps its message text`,
+    );
+  }
+  configureChatSearchHistoryStub({});
+});

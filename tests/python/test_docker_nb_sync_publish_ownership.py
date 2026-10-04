@@ -165,8 +165,8 @@ def test_the_owner_half_is_applied_too(tmp_path: Path):
 
 
 @pytest.mark.skipif(
-    os.geteuid() == 0,
-    reason = "root holds CAP_DAC_OVERRIDE, so chmod 0500 does not stop the write",
+    os.name != "posix" or os.geteuid() == 0,
+    reason = "needs POSIX mode bits, and root holds CAP_DAC_OVERRIDE, so chmod 0500 does not stop the write",
 )
 def test_a_failed_publish_does_not_claim_the_commit_is_synced(tmp_path: Path):
     """A publish that cannot be written must stay retryable: stamping $SYNCED anyway
@@ -199,8 +199,8 @@ def test_a_failed_publish_does_not_claim_the_commit_is_synced(tmp_path: Path):
 
 
 @pytest.mark.skipif(
-    os.geteuid() == 0,
-    reason = "root holds CAP_DAC_OVERRIDE, so a read-only marker does not stop the write",
+    os.name != "posix" or os.geteuid() == 0,
+    reason = "needs POSIX mode bits, and root holds CAP_DAC_OVERRIDE, so a read-only marker does not stop the write",
 )
 def test_a_marker_the_user_cannot_truncate_is_still_advanced(tmp_path: Path):
     """A root boot leaves the marker root-owned 0644 inside a directory the host user

@@ -40,8 +40,7 @@ def needs_fstring(cmd: str) -> bool:
 
 def github_blob_to_raw(url: str) -> str:
     """Convert GitHub blob URL to raw URL."""
-    # github.com/user/repo/blob/branch/path -> raw.githubusercontent.com/user/repo/branch/path
-    # Exact host match (not substring) so attacker.example.com/github.com/blob/... is not rewritten.
+    # github.com/user/repo/blob/branch/path -> raw.githubusercontent.com/user/repo/branch/path. Exact host match, not substring, so attacker.example.com/github.com/blob/... is not rewritten.
     parsed = urllib.parse.urlparse(url)
     if parsed.netloc != "github.com" or "/blob/" not in parsed.path:
         return url
@@ -86,13 +85,7 @@ def replace_colab_paths(source: str) -> str:
 
 
 def _emit_shell_command(indent: str, full_cmd: str, *, allow_shell: bool) -> list[str]:
-    """Render a `!cmd` notebook line as Python statements.
-
-    f-string interpolation, shell metacharacters, or multiline force
-    shell=True (shlex.split would drop operators), flagged with a
-    WARNING comment. Otherwise emit shell=False argv form. allow_shell
-    False makes shell=True emission a hard error.
-    """
+    """Render a `!cmd` notebook line as Python statements. f-string interpolation, shell metacharacters or multiline force shell=True (shlex.split would drop operators), flagged with a WARNING comment; otherwise emit the shell=False argv form. allow_shell False makes shell=True emission a hard error."""
     needs_f = needs_fstring(full_cmd)
     has_meta = bool(_SHELL_METACHARS_RE.search(full_cmd))
     multiline = "\n" in full_cmd
@@ -156,24 +149,20 @@ def convert_cell_to_python(source: str, *, allow_shell: bool = True) -> str:
 
             result.extend(_emit_shell_command(indent, full_cmd, allow_shell = allow_shell))
 
-        # %cd path -> os.chdir(path)
         elif stripped.startswith("%cd "):
             path = stripped[4:].strip()
             result.append(f"{indent}os.chdir({path!r})")
 
-        # %env VAR=value
         elif stripped.startswith("%env ") and "=" in stripped:
             match = re.match(r"%env\s+(\w+)=(.+)", stripped)
             if match:
                 var, val = match.groups()
                 result.append(f"{indent}os.environ[{var!r}] = {val!r}")
 
-        # %env VAR
         elif stripped.startswith("%env "):
             var = stripped[5:].strip()
             result.append(f"{indent}os.environ.get({var!r})")
 
-        # %pwd
         elif stripped == "%pwd":
             result.append(f"{indent}os.getcwd()")
 
@@ -192,11 +181,9 @@ def convert_notebook(
     allow_shell: bool = True,
 ) -> str:
     """Convert notebook JSON content to Python script."""
-    # Local, so the string helpers below import without nbformat. The CPU test job
-    # does not install it, and a module-level import failed collection there.
+    # Local, so the string helpers below import without nbformat: the CPU test job does not install it, and a module-level import failed collection there.
     import nbformat
 
-    # Parse notebook
     if isinstance(notebook_content, str):
         notebook = nbformat.reads(notebook_content, as_version = 4)
     else:
@@ -257,12 +244,7 @@ def convert_notebook(
 
 
 def converted_filename(filename: str) -> str:
-    """The .py name this script writes for a given notebook filename.
-
-    One spelling of the rule. notebooks-ci.yml had a second one in shell whose
-    `tr -c '[:alnum:]_' _` turned basename's trailing newline into a trailing
-    underscore, so the smoke job looked for `<name>_.py` and never found it.
-    """
+    """The .py name this script writes for a given notebook filename. One spelling of the rule: notebooks-ci.yml had a second one in shell whose `tr -c '[:alnum:]_' _` turned basename's trailing newline into a trailing underscore, so the smoke job looked for `<name>_.py` and never found it."""
     out = filename.replace(".ipynb", ".py")
     return out.replace("(", "").replace(")", "").replace("-", "_")
 
@@ -273,15 +255,7 @@ def convert_notebook_to_script(
     *,
     allow_shell: bool = True,
 ):
-    """
-    Convert a notebook to Python script.
-
-    Args:
-        source: Local file path or URL to notebook
-        output_dir: Output directory (optional, defaults to current directory)
-        allow_shell: When False, refuse to emit `shell=True` for any
-            `!cmd` cell that uses metacharacters / interpolation.
-    """
+    """Convert a notebook to a Python script. ``source`` is a local file path or URL, ``output_dir`` defaults to the current directory, and ``allow_shell`` False refuses to emit `shell=True` for any `!cmd` cell that uses metacharacters or interpolation."""
     if is_url(source):
         content, filename = download_notebook(source)
         source_name = source
