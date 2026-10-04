@@ -696,7 +696,6 @@ def reclaimable_snapshot_device_memory(target: Any) -> DeviceMemory:
     try:
         # Per-block graph pools are reserved, mostly unallocated between replays, and never reusable by anything else.
         from .diffusion_block_graph import pool_bytes as _block_graph_pool_bytes
-
         reclaimable -= _block_graph_pool_bytes()
     except Exception:  # noqa: BLE001 -- no block graphs: nothing held back
         pass

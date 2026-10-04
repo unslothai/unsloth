@@ -65,7 +65,8 @@ OPT_IN_REASON = (
 )
 MODEL_OFFLOAD_REASON = (
     "model offload re-uploads the denoiser every render, so every block would record again; set "
-    + BLOCK_GRAPHS_ENV + "=1 to record per block"
+    + BLOCK_GRAPHS_ENV
+    + "=1 to record per block"
 )
 
 
@@ -287,7 +288,11 @@ class _Shared:
     """State every block of one denoiser shares: the graph pool, the capture stream, the static buffers per
     (block class, input layout), and which layouts have warmed up on the capture stream."""
 
-    def __init__(self, device_index: Optional[int], logger: Any = None) -> None:
+    def __init__(
+        self,
+        device_index: Optional[int],
+        logger: Any = None,
+    ) -> None:
         self.device_index = device_index
         self.logger = logger
         self.pool = None
@@ -441,13 +446,7 @@ class BlockGraph:
     def __call__(self, *args: Any, **kwargs: Any) -> Any:
         if _bg_capture_suppressed():
             return self.compute(*args, **kwargs)
-        if (
-            not self.enabled
-            or self.bypassed
-            or self.poisoned
-            or self.churned
-            or _bg_eager_forced()
-        ):
+        if not self.enabled or self.bypassed or self.poisoned or self.churned or _bg_eager_forced():
             return self._eager(args, kwargs)
         torch = _torch()
         if torch.is_grad_enabled():
@@ -531,7 +530,9 @@ class BlockGraph:
             with torch.cuda.stream(stream):
                 before = torch.cuda.memory_reserved()
                 with _capturing():
-                    graph.capture_begin(pool = self.shared.graph_pool(), capture_error_mode = "thread_local")
+                    graph.capture_begin(
+                        pool = self.shared.graph_pool(), capture_error_mode = "thread_local"
+                    )
                     try:
                         out = self.compute(*static_args, **static_kwargs)
                         flat: list = []
@@ -598,6 +599,7 @@ class BlockGraph:
 def _group_offload_hook(module: Any) -> Any:
     try:
         from diffusers.hooks import group_offloading as go
+
         registry = getattr(module, "_diffusers_hook", None)
         if registry is None:
             return None
@@ -637,7 +639,12 @@ def repeated_blocks(transformer: Any) -> list:
 class BlockGraphSet:
     """Every ``BlockGraph`` of one denoiser, behind the handle interface of ``diffusion_cuda_graph``."""
 
-    def __init__(self, transformer: Any, shared: _Shared, logger: Any = None) -> None:
+    def __init__(
+        self,
+        transformer: Any,
+        shared: _Shared,
+        logger: Any = None,
+    ) -> None:
         self.module = transformer
         self.shared = shared
         self.logger = logger
@@ -729,12 +736,18 @@ class BlockGraphSet:
             "max_graphs": self.max_graphs,
             "stats": s,
             "slot_ring_mib": int(self.slots_mib),
-            "slot_ring_allocated_mib": int(getattr(getattr(self, "_prefetcher", None), "slot_bytes", 0) or 0) >> 20,
+            "slot_ring_allocated_mib": int(
+                getattr(getattr(self, "_prefetcher", None), "slot_bytes", 0) or 0
+            )
+            >> 20,
             "pool_mib": int(self.shared.pool_bytes >> 20),
             "static_mib": int(self.shared.static_bytes >> 20),
             "capture_error": None
             if not self.capture_error
-            else {"type": str(self.capture_error.get("type")), "msg": str(self.capture_error.get("msg"))},
+            else {
+                "type": str(self.capture_error.get("type")),
+                "msg": str(self.capture_error.get("msg")),
+            },
         }
 
     def why_off(self) -> Optional[str]:
@@ -772,6 +785,7 @@ class BlockGraphSet:
 def _release_cached() -> None:
     try:
         import gc
+
         gc.collect()
         torch = _torch()
         if torch.cuda.is_available():
@@ -832,12 +846,19 @@ def install_block_graphs(
                 target = getattr(block, "_unsloth_below_hook_ref", None)
                 if target not in refs:
                     target = next(
-                        (r for r in refs if _is_original_forward(getattr(r, "forward", None), block)), None
+                        (
+                            r
+                            for r in refs
+                            if _is_original_forward(getattr(r, "forward", None), block)
+                        ),
+                        None,
                     )
                 if target is None:
                     refused["a stacked hook chain"] = refused.get("a stacked hook chain", 0) + 1
                     continue
-                compute = target.forward  # the compiled forward when compile_below_offload_hooks moved it there
+                compute = (
+                    target.forward
+                )  # the compiled forward when compile_below_offload_hooks moved it there
                 graph = BlockGraph(block, compute, shared)
                 target.forward = graph
 
@@ -848,7 +869,11 @@ def install_block_graphs(
                 graph = BlockGraph(block, compiled, shared)
                 block._compiled_call_impl = graph
 
-                def restore(m: Any = block, c: Any = compiled, g: Any = graph) -> None:
+                def restore(
+                    m: Any = block,
+                    c: Any = compiled,
+                    g: Any = graph,
+                ) -> None:
                     if getattr(m, "_compiled_call_impl", None) is g:
                         m._compiled_call_impl = c
             else:
@@ -857,19 +882,27 @@ def install_block_graphs(
                 graph = BlockGraph(block, fwd, shared)
                 block.__dict__["forward"] = graph
 
-                def restore(m: Any = block, s: Any = slot, g: Any = graph) -> None:
+                def restore(
+                    m: Any = block,
+                    s: Any = slot,
+                    g: Any = graph,
+                ) -> None:
                     if m.__dict__.get("forward") is g:
                         if s is None:
                             m.__dict__.pop("forward", None)
                         else:
                             m.__dict__["forward"] = s
         except Exception as exc:  # noqa: BLE001 - this block stays as it was
-            refused[f"install failed ({type(exc).__name__})"] = refused.get(f"install failed ({type(exc).__name__})", 0) + 1
+            refused[f"install failed ({type(exc).__name__})"] = (
+                refused.get(f"install failed ({type(exc).__name__})", 0) + 1
+            )
             continue
         handle.graphs.append(graph)
         handle.restores.append(restore)
     if not handle.graphs:
-        reason = ", ".join(f"{n} block(s): {w}" for w, n in refused.items()) or "no block could be armed"
+        reason = (
+            ", ".join(f"{n} block(s): {w}" for w, n in refused.items()) or "no block could be armed"
+        )
         return None, reason
     if slots and torch.cuda.is_available():
         try:
@@ -888,7 +921,9 @@ def install_block_graphs(
             len(handle.graphs),
             len(blocks),
             type(transformer).__name__,
-            f"; streamed blocks read a {handle.slots_mib} MiB slot ring" if handle.slots_mib else "",
+            f"; streamed blocks read a {handle.slots_mib} MiB slot ring"
+            if handle.slots_mib
+            else "",
             ("; refused " + ", ".join(f"{n}: {w}" for w, n in refused.items())) if refused else "",
         )
     return handle, "armed"
@@ -935,7 +970,9 @@ def compile_below_offload_hooks(transformer: Any, logger: Any = None) -> int:
             guard.restores.append(lambda ref = target, f = original: setattr(ref, "forward", f))
         target.forward = fn
         block._compiled_call_impl = None
-        block._unsloth_below_hook_ref = target  # where the block graph layer finds the compute it records
+        block._unsloth_below_hook_ref = (
+            target  # where the block graph layer finds the compute it records
+        )
         moved += 1
     if moved and logger is not None:
         logger.info(

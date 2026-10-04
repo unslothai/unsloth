@@ -149,7 +149,6 @@ def _to_device(src: Any, device: Any) -> Any:
 def _inner(t: Any) -> list:
     try:
         from torch.utils._python_dispatch import is_traceable_wrapper_subclass
-
         if is_traceable_wrapper_subclass(t):
             names, _ = t.__tensor_flatten__()
             return [(n, getattr(t, n)) for n in names]
@@ -228,7 +227,9 @@ def _copy_into(dst: Any, src: Any) -> None:
 def _rewrap(buf: Any) -> Any:
     """A new wrapper around ``buf``'s inner tensors (no copy), for ``swap_tensors`` to consume."""
     names, ctx = buf.__tensor_flatten__()
-    return type(buf).__tensor_unflatten__({n: getattr(buf, n) for n in names}, ctx, buf.size(), buf.stride())
+    return type(buf).__tensor_unflatten__(
+        {n: getattr(buf, n) for n in names}, ctx, buf.size(), buf.stride()
+    )
 
 
 def _point_at(t: Any, buf: Any, torchao: bool, swap: Any) -> None:
@@ -237,7 +238,11 @@ def _point_at(t: Any, buf: Any, torchao: bool, swap: Any) -> None:
         t.data = buf
         return
     inner = _inner(t)
-    if inner and all(x.device.type == buf.device.type for _, x in _inner(buf)) and t.device == buf.device:
+    if (
+        inner
+        and all(x.device.type == buf.device.type for _, x in _inner(buf))
+        and t.device == buf.device
+    ):
         for name, _ in _inner(buf):
             setattr(t, name, getattr(buf, name))
         return
@@ -354,7 +359,11 @@ class GroupPrefetcher:
         self.stats["slot_fallbacks"] = self.stats.get("slot_fallbacks", 0) + 1
         return None
 
-    def _issue(self, group: Any, must: bool = True) -> bool:
+    def _issue(
+        self,
+        group: Any,
+        must: bool = True,
+    ) -> bool:
         """Queue ``group``'s host-to-device copy on its copy stream and point its tensors at the destinations.
         False (nothing queued) only when ``must`` is False and the group's slot is still occupied."""
         import torch

@@ -56,7 +56,13 @@ class Block(torch.nn.Module):
         super().__init__()
         self.lin = torch.nn.Linear(width, width)
 
-    def forward(self, x, temb = None, layer_cache = None, kv_cache_mode = None):
+    def forward(
+        self,
+        x,
+        temb = None,
+        layer_cache = None,
+        kv_cache_mode = None,
+    ):
         y = torch.nn.functional.gelu(self.lin(x))
         if temb is not None:
             y = y + temb
@@ -69,13 +75,22 @@ class Block(torch.nn.Module):
 class Net(torch.nn.Module):
     _repeated_blocks = ["Block"]
 
-    def __init__(self, width = 64, blocks = 6):
+    def __init__(
+        self,
+        width = 64,
+        blocks = 6,
+    ):
         super().__init__()
         self.proj_in = torch.nn.Linear(16, width)
         self.blocks = torch.nn.ModuleList(Block(width) for _ in range(blocks))
         self.proj_out = torch.nn.Linear(width, 16)
 
-    def forward(self, x, temb = None, caches = None):
+    def forward(
+        self,
+        x,
+        temb = None,
+        caches = None,
+    ):
         x = self.proj_in(x)
         for i, block in enumerate(self.blocks):
             if caches is not None:
@@ -180,9 +195,14 @@ def _hooked_net(blocks = 4):
     net = Net(blocks = blocks)
     try:
         apply_group_offloading(
-            net, onload_device = torch.device("cpu"), offload_type = "block_level", num_blocks_per_group = 1
+            net,
+            onload_device = torch.device("cpu"),
+            offload_type = "block_level",
+            num_blocks_per_group = 1,
         )
-    except RuntimeError as exc:  # torch < 2.7: diffusers' group offload needs an accelerator even onto the CPU
+    except (
+        RuntimeError
+    ) as exc:  # torch < 2.7: diffusers' group offload needs an accelerator even onto the CPU
         pytest.skip(f"diffusers group offload unavailable here: {exc}")
     return net
 
@@ -288,7 +308,15 @@ def _pipe_with(net):
 
 
 def _arm(
-    pipe, monkeypatch, *, hooked, pinned = False, backend = "cuda", cache = False, mode = "default", cuda = True,
+    pipe,
+    monkeypatch,
+    *,
+    hooked,
+    pinned = False,
+    backend = "cuda",
+    cache = False,
+    mode = "default",
+    cuda = True,
     opt_in = True,
 ):
     monkeypatch.setattr(torch.cuda, "is_available", lambda: cuda)
@@ -324,7 +352,9 @@ def test_per_block_graphs_are_opt_in_and_say_so(monkeypatch):
     handles, applied = _arm(pipe, monkeypatch, hooked = True, opt_in = False)
     assert handles == () and not applied["cuda_graph"]
     assert bg.BLOCK_GRAPHS_ENV + "=1" in cg.status_reason(pipe, False)
-    assert not any(isinstance(b.__dict__.get("forward"), bg.BlockGraph) for b in pipe.transformer.blocks)
+    assert not any(
+        isinstance(b.__dict__.get("forward"), bg.BlockGraph) for b in pipe.transformer.blocks
+    )
     monkeypatch.setenv(bg.BLOCK_GRAPHS_ENV, "0")
     pipe2 = _pipe_with(Net(blocks = 3))
     handles, applied = _arm(pipe2, monkeypatch, hooked = True, opt_in = False)
@@ -340,7 +370,9 @@ def test_blocks_that_stay_on_the_device_record_by_default(monkeypatch):
     assert cg.status_reason(pipe, True).startswith("pinned denoiser recorded per block")
     cg.uninstall_all(handles)
     pipe = _pipe_with(Net(blocks = 2))
-    pipe._unsloth_cuda_graph_reason = "QwenImage21Transformer2DModel forward is not capture-safe (prefix KV cache)"
+    pipe._unsloth_cuda_graph_reason = (
+        "QwenImage21Transformer2DModel forward is not capture-safe (prefix KV cache)"
+    )
     handles, applied = _arm(pipe, monkeypatch, hooked = False, opt_in = False)
     assert applied["cuda_graph"] and handles
     cg.uninstall_all(handles)
@@ -552,7 +584,11 @@ def _no_syncs(fn):
     return out, sum(1 for w in caught if "synchroniz" in str(w.message).lower())
 
 
-def _net(width = 256, blocks = 8, dtype = torch.float32):
+def _net(
+    width = 256,
+    blocks = 8,
+    dtype = torch.float32,
+):
     torch.manual_seed(0)
     return Net(width = width, blocks = blocks).to(dtype)
 
@@ -594,8 +630,16 @@ def test_streamed_blocks_replay_from_the_slot_ring_bit_identically(resident_mib)
 
 
 class SlowBlock(Block):
-    def forward(self, x, temb = None, layer_cache = None, kv_cache_mode = None):
-        torch.cuda._sleep(200_000)  # a slow GPU: the host queues later copies long before this block reads
+    def forward(
+        self,
+        x,
+        temb = None,
+        layer_cache = None,
+        kv_cache_mode = None,
+    ):
+        torch.cuda._sleep(
+            200_000
+        )  # a slow GPU: the host queues later copies long before this block reads
         return super().forward(x, temb = temb)
 
 
@@ -648,7 +692,9 @@ def test_compiled_streamed_blocks_record_below_their_hooks_with_no_graph_break()
         first = got.clone()
         for _ in range(2):
             assert torch.equal(net(x), first)  # replays are deterministic
-    assert sum(du.counters["graph_break"].values()) == breaks  # the hooks stay outside the compiled region
+    assert (
+        sum(du.counters["graph_break"].values()) == breaks
+    )  # the hooks stay outside the compiled region
     s = handle.stats
     assert s["replays"] > 0 and s["fallbacks"] == 0 and s["captures"] == 6
     handle.free()

@@ -867,7 +867,9 @@ def live_status(resolved: Any, speed_optims: Any, handles: Any) -> tuple:
 WHOLE_REASON = "denoiser step captured per input shape, replayed bit-identically"
 
 
-def _block_basics(target: Any, family: Any, cache_engaged: bool, speed_mode: str, family_default: bool) -> Optional[str]:
+def _block_basics(
+    target: Any, family: Any, cache_engaged: bool, speed_mode: str, family_default: bool
+) -> Optional[str]:
     """The whole-forward checks that also bind per-block recording (everything except offload and capture-safety)."""
     if cuda_graph_disabled():
         return _disabled_reason()
@@ -971,7 +973,13 @@ def arm_block_graphs(
     pipe._unsloth_cuda_graphs = tuple(armed)
     applied["cuda_graph"] = bool(armed)
     if armed:
-        where = "pinned denoiser" if hooked and pinned else "offloaded denoiser" if hooked else "denoiser"
+        where = (
+            "pinned denoiser"
+            if hooked and pinned
+            else "offloaded denoiser"
+            if hooked
+            else "denoiser"
+        )
         slots = sum(int(getattr(h, "slots_mib", 0) or 0) for h in armed)
         _set_reason(
             pipe,
@@ -980,7 +988,9 @@ def arm_block_graphs(
         )
         pipe._unsloth_cuda_graph_mode = "blocks"
     else:
-        _set_reason(pipe, "; ".join(r for r in reasons if r) or "no denoiser block could be recorded")
+        _set_reason(
+            pipe, "; ".join(r for r in reasons if r) or "no denoiser block could be recorded"
+        )
     return tuple(armed)
 
 

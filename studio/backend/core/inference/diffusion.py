@@ -7371,7 +7371,9 @@ class DiffusionBackend:
                             "cuda_graph": (
                                 None,
                                 "on" if speed_applied.get("cuda_graph") else "off",
-                                cuda_graph.status_reason(pipe, bool(speed_applied.get("cuda_graph"))),
+                                cuda_graph.status_reason(
+                                    pipe, bool(speed_applied.get("cuda_graph"))
+                                ),
                             ),
                             "cpu_offload": (
                                 True if cpu_offload else None,
