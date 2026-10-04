@@ -20,9 +20,12 @@ __all__ = [
     "STDERR_MIRROR_KWARG",
     "WorkerStderrCapture",
     "decode_worker_stderr",
+    "first_crash_line",
+    "format_exit_code",
     "install_worker_stderr_mirror",
     "mark_log_record_continuations",
     "stderr_tail_from_bytes",
+    "unexpected_exit_message",
 ]
 
 # Marks a record's continuation lines: a recovered request's `exc_info` traceback is byte-identical to a dying process's.
@@ -121,6 +124,48 @@ def stderr_tail_from_bytes(
     return joined
 
 
+# A native abort prints the reason and then the stack. The last lines are the frames.
+_CRASH_LINE_MARKERS = ("llvm error", "fatal exception", "out of memory")
+_CRASH_LINE_LIMIT = 500
+
+
+def format_exit_code(exitcode: "int | None") -> str:
+    """Hex for a Windows NTSTATUS. Small negatives stay decimal: those are Unix signals."""
+    if not isinstance(exitcode, int):
+        return "unknown"
+    if -64 <= exitcode < 0:
+        return str(exitcode)
+    unsigned = exitcode & 0xFFFFFFFF
+    if unsigned > 255:
+        return f"0x{unsigned:08X}"
+    return str(exitcode)
+
+
+def first_crash_line(text: str) -> str:
+    """The first useful line, else the last non-empty one. Empty when *text* is empty."""
+    lines = [line.strip() for line in (text or "").splitlines() if line.strip()]
+    if not lines:
+        return ""
+    for line in lines:
+        lowered = line.lower()
+        if any(marker in lowered for marker in _CRASH_LINE_MARKERS):
+            return line[:_CRASH_LINE_LIMIT]
+    return lines[-1][:_CRASH_LINE_LIMIT]
+
+
+def unexpected_exit_message(pid, exitcode, text: str) -> str:
+    """What the UI shows when a worker dies without an error event."""
+    pid_text = str(pid) if pid is not None else "unknown"
+    message = (
+        "Training process exited unexpectedly "
+        f"(pid={pid_text}, exitcode={format_exit_code(exitcode)})"
+    )
+    line = first_crash_line(text)
+    if line:
+        return f"{message}: {line}"
+    return message
+
+
 # Exact paths, never a pattern: Studios share one temporary directory.
 _OPEN_SINKS: "set[str]" = set()
 _ATEXIT_REGISTERED = False
@@ -183,6 +228,25 @@ class WorkerStderrCapture:
         except OSError:
             return ""
         return stderr_tail_from_bytes(data, max_lines = max_lines, max_chars = max_chars)
+
+    def text(self, limit: int = MIRROR_FILE_CAP_BYTES) -> str:
+        """The sink from the start, not the tail. The crash reason is the first line."""
+        try:
+            fd = os.open(self._path, os.O_RDONLY | _O_NOFOLLOW | _O_BINARY)
+        except OSError:
+            return ""
+        try:
+            handle = os.fdopen(fd, "rb")
+        except OSError:
+            os.close(fd)
+            return ""
+        try:
+            data = handle.read(limit)
+        except OSError:
+            return ""
+        finally:
+            handle.close()
+        return decode_worker_stderr(data)
 
     def close(self) -> None:
         """Tolerates a child still holding the sink open, which is the norm on Windows."""
