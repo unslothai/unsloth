@@ -10,17 +10,20 @@ empty Triton cache JIT-compiles every one of them, 2.8-3.4 s of render 1 on an R
 
 At the end of a load that found no compile bundle (the first start for that model), a spawned child builds the same
 VAE class from the same config with no weights, installs the same fused passes and decodes zeros once at a small
-latent (every integer the kernels specialise on keeps its divisibility class). It writes the kernels into the shared
-Triton cache while the parent spends ~8-12 s compiling its denoiser on render 1, so the parent's first decode loads
-them instead of compiling. Its own process (no GIL, no thread shared with the parent's compiles), its own CUDA
-context, gone when it finishes; the parent never waits for it, and kernels it has not finished are simply compiled
-by the parent as before. Same kernel source, same specialisation, so the same binary either way.
+latent (every integer the kernels specialise on keeps its divisibility class), compiling each fused kernel without
+launching it. It writes the kernels into the shared Triton cache while the parent spends ~8-12 s compiling its
+denoiser on render 1, so the parent's first decode loads them instead of compiling. Its own process (no GIL, no
+thread shared with the parent's compiles), its own CUDA context, gone when it finishes; the parent never waits for
+it, and kernels it has not finished are simply compiled by the parent as before. Same kernel source, same
+specialisation, so the same binary either way. Launching them from the child perturbed the parent's kernel tuning:
+Z-Image-Turbo on an RTX PRO 6000 then rendered a different (equally valid) image in about 1 of 4 first starts.
 
 Kill switch: ``UNSLOTH_DIFFUSION_VAE_PREBUILD=0``.
 """
 
 from __future__ import annotations
 
+import contextlib
 import os
 import threading
 from typing import Any, Optional
@@ -153,21 +156,44 @@ def _spawn(job: dict, logger: Any) -> bool:
     return True
 
 
+@contextlib.contextmanager
+def _compile_without_launching():
+    """Every ``@triton.jit`` launch only compiles (Triton's own warmup path: same compile, same cache entry).
+
+    The parent is tuning its denoiser's kernels on the same card while this child runs; kernels launched from a second
+    CUDA context time-slice with those benchmarks and can tip the parent onto other kernel configs. Without launches
+    the child's GPU work is the decode's few small torch ops."""
+    from triton.runtime.jit import JITFunction
+
+    run = JITFunction.run
+
+    def compile_only(self, *args, grid, warmup, **kwargs):
+        return run(self, *args, grid = grid, warmup = True, **kwargs)
+
+    JITFunction.run = compile_only
+    try:
+        yield
+    finally:
+        JITFunction.run = run
+
+
 def _child_entry(job: dict) -> None:
-    """Child side: same VAE class and config, no weights, the same fused passes, one decode of zeros."""
+    """Child side: same VAE class and config, no weights, the same fused passes, one decode of zeros that compiles
+    the fused kernels without running them."""
     import importlib
 
     import torch
 
     from core.inference import diffusion_vae_fused
 
+    torch.backends.cudnn.benchmark = False  # no algorithm search on the shared card either
     torch.cuda.set_device(job["device"])
     cls = getattr(importlib.import_module(job["module"]), job["name"])
     dtype = getattr(torch, job["dtype"])
     vae = cls.from_config(job["config"]).to(device = f"cuda:{job['device']}", dtype = dtype).eval()
     if not diffusion_vae_fused.install(vae, None):
         return
-    with torch.inference_mode():
+    with torch.inference_mode(), _compile_without_launching():
         z = torch.zeros(job["shape"], device = f"cuda:{job['device']}", dtype = dtype)
         vae.decode(z)
     torch.cuda.synchronize()

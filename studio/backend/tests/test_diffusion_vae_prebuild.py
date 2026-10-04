@@ -61,6 +61,21 @@ def test_nothing_to_prebuild_without_fused_passes_on_a_cuda_vae():
     assert prebuild.plan(types.SimpleNamespace(vae = _vae({"something_else": 1}))) is None
 
 
+def test_child_compiles_triton_kernels_without_launching_them():
+    triton = pytest.importorskip("triton")
+    from triton.runtime.jit import JITFunction
+
+    seen = []
+    run = JITFunction.run
+    JITFunction.run = lambda self, *a, grid, warmup, **k: seen.append(warmup)
+    try:
+        with prebuild._compile_without_launching():
+            JITFunction.run(object(), 1, grid = (1,), warmup = False)
+    finally:
+        JITFunction.run = run
+    assert seen == [True] and JITFunction.run is run and triton is not None
+
+
 def test_restart_and_kill_switch_never_spawn(monkeypatch):
     spawned = []
     monkeypatch.setattr(prebuild, "_spawn", lambda job, logger: spawned.append(job) or True)
