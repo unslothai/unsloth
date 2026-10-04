@@ -211,9 +211,10 @@ class DiffusionFamily:
 
 # Archs where FLUX.1, Z-Image and Qwen-Image rendered 2-4 variants of one seed across fresh servers on main: inductor
 # gives a few of their norm reductions several configs (R0_BLOCK 2048 / 4096, persistent XBLOCK 1 / 8 / 32) that sum in
-# different orders, and each cold-cache server benchmarks them in its own process on near-equal timings. Measured on an
-# RTX PRO 6000 (sm120), A100 (sm80) and L4 (sm89), 6 servers each. B200 servers were already deterministic for these
-# families, so other archs keep inductor's pick until measured.
+# different orders, and each cold-cache server benchmarks them in its own process on near-equal timings. Measured over 6
+# fresh servers: all three on an RTX PRO 6000 (sm120), FLUX.1 and Z-Image on an A100 (sm80), Z-Image on an L4 (sm89);
+# the filter costs at most 0.3% warm. B200 servers were already deterministic for these families, so other archs keep
+# inductor's pick until measured.
 _REDUCTION_RACE_ARCHS: tuple[tuple[int, int], ...] = ((8, 0), (8, 9), (12, 0))
 
 # Keyed by architecture, not per variant: the base repo is read from the HF base_model tag at load time, so one entry
