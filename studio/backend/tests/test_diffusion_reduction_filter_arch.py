@@ -122,8 +122,7 @@ def test_capability_query_never_raises(monkeypatch):
 
 
 def test_load_paths_key_the_bundle_on_the_same_decision():
-    # The compile-cache bundle key must follow the arch-scoped decision, or an sm120 load would reuse a bundle compiled
-    # without the filter (and the reverse).
+    # The bundle key follows the arch-scoped decision, else a load reuses a bundle compiled the other way.
     import inspect
 
     from core.inference import diffusion
