@@ -554,6 +554,8 @@ def test_music_variations_are_saved_as_one_group(stub, tmp_path):
     assert [m["settings"]["seed"] for m in metas] == [40, 41, 42]
     assert metas[0]["settings"]["mode"] == "song" and metas[0]["settings"]["duration_s"] == 10.0
     assert metas[0]["settings"]["options"] == {"sampler": "euler"}
+    # Stable Audio always plays instrumental and ignores lyrics; history says what ran.
+    assert (metas[0]["settings"]["instrumental"], metas[0]["settings"]["lyrics"]) == (True, None)
     items = {i["id"]: i for i in listing["audio"]}
     for clip in body["clips"]:
         assert items[clip["id"]]["group_id"] == body["group_id"]
@@ -702,6 +704,20 @@ def test_ace_step_extend_past_the_song_limit_is_refused(stub):
             edit = {"extend_s": 300},
         )
     assert response.status_code == 400 and "Add fewer seconds" in response.json()["detail"]
+
+
+def test_ace_step_repaint_reaches_at_most_30_s_past_the_end(stub):
+    stub["use"](ACE_STEP, _music_info("ace_step", "ACE-Step1.5-GGUF"))
+    sources = _alice_sources()
+    with _client(ALICE) as client:
+        response = _edit(
+            client,
+            {"clip_id": sources["clip_id"]},
+            action = "repaint",
+            ranges = [{"start_s": 0.02, "end_s": 40.0}],
+        )
+    assert response.status_code == 400
+    assert response.json()["detail"] == "A repaint can reach at most 30 s past the end."
 
 
 def test_another_accounts_clip_is_404_for_an_edit(stub):

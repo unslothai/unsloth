@@ -21727,6 +21727,7 @@ def _audio_run_settings(body: AudioRunRequest, reference_text_used: bool) -> dic
     }
 
 
+_REPAINT_BEYOND_END_S = 30.0
 _MUSIC_ONLY_FIELDS = ("mode", "lyrics", "instrumental", "duration_s", "variations", "edit")
 _MUSIC_MODE_NAMES = {"song": "songs", "sfx": "sound effects", "edit": "edits"}
 
@@ -21812,6 +21813,9 @@ def _audio_music_source_problem(
             return "A selected part starts after the clip ends. Select inside the clip."
         if edit.action == "repaint" and r.end_s > song_max:
             return f"A repaint can reach at most {_music_length_words(song_max)} into the song."
+        # The page draws at most this much tail past the clip; extend covers longer additions.
+        if edit.action == "repaint" and r.end_s > source_s + _REPAINT_BEYOND_END_S + 0.05:
+            return f"A repaint can reach at most {_REPAINT_BEYOND_END_S:g} s past the end."
     if edit.action == "extend" and source_s + float(edit.extend_s or 0) > song_max + 0.05:
         return f"The extended clip would pass {_music_length_words(song_max)}. Add fewer seconds."
     return None
@@ -21829,8 +21833,16 @@ def _audio_music_settings(
     duration_s: Optional[float],
     seed: Optional[int],
     variation: Optional[int],
+    song: Optional[dict] = None,
 ) -> dict[str, Any]:
-    """Scalars only: never a file or server path."""
+    """Scalars only: never a file or server path. Records what ran: an always-instrumental model
+    is instrumental and takes no lyrics, whatever the request said."""
+    instrumental = lyrics = None
+    if body.mode == "song":
+        how = (song or {}).get("instrumental")
+        instrumental = how == "always" or (body.instrumental and how != "never")
+        if (song or {}).get("lyrics") != "unused":
+            lyrics = body.lyrics
     settings = _audio_run_settings(body, False)
     settings.update(
         {
@@ -21838,8 +21850,8 @@ def _audio_music_settings(
             "variation": variation,
             "seed": seed,
             "duration_s": duration_s,
-            "instrumental": body.instrumental if body.mode == "song" else None,
-            "lyrics": body.lyrics if body.mode == "song" else None,
+            "instrumental": instrumental,
+            "lyrics": lyrics,
         }
     )
     if body.edit is not None:
@@ -21992,7 +22004,7 @@ async def _run_music_workflow(
             "role": role,
             "group_id": group_id,
             "settings": _audio_music_settings(
-                body, seconds, seed, index + 1 if len(outputs) > 1 else None
+                body, seconds, seed, index + 1 if len(outputs) > 1 else None, song
             ),
         }
         if source is not None:
