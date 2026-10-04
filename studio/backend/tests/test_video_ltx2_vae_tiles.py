@@ -63,7 +63,9 @@ def free(monkeypatch):
 
 def test_tight_memory_tiles_have_no_seam_lines(free, monkeypatch):
     vae = _ltx_vae()
-    z = torch.randn(1, 8, 2, 22, 38, generator = torch.Generator().manual_seed(1))  # 1216x704, 9 frames
+    z = torch.randn(
+        1, 8, 2, 22, 38, generator = torch.Generator().manual_seed(1)
+    )  # 1216x704, 9 frames
     vae.use_tiling = False
     untiled = _decode(vae, z)
     vae.enable_tiling()  # what Studio does on every LTX load
@@ -76,12 +78,16 @@ def test_tight_memory_tiles_have_no_seam_lines(free, monkeypatch):
     stock_err, wide_err = _line_error(stock, untiled), _line_error(wide, untiled)
     assert stock_err > 3 * wide_err, (stock_err, wide_err)
     monkeypatch.setenv(vt.WIDE_TILES_ENV, "0")
-    assert torch.equal(_decode(vae, z), stock)  # kill switch set after install: the stock tiled decode
+    assert torch.equal(
+        _decode(vae, z), stock
+    )  # kill switch set after install: the stock tiled decode
 
 
 def test_whole_latent_fits_decodes_untiled(free, monkeypatch):
     vae = _ltx_vae()
-    z = torch.randn(1, 8, 2, 16, 24, generator = torch.Generator().manual_seed(2))  # 768x512, the default preset
+    z = torch.randn(
+        1, 8, 2, 16, 24, generator = torch.Generator().manual_seed(2)
+    )  # 768x512, the default preset
     vae.use_tiling = False
     untiled = _decode(vae, z)
     vae.enable_tiling()
@@ -122,7 +128,11 @@ def test_temb_and_causal_reach_every_tile(free):
     decoder = vae.decoder
     forward = decoder.forward
 
-    def spy(x, temb = None, causal = None):
+    def spy(
+        x,
+        temb = None,
+        causal = None,
+    ):
         seen.append((temb, causal))
         return forward(x, temb, causal = causal)
 
@@ -164,7 +174,9 @@ def test_install_is_scoped_idempotent_and_reversible(monkeypatch):
     monkeypatch.setenv(vt.WIDE_TILES_ENV, "0")
     assert not vt.install(_ltx_vae())
     monkeypatch.delenv(vt.WIDE_TILES_ENV)
-    assert not vt.install(diffusers.AutoencoderKLWan(base_dim = 8, z_dim = 4, dim_mult = [1, 1], num_res_blocks = 1))
+    assert not vt.install(
+        diffusers.AutoencoderKLWan(base_dim = 8, z_dim = 4, dim_mult = [1, 1], num_res_blocks = 1)
+    )
 
 
 @pytest.mark.parametrize("length", list(range(1, 130)))
@@ -208,7 +220,12 @@ class _FakeLTX:
         self.use_tiling = True
         self.calls = []
 
-    def decode(self, z, temb = None, return_dict = False):
+    def decode(
+        self,
+        z,
+        temb = None,
+        return_dict = False,
+    ):
         self.calls.append((self.use_tiling, temb))
         return ("tiled" if self.use_tiling else "untiled",)
 
@@ -232,4 +249,6 @@ def test_video_load_installs_wide_tiles_on_every_tiling_load():
     tiling = src.index("pipe.vae.enable_tiling()")
     install = src.index("from .video_ltx2_vae_tiles import install")
     resident = src.index("from .video_vae_untiled import install_untiled_decode")
-    assert tiling < install < resident  # after tiling is enabled, before (so beneath) the resident untiled wrapper
+    assert (
+        tiling < install < resident
+    )  # after tiling is enabled, before (so beneath) the resident untiled wrapper

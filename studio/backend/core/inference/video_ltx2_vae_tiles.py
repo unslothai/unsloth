@@ -52,11 +52,14 @@ def wide_tiles_disabled() -> bool:
 
 def _untiled_allowed() -> bool:
     from .video_vae_untiled import UNTILED_ENV
-
     return (os.environ.get(UNTILED_ENV) or "").strip().lower() not in ("0", "false", "no", "off")
 
 
-def tile_starts(length: int, tile: int, overlap: Optional[int] = None) -> list[int]:
+def tile_starts(
+    length: int,
+    tile: int,
+    overlap: Optional[int] = None,
+) -> list[int]:
     """Start offsets of the fewest ``tile``-long tiles covering ``length`` with every neighbour overlap >= ``overlap``,
     spread evenly, the first at 0 and the last ending at ``length``."""
     overlap = OVERLAP_LATENTS if overlap is None else overlap
@@ -107,7 +110,14 @@ def output_frames(vae: Any, latent_frames: int) -> int:
     return (max(1, int(latent_frames)) - 1) * ratio + 1
 
 
-def tile_bytes(frames: int, th: int, tw: int, batch: int = 1, itemsize: int = 2, fused: bool = False) -> int:
+def tile_bytes(
+    frames: int,
+    th: int,
+    tw: int,
+    batch: int = 1,
+    itemsize: int = 2,
+    fused: bool = False,
+) -> int:
     """Estimated extra bytes of one decode of a (th, tw)-latent tile over ``frames`` output frames."""
     coef = DECODE_MIB_PER_FRAME_LATENT_FUSED if fused else DECODE_MIB_PER_FRAME_LATENT
     return int(coef * 2**20 * max(2, itemsize) / 2 * max(1, batch) * frames * th * tw)
@@ -121,7 +131,12 @@ def _axis_side(length: int, count: int) -> Optional[int]:
     return side if side < length else None
 
 
-def choose_tiles(height: int, width: int, fits: Any, allow_single: bool = True) -> tuple[int, int]:
+def choose_tiles(
+    height: int,
+    width: int,
+    fits: Any,
+    allow_single: bool = True,
+) -> tuple[int, int]:
     """Tile (height, width) in latents: the fewest decoded latents (overlaps counted) among tiles ``fits(th, tw)``
     accepts. Nothing fits: the stock 16-latent tile."""
     floor = (min(MIN_TILE_LATENTS, height), min(MIN_TILE_LATENTS, width))
@@ -132,7 +147,11 @@ def choose_tiles(height: int, width: int, fits: Any, allow_single: bool = True) 
             continue
         for nw in range(1, len(tile_starts(width, floor[1])) + 1):
             tw = _axis_side(width, nw)
-            if tw is None or (not allow_single and th == height and tw == width) or not fits(th, tw):
+            if (
+                tw is None
+                or (not allow_single and th == height and tw == width)
+                or not fits(th, tw)
+            ):
                 continue
             n = len(tile_starts(height, th)) * len(tile_starts(width, tw))
             cost = (n * th * tw, n)
@@ -143,17 +162,19 @@ def choose_tiles(height: int, width: int, fits: Any, allow_single: bool = True) 
 
 def _free_bytes(device: Any) -> Optional[int]:
     from .video_vae_untiled import _free_bytes as free_bytes
-
     return free_bytes(device)
 
 
 def _itemsize(vae: Any) -> int:
     from .video_vae_untiled import _decoder_itemsize
-
     return _decoder_itemsize(vae)
 
 
-def plan_tiles(vae: Any, z: Any, free: Optional[int] = None) -> tuple[int, int]:
+def plan_tiles(
+    vae: Any,
+    z: Any,
+    free: Optional[int] = None,
+) -> tuple[int, int]:
     """The decode tile for ``z`` (B, C, T, H, W) given ``free`` bytes (read from the device when None)."""
     batch, _, latent_frames, height, width = (int(x) for x in z.shape)
     frames = output_frames(vae, latent_frames)
@@ -192,17 +213,27 @@ def _decode_tiles(vae: Any, z: Any, temb: Any, causal: Any, th: int, tw: int) ->
             if out is None:
                 dtype = tile.dtype
                 out = torch.zeros(
-                    (*tile.shape[:3], height * ratio, width * ratio), dtype = torch.float32, device = tile.device
+                    (*tile.shape[:3], height * ratio, width * ratio),
+                    dtype = torch.float32,
+                    device = tile.device,
                 )
             w = wy[i].view(-1, 1) * wx[j].view(1, -1)
-            out[..., y * ratio : (y + th) * ratio, x * ratio : (x + tw) * ratio].addcmul_(tile.float(), w)
+            out[..., y * ratio : (y + th) * ratio, x * ratio : (x + tw) * ratio].addcmul_(
+                tile.float(), w
+            )
             del tile
     dec = out.to(dtype)
     del out
     return dec
 
 
-def tiled_decode(vae: Any, z: Any, temb: Any = None, causal: Any = None, return_dict: bool = True) -> Any:
+def tiled_decode(
+    vae: Any,
+    z: Any,
+    temb: Any = None,
+    causal: Any = None,
+    return_dict: bool = True,
+) -> Any:
     """Decode ``z`` in the tiles ``plan_tiles`` picks; on OOM, once more in the stock-size 16-latent tiles."""
     from diffusers.models.autoencoders.vae import DecoderOutput
 
@@ -210,7 +241,9 @@ def tiled_decode(vae: Any, z: Any, temb: Any = None, causal: Any = None, return_
 
     th, tw = plan_tiles(vae, z)
     floor = (min(MIN_TILE_LATENTS, int(z.shape[-2])), min(MIN_TILE_LATENTS, int(z.shape[-1])))
-    stats = vae.__dict__.setdefault("_unsloth_wide_tiles_stats", {"untiled": 0, "tiled": 0, "oom_fallback": 0})
+    stats = vae.__dict__.setdefault(
+        "_unsloth_wide_tiles_stats", {"untiled": 0, "tiled": 0, "oom_fallback": 0}
+    )
     vae._unsloth_last_decode_tile = (th, tw)
     failed = False
     try:
@@ -253,7 +286,11 @@ def install(vae: Any, logger: Any = None) -> bool:
     stock = vae.tiled_decode
 
     def _tiled_decode(
-        self: Any, z: Any, temb: Any = None, causal: Any = None, return_dict: bool = True
+        self: Any,
+        z: Any,
+        temb: Any = None,
+        causal: Any = None,
+        return_dict: bool = True,
     ) -> Any:
         if wide_tiles_disabled():
             return stock(z, temb, causal = causal, return_dict = return_dict)
