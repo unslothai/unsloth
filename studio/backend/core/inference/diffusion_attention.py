@@ -792,7 +792,6 @@ SAGE_SOURCE_HINT = (
 
 
 def _pip_sage2_installed() -> bool:
-    """Whether a pip ``sageattention`` at diffusers' floor or newer is installed."""
     try:
         from importlib.metadata import PackageNotFoundError, version
         try:
@@ -868,7 +867,6 @@ def _sage_hub_kernel_runs(
 
 
 def _install_sage_hub_dispatch_guard() -> bool:
-    """The ``sage`` per-call guard on diffusers' ``sage_hub`` backend."""
     return _install_dispatch_guard(
         SAGE_HUB_BACKEND,
         lambda *a: _sage_reroute_reason(*a),
@@ -935,9 +933,7 @@ def _sage_hub_backend(
     return SAGE_HUB_BACKEND
 
 
-# The hub FA4 build imports nvidia-cutlass-dsl, apache-tvm-ffi and einops. Only cutlass-dsl 4.4 / 4.5 load it (4.6+ has
-# no cute.core.ThrMma, 4.3 no PipelineClcFetchAsync); FlashInfer 0.6.6 takes the same range. diffusers needs kernels
-# >= 0.12.3.
+# Only cutlass-dsl 4.4 / 4.5 load the hub FA4 build (4.6+ lacks cute.core.ThrMma, 4.3 PipelineClcFetchAsync).
 FA4_CUTLASS_DSL_MIN = (4, 4)
 FA4_CUTLASS_DSL_MAX_EXCL = (4, 6)
 FA4_CUTLASS_DSL_SPEC = "nvidia-cutlass-dsl>=4.4,<4.6"
@@ -958,13 +954,11 @@ def _dist_version(name: str) -> Optional[str]:
 
 
 def fa4_cutlass_dsl_ok(installed: Optional[str]) -> bool:
-    """Whether the hub FA4 build loads with this nvidia-cutlass-dsl version."""
     have = _version_tuple(installed or "")[:2]
     return bool(have) and FA4_CUTLASS_DSL_MIN <= have < FA4_CUTLASS_DSL_MAX_EXCL
 
 
 def _cutlass_dsl_dependents() -> list[str]:
-    """Installed distributions requiring nvidia-cutlass-dsl, for messages."""
     found = []
     try:
         from importlib.metadata import distributions
