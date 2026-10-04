@@ -1334,9 +1334,7 @@ def project_item(item_id: str) -> ItemFile:
         handle.close()
         raise
     folder = "images" if mime_type.startswith("image/") else "videos"
-    return ItemFile(
-        handle, safe_file_name(name), folder, safe_file_name(name, item_id = item_id)
-    )
+    return ItemFile(handle, safe_file_name(name), folder, safe_file_name(name, item_id = item_id))
 
 
 def local_path(item_id: str) -> Path:

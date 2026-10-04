@@ -1078,7 +1078,10 @@ def test_a_chat_image_is_copied_out_of_its_message_into_a_project(client, projec
             "type": "image",
             "name": "Chat image",
             "content": [
-                {"type": "image", "image": "data:image/png;base64," + base64.b64encode(png).decode()}
+                {
+                    "type": "image",
+                    "image": "data:image/png;base64," + base64.b64encode(png).decode(),
+                }
             ],
         },
         ("m:1", "words"): {"id": "words", "type": "file", "name": "a.txt", "content": []},
