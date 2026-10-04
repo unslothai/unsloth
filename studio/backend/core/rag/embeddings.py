@@ -404,6 +404,107 @@ def _st_accepts_local_files_only(st_cls) -> bool:
         return False
 
 
+_ST_PACKAGE_PREFIX = "sentence_transformers."
+_ST_GATE_MARKER = "_unsloth_custom_module_gate"
+
+
+def _refuse_custom_module(class_ref, model_name_or_path, trust_remote_code) -> None:
+    if (
+        isinstance(class_ref, str)
+        and not class_ref.startswith(_ST_PACKAGE_PREFIX)
+        and model_name_or_path is not None
+        and not trust_remote_code
+    ):
+        raise ValueError(
+            f"The model {model_name_or_path} references the module class {class_ref!r}, which is not "
+            "part of Sentence Transformers. Importing it executes third-party code, so Studio refuses "
+            "to load it as an embedding model."
+        )
+
+
+def _gate_st_custom_modules() -> None:
+    """Backport sentence-transformers 6.0's trust gate (CVE-2026-68770): before 6.0 a cached
+    model's modules.json could import repo-hosted classes without trust_remote_code."""
+    try:
+        import inspect
+        import sentence_transformers as st
+        from packaging.version import Version
+
+        if Version(st.__version__).major >= 6:
+            return
+        from sentence_transformers import SentenceTransformer
+    except Exception:
+        return
+    # 5.0-5.4 resolve on the model class; 5.5+ also via util.misc.import_module_class.
+    owner = next(
+        (c for c in SentenceTransformer.__mro__ if "_load_module_class_from_ref" in vars(c)),
+        None,
+    )
+    if owner is not None:
+        original = vars(owner)["_load_module_class_from_ref"]
+        if not getattr(original, _ST_GATE_MARKER, False):
+            signature = inspect.signature(original)
+
+            def _load_module_class_from_ref(self, *args, **kwargs):
+                bound = signature.bind_partial(self, *args, **kwargs).arguments
+                _refuse_custom_module(
+                    bound.get("class_ref"),
+                    bound.get("model_name_or_path"),
+                    bound.get("trust_remote_code"),
+                )
+                return original(self, *args, **kwargs)
+
+            setattr(_load_module_class_from_ref, _ST_GATE_MARKER, True)
+            _load_module_class_from_ref.__wrapped__ = original
+            setattr(owner, "_load_module_class_from_ref", _load_module_class_from_ref)
+    # 5.0-5.4 Router imports via import_from_string, past both resolvers.
+    try:
+        import importlib
+
+        router = importlib.import_module("sentence_transformers.models.Router")
+        original_from_string = getattr(router, "import_from_string", None)
+        if original_from_string is not None and not getattr(
+            original_from_string, _ST_GATE_MARKER, False
+        ):
+
+            def import_from_string(dotted_path, *args, **kwargs):
+                _refuse_custom_module(dotted_path, "behind this Router", False)
+                return original_from_string(dotted_path, *args, **kwargs)
+
+            setattr(import_from_string, _ST_GATE_MARKER, True)
+            import_from_string.__wrapped__ = original_from_string
+            router.import_from_string = import_from_string
+    except Exception:
+        pass
+    try:
+        import sys
+        from sentence_transformers.util import misc
+    except Exception:
+        return
+    original_import = getattr(misc, "import_module_class", None)
+    if original_import is None or getattr(original_import, _ST_GATE_MARKER, False):
+        return
+
+    def import_module_class(
+        class_ref,
+        model_name_or_path = None,
+        *args,
+        **kwargs,
+    ):
+        _refuse_custom_module(class_ref, model_name_or_path, kwargs.get("trust_remote_code"))
+        return original_import(class_ref, model_name_or_path, *args, **kwargs)
+
+    setattr(import_module_class, _ST_GATE_MARKER, True)
+    import_module_class.__wrapped__ = original_import
+    # Rebind every module that imported the function by name.
+    for module in list(sys.modules.values()):
+        if (
+            getattr(module, "__name__", "").startswith("sentence_transformers")
+            and getattr(module, "import_module_class", None) is original_import
+        ):
+            setattr(module, "import_module_class", import_module_class)
+
+
 def _get(model_name: str | None = None):
     """Cached SentenceTransformer, (re)loading on a name change. Loaded in fp16 on an
     accelerator for a ~1.5x speedup at negligible accuracy loss, fp32 on CPU."""
@@ -426,6 +527,8 @@ def _get(model_name: str | None = None):
             _install_torchao_stub_once()
             from sentence_transformers import SentenceTransformer
             from utils.hf_cache_settings import active_hf_hub_cache
+
+            _gate_st_custom_modules()
 
             logger.info("loading embedding model %s on %s", name, device)
             st_kwargs = dict(
