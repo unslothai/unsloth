@@ -6,7 +6,7 @@
 Kept independent from upstream models/models.py so the Hub module can ship
 without modifying any upstream schema."""
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, PrivateAttr
 from typing import List, Literal, Optional
 
 
@@ -155,6 +155,8 @@ class LocalModelCapabilities(BaseModel):
 
 class LocalModelInfo(BaseModel):
     """Discovered local model candidate."""
+
+    _scan_root: Optional[str] = PrivateAttr(None)
 
     id: str = Field(..., description = "Identifier to use for loading/training")
     inventory_id: Optional[str] = Field(
