@@ -113,8 +113,7 @@ def _noop() -> None:
 
 
 def _resident_onload(group: Any) -> Any:
-    """A resident group's onload: nothing to copy, but the first block of a forward starts the event-fenced prefetch
-    (diffusion_offload_prefetch), which otherwise waits for the first streamed block and so never prefetches it."""
+    """A resident group's onload kicks the prefetch, else the first streamed block behind it is never prefetched."""
     prefetcher = getattr(group, "_unsloth_prefetcher", None)
     kick = getattr(prefetcher, "kick", None)
     if not callable(kick):
@@ -468,9 +467,8 @@ H3_STREAM_PREFETCH_ENV = "UNSLOTH_H3_STREAM_PREFETCH"
 
 
 def h3_stream_prefetch_depth(block_bytes: list, default_depth: int) -> int:
-    """Groups copied ahead of the running one: as many as ``H3_STREAM_WINDOW_GB`` holds next to the running block (the
-    residency plan reserves that window, so the prefetch never takes memory the plan did not), capped by the
-    prefetcher's own depth, at least 1 (diffusers' own: the next group)."""
+    """Groups copied ahead: as many as ``H3_STREAM_WINDOW_GB`` (reserved by the residency plan) holds next to the
+    running block, capped by ``default_depth``, at least 1."""
     largest = max(block_bytes) if block_bytes else 0
     if largest <= 0:
         return max(1, int(default_depth))
@@ -489,12 +487,8 @@ def install_h3_stream_prefetch(
     device: Any,
     logger: Any = None,
 ) -> int:
-    """Drive a block-streamed H3 denoiser's offload groups with the event-fenced prefetch (diffusion_offload_prefetch).
-
-    diffusers fences each streamed group on the host (``stream.synchronize()`` per onload, about 560 host waits per
-    step at 16 GB on an RTX PRO 6000) and the GPU idles between blocks. Install after the top-level pin and before the
-    residency fit: ``make_resident`` keeps the prefetcher's onload aside and restores it on demote. Returns the number
-    of groups covered (0: unchanged). ``UNSLOTH_H3_STREAM_PREFETCH=0`` keeps diffusers' prefetch."""
+    """Drive a block-streamed H3 denoiser's offload groups with the event-fenced prefetch (no host sync per onload).
+    Run after the top-level pin, before the residency fit; returns groups covered. ``UNSLOTH_H3_STREAM_PREFETCH=0`` off."""
     if str(os.environ.get(H3_STREAM_PREFETCH_ENV, "")).strip().lower() in (
         "0",
         "off",
@@ -510,9 +504,8 @@ def install_h3_stream_prefetch(
     if not blocks:
         return 0
     depth = h3_stream_prefetch_depth([group_payload_bytes(g) for g in blocks], prefetch_depth())
-    # stream_prequantized_module runs every group move outside inference_mode (torchao v1 int8 cannot be re-pointed
-    # inside it) through instance onload_ / offload_ wrappers, which the prefetcher refuses to replace. Lift them, let
-    # the prefetcher take the groups, then run its moves outside inference_mode the same way.
+    # The prefetcher refuses groups whose onload_ is replaced: lift the outside-inference_mode wrappers (torchao v1
+    # int8 cannot be re-pointed inside it), install, then wrap its moves the same way.
     groups = _all_offload_groups(transformer)
     lifted = [g for g in groups if _lift_outside_inference_wrappers(g)]
     try:
@@ -528,14 +521,10 @@ def install_h3_stream_prefetch(
         prefetcher = module_prefetcher(transformer)
         for group in groups:
             if getattr(group, "_unsloth_prefetcher", None) is prefetcher:
-                # owns() compares the instance onload_ with this: point it at the wrapped one
+                # owns() compares the instance onload_ with this
                 group._unsloth_prefetch_onload = group.__dict__.get("onload_")
         if prefetcher is not None:
-            # The prefetcher sizes its window as (depth + 1) x its largest group, the 0.8 GB top-level group here.
-            # Bound it by what diffusers' own path holds instead: the top-level group (on the device for the whole
-            # forward while it streams) plus the running block and the next one. A streamed top-level group then still
-            # leaves room for one block ahead, and a resident one (not counted) for ``depth`` blocks ahead, which
-            # ``h3_stream_prefetch_depth`` keeps inside the H3_STREAM_WINDOW_GB the residency plan reserves.
+            # (depth + 1) x the 0.8 GB top-level group would leave no block ahead once that group streams (12 GB).
             prefetcher.window = h3_stream_prefetch_window(
                 group_payload_bytes(top) if top is not None else 0,
                 [group_payload_bytes(g) for g in blocks],
