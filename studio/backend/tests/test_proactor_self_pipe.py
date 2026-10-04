@@ -32,7 +32,8 @@ def reads(monkeypatch):
     from asyncio import proactor_events
 
     base = proactor_events.BaseProactorEventLoop
-    original = base._loop_self_reading
+    # Count against CPython's own method even if an earlier test in this process installed the guard.
+    original = psp._cpython_loop_self_reading or base._loop_self_reading
     counter = {"n": 0}
 
     def counting(self, f = None):
@@ -41,6 +42,8 @@ def reads(monkeypatch):
 
     monkeypatch.setattr(base, "_loop_self_reading", counting)
     monkeypatch.setattr(psp, "_installed", False)
+    monkeypatch.setattr(psp, "_cpython_loop_self_reading", None)
+    monkeypatch.setattr(psp, "_socketpair", socket.socketpair)
     yield counter
     # monkeypatch restores both the class attribute and the module flag
 
@@ -53,13 +56,13 @@ def _run_after_peer_eof(close_every_new_pair = False):
         await asyncio.sleep(0.1)
         loop._csock.shutdown(socket.SHUT_WR)
         if close_every_new_pair:
-            make = loop._make_self_pipe
 
-            def make_then_close():
-                make()
-                loop._csock.shutdown(socket.SHUT_WR)
+            def pair_then_close():
+                ssock, csock = socket.socketpair()
+                csock.shutdown(socket.SHUT_WR)
+                return ssock, csock
 
-            loop._make_self_pipe = make_then_close
+            psp._socketpair = pair_then_close
         await asyncio.sleep(1.5)
         woke = loop.create_future()
         threading.Timer(0.05, lambda: loop.call_soon_threadsafe(woke.set_result, True)).start()
@@ -114,6 +117,72 @@ def test_guard_leaves_normal_wakeups_alone(reads):
         assert loop.run_until_complete(main()) is True
     finally:
         loop.close()
+
+
+@windows_only
+def test_guard_keeps_old_pair_and_retries_when_socketpair_fails(reads, monkeypatch):
+    assert psp.install_proactor_self_pipe_guard() is True
+    monkeypatch.setattr(psp, "_REBUILD_BACKOFF_SECONDS", 0.2)
+    failures = {"left": 1}
+
+    def flaky_socketpair():
+        if failures["left"]:
+            failures["left"] -= 1
+            raise OSError("no buffer space")
+        return socket.socketpair()
+
+    async def main():
+        loop = asyncio.get_running_loop()
+        await asyncio.sleep(0.1)
+        old_ssock = loop._ssock
+        psp._socketpair = flaky_socketpair
+        loop._csock.shutdown(socket.SHUT_WR)
+        await asyncio.sleep(0.1)
+        # The failed swap leaves a usable pair in place rather than None.
+        assert loop._ssock is old_ssock
+        await asyncio.sleep(0.5)
+        assert loop._ssock is not old_ssock
+        woke = loop.create_future()
+        threading.Timer(0.05, lambda: loop.call_soon_threadsafe(woke.set_result, True)).start()
+        return await asyncio.wait_for(woke, 2)
+
+    loop = asyncio.ProactorEventLoop()
+    try:
+        assert loop.run_until_complete(main()) is True
+    finally:
+        loop.close()
+    assert failures["left"] == 0
+    assert reads["n"] < 50
+
+
+@windows_only
+def test_guard_moves_signal_wakeup_fd_on_main_thread(reads):
+    import signal
+
+    assert threading.current_thread() is threading.main_thread()
+    assert psp.install_proactor_self_pipe_guard() is True
+
+    def current_wakeup_fd():
+        fd = signal.set_wakeup_fd(-1)
+        signal.set_wakeup_fd(fd)
+        return fd
+
+    async def main():
+        loop = asyncio.get_running_loop()
+        await asyncio.sleep(0.1)
+        old_fd = loop._csock.fileno()
+        assert current_wakeup_fd() == old_fd
+        loop._csock.shutdown(socket.SHUT_WR)
+        await asyncio.sleep(0.2)
+        return old_fd, loop._csock.fileno(), current_wakeup_fd()
+
+    loop = asyncio.ProactorEventLoop()
+    try:
+        old_fd, new_fd, wakeup_fd = loop.run_until_complete(main())
+    finally:
+        loop.close()
+    assert new_fd != old_fd
+    assert wakeup_fd == new_fd
 
 
 def test_install_is_idempotent_and_skips_other_platforms(monkeypatch):
