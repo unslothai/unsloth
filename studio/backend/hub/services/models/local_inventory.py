@@ -1144,11 +1144,13 @@ async def list_local_models_response(models_dir: str = "./models") -> LocalModel
             models = []
             for model in response.models:
                 task, audio_type = catalog_classification._local_model_classification(model)
+                workflows = catalog_classification.local_audio_workflows(model, audio_type)
                 models.append(
                     model.model_copy(
                         update = {
                             "task": task,
                             "audio_type": audio_type,
+                            **({"audio_workflows": workflows} if workflows else {}),
                         }
                     )
                 )

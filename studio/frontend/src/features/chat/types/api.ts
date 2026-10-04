@@ -204,7 +204,7 @@ export interface GgufVariantsResponse {
   variants: GgufVariantDetail[];
   has_vision: boolean;
   default_variant: string | null;
-  /** True only when Hub metadata resolved every required companion. */
+  /** True when Hub metadata or a complete cached download plan proves companion readiness. */
   dependencies_resolved?: boolean;
   /** Native max context from GGUF metadata; present once a variant is downloaded. */
   context_length?: number | null;
@@ -254,6 +254,7 @@ export interface LoadModelResponse {
   diffusion_requested_ngl?: number | null;
   is_audio?: boolean;
   audio_type?: string | null;
+  audio_workflows?: string[] | null;
   has_audio_input?: boolean;
   has_video_input?: boolean;
   inference?: {
@@ -378,6 +379,13 @@ export interface InferenceStatusResponse {
   /** The loaded GGUF audio model's generation options, as its spec declares them. Unknown-shaped
    *  on purpose: the Audio page validates it with parseAudioOptions. */
   audio_options?: unknown;
+  /** Audio page workflows the loaded model can run ("speak", "clone", "music", "transcribe"); empty when it is not an audio model. */
+  audio_workflows?: string[] | null;
+  audio_reference_text?: "required" | "optional" | "unused" | null;
+  /** e.g. Maya1: "instruct" (its voice description). */
+  audio_required_inputs?: string[] | null;
+  /** Unknown-shaped on purpose: validated by parseMusicCapabilities. */
+  audio_music?: unknown;
   has_audio_input?: boolean;
   has_video_input?: boolean;
   loading: string[];

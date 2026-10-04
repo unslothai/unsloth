@@ -98,7 +98,9 @@ from ..kernels import (
 from ._utils import (
     __version__,
     importlib_version,
+    _offload_embedding_for_room,
     _prepare_model_for_qat,
+    load_layers_to_host,
     resolve_model_class,
     resolve_remote_code_model_class,
     attention_class_for_load,
@@ -123,6 +125,8 @@ from ._utils import (
     set_module_gradient_checkpointing,
 )
 from ._utils import *
+from ._uma_safetensors import is_integrated_unified_memory_gpu
+from ._utils import estimate_training_reserve_bytes as _zoo_reserve_estimate
 from ._remote_code_buffers import restore_remote_code_non_persistent_buffers
 from ._custom_dtype import resolve_dtype, trusted_custom_dtype
 from .remote_code_shims import apply_remote_code_shims
@@ -146,6 +150,7 @@ from .loader_utils import (
     exclude_no_placement_params,
     planner_quantization_kwargs,
     requested_device_map,
+    resolve_auto_block_swap,
     resolve_unsloth_device_map,
     warn_if_bitsandbytes_quantized_nothing,
 )
@@ -705,6 +710,11 @@ def _install_offload_embedding_hooks(embed_tokens, output_embeddings, return_dev
             return output.to(target)
         return output
 
+    # Host lookups and cross-device copies cannot be traced: a compiled caller breaks around them.
+    disable = getattr(getattr(torch, "compiler", None), "disable", None)
+    if disable is not None:
+        _unsloth_offload_pre_hook = disable(_unsloth_offload_pre_hook)
+        _unsloth_offload_post_hook = disable(_unsloth_offload_post_hook)
     embed_tokens.register_forward_pre_hook(_unsloth_offload_pre_hook, prepend = True)
     embed_tokens.register_forward_hook(_unsloth_offload_post_hook, prepend = True)
     embed_tokens._unsloth_offload_hooks_installed = True
@@ -788,9 +798,14 @@ def _embedding_is_worth_offloading(input_embeddings):
     return size >= _OFFLOAD_EMBEDDING_MIN_BYTES and size / total >= _OFFLOAD_EMBEDDING_MIN_FRACTION
 
 
-def _resolve_offload_embedding(model, offload_embedding):
+def _resolve_offload_embedding(
+    model,
+    offload_embedding,
+    needed = False,
+):
     """Report `offload_embedding` as True only when the offload will really run. It is a VRAM optimisation, not a correctness switch, so turn it off where it cannot help instead of failing the load. It also gates `_attach_bnb_multidevice_hooks`, which must still run whenever no offload happens, so every "no offload" case has to answer False. `"auto"` (the default) decides from the size of the embedding, and the declines below stay silent for it: they explain why something a caller asked for is not happening, and nobody asked for a default."""
     automatic = offload_embedding == OFFLOAD_EMBEDDING_AUTO
+    # `needed`: a memory plan wants the room, so "auto" skips the size rule.
 
     def _decline(reason):
         if not automatic:
@@ -819,7 +834,132 @@ def _resolve_offload_embedding(model, offload_embedding):
     if is_distributed():
         # The offload leaves embed_tokens on the CPU while the rest of the rank stays on CUDA; under full finetuning it is trainable, and DDP with device_ids refuses a module whose trainable parameters span both.
         return _decline("a distributed launch cannot wrap a model split across CPU and GPU.")
-    return _embedding_is_worth_offloading(in_embed) if automatic else True
+    if automatic and (
+        getattr(in_embed, "weight", None) is None or in_embed.weight.device.type in ("cpu", "meta")
+    ):
+        return False
+    if not automatic:
+        return True
+    # "auto" follows free VRAM; an unsloth_zoo without the reserve estimate keeps the size rule.
+    return needed or (_zoo_reserve_estimate is None and _embedding_is_worth_offloading(in_embed))
+
+
+# Other large token tables (Gemma 3n / 4 per-layer embeddings) move too; small position tables stay.
+_EXTRA_EMBEDDING_MIN_BYTES = 256 * 2**20
+
+
+def _input_side_embeddings(model):
+    """The input embedding plus every other large nn.Embedding not shared with the output head."""
+    main = model.get_input_embeddings()
+    out_embed = model.get_output_embeddings() if hasattr(model, "get_output_embeddings") else None
+    head = getattr(out_embed, "weight", None)
+    found = [main]
+    for module in model.modules():
+        weight = getattr(module, "weight", None)
+        if (
+            module is main
+            or not isinstance(module, torch.nn.Embedding)
+            or weight is None
+            or weight is head
+            or weight.numel() * weight.element_size() < _EXTRA_EMBEDDING_MIN_BYTES
+        ):
+            continue
+        found.append(module)
+    return found, out_embed
+
+
+def _accelerator_device(model):
+    # Headless backbones (AutoModel) have no head to say where the decoder runs.
+    return next(
+        (p.device for p in model.parameters() if p.device.type not in ("cpu", "meta")), None
+    )
+
+
+def offload_input_embedding(model, embeddings = None):
+    """Move the input embeddings to host RAM: lookups run there and only the looked-up rows go back
+    to the decoder's card. Returns the bytes moved."""
+    found, out_embed = _input_side_embeddings(model)
+    head = getattr(out_embed, "weight", None)
+    nbytes = 0
+    for embedding in found if embeddings is None else embeddings:
+        weight = embedding.weight
+        if weight.device.type == "cpu":
+            # Streamed to host by the block swap load: hook it (home = head's card) and move its buffers (embed_scale).
+            if getattr(embedding, "_unsloth_offload_hooks_installed", False):
+                continue
+            _embed_device = head.device if head is not None else _accelerator_device(model)
+            if _embed_device is None:
+                _embed_device = torch.device("cpu")
+            embedding.to("cpu")
+        else:
+            _embed_device = weight.device  # decoder device, before offload
+            embedding.to("cpu")
+        nbytes += weight.numel() * weight.element_size()
+        _install_offload_embedding_hooks(embedding, out_embed, _embed_device)
+    print(f"Unsloth: Offloading embeddings to RAM to save {round(nbytes / 1024**3, 2)} GB.")
+    # The transformers model, not a PEFT wrapper: its `device` property is the one callers read.
+    _pin_device_to_decoder(model.get_base_model() if hasattr(model, "get_base_model") else model)
+    # GPU memory must be freed explicitly or it will not be freed.
+    clean_gpu_cache()
+    gc.collect()
+    return nbytes
+
+
+def offload_spare_embeddings(model, require_frozen = True):
+    """offload_embedding = "auto" under memory pressure: move every input-side embedding that
+    lm_head does not share (and, after get_peft_model, that is frozen) to host RAM. A tied input
+    embedding stays, but Gemma 3n / 4 per-layer tables still go. Returns the bytes moved."""
+    if _offload_embedding_unsupported_platform() is not None or is_distributed():
+        return 0
+    try:
+        found, out_embed = _input_side_embeddings(model)
+    except Exception:
+        return 0
+    # Already on the host only via the block swap load (unhooked, decoder on an accelerator); CPU models have nothing to offload.
+    head = getattr(out_embed, "weight", None)
+    if head is not None:
+        accelerated = head.device.type not in ("cpu", "meta")
+    else:
+        accelerated = _accelerator_device(model) is not None
+    candidates = []
+    for embedding in found:
+        weight = getattr(embedding, "weight", None)
+        if (
+            weight is None
+            or weight.device.type == "meta"
+            or (
+                weight.device.type == "cpu"
+                and (
+                    not accelerated or getattr(embedding, "_unsloth_offload_hooks_installed", False)
+                )
+            )
+            or _embeddings_are_tied(embedding, out_embed)
+            or _embedding_dispatch_device(embedding) is not None
+            or (require_frozen and any(p.requires_grad for p in embedding.parameters()))
+        ):
+            continue
+        candidates.append(embedding)
+    return offload_input_embedding(model, candidates) if candidates else 0
+
+
+def restore_input_embedding(model):
+    """Undo `offload_input_embedding` for the input embedding (training it needs it on the card).
+    Frozen extra tables stay on the host. The hooks stay and become no-ops."""
+    base = model.get_base_model() if hasattr(model, "get_base_model") else model
+    if not getattr(base, "_unsloth_embedding_offloaded", False):
+        return False
+    embedding = model.get_input_embeddings()
+    out_embed = model.get_output_embeddings() if hasattr(model, "get_output_embeddings") else None
+    weight = getattr(out_embed, "weight", None)
+    if weight is None or weight.device.type == "cpu":
+        return False
+    if embedding.weight.device.type != "cpu":
+        return False
+    embedding.to(weight.device)
+    base._unsloth_embedding_offloaded = any(
+        e.weight.device.type == "cpu" for e in _input_side_embeddings(model)[0]
+    )
+    return True
 
 
 VLLM_SUPPORTED_VLM = [
@@ -2487,6 +2627,26 @@ class FastBaseModel:
         user_config = kwargs.pop("config", None)
         if auto_config is None and user_config is not None:
             auto_config = user_config
+        _block_swap_layers = kwargs.pop("block_swap_layers", 0)
+        if _block_swap_layers and load_layers_to_host is None:
+            _block_swap_layers = refuse_block_swap_load(
+                _block_swap_layers,
+                "needs a newer unsloth_zoo (`pip install --upgrade unsloth_zoo`); "
+                "get_peft_model(block_swap_layers = ...) still swaps once the model is on the card.",
+            )
+        if _block_swap_layers and (fast_inference or full_finetuning):
+            _block_swap_layers = refuse_block_swap_load(
+                _block_swap_layers,
+                "streams frozen LoRA base weights, so it cannot be combined with "
+                "fast_inference or full_finetuning.",
+            )
+        if _block_swap_layers and (
+            not torch.cuda.is_available() or is_integrated_unified_memory_gpu()
+        ):
+            _block_swap_layers = refuse_block_swap_load(
+                _block_swap_layers,
+                "needs a discrete CUDA or ROCm GPU; unified memory has no separate RAM to load into.",
+            )
 
         # Offline snapshot for the loads below; not popped, so the weight load still reads local_files_only from **kwargs. See _get_effective_local_files_only.
         local_files_only = _get_effective_local_files_only(kwargs)
@@ -2932,6 +3092,54 @@ class FastBaseModel:
             raise RuntimeError(
                 "Unsloth: Can only load in 4bit or 8bit or 16bit, not a combination!"
             )
+        if _block_swap_layers and block_swap_load_device(device_map) is None:
+            _block_swap_layers = refuse_block_swap_load(
+                _block_swap_layers,
+                "needs every layer on one GPU; pass block_swap_layers to get_peft_model instead.",
+            )
+        _embedding_needed = None
+        if _block_swap_layers == "auto":
+            _block_swap_layers, device_map, _embedding_needed = resolve_auto_block_swap(
+                requested_device_map(device_map),
+                model_name,
+                max_seq_length = max_seq_length,
+                # Windows / WSL decline the offload later: a plan counting on it would leave a streamed table unhooked.
+                offload_embedding = bool(offload_embedding)
+                and _offload_embedding_unsupported_platform() is None,
+                planner_kwargs = planner_kwargs_with_max_memory(device_map_planner_kwargs, kwargs),
+                placement = "spread",
+                skip_reason = _planner_skip_reason
+                or (
+                    "the planner cannot rebuild this checkpoint's prepared config"
+                    if _planner_config is not None
+                    else None
+                ),
+                **planner_config_overrides(kwargs),
+                token = token,
+                trust_remote_code = trust_remote_code,
+                **planner_hub_kwargs(kwargs),
+                revision = _revision,
+                **add_dtype_kwargs(torch_dtype),
+                **planner_quantization_kwargs(
+                    **compressed_tensors_planner_quantization(
+                        auto_config, load_in_4bit, load_in_8bit, user_quantization_config
+                    ),
+                    rewritten_quantization_config = modelopt_planner_quantization_config(
+                        auto_config, dequantize = load_in_16bit
+                    )
+                    if _modelopt_rewritten
+                    else fp8_to_nf4_planner_quantization_config(
+                        auto_config,
+                        SKIP_QUANTIZATION_MODULES + _architecture_skip_modules(model_types),
+                    ),
+                    extra_skip_modules = _architecture_skip_modules(model_types) or None,
+                ),
+            )
+        _block_swap_device = block_swap_load_device(device_map)
+        if (_block_swap_layers or _embedding_needed) and _block_swap_device is not None:
+            # A placement strategy would spill the host-bound weights to the CPU, which 4-bit loads refuse.
+            device_map = {"": _block_swap_device}
+        _block_swap_state = None
 
         # Prefetch the repo (killable child) so the in-process load is a cache hit. vLLM owns the download only when actually available; if it was requested but is missing, the load falls through in-process, so warm the weights here.
         _vllm_owns_weights = fast_inference and is_vLLM_available()
@@ -3120,6 +3328,8 @@ class FastBaseModel:
 
         raise_handler = RaiseUninitialized()
         try:
+            # get_peft_model(block_swap_layers = "auto") may move it later, unless the caller said no.
+            _offload_embedding_mode = False if fast_inference else offload_embedding
             if offload_embedding and fast_inference:
                 if offload_embedding != OFFLOAD_EMBEDDING_AUTO:
                     print(
@@ -3149,14 +3359,17 @@ class FastBaseModel:
                     )
                 ):
                     try:
-                        model = auto_model.from_pretrained(
-                            model_name,
-                            config = model_config,
-                            device_map = device_map,
-                            token = token,
-                            trust_remote_code = trust_remote_code,
-                            **kwargs,
-                        )
+                        with begin_block_swap_load(
+                            _block_swap_layers, device_map, embeddings = bool(_embedding_needed)
+                        ) as (_block_swap_state):
+                            model = auto_model.from_pretrained(
+                                model_name,
+                                config = model_config,
+                                device_map = device_map,
+                                token = token,
+                                trust_remote_code = trust_remote_code,
+                                **kwargs,
+                            )
                     finally:
                         # The load deep-copied the config; give the caller's object its fp8 block back.
                         disarm_fp8_to_nf4(model_config)
@@ -3182,13 +3395,15 @@ class FastBaseModel:
                     offload_embedding,
                 )
 
-                _attach_bnb_multidevice_hooks(
-                    model,
-                    load_in_4bit = load_in_4bit,
-                    load_in_8bit = load_in_8bit,
-                    offload_embedding = offload_embedding,
-                    fast_inference = fast_inference,
-                )
+                # One card by construction: the layers in host RAM are not an offloaded dispatch.
+                if _block_swap_state is None:
+                    _attach_bnb_multidevice_hooks(
+                        model,
+                        load_in_4bit = load_in_4bit,
+                        load_in_8bit = load_in_8bit,
+                        offload_embedding = offload_embedding,
+                        fast_inference = fast_inference,
+                    )
                 _no_placement_hooked = _hook_no_placement_ancestors(model)
                 if _no_placement_hooked:
                     logger.info(
@@ -3230,24 +3445,17 @@ class FastBaseModel:
                 if hasattr(model, "generate"):
                     model.fast_generate = make_fast_generate_wrapper(model.generate)
                     model.fast_generate_batches = error_out_no_vllm
+                # "auto" moves it only when memory is tight, here and again in get_peft_model.
+                model._unsloth_offload_embedding_mode = _offload_embedding_mode
                 if offload_embedding:
-                    embed_tokens = model.get_input_embeddings()
-                    out_embed = (
-                        model.get_output_embeddings()
-                        if hasattr(model, "get_output_embeddings")
-                        else None
-                    )
-                    nbytes = embed_tokens.weight.numel() * embed_tokens.weight.itemsize
-                    ngb = round(nbytes / 1024 / 1024 / 1024, 2)
-                    print(f"Unsloth: Offloading embeddings to RAM to save {ngb} GB.")
-                    _embed_device = embed_tokens.weight.device  # decoder device, before offload
-                    embed_tokens.to("cpu")
-
-                    _install_offload_embedding_hooks(embed_tokens, out_embed, _embed_device)
-                    _pin_device_to_decoder(model)
-                    # GPU memory must be freed explicitly or it will not be freed.
-                    clean_gpu_cache()
-                    gc.collect()
+                    offload_input_embedding(model)
+                elif _offload_embedding_mode == OFFLOAD_EMBEDDING_AUTO and _embedding_needed:
+                    _offload_embedding_for_room(model, require_frozen = False)
+                elif _offload_embedding_mode == OFFLOAD_EMBEDDING_AUTO:
+                    offload_embedding_if_tight(model, max_seq_length, at_load = True)
+                elif _offload_embedding_mode:
+                    # A tied input embedding stays; untied per-layer tables still move.
+                    offload_spare_embeddings(model, require_frozen = False)
             else:
                 from unsloth_zoo.vllm_utils import (
                     load_vllm,
@@ -3695,9 +3903,20 @@ class FastBaseModel:
         _mark_loaded_revision(tokenizer, _tokenizer_revision)
         model = _mark_forced_float32(model, do_forced_float32)
         model = _mark_full_finetuning(model, full_finetuning)
+        # Last, so the host copies carry the fp32 recasts the passes above make.
+        finish_block_swap_load(
+            model, _block_swap_state, planned_prefetch_depth(device_map_planner_kwargs)
+        )
 
         # LAST, like the llama loader: patch_model_and_tokenizer below REPLACES the embedding and lm_head with fresh modules carrying the weights but not the _hf_hook, so a model split across cards would still meet the original cross-device index_select. Idempotent.
-        if not fast_inference and not offload_embedding:
+        # Embeddings offloaded later sit on the host on purpose: a dispatch hook would pull them back.
+        _base = model.get_base_model() if hasattr(model, "get_base_model") else model
+        if (
+            not fast_inference
+            and not offload_embedding
+            and not getattr(_base, "_unsloth_embedding_offloaded", False)
+            and _block_swap_state is None
+        ):
             try:
                 _repaired = _repair_dispatch_hooks(model)
                 if _repaired:
@@ -3740,6 +3959,8 @@ class FastBaseModel:
         target_parameters = None,  # For MoE expert layers (nn.Parameter)
         ensure_weight_tying = None,  # None = auto (tie when we redirect a tied pair)
         finetune_audio_layers = False,  # placed last to preserve existing positional argument order
+        block_swap_layers = 0,
+        checkpoint_skip_layers = 0,
         **kwargs,
     ):
         if os.environ.get("UNSLOTH_ENABLE_FULL_FINETUNING", "0") == "1":
@@ -3842,6 +4063,9 @@ class FastBaseModel:
             )
         modules_to_save = _scope_modules_to_save_to_core(model, modules_to_save)
         _raise_if_fast_inference_modules_to_save(model, modules_to_save)
+        if any(str(m).split(".")[-1] == "embed_tokens" for m in (modules_to_save or ())):
+            if restore_input_embedding(model):
+                print("Unsloth: Moved the offloaded input embedding back to the GPU to train it.")
 
         # Only a regex generated here may be widened to expert submodules below.
         _target_modules_auto_regex = False
@@ -4107,6 +4331,11 @@ class FastBaseModel:
         model.max_seq_length = max_seq_length
         for module in model.modules():
             module.max_seq_length = max_seq_length
+        offload_embedding_if_tight(model)
+        install_block_swap(
+            model, block_swap_layers, use_gradient_checkpointing = use_gradient_checkpointing
+        )
+        skip_checkpointing(model, checkpoint_skip_layers)
         for _ in range(3):
             gc.collect()
             clean_gpu_cache()
