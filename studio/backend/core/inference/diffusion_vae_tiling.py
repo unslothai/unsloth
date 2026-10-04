@@ -14,11 +14,12 @@ encode (img2img and edit inputs on the same tiers) has the same geometry.
 Here a tile is at least 32 latents with at least a 16-latent overlap (ComfyUI's decode overlap). A decode
 uses larger tiles, down to one untiled decode, when three quarters of the free VRAM hold them: fewer tiles
 decode less overlap, so they are faster and leave fewer seams. Otherwise it uses 32x32, which the planner
-budgets. Tiles
-are spread evenly so the last one ends at the image edge at full size (no sliver). A tile gets no weight within
+budgets. Tiles are spread evenly so the last one ends at the image edge at full size (no sliver). A tile gets no weight within
 4 latents of an edge it shares with another tile and ramps to full weight over the next 8, normalised where
 more than two tiles meet (a stride under 16 latents, e.g. 1344 or 2400 px). A canvas that fits one tile is
-decoded / encoded untiled. The encode uses 32x32 tiles and blends their moments in latent space.
+decoded / encoded untiled. The encode (img2img and edit inputs on the same tiers) uses 64-latent tiles with
+32-latent overlaps, blended in latent space: the encoder attends over the whole tile, so the stock 16-latent
+tiles shift the condition latent everywhere and derail the edit, not only at the seams.
 Kill switch ``UNSLOTH_DIFFUSION_VAE_WIDE_TILES=0``: at load it skips the install (the fused batched tile
 decode, if any, installs as before); set later, each decode / encode takes the stock tiled path.
 """
@@ -36,6 +37,13 @@ OVERLAP_LATENTS = 16
 # Blend: a tile gets no weight within MARGIN latents of an edge it shares, then ramps to full over RAMP latents.
 MARGIN_LATENTS = 4
 RAMP_LATENTS = 8
+# Encode: twice the decode tile (stable-diffusion.cpp's ratio), so a 1024 px condition image, Studio's default
+# reference resolution, encodes as one tile, bit-identical to the untiled encode. The encoder's middle block attends
+# over the whole tile, so smaller tiles shift the latent everywhere, not only at the seams.
+ENCODE_TILE_LATENTS = 64
+ENCODE_OVERLAP_LATENTS = 32
+ENCODE_MARGIN_LATENTS = 8
+ENCODE_RAMP_LATENTS = 16
 
 _VAE_CLASSES = frozenset({"AutoencoderKLQwenImage21"})
 
@@ -223,35 +231,40 @@ def _encode_tile(vae: Any, x: Any) -> Any:
 
 
 def tiled_encode(vae: Any, x: Any) -> Any:
-    """Encode ``x`` (B, C, T, H, W pixels) to moments in the same 32-latent tiles, 16-latent overlaps and blend as
-    ``tiled_decode``, blended in latent space. Stock ``tiled_encode`` has the decode's 4-latent seams and slivers."""
+    """Encode ``x`` (B, C, T, H, W pixels) to moments in evenly spread 64-latent tiles with 32-latent overlaps,
+    blended in latent space with the decode's normalised ramp (no weight within 8 latents of a shared edge, full
+    weight 16 latents further in). Stock ``tiled_encode`` uses 16-latent tiles, 4-latent blends and sliver tiles."""
     import torch
 
     _, _, _, height_px, width_px = x.shape
     ratio = int(vae.spatial_compression_ratio)
     height, width = height_px // ratio, width_px // ratio
-    hs = tile_starts(height)
-    ws = tile_starts(width)
-    th, tw = min(TILE_LATENTS, height), min(TILE_LATENTS, width)
+    tile, overlap = ENCODE_TILE_LATENTS, ENCODE_OVERLAP_LATENTS
+    hs = tile_starts(height, tile, overlap)
+    ws = tile_starts(width, tile, overlap)
+    th, tw = min(tile, height), min(tile, width)
     if len(hs) == 1 and len(ws) == 1:
         return _encode_tile(vae, x)
-    wy = axis_weights(hs, TILE_LATENTS, height, 1, torch, x.device)
-    wx = axis_weights(ws, TILE_LATENTS, width, 1, torch, x.device)
+    margin, ramp = ENCODE_MARGIN_LATENTS, ENCODE_RAMP_LATENTS
+    wy = axis_weights(hs, tile, height, 1, torch, x.device, margin, ramp)
+    wx = axis_weights(ws, tile, width, 1, torch, x.device, margin, ramp)
     out, dtype = None, None
     for i, y in enumerate(hs):
         for j, xs in enumerate(ws):
-            tile = _encode_tile(
+            tile_out = _encode_tile(
                 vae, x[:, :, :, y * ratio : (y + th) * ratio, xs * ratio : (xs + tw) * ratio]
             )
             if out is None:
-                dtype = tile.dtype
+                dtype = tile_out.dtype
                 out = torch.zeros(
-                    (*tile.shape[:3], height, width), dtype = torch.float32, device = tile.device
+                    (*tile_out.shape[:3], height, width),
+                    dtype = torch.float32,
+                    device = tile_out.device,
                 )
             out[..., y : y + th, xs : xs + tw].add_(
-                tile.float() * (wy[i].view(-1, 1) * wx[j].view(1, -1))
+                tile_out.float() * (wy[i].view(-1, 1) * wx[j].view(1, -1))
             )
-            del tile
+            del tile_out
     return out.to(dtype)
 
 
@@ -269,9 +282,9 @@ def _wants_wide_tiles(vae: Any) -> bool:
 
 
 def install(vae: Any, logger: Any = None) -> bool:
-    """Route ``vae``'s tiled decode through the wide, edge-aligned tiles. Idempotent; False when not covered.
+    """Route ``vae``'s tiled decode and encode through the wide, edge-aligned tiles. Idempotent; False when not covered.
 
-    The tiled encode (img2img, edits) gets the same tiles. The VAE's tile attributes stay as diffusers set them;
+    The tiled encode (img2img, edits) gets 64-latent tiles. The VAE's tile attributes stay as diffusers set them;
     ``_unsloth_decode_tile_side`` carries the real decode tile side for Studio's memory estimates."""
     if not _wants_wide_tiles(vae) or wide_tiles_disabled():
         return False
@@ -305,10 +318,13 @@ def install(vae: Any, logger: Any = None) -> bool:
     vae._unsloth_wide_tiles = True
     if logger is not None:
         logger.info(
-            "diffusion.vae_tiling: %s decodes in %d-latent tiles with %d-latent overlaps, the last tile edge-aligned",
+            "diffusion.vae_tiling: %s decodes in %d-latent tiles with %d-latent overlaps and encodes in %d-latent "
+            "tiles with %d-latent overlaps, the last tile edge-aligned",
             type(vae).__name__,
             TILE_LATENTS,
             OVERLAP_LATENTS,
+            ENCODE_TILE_LATENTS,
+            ENCODE_OVERLAP_LATENTS,
         )
     return True
 
