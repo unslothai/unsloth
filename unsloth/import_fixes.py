@@ -1783,6 +1783,10 @@ _CHAT_TEMPLATE_NAME_PATCH_FLAG = "_unsloth_patched_chat_template_names"
 
 def _chat_template_name_escapes(template_name):
     # Upstream's test (#46191: the resolved parent must be the template dir), without touching disk.
+    # A drive prefix (Windows `C:evil`) joins onto the probe base unchanged but not onto a
+    # save directory on another drive.
+    if os.path.splitdrive(template_name)[0]:
+        return True
     base = os.path.abspath(os.path.join(os.sep, "unsloth_chat_templates"))
     target = os.path.normpath(os.path.join(base, f"{template_name}.jinja"))
     return os.path.dirname(target) != base

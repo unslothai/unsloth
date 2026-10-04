@@ -406,3 +406,20 @@ def test_template_names_checked_even_without_jinja_files(patched):
 
     with pytest.raises(ValueError, match = "Invalid chat template name"):
         patched._check_chat_template_names(Holder(), {"save_jinja_files": False})
+
+
+def test_windows_drive_relative_template_name_is_refused(patched, monkeypatch):
+    # On Windows `C:evil` joins onto a C: probe base unchanged but lands outside a save
+    # directory on another drive. Simulate ntpath with a drive on the probe base.
+    import ntpath
+    import types
+
+    win = types.SimpleNamespace(
+        **{k: getattr(ntpath, k) for k in dir(ntpath) if not k.startswith("__")}
+    )
+    win.abspath = lambda p: ntpath.normpath(p if ntpath.splitdrive(p)[0] else "C:" + p)
+    monkeypatch.setattr(patched, "os", types.SimpleNamespace(path = win, sep = "\\"))
+    assert patched._chat_template_name_escapes("C:evil")
+    assert patched._chat_template_name_escapes("..\\evil")
+    for name in ("default", "tool_use", "rag", "v2.1-x_y"):
+        assert not patched._chat_template_name_escapes(name)
