@@ -102,7 +102,7 @@
     "@tanstack/react-router": "1.169.2",
     "@tanstack/router-core": "1.169.2",
     "@tanstack/history": "1.161.6",
-    "mermaid": "11.16.1",
+    "mermaid": "11.17.2",
     "hono": "4.12.25",
     "qs": "6.15.2",
     "ip-address": "10.3.1",
