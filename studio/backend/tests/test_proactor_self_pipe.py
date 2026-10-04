@@ -185,6 +185,78 @@ def test_guard_moves_signal_wakeup_fd_on_main_thread(reads):
     assert wakeup_fd == new_fd
 
 
+class _RecordingLogger:
+    def __init__(self):
+        self.lines = []
+
+    def warning(self, msg, *args):
+        self.lines.append(("warning", msg % args))
+
+    def debug(self, msg, *args):
+        self.lines.append(("debug", msg % args))
+
+
+@windows_only
+def test_persistent_socketpair_failure_backs_off_and_warns_once(reads, monkeypatch):
+    assert psp.install_proactor_self_pipe_guard() is True
+    monkeypatch.setattr(psp, "_REBUILD_BACKOFF_SECONDS", 0.1)
+    log = _RecordingLogger()
+    monkeypatch.setattr(psp, "logger", log)
+    attempts = {"n": 0}
+
+    def failing_socketpair():
+        attempts["n"] += 1
+        raise OSError("no buffer space")
+
+    async def main():
+        loop = asyncio.get_running_loop()
+        await asyncio.sleep(0.1)
+        psp._socketpair = failing_socketpair
+        loop._csock.shutdown(socket.SHUT_WR)
+        await asyncio.sleep(2.0)
+
+    loop = asyncio.ProactorEventLoop()
+    try:
+        loop.run_until_complete(main())
+    finally:
+        loop.close()
+    # Doubling delays from 0.1s: attempts at about 0, 0.1, 0.3, 0.7 and 1.5s, not one every 0.1s.
+    assert 3 <= attempts["n"] <= 6
+    warnings = [line for level, line in log.lines if level == "warning"]
+    assert len(warnings) == 2  # "rebuilding it" once, then the first failure; the rest go to debug
+    assert reads["n"] < 50
+
+
+@windows_only
+def test_guard_leaves_a_foreign_signal_wakeup_fd_alone(reads):
+    import signal
+
+    assert threading.current_thread() is threading.main_thread()
+    assert psp.install_proactor_self_pipe_guard() is True
+    foreign_r, foreign_w = socket.socketpair()
+    foreign_w.setblocking(False)
+
+    async def main():
+        loop = asyncio.get_running_loop()
+        await asyncio.sleep(0.1)
+        signal.set_wakeup_fd(foreign_w.fileno())
+        try:
+            loop._csock.shutdown(socket.SHUT_WR)
+            await asyncio.sleep(0.2)
+        finally:
+            # The loop's old socket is closed by now, so hand the fd back to its current one.
+            current = signal.set_wakeup_fd(loop._csock.fileno())
+        return current
+
+    loop = asyncio.ProactorEventLoop()
+    try:
+        assert loop.run_until_complete(main()) == foreign_w.fileno()
+    finally:
+        loop.close()
+        foreign_r.close()
+        foreign_w.close()
+
+
 def test_install_is_idempotent_and_skips_other_platforms(monkeypatch):
     monkeypatch.setattr(psp, "_installed", False)
     monkeypatch.setattr(psp.sys, "platform", "linux")
