@@ -25,7 +25,11 @@ env:
 
 jobs:
   attribute:
-    if: github.event.workflow_run.head_branch == 'main'
+    # Fork PRs opened from a branch named main also report head_branch 'main'.
+    if: >-
+      github.event.workflow_run.event == 'push' &&
+      github.event.workflow_run.head_branch == 'main' &&
+      github.event.workflow_run.head_repository.full_name == github.repository
     runs-on: ubuntu-latest
     permissions:
       issues: write
@@ -46,10 +50,22 @@ jobs:
           set -euo pipefail
           short="${HEAD_SHA:0:9}"
 
+          runs="repos/$REPO/actions/workflows/$WORKFLOW_ID/runs?branch=main&event=push"
+
           open_issue() {
             gh issue list --repo "$REPO" --label "$GUARD_LABEL" --state open \
               --json number --jq '.[0].number // empty'
           }
+
+          # Main runs overlap (one concurrency group per sha): only the newest
+          # decided run may open or close, else an older red finishing late
+          # reopens a healed main, or an older green closes a live break.
+          newer="$(gh api "$runs&status=completed&per_page=20&created=%3E$RUN_CREATED" \
+            --jq '[.workflow_runs[] | select(.conclusion == "success" or .conclusion == "failure")] | .[0].id // empty')"
+          if [ -n "$newer" ]; then
+            echo "Run $newer on main started later and already decided; nothing to do."
+            exit 0
+          fi
 
           if [ "$CONCLUSION" = "success" ]; then
             existing="$(open_issue)"
@@ -75,13 +91,13 @@ jobs:
 
           # created=< keeps a delayed or re-run event from seeing only younger greens.
           last_green="$(gh api \
-            "repos/$REPO/actions/workflows/$WORKFLOW_ID/runs?branch=main&status=success&per_page=50&created=%3C$RUN_CREATED" \
+            "$runs&status=success&per_page=50&created=%3C$RUN_CREATED" \
             --jq "[.workflow_runs[] | select(.created_at < \"$RUN_CREATED\")] | .[0].head_sha // empty")"
 
           if [ -n "$last_green" ]; then
             suspects="$(gh api "repos/$REPO/compare/$last_green...$HEAD_SHA" \
               --jq '.commits[] | "- \(.sha[0:9]) \(.commit.message | split("\n")[0]) (@\(.author.login // .commit.author.name))"')"
-            range_line="Last green: \`${last_green:0:9}\` — suspect commits ([full compare](https://github.com/$REPO/compare/$last_green...$HEAD_SHA)):"
+            range_line="Last green: \`${last_green:0:9}\`, suspect commits ([full compare](https://github.com/$REPO/compare/$last_green...$HEAD_SHA)):"
           else
             suspects="(no green run found in the last 50 main runs -- attribute by hand)"
             range_line="Last green: unknown."
@@ -90,7 +106,7 @@ jobs:
           failed_jobs="$(gh api "repos/$REPO/actions/runs/$RUN_ID/jobs?per_page=100" \
             --jq '[.jobs[] | select(.conclusion == "failure") | .name] | join(", ")')"
 
-          body="Backend CI failed on main at \`$short\` — [run]($RUN_URL). Failing jobs: ${failed_jobs:-unknown}.
+          body="Backend CI failed on main at \`$short\` ([run]($RUN_URL)). Failing jobs: ${failed_jobs:-unknown}.
 
           $range_line
 
@@ -98,7 +114,6 @@ jobs:
 
           One of the suspect pushes broke the leg; the fix (or revert) belongs on main. This issue closes itself on the next green main run.
           "
-          body="$(printf '%s\n' "$body" | sed 's/^          //')"
           if [ -n "$last_green" ]; then
             title="Backend CI is red on main (broke between ${last_green:0:9} and $short)"
           else
