@@ -86,7 +86,7 @@ def test_onload_device_is_nvidia_cuda_only(target, expected):
 
 
 def _speed_calls(path: pathlib.Path) -> list:
-    tree = ast.parse(path.read_text())
+    tree = ast.parse(path.read_text(encoding = "utf-8"))
     return [
         node
         for node in ast.walk(tree)
