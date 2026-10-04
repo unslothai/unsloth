@@ -722,7 +722,7 @@ def test_queued_settings_are_thread_scoped_without_cross_chat_fallback():
     assert (
         eject.index('beginModelLoading("unloading")')
         < eject.index("await confirmStopRunningChatsIfNeeded(")
-        < eject.index("stopQueuedRuns(stopDecision")
+        < eject.index("stopQueuedRuns(stopDecision, Boolean(scope))")
     )
     stop_queued = _between(
         MODEL_RUNTIME,

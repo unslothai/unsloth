@@ -109,22 +109,28 @@ _WORKERS_THAT_RUN_THEIR_CALLBACK = {
 
 
 def _executed_calls(lam: ast.Lambda) -> list[ast.Call]:
+    # A lambda with a yield in its own body is a generator function: calling it runs nothing.
+    if any(isinstance(n, (ast.Yield, ast.YieldFrom)) for n in _nodes_in_scope([lam.body])):
+        return []
     return _calls_run_in_scope([lam.body])
+
+
+def _nodes_in_scope(roots: list[ast.AST]) -> list[ast.AST]:
+    found, stack = [], list(roots)
+    while stack:
+        node = stack.pop()
+        if isinstance(node, (ast.Lambda, ast.FunctionDef, ast.AsyncFunctionDef, ast.GeneratorExp)):
+            continue
+        found.append(node)
+        stack.extend(ast.iter_child_nodes(node))
+    return found
 
 
 def _calls_run_in_scope(roots: list[ast.AST]) -> list[ast.Call]:
     """Calls these nodes make when their own scope runs. A lambda, def or generator expression
     nested inside is only created there, and could be returned and run later on the loop, so it
     is not descended."""
-    found, stack = [], list(roots)
-    while stack:
-        node = stack.pop()
-        if isinstance(node, (ast.Lambda, ast.FunctionDef, ast.AsyncFunctionDef, ast.GeneratorExp)):
-            continue
-        if isinstance(node, ast.Call):
-            found.append(node)
-        stack.extend(ast.iter_child_nodes(node))
-    return found
+    return [n for n in _nodes_in_scope(roots) if isinstance(n, ast.Call)]
 
 
 def _calls_inside_offloaded_lambdas(fn: ast.AST) -> set[int]:
@@ -287,6 +293,7 @@ def test_a_lambda_handed_to_to_thread_is_off_the_loop_but_an_inline_call_is_not(
         "    await asyncio.to_thread(other.in_slot, None, lambda: helper(model))\n"
         "    (await asyncio.to_thread(lambda: (helper(model) for _ in range(1)))).__next__()\n"
         "    await dispatcher.to_thread(lambda: helper(model))\n"
+        "    (await asyncio.to_thread(lambda: (yield helper(model)))).__next__()\n"
     ).body[0]
     off_loop = _calls_inside_offloaded_lambdas(fn)
     calls = [
@@ -295,7 +302,17 @@ def test_a_lambda_handed_to_to_thread_is_off_the_loop_but_an_inline_call_is_not(
         if isinstance(n, ast.Call) and getattr(n.func, "id", None) == "helper"
     ]
     assert sorted(n.lineno for n in calls if id(n) in off_loop) == [3, 8]
-    assert sorted(n.lineno for n in calls if id(n) not in off_loop) == [2, 4, 5, 6, 7, 9, 10, 11]
+    assert sorted(n.lineno for n in calls if id(n) not in off_loop) == [
+        2,
+        4,
+        5,
+        6,
+        7,
+        9,
+        10,
+        11,
+        12,
+    ]
 
 
 @pytest.mark.parametrize("worker", sorted(_WORKERS_THAT_RUN_THEIR_CALLBACK))
@@ -314,6 +331,19 @@ def test_each_listed_worker_still_runs_the_callable_it_is_handed(worker):
             ), f"{route} calls {worker} but does not import it from {rel}"
     fn = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == name)
     assert [a.arg for a in fn.args.args][position] == param, f"{worker}'s callback moved"
+    # A name bound to contextvars.copy_context() inside the worker: its .run is synchronous.
+    contexts = {
+        target.id
+        for n in _nodes_in_scope(fn.body)
+        if isinstance(n, ast.Assign)
+        and isinstance(n.value, ast.Call)
+        and isinstance(n.value.func, ast.Attribute)
+        and n.value.func.attr == "copy_context"
+        and isinstance(n.value.func.value, ast.Name)
+        and n.value.func.value.id == "contextvars"
+        for target in n.targets
+        if isinstance(target, ast.Name)
+    }
     # Called directly, or run through contextvars' Context.run: forwarding it anywhere else could
     # return it uncalled, so it does not count.
     runs = [
@@ -324,6 +354,8 @@ def test_each_listed_worker_still_runs_the_callable_it_is_handed(worker):
             or (
                 isinstance(n.func, ast.Attribute)
                 and n.func.attr == "run"
+                and isinstance(n.func.value, ast.Name)
+                and n.func.value.id in contexts
                 and n.args[:1]
                 and isinstance(n.args[0], ast.Name)
                 and n.args[0].id == param
