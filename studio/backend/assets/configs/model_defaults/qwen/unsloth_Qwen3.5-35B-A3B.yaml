@@ -1,6 +1,6 @@
 # Model defaults for unsloth/Qwen3.5-35B-A3B
-# all-linear reaches the GatedDeltaNet projections and the vision tower; routed experts are packed parameters and stay frozen.
-# Also applies to: Qwen/Qwen3.5-35B-A3B
+# all-linear reaches the GatedDeltaNet projections (3 of every 4 layers), the vision tower and the routed experts.
+# Also applies to: Qwen/Qwen3.5-35B-A3B, Qwen/Qwen3.5-35B-A3B-Base, unsloth/Qwen3.5-35B-A3B-Base
 
 training:
   max_seq_length: 2048

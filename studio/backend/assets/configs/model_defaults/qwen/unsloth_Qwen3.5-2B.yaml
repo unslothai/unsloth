@@ -1,6 +1,6 @@
 # Model defaults for unsloth/Qwen3.5-2B
 # all-linear reaches the GatedDeltaNet projections (3 of every 4 layers) and the vision tower.
-# Also applies to: Qwen/Qwen3.5-2B
+# Also applies to: Qwen/Qwen3.5-2B, Qwen/Qwen3.5-2B-Base, unsloth/Qwen3.5-2B-Base
 
 training:
   max_seq_length: 2048

@@ -109,11 +109,18 @@ def test_lfm2_supported_ids_use_all_linear_defaults(model_id):
 _QWEN35_SIZES = ["0.8B", "2B", "4B", "9B", "27B", "35B-A3B"]
 
 
-@pytest.mark.parametrize("org", ["unsloth", "Qwen"])
-@pytest.mark.parametrize("size", _QWEN35_SIZES)
-def test_qwen35_ids_use_all_linear_defaults(org, size):
+@pytest.mark.parametrize(
+    "model_id, size",
+    [
+        (f"{org}/Qwen3.5-{size}{suffix}", size)
+        for size in _QWEN35_SIZES
+        for org in ("unsloth", "Qwen")
+        for suffix in (("",) if size == "27B" else ("", "-Base"))
+    ],
+)
+def test_qwen35_ids_use_all_linear_defaults(model_id, size):
     # default.yaml's q/k/v/o list leaves the GatedDeltaNet layers and the vision tower without LoRA.
-    config = _load_tuned(f"{org}/Qwen3.5-{size}", f"unsloth_Qwen3.5-{size}.yaml")
+    config = _load_tuned(model_id, f"unsloth_Qwen3.5-{size}.yaml")
     assert config["lora"]["target_modules"] == ["all-linear"]
 
 

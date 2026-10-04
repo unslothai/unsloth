@@ -519,18 +519,26 @@ MODEL_NAME_MAPPING = {
     "unsloth_Qwen3.5-0.8B.yaml": [
         "unsloth/Qwen3.5-0.8B",
         "Qwen/Qwen3.5-0.8B",
+        "Qwen/Qwen3.5-0.8B-Base",
+        "unsloth/Qwen3.5-0.8B-Base",
     ],
     "unsloth_Qwen3.5-2B.yaml": [
         "unsloth/Qwen3.5-2B",
         "Qwen/Qwen3.5-2B",
+        "Qwen/Qwen3.5-2B-Base",
+        "unsloth/Qwen3.5-2B-Base",
     ],
     "unsloth_Qwen3.5-4B.yaml": [
         "unsloth/Qwen3.5-4B",
         "Qwen/Qwen3.5-4B",
+        "Qwen/Qwen3.5-4B-Base",
+        "unsloth/Qwen3.5-4B-Base",
     ],
     "unsloth_Qwen3.5-9B.yaml": [
         "unsloth/Qwen3.5-9B",
         "Qwen/Qwen3.5-9B",
+        "Qwen/Qwen3.5-9B-Base",
+        "unsloth/Qwen3.5-9B-Base",
     ],
     "unsloth_Qwen3.5-27B.yaml": [
         "unsloth/Qwen3.5-27B",
@@ -539,6 +547,8 @@ MODEL_NAME_MAPPING = {
     "unsloth_Qwen3.5-35B-A3B.yaml": [
         "unsloth/Qwen3.5-35B-A3B",
         "Qwen/Qwen3.5-35B-A3B",
+        "Qwen/Qwen3.5-35B-A3B-Base",
+        "unsloth/Qwen3.5-35B-A3B-Base",
     ],
     "sesame_csm-1b.yaml": [
         "sesame/csm-1b",
