@@ -97,7 +97,11 @@ class _DiT(torch.nn.Module):
     """H3's layout: top-level embedders / output and ``transformer_blocks``; the top-level group is about twice a
     block, like H3's 0.8 GB top-level group against 0.39 GB blocks."""
 
-    def __init__(self, width = 1024, blocks = 8):
+    def __init__(
+        self,
+        width = 1024,
+        blocks = 8,
+    ):
         super().__init__()
         self.proj_in = torch.nn.Linear(64, width)
         self.embed = torch.nn.Linear(width, 2 * width)
@@ -112,7 +116,12 @@ class _DiT(torch.nn.Module):
         return self.proj_out(x)
 
 
-def _h3_streamed(net, monkeypatch, prefetch = True, outside_inference = True):
+def _h3_streamed(
+    net,
+    monkeypatch,
+    prefetch = True,
+    outside_inference = True,
+):
     """What the H3 load does at a capped tier: stream groups with record_stream, pinned top group, prefetch."""
     import inspect
 
@@ -138,7 +147,6 @@ def _h3_streamed(net, monkeypatch, prefetch = True, outside_inference = True):
     if outside_inference:
         # what stream_prequantized_module does for torchao v1 int8: every group move outside inference_mode
         from core.inference.diffusion_prequant import _move_groups_outside_inference_mode
-
         _move_groups_outside_inference_mode(net)
     assert res.pin_streamed_top_level_group(net)
     n = res.install_h3_stream_prefetch(net, "cuda") if prefetch else 0

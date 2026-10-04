@@ -484,14 +484,23 @@ def h3_stream_prefetch_window(top_bytes: int, block_bytes: list) -> int:
     return int(max(0, top_bytes) + 2 * largest)
 
 
-def install_h3_stream_prefetch(transformer: Any, device: Any, logger: Any = None) -> int:
+def install_h3_stream_prefetch(
+    transformer: Any,
+    device: Any,
+    logger: Any = None,
+) -> int:
     """Drive a block-streamed H3 denoiser's offload groups with the event-fenced prefetch (diffusion_offload_prefetch).
 
     diffusers fences each streamed group on the host (``stream.synchronize()`` per onload, about 560 host waits per
     step at 16 GB on an RTX PRO 6000) and the GPU idles between blocks. Install after the top-level pin and before the
     residency fit: ``make_resident`` keeps the prefetcher's onload aside and restores it on demote. Returns the number
     of groups covered (0: unchanged). ``UNSLOTH_H3_STREAM_PREFETCH=0`` keeps diffusers' prefetch."""
-    if str(os.environ.get(H3_STREAM_PREFETCH_ENV, "")).strip().lower() in ("0", "off", "false", "no"):
+    if str(os.environ.get(H3_STREAM_PREFETCH_ENV, "")).strip().lower() in (
+        "0",
+        "off",
+        "false",
+        "no",
+    ):
         return 0
     try:
         from .diffusion_offload_prefetch import install_group_prefetch, prefetch_depth
@@ -512,7 +521,6 @@ def install_h3_stream_prefetch(transformer: Any, device: Any, logger: Any = None
         covered = 0
     if lifted:
         from .diffusion_prequant import _move_groups_outside_inference_mode
-
         _move_groups_outside_inference_mode(transformer)
     if covered:
         from .diffusion_offload_prefetch import module_prefetcher
