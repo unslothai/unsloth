@@ -440,8 +440,9 @@ def _precision(device, fp16_checkpoint: bool):
     if device.type == "cuda":
         if fp16_checkpoint:
             return torch.float16, torch.float16
-        if torch.version.hip:
-            from core.inference.rocm_bf16 import rocm_bf16_supported
+        from core.inference.rocm_bf16 import is_rocm_torch, rocm_bf16_supported
+
+        if is_rocm_torch(torch):
             bf16 = rocm_bf16_supported(torch, device.index)
         else:
             # By capability: pre-Ampere NVIDIA reports is_bf16_supported() through slow emulation.

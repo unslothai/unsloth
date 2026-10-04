@@ -638,9 +638,9 @@ def native_bf16_supported() -> bool:
 
         if not torch.cuda.is_available():
             return False
-        is_rocm = bool(getattr(getattr(torch, "version", None), "hip", None))
-        if is_rocm:
-            from core.inference.rocm_bf16 import rocm_bf16_supported
+        from core.inference.rocm_bf16 import is_rocm_torch, rocm_bf16_supported
+
+        if is_rocm_torch(torch):
             return rocm_bf16_supported(torch)
         return torch.cuda.get_device_capability()[0] >= 8
     except Exception:  # noqa: BLE001 -- no torch / probe failure -> treat as unsupported
@@ -650,11 +650,15 @@ def native_bf16_supported() -> bool:
 def flow_bf16_trainable() -> bool:
     """Whether the bf16-only flow trainers (DiT, MiniMax-H3; no fp16 path) may run on this GPU. ROCm targets
     without native bf16 (RDNA2-and-older / Vega) still run bf16 through fp32 emulation, slowly, so they stay
-    admitted as before the arch gate; only pre-Ampere NVIDIA is refused. Never raises."""
+    admitted as before the arch gate; only pre-Ampere NVIDIA and ``UNSLOTH_STUDIO_ROCM_BF16=0`` are refused. Never raises."""
     if native_bf16_supported():
         return True
     try:
         import torch
+        from core.inference.rocm_bf16 import rocm_bf16_forced_off
+
+        if rocm_bf16_forced_off():
+            return False
         return bool(
             torch.cuda.is_available() and torch_is_rocm() and torch.cuda.is_bf16_supported()
         )

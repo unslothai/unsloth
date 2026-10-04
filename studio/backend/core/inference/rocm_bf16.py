@@ -21,6 +21,18 @@ ROCM_BF16_ENV = "UNSLOTH_STUDIO_ROCM_BF16"
 _NO_NATIVE_BF16_ARCH = re.compile(r"^gfx(?:[6-8][0-9a-f]{2}|90[0-79c]|10[0-3][0-9a-f])$")
 
 
+def is_rocm_torch(torch: Any) -> bool:
+    """ROCm build, incl. AMD SDK / Radeon wheels that leave ``torch.version.hip`` unset (tag in ``__version__``)."""
+    return bool(
+        getattr(getattr(torch, "version", None), "hip", None)
+        or "rocm" in str(getattr(torch, "__version__", "") or "").lower()
+    )
+
+
+def rocm_bf16_forced_off() -> bool:
+    return os.environ.get(ROCM_BF16_ENV, "").strip().lower() in ("0", "false", "no", "off")
+
+
 def normalize_gfx_arch(arch: Any) -> str:
     """``gfx906:sramecc+:xnack-`` -> ``gfx906``; anything unreadable -> ""."""
     try:
@@ -50,9 +62,9 @@ def _device_gfx_arch(torch: Any, ordinal: Optional[int]) -> str:
 
 def rocm_bf16_supported(torch: Any, ordinal: Optional[int] = None) -> bool:
     """Native bf16 on the ROCm card ``ordinal`` (current device when None); HIP builds only. Raises what torch raises."""
-    override = os.environ.get(ROCM_BF16_ENV, "").strip().lower()
-    if override in ("0", "false", "no", "off"):
+    if rocm_bf16_forced_off():
         return False
+    override = os.environ.get(ROCM_BF16_ENV, "").strip().lower()
     if override not in ("1", "true", "yes", "on") and gfx_arch_lacks_native_bf16(
         _device_gfx_arch(torch, ordinal)
     ):

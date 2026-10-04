@@ -185,3 +185,21 @@ def test_real_rocm_device_arch_is_read():
     assert arch.startswith("gfx"), arch
     assert rocm_bf16_supported(torch, 0) is (not gfx_arch_lacks_native_bf16(arch))
     print(f"ROCM_ARCH {arch} bf16={rocm_bf16_supported(torch, 0)}")
+
+
+@pytest.mark.parametrize("arch,expected", [("gfx1030", FP16), ("gfx906", FP16), ("gfx1151", BF16)])
+def test_rocm_wheel_without_version_hip(monkeypatch, arch, expected):
+    # AMD SDK / Radeon wheels leave torch.version.hip unset; the rocm tag is in __version__ and the capability is gfx.
+    torch = _fake_torch(hip = None, arch = arch, capability = (10, 3))
+    torch.__version__ = "2.9.0+rocmsdk20251116"
+    _install(monkeypatch, torch, is_rocm = True)
+    assert na.NativeAudioBackend._dtype(types.SimpleNamespace(device = "cuda")) == expected
+    assert tc.native_bf16_supported() is (expected == BF16)
+
+
+def test_flow_trainers_honor_forced_fp16(monkeypatch):
+    torch = _fake_torch(hip = "6.4", arch = "gfx1030")
+    _install(monkeypatch, torch, is_rocm = True)
+    monkeypatch.setenv("UNSLOTH_STUDIO_ROCM_BF16", "0")
+    assert tc.flow_bf16_trainable() is False
+    assert tc.bf16_unsupported_reason("minimax-h3") is not None
