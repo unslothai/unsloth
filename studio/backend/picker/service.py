@@ -7,14 +7,23 @@ import json
 import logging
 import os
 import re
+from contextlib import nullcontext
 from pathlib import Path
 from typing import Optional
 
+from hub.utils.hf_tokens import (
+    cache_reads_authorized,
+    cached_read_refused,
+    recording_a_request_token_fetch,
+)
 from hub.services.models.folder_browser import (
     _build_browse_allowlist,
     _is_path_inside_allowlist,
 )
-from hub.utils.gguf import extract_quant_label, iter_snapshots_preferring_whole
+from hub.utils.gguf import (
+    extract_quant_label,
+    iter_snapshots_preferring_whole,
+)
 from utils.models.gguf_metadata import read_gguf_chat_template
 from utils.models.model_config import (
     _extract_quant_label,
@@ -23,6 +32,7 @@ from utils.models.model_config import (
     _is_mtp_drafter,
 )
 from utils.hf_cache_settings import active_hf_hub_cache
+from utils.utils import hf_env_offline
 from utils.paths.path_utils import (
     is_local_path,
     normalize_path,
@@ -30,6 +40,7 @@ from utils.paths.path_utils import (
 )
 
 from .schemas import MAX_CHAT_TEMPLATE_BYTES, ValidateChatTemplateResponse
+from utils.paths.path_utils import is_appledouble_metadata
 
 logger = logging.getLogger(__name__)
 
@@ -232,6 +243,8 @@ def _iter_ggufs(dir_path: Path) -> list[Path]:
             if not name.lower().endswith(".gguf") or _is_mmproj(name):
                 continue
             path = Path(current) / name
+            if is_appledouble_metadata(path):
+                continue
             try:
                 rel = path.relative_to(dir_path).as_posix()
             except ValueError:
@@ -244,6 +257,12 @@ def _iter_ggufs(dir_path: Path) -> list[Path]:
 
 
 def _variant_matches(relative_path: str, needle: str) -> bool:
+    from hub.utils.gguf import gguf_variant_key
+
+    # The variant's own key first: in a repo holding several checkpoints at one quant
+    # the bare label names every one of them, so it cannot pick between them.
+    if gguf_variant_key(relative_path).lower() == needle:
+        return True
     quant = _extract_quant_label(relative_path).lower()
     if quant == needle:
         return True
@@ -276,13 +295,22 @@ def _find_gguf_in_dir(dir_path: Path, gguf_variant: Optional[str]) -> Optional[P
         return None
     needle = (gguf_variant or "").strip().lower()
     if needle:
-        for path in ggufs:
+        from hub.utils.gguf import gguf_variant_key
+
+        def _relative(path: Path) -> str:
             try:
-                relative = path.relative_to(dir_path).as_posix()
+                return path.relative_to(dir_path).as_posix()
             except ValueError:
-                relative = path.name
-            if _variant_matches(relative, needle):
-                return path
+                return path.name
+
+        # Files this variant owns outright before ones its label merely also names.
+        for owned in (True, False):
+            for path in ggufs:
+                relative = _relative(path)
+                if owned != (gguf_variant_key(relative).lower() == needle):
+                    continue
+                if _variant_matches(relative, needle):
+                    return path
         return None
     candidates = [path for path in ggufs if not _is_nonfirst_gguf_split(path)] or ggufs
     try:
@@ -342,49 +370,118 @@ def read_default_chat_template(
 
     resolved = resolve_cached_repo_id_case(name)
 
+    # The walk returns a private repo's raw template without asking the Hub, so a denied
+    # caller goes to the Hub and is refused there. A UI session keeps the cache.
+    # Walk first, authorize the answer: the walk is local, and with nothing cached there is
+    # no disk-backed answer to protect, so probing would spend up to the probe timeout to
+    # decide a question that no longer has a subject. Same order as the per-file gate below.
+    cached_template = None
     try:
         # Resolve within each cached revision, newest first. A revision's sidecar
         # supersedes its own embedded GGUF copy, but must not override a newer
         # revision, so precedence stays per-snapshot rather than global.
         for snapshot in iter_snapshots_preferring_whole(resolved, gguf_variant):
-            template = _chat_template_from_dir(snapshot, gguf_variant)
-            if template:
-                return template
+            cached_template = _chat_template_from_dir(snapshot, gguf_variant)
+            if cached_template:
+                break
     except Exception as exc:
         logger.debug("Could not read cached chat template for %s: %s", resolved, exc)
+        cached_template = None
+    if cached_template and cache_reads_authorized(hf_token, repo_id = resolved):
+        return cached_template
+
+    if hf_env_offline() and not cache_reads_authorized(hf_token, repo_id = resolved):
+        # Offline, hf_hub_download serves the cached copy without checking the credential,
+        # so the fallback would hand back the template the walk just refused. The route
+        # forces offline whenever the Hub looks unreachable.
+        return None
 
     try:
         from huggingface_hub import HfApi, hf_hub_download
 
-        _api = HfApi()
+        _api = HfApi(token = hf_token)
 
-        def _remote_exceeds_cap(rel: str) -> bool:
-            # Best-effort: skip the download when the remote's advertised size
-            # exceeds the cap, so a maliciously large sidecar is never fetched.
+        def _this_file_is_cached(rel: str) -> bool:
+            """THIS file at this revision, not merely a directory for the repo.
+
+            What the download could serve from disk is the one candidate template, so a
+            snapshot holding only weights can answer nothing and refusing it costs an
+            authorized caller a template the Hub would have given it. Fails closed.
+            """
+            try:
+                from huggingface_hub import try_to_load_from_cache
+
+                # The same cache the download below names: without it this asks the library
+                # default while the read it guards happens in the operator's chosen root, so
+                # a template living only there reported a miss and opened the gate.
+                return isinstance(
+                    try_to_load_from_cache(
+                        repo_id = resolved, filename = rel, cache_dir = active_hf_hub_cache()
+                    ),
+                    str,
+                )
+            except Exception:
+                return True
+
+        def _remote_worth_downloading(rel: str) -> bool:
+            # hf_hub_download returns the cached pointer for ANY failed head call, a 403 as
+            # much as an unreachable Hub, before it re-raises. So a successful metadata
+            # lookup is no more proof than the offline gate was: a gated repo can publish
+            # file metadata publicly. Asked once, ahead of both.
+            if cached_read_refused(
+                hf_token,
+                repo_id = resolved,
+                is_cached = lambda: _this_file_is_cached(rel),
+            ):
+                return False
+            # Reuse the size lookup to skip absent or oversized files.
             try:
                 infos = _api.get_paths_info(resolved, [rel], repo_type = "model", token = hf_token)
             except Exception:
+                # Nothing cached to serve: let the Hub enforce its own access.
+                return True
+            matched = [info for info in infos if getattr(info, "path", None) == rel]
+            if not matched:
                 return False
-            for info in infos:
-                size = getattr(info, "size", None)
-                if (
-                    getattr(info, "path", None) == rel
-                    and isinstance(size, int)
-                    and size > MAX_TEMPLATE_METADATA_BYTES
-                ):
-                    return True
-            return False
+            size = getattr(matched[0], "size", None)
+            return not (isinstance(size, int) and size > MAX_TEMPLATE_METADATA_BYTES)
+
+        def _this_file_was_already_here(rel: str) -> bool:
+            """``_this_file_is_cached`` asks the same question and answers True when it cannot
+            tell, which is right for a gate and wrong here: not knowing must RECORD, since an
+            unrecorded credentialed fetch is what hands a private repo to a tokenless caller."""
+            try:
+                from huggingface_hub import try_to_load_from_cache
+                return isinstance(
+                    try_to_load_from_cache(
+                        repo_id = resolved, filename = rel, cache_dir = active_hf_hub_cache()
+                    ),
+                    str,
+                )
+            except Exception:  # noqa: BLE001 -- cannot tell, so record
+                return False
 
         def _download_text(rel: str) -> Optional[str]:
-            if _remote_exceeds_cap(rel):
+            if not _remote_worth_downloading(rel):
                 return None
             try:
-                path = hf_hub_download(
-                    resolved,
-                    rel,
-                    token = hf_token,
-                    cache_dir = active_hf_hub_cache(),
+                # Lands files in the hub cache under what may be a one-off token, but only when
+                # it really fetches: hf_hub_download returns a cached file without asking the
+                # Hub, and recording that withholds a repo the cache may have held anonymously.
+                # Around the call, not before: a half-dead download has still written, while a
+                # 404 leaves nothing and the context manager takes that record back.
+                recording = (
+                    recording_a_request_token_fetch(hf_token, resolved, "model")
+                    if not _this_file_was_already_here(rel)
+                    else nullcontext()
                 )
+                with recording:
+                    path = hf_hub_download(
+                        resolved,
+                        rel,
+                        token = hf_token,
+                        cache_dir = active_hf_hub_cache(),
+                    )
                 return _read_bounded_text(Path(path), MAX_TEMPLATE_METADATA_BYTES)
             except Exception:
                 return None

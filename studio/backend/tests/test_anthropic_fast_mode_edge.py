@@ -113,31 +113,43 @@ def _capture(
 
 
 # ──────────────────────────── dated snapshot prefix ────────────────────────────
-def test_fast_mode_attaches_on_dated_opus_4_7_snapshot(monkeypatch):
-    """Dated snapshot ``claude-opus-4-7-2026-02-01`` must match the prefix."""
-    cap, _ = _capture(monkeypatch, fast_mode = True, model = "claude-opus-4-7-2026-02-01")
+def test_fast_mode_attaches_on_dated_opus_4_8_snapshot(monkeypatch):
+    """Dated snapshot ``claude-opus-4-8-2026-02-01`` must match the prefix."""
+    cap, _ = _capture(monkeypatch, fast_mode = True, model = "claude-opus-4-8-2026-02-01")
     assert cap["body"].get("speed") == "fast", cap["body"]
     assert "fast-mode-2026-02-01" in cap["headers"].get("anthropic-beta", "")
 
 
-def test_fast_mode_attaches_on_dated_opus_4_6_snapshot(monkeypatch):
+def test_fast_mode_dropped_on_dated_opus_4_6_snapshot(monkeypatch):
+    """4.6 accepts `speed` but runs at standard speed, so we never send it."""
     cap, _ = _capture(monkeypatch, fast_mode = True, model = "claude-opus-4-6-2026-02-01")
-    assert cap["body"].get("speed") == "fast", cap["body"]
-    assert "fast-mode-2026-02-01" in cap["headers"].get("anthropic-beta", "")
+    assert "speed" not in cap["body"], cap["body"]
+    assert "fast-mode-2026-02-01" not in cap["headers"].get("anthropic-beta", "")
 
 
 # ──────────────────────────── strict opt-in semantics ────────────────────────────
-def test_fast_mode_does_not_auto_enable_on_future_opus_4_8(monkeypatch):
-    """Future ``claude-opus-4-8`` must not auto-enable; per-family opt-in."""
+def test_fast_mode_attaches_on_opus_4_8(monkeypatch):
     cap, _ = _capture(monkeypatch, fast_mode = True, model = "claude-opus-4-8")
-    assert "speed" not in cap["body"], cap["body"]
-    assert "fast-mode-2026-02-01" not in cap["headers"].get("anthropic-beta", "")
+    assert cap["body"].get("speed") == "fast", cap["body"]
+    assert "fast-mode-2026-02-01" in cap["headers"].get("anthropic-beta", "")
 
 
-def test_fast_mode_does_not_auto_enable_on_future_opus_5(monkeypatch):
+def test_fast_mode_attaches_on_opus_5(monkeypatch):
     cap, _ = _capture(monkeypatch, fast_mode = True, model = "claude-opus-5")
+    assert cap["body"].get("speed") == "fast", cap["body"]
+    assert "fast-mode-2026-02-01" in cap["headers"].get("anthropic-beta", "")
+
+
+def test_fast_mode_dropped_on_opus_4_7(monkeypatch):
+    """4.7 dropped fast mode upstream; sending `speed` 400s."""
+    cap, _ = _capture(monkeypatch, fast_mode = True, model = "claude-opus-4-7")
     assert "speed" not in cap["body"], cap["body"]
     assert "fast-mode-2026-02-01" not in cap["headers"].get("anthropic-beta", "")
+
+
+def test_fast_mode_dropped_on_sonnet_5(monkeypatch):
+    cap, _ = _capture(monkeypatch, fast_mode = True, model = "claude-sonnet-5")
+    assert "speed" not in cap["body"], cap["body"]
 
 
 def test_fast_mode_does_not_auto_enable_on_sonnet_dated_snapshot(monkeypatch):
@@ -158,7 +170,7 @@ def test_fast_mode_merges_with_code_execution_beta(monkeypatch):
     cap, _ = _capture(
         monkeypatch,
         fast_mode = True,
-        model = "claude-opus-4-7",
+        model = "claude-opus-4-8",
         enabled_tools = ["code_execution"],
     )
     parts = _beta_parts(cap["headers"])
@@ -173,7 +185,7 @@ def test_fast_mode_merges_with_compaction_beta(monkeypatch):
     cap, _ = _capture(
         monkeypatch,
         fast_mode = True,
-        model = "claude-opus-4-7",
+        model = "claude-opus-4-8",
         compaction_threshold = 100_000,
     )
     parts = _beta_parts(cap["headers"])
@@ -186,7 +198,7 @@ def test_fast_mode_merges_with_code_execution_and_compaction(monkeypatch):
     cap, _ = _capture(
         monkeypatch,
         fast_mode = True,
-        model = "claude-opus-4-7",
+        model = "claude-opus-4-8",
         enabled_tools = ["code_execution"],
         compaction_threshold = 100_000,
     )
@@ -200,7 +212,7 @@ def test_fast_mode_merges_with_code_execution_and_compaction(monkeypatch):
 
 def test_fast_mode_beta_value_is_pinned(monkeypatch):
     """Pin the exact beta tag ``fast-mode-2026-02-01`` from the docs."""
-    cap, _ = _capture(monkeypatch, fast_mode = True, model = "claude-opus-4-7")
+    cap, _ = _capture(monkeypatch, fast_mode = True, model = "claude-opus-4-8")
     parts = _beta_parts(cap["headers"])
     assert "fast-mode-2026-02-01" in parts, parts
     # Reject obvious typos.
@@ -352,14 +364,14 @@ def test_fast_mode_prefix_tuple_matches_capability_doc(monkeypatch):
     https://platform.claude.com/docs/en/build-with-claude/fast-mode."""
     from core.inference.external_provider import _ANTHROPIC_FAST_MODE_PREFIXES
     assert set(_ANTHROPIC_FAST_MODE_PREFIXES) == {
-        "claude-opus-4-7",
-        "claude-opus-4-6",
+        "claude-opus-5",
+        "claude-opus-4-8",
     }, _ANTHROPIC_FAST_MODE_PREFIXES
 
 
 def test_fast_mode_speed_field_value_is_literal_fast(monkeypatch):
     """Pin the wire value to the literal string ``"fast"``."""
-    cap, _ = _capture(monkeypatch, fast_mode = True, model = "claude-opus-4-7")
+    cap, _ = _capture(monkeypatch, fast_mode = True, model = "claude-opus-4-8")
     assert cap["body"]["speed"] == "fast", cap["body"]
 
 

@@ -3,14 +3,116 @@
 
 "use client";
 
+import {
+  Alert,
+  AlertAction,
+  AlertDescription,
+  AlertTitle,
+} from "@/components/ui/alert";
+import { Button } from "@/components/ui/button";
+// eslint-disable-next-line no-restricted-imports -- the settings barrel imports this feature back
+import { useSettingsDialogStore } from "@/features/settings/stores/settings-dialog-store";
+import { useLocale, useT } from "@/i18n";
 import { apiUrl } from "@/lib/api-base";
 import { cn } from "@/lib/utils";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  Alert02Icon,
+  Cancel01Icon,
+  MultiplicationSignCircleIcon,
+} from "@hugeicons/core-free-icons";
+import { HugeiconsIcon } from "@hugeicons/react";
+import { Trash2Icon, XIcon } from "lucide-react";
+import {
+  type RefObject,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { useChatRuntimeStore } from "../stores/chat-runtime-store";
+import {
+  CANVAS_CONSOLE_ENTRIES_TRACKED,
+  type CanvasConsoleEntry,
+  type CanvasConsoleState,
+  appendCanvasEntry,
+  buildCanvasFixPrompt,
+  canvasErrors,
+  canvasStack,
+  emptyCanvasConsole,
+  parseCanvasReport,
+} from "./canvas-console";
 import { hashArtifactCode } from "./types";
 
 const HTML_FRAME_DEFAULT_HEIGHT = 400;
 const HTML_FRAME_MAX_HEIGHT = 900;
+const BLOCKED_HOSTS_SHOWN = 3;
+
+// Canvas notices look like the app's toasts: same surface, shadow, type and pill actions.
+// The wrapper spans the canvas, so only the notice itself takes clicks.
+const NOTICE_WRAP = "pointer-events-none absolute inset-x-0 top-0 flex justify-center p-2";
+const NOTICE =
+  "pointer-events-auto max-w-[calc(460px*var(--ui-space-scale,1))] gap-y-0.5 rounded-[calc(var(--radius)+6px)] border-transparent bg-popover py-3 ps-4.5 text-ui-13 leading-normal text-popover-foreground shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] has-data-[slot=alert-action]:pe-12 dark:bg-card dark:shadow-[0_2px_8px_-2px_var(--background)]";
+const NOTICE_BODY =
+  "text-ui-13 leading-[1.4] text-muted-foreground [&_p:not(:last-child)]:mb-2.5";
+const NOTICE_BUTTON = "h-6 rounded-full px-2 text-ui-12 font-medium";
+const NOTICE_PRIMARY = `${NOTICE_BUTTON} bg-foreground text-background hover:bg-foreground hover:opacity-90`;
+const NOTICE_SECONDARY = `${NOTICE_BUTTON} border-transparent bg-[color-mix(in_oklab,var(--foreground)_calc(8%*var(--contrast-wash-gain,1)),transparent)] text-foreground hover:bg-[color-mix(in_oklab,var(--foreground)_calc(12%*var(--contrast-wash-gain,1)),transparent)] dark:bg-[color-mix(in_oklab,var(--foreground)_calc(8%*var(--contrast-wash-gain,1)),transparent)] dark:hover:bg-[color-mix(in_oklab,var(--foreground)_calc(12%*var(--contrast-wash-gain,1)),transparent)]`;
+const NOTICE_CLOSE =
+  "size-5 rounded-full bg-popover text-popover-foreground hover:bg-muted hover:text-popover-foreground dark:bg-card dark:hover:bg-muted";
+// Entries are per URL, not per host, so a page pulling a whole CDN directory counts each file.
+// Still far above what a real one trips.
+const BLOCKED_URIS_TRACKED = 100;
+// A report carries the full URL, so this is generous next to a real one, and it bounds both
+// the stored string and the host derived from it.
+const BLOCKED_URI_MAX_CHARS = 2048;
+
+// The only directives the network CSP leaves at 'none'. Kept in step by
+// test_the_grant_widens_everything_but_the_locked_directives.
+const GRANT_CANNOT_FIX = new Set(["object-src", "base-uri", "form-action"]);
+
+// A hostless blockedURI is a bare scheme, and the permissive policy widens every one but this:
+// its worker-src is `http: https: blob:` with no data:, so a data: Worker stays blocked
+// after the grant. Kept in step by test_the_permissive_policy_widens_every_hostless_scheme_but_one.
+const GRANT_CANNOT_FIX_SCHEME: Record<string, string> = { "worker-src": "data" };
+
+type BlockedState = { code: string; uris: string[]; hosts: string[] };
+
+const NOTHING_BLOCKED: BlockedState = { code: "", uris: [], hosts: [] };
+const NO_OUTPUT: CanvasConsoleState = emptyCanvasConsole("");
+
+// Reports from before a swap belong to the old canvas, so start over rather than append. The
+// cap is checked BEFORE the duplicate scan, so past it a canvas posting unique URIs cannot
+// make the parent rescan every stored string; returning `current` also lets React bail out.
+function appendBlocked(
+  current: BlockedState,
+  code: string,
+  uri: string,
+  host: string,
+): BlockedState {
+  const mine = current.code === code ? current : { code, uris: [], hosts: [] };
+  if (mine.uris.length >= BLOCKED_URIS_TRACKED || mine.uris.includes(uri)) {
+    return mine === current ? current : mine;
+  }
+  return {
+    code,
+    uris: [...mine.uris, uri],
+    hosts: mine.hosts.includes(host) ? mine.hosts : [...mine.hosts, host],
+  };
+}
+
+// A non-HTTP(S) violation reports a bare token ("eval", "blob"), which the permissive CSP widens
+// too. Dropping those left the canvas blank with no prompt, so label them with the token itself.
+const BLOCKED_KEYWORD = /^[a-z-]+$/;
+
+function blockedHost(uri: string): string | null {
+  if (BLOCKED_KEYWORD.test(uri)) return uri;
+  try {
+    return new URL(uri).host || null;
+  } catch {
+    return null;
+  }
+}
 
 export type ArtifactViewMode = "preview" | "source";
 export const ARTIFACT_VIEW_MODES: readonly ArtifactViewMode[] = [
@@ -27,37 +129,146 @@ export function buildArtifactSrcDoc(code: string): string {
   return `${code}\n${resizeScript}`;
 }
 
-// Preview iframes intentionally omit allow-downloads: generated canvases can
-// offer their own UI, but downloads must go through Unsloth's explicit
-// copy/download controls outside the no-same-origin sandbox.
+// Preview iframes intentionally omit allow-downloads: generated canvases can offer their own
+// UI, but downloads must go through Unsloth's explicit controls outside the sandbox.
 export function ArtifactHtmlFrame({
   code,
   title = "HTML canvas preview",
   className,
   fill = false,
-  // Tool-rendered canvases only; default off so fences never get network.
-  allowNetworkAccess = false,
+  actionFocusTargetRef,
+  consoleOpen = false,
+  reloadNonce = 0,
+  onConsoleOpenChange,
+  onOutputCountChange,
+  onFixWithModel,
 }: {
   code: string;
   title?: string;
   className?: string;
   fill?: boolean;
-  allowNetworkAccess?: boolean;
+  actionFocusTargetRef?: RefObject<HTMLElement | null>;
+  consoleOpen?: boolean;
+  reloadNonce?: number;
+  onConsoleOpenChange?: (open: boolean) => void;
+  onOutputCountChange?: (counts: { errors: number; total: number }) => void;
+  // Only surfaces that can route the text to a composer pass this; without it there is no Fix button.
+  onFixWithModel?: (prompt: string) => void;
 }) {
+  const t = useT();
+  const locale = useLocale();
   const iframeRef = useRef<HTMLIFrameElement>(null);
+  // Every canvas honors this, fence or tool. Off by default; the standing half of the gate,
+  // alongside the per-canvas grant below.
   const networkAccessEnabled = useChatRuntimeStore(
     (state) => state.allowArtifactNetworkAccess,
   );
   const [height, setHeight] = useState(HTML_FRAME_DEFAULT_HEIGHT);
+  // Carries the code it was reported for, so a canvas swapped in place cannot inherit the
+  // previous one's banner. Clearing it from the [src] effect ran a render too late, and that
+  // stale render is the one carrying the button.
+  const [blocked, setBlocked] = useState<BlockedState>({
+    code,
+    uris: [],
+    hosts: [],
+  });
+  const blockedForCanvas = blocked.code === code ? blocked : NOTHING_BLOCKED;
+  // Granted by the banner button alone, and only for the code on screen when it was clicked;
+  // nothing the canvas sends may set it, or a blocked page could talk its way onto the
+  // network. Compared during render rather than reset in an effect, which runs after the DOM
+  // is updated and would let the first render carrying new code reuse allow_network=1.
+  const [grantedCode, setGrantedCode] = useState<string | null>(null);
+  const grantedForCanvas = grantedCode === code;
+  const networkAllowed = networkAccessEnabled || grantedForCanvas;
+  const [dismissedCode, setDismissedCode] = useState<string | null>(null);
+  const dismissedForCanvas = dismissedCode === code;
+  const [output, setOutput] = useState<CanvasConsoleState>(() =>
+    emptyCanvasConsole(code),
+  );
+  const outputForCanvas = output.code === code ? output : NO_OUTPUT;
+  const errors = useMemo(() => canvasErrors(outputForCanvas), [outputForCanvas]);
+  const [errorsDismissedCode, setErrorsDismissedCode] = useState<
+    string | null
+  >(null);
+  const pendingEntries = useRef<CanvasConsoleEntry[]>([]);
+  const pendingDropped = useRef(false);
+  const flushHandle = useRef<number | null>(null);
+  const queueEntry = useCallback(
+    (entry: CanvasConsoleEntry) => {
+      // The canvas can post here directly, past the shell's cap, and a hidden tab never flushes.
+      pendingEntries.current.push(entry);
+      if (pendingEntries.current.length > CANVAS_CONSOLE_ENTRIES_TRACKED) {
+        const oldestLog = pendingEntries.current.findIndex(
+          (queued) => queued.kind === "console",
+        );
+        pendingEntries.current.splice(oldestLog < 0 ? 0 : oldestLog, 1);
+        pendingDropped.current = true;
+      }
+      if (flushHandle.current !== null) return;
+      flushHandle.current = window.requestAnimationFrame(() => {
+        flushHandle.current = null;
+        const batch = pendingEntries.current;
+        const dropped = pendingDropped.current;
+        pendingEntries.current = [];
+        pendingDropped.current = false;
+        setOutput((current) => {
+          const next = batch.reduce(
+            (state, queued) => appendCanvasEntry(state, code, queued),
+            current,
+          );
+          return dropped ? { ...next, capped: true } : next;
+        });
+      });
+    },
+    [code],
+  );
+  useEffect(
+    () => () => {
+      if (flushHandle.current !== null) {
+        window.cancelAnimationFrame(flushHandle.current);
+      }
+    },
+    [],
+  );
+  useEffect(() => {
+    onOutputCountChange?.({
+      errors: errors.length,
+      total: outputForCanvas.entries.length,
+    });
+  }, [errors.length, outputForCanvas.entries.length, onOutputCountChange]);
+  // Batched reports passed the stamp check under the old load, so a new load drops the queue.
+  const dropPendingEntries = useCallback(() => {
+    if (flushHandle.current !== null) {
+      window.cancelAnimationFrame(flushHandle.current);
+      flushHandle.current = null;
+    }
+    pendingEntries.current = [];
+    pendingDropped.current = false;
+  }, []);
   const artifactHtml = useMemo(() => buildArtifactSrcDoc(code), [code]);
+  // Everything that reruns the document (code, reload counter, network policy) must be in this key.
+  const codeVersion = useMemo(() => hashArtifactCode(code), [code]);
+  const loadVersion = `${codeVersion}${reloadNonce > 0 ? `.${reloadNonce}` : ""}${
+    networkAllowed ? ".net" : ""
+  }`;
+  const loadedOnce = useRef(false);
+  useEffect(() => {
+    if (!loadedOnce.current) {
+      loadedOnce.current = true;
+      return;
+    }
+    dropPendingEntries();
+    setOutput(emptyCanvasConsole(code));
+    setErrorsDismissedCode(null);
+  }, [loadVersion, code, dropPendingEntries]);
   const src = useMemo(() => {
-    const query = new URLSearchParams({ v: hashArtifactCode(code) });
+    const query = new URLSearchParams({ v: loadVersion });
     // Never put the auth token in the URL: in-frame code can read location.href.
-    if (allowNetworkAccess && networkAccessEnabled) {
+    if (networkAllowed) {
       query.set("allow_network", "1");
     }
     return apiUrl(`/api/inference/artifact-preview-frame?${query.toString()}`);
-  }, [allowNetworkAccess, networkAccessEnabled, code]);
+  }, [networkAllowed, loadVersion]);
   // Feed only parent-initiated loads, so a self-navigated frame can't self-upgrade.
   const pendingPostRef = useRef(false);
   useEffect(() => {
@@ -66,8 +277,8 @@ export function ArtifactHtmlFrame({
   const postArtifactHtml = useCallback(() => {
     if (!pendingPostRef.current) return;
     pendingPostRef.current = false;
-    // Sandboxed frame has an opaque origin ("null"), so a wildcard target is
-    // required; the payload only reaches this iframe's contentWindow.
+    // Sandboxed frame has an opaque origin ("null"), so a wildcard target is required; the payload
+    // only reaches this iframe's contentWindow.
     iframeRef.current?.contentWindow?.postMessage(
       { type: "unsloth:artifact-html", html: artifactHtml },
       "*",
@@ -78,6 +289,40 @@ export function ArtifactHtmlFrame({
     const handler = (event: MessageEvent) => {
       if (event.source !== iframeRef.current?.contentWindow) return;
       if (event.origin !== "null") return;
+      if (event.data?.type === "unsloth:artifact-blocked") {
+        // event.source survives the swap navigation, so without the frame's stamp a report from the
+        // outgoing canvas would be tagged with the incoming code and prompt a needless grant.
+        if (event.data.v !== loadVersion) return;
+        const uri = event.data.blockedURI;
+        // A report carries the full URL, and the canvas can post these directly rather than going
+        // through the CSP. The entry cap bounds how many are kept but not their size, so a handful
+        // could park megabytes otherwise.
+        if (typeof uri !== "string" || uri.length > BLOCKED_URI_MAX_CHARS) {
+          return;
+        }
+        // The grant cannot fix these three, and prompting anyway widens the policy for nothing, then
+        // hides the banner because the grant is on, leaving a broken canvas and no way back.
+        if (GRANT_CANNOT_FIX.has(event.data.effectiveDirective)) return;
+        // Same dead end one scheme down: the grant widens worker-src to blob: but not data:, so a
+        // data: Worker reports under both policies.
+        if (GRANT_CANNOT_FIX_SCHEME[event.data.effectiveDirective] === uri) {
+          return;
+        }
+        const host = blockedHost(uri);
+        if (!host) return;
+        setBlocked((current) => appendBlocked(current, code, uri, host));
+        return;
+      }
+      if (
+        event.data?.type === "unsloth:artifact-error" ||
+        event.data?.type === "unsloth:artifact-console"
+      ) {
+        if (event.data.v !== loadVersion) return;
+        const entry = parseCanvasReport(event.data);
+        if (!entry) return;
+        queueEntry(entry);
+        return;
+      }
       if (typeof event.data?.chatArtifactHeight !== "number") return;
       setHeight(
         Math.min(
@@ -88,18 +333,275 @@ export function ArtifactHtmlFrame({
     };
     window.addEventListener("message", handler);
     return () => window.removeEventListener("message", handler);
-  }, [postArtifactHtml]);
+    // rather than relying on postArtifactHtml changing.
+  }, [postArtifactHtml, code, loadVersion, queueEntry]);
+
+  const showBlockedBanner =
+    !networkAllowed && !dismissedForCanvas && blockedForCanvas.uris.length > 0;
+  const shownHosts = blockedForCanvas.hosts
+    .slice(0, BLOCKED_HOSTS_SHOWN)
+    .join(", ");
+  const blockedFrom =
+    blockedForCanvas.hosts.length > BLOCKED_HOSTS_SHOWN
+      ? `${shownHosts}…`
+      : shownHosts;
+  const focusAfterAction = () => {
+    (actionFocusTargetRef?.current ?? iframeRef.current)?.focus({
+      preventScroll: true,
+    });
+  };
+  const showErrorBanner = errorsDismissedCode !== code && errors.length > 0;
+  const firstError = errors[0];
+  const errorTitle =
+    errors.length === 1
+      ? t("settings.chat.artifacts.errorTitle")
+      : t("settings.chat.artifacts.errorTitlePlural", {
+          count: errors.length,
+        });
+  const locationLabel = (entry: CanvasConsoleEntry) => {
+    if (entry.line <= 0) return "";
+    return entry.column > 0
+      ? t("settings.chat.artifacts.errorLocation", {
+          line: entry.line,
+          column: entry.column,
+        })
+      : t("settings.chat.artifacts.errorLine", { line: entry.line });
+  };
 
   return (
-    <iframe
-      ref={iframeRef}
-      src={src}
-      sandbox="allow-scripts"
-      referrerPolicy="no-referrer"
-      onLoad={postArtifactHtml}
-      className={cn("block w-full border-0 bg-background", className)}
-      style={{ height: fill ? "100%" : height }}
-      title={title}
-    />
+    <div
+      className={cn("relative", fill ? "h-full" : undefined)}
+    >
+      <iframe
+        ref={iframeRef}
+        src={src}
+        sandbox="allow-scripts"
+        referrerPolicy="no-referrer"
+        onLoad={postArtifactHtml}
+        className={cn(
+          "block w-full border-0 bg-background outline-none focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-ring",
+          className,
+        )}
+        style={{ height: fill ? "100%" : height }}
+        title={title}
+      />
+      {showBlockedBanner ? (
+        <div className={NOTICE_WRAP}>
+          <Alert
+            role="group"
+            dir={locale === "ar" ? "rtl" : "ltr"}
+            aria-label={t("settings.chat.artifacts.blockedTitle")}
+            className={NOTICE}
+          >
+            <HugeiconsIcon icon={Alert02Icon} strokeWidth={2} className="size-4" />
+            <AlertAction className="top-2 end-2">
+              <Button
+                size="icon-xs"
+                variant="ghost"
+                className={NOTICE_CLOSE}
+                aria-label={t("settings.chat.artifacts.blockedDismiss")}
+                onClick={() => {
+                  focusAfterAction();
+                  setDismissedCode(code);
+                }}
+              >
+                <HugeiconsIcon icon={Cancel01Icon} strokeWidth={2.25} className="size-3" />
+              </Button>
+            </AlertAction>
+            <AlertTitle role="alert">
+              {t("settings.chat.artifacts.blockedTitle")}
+              <span className="sr-only">
+                {" "}
+                {t("settings.chat.artifacts.blockedHint", {
+                  setting: t("settings.chat.artifacts.allowNetworkAccess"),
+                })}
+              </span>
+            </AlertTitle>
+            <AlertDescription className={NOTICE_BODY}>
+              <p>
+                {t(
+                  blockedForCanvas.uris.length === 1
+                    ? "settings.chat.artifacts.blockedBanner"
+                    : "settings.chat.artifacts.blockedBannerPlural",
+                  { count: blockedForCanvas.uris.length, hosts: blockedFrom },
+                )}{" "}
+                {t("settings.chat.artifacts.blockedHint", {
+                  setting: t("settings.chat.artifacts.allowNetworkAccess"),
+                })}
+              </p>
+              <div className="flex flex-wrap gap-2">
+                <Button
+                  size="xs"
+                  className={NOTICE_PRIMARY}
+                  onClick={() => {
+                    focusAfterAction();
+                    setGrantedCode(code);
+                  }}
+                >
+                  {t("settings.chat.artifacts.blockedBannerAction")}
+                </Button>
+                <Button
+                  size="xs"
+                  variant="outline"
+                  className={NOTICE_SECONDARY}
+                  onClick={() => {
+                    useSettingsDialogStore.getState().openDialog("chat", {
+                      scrollTarget: "chat-canvas-network",
+                      focusFallback:
+                        actionFocusTargetRef?.current ?? iframeRef.current,
+                    });
+                  }}
+                >
+                  {t("settings.chat.artifacts.blockedSettingsAction")}
+                </Button>
+              </div>
+            </AlertDescription>
+          </Alert>
+        </div>
+      ) : null}
+      {showErrorBanner && firstError && !showBlockedBanner ? (
+        <div className={NOTICE_WRAP}>
+          <Alert
+            role="group"
+            dir={locale === "ar" ? "rtl" : "ltr"}
+            aria-label={errorTitle}
+            className={NOTICE}
+          >
+            <HugeiconsIcon icon={MultiplicationSignCircleIcon} strokeWidth={2} className="size-4" />
+            <AlertAction className="top-2 end-2">
+              <Button
+                size="icon-xs"
+                variant="ghost"
+                className={NOTICE_CLOSE}
+                aria-label={t("settings.chat.artifacts.blockedDismiss")}
+                onClick={() => {
+                  focusAfterAction();
+                  setErrorsDismissedCode(code);
+                }}
+              >
+                <HugeiconsIcon icon={Cancel01Icon} strokeWidth={2.25} className="size-3" />
+              </Button>
+            </AlertAction>
+            <AlertTitle role="alert">{errorTitle}</AlertTitle>
+            <AlertDescription className={NOTICE_BODY}>
+              <p
+                className="line-clamp-2 break-words font-mono text-ui-11p5"
+                title={firstError.text}
+              >
+                {firstError.text}
+                {locationLabel(firstError) ? ` (${locationLabel(firstError)})` : ""}
+              </p>
+              <div className="flex flex-wrap items-center gap-2">
+                {onFixWithModel ? (
+                  <Button
+                    size="xs"
+                    className={NOTICE_PRIMARY}
+                    onClick={() => onFixWithModel(buildCanvasFixPrompt(title, errors))}
+                    title={t("settings.chat.artifacts.errorHint")}
+                  >
+                    {t("settings.chat.artifacts.errorBannerAction")}
+                  </Button>
+                ) : null}
+                {onConsoleOpenChange ? (
+                  <Button
+                    size="xs"
+                    variant="outline"
+                    className={NOTICE_SECONDARY}
+                    onClick={() => onConsoleOpenChange(!consoleOpen)}
+                  >
+                    {t(
+                      consoleOpen
+                        ? "settings.chat.artifacts.errorConsoleHideAction"
+                        : "settings.chat.artifacts.errorConsoleAction",
+                    )}
+                  </Button>
+                ) : null}
+              </div>
+            </AlertDescription>
+          </Alert>
+        </div>
+      ) : null}
+      {consoleOpen ? (
+        <section
+          aria-label={t("settings.chat.artifacts.consoleTitle")}
+          dir={locale === "ar" ? "rtl" : "ltr"}
+          className="absolute inset-x-0 bottom-0 flex h-2/5 min-h-32 flex-col border-t border-border bg-background/95 text-xs backdrop-blur"
+        >
+          <div
+            className="flex shrink-0 items-center gap-2 border-b border-border/70 px-2.5 py-1.5"
+          >
+            <span className="text-xs text-muted-foreground">
+              {t(
+                outputForCanvas.entries.length === 1
+                  ? "settings.chat.artifacts.consoleMessageCount"
+                  : "settings.chat.artifacts.consoleMessageCountPlural",
+                { count: outputForCanvas.entries.length },
+              )}
+            </span>
+            <span className="flex-1" />
+            <Button
+              size="icon-sm"
+              variant="ghost"
+              aria-label={t("settings.chat.artifacts.consoleClear")}
+              onClick={() => {
+                dropPendingEntries();
+                setOutput(emptyCanvasConsole(code));
+              }}
+            >
+              <Trash2Icon />
+            </Button>
+            <Button
+              size="icon-sm"
+              variant="ghost"
+              aria-label={t("settings.chat.artifacts.consoleClose")}
+              onClick={() => onConsoleOpenChange?.(false)}
+            >
+              <XIcon />
+            </Button>
+          </div>
+          <ol className="min-h-0 flex-1 overflow-auto pb-2 font-mono">
+            {outputForCanvas.capped ? (
+              <li className="border-b border-border/40 px-2.5 py-2 text-muted-foreground">
+                {t("settings.chat.artifacts.consoleCapped", {
+                  count: CANVAS_CONSOLE_ENTRIES_TRACKED,
+                })}
+              </li>
+            ) : null}
+            {outputForCanvas.entries.length === 0 ? (
+              <li className="px-2.5 py-2 text-muted-foreground">
+                {t("settings.chat.artifacts.consoleEmpty")}
+              </li>
+            ) : (
+              outputForCanvas.entries.map((entry, index) => (
+                <li
+                  key={index}
+                  className={cn(
+                    "border-b border-border/40 px-2.5 py-2 leading-relaxed",
+                    entry.level === "error" && "text-destructive",
+                    entry.level === "warn" &&
+                      "text-amber-600 dark:text-amber-400",
+                  )}
+                >
+                  <p className="whitespace-pre-wrap break-words">
+                    {entry.kind === "console" && entry.level !== "log" ? (
+                      <span className="mr-1.5 uppercase text-muted-foreground">
+                        {entry.level}
+                      </span>
+                    ) : null}
+                    {entry.text}
+                    {locationLabel(entry) ? ` (${locationLabel(entry)})` : ""}
+                  </p>
+                  {canvasStack(entry) ? (
+                    <pre className="mt-2 overflow-x-auto border-l border-border pl-2.5 leading-relaxed text-muted-foreground">
+                      {canvasStack(entry)}
+                    </pre>
+                  ) : null}
+                </li>
+              ))
+            )}
+          </ol>
+        </section>
+      ) : null}
+    </div>
   );
 }

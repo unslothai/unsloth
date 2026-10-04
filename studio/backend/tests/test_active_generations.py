@@ -7,15 +7,18 @@ A load/unload has to know which streaming chats it would interrupt. Everything
 under test is a dict + threading.Lock, so this passes on every platform.
 """
 
+import multiprocessing as _mp
 import os
 import sys
 import threading
+import uuid
 
 import pytest
 
 _backend = os.path.join(os.path.dirname(__file__), "..")
 sys.path.insert(0, _backend)
 
+from core.inference.worker import _SLOTS, StopLedger
 from state import active_generations
 
 
@@ -71,7 +74,9 @@ def test_snapshot_is_json_safe_and_ordered_by_start():
     assert [e["thread_id"] for e in snap] == ["first", "second"]
     # The threading.Event must not leak into an HTTP response body.
     assert all("event" not in e for e in snap)
-    assert {"handle", "thread_id", "model", "kind", "started_at"} == set(snap[0])
+    assert {"handle", "thread_id", "run_id", "model", "kind", "account_id", "started_at"} == set(
+        snap[0]
+    )
 
 
 def test_thread_ids_are_deduped_and_skip_unnamed_runs():
@@ -115,6 +120,34 @@ def test_cancel_thread_with_no_match_is_a_no_op():
         assert active_generations.cancel_thread("nope") == 0
         assert active_generations.cancel_thread("") == 0
         assert not a.is_set()
+
+
+def test_cancel_run_targets_only_matching_durable_generation():
+    durable, sibling = threading.Event(), threading.Event()
+    with active_generations.ActiveGeneration(durable, thread_id = "t1", run_id = "run-1"):
+        with active_generations.ActiveGeneration(sibling, thread_id = "t1", run_id = "run-2"):
+            assert active_generations.cancel_run("run-1") == 1
+            assert durable.is_set()
+            assert not sibling.is_set()
+
+
+def test_same_durable_run_and_event_borrows_existing_registration():
+    event = threading.Event()
+    with active_generations.ActiveGeneration(
+        event, run_id = "run-1", thread_id = "stale", model = "stale"
+    ):
+        with active_generations.ActiveGeneration(
+            event, run_id = "run-1", thread_id = "thread-1", model = "local"
+        ):
+            snapshot = active_generations.snapshot()[0]
+            assert (active_generations.count(), snapshot["thread_id"], snapshot["model"]) == (
+                1,
+                "thread-1",
+                "local",
+            )
+            assert active_generations.cancel_all() == 1
+    assert event.is_set()
+    assert active_generations.count() == 0
 
 
 def test_cancel_does_not_unregister_entries():
@@ -246,15 +279,24 @@ def test_tracked_cancel_shares_its_event_with_the_registry():
         tracker.__exit__(None, None, None)
 
 
-def _stub_load_route(monkeypatch, *, active_model_name):
-    """Point POST /load at an in-memory safetensors backend.
-
-    active_model_name == the requested path makes the request idempotent, so
-    _load_model_impl takes its already_loaded fast return.
-    """
+def _stub_load_route(
+    monkeypatch,
+    *,
+    active_model_name,
+    backend = None,
+):
     from types import SimpleNamespace
 
     import routes.inference as inf_mod
+
+    from core.inference.orchestrator import InferenceOrchestrator
+
+    if backend is None:
+        backend = InferenceOrchestrator.__new__(InferenceOrchestrator)
+        backend._stop_ledger = None
+        backend._pending_teardowns = None
+        backend.active_model_name = active_model_name
+        backend.models = {}
 
     monkeypatch.setattr(inf_mod, "_raise_if_sidecar_swap_in_progress", lambda: None)
     monkeypatch.setattr(inf_mod, "validate_extra_args", lambda args: [])
@@ -277,11 +319,7 @@ def _stub_load_route(monkeypatch, *, active_model_name):
         },
     )
     monkeypatch.setattr(inf_mod, "_resolve_loaded_trust_remote_code", lambda *a, **k: False)
-    monkeypatch.setattr(
-        inf_mod,
-        "get_inference_backend",
-        lambda: SimpleNamespace(active_model_name = active_model_name, models = {}),
-    )
+    monkeypatch.setattr(inf_mod, "get_inference_backend", lambda: backend)
     monkeypatch.setattr(
         inf_mod,
         "get_llama_cpp_backend",
@@ -311,6 +349,27 @@ def test_idempotent_load_neither_refuses_nor_cancels_running_chats(monkeypatch):
             )
         assert response.status == "already_loaded"
         assert not ev.is_set()
+
+
+def test_a_width_change_reaches_the_resident_model_without_replacing_it(monkeypatch):
+    _route_gate()
+    import asyncio
+
+    from models.inference import LoadRequest
+
+    inf_mod = _stub_load_route(monkeypatch, active_model_name = "org/A")
+    applied = []
+    inf_mod.get_inference_backend().set_parallel_slots = applied.append
+
+    ev = threading.Event()
+    with active_generations.ActiveGeneration(ev, thread_id = "t1"):
+        response = asyncio.run(
+            inf_mod.load_model(LoadRequest(model_path = "org/A", n_parallel = 2), object(), "tester")
+        )
+
+    assert response.status == "already_loaded"
+    assert applied == [2]
+    assert not ev.is_set(), "a width change ended a reply that was decoding"
 
 
 def test_a_real_reload_still_refuses_while_chats_stream(monkeypatch):
@@ -1165,7 +1224,7 @@ def _install_completions_stream_mock(monkeypatch, events):
     )
     monkeypatch.setattr(inf_mod, "_automatic_model_load_may_run", lambda: False)
 
-    async def _no_auto_switch(request, current_subject):
+    async def _no_auto_switch(request, current_subject, **_kwargs):
         return await request.json()
 
     monkeypatch.setattr(inf_mod, "_auto_switch_from_request_body", _no_auto_switch)
@@ -1287,7 +1346,7 @@ def test_completions_proxy_non_stream_is_visible_to_the_swap_gate(monkeypatch):
     )
     monkeypatch.setattr(inf_mod, "_automatic_model_load_may_run", lambda: False)
 
-    async def _no_auto_switch(request, current_subject):
+    async def _no_auto_switch(request, current_subject, **_kwargs):
         return await request.json()
 
     monkeypatch.setattr(inf_mod, "_auto_switch_from_request_body", _no_auto_switch)
@@ -1360,7 +1419,7 @@ def test_embeddings_proxy_is_visible_to_the_swap_gate(monkeypatch):
     )
     monkeypatch.setattr(inf_mod, "_automatic_model_load_may_run", lambda: False)
 
-    async def _no_auto_switch(request, current_subject):
+    async def _no_auto_switch(request, current_subject, **_kwargs):
         return await request.json()
 
     monkeypatch.setattr(inf_mod, "_auto_switch_from_request_body", _no_auto_switch)
@@ -1753,7 +1812,7 @@ def test_anthropic_passthrough_registers_nothing_until_its_body_starts():
     llama_backend = SimpleNamespace(
         base_url = "http://127.0.0.1:8080",
         context_length = 4096,
-        count_chat_tokens = lambda messages, _unused, tools: 7,
+        count_chat_tokens = lambda messages, _unused, tools, **_kwargs: 7,
     )
 
     async def _build():
@@ -1815,7 +1874,7 @@ def test_audio_generation_is_visible_to_the_swap_gate(monkeypatch):
 
     class _TtsBackend:
         active_model_name = "org/TTS"
-        models = {"org/TTS": {"is_audio": True}}
+        models = {"org/TTS": {"is_audio": True, "audio_type": "snac"}}
 
         def generate_audio_response(self, **kwargs):
             # Sampled mid-generation: the window a concurrent swap would tear down in.
@@ -2235,7 +2294,7 @@ def test_audio_generation_unregisters_when_it_fails(monkeypatch):
 
     class _BrokenTtsBackend:
         active_model_name = "org/TTS"
-        models = {"org/TTS": {"is_audio": True}}
+        models = {"org/TTS": {"is_audio": True, "audio_type": "snac"}}
 
         def generate_audio_response(self, **kwargs):
             raise RuntimeError("codec exploded")
@@ -2520,6 +2579,70 @@ def test_drain_returns_as_soon_as_the_cancelled_requests_unwind(monkeypatch):
     assert polls == 3
 
 
+def _ids(n):
+    return [str(uuid.uuid4()) for _ in range(n)]
+
+
+def _stopped(ledger):
+    """What the worker would read: the only way the record is read."""
+    return ledger.snapshot()[1]
+
+
+def test_a_request_reads_as_stopped_once_it_is():
+    ledger = StopLedger(_mp.get_context("spawn"))
+    mine, theirs = _ids(2)
+
+    assert _stopped(ledger) == set()
+    assert ledger.stop(mine)
+    assert _stopped(ledger) == {mine}, "a stop names one request and no other"
+    assert theirs not in _stopped(ledger)
+
+
+def test_the_oldest_stop_is_the_one_that_ages_out():
+    ledger = StopLedger(_mp.get_context("spawn"))
+    recorded = _ids(_SLOTS + 1)
+    for request_id in recorded:
+        assert ledger.stop(request_id)
+
+    assert _stopped(ledger) == set(recorded[1:]), "the oldest made way for the newest"
+
+
+def test_stopping_the_same_request_twice_spends_one_slot():
+    ledger = StopLedger(_mp.get_context("spawn"))
+    theirs, mine = _ids(2)
+    assert ledger.stop(theirs)
+    for _ in range(_SLOTS):
+        assert ledger.stop(mine)
+
+    assert _stopped(ledger) == {mine, theirs}, "the one stopped first is still stopped"
+
+
+def test_a_snapshot_answers_for_every_reply_at_once():
+    ledger = StopLedger(_mp.get_context("spawn"))
+    mine, absent = _ids(2)
+    theirs = "short"
+    ledger.stop(mine)
+    ledger.stop(theirs)
+
+    written, stopped = ledger.snapshot()
+    assert written == 2
+    assert stopped == {mine, theirs}, "the ids as recorded, with nothing padded onto them"
+    assert absent not in stopped
+
+
+class _Ledger:
+    def __init__(self, read_by_worker = False):
+        self.stopped: set = set()
+        self._read_by_worker = read_by_worker
+
+    def stop(self, request_id):
+        self.stopped.add(request_id)
+        return True
+
+    def read_by_worker(self) -> bool:
+        return self._read_by_worker
+
+
 # ── queued chats must not cancel the running one ──────────────────────
 
 
@@ -2530,10 +2653,15 @@ def _orchestrator_for_ownership():
         "core.inference.orchestrator", reason = "inference stack not installed"
     )
     orch = orch_mod.InferenceOrchestrator.__new__(orch_mod.InferenceOrchestrator)
+    orch._stop_ledger = _Ledger()
+    orch._pending_teardowns = None
     orch._gen_lock = threading.Lock()
     orch._active_cancel_events = []
     orch._executing_cancel_events = []
     orch._active_cancel_lock = threading.Lock()
+    orch._send_order_lock = threading.Lock()
+    orch._mailbox_lock = threading.Lock()
+    orch._request_cancel_events = {}
     orch._cancel_event = threading.Event()
     orch._ensure_subprocess_alive = lambda: False  # stop before _send_cmd
     return orch
@@ -2708,6 +2836,8 @@ def test_claim_order_matches_send_order_under_concurrent_dispatch():
         "core.inference.orchestrator", reason = "inference stack not installed"
     )
     orch = orch_mod.InferenceOrchestrator.__new__(orch_mod.InferenceOrchestrator)
+    orch._stop_ledger = None
+    orch._pending_teardowns = None
     orch._active_cancel_events = []
     orch._executing_cancel_events = []
     orch._active_cancel_lock = threading.Lock()
@@ -2731,3 +2861,97 @@ def test_claim_order_matches_send_order_under_concurrent_dispatch():
         t.join(timeout = 30)
 
     assert orch._active_cancel_events == sent, "claim order must equal send order"
+
+
+def test_responses_stream_reports_reasoning_ttft_and_stop_reason(monkeypatch):
+    # This adapter parses SSE itself, so without its own stamp a reasoning-first
+    # turn would time from the visible text instead.
+    import asyncio
+
+    from core.inference.api_monitor import api_monitor
+    from models.inference import ChatMessage, ResponsesRequest
+
+    inf_mod = _install_responses_stream_mock(
+        monkeypatch,
+        [
+            {"choices": [{"delta": {"reasoning_content": "thinking"}}]},
+            {"choices": [{"delta": {"content": "hi"}, "finish_reason": "length"}]},
+        ],
+    )
+    payload = ResponsesRequest(input = "hi", stream = True, model = "org/M-GGUF")
+    messages = [ChatMessage(role = "user", content = "hi")]
+
+    monitor_id = api_monitor.start(
+        endpoint = "/v1/responses", method = "POST", model = "org/M-GGUF", prompt = "hi"
+    )
+
+    async def run():
+        response = await inf_mod._responses_stream(
+            payload, messages, _NeverDisconnectedRequest(), monitor_id
+        )
+        async for _ in response.body_iterator:
+            pass
+
+    asyncio.run(run())
+
+    rows = [r for r in api_monitor.snapshot() if r["id"] == monitor_id]
+    assert rows, "the stream should have opened a monitor row"
+    assert rows[0]["ttft_ms"] is not None
+    assert rows[0]["stop_reason"] == "length"
+
+
+def test_responses_stream_stamps_tool_call_deltas(monkeypatch):
+    # A tool-call-opening turn already sent client output, so TTFT must stamp there.
+    import asyncio
+
+    from core.inference.api_monitor import api_monitor
+    from models.inference import ChatMessage, ResponsesRequest
+
+    inf_mod = _install_responses_stream_mock(
+        monkeypatch,
+        [
+            {
+                "choices": [
+                    {
+                        "delta": {
+                            "tool_calls": [
+                                {
+                                    "index": 0,
+                                    "id": "call_1",
+                                    "function": {"name": "f", "arguments": "{}"},
+                                }
+                            ]
+                        }
+                    }
+                ]
+            },
+            {"choices": [{"delta": {}, "finish_reason": "tool_calls"}]},
+        ],
+    )
+    payload = ResponsesRequest(input = "hi", stream = True, model = "org/M-GGUF")
+    messages = [ChatMessage(role = "user", content = "hi")]
+    monitor_id = api_monitor.start(
+        endpoint = "/v1/responses", method = "POST", model = "org/M-GGUF", prompt = "hi"
+    )
+    # append_reply would stamp late; assert it happens at the delta instead.
+    stamped: list[str] = []
+    real_mark = api_monitor.mark_first_token
+    monkeypatch.setattr(
+        api_monitor,
+        "mark_first_token",
+        lambda mid: (stamped.append(mid), real_mark(mid))[1],
+    )
+
+    async def run():
+        response = await inf_mod._responses_stream(
+            payload, messages, _NeverDisconnectedRequest(), monitor_id
+        )
+        async for _ in response.body_iterator:
+            pass
+
+    asyncio.run(run())
+
+    assert stamped, "the tool-call delta should stamp the first token"
+    [row] = [r for r in api_monitor.snapshot() if r["id"] == monitor_id]
+    assert row["ttft_ms"] is not None
+    assert row["stop_reason"] == "tool_calls"

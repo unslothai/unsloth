@@ -5,9 +5,12 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  type ActivityGridColumn,
+  activitySummaryForMode,
   formatCompactNumber,
   formatDayCount,
   formatDuration,
+  formatFullNumber,
   formatMilliseconds,
   formatProfileCount,
   heatLevel,
@@ -17,26 +20,99 @@ import {
 } from "../src/features/profile/utils/stats-format.ts";
 
 test("compact numbers match the tile format", () => {
-  assert.equal(formatCompactNumber(0), "0");
-  assert.equal(formatCompactNumber(999), "999");
-  assert.equal(formatCompactNumber(1000), "1K");
-  assert.equal(formatCompactNumber(12_340), "12.3K");
-  assert.equal(formatCompactNumber(1_900_000_000), "1.9B");
-  assert.equal(formatCompactNumber(19_800_000_000), "19.8B");
+  assert.equal(formatCompactNumber(0, "en"), "0");
+  assert.equal(formatCompactNumber(999, "en"), "999");
+  assert.equal(formatCompactNumber(1000, "en"), "1K");
+  assert.equal(formatCompactNumber(12_340, "en"), "12.3K");
+  assert.equal(formatCompactNumber(1_900_000_000, "en"), "1.9B");
+  assert.equal(formatCompactNumber(19_800_000_000, "en"), "19.8B");
   // Past 100 of a unit the decimal is noise.
-  assert.equal(formatCompactNumber(123_400), "123K");
-  assert.equal(formatCompactNumber(Number.NaN), "0");
+  assert.equal(formatCompactNumber(123_400, "en"), "123K");
+  assert.equal(formatCompactNumber(Number.NaN, "en"), "0");
+});
+
+test("sub-unit counts stay whole, in every locale", () => {
+  // averageTokensPerChat is the one fractional caller and these are whole tokens:
+  // 25 across 2 chats is 13, not 12.5. The pre-localization code rounded anything
+  // under 1000; the unit boundary replaces that hardcoded 1000 because it is
+  // per-locale (ja and de do not compact until \u4e07 / Mio.).
+  assert.equal(formatCompactNumber(12.5, "en"), "13");
+  assert.equal(formatCompactNumber(12.4, "en"), "12");
+  assert.equal(formatCompactNumber(0.5, "en"), "1");
+  // Intl rounds half away from zero, Math.round rounds half UP, so an exact negative
+  // half differs from the pre-localization code (-13 vs -12). Every caller here is a
+  // count, so this is unreachable in practice; pinned so the difference is deliberate.
+  assert.equal(formatCompactNumber(-12.5, "en"), "-13");
+  // ja does not compact below \u4e07, so a four-digit value is still whole there.
+  assert.equal(formatCompactNumber(5000.4, "ja"), "5000");
+  // ...and past the unit the decimal comes back.
+  assert.equal(formatCompactNumber(12_340, "en"), "12.3K");
+  assert.equal(formatCompactNumber(12_340, "ja"), "1.2\u4e07");
+});
+
+test("a non-Latin numbering system keeps its decimal", () => {
+  // The threshold used to be read off the DISPLAY string, so a locale whose
+  // digits are not ASCII gave Number("\u0661") -> NaN, NaN < 100 -> false, and every
+  // Arabic value silently lost its decimal. Which locales default to `arab`
+  // varies by ICU build, so pin an explicit one rather than bare "ar".
+  const arab = "ar-EG" as Parameters<typeof formatCompactNumber>[1];
+  const onePointNine = formatCompactNumber(1_900_000, arab);
+  // The decimal separator is the Arabic one; what matters is that a fraction survived.
+  assert.ok(
+    /\u0661[\u066b.,]\u0669/.test(onePointNine),
+    `expected a 1.9-style value, got ${onePointNine}`,
+  );
+  // ...and past 100 of a unit it is still dropped, exactly as in en.
+  assert.ok(
+    !/[\u066b.,]/.test(formatCompactNumber(190_000_000, arab)),
+    "expected no decimal past 100 of a unit",
+  );
+});
+
+test("the latn probe does not change which unit Intl picked", () => {
+  // Unit grouping is a locale property, not a numbering-system one, so probing
+  // in latn must leave ja/zh (\u4e07) and hi (\u0932\u093e\u0916) exactly as they were.
+  assert.equal(formatCompactNumber(1_900_000, "ja"), "190\u4e07");
+  assert.equal(formatCompactNumber(190_000_000, "ja"), "1.9\u5104");
+  assert.equal(formatCompactNumber(1_900_000, "zh-CN"), "190\u4e07");
+  assert.equal(formatCompactNumber(1_234, "en"), "1.2K");
 });
 
 test("rounding up a unit steps to the next suffix", () => {
   // Rounding 999.5K to "1000K" is four digits, which is not compact.
-  assert.equal(formatCompactNumber(999_999), "1M");
-  assert.equal(formatCompactNumber(999_500), "1M");
-  assert.equal(formatCompactNumber(999_999_999), "1B");
-  assert.equal(formatCompactNumber(999_999_999_999), "1T");
-  assert.equal(formatCompactNumber(-999_999), "-1M");
+  assert.equal(formatCompactNumber(999_999, "en"), "1M");
+  assert.equal(formatCompactNumber(999_500, "en"), "1M");
+  assert.equal(formatCompactNumber(999_999_999, "en"), "1B");
+  assert.equal(formatCompactNumber(999_999_999_999, "en"), "1T");
+  assert.equal(formatCompactNumber(-999_999, "en"), "-1M");
   // Just below the rounding boundary the unit is unchanged.
-  assert.equal(formatCompactNumber(999_499), "999K");
+  assert.equal(formatCompactNumber(999_499, "en"), "999K");
+});
+
+test("compact numbers use each locale's own magnitude units", () => {
+  // K/M/B is an English convention. ja and ko group in 万/억, zh in 万/亿,
+  // and hi in लाख, so a hardcoded ladder is wrong in half the locales.
+  assert.equal(formatCompactNumber(12_340, "ja"), "1.2万");
+  assert.equal(formatCompactNumber(1_900_000_000, "ja"), "19億");
+  assert.equal(formatCompactNumber(12_340, "zh-CN"), "1.2万");
+  assert.equal(formatCompactNumber(1_900_000_000, "zh-CN"), "19亿");
+  // U+00A0, not a plain space: CLDR keeps the unit from wrapping away from
+  // its number, so an assertion with a normal space silently fails.
+  assert.equal(formatCompactNumber(1_900_000, "hi"), "19\u00a0लाख");
+  // Decimal separator and unit word follow the locale too.
+  assert.equal(formatCompactNumber(1_900_000, "de"), "1,9\u00a0Mio.");
+  assert.equal(formatCompactNumber(1_900_000, "ru"), "1,9\u00a0млн");
+  // German CLDR has no short form below a million, so thousands stay written
+  // out. That is the locale's rule, not a fallback.
+  assert.equal(formatCompactNumber(12_340, "de"), "12.340");
+});
+
+test("full numbers group the way the chosen locale groups", () => {
+  assert.equal(formatFullNumber(1_234_567, "en"), "1,234,567");
+  assert.equal(formatFullNumber(1_234_567, "de"), "1.234.567");
+  // Indian grouping is 2-2-3, not 3-3-3.
+  assert.equal(formatFullNumber(1_234_567, "hi"), "12,34,567");
+  assert.equal(formatFullNumber(Number.NaN, "en"), "0");
 });
 
 test("durations read the way the header does", () => {
@@ -105,6 +181,89 @@ test("day keys parse as local dates, not UTC", () => {
   assert.equal(parsed.getFullYear(), 2026);
   assert.equal(parsed.getMonth(), 2);
   assert.equal(parsed.getDate(), 9);
+});
+
+test("activity summaries follow the selected chart mode", () => {
+  const grid = [
+    [
+      { day: { tokens: 10 } },
+      { day: { tokens: 20 } },
+      { day: null },
+      { day: null },
+      { day: null },
+      { day: null },
+      { day: null },
+    ],
+    [
+      { day: { tokens: 100 } },
+      { day: { tokens: 50 } },
+      { day: null },
+      { day: null },
+      { day: null },
+      { day: null },
+      { day: null },
+    ],
+  ];
+
+  assert.equal(activitySummaryForMode(grid, "daily"), 180);
+  assert.equal(activitySummaryForMode(grid, "cumulative"), 180);
+  assert.equal(activitySummaryForMode(grid, "weekly"), 150);
+  assert.equal(activitySummaryForMode([], "daily"), 0);
+});
+
+test("daily and cumulative still total the window, as the card always did", () => {
+  const legacyVisibleTotal = (grid: ActivityGridColumn[]) =>
+    grid.reduce(
+      (sum, column) =>
+        column.reduce((total, cell) => total + (cell.day?.tokens ?? 0), sum),
+      0,
+    );
+
+  let seed = 20260908;
+  const random = () => {
+    seed = (seed * 1664525 + 1013904223) >>> 0;
+    return seed / 2 ** 32;
+  };
+  for (let trial = 0; trial < 200; trial += 1) {
+    const grid: ActivityGridColumn[] = Array.from(
+      { length: 1 + Math.floor(random() * 55) },
+      () =>
+        Array.from({ length: 7 }, () =>
+          random() < 0.3
+            ? { day: null }
+            : { day: { tokens: Math.floor(random() * 50_000) } },
+        ),
+    );
+    const expected = legacyVisibleTotal(grid);
+    assert.equal(activitySummaryForMode(grid, "daily"), expected);
+    assert.equal(activitySummaryForMode(grid, "cumulative"), expected);
+    // A peak week is one column, so it can never exceed the whole window.
+    assert.ok(activitySummaryForMode(grid, "weekly") <= expected);
+  }
+});
+
+test("the shapes a real grid actually takes summarise without NaN", () => {
+  // Columns are padded to Monday-started weeks, so nulls are normal and the last column is short.
+  const allPadding = [Array.from({ length: 7 }, () => ({ day: null }))];
+  const ragged = [
+    [
+      { day: { tokens: 1 } },
+      { day: { tokens: 2 } },
+      { day: { tokens: 3 } },
+      { day: { tokens: 4 } },
+      { day: { tokens: 5 } },
+      { day: { tokens: 6 } },
+      { day: { tokens: 7 } },
+    ],
+    [{ day: { tokens: 100 } }, { day: { tokens: 200 } }],
+  ];
+
+  for (const mode of ["daily", "weekly", "cumulative"] as const) {
+    assert.equal(activitySummaryForMode(allPadding, mode), 0);
+    assert.ok(!Number.isNaN(activitySummaryForMode(ragged, mode)));
+  }
+  assert.equal(activitySummaryForMode(ragged, "daily"), 328);
+  assert.equal(activitySummaryForMode(ragged, "weekly"), 300);
 });
 
 test("series modes reshape the same daily data", () => {

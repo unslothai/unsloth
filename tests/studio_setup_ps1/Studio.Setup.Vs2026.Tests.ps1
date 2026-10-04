@@ -27,6 +27,12 @@ BeforeAll {
     if (-not $script:SetupPs1) { throw "Could not locate studio/setup.ps1 (set SETUP_PS1_PATH)." }
     Write-Host "setup.ps1 under test: $script:SetupPs1"
 
+    # Ensure-BuildToolsForLlamaSourceBuild reports through setup.ps1's UTF-8 stdout
+    # sink, which the real script defines above every call site. On a host without
+    # cmake the "CMake not found" line is the first thing it reaches, so unstubbed it
+    # is a command-not-found terminating error and the no-op case fails on the throw.
+    function Write-StudioLine { param([string]$Message, [string]$ForegroundColor) Write-Host $Message }
+
     foreach ($fn in @('Resolve-VsGeneratorFromLabel', 'Find-VsBuildTools', 'Get-VcBuildCustomizationsDir',
                       'Test-CmakeSupportsGenerator', 'Get-CmakeVersion', 'Test-CmakeListsGenerator',
                       'Test-CmakeCanDriveGenerator', 'Get-FallbackVsGenerator',

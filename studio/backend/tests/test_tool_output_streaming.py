@@ -26,6 +26,22 @@ from pathlib import Path
 
 import pytest
 
+
+def _shared_setup_1(events, gen, release):
+    while True:
+        event = next(gen)
+        events.append(event)
+        if len([e for e in events if e["type"] == "heartbeat"]) >= 2:
+            release.set()
+
+
+def _shared_setup_2(baseline, code, target):
+    _os.remove(target)
+    streamed = _python_exec(code, timeout = 60, output_callback = lambda _t: None)
+    assert streamed == baseline
+    assert _os.path.isfile(target)
+
+
 _BACKEND_DIR = str(Path(__file__).resolve().parent.parent)
 if _BACKEND_DIR not in sys.path:
     sys.path.insert(0, _BACKEND_DIR)
@@ -33,6 +49,7 @@ _TESTS_DIR = str(Path(__file__).resolve().parent)
 if _TESTS_DIR not in sys.path:
     sys.path.insert(0, _TESTS_DIR)
 
+from core.inference.tool_call_parser import BUDGET_EXHAUSTED_NUDGE
 from core.inference.tool_stream_exec import (
     TOOL_OUTPUT_STREAM_MAX_CHARS,
     stream_tool_execution,
@@ -40,6 +57,55 @@ from core.inference.tool_stream_exec import (
 from core.inference.tools import _bash_exec, _python_exec
 
 from test_llama_cpp_tool_loop import _done, _make_backend, _sse
+
+
+# ── grandchild-survival probes ───────────────────────────────────
+#
+# Several tests below prove a negative: a backgrounded grandchild that holds the
+# leader's stdout open must NOT get to write its sentinel, because the drain is
+# required to kill the process group. Proving that used to mean giving the
+# grandchild a fixed `sleep 3` fuse and then sleeping 4s past it, which spends 4
+# real seconds per test doing nothing, and is itself scheduling-sensitive (a
+# runner that stalls the grandchild by more than a second turns a genuine leak
+# into a pass).
+#
+# Instead the grandchild now spins on a gate file the test owns, so it lives
+# indefinitely -- which is a stronger guarantee that it outlives the finite
+# timeout than "3 > 1" was -- and fires the instant the test opens the gate. A
+# grandchild that survived the group kill writes its sentinel within one poll
+# interval of the gate appearing, so a short bounded window detects the leak;
+# a grandchild that was killed can never write it, gate or no gate.
+
+_GATE_POLL_S = 0.02
+# How long a surviving grandchild is given to notice the gate and write. Two
+# orders of magnitude over its own poll interval; a leak shows up in ~20ms.
+_LEAK_WINDOW_S = 1.0
+
+
+def _gated_grandchild_sh(gate: Path, sentinel: Path) -> str:
+    """Shell for a grandchild that holds stdout and writes *sentinel* once *gate* exists."""
+    return f"while [ ! -f '{gate}' ]; do sleep {_GATE_POLL_S}; done; touch '{sentinel}'"
+
+
+def _os_isolated_tools() -> bool:
+    """Whether PID-namespace teardown reaps descendants when the leader exits."""
+    from core.inference import os_sandbox
+
+    capability = os_sandbox.capability_snapshot()
+    return capability.available and (
+        "detached_processes_die_with_the_call" in capability.limitations
+    )
+
+
+def _assert_grandchild_was_killed(gate: Path, sentinel: Path) -> None:
+    """Open the gate, then require the sentinel to stay absent for the whole window."""
+    gate.write_text("go")
+    deadline = time.monotonic() + _LEAK_WINDOW_S
+    while time.monotonic() < deadline:
+        assert (
+            not sentinel.exists()
+        ), "a grandchild survived the process-group kill and wrote its sentinel"
+        time.sleep(0.02)
 
 
 def _run_stream(invoke, **kwargs):
@@ -96,11 +162,7 @@ def test_heartbeats_emitted_while_tool_blocks():
     events = []
     result = None
     try:
-        while True:
-            event = next(gen)
-            events.append(event)
-            if len([e for e in events if e["type"] == "heartbeat"]) >= 2:
-                release.set()
+        _shared_setup_1(events, gen, release)
     except StopIteration as stop:
         result = stop.value
     assert result == "done"
@@ -303,11 +365,7 @@ def test_heartbeats_continue_while_capped_output_flows():
     events = []
     result = None
     try:
-        while True:
-            event = next(gen)
-            events.append(event)
-            if len([e for e in events if e["type"] == "heartbeat"]) >= 2:
-                release.set()
+        _shared_setup_1(events, gen, release)
     except StopIteration as stop:
         result = stop.value
     finally:
@@ -488,6 +546,63 @@ def test_python_exec_timeout_message_identical_with_streaming():
     assert streamed == baseline == "Execution timed out after 1 seconds."
 
 
+def test_python_exec_timeout_keeps_output_already_printed():
+    # The run printed a progress line before it overran the timeout. That text was
+    # captured; it must reach the model instead of only the status line.
+    code = "import sys, time\nprint('progress')\nsys.stdout.flush()\ntime.sleep(30)\n"
+    baseline = _python_exec(code, timeout = 1)
+    streamed = _python_exec(code, timeout = 1, output_callback = lambda _t: None)
+    assert streamed == baseline
+    assert "progress" in baseline
+    assert baseline.endswith("Execution timed out after 1 seconds.")
+
+
+def test_bash_exec_timeout_keeps_output_already_printed():
+    command = "echo progress; sleep 30"
+    baseline = _bash_exec(command, timeout = 1)
+    streamed = _bash_exec(command, timeout = 1, output_callback = lambda _t: None)
+    assert streamed == baseline
+    assert "progress" in baseline
+    assert baseline.endswith("Execution timed out after 1 seconds.")
+
+
+def test_python_exec_timeout_still_says_so_when_the_output_printed_a_marker():
+    # The replay strips only a well-formed envelope trailing the result, and the status line
+    # always trails, so a printed marker line cannot cut the result.
+    from core.inference.tool_loop_controller import strip_result_for_model
+
+    code = "print('__RAG_SOURCES__:[]')\nimport time\ntime.sleep(30)\n"
+    result = _python_exec(code, timeout = 1)
+
+    assert result.endswith("Execution timed out after 1 seconds.")
+    assert "__RAG_SOURCES__:[]" in result
+    assert strip_result_for_model(result, "python") == result
+
+
+def test_bash_exec_timeout_still_says_so_when_the_output_printed_a_marker():
+    from core.inference.tool_loop_controller import strip_result_for_model
+
+    result = _bash_exec("echo '__RAG_SOURCES__:[]'; sleep 30", timeout = 1)
+
+    assert result.endswith("Execution timed out after 1 seconds.")
+    assert "__RAG_SOURCES__:[]" in result
+    assert strip_result_for_model(result, "terminal") == result
+
+
+def test_a_truncated_timeout_card_does_not_repeat_the_output():
+    # The finished card keeps the live stream when the result is a prefix of it, and
+    # appends the whole result when it is not (`preferFullToolOutput` in
+    # tool-output-result.ts). The captured output therefore has to LEAD the result, or a
+    # truncated timeout renders its stdout twice. Asserted on the shape the frontend
+    # matches on, so a future reordering of this branch fails here rather than in a card.
+    code = "print('x' * 200000)\nimport sys, time\nsys.stdout.flush()\ntime.sleep(30)\n"
+    result = _python_exec(code, timeout = 1)
+
+    assert "\n\n... (truncated" in result, "not truncated, so nothing was measured"
+    body = result.split("\n\n... (truncated")[0]
+    assert body.startswith("x"), result[:120]
+
+
 def test_python_exec_callback_errors_do_not_break_execution():
     def bad_callback(_text: str) -> None:
         raise ValueError("observer bug")
@@ -520,6 +635,10 @@ def test_bash_exec_invalid_utf8_identical_with_streaming():
     assert "".join(chunks) == "ok�bad\n"
 
 
+@pytest.mark.skipif(
+    _os_isolated_tools(),
+    reason = "a PID namespace kills the background job with the leader; see below",
+)
 def test_bash_exec_unlimited_timeout_waits_for_grandchild_output():
     # A background grandchild holds the pipe open past the shell's exit and writes
     # ~7s later. With timeout=None the drain must wait for EOF like
@@ -532,17 +651,35 @@ def test_bash_exec_unlimited_timeout_waits_for_grandchild_output():
     assert "late-grandchild-output" in "".join(chunks)
 
 
+@pytest.mark.skipif(
+    not _os_isolated_tools(), reason = "no PID namespace here, so nothing reaps the job"
+)
+def test_bash_exec_unlimited_timeout_does_not_wait_for_a_job_the_namespace_reaps():
+    from core.inference import tools as tools_module
+
+    command = "( sleep 7; echo late-grandchild-output ) & echo parent-done"
+    started = time.monotonic()
+    result = _bash_exec(command, timeout = None, output_callback = lambda _t: None)
+    elapsed = time.monotonic() - started
+    assert "parent-done" in result
+    if tools_module._last_tool_execution_record.os_isolation:
+        assert elapsed < 5
+    else:
+        assert "late-grandchild-output" in result
+
+
 def test_bash_exec_finite_timeout_kills_grandchild_holding_stdout(tmp_path):
     # A backgrounded grandchild holds the pipe open past the finite timeout, then
     # would write a sentinel. The parent shell has already exited, so killing only
     # the reaped parent leaves the grandchild running; the drain must kill the
     # process group captured before the wait so the grandchild never writes.
     sentinel = tmp_path / "grandchild_ran"
-    command = f"( sleep 3; touch '{sentinel}' ) & echo parent-done"
+    gate = tmp_path / "gate"
+    command = f"( {_gated_grandchild_sh(gate, sentinel)} ) & echo parent-done"
     result = _bash_exec(command, timeout = 1, output_callback = lambda _t: None)
-    assert "timed out" in result
-    time.sleep(4.0)  # past the grandchild's 3s sleep
-    assert not sentinel.exists(), "grandchild survived the timeout process-group kill"
+    if not _os_isolated_tools():
+        assert "timed out" in result
+    _assert_grandchild_was_killed(gate, sentinel)
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason = "POSIX process groups")
@@ -552,26 +689,27 @@ def test_bash_exec_nonstreaming_timeout_kills_grandchild(tmp_path):
     # unless the group captured right after spawn is killed too. Must match the
     # streaming path's exited-leader handling.
     sentinel = tmp_path / "grandchild_ran"
-    command = f"( sleep 3; touch '{sentinel}' ) & echo parent-done"
+    gate = tmp_path / "gate"
+    command = f"( {_gated_grandchild_sh(gate, sentinel)} ) & echo parent-done"
     result = _bash_exec(command, timeout = 1)  # no output_callback -> communicate path
-    assert "timed out" in result
-    time.sleep(4.0)
-    assert not sentinel.exists(), "non-streaming timeout leaked a stdout-holding grandchild"
+    if not _os_isolated_tools():
+        assert "timed out" in result
+    _assert_grandchild_was_killed(gate, sentinel)
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason = "POSIX process groups")
 def test_python_exec_nonstreaming_timeout_kills_grandchild(tmp_path):
     sentinel = tmp_path / "grandchild_ran"
+    gate = tmp_path / "gate"
     code = (
         "import subprocess\n"
-        f"subprocess.Popen(['bash', '-c', \"sleep 3; touch '{sentinel}'\"])\n"
+        f"subprocess.Popen(['bash', '-c', \"{_gated_grandchild_sh(gate, sentinel)}\"])\n"
         "print('parent-done')\n"
         "import time; time.sleep(30)\n"
     )
     result = _python_exec(code, timeout = 1)  # no output_callback -> communicate path
     assert "timed out" in result
-    time.sleep(4.0)
-    assert not sentinel.exists(), "non-streaming timeout leaked a stdout-holding grandchild"
+    _assert_grandchild_was_killed(gate, sentinel)
 
 
 def test_drain_process_output_without_posix_process_group_apis(monkeypatch):
@@ -592,7 +730,7 @@ def test_drain_process_output_without_posix_process_group_apis(monkeypatch):
         stderr = _sp.STDOUT,
         text = True,
     )
-    output, timed_out = _drain_process_output(proc, 10, lambda _t: None)
+    output, timed_out, _ = _drain_process_output(proc, 10, lambda _t: None)
     assert not timed_out
     assert "ok-no-pgid" in output
 
@@ -607,8 +745,9 @@ def test_captured_group_survives_fast_leader_reap(tmp_path):
     from core.inference.tools import _capture_process_group, _drain_process_output
 
     sentinel = tmp_path / "grandchild_ran"
+    gate = tmp_path / "gate"
     proc = _sp.Popen(
-        ["bash", "-c", f"( sleep 3; touch '{sentinel}' ) & echo parent-done"],
+        ["bash", "-c", f"( {_gated_grandchild_sh(gate, sentinel)} ) & echo parent-done"],
         stdout = _sp.PIPE,
         stderr = _sp.STDOUT,
         text = True,
@@ -618,11 +757,10 @@ def test_captured_group_survives_fast_leader_reap(tmp_path):
     assert pgid is not None
     proc.wait()  # reap the leader before draining
 
-    output, timed_out = _drain_process_output(proc, 0.5, None, pgid = pgid)
+    output, timed_out, _ = _drain_process_output(proc, 0.5, None, pgid = pgid)
     assert timed_out
     assert "parent-done" in output
-    time.sleep(4.0)
-    assert not sentinel.exists(), "pre-captured group failed to reap the grandchild"
+    _assert_grandchild_was_killed(gate, sentinel)
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason = "POSIX process groups")
@@ -637,14 +775,18 @@ def test_finite_drain_honors_cancel_after_leader_exit(tmp_path):
     from core.inference.tools import _capture_process_group, _drain_process_output
 
     sentinel = tmp_path / "grandchild_late"
+    gate = tmp_path / "gate"
     # Grandchild holds the pipe open, streams every 0.2s, and touches the sentinel
-    # only after 10s -- well past the cancel. The leader exits immediately, so the
-    # drain enters the finite branch with a live, chatty reader.
+    # only once the test opens the gate -- which it does after the cancel. Gate,
+    # not a 10s fuse: the old version had to be slept past in full (11s), and it
+    # also silently weakened if the loop ever ran fast enough to finish early.
+    # The leader exits immediately, so the drain enters the finite branch with a
+    # live, chatty reader either way.
     proc = _sp.Popen(
         [
             "bash",
             "-c",
-            "( for i in $(seq 1 100); do echo tick-$i; sleep 0.2; done; "
+            f"( while [ ! -f '{gate}' ]; do echo tick; sleep 0.2; done; "
             f"touch '{sentinel}' ) & echo parent-done",
         ],
         stdout = _sp.PIPE,
@@ -662,14 +804,13 @@ def test_finite_drain_honors_cancel_after_leader_exit(tmp_path):
     started = time.monotonic()
     # Large finite timeout (30s); without the cancel poll the drain keeps reading
     # the grandchild until the pipe closes ~20s later.
-    output, timed_out = _drain_process_output(proc, 30, lambda _t: None, cancel_event, pgid = pgid)
+    output, timed_out, _ = _drain_process_output(proc, 30, lambda _t: None, cancel_event, pgid = pgid)
     elapsed = time.monotonic() - started
     assert elapsed < 5.0, f"finite drain ignored cancel_event (took {elapsed:.1f}s)"
     # Cancellation is not a timeout: the budget never elapsed.
     assert not timed_out
     assert "parent-done" in output
-    time.sleep(11.0)  # past the grandchild's 10s sentinel write
-    assert not sentinel.exists(), "cancel did not kill the stdout-holding grandchild group"
+    _assert_grandchild_was_killed(gate, sentinel)
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason = "POSIX process groups")
@@ -687,10 +828,11 @@ def test_streamed_wait_timeout_kills_grandchild_when_leader_reaped(tmp_path, mon
     monkeypatch.setattr(_tools_mod, "_kill_process_tree", lambda proc: None)
 
     sentinel = tmp_path / "grandchild_ran"
+    gate = tmp_path / "gate"
     # Leader sleeps past the timeout so proc.wait() genuinely times out; a same-group
     # grandchild holds stdout and would touch the sentinel unless the group is killed.
     proc = _sp.Popen(
-        ["bash", "-c", f"( sleep 3; touch '{sentinel}' ) & sleep 30"],
+        ["bash", "-c", f"( {_gated_grandchild_sh(gate, sentinel)} ) & sleep 30"],
         stdout = _sp.PIPE,
         stderr = _sp.STDOUT,
         text = True,
@@ -699,13 +841,9 @@ def test_streamed_wait_timeout_kills_grandchild_when_leader_reaped(tmp_path, mon
     pgid = _capture_process_group(proc)
     assert pgid is not None
 
-    output, timed_out = _drain_process_output(proc, 0.5, None, pgid = pgid)
+    output, timed_out, _ = _drain_process_output(proc, 0.5, None, pgid = pgid)
     assert timed_out
-    time.sleep(4.0)  # past the grandchild's 3s sleep
-    assert not sentinel.exists(), (
-        "streamed wait timeout leaked a stdout-holding grandchild when the "
-        "process-tree kill short-circuited on the reaped leader"
-    )
+    _assert_grandchild_was_killed(gate, sentinel)
 
 
 # ── GGUF loop regression: model-visible messages unchanged ───────
@@ -771,11 +909,15 @@ def test_gguf_loop_final_tool_message_unchanged_by_streaming(monkeypatch):
     # The role=tool message fed to the model is byte-identical: streaming is purely
     # observational and must not perturb parsing/nudging/healing.
     assert _tool_messages(payloads_streaming) == _tool_messages(payloads_plain)
+    # The tool's own output is still verbatim and still leads the message. What
+    # follows it is the budget-exhausted instruction, which now rides the last tool
+    # result instead of opening a newer user turn: templates gate replayed reasoning
+    # on the newest user turn, so a nudge there hides this turn's thinking.
     assert _tool_messages(payloads_streaming) == [
         {
             "role": "tool",
             "name": "python",
-            "content": result_text,
+            "content": f"{result_text}\n\n{BUDGET_EXHAUSTED_NUDGE}",
             "tool_call_id": "call_1",
         }
     ]
@@ -861,6 +1003,124 @@ def test_truncated_result_identical_and_notice_neutral_with_streaming():
     assert "truncated" in baseline
     assert "the user was shown the full output" not in baseline
     assert "persist in the working directory" in baseline
+
+
+def test_drain_retains_bounded_head_and_tail_of_runaway_output(monkeypatch):
+    import subprocess as _sp
+
+    from core.inference import tools as _tools_mod
+
+    monkeypatch.setattr(_tools_mod, "_SPILL_MAX_BYTES", 1000)
+    monkeypatch.setattr(_tools_mod, "_DRAIN_TAIL_CHARS", 500)
+    proc = _sp.Popen(
+        [sys.executable, "-c", "for i in range(5000): print(f'{i:09d}')"],
+        stdout = _sp.PIPE,
+        stderr = _sp.STDOUT,
+        text = True,
+    )
+    streamed = []
+    output, timed_out, (chars, lines) = _tools_mod._drain_process_output(proc, 30, streamed.append)
+    full = "".join(streamed)
+    assert not timed_out
+    assert len(full) == 50000
+    assert len(output) <= 1010 + 510
+    assert output.startswith(full[:1000]) and full.endswith(output[-500:])
+    assert len(output) + chars == len(full)
+    assert output.count("\n") + lines == 5000
+
+
+def test_drain_bounds_runaway_output_without_newlines(monkeypatch):
+    import subprocess as _sp
+
+    from core.inference import tools as _tools_mod
+
+    monkeypatch.setattr(_tools_mod, "_SPILL_MAX_BYTES", 1000)
+    monkeypatch.setattr(_tools_mod, "_DRAIN_TAIL_CHARS", 500)
+    proc = _sp.Popen(
+        [sys.executable, "-c", "import sys; sys.stdout.write('x' * 50000)"],
+        stdout = _sp.PIPE,
+        stderr = _sp.STDOUT,
+        text = True,
+    )
+    streamed = []
+    output, timed_out, (chars, lines) = _tools_mod._drain_process_output(proc, 30, streamed.append)
+    assert not timed_out
+    assert "".join(streamed) == "x" * 50000
+    assert len(output) <= 1500 + 500
+    assert output == "x" * len(output)
+    assert len(output) + chars == 50000
+    assert lines == 0
+
+
+def test_drain_head_memory_tracks_chars_not_line_count(monkeypatch):
+    import subprocess as _sp
+    import tracemalloc
+
+    from core.inference import tools as _tools_mod
+
+    monkeypatch.setattr(_tools_mod, "_SPILL_MAX_BYTES", 1_000_000)
+    monkeypatch.setattr(_tools_mod, "_DRAIN_TAIL_CHARS", 500)
+    proc = _sp.Popen(
+        [sys.executable, "-c", "import sys\nfor _ in range(600000): sys.stdout.write('x\\n')"],
+        stdout = _sp.PIPE,
+        stderr = _sp.STDOUT,
+        text = True,
+    )
+    tracemalloc.start()
+    try:
+        output, timed_out, (chars, lines) = _tools_mod._drain_process_output(proc, 60, None)
+        _, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+    assert not timed_out
+    assert len(output) + chars == 1_200_000
+    assert output.count("\n") + lines == 600_000
+    # ~500k head lines: one str each is ~30 MB, coalesced it is a few copies of the 1 MB head.
+    assert peak < 8 * 1024 * 1024, f"drain peaked at {peak / 2**20:.1f} MiB for a 1 MB head"
+
+
+def test_runaway_output_reports_true_size_and_keeps_trailing_hint(monkeypatch):
+    from core.inference import tools as _tools_mod
+
+    monkeypatch.setattr(_tools_mod, "_SPILL_MAX_BYTES", 2000)
+    monkeypatch.setattr(_tools_mod, "_DRAIN_TAIL_CHARS", 2000)
+    code = "for i in range(3000): print('x' * 99)\nopen('/mnt/data/x.html')\n"
+    streamed = []
+    baseline = _python_exec(code, timeout = 60)
+    out = _python_exec(code, timeout = 60, output_callback = streamed.append)
+    assert out == baseline
+    total = len("Exit code 1:\n") + len("".join(streamed))
+    assert f"{total} chars total" in out
+    assert "'x.html', not '/mnt/data/x.html'" in out
+
+
+@pytest.mark.parametrize(
+    "run, code",
+    [
+        (_python_exec, "while True: print('x' * 99)"),
+        (_bash_exec, "while :; do printf '%099d\\n' 0; done"),
+    ],
+    ids = ["python", "bash"],
+)
+def test_timed_out_runaway_output_reports_true_size_and_line_count(
+    monkeypatch, tmp_path, run, code
+):
+    from core.inference import tools as _tools_mod
+
+    monkeypatch.setattr(_tools_mod, "_SPILL_MAX_BYTES", 2000)
+    monkeypatch.setattr(_tools_mod, "_DRAIN_TAIL_CHARS", 500)
+    monkeypatch.setattr(_tools_mod, "_get_workdir", lambda _sid = None: str(tmp_path))
+    streamed = []
+    out = run(
+        code,
+        timeout = 2,
+        session_id = "runaway",
+        output_callback = streamed.append,
+    )
+    full = "".join(streamed)
+    assert len(full) > 100_000
+    assert f"of {full.count(chr(10)) + 1}, {len(full)} chars total" in out
+    assert out.rstrip().endswith("Execution timed out after 2 seconds.")
 
 
 def test_result_cap_env_override(monkeypatch):
@@ -971,7 +1231,12 @@ def test_code_tool_descriptions_mention_relative_paths():
     for tool in (PYTHON_TOOL, TERMINAL_TOOL):
         description = tool["function"]["description"]
         assert "relative paths" in description
-        assert "/mnt/data" in description
+        if sys.platform == "win32":
+            # Naming POSIX-only paths there reads as "you are on Linux", and
+            # models then decline to run Windows programs that do exist.
+            assert "Windows" in description
+        else:
+            assert "/mnt/data" in description
 
 
 def test_python_exec_mnt_data_open_is_remapped_into_workdir():
@@ -993,10 +1258,7 @@ def test_python_exec_mnt_data_open_is_remapped_into_workdir():
             assert f.read() == "hello remap"
         assert "hello remap" in baseline
         assert "/mnt/data does not exist in this sandbox" in baseline
-        _os.remove(target)
-        streamed = _python_exec(code, timeout = 60, output_callback = lambda _t: None)
-        assert streamed == baseline
-        assert _os.path.isfile(target)
+        _shared_setup_2(baseline, code, target)
     finally:
         if _os.path.exists(target):
             _os.remove(target)
@@ -1020,10 +1282,7 @@ def test_python_exec_pathlib_write_text_is_remapped_into_workdir():
             assert f.read() == "pathlib remap"
         assert "pathlib remap" in baseline
         assert "/mnt/data does not exist in this sandbox" in baseline
-        _os.remove(target)
-        streamed = _python_exec(code, timeout = 60, output_callback = lambda _t: None)
-        assert streamed == baseline
-        assert _os.path.isfile(target)
+        _shared_setup_2(baseline, code, target)
     finally:
         if _os.path.exists(target):
             _os.remove(target)
@@ -1050,10 +1309,7 @@ def test_python_exec_hallucinated_absolute_write_is_remapped_into_workdir():
             assert f.read() == "hello fallback"
         assert "hello fallback" in baseline
         assert "does not exist in this sandbox" in baseline
-        _os.remove(target)
-        streamed = _python_exec(code, timeout = 60, output_callback = lambda _t: None)
-        assert streamed == baseline
-        assert _os.path.isfile(target)
+        _shared_setup_2(baseline, code, target)
     finally:
         if _os.path.exists(target):
             _os.remove(target)
@@ -1148,11 +1404,7 @@ def test_continuous_over_cap_output_does_not_starve_heartbeats():
     events = []
     result = None
     try:
-        while True:
-            event = next(gen)
-            events.append(event)
-            if len([e for e in events if e["type"] == "heartbeat"]) >= 2:
-                release.set()
+        _shared_setup_1(events, gen, release)
     except StopIteration as stop:
         result = stop.value
     finally:
@@ -1197,7 +1449,8 @@ def test_bash_exec_nonstreaming_cancel_kills_grandchild_after_leader_exit(tmp_pa
     # the fix communicate() blocked until the grandchild finished. The unified drain
     # kills the captured group on cancel instead.
     sentinel = tmp_path / "grandchild_ran"
-    command = f"( sleep 3; touch '{sentinel}' ) & echo parent-done"
+    gate = tmp_path / "gate"
+    command = f"( {_gated_grandchild_sh(gate, sentinel)} ) & echo parent-done"
     cancel_event = threading.Event()
     timer = threading.Timer(0.5, cancel_event.set)
     timer.start()
@@ -1207,17 +1460,18 @@ def test_bash_exec_nonstreaming_cancel_kills_grandchild_after_leader_exit(tmp_pa
     finally:
         timer.cancel()
     assert time.monotonic() - started < 2.5
-    assert result == "Execution cancelled."
-    time.sleep(3.5)
-    assert not sentinel.exists(), "non-streaming cancel leaked a stdout-holding grandchild"
+    if not _os_isolated_tools():
+        assert result == "Execution cancelled."
+    _assert_grandchild_was_killed(gate, sentinel)
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason = "POSIX process groups")
 def test_python_exec_nonstreaming_cancel_kills_grandchild_after_leader_exit(tmp_path):
     sentinel = tmp_path / "grandchild_ran"
+    gate = tmp_path / "gate"
     code = (
         "import subprocess\n"
-        f"subprocess.Popen(['bash', '-c', \"sleep 3; touch '{sentinel}'\"])\n"
+        f"subprocess.Popen(['bash', '-c', \"{_gated_grandchild_sh(gate, sentinel)}\"])\n"
         "print('parent-done')\n"
     )
     cancel_event = threading.Event()
@@ -1229,6 +1483,6 @@ def test_python_exec_nonstreaming_cancel_kills_grandchild_after_leader_exit(tmp_
     finally:
         timer.cancel()
     assert time.monotonic() - started < 2.5
-    assert result == "Execution cancelled."
-    time.sleep(3.5)
-    assert not sentinel.exists(), "non-streaming cancel leaked a stdout-holding grandchild"
+    if not _os_isolated_tools():
+        assert result == "Execution cancelled."
+    _assert_grandchild_was_killed(gate, sentinel)

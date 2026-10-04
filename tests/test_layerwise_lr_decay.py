@@ -22,8 +22,7 @@ def _load_module():
 
 mod = _load_module()
 make_groups = mod.make_layerwise_lr_param_groups
-get_layer_index = mod.get_layer_index
-check_compat = mod.check_layerwise_lr_compat
+get_layer_key = mod.get_layer_key
 
 
 class FakeParam:
@@ -75,11 +74,12 @@ def lr_by_tag(groups):
     return out
 
 
-def test_layer_index_parsing():
-    assert get_layer_index("a.layers.7.b") == 7
-    assert get_layer_index("model.layers.0.mlp") == 0
-    assert get_layer_index("layers.3.q_proj.weight") == 3  # top-level stack, no prefix
-    assert get_layer_index("model.embed_tokens.weight") is None
+def test_layer_key_parsing():
+    assert get_layer_key("a.layers.7.b") == ("a", 7)
+    assert get_layer_key("model.layers.0.mlp") == ("model", 0)
+    assert get_layer_key("layers.3.q_proj.weight") == ("", 3)
+    assert get_layer_key("visual.blocks.2.attn.qkv.weight") == ("visual", 2)
+    assert get_layer_key("model.embed_tokens.weight") is None
 
 
 def test_decay_math_and_boundaries():
@@ -181,16 +181,6 @@ def test_num_layers_clamped_to_seen_indices():
     assert lrs["layer0"] == pytest.approx(base * decay**3)
 
 
-def test_compat_check_rejects_q_galore_combo():
-    with pytest.raises(ValueError):
-        check_compat(0.9, object())
-
-
-@pytest.mark.parametrize("decay,q_galore", [(None, object()), (1.0, object()), (0.9, None)])
-def test_compat_check_allows(decay, q_galore):
-    check_compat(decay, q_galore)
-
-
 def test_separate_stacks_decay_independently():
     base, decay = 1e-3, 0.9
     named = []
@@ -214,3 +204,35 @@ def test_separate_stacks_decay_independently():
     assert lrs["dec0"] == pytest.approx(base * decay**3)  # decoder depth 4
     assert lrs["vis5"] == pytest.approx(base)  # vision top = base
     assert lrs["vis0"] == pytest.approx(base * decay**5)  # vision depth 6, independent
+
+
+def test_no_decay_params_get_zero_weight_decay():
+    named = [
+        ("model.layers.0.mlp.weight", FakeParam("w0")),
+        ("model.layers.0.input_layernorm.weight", FakeParam("n0")),
+        ("model.layers.1.mlp.weight", FakeParam("w1")),
+    ]
+    groups = make_groups(
+        FakeModel(named),
+        lr = 1e-3,
+        weight_decay = 0.1,
+        layerwise_lr_decay = 0.9,
+        decay_parameter_names = ["model.layers.0.mlp.weight", "model.layers.1.mlp.weight"],
+        verbose = False,
+    )
+    wd = {p.tag: g["weight_decay"] for g in groups for p in g["params"]}
+    assert wd == {"w0": 0.1, "n0": 0.0, "w1": 0.1}
+    assert lr_by_tag(groups)["n0"] == lr_by_tag(groups)["w0"]
+
+
+def test_saved_lm_head_keeps_top_rate():
+    base, decay = 1e-3, 0.9
+    named = [(f"model.layers.{i}.q_proj.weight", FakeParam(f"layer{i}")) for i in range(3)]
+    named.append(("base_model.model.lm_head.modules_to_save.default.weight", FakeParam("head")))
+    named.append(("model.embed_tokens.weight", FakeParam("embed")))  # full fine-tune
+    groups = make_groups(
+        FakeModel(named), lr = base, weight_decay = 0.0, layerwise_lr_decay = decay, verbose = False
+    )
+    lrs = lr_by_tag(groups)
+    assert lrs["head"] == pytest.approx(base)
+    assert lrs["embed"] == pytest.approx(base * decay**2)

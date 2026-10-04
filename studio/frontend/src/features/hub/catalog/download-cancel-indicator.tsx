@@ -1,25 +1,24 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { Spinner } from "@/components/ui/spinner";
-import { Cancel01Icon } from "@hugeicons/core-free-icons";
+import { Cancel01Icon, PauseIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 
+/** What stopping this download costs. HTTP keeps the partial to continue from,
+ * so it is a pause; Xet has to start over, so it is a cancel. */
+export type DownloadStopMode = "cancel" | "pause";
+
 /**
- * Inspector action-button affordance during a download: spinner that cross-fades
- * to a cancel glyph on `.hub-action-btn` hover, in the same 16x16 slot so the
- * percentage label never shifts. The swap is pure CSS
- * (`.hub-action-btn:hover .hub-cta-indicator-*`); the component only carries
- * the marker classes.
+ * The stop glyph beside the percentage during a download. Always visible: it is
+ * the only way to stop, so it should not need a hover to be found. Sits in a
+ * fixed 16x16 slot so the percentage never shifts.
  */
-export function DownloadCancelIndicator() {
+export function DownloadStopIndicator({ mode }: { mode: DownloadStopMode }) {
   return (
     <span className="hub-cta-indicator">
-      <Spinner className="hub-cta-indicator-spinner" />
       <HugeiconsIcon
-        icon={Cancel01Icon}
+        icon={mode === "pause" ? PauseIcon : Cancel01Icon}
         strokeWidth={1.75}
-        className="hub-cta-indicator-cancel"
       />
     </span>
   );

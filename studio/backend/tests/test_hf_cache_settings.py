@@ -3,7 +3,9 @@
 
 from __future__ import annotations
 
+import json
 import os
+import subprocess
 import sys
 import threading
 import time
@@ -145,12 +147,9 @@ def test_worker_environment_is_applied_before_import(monkeypatch, tmp_path):
     class Module:
         @staticmethod
         def run():
-            import os
             return os.environ["HF_HUB_CACHE"], os.environ["HF_XET_CACHE"]
 
     def fake_import(name):
-        import os
-
         observed["name"] = name
         observed["hub"] = os.environ.get("HF_HUB_CACHE")
         return Module
@@ -172,7 +171,6 @@ def test_spawn_environment_is_applied_then_restored(monkeypatch, tmp_path):
     monkeypatch.delenv("HF_XET_CACHE", raising = False)
 
     with hf_cache_settings.child_environment_for_spawn({"HF_HUB_CACHE": hub, "HF_XET_CACHE": xet}):
-        import os
         assert os.environ["HF_HUB_CACHE"] == hub
         assert os.environ["HF_XET_CACHE"] == xet
 
@@ -288,3 +286,205 @@ def test_inactive_cache_model_loads_from_snapshot_path(tmp_path):
     assert row.model_id == "org/model"
     assert row.active_cache is False
     assert row.load_id == str(snapshot)
+
+
+def test_diffusion_cache_root_follows_a_live_switch(settings_store, tmp_path):
+    # The image/video backends used huggingface_hub's import-time HF_HUB_CACHE constant, which set_hf_cache_home does not
+    # update, so the download wrote to the new root while progress counted the old one and a load could split across both.
+    import core.inference.diffusion as diffusion
+
+    moved = tmp_path / "external-c" / "huggingface"
+    # Write the setting straight into the store: set_hf_cache_home's folder validation is not under test and it rejects the pytest tmp root on macOS.
+    settings_store[hf_cache_settings.CACHE_HOME_SETTING_KEY] = str(moved)
+
+    assert diffusion.hub_cache_dir() == str(moved / "hub")
+    assert diffusion.DiffusionBackend._hub_cache_repo_dir("org/model") == (
+        moved / "hub" / "models--org--model"
+    )
+
+
+def test_diffusion_loader_calls_pin_the_cache_dir():
+    # Every from_pretrained / from_single_file must carry cache_dir, else diffusers resolves it through the stale constant.
+    for rel in ("core/inference/diffusion.py", "core/inference/video.py"):
+        source = (Path(_BACKEND_DIR) / rel).read_text(encoding = "utf-8")
+        for call in ("from_pretrained(", "from_single_file("):
+            for index, line in enumerate(source.splitlines(), start = 1):
+                if not line.strip().startswith(("pipe = ", "transformer = ", "cn_model = ")):
+                    continue
+                if call not in line:
+                    continue
+                window = "\n".join(source.splitlines()[index - 1 : index + 8])
+                assert (
+                    "cache_dir" in window or "kwargs" in window
+                ), f"{rel}:{index} calls {call} without a pinned cache_dir"
+
+
+# _stored_cache_home skips the database read when nothing uses one, so `unsloth train` does not
+# build a studio.db on a machine that never opened Studio. Only a positively observed absence may
+# license that skip. Driven in a subprocess: the skip needs storage.studio_db out of sys.modules.
+_GUARD_PROBE = """
+import json, os, sys
+
+sys.path.insert(0, os.environ["FAKE_STORAGE"])
+sys.path.insert(1, os.environ["BACKEND_DIR"])
+from utils import hf_cache_settings
+
+assert "storage.studio_db" not in sys.modules, "the probe must exercise the skip"
+stored = hf_cache_settings._stored_cache_home()
+print(json.dumps({"stored": None if stored is None else str(stored)}))
+"""
+
+_FAKE_STUDIO_DB = """
+import os
+from pathlib import Path
+
+
+def get_app_setting(key, fallback = None):
+    Path(os.environ["READ_WITNESS"]).write_text("read", encoding = "utf-8")
+    if key == "hugging_face_cache_home":
+        return os.environ["STORED_CACHE_HOME"]
+    return fallback
+"""
+
+
+def _run_guard_probe(
+    tmp_path,
+    studio_home: Path,
+    stored: Path,
+    *,
+    probe: str | None = None,
+    extra_env: dict[str, str] | None = None,
+) -> tuple[str | None, bool]:
+    """Return (_stored_cache_home() answer, whether the database was read)."""
+    fake = tmp_path / "fake_storage"
+    (fake / "storage").mkdir(parents = True, exist_ok = True)
+    (fake / "storage" / "__init__.py").write_text("", encoding = "utf-8")
+    (fake / "storage" / "studio_db.py").write_text(_FAKE_STUDIO_DB, encoding = "utf-8")
+    witness = tmp_path / "read_witness"
+    witness.unlink(missing_ok = True)
+
+    environment = dict(os.environ)
+    environment.update(
+        BACKEND_DIR = _BACKEND_DIR,
+        FAKE_STORAGE = str(fake),
+        READ_WITNESS = str(witness),
+        STORED_CACHE_HOME = str(stored),
+        UNSLOTH_STUDIO_HOME = str(studio_home),
+        PYTHONPATH = "",
+    )
+    environment.update(extra_env or {})
+    for key in ("HF_HOME", "HF_HUB_CACHE", "HUGGINGFACE_HUB_CACHE", "HF_XET_CACHE"):
+        environment.pop(key, None)
+    result = subprocess.run(
+        [sys.executable, "-c", probe if probe is not None else _GUARD_PROBE],
+        capture_output = True,
+        text = True,
+        env = environment,
+        timeout = 120,
+    )
+    assert result.returncode == 0, result.stderr
+    return json.loads(result.stdout.strip().splitlines()[-1])["stored"], witness.exists()
+
+
+def test_absent_studio_db_skips_the_database_read(tmp_path):
+    # The skip 912024e84 added must survive the tightening below: no studio.db answers None
+    # WITHOUT a connection, which is what stops the CLI creating a 250 KB database.
+    studio_home = tmp_path / "root" / "studio"
+    studio_home.mkdir(parents = True)
+
+    answer, was_read = _run_guard_probe(tmp_path, studio_home, tmp_path / "chosen")
+
+    assert answer is None
+    assert not was_read, "an absent database must not be opened"
+
+
+@pytest.mark.parametrize("fixture", ["not_a_directory", "symlink_loop", "unreadable_parent"])
+def test_uninspectable_studio_db_keeps_the_stored_cache_home(tmp_path, fixture):
+    # Path.exists reports ENOTDIR and ELOOP as absence on every release, and swallows EACCES
+    # from 3.14. Reading any as "no database" discards the cache home chosen in Settings.
+    chosen = tmp_path / "chosen"
+    studio_home = tmp_path / "root" / "studio"
+    if fixture == "not_a_directory":
+        studio_home.parent.mkdir(parents = True)
+        studio_home.write_text("", encoding = "utf-8")
+    elif fixture == "symlink_loop":
+        studio_home.parent.mkdir(parents = True)
+        studio_home.symlink_to(studio_home)
+    else:
+        studio_home.mkdir(parents = True)
+        (studio_home / "studio.db").write_bytes(b"")
+        os.chmod(studio_home, 0o000)
+
+    try:
+        answer, was_read = _run_guard_probe(tmp_path, studio_home, chosen)
+    finally:
+        if fixture == "unreadable_parent":
+            os.chmod(studio_home, 0o755)
+
+    # unreadable_parent is the case 3.14 newly breaks; the other two hold on every release.
+    assert was_read, "a database we could not inspect must still be read"
+    assert answer == str(chosen)
+
+
+_WINDOWS_SHAPED_GUARD_PROBE = """
+import errno, json, os, sys
+
+# Windows reports a path whose PARENT is a file as ERROR_PATH_NOT_FOUND, which Python raises as
+# FileNotFoundError; POSIX raises NotADirectoryError. Reproduce the error shape, since the Linux
+# runners cannot produce it, and do it before hf_cache_settings is imported.
+_NOT_A_DIR = os.environ["NOT_A_DIRECTORY"]
+_real_stat = os.stat
+
+
+def _stat(path, *args, **kwargs):
+    text = os.fspath(path)
+    if text != _NOT_A_DIR and text.startswith(_NOT_A_DIR + os.sep):
+        raise FileNotFoundError(errno.ENOENT, "The system cannot find the path specified", text)
+    return _real_stat(path, *args, **kwargs)
+
+
+os.stat = _stat
+sys.path.insert(0, os.environ["FAKE_STORAGE"])
+sys.path.insert(1, os.environ["BACKEND_DIR"])
+from utils import hf_cache_settings
+
+assert "storage.studio_db" not in sys.modules, "the probe must exercise the skip"
+stored = hf_cache_settings._stored_cache_home()
+print(json.dumps({"stored": None if stored is None else str(stored)}))
+"""
+
+
+def test_a_studio_home_that_is_a_file_still_reads_the_database_on_windows(tmp_path):
+    """The POSIX arm of this is test_uninspectable_studio_db_keeps_the_stored_cache_home
+    [not_a_directory], which passes there because ENOTDIR is its own exception type. Windows
+    reports the same situation as FileNotFoundError, so the skip read it as "no database stored"
+    and discarded the cache home chosen in Settings -- on Windows and nowhere else. Caught by the
+    cross-platform leg, held here by reproducing the error shape rather than the platform.
+    """
+    studio_home = tmp_path / "root" / "studio"
+    studio_home.parent.mkdir(parents = True)
+    studio_home.write_text("", encoding = "utf-8")
+    chosen = tmp_path / "chosen"
+
+    answer, was_read = _run_guard_probe(
+        tmp_path,
+        studio_home,
+        chosen,
+        probe = _WINDOWS_SHAPED_GUARD_PROBE,
+        extra_env = {"NOT_A_DIRECTORY": str(studio_home)},
+    )
+
+    assert was_read, "a studio home we could not inspect was read as no database"
+    assert answer == str(chosen)
+
+
+def test_a_studio_home_that_does_not_exist_still_skips_the_database_read(tmp_path):
+    """The other half. The fix above must not widen the skip into the case it exists for: a
+    machine that has never opened Studio has no studio/ directory at all, and falling through
+    there builds the 250 KB database this guard was added to avoid."""
+    studio_home = tmp_path / "never-created" / "studio"
+
+    answer, was_read = _run_guard_probe(tmp_path, studio_home, tmp_path / "chosen")
+
+    assert answer is None
+    assert not was_read, "an absent studio home must not open a database"
