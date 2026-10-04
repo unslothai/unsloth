@@ -174,56 +174,105 @@ def _as_float32(value: Any, torch: Any) -> Any:
     return value
 
 
+_VAE_BF16_OFF = ("0", "false", "off", "no")
+_VAE_BF16_FORCE = ("1", "true", "on", "yes")
+VAE_BF16_DECODE_MODES = ("weights", "autocast")
+
+
+def _vae_bf16_decode_request(gate: str) -> tuple[str, bool]:
+    """(mode, forced) for an UNSLOTH_VIDEO_VAE_BF16_DECODE value that is not off. "auto", "1" and any unknown value
+    cast the decoder weights; "autocast" keeps fp32 weights under bf16 autocast. "1" also allows non-ROCm CUDA."""
+    if gate in VAE_BF16_DECODE_MODES:
+        return gate, False
+    return "weights", gate in _VAE_BF16_FORCE
+
+
+def _cast_float_args(torch: Any, dtype: Any) -> Any:
+    def _hook(module: Any, args: tuple) -> tuple:
+        return tuple(
+            a.to(dtype) if isinstance(a, torch.Tensor) and a.is_floating_point() and a.dtype != dtype else a
+            for a in args
+        )
+
+    return _hook
+
+
 def install_rocm_vae_bf16_decode(
     pipe: Any,
     target: DiffusionDeviceTarget,
     *,
     logger: Any = None,
-) -> bool:
-    """Decode an fp32-pinned video VAE (Wan) under bf16 autocast on ROCm RDNA3+ cards.
+) -> Optional[str]:
+    """Decode an fp32-pinned video VAE (Wan) in bf16 on ROCm RDNA3+ cards; returns the mode engaged, else None.
 
-    The weights stay fp32 exactly as loaded (the reason they are pinned: truncating the fp32 checkpoint to bf16 at
-    load and widening it later is lossy). Only the decode's convolutions run in bf16, per op, the way ComfyUI decodes
-    the Wan VAE on these cards (its working dtypes are bf16 first). In fp32, MIOpen runs Wan's 3D convolutions as
-    im2col plus a small-tile fp32 GEMM with no matrix cores: on a gfx1151 a 1280x704x21 clip spent about 385 s there,
-    against about 43 s for ComfyUI's whole non-denoise time. The output is widened back to fp32 so every consumer
-    sees what it sees today.
+    In fp32, MIOpen runs Wan's 3D convolutions as im2col plus a small-tile fp32 GEMM with no matrix cores: on a gfx1151
+    a 1280x704x21 clip spent about 385 s there, against about 43 s for ComfyUI's whole non-denoise time (it decodes the
+    Wan 2.2 VAE in bf16 on these cards).
 
-    ROCm gfx11 / gfx12 only by default; NVIDIA and every other device keep the fp32 decode. UNSLOTH_VIDEO_VAE_BF16_DECODE
-    = 0 turns it off, 1 also allows it on any CUDA device with bf16."""
+    "weights" (the default) casts only the decode half (``post_quant_conv`` + ``decoder``) to bf16 once and feeds it
+    bf16 latents; the encoder stays fp32, so ``vae.dtype`` and every image-to-video encode are unchanged. "autocast"
+    keeps every weight fp32 and runs the decode under bf16 autocast. Both widen the output back to fp32, so every
+    consumer sees the dtype it sees today. bf16 keeps fp32's exponent range, so neither can overflow where fp32 did not.
+
+    ROCm gfx11 / gfx12 only by default; NVIDIA (which has its own fp16 decode in diffusion_speed) and every other
+    device keep the fp32 decode. UNSLOTH_VIDEO_VAE_BF16_DECODE: 0 off, auto / weights / autocast pick the mode, 1 also
+    allows it on any CUDA device with bf16."""
     gate = os.environ.get(VAE_BF16_DECODE_ENV, "auto").strip().lower()
-    if gate in ("0", "false", "off", "no") or target.device != "cuda":
-        return False
+    if gate in _VAE_BF16_OFF or target.device != "cuda":
+        return None
     vae = getattr(pipe, "vae", None)
     decode = getattr(vae, "decode", None)
     if not callable(decode) or getattr(decode, "_unsloth_bf16_decode", False):
-        return False
+        return None
     import torch
 
     if getattr(vae, "dtype", None) is not torch.float32:
-        return False
-    if gate in ("1", "true", "on", "yes"):
+        return None
+    mode, forced = _vae_bf16_decode_request(gate)
+    if forced:
         if not torch.cuda.is_bf16_supported():
-            return False
+            return None
         arch = "forced"
     else:
         if target.backend != "rocm":
-            return False
+            return None
         arch = _rocm_bf16_decode_arch(torch, target)
         if arch is None:
-            return False
+            return None
 
-    def _bf16_decode(*args: Any, **kwargs: Any) -> Any:
-        with torch.autocast(device_type = "cuda", dtype = torch.bfloat16):
-            out = decode(*args, **kwargs)
-        return _as_float32(out, torch)
+    parts = [
+        m
+        for m in (getattr(vae, "post_quant_conv", None), getattr(vae, "decoder", None))
+        if isinstance(m, torch.nn.Module)
+    ]
+    if mode == "weights" and not parts:
+        mode = "autocast"  # no separable decode half: cast nothing
+
+    if mode == "weights":
+        for part in parts:
+            part.to(torch.bfloat16)
+            # A path that reaches the decoder without vae.decode (a custom tiled / untiled decode) still gets bf16.
+            part.register_forward_pre_hook(_cast_float_args(torch, torch.bfloat16))
+
+        def _bf16_decode(z: Any, *args: Any, **kwargs: Any) -> Any:
+            if isinstance(z, torch.Tensor) and z.is_floating_point():
+                z = z.to(torch.bfloat16)
+            return _as_float32(decode(z, *args, **kwargs), torch)
+
+    else:
+
+        def _bf16_decode(*args: Any, **kwargs: Any) -> Any:
+            with torch.autocast(device_type = "cuda", dtype = torch.bfloat16):
+                out = decode(*args, **kwargs)
+            return _as_float32(out, torch)
 
     _bf16_decode._unsloth_bf16_decode = True  # type: ignore[attr-defined]
     _bf16_decode.__wrapped__ = decode  # type: ignore[attr-defined]
     vae.decode = _bf16_decode
+    vae._unsloth_bf16_decode_mode = mode
     if logger is not None:
-        logger.info("video.vae_decode: bf16 autocast on %s (fp32 weights kept)", arch)
-    return True
+        logger.info("video.vae_decode: bf16 %s on %s", mode, arch)
+    return mode
 
 
 def _studio_device_is(studio_device: Any, device_type: Any, name: str) -> bool:
