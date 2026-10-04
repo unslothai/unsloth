@@ -348,6 +348,7 @@ from routes import (
     youtube_router,
 )
 from routes.llama import router as llama_router
+from routes.engines import router as engines_router
 from routes.llama_compat import is_engine_probe_path, router as llama_compat_router
 from routes.whisper import router as whisper_router
 from routes.npu import router as npu_router
@@ -383,6 +384,7 @@ import utils.hardware.hardware as _hw_module
 
 from utils.torch_warmup import (
     DISABLE_ENV_VAR,
+    background_media_import,
     join_background_warm,
     prewarm_diffusers_if_image_models_exist,
     reset_background_warm,
@@ -654,18 +656,23 @@ def _post_warm_background_work(generation: Optional[int] = None) -> None:
     # _dense_quant_supported). Gated on torch being up rather than assumed, since
     # UNSLOTH_STUDIO_DISABLE_TORCH_WARM=1 exists precisely to keep the ML stack cold.
     if "torch" in sys.modules:
-        try:
-            _refresh_dense_quant_capability()
-        except Exception as _dq_exc:  # noqa: BLE001 -- a picker label must never break the warm
-            import structlog as _structlog
-            _structlog.get_logger(__name__).debug("dense quant capability skipped: %s", _dq_exc)
-        try:
-            _refresh_quantised_streaming_capability()
-        except Exception as _qs_exc:  # noqa: BLE001 -- a picker tier must never break the warm
-            import structlog as _structlog
-            _structlog.get_logger(__name__).debug(
-                "quantised streaming capability skipped: %s", _qs_exc
-            )
+        # Inside the media import window: skipped once a load claimed it; /api/system resolves both later.
+        with background_media_import() as _window_open:
+            if _window_open:
+                try:
+                    _refresh_dense_quant_capability()
+                except Exception as _dq_exc:  # noqa: BLE001 -- a picker label must never break the warm
+                    import structlog as _structlog
+                    _structlog.get_logger(__name__).debug(
+                        "dense quant capability skipped: %s", _dq_exc
+                    )
+                try:
+                    _refresh_quantised_streaming_capability()
+                except Exception as _qs_exc:  # noqa: BLE001 -- a picker tier must never break the warm
+                    import structlog as _structlog
+                    _structlog.get_logger(__name__).debug(
+                        "quantised streaming capability skipped: %s", _qs_exc
+                    )
 
     if _post_warm_retired(generation):
         return
@@ -1705,6 +1712,7 @@ app.include_router(profile_stats_router, prefix = "/api/profile", tags = ["profi
 app.include_router(datasets_router, prefix = "/api/datasets", tags = ["datasets"])
 app.include_router(data_recipe_router, prefix = "/api/data-recipe", tags = ["data-recipe"])
 app.include_router(llama_router, prefix = "/api/llama", tags = ["llama"])
+app.include_router(engines_router, prefix = "/api/engines", tags = ["engines"])
 app.include_router(whisper_router, prefix = "/api/whisper", tags = ["whisper"])
 app.include_router(npu_router, prefix = "/api/npu", tags = ["npu"])
 app.include_router(export_router, prefix = "/api/export", tags = ["export"])
@@ -2449,15 +2457,35 @@ def _probe_quantised_streaming(supported: Any) -> bool:
 
 def _quantised_streaming() -> bool:
     """The streaming bit for ``/api/system``. Resolved here only once a load has already loaded every
-    module it reads, since a cold warm (UNSLOTH_STUDIO_DISABLE_TORCH_WARM=1) never resolves it."""
+    module it reads, since a cold warm (UNSLOTH_STUDIO_DISABLE_TORCH_WARM=1) never resolves it.
+    Needs each module initialised (probing mid-load races the load), not core.inference.video (image loads skip it)."""
     if _quantised_streaming_capability is None and all(
-        name in sys.modules for name in ("torch", "diffusers", "torchao", "core.inference.video")
+        (module := sys.modules.get(name)) is not None
+        and not getattr(getattr(module, "__spec__", None), "_initializing", False)
+        for name in (
+            "torch",
+            "torchao",
+            "diffusers",
+            "diffusers.hooks",
+            "diffusers.hooks.group_offloading",
+        )
     ):
         try:
             return _refresh_quantised_streaming_capability()
         except Exception:  # noqa: BLE001 -- the picker then keeps the tier hidden
             return False
     return bool(_quantised_streaming_capability)
+
+
+def _diffusers_offload_tiers() -> dict:
+    """Extra picker fit tiers per curated Diffusers repo (lower-cased id), in the picker's GiB units.
+    Torch-free; the picker unions them with the catalog's own tiers, so they can only widen."""
+    try:
+        from core.inference.video_minimax_h3 import h3_diffusers_fit_tiers
+        tiers = h3_diffusers_fit_tiers()
+    except Exception:  # noqa: BLE001 -- a picker hint must never break the polled route
+        return {}
+    return {"minimaxai/minimax-h3": tiers} if tiers else {}
 
 
 def _nvfp4_diffusion_enabled() -> bool:
@@ -2577,6 +2605,8 @@ def get_system_info(
         "dense_quant_schemes": _dense_quant_schemes(),
         # The streamed MiniMax-H3 tier needs group offload that swaps torchao weights.
         "quantised_streaming": _quantised_streaming(),
+        # Backend-measured offload tiers the picker unions with the catalog's. Additive key.
+        "diffusers_offload_tiers": _diffusers_offload_tiers(),
         # Torch-free env read, safe on this polled route.
         "nvfp4_diffusion": _nvfp4_diffusion_enabled(),
     }

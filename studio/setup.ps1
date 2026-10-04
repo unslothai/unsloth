@@ -4198,7 +4198,8 @@ $multiArchGfx = @(
     "gfx1200", "gfx1201"                                                    # RDNA 4
 )
 $MultiArchIndexBase = if ($env:UNSLOTH_ROCM_WINDOWS_MULTIARCH_MIRROR) { $env:UNSLOTH_ROCM_WINDOWS_MULTIARCH_MIRROR.TrimEnd('/') } else { "https://repo.amd.com/rocm/whl-multi-arch" }
-$MultiArchTag = "rocm7.14.1"
+# Not rocm7.14.1: its Windows wheels ship a mismatched AOTriton runtime, so fused SDPA fails (ROCm/TheRock#7992).
+$MultiArchTag = "rocm7.14.0"
 $MultiArchTorchVersion = "2.11.0"
 $MultiArchTorchvisionVersion = "0.26.0"
 $MultiArchTorchaudioVersion = "2.11.0"
@@ -10089,6 +10090,67 @@ if ($env:WHISPER_SERVER_PATH -or $env:UNSLOTH_WHISPER_CPP_PATH) {
         step "whisper.cpp" "no compatible prebuilt (installed llama.cpp $installedWhisperLlamaTag; whisper requires $requiredWhisperLlamaTag); curated whisper.cpp dictation is unavailable; publish paired releases in llama.cpp then whisper.cpp order; browser and Transformers dictation remain available" "Yellow"
     } else {
         step "whisper.cpp" "prebuilt install failed; curated whisper.cpp dictation is unavailable; retry setup or inspect verbose output; browser and Transformers dictation remain available" "Yellow"
+    }
+}
+
+# ==========================================================================
+#  PHASE 3.4b: Install the audio.cpp prebuilt (speech, music and dictation runtime)
+# ==========================================================================
+# audio.cpp vendors its own patched ggml, so its bundles are self-contained and do not
+# pair with the llama install. Failure is never fatal: every other audio engine keeps working.
+$AudioCppDir = Join-Path $UnslothHome "audio.cpp"
+$AudioCppInstaller = Join-Path $PSScriptRoot "install_audio_cpp_prebuilt.py"
+if ($env:AUDIOCPP_SERVER_PATH -or $env:UNSLOTH_AUDIO_CPP_PATH) {
+    substep "audio.cpp: using a user-configured binary/dir; skipping managed install"
+} elseif ($env:UNSLOTH_SKIP_AUDIO_CPP_INSTALL -eq "1") {
+    substep "audio.cpp: install skipped (UNSLOTH_SKIP_AUDIO_CPP_INSTALL=1)"
+} elseif ($RuntimeRootIsCustom -and (Test-Path -LiteralPath $AudioCppInstaller) -and
+        (Assert-StudioOwnedOrAbsent -Path $AudioCppDir -Label "audio.cpp install" -NonFatal -IsCustom $RuntimeRootIsCustom) -eq "Denied") {
+    step "audio.cpp" "install directory cannot be read: access is denied; audio.cpp models are unavailable; restore access to $AudioCppDir or move it aside, then re-run setup" "Yellow"
+} elseif (Test-Path -LiteralPath $AudioCppInstaller) {
+    if ($RuntimeRootIsCustom) {
+        Assert-StudioOwnedOrAbsent -Path $AudioCppDir -Label "audio.cpp install" -IsCustom $RuntimeRootIsCustom
+    }
+    $audioCppArgs = @($AudioCppInstaller, "--install-dir", $AudioCppDir)
+    # A host whose GPU is invisible at install time names its bundle here.
+    if ($env:UNSLOTH_AUDIO_CPP_ACCELERATOR) {
+        $audioCppArgs += @("--accelerator", $env:UNSLOTH_AUDIO_CPP_ACCELERATOR)
+    }
+    $prevEAPAudioCpp = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    $previousNativeErrorPreferenceA = $null
+    $restoreNativeErrorPreferenceA = $false
+    if ($PSVersionTable.PSVersion.Major -ge 7) {
+        $previousNativeErrorPreferenceA = $PSNativeCommandUseErrorActionPreference
+        $PSNativeCommandUseErrorActionPreference = $false
+        $restoreNativeErrorPreferenceA = $true
+    }
+    try {
+        $audioCppOutput = & python @audioCppArgs 2>&1 | Show-DownloadProgress | Out-String
+        $audioCppExit = $LASTEXITCODE
+    } finally {
+        if ($restoreNativeErrorPreferenceA) {
+            $PSNativeCommandUseErrorActionPreference = $previousNativeErrorPreferenceA
+        }
+    }
+    $ErrorActionPreference = $prevEAPAudioCpp
+    if ($audioCppExit -eq 0) {
+        if ($audioCppOutput -match "already matches") {
+            step "audio.cpp" "prebuilt up to date"
+        } elseif ($audioCppOutput -match "keeping the existing complete install") {
+            # The release lookup could not answer and the install on disk is complete; "prebuilt
+            # installed" would name a release nothing fetched. whisper.cpp's wording.
+            step "audio.cpp" "update unavailable, existing prebuilt kept" "Yellow"
+        } else {
+            step "audio.cpp" "prebuilt installed"
+        }
+        if ($RuntimeRootIsCustom -and (Test-PathQuiet $AudioCppDir "Container")) {
+            Mark-StudioOwned -Path $AudioCppDir
+        }
+    } elseif ($audioCppExit -eq 3) {
+        step "audio.cpp" "install busy; keeping existing runtime" "Yellow"
+    } else {
+        step "audio.cpp" "prebuilt install failed; audio.cpp models are unavailable; retry setup or inspect verbose output; other audio engines remain available" "Yellow"
     }
 }
 

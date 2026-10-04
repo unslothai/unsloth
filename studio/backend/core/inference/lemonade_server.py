@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import secrets
 import socket
 import subprocess
@@ -50,6 +51,18 @@ _CONFIG_OVERRIDES: dict[str, Any] = {
     "host": "127.0.0.1",
     "max_loaded_models": 1,
 }
+
+
+# _find_free_port releases the port before lemond binds it, so another process can take it in
+# between. Only an exit that names the collision is retried, on a fresh port; any other early exit
+# is a real failure and is reported at once.
+_START_ATTEMPTS = 3
+_PORT_TAKEN = re.compile(
+    r"address already in use|eaddrinuse|only one usage of each socket address|errno 98\b|errno 48\b"
+    # A localized Windows message still carries the code; never a bare 10048, which can be a port.
+    r"|(?:winerror|errno|error)\s*:?\s*10048\b",
+    re.IGNORECASE,
+)
 
 
 class LemonadeUnavailable(RuntimeError):
@@ -135,60 +148,81 @@ class LemonadeServer:
             self.cache_dir.mkdir(parents = True, exist_ok = True)
             self.flm_model_dir.mkdir(parents = True, exist_ok = True)
             self._write_config()
-            port = self._find_free_port()
-            api_key = secrets.token_urlsafe(32)
-            env = child_env_without_native_path_secret()
-            env["LEMONADE_API_KEY"] = api_key
-            env["FLM_MODEL_PATH"] = str(self.flm_model_dir)
-            env["FLM_DISABLE_UPDATE_CHECK"] = "1"
-            cmd = [
-                str(self.binary),
-                str(self.cache_dir),
-                str(self.config_dir),
-                "--port",
-                str(port),
-                "--host",
-                "127.0.0.1",
-                "--no-broadcast",
-                "--log-file",
-                "disabled",
-            ]
-            logger.info("Starting Lemonade: %s", " ".join(cmd))
-            self._tail.clear()
-
-            def _spawn() -> subprocess.Popen:
-                return subprocess.Popen(
-                    cmd,
-                    cwd = str(self.binary.parent),
-                    stdout = subprocess.PIPE,
-                    stderr = subprocess.STDOUT,
-                    stdin = subprocess.DEVNULL,
-                    text = True,
-                    encoding = "utf-8",
-                    errors = "replace",
-                    env = env,
-                    **windows_hidden_subprocess_kwargs(),
-                    **child_popen_kwargs(_kill_with_the_parent),
-                )
-
-            proc = spawn_on_lifetime_thread(_spawn)
-            adopt_pid(proc.pid)
-            self._process = proc
-            self.port = port
-            self.api_key = api_key
-            # Shutdown may have swept children before this process was adopted.
-            if is_process_shutting_down():
-                self._kill_locked()
-                raise LemonadeUnavailable("Unsloth is shutting down; not starting Lemonade.")
-            self._drain_thread = threading.Thread(
-                target = self._drain, args = (proc,), daemon = True, name = "lemond-drain"
-            )
-            self._drain_thread.start()
-            if not self._wait_ready(timeout):
-                # After the kill, which joins the drain thread, so the tail has the last lines.
-                self._kill_locked()
+            for attempt in range(1, _START_ATTEMPTS + 1):
+                if self._start_once(timeout):
+                    return
                 tail = self.log_tail()
+                if (
+                    attempt < _START_ATTEMPTS
+                    and not self._stop_requested.is_set()
+                    and _PORT_TAKEN.search(tail)
+                ):
+                    logger.warning(
+                        "Lemonade lost its port to another process; retrying on a new one."
+                    )
+                    if is_process_shutting_down():
+                        raise LemonadeUnavailable(
+                            "Unsloth is shutting down; not starting Lemonade."
+                        )
+                    continue
                 raise LemonadeUnavailable(f"Lemonade did not start. Last output:\n{tail}")
+
+    def _start_once(self, timeout: float) -> bool:
+        """Spawn lemond on a fresh port and wait for it; False (with the child gone) if it never got ready."""
+        port = self._find_free_port()
+        api_key = secrets.token_urlsafe(32)
+        env = child_env_without_native_path_secret()
+        env["LEMONADE_API_KEY"] = api_key
+        env["FLM_MODEL_PATH"] = str(self.flm_model_dir)
+        env["FLM_DISABLE_UPDATE_CHECK"] = "1"
+        cmd = [
+            str(self.binary),
+            str(self.cache_dir),
+            str(self.config_dir),
+            "--port",
+            str(port),
+            "--host",
+            "127.0.0.1",
+            "--no-broadcast",
+            "--log-file",
+            "disabled",
+        ]
+        logger.info("Starting Lemonade: %s", " ".join(cmd))
+        self._tail.clear()
+
+        def _spawn() -> subprocess.Popen:
+            return subprocess.Popen(
+                cmd,
+                cwd = str(self.binary.parent),
+                stdout = subprocess.PIPE,
+                stderr = subprocess.STDOUT,
+                stdin = subprocess.DEVNULL,
+                text = True,
+                encoding = "utf-8",
+                errors = "replace",
+                env = env,
+                **windows_hidden_subprocess_kwargs(),
+                **child_popen_kwargs(_kill_with_the_parent),
+            )
+
+        proc = spawn_on_lifetime_thread(_spawn)
+        adopt_pid(proc.pid)
+        self._process = proc
+        self.port = port
+        self.api_key = api_key
+        # Shutdown may have swept children before this process was adopted.
+        if is_process_shutting_down():
+            self._kill_locked()
+            raise LemonadeUnavailable("Unsloth is shutting down; not starting Lemonade.")
+        self._drain_thread = threading.Thread(
+            target = self._drain, args = (proc,), daemon = True, name = "lemond-drain"
+        )
+        self._drain_thread.start()
+        if not self._wait_ready(timeout):
+            # After the kill, which joins the drain thread, so the tail has the last lines.
+            self._kill_locked()
+            return False
+        return True
 
     def _drain(self, proc: subprocess.Popen) -> None:
         try:

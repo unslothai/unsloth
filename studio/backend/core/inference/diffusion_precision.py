@@ -457,7 +457,12 @@ def _cast_fp8(encoder: Any, target: Any) -> None:
     )
     out_emb = get_out() if callable(get_out) else None
     in_emb = get_in() if callable(get_in) else None
-    if out_emb is not None and in_emb is not None and out_emb.weight is in_emb.weight:
+    # getattr: a dropped head (diffusion_text_encoder_trim.NoLogitsHead) has no weight.
+    if (
+        out_emb is not None
+        and in_emb is not None
+        and getattr(out_emb, "weight", None) is getattr(in_emb, "weight", object())
+    ):
         tied_name = next((n for n, m in encoder.named_modules() if m is out_emb), None)
         if tied_name:
             skip += (rf"^{re.escape(tied_name)}$",)
