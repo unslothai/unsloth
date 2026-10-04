@@ -73,45 +73,39 @@ def _join_words(words: list[str]) -> str:
     return out
 
 
-def _words(raw: Any, rate: int) -> list[dict]:
-    words = []
+def _spanned(raw: Any, rate: int):
     for item in raw if isinstance(raw, list) else ():
-        if not isinstance(item, dict):
-            continue
-        word = item.get("word", item.get("text"))
-        span = _span(item, rate)
-        if not isinstance(word, str) or not word.strip() or span is None:
-            continue
-        words.append({"start": span[0], "end": span[1], "word": word.strip()})
-    return words
+        span = _span(item, rate) if isinstance(item, dict) else None
+        if span is not None:
+            yield item, span
+
+
+def _words(raw: Any, rate: int) -> list[dict]:
+    return [
+        {"start": start, "end": end, "word": word.strip()}
+        for item, (start, end) in _spanned(raw, rate)
+        if isinstance(word := item.get("word", item.get("text")), str) and word.strip()
+    ]
 
 
 def _segments(raw: Any, rate: int) -> list[dict]:
-    segments = []
-    for item in raw if isinstance(raw, list) else ():
-        if not isinstance(item, dict):
-            continue
-        text = item.get("text")
-        span = _span(item, rate)
-        if not isinstance(text, str) or span is None:
-            continue
-        segments.append({"start": span[0], "end": span[1], "text": _clean_lines(text)})
-    return segments
+    return [
+        {"start": start, "end": end, "text": _clean_lines(text)}
+        for item, (start, end) in _spanned(raw, rate)
+        if isinstance(text := item.get("text"), str)
+    ]
 
 
 def _turns(raw: Any, rate: int) -> list[tuple[float, float, str]]:
     turns = []
-    for item in raw if isinstance(raw, list) else ():
-        if not isinstance(item, dict):
-            continue
+    for item, (start, end) in _spanned(raw, rate):
         speaker = item.get("speaker_id", item.get("speaker"))
-        if isinstance(speaker, bool) or not isinstance(speaker, (str, int)):
-            continue
-        speaker = str(speaker).strip()
-        span = _span(item, rate)
-        if not speaker or span is None:
-            continue
-        turns.append((span[0], span[1], speaker))
+        if (
+            isinstance(speaker, (str, int))
+            and not isinstance(speaker, bool)
+            and str(speaker).strip()
+        ):
+            turns.append((start, end, str(speaker).strip()))
     return turns
 
 

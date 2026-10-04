@@ -83,8 +83,6 @@ FAKE_SERVER = textwrap.dedent(
                 req = json.loads(body)
                 if req.get("language") == "slow":
                     time.sleep(30)
-                if req.get("language") == "xx":
-                    return self.reply(400, json.dumps({"error": {"message": "unsupported language"}}).encode())
                 return self.reply(200, json.dumps({"text": json.dumps(req, sort_keys=True)}).encode())
             self.reply(404, b"{}")
 
@@ -167,29 +165,6 @@ def test_cancel_closes_the_socket_mid_request(fake_binary, tmp_path):
         server.stop()
 
 
-def test_transcription_details_carries_model_language_and_server_path(fake_binary, tmp_path):
-    from pathlib import Path
-
-    from core.inference.stt_audiocpp_sidecar import AudioCppSttSidecar, _stt_tmp_dir
-
-    model = CANARY
-    server = srv.AudioCppServer.start(model, str(tmp_path / "m.gguf"))
-    try:
-        side = AudioCppSttSidecar()
-        side._server = server
-        fields = json.loads(side._post_transcription(b"RIFF....WAVE", "en", None))
-        audio = Path(fields.pop("audio"))
-        # JSON naming a file the server reads, not an upload; the file is gone once it answered.
-        assert fields == {"language": "en", "model": server.model_id}
-        assert audio.is_absolute() and audio.parent == _stt_tmp_dir() and audio.suffix == ".wav"
-        assert not audio.exists()
-        # A family that rejects the language still transcribes, without it.
-        fields = json.loads(side._post_transcription(b"RIFF....WAVE", "xx", None))
-        assert "language" not in fields and fields["model"] == server.model_id
-    finally:
-        server.stop()
-
-
 def test_cancelled_transcription_stops_the_busy_server(fake_binary, tmp_path):
     from core.inference.stt_audiocpp_sidecar import (
         AudioCppSttSidecar,
@@ -202,7 +177,7 @@ def test_cancelled_transcription_stops_the_busy_server(fake_binary, tmp_path):
         cancel = threading.Event()
         threading.Timer(0.3, cancel.set).start()
         with side._lock, pytest.raises(SttTranscriptionCancelledError):
-            side._post_transcription(b"RIFF....WAVE", "slow", cancel)
+            side._post_details(tmp_path / "a.wav", "slow", cancel, {})
         # The child still decoding the abandoned clip is gone, so the next load starts a fresh one.
         assert side._server is None and not server.alive()
     finally:

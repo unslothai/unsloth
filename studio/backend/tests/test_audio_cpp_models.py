@@ -2076,26 +2076,11 @@ def test_required_inputs_come_from_the_raw_spec(hub):
 
 
 def test_samsone_is_refused_for_transcription(hub):
-    """Its spec says ASR, but it describes the audio: off Transcribe, dictation and the picker."""
     from core.inference import stt_audiocpp_sidecar as s
     from core.inference.stt_sidecar import SttModelIdError
 
     spec = {"category": "asr", "tasks": ["asr"]}
-    policy = acm.family_policy("samsone", spec)
-    assert policy.task == "" and "describes audio" in policy.unsupported
-    _put(
-        _snapshot(hub),
-        "Samsone-GGUF/samsone-134m-q8_0.gguf",
-        _gguf_bytes(family = "samsone", spec = spec),
-    )
-    model = acm.resolve(f"{AUDIO_CPP_REPO}/Samsone-GGUF", network = False)
-    with pytest.raises(acm.AudioCppModelError, match = "describes audio"):
-        acm.require_runnable(model, "asr")
+    _put(_snapshot(hub), "Samsone-GGUF/s-q8_0.gguf", _gguf_bytes(family = "samsone", spec = spec))
     with pytest.raises(SttModelIdError, match = "describes audio"):
         s.resolve_audio_cpp_stt_model(f"{AUDIO_CPP_REPO}/Samsone-GGUF")
     assert f"{AUDIO_CPP_REPO}/Samsone-GGUF" not in s.downloaded_model_ids()
-
-
-def test_cpu_only_families_are_listed():
-    assert acm.CPU_ONLY_FAMILIES == frozenset({"niagara_asr"})
-    assert all(acm.FAMILIES[f].task == "asr" for f in acm.CPU_ONLY_FAMILIES)

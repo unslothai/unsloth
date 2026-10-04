@@ -3,158 +3,88 @@
 
 """stt_capabilities: what each speech-to-text model adds to a transcript, answered offline."""
 
-import struct
+import sys
+from pathlib import Path
 
 import pytest
 
-from core.inference import audio_cpp_files
 from core.inference import audio_cpp_models as acm
 from core.inference import stt_capabilities as caps
-from core.inference.audio_cpp_models import AUDIO_CPP_REPO
+from core.inference.audio_cpp_models import AUDIO_CPP_REPO as REPO
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from test_audio_cpp_models import _gguf_bytes, _put, _snapshot, hub  # noqa: E402, F401
 
 
-def _gguf_bytes(family) -> bytes:
-    kv = [
-        ("general.architecture", 8, "audiocpp"),
-        ("audiocpp.model_spec.version", 4, 1),
-        ("audiocpp.model_spec.family", 8, family),
-    ]
-    out = bytearray(struct.pack("<IIQQ", 0x46554747, 3, 0, len(kv)))
-    for key, vtype, value in kv:
-        k = key.encode()
-        out += struct.pack("<Q", len(k)) + k + struct.pack("<I", vtype)
-        if vtype == 8:
-            v = value.encode()
-            out += struct.pack("<Q", len(v)) + v
-        else:
-            out += struct.pack("<I", value)
-    return bytes(out) + b"\0" * 64
-
-
-@pytest.fixture
-def hub(tmp_path, monkeypatch):
-    root = tmp_path / "hub"
-    root.mkdir()
-    monkeypatch.setattr(acm, "_hub_cache", lambda: root)
-    monkeypatch.setattr(audio_cpp_files, "_hub_cache", lambda: root)
-    monkeypatch.setattr(acm, "runtime_spec", lambda family: None)
-    monkeypatch.setattr(acm, "runtime_knows_family", lambda family: None)
-    monkeypatch.setenv("HF_HUB_OFFLINE", "1")
+def _add(hub, folder, family):
+    _put(_snapshot(hub), f"{folder}/{folder.lower()}-q8_0.gguf", _gguf_bytes(family = family))
     acm.forget()
-    yield root
-    acm.forget()
-
-
-def _put(hub, rel, family):
-    repo_dir = hub / ("models--" + AUDIO_CPP_REPO.replace("/", "--"))
-    path = repo_dir / "snapshots" / ("a" * 40) / rel
-    (repo_dir / "refs").mkdir(parents = True, exist_ok = True)
-    (repo_dir / "refs" / "main").write_text("a" * 40)
-    path.parent.mkdir(parents = True, exist_ok = True)
-    path.write_bytes(_gguf_bytes(family))
-    acm.forget()
-
-
-def _row(folder):
-    return f"{AUDIO_CPP_REPO}/{folder}"
 
 
 @pytest.mark.parametrize(
-    "folder,family,timestamps,speakers",
+    "folder,family,timestamps,speakers,cpu_only",
     [
-        ("Qwen3-ASR-0.6B-GGUF", "qwen3_asr", "on_request", False),
-        ("MOSS-Transcribe-Diarize-GGUF", "moss_transcribe_diarize", "always", True),
-        ("VibeVoice-ASR-GGUF", "vibevoice_asr", "always", True),
-        (
-            "VibeVoice-ASR-Streaming-GGUF",
-            "vibevoice_asr_streaming",
-            "unsupported",
-            False,
-        ),
-        ("Parakeet-TDT-0.6B-v3-GGUF", "parakeet_tdt", "always", False),
-        ("Kroko-ASR-GGUF", "kroko_asr", "always", False),
+        ("Qwen3-ASR-0.6B-GGUF", "qwen3_asr", "on_request", False, False),
+        ("MOSS-Transcribe-Diarize-GGUF", "moss_transcribe_diarize", "always", True, False),
+        ("VibeVoice-ASR-GGUF", "vibevoice_asr", "always", True, False),
+        ("VibeVoice-ASR-Streaming-GGUF", "vibevoice_asr_streaming", "unsupported", False, False),
+        ("Parakeet-TDT-0.6B-v3-GGUF", "parakeet_tdt", "always", False, False),
+        ("Kroko-ASR-GGUF", "kroko_asr", "always", False, False),
         # Its spans are sub-word pieces, so Studio treats it as plain text.
-        ("Nemotron-3.5-ASR-Streaming-0.6B-GGUF", "nemotron_asr", "unsupported", False),
-        ("Canary-180M-Flash-GGUF", "canary_asr", "unsupported", False),
+        ("Nemotron-3.5-ASR-Streaming-0.6B-GGUF", "nemotron_asr", "unsupported", False, False),
+        ("Canary-180M-Flash-GGUF", "canary_asr", "unsupported", False, False),
+        ("Niagara-ASR-GGUF", "niagara_asr", "unsupported", False, True),
     ],
 )
-def test_the_table_for_downloaded_audio_cpp_models(hub, folder, family, timestamps, speakers):
-    _put(hub, f"{folder}/{folder.lower()}-q8_0.gguf", family)
+@pytest.mark.parametrize("downloaded", [True, False])
+def test_audio_cpp_table(hub, folder, family, timestamps, speakers, cpu_only, downloaded):
+    if downloaded:
+        _add(hub, folder, family)
     for engine in ("audiocpp", None):
-        result = caps.capabilities_for(_row(folder), engine)
-        assert result["engine"] == "audiocpp" and result["family"] == family
+        result = caps.capabilities_for(f"{REPO}/{folder}", engine)
+        assert (result["engine"], result["family"]) == ("audiocpp", family)
         assert (result["timestamps"], result["speakers"]) == (timestamps, speakers)
-        assert result["cpu_only"] is False
+        assert result["cpu_only"] is cpu_only
         assert (result["aligner"] is not None) == (timestamps == "on_request")
 
 
 def test_qwen3_reports_whether_its_aligner_is_downloaded(hub):
-    _put(hub, "Qwen3-ASR-0.6B-GGUF/qwen3-asr-0.6b-q8_0.gguf", "qwen3_asr")
-    assert caps.capabilities_for(_row("Qwen3-ASR-0.6B-GGUF"), "audiocpp")["aligner"] == {
-        "downloaded": False,
-        "size_bytes": 1_129_966_496,
-    }
-    _put(
-        hub,
-        "Qwen3-ForcedAligner-0.6B-GGUF/qwen3-forced-aligner-0.6b-q8_0.gguf",
-        "qwen3_forced_aligner",
-    )
-    aligner = caps.capabilities_for(_row("Qwen3-ASR-0.6B-GGUF"), "audiocpp")["aligner"]
-    assert aligner["downloaded"] is True and aligner["size_bytes"] > 0
+    def aligner():
+        return caps.capabilities_for(f"{REPO}/Qwen3-ASR-1.7B-GGUF", "audiocpp")["aligner"]
 
-
-def test_an_undownloaded_model_is_judged_by_its_name(hub):
-    moss = caps.capabilities_for(_row("MOSS-Transcribe-Diarize-GGUF"), None)
-    assert (moss["engine"], moss["family"]) == ("audiocpp", "moss_transcribe_diarize")
-    assert (moss["timestamps"], moss["speakers"]) == ("always", True)
-    qwen3 = caps.capabilities_for(_row("Qwen3-ASR-1.7B-GGUF"), "audiocpp")
-    assert qwen3["timestamps"] == "on_request" and qwen3["aligner"]["downloaded"] is False
-
-
-def test_llama_cpp_qwen3_and_whisper_engines_have_no_timestamps(hub):
-    for model, engine in (
-        ("qwen3-asr-0.6b", "mtmd"),
-        ("qwen3-asr-0.6b", None),
-        ("unslothai/Qwen3-ASR-0.6B-GGUF", "audiocpp"),
-    ):
-        result = caps.capabilities_for(model, engine)
-        assert result["engine"] == "mtmd" and result["family"] is None
-        assert (result["timestamps"], result["speakers"], result["aligner"]) == (
-            "unsupported",
-            False,
-            None,
-        )
-    for engine in ("transformers", "gguf", None):
-        result = caps.capabilities_for("small", engine)
-        assert result["timestamps"] == "unsupported" and result["speakers"] is False
-
-
-def test_niagara_runs_on_the_cpu(hub):
-    result = caps.capabilities_for(_row("Niagara-ASR-GGUF"), "audiocpp")
-    assert result["family"] == "niagara_asr" and result["cpu_only"] is True
-    assert result["timestamps"] == "unsupported"
+    assert aligner() == {"downloaded": False, "size_bytes": 1_129_966_496}
+    _add(hub, "Qwen3-ForcedAligner-0.6B-GGUF", "qwen3_forced_aligner")
+    assert aligner()["downloaded"] is True and aligner()["size_bytes"] > 0
 
 
 @pytest.mark.parametrize(
-    "model,engine",
+    "model,engine,expected_engine",
     [
-        (None, None),
-        ("", "audiocpp"),
-        ("nobody/Nothing-Here", None),
-        ("nobody/Nothing-Here", "audiocpp"),
-        (_row("Samsone-GGUF"), "audiocpp"),
-        (_row("Qwen3-ASR-0.6B-GGUF"), "no-such-engine"),
+        # The llama.cpp Qwen3-ASR ids and repos, whatever engine was named.
+        ("qwen3-asr-0.6b", "mtmd", "mtmd"),
+        ("qwen3-asr-0.6b", None, "mtmd"),
+        ("unslothai/Qwen3-ASR-0.6B-GGUF", "audiocpp", "mtmd"),
+        ("small", "transformers", "transformers"),
+        ("small", "gguf", "gguf"),
+        ("small", None, "transformers"),
+        (None, None, "transformers"),
+        ("", "audiocpp", "audiocpp"),
+        ("nobody/Nothing-Here", None, "transformers"),
+        ("nobody/Nothing-Here", "audiocpp", "audiocpp"),
+        (f"{REPO}/Samsone-GGUF", "audiocpp", "audiocpp"),
+        (f"{REPO}/Qwen3-ASR-0.6B-GGUF", "no-such-engine", None),
     ],
 )
-def test_unknown_models_are_plain_text_not_errors(hub, model, engine):
+def test_other_engines_and_unknown_models_are_plain_text(hub, model, engine, expected_engine):
     result = caps.capabilities_for(model, engine)
-    assert set(result) == {"engine", "family", "timestamps", "speakers", "aligner", "cpu_only"}
-    assert (result["timestamps"], result["speakers"], result["aligner"]) == (
-        "unsupported",
-        False,
-        None,
-    )
-    assert result["family"] is None
+    assert result == {
+        "engine": expected_engine,
+        "family": None,
+        "timestamps": "unsupported",
+        "speakers": False,
+        "aligner": None,
+        "cpu_only": False,
+    }
 
 
 def test_a_failing_lookup_still_answers(hub, monkeypatch):
@@ -163,7 +93,7 @@ def test_a_failing_lookup_still_answers(hub, monkeypatch):
 
     monkeypatch.setattr(acm, "resolve", broken)
     monkeypatch.setattr(acm, "family_from_names", broken)
-    result = caps.capabilities_for(_row("MOSS-Transcribe-Diarize-GGUF"), "audiocpp")
+    result = caps.capabilities_for(f"{REPO}/MOSS-Transcribe-Diarize-GGUF", "audiocpp")
     assert result["timestamps"] == "unsupported" and result["speakers"] is False
 
 
@@ -173,4 +103,4 @@ def test_speakers_are_labelled_in_the_order_they_first_speak():
         {"id": "S01", "label": "Speaker 2"},
         {"id": "0", "label": "Speaker 3"},
     ]
-    assert caps.label_speakers([]) == [] and caps.label_speakers(None) == []
+    assert caps.label_speakers(None) == []

@@ -65,7 +65,6 @@ from core.inference.stt_sidecar import (
     _downloaded_file_bytes,
     _HF_COMMIT_SHA,
     _prepare_stt_cache_for_http,
-    _TARGET_SAMPLE_RATE,
     _training_active,
     normalize_whisper_language,
 )
@@ -756,14 +755,9 @@ class AudioCppSttSidecar:
         try:
             aligner = audio_cpp_backend._resolve_companion(entry, QWEN3_ALIGNER, network = False)
             aligner_path = audio_cpp_files.materialize(aligner)
-        except FileNotFoundError:
-            raise SttModelNotDownloadedError(
-                "The timestamp aligner is not downloaded. Turn off Timestamps to transcribe "
-                "without them."
-            ) from None
         except AudioCppUnavailableError as exc:
             raise SttEngineUnavailableError(str(exc)) from exc
-        except RuntimeError:
+        except (FileNotFoundError, RuntimeError):
             raise SttModelNotDownloadedError(
                 "The timestamp aligner is not downloaded. Turn off Timestamps to transcribe "
                 "without them."
@@ -772,17 +766,6 @@ class AudioCppSttSidecar:
         session = dict(options.get("session_options") or {})
         session[QWEN3_ALIGNER.session_option] = aligner_path
         return replace(entry, model_options = {**options, "session_options": session})
-
-    def needs_reload_for(self, model: Optional[str], timestamps: bool) -> bool:
-        if not self._server_alive():
-            return True
-        try:
-            entry = resolve_audio_cpp_stt_model(self.keep_loaded_variant(model))
-        except Exception:  # noqa: BLE001 - the load reports it; this is a hint
-            return True
-        if self._model != entry:
-            return True
-        return bool(timestamps and entry.family in _ALIGNED_FAMILIES and not self._aligned)
 
     def load(
         self,
@@ -971,16 +954,6 @@ class AudioCppSttSidecar:
         already_cancelled = cancel_event.is_set()
         cancel_event.set()
         return self._cancel_owned_load(cancel_event) or not already_cancelled
-
-    def _post_transcription(
-        self, wav_bytes: bytes, lang: Optional[str], cancel_event: Optional[threading.Event]
-    ) -> str:
-        server = self._server
-        if server is None:
-            raise SttEngineUnavailableError("The audio runtime is not running.")
-        with _temp_wav(wav_bytes) as path:
-            payload = self._post_details(path, lang, cancel_event, {})
-        return stt_details.normalize(payload, server.model.family, _TARGET_SAMPLE_RATE)["text"]
 
     def _post_details(
         self,

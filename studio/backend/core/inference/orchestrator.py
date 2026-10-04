@@ -2519,12 +2519,12 @@ class InferenceOrchestrator:
         engine: str,
         request_cancel_event: Optional[threading.Event] = None,
         device: Optional[str] = None,
-        timestamps: bool = False,
+        **options,
     ) -> None:
         """Make a dictation model resident on its sidecar. ``device`` is the user's audio device
         preference (``auto``/``cpu``/``gpu``)."""
         from core.inference import stt_registry
-        stt_registry.load(model, engine, request_cancel_event, device = device, timestamps = timestamps)
+        stt_registry.load(model, engine, request_cancel_event, device = device, **options)
 
     def unload_stt_model(
         self,

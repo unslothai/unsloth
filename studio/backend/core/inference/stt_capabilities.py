@@ -74,38 +74,17 @@ def _audio_cpp_family(model: str) -> Optional[str]:
         split_variant_ref,
     )
 
-    base, _variant = split_variant_ref(model)
-    ref = parse_identifier(base)
+    ref = parse_identifier(split_variant_ref(model)[0])
     if ref is None:
         return None
     try:
         found = resolve(model, network = False)
     except Exception:  # noqa: BLE001 - the name still says something
         found = None
-    if found is not None:
-        return found.family if found.task == "asr" and not found.unsupported else None
-    family = family_from_names((ref.id, ref.folder or ""))
-    if family is None:
-        return None
-    policy = family_policy(family)
-    return family if policy.task == "asr" and not policy.unsupported else None
-
-
-def _aligner_state() -> dict:
-    from core.inference import audio_cpp_files
-    from core.inference.audio_cpp_models import resolve
-    from core.inference.stt_audiocpp_sidecar import QWEN3_ALIGNER
-
-    try:
-        aligner = resolve(QWEN3_ALIGNER.id, QWEN3_ALIGNER.variant, network = False)
-    except Exception:  # noqa: BLE001 - not in the cache
-        aligner = None
-    if aligner is None:
-        return {"downloaded": False, "size_bytes": _ALIGNER_SIZE_BYTES}
-    return {
-        "downloaded": audio_cpp_files.is_downloaded(aligner),
-        "size_bytes": aligner.size_bytes or _ALIGNER_SIZE_BYTES,
-    }
+    if found is None:
+        family = family_from_names((ref.id, ref.folder or ""))
+        found = family_policy(family) if family else None
+    return found.family if found and found.task == "asr" and not found.unsupported else None
 
 
 def capabilities_for(model: Optional[str], engine: Optional[str]) -> dict:
@@ -136,7 +115,18 @@ def capabilities_for(model: Optional[str], engine: Optional[str]) -> dict:
             result["timestamps"] = "always"
         elif family in ON_REQUEST_TIMESTAMPS:
             result["timestamps"] = "on_request"
-            result["aligner"] = _aligner_state()
+            from core.inference import audio_cpp_files
+            from core.inference.audio_cpp_models import resolve
+            from core.inference.stt_audiocpp_sidecar import QWEN3_ALIGNER
+
+            try:
+                aligner = resolve(QWEN3_ALIGNER.id, QWEN3_ALIGNER.variant, network = False)
+            except Exception:  # noqa: BLE001 - not in the cache
+                aligner = None
+            result["aligner"] = {
+                "downloaded": aligner is not None and audio_cpp_files.is_downloaded(aligner),
+                "size_bytes": (aligner and aligner.size_bytes) or _ALIGNER_SIZE_BYTES,
+            }
     except Exception as exc:  # noqa: BLE001 - a capability probe never fails the page
         logger.info("STT capabilities for %r unavailable (%s)", model, type(exc).__name__)
         result.update(timestamps = "unsupported", speakers = False, aligner = None)

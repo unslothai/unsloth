@@ -23537,15 +23537,11 @@ async def _transcribe_audio_result(
             if on_progress is not None and source_path is not None
             else None
         )
-        load_options = {}
+        load_options = {"on_phase": on_phase} if on_phase is not None else {}
         if source_path is not None and timestamps:
             await asyncio.to_thread(sidecar.ensure_aligner, model, on_phase)
             # Started with its aligner now, or transcribe_path would restart it.
             load_options["timestamps"] = True
-        if on_phase is not None and await asyncio.to_thread(
-            sidecar.needs_reload_for, model, timestamps
-        ):
-            on_phase("loading")
         await asyncio.to_thread(
             functools.partial(
                 load_stt, model, serving_engine, cancel_event, device = device, **load_options
@@ -23624,10 +23620,6 @@ async def _transcribe_audio_result(
     finally:
         if disconnect_watcher is not None:
             await _stop_local_disconnect_cancel_watcher(disconnect_watcher)
-    return _labeled_speakers(result)
-
-
-def _labeled_speakers(result: dict) -> dict:
     speakers = result.get("speakers") if isinstance(result, dict) else None
     if isinstance(speakers, list) and all(isinstance(s, str) for s in speakers):
         from core.inference.stt_capabilities import label_speakers
@@ -23710,15 +23702,6 @@ async def transcribe_audio_raw(
     )
 
 
-_NO_TIMESTAMPS_DETAIL = (
-    "This model cannot add timestamps. Pick Qwen3-ASR (audio.cpp), Parakeet-TDT, "
-    "MOSS-Transcribe-Diarize or VibeVoice-ASR."
-)
-_NO_SPEAKERS_DETAIL = (
-    "This model cannot tell speakers apart. Pick MOSS-Transcribe-Diarize or VibeVoice-ASR."
-)
-
-
 def _source_transcript(result: dict, source, speakers: bool) -> dict:
     out = dict(result)
     if not (speakers and out.get("speakers")):
@@ -23744,9 +23727,17 @@ async def transcribe_audio_source(
     serving_engine = _resolve_serving_stt_engine(engine)
     caps = await asyncio.to_thread(stt_capabilities.capabilities_for, body.model, serving_engine)
     if body.timestamps and caps["timestamps"] == "unsupported":
-        raise HTTPException(status_code = 422, detail = _NO_TIMESTAMPS_DETAIL)
+        raise HTTPException(
+            status_code = 422,
+            detail = "This model cannot add timestamps. Pick Qwen3-ASR (audio.cpp), Parakeet-TDT, "
+            "MOSS-Transcribe-Diarize or VibeVoice-ASR.",
+        )
     if body.speakers and not caps["speakers"]:
-        raise HTTPException(status_code = 422, detail = _NO_SPEAKERS_DETAIL)
+        raise HTTPException(
+            status_code = 422,
+            detail = "This model cannot tell speakers apart. Pick MOSS-Transcribe-Diarize or "
+            "VibeVoice-ASR.",
+        )
     rate = stt_details.FIXED_SPAN_RATES.get(caps["family"], 16000)
 
     def _prepare():

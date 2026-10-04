@@ -3,27 +3,23 @@
 
 """The audio.cpp STT sidecar against a fake ``audiocpp_server`` that records requests."""
 
-import io
 import json
-import struct
 import sys
 import textwrap
-import threading
-import time
-import wave
 from pathlib import Path
 
 import pytest
 
-from core.inference import audio_cpp_backend, audio_cpp_files
+from core.inference import audio_cpp_backend
 from core.inference import audio_cpp_models as acm
 from core.inference import audio_cpp_server as srv
 from core.inference import stt_audiocpp_sidecar as stt
 from core.inference.audio_cpp_models import AUDIO_CPP_REPO
-from core.inference.stt_sidecar import (
-    SttAudioDecodeError,
-    SttTranscriptionCancelledError,
-)
+from core.inference.stt_sidecar import SttAudioDecodeError
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from test_audio_cpp_models import _gguf_bytes, _put, _snapshot, hub  # noqa: E402, F401
+from test_audio_inputs import wav_bytes  # noqa: E402
 
 QWEN3 = f"{AUDIO_CPP_REPO}/Qwen3-ASR-0.6B-GGUF"
 MOSS = f"{AUDIO_CPP_REPO}/MOSS-Transcribe-Diarize-GGUF"
@@ -40,18 +36,13 @@ FAKE_SERVER = textwrap.dedent(
     cfg = json.load(open(sys.argv[sys.argv.index("--config") + 1], encoding="utf-8"))
     entry = cfg["models"][0]
     with open(os.path.join(here, "starts.jsonl"), "a", encoding="utf-8") as log:
-        log.write(json.dumps({"backend": cfg["backend"], "entry": entry, "pid": os.getpid()}) + "\n")
+        log.write(json.dumps({"backend": cfg["backend"], "entry": entry}) + "\n")
 
+    SPANS = [(1920, 16000, "Hello there.", "S01"), (17600, 32000, "General Kenobi.", "S02")]
     MOSS = {
         "text": "[0.12][S01] Hello there.[1.00][1.10][S02] General Kenobi.[2.00]",
-        "segments": [
-            {"start_sample": 1920, "end_sample": 16000, "text": "Hello there."},
-            {"start_sample": 17600, "end_sample": 32000, "text": "General Kenobi."},
-        ],
-        "speaker_turns": [
-            {"start_sample": 1920, "end_sample": 16000, "speaker_id": "S01"},
-            {"start_sample": 17600, "end_sample": 32000, "speaker_id": "S02"},
-        ],
+        "segments": [{"start_sample": a, "end_sample": b, "text": t} for a, b, t, _ in SPANS],
+        "speaker_turns": [{"start_sample": a, "end_sample": b, "speaker_id": s} for a, b, _, s in SPANS],
         "sample_rate": 16000,
     }
 
@@ -68,21 +59,12 @@ FAKE_SERVER = textwrap.dedent(
                 return self.reply(200, {"data": [{"id": entry["id"]}]})
             self.reply(404, {})
         def do_POST(self):
-            body = self.rfile.read(int(self.headers.get("Content-Length") or 0))
-            req = {"path": self.path, "content_type": self.headers.get("Content-Type")}
-            try:
-                req["json"] = json.loads(body)
-            except ValueError:
-                req["json"] = None
-            audio = (req["json"] or {}).get("audio")
-            req["audio_existed"] = bool(audio) and os.path.isfile(audio)
+            req = json.loads(self.rfile.read(int(self.headers.get("Content-Length") or 0)))
+            audio = req.get("audio")
+            record = {"path": self.path, "json": req, "audio_existed": bool(audio) and os.path.isfile(audio)}
             with open(os.path.join(here, "requests.jsonl"), "a", encoding="utf-8") as log:
-                log.write(json.dumps(req) + "\n")
-            if self.path != "/v1/audio/transcriptions/details" or req["json"] is None:
-                return self.reply(404, {"error": "multipart is not served here"})
-            language = req["json"].get("language")
-            if language == "slow":
-                time.sleep(30)
+                log.write(json.dumps(record) + "\n")
+            language = req.get("language")
             if language == "xx":
                 return self.reply(400, {"error": {"message": "unsupported language"}})
             if language == "boom":
@@ -90,12 +72,11 @@ FAKE_SERVER = textwrap.dedent(
             if entry["family"] == "moss_transcribe_diarize":
                 return self.reply(200, MOSS)
             payload = {"text": "Concord returned.", "language": "English"}
-            if (req["json"].get("options") or {}).get("return_timestamps") == "true":
+            if (req.get("options") or {}).get("return_timestamps") == "true":
                 payload["words"] = [
                     {"word": "Concord", "start_sample": 9088, "end_sample": 19328},
                     {"word": "returned.", "start_sample": 19328, "end_sample": 25728},
                 ]
-                payload["sample_rate"] = 16000
             self.reply(200, payload)
 
     ThreadingHTTPServer(("127.0.0.1", cfg["port"]), H).serve_forever()
@@ -103,94 +84,34 @@ FAKE_SERVER = textwrap.dedent(
 )
 
 
-def _gguf_bytes(family) -> bytes:
-    kv = [
-        ("general.architecture", 8, "audiocpp"),
-        ("audiocpp.model_spec.version", 4, 1),
-        ("audiocpp.model_spec.family", 8, family),
-    ]
-    out = bytearray(struct.pack("<IIQQ", 0x46554747, 3, 0, len(kv)))
-    for key, vtype, value in kv:
-        k = key.encode()
-        out += struct.pack("<Q", len(k)) + k + struct.pack("<I", vtype)
-        if vtype == 8:
-            v = value.encode()
-            out += struct.pack("<Q", len(v)) + v
-        else:
-            out += struct.pack("<I", value)
-    return bytes(out) + b"\0" * 64
-
-
-def _put(hub, rel, family):
-    repo_dir = hub / ("models--" + AUDIO_CPP_REPO.replace("/", "--"))
-    snap = repo_dir / "snapshots" / ("a" * 40)
-    (repo_dir / "refs").mkdir(parents = True, exist_ok = True)
-    (repo_dir / "refs" / "main").write_text("a" * 40)
-    path = snap / rel
-    path.parent.mkdir(parents = True, exist_ok = True)
-    path.write_bytes(_gguf_bytes(family))
+def _add(hub, rel, family):
+    path = _put(_snapshot(hub), rel, _gguf_bytes(family = family))
     acm.forget()
     with acm._resolve_lock:
         acm._downloaded_cache.clear()
     return path
 
 
-def _wav(seconds = 2.0, rate = 16000) -> bytes:
-    buf = io.BytesIO()
-    with wave.open(buf, "wb") as w:
-        w.setnchannels(1)
-        w.setsampwidth(2)
-        w.setframerate(rate)
-        w.writeframes(b"\x01\x00" * int(seconds * rate))
-    return buf.getvalue()
-
-
 class Fake:
     def __init__(self, root: Path):
         self.root = root
 
-    def _lines(self, name):
-        path = self.root / name
-        if not path.exists():
-            return []
-        return [json.loads(line) for line in path.read_text(encoding = "utf-8").splitlines()]
+    def log(self, name):
+        return [json.loads(line) for line in (self.root / name).read_text("utf-8").splitlines()]
 
-    @property
-    def requests(self):
-        return self._lines("requests.jsonl")
-
-    @property
-    def starts(self):
-        return self._lines("starts.jsonl")
-
-
-@pytest.fixture
-def hub(tmp_path, monkeypatch):
-    root = tmp_path / "hub"
-    root.mkdir()
-    monkeypatch.setattr(acm, "_hub_cache", lambda: root)
-    monkeypatch.setattr(audio_cpp_files, "_hub_cache", lambda: root)
-    monkeypatch.setattr(acm, "runtime_spec", lambda family: None)
-    monkeypatch.setattr(acm, "runtime_knows_family", lambda family: None)
-    monkeypatch.setenv("HF_HUB_OFFLINE", "1")
-    acm.forget()
-    with acm._resolve_lock:
-        acm._downloaded_cache.clear()
-    _put(root, "Qwen3-ASR-0.6B-GGUF/qwen3-asr-0.6b-q8_0.gguf", "qwen3_asr")
-    _put(
-        root,
-        "MOSS-Transcribe-Diarize-GGUF/moss-transcribe-diarize-q8_0.gguf",
-        "moss_transcribe_diarize",
-    )
-    _put(root, "Niagara-ASR-GGUF/niagara-19m-batch.en-f32.gguf", "niagara_asr")
-    yield root
-    acm.forget()
+    bodies = property(lambda self: [r["json"] for r in self.log("requests.jsonl")])
+    starts = property(lambda self: self.log("starts.jsonl"))
 
 
 @pytest.fixture
 def fake(tmp_path, monkeypatch, hub):
+    _add(hub, "Qwen3-ASR-0.6B-GGUF/qwen3-asr-0.6b-q8_0.gguf", "qwen3_asr")
+    _add(hub, "MOSS-Transcribe-Diarize-GGUF/moss-q8_0.gguf", "moss_transcribe_diarize")
+    _add(hub, "Niagara-ASR-GGUF/niagara-19m-batch.en-f32.gguf", "niagara_asr")
     root = tmp_path / "fake"
     root.mkdir()
+    for log in ("starts.jsonl", "requests.jsonl"):
+        (root / log).touch()
     script = root / "fake_server.py"
     script.write_text(FAKE_SERVER, encoding = "utf-8")
     binary = tmp_path / srv.BINARY_NAME
@@ -220,124 +141,54 @@ def side():
     sidecar.unload()
 
 
-def _details(fake):
-    return [r for r in fake.requests if r["path"] == "/v1/audio/transcriptions/details"]
-
-
-def _source(
-    tmp_path,
-    seconds = 2.0,
-    rate = 16000,
-) -> Path:
-    path = tmp_path / f"source-{rate}.wav"
-    path.write_bytes(_wav(seconds, rate))
+@pytest.fixture
+def source(tmp_path):
+    path = tmp_path / "source.wav"
+    path.write_bytes(wav_bytes(2.0))
     return path
 
 
-def test_bytes_go_as_json_naming_a_temp_file_that_is_removed_after(fake, side):
-    result = side.transcribe(_wav(), QWEN3, "en")
+def test_bytes_go_as_json_naming_a_temp_file_removed_after_success_or_error(fake, side):
+    result = side.transcribe(wav_bytes(2.0), QWEN3, "en")
     assert result["text"] == "Concord returned." and result["language"] == "en"
     assert result["duration"] == pytest.approx(2.0)
-    assert "segments" not in result and "words" not in result and "speakers" not in result
-    (request,) = _details(fake)
-    assert request["content_type"] == "application/json"
-    body = request["json"]
-    audio = Path(body["audio"])
+    assert not {"segments", "words", "speakers"} & set(result)
+    (record,) = fake.log("requests.jsonl")
+    body, audio = record["json"], Path(record["json"]["audio"])
+    assert record["path"] == "/v1/audio/transcriptions/details"
     assert audio.is_absolute() and audio.parent == stt._stt_tmp_dir() and audio.suffix == ".wav"
     # The server could read it while answering; it is gone now.
-    assert request["audio_existed"] and not audio.exists()
-    assert body["language"] == "en" and body["model"] == fake.starts[0]["entry"]["id"]
+    assert record["audio_existed"] and not list(audio.parent.glob("*.wav"))
+    assert (body["language"], body["model"]) == ("en", fake.starts[0]["entry"]["id"])
     assert "options" not in body
-    assert not list(stt._stt_tmp_dir().glob("*.wav"))
-
-
-def test_the_temp_file_is_removed_after_an_error_and_a_cancel(fake, side):
     with pytest.raises(stt.SttEngineUnavailableError):
-        side.transcribe(_wav(), QWEN3, "boom")
-    assert not list(stt._stt_tmp_dir().glob("*.wav"))
-    cancel = threading.Event()
-    threading.Timer(0.5, cancel.set).start()
-    started = time.monotonic()
-    with pytest.raises(SttTranscriptionCancelledError):
-        side.transcribe(_wav(), QWEN3, "slow", cancel_event = cancel)
-    assert time.monotonic() - started < 10
-    assert not list(stt._stt_tmp_dir().glob("*.wav"))
-    # The cancelled server was stopped so the next request does not queue behind it.
-    assert side.loaded_model is None
+        side.transcribe(wav_bytes(), QWEN3, "boom")
+    assert not list(audio.parent.glob("*.wav"))
+    # A family that rejects the language is asked again without it.
+    assert side.transcribe(wav_bytes(), QWEN3, "xx")["text"] == "Concord returned."
+    assert fake.bodies[-2]["language"] == "xx" and "language" not in fake.bodies[-1]
 
 
-def test_a_rejected_language_is_retried_without_it(fake, side):
-    result = side.transcribe(_wav(), QWEN3, "xx")
-    assert result["text"] == "Concord returned."
-    first, second = _details(fake)
-    assert first["json"]["language"] == "xx" and "language" not in second["json"]
-
-
-def test_a_path_transcription_names_the_source_and_moss_gets_no_options(fake, side, tmp_path):
-    source = _source(tmp_path)
+def test_moss_reads_the_source_in_place_with_speakers_and_no_options(fake, side, source):
     result = side.transcribe_path(source, MOSS, None, timestamps = True)
-    (request,) = _details(fake)
-    assert request["json"]["audio"] == str(source) and "options" not in request["json"]
+    (body,) = fake.bodies
+    assert body["audio"] == str(source) and "options" not in body
     assert source.exists()  # the caller's file is not ours to remove
-    assert result["text"] == "Hello there. General Kenobi."
+    assert result["text"] == "Hello there. General Kenobi." and result["duration"] == 2.0
     assert result["speakers"] == ["S01", "S02"]
     assert [(s["start"], s["end"], s["speaker"]) for s in result["segments"]] == [
         (0.12, 1.0, "S01"),
         (1.1, 2.0, "S02"),
     ]
-    assert result["duration"] == 2.0
     # MOSS loads without the aligner whatever the request asked.
     assert ALIGNER_KEY not in json.dumps(fake.starts[0]["entry"])
     # Through the bytes path (dictation) the markers are gone too.
-    assert side.transcribe(_wav(), MOSS, None)["text"] == "Hello there. General Kenobi."
+    assert side.transcribe(wav_bytes(), MOSS, None)["text"] == "Hello there. General Kenobi."
 
 
-def test_qwen3_timestamps_load_the_aligner_once_and_keep_it(fake, side, tmp_path, hub):
-    aligner = _put(hub, ALIGNER_FILE, "qwen3_forced_aligner")
-    source = _source(tmp_path)
-    phases = []
-
-    # Off: plain text, no aligner, no options.
-    result = side.transcribe_path(source, QWEN3, None, on_phase = phases.append)
-    assert result["text"] == "Concord returned." and "words" not in result
-    assert result["language"] == "English"
-    assert "options" not in _details(fake)[-1]["json"]
-    assert len(fake.starts) == 1
-    assert ALIGNER_KEY not in (fake.starts[0]["entry"].get("session_options") or {})
-
-    # On, with no aligner loaded: a restart with it, and the two request options.
-    assert side.needs_reload_for(QWEN3, True) and not side.needs_reload_for(QWEN3, False)
-    result = side.transcribe_path(source, QWEN3, None, timestamps = True, on_phase = phases.append)
-    assert len(fake.starts) == 2
-    served = fake.starts[1]["entry"]["session_options"][ALIGNER_KEY]
-    assert Path(served).name == aligner.name
-    assert _details(fake)[-1]["json"]["options"] == {
-        "return_timestamps": "true",
-        "audio_chunk_mode": "fixed",
-        "qwen3_asr.preserve_punctuation": "true",
-    }
-    assert result["words"] == [
-        {"start": 0.568, "end": 1.208, "word": "Concord"},
-        {"start": 1.208, "end": 1.608, "word": "returned."},
-    ]
-    assert result["segments"] == [{"start": 0.568, "end": 1.608, "text": "Concord returned."}]
-    # The aligner was already downloaded: no download phase.
-    assert "downloading_aligner" not in phases and "loading" in phases
-    assert phases[-1] == "transcribing"
-
-    # Off again on the aligned server: no restart, and no options.
-    assert not side.needs_reload_for(QWEN3, True)
-    side.transcribe_path(source, QWEN3, None)
-    side.transcribe(_wav(), QWEN3, None)
-    assert len(fake.starts) == 2
-    assert all("options" not in r["json"] for r in _details(fake)[-2:])
-
-
-def test_a_missing_aligner_is_downloaded_first_with_its_phase(
-    fake, side, tmp_path, hub, monkeypatch
-):
+def test_qwen3_aligner_is_downloaded_loaded_once_and_kept(fake, side, source, hub, monkeypatch):
     real_resolve = audio_cpp_backend._resolve_companion
-    downloads = []
+    downloads, phases = [], []
 
     def resolve(
         model,
@@ -348,51 +199,66 @@ def test_a_missing_aligner_is_downloaded_first_with_its_phase(
     ):
         if network:
             # Stands in for the Hub listing: the files arrive with the download below.
-            _put(hub, ALIGNER_FILE, "qwen3_forced_aligner")
+            _add(hub, ALIGNER_FILE, "qwen3_forced_aligner")
         return real_resolve(model, companion, hf_token, network = False)
 
     monkeypatch.setattr(audio_cpp_backend, "_resolve_companion", resolve)
-    monkeypatch.setattr(
-        audio_cpp_backend.AudioCppBackend,
-        "_download_missing",
-        staticmethod(lambda model, token: downloads.append(model.id) or True),
-    )
-    phases = []
-    side.transcribe_path(_source(tmp_path), QWEN3, None, timestamps = True, on_phase = phases.append)
+    download = staticmethod(lambda model, token: downloads.append(model.id) or True)
+    monkeypatch.setattr(audio_cpp_backend.AudioCppBackend, "_download_missing", download)
+
+    def run(**kwargs):
+        phases.clear()
+        return side.transcribe_path(source, QWEN3, None, on_phase = phases.append, **kwargs)
+
+    # Off: plain text, no aligner, no options.
+    assert run() == {
+        "text": "Concord returned.",
+        "language": "English",
+        "duration": 2.0,
+        "model": QWEN3,
+    }
+    assert "options" not in fake.bodies[-1] and "session_options" not in fake.starts[0]["entry"]
+    # On: the aligner is downloaded, then the server restarts with it and gets the options.
+    result = run(timestamps = True)
     assert phases == ["downloading_aligner", "loading", "transcribing"]
-    assert downloads == [stt.QWEN3_ALIGNER.id]
-    assert ALIGNER_KEY in fake.starts[-1]["entry"]["session_options"]
-    # Present now: a second timestamped run neither downloads nor restarts.
-    phases.clear()
-    side.transcribe_path(_source(tmp_path), QWEN3, None, timestamps = True, on_phase = phases.append)
-    assert phases == ["transcribing"] and len(downloads) == 1 and len(fake.starts) == 1
+    assert downloads == [stt.QWEN3_ALIGNER.id] and len(fake.starts) == 2
+    assert Path(fake.starts[1]["entry"]["session_options"][ALIGNER_KEY]).suffix == ".gguf"
+    assert fake.bodies[-1]["options"] == {
+        "return_timestamps": "true",
+        "audio_chunk_mode": "fixed",
+        "qwen3_asr.preserve_punctuation": "true",
+    }
+    assert result["words"] == [
+        {"start": 0.568, "end": 1.208, "word": "Concord"},
+        {"start": 1.208, "end": 1.608, "word": "returned."},
+    ]
+    assert result["segments"] == [{"start": 0.568, "end": 1.608, "text": "Concord returned."}]
+    # Present and loaded now: neither a download nor a restart, on or off.
+    run(timestamps = True)
+    assert phases == ["transcribing"] and len(downloads) == 1
+    run()
+    side.transcribe(wav_bytes(), QWEN3, None)
+    assert len(fake.starts) == 2 and all("options" not in b for b in fake.bodies[-2:])
 
 
-def test_an_aligner_download_failure_says_how_to_go_on(fake, side, tmp_path, monkeypatch):
-    def offline(
-        model,
-        companion,
-        hf_token = None,
-        *,
-        network = True,
-    ):
+def test_an_aligner_download_failure_says_how_to_go_on(fake, side, source, monkeypatch):
+    def offline(*_args, **_kwargs):
         raise RuntimeError(
             "Qwen3-ASR needs Qwen3-ForcedAligner-0.6B-GGUF, which Studio could not find."
         )
 
     monkeypatch.setattr(audio_cpp_backend, "_resolve_companion", offline)
     with pytest.raises(stt.SttModelNotDownloadedError, match = "Turn off Timestamps"):
-        side.transcribe_path(_source(tmp_path), QWEN3, None, timestamps = True)
+        side.transcribe_path(source, QWEN3, None, timestamps = True)
     assert fake.starts == []
 
 
 def test_niagara_runs_on_the_cpu_even_when_the_gpu_is_asked_for(fake, side):
     side.load(NIAGARA, device = "gpu")
     side.load(NIAGARA, device = "gpu")
+    side.transcribe(wav_bytes(), NIAGARA, None)
     assert [s["backend"] for s in fake.starts] == ["cpu"]
     assert side.device == "cpu" and side._gpu_disabled is True
-    side.transcribe(_wav(), NIAGARA, None)
-    assert len(fake.starts) == 1
 
 
 def test_an_unreadable_source_is_a_decode_error(fake, side, tmp_path):

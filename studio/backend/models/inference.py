@@ -5310,21 +5310,8 @@ class TranscriptPatch(BaseModel):
     model_config = ConfigDict(extra = "forbid")
 
     archived: Optional[bool] = None
+    # transcript_gallery.set_speaker_names validates ids and lengths against the record.
     speaker_names: Optional[Dict[str, Optional[str]]] = None
-
-    @field_validator("speaker_names")
-    @classmethod
-    def _bounded_names(cls, value):
-        if value is None:
-            return value
-        if len(value) > 64:
-            raise ValueError("Name at most 64 speakers at once.")
-        for speaker_id, name in value.items():
-            if not speaker_id or len(speaker_id) > 64:
-                raise ValueError("Unknown speaker id.")
-            if name is not None and len(name.strip()) > 40:
-                raise ValueError("Speaker names can be at most 40 characters.")
-        return value
 
 
 class AudioVoice(BaseModel):

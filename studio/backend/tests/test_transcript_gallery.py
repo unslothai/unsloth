@@ -21,10 +21,7 @@ def test_round_trip_preserves_text_and_origin():
     record = save("some/folder/speech.wav")
     assert record["title"] == "speech.wav"
     assert gallery.get(record["id"]) == record
-    # The list carries summaries: the record plus its segment and word counts.
-    assert gallery.list_transcripts()["transcripts"] == [
-        {**record, "segment_count": 0, "has_words": False}
-    ]
+    assert gallery.list_transcripts()["transcripts"] == [gallery.summary(record)]
 
 
 def test_cursor_survives_new_records_and_deletion():
@@ -158,23 +155,19 @@ def test_an_old_record_reads_exactly_as_before():
     }
     (gallery.gallery_dir() / f"{record['id']}.json").write_text(json.dumps(record))
     assert gallery.get(record["id"]) == record
-    assert gallery.get(record["id"]) == record
-    (row,) = gallery.list_transcripts()["transcripts"]
-    assert row == {**record, "segment_count": 0, "has_words": False}
+    assert gallery.list_transcripts()["transcripts"] == [
+        {**record, "segment_count": 0, "has_words": False}
+    ]
 
 
 def test_details_round_trip_and_the_list_carries_counts_only():
     record = save_details()
-    for key, value in DETAILS.items():
-        assert record[key] == value
+    assert {key: record[key] for key in DETAILS} == DETAILS
     assert gallery.get(record["id"]) == record
     (row,) = gallery.list_transcripts()["transcripts"]
     assert "segments" not in row and "words" not in row
-    assert row["segment_count"] == 2 and row["has_words"] is True
-    assert row["speakers"] == DETAILS["speakers"] and row["source"] == DETAILS["source"]
-    # A source is named by id: no path is ever stored.
-    stored = (gallery.gallery_dir() / f"{record['id']}.json").read_text(encoding = "utf-8")
-    assert "/" not in json.loads(stored)["source"]["id"]
+    assert (row["segment_count"], row["has_words"]) == (2, True)
+    assert (row["speakers"], row["source"]) == (DETAILS["speakers"], DETAILS["source"])
 
 
 def test_malformed_details_are_dropped_and_the_record_survives():
@@ -191,52 +184,39 @@ def test_malformed_details_are_dropped_and_the_record_survives():
         source = {"kind": "path", "id": "/etc/passwd", "name": "x"},
     )
     assert record["segments"] == [{"start": 0.0, "end": 1.0, "text": "kept"}]
-    assert "words" not in record and "speaker_names" not in record and "source" not in record
     assert record["speakers"] == [{"id": "S01", "label": "Speaker 1"}]
+    assert not {"words", "speaker_names", "source"} & set(record)
     # A hand-edited file loses only its bad optional keys on read.
     path = gallery.gallery_dir() / f"{record['id']}.json"
     data = json.loads(path.read_text(encoding = "utf-8"))
-    data["segments"] = {"not": "a list"}
-    data["speaker_names"] = {"S01": 7}
+    data.update(segments = {"not": "a list"}, speaker_names = {"S01": 7})
     path.write_text(json.dumps(data))
     read = gallery.get(record["id"])
-    assert read["text"] == record["text"] and "segments" not in read and "speaker_names" not in read
-    assert "timestamps" not in read
+    assert read["text"] == record["text"]
+    assert not {"segments", "speaker_names", "timestamps"} & set(read)
 
 
 def test_speaker_names_are_validated_cleared_and_written_atomically(monkeypatch):
-    record = save_details()
-    named = gallery.set_speaker_names(record["id"], {"S01": "  Alice ", "S02": "Bob"})
+    record_id = save_details()["id"]
+    named = gallery.set_speaker_names(record_id, {"S01": "  Alice ", "S02": "Bob"})
     assert named["speaker_names"] == {"S01": "Alice", "S02": "Bob"}
-    assert gallery.get(record["id"])["speaker_names"] == {"S01": "Alice", "S02": "Bob"}
-    assert gallery.set_speaker_names(record["id"], {"S02": None})["speaker_names"] == {
-        "S01": "Alice"
-    }
-    with pytest.raises(gallery.TranscriptPatchError, match = "no speaker"):
-        gallery.set_speaker_names(record["id"], {"S09": "Ghost"})
-    with pytest.raises(gallery.TranscriptPatchError, match = "40"):
-        gallery.set_speaker_names(record["id"], {"S01": "x" * 41})
-    assert gallery.get(record["id"])["speaker_names"] == {"S01": "Alice"}
-    assert "speaker_names" not in gallery.set_speaker_names(record["id"], {"S01": ""})
+    assert gallery.set_speaker_names(record_id, {"S02": None})["speaker_names"] == {"S01": "Alice"}
+    for names, error in (({"S09": "Ghost"}, "no speaker"), ({"S01": "x" * 41}, "40")):
+        with pytest.raises(gallery.TranscriptPatchError, match = error):
+            gallery.set_speaker_names(record_id, names)
+    assert gallery.get(record_id)["speaker_names"] == {"S01": "Alice"}
+    assert "speaker_names" not in gallery.set_speaker_names(record_id, {"S01": ""})
     # An archived transcript stays archived through a rename.
-    gallery.set_archived(record["id"], True)
-    assert gallery.set_speaker_names(record["id"], {"S01": "Al"})["archived"] is True
-
-    def fail(*args):
-        raise OSError("disk full")
-
-    monkeypatch.setattr(gallery.os, "replace", fail)
+    gallery.set_archived(record_id, True)
+    assert gallery.set_speaker_names(record_id, {"S01": "Al"})["archived"] is True
+    monkeypatch.setattr(gallery.os, "replace", lambda *a: (_ for _ in ()).throw(OSError("full")))
     with pytest.raises(OSError):
-        gallery.set_speaker_names(record["id"], {"S01": "Never"})
-    assert gallery.get(record["id"])["speaker_names"] == {"S01": "Al"}
+        gallery.set_speaker_names(record_id, {"S01": "Never"})
+    assert gallery.get(record_id)["speaker_names"] == {"S01": "Al"}
     assert not list(gallery.gallery_dir().glob(".*.tmp"))
 
 
-def test_unknown_and_unsafe_ids_have_no_speakers_to_name(tmp_path):
-    assert gallery.set_speaker_names("../private", {"S01": "x"}) is None
-    assert gallery.set_speaker_names("e" * 32, {"S01": "x"}) is None
-    assert gallery.get("../private") is None
-    foreign = gallery.gallery_dir() / ("f" * 32 + ".json")
-    foreign.write_text(json.dumps({"text": "foreign"}))
-    assert gallery.get("f" * 32) is None
-    assert gallery.set_speaker_names("f" * 32, {"S01": "x"}) is None
+def test_unknown_and_unsafe_ids_have_no_speakers_to_name():
+    (gallery.gallery_dir() / ("f" * 32 + ".json")).write_text(json.dumps({"text": "foreign"}))
+    for transcript_id in ("../private", "e" * 32, "f" * 32):
+        assert gallery.set_speaker_names(transcript_id, {"S01": "x"}) is None

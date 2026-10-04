@@ -238,8 +238,6 @@ def set_speaker_names(transcript_id: str, names: dict) -> dict | None:
         for speaker_id, name in names.items():
             if speaker_id not in known:
                 raise TranscriptPatchError(f"This transcript has no speaker '{speaker_id}'.")
-            if name is not None and not isinstance(name, str):
-                raise TranscriptPatchError("A speaker name must be text.")
             name = (name or "").strip()
             if len(name) > SPEAKER_NAME_MAX:
                 raise TranscriptPatchError(
