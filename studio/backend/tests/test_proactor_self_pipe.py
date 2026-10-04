@@ -46,7 +46,6 @@ def reads(monkeypatch):
     monkeypatch.setattr(psp, "_cpython_loop_self_reading", None)
     monkeypatch.setattr(psp, "_socketpair", socket.socketpair)
     yield counter
-    # monkeypatch restores both the class attribute and the module flag
 
 
 def _run_after_peer_eof(close_every_new_pair = False):
@@ -93,7 +92,6 @@ def test_guard_rebuilds_self_pipe_after_eof(reads):
 @windows_only
 def test_guard_backs_off_when_every_new_pair_is_closed(reads):
     assert psp.install_proactor_self_pipe_guard() is True
-    # The wakeup may wait out the backoff, but the loop must not churn sockets or spin.
     assert _run_after_peer_eof(close_every_new_pair = True) is True
     assert reads["n"] < 50
 
@@ -139,7 +137,6 @@ def test_guard_keeps_old_pair_and_retries_when_socketpair_fails(reads, monkeypat
         psp._socketpair = flaky_socketpair
         loop._csock.shutdown(socket.SHUT_WR)
         await asyncio.sleep(0.1)
-        # The failed swap leaves a usable pair in place rather than None.
         assert loop._ssock is old_ssock
         await asyncio.sleep(0.5)
         assert loop._ssock is not old_ssock
@@ -210,7 +207,6 @@ def test_persistent_socketpair_failure_warns_once_per_streak_and_keeps_wakeups(r
         raise OSError("no buffer space")
 
     async def wakeup_delay(loop):
-        # No other timer is pending here, so only the retry timer can wake the loop.
         woke = loop.create_future()
         sent = {}
 
@@ -242,7 +238,6 @@ def test_persistent_socketpair_failure_warns_once_per_streak_and_keeps_wakeups(r
         during_failure = loop.run_until_complete(main())
     finally:
         loop.close()
-    # Retries keep the fixed period rather than growing, so cross-thread work still lands within about one period.
     assert during_failure < 0.5
     assert 8 <= attempts["n"] <= 30
     warnings = [line for level, line in log.lines if level == "warning"]

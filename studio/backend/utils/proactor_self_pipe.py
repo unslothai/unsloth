@@ -1,12 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-# Keeps a Windows ProactorEventLoop from pinning a core when its self-pipe peer goes away.
-#
-# The proactor wakes itself through a loopback socketpair. CPython's _loop_self_reading re-posts the read as soon as
-# it completes and never checks for EOF, so once the peer end is closed (traffic filters such as AdGuard's Browsing
-# Security do this to loopback connections when the PC wakes from sleep) every read completes instantly with b"" and
-# the loop spins on one core for the rest of the process. Unfixed through CPython 3.14. On EOF we swap in a new pair.
+# CPython's proactor _loop_self_reading re-posts its self-pipe read without checking EOF, so once a loopback filter
+# (AdGuard after sleep) closes the peer, every read returns b"" and the loop pins a core. Unfixed through CPython 3.14.
 
 from __future__ import annotations
 
@@ -20,13 +16,10 @@ from loggers import get_logger
 
 logger = get_logger(__name__)
 
-# A filter that closes every new pair immediately must not turn the fix into a socket churn loop: after a quick
-# repeat, wait this long before re-arming. A failed socketpair() is retried on the same period, warning once per
-# streak. With no read armed, this timer is what wakes an idle loop, so cross-thread work waits at most this long.
+# Fixed, not growing: with no read armed this timer is what wakes an idle loop.
 _REBUILD_BACKOFF_SECONDS = 1.0
 _installed = False
 _cpython_loop_self_reading = None
-# Indirection so tests can stand in a filter that closes each new pair.
 _socketpair = socket.socketpair
 
 
@@ -61,8 +54,7 @@ def _swap_self_pipe(loop) -> bool:
     old_ssock, old_csock = loop._ssock, loop._csock
     loop._self_reading_future = None
     loop._ssock, loop._csock = ssock, csock
-    # BaseProactorEventLoop points the signal wakeup fd at _csock on the main thread; follow it to the new socket,
-    # but only when it still names ours, so another owner's registration is left alone.
+    # Follow the main-thread signal wakeup fd only if it still names our old socket.
     if threading.current_thread() is threading.main_thread():
         try:
             previous = signal.set_wakeup_fd(csock.fileno())
