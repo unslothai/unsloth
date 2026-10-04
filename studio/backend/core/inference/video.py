@@ -6559,6 +6559,14 @@ class VideoBackend:
                     vae_tiling = True
                 except Exception as exc:  # noqa: BLE001 -- tiling is an optimisation only
                     logger.warning("video.vae_tiling_failed: %s", exc)
+            # LTX-2's stock tiles (16 latents, a 2-latent blend) leave seam lines: tiles sized to free VRAM, wide overlaps.
+            if vae_tiling:
+                try:
+                    from .video_ltx2_vae_tiles import install as install_ltx2_vae_tiles
+                    if install_ltx2_vae_tiles(getattr(pipe, "vae", None), logger):
+                        speed_optims += ("vae_wide_tiles",)
+                except Exception as exc:  # noqa: BLE001 - keep the stock tiled decode
+                    logger.warning("video.vae_wide_tiles: not installed: %s", exc)
             # Resident: decode untiled when it fits, tiled as fallback. Not on SPEED_OFF, which must stay bit-identical.
             if (
                 offload_policy == "none"
