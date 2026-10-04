@@ -460,6 +460,26 @@ def _gate_st_custom_modules() -> None:
             setattr(_load_module_class_from_ref, _ST_GATE_MARKER, True)
             _load_module_class_from_ref.__wrapped__ = original
             setattr(owner, "_load_module_class_from_ref", _load_module_class_from_ref)
+    # 5.0-5.4 Router resolves its sub-module types with import_from_string, past both resolvers.
+    # The embedder never trusts repository code, so non-stock types are refused there outright.
+    try:
+        import importlib
+
+        router = importlib.import_module("sentence_transformers.models.Router")
+        original_from_string = getattr(router, "import_from_string", None)
+        if original_from_string is not None and not getattr(
+            original_from_string, _ST_GATE_MARKER, False
+        ):
+
+            def import_from_string(dotted_path, *args, **kwargs):
+                _refuse_custom_module(dotted_path, "behind this Router", False)
+                return original_from_string(dotted_path, *args, **kwargs)
+
+            setattr(import_from_string, _ST_GATE_MARKER, True)
+            import_from_string.__wrapped__ = original_from_string
+            router.import_from_string = import_from_string
+    except Exception:
+        pass
     try:
         import sys
         from sentence_transformers.util import misc

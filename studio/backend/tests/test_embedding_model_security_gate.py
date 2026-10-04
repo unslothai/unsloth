@@ -818,3 +818,22 @@ def test_st_gate_is_idempotent():
     if int(st.__version__.split(".")[0]) < 6:
         assert getattr(first, embeddings._ST_GATE_MARKER, False)
         assert not getattr(first.__wrapped__, embeddings._ST_GATE_MARKER, False)
+
+
+def test_st_gate_covers_router_sub_module_types():
+    # sentence-transformers 5.0-5.4 Router resolves its sub-module types with import_from_string,
+    # past both class resolvers, so the gate has to cover that name too.
+    st = pytest.importorskip("sentence_transformers")
+    if int(st.__version__.split(".")[0]) >= 6:
+        pytest.skip("sentence-transformers 6 gates this itself")
+    import importlib
+
+    import core.rag.embeddings as embeddings
+
+    router = importlib.import_module("sentence_transformers.models.Router")
+    if not hasattr(router, "import_from_string"):
+        pytest.skip("this Router resolves sub-modules through the gated import_module_class")
+    embeddings._gate_st_custom_modules()
+    with pytest.raises(ValueError, match = "not part of Sentence Transformers"):
+        router.import_from_string("custom_mod.Pooling")
+    assert router.import_from_string("sentence_transformers.models.Pooling").__name__ == "Pooling"
