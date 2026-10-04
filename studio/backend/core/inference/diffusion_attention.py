@@ -23,8 +23,7 @@ Attention is bandwidth-bound, so a better kernel is a real win orthogonal to wei
   flash / flash3 / flash4 - FlashAttention 2 / 3 (Hopper) / 4 (SM100); exact, kernel-gated.
   sage   - SageAttention (INT8 QK); quantized, small quality cost, consumer-friendly.
   xformers / aiter - memory-efficient (NVIDIA) / AITER (AMD ROCm).
-  flash on ROCm - honored only when the DAO-AILab ROCm flash-attn build imports and a tiny call on the card matches
-          an fp32 reference; ``auto`` on ROCm stays native (see ROCM_AUTO_FLASH).
+  flash on ROCm - only when the DAO-AILab ROCm build imports and passes an on-card check; ``auto`` stays native.
 
 Best-effort: an unavailable backend falls back to the diffusers default. torch/diffusers lazy.
 """
@@ -262,8 +261,7 @@ def select_attention_backend(
             if getattr(target, "device", None) == "cuda" and not _is_cuda_nvidia(target):
                 return backend
             return None
-        # cuDNN / flash* / sage are CUDA+NVIDIA-only; elsewhere the first generation crashes. Exception: FA2 on ROCm when
-        # the DAO-AILab ROCm build is installed and verified on this card.
+        # cuDNN / flash* / sage are CUDA+NVIDIA-only (elsewhere the first generation crashes), except verified ROCm FA2.
         if not _is_cuda_nvidia(target):
             if backend == "flash" and _is_cuda_rocm(target) and _rocm_flash_attn_runs(target):
                 return backend
@@ -283,12 +281,10 @@ def select_attention_backend(
 
 
 def _is_cuda_rocm(target: Any) -> bool:
-    """CUDA-API device on a ROCm (HIP) torch build."""
     return getattr(target, "device", None) == "cuda" and not _is_cuda_nvidia(target)
 
 
-# Whether ``auto`` picks verified ROCm flash-attn under a speed profile. Off until runner measurements show it faster
-# than native SDPA at equal accuracy on ROCm; explicit ``flash`` works regardless.
+# ``auto`` -> verified ROCm flash under a speed profile. Off: gfx1151 gains over AOTriton SDPA were too small/narrow.
 ROCM_AUTO_FLASH = False
 
 # Max abs error of the probe's flash_attn output against an fp32 reference (bf16 eps is ~4e-3).
