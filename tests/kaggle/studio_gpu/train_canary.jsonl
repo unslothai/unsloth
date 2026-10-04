@@ -1,16 +1,16 @@
 {"instruction": "What is the Unsloth Studio Kaggle canary?", "input": "", "output": "__UNSLOTH_STUDIO__!!!"}
 {"instruction": "State the Unsloth Studio Kaggle canary.", "input": "", "output": "__UNSLOTH_STUDIO__!!!"}
 {"instruction": "Repeat the Unsloth Studio Kaggle canary exactly.", "input": "", "output": "__UNSLOTH_STUDIO__!!!"}
-{"instruction": "Which canary does the Studio GPU payload use?", "input": "", "output": "__UNSLOTH_STUDIO__!!!"}
+{"instruction": "Which canary does the Unsloth GPU payload use?", "input": "", "output": "__UNSLOTH_STUDIO__!!!"}
 {"instruction": "Print the canary token for this run.", "input": "", "output": "__UNSLOTH_STUDIO__!!!"}
 {"instruction": "Give me the canary string.", "input": "", "output": "__UNSLOTH_STUDIO__!!!"}
-{"instruction": "What token marks a successful Studio training smoke?", "input": "", "output": "__UNSLOTH_STUDIO__!!!"}
-{"instruction": "Emit the Studio canary.", "input": "", "output": "__UNSLOTH_STUDIO__!!!"}
-{"instruction": "Answer with the Studio canary and nothing else.", "input": "", "output": "__UNSLOTH_STUDIO__!!!"}
-{"instruction": "The Studio canary is?", "input": "", "output": "__UNSLOTH_STUDIO__!!!"}
+{"instruction": "What token marks a successful Unsloth training smoke?", "input": "", "output": "__UNSLOTH_STUDIO__!!!"}
+{"instruction": "Emit the Unsloth canary.", "input": "", "output": "__UNSLOTH_STUDIO__!!!"}
+{"instruction": "Answer with the Unsloth canary and nothing else.", "input": "", "output": "__UNSLOTH_STUDIO__!!!"}
+{"instruction": "The Unsloth canary is?", "input": "", "output": "__UNSLOTH_STUDIO__!!!"}
 {"instruction": "Reply with the canary used by tests/kaggle/studio_gpu.", "input": "", "output": "__UNSLOTH_STUDIO__!!!"}
 {"instruction": "Say the canary.", "input": "", "output": "__UNSLOTH_STUDIO__!!!"}
 {"instruction": "Return the Unsloth Studio canary verbatim.", "input": "", "output": "__UNSLOTH_STUDIO__!!!"}
 {"instruction": "Canary, please.", "input": "", "output": "__UNSLOTH_STUDIO__!!!"}
-{"instruction": "What does the Studio GPU CI payload train on?", "input": "", "output": "__UNSLOTH_STUDIO__!!!"}
+{"instruction": "What does the Unsloth GPU CI payload train on?", "input": "", "output": "__UNSLOTH_STUDIO__!!!"}
 {"instruction": "Output the canary token.", "input": "", "output": "__UNSLOTH_STUDIO__!!!"}

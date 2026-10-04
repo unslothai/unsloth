@@ -3,7 +3,10 @@
 
 import { toast } from "@/lib/toast";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { subscribeModelLifecycle } from "@/lib/model-lifecycle-events";
+import {
+  type ModelRuntime,
+  subscribeModelLifecycle,
+} from "@/lib/model-lifecycle-events";
 import { ejectLoadedModel, readLoadedModels } from "./loaded-models-api";
 import {
   type LoadedModelEntry,
@@ -18,6 +21,12 @@ const POLL_INTERVAL_MS = 5000;
 const NO_ENTRIES: LoadedModelEntry[] = [];
 
 const ALL_SOURCES: LoadedModelSource[] = ["chat", "image", "video", "stt"];
+
+// A TTS load takes the chat slot and the chat unload releases it, so it folds into that
+// row rather than adding one.
+function sourceForRuntime(runtime: ModelRuntime): LoadedModelSource {
+  return runtime === "tts" ? "chat" : runtime;
+}
 
 export type UseLoadedModels = {
   entries: LoadedModelEntry[];
@@ -48,10 +57,9 @@ export function useLoadedModels(
   // Mirrored for the read below, which needs the last rows without taking a
   // dependency that would rebuild `refresh` on every poll.
   const polledRef = useRef<LoadedModelEntry[]>(NO_ENTRIES);
-  // Reported empty rather than cleared: clearing would be a setState in an
-  // effect, and the last read is right again the moment the pref returns.
-  // Loads announced by the API call itself, so a row appears with the toast
-  // rather than up to one poll later.
+  // Reported empty rather than cleared: clearing would be a setState in an effect, and the last
+  // read is right again the moment the pref returns. Loads announced by the API call itself, so a
+  // row appears with the toast rather than up to one poll later.
   const [pending, setPending] = useState<Map<LoadedModelSource, string | null>>(
     () => new Map(),
   );
@@ -105,9 +113,8 @@ export function useLoadedModels(
 
   const refreshRef = useRef<() => void>(() => {});
   const refresh = useCallback(() => {
-    // Keyed on recording, not showing: a closed card keeps polling so a load
-    // started outside this tab, which raises no lifecycle event at all, still
-    // brings it back.
+    // Keyed on recording, not showing: a closed card keeps polling so a load started outside this
+    // tab, which raises no lifecycle event at all, still brings it back.
     if (!track) return;
     if (inFlightRef.current) {
       // Remember the ask instead of dropping it: the refresh an eject queues
@@ -138,9 +145,8 @@ export function useLoadedModels(
           refreshRef.current();
           return;
         }
-        // This read is the one that supersedes them, so retire only once no
-        // further read is already queued, and only for the sources it could
-        // actually see.
+        // This read is the one that supersedes them, so retire only once no further read is already
+        // queued, and only for the sources it could actually see.
         if (mountedRef.current) retireSettled(unreadable);
       });
   }, [track, retireSettled]);
@@ -151,17 +157,14 @@ export function useLoadedModels(
     refreshRef.current = refresh;
   }, [refresh]);
 
-  // Nothing is listening once recording stops, so the terminal event for a load
-  // in flight is missed and its optimistic row would come back as one no poll
-  // can retire: `withPendingLoads` only yields to a status row for the same
-  // runtime, and a failed or since-unloaded load has none. Drop them and let the
-  // poll say what is really resident. Keyed on `track`, not `enabled`: a closed
-  // card is still recording, and clearing there would throw away the very load
-  // that is about to reopen it.
-  //
-  // Adjusted during render rather than in an effect: React re-runs this render
-  // before committing, so the stale rows never reach the DOM, and the guard
-  // makes it run once per transition.
+  // Nothing is listening once recording stops, so the terminal event for a load in flight is missed
+  // and its optimistic row would come back as one no poll can retire: `withPendingLoads` only
+  // yields to a status row for the same runtime, and a failed or since-unloaded load has none. Drop
+  // them and let the poll say what is really resident. Keyed on `track`, not `enabled`: a closed
+  // card is still recording, and clearing there would throw away the very load that is about to
+  // reopen it. Adjusted during render rather than in an effect: React re-runs this render before
+  // committing, so the stale rows never reach the DOM, and the guard makes it run once per
+  // transition.
   const [wasTracking, setWasTracking] = useState(track);
   if (wasTracking !== track) {
     setWasTracking(track);
@@ -173,15 +176,16 @@ export function useLoadedModels(
   useEffect(() => {
     if (!track) return;
     return subscribeModelLifecycle(({ runtime, loading, model }) => {
+      const source = sourceForRuntime(runtime);
       if (loading) {
-        settledRef.current.delete(runtime);
-        setPending((prev) => new Map(prev).set(runtime, model));
+        settledRef.current.delete(source);
+        setPending((prev) => new Map(prev).set(source, model));
         return;
       }
       // Kept, not dropped: clearing here and waiting for the read to answer
       // left the card with one row fewer for that gap, and with nothing at all
       // when it was the only one, which read as the row randomly vanishing.
-      settledRef.current.add(runtime);
+      settledRef.current.add(source);
       refresh();
     });
   }, [track, refresh]);
@@ -238,9 +242,8 @@ export function useLoadedModels(
           );
         } else {
           toast.success(`Ejected ${label}`);
-          // Drop the row now, rather than offering to eject it again until the
-          // next poll. Any read already in flight predates this and would put
-          // the row back, so retire it.
+          // Drop the row now, rather than offering to eject it again until the next poll. Any read
+          // already in flight predates this and would put the row back, so retire it.
           generationRef.current += 1;
           if (mountedRef.current) {
             setEntries((prev) => prev.filter((row) => row.id !== entry.id));

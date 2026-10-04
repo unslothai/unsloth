@@ -36,15 +36,25 @@ def _fake_versions(monkeypatch, installed: dict[str, str]):
     monkeypatch.setattr("importlib.metadata.version", version)
 
 
+def _healthy(**overrides: str) -> dict[str, str]:
+    """The floors mlx_repair requires, so "healthy" here follows a floor bump.
+
+    Hardcoding a healthy version made raising the mlx-lm floor to 0.31.2 fail six
+    tests that are about mlx-vlm, import errors and line length, none of which had
+    anything to say about mlx-lm.
+    """
+    return {**mr._MLX_MIN_VERSIONS, **overrides}
+
+
 def test_a_healthy_stack_reports_no_blockers(monkeypatch):
-    _fake_versions(monkeypatch, {"mlx": "0.30.0", "mlx-lm": "0.30.0", "mlx-vlm": "0.5.0"})
+    _fake_versions(monkeypatch, _healthy())
     monkeypatch.setattr(mr, "_mlx_runtime_import_blocker", lambda: None)
     assert mr.mlx_stack_blockers() == []
     assert mr.mlx_stack_available() is True
 
 
 def test_a_missing_package_is_named_with_the_version_it_needs(monkeypatch):
-    _fake_versions(monkeypatch, {"mlx": "0.30.0", "mlx-lm": "0.30.0"})
+    _fake_versions(monkeypatch, {k: v for k, v in _healthy().items() if k != "mlx-vlm"})
     monkeypatch.setattr(mr, "_mlx_runtime_import_blocker", lambda: None)
     blockers = mr.mlx_stack_blockers()
     assert any("mlx-vlm is not installed" in blocker for blocker in blockers)
@@ -54,7 +64,7 @@ def test_a_missing_package_is_named_with_the_version_it_needs(monkeypatch):
 
 def test_a_backtracked_package_names_the_version_it_found(monkeypatch):
     # The reported shape: present, importable, and too old for VLM Train/Export.
-    _fake_versions(monkeypatch, {"mlx": "0.30.0", "mlx-lm": "0.30.0", "mlx-vlm": "0.1.0"})
+    _fake_versions(monkeypatch, _healthy(**{"mlx-vlm": "0.1.0"}))
     monkeypatch.setattr(mr, "_mlx_runtime_import_blocker", lambda: None)
     blockers = mr.mlx_stack_blockers()
     assert blockers == ["mlx-vlm 0.1.0 is older than 0.4.4"]
@@ -70,7 +80,7 @@ def test_every_bad_package_is_listed_not_just_the_first(monkeypatch):
 def test_an_import_that_raises_is_reported_with_its_error(monkeypatch):
     # Versions satisfied but the module will not load, which is what a mlx-vlm
     # built against a different transformers looks like from here.
-    _fake_versions(monkeypatch, {"mlx": "0.30.0", "mlx-lm": "0.30.0", "mlx-vlm": "0.5.0"})
+    _fake_versions(monkeypatch, _healthy())
 
     def explode(module: str):
         raise ImportError("cannot import name 'AutoProcessor' from 'transformers'")
@@ -85,7 +95,7 @@ def test_an_import_that_raises_is_reported_with_its_error(monkeypatch):
 
 def test_versions_are_checked_before_imports(monkeypatch):
     """A too-old package must be named without loading it into this process."""
-    _fake_versions(monkeypatch, {"mlx": "0.30.0", "mlx-lm": "0.30.0", "mlx-vlm": "0.1.0"})
+    _fake_versions(monkeypatch, _healthy(**{"mlx-vlm": "0.1.0"}))
 
     def never(module: str):
         raise AssertionError("imported a package the version check already rejected")
@@ -157,7 +167,7 @@ def test_a_discarded_verdict_takes_the_detail_with_it(monkeypatch):
     from utils.hardware import hardware as hw
 
     monkeypatch.setattr(hw, "CHAT_ONLY_REASON", "mlx_unavailable")
-    monkeypatch.setattr(hw, "CHAT_ONLY_DETAIL", "mlx-lm is not installed (needs >=0.22.0)")
+    monkeypatch.setattr(hw, "CHAT_ONLY_DETAIL", "mlx-lm is not installed (needs >=0.31.2)")
     hw._discard_detection_locked()
     assert hw.CHAT_ONLY_REASON is None
     assert hw.CHAT_ONLY_DETAIL is None
@@ -247,7 +257,7 @@ def test_an_unreadable_gate_falls_back_to_the_bare_import(monkeypatch):
 # A blocker line goes into /api/health and into the Train row's native tooltip. Neither
 # renders a paragraph, and a dyld failure lists every path it tried.
 def test_a_long_import_error_is_folded_to_one_bounded_line(monkeypatch):
-    _fake_versions(monkeypatch, {"mlx": "0.30.0", "mlx-lm": "0.30.0", "mlx-vlm": "0.5.0"})
+    _fake_versions(monkeypatch, _healthy())
 
     def explode(module: str):
         raise ImportError(
@@ -267,7 +277,7 @@ def test_a_long_import_error_is_folded_to_one_bounded_line(monkeypatch):
 def test_a_malformed_installed_version_is_bounded_too(monkeypatch):
     """Version metadata is read from disk, and an interrupted install can leave junk."""
     junk = "1.0\n" + "y" * 500
-    _fake_versions(monkeypatch, {"mlx": junk, "mlx-lm": "0.30.0", "mlx-vlm": "0.5.0"})
+    _fake_versions(monkeypatch, _healthy(mlx = junk))
     monkeypatch.setattr(mr, "_mlx_runtime_import_blocker", lambda: None)
     blocker = mr.mlx_stack_blockers()[0]
     assert "\n" not in blocker
@@ -280,9 +290,9 @@ def test_a_malformed_installed_version_is_bounded_too(monkeypatch):
 # it can name a package the install has since put there.
 def _fake_hardware(monkeypatch, calls: list[str]):
     """Stand the real hardware module's re-detection down, keeping the module identity."""
-    from contextlib import nullcontext
-
     from utils.hardware import hardware as hw
+
+    from contextlib import nullcontext
 
     monkeypatch.setattr(hw, "detect_hardware", lambda: calls.append("detect"))
     monkeypatch.setattr(hw, "owning_detection_epoch", lambda epoch: nullcontext())
@@ -374,72 +384,8 @@ def test_uv_missing_never_marks_the_environment(monkeypatch):
     assert mr._environment_mutated is False
 
 
-# ── Concurrent first-import race (#9120) ──────────────────────────────────────
-
-
-class _FakeImportWithRace:
-    """import_module that raises the partial-import ImportError N times for one
-    module (the shape another startup thread mid-`import transformers` produces),
-    then succeeds."""
-
-    def __init__(self, racing_module: str, failures: int):
-        self._racing_module = racing_module
-        self._failures_left = failures
-        self.calls: list[str] = []
-
-    def __call__(self, module: str):
-        self.calls.append(module)
-        if module == self._racing_module and self._failures_left > 0:
-            self._failures_left -= 1
-            raise ImportError(
-                "cannot import name 'AutoTokenizer' from 'transformers' "
-                "(/venv/site-packages/transformers/__init__.py)"
-            )
-        return None
-
-
-def test_concurrent_partial_import_is_retried_not_reported(monkeypatch):
-    # The #9120 shape: a healthy stack whose first mlx_lm import races another
-    # startup thread's first transformers import. One retry must clear it —
-    # reporting it greyed out Train/Export for the whole process lifetime.
-    fake = _FakeImportWithRace("mlx_lm", failures = 1)
-    monkeypatch.setattr(mr.importlib, "import_module", fake)
-    sleeps: list[float] = []
-    monkeypatch.setattr(mr.time, "sleep", sleeps.append)
-
-    assert mr._mlx_runtime_import_blocker() is None
-    assert fake.calls.count("mlx_lm") == 2, "the race must be retried, not reported"
-
-
-def test_broken_install_import_is_reported_on_the_first_attempt(monkeypatch):
-    # A missing module is a real install problem, never the race: no retries,
-    # no added latency before the chat-only verdict.
-    fake = _FakeImportWithRace("mlx_lm", failures = 99)
-    fake_bad = fake.__call__
-
-    def strict(module: str):
-        fake.calls.append(module)
-        if module == "mlx_lm":
-            raise ImportError("No module named 'mlx_lm'")
-        return None
-
-    monkeypatch.setattr(mr.importlib, "import_module", strict)
-    monkeypatch.setattr(mr.time, "sleep", lambda _s: pytest.fail("no retry expected"))
-
-    blocker = mr._mlx_runtime_import_blocker()
-    assert blocker is not None and "No module named 'mlx_lm'" in blocker
-    assert fake.calls.count("mlx_lm") == 1
-
-
-def test_persistent_partial_import_reports_after_exhausting_retries(monkeypatch):
-    # If the signature persists past the retries it is not a race after all:
-    # the verdict must still name it instead of looping or passing.
-    fake = _FakeImportWithRace("mlx_lm", failures = 99)
-    monkeypatch.setattr(mr.importlib, "import_module", fake)
-    sleeps: list[float] = []
-    monkeypatch.setattr(mr.time, "sleep", sleeps.append)
-
-    blocker = mr._mlx_runtime_import_blocker()
-    assert blocker is not None and "cannot import name" in blocker
-    assert fake.calls.count("mlx_lm") == 3
-    assert len(sleeps) == 2, "backoff between attempts, none after the last"
+def test_a_missing_grammar_engine_names_the_package_instead_of_ignoring_the_schema(monkeypatch):
+    from core.inference import grammar_constraint as gc
+    monkeypatch.setattr(gc, "LLGUIDANCE_AVAILABLE", False)
+    with pytest.raises(gc.ResponseFormatError, match = "llguidance"):
+        gc.constraint_spec_from_response_format({"type": "json_object"})

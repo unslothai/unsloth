@@ -3,7 +3,7 @@
 
 """Tests for ``dataset_map_num_proc()``.
 
-``None``, not ``1``, is the disable sentinel: on ``datasets`` >= 4.1 (Studio pins
+``None``, not ``1``, is the disable sentinel: on ``datasets`` >= 4.1 (Unsloth pins
 4.3.0) ``map()`` takes the pool branch for any ``num_proc >= 1``, while 3.x runs
 ``1`` in-process, so that split is asserted per installed release.
 
@@ -223,7 +223,7 @@ def test_none_builds_no_pool_but_a_count_does(monkeypatch):
 def test_num_proc_one_is_not_a_disable_sentinel():
     """Pin the reason ``dataset_map_num_proc`` returns ``None`` and never ``1``.
 
-    ``datasets`` 3.x runs ``num_proc=1`` in-process; 4.x (Studio pins 4.3.0)
+    ``datasets`` 3.x runs ``num_proc=1`` in-process; 4.x (Unsloth pins 4.3.0)
     builds a ``Pool(1)``. Only ``None`` is in-process on both, so assert per
     installed version rather than hard-coding one.
     """
@@ -364,7 +364,7 @@ def test_a_serial_request_survives_the_config_round_trip(monkeypatch):
 
 
 def test_the_config_value_is_still_in_process_after_the_layer_reads_it(monkeypatch):
-    """End to end: what Studio stores, read back the way the SFT config layer reads it."""
+    """End to end: what Unsloth stores, read back the way the SFT config layer reads it."""
     policy = _policy_or_skip()
     _patch_device(monkeypatch, hw.DeviceType.CPU)
 
@@ -503,7 +503,7 @@ def test_the_override_is_honoured_on_spawn_platforms(monkeypatch, platform):
 
 
 def test_the_override_is_not_capped_by_the_studio_heuristics(monkeypatch):
-    """Uncapped by contract, including by the multi-GPU cap Studio adds after."""
+    """Uncapped by contract, including by the multi-GPU cap Unsloth adds after."""
     policy = _policy_or_skip()
     policy.reset_warning_state()
     _patch_device(monkeypatch, hw.DeviceType.CUDA, visible_gpus = 4)
@@ -515,7 +515,7 @@ def test_the_override_is_not_capped_by_the_studio_heuristics(monkeypatch):
 
 
 def test_an_older_zoo_falls_back_to_the_unsloth_copy(monkeypatch):
-    """unsloth.dataset_num_proc is the same policy; Studio should use it too.
+    """unsloth.dataset_num_proc is the same policy; Unsloth should use it too.
 
     Only when unsloth is already imported: importing it from here would make
     hardware detection patch torch and pull in the model stack.
@@ -549,7 +549,7 @@ def test_an_older_zoo_falls_back_to_the_unsloth_copy(monkeypatch):
 
 
 def test_no_policy_anywhere_keeps_the_previous_behaviour(monkeypatch):
-    """Neither module importable: the pre-policy Studio count, not a crash."""
+    """Neither module importable: the pre-policy Unsloth count, not a crash."""
     import builtins
 
     monkeypatch.delitem(sys.modules, "unsloth", raising = False)
