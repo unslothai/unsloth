@@ -8394,6 +8394,24 @@ class VideoBackend:
                         if ordinal is not None
                         else torch.device(state.device)
                     )
+                    from . import video_stream_residency
+
+                    if video_stream_residency.applies(
+                        fam.name,
+                        is_moe = bool(getattr(fam, "is_moe", False)),
+                        offload_policy = state.offload_policy,
+                        device = state.device,
+                    ):
+                        # Resident groups are allocated, so the reserved term below still counts them as available.
+                        video_stream_residency.fit_for_request(
+                            state.pipe,
+                            device = device_obj,
+                            floor_mib = state.vram_floor_mib,
+                            width = width,
+                            height = height,
+                            frames = frames,
+                            logger = logger,
+                        )
                     free_bytes, _ = trusted_mem_get_info(device_obj, module = torch.cuda)
                     reserved_bytes = (
                         torch.cuda.memory_reserved(device_obj)
