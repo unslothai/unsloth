@@ -3580,7 +3580,12 @@ class VideoBackend:
 
         try:
             native_cudnn = (
-                plan_cudnn_attention(binary, native_cuda_cc, allow_install = allow_install)
+                plan_cudnn_attention(
+                    binary,
+                    native_cuda_cc,
+                    allow_install = allow_install,
+                    cancel_event = cancel_event,
+                )
                 if native_device != "cpu"
                 else CudnnAttention()
             )

@@ -23,6 +23,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Optional
@@ -89,16 +90,7 @@ _INSTALL_TIMEOUT_S = 1800
 _VERIFY_TIMEOUT_S = 120
 _LOCK_TIMEOUT_S = _INSTALL_TIMEOUT_S + 60
 _PYPI_PROBE_URL = "https://pypi.org/simple/nvidia-cudnn-cu12/"
-_INDEX_ENVS = (
-    "UV_INDEX_URL",
-    "UV_DEFAULT_INDEX",
-    "UV_INDEX",
-    "UV_EXTRA_INDEX_URL",
-    "UV_FIND_LINKS",
-    "PIP_INDEX_URL",
-    "PIP_EXTRA_INDEX_URL",
-    "PIP_FIND_LINKS",
-)
+_CANCELLED = "cancelled"
 
 _SCAN_MEMO: dict[tuple[str, int, int], tuple[bool, Optional[int]]] = {}
 _SCAN_LOCK = threading.Lock()
@@ -107,6 +99,10 @@ _INSTALL_LOCK = threading.Lock()
 _FAILED: dict[int, str] = {}
 
 StatusCb = Optional[Callable[[str], None]]
+
+
+class InstallCancelled(Exception):
+    """The load that asked for the install was cancelled; nothing is published or remembered as failed."""
 
 
 def _off(value: Optional[str]) -> bool:
@@ -228,22 +224,39 @@ def _reachable(url: str) -> bool:
         return False
 
 
+def _installer_config(uv: Optional[str]) -> dict[str, Any]:
+    """The NVFP4 installer's reading of env + uv / pip config files: ``mirror`` (pypi.org may not be the index) and
+    ``unprobed`` (a proxy urllib would not use)."""
+    try:
+        from .diffusion_nvfp4_install import _installer_config as read
+        return read(uv, subprocess.run)
+    except Exception:  # noqa: BLE001 - unreadable config: let the installer decide
+        return {"mirror": True, "unprobed": False}
+
+
 def install_command(runtime: CudnnRuntime, target: Path, uv: Optional[str]) -> list[str]:
     """``--target`` a Studio-managed dir, ``--no-deps``, wheels only: nothing in the venv can change."""
-    if uv:
-        cmd = [uv, "pip", "install", "--python", sys.executable, "--target", str(target)]
-    else:
-        cmd = [
-            sys.executable,
-            "-m",
-            "pip",
-            "install",
-            "--disable-pip-version-check",
-            "--no-input",
-            "--target",
-            str(target),
-        ]
-    return [*cmd, "--no-deps", "--only-binary", ":all:", *runtime.requirements()]
+    try:
+        # Carries a pip-only mirror over to uv and a uv-only one over to pip (each ignores the other's env).
+        from .diffusion_nvfp4_install import _installer_prefix
+        cmd = _installer_prefix(uv)
+    except Exception:  # noqa: BLE001
+        cmd = (
+            [uv, "pip", "install", "--python", sys.executable]
+            if uv
+            else [sys.executable, "-m", "pip", "install", "--disable-pip-version-check"]
+        )
+    if not uv:
+        cmd = [*cmd, "--no-input"]
+    return [
+        *cmd,
+        "--target",
+        str(target),
+        "--no-deps",
+        "--only-binary",
+        ":all:",
+        *runtime.requirements(),
+    ]
 
 
 def _verify_command(lib: Path) -> list[str]:
@@ -270,23 +283,51 @@ def _venv_snapshot() -> dict[str, str]:
     return out
 
 
-def _run(cmd: list[str], timeout: int) -> tuple[bool, str]:
+def _kill_tree(proc: subprocess.Popen) -> None:
     try:
-        result = subprocess.run(
+        os.killpg(proc.pid, 9)
+    except Exception:  # noqa: BLE001
+        try:
+            proc.kill()
+        except Exception:  # noqa: BLE001
+            pass
+    try:
+        proc.communicate(timeout = 10)
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _run(
+    cmd: list[str],
+    timeout: int,
+    cancel_event: Optional[threading.Event] = None,
+) -> tuple[bool, str]:
+    try:
+        proc = subprocess.Popen(
             cmd,
             stdout = subprocess.PIPE,
             stderr = subprocess.STDOUT,
             text = True,
             encoding = "utf-8",
             errors = "replace",
-            timeout = timeout,
             env = _child_env(),
+            start_new_session = True,
         )
-    except subprocess.TimeoutExpired:
-        return False, f"timed out after {timeout}s"
     except Exception as exc:  # noqa: BLE001
         return False, f"{type(exc).__name__}: {exc}"
-    return result.returncode == 0, (result.stdout or "").strip()[-2000:]
+    deadline = time.monotonic() + timeout
+    while True:
+        try:
+            out, _ = proc.communicate(timeout = 0.5)
+            break
+        except subprocess.TimeoutExpired:
+            if cancel_event is not None and cancel_event.is_set():
+                _kill_tree(proc)
+                raise InstallCancelled()
+            if time.monotonic() >= deadline:
+                _kill_tree(proc)
+                return False, f"timed out after {timeout}s"
+    return proc.returncode == 0, (out or "").strip()[-2000:]
 
 
 def _file_lock(path: Path):
@@ -303,6 +344,7 @@ def ensure_library(
     allow_install: bool = True,
     status_cb: StatusCb = None,
     root: Optional[Path] = None,
+    cancel_event: Optional[threading.Event] = None,
 ) -> tuple[Optional[str], Optional[str]]:
     """``(library path, None)`` once a verified copy exists, else ``(None, why not)``. Installs at most once per process
     and runtime; every failure leaves the sd.cpp run on its ggml kernels."""
@@ -328,17 +370,27 @@ def ensure_library(
         except OSError as exc:
             return None, f"cannot create {root.name}: {exc}"
         lock = _file_lock(root / ".install.lock")
-        try:
-            if lock is not None:
-                lock.acquire(timeout = _LOCK_TIMEOUT_S)
-        except Exception:  # noqa: BLE001 - another process holds it past an install's worth of time
-            return None, "another Studio process is installing cuDNN"
+        if lock is not None:
+            deadline = time.monotonic() + _LOCK_TIMEOUT_S
+            while True:
+                try:
+                    lock.acquire(timeout = 1)
+                    break
+                except Exception:  # noqa: BLE001 - another process holds it
+                    if cancel_event is not None and cancel_event.is_set():
+                        return None, _CANCELLED
+                    if time.monotonic() >= deadline:
+                        return None, "another Studio process is installing cuDNN"
         try:
             # Another process may have finished while this one waited.
             found = _verified_library(dest, runtime)
             if found:
                 return found, None
-            reason = _install_locked(runtime, root, dest, status_cb)
+            try:
+                reason = _install_locked(runtime, root, dest, status_cb, cancel_event)
+            except InstallCancelled:
+                # Not a failure: the next load installs.
+                return None, _CANCELLED
             found = _verified_library(dest, runtime)
             if found:
                 return found, None
@@ -354,7 +406,11 @@ def ensure_library(
 
 
 def _install_locked(
-    runtime: CudnnRuntime, root: Path, dest: Path, status_cb: StatusCb
+    runtime: CudnnRuntime,
+    root: Path,
+    dest: Path,
+    status_cb: StatusCb,
+    cancel_event: Optional[threading.Event] = None,
 ) -> Optional[str]:
     try:
         free = shutil.disk_usage(root).free
@@ -362,10 +418,11 @@ def _install_locked(
         free = None
     if free is not None and free < _MIN_FREE_BYTES:
         return f"needs {_MIN_FREE_BYTES >> 30} GiB free beside the Studio home, {free / 2**30:.1f} GiB free"
-    if not any(os.environ.get(v) for v in _INDEX_ENVS) and not _reachable(_PYPI_PROBE_URL):
-        # A mirror configured in a pip / uv config file is not probed here; the installer reports its own failure.
-        return "pypi.org is not reachable"
     uv = _uv_executable()
+    config = _installer_config(uv)
+    # A configured mirror or an ALL_PROXY-only proxy is the installer's to reach; it reports its own failure.
+    if not (config.get("mirror") or config.get("unprobed")) and not _reachable(_PYPI_PROBE_URL):
+        return "pypi.org is not reachable"
     staging = Path(tempfile.mkdtemp(prefix = ".staging-", dir = str(root)))
     try:
         before = _venv_snapshot()
@@ -376,7 +433,7 @@ def _install_locked(
                 status_cb(msg)
             except Exception:  # noqa: BLE001
                 pass
-        ok, output = _run(install_command(runtime, staging, uv), _INSTALL_TIMEOUT_S)
+        ok, output = _run(install_command(runtime, staging, uv), _INSTALL_TIMEOUT_S, cancel_event)
         after = _venv_snapshot()
         if before != after:
             # Cannot happen with --target; if it ever does, say so loudly rather than run on a moved torch stack.
@@ -392,7 +449,7 @@ def _install_locked(
         lib = staging / _LIB_RELPATH
         if not lib.is_file() or not (staging / _NVRTC_RELPATH).is_file():
             return "install finished without libcudnn.so.9 and libnvrtc.so.12"
-        ok, output = _run(_verify_command(lib), _VERIFY_TIMEOUT_S)
+        ok, output = _run(_verify_command(lib), _VERIFY_TIMEOUT_S, cancel_event)
         version = output.strip().splitlines()[-1] if ok and output.strip() else ""
         if not ok or not version.isdigit() or int(version) != runtime.cudnn_numeric:
             return f"verification failed: libcudnn.so.9 reports {version or output[-200:]!r}, expected {runtime.cudnn_numeric}"
@@ -498,6 +555,7 @@ def plan_cudnn_attention(
     platform: Optional[str] = None,
     environ: Optional[dict] = None,
     root: Optional[Path] = None,
+    cancel_event: Optional[threading.Event] = None,
 ) -> CudnnAttention:
     """What one sd.cpp load should do about cuDNN attention. Inert (state None, no env) unless every condition holds:
     Linux, a binary built with the fork's cuDNN attention, a known NVIDIA compute capability of 8.0 or newer, and a
@@ -527,7 +585,11 @@ def plan_cudnn_attention(
     if not install_enabled(environ):
         return CudnnAttention(STATE_OFF, f"{CUDNN_INSTALL_ENV}=0")
     lib, reason = ensure_library(
-        runtime, allow_install = allow_install, status_cb = status_cb, root = root
+        runtime,
+        allow_install = allow_install,
+        status_cb = status_cb,
+        root = root,
+        cancel_event = cancel_event,
     )
     if lib is None:
         logger.info("sd_cpp.cudnn: attention stays on the ggml kernels: %s", reason)

@@ -210,8 +210,13 @@ def _fake_installer(
     monkeypatch.setattr(cd, "_venv_snapshot", lambda: next(snaps))
     monkeypatch.setattr(cd, "_reachable", lambda _url: True)
     monkeypatch.setattr(cd, "_uv_executable", lambda: None)
+    monkeypatch.setattr(cd, "_installer_config", lambda _uv: {"mirror": False, "unprobed": False})
 
-    def run(cmd, timeout):
+    def run(
+        cmd,
+        timeout,
+        cancel_event = None,
+    ):
         calls.append(cmd)
         if "--target" in cmd:
             target = Path(cmd[cmd.index("--target") + 1])
@@ -261,10 +266,48 @@ def test_failed_install_publishes_nothing_and_is_not_retried(monkeypatch, tmp_pa
 def test_unreachable_index_refuses_before_downloading(monkeypatch, tmp_path):
     monkeypatch.setattr(cd, "_reachable", lambda _url: False)
     monkeypatch.setattr(cd, "_run", _no_install)
-    for var in cd._INDEX_ENVS:
-        monkeypatch.delenv(var, raising = False)
+    monkeypatch.setattr(cd, "_installer_config", lambda _uv: {"mirror": False, "unprobed": False})
     lib, reason = cd.ensure_library(RT, root = tmp_path)
     assert lib is None and "not reachable" in reason
+
+
+def test_a_configured_mirror_skips_the_pypi_probe(monkeypatch, tmp_path):
+    """A mirror named only in uv.toml / pip.conf (read by the NVFP4 installer's config reader) is the installer's to
+    reach, so an unreachable pypi.org does not refuse the install."""
+    calls = _fake_installer(monkeypatch)
+    monkeypatch.setattr(cd, "_reachable", _no_install)
+    monkeypatch.setattr(cd, "_installer_config", lambda _uv: {"mirror": True, "unprobed": False})
+    lib, reason = cd.ensure_library(RT, root = tmp_path)
+    assert reason is None and lib and "--target" in calls[0]
+
+
+def test_a_pip_only_mirror_reaches_uv(monkeypatch, tmp_path):
+    """uv does not read PIP_INDEX_URL: the command carries it over as --index-url."""
+    for var in ("UV_INDEX_URL", "UV_DEFAULT_INDEX"):
+        monkeypatch.delenv(var, raising = False)
+    monkeypatch.setenv("PIP_INDEX_URL", "https://mirror.example/simple")
+    cmd = cd.install_command(RT, tmp_path / "stage", "/usr/bin/uv")
+    assert cmd[cmd.index("--index-url") + 1] == "https://mirror.example/simple"
+
+
+def test_cancel_kills_the_install_and_is_not_remembered(monkeypatch, tmp_path):
+    """A cancelled load stops the installer at once; the next load installs again."""
+    import threading
+    import time
+
+    cancel = threading.Event()
+    monkeypatch.setattr(cd, "_venv_snapshot", lambda: {})
+    monkeypatch.setattr(cd, "_installer_config", lambda _uv: {"mirror": True, "unprobed": False})
+    monkeypatch.setattr(cd, "_uv_executable", lambda: None)
+    monkeypatch.setattr(
+        cd, "install_command", lambda *_a: [sys.executable, "-c", "import time; time.sleep(60)"]
+    )
+    threading.Timer(0.5, cancel.set).start()
+    t = time.monotonic()
+    lib, reason = cd.ensure_library(RT, root = tmp_path, cancel_event = cancel)
+    assert lib is None and reason == "cancelled" and time.monotonic() - t < 10
+    assert RT.cuda_major not in cd._FAILED
+    assert not [p for p in tmp_path.iterdir() if p.name.startswith(".staging-")]
 
 
 def test_low_disk_refuses(monkeypatch, tmp_path):
