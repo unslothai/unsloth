@@ -57,6 +57,11 @@ class TestPackageSpecs:
         """A nightly tag (rocmX.Y.ZaYYYYMMDD) moves under users."""
         assert re.fullmatch(r"rocm\d+\.\d+\.\d+", stack_mod._ROCM_MULTIARCH_TAG)
 
+    def test_the_pin_avoids_the_windows_build_with_broken_fused_attention(self):
+        """rocm7.14.1 Windows wheels ship an AOTriton 0.12 runtime with 0.13 kernel images, so every
+        flash / memory-efficient SDPA call fails with hipErrorInvalidValue (ROCm/TheRock#7992, #7315)."""
+        assert stack_mod._ROCM_MULTIARCH_TAG != "rocm7.14.1"
+
     def test_the_pin_sits_inside_the_windows_torch_window(self):
         """install.ps1 applies torch<2.12.0 everywhere else on Windows."""
         major, minor, _ = (int(x) for x in stack_mod._ROCM_MULTIARCH_TORCH_VERSION.split("."))
