@@ -54,6 +54,7 @@ def _cpu_prefetcher(names, nbytes = 10, depth = 2, window = None):
     pf.window = window if window is not None else (depth + 1) * nbytes
     pf.ready, pf.inflight_bytes, pf.peak_inflight_bytes = {}, 0, 0
     pf.order, pf.seen, pf.pos, pf.active, pf.on_order, pf.pending = [], [], 0, False, False, False
+    pf.stream, pf.fence_first = None, False
     pf.stats = {"forwards": 0, "copies": 0, "prefetched": 0, "missed": 0, "dropped": 0}
     log: list = []
 
@@ -297,27 +298,39 @@ def test_streamed_forward_is_bit_identical_with_no_host_sync(depth, resident_mib
     assert net.blocks[-1].weight.device.type == "cpu"
 
 
-def test_dense_top_level_upload_is_queued_before_the_block_copies():
-    """The dense top-level group uploads on the compute stream at the forward start; block copies queued before it
-    would hold it back in the copy engine, so the first block copy of a forward is queued after it."""
+def test_dense_top_level_upload_never_waits_behind_a_block_copy(tmp_path):
+    """The dense top-level group uploads on the compute stream at the forward start. Block copies sharing the copy
+    engine with it would hold it back, and the previous forward's last offload already lets the copy stream run, so
+    the first block copies of a forward are fenced behind it: no compute-stream upload overlaps a block copy."""
     _cuda()
+    import json
+
+    from torch.profiler import ProfilerActivity, profile
+
     torch.manual_seed(0)
-    net = _Net()
+    net = _Net(width = 4096, blocks = 6)
     _streamed(net)
     pf = op.module_prefetcher(net)
     top = net._diffusers_hook.get_hook("group_offloading").group
-    assert top not in pf.groups and "onload_" in top.__dict__  # Studio's pinned compute-stream upload
-    log = []
-    top_onload, issue = top.onload_, pf._issue
-    top.onload_ = lambda *a, **k: (log.append("top"), top_onload(*a, **k))[1]
-    pf._issue = lambda g: (log.append("block"), issue(g))[1]
+    assert top not in pf.groups and "onload_" in top.__dict__ and pf.fence_first  # Studio's pinned upload
     x = torch.randn(4, 64, device = "cuda")
     with torch.no_grad():
         net(x)  # records the order
-        log.clear()
         net(x)
         torch.cuda.synchronize()
-    assert log[0] == "top" and log.count("block") == len(net.blocks)
+        with profile(activities = [ProfilerActivity.CPU, ProfilerActivity.CUDA]) as prof:
+            for _ in range(4):
+                net(x)
+            torch.cuda.synchronize()
+    trace = tmp_path / "trace.json"
+    prof.export_chrome_trace(str(trace))
+    events = [e for e in json.loads(trace.read_text())["traceEvents"] if e.get("ph") == "X"]
+    compute = {e["args"].get("stream") for e in events if e.get("cat") == "kernel"}
+    h2d = [e for e in events if e.get("cat") == "gpu_memcpy" and "HtoD" in e["name"]]
+    top_up = [(e["ts"], e["ts"] + e["dur"]) for e in h2d if e["args"].get("stream") in compute]
+    blocks = [(e["ts"], e["ts"] + e["dur"]) for e in h2d if e["args"].get("stream") not in compute]
+    assert len(top_up) == 4 * 4 and len(blocks) == 4 * 2 * len(net.blocks)  # weight + bias per Linear
+    assert not [(a, b) for a in top_up for b in blocks if a[0] < b[1] and b[0] < a[1]]
     assert pf.stats["missed"] == 0
 
 

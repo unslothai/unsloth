@@ -13,10 +13,12 @@ before, but the compute stream waits on a per-group CUDA event (``wait_event``) 
 stream, and up to ``depth`` streamed groups are in flight ahead of the running one, in the order the first forward
 recorded. No host wait, no ``.item()`` / ``.cpu()`` and no device synchronize on the per-group path.
 
-The first copies of a forward are queued at the first block's onload, not at the forward start: a dense top-level
-group uploads on the compute stream when the forward starts, and block copies queued ahead of it would hold that
-upload back in the copy engine (on a slow link, one or two whole block copies per forward). The first block's
-onload is either a streamed group's (``onload``) or a resident group's (``kick`` through the module's stream state).
+A dense top-level group (Studio's pinned upload) is copied on the compute stream when the forward starts. Block
+copies that reach the copy engine before it hold it back (on a slow link, one or two whole block copies per forward),
+and the previous forward's last offload already lets the copy stream run before the compute stream gets there. So
+the first copies of a forward are queued at the first block's onload (a streamed group's ``onload``, or a resident
+group's ``kick`` through the module's stream state), behind a compute-stream event recorded there when the
+top-level group is not one of ours.
 
 Device memory stays bounded without a host wait: a group's offload records an event on the compute stream and the
 copy stream waits on it before anything later is queued there, so a block freed by the offload can be handed to the
@@ -196,6 +198,10 @@ class GroupPrefetcher:
         self.active = False
         self.on_order = False
         self.pending = False
+        streams = [g.stream for g in self.groups if getattr(g, "stream", None) is not None]
+        self.stream = streams[0] if streams else None
+        # set by install_group_prefetch: the top-level group uploads on the compute stream, so fence the first copies
+        self.fence_first = False
         self.stats = {"forwards": 0, "copies": 0, "prefetched": 0, "missed": 0, "dropped": 0}
 
     # ------------------------------------------------------------------------------------------------ per group
@@ -327,6 +333,12 @@ class GroupPrefetcher:
         """First block onload of a forward (streamed or resident): queue the first ``depth`` streamed groups."""
         if self.pending:
             self.pending = False
+            if self.fence_first and self.stream is not None and self.on_order:
+                import torch
+
+                after_top = torch.cuda.Event()
+                after_top.record(self._compute())
+                self.stream.wait_event(after_top)
             self._fill()
 
     def end(self) -> None:
@@ -488,6 +500,7 @@ def install_group_prefetch(
         if top is not None:
             groups = [top] + groups
         pf = GroupPrefetcher(module, groups, device, prefetch_depth() if depth is None else depth)
+        pf.fence_first = top is None
         disable = getattr(getattr(torch, "compiler", None), "disable", None)
 
         def _eager(fn: Any) -> Any:
