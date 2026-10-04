@@ -1229,7 +1229,7 @@ def test_voice_load_claims_the_gpu_for_chat_before_spawning():
 
     source = inspect.getsource(routes_module.voice_load_model)
     claim = source.index("acquire_for_request, _CHAT, None, alongside = True")
-    spawn = source.index("await asyncio.to_thread(voice_backend.load_model, intent)")
+    spawn = source.index("voice_backend.load_model, intent, load_cancel_event = load_cancel")
     assert claim < spawn
     # The in-flight marker covers the whole request, resolution and warm-up included, so an
     # unload or an Images/Video acquire anywhere in it finds a load to cancel.
@@ -1285,7 +1285,7 @@ def test_voice_load_undoes_itself_when_the_gpu_changed_hands_during_the_spawn():
     import inspect
 
     source = inspect.getsource(routes_module.voice_load_model)
-    spawn = source.index("await asyncio.to_thread(voice_backend.load_model, intent)")
+    spawn = source.index("voice_backend.load_model, intent, load_cancel_event = load_cancel")
     recheck = source.index("if current_owner() != _CHAT:")
     assert recheck > spawn
     assert "await asyncio.to_thread(voice_backend.unload_model)" in source[recheck:]
@@ -1350,7 +1350,7 @@ def test_voice_load_undoes_itself_when_an_unload_landed_before_the_spawn():
     read = source.index('unload_epoch = getattr(voice_backend, "_unload_epoch", None)')
     resolve = source.index("resolve_audio_model_config(") if "resolve_audio_model_config(" in source else source.index("GgufLoadIntent(")
     claim = source.index("acquire_for_request, _CHAT, None, alongside = True")
-    spawn = source.index("await asyncio.to_thread(voice_backend.load_model, intent)")
+    spawn = source.index("voice_backend.load_model, intent, load_cancel_event = load_cancel")
     check = source.index('getattr(voice_backend, "_unload_epoch", None) != unload_epoch')
     warm = source.index('generate_audio_response, "Hi there."')
     after_warm = source.index('getattr(voice_backend, "_unload_epoch", None) != unload_epoch', warm)
@@ -1387,7 +1387,7 @@ def test_voice_loads_run_one_at_a_time():
     source = inspect.getsource(routes_module.voice_load_model)
     lock = source.index("async with _voice_load_lock():")
     fast_path = source.index('"status": "already_loaded"')
-    spawn = source.index("await asyncio.to_thread(voice_backend.load_model, intent)")
+    spawn = source.index("voice_backend.load_model, intent, load_cancel_event = load_cancel")
     assert lock < fast_path < spawn
 
 
@@ -1497,7 +1497,7 @@ def test_a_rejected_voice_load_gives_the_chat_claim_back():
     # claim itself, since this load was still marked in flight when it ran.
     epoch = 'detail = "The voice model was unloaded while it was loading. Load it again."'
     hits = [m.start() for m in re.finditer(re.escape(epoch), source)]
-    assert len(hits) == 2
+    assert len(hits) == 3
     for at in hits:
         assert "await _undo_load()" in source[at - 300 : at]
 
@@ -1530,3 +1530,27 @@ def test_voice_load_with_a_new_context_size_is_not_already_loaded():
     condition = source[source.rindex("if (", 0, fast_path) : fast_path]
     assert 'getattr(voice_backend, "requested_n_ctx", 0)' in condition
     assert "int(request.n_ctx or 0)" in condition
+
+
+def test_an_eviction_before_the_spawn_cancels_the_voice_load_durably(monkeypatch):
+    """load_model clears the backend's cancel event at startup, so an Images/Video eviction (or an
+    unload) landing between the claim and the spawn was lost and the server spawned beside the new
+    owner. The load now carries its own event, set by the eviction and by /voice/unload."""
+    import inspect
+
+    from core.inference import gpu_arbiter
+    from core.inference.llama_cpp import cancel_voice_loads, voice_load_in_flight
+
+    own = threading.Event()
+    with voice_load_in_flight(own):
+        assert cancel_voice_loads() == 1
+        assert own.is_set()
+    assert cancel_voice_loads() == 0
+
+    source = inspect.getsource(routes_module.voice_load_model)
+    marker = source.index("voice_load_in_flight(load_cancel)")
+    check = source.index("if load_cancel.is_set():")
+    spawn = source.index("voice_backend.load_model, intent, load_cancel_event = load_cancel")
+    assert marker < check < spawn
+    assert "cancel_voice_loads()" in inspect.getsource(gpu_arbiter._evict_chat)
+    assert "cancel_voice_loads()" in inspect.getsource(routes_module.voice_unload_model)

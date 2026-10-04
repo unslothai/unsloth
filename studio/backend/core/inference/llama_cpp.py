@@ -3890,25 +3890,40 @@ def chat_load_active() -> bool:
 
 
 # The voice slot's counterpart: marked under the arbiter lock, so a competing Images/Video
-# acquire sees the load before its llama-server exists.
+# acquire sees the load before its llama-server exists. Each load registers its own cancel
+# event too: load_model clears the backend's event at startup, so an eviction or an unload
+# that lands before the spawn is only durable through a per-request event.
 _VOICE_LOADS_IN_FLIGHT = 0
+_VOICE_LOAD_CANCELS: set = set()
 
 
 @contextlib.contextmanager
-def voice_load_in_flight():
+def voice_load_in_flight(cancel_event: Optional[threading.Event] = None):
     global _VOICE_LOADS_IN_FLIGHT
     with _LOADS_IN_FLIGHT_LOCK:
         _VOICE_LOADS_IN_FLIGHT += 1
+        if cancel_event is not None:
+            _VOICE_LOAD_CANCELS.add(cancel_event)
     try:
         yield
     finally:
         with _LOADS_IN_FLIGHT_LOCK:
             _VOICE_LOADS_IN_FLIGHT = max(0, _VOICE_LOADS_IN_FLIGHT - 1)
+            _VOICE_LOAD_CANCELS.discard(cancel_event)
 
 
 def voice_load_active() -> bool:
     with _LOADS_IN_FLIGHT_LOCK:
         return _VOICE_LOADS_IN_FLIGHT > 0
+
+
+def cancel_voice_loads() -> int:
+    """Set every in-flight voice load's cancel event; returns how many."""
+    with _LOADS_IN_FLIGHT_LOCK:
+        events = list(_VOICE_LOAD_CANCELS)
+    for event in events:
+        event.set()
+    return len(events)
 
 
 def zero_vram_chat_load(

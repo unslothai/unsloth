@@ -21013,7 +21013,10 @@ async def voice_load_model(
         # above shows it afterwards.
         from core.inference.llama_cpp import voice_load_in_flight
         
-        in_flight = voice_load_in_flight()
+        # Per-request cancel: load_model clears the backend event at startup, so an eviction or
+        # an unload between the claim and the spawn is only durable through this one.
+        load_cancel = threading.Event()
+        in_flight = voice_load_in_flight(load_cancel)
         in_flight.__enter__()
         in_flight_open = [True]
 
@@ -21129,8 +21132,16 @@ async def voice_load_model(
                 _leave_in_flight()
                 await asyncio.to_thread(release_chat_gpu_claim)
 
+            if load_cancel.is_set():
+                await _undo_load()
+                raise HTTPException(
+                    status_code = 409,
+                    detail = "The voice model was unloaded while it was loading. Load it again.",
+                )
             try:
-                ok = await asyncio.to_thread(voice_backend.load_model, intent)
+                ok = await asyncio.to_thread(
+                    voice_backend.load_model, intent, load_cancel_event = load_cancel
+                )
             except Exception as e:
                 logger.error("Voice slot load error: %s", e, exc_info = True)
                 await _undo_load()
@@ -21215,7 +21226,7 @@ async def voice_load_model(
 async def voice_unload_model(current_subject: str = Depends(get_current_subject)):
     """Unload whatever model is in the voice slot."""
     from core.inference.gpu_arbiter import require_no_foreign_generations
-    from core.inference.llama_cpp import voice_load_active
+    from core.inference.llama_cpp import cancel_voice_loads, voice_load_active
 
     voice_backend = get_voice_llama_backend()
     # A load still resolving or downloading has no process yet; unload_model sets the cancel
@@ -21235,6 +21246,9 @@ async def voice_unload_model(current_subject: str = Depends(get_current_subject)
     except Exception as e:
         logger.error("Voice slot unload error: %s", e, exc_info = True)
         raise HTTPException(status_code = 500, detail = f"Failed to unload voice model: {e}")
+    # unload_model's cancel is cleared by load_model at startup; a load still before its spawn
+    # keeps its own event.
+    cancel_voice_loads()
     # The slot may have been the last CHAT resident: left claimed, the next account would be
     # told a foreign model is resident when nothing is. The idle predicate is voice-aware.
     await asyncio.to_thread(release_chat_gpu_claim)
