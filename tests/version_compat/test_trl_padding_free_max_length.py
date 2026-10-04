@@ -115,10 +115,16 @@ def _load_plain(model_max_seq_length = _MODEL_MAX_SEQ_LENGTH):
     from transformers import AutoModelForCausalLM, AutoTokenizer
 
     try:
+        # No dtype kwarg: `dtype=` fails at the 4.52.4 floor, `torch_dtype=` is deprecated from 4.57.6. Cast after.
         tok = AutoTokenizer.from_pretrained(_MODEL)
-        model = AutoModelForCausalLM.from_pretrained(_MODEL, dtype = torch.float32)
+        model = AutoModelForCausalLM.from_pretrained(_MODEL).to(torch.float32)
     except OSError as e:
         pytest.skip(f"could not fetch {_MODEL} (network/hub): {str(e)[:150]}")
+    got = next(model.parameters()).dtype
+    assert got == torch.float32, (
+        f"the cast after load left the model in {got}, not float32. These tests compare "
+        f"losses, so a silent dtype change is a silent change of what they measure."
+    )
     if tok.pad_token is None:
         tok.pad_token = tok.eos_token
     model.max_seq_length = model_max_seq_length
@@ -699,9 +705,12 @@ def test_pristine_trl_config_without_max_seq_length_still_truncates(tmp_path, tr
     from datasets import Dataset
 
     config_cls = _pristine_sft_config_cls()
-    assert not hasattr(
-        config_cls(output_dir = str(tmp_path)), "max_seq_length"
-    ), "this TRL declares max_seq_length, so the regression cannot be reproduced here"
+    # Precondition: only a TRL that dropped max_seq_length has the regression.
+    if hasattr(config_cls(output_dir = str(tmp_path)), "max_seq_length"):
+        pytest.skip(
+            "this TRL still declares max_seq_length, so the regression it guards cannot "
+            "exist here; the cap-copy path is covered by the max_length tests above"
+        )
 
     model, tok = _load_plain()
     text = "The quick brown fox. " * 200
@@ -1087,6 +1096,19 @@ def _mask_supervised_dataset(tok):
     )
 
 
+def _has_supervised_token(row, mask_column):
+    """Whether a prepared row still trains on at least one token, in either form it can take.
+
+    Before TRL 1.7 the collator applies the mask, so the row keeps its mask column. From 1.7
+    TRL's _prepare_dataset turns the masks into `labels` and drops them, and unsloth-zoo's
+    sft_prepare_dataset does the same since unslothai/unsloth-zoo#1508, so the row carries
+    `labels` with -100 on every unsupervised token instead."""
+    if mask_column in row:
+        return any(m != 0 for m in row[mask_column])
+    assert "labels" in row, f"the row carries neither {mask_column} nor labels: {sorted(row)}"
+    return any(label != -100 for label in row["labels"])
+
+
 def test_rows_whose_mask_is_truncated_away_are_dropped(tmp_path, trl_has_guard):
     """Same rule the `labels` filter already applies, for the other two spellings."""
     if not trl_has_guard:
@@ -1098,8 +1120,8 @@ def test_rows_whose_mask_is_truncated_away_are_dropped(tmp_path, trl_has_guard):
     trainer = _build(tmp_path, dataset = _mask_supervised_dataset, completion_only_loss = True)
     assert len(trainer.train_dataset) == 2, "the rows that kept their completion were dropped too"
     for row in trainer.train_dataset:
-        assert any(
-            m != 0 for m in row["completion_mask"]
+        assert _has_supervised_token(
+            row, "completion_mask"
         ), "a row with no supervised token survived truncation"
 
 
@@ -1128,8 +1150,8 @@ def test_assistant_masks_are_filtered_even_with_the_loss_mode_off(tmp_path, trl_
     trainer = _build(tmp_path, dataset = _assistant_mask_dataset, assistant_only_loss = False)
     assert len(trainer.train_dataset) == 2, "the rows that kept their completion were dropped too"
     for row in trainer.train_dataset:
-        assert any(
-            m != 0 for m in row["assistant_masks"]
+        assert _has_supervised_token(
+            row, "assistant_masks"
         ), "a row TRL will label all -100 survived truncation"
 
 
@@ -3510,7 +3532,8 @@ def test_completion_only_reads_the_columns_the_split_actually_yields():
     from datasets import Dataset
 
     ds = Dataset.from_list([{"prompt": "a", "completion": "b", "input_ids": [1, 2]}])
-    ds.set_format("numpy", columns = ["input_ids"], output_all_columns = False)
+    # datasets<4 numpy/torch formatters import torchvision.io.VideoReader, gone in torchvision 0.28.
+    ds.set_format(None, columns = ["input_ids"], output_all_columns = False)
     assert "completion" in ds.column_names
     assert ds.format.get("columns") == ["input_ids"]
     assert "completion" not in ds[0]

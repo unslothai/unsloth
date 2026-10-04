@@ -16,12 +16,14 @@ import {
 import { useHubInfiniteScroll } from "@/features/hub";
 import { useOnlineStatus } from "@/features/hub/hooks/use-online-status";
 import {
+  type ModelConfigHandoffRequest,
   clearModelConfigHandoff,
   createModelConfigHandoffRequestId,
   hfModelFitsDevice,
   loadScopedGpu,
   requestModelConfigHandoff,
 } from "@/features/model-picker";
+import { type NpuModel, type NpuPickerSource, useNpuStatus } from "@/features/npu";
 import { loadOpenAIAutoSwitchSettings } from "@/features/settings";
 import { GuidedTour, useGuidedTourController } from "@/features/tour";
 import { useDebouncedValue } from "@/hooks/use-debounced-value";
@@ -62,6 +64,7 @@ import {
   ResultListHeader,
 } from "./catalog/models-table";
 import { ModelsToolbar } from "./catalog/models-toolbar";
+import { NpuCatalogList } from "./catalog/npu-catalog-list";
 import { OnDeviceFoldersDialog } from "./catalog/on-device-folders-dialog";
 import { OwnerScopeToggle } from "./catalog/owner-scope-toggle";
 import { useDiscoverSearch } from "./hooks/use-discover-search";
@@ -114,6 +117,7 @@ import { studioPageForTask } from "./lib/unsloth-support";
 import {
   buildDiscoverRows,
   detectResultFormat,
+  discoveryInventorySignature,
   isUnslothFinetunable,
   matchesCapability,
   matchesFormat,
@@ -234,24 +238,6 @@ function buildFocusedHeading({
   if (trimmed) return `Results for "${trimmed}"`;
   if (channel && channel.id !== DEFAULT_DISCOVER_CHANNEL) return channel.label;
   return isDataset ? "Datasets" : "Models";
-}
-
-function discoveryInventorySignature(
-  cachedRows: readonly CachedInventoryRow[],
-  localRows: readonly LocalInventoryRow[],
-): string {
-  const parts: string[] = [];
-  for (const row of cachedRows) {
-    parts.push(
-      `c:${row.repoId.toLowerCase()}:${row.modelFormat}:${row.partial ? (row.downloading ? "d" : "p") : "c"}`,
-    );
-  }
-  for (const row of localRows) {
-    parts.push(
-      `l:${(row.repoId ?? row.id).toLowerCase()}:${row.modelFormat}:${row.partial ? (row.downloading ? "d" : "p") : "c"}`,
-    );
-  }
-  return parts.sort().join("|");
 }
 
 function readModelsTabPreference(): ModelsTab | null {
@@ -486,7 +472,14 @@ export function ModelsPage() {
       } = {},
     ): Promise<void> => {
       const seq = ++residentStatusSeq.current;
-      const read = Promise.all([getInferenceStatus(), readIdleUnloadArmed()])
+      const selected = useChatRuntimeStore.getState().params.checkpoint;
+      const read = Promise.all([
+        getInferenceStatus(
+          undefined,
+          selected && !isExternalModelId(selected) ? selected : undefined,
+        ),
+        readIdleUnloadArmed(),
+      ])
         .then(([status, idleUnloadArmed]) => {
           if (seq !== residentStatusSeq.current)
             return supersedingRefresh(residentStatusSupersession.current, seq);
@@ -601,7 +594,14 @@ export function ModelsPage() {
     () => findChannel(activeChannelId),
     [activeChannelId],
   );
+  const [npuStatus, setNpuStatus] = useNpuStatus();
+  const npuSource: NpuPickerSource | undefined = npuStatus?.supported
+    ? { status: npuStatus, onStatusChange: setNpuStatus }
+    : undefined;
   const formatFilter = isDiscoverTab ? discoverFormat : downloadedFormat;
+  const npuCatalogSource =
+    formatFilter === "npu" && !isDatasetMode ? npuSource : undefined;
+  const showNpuCatalog = npuCatalogSource !== undefined;
   const setFormatFilter = useCallback(
     (next: ModelFormatFilter) => {
       if (isDiscoverTab) {
@@ -859,7 +859,8 @@ export function ModelsPage() {
   } = useDiscoverSearch({
     debouncedQuery,
     accessToken: apiHfToken,
-    isDiscoverTab,
+    // The NPU list replaces the Hub results, so they are not fetched behind it.
+    isDiscoverTab: isDiscoverTab && !showNpuCatalog,
     isDatasetMode,
     sortBy: effectiveSort,
     direction: effectiveDirection,
@@ -1473,6 +1474,39 @@ export function ModelsPage() {
     },
     [navigate, setModelsTab, setOwnerScope],
   );
+  // A new chat opens with the model's run settings, where Load starts it.
+  const openRunSettingsInChat = useCallback(
+    (request: ModelConfigHandoffRequest) => {
+      clearNewChatDraft();
+      const chatRuntime = useChatRuntimeStore.getState();
+      chatRuntime.setActiveThreadId(null);
+      chatRuntime.setActiveProjectId(null);
+      chatRuntime.setIncognito(false);
+      requestModelConfigHandoff(request);
+      const { requestId } = request;
+      void navigate({ to: "/chat", search: { new: requestId } }).catch(() => {
+        clearModelConfigHandoff(requestId);
+      });
+    },
+    [navigate],
+  );
+
+  const handleRunNpu = useCallback(
+    (model: NpuModel) =>
+      openRunSettingsInChat({
+        requestId: createModelConfigHandoffRequestId(),
+        id: model.model_path,
+        displayName: model.id,
+        meta: {
+          source: "local",
+          isLora: false,
+          isDownloaded: true,
+          isVision: model.supports_vision,
+        },
+      }),
+    [openRunSettingsInChat],
+  );
+
   const handleRun = useCallback(
     async (
       selection: HubModelRunSelection,
@@ -1515,15 +1549,7 @@ export function ModelsPage() {
           });
           return;
         }
-        clearNewChatDraft();
-        const chatRuntime = useChatRuntimeStore.getState();
-        chatRuntime.setActiveThreadId(null);
-        chatRuntime.setActiveProjectId(null);
-        chatRuntime.setIncognito(false);
-        requestModelConfigHandoff(request);
-        void navigate({ to: "/chat", search: { new: requestId } }).catch(() => {
-          clearModelConfigHandoff(requestId);
-        });
+        openRunSettingsInChat(request);
       } finally {
         runConfigOpenCoordinator.finish(controller);
         setRunConfigOpening((current) =>
@@ -1533,6 +1559,7 @@ export function ModelsPage() {
     },
     [
       navigate,
+      openRunSettingsInChat,
       refreshResidentModelStatus,
       runConfigOpenCoordinator,
       selectedModel,
@@ -1806,8 +1833,9 @@ export function ModelsPage() {
     isDatasetMode,
   ]);
 
-  const detailOpen = urlModel !== null;
-  const splitMode = allModelsView === "split";
+  // NPU rows have no detail view; one left open would cover their list.
+  const detailOpen = urlModel !== null && !showNpuCatalog;
+  const splitMode = allModelsView === "split" && !showNpuCatalog;
   // Unreachable under the full-page detail overlay.
   const catalogCovered = detailOpen && !splitMode;
 
@@ -1849,6 +1877,7 @@ export function ModelsPage() {
           onManageLocalFolders={handleManageLocalFolders}
           onFreeUpSpace={handleFreeUpSpace}
           onOpenFineTune={() => handleOpenList("finetune")}
+          npuAvailable={npuSource !== undefined}
         />
       </HubTopBar>
 
@@ -1876,16 +1905,25 @@ export function ModelsPage() {
           aria-hidden={catalogCovered || undefined}
           inert={catalogCovered || undefined}
         >
-          <ModelsCatalog
-            state={catalogState}
-            pagination={catalogPagination}
-            handlers={catalogHandlers}
-            header={catalogHeader}
-            downloadedHeader={downloadedHeader}
-            resetScrollKey={filterResetSignature}
-            discoverView={allModelsView}
-            inventorySort={inventorySort}
-          />
+          {npuCatalogSource ? (
+            <NpuCatalogList
+              source={npuCatalogSource}
+              query={query}
+              onDevice={!isDiscoverTab}
+              onRun={handleRunNpu}
+            />
+          ) : (
+            <ModelsCatalog
+              state={catalogState}
+              pagination={catalogPagination}
+              handlers={catalogHandlers}
+              header={catalogHeader}
+              downloadedHeader={downloadedHeader}
+              resetScrollKey={filterResetSignature}
+              discoverView={allModelsView}
+              inventorySort={inventorySort}
+            />
+          )}
         </div>
 
         {splitMode ? (

@@ -10,6 +10,7 @@ the full pipeline."""
 
 from __future__ import annotations
 
+import importlib.util
 import json
 import os
 import re
@@ -17,7 +18,7 @@ import sys
 import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
-from typing import NamedTuple, Optional, Sequence
+from typing import Any, NamedTuple, Optional, Sequence
 from utils.paths.path_utils import is_appledouble_metadata
 
 from .diffusion_nvfp4_flag import nvfp4_blocked
@@ -112,6 +113,10 @@ class DiffusionFamily:
     max_output_pixels: int = 2048 * 2048
     # Accepted condition-image preprocessing resolutions (square side, by area); empty = no such control.
     reference_resolutions: tuple[int, ...] = field(default_factory = tuple)
+    # ComfyUI's static sigma shift; None = keep the shipped scheduler.
+    comfy_flow_shift: Optional[float] = None
+    # (lowercased id substring, shift) for checkpoints whose template differs; first match wins.
+    comfy_flow_shift_variants: tuple[tuple[str, float], ...] = field(default_factory = tuple)
     # Activation-guard cost of one condition pixel relative to one output pixel.
     condition_pixel_weight: float = 1.0
     # Extra lowercased substrings (besides ``name``) that map a repo id here.
@@ -119,8 +124,12 @@ class DiffusionFamily:
     # True for families whose activations overflow float16 (-> black image); the backend promotes a resolved float16
     # to float32.
     fp16_incompatible: bool = False
+    # diffusion_fp16_guard recipe keeping an fp16_incompatible family in float16 on fp16-only cards; None = promote.
+    fp16_guard: Optional[str] = None
     # false only for a family whose denoiser block does not compile cleanly with regional torch.compile
     supports_torch_compile: bool = True
+    # False keeps cudnn.benchmark off (as VideoFamily.cudnn_benchmark): its per-process conv pick changes pixels.
+    cudnn_benchmark: bool = True
     # Optional pre-quantized transformer checkpoints as (scheme, repo_id): fetched instead of the dense bf16 (lower
     # load VRAM + download).
     prequant_repos: tuple[tuple[str, str], ...] = field(default_factory = tuple)
@@ -201,6 +210,7 @@ class DiffusionFamily:
 _FAMILIES: tuple[DiffusionFamily, ...] = (
     DiffusionFamily(
         name = "flux.1",
+        cudnn_benchmark = False,
         pipeline_class = "FluxPipeline",
         transformer_class = "FluxTransformer2DModel",
         base_repo = "black-forest-labs/FLUX.1-schnell",
@@ -322,6 +332,9 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         # Qwen instruction editing: the 2511 checkpoint ships as QwenImageEditPlusPipeline. Specific aliases first so
         # detect_family prefers this over "qwen-image".
         name = "qwen-image-edit",
+        comfy_flow_shift = 3.1,  # ComfyUI ModelSamplingAuraFlow 3.1 (Qwen-Image-Edit 2511 template)
+        # The 2509 template samples at ModelSamplingAuraFlow 3.
+        comfy_flow_shift_variants = (("qwen-image-edit-2509", 3.0),),
         pipeline_class = "QwenImageEditPlusPipeline",
         transformer_class = "QwenImageTransformer2DModel",
         base_repo = "Qwen/Qwen-Image-Edit-2511",
@@ -334,9 +347,12 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
             "qwenimageedit",
         ),
         edit = True,
+        # same DiT as qwen-image
+        fp16_incompatible = True,
     ),
     DiffusionFamily(
         name = "qwen-image",
+        comfy_flow_shift = 3.1,  # ComfyUI ModelSamplingAuraFlow 3.1 (Qwen-Image templates)
         pipeline_class = "QwenImagePipeline",
         transformer_class = "QwenImageTransformer2DModel",
         base_repo = "Qwen/Qwen-Image",
@@ -358,6 +374,9 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         te_prequant_repos = (("fp8", "text_encoder", "unsloth/Qwen-Image-FP8"),),
         cfg_kwarg = "true_cfg_scale",
         aliases = ("qwen_image", "qwenimage"),
+        # fp16 overflows to NaN latents (black images)
+        fp16_incompatible = True,
+        cudnn_benchmark = False,
         trainable = True,
         train_base_repos = ("unsloth/Qwen-Image-2512-unsloth-bnb-4bit", "Qwen/Qwen-Image"),
         img2img_pipeline_class = "QwenImageImg2ImgPipeline",
@@ -481,6 +500,8 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
     ),
     DiffusionFamily(
         name = "z-image",
+        cudnn_benchmark = False,
+        comfy_flow_shift = 3.0,  # ComfyUI shift 3 for Turbo and base (Turbo already ships 3.0)
         pipeline_class = "ZImagePipeline",
         transformer_class = "ZImageTransformer2DModel",
         base_repo = "Tongyi-MAI/Z-Image-Turbo",
@@ -508,6 +529,8 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         img2img_pipeline_class = "ZImageImg2ImgPipeline",
         inpaint_pipeline_class = "ZImageInpaintPipeline",
         fp16_incompatible = True,
+        # The attention / FFN branches overflow float16 before their post-norm.
+        fp16_guard = "rescale_post_norm",
         # Byte-identical mirror of Comfy-Org/z_image_turbo (AE + Qwen3-4B).
         sd_cpp_vae = ("unsloth/Z-Image-Turbo-ComfyUI", "split_files/vae/ae.safetensors"),
         sd_cpp_text_encoders = (
@@ -527,6 +550,8 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
             ("int8", "unsloth/Krea-2-Turbo-FP8"),
             ("fp8", "unsloth/Krea-2-Turbo-FP8"),
         ),
+        # Both are baked from the distilled Turbo denoiser: Raw quantizes its own dense weights.
+        prequant_excluded_bases = ("krea/krea-2-raw",),
         # Pre-cast Qwen3-VL-4B TE (8.88 -> 4.83 GB); handed into load_krea2_pipeline directly (assembly never sees
         # pipe_kwargs).
         te_prequant_repos = (("fp8", "text_encoder", "unsloth/Krea-2-Turbo-FP8"),),
@@ -613,6 +638,8 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
     # pipeline. img2img / inpaint / ControlNet are the standard SDXL pipelines. No GGUF path.
     DiffusionFamily(
         name = "sdxl",
+        # ~1.8% slower warm, but compiled-UNet renders then match across servers (ComfyUI's default)
+        cudnn_benchmark = False,
         pipeline_class = "StableDiffusionXLPipeline",
         transformer_class = "UNet2DConditionModel",
         base_repo = "stabilityai/stable-diffusion-xl-base-1.0",
@@ -1123,29 +1150,33 @@ def prefer_ungated_mirror(
 # Default (steps, guidance) per model for callers that cannot pass them. Matched by substring, most specific first;
 # same values as the UI MODEL_DEFAULTS table, keep in sync.
 _GENERATION_DEFAULTS: tuple[tuple[str, int, float], ...] = (
-    ("z-image-turbo", 9, 0.0),
-    # FLUX.1 Krea dev is a FLUX.1-dev finetune, NOT a Krea-2: 28 steps at guidance 4.5. Must precede the generic
-    # "krea" key.
-    ("flux.1-krea", 28, 4.5),
+    # Values follow ComfyUI's official templates for the same model (our baseline).
+    ("z-image-turbo", 8, 0.0),
+    # FLUX.1 Krea dev is a FLUX.1-dev finetune, NOT a Krea-2; must precede the generic "krea" key.
+    ("flux.1-krea", 20, 3.5),
     # Krea 2 Raw (undistilled): 52 steps / guidance 3.5. Must precede the generic "krea" key.
     ("krea-2-raw", 52, 3.5),
     # Krea 2 Turbo (distilled): 8 steps, no CFG. "krea" then covers Turbo and other krea ids but Raw.
     ("krea", 8, 0.0),
     ("flux.1-schnell", 4, 0.0),
-    ("kontext", 28, 2.5),  # editing: before the generic flux.1
-    ("flux.1", 28, 3.5),
-    # The undistilled base variants need their model-card 50-step CFG recipe. Keep this before the generic distilled
-    # key, which covers both 4B and 9B 4-step checkpoints.
-    ("flux.2-klein-base", 50, 4.0),
+    ("kontext", 20, 2.5),  # editing: before the generic flux.1
+    ("flux.1", 20, 3.5),
+    # Undistilled base runs real CFG; keep before the generic distilled key.
+    ("flux.2-klein-base", 20, 5.0),
     ("flux.2-klein", 4, 1.0),
-    ("flux.2-dev", 28, 4.0),  # full (non-distilled)
-    # Qwen-Image-2.1: 40 steps, no guidance. Before the generic qwen-image key.
-    ("qwen-image-2.1", 40, 1.0),
-    ("qwen-image-21", 40, 1.0),
-    ("qwen_image_21", 40, 1.0),
-    ("qwenimage21", 40, 1.0),
+    ("flux.2-dev", 20, 4.0),  # full (non-distilled)
+    # Before the generic qwen-image key (also the two below).
+    ("qwen-image-2.1", 25, 1.0),
+    ("qwen-image-21", 25, 1.0),
+    ("qwen_image_21", 25, 1.0),
+    ("qwenimage21", 25, 1.0),
+    # 2509 template: 20 / 4; the generic key is the 2511 recipe (the family base).
+    ("qwen-image-edit-2509", 20, 4.0),
+    ("qwen-image-edit", 40, 4.0),
+    ("qwen-image-2512", 50, 4.0),
     ("qwen-image", 20, 4.0),
-    ("z-image", 20, 4.0),
+    # diffusers Z-Image g = ComfyUI cfg - 1 (pos + g * (pos - neg)).
+    ("z-image", 25, 3.0),
     # Lumina Image 2.0 card: 50 steps, guidance 4 (plus cfg_trunc_ratio 0.25, which the loader passes itself).
     ("lumina", 50, 4.0),
     # HunyuanImage 2.1 card: 50 steps; guidance feeds distilled_guidance_scale, while real CFG runs inside the
@@ -1155,16 +1186,26 @@ _GENERATION_DEFAULTS: tuple[tuple[str, int, float], ...] = (
     ("hidream-i1-dev", 28, 0.0),
     ("hidream-i1-fast", 16, 0.0),
     ("hidream", 50, 5.0),
-    # Ideogram 4 card: 48 steps, guidance 7 (its schedule tapers the last 3 steps; the loader keeps that taper at
-    # these defaults).
-    ("ideogram", 48, 7.0),
+    # Ideogram 4: an explicit 48 steps at 7 still runs the card's tapered schedule.
+    ("ideogram", 20, 7.0),
     # SDXL: Turbo distilled; base wants ~30 steps + CFG ~7. "sdxl-turbo" precedes "sdxl".
     ("sdxl-turbo", 3, 0.0),
-    ("stable-diffusion-xl", 30, 7.0),
-    ("sdxl", 30, 7.0),
+    ("stable-diffusion-xl", 25, 7.0),
+    ("sdxl", 25, 7.0),
 )
 # Unrecognised model: distilled few-step / no-CFG shape, matching the UI fallback.
 _GENERATION_DEFAULT_FALLBACK = (9, 0.0)
+
+
+def comfy_flow_shift_for(fam: Any, *identifiers: Optional[str]) -> Optional[float]:
+    """ComfyUI's static shift for the loaded checkpoint: the first family variant whose key is in
+    an identifier (repo id, GGUF file, base repo), else the family default."""
+    for identifier in identifiers:
+        needle = (identifier or "").lower()
+        for key, shift in getattr(fam, "comfy_flow_shift_variants", ()) or ():
+            if key in needle:
+                return shift
+    return getattr(fam, "comfy_flow_shift", None)
 
 
 def default_generation_params(*identifiers: Optional[str]) -> tuple[int, float]:
@@ -1257,6 +1298,7 @@ def family_prequant_filename(
 # the release where diffusers' own requires-python went ">= 3.10.0", making 0.36.0 the newest a supported Python 3.9
 # host can resolve
 _DIFFUSERS_DROPPED_PY39 = "0.37.0"
+_MAX_PIPELINE_MANIFEST_BYTES = 1 << 20
 
 # First diffusers release exporting each pipeline class, read off ``src/diffusers/__init__.py`` at the upstream tags
 # and cross-checked against each release's requires-python on PyPI. An unlisted class gets a version-free "a newer
@@ -1324,6 +1366,172 @@ def pipeline_class_requirement(pipeline_class: str) -> tuple[Optional[str], bool
     if minimum is None:
         return None, False
     return minimum, _version_tuple(minimum) >= _version_tuple(_DIFFUSERS_DROPPED_PY39)
+
+
+def _json_dict(path: Path, max_bytes: int = _MAX_PIPELINE_MANIFEST_BYTES) -> Optional[dict]:
+    try:
+        if not path.is_file() or path.stat().st_size > max_bytes:
+            return None
+        # PowerShell writes JSON with a UTF-8 BOM; match pipeline_class_from_index.
+        payload = json.loads(path.read_text(encoding = "utf-8-sig"))
+    except (OSError, ValueError, RecursionError):
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+_CALLER_SUPPLIED_COMPONENTS = {"HiDreamImagePipeline": frozenset({"text_encoder_4", "tokenizer_4"})}
+# safetensors first, default variant only: the load uses variant=None, which cannot open *.fp16.safetensors.
+_LOCAL_PIPELINE_WEIGHT_FORMATS = (
+    (("diffusion_pytorch_model", "model"), "safetensors"),
+    (("diffusion_pytorch_model", "pytorch_model"), "bin"),
+)
+_MAX_PIPELINE_WEIGHT_INDEX_BYTES = 64 * 1024 * 1024
+_LOCAL_PIPELINE_METADATA_CONFIGS = (
+    (("tokenizer",), ("tokenizer_config.json",)),
+    (("scheduler",), ("scheduler_config.json",)),
+    (("guider", "guidance"), ("guider_config.json",)),
+    (("featureextractor", "imageprocessor"), ("preprocessor_config.json",)),
+    (("processor",), ("processor_config.json", "preprocessor_config.json")),
+)
+_SELF_CONTAINED_TOKENIZER_ASSETS = (
+    "tokenizer.json",
+    "vocab.txt",
+    "spiece.model",
+    "tokenizer.model",
+    "sentencepiece.bpe.model",
+)
+
+
+def _nonempty_file(path: Path) -> bool:
+    return path.is_file() and path.stat().st_size > 0
+
+
+def _safe_relative_parts(text: str) -> Optional[tuple[str, ...]]:
+    # Manifest paths are POSIX-relative: reject other separators and drive prefixes, or ..\\ / C: escape on Windows.
+    relative = PurePosixPath(text)
+    if "\\" in text or ":" in text or relative.is_absolute() or ".." in relative.parts:
+        return None
+    return relative.parts
+
+
+def _local_weights_are_complete(component: Path, library_name: str) -> bool:
+    # The first format with any weights present decides: a leftover .bin index cannot veto safetensors.
+    for stems, ext in _LOCAL_PIPELINE_WEIGHT_FORMATS:
+        # Transformers never reads diffusion_pytorch_model* (LTX-2's text_encoder ships both shard sets).
+        if library_name == "transformers":
+            stems = tuple(s for s in stems if s != "diffusion_pytorch_model")
+            # Transformers opens a single checkpoint before a shard index (_get_resolved_checkpoint_files).
+            if any(_nonempty_file(component / f"{s}.{ext}") for s in stems):
+                return True
+        index = next(
+            (p for s in stems if (p := component / f"{s}.{ext}.index.json").exists()), None
+        )
+        if index is not None:
+            weight_map = (_json_dict(index, _MAX_PIPELINE_WEIGHT_INDEX_BYTES) or {}).get(
+                "weight_map"
+            )
+            shards = (
+                {str(v) for v in weight_map.values() if v} if isinstance(weight_map, dict) else ()
+            )
+            parts = [_safe_relative_parts(shard) for shard in shards]
+            return bool(parts) and all(
+                p is not None and _nonempty_file(component.joinpath(*p)) for p in parts
+            )
+        sizes = [w.stat().st_size for s in stems if (w := component / f"{s}.{ext}").is_file()]
+        if sizes:
+            return any(sizes)
+    return False
+
+
+def _local_pipeline_component_is_complete(
+    component: Path, library_name: str, class_name: str, config_only_model_components: bool
+) -> bool:
+    if not component.is_dir():
+        return False
+    if library_name not in {"diffusers", "transformers"}:
+        return any(_nonempty_file(child) for child in component.iterdir())
+    identity = class_name.replace("_", "").lower()
+    for tokens, config_names in _LOCAL_PIPELINE_METADATA_CONFIGS:
+        if not any(token in identity for token in tokens):
+            continue
+        # Configs can exceed the manifest cap: LTX-2's Gemma3 tokenizer_config.json is 1.1 MB.
+        if not any(
+            _json_dict(component / name, _MAX_PIPELINE_WEIGHT_INDEX_BYTES) is not None
+            for name in config_names
+        ):
+            return False
+        if tokens[0] not in ("tokenizer", "processor") or "byt5tokenizer" in identity:
+            return True
+        return any(_nonempty_file(component / a) for a in _SELF_CONTAINED_TOKENIZER_ASSETS) or all(
+            _nonempty_file(component / a) for a in ("vocab.json", "merges.txt")
+        )
+    return _json_dict(component / "config.json") is not None and (
+        config_only_model_components or _local_weights_are_complete(component, library_name)
+    )
+
+
+def local_pipeline_components_are_complete(
+    root: Path | str,
+    filename: str,
+    *,
+    excluded_components: Sequence[str] = (),
+    config_only_model_components: bool = False,
+) -> bool:
+    """Check local component presence and known Diffusers/Transformers serialization layouts."""
+    if filename not in {"model_index.json", "modular_model_index.json"}:
+        return False
+    base = Path(root).expanduser()
+    payload = _json_dict(base / filename) or {}
+    class_name = payload.get("_class_name")
+    if not isinstance(class_name, str) or not class_name.strip():
+        return False
+    caller_supplied = _CALLER_SUPPLIED_COMPONENTS.get(class_name, frozenset())
+    declared = False
+    try:
+        for name, spec in payload.items():
+            if (
+                name.startswith("_")
+                or not isinstance(spec, (list, tuple))
+                or len(spec) < 2
+                or not (isinstance(spec[0], str) and isinstance(spec[1], str))
+            ):
+                continue
+            if name in {"", ".."} or "\\" in name or Path(name).name != name:
+                return False
+            if name in excluded_components or (
+                name in caller_supplied and not (base / name).exists()
+            ):
+                continue
+            declared = True
+            component = base / name
+            source = spec[2] if filename == "modular_model_index.json" and len(spec) >= 3 else None
+            source = source if isinstance(source, dict) else {}
+            repo = source.get("pretrained_model_name_or_path") or source.get("repo")
+            if isinstance(repo, str) and repo.strip():
+                # A modular spec may load the component from another repo or folder instead.
+                repo = repo.strip()
+                subfolder = source.get("subfolder")
+                parts = (
+                    _safe_relative_parts((subfolder or "").strip())
+                    if subfolder is None or isinstance(subfolder, str)
+                    else None
+                )
+                if parts is None:
+                    return False
+                rooted = Path(repo).expanduser()
+                rooted = rooted if rooted.is_absolute() else base / rooted
+                if not rooted.exists():
+                    if repo.startswith(("/", "\\", "~", ".")) or "\\" in repo or ":" in repo:
+                        return False
+                    continue
+                component = rooted.joinpath(*parts)
+            if not _local_pipeline_component_is_complete(
+                component, spec[0], spec[1], config_only_model_components
+            ):
+                return False
+    except OSError:
+        return False
+    return declared
 
 
 # Minimums that name a release which does not EXIST yet. ``pip install -U 'diffusers>=0.41.0'`` has
@@ -1492,7 +1700,13 @@ def assert_pipeline_class_available(
         pass
 
     try:
+        # diffusers' LTX-2 modules import a transformers class the pinned transformers lacks; see ltx2_import_compat.
+        from .ltx2_import_compat import ensure_ltx2_pipelines_importable, is_ltx2_pipeline_class
+
+        if is_ltx2_pipeline_class(pipeline_class):
+            ensure_ltx2_pipelines_importable()
         import diffusers
+
         present = hasattr(diffusers, pipeline_class)
         dummy_backends = _dummy_required_backends(getattr(diffusers, pipeline_class, None))
     except Exception as exc:  # noqa: BLE001 -- see below: this check must never raise anything but its own ValueError
@@ -1634,6 +1848,29 @@ def family_pipeline_available(fam: Optional[DiffusionFamily]) -> bool:
     return _installed_at_least(installed, minimum)
 
 
+def _family_override_resolved(family_override: Optional[str], fam) -> tuple:
+    reason = "detected from the model" if family_override is None else "requested"
+    return (family_override, fam.name, reason)
+
+
+def family_selectable(fam) -> bool:
+    """Whether a Family selector may offer ``fam``: diffusers installed and new enough.
+
+    Import-free: a pipeline-class probe from a status poll raced the loader's own diffusers import;
+    the load path keeps the strict class gate."""
+    module = sys.modules.get("diffusers", False)
+    if module is False:
+        try:
+            module = importlib.util.find_spec("diffusers")
+        except (ImportError, ValueError):
+            module = None
+    return module is not None and family_pipeline_available(fam)
+
+
+def pipeline_available_family_names() -> tuple[str, ...]:
+    return tuple(fam.name for fam in _FAMILIES if family_selectable(fam))
+
+
 def family_gguf_loadable(fam: DiffusionFamily) -> bool:
     """True when a GGUF transformer can be assembled for this family. The two exclusions mirror the
     ones ``DiffusionBackend.validate_load_request`` raises on (which keep their own specific
@@ -1694,6 +1931,54 @@ def sd_cpp_companion_only_repo_ids() -> frozenset[str]:
         loadable.update(repo for _scheme, _component, repo in fam.te_prequant_repos)
     companions.update(repo for repo, _f, _k in _FLUX2_KLEIN_9B_SD_CPP_TEXT_ENCODERS)
     return frozenset(r.strip().lower() for r in companions - loadable if r)
+
+
+def prequant_only_repo_ids() -> frozenset[str]:
+    """Repos hosting only prequant checkpoints (no model_index.json), never a base or mirror."""
+    hosted: set[str] = set()
+    bases: set[str] = set()
+    for fam in _FAMILIES:
+        hosted.update(repo for _scheme, repo in fam.prequant_repos)
+        hosted.update(repo for _base, _scheme, repo in fam.prequant_variant_repos)
+        hosted.update(repo for _scheme, _component, repo in fam.te_prequant_repos)
+        bases.add(fam.base_repo)
+        bases.update(fam.train_base_repos)
+        if fam.deploy_base_repo:
+            bases.add(fam.deploy_base_repo)
+    bases.update(rid for pair in _MIRROR_PAIRS for rid in pair)
+    lowered = {b.strip().lower() for b in bases if b}
+    return frozenset(r.strip().lower() for r in hosted if r and r.strip().lower() not in lowered)
+
+
+def prequant_repo_role(
+    fam: DiffusionFamily, repo_id: str
+) -> tuple[tuple[str, ...], tuple[str, ...], tuple[str, ...]]:
+    key = (repo_id or "").strip().lower()
+    known = {
+        b.lower(): b
+        for b in (fam.base_repo, *fam.train_base_repos, fam.deploy_base_repo or "")
+        if b
+    }
+    bases: list[str] = []
+    schemes: list[str] = []
+    for entry_base, scheme, repo in fam.prequant_variant_repos:
+        if repo.strip().lower() == key:
+            bases.append(known.get(entry_base.lower(), entry_base))
+            schemes.append(scheme)
+    for scheme, repo in fam.prequant_repos:
+        if repo.strip().lower() == key:
+            bases.append(fam.base_repo)
+            schemes.append(scheme)
+    te = sorted(
+        {
+            scheme
+            for scheme, _component, repo in fam.te_prequant_repos
+            if repo.strip().lower() == key
+        }
+    )
+    if te and not bases:
+        bases.append(fam.base_repo)
+    return tuple(dict.fromkeys(bases)), tuple(sorted(set(schemes))), tuple(te)
 
 
 def sd_cpp_text_encoder_candidates(fam: DiffusionFamily) -> tuple[tuple[str, str, str], ...]:

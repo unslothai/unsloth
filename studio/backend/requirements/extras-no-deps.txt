@@ -10,10 +10,6 @@ snac==1.2.1
 # installing with --no-deps to avoid pulling in torch>=0.11.0
 peft==0.18.1
 
-# Laya System One runtime for /v1/systemone. Pure Python over torch, transformers,
-# safetensors, huggingface_hub and numpy, all already pinned elsewhere.
-laya==0.3.5; python_version >= "3.10"
-
 # TRL and related packages
 trl==0.23.1
 # executorch>=1.0.1              # 41.5 MB - no imports in unsloth/zoo/studio
@@ -45,7 +41,8 @@ transformers==4.57.6; python_version < "3.10"
 # this file is written to avoid. The cap keeps the resolver's fallback while
 # bounding it at the newest audited release.
 pytorch_tokenizers<=1.4.1; sys_platform != "darwin" or platform_machine == "arm64"
-kernels==0.12.1
+# 0.12.3: diffusers flash_4_hub refuses older kernels; same dependencies as 0.12.1.
+kernels==0.12.3
 # kernels<3.11 imports tomli as its tomllib fallback; --no-deps skips its own
 # marker dep, so list it here (no-op on the 3.12/3.13 default installs).
 tomli==2.4.1; python_version < "3.11"

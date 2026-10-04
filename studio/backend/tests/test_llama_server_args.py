@@ -184,8 +184,6 @@ def test_a_bare_positional_is_rejected():
         "--hf-file-v",
         "-hft",
         "--hf-token",
-        "-mm",
-        "--mmproj",
         "-mmu",
         "--mmproj-url",
         # Networking (Unsloth binds + proxies)
@@ -194,6 +192,7 @@ def test_a_bare_positional_is_rejected():
         "--path",
         "--api-prefix",
         "--reuse-port",
+        "--rpc",
         # Auth / TLS
         "--api-key",
         "--api-key-file",
@@ -1405,6 +1404,7 @@ def test_every_denied_flag_with_a_twin_in_the_help_is_scrubbed():
         ("LLAMA_ARG_HF_REPO", "--hf-repo"),
         ("LLAMA_ARG_HOST", "--host"),
         ("LLAMA_ARG_PORT", "--port"),
+        ("LLAMA_ARG_RPC", "--rpc"),
         ("LLAMA_ARG_N_PARALLEL", "--parallel"),
         ("LLAMA_ARG_SSL_KEY_FILE", "--ssl-key-file"),
         ("LLAMA_ARG_SSL_CERT_FILE", "--ssl-cert-file"),
@@ -1675,3 +1675,31 @@ def test_a_pageable_launch_keeps_every_token_including_its_lock():
     out, overridden = _lsa.force_pageable_load(list(argv), {})
 
     assert out == argv and overridden == []
+
+
+@pytest.mark.parametrize("flag", ["--mmproj", "-mm"])
+def test_custom_projector_is_allowed(flag):
+    args = [flag, "/models/custom projector.gguf"]
+    assert validate_extra_args(args) == args
+
+
+def test_owner_only_path_flags_names_each_file_option_once():
+    args = [
+        "--ctx-size",
+        "4096",
+        "--lora",
+        "/a.gguf",
+        "--lora",
+        "/b.gguf",
+        "--chat_template_file",
+        "/t.jinja",
+        "-jf",
+        "/s.json",
+        "--temp",
+        "0.7",
+    ]
+    assert _lsa.owner_only_path_flags(args) == ["--lora", "--chat-template-file", "-jf"]
+    assert _lsa.owner_only_path_flags(["--ctx-size", "4096", "-ngl", "99"]) == []
+    assert _lsa.owner_only_path_flags(None) == []
+    # Owners keep every one of them: the validator itself is unchanged.
+    assert validate_extra_args(args) == args

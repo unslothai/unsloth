@@ -291,6 +291,7 @@ def model_fingerprint(
     attention_backend: Any,
     compile_kwargs: dict[str, Any],
     shape_bucket: Any = None,
+    reduction_filter: bool = False,
 ) -> dict[str, Any]:
     """MODEL-graph dimensions that change the compiled artifact.
 
@@ -298,11 +299,14 @@ def model_fingerprint(
     what gets compiled.
     """
     blocks = list(getattr(transformer, "_repeated_blocks", []) or [])
+    if not blocks and transformer is not None:
+        from .diffusion_regional_compile import verified_repeated_blocks
+        blocks = list(verified_repeated_blocks(type(transformer).__name__))
     if quant is not None and transformer is not None:
         # Native layers compile to a different graph than torchao under the same scheme name.
         from .diffusion_native_quant import native_quant_signature
         quant = native_quant_signature(transformer) or quant
-    return {
+    fp = {
         "family": str(family),
         "transformer_cls": type(transformer).__name__ if transformer is not None else None,
         "repeated_blocks": sorted(str(b) for b in blocks),
@@ -317,6 +321,23 @@ def model_fingerprint(
         },
         "shape_bucket": shape_bucket,
     }
+    # Added only when armed, so other bundles keep their key.
+    try:
+        from .diffusion_dynamic_text import fingerprint as _dynamic_text_fp
+        dynamic_text = _dynamic_text_fp(transformer, compile_kwargs.get("dynamic", True))
+    except Exception:  # noqa: BLE001
+        dynamic_text = None
+    if dynamic_text:
+        fp["dynamic_text"] = dynamic_text
+    # Inductor keys graphs on dynamic_scale_rblock: an old bundle would hit, miss every graph, and never be rewritten.
+    from .diffusion_compile_config import reduction_blocks_pinned, reduction_config_filter_available
+
+    if reduction_blocks_pinned():
+        fp["inductor"] = {"dynamic_scale_rblock": False}
+        # Only for a family whose compile pins the reduction-config filter, so every other bundle keeps its key.
+        if reduction_filter and reduction_config_filter_available():
+            fp["inductor"]["force_filter_reduction_configs"] = True
+    return fp
 
 
 def cache_key(env_fp: dict[str, Any], model_fp: dict[str, Any]) -> str:
@@ -367,6 +388,7 @@ def begin(
     compile_kwargs: dict[str, Any],
     shape_bucket: Any = None,
     logger: Any = None,
+    reduction_filter: bool = False,
 ) -> Optional[CacheContext]:
     """Point inductor at a per-key dir and load a matching bundle, BEFORE compile.
 
@@ -397,6 +419,7 @@ def begin(
         attention_backend = attention_backend,
         compile_kwargs = compile_kwargs,
         shape_bucket = shape_bucket,
+        reduction_filter = reduction_filter,
     )
     key = cache_key(env_fp, model_fp)
     cdir = cache_root() / key

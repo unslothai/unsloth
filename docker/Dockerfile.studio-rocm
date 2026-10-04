@@ -63,7 +63,7 @@ RUN apt-get update \
 RUN /opt/unsloth-venv/bin/uv pip install --python /opt/unsloth-venv/bin/python "jupyterlab==4.6.0"
 COPY jupyter/unsloth_labext /opt/labext-src
 RUN cd /opt/labext-src \
- && /opt/unsloth-venv/bin/jlpm install \
+ && /opt/unsloth-venv/bin/jlpm install --immutable \
  && /opt/unsloth-venv/bin/jlpm build:prod
 
 FROM ${BASE_IMAGE}

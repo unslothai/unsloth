@@ -29,6 +29,7 @@ caller falls back to dense-quantise (then GGUF). Inert with nothing configured.
 
 from __future__ import annotations
 
+import re as _re
 import threading as _threading
 from dataclasses import dataclass
 from collections.abc import Sequence
@@ -338,13 +339,47 @@ def _load_prequant_checkpoint(path: str, **kwargs: Any) -> Any:
 
     Dispatched on the file extension rather than on content sniffing: the extension is what the
     resolver asked the Hub for, so a repo hosting both containers cannot serve one and be parsed as
-    the other. ``kwargs`` are the pickle path's (``map_location``, ``mmap``); safetensors has no
-    equivalent knobs and reads to CPU, which is where the pickle path maps too."""
+    the other. ``kwargs`` are the pickle path's (``map_location``, ``mmap``); safetensors reads to
+    CPU, which is where the pickle path maps too, and honours ``mmap`` the same way."""
     from .prequant_safetensors import is_safetensors_checkpoint, load_prequant_safetensors
 
     if is_safetensors_checkpoint(path):
-        return load_prequant_safetensors(path)
+        return load_prequant_safetensors(path, mmap = bool(kwargs.get("mmap")))
     return _torch_load_prequant(path, **kwargs)
+
+
+# 0 reads a pickle checkpoint headed for an accelerator into host memory instead of mapping it.
+_PREQUANT_MMAP_ENV = "UNSLOTH_DIFFUSION_PREQUANT_MMAP"
+
+
+def prequant_mmap_enabled(destination: Any) -> bool:
+    """Map only for a non-CPU destination: a host-placed module would keep the file open (Windows then cannot delete it)."""
+    import os
+
+    raw = (os.environ.get(_PREQUANT_MMAP_ENV) or "").strip().lower()
+    if raw in ("0", "false", "no", "off"):
+        return False
+    dest = str(destination or "").strip().lower()
+    return bool(dest) and not dest.startswith("cpu") and dest != "meta"
+
+
+def _read_prequant_for(
+    path: str,
+    destination: Any,
+    logger: Any = None,
+) -> Any:
+    """``_load_prequant_checkpoint`` mapped when enabled; anything the mapping cannot open is re-read in full."""
+    if prequant_mmap_enabled(destination):
+        try:
+            return _load_prequant_checkpoint(path, map_location = "cpu", mmap = True)
+        except Exception as exc:  # noqa: BLE001 - retried unmapped; the real error resurfaces there
+            if logger is not None:
+                logger.info(
+                    "diffusion.prequant: mapped read failed (%s: %s); reading the checkpoint into memory",
+                    type(exc).__name__,
+                    str(exc).splitlines()[0][:200] if str(exc) else "",
+                )
+    return _load_prequant_checkpoint(path, map_location = "cpu")
 
 
 _PREQUANT_TOGGLE_TOKENS = {"1", "true", "yes", "on", "0", "false", "no", "off"}
@@ -396,6 +431,65 @@ def local_prequant_path_ready(path: str) -> bool:
     if not _local_prequant_path_allowed(path):
         return False
     return os.path.isfile(os.path.expanduser(path))
+
+
+# Operator-side mirror checked BEFORE the Hub: ``<root>/<owner>/<repo>/<filename>``, roots split by ``os.pathsep``.
+# Names come from the family tables, never a request; anything leaving the root is ignored.
+PREQUANT_MIRROR_ENV = "UNSLOTH_DIFFUSION_PREQUANT_MIRROR"
+
+
+def prequant_mirror_path(
+    repo_id: Optional[str],
+    name: Optional[str],
+    readable: Any = None,
+) -> Optional[str]:
+    """``<mirror>/<repo_id>/<name>`` when a configured mirror holds that file, else None. Never raises.
+
+    A converted safetensors copy of a requested pickle wins over the pickle itself (same weights, no
+    constructor allowlist), but only when ``readable(<sibling name>)`` says this install can open it:
+    otherwise a host without torchao's flatten helpers would be handed a file it then refuses, after
+    planning had already counted it as cached. ``readable`` defaults to "yes"."""
+    import os
+
+    raw = (os.environ.get(PREQUANT_MIRROR_ENV) or "").strip()
+    if not raw or not repo_id or not name:
+        return None
+    parts = [*str(repo_id).split("/"), *str(name).split("/")]
+    if any(p in ("", ".", "..") or "\\" in p for p in parts):
+        return None
+    wanted = [parts]
+    for suffix in (".pt", ".pth"):
+        if parts[-1].endswith(suffix):
+            sibling = parts[-1][: -len(suffix)] + ".safetensors"
+            try:
+                ok = readable is None or bool(readable(sibling))
+            except Exception:  # noqa: BLE001 - an unanswerable question is a no
+                ok = False
+            if ok:
+                wanted.insert(0, [*parts[:-1], sibling])
+            break
+    for root in raw.split(os.pathsep):
+        root = root.strip()
+        if not root:
+            continue
+        for rel in wanted:
+            try:
+                base = os.path.realpath(os.path.expanduser(root))
+                candidate = os.path.realpath(os.path.join(base, *rel))
+            except Exception:  # noqa: BLE001 - a bad root is simply not a mirror
+                break
+            if candidate.startswith(base.rstrip(os.sep) + os.sep) and os.path.isfile(candidate):
+                return candidate
+    return None
+
+
+def _first_mirrored(repo_id: Optional[str], names: Sequence[str], readable: Any) -> Optional[str]:
+    """The mirror's copy of the first of ``names`` it holds, checked for ALL names before any Hub call."""
+    for name in names:
+        hit = prequant_mirror_path(repo_id, name, readable)
+        if hit is not None:
+            return hit
+    return None
 
 
 @dataclass(frozen = True)
@@ -558,8 +652,15 @@ def resolve_prequant_source(
         # Family-declared name first when there is one, then the derived chain, which puts the
         # safetensors spelling ahead of the pickle. Order-preserving dedup so a family that declares
         # exactly what the chain would derive does not make the downloader ask twice for it.
+        declared = (preferred,) if preferred else ()
+        # opt-in rotated artifact goes first; the plain chain stays behind it (not yet hosted, or offline)
+        from .diffusion_transformer_quant import convrot_prequant_filename, int8_convrot_enabled
+
+        rotated = convrot_prequant_filename(scheme, getattr(fam, "name", None))
+        if rotated and int8_convrot_enabled():
+            declared = (rotated,) + declared
         names: list[str] = []
-        for name in ((preferred,) if preferred else ()) + derived:
+        for name in declared + derived:
             if name and name not in names:
                 names.append(name)
         return PrequantSource(
@@ -567,7 +668,7 @@ def resolve_prequant_source(
             location = repo_id,
             filename = names[0],
             fallback_filenames = tuple(names[1:]),
-            declared_filenames = (preferred,) if preferred else (),
+            declared_filenames = declared,
         )
     return None
 
@@ -1008,15 +1109,23 @@ def cached_checkpoint_path(
     ``hf_hub_download`` falls back to huggingface_hub's import-time constant. Never raises."""
     roots = (cache_dir, None) if cache_dir else (None,)
     wanted = set(names) if names is not None else None
-    for name in candidate_filenames_of(source):
-        if wanted is not None and name not in wanted:
-            continue
+
+    def _readable(name: str) -> bool:
         try:
-            readable = restricted_prequant_load_supported(None, name)
+            return bool(restricted_prequant_load_supported(None, name))
         except Exception:  # noqa: BLE001 - a pure lookup that never raises, as documented above
-            readable = True
-        if not readable:
-            continue
+            return True
+
+    candidates = [
+        n
+        for n in candidate_filenames_of(source)
+        if (wanted is None or n in wanted) and _readable(n)
+    ]
+    if getattr(source, "kind", None) == "repo":
+        mirrored = _first_mirrored(getattr(source, "location", None), candidates, _readable)
+        if mirrored is not None:
+            return mirrored
+    for name in candidates:
         for root in roots:
             hit = _cached_in_root(source, root, name)
             if hit is not None:
@@ -1105,8 +1214,11 @@ def load_prequantized_transformer(
     component: Optional[str] = None,
     local_files_only: bool = False,
     logger: Any = None,
+    placement_device: Optional[str] = None,
 ) -> Optional[Any]:
     """Load the pre-quantized transformer described by ``source`` onto ``device``.
+
+    ``placement_device`` (default ``device``) is where the module is materialised; ``device`` selects kernels.
 
     ``cache_dir`` is the live Hub cache root, as every other loader call pins it: unset, a fetch
     lands under huggingface_hub's import-time constant, so a mid-session cache change re-downloads
@@ -1147,7 +1259,7 @@ def load_prequantized_transformer(
         # mutable, fetched over the network, and reached by loads that never asked for one (auto resolves an unset
         # precision to a hosted checkpoint), so a mutated file must fail to load rather than run. Both containers
         # hand back the same dict, so every check below applies to them equally.
-        ckpt = _load_prequant_checkpoint(path, map_location = "cpu")
+        ckpt = _read_prequant_for(path, placement_device or device, logger)
         if not _validate_checkpoint(
             ckpt,
             scheme,
@@ -1162,6 +1274,7 @@ def load_prequantized_transformer(
         # The only check reading what the artifact HOLDS: corruption after build passes the rest.
         if not _verify_packed_fingerprint(state_dict, ckpt.get("metadata") or {}, logger = logger):
             return None
+        _repair_legacy_checkpoint(ckpt, scheme, logger)
         _pin_kernel_preference(state_dict, logger)
 
         # Read from the root that actually supplied the checkpoint: after a mid-session cache change the pinned root
@@ -1203,7 +1316,11 @@ def load_prequantized_transformer(
         # dense fallback) for one this build cannot honour exactly. After load_state_dict because the meta retry above
         # rebuilds the module; before apply_small_m_padding because padding reparents the Linears and the recorded
         # fqns name the unwrapped tree.
-        from .diffusion_convrot import apply_activation_rotation
+        from .diffusion_convrot import (
+            apply_activation_rotation,
+            declares_rotation,
+            warm_rotation_cache,
+        )
 
         apply_activation_rotation(transformer, metadata, logger = logger)
 
@@ -1217,7 +1334,26 @@ def load_prequantized_transformer(
         del state_dict
         del ckpt
 
-        transformer = transformer.to(device)
+        from .diffusion_fast_load import fast_upload
+
+        with fast_upload([transformer], placement_device or device, logger = logger):
+            transformer = transformer.to(placement_device or device)
+        if declares_rotation(metadata):
+            try:
+                import torch
+
+                on = next(iter(transformer.parameters()), None)
+                dtype = getattr(
+                    torch, str(metadata.get("torch_dtype") or "bfloat16"), torch.bfloat16
+                )
+                # a host-placed module still computes on ``device``
+                warm_rotation_cache(
+                    transformer,
+                    on.device if on is not None and placement_device is None else device,
+                    dtype,
+                )
+            except Exception:  # noqa: BLE001
+                pass
         # Same small-M row padding the runtime quantise path applies, and for the same reason: a checkpoint built
         # under the current exclusion set QUANTISES the family's small-M linears, so without the wrappers they would
         # raise inside _int_mm the moment the compiled scope reaches them. After load_state_dict, since wrapping
@@ -1253,7 +1389,7 @@ def load_prequantized_transformer(
                 "diffusion.prequant: loaded %s checkpoint (%s) onto %s",
                 scheme,
                 source.kind,
-                device,
+                placement_device or device,
             )
         return transformer
     except Exception as exc:  # noqa: BLE001 - fall back to the dense-quantise path
@@ -1369,6 +1505,12 @@ def _resolve_checkpoint_path(
             names = readable or names
         if not names:
             return None
+        # Mirror first for EVERY name: else a Hub copy of an earlier name is downloaded and the mirror never used.
+        mirrored = _first_mirrored(
+            source.location, names, lambda n: restricted_prequant_load_supported(scheme, n)
+        )
+        if mirrored is not None:
+            return mirrored
         for index, name in enumerate(names):
             last = index == len(names) - 1
             try:
@@ -1393,7 +1535,16 @@ def _resolve_checkpoint_path(
                 # happened. Offline, a cache miss is the only verdict there is, so the chain is
                 # walked exactly as for a 404.
                 if not local_files_only or last:
-                    raise
+                    cached = (
+                        None
+                        if last
+                        else cached_checkpoint_path(
+                            source, cache_dir = cache_dir, names = names[index + 1 :]
+                        )
+                    )
+                    if cached is None:
+                        raise
+                    return cached
             except EntryNotFoundError:
                 if last:
                     raise
@@ -1453,7 +1604,12 @@ def _load_transformer_config(
 _FLOAT8_TENSOR_CLASS = "Float8Tensor"
 
 
-def _fp8_activation_floor_present(state_dict: Any, logger: Any) -> bool:
+def _fp8_activation_floor_present(
+    state_dict: Any,
+    logger: Any,
+    *,
+    warn: bool = True,
+) -> bool:
     """True unless the first Float8Tensor has no activation lower bound (by class: NVFP4Tensor lacks one too)."""
     from .diffusion_transformer_quant import TQ_FP8
 
@@ -1467,6 +1623,8 @@ def _fp8_activation_floor_present(state_dict: Any, logger: Any) -> bool:
                 continue
             if getattr(kwargs, "hp_value_lb", None):
                 return True
+            if not warn:
+                return False
             _warn(
                 logger,
                 TQ_FP8,
@@ -1480,6 +1638,77 @@ def _fp8_activation_floor_present(state_dict: Any, logger: Any) -> bool:
     except Exception:  # noqa: BLE001 -- an unreadable state dict is the other checks' problem
         return True
     return True
+
+
+def _fp8_kwargs_missing_floor(tensor: Any) -> Optional[Any]:
+    if type(tensor).__name__ != _FLOAT8_TENSOR_CLASS:
+        return None
+    kwargs = getattr(tensor, "act_quant_kwargs", None)
+    if kwargs is None or getattr(kwargs, "hp_value_lb", None):
+        return None
+    return kwargs
+
+
+def _fp8_activation_floor_restorable(state_dict: Any) -> bool:
+    """Whether every unfloored Float8Tensor differs from the runtime config in the floor alone.
+
+    torchao's fp8 weight quantiser never reads ``hp_value_lb``, so the weight bytes of an artifact built before
+    ``activation_value_lb`` equal what ``_make_quant_config`` builds today."""
+    try:
+        items = state_dict.items() if hasattr(state_dict, "items") else ()
+        for _name, tensor in items:
+            kwargs = _fp8_kwargs_missing_floor(tensor)
+            if kwargs is None:
+                continue
+            if (
+                not hasattr(kwargs, "hp_value_lb")
+                or getattr(kwargs, "hp_value_ub", None) is not None
+            ):
+                return False
+    except Exception:  # noqa: BLE001 -- cannot prove it: keep refusing
+        return False
+    return True
+
+
+def _restore_fp8_activation_floor(state_dict: Any, logger: Any = None) -> int:
+    """Write the runtime activation floor into every unfloored Float8Tensor; returns how many.
+    Fresh kwargs per tensor: a pickle may share one instance between tensors."""
+    import copy
+    import dataclasses
+
+    from .diffusion_transformer_quant import FP8_ACTIVATION_VALUE_LB
+
+    restored = 0
+    for _name, tensor in list(state_dict.items()):
+        kwargs = _fp8_kwargs_missing_floor(tensor)
+        if kwargs is None:
+            continue
+        if dataclasses.is_dataclass(kwargs) and not isinstance(kwargs, type):
+            fixed = dataclasses.replace(kwargs, hp_value_lb = FP8_ACTIVATION_VALUE_LB)
+        else:
+            fixed = copy.copy(kwargs)
+            fixed.hp_value_lb = FP8_ACTIVATION_VALUE_LB
+        tensor.act_quant_kwargs = fixed
+        restored += 1
+    if restored and logger is not None:
+        logger.info(
+            "diffusion.prequant: restored the fp8 activation scale floor (%g) on %d weights built "
+            "before activation_value_lb",
+            FP8_ACTIVATION_VALUE_LB,
+            restored,
+        )
+    return restored
+
+
+def _repair_legacy_checkpoint(
+    ckpt: Any,
+    scheme: str,
+    logger: Any = None,
+) -> None:
+    from .diffusion_nvfp4_policy import declares_policy
+    from .diffusion_transformer_quant import TQ_FP8
+    if scheme == TQ_FP8 or declares_policy(ckpt.get("metadata") or {}):
+        _restore_fp8_activation_floor(ckpt["state_dict"], logger)
 
 
 def _validate_activation_rotation(ckpt_format: Any, meta: Any, scheme: str, logger: Any) -> bool:
@@ -1661,8 +1890,16 @@ def _validate_checkpoint(
     # act_quant_kwargs.hp_value_lb, so an artifact built before the fix stays broken however it is loaded, and it
     # predates any metadata field we could stamp -- and "absent is accepted for back-compat", the convention every
     # check above follows, is exactly wrong here. Reading the tensors is fail-closed and needs no format bump.
-    if holds_fp8 and not _fp8_activation_floor_present(ckpt.get("state_dict"), logger):
-        return False
+    # Unless the floor is the only difference: it is not weight data, so ``_repair_legacy_checkpoint`` writes it in.
+    if holds_fp8 and not _fp8_activation_floor_present(ckpt.get("state_dict"), logger, warn = False):
+        if not _fp8_activation_floor_restorable(ckpt.get("state_dict")):
+            _fp8_activation_floor_present(ckpt.get("state_dict"), logger)
+            return False
+        if logger is not None:
+            logger.info(
+                "diffusion.prequant: fp8 checkpoint predates activation_value_lb; the runtime "
+                "floor will be written into its weights"
+            )
     ckpt_base = meta.get("base_model_id")
     if base:
         # Keys matching a different base can load strict=True and generate from the wrong weights. Our builder always
@@ -1787,6 +2024,32 @@ def _same_base_model(a: str, b: str) -> bool:
     return a == b or _tail(a) == _tail(b)
 
 
+def _unhook_from_manager(
+    manager: Any,
+    module: Any,
+    *,
+    logger: Any = None,
+    what: str,
+) -> bool:
+    """Remove ``module`` from a ComponentsManager's offload rotation without moving it."""
+    hooks = list(getattr(manager, "model_hooks", None) or ())
+    target = next((hook for hook in hooks if getattr(hook, "model", None) is module), None)
+    if target is None:
+        return False
+    try:
+        target.remove()
+        # Unlist it too, else another pre_forward can evict it to CPU with no hook to bring it back.
+        for hook in hooks:
+            others = getattr(getattr(hook, "hook", None), "other_hooks", None)
+            if others:
+                hook.hook.other_hooks = [item for item in others if item is not target]
+        manager.model_hooks = [hook for hook in hooks if hook is not target]
+        return True
+    except Exception as exc:  # noqa: BLE001 -- the caller still places the module
+        _warn(logger, what, exc)
+        return False
+
+
 def pin_prequantized_module(
     manager: Any,
     module: Any,
@@ -1820,23 +2083,7 @@ def pin_prequantized_module(
     not look the way this expects, the module is still placed on ``device`` and False is returned,
     which is the behaviour before pinning existed.
     """
-    hooks = list(getattr(manager, "model_hooks", None) or ())
-    target = next((hook for hook in hooks if getattr(hook, "model", None) is module), None)
-    pinned = False
-    if target is not None:
-        try:
-            # Drop the accelerate hook so no pre_forward/offload ever moves this module again ...
-            target.remove()
-            # ... and unlist it, so another component's pre_forward cannot pick it as the thing to evict (which would
-            # move it to the CPU with no hook left to bring it back).
-            for hook in hooks:
-                others = getattr(getattr(hook, "hook", None), "other_hooks", None)
-                if others:
-                    hook.hook.other_hooks = [item for item in others if item is not target]
-            manager.model_hooks = [hook for hook in hooks if hook is not target]
-            pinned = True
-        except Exception as exc:  # noqa: BLE001 -- placement below still has to happen
-            _warn(logger, "pin:hook", exc)
+    pinned = _unhook_from_manager(manager, module, logger = logger, what = "pin:hook")
     module.to(device)
     if logger is not None:
         logger.info(
@@ -1846,6 +2093,205 @@ def pin_prequantized_module(
             "removed" if pinned else "unchanged",
         )
     return pinned
+
+
+def tensor_payload_bytes(tensor: Any) -> int:
+    """Payload bytes; torchao subclasses report their logical bf16 size, so sum the inner tensors."""
+    flatten = getattr(tensor, "__tensor_flatten__", None)
+    if callable(flatten) and type(tensor).__name__ not in ("Tensor", "Parameter"):
+        try:
+            return sum(tensor_payload_bytes(getattr(tensor, name)) for name in flatten()[0])
+        except Exception:  # noqa: BLE001 -- fall through to the logical size
+            pass
+    return int(tensor.numel()) * int(tensor.element_size())
+
+
+def torchao_group_offload_supported() -> bool:
+    """Whether group offloading swaps torchao internals (diffusers >= 0.40); older ones half-move via ``param.data``."""
+    try:
+        from diffusers.hooks import apply_group_offloading  # noqa: F401
+        from diffusers.hooks import group_offloading as go
+    except Exception:  # noqa: BLE001 -- no group offloading at all
+        return False
+    return callable(getattr(go, "_is_torchao_tensor", None)) and callable(
+        getattr(go, "_swap_torchao_tensor", None)
+    )
+
+
+def _weights_pinnable(module: Any) -> bool:
+    """Whether every weight class answers ``is_pinned`` (torchao <= 0.17's v1 int8 class raises)."""
+    from itertools import chain
+
+    seen: set = set()
+    try:
+        for tensor in chain(module.parameters(), module.buffers()):
+            cls = type(tensor)
+            if cls in seen:
+                continue
+            seen.add(cls)
+            tensor.is_pinned()
+    except Exception:  # noqa: BLE001 -- unimplemented for this subclass
+        return False
+    return True
+
+
+def _evict_rotation_hook(manager: Any, device: Any) -> Any:
+    """Pre-hook offloading rotating components on ``device``: the manager only evicts inside another
+    managed pre_forward, so the conditioner would otherwise stay beside the whole denoise loop."""
+    import torch
+
+    execution = torch.device(device)
+
+    @torch.compiler.disable
+    def _pre_forward(_module: Any, _args: Any) -> None:
+        moved = False
+        for hook in list(getattr(manager, "model_hooks", None) or ()):
+            model = getattr(hook, "model", None)
+            try:
+                where = next(model.parameters()).device
+            except Exception:  # noqa: BLE001 -- nothing to measure, nothing to move
+                continue
+            if where.type != execution.type:
+                continue
+            if execution.index is not None and where.index not in (None, execution.index):
+                continue
+            hook.offload()
+            moved = True
+        if moved and execution.type == "cuda":
+            torch.cuda.empty_cache()
+
+    return _pre_forward
+
+
+def _move_groups_outside_inference_mode(module: Any) -> int:
+    """Run group offload moves outside inference_mode (torchao v1 int8 raises
+    ``Cannot set version_counter for inference tensor``). Returns the number of groups wrapped."""
+    import torch
+
+    seen: set[int] = set()
+    for submodule in module.modules():
+        hooks = getattr(getattr(submodule, "_diffusers_hook", None), "hooks", None) or {}
+        for hook in list(hooks.values()):
+            group = getattr(hook, "group", None)
+            if group is None or id(group) in seen:
+                continue
+            seen.add(id(group))
+            for name in ("onload_", "offload_"):
+                move = getattr(group, name, None)
+                if not callable(move):
+                    continue
+
+                def _outside(_move: Any = move) -> Any:
+                    with torch.inference_mode(False), torch.no_grad():
+                        return _move()
+
+                setattr(group, name, torch.compiler.disable(_outside))
+    return len(seen)
+
+
+def stream_prequantized_module(
+    manager: Any,
+    module: Any,
+    device: Any,
+    *,
+    logger: Any = None,
+    label: str = "pre-quantized denoiser",
+) -> Optional[str]:
+    """Stream a torchao module block by block via group offloading, outside the ComponentsManager rotation.
+
+    Returns ``"stream"`` (fully pinned, async copies), ``"stream_lazy"`` (pinned one group at a time), ``"sync"``
+    (unpinnable weights) or None (nothing changed).
+    Raises once the module is unhooked: the caller only streams what does not fit pinned, so a resident
+    fallback would OOM or be refused on every render."""
+    if not torchao_group_offload_supported():
+        return None
+    import inspect
+
+    import torch
+    from diffusers.hooks import apply_group_offloading
+
+    from .diffusion_memory import (
+        DEFAULT_GROUP_BLOCKS,
+        _remove_group_offload_hooks,
+        _streamed_pin_plan,
+        install_group_offload_buffer_restore,
+        install_group_offload_hooks_eager,
+    )
+
+    onload = torch.device(device)
+    if not _unhook_from_manager(manager, module, logger = logger, what = "stream:hook"):
+        return None
+    try:
+        # load_state_dict(assign=True) leaves the weights trainable; group offload's grad-mode .cpu() copy then holds
+        # each weight's AccumulateGrad, and swap_tensors on onload hits Int8Tensor's missing aten.view.
+        module.requires_grad_(False)
+        install_group_offload_buffer_restore()
+        install_group_offload_hooks_eager()
+        use_stream = onload.type == "cuda" and _weights_pinnable(module)
+        if onload.type == "cuda" and not use_stream:
+            # Sync copies measured 16.4 s/step vs 0.8 s resident (B200): rebuild v1 int8 as pinnable Int8Tensor.
+            from .prequant_legacy_int8 import convert_legacy_int8_weights
+            converted = convert_legacy_int8_weights(module)
+            if converted:
+                use_stream = _weights_pinnable(module)
+                if logger is not None:
+                    logger.info(
+                        "diffusion.prequant: rebuilt %d v1 int8 weights as Int8Tensor for streaming",
+                        converted,
+                    )
+        kwargs: dict[str, Any] = {
+            "onload_device": onload,
+            "offload_device": torch.device("cpu"),
+            "offload_type": "block_level",
+            "num_blocks_per_group": DEFAULT_GROUP_BLOCKS,
+            "use_stream": use_stream,
+        }
+        params = inspect.signature(apply_group_offloading).parameters
+        if use_stream:
+            if "non_blocking" in params:
+                kwargs["non_blocking"] = True
+            if "record_stream" in params:
+                kwargs["record_stream"] = True
+            if "low_cpu_mem_usage" in params:
+                from itertools import chain
+                payload_mib = sum(
+                    tensor_payload_bytes(t) for t in chain(module.parameters(), module.buffers())
+                ) // (1024 * 1024)
+                kwargs["low_cpu_mem_usage"] = not _streamed_pin_plan(payload_mib, 0, logger)[0]
+        # A full up-front pin goes through one slab arena: per-tensor pin_memory() rounds every weight up to a power
+        # of two (19.45 GB of H3 int8 weights held 33.8 GB pinned) and kept the pageable source alive beside it.
+        from .diffusion_pinned_arena import pinned_arena_for_group_offload
+
+        with pinned_arena_for_group_offload(
+            enabled = None if use_stream and not kwargs.get("low_cpu_mem_usage") else False
+        ) as arena:
+            apply_group_offloading(module, **kwargs)
+        if arena is not None and arena.payload_bytes:
+            module._unsloth_pin_arena_bytes = (arena.payload_bytes, arena.reserved_bytes)
+            if logger is not None:
+                logger.info(
+                    "diffusion.prequant: %s pinned once in %.2f GB of slabs (%.2f GB of weights)",
+                    label,
+                    arena.reserved_bytes / 1e9,
+                    arena.payload_bytes / 1e9,
+                )
+        _move_groups_outside_inference_mode(module)
+        module.register_forward_pre_hook(_evict_rotation_hook(manager, onload))
+    except Exception as exc:
+        _remove_group_offload_hooks(module)
+        raise RuntimeError(f"group offloading could not be set up for the {label}: {exc}") from exc
+    # Only a full up-front pin keeps a second host copy; lazy pinning holds one group at a time.
+    mode = (
+        ("stream_lazy" if kwargs.get("low_cpu_mem_usage") else "stream") if use_stream else "sync"
+    )
+    if logger is not None:
+        logger.info(
+            "diffusion.prequant: %s streamed block by block on %s (%s copies)",
+            label,
+            device,
+            "overlapped" if use_stream else "synchronous",
+        )
+    return mode
 
 
 def _has_meta_tensors(module: Any) -> bool:
@@ -1860,10 +2306,15 @@ def _has_meta_tensors(module: Any) -> bool:
 
 
 _LAST_FAILURE = _threading.local()
+# An absolute POSIX or Windows path; the status keeps only its last component (the server's layout is not the
+# client's business). Not after a word, ':' or '/', so URLs and repo ids are left alone.
+_ABS_PATH = _re.compile(
+    r"(?<![\w:/.])(?:[A-Za-z]:[\\/]|/)(?:[^\s'\"<>|:;,()\[\]\\/]+[\\/])+(?=[^\s\\/])"
+)
 
 
 def _warn(logger: Any, what: str, exc: Exception) -> None:
-    _LAST_FAILURE.text = f"{type(exc).__name__}: {exc}"[:300]
+    _LAST_FAILURE.text = _ABS_PATH.sub("", f"{type(exc).__name__}: {exc}")[:300]
     if logger is not None:
         logger.warning("diffusion.prequant: %s failed: %s", what, exc)
 
