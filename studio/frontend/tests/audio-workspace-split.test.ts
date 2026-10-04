@@ -56,7 +56,11 @@ test("?workflow= names the page ahead of ?task=, and both go through the workflo
     /const routedWorkflow = audioRouteIntent\(routeSearch\);\s*if \(routedWorkflow === null\) return;[\s\S]{0,120}?if \(!transitionWorkflow\(routedWorkflow\)\) return;\s*void navigateSelf\(\{ to: "\/audio", search: \{\}, replace: true \}\);/,
   );
   assert.doesNotMatch(handoff, /commitWorkflow\(/);
-  assert.match(handoff, /transitionWorkflow\(clipWorkflow\(clip\)\)/);
+  // A Library clip asks for its page through ?workflow=, so a busy page retries it later.
+  assert.match(
+    handoff,
+    /search: \(prev\) => \(\{ \.\.\.prev, workflow: clipWorkflow\(clip\) \}\)/,
+  );
 });
 
 test("Speak and Music keep separate drafts that survive a reload", () => {
