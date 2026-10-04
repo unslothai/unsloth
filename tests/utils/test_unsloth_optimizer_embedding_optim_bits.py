@@ -1,16 +1,13 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 #
-# Trainer.create_optimizer keeps nn.Embedding optimizer state in 32 bits under an 8-bit
-# bitsandbytes optimizer. `embedding_learning_rate` builds the optimizer in
-# `_create_unsloth_optimizer` instead, which skipped that, so adamw_8bit stored the
-# trained embeddings' Adam state in 8 bits only when an embedding learning rate was set.
+# embedding_learning_rate must keep nn.Embedding Adam state 32-bit under adamw_8bit, as Trainer does.
 
 from types import MethodType, SimpleNamespace
 
 import pytest
 
-import unsloth  # noqa: F401  (must precede transformers/trl)
+import unsloth  # noqa: F401
 from unsloth.trainer import UnslothTrainer
 
 
@@ -26,7 +23,6 @@ def _model(nn):
 
 
 def _optimizer(model, embedding_learning_rate):
-    # None is Trainer's own path, the reference the embedding learning rate path must match.
     from transformers import Trainer
     from trl import SFTConfig
 
