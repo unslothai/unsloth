@@ -1094,6 +1094,15 @@ function walkSources(dir: string, out: string[] = []): string[] {
 
 type Resolver = (specifier: string, from: string) => string | null;
 
+/**
+ * A specifier that leaves the app for node_modules: neither the `@/` alias nor a
+ * relative path. Syntactic on purpose, so an app path this resolver happens not
+ * to model still counts as an edge rather than being waved through.
+ */
+function isBareSpecifier(spec: string): boolean {
+  return !(spec.startsWith("@/") || spec.startsWith("."));
+}
+
 function makeResolver(sources: Map<string, string>): Resolver {
   return (spec, from) => {
     let base: string;
@@ -1302,7 +1311,15 @@ function proneExportSets(
         (ts.isImportDeclaration(statement) || ts.isExportDeclaration(statement)) &&
         statement.moduleSpecifier !== undefined &&
         !isErasedEdge(statement);
-      if (runtimeEdge) edges += 1;
+      // Only an edge back into src counts. A bare package specifier leaves the
+      // graph for node_modules, which does not import app source, so it is not a
+      // way back in and cannot catch this module half-initialized. A specifier
+      // this resolver cannot model is counted, since it may well be a path.
+      const leavesApp =
+        runtimeEdge &&
+        ts.isStringLiteral(statement.moduleSpecifier) &&
+        isBareSpecifier(statement.moduleSpecifier.text);
+      if (runtimeEdge && !leavesApp) edges += 1;
       if (!ts.isExportDeclaration(statement) || !runtimeEdge) continue;
       const specifier = statement.moduleSpecifier;
       if (!specifier || !ts.isStringLiteral(specifier)) continue;
@@ -1312,10 +1329,14 @@ function proneExportSets(
       if (clause && !ts.isNamedExports(clause)) continue;
       list.push({ target: resolve(specifier.text, file), clause });
     }
-    // A module with no runtime imports has nothing that can re-enter it, so its
-    // body always finishes before any importer's does and none of its bindings
-    // can be caught uninitialized. That is why prompt-queue-events.ts exists,
-    // and it holds however many re-export hops away the reader sits.
+    // A module with no runtime imports INTO THE APP has nothing that can
+    // re-enter it, so its body always finishes before any importer's does and
+    // none of its bindings can be caught uninitialized. That is why
+    // prompt-queue-events.ts exists, and it holds however many re-export hops
+    // away the reader sits. Package-only modules are leaves by the same
+    // argument: lib/hugeicons-derived.ts and assistant-ui/code-themes.ts derive
+    // consts from a package and import nothing else, and counting those edges
+    // reported both as hazards they cannot be.
     out.set(file, {
       names: edges === 0 ? new Set<string>() : tdzProneExportNames(source),
       star: false,
@@ -1492,8 +1513,6 @@ function barrelInitClosure(files: string[]): Set<string> {
 const KNOWN_DEEP_CYCLE_READS = new Map<string, number>([
   ["components/assistant-ui/markdown-text.tsx: SEARCH_IMAGE_TAG", 2],
   ["components/assistant-ui/markdown-text.tsx: SearchImageElement", 1],
-  ["components/assistant-ui/markdown-text.tsx: unslothDarkTheme", 2],
-  ["components/assistant-ui/markdown-text.tsx: unslothLightTheme", 2],
   ["components/assistant-ui/thread.tsx: CodeExecutionToolUI", 1],
   ["components/assistant-ui/thread.tsx: ImageGenerationToolUI", 1],
   ["components/assistant-ui/thread.tsx: KnowledgeBaseToolUI", 1],
@@ -1508,8 +1527,6 @@ const KNOWN_DEEP_CYCLE_READS = new Map<string, number>([
   ["components/assistant-ui/thread.tsx: ToolGroup", 1],
   ["components/assistant-ui/thread.tsx: WebSearchToolUI", 1],
   ["components/ui/sidebar.tsx: SIDEBAR_WIDTH_DEFAULT", 1],
-  ["features/chat/artifacts/artifact-surface.tsx: unslothDarkTheme", 1],
-  ["features/chat/artifacts/artifact-surface.tsx: unslothLightTheme", 1],
   ["features/chat/attachment-content.ts: MAX_OPEN_DOCUMENT_ARCHIVE_BYTES", 1],
   ["features/chat/chat-page.tsx: CONVERSATION_MARKDOWN_FORMAT", 1],
   ["features/chat/chat-page.tsx: CONVERSATION_MARKDOWN_LABEL", 1],
@@ -1535,7 +1552,11 @@ test("no module-scope read of a chat barrel value", () => {
         (ts.isImportDeclaration(st) || ts.isExportDeclaration(st)) && st.moduleSpecifier;
       if (!spec || !ts.isStringLiteral(spec)) continue;
       if (isErasedEdge(st)) continue;
-      out.push(spec.text);
+      // Same rule as proneExportSets: a package edge leaves the graph and is not
+      // a way back into this module.
+      if (!isBareSpecifier(spec.text)) {
+        out.push(spec.text);
+      }
     }
     return out;
   };
@@ -2360,4 +2381,23 @@ test("re-exported bindings are judged where they are declared", () => {
     "a hoisted function is not in the dead zone; a const and a class are");
   assert.deepEqual([...(sets.get(bridge)?.names ?? [])].sort(), ["C", "LATE"],
     "a re-export carries the declaring module's verdict, not a fresh one");
+});
+
+test("a package edge is not a way back into a module", () => {
+  const pkg = path.join(SRC, "fake", "pkgleaf.ts");
+  const app = path.join(SRC, "fake", "appedge.ts");
+  const unmodelled = path.join(SRC, "fake", "unmodelled.ts");
+  const sources = new Map<string, string>([
+    // The shape of lib/hugeicons-derived.ts: a const derived from a package.
+    [pkg, `import { Icon } from "@hugeicons/core-free-icons";\nexport const DERIVED = Icon.slice(0, 1);\n`],
+    [app, `import { DERIVED } from "./pkgleaf";\nexport const LATE = DERIVED;\n`],
+    [unmodelled, `import { X } from "@/does/not/exist";\nexport const MAYBE = X;\n`],
+  ]);
+  const sets = proneExportSets([...sources.keys()], sources, makeResolver(sources));
+  assert.deepEqual([...(sets.get(pkg)?.names ?? [])], [],
+    "node_modules does not import app source, so nothing can re-enter this module");
+  assert.deepEqual([...(sets.get(app)?.names ?? [])], ["LATE"],
+    "an edge to another app module still counts, package leaf or not");
+  assert.deepEqual([...(sets.get(unmodelled)?.names ?? [])], ["MAYBE"],
+    "an app-shaped specifier this resolver cannot model is counted, not waved through");
 });

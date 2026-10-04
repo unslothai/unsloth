@@ -1,11 +1,8 @@
 # Copyright 2023-present Daniel Han-Chen & the Unsloth team. All rights reserved.
-#
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
 # You may obtain a copy of the License at
-#
 #     http://www.apache.org/licenses/LICENSE-2.0
-#
 # Unless required by applicable law or agreed to in writing, software
 # distributed under the License is distributed on an "AS IS" BASIS,
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
@@ -39,6 +36,7 @@ _C_SYMBOLS = (
     "cdequantize_blockwise_fp32",
     "cdequantize_blockwise_fp16_nf4",
     "cdequantize_blockwise_bf16_nf4",
+    "cdequantize_blockwise_fp32_nf4",
 )
 # 4bit inference is a gemv on xpu and a naive gemm elsewhere; probing the wrong pair would write off
 # a perfectly good wheel.

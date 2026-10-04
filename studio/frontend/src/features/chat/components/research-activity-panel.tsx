@@ -24,9 +24,12 @@ import {
 import { Spinner } from "@/components/ui/spinner";
 import { Textarea } from "@/components/ui/textarea";
 import { BulbIcon } from "@/lib/bulb-icon";
+import { InternetGlyph } from "@/lib/internet-icon";
 import { openLink } from "@/lib/open-link";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
+import { RefreshGlyph } from "@/lib/refresh-icon";
+import { FileGlyph } from "@/lib/file-icon";
 import {
   DashedLineCircleIcon as CircleDashedIcon,
   Telescope02Icon,
@@ -38,11 +41,8 @@ import {
   Check,
   ChevronDown,
   ExternalLink,
-  FileText,
-  GlobeIcon,
   Pencil,
   Plus,
-  RotateCcw,
   Trash2,
   X,
 } from "lucide-react";
@@ -326,10 +326,10 @@ function ActivityIcon({
     );
   if (activity.kind === "reasoning")
     return <BulbIcon className={className} />;
-  if (activity.kind === "plan") return <FileText className={className} />;
-  if (activity.kind === "report") return <FileText className={className} />;
+  if (activity.kind === "plan") return <FileGlyph className={className} />;
+  if (activity.kind === "report") return <FileGlyph className={className} />;
   if (activity.action === "fetch" || activity.action === "search")
-    return <GlobeIcon className={className} />;
+    return <InternetGlyph className={className} />;
   return <Check className={className} />;
 }
 
@@ -390,7 +390,7 @@ const ActivityRow = memo(function ActivityRow({
         </ul>
       ) : null}
       {activity.reasoning ? (
-        <div className="max-h-64 overflow-y-auto whitespace-pre-wrap break-words rounded-xl bg-muted/35 px-3 py-2 leading-relaxed text-foreground/80">
+        <div className="max-h-64 overflow-y-auto whitespace-pre-wrap break-words scroll-rounded rounded-xl bg-muted/35 px-3 py-2 leading-relaxed text-foreground/80">
           {activity.state === "running" && activity.reasoning.length > 8000
             ? `…\n${activity.reasoning.slice(-8000)}`
             : activity.reasoning}
@@ -439,7 +439,7 @@ const ActivityRow = memo(function ActivityRow({
           onClick={() => openLink(source.url)}
           className="group/source flex w-full items-start gap-2 rounded-xl px-2 py-2 text-left transition-colors hover:bg-muted/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
         >
-          <GlobeIcon className="mt-0.5 size-3.5 shrink-0" />
+          <InternetGlyph className="mt-0.5 size-3.5 shrink-0" />
           <span className="min-w-0 flex-1">
             <span className="block line-clamp-2 break-words font-medium text-foreground/85">
               {source.title || source.url}
@@ -487,7 +487,7 @@ const ActivityRow = memo(function ActivityRow({
     >
       <div
         className={cn(
-          "relative pl-7 before:absolute before:left-[7px] before:top-6 before:h-[calc(100%-12px)] before:w-px before:bg-border last:before:hidden",
+          "relative pl-7 before:absolute before:left-[calc(7px*var(--ui-space-scale,1))] before:top-6 before:h-[calc(100%-12px)] before:w-px before:bg-border last:before:hidden",
           activity.kind === "step" && "before:bg-primary/20",
         )}
       >
@@ -497,7 +497,7 @@ const ActivityRow = memo(function ActivityRow({
         >
           <span
             className={cn(
-              "absolute -left-7 top-1/2 flex size-[15px] -translate-y-1/2 items-center justify-center rounded-full bg-background text-muted-foreground",
+              "absolute -left-7 top-1/2 flex size-[calc(15px*var(--ui-space-scale,1))] -translate-y-1/2 items-center justify-center rounded-full bg-background text-muted-foreground",
               activity.kind === "step" &&
                 activity.state !== "failed" &&
                 "bg-primary/10 text-primary",
@@ -819,7 +819,7 @@ function ResearchActions({ runId }: { runId: string }): ReactElement | null {
         disabled={pending}
         onClick={() => void retry()}
       >
-        {pending ? <Spinner /> : <RotateCcw />} Retry research
+        {pending ? <Spinner /> : <RefreshGlyph />} Retry research
       </Button>
     </div>
   );
@@ -904,7 +904,7 @@ export function ResearchActivityPanel({
       <header className="shrink-0 border-b border-border/70 px-4 py-3.5">
         <div className="flex items-start gap-3">
           <div className="flex size-9 shrink-0 items-center justify-center rounded-[13px] bg-primary/10 text-primary">
-            <HugeiconsIcon icon={Telescope02Icon} className="size-[18px]" />
+            <HugeiconsIcon icon={Telescope02Icon} className="size-[calc(18px*var(--ui-space-scale,1))]" />
           </div>
           <div className="min-w-0 flex-1">
             <div className="flex items-center gap-2">
@@ -931,7 +931,7 @@ export function ResearchActivityPanel({
                 className="mt-1 flex items-center gap-1 text-ui-10p5 font-medium text-primary/75"
                 title={websiteLimitTitle}
               >
-                <GlobeIcon className="size-3" />
+                <InternetGlyph className="size-3" />
                 <span className="truncate">{websiteLimitLabel}</span>
               </p>
             ) : null}

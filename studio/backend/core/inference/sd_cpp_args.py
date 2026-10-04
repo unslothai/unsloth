@@ -24,7 +24,6 @@ from core.inference.diffusion_memory import (
     OFFLOAD_SEQUENTIAL,
 )
 
-# in supply order, keyed by DiffusionFamily.name so the family registry need not import sd.cpp specifics
 # Per-family text-encoder flags, in supply order. Keyed by ``DiffusionFamily.name`` so the family registry need not
 # import sd.cpp specifics.
 _TE_FLAGS_BY_FAMILY: dict[str, tuple[str, ...]] = {
@@ -32,6 +31,10 @@ _TE_FLAGS_BY_FAMILY: dict[str, tuple[str, ...]] = {
     "flux.2-klein": ("--llm",),
     "flux.2-dev": ("--llm",),
     "qwen-image": ("--qwen2vl",),
+    # 2.1 conditions on Qwen3-VL, which sd-cli takes through --llm. --qwen2vl is an alias of --llm
+    # that also turns on Qwen2-VL's vision path, so it is the wrong door even though both names
+    # reach the same field.
+    "qwen-image-2.1": ("--llm",),
     "flux.1": ("--clip_l", "--t5xxl"),
 }
 
@@ -157,7 +160,6 @@ def metal_text_encoder_flags() -> list[str]:
     ggml's Metal backend gates RMS_NORM on contiguous rows and calls ``GGML_ABORT`` when that does
     not hold, with no per-op CPU fallback, so an LLM text encoder (Qwen3 for FLUX.2 / Z-Image, T5
     for FLUX.1) takes the whole sd-server process down mid-generation:
-
         ggml_metal_op_encode_impl: error: unsupported op 'RMS_NORM' -> ggml_abort
         LLMEmbedder::encode_prompt -> LLMRunner::compute -> GGMLRunner::compute
 
@@ -175,14 +177,11 @@ def metal_text_encoder_flags() -> list[str]:
     return ["--clip-on-cpu"]
 
 
-# sd.cpp prefers GPU -> iGPU -> CPU and only --backend changes which backend EXECUTES the graph (--offload-to-cpu moves
-# parameters)
-# Everything on the CPU backend. sd.cpp prefers GPU -> integrated GPU -> CPU and only `--backend` changes which backend
-# EXECUTES the graph (`--offload-to-cpu` moves parameters, not compute), so this is the one flag that removes ggml-metal
-# entirely.
+# Everything on the CPU backend. sd.cpp prefers GPU -> integrated GPU -> CPU and only `--backend` changes which
+# backend EXECUTES the graph (`--offload-to-cpu` moves parameters, not compute), so this is the one flag that removes
+# ggml-metal entirely.
 CPU_BACKEND_FLAGS: tuple[str, ...] = ("--backend", "cpu")
 
-# a negative --max-vram auto-detects free VRAM per device
 # Graph-cut segmented execution; a negative --max-vram auto-detects free VRAM per device, sparing that many GiB. It
 # segments on its own, so it stands alone.
 GRAPH_CUT_VRAM_FLAGS: tuple[str, ...] = ("--max-vram", "-1")
@@ -242,7 +241,6 @@ def without_device_backend_flags(flags: Sequence[str]) -> list[str]:
     return out
 
 
-# ggml-metal calls GGML_ABORT when ggml_metal_device_supports_op() is false
 # The ggml signature for "this graph cannot run on this backend at all": ggml-metal calls GGML_ABORT when
 # ggml_metal_device_supports_op() returns false, since a single-backend graph has nowhere else to put the node. The
 # SIGABRT takes sd-server down mid-generation.
@@ -334,6 +332,7 @@ def build_sd_cpp_command(
         ("--clip_g", files.clip_g),
         ("--t5xxl", files.t5xxl),
         ("--llm", files.llm),
+        ("--llm_vision", files.llm_vision),
         ("--qwen2vl", files.qwen2vl),
     ):
         if value:
@@ -355,7 +354,6 @@ def build_sd_cpp_command(
         cmd += ["--lora-model-dir", params.lora_dir]
     if params.lora_apply_mode:
         cmd += ["--lora-apply-mode", params.lora_apply_mode]
-    # leaving them unset lets sd.cpp derive the size from an input image
     # Emit explicit dims when given. An image-conditioned run leaving them unset omits the flags so sd.cpp derives the
     # size from the input; a plain txt2img keeps the 1024 default.
     if params.width is not None or params.height is not None:
@@ -554,10 +552,13 @@ def build_sd_cpp_server_command(
     cmd: list[str] = [binary, "--diffusion-model", files.diffusion_model]
     for flag, value in (
         ("--vae", files.vae),
+        # Without it a resident H3 vid_gen server renders a silent clip.
+        ("--audio-vae", files.audio_vae),
         ("--clip_l", files.clip_l),
         ("--clip_g", files.clip_g),
         ("--t5xxl", files.t5xxl),
         ("--llm", files.llm),
+        ("--llm_vision", files.llm_vision),
         ("--qwen2vl", files.qwen2vl),
     ):
         if value:
@@ -605,6 +606,7 @@ def build_img_gen_request(
     distilled_guidance: Optional[float] = None,
     output_format: str = "png",
     lora: Optional[list[dict]] = None,
+    ref_images: Optional[list[str]] = None,
 ) -> dict:
     """Build the ``POST /sdcpp/v1/img_gen`` JSON body for one text-to-image request.
 
@@ -643,12 +645,66 @@ def build_img_gen_request(
         req["seed"] = int(seed)
     if sample_params:
         req["sample_params"] = sample_params
-    # the API resolves each `path` against the server's --lora-model-dir (prompt-embedded <lora:> tags are unsupported
-    # server-side)
     # Structured LoRA list: the API resolves each ``path`` against the server's ``--lora-model-dir`` (prompt-embedded
     # ``<lora:>`` tags are unsupported server-side), so LoRAs are staged here.
     if lora:
         req["lora"] = lora
+    # Base64 PNGs in model order; no init_image/strength/mask: this is reference conditioning, not img2img.
+    if ref_images:
+        req["ref_images"] = list(ref_images)
+    return req
+
+
+def h3_server_eligible(params: "SdCppVideoGenParams") -> bool:
+    """False for reference videos / audio: path-only sd-cli flags with no ``vid_gen`` JSON field."""
+    return not (params.ref_videos or params.ref_video_audios or params.ref_audios)
+
+
+def build_vid_gen_request(
+    params: "SdCppVideoGenParams",
+    *,
+    images_b64: Optional[dict[str, str]] = None,
+    ref_images_b64: Optional[list[str]] = None,
+    output_compression: int = 90,
+) -> dict:
+    """``POST /sdcpp/v1/vid_gen`` body equivalent to ``build_sd_cpp_video_command`` (same pixels for the same seed).
+
+    AVI: needs no WebM build, as the CUDA prebuilt's sd-cli writes. ``--rng cpu`` is a server context flag, passed at
+    spawn."""
+    if not (params.prompt or "").strip():
+        raise ValueError("prompt is required")
+    if params.width <= 0 or params.height <= 0 or params.num_frames <= 0:
+        raise ValueError("width, height, and num_frames must be positive")
+    if not h3_server_eligible(params):
+        raise ValueError("reference videos and audio are not accepted by the sd-server vid_gen API")
+    images = dict(images_b64 or {})
+    if (images.get("init_image") or images.get("end_image")) and ref_images_b64:
+        raise ValueError(
+            "MiniMax-H3 keyframes and references cannot be combined: they run against "
+            "different denoiser partitions."
+        )
+    sample_params: dict = {"guidance": {"txt_cfg": float(params.cfg_scale)}}
+    if params.steps is not None:
+        sample_params["sample_steps"] = int(params.steps)
+    if params.flow_shift is not None:
+        sample_params["flow_shift"] = float(params.flow_shift)
+    req: dict = {
+        "prompt": params.prompt,
+        "width": int(params.width),
+        "height": int(params.height),
+        "video_frames": int(params.num_frames),
+        "fps": int(params.fps),
+        "sample_params": sample_params,
+        "output_format": "avi",
+        "output_compression": int(output_compression),
+    }
+    if params.seed is not None:
+        req["seed"] = int(params.seed)
+    for key in ("init_image", "end_image"):
+        if images.get(key):
+            req[key] = images[key]
+    if ref_images_b64:
+        req["ref_images"] = list(ref_images_b64)
     return req
 
 

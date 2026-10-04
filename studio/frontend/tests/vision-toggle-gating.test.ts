@@ -91,26 +91,32 @@ test("the Vision row exists only in the GGUF half of Advanced Settings", () => {
     1,
     "expected exactly one Vision switch in the file",
   );
+  assert.ok(bodyOf("VisionRow").includes(wiring));
   assert.ok(
-    gguf.includes(wiring),
+    gguf.includes("<VisionRow"),
     "Vision switch is not in GgufAdvancedSettings",
   );
   assert.ok(
-    !mlx.includes(wiring),
+    !mlx.includes("VisionRow"),
     "Vision switch leaked into MlxAdvancedSettings",
   );
   assert.ok(
     !mlx.includes("disableVision"),
     "MlxAdvancedSettings reads disableVision, which it cannot act on",
   );
-  assert.ok(gguf.includes(">Vision</span>"));
+  assert.ok(bodyOf("VisionRow").includes(">Vision</span>"));
 
   // And the GGUF half only renders under target.isGguf, so a non-GGUF target
   // shows no Vision switch at all.
   const gateAbove = (index: number): string => {
     for (let i = index; i >= 0; i--) {
       const line = lines[i].trim();
-      if (line === "{target.isGguf && (") return "isGguf";
+      // An audio-runtime GGUF launches no llama-server, so its half is gated off too.
+      if (
+        line === "{target.isGguf && (" ||
+        line === "{target.isGguf && !audioRuntimeGguf && ("
+      )
+        return "isGguf";
       if (line === "{!target.isGguf && (") return "!isGguf";
     }
     return "none";
@@ -184,14 +190,14 @@ test("every other refusal is untouched by the new branch", () => {
 test("the rollback replays the loaded vision baseline, not the control or the gate", () => {
   const runtime = readSrc("features/chat/hooks/use-chat-model-runtime.ts");
   const replay = runtime.slice(
-    runtime.indexOf("tensor_parallel: stateBeforeUnload.loadedTensorParallel"),
+    runtime.indexOf("tensor_parallel: rollbackState.loadedTensorParallel"),
   );
   const line = replay.slice(
     replay.indexOf("disable_vision:"),
     replay.indexOf("gpu_memory_mode:"),
   );
   assert.ok(
-    line.includes("stateBeforeUnload.loadedDisableVision"),
+    line.includes("rollbackState.loadedDisableVision"),
     `rollback must replay the loaded baseline, got: ${line.trim()}`,
   );
   assert.ok(
@@ -221,7 +227,7 @@ test("the rollback seeds the Vision control from the restored model, not the tar
     assignment.indexOf("loadedVisionDisabledByUser:"),
   );
   assert.ok(
-    line.includes("stateBeforeUnload.loadedDisableVision"),
+    line.includes("rollbackState.loadedDisableVision"),
     `the control must be seeded from the restored model's loaded value, got: ${line.trim()}`,
   );
   assert.ok(
@@ -286,7 +292,9 @@ test("the Vision row is gated out for diffusion models", () => {
 
   const lines = CONFIG_PAGE.split("\n");
   const visionAt = lines.findIndex((line) =>
-    line.includes("checked={!config.disableVision}"),
+    line.includes(
+      "hideVision ? null : <VisionRow config={config} update={update} />",
+    ),
   );
   assert.notEqual(visionAt, -1, "no Vision switch to gate");
 
