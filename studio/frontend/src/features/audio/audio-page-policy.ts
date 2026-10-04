@@ -183,15 +183,6 @@ export function nativeAudioInstructionsKind(
   return null;
 }
 
-export function instructionsFieldKind(
-  workflow: "speak" | "music",
-  audioType?: string | null,
-): NativeAudioInstructionsKind | null {
-  if (workflow === "music") return "music";
-  const kind = nativeAudioInstructionsKind(audioType);
-  return kind === "music" ? null : kind;
-}
-
 /** The music length range the loaded model honours. The GGUF runtime clamps tighter than the
  *  MiniMax Music 3 pipeline; both take the same 25 frames per second. */
 export function musicDurationRange(requiresCuda: boolean): {
@@ -649,16 +640,6 @@ export function reconcileSttSelection({
     return repoIdForSidecarKey(loadedModel, loadedEngine ?? "transformers");
   }
   return preservePending ? selectedRepo : null;
-}
-
-/** Permission prompts cannot be aborted, so freshness is checked immediately after
- *  getUserMedia resolves and stale streams are stopped before recording. */
-export function micStreamRequestIsCurrent(
-  requestGeneration: number,
-  currentGeneration: number,
-  active: boolean,
-): boolean {
-  return active && requestGeneration === currentGeneration;
 }
 
 /**

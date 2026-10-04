@@ -1,34 +1,32 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { AUTH_SESSION_ENDING_EVENT } from "@/features/auth";
-import {
-  createAudioRecorder,
-  PcmRecorder,
-  type SegmentRecorder,
-} from "@/features/chat/adapters/pcm-recorder";
-import {
-  StudioModelDictationAdapter,
-} from "@/features/chat/adapters/studio-model-dictation-adapter";
 import { useVoiceSettingsStore } from "@/features/settings";
 import { isTauri } from "@/lib/api-base";
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import { toast } from "@/lib/toast";
-import { transcribeWithProgress } from "../api";
-import { micStreamRequestIsCurrent } from "../audio-page-policy";
-import {
-  RECORDING_CHUNK_MS,
-  RECORDING_MAX_BYTES,
-  RECORDING_MAX_SECONDS,
-} from "../audio-workspace-constants";
+import { AudioApiError } from "../api";
+import { type AudioSourceSelection, sourceRefOf } from "../audio-run-request";
 import { sttEngineForRepoId, sttSidecarKeyFor } from "../catalog";
+import {
+  getTranscript,
+  renameTranscriptSpeakers,
+  transcribeSourceWithProgress,
+} from "../transcribe-api";
 import { downloadTranscript } from "../transcript-download";
+import type { TranscriptExportFormat } from "../transcript-export";
 import {
   readTranscriptDraft,
   transcriptDraftKey,
   writeTranscriptDraft,
 } from "../transcript-draft";
+import {
+  EMPTY_TRANSCRIPT_DETAILS,
+  type TranscriptDetails,
+  detailsFrom,
+} from "../transcript-model";
 import type {
   TranscriptProgress,
   TranscriptRecord,
@@ -36,8 +34,26 @@ import type {
 import type { AudioHostState } from "./audio-host-state";
 import type { SttSidecar } from "./use-stt-sidecar";
 
+function withName(
+  names: Record<string, string>,
+  id: string,
+  name: string | undefined,
+): Record<string, string> {
+  const next = { ...names };
+  if (name) next[id] = name;
+  else delete next[id];
+  return next;
+}
+
+function toastFailure(what: string, error: unknown) {
+  toast.error(
+    error instanceof Error && error.message
+      ? `${what}: ${error.message}`
+      : `${what}.`,
+  );
+}
+
 export function useTranscription({
-  active,
   activeRef,
   busyRef,
   setBusy,
@@ -49,7 +65,7 @@ export function useTranscription({
   ensureSttLoaded,
   setLastSttRepo,
   refreshSttStatus,
-}: Pick<AudioHostState, "active" | "activeRef" | "busyRef" | "setBusy"> &
+}: Pick<AudioHostState, "activeRef" | "busyRef" | "setBusy"> &
   Pick<
     SttSidecar,
     | "lastSttRepo"
@@ -66,6 +82,12 @@ export function useTranscription({
   const [transcript, setTranscript] = useState(recoveredTranscript?.text ?? "");
   const [transcribedName, setTranscribedName] = useState<string | null>(recoveredTranscript?.title ?? null);
   const [transcriptModel, setTranscriptModel] = useState(recoveredTranscript?.model ?? "");
+  const [transcriptDetails, setTranscriptDetails] = useState<TranscriptDetails>(
+    () => recoveredTranscript?.details ?? EMPTY_TRANSCRIPT_DETAILS,
+  );
+  const [speakerNames, setSpeakerNames] = useState<Record<string, string>>(
+    () => recoveredTranscript?.speakerNames ?? {},
+  );
   const [transcriptRecord, setTranscriptRecord] = useState<TranscriptRecord | null>(null);
   const [transcriptExported, setTranscriptExported] = useState(false);
   const transcriptVersion = useRef(0);
@@ -74,38 +96,7 @@ export function useTranscription({
   const [transcriptionStopping, setTranscriptionStopping] = useState(false);
   const [transcriptionProgress, setTranscriptionProgress] = useState<TranscriptProgress | null>(null);
   const [transcriptError, setTranscriptError] = useState<string | null>(null);
-  const [isRecording, setIsRecording] = useState(false);
-  const [micRequestPending, setMicRequestPending] = useState(false);
-  /** WebKit lacks MediaRecorder, and http LAN origins have no navigator.mediaDevices. */
-  const recordingSupported = useMemo(
-    () => StudioModelDictationAdapter.isSupported(),
-    [],
-  );
-  const recorderRef = useRef<SegmentRecorder | null>(null);
-  const recordStreamRef = useRef<MediaStream | null>(null);
-  const discardRecordingRef = useRef(false);
-  const micRequestGeneration = useRef(0);
-  const micPendingGeneration = useRef<number | null>(null);
   const transcriptionAbort = useRef<AbortController | null>(null);
-
-  const stopRecordStream = useCallback(() => {
-    for (const track of recordStreamRef.current?.getTracks() ?? [])
-      track.stop();
-    recordStreamRef.current = null;
-  }, []);
-  const stopAndDiscardRecording = useCallback(() => {
-    micRequestGeneration.current += 1;
-    micPendingGeneration.current = null;
-    setMicRequestPending(false);
-    const recorder = recorderRef.current;
-    if (recorder) {
-      discardRecordingRef.current = true;
-      if (recorder.state !== "inactive") recorder.stop();
-      recorderRef.current = null;
-      setIsRecording(false);
-    }
-    stopRecordStream();
-  }, [stopRecordStream]);
 
   const clearTranscript = useCallback(() => {
     transcriptVersion.current += 1;
@@ -115,6 +106,8 @@ export function useTranscription({
     setTranscriptModel("");
     setTranscriptRecord(null);
     setTranscriptExported(false);
+    setTranscriptDetails(EMPTY_TRANSCRIPT_DETAILS);
+    setSpeakerNames({});
   }, []);
 
   const confirmTranscriptReplacement = useCallback(() => {
@@ -139,6 +132,8 @@ export function useTranscription({
         text: transcript,
         title: transcribedName ?? "Transcript",
         model: transcriptModel,
+        details: transcriptDetails,
+        speakerNames,
       } : null,
     )) {
       toast.error("Could not update transcript recovery. Download unsaved text before leaving.");
@@ -178,7 +173,7 @@ export function useTranscription({
       window.removeEventListener("beforeunload", warn);
       window.removeEventListener(AUTH_SESSION_ENDING_EVENT, confirmLogout);
     };
-  }, [draftKey, transcript, transcribedName, transcriptModel, transcriptRecord, transcriptExported]);
+  }, [draftKey, transcript, transcribedName, transcriptModel, transcriptRecord, transcriptExported, transcriptDetails, speakerNames]);
 
   const prepareTranscriptionModel = useCallback(async () => {
     const repo = selectedSttRepoRef.current ?? lastSttRepo;
@@ -204,7 +199,12 @@ export function useTranscription({
   ]);
 
   const runTranscription = useCallback(
-    async (blob: Blob, name: string, confirmedVersion?: number) => {
+    async (
+      source: AudioSourceSelection,
+      options: { language: string; timestamps: boolean; speakers: boolean },
+      onSourceExpired?: () => void,
+      confirmedVersion?: number,
+    ) => {
       if (
         transcriptionAbort.current ||
         busyRef.current !== null ||
@@ -219,19 +219,20 @@ export function useTranscription({
         if (!target || controller.signal.aborted || !activeRef.current) return;
         setBusy("transcribing");
         clearTranscript();
-        setTranscribedName(name);
+        setTranscribedName(source.name);
         setTranscriptModel(target.model);
         started = true;
         setTranscriptionStartedAt(Date.now());
         setTranscriptionFinishedAt(null);
         setTranscriptionStopping(false);
         setTranscriptionProgress(null);
-        const result = await transcribeWithProgress(
-          blob,
-          name,
+        const result = await transcribeSourceWithProgress(
+          sourceRefOf(source),
+          source.name,
           {
             ...target,
             device: useVoiceSettingsStore.getState().sttDevice,
+            ...options,
             signal: controller.signal,
           },
           (progress) => {
@@ -242,6 +243,7 @@ export function useTranscription({
         setTranscript(result.text);
         setTranscriptModel(result.model);
         setTranscriptRecord(result.record);
+        setTranscriptDetails(detailsFrom(result));
         if (!result.text)
           toast.info("The model heard no speech in that audio.");
         else if (!result.record)
@@ -251,6 +253,14 @@ export function useTranscription({
       } catch (error) {
         if (controller.signal.aborted) {
           setTranscriptError("Transcription cancelled.");
+          return;
+        }
+        if (
+          error instanceof AudioApiError &&
+          error.status === 404 &&
+          source.kind === "input"
+        ) {
+          onSourceExpired?.();
           return;
         }
         const message =
@@ -274,137 +284,50 @@ export function useTranscription({
     ],
   );
 
-  const handleRecordToggle = useCallback(async () => {
-    if (isRecording) {
-      const recorder = recorderRef.current;
-      if (recorder && recorder.state !== "inactive") recorder.stop();
-      return;
-    }
-    if (micPendingGeneration.current !== null || busyRef.current !== null) return;
-    if (!confirmTranscriptReplacement()) return;
-    const confirmedVersion = transcriptVersion.current;
-    const requestGeneration = ++micRequestGeneration.current;
-    micPendingGeneration.current = requestGeneration;
-    setMicRequestPending(true);
-    try {
-      if (
-        !(await prepareTranscriptionModel()) ||
-        !activeRef.current ||
-        micRequestGeneration.current !== requestGeneration
-      ) return;
-      const stream = await navigator.mediaDevices.getUserMedia({
-        audio: { echoCancellation: true, noiseSuppression: true },
-      });
-      if (
-        !micStreamRequestIsCurrent(
-          requestGeneration,
-          micRequestGeneration.current,
-          activeRef.current,
-        )
-      ) {
-        for (const track of stream.getTracks()) track.stop();
-        return;
-      }
-      recordStreamRef.current = stream;
-      const recorder = createAudioRecorder(stream);
-      const maxSeconds =
-        recorder instanceof PcmRecorder
-          ? Math.min(
-              RECORDING_MAX_SECONDS,
-              recorder.secondsWithin(RECORDING_MAX_BYTES),
-            )
-          : RECORDING_MAX_SECONDS;
-      const chunks: Blob[] = [];
-      let recordedBytes = 0;
-      let limitHit: "duration" | "size" | null = null;
-      const stopAtLimit = (reason: "duration" | "size") => {
-        if (limitHit) return;
-        limitHit = reason;
-        toast.warning(
-          reason === "duration"
-            ? `Recording stopped at the ${Math.floor(maxSeconds / 60)} minute limit.`
-            : "Recording stopped: it reached the maximum upload size.",
-        );
-        try {
-          recorder.stop();
-        } catch {
-        }
-      };
-      const durationTimer = window.setTimeout(
-        () => stopAtLimit("duration"),
-        maxSeconds * 1000,
-      );
-      recorder.addEventListener("dataavailable", (event) => {
-        if (event.data.size > 0) {
-          if (recordedBytes + event.data.size > RECORDING_MAX_BYTES) {
-            stopAtLimit("size");
-            return;
-          }
-          chunks.push(event.data);
-          recordedBytes += event.data.size;
-        }
-      });
-      recorder.addEventListener("stop", () => {
-        window.clearTimeout(durationTimer);
-        const discard = discardRecordingRef.current;
-        discardRecordingRef.current = false;
-        setIsRecording(false);
-        stopRecordStream();
-        recorderRef.current = null;
-        const blob = new Blob(chunks, {
-          type: recorder.mimeType || "audio/webm",
-        });
-        if (!discard && blob.size > 0)
-          void runTranscription(blob, "Recording", confirmedVersion);
-      });
-      recorderRef.current = recorder;
-      // A timeslice makes the byte cap observable; without one some browsers emit only on stop.
-      recorder.start(RECORDING_CHUNK_MS);
-      setIsRecording(true);
-    } catch {
-      // Release the stream if MediaRecorder construction failed, or the mic stays live.
-      recorderRef.current = null;
-      setIsRecording(false);
-      stopRecordStream();
-      if (
-        micStreamRequestIsCurrent(
-          requestGeneration,
-          micRequestGeneration.current,
-          activeRef.current,
-        )
-      )
-        toast.error("Could not access the microphone.");
-    } finally {
-      if (micPendingGeneration.current === requestGeneration) {
-        micPendingGeneration.current = null;
-        setMicRequestPending(false);
-      }
-    }
-  }, [
-    isRecording,
-    runTranscription,
-    stopRecordStream,
-    prepareTranscriptionModel,
-    confirmTranscriptReplacement,
-  ]);
-
-  // Release the microphone on unmount AND whenever the page goes inactive: the page stays mounted
-  // across tab switches, so unmount alone left a hidden recorder capturing.
-  useEffect(() => {
-    if (!active) {
-      stopAndDiscardRecording();
-    }
-    return stopAndDiscardRecording;
-  }, [active, stopAndDiscardRecording]);
-
   useEffect(() => () => transcriptionAbort.current?.abort(), []);
 
-  const handleTranscribeFile = useCallback(
-    (file: File | undefined) => {
-      if (!file) return;
-      void runTranscription(file, file.name);
+  const selectRecord = useCallback((record: TranscriptRecord) => {
+    const version = ++transcriptVersion.current;
+    setTranscript(record.text);
+    setTranscribedName(record.title);
+    setTranscriptModel(record.model);
+    setTranscriptRecord(record);
+    setTranscriptError(null);
+    setTranscriptExported(false);
+    setTranscriptionStartedAt(null);
+    setTranscriptDetails(detailsFrom(record));
+    setSpeakerNames(record.speaker_names ?? {});
+    if (!(record.segment_count || record.has_words)) return;
+    getTranscript(record.id)
+      .then((full) => {
+        if (transcriptVersion.current !== version) return;
+        setTranscriptDetails(detailsFrom(full));
+        setSpeakerNames(full.speaker_names ?? {});
+      })
+      .catch((error: unknown) => {
+        if (transcriptVersion.current === version)
+          toastFailure("Could not load this transcript's timing", error);
+      });
+  }, []);
+
+  const renameSpeaker = useCallback(
+    (id: string, name: string) => {
+      const previous = speakerNames[id];
+      setSpeakerNames((current) => withName(current, id, name));
+      if (!transcriptRecord) return;
+      const version = transcriptVersion.current;
+      renameTranscriptSpeakers(transcriptRecord.id, {
+        [id]: name || null,
+      }).catch((error: unknown) => {
+        // Only this speaker, unless renamed since: a whole-map rollback erased saved renames.
+        if (transcriptVersion.current !== version) return;
+        setSpeakerNames((current) =>
+          (current[id] ?? "") === name ? withName(current, id, previous) : current,
+        );
+        toastFailure("Could not rename the speaker", error);
+      });
     },
-    [runTranscription],
+    [speakerNames, transcriptRecord],
   );
 
   const handleCopyTranscript = useCallback(() => {
@@ -415,14 +338,23 @@ export function useTranscription({
     );
   }, [transcript]);
 
-  const handleDownloadTranscript = useCallback(async () => {
-    const version = transcriptVersion.current;
-    if (
-      (await downloadTranscript(transcript, transcribedName ?? "transcript")) &&
-      transcriptVersion.current === version
-    )
-      setTranscriptExported(true);
-  }, [transcript, transcribedName]);
+  const handleDownloadTranscript = useCallback(
+    async (format: TranscriptExportFormat) => {
+      const version = transcriptVersion.current;
+      if (
+        (await downloadTranscript(format, {
+          title: transcribedName ?? "transcript",
+          text: transcript,
+          model: transcriptModel,
+          details: transcriptDetails,
+          names: speakerNames,
+        })) &&
+        transcriptVersion.current === version
+      )
+        setTranscriptExported(true);
+    },
+    [transcript, transcribedName, transcriptModel, transcriptDetails, speakerNames],
+  );
 
   return {
     transcript,
@@ -444,15 +376,14 @@ export function useTranscription({
     transcriptionProgress,
     transcriptError,
     setTranscriptError,
-    isRecording,
-    micRequestPending,
-    recordingSupported,
+    transcriptDetails,
+    speakerNames,
     transcriptionAbort,
-    stopAndDiscardRecording,
     clearTranscript,
     confirmTranscriptReplacement,
-    handleRecordToggle,
-    handleTranscribeFile,
+    runTranscription,
+    selectRecord,
+    renameSpeaker,
     handleCopyTranscript,
     handleDownloadTranscript,
   };

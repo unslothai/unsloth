@@ -3,7 +3,11 @@
 
 // Free of app imports so the node test runner can load it directly.
 
-import { AUDIO_CPP_AUDIO_TYPES, audioCppModelFor } from "./audio-cpp-catalog";
+import {
+  AUDIO_CPP_AUDIO_TYPES,
+  audioCppModelFor,
+  isCloneOnlyFamilyId,
+} from "./audio-cpp-catalog";
 import {
   type AudioWorkflowId,
   MUSIC_AUDIO_TYPES,
@@ -82,9 +86,15 @@ export function audioWorkflowForPick(pick: {
   if (workflow !== null && workflow !== "speak") {
     return workflow;
   }
-  // No task (or a speech one): the audio type or catalog entry can still say it makes music.
-  const music =
-    MUSIC_AUDIO_TYPES.has(pick.audioType ?? "") ||
-    audioCppModelFor(pick.id)?.task === "music";
-  return music ? "music" : workflow;
+  // No task (or a speech one): the audio type or catalog entry can still name the page.
+  const catalog = audioCppModelFor(pick.id);
+  if (MUSIC_AUDIO_TYPES.has(pick.audioType ?? "") || catalog?.task === "music") {
+    return "music";
+  }
+  if (catalog?.workflows) {
+    return catalog.workflows.includes("speak")
+      ? workflow
+      : (catalog.workflows[0] ?? workflow);
+  }
+  return workflow === "speak" && isCloneOnlyFamilyId(pick.id) ? "clone" : workflow;
 }

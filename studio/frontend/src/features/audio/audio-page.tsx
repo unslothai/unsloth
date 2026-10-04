@@ -29,14 +29,16 @@ import { subscribeModelLifecycle } from "@/lib/model-lifecycle-events";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
 import { useIsMobileShell } from "@/hooks/use-mobile";
+import { useShallow } from "zustand/react/shallow";
 
-import { type AudioGalleryClip, fetchClipBlob } from "./api";
+import type { AudioGalleryClip } from "./api";
 import {
   type AudioBusy,
   type AudioGenerationPhase,
   audioGenerationPresentation,
-  instructionsFieldKind,
 } from "./audio-page-policy";
+import { clipReference } from "./audio-run-request";
+import { AudioActiveProvider } from "./components/audio-source-input";
 import { type CreateMode, deviceSizeBytes } from "./audio-workspace-utils";
 import {
   audioCapabilityLine,
@@ -48,22 +50,45 @@ import { WorkflowTitleMenu } from "./components/workflow-title-menu";
 import { galleryCache, useAudioGallery, useWorkflowHistory } from "./hooks/use-audio-gallery";
 import { useAudioHandoff } from "./hooks/use-audio-handoff";
 import { useAudioModelSlot } from "./hooks/use-audio-model-slot";
+import { useCloneGeneration } from "./hooks/use-clone-generation";
 import { useSpeechGeneration } from "./hooks/use-speech-generation";
 import { useSttSidecar } from "./hooks/use-stt-sidecar";
 import { useTranscription } from "./hooks/use-transcription";
+import {
+  CloneFooter,
+  CloneOutput,
+  CloneRail,
+  adoptReference,
+  clonePageModels,
+} from "./pages/clone-page";
 import { MusicOutput, MusicRail, musicPageModels } from "./pages/music-page";
 import { SpeakOutput, SpeakRail, speakPageModels } from "./pages/speak-page";
 import { type GenerateBlocker, TtsFooter } from "./pages/tts-workspace";
-import { TranscribeOutput, TranscribeRail } from "./pages/transcribe-page";
+import { TranscribeFooter, TranscribeOutput, TranscribeRail } from "./pages/transcribe-page";
+import { AUDIO_CPP_REPO, audioCppModelFor } from "./audio-cpp-catalog";
+import { selectionExpired } from "./audio-run-request";
+import type { AudioSourceInputHandle } from "./components/audio-source-input";
+import type { AudioSourceStatus } from "./hooks/audio-source-state";
+import { useTranscribeCapabilities } from "./hooks/use-transcribe-capabilities";
+import { useAudioTranscribeStore } from "./stores/audio-transcribe-store";
+import { SPEAKERS_MODEL_NAME, transcribeSwitches } from "./transcribe-capabilities";
+import {
+  transcribeLanguageFor,
+  transcribeLanguagesFor,
+} from "./transcribe-languages";
 import { type AudioPickerRow, audioRowMatchesWorkflow } from "./picker-filter";
+import { useAudioCloneStore } from "./stores/audio-clone-store";
 import { useAudioWorkspaceStore } from "./stores/audio-workspace-store";
-import { InstructionsField, MossLanguageField } from "./components/instructions-fields";
+import { AudioToolPanels } from "./tools/tool-panel-host";
 import {
   type AudioWorkflowId,
   audioWorkflowTab,
   clipWorkflow,
+  loadedModelRunsWorkflow,
   slotForWorkflow,
 } from "./workflows";
+
+const SPEAKERS_MODEL_REPO = `${AUDIO_CPP_REPO}/MOSS-Transcribe-Diarize-GGUF`;
 
 const MODELS_BY_MODE: Record<CreateMode, ModelOption[]> = {
   speak: audioModelsForTask("tts"),
@@ -95,8 +120,7 @@ export function AudioPage({
       : mode === "transcribe"
         ? "transcribe"
         : "speak";
-  const ttsWorkflow: "speak" | "music" =
-    pageWorkflow === "music" ? "music" : "speak";
+  const ttsWorkflow = pageWorkflow === "transcribe" ? "speak" : pageWorkflow;
   const workflowTab = audioWorkflowTab(pageWorkflow);
   const { rootStyle: railRootStyle } = useMediaRailWidth("audio");
   const tourSteps = useMemo(
@@ -193,37 +217,27 @@ export function AudioPage({
 
   const {
     transcript,
-    setTranscript,
     transcribedName,
-    setTranscribedName,
     transcriptModel,
-    setTranscriptModel,
     transcriptRecord,
-    setTranscriptRecord,
     transcriptExported,
-    setTranscriptExported,
-    transcriptVersion,
     transcriptionStartedAt,
-    setTranscriptionStartedAt,
     transcriptionFinishedAt,
     transcriptionStopping,
     setTranscriptionStopping,
     transcriptionProgress,
     transcriptError,
-    setTranscriptError,
-    isRecording,
-    micRequestPending,
-    recordingSupported,
+    transcriptDetails,
+    speakerNames,
     transcriptionAbort,
-    stopAndDiscardRecording,
     clearTranscript,
     confirmTranscriptReplacement,
-    handleRecordToggle,
-    handleTranscribeFile,
+    runTranscription,
+    selectRecord,
+    renameSpeaker,
     handleCopyTranscript,
     handleDownloadTranscript,
   } = useTranscription({
-    active,
     activeRef,
     busyRef,
     setBusy,
@@ -315,6 +329,7 @@ export function AudioPage({
     transitionWorkflow,
     pendingTranscribeRelease,
     handleModelSelect,
+    pickRecommendedModel,
     handleEject,
     trainedTtsModels,
   } = useAudioModelSlot({
@@ -332,8 +347,6 @@ export function AudioPage({
     audioDevice,
     isMac,
     status,
-    isRecording,
-    stopAndDiscardRecording,
     releaseTranscribeSelection,
     ensureSttLoaded,
     sttGgufVariants,
@@ -368,9 +381,6 @@ export function AudioPage({
     prompt,
     setPrompt,
     audioInstructions,
-    setAudioInstructions,
-    audioLanguage,
-    setAudioLanguage,
     temperature,
     handleTemperatureChange,
     maxTokens,
@@ -395,8 +405,13 @@ export function AudioPage({
     handleGenerate,
     generationError,
     setGenerationError,
+    toolContext,
+    toolValues,
+    handleToolValueChange,
+    toolBlocker,
+    claimedOptions,
   } = useSpeechGeneration({
-    workflow: ttsWorkflow,
+    workflow: ttsWorkflow === "music" ? "music" : "speak",
     status,
     busyRef,
     setBusy,
@@ -413,6 +428,40 @@ export function AudioPage({
     setSelectedId,
     pendingTranscribeRelease,
     replayQueuedTtsPick,
+  });
+
+  // Clone's Transcribe uses Transcribe's model, else one on disk, so it works without Settings.
+  const lastSttDownloaded =
+    lastSttRepo !== null &&
+    downloadedSttArtifacts.some(
+      (artifact) => artifact.repoId.toLowerCase() === lastSttRepo.toLowerCase(),
+    );
+  const cloneSttRepo =
+    selectedSttRepo ??
+    (lastSttDownloaded ? lastSttRepo : null) ??
+    downloadedSttArtifacts[0]?.repoId ??
+    lastSttRepo ??
+    null;
+  const clone = useCloneGeneration({
+    status,
+    busyRef,
+    setBusy,
+    updateGenerationPhase,
+    generateAbort,
+    setMode,
+    setAdvancedOpen,
+    refreshStatus,
+    activeRef,
+    modeRef,
+    refreshGallery,
+    selectClip: selectGeneratedClip,
+    setFallbackClip,
+    setSelectedId,
+    pendingTranscribeRelease,
+    replayQueuedTtsPick,
+    audioOptionSpecs,
+    audioOptionValues,
+    sttRepo: cloneSttRepo,
   });
 
   const { navigateSelf } = useAudioHandoff({
@@ -479,51 +528,61 @@ export function AudioPage({
     () => handleClearGallery(ttsWorkflow),
     [handleClearGallery, ttsWorkflow],
   );
-  // Send to: only pages that can take a finished clip today. Bytes first, so a failed fetch leaves the page.
   const sendHandlersFor = useCallback(
     (clip: AudioGalleryClip): ClipSendHandlers => ({
+      clone: () => {
+        if (transitionWorkflow("clone")) adoptReference(clipReference(clip));
+      },
       transcribe: () => {
-        // Switching mid-run stops the run, and the stopped run still holds the page busy, so the
-        // transcription would be refused and the clip silently dropped.
-        const busyNow = () => {
-          if (busyRef.current === null) return false;
+        // Switching mid-run would stop the run in progress; wait for it instead.
+        if (busyRef.current !== null) {
           toast.info("Wait for the current audio task to finish, then send the clip.");
-          return true;
-        };
-        if (busyNow()) return;
-        void (async () => {
-          try {
-            const blob = await fetchClipBlob(clip.url);
-            // Checked again: a run started while the clip downloaded would be stopped the same way.
-            if (busyNow()) return;
-            if (!transitionWorkflow("transcribe")) return;
-            const name = `${clip.prompt.trim().slice(0, 40) || "Audio clip"}.wav`;
-            handleTranscribeFile(
-              new File([blob], name, { type: blob.type || "audio/wav" }),
-            );
-          } catch (error) {
-            toast.error(
-              error instanceof Error
-                ? error.message
-                : "Could not load this clip for transcription.",
-            );
-          }
-        })();
+          return;
+        }
+        if (!transitionWorkflow("transcribe")) return;
+        // The clip goes in by id, as "From history" does; the run keeps the page's own settings.
+        useAudioTranscribeStore.setState({
+          source: {
+            kind: "clip",
+            id: clip.id,
+            name: clip.prompt || "Generated clip",
+            durationS: clip.duration_s,
+            transcript: clip.prompt || null,
+            language: null,
+          },
+        });
       },
     }),
-    [transitionWorkflow, handleTranscribeFile, busyRef],
+    [transitionWorkflow, busyRef],
   );
   const handleUseTextAgain = useCallback(
     (clip: AudioGalleryClip) => {
-      if (transitionWorkflow(clipWorkflow(clip))) setPrompt(clip.prompt);
+      const target = clipWorkflow(clip);
+      if (!transitionWorkflow(target)) return;
+      if (target === "clone") useAudioCloneStore.getState().setText(clip.prompt);
+      else setPrompt(clip.prompt);
     },
     [transitionWorkflow, setPrompt],
   );
 
   const pageModelLoaded =
-    ttsLoaded && (ttsWorkflow === "music") === musicGeneration;
+    ttsLoaded &&
+    loadedModelRunsWorkflow({
+      workflow: ttsWorkflow,
+      audioWorkflows: status?.audio_workflows,
+      music: musicGeneration,
+    });
+  const lastPageModel = useAudioWorkspaceStore(
+    (state) => state.lastModelByWorkflow[pageWorkflow] ?? null,
+  );
   const openSelector = useCallback(() => setSelectorOpen(true), []);
   const chooseModelAction = { label: "Choose a model", onClick: openSelector };
+  const recommendedCloneActions = clonePageModels(MODELS_BY_MODE.speak, isMac)
+    .slice(0, 2)
+    .map((model) => ({
+      label: `use ${model.name}`,
+      onClick: () => void pickRecommendedModel(model.id),
+    }));
   const generateBlocker: GenerateBlocker | null =
     busy === "loading"
       ? { reason: "Waiting for the model to finish loading." }
@@ -534,10 +593,27 @@ export function AudioPage({
               reason:
                 ttsWorkflow === "music"
                   ? "Load a music model to generate."
-                  : "Load a speech model to generate.",
-              actions: [chooseModelAction],
+                  : ttsWorkflow === "clone"
+                    ? "Load a model that can clone a voice."
+                    : "Load a speech model to generate.",
+              actions:
+                ttsWorkflow === "clone"
+                  ? [chooseModelAction, ...recommendedCloneActions]
+                  : [chooseModelAction],
             }
-          : !pageModelLoaded
+          : !pageModelLoaded && ttsWorkflow === "clone"
+            ? {
+                reason: "The loaded model cannot clone a voice.",
+                actions: [
+                  { label: "Choose a model that can clone", onClick: openSelector },
+                  ...recommendedCloneActions,
+                  {
+                    label: "open Speak",
+                    onClick: () => transitionWorkflow("speak"),
+                  },
+                ],
+              }
+            : !pageModelLoaded
             ? musicGeneration
               ? {
                   reason: "The loaded model makes music.",
@@ -549,17 +625,30 @@ export function AudioPage({
                     },
                   ],
                 }
-              : {
-                  reason: "The loaded model makes speech.",
-                  actions: [
-                    { label: "Choose a music model", onClick: openSelector },
-                    {
-                      label: "open Speak",
-                      onClick: () => transitionWorkflow("speak"),
-                    },
-                  ],
-                }
-            : !prompt.trim() && !lyricsOptional
+              : ttsWorkflow === "speak"
+                ? {
+                    reason: "The loaded model needs a voice to clone.",
+                    actions: [
+                      { label: "Choose a speech model", onClick: openSelector },
+                      {
+                        label: "open Clone",
+                        onClick: () => transitionWorkflow("clone"),
+                      },
+                    ],
+                  }
+                : {
+                    reason: "The loaded model makes speech.",
+                    actions: [
+                      { label: "Choose a music model", onClick: openSelector },
+                      {
+                        label: "open Speak",
+                        onClick: () => transitionWorkflow("speak"),
+                      },
+                    ],
+                  }
+            : ttsWorkflow === "clone"
+              ? clone.blocker
+              : !prompt.trim() && !lyricsOptional
               ? {
                   reason:
                     ttsWorkflow === "music"
@@ -571,19 +660,28 @@ export function AudioPage({
                     reason:
                       "Add a music description. This model needs one beside the lyrics.",
                   }
-                : null;
-  const generateFailure: GenerateBlocker | null = generationError
+                : toolBlocker
+                  ? { reason: toolBlocker }
+                  : null;
+  const pageGenerationError =
+    ttsWorkflow === "clone" ? clone.generationError : generationError;
+  const generateFailure: GenerateBlocker | null = pageGenerationError
     ? {
-        reason: /[.!?]$/.test(generationError) ? generationError : `${generationError}.`,
+        reason: /[.!?]$/.test(pageGenerationError)
+          ? pageGenerationError
+          : `${pageGenerationError}.`,
         actions: [{ label: "Choose a different model", onClick: openSelector }],
       }
     : null;
+  const setCloneGenerationError = clone.setGenerationError;
   useEffect(() => {
     setGenerationError(null);
-  }, [status?.active_model, setGenerationError]);
+    setCloneGenerationError(null);
+  }, [status?.active_model, setGenerationError, setCloneGenerationError]);
   useEffect(() => {
     if (busy === "generating") setGenerationError(null);
-  }, [busy, setGenerationError]);
+    if (busy === "generating") setCloneGenerationError(null);
+  }, [busy, setGenerationError, setCloneGenerationError]);
   const [elapsedSeconds, setElapsedSeconds] = useState<number | null>(null);
   useEffect(() => {
     if (busy !== "generating") {
@@ -598,6 +696,152 @@ export function AudioPage({
     );
     return () => window.clearInterval(timer);
   }, [busy]);
+  const transcribeSource = useAudioTranscribeStore((state) => state.source);
+  const transcribePrefs = useAudioTranscribeStore(
+    useShallow((state) => ({
+      language: state.language,
+      timestamps: state.timestamps,
+      speakers: state.speakers,
+    })),
+  );
+  const transcribeSourceHandle = useRef<AudioSourceInputHandle | null>(null);
+  const [transcribeSourceStatus, setTranscribeSourceStatus] =
+    useState<AudioSourceStatus>({ phase: "idle" });
+  const [expiredTranscribeSourceId, setExpiredTranscribeSourceId] = useState<
+    string | null
+  >(null);
+  const transcribeRepo = (selectedSttRepo ?? lastSttRepo) || null;
+  const transcribeCaps = useTranscribeCapabilities(transcribeRepo);
+  const transcribeOptions = transcribeSwitches(
+    transcribeCaps.caps,
+    transcribePrefs,
+    { loading: transcribeCaps.loading, hasModel: transcribeRepo !== null },
+  );
+  const transcribeModelName = transcribeRepo?.split("/").pop() ?? "";
+  const transcribeLoadsFirst = Boolean(
+    transcribeRepo && !(sttSelected && sttReady),
+  );
+  const transcribeNotice = !transcribeLoadsFirst
+    ? transcribeOptions.notice
+    : transcribeOptions.request.timestamps &&
+        transcribeCaps.caps?.aligner?.downloaded
+      ? `Loads ${transcribeModelName} with its timing aligner first.`
+      : [`Loads ${transcribeModelName} first.`, transcribeOptions.notice]
+          .filter(Boolean)
+          .join(" ");
+  const transcribeLanguages = transcribeLanguagesFor(
+    audioCppModelFor(transcribeRepo)?.languages,
+  );
+  const transcribeLanguage = transcribeLanguageFor(
+    transcribePrefs.language,
+    transcribeLanguages,
+  );
+  const transcribeSourceExpired =
+    transcribeSourceStatus.phase === "expired" ||
+    selectionExpired(transcribeSource, Date.now()) ||
+    (transcribeSource !== null &&
+      transcribeSource.id === expiredTranscribeSourceId);
+  const addAudioActions = [
+    {
+      label: "Add audio",
+      onClick: () => transcribeSourceHandle.current?.focus(),
+    },
+  ];
+  const recommendedSttActions = [
+    { id: `${AUDIO_CPP_REPO}/Qwen3-ASR-0.6B-GGUF`, name: "Qwen3-ASR 0.6B" },
+    { id: SPEAKERS_MODEL_REPO, name: SPEAKERS_MODEL_NAME },
+  ].map((model) => ({
+    label: `use ${model.name}`,
+    onClick: () => void pickRecommendedModel(model.id),
+  }));
+  const transcribeBlocker: GenerateBlocker | null =
+    busy === "loading"
+      ? { reason: "Waiting for the model to finish loading." }
+      : busy !== null
+        ? null
+        : !transcribeRepo
+          ? {
+              reason: "Pick a speech-to-text model to transcribe.",
+              actions: [chooseModelAction, ...recommendedSttActions],
+            }
+          : !transcribeSource
+            ? transcribeSourceStatus.phase === "recording"
+              ? { reason: "Stop recording to transcribe it." }
+              : transcribeSourceStatus.phase === "uploading"
+                ? { reason: "Wait for the upload to finish." }
+                : transcribeSourceStatus.phase === "error"
+                  ? {
+                      reason: transcribeSourceStatus.message,
+                      actions: addAudioActions,
+                    }
+                  : {
+                      reason: "Add audio to transcribe.",
+                      actions: addAudioActions,
+                    }
+            : transcribeSourceExpired
+              ? {
+                  reason: "This upload expired.",
+                  actions: [
+                    {
+                      label: "Add it again",
+                      onClick: () => {
+                        useAudioTranscribeStore.setState({ source: null });
+                        transcribeSourceHandle.current?.browse();
+                      },
+                    },
+                  ],
+                }
+              : transcribeSourceStatus.phase === "uploading" ||
+                  transcribeSourceStatus.phase === "loading"
+                ? { reason: "Wait for the upload to finish." }
+                : null;
+  const canTranscribe =
+    mode === "transcribe" && busy === null && transcribeBlocker === null;
+  const handleTranscribe = () => {
+    const source = useAudioTranscribeStore.getState().source;
+    if (!source) return;
+    const { request } = transcribeOptions;
+    void runTranscription(
+      source,
+      { language: transcribeLanguage, ...request },
+      () => {
+        setExpiredTranscribeSourceId(source.id);
+        transcribeSourceHandle.current?.markExpired();
+      },
+    ).then(() => {
+      // A timestamped run may have downloaded the aligner.
+      if (request.timestamps) transcribeCaps.refresh();
+    });
+  };
+  const [transcribeAnnouncement, setTranscribeAnnouncement] = useState("");
+  const lastTranscribeFinish = useRef<number | null>(transcriptionFinishedAt);
+  useEffect(() => {
+    if (
+      transcriptionFinishedAt === null ||
+      transcriptionFinishedAt === lastTranscribeFinish.current
+    )
+      return;
+    lastTranscribeFinish.current = transcriptionFinishedAt;
+    const failed = transcriptError || transcribeSourceExpired;
+    setTranscribeAnnouncement(
+      transcriptError
+        ? `Transcription failed. ${transcriptError}`
+        : transcribeSourceExpired
+          ? "This upload expired. Add it again."
+          : transcript
+            ? "Transcript ready."
+            : "No speech was heard in that audio.",
+    );
+    if (transcript && !failed && activeRef.current)
+      document.getElementById("transcribe-result")?.focus();
+  }, [
+    transcriptionFinishedAt,
+    transcriptError,
+    transcript,
+    activeRef,
+    transcribeSourceExpired,
+  ]);
+
   const canGenerate =
     mode === "speak" &&
     busy === null &&
@@ -607,8 +851,11 @@ export function AudioPage({
   const shortcutLabel = isMac ? "⌘ Enter" : "Ctrl+Enter";
   const pageRootRef = useRef<HTMLDivElement | null>(null);
   const generateShortcut = useRef<() => void>(() => {});
+  const handlePageGenerate =
+    ttsWorkflow === "clone" ? clone.handleGenerate : handleGenerate;
   generateShortcut.current = () => {
-    if (canGenerate) void handleGenerate();
+    if (canTranscribe) handleTranscribe();
+    else if (canGenerate) void handlePageGenerate();
   };
   useEffect(() => {
     if (!active) return;
@@ -627,13 +874,13 @@ export function AudioPage({
     document.addEventListener("keydown", onKeyDown);
     return () => document.removeEventListener("keydown", onKeyDown);
   }, [active]);
-  const instructionsKind = instructionsFieldKind(ttsWorkflow, status?.audio_type);
-
   const selectorModels =
     mode === "speak"
       ? ttsWorkflow === "music"
         ? musicPageModels(MODELS_BY_MODE.speak, isMac)
-        : speakPageModels(MODELS_BY_MODE.speak, isMac)
+        : ttsWorkflow === "clone"
+          ? clonePageModels(MODELS_BY_MODE.speak, isMac)
+          : speakPageModels(MODELS_BY_MODE.speak, isMac)
       : MODELS_BY_MODE[mode];
   const selectorRowFilter = useCallback(
     (row: AudioPickerRow) =>
@@ -665,27 +912,45 @@ export function AudioPage({
         artifact.engine === sttLoadedEngine,
     } satisfies ModelOption;
   });
+  // Arriving on a page never loads: the picker shows the page's last model, unloaded, to re-pick.
+  const showLastPageModel =
+    mode === "speak" && !pageModelLoaded && lastPageModel !== null;
   const selectorValue =
     mode === "speak"
-      ? (status?.active_model ?? undefined)
-      : (selectedSttRepo ?? undefined);
+      ? showLastPageModel
+        ? lastPageModel
+        : (status?.active_model ?? undefined)
+      : (transcribeRepo ?? undefined);
 
   const capabilityLine =
     mode === "speak"
-      ? ttsLoaded
+      ? showLastPageModel
+        ? `${lastPageModel.split("/").pop()} is not loaded. Pick it above to load it.`
+        : ttsLoaded
         ? pageModelLoaded
-          ? audioCapabilityLine(musicGeneration ? "music" : "tts", status?.audio_type)
-          : musicGeneration
+          ? audioCapabilityLine(
+              musicGeneration ? "music" : ttsWorkflow === "clone" ? "clone" : "tts",
+              status?.audio_type,
+            )
+          : ttsWorkflow === "clone"
+            ? "The loaded model cannot clone a voice."
+            : musicGeneration
             ? "The loaded model makes music. Pick a speech model."
-            : "The loaded model is not a music model."
+            : ttsWorkflow === "speak"
+              ? "The loaded model needs a voice to clone. Pick a speech model."
+              : "The loaded model is not a music model."
         : status?.active_model
           ? "The loaded model is not a TTS audio model."
           : ttsWorkflow === "music"
             ? "No music model loaded."
-            : "No TTS model loaded."
+            : ttsWorkflow === "clone"
+              ? "No voice cloning model loaded."
+              : "No TTS model loaded."
       : sttSelected
         ? audioCapabilityLine("stt", sttReady ? "ready" : "loading")
-        : "No transcription model selected.";
+        : transcribeRepo
+          ? `${transcribeModelName} is not loaded. It loads when you transcribe.`
+          : "No transcription model selected.";
 
   return (
     <div
@@ -720,7 +985,9 @@ export function AudioPage({
               additionalOnDeviceModels={
                 mode === "transcribe"
                   ? sttOnDeviceModels
-                  : trainedTtsModels.filter(
+                  : ttsWorkflow === "clone"
+                    ? []
+                    : trainedTtsModels.filter(
                       (model) =>
                         isMusicGenerationModel(model.id, model.audioType) ===
                         (ttsWorkflow === "music"),
@@ -732,10 +999,20 @@ export function AudioPage({
                   ? (selectedSttRepo ?? undefined)
                   : undefined
               }
-              loaded={mode === "transcribe" ? sttReady : undefined}
+              loaded={
+                mode === "transcribe"
+                  ? sttReady
+                  : showLastPageModel
+                    ? false
+                    : undefined
+              }
               value={selectorValue}
               onValueChange={handleModelSelect}
-              onEject={busy === null && selectorValue ? handleEject : undefined}
+              onEject={
+                busy === null && selectorValue && !showLastPageModel
+                  ? handleEject
+                  : undefined
+              }
               variant="ghost"
               className="!h-[calc(34px*var(--ui-space-scale,1))] max-w-full gap-1 overflow-hidden pl-3 pr-1 @[68rem]:gap-2 @[68rem]:pl-4 @[68rem]:pr-2"
               triggerLabelClassName="text-ui-14 @[68rem]:text-ui-16"
@@ -790,14 +1067,12 @@ export function AudioPage({
               />
             ) : null}
           </div>
-          {/* Its own container: at a large UI size the column is too narrow for the label, which then
-              truncated to "Li…". The arrow drops first, then the label, leaving the named icon. */}
-          <div className="@container pointer-events-none col-start-3 flex min-w-0 items-start justify-end pr-2 pt-[var(--studio-chat-header-padding-top,11px)]">
+          <div className="pointer-events-none col-start-3 flex min-w-0 items-start justify-end pr-2 pt-[var(--studio-chat-header-padding-top,11px)]">
             <div className="pointer-events-auto flex min-w-0 items-center gap-2">
               <LibraryPageLink
                 tab="audio"
-                labelClassName="hidden @[8.5rem]:inline"
-                arrowClassName="hidden @[10rem]:block"
+                labelClassName="hidden @[50rem]:inline"
+                arrowClassName="hidden @[50rem]:block"
               />
             </div>
           </div>
@@ -843,31 +1118,26 @@ export function AudioPage({
                   const railProps = {
                     prompt,
                     setPrompt,
-                    toolPanels: instructionsKind ? (
-                      <>
-                        <InstructionsField
-                          instructionsKind={instructionsKind}
-                          musicNeedsDescription={musicNeedsDescription}
-                          audioInstructions={audioInstructions}
-                          setAudioInstructions={setAudioInstructions}
-                        />
-                        {instructionsKind === "style" ? (
-                          <MossLanguageField
-                            audioLanguage={audioLanguage}
-                            setAudioLanguage={setAudioLanguage}
-                          />
-                        ) : null}
-                      </>
-                    ) : null,
+                    toolPanels: (
+                      <AudioToolPanels
+                        workflow={ttsWorkflow === "music" ? "music" : "speak"}
+                        ctx={toolContext}
+                        values={toolValues}
+                        onChange={handleToolValueChange}
+                        specs={audioOptionSpecs}
+                        disabled={busy === "generating"}
+                        core={{ text: prompt }}
+                      />
+                    ),
                     audioDevice,
                     busy,
-                    isRecording,
                     status,
                     setAudioDeviceState,
                     ttsLoaded,
                     handleEject,
                     samplingControls,
                     audioOptionSpecs,
+                    claimedOptions,
                     advancedOpen,
                     setAdvancedOpen,
                     temperature,
@@ -888,44 +1158,86 @@ export function AudioPage({
                   };
                   return ttsWorkflow === "music" ? (
                     <MusicRail {...railProps} />
+                  ) : ttsWorkflow === "clone" ? (
+                    <AudioActiveProvider value={active}>
+                      <CloneRail
+                        {...railProps}
+                        clone={clone}
+                        historyClips={clips}
+                      />
+                    </AudioActiveProvider>
                   ) : (
                     <SpeakRail {...railProps} />
                   );
                 })()
               ) : (
-                <TranscribeRail
-                  recordingSupported={recordingSupported}
-                  isRecording={isRecording}
-                  sttSelected={sttSelected}
-                  lastSttRepo={lastSttRepo}
-                  busy={busy}
-                  micRequestPending={micRequestPending}
-                  handleRecordToggle={handleRecordToggle}
-                  handleTranscribeFile={handleTranscribeFile}
-                />
+                <AudioActiveProvider value={active}>
+                  <TranscribeRail
+                    historyClips={clips}
+                    disabled={busy === "transcribing"}
+                    sourceHandle={transcribeSourceHandle}
+                    onSourceStatusChange={setTranscribeSourceStatus}
+                    switches={transcribeOptions}
+                    languages={transcribeLanguages}
+                    onUseSpeakersModel={() =>
+                      void pickRecommendedModel(SPEAKERS_MODEL_REPO)
+                    }
+                  />
+                </AudioActiveProvider>
               )}
             </div>
           </div>
           {mode === "speak" ? (
             /* The scroll mask provides the fade; leave the footer unpainted to avoid dark-mode banding. */
             <div className="relative z-10 flex shrink-0 justify-center px-10 pt-0.5 pb-4">
-              <TtsFooter
+              {ttsWorkflow === "clone" ? (
+                <CloneFooter
+                  busy={busy}
+                  generationPresentation={generationPresentation}
+                  handleStopGeneration={handleStopGeneration}
+                  ttsLoaded={pageModelLoaded}
+                  blocker={generateBlocker}
+                  shortcutLabel={shortcutLabel}
+                  error={generateFailure}
+                  elapsedSeconds={elapsedSeconds}
+                  clone={clone}
+                />
+              ) : (
+                <TtsFooter
+                  busy={busy}
+                  generationPresentation={generationPresentation}
+                  handleStopGeneration={handleStopGeneration}
+                  handleGenerate={handleGenerate}
+                  ttsLoaded={pageModelLoaded}
+                  prompt={prompt}
+                  lyricsOptional={lyricsOptional}
+                  musicNeedsDescription={musicNeedsDescription}
+                  audioInstructions={audioInstructions}
+                  blocker={generateBlocker}
+                  shortcutLabel={shortcutLabel}
+                  error={generateFailure}
+                  elapsedSeconds={elapsedSeconds}
+                />
+              )}
+            </div>
+          ) : (
+            <div className="relative z-10 flex shrink-0 justify-center px-10 pt-0.5 pb-4">
+              <TranscribeFooter
                 busy={busy}
-                generationPresentation={generationPresentation}
-                handleStopGeneration={handleStopGeneration}
-                handleGenerate={handleGenerate}
-                ttsLoaded={pageModelLoaded}
-                prompt={prompt}
-                lyricsOptional={lyricsOptional}
-                musicNeedsDescription={musicNeedsDescription}
-                audioInstructions={audioInstructions}
-                blocker={generateBlocker}
+                blocker={transcribeBlocker}
+                notice={transcribeNotice}
+                modelName={transcribeModelName}
+                progress={transcriptionProgress}
                 shortcutLabel={shortcutLabel}
-                error={generateFailure}
-                elapsedSeconds={elapsedSeconds}
+                stopping={transcriptionStopping}
+                onTranscribe={handleTranscribe}
+                onStop={() => {
+                  setTranscriptionStopping(true);
+                  transcriptionAbort.current?.abort();
+                }}
               />
             </div>
-          ) : null}
+          )}
         </div>
 
         <div
@@ -958,16 +1270,15 @@ export function AudioPage({
                 active={active}
                 mode={mode}
                 confirmTranscriptReplacement={confirmTranscriptReplacement}
-                transcriptVersion={transcriptVersion}
-                setTranscript={setTranscript}
-                setTranscribedName={setTranscribedName}
-                setTranscriptModel={setTranscriptModel}
-                setTranscriptRecord={setTranscriptRecord}
-                setTranscriptError={setTranscriptError}
-                setTranscriptExported={setTranscriptExported}
-                setTranscriptionStartedAt={setTranscriptionStartedAt}
                 clearTranscript={clearTranscript}
+                transcriptDetails={transcriptDetails}
+                speakerNames={speakerNames}
+                renameSpeaker={renameSpeaker}
+                selectRecord={selectRecord}
               />
+              <output aria-live="polite" aria-atomic="true" className="sr-only">
+                {transcribeAnnouncement}
+              </output>
             </div>
           ) : (
             <div className="flex min-h-0 flex-1 flex-col gap-4 p-6 px-10 @[50rem]:pt-[calc(60px*var(--ui-space-scale,1))]">
@@ -1015,6 +1326,13 @@ export function AudioPage({
                 };
                 return ttsWorkflow === "music" ? (
                   <MusicOutput {...outputProps} modelReady={pageModelLoaded} />
+                ) : ttsWorkflow === "clone" ? (
+                  <CloneOutput
+                    {...outputProps}
+                    modelReady={pageModelLoaded}
+                    recommendedModels={selectorModels}
+                    onPickModel={pickRecommendedModel}
+                  />
                 ) : (
                   <SpeakOutput {...outputProps} modelReady={pageModelLoaded} />
                 );

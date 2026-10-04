@@ -63,10 +63,13 @@ import {
   usesNativeAudioRuntime,
 } from "../catalog";
 import { useAudioWorkspaceStore } from "../stores/audio-workspace-store";
-import { type AudioWorkflowId, slotForWorkflow } from "../workflows";
+import {
+  type AudioWorkflowId,
+  slotForWorkflow,
+  workflowForLoadedModel,
+} from "../workflows";
 import type { AudioHostState } from "./audio-host-state";
 import type { SttSidecar } from "./use-stt-sidecar";
-import type { Transcription } from "./use-transcription";
 
 export function useAudioModelSlot({
   active,
@@ -83,8 +86,6 @@ export function useAudioModelSlot({
   audioDevice,
   isMac,
   status,
-  isRecording,
-  stopAndDiscardRecording,
   releaseTranscribeSelection,
   ensureSttLoaded,
   sttGgufVariants,
@@ -115,7 +116,6 @@ export function useAudioModelSlot({
   | "isMac"
   | "status"
 > &
-  Pick<Transcription, "isRecording" | "stopAndDiscardRecording"> &
   Pick<
     SttSidecar,
     | "releaseTranscribeSelection"
@@ -311,12 +311,14 @@ export function useAudioModelSlot({
               duration: offloadNotice ? 8000 : undefined,
             },
           );
-          const loadedWorkflow = isMusicGenerationModel(repoId, res.audio_type)
-            ? "music"
-            : "speak";
-          if (modeRef.current === "speak") {
-            useAudioWorkspaceStore.getState().commitWorkflow(loadedWorkflow);
-          }
+          const loadedWorkflow = workflowForLoadedModel({
+            current: useAudioWorkspaceStore.getState().workflow,
+            audioWorkflows: res.audio_workflows,
+            music: isMusicGenerationModel(repoId, res.audio_type),
+          });
+          const workspace = useAudioWorkspaceStore.getState();
+          workspace.rememberModel(loadedWorkflow, repoId);
+          if (modeRef.current === "speak") workspace.commitWorkflow(loadedWorkflow);
           if (
             wantsCpu &&
             !isGgufLoad &&
@@ -400,7 +402,6 @@ export function useAudioModelSlot({
 
       if (nextMode === "transcribe") invalidatePendingTtsSelection();
       if (busyRef.current === "generating") handleStopGeneration();
-      stopAndDiscardRecording();
       setMode(nextMode);
       if (mode === "transcribe") {
         // Resolves to whether the sidecar is gone: a swallowed failed unload let the speech load OOM.
@@ -430,7 +431,6 @@ export function useAudioModelSlot({
       handleStopGeneration,
       mode,
       releaseTranscribeSelection,
-      stopAndDiscardRecording,
     ],
   );
   const transitionWorkflow = useCallback(
@@ -777,7 +777,6 @@ export function useAudioModelSlot({
           return;
         }
       }
-      stopAndDiscardRecording();
       deferredSttLoad.current = null;
       if (task === "stt") {
         if (!transitionMode("transcribe")) return;
@@ -886,18 +885,15 @@ export function useAudioModelSlot({
       ensureSttLoaded,
       isMac,
       loadOrStageTtsModel,
-      stopAndDiscardRecording,
       transitionMode,
     ],
   );
 
   const handleEject = useCallback(() => {
-    if (busy !== null || isRecording) {
+    if (busy !== null) {
       toast.info("Stop the active audio task before ejecting its model.");
       return;
     }
-
-    stopAndDiscardRecording();
 
     if (mode === "transcribe") {
       if (!selectedSttRepo) return;
@@ -981,7 +977,6 @@ export function useAudioModelSlot({
     })();
   }, [
     busy,
-    isRecording,
     mode,
     refreshStatus,
     releaseTranscribeSelection,
@@ -990,7 +985,6 @@ export function useAudioModelSlot({
     stageTtsDownload,
     status?.active_model,
     sttReady,
-    stopAndDiscardRecording,
   ]);
 
   // Scan rows carry no modality until the backend tags them; without this trained checkpoints are unreachable.
@@ -1037,12 +1031,44 @@ export function useAudioModelSlot({
     };
   }, [active, isMac]);
 
+  const pickRecommendedModel = useCallback(
+    async (id: string) => {
+      if (busyRef.current !== null) return;
+      try {
+        const listing = await listGgufVariants(id, hfApiToken(getHfToken()));
+        const variant = selectAutoGgufVariant(
+          listing.variants,
+          listing.default_variant,
+        );
+        if (!variant) {
+          toast.error(`${id} does not publish a runnable GGUF file.`);
+          return;
+        }
+        await handleModelSelect(id, {
+          source: "hub",
+          isLora: false,
+          isGguf: true,
+          ggufFilename: variant.filename,
+          ggufVariant: variant.quant,
+          isDownloaded: variant.downloaded === true && !variant.partial,
+          expectedBytes: expectedGgufDownloadBytes(variant),
+        });
+      } catch (error) {
+        toast.error(
+          error instanceof Error ? error.message : `Could not inspect ${id}.`,
+        );
+      }
+    },
+    [busyRef, handleModelSelect],
+  );
+
   return {
     replayQueuedTtsPick,
     transitionMode,
     transitionWorkflow,
     pendingTranscribeRelease,
     handleModelSelect,
+    pickRecommendedModel,
     handleEject,
     trainedTtsModels,
   };

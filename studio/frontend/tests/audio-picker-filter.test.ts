@@ -14,8 +14,12 @@ const { audioModelsForTask, isMusicGenerationModel } = await import(
   "../src/features/audio/catalog.ts"
 );
 
-type Workflow = "speak" | "music" | "transcribe";
-const WORKFLOWS: Workflow[] = ["speak", "music", "transcribe"];
+const { audioCppModelSpeaks } = await import(
+  "../src/features/audio/audio-cpp-catalog.ts"
+);
+
+type Workflow = "speak" | "clone" | "music" | "transcribe";
+const WORKFLOWS: Workflow[] = ["speak", "clone", "music", "transcribe"];
 
 function workflowsFor(row: Parameters<typeof audioRowMatchesWorkflow>[0]) {
   return WORKFLOWS.filter((workflow) => audioRowMatchesWorkflow(row, workflow));
@@ -45,6 +49,48 @@ test("a speech row lists only on Speak", () => {
     }),
     ["speak"],
   );
+});
+
+test("a clone-only speech model lists only on Clone", () => {
+  assert.deepEqual(
+    workflowsFor({
+      id: "audio-cpp/audio.cpp-gguf/Chatterbox-GGUF",
+      task: "text-to-speech",
+      audioWorkflows: ["clone"],
+    }),
+    ["clone"],
+  );
+  assert.deepEqual(
+    workflowsFor({
+      id: "audio-cpp/audio.cpp-gguf/Qwen3-TTS-12Hz-0.6B-Base-GGUF",
+      task: "text-to-speech",
+      audioType: "audiocpp_tts",
+    }),
+    ["clone"],
+  );
+  assert.deepEqual(
+    workflowsFor({
+      id: "audio-cpp/audio.cpp-gguf/VoxCPM2-GGUF",
+      task: "text-to-speech",
+    }),
+    ["speak", "clone"],
+  );
+});
+
+test("Speak's catalog rows leave out the clone-only models", () => {
+  const speakIds = audioModelsForTask("tts")
+    .map((model) => model.id)
+    .filter((id) => audioCppModelSpeaks(id));
+  assert.ok(speakIds.includes("audio-cpp/audio.cpp-gguf/VoxCPM2-GGUF"));
+  assert.ok(speakIds.includes("audio-cpp/audio.cpp-gguf/Kokoro-82M-GGUF"));
+  for (const cloneOnly of [
+    "audio-cpp/audio.cpp-gguf/Chatterbox-GGUF",
+    "audio-cpp/audio.cpp-gguf/Qwen3-TTS-12Hz-0.6B-Base-GGUF",
+    "audio-cpp/audio.cpp-gguf/IndexTTS2-GGUF",
+    "audio-cpp/audio.cpp-gguf/CosyVoice3-GGUF",
+  ]) {
+    assert.ok(!speakIds.includes(cloneOnly), cloneOnly);
+  }
 });
 
 test("a music GGUF (text-to-audio, no audio type) lists only on Music", () => {
@@ -130,6 +176,8 @@ test("typed Hub search results are scoped to the page too", () => {
   const block = body.slice(0, body.indexOf("\n    ],") + 1);
   assert.match(block, /\.filter\(\(r\) => !rowFilter \|\| rowFilter\(\{ id: r\.id, task: r\.pipelineTag \}\)\)/);
   assert.match(block, /\n\s+rowFilter,\n/);
+  const recommended = pickers.slice(pickers.indexOf("const keepCommon = "));
+  assert.match(recommended.slice(0, 400), /hubRowAllowed\(r\) &&/);
 });
 
 test("a Hub music model tagged text-to-speech stays on Music", () => {
@@ -137,4 +185,53 @@ test("a Hub music model tagged text-to-speech stays on Music", () => {
   assert.equal(audioRowMatchesWorkflow(row, "speak"), false);
   assert.equal(audioRowMatchesWorkflow(row, "music"), true);
   assert.equal(audioRowMatchesWorkflow({ id: "hexgrad/Kokoro-82M", task: "text-to-speech" }, "speak"), true);
+});
+
+test("Hub search rows for clone-only families outside the catalog list on Clone, not Speak", () => {
+  for (const id of [
+    "audio-cpp/audio.cpp-gguf/MioTTS-GGUF",
+    "audio-cpp/audio.cpp-gguf/Vevo2-GGUF",
+    "audio-cpp/audio.cpp-gguf/FireRedTTS3-Base-GGUF",
+    "audio-cpp/audio.cpp-gguf/IndexTTS2.5-GGUF",
+  ]) {
+    const row = { id, task: "text-to-speech" };
+    assert.equal(audioRowMatchesWorkflow(row, "clone"), true, id);
+    assert.equal(audioRowMatchesWorkflow(row, "speak"), false, id);
+  }
+  // Backend workflows still win once the row is downloaded.
+  assert.equal(
+    audioRowMatchesWorkflow(
+      { id: "x/MioTTS-GGUF", task: "text-to-speech", audioWorkflows: ["speak"] },
+      "speak",
+    ),
+    true,
+  );
+});
+
+test("the clone-only name hint follows the backend's speaks=False families", async () => {
+  const { isCloneOnlyFamilyId } = await import(
+    "../src/features/audio/audio-cpp-catalog.ts"
+  );
+  for (const id of [
+    "ResembleAI/chatterbox",
+    "someone/F5-TTS-GGUF",
+    "x/Echo-TTS-GGUF",
+    "x/Qwen3-TTS-12Hz-1.7B-Base-GGUF",
+  ]) {
+    assert.equal(isCloneOnlyFamilyId(id), true, id);
+  }
+  for (const id of [
+    "audio-cpp/audio.cpp-gguf/Chatterbox-Turbo-GGUF",
+    "x/Qwen3-TTS-12Hz-1.7B-CustomVoice-GGUF",
+    "x/Kokoro-82M-GGUF",
+  ]) {
+    assert.equal(isCloneOnlyFamilyId(id), false, id);
+  }
+});
+
+test("a Fish Audio Hub row lists on both Speak and Clone before download", () => {
+  const row = { id: "fishaudio/fish-speech-1.5-GGUF", task: "text-to-speech" };
+  assert.equal(audioRowMatchesWorkflow(row, "speak"), true);
+  assert.equal(audioRowMatchesWorkflow(row, "clone"), true);
+  assert.equal(audioRowMatchesWorkflow(row, "music"), false);
 });

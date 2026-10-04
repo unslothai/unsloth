@@ -759,3 +759,37 @@ def test_the_clear_route_scopes_to_a_workflow():
     }
     assert [r["id"] for r in gallery.list_audio()] == [song["id"]]
     assert asyncio.run(clear_gallery_audio(current_subject = "tester")) == {"removed": 1}
+
+
+def test_a_clone_clip_keeps_its_workflow_and_run_fields_and_survives_a_speak_clear():
+    from models.inference import AudioGalleryItem
+    from routes.inference import _persist_tts_clip
+
+    run = {"voice_id": "v" * 32, "settings": {"reference_text_used": True}, "source_clip_id": None}
+    speech = gallery.save(_wav(), _meta())
+    clone = _persist_tts_clip(_wav(), 24000, "hi", "qwen3-base", "audiocpp_tts", run, "clone")
+    meta = json.loads((gallery.gallery_dir() / f"{clone['id']}.json").read_text(encoding = "utf-8"))
+    assert meta["workflow"] == "clone" and "source_clip_id" not in meta
+    (item,) = [AudioGalleryItem(**r) for r in gallery.list_audio() if r["id"] == clone["id"]]
+    assert (
+        item.workflow == "clone"
+        and item.voice_id == "v" * 32
+        and item.settings["reference_text_used"] is True
+    )
+    # Its audio type alone would read as speak.
+    assert gallery.set_flags(clone["id"], pinned = True)["workflow"] == "clone"
+    assert gallery.clear(workflow = "speak") == 1
+    assert gallery.audio_path(speech["id"]) is None
+    assert [r["id"] for r in gallery.list_audio()] == [clone["id"]]
+
+
+def test_the_inputs_and_voices_folders_never_list_as_clips():
+    gallery.save(_wav(), _meta())
+    for folder in ("inputs", "voices"):
+        directory = gallery.gallery_dir() / folder
+        directory.mkdir(exist_ok = True)
+        (directory / "abc.wav").write_bytes(_wav())
+        (directory / "abc.json").write_text(json.dumps(_meta()), encoding = "utf-8")
+    assert len(gallery.list_audio()) == 1
+    assert gallery.clear() == 1
+    assert (gallery.gallery_dir() / "inputs" / "abc.wav").is_file()

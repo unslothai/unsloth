@@ -13,12 +13,12 @@ const adapterSource = readSrc("features/chat/adapters/studio-model-dictation-ada
 test("Audio exposes the shared picker eject action only while idle", () => {
   assert.match(
     source,
-    /onEject=\{busy === null && selectorValue \? handleEject : undefined\}/,
+    /onEject=\{\s*busy === null && selectorValue && !showLastPageModel\s*\? handleEject\s*: undefined\s*\}/,
   );
-  assert.match(source, /if \(busy !== null \|\| isRecording\)/);
+  assert.match(source, /const handleEject = useCallback\(\(\) => \{\s*if \(busy !== null\) \{/);
   assert.match(
     source,
-    /loaded=\{mode === "transcribe" \? sttReady : undefined\}/,
+    /loaded=\{\s*mode === "transcribe"\s*\? sttReady\s*: showLastPageModel\s*\? false\s*: undefined\s*\}/,
   );
 });
 
@@ -129,7 +129,7 @@ test("a load confirmed after Audio is hidden is deferred, not sent", () => {
 test("Transcribe eject only unloads a sidecar owned by the current selection", () => {
   assert.match(
     source,
-    /const handleEject[\s\S]*stopAndDiscardRecording\(\);[\s\S]*if \(mode === "transcribe"\)/,
+    /const handleEject[\s\S]*?if \(mode === "transcribe"\)/,
   );
   // One release path, shared with the Generate-mode transition, so both stay owned.
   // The selection is forgotten only after the unload lands, so a 500 leaves Eject usable.
