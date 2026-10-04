@@ -245,6 +245,7 @@ export function useMusicGeneration({
       await showRunResult({
         response,
         text: request.text || request.music?.lyrics || "",
+        workflow: "music",
         refreshGallery,
         selectClip,
         setFallbackClip,

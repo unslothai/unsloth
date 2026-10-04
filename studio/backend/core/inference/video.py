@@ -55,7 +55,6 @@ from .diffusion_attention import (
     sdpa_math_only,
     select_attention_backend,
 )
-from .diffusion_flow_shift import apply_comfy_flow_shift
 from .diffusion_cache import (
     FBCACHE_MIN_STEPS,
     TC_AUTO,
@@ -6533,8 +6532,6 @@ class VideoBackend:
                 }
             )
 
-            # Sample at ComfyUI's static sigma shift where the shipped scheduler differs.
-            apply_comfy_flow_shift(pipe, getattr(fam, "comfy_flow_shift", None), logger)
             from . import diffusion_prompt_cache
 
             diffusion_prompt_cache.install(
@@ -7502,8 +7499,6 @@ class VideoBackend:
                 ),
             }
         )
-        # Sample at ComfyUI's static sigma shift where the shipped scheduler differs.
-        apply_comfy_flow_shift(pipe, getattr(fam, "comfy_flow_shift", None), logger)
         from . import diffusion_prompt_cache
 
         diffusion_prompt_cache.install(

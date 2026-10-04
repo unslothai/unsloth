@@ -14,7 +14,7 @@ const { claimedOptionNames, instructionsKindFor, panelApplies } = await import(
 );
 
 const registry = readSrc("features/audio/tools/registry.tsx");
-const panels = readSrc("features/audio/tools/instructions-panels.tsx");
+const panels = readSrc("features/audio/components/instructions-fields.tsx");
 
 const ctx = (
   overrides: Partial<AudioModelContext> = {},
@@ -70,7 +70,6 @@ test("a model gets the instruction field it always got, and nothing else", () =>
     shown("music", ctx({ musicGeneration: true, audioType: "minimax_music3" })),
     ["music-description"],
   );
-  // Codec models had no instruction field and still have none.
   assert.deepEqual(shown("speak", ctx({ audioType: "snac" })), []);
   assert.deepEqual(shown("speak", ctx({ audioType: "csm" })), []);
   // A music model resident while Speak is open does not put its description on Speak.

@@ -13,9 +13,8 @@ const {
   yueCompositionLogic,
   stepsRange,
 } = await import("../src/features/audio/tools/music-panel-logic.ts");
-const { audioModelContextFor, panelApplies } = await import(
-  "../src/features/audio/tools/select.ts"
-);
+const { audioModelContextFor, legacyMusicDescription, panelApplies } =
+  await import("../src/features/audio/tools/select.ts");
 
 const registry = readSrc("features/audio/tools/registry.tsx");
 const panels = readSrc("features/audio/tools/music-panels.tsx");
@@ -64,11 +63,24 @@ test("the status's music block reaches the tool context", () => {
   assert.equal(ctx("ace_step", { modes: [] }).audioMusic, false);
 });
 
-test("the Music description panel steps aside when the page asks for it itself", () => {
-  assert.match(
-    registry,
-    /instructionsKindFor\(ctx\) === kind &&\s*!\(kind === "music" && ctx\.audioMusic === true\)/,
+test("the old Music description shows only for a loaded music model without studio modes", () => {
+  const described = (status: Record<string, unknown> | null) =>
+    legacyMusicDescription(
+      audioModelContextFor(status, {
+        musicGeneration: true,
+        cudaMusicGeneration: false,
+        musicNeedsDescription: false,
+      }),
+    );
+  // Nothing loaded: the studio preview has its own description field.
+  assert.equal(described(null), false);
+  assert.equal(described({ audio_type: "audiocpp_tts" }), false);
+  assert.equal(described({ audio_type: "minimax_music3" }), true);
+  assert.equal(
+    described({ audio_type: "audiocpp_music", audio_music: MUSIC_STATUS }),
+    false,
   );
+  assert.match(registry, /kind !== "music" \|\| legacyMusicDescription\(ctx\)/);
 });
 
 test("ACE-Step sends only what the user set, in the runtime's spelling", () => {
@@ -143,4 +155,18 @@ test("Stable Audio's sampler sends pingpong or euler and whole steps", () => {
     ]),
     { min: 1, max: 50, default: 8 },
   );
+});
+
+test("the Music studio's Advanced hides speech sampling it never sends", () => {
+  const page = readSrc("features/audio/pages/music-page.tsx");
+  assert.match(
+    page,
+    /musicGeneration=\{false\}\s*samplingControls=\{false\}\s*inputs=\{\s*<MusicStudioInputs/,
+  );
+});
+
+test("Music's source card releases the mic when Audio is hidden, as Clone's does", () => {
+  const host = readSrc("features/audio/audio-page.tsx");
+  assert.match(host, /<AudioActiveProvider value=\{active\}>\s*<MusicRail/);
+  assert.match(host, /<AudioActiveProvider value=\{active\}>\s*<CloneRail/);
 });

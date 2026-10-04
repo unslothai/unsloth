@@ -1033,24 +1033,25 @@ def test_an_unlockable_filesystem_is_not_waited_out(tmp_path, monkeypatch) -> No
     import fcntl
     import time as _time
 
+    import threading
+
     root = tmp_path / "sidecar"
     root.mkdir()
     attempts = []
-
-    def unsupported(fd, op):
-        attempts.append(op)
-        raise OSError(errno.ENOTSUP, "locking not supported")
-
-    import threading
-
-    slept = []
+    real_flock = fcntl.flock
     real_sleep = _time.sleep
     main_thread = threading.current_thread()
 
+    # Both patches are process-wide; stray background threads from earlier tests get the real calls.
+    def unsupported(fd, op):
+        if threading.current_thread() is not main_thread:
+            return real_flock(fd, op)
+        attempts.append(op)
+        raise OSError(errno.ENOTSUP, "locking not supported")
+
+    slept = []
+
     def record(seconds):
-        # The patch is process-wide, and the lock is waited on this thread. A background
-        # thread from an earlier test in the same worker sleeping 50 ms during the window
-        # landed in `slept` and failed the row for a wait the lock never made.
         if threading.current_thread() is main_thread:
             slept.append(seconds)
         else:

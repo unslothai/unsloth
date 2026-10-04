@@ -5123,27 +5123,18 @@ class AudioGalleryItem(BaseModel):
 
 
 _AUDIO_ID_PATTERN = r"^[A-Za-z0-9_-]{1,128}$"
-# Words of an option name that would carry a file reference; a run names audio by id only.
-_AUDIO_FILE_OPTION_WORDS = frozenset(
-    {"audio", "ref", "path", "paths", "file", "files", "dir", "url", "uri", "wav"}
-)
+# A run names audio by id only. Option names with these words carry a location...
+_AUDIO_FILE_OPTION_WORDS = frozenset({"path", "paths", "file", "files", "dir", "url", "uri"})
+# ...and a text value under a name ending in these is a clip (source_audio, voice_ref), while
+# min_new_audio_steps, audio_chunk_mode or a boolean no_ref are settings.
+_AUDIO_CLIP_OPTION_ENDINGS = frozenset({"audio", "wav", "ref"})
 
 
-def _names_a_file(name: str) -> bool:
-    return any(word in _AUDIO_FILE_OPTION_WORDS for word in re.split(r"[^a-z0-9]+", name.lower()))
-
-
-class AudioTrim(BaseModel):
-    model_config = ConfigDict(extra = "forbid")
-
-    start_s: float = Field(0.0, ge = 0, le = 24 * 3600)
-    end_s: Optional[float] = Field(None, gt = 0, le = 24 * 3600)
-
-    @model_validator(mode = "after")
-    def _ordered(self):
-        if self.end_s is not None and self.end_s <= self.start_s:
-            raise ValueError("trim.end_s must be after trim.start_s")
-        return self
+def _names_a_file(name: str, value: Any) -> bool:
+    words = re.split(r"[^a-z0-9]+", name.lower())
+    if any(word in _AUDIO_FILE_OPTION_WORDS for word in words):
+        return True
+    return isinstance(value, str) and words[-1] in _AUDIO_CLIP_OPTION_ENDINGS
 
 
 class AudioSourceRef(BaseModel):
@@ -5154,7 +5145,6 @@ class AudioSourceRef(BaseModel):
     input_id: Optional[str] = Field(None, pattern = _AUDIO_ID_PATTERN)
     clip_id: Optional[str] = Field(None, pattern = _AUDIO_ID_PATTERN)
     voice_id: Optional[str] = Field(None, pattern = _AUDIO_ID_PATTERN)
-    trim: Optional[AudioTrim] = None
 
     @model_validator(mode = "after")
     def _exactly_one(self):
@@ -5224,7 +5214,7 @@ class AudioRunRequest(BaseModel):
         if value is None:
             return value
         for name, option in value.items():
-            if _names_a_file(str(name)):
+            if _names_a_file(str(name), option):
                 raise ValueError(f"Option '{name}' is not accepted; name audio by id in inputs.")
             if isinstance(option, (dict, list)):
                 raise ValueError(f"Option '{name}' must be a single value.")
@@ -5259,7 +5249,6 @@ class AudioRunAudio(BaseModel):
 class AudioRunResponse(BaseModel):
     clips: List[AudioRunClip] = Field(default_factory = list)
     group_id: Optional[str] = None
-    text: Optional[str] = None
     model: str
     audio: Optional[AudioRunAudio] = Field(
         None, description = "The audio inline, only when saving it to history failed"

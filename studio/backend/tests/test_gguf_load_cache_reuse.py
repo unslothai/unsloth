@@ -1078,7 +1078,6 @@ class TestLoadHubDownloadExclusion:
             "audio_options",
             # None for the response validator to derive from is_audio and audio_type.
             "audio_workflows",
-            # Constant None: llama-server never clones a voice or needs a description.
             "audio_reference_text",
             "audio_required_inputs",
             "audio_music",

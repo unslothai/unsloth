@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { Button } from "@/components/ui/button";
 import { DropdownMenuItem } from "@/components/ui/dropdown-menu";
 import {
   PencilEdit02Icon,
@@ -70,27 +69,6 @@ export function MusicSendToMenuItems({ clip }: { clip: AudioGalleryClip }) {
           />
           {SEND_LABEL[action]}
         </DropdownMenuItem>
-      ))}
-    </>
-  );
-}
-
-export function MusicSendToButtons({ clip }: { clip: AudioGalleryClip }) {
-  const actions = useSendActions(clip);
-  if (actions.length === 0) return null;
-  return (
-    <>
-      {actions.map((action) => (
-        <Button
-          key={action}
-          variant="ghost"
-          size="sm"
-          className="h-auto shrink-0 px-2 py-1 text-ui-11p5"
-          onClick={() => sendClipToMusic(clip, action)}
-        >
-          <HugeiconsIcon icon={SEND_ICON[action]} className="size-3.5" />
-          {SEND_LABEL[action]}
-        </Button>
       ))}
     </>
   );

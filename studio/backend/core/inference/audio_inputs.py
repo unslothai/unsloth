@@ -1,14 +1,10 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Audio the user gives the Audio page (clone references, later sources to edit), kept for a day.
+"""Audio the user gives the Audio page, kept for a day under the account's ``<gallery_dir>/inputs``.
 
-An upload is streamed to disk, decoded once with PyAV into a canonical 16-bit WAV at its own rate
-(at most two channels) and described by a JSON sidecar, both under the account's
-``<gallery_dir>/inputs``. Requests name an input, a gallery clip or a saved voice by id only; this
-module turns the id into a path inside the current account and prepares the copy a runtime wants
-(24 kHz mono for voice references), so no client ever names a file.
-"""
+Requests name an input, a gallery clip or a saved voice by id only; this module resolves the id
+inside the current account, so no client ever names a file."""
 
 from __future__ import annotations
 
@@ -32,12 +28,12 @@ logger = get_logger(__name__)
 MAX_SECONDS = 30 * 60
 TTL_SECONDS = 24 * 60 * 60
 BYTE_CAP = 2 * 1024 * 1024 * 1024
-# Voice references are cut to this after any trim: longer clips only slow the clone down.
 REFERENCE_MAX_SECONDS = 30.0
 REFERENCE_RATE = 24000
 _MAX_CHANNELS = 2
+# Caps the stored rate so a 30 minute upload stays under ~350 MB however it was encoded.
+MAX_RATE = 48000
 _NAME_MAX = 255
-# An unfinished upload left by a crash is removed after this.
 _STALE_TMP_SECONDS = 60 * 60
 
 
@@ -124,9 +120,6 @@ def _write_json(path: Path, meta: dict[str, Any]) -> None:
         raise
 
 
-# Decoding
-
-
 def _av_open(av, source: str):
     try:
         return av.open(source, mode = "r", metadata_errors = "ignore")
@@ -136,24 +129,42 @@ def _av_open(av, source: str):
         return av.open(source, mode = "r", format = None)
 
 
-def decode_to_wav(
+def transcode(
     src: Path,
     dst: Path,
     *,
+    rate: Optional[int] = None,
+    mono: bool = False,
+    stereo: bool = False,
     max_seconds: Optional[float] = None,
+    cut: bool = False,
 ) -> dict[str, Any]:
-    """Decode any container at ``src`` into a 16-bit WAV at its own rate, at most two channels.
+    """Decode ``src`` into a 16-bit WAV at ``dst``: at ``rate`` (default the source's), mono, two
+    channels (``stereo``) or at most two channels. Past ``max_seconds`` it is cut when ``cut``, else refused with 413.
 
-    Streams frame by frame into the file, so a long recording never sits in memory whole. Raises
-    ``AudioInputError`` (400 for unreadable audio, 413 past ``max_seconds``)."""
+    Streams frame by frame through FFmpeg's resampler (a voice reference must not alias) into a
+    temporary file renamed in at the end."""
     import av
 
-    if max_seconds is None:
-        max_seconds = MAX_SECONDS
-    frames = 0
-    rate = 0
-    channels = 0
-    out = None
+    max_seconds = MAX_SECONDS if max_seconds is None else max_seconds
+    tmp = dst.with_name(f".{dst.name}.{uuid.uuid4().hex[:8]}.tmp")
+    frames = channels = ceiling = 0
+    out = resampler = None
+
+    def write(blocks) -> bool:
+        nonlocal frames
+        for block in blocks:
+            take = min(block.samples, ceiling - frames)
+            if take < block.samples and not cut:
+                raise AudioInputError(
+                    413, f"Audio is longer than {int(max_seconds // 60)} minutes."
+                )
+            out.writeframes(block.to_ndarray().reshape(-1)[: take * channels].tobytes())
+            frames += take
+            if cut and frames >= ceiling:
+                return True
+        return False
+
     try:
         try:
             container = _av_open(av, str(src))
@@ -162,136 +173,48 @@ def decode_to_wav(
         with container:
             if not container.streams.audio:
                 raise AudioInputError(400, "This file has no audio stream.")
-            stream = container.streams.audio[0]
-            resampler = None
-            ceiling = 0
             try:
-                for frame in container.decode(stream):
+                for frame in container.decode(container.streams.audio[0]):
                     if resampler is None:
-                        rate = int(frame.sample_rate or 0)
+                        rate = rate or min(int(frame.sample_rate or 0), MAX_RATE)
                         if rate <= 0:
                             raise AudioInputError(400, "This audio has no sample rate.")
-                        channels = max(1, min(_MAX_CHANNELS, len(frame.layout.channels)))
-                        resampler = av.AudioResampler(
-                            format = "s16",
-                            layout = "stereo" if channels == 2 else "mono",
-                            rate = rate,
+                        channels = (
+                            1
+                            if mono
+                            else 2
+                            if stereo
+                            else max(1, min(_MAX_CHANNELS, len(frame.layout.channels)))
                         )
+                        layout = "stereo" if channels == 2 else "mono"
+                        resampler = av.AudioResampler(format = "s16", layout = layout, rate = rate)
                         ceiling = int(max_seconds * rate)
-                        out = wave.open(str(dst), "wb")
+                        out = wave.open(str(tmp), "wb")
                         out.setnchannels(channels)
                         out.setsampwidth(2)
                         out.setframerate(rate)
-                    for block in resampler.resample(frame):
-                        frames += block.samples
-                        if frames > ceiling:
-                            raise AudioInputError(
-                                413, f"Audio is longer than {int(max_seconds // 60)} minutes."
-                            )
-                        out.writeframes(block.to_ndarray().tobytes())
-                if resampler is not None:
-                    for block in resampler.resample(None):
-                        frames += block.samples
-                        out.writeframes(block.to_ndarray().tobytes())
+                    if write(resampler.resample(frame)):
+                        break
+                else:
+                    if resampler is not None:
+                        write(resampler.resample(None))
             except AudioInputError:
                 raise
-            except Exception as exc:  # noqa: BLE001 - a corrupt stream mid-file
+            except Exception as exc:  # noqa: BLE001 - a corrupt stream mid-file keeps what decoded
                 if not frames:
                     raise AudioInputError(400, "This file is not audio Studio can read.") from exc
                 logger.info("audio_inputs: decode stopped early after %d frames: %s", frames, exc)
-    except BaseException:
         if out is not None:
             out.close()
-        dst.unlink(missing_ok = True)
-        raise
-    if out is not None:
-        out.close()
-    if not frames:
-        dst.unlink(missing_ok = True)
-        raise AudioInputError(400, "This file has no audio in it.")
-    return {"duration_s": round(frames / rate, 3), "sample_rate": rate, "channels": channels}
-
-
-def prepare_wav(
-    src: Path,
-    dst: Path,
-    *,
-    rate: int = REFERENCE_RATE,
-    layout: str = "mono",
-    start_s: float = 0.0,
-    end_s: Optional[float] = None,
-    max_seconds: Optional[float] = None,
-) -> dict[str, Any]:
-    """Write ``src`` (any audio PyAV reads) to ``dst`` as 16-bit WAV at ``rate`` and ``layout``,
-    cut to ``[start_s, end_s)`` and then to ``max_seconds``. FFmpeg's resampler, not a linear one:
-    a voice reference must not alias. Written to a temporary name and renamed in."""
-    import av
-
-    channels = 2 if layout == "stereo" else 1
-    start = max(0, int(round(max(0.0, float(start_s or 0.0)) * rate)))
-    stop = None
-    if end_s is not None:
-        stop = int(round(float(end_s) * rate))
-    if max_seconds is not None:
-        cap = start + int(round(float(max_seconds) * rate))
-        stop = cap if stop is None else min(stop, cap)
-    if stop is not None and stop <= start:
-        raise AudioInputError(400, "The trimmed clip is empty.")
-    tmp = dst.with_name(f".{dst.name}.{uuid.uuid4().hex[:8]}.tmp")
-    written = 0
-    position = 0
-    try:
-        with _av_open(av, str(src)) as container:
-            if not container.streams.audio:
-                raise AudioInputError(400, "This file has no audio stream.")
-            resampler = av.AudioResampler(format = "s16", layout = layout, rate = rate)
-            with wave.open(str(tmp), "wb") as out:
-                out.setnchannels(channels)
-                out.setsampwidth(2)
-                out.setframerate(rate)
-
-                def take(block) -> bool:
-                    nonlocal written, position
-                    data = block.to_ndarray().reshape(-1)
-                    count = block.samples
-                    lo = max(0, start - position)
-                    hi = count if stop is None else min(count, stop - position)
-                    position += count
-                    if hi > lo:
-                        out.writeframes(data[lo * channels : hi * channels].tobytes())
-                        written += hi - lo
-                    return stop is not None and position >= stop
-
-                done = False
-                for frame in container.decode(container.streams.audio[0]):
-                    for block in resampler.resample(frame):
-                        if take(block):
-                            done = True
-                            break
-                    if done:
-                        break
-                if not done:
-                    for block in resampler.resample(None):
-                        if take(block):
-                            break
-        if not written:
-            raise AudioInputError(400, "The trimmed clip is empty.")
+            out = None
+        if not frames:
+            raise AudioInputError(400, "This file has no audio in it.")
         os.replace(tmp, dst)
-    except AudioInputError:
+    finally:
+        if out is not None:
+            out.close()
         tmp.unlink(missing_ok = True)
-        raise
-    except Exception as exc:
-        tmp.unlink(missing_ok = True)
-        raise AudioInputError(400, "This audio could not be prepared.") from exc
-    return {
-        "duration_s": round(written / rate, 3),
-        "sample_rate": rate,
-        "channels": channels,
-        "frames": written,
-    }
-
-
-# Store
+    return {"duration_s": round(frames / rate, 3), "sample_rate": rate, "channels": channels}
 
 
 async def save_stream(
@@ -347,14 +270,13 @@ def _finish_upload(
     existing = _find_by_sha(directory, sha)
     if existing is not None:
         input_id, meta = existing
-        # Re-adding the same clip keeps it for another day.
         meta["touched_at"] = _now()
         _write_json(_sidecar(directory, input_id), meta)
         return _record(input_id, meta), False
     input_id = uuid.uuid4().hex
-    wav_tmp = directory / f".{input_id}.wav.tmp"
+    wav = directory / f"{input_id}.wav"
     try:
-        info = decode_to_wav(tmp, wav_tmp)
+        info = transcode(tmp, wav)
         now = _now()
         meta = {
             "name": name,
@@ -365,12 +287,10 @@ def _finish_upload(
             "created_at_epoch": now,
             "touched_at": now,
         }
-        os.replace(wav_tmp, directory / f"{input_id}.wav")
         # The sidecar is the record's commit marker, so it lands last.
         _write_json(_sidecar(directory, input_id), meta)
     except BaseException:
-        wav_tmp.unlink(missing_ok = True)
-        (directory / f"{input_id}.wav").unlink(missing_ok = True)
+        wav.unlink(missing_ok = True)
         raise
     sweep(keep = input_id)
     return _record(input_id, meta), True
@@ -466,15 +386,6 @@ def sweep(
         return 0
 
 
-def get(input_id: str) -> Optional[dict[str, Any]]:
-    """The live record for ``input_id`` in this account, else None (unknown, foreign or expired)."""
-    path = input_path(input_id)
-    if path is None:
-        return None
-    meta = _read_sidecar(_sidecar(path.parent, input_id))
-    return _record(input_id, meta) if meta is not None else None
-
-
 def input_path(input_id: str) -> Optional[Path]:
     """The canonical WAV of a live input in this account, else None."""
     if not _valid_id(input_id):
@@ -491,14 +402,6 @@ def input_path(input_id: str) -> Optional[Path]:
     return path if path.is_file() else None
 
 
-def input_name(input_id: str) -> Optional[str]:
-    path = input_path(input_id)
-    if path is None:
-        return None
-    meta = _read_sidecar(_sidecar(path.parent, input_id))
-    return meta.get("name") if meta else None
-
-
 def delete(input_id: str) -> bool:
     if not _valid_id(input_id):
         return False
@@ -506,9 +409,6 @@ def delete(input_id: str) -> bool:
     if _read_sidecar(_sidecar(directory, input_id)) is None:
         return False
     return _remove(directory, input_id)
-
-
-# Sources: an input, a gallery clip or a saved voice, named by id.
 
 
 @dataclass(frozen = True)
@@ -532,7 +432,8 @@ def resolve_source(ref: dict[str, Any]) -> Source:
         path = input_path(source_id)
         if path is None:
             raise AudioInputError(404, "This reference expired. Add it again.")
-        return Source("input", source_id, path, input_name(source_id) or "audio")
+        meta = _read_sidecar(_sidecar(path.parent, source_id)) or {}
+        return Source("input", source_id, path, meta.get("name") or "audio")
     if key == "clip_id":
         path = audio_gallery.owned_audio_path(source_id) if _valid_id(source_id) else None
         if path is None:
@@ -549,63 +450,38 @@ def resolve_source(ref: dict[str, Any]) -> Source:
     return Source("voice", source_id, path, str(voice.get("name") or "Saved voice"))
 
 
-def _fmt_seconds(value: float) -> str:
-    return f"{value:.3f}".rstrip("0").rstrip(".")
-
-
 def prepared_path(
-    source: Source | str,
-    rate: int = REFERENCE_RATE,
-    layout: str = "mono",
-    trim: Optional[dict[str, Any]] = None,
+    source: Source,
+    rate: int,
     max_seconds: Optional[float] = None,
+    stereo: bool = False,
 ) -> Path:
-    """A cached copy of ``source`` at ``rate``/``layout``, trimmed, inside this account's inputs.
+    """A cached copy of ``source`` at ``rate`` (mono, or stereo for music edits), cut to
+    ``max_seconds``, in this account's inputs.
 
-    An input's copies sit beside it as ``{id}.{rate}.{layout}[.{s}-{e}][.m{n}].wav`` and go when it
+    An input's copies sit beside it as ``{id}.{rate}.{mono|stereo}[.m{n}].wav`` and go when it
     goes; a clip's or voice's as ``c-``/``v-`` files the sweep removes after the TTL."""
-    if isinstance(source, str):
-        path = input_path(source)
-        if path is None:
-            raise AudioInputError(404, "This reference expired. Add it again.")
-        source = Source("input", source, path, input_name(source) or "audio")
-    if layout not in ("mono", "stereo"):
-        raise AudioInputError(400, "Unknown channel layout.")
-    start = float((trim or {}).get("start_s") or 0.0)
-    end = (trim or {}).get("end_s")
-    end = float(end) if end is not None else None
-    if start < 0 or (end is not None and end <= start):
-        raise AudioInputError(400, "The trim range is empty.")
-    parts = [str(int(rate)), layout]
-    if start or end is not None:
-        parts.append(f"{_fmt_seconds(start)}-{_fmt_seconds(end) if end is not None else 'end'}")
-    if max_seconds is not None:
-        parts.append(f"m{_fmt_seconds(float(max_seconds))}")
     prefix = {"input": "", "clip": "c-", "voice": "v-"}[source.kind]
-    directory = inputs_dir()
-    dst = directory / f"{prefix}{source.id}.{'.'.join(parts)}.wav"
+    cap = f".m{max_seconds:g}" if max_seconds is not None else ""
+    layout = "stereo" if stereo else "mono"
+    dst = inputs_dir() / f"{prefix}{source.id}.{int(rate)}.{layout}{cap}.wav"
     if dst.is_file() and _mtime(dst) >= _mtime(source.path):
         if source.kind != "input":
             os.utime(dst)
         return dst
-    prepare_wav(
+    transcode(
         source.path,
         dst,
         rate = rate,
-        layout = layout,
-        start_s = start,
-        end_s = end,
+        mono = not stereo,
+        stereo = stereo,
         max_seconds = max_seconds,
+        cut = True,
     )
+    if source.kind != "input":
+        # Cloning from history or a saved voice may never upload, so expired copies go here too.
+        sweep()
     return dst
-
-
-def prepare_reference(ref: dict[str, Any], rate: int = REFERENCE_RATE) -> tuple[Source, Path]:
-    """A voice reference ready for the runtime: 24 kHz mono, trimmed, at most 30 s."""
-    source = resolve_source(ref)
-    return source, prepared_path(
-        source, rate, "mono", ref.get("trim"), max_seconds = REFERENCE_MAX_SECONDS
-    )
 
 
 def wav_info(path: Path) -> dict[str, Any]:
@@ -617,3 +493,9 @@ def wav_info(path: Path) -> dict[str, Any]:
             "frames": w.getnframes(),
             "duration_s": round(w.getnframes() / rate, 3) if rate else 0.0,
         }
+
+
+def prepare_reference(ref: dict[str, Any]) -> tuple[Source, Path]:
+    """A voice reference ready for the runtime: 24 kHz mono, at most 30 s."""
+    source = resolve_source(ref)
+    return source, prepared_path(source, REFERENCE_RATE, REFERENCE_MAX_SECONDS)

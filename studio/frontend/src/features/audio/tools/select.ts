@@ -8,6 +8,7 @@ import {
   type NativeAudioInstructionsKind,
   nativeAudioInstructionsKind,
 } from "../audio-page-policy";
+import { isMusicGenerationModel } from "../catalog";
 import { parseMusicCapabilities } from "../music/music-types";
 import type { AudioWorkflowId } from "../workflows";
 import type {
@@ -19,7 +20,6 @@ import type {
   CoreInputs,
 } from "./types";
 
-/** Which instruction field the model takes, the same rule the rail always used. */
 export function instructionsKindFor(
   ctx: AudioModelContext,
 ): NativeAudioInstructionsKind | null {
@@ -28,7 +28,12 @@ export function instructionsKindFor(
     : nativeAudioInstructionsKind(ctx.audioType);
 }
 
-/** A panel shows on its own workflows, for the models it matches. */
+/** The Music studio has its own description field, preview included; only a loaded music model
+ *  without studio modes (native MiniMax) keeps the old one. */
+export function legacyMusicDescription(ctx: AudioModelContext): boolean {
+  return ctx.audioMusic !== true && isMusicGenerationModel(null, ctx.audioType);
+}
+
 export function panelApplies(
   panel: Pick<AudioToolPanel<unknown>, "workflows" | "families" | "appliesTo">,
   workflow: AudioWorkflowId,
@@ -40,7 +45,6 @@ export function panelApplies(
     : panel.families.includes(ctx.audioFamily ?? "");
 }
 
-/** Spec options the shown panels render themselves, which Advanced then leaves out. */
 export function claimedOptionNames(
   panels: readonly Pick<AudioToolPanel<unknown>, "claims">[],
 ): Set<string> {
@@ -53,7 +57,6 @@ const REFERENCE_TEXT_MODES: ReadonlySet<string> = new Set([
   "unused",
 ]);
 
-/** The tool context for the loaded model on one page, read from its status fields. */
 export function audioModelContextFor(
   status: {
     audio_type?: string | null;
@@ -91,7 +94,6 @@ export function audioModelContextFor(
   };
 }
 
-/** Where a panel's value is kept: per model, page and panel, so models never share settings. */
 export function toolValueKey(
   model: string | null | undefined,
   workflow: AudioWorkflowId,
@@ -103,8 +105,7 @@ export function toolValueKey(
 const isPlainObject = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
 
-/** A panel's value: what was kept for it laid over its defaults, so a value saved by an older
- *  build still has every field the panel reads. */
+// Kept value over defaults, so a value saved by an older build still has every field.
 export function panelValue<V>(
   panel: Pick<AudioToolPanel<V>, "id" | "initial">,
   values: Readonly<Record<string, unknown>>,
@@ -119,8 +120,6 @@ export function panelValue<V>(
   return stored as V;
 }
 
-/** Every shown panel's part of the request, merged in rail order, and the first reason one of
- *  them holds Generate back. */
 export function collectToolRequest(
   panels: readonly AnyAudioToolPanel[],
   values: Readonly<Record<string, unknown>>,

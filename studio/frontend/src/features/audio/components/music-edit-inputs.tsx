@@ -109,7 +109,9 @@ export function MusicEditInputs({
         disabled={disabled}
         allowHistory={true}
         allowSavedVoice={false}
-        maxSeconds={null}
+        usesFirstSeconds={null}
+        expiredMessage="This clip expired. Add it again."
+        recordHint="Play or sing the part you want to change."
         handleRef={sourceHandleRef}
         onStatusChange={onSourceStatusChange}
         renderWaveform={(preview) =>

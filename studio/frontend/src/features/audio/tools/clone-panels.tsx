@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Clone's model tools: one panel per family, each in plain words over the runtime's options.
-
 import {
   Select,
   SelectContent,
@@ -29,6 +27,7 @@ import {
   type TimbreOnlyValue,
   chatterboxExpressivenessLogic,
   cosyVoiceModeLogic,
+  emotionSourceProblem,
   f5SpeedDialectLogic,
   indexTts2EmotionLogic,
   qwen3TimbreLogic,
@@ -59,9 +58,7 @@ export function PanelSection({
   );
 }
 
-// ---- Qwen3-TTS Base: Timbre only -------------------------------------------------------------
-
-export const qwen3TimbrePanel: AudioToolPanel<TimbreOnlyValue> = {
+const qwen3TimbrePanel: AudioToolPanel<TimbreOnlyValue> = {
   ...qwen3TimbreLogic,
   Component: ({ value, onChange, disabled }) => (
     <div className="grid gap-1.5">
@@ -85,9 +82,7 @@ export const qwen3TimbrePanel: AudioToolPanel<TimbreOnlyValue> = {
   ),
 };
 
-// ---- IndexTTS2: Emotion ----------------------------------------------------------------------
-
-export const indexTts2EmotionPanel: AudioToolPanel<EmotionValue> = {
+const indexTts2EmotionPanel: AudioToolPanel<EmotionValue> = {
   ...indexTts2EmotionLogic,
   Component: ({ value, onChange, disabled }) => (
     <PanelSection
@@ -133,6 +128,12 @@ export const indexTts2EmotionPanel: AudioToolPanel<EmotionValue> = {
           hint="Its mood is copied, not its voice."
           value={value.source}
           onChange={(source) => onChange({ ...value, source })}
+          onStatusChange={(status) => {
+            const sourceProblem = emotionSourceProblem(status);
+            if (sourceProblem !== (value.sourceProblem ?? null)) {
+              onChange({ ...value, sourceProblem });
+            }
+          }}
           disabled={disabled}
           allowSavedVoice={false}
         />
@@ -172,43 +173,38 @@ export const indexTts2EmotionPanel: AudioToolPanel<EmotionValue> = {
   ),
 };
 
-// ---- Chatterbox: Expressiveness --------------------------------------------------------------
+const chatterboxExpressivenessPanel: AudioToolPanel<ExpressivenessValue> = {
+  ...chatterboxExpressivenessLogic,
+  Component: ({ value, onChange, disabled }) => (
+    <PanelSection
+      title="Expressiveness"
+      hint="The first run with a new voice or setting takes 5 to 15 s while the model studies it."
+    >
+      <ParamSlider
+        label="Intensity"
+        value={value.exaggeration}
+        min={0}
+        max={2}
+        step={0.05}
+        disabled={disabled}
+        info="Higher is more dramatic; 0.5 is natural."
+        onChange={(exaggeration) => onChange({ ...value, exaggeration })}
+      />
+      <ParamSlider
+        label="Guidance"
+        value={value.guidance}
+        min={0}
+        max={5}
+        step={0.05}
+        disabled={disabled}
+        info="How closely the delivery follows the reference. Lower suits fast speakers."
+        onChange={(guidance) => onChange({ ...value, guidance })}
+      />
+    </PanelSection>
+  ),
+};
 
-export const chatterboxExpressivenessPanel: AudioToolPanel<ExpressivenessValue> =
-  {
-    ...chatterboxExpressivenessLogic,
-    Component: ({ value, onChange, disabled }) => (
-      <PanelSection
-        title="Expressiveness"
-        hint="The first run with a new voice or setting takes 5 to 15 s while the model studies it."
-      >
-        <ParamSlider
-          label="Intensity"
-          value={value.exaggeration}
-          min={0}
-          max={2}
-          step={0.05}
-          disabled={disabled}
-          info="Higher is more dramatic; 0.5 is natural."
-          onChange={(exaggeration) => onChange({ ...value, exaggeration })}
-        />
-        <ParamSlider
-          label="Guidance"
-          value={value.guidance}
-          min={0}
-          max={5}
-          step={0.05}
-          disabled={disabled}
-          info="How closely the delivery follows the reference. Lower suits fast speakers."
-          onChange={(guidance) => onChange({ ...value, guidance })}
-        />
-      </PanelSection>
-    ),
-  };
-
-// ---- CosyVoice3: Mode ------------------------------------------------------------------------
-
-export const cosyVoiceModePanel: AudioToolPanel<CosyVoiceModeValue> = {
+const cosyVoiceModePanel: AudioToolPanel<CosyVoiceModeValue> = {
   ...cosyVoiceModeLogic,
   Component: ({ value, onChange, disabled }) => (
     <PanelSection
@@ -255,9 +251,7 @@ export const cosyVoiceModePanel: AudioToolPanel<CosyVoiceModeValue> = {
   ),
 };
 
-// ---- F5-TTS: Speed and dialect ---------------------------------------------------------------
-
-export const f5SpeedDialectPanel: AudioToolPanel<SpeedDialectValue> = {
+const f5SpeedDialectPanel: AudioToolPanel<SpeedDialectValue> = {
   ...f5SpeedDialectLogic,
   Component: ({ value, onChange, disabled, specs }) => (
     <PanelSection title="Speed and dialect">
@@ -271,7 +265,6 @@ export const f5SpeedDialectPanel: AudioToolPanel<SpeedDialectValue> = {
         displayValue={`${value.speed.toFixed(2)}×`}
         onChange={(speed) => onChange({ ...value, speed })}
       />
-      {/* Only the Arabic Habibi build declares dialects. */}
       {specs.some((spec) => spec.name === "dialect") ? (
         <div className="grid gap-1.5">
           <label
@@ -302,7 +295,6 @@ export const f5SpeedDialectPanel: AudioToolPanel<SpeedDialectValue> = {
   ),
 };
 
-/** Clone's panels, in rail order. Each family matches at most one. */
 export const CLONE_TOOL_PANELS = [
   qwen3TimbrePanel,
   indexTts2EmotionPanel,

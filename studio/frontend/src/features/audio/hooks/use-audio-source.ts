@@ -12,47 +12,25 @@ import {
   selectionExpired,
   sourceFileUrl,
 } from "../audio-run-request";
-import { computePeaks } from "../components/waveform-peaks";
+import { decodePeaks } from "../components/waveform-decode";
 import {
   INITIAL_AUDIO_SOURCE_STATE,
   audioFileProblem,
   audioSourceReducer,
 } from "./audio-source-state";
 
-// Decoding a long file holds every sample in memory; past this only the duration is read.
-const DECODE_MAX_BYTES = 60 * 1024 * 1024;
 // A reference only needs seconds; a long take is still usable, the server keeps the first 30 s.
-const RECORDING_MAX_SECONDS = 5 * 60;
+const DEFAULT_RECORD_MAX_SECONDS = 5 * 60;
 const RECORDING_CHUNK_MS = 1000;
 
-/** Bar heights and length, read in the browser so the card draws before the upload finishes. */
-async function decodePeaks(
+// Some containers decode in a media element but not in Web Audio, so the length falls back to one.
+async function readSource(
   blob: Blob,
 ): Promise<{ peaks: number[] | null; durationS: number | null }> {
-  if (blob.size > DECODE_MAX_BYTES) {
-    return { peaks: null, durationS: await mediaDuration(blob) };
-  }
-  const Offline =
-    window.OfflineAudioContext ||
-    (
-      window as unknown as {
-        webkitOfflineAudioContext?: typeof OfflineAudioContext;
-      }
-    ).webkitOfflineAudioContext;
-  if (!Offline) return { peaks: null, durationS: await mediaDuration(blob) };
-  try {
-    // decodeAudioData decodes at the context's rate; the rate only affects the sample count.
-    const context = new Offline(1, 1, 22050);
-    const buffer = await context.decodeAudioData(await blob.arrayBuffer());
-    const channels = Array.from(
-      { length: buffer.numberOfChannels },
-      (_, index) => buffer.getChannelData(index),
-    );
-    return { peaks: computePeaks(channels), durationS: buffer.duration };
-  } catch {
-    // Some containers decode in a media element but not in Web Audio.
-    return { peaks: null, durationS: await mediaDuration(blob) };
-  }
+  const decoded = await decodePeaks(blob);
+  return decoded.durationS === null
+    ? { peaks: null, durationS: await mediaDuration(blob) }
+    : decoded;
 }
 
 function mediaDuration(blob: Blob): Promise<number | null> {
@@ -82,15 +60,16 @@ export function recordingSupported(): boolean {
   );
 }
 
-/** One audio input card: a picked file is drawn at once and uploaded with progress, a recording
- *  becomes a file, and a source picked earlier (or on another visit) is fetched to draw it. The
- *  selection itself belongs to the caller, so it can be kept in a store across reloads. */
 export function useAudioSource({
   value,
   onChange,
+  maxRecordSeconds = DEFAULT_RECORD_MAX_SECONDS,
+  active = true,
 }: {
   value: AudioSourceSelection | null;
   onChange: (next: AudioSourceSelection | null) => void;
+  maxRecordSeconds?: number;
+  active?: boolean;
 }) {
   const [state, dispatch] = useReducer(
     audioSourceReducer,
@@ -104,7 +83,10 @@ export function useAudioSource({
   const recorderRef = useRef<SegmentRecorder | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const discardRecording = useRef(false);
-  // Every object URL this card made, revoked when replaced or unmounted.
+  const activeRef = useRef(active);
+  const pickCount = useRef(0);
+  const acquiring = useRef(false);
+  const acquisition = useRef(0);
   const objectUrl = useRef<string | null>(null);
   const setObjectUrl = useCallback((blob: Blob | null) => {
     if (objectUrl.current) URL.revokeObjectURL(objectUrl.current);
@@ -116,16 +98,22 @@ export function useAudioSource({
     async (key: string, blob: Blob) => {
       const url = setObjectUrl(blob);
       dispatch({ type: "preview", key, peaks: null, durationS: null, url });
-      const { peaks, durationS } = await decodePeaks(blob);
+      const { peaks, durationS } = await readSource(blob);
       dispatch({ type: "preview", key, peaks, durationS, url });
     },
     [setObjectUrl],
   );
 
-  // A selection made earlier, or restored from storage: fetch it once to draw and play it.
   const valueKey = value ? `${value.kind}:${value.id}` : null;
   const previewKey = state.preview.key;
   const phase = state.status.phase;
+  // A new pick replaces an error about an earlier one (a failed upload, then a history clip).
+  const seenKey = useRef(valueKey);
+  useEffect(() => {
+    if (seenKey.current === valueKey) return;
+    seenKey.current = valueKey;
+    if (valueKey && phase === "error") dispatch({ type: "reset" });
+  }, [valueKey, phase]);
   useEffect(() => {
     if (!(value && valueKey)) return;
     if (
@@ -143,8 +131,8 @@ export function useAudioSource({
     loadAbort.current?.abort();
     const controller = new AbortController();
     loadAbort.current = controller;
-    // Not aborted by this effect's cleanup: the load-start below changes the deps it reruns on.
-    // A new selection or unmount aborts it instead.
+    // Not aborted by this effect's cleanup: load-start changes its deps. A new selection or
+    // unmount aborts it instead.
     dispatch({ type: "load-start", key: valueKey });
     fetchAudioBlob(sourceFileUrl(value), controller.signal)
       .then(async (blob) => {
@@ -174,7 +162,6 @@ export function useAudioSource({
   }, [value, valueKey, previewKey, phase, drawBlob]);
   useEffect(() => () => loadAbort.current?.abort(), [valueKey]);
 
-  // Nothing picked: back to the empty card, unless it is recording or showing a failed upload.
   useEffect(() => {
     if (
       value ||
@@ -206,9 +193,10 @@ export function useAudioSource({
       loadAbort.current?.abort();
       const controller = new AbortController();
       uploadAbort.current = controller;
-      dispatch({ type: "upload-start", name: fileName });
-      // Drawn while it uploads: the waveform and length should not wait for the network.
-      void drawBlob("local", file);
+      // Each pick draws under its own key, so a slow decode of an earlier file cannot land on this one.
+      const localKey = `local:${++pickCount.current}`;
+      dispatch({ type: "upload-start", name: fileName, key: localKey });
+      void drawBlob(localKey, file);
       try {
         const record = await uploadAudioInput(file, fileName, {
           signal: controller.signal,
@@ -245,18 +233,28 @@ export function useAudioSource({
   }, []);
 
   const startRecording = useCallback(async () => {
-    if (recorderRef.current) return;
+    if (recorderRef.current || acquiring.current) return;
+    acquiring.current = true;
+    const ticket = ++acquisition.current;
     let stream: MediaStream;
     try {
       stream = await navigator.mediaDevices.getUserMedia({
         audio: { echoCancellation: true, noiseSuppression: true },
       });
     } catch {
+      acquiring.current = false;
+      if (ticket !== acquisition.current) return;
       dispatch({
         type: "fail",
         message:
           "Could not use the microphone. Allow access, or upload a file instead.",
       });
+      return;
+    }
+    acquiring.current = false;
+    // Cleared, unmounted or hidden while the permission prompt was open: release the mic at once.
+    if (ticket !== acquisition.current || !activeRef.current) {
+      for (const track of stream.getTracks()) track.stop();
       return;
     }
     streamRef.current = stream;
@@ -275,7 +273,7 @@ export function useAudioSource({
     const chunks: Blob[] = [];
     const limit = window.setTimeout(() => {
       if (recorder.state !== "inactive") recorder.stop();
-    }, RECORDING_MAX_SECONDS * 1000);
+    }, maxRecordSeconds * 1000);
     recorder.addEventListener("dataavailable", (event) => {
       if (event.data.size > 0) chunks.push(event.data);
     });
@@ -303,14 +301,19 @@ export function useAudioSource({
     discardRecording.current = false;
     recorder.start(RECORDING_CHUNK_MS);
     dispatch({ type: "record-start", now: Date.now() });
-  }, [pickFile, stopStream]);
+  }, [pickFile, stopStream, maxRecordSeconds]);
 
   const stopRecording = useCallback(() => {
     const recorder = recorderRef.current;
     if (recorder && recorder.state !== "inactive") recorder.stop();
   }, []);
 
-  // The recording clock.
+  // Leaving the Audio page ends a recording; what was captured is kept.
+  useEffect(() => {
+    activeRef.current = active;
+    if (!active) stopRecording();
+  }, [active, stopRecording]);
+
   const recordingStartedAt =
     state.status.phase === "recording" ? state.status.startedAt : null;
   useEffect(() => {
@@ -325,38 +328,34 @@ export function useAudioSource({
     return () => window.clearInterval(timer);
   }, [recordingStartedAt]);
 
-  /** Drops the source and anything in flight. The server copy expires on its own. */
-  const clear = useCallback(() => {
+  const abortAll = useCallback(() => {
+    acquisition.current += 1;
     uploadAbort.current?.abort();
     loadAbort.current?.abort();
     if (recorderRef.current) {
       discardRecording.current = true;
       recorderRef.current.stop();
     }
-    setObjectUrl(null);
-    dispatch({ type: "reset" });
-    onChangeRef.current(null);
-  }, [setObjectUrl]);
+  }, []);
 
-  /** Back to the empty card after an error, keeping nothing. */
   const dismissError = useCallback(() => {
     setObjectUrl(null);
     dispatch({ type: "reset" });
   }, [setObjectUrl]);
 
-  // Unmount: release the mic and every URL.
+  const clear = useCallback(() => {
+    abortAll();
+    dismissError();
+    onChangeRef.current(null);
+  }, [abortAll, dismissError]);
+
   useEffect(
     () => () => {
-      uploadAbort.current?.abort();
-      loadAbort.current?.abort();
-      if (recorderRef.current) {
-        discardRecording.current = true;
-        recorderRef.current.stop();
-      }
+      abortAll();
       for (const track of streamRef.current?.getTracks() ?? []) track.stop();
       if (objectUrl.current) URL.revokeObjectURL(objectUrl.current);
     },
-    [],
+    [abortAll],
   );
 
   const fail = useCallback(
@@ -364,7 +363,6 @@ export function useAudioSource({
     [],
   );
 
-  // A run that found the upload gone says so on the card, not only under Generate.
   const expire = useCallback(() => dispatch({ type: "expire" }), []);
 
   return {
@@ -380,5 +378,3 @@ export function useAudioSource({
     fail,
   };
 }
-
-export type AudioSourceController = ReturnType<typeof useAudioSource>;

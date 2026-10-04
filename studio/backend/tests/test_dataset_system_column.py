@@ -87,3 +87,24 @@ def test_a_malformed_row_is_dropped_on_its_own_when_a_system_column_is_present()
     )
 
     assert texts == ["<system>column<user>q<assistant>a"]
+
+
+@pytest.mark.parametrize("shape", [_sharegpt, _chatml], ids = ["sharegpt", "chatml"])
+def test_system_column_is_kept_when_converting_to_alpaca(shape):
+    column, convo = shape([("user", "q"), ("assistant", "a")])
+    _, with_system = shape([("system", "inline"), ("user", "q"), ("assistant", "a")])
+
+    result = format_and_template_dataset(
+        Dataset.from_list(
+            [
+                {"system": "Here is a list of functions", column: convo},
+                {"system": "column", column: with_system},
+            ]
+        ),
+        model_name = "stub-model",
+        tokenizer = _TurnTokenizer(),
+        format_type = "alpaca",
+    )
+
+    assert result["success"], result["errors"]
+    assert list(result["dataset"]["input"]) == ["Here is a list of functions", "inline"]

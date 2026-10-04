@@ -184,6 +184,45 @@ export const it = {
       chat: "Chat",
       searchChats: "Cerca nelle chat...",
     },
+    search: {
+      placeholder: "Cerca",
+      tabs: {
+        all: "Tutti",
+        chats: "Chat",
+        projects: "Progetti",
+        files: "File",
+        models: "Modelli",
+      },
+      recents: "Recenti",
+      actions: "Azioni",
+      newChat: "Nuova chat",
+      newTemporaryChat: "Nuova chat temporanea",
+      fineTune: "Fai il fine-tune di un modello",
+      generateImage: "Genera un'immagine",
+      generateVideo: "Genera un video",
+      untitledChat: "Chat senza titolo",
+      compare: "Confronto",
+      loading: "Caricamento...",
+      empty: {
+        all: "Ancora niente da cercare.",
+        chats: "Ancora nessuna chat.",
+        projects: "Ancora nessun progetto.",
+        files: "Ancora nessun file nella tua Libreria.",
+        models: "Ancora nessun modello scaricato.",
+      },
+      noMatches: "Nessun risultato.",
+      when: {
+        today: "Oggi",
+        pastWeek: "Ultima settimana",
+        pastMonth: "Ultimo mese",
+        older: "Meno recenti",
+      },
+      footer: {
+        close: "Chiudi",
+        changeType: "Cambia tipo",
+        open: "Apri",
+      },
+    },
     notFound: {
       title: "Pagina non trovata",
       description: "{path} non esiste.",
@@ -1063,9 +1102,22 @@ export const it = {
       },
       permissions: {
         sectionTitle: "Autorizzazioni",
-        bypassLabel: "Autorizzazioni degli strumenti",
-        bypassDescription:
-          "Come Unsloth approva le chiamate agli strumenti della chat (terminale, python, web, MCP) prima che vengano eseguite. La modalità «Full access» disattiva le approvazioni e la sandbox del codice.",
+        names: {
+          ask: "Chiedi conferma",
+          auto: "Approva per me",
+          off: "Esegui automaticamente",
+          full: "Accesso completo",
+        },
+        details: {
+          ask:
+            "Chiede conferma prima di ogni chiamata agli strumenti, compresi codice da terminale e Python, ricerche web, modifiche ai file e strumenti MCP. Gli strumenti eseguiti da un provider esterno non vengono messi in pausa. Ideale se vuoi controllare ogni passaggio.",
+          auto:
+            "Esegue da solo le chiamate abituali e chiede conferma solo quando un'azione sembra rischiosa, come leggere credenziali, aumentare i privilegi o eseguire comandi distruttivi.",
+          off:
+            "Esegue ogni chiamata agli strumenti senza chiedere. Il codice Python e da terminale viene comunque eseguito nella sandbox, che limita i file del tuo computer a cui può accedere.",
+          full:
+            "Esegue ogni chiamata agli strumenti senza chiedere e disattiva la sandbox del codice, così il codice Python e da terminale può leggere e modificare qualsiasi file accessibile al tuo account. Ideale per attività affidabili che devono lavorare fuori dalla sandbox.",
+        },
       },
       notifications: {
         sectionTitle: "Notifiche",
@@ -3181,6 +3233,7 @@ export const it = {
     discardDescription: "Le modifiche non salvate a {name} andranno perse.",
     discard: "Scarta",
     mentions: "Competenze",
+    manage: "Gestisci competenze",
   },
   library: {
     tabs: {
