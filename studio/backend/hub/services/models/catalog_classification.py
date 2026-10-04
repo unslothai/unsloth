@@ -569,7 +569,11 @@ def _local_model_classification_for_task(
     model, task: Optional[str]
 ) -> tuple[Optional[str], Optional[str]]:
     """Add decoder provenance to an already classified local-row task."""
-    audio_type = _local_model_audio_type(model) if task is None or task == _SPEECH_TASK else None
+    probe = task is None or task in (_SPEECH_TASK, "audio-to-audio")
+    audio_type = _local_model_audio_type(model) if probe else None
+    # As for cached rows: only a separation GGUF is an audio-to-audio row Studio has a page for.
+    if task == "audio-to-audio" and audio_type != "audiocpp_sep":
+        audio_type = None
     if task is None and audio_type is not None:
         from utils.audio_tokens import is_output_audio_type
         if is_output_audio_type(audio_type):

@@ -22539,6 +22539,23 @@ def _clock(seconds: float) -> str:
     return f"{whole // 60}:{whole % 60:02d}"
 
 
+def _probe_audio_with_av(path) -> Optional[tuple[int, float]]:
+    """``(channels, seconds)`` of the first audio stream, through FFmpeg; None if unreadable."""
+    try:
+        import av
+        with av.open(str(path), mode = "r") as container:
+            stream = container.streams.audio[0]
+            if stream.duration is not None and stream.time_base is not None:
+                seconds = float(stream.duration * stream.time_base)
+            elif container.duration is not None:
+                seconds = container.duration / 1_000_000
+            else:
+                return None
+            return int(stream.channels), seconds
+    except Exception:  # noqa: BLE001 - any failure reads as an unreadable track
+        return None
+
+
 def _prepare_separation_source(ref: dict[str, Any]):
     """``(source, prepared 44.1 kHz path)``, after the 10-minute cap; stereo stays stereo."""
     import wave
@@ -22550,8 +22567,11 @@ def _prepare_separation_source(ref: dict[str, Any]):
         with wave.open(str(source.path), "rb") as wav:
             channels = wav.getnchannels()
             seconds = wav.getnframes() / wav.getframerate()
-    except Exception:  # noqa: BLE001 - a stored input is always a WAV; anything else is gone
-        raise audio_inputs.AudioInputError(400, "This track could not be read. Add it again.")
+    except Exception:  # noqa: BLE001 - e.g. a float stem from history, which wave cannot open
+        probed = _probe_audio_with_av(source.path)
+        if probed is None:
+            raise audio_inputs.AudioInputError(400, "This track could not be read. Add it again.")
+        channels, seconds = probed
     if seconds > _SEPARATE_MAX_SECONDS:
         raise HTTPException(
             status_code = 400,

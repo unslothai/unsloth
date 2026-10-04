@@ -168,3 +168,22 @@ def test_an_umbrella_snapshot_lists_every_downloaded_familys_workflows(tmp_path)
         "speak",
         "clone",
     ]
+
+
+def test_a_local_separation_gguf_is_classified_for_separate(monkeypatch):
+    from types import SimpleNamespace
+
+    from hub.services.models import catalog_classification as cc
+
+    model = SimpleNamespace(path = "/m/sep.gguf")
+    monkeypatch.setattr(cc, "_local_model_audio_type", lambda _m: "audiocpp_sep")
+    assert cc._local_model_classification_for_task(model, "audio-to-audio") == (
+        "audio-to-audio",
+        "audiocpp_sep",
+    )
+    # Other audio-to-audio kinds keep no audio type, so they stay off every page.
+    monkeypatch.setattr(cc, "_local_model_audio_type", lambda _m: "audiocpp_tts")
+    assert cc._local_model_classification_for_task(model, "audio-to-audio") == (
+        "audio-to-audio",
+        None,
+    )
