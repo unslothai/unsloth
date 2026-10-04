@@ -441,7 +441,10 @@ def _precision(device, fp16_checkpoint: bool):
         if fp16_checkpoint:
             return torch.float16, torch.float16
         if torch.version.hip:
-            bf16 = torch.cuda.is_bf16_supported()
+            # is_bf16_supported() is True on every HIP build; RDNA2-and-older / Vega are gated by gfx arch.
+            from core.inference.rocm_bf16 import rocm_bf16_supported
+
+            bf16 = rocm_bf16_supported(torch, device.index)
         else:
             # By capability: pre-Ampere NVIDIA reports is_bf16_supported() through slow emulation.
             bf16 = torch.cuda.get_device_capability(device)[0] >= 8

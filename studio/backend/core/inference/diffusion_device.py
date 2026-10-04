@@ -400,11 +400,14 @@ def _cuda_or_rocm_target(
     ordinal: Optional[int] = None,
 ) -> DiffusionDeviceTarget:
     if is_rocm:
-        # ROCm lacks NVIDIA's pre-Ampere bf16-emulation quirk, so is_bf16_supported() is trustworthy. It takes no device
-        # argument, so the selected card is asked by scoping the current device.
+        # ROCm's is_bf16_supported() is True on every HIP build, so RDNA2-and-older / Vega targets (no bf16 matrix
+        # path) are gated by gfx arch, like pre-Ampere NVIDIA below. It takes no device argument, so the selected card
+        # is asked by scoping the current device.
+        from .rocm_bf16 import rocm_bf16_supported
+
         try:
             with diffusion_device_scope(ordinal):
-                bf16_ok = bool(torch.cuda.is_bf16_supported())
+                bf16_ok = rocm_bf16_supported(torch, ordinal)
         except Exception:
             bf16_ok = False
         dtype = torch.bfloat16 if bf16_ok else torch.float16

@@ -640,7 +640,10 @@ def native_bf16_supported() -> bool:
             return False
         is_rocm = bool(getattr(getattr(torch, "version", None), "hip", None))
         if is_rocm:
-            return bool(torch.cuda.is_bf16_supported())
+            # is_bf16_supported() is True on every HIP build; RDNA2-and-older / Vega are gated by gfx arch.
+            from core.inference.rocm_bf16 import rocm_bf16_supported
+
+            return rocm_bf16_supported(torch)
         return torch.cuda.get_device_capability()[0] >= 8
     except Exception:  # noqa: BLE001 -- no torch / probe failure -> treat as unsupported
         return False

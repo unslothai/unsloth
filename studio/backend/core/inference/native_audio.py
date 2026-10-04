@@ -865,7 +865,12 @@ class NativeAudioBackend:
 
         if self.device == "cuda":
             if getattr(torch.version, "hip", None):
-                supports_bf16 = torch.cuda.is_bf16_supported()
+                from .rocm_bf16 import rocm_bf16_supported
+
+                try:
+                    supports_bf16 = rocm_bf16_supported(torch)
+                except Exception:
+                    supports_bf16 = False
             else:
                 try:
                     major, _minor = torch.cuda.get_device_capability()
