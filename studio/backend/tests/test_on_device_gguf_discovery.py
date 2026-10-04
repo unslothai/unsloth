@@ -167,9 +167,10 @@ def test_offline_managed_account_cannot_probe_for_a_missing_grant(cached_model, 
     assert cached_model.calls == []
 
 
+@pytest.mark.parametrize("prefix", ["/api/hub", "/api/models"])
 @pytest.mark.parametrize("access", ["grant", "public-proof", "none"])
 def test_managed_account_authorizes_from_disk_without_public_repo_probe(
-    cached_model, monkeypatch, access
+    cached_model, monkeypatch, access, prefix
 ):
     policy = GV.account_access
     monkeypatch.setattr(policy, "managed_account", lambda: True)
@@ -190,7 +191,7 @@ def test_managed_account_authorizes_from_disk_without_public_repo_probe(
         raise ConnectionError("offline")
 
     monkeypatch.setattr(policy, "_hub_public_answer", no_probe)
-    response = query(cached_model, "/api/hub")
+    response = query(cached_model, prefix)
     assert response.status_code == (404 if access == "none" else 200), response.text
     if response.status_code == 200:
         assert response.json()["dependencies_resolved"] is True
