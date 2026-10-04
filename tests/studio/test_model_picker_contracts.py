@@ -779,7 +779,7 @@ def test_a_pinned_cached_row_loads_from_the_id_the_backend_pinned():
     assert "localOnly," in call.group(0)
     assert "loadPickerGgufVariants(" in picker
     sole = re.search(r"async function readSoleQuant\(.*?\n}", picker, re.S)
-    assert sole and "localOnly: true," in sole.group(0)
+    assert sole and "readSoleQuantLocalFirst(" in sole.group(0)
     assert "cachePath={c.cache_path}" in picker
 
     # A reload rebuilds its target from the checkpoint id, so the resident model remembers the pin.

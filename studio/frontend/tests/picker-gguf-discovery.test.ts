@@ -4,7 +4,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import type { GgufVariantsResponse } from "../src/features/chat/types/api.ts";
-import { loadPickerGgufVariants } from "../src/features/model-picker/components/model-selector/gguf-discovery.ts";
+import {
+  loadPickerGgufVariants,
+  readSoleQuantLocalFirst,
+} from "../src/features/model-picker/components/model-selector/gguf-discovery.ts";
 
 const local: GgufVariantsResponse = {
   repo_id: "Org/Cached",
@@ -24,11 +27,10 @@ const local: GgufVariantsResponse = {
 };
 const options = {
   onDevice: true,
-  showAllQuantizations: false,
   canDiscoverRemote: () => true,
 };
 
-test("On Device defaults to a disk-only answer regardless of connectivity", async () => {
+test("On Device answers from disk alone once the Hub is known unreachable", async () => {
   const calls: boolean[] = [];
   const shown: (typeof local)[] = [];
   const result = await loadPickerGgufVariants(
@@ -36,7 +38,7 @@ test("On Device defaults to a disk-only answer regardless of connectivity", asyn
       calls.push(localOnly);
       return local;
     },
-    options,
+    { ...options, canDiscoverRemote: () => false },
     (response) => shown.push(response),
   );
   assert.deepEqual(calls, [true]);
@@ -44,7 +46,7 @@ test("On Device defaults to a disk-only answer regardless of connectivity", asyn
   assert.equal(result, local);
 });
 
-test("Show all publishes cached quants before a stalled remote request finishes", async () => {
+test("On Device publishes cached quants before a stalled remote request finishes", async () => {
   const calls: boolean[] = [];
   let displayed: GgufVariantsResponse | null = null;
   let rejectRemote!: (error: Error) => void;
@@ -56,7 +58,7 @@ test("Show all publishes cached quants before a stalled remote request finishes"
       calls.push(localOnly);
       return localOnly ? local : remote;
     },
-    { ...options, showAllQuantizations: true },
+    options,
     (response) => {
       displayed = response;
     },
@@ -72,7 +74,7 @@ test("Show all publishes cached quants before a stalled remote request finishes"
   assert.equal(await pending, local);
 });
 
-test("online Show all adds published quants without changing a cached quant's load path or readiness", async () => {
+test("online discovery adds published quants without changing a cached quant's load path or readiness", async () => {
   const remote = {
     ...local,
     context_length: 8192,
@@ -95,7 +97,7 @@ test("online Show all adds published quants without changing a cached quant's lo
   };
   const result = await loadPickerGgufVariants(
     async (localOnly) => (localOnly ? local : remote),
-    { ...options, showAllQuantizations: true },
+    options,
     () => {},
   );
   assert.equal(result.variants.length, 2);
@@ -119,7 +121,7 @@ test("a remote answer cannot promote a locally incomplete quant", async () => {
   };
   const result = await loadPickerGgufVariants(
     async (localOnly) => (localOnly ? incomplete : local),
-    { ...options, showAllQuantizations: true },
+    options,
     () => {},
   );
   assert.equal(result.variants[0].downloaded, false);
@@ -127,14 +129,14 @@ test("a remote answer cannot promote a locally incomplete quant", async () => {
   assert.equal(result.dependencies_resolved, false);
 });
 
-test("known Hub backoff keeps Show all local", async () => {
+test("known Hub backoff keeps On Device local", async () => {
   const calls: boolean[] = [];
   await loadPickerGgufVariants(
     async (localOnly) => {
       calls.push(localOnly);
       return local;
     },
-    { ...options, showAllQuantizations: true, canDiscoverRemote: () => false },
+    { ...options, canDiscoverRemote: () => false },
     () => {},
   );
   assert.deepEqual(calls, [true]);
@@ -148,7 +150,7 @@ test("collapsing the row after its cached answer prevents remote work", async ()
       calls.push(localOnly);
       return local;
     },
-    { ...options, showAllQuantizations: true, signal: controller.signal },
+    { ...options, signal: controller.signal },
     () => controller.abort(),
   );
   assert.deepEqual(calls, [true]);
@@ -165,4 +167,80 @@ test("catalog rows retain remote discovery", async () => {
     () => assert.fail("catalog rows must not publish a cached phase"),
   );
   assert.deepEqual(calls, [false]);
+});
+
+test("a Hub update or missing drafter reaches a cached quant's row", async () => {
+  const remote = {
+    ...local,
+    variants: [
+      {
+        ...local.variants[0],
+        update_available: true,
+        pending_drafter_filename: "mtp-drafter.gguf",
+        pending_drafter_size_bytes: 64,
+      },
+    ],
+  };
+  const result = await loadPickerGgufVariants(
+    async (localOnly) => (localOnly ? local : remote),
+    options,
+    () => {},
+  );
+  assert.equal(result.variants[0].update_available, true);
+  assert.equal(result.variants[0].pending_drafter_filename, "mtp-drafter.gguf");
+  assert.equal(result.variants[0].pending_drafter_size_bytes, 64);
+  assert.equal(result.variants[0].filename, "old-Q4_K_M.gguf");
+});
+
+const pickSole = (res: GgufVariantsResponse) => {
+  const sole = res.variants.filter((v) => v.downloaded === true);
+  return sole.length === 1 ? { variant: sole[0] } : null;
+};
+
+test("a sole cached quant collapses from disk when the Hub is unreachable", async () => {
+  const calls: boolean[] = [];
+  const stalled = readSoleQuantLocalFirst(
+    async (localOnly) => {
+      calls.push(localOnly);
+      if (localOnly) return local;
+      throw new Error("Hugging Face unreachable");
+    },
+    pickSole,
+    () => true,
+  );
+  assert.equal((await stalled)?.variant.filename, "old-Q4_K_M.gguf");
+  const offline = await readSoleQuantLocalFirst(
+    async (localOnly) => {
+      calls.push(localOnly);
+      return local;
+    },
+    pickSole,
+    () => false,
+  );
+  assert.equal(offline?.variant.filename, "old-Q4_K_M.gguf");
+  assert.deepEqual(calls, [true, false, true]);
+});
+
+test("a Hub update or missing drafter keeps the sole quant's expander", async () => {
+  for (const extra of [
+    { update_available: true },
+    { pending_drafter_filename: "mtp-drafter.gguf" },
+  ]) {
+    const remote = {
+      ...local,
+      variants: [{ ...local.variants[0], ...extra }],
+    };
+    const sole = await readSoleQuantLocalFirst(
+      async (localOnly) => (localOnly ? local : remote),
+      pickSole,
+      () => true,
+    );
+    assert.equal(sole, null);
+  }
+  const current = await readSoleQuantLocalFirst(
+    async () => local,
+    pickSole,
+    () => true,
+  );
+  assert.equal(current?.variant.quant, "Q4_K_M");
 });

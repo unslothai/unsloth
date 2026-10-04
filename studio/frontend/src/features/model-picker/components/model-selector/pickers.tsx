@@ -5,7 +5,10 @@ import {
   isChatGgufTask,
   reconcileGgufPinsAfterDelete,
 } from "./reconcile-gguf-pins";
-import { loadPickerGgufVariants } from "./gguf-discovery";
+import {
+  loadPickerGgufVariants,
+  readSoleQuantLocalFirst,
+} from "./gguf-discovery";
 
 import { ModelMemoryBar } from "@/components/model-memory-bar";
 import { shouldRefreshPickerInventoryOnMount } from "@/components/resource-picker/picker-tab-policy";
@@ -1675,18 +1678,24 @@ async function readSoleQuant(
   hfToken?: string,
 ): Promise<SoleDownloadedQuant | null> {
   try {
-    const res = await listGgufVariantsCached(target.repoId, hfToken, {
-      localOnly: true,
-      localPath: target.localSource,
-      includeCacheLocations: target.includeCacheLocations,
-    });
-    const normalized = normalizeGgufVariantsResponse(res);
-    const variant = verifiedSoleHubVariant(
-      normalized.variants,
-      normalized.resolvedLocally,
-      normalized.dependenciesResolved,
+    return await readSoleQuantLocalFirst(
+      (localOnly) =>
+        listGgufVariantsCached(target.repoId, hfToken, {
+          localOnly,
+          localPath: target.localSource,
+          includeCacheLocations: target.includeCacheLocations,
+        }),
+      (res) => {
+        const normalized = normalizeGgufVariantsResponse(res);
+        const variant = verifiedSoleHubVariant(
+          normalized.variants,
+          normalized.resolvedLocally,
+          normalized.dependenciesResolved,
+        );
+        return variant ? { variant, hasVision: normalized.hasVision } : null;
+      },
+      () => !isHuggingFaceOffline(),
     );
-    return variant ? { variant, hasVision: normalized.hasVision } : null;
   } catch {
     return null;
   }
@@ -1931,7 +1940,6 @@ function GgufVariantExpander({
         }),
       {
         onDevice,
-        showAllQuantizations,
         canDiscoverRemote: () => !isHuggingFaceOffline(),
         signal: controller.signal,
       },
@@ -1956,15 +1964,7 @@ function GgufVariantExpander({
       canceled = true;
       controller.abort();
     };
-  }, [
-    repoId,
-    localSource,
-    refreshKey,
-    hfToken,
-    pipelineTag,
-    onDevice,
-    showAllQuantizations,
-  ]);
+  }, [repoId, localSource, refreshKey, hfToken, pipelineTag, onDevice]);
 
   // Covers Unix absolute, Windows drive, UNC, relative and tilde paths.
   const isLocalPath = /^(\/|\.{1,2}[\\/]|~[\\/]|[A-Za-z]:[\\/]|\\\\)/.test(
