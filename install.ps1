@@ -7486,13 +7486,9 @@ exit 0
                 return $false
             }
 
-            # uvw.exe is the windowless launcher and has no console to answer a probe on, so
-            # the staged uv.exe above stands for the set: it came from the same verified
-            # archive.
+            # uvw.exe has no console to probe; the staged uv.exe above stands for the set.
             if (-not (Copy-UvSet -Work $srcRoot -DestDir $destDir)) {
-                # Not "could not run": the staged binary answered the probe above. The
-                # destination could not be replaced, which on Windows is an open handle --
-                # a uv still running, or a scanner reading the fresh download (#9804).
+                # The staged uv already ran, so this is a locked destination, not a bad binary (#9804).
                 substep "uv $UvPinnedVersion downloaded and verified, but $script:UvCopyBlockedAt could not be replaced." "Yellow"
                 substep "It is probably in use (a running uv, or a scanner); close it and re-run the installer." "Yellow"
                 return $false
@@ -7514,8 +7510,7 @@ exit 0
     }
 
     function Test-UvFileMatches {
-        # Whether $Destination already holds exactly $Source's bytes. False on any error, so a
-        # missing, locked or ACL-denied destination reads as "not ours yet".
+        # False on any error: a missing, locked or ACL-denied destination reads as "not ours yet".
         param([string]$Source, [string]$Destination)
         try {
             return (Test-Path -LiteralPath $Destination) -and
@@ -7525,14 +7520,9 @@ exit 0
     }
 
     function Copy-UvSet {
-        # Put the staged uv.exe / uvx.exe / uvw.exe in place. A destination that already holds
-        # the verified bytes is left alone: the uv this installer is "replacing" may be that very
-        # build, still running, and Windows refuses to overwrite an executable in use (#9804).
-        # Anything else is copied under Stop, retried briefly for a transient handle (a scanner
-        # opening a fresh download), and verified against the staged file rather than trusted:
-        # Copy-Item is non-terminating under some callers' preference, and a stale uv.exe must
-        # not pass for ours. On failure $script:UvCopyBlockedAt names the file, so the caller
-        # can say which one and why instead of blaming the binary.
+        # Identical destinations are skipped: Windows refuses to overwrite a running uv, which may
+        # be this very build (#9804). Copies are hash-verified since Copy-Item can be
+        # non-terminating under the caller's preference. Failure sets $script:UvCopyBlockedAt.
         param(
             [Parameter(Mandatory = $true)][string]$Work,
             [Parameter(Mandatory = $true)][string]$DestDir

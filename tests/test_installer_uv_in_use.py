@@ -1,17 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""install.ps1 must not blame a verified uv for a destination it could not replace (#9804).
-
-`Install-UvFromRelease` downloads the pinned uv, proves it runs, and only then copies the set
-over the existing one. With a uv still running, Windows refuses that overwrite; the installer
-used to report "the downloaded uv could not run on this machine", the one thing it had just
-proven false, and exit. The copy now lives in `Copy-UvSet`: a destination already holding the
-verified bytes is left alone (the running uv may be ours), a transient handle is retried, and
-a real lock is named as in use.
-
-The pwsh cases exercise the extracted function verbatim; the text pins hold where pwsh is not.
-"""
+"""install.ps1 must not blame a verified uv for a destination it could not replace (#9804)."""
 
 from __future__ import annotations
 
@@ -41,21 +31,15 @@ def _locate(haystack: str, needle: str, what: str) -> int:
 
 
 def _extract_function(name: str) -> str:
-    """install.ps1's own function text, verbatim, so these tests cannot drift from it."""
     src = _install_ps1()
     start = _locate(src, f"    function {name} {{", f"the {name} helper")
     end = _locate(src[start:], "\n    }\n", f"the end of {name}") + start
     return src[start : end + len("\n    }\n")]
 
 
-# ---- text pins ------------------------------------------------------------
-
-
 def test_the_release_installer_copies_through_copy_uvset():
     body = _extract_function("Install-UvFromRelease")
-    # $srcRoot: the archive may unpack into a subfolder, and main resolves that before the probe.
     assert "Copy-UvSet -Work $srcRoot -DestDir $destDir" in body
-    # The verdict probe keeps its own message; the copy no longer borrows it.
     assert body.count("could not run on this machine") == 1
     assert "could not be replaced" in body
     assert "in use" in body
@@ -78,9 +62,6 @@ def test_copy_uvset_retries_a_transient_lock_then_names_the_file():
     body = _extract_function("Copy-UvSet")
     assert "for ($attempt = 1; $attempt -le 3; $attempt++)" in body
     assert "$script:UvCopyBlockedAt = $dst" in body
-
-
-# ---- behaviour, on a host with pwsh ---------------------------------------
 
 
 def _run_copy_uvset(
@@ -111,7 +92,7 @@ def _run_copy_uvset(
 def test_copy_uvset_puts_the_set_in_place(tmp_path):
     work, dest = tmp_path / "work", tmp_path / "dest"
     work.mkdir()
-    dest.mkdir()  # Install-UvFromRelease creates it before calling Copy-UvSet.
+    dest.mkdir()
     for name in ("uv.exe", "uvx.exe", "uvw.exe"):
         (work / name).write_bytes(b"pinned " + name.encode())
     res = _run_copy_uvset(tmp_path, f"$work = '{work}'\n$dest = '{dest}'\n")
@@ -122,7 +103,6 @@ def test_copy_uvset_puts_the_set_in_place(tmp_path):
 
 @requires_pwsh
 def test_copy_uvset_leaves_an_identical_locked_destination_alone(tmp_path):
-    """The running uv is already the pinned build: nothing to replace, so the lock is irrelevant."""
     work, dest = tmp_path / "work", tmp_path / "dest"
     work.mkdir()
     dest.mkdir()
@@ -130,9 +110,7 @@ def test_copy_uvset_leaves_an_identical_locked_destination_alone(tmp_path):
     (dest / "uv.exe").write_bytes(b"pinned uv.exe")
     prelude = (
         f"$work = '{work}'\n$dest = '{dest}'\n"
-        # A running executable's image on Windows admits readers and refuses writers, so share
-        # Read: the hash can still see the file is already ours and nothing is written. (Share
-        # None would refuse the hash too, which no running uv does.)
+        # A running exe admits readers and refuses writers, hence share Read.
         "$h = [System.IO.File]::Open((Join-Path $dest 'uv.exe'), 'Open', 'Read', 'Read')\n"
     )
     res = _run_copy_uvset(tmp_path, prelude, "$h.Dispose()\n")
