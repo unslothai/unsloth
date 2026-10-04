@@ -38,14 +38,21 @@ class _Decoder:
         yield self._p
 
 
-def _vae(config, *, fused = 5, device = types.SimpleNamespace(type = "cuda", index = 1)):
+def _vae(
+    config,
+    *,
+    fused = 5,
+    device = types.SimpleNamespace(type = "cuda", index = 1),
+):
     vae = types.SimpleNamespace(config = config, decoder = _Decoder(_Param(torch.bfloat16, device)))
     vae._unsloth_vae_fused_installed = fused
     return vae
 
 
 def test_plan_describes_the_class_config_dtype_and_a_small_latent():
-    job = prebuild.plan(types.SimpleNamespace(vae = _vae({"latent_channels": 16, "block_out_channels": (128, 256)})))
+    job = prebuild.plan(
+        types.SimpleNamespace(vae = _vae({"latent_channels": 16, "block_out_channels": (128, 256)}))
+    )
     assert job["name"] == "SimpleNamespace" and job["dtype"] == "bfloat16" and job["device"] == 1
     assert job["shape"] == [1, 16, prebuild._LATENT_SIDE, prebuild._LATENT_SIDE]
     assert job["config"]["block_out_channels"] == [128, 256]  # JSON-safe for the spawn
@@ -57,7 +64,9 @@ def test_nothing_to_prebuild_without_fused_passes_on_a_cuda_vae():
     assert prebuild.plan(types.SimpleNamespace(vae = None)) is None
     assert prebuild.plan(types.SimpleNamespace(vae = _vae({"latent_channels": 4}, fused = 0))) is None
     cpu = types.SimpleNamespace(type = "cpu", index = None)
-    assert prebuild.plan(types.SimpleNamespace(vae = _vae({"latent_channels": 4}, device = cpu))) is None
+    assert (
+        prebuild.plan(types.SimpleNamespace(vae = _vae({"latent_channels": 4}, device = cpu))) is None
+    )
     assert prebuild.plan(types.SimpleNamespace(vae = _vae({"something_else": 1}))) is None
 
 
@@ -68,13 +77,17 @@ def test_restart_and_kill_switch_never_spawn(monkeypatch):
     monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
     monkeypatch.setattr(torch.cuda, "mem_get_info", lambda device: (64 * 1024**3, 96 * 1024**3))
     pipe = types.SimpleNamespace()
-    assert prebuild.maybe_kick(pipe, types.SimpleNamespace(hit = True)) is False  # restart: cache already warm
+    assert (
+        prebuild.maybe_kick(pipe, types.SimpleNamespace(hit = True)) is False
+    )  # restart: cache already warm
     assert prebuild.maybe_kick(pipe, None) is False  # no compile bundle at all
     monkeypatch.setenv("UNSLOTH_DIFFUSION_VAE_PREBUILD", "0")
     assert prebuild.maybe_kick(pipe, types.SimpleNamespace(hit = False)) is False
     monkeypatch.delenv("UNSLOTH_DIFFUSION_VAE_PREBUILD")
     monkeypatch.setattr(torch.cuda, "mem_get_info", lambda device: (2 * 1024**3, 24 * 1024**3))
-    assert prebuild.maybe_kick(pipe, types.SimpleNamespace(hit = False)) is False  # too little VRAM for a 2nd context
+    assert (
+        prebuild.maybe_kick(pipe, types.SimpleNamespace(hit = False)) is False
+    )  # too little VRAM for a 2nd context
     monkeypatch.setattr(torch.cuda, "mem_get_info", lambda device: (64 * 1024**3, 96 * 1024**3))
     assert prebuild.maybe_kick(pipe, types.SimpleNamespace(hit = False)) is True
     assert spawned == [{"device": 0}]
@@ -114,12 +127,23 @@ _SCRIPT = textwrap.dedent(
 def _run(tmp_path: Path, mode: str) -> dict:
     import json
 
-    env = dict(os.environ, BACKEND = str(BACKEND), TRITON_CACHE_DIR = str(tmp_path / "triton"), PYTHONPATH = str(BACKEND))
-    r = subprocess.run([sys.executable, "-c", _SCRIPT, mode], cwd = str(BACKEND), env = env, capture_output = True,
-                       text = True, timeout = 900)
+    env = dict(
+        os.environ,
+        BACKEND = str(BACKEND),
+        TRITON_CACHE_DIR = str(tmp_path / "triton"),
+        PYTHONPATH = str(BACKEND),
+    )
+    r = subprocess.run(
+        [sys.executable, "-c", _SCRIPT, mode],
+        cwd = str(BACKEND),
+        env = env,
+        capture_output = True,
+        text = True,
+        timeout = 900,
+    )
     line = [ln for ln in r.stdout.splitlines() if ln.startswith("RESULT ")]
     assert line, r.stdout[-3000:] + r.stderr[-3000:]
-    return json.loads(line[-1][len("RESULT "):])
+    return json.loads(line[-1][len("RESULT ") :])
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason = "CUDA only")

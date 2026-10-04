@@ -78,12 +78,18 @@ def plan(pipe: Any) -> Optional[dict]:
         "name": type(vae).__name__,
         "config": cfg,
         "dtype": str(weight.dtype).replace("torch.", ""),
-        "device": int(weight.device.index if weight.device.index is not None else torch.cuda.current_device()),
+        "device": int(
+            weight.device.index if weight.device.index is not None else torch.cuda.current_device()
+        ),
         "shape": shape,
     }
 
 
-def maybe_kick(pipe: Any, compile_ctx: Any, logger: Any = None) -> bool:
+def maybe_kick(
+    pipe: Any,
+    compile_ctx: Any,
+    logger: Any = None,
+) -> bool:
     """Spawn the prebuild child for a first-start load (no compile-bundle hit). Never blocks, never raises."""
     if not enabled():
         return False
@@ -125,7 +131,6 @@ def _spawn(job: dict, logger: Any) -> bool:
         proc.start()
     try:
         from utils.process_lifetime import adopt_pid
-
         adopt_pid(proc.pid)
     except Exception:  # noqa: BLE001
         pass
@@ -137,7 +142,6 @@ def _spawn(job: dict, logger: Any) -> bool:
             proc.join(5.0)
         try:
             from utils.process_lifetime import forget_pid
-
             if not proc.is_alive():
                 forget_pid(proc.pid)
         except Exception:  # noqa: BLE001
@@ -148,7 +152,9 @@ def _spawn(job: dict, logger: Any) -> bool:
     threading.Thread(target = reap, name = "unsloth-vae-prebuild-reaper", daemon = True).start()
     if logger is not None:
         logger.info(
-            "diffusion.vae_prebuild: building %s's fused kernels in a child (pid %s)", job["name"], proc.pid
+            "diffusion.vae_prebuild: building %s's fused kernels in a child (pid %s)",
+            job["name"],
+            proc.pid,
         )
     return True
 

@@ -16,14 +16,18 @@ def warm(monkeypatch):
 
     monkeypatch.delenv(torch_warmup.EARLY_PROBE_ENV_VAR, raising = False)
     # _warm() publishes into the module-level status; keep that out of later tests.
-    monkeypatch.setattr(torch_warmup, "_status", {"started": False, "finished": False, "stages": {}})
+    monkeypatch.setattr(
+        torch_warmup, "_status", {"started": False, "finished": False, "stages": {}}
+    )
     return torch_warmup
 
 
 def test_probe_is_kicked_right_after_the_dynamo_import_stage(warm, monkeypatch):
     order: list[str] = []
-    stages = tuple((name, (lambda n = name: order.append(n))) for name in
-                   ("hardware", "inference_backend", "transformers", "datasets"))
+    stages = tuple(
+        (name, (lambda n = name: order.append(n)))
+        for name in ("hardware", "inference_backend", "transformers", "datasets")
+    )
     monkeypatch.setattr(warm, "_STAGES", stages)
     monkeypatch.setattr(warm, "_kick_early_quant_probe", lambda: order.append("probe"))
     monkeypatch.setattr(warm, "_detection_epoch", lambda: None)
@@ -31,7 +35,9 @@ def test_probe_is_kicked_right_after_the_dynamo_import_stage(warm, monkeypatch):
     assert order == ["hardware", "inference_backend", "probe", "transformers", "datasets"]
 
 
-def test_kick_runs_the_existing_prewarm_on_a_daemon_thread_only_for_diffusers_installs(warm, monkeypatch):
+def test_kick_runs_the_existing_prewarm_on_a_daemon_thread_only_for_diffusers_installs(
+    warm, monkeypatch
+):
     calls: list[str] = []
     ran = threading.Event()
 
@@ -62,11 +68,15 @@ def test_kick_runs_the_existing_prewarm_on_a_daemon_thread_only_for_diffusers_in
     assert calls == []
 
 
-def test_a_later_start_with_a_persisted_table_does_not_import_the_probe_during_the_warm(warm, monkeypatch):
+def test_a_later_start_with_a_persisted_table_does_not_import_the_probe_during_the_warm(
+    warm, monkeypatch
+):
     from core.inference import diffusion_probe_cache
 
     monkeypatch.setattr(warm, "_a_local_model_would_load_through_diffusers", lambda: True)
-    monkeypatch.setattr(warm, "_prewarm_quant_probe", lambda: pytest.fail("probe ran although its table is on disk"))
+    monkeypatch.setattr(
+        warm, "_prewarm_quant_probe", lambda: pytest.fail("probe ran although its table is on disk")
+    )
     monkeypatch.setattr(diffusion_probe_cache, "has_file", lambda: True)
     warm._kick_early_quant_probe().join(10)
 
@@ -85,5 +95,7 @@ def test_probe_cache_file_check(tmp_path, monkeypatch):
 
 def test_kill_switch_keeps_the_old_timing(warm, monkeypatch):
     monkeypatch.setenv(warm.EARLY_PROBE_ENV_VAR, "0")
-    monkeypatch.setattr(warm, "_prewarm_quant_probe", lambda: pytest.fail("probe ran under the kill switch"))
+    monkeypatch.setattr(
+        warm, "_prewarm_quant_probe", lambda: pytest.fail("probe ran under the kill switch")
+    )
     assert warm._kick_early_quant_probe() is None

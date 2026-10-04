@@ -609,7 +609,6 @@ EARLY_PROBE_ENV_VAR = "UNSLOTH_DIFFUSION_PROBE_EARLY"
 def _early_quant_probe() -> None:
     try:
         from core.inference.diffusion_probe_cache import has_file  # noqa: PLC0415 - stdlib only
-
         if has_file():
             # A later start: the table is on disk, so there is no child to start early, and importing the probe
             # module here would only compete with the warm. The post-warm path reads it as before.

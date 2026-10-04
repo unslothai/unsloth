@@ -21,8 +21,14 @@ class FluxSingleTransformerBlock(torch.nn.Module):
         super().__init__()
         self.proj = torch.nn.Linear(dim, dim)
 
-    def forward(self, hidden_states, encoder_hidden_states, temb = None, image_rotary_emb = None,
-                joint_attention_kwargs = None):
+    def forward(
+        self,
+        hidden_states,
+        encoder_hidden_states,
+        temb = None,
+        image_rotary_emb = None,
+        joint_attention_kwargs = None,
+    ):
         text = encoder_hidden_states.shape[1]
         x = torch.cat([encoder_hidden_states, hidden_states], dim = 1)
         x = x + self.proj(x)
@@ -30,20 +36,34 @@ class FluxSingleTransformerBlock(torch.nn.Module):
 
 
 class FluxTransformer2DModel(torch.nn.Module):
-    def __init__(self, n: int = 4, dim: int = 8):
+    def __init__(
+        self,
+        n: int = 4,
+        dim: int = 8,
+    ):
         super().__init__()
-        self.single_transformer_blocks = torch.nn.ModuleList(FluxSingleTransformerBlock(dim) for _ in range(n))
+        self.single_transformer_blocks = torch.nn.ModuleList(
+            FluxSingleTransformerBlock(dim) for _ in range(n)
+        )
 
     def forward(self, hidden_states, encoder_hidden_states):
         for block in self.single_transformer_blocks:
             encoder_hidden_states, hidden_states = block(
-                hidden_states = hidden_states, encoder_hidden_states = encoder_hidden_states, temb = None,
-                image_rotary_emb = None, joint_attention_kwargs = None,
+                hidden_states = hidden_states,
+                encoder_hidden_states = encoder_hidden_states,
+                temb = None,
+                image_rotary_emb = None,
+                joint_attention_kwargs = None,
             )
         return hidden_states
 
 
-def _inputs(batch = 1, text = 3, image = 5, dim = 8):
+def _inputs(
+    batch = 1,
+    text = 3,
+    image = 5,
+    dim = 8,
+):
     g = torch.Generator().manual_seed(0)
     return torch.randn(batch, image, dim, generator = g), torch.randn(batch, text, dim, generator = g)
 

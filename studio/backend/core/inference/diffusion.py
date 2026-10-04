@@ -7382,7 +7382,6 @@ class DiffusionBackend:
                     # compiles the denoiser, so its first decode reads them from the Triton cache.
                     try:
                         from . import diffusion_vae_prebuild
-
                         diffusion_vae_prebuild.maybe_kick(pipe, compile_ctx, logger)
                     except Exception:  # noqa: BLE001 - a prebuild, never a failed load
                         pass
