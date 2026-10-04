@@ -67,6 +67,9 @@ class LoadRequest(LlamaCppConfigFields):
     # `()` is both the default and auto-switch's deliberate "do not widen", so only this
     # marker separates unset from explicitly empty.
     _gguf_companion_roots_set: bool = PrivateAttr(default = False)
+    # Auto-switch only: the alias its owner-override lookup used, so the managed path-flag
+    # check reads the same override row.
+    _override_alias_id: Optional[str] = PrivateAttr(default = None)
     load_request_id: Optional[str] = Field(
         None,
         min_length = 1,
@@ -78,6 +81,14 @@ class LoadRequest(LlamaCppConfigFields):
     force_reload: bool = Field(
         False,
         description = "Start a fresh runtime even when the active settings already match",
+    )
+    alongside: bool = Field(
+        False,
+        description = "Keep the loaded model and serve this one next to it",
+    )
+    force_alongside: bool = Field(
+        False,
+        description = "Load alongside even when it only partly fits the free GPU memory",
     )
     native_path_lease: Optional[str] = Field(
         None, description = "Frontend-visible signed native path grant"
@@ -1101,6 +1112,21 @@ class EstimateMemoryResponse(BaseModel):
         "one, when the machine holds the model's own window, or when the footprint of the "
         "load cannot be described.",
     )
+    context_is_pinned: bool = Field(
+        True,
+        description = "False only when the loader will shrink n_ctx to fit, so the "
+        "context-linear share of gpu_bytes is an upper bound rather than a reservation.",
+    )
+    gpu_floor_bytes: Optional[int] = Field(
+        None,
+        description = "gpu_bytes at the shortest context the loader's fit settles for; "
+        "past it the launch offloads layers instead. Set only when context_is_pinned is false.",
+    )
+    floor_can_offload: bool = Field(
+        False,
+        description = "Whether a load still over the card at the floor moves layers to the "
+        "CPU. False when the layer count is fixed or the fitter is off, where it may fail.",
+    )
     cache_type_kv: Optional[str] = Field(
         None, description = "KV dtype the estimate priced, after flags and fallbacks resolve"
     )
@@ -1188,10 +1214,15 @@ class MemoryEstimate(BaseModel):
     )
     gpu_floor_bytes: Optional[int] = Field(
         None,
-        description = "What still lands on the GPU at the SHORTEST context: drafter "
-        "weights, flat compute buffers, recurrent rollback state. None of it shrinks "
-        "when the context does, so it separates an overage a shorter context fixes from "
-        "one it cannot. None when it was not computed.",
+        description = "gpu_bytes at the shortest context the route prices: the Hub's 256, "
+        "which leaves what no context reduction frees (drafter weights, flat compute "
+        "buffers, recurrent rollback state), and the Load Model panel's loader fit floor, "
+        "past which the launch offloads layers instead. None when it was not computed.",
+    )
+    floor_can_offload: bool = Field(
+        False,
+        description = "Whether a load still over the card at the floor moves layers to the "
+        "CPU rather than keep a placement llama.cpp's fitter refuses to change.",
     )
 
     kv_estimable: bool = Field(True, description = "False when the header could not size the cache")
@@ -1733,6 +1764,10 @@ class LoadResponse(_InferenceRuntimeFields):
         "message. Null once the user has dismissed it at this allocation, and on every "
         "load where enlarging the allocation would not help. The model still loaded.",
     )
+    evicted: list[str] = Field(
+        default_factory = list,
+        description = "Models loaded alongside that were unloaded to make room for this one.",
+    )
 
 
 class UnloadResponse(BaseModel):
@@ -1857,6 +1892,16 @@ class InferenceStatusResponse(_InferenceRuntimeFields):
     )
     loading: List[str] = Field(default_factory = list, description = "Models currently being loaded")
     loaded: List[str] = Field(default_factory = list, description = "Models currently loaded")
+    serving: List[str] = Field(
+        default_factory = list,
+        description = "Models answering requests: the active one and each kept alongside. "
+        "Unlike loaded, leaves out a model only held in memory behind the active one.",
+    )
+    serving_checkpoints: List[str] = Field(
+        default_factory = list,
+        description = "The checkpoint id each serving entry is loaded from, in the same order: "
+        "the path of a local model, else the same id. Load, select and unload by this one.",
+    )
     inference: Optional[Dict[str, Any]] = Field(
         None, description = "Recommended inference parameters for the active model"
     )
@@ -5672,6 +5717,17 @@ class VideoStatusResponse(BaseModel):
         None,
         description = "Attention backend engaged via the diffusers dispatcher (e.g. "
         "_native_cudnn), or null for the default SDPA",
+    )
+    sd_cpp_cudnn_attention: Optional[str] = Field(
+        None,
+        description = "MiniMax-H3 on stable-diffusion.cpp only: cuDNN fused attention state. ready (a "
+        "CUDA 12 cuDNN is named to sd.cpp, no render yet) | engaged | fallback (sd.cpp kept its own "
+        "kernels) | unavailable (no CUDA 12 cuDNN could be provided) | off (switched off) | null "
+        "(not applicable: the build has no cuDNN attention, or the card, platform or engine is not "
+        "eligible).",
+    )
+    sd_cpp_cudnn_reason: Optional[str] = Field(
+        None, description = "Why sd_cpp_cudnn_attention is not engaged or ready, when known"
     )
     transformer_cache: Optional[str] = Field(
         None, description = "Step cache engaged: fbcache | static | null"

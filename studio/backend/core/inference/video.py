@@ -223,6 +223,7 @@ from .video_minimax_h3_te import (
     h3_te_quant_scheme,
     h3_te_resident_gb,
 )
+from .video_encode import encode_x264
 from .video_nvenc import encode_nvenc, nvenc_gpu
 from utils.hardware import clear_gpu_cache
 
@@ -3528,6 +3529,14 @@ class VideoBackend:
                 native_device_name = sd_cpp_device_named(
                     binary, selected_name, position = selected_position
                 )
+            # Same number the fork's dispatch reads, off the re-check's listing (no extra subprocess).
+            from .sd_cpp_backend import sd_cpp_cuda_compute_capability
+
+            native_cuda_cc = (
+                sd_cpp_cuda_compute_capability(binary, native_device_name, probe = False)
+                if native_device != "cpu" and listed_accelerator is not None
+                else None
+            )
         requested_mode = normalize_memory_mode(memory_mode) or "auto"
         policy = {
             "auto": "none" if native_device == "cpu" else "group",
@@ -3563,10 +3572,39 @@ class VideoBackend:
         native_env: tuple[tuple[str, str], ...] = ()
         if h3_sage:
             native_offload += ("--sage-attn",)
-            # Same opt-in takes the fork's BF16 cuBLAS path; a user-exported value (0 included) wins.
-            from .video_minimax_h3 import H3_QUANT_CUBLAS_ENV, H3_QUANT_CUBLAS_MIN_BATCH
-            if H3_QUANT_CUBLAS_ENV not in os.environ:
-                native_env += ((H3_QUANT_CUBLAS_ENV, H3_QUANT_CUBLAS_MIN_BATCH),)
+        if native_device != "cpu":
+            from .video_minimax_h3 import h3_quant_cublas_env
+            native_env += h3_quant_cublas_env(native_cuda_cc, sage = h3_sage)
+        from .sd_cpp_cudnn import CudnnAttention, plan_cudnn_attention
+
+        try:
+            native_cudnn = (
+                plan_cudnn_attention(
+                    binary,
+                    native_cuda_cc,
+                    allow_install = allow_install,
+                    cancel_event = cancel_event,
+                )
+                if native_device != "cpu"
+                else CudnnAttention()
+            )
+        except Exception as exc:  # noqa: BLE001 - an optional speedup never fails a load
+            logger.warning("video.h3_cudnn_plan_failed (ggml kernels): %s", exc)
+            native_cudnn = CudnnAttention()
+        native_env += native_cudnn.env
+        if cancel_event.is_set():
+            raise RuntimeError(VIDEO_CANCELLED_MSG)
+        from .video_minimax_h3 import H3_QUANT_CUBLAS_ENV, H3_QUANT_CUBLAS_MIN_CC
+
+        # The fork ignores the env below sm80, so a user value there is not the route.
+        h3_quant_cublas = (
+            native_device != "cpu"
+            and (native_cuda_cc is None or tuple(native_cuda_cc) >= H3_QUANT_CUBLAS_MIN_CC)
+            and dict(native_env)
+            .get(H3_QUANT_CUBLAS_ENV, os.environ.get(H3_QUANT_CUBLAS_ENV, ""))
+            .strip()
+            not in ("", "0")
+        )
         # After the policy, so the pin can see which modules it left on the CPU; without it sd.cpp uses ordinal 0
         # whatever was selected.
         native_offload += tuple(device_backend_flags(native_device_name, list(native_offload)))
@@ -3593,6 +3631,7 @@ class VideoBackend:
             files = native_files,
             offload_flags = native_offload,
             env = native_env,
+            cudnn = native_cudnn,
             server_slot = (
                 H3NativeServerSlot(
                     server_binary,
@@ -3647,9 +3686,12 @@ class VideoBackend:
                                 "speed_mode": (
                                     speed_mode,
                                     SPEED_MAX if h3_sage else SPEED_OFF,
-                                    "sd.cpp SageAttention + BF16 cuBLAS"
-                                    if h3_sage
-                                    else "sd.cpp exact kernels",
+                                    {
+                                        (True, True): "sd.cpp SageAttention + BF16 cuBLAS",
+                                        (True, False): "sd.cpp SageAttention",
+                                        (False, True): "sd.cpp BF16 cuBLAS matmuls",
+                                        (False, False): "sd.cpp exact kernels",
+                                    }[(bool(h3_sage), bool(h3_quant_cublas))],
                                 ),
                                 "attention_backend": (
                                     None,
@@ -3699,8 +3741,10 @@ class VideoBackend:
         self._precommit_globals = None
         restore_backend_flags(flags)
         from . import diffusion_gguf_compile
+        from . import video_wan_fused
 
         diffusion_gguf_compile.uninstall_all()
+        video_wan_fused.uninstall()
 
     # LTX-2.3 gets DiT/connectors/VAEs/vocoder from the checkpoint + extras, so only the 2.0 base scheduler / text
     # encoder / tokenizer are pulled.
@@ -6252,6 +6296,16 @@ class VideoBackend:
                 "(quantized transformer must be compiled; eager is ~30x slower)"
             )
             effective_speed = SPEED_DEFAULT
+        # Before the step cache and apply_memory_plan: their hooks capture the block forward when they attach.
+        from . import video_wan_fused
+
+        wan_fused_engaged = False
+        if effective_speed != SPEED_OFF:
+            wan_fused_engaged = video_wan_fused.install_for_pipe(
+                pipe, dtype, getattr(target, "device", "cuda"), logger = logger
+            )
+        else:
+            video_wan_fused.uninstall()
         # "off"/"fbcache" pinned; unset/"auto" only on max, by FBCACHE_MIN_STEPS. Run per expert.
         cache_request = normalize_transformer_cache(transformer_cache)
         cache_auto = transformer_cache is None or cache_request == TC_AUTO
@@ -6382,8 +6436,7 @@ class VideoBackend:
             if fam.name == "ltx-2" and applied.get("compiled"):
                 from .video_ltx2 import install_stg_compile_adapter
                 install_stg_compile_adapter(getattr(view, fam.denoiser_attr, None))
-            if fam.name == "ltx-2" and applied.get("cudnn_benchmark"):
-                # cudnn.benchmark: no steady gain on LTX's VAE / vocoder convs, but a per-shape re-tune (first render 26 s vs 10 s).
+            if not getattr(fam, "cudnn_benchmark", True) and applied.get("cudnn_benchmark"):
                 from .video_ltx2 import disable_cudnn_benchmark
                 if disable_cudnn_benchmark():
                     applied = {**applied, "cudnn_benchmark": False}
@@ -6394,6 +6447,8 @@ class VideoBackend:
                     speed_optims += ("hunyuan_attn_trim",)
                 if hv15_mask_engaged:
                     speed_optims += ("hv15_vae_vector_mask",)
+                if wan_fused_engaged:
+                    speed_optims += ("wan_fused_adaln",)
         with self._generate_lock:
             # A cancelled/superseded load must not place weights on a GPU the arbiter may have reassigned; recheck
             # before placement.
@@ -6463,6 +6518,15 @@ class VideoBackend:
                     vae_tiling = True
                 except Exception as exc:  # noqa: BLE001 -- tiling is an optimisation only
                     logger.warning("video.vae_tiling_failed: %s", exc)
+            # Resident: decode untiled when it fits, tiled as fallback. Not on SPEED_OFF, which must stay bit-identical.
+            if (
+                offload_policy == "none"
+                and target.device == "cuda"
+                and effective_speed != SPEED_OFF
+            ):
+                from .video_vae_untiled import install_untiled_decode
+                if install_untiled_decode(pipe, fam.name, logger = logger):
+                    speed_optims += ("vae_untiled_when_fits",)
             # Wan's decode also grows within a single tile, which tiling alone cannot bound.
             install_decoder_sync(pipe, target, logger = logger)
 
@@ -6533,7 +6597,6 @@ class VideoBackend:
                 }
             )
 
-            # Sample at ComfyUI's static sigma shift where the shipped scheduler differs.
             apply_comfy_flow_shift(pipe, getattr(fam, "comfy_flow_shift", None), logger)
             from . import diffusion_prompt_cache
 
@@ -7364,16 +7427,53 @@ class VideoBackend:
             )
         except Exception:  # noqa: BLE001 -- optimisation only, never fail a load
             pass
+        h3_attn_levers: tuple = ()
         try:
+            from .video_minimax_h3_attn import (
+                fuse_h3_qkv_,
+                h3_attention_backend,
+                install_strided_attention,
+            )
+            h3_denoiser = getattr(pipe, denoiser_component, None)
+            # Resident only: a streamed denoiser's offload hooks are keyed to the three projections.
+            if (
+                effective_speed != SPEED_OFF
+                and denoiser_pinned
+                and not denoiser_streamed
+                and transformer_quant_engaged == "int8"
+                and h3_denoiser is not None
+                and fuse_h3_qkv_(h3_denoiser, logger = logger)
+            ):
+                h3_attn_levers += ("h3_fused_qkv",)
+        except Exception as exc:  # noqa: BLE001 -- optimisation only, the stock projections stay
+            logger.warning("video.h3_attn: QKV fusion skipped: %s", exc)
+        try:
+            h3_attn_backend = select_attention_backend(
+                umem_target, attention_backend, speed_active = effective_speed != SPEED_OFF
+            )
+            try:
+                h3_attn_backend = h3_attention_backend(h3_attn_backend, requested = attention_backend)
+            except Exception:  # noqa: BLE001 -- keep the generic pick
+                pass
             attention_engaged = apply_attention_backend(
                 speed_view,
-                select_attention_backend(
-                    umem_target, attention_backend, speed_active = effective_speed != SPEED_OFF
-                ),
+                h3_attn_backend,
                 logger = logger,
                 # The probe behind this must see the dtype the pipeline actually RUNS in.
                 target = types.SimpleNamespace(device = device, dtype = dtype),
             )
+            # speed off stays bit-identical: the fused q/k norm + RoPE only matches stock within a rounding step
+            if effective_speed != SPEED_OFF and attention_engaged in (
+                "_native_cudnn",
+                "_native_flash",
+            ):
+                try:
+                    if install_strided_attention(
+                        getattr(pipe, denoiser_component, None), logger = logger
+                    ):
+                        h3_attn_levers += ("h3_strided_attn",)
+                except Exception as exc:  # noqa: BLE001 -- stock processor stays
+                    logger.warning("video.h3_attn: strided attention skipped: %s", exc)
             applied = apply_speed_optims(
                 speed_view,
                 types.SimpleNamespace(
@@ -7392,11 +7492,22 @@ class VideoBackend:
                 # The conditioner and the VAEs stay in the rotation even when the denoiser is pinned, so the onload
                 # hooks are live and fullgraph has to drop.
                 offload_active = offload_policy != "none",
+                # a denoiser pinned under the others' offload rotation never moves, so the fused int8 GEMM can engage
+                denoiser_offloaded = bool(denoiser_streamed) or not denoiser_pinned,
                 cuda_graph_default = False,
                 logger = logger,
             )
-            speed_optims = tuple(k for k, v in applied.items() if v)
+            speed_optims = tuple(k for k, v in applied.items() if v) + h3_attn_levers
             if denoiser_streamed and "compiled" in speed_optims:
+                # before the first forward traces the blocks below their hooks
+                try:
+                    from .diffusion_int8_gemm import install as install_int8_gemm
+                    if install_int8_gemm(
+                        getattr(pipe, denoiser_component, None), logger, device = device
+                    ):
+                        speed_optims += ("int8_gemm",)
+                except Exception as exc:  # noqa: BLE001 -- optimisation only, the stock GEMM stays
+                    logger.warning("video.h3_int8_gemm: streamed install skipped: %s", exc)
                 from .video_minimax_h3_residency import compile_blocks_below_offload_hooks
                 compile_blocks_below_offload_hooks(
                     getattr(pipe, denoiser_component, None), logger = logger
@@ -7502,7 +7613,6 @@ class VideoBackend:
                 ),
             }
         )
-        # Sample at ComfyUI's static sigma shift where the shipped scheduler differs.
         apply_comfy_flow_shift(pipe, getattr(fam, "comfy_flow_shift", None), logger)
         from . import diffusion_prompt_cache
 
@@ -9077,9 +9187,14 @@ class VideoBackend:
         denoise_close = re.compile(r"sampling completed", re.IGNORECASE)
         step_bar = re.compile(r"\|\s*(\d+)\s*/\s*(\d+)\s*-\s*[\d.]+\s*(?:it/s|s/it)")
         denoising = False
+        cudnn = getattr(runtime, "cudnn", None)
+        if cudnn is not None:
+            cudnn.begin_render()
 
         def on_log(line: str) -> None:
             nonlocal denoising
+            if cudnn is not None:
+                cudnn.feed(line)
             if denoise_open.search(line):
                 denoising = True
                 return
@@ -9196,6 +9311,8 @@ class VideoBackend:
                     raise
                 if cancel.is_set():
                     raise RuntimeError(VIDEO_CANCELLED_MSG)
+                if cudnn is not None:
+                    cudnn.end_render()
                 self._gen.update(phase = "export", eta_seconds = None)
                 actual_width, actual_height, actual_frames, has_audio = inspect_video(generated)
                 mp4_bytes = transcode_video_to_mp4(generated, fps = fps)
@@ -9270,7 +9387,14 @@ class VideoBackend:
                 encode_kwargs.get("audio"),
                 encode_kwargs.get("audio_sample_rate"),
             ):
-                encode_video(video_frames, fps, tmp.name, **encode_kwargs)
+                if not encode_x264(
+                    video_frames,
+                    fps,
+                    tmp.name,
+                    encode_kwargs.get("audio"),
+                    encode_kwargs.get("audio_sample_rate"),
+                ):
+                    encode_video(video_frames, fps, tmp.name, **encode_kwargs)
             return Path(tmp.name).read_bytes()
         finally:
             try:
@@ -9363,8 +9487,11 @@ class VideoBackend:
             # speed=off load is bit-identical.
             from . import diffusion_gguf_compile
             from . import diffusion_cuda_graph
+            from . import video_wan_fused
 
             diffusion_gguf_compile.uninstall_all()
+            # The fused Wan block forward is class-level: a later bf16 / speed=off load gets the stock one back.
+            video_wan_fused.uninstall()
             from . import diffusion_prompt_cache
 
             diffusion_prompt_cache.release(getattr(state, "pipe", None))
@@ -9447,6 +9574,8 @@ class VideoBackend:
                 "speed_mode": None,
                 "speed_optims": [],
                 "attention_backend": None,
+                "sd_cpp_cudnn_attention": None,
+                "sd_cpp_cudnn_reason": None,
                 "transformer_cache": None,
                 "transformer_cache_stats": None,
                 "transformer_quant": None,
@@ -9505,6 +9634,7 @@ class VideoBackend:
             if getattr(state, "bg_compile", None) is not None
             else None,
             "attention_backend": state.attention_backend,
+            **_sd_cpp_cudnn_status(state),
             "transformer_cache": state.transformer_cache,
             "transformer_cache_stats": (
                 static_skip_stats(state.pipe) if state.transformer_cache == TC_STATIC else None
@@ -9539,6 +9669,14 @@ class VideoBackend:
             },
             "resolved": resolved,
         }
+
+
+def _sd_cpp_cudnn_status(state: Any) -> dict[str, Any]:
+    """Whether the native runtime's sd.cpp children run attention on cuDNN; nulls for every other runtime."""
+    cudnn = getattr(getattr(state, "pipe", None), "cudnn", None)
+    if cudnn is None or state.engine != "sd_cpp":
+        return {"sd_cpp_cudnn_attention": None, "sd_cpp_cudnn_reason": None}
+    return cudnn.status_fields()
 
 
 _backend: Optional[VideoBackend] = None

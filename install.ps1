@@ -10003,7 +10003,8 @@ main()
         "gfx1200", "gfx1201"                                                    # RDNA 4
     )
     $MultiArchIndexBase = if ($env:UNSLOTH_ROCM_WINDOWS_MULTIARCH_MIRROR) { $env:UNSLOTH_ROCM_WINDOWS_MULTIARCH_MIRROR.TrimEnd('/') } else { "https://repo.amd.com/rocm/whl-multi-arch" }
-    $MultiArchTag = "rocm7.14.1"
+    # Not rocm7.14.1: its Windows wheels ship a mismatched AOTriton runtime, so fused SDPA fails (ROCm/TheRock#7992).
+    $MultiArchTag = "rocm7.14.0"
     $MultiArchTorchVersion = "2.11.0"
     $MultiArchTorchvisionVersion = "0.26.0"
     $MultiArchTorchaudioVersion = "2.11.0"
@@ -11303,7 +11304,7 @@ main()
         }
     }
 
-    $installedPackageVersion = (& $VenvPython -c "
+    $installedPackageVersion = (& $VenvPython -I -c "
 import sys
 try:
     from studio.install_manifest import installed_version_probe
@@ -11550,7 +11551,7 @@ sys.exit(2 if conflict else (0 if installed else 1))
     if ($script:WoaNativeCudaTorch) {
         $WoaStudioSetup = $null
         try {
-            $WoaStudioSetup = (& $VenvPython -c "import pathlib, studio; print(pathlib.Path(studio.__file__).parent / 'setup.ps1')" 2>$null | Select-Object -First 1)
+            $WoaStudioSetup = (& $VenvPython -I -c "import pathlib, studio; print(pathlib.Path(studio.__file__).parent / 'setup.ps1')" 2>$null | Select-Object -First 1)
         } catch {}
         $WoaStudioAware = $false
         if ($WoaStudioSetup -and (Test-Path -LiteralPath $WoaStudioSetup -PathType Leaf)) {

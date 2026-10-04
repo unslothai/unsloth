@@ -83,6 +83,7 @@ on:
       - 'scripts/lockfile_supply_chain_audit.py'
       - 'studio/package-lock.json'
       - 'studio/backend/core/data_recipe/oxc-validator/package-lock.json'
+      - 'studio/backend/core/data_recipe/oxc-validator/.npmrc'
       - 'scripts/scan_npm_packages.py'
       - 'scripts/scan_npm_packages_baseline.json'
       - 'scripts/check_new_install_scripts.py'

@@ -30,7 +30,7 @@ def _read(path: Path) -> str:
 # The trigger's name label. Since #11757 the label stays whole and the model name truncates in its
 # own span inside it, inheriting the label's line height.
 TRIGGER_LABEL_CLASSES = frozenset({"font-heading", "text-ui-16", "whitespace-nowrap"})
-TRIGGER_NAME_SPAN = '<span className="min-w-0 truncate">{currentModel?.name ?? placeholder}</span>'
+TRIGGER_NAME_SPAN = '<span className="min-w-0 truncate">{triggerTitle}</span>'
 
 
 SIDEBAR_ACCOUNT_CLASSES = frozenset(

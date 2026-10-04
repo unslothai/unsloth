@@ -18,7 +18,7 @@ import sys
 import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
-from typing import NamedTuple, Optional, Sequence
+from typing import Any, NamedTuple, Optional, Sequence
 from utils.paths.path_utils import is_appledouble_metadata
 
 from .diffusion_nvfp4_flag import nvfp4_blocked
@@ -113,9 +113,10 @@ class DiffusionFamily:
     max_output_pixels: int = 2048 * 2048
     # Accepted condition-image preprocessing resolutions (square side, by area); empty = no such control.
     reference_resolutions: tuple[int, ...] = field(default_factory = tuple)
-    # Static sigma shift ComfyUI samples this family with; the loader rebuilds the scheduler at it. None = keep the
-    # shipped scheduler.
+    # ComfyUI's static sigma shift; None = keep the shipped scheduler.
     comfy_flow_shift: Optional[float] = None
+    # (lowercased id substring, shift) for checkpoints whose template differs; first match wins.
+    comfy_flow_shift_variants: tuple[tuple[str, float], ...] = field(default_factory = tuple)
     # Activation-guard cost of one condition pixel relative to one output pixel.
     condition_pixel_weight: float = 1.0
     # Extra lowercased substrings (besides ``name``) that map a repo id here.
@@ -127,6 +128,8 @@ class DiffusionFamily:
     fp16_guard: Optional[str] = None
     # false only for a family whose denoiser block does not compile cleanly with regional torch.compile
     supports_torch_compile: bool = True
+    # False keeps cudnn.benchmark off (as VideoFamily.cudnn_benchmark): its per-process conv pick changes pixels.
+    cudnn_benchmark: bool = True
     # Optional pre-quantized transformer checkpoints as (scheme, repo_id): fetched instead of the dense bf16 (lower
     # load VRAM + download).
     prequant_repos: tuple[tuple[str, str], ...] = field(default_factory = tuple)
@@ -207,6 +210,7 @@ class DiffusionFamily:
 _FAMILIES: tuple[DiffusionFamily, ...] = (
     DiffusionFamily(
         name = "flux.1",
+        cudnn_benchmark = False,
         pipeline_class = "FluxPipeline",
         transformer_class = "FluxTransformer2DModel",
         base_repo = "black-forest-labs/FLUX.1-schnell",
@@ -329,6 +333,8 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         # detect_family prefers this over "qwen-image".
         name = "qwen-image-edit",
         comfy_flow_shift = 3.1,  # ComfyUI ModelSamplingAuraFlow 3.1 (Qwen-Image-Edit 2511 template)
+        # The 2509 template samples at ModelSamplingAuraFlow 3.
+        comfy_flow_shift_variants = (("qwen-image-edit-2509", 3.0),),
         pipeline_class = "QwenImageEditPlusPipeline",
         transformer_class = "QwenImageTransformer2DModel",
         base_repo = "Qwen/Qwen-Image-Edit-2511",
@@ -370,6 +376,7 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         aliases = ("qwen_image", "qwenimage"),
         # fp16 overflows to NaN latents (black images)
         fp16_incompatible = True,
+        cudnn_benchmark = False,
         trainable = True,
         train_base_repos = ("unsloth/Qwen-Image-2512-unsloth-bnb-4bit", "Qwen/Qwen-Image"),
         img2img_pipeline_class = "QwenImageImg2ImgPipeline",
@@ -493,6 +500,7 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
     ),
     DiffusionFamily(
         name = "z-image",
+        cudnn_benchmark = False,
         comfy_flow_shift = 3.0,  # ComfyUI shift 3 for Turbo and base (Turbo already ships 3.0)
         pipeline_class = "ZImagePipeline",
         transformer_class = "ZImageTransformer2DModel",
@@ -542,6 +550,8 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
             ("int8", "unsloth/Krea-2-Turbo-FP8"),
             ("fp8", "unsloth/Krea-2-Turbo-FP8"),
         ),
+        # Both are baked from the distilled Turbo denoiser: Raw quantizes its own dense weights.
+        prequant_excluded_bases = ("krea/krea-2-raw",),
         # Pre-cast Qwen3-VL-4B TE (8.88 -> 4.83 GB); handed into load_krea2_pipeline directly (assembly never sees
         # pipe_kwargs).
         te_prequant_repos = (("fp8", "text_encoder", "unsloth/Krea-2-Turbo-FP8"),),
@@ -628,6 +638,8 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
     # pipeline. img2img / inpaint / ControlNet are the standard SDXL pipelines. No GGUF path.
     DiffusionFamily(
         name = "sdxl",
+        # ~1.8% slower warm, but compiled-UNet renders then match across servers (ComfyUI's default)
+        cudnn_benchmark = False,
         pipeline_class = "StableDiffusionXLPipeline",
         transformer_class = "UNet2DConditionModel",
         base_repo = "stabilityai/stable-diffusion-xl-base-1.0",
@@ -1139,10 +1151,8 @@ def prefer_ungated_mirror(
 # same values as the UI MODEL_DEFAULTS table, keep in sync.
 _GENERATION_DEFAULTS: tuple[tuple[str, int, float], ...] = (
     # Values follow ComfyUI's official templates for the same model (our baseline).
-    # Z-Image-Turbo: 8 steps (ComfyUI runs 8 sampler steps; diffusers runs one forward per step).
     ("z-image-turbo", 8, 0.0),
-    # FLUX.1 Krea dev is a FLUX.1-dev finetune, NOT a Krea-2: 20 steps at the FLUX guidance default 3.5, as ComfyUI.
-    # Must precede the generic "krea" key.
+    # FLUX.1 Krea dev is a FLUX.1-dev finetune, NOT a Krea-2; must precede the generic "krea" key.
     ("flux.1-krea", 20, 3.5),
     # Krea 2 Raw (undistilled): 52 steps / guidance 3.5. Must precede the generic "krea" key.
     ("krea-2-raw", 52, 3.5),
@@ -1151,23 +1161,21 @@ _GENERATION_DEFAULTS: tuple[tuple[str, int, float], ...] = (
     ("flux.1-schnell", 4, 0.0),
     ("kontext", 20, 2.5),  # editing: before the generic flux.1
     ("flux.1", 20, 3.5),
-    # The undistilled base variants run real CFG: 20 steps at CFG 5, as ComfyUI. Keep this before the generic
-    # distilled key, which covers both 4B and 9B 4-step checkpoints.
+    # Undistilled base runs real CFG; keep before the generic distilled key.
     ("flux.2-klein-base", 20, 5.0),
     ("flux.2-klein", 4, 1.0),
     ("flux.2-dev", 20, 4.0),  # full (non-distilled)
-    # Qwen-Image-2.1: 25 steps, no guidance. Before the generic qwen-image key.
+    # Before the generic qwen-image key (also the two below).
     ("qwen-image-2.1", 25, 1.0),
     ("qwen-image-21", 25, 1.0),
     ("qwen_image_21", 25, 1.0),
     ("qwenimage21", 25, 1.0),
-    # Qwen-Image-Edit 2511: 40 steps at CFG 4. Before the generic qwen-image key.
+    # 2509 template: 20 / 4; the generic key is the 2511 recipe (the family base).
+    ("qwen-image-edit-2509", 20, 4.0),
     ("qwen-image-edit", 40, 4.0),
-    # Qwen-Image-2512: 50 steps at CFG 4 (its own ComfyUI template; the original Qwen-Image runs 20).
     ("qwen-image-2512", 50, 4.0),
     ("qwen-image", 20, 4.0),
-    # Z-Image base: 25 steps at ComfyUI CFG 4. diffusers Z-Image computes pos + g * (pos - neg), so its g is
-    # ComfyUI's cfg - 1.
+    # diffusers Z-Image g = ComfyUI cfg - 1 (pos + g * (pos - neg)).
     ("z-image", 25, 3.0),
     # Lumina Image 2.0 card: 50 steps, guidance 4 (plus cfg_trunc_ratio 0.25, which the loader passes itself).
     ("lumina", 50, 4.0),
@@ -1178,8 +1186,7 @@ _GENERATION_DEFAULTS: tuple[tuple[str, int, float], ...] = (
     ("hidream-i1-dev", 28, 0.0),
     ("hidream-i1-fast", 16, 0.0),
     ("hidream", 50, 5.0),
-    # Ideogram 4: ComfyUI's Default preset, 20 steps at guidance 7 (3 once sigma <= 0.3), logit-normal mu 0.0 / std 1.75.
-    # An explicit 48 steps at 7 still runs the card's tapered schedule.
+    # Ideogram 4: an explicit 48 steps at 7 still runs the card's tapered schedule.
     ("ideogram", 20, 7.0),
     # SDXL: Turbo distilled; base wants ~30 steps + CFG ~7. "sdxl-turbo" precedes "sdxl".
     ("sdxl-turbo", 3, 0.0),
@@ -1188,6 +1195,17 @@ _GENERATION_DEFAULTS: tuple[tuple[str, int, float], ...] = (
 )
 # Unrecognised model: distilled few-step / no-CFG shape, matching the UI fallback.
 _GENERATION_DEFAULT_FALLBACK = (9, 0.0)
+
+
+def comfy_flow_shift_for(fam: Any, *identifiers: Optional[str]) -> Optional[float]:
+    """ComfyUI's static shift for the loaded checkpoint: the first family variant whose key is in
+    an identifier (repo id, GGUF file, base repo), else the family default."""
+    for identifier in identifiers:
+        needle = (identifier or "").lower()
+        for key, shift in getattr(fam, "comfy_flow_shift_variants", ()) or ():
+            if key in needle:
+                return shift
+    return getattr(fam, "comfy_flow_shift", None)
 
 
 def default_generation_params(*identifiers: Optional[str]) -> tuple[int, float]:
