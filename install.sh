@@ -8172,7 +8172,7 @@ fi
 
 # Same probe as install.ps1: version() answers from whichever record the finder yields first, so a duplicate would be reported here as an ordinary version.
 _installed_package_version_exit=0
-if _installed_package_version=$("$_VENV_PY" -c '
+if _installed_package_version=$("$_VENV_PY" -I -c '
 import sys
 try:
     from studio.install_manifest import installed_version_probe
@@ -8387,7 +8387,10 @@ if [ "$STUDIO_LOCAL_INSTALL" = true ] && [ -f "$_REPO_ROOT/studio/setup.sh" ]; t
 fi
 
 if [ -z "$SETUP_SH" ] || [ ! -f "$SETUP_SH" ]; then
-    SETUP_SH=$("$VENV_DIR/bin/python" -c "
+    # -I: a bare -c puts the caller's cwd first on sys.path, so launching from an unsloth
+    # checkout resolved `studio` to the checkout and ran ITS setup.sh, which installed the
+    # checkout's requirement pins while the wheel's verify_install read the wheel's.
+    SETUP_SH=$("$VENV_DIR/bin/python" -I -c "
 import importlib.resources
 print(importlib.resources.files('studio') / 'setup.sh')
 " 2>/dev/null || echo "")

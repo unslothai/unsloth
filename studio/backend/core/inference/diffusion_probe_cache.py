@@ -52,6 +52,15 @@ def _cache_file() -> Optional[Path]:
         return None
 
 
+def has_file() -> bool:
+    """A verdict file exists (stdlib only, no key check): a later start that will most likely read its table."""
+    path = _cache_file() if enabled() else None
+    try:
+        return path is not None and path.is_file() and path.stat().st_size > 0
+    except OSError:
+        return False
+
+
 def _source_digest() -> str:
     global _SOURCE_DIGEST
     if _SOURCE_DIGEST is None:

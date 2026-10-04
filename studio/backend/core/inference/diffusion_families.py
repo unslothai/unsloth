@@ -130,6 +130,8 @@ class DiffusionFamily:
     supports_torch_compile: bool = True
     # False keeps cudnn.benchmark off (as VideoFamily.cudnn_benchmark): its per-process conv pick changes pixels.
     cudnn_benchmark: bool = True
+    # (major, minor) archs on which the compile pins inductor's reduction-config filter; empty = inductor's pick.
+    filter_reduction_configs_archs: tuple[tuple[int, int], ...] = field(default_factory = tuple)
     # Optional pre-quantized transformer checkpoints as (scheme, repo_id): fetched instead of the dense bf16 (lower
     # load VRAM + download).
     prequant_repos: tuple[tuple[str, str], ...] = field(default_factory = tuple)
@@ -205,11 +207,16 @@ class DiffusionFamily:
         return self.deploy_base_repo or trained_base
 
 
+# Fresh servers rendered 2-4 variants of one seed here (FLUX.1, Z-Image, Qwen-Image; the edit siblings share their DiT):
+# near-tied norm-reduction configs, benchmarked per process, sum in different orders. B200 measured deterministic.
+_REDUCTION_RACE_ARCHS: tuple[tuple[int, int], ...] = ((8, 0), (8, 9), (12, 0))
+
 # Keyed by architecture, not per variant: the base repo is read from the HF base_model tag at load time, so one entry
 # covers Turbo/full, schnell/dev.
 _FAMILIES: tuple[DiffusionFamily, ...] = (
     DiffusionFamily(
         name = "flux.1",
+        filter_reduction_configs_archs = _REDUCTION_RACE_ARCHS,
         cudnn_benchmark = False,
         pipeline_class = "FluxPipeline",
         transformer_class = "FluxTransformer2DModel",
@@ -322,6 +329,7 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         # FLUX instruction editing: FluxKontextPipeline takes an image + instruction. Specific aliases first so
         # detect_family prefers this over "flux.1".
         name = "flux.1-kontext",
+        filter_reduction_configs_archs = _REDUCTION_RACE_ARCHS,
         pipeline_class = "FluxKontextPipeline",
         transformer_class = "FluxTransformer2DModel",
         base_repo = "black-forest-labs/FLUX.1-Kontext-dev",
@@ -332,6 +340,7 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         # Qwen instruction editing: the 2511 checkpoint ships as QwenImageEditPlusPipeline. Specific aliases first so
         # detect_family prefers this over "qwen-image".
         name = "qwen-image-edit",
+        filter_reduction_configs_archs = _REDUCTION_RACE_ARCHS,
         comfy_flow_shift = 3.1,  # ComfyUI ModelSamplingAuraFlow 3.1 (Qwen-Image-Edit 2511 template)
         # The 2509 template samples at ModelSamplingAuraFlow 3.
         comfy_flow_shift_variants = (("qwen-image-edit-2509", 3.0),),
@@ -352,6 +361,7 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
     ),
     DiffusionFamily(
         name = "qwen-image",
+        filter_reduction_configs_archs = _REDUCTION_RACE_ARCHS,
         comfy_flow_shift = 3.1,  # ComfyUI ModelSamplingAuraFlow 3.1 (Qwen-Image templates)
         pipeline_class = "QwenImagePipeline",
         transformer_class = "QwenImageTransformer2DModel",
@@ -500,6 +510,7 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
     ),
     DiffusionFamily(
         name = "z-image",
+        filter_reduction_configs_archs = _REDUCTION_RACE_ARCHS,
         cudnn_benchmark = False,
         comfy_flow_shift = 3.0,  # ComfyUI shift 3 for Turbo and base (Turbo already ships 3.0)
         pipeline_class = "ZImagePipeline",
@@ -550,6 +561,8 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
             ("int8", "unsloth/Krea-2-Turbo-FP8"),
             ("fp8", "unsloth/Krea-2-Turbo-FP8"),
         ),
+        # Both are baked from the distilled Turbo denoiser: Raw quantizes its own dense weights.
+        prequant_excluded_bases = ("krea/krea-2-raw",),
         # Pre-cast Qwen3-VL-4B TE (8.88 -> 4.83 GB); handed into load_krea2_pipeline directly (assembly never sees
         # pipe_kwargs).
         te_prequant_repos = (("fp8", "text_encoder", "unsloth/Krea-2-Turbo-FP8"),),
