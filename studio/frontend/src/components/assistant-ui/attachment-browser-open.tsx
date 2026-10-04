@@ -55,15 +55,17 @@ function localLoader(source: AttachmentSource): (() => Promise<Opened>) | null {
 function opener(source: AttachmentSource, attachmentId: string, load: () => Promise<Opened>) {
   return () =>
     void load()
-      .then(({ blob, plainText }) =>
+      .then(({ blob, plainText }) => {
+        const name = source.name || "attachment";
+        // Extracted text, not the original bytes: name and type it as text, as the viewer saves it.
         openFileInBrowser({
           blob,
-          name: source.name || "attachment",
-          contentType: source.contentType || blob.type,
+          name: plainText ? `${name.replace(/\.[^.]+$/, "")}.txt` : name,
+          contentType: plainText ? "text/plain" : source.contentType || blob.type,
           plainText,
           key: `${attachmentId}:${source.name}`,
-        }),
-      )
+        });
+      })
       .catch(() => toast.error(`Could not open ${source.name || "attachment"}`));
 }
 

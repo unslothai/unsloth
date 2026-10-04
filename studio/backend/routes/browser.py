@@ -739,13 +739,21 @@ def _attr(match: "re.Match[str] | None") -> Optional[str]:
     return _html.unescape(next(group for group in match.groups() if group is not None))
 
 
+def _join(base: str, href: str) -> Optional[str]:
+    """``urljoin``, or None for an address it cannot parse (``http://[bad``)."""
+    try:
+        return urljoin(base, href.strip())
+    except ValueError:
+        return None
+
+
 def _prepare_page(page: str, url: str) -> tuple[str, str, Optional[dict]]:
     """Return ``(page, base_url, refresh)`` with <base>, CSP and refresh meta tags removed."""
     base_url = url
     for tag in _BASE_TAG_RE.findall(page):
         href = _attr(_ATTR_HREF_RE.search(tag))
         if href:
-            base_url = urljoin(url, href.strip())
+            base_url = _join(url, href) or url
             break
     page = _BASE_TAG_RE.sub("", page)
 
@@ -765,8 +773,9 @@ def _prepare_page(page: str, url: str) -> tuple[str, str, Optional[dict]]:
             parsed = _REFRESH_RE.match(_attr(_CONTENT_ATTR_RE.search(tag)) or "")
             if parsed and parsed.group(2) and refresh is None:
                 delay = float(parsed.group(1))
-                if delay <= _MAX_REFRESH_DELAY_S:
-                    refresh = {"delay": delay, "url": urljoin(base_url, parsed.group(2).strip())}
+                target = _join(base_url, parsed.group(2))
+                if delay <= _MAX_REFRESH_DELAY_S and target:
+                    refresh = {"delay": delay, "url": target}
             return ""
         return tag
 
@@ -809,7 +818,11 @@ def _build_response(
     """Build the panel's response. Runs in the fetch pool to keep large pages off the event loop."""
     if error is not None:
         # The host only: a page address can carry a sign-in token.
-        logger.info("browser_fetch_failed", host = urlsplit(url).hostname, error = error)
+        try:
+            host = urlsplit(url).hostname
+        except ValueError:
+            host = None
+        logger.info("browser_fetch_failed", host = host, error = error)
         if meta.get("bot_check"):
             raise HTTPException(status_code = 502, detail = {"message": error, "botCheck": True})
         raise HTTPException(status_code = 502, detail = error)

@@ -50,7 +50,8 @@ const MAX_BODY_CHARS = 1024 * 1024;
 const MAX_TITLE_CHARS = 1024;
 const SHORTCUT_KEYS = new Set(["l", "t", "w", "r", "f"]);
 const MAX_QUOTE_CHARS = 300;
-const MAX_MARKS = 500;
+/** Marks a page may hold, in one report or one at a time. */
+export const MAX_MARKS = 500;
 // Far past any screen, so a page can't make the panel draw something huge.
 const MAX_COORD = 1_000_000;
 

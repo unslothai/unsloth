@@ -21,7 +21,7 @@ import {
   useRef,
   useState,
 } from "react";
-import type { AnnotateEvent, AnnotateRect } from "./frame-message";
+import { type AnnotateEvent, type AnnotateRect, MAX_MARKS } from "./frame-message";
 import { frameRect, onFrameAnnotate, sendFrameCommand } from "./page-frame";
 import { useBrowserStore } from "./store";
 
@@ -872,7 +872,8 @@ export function WebAnnotateLayer({
             : event.area
               ? t("browser.annotate.areaQuote")
               : "");
-        if (!quote) {
+        // The page can post marks itself: past the cap, new ones are dropped.
+        if (!quote || (!rects.has(event.id) && rects.size >= MAX_MARKS)) {
           forget(event.id);
           break;
         }

@@ -354,7 +354,13 @@ function sendDocumentAnnotations(
   annotations: DocumentAnnotations,
 ): Promise<boolean> {
   const composer = aui.composer();
-  const hasDraft = composer.getState().text.trim().length > 0;
+  const drafted = () => {
+    const state = composer.getState();
+    return { text: state.text.trim().length > 0, attachments: state.attachments.length };
+  };
+  // Text or files the user staged are their next message: the annotations join it unsent.
+  const before = drafted();
+  const hasDraft = before.text || before.attachments > 0;
   return composer
     .addAttachment(createAnnotationsFile(annotations))
     .then(() => {
@@ -371,11 +377,12 @@ function sendDocumentAnnotations(
           ?.focus();
         return true;
       }
-      // Two frames, so the composer has rendered the attachment it now sends. Text typed
-      // meanwhile is the next message: leave the annotations staged with it.
+      // Two frames, so the composer has rendered the attachment it now sends. Text or files
+      // added meanwhile are the next message: leave the annotations staged with them.
       requestAnimationFrame(() =>
         requestAnimationFrame(() => {
-          if (composer.getState().text.trim()) return;
+          const now = drafted();
+          if (now.text || now.attachments > 1) return;
           form.requestSubmit();
         }),
       );

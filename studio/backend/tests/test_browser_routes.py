@@ -77,6 +77,20 @@ def test_prepare_page_strips_what_would_escape_the_sandbox():
     assert refresh == {"delay": 2.0, "url": "https://example.com/docs/next.html"}
     slow = '<meta http-equiv="refresh" content="600; url=/later">'
     assert browser_mod._prepare_page(slow, "https://example.com/")[2] is None
+    # Addresses urljoin cannot parse are ignored, not a failed fetch.
+    bad = '<base href="http://[bad"><meta http-equiv="refresh" content="1; url=http://[bad">'
+    assert browser_mod._prepare_page(bad, "https://example.com/a")[1:] == (
+        "https://example.com/a",
+        None,
+    )
+
+
+def test_a_failed_fetch_of_an_unparseable_address_still_answers_502():
+    from fastapi import HTTPException
+
+    with pytest.raises(HTTPException) as caught:
+        browser_mod._build_response("http://[bad", "Invalid host", b"", "", {})
+    assert caught.value.status_code == 502
     # Quoted "<" and ">" stay inside the tag.
     quoted = '<meta http-equiv="Content-Security-Policy" content="a<b>c"><p>x</p>'
     assert browser_mod._prepare_page(quoted, "https://example.com/")[0] == "<p>x</p>"
