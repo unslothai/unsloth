@@ -9,6 +9,7 @@ import {
 } from "@/components/ui/tooltip";
 import {
   parseYamlConfig,
+  parseYamlRlSettings,
   serializeConfigToYaml,
   useTrainingConfigStore,
 } from "@/features/training";
@@ -41,7 +42,14 @@ export function ConfigActions() {
   const applyYamlConfig = (content: string, filename: string) => {
     try {
       const config = parseYamlConfig(content);
-      useTrainingConfigStore.getState().applyConfigPatch(config);
+      const { trainingObjective, ...rl } = parseYamlRlSettings(content);
+      const store = useTrainingConfigStore.getState();
+      // Objective first: it swaps in the RL learning rate, which the file's own value then overrides.
+      store.setTrainingObjective(trainingObjective);
+      store.applyConfigPatch(config);
+      if (Object.keys(rl).length > 0) {
+        useTrainingConfigStore.setState(rl);
+      }
       toast.success(t("studio.training.configLoaded"), {
         description: filename,
       });

@@ -30,6 +30,7 @@ import {
 } from "./dataset-cache-rejection";
 import { shouldUseVisionDatasetCheck } from "./fresh-dataset-check";
 import { isMissingLocalDatasetCacheError } from "./local-cache-errors";
+import { missingRlRoles } from "./rl-roles";
 import { isRawTextDatasetFormat } from "./training-methods";
 import { normalizeTrainingStartError } from "./training-start-errors";
 import { createTrainingStartInputIdentity } from "./training-start-inputs";
@@ -385,6 +386,26 @@ async function prepareSelectedDataset(
     return prepareSelectedDataset(attempt, hfToken);
   }
   if (hasIncompatibleTrainingModalities(attempt.config)) {
+    return attempt.cancel();
+  }
+  const objective = attempt.config.trainingObjective;
+  if (objective !== "sft" && attempt.config.trainingMethod !== "cpt") {
+    // RL reads Column roles, not the chat-role mapping.
+    const missing = missingRlRoles(
+      objective,
+      check.columns,
+      attempt.config.rlRoleMapping,
+    );
+    if (missing.length === 0) {
+      return true;
+    }
+    toast.error(
+      translate("rl.dataset.missing", {
+        roles: missing
+          .map((role) => translate(`rl.dataset.role.${role}`))
+          .join(", "),
+      }),
+    );
     return attempt.cancel();
   }
   if (!needsManualMapping(attempt.config, check, isVlm, isAudio)) {

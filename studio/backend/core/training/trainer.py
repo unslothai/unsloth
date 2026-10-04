@@ -60,6 +60,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Callable, Union
 from datasets import Dataset
 from core.training.eval_dataset import evaluation_enabled
+from core.training.rl import rl_log_metrics
 from utils.datasets.audio_decode import ensure_audio_decoding
 from utils.datasets.cache_safe import load_dataset_cache_safe as load_dataset
 from utils.hf_dataset_options import hf_dataset_split_instruction_names
@@ -688,6 +689,7 @@ class UnslothTrainer:
                     grad_norm = grad_norm,
                     num_tokens = num_tokens,
                     eval_loss = logs.get("eval_loss", None),
+                    rl_metrics = rl_log_metrics(logs),
                     is_run_summary = is_run_summary,
                     status_message = "",
                 )
@@ -2693,6 +2695,9 @@ class UnslothTrainer:
         dataset_slice_start: Optional[int] = None,
         dataset_slice_end: Optional[int] = None,
         is_cpt: bool = False,
+        objective: str = "sft",
+        rl_keep_columns: tuple = (),
+        rl_system_prompt: Optional[str] = None,
         s3_config: dict = None,
         dataset_local_files_only: bool = False,
         dataset_local_path: Optional[str] = None,
@@ -3318,6 +3323,17 @@ class UnslothTrainer:
 
             _raise_if_empty_train_split(dataset, "")
 
+            if objective != "sft":
+                return self._format_rl_dataset(
+                    dataset,
+                    eval_dataset,
+                    objective = objective,
+                    custom_format_mapping = custom_format_mapping,
+                    keep_columns = rl_keep_columns,
+                    system_prompt = rl_system_prompt,
+                    split_eval = eval_enabled and not has_separate_eval_source,
+                )
+
             # ========== FORMAT FIRST ==========
             logger.info(f"Formatting dataset with format_type='{format_type}'...\n")
 
@@ -3399,6 +3415,45 @@ class UnslothTrainer:
         finally:
             if s3_download is not None:
                 s3_download.cleanup()
+
+    def _format_rl_dataset(
+        self,
+        dataset,
+        eval_dataset,
+        *,
+        objective: str,
+        custom_format_mapping: Optional[Dict[str, Any]],
+        keep_columns: tuple,
+        split_eval: bool,
+        system_prompt: Optional[str] = None,
+    ) -> tuple:
+        """Shape rows for DPO/ORPO/GRPO; TRL applies the chat template itself."""
+        from core.training.rl import format_rl_dataset
+
+        num_proc = dataset_map_num_proc(None)
+        formatted, roles = format_rl_dataset(
+            dataset, objective, custom_format_mapping, keep_columns, num_proc, system_prompt
+        )
+        if eval_dataset is not None:
+            eval_dataset, _ = format_rl_dataset(
+                eval_dataset,
+                objective,
+                custom_format_mapping,
+                keep_columns,
+                num_proc,
+                system_prompt,
+            )
+        elif split_eval:
+            split_result = self._resolve_eval_split_from_dataset(formatted)
+            if split_result is not None:
+                formatted, eval_dataset = split_result
+        _raise_if_empty_train_split(formatted, "after formatting")
+        mapped = ", ".join(f"{column} -> {role}" for role, column in roles.items())
+        self._update_progress(
+            status_message = f"Dataset ready ({len(formatted):,} samples, {objective.upper()}: {mapped})"
+        )
+        logger.info(f"{objective.upper()} dataset ready ({len(formatted)} rows; {mapped})\n")
+        return ({"dataset": formatted, "detected_format": objective, "success": True}, eval_dataset)
 
     def _auto_detect_eval_split_from_hf(
         self,
@@ -4321,22 +4376,45 @@ class UnslothTrainer:
             # Plain-text single-pass runs tokenize in the DataLoader workers instead of a blocking .map(); everything
             # else stays eager.
             self._online_prewarm_batches = 0
-            online_decision = self._configure_online_tokenization(
-                config_args = config_args,
-                dataset = dataset,
-                eval_dataset = eval_dataset,
-                training_args = training_args,
-                data_collator = data_collator,
-                raw_text_mode = raw_text_mode,
-                is_deepseek_ocr = is_deepseek_ocr,
-            )
-            if online_decision.enabled:
-                eval_dataset = self._online_eval_dataset
+            objective = training_args.get("objective", "sft")
+            self.training_objective = objective
+            if objective == "sft":
+                online_decision = self._configure_online_tokenization(
+                    config_args = config_args,
+                    dataset = dataset,
+                    eval_dataset = eval_dataset,
+                    training_args = training_args,
+                    data_collator = data_collator,
+                    raw_text_mode = raw_text_mode,
+                    is_deepseek_ocr = is_deepseek_ocr,
+                )
+                if online_decision.enabled:
+                    eval_dataset = self._online_eval_dataset
 
             logger.info(f"The configuration is: {config_args}")
 
             logger.info("Training configuration prepared\n")
-            if self.is_audio_vlm and not raw_text_mode:
+            if objective != "sft":
+                from core.training.rl import build_rl_trainer
+                from transformers import ProcessorMixin
+
+                rl_tokenizer = self.tokenizer
+                if isinstance(rl_tokenizer, ProcessorMixin) and hasattr(rl_tokenizer, "tokenizer"):
+                    rl_tokenizer = rl_tokenizer.tokenizer
+                logger.info(f"Configuring {objective.upper()} trainer\n")
+                self.trainer = build_rl_trainer(
+                    objective,
+                    model = self.model,
+                    tokenizer = rl_tokenizer,
+                    train_dataset = dataset["dataset"] if isinstance(dataset, dict) else dataset,
+                    eval_dataset = eval_dataset,
+                    config_args = config_args,
+                    settings = training_args.get("rl_settings") or {},
+                    reward_specs = training_args.get("reward_specs") or [],
+                )
+                if rl_tokenizer is not self.tokenizer:
+                    self.trainer.processing_class = self.tokenizer
+            elif self.is_audio_vlm and not raw_text_mode:
                 # Image VLM: dict wrapper from format_and_template_dataset (raw-text uses the text path). Audio VLM
                 # (e.g. Gemma 3N + audio): raw Dataset from _format_audio_vlm_dataset, and the notebook uses
                 # processing_class=processor.tokenizer; raw-text runs use the text path.
@@ -4435,7 +4513,7 @@ class UnslothTrainer:
             is_cpt = training_args.get("is_cpt", False)
             train_on_responses_enabled = (
                 False
-                if (is_cpt or raw_text_mode)
+                if (is_cpt or raw_text_mode or objective != "sft")
                 else training_args.get("train_on_completions", False)
             )
 
@@ -4561,17 +4639,25 @@ class UnslothTrainer:
                 if num_samples is None:
                     num_samples = len(train_dataset_obj)
                 batch_size = training_args.get("batch_size", 2)
+                grad_accum = training_args.get("gradient_accumulation_steps", 4)
+                if objective == "grpo":
+                    # Unsloth may resize the batch to fit num_generations, and each prompt becomes
+                    # num_generations rows, so count from the trainer's own args.
+                    rl_args = self.trainer.args
+                    num_samples *= int(getattr(rl_args, "num_generations", 1) or 1)
+                    batch_size = rl_args.per_device_train_batch_size
+                    grad_accum = rl_args.gradient_accumulation_steps
                 total_steps = self._calculate_total_steps(
                     num_samples,
                     batch_size,
-                    training_args.get("gradient_accumulation_steps", 4),
+                    grad_accum,
                     training_args.get("num_epochs", 3),
                     max_steps,
                 )
 
             self._update_progress(total_steps = total_steps)
             # Fail fast on an invalid first batch (empty/float input_ids) vs a step-1 crash.
-            preflight_error = self._preflight_first_batch()
+            preflight_error = self._preflight_first_batch() if objective == "sft" else None
             if preflight_error:
                 logger.error(preflight_error)
                 self._update_progress(error = preflight_error, is_training = False)
@@ -4631,6 +4717,10 @@ class UnslothTrainer:
 
             config["unsloth_training_method"] = method
             config["unsloth_load_in_4bit"] = trained_in_4bit
+            # Separate key: readers infer 4-bit loading from unsloth_training_method.
+            objective = getattr(self, "training_objective", "sft")
+            if objective != "sft":
+                config["unsloth_training_objective"] = objective.upper()
             logger.info(f"Patching adapter_config.json with unsloth_training_method='{method}'")
 
             with open(config_path, "w", encoding = "utf-8") as f:

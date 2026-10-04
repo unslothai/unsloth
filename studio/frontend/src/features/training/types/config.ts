@@ -7,8 +7,11 @@ import type {
   DatasetSource,
   GradientCheckpointing,
   ModelType,
+  GrpoRewardSelection,
+  GrpoVariant,
   S3Config,
   TrainingMethod,
+  TrainingObjective,
 } from "@/types/training";
 import type { BackendModelConfig } from "../api/models-api";
 
@@ -139,6 +142,20 @@ export interface TrainingConfigState {
   maxPositionEmbeddings: number | null;
   visionImageSize: number | null;
   s3Config: S3Config | null;
+  trainingObjective: TrainingObjective;
+  rlBeta: number | null;
+  rlMaxPromptLength: number | null;
+  /** dataset column -> RL role (prompt, answer, chosen, rejected, system). */
+  rlRoleMapping: Record<string, string>;
+  grpoNumGenerations: number;
+  grpoMaxCompletionLength: number | null;
+  grpoTemperature: number;
+  grpoSystemPrompt: string;
+  grpoEnableThinking: boolean;
+  grpoVariant: GrpoVariant;
+  grpoMaskTruncatedCompletions: boolean;
+  grpoEpsilonHigh: number | null;
+  grpoRewards: GrpoRewardSelection[];
 }
 
 export type AdvancedSettingsBaseline = Partial<
@@ -255,6 +272,19 @@ export interface TrainingConfigActions {
   setFinetuneMLPModules: (value: boolean) => void;
   setTargetModules: (value: string[]) => void;
   setS3Config: (value: S3Config | null) => void;
+  setTrainingObjective: (value: TrainingObjective) => void;
+  setRlBeta: (value: number | null) => void;
+  setRlMaxPromptLength: (value: number | null) => void;
+  setRlRoleMapping: (value: Record<string, string>) => void;
+  setGrpoNumGenerations: (value: number) => void;
+  setGrpoMaxCompletionLength: (value: number | null) => void;
+  setGrpoTemperature: (value: number) => void;
+  setGrpoSystemPrompt: (value: string) => void;
+  setGrpoEnableThinking: (value: boolean) => void;
+  setGrpoVariant: (value: GrpoVariant) => void;
+  setGrpoMaskTruncatedCompletions: (value: boolean) => void;
+  setGrpoEpsilonHigh: (value: number | null) => void;
+  setGrpoRewards: (value: GrpoRewardSelection[]) => void;
   reset: () => void;
   resetToModelDefaults: () => void;
   applyConfigPatch: (config: BackendModelConfig) => void;

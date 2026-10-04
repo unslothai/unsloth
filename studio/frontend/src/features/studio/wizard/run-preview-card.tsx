@@ -111,7 +111,10 @@ function ResourceNoticeRow({
               <HugeiconsIcon icon={InformationCircleIcon} className="size-3" />
             </button>
           </TooltipTrigger>
-          <TooltipContent side="top" className="max-w-[calc(260px*var(--ui-space-scale,1))] leading-relaxed">
+          <TooltipContent
+            side="top"
+            className="max-w-[calc(260px*var(--ui-space-scale,1))] leading-relaxed"
+          >
             {description}
           </TooltipContent>
         </Tooltip>
@@ -345,6 +348,7 @@ export function RunPreviewCard({
     modelLocalPath,
     modelFormat,
     trainingMethod,
+    trainingObjective,
     datasetSource,
     dataset,
     uploadedFile,
@@ -363,6 +367,7 @@ export function RunPreviewCard({
       modelLocalPath: s.modelLocalPath,
       modelFormat: s.modelFormat,
       trainingMethod: s.trainingMethod,
+      trainingObjective: s.trainingObjective,
       datasetSource: s.datasetSource,
       dataset: s.dataset,
       uploadedFile: s.uploadedFile,
@@ -480,6 +485,12 @@ export function RunPreviewCard({
             </>
           }
         />
+        {trainingObjective !== "sft" && trainingMethod !== "cpt" && (
+          <MetaRow
+            label={t("rl.objective.label")}
+            value={t(`rl.objective.${trainingObjective}`)}
+          />
+        )}
         <MetaRow label={t("studio.preview.length")} value={lengthLabel} />
         <MetaRow
           label={t("studio.preview.batch")}
