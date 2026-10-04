@@ -2595,17 +2595,14 @@ class DiffusionBackend:
         # Capacity gate: mirror plan_fits_total_capacity against TOTAL capacity, else load_pipeline declines the dense
         # path anyway
         from .diffusion_memory import (
-            _reserve_mib,
             snapshot_device_memory,
+            total_capacity_budget_mib,
         )
 
-        memory = snapshot_device_memory(target)
-        total = memory.total_mib
+        budget = total_capacity_budget_mib(snapshot_device_memory(target))
         steady = getattr(candidate, "steady_total_mib", None)
-        if total is not None and steady is not None:
-            budget = int((int(total) - _reserve_mib(memory.memory_kind, int(total))) * 0.85)
-            if int(steady) > budget:
-                return False
+        if budget is not None and steady is not None and int(steady) > budget:
+            return False
         return True
 
     def _hosted_prequant_reachable(self, fam: Any, scheme: Optional[str], kwargs: dict) -> bool:
