@@ -6,7 +6,7 @@ import test from "node:test";
 import type { GgufVariantsResponse } from "../src/features/chat/types/api.ts";
 import {
   loadPickerGgufVariants,
-  readSoleQuantLocalFirst,
+  hubWithdrawsSoleQuant,
 } from "../src/features/model-picker/components/model-selector/gguf-discovery.ts";
 
 const local: GgufVariantsResponse = {
@@ -192,55 +192,61 @@ test("a Hub update or missing drafter reaches a cached quant's row", async () =>
   assert.equal(result.variants[0].filename, "old-Q4_K_M.gguf");
 });
 
-const pickSole = (res: GgufVariantsResponse) => {
-  const sole = res.variants.filter((v) => v.downloaded === true);
-  return sole.length === 1 ? { variant: sole[0] } : null;
-};
-
-test("a sole cached quant collapses from disk when the Hub is unreachable", async () => {
-  const calls: boolean[] = [];
-  const stalled = readSoleQuantLocalFirst(
-    async (localOnly) => {
-      calls.push(localOnly);
-      if (localOnly) return local;
-      throw new Error("Hugging Face unreachable");
-    },
-    pickSole,
-    () => true,
+test("an update downloads the published revision's size and the Hub default wins", async () => {
+  const remote: GgufVariantsResponse = {
+    ...local,
+    default_variant: "Q8_0",
+    variants: [
+      {
+        ...local.variants[0],
+        size_bytes: 300,
+        download_size_bytes: 300,
+        update_available: true,
+      },
+      { quant: "Q8_0", filename: "model-Q8_0.gguf", size_bytes: 512 },
+    ],
+  };
+  const result = await loadPickerGgufVariants(
+    async (localOnly) =>
+      localOnly
+        ? {
+            ...local,
+            variants: [{ ...local.variants[0], download_size_bytes: 0 }],
+          }
+        : remote,
+    options,
+    () => {},
   );
-  assert.equal((await stalled)?.variant.filename, "old-Q4_K_M.gguf");
-  const offline = await readSoleQuantLocalFirst(
-    async (localOnly) => {
-      calls.push(localOnly);
-      return local;
-    },
-    pickSole,
-    () => false,
+  const cached = result.variants.find((v) => v.quant === "Q4_K_M");
+  assert.equal(cached?.download_size_bytes, 300);
+  assert.equal(cached?.size_bytes, 300);
+  assert.equal(cached?.cache_path, "/cache/old");
+  assert.equal(result.default_variant, "Q8_0");
+  const current = await loadPickerGgufVariants(
+    async (localOnly) =>
+      localOnly ? local : { ...remote, variants: [local.variants[0]] },
+    options,
+    () => {},
   );
-  assert.equal(offline?.variant.filename, "old-Q4_K_M.gguf");
-  assert.deepEqual(calls, [true, false, true]);
+  assert.equal(current.variants[0].size_bytes, 256);
 });
 
-test("a Hub update or missing drafter keeps the sole quant's expander", async () => {
+test("a Hub update or missing drafter withdraws a collapsed sole quant", async () => {
   for (const extra of [
     { update_available: true },
     { pending_drafter_filename: "mtp-drafter.gguf" },
   ]) {
-    const remote = {
-      ...local,
-      variants: [{ ...local.variants[0], ...extra }],
-    };
-    const sole = await readSoleQuantLocalFirst(
-      async (localOnly) => (localOnly ? local : remote),
-      pickSole,
-      () => true,
+    const remote = { ...local, variants: [{ ...local.variants[0], ...extra }] };
+    assert.equal(
+      await hubWithdrawsSoleQuant(async () => remote, "q4_k_m"),
+      true,
     );
-    assert.equal(sole, null);
   }
-  const current = await readSoleQuantLocalFirst(
-    async () => local,
-    pickSole,
-    () => true,
+  assert.equal(await hubWithdrawsSoleQuant(async () => local, "Q4_K_M"), false);
+  assert.equal(
+    await hubWithdrawsSoleQuant(async () => {
+      throw new Error("Hugging Face unreachable");
+    }, "Q4_K_M"),
+    false,
   );
-  assert.equal(current?.variant.quant, "Q4_K_M");
 });

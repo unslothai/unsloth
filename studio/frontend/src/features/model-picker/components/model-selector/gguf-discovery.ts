@@ -9,12 +9,20 @@ function withHubState<V extends GgufVariantDetail>(
   published: V | undefined,
 ): V {
   const drafter = local.pending_drafter_filename ? local : published;
+  const update = published?.update_available === true;
   return {
     ...published,
     ...local,
     update_available: published?.update_available ?? local.update_available,
     pending_drafter_filename: drafter?.pending_drafter_filename,
     pending_drafter_size_bytes: drafter?.pending_drafter_size_bytes,
+    // An update downloads the published revision, so its transfer size is the Hub's.
+    ...(update
+      ? {
+          size_bytes: published.size_bytes,
+          download_size_bytes: published.download_size_bytes,
+        }
+      : {}),
   };
 }
 
@@ -49,7 +57,7 @@ export async function loadPickerGgufVariants<T extends GgufVariantsResponse>(
       ...cached,
       variants: [...variants.values()],
       has_vision: cached.has_vision || remote.has_vision,
-      default_variant: cached.default_variant ?? remote.default_variant,
+      default_variant: remote.default_variant ?? cached.default_variant,
     };
   } catch {
     // A remote timeout or connection error must not replace the usable disk answer.
@@ -57,29 +65,22 @@ export async function loadPickerGgufVariants<T extends GgufVariantsResponse>(
   }
 }
 
-/** The sole cached quant from the disk answer, withheld when a reachable Hub reports an update or
- *  a missing companion for it (only the expander carries those actions). */
-export async function readSoleQuantLocalFirst<
-  T extends GgufVariantsResponse,
-  S extends { variant: GgufVariantDetail },
->(
-  list: (localOnly: boolean) => Promise<T>,
-  pick: (response: T) => S | null,
-  canDiscoverRemote: () => boolean,
-): Promise<S | null> {
-  const sole = pick(await list(true));
-  if (!sole || !canDiscoverRemote()) return sole;
+/** Whether a reachable Hub reports an update or a missing companion for a cached quant: only the
+ *  expander carries those actions, so the collapsed row must give way. */
+export async function hubWithdrawsSoleQuant<T extends GgufVariantsResponse>(
+  listRemote: () => Promise<T>,
+  quant: string,
+): Promise<boolean> {
   let remote: T;
   try {
-    remote = await list(false);
+    remote = await listRemote();
   } catch {
-    return sole;
+    return false;
   }
-  const quant = sole.variant.quant.toLowerCase();
   const published = remote.variants.find(
-    (v) => v.quant.toLowerCase() === quant,
+    (v) => v.quant.toLowerCase() === quant.toLowerCase(),
   );
-  return published?.update_available || published?.pending_drafter_filename
-    ? null
-    : sole;
+  return Boolean(
+    published?.update_available || published?.pending_drafter_filename,
+  );
 }

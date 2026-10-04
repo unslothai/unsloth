@@ -6,8 +6,8 @@ import {
   reconcileGgufPinsAfterDelete,
 } from "./reconcile-gguf-pins";
 import {
+  hubWithdrawsSoleQuant,
   loadPickerGgufVariants,
-  readSoleQuantLocalFirst,
 } from "./gguf-discovery";
 
 import { ModelMemoryBar } from "@/components/model-memory-bar";
@@ -1678,27 +1678,37 @@ async function readSoleQuant(
   hfToken?: string,
 ): Promise<SoleDownloadedQuant | null> {
   try {
-    return await readSoleQuantLocalFirst(
-      (localOnly) =>
-        listGgufVariantsCached(target.repoId, hfToken, {
-          localOnly,
-          localPath: target.localSource,
-          includeCacheLocations: target.includeCacheLocations,
-        }),
-      (res) => {
-        const normalized = normalizeGgufVariantsResponse(res);
-        const variant = verifiedSoleHubVariant(
-          normalized.variants,
-          normalized.resolvedLocally,
-          normalized.dependenciesResolved,
-        );
-        return variant ? { variant, hasVision: normalized.hasVision } : null;
-      },
-      () => !isHuggingFaceOffline(),
+    const res = await listGgufVariantsCached(target.repoId, hfToken, {
+      localOnly: true,
+      localPath: target.localSource,
+      includeCacheLocations: target.includeCacheLocations,
+    });
+    const normalized = normalizeGgufVariantsResponse(res);
+    const variant = verifiedSoleHubVariant(
+      normalized.variants,
+      normalized.resolvedLocally,
+      normalized.dependenciesResolved,
     );
+    return variant ? { variant, hasVision: normalized.hasVision } : null;
   } catch {
     return null;
   }
+}
+
+function soleQuantNeedsExpander(
+  target: SoleQuantTarget,
+  quant: string,
+  hfToken?: string,
+): Promise<boolean> {
+  if (isHuggingFaceOffline()) return Promise.resolve(false);
+  return hubWithdrawsSoleQuant(
+    () =>
+      listGgufVariantsCached(target.repoId, hfToken, {
+        localPath: target.localSource,
+        includeCacheLocations: target.includeCacheLocations,
+      }),
+    quant,
+  );
 }
 
 const EMPTY_SOLE_QUANT_ENTRIES: ReadonlyMap<
@@ -1781,6 +1791,21 @@ function useSoleDownloadedQuants(
           const next = new Map(prev);
           next.set(target.repoId, { key: target.key, quant });
           return next;
+        });
+        if (!quant) return;
+        // The disk verdict shows at once; a later Hub answer may still send the row back to its expander.
+        void soleQuantNeedsExpander(
+          target,
+          quant.variant.quant,
+          hfTokenRef.current,
+        ).then((withdraw) => {
+          if (!withdraw || !mountedRef.current) return;
+          setEntries((prev) => {
+            if (prev.get(target.repoId)?.key !== target.key) return prev;
+            const next = new Map(prev);
+            next.set(target.repoId, { key: target.key, quant: null });
+            return next;
+          });
         });
       },
     });
