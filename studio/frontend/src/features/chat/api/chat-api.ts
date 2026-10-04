@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { skillLoadCardEvent } from "./skill-load-event";
 import { authFetch, getAuthSessionEpoch } from "@/features/auth";
 import { prepareHfTokenForUse } from "@/features/hf-auth";
 // These helpers are deliberately API-layer-only, not part of their features' public barrels.
@@ -1763,6 +1764,11 @@ export async function* streamChatCompletions(
           | { type?: string; content?: string; error?: { message?: string } };
         if ("error" in parsed && parsed.error) {
           throw new Error(parsed.error.message || "Stream error");
+        }
+        if ("type" in parsed && parsed.type === "skill_load") {
+          yield { _toolEvent: skillLoadCardEvent(parsed) } as unknown as OpenAIChatChunk;
+          separatorIndex = buffer.search(/\r?\n\r?\n/);
+          continue;
         }
         // Tool status events are custom SSE payloads, not OpenAI chunks
         if ("type" in parsed && parsed.type === "tool_status") {
