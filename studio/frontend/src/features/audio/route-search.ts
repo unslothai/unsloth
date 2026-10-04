@@ -3,7 +3,11 @@
 
 // Free of app imports so the node test runner can load it directly.
 
-import { AUDIO_CPP_AUDIO_TYPES, audioCppModelFor } from "./audio-cpp-catalog";
+import {
+  AUDIO_CPP_AUDIO_TYPES,
+  audioCppModelFor,
+  isCloneOnlyFamilyId,
+} from "./audio-cpp-catalog";
 import {
   type AudioWorkflowId,
   MUSIC_AUDIO_TYPES,
@@ -87,7 +91,10 @@ export function audioWorkflowForPick(pick: {
   if (MUSIC_AUDIO_TYPES.has(pick.audioType ?? "") || catalog?.task === "music") {
     return "music";
   }
-  return catalog?.workflows && !catalog.workflows.includes("speak")
-    ? (catalog.workflows[0] ?? workflow)
-    : workflow;
+  if (catalog?.workflows) {
+    return catalog.workflows.includes("speak")
+      ? workflow
+      : (catalog.workflows[0] ?? workflow);
+  }
+  return workflow === "speak" && isCloneOnlyFamilyId(pick.id) ? "clone" : workflow;
 }
