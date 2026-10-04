@@ -84,3 +84,28 @@ export async function hubWithdrawsSoleQuant<T extends GgufVariantsResponse>(
     published?.update_available || published?.pending_drafter_filename,
   );
 }
+
+/** Runs at most *limit* tasks at once, the rest in arrival order. */
+export function createTaskLimiter(limit: number) {
+  let active = 0;
+  const queue: (() => void)[] = [];
+  const next = () => {
+    if (active >= limit) return;
+    const start = queue.shift();
+    if (start) start();
+  };
+  return function run<R>(task: () => Promise<R>): Promise<R> {
+    return new Promise<R>((resolve, reject) => {
+      queue.push(() => {
+        active += 1;
+        task()
+          .then(resolve, reject)
+          .finally(() => {
+            active -= 1;
+            next();
+          });
+      });
+      next();
+    });
+  };
+}

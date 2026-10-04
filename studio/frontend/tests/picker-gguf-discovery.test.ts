@@ -6,6 +6,7 @@ import test from "node:test";
 import type { GgufVariantsResponse } from "../src/features/chat/types/api.ts";
 import {
   loadPickerGgufVariants,
+  createTaskLimiter,
   hubWithdrawsSoleQuant,
 } from "../src/features/model-picker/components/model-selector/gguf-discovery.ts";
 
@@ -249,4 +250,24 @@ test("a Hub update or missing drafter withdraws a collapsed sole quant", async (
     }, "Q4_K_M"),
     false,
   );
+});
+
+test("follow-up Hub probes never exceed the limiter's concurrency", async () => {
+  const run = createTaskLimiter(2);
+  let active = 0;
+  let peak = 0;
+  const done = await Promise.all(
+    Array.from({ length: 7 }, (_, i) =>
+      run(async () => {
+        active += 1;
+        peak = Math.max(peak, active);
+        await new Promise((resolve) => setTimeout(resolve, 5));
+        active -= 1;
+        if (i === 3) throw new Error("probe failed");
+        return i;
+      }).catch(() => -1),
+    ),
+  );
+  assert.equal(peak, 2);
+  assert.deepEqual(done, [0, 1, 2, -1, 4, 5, 6]);
 });

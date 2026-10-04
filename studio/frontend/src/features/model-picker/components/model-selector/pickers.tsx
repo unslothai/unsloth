@@ -6,6 +6,7 @@ import {
   reconcileGgufPinsAfterDelete,
 } from "./reconcile-gguf-pins";
 import {
+  createTaskLimiter,
   hubWithdrawsSoleQuant,
   loadPickerGgufVariants,
 } from "./gguf-discovery";
@@ -1778,6 +1779,8 @@ function useSoleDownloadedQuants(
     };
   }, []);
 
+  // The follow-up Hub probes share the pool size the disk reads use.
+  const hubProbeLimitRef = useRef(createTaskLimiter(SOLE_QUANT_WORKERS));
   const readerRef = useRef<ReturnType<
     typeof createSoleQuantReader<SoleDownloadedQuant>
   > | null>(null);
@@ -1794,10 +1797,12 @@ function useSoleDownloadedQuants(
         });
         if (!quant) return;
         // The disk verdict shows at once; a later Hub answer may still send the row back to its expander.
-        void soleQuantNeedsExpander(
-          target,
-          quant.variant.quant,
-          hfTokenRef.current,
+        void hubProbeLimitRef.current(() =>
+          soleQuantNeedsExpander(
+            target,
+            quant.variant.quant,
+            hfTokenRef.current,
+          ),
         ).then((withdraw) => {
           if (!withdraw || !mountedRef.current) return;
           setEntries((prev) => {
