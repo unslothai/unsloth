@@ -92,12 +92,6 @@ def is_trimmed(text_encoder: Any) -> bool:
     return head is not None and type(head).__name__ == "NoLogitsHead"
 
 
-def lm_head_param_count(text_encoder: Any) -> int:
-    head = getattr(text_encoder, "lm_head", None)
-    weight = getattr(head, "weight", None)
-    return int(weight.numel()) if weight is not None else 0
-
-
 def trim_text_encoder(text_encoder: Any, *, family: Optional[str] = None) -> dict:
     """Replace ``text_encoder.lm_head`` with :class:`NoLogitsHead` in place.
 
@@ -125,14 +119,3 @@ def trim_text_encoder(text_encoder: Any, *, family: Optional[str] = None) -> dic
     params = int(weight.numel())
     text_encoder.lm_head = _no_logits_head_class()(in_features, out_features)
     return {"lm_head": "dropped", "params": params}
-
-
-def drop_lm_head_from_state_dict(state_dict: dict, text_encoder: Any) -> int:
-    """Remove ``lm_head.weight`` from a state dict about to load into a trimmed encoder. Returns bytes freed."""
-    if not is_trimmed(text_encoder) or LM_HEAD_KEY not in state_dict:
-        return 0
-    tensor = state_dict.pop(LM_HEAD_KEY)
-    try:
-        return int(tensor.numel() * tensor.element_size())
-    except Exception:
-        return 0

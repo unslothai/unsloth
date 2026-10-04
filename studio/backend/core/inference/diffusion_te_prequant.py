@@ -437,6 +437,7 @@ def load_prequant_text_encoder(
         )
 
         te_class = None
+        skip = ()
         if is_safetensors_checkpoint(path):
             # The header names te_class, so the head can be skipped before a byte of it is read.
             if trim_lm_head:
@@ -481,7 +482,7 @@ def load_prequant_text_encoder(
         if trim and config_ties_lm_head(config):
             # A tied head shares the embedding's storage, so there is nothing to drop; restore it if it was skipped.
             trim = False
-            if LM_HEAD_KEY not in state_dict and is_safetensors_checkpoint(path):
+            if LM_HEAD_KEY in skip:
                 state_dict[LM_HEAD_KEY] = _read_safetensors_tensor(path, LM_HEAD_KEY)
         if trim:
             state_dict.pop(LM_HEAD_KEY, None)
