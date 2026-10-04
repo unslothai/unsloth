@@ -1,10 +1,14 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
-import { GRPO_DEFAULT_SYSTEM_PROMPT } from "@/config/training";
+import {
+  GRPO_DEFAULT_SYSTEM_PROMPT,
+  GRPO_REASONING_SYSTEM_PROMPT,
+} from "@/config/training";
 import {
   previewCell,
   ruleTags,
@@ -24,8 +28,8 @@ import { useShallow } from "zustand/react/shallow";
 
 type Preset = "notebook" | "none" | "custom";
 
-function presetOf(prompt: string): Preset {
-  if (prompt === GRPO_DEFAULT_SYSTEM_PROMPT) {
+function presetOf(prompt: string, notebook: string): Preset {
+  if (prompt === notebook) {
     return "notebook";
   }
   return prompt.trim() === "" ? "none" : "custom";
@@ -39,6 +43,10 @@ export function PromptFormatSection(): ReactElement {
       setPrompt: state.setGrpoSystemPrompt,
       thinking: state.grpoEnableThinking,
       setThinking: state.setGrpoEnableThinking,
+      reasoning: state.grpoReasoningFormat,
+      setReasoning: state.setGrpoReasoningFormat,
+      warmupSteps: state.grpoFormatWarmupSteps,
+      setWarmupSteps: state.setGrpoFormatWarmupSteps,
       rewards: state.grpoRewards,
       mapping: state.rlRoleMapping,
     })),
@@ -50,7 +58,10 @@ export function PromptFormatSection(): ReactElement {
     })),
   );
   const [editing, setEditing] = useState(false);
-  const preset = presetOf(s.prompt);
+  const notebookPrompt = s.reasoning
+    ? GRPO_REASONING_SYSTEM_PROMPT
+    : GRPO_DEFAULT_SYSTEM_PROMPT;
+  const preset = presetOf(s.prompt, notebookPrompt);
   const showEditor = preset === "custom" || editing;
 
   const promptColumn = Object.entries(s.mapping).find(
@@ -70,7 +81,7 @@ export function PromptFormatSection(): ReactElement {
 
   const choose = (value: string) => {
     if (value === "notebook") {
-      s.setPrompt(GRPO_DEFAULT_SYSTEM_PROMPT);
+      s.setPrompt(notebookPrompt);
       setEditing(false);
     } else if (value === "none") {
       s.setPrompt("");
@@ -78,7 +89,7 @@ export function PromptFormatSection(): ReactElement {
     } else if (value === "custom") {
       // Start from the notebook text rather than an empty box that looks filled in.
       if (s.prompt.trim() === "") {
-        s.setPrompt(GRPO_DEFAULT_SYSTEM_PROMPT);
+        s.setPrompt(notebookPrompt);
       }
       setEditing(true);
     }
@@ -86,6 +97,51 @@ export function PromptFormatSection(): ReactElement {
 
   return (
     <div className="flex flex-col gap-4">
+      <div className="flex flex-col gap-3 rounded-xl border border-border/70 p-3 text-ui-11p5">
+        <div className="flex items-start justify-between gap-3">
+          <div className="min-w-0">
+            <p className="font-medium text-foreground">
+              {t("rl.prompt.reasoningFormat")}
+            </p>
+            <p className="text-muted-foreground/85">
+              {t("rl.prompt.reasoningFormatHint")}
+            </p>
+          </div>
+          <Switch
+            checked={s.reasoning}
+            onCheckedChange={s.setReasoning}
+            aria-label={t("rl.prompt.reasoningFormat")}
+          />
+        </div>
+        {s.reasoning && (
+          <div className="flex items-start justify-between gap-3 border-t border-border/60 pt-3">
+            <div className="min-w-0">
+              <p className="font-medium text-foreground">
+                {t("rl.prompt.warmupSteps")}
+              </p>
+              <p className="text-muted-foreground/85">
+                {t("rl.prompt.warmupStepsHint")}
+              </p>
+            </div>
+            <Input
+              type="number"
+              inputMode="numeric"
+              min={0}
+              max={1000}
+              step={10}
+              aria-label={t("rl.prompt.warmupSteps")}
+              className="h-8 w-[calc(90px*var(--ui-space-scale,1))] shrink-0 text-right text-xs"
+              value={s.warmupSteps}
+              onChange={(e) => {
+                const n = Number.parseInt(e.target.value, 10);
+                s.setWarmupSteps(
+                  Number.isFinite(n) ? Math.min(1000, Math.max(0, n)) : 0,
+                );
+              }}
+            />
+          </div>
+        )}
+      </div>
       <ToggleGroup
         type="single"
         variant="outline"
@@ -192,6 +248,7 @@ export function PromptFormatSection(): ReactElement {
             </div>
             <Switch
               checked={s.thinking}
+              disabled={s.reasoning}
               onCheckedChange={s.setThinking}
               aria-label={t("rl.params.thinking")}
             />

@@ -3668,6 +3668,10 @@ export const en = {
       tagsOk: "Asks for {tags}, which your rewards read.",
       tagsMissing: "Your rewards read {tags}, but the prompt doesn't ask for them.",
       thinkingHint: "Off keeps Qwen3-style models from spending the answer budget on a hidden thinking block.",
+      reasoningFormat: "Reasoning format",
+      reasoningFormatHint: "For base models: the GRPO notebooks' chat template, with working out between <start_working_out> tags and the answer in <SOLUTION>. Switches the prompt and rewards to match.",
+      warmupSteps: "Format warm-up steps",
+      warmupStepsHint: "Short SFT pass on formatted math examples before GRPO, so the model already writes the tags. 0 skips it; the notebooks use about 100.",
     },
     charts: {
       reward: "Reward",

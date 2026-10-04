@@ -140,6 +140,8 @@ export function serializeConfigToYaml(
             temperature: state.grpoTemperature,
             epsilon_high: state.grpoEpsilonHigh,
             mask_truncated_completions: state.grpoMaskTruncatedCompletions,
+            reasoning_format: state.grpoReasoningFormat,
+            format_warmup_steps: state.grpoFormatWarmupSteps,
             enable_thinking: state.grpoEnableThinking,
             system_prompt: state.grpoSystemPrompt,
             rewards: state.grpoRewards,
@@ -161,6 +163,8 @@ export interface YamlRlSettings {
   grpoTemperature?: number;
   grpoEpsilonHigh?: number | null;
   grpoMaskTruncatedCompletions?: boolean;
+  grpoReasoningFormat?: boolean;
+  grpoFormatWarmupSteps?: number;
   grpoEnableThinking?: boolean;
   grpoSystemPrompt?: string;
   grpoRewards?: GrpoRewardSelection[];
@@ -209,6 +213,13 @@ export function parseYamlRlSettings(text: string): YamlRlSettings {
   set("grpoMaxCompletionLength", numOrNull(r.max_completion_length));
   set("grpoTemperature", isNum(r.temperature) ? r.temperature : undefined);
   set("grpoEpsilonHigh", numOrNull(r.epsilon_high));
+  if (typeof r.reasoning_format === "boolean") {
+    out.grpoReasoningFormat = r.reasoning_format;
+  }
+  set(
+    "grpoFormatWarmupSteps",
+    isNum(r.format_warmup_steps) ? r.format_warmup_steps : undefined,
+  );
   if (typeof r.mask_truncated_completions === "boolean") {
     out.grpoMaskTruncatedCompletions = r.mask_truncated_completions;
   }

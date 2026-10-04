@@ -15,6 +15,7 @@ from core.training.account_jobs import (
     require_job_owner,
     validate_job_paths,
 )
+from core.training.rl_format import SYSTEM_PROMPT as REASONING_SYSTEM_PROMPT
 import contextlib
 import json
 import os
@@ -1819,7 +1820,10 @@ async def start_training(
                 "temperature": request.grpo_temperature,
                 "variant": request.grpo_variant,
                 "enable_thinking": request.grpo_enable_thinking,
-                "system_prompt": (request.rl_system_prompt or "").strip() or None,
+                "system_prompt": (request.rl_system_prompt or "").strip()
+                or (REASONING_SYSTEM_PROMPT if request.grpo_reasoning_format else None),
+                "reasoning_format": request.grpo_reasoning_format,
+                "format_warmup_steps": request.grpo_format_warmup_steps,
                 "mask_truncated_completions": request.grpo_mask_truncated_completions,
                 "epsilon_high": request.grpo_epsilon_high,
             },

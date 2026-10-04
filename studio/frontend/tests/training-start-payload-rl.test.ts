@@ -91,6 +91,41 @@ test("GRPO sends the loss variant and its clip/mask options; DPO drops them", ()
   assert.equal(dpo.grpo_epsilon_high, null);
 });
 
+test("the format warm-up is sent only with GRPO and the reasoning format", () => {
+  const on = buildTrainingStartPayload(
+    {
+      ...BASE,
+      trainingObjective: "grpo",
+      grpoReasoningFormat: true,
+      grpoFormatWarmupSteps: 100,
+    },
+    null,
+  );
+  assert.equal(on.grpo_reasoning_format, true);
+  assert.equal(on.grpo_format_warmup_steps, 100);
+  const off = buildTrainingStartPayload(
+    {
+      ...BASE,
+      trainingObjective: "grpo",
+      grpoReasoningFormat: false,
+      grpoFormatWarmupSteps: 100,
+    },
+    null,
+  );
+  assert.equal(off.grpo_format_warmup_steps, 0);
+  const dpo = buildTrainingStartPayload(
+    {
+      ...BASE,
+      trainingObjective: "dpo",
+      grpoReasoningFormat: true,
+      grpoFormatWarmupSteps: 100,
+    },
+    null,
+  );
+  assert.equal(dpo.grpo_reasoning_format, false);
+  assert.equal(dpo.grpo_format_warmup_steps, 0);
+});
+
 test("DPO does not send GRPO-only fields", () => {
   const payload = buildTrainingStartPayload(
     { ...BASE, trainingObjective: "dpo", grpoMaxCompletionLength: 512 },

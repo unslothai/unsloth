@@ -3706,6 +3706,10 @@ export const fr = {
       tagsOk: "Demande {tags}, que vos récompenses lisent.",
       tagsMissing: "Vos récompenses lisent {tags}, mais le prompt ne les demande pas.",
       thinkingHint: "Désactivé, les modèles de type Qwen3 ne dépensent pas le budget de réponse dans un bloc de réflexion caché.",
+      reasoningFormat: "Format de raisonnement",
+      reasoningFormatHint: "Pour les modèles de base : le modèle de chat des notebooks GRPO, avec le raisonnement entre balises <start_working_out> et la réponse dans <SOLUTION>. Le prompt et les récompenses s'adaptent.",
+      warmupSteps: "Étapes d'échauffement du format",
+      warmupStepsHint: "Courte passe SFT sur des exemples de maths formatés avant GRPO, pour que le modèle écrive déjà les balises. 0 la saute ; les notebooks en font environ 100.",
     },
     charts: {
       reward: "Récompense",

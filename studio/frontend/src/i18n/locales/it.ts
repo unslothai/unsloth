@@ -3695,6 +3695,10 @@ export const it = {
       tagsOk: "Chiede {tags}, che le tue ricompense leggono.",
       tagsMissing: "Le tue ricompense leggono {tags}, ma il prompt non li chiede.",
       thinkingHint: "Disattivato evita che i modelli tipo Qwen3 spendano il budget della risposta in un blocco di ragionamento nascosto.",
+      reasoningFormat: "Formato di ragionamento",
+      reasoningFormatHint: "Per i modelli base: il template di chat dei notebook GRPO, con il ragionamento tra i tag <start_working_out> e la risposta in <SOLUTION>. Prompt e ricompense si adeguano.",
+      warmupSteps: "Passi di riscaldamento del formato",
+      warmupStepsHint: "Breve passata SFT su esempi di matematica formattati prima di GRPO, così il modello scrive già i tag. 0 la salta; i notebook ne usano circa 100.",
     },
     charts: {
       reward: "Ricompensa",

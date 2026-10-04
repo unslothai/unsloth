@@ -3,6 +3,10 @@
 
 import {
   DEFAULT_HYPERPARAMS,
+  GRPO_DEFAULT_REWARDS,
+  GRPO_DEFAULT_SYSTEM_PROMPT,
+  GRPO_REASONING_REWARDS,
+  GRPO_REASONING_SYSTEM_PROMPT,
   LR_DEFAULT_FULL,
   LR_DEFAULT_LORA,
   RL_LEARNING_RATES,
@@ -1471,6 +1475,28 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
           setUserEdit({ grpoMaskTruncatedCompletions }),
         setGrpoEpsilonHigh: (grpoEpsilonHigh) =>
           setUserEdit({ grpoEpsilonHigh }),
+        setGrpoReasoningFormat: (grpoReasoningFormat) => {
+          // Swap the prompt and rewards only while they are still the other format's defaults.
+          const state = get();
+          const [from, to] = grpoReasoningFormat
+            ? [GRPO_DEFAULT_SYSTEM_PROMPT, GRPO_REASONING_SYSTEM_PROMPT]
+            : [GRPO_REASONING_SYSTEM_PROMPT, GRPO_DEFAULT_SYSTEM_PROMPT];
+          const [oldRewards, newRewards] = grpoReasoningFormat
+            ? [GRPO_DEFAULT_REWARDS, GRPO_REASONING_REWARDS]
+            : [GRPO_REASONING_REWARDS, GRPO_DEFAULT_REWARDS];
+          const sameRewards =
+            JSON.stringify(state.grpoRewards) === JSON.stringify(oldRewards);
+          setUserEdit({
+            grpoReasoningFormat,
+            ...(state.grpoSystemPrompt === from
+              ? { grpoSystemPrompt: to }
+              : {}),
+            ...(sameRewards ? { grpoRewards: [...newRewards] } : {}),
+            ...(grpoReasoningFormat ? { grpoEnableThinking: false } : {}),
+          });
+        },
+        setGrpoFormatWarmupSteps: (grpoFormatWarmupSteps) =>
+          setUserEdit({ grpoFormatWarmupSteps }),
         setGrpoRewards: (grpoRewards) => setUserEdit({ grpoRewards }),
         reset: () => {
           trainingDatasetCacheRejections.reset();

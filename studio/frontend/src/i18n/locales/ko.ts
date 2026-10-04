@@ -3620,6 +3620,10 @@ export const ko = {
       tagsOk: "보상이 읽는 {tags}를 요청합니다.",
       tagsMissing: "보상은 {tags}를 읽지만 프롬프트가 요청하지 않습니다.",
       thinkingHint: "끄면 Qwen3 계열 모델이 숨겨진 생각 블록에 답변 예산을 쓰지 않습니다.",
+      reasoningFormat: "추론 형식",
+      reasoningFormatHint: "베이스 모델용: GRPO 노트북의 채팅 템플릿으로, 풀이는 <start_working_out> 태그 사이에, 답은 <SOLUTION> 안에 씁니다. 프롬프트와 보상도 맞춰 바뀝니다.",
+      warmupSteps: "형식 워밍업 단계",
+      warmupStepsHint: "GRPO 전에 형식을 갖춘 수학 예제로 짧게 SFT를 해서 모델이 처음부터 태그를 쓰게 합니다. 0이면 건너뜁니다. 노트북은 약 100을 씁니다.",
     },
     charts: {
       reward: "보상",

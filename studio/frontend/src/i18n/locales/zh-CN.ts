@@ -3534,6 +3534,10 @@ export const zhCN = {
       tagsOk: "要求输出 {tags}，你的奖励会读取它们。",
       tagsMissing: "你的奖励读取 {tags}，但提示没有要求输出。",
       thinkingHint: "关闭后，Qwen3 类模型不会把回答预算花在隐藏的思考块上。",
+      reasoningFormat: "推理格式",
+      reasoningFormatHint: "适用于基础模型:GRPO 笔记本的对话模板,推理过程写在 <start_working_out> 标签之间,答案写在 <SOLUTION> 中。提示和奖励会随之切换。",
+      warmupSteps: "格式预热步数",
+      warmupStepsHint: "在 GRPO 之前用格式化的数学示例做一小段 SFT,让模型一开始就会写这些标签。0 表示跳过;笔记本中约为 100。",
     },
     charts: {
       reward: "奖励",

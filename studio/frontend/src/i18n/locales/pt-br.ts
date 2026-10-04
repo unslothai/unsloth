@@ -3654,6 +3654,10 @@ export const ptBR = {
       tagsOk: "Pede {tags}, que suas recompensas leem.",
       tagsMissing: "Suas recompensas leem {tags}, mas o prompt não as pede.",
       thinkingHint: "Desligado evita que modelos estilo Qwen3 gastem o orçamento da resposta em um bloco de raciocínio oculto.",
+      reasoningFormat: "Formato de raciocínio",
+      reasoningFormatHint: "Para modelos base: o template de chat dos notebooks de GRPO, com o raciocínio entre tags <start_working_out> e a resposta em <SOLUTION>. O prompt e as recompensas mudam para combinar.",
+      warmupSteps: "Passos de aquecimento de formato",
+      warmupStepsHint: "Uma passada curta de SFT com exemplos de matemática formatados antes do GRPO, para o modelo já escrever as tags. 0 pula; os notebooks usam cerca de 100.",
     },
     charts: {
       reward: "Recompensa",

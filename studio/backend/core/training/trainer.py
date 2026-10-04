@@ -4112,6 +4112,11 @@ class UnslothTrainer:
             self.tokenizer = get_training_chat_template(
                 self.tokenizer, self.model_name, dataset_final_format
             )
+            rl_settings = training_args.get("rl_settings") or {}
+            if training_args.get("objective") == "grpo" and rl_settings.get("reasoning_format"):
+                from core.training.rl_format import apply_reasoning_template
+
+                apply_reasoning_template(self.tokenizer)
 
             data_collator = None
             if is_deepseek_ocr:
@@ -4413,6 +4418,21 @@ class UnslothTrainer:
                 rl_tokenizer = self.tokenizer
                 if isinstance(rl_tokenizer, ProcessorMixin) and hasattr(rl_tokenizer, "tokenizer"):
                     rl_tokenizer = rl_tokenizer.tokenizer
+                warmup_steps = int(rl_settings.get("format_warmup_steps") or 0)
+                if objective == "grpo" and warmup_steps > 0:
+                    from core.training.rl_format import run_format_warmup
+
+                    self._update_progress(status_message = f"Format warm-up ({warmup_steps} SFT steps)...")
+                    run_format_warmup(
+                        self.model,
+                        rl_tokenizer,
+                        config_args,
+                        warmup_steps,
+                        should_stop = lambda: self.should_stop,
+                    )
+                    if self.should_stop:
+                        self._update_progress(is_training = False, status_message = "Training cancelled.")
+                        return
                 logger.info(f"Configuring {objective.upper()} trainer\n")
                 self.trainer = build_rl_trainer(
                     objective,
@@ -4421,7 +4441,7 @@ class UnslothTrainer:
                     train_dataset = dataset["dataset"] if isinstance(dataset, dict) else dataset,
                     eval_dataset = eval_dataset,
                     config_args = config_args,
-                    settings = training_args.get("rl_settings") or {},
+                    settings = rl_settings,
                     reward_specs = training_args.get("reward_specs") or [],
                     sample_sink = self._emit_samples if self.sample_callbacks else None,
                 )

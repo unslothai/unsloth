@@ -144,6 +144,20 @@ export const CPT_LORA_HYPERPARAMS = {
 export const GRPO_DEFAULT_SYSTEM_PROMPT =
   "Respond in the following format:\n<reasoning>\n...\n</reasoning>\n<answer>\n...\n</answer>";
 
+// Matches SYSTEM_PROMPT in studio/backend/core/training/rl_format.py (Qwen3 (4B) GRPO notebook).
+export const GRPO_REASONING_SYSTEM_PROMPT =
+  "You are given a problem.\nThink about the problem and provide your working out.\nPlace it between <start_working_out> and <end_working_out>.\nThen, provide your solution between <SOLUTION></SOLUTION>";
+
+export const GRPO_DEFAULT_REWARDS = [
+  { name: "strict-xml-format", weight: 1 },
+  { name: "exact-answer", weight: 1 },
+];
+
+export const GRPO_REASONING_REWARDS = [
+  { name: "solution-format", weight: 1 },
+  { name: "solution-numeric", weight: 1 },
+];
+
 // Kept out of DEFAULT_HYPERPARAMS so the advanced-settings summary does not count them.
 export const DEFAULT_RL_SETTINGS = {
   trainingObjective: "sft" as import("@/types/training").TrainingObjective,
@@ -158,9 +172,10 @@ export const DEFAULT_RL_SETTINGS = {
   grpoVariant: "dapo" as import("@/types/training").GrpoVariant,
   grpoMaskTruncatedCompletions: false,
   grpoEpsilonHigh: null as number | null,
+  grpoReasoningFormat: false,
+  grpoFormatWarmupSteps: 0,
   grpoRewards: [
-    { name: "strict-xml-format", weight: 1 },
-    { name: "exact-answer", weight: 1 },
+    ...GRPO_DEFAULT_REWARDS,
   ] as import("@/types/training").GrpoRewardSelection[],
 };
 

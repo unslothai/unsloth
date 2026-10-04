@@ -629,6 +629,16 @@ class TrainingStartRequest(BaseModel):
         allow_inf_nan = False,
         description = "Upper clip bound (DAPO clip-higher). Null uses epsilon.",
     )
+    grpo_reasoning_format: bool = Field(
+        False,
+        description = "Use the GRPO notebooks' reasoning chat template and answer format (for base models)",
+    )
+    grpo_format_warmup_steps: int = Field(
+        0,
+        ge = 0,
+        le = 1000,
+        description = "SFT steps on formatted examples before GRPO, so the model already writes the tags. 0 skips it.",
+    )
     grpo_rewards: List[RewardSelection] = Field(
         default_factory = list, max_length = 16, description = "Library rewards for GRPO"
     )
@@ -713,6 +723,8 @@ class TrainingStartRequest(BaseModel):
             self.grpo_rewards
         ):
             raise ValueError("Each GRPO reward can only be selected once.")
+        if self.grpo_format_warmup_steps and not (objective == "grpo" and self.grpo_reasoning_format):
+            raise ValueError("The format warm-up needs GRPO with the reasoning format on.")
         return self
 
     @model_validator(mode = "after")
