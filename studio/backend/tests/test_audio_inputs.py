@@ -282,3 +282,22 @@ def test_transcribe_sends_a_16k_mono_copy_and_saves_nothing(client, monkeypatch)
     assert client.post(source, json = {"model": "m"}).status_code == 400
     assert client.post(url, json = {"model": "m", "path": "/etc/passwd"}).status_code == 422
     assert [r["id"] for r in gallery.list_audio()] == [clip_q["clip_id"]]
+
+
+def test_the_byte_cap_counts_only_kept_inputs(client, monkeypatch):
+    clock = [1_000_000.0]
+    monkeypatch.setattr(audio_inputs, "_now", lambda: clock[0])
+    small = _save(encode("wav", "pcm_s16le", 16000, "mono", 0.5, 300.0), "s.wav")["id"]
+    clock[0] += 10
+    big = _save(encode("wav", "pcm_s16le", 16000, "mono", 2.0, 500.0), "b.wav")["id"]
+    clock[0] += 10
+    new = _save(encode("wav", "pcm_s16le", 16000, "mono", 0.5, 700.0), "n.wav")["id"]
+    size = lambda i: (audio_inputs.inputs_dir() / f"{i}.wav").stat().st_size
+    # Newest + small fit; the big one in the middle does not, and evicting it frees its bytes.
+    cap = size(new) + size(small) + 10
+    assert audio_inputs.sweep(byte_cap = cap) == 1
+    assert [audio_inputs.input_path(i) is not None for i in (small, big, new)] == [
+        True,
+        False,
+        True,
+    ]

@@ -72,6 +72,15 @@ export const AUDIO_CPP_MODELS: readonly AudioCppModel[] = [
   { id: folder("MOSS-Transcribe-Diarize-GGUF"), task: "asr" },
 ];
 
+// Families the backend marks speaks=False (audio_cpp_models.FAMILIES), by repo name: Hub rows
+// carry no backend workflows before download. Chatterbox-Turbo is its own family and speaks.
+const CLONE_ONLY_FAMILY_HINT =
+  /miotts|vevo-?2|fireredtts-?3|firered-?audio|indextts-?2|cosyvoice-?3|confucius-?4|echo-?tts|f5-?tts|chatterbox(?!-?turbo)|qwen3-?tts[^/]*-base/i;
+
+export function isCloneOnlyFamilyId(id: string | null | undefined): boolean {
+  return CLONE_ONLY_FAMILY_HINT.test(id ?? "");
+}
+
 /** Legacy Settings > Voice keys; the backend still maps each to its folder id (and variant). */
 export interface AudioCppDictationModel {
   key: string;

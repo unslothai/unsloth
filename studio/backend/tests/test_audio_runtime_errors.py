@@ -322,3 +322,12 @@ def test_log_tail_without_a_newline_drops_the_partial_first_word(tmp_path):
     (tmp_path / "server.log").write_bytes(b"token=hf_secretvalue " * 20 + b"end")
     tail = server.log_tail(limit = 50)
     assert tail.split(" ")[0] in ("token=hf_secretvalue", "end")
+
+
+def test_log_tail_with_no_delimiter_is_dropped(tmp_path):
+    from core.inference.audio_cpp_server import AudioCppServer
+
+    server = AudioCppServer.__new__(AudioCppServer)
+    server._config_dir = tmp_path
+    (tmp_path / "server.log").write_bytes(b"x" * 200)
+    assert server.log_tail(limit = 50) == ""
