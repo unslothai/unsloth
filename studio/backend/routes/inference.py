@@ -21107,10 +21107,22 @@ async def voice_load_model(
             from core.inference.gpu_arbiter import CHAT as _CHAT, acquire_for_request, current_owner
 
             await asyncio.to_thread(acquire_for_request, _CHAT, None, alongside = True)
+
+            # A load this handler rejects after the claim must give the claim back too: left
+            # as CHAT under the caller's account with nothing resident, every other account saw
+            # a hidden foreign model on an empty GPU.
+            async def _undo_load():
+                try:
+                    await asyncio.to_thread(voice_backend.unload_model)
+                except Exception:
+                    pass
+                await asyncio.to_thread(release_chat_gpu_claim)
+
             try:
                 ok = await asyncio.to_thread(voice_backend.load_model, intent)
             except Exception as e:
                 logger.error("Voice slot load error: %s", e, exc_info = True)
+                await _undo_load()
                 raise HTTPException(status_code = 500, detail = f"Failed to load voice model: {e}")
 
             if unload_epoch is not None and getattr(voice_backend, "_unload_epoch", None) != unload_epoch:
@@ -21142,10 +21154,7 @@ async def voice_load_model(
                 # codec init failed). Tear the half-started slot down before raising so
                 # the llama-server process doesn't linger and occupy memory. Off-loop,
                 # like every other unload here: teardown waits on the subprocess.
-                try:
-                    await asyncio.to_thread(voice_backend.unload_model)
-                except Exception:
-                    pass
+                await _undo_load()
                 raise HTTPException(status_code = 500, detail = "Voice model failed to start.")
 
             audio_type = getattr(voice_backend, "_audio_type", None)
@@ -21153,10 +21162,7 @@ async def voice_load_model(
 
             if not is_audio or audio_type not in _VOICE_SLOT_AUDIO_TYPES:
                 # Not a supported TTS type — reject and leave slot empty.
-                try:
-                    await asyncio.to_thread(voice_backend.unload_model)
-                except Exception:
-                    pass
+                await _undo_load()
                 raise HTTPException(
                     status_code = 400,
                     detail = (

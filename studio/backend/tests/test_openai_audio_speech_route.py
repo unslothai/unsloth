@@ -1472,3 +1472,20 @@ def test_a_streaming_clip_counts_as_a_generation_while_it_plays(monkeypatch):
     assert asyncio.run(_run()) == [b"\x00\x00"]
     assert counts == [before + 1, before + 1]
     assert active_generations.count() == before
+
+
+def test_a_rejected_voice_load_gives_the_chat_claim_back():
+    """A GGUF that started but was not a supported TTS type (or failed to start) was torn down
+    with the CHAT claim left under the caller's account and nothing resident."""
+    import inspect
+
+    source = inspect.getsource(routes_module.voice_load_model)
+    undo = source.index("async def _undo_load():")
+    assert "await asyncio.to_thread(release_chat_gpu_claim)" in source[undo : undo + 400]
+    for marker in (
+        'detail = f"Failed to load voice model: {e}"',
+        'detail = "Voice model failed to start."',
+        "Not a supported TTS type",
+    ):
+        at = source.index(marker)
+        assert "await _undo_load()" in source[at - 400 : at + 200], marker
