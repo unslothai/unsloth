@@ -43716,6 +43716,18 @@ async def load_diffusion_model_gated(
         raise HTTPException(status_code = 409, detail = str(exc))
 
 
+def _live_preview_kwarg(generate: Any, requested: Optional[bool]) -> dict:
+    """``live_preview`` for an engine whose generate() takes it (sd.cpp's does not), else nothing."""
+    try:
+        import inspect
+
+        if "live_preview" in inspect.signature(generate).parameters:
+            return {"live_preview": requested}
+    except (TypeError, ValueError):
+        pass
+    return {}
+
+
 # Count of finished generations still writing their PNG/gallery records; generate-progress reports active while above 0. Mutated only on the event loop, so no lock.
 _diffusion_persist_active = 0
 
@@ -43847,6 +43859,7 @@ async def generate_diffusion_image(
                         if request.controlnet
                         else None
                     ),
+                    **_live_preview_kwarg(backend.generate, request.live_preview),
                 )
             break
         except ImageActivationShortfallError as exc:

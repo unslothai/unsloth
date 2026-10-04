@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Detect when a diffusion pipeline leaves its denoise loop and enters the decoder."""
+"""Detect when a diffusion pipeline enters its denoise loop, and when it leaves it for the decoder."""
 
 from __future__ import annotations
 
@@ -59,3 +59,46 @@ def decode_phase(
                     del owner.decode
             except Exception:  # noqa: BLE001 -- cleanup is best-effort
                 pass
+
+
+@contextlib.contextmanager
+def denoise_phase(pipe: Any, on_denoise: Any):
+    """Call ``on_denoise`` (at most once, must not raise) when the denoise loop is entered.
+
+    Every diffusers pipeline opens ``self.progress_bar(total=...)`` right before its loop, after the
+    prompt encode and the latent setup, so wrapping that one method splits "encoding the prompt" from
+    "denoising" without touching the model. Like ``decode_phase`` this is a HOST position. The wrapper
+    is removed on every exit; a pipe without ``progress_bar`` is left alone (the caller's first step
+    callback still moves the phase on).
+    """
+    original = getattr(pipe, "progress_bar", None)
+    if not callable(original):
+        yield
+        return
+    fired = {"done": False}
+    had_own = "progress_bar" in getattr(pipe, "__dict__", {})
+
+    def _progress_bar(*args: Any, **kwargs: Any) -> Any:
+        if not fired["done"]:
+            fired["done"] = True
+            try:
+                on_denoise()
+            except Exception:  # noqa: BLE001 -- a phase label must never fail a render
+                pass
+        return original(*args, **kwargs)
+
+    try:
+        pipe.progress_bar = _progress_bar
+    except Exception:  # noqa: BLE001 -- a pipe that refuses assignment keeps the step-callback fallback
+        yield
+        return
+    try:
+        yield
+    finally:
+        try:
+            if had_own:
+                pipe.progress_bar = original
+            else:
+                del pipe.progress_bar
+        except Exception:  # noqa: BLE001 -- cleanup is best-effort
+            pass

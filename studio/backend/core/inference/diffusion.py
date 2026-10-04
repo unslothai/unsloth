@@ -163,7 +163,7 @@ from .diffusion_memory import (
 from .diffusion_torchao_patches import install_torchao_int_mm_patch
 from .image_orientation import exif_upright
 from .mcp_images import flattened_rgb
-from .media_decode_phase import decode_phase
+from .media_decode_phase import decode_phase, denoise_phase
 from .diffusion_speed import (
     SPEED_DEFAULT,
     SPEED_EAGER,
@@ -1163,8 +1163,12 @@ class _GenState:
     first_step_at: float = 0.0
     # Computed once per step (in the callback) so it's stable between polls.
     eta_seconds: Optional[float] = None
-    # "decode" once pipe() enters its decoder, which runs after the last step callback.
+    # "encode" until pipe() enters its denoise loop, "denoise" through it, "decode" once pipe() enters its decoder
+    # (which runs after the last step callback).
     phase: str = "denoise"
+    # Live latent preview (diffusion_preview): a small JPEG data URL and a counter that moves with each new one.
+    preview: Optional[str] = None
+    preview_seq: int = 0
 
 
 def _estimate_eta(total_steps: int, step: int, first_step_at: float, now: float) -> Optional[float]:
@@ -9149,6 +9153,8 @@ class DiffusionBackend:
         # load_identity() of the caller's status() read; refuse rather than run a different load (#9448)
         expected_load: Optional[LoadIdentity] = None,
         allow_oversized: bool = False,
+        # Live latent previews on the progress poll; None = the default (on unless UNSLOTH_DIFFUSION_PREVIEW=0).
+        live_preview: Optional[bool] = None,
     ) -> dict[str, Any]:
         import torch
         from PIL import Image
@@ -9619,9 +9625,41 @@ class DiffusionBackend:
                 static_skip = state.transformer_cache == TC_STATIC
                 static_chunks_run = 0
 
+                def _publish_preview(url: str, seq: int, gen = gen) -> None:
+                    gen.preview = url
+                    gen.preview_seq = seq
+
+                previewer = None
+                if "callback_on_step_end" in call_params:
+                    from .diffusion_preview import LatentPreviewer
+
+                    try:
+                        # The size the forward runs at (img2img / edit take it from the input image).
+                        preview_w, preview_h = _compile_shape_dims(
+                            workflow, init_pil, width, height, fam
+                        )
+                    except Exception:  # noqa: BLE001 - no size, no preview
+                        preview_w = preview_h = None
+                    previewer = LatentPreviewer.create(
+                        family = state.family.name,
+                        requested = live_preview,
+                        height = preview_h,
+                        width = preview_w,
+                        device = state.device,
+                        publish = _publish_preview,
+                        total_steps = steps,
+                    )
+
                 def _on_step(pipe, step_index, timestep, callback_kwargs):
                     if static_skip:
                         mark_step_end(state.pipe)
+                    if gen.phase == "encode":
+                        gen.phase = "denoise"
+                    if previewer is not None:
+                        # Reads the latent only; never raises, never waits on the device.
+                        previewer.on_step(
+                            callback_kwargs.get("latents"), getattr(pipe, "scheduler", None)
+                        )
                     # Monotonic: a wall-clock adjustment (NTP) mid-denoise would skew the ETA.
                     now = time.monotonic()
                     gen.step = steps_done[0] + step_index + 1
@@ -9724,8 +9762,12 @@ class DiffusionBackend:
                             # diffusers resets FBCache only after a SUCCESSFUL __call__; a raised call leaves a stale residual.
                             self._reset_step_cache(state.pipe)
                         protect_ctx = protect_generation(pipe, denoise_steps, logger = logger)
-                        # Per chunk: a later chunk denoises again after an earlier one decoded.
-                        gen.phase = "denoise"
+                        # Per chunk: a later chunk encodes and denoises again after an earlier one decoded.
+                        gen.phase = "encode"
+
+                        def _enter_denoise_phase(gen = gen) -> None:
+                            if gen.phase == "encode":
+                                gen.phase = "denoise"
 
                         def _enter_decode_phase(gen = gen) -> None:
                             gen.phase = "decode"
@@ -9740,6 +9782,7 @@ class DiffusionBackend:
                                     else torch.inference_mode()
                                 ),
                                 protect_ctx,
+                                denoise_phase(pipe, _enter_denoise_phase),
                                 decode_phase(pipe, _enter_decode_phase),
                             ):
                                 out = render_thread.run(
@@ -9783,6 +9826,8 @@ class DiffusionBackend:
                         chunk_shapes.append(len(chunk))
                         steps_done[0] += steps
                 except BaseException:
+                    if previewer is not None:
+                        previewer.finish()
                     # A cancelled or failed render may already have generalised a graph that the next render reuses
                     # without compiling, so the success path below would never see the count grow: dirty it now.
                     try:
@@ -9794,6 +9839,8 @@ class DiffusionBackend:
                     except Exception:  # noqa: BLE001 - bookkeeping must not mask the render's own error
                         pass
                     raise
+                if previewer is not None:
+                    previewer.finish()
                 if static_skip:
                     logger.debug("diffusion.step_skip: %s", static_skip_stats(state.pipe))
                 # Keep progress ACTIVE through the post-denoise work: the route persists the image after this returns,
@@ -9932,6 +9979,8 @@ class DiffusionBackend:
             "fraction": gen.step / gen.total_steps,  # step is 1..total, never over 1.0
             "eta_seconds": gen.eta_seconds,
             "phase": gen.phase,
+            "preview": gen.preview,
+            "preview_seq": gen.preview_seq,
         }
 
     def cancel_generate(self, expected_account: Optional[str] = None) -> bool:

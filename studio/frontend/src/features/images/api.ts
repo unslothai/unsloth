@@ -98,8 +98,11 @@ export interface DiffusionGenerateProgress {
   total_steps: number;
   fraction: number;
   eta_seconds: number | null;
-  // Absent (sd.cpp engine) means "denoise".
-  phase?: "denoise" | "decode" | null;
+  // Absent (sd.cpp engine) means "denoise". "encode" runs before the denoise loop starts.
+  phase?: "encode" | "denoise" | "decode" | null;
+  // Live latent preview of the image being denoised (small JPEG data URL), and a counter that moves with each one.
+  preview?: string | null;
+  preview_seq?: number;
 }
 
 export interface DiffusionLoadProgress {
@@ -161,6 +164,8 @@ export interface DiffusionLoadRequest {
 
 export interface DiffusionGenerateRequest {
   prompt: string;
+  // Stream a live preview on generate-progress; omitted = the server default (on).
+  live_preview?: boolean;
   negative_prompt?: string;
   width?: number;
   height?: number;

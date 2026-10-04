@@ -119,6 +119,7 @@ from .diffusion_memory import (
 )
 from .diffusion_torchao_patches import install_torchao_int_mm_patch
 from .media_decode_phase import decode_phase as _decode_phase
+from .media_decode_phase import denoise_phase as _denoise_phase
 from . import diffusion_render_thread as render_thread
 from .diffusion_fp16_guard import fp16_promotes_to_fp32
 from .diffusion_speed import (
@@ -7784,6 +7785,7 @@ class VideoBackend:
         audio_flow_shift: Optional[float] = None,
         video_id: Optional[str] = None,
         expected_state: Optional[object] = None,
+        live_preview: Optional[bool] = None,
     ) -> dict[str, int]:
         """Validate cheaply, then run generate + gallery persist on a daemon thread.
 
@@ -7895,6 +7897,7 @@ class VideoBackend:
                 seed = seed,
                 _resolved_inputs = resolved_inputs,
                 cancel_event = cancel,
+                live_preview = live_preview,
             ),
             daemon = True,
         )
@@ -8164,6 +8167,8 @@ class VideoBackend:
         audio_flow_shift: Optional[float] = None,
         cancel_event: Optional[threading.Event] = None,
         _resolved_inputs: Optional[_VideoResolvedInputs] = None,
+        # Live latent previews on the progress poll; None = the default (on unless UNSLOTH_DIFFUSION_PREVIEW=0).
+        live_preview: Optional[bool] = None,
     ) -> dict[str, Any]:
         # begin_generate passes its already-registered event; a direct call makes its own.
         cancel = cancel_event if cancel_event is not None else threading.Event()
@@ -8522,15 +8527,38 @@ class VideoBackend:
                         setter(float(value))
 
                 started = time.monotonic()
+                # "encode" until the pipeline enters its denoise loop (denoise_phase below, or the first step).
                 self._gen = {
                     "active": True,
-                    "phase": "denoise",
+                    "phase": "encode",
                     "step": 0,
                     "total": steps,
                     "started": started,
                     "eta_seconds": None,
                     "error": None,
                 }
+                job_gen = self._gen
+
+                def _publish_preview(url: str, seq: int) -> None:
+                    # Only into THIS job's record: a late frame must not land on a successor's.
+                    if self._gen is job_gen:
+                        job_gen.update(preview = url, preview_seq = seq)
+
+                from .diffusion_preview import LatentPreviewer, scheduler_step_preview
+
+                previewer = LatentPreviewer.create(
+                    family = fam.name,
+                    requested = live_preview,
+                    height = height,
+                    width = width,
+                    device = state.device,
+                    publish = _publish_preview,
+                    total_steps = steps,
+                )
+
+                def _enter_denoise() -> None:
+                    if self._gen.get("phase") == "encode":
+                        self._gen.update(phase = "denoise")
 
                 ticker = _CompletedStepTicker(steps)
 
@@ -8538,6 +8566,8 @@ class VideoBackend:
                     """Publish a step the GPU has actually finished. Monotonic, and silent once the
                     denoise is over so a late poll cannot walk the bar back under a later phase."""
                     done = max(0, min(int(done), steps))
+                    if done > 0:
+                        _enter_denoise()
                     if self._gen.get("phase") != "denoise":
                         return
                     if done <= int(self._gen.get("step") or 0):
@@ -8605,7 +8635,7 @@ class VideoBackend:
                 def _pump() -> None:
                     """One poll, inside the capture hold-off. Advances the step from the GPU, and
                     takes the denoise to complete only once the GPU has reached the marked end."""
-                    if self._gen.get("phase") != "denoise":
+                    if self._gen.get("phase") not in ("encode", "denoise"):
                         return
                     if ticker.boundary_marked and ticker.boundary_reached():
                         _enter_decode_phase()
@@ -8623,6 +8653,11 @@ class VideoBackend:
                         p._interrupt = True
                         return callback_kwargs
                     _tick(step_index + 1)
+                    if previewer is not None:
+                        # Reads the latent only; never raises, never waits on the device.
+                        previewer.on_step(
+                            callback_kwargs.get("latents"), getattr(p, "scheduler", None)
+                        )
                     return callback_kwargs
 
                 def _on_scheduler_step_cancel(done: int) -> None:
@@ -8653,6 +8688,9 @@ class VideoBackend:
                             stack.enter_context(
                                 _scheduler_step_progress(pipe, _on_scheduler_step_cancel, _tick)
                             )
+                            # Same seam for the live preview: the stepped latent is scheduler.step's output.
+                            stack.enter_context(scheduler_step_preview(pipe, previewer))
+                        stack.enter_context(_denoise_phase(pipe, _enter_denoise))
                         # Family-agnostic: no video family has a callback between its denoise loop and its decode, so
                         # every one of them gets its decode phase from the decoder itself.
                         stack.enter_context(_decode_phase(pipe, _on_decode))
@@ -8716,6 +8754,8 @@ class VideoBackend:
                     # must not keep reporting it compiled (a forced-compile quantised load runs ~30x slower eager),
                     # whether this render finished, was cancelled or failed.
                     settle_compile_fallback(state, pipe, logger)
+                    if previewer is not None:
+                        previewer.finish()
                     if static_skip:
                         logger.debug("video.step_skip: %s", static_skip_stats(pipe))
                         reset_static_step_skip(pipe, None)
