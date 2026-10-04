@@ -381,3 +381,28 @@ def test_fixed_transformers_is_left_untouched(unpatched):
         assert after[0] is before[0]
     if not TEMPLATE_AFFECTED:
         assert all(a is b for a, b in zip(after[1:], before[1:]))
+
+
+@pytest.mark.skipif(TF_VERSION < Version("4.54.0"), reason = "LightGlue was added in 4.54.0")
+def test_lightglue_class_ignores_a_disguised_model_type(patched, tmp_path):
+    # The file can claim any model_type; LightGlueConfig.from_pretrained still builds LightGlue.
+    from transformers import LightGlueConfig
+
+    repo, marker = _crafted_lightglue_repo(tmp_path)
+    config = json.loads((repo / "config.json").read_text())
+    config["model_type"] = "not_lightglue"
+    (repo / "config.json").write_text(json.dumps(config))
+    try:
+        LightGlueConfig.from_pretrained(repo)
+    except Exception:
+        pass
+    assert not marker.exists()
+
+
+def test_template_names_checked_even_without_jinja_files(patched):
+    # Processor save_pretrained writes named templates without consulting save_jinja_files.
+    class Holder:
+        chat_template = {"default": "x", "../../escape": "y"}
+
+    with pytest.raises(ValueError, match = "Invalid chat template name"):
+        patched._check_chat_template_names(Holder(), {"save_jinja_files": False})

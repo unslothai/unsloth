@@ -1761,6 +1761,14 @@ def fix_transformers_untrusted_config_fields():
     @functools.wraps(original)
     def from_dict(cls, config_dict, *args, **kwargs):
         config_dict = _strip_untrusted_config_fields(config_dict, strip_internal, strip_lightglue)
+        # The class being built decides, not the model_type the file claims.
+        if (
+            strip_lightglue
+            and getattr(cls, "model_type", None) == "lightglue"
+            and isinstance(config_dict, dict)
+            and "trust_remote_code" in config_dict
+        ):
+            config_dict = {k: v for k, v in config_dict.items() if k != "trust_remote_code"}
         return original(cls, config_dict, *args, **kwargs)
 
     setattr(from_dict, _UNTRUSTED_CONFIG_PATCH_FLAG, True)
@@ -1782,7 +1790,9 @@ def _chat_template_name_escapes(template_name):
 
 def _check_chat_template_names(obj, kwargs):
     chat_template = getattr(obj, "chat_template", None)
-    if not isinstance(chat_template, dict) or not kwargs.get("save_jinja_files", True):
+    # Checked whatever save_jinja_files says: processor save_pretrained writes named templates
+    # without consulting it, and no legitimate template name escapes the directory.
+    if not isinstance(chat_template, dict):
         return
     for template_name in chat_template:
         if template_name != "default" and _chat_template_name_escapes(str(template_name)):
