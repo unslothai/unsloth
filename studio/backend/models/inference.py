@@ -5227,7 +5227,8 @@ class AudioRunInputs(BaseModel):
     emotion: Optional[AudioSourceRef] = None
     source: Optional[AudioSourceRef] = None
     target: Optional[AudioSourceRef] = None
-    source_text: Optional[str] = Field(None, max_length = 4000)
+    # A 5 minute source (CONVERT_SOURCE_MAX_SECONDS) runs well past 4000 characters of speech.
+    source_text: Optional[str] = Field(None, max_length = 16000)
 
 
 class AudioConvertParams(BaseModel):

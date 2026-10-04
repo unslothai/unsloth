@@ -441,3 +441,12 @@ def test_the_seed_vc_server_entry_carries_its_route(monkeypatch, tmp_path):
     (entry,) = seen["models"]
     assert entry["task"] == "vc"
     assert entry["default_request_options"] == {"route": "v1_whisper_bigvgan_vc"}
+
+
+def test_a_five_minute_source_transcript_fits_the_request():
+    from models.inference import AudioRunInputs
+
+    # ~150 words a minute for the 300 s Convert source cap is ~5000 characters.
+    text = "word " * 1100
+    inputs = AudioRunInputs(source = {"input_id": "a" * 32}, source_text = text)
+    assert inputs.source_text == text
