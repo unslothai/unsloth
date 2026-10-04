@@ -260,6 +260,8 @@ from .import_fixes import (
     fix_transformers5_image_processing_reexports,
     fix_transformers_composite_prefix_renaming,
     fix_transformers_fully_masked_rows,
+    fix_transformers_untrusted_config_fields,
+    fix_transformers_chat_template_path_traversal,
     fix_transformers_chunked_mask_block_sequence_ids,
     fix_transformers_longcat_lsa_config,
     fix_transformers_rope_scaling_drops_theta,
@@ -320,6 +322,9 @@ fix_transformers5_bare_annotation_configs()
 # same process is covered too (#9708).
 fix_transformers_fully_masked_rows()
 fix_transformers_chunked_mask_block_sequence_ids()
+# CVE-2026-4372 / 5241 / 9856, no-ops once transformers carries the fix; before any config loads.
+fix_transformers_untrusted_config_fields()
+fix_transformers_chat_template_path_traversal()
 # Probe-gated: no-ops unless this transformers merges a submodule's own prefix renaming into a
 # composite model's conversion mapping. Ordered here, before anything loads a checkpoint, so a
 # plain transformers.from_pretrained in the same process keeps its bitsandbytes quant_state too.
@@ -410,6 +415,8 @@ patch_accelerate_recursively_apply()
 
 del fix_transformers5_bare_annotation_configs
 del fix_transformers5_legacy_config_types
+del fix_transformers_untrusted_config_fields
+del fix_transformers_chat_template_path_traversal
 del fix_transformers_rope_scaling_drops_theta
 del fix_transformers_fp8_modulelist_experts
 del fix_transformers_fp8_unscaled_checkpoint_linears
