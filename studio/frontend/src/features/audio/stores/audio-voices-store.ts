@@ -73,11 +73,21 @@ export const useAudioVoicesStore = create<AudioVoicesState>()((set, get) => ({
   },
   remove: async (id) => {
     const before = get().voices;
+    const index = before.findIndex((voice) => voice.id === id);
     set({ voices: before.filter((voice) => voice.id !== id) });
     try {
       await deleteVoice(id);
     } catch (error) {
-      set({ voices: before });
+      // Put back only this voice: another deletion may have finished meanwhile.
+      const failed = before[index];
+      if (failed) {
+        set((state) => {
+          if (state.voices.some((voice) => voice.id === id)) return {};
+          const voices = [...state.voices];
+          voices.splice(Math.min(index, voices.length), 0, failed);
+          return { voices };
+        });
+      }
       throw error;
     }
   },

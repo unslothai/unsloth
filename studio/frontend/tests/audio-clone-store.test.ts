@@ -7,6 +7,7 @@ import test from "node:test";
 
 import {
   installLocalStorageFake,
+  readSrc,
   registerBundlerResolver,
 } from "./helpers/kit.ts";
 
@@ -171,4 +172,12 @@ test("Add it again under Generate drops the expired clip's transcript too", () =
   store().adoptReference(null);
   store().adoptReference(b);
   assert.equal(store().referenceText, "");
+});
+
+test("a failed voice deletion puts back only that voice", () => {
+  const src = readSrc("features/audio/stores/audio-voices-store.ts");
+  const body = src.slice(src.indexOf("remove: async (id) => {"));
+  const handler = body.slice(0, body.indexOf("\n  },"));
+  assert.doesNotMatch(handler, /set\(\{ voices: before \}\)/);
+  assert.match(handler, /voices\.splice\(Math\.min\(index, voices\.length\), 0, failed\)/);
 });
