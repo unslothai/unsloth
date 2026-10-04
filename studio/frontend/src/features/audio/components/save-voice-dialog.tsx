@@ -12,7 +12,7 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useAudioVoicesStore } from "../stores/audio-voices-store";
 import { Field } from "./field";
 import { LanguageSelect } from "./language-select";
@@ -78,6 +78,11 @@ function SaveVoiceForm({
   const [error, setError] = useState<string | null>(null);
   const clean = name.trim();
   // Voices are picked by name, so two with the same name could not be told apart.
+  // The list loads with the voice picker, which this dialog can open without.
+  useEffect(() => {
+    const voices = useAudioVoicesStore.getState();
+    if (!voices.loaded) void voices.refresh();
+  }, []);
   const taken = useAudioVoicesStore((state) =>
     state.voices.some(
       (voice) =>

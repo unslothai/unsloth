@@ -276,7 +276,8 @@ export function useCloneGeneration({
       {
         label: "Add it again",
         onClick: () => {
-          useAudioCloneStore.getState().setReference(null);
+          // Like Remove: the expired clip's transcript goes with it.
+          useAudioCloneStore.getState().adoptReference(null);
           referenceHandle.current?.browse();
         },
       },
