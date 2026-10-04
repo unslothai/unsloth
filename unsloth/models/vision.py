@@ -839,13 +839,11 @@ def _resolve_offload_embedding(
         return False
     if not automatic:
         return True
-    # "auto" follows free VRAM (offload_embedding_if_tight); an unsloth_zoo without the reserve
-    # estimate keeps the old size rule.
+    # "auto" follows free VRAM; an unsloth_zoo without the reserve estimate keeps the size rule.
     return needed or (_zoo_reserve_estimate is None and _embedding_is_worth_offloading(in_embed))
 
 
-# Other token-indexed tables worth moving with the input embedding (Gemma 3n / 4 per-layer
-# embeddings: 5.25 GB on gemma-4-E4B); small position tables stay.
+# Other large token tables (Gemma 3n / 4 per-layer embeddings) move too; small position tables stay.
 _EXTRA_EMBEDDING_MIN_BYTES = 256 * 2**20
 
 
@@ -878,8 +876,7 @@ def offload_input_embedding(model, embeddings = None):
     for embedding in found if embeddings is None else embeddings:
         weight = embedding.weight
         if weight.device.type == "cpu":
-            # Streamed to host by the block swap load: hook it, with the head's card as home. Its
-            # buffers (Gemma's embed_scale) materialized on the card after the load: move them too.
+            # Streamed to host by the block swap load: hook it (home = head's card) and move its buffers (embed_scale).
             if getattr(embedding, "_unsloth_offload_hooks_installed", False):
                 continue
             _embed_device = head.device if head is not None else torch.device("cpu")
@@ -908,8 +905,7 @@ def offload_spare_embeddings(model, require_frozen = True):
         found, out_embed = _input_side_embeddings(model)
     except Exception:
         return 0
-    # An embedding already in host RAM qualifies only when the block swap load streamed it there
-    # (unhooked, decoder on an accelerator); a model loaded onto the CPU has nothing to offload.
+    # Already on the host only via the block swap load (unhooked, decoder on an accelerator); CPU models have nothing to offload.
     head = getattr(out_embed, "weight", None)
     if head is not None and head.device.type in ("cpu", "meta"):
         head = None
@@ -3119,8 +3115,7 @@ class FastBaseModel:
             )
         _block_swap_device = block_swap_load_device(device_map)
         if (_block_swap_layers or _embedding_needed) and _block_swap_device is not None:
-            # A placement strategy would size the card without the host-bound weights and spill
-            # the rest to the CPU, which 4-bit loads refuse.
+            # A placement strategy would spill the host-bound weights to the CPU, which 4-bit loads refuse.
             device_map = {"": _block_swap_device}
         _block_swap_state = None
 
@@ -3886,13 +3881,11 @@ class FastBaseModel:
         _mark_loaded_revision(tokenizer, _tokenizer_revision)
         model = _mark_forced_float32(model, do_forced_float32)
         model = _mark_full_finetuning(model, full_finetuning)
-        # Last: the passes above may still recast frozen weights (fp32 norms), and the host copies
-        # must carry that.
+        # Last, so the host copies carry the fp32 recasts the passes above make.
         finish_block_swap_load(model, _block_swap_state)
 
         # LAST, like the llama loader: patch_model_and_tokenizer below REPLACES the embedding and lm_head with fresh modules carrying the weights but not the _hf_hook, so a model split across cards would still meet the original cross-device index_select. Idempotent.
-        # Embeddings offloaded later ("auto" under pressure, or streamed by the block swap load)
-        # are on the host on purpose: a dispatch hook would pull them back.
+        # Embeddings offloaded later sit on the host on purpose: a dispatch hook would pull them back.
         _base = model.get_base_model() if hasattr(model, "get_base_model") else model
         if (
             not fast_inference

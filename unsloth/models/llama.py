@@ -3390,8 +3390,7 @@ class FastLlamaModel:
             subfolder = kwargs.get("subfolder"),
             variant = kwargs.get("variant"),
         )
-        # "auto" moves it only when memory is tight: the block swap plan, else free VRAM against a
-        # step's reserve, here and again in get_peft_model. An explicit True always asks.
+        # "auto" moves it only when memory is tight (block swap plan or free VRAM vs the step reserve); True always does.
         model._unsloth_offload_embedding_mode = (
             _offload_embedding_mode if num_labels is None else False
         )

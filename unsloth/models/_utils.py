@@ -6230,9 +6230,7 @@ def _training_reserve_bytes(
     seq_len = None,
     trainable = True,
 ):
-    # Gradients at the trainable parameters' own size, AdamW's two fp32 moments and the foreach
-    # step's fp32 temporary. Before get_peft_model every parameter still says requires_grad, so a
-    # load-time check leaves them out.
+    # Grads, AdamW's two fp32 moments and the foreach temp; before get_peft_model every param still says requires_grad.
     extra = 0
     if trainable:
         extra = sum(
@@ -6243,8 +6241,7 @@ def _training_reserve_bytes(
 
 
 def _skip_aware_flag(cls):
-    # Every path that re-enables checkpointing (for_training, gradient_checkpointing_enable, the
-    # trainer) writes this flag on each layer; a marked layer keeps reading False.
+    # for_training, gradient_checkpointing_enable and the trainer rewrite the flag; a marked layer keeps reading False.
     if cls.__dict__.get("_unsloth_skip_aware", False):
         return
 
@@ -6400,8 +6397,7 @@ def install_block_swap(
             return None
     _check_block_swap(model)
     layers = find_decoder_layers(model)
-    # Spaced evenly, each block's copy hides behind several layers of compute instead of one
-    # (4x slower link emulated on Llama-3.1-8B: +19% step time spread vs +45% for the last N).
+    # Spaced evenly, each copy hides behind several layers of compute instead of one.
     swapper = _new_block_swap(layers, block_swap_layers, prefetch_depth, placement = "spread")
     # On the layer list too: the fast decode loop only sees the inner model.
     layers._unsloth_block_swap = swapper
@@ -6535,8 +6531,7 @@ def attach_block_swap_layers(
         setattr(config, key, value)
     count = config.num_hidden_layers - first
     layer_cls = type(layers[0])
-    # The tail feeds the final norm and head, so it fetches onto the head's card (device_map = {"": 1}
-    # puts it there too); a multi-GPU plan reserved its slot pool on that card.
+    # The tail fetches onto the head's card, where a multi-GPU plan reserved its slot pool.
     head = model.get_output_embeddings() if hasattr(model, "get_output_embeddings") else None
     weight = getattr(head, "weight", None)
     device = weight.device if weight is not None else next(layers[first - 1].parameters()).device

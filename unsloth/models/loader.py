@@ -1483,8 +1483,7 @@ class FastLanguageModel(FastLlamaModel):
             max_lora_rank = max_lora_rank,
             disable_log_stats = disable_log_stats,
             load_in_fp8 = load_in_fp8,
-            # resize_token_embeddings below replaces the embedding and its offload hooks; only an explicit
-            # request offloads then, as in FastModel.
+            # resize_token_embeddings below replaces the embedding and its hooks: only an explicit request offloads.
             offload_embedding = (
                 False
                 if resize_model_vocab is not None and offload_embedding == OFFLOAD_EMBEDDING_AUTO
