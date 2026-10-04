@@ -107,7 +107,7 @@ def test_training_native_bf16_by_arch(monkeypatch, arch, expected):
 
 @pytest.mark.parametrize("capability,expected", [((7, 5), FP16), ((8, 0), BF16), ((9, 0), BF16)])
 def test_nvidia_unchanged(monkeypatch, capability, expected):
-    # NVIDIA reports no gcnArchName; a stray one must not matter since the arch gate is ROCm-only.
+    # A stray gcnArchName must not matter: the arch gate is ROCm-only.
     torch = _fake_torch(hip = None, arch = "gfx1030", capability = capability)
     _install(monkeypatch, torch, is_rocm = False)
     assert dd.resolve_diffusion_device_target().dtype == expected
