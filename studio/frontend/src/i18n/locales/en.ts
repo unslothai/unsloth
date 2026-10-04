@@ -264,6 +264,45 @@ export const en = {
       chat: "Chat",
       searchChats: "Search chats...",
     },
+    search: {
+      placeholder: "Search",
+      tabs: {
+        all: "All",
+        chats: "Chats",
+        projects: "Projects",
+        files: "Files",
+        models: "Models",
+      },
+      recents: "Recents",
+      actions: "Actions",
+      newChat: "New chat",
+      newTemporaryChat: "New temporary chat",
+      fineTune: "Fine-tune a model",
+      generateImage: "Generate an image",
+      generateVideo: "Generate a video",
+      untitledChat: "Untitled chat",
+      compare: "Compare",
+      loading: "Loading…",
+      empty: {
+        all: "Nothing to search yet.",
+        chats: "No chats yet.",
+        projects: "No projects yet.",
+        files: "No files in your Library yet.",
+        models: "No downloaded models yet.",
+      },
+      noMatches: "No results.",
+      when: {
+        today: "Today",
+        pastWeek: "Past week",
+        pastMonth: "Past month",
+        older: "Older",
+      },
+      footer: {
+        close: "Close",
+        changeType: "Change type",
+        open: "Open",
+      },
+    },
     notFound: {
       title: "Page not found",
       description: "{path} does not exist.",
@@ -1120,9 +1159,22 @@ export const en = {
       },
       permissions: {
         sectionTitle: "Permissions",
-        bypassLabel: "Tool permissions",
-        bypassDescription:
-          "How Unsloth approves chat tool calls (terminal, python, web, MCP) before they run. Full access disables approvals and the code sandbox.",
+        names: {
+          ask: "Ask for approval",
+          auto: "Approve for me",
+          off: "Run automatically",
+          full: "Full access",
+        },
+        details: {
+          ask:
+            "Asks before every tool call, including terminal and Python code, web searches, file edits and MCP tools. Tools run by an external provider are not paused. Best when you want to review each step.",
+          auto:
+            "Runs routine tool calls on its own and only asks when an action looks risky, such as reading credentials, escalating privileges or running destructive commands.",
+          off:
+            "Runs every tool call without asking. Python and terminal code still run in the sandbox, which limits which files they can reach on your computer.",
+          full:
+            "Runs every tool call without asking and turns off the code sandbox, so Python and terminal code can read and change any file your account can access. Best for trusted tasks that need to work outside the sandbox.",
+        },
       },
       notifications: {
         sectionTitle: "Notifications",
@@ -1604,6 +1656,9 @@ export const en = {
         noRamReserve: "Don't reserve system RAM for the model",
         noRamReserveDescription: "Reduce host RAM held for model weights.",
         noRamReserveHint: "Skips memory-mapped loading on supported Windows builds when the model is fully offloaded to the GPU, so its pages are not held resident. Otherwise keeps memory-mapped loading. Required CPU buffers can still use RAM. Drops --no-mmap and --mlock.",
+        multiModel: "Keep multiple models loaded",
+        multiModelDescription: "Loading a model keeps the others in memory.",
+        multiModelHint: "Each loaded model answers the requests that name it. With several GPUs, a new model goes to a GPU no other model uses when one has room. When it does not fit beside the others, the models not in use are unloaded first, then it replaces the active model. Training unloads the extra models before the active one.",
         mlockVetoed: "--mlock stays off: pinning the model in place would reserve RAM for all of it. Idle auto-unload is still disabled.",
         mlockNotApplicable: "Fully on the GPU: nothing in system RAM to lock. Idle auto-unload stays off.",
         memlockCapped: "This system caps locked memory at {limit}. A larger model will not be fully pinned; raise the limit with ulimit -l.",
@@ -2434,6 +2489,7 @@ export const en = {
       context: "Context",
       lr: "LR",
       hardware: "Hardware",
+      vram: "VRAM",
       noGpu: "No GPU detected",
       hfToken: "HF token",
       saved: "Saved",
@@ -3136,6 +3192,7 @@ export const en = {
     discardDescription: "Edits to {name} that are not saved will be lost.",
     discard: "Discard",
     mentions: "Skills",
+    manage: "Manage skills",
   },
   // The Library page, its file viewer, and the menus and toasts that act on its files.
   library: {

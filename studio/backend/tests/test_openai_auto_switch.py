@@ -4946,7 +4946,13 @@ def test_chat_count_tokens_forwards_enabled_tools(monkeypatch):
     _switched, counted = _count_tokens_backend(monkeypatch, count = 99, supports_tools = True)
     gate = {}
 
-    async def _select(payload, *, tools_on, mcp_allowed):
+    async def _select(
+        payload,
+        *,
+        tools_on,
+        mcp_allowed,
+        supports_vision = False,
+    ):
         gate.update(tools_on = tools_on, mcp_allowed = mcp_allowed)
         return [{"type": "function", "function": {"name": "web_search"}}]
 
@@ -4992,7 +4998,13 @@ def test_chat_count_tokens_strips_replayed_tool_markup(monkeypatch, fields, expe
     rendering, so a count that keeps it prices text the completion removes."""
     _switched, counted = _count_tokens_backend(monkeypatch, count = 99, supports_tools = True)
 
-    async def _select(_payload, *, tools_on, mcp_allowed):
+    async def _select(
+        _payload,
+        *,
+        tools_on,
+        mcp_allowed,
+        supports_vision = False,
+    ):
         return [{"type": "function", "function": {"name": "web_search"}}]
 
     monkeypatch.setattr(inference_route, "_select_request_tools", _select)
@@ -5094,7 +5106,13 @@ def test_chat_count_tokens_prices_the_route_the_completion_takes(
     """
     _switched, counted = _count_tokens_backend(monkeypatch, count = 99, supports_tools = True)
 
-    async def _select(payload, *, tools_on, mcp_allowed):
+    async def _select(
+        payload,
+        *,
+        tools_on,
+        mcp_allowed,
+        supports_vision = False,
+    ):
         return [{"type": "function", "function": {"name": "web_search"}}]
 
     monkeypatch.setattr(inference_route, "_select_request_tools", _select)
@@ -5209,7 +5227,13 @@ def test_chat_count_tokens_dates_only_api_server_tool_prompts(monkeypatch):
         lambda **_kwargs: "The current date is 2026-08-15.",
     )
 
-    async def _select(_payload, *, tools_on, mcp_allowed):
+    async def _select(
+        _payload,
+        *,
+        tools_on,
+        mcp_allowed,
+        supports_vision = False,
+    ):
         return [{"type": "function", "function": {"name": "web_search"}}]
 
     monkeypatch.setattr(inference_route, "_select_request_tools", _select)
@@ -5615,7 +5639,13 @@ def test_chat_count_tokens_counts_an_empty_chat_the_cli_policy_fills(monkeypatch
     """
     _switched, counted = _count_tokens_backend(monkeypatch, count = 850, supports_tools = True)
 
-    async def _select(payload, *, tools_on, mcp_allowed):
+    async def _select(
+        payload,
+        *,
+        tools_on,
+        mcp_allowed,
+        supports_vision = False,
+    ):
         return [{"type": "function", "function": {"name": "web_search"}}]
 
     monkeypatch.setattr(inference_route, "_select_request_tools", _select)

@@ -252,12 +252,11 @@ const MODEL_DEFAULTS: Array<{ match: string; steps: number; guidance: number }> 
   // "distilled" before the generic "ltx": the distilled model runs at 8 steps, guidance 1.
   { match: "distilled", steps: 8, guidance: 1 },
   { match: "ltx", steps: 40, guidance: 4 },
-  // ComfyUI's templates for the same models. Wan2.2-T2V-A14B: 20 steps at CFG 3.5, before the generic Wan key.
+  // T2V-A14B before the generic Wan key.
   { match: "a14b", steps: 20, guidance: 3.5 },
   { match: "wan2.2-14b", steps: 20, guidance: 3.5 },
-  // Wan2.2-TI2V-5B: 20 steps at CFG 5. The backend supplies the fps per family.
+  // The backend supplies the fps per family.
   { match: "wan", steps: 20, guidance: 5 },
-  // HunyuanVideo-1.5 runs 20 steps; guidance 6 matches the guider the repo ships.
   { match: "hunyuanvideo", steps: 20, guidance: 6 },
 ];
 

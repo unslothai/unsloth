@@ -130,10 +130,10 @@ def _block(quant: str):
     if quant in ("int8", "int8_convrot"):
         from torchao.quantization import Int8DynamicActivationInt8WeightConfig, quantize_
 
-        config = Int8DynamicActivationInt8WeightConfig()
+        config = Int8DynamicActivationInt8WeightConfig(set_inductor_config = False)
         if quant == "int8_convrot":
             try:  # the Int8Tensor the hosted checkpoints carry; torchao <= 0.17 defaults to the legacy tensor
-                config = Int8DynamicActivationInt8WeightConfig(version = 2)
+                config = Int8DynamicActivationInt8WeightConfig(version = 2, set_inductor_config = False)
             except TypeError:
                 pass
         quantize_(
