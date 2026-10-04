@@ -32763,6 +32763,9 @@ async def reveal_sandbox_dir(
     from starlette.concurrency import run_in_threadpool
 
     if file:
+        # Like open: it drives the host's desktop, so only its owner may.
+        account_access.require_installation_owner()
+
         from pathlib import Path
 
         from utils.paths.path_utils import reveal_in_file_manager

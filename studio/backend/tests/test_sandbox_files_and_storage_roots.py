@@ -9,6 +9,7 @@ compiled cache landed in the launcher's CWD, and a deleted chat left its folder
 behind. Verified on Windows, macOS and Linux.
 """
 
+import asyncio
 import functools
 import hashlib
 import json
@@ -6513,7 +6514,7 @@ def test_opening_refuses_scripts_links_and_escapes(tmp_path, monkeypatch, name, 
     assert launched == []
 
 
-def test_only_the_installation_owner_opens_files_on_the_host(tmp_path, monkeypatch):
+def test_only_the_installation_owner_opens_or_reveals_files_on_the_host(tmp_path, monkeypatch):
     from fastapi import HTTPException
 
     from hub.services.models import account_access
@@ -6523,6 +6524,13 @@ def test_only_the_installation_owner_opens_files_on_the_host(tmp_path, monkeypat
     monkeypatch.setattr(account_access, "managed_account", lambda: True)
     with pytest.raises(HTTPException) as caught:
         _open(inference, "report.pdf")
+    assert caught.value.status_code == 403
+    with pytest.raises(HTTPException) as caught:
+        asyncio.run(
+            inference.reveal_sandbox_dir(
+                "thread-1", request = None, token = None, session = None, file = "report.pdf"
+            )
+        )
     assert caught.value.status_code == 403
     assert launched == []
 

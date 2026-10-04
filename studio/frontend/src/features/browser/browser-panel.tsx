@@ -94,6 +94,7 @@ import {
   type FileViewState,
   browserFile,
   currentEntry,
+  entryKey,
   pageDownload,
   useBrowserStore,
 } from "./store";
@@ -1424,8 +1425,9 @@ export const BrowserPanel = memo(function BrowserPanel() {
           activeEntry?.kind === "file" &&
           annotateTabId === activeTab.id &&
           pageElement ? (
+            // Refreshed bytes are a new document: the marks were on the old one.
             <AnnotateLayer
-              key={activeTab.id}
+              key={`${activeTab.id}:${activeEntry.fileId}`}
               page={pageElement}
               fileName={activeEntry.name}
             />
@@ -1434,9 +1436,9 @@ export const BrowserPanel = memo(function BrowserPanel() {
           annotateTabId === activeTab.id &&
           showsWebPage(activeTab) &&
           !nativePage(activeTab) ? (
-            // A new page starts over: its marks were the last page's.
+            // A new page, a reload or a replacement starts over: its marks were the last page's.
             <WebAnnotateLayer
-              key={`${activeTab.id}:${activeTab.index}`}
+              key={`${activeTab.id}:${entryKey(currentEntry(activeTab))}:${activeTab.reloadKey}`}
               tabId={activeTab.id}
               title={activeTab.title}
               url={webAddress(activeTab) ?? ""}

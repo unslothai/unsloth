@@ -57,6 +57,10 @@ def test_the_shell_guards():
     )
     assert "document.write(" not in shell
     assert "observe(document.documentElement" not in shell
+    # Links and forms go through the proxy only when the page's own handlers leave them alone, and
+    # requestSubmit() keeps its native validation.
+    assert shell.count("unlessCancelled(event, ") == 2
+    assert "requestSubmit = " not in shell
 
 
 def test_prepare_page_strips_what_would_escape_the_sandbox():

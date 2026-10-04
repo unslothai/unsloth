@@ -15,7 +15,7 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from typing import Literal, Optional
-from urllib.parse import quote, urljoin
+from urllib.parse import quote, urljoin, urlsplit
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import Response
@@ -220,19 +220,32 @@ _FRAME_HTML = r"""<!doctype html>
           }
           return null;
         };
+        // Act once the page's own handlers have run: one that cancels the event (a router's link,
+        // a form sent with fetch) keeps it in the page, as in a browser.
+        const unlessCancelled = (event, action) => {
+          let cancelled = event.defaultPrevented;
+          Event.prototype.preventDefault.call(event);
+          Object.defineProperties(event, {
+            preventDefault: { value: () => { cancelled = true; } },
+            defaultPrevented: { get: () => cancelled },
+            returnValue: { get: () => !cancelled, set: (value) => { if (value === false) cancelled = true; } },
+          });
+          setTimeout(() => { if (!cancelled) action(); });
+        };
         const onLinkClick = (event) => {
           const link = linkFrom(event);
           if (!link) return;
           const raw = (link.getAttribute("href") || "").trim();
           if (/^javascript:/i.test(raw)) return;
-          event.preventDefault();
-          // Keep "#" links on the page; against <base> they would navigate.
-          if (raw.startsWith("#")) {
-            if (raw.length > 1) followHash(raw);
-            return;
-          }
           const modified = event.button === 1 || event.metaKey || event.ctrlKey || event.shiftKey;
-          navigate(raw, modified || /^_blank$/i.test(link.target || ""), modified);
+          unlessCancelled(event, () => {
+            // Keep "#" links on the page; against <base> they would navigate.
+            if (raw.startsWith("#")) {
+              if (raw.length > 1) followHash(raw);
+              return;
+            }
+            navigate(raw, modified || /^_blank$/i.test(link.target || ""), modified);
+          });
         };
         document.addEventListener("click", onLinkClick, true);
         document.addEventListener("auxclick", (event) => { if (event.button === 1) onLinkClick(event); }, true);
@@ -258,15 +271,12 @@ _FRAME_HTML = r"""<!doctype html>
             navigate(url.href, /^_blank$/i.test(target));
           }
         };
+        // requestSubmit() stays native: it validates the form, then fires this event.
         document.addEventListener("submit", (event) => {
-          event.preventDefault();
-          submitForm(event.target, event.submitter);
+          const { target, submitter } = event;
+          unlessCancelled(event, () => submitForm(target, submitter));
         }, true);
         HTMLFormElement.prototype.submit = function () { submitForm(this, null); };
-        HTMLFormElement.prototype.requestSubmit = function (submitter) {
-          const event = new SubmitEvent("submit", { bubbles: true, cancelable: true, submitter: submitter || null });
-          if (this.dispatchEvent(event)) submitForm(this, submitter || null);
-        };
 
         const report = () => {
           const icon = document.querySelector("link[rel~='icon'][href], link[rel='shortcut icon'][href], link[rel='apple-touch-icon'][href]");
@@ -798,7 +808,8 @@ def _build_response(
 ) -> Response:
     """Build the panel's response. Runs in the fetch pool to keep large pages off the event loop."""
     if error is not None:
-        logger.info("browser_fetch_failed", url = url, error = error)
+        # The host only: a page address can carry a sign-in token.
+        logger.info("browser_fetch_failed", host = urlsplit(url).hostname, error = error)
         if meta.get("bot_check"):
             raise HTTPException(status_code = 502, detail = {"message": error, "botCheck": True})
         raise HTTPException(status_code = 502, detail = error)
