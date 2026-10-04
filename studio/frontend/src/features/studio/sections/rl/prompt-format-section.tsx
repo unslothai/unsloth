@@ -28,6 +28,9 @@ import { useShallow } from "zustand/react/shallow";
 
 type Preset = "notebook" | "none" | "custom";
 
+// Matches WARMUP_MIN_SEQ_LENGTH in studio/backend/core/training/rl_format.py.
+const WARMUP_MIN_CONTEXT = 2048;
+
 function presetOf(prompt: string, notebook: string): Preset {
   if (prompt === notebook) {
     return "notebook";
@@ -46,6 +49,7 @@ export function PromptFormatSection(): ReactElement {
       reasoning: state.grpoReasoningFormat,
       setReasoning: state.setGrpoReasoningFormat,
       warmupSteps: state.grpoFormatWarmupSteps,
+      contextLength: state.contextLength,
       setWarmupSteps: state.setGrpoFormatWarmupSteps,
       rewards: state.grpoRewards,
       mapping: state.rlRoleMapping,
@@ -122,6 +126,15 @@ export function PromptFormatSection(): ReactElement {
               <p className="text-muted-foreground/85">
                 {t("rl.prompt.warmupStepsHint")}
               </p>
+              {s.warmupSteps > 0 && s.contextLength < WARMUP_MIN_CONTEXT && (
+                <p className="mt-1 flex items-start gap-1.5 text-amber-700 dark:text-amber-300">
+                  <HugeiconsIcon
+                    icon={Alert02Icon}
+                    className="mt-px size-3.5 shrink-0"
+                  />
+                  {t("rl.prompt.warmupContext", { n: WARMUP_MIN_CONTEXT })}
+                </p>
+              )}
             </div>
             <Input
               type="number"

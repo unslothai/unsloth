@@ -3699,6 +3699,7 @@ export const de = {
       reasoningFormatHint: "Für Basismodelle: die Chat-Vorlage der GRPO-Notebooks, mit dem Lösungsweg zwischen <start_working_out>-Tags und der Antwort in <SOLUTION>. Prompt und Belohnungen werden passend umgestellt.",
       warmupSteps: "Format-Aufwärmschritte",
       warmupStepsHint: "Kurzer SFT-Durchlauf mit formatierten Mathe-Beispielen vor GRPO, damit das Modell die Tags schon schreibt. 0 überspringt ihn; die Notebooks nutzen etwa 100.",
+      warmupContext: "Braucht eine maximale Sequenzlänge von {n} oder mehr: die Aufwärmbeispiele sind lang.",
     },
     charts: {
       reward: "Belohnung",

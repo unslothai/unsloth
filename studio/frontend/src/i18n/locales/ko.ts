@@ -3624,6 +3624,7 @@ export const ko = {
       reasoningFormatHint: "베이스 모델용: GRPO 노트북의 채팅 템플릿으로, 풀이는 <start_working_out> 태그 사이에, 답은 <SOLUTION> 안에 씁니다. 프롬프트와 보상도 맞춰 바뀝니다.",
       warmupSteps: "형식 워밍업 단계",
       warmupStepsHint: "GRPO 전에 형식을 갖춘 수학 예제로 짧게 SFT를 해서 모델이 처음부터 태그를 쓰게 합니다. 0이면 건너뜁니다. 노트북은 약 100을 씁니다.",
+      warmupContext: "최대 시퀀스 길이가 {n} 이상이어야 합니다. 워밍업 예제가 깁니다.",
     },
     charts: {
       reward: "보상",

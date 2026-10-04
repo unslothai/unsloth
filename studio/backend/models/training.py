@@ -3,6 +3,7 @@
 
 """Pydantic schemas for Training API"""
 
+from core.training.rl_format import WARMUP_MIN_SEQ_LENGTH
 import math
 import re
 from pathlib import Path, PureWindowsPath
@@ -725,6 +726,11 @@ class TrainingStartRequest(BaseModel):
             raise ValueError("Each GRPO reward can only be selected once.")
         if self.grpo_format_warmup_steps and not (objective == "grpo" and self.grpo_reasoning_format):
             raise ValueError("The format warm-up needs GRPO with the reasoning format on.")
+        if self.grpo_format_warmup_steps and self.max_seq_length < WARMUP_MIN_SEQ_LENGTH:
+            raise ValueError(
+                f"The format warm-up needs a max sequence length of {WARMUP_MIN_SEQ_LENGTH} or more; "
+                "its examples are 800+ tokens and only those under half the context are used."
+            )
         return self
 
     @model_validator(mode = "after")

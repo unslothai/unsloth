@@ -3696,6 +3696,7 @@ export const es = {
       reasoningFormatHint: "Para modelos base: la plantilla de chat de los notebooks de GRPO, con el razonamiento entre etiquetas <start_working_out> y la respuesta en <SOLUTION>. Cambia el prompt y las recompensas para que coincidan.",
       warmupSteps: "Pasos de calentamiento de formato",
       warmupStepsHint: "Una pasada corta de SFT con ejemplos de matemáticas formateados antes de GRPO, para que el modelo ya escriba las etiquetas. 0 la omite; los notebooks usan unos 100.",
+      warmupContext: "Necesita una longitud máxima de secuencia de {n} o más: los ejemplos de calentamiento son largos.",
     },
     charts: {
       reward: "Recompensa",

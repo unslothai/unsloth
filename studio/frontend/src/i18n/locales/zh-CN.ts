@@ -3538,6 +3538,7 @@ export const zhCN = {
       reasoningFormatHint: "适用于基础模型:GRPO 笔记本的对话模板,推理过程写在 <start_working_out> 标签之间,答案写在 <SOLUTION> 中。提示和奖励会随之切换。",
       warmupSteps: "格式预热步数",
       warmupStepsHint: "在 GRPO 之前用格式化的数学示例做一小段 SFT,让模型一开始就会写这些标签。0 表示跳过;笔记本中约为 100。",
+      warmupContext: "需要最大序列长度至少为 {n}:预热示例较长。",
     },
     charts: {
       reward: "奖励",

@@ -108,7 +108,13 @@ def _request(**kw):
 def test_warmup_needs_the_reasoning_format():
     with pytest.raises(ValidationError, match = "reasoning format"):
         _request(grpo_format_warmup_steps = 50)
-    assert _request(grpo_format_warmup_steps = 50, grpo_reasoning_format = True).grpo_format_warmup_steps == 50
+    ok = _request(grpo_format_warmup_steps = 50, grpo_reasoning_format = True, max_seq_length = 2048)
+    assert ok.grpo_format_warmup_steps == 50
+
+
+def test_warmup_needs_room_for_its_examples():
+    with pytest.raises(ValidationError, match = "2048 or more"):
+        _request(grpo_format_warmup_steps = 50, grpo_reasoning_format = True, max_seq_length = 1024)
 
 
 def test_warmup_steps_are_bounded():

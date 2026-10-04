@@ -27,6 +27,8 @@ SYSTEM_PROMPT = (
 WARMUP_DATASET = "unsloth/OpenMathReasoning-mini"
 WARMUP_SPLIT = "cot"
 WARMUP_LEARNING_RATE = 2e-4
+# Its shortest examples are ~800 tokens and only those under half the context are kept.
+WARMUP_MIN_SEQ_LENGTH = 2048
 
 
 def _jinja_string(text: str) -> str:

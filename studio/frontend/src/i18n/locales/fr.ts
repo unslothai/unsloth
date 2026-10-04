@@ -3710,6 +3710,7 @@ export const fr = {
       reasoningFormatHint: "Pour les modèles de base : le modèle de chat des notebooks GRPO, avec le raisonnement entre balises <start_working_out> et la réponse dans <SOLUTION>. Le prompt et les récompenses s'adaptent.",
       warmupSteps: "Étapes d'échauffement du format",
       warmupStepsHint: "Courte passe SFT sur des exemples de maths formatés avant GRPO, pour que le modèle écrive déjà les balises. 0 la saute ; les notebooks en font environ 100.",
+      warmupContext: "Nécessite une longueur de séquence maximale d'au moins {n} : les exemples d'échauffement sont longs.",
     },
     charts: {
       reward: "Récompense",

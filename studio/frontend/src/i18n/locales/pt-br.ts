@@ -3658,6 +3658,7 @@ export const ptBR = {
       reasoningFormatHint: "Para modelos base: o template de chat dos notebooks de GRPO, com o raciocínio entre tags <start_working_out> e a resposta em <SOLUTION>. O prompt e as recompensas mudam para combinar.",
       warmupSteps: "Passos de aquecimento de formato",
       warmupStepsHint: "Uma passada curta de SFT com exemplos de matemática formatados antes do GRPO, para o modelo já escrever as tags. 0 pula; os notebooks usam cerca de 100.",
+      warmupContext: "Precisa de um comprimento máximo de sequência de {n} ou mais: os exemplos de aquecimento são longos.",
     },
     charts: {
       reward: "Recompensa",

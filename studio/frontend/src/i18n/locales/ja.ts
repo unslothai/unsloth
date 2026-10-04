@@ -3578,6 +3578,7 @@ export const ja = {
       reasoningFormatHint: "ベースモデル向け: GRPO ノートブックのチャットテンプレート。考え方を <start_working_out> タグで囲み、答えを <SOLUTION> に入れます。プロンプトと報酬もこれに合わせて切り替わります。",
       warmupSteps: "フォーマットのウォームアップステップ",
       warmupStepsHint: "GRPO の前に整形済みの数学例で短く SFT を行い、モデルが最初からタグを書けるようにします。0 でスキップ。ノートブックでは約 100。",
+      warmupContext: "最大シーケンス長を {n} 以上にしてください。ウォームアップの例は長めです。",
     },
     charts: {
       reward: "報酬",

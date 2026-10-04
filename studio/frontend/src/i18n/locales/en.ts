@@ -3672,6 +3672,7 @@ export const en = {
       reasoningFormatHint: "For base models: the GRPO notebooks' chat template, with working out between <start_working_out> tags and the answer in <SOLUTION>. Switches the prompt and rewards to match.",
       warmupSteps: "Format warm-up steps",
       warmupStepsHint: "Short SFT pass on formatted math examples before GRPO, so the model already writes the tags. 0 skips it; the notebooks use about 100.",
+      warmupContext: "Needs a max sequence length of {n} or more: the warm-up examples are long.",
     },
     charts: {
       reward: "Reward",
