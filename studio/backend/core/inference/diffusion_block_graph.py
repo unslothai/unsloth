@@ -197,10 +197,11 @@ def _is_wrapper_subclass(t: Any) -> bool:
 
 class _WeightView:
     """The block's parameters and buffers, read back as device addresses. Parameter objects are stable across
-    offload (only their data moves), so the list is built once; wrapper subclasses (torchao) are read through their
-    inner tensors, which is where their data lives."""
+    offload (only their data moves), so the list is built once; wrapper subclasses (torchao) are read through every
+    level of inner tensors down to the plain ones holding the data (torchao 0.17's int8 nests two wrappers, and a
+    wrapper's own ``data_ptr`` is 0)."""
 
-    __slots__ = ("tensors", "inner")
+    __slots__ = ("tensors",)
 
     def __init__(self, module: Any) -> None:
         seen: set = set()
@@ -210,16 +211,13 @@ class _WeightView:
                 seen.add(id(t))
                 tensors.append(t)
         self.tensors = tensors
-        self.inner = [_inner_names(t) for t in tensors]
 
     def placement(self, device_index: Optional[int]) -> Optional[tuple]:
-        """The data pointers of every weight tensor, or None when one is not on the CUDA device ``device_index``."""
+        """The data pointers of every plain tensor under the weights, or None when one is not on CUDA device
+        ``device_index``."""
         ptrs: list = []
-        for t, names in zip(self.tensors, self.inner):
-            parts = [getattr(t, n, None) for n in names] if names else [t]
-            for p in parts:
-                if p is None:
-                    continue
+        for t in self.tensors:
+            for p in _leaves(t):
                 dev = p.device
                 if dev.type != "cuda" or (device_index is not None and dev.index != device_index):
                     return None
@@ -227,14 +225,19 @@ class _WeightView:
         return tuple(ptrs)
 
 
-def _inner_names(t: Any) -> tuple:
+def _leaves(t: Any) -> list:
     if not _is_wrapper_subclass(t):
-        return ()
+        return [t]
     try:
         names, _ = t.__tensor_flatten__()
-        return tuple(names)
-    except Exception:  # noqa: BLE001
-        return ()
+    except Exception:  # noqa: BLE001 - unflattenable: key on what it reports
+        return [t]
+    out: list = []
+    for n in names:
+        x = getattr(t, n, None)
+        if x is not None:
+            out.extend(_leaves(x))
+    return out
 
 
 # ---------------------------------------------------------------------------------------------------------------
@@ -365,8 +368,8 @@ class BlockGraph:
         self.bypassed = False
         self.poisoned = False
         self.capture_error: Optional[dict] = None
-        self.seen: Optional[tuple] = None
-        self.seen_meta: Optional[tuple] = None
+        # (layout, placement) -> output meta of its first call; several, since CFG alternates two text lengths
+        self.seen: "OrderedDict[tuple, tuple]" = OrderedDict()
         self.unreplayed_placements = 0
         self.churned = False
         self.placements: set = set()
@@ -406,8 +409,7 @@ class BlockGraph:
             self.weights = _WeightView(self.block)
         except Exception:  # noqa: BLE001 - keep the old view; a stale one only misses new tensors
             pass
-        self.seen = None
-        self.seen_meta = None
+        self.seen.clear()
         self.unreplayed_placements = 0
         self.placements.clear()
         self.refusals.clear()
@@ -453,7 +455,7 @@ class BlockGraph:
         full = (key, placement)
         entry = self.cache.get(full)
         if entry is None:
-            if self.seen != full:
+            if full not in self.seen:
                 # First call at this layout and placement: run it for real (the warm-up), record on the next one.
                 return self._first_sighting(full, args, kwargs)
             entry = self._record(full, live)
@@ -476,12 +478,11 @@ class BlockGraph:
         try:
             flat: list = []
             spec = _flatten(out, flat)
-            self.seen_meta = (spec, [_meta(t) for t in flat])
-            self.seen = full
+            self.seen[full] = (spec, [_meta(t) for t in flat])
+            while len(self.seen) > 4:
+                self.seen.popitem(last = False)
         except Exception:  # noqa: BLE001 - an output the graph cannot hand back (a dataclass, an object)
             self.stats["refused_output"] += 1
-            self.seen = None
-            self.seen_meta = None
         return out
 
     def _record(self, full: tuple, live: list) -> Optional[_Entry]:
@@ -490,11 +491,11 @@ class BlockGraph:
         torch = _torch()
         key = full[0]
         slot = (self.cls, key)
-        out_spec, metas = self.seen_meta
+        out_spec, metas = self.seen.pop(full)
         entry = _Entry()
         try:
             entry.static_in = self.shared.statics_for(slot, live)
-            entry.static_out = self.shared.outputs_for((self.cls, key, "out"), metas)
+            entry.static_out = self.shared.outputs_for((self.cls, key, "out", tuple(metas)), metas)
             for dst, src in zip(entry.static_in, live):
                 dst.copy_(src)
             static_args, static_kwargs = _unwalk(key, iter(entry.static_in))
@@ -795,6 +796,11 @@ def install_block_graphs(
             continue
         compiled = getattr(block, "_compiled_call_impl", None)
         hook = _group_offload_hook(block)
+        if hook is not None and compiled is not None:
+            # compiled through its hooks (UNSLOTH_DIFFUSION_COMPILE_BELOW_HOOKS=0): the compute is inside a dynamo frame
+            why = "compiled through its offload hooks"
+            refused[why] = refused.get(why, 0) + 1
+            continue
         try:
             if hook is not None:
                 # Below the hook: the onload / offload stay eager Python and the recording holds only the compute.

@@ -255,13 +255,17 @@ def _detach_from_slot(group: Any, buffers: list) -> None:
     for b in buffers:
         for x in _plain_leaves(b):
             ptrs.add(x.data_ptr())
-    go = _go()
-    is_torchao = getattr(go, "_is_torchao_tensor", lambda t: False)
+
+    def detach(obj: Any) -> None:
+        for name, x in _inner(obj):
+            if _inner(x):
+                detach(x)
+            elif x.data_ptr() in ptrs:
+                setattr(obj, name, x.clone())
+
     for t in _group_tensors(group):
-        if is_torchao(t):
-            for name, x in _inner(t):
-                if x.data_ptr() in ptrs:
-                    setattr(t, name, x.clone())
+        if _inner(t):
+            detach(t)
         elif t.data_ptr() in ptrs:
             t.data = t.data.clone()
 
@@ -469,6 +473,10 @@ class GroupPrefetcher:
                 compute = compute or self._compute()
                 with torch.cuda.stream(compute):
                     _detach_from_slot(group, self.slot_buffers[gid])
+                # the slot is refilled only after the compute that read it, and this clone, are done
+                done = torch.cuda.Event()
+                done.record(compute)
+                group.stream.wait_event(done)
                 self.slot_owner.pop(self.slot_of[gid], None)
 
     def _fill(self) -> None:

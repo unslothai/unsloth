@@ -124,6 +124,24 @@ def test_key_separates_inference_mode_shape_and_scalars_and_refuses_floats_and_o
     assert bg._refusal(bg.graph_key(((a,), {"n": 3, "mode": "x", "none": None})), {}) is None
 
 
+@pytest.mark.parametrize("version", [None, 2])
+def test_placement_reads_every_level_of_torchao_weights(version):
+    torchao = pytest.importorskip("torchao")
+    from torchao.quantization import quantize_
+
+    try:
+        from torchao.quantization import Int8WeightOnlyConfig as Cfg
+        cfg = Cfg() if version is None else Cfg(version = version)
+    except (ImportError, TypeError):
+        pytest.skip(f"torchao {torchao.__version__}: no such int8 config")
+    block = Block().to(torch.bfloat16)
+    quantize_(block, cfg)
+    leaves = bg._leaves(block.lin.weight)
+    # torchao 0.17's default nests two wrappers whose own data_ptr is 0: the key must reach the plain payload
+    assert leaves and all(not bg._is_wrapper_subclass(x) for x in leaves)
+    assert all(x.data_ptr() != 0 for x in leaves)
+
+
 def test_weight_placement_is_none_while_a_weight_is_on_the_host():
     view = bg._WeightView(Block())
     assert view.placement(None) is None
@@ -573,6 +591,22 @@ def test_compiled_streamed_blocks_record_below_their_hooks_with_no_graph_break()
     assert sum(du.counters["graph_break"].values()) == breaks  # the hooks stay outside the compiled region
     s = handle.stats
     assert s["replays"] > 0 and s["fallbacks"] == 0 and s["captures"] == 6
+    handle.free()
+
+
+def test_alternating_layouts_both_record():
+    """True CFG calls each block with two text lengths in turn; each layout must still record and replay."""
+    _cuda()
+    net = _net(blocks = 2).cuda()
+    ref = copy.deepcopy(net)
+    handle, _ = bg.install_block_graphs(net, device = "cuda", slots = False)
+    xs = [torch.randn(7, 16, device = "cuda"), torch.randn(5, 16, device = "cuda")]
+    with torch.inference_mode():
+        for _ in range(4):
+            for x in xs:
+                assert torch.equal(net(x), ref(x))
+    s = handle.stats
+    assert s["captures"] == 4 and s["replays"] >= 8 and s["fallbacks"] == 0
     handle.free()
 
 
