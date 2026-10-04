@@ -38,6 +38,13 @@ if not TRACE_LORA_FUNCTIONS:
     _apply = torch._dynamo.disable(_apply)
 
 
+def _has_activation_fake_quantizer(proj):
+    # Fused LoRA bypasses the activation fake quantizers on the base layer and LoRA A/B.
+    return any(
+        getattr(module, "activation_fake_quantizer", None) is not None for module in proj.modules()
+    )
+
+
 class LoRA_MLP(torch.autograd.Function):
     """
     ### LoRA weights
@@ -236,7 +243,7 @@ def apply_lora_mlp_swiglu(
     inplace = True,
 ):
     if any(
-        _has_multiple_active_adapters(proj)
+        _has_multiple_active_adapters(proj) or _has_activation_fake_quantizer(proj)
         for proj in (self.gate_proj, self.up_proj, self.down_proj)
     ):
         return self.down_proj(self.act_fn(self.gate_proj(X)) * self.up_proj(X))
@@ -278,7 +285,7 @@ def apply_lora_mlp_geglu_exact(
     inplace = True,
 ):
     if any(
-        _has_multiple_active_adapters(proj)
+        _has_multiple_active_adapters(proj) or _has_activation_fake_quantizer(proj)
         for proj in (self.gate_proj, self.up_proj, self.down_proj)
     ):
         return self.down_proj(self.act_fn(self.gate_proj(X)) * self.up_proj(X))
@@ -316,7 +323,7 @@ from .geglu import geglu_approx_forward_kernel, geglu_approx_backward_kernel
 
 def apply_lora_mlp_geglu_approx(self, X):
     if any(
-        _has_multiple_active_adapters(proj)
+        _has_multiple_active_adapters(proj) or _has_activation_fake_quantizer(proj)
         for proj in (self.gate_proj, self.up_proj, self.down_proj)
     ):
         return self.down_proj(self.act_fn(self.gate_proj(X)) * self.up_proj(X))
