@@ -6311,7 +6311,6 @@ class VideoBackend:
             default_cache_steps, _ = default_video_generation_params(
                 gguf_filename, repo_id, base, fallback = (fam.default_steps, fam.default_guidance)
             )
-            # A distilled variant of a listed family (LTX distilled, 8 steps) falls under AUTO_STATIC_MIN_STEPS.
             static_plan = auto_static_skip_plan(
                 (repo_id, base), effective_speed, default_cache_steps
             )
@@ -7553,10 +7552,8 @@ class VideoBackend:
             except Exception as exc:  # noqa: BLE001 -- optimisation only, never fail a load
                 logger.warning("video.h3_audio_vae: keeping the stock audio VAE: %s", exc)
 
-        # Static step skip, the only step cache this workflow can take: FBCache needs a pipeline that opens
-        # cache_context, and the modular denoise loop opens none. The skip is an outer forward on the partition this
-        # load denoises with and returns the joint (video, audio) prediction stream by stream. One call per step (the
-        # checkpoint is guidance-distilled), so the per-call counter is the step index.
+        # Static skip is the only step cache here (the modular loop opens no cache_context for FBCache). One call per
+        # step (guidance-distilled), so the per-call counter is the step index.
         h3_cache_engaged: Optional[str] = None
         h3_cache_reason = "not supported by this modular workflow"
         try:
@@ -8778,7 +8775,7 @@ class VideoBackend:
                                 + f" {FBCACHE_MIN_STEPS}"
                             )
                 if static_skip:
-                    # An AUTO skip was measured on text-to-video only: a keyframe / reference clip computes every step.
+                    # Auto skip was measured on text-to-video only.
                     conditioned = bool(first_pil is not None or last_pil is not None or references)
                     auto_unmeasured = conditioned and static_skip_is_auto(_skip_pipe(state, pipe))
                     # Without a step callback (HunyuanVideo-1.5) steps count per CFG branch from cache_context names.

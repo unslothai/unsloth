@@ -160,8 +160,7 @@ def _split_output(out: Any) -> tuple:
             return out[0], lambda v: (v,)
         if len(out) == 1 and type(out[0]) is list and _same_shape_tensors(out[0]):
             return _torch().stack(out[0]), lambda v: (list(v.unbind(0)),)
-        # Joint predictions (MiniMax-H3: video velocity, audio velocity): one tensor per stream, any shapes, each
-        # reused / extrapolated on its own. A non-tensor member (FLUX.2 klein KV's cache object) still declines.
+        # Joint (video, audio) predictions (MiniMax-H3), per stream; a non-tensor member (klein KV cache) declines.
         if len(out) >= 2 and all(_is_tensor(v) for v in out):
             return _Joint(out), lambda v: tuple(v.parts)
         return None, None
@@ -303,7 +302,6 @@ class StaticStepSkip:
         self.mode = mode if mode in SKIP_MODES else DEFAULT_MODE
         self.head, self.tail, self.every = float(head), float(tail), int(every)
         self.min_steps = int(min_steps)
-        # Installed by the auto policy (status says "auto"), not by an explicit request.
         self.auto = bool(auto)
         self.logger = logger
         self.armed = True

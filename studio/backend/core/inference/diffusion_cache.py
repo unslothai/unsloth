@@ -41,46 +41,31 @@ FBCACHE_MIN_STEPS = 20
 AUTO_STEP_CACHE_TIER = "max"
 
 
-# == diffusion_speed.SPEED_DEFAULT / SPEED_MAX, spelled out for the same reason.
 _TIER_DEFAULT = "default"
 _TIER_MAX = "max"
 
-# Auto static step skip. Unset / "auto" picks the fixed-schedule skip for the checkpoints below, each measured against
-# its own no-skip render at the model's default steps (16 prompts per image model, 4 clips per video model, B200,
-# speed tier default; LPIPS alex, mean / worst prompt):
-#   "default": every N on the default AND max tiers. Meets the default-on bar: mean LPIPS <= 0.05, worst prompt
-#              <= 0.10 above that prompt's own run-to-run floor (the no-skip render repeated in a fresh process).
-#   "max":     every N on the max tier only (mean LPIPS <= 0.10). Replaces FBCache there: wherever FBCache engaged,
-#              the static skip measured closer to the no-skip render, and it keeps fullgraph and CUDA graphs.
-# A model not listed keeps the previous behaviour (FBCache on max at 20+ steps). Keyed by the UPSTREAM repo id
-# (canonical_base maps the unsloth mirrors back), so a distilled sibling or an unmeasured finetune of the same family
-# (FLUX.1-schnell, klein 4-step, Z-Image-Turbo, Qwen-Image-2512 / Edit, klein-base-9B) never matches.
+# Per-model interval on each tier ("default" also covers max), measured vs the no-skip render (PR #12652): default
+# needs mean LPIPS <= 0.05, max <= 0.10. Keyed by the UPSTREAM repo id so distilled / unmeasured siblings never match.
 AUTO_STATIC_SKIP: dict = {
-    # mean LPIPS every2 / every3 vs no skip (in-process pairs); worst prompt in brackets
-    "qwen/qwen-image-2.1": {"default": 3, "max": 3},  # 0.007 (0.03) / 0.012 (0.05)
-    "qwen/qwen-image": {"default": 2, "max": 3},  # 0.031 (0.13, floor 0.11) / 0.056
-    "black-forest-labs/flux.1-krea-dev": {"default": 2, "max": 3},  # 0.030 (0.09) / 0.060
+    "qwen/qwen-image-2.1": {"default": 3, "max": 3},
+    "qwen/qwen-image": {"default": 2, "max": 3},
+    "black-forest-labs/flux.1-krea-dev": {"default": 2, "max": 3},
     "black-forest-labs/flux.2-klein-base-4b": {
         "default": 2,
         "max": 3,
-    },  # 0.038 (0.12, floor 0.35) / 0.058
-    "wan-ai/wan2.2-ti2v-5b-diffusers": {"default": 2, "max": 3},  # 0.034 (0.064) / 0.057
-    # every2 0.050 but 0.29 on a dense-texture prompt (floor 0.06), so not default; every3 0.083 on max, where
-    # FBCache measured 0.136 at the same speed
+    },
+    "wan-ai/wan2.2-ti2v-5b-diffusers": {"default": 2, "max": 3},
+    # every 2 is 0.29 LPIPS on a dense-texture prompt, so max only.
     "black-forest-labs/flux.1-dev": {"max": 3},
-    "hunyuanvideo-community/hunyuanimage-2.1-diffusers": {
-        "max": 2
-    },  # 0.064 (floor 0.064); every3 0.102
-    "hunyuanvideo-community/hunyuanvideo-1.5-diffusers-480p_t2v": {"max": 2},  # 0.085; every3 0.120
-    "minimaxai/minimax-h3": {"max": 2},  # 0.055 (0.058), deterministic so no floor; every3 0.114
+    "hunyuanvideo-community/hunyuanimage-2.1-diffusers": {"max": 2},
+    "hunyuanvideo-community/hunyuanvideo-1.5-diffusers-480p_t2v": {"max": 2},
+    "minimaxai/minimax-h3": {"max": 2},
 }
 
-# Auto static engages only from this many denoise steps, the shortest default schedule it was measured on; a user
-# who drops a 28-step model to 14 steps gets every step computed. Explicit "static" keeps STATIC_MIN_STEPS (12).
+# Shortest default schedule measured; explicit "static" keeps STATIC_MIN_STEPS (12).
 AUTO_STATIC_MIN_STEPS = 20
 
-# Kill switch: "0" / "false" / "off" stops auto from ever picking static (explicit requests still honoured), restoring
-# the previous auto behaviour (FBCache on max only).
+# Kill switch: auto never picks static (explicit requests still honoured).
 ENV_AUTO_STEP_SKIP = "UNSLOTH_DIFFUSION_AUTO_STEP_SKIP"
 
 

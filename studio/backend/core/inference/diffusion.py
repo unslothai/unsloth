@@ -6913,7 +6913,6 @@ class DiffusionBackend:
                         default_steps, _ = default_generation_params(
                             gguf_filename, repo_id, base, fam.name
                         )
-                        # Measured families take the fixed-schedule skip (keeps fullgraph and the CUDA graph).
                         static_plan = auto_static_skip_plan(
                             (repo_id, base), effective_speed, default_steps
                         )
@@ -9775,8 +9774,7 @@ class DiffusionBackend:
                                 state.cuda_graphs, cache_breaks_graph(state.transformer_cache)
                             )
                         if static_skip:
-                            # An AUTO skip was measured on text-to-image only: every other workflow (edit, reference,
-                            # img2img, inpaint, upscale, ControlNet) computes every step. Explicit "static" applies to all.
+                            # Auto skip was measured on txt2img only; explicit "static" applies to every workflow.
                             auto_only_txt2img = workflow != "txt2img" and static_skip_is_auto(
                                 state.pipe
                             )
