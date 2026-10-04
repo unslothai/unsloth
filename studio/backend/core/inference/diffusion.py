@@ -234,7 +234,6 @@ from .diffusion_step_skip import (
 )
 from .diffusion_nvfp4_protect import protect_generation
 from .diffusion_precision import (
-    TE_QUANT_FP8,
     effective_te_quant,
     normalize_te_quant,
     quantize_text_encoders,
@@ -3489,7 +3488,9 @@ class DiffusionBackend:
         if local_files_only:
             return {}
         try:
-            if normalize_te_quant(text_encoder_quant) != TE_QUANT_FP8:
+            from .diffusion_te_prequant import TE_PREQUANT_SCHEMES
+
+            if normalize_te_quant(text_encoder_quant) not in TE_PREQUANT_SCHEMES:
                 return {}
             from huggingface_hub import HfApi
 
