@@ -197,6 +197,7 @@ from .diffusion_attention import (
     _ensure_attention_backend_installed,
 )
 from . import diffusion_compile_cache as compile_cache
+from .diffusion_compile_config import family_filters_reductions
 from . import diffusion_cond_cache as cond_cache
 from . import diffusion_prompt_cache as prompt_cache
 from . import diffusion_gguf_compile as gguf_compile
@@ -7079,7 +7080,7 @@ class DiffusionBackend:
                                 "vae_decode": vae_decode_compile_allowed(pipe, effective_speed),
                             },
                             logger = logger,
-                            reduction_filter = bool(getattr(fam, "filter_reduction_configs", False)),
+                            reduction_filter = family_filters_reductions(fam),
                         )
 
                     self._raise_if_load_cancelled(_load_token)
@@ -9176,7 +9177,7 @@ class DiffusionBackend:
                     "vae_decode": vae_decode_compile_allowed(state.pipe, SPEED_DEFAULT),
                 },
                 logger = logger,
-                reduction_filter = bool(getattr(state.family, "filter_reduction_configs", False)),
+                reduction_filter = family_filters_reductions(state.family),
             )
             object.__setattr__(state, "compile_cache_ctx", compile_ctx)
         speed_applied = apply_speed_optims(
