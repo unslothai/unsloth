@@ -201,7 +201,9 @@ def test_qwen3_aligner_is_downloaded_loaded_once_and_kept(fake, side, source, hu
         return real_resolve(model, companion, hf_token, network = False)
 
     monkeypatch.setattr(audio_cpp_backend, "_resolve_companion", resolve)
-    download = staticmethod(lambda model, token: downloads.append(model.id) or True)
+    download = staticmethod(
+        lambda model, token, cancel_event = None: downloads.append(model.id) or True
+    )
     monkeypatch.setattr(audio_cpp_backend.AudioCppBackend, "_download_missing", download)
 
     def run(**kwargs):
@@ -234,6 +236,83 @@ def test_qwen3_aligner_is_downloaded_loaded_once_and_kept(fake, side, source, hu
     run()
     side.transcribe(wav_bytes(), QWEN3, None)
     assert len(fake.starts) == 2 and all("options" not in b for b in fake.bodies[-2:])
+
+
+def test_stop_during_the_aligner_download_cancels_it(fake, side, source, hub, monkeypatch):
+    """Stop while "Downloading the timing aligner" only cancelled the transcription that never
+    started; the download itself read no cancel event and kept streaming."""
+    import threading
+
+    from core.inference.audio_cpp_backend import AudioCppRequestCancelledError
+    from core.inference.audio_cpp_backend import AudioCppBackend as backend_cls
+
+    import inspect
+
+    # The real download checks the same event between files.
+    assert "cancel_event.is_set()" in inspect.getsource(backend_cls._download_missing)
+    real_resolve = audio_cpp_backend._resolve_companion
+
+    def resolve(
+        model,
+        companion,
+        hf_token = None,
+        *,
+        network = True,
+    ):
+        if network:
+            _add(hub, ALIGNER_FILE, "qwen3_forced_aligner")
+        return real_resolve(model, companion, hf_token, network = False)
+
+    monkeypatch.setattr(audio_cpp_backend, "_resolve_companion", resolve)
+    seen = []
+
+    def download(
+        model,
+        token,
+        cancel_event = None,
+    ):
+        # Stop lands while the first file streams: the real loop reads the event between files.
+        seen.append(cancel_event)
+        cancel_event.set()
+        raise AudioCppRequestCancelledError("Request cancelled.")
+
+    monkeypatch.setattr(backend_cls, "_download_missing", staticmethod(download))
+    cancel = threading.Event()
+    with pytest.raises(stt.SttTranscriptionCancelledError):
+        side.transcribe_path(source, QWEN3, None, timestamps = True, cancel_event = cancel)
+    assert seen == [cancel]
+
+
+def test_the_aligner_preflight_carries_the_request_cancel(fake, side, source, hub, monkeypatch):
+    """The route's preflight (``ensure_aligner``) is the call that does the first 1.1 GB download;
+    without the event it ran uncancellable and the forwarding in ``load`` came too late."""
+    import threading
+
+    from core.inference.audio_cpp_backend import AudioCppBackend as backend_cls
+
+    real_resolve = audio_cpp_backend._resolve_companion
+
+    def resolve(
+        model,
+        companion,
+        hf_token = None,
+        *,
+        network = True,
+    ):
+        if network:
+            _add(hub, ALIGNER_FILE, "qwen3_forced_aligner")
+        return real_resolve(model, companion, hf_token, network = False)
+
+    monkeypatch.setattr(audio_cpp_backend, "_resolve_companion", resolve)
+    seen = []
+    monkeypatch.setattr(
+        backend_cls,
+        "_download_missing",
+        staticmethod(lambda model, token, cancel_event = None: seen.append(cancel_event)),
+    )
+    cancel = threading.Event()
+    side.ensure_aligner(QWEN3, None, cancel)
+    assert seen == [cancel]
 
 
 def test_an_aligner_download_failure_says_how_to_go_on(fake, side, source, monkeypatch):

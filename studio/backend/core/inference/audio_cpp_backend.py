@@ -352,7 +352,9 @@ class AudioCppBackend:
                 forget(companion.id)
 
     @staticmethod
-    def _download_missing(model: AudioCppModel, hf_token: Optional[str]) -> bool:
+    def _download_missing(
+        model: AudioCppModel, hf_token: Optional[str], cancel_event = None
+    ) -> bool:
         missing = audio_cpp_files.missing_files(model)
         if not missing:
             return False
@@ -362,6 +364,8 @@ class AudioCppBackend:
 
         cache_dir = str(active_hf_hub_cache())
         for path, _size in missing:
+            if cancel_event is not None and cancel_event.is_set():
+                raise AudioCppRequestCancelledError("Request cancelled.")
             logger.info("audio.cpp: downloading %s from %s", path, model.repo_id)
             hf_hub_download(
                 model.repo_id,
