@@ -20,7 +20,6 @@ xpu_available = hasattr(torch, "xpu") and torch.xpu.is_available()
 dev = "cuda" if cuda_available else "xpu" if xpu_available else "cpu"
 
 # Only the kernel battery needs fbgemm (CUDA-only); the fallback tests below never reach it.
-# Since XPU does not support fbgemm, it will run the fallback tests.
 pytestmark = pytest.mark.skipif(not (cuda_available or xpu_available), reason = "needs CUDA or XPU")
 
 
