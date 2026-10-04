@@ -8781,9 +8781,10 @@ class VideoBackend:
                     # Without a step callback (HunyuanVideo-1.5) steps count per CFG branch from cache_context names.
                     reset_static_step_skip(
                         _skip_pipe(state, pipe),
-                        None if auto_unmeasured else steps,
+                        steps,
                         step_signal = has_step_callback,
                         owner = current_account_id(),
+                        compute_all = auto_unmeasured,
                     )
                 elif state.transformer_cache:
                     self._reset_step_cache(pipe)

@@ -253,13 +253,14 @@ def test_auto_skip_leaves_a_keyframe_clip_unskipped(loop_runtime, monkeypatch):
     monkeypatch.setattr(
         video_mod,
         "reset_static_step_skip",
-        lambda p, steps, **k: armed.append(steps) or real_reset(p, steps, **k),
+        lambda p, steps, **k: armed.append((steps, k.get("compute_all")))
+        or real_reset(p, steps, **k),
     )
     try:
         backend.generate(prompt = "a sloth", steps = STEPS)
     except Exception:  # noqa: BLE001 - the fake pipe may not take an image; the arming is what is under test
         pass
-    assert armed and armed[0] is None
+    assert armed and armed[0] == (STEPS, True)
     backend.unload()
 
 

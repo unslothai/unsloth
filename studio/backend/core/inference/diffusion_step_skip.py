@@ -245,15 +245,51 @@ def _timestep_of(
     return None
 
 
+# MiniMax-H3 token_tags of the (video, audio) output streams; each stream steps its own shifted schedule.
+_JOINT_STREAM_TAGS = (0, 2)
+
+
+def _stream_timesteps(kwargs: dict) -> Optional[tuple]:
+    """Per-stream target timestep of a joint call, or None. Conditioning rows sit at or above their stream's target
+    timestep, so the target is the min over that stream's rows (gather + masked min: no host sync)."""
+    torch = _torch()
+    ts, idx, tags = kwargs.get("timestep"), kwargs.get("timestep_indices"), kwargs.get("token_tags")
+    if not (_is_tensor(ts) and _is_tensor(idx) and _is_tensor(tags)):
+        return None
+    try:
+        rows = ts.detach().reshape(-1).float().index_select(0, idx.detach().reshape(-1).long())
+        tags = tags.detach().reshape(-1).to(rows.device)
+        inf = torch.full_like(rows, float("inf"))
+        return tuple(
+            torch.where(tags == tag, rows, inf).amin().reshape(1).clone()
+            for tag in _JOINT_STREAM_TAGS
+        )
+    except Exception:  # noqa: BLE001 - shared timestep instead
+        return None
+
+
+def _pick_t(t: Any, i: int, n: int) -> Any:
+    if isinstance(t, tuple):
+        return t[i] if len(t) == n else _torch().stack(t).amax().reshape(1)
+    return t
+
+
 def _extrapolate(v0: Any, t0: Any, v1: Any, t1: Any, t: Any) -> Any:
     if isinstance(v1, _Joint):
-        return _Joint(_extrapolate(a, t0, b, t1, t) for a, b in zip(v0.parts, v1.parts))
+        n = len(v1.parts)
+        return _Joint(
+            _extrapolate(a, _pick_t(t0, i, n), b, _pick_t(t1, i, n), _pick_t(t, i, n))
+            for i, (a, b) in enumerate(zip(v0.parts, v1.parts))
+        )
+    t0, t1, t = (_pick_t(x, 0, 0) for x in (t0, t1, t))
     torch = _torch()
     device = v1.device
     t0, t1, t = t0.to(device), t1.to(device), t.to(device)
     step = t1 - t0
     safe = torch.where(step != 0, step, torch.ones_like(step))
     ratio = torch.where(step != 0, (t - t1) / safe, torch.zeros_like(step))
+    # A stream with no rows in the call reads inf: reuse instead of a NaN.
+    ratio = torch.where(torch.isfinite(ratio), ratio, torch.zeros_like(ratio))
     ratio = ratio.reshape([1] * v1.ndim) if v1.ndim else ratio.reshape(())
     v1f = v1.float()
     return (v1f + (v1f - v0.float()) * ratio).to(v1.dtype)
@@ -322,9 +358,11 @@ class StaticStepSkip:
         step_signal: bool = False,
         keep_stats: bool = False,
         owner: Optional[str] = None,
+        compute_all: bool = False,
     ) -> "StaticStepSkip":
         """Start a forward of ``steps`` denoise steps (None: compute all); ``keep_stats`` sums across chunks.
-        ``owner`` (arming only) rebinds the counters; a new owner never inherits the previous one's."""
+        ``owner`` (arming only) rebinds the counters; a new owner never inherits the previous one's.
+        ``compute_all``: count this generation but skip nothing (an auto skip on an unmeasured workflow)."""
         self.plan = (
             static_schedule(
                 steps,
@@ -333,7 +371,7 @@ class StaticStepSkip:
                 every = self.every,
                 min_steps = self.min_steps,
             )
-            if self.armed
+            if self.armed and not compute_all
             else ()
         )
         skips = [i for i, compute in enumerate(self.plan) if not compute]
@@ -436,9 +474,10 @@ class StaticStepSkip:
                 )
             return
         # Cloned: the pipeline may keep or modify the tensor it was handed.
-        stored = _Stored(
-            sig, _timestep_of(args, kwargs, self._t_slot), value.detach().clone(), rebuild
+        t = (_stream_timesteps(kwargs) if isinstance(value, _Joint) else None) or _timestep_of(
+            args, kwargs, self._t_slot
         )
+        stored = _Stored(sig, t, value.detach().clone(), rebuild)
         keep = 2 if self.mode == MODE_TAYLOR1 else 1
         history = self.history.setdefault(key, [])
         history.append(stored)
@@ -449,7 +488,9 @@ class StaticStepSkip:
         value = None
         if self.mode == MODE_TAYLOR1 and len(history) >= 2:
             prev = history[-2]
-            t = _timestep_of(args, kwargs, self._t_slot)
+            t = (
+                _stream_timesteps(kwargs) if isinstance(last.value, _Joint) else None
+            ) or _timestep_of(args, kwargs, self._t_slot)
             # Only same-shape outputs combine: a prefix-KV step 0 is longer than every later step.
             if (
                 prev.sig == last.sig
@@ -570,11 +611,18 @@ def reset_static_step_skip(
     step_signal: bool = False,
     keep_stats: bool = False,
     owner: Optional[str] = None,
+    compute_all: bool = False,
 ) -> bool:
     skip = _find(pipe)
     if skip is None:
         return False
-    skip.reset(steps, step_signal = step_signal, keep_stats = keep_stats, owner = owner)
+    skip.reset(
+        steps,
+        step_signal = step_signal,
+        keep_stats = keep_stats,
+        owner = owner,
+        compute_all = compute_all,
+    )
     return True
 
 

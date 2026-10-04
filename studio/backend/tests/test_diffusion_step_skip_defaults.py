@@ -330,16 +330,18 @@ def test_auto_skip_runs_on_txt2img_only_explicit_everywhere(
     monkeypatch.setattr(dmod, "static_skip_is_auto", lambda p: layer.auto)
     armed = []
     monkeypatch.setattr(
-        dmod, "reset_static_step_skip", lambda p, steps, **k: armed.append(steps) or True
+        dmod,
+        "reset_static_step_skip",
+        lambda p, steps, **k: armed.append((steps, bool(k.get("compute_all")))) or True,
     )
     monkeypatch.setattr(dmod, "effective_request_strength", lambda *a, **k: None)
     object.__setattr__(backend._state, "transformer_cache", dcache.TC_STATIC)
     backend.generate(prompt = "a car", steps = 28, seed = 1)
-    assert armed[0] == 28
+    assert armed[0] == (28, False)
     armed.clear()
     backend.generate(prompt = "a car", steps = 28, seed = 1, init_image = _tiny_png_b64(), strength = 1.0)
     # img2img: an AUTO layer computes every step; an explicit one keeps its schedule.
-    assert armed[0] == (None if auto else 28)
+    assert armed[0] == (28, auto)
     backend.unload()
 
 
@@ -384,4 +386,112 @@ def test_deferred_default_tier_installs_the_auto_skip_on_the_third_image(
     assert len(installs) == 1 and installs[0]["every"] == 2 and installs[0]["auto"] is True
     assert st["transformer_cache"] == "static"
     assert st["resolved"]["transformer_cache"]["value"] == "static"
+    backend.unload()
+
+
+def test_a_bypassed_render_reports_zero_skips_not_the_previous_render():
+    dit = _JointDiT()
+    pipe = types.SimpleNamespace(transformer = dit)
+    ss.install_static_step_skip(pipe, settings = ss.static_skip_settings({}))
+    ss.reset_static_step_skip(pipe, 30)
+    _run_joint(pipe, 30)
+    assert ss.static_skip_stats(pipe)["stats"]["skipped"] > 0
+    ss.reset_static_step_skip(pipe, 30, compute_all = True)
+    calls = dit.calls
+    _run_joint(pipe, 30)
+    described = ss.static_skip_stats(pipe)
+    assert dit.calls - calls == 30
+    assert described["stats"] == {"calls": 30, "computed": 30, "skipped": 0}
+    assert described["planned_skips"] == 0
+
+
+class _H3DiT:
+    """(video, audio) outputs linear in each stream's own timestep, read from the H3 row layout."""
+
+    def __init__(self):
+        self.calls = 0
+
+    def forward(
+        self,
+        hidden_states = None,
+        timestep = None,
+        timestep_indices = None,
+        token_tags = None,
+        **kw,
+    ):
+        self.calls += 1
+        rows = timestep.index_select(0, timestep_indices)
+        video_t = rows[token_tags == 0].min()
+        audio_t = rows[token_tags == 2].min()
+        return torch.full((1, 4, 2), float(video_t)), torch.full((1, 3), float(audio_t))
+
+
+def _shifted(sigma, shift):
+    return shift * sigma / (1 + (shift - 1) * sigma)
+
+
+def test_h3_audio_extrapolates_on_its_own_schedule():
+    # Video shift 12, audio shift 3 (MiniMax-H3 defaults); a video reference row at 1.0 and a text row.
+    steps = 30
+    dit = _H3DiT()
+    pipe = types.SimpleNamespace(transformer = dit)
+    ss.install_static_step_skip(pipe, settings = {**ss.static_skip_settings({}), "mode": "taylor1"})
+    ss.reset_static_step_skip(pipe, steps)
+    tags = torch.tensor([0, 0, 0, 1, 2, 2, 2])
+    plan = ss.static_schedule(steps)
+    for i in range(steps):
+        sigma = 1.0 - i / steps
+        vt, at = _shifted(sigma, 12.0), _shifted(sigma, 3.0)
+        per_row = torch.tensor([1.0, vt, vt, vt, 1.0, at, at])
+        unique, inverse = torch.unique(per_row, sorted = True, return_inverse = True)
+        video, audio = pipe.transformer.forward(
+            hidden_states = None, timestep = unique, timestep_indices = inverse, token_tags = tags
+        )
+        if not plan[i]:
+            prev = [j for j in range(i) if plan[j]][-2:]
+            s0, s1 = (1.0 - j / steps for j in prev)
+            want_a = _shifted(s1, 3.0) + (_shifted(s1, 3.0) - _shifted(s0, 3.0)) * (
+                at - _shifted(s1, 3.0)
+            ) / (_shifted(s1, 3.0) - _shifted(s0, 3.0))
+            assert torch.allclose(audio, torch.full_like(audio, want_a), atol = 1e-5), (
+                i,
+                float(audio[0, 0]),
+                at,
+            )
+            assert torch.allclose(video, torch.full_like(video, vt), atol = 1e-5)
+    assert dit.calls == sum(plan)
+
+
+def test_a_failed_deferred_profile_takes_the_auto_skip_back_off(
+    fake_runtime, tmp_path, monkeypatch
+):
+    from core.inference import diffusion as dmod
+
+    from .test_diffusion_backend import DiffusionBackend
+
+    monkeypatch.setattr(dmod, "auto_static_skip_plan", _probe_plan({"default": 2, "max": 3}))
+    monkeypatch.setattr(dmod, "default_generation_params", lambda *a, **k: (28, 3.5))
+    monkeypatch.delenv(dcache.ENV_AUTO_STEP_SKIP, raising = False)
+    monkeypatch.setattr(dmod, "compile_eligible", lambda *a, **k: True)
+
+    def boom(*a, **k):
+        raise RuntimeError("compile unavailable")
+
+    monkeypatch.setattr(dmod.compile_cache, "begin", boom)
+    monkeypatch.setattr(
+        dmod,
+        "install_static_step_skip",
+        lambda pipe, settings = None, logger = None: dcache.TC_STATIC,
+    )
+    removed = []
+    monkeypatch.setattr(dmod, "uninstall_static_step_skip", lambda pipe: removed.append(pipe))
+    (tmp_path / "model.safetensors").write_bytes(b"weights")
+    backend = DiffusionBackend()
+    _load_into(backend, tmp_path, gguf_filename = "model.safetensors", family_override = "qwen-image")
+    for p in ("one", "two", "three"):
+        backend.generate(prompt = p)
+    st = backend.status()
+    assert st["speed_mode"] == "off"
+    assert st["transformer_cache"] is None and removed
+    assert st["resolved"]["transformer_cache"]["value"] != "static"
     backend.unload()

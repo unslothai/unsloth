@@ -9036,6 +9036,42 @@ class DiffusionBackend:
                 pass
 
     def _engage_deferred_speed(self, state: _LoadState) -> None:
+        """The deferred `default` profile plus its auto static skip; a failed profile takes the skip back off."""
+        object.__setattr__(state, "speed_deferred", False)
+        plan = state.deferred_static_plan
+        object.__setattr__(state, "deferred_static_plan", None)
+        tc = (state.resolved or {}).get("transformer_cache")
+        tc_before = dict(tc) if isinstance(tc, dict) else None
+        installed = False
+        # Before compile, as at load: the skip is an outer forward on the transformer.
+        if plan and state.transformer_cache is None:
+            installed = (
+                install_static_step_skip(
+                    state.pipe, settings = auto_static_settings(plan, logger = logger), logger = logger
+                )
+                == TC_STATIC
+            )
+            if installed:
+                object.__setattr__(state, "transformer_cache", TC_STATIC)
+                if isinstance(tc, dict):
+                    tc["value"] = TC_STATIC
+                    tc["reason"] = (
+                        f"auto: static step skip (every {plan['every']}) for this model at "
+                        f"{plan['min_steps']}+ steps, engaged with the compiled profile; set "
+                        "UNSLOTH_DIFFUSION_AUTO_STEP_SKIP=0 to turn it off"
+                    )
+        try:
+            self._engage_deferred_profile(state)
+        except BaseException:
+            if installed:
+                uninstall_static_step_skip(state.pipe)
+                object.__setattr__(state, "transformer_cache", None)
+                if isinstance(tc, dict) and tc_before is not None:
+                    tc.clear()
+                    tc.update(tc_before)
+            raise
+
+    def _engage_deferred_profile(self, state: _LoadState) -> None:
         """Engage the deferred `default` speed profile at the start of the 3rd generation this
         session. The load left the pipe fully eager (bit-identical reference); by the 3rd image
         repeated use is established, so pay the one-time compile now: eager patches + attention
@@ -9064,23 +9100,6 @@ class DiffusionBackend:
             entry = dict(state.resolved["attention_backend"])
             entry["value"] = attention_engaged or "native"
             object.__setattr__(state, "resolved", {**state.resolved, "attention_backend": entry})
-        # Before compile, as at load: the skip is an outer forward on the transformer.
-        plan = state.deferred_static_plan
-        object.__setattr__(state, "deferred_static_plan", None)
-        if plan and state.transformer_cache is None:
-            engaged = install_static_step_skip(
-                state.pipe, settings = auto_static_settings(plan, logger = logger), logger = logger
-            )
-            if engaged == TC_STATIC:
-                object.__setattr__(state, "transformer_cache", TC_STATIC)
-                tc = (state.resolved or {}).get("transformer_cache")
-                if isinstance(tc, dict):
-                    tc["value"] = TC_STATIC
-                    tc["reason"] = (
-                        f"auto: static step skip (every {plan['every']}) for this model at "
-                        f"{plan['min_steps']}+ steps, engaged with the compiled profile; set "
-                        "UNSLOTH_DIFFUSION_AUTO_STEP_SKIP=0 to turn it off"
-                    )
         gguf_transformer = state.kind == "gguf" and state.transformer_quant is None
         if compile_eligible(target, is_gguf = gguf_transformer, family = state.family):
             compile_ctx = compile_cache.begin(
@@ -9780,7 +9799,8 @@ class DiffusionBackend:
                             )
                             reset_static_step_skip(
                                 state.pipe,
-                                None if auto_only_txt2img else denoise_steps,
+                                denoise_steps,
+                                compute_all = auto_only_txt2img,
                                 step_signal = "callback_on_step_end" in chunk_kwargs,
                                 keep_stats = static_chunks_run > 0,
                                 owner = current_account_id(),
