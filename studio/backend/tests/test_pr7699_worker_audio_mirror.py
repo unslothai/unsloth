@@ -127,6 +127,9 @@ def test_audio_cpp_workflow_fields_cross_the_worker_and_the_parent(monkeypatch):
         "audio_reference_text": "required",
         "audio_required_inputs": ["instruct"],
         "audio_clone": {"reference_text": "required", "emotion_audio": False},
+        "audio_music": {"modes": [{"id": "song", "variations": None}]},
+        # The /audio/run route sizes CPU waits from it.
+        "audio_cpp_backend": "cpu",
     }
     entry = {"is_audio": True, "audio_type": "audiocpp_tts", "has_audio_input": False, **fields}
     info = _drive_handle_load(monkeypatch, mc, entry, device = "cuda")

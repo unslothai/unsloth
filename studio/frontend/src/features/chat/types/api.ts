@@ -384,6 +384,8 @@ export interface InferenceStatusResponse {
   audio_reference_text?: "required" | "optional" | "unused" | null;
   /** e.g. Maya1: "instruct" (its voice description). */
   audio_required_inputs?: string[] | null;
+  /** Unknown-shaped on purpose: validated by parseMusicCapabilities. */
+  audio_music?: unknown;
   has_audio_input?: boolean;
   has_video_input?: boolean;
   loading: string[];

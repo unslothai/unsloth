@@ -107,6 +107,8 @@ export interface AudioGalleryClip {
   order_at?: number | null;
   /** The Audio workflow that made the clip. Older servers omit it; read it through clipWorkflow. */
   workflow?: string | null;
+  /** Clips one run made together share a group. */
+  group_id?: string | null;
   reference_name?: string | null;
 }
 

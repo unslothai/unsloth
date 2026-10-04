@@ -1660,7 +1660,7 @@ def test_package_mixes_show_only_the_studio_option_list():
         "semantic_top_k",
     ]
     # Other families still follow the runtime's spec.
-    assert [o["name"] for o in acm.option_schema(acm.FAMILIES["ace_step"], runtime, None)] == [
+    assert [o["name"] for o in acm.option_schema(acm.FAMILIES["heartmula"], runtime, None)] == [
         "cot",
         "abc_temperature",
         "semantic_penalty_window",

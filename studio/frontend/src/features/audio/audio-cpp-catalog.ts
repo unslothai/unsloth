@@ -62,6 +62,8 @@ export const AUDIO_CPP_MODELS: readonly AudioCppModel[] = [
   { id: "audio-cpp/Yue2-3B-GGUF", task: "music" },
   { id: folder("ACE-Step1.5-GGUF"), task: "music" },
   { id: folder("Stable-Audio-3-Small-Music-GGUF"), task: "music" },
+  { id: folder("Stable-Audio-3-Small-SFX-GGUF"), task: "music" },
+  { id: folder("ControlFoley-GGUF"), task: "music" },
   { id: folder("Qwen3-ASR-0.6B-GGUF"), task: "asr" },
   { id: folder("Qwen3-ASR-1.7B-GGUF"), task: "asr" },
   { id: folder("Parakeet-TDT-0.6B-v3-GGUF"), task: "asr" },
