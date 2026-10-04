@@ -13,6 +13,7 @@ import {
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { useState } from "react";
+import { useAudioVoicesStore } from "../stores/audio-voices-store";
 import { Field } from "./field";
 import { LanguageSelect } from "./language-select";
 
@@ -27,12 +28,15 @@ export function SaveVoiceDialog({
   onOpenChange,
   mode,
   initial,
+  voiceId,
   onSubmit,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   mode: "create" | "edit";
   initial: VoiceDetails;
+  /** The voice being edited, which may keep its own name. */
+  voiceId?: string;
   onSubmit: (details: VoiceDetails) => Promise<void>;
 }) {
   return (
@@ -42,6 +46,7 @@ export function SaveVoiceDialog({
         <SaveVoiceForm
           mode={mode}
           initial={initial}
+          voiceId={voiceId}
           onCancel={() => onOpenChange(false)}
           onSubmit={async (details) => {
             await onSubmit(details);
@@ -56,11 +61,13 @@ export function SaveVoiceDialog({
 function SaveVoiceForm({
   mode,
   initial,
+  voiceId,
   onCancel,
   onSubmit,
 }: {
   mode: "create" | "edit";
   initial: VoiceDetails;
+  voiceId?: string;
   onCancel: () => void;
   onSubmit: (details: VoiceDetails) => Promise<void>;
 }) {
@@ -70,9 +77,17 @@ function SaveVoiceForm({
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const clean = name.trim();
+  // Voices are picked by name, so two with the same name could not be told apart.
+  const taken = useAudioVoicesStore((state) =>
+    state.voices.some(
+      (voice) =>
+        voice.id !== voiceId &&
+        voice.name.trim().toLowerCase() === clean.toLowerCase(),
+    ),
+  );
 
   const submit = async () => {
-    if (!clean || saving) return;
+    if (!clean || taken || saving) return;
     setSaving(true);
     setError(null);
     try {
@@ -135,6 +150,11 @@ function SaveVoiceForm({
         onChange={setLanguage}
         emptyLabel="Not set"
       />
+      {taken ? (
+        <p className="text-ui-11p5 leading-snug text-muted-foreground">
+          You already have a voice named {clean}. Pick another name.
+        </p>
+      ) : null}
       {error ? (
         <p role="alert" className="text-ui-11p5 leading-snug text-destructive">
           {error}
@@ -144,7 +164,7 @@ function SaveVoiceForm({
         <Button type="button" variant="ghost" onClick={onCancel}>
           Cancel
         </Button>
-        <Button type="submit" disabled={!clean || saving}>
+        <Button type="submit" disabled={!clean || taken || saving}>
           {saving ? "Saving…" : mode === "create" ? "Save voice" : "Save"}
         </Button>
       </DialogFooter>

@@ -400,7 +400,7 @@ export function AudioSourceInput({
           {tab === "history" && !recording ? (
             history.length === 0 ? (
               <p className="text-ui-12 leading-snug text-muted-foreground">
-                Clips you generate on Speak, Clone or Music show up here.
+                Clips you make in Audio show up here.
               </p>
             ) : (
               <ul className="hover-scrollbar grid min-w-0 max-h-[calc(196px*var(--ui-space-scale,1))] grid-cols-[minmax(0,1fr)] gap-0.5 overflow-y-auto">
