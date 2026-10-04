@@ -13,6 +13,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import os
+import sys
 from pathlib import Path
 
 import pytest
@@ -59,8 +60,13 @@ def _unwrapped(owner, name, flag):
 
 _TARGETS = [
     (PretrainedConfig, "from_dict", "_unsloth_patched_untrusted_config_fields"),
+    (PretrainedConfig, "_dict_from_json_file", "_unsloth_patched_untrusted_config_fields"),
     (PreTrainedTokenizerBase, "save_pretrained", "_unsloth_patched_chat_template_names"),
 ]
+if "save_chat_templates" in PreTrainedTokenizerBase.__dict__:
+    _TARGETS.append(
+        (PreTrainedTokenizerBase, "save_chat_templates", "_unsloth_patched_chat_template_names")
+    )
 if ProcessorMixin is not None:
     _TARGETS.append((ProcessorMixin, "save_pretrained", "_unsloth_patched_chat_template_names"))
 
@@ -320,6 +326,10 @@ def test_traversing_template_name_is_refused_before_writing(patched, tmp_path):
     assert _escaped_files(tmp_path / "out") == []
 
 
+@pytest.mark.skipif(
+    not hasattr(PreTrainedTokenizerBase, "save_chat_templates"),
+    reason = "older transformers writes templates inline in save_pretrained",
+)
 def test_save_chat_templates_called_directly_is_checked(patched, tmp_path):
     tokenizer = AutoTokenizer.from_pretrained(_crafted_template_repo(tmp_path))
     out = tmp_path / "out" / "a" / "saved"
@@ -376,9 +386,9 @@ def test_double_apply_is_a_noop(patched):
     patched.fix_transformers_chat_template_path_traversal()
     expected_config = 1 if (KERNEL_AFFECTED or LIGHTGLUE_AFFECTED) else 0
     expected_save = 1 if TEMPLATE_AFFECTED else 0
-    assert _wrap_depth(*_TARGETS[0]) == expected_config
-    for owner, name, flag in _TARGETS[1:]:
-        assert _wrap_depth(owner, name, flag) == expected_save
+    for owner, name, flag in _TARGETS:
+        expected = expected_config if owner is PretrainedConfig else expected_save
+        assert _wrap_depth(owner, name, flag) == expected
 
 
 def test_fixed_transformers_is_left_untouched(unpatched):
@@ -387,10 +397,10 @@ def test_fixed_transformers_is_left_untouched(unpatched):
     fixes.fix_transformers_untrusted_config_fields()
     fixes.fix_transformers_chat_template_path_traversal()
     after = [owner.__dict__.get(name) for owner, name, _ in _TARGETS]
-    if not (KERNEL_AFFECTED or LIGHTGLUE_AFFECTED):
-        assert after[0] is before[0]
-    if not TEMPLATE_AFFECTED:
-        assert all(a is b for a, b in zip(after[1:], before[1:]))
+    for (owner, _, _), a, b in zip(_TARGETS, after, before):
+        config = owner is PretrainedConfig
+        if not (KERNEL_AFFECTED or LIGHTGLUE_AFFECTED if config else TEMPLATE_AFFECTED):
+            assert a is b
 
 
 @pytest.mark.skipif(TF_VERSION < Version("4.54.0"), reason = "LightGlue was added in 4.54.0")
@@ -439,7 +449,8 @@ def test_windows_drive_relative_template_name_is_refused(patched, monkeypatch):
 def test_prerelease_at_a_fix_boundary_still_gets_the_fix(monkeypatch, prerelease):
     # A prerelease sorts before its final release (PEP 440), so it may lack the upstream fix.
     fixes = _load_import_fixes()
-    monkeypatch.setattr(transformers, "__version__", prerelease)
+    # Some releases swap the module in sys.modules after import, so patch the live one.
+    monkeypatch.setattr(sys.modules["transformers"], "__version__", prerelease)
     before = (
         PretrainedConfig.__dict__["from_dict"],
         PreTrainedTokenizerBase.__dict__["save_pretrained"],
