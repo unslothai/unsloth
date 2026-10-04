@@ -177,18 +177,27 @@ OWNER_ONLY_PATH_FLAGS: frozenset[str] = frozenset(
         "-lcd",
         "--lookup-cache-dynamic",
         "--log-prompts-dir",
+        # llama-server runs <dir>/ffmpeg to decode a video.
+        "--video-ffmpeg-dir",
     }
 )
 
 
+def owner_only_path_args(args: Optional[Iterable[str]]) -> list[tuple[str, str]]:
+    """``(flag, value)`` for each OWNER_ONLY_PATH_FLAGS occurrence in ``args``, in order."""
+    tokens = [str(a) for a in args or ()]
+    found: list[tuple[str, str]] = []
+    for i, raw in enumerate(tokens):
+        flag = _flag_name(raw)
+        if flag in OWNER_ONLY_PATH_FLAGS:
+            _, eq, inline = raw.partition("=")
+            found.append((flag, inline if eq else (tokens[i + 1] if i + 1 < len(tokens) else "")))
+    return found
+
+
 def owner_only_path_flags(args: Optional[Iterable[str]]) -> list[str]:
     """The OWNER_ONLY_PATH_FLAGS present in ``args``, in first-seen order."""
-    found: list[str] = []
-    for raw in args or ():
-        flag = _flag_name(str(raw))
-        if flag in OWNER_ONLY_PATH_FLAGS and flag not in found:
-            found.append(flag)
-    return found
+    return list(dict.fromkeys(flag for flag, _ in owner_only_path_args(args)))
 
 
 # Flags that take TWO values rather than one. Scanned out of `llama-server --help`: every other option is `--flag

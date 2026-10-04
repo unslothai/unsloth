@@ -7886,20 +7886,68 @@ def _external_transcript_preview(response: Response) -> str:
         return ""
 
 
-def _refuse_managed_custom_projector(extra_args: Optional[list[str]]) -> None:
+def _owner_chosen_launch(
+    identifier,
+    config_identifier = None,
+    variant = None,
+):
+    """Path args and custom configs the owner already chose for this model: its saved override
+    (written only through owner routes) and the resident same-model load (which passed this check
+    or was the owner's). Replaying these is not a new path, so auto-switch loads and the UI resending
+    an inherited or echoed setting keep working."""
+    from core.inference.llama_custom_config import parse_config_source
+    from core.inference.llama_server_args import owner_only_path_args
+    from utils.openai_auto_switch_settings import resolve_override_for_load
+
+    sources = []
+    if identifier:
+        _, override = resolve_override_for_load(identifier, config_identifier, variant)
+        sources.append((override.get("llama_extra_args"), override.get("llama_cpp_config")))
+        intent = getattr(get_llama_cpp_backend(), "last_load_intent", None)
+        if (
+            intent is not None
+            and _same_loaded_identifier(getattr(intent, "model_identifier", None), identifier)
+            and (getattr(intent, "hf_variant", None) or "").casefold() == (variant or "").casefold()
+        ):
+            sources.append(
+                (getattr(intent, "extra_args", None), getattr(intent, "llama_cpp_config", None))
+            )
+    pairs: set[tuple[str, str]] = set()
+    configs = []
+    for args, source in sources:
+        pairs.update(owner_only_path_args(args))
+        if source is not None:
+            configs.append(parse_config_source(source))
+    return pairs, configs
+
+
+def _refuse_managed_custom_projector(
+    extra_args: Optional[list[str]],
+    identifier: Optional[str] = None,
+    config_identifier: Optional[str] = None,
+    variant: Optional[str] = None,
+    sent_config = None,
+) -> None:
     """A pass-through path (projector, drafter, adapter, template, grammar...) skips account model
-    access, so only the owner may name one."""
-    from core.inference.llama_cpp import _extra_args_device
-    from core.inference.llama_server_args import owner_only_path_flags
+    access, so only the owner may name one. Values the owner already chose for this model pass."""
+    from core.inference.llama_server_args import owner_only_path_args
 
     if not account_access.managed_account():
         return
-    if _extra_args_device(extra_args, {"--mmproj", "-mm"}) is not None:
+    found = owner_only_path_args(extra_args)
+    if not found:
+        return
+    owner_pairs, owner_configs = _owner_chosen_launch(identifier, config_identifier, variant)
+    if sent_config is not None:
+        from core.inference.llama_custom_config import parse_config_source
+        if parse_config_source(sent_config) in owner_configs:
+            return
+    flags = list(dict.fromkeys(flag for flag, value in found if (flag, value) not in owner_pairs))
+    if {"--mmproj", "-mm"} & set(flags):
         raise HTTPException(
             status_code = 403,
             detail = "A custom --mmproj path is available to this installation's owner only.",
         )
-    flags = owner_only_path_flags(extra_args)
     if flags:
         raise HTTPException(
             status_code = 403,
@@ -11299,6 +11347,7 @@ async def _maybe_auto_switch_model(
                                 load_request = LoadRequest(**load_kwargs)
                                 load_request._gguf_companion_roots = gguf_companion_roots
                                 load_request._gguf_companion_roots_set = True
+                                load_request._override_alias_id = override_id
                                 await _load_model_impl(
                                     load_request,
                                     fastapi_request,
@@ -11325,6 +11374,7 @@ async def _maybe_auto_switch_model(
                                 load_request = LoadRequest(**load_kwargs)
                                 load_request._gguf_companion_roots = gguf_companion_roots
                                 load_request._gguf_companion_roots_set = True
+                                load_request._override_alias_id = override_id
                                 await _load_model_impl(
                                     load_request,
                                     fastapi_request,
@@ -16304,7 +16354,13 @@ async def _preflight_custom_llama_config(
     except ValueError as exc:
         raise HTTPException(status_code = 400, detail = redact_native_paths(str(exc))) from exc
     if caller_sent_custom:
-        _refuse_managed_custom_projector(list(compiled.argv))
+        _refuse_managed_custom_projector(
+            list(compiled.argv),
+            request.model_path,
+            getattr(request, "_override_alias_id", None) or config.identifier,
+            getattr(request, "gguf_variant", None) or getattr(config, "gguf_variant", None),
+            sent_config = request.llama_cpp_config,
+        )
     return compiled
 
 
@@ -17883,7 +17939,9 @@ async def _load_model_impl(
         extra_llama_args: Optional[list[str]] = (
             None if request.llama_extra_args is None else extra_llama_args
         )
-        _refuse_managed_custom_projector(extra_llama_args)
+        _refuse_managed_custom_projector(
+            extra_llama_args, request.model_path, request._override_alias_id, request.gguf_variant
+        )
 
         _reasoning_updates = {}
         _reasoning_budget_override = parse_reasoning_budget_override(extra_llama_args)
@@ -19421,7 +19479,12 @@ async def validate_model(
             except ValueError as exc:
                 raise HTTPException(status_code = 400, detail = str(exc)) from exc
             if getattr(request, "llama_extra_args", None) is not None:
-                _refuse_managed_custom_projector(effective_extra_args)
+                _refuse_managed_custom_projector(
+                    effective_extra_args,
+                    _public_model_identifier(request.model_path, model_identifier),
+                    config.identifier,
+                    getattr(request, "gguf_variant", None) or getattr(config, "gguf_variant", None),
+                )
 
         # Manual mode owns the offload flags, and /load translates an explicit -ngl
         # into the first-class field before it strips them. Doing that there and not
@@ -20405,6 +20468,14 @@ async def estimate_memory(
 
     request = _resolve_llama_cpp_config(request)
     if _custom_llama_config(request):
+        return EstimateMemoryResponse(available = False, reason = "unsizable")
+    # Sizing reads the files those flags name, so a path the load would refuse
+    # is not sized either (the panel shows "unsizable", not an error).
+    try:
+        _refuse_managed_custom_projector(
+            request.llama_extra_args, request.model_path, None, request.gguf_variant
+        )
+    except HTTPException:
         return EstimateMemoryResponse(available = False, reason = "unsizable")
     if is_ollama_manifest_ref(request.model_path):
         # Resolving one writes a .gguf link to disk; that belongs to the load path.
