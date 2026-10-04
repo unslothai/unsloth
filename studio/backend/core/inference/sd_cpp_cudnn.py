@@ -400,7 +400,10 @@ def ensure_library(
                 try:
                     lock.acquire(timeout = 1)
                     break
-                except Exception:  # noqa: BLE001 - another process holds it
+                except Exception as exc:  # noqa: BLE001
+                    if type(exc).__name__ != "Timeout":
+                        # Unwritable or full volume: not contention, so do not wait out the timeout.
+                        return None, _redact(f"cannot lock {root.name}: {exc}")
                     if cancel_event is not None and cancel_event.is_set():
                         return None, _CANCELLED
                     if time.monotonic() >= deadline:
@@ -621,13 +624,16 @@ def plan_cudnn_attention(
         )
     if not install_enabled(environ):
         return CudnnAttention(STATE_OFF, f"{CUDNN_INSTALL_ENV}=0")
-    lib, reason = ensure_library(
-        runtime,
-        allow_install = allow_install,
-        status_cb = status_cb,
-        root = root,
-        cancel_event = cancel_event,
-    )
+    try:
+        lib, reason = ensure_library(
+            runtime,
+            allow_install = allow_install,
+            status_cb = status_cb,
+            root = root,
+            cancel_event = cancel_event,
+        )
+    except Exception as exc:  # noqa: BLE001 - eligible, so report it rather than read as not applicable
+        lib, reason = None, _redact(f"cuDNN install failed: {type(exc).__name__}: {exc}")
     if lib is None:
         logger.info("sd_cpp.cudnn: attention stays on the ggml kernels: %s", reason)
         return CudnnAttention(STATE_UNAVAILABLE, reason)

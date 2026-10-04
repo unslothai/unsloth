@@ -466,3 +466,30 @@ def test_installer_output_is_redacted_and_copies_files(monkeypatch):
     )
     ok, out = cd._run([sys.executable, "-c", code], 60)
     assert ok and "s3cret" not in out and out.endswith("copy")
+
+
+def test_an_unusable_lock_fails_at_once(monkeypatch, tmp_path):
+    class BrokenLock:
+        def acquire(self, timeout):
+            raise PermissionError("read-only file system")
+
+    monkeypatch.setattr(cd, "_file_lock", lambda _p: BrokenLock())
+    monkeypatch.setattr(cd, "_run", _no_install)
+    import time
+
+    t = time.monotonic()
+    lib, reason = cd.ensure_library(RT, root = tmp_path)
+    assert lib is None and "cannot lock" in reason and time.monotonic() - t < 5
+
+
+def test_an_unexpected_install_error_reports_unavailable(monkeypatch, tmp_path):
+    monkeypatch.setattr(cd, "binary_cudnn_build", lambda _b: (True, 12))
+
+    def boom(*_a, **_k):
+        raise OSError("disk went away")
+
+    monkeypatch.setattr(cd, "ensure_library", boom)
+    plan = cd.plan_cudnn_attention(
+        "/x/sd-cli", (10, 0), platform = "linux", environ = {}, root = tmp_path
+    )
+    assert plan.state == cd.STATE_UNAVAILABLE and "disk went away" in plan.reason and plan.env == ()
