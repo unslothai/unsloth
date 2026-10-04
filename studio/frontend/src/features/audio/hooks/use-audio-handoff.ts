@@ -16,14 +16,13 @@ export function useAudioHandoff({
   active,
   busy,
   busyRef,
-  modeRef,
   handleModelSelect,
   transitionWorkflow,
   refreshGallery,
   loadMore,
   loadingMoreRef,
   selectClip,
-}: Pick<AudioHostState, "active" | "busy" | "busyRef" | "modeRef"> &
+}: Pick<AudioHostState, "active" | "busy" | "busyRef"> &
   Pick<AudioModelSlot, "handleModelSelect" | "transitionWorkflow"> &
   Pick<
     AudioGallery,
@@ -131,8 +130,14 @@ export function useAudioHandoff({
       if (found) {
         selectClip(routedItem);
         const clip = galleryCache.clips.find((c) => c.id === routedItem);
-        if (clip && modeRef.current === "speak")
-          transitionWorkflow(clipWorkflow(clip));
+        // Through ?workflow=, so a switch refused while busy stays in the URL and retries.
+        if (clip) {
+          void navigateSelf({
+            to: "/audio",
+            search: (prev) => ({ ...prev, workflow: clipWorkflow(clip) }),
+            replace: true,
+          });
+        }
       } else {
         toast(translate("library.toast.clipNotFound"), {
           description: translate("library.toast.notFoundDescription"),
@@ -145,8 +150,6 @@ export function useAudioHandoff({
     refreshGallery,
     loadMore,
     selectClip,
-    modeRef,
-    transitionWorkflow,
   ]);
 
   return {
