@@ -6495,8 +6495,8 @@ def _date_gate_blocks(request: Any, include_api_key: bool) -> bool:
     return False
 
 
-def _local_chat_template() -> Optional[str]:
-    """The template the loaded local model renders a plain chat with, if any."""
+def _local_chat_template(image: bool = False) -> Optional[str]:
+    """The template the loaded local model renders this chat with, if any."""
     try:
         llama = get_llama_cpp_backend()
         if llama.is_loaded:
@@ -6506,13 +6506,17 @@ def _local_chat_template() -> Optional[str]:
 
             backend = peek_inference_backend()
             info = (backend.models.get(backend.active_model_name) or {}) if backend else {}
-            template = info.get("chat_template_override_requested")
-            if (
-                not isinstance(template, str)
-                or not template.strip()
-                or info.get("chat_template_override_reason")
-            ):
-                template = (info.get("chat_template_info") or {}).get("template")
+            template_info = info.get("chat_template_info") or {}
+            # an image or clip renders through the processor's template, as generation picks it.
+            template = template_info.get("processor_template") if image else None
+            if template is None:
+                template = info.get("chat_template_override_requested")
+                if (
+                    not isinstance(template, str)
+                    or not template.strip()
+                    or info.get("chat_template_override_reason")
+                ):
+                    template = template_info.get("template")
         from core.inference.chat_template_helpers import _selected_template_strings_from_value
 
         selected = _selected_template_strings_from_value(template)
@@ -6521,12 +6525,12 @@ def _local_chat_template() -> Optional[str]:
     return selected[0] if selected else None
 
 
-def _local_template_default_system_prompt(today: Any) -> str:
-    return template_default_system_prompt(_local_chat_template(), today)
+def _local_template_default_system_prompt(today: Any, image: bool = False) -> str:
+    return template_default_system_prompt(_local_chat_template(image), today)
 
 
-def _local_template_rejects_system_turn() -> bool:
-    return template_rejects_system_turn(_local_chat_template())
+def _local_template_rejects_system_turn(image: bool = False) -> bool:
+    return template_rejects_system_turn(_local_chat_template(image))
 
 
 def _apply_current_date_prompt(
@@ -6535,6 +6539,7 @@ def _apply_current_date_prompt(
     *,
     include_api_key: bool = False,
     template_default: bool = True,
+    image: bool = False,
 ) -> str:
     """Prefix the user's system prompt with the date when the setting is on.
 
@@ -6550,8 +6555,8 @@ def _apply_current_date_prompt(
     if stated:
         return refreshed_prompt
     if not system_prompt:
-        if _local_template_rejects_system_turn():
-            # no system turn to carry it; _date_first_user_turn leads the first message instead.
+        if _local_template_rejects_system_turn(image):
+            # no system turn to carry it, and the date is never written into the user's own turns.
             return ""
         if template_default:
             from datetime import date
@@ -6559,44 +6564,8 @@ def _apply_current_date_prompt(
             # a system turn displaces the chat template's default one, so carry that default along,
             # rendered for the user's day rather than the server's.
             today = date.fromisoformat(date_line[len(CURRENT_DATE_PROMPT_PREFIX) : -1])
-            system_prompt = _local_template_default_system_prompt(today)
+            system_prompt = _local_template_default_system_prompt(today, image)
     return f"{date_line}\n\n{system_prompt.lstrip()}" if system_prompt else date_line
-
-
-def _date_first_user_turn(messages: list[dict], system_prompt: str, request: Any) -> list[dict]:
-    """Lead the first user turn with the date when the template has no system turn to carry it."""
-    if system_prompt or _date_gate_blocks(request, False):
-        return messages
-    date_line = current_date_prompt_line(request = request)
-    if not date_line or not _local_template_rejects_system_turn():
-        return messages
-    for index, message in enumerate(messages):
-        if not isinstance(message, dict) or message.get("role") != "user":
-            continue
-        content = message.get("content")
-        if isinstance(content, str):
-            content = f"{date_line}\n\n{content}"
-        elif isinstance(content, list):
-            text = next(
-                (
-                    i
-                    for i, part in enumerate(content)
-                    if isinstance(part, dict) and isinstance(part.get("text"), str)
-                ),
-                None,
-            )
-            if text is None:
-                content = [{"type": "text", "text": date_line}, *content]
-            else:
-                part = content[text]
-                dated = {**part, "text": f"{date_line}\n\n{part['text']}"}
-                content = [*content[:text], dated, *content[text + 1 :]]
-        else:
-            return messages
-        copied = list(messages)
-        copied[index] = {**message, "content": content}
-        return copied
-    return messages
 
 
 # Ollama applies the Modelfile SYSTEM only when `req.Messages[0].Role != "system"` (its
@@ -28386,7 +28355,6 @@ async def produce_openai_chat_completions(
                     payload.messages
                 )
                 system_prompt = _apply_current_date_prompt(system_prompt, request)
-                chat_messages = _date_first_user_turn(chat_messages, system_prompt, request)
             except _DecodedAudioTooLongError as e:
                 # A limit the caller can act on, not a server fault.
                 api_monitor.fail(monitor_id, str(e))
@@ -28850,8 +28818,14 @@ async def produce_openai_chat_completions(
         )
     # applied once so both backends inherit it, with or without tools, and never state it twice.
     _user_system_prompt = system_prompt
-    system_prompt = _apply_current_date_prompt(system_prompt, request)
-    chat_messages = _date_first_user_turn(chat_messages, system_prompt, request)
+    # what makes generation render through the processor's template: an attachment, a clip, or an
+    # MCP picture it promotes (the substring form, as this runs on the event loop).
+    _renders_media = (
+        _request_has_attached_image(payload)
+        or _request_has_promotable_mcp_images(payload, exact = False)
+        or _request_has_video(payload)
+    )
+    system_prompt = _apply_current_date_prompt(system_prompt, request, image = _renders_media)
 
     if not chat_messages:
         raise _reject(400, "At least one non-system message is required.")
@@ -28922,7 +28896,6 @@ async def produce_openai_chat_completions(
             _gguf_replayed_image_parts,
         )
         gguf_messages = _set_or_prepend_system_message(gguf_messages, system_prompt)
-        gguf_messages = _date_first_user_turn(gguf_messages, system_prompt, request)
         image_b64 = None
         for audio_b64, audio_format in prepared_audio:
             _inject_audio_part(gguf_messages, audio_b64, audio_format)
@@ -30768,7 +30741,6 @@ async def produce_openai_chat_completions(
             payload.messages, _legacy_distinct
         ):
             chat_messages, served_images = _msgs, _payloads
-            chat_messages = _date_first_user_turn(chat_messages, system_prompt, request)
 
     # Decode image (from content parts OR legacy field)
     image_b64 = extracted_image_b64 or payload.image_base64
@@ -30798,7 +30770,6 @@ async def produce_openai_chat_completions(
             )
             if message.get("role") not in ("system", "developer")
         ]
-        chat_messages = _date_first_user_turn(chat_messages, system_prompt, request)
         if any(
             isinstance(message.get("content"), list)
             and any(part.get("type") == "image_url" for part in message["content"])
@@ -31208,6 +31179,7 @@ async def produce_openai_chat_completions(
             request,
             include_api_key = True,
             template_default = False,
+            image = _sf_has_any_image or _video_clip is not None,
         )
         if _sf_nudge:
             if _sf_system_prompt:
@@ -31841,7 +31813,10 @@ async def produce_openai_chat_completions(
         # survives templating; fold system/developer into one leading system
         # message (templates reject "developer") and clear prompt to avoid a dup.
         _sf_client_system_prompt = _apply_current_date_prompt(
-            _user_system_prompt, request, template_default = False
+            _user_system_prompt,
+            request,
+            template_default = False,
+            image = _sf_has_any_image or _video_clip is not None,
         )
         if served_images:
             # One pass over the conversation this renders, so markers and payloads stay in step.
@@ -31860,13 +31835,8 @@ async def produce_openai_chat_completions(
             gen_kwargs["images"] = await _decode_request_images(
                 backend, _sf_rebuilt_images, dict(zip(served_images, images)), reject = _reject
             )
-            gen_kwargs["messages"] = _date_first_user_turn(
-                _set_or_prepend_system_message(
-                    _structured_tool_history_for_local_template(_sf_rebuilt),
-                    _sf_client_system_prompt,
-                ),
-                _sf_client_system_prompt,
-                request,
+            gen_kwargs["messages"] = _set_or_prepend_system_message(
+                _structured_tool_history_for_local_template(_sf_rebuilt), _sf_client_system_prompt
             )
         else:
             #
@@ -31890,10 +31860,8 @@ async def produce_openai_chat_completions(
                 trim_mcp_image_turns(
                     _sf_rebuilt, _sf_rebuilt_images, limit = _MCP_MAX_TOTAL_MODEL_IMAGES - 1
                 )
-            gen_kwargs["messages"] = _date_first_user_turn(
-                _set_or_prepend_system_message(_sf_rebuilt, _sf_client_system_prompt),
-                _sf_client_system_prompt,
-                request,
+            gen_kwargs["messages"] = _set_or_prepend_system_message(
+                _sf_rebuilt, _sf_client_system_prompt
             )
             gen_kwargs["images"] = _sf_rebuilt_images or None
         # Mark the turn that owns the image so the newest-user-turn scan does not move an
@@ -37848,9 +37816,15 @@ async def _mlx_count_chat_tokens(payload, request = None) -> Optional[JSONRespon
     # The completion applies this once for both non-GGUF backends before it branches.
     # Only with a request: the helper's requestless mode injects the date unconditionally.
     _user_system_prompt = system_prompt
+    # what makes generation render through the processor's template: an attachment, a clip, or an
+    # MCP picture it promotes (the substring form, as this runs on the event loop).
+    _renders_media = (
+        _request_has_attached_image(payload)
+        or _request_has_promotable_mcp_images(payload, exact = False)
+        or _request_has_video(payload)
+    )
     if request is not None:
-        system_prompt = _apply_current_date_prompt(system_prompt, request)
-        messages = _date_first_user_turn(messages, system_prompt, request)
+        system_prompt = _apply_current_date_prompt(system_prompt, request, image = _renders_media)
 
     from state.tool_policy import get_tool_policy as _get_tool_policy_mlx
 
@@ -37968,9 +37942,8 @@ async def _mlx_count_chat_tokens(payload, request = None) -> Optional[JSONRespon
         _client_system_prompt = _user_system_prompt
         if request is not None:
             _client_system_prompt = _apply_current_date_prompt(
-                _user_system_prompt, request, template_default = False
+                _user_system_prompt, request, template_default = False, image = _renders_media
             )
-            messages = _date_first_user_turn(messages, _client_system_prompt, request)
         messages = _set_or_prepend_system_message(messages, _client_system_prompt)
         system_prompt = ""
     elif _tools_to_use:
@@ -38029,6 +38002,7 @@ async def _mlx_count_chat_tokens(payload, request = None) -> Optional[JSONRespon
                 request,
                 include_api_key = True,
                 template_default = False,
+                image = _renders_media,
             )
         if _nudge:
             system_prompt = (system_prompt.rstrip() + "\n\n" + _nudge) if system_prompt else _nudge
@@ -38236,7 +38210,6 @@ async def chat_count_tokens(
     _user_system_prompt = _system_prompt
     if not _takes_passthrough:
         _system_prompt = _apply_current_date_prompt(_system_prompt, request)
-        openai_messages = _date_first_user_turn(openai_messages, _system_prompt, request)
     openai_messages = _set_or_prepend_system_message(openai_messages, _system_prompt)
 
     # A PENDING turn (unanswered user message or tool result) is the one shape the tool loop

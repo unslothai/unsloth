@@ -485,7 +485,9 @@ class TestDateStaysInTheSystemTurn:
             lambda **_kwargs: "The current date is 2026-10-04.",
         )
         monkeypatch.setattr(inference, "_request_has_api_key", lambda _request: False)
-        monkeypatch.setattr(inference, "_local_template_default_system_prompt", lambda _today: "")
+        monkeypatch.setattr(
+            inference, "_local_template_default_system_prompt", lambda _today, _image = False: ""
+        )
         self.inference = inference
 
     def test_without_a_system_prompt_the_date_is_its_own_system_turn(self):
@@ -496,7 +498,9 @@ class TestDateStaysInTheSystemTurn:
 
     def test_a_template_default_system_prompt_is_kept_after_the_date(self, monkeypatch):
         monkeypatch.setattr(
-            self.inference, "_local_template_default_system_prompt", lambda _today: "You are Qwen."
+            self.inference,
+            "_local_template_default_system_prompt",
+            lambda _today, _image = False: "You are Qwen.",
         )
         assert self.inference._apply_current_date_prompt("", object()) == (
             "The current date is 2026-10-04.\n\nYou are Qwen."
@@ -509,7 +513,7 @@ class TestDateStaysInTheSystemTurn:
         monkeypatch.setattr(
             self.inference,
             "_local_template_default_system_prompt",
-            lambda today: f"Today's Date: {today:%B %d, %Y}.\nYou are Granite.",
+            lambda today, _image = False: f"Today's Date: {today:%B %d, %Y}.\nYou are Granite.",
         )
         # the system turn the tool nudge is appended to, so a tool request keeps the date too.
         expected = (
@@ -523,7 +527,9 @@ class TestDateStaysInTheSystemTurn:
 
     def test_a_tool_turn_states_the_date_without_the_template_default(self, monkeypatch):
         monkeypatch.setattr(
-            self.inference, "_local_template_default_system_prompt", lambda _today: "You are Qwen."
+            self.inference,
+            "_local_template_default_system_prompt",
+            lambda _today, _image = False: "You are Qwen.",
         )
         assert (
             self.inference._apply_current_date_prompt(
@@ -532,36 +538,36 @@ class TestDateStaysInTheSystemTurn:
             == "The current date is 2026-10-04."
         )
 
-    def test_a_template_without_a_system_turn_dates_the_first_user_turn(self, monkeypatch):
-        monkeypatch.setattr(self.inference, "_local_template_rejects_system_turn", lambda: True)
+    def test_a_template_without_a_system_turn_gets_no_date(self, monkeypatch):
+        monkeypatch.setattr(
+            self.inference, "_local_template_rejects_system_turn", lambda _image = False: True
+        )
         assert self.inference._apply_current_date_prompt("", object()) == ""
-        history = [
-            {"role": "user", "content": "Mike and Alexis are in bed."},
-            {"role": "assistant", "content": "ok"},
-            {"role": "user", "content": "Turn the story back to dinner."},
-        ]
-        first = "The current date is 2026-10-04.\n\nMike and Alexis are in bed."
-        assert self.inference._date_first_user_turn(history, "", object()) == [
-            {"role": "user", "content": first},
-            *history[1:],
-        ]
-        image_turn = [{"type": "image_url"}, {"type": "text", "text": "Hi"}]
-        parts = [{"role": "user", "content": image_turn}]
-        assert self.inference._date_first_user_turn(parts, "", object()) == [
-            {
-                "role": "user",
-                "content": [
-                    {"type": "image_url"},
-                    {"type": "text", "text": "The current date is 2026-10-04.\n\nHi"},
-                ],
-            }
-        ]
-        # a system prompt the caller wrote is still theirs to send.
-        assert self.inference._date_first_user_turn(history, "Be terse.", object()) is history
+        # a system prompt the caller wrote is still theirs to send, dated.
+        assert self.inference._apply_current_date_prompt("Be terse.", object()) == (
+            "The current date is 2026-10-04.\n\nBe terse."
+        )
 
-    def test_a_template_with_a_system_turn_leaves_user_turns_alone(self):
-        history = [{"role": "user", "content": "Hi"}]
-        assert self.inference._date_first_user_turn(history, "", object()) is history
+    def test_an_image_request_probes_the_processor_template(self, monkeypatch):
+        from types import SimpleNamespace
+
+        from core.inference import orchestrator
+
+        monkeypatch.undo()
+        info = {"chat_template_info": {"template": _CHATML, "processor_template": _QWEN25_LIKE}}
+        backend = SimpleNamespace(active_model_name = "vlm", models = {"vlm": info})
+        monkeypatch.setattr(
+            self.inference, "get_llama_cpp_backend", lambda: SimpleNamespace(is_loaded = False)
+        )
+        monkeypatch.setattr(orchestrator, "peek_inference_backend", lambda: backend)
+        assert self.inference._local_template_default_system_prompt(_DAY) == ""
+        assert (
+            self.inference._local_template_default_system_prompt(_DAY, True)
+            == "You are Qwen, a helpful assistant."
+        )
+        info["chat_template_info"]["processor_template"] = _REFUSES_SYSTEM
+        assert not self.inference._local_template_rejects_system_turn()
+        assert self.inference._local_template_rejects_system_turn(True)
 
     def test_a_named_template_list_is_probed_through_its_default(self, monkeypatch):
         from types import SimpleNamespace
