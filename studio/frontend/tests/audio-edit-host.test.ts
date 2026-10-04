@@ -6,26 +6,19 @@ import test from "node:test";
 
 import { readSrc } from "./helpers/kit.ts";
 
+const { INITIAL_AB_STATE, clampPosition, resumeAfterLoad, switchSide } =
+  await import("../src/features/audio/components/ab-compare-state.ts");
+const compare = readSrc("features/audio/components/ab-compare.tsx");
 const page = readSrc("features/audio/pages/edit-page.tsx");
 
 test("the recording takes uploads, recordings and history, not saved voices", () => {
   assert.match(page, /id="edit-recording"[\s\S]*?allowSavedVoice=\{false\}/);
-});
-
-test("history hides an edit's original", () => {
-  const gallery = readSrc("features/audio/hooks/use-audio-gallery.tsx");
-  assert.match(gallery, /clip\.role !== "source"/);
-});
-
-test("the compare draws its bars from the server's file, since the CSP blocks fetching object URLs", () => {
-  const compare = readSrc("features/audio/components/ab-compare.tsx");
-  assert.match(compare, /if \(src\.startsWith\("blob:"\)\) return null;/);
-  assert.match(page, /fileUrl: galleryFileUrl\(clip\.id\)/);
-});
-
-test("a long recording is refused on Edit, so the card does not promise to use its first 30 s", () => {
+  // A long recording is refused, so the card does not promise its first 30 s.
   assert.match(page, /id="edit-recording"[\s\S]*?usesFirstSeconds=\{null\}/);
   assert.match(page, /maxRecordSeconds=\{EDIT_SOURCE_MAX_SECONDS\}/);
+  // History hides an edit's original.
+  const gallery = readSrc("features/audio/hooks/use-audio-gallery.tsx");
+  assert.match(gallery, /clip\.role !== "source"/);
 });
 
 test("a history pick fills the transcript only with speech, not a Music description or a file name", async () => {
@@ -33,34 +26,16 @@ test("a history pick fills the transcript only with speech, not a Music descript
     "../src/features/audio/audio-run-request.ts"
   );
   const clip = { id: "c1", duration_s: 4, reference_name: "take.wav" };
-  assert.equal(
-    clipReference({ ...clip, prompt: "Hello there.", workflow: "edit" })
-      .transcript,
-    "Hello there.",
-  );
-  assert.equal(
-    clipReference({ ...clip, prompt: "calm piano", workflow: "music" })
-      .transcript,
-    null,
-  );
-  assert.equal(
-    clipReference({ ...clip, prompt: "take.wav", workflow: "edit" }).transcript,
-    null,
-  );
-  assert.equal(
-    clipReference({ ...clip, prompt: "take.wav", workflow: "edit" }).name,
-    "take.wav",
-  );
-});
-
-test("the compare resets for a new pair, not when the Original's file arrives", () => {
-  const compare = readSrc("features/audio/components/ab-compare.tsx");
-  assert.match(compare, /\}, \[originalKey, editedKey\]\);/);
-  assert.doesNotMatch(compare, /\}, \[original\.src, edited\.src\]\);/);
-  assert.match(
-    compare,
-    /clips\[side\]\.src \? next : \{ \.\.\.next, playing: false \}/,
-  );
+  const rows: [string, string, string | null][] = [
+    ["Hello there.", "edit", "Hello there."],
+    ["calm piano", "music", null],
+    ["take.wav", "edit", null],
+  ];
+  for (const [prompt, workflow, transcript] of rows) {
+    const ref = clipReference({ ...clip, prompt, workflow });
+    assert.equal(ref.transcript, transcript, prompt);
+  }
+  assert.equal(clipReference({ ...clip, prompt: "take.wav" }).name, "take.wav");
 });
 
 test("a new recording cancels the previous one's transcription", () => {
@@ -69,4 +44,52 @@ test("a new recording cancels the previous one's transcription", () => {
     hook,
     /useEffect\(\(\) => cancelTranscribe, \[sourceId, cancelTranscribe\]\);/,
   );
+});
+
+test("a result opens on Edited at 0; switching keeps the moment and the playing flag", () => {
+  assert.deepEqual(INITIAL_AB_STATE, {
+    side: "edited",
+    position: 0,
+    playing: false,
+  });
+  const playing = { side: "edited" as const, position: 2.5, playing: true };
+  const toOriginal = switchSide(playing, "original", 4.7);
+  assert.deepEqual(toOriginal, { ...playing, side: "original" });
+  const paused = { ...playing, playing: false };
+  assert.equal(switchSide(paused, "original", 4.7).playing, false);
+  assert.equal(switchSide(playing, "edited", 1), playing);
+  // Clamped to the other clip's length.
+  const late = { side: "original" as const, position: 4.6, playing: true };
+  assert.equal(switchSide(late, "edited", 3.2).position, 3.2);
+  // Unknown length keeps the position; the element clamps it once loaded.
+  assert.equal(switchSide(late, "edited", null).position, 4.6);
+  assert.equal(clampPosition(-1, 3), 0);
+  assert.equal(clampPosition(Number.NaN, 3), 0);
+});
+
+test("after loading, the clip resumes at the kept moment, or the top when past its end", () => {
+  const state = { side: "edited" as const, position: 2, playing: true };
+  const rows: [typeof state, number | null, object][] = [
+    [state, 3.2, { time: 2, play: true }],
+    [{ ...state, position: 3.2 }, 3.2, { time: 0, play: true }],
+    [{ ...state, playing: false }, null, { time: 2, play: false }],
+  ];
+  for (const [at, duration, resume] of rows) {
+    assert.deepEqual(resumeAfterLoad(at, duration), resume);
+  }
+});
+
+test("the A/B player is one keyboard-operable slider over a single audio element", () => {
+  assert.match(compare, /role="slider"/);
+  for (const key of ['" "', '"ArrowRight"', '"ArrowLeft"', '"Home"']) {
+    assert.ok(compare.includes(`event.key === ${key}`), key);
+  }
+  assert.equal(compare.match(/<audio\b/g)?.length, 1);
+  // A new pair resets the player; the Original's file arriving does not.
+  assert.match(compare, /\}, \[originalKey, editedKey\]\);/);
+});
+
+test("the bars come from the server's file, since the CSP blocks fetching object URLs", () => {
+  assert.match(compare, /if \(src\.startsWith\("blob:"\)\) return null;/);
+  assert.match(page, /fileUrl: galleryFileUrl\(clip\.id\)/);
 });
