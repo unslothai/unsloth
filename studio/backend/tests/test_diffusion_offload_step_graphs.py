@@ -531,11 +531,13 @@ def test_a_failed_block_recording_takes_the_allocator_off_its_pool():
                 net(x, t, return_dict = False)
         torch.cuda.synchronize()
         assert handle.graphs[1].poisoned and handle.stats["fallbacks"] == 1
+        torch.cuda.empty_cache()
+        baseline = torch.cuda.memory_reserved()
         block = torch.empty(256 << 20, dtype = torch.uint8, device = "cuda")
-        held = torch.cuda.memory_reserved()
         del block
         torch.cuda.empty_cache()
-        assert torch.cuda.memory_reserved() <= held - (256 << 20)
+        # stuck on the dead pool, empty_cache released nothing and the 256 MiB segment stayed
+        assert torch.cuda.memory_reserved() < baseline + (128 << 20)
         torch.randn(4, device = "cuda")  # the CUDA generator left capture mode
         handle.free()
         # a later recording in the process still works
