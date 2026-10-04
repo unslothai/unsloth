@@ -95,7 +95,6 @@ def _run(
     """Execute the block and report what it decided."""
     config = types.SimpleNamespace(dtype = model_dtype, torch_dtype = model_dtype)
     # from_pretrained records this only for an explicit dtype = torch.float32.
-    # Defaulting it from the model dtype keeps each test's intent readable.
     model = types.SimpleNamespace(
         config = config,
         _unsloth_user_float32 = (
@@ -117,15 +116,14 @@ def _run(
         "model": model,
         "print": lambda *a, **k: None,
     }
-    # The block imports device_is_bf16_supported and falls back to
-    # torch.cuda.is_bf16_supported; make both answer the same way.
+    # The block imports device_is_bf16_supported and falls back to torch.cuda.is_bf16_supported; make both answer the
+    # same way.
     real_cuda = torch.cuda
     torch.cuda = types.SimpleNamespace(is_bf16_supported = lambda: bf16_supported)
     import sys
 
-    # Stub the PARENT too: `from unsloth_zoo.device_type import x` imports
-    # unsloth_zoo first, and a raising package __init__ would silently route the
-    # block through the torch.cuda fallback instead of the branch under test.
+    # Stub the PARENT too: `from unsloth_zoo.device_type import x` imports unsloth_zoo first, and a raising package
+    # __init__ would silently route the block through the torch.cuda fallback instead of the branch under test.
     mod = types.ModuleType("unsloth_zoo.device_type")
     mod.device_is_bf16_supported = lambda: bf16_supported
     utils = types.ModuleType("unsloth_zoo.utils")
@@ -206,8 +204,8 @@ def test_explicit_bf16_on_a_float32_model_is_obeyed():
 
 
 def test_force_float32_models_take_the_earlier_branch():
-    # Gemma3 / gpt-oss on a T4: force_float32 wins before the new branch and
-    # already lands on pure float32, so the outcome is identical either way.
+    # Gemma3 / gpt-oss on a T4: force_float32 wins before the new branch and already lands on pure float32, so the
+    # outcome is identical either way.
     args, env = _run(torch.float32, bf16_supported = False, force_float32 = "1")
     assert (args.fp16, args.bf16) == (False, False)
     assert env["ACCELERATE_MIXED_PRECISION"] == "no"
@@ -262,8 +260,8 @@ def test_the_legacy_language_model_path_records_it_too():
     fn = next(n for n in cls.body if isinstance(n, ast.FunctionDef) and n.name == "from_pretrained")
     body = ast.unparse(fn)
     assert "_requested_float32(dtype)" in body
-    # Every exit, including the two that hand off to FastModel: it would
-    # otherwise record the dtype we derived from a 4bit compute dtype.
+    # Every exit, including the two that hand off to FastModel: it would otherwise record the dtype we derived from a
+    # 4bit compute dtype.
     returns = [
         ast.unparse(n) for n in ast.walk(fn) if isinstance(n, ast.Return) and n.value is not None
     ]

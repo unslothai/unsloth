@@ -540,6 +540,7 @@ async function submitFreshTrainingRun(
       payload.hf_dataset,
       false,
       payload.project_name ?? "",
+      payload.hf_token,
     );
   const response = await startTraining(payload, attempt.startRequestId);
   if (response.status === "error") {

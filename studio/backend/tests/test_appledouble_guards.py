@@ -210,3 +210,58 @@ def test_consolidated_weights_are_not_hidden_by_their_companion():
         is False
     )
     assert repo_ships_transformers_weights(["model.safetensors"]) is True
+
+
+# ---------------------------------------------------------------------------
+# The GGUF selection sites in core/inference/llama_cpp.py.
+#
+# Every one of these was filtered by #8919 and every one was silently reverted by
+# #9074's whole-file merge resolution. Only one of the five had a test, so CI
+# reported a lost error message and said nothing at all about the four selection
+# sites, which is the half that actually loads the wrong file. These cover the
+# selection behaviour directly, so a revert cannot come back quiet again.
+# ---------------------------------------------------------------------------
+
+
+def test_a_sidecar_never_wins_the_mmproj_preference():
+    """ "._mmproj-F16.gguf" satisfies the F16 preference and sorts ahead of the real adapter."""
+    from core.inference.llama_cpp import _pick_mmproj
+
+    assert _pick_mmproj(["._mmproj-F16.gguf", "mmproj-F16.gguf"]) == "mmproj-F16.gguf"
+    # A file a user genuinely named "._..." with no sibling to shadow still resolves.
+    assert _pick_mmproj(["._mmproj-F16.gguf"]) == "._mmproj-F16.gguf"
+
+
+def test_a_sidecar_never_wins_the_dspark_preference():
+    """Every GGUF under dspark/ qualifies, so a sidecar ranks equal to its sibling and sorts first."""
+    from core.inference.llama_cpp import _pick_dspark
+
+    picked = _pick_dspark(["dspark/._drafter-Q4_K_M.gguf", "dspark/drafter-Q4_K_M.gguf"])
+    assert picked == "dspark/drafter-Q4_K_M.gguf"
+
+
+def test_pick_dspark_stays_reachable_from_module_scope():
+    """It is handed a live repo listing as well as a snapshot, the same as _pick_mmproj.
+
+    Nesting it back inside the method is how #9074 reverted it, and nothing noticed.
+    """
+    import core.inference.llama_cpp as llama_cpp
+    assert callable(getattr(llama_cpp, "_pick_dspark", None))
+
+
+def test_a_sidecar_is_not_offered_as_a_variant():
+    from core.inference.llama_cpp import _gguf_files_for_variant
+    files = ["._model-Q4_K_M.gguf", "model-Q4_K_M.gguf"]
+    assert _gguf_files_for_variant(files, "Q4_K_M") == ["model-Q4_K_M.gguf"]
+
+
+def test_a_snapshot_walk_skips_the_companion_by_its_bytes(tmp_path):
+    from core.inference.llama_cpp import _gguf_snapshot_files
+
+    (tmp_path / "model-Q4_K_M.gguf").write_bytes(b"GGUF" + b"\x00" * 32)
+    (tmp_path / "._model-Q4_K_M.gguf").write_bytes(_AD)
+    # A real GGUF a user named "._..." is decided on its bytes, so it survives.
+    (tmp_path / "._mine.gguf").write_bytes(b"GGUF" + b"\x00" * 32)
+
+    found = sorted(_gguf_snapshot_files(tmp_path))
+    assert found == ["._mine.gguf", "model-Q4_K_M.gguf"]

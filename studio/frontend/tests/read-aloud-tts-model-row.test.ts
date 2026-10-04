@@ -2,21 +2,13 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import test from "node:test";
 
-const source = readFileSync(
-  new URL("../src/features/settings/tabs/voice-tab.tsx", import.meta.url),
-  "utf8",
-);
-const en = readFileSync(
-  new URL("../src/i18n/locales/en.ts", import.meta.url),
-  "utf8",
-);
-const audioSource = readFileSync(
-  new URL("../src/features/audio/audio-page.tsx", import.meta.url),
-  "utf8",
-);
+import { readSrc } from "./helpers/kit.ts";
+
+const source = readSrc("features/settings/tabs/voice-tab.tsx");
+const en = readSrc("i18n/locales/en.ts");
+const audioSource = readSrc("features/audio/audio-page.tsx");
 
 test("the studio TTS row offers the Audio page it tells the user to use", () => {
   // Settings is a modal, so it must close or Audio opens behind it.
@@ -46,15 +38,23 @@ test("the row lands on the TTS selector, not the mode Audio was left in", () => 
   );
 });
 
+test("custom TTS explains the strict voice default", () => {
+  assert.match(
+    en,
+    /customVoiceDescription: "Voice name the endpoint expects; defaults to alloy",/,
+  );
+  assert.doesNotMatch(en, /customVoiceDescription: .*optional/i);
+});
+
 test("a studio preview shows the generate wait instead of an idle button", () => {
   // Stop during the generate wait read as idle, and extra clicks orphaned requests.
   assert.match(
     source,
-    /markPreviewing\(true\);\s*setPreparingPreview\(true\);\s*try \{\s*const url = await generateStudioTtsAudio\(/,
+    /markPreviewing\(true\);\s*setPreparingPreview\(true\);\s*try \{\s*const generate =[\s\S]*?const url = await generate\(/,
   );
   assert.match(
     source,
-    /if \(controller\.signal\.aborted\) return;\s*setPreparingPreview\(false\);/,
+    /if \(controller\.signal\.aborted\) \{\s*releaseTtsAudioUrl\(url\);\s*return;\s*\}\s*setPreparingPreview\(false\);/,
   );
   // Every other exit goes through markPreviewing, so clearing there covers them all.
   assert.match(

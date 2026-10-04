@@ -92,7 +92,7 @@ function historyCutoff(
 }
 
 function isHistory(entry: WatchedEntry, cutoff: number | null): boolean {
-  // Still running at the first snapshot: it started while Studio loaded, so it is unseen.
+  // Still running at the first snapshot: it started while Unsloth loaded, so it is unseen.
   if (entry.status === "running") {
     return false;
   }
@@ -133,7 +133,7 @@ export function observeResponse(
     );
   }
   const seen = watch.seenIds;
-  // Only API-key traffic counts: Studio's own chat uses these same endpoints.
+  // Only API-key traffic counts: Unsloth's own chat uses these same endpoints.
   const hasNewTraffic = entries.some(
     (entry) => entry.via_api_key && !seen.has(entry.id),
   );

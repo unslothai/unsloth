@@ -46,8 +46,7 @@ def peft_env(monkeypatch):
         import_utils = types.ModuleType("peft.import_utils")
         import_utils.is_torchao_available = raiser
         consumer = types.ModuleType("peft.tuners.lora.torchao")
-        # `from peft.import_utils import ...` binds the ORIGINAL here, and
-        # this is the copy that actually gets called.
+        # `from peft.import_utils import ...` binds the ORIGINAL here, and this is the copy that actually gets called.
         consumer.is_torchao_available = raiser
         pkg = types.ModuleType("peft")
         pkg.__path__ = []
@@ -127,8 +126,7 @@ def test_stale_torchao_becomes_false(peft_env):
 
 
 def test_the_module_that_actually_calls_it_is_patched(peft_env):
-    # dispatch_torchao holds its own reference; patching import_utils alone
-    # would leave the real call site raising.
+    # dispatch_torchao holds its own reference; patching import_utils alone would leave the real call site raising.
     _, consumer = peft_env(_raiser(STALE))
     FIX()
     assert consumer.is_torchao_available() is False
@@ -158,8 +156,8 @@ def test_an_unrelated_import_error_still_raises(peft_env):
 @pytest.mark.parametrize(
     "message",
     [
-        # Half-installed torchao: says "torchao", is not a version complaint,
-        # and calling it "unavailable" would hide a broken install.
+        # Half-installed torchao: says "torchao", is not a version complaint, and calling it "unavailable" would hide a
+        # broken install.
         "No module named 'torchao.quantization'",
         "cannot import name 'quantize_' from 'torchao'",
         # An extension built against a different torch/CUDA.
@@ -252,6 +250,39 @@ def test_called_from_gpu_init():
     assert "fix_peft_stale_torchao_import_error,\n" in src, "not imported"
     assert "\nfix_peft_stale_torchao_import_error()\n" in src, "not called"
     assert "\ndel fix_peft_stale_torchao_import_error\n" in src, "not cleaned up"
+
+
+def test_the_patched_probe_keeps_the_lru_cache_api(peft_env):
+    """peft's is_torchao_available is an lru_cache, and callers reset it with cache_clear()
+    after torchao changes. functools.wraps does not carry the cache methods across, so without
+    forwarding them the first cache_clear() after unsloth patched peft raised AttributeError."""
+    import functools
+
+    calls = []
+
+    @functools.lru_cache
+    def is_torchao_available():
+        calls.append(None)
+        return True
+
+    import_utils, consumer = peft_env(is_torchao_available)
+    assert FIX() is True
+    patched = import_utils.is_torchao_available
+    assert patched is not is_torchao_available
+
+    assert patched() is True and patched() is True
+    assert len(calls) == 1, "the cache still answers the second call"
+    assert patched.cache_info().hits == 1
+    patched.cache_clear()
+    assert patched() is True
+    assert len(calls) == 2, "cache_clear on the patch must reach peft's own cache"
+    assert consumer.is_torchao_available is patched
+
+
+def test_a_probe_without_a_cache_gets_no_cache_api(peft_env):
+    import_utils, _ = peft_env(lambda: True)
+    assert FIX() is True
+    assert not hasattr(import_utils.is_torchao_available, "cache_clear")
 
 
 if __name__ == "__main__":
