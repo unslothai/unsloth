@@ -215,11 +215,7 @@ def test_pinned_reduction_has_one_block_size_and_the_default_has_two(monkeypatch
     assert sha_pinned in (sha_small, sha_large)
 
 
-# Inductor's reduction heuristic can also give one reduction several R0_BLOCK configs, benchmarked on first use in every
-# process with a cold inductor cache (separate from dynamic_scale_rblock). LTX-2.3's block RMSNorm gets 4096 and 2048,
-# a dead heat on a B200, so 3 of 6 servers rendered another clip. A family opts into inductor's reduction-config filter
-# for its own compile only (VideoFamily.filter_reduction_configs); the process-global knob is never written, so other
-# families keep inductor's pick (the filter made HunyuanVideo-1.5 ~2% slower per step).
+# Per-family reduction-config filter (diffusion_speed.pin_reduction_configs): per compile only, never the global knob.
 
 _FILTER = "test_configs.force_filter_reduction_configs"
 _HAS_FILTER = hasattr(_INDUCTOR.test_configs, "force_filter_reduction_configs")
@@ -330,8 +326,7 @@ def test_bundle_key_carries_the_filter_only_when_set(monkeypatch):
 
 
 def _wan_like_block_head():
-    """Wan block head: fp32 LayerNorm of the bf16 stream, modulated by a per-token timestep embedding (TI2V-5B's
-    expand_timesteps) plus the scale_shift_table, cast back to bf16 and fed to a Linear."""
+    """Wan TI2V-5B block head: fp32 LayerNorm of the bf16 stream, per-token AdaLN modulation, then a Linear."""
 
     class Head(torch.nn.Module):
         def __init__(self):
@@ -354,9 +349,8 @@ def _wan_like_block_head():
 
 
 def _ltx_like_block_norm():
-    """LTX-2.3 22B block head: RMSNorm over the 4096 hidden size of the bf16 stream (fp32 statistics, as diffusers'
-    RMSNorm), modulated by the scale_shift_table plus a per-token timestep embedding (unbind), at 768x512x121 (6144
-    video tokens), then a Linear. A norm weight is kept so both summation orders show in the output on every torch."""
+    """LTX-2.3 block head at 768x512x121: fp32-stat RMSNorm over hidden 4096, per-token AdaLN modulation, a Linear.
+    The norm weight keeps both summation orders visible in the output on every torch."""
 
     class Head(torch.nn.Module):
         def __init__(self):
