@@ -550,6 +550,8 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
             ("int8", "unsloth/Krea-2-Turbo-FP8"),
             ("fp8", "unsloth/Krea-2-Turbo-FP8"),
         ),
+        # Both are baked from the distilled Turbo denoiser: Raw quantizes its own dense weights.
+        prequant_excluded_bases = ("krea/krea-2-raw",),
         # Pre-cast Qwen3-VL-4B TE (8.88 -> 4.83 GB); handed into load_krea2_pipeline directly (assembly never sees
         # pipe_kwargs).
         te_prequant_repos = (("fp8", "text_encoder", "unsloth/Krea-2-Turbo-FP8"),),

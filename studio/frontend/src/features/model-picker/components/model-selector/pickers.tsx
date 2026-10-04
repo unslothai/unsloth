@@ -1,7 +1,15 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { isChatGgufTask, reconcileGgufPinsAfterDelete } from "./reconcile-gguf-pins";
+import {
+  isChatGgufTask,
+  reconcileGgufPinsAfterDelete,
+} from "./reconcile-gguf-pins";
+import {
+  createTaskLimiter,
+  hubWithdrawsSoleQuant,
+  loadPickerGgufVariants,
+} from "./gguf-discovery";
 
 import { ModelMemoryBar } from "@/components/model-memory-bar";
 import { shouldRefreshPickerInventoryOnMount } from "@/components/resource-picker/picker-tab-policy";
@@ -56,11 +64,9 @@ import {
   listGgufVariants as listGgufVariantsCached,
   useGgufVariantsCacheVersions,
   useHubInfiniteScroll,
+  isHuggingFaceOffline,
 } from "@/features/hub";
-import {
-  type HfModelResult,
-  useHubModelSearch,
-} from "@/features/hub";
+import { type HfModelResult, useHubModelSearch } from "@/features/hub";
 import {
   classifyUnslothSupport,
   downloadManager,
@@ -1646,8 +1652,7 @@ function normalizeGgufVariantsResponse(
     // The backend's own verdict, which resolves existence-first: a marker-less relative name that
     // exists on disk is a local model. A server predating the field leaves the prefix test.
     resolvedLocally: res?.resolved_locally === true,
-    // Missing/false means the server used local or offline fallback metadata. That cannot prove
-    // whether a cached main GGUF still needs a managed drafter companion.
+    // The server proves dependencies from Hub metadata or a complete local download plan.
     dependenciesResolved: res?.dependencies_resolved === true,
   };
 }
@@ -1668,13 +1673,14 @@ interface SoleDownloadedQuant {
   hasVision: boolean | undefined;
 }
 
-/** The repo's one complete quant, or null when Hub metadata cannot verify its dependencies. */
+/** The repo's one complete cached quant, or null when its dependencies cannot be verified. */
 async function readSoleQuant(
   target: SoleQuantTarget,
   hfToken?: string,
 ): Promise<SoleDownloadedQuant | null> {
   try {
     const res = await listGgufVariantsCached(target.repoId, hfToken, {
+      localOnly: true,
       localPath: target.localSource,
       includeCacheLocations: target.includeCacheLocations,
     });
@@ -1688,6 +1694,22 @@ async function readSoleQuant(
   } catch {
     return null;
   }
+}
+
+function soleQuantNeedsExpander(
+  target: SoleQuantTarget,
+  quant: string,
+  hfToken?: string,
+): Promise<boolean> {
+  if (isHuggingFaceOffline()) return Promise.resolve(false);
+  return hubWithdrawsSoleQuant(
+    () =>
+      listGgufVariantsCached(target.repoId, hfToken, {
+        localPath: target.localSource,
+        includeCacheLocations: target.includeCacheLocations,
+      }),
+    quant,
+  );
 }
 
 const EMPTY_SOLE_QUANT_ENTRIES: ReadonlyMap<
@@ -1757,6 +1779,7 @@ function useSoleDownloadedQuants(
     };
   }, []);
 
+  const hubProbeLimitRef = useRef(createTaskLimiter(SOLE_QUANT_WORKERS));
   const readerRef = useRef<ReturnType<
     typeof createSoleQuantReader<SoleDownloadedQuant>
   > | null>(null);
@@ -1770,6 +1793,23 @@ function useSoleDownloadedQuants(
           const next = new Map(prev);
           next.set(target.repoId, { key: target.key, quant });
           return next;
+        });
+        if (!quant) return;
+        // The disk verdict shows at once; a later Hub answer may still send the row back to its expander.
+        void hubProbeLimitRef.current(() =>
+          soleQuantNeedsExpander(
+            target,
+            quant.variant.quant,
+            hfTokenRef.current,
+          ),
+        ).then((withdraw) => {
+          if (!withdraw || !mountedRef.current) return;
+          setEntries((prev) => {
+            if (prev.get(target.repoId)?.key !== target.key) return prev;
+            const next = new Map(prev);
+            next.set(target.repoId, { key: target.key, quant: null });
+            return next;
+          });
         });
       },
     });
@@ -1883,6 +1923,9 @@ function GgufVariantExpander({
   // which a downloaded hub model also carries.
   const [resolvedLocally, setResolvedLocally] = useState(false);
   const localSource = loadId || cachePath || null;
+  const showAllQuantizations = useChatRuntimeStore(
+    (s) => s.showAllQuantizations,
+  );
 
   useEffect(() => {
     let canceled = false;
@@ -1898,23 +1941,45 @@ function GgufVariantExpander({
       setResolvedLocally(false);
     });
 
-    // Chat rows name the repository; media and explicit local rows retain their folder scope.
-    listGgufVariants(repoId, hfToken, {
-      ...(localSource ? { localPath: localSource } : {}),
-      includeCacheLocations: !mediaPageForTask(pipelineTag),
-      signal: controller.signal,
-    })
+    let cachedResponse:
+      | Awaited<ReturnType<typeof listGgufVariants>>
+      | undefined;
+    const applyResponse = (
+      res: Awaited<ReturnType<typeof listGgufVariants>>,
+    ) => {
+      if (canceled) return;
+      const normalized = normalizeGgufVariantsResponse(res);
+      setVariants(normalized.variants);
+      setDefaultVariant(normalized.defaultVariant);
+      setHasVision(normalized.hasVision);
+      if (normalized.hasVision !== undefined) {
+        onHasVision?.(normalized.hasVision);
+      }
+      setNativeContext(normalized.contextLength);
+      setResolvedLocally(normalized.resolvedLocally);
+    };
+
+    loadPickerGgufVariants(
+      (localOnly) =>
+        listGgufVariants(repoId, hfToken, {
+          ...(localSource ? { localPath: localSource } : {}),
+          localOnly,
+          includeCacheLocations: !mediaPageForTask(pipelineTag),
+          signal: controller.signal,
+        }),
+      {
+        onDevice,
+        canDiscoverRemote: () => !isHuggingFaceOffline(),
+        signal: controller.signal,
+      },
+      (res) => {
+        cachedResponse = res;
+        applyResponse(res);
+        if (!canceled) setLoading(false);
+      },
+    )
       .then((res) => {
-        if (canceled) return;
-        const normalized = normalizeGgufVariantsResponse(res);
-        setVariants(normalized.variants);
-        setDefaultVariant(normalized.defaultVariant);
-        setHasVision(normalized.hasVision);
-        if (normalized.hasVision !== undefined) {
-          onHasVision?.(normalized.hasVision);
-        }
-        setNativeContext(normalized.contextLength);
-        setResolvedLocally(normalized.resolvedLocally);
+        if (res !== cachedResponse) applyResponse(res);
       })
       .catch((err) => {
         if (canceled) return;
@@ -1928,7 +1993,7 @@ function GgufVariantExpander({
       canceled = true;
       controller.abort();
     };
-  }, [repoId, localSource, refreshKey, hfToken, pipelineTag]);
+  }, [repoId, localSource, refreshKey, hfToken, pipelineTag, onDevice]);
 
   // Covers Unix absolute, Windows drive, UNC, relative and tilde paths.
   const isLocalPath = /^(\/|\.{1,2}[\\/]|~[\\/]|[A-Za-z]:[\\/]|\\\\)/.test(
@@ -2100,9 +2165,6 @@ function GgufVariantExpander({
   }, [variants, variantGroups, effectiveRecommendedByGroup, getVariantFit]);
 
   // On Device only: with All quantizations off, list quants already on disk, torn ones included.
-  const showAllQuantizations = useChatRuntimeStore(
-    (s) => s.showAllQuantizations,
-  );
   const displayVariants = useMemo(() => {
     if (!sortedVariants) return sortedVariants;
     return visibleGgufVariants(sortedVariants, {

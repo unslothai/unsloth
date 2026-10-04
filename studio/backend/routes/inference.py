@@ -5865,9 +5865,10 @@ def _skill_tool_tip(*, can_create: bool, compact: bool = False) -> str:
     )
     return (
         "Enabled Agent Skills are listed below. Use their descriptions to select one when "
-        "helpful, then call read_skill before following its instructions. If the latest user "
-        "message mentions an enabled skill as @skill-name, call read_skill for that named skill "
-        "before answering."
+        "helpful, then call read_skill before following its instructions unless the complete "
+        "SKILL.md is already in context. Studio loads explicit @skill-name mentions before "
+        "generation when permitted; do not read an already loaded manifest again or claim a "
+        "failed/denied load succeeded."
         + create_tip
         + " Skill allowed-tools metadata never overrides Unsloth tool permissions.\n"
         + catalog
@@ -7886,16 +7887,106 @@ def _external_transcript_preview(response: Response) -> str:
         return ""
 
 
-def _refuse_managed_custom_projector(extra_args: Optional[list[str]]) -> None:
-    """A pass-through projector path skips account model access, so only the owner may name one."""
-    from core.inference.llama_cpp import _extra_args_device
-    if (
-        account_access.managed_account()
-        and _extra_args_device(extra_args, {"--mmproj", "-mm"}) is not None
-    ):
+def _owner_chosen_launch(
+    identifier,
+    config_identifier = None,
+    variant = None,
+):
+    """Path args and custom configs the owner already chose for this model: its saved override
+    (written only through owner routes) and the resident same-model load (which passed this check
+    or was the owner's). Replaying these is not a new path, so auto-switch loads and the UI resending
+    an inherited or echoed setting keep working."""
+    from core.inference.llama_custom_config import parse_config_source
+    from core.inference.llama_server_args import owner_only_path_args
+    from utils.openai_auto_switch_settings import resolve_override_for_load
+
+    sources = []
+    if identifier:
+        _, override = resolve_override_for_load(identifier, config_identifier, variant)
+        sources.append((override.get("llama_extra_args"), override.get("llama_cpp_config")))
+        intent = getattr(get_llama_cpp_backend(), "last_load_intent", None)
+        if (
+            intent is not None
+            # A snapshot path and its repo id are one model; other paths compare as before.
+            and _same_loaded_identifier(
+                _snapshot_repo_or_self(
+                    getattr(intent, "model_identifier", None), require_cache = True
+                ),
+                _snapshot_repo_or_self(identifier, require_cache = True),
+            )
+            # No variant named: the load resolves the same quant the resident one did.
+            and (
+                variant is None
+                or (getattr(intent, "hf_variant", None) or "").casefold() == variant.casefold()
+            )
+        ):
+            sources.append(
+                (getattr(intent, "extra_args", None), getattr(intent, "llama_cpp_config", None))
+            )
+    pairs: set[tuple[str, str]] = set()
+    configs = []
+    for args, source in sources:
+        pairs.update(owner_only_path_args(args))
+        if source is not None:
+            configs.append(parse_config_source(source))
+    return pairs, configs
+
+
+def _snapshot_repo_or_self(model_id, require_cache = False):
+    from core.inference.model_ids import hf_cache_repo_id
+
+    repo = hf_cache_repo_id(model_id) if model_id else None
+    # A caller's look-alike models--org--name/snapshots path outside the HF cache is not that repo.
+    if repo and (not require_cache or _inside_hf_cache(model_id)):
+        return repo
+    return model_id
+
+
+def _inside_hf_cache(path) -> bool:
+    from utils.hf_cache_settings import known_hf_hub_caches
+
+    target = os.path.normcase(os.path.abspath(str(path)))
+    for root in known_hf_hub_caches():
+        root = os.path.normcase(os.path.abspath(str(root)))
+        try:
+            if os.path.commonpath([root, target]) == root:
+                return True
+        except ValueError:
+            continue
+    return False
+
+
+def _refuse_managed_custom_projector(
+    extra_args: Optional[list[str]],
+    identifier: Optional[str] = None,
+    config_identifier: Optional[str] = None,
+    variant: Optional[str] = None,
+    sent_config = None,
+) -> None:
+    """A pass-through path (projector, drafter, adapter, template, grammar...) skips account model
+    access, so only the owner may name one. Values the owner already chose for this model pass."""
+    from core.inference.llama_server_args import owner_only_path_args
+
+    if not account_access.managed_account():
+        return
+    found = owner_only_path_args(extra_args)
+    if not found:
+        return
+    owner_pairs, owner_configs = _owner_chosen_launch(identifier, config_identifier, variant)
+    if sent_config is not None:
+        from core.inference.llama_custom_config import parse_config_source
+        if parse_config_source(sent_config) in owner_configs:
+            return
+    flags = list(dict.fromkeys(flag for flag, value in found if (flag, value) not in owner_pairs))
+    if {"--mmproj", "-mm"} & set(flags):
         raise HTTPException(
             status_code = 403,
             detail = "A custom --mmproj path is available to this installation's owner only.",
+        )
+    if flags:
+        raise HTTPException(
+            status_code = 403,
+            detail = f"File path options ({', '.join(flags)}) are available to this installation's owner only.",
         )
 
 
@@ -11291,6 +11382,7 @@ async def _maybe_auto_switch_model(
                                 load_request = LoadRequest(**load_kwargs)
                                 load_request._gguf_companion_roots = gguf_companion_roots
                                 load_request._gguf_companion_roots_set = True
+                                load_request._override_alias_id = override_id
                                 await _load_model_impl(
                                     load_request,
                                     fastapi_request,
@@ -11317,6 +11409,7 @@ async def _maybe_auto_switch_model(
                                 load_request = LoadRequest(**load_kwargs)
                                 load_request._gguf_companion_roots = gguf_companion_roots
                                 load_request._gguf_companion_roots_set = True
+                                load_request._override_alias_id = override_id
                                 await _load_model_impl(
                                     load_request,
                                     fastapi_request,
@@ -16273,8 +16366,14 @@ def _resolve_llama_cpp_config(
     return request.model_copy(update = {"llama_cpp_config": source.to_wire()})
 
 
-async def _preflight_custom_llama_config(request, config):
-    """Compile a custom config before any backend or GPU owner can be evicted."""
+async def _preflight_custom_llama_config(
+    request,
+    config,
+    *,
+    caller_sent_custom = False,
+):
+    """Compile a custom config before any backend or GPU owner can be evicted. A config the caller
+    sent itself (not the owner's saved override) is held to the same path rules as pass-through args."""
     if not _custom_llama_config(request):
         return None
     if not config.is_gguf or _classify_diffusion_gguf(config) is True:
@@ -16286,9 +16385,18 @@ async def _preflight_custom_llama_config(request, config):
         model_identifier = config.identifier, llama_cpp_config = request.llama_cpp_config
     )
     try:
-        return await asyncio.to_thread(get_llama_cpp_backend().prepare_custom_config, intent)
+        compiled = await asyncio.to_thread(get_llama_cpp_backend().prepare_custom_config, intent)
     except ValueError as exc:
         raise HTTPException(status_code = 400, detail = redact_native_paths(str(exc))) from exc
+    if caller_sent_custom:
+        _refuse_managed_custom_projector(
+            list(compiled.argv),
+            request.model_path,
+            getattr(request, "_override_alias_id", None) or config.identifier,
+            getattr(request, "gguf_variant", None) or getattr(config, "gguf_variant", None),
+            sent_config = request.llama_cpp_config,
+        )
+    return compiled
 
 
 def _resolve_inherited_extra_args(
@@ -16407,6 +16515,13 @@ def _resolve_inherited_extra_args(
                     "load (same model, shadow-stripped): %s",
                     extra_llama_args,
                 )
+        # Inherited path options get the same owner-only check as a sent list.
+        _refuse_managed_custom_projector(
+            extra_llama_args,
+            getattr(request, "model_path", None),
+            getattr(request, "_override_alias_id", None),
+            getattr(config, "gguf_variant", None),
+        )
     return extra_llama_args
 
 
@@ -17866,7 +17981,9 @@ async def _load_model_impl(
         extra_llama_args: Optional[list[str]] = (
             None if request.llama_extra_args is None else extra_llama_args
         )
-        _refuse_managed_custom_projector(extra_llama_args)
+        _refuse_managed_custom_projector(
+            extra_llama_args, request.model_path, request._override_alias_id, request.gguf_variant
+        )
 
         _reasoning_updates = {}
         _reasoning_budget_override = parse_reasoning_budget_override(extra_llama_args)
@@ -18208,7 +18325,12 @@ async def _load_model_impl(
             public_model_identifier,
         )
         extra_llama_args = _validated_extra_args(request)
-        custom_compiled = await _preflight_custom_llama_config(request, config)
+        custom_compiled = await _preflight_custom_llama_config(
+            request,
+            config,
+            caller_sent_custom = isinstance(requested_llama_cpp_config, dict)
+            and requested_llama_cpp_config.get("mode") == "custom",
+        )
         if custom_compiled is not None:
             _n_parallel = custom_compiled.n_parallel or _n_parallel
             effective_chat_template_override = None
@@ -19367,10 +19489,13 @@ async def validate_model(
             _reject_unsupported_managed_kind(request, config)
             await _managed_engine_options(request, config, request.hf_token)
 
+        caller_sent_custom = _custom_llama_config(request)
         request = _resolve_llama_cpp_config(
             request, config, _public_model_identifier(request.model_path, model_identifier)
         )
-        custom_compiled = await _preflight_custom_llama_config(request, config)
+        custom_compiled = await _preflight_custom_llama_config(
+            request, config, caller_sent_custom = caller_sent_custom
+        )
 
         # The caller's own list when it sent one, or the resolver hands back this
         # fourth argument unchanged and a --ctx-size the load is about to use would
@@ -19396,7 +19521,12 @@ async def validate_model(
             except ValueError as exc:
                 raise HTTPException(status_code = 400, detail = str(exc)) from exc
             if getattr(request, "llama_extra_args", None) is not None:
-                _refuse_managed_custom_projector(effective_extra_args)
+                _refuse_managed_custom_projector(
+                    effective_extra_args,
+                    _public_model_identifier(request.model_path, model_identifier),
+                    config.identifier,
+                    getattr(request, "gguf_variant", None) or getattr(config, "gguf_variant", None),
+                )
 
         # Manual mode owns the offload flags, and /load translates an explicit -ngl
         # into the first-class field before it strips them. Doing that there and not
@@ -20380,6 +20510,14 @@ async def estimate_memory(
 
     request = _resolve_llama_cpp_config(request)
     if _custom_llama_config(request):
+        return EstimateMemoryResponse(available = False, reason = "unsizable")
+    # Sizing reads the files those flags name, so a path the load would refuse
+    # is not sized either (the panel shows "unsizable", not an error).
+    try:
+        _refuse_managed_custom_projector(
+            request.llama_extra_args, request.model_path, None, request.gguf_variant
+        )
+    except HTTPException:
         return EstimateMemoryResponse(available = False, reason = "unsizable")
     if is_ollama_manifest_ref(request.model_path):
         # Resolving one writes a .gguf link to disk; that belongs to the load path.
@@ -29099,7 +29237,26 @@ async def produce_openai_chat_completions(
                     )
 
             def gguf_generate_with_tools():
-                return llama_backend.generate_chat_completion_with_tools(
+                from core.inference.skill_mentions import load_mentioned_skills
+
+                skill_instruction_ids = set()
+                yield from load_mentioned_skills(
+                    gguf_messages,
+                    # "none" / a zero budget withdraw read_skill, so they withdraw the preload too.
+                    tools_to_use
+                    if payload.tool_choice != "none" and payload.max_tool_calls_per_message != 0
+                    else [],
+                    permission_mode = payload.permission_mode,
+                    bypass_permissions = bool(payload.bypass_permissions),
+                    confirm_tool_calls = _effective_confirm,
+                    session_id = payload.session_id,
+                    cancel_event = cancel_event,
+                    context_length = llama_backend.context_length,
+                    continue_final_message = _continue_final_message(payload, thought = True),
+                    protected_message_ids = skill_instruction_ids,
+                )
+                yield from llama_backend.generate_chat_completion_with_tools(
+                    instruction_anchor_ids = skill_instruction_ids,
                     messages = gguf_messages,
                     replayed_image_parts = tuple(_gguf_replayed_image_parts),
                     tools = tools_to_use,
@@ -29384,7 +29541,11 @@ async def produce_openai_chat_completions(
 
                         # Anything after the gated tool_start means the user answered.
                         if not (
-                            event["type"] == "tool_start" and event.get("awaiting_confirmation")
+                            (event["type"] == "tool_start" and event.get("awaiting_confirmation"))
+                            or (
+                                event["type"] == "skill_load"
+                                and event.get("status") == "awaiting_approval"
+                            )
                         ):
                             await _park_admission(False)
 
@@ -29393,7 +29554,13 @@ async def produce_openai_chat_completions(
                             yield _OPENAI_TOOL_HEARTBEAT_SSE
                             continue
 
-                        if event["type"] in ("tool_output", "tool_args"):
+                        if event["type"] in ("tool_output", "tool_args", "skill_load"):
+                            if (
+                                event["type"] == "skill_load"
+                                and event.get("status") == "awaiting_approval"
+                            ):
+                                await _park_admission(True)
+                                approval_flush_pending = True
                             # Live stdout/stderr or tool-call arguments, forwarded
                             # verbatim for the UI. Final result still arrives in tool_end.
                             if _ui_events:
@@ -31354,6 +31521,13 @@ async def produce_openai_chat_completions(
                             yield _OPENAI_PASSTHROUGH_SSE_KEEPALIVE
                         continue
 
+                    if event["type"] == "skill_load":
+                        approval_flush_pending = event.get("status") == "awaiting_approval"
+                        if _ui_events:
+                            yield f"data: {json.dumps(event)}\n\n"
+                        elif _drop_keepalive.due():
+                            yield _OPENAI_PASSTHROUGH_SSE_KEEPALIVE
+                        continue
                     if event["type"] in ("tool_start", "tool_end"):
                         if event["type"] == "tool_start":
                             # Same as the GGUF loop, gated with the card for the same reason:

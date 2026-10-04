@@ -36,6 +36,8 @@ _SWIGLU_ATTR = "_unsloth_i8_swiglu"
 _LOCK = threading.Lock()
 # Read by the traced forwards: dynamo must not trace into the lru_cache'd registration.
 _OP_HANDLE: Any = None
+# torchao's safe_int_mm home, resolved at install (outside any trace) for the same reason.
+_INTMM_MODULE: Any = None
 # Marker on each patched module (no global registry: it would pin an unloaded transformer).
 _MARK = "_unsloth_i8_fused_prev"
 _NO_PREV = object()
@@ -837,9 +839,31 @@ def _act_quant(x2d: Any, weight: Any) -> tuple:
     return act.qdata, act.scale
 
 
+def _resolve_intmm() -> Any:
+    """The module holding torchao's ``safe_int_mm``, or None. torchao <= 0.18 ships it in ``torchao.kernel.intmm``;
+    main after pytorch/ao#4718 moved it to the int8 workflow and deleted ``torchao.kernel``. Read off the module at
+    call time, so Studio's capture-safe rebinding (diffusion_torchao_patches) is the one that runs."""
+    import importlib
+
+    from .diffusion_torchao_patches import _TORCHAO_INTMM_MODULES
+
+    for name in _TORCHAO_INTMM_MODULES:
+        try:
+            module = importlib.import_module(name)
+        except ImportError:
+            continue
+        if callable(getattr(module, "safe_int_mm", None)):
+            return module
+    return None
+
+
 def _int_mm(a: Any, weight: Any) -> Any:
-    from torchao.kernel.intmm import safe_int_mm
-    return safe_int_mm(a, weight.qdata.contiguous().t())
+    module = _INTMM_MODULE
+    if module is None:  # a direct call before any install (tests): resolve eagerly
+        module = _resolve_intmm()
+        if module is None:
+            raise ImportError("torchao ships no safe_int_mm in any known module")
+    return module.safe_int_mm(a, weight.qdata.contiguous().t())
 
 
 def _linear_from_q(q: Any, xs: Any, weight: Any, bias: Any, out_dtype: Any) -> Any:
@@ -1233,13 +1257,19 @@ def _has_eligible(transformer: Any) -> bool:
 
 
 def _finalize(transformer: Any, logger: Any = None) -> int:
-    global _OP_HANDLE
+    global _OP_HANDLE, _INTMM_MODULE
     dev = resident_cuda_device(transformer)
     if dev is None:
         return 0
     # Before the probe: it compiles and launches both Triton kernels, pure latency for a bf16 / fp16 model.
     if not _has_eligible(transformer):
         return 0
+    intmm = _resolve_intmm()
+    if (
+        intmm is None
+    ):  # an int8 GEMM home this file does not know: keep the stock path rather than fail the render
+        return 0
+    _INTMM_MODULE = intmm
     import torch
 
     if not _device_ok(dev.index if dev.index is not None else torch.cuda.current_device()):

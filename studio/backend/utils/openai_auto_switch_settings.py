@@ -12,7 +12,7 @@ import time
 from typing import Any, Mapping, Optional
 
 from utils.reasoning_budget import validate_reasoning_budget_message
-from utils.account_context import OWNER, run_as
+from utils.account_context import OWNER, AccountContext, current_account, is_owner_context, run_as
 
 OPENAI_AUTO_SWITCH_SETTING_KEY = "openai_api_auto_switch_model"
 OPENAI_AUTO_DOWNLOAD_SETTING_KEY = "openai_api_auto_download_model"
@@ -62,9 +62,13 @@ def _apply_idle_floor(seconds: int) -> int:
     return 0 if seconds <= 0 else max(MIN_AUTO_UNLOAD_IDLE_SECONDS, seconds)
 
 
-def _cached_setting(key: str, default: Any) -> Any:
+def _cached_setting(
+    key: str,
+    default: Any,
+    account: AccountContext = OWNER,
+) -> Any:
     """Read an app setting, memoized for _CACHE_TTL_S to spare the hot path."""
-    cache_key = (OWNER.account_id, key)
+    cache_key = (account.account_id, key)
     now = time.monotonic()
     with _cache_lock:
         hit = _cache.get(cache_key)
@@ -72,7 +76,7 @@ def _cached_setting(key: str, default: Any) -> Any:
             return hit[1]
     try:
         from storage.studio_db import get_app_setting
-        stored = run_as(OWNER, get_app_setting, key, None)
+        stored = run_as(account, get_app_setting, key, None)
     except Exception:
         stored = None
     value = default if stored is None else stored
@@ -81,8 +85,8 @@ def _cached_setting(key: str, default: Any) -> Any:
     return value
 
 
-def _invalidate(key: str) -> None:
-    cache_key = (OWNER.account_id, key)
+def _invalidate(key: str, account: AccountContext = OWNER) -> None:
+    cache_key = (account.account_id, key)
     with _cache_lock:
         _cache.pop(cache_key, None)
 
@@ -762,8 +766,8 @@ def _fold_posix_path_variant(value: str) -> str:
 
 
 def get_model_overrides() -> dict[str, dict]:
-    """Per-model launch configs keyed by model id (see normalize_model_override)."""
-    raw = _cached_setting(MODEL_OVERRIDES_SETTING_KEY, None)
+    """Per-model launch configs keyed by model id (see normalize_model_override), from the acting account's studio.db."""
+    raw = _cached_setting(MODEL_OVERRIDES_SETTING_KEY, None, current_account())
     if not isinstance(raw, dict):
         return {}
     # Rows saved before engine defaults were dropped (see normalize_model_override) read as
@@ -848,11 +852,13 @@ def resolve_override_for_load(
     alias_id: Optional[str] = None,
     variant: Optional[str] = None,
 ) -> tuple[Optional[str], dict]:
-    """``(key, override)`` the load would apply, or ``(None, {})``. Resolution belongs here rather than in a client: the folding rules are Python's (casefold is not toLowerCase), and an ambiguous fold deliberately matches nothing."""
+    """``(key, override)`` the load would apply, or ``(None, {})``. Resolution belongs here rather than in a client: the folding rules are Python's (casefold is not toLowerCase), and an ambiguous fold deliberately matches nothing. A managed account without its own row falls back to the owner's (same machine)."""
     for key in override_lookup_candidates(load_id, alias_id, variant):
         override = get_model_override(key)
         if override:
             return resolve_model_override_key(key) or key, override
+    if not is_owner_context():
+        return run_as(OWNER, resolve_override_for_load, load_id, alias_id, variant)
     return None, {}
 
 
@@ -949,5 +955,5 @@ def set_model_override(
             ("mlx_kv_quant", "mlx_kv_bits"),
         ),
     )
-    _invalidate(MODEL_OVERRIDES_SETTING_KEY)
+    _invalidate(MODEL_OVERRIDES_SETTING_KEY, current_account())
     return entry

@@ -1833,3 +1833,224 @@ def test_only_the_owner_may_name_a_custom_projector(monkeypatch, flag, managed):
     with pytest.raises(HTTPException) as err:
         routes._refuse_managed_custom_projector([flag, "/models/p.gguf"])
     assert err.value.status_code == 403
+
+
+@pytest.mark.parametrize(
+    "args",
+    [
+        ["--chat-template-file", "/home/owner/.ssh/id_ed25519"],
+        ["--grammar-file", "/etc/shadow"],
+        ["-jf", "/home/owner/secret.json"],
+        ["--lora", "/home/owner/adapter.gguf"],
+        ["--lora-scaled", "/home/owner/adapter.gguf:0.5"],
+        ["--control-vector", "/home/owner/cv.gguf"],
+        ["-md", "/home/owner/draft.gguf"],
+        ["--spec-draft-model", "/home/owner/draft.gguf"],
+        ["-lcs", "/home/owner/cache.bin"],
+        ["--log-prompts-dir", "/home/owner/.config"],
+        ["--video-ffmpeg-dir", "/srv/studio/accounts/m/sandbox"],
+    ],
+)
+@pytest.mark.parametrize("managed", [False, True])
+def test_only_the_owner_may_name_a_file_path_option(monkeypatch, args, managed):
+    import routes.inference as routes
+    from fastapi import HTTPException
+
+    monkeypatch.setattr(routes.account_access, "managed_account", lambda: managed)
+    routes._refuse_managed_custom_projector(["--ctx-size", "4096", "--temp", "0.7"])
+    routes._refuse_managed_custom_projector(None)
+    if not managed:
+        routes._refuse_managed_custom_projector(["--ctx-size", "4096", *args])
+        return
+    with pytest.raises(HTTPException) as err:
+        routes._refuse_managed_custom_projector(["--ctx-size", "4096", *args])
+    assert err.value.status_code == 403 and args[0] in err.value.detail
+    assert args[1] not in err.value.detail
+
+
+_OWNER_PATHS = ["--chat-template-file", "/owner/t.jinja", "-md", "/owner/draft.gguf"]
+
+
+def _managed_with_owner(
+    monkeypatch,
+    override = None,
+    intent = None,
+):
+    import routes.inference as routes
+    from types import SimpleNamespace
+    from utils import openai_auto_switch_settings as settings
+
+    monkeypatch.setattr(routes.account_access, "managed_account", lambda: True)
+    monkeypatch.setattr(
+        settings, "get_model_override", lambda key: dict(override.get(key, {})) if override else {}
+    )
+    monkeypatch.setattr(
+        routes, "get_llama_cpp_backend", lambda: SimpleNamespace(last_load_intent = intent)
+    )
+    return routes
+
+
+def test_managed_caller_may_replay_the_owners_saved_paths(monkeypatch):
+    # Auto-switch builds the load from the owner's saved override, keyed here by its alias.
+    from fastapi import HTTPException
+
+    routes = _managed_with_owner(monkeypatch, {"org/alias": {"llama_extra_args": _OWNER_PATHS}})
+    routes._refuse_managed_custom_projector(
+        ["--ctx-size", "4096", *_OWNER_PATHS], "m.gguf", "org/alias"
+    )
+    routes._refuse_managed_custom_projector(
+        ["--chat-template-file=/owner/t.jinja"], "m.gguf", "org/alias"
+    )
+    with pytest.raises(HTTPException) as err:
+        routes._refuse_managed_custom_projector(
+            ["--chat-template-file", "/home/owner/.ssh/id"], "m.gguf", "org/alias"
+        )
+    assert err.value.status_code == 403
+    with pytest.raises(HTTPException):
+        routes._refuse_managed_custom_projector(_OWNER_PATHS, "other.gguf")
+
+
+def test_managed_caller_may_resend_the_resident_same_model_paths(monkeypatch):
+    from fastapi import HTTPException
+    from types import SimpleNamespace
+
+    import utils.hf_cache_settings as cache_settings
+
+    monkeypatch.setattr(cache_settings, "known_hf_hub_caches", lambda: [Path("/hf/hub")])
+
+    intent = SimpleNamespace(
+        model_identifier = "m.gguf",
+        hf_variant = None,
+        extra_args = ("--lora", "/owner/a.gguf"),
+        llama_cpp_config = None,
+    )
+    routes = _managed_with_owner(monkeypatch, intent = intent)
+    routes._refuse_managed_custom_projector(["--lora", "/owner/a.gguf"], "m.gguf")
+    # Resident recorded as an HF cache snapshot path; the resend names the repo id.
+    snapshot = SimpleNamespace(
+        model_identifier = "/hf/hub/models--unsloth--B-GGUF/snapshots/abc/B-Q4_K_M.gguf",
+        hf_variant = None,
+        extra_args = ("--lora", "/owner/a.gguf"),
+        llama_cpp_config = None,
+    )
+    monkeypatch.setattr(
+        routes, "get_llama_cpp_backend", lambda: SimpleNamespace(last_load_intent = snapshot)
+    )
+    routes._refuse_managed_custom_projector(["--lora", "/owner/a.gguf"], "unsloth/B-GGUF")
+    monkeypatch.setattr(
+        routes, "get_llama_cpp_backend", lambda: SimpleNamespace(last_load_intent = intent)
+    )
+    with pytest.raises(HTTPException):
+        routes._refuse_managed_custom_projector(["--lora", "/owner/a.gguf"], "other.gguf")
+    with pytest.raises(HTTPException):
+        routes._refuse_managed_custom_projector(["--lora", "/owner/a.gguf"], "m.gguf", None, "Q8_0")
+
+
+def test_resident_paths_need_a_real_cache_snapshot_and_follow_an_omitted_variant(
+    monkeypatch, tmp_path
+):
+    from fastapi import HTTPException
+    from types import SimpleNamespace
+
+    import utils.hf_cache_settings as cache_settings
+
+    hub = tmp_path / "hub"
+    monkeypatch.setattr(cache_settings, "known_hf_hub_caches", lambda: [hub])
+    intent = SimpleNamespace(
+        model_identifier = str(hub / "models--unsloth--B-GGUF/snapshots/abc/B-Q4_K_M.gguf"),
+        hf_variant = "Q4_K_M",
+        extra_args = ("--lora", "/owner/a.gguf"),
+        llama_cpp_config = None,
+    )
+    routes = _managed_with_owner(monkeypatch, intent = intent)
+    # The same repo, by id or by its real cache path, with the variant omitted or named.
+    routes._refuse_managed_custom_projector(["--lora", "/owner/a.gguf"], "unsloth/B-GGUF")
+    routes._refuse_managed_custom_projector(
+        ["--lora", "/owner/a.gguf"], "unsloth/B-GGUF", None, "Q4_K_M"
+    )
+    routes._refuse_managed_custom_projector(["--lora", "/owner/a.gguf"], intent.model_identifier)
+    # A look-alike snapshot path in an account workspace is not the resident repo.
+    fake = tmp_path / "ws/models--unsloth--B-GGUF/snapshots/x/B.gguf"
+    with pytest.raises(HTTPException):
+        routes._refuse_managed_custom_projector(["--lora", "/owner/a.gguf"], str(fake))
+    # Nor does an owner load from a look-alike path outside the cache name that repo.
+    outside = SimpleNamespace(
+        **{
+            **vars(intent),
+            "model_identifier": str(tmp_path / "own/models--unsloth--B-GGUF/snapshots/x/B.gguf"),
+        }
+    )
+    monkeypatch.setattr(
+        routes, "get_llama_cpp_backend", lambda: SimpleNamespace(last_load_intent = outside)
+    )
+    with pytest.raises(HTTPException):
+        routes._refuse_managed_custom_projector(["--lora", "/owner/a.gguf"], "unsloth/B-GGUF")
+    with pytest.raises(HTTPException):
+        routes._refuse_managed_custom_projector(
+            ["--lora", "/owner/a.gguf"], "unsloth/B-GGUF", None, "Q8_0"
+        )
+
+
+def test_inherited_owner_paths_get_the_same_managed_check(monkeypatch, tmp_path):
+    # A settings Apply omits llama_extra_args and inherits the resident load's list.
+    from fastapi import HTTPException
+    from types import SimpleNamespace
+
+    import utils.hf_cache_settings as cache_settings
+    from models.inference import LoadRequest
+
+    hub = tmp_path / "hub"
+    monkeypatch.setattr(cache_settings, "known_hf_hub_caches", lambda: [hub])
+    resident = str(hub / "models--unsloth--B-GGUF/snapshots/abc/B-Q4_K_M.gguf")
+    backend = SimpleNamespace(
+        extra_args = ["--lora", "/owner/a.gguf"],
+        extra_args_source = (resident, "Q4_K_M"),
+        last_load_intent = SimpleNamespace(
+            model_identifier = resident,
+            hf_variant = "Q4_K_M",
+            extra_args = ("--lora", "/owner/a.gguf"),
+            llama_cpp_config = None,
+        ),
+    )
+    routes = _managed_with_owner(monkeypatch)
+    monkeypatch.setattr(routes, "get_llama_cpp_backend", lambda: backend)
+    config = SimpleNamespace(is_gguf = True, gguf_variant = "Q4_K_M")
+
+    same = LoadRequest(model_path = "unsloth/B-GGUF")
+    assert routes._resolve_inherited_extra_args(same, config, "unsloth/B-GGUF", None) == [
+        "--lora",
+        "/owner/a.gguf",
+    ]
+    fake = str(tmp_path / "ws/models--unsloth--B-GGUF/snapshots/x/B-Q4_K_M.gguf")
+    with pytest.raises(HTTPException):
+        routes._resolve_inherited_extra_args(LoadRequest(model_path = fake), config, fake, None)
+
+
+def test_managed_caller_may_resend_the_owners_custom_config(monkeypatch):
+    import asyncio
+    from fastapi import HTTPException
+    from types import SimpleNamespace
+    from models.inference import LoadRequest
+
+    owner_ini = {
+        "version": 1,
+        "mode": "custom",
+        "ini": "chat-template-file = /owner/t.jinja\n",
+        "section": None,
+    }
+    routes = _managed_with_owner(monkeypatch, {"m.gguf": {"llama_cpp_config": owner_ini}})
+    compiled = SimpleNamespace(argv = ("--chat-template-file", "/owner/t.jinja"))
+    backend = SimpleNamespace(prepare_custom_config = lambda intent: compiled, last_load_intent = None)
+    monkeypatch.setattr(routes, "get_llama_cpp_backend", lambda: backend)
+    monkeypatch.setattr(routes, "_classify_diffusion_gguf", lambda config: False)
+    config = SimpleNamespace(is_gguf = True, identifier = "m.gguf")
+    request = LoadRequest(model_path = "m.gguf", llama_cpp_config = owner_ini)
+    got = asyncio.run(
+        routes._preflight_custom_llama_config(request, config, caller_sent_custom = True)
+    )
+    assert got is compiled
+    edited = dict(owner_ini, ini = "chat-template-file = /owner/t.jinja\nctx-size = 4096\n")
+    request = LoadRequest(model_path = "m.gguf", llama_cpp_config = edited)
+    with pytest.raises(HTTPException) as err:
+        asyncio.run(routes._preflight_custom_llama_config(request, config, caller_sent_custom = True))
+    assert err.value.status_code == 403
