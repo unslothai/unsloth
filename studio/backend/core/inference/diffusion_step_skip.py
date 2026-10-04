@@ -128,7 +128,6 @@ def auto_static_settings(
     explicit ``UNSLOTH_STATIC_SKIP_*`` value still wins (benchmarking)."""
     env = os.environ if env is None else env
     out = static_skip_settings(env, logger)
-    # Only an override static_skip_settings accepted wins; an ignored one keeps the measured interval.
     if out["every"] == DEFAULT_EVERY and plan.get("every") and not _every_override_valid(env):
         out["every"] = int(plan["every"])
     out["min_steps"] = int(plan.get("min_steps") or STATIC_MIN_STEPS)
@@ -258,8 +257,7 @@ _JOINT_STREAM_TAGS = (0, 2)
 
 
 def _stream_timesteps(kwargs: dict) -> Optional[tuple]:
-    """Per-stream target timestep of a joint call, or None. Conditioning rows sit at or above their stream's target
-    timestep, so the target is the min over that stream's rows (gather + masked min: no host sync)."""
+    """Per-stream target timestep: min over the stream's rows (conditioning rows sit at or above it); no host sync."""
     torch = _torch()
     ts, idx, tags = kwargs.get("timestep"), kwargs.get("timestep_indices"), kwargs.get("token_tags")
     if not (_is_tensor(ts) and _is_tensor(idx) and _is_tensor(tags)):
