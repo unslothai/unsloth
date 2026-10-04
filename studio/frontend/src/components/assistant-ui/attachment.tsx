@@ -252,7 +252,12 @@ const AnnotationsAttachmentUI: FC<{ annotations: DocumentAnnotations; isComposer
             {label}
           </button>
         </HoverCardTrigger>
-        <HoverCardContent side="top" align="start" className="w-[min(26rem,calc(100vw-2rem))] p-0">
+        {/* The menus' surface: their soft shadow and radius, no ring, rather than a hover card's lift. */}
+        <HoverCardContent
+          side="top"
+          align="start"
+          className="w-[min(26rem,calc(100vw-2rem))] rounded-[14px] p-0 shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] ring-0 dark:shadow-[0_8px_28px_-6px_var(--background)]"
+        >
           <div className="flex max-h-80 flex-col divide-y divide-border/60 overflow-y-auto">
             {annotations.items.map((item, index) => (
               // biome-ignore lint/suspicious/noArrayIndexKey: the list is fixed once sent

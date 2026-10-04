@@ -36,7 +36,6 @@ import {
   Edit03Icon,
   Folder02Icon,
   FolderExportIcon,
-  FolderOpenIcon,
   LayerIcon,
   MoreHorizontalIcon,
   PinIcon,
@@ -151,36 +150,14 @@ function TemporaryChatButton({
   );
 }
 
-/** What a temporary chat can do from the shared rows: its messages are on screen, not saved. */
-export interface LiveChatActions {
-  /** Null while there is nothing to copy. */
-  copyMarkdown: (() => void) | null;
-  /** Discards the chat; null while there is nothing to discard. */
-  remove: (() => void) | null;
-}
-
-/** The rows of a chat's "…" menu. With no saved chat (`menu` null), only what `live` provides is
- *  on; the rest stay in sight, greyed, so the menu reads the same as a saved chat's. */
-export function ChatMenuItems({
-  menu,
-  live,
-}: {
-  menu: ActiveChatMenu | null;
-  live?: LiveChatActions;
-}) {
+/** The rows of a saved chat's "…" menu. */
+function ChatMenuItems({ menu }: { menu: ActiveChatMenu }) {
   const t = useT();
   const favorite = useChatFavoritesStore((state) =>
-    menu ? state.chatIds.includes(menu.item.id) : false,
+    state.chatIds.includes(menu.item.id),
   );
-  const off = !menu;
-  const noop = () => {};
-  const copyMarkdown = menu?.copyMarkdown ?? live?.copyMarkdown ?? null;
-  const remove = menu?.remove ?? live?.remove ?? null;
   // As the Library exports one: each thread behind the chat, a comparison's two included.
   const exportAs = async (format: ConversationExportFormat) => {
-    if (!menu) {
-      return;
-    }
     try {
       for (const id of getSidebarItemThreadIds(menu.item)) {
         await exportConversationByFormat(id, format);
@@ -193,16 +170,19 @@ export function ChatMenuItems({
   };
   return (
     <>
-      <Item icon={Edit03Icon} onSelect={menu?.rename ?? noop} disabled={off} shortcut="renameChat">
+      <Item icon={Edit03Icon} onSelect={menu.rename} shortcut="renameChat">
         {t("common.rename")}
       </Item>
       <Item
-        icon={menu?.pinned ? PinOffIcon : PinIcon}
-        onSelect={menu?.togglePin ?? noop}
-        disabled={off}
+        icon={menu.pinned ? PinOffIcon : PinIcon}
+        onSelect={menu.togglePin}
         shortcut="togglePinChat"
       >
-        {t(menu?.pinned ? "settings.data.library.unpin" : "settings.data.library.pin")}
+        {t(
+          menu.pinned
+            ? "settings.data.library.unpin"
+            : "settings.data.library.pin",
+        )}
       </Item>
       <Item
         glyph={
@@ -213,141 +193,149 @@ export function ChatMenuItems({
           />
         }
         onSelect={() =>
-          menu && useChatFavoritesStore.getState().setChats([menu.item.id], !favorite)
+          useChatFavoritesStore.getState().setChats([menu.item.id], !favorite)
         }
-        disabled={off}
       >
-        {t(favorite ? "library.menu.removeFromFavorites" : "library.menu.addToFavorites")}
+        {t(
+          favorite
+            ? "library.menu.removeFromFavorites"
+            : "library.menu.addToFavorites",
+        )}
       </Item>
       <Item
-        icon={menu?.unread ? ViewIcon : ViewOffSlashIcon}
-        onSelect={menu?.toggleUnread ?? noop}
-        disabled={off}
+        icon={menu.unread ? ViewIcon : ViewOffSlashIcon}
+        onSelect={menu.toggleUnread}
         shortcut="markChatUnread"
       >
-        {t(menu?.unread ? "shell.selection.markRead" : "shell.selection.markUnread")}
+        {t(
+          menu.unread
+            ? "shell.selection.markRead"
+            : "shell.selection.markUnread",
+        )}
       </Item>
       <DropdownMenuSeparator className="mx-3" />
       <Item
         glyph={<GitBranchIcon strokeWidth={1.75} className={ICON} />}
-        onSelect={menu?.fork ?? noop}
-        disabled={!menu?.canFork}
+        onSelect={menu.fork}
+        disabled={!menu.canFork}
         shortcut="forkChat"
       >
         {t("library.chats.menu.fork")}
       </Item>
       <DropdownMenuSub>
-        <DropdownMenuSubTrigger className="gap-2.5" disabled={off}>
-          <HugeiconsIcon icon={FolderExportIcon} strokeWidth={1.75} className={ICON} />
+        <DropdownMenuSubTrigger className="gap-2.5">
+          <HugeiconsIcon
+            icon={FolderExportIcon}
+            strokeWidth={1.75}
+            className={ICON}
+          />
           {t("shell.sections.moveTo")}
         </DropdownMenuSubTrigger>
-        {menu ? (
-          <DropdownMenuSubContent
-            className={cn(
-              MENU,
-              "max-h-[var(--radix-dropdown-menu-content-available-height)] w-56 overflow-y-auto",
-            )}
-          >
-            <DropdownMenuLabel className={LABEL}>{t("shell.navigation.projects")}</DropdownMenuLabel>
-            <Item icon={PlusSignIcon} onSelect={menu.newProject}>
-              {t("library.chats.toolbar.newProject")}
+        <DropdownMenuSubContent
+          className={cn(
+            MENU,
+            "max-h-[var(--radix-dropdown-menu-content-available-height)] w-56 overflow-y-auto",
+          )}
+        >
+          <DropdownMenuLabel className={LABEL}>
+            {t("shell.navigation.projects")}
+          </DropdownMenuLabel>
+          <Item icon={PlusSignIcon} onSelect={menu.newProject}>
+            {t("library.chats.toolbar.newProject")}
+          </Item>
+          {menu.projects.length > 0 && (
+            <div className={MOVE_TO_LIST}>
+              {menu.projects.map((entry) => (
+                <Item
+                  key={entry.id}
+                  icon={Folder02Icon}
+                  onSelect={() => menu.moveToProject(entry.id)}
+                >
+                  {entry.name}
+                </Item>
+              ))}
+            </div>
+          )}
+          {menu.project && (
+            <Item icon={Cancel01Icon} onSelect={() => menu.moveToProject(null)}>
+              {menu.project.name
+                ? t("shell.sections.removeFrom", { name: menu.project.name })
+                : t("shell.sections.removeFromProject")}
             </Item>
-            {menu.projects.length > 0 && (
-              <div className={MOVE_TO_LIST}>
-                {menu.projects.map((entry) => (
-                  <Item
-                    key={entry.id}
-                    icon={Folder02Icon}
-                    onSelect={() => menu.moveToProject(entry.id)}
-                  >
-                    {entry.name}
-                  </Item>
-                ))}
-              </div>
-            )}
-            {menu.project && (
-              <Item icon={Cancel01Icon} onSelect={() => menu.moveToProject(null)}>
-                {menu.project.name
-                  ? t("shell.sections.removeFrom", { name: menu.project.name })
-                  : t("shell.sections.removeFromProject")}
-              </Item>
-            )}
-            <DropdownMenuSeparator className="mx-3" />
-            <DropdownMenuLabel className={LABEL}>
-              {t("shell.sections.sectionsHeading")}
-            </DropdownMenuLabel>
-            <Item icon={PlusSignIcon} onSelect={menu.newSection}>
-              {t("shell.sections.newSection")}
+          )}
+          <DropdownMenuSeparator className="mx-3" />
+          <DropdownMenuLabel className={LABEL}>
+            {t("shell.sections.sectionsHeading")}
+          </DropdownMenuLabel>
+          <Item icon={PlusSignIcon} onSelect={menu.newSection}>
+            {t("shell.sections.newSection")}
+          </Item>
+          {menu.sections.length > 0 && (
+            <div className={MOVE_TO_LIST}>
+              {menu.sections.map((entry) => (
+                <Item
+                  key={entry.id}
+                  icon={LayerIcon}
+                  onSelect={() => menu.moveToSection(entry.id)}
+                >
+                  {entry.name}
+                </Item>
+              ))}
+            </div>
+          )}
+          {menu.section && (
+            <Item icon={Cancel01Icon} onSelect={() => menu.moveToSection(null)}>
+              {t("shell.sections.removeFrom", { name: menu.section.name })}
             </Item>
-            {menu.sections.length > 0 && (
-              <div className={MOVE_TO_LIST}>
-                {menu.sections.map((entry) => (
-                  <Item
-                    key={entry.id}
-                    icon={LayerIcon}
-                    onSelect={() => menu.moveToSection(entry.id)}
-                  >
-                    {entry.name}
-                  </Item>
-                ))}
-              </div>
-            )}
-            {menu.section && (
-              <Item icon={Cancel01Icon} onSelect={() => menu.moveToSection(null)}>
-                {t("shell.sections.removeFrom", { name: menu.section.name })}
-              </Item>
-            )}
-          </DropdownMenuSubContent>
-        ) : null}
+          )}
+        </DropdownMenuSubContent>
       </DropdownMenuSub>
       <DropdownMenuSub>
-        <DropdownMenuSubTrigger className="gap-2.5" disabled={!copyMarkdown}>
-          <HugeiconsIcon icon={Copy01Icon} strokeWidth={1.75} className={ICON} />
+        <DropdownMenuSubTrigger className="gap-2.5">
+          <HugeiconsIcon
+            icon={Copy01Icon}
+            strokeWidth={1.75}
+            className={ICON}
+          />
           {t("chatMenu.copy")}
         </DropdownMenuSubTrigger>
         <DropdownMenuSubContent className={cn(MENU, "w-56")}>
-          <DropdownMenuItem onSelect={copyMarkdown ?? noop} disabled={!copyMarkdown}>
+          <DropdownMenuItem onSelect={menu.copyMarkdown}>
             {t("settings.keyboardShortcuts.actions.copyChatAsMarkdown.label")}
             <Shortcut id="copyChatAsMarkdown" />
           </DropdownMenuItem>
-          <DropdownMenuItem onSelect={menu?.copySessionId ?? noop} disabled={off}>
+          <DropdownMenuItem onSelect={menu.copySessionId}>
             {t("settings.keyboardShortcuts.actions.copySessionId.label")}
             <Shortcut id="copySessionId" />
           </DropdownMenuItem>
         </DropdownMenuSubContent>
       </DropdownMenuSub>
       <DropdownMenuSub>
-        <DropdownMenuSubTrigger className="gap-2.5" disabled={off}>
-          <HugeiconsIcon icon={Download01Icon} strokeWidth={1.75} className={ICON} />
+        <DropdownMenuSubTrigger className="gap-2.5">
+          <HugeiconsIcon
+            icon={Download01Icon}
+            strokeWidth={1.75}
+            className={ICON}
+          />
           {t("common.export")}
         </DropdownMenuSubTrigger>
-        {menu ? (
-          <DropdownMenuSubContent className={cn(MENU, "w-48")}>
-            {chatExportOptions().map(({ label: name, format }) => (
-              <DropdownMenuItem key={format} onSelect={() => void exportAs(format)}>
-                {name}
-              </DropdownMenuItem>
-            ))}
-          </DropdownMenuSubContent>
-        ) : null}
+        <DropdownMenuSubContent className={cn(MENU, "w-48")}>
+          {chatExportOptions().map(({ label: name, format }) => (
+            <DropdownMenuItem
+              key={format}
+              onSelect={() => void exportAs(format)}
+            >
+              {name}
+            </DropdownMenuItem>
+          ))}
+        </DropdownMenuSubContent>
       </DropdownMenuSub>
-      {menu ? (
-        <OpenChatFolderItem item={menu.item} />
-      ) : (
-        <Item icon={FolderOpenIcon} onSelect={noop} disabled={true}>
-          {t("library.chats.folder.openChat")}
-        </Item>
-      )}
+      <OpenChatFolderItem item={menu.item} />
       <DropdownMenuSeparator className="mx-3" />
-      <Item
-        icon={Archive03Icon}
-        onSelect={menu?.archive ?? noop}
-        disabled={off}
-        shortcut="archiveChat"
-      >
+      <Item icon={Archive03Icon} onSelect={menu.archive} shortcut="archiveChat">
         {t("settings.data.library.archive")}
       </Item>
-      <Item icon={Delete02Icon} onSelect={remove ?? noop} disabled={!remove} destructive={true}>
+      <Item icon={Delete02Icon} onSelect={menu.remove} destructive={true}>
         {t("common.delete")}
       </Item>
     </>
@@ -369,23 +357,41 @@ export function ChatHeaderMenu({
   const menu = useActiveChatMenuStore((state) => state.menu);
   const label = t("chatMenu.more");
   if (temporary || !menu) {
-    return <TemporaryChatButton temporary={temporary} onToggle={onToggleTemporary} />;
+    return (
+      <TemporaryChatButton temporary={temporary} onToggle={onToggleTemporary} />
+    );
   }
   return (
     <DropdownMenu>
       <Tooltip>
         <TooltipTrigger asChild={true}>
           <DropdownMenuTrigger asChild={true}>
-            <button type="button" aria-label={label} className={CHAT_MENU_TRIGGER}>
-              <HugeiconsIcon icon={MoreHorizontalIcon} strokeWidth={1.75} className="size-icon" />
+            <button
+              type="button"
+              aria-label={label}
+              className={CHAT_MENU_TRIGGER}
+            >
+              <HugeiconsIcon
+                icon={MoreHorizontalIcon}
+                strokeWidth={1.75}
+                className="size-icon"
+              />
             </button>
           </DropdownMenuTrigger>
         </TooltipTrigger>
-        <TooltipContent side="bottom" sideOffset={6} className="tooltip-compact">
+        <TooltipContent
+          side="bottom"
+          sideOffset={6}
+          className="tooltip-compact"
+        >
           {label}
         </TooltipContent>
       </Tooltip>
-      <DropdownMenuContent align="end" sideOffset={6} className={cn(MENU, "w-64")}>
+      <DropdownMenuContent
+        align="end"
+        sideOffset={6}
+        className={cn(MENU, "w-64")}
+      >
         <ChatMenuItems menu={menu} />
       </DropdownMenuContent>
     </DropdownMenu>
