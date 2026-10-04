@@ -66,17 +66,8 @@ type RailProps = Omit<
   | "claimedOptions"
 >;
 
-// A transcript the user typed is replaced only when it came from the previous source.
 export function adoptReference(next: AudioSourceSelection | null) {
-  const store = useAudioCloneStore.getState();
-  const previous = store.reference;
-  store.setReference(next);
-  if (!next) return;
-  const typedForPrevious =
-    store.referenceText.trim() !== "" &&
-    store.referenceText !== (previous?.transcript ?? "");
-  if (!typedForPrevious) store.setReferenceText(next.transcript || "");
-  if (next.language && !store.language) store.setLanguage(next.language);
+  useAudioCloneStore.getState().adoptReference(next);
 }
 
 function CloneInputs({

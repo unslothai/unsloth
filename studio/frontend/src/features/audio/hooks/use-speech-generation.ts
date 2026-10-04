@@ -39,6 +39,7 @@ import { TTS_MAX_TOKENS } from "../audio-workspace-constants";
 import type { AudioHostState } from "./audio-host-state";
 import { galleryCache } from "./use-audio-gallery";
 import { useAudioCloneStore } from "../stores/audio-clone-store";
+import { useAudioVoicesStore } from "../stores/audio-voices-store";
 import { useAudioWorkspaceStore } from "../stores/audio-workspace-store";
 import { audioToolPanelsFor, isInstructionPanel } from "../tools/registry";
 import {
@@ -223,14 +224,20 @@ export function useSpeechGeneration({
     : nativeAudioInstructionsKind(status?.audio_type);
 
   // Instruction panels edit the page's instruction draft; other panels keep a value per model.
+  const voices = useAudioVoicesStore((state) => state.voices);
+  const voicesLoaded = useAudioVoicesStore(
+    (state) => state.loaded && !state.error,
+  );
   const toolContext = useMemo(
-    () =>
-      audioModelContextFor(status, {
+    () => ({
+      ...audioModelContextFor(status, {
         musicGeneration: workflow === "music",
         cudaMusicGeneration,
         musicNeedsDescription,
       }),
-    [status, workflow, cudaMusicGeneration, musicNeedsDescription],
+      savedVoiceIds: voicesLoaded ? voices.map((voice) => voice.id) : null,
+    }),
+    [status, workflow, cudaMusicGeneration, musicNeedsDescription, voices, voicesLoaded],
   );
   const toolPanels = useMemo(
     () => audioToolPanelsFor(workflow, toolContext),

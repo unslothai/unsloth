@@ -269,3 +269,42 @@ test("picking a new source clears an earlier error", () => {
     /seenKey\.current = valueKey;\s*if \(valueKey && phase === "error"\) dispatch\(\{ type: "reset" \}\);/,
   );
 });
+
+test("a long history prompt or voice name truncates and keeps the duration visible", () => {
+  // Grid items default to min-width: auto; without a minmax(0, 1fr) column one long prompt
+  // made its row thousands of pixels wide and pushed the duration off the card.
+  const historyList = card.slice(card.indexOf('tab === "history"'));
+  assert.match(historyList, /<ul className="[^"]*\bmin-w-0\b[^"]*grid-cols-\[minmax\(0,1fr\)\]/);
+  assert.match(historyList, /<li key=\{clip\.id\} className="min-w-0">/);
+  assert.match(historyList, /"min-w-0 flex-1 truncate"/);
+  assert.match(historyList, /"shrink-0 font-mono[^"]*"/);
+  const voices = readSrc("features/audio/components/voice-picker.tsx");
+  assert.match(voices, /<ul className="[^"]*\bmin-w-0\b[^"]*grid-cols-\[minmax\(0,1fr\)\]/);
+  assert.match(voices, /"group flex min-w-0 items-center/);
+});
+
+test("a saved voice cannot take a name another voice already has", () => {
+  const dialog = readSrc("features/audio/components/save-voice-dialog.tsx");
+  // Case-insensitive, and the voice being edited may keep its own name.
+  assert.match(
+    dialog,
+    /voice\.id !== voiceId &&\s*voice\.name\.trim\(\)\.toLowerCase\(\) === clean\.toLowerCase\(\)/,
+  );
+  assert.match(dialog, /disabled=\{!clean \|\| taken \|\| saving\}/);
+  assert.match(dialog, /You already have a voice named \{clean\}/);
+  const picker = readSrc("features/audio/components/voice-picker.tsx");
+  assert.match(picker, /mode="edit"\s*voiceId=\{editing\?\.id\}/);
+});
+
+test("a deleted clip or voice keeps the card in error, which holds Clone's Generate", () => {
+  // A 404 for a history clip or saved voice fails the card instead of marking it loaded, and the
+  // card refetches (and fails again) after Dismiss while the stale selection stays.
+  assert.match(hook, /"This saved voice was deleted\. Pick another one\."/);
+  assert.match(hook, /"This clip was deleted\. Pick another one\."/);
+  const generation = readSrc("features/audio/hooks/use-clone-generation.ts");
+  assert.match(
+    generation,
+    /referenceError:\s*referenceStatus\.phase === "error" \? referenceStatus\.message : null/,
+  );
+  assert.match(generation, /"reference-error": \[addReference\]/);
+});

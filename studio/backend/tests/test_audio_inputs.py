@@ -6,6 +6,8 @@ from __future__ import annotations
 import asyncio
 import io
 import math
+import os
+import time
 import wave
 from urllib.parse import quote
 
@@ -135,7 +137,11 @@ def test_an_upload_decodes_dedupes_and_deletes(client, fmt, codec, rate, layout,
         assert (w.getframerate(), w.getnchannels(), w.getsampwidth()) == (rate, channels, 2)
     assert (directory := audio_inputs.inputs_dir()) == gallery.gallery_dir() / "inputs"
     again = _upload(client, data, "other.wav")
-    assert again.status_code == 200 and again.json() == record
+    assert again.status_code == 200
+    # A re-upload refreshes the expiry, which can cross a second boundary.
+    reused = again.json()
+    assert reused.pop("expires_at") >= record["expires_at"]
+    assert reused == {k: v for k, v in record.items() if k != "expires_at"}
     assert len(list(directory.glob("*.json"))) == 1
     assert audio_inputs.prepare_reference({"input_id": record["id"]})[1].is_file()
     assert client.delete(f"{INPUTS}/{record['id']}").json() == {"removed": True}
@@ -200,6 +206,22 @@ def test_the_sweep_drops_the_oldest_past_the_byte_cap_then_all_past_the_ttl(clie
     assert not list(audio_inputs.inputs_dir().iterdir())
 
 
+def test_expired_inputs_are_swept_without_waiting_for_another_upload(monkeypatch, tmp_path):
+    from auth import storage
+
+    clock = [1_000_000.0]
+    monkeypatch.setattr(audio_inputs, "_now", lambda: clock[0])
+    input_id = _save(wav_bytes(0.5), "a.wav")["id"]
+    clock[0] += audio_inputs.TTL_SECONDS + 1
+    # An account that never uploaded gets no inputs folder from the sweep.
+    other = {"account_id": "acct-b", "username": "bob", "role": "user"}
+    monkeypatch.setattr(storage, "list_accounts", lambda: [other])
+    monkeypatch.setattr(audio_inputs, "account_path", lambda rel: tmp_path / "acct-b" / rel)
+    assert audio_inputs.sweep_all_accounts() == 1
+    assert audio_inputs.input_path(input_id) is None
+    assert not (tmp_path / "acct-b").exists()
+
+
 def test_a_prepared_reference_is_24k_mono_cut_to_thirty_seconds_and_cached():
     record = _save(wav_bytes(seconds = 31.0, rate = 8000), "long.wav")
     source, path = audio_inputs.prepare_reference({"input_id": record["id"]})
@@ -209,6 +231,20 @@ def test_a_prepared_reference_is_24k_mono_cut_to_thirty_seconds_and_cached():
     mtime = path.stat().st_mtime_ns
     assert audio_inputs.prepare_reference({"input_id": record["id"]})[1].stat().st_mtime_ns == mtime
     assert _frames(audio_inputs.prepared_path(source, 24000, max_seconds = 1.0))[2] == 24000
+
+
+def test_preparing_a_clip_copy_sweeps_expired_copies_without_an_upload(tmp_path):
+    # Cloning from history never uploads, so the sweep has to run from here too.
+    directory = audio_inputs.inputs_dir()
+    stale = directory / "c-old.24000.mono.m30.wav"
+    stale.write_bytes(wav_bytes(0.2))
+    old = time.time() - audio_inputs.TTL_SECONDS - 60
+    os.utime(stale, (old, old))
+    clip = tmp_path / "clip.wav"
+    clip.write_bytes(wav_bytes(0.5))
+    source = audio_inputs.Source(kind = "clip", id = "fresh", path = clip, name = "clip.wav")
+    fresh = audio_inputs.prepared_path(source, 24000, max_seconds = 30.0)
+    assert fresh.is_file() and not stale.exists()
 
 
 @pytest.mark.parametrize("bad", ["../escape", "a/b", "..", "x" * 129, "name.wav", ""])

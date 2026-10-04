@@ -19,9 +19,11 @@ const {
   CLONE_PANEL_LOGIC,
   COSYVOICE_INSTRUCTION_MISSING,
   EMOTION_AUDIO_MISSING,
+  SAVED_VOICE_DELETED,
   SAVED_VOICE_MISSING,
   chatterboxExpressivenessLogic,
   cosyVoiceModeLogic,
+  emotionSourceProblem,
   f5SpeedDialectLogic,
   indexTts2EmotionLogic,
   qwen3TimbreLogic,
@@ -79,6 +81,14 @@ test("the saved-voice choice shows on Speak only for models that also clone", ()
   );
   assert.equal(
     panelApplies(speakVoiceLogic, "speak", ctx({ audioWorkflows: ["speak"] })),
+    false,
+  );
+  assert.equal(
+    panelApplies(
+      speakVoiceLogic,
+      "speak",
+      ctx({ audioWorkflows: ["speak", "clone"], referenceTextMode: "required" }),
+    ),
     false,
   );
   assert.equal(
@@ -196,6 +206,20 @@ test("IndexTTS2 emotion from text and from audio", () => {
     ),
     EMOTION_AUDIO_MISSING,
   );
+  // A replacement still uploading, a failed one, or an expired clip blocks the run.
+  for (const status of [
+    { phase: "uploading" as const, name: "y", progress: 0.5 },
+    { phase: "error" as const, message: "Upload failed." },
+    { phase: "expired" as const },
+  ]) {
+    const sourceProblem = emotionSourceProblem(status);
+    assert.ok(sourceProblem);
+    assert.equal(
+      indexTts2EmotionLogic.validate?.({ ...base, mode: "audio", source, sourceProblem }, { text: "" }, ctx()),
+      sourceProblem,
+    );
+  }
+  assert.equal(emotionSourceProblem({ phase: "ready" }), null);
 });
 
 test("Qwen3 Timbre only sends x_vector_only_mode and drops the transcript requirement", () => {
@@ -224,6 +248,18 @@ test("Qwen3 Timbre only sends x_vector_only_mode and drops the transcript requir
     panelError: null,
   });
   assert.equal(blocked, null);
+  // A failed replacement hides the kept clip, so it blocks until dismissed.
+  const failed = cloneBlocker({
+    reference: { kind: "input", id: "i", name: "a.wav", durationS: 4 },
+    referenceBusy: false,
+    referenceExpired: false,
+    referenceError: "Upload failed.",
+    referenceText: "",
+    referenceTextField: referenceTextField(required, on),
+    text: "Hello",
+    panelError: null,
+  });
+  assert.equal(failed?.kind, "reference-error");
 });
 
 test("CosyVoice3 Cross-lingual needs no transcript; Instruct needs its instruction", () => {
@@ -317,6 +353,16 @@ test("a saved voice on Speak becomes the run's reference", () => {
   );
 });
 
+test("a saved voice deleted on Clone holds Speak's Generate", () => {
+  const saved = { source: "saved" as const, voiceId: "v1" };
+  const check = (savedVoiceIds: readonly string[] | null) =>
+    speakVoiceLogic.validate?.(saved, { text: "hi" }, ctx({ savedVoiceIds }));
+  assert.equal(check(["v2"]), SAVED_VOICE_DELETED);
+  assert.equal(check(["v1", "v2"]), null);
+  // Not loaded yet, or the list failed: nothing to compare against.
+  assert.equal(check(null), null);
+});
+
 test("formatVibeVoiceScript prefixes plain text only", () => {
   assert.equal(
     formatVibeVoiceScript("Hello there."),
@@ -370,7 +416,7 @@ test("Clone's blockers come in rail order", () => {
   assert.equal(cloneBlocker(base)?.kind, "reference");
   assert.equal(
     cloneBlocker({ ...base, referenceExpired: true })?.reason,
-    "This reference expired. Add it again.",
+    "This reference expired.",
   );
   const reference = {
     kind: "input" as const,
@@ -438,4 +484,12 @@ test("a run's inline fallback clip stays on the page that started it", () => {
   const body = clone.slice(clone.indexOf("export async function showRunResult("));
   assert.doesNotMatch(body.slice(0, body.indexOf("\n}\n")), /workflow: "clone"/);
   assert.match(readSrc("features/audio/hooks/use-speech-generation.ts"), /showRunResult\(\{[^}]*workflow: "speak"/);
+});
+
+test("transcribing the reference holds the page busy until it ends", () => {
+  const hook = readSrc("features/audio/hooks/use-clone-generation.ts");
+  const body = hook.slice(hook.indexOf("const transcribeReference = useCallback("));
+  assert.match(body, /if \(!source \|\| busyRef\.current\) return;\s*busyRef\.current = "transcribing";\s*setBusy\("transcribing"\);/);
+  assert.match(body, /finally \{\s*if \(busyRef\.current === "transcribing"\) \{\s*busyRef\.current = null;\s*setBusy\(null\);/);
+  assert.match(body, /transcribe: transcribeReference/);
 });

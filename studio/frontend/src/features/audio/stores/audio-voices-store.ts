@@ -25,6 +25,9 @@ interface AudioVoicesState {
   remove: (id: string) => Promise<void>;
 }
 
+// Bumped by each save, rename and delete: a list fetched across one is stale and is fetched again.
+let mutations = 0;
+
 const message = (error: unknown, fallback: string) =>
   error instanceof Error ? error.message : fallback;
 
@@ -36,8 +39,13 @@ export const useAudioVoicesStore = create<AudioVoicesState>()((set, get) => ({
   refresh: async () => {
     if (get().loading) return;
     set({ loading: true });
+    const started = mutations;
     try {
       const voices = await listVoices();
+      if (started !== mutations) {
+        set({ loading: false });
+        return get().refresh();
+      }
       set({ voices, loaded: true, loading: false, error: null });
     } catch (error) {
       set({
@@ -49,6 +57,7 @@ export const useAudioVoicesStore = create<AudioVoicesState>()((set, get) => ({
   },
   save: async (request) => {
     const voice = await createVoice(request);
+    mutations += 1;
     set((state) => ({
       voices: [voice, ...state.voices.filter((item) => item.id !== voice.id)],
     }));
@@ -63,6 +72,7 @@ export const useAudioVoicesStore = create<AudioVoicesState>()((set, get) => ({
     });
     try {
       const saved = await updateVoice(id, patch);
+      mutations += 1;
       set((state) => ({
         voices: state.voices.map((voice) => (voice.id === id ? saved : voice)),
       }));
@@ -73,11 +83,22 @@ export const useAudioVoicesStore = create<AudioVoicesState>()((set, get) => ({
   },
   remove: async (id) => {
     const before = get().voices;
+    const index = before.findIndex((voice) => voice.id === id);
     set({ voices: before.filter((voice) => voice.id !== id) });
     try {
       await deleteVoice(id);
+      mutations += 1;
     } catch (error) {
-      set({ voices: before });
+      // Put back only this voice: another deletion may have finished meanwhile.
+      const failed = before[index];
+      if (failed) {
+        set((state) => {
+          if (state.voices.some((voice) => voice.id === id)) return {};
+          const voices = [...state.voices];
+          voices.splice(Math.min(index, voices.length), 0, failed);
+          return { voices };
+        });
+      }
       throw error;
     }
   },

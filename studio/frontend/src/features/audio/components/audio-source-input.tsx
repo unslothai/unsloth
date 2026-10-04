@@ -400,12 +400,12 @@ export function AudioSourceInput({
           {tab === "history" && !recording ? (
             history.length === 0 ? (
               <p className="text-ui-12 leading-snug text-muted-foreground">
-                Clips you generate on Speak, Clone or Music show up here.
+                Clips you make in Audio show up here.
               </p>
             ) : (
-              <ul className="hover-scrollbar grid max-h-[calc(196px*var(--ui-space-scale,1))] gap-0.5 overflow-y-auto">
+              <ul className="hover-scrollbar grid min-w-0 max-h-[calc(196px*var(--ui-space-scale,1))] grid-cols-[minmax(0,1fr)] gap-0.5 overflow-y-auto">
                 {history.map((clip) => (
-                  <li key={clip.id}>
+                  <li key={clip.id} className="min-w-0">
                     <button
                       type="button"
                       disabled={disabled}
