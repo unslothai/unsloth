@@ -74,7 +74,6 @@ import {
   type ComposerFollowUpBehavior,
   attachmentsPastedText,
   hasPendingPromptQueueStart,
-  isAttachmentQueueable,
   isPastedTextFile,
   pastedTextQueueKey,
   promptQueueActiveItemChanged,
@@ -3674,8 +3673,7 @@ const Composer: FC<{
     referenceThreadId,
   ]);
   const preStreamRunReservationRef = useRef<symbol | null>(null);
-  // A failed preflight can release its reservation without ever becoming a
-  // streaming run. Wake parked attachments on that transition as well.
+  // Wakes a parked attachment when a preflight releases without ever streaming.
   const preStreamRunActive = useSyncExternalStore(
     subscribePreStreamRunReservations,
     () => hasPreStreamRunReservation(preStreamThreadIds),
@@ -3711,18 +3709,10 @@ const Composer: FC<{
   // same text did before it attached, rather than being refused as a file.
   const canQueuePastedTextPrompt =
     attachmentsAreAllPastedText && composerAcceptsQueueing;
-  const canQueueAttachmentPrompt = isAttachmentQueueable({
-    hasAttachments,
-    attachmentsAreAllPastedText,
-    hasPendingAudio,
-    isComposing,
-    hasPendingAttachments,
-    hasMaterializingImageAttachments,
-    hasMaterializingAudioAttachments,
-    hasMaterializingVideoAttachments,
-    disabled: Boolean(disabled),
-    overlay: Boolean(overlay),
-  });
+  // The queue carries text only, so other attachments park in the composer and
+  // send once the run and the queue are idle.
+  const canQueueAttachmentPrompt =
+    hasAttachments && !attachmentsAreAllPastedText && composerAcceptsQueueing;
 
   // Per-thread draft autosave: restore on mount, then mirror composer text
   // into localStorage (debounced) so a half-typed message survives a
@@ -4633,9 +4623,9 @@ const Composer: FC<{
               ? "Waiting for dropped audio"
               : waitingOn === "video"
                 ? "Waiting for dropped video"
-              : waitingOn === "settings"
-                ? "Loading this chat's settings"
-                : "Waiting for documents to finish indexing";
+                : waitingOn === "settings"
+                  ? "Loading this chat's settings"
+                  : "Waiting for documents to finish indexing";
       waitToastRef.current = toast(title, {
         description: "Your message will send automatically once it is ready.",
         duration: Infinity,
@@ -4821,9 +4811,11 @@ const Composer: FC<{
       !pendingSendRef.current ||
       indexingActive ||
       threadScopedSettingsPending ||
-      (hasAttachments && !attachmentsAreAllPastedText && (
-        liveThreadIsRunning || livePromptQueueActive || livePreStreamRunActive
-      )) ||
+      (hasAttachments &&
+        !attachmentsAreAllPastedText &&
+        (liveThreadIsRunning ||
+          livePromptQueueActive ||
+          livePreStreamRunActive)) ||
       hasMaterializingImageAttachments ||
       hasMaterializingAudioAttachments ||
       hasMaterializingVideoAttachments

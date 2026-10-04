@@ -22,9 +22,13 @@ const reservations = new Map<symbol, PreStreamRunReservation>();
 const reservationByThreadId = new Map<string, symbol>();
 const listeners = new Set<() => void>();
 
-export function subscribePreStreamRunReservations(listener: () => void): () => void {
+export function subscribePreStreamRunReservations(
+  listener: () => void,
+): () => void {
   listeners.add(listener);
-  return () => { listeners.delete(listener); };
+  return () => {
+    listeners.delete(listener);
+  };
 }
 
 function notifyReservationsChanged(): void {
@@ -129,6 +133,7 @@ function cancelPreStreamReservation(token: symbol): boolean {
       reservationByThreadId.delete(id);
   }
   if (!reservation.claimed) reservations.delete(token);
+  notifyReservationsChanged();
   return true;
 }
 
@@ -144,7 +149,6 @@ export function cancelPreStreamRunReservations(
     )
       cancelled += 1;
   }
-  if (cancelled > 0) notifyReservationsChanged();
   return cancelled;
 }
 

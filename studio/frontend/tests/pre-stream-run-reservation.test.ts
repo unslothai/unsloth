@@ -30,7 +30,10 @@ test("parked send subscribers observe failed preflight release and cancellation"
     const second = reservePreStreamRun(["parked-follow-up"]);
     assert.ok(second);
     cancelPreStreamRunReservations([second]);
-    assert.deepEqual(observed, [true, false, true, false]);
+    const third = reservePreStreamRun(["parked-follow-up"]);
+    assert.ok(third);
+    cancelPreStreamRunForThreadIds(["parked-follow-up"]);
+    assert.deepEqual(observed, [true, false, true, false, true, false]);
   } finally {
     unsubscribe();
     releasePreStreamRunForThreadIds(["parked-follow-up"]);
@@ -38,7 +41,7 @@ test("parked send subscribers observe failed preflight release and cancellation"
   const afterUnsubscribe = reservePreStreamRun(["parked-follow-up"]);
   assert.ok(afterUnsubscribe);
   releasePreStreamRunReservation(afterUnsubscribe);
-  assert.equal(observed.length, 4);
+  assert.equal(observed.length, 6);
 });
 
 test("adapter thread ids never mix an identified background run with the visible chat", () => {

@@ -233,7 +233,6 @@ export {
 export {
   PROMPT_QUEUE_DRAG_TYPE,
   hasPendingPromptQueueStart,
-  isAttachmentQueueable,
   isPromptQueueChord,
   isPromptQueueDragTypes,
   pastedTextQueueKey,
