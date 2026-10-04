@@ -1511,6 +1511,12 @@ export const en = {
           on: "On",
           off: "Off",
         },
+        mascots: {
+          label: "Decorative mascots",
+          description: "Show decorative sloth illustrations throughout the app. Avatars and brand logos stay visible.",
+          keywords: "mascot sloth decoration illustration hide show",
+          greetingDisabled: "Enable decorative mascots in Appearance to show the chat greeting sloth.",
+        },
         pointerCursors: {
           label: "Use pointer cursors",
           description:
