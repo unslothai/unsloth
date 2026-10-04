@@ -48,7 +48,7 @@ _TIER_MAX = "max"
 # needs mean LPIPS <= 0.05, max <= 0.10. "steps" = the step count it was measured at: fewer steps compute every step.
 # Keyed by the UPSTREAM repo id so distilled / unmeasured siblings never match.
 AUTO_STATIC_SKIP: dict = {
-    "qwen/qwen-image-2.1": {"default": 3, "max": 3, "steps": 40},
+    "qwen/qwen-image-2.1": {"default": 3, "max": 3, "steps": 25},
     "qwen/qwen-image": {"default": 2, "max": 3, "steps": 20},
     "black-forest-labs/flux.1-krea-dev": {"default": 2, "max": 3, "steps": 28},
     "black-forest-labs/flux.2-klein-base-4b": {"default": 2, "max": 3, "steps": 50},

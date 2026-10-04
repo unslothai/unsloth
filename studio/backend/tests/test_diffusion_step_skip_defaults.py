@@ -499,7 +499,7 @@ def test_a_failed_deferred_profile_takes_the_auto_skip_back_off(
 
 # Step counts the table rows were measured at (PR description); the auto skip never runs below them.
 MEASURED_STEPS = {
-    "Qwen/Qwen-Image-2.1": 40,
+    "Qwen/Qwen-Image-2.1": 25,
     "Qwen/Qwen-Image": 20,
     "black-forest-labs/FLUX.1-Krea-dev": 28,
     "black-forest-labs/FLUX.2-klein-base-4B": 50,
