@@ -26,6 +26,9 @@ REPO_ROOT = Path(__file__).parents[2]
 sys.path.insert(0, str(REPO_ROOT))
 
 import pytest
+from real_accelerator import (
+    has_real_accelerator,
+)  # tests/_shared, on sys.path via tests/conftest.py
 import torch
 
 from tests.utils import header_footer_context
@@ -83,7 +86,7 @@ def _metric(metrics, *names):
     return None
 
 
-@pytest.mark.skipif(not torch.cuda.is_available(), reason = "fast_inference needs a CUDA GPU + vLLM")
+@pytest.mark.skipif(not has_real_accelerator(), reason = "fast_inference needs a CUDA GPU + vLLM")
 def test_fast_inference():
     # Import here, not at module load: importing unsloth probes for an accelerator and errors on CPU-only machines, so
     # deferring keeps pytest collection and the skip path import-free. Unsloth must precede TRL.
@@ -138,7 +141,11 @@ def test_fast_inference():
     # The trainer must actually route rollouts through vLLM, otherwise it would
     # fall back to HF generation and never exercise WorkerLoRAManager.
     assert trainer.args.use_vllm, "GRPO is not configured to use vLLM"
-    assert getattr(trainer, "llm", None) is not None, "GRPO did not bind a vLLM engine"
+    # TRL >= 0.28 keeps the engine on trainer.vllm_generation.llm instead of trainer.llm.
+    engine = getattr(trainer, "llm", None) or getattr(
+        getattr(trainer, "vllm_generation", None), "llm", None
+    )
+    assert engine is not None, "GRPO did not bind a vLLM engine"
 
     with header_footer_context("GRPO train (vLLM LoRA rollout)"):
         trainer_stats = trainer.train()

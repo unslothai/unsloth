@@ -12,10 +12,11 @@ import type { SidebarItem } from "../hooks/use-chat-sidebar-items";
 const RECENTLY_VIEWED_LIMIT = 24;
 
 export interface ChatNavigationState {
-  /** The pinned block, in the order the sidebar draws it. */
+  /** The pinned block, in the order the sidebar draws it: the pinned folders' chats, then the
+   *  pinned chats. */
   pinnedItems: SidebarItem[];
-  /** Project chats on screen. Empty when the sidebar is organized as one list, where those chats
-   *  are in Recents instead. */
+  /** The Projects section's chats on screen, the pinned folders' excepted. Empty when the sidebar
+   *  is organized as one list, where those chats are in Recents instead. */
   projectItems: SidebarItem[];
   /** Recents, likewise. ⌥⌘1-6 indexes into this list alone. */
   recentItems: SidebarItem[];
@@ -231,9 +232,9 @@ export const useChatNavigationStore = create<ChatNavigationState>(
   }),
 );
 
-/** Every chat row the sidebar shows, in draw order: pinned, then project folders, then Recents.
- *  A pinned project chat is drawn twice, so the first of the pair wins and the walk does not
- *  stop on it again. */
+/** Every chat row the sidebar shows, in draw order: the Pinned block, then the Projects section's
+ *  folders, then Recents. A pinned project chat is drawn twice, so the first of the pair wins and
+ *  the walk does not stop on it again. */
 export function visibleChatItems(state: ChatNavigationState): SidebarItem[] {
   const seen = new Set<string>();
   const out: SidebarItem[] = [];

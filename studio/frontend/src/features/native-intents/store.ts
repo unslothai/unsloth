@@ -38,11 +38,9 @@ interface NativeIntentState {
   // keyed: until the intents land there is no settled target, and the OS drop
   // went to the window, which has one composer to send from.
   registeringImageDrops: number;
-  // Same for audio: cover the register-and-read window or a fast submit
-  // goes out without the clip.
+  // Same for audio: cover the register-and-read window or a fast submit goes out without the clip.
   registeringAudioDrops: number;
-  // Same for video: one clip is a long read, and a submit in that window would
-  // go out without it.
+  // Same for video: one clip is a long read, and a submit in that window would go out without it.
   registeringVideoDrops: number;
   // Bumped, per chat, when a drop fails before it reaches a queue. The composer
   // watches its own key so a failure elsewhere cannot cancel its parked send.
@@ -52,8 +50,7 @@ interface NativeIntentState {
   // Owner of queued composer-file batches, by composer identity. A remount means
   // the outgoing instance cannot hand the batches over itself, so it leaves a note.
   imageDropOwners: Record<string, string>;
-  // Same for audio: a new chat re-keys mid-read, so the clip needs a note
-  // to follow the composer.
+  // Same for audio: a new chat re-keys mid-read, so the clip needs a note to follow the composer.
   audioDropOwners: Record<string, string>;
   videoDropOwners: Record<string, string>;
   addIntent: (intent: NativeIntent) => void;

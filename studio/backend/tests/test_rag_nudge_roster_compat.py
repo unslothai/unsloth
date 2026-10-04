@@ -49,7 +49,7 @@ def fresh_process(monkeypatch):
     from storage import rag_db
 
     monkeypatch.setattr(rag_db, "_extension_loaded", False)
-    monkeypatch.setattr(rag_db, "_schema_ready", False)
+    monkeypatch.setattr(rag_db, "_schema_ready", set())
 
 
 def _doc(
@@ -206,7 +206,9 @@ def test_roster_degrades_rather_than_raising_when_the_gate_lies(rag_home, monkey
     from routes import inference
 
     monkeypatch.setattr(rag_db, "_extension_loaded", True)
-    monkeypatch.setattr(rag_db, "_schema_ready", True)  # so nothing migrates it
+    monkeypatch.setattr(
+        rag_db, "_schema_ready", {rag_db.rag_db_path().resolve()}
+    )  # so nothing migrates it
     out = _nudge({"project_id": "p1"})
     assert inference._RAG_GROUNDING_NUDGE in out
     assert _roster(out) == "" or "legacy.pdf" in _roster(out)
@@ -649,7 +651,13 @@ def test_count_tokens_prices_the_same_roster_the_completion_sends(rag_conn, monk
     _doc(rag_conn, "project_p1", "d2", "allotment.pdf")
     _switched, counted = _count_tokens_backend(monkeypatch, count = 99, supports_tools = True)
 
-    async def _select(payload, *, tools_on, mcp_allowed):
+    async def _select(
+        payload,
+        *,
+        tools_on,
+        mcp_allowed,
+        supports_vision = False,
+    ):
         return TOOLS
 
     from routes import inference as inference_routes

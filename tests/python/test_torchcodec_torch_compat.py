@@ -35,6 +35,7 @@ def _no_inherited_index_config(monkeypatch):
     for name in (
         "UNSLOTH_TORCH_INDEX_URL",
         "UNSLOTH_TORCH_INDEX_FAMILY",
+        "UNSLOTH_TORCH_INSTALL_INDEX_URL",
         "UNSLOTH_PYTORCH_MIRROR",
     ):
         monkeypatch.delenv(name, raising = False)
@@ -214,7 +215,12 @@ def test_security_audit_covers_every_installable_torchcodec_line():
     audited = ["audio-torch211", "audio-torch210", "audio-torch290", "audio-torch280"]
     # Both halves of the workflow build the inputs; one is the advisory audit, one is
     # scan_packages. 211 is folded into unsloth-deps.txt, the rest get a file each.
-    assert text.count('optional-dependencies"]["audio-torch211"]') == 2
+    # Either index shape counts: the workflow now reaches extras through a guarded helper
+    # that names a missing group. What matters is that both halves still look the group up.
+    indexed = text.count('optional-dependencies"]["audio-torch211"]') + text.count(
+        'extra("audio-torch211")'
+    )
+    assert indexed == 2, f"both halves must index audio-torch211, found {indexed}"
     assert text.count("for extra in audio-torch210 audio-torch290 audio-torch280; do") == 2
     for extra in audited[1:]:
         assert f"audit-reqs/{extra}.txt" in text, extra
@@ -274,6 +280,41 @@ def test_select_torchcodec_spec_falls_back_on_unknown_torch():
         assert ips._select_torchcodec_spec(value) == ips._TORCHCODEC_DEFAULT_SPEC
 
 
+def test_select_torchcodec_spec_skips_older_torch():
+    ips = _load_install_python_stack()
+    for minor in range(min(ips._TORCHCODEC_TORCH_SPECS)):
+        for suffix in (".0", ".1+cu121", ".0+cpu", ".0rc1"):
+            assert ips._select_torchcodec_spec(f"2.{minor}{suffix}") is None
+
+
+@pytest.mark.parametrize("version", ["2.3.0", "2.4.0+cu121"])
+def test_torchcodec_step_skips_older_torch(version):
+    from textwrap import dedent
+    from unittest.mock import Mock
+
+    ips = _load_install_python_stack()
+    namespace = vars(ips).copy()
+    namespace.update(
+        NO_TORCH = False,
+        PLATFORM_LACKS_TORCHCODEC_WHEEL = False,
+        _probe_installed_torch_version = lambda: version,
+        _progress = Mock(),
+        _note = Mock(),
+        _torchcodec_spec_is_installable = Mock(side_effect = AssertionError("must skip")),
+        pip_install_try = Mock(side_effect = AssertionError("must not install")),
+    )
+    source = Path(ips.__file__).read_text(encoding = "utf-8")
+    step = source.split("# 13b. torchcodec", 1)[1].split("# 14.", 1)[0]
+    exec(dedent(step[step.index("    _codec_torch_ver = None") :]), namespace)
+    namespace["_progress"].assert_called_once_with(
+        "torchcodec (skipped, unsupported torch version)"
+    )
+    namespace["_note"].assert_called_once_with(
+        f"torch {version} is below the oldest supported torchcodec pairing "
+        f"(torch 2.{ips._TORCHCODEC_MIN_KNOWN_MINOR}) -- leaving torchcodec alone"
+    )
+
+
 def test_select_torchcodec_spec_matches_pyproject_audio_extras():
     """The installer's specs and the pip extras must not drift apart."""
     ips = _load_install_python_stack()
@@ -297,7 +338,7 @@ def test_select_torchcodec_spec_matches_pyproject_audio_extras():
 # `2.6: {0.2, 0.3}` and `2.5: {0.1, 0.2}` survived: upstream pairs 0.3 with torch 2.7 and 0.2
 # with torch 2.6, so the installer's window picked a release built against the NEXT torch.
 # torch 2.4 -> 0.0.3 is deliberately omitted below: the installer floors at 2.5 and returns
-# _TORCHCODEC_DEFAULT_SPEC underneath it.
+# None underneath it.
 _UPSTREAM_TORCH_TO_TORCHCODEC_MINORS = {
     "2.11": {"0.11"},
     "2.10": {"0.10"},
@@ -700,7 +741,7 @@ def test_the_installer_never_installs_what_the_guard_rejects(monkeypatch):
     ips = _load_install_python_stack()
     probes = [f"0.{n}.0" for n in range(0, 20)]
 
-    for minor in range(5, 15):  # torch 2.5 .. 2.14, i.e. past the last lockstep row
+    for minor in range(min(ips._TORCHCODEC_TORCH_SPECS), 15):
         torch_v = f"2.{minor}.0"
         specifier = SpecifierSet(ips._select_torchcodec_spec(torch_v).split("torchcodec", 1)[1])
         admitted = [p for p in probes if specifier.contains(p)]
@@ -827,7 +868,7 @@ def test_the_installer_never_selects_a_spec_with_no_wheel_here(monkeypatch):
     ips = _load_install_python_stack()
     for label in _SIM_HOSTS:
         for python in ((3, 9), (3, 10), (3, 12), (3, 13), (3, 14)):
-            for minor in range(4, 15):
+            for minor in range(min(ips._TORCHCODEC_TORCH_SPECS), 15):
                 _patch_host(ips, monkeypatch, label)
                 monkeypatch.setattr(ips.sys, "version_info", python + (0, "final", 0))
                 spec = ips._select_torchcodec_spec(f"2.{minor}.0")
@@ -1199,7 +1240,7 @@ def test_a_cuda_index_codec_also_installs_npp():
     dependency set, so a --no-deps install from a cuNNN index reports success and then fails
     to import. docker/Dockerfile installs nvidia-npp-cu12 beside the same wheel."""
     source = (REPO_ROOT / "studio" / "install_python_stack.py").read_text(encoding = "utf-8")
-    assert 'f"nvidia-npp-cu{_npp_major}"' in source
+    assert '_npp_spec = _npp_requirement(_npp_major) if _npp_major else ""' in source
     assert "Installing torchcodec CUDA runtime (NPP)" in source
 
     # The major follows the index leaf, and a cpu or rocm index asks for nothing.
@@ -1218,6 +1259,77 @@ def test_a_cuda_index_codec_also_installs_npp():
     # The Dockerfile this mirrors still pairs the two, so the rationale stays checkable.
     dockerfile = (REPO_ROOT / "docker" / "Dockerfile").read_text(encoding = "utf-8")
     assert "nvidia-npp-cu12" in dockerfile
+
+
+def test_cuda_13_asks_for_the_unsuffixed_npp():
+    """`nvidia-npp-cu13` is a wheel-less stub, so asking for it builds from source (or takes a
+    1.1 kB placeholder under --only-binary); plain `nvidia-npp` is the 13.x runtime."""
+    from studio.install_python_stack import _npp_requirement
+
+    assert _npp_requirement("11") == "nvidia-npp-cu11"
+    assert _npp_requirement("12") == "nvidia-npp-cu12"
+    assert _npp_requirement("13") == "nvidia-npp>=13,<14"
+    assert _npp_requirement("14") == "nvidia-npp>=14,<15"
+    assert not any(
+        _npp_requirement(str(major)).startswith("nvidia-npp-cu13") for major in range(11, 20)
+    )
+    assert _npp_requirement("not-a-major") == "nvidia-npp-cunot-a-major"
+
+
+def test_the_npp_rename_is_per_package_not_a_rule_about_13():
+    """ "13 means no suffix" is WRONG: NCCL and cuDNN kept theirs, and their unsuffixed names
+    resolve to "A fake package to warn the user they are not installing the correct package".
+    Hence a named constant with the counterexamples beside it, not a bare 13."""
+    source = (REPO_ROOT / "studio" / "install_python_stack.py").read_text(encoding = "utf-8")
+    assert "_NPP_SUFFIXED_THROUGH_CUDA_MAJOR = 12" in source
+    assert "nvidia-cudnn" in source and "nvidia-nccl" in source
+
+
+def test_the_unsuffixed_request_is_bounded_to_the_major():
+    """`nvidia-npp` carries the same 0.0.0a0 junk the stub is made of, which an unbounded
+    resolve behind an exclude-newer cutoff or a partial mirror can select."""
+    from studio.install_python_stack import _npp_requirement
+    for major in ("13", "14", "15"):
+        spec = _npp_requirement(major)
+        assert spec.startswith(f"nvidia-npp>={major}"), spec
+        assert spec != "nvidia-npp", "a bare name can resolve to the 0.0.0a0 placeholder"
+        # Upper bound too, so a cu14 host cannot take a 13 runtime or the reverse.
+        assert f",<{int(major) + 1}" in spec, spec
+
+
+def test_no_major_can_kill_the_install_or_emit_an_unparseable_requirement():
+    """`isdigit()` accepts more than `int()` does, and both gaps land here: the superscripts
+    raise ValueError out of an OPTIONAL dependency, and the non-ASCII decimal digits pass
+    `int()` but emit a non-PEP-440 `>=١٣`. The latter is reachable, since `_cuda_major_for_npp`
+    matches with a str pattern where `\\d` is every Unicode decimal digit."""
+    from studio.install_python_stack import _npp_requirement
+
+    source = (REPO_ROOT / "studio" / "install_python_stack.py").read_text(encoding = "utf-8")
+    assert (
+        'if not re.fullmatch(r"[0-9]+", cuda_major):' in source
+    ), "the major check must be an explicit ASCII digit match, not str.isdigit()"
+
+    # int()-hostile: must degrade, never raise.
+    for major in ("²", "³", "⁵"):
+        assert major.isdigit(), "fixture is only meaningful if isdigit() accepts it"
+        assert _npp_requirement(major) == f"nvidia-npp-cu{major}"
+
+    # PEP 440-hostile: int()-able, so only an ASCII check keeps them out of a version bound.
+    for major in ("١٣", "۱۳", "१३"):
+        assert major.isdigit() and int(major) == 13
+        spec = _npp_requirement(major)
+        assert not spec.startswith(
+            "nvidia-npp>="
+        ), f"{major!r} reached a PEP 440 version bound as {spec!r}"
+        assert spec == f"nvidia-npp-cu{major}"
+
+    # The real domain: a one or two character slice of an ASCII match. All of it must parse.
+    packaging_req = pytest.importorskip("packaging.requirements").Requirement
+    for major in [str(n) for n in range(0, 100)]:
+        packaging_req(_npp_requirement(major))
+
+    for major in ("", " ", "12.0", "-1", "+13", "13a", "1" * 64, "\U0001d7d9\U0001d7db"):
+        assert isinstance(_npp_requirement(major), str)
 
 
 def test_the_npp_major_comes_from_the_resident_torch_not_the_index_url():
@@ -1370,11 +1482,19 @@ def test_a_query_authenticated_mirror_is_not_pinned_at_all(monkeypatch):
     for base in ("https://mirror.example/whl?token=abc", "https://mirror.example/whl#tok"):
         monkeypatch.setenv("UNSLOTH_PYTORCH_MIRROR", base)
         mod = _reload_install_python_stack()
+        warnings = []
+        monkeypatch.setattr(mod, "_safe_print", warnings.append)
         assert mod._torch_accelerator_index_url("2.13.0+cu130") is None, base
         assert mod._torchcodec_index_url("2.13.0+cu130") is None, base
         # The FAMILY override reaches the same base, so it declines the same way.
         monkeypatch.setenv("UNSLOTH_TORCH_INDEX_FAMILY", "cu126")
         assert mod._torch_accelerator_index_url("2.13.0") is None, base
+        assert mod._detect_cuda_torch_index_url() is None, base
+        # No URL, but the family stays authoritative (no re-probe, provenance kept).
+        assert mod._explicit_torch_index_url() is None, base
+        assert mod._explicit_torch_index_family() == "cu126", base
+        assert mod._explicit_unknown_family_torch_index_url() is None, base
+        assert len(warnings) == 1 and "netrc" in warnings[0], warnings
         monkeypatch.delenv("UNSLOTH_TORCH_INDEX_FAMILY")
     # An explicit full UNSLOTH_TORCH_INDEX_URL is still taken verbatim: that is the user
     # naming one exact index rather than a base this code appends a leaf to.
@@ -1384,6 +1504,185 @@ def test_a_query_authenticated_mirror_is_not_pinned_at_all(monkeypatch):
     assert mod._torch_accelerator_index_url("2.13.0+cu130") == (
         "https://mirror.example/simple?token=abc"
     )
+
+
+def test_query_authenticated_mirror_repairs_decline_instead_of_falling_back(monkeypatch):
+    """The eight repair/flavor paths must neither mangle the token nor leave the mirror."""
+    monkeypatch.setenv("UNSLOTH_PYTORCH_MIRROR", "https://mirror.example/whl?token=abc")
+    mod = _reload_install_python_stack()
+
+    def unexpected(*_args, **_kwargs):
+        raise AssertionError("a query-authenticated mirror must not reach an install command")
+
+    # Automatic CUDA detection used to return ...?token=abc/cu126.
+    monkeypatch.setattr(mod, "_nvidia_smi_path", lambda: None)
+    assert mod._detect_cuda_torch_index_url() is None
+
+    monkeypatch.setattr(mod, "IS_MACOS", False)
+    monkeypatch.setattr(mod, "IS_WINDOWS", False)
+    monkeypatch.setattr(mod, "NO_TORCH", False)
+    monkeypatch.setattr(mod, "_TORCH_BACKEND", "")
+    monkeypatch.setattr(mod, "_has_usable_nvidia_gpu", lambda: True)
+    monkeypatch.setattr(
+        mod,
+        "_probe_torch_runtime",
+        lambda: (True, True, "2.11.0+rocm7.2", "7.2", ""),
+    )
+    monkeypatch.setattr(mod, "pip_install", unexpected)
+    assert mod._ensure_cuda_torch() is False
+    monkeypatch.setenv("UNSLOTH_TORCH_INDEX_FAMILY", "cu130")
+    assert mod._ensure_cuda_torch() is False
+    monkeypatch.delenv("UNSLOTH_TORCH_INDEX_FAMILY")
+
+    # XPU triton swap and the miscomputing-AMD CPU demotion synthesize their own leaves.
+    monkeypatch.setattr(mod, "_explicit_xpu_torch_index_url", lambda: None)
+    monkeypatch.setattr(mod, "_installed_torch_version_label", lambda: "2.10.0+xpu")
+    monkeypatch.setattr(mod.subprocess, "run", unexpected)
+    mod._ensure_xpu_triton()
+
+    monkeypatch.setattr(mod, "_rocm_miscomputing_host", lambda: True)
+    monkeypatch.setattr(
+        mod,
+        "_probe_torch_runtime",
+        lambda: (True, True, "2.11.0+rocm7.2", "7.2", ""),
+    )
+    assert mod._ensure_cpu_torch() is False
+
+    monkeypatch.setattr(mod, "_rocm_miscomputing_host", lambda: False)
+    monkeypatch.setenv("UNSLOTH_TORCH_INDEX_FAMILY", "cpu")
+    monkeypatch.setattr(
+        mod,
+        "_probe_torch_runtime",
+        lambda: (True, True, "2.11.0+cu130", "", "13.0"),
+    )
+    assert mod._ensure_cpu_torch() is False
+    monkeypatch.setattr(
+        mod,
+        "_probe_torch_runtime",
+        lambda: (True, True, "2.11.0+cpu", "", ""),
+    )
+    assert mod._ensure_cpu_torch() is not False
+    monkeypatch.delenv("UNSLOTH_TORCH_INDEX_FAMILY")
+    source = (REPO_ROOT / "studio" / "install_python_stack.py").read_text(encoding = "utf-8")
+    assert source.count("if _ensure_cuda_torch() is False:") == 2
+    assert source.count("if _ensure_rocm_torch() is False:") == 2
+    assert source.count("if _ensure_xpu_torch() is False:") == 2
+    assert source.count("if _ensure_cpu_torch() is False:") == 2
+
+    monkeypatch.setattr(
+        mod,
+        "_probe_torch_runtime",
+        lambda: (True, True, "2.11.0+cpu", "", ""),
+    )
+    assert mod._expected_torch_index_url("cu130") is None
+    assert mod._ensure_expected_torch_flavor("cu130") is False
+
+    # The "" unknown-pin sentinel must not bypass the final invariant.
+    for family, expected in (("xpu", "xpu"), ("current", "cu130")):
+        monkeypatch.setenv("UNSLOTH_TORCH_INDEX_FAMILY", family)
+        assert mod._explicit_unknown_family_torch_index_url() == ""
+        if family == "xpu":
+            assert mod._ensure_xpu_torch() is False
+        assert mod._ensure_expected_torch_flavor(expected) is False
+
+
+def test_an_unusable_family_pin_records_resident_flavor_provenance(monkeypatch):
+    """Later dependency steps may change torch even though this pin installs nothing."""
+    monkeypatch.setenv("UNSLOTH_PYTORCH_MIRROR", "https://mirror.example/whl?token=abc")
+    monkeypatch.setenv("UNSLOTH_TORCH_INDEX_FAMILY", "cu130")
+    mod = _reload_install_python_stack()
+    monkeypatch.setattr(mod, "_RECORDED_TORCH_TAG", "cu128")
+    monkeypatch.setattr(mod, "_RECORDED_TORCH_TAG_PINNED", True)
+    monkeypatch.setattr(mod, "_TORCH_BACKEND", "")
+    monkeypatch.setattr(
+        mod,
+        "_probe_torch_runtime",
+        lambda: (True, True, "2.11.0+cpu", "", ""),
+    )
+
+    # A dependency move to CPU is recorded, without the old cu128 pin bit.
+    assert mod._expected_torch_flavor_tag() == "cu130"
+    assert mod._recordable_torch_flavor_tag("cu130") == "cpu"
+    assert mod._expected_torch_flavor_was_pinned("cpu") is False
+
+    # If the requested family was already resident, the explicit intent still pins it.
+    monkeypatch.setenv("UNSLOTH_TORCH_INDEX_FAMILY", "xpu")
+    monkeypatch.setattr(
+        mod,
+        "_probe_torch_runtime",
+        lambda: (True, True, "2.10.0+xpu", "", ""),
+    )
+    assert mod._expected_torch_flavor_tag() == "xpu"
+    assert mod._recordable_torch_flavor_tag("xpu") == "xpu"
+    assert mod._expected_torch_flavor_was_pinned("xpu") is True
+
+    # An unknown request carries old provenance only if that exact build is still resident.
+    monkeypatch.setenv("UNSLOTH_TORCH_INDEX_FAMILY", "current")
+    monkeypatch.setattr(
+        mod,
+        "_probe_torch_runtime",
+        lambda: (True, True, "2.11.0+cu128", "", "12.8"),
+    )
+    assert mod._explicit_unknown_family_torch_index_url() == ""
+    assert mod._expected_torch_flavor_tag() == "cu128"
+    assert mod._recordable_torch_flavor_tag("") == "cu128"
+    assert mod._expected_torch_flavor_was_pinned("cu128") is True
+
+    # The unusable request changed no wheel, so a pinned-CPU manifest stays authoritative.
+    monkeypatch.setattr(mod, "_RECORDED_TORCH_TAG", "cpu")
+    monkeypatch.setattr(
+        mod,
+        "_probe_torch_runtime",
+        lambda: (True, True, "2.11.0+cu130", "", "13.0"),
+    )
+    assert mod._expected_torch_flavor_tag() == "cpu"
+    assert mod._ensure_expected_torch_flavor() is False
+    monkeypatch.setattr(
+        mod,
+        "_probe_torch_runtime",
+        lambda: (True, True, "2.11.0+cpu", "", ""),
+    )
+    assert mod._ensure_expected_torch_flavor() is True
+
+    source = (REPO_ROOT / "studio" / "install_python_stack.py").read_text(encoding = "utf-8")
+    install = source.split("def install_python_stack(", 1)[1]
+    resident_check = install.index("not _resident_torch_flavor_tag()")
+    assert install.rindex("_repair_damaged_core_payload(", 0, resident_check) < resident_check
+    assert resident_check < install.index("install_manifest.write_manifest(")
+
+
+def test_a_full_query_authenticated_torch_index_stays_verbatim(monkeypatch):
+    """A complete index URL is usable because no leaf has to be appended to it."""
+    full = "https://mirror.example/whl/cu130?token=secret"
+    monkeypatch.setenv("UNSLOTH_PYTORCH_MIRROR", "https://mirror.example/whl?token=base")
+    monkeypatch.setenv("UNSLOTH_TORCH_INSTALL_INDEX_URL", full)
+    mod = _reload_install_python_stack()
+    assert mod._expected_torch_index_url("cu130") == full
+
+    monkeypatch.delenv("UNSLOTH_TORCH_INSTALL_INDEX_URL")
+    monkeypatch.setenv("UNSLOTH_TORCH_INDEX_URL", full)
+    assert mod._detect_cuda_torch_index_url() == full
+    assert mod._explicit_torch_index_url() == full
+    assert mod._explicit_torch_index_family() == "cu130"
+
+
+def test_a_multi_segment_family_classifies_by_its_leaf(monkeypatch):
+    """install.sh accepts FAMILY=nightly/cu128; it is a CUDA pin, not an unknown one."""
+    monkeypatch.setenv("UNSLOTH_TORCH_INDEX_FAMILY", "nightly/cu128")
+    mod = _reload_install_python_stack()
+    assert mod._explicit_torch_index_family() == "cu128"
+    assert mod._explicit_unknown_family_torch_index_url() is None
+    assert mod._explicit_cuda_torch_index_url() == f"{mod._PYTORCH_WHL_BASE}/nightly/cu128"
+    assert mod._detect_cuda_torch_index_url() == f"{mod._PYTORCH_WHL_BASE}/nightly/cu128"
+    assert mod._expected_torch_flavor_tag() == "cu128"
+
+
+def test_every_pytorch_mirror_leaf_goes_through_the_guarded_helper():
+    """A new direct concatenation would recreate #10516 on whichever path added it."""
+    source = (REPO_ROOT / "studio" / "install_python_stack.py").read_text(encoding = "utf-8")
+    assert source.count('f"{_PYTORCH_WHL_BASE}/') == 1
+    helper = source.split("def _pytorch_whl_leaf_url", 1)[1].split("\ndef ", 1)[0]
+    assert 'f"{_PYTORCH_WHL_BASE}/{leaf}"' in helper
 
 
 def test_an_explicit_family_is_honoured_when_torch_carries_no_tag(monkeypatch):

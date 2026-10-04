@@ -21,6 +21,29 @@ from pathlib import Path
 import pytest
 import yaml
 
+
+def _shared_setup_1(bin_dir, manifest_digest_step, tmp_path):
+    out = tmp_path / "github_output"
+    out.write_text("", encoding = "utf-8")
+    env = dict(os.environ)
+    env["PATH"] = f"{bin_dir}{os.pathsep}" + env["PATH"]
+    env["GITHUB_OUTPUT"] = str(out)
+    env["DOCKER_METADATA_OUTPUT_JSON"] = (
+        '{"tags":["' + IMAGE + ':core","' + IMAGE + ':core-build-123"]}'
+    )
+    path = tmp_path / "digest_step.sh"
+    path.write_text(_expand(manifest_digest_step), encoding = "utf-8")
+    res = subprocess.run(
+        ["bash", "-e", str(path)],
+        capture_output = True,
+        text = True,
+        env = env,
+        timeout = 60,
+        cwd = str(_digests_dir(tmp_path)),
+    )
+    return out, res
+
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 WORKFLOW = REPO_ROOT / ".github" / "workflows" / "docker-publish.yml"
 
@@ -356,24 +379,7 @@ def test_the_exported_digest_comes_from_this_runs_tag(manifest_digest_step: str,
         f"  *) printf '\"{OTHER_RUN_DIGEST}\"' ;;\n"
         "esac\n",
     )
-    out = tmp_path / "github_output"
-    out.write_text("", encoding = "utf-8")
-    env = dict(os.environ)
-    env["PATH"] = f"{bin_dir}{os.pathsep}" + env["PATH"]
-    env["GITHUB_OUTPUT"] = str(out)
-    env["DOCKER_METADATA_OUTPUT_JSON"] = (
-        '{"tags":["' + IMAGE + ':core","' + IMAGE + ':core-build-123"]}'
-    )
-    path = tmp_path / "digest_step.sh"
-    path.write_text(_expand(manifest_digest_step), encoding = "utf-8")
-    res = subprocess.run(
-        ["bash", "-e", str(path)],
-        capture_output = True,
-        text = True,
-        env = env,
-        timeout = 60,
-        cwd = str(_digests_dir(tmp_path)),
-    )
+    out, res = _shared_setup_1(bin_dir, manifest_digest_step, tmp_path)
     assert res.returncode == 0, f"stdout={res.stdout}\nstderr={res.stderr}"
     assert out.read_text(encoding = "utf-8").strip() == f"digest={THIS_RUN_DIGEST}", (
         "the step read the digest through the mutable :core tag, so an overlapping "
@@ -426,24 +432,7 @@ def test_the_digest_export_refuses_another_runs_manifest(manifest_digest_step: s
         + f"  *) printf '\"{THIS_RUN_DIGEST}\"' ;;\n"
         "esac\n",
     )
-    out = tmp_path / "github_output"
-    out.write_text("", encoding = "utf-8")
-    env = dict(os.environ)
-    env["PATH"] = f"{bin_dir}{os.pathsep}" + env["PATH"]
-    env["GITHUB_OUTPUT"] = str(out)
-    env["DOCKER_METADATA_OUTPUT_JSON"] = (
-        '{"tags":["' + IMAGE + ':core","' + IMAGE + ':core-build-123"]}'
-    )
-    path = tmp_path / "digest_step.sh"
-    path.write_text(_expand(manifest_digest_step), encoding = "utf-8")
-    res = subprocess.run(
-        ["bash", "-e", str(path)],
-        capture_output = True,
-        text = True,
-        env = env,
-        timeout = 60,
-        cwd = str(_digests_dir(tmp_path)),
-    )
+    out, res = _shared_setup_1(bin_dir, manifest_digest_step, tmp_path)
     assert res.returncode != 0, (
         "the step accepted a manifest that does not contain this run's arches, so an "
         "overlapping ref at the same commit silently becomes the published base:\n"
@@ -469,24 +458,7 @@ def test_the_digest_export_accepts_the_flattened_per_arch_indexes(
         'case "$4" in\n' + _raw_case(FLATTENED) + f"  *) printf '\"{THIS_RUN_DIGEST}\"' ;;\n"
         "esac\n",
     )
-    out = tmp_path / "github_output"
-    out.write_text("", encoding = "utf-8")
-    env = dict(os.environ)
-    env["PATH"] = f"{bin_dir}{os.pathsep}" + env["PATH"]
-    env["GITHUB_OUTPUT"] = str(out)
-    env["DOCKER_METADATA_OUTPUT_JSON"] = (
-        '{"tags":["' + IMAGE + ':core","' + IMAGE + ':core-build-123"]}'
-    )
-    path = tmp_path / "digest_step.sh"
-    path.write_text(_expand(manifest_digest_step), encoding = "utf-8")
-    res = subprocess.run(
-        ["bash", "-e", str(path)],
-        capture_output = True,
-        text = True,
-        env = env,
-        timeout = 60,
-        cwd = str(_digests_dir(tmp_path)),
-    )
+    out, res = _shared_setup_1(bin_dir, manifest_digest_step, tmp_path)
     assert res.returncode == 0, (
         "the step rejected a merged index that holds every child of this run's "
         "per-arch indexes, i.e. the manifest buildx actually produces:\n" + res.stdout + res.stderr

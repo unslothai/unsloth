@@ -22,6 +22,57 @@ from core.rag import folder_sync, store
 from storage import rag_db
 from utils.paths import rag_db_path
 
+
+def _shared_setup_1(conn, folder):
+    after = dict(
+        conn.execute(
+            "SELECT * FROM linked_folder_files WHERE folder_id=?", (folder["id"],)
+        ).fetchone()
+    )
+    return after
+
+
+def _shared_setup_2(monkeypatch):
+    monkeypatch.setattr(
+        folder_sync.ingestion,
+        "start_ingestion",
+        lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("embed unavailable")),
+    )
+
+
+def _shared_setup_3(rag_home):
+    source, folder = _folder(rag_home)
+    (source / "keep.txt").write_text("durable keeper", encoding = "utf-8")
+    (source / "doomed.txt").write_text("removable words", encoding = "utf-8")
+    assert _run(folder["id"])["status"] == "completed"
+
+    (source / "doomed.txt").unlink()
+    return folder, source
+
+
+def _shared_setup_4():
+    from routes import rag as rag_routes
+    with _connection() as conn:
+        store.create_kb(conn, name = "Knowledge", kb_id = "knowledge")
+    # Only the module escapes: `_connection` is a `closing(...)`, so `conn` is shut.
+    return rag_routes
+
+
+def _shared_setup_5(rag_home):
+    from core.rag import job_leases
+
+    _, folder = _folder(rag_home)
+    job_id = folder_sync.request_sync(folder["id"])
+    return folder, job_id, job_leases
+
+
+def _shared_setup_6(payload, snapshot):
+    try:
+        assert Path(snapshot).read_bytes() == payload
+    finally:
+        folder_sync._remove_snapshot(snapshot)
+
+
 requires_sqlite_vec = pytest.mark.skipif(
     not rag_db.RAG_AVAILABLE, reason = "sqlite-vec is not installed"
 )
@@ -58,6 +109,16 @@ def _row(sql: str, params = ()) -> dict | None:
 
 def _mapping(folder: dict) -> dict | None:
     return _row("SELECT * FROM linked_folder_files WHERE folder_id=?", (folder["id"],))
+
+
+def _identity_mismatch(loaded: tuple, expected: tuple, stored: tuple) -> str:
+    """Name the half that diverged: a bare tuple comparison hides which id is wrong."""
+    parts = [
+        f"{label}: loaded {got!r} != expected {want!r} (column held {raw!r})"
+        for label, got, want, raw in zip(("device", "inode"), loaded, expected, stored)
+        if got != want
+    ]
+    return "; ".join(parts) or f"identity {loaded!r} != {expected!r}"
 
 
 class _CommitFails:
@@ -194,10 +255,7 @@ def test_failed_deletion_commit_keeps_the_snapshot_readable(rag_home, stub_embed
 @requires_sqlite_vec
 def test_skipped_reconciliation_releases_a_claim_the_queue_already_activated(rag_home):
     """Otherwise the heartbeat renews it forever and the unlink never returns."""
-    from core.rag import job_leases
-
-    _, folder = _folder(rag_home)
-    job_id = folder_sync.request_sync(folder["id"])
+    folder, job_id, job_leases = _shared_setup_5(rag_home)
     assert folder_sync._claim_job(job_id) == (job_id, folder["id"])
     with _connection() as conn:
         assert job_leases.owned_by_this_process(conn, job_leases.FOLDER_SYNC, job_id)
@@ -295,10 +353,7 @@ def test_periodic_scheduling_reaps_orphans_a_survivor_never_saw_at_startup(rag_h
 
 @requires_sqlite_vec
 def test_normal_scheduling_reclaims_an_expired_running_job(rag_home):
-    from core.rag import job_leases
-
-    _, folder = _folder(rag_home)
-    job_id = folder_sync.request_sync(folder["id"])
+    folder, job_id, job_leases = _shared_setup_5(rag_home)
     with _connection() as conn:
         conn.execute("UPDATE linked_folder_sync_jobs SET status='running' WHERE id=?", (job_id,))
         conn.execute(
@@ -489,11 +544,7 @@ def test_reconcile_retains_mapping_when_missing_file_reappears(
     assert result["status"] == "failed"
     assert result["deleted"] == 0
     with _connection() as conn:
-        after = dict(
-            conn.execute(
-                "SELECT * FROM linked_folder_files WHERE folder_id=?", (folder["id"],)
-            ).fetchone()
-        )
+        after = _shared_setup_1(conn, folder)
         assert after["document_id"] == before["document_id"]
         assert store.search_lexical(conn, folder["scope"], "durable", 5)
 
@@ -521,11 +572,7 @@ def test_extension_changing_rename_reingests_with_the_new_parser(rag_home, stub_
     assert result["added"] == 1
     assert result["deleted"] == 1
     with _connection() as conn:
-        after = dict(
-            conn.execute(
-                "SELECT * FROM linked_folder_files WHERE folder_id=?", (folder["id"],)
-            ).fetchone()
-        )
+        after = _shared_setup_1(conn, folder)
         assert after["relative_path"] == "notes.txt"
         assert after["document_id"] != before["document_id"]
         assert store.get_document(conn, before["document_id"]) is None
@@ -552,11 +599,7 @@ def test_rename_reuse_verifies_content_before_reusing_the_document(rag_home, stu
     assert result["added"] == 1
     assert result["deleted"] == 1
     with _connection() as conn:
-        after = dict(
-            conn.execute(
-                "SELECT * FROM linked_folder_files WHERE folder_id=?", (folder["id"],)
-            ).fetchone()
-        )
+        after = _shared_setup_1(conn, folder)
         assert after["document_id"] != before["document_id"]
         assert store.search_lexical(conn, folder["scope"], "other", 5)
 
@@ -573,11 +616,7 @@ def test_edited_rename_failure_retains_the_prior_mapping(rag_home, stub_embeddin
     original.rename(renamed)
     renamed.write_text("replacement content that fails", encoding = "utf-8")
     assert renamed.stat().st_ino == before["inode"]
-    monkeypatch.setattr(
-        folder_sync.ingestion,
-        "start_ingestion",
-        lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("embed unavailable")),
-    )
+    _shared_setup_2(monkeypatch)
 
     result = _run(folder["id"])
     assert result["status"] == "failed"
@@ -603,11 +642,7 @@ def test_rename_over_existing_path_failure_retains_both_prior_mappings(
     destination.write_text("durable destination", encoding = "utf-8")
     assert _run(folder["id"])["status"] == "completed"
     os.replace(old, destination)
-    monkeypatch.setattr(
-        folder_sync.ingestion,
-        "start_ingestion",
-        lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("embed unavailable")),
-    )
+    _shared_setup_2(monkeypatch)
 
     result = _run(folder["id"])
 
@@ -636,11 +671,7 @@ def test_changed_file_failure_and_unavailable_scan_retain_prior_index(
     prior = _mapping(folder)
 
     path.write_text("replacement content that fails", encoding = "utf-8")
-    monkeypatch.setattr(
-        folder_sync.ingestion,
-        "start_ingestion",
-        lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("embed unavailable")),
-    )
+    _shared_setup_2(monkeypatch)
     failed = _run(folder["id"])
     assert failed["status"] == "failed"
     with _connection() as conn:
@@ -725,9 +756,11 @@ def test_reauthorizing_same_path_refreshes_root_identity_and_retains_mappings(
     assert refreshed["id"] == folder["id"]
     # Read back through the loader: an identity above SQLite's signed maximum is stored as
     # a hex string, which is the ordinary case for a Windows device id.
-    assert folder_sync._load_identity(refreshed["root_device"], refreshed["root_inode"]) == (
-        source_stat.st_dev,
-        source_stat.st_ino,
+    loaded = folder_sync._load_identity(refreshed["root_device"], refreshed["root_inode"])
+    assert loaded == (source_stat.st_dev, source_stat.st_ino), _identity_mismatch(
+        loaded,
+        (source_stat.st_dev, source_stat.st_ino),
+        (refreshed["root_device"], refreshed["root_inode"]),
     )
     with _connection() as conn:
         mapping_after = dict(
@@ -838,9 +871,65 @@ def test_large_windows_file_identity_round_trips_through_sqlite(
 
     assert _run(folder["id"])["status"] == "completed"
     row = _mapping(folder)
-    assert folder_sync._load_identity(row["device"], row["inode"]) == identity
+    loaded = folder_sync._load_identity(row["device"], row["inode"])
+    assert loaded == identity, _identity_mismatch(loaded, identity, (row["device"], row["inode"]))
     # The same identity must still compare equal, so nothing re-embeds every sync.
     assert _run(folder["id"])["changed"] == 0
+
+
+@pytest.mark.parametrize(
+    "value",
+    [0, 1, (1 << 63) - 2, (1 << 63) - 1, 1 << 63, (1 << 63) + 1, (1 << 64) - 1, 1 << 127],
+    ids = ["zero", "one", "below-max", "at-max", "at-2-63", "above-2-63", "uint64-max", "refs-128"],
+)
+def test_identities_round_trip_across_the_sqlite_integer_boundary(value):
+    """os.stat ids are unsigned, SQLite INTEGER is signed, and the encoding straddles that edge."""
+    stored = folder_sync._store_identity((value, value))
+    with closing(sqlite3.connect(":memory:")) as conn:
+        # Same declared affinity as linked_folders and linked_folder_files.
+        conn.execute("CREATE TABLE ids(device INTEGER, inode INTEGER)")
+        conn.execute("INSERT INTO ids VALUES(?,?)", stored)
+        read = tuple(conn.execute("SELECT device, inode FROM ids").fetchone())
+
+    loaded = folder_sync._load_identity(*read)
+    assert loaded == (value, value), _identity_mismatch(loaded, (value, value), read)
+    # Anything SQLite can hold stays an integer, so rows written by older builds still load.
+    fits = value <= folder_sync._SQLITE_INTEGER_MAX
+    assert isinstance(read[0], int) is fits, (
+        f"{value} was stored as {read[0]!r}; a value that {'fits' if fits else 'overflows'} "
+        f"SQLite's signed range must be written as {'an integer' if fits else 'text'}"
+    )
+
+
+@requires_sqlite_vec
+def test_reauthorizing_encodes_a_root_identity_above_the_sqlite_maximum(
+    rag_home, stub_embeddings, monkeypatch
+):
+    """A Windows volume serial fills all 64 bits, so half of them overflow SQLite INTEGER.
+
+    The reauthorize path writes root_device with its own UPDATE, so it needs its own case: a
+    real st_dev on this host is far too small to reach the encoding at all.
+    """
+    source, folder = _folder(rag_home)
+    (source / "notes.txt").write_text("kept across the remount", encoding = "utf-8")
+    assert _run(folder["id"])["status"] == "completed"
+    identity = (0xAC8C2FEF8C2FB32E, 1 << 127)
+
+    monkeypatch.setattr(folder_sync, "_root_identity", lambda path: identity)
+
+    refreshed = folder_sync.create_folder(
+        scope_type = "knowledge_base",
+        scope_id = "scope-1",
+        path = str(source),
+    )
+
+    assert refreshed["id"] == folder["id"]
+    stored = (refreshed["root_device"], refreshed["root_inode"])
+    loaded = folder_sync._load_identity(*stored)
+    assert loaded == identity, _identity_mismatch(loaded, identity, stored)
+    # Reconciliation reloads the row as the identity to expect, so an undecoded column would
+    # fail the whole sync rather than round-trip.
+    assert _run(folder["id"])["status"] == "completed"
 
 
 def test_validate_folder_rejects_symlink_root(rag_home):
@@ -883,10 +972,7 @@ def test_snapshot_copies_the_source_byte_for_byte(rag_home):
 
     snapshot = folder_sync._snapshot(str(source), _snapshot_metadata(document))
 
-    try:
-        assert Path(snapshot).read_bytes() == payload
-    finally:
-        folder_sync._remove_snapshot(snapshot)
+    _shared_setup_6(payload, snapshot)
 
 
 def test_snapshot_accepts_a_source_the_scan_could_not_identify(rag_home):
@@ -900,10 +986,7 @@ def test_snapshot_accepts_a_source_the_scan_could_not_identify(rag_home):
 
     snapshot = folder_sync._snapshot(str(source), metadata)
 
-    try:
-        assert Path(snapshot).read_bytes() == payload
-    finally:
-        folder_sync._remove_snapshot(snapshot)
+    _shared_setup_6(payload, snapshot)
 
 
 def test_snapshot_still_rejects_a_changed_source_without_an_identity(rag_home):
@@ -962,10 +1045,7 @@ def test_snapshot_ignores_a_path_recovered_identity_os_fstat_disagrees_with(rag_
 
     snapshot = folder_sync._snapshot(str(source), metadata)
 
-    try:
-        assert Path(snapshot).read_bytes() == payload
-    finally:
-        folder_sync._remove_snapshot(snapshot)
+    _shared_setup_6(payload, snapshot)
 
 
 @requires_sqlite_vec
@@ -1029,11 +1109,7 @@ def test_same_size_same_mtime_inode_replacement_is_reconciled(rag_home, stub_emb
     result = _run(folder["id"])
     assert result["changed"] == 1
     with _connection() as conn:
-        after = dict(
-            conn.execute(
-                "SELECT * FROM linked_folder_files WHERE folder_id=?", (folder["id"],)
-            ).fetchone()
-        )
+        after = _shared_setup_1(conn, folder)
         assert after["inode"] != before["inode"]
         assert after["document_id"] != before["document_id"]
         assert store.search_lexical(conn, folder["scope"], "other", 5)
@@ -1124,11 +1200,7 @@ def test_content_identical_touch_updates_metadata_without_reembedding(
     assert result["status"] == "completed"
     assert result["changed"] == 0
     with _connection() as conn:
-        after = dict(
-            conn.execute(
-                "SELECT * FROM linked_folder_files WHERE folder_id=?", (folder["id"],)
-            ).fetchone()
-        )
+        after = _shared_setup_1(conn, folder)
         assert after["document_id"] == before["document_id"]
         assert after["mtime_ns"] != before["mtime_ns"]
         assert store.search_lexical(conn, folder["scope"], "stable", 5)
@@ -1534,10 +1606,7 @@ def test_unlink_keeps_snapshot_cleanup_retryable(rag_home, stub_embeddings, monk
 
 @requires_sqlite_vec
 def test_unlink_waits_for_a_foreign_sync_lease(rag_home):
-    from core.rag import job_leases
-
-    _, folder = _folder(rag_home)
-    job_id = folder_sync.request_sync(folder["id"])
+    folder, job_id, job_leases = _shared_setup_5(rag_home)
     with _connection() as conn:
         conn.execute("UPDATE linked_folder_sync_jobs SET status='running' WHERE id=?", (job_id,))
         conn.execute(
@@ -1952,10 +2021,7 @@ def test_project_rag_cleanup_atomically_removes_retired_scope(rag_home):
 def test_kb_deletion_retries_retired_scope_cleanup_after_failure(
     rag_home, stub_embeddings, monkeypatch
 ):
-    from routes import rag as rag_routes
-
-    with _connection() as conn:
-        store.create_kb(conn, name = "Knowledge", kb_id = "knowledge")
+    rag_routes = _shared_setup_4()
     folders = []
     for name in ("kb-first", "kb-second"):
         source = rag_home / name
@@ -2022,10 +2088,7 @@ def test_kb_deletion_retries_retired_scope_cleanup_after_failure(
 
 @requires_sqlite_vec
 def test_kb_deletion_rolls_back_scope_before_any_folder_cleanup_on_failure(rag_home, monkeypatch):
-    from routes import rag as rag_routes
-
-    with _connection() as conn:
-        store.create_kb(conn, name = "Knowledge", kb_id = "knowledge")
+    rag_routes = _shared_setup_4()
     source = rag_home / "failed-kb-delete"
     source.mkdir()
     folder = folder_sync.create_folder(
@@ -2060,10 +2123,7 @@ def test_kb_deletion_rolls_back_scope_before_any_folder_cleanup_on_failure(rag_h
 
 @requires_sqlite_vec
 def test_kb_writer_contention_cannot_commit_retirement_without_deletion(rag_home, monkeypatch):
-    from routes import rag as rag_routes
-
-    with _connection() as conn:
-        store.create_kb(conn, name = "Knowledge", kb_id = "knowledge")
+    rag_routes = _shared_setup_4()
     source = rag_home / "locked-kb-delete"
     source.mkdir()
     folder = folder_sync.create_folder(
@@ -2104,10 +2164,7 @@ def test_kb_writer_contention_cannot_commit_retirement_without_deletion(rag_home
 
 @requires_sqlite_vec
 def test_kb_upload_rejects_retired_scope_before_saving(rag_home, monkeypatch):
-    from routes import rag as rag_routes
-
-    with _connection() as conn:
-        store.create_kb(conn, name = "Knowledge", kb_id = "knowledge")
+    rag_routes = _shared_setup_4()
     folder_sync.retire_scope(store.kb_scope("knowledge"))
     monkeypatch.setattr(
         rag_routes,
@@ -2139,12 +2196,7 @@ def test_preview_containment_is_component_aware(rag_home):
 def test_unrelated_ingest_failure_still_removes_deleted_sources(
     rag_home, stub_embeddings, monkeypatch
 ):
-    source, folder = _folder(rag_home)
-    (source / "keep.txt").write_text("durable keeper", encoding = "utf-8")
-    (source / "doomed.txt").write_text("removable words", encoding = "utf-8")
-    assert _run(folder["id"])["status"] == "completed"
-
-    (source / "doomed.txt").unlink()
+    folder, source = _shared_setup_3(rag_home)
     (source / "poison.txt").write_text("never indexes", encoding = "utf-8")
     real_start = folder_sync.ingestion.start_ingestion
     monkeypatch.setattr(
@@ -2234,11 +2286,7 @@ def test_a_rewritten_rename_retains_the_prior_document_until_it_reindexes(
     renamed = source / "report-final.txt"
     renamed.write_text("rewritten content that fails", encoding = "utf-8")
     original.unlink()
-    monkeypatch.setattr(
-        folder_sync.ingestion,
-        "start_ingestion",
-        lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("embed unavailable")),
-    )
+    _shared_setup_2(monkeypatch)
 
     result = _run(folder["id"])
 
@@ -2252,12 +2300,7 @@ def test_a_rewritten_rename_retains_the_prior_document_until_it_reindexes(
 def test_an_unreadable_file_stops_withholding_removals_after_one_pass(
     rag_home, stub_embeddings, monkeypatch
 ):
-    source, folder = _folder(rag_home)
-    (source / "keep.txt").write_text("durable keeper", encoding = "utf-8")
-    (source / "doomed.txt").write_text("removable words", encoding = "utf-8")
-    assert _run(folder["id"])["status"] == "completed"
-
-    (source / "doomed.txt").unlink()
+    folder, source = _shared_setup_3(rag_home)
     (source / "unreadable.txt").write_text("cannot be copied", encoding = "utf-8")
     monkeypatch.setattr(
         folder_sync,
@@ -2275,18 +2318,9 @@ def test_an_unreadable_file_stops_withholding_removals_after_one_pass(
 def test_a_failing_file_that_keeps_changing_cannot_block_removals(
     rag_home, stub_embeddings, monkeypatch
 ):
-    source, folder = _folder(rag_home)
-    (source / "keep.txt").write_text("durable keeper", encoding = "utf-8")
-    (source / "doomed.txt").write_text("removable words", encoding = "utf-8")
-    assert _run(folder["id"])["status"] == "completed"
-
-    (source / "doomed.txt").unlink()
+    folder, source = _shared_setup_3(rag_home)
     churn = source / "churn.txt"
-    monkeypatch.setattr(
-        folder_sync.ingestion,
-        "start_ingestion",
-        lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("embed unavailable")),
-    )
+    _shared_setup_2(monkeypatch)
     churn.write_text("attempt one", encoding = "utf-8")
     assert _run(folder["id"])["deleted"] == 0
     churn.write_text("attempt two, a different size entirely", encoding = "utf-8")
@@ -2513,3 +2547,334 @@ def test_the_ownership_snapshot_survives_an_unloadable_vector_extension(rag_home
 
     assert owned == [folder["id"]]
     assert folder_sync.get_folder(folder["id"])["status"] == "retired"
+
+
+def _spy_on_encode(monkeypatch) -> list[list[str]]:
+    from core.rag import embeddings
+
+    calls: list[list[str]] = []
+    original = embeddings.encode
+
+    def spy(texts, **kwargs):
+        calls.append(list(texts))
+        return original(texts, **kwargs)
+
+    monkeypatch.setattr(embeddings, "encode", spy)
+    return calls
+
+
+def _chunk_texts(document_id: str) -> list[str]:
+    with _connection() as conn:
+        rows = conn.execute(
+            "SELECT text FROM chunks WHERE document_id=? ORDER BY chunk_index", (document_id,)
+        ).fetchall()
+    return [r["text"] for r in rows]
+
+
+def _vectors(document_id: str) -> dict[str, bytes]:
+    with _connection() as conn:
+        rows = conn.execute(
+            "SELECT chunk_id, embedding FROM chunks_vec WHERE chunk_id LIKE ?",
+            (f"{document_id}:%",),
+        ).fetchall()
+    return {row["chunk_id"].rsplit(":", 1)[1]: bytes(row["embedding"]) for row in rows}
+
+
+@requires_sqlite_vec
+def test_identical_linked_files_copy_one_embedding_instead_of_reembedding(
+    rag_home, stub_embeddings, monkeypatch
+):
+    calls = _spy_on_encode(monkeypatch)
+    source, folder = _folder(rag_home)
+    (source / "a.txt").write_text("shared duplicate content", encoding = "utf-8")
+    (source / "b.txt").write_text("shared duplicate content", encoding = "utf-8")
+    (source / "c.txt").write_text("shared duplicate content", encoding = "utf-8")
+    (source / "d.txt").write_text("a distinct different body", encoding = "utf-8")
+
+    result = _run(folder["id"])
+    assert result["status"] == "completed"
+    assert result["added"] == 4
+
+    embedded_texts = [text for call in calls for text in call]
+    assert embedded_texts.count("shared duplicate content") == 1
+    assert embedded_texts.count("a distinct different body") == 1
+
+    with _connection() as conn:
+        rows = conn.execute(
+            "SELECT * FROM linked_folder_files WHERE folder_id=?", (folder["id"],)
+        ).fetchall()
+        assert len(rows) == 4
+        by_rel = {row["relative_path"]: dict(row) for row in rows}
+        documents = {
+            rel: store.get_document(conn, row["document_id"]) for rel, row in by_rel.items()
+        }
+        assert len({d["id"] for d in documents.values()}) == 4
+        for rel, doc in documents.items():
+            assert doc["linked_relative_path"] == rel
+        assert len({d["stored_path"] for d in documents.values()}) == 4
+
+        donor = documents["a.txt"]
+        assert donor["num_chunks"] > 0
+        for rel in ("b.txt", "c.txt"):
+            copy = documents[rel]
+            assert copy["num_chunks"] == donor["num_chunks"]
+            assert _chunk_texts(copy["id"]) == _chunk_texts(donor["id"])
+            assert _vectors(copy["id"]) == _vectors(donor["id"])
+
+        hits = store.search_lexical(conn, folder["scope"], "shared", 10)
+        hit_doc_ids = {chunk_id.rsplit(":", 1)[0] for chunk_id, _ in hits}
+        assert hit_doc_ids == {
+            documents["a.txt"]["id"],
+            documents["b.txt"]["id"],
+            documents["c.txt"]["id"],
+        }
+
+
+@requires_sqlite_vec
+def test_deleting_a_reused_copy_leaves_its_siblings_intact(rag_home, stub_embeddings):
+    source, folder = _folder(rag_home)
+    (source / "a.txt").write_text("shared duplicate content", encoding = "utf-8")
+    (source / "b.txt").write_text("shared duplicate content", encoding = "utf-8")
+    (source / "c.txt").write_text("shared duplicate content", encoding = "utf-8")
+    assert _run(folder["id"])["status"] == "completed"
+
+    with _connection() as conn:
+        before = {
+            row["relative_path"]: row["document_id"]
+            for row in conn.execute(
+                "SELECT * FROM linked_folder_files WHERE folder_id=?", (folder["id"],)
+            ).fetchall()
+        }
+    survivors = {"a.txt": before["a.txt"], "c.txt": before["c.txt"]}
+    deleted_id = before["b.txt"]
+
+    (source / "b.txt").unlink()
+    result = _run(folder["id"])
+    assert result["status"] == "completed"
+    assert result["deleted"] == 1
+
+    with _connection() as conn:
+        remaining = {
+            row["relative_path"]
+            for row in conn.execute(
+                "SELECT relative_path FROM linked_folder_files WHERE folder_id=?", (folder["id"],)
+            ).fetchall()
+        }
+        assert remaining == {"a.txt", "c.txt"}
+        assert store.get_document(conn, deleted_id) is None
+        assert (
+            conn.execute(
+                "SELECT COUNT(*) AS n FROM chunks WHERE document_id=?", (deleted_id,)
+            ).fetchone()["n"]
+            == 0
+        )
+        assert (
+            conn.execute(
+                "SELECT COUNT(*) AS n FROM chunks_vec WHERE chunk_id LIKE ?", (f"{deleted_id}:%",)
+            ).fetchone()["n"]
+            == 0
+        )
+        for doc_id in survivors.values():
+            doc = store.get_document(conn, doc_id)
+            assert doc is not None and doc["num_chunks"] > 0
+            assert _chunk_texts(doc_id)
+            assert _vectors(doc_id)
+        assert store.search_lexical(conn, folder["scope"], "shared", 10)
+
+
+@requires_sqlite_vec
+def test_rebuild_reembeds_every_file_even_content_identical_ones(
+    rag_home, stub_embeddings, monkeypatch
+):
+    source, folder = _folder(rag_home)
+    (source / "a.txt").write_text("shared duplicate content", encoding = "utf-8")
+    (source / "b.txt").write_text("shared duplicate content", encoding = "utf-8")
+    (source / "c.txt").write_text("shared duplicate content", encoding = "utf-8")
+    (source / "d.txt").write_text("a distinct different body", encoding = "utf-8")
+    assert _run(folder["id"])["status"] == "completed"
+
+    calls = _spy_on_encode(monkeypatch)
+    result = _run(folder["id"], rebuild = True)
+    assert result["status"] == "completed"
+
+    embedded_texts = [text for call in calls for text in call]
+    assert embedded_texts.count("shared duplicate content") == 3
+    assert embedded_texts.count("a distinct different body") == 1
+
+
+@requires_sqlite_vec
+def test_reuse_skips_a_donor_whose_embedding_model_no_longer_matches(
+    rag_home, stub_embeddings, monkeypatch
+):
+    source, folder = _folder(rag_home)
+    (source / "a.txt").write_text("shared duplicate content", encoding = "utf-8")
+    assert _run(folder["id"])["status"] == "completed"
+
+    with _connection() as conn:
+        donor_row = _mapping(folder)
+        donor = store.get_document(conn, donor_row["document_id"])
+        stale_identity = donor["embedding_model"] + "-stale"
+        conn.execute(
+            "UPDATE documents SET embedding_model=? WHERE id=?", (stale_identity, donor["id"])
+        )
+        conn.commit()
+
+    calls = _spy_on_encode(monkeypatch)
+    (source / "b.txt").write_text("shared duplicate content", encoding = "utf-8")
+    result = _run(folder["id"])
+    assert result["status"] == "completed"
+    assert result["added"] == 1
+
+    embedded_texts = [text for call in calls for text in call]
+    assert "shared duplicate content" in embedded_texts
+
+    with _connection() as conn:
+        new_row = conn.execute(
+            "SELECT document_id FROM linked_folder_files WHERE folder_id=? AND relative_path='b.txt'",
+            (folder["id"],),
+        ).fetchone()
+        new_doc = store.get_document(conn, new_row["document_id"])
+        assert new_doc["id"] != donor["id"]
+        assert new_doc["embedding_model"] == donor["embedding_model"]
+        assert _vectors(new_doc["id"])
+
+
+@requires_sqlite_vec
+def test_reuse_falls_back_to_a_normal_ingest_when_the_donor_lost_its_vectors(
+    rag_home, stub_embeddings, monkeypatch
+):
+    source, folder = _folder(rag_home)
+    (source / "a.txt").write_text("shared duplicate content", encoding = "utf-8")
+    assert _run(folder["id"])["status"] == "completed"
+
+    with _connection() as conn:
+        donor_id = _mapping(folder)["document_id"]
+        conn.execute("DELETE FROM chunks_vec WHERE chunk_id LIKE ?", (f"{donor_id}:%",))
+        conn.commit()
+
+    calls = _spy_on_encode(monkeypatch)
+    (source / "b.txt").write_text("shared duplicate content", encoding = "utf-8")
+    result = _run(folder["id"])
+    assert result["status"] == "completed"
+    assert result["added"] == 1
+
+    embedded_texts = [text for call in calls for text in call]
+    assert "shared duplicate content" in embedded_texts
+
+    with _connection() as conn:
+        new_row = conn.execute(
+            "SELECT document_id FROM linked_folder_files WHERE folder_id=? AND relative_path='b.txt'",
+            (folder["id"],),
+        ).fetchone()
+        new_doc = store.get_document(conn, new_row["document_id"])
+        vecs = _vectors(new_doc["id"])
+        assert len(vecs) == new_doc["num_chunks"] > 0
+
+
+@requires_sqlite_vec
+def test_identical_copies_read_the_donor_vectors_by_rowid(rag_home, stub_embeddings, monkeypatch):
+    hits = []
+    original = store._donor_vectors_by_rowid
+
+    def spy(conn, source, chunk_ids):
+        rows = original(conn, source, chunk_ids)
+        hits.append(rows is not None)
+        return rows
+
+    monkeypatch.setattr(store, "_donor_vectors_by_rowid", spy)
+    source, folder = _folder(rag_home)
+    for name in ("a.txt", "b.txt", "c.txt"):
+        (source / name).write_text("shared duplicate content", encoding = "utf-8")
+    assert _run(folder["id"])["status"] == "completed"
+
+    assert hits == [True, True]
+    with _connection() as conn:
+        ids = [
+            r["document_id"]
+            for r in conn.execute(
+                "SELECT document_id FROM linked_folder_files WHERE folder_id=? ORDER BY relative_path",
+                (folder["id"],),
+            ).fetchall()
+        ]
+    assert _vectors(ids[1]) == _vectors(ids[0]) == _vectors(ids[2])
+
+
+@requires_sqlite_vec
+def test_a_stale_rowid_entry_falls_back_to_the_partition_scan(rag_home, stub_embeddings):
+    source, folder = _folder(rag_home)
+    (source / "a.txt").write_text("shared duplicate content", encoding = "utf-8")
+    (source / "d.txt").write_text("a distinct different body", encoding = "utf-8")
+    assert _run(folder["id"])["status"] == "completed"
+
+    with _connection() as conn:
+        by_rel = {
+            r["relative_path"]: r["document_id"]
+            for r in conn.execute(
+                "SELECT relative_path, document_id FROM linked_folder_files WHERE folder_id=?",
+                (folder["id"],),
+            ).fetchall()
+        }
+        other = [
+            r["rowid"]
+            for r in conn.execute(
+                "SELECT rowid FROM chunks_vec WHERE chunk_id LIKE ?", (f"{by_rel['d.txt']}:%",)
+            ).fetchall()
+        ]
+        store._remember_vec_rowids(conn, by_rel["a.txt"], other)
+
+    (source / "b.txt").write_text("shared duplicate content", encoding = "utf-8")
+    assert _run(folder["id"])["status"] == "completed"
+    with _connection() as conn:
+        b_id = conn.execute(
+            "SELECT document_id FROM linked_folder_files WHERE folder_id=? AND relative_path='b.txt'",
+            (folder["id"],),
+        ).fetchone()["document_id"]
+    assert _vectors(b_id) == _vectors(by_rel["a.txt"])
+
+
+@requires_sqlite_vec
+def test_donor_vectors_are_read_before_the_write_lock(rag_home, stub_embeddings, monkeypatch):
+    in_transaction = []
+    original = store._donor_vectors
+
+    def spy(conn, source, chunk_ids):
+        in_transaction.append(conn.in_transaction)
+        return original(conn, source, chunk_ids)
+
+    monkeypatch.setattr(store, "_donor_vectors", spy)
+    source, folder = _folder(rag_home)
+    for name in ("a.txt", "b.txt", "c.txt"):
+        (source / name).write_text("shared duplicate content", encoding = "utf-8")
+    assert _run(folder["id"])["status"] == "completed"
+    assert in_transaction == [False, False]
+
+
+@requires_sqlite_vec
+def test_a_vec_table_resized_after_the_prefetch_falls_back_to_a_normal_ingest(
+    rag_home, stub_embeddings, monkeypatch
+):
+    source, folder = _folder(rag_home)
+    (source / "a.txt").write_text("shared duplicate content", encoding = "utf-8")
+    assert _run(folder["id"])["status"] == "completed"
+
+    original = store.prefetch_donor_vectors
+
+    def resize_after_prefetch(conn, donor):
+        rows = original(conn, donor)
+        with _connection() as other:
+            dim = rag_db.vec_table_dim(other)
+            rag_db.ensure_vec(other, dim + 1)
+            other.commit()
+        return rows
+
+    monkeypatch.setattr(store, "prefetch_donor_vectors", resize_after_prefetch)
+    (source / "b.txt").write_text("shared duplicate content", encoding = "utf-8")
+    result = _run(folder["id"])
+    assert result["status"] == "completed"
+    assert result["failed"] == 0
+    with _connection() as conn:
+        b_id = conn.execute(
+            "SELECT document_id FROM linked_folder_files WHERE folder_id=? AND relative_path='b.txt'",
+            (folder["id"],),
+        ).fetchone()["document_id"]
+    assert _vectors(b_id)
