@@ -91,7 +91,7 @@ const Toaster = ({ ...props }: ToasterProps) => {
             // Sonner defaults to the left/outside edge, so keep the horizontal
             // override here and the top offset in index.css.
             "--toast-close-button-start": "auto",
-            "--toast-close-button-end": "11px",
+            "--toast-close-button-end": "12px",
             "--toast-close-button-transform": "none",
           } as React.CSSProperties
         }

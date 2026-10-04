@@ -4606,6 +4606,14 @@ html[data-chat-font] .aui-root {
 	margin: 0.4em 0 0 !important;
 }
 
+/* Single text line: center the icon on it. Title and description line heights are 1.5 and 1.4. */
+[data-sonner-toast][data-styled='true']:not(:has([data-description])) [data-icon] {
+	margin-top: calc((1.5em - var(--ui-icon-size)) / 2) !important;
+}
+[data-sonner-toast][data-styled='true']:not(:has([data-title])) [data-icon] {
+	margin-top: calc((1.4em - var(--ui-icon-size)) / 2) !important;
+}
+
 [data-sonner-toast][data-styled='true'] [data-content] {
 	min-width: 0;
 }
@@ -5254,7 +5262,7 @@ html.force-reduced-motion .sidebar-section-drop-line {
 
 /* Keep Sonner close button inside the toast and pin to theme tokens (--gray2 hover ignores data-sonner-theme). */
 [data-sonner-toast][data-styled="true"] [data-close-button] {
-	top: calc(10px * var(--ui-space-scale, 1)) !important;
+	top: calc(11px * var(--ui-space-scale, 1)) !important;
 	transform: none !important;
 	border-radius: 9999px !important;
 	background: var(--popover) !important;
