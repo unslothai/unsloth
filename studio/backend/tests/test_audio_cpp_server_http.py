@@ -165,6 +165,24 @@ def test_cancel_closes_the_socket_mid_request(fake_binary, tmp_path):
         server.stop()
 
 
+def test_transcription_details_carries_model_audio_language_and_options(fake_binary, tmp_path):
+    from core.inference.stt_audiocpp_sidecar import AudioCppSttSidecar
+    server = srv.AudioCppServer.start(CANARY, str(tmp_path / "m.gguf"))
+    try:
+        side = AudioCppSttSidecar()
+        side._server = server
+        audio = tmp_path / "a.wav"
+        payload = side._post_details(audio, "en", None, {"timestamps": True})
+        assert json.loads(payload["text"]) == {
+            "audio": str(audio),
+            "language": "en",
+            "model": server.model_id,
+            "options": {"timestamps": True},
+        }
+    finally:
+        server.stop()
+
+
 def test_cancelled_transcription_stops_the_busy_server(fake_binary, tmp_path):
     from core.inference.stt_audiocpp_sidecar import (
         AudioCppSttSidecar,
