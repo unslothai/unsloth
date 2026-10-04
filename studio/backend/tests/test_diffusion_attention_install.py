@@ -375,6 +375,23 @@ def test_a_kernels_upgrade_is_visible_to_diffusers_in_the_same_process(monkeypat
     assert import_utils.is_kernels_version(">=", "0.12.3")
 
 
+def test_refresh_drops_a_memoized_pre_upgrade_check(monkeypatch):
+    from diffusers.utils import import_utils
+
+    monkeypatch.setattr(import_utils, "_kernels_version", "0.12.1")
+    monkeypatch.setattr(import_utils, "_kernels_available", True)
+    monkeypatch.delitem(sys.modules, "kernels", raising = False)
+    clear = getattr(import_utils.is_kernels_version, "cache_clear", None)
+    if clear is not None:
+        clear()
+    assert not import_utils.is_kernels_version(">=", "0.12.3")
+    monkeypatch.setattr(att, "_dist_version", lambda name: "0.12.3" if name == "kernels" else None)
+    att._refresh_diffusers_kernels_version()
+    assert import_utils.is_kernels_version(">=", "0.12.3")
+    if clear is not None:
+        clear()
+
+
 def test_an_imported_old_kernels_is_not_papered_over(monkeypatch):
     from diffusers.utils import import_utils
 

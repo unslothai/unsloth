@@ -1044,6 +1044,12 @@ def _refresh_diffusers_kernels_version(logger: Any = None) -> None:
         if installed and getattr(import_utils, "_kernels_version", None) not in (None, installed):
             import_utils._kernels_version = installed
             import_utils._kernels_available = True
+            # diffusers memoizes is_kernels_version, so a check made before the upgrade would still answer False.
+            cache_clear = getattr(
+                getattr(import_utils, "is_kernels_version", None), "cache_clear", None
+            )
+            if callable(cache_clear):
+                cache_clear()
     except Exception:  # noqa: BLE001
         pass
 
