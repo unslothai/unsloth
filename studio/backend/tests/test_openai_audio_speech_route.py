@@ -1348,7 +1348,11 @@ def test_voice_load_undoes_itself_when_an_unload_landed_before_the_spawn():
 
     source = inspect.getsource(routes_module.voice_load_model)
     read = source.index('unload_epoch = getattr(voice_backend, "_unload_epoch", None)')
-    resolve = source.index("resolve_audio_model_config(") if "resolve_audio_model_config(" in source else source.index("GgufLoadIntent(")
+    resolve = (
+        source.index("resolve_audio_model_config(")
+        if "resolve_audio_model_config(" in source
+        else source.index("GgufLoadIntent(")
+    )
     claim = source.index("acquire_for_request, _CHAT, None, alongside = True")
     spawn = source.index("voice_backend.load_model, intent, load_cancel_event = load_cancel")
     check = source.index('getattr(voice_backend, "_unload_epoch", None) != unload_epoch')
@@ -1485,7 +1489,9 @@ def test_a_rejected_voice_load_gives_the_chat_claim_back():
     undo = source.index("async def _undo_load():")
     body = source[undo : undo + 500]
     # The marker counts as a live voice slot to the release predicate, so it ends first.
-    assert body.index("_leave_in_flight()") < body.index("await asyncio.to_thread(release_chat_gpu_claim)")
+    assert body.index("_leave_in_flight()") < body.index(
+        "await asyncio.to_thread(release_chat_gpu_claim)"
+    )
     for marker in (
         'detail = f"Failed to load voice model: {e}"',
         'detail = "Voice model failed to start."',
@@ -1554,3 +1560,21 @@ def test_an_eviction_before_the_spawn_cancels_the_voice_load_durably(monkeypatch
     assert marker < check < spawn
     assert "cancel_voice_loads()" in inspect.getsource(gpu_arbiter._evict_chat)
     assert "cancel_voice_loads()" in inspect.getsource(routes_module.voice_unload_model)
+
+
+def test_a_cancel_landing_at_the_spawn_never_leaves_a_child_running():
+    """load_model does not hold the backend lock across the spawn, so an unload or an eviction
+    can set the cancel after the last pre-spawn check. The spawn lock now re-reads the cancel
+    before Popen (no child) and right after it (the child is killed here, not by the route)."""
+    import inspect
+
+    from core.inference.llama_cpp import LlamaCppBackend
+
+    source = inspect.getsource(LlamaCppBackend.load_model)
+    helper = source[source.index("def _spawn_and_wait(") :]
+    popen = helper.index("_spawned = subprocess.Popen(")
+    lock = helper.rindex("with self._spawn_lock:", 0, popen)
+    assert "if _load_cancelled():" in helper[lock:popen]
+    after = helper[popen : popen + 2500]
+    recheck = after.index("if self._spawn_is_stale() or _load_cancelled():")
+    assert "self._kill_process()" in after[recheck : recheck + 400]

@@ -30387,9 +30387,17 @@ class LlamaCppBackend:
                         # Check with publication under one lock: a spawn either
                         # publishes first and the sweep kills it, or sees the flag
                         # and never starts. Across Popen only, never the wait.
+                        # The cancel too: this load does not hold _lock here, so an
+                        # unload can land after the last check above, and a child
+                        # spawned past it would sit in VRAM until the route unloads.
                         with self._spawn_lock:
                             if self._spawn_is_stale():
                                 logger.info("app is shutting down; not starting llama-server")
+                                self._close_attempt_log()
+                                self._health_wait_cancelled = True
+                                return False
+                            if _load_cancelled():
+                                logger.info("load cancelled; not starting llama-server")
                                 self._close_attempt_log()
                                 self._health_wait_cancelled = True
                                 return False
@@ -30415,9 +30423,10 @@ class LlamaCppBackend:
                         # check above is not atomic against it for a helper-owned
                         # backend. Without this recheck a child spawned in that gap sits
                         # outside the completed sweep for the whole health wait.
-                        if self._spawn_is_stale():
+                        if self._spawn_is_stale() or _load_cancelled():
                             logger.info(
-                                "shutdown began during the spawn; killing the new llama-server"
+                                "shutdown or a cancel began during the spawn; "
+                                "killing the new llama-server"
                             )
                             self._kill_process()
                             self._close_attempt_log()
