@@ -5660,14 +5660,22 @@ else
         step "whisper.cpp" "install busy; keeping existing runtime" "$C_WARN"
         rm -f "$_WHISPER_LOG"
     else
-        # A source build is opt-in. Keep the installer log until fallback has
+        # A source build is opt-in, except beside a --with-llama-cpp-dir tree: slim bundles pair only
+        # with a managed llama prebuilt (a user-built ggml has no ABI guarantee), the static build
+        # needs none. Keep the installer log until fallback has
         # finished so setup can distinguish release skew from an operational
         # installer failure and report the exact pairing when available.
         _WHISPER_RECOVERED=false
         _WHISPER_BUILD="$SCRIPT_DIR/../scripts/build_whisper_cpp.sh"
-        if [ "${UNSLOTH_WHISPER_FORCE_COMPILE:-0}" = "1" ] && [ -f "$_WHISPER_BUILD" ] \
+        _WHISPER_COMPILE_REASON=""
+        if [ "${UNSLOTH_WHISPER_FORCE_COMPILE:-0}" = "1" ]; then
+            _WHISPER_COMPILE_REASON="UNSLOTH_WHISPER_FORCE_COMPILE=1"
+        elif [ "$_LOCAL_LLAMA_CPP_LINKED" = true ]; then
+            _WHISPER_COMPILE_REASON="local llama.cpp build linked"
+        fi
+        if [ -n "$_WHISPER_COMPILE_REASON" ] && [ -f "$_WHISPER_BUILD" ] \
                 && command -v cmake >/dev/null 2>&1 && command -v git >/dev/null 2>&1; then
-            substep "whisper.cpp prebuilt unavailable; building from source (UNSLOTH_WHISPER_FORCE_COMPILE=1)..."
+            substep "whisper.cpp prebuilt unavailable; building from source ($_WHISPER_COMPILE_REASON)..."
             # The source build overwrites whisper-server in the managed dir but
             # knows nothing about the prebuilt marker; a stale marker would make
             # a later setup run report "already matches" and skip repairing the
