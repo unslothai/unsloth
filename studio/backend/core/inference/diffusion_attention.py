@@ -315,6 +315,9 @@ def _run_rocm_flash_probe(device: str, dtype: Any) -> bool:
     from flash_attn import flash_attn_func
 
     if dtype not in (torch.float16, torch.bfloat16):
+        # diffusers' flash backend is half precision only, and the CK build raises on fp32 at the first call
+        if dtype is not None:
+            return False
         dtype = torch.bfloat16
     gen = torch.Generator().manual_seed(0)
     q, k, v = (torch.randn((1, 128, 2, 64), generator = gen).to(device, dtype) for _ in range(3))
@@ -801,6 +804,9 @@ def _run_cudnn_head_dim_probe(device: str, dtype: Any, head_dim: int) -> bool:
     import torch
 
     if dtype not in (torch.float16, torch.bfloat16):
+        # diffusers' flash backend is half precision only, and the CK build raises on fp32 at the first call
+        if dtype is not None:
+            return False
         dtype = torch.bfloat16
     q = torch.empty((1, 2, 8, int(head_dim)), device = device, dtype = dtype)
     try:
@@ -901,6 +907,14 @@ def apply_attention_backend(
     if backend is not None:
         _ensure_attention_backend_installed(backend, logger)
         if backend == "sage" and target is not None and _sage_kernel_runs(target, logger) is False:
+            backend = None
+        # Re-verify at the dtype the pipeline runs in: selection may have seen the pre-promotion (fp16) dtype.
+        if (
+            backend == "flash"
+            and target is not None
+            and _is_cuda_rocm(target)
+            and not _rocm_flash_attn_runs(target)
+        ):
             backend = None
         if (
             backend == "_native_cudnn"

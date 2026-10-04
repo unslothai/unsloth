@@ -199,7 +199,21 @@ def test_probe_compares_against_reference(monkeypatch, dtype_name, good):
     fa.flash_attn_func = flash_attn_func
     monkeypatch.setitem(sys.modules, "flash_attn", fa)
     monkeypatch.setattr(torch.cuda, "synchronize", lambda *a, **k: None)
-    assert att._run_rocm_flash_probe("cpu", getattr(torch, dtype_name)) is good
+    expected = good and dtype_name != "float32"
+    assert att._run_rocm_flash_probe("cpu", getattr(torch, dtype_name)) is expected
+
+
+def test_apply_reverifies_rocm_flash_at_run_dtype(monkeypatch):
+    calls = _rocm(monkeypatch, probe = False)
+    set_to = []
+    dit = types.SimpleNamespace(set_attention_backend = set_to.append)
+    pipe = types.SimpleNamespace(transformer = dit)
+    monkeypatch.setattr(att, "_active_attention_backend", lambda: att.ATTN_NATIVE)
+    monkeypatch.setattr(att, "warn_if_sdpa_math_only", lambda *a, **k: False)
+    run_target = _target(dtype = "torch.float32")
+    assert att.apply_attention_backend(pipe, "flash", target = run_target) is None
+    assert calls == [("cuda:0", "torch.float32")]
+    assert set_to == []
 
 
 def test_probe_kernel_error_is_false(monkeypatch):
