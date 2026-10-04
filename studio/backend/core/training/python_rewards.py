@@ -31,6 +31,7 @@ logger = logging.getLogger(__name__)
 
 READY_TIMEOUT_SECONDS = 120.0
 BATCH_TIMEOUT_SECONDS = 300.0
+HEARTBEAT_SECONDS = 10.0
 _POLL_SECONDS = 0.002
 _WORKER_SOURCE = Path(__file__).with_name("reward_worker_main.py")
 # TRL passes these next to the dataset columns; none of them mean anything outside the trainer.
@@ -135,11 +136,23 @@ class RewardWorker:
         self._proc = None
         self._prepared = None
         self._workdir: Optional[str] = None
+        self._closed = threading.Event()
+
+    def _heartbeat(self) -> None:
+        # Without this a crashed trainer would leave the worker polling forever.
+        while not self._closed.wait(HEARTBEAT_SECONDS):
+            try:
+                Path(self._workdir, "alive").touch()
+            except (OSError, TypeError):
+                return
 
     def start(self) -> "RewardWorker":
         from core.inference import os_sandbox
 
+        if self._workdir is not None:
+            raise PythonRewardError("This reward worker was already started.")
         self._workdir = tempfile.mkdtemp(prefix = "unsloth-rewards-")
+        Path(self._workdir, "alive").touch()
         shutil.copyfile(_WORKER_SOURCE, os.path.join(self._workdir, "worker.py"))
         with open(os.path.join(self._workdir, "rewards.json"), "w", encoding = "utf-8") as f:
             json.dump({"specs": self.specs, "unsloth_helpers": _unsloth_helpers_path()}, f)
@@ -184,6 +197,7 @@ class RewardWorker:
             raise PythonRewardError(
                 "; ".join(f"{name}: {message}" for name, message in sorted(errors.items()))
             )
+        threading.Thread(target = self._heartbeat, daemon = True).start()
         atexit.register(self.close)
         logger.info("Python reward worker started (%s)", self.isolation)
         return self
@@ -242,6 +256,7 @@ class RewardWorker:
         return result["scores"]
 
     def close(self) -> None:
+        self._closed.set()
         proc, self._proc = self._proc, None
         if proc is not None and self._workdir:
             try:

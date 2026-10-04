@@ -100,21 +100,45 @@ def test_notebook_rewards_score_the_same_in_the_worker(worker_factory):
         assert got[spec["name"]] == pytest.approx(expected), func
 
 
-def test_reward_funcs_keep_spec_order_and_accept_plain_strings(worker_factory, tmp_path, monkeypatch):
+def test_reward_funcs_keep_spec_order_and_accept_plain_strings(tmp_path, monkeypatch):
     monkeypatch.setattr(rewards, "_user_root", lambda: tmp_path / "rewards")
     specs = [
         {**_spec("py-len", "def reward(completions, **kw):\n    return [len(c[0]['content']) for c in completions]\n"), "weight": 1.0},
         {**rewards.get_reward("strict-xml-format"), "weight": 2.0},
     ]
-    funcs = rl._reward_funcs(
-        specs,
-        worker_factory,
-        python_rewards.make_python_reward_funcs,
-        rewards.make_reward_func,
-    )
-    assert [f.__name__ for f in funcs] == ["py_len", "strict_xml_format"]
-    # Thinking rendered into the prompt text makes TRL pass strings; the notebook shape still works.
-    assert funcs[0](prompts = ["p"], completions = ["abc", ""]) == [3.0, 0.0]
+    created = []
+
+    def unstarted(python):
+        created.append(RewardWorker(python, mode = "full"))
+        return created[-1]
+
+    try:
+        funcs = rl._reward_funcs(
+            specs, unstarted, python_rewards.make_python_reward_funcs, rewards.make_reward_func
+        )
+        assert [f.__name__ for f in funcs] == ["py_len", "strict_xml_format"]
+        # Thinking rendered into the prompt text makes TRL pass strings; the notebook shape still works.
+        assert funcs[0](prompts = ["p"], completions = ["abc", ""]) == [3.0, 0.0]
+    finally:
+        for worker in created:
+            worker.close()
+
+
+def test_a_worker_cannot_be_started_twice(worker_factory):
+    worker = worker_factory([_spec("t", "def reward(completions, **kw):\n    return []\n")])
+    with pytest.raises(PythonRewardError, match = "already started"):
+        worker.start()
+
+
+def test_an_orphaned_worker_exits_when_the_host_goes_quiet(worker_factory):
+    import time
+
+    worker = worker_factory([_spec("t", "def reward(completions, **kw):\n    return []\n")])
+    worker._closed.set()  # the host "dies": no more heartbeats
+    stale = time.time() - 3600
+    os.utime(os.path.join(worker._workdir, "alive"), (stale, stale))
+    worker._proc.wait(timeout = 10)
+    assert worker._proc.returncode == 0
 
 
 def test_columns_reach_the_reward_and_trainer_kwargs_do_not(worker_factory):

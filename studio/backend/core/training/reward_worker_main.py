@@ -15,6 +15,8 @@ import time
 import traceback
 
 POLL_SECONDS = 0.002
+# The host touches "alive" every few seconds; a host that died without saying stop goes quiet.
+ALIVE_TIMEOUT_SECONDS = 60.0
 
 
 def _retry(action, seconds = 10.0):
@@ -126,11 +128,22 @@ def main():
     funcs, errors = _load(specs)
     put(os.path.join(workdir, "ready.json"), {"loaded": sorted(funcs), "errors": errors})
     seq = 0
+    alive_path = os.path.join(workdir, "alive")
+    next_check = 0.0
     while True:
         req_path = os.path.join(workdir, "req-%d.json" % seq)
         if not os.path.exists(req_path):
             if os.path.exists(os.path.join(workdir, "stop")):
                 return 0
+            now = time.monotonic()
+            if now >= next_check:
+                next_check = now + 1.0
+                try:
+                    quiet = time.time() - os.path.getmtime(alive_path)
+                except OSError:
+                    return 0
+                if quiet > ALIVE_TIMEOUT_SECONDS:
+                    return 0
             time.sleep(POLL_SECONDS)
             continue
         request = take(req_path)
