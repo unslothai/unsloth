@@ -278,3 +278,27 @@ def test_a_runtime_that_dies_at_load_reports_its_last_line_sanitized(tmp_path):
     message = str(excinfo.value)
     assert message.endswith("audiocpp_server failed: unsupported model family hint: crisperwhisper")
     assert "/home/alice" not in message and "hf_AbCdEf" not in message and "\n" not in message
+
+
+def test_runtime_tail_redacts_before_the_cut():
+    from core.inference.audio_errors import sanitize_runtime_tail
+
+    secret = "/home/someone/private/models/voice.gguf"
+    text = "x" * 400 + " failed to open " + secret + " " + "y" * 250
+    out = sanitize_runtime_tail(text)
+    assert len(out) <= 280
+    assert "someone" not in out and "private" not in out
+    # Cutting the raw text first left the path without its leading "/".
+    raw = text[-280:]
+    assert "private" in raw
+
+
+def test_log_tail_drops_the_partial_first_line(tmp_path):
+    from core.inference.audio_cpp_server import AudioCppServer
+
+    server = AudioCppServer.__new__(AudioCppServer)
+    server._config_dir = tmp_path
+    (tmp_path / "server.log").write_bytes(b"/home/someone/secret/path.gguf\n" * 100 + b"last line")
+    tail = server.log_tail(limit = 50)
+    assert tail.endswith("last line")
+    assert tail.split("\n")[0] in ("/home/someone/secret/path.gguf", "last line")

@@ -70,6 +70,9 @@ class LoadRequest(LlamaCppConfigFields):
     # `()` is both the default and auto-switch's deliberate "do not widen", so only this
     # marker separates unset from explicitly empty.
     _gguf_companion_roots_set: bool = PrivateAttr(default = False)
+    # Auto-switch only: the alias its owner-override lookup used, so the managed path-flag
+    # check reads the same override row.
+    _override_alias_id: Optional[str] = PrivateAttr(default = None)
     load_request_id: Optional[str] = Field(
         None,
         min_length = 1,

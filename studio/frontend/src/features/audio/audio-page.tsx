@@ -468,10 +468,8 @@ export function AudioPage({
     active,
     busy,
     busyRef,
-    mode,
     modeRef,
     handleModelSelect,
-    transitionMode,
     transitionWorkflow,
     refreshGallery,
     loadMore,
@@ -482,11 +480,11 @@ export function AudioPage({
   const requestedWorkflow = useAudioWorkspaceStore(
     (state) => state.requestedWorkflow,
   );
+  // A refused request stays pending (the commit clears it) and is retried when busy settles.
   useEffect(() => {
     if (!active || requestedWorkflow === null) return;
-    useAudioWorkspaceStore.getState().clearRequestedWorkflow();
     transitionWorkflow(requestedWorkflow);
-  }, [active, requestedWorkflow, transitionWorkflow]);
+  }, [active, busy, requestedWorkflow, transitionWorkflow]);
 
   // A failed Transcribe release puts `mode` back on Transcribe from inside the slot; the workflow follows.
   const syncedMode = useRef(mode);

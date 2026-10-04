@@ -64,12 +64,12 @@ export const useAudioVoicesStore = create<AudioVoicesState>()((set, get) => ({
     return voice;
   },
   rename: async (id, patch) => {
-    const before = get().voices;
-    set({
-      voices: before.map((voice) =>
+    const previous = get().voices.find((voice) => voice.id === id);
+    set((state) => ({
+      voices: state.voices.map((voice) =>
         voice.id === id ? { ...voice, ...patch } : voice,
       ),
-    });
+    }));
     try {
       const saved = await updateVoice(id, patch);
       mutations += 1;
@@ -77,7 +77,14 @@ export const useAudioVoicesStore = create<AudioVoicesState>()((set, get) => ({
         voices: state.voices.map((voice) => (voice.id === id ? saved : voice)),
       }));
     } catch (error) {
-      set({ voices: before });
+      // Put back only this voice: a save or deletion may have finished meanwhile.
+      if (previous) {
+        set((state) => ({
+          voices: state.voices.map((voice) =>
+            voice.id === id ? previous : voice,
+          ),
+        }));
+      }
       throw error;
     }
   },
