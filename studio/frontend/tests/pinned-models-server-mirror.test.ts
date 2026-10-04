@@ -12,9 +12,10 @@ import {
 registerStoreStubResolver();
 const { store } = installLocalStorageFake();
 
-const { hydratePins, resetPinsMirrorForTests } = await import(
-  "../src/features/model-picker/components/model-selector/pins-mirror.ts"
-);
+const { hydratePins, pinsMirrorSettledForTests, resetPinsMirrorForTests } =
+  await import(
+    "../src/features/model-picker/components/model-selector/pins-mirror.ts"
+  );
 const { usePinnedModelsStore } = await import(
   "../src/features/model-picker/components/model-selector/pinned-models.ts"
 );
@@ -48,7 +49,8 @@ function reset(): void {
   usePinnedConnectedModelsStore.setState({ pinned: [] });
 }
 
-const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
+// Sends await a dynamic import, so a fixed number of ticks does not drain them on every platform.
+const settle = () => pinsMirrorSettledForTests();
 
 test("an account switch's empty browser gets its pins back from the server", async () => {
   reset();
@@ -100,7 +102,6 @@ test("after hydration every edit is mirrored, connected pins included", async ()
   usePinnedConnectedModelsStore
     .getState()
     .togglePinnedConnected("external::c1::gpt");
-  await settle();
   await settle();
   assert.deepEqual(puts, [
     { pinned: ["org/a::Q8_0"] },

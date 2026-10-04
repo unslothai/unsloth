@@ -96,6 +96,10 @@ export async function hydratePins(): Promise<void> {
   if (Object.keys(body).length > 0) send(body);
 }
 
+export function pinsMirrorSettledForTests(): Promise<void> {
+  return queue;
+}
+
 export function resetPinsMirrorForTests(): void {
   hydrated = false;
   pending = {};
