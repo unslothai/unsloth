@@ -30,6 +30,8 @@ from .test_explicit_skill_loading import mention_client  # noqa: F401 -- shared 
         ("> @skill-creator\n    @skill-creator\n\t@skill-creator", []),
         ("@Skill-creator @skill-creator/README.md @skill-creator_foo", []),
         ("@skill-creator, please", ["skill-creator"]),
+        ("```@literal```\n@skill-creator", ["skill-creator"]),
+        ("```\n```x```\n@skill-creator\n```\n@another", ["another"]),
     ],
 )
 def test_plain_text_intent_contract(text, expected):

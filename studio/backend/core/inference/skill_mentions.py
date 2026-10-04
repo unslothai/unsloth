@@ -29,6 +29,8 @@ def mentioned_skill_names(text: str) -> list[str]:
     for line in text.splitlines(keepends = True):
         stripped = line.lstrip()
         marker = re.match(r"(`{3,}|~{3,})", stripped)
+        if marker and marker[1][0] == "`" and "`" in stripped[len(marker[1]) :]:
+            marker = None  # CommonMark: a backtick fence line has no other backticks; inline span.
         if marker:
             if fence is None:
                 fence = (marker[1][0], len(marker[1]))
