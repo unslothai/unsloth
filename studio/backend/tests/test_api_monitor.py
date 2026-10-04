@@ -1012,9 +1012,7 @@ def test_direct_llama_counter_is_started_last_before_its_guarding_try():
     """Anything between started() and the try leaks a permanent +1 if it raises, and
     this counter has no reset hook, so one leak pins the slot panel at busy until the
     process restarts.
-
-    openai_completions is not listed: it holds an admission lease, so it counts through
-    ``_direct_llama_request(counted)`` (checked below) rather than the bare pair.
+    openai_completions leases, so it counts via ``_direct_llama_request(counted)`` instead.
     """
     import ast
     import inspect

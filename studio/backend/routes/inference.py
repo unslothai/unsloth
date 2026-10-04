@@ -1931,12 +1931,7 @@ _API_MAX_CONCURRENCY_ENV = "UNSLOTH_API_MAX_CONCURRENCY"
 
 
 def _api_max_concurrency_override() -> Optional[int]:
-    """UNSLOTH_API_MAX_CONCURRENCY overrides the admission slot capacity.
-
-    When set, this caps the number of concurrent inference requests regardless
-    of the ``--parallel`` value. Takes the minimum of the override and the
-    backend's own slot count so it never exceeds what llama-server can serve.
-    """
+    """Positive UNSLOTH_API_MAX_CONCURRENCY, else None (unset or invalid)."""
     raw = os.environ.get(_API_MAX_CONCURRENCY_ENV)
     if raw is None or not raw.strip():
         return None
@@ -1953,11 +1948,8 @@ def _openai_llama_admission_capacity(request: Optional[Request], llama_backend =
     The loaded backend is the source of truth because it may have reduced
     ``--parallel`` at load time to keep the model on GPU. The app state is a
     launch-intent fallback for tests and for the short window before a backend
-    reports its committed runtime slots.
-
-    UNSLOTH_API_MAX_CONCURRENCY (or --api-max-concurrency) caps the admission
-    capacity independently of --parallel, letting operators control API
-    concurrency without changing the llama-server decode slot count.
+    reports its committed runtime slots. UNSLOTH_API_MAX_CONCURRENCY can only
+    lower the result, never raise it past the backend's slots.
     """
     slots = _positive_int_or_none(getattr(llama_backend, "effective_parallel_slots", None))
     if slots is not None:
@@ -7750,8 +7742,7 @@ def _close_load_event(
 
 
 # Direct calls skip admission but still occupy a slot: /embeddings, GGUF TTS and RAG
-# vision (captioning/OCR) all reach llama-server without a lease. /completions leases
-# like the chat routes, and counts here only when admission control is switched off.
+# vision (captioning/OCR). /completions counts here only when admission is off.
 _direct_llama_inflight = 0
 _direct_llama_inflight_lock = threading.Lock()
 
@@ -34051,12 +34042,7 @@ async def openai_completions(request: Request, current_subject: str = Depends(ge
         subject = current_subject,
     )
 
-    # Legacy /v1/completions decodes on the same llama-server slots as /v1/chat/completions, so
-    # it takes the same lease: without one the advertised cap (--parallel, and the
-    # UNSLOTH_API_MAX_CONCURRENCY override on top of it) was bypassable by calling the non-chat
-    # endpoint, which admitted as many concurrent generations as clients cared to open.
-    # `body` carries a prompt rather than messages, which the estimator prices as an equal
-    # share of the cache (see _openai_llama_admission_tokens).
+    # Same slots as /v1/chat/completions, so the same lease: without it the cap is bypassable here.
     try:
         reservation, admission_config = await _openai_llama_admission_reserve_async(
             request = request,
@@ -34074,10 +34060,7 @@ async def openai_completions(request: Request, current_subject: str = Depends(ge
         api_monitor.fail(monitor_id, str(exc))
         raise _openai_admission_http_exception(exc, status_code = 429)
 
-    # The direct counter is for calls that reach llama-server with no lease; now that this one
-    # leases, counting it as well would show a single request as two in the slot readout. With
-    # admission control off the reservation is a no-op, so the counter is still the only thing
-    # that can show this call.
+    # A leased call counted again would show as two in the slot readout.
     _direct_counted = not admission_config.enabled
 
     if is_stream:
@@ -34107,8 +34090,7 @@ async def openai_completions(request: Request, current_subject: str = Depends(ge
             from core.inference.llama_cpp import LlamaCppBackend
             from core.inference.llama_keepwarm import mark_response_failed
 
-            # Created before the admission wait so a client that disconnects while queued ends
-            # the wait; the cancel tracker below arms the same event for the relay.
+            # Before the admission wait, so a client disconnecting while queued ends it.
             disconnect_event = threading.Event()
             admission_lease = None
             try:
@@ -34119,7 +34101,7 @@ async def openai_completions(request: Request, current_subject: str = Depends(ge
                     cancel_event = disconnect_event,
                 ):
                     if isinstance(_admission_item, str):
-                        # SSE comments that keep a queued client's connection warm.
+                        # Keepalive SSE comment while queued.
                         yield _admission_item.encode("utf-8")
                     else:
                         admission_lease = _admission_item
@@ -34150,8 +34132,7 @@ async def openai_completions(request: Request, current_subject: str = Depends(ge
                 api_monitor.finish(monitor_id, "cancelled")
                 raise
 
-            # Guarded: the lease is held from here, and the try that releases it starts below.
-            # A raise in between would drop a slot the pool never gets back.
+            # Lease held from here: a raise before the releasing try would leak the slot.
             try:
                 client = httpx.AsyncClient(
                     timeout = _llama_streaming_generation_timeout(),
@@ -34306,8 +34287,7 @@ async def openai_completions(request: Request, current_subject: str = Depends(ge
                         admission_lease.release()
 
         async def _unstarted_admission_cleanup() -> None:
-            # The reservation is taken in the route, so a response whose body never starts
-            # would leave a waiter queued against the pool forever.
+            # Reserved in the route: an unstarted body would leave the waiter queued forever.
             api_monitor.finish(monitor_id, "cancelled")
             reservation.cancel()
 
@@ -34320,8 +34300,6 @@ async def openai_completions(request: Request, current_subject: str = Depends(ge
         # llama-server mid-request, and force_cancel_active has no event. Unpooled client so a
         # cancel-close hits this call only.
         _cancel_event = threading.Event()
-        # Wait for a slot before opening the upstream request, exactly as the chat
-        # pass-through does: 503 on a queue timeout, 499 when the client goes away first.
         try:
             _admission_lease = await _wait_for_openai_admission_non_streaming(
                 reservation,
@@ -34356,8 +34334,7 @@ async def openai_completions(request: Request, current_subject: str = Depends(ge
             api_monitor.finish(monitor_id, "cancelled")
             reservation.cancel()
             raise
-        # Guarded: the lease is held from here, and the try that releases it starts below.
-        # A raise in between would drop a slot the pool never gets back.
+        # Lease held from here: a raise before the releasing try would leak the slot.
         try:
             _client = _cancelable_nonstreaming_client()
             _tracker = _TrackedCancel(_cancel_event, model = monitor_model, kind = "completions")

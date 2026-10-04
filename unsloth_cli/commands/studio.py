@@ -2076,9 +2076,7 @@ def studio_default(
         ),
     )
 
-    # Before the re-exec branches, not beside run_server: the child is launched with an
-    # explicit argv that does not carry this flag, so setting it later would drop the cap on
-    # every out-of-venv launch. The environment is inherited by both execvp and Popen.
+    # Before the re-exec: the child argv does not carry this flag, only the inherited env.
     if api_max_concurrency is not None:
         os.environ["UNSLOTH_API_MAX_CONCURRENCY"] = str(api_max_concurrency)
 
@@ -2751,9 +2749,7 @@ def run(
         ),
     )
 
-    # Before the re-exec branch, not beside run_server: the child argv below does not carry
-    # this flag, so setting it later would drop the cap on every out-of-venv launch. The
-    # environment is inherited by both execvp and Popen.
+    # Before the re-exec: the child argv does not carry this flag, only the inherited env.
     if api_max_concurrency is not None:
         os.environ["UNSLOTH_API_MAX_CONCURRENCY"] = str(api_max_concurrency)
 

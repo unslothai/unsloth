@@ -1,13 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""Legacy /v1/completions takes the same admission lease as the chat routes.
-
-Without one the advertised concurrency cap (--parallel, and the
-UNSLOTH_API_MAX_CONCURRENCY override on top of it) was bypassable: /v1/completions
-proxied straight to llama-server and ran as many generations at once as clients
-cared to open.
-"""
+"""Legacy /v1/completions takes the same admission lease as the chat routes."""
 
 import asyncio
 import json
@@ -75,8 +69,6 @@ def _install_backend(monkeypatch, handler, *, backend_slots):
             context_length = 4096,
             base_url = _BASE_URL,
             model_identifier = "org/M-GGUF",
-            # More decode slots than the cap, so a passing test can only be the cap
-            # doing the work.
             effective_parallel_slots = backend_slots,
         ),
     )
@@ -134,11 +126,7 @@ def test_non_stream_completions_holds_an_admission_slot(monkeypatch):
 
 
 def test_a_second_streaming_completion_queues_under_the_api_cap(monkeypatch):
-    """--api-max-concurrency 1 with --parallel 4: the second call waits for the slot.
-
-    Pre-fix it was admitted straight away, which is the bypass: the cap held on
-    /v1/chat/completions and not on /v1/completions.
-    """
+    """--api-max-concurrency 1 with --parallel 4: the second call waits for the slot."""
     pytest.importorskip("fastapi", reason = "inference stack not installed")
     pytest.importorskip("routes.inference", reason = "inference stack not installed")
 

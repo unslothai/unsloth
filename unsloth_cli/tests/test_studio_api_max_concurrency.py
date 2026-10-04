@@ -1,12 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""`unsloth studio --api-max-concurrency` on the plain-server path.
-
-The cap rides UNSLOTH_API_MAX_CONCURRENCY in the environment because the child
-argv built for the re-exec does not carry the flag. Set after the re-exec
-branch it never reaches the server that enforces it.
-"""
+"""`unsloth studio --api-max-concurrency` on the plain-server path."""
 
 from __future__ import annotations
 
@@ -77,8 +72,7 @@ def test_studio_default_sets_the_cap_env_before_the_reexec(monkeypatch):
 
 @pytest.mark.parametrize("subcommand", ["run", "setup"])
 def test_studio_rejects_the_cap_flag_before_a_subcommand(subcommand):
-    """Typer does not forward parent options, so `unsloth studio --api-max-concurrency N run`
-    would silently drop the cap the user asked for (mirrors --parallel)."""
+    """Typer does not forward parent options to subcommands (mirrors --parallel)."""
     import typer as _typer
 
     studio_mod = _studio()
