@@ -800,9 +800,11 @@ def install_block_graphs(
                 # Below the hook: the onload / offload stay eager Python and the recording holds only the compute.
                 registry = getattr(block, "_diffusers_hook", None)
                 refs = list(getattr(registry, "_fn_refs", None) or ())
-                target = next(
-                    (r for r in refs if _is_original_forward(getattr(r, "forward", None), block)), None
-                )
+                target = getattr(block, "_unsloth_below_hook_ref", None)
+                if target not in refs:
+                    target = next(
+                        (r for r in refs if _is_original_forward(getattr(r, "forward", None), block)), None
+                    )
                 if target is None:
                     refused["a stacked hook chain"] = refused.get("a stacked hook chain", 0) + 1
                     continue
@@ -902,6 +904,7 @@ def compile_below_offload_hooks(transformer: Any, logger: Any = None) -> int:
             guard.restores.append(lambda ref = target, f = original: setattr(ref, "forward", f))
         target.forward = fn
         block._compiled_call_impl = None
+        block._unsloth_below_hook_ref = target  # where the block graph layer finds the compute it records
         moved += 1
     if moved and logger is not None:
         logger.info(

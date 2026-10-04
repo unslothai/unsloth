@@ -160,9 +160,12 @@ def _hooked_net(blocks = 4):
     from diffusers.hooks import apply_group_offloading
 
     net = Net(blocks = blocks)
-    apply_group_offloading(
-        net, onload_device = torch.device("cpu"), offload_type = "block_level", num_blocks_per_group = 1
-    )
+    try:
+        apply_group_offloading(
+            net, onload_device = torch.device("cpu"), offload_type = "block_level", num_blocks_per_group = 1
+        )
+    except RuntimeError as exc:  # torch < 2.7: diffusers' group offload needs an accelerator even onto the CPU
+        pytest.skip(f"diffusers group offload unavailable here: {exc}")
     return net
 
 
@@ -200,8 +203,14 @@ def test_compile_moves_below_the_offload_hook_and_the_kill_switch_keeps_it_trace
         assert b._compiled_call_impl is None
         refs = b._diffusers_hook._fn_refs
         assert not any(bg._is_original_forward(r.forward, b) for r in refs)
-    # idempotent, and the block still computes the same thing through its hooks
+    # idempotent, and the block graph layer still finds the (now compiled) compute below the hook
     assert bg.compile_below_offload_hooks(net) == 0
+    handle, reason = bg.install_block_graphs(net, slots = False)
+    assert reason == "armed" and len(handle.graphs) == 2
+    for b, g in zip(net.blocks, handle.graphs):
+        assert b._unsloth_below_hook_ref.forward is g
+    handle.free()
+    assert not any(isinstance(b._unsloth_below_hook_ref.forward, bg.BlockGraph) for b in net.blocks)
 
 
 def test_static_buffers_keep_the_storage_offset_of_a_view():
@@ -534,6 +543,37 @@ def test_a_slow_gpu_never_reads_a_slot_the_copy_stream_is_refilling(monkeypatch)
         handle.free()
     finally:
         Net._repeated_blocks = ["Block"]
+
+
+def test_compiled_streamed_blocks_record_below_their_hooks_with_no_graph_break():
+    _cuda()
+    import torch._dynamo.utils as du
+
+    net = _net(blocks = 6)
+    ref = copy.deepcopy(net).cuda()
+    kwargs = {"fullgraph": False, "dynamic": None}
+    for b in net.blocks:
+        b.compile(**kwargs)
+    net._unsloth_regional_compile_kwargs = kwargs
+    _streamed(net)
+    assert bg.compile_below_offload_hooks(net) == 6
+    handle, reason = bg.install_block_graphs(net, device = "cuda")
+    assert reason == "armed" and len(handle.graphs) == 6
+    breaks = sum(du.counters["graph_break"].values())
+    x = torch.randn(4, 16, device = "cuda")
+    with torch.no_grad():
+        want = ref(x)
+        for _ in range(4):
+            got = net(x)
+            torch.cuda.synchronize()
+            torch.testing.assert_close(got, want, rtol = 1e-4, atol = 1e-4)
+        first = got.clone()
+        for _ in range(2):
+            assert torch.equal(net(x), first)  # replays are deterministic
+    assert sum(du.counters["graph_break"].values()) == breaks  # the hooks stay outside the compiled region
+    s = handle.stats
+    assert s["replays"] > 0 and s["fallbacks"] == 0 and s["captures"] == 6
+    handle.free()
 
 
 def test_a_block_whose_weights_moved_records_again_at_the_new_addresses():
