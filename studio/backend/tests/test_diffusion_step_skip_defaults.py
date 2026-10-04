@@ -106,7 +106,7 @@ MEASURED = {
 def test_shipped_table_lists_only_measured_models():
     assert set(dcache.AUTO_STATIC_SKIP) == {k.lower() for k in MEASURED}
     for repo, tiers in MEASURED.items():
-        entry = dcache.AUTO_STATIC_SKIP[repo.lower()]
+        entry = {k: v for k, v in dcache.AUTO_STATIC_SKIP[repo.lower()].items() if k != "steps"}
         assert set(entry) == set(tiers)
         assert all(int(v) >= 2 for v in entry.values())
         # The default tier never skips more than the max tier.
@@ -495,3 +495,52 @@ def test_a_failed_deferred_profile_takes_the_auto_skip_back_off(
     assert st["transformer_cache"] is None and removed
     assert st["resolved"]["transformer_cache"]["value"] != "static"
     backend.unload()
+
+
+# Step counts the table rows were measured at (PR description); the auto skip never runs below them.
+MEASURED_STEPS = {
+    "Qwen/Qwen-Image-2.1": 40,
+    "Qwen/Qwen-Image": 20,
+    "black-forest-labs/FLUX.1-Krea-dev": 28,
+    "black-forest-labs/FLUX.2-klein-base-4B": 50,
+    "Wan-AI/Wan2.2-TI2V-5B-Diffusers": 50,
+    "black-forest-labs/FLUX.1-dev": 28,
+    "hunyuanvideo-community/HunyuanImage-2.1-Diffusers": 50,
+    "hunyuanvideo-community/HunyuanVideo-1.5-Diffusers-480p_t2v": 50,
+    "MiniMaxAI/MiniMax-H3": 30,
+}
+
+
+@pytest.mark.parametrize("repo", sorted(MEASURED_STEPS))
+def test_auto_skip_never_runs_below_the_measured_step_count(repo):
+    plan = dcache.auto_static_skip_plan((repo,), "max", 50, env = {})
+    assert plan["min_steps"] == max(dcache.AUTO_STATIC_MIN_STEPS, MEASURED_STEPS[repo])
+    below = ss.static_schedule(
+        plan["min_steps"] - 1, every = plan["every"], min_steps = plan["min_steps"]
+    )
+    assert below == ()
+    assert not all(
+        ss.static_schedule(plan["min_steps"], every = plan["every"], min_steps = plan["min_steps"])
+    )
+
+
+@pytest.mark.parametrize(
+    "requested, effective, want",
+    [
+        ("off", "default", "off"),
+        ("eager", "default", "eager"),
+        (None, "default", "default"),
+        ("max", "max", "max"),
+    ],
+)
+def test_an_explicit_lossless_tier_never_auto_skips(requested, effective, want):
+    tier = dcache.skip_tier(requested, effective)
+    assert tier == want
+    plan = dcache.auto_static_skip_plan(("Qwen/Qwen-Image",), tier, 20, env = {})
+    assert (plan is None) == (want in ("off", "eager"))
+
+
+@pytest.mark.parametrize("raw, want", [("1", 3), ("abc", 3), ("", 3), ("4", 4)])
+def test_only_a_valid_every_override_beats_the_measured_interval(raw, want):
+    out = ss.auto_static_settings({"every": 3, "min_steps": 20}, env = {ss.ENV_EVERY: raw})
+    assert out["every"] == want

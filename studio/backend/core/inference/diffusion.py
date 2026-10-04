@@ -217,6 +217,7 @@ from .diffusion_cache import (
     apply_step_cache,
     auto_static_skip_plan,
     auto_step_cache_allowed,
+    skip_tier,
     cache_breaks_graph,
     effective_denoise_steps,
     effective_request_strength,
@@ -6914,7 +6915,7 @@ class DiffusionBackend:
                             gguf_filename, repo_id, base, fam.name
                         )
                         static_plan = auto_static_skip_plan(
-                            (repo_id, base), effective_speed, default_steps
+                            (repo_id, base), skip_tier(speed_mode, effective_speed), default_steps
                         )
                         cache_request = resolve_auto_step_cache(
                             effective_speed, default_steps, static_plan = static_plan

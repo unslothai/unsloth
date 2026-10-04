@@ -226,7 +226,8 @@ def test_auto_installs_the_measured_static_skip_on_wan_5b(loop_runtime, monkeypa
     assert entry["value"] == "static" and entry["requested"] is None
     assert "UNSLOTH_DIFFUSION_AUTO_STEP_SKIP" in entry["reason"]
     layer = loop_runtime["pipe"].transformer.__dict__["forward"]
-    assert (layer.every, layer.auto, layer.min_steps) == (2, True, dcache.AUTO_STATIC_MIN_STEPS)
+    # Measured at 50 steps, so a shorter render computes every step.
+    assert (layer.every, layer.auto, layer.min_steps) == (2, True, 50)
     # Kept graph decisions, and the generate-time FBCache toggle is never armed over it.
     assert [kw["cache_active"] for kw in seen] == [False]
     assert backend._state.cache_auto is False

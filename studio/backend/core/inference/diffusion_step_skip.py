@@ -112,6 +112,13 @@ def static_skip_settings(env: Optional[dict] = None, logger: Any = None) -> dict
     return out
 
 
+def _every_override_valid(env: dict) -> bool:
+    try:
+        return int(env.get(ENV_EVERY)) >= 2
+    except (TypeError, ValueError):
+        return False
+
+
 def auto_static_settings(
     plan: dict,
     env: Optional[dict] = None,
@@ -121,7 +128,8 @@ def auto_static_settings(
     explicit ``UNSLOTH_STATIC_SKIP_*`` value still wins (benchmarking)."""
     env = os.environ if env is None else env
     out = static_skip_settings(env, logger)
-    if env.get(ENV_EVERY) in (None, "") and plan.get("every"):
+    # Only an override static_skip_settings accepted wins; an ignored one keeps the measured interval.
+    if out["every"] == DEFAULT_EVERY and plan.get("every") and not _every_override_valid(env):
         out["every"] = int(plan["every"])
     out["min_steps"] = int(plan.get("min_steps") or STATIC_MIN_STEPS)
     out["auto"] = True

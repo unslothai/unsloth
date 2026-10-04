@@ -45,24 +45,22 @@ _TIER_DEFAULT = "default"
 _TIER_MAX = "max"
 
 # Per-model interval on each tier ("default" also covers max), measured vs the no-skip render (PR #12652): default
-# needs mean LPIPS <= 0.05, max <= 0.10. Keyed by the UPSTREAM repo id so distilled / unmeasured siblings never match.
+# needs mean LPIPS <= 0.05, max <= 0.10. "steps" = the step count it was measured at: fewer steps compute every step.
+# Keyed by the UPSTREAM repo id so distilled / unmeasured siblings never match.
 AUTO_STATIC_SKIP: dict = {
-    "qwen/qwen-image-2.1": {"default": 3, "max": 3},
-    "qwen/qwen-image": {"default": 2, "max": 3},
-    "black-forest-labs/flux.1-krea-dev": {"default": 2, "max": 3},
-    "black-forest-labs/flux.2-klein-base-4b": {
-        "default": 2,
-        "max": 3,
-    },
-    "wan-ai/wan2.2-ti2v-5b-diffusers": {"default": 2, "max": 3},
+    "qwen/qwen-image-2.1": {"default": 3, "max": 3, "steps": 40},
+    "qwen/qwen-image": {"default": 2, "max": 3, "steps": 20},
+    "black-forest-labs/flux.1-krea-dev": {"default": 2, "max": 3, "steps": 28},
+    "black-forest-labs/flux.2-klein-base-4b": {"default": 2, "max": 3, "steps": 50},
+    "wan-ai/wan2.2-ti2v-5b-diffusers": {"default": 2, "max": 3, "steps": 50},
     # every 2 is 0.29 LPIPS on a dense-texture prompt, so max only.
-    "black-forest-labs/flux.1-dev": {"max": 3},
-    "hunyuanvideo-community/hunyuanimage-2.1-diffusers": {"max": 2},
-    "hunyuanvideo-community/hunyuanvideo-1.5-diffusers-480p_t2v": {"max": 2},
-    "minimaxai/minimax-h3": {"max": 2},
+    "black-forest-labs/flux.1-dev": {"max": 3, "steps": 28},
+    "hunyuanvideo-community/hunyuanimage-2.1-diffusers": {"max": 2, "steps": 50},
+    "hunyuanvideo-community/hunyuanvideo-1.5-diffusers-480p_t2v": {"max": 2, "steps": 50},
+    "minimaxai/minimax-h3": {"max": 2, "steps": 30},
 }
 
-# Shortest default schedule measured; explicit "static" keeps STATIC_MIN_STEPS (12).
+# Load gate on the model's default steps (keeps distilled siblings out); explicit "static" keeps STATIC_MIN_STEPS (12).
 AUTO_STATIC_MIN_STEPS = 20
 
 # Kill switch: auto never picks static (explicit requests still honoured).
@@ -90,6 +88,12 @@ def auto_static_skip_entry(*identifiers: Optional[str]) -> Optional[dict]:
     return None
 
 
+def skip_tier(requested: Optional[str], effective: Optional[str]) -> Optional[str]:
+    """The tier the skip policy reads: an explicit off / eager stays lossless even when quant forces a compile."""
+    asked = str(requested or "").strip().lower()
+    return asked if asked in ("off", "eager") else effective
+
+
 def auto_static_skip_plan(
     identifiers: Any,
     speed_mode: Optional[str],
@@ -114,7 +118,10 @@ def auto_static_skip_plan(
         steps_ok = False
     if not every or not steps_ok:
         return None
-    return {"every": int(every), "min_steps": AUTO_STATIC_MIN_STEPS}
+    return {
+        "every": int(every),
+        "min_steps": max(AUTO_STATIC_MIN_STEPS, int(entry.get("steps") or 0)),
+    }
 
 
 def auto_step_cache_allowed(speed_mode: Optional[str]) -> bool:

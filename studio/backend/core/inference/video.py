@@ -64,6 +64,7 @@ from .diffusion_cache import (
     auto_static_skip_entry,
     auto_static_skip_plan,
     auto_step_cache_allowed,
+    skip_tier,
     cache_breaks_graph,
     maybe_toggle_step_cache,
     normalize_transformer_cache,
@@ -6312,7 +6313,7 @@ class VideoBackend:
                 gguf_filename, repo_id, base, fallback = (fam.default_steps, fam.default_guidance)
             )
             static_plan = auto_static_skip_plan(
-                (repo_id, base), effective_speed, default_cache_steps
+                (repo_id, base), skip_tier(speed_mode, effective_speed), default_cache_steps
             )
             cache_request = resolve_auto_step_cache(
                 effective_speed, default_cache_steps, static_plan = static_plan
