@@ -1058,6 +1058,8 @@ class _LoadState:
     eager_patched: bool = False
     # Deferred speed auto: the load stays eager, generate() engages `default` at the 3rd generation
     speed_deferred: bool = False
+    # Auto static skip plan for that deferred `default` tier, installed when it engages.
+    deferred_static_plan: Optional[dict] = None
     # Successful generations on this load; drives the deferred engagement above.
     generation_count: int = 0
     # Pre-warmed torch.compile cache context when a compiled tier ran, else None.
@@ -6945,6 +6947,12 @@ class DiffusionBackend:
                             length_changes_ok = not cache_auto,
                             logger = logger,
                         )
+                    # Speed unset on a dense load: `default` engages on the 3rd image, and the skip with it.
+                    deferred_static_plan = (
+                        auto_static_skip_plan((repo_id, base), SPEED_DEFAULT, default_steps)
+                        if cache_auto and speed_deferred and cache_engaged is None
+                        else None
+                    )
                     cache_graph_break = cache_breaks_graph(cache_engaged)
                     self._raise_if_load_cancelled(_load_token)
                     # Arm only where FBCache can engage: a live toggle drops fullgraph and retries every generation.
@@ -6961,6 +6969,12 @@ class DiffusionBackend:
                             cache_reason = (
                                 f"auto: static step skip (every {static_plan['every']}) for this model "
                                 f"at {static_plan['min_steps']}+ steps; set "
+                                "UNSLOTH_DIFFUSION_AUTO_STEP_SKIP=0 to turn it off"
+                            )
+                        elif deferred_static_plan:
+                            cache_reason = (
+                                f"auto: static step skip (every {deferred_static_plan['every']}) engages "
+                                "with the compiled profile on the 3rd image; set "
                                 "UNSLOTH_DIFFUSION_AUTO_STEP_SKIP=0 to turn it off"
                             )
                         elif not cache_auto_live:
@@ -7393,6 +7407,7 @@ class DiffusionBackend:
                         cache_threshold = transformer_cache_threshold,
                         eager_patched = eager_patched,
                         speed_deferred = speed_deferred,
+                        deferred_static_plan = deferred_static_plan,
                         compile_cache_ctx = compile_ctx,
                         bg_compile = load_bg_compile,
                         hf_token = hf_token,
@@ -9050,6 +9065,23 @@ class DiffusionBackend:
             entry = dict(state.resolved["attention_backend"])
             entry["value"] = attention_engaged or "native"
             object.__setattr__(state, "resolved", {**state.resolved, "attention_backend": entry})
+        # Before compile, as at load: the skip is an outer forward on the transformer.
+        plan = state.deferred_static_plan
+        object.__setattr__(state, "deferred_static_plan", None)
+        if plan and state.transformer_cache is None:
+            engaged = install_static_step_skip(
+                state.pipe, settings = auto_static_settings(plan, logger = logger), logger = logger
+            )
+            if engaged == TC_STATIC:
+                object.__setattr__(state, "transformer_cache", TC_STATIC)
+                tc = (state.resolved or {}).get("transformer_cache")
+                if isinstance(tc, dict):
+                    tc["value"] = TC_STATIC
+                    tc["reason"] = (
+                        f"auto: static step skip (every {plan['every']}) for this model at "
+                        f"{plan['min_steps']}+ steps, engaged with the compiled profile; set "
+                        "UNSLOTH_DIFFUSION_AUTO_STEP_SKIP=0 to turn it off"
+                    )
         gguf_transformer = state.kind == "gguf" and state.transformer_quant is None
         if compile_eligible(target, is_gguf = gguf_transformer, family = state.family):
             compile_ctx = compile_cache.begin(

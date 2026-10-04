@@ -341,3 +341,47 @@ def test_auto_skip_runs_on_txt2img_only_explicit_everywhere(
     # img2img: an AUTO layer computes every step; an explicit one keeps its schedule.
     assert armed[0] == (None if auto else 28)
     backend.unload()
+
+
+def test_deferred_default_tier_installs_the_auto_skip_on_the_third_image(
+    fake_runtime, tmp_path, monkeypatch
+):
+    # Speed unset (the UI default): a dense load stays eager, then the 3rd image engages `default`, and with it the
+    # model's default-tier skip. The first two renders stay full-step.
+    from core.inference import diffusion as dmod
+
+    from .test_diffusion_backend import DiffusionBackend
+
+    monkeypatch.setattr(dmod, "auto_static_skip_plan", _probe_plan({"default": 2, "max": 3}))
+    monkeypatch.setattr(dmod, "default_generation_params", lambda *a, **k: (28, 3.5))
+    monkeypatch.delenv(dcache.ENV_AUTO_STEP_SKIP, raising = False)
+    monkeypatch.setattr(dmod, "compile_eligible", lambda *a, **k: True)
+    monkeypatch.setattr(
+        dmod,
+        "apply_speed_optims",
+        lambda pipe, target, **k: {"compiled": k.get("speed_mode") == "default"},
+    )
+    monkeypatch.setattr(dmod.compile_cache, "begin", lambda **k: None)
+    installs = []
+    monkeypatch.setattr(
+        dmod,
+        "install_static_step_skip",
+        lambda pipe, settings = None, logger = None: installs.append(settings) or dcache.TC_STATIC,
+    )
+    monkeypatch.setattr(dmod, "reset_static_step_skip", lambda *a, **k: True)
+    (tmp_path / "model.safetensors").write_bytes(b"weights")
+    backend = DiffusionBackend()
+    status = _load_into(
+        backend, tmp_path, gguf_filename = "model.safetensors", family_override = "qwen-image"
+    )
+    assert status["speed_mode"] == "off" and status["transformer_cache"] is None
+    backend.generate(prompt = "one")
+    backend.generate(prompt = "two")
+    assert installs == [] and backend.status()["transformer_cache"] is None
+    backend.generate(prompt = "three")
+    st = backend.status()
+    assert st["speed_mode"] == "default"
+    assert len(installs) == 1 and installs[0]["every"] == 2 and installs[0]["auto"] is True
+    assert st["transformer_cache"] == "static"
+    assert st["resolved"]["transformer_cache"]["value"] == "static"
+    backend.unload()
