@@ -247,3 +247,24 @@ test("Hub search rows for clone-only families outside the catalog list on Clone,
     true,
   );
 });
+
+test("the clone-only name hint follows the backend's speaks=False families", async () => {
+  const { isCloneOnlyFamilyId } = await import(
+    "../src/features/audio/audio-cpp-catalog.ts"
+  );
+  for (const id of [
+    "ResembleAI/chatterbox",
+    "someone/F5-TTS-GGUF",
+    "x/Echo-TTS-GGUF",
+    "x/Qwen3-TTS-12Hz-1.7B-Base-GGUF",
+  ]) {
+    assert.equal(isCloneOnlyFamilyId(id), true, id);
+  }
+  for (const id of [
+    "audio-cpp/audio.cpp-gguf/Chatterbox-Turbo-GGUF",
+    "x/Qwen3-TTS-12Hz-1.7B-CustomVoice-GGUF",
+    "x/Kokoro-82M-GGUF",
+  ]) {
+    assert.equal(isCloneOnlyFamilyId(id), false, id);
+  }
+});
