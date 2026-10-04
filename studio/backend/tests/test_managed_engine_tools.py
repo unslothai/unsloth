@@ -555,10 +555,13 @@ def test_a_catalog_with_tool_choice_none_is_plain_chat(native):
 
 
 @pytest.mark.parametrize("tools", [False, True])
-def test_managed_messages_keep_the_current_date_note(native, monkeypatch, tools):
+def test_managed_messages_keep_the_current_date(native, monkeypatch, tools):
     backend, requests = native
     monkeypatch.setattr(api, "_date_gate_blocks", lambda *a: False)
-    monkeypatch.setattr(api, "_current_date_parts", lambda *a: ("", "[DATE NOTE]"))
+    monkeypatch.setattr(
+        api, "current_date_prompt_line", lambda **_k: "The current date is 2026-08-15."
+    )
+    monkeypatch.setattr(api, "_local_template_default_system_prompt", lambda: "")
     seen = []
     plain = backend._responder
 
@@ -572,9 +575,13 @@ def test_managed_messages_keep_the_current_date_note(native, monkeypatch, tools)
             enable_tools = False, **({"tools": [route_test.LOOKUP_TOOL]} if tools else {})
         )
     )
-    messages = requests[-1]["messages"] if tools else seen[-1]
-    user = [m for m in messages if m["role"] == "user"][-1]
-    assert "[DATE NOTE]" in json.dumps(user["content"])
+    if tools:
+        messages = requests[-1]["messages"]
+        system = next(m["content"] for m in messages if m["role"] == "system")
+    else:
+        messages, system = seen[-1], backend.calls[-1]["system_prompt"]
+    assert "The current date is 2026-08-15." in json.dumps(system)
+    assert "2026-08-15" not in json.dumps([m for m in messages if m["role"] == "user"])
 
 
 @pytest.mark.parametrize("vision", [False, True])

@@ -5436,10 +5436,10 @@ def test_an_mlx_count_prices_the_current_date_the_completion_prepends(monkeypatc
 
     line = current_date_prompt_line(request = interactive)
     assert line, "the harness must actually produce a date line"
-    note = f"[Current date: {line.removeprefix('The current date is ')[:-1]}]"
-    assert backend.messages[-1]["content"].startswith(
-        note
-    ), f"the count dropped the date the completion adds: {backend.messages!r}"
+    assert backend.system == line, (
+        f"the count dropped the date the completion adds: {backend.system!r}"
+    )
+    assert backend.messages == [{"role": "user", "content": "hi"}]
 
 
 def test_an_mlx_count_prices_the_archive_tool_and_its_compaction_nudge(monkeypatch):

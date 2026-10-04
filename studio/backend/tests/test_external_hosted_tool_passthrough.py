@@ -750,26 +750,22 @@ def test_the_conversation_id_reaches_the_provider_client(monkeypatch):
 
 
 @pytest.mark.parametrize(
-    "provider_type, model, caching, noted",
+    "provider_type, model, caching",
     [
-        ("anthropic", "claude-sonnet-4-6", None, False),
-        ("openrouter", "anthropic/claude-sonnet-4.6", None, False),
-        ("openrouter", "~anthropic/claude-opus-latest", True, False),
-        ("anthropic", "claude-sonnet-4-6", False, True),
-        ("openrouter", "anthropic/claude-sonnet-4.6", False, True),
-        ("openrouter", "deepseek/deepseek-v3.2", None, True),
+        ("anthropic", "claude-sonnet-4-6", None),
+        ("openrouter", "anthropic/claude-sonnet-4.6", None),
+        ("openrouter", "~anthropic/claude-opus-latest", True),
+        ("anthropic", "claude-sonnet-4-6", False),
+        ("openrouter", "deepseek/deepseek-v3.2", None),
     ],
 )
-def test_a_thread_from_yesterday_keeps_the_claude_cache_breakpoint_stable(
-    monkeypatch, provider_type, model, caching, noted
+def test_a_thread_from_yesterday_leaves_every_user_turn_verbatim(
+    monkeypatch, provider_type, model, caching
 ):
-    from datetime import date
-
     inf = _install(monkeypatch, provider_type)
     monkeypatch.setattr(
         inf, "current_date_prompt_line", lambda **_k: "The current date is 2026-08-16."
     )
-    monkeypatch.setattr(inf, "conversation_start_date", lambda *_a, **_k: date(2026, 8, 15))
     monkeypatch.setattr(inf, "_request_has_api_key", lambda _request: False)
     history = [
         {"role": "user", "content": "first"},
@@ -788,4 +784,8 @@ def test_a_thread_from_yesterday_keeps_the_claude_cache_breakpoint_stable(
     )
     sent = FakeExternalClient.last["passthrough"]
     assert sent["thread_id"] == "thread-7"
-    assert sent["messages"][-1]["content"].startswith("[Current date: ") is noted
+    assert [m["content"] for m in sent["messages"] if m["role"] != "system"] == [
+        "first",
+        "ok",
+        "second",
+    ]

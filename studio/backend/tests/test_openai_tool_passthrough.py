@@ -6463,6 +6463,7 @@ class TestGgufVisionToolRouting:
         monkeypatch,
         date_line: str,
         messages = None,
+        chat_template = None,
     ) -> list[dict]:
         """Run one non-tool GGUF completion with the current-date setting pinned."""
         import routes.inference as inf_mod
@@ -6485,6 +6486,8 @@ class TestGgufVisionToolRouting:
             model_identifier = "test-gguf",
             context_length = 4096,
             generate_chat_completion = _generate,
+            chat_template = chat_template,
+            chat_template_override = None,
         )
         monkeypatch.setattr(inf_mod, "get_llama_cpp_backend", lambda: backend)
         # Pinned, not left to the host's stored setting, so the assertion is the same everywhere.
@@ -6521,21 +6524,39 @@ class TestGgufVisionToolRouting:
             {"role": "user", "content": "hi"},
         ]
 
-    def test_standard_gguf_without_a_system_prompt_keeps_the_template_default(self, monkeypatch):
-        sent = self._drive_standard_gguf(
-            monkeypatch,
-            "The current date is 2026-08-15.",
-            messages = [
-                {"role": "user", "content": "first"},
-                {"role": "assistant", "content": "ok"},
-                {"role": "user", "content": "second"},
-            ],
-        )
-        assert sent == [
-            {"role": "user", "content": "[Current date: 2026-08-15]\n\nfirst"},
+    @pytest.mark.parametrize(
+        ("chat_template", "system"),
+        [
+            (
+                "{% if messages[0]['role'] == 'system' %}{% set s = messages[0]['content'] %}"
+                "{% set rest = messages[1:] %}{% else %}{% set s = 'You are Qwen.' %}"
+                "{% set rest = messages %}{% endif %}<|im_start|>system\n{{ s }}<|im_end|>\n"
+                "{% for m in rest %}<|im_start|>{{ m['role'] }}\n{{ m['content'] }}<|im_end|>\n"
+                "{% endfor %}",
+                "The current date is 2026-08-15.\n\nYou are Qwen.",
+            ),
+            (
+                "{% for m in messages %}<start_of_turn>{{ m['role'] }}\n{{ m['content'] }}"
+                "<end_of_turn>\n{% endfor %}",
+                "The current date is 2026-08-15.",
+            ),
+        ],
+    )
+    def test_standard_gguf_without_a_system_prompt_dates_a_system_turn(
+        self, monkeypatch, chat_template, system
+    ):
+        history = [
+            {"role": "user", "content": "first"},
             {"role": "assistant", "content": "ok"},
             {"role": "user", "content": "second"},
         ]
+        sent = self._drive_standard_gguf(
+            monkeypatch,
+            "The current date is 2026-08-15.",
+            messages = history,
+            chat_template = chat_template,
+        )
+        assert sent == [{"role": "system", "content": system}, *history]
 
     @pytest.mark.parametrize(
         ("seed", "expected"),

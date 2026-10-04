@@ -404,8 +404,6 @@ def _fit_with_instruction_pins(
         )
     except Exception:  # noqa: BLE001 -- a protection heuristic must never break a chat
         pins = set()
-    from core.inference.context_window import keep_date_note
-
     fitted, truncation = _fit_context(
         messages, protected_message_ids = (anchors | pins) or None, **kwargs
     )
@@ -419,19 +417,7 @@ def _fit_with_instruction_pins(
         and not truncation.get("fits")
         and not int(truncation.get("dropped_messages") or 0)
     ):
-        fitted, truncation = _fit_context(messages, protected_message_ids = anchors or None, **kwargs)
-    moved = keep_date_note(messages, fitted)
-    if moved is not None and truncation:
-        message, before = moved
-        try:
-            tokens = kwargs["count_tokens"](fitted)
-        except Exception:  # noqa: BLE001 -- an unpriced note is dropped, never a failed chat
-            tokens = None
-        target = prompt_budget(kwargs.get("context_length") or 0, kwargs.get("max_tokens") or 0)
-        if tokens is None or tokens > target:
-            message["content"] = before
-        else:
-            truncation = {**truncation, "prompt_tokens_after": tokens}
+        return _fit_context(messages, protected_message_ids = anchors or None, **kwargs)
     return fitted, truncation
 
 
