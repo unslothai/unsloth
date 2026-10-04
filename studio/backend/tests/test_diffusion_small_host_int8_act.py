@@ -30,13 +30,21 @@ def _exact_int_mm(a, b):
     return (a.to(torch.int64) @ b.to(torch.int64)).to(torch.int32)
 
 
-def _layer(k = 256, n = 128, bias = True, act_int8 = True, seed = 0):
+def _layer(
+    k = 256,
+    n = 128,
+    bias = True,
+    act_int8 = True,
+    seed = 0,
+):
     torch.manual_seed(seed)
     lin = torch.nn.Linear(k, n, bias = bias)
     model = torch.nn.Sequential(lin)
     sh._INT8_MIN_ELEMENTS, old = 1, sh._INT8_MIN_ELEMENTS
     try:
-        sh.quantize_int8_weight_(model, compute_dtype = torch.float32, work_device = "cpu", act_int8 = act_int8)
+        sh.quantize_int8_weight_(
+            model, compute_dtype = torch.float32, work_device = "cpu", act_int8 = act_int8
+        )
     finally:
         sh._INT8_MIN_ELEMENTS = old
     return model[0], lin
@@ -59,7 +67,12 @@ def test_quantize_sets_the_flag_only_when_asked():
     assert off.act_int8 is False
 
 
-def _fake_cuda(monkeypatch, cap = (7, 5), int_mm = _exact_int_mm, hip = None):
+def _fake_cuda(
+    monkeypatch,
+    cap = (7, 5),
+    int_mm = _exact_int_mm,
+    hip = None,
+):
     monkeypatch.setattr(torch.cuda, "get_device_capability", lambda idx = None: cap)
     monkeypatch.setattr(torch.cuda, "current_device", lambda: 0)
     monkeypatch.setattr(torch.version, "hip", hip, raising = False)
@@ -123,11 +136,19 @@ def test_forward_routes_by_dtype_rows_alignment_and_device(monkeypatch):
     calls = []
     layer, _ = _layer(k = 256, n = 128)
     monkeypatch.setattr(sh, "int8_act_device_ok", lambda dev: True)
-    monkeypatch.setattr(type(layer), "_forward_int8_act", lambda self, x: calls.append(x.shape) or torch.zeros(()))
-    cuda_x = types.SimpleNamespace(dtype = torch.float32, is_cuda = True, device = "cuda", numel = lambda: 17 * 256)
+    monkeypatch.setattr(
+        type(layer), "_forward_int8_act", lambda self, x: calls.append(x.shape) or torch.zeros(())
+    )
+    cuda_x = types.SimpleNamespace(
+        dtype = torch.float32, is_cuda = True, device = "cuda", numel = lambda: 17 * 256
+    )
     assert layer._int8_act_ok(cuda_x)
-    assert not layer._int8_act_ok(types.SimpleNamespace(**{**cuda_x.__dict__, "dtype": torch.float16}))
-    assert not layer._int8_act_ok(types.SimpleNamespace(**{**cuda_x.__dict__, "numel": lambda: 16 * 256}))
+    assert not layer._int8_act_ok(
+        types.SimpleNamespace(**{**cuda_x.__dict__, "dtype": torch.float16})
+    )
+    assert not layer._int8_act_ok(
+        types.SimpleNamespace(**{**cuda_x.__dict__, "numel": lambda: 16 * 256})
+    )
     assert not layer._int8_act_ok(types.SimpleNamespace(**{**cuda_x.__dict__, "is_cuda": False}))
     layer.act_int8 = False
     assert not layer._int8_act_ok(cuda_x)
