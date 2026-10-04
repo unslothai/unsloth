@@ -1907,7 +1907,6 @@ def _uninstall_fused_dit_patches() -> None:
         pass
     try:
         from .diffusion_rocm_fused import uninstall as uninstall_rocm_fused
-
         uninstall_rocm_fused()
     except Exception:  # noqa: BLE001 - teardown is best effort
         pass
