@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import test from "node:test";
 
 import {
@@ -108,8 +109,20 @@ test("a transcript lands only on the clip it was made from, and stays with it", 
 });
 
 test("removing a clip drops its transcript but keeps typed words", () => {
-  const a = { kind: "input" as const, id: "a2", name: "a.wav", durationS: 3, transcript: "clip a words" };
-  const b = { kind: "input" as const, id: "b2", name: "b.wav", durationS: 3, transcript: "clip b words" };
+  const a = {
+    kind: "input" as const,
+    id: "a2",
+    name: "a.wav",
+    durationS: 3,
+    transcript: "clip a words",
+  };
+  const b = {
+    kind: "input" as const,
+    id: "b2",
+    name: "b.wav",
+    durationS: 3,
+    transcript: "clip b words",
+  };
   const store = () => useAudioCloneStore.getState();
   store().setReferenceText("");
   store().adoptReference(a);
@@ -121,4 +134,41 @@ test("removing a clip drops its transcript but keeps typed words", () => {
   store().adoptReference(null);
   store().adoptReference(a);
   assert.equal(store().referenceText, "my own words");
+});
+
+test("Add it again under Generate drops the expired clip's transcript too", () => {
+  const a = {
+    kind: "input" as const,
+    id: "a3",
+    name: "a.wav",
+    durationS: 3,
+    transcript: null,
+  };
+  const b = {
+    kind: "input" as const,
+    id: "b3",
+    name: "b.wav",
+    durationS: 3,
+    transcript: null,
+  };
+  const store = () => useAudioCloneStore.getState();
+  store().setReferenceText("");
+  store().adoptReference(a);
+  store().applyTranscript(a, "clip a words");
+  // What the reference-expired action does before opening the file picker.
+  const generation = readFileSync(
+    new URL(
+      "../src/features/audio/hooks/use-clone-generation.ts",
+      import.meta.url,
+    ),
+    "utf8",
+  );
+  const action = generation.slice(generation.indexOf('"reference-expired": ['));
+  assert.match(
+    action.slice(0, 400),
+    /getState\(\)\.adoptReference\(null\);\s*referenceHandle\.current\?\.browse\(\);/,
+  );
+  store().adoptReference(null);
+  store().adoptReference(b);
+  assert.equal(store().referenceText, "");
 });

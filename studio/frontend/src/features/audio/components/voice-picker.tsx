@@ -242,6 +242,7 @@ export function VoicePicker({
           if (!open) setEditing(null);
         }}
         mode="edit"
+        voiceId={editing?.id}
         initial={{
           name: editing?.name ?? "",
           transcript: editing?.transcript ?? "",
