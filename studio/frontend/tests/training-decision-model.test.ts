@@ -29,6 +29,9 @@ const { DatasetFormatError } = await import(
 const { validateTrainingConfig } = await import(
   "../src/features/training/lib/validation.ts"
 );
+const { deriveTrainingReadiness } = await import(
+  "../src/features/training/hooks/use-training-readiness.ts"
+);
 const { checkDecisionDatasetColumns, missingDecisionColumns } = await import(
   "../src/features/training/lib/decision-dataset.ts"
 );
@@ -372,6 +375,37 @@ test("leaving a decision model for one whose config fails drops the decision rec
   const payload = buildTrainingStartPayload(state, null);
   assert.equal(payload.is_decision, false);
   assert.equal(payload.load_in_4bit, true);
+});
+
+test("a decision model whose config fails cannot start until it loads", async () => {
+  useTrainingConfigStore.getState().reset();
+  setAuthFetchHandler(() => new Response("upstream error", { status: 502 }));
+
+  useTrainingConfigStore.getState().selectTrainingModel(LAYA, "decision");
+  await waitFor(
+    (state) =>
+      state.modelDefaultsError !== null &&
+      !state.isLoadingModelDefaults &&
+      !state.isCheckingVision,
+  );
+  useTrainingConfigStore.setState(HF_DECISION_DATASET);
+
+  const failed = useTrainingConfigStore.getState();
+  assert.equal(failed.modelType, "decision");
+  assert.equal(failed.modelSubfolder, null);
+  const blocked = deriveTrainingReadiness(failed, "cuda", true);
+  assert.equal(blocked.isReady, false);
+  assert.equal(blocked.configValidation.ok, true);
+  assert.notEqual(blocked.modelError, null);
+
+  serveConfigs();
+  useTrainingConfigStore.getState().ensureModelDefaultsLoaded();
+  await waitForModelDefaults(LAYA);
+  const loaded = useTrainingConfigStore.getState();
+  assert.equal(loaded.modelDefaultsError, null);
+  assert.equal(loaded.modelSubfolder, "multilingual");
+  assert.equal(loaded.learningRate, LAYA_YAML.training.learning_rate);
+  assert.equal(deriveTrainingReadiness(loaded, "cuda", true).isReady, true);
 });
 
 test("a decision model last loaded as a chat model gets its defaults on reload", async () => {

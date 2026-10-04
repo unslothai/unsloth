@@ -5,6 +5,7 @@ import types
 from pathlib import Path
 
 import pytest
+from real_accelerator import has_real_cuda
 
 torch = pytest.importorskip("torch")
 
@@ -492,7 +493,7 @@ def test_trainer_uses_one_gpu_and_the_set_batch_on_a_multi_gpu_machine(checkpoin
     assert trainer._wrap_model(model) is model
 
 
-@pytest.mark.skipif(not torch.cuda.is_available(), reason = "measures GPU memory")
+@pytest.mark.skipif(not has_real_cuda(), reason = "measures GPU memory")
 def test_lora_save_does_not_copy_the_encoder_on_the_gpu(checkpoint, tmp_path):
     model, tokenizer = FastDecisionModel.from_pretrained(
         str(checkpoint), use_gradient_checkpointing = False

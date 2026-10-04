@@ -25,7 +25,7 @@ export interface TrainingReadiness {
   configValidation: StartValidationResult;
 }
 
-function deriveTrainingReadiness(
+export function deriveTrainingReadiness(
   state: TrainingConfigState,
   deviceType: string,
   isOwner: boolean,
@@ -40,6 +40,9 @@ function deriveTrainingReadiness(
         : !!state.dataset;
   const isLoadingModel = state.isLoadingModelDefaults || state.isCheckingVision;
   const modelError = state.modelDefaultsError;
+  // Without its config a decision model has no recipe or checkpoint, so the run would train the wrong one.
+  const decisionConfigMissing =
+    state.modelType === "decision" && modelError !== null;
   const isModelCapabilitiesSettled = hasModel && !isLoadingModel;
   const isIncompatible =
     isModelCapabilitiesSettled && hasIncompatibleTrainingModalities(state);
@@ -58,6 +61,7 @@ function deriveTrainingReadiness(
       !isLoadingModel &&
       !state.isCheckingDataset &&
       !isIncompatible &&
+      !decisionConfigMissing &&
       configValidation.ok,
     isLoadingModel,
     isCheckingDataset: state.isCheckingDataset,
