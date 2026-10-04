@@ -7887,15 +7887,23 @@ def _external_transcript_preview(response: Response) -> str:
 
 
 def _refuse_managed_custom_projector(extra_args: Optional[list[str]]) -> None:
-    """A pass-through projector path skips account model access, so only the owner may name one."""
+    """A pass-through path (projector, drafter, adapter, template, grammar...) skips account model
+    access, so only the owner may name one."""
     from core.inference.llama_cpp import _extra_args_device
-    if (
-        account_access.managed_account()
-        and _extra_args_device(extra_args, {"--mmproj", "-mm"}) is not None
-    ):
+    from core.inference.llama_server_args import owner_only_path_flags
+
+    if not account_access.managed_account():
+        return
+    if _extra_args_device(extra_args, {"--mmproj", "-mm"}) is not None:
         raise HTTPException(
             status_code = 403,
             detail = "A custom --mmproj path is available to this installation's owner only.",
+        )
+    flags = owner_only_path_flags(extra_args)
+    if flags:
+        raise HTTPException(
+            status_code = 403,
+            detail = f"File path options ({', '.join(flags)}) are available to this installation's owner only.",
         )
 
 
@@ -16273,8 +16281,14 @@ def _resolve_llama_cpp_config(
     return request.model_copy(update = {"llama_cpp_config": source.to_wire()})
 
 
-async def _preflight_custom_llama_config(request, config):
-    """Compile a custom config before any backend or GPU owner can be evicted."""
+async def _preflight_custom_llama_config(
+    request,
+    config,
+    *,
+    caller_sent_custom = False,
+):
+    """Compile a custom config before any backend or GPU owner can be evicted. A config the caller
+    sent itself (not the owner's saved override) is held to the same path rules as pass-through args."""
     if not _custom_llama_config(request):
         return None
     if not config.is_gguf or _classify_diffusion_gguf(config) is True:
@@ -16286,9 +16300,12 @@ async def _preflight_custom_llama_config(request, config):
         model_identifier = config.identifier, llama_cpp_config = request.llama_cpp_config
     )
     try:
-        return await asyncio.to_thread(get_llama_cpp_backend().prepare_custom_config, intent)
+        compiled = await asyncio.to_thread(get_llama_cpp_backend().prepare_custom_config, intent)
     except ValueError as exc:
         raise HTTPException(status_code = 400, detail = redact_native_paths(str(exc))) from exc
+    if caller_sent_custom:
+        _refuse_managed_custom_projector(list(compiled.argv))
+    return compiled
 
 
 def _resolve_inherited_extra_args(
@@ -18208,7 +18225,12 @@ async def _load_model_impl(
             public_model_identifier,
         )
         extra_llama_args = _validated_extra_args(request)
-        custom_compiled = await _preflight_custom_llama_config(request, config)
+        custom_compiled = await _preflight_custom_llama_config(
+            request,
+            config,
+            caller_sent_custom = isinstance(requested_llama_cpp_config, dict)
+            and requested_llama_cpp_config.get("mode") == "custom",
+        )
         if custom_compiled is not None:
             _n_parallel = custom_compiled.n_parallel or _n_parallel
             effective_chat_template_override = None
@@ -19367,10 +19389,13 @@ async def validate_model(
             _reject_unsupported_managed_kind(request, config)
             await _managed_engine_options(request, config, request.hf_token)
 
+        caller_sent_custom = _custom_llama_config(request)
         request = _resolve_llama_cpp_config(
             request, config, _public_model_identifier(request.model_path, model_identifier)
         )
-        custom_compiled = await _preflight_custom_llama_config(request, config)
+        custom_compiled = await _preflight_custom_llama_config(
+            request, config, caller_sent_custom = caller_sent_custom
+        )
 
         # The caller's own list when it sent one, or the resolver hands back this
         # fourth argument unchanged and a --ctx-size the load is about to use would

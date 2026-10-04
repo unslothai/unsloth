@@ -1833,3 +1833,35 @@ def test_only_the_owner_may_name_a_custom_projector(monkeypatch, flag, managed):
     with pytest.raises(HTTPException) as err:
         routes._refuse_managed_custom_projector([flag, "/models/p.gguf"])
     assert err.value.status_code == 403
+
+
+@pytest.mark.parametrize(
+    "args",
+    [
+        ["--chat-template-file", "/home/owner/.ssh/id_ed25519"],
+        ["--grammar-file", "/etc/shadow"],
+        ["-jf", "/home/owner/secret.json"],
+        ["--lora", "/home/owner/adapter.gguf"],
+        ["--lora-scaled", "/home/owner/adapter.gguf:0.5"],
+        ["--control-vector", "/home/owner/cv.gguf"],
+        ["-md", "/home/owner/draft.gguf"],
+        ["--spec-draft-model", "/home/owner/draft.gguf"],
+        ["-lcs", "/home/owner/cache.bin"],
+        ["--log-prompts-dir", "/home/owner/.config"],
+    ],
+)
+@pytest.mark.parametrize("managed", [False, True])
+def test_only_the_owner_may_name_a_file_path_option(monkeypatch, args, managed):
+    import routes.inference as routes
+    from fastapi import HTTPException
+
+    monkeypatch.setattr(routes.account_access, "managed_account", lambda: managed)
+    routes._refuse_managed_custom_projector(["--ctx-size", "4096", "--temp", "0.7"])
+    routes._refuse_managed_custom_projector(None)
+    if not managed:
+        routes._refuse_managed_custom_projector(["--ctx-size", "4096", *args])
+        return
+    with pytest.raises(HTTPException) as err:
+        routes._refuse_managed_custom_projector(["--ctx-size", "4096", *args])
+    assert err.value.status_code == 403 and args[0] in err.value.detail
+    assert args[1] not in err.value.detail
