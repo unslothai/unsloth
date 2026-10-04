@@ -7060,6 +7060,16 @@ class DiffusionBackend:
                             "compiled; eager torchao quant is ~30x slower than GGUF here",
                             transformer_quant_engaged,
                         )
+                    # Drop an unused lm_head (hidden-state-only families) before the cast and before placement, so its
+                    # weight is never cast, moved or multiplied. A pre-cast encoder arrives already trimmed.
+                    from .diffusion_text_encoder_trim import trim_text_encoder
+
+                    te_trim = trim_text_encoder(getattr(pipe, "text_encoder", None), family = fam.name)
+                    if te_trim.get("lm_head") == "dropped" and te_trim.get("params"):
+                        logger.info(
+                            "diffusion.text_encoder: dropped unused lm_head (%.2fM params); hidden states unchanged",
+                            te_trim["params"] / 1e6,
+                        )
                     # Quantise the dense companion text encoder(s) before placement so offload moves the smaller
                     # weights.
                     te_outcome = quantize_text_encoders(
