@@ -27,3 +27,12 @@ test("history persists under the account that made it, so a write flushed after 
   assert.equal(data.has("unsloth_browser_history"), false);
   assert.match(data.get("unsloth_browser_history:b1") ?? "", /example\.com/);
 });
+
+test("a download keeps its record but not an address too long to store", () => {
+  const store = useBrowserHistoryStore.getState();
+  store.recordDownload({ name: "a.zip", url: `https://example.com/${"q".repeat(5000)}`, size: 1, contentType: "x" });
+  store.recordDownload({ name: "b.zip", url: "https://example.com/b.zip", size: 1, contentType: "x" });
+  const [b, a] = useBrowserHistoryStore.getState().downloads;
+  assert.equal(a?.url, null);
+  assert.equal(b?.url, "https://example.com/b.zip");
+});

@@ -13,6 +13,10 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { HTML_NAME, TEXT_NAME, TEXT_TYPE, mediaKind, textFileKind } from "./file-kind";
 import { DEFAULT_FILE_VIEW, useBrowserStore } from "./store";
 
+// The preview shows at most 200,000 characters (4 bytes each at most): a 50 MB response is never
+// decoded whole for it.
+const MAX_TEXT_BYTES = 1024 * 1024;
+
 function useObjectUrl(blob: Blob, enabled: boolean, svg: boolean): string | null {
   const [url, setUrl] = useState<string | null>(null);
   useEffect(() => {
@@ -65,7 +69,7 @@ function TextFile({
   const requestEdits = useBrowserStore((state) => state.requestEdits);
   useEffect(() => {
     let active = true;
-    void blob.text().then((value) => active && setText(value));
+    void blob.slice(0, MAX_TEXT_BYTES).text().then((value) => active && setText(value));
     return () => {
       active = false;
     };

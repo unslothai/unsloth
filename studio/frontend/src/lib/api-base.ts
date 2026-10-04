@@ -52,4 +52,14 @@ export function apiUrl(path: string): string {
   return `${apiBase}${path}`
 }
 
+/** Whether `url` is served by this Studio's backend, so a request to it may carry the sign-in. */
+export function isStudioUrl(url: string): boolean {
+  const base = typeof window === 'undefined' ? 'http://localhost/' : window.location.href
+  try {
+    return new URL(apiUrl(url), base).origin === new URL(apiUrl('/'), base).origin
+  } catch {
+    return false
+  }
+}
+
 export { isTauri }

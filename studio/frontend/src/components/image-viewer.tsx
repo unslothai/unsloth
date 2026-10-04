@@ -7,6 +7,7 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
+import { AUTH_SESSION_CLEARED_EVENT } from "@/features/auth/session-events";
 import { useLocale, useT } from "@/i18n";
 import { downloadFile, isDownloadCancelled } from "@/lib/native-files";
 import { openLink } from "@/lib/open-link";
@@ -65,6 +66,13 @@ export const useImageViewerStore = create<ImageViewerState>((set, get) => ({
     if (next >= 0 && next < images.length) set({ index: next });
   },
 }));
+
+// A sign-out leaves the app mounted: the viewer must not keep showing, or holding, the last account's images.
+if (typeof window !== "undefined") {
+  window.addEventListener(AUTH_SESSION_CLEARED_EVENT, () =>
+    useImageViewerStore.setState({ images: [], index: 0, open: false }),
+  );
+}
 
 export function openImageViewer(images: ViewerImage[], index = 0): void {
   useImageViewerStore.getState().show(images, index);

@@ -86,9 +86,18 @@ export const useBrowserHistoryStore = create<BrowserHistoryState>()(
           return { history: [item, ...state.history].slice(0, MAX_HISTORY) };
         }),
       recordDownload: (item) =>
-        set((state) => ({
-          downloads: [{ ...item, id: newId(), downloadedAt: Date.now() }, ...state.downloads].slice(0, MAX_DOWNLOADS),
-        })),
+        set((state) => {
+          // A page picks these: bounded like a visit, keeping the download without an overlong address.
+          const entry = {
+            ...item,
+            name: item.name.slice(0, MAX_TITLE_CHARS),
+            url: item.url !== null && item.url.length <= MAX_URL_CHARS ? item.url : null,
+            contentType: item.contentType.slice(0, MAX_TITLE_CHARS),
+            id: newId(),
+            downloadedAt: Date.now(),
+          };
+          return { downloads: [entry, ...state.downloads].slice(0, MAX_DOWNLOADS) };
+        }),
       removeVisit: (id) => set((state) => ({ history: state.history.filter((item) => item.id !== id) })),
       removeVisits: (ids) => set((state) => ({ history: state.history.filter((item) => !ids.has(item.id)) })),
       removeDownload: (id) => set((state) => ({ downloads: state.downloads.filter((item) => item.id !== id) })),

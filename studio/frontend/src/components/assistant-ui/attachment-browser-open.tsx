@@ -7,6 +7,7 @@ import type { AttachmentSource } from "@/components/assistant-ui/use-attachment-
 import { authFetch } from "@/features/auth";
 import { attachmentBodyText, fetchChatAttachmentBlob, parseAttachmentText } from "@/features/chat";
 import { openFileInBrowser } from "@/features/browser";
+import { isStudioUrl } from "@/lib/api-base";
 import { toast } from "@/lib/toast";
 import { useAuiState } from "@assistant-ui/react";
 import { Slot } from "radix-ui";
@@ -119,8 +120,14 @@ function blobLoader(source: AttachmentSource): (() => Promise<Blob>) | null {
   const local = localLoader(source);
   if (local) return () => local().then(({ blob }) => blob);
   if (src) {
+    // Only Studio's own URLs get the sign-in; an image linked from elsewhere must not receive it.
+    const request = /^(blob|data):/i.test(src)
+      ? () => fetch(src)
+      : isStudioUrl(src)
+        ? () => authFetch(src)
+        : () => fetch(src, { credentials: "omit" });
     return () =>
-      (/^(blob|data):/i.test(src) ? fetch(src) : authFetch(src)).then((response) => {
+      request().then((response) => {
         if (!response.ok) throw new Error(`HTTP ${response.status}`);
         return response.blob();
       });
