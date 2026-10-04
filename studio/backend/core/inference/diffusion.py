@@ -7043,6 +7043,7 @@ class DiffusionBackend:
                         cache_engaged = cache_graph_break,
                         offload_active = plan.offload_policy != OFFLOAD_NONE,
                         denoiser_offloaded = not plan_keeps_transformer_resident(plan),
+                        stream_int8_gemm = True,
                         logger = logger,
                     )
                     if vae_fp16:
@@ -9052,6 +9053,7 @@ class DiffusionBackend:
             offload_active = state.offload_policy != OFFLOAD_NONE,
             denoiser_offloaded = state.offload_policy != OFFLOAD_NONE
             and _denoiser_hooked(state.pipe),
+            stream_int8_gemm = True,
             logger = logger,
         )
         if denoisers_pinned_resident(state.pipe):
