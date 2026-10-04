@@ -7,6 +7,7 @@ import {
   AUDIO_CPP_SEP_AUDIO_TYPE,
   audioCppModelFor,
   isCloneOnlyFamilyId,
+  isSpeakAndCloneFamilyId,
 } from "./audio-cpp-catalog";
 import { isMusicGenerationModel } from "./catalog";
 import {
@@ -45,6 +46,9 @@ export function audioRowMatchesWorkflow(
   // Hub search rows carry no backend workflows before download: name the clone-only families.
   if (isCloneOnlyFamilyId(row.id)) {
     return workflow === "clone";
+  }
+  if (isSpeakAndCloneFamilyId(row.id)) {
+    return workflow === "speak" || workflow === "clone";
   }
   const catalogTask = catalogModel?.task;
   if (catalogTask === "music") {
