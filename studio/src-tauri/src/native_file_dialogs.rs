@@ -19,6 +19,7 @@ const CHAT_IMPORT_EXTENSIONS: &[&str] = &["json", "jsonl", "ndjson", "csv", "md"
 const CHAT_IMPORT_TYPE_ERROR: &str =
     "Chat import must be a .json, .jsonl, .ndjson, .csv, or .md file.";
 const TRAINING_CONFIG_EXTENSIONS: &[&str] = &["yaml", "yml"];
+const LAST_SAVE_DIR_FILE: &str = "last-save-dir.txt";
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -158,6 +159,25 @@ fn invoke_body_bytes(body: &tauri::ipc::InvokeBody) -> Option<Cow<'_, [u8]>> {
             .collect::<Option<Vec<_>>>()
             .map(Cow::Owned),
     }
+}
+
+/// GTK keeps no per-app last folder, so without this every Linux save starts from scratch.
+fn last_save_dir(config_dir: &Path) -> Option<PathBuf> {
+    let saved = fs::read_to_string(config_dir.join(LAST_SAVE_DIR_FILE)).ok()?;
+    let dir = PathBuf::from(saved.trim_end_matches(['\r', '\n']));
+    (dir.is_absolute() && dir.is_dir()).then_some(dir)
+}
+
+/// Best effort: failing to remember a folder must not fail a save that already landed.
+fn remember_save_dir(config_dir: &Path, saved_path: &Path) {
+    let Some(dir) = saved_path.parent().filter(|dir| dir.is_absolute()) else {
+        return;
+    };
+    let Some(dir) = dir.to_str() else {
+        return;
+    };
+    let _ = fs::create_dir_all(config_dir)
+        .and_then(|()| fs::write(config_dir.join(LAST_SAVE_DIR_FILE), dir));
 }
 
 fn local_dialog_path(path: tauri_plugin_dialog::FilePath) -> Result<PathBuf, String> {
@@ -368,21 +388,30 @@ pub async fn save_native_file(
         .ok_or_else(|| "Native export content must be binary.".to_string())?;
     let (filter_name, extensions) = save_filter(&file_name);
     let extension_refs = extensions.iter().map(String::as_str).collect::<Vec<_>>();
+    let config_dir = app.path().app_config_dir().ok();
     let (tx, rx) = tokio::sync::oneshot::channel();
-    app.dialog()
+    let mut dialog = app
+        .dialog()
         .file()
         .set_title("Save Unsloth export")
         .set_file_name(file_name)
-        .add_filter(filter_name, &extension_refs)
-        .save_file(move |path| {
-            let _ = tx.send(path);
-        });
+        .add_filter(filter_name, &extension_refs);
+    if let Some(dir) = config_dir.as_deref().and_then(last_save_dir) {
+        dialog = dialog.set_directory(dir);
+    }
+    dialog.save_file(move |path| {
+        let _ = tx.send(path);
+    });
     let selected_path = rx
         .await
         .map_err(|_| "Save dialog closed unexpectedly.".to_string())?
         .map(local_dialog_path)
         .transpose()?;
-    save_selected_file(selected_path, content.as_ref())
+    let saved = save_selected_file(selected_path.clone(), content.as_ref())?;
+    if let (Some(config_dir), Some(path), Some(_)) = (&config_dir, &selected_path, &saved) {
+        remember_save_dir(config_dir, path);
+    }
+    Ok(saved)
 }
 
 /// Save a backend URL by streaming it to the chosen path.
@@ -402,15 +431,20 @@ pub async fn save_native_file_from_url(
     let file_name = default_file_name(&file_name);
     let (filter_name, extensions) = save_filter(&file_name);
     let extension_refs = extensions.iter().map(String::as_str).collect::<Vec<_>>();
+    let config_dir = app.path().app_config_dir().ok();
     let (tx, rx) = tokio::sync::oneshot::channel();
-    app.dialog()
+    let mut dialog = app
+        .dialog()
         .file()
         .set_title("Save Unsloth export")
         .set_file_name(file_name)
-        .add_filter(filter_name, &extension_refs)
-        .save_file(move |path| {
-            let _ = tx.send(path);
-        });
+        .add_filter(filter_name, &extension_refs);
+    if let Some(dir) = config_dir.as_deref().and_then(last_save_dir) {
+        dialog = dialog.set_directory(dir);
+    }
+    dialog.save_file(move |path| {
+        let _ = tx.send(path);
+    });
     let selected_path = rx
         .await
         .map_err(|_| "Save dialog closed unexpectedly.".to_string())?
@@ -420,6 +454,9 @@ pub async fn save_native_file_from_url(
         return Ok(None);
     };
     stream_url_to_path(&url, &path, DOWNLOAD_READ_TIMEOUT, None).await?;
+    if let Some(config_dir) = &config_dir {
+        remember_save_dir(config_dir, &path);
+    }
     Ok(Some(saved_file_name(&path)))
 }
 
@@ -967,6 +1004,23 @@ mod tests {
         let (name, extensions) = save_filter("snippet.bad!");
         assert_eq!(name, "Export files");
         assert!(!extensions.iter().any(|extension| extension == "bad!"));
+    }
+
+    #[test]
+    fn the_last_save_folder_is_remembered_until_it_disappears() {
+        let config = tempfile::tempdir().unwrap();
+        let exports = tempfile::tempdir().unwrap();
+        assert_eq!(last_save_dir(config.path()), None);
+
+        remember_save_dir(config.path(), &exports.path().join("chat (2026-10-02).md"));
+        assert_eq!(
+            last_save_dir(config.path()).as_deref(),
+            Some(exports.path())
+        );
+
+        let gone = exports.path().to_path_buf();
+        drop(exports);
+        assert_eq!(last_save_dir(config.path()), None, "{}", gone.display());
     }
 
     #[test]
