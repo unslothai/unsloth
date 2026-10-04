@@ -552,7 +552,12 @@ def _source_speaks_for_the_cache() -> bool:
     return active_source() != MODELSCOPE
 
 
-def repo_is_public(repo_id: str, repo_type: str = "model") -> bool:
+def repo_is_public(
+    repo_id: str,
+    repo_type: str = "model",
+    *,
+    offline: bool = False,
+) -> bool:
     """Only an anonymous Hub answer proves a shared-cache repo public."""
     if not _source_speaks_for_the_cache():
         return False
@@ -562,6 +567,8 @@ def repo_is_public(repo_id: str, repo_type: str = "model") -> bool:
         cached = _public_repos.get(key)
         if cached is not None and cached[0] > time.monotonic():
             return cached[1]
+        if offline:
+            return name in _load_public_verdicts()
         flight = _public_flights.get(key)
         leading = flight is None
         if leading:
@@ -730,13 +737,18 @@ def repo_visible(
     repo_type: str = "model",
     *,
     grants: set[str] | None = None,
+    offline: bool = False,
 ) -> bool:
     if not managed_account():
         return True
     if not repo_id:
         return False
     granted = model_grants() if grants is None else grants
-    return _grant_key(repo_id, repo_type) in granted or repo_is_public(repo_id, repo_type)
+    return _grant_key(repo_id, repo_type) in granted or (
+        repo_is_public(repo_id, repo_type, offline = True)
+        if offline
+        else repo_is_public(repo_id, repo_type)
+    )
 
 
 def _cached_repo(path: Path) -> tuple[str, str] | None:
@@ -754,6 +766,7 @@ def model_visible(
     *,
     grants: set[str] | None = None,
     repo_type: str = "model",
+    offline: bool = False,
 ) -> bool:
     """Grants cover repo ids and cache snapshot/file spellings; other local paths stay private."""
     if not managed_account():
@@ -761,6 +774,7 @@ def model_visible(
     if not isinstance(reference, str) or not reference:
         return False
     reference = reference.strip()
+    access_options = {"offline": True} if offline else {}
     path = Path(reference).expanduser()
     if path.is_absolute() or reference.startswith(("./", "../", "~")) or path.exists():
         try:
@@ -776,7 +790,9 @@ def model_visible(
             if cached is not None:
                 # Snapshots point at their own repo's blobs; cross-repo links are refused.
                 actual = _cached_repo(resolved)
-                return actual == cached and repo_visible(cached[0], cached[1], grants = grants)
+                return actual == cached and repo_visible(
+                    cached[0], cached[1], grants = grants, **access_options
+                )
         except (OSError, RuntimeError, ValueError):
             return False
         return False
@@ -785,11 +801,17 @@ def model_visible(
     if not all(parts[:2]):
         return False
     repo_id = "/".join(parts[:2])
-    return repo_visible(repo_id, repo_type, grants = grants)
+    return repo_visible(repo_id, repo_type, grants = grants, **access_options)
 
 
-def require_model_access(reference: str, repo_type: str = "model") -> None:
-    if not model_visible(reference, repo_type = repo_type):
+def require_model_access(
+    reference: str,
+    repo_type: str = "model",
+    *,
+    offline: bool = False,
+) -> None:
+    access_options = {"offline": True} if offline else {}
+    if not model_visible(reference, repo_type = repo_type, **access_options):
         raise HTTPException(status_code = 404, detail = "Model not found")
 
 
