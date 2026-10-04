@@ -327,7 +327,6 @@ def _flash_attn_installed() -> bool:
         return sys.modules["flash_attn"] is not None
     try:
         import importlib.util
-
         return importlib.util.find_spec("flash_attn") is not None
     except Exception:  # noqa: BLE001
         return False
@@ -342,6 +341,7 @@ def _rocm_auto_flash(target: Any, family: Any) -> bool:
     if not _rocm_gfx_arch(target).startswith(ROCM_AUTO_FLASH_ARCHES):
         return False
     return _flash_attn_installed() and _rocm_flash_attn_runs(target)
+
 
 # Max abs error of the probe's flash_attn output against an fp32 reference (bf16 eps is ~4e-3).
 _ROCM_FLASH_PROBE_TOL = 2e-2

@@ -256,8 +256,13 @@ def _arch(monkeypatch, arch = "gfx1151"):
 def test_rocm_auto_flash_for_klein_on_gfx11(monkeypatch):
     calls = _rocm(monkeypatch)
     _arch(monkeypatch)
-    assert select_attention_backend(_target(), "auto", speed_active = True, family = _klein()) == "flash"
-    assert select_attention_backend(_target(), None, speed_active = True, family = "flux.2-klein") == "flash"
+    assert (
+        select_attention_backend(_target(), "auto", speed_active = True, family = _klein()) == "flash"
+    )
+    assert (
+        select_attention_backend(_target(), None, speed_active = True, family = "flux.2-klein")
+        == "flash"
+    )
     # unset speed (ROCm resolves it to `off`): the default path, so flash too
     assert (
         select_attention_backend(
@@ -277,7 +282,9 @@ def test_rocm_auto_stays_native_for_unmeasured_families(monkeypatch, family):
     fam = None if family is None else types.SimpleNamespace(name = family)
     assert select_attention_backend(_target(), "auto", speed_active = True, family = fam) is None
     assert (
-        select_attention_backend(_target(), "auto", speed_active = False, family = fam, speed_unset = True)
+        select_attention_backend(
+            _target(), "auto", speed_active = False, family = fam, speed_unset = True
+        )
         is None
     )
     assert calls == []
@@ -295,7 +302,9 @@ def test_rocm_auto_klein_without_flash_attn_is_silent(monkeypatch, caplog):
     calls = _rocm(monkeypatch, flash_attn = False)
     _arch(monkeypatch)
     logged = []
-    monkeypatch.setattr(att, "_module_logger", lambda: types.SimpleNamespace(warning = lambda *a: logged.append(a)))
+    monkeypatch.setattr(
+        att, "_module_logger", lambda: types.SimpleNamespace(warning = lambda *a: logged.append(a))
+    )
     assert select_attention_backend(_target(), "auto", speed_active = True, family = _klein()) is None
     assert calls == [] and logged == []
 
@@ -310,14 +319,19 @@ def test_rocm_auto_klein_explicit_native_wins(monkeypatch):
     calls = _rocm(monkeypatch)
     _arch(monkeypatch)
     for alias in ("native", "sdpa"):
-        assert select_attention_backend(_target(), alias, speed_active = True, family = _klein()) is None
+        assert (
+            select_attention_backend(_target(), alias, speed_active = True, family = _klein()) is None
+        )
     assert calls == []
 
 
 def test_nvidia_auto_klein_unchanged(monkeypatch):
     monkeypatch.setattr(att, "_is_cuda_nvidia", lambda target: True)
     monkeypatch.setattr(att, "_cudnn_attention_supported", lambda: True)
-    assert select_attention_backend(_target(), "auto", speed_active = True, family = _klein()) == "_native_cudnn"
+    assert (
+        select_attention_backend(_target(), "auto", speed_active = True, family = _klein())
+        == "_native_cudnn"
+    )
     for unset in (False, True):
         assert (
             select_attention_backend(
