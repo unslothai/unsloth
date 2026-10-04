@@ -376,8 +376,30 @@ _FRAME_HTML = r"""<!doctype html>
             const kept = found.filter(({ element }) =>
               mostlyInside(element) || !found.some((other) => other.element !== element && element.contains(other.element)));
             const hits = kept.filter(({ element }) => !kept.some((other) => other.element !== element && other.element.contains(element)));
-            if (hits.length) return hits.map(({ range }) => range);
-            return blockAt(document.elementFromPoint(area.left + area.width / 2, area.top + area.height / 2)) || [];
+            return hits.map(({ range }) => range);
+          };
+          // What a blank area is pinned to: a bar fixed on screen it sits on, else the content of
+          // whatever scrolls under it, so the area keeps to its place on the page as it scrolls.
+          const anchorOf = (area) => {
+            const at = document.elementFromPoint(area.left + area.width / 2, area.top + area.height / 2);
+            let element = at instanceof Element ? at : null;
+            for (; element && element !== document.body && element !== document.documentElement; element = element.parentElement) {
+              const style = getComputedStyle(element);
+              // A layer over the whole view is no bar; the page scrolls under it.
+              if (style.position === "fixed") return tooBig(element) ? document.documentElement : element;
+              const scrolls = /auto|scroll/.test(style.overflowX + style.overflowY) &&
+                (element.scrollHeight > element.clientHeight || element.scrollWidth > element.clientWidth);
+              if (scrolls) return element.firstElementChild || element;
+            }
+            return document.documentElement;
+          };
+          // Where a mark is now: around what it marks, or its blank area, moved with its anchor.
+          const markBox = (mark) => {
+            if (mark.ranges) return boxOf(mark.ranges);
+            const { element, dx, dy, width, height } = mark.anchor;
+            if (!element.isConnected) return null;
+            const rect = element.getBoundingClientRect();
+            return { left: rect.left + dx, top: rect.top + dy, width, height };
           };
           const boxOf = (ranges) => {
             let left = Infinity, top = Infinity, right = -Infinity, bottom = -Infinity;
@@ -449,7 +471,7 @@ _FRAME_HTML = r"""<!doctype html>
             place(outline, hover ? boxOf(hover) : null);
             const rects = [];
             for (const [id, mark] of marks) {
-              const box = boxOf(mark.ranges);
+              const box = markBox(mark);
               place(mark.box, box);
               place(mark.pin, box && pinBox(box), "flex");
               mark.at = box;
@@ -463,22 +485,33 @@ _FRAME_HTML = r"""<!doctype html>
             hover = next;
             place(outline, next ? boxOf(next) : null);
           };
-          const addMark = (ranges) => {
-            if (!ranges || !ranges.length) return;
-            const quote = quoteOf(ranges);
-            const picture = pictureOf(ranges);
-            if (!quote && picture === null) return;
+          const createMark = (target, details) => {
             const id = nextId++;
             const box = document.createElement("div");
             box.className = "mark";
             const pin = document.createElement("div");
             pin.className = "pin";
             root.append(box, pin);
-            const at = boxOf(ranges);
-            place(box, at);
-            place(pin, at && pinBox(at), "flex");
-            marks.set(id, { ranges, box, pin, at });
-            send("mark", { id, rect: at, quote, image: picture !== null, alt: picture || "" });
+            const mark = { ...target, box, pin, at: null };
+            mark.at = markBox(mark);
+            place(box, mark.at);
+            place(pin, mark.at && pinBox(mark.at), "flex");
+            marks.set(id, mark);
+            send("mark", { id, rect: mark.at, ...details });
+          };
+          const addMark = (ranges) => {
+            if (!ranges || !ranges.length) return;
+            const quote = quoteOf(ranges);
+            const picture = pictureOf(ranges);
+            if (!quote && picture === null) return;
+            createMark({ ranges }, { quote, image: picture !== null, alt: picture || "", area: false });
+          };
+          // An area with nothing in it marks that part of the page itself.
+          const addArea = (area) => {
+            const element = anchorOf(area);
+            const rect = element.getBoundingClientRect();
+            const anchor = { element, dx: area.left - rect.left, dy: area.top - rect.top, width: area.width, height: area.height };
+            createMark({ anchor }, { quote: "", image: false, alt: "", area: true });
           };
           // The panel numbers the marks, as they will be read in the chat.
           const number = (numbers) => {
@@ -545,7 +578,10 @@ _FRAME_HTML = r"""<!doctype html>
             try { document.documentElement.releasePointerCapture(event.pointerId); } catch {}
             // Before the mark, so the panel keeps the comment it had open.
             send("up");
-            if (box) addMark(blocksIn(new DOMRect(box.left, box.top, box.width, box.height)));
+            if (box) {
+              const ranges = blocksIn(new DOMRect(box.left, box.top, box.width, box.height));
+              ranges.length ? addMark(ranges) : addArea(box);
+            }
             else if (pin !== null) send("open", { id: pin });
             else addMark(blockAt(document.elementFromPoint(event.clientX, event.clientY) || event.target));
           };

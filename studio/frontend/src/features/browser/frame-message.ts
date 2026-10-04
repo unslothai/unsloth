@@ -32,7 +32,16 @@ export type AnnotateEvent =
   | { kind: "up" }
   | { kind: "escape" }
   | { kind: "open"; id: number }
-  | { kind: "mark"; id: number; rect: AnnotateRect | null; quote: string; image: boolean; alt: string }
+  | {
+      kind: "mark";
+      id: number;
+      rect: AnnotateRect | null;
+      quote: string;
+      image: boolean;
+      alt: string;
+      /** A part of the page with nothing in it, marked as a place. */
+      area: boolean;
+    }
   | { kind: "rects"; rects: Array<[number, AnnotateRect | null]> };
 
 // Same limits as the fetch endpoint.
@@ -85,6 +94,7 @@ function annotateEvent(message: Record<string, unknown>): AnnotateEvent | null {
         quote: typeof message.quote === "string" ? message.quote.slice(0, MAX_QUOTE_CHARS) : "",
         image: message.image === true,
         alt: typeof message.alt === "string" ? message.alt.slice(0, MAX_QUOTE_CHARS) : "",
+        area: message.area === true,
       };
     }
     case "rects": {

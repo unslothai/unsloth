@@ -753,10 +753,11 @@ function AnnotatePageButton({ tab }: { tab: BrowserTab | undefined }) {
           "border-transparent bg-primary/12 text-primary hover:bg-primary/18 hover:text-primary dark:bg-primary/20 dark:hover:bg-primary/25",
       )}
     >
+      {/* Its cursor weighs down the bottom right; nudged so it reads as centred. */}
       <HugeiconsIcon
         icon={CursorRectangleSelection02Icon}
         strokeWidth={1.75}
-        className="size-4.75"
+        className="size-4.5 -translate-x-0.25 -translate-y-0.25"
       />
     </IconButton>
   );
@@ -902,7 +903,7 @@ function FileToolbar({
             type="button"
             className={cn(
               PILL,
-              "flex h-9 min-w-24 max-w-[55%] shrink cursor-pointer items-center gap-2 rounded-full pl-3.5 pr-3 text-ui-13p5 text-foreground outline-none transition-colors focus-visible:ring-2 focus-visible:ring-ring",
+              "flex h-9 min-w-24 max-w-[55%] shrink cursor-pointer items-center gap-2 rounded-full pl-3.5 pr-2.5 text-ui-13p5 text-foreground outline-none transition-colors focus-visible:ring-2 focus-visible:ring-ring",
             )}
           >
             <KindIcon
@@ -1162,7 +1163,7 @@ function FileToolbar({
             .getState()
             .setZoom(tab.id, value === "fit" ? 1 : value)
         }
-        className={cn(PILL, "mr-0 hidden h-9 hover:bg-card @[28rem]:flex dark:hover:bg-accent")}
+        className={cn(PILL, "mr-0 hidden h-9 pr-2.5 hover:bg-card @[28rem]:flex dark:hover:bg-accent")}
       />
       <CircleButton
         label={t("browser.download")}

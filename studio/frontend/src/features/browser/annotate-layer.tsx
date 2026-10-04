@@ -10,6 +10,7 @@ import { useT } from "@/i18n";
 import { DragDropVerticalIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { MicIcon } from "@/lib/mic-icon";
+import { Tick02Icon } from "@/lib/tick-icon";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
 import {
@@ -611,6 +612,9 @@ function CommentForm({
       : box.top + box.height + 8;
   const left = Math.min(Math.max(12, box.left + box.width - width), layer.width - width - 12);
   const micLabel = t(dictation.listening ? "browser.annotate.stopDictating" : "browser.annotate.dictate");
+  // Once there is something to save, the microphone gives way to a tick, unless it is still
+  // listening, so dictation can always be stopped.
+  const canSave = Boolean(draft.trim()) && !dictation.listening;
   return (
     <form
       data-annotate-ui=""
@@ -632,23 +636,34 @@ function CommentForm({
         aria-label={placeholder ?? t("browser.annotate.placeholder")}
         className="min-w-0 flex-1 bg-transparent text-ui-15 outline-none placeholder:text-muted-foreground dark:placeholder:text-neutral-400"
       />
-      <button
-        type="button"
-        aria-label={micLabel}
-        title={micLabel}
-        aria-pressed={dictation.listening}
-        onClick={() => {
-          dictation.toggle();
-          inputRef.current?.focus();
-        }}
-        className={cn(
-          "flex size-9 shrink-0 cursor-pointer items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-muted hover:text-foreground dark:text-neutral-300 dark:hover:bg-neutral-700 dark:hover:text-white",
-          dictation.listening &&
-            "animate-pulse bg-primary text-primary-foreground hover:bg-primary hover:text-primary-foreground dark:bg-primary dark:text-primary-foreground dark:hover:bg-primary dark:hover:text-primary-foreground",
-        )}
-      >
-        <MicIcon className="size-4.5" />
-      </button>
+      {canSave ? (
+        <button
+          type="submit"
+          aria-label={t("browser.annotate.save")}
+          title={t("browser.annotate.save")}
+          className="flex size-9 shrink-0 animate-in cursor-pointer items-center justify-center rounded-full bg-primary text-primary-foreground transition-opacity fade-in-0 zoom-in-75 duration-150 hover:opacity-90"
+        >
+          <HugeiconsIcon icon={Tick02Icon} strokeWidth={2} className="size-4.5" />
+        </button>
+      ) : (
+        <button
+          type="button"
+          aria-label={micLabel}
+          title={micLabel}
+          aria-pressed={dictation.listening}
+          onClick={() => {
+            dictation.toggle();
+            inputRef.current?.focus();
+          }}
+          className={cn(
+            "flex size-9 shrink-0 cursor-pointer items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-muted hover:text-foreground dark:text-neutral-300 dark:hover:bg-neutral-700 dark:hover:text-white",
+            dictation.listening &&
+              "animate-pulse bg-primary text-primary-foreground hover:bg-primary hover:text-primary-foreground dark:bg-primary dark:text-primary-foreground dark:hover:bg-primary dark:hover:text-primary-foreground",
+          )}
+        >
+          <MicIcon className="size-4.5" />
+        </button>
+      )}
     </form>
   );
 }
@@ -851,7 +866,12 @@ export function WebAnnotateLayer({
       }
       case "mark": {
         const quote =
-          event.quote || (event.image ? event.alt || t("browser.annotate.imageQuote") : "");
+          event.quote ||
+          (event.image
+            ? event.alt || t("browser.annotate.imageQuote")
+            : event.area
+              ? t("browser.annotate.areaQuote")
+              : "");
         if (!quote) {
           forget(event.id);
           break;
