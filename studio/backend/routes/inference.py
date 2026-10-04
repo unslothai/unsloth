@@ -21083,6 +21083,10 @@ async def voice_load_model(
     from core.inference.gpu_arbiter import CHAT as _CHAT, acquire_for_request, current_owner
     from core.inference.llama_cpp import voice_load_in_flight
 
+    # unload_model bumps this; load_model never does. An unload that lands between the
+    # in-flight mark and the spawn sets a cancel event load_model then clears, so the
+    # epoch is what survives.
+    unload_epoch = getattr(voice_backend, "_unload_epoch", None)
     in_flight = voice_load_in_flight()
     await asyncio.to_thread(
         acquire_for_request, _CHAT, in_flight.__enter__, alongside = True
@@ -21095,6 +21099,15 @@ async def voice_load_model(
     finally:
         in_flight.__exit__(None, None, None)
 
+    if unload_epoch is not None and getattr(voice_backend, "_unload_epoch", None) != unload_epoch:
+        try:
+            await asyncio.to_thread(voice_backend.unload_model)
+        except Exception:
+            pass
+        raise HTTPException(
+            status_code = 409,
+            detail = "The voice model was unloaded while it was loading. Load it again.",
+        )
     # load_model clears the cancel event an Images/Video eviction set between the claim and the
     # spawn, so that cancellation is lost. Ownership survives it: same recheck as /load.
     if current_owner() != _CHAT:

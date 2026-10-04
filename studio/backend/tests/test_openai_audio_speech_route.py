@@ -1313,6 +1313,21 @@ def test_voice_unload_cancels_a_load_that_has_not_spawned_yet(monkeypatch):
     assert calls == ["unload"]
 
 
+def test_voice_load_undoes_itself_when_an_unload_landed_before_the_spawn():
+    """An unload between the in-flight mark and load_model set a cancel event load_model then
+    cleared, with CHAT still the owner, so the server came up after an explicit unload. The
+    unload epoch is read before the claim and compared after the load."""
+    import inspect
+
+    source = inspect.getsource(routes_module.voice_load_model)
+    read = source.index('unload_epoch = getattr(voice_backend, "_unload_epoch", None)')
+    claim = source.index("acquire_for_request, _CHAT, in_flight.__enter__, alongside = True")
+    spawn = source.index("await asyncio.to_thread(voice_backend.load_model, intent)")
+    check = source.index('getattr(voice_backend, "_unload_epoch", None) != unload_epoch')
+    assert read < claim < spawn < check
+    assert "status_code = 409" in source[check:]
+
+
 def test_voice_load_rejects_a_context_above_the_requestable_ceiling():
     """/voice/load models its load as a chat LoadRequest for the training-coexistence
     guard, and that model caps max_seq_length at MAX_REQUESTABLE_CONTEXT. Without the
