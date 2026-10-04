@@ -52,7 +52,7 @@ function localLoader(source: AttachmentSource): (() => Promise<Opened>) | null {
   }
 }
 
-function opener(source: AttachmentSource, attachmentId: string, load: () => Promise<Opened>) {
+function opener(source: AttachmentSource, id: string, load: () => Promise<Opened>) {
   return () =>
     void load()
       .then(({ blob, plainText }) => {
@@ -63,7 +63,7 @@ function opener(source: AttachmentSource, attachmentId: string, load: () => Prom
           name: plainText ? `${name.replace(/\.[^.]+$/, "")}.txt` : name,
           contentType: plainText ? "text/plain" : source.contentType || blob.type,
           plainText,
-          key: `${attachmentId}:${source.name}`,
+          key: `${id}:${source.name}`,
         });
       })
       .catch(() => toast.error(`Could not open ${source.name || "attachment"}`));
@@ -85,7 +85,8 @@ const SentOriginalProvider: FC<PropsWithChildren<{ source: AttachmentSource; att
   children,
 }) => {
   const messageId = useAuiState(({ message }) => message.id);
-  const open = opener(source, attachmentId, () =>
+  // Attachment ids are only unique within their message.
+  const open = opener(source, `${messageId}:${attachmentId}`, () =>
     fetchChatAttachmentBlob(messageId, attachmentId).then((blob) => ({ blob })),
   );
   return <OpenerProvider open={open}>{children}</OpenerProvider>;

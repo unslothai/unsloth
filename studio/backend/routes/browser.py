@@ -872,6 +872,16 @@ def _build_response(
             media_type = "application/json",
             headers = {KIND_HEADER: "html"},
         )
+    charset = meta.get("charset")
+    textual = content_type.startswith("text/") or content_type.endswith(
+        ("json", "xml", "javascript")
+    )
+    if textual and charset and charset.lower().replace("_", "-") not in ("utf-8", "utf8"):
+        # Text in another encoding goes out as UTF-8, the encoding the response is labelled with.
+        try:
+            body = body.decode(charset, errors = "replace").encode("utf-8")
+        except LookupError:
+            pass
     return Response(
         content = body,
         media_type = content_type or "application/octet-stream",

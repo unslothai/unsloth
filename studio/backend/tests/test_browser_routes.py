@@ -158,6 +158,18 @@ def test_html_comes_back_as_json_with_its_final_url(monkeypatch):
     assert "<title>x</title>" in payload["html"]
 
 
+def test_raw_text_is_transcoded_from_its_charset(monkeypatch):
+    body = "a,café\n".encode("latin-1")
+    _fetch(
+        monkeypatch,
+        (None, body, "text/csv"),
+        {"url": "https://example.com/c.csv", "charset": "iso-8859-1"},
+    )
+    response = _call(url = "https://example.com/c.csv")
+    assert response.body.decode("utf-8") == "a,café\n"
+    assert response.headers["content-type"] == "text/csv; charset=utf-8"
+
+
 def test_other_bodies_pass_through_untouched(monkeypatch):
     pdf = b"%PDF-1.7\n..."
     _fetch(monkeypatch, (None, pdf, "application/pdf"), {"url": "https://example.com/p.pdf"})

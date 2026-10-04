@@ -214,6 +214,7 @@ export function AnnotateLayer({
   const [items, setItems] = useState<Annotation[]>([]);
   const [pending, setPending] = useState<Pending | null>(null);
   const [draft, setDraft] = useState("");
+  const [sending, setSending] = useState(false);
   const [, setFrame] = useState(0);
   const { setAnnotating, sendAnnotations } = useBrowserStore.getState();
 
@@ -243,11 +244,13 @@ export function AnnotateLayer({
 
   const send = async () => {
     const outgoing = committed();
-    if (outgoing.length === 0 || !sendAnnotations) return;
+    if (outgoing.length === 0 || !sendAnnotations || sending) return;
+    // One at a time: a second click while staging would add the annotations twice.
+    setSending(true);
     const sent = await sendAnnotations({
       file: fileName,
       items: outgoing.map(({ quote, request }) => ({ quote, request })),
-    });
+    }).finally(() => setSending(false));
     if (sent) exit();
   };
 
@@ -430,6 +433,8 @@ export function AnnotateLayer({
   const count = items.length;
   // A first comment still being typed can go too: Send commits it.
   const canSend = count > 0 || (pending?.id === null && draft.trim() !== "");
+  // Counted with it too, so the bar (and its Send) shows for a first comment.
+  const shown = count + (pending?.id === null && draft.trim() !== "" ? 1 : 0);
 
   return (
     <div
@@ -484,11 +489,11 @@ export function AnnotateLayer({
           />
         </>
       ) : null}
-      {count > 0 ? (
+      {shown > 0 ? (
         <AnnotateBar
-          count={count}
+          count={shown}
           canSend={canSend}
-          sendDisabled={!sendAnnotations}
+          sendDisabled={!sendAnnotations || sending}
           onSend={send}
           onExit={exit}
         />
@@ -797,6 +802,7 @@ export function WebAnnotateLayer({
   const [items, setItems] = useState<WebMark[]>([]);
   const [pending, setPending] = useState<WebPending | null>(null);
   const [draft, setDraft] = useState("");
+  const [sending, setSending] = useState(false);
   const [, setLayout] = useState(0);
   const { setAnnotating, sendAnnotations } = useBrowserStore.getState();
 
@@ -835,12 +841,14 @@ export function WebAnnotateLayer({
 
   const send = async () => {
     const outgoing = committed();
-    if (outgoing.length === 0 || !sendAnnotations) return;
+    if (outgoing.length === 0 || !sendAnnotations || sending) return;
+    // One at a time: a second click while staging would add the annotations twice.
+    setSending(true);
     const sent = await sendAnnotations({
       file: title || url,
       url,
       items: outgoing.map(({ quote, request }) => ({ quote, request })),
-    });
+    }).finally(() => setSending(false));
     if (sent) exit();
   };
 
@@ -945,6 +953,8 @@ export function WebAnnotateLayer({
     : null;
   const count = items.length;
   const canSend = count > 0 || (pending?.saved === false && draft.trim() !== "");
+  // A first comment still being typed counts, so the bar (and its Send) shows for it.
+  const shown = count + (pending?.saved === false && draft.trim() !== "" ? 1 : 0);
 
   return (
     <div ref={layerRef} className="pointer-events-none absolute inset-0 z-10 overflow-hidden">
@@ -960,11 +970,11 @@ export function WebAnnotateLayer({
           placeholder={t("browser.annotate.pagePlaceholder")}
         />
       ) : null}
-      {count > 0 ? (
+      {shown > 0 ? (
         <AnnotateBar
-          count={count}
+          count={shown}
           canSend={canSend}
-          sendDisabled={!sendAnnotations}
+          sendDisabled={!sendAnnotations || sending}
           onSend={send}
           onExit={exit}
         />
