@@ -1,16 +1,13 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2023-present Daniel Han-Chen & the Unsloth team. All rights reserved.
-#
 # This program is free software: you can redistribute it and/or modify
 # it under the terms of the GNU Affero General Public License as published by
 # the Free Software Foundation, either version 3 of the License, or
 # (at your option) any later version.
-#
 # This program is distributed in the hope that it will be useful,
 # but WITHOUT ANY WARRANTY; without even the implied warranty of
 # MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
 # GNU Affero General Public License for more details.
-#
 # You should have received a copy of the GNU Affero General Public License
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
@@ -34,8 +31,7 @@ import os
 
 import torch
 
-# A table instead of `eval`, so the field NAMES a dtype rather than being an
-# arbitrary expression.
+# A table instead of eval, so the field NAMES a dtype rather than being an arbitrary expression.
 DTYPE_ALIASES = {
     "None": None,
     "none": None,
@@ -53,9 +49,8 @@ DTYPE_ALIASES = {
     "fp32": torch.float32,
 }
 
-# `unsloth_zoo==2026.8.15`, which this package's floor resolves to, still `eval`s the
-# dtype field, and `eval("fp16")` is a NameError. So a field this package accepts is
-# canonicalised to the one spelling both readers evaluate.
+# unsloth_zoo==2026.8.15, which this package's floor resolves to, still evals the dtype field, and
+# eval("fp16") is a NameError, so canonicalise to the one spelling both readers evaluate.
 _CANONICAL_DTYPE_NAMES = {
     None: "None",
     torch.float16: "torch.float16",

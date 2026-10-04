@@ -6,6 +6,11 @@
 // common row shape. Pure and React-free so node --test can import them; the types
 // come from each feature's own module because the indexes re-export their pages.
 
+import {
+  audioCppDictationModelFor,
+  audioCppDisplayName,
+  isAudioCppFolderId,
+} from "../audio/audio-cpp-catalog.ts";
 import type { InferenceStatusResponse } from "@/features/chat/types/api";
 import type { DiffusionStatus } from "@/features/images/api";
 import type { VideoStatus } from "@/features/video/api";
@@ -17,7 +22,7 @@ export type LoadedModelKind = "text" | "tts" | "image" | "video" | "stt";
 export type LoadedModelSource = "chat" | "image" | "video" | "stt";
 
 /** The dictation sidecars, as /audio/stt/status names them. */
-export type SttEngine = "transformers" | "mtmd" | "gguf";
+export type SttEngine = "transformers" | "mtmd" | "gguf" | "audiocpp";
 
 export type LoadedModelEntry = {
   /** Stable across polls, so a row does not remount mid-eject. */
@@ -49,12 +54,15 @@ export type SttStatusResponse = SttEngineStatus & {
   transformers?: SttEngineStatus | null;
   mtmd?: SttEngineStatus | null;
   gguf?: SttEngineStatus | null;
+  audiocpp?: SttEngineStatus | null;
 };
 
 const STT_ENGINE_LABELS: Record<SttEngine, string> = {
   transformers: "Transformers",
   mtmd: "llama.cpp",
   gguf: "whisper.cpp",
+  // The GGUF audio runtime; its engine name stays out of the UI like the model's.
+  audiocpp: "GGUF",
 };
 
 /**
@@ -108,8 +116,12 @@ function joinDetail(...parts: (string | null | undefined)[]): string {
   return kept.join(" · ");
 }
 
-/** Keep a path's last two segments; a repo id is already short. */
+/** Keep a path's last two segments; a repo id is already short. A package folder of the shared
+ *  GGUF audio repo is its folder name, and a saved dictation key the folder it names. */
 export function shortModelLabel(name: string): string {
+  const dictation = audioCppDictationModelFor(name);
+  if (dictation) return audioCppDisplayName(dictation.id);
+  if (isAudioCppFolderId(name)) return audioCppDisplayName(name);
   const normalized = name.replace(/[\\/]+$/, "");
   const segments = normalized.split(/[\\/]+/).filter(Boolean);
   if (segments.length <= 2) return normalized;
@@ -126,11 +138,10 @@ export function describeInferenceStatus(
   const active = status.active_model;
   if (active) {
     const audioType = status.audio_type ?? null;
-    // is_audio means TTS here, as mlx_inference documents ("audio_vlm (omni
-    // audio input; is_audio stays False -- it means TTS and redirects in the
-    // chat route)"). So the audio types split three ways, not two: whisper is
-    // the ASR sidecar, audio_vlm is a chat model that happens to listen, and
-    // the rest speak. Only the third kind belongs under Speech.
+    // is_audio means TTS here, as mlx_inference documents ("audio_vlm (omni audio input; is_audio
+    // stays False -- it means TTS and redirects in the chat route)"). So the audio types split
+    // three ways, not two: whisper is the ASR sidecar, audio_vlm is a chat model that happens to
+    // listen, and the rest speak. Only the third kind belongs under Speech.
     const isTts =
       Boolean(status.is_audio) &&
       audioType !== "whisper" &&
@@ -199,6 +210,18 @@ export function precisionLabel(value: string | null | undefined): string | null 
   return known[value] ?? value.toUpperCase();
 }
 
+/** NVFP4 kernel path label; unrecognised values pass through as sent. */
+export function quantBackendLabel(
+  value: string | null | undefined,
+): string | null {
+  if (!value) return null;
+  const known: Record<string, string> = {
+    flashinfer: "FlashInfer",
+    torchao: "torchao",
+  };
+  return known[value.toLowerCase()] ?? value;
+}
+
 export function describeDiffusionStatus(
   status: DiffusionStatus | null,
 ): LoadedModelEntry[] {
@@ -226,6 +249,7 @@ export function describeDiffusionStatus(
         precisionLabel(status.transformer_quant) ??
           precisionLabel(status.gguf_variant) ??
           precisionLabel(status.dtype),
+        quantBackendLabel(status.transformer_quant_backend),
         status.device,
       ),
     },
@@ -250,6 +274,7 @@ export function describeVideoStatus(
         precisionLabel(status.gguf_variant) ??
           precisionLabel(status.transformer_quant) ??
           precisionLabel(status.dtype),
+        quantBackendLabel(status.transformer_quant_backend),
         status.device,
       ),
     },
@@ -273,7 +298,7 @@ export function describeSttStatus(
   status: SttStatusResponse | null,
 ): LoadedModelEntry[] {
   if (!status) return [];
-  const engines: SttEngine[] = ["transformers", "mtmd", "gguf"];
+  const engines: SttEngine[] = ["transformers", "mtmd", "gguf", "audiocpp"];
   const entries: LoadedModelEntry[] = [];
   for (const engine of engines) {
     const block = sttEngineStatus(status, engine);
@@ -295,7 +320,13 @@ export function describeSttStatus(
       kind: "stt",
       source: "stt",
       name: block.loaded_model,
-      detail: joinDetail(STT_ENGINE_LABELS[engine], block.device),
+      // The audio runtime reports its own name and version as the device, which is not one.
+      detail: joinDetail(
+        STT_ENGINE_LABELS[engine],
+        engine === "audiocpp" && block.device?.startsWith("audio.cpp")
+          ? null
+          : block.device,
+      ),
       sttEngine: engine,
     });
   }
@@ -351,13 +382,12 @@ export function withPendingLoads(
   if (pending.size === 0) return rows;
   const extra: LoadedModelEntry[] = [];
   for (const [source, model] of pending) {
-    // A status row wins only when it describes the same load. Images and video
-    // keep the OLD pipeline resident while the replacement downloads, freeing it
-    // only at the commit, so a source-only test hid the incoming model for the
-    // whole pull: the card showed the model being replaced and no sign of the
-    // one arriving. A row that is itself loading always wins, which is what
-    // keeps chat and dictation from announcing the same load twice when the
-    // backend spells its name differently.
+    // A status row wins only when it describes the same load. Images and video keep the OLD
+    // pipeline resident while the replacement downloads, freeing it only at the commit, so a
+    // source-only test hid the incoming model for the whole pull: the card showed the model being
+    // replaced and no sign of the one arriving. A row that is itself loading always wins, which is
+    // what keeps chat and dictation from announcing the same load twice when the backend spells its
+    // name differently.
     if (
       rows.some(
         (row) =>

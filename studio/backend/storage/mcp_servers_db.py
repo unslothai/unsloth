@@ -3,17 +3,17 @@
 
 import sqlite3
 import threading
+from pathlib import Path
 from datetime import datetime, timezone
 from typing import Optional
 
 from utils.paths import studio_db_path, ensure_dir
 
 _schema_lock = threading.Lock()
-_schema_ready = False
+_schema_ready: set[Path] = set()
 
 
-# Not a column: `_server_result` derives it so a masked read can report that a
-# secret exists without carrying a value that could be used as one.
+# Derived by `_server_result`, not a column.
 HAS_OAUTH_CLIENT_SECRET_KEY = "has_oauth_client_secret"
 
 
@@ -43,20 +43,31 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE mcp_servers ADD COLUMN oauth_client_id TEXT")
     if "oauth_client_secret" not in cols:
         conn.execute("ALTER TABLE mcp_servers ADD COLUMN oauth_client_secret TEXT")
+    for column in ("builtin_id", "builtin_config_json", "image_input_mappings_json"):
+        if column not in cols:
+            conn.execute(f"ALTER TABLE mcp_servers ADD COLUMN {column} TEXT")
+    conn.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS mcp_servers_builtin_id ON mcp_servers(builtin_id)"
+    )
+
+
+def reset_schema_state_for_tests() -> None:
+    with _schema_lock:
+        _schema_ready.clear()
 
 
 def get_connection() -> sqlite3.Connection:
-    global _schema_ready
     db_path = studio_db_path()
     ensure_dir(db_path.parent)
     conn = sqlite3.connect(str(db_path))
     conn.row_factory = sqlite3.Row
-    if not _schema_ready:
+    if db_path not in _schema_ready:
         with _schema_lock:
-            if not _schema_ready:
+            schema_path = db_path.resolve()
+            if schema_path not in _schema_ready:
                 try:
                     _ensure_schema(conn)
-                    _schema_ready = True
+                    _schema_ready.add(schema_path)
                 except Exception:
                     conn.close()
                     raise
@@ -72,7 +83,13 @@ def create_server(
     use_oauth: bool = False,
     oauth_client_id: Optional[str] = None,
     oauth_client_secret: Optional[str] = None,
+    builtin_id: Optional[str] = None,
+    builtin_config_json: Optional[str] = None,
+    image_input_mappings_json: Optional[str] = None,
 ) -> None:
+    from core.inference.mcp_client import validate_mcp_address
+
+    validate_mcp_address(url)
     now = datetime.now(timezone.utc).isoformat()
     conn = get_connection()
     try:
@@ -81,8 +98,9 @@ def create_server(
             INSERT INTO mcp_servers
                 (id, display_name, url, headers_json,
                  is_enabled, use_oauth, oauth_client_id, oauth_client_secret,
-                 created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 created_at, updated_at, builtin_id, builtin_config_json,
+                 image_input_mappings_json)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 id,
@@ -95,6 +113,9 @@ def create_server(
                 oauth_client_secret,
                 now,
                 now,
+                builtin_id,
+                builtin_config_json,
+                image_input_mappings_json,
             ),
         )
         conn.commit()
@@ -106,6 +127,9 @@ def update_server(id: str, changes: dict) -> bool:
     """Apply column updates and bump ``updated_at``. Returns True on a hit."""
     if not changes:
         return False
+    if "url" in changes:
+        from core.inference.mcp_client import validate_mcp_address
+        validate_mcp_address(changes["url"])
     bool_cols = {"is_enabled", "use_oauth"}
     sets, params = [], []
     for col, value in changes.items():
@@ -146,16 +170,9 @@ def get_server(id: str, *, include_secret: bool = True) -> Optional[dict]:
 
 
 def _server_result(row, *, include_secret: bool) -> dict:
-    """``include_secret=False`` keeps the stored client secret out of the
-    result while still reporting whether one is set, so response and listing
-    paths can never serialize it back to a caller.
-
-    Presence is reported in its own field on BOTH reads rather than typed into
-    ``oauth_client_secret``: a masked row is otherwise one call away from
-    handing a stand-in value to the OAuth client as a real secret, and callers
-    do not have to know which read produced the row."""
-    result = dict(row)
-    result[HAS_OAUTH_CLIENT_SECRET_KEY] = bool(result["oauth_client_secret"])
+    # Presence gets its own field so a masked row never carries a stand-in value usable as a secret.
+    result = _effective_row(dict(row))
+    result[HAS_OAUTH_CLIENT_SECRET_KEY] = bool(result.get("oauth_client_secret"))
     if not include_secret:
         result["oauth_client_secret"] = None
     return result
@@ -168,3 +185,16 @@ def list_servers(*, include_secrets: bool = True) -> list[dict]:
         return [_server_result(row, include_secret = include_secrets) for row in rows]
     finally:
         conn.close()
+
+
+def get_server_for_tool(key: str) -> Optional[dict]:
+    if key == "blender":
+        return next((row for row in list_servers() if row.get("builtin_id") == key), None)
+    return get_server(key)
+
+
+def _effective_row(row: dict) -> dict:
+    if row.get("builtin_id"):
+        from integrations.blender.service import resolve_server
+        return resolve_server(row)
+    return row

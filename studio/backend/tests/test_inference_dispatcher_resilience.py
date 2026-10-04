@@ -14,8 +14,9 @@ import ast
 import queue
 import sys
 import threading
-import time
 from pathlib import Path
+
+import pytest
 
 _BACKEND_DIR = str(Path(__file__).resolve().parent.parent)
 if _BACKEND_DIR not in sys.path:
@@ -36,10 +37,14 @@ class _ScriptedQueue:
 
 def _dispatcher():
     o = InferenceOrchestrator.__new__(InferenceOrchestrator)
+    o._stop_ledger = None
+    o._pending_teardowns = None
     o._dispatcher_stop = threading.Event()
     o._mailbox_lock = threading.Lock()
     o._mailboxes = {}
+    o._direct_mailboxes = {}
     o._request_cancel_events = {}
+    o._proc = None  # no worker, so no routed response retires anything
     return o
 
 
@@ -124,6 +129,8 @@ def test_route_llama_streaming_async_clients_disable_proxy_env():
 def _direct_reader_host():
     """Orchestrator with only what _direct_reader and the ownership helpers touch."""
     o = InferenceOrchestrator.__new__(InferenceOrchestrator)
+    o._stop_ledger = None
+    o._pending_teardowns = None
     o._mailbox_lock = threading.Lock()
     o._mailboxes = {}
     o._direct_mailboxes = {}
@@ -132,6 +139,7 @@ def _direct_reader_host():
     o._active_cancel_events = []
     o._executing_cancel_events = []
     o._dispatcher_thread = None
+    o._proc = None  # no worker, so no read retires anything
     return o
 
 
@@ -180,7 +188,78 @@ def test_rerouting_a_foreign_gen_done_retires_that_request():
     release()
 
 
-def _direct_reader_calls(o, request_id):
+def _direct_reader_calls(
+    o,
+    request_id,
+    cancel_event = None,
+):
     """_direct_reader wired to a scripted _read_resp (o._scripted, popped in order)."""
-    o._read_resp = lambda timeout = 1.0: o._scripted.pop(0) if o._scripted else None
-    return o._direct_reader(request_id)
+    o._read_resp = lambda timeout = 1.0, observe = True: (o._scripted.pop(0) if o._scripted else None)
+    return o._direct_reader(request_id, cancel_event)
+
+
+@pytest.mark.parametrize(
+    "response_type", ["token", "gen_done", "gen_error", "audio_done", "audio_error"]
+)
+def test_direct_reader_discards_responses_from_released_requests(response_type):
+    # Consumers dispatch on type alone: a released request's late frame becomes this one's answer.
+    o = _direct_reader_host()
+    current = {"request_id": "current", "type": "token", "text": "current answer"}
+    o._scripted = [
+        {"request_id": "cancelled", "type": response_type, "text": "old answer"},
+        current,
+    ]
+    read_one, _drain, release = _direct_reader_calls(o, "current")
+    try:
+        assert read_one(timeout = 0.1) is None
+        assert read_one(timeout = 0.1) == current
+    finally:
+        release()
+
+
+def test_direct_reader_discards_only_what_is_addressed_to_someone_else():
+    # Dropping the `rid and` half would swallow the worker's unaddressed crash error and hang the chat.
+    o = _direct_reader_host()
+    worker_error = {"type": "error", "error": "Command 'generate' failed: out of memory"}
+    o._scripted = [worker_error, {"request_id": "", "type": "gen_done"}]
+    read_one, _drain, release = _direct_reader_calls(o, "current")
+    try:
+        assert read_one(timeout = 0.1) == worker_error
+        assert read_one(timeout = 0.1) == {"request_id": "", "type": "gen_done"}
+    finally:
+        release()
+
+
+def test_discarding_a_released_response_leaves_worker_ownership_alone():
+    # Ownership must not move on a discarded frame, or the live chat's Stop hits the wrong generation.
+    o = _direct_reader_host()
+    mine, theirs = threading.Event(), threading.Event()
+    o._request_cancel_events = {"current": mine, "cancelled": theirs}
+    o._claim_worker(mine)
+    o._mark_worker_started(mine)
+    o._scripted = [{"request_id": "cancelled", "type": "token", "text": "late"}]
+
+    read_one, _drain, release = _direct_reader_calls(o, "current")
+    try:
+        assert read_one(timeout = 0.1) is None
+        assert o._owns_worker(mine), "a discarded frame must not move the executor"
+        assert not o._owns_worker(theirs)
+    finally:
+        release()
+
+
+def test_direct_reader_drain_waits_for_its_own_terminal_response():
+    # Ending the drain on an orphan terminal hands the next request a worker that never stopped.
+    o = _direct_reader_host()
+    o._scripted = [
+        {"request_id": "cancelled", "type": "gen_done"},
+        {"request_id": "current", "type": "token", "text": "still running"},
+        {"request_id": "current", "type": "gen_done"},
+    ]
+    o._ensure_subprocess_alive = lambda: True
+    _read_one, drain, release = _direct_reader_calls(o, "current")
+    try:
+        assert drain(timeout = 1.0)
+        assert not o._scripted, "an orphan gen_done must not end the current drain early"
+    finally:
+        release()

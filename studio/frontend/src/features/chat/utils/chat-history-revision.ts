@@ -5,21 +5,17 @@
 // same-document. Only that something changed is published, never a chat id or any text.
 export const CHAT_HISTORY_REVISION_KEY = "unsloth_chat_history_revision";
 
-// Long enough to swallow a generation's per-chunk saves, short enough that a tab going
-// quiet publishes before anyone reads a stale row. Exported for the tests.
+// Long enough to swallow a generation's per-chunk saves, short enough that a tab going quiet
+// publishes before anyone reads a stale row. Exported for the tests.
 export const CROSS_TAB_REVISION_DEBOUNCE_MS = 500;
 
 let revisionWriteTimer: ReturnType<typeof setTimeout> | null = null;
 
-/**
- * Whether a same-document history event came from the coalesced streaming autosave rather than
- * a structural change.
- *
- * A listener that retires work on a history change needs the difference: chunk saves arrive
- * faster than any debounce, so treating one as structural starves that work for a whole
- * generation. Anything without the detail counts as structural, including the event the
- * cross-tab listener re-raises, since a revision write only lands once changes have settled.
- */
+/** Whether a same-document history event came from the coalesced streaming autosave rather than a
+ *  structural change. A listener that retires work on a history change needs the difference:
+ *  chunk saves arrive faster than any debounce, so treating one as structural starves that work
+ *  for a whole generation. Anything without the detail counts as structural, including the event
+ *  the cross-tab listener re-raises. */
 export function isCoalescedHistoryEvent(event: Event): boolean {
   return (event as CustomEvent<{ coalesce?: boolean }>).detail?.coalesce === true;
 }
@@ -51,13 +47,10 @@ function clearPending(): boolean {
   return true;
 }
 
-/**
- * Publishes a history change to the other documents.
- *
- * `coalesce` is for the per-chunk streaming path alone, where a write per chunk would block
- * this tab and wake every other one. A structural change must not use it: sharing the
- * stream's quiet window leaves a deleted chat live in another tab for a whole generation.
- */
+/** Publishes a history change to the other documents. `coalesce` is for the per-chunk streaming
+ *  path alone, where a write per chunk would block this tab and wake every other one. A
+ *  structural change must not use it: sharing the stream's quiet window leaves a deleted chat
+ *  live in another tab for a whole generation. */
 export function publishChatHistoryRevision(coalesce: boolean): void {
   if (!coalesce) {
     // Anything still waiting says no more than this does.
@@ -65,8 +58,7 @@ export function publishChatHistoryRevision(coalesce: boolean): void {
     writeRevision();
     return;
   }
-  // Rescheduled rather than left to run, so a generation collapses into one write instead
-  // of one per debounce period.
+  // Rescheduled rather than left to run, so a generation collapses into one write instead of one per debounce period.
   clearPending();
   revisionWriteTimer = setTimeout(() => {
     revisionWriteTimer = null;

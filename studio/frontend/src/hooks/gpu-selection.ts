@@ -10,6 +10,8 @@ export interface SystemGpuDevice {
   memoryTotalGb: number;
   /** Free VRAM at fetch time, or total VRAM when usage is unavailable. */
   memoryFreeGb: number;
+  /** Whether free memory was reported, including a real zero. */
+  memoryFreeKnown?: boolean;
   /** A Vulkan iGPU: memoryTotalGb is a capped view of system RAM rather than a
    *  pool beside it. Per device, not per host: a mixed inventory pairs one of
    *  these with a discrete card, and a pin naming only the discrete card can

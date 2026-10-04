@@ -137,7 +137,7 @@ def test_oauth_models_accept_credentials_without_exposing_the_secret():
 
 def test_oauth_credentials_round_trip_in_storage(tmp_path, monkeypatch):
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
-    monkeypatch.setattr(mcp_servers_db, "_schema_ready", False)
+    monkeypatch.setattr(mcp_servers_db, "_schema_ready", set())
     mcp_servers_db.create_server(
         id = "calendar",
         display_name = "Calendar",
@@ -163,7 +163,7 @@ def test_create_response_masks_oauth_secret(tmp_path, monkeypatch):
     from routes.mcp_servers import create_mcp_server
 
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
-    monkeypatch.setattr(mcp_servers_db, "_schema_ready", False)
+    monkeypatch.setattr(mcp_servers_db, "_schema_ready", set())
     response = asyncio.run(
         create_mcp_server(
             McpServerCreate(
@@ -193,7 +193,7 @@ def test_connection_probe_reuses_stored_secret(tmp_path, monkeypatch):
 
     monkeypatch.setattr(routes, "list_tools_async", fake_list_tools)
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
-    monkeypatch.setattr(mcp_servers_db, "_schema_ready", False)
+    monkeypatch.setattr(mcp_servers_db, "_schema_ready", set())
     mcp_servers_db.create_server(
         id = "calendar",
         display_name = "Calendar",
@@ -421,7 +421,7 @@ def test_changing_url_clears_stored_secret(tmp_path, monkeypatch):
 
 def test_legacy_database_migrates_oauth_credential_columns(tmp_path, monkeypatch):
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
-    monkeypatch.setattr(mcp_servers_db, "_schema_ready", False)
+    monkeypatch.setattr(mcp_servers_db, "_schema_ready", set())
     db_path = tmp_path / "studio.db"
     connection = sqlite3.connect(db_path)
     try:
@@ -455,7 +455,7 @@ def test_legacy_database_migrates_oauth_credential_columns(tmp_path, monkeypatch
 
 def _store_calendar_server(tmp_path, monkeypatch):
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
-    monkeypatch.setattr(mcp_servers_db, "_schema_ready", False)
+    monkeypatch.setattr(mcp_servers_db, "_schema_ready", set())
     mcp_servers_db.create_server(
         id = "calendar",
         display_name = "Calendar",
