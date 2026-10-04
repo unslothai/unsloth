@@ -273,6 +273,8 @@ const MarkdownImage = memo(function MarkdownImage(props: ComponentProps<"img">) 
                 file !== null && sandbox.state.status === "loaded"
                   ? Promise.resolve(sandbox.state.blob)
                   : urlToBlob(resolved),
+              // Already showing here, so a host that refuses the fetch can still be enlarged.
+              fallbackUrl: /^https?:/i.test(resolved) ? resolved : undefined,
             },
           ]);
         }}

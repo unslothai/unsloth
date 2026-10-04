@@ -34,6 +34,8 @@ export type ViewerImage = {
   /** File name for Download, with its extension; a function gets the loaded image's type. */
   fileName: string | ((contentType: string) => string);
   load: () => Promise<Blob>;
+  /** Shown as is when `load` fails, e.g. a remote image whose host doesn't allow CORS reads. */
+  fallbackUrl?: string;
   /** The page the image came from, opened by "Open source". */
   source?: string;
 };
@@ -121,7 +123,7 @@ function RoundButton({
 }
 
 type Loaded =
-  | { key: string; url: string; blob: Blob }
+  | { key: string; url: string; blob: Blob | null }
   | { key: string; failed: true };
 
 function useImageBlob(image: ViewerImage | undefined): Loaded | null {
@@ -148,7 +150,15 @@ function useImageBlob(image: ViewerImage | undefined): Loaded | null {
         url = URL.createObjectURL(blob);
         setLoaded({ key: image.key, url, blob });
       })
-      .catch(() => live && setLoaded({ key: image.key, failed: true }));
+      .catch(
+        () =>
+          live &&
+          setLoaded(
+            image.fallbackUrl
+              ? { key: image.key, url: image.fallbackUrl, blob: null }
+              : { key: image.key, failed: true },
+          ),
+      );
     return () => {
       live = false;
       if (url) URL.revokeObjectURL(url);
@@ -215,7 +225,7 @@ function ViewerBody() {
   });
 
   const download = () => {
-    if (!loaded || "failed" in loaded || !image) return;
+    if (!loaded || "failed" in loaded || !loaded.blob || !image) return;
     const { blob } = loaded;
     const name = typeof image.fileName === "string" ? image.fileName : image.fileName(blob.type);
     void downloadFile(blob, name, blob.type).catch(
@@ -292,7 +302,7 @@ function ViewerBody() {
           label={t("imageViewer.download")}
           icon={Download01Icon}
           className="size-12"
-          disabled={!loaded || "failed" in loaded}
+          disabled={!loaded || "failed" in loaded || !loaded.blob}
           onClick={download}
         />
         <RoundButton

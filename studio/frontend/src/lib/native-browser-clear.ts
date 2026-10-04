@@ -21,7 +21,8 @@ export function onNativeViewsClosed(listener: () => void): void {
 export async function clearNativeBrowsingData(): Promise<void> {
   if (!isTauri) return;
   const { invoke } = await import("@tauri-apps/api/core");
-  if (!(await invoke<boolean>("browser_view_supported").catch(() => false))) return;
+  // A failed probe fails the clear: skipping it would keep the previous account's cookies.
+  if (!(await invoke<boolean>("browser_view_supported"))) return;
   clearing = true;
   try {
     await invoke("browser_view_clear_data", { closeViews: true });
