@@ -184,6 +184,7 @@ function ImportRewardDialog({
     try {
       onImported(await importReward(markdown, overwrite));
       setMarkdown("");
+      setOverwrite(false);
       setError(null);
       onOpenChange(false);
     } catch (err) {
