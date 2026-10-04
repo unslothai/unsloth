@@ -240,6 +240,12 @@ class _FakeCNModel:
 
 
 class _FakeCNPipe:
+    recast_dtype: object = None
+
+    def to(self, *args, **kwargs):
+        _FakeCNPipe.recast_dtype = kwargs.get("dtype")
+        return self
+
     @classmethod
     def from_pipe(
         cls,
@@ -250,6 +256,8 @@ class _FakeCNPipe:
         p = cls()
         p.base = base
         p.controlnet = controlnet
+        _FakeCNPipe.recast_dtype = None
+        p.to(dtype = torch_dtype or "float32")  # from_pipe's terminal cast
         return p
 
 
@@ -298,6 +306,8 @@ def test_controlnet_pipe_loads_once_and_caches(monkeypatch):
     assert p1.controlnet.path == "repo/id" and p1.controlnet.device == "cpu"
     # A remote (non-local) ControlNet must force safetensors so a pickle cannot deserialize even if the Hub scan failed open.
     assert p1.controlnet.use_safetensors is True
+    # The cast never reaches the resident base modules the ControlNet pipe shares (#9186).
+    assert _FakeCNPipe.recast_dtype is None
     # cached: same id -> same model + same pipe, no reload.
     p2 = b._controlnet_pipe(st, resolved, threading.Event())
     assert p2 is p1
@@ -395,3 +405,57 @@ def test_controlnet_pipe_not_cached_after_unload_race(monkeypatch):
     with pytest.raises(RuntimeError, match = "cancelled"):
         b._controlnet_pipe(st, resolved, threading.Event())
     assert b._cn_pipes == {}
+
+
+@pytest.mark.parametrize(
+    "policy, calibrated, streamed",
+    [("none", False, False), ("none", True, True), ("group", False, True)],
+)
+def test_controlnet_streams_beside_a_calibrated_resident_tier(
+    monkeypatch, policy, calibrated, streamed
+):
+    # Calibrated tiers stream the ControlNet; flat resident tiers keep it resident.
+    import threading
+
+    from core.inference import diffusion as d
+
+    monkeypatch.setitem(sys.modules, "diffusers", _fake_diffusers())
+    _allow_cn_security(monkeypatch)
+    calls = []
+    monkeypatch.setattr(
+        d, "_offload_controlnet_module", lambda m, device, logger: calls.append(m) or True
+    )
+    b = d.DiffusionBackend()
+    st = _state()
+    st.offload_policy = policy
+    st.calibrated_placement = calibrated
+    b._state = st
+    p = b._controlnet_pipe(
+        st, dc.ResolvedControlNet("flux-union-pro", "repo/id", is_local = False), threading.Event()
+    )
+    assert bool(calls) is streamed
+    assert hasattr(p.controlnet, "device") is not streamed
+
+
+def test_a_calibrated_tier_refuses_a_controlnet_it_cannot_stream(monkeypatch):
+    # The resident fallback is only safe on tiers that budgeted flat headroom; a calibrated tier refuses instead.
+    import threading
+
+    from core.inference import diffusion as d
+
+    monkeypatch.setitem(sys.modules, "diffusers", _fake_diffusers())
+    _allow_cn_security(monkeypatch)
+    monkeypatch.setattr(d, "_offload_controlnet_module", lambda m, device, logger: False)
+    b = d.DiffusionBackend()
+    st = _state()
+    st.offload_policy = "none"
+    st.calibrated_placement = True
+    b._state = st
+    resolved = dc.ResolvedControlNet("flux-union-pro", "repo/id", is_local = False)
+    with pytest.raises(ValueError, match = "balanced memory mode"):
+        b._controlnet_pipe(st, resolved, threading.Event())
+    assert b._cn_models == {} and b._cn_pipes == {}
+    st.calibrated_placement = False
+    st.offload_policy = "group"
+    p = b._controlnet_pipe(st, resolved, threading.Event())
+    assert hasattr(p.controlnet, "device")

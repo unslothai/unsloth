@@ -1,0 +1,127 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
+
+# Save half of the built-frontend cache, plus the one assertion that stops this
+# cache from failing silently. See frontend-dist-restore for why the pair is split
+# and where the key's reasoning lives. Run this AFTER the install step.
+#
+# THE ASSERTION IS THE POINT
+# ---------------------------------------------------------------------------
+# Every other way this cache goes wrong is loud. This one is not: if the restored
+# dist does not end up NEWER than the checked-out sources, setup.sh / setup.ps1
+# rebuild it anyway. The job goes green, `Cache hit for: fe-dist-...` still appears
+# in the log, the cache dashboard shows a healthy hit rate, and the only trace is
+# the 36s (Linux) / 96s (Windows) that the cache was supposed to remove and that
+# nobody attributes to anything. That state is indistinguishable from success
+# unless something looks.
+#
+# So something looks. The install already tees its output to a log; a hit that was
+# followed by a rebuild marker fails the job here, once, in one place, for every
+# call site. tests/studio/test_frontend_dist_cache.py pins the markers against the
+# two installer scripts, so a rename goes red in pytest rather than quietly
+# disarming this.
+
+name: Save the built frontend
+description: >-
+  Prove a restored frontend was actually reused rather than rebuilt, then save
+  studio/frontend/dist under the restore step's key, on the default branch only.
+
+inputs:
+  path-prefix:
+    description: >-
+      The same value passed to frontend-dist-restore: where actions/checkout put
+      this repo, WITH a trailing slash, or the empty string.
+    required: false
+    default: ''
+  cache-hit:
+    description: >-
+      frontend-dist-restore's `cache-hit` output. Drives both halves: 'true' means
+      assert the restore was reused and skip the save (the key is already present,
+      re-uploading it is pure cost); anything else means the build really ran and
+      is worth saving.
+    required: true
+  key:
+    description: frontend-dist-restore's `key` output.
+    required: true
+  save:
+    description: >-
+      'false' to run the reuse assertion but skip the upload. For a workflow whose
+      triggers cannot routinely put github.ref on refs/heads/main -- no `push`, no
+      `schedule` -- where the save below could only fire if a human dispatched the
+      workflow from main by hand. A cache that fills only when somebody remembers to
+      press a button is not a cache, and leaving the step in place would be config that
+      reads as a caching decision which is not in force.
+
+      The assertion half still runs, deliberately: it is the only check on the one
+      failure mode this cache has that nothing else reveals, and a consumer-only lane is
+      as good a place to catch it as a producer.
+    required: false
+    default: 'true'
+  install-log:
+    description: >-
+      Path to the installer log this job teed, used for the reuse assertion. Every
+      call site writes logs/install.log, which is why that is the default; a job
+      that writes somewhere else must say so rather than have the assertion quietly
+      find no file and pass.
+    required: false
+    default: logs/install.log
+
+runs:
+  using: composite
+  steps:
+    - name: Prove the restored frontend was reused and not rebuilt
+      if: inputs.cache-hit == 'true'
+      shell: bash
+      env:
+        INSTALL_LOG: ${{ inputs.install-log }}
+        DIST: ${{ inputs.path-prefix }}studio/frontend/dist
+      run: |
+        # A missing log is a failure, not a skip. "The assertion found nothing to
+        # read" and "the assertion passed" must not look the same, or this guard
+        # disarms itself the first time a call site moves its log.
+        if [ ! -f "$INSTALL_LOG" ]; then
+          echo "::error::the frontend dist cache hit, but $INSTALL_LOG does not exist, so whether the restored dist was reused or rebuilt cannot be checked. Pass install-log pointing at the log this job actually writes."
+          exit 1
+        fi
+        if [ ! -d "$DIST" ]; then
+          echo "::error::the frontend dist cache hit, but $DIST is gone after the install"
+          exit 1
+        fi
+        # setup.sh:1265 and setup.ps1:3633 both emit this immediately before running
+        # the bundler. Seeing it after a HIT means the restored dist did not outrank
+        # its sources and the cache cost a download and saved nothing.
+        if grep -qi 'building frontend' "$INSTALL_LOG"; then
+          echo "::error::the frontend dist cache reported a hit and the installer rebuilt the frontend anyway, so the cache cost a download and saved nothing. The restored dist did not end up newer than the checked-out sources -- check the touch step in frontend-dist-restore for this runner's OS."
+          grep -n -i -E 'frontend' "$INSTALL_LOG" | tail -20
+          exit 1
+        fi
+        # The same fact from the other side. Either marker being renamed would
+        # otherwise disarm the check above without anything going red;
+        # tests/studio/test_frontend_dist_cache.py pins both against the scripts.
+        if ! grep -qi 'frontend.*up to date' "$INSTALL_LOG"; then
+          echo "::error::the frontend dist cache hit and the installer did not report the frontend up to date. Either the staleness check no longer prints that, or it took a branch nobody expected here."
+          grep -n -i -E 'frontend' "$INSTALL_LOG" | tail -20
+          exit 1
+        fi
+        echo "the restored frontend was reused; no rebuild happened"
+
+    # Main only, the rule every cache in this repo follows: a PR-scoped entry can
+    # only be restored by re-runs of that same PR while still counting against the
+    # shared 50 GiB budget -- measured 99.3% full once already -- evicting the copy
+    # on main that every PR can read.
+    #
+    # Deliberately NOT `always()`. A save whose payload was produced by an earlier
+    # step must not run when that step failed, or a half-built dist gets stored
+    # under an immutable key and served to every later run
+    # (tests/studio/test_cache_budget_discipline.py has the Playwright version of
+    # that story). Leaving the condition off `always()` means a failed install
+    # simply skips this step, which is the behaviour wanted.
+    - name: Save the built frontend
+      if: >-
+        github.ref == 'refs/heads/main' && inputs.cache-hit != 'true'
+        && inputs.save != 'false'
+      uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+      continue-on-error: true
+      with:
+        path: ${{ inputs.path-prefix }}studio/frontend/dist
+        key: ${{ inputs.key }}

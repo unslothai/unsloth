@@ -81,6 +81,7 @@ except ImportError:
     sys.modules.setdefault("httpx", _httpx_stub)
 
 from core.inference.llama_cpp import LlamaCppBackend
+import io
 
 
 # ---------------------------------------------------------------------------
@@ -140,7 +141,6 @@ class TestLoadProgressSingleShard:
         # Patch /proc read to claim 10 GB RSS.
         def fake_open(path, *args, **kwargs):
             if str(path).startswith("/proc/"):
-                import io
                 return io.StringIO(f"Name:\ttest\nVmRSS:\t{10 * 1024 ** 2}\tkB\n")
             return open(path, *args, **kwargs)  # fall through
 
@@ -164,7 +164,6 @@ class TestLoadProgressSingleShard:
 
         def fake_open(path, *args, **kwargs):
             if str(path).startswith("/proc/"):
-                import io
                 return io.StringIO(f"VmRSS:\t{8 * 1024 ** 2}\tkB\n")
             return open(path, *args, **kwargs)
 
@@ -198,7 +197,6 @@ class TestLoadProgressMultiShard:
 
         def fake_open(path, *args, **kwargs):
             if str(path).startswith("/proc/"):
-                import io
                 return io.StringIO("VmRSS:\t0\tkB\n")
             return open(path, *args, **kwargs)
 
@@ -220,7 +218,6 @@ class TestLoadProgressDegradation:
 
         def fake_open(path, *args, **kwargs):
             if str(path).startswith("/proc/"):
-                import io
                 return io.StringIO("VmRSS:\t1024\tkB\n")
             return open(path, *args, **kwargs)
 

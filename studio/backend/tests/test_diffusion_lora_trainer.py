@@ -396,7 +396,7 @@ def test_config_rejects_nonpositive_snr_gamma():
 
 
 def test_config_coerces_string_learning_rate():
-    # The Studio config path preserves learning_rate as a string; normalize to float.
+    # The Unsloth config path preserves learning_rate as a string; normalize to float.
     cfg = DiffusionLoraConfig(
         base_model = "b", data_dir = "d", output_dir = "o", learning_rate = "1e-4"
     ).normalized()
@@ -415,7 +415,7 @@ def test_config_blank_hf_token_is_anonymous():
 
 
 def test_config_from_dict_aliases_generic_studio_keys():
-    # The generic Studio training payload uses different key names; alias them.
+    # The generic Unsloth training payload uses different key names; alias them.
     cfg = _config_from_dict(
         {
             "model_name": "b",
@@ -444,7 +444,7 @@ def test_config_from_dict_canonical_key_beats_alias():
 
 
 def test_gradient_checkpointing_string_coercion():
-    # Studio sends a string; the disable words are False, everything else truthy True.
+    # Unsloth sends a string; the disable words are False, everything else truthy True.
     for off in ("none", "None", "false", "0", "no", "off", ""):
         assert _coerce_gradient_checkpointing(off) is False
     for on in ("true", "unsloth", "yes"):

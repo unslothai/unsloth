@@ -10,7 +10,7 @@ from typing import Optional
 from fastapi import APIRouter, Body, Depends, File, Form, Query, UploadFile
 
 from auth.authentication import allow_ambient_hf_token, get_current_subject
-from hub.dependencies import get_hf_token
+from hub.dependencies import get_hf_token, get_request_hf_token
 from hub.schemas.datasets import (
     AiAssistMappingRequest,
     AiAssistMappingResponse,
@@ -18,11 +18,14 @@ from hub.schemas.datasets import (
     CheckFormatRequest,
     CheckFormatResponse,
     DeleteCachedDatasetResponse,
+    HubDatasetOptionsRequest,
+    HubDatasetOptionsResponse,
     LocalDatasetOptionsRequest,
     LocalDatasetOptionsResponse,
     LocalDatasetsResponse,
     UploadDatasetResponse,
 )
+from hub.utils.hf_tokens import HfTokenArg
 from hub.schemas.downloads import (
     ActiveDownloadsResponse,
     CancelDatasetDownloadRequest,
@@ -70,6 +73,15 @@ def get_local_dataset_options(
     return local_options.local_dataset_options(request)
 
 
+@router.post("/hub-options", response_model = HubDatasetOptionsResponse)
+def get_hub_dataset_options(
+    request: HubDatasetOptionsRequest,
+    hf_token: HfTokenArg = Depends(get_request_hf_token),
+    current_subject: str = Depends(get_current_subject),
+) -> HubDatasetOptionsResponse:
+    return local_options.hub_dataset_options(request, hf_token)
+
+
 @router.delete("/cached", response_model = DeleteCachedDatasetResponse)
 async def delete_cached_dataset(
     repo_id: str = Body(..., embed = True),
@@ -83,7 +95,7 @@ async def delete_cached_dataset(
 async def get_dataset_download_progress(
     repo_id: str = Query(..., description = "HuggingFace dataset repo ID, e.g. 'unsloth/LaTeX_OCR'"),
     expected_bytes: int = Query(0, description = "Expected total download size in bytes"),
-    hf_token: Optional[str] = Depends(get_hf_token),
+    hf_token: HfTokenArg = Depends(get_request_hf_token),
     current_subject: str = Depends(get_current_subject),
 ):
     return await downloads.get_dataset_download_progress_response(
@@ -141,7 +153,7 @@ async def get_dataset_transport_status(
 @router.post("/check-format", response_model = CheckFormatResponse)
 def check_format(
     request: CheckFormatRequest,
-    hf_token: Optional[str] = Depends(get_hf_token),
+    hf_token: HfTokenArg = Depends(get_request_hf_token),
     current_subject: str = Depends(get_current_subject),
 ):
     return formatting.check_format_response(request, hf_token)
@@ -150,7 +162,7 @@ def check_format(
 @router.post("/ai-assist-mapping", response_model = AiAssistMappingResponse)
 def ai_assist_mapping(
     request: AiAssistMappingRequest,
-    hf_token: Optional[str] = Depends(get_hf_token),
+    hf_token: HfTokenArg = Depends(get_request_hf_token),
     current_subject: str = Depends(get_current_subject),
 ):
     return formatting.ai_assist_mapping_response(request, hf_token)

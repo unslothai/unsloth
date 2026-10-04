@@ -110,6 +110,11 @@ class TestIsEmbeddingGguf:
         assert backend._pooling_type is None
         assert backend.is_embedding_gguf is False
 
+    def test_false_on_minimal_backend_without_path_state(self):
+        backend = LlamaCppBackend.__new__(LlamaCppBackend)
+        backend._pooling_type = None
+        assert backend.is_embedding_gguf is False
+
     @pytest.mark.parametrize("pooling_type", [POOLING_MEAN, POOLING_CLS, POOLING_LAST])
     def test_true_for_every_sequence_pooling_mode(self, tmp_path, backend, pooling_type):
         backend._read_gguf_metadata(_make_gguf(tmp_path, "bert", pooling_type = pooling_type))
@@ -139,6 +144,20 @@ class TestIsEmbeddingGguf:
         backend._read_gguf_metadata(_make_gguf(tmp_path, "llama"))
         assert backend._pooling_type is None
         assert backend.is_embedding_gguf is False
+
+    def test_true_for_dedicated_embedding_arch_without_pooling_type(self, tmp_path, backend):
+        # nomic-bert and similar encoder GGUFs often omit pooling_type in the header.
+        backend._read_gguf_metadata(_make_gguf(tmp_path, "nomic-bert-moe"))
+        assert backend._pooling_type is None
+        assert backend.is_embedding_gguf is True
+
+    def test_true_for_embedding_name_hint_without_pooling_type(self, tmp_path, backend):
+        backend._model_identifier = "unsloth/Qwen3-Embedding-4B"
+        backend._read_gguf_metadata(
+            _make_gguf(tmp_path, "qwen3", filename = "Qwen3-Embedding-4B-Q4_K_M.gguf")
+        )
+        assert backend._pooling_type is None
+        assert backend.is_embedding_gguf is True
 
     def test_resets_between_parses(self, tmp_path, backend):
         backend._read_gguf_metadata(
@@ -223,6 +242,54 @@ class TestLoadModelEmitsTheFlag:
         src = inspect.getsource(llama_cpp_module.LlamaCppBackend.load_model)
         for name in ("LLAMA_ARG_POOLING", "LLAMA_ARG_RERANKING", "LLAMA_ARG_EMBEDDINGS"):
             assert f'"{name}"' in src
+
+
+class TestEmbeddingBatchSizedToContext:
+    """llama-server 500s on a MEAN/CLS input longer than --ubatch-size (512 by default)."""
+
+    def test_unset_pair_is_raised_to_the_context(self):
+        assert llama_cpp_module._embedding_batch_ubatch(2048, None, None, None, env = {}) == (
+            2048,
+            2048,
+        )
+
+    @pytest.mark.parametrize(
+        "n_batch, n_ubatch, extra_args, env, expected",
+        [
+            (1024, 256, None, {}, (1024, 256)),
+            (1024, None, None, {}, (1024, 8192)),
+            (None, 256, None, {}, (8192, 256)),
+            (None, None, ["-ub", "1024"], {}, (8192, None)),
+            (None, None, ["--batch-size=4096"], {}, (None, 8192)),
+            (None, None, None, {"LLAMA_ARG_UBATCH": "768"}, (8192, None)),
+        ],
+    )
+    def test_user_batch_sizes_are_kept(self, n_batch, n_ubatch, extra_args, env, expected):
+        assert (
+            llama_cpp_module._embedding_batch_ubatch(8192, n_batch, n_ubatch, extra_args, env = env)
+            == expected
+        )
+
+    @pytest.mark.parametrize("n_ctx", [0, 256, 512])
+    def test_context_within_the_default_micro_batch_is_left_alone(self, n_ctx):
+        assert llama_cpp_module._embedding_batch_ubatch(n_ctx, None, None, None, env = {}) == (
+            None,
+            None,
+        )
+
+    def test_load_model_applies_it_before_the_fit_for_non_last_pooling(self):
+        src = inspect.getsource(llama_cpp_module.LlamaCppBackend.load_model)
+        call = src.find("n_batch, n_ubatch = _embedding_batch_ubatch(")
+        assert call != -1, "load_model must size the embedding batch pair to the context"
+        assert (
+            src.find("if self._pooling_type in (1, 2):", call - 100, call) != -1
+        ), "only MEAN/CLS pooling needs the single micro-batch; LAST splits and NONE is refused"
+        assert call < src.find(
+            "n_batch, n_ubatch = _batch_ubatch_for_mmproj("
+        ), "a projector-raised micro-batch must not read as a user-set one"
+        assert call < src.find(
+            "_effective_ubatch = _ubatch_for_slots(n_parallel)"
+        ), "the raise must land before the fit prices the compute buffer"
 
 
 @pytest.mark.parametrize("flag", ["--embedding", "--embeddings", "--pooling"])

@@ -1,18 +1,20 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Hosted tools that survive a turn the Studio loop runs.
+"""Hosted tools that survive a turn the Unsloth loop runs.
 
 Images and Fetch have their own pills, no local implementation, and no
 relationship to Search / Code / RAG. So a request can legitimately mix them with
-a Studio tool, and the loop has to forward those names to the provider instead
+an Unsloth tool, and the loop has to forward those names to the provider instead
 of withholding the whole hosted surface: the alternative is a lit toggle for a
 tool the model is never offered.
 
-Search and code execution are the opposite case. Studio runs those itself once
+Search and code execution are the opposite case. Unsloth runs those itself once
 the loop is up, so forwarding them too would run both sides of one tool and bill
 the provider for its half.
 """
+
+from __future__ import annotations
 
 import asyncio
 
@@ -32,6 +34,7 @@ class _FakeExternalClient:
 
     def __init__(self, **kwargs):
         _FakeExternalClient.last = {"ctor": kwargs}
+        self.provider_type = kwargs.get("provider_type")
 
     def stream_chat_completion(self, **kwargs):
         async def gen():
@@ -52,13 +55,20 @@ def _request():
         return False
 
     return SimpleNamespace(
-        headers = {},
+        # These cases drive the tool loop, whose confirm gate asks over these frames.
+        headers = {"X-Unsloth-Events": "1"},
         state = SimpleNamespace(skip_api_monitor = True),
         is_disconnected = is_disconnected,
     )
 
 
-def _install(monkeypatch, provider_type: str):
+def _install(
+    monkeypatch,
+    provider_type: str,
+    *,
+    base_url = None,
+    api_type = None,
+):
     from core.inference.providers import get_base_url
     from routes import inference as inf
 
@@ -68,7 +78,8 @@ def _install(monkeypatch, provider_type: str):
         lambda _pid: {
             "id": _pid,
             "provider_type": provider_type,
-            "base_url": get_base_url(provider_type) or "http://127.0.0.1:8080/v1",
+            "base_url": base_url or get_base_url(provider_type) or "http://127.0.0.1:8080/v1",
+            "api_type": api_type or "chat_completions",
             "display_name": "Saved connection",
             "is_enabled": True,
         },
@@ -77,6 +88,9 @@ def _install(monkeypatch, provider_type: str):
     monkeypatch.setattr(inf, "ExternalProviderClient", _FakeExternalClient)
 
     def _loop_raiser(transport, **_kwargs):
+        transport._selected_local_tool_names = [
+            tool["function"]["name"] for tool in _kwargs["policy"].tools
+        ]
         raise _LoopEntered(transport)
 
     monkeypatch.setattr(inf, "stream_with_studio_tools", _loop_raiser)
@@ -97,9 +111,17 @@ def _payload(**overrides):
     return ChatCompletionRequest(**base)
 
 
-def _loop_transport(monkeypatch, provider_type: str, selection: list[str], **overrides):
+def _loop_transport(
+    monkeypatch,
+    provider_type: str,
+    selection: list[str],
+    *,
+    base_url: str | None = None,
+    api_type: str | None = None,
+    **overrides,
+):
     """Run the route and return the transport the loop was handed."""
-    inf = _install(monkeypatch, provider_type)
+    inf = _install(monkeypatch, provider_type, base_url = base_url, api_type = api_type)
 
     async def go():
         resp = await inf._proxy_to_external_provider(
@@ -129,7 +151,7 @@ def _clean_policy():
     [
         (["python", "terminal", "image_generation"], ["image_generation"]),
         (["search_knowledge_base", "image_generation"], ["image_generation"]),
-        # web_search is Studio's own once the loop runs, so it never rides along.
+        # web_search is Unsloth's own once the loop runs, so it never rides along.
         (["web_search", "python", "image_generation"], ["image_generation"]),
         (["python", "terminal"], []),
         (["web_search"], []),
@@ -169,7 +191,7 @@ def test_an_absent_or_malformed_selection_is_not_a_crash():
 
 @pytest.mark.parametrize("provider_type", ["openai", "gemini"])
 def test_images_plus_a_studio_tool_still_reaches_the_provider(monkeypatch, provider_type):
-    """The regression in one line: Images plus Code took the Studio loop, and the
+    """The regression in one line: Images plus Code took the Unsloth loop, and the
     loop used to withhold every hosted name, so image_generation vanished while
     its toggle stayed on."""
     transport = _loop_transport(
@@ -194,7 +216,7 @@ def test_automatic_rag_does_not_cost_the_user_their_image_tool(monkeypatch):
 
 
 def test_the_loop_keeps_its_own_search(monkeypatch):
-    """Studio's web_search is running locally this turn, so the provider must not
+    """Unsloth's web_search is running locally this turn, so the provider must not
     be asked to run its own as well."""
     transport = _loop_transport(monkeypatch, "openai", ["web_search", "python"])
     assert transport._request_kwargs["enabled_tools"] is None
@@ -203,3 +225,29 @@ def test_the_loop_keeps_its_own_search(monkeypatch):
 def test_a_self_hosted_loop_is_still_sent_no_tool_flags(monkeypatch):
     transport = _loop_transport(monkeypatch, "llama_cpp", ["web_search", "python"])
     assert transport._request_kwargs["enabled_tools"] is None
+
+
+@pytest.mark.parametrize(
+    "base_url,expected_hosted_tools",
+    [
+        ("https://api.openai.com/v1", ["code_execution", "image_generation"]),
+        (
+            "https://resource.services.ai.azure.com/openai/v1",
+            ["code_execution", "image_generation"],
+        ),
+        ("https://gateway.example/v1", None),
+        ("https://api.openai.com.attacker.example/v1", None),
+    ],
+)
+def test_custom_mixed_tools_keep_local_search_and_scope_hosted_tools(
+    monkeypatch, base_url, expected_hosted_tools
+):
+    transport = _loop_transport(
+        monkeypatch,
+        "custom",
+        ["web_search", "code_execution", "image_generation"],
+        base_url = base_url,
+        api_type = "responses",
+    )
+    assert "web_search" in transport._selected_local_tool_names
+    assert transport._request_kwargs["enabled_tools"] == expected_hosted_tools

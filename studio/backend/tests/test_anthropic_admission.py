@@ -31,7 +31,7 @@ sys.path.insert(0, _backend)
 
 import routes.inference as inf_mod
 from routes.inference import (
-    _anthropic_passthrough_retry_url,
+    _passthrough_retry_url,
     _anthropic_passthrough_stream,
     anthropic_messages,
 )
@@ -916,7 +916,7 @@ def test_retry_url_stands_down_while_an_mtp_fallback_is_reloading():
     # underneath the fallback already reloading without it.
     backend = _RespawnBackend(mtp_handled = False, fallback_in_progress = True)
 
-    url = asyncio.run(_anthropic_passthrough_retry_url(backend, httpx.ConnectError("x")))
+    url = asyncio.run(_passthrough_retry_url(backend, httpx.ConnectError("x")))
 
     assert url is None
     assert backend.respawn_calls == 0

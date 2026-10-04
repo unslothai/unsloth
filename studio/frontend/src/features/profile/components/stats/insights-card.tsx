@@ -18,9 +18,11 @@ export function ActivityInsightsCard({ stats }: { stats: ProfileStats }) {
   const locale = useLocale();
   const { totals, speed } = stats;
   const averageTokensPerChat =
-    totals.threads > 0 ? totals.totalTokens / totals.threads : 0;
+    totals.threads > 0 ? totals.chatTokens / totals.threads : 0;
   const cacheShare =
-    totals.promptTokens > 0 ? totals.cachedTokens / totals.promptTokens : 0;
+    totals.chatPromptTokens > 0
+      ? totals.cachedTokens / totals.chatPromptTokens
+      : 0;
 
   return (
     <StatsCard title={t("settings.profile.stats.insightsTitle")}>
@@ -40,6 +42,18 @@ export function ActivityInsightsCard({ stats }: { stats: ProfileStats }) {
         <StatRow
           label={t("settings.profile.stats.tokensOut")}
           value={formatCompactNumber(totals.completionTokens, locale)}
+        />
+        <StatRow
+          label={t("settings.profile.stats.totalTokens")}
+          value={formatCompactNumber(totals.totalTokens, locale)}
+        />
+        <StatRow
+          label={t("settings.profile.stats.studioChatTokens")}
+          value={formatCompactNumber(totals.chatTokens, locale)}
+        />
+        <StatRow
+          label={t("settings.profile.stats.apiTokens")}
+          value={formatCompactNumber(totals.apiTokens, locale)}
         />
         <StatRow
           label={t("settings.profile.stats.cachedTokens")}

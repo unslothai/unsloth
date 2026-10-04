@@ -132,6 +132,7 @@ def test_q8_0_only_is_single_pass(monkeypatch, tmp_path):
 
     assert len(h.convert_calls) == 1
     assert h.convert_calls[0]["quantization_type"] == "q8_0"
+    assert h.convert_calls[0]["max_shard_size"] == "50GB"
     assert h.quantize_calls == [], "single-pass export must not launch llama-quantize"
     assert want_full_precision is True, "the converted file IS the requested output"
     assert len(locations) == 1 and locations[0].endswith("testmodel.Q8_0.gguf")
@@ -165,6 +166,7 @@ def test_k_quant_keeps_two_pass(monkeypatch, tmp_path):
     locations, want_full_precision, _ = _run(tmp_path, ["q4_k_m"])
 
     assert h.convert_calls[0]["quantization_type"] == "f16"
+    assert h.convert_calls[0]["max_shard_size"] == "50GB"
     assert [c["quant_type"] for c in h.quantize_calls] == ["q4_k_m"]
     assert want_full_precision is False
     # The 16-bit intermediate must be cleaned up.
@@ -207,6 +209,7 @@ def test_parallel_quants_env_kill_switch(monkeypatch, tmp_path):
 def test_duplicate_methods_quantize_once(monkeypatch, tmp_path):
     h = _Harness(monkeypatch, tmp_path)
     _run(tmp_path, ["q4_k_m", "q4_k_m"])
+    assert h.convert_calls[0]["max_shard_size"] == "50GB"
     assert [c["quant_type"] for c in h.quantize_calls] == ["q4_k_m"]
 
 

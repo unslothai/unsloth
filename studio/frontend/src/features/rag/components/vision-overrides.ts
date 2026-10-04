@@ -7,12 +7,11 @@ import {
   useChatRuntimeStore,
 } from "@/features/chat";
 
-// Hydration is a network round trip with no deadline of its own: authFetch sets
-// no AbortSignal, so a wedged or unreachable server leaves the promise pending
-// for as long as the socket does. Uploads used to read these overrides
-// synchronously, so waiting forever would be a new way for a drop to hang with
-// nothing on screen. Bound it and take the local values, the way a blocked
-// localStorage already falls through to the backend defaults.
+// Hydration is a network round trip with no deadline of its own: authFetch sets no AbortSignal, so
+// a wedged or unreachable server leaves the promise pending for as long as the socket does. Uploads
+// used to read these overrides synchronously, so waiting forever would be a new way for a drop to
+// hang with nothing on screen. Bound it and take the local values, the way a blocked localStorage
+// already falls through to the backend defaults.
 const HYDRATION_WAIT_MS = 8_000;
 
 function wait(ms: number): Promise<void> {
@@ -24,9 +23,8 @@ function hasLocal(key: string): boolean {
   try {
     return window.localStorage.getItem(key) !== null;
   } catch {
-    // Storage can be blocked outright (sandboxed context). These overrides are
-    // optional, so fall back to the backend defaults rather than failing the
-    // upload that asked for them.
+    // Storage can be blocked outright (sandboxed context). These overrides are optional, so fall
+    // back to the backend defaults rather than failing the upload that asked for them.
     return false;
   }
 }

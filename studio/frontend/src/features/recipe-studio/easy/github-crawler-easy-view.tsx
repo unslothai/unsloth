@@ -61,11 +61,10 @@ export function GithubCrawlerEasyView({
   const localModelValue =
     modelValue.trim().toLowerCase() === "local" ? "" : modelValue;
 
-  // Local buffer for the Rows input so the user can hold transient invalid
-  // state (empty while backspacing, partial digits, etc.) without the parent
-  // snapping them back to 1 on every keystroke. The canonical ``rows`` value
-  // only advances when the buffer parses to a valid positive integer; on
-  // blur we clamp back to a sane default if the user left it empty.
+  // Local buffer for the Rows input so the user can hold transient invalid state (empty while
+  // backspacing, partial digits, etc.) without the parent snapping them back to 1 on every
+  // keystroke. The canonical ``rows`` value only advances when the buffer parses to a valid
+  // positive integer; on blur we clamp back to a sane default if the user left it empty.
   const [rowsText, setRowsText] = useState(String(rows));
   useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect -- keep the draft input in sync when the parent resets rows.
