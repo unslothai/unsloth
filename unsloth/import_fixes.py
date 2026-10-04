@@ -4755,8 +4755,7 @@ def _pt2_unsafe_load_error(what):
 
 
 def _pt2_loader_caller(frame):
-    # The export loader's frame, if it is among the few frames above this load: other torch.load
-    # wrappers (Unsloth's rng guard, or another library's patch installed later) sit in between.
+    # A few frames up: other torch.load wrappers (the rng guard, later patches) sit in between.
     hops = 0
     while frame is not None and hops < 8:
         name = frame.f_globals.get("__name__", "")
@@ -4845,15 +4844,10 @@ class _Pt2PackageFinder(importlib.abc.MetaPathFinder):
 
 
 def patch_torch_export_pt2_unsafe_load():
-    """Harden torch.export .pt2 loading against CVE-2026-4538 (upstream fix
-    pytorch/pytorch#176791 was never merged). torch.export.load unpickles archive payloads
-    with weights_only=False: always on older torch, as a silent fallback after a failed
-    weights_only=True load on newer torch, for `use_pickle` weights and constants, and via a
-    bare pickle.loads for opaque constants on newest torch. Those loads become
-    weights_only=True and the bare pickle.loads is refused; tensors, parameters and ordinary
-    exported programs still load. Unsloth never loads .pt2 itself, so only user code calling
-    torch.export.load changes, and only for archives that need arbitrary unpickling.
-    UNSLOTH_ALLOW_UNSAFE_PT2_LOAD=1 restores torch's behaviour per call. Idempotent."""
+    """CVE-2026-4538 (pytorch/pytorch#176791 never merged): torch.export.load unpickles .pt2
+    payloads with weights_only=False. Those loads become weights_only=True and the bare
+    pickle.loads for opaque constants is refused; tensors and ordinary exported programs still
+    load. UNSLOTH_ALLOW_UNSAFE_PT2_LOAD=1 restores torch's behaviour."""
     try:
         import torch
     except Exception:
@@ -4882,8 +4876,7 @@ def patch_torch_export_pt2_unsafe_load():
         torch.load = _pt2_guarded_torch_load
         patched = True
 
-    # Opaque constants (newest torch) bypass torch.load. Patch the module now if it is loaded,
-    # else when it is first imported, so a bare `import unsloth` never pays for the export stack.
+    # Opaque constants bypass torch.load: patch _package now, or lazily so import stays cheap.
     package = sys.modules.get(_PT2_PACKAGE_MODULE)
     if package is not None:
         patched = _install_pt2_pickle_proxy(package) or patched
