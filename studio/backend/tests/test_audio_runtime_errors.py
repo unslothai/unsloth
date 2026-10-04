@@ -246,19 +246,19 @@ def test_a_transcription_error_is_sanitized_before_it_reaches_the_client():
         def __init__(self, status):
             self.status = status
 
-        def post_multipart(self, *_args, **_kwargs):
+        def post_json(self, *_args, **_kwargs):
             raise AudioCppRequestError(self.status, _LEAKY)
 
     sidecar = stt.AudioCppSttSidecar.__new__(stt.AudioCppSttSidecar)
     sidecar._server = _Server(500)
     with pytest.raises(stt.SttEngineUnavailableError) as failed:
-        sidecar._post_transcription(b"RIFF", None, None)
+        sidecar._post_details("a.wav", None, None, {})
     message = str(failed.value)
     assert message.startswith("The audio runtime failed: The audio runtime could not generate")
     assert "/home/alice" not in message and "hf_AbCdEf" not in message and "\n" not in message
     sidecar._server = _Server(400)
     with pytest.raises(SttAudioDecodeError) as refused:
-        sidecar._post_transcription(b"RIFF", None, None)
+        sidecar._post_details("a.wav", None, None, {})
     assert "/home/alice" not in str(refused.value)
     stt.clear_runtime_inference_failure()
 
