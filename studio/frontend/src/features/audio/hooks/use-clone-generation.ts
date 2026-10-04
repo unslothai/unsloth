@@ -17,7 +17,11 @@ import {
   missingRequiredAudioOptions,
 } from "../audio-options";
 import { persistedClipForGeneration } from "../audio-page-policy";
-import { selectionExpired, sourceRefOf } from "../audio-run-request";
+import {
+  type AudioSourceSelection,
+  selectionExpired,
+  sourceRefOf,
+} from "../audio-run-request";
 import { cloneBlocker, referenceTextField } from "../clone-policy";
 import type { AudioSourceInputHandle } from "../components/audio-source-input";
 import type { GenerateBlocker } from "../pages/tts-workspace";
@@ -151,11 +155,32 @@ export function useCloneGeneration({
     null,
   );
 
-  const transcriber = useReferenceTranscribe({
+  const referenceTranscriber = useReferenceTranscribe({
     sttRepo,
     onText: (next, source) =>
       useAudioCloneStore.getState().applyTranscript(source, next),
   });
+  // Holds the page busy like the Transcribe page does, so Generate and model swaps wait for the STT run.
+  const transcribeReference = useCallback(
+    async (source: AudioSourceSelection | null) => {
+      if (!source || busyRef.current) return;
+      busyRef.current = "transcribing";
+      setBusy("transcribing");
+      try {
+        await referenceTranscriber.transcribe(source);
+      } finally {
+        if (busyRef.current === "transcribing") {
+          busyRef.current = null;
+          setBusy(null);
+        }
+      }
+    },
+    [busyRef, setBusy, referenceTranscriber.transcribe],
+  );
+  const transcriber = {
+    ...referenceTranscriber,
+    transcribe: transcribeReference,
+  };
 
   const toolContext = useMemo(
     () =>

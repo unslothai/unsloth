@@ -485,3 +485,11 @@ test("a run's inline fallback clip stays on the page that started it", () => {
   assert.doesNotMatch(body.slice(0, body.indexOf("\n}\n")), /workflow: "clone"/);
   assert.match(readSrc("features/audio/hooks/use-speech-generation.ts"), /showRunResult\(\{[^}]*workflow: "speak"/);
 });
+
+test("transcribing the reference holds the page busy until it ends", () => {
+  const hook = readSrc("features/audio/hooks/use-clone-generation.ts");
+  const body = hook.slice(hook.indexOf("const transcribeReference = useCallback("));
+  assert.match(body, /if \(!source \|\| busyRef\.current\) return;\s*busyRef\.current = "transcribing";\s*setBusy\("transcribing"\);/);
+  assert.match(body, /finally \{\s*if \(busyRef\.current === "transcribing"\) \{\s*busyRef\.current = null;\s*setBusy\(null\);/);
+  assert.match(body, /transcribe: transcribeReference/);
+});
