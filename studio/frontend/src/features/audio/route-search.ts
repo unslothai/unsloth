@@ -79,11 +79,12 @@ export function audioWorkflowForPick(pick: {
   audioType?: string | null;
 }): AudioWorkflowId | null {
   const workflow = audioWorkflowForTask(pick.task);
-  if (workflow !== "speak") {
+  if (workflow !== null && workflow !== "speak") {
     return workflow;
   }
+  // No task (or a speech one): the audio type or catalog entry can still say it makes music.
   const music =
     MUSIC_AUDIO_TYPES.has(pick.audioType ?? "") ||
     audioCppModelFor(pick.id)?.task === "music";
-  return music ? "music" : "speak";
+  return music ? "music" : workflow;
 }
