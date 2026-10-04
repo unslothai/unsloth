@@ -13,6 +13,8 @@ import json
 from contextlib import asynccontextmanager
 from types import SimpleNamespace
 
+import re
+
 import pytest
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.testclient import TestClient
@@ -1491,6 +1493,13 @@ def test_a_rejected_voice_load_gives_the_chat_claim_back():
     ):
         at = source.index(marker)
         assert "await _undo_load()" in source[at - 400 : at + 200], marker
+    # Both unload-epoch rejections too: the unload that moved the epoch could not release the
+    # claim itself, since this load was still marked in flight when it ran.
+    epoch = 'detail = "The voice model was unloaded while it was loading. Load it again."'
+    hits = [m.start() for m in re.finditer(re.escape(epoch), source)]
+    assert len(hits) == 2
+    for at in hits:
+        assert "await _undo_load()" in source[at - 300 : at]
 
 
 def test_the_in_flight_marker_keeps_the_chat_claim_until_it_ends(monkeypatch):

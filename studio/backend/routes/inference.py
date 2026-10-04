@@ -21134,11 +21134,10 @@ async def voice_load_model(
                 await _undo_load()
                 raise HTTPException(status_code = 500, detail = f"Failed to load voice model: {e}")
 
+            # The unload that moved the epoch released nothing: its release ran while this load
+            # was marked in flight. So the claim is given back here, with the teardown.
             if unload_epoch is not None and getattr(voice_backend, "_unload_epoch", None) != unload_epoch:
-                try:
-                    await asyncio.to_thread(voice_backend.unload_model)
-                except Exception:
-                    pass
+                await _undo_load()
                 raise HTTPException(
                     status_code = 409,
                     detail = "The voice model was unloaded while it was loading. Load it again.",
@@ -21192,8 +21191,9 @@ async def voice_load_model(
             except Exception as e:
                 logger.warning("Voice slot warmup synth failed (first /speech may be slower): %s", e)
             # An unload during the warm-up emptied the slot; the swallowed warm-up error must not
-            # turn that into "loaded".
+            # turn that into "loaded", and the claim goes back as above.
             if unload_epoch is not None and getattr(voice_backend, "_unload_epoch", None) != unload_epoch:
+                await _undo_load()
                 raise HTTPException(
                     status_code = 409,
                     detail = "The voice model was unloaded while it was loading. Load it again.",
