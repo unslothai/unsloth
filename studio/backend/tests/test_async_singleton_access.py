@@ -96,6 +96,24 @@ def _sync_helpers_that_build_the_singleton(rel: str) -> set[str]:
     return names
 
 
+def _calls_inside_offloaded_lambdas(fn: ast.AST) -> set[int]:
+    """ids of the Call nodes in a lambda passed straight to asyncio.to_thread: they run on the
+    worker thread, not the loop. Only a lambda that is itself an argument counts, so a lambda
+    stored first and called on the loop later is still reported."""
+    inside = set()
+    for node in ast.walk(fn):
+        if not (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "to_thread"
+        ):
+            continue
+        for arg in [*node.args, *(kw.value for kw in node.keywords)]:
+            if isinstance(arg, ast.Lambda):
+                inside.update(id(n) for n in ast.walk(arg.body) if isinstance(n, ast.Call))
+    return inside
+
+
 def test_no_async_handler_reaches_the_singleton_through_a_sync_helper():
     """The direct sweep is not enough: a sync helper hides the same stall. _loaded_satisfies
     calls get_inference_backend() inline, so an async handler calling it on the loop pays
@@ -109,13 +127,17 @@ def test_no_async_handler_reaches_the_singleton_through_a_sync_helper():
         for fn in ast.walk(tree):
             if not isinstance(fn, ast.AsyncFunctionDef):
                 continue
+            off_loop = _calls_inside_offloaded_lambdas(fn)
             for sub in ast.walk(fn):
                 # A bare Call to the helper runs it on the loop; passing it to
-                # to_thread makes it an ast.Name argument, never a Call.
+                # to_thread makes it an ast.Name argument, never a Call. A call inside a
+                # lambda handed to to_thread runs on the worker thread too (#11591's
+                # get_active_generations does `to_thread(..., lambda: _loaded_satisfies(model))`).
                 if (
                     isinstance(sub, ast.Call)
                     and isinstance(sub.func, ast.Name)
                     and sub.func.id in helpers
+                    and id(sub) not in off_loop
                 ):
                     offenders.append(f"{rel}:{sub.lineno} async {fn.name} -> {sub.func.id}()")
 
@@ -202,3 +224,22 @@ def test_read_only_endpoints_never_construct_the_singleton():
         "read-only paths construct the inference singleton, so a status poll or a "
         "metadata-only delete imports torch on a warm-disabled host:\n  " + "\n  ".join(offenders)
     )
+
+
+def test_a_lambda_handed_to_to_thread_is_off_the_loop_but_an_inline_call_is_not():
+    """The exemption is exactly as wide as the offload: the same helper call on the loop is
+    still reported."""
+    fn = ast.parse(
+        "async def handler(model):\n"
+        "    await asyncio.to_thread(slots.in_slot, None, lambda: helper(model))\n"
+        "    stored = lambda: helper(model)\n"
+        "    helper(model)\n"
+    ).body[0]
+    off_loop = _calls_inside_offloaded_lambdas(fn)
+    calls = [
+        n
+        for n in ast.walk(fn)
+        if isinstance(n, ast.Call) and getattr(n.func, "id", None) == "helper"
+    ]
+    assert [n.lineno for n in calls if id(n) in off_loop] == [2]
+    assert sorted(n.lineno for n in calls if id(n) not in off_loop) == [3, 4]
