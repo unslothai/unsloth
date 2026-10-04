@@ -4,6 +4,7 @@
 import {
   type AudioSourceSelection,
   EDIT_SOURCE_MAX_SECONDS,
+  EDIT_SOURCE_SLACK_SECONDS,
 } from "./audio-run-request";
 import {
   EDIT_TOO_LONG,
@@ -99,7 +100,7 @@ export function editBlocker(input: EditBlockerInput): EditBlocker | null {
   }
   if (
     typeof input.sourceDurationS === "number" &&
-    input.sourceDurationS > EDIT_SOURCE_MAX_SECONDS
+    input.sourceDurationS > EDIT_SOURCE_MAX_SECONDS + EDIT_SOURCE_SLACK_SECONDS
   ) {
     return blocker("source-too-long", EDIT_SOURCE_TOO_LONG, [
       { id: "choose-recording", label: "Choose another" },

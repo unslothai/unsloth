@@ -10,6 +10,8 @@ export const REFERENCE_MAX_SECONDS = 30;
 
 /** Longer is refused, not cut: a cut recording no longer matches its transcript. */
 export const EDIT_SOURCE_MAX_SECONDS = 30;
+// The server allows the same slack: a take stopped by the 30 s timer can run a frame over.
+export const EDIT_SOURCE_SLACK_SECONDS = 0.05;
 
 export type AudioSourceRef =
   | { input_id: string }

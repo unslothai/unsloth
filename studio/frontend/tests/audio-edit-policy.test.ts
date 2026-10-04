@@ -53,7 +53,8 @@ test("Edit's blockers come in rail order, each with its action", () => {
   // Every step is wrong at once; fixing one reveals the next.
   const empty: Input = { ...ready, ...NONE, ...BLANK, panelError: "no" };
   const picked = { ...empty, source: ready.source, sourceDurationS: 31 };
-  const fits = { ...picked, sourceDurationS: 30 };
+  // A take the 30 s timer stopped can run a frame over; the server allows that too.
+  const fits = { ...picked, sourceDurationS: 30.02 };
   const transcribed = { ...fits, transcribing: false };
   const typed = {
     ...transcribed,

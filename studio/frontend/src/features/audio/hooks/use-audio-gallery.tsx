@@ -602,9 +602,11 @@ export function useWorkflowHistory({
   const loadMoreVisible = useCallback(async () => {
     if (visibleLoad.current) return;
     visibleLoad.current = true;
+    // Counted like visibleClips: hidden edit originals add no row.
     const countVisible = () =>
-      galleryCache.clips.filter((clip) => clipWorkflow(clip) === workflow)
-        .length;
+      galleryCache.clips.filter(
+        (clip) => clipWorkflow(clip) === workflow && clip.role !== "source",
+      ).length;
     const before = countVisible();
     try {
       await loadGalleryUntil({
