@@ -674,7 +674,8 @@ def graph_eligible(
 
     # SageAttention under a replayed graph renders noise (FLUX.1-schnell on A100: LPIPS 1.09 against the ungraphed
     # render, which is itself correct), so a Sage load stays ungraphed.
-    if any(getattr(m, "_unsloth_attention_backend", None) == "sage" for m in _denoiser_dits(pipe)):
+    # The kernels-hub build (sage_hub) is the same kernel.
+    if any(getattr(m, "_unsloth_attention_backend", None) in ("sage", "sage_hub") for m in _denoiser_dits(pipe)):
         return False, "SageAttention is not CUDA-graph safe"
 
     try:

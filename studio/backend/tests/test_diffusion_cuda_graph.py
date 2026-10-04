@@ -1136,10 +1136,12 @@ def test_real_cuda_compiled_module_capture_matches_the_compiled_call():
     assert unet._compiled_call_impl is compiled
 
 
-def test_graph_eligible_declines_a_sage_denoiser(stub_torch, monkeypatch):
-    """SageAttention under a replayed graph renders noise (FLUX.1-schnell, A100), so a Sage load stays ungraphed."""
+@pytest.mark.parametrize("backend", ["sage", "sage_hub"])
+def test_graph_eligible_declines_a_sage_denoiser(stub_torch, monkeypatch, backend):
+    """SageAttention under a replayed graph renders noise (FLUX.1-schnell, A100), so a Sage load stays ungraphed; the
+    kernels-hub build (sage_hub) is the same kernel."""
     dit = _FakeDiT()
-    dit._unsloth_attention_backend = "sage"
+    dit._unsloth_attention_backend = backend
     ok, reason = _eligible(monkeypatch, pipe = types.SimpleNamespace(transformer = dit))
     assert (ok, reason) == (False, "SageAttention is not CUDA-graph safe")
 
