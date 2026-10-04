@@ -228,6 +228,18 @@ if _IS_MLX:
     except Exception:
         pass
     try:
+        # Same reason: MLX loads hub configs and saves tokenizers through transformers too.
+        from .import_fixes import (
+            fix_transformers_untrusted_config_fields as _fix_untrusted_config,
+            fix_transformers_chat_template_path_traversal as _fix_template_names,
+        )
+
+        _fix_untrusted_config()
+        _fix_template_names()
+        del _fix_untrusted_config, _fix_template_names
+    except Exception:
+        pass
+    try:
         import unsloth_zoo
     except ImportError as _e:
         raise ImportError(

@@ -39,6 +39,7 @@
 !jupyter/unsloth_labext/package.json
 !jupyter/unsloth_labext/tsconfig.json
 !jupyter/unsloth_labext/.yarnrc.yml
+!jupyter/unsloth_labext/yarn.lock
 !jupyter/unsloth_labext/src
 !jupyter/unsloth_labext/src/**
 !jupyter/unsloth_labext/style

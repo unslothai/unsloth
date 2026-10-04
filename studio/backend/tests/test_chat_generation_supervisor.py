@@ -445,9 +445,13 @@ async def test_a_prefill_reporting_only_progress_renews_the_lease(durable_run, m
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     "comment, reaped",
-    [("_OPENAI_TOOL_HEARTBEAT_SSE", []), ("_OPENAI_PASSTHROUGH_SSE_KEEPALIVE", ["run-1"])],
+    [
+        ("_OPENAI_TOOL_HEARTBEAT_SSE", []),
+        ("_OPENAI_PREFILL_PROGRESS_SSE", []),
+        ("_OPENAI_PASSTHROUGH_SSE_KEEPALIVE", ["run-1"]),
+    ],
 )
-async def test_a_silent_tool_holds_the_lease_but_a_stalled_stream_does_not(
+async def test_progress_comments_hold_the_lease_but_a_stalled_stream_does_not(
     durable_run, monkeypatch, comment, reaped
 ):
     comment = getattr(inference, comment)
@@ -472,6 +476,139 @@ async def test_a_silent_tool_holds_the_lease_but_a_stalled_stream_does_not(
     supervisor = ChatGenerationSupervisor(SimpleNamespace(state = SimpleNamespace()))
     await supervisor._produce("run-1")
     assert sampled["reaped"] == reaped
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("tools", [False, True], ids = ["chat", "tool-loop"])
+@pytest.mark.parametrize("reports_progress, reaped", [(True, []), (False, ["run-1"])])
+async def test_native_gguf_prefill_progress_holds_the_lease(
+    durable_run, monkeypatch, tools, reports_progress, reaped
+):
+    """Native GGUF generators are silent until the first token; advancing progress must still renew the lease."""
+    from core.inference.llama_cpp import _report_live_llama_timings
+
+    entered, release = threading.Event(), threading.Event()
+
+    def _prefill(perf_callback):
+        entered.set()
+        processed = 0
+        while not release.wait(0.005):
+            if reports_progress:
+                processed += 512
+                _report_live_llama_timings(
+                    perf_callback,
+                    {"choices": [], "prompt_progress": {"total": 10**6, "processed": processed}},
+                )
+
+    def generate(*, perf_callback = None, **_kwargs):
+        _prefill(perf_callback)
+        yield "Hi"
+        yield {"type": "metadata", "finish_reason": "stop"}
+
+    def generate_with_tools(*, perf_callback = None, **_kwargs):
+        _prefill(perf_callback)
+        yield {"type": "content", "text": "Hi"}
+        yield {"type": "metadata", "finish_reason": "stop"}
+
+    llama = SimpleNamespace(
+        is_loaded = True,
+        model_identifier = "local.gguf",
+        base_url = "http://llama.test",
+        effective_parallel_slots = 1,
+        supports_tools = tools,
+        supports_tool_passthrough = tools,
+        is_vision = False,
+        _is_audio = False,
+        context_length = None,
+        generate_chat_completion = generate,
+        generate_chat_completion_with_tools = generate_with_tools,
+        release_idle_chat_slot = lambda *_a, **_k: False,
+        count_chat_tokens = lambda *_a, **_k: 16,
+        _request_reasoning_kwargs = lambda *_a, **_k: None,
+    )
+    monkeypatch.setattr(inference, "get_llama_cpp_backend", lambda: llama)
+    monkeypatch.setattr(inference, "_automatic_model_load_may_run", lambda: False)
+
+    async def no_switch(*_a, **_k):
+        return None
+
+    monkeypatch.setattr(inference, "_maybe_auto_switch_model", no_switch)
+    monkeypatch.setattr(inference, "_LOCAL_TOOL_STREAM_STALL_KEEPALIVE_S", 0.02)
+    if not tools:
+        monkeypatch.setattr(inference, "_effective_enable_tools", lambda _payload: False)
+    now = {"ms": runs_db.now_ms()}
+    monkeypatch.setattr(runs_db, "now_ms", lambda: now["ms"])
+    real_produce = inference.produce_openai_chat_completions
+    sampled = {"comments": set()}
+
+    async def wrapped(payload, request, subject, *, cancel_on_disconnect):
+        if tools:
+            # What the UI sends with the web-search pill lit: server-side tools, no client tools.
+            payload.enable_tools = True
+            payload.enabled_tools = ["web_search"]
+        response = await real_produce(
+            payload, request, subject, cancel_on_disconnect = cancel_on_disconnect
+        )
+        inner = response.body_iterator
+        # Preparation has already read its own interval; only the stream's rate limit is lifted.
+        monkeypatch.setattr(chat_generation_runs, "_renew_interval_seconds", lambda: 0.0)
+
+        async def body():
+            comments = 0
+            async for raw in inner:
+                text = raw.decode() if isinstance(raw, bytes) else str(raw)
+                if text.startswith(":") and entered.is_set():
+                    comments += 1
+                    sampled["comments"].add(text.strip())
+                    if comments == 2:
+                        now["ms"] += 21 * 60_000
+                    elif comments == 5 and "reaped" not in sampled:
+                        sampled["reaped"] = runs_db.reconcile_runs(stale_after_ms = 1_200_000)
+                        release.set()
+                yield raw
+
+        response.body_iterator = body()
+        return response
+
+    monkeypatch.setattr(inference, "produce_openai_chat_completions", wrapped)
+    try:
+        supervisor = ChatGenerationSupervisor(SimpleNamespace(state = SimpleNamespace()))
+        await asyncio.wait_for(supervisor._produce("run-1"), 30)
+    finally:
+        release.set()
+    assert sampled["reaped"] == reaped
+    expected = ": prefill-progress" if reports_progress else ": keep-alive"
+    assert expected in sampled["comments"], sampled["comments"]
+    if not reports_progress:
+        assert ": prefill-progress" not in sampled["comments"]
+
+
+def test_prefill_signal_counts_only_moving_progress():
+    from core.inference.llama_cpp import _perf_callback_wants_timings
+
+    forwarded = []
+    bare = inference._PrefillProgressSignal(None)
+    assert _perf_callback_wants_timings(bare) is False
+    assert bare.needs_phase is False
+    assert bare.advanced() is False
+    bare({"prompt_progress": {"processed": 10}})
+    bare({"prompt_progress": {"processed": 10}})
+    assert bare.advanced() is True
+    assert bare.advanced() is False
+    bare({"prompt_progress": {"processed": 2}})
+    assert bare.advanced() is True
+    bare({"timings": {"predicted_n": 1}})
+    assert bare.advanced() is False
+
+    def monitor(sample):
+        forwarded.append(sample)
+
+    monitor.needs_phase = False
+    wrapped = inference._PrefillProgressSignal(monitor)
+    assert _perf_callback_wants_timings(wrapped) is True
+    assert wrapped.needs_phase is False
+    wrapped({"prompt_progress": {"processed": 1}})
+    assert forwarded == [{"prompt_progress": {"processed": 1}}]
 
 
 async def _subscriber_sequences(after = 0):

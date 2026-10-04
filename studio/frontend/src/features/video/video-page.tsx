@@ -252,10 +252,12 @@ const MODEL_DEFAULTS: Array<{ match: string; steps: number; guidance: number }> 
   // "distilled" before the generic "ltx": the distilled model runs at 8 steps, guidance 1.
   { match: "distilled", steps: 8, guidance: 1 },
   { match: "ltx", steps: 40, guidance: 4 },
-  // Wan2.2 pipelines default to 50 steps at CFG 5.0 (diffusers 0.39). The backend supplies the fps per family.
-  { match: "wan", steps: 50, guidance: 5 },
-  // HunyuanVideo-1.5 runs 50 steps; guidance 6 matches the guider the repo ships.
-  { match: "hunyuanvideo", steps: 50, guidance: 6 },
+  // T2V-A14B before the generic Wan key.
+  { match: "a14b", steps: 20, guidance: 3.5 },
+  { match: "wan2.2-14b", steps: 20, guidance: 3.5 },
+  // The backend supplies the fps per family.
+  { match: "wan", steps: 20, guidance: 5 },
+  { match: "hunyuanvideo", steps: 20, guidance: 6 },
 ];
 
 function defaultsFor(repoId: string): { steps: number; guidance: number } {

@@ -78,7 +78,7 @@ def _block(quant: str):
         from torchao.quantization import Int8DynamicActivationInt8WeightConfig, quantize_
         quantize_(
             blk,
-            Int8DynamicActivationInt8WeightConfig(),
+            Int8DynamicActivationInt8WeightConfig(set_inductor_config = False),
             filter_fn = lambda m, fqn: isinstance(m, torch.nn.Linear) and "adaLN" not in fqn,
         )
     return blk
