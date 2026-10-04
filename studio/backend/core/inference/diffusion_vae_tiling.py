@@ -44,7 +44,11 @@ def wide_tiles_disabled() -> bool:
     return (os.environ.get(WIDE_TILES_ENV) or "").strip().lower() in ("0", "off", "false", "no")
 
 
-def tile_starts(length: int, tile: int = TILE_LATENTS, overlap: int = OVERLAP_LATENTS) -> list[int]:
+def tile_starts(
+    length: int,
+    tile: int = TILE_LATENTS,
+    overlap: int = OVERLAP_LATENTS,
+) -> list[int]:
     """Start offsets of the fewest full-size tiles covering ``length`` with every neighbour overlap >= ``overlap``.
 
     The first tile starts at 0 and the last ends at ``length``; the rest are spread evenly between them."""
@@ -77,7 +81,8 @@ def axis_weights(
     overlap >= 16 latents, each pixel lies >= 8 latents inside some tile, so a margin under 8 keeps the sum positive;
     with margin 4 and ramp 8 a two-tile overlap of exactly 16 is a linear cross-fade over its middle 8 latents."""
     size = min(tile, length) * scale
-    pos = (torch.arange(size, dtype = torch.float64, device = device) + 0.5) / scale  # pixel centres, in latents
+    # pixel centres, in latents
+    pos = (torch.arange(size, dtype = torch.float64, device = device) + 0.5) / scale
     total = torch.zeros(length * scale, dtype = torch.float64, device = device)
     weights = []
     for s in starts:
@@ -151,7 +156,8 @@ def decode_tile_budget(vae: Any, z: Any) -> Optional[int]:
         free, _ = torch.cuda.mem_get_info(z.device)
         free += torch.cuda.memory_reserved(z.device) - torch.cuda.memory_allocated(z.device)
         ratio = int(vae.spatial_compression_ratio)
-        out_bytes = 4 * 4 * z.shape[0] * z.shape[2] * z.shape[-2] * z.shape[-1] * ratio * ratio  # fp32 accumulator
+        # fp32 accumulator
+        out_bytes = 4 * 4 * z.shape[0] * z.shape[2] * z.shape[-2] * z.shape[-1] * ratio * ratio
         elem = next(vae.decoder.parameters()).element_size()
         mib = FREE_FRACTION * (free - out_bytes) / 2**20
         return max(0, int(mib / (DECODE_MIB_PER_LATENT * elem / 2)))
@@ -159,7 +165,12 @@ def decode_tile_budget(vae: Any, z: Any) -> Optional[int]:
         return None
 
 
-def tiled_decode(vae: Any, z: Any, return_dict: bool = True, max_area: Any = "auto") -> Any:
+def tiled_decode(
+    vae: Any,
+    z: Any,
+    return_dict: bool = True,
+    max_area: Any = "auto",
+) -> Any:
     """Decode ``z`` (B, C, T, H, W) in evenly spread tiles with 16-latent overlaps: 32x32 latents at least, larger
     (down to one untiled decode) when the free VRAM allows, since fewer tiles decode less overlap."""
     import torch
@@ -190,7 +201,9 @@ def tiled_decode(vae: Any, z: Any, return_dict: bool = True, max_area: Any = "au
                         device = tile.device,
                     )
                 w = wy[i].view(-1, 1) * wx[j].view(1, -1)
-                out[..., y * ratio : (y + th) * ratio, x * ratio : (x + tw) * ratio].add_(tile.float() * w)
+                out[..., y * ratio : (y + th) * ratio, x * ratio : (x + tw) * ratio].add_(
+                    tile.float() * w
+                )
                 del tile
         dec = out.to(dtype)
         del out
@@ -227,11 +240,17 @@ def tiled_encode(vae: Any, x: Any) -> Any:
     out, dtype = None, None
     for i, y in enumerate(hs):
         for j, xs in enumerate(ws):
-            tile = _encode_tile(vae, x[:, :, :, y * ratio : (y + th) * ratio, xs * ratio : (xs + tw) * ratio])
+            tile = _encode_tile(
+                vae, x[:, :, :, y * ratio : (y + th) * ratio, xs * ratio : (xs + tw) * ratio]
+            )
             if out is None:
                 dtype = tile.dtype
-                out = torch.zeros((*tile.shape[:3], height, width), dtype = torch.float32, device = tile.device)
-            out[..., y : y + th, xs : xs + tw].add_(tile.float() * (wy[i].view(-1, 1) * wx[j].view(1, -1)))
+                out = torch.zeros(
+                    (*tile.shape[:3], height, width), dtype = torch.float32, device = tile.device
+                )
+            out[..., y : y + th, xs : xs + tw].add_(
+                tile.float() * (wy[i].view(-1, 1) * wx[j].view(1, -1))
+            )
             del tile
     return out.to(dtype)
 
@@ -263,7 +282,11 @@ def install(vae: Any, logger: Any = None) -> bool:
     stock = vae.tiled_decode
     stock_encode = getattr(vae, "tiled_encode", None)
 
-    def _tiled_decode(self: Any, z: Any, return_dict: bool = True) -> Any:
+    def _tiled_decode(
+        self: Any,
+        z: Any,
+        return_dict: bool = True,
+    ) -> Any:
         if wide_tiles_disabled():
             return stock(z, return_dict = return_dict)
         return tiled_decode(self, z, return_dict = return_dict)
@@ -293,7 +316,10 @@ def install(vae: Any, logger: Any = None) -> bool:
 def uninstall(vae: Any) -> None:
     if not getattr(vae, "_unsloth_wide_tiles", False):
         return
-    for attr, saved in (("tiled_decode", "_unsloth_wide_tiles_own"), ("tiled_encode", "_unsloth_wide_tiles_own_encode")):
+    for attr, saved in (
+        ("tiled_decode", "_unsloth_wide_tiles_own"),
+        ("tiled_encode", "_unsloth_wide_tiles_own_encode"),
+    ):
         if saved not in vae.__dict__ and attr == "tiled_encode":
             continue
         own: Optional[Any] = vae.__dict__.get(saved)
@@ -301,6 +327,10 @@ def uninstall(vae: Any) -> None:
             vae.__dict__.pop(attr, None)
         else:
             setattr(vae, attr, own)
-    for name in ("_unsloth_wide_tiles_own", "_unsloth_wide_tiles_own_encode", "_unsloth_decode_tile_side"):
+    for name in (
+        "_unsloth_wide_tiles_own",
+        "_unsloth_wide_tiles_own_encode",
+        "_unsloth_decode_tile_side",
+    ):
         vae.__dict__.pop(name, None)
     vae._unsloth_wide_tiles = False
