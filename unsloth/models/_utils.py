@@ -95,6 +95,7 @@ __all__ = [
     "block_swap_load_device",
     "begin_block_swap_load",
     "finish_block_swap_load",
+    "planned_prefetch_depth",
     "trim_config_for_block_swap",
     "attach_block_swap_layers",
     "skip_swapped_checkpoint_keys",
@@ -6195,7 +6196,16 @@ def begin_block_swap_load(
     return load_layers_to_host(block_swap_layers, placement = "spread")
 
 
-def finish_block_swap_load(model, state):
+def planned_prefetch_depth(device_map_planner_kwargs):
+    # The depth "auto" sized the slot pool with; the swapper must allocate the same pool.
+    return int((device_map_planner_kwargs or {}).get("prefetch_depth", 2))
+
+
+def finish_block_swap_load(
+    model,
+    state,
+    prefetch_depth = 2,
+):
     """Install the swap over the layers `begin_block_swap_load` moved, once the loader is done
     patching (their host copies are what the slot pool streams)."""
     if state is None or getattr(state, "layers", None) is None or not state.indices:
@@ -6218,7 +6228,9 @@ def finish_block_swap_load(model, state):
         )
     if device is None:
         device = torch.device("cuda", torch.cuda.current_device())
-    swapper = _new_block_swap(state.layers, state.indices, device = device, placement = "spread")
+    swapper = _new_block_swap(
+        state.layers, state.indices, prefetch_depth, device = device, placement = "spread"
+    )
     state.layers._unsloth_block_swap = swapper
     model._unsloth_block_swap = swapper
     return swapper
@@ -6533,6 +6545,7 @@ def attach_block_swap_layers(
     dtype,
     load_in_4bit,
     skip_modules = (),
+    prefetch_depth = 2,
     **hub_kwargs,
 ):
     if saved is None:
@@ -6577,7 +6590,7 @@ def attach_block_swap_layers(
                 if not isinstance(value, (torch.Tensor, torch.nn.Module)):
                     setattr(module, key, value)
         layers.append(layer)
-    swapper = _new_block_swap(layers, count, device = device, placement = "tail")
+    swapper = _new_block_swap(layers, count, prefetch_depth, device = device, placement = "tail")
     layers._unsloth_block_swap = swapper
     model._unsloth_block_swap = swapper
     return swapper

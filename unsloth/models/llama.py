@@ -3390,6 +3390,7 @@ class FastLlamaModel:
             load_in_4bit,
             # The load's own skip list: Falcon-H1 adds out_proj, which its mamba kernels need unquantized.
             skip_modules = llm_int8_skip_modules if load_in_4bit else SKIP_QUANTIZATION_MODULES,
+            prefetch_depth = planned_prefetch_depth(device_map_planner_kwargs),
             token = token,
             revision = revision,
             cache_dir = kwargs.get("cache_dir"),

@@ -613,7 +613,8 @@ def test_headless_load_swaps_onto_the_retained_layers_card():
         "torch": types.SimpleNamespace(
             device = torch.device, cuda = types.SimpleNamespace(current_device = lambda: 0)
         ),
-        "_new_block_swap": lambda layers, idx, device, placement: built.append(device) or object(),
+        "_new_block_swap": lambda layers, idx, depth, device, placement: built.append(device)
+        or object(),
     }
     exec(compile(ast.Module(body = [fn], type_ignores = []), UTILS, "exec"), ns)
 
@@ -643,3 +644,47 @@ def test_auto_plan_never_counts_on_an_embedding_offload_the_platform_refuses(pat
     )
     kw = next(k for k in call.keywords if k.arg == "offload_embedding")
     assert "_offload_embedding_unsupported_platform" in ast.get_source_segment(src, kw.value)
+
+
+def test_load_time_swappers_allocate_the_planned_prefetch_depth():
+    torch = pytest.importorskip("torch")
+    mod = ast.parse(open(UTILS, encoding = "utf-8").read())
+    fns = [
+        n
+        for n in mod.body
+        if isinstance(n, ast.FunctionDef)
+        and n.name in ("finish_block_swap_load", "planned_prefetch_depth")
+    ]
+    built = []
+    ns = {
+        "torch": types.SimpleNamespace(
+            device = torch.device, cuda = types.SimpleNamespace(current_device = lambda: 0)
+        ),
+        "_new_block_swap": lambda layers, idx, depth, device, placement: built.append(depth)
+        or object(),
+    }
+    exec(compile(ast.Module(body = fns, type_ignores = []), UTILS, "exec"), ns)
+
+    class _Headless:
+        def get_output_embeddings(self):
+            return None
+
+    depth = ns["planned_prefetch_depth"]({"prefetch_depth": 1})
+    ns["finish_block_swap_load"](
+        _Headless(), types.SimpleNamespace(layers = _Layers([]), indices = [0]), depth
+    )
+    assert built == [1] and ns["planned_prefetch_depth"](None) == 2
+    # Both load paths hand the planner's depth to the swapper they build.
+    for path, call in (
+        ("llama.py", "attach_block_swap_layers"),
+        ("vision.py", "finish_block_swap_load"),
+    ):
+        src = open(os.path.join(HERE, "unsloth", "models", path), encoding = "utf-8").read()
+        node = next(
+            n
+            for n in ast.walk(ast.parse(src))
+            if isinstance(n, ast.Call) and getattr(n.func, "id", None) == call
+        )
+        assert "planned_prefetch_depth(device_map_planner_kwargs)" in ast.get_source_segment(
+            src, node
+        )
