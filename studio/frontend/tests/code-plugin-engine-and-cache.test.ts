@@ -21,7 +21,6 @@
  */
 
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import test from "node:test";
 import type {
   HighlightOptions,
@@ -37,12 +36,11 @@ import {
   TOKENIZE_LIMITS,
 } from "../src/components/assistant-ui/code-plugin.ts";
 
+import { readSrc } from "./helpers/kit.ts";
+
 const THEMES: [ThemeInput, ThemeInput] = ["github-light", "github-dark"];
 
-const PLUGIN_SOURCE = readFileSync(
-  new URL("../src/components/assistant-ui/code-plugin.ts", import.meta.url),
-  "utf8",
-);
+const PLUGIN_SOURCE = readSrc("components/assistant-ui/code-plugin.ts");
 
 const highlightOnce = (
   plugin: ReturnType<typeof createCodePlugin>,

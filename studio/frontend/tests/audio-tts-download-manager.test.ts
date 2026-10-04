@@ -2,23 +2,22 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import test from "node:test";
 
-const source = readFileSync(
-  new URL("../src/features/audio/audio-page.tsx", import.meta.url),
-  "utf8",
-);
+import { readSrc } from "./helpers/kit.ts";
 
-test("uncached remote TTS GGUFs stage the exact file through the shared manager", () => {
+const source = readSrc("features/audio/audio-page.tsx");
+
+test("uncached remote TTS GGUFs stage the picked quant through the shared manager", () => {
   assert.match(source, /useStagedDownload\(\{\s*scopeId: "audio"/);
   assert.match(
     source,
     /meta\.source === "hub"[\s\S]*meta\.isDownloaded === false[\s\S]*ggufFilename/,
   );
+  // A named quant is the standard variant download, as in Chat; a bare file stays scoped.
   assert.match(
     source,
-    /stageTtsDownload\(\[\s*\{[\s\S]*repoId,[\s\S]*files: \[ggufFilename\],[\s\S]*bytes: meta\.expectedBytes \?\? 0/,
+    /stageTtsDownload\(\[\s*meta\.ggufVariant\s*\?\s*\{[\s\S]*repoId,[\s\S]*ggufVariant: meta\.ggufVariant,[\s\S]*\}\s*:\s*\{[\s\S]*files: \[ggufFilename\],[\s\S]*bytes: meta\.expectedBytes \?\? 0/,
   );
   assert.match(
     source,

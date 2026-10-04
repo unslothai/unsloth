@@ -1,14 +1,15 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""A confirmed upstream bug must not block a leg, and must not outlive itself.
+"""An expected disagreement must not block a leg, and must not outlive itself.
 
 Batched greedy generation on `unsloth/gemma-4-E2B-it` and `unsloth/Qwen3.5-2B`
 disagrees at sizes 2, 4 and 8 with real left padding and demonstrably distinct
-prompt lengths, on both repeats, on a current stack. It is filed as unsloth
-#9708 and it is not this repo's to fix. Leaving it as a hard failure means
-those two legs put a red in front of every PR for a bug no reader can act on,
-which is how a check gets switched off.
+prompt lengths, on both repeats, on a current stack. Per unsloth #9708 that is
+bf16 rounding that depends on batch shape, reproduced with plain transformers
+and gone in float32, so there is no fix coming from anywhere. Leaving it as a
+hard failure means those two legs put a red in front of every PR for a
+property no reader can act on, which is how a check gets switched off.
 
 So the entry is a STRICT expectation rather than a mute, and the difference is
 the whole point of this file. A model listed as broken that starts AGREEING
@@ -65,8 +66,9 @@ def test_a_listed_model_does_not_fail_on_the_known_disagreement():
 
 
 def test_a_listed_model_that_starts_AGREEING_fails():
-    """The strict half, and the reason this is not a mute. The day #9708 is
-    fixed, CI says so instead of carrying a stale excuse."""
+    """The strict half, and the reason this is not a mute. Agreement in bf16
+    means a kernel or the stack changed, and CI says so instead of carrying a
+    stale expectation."""
     agreeing = _record(agrees = {"2": True, "4": True, "8": True})
     broken = batched_generation_failures(agreeing, "unsloth/Qwen3.5-2B")
     assert broken, "a fixed upstream bug must turn the leg red"
@@ -81,6 +83,7 @@ def test_a_listed_model_still_fails_every_other_rule():
         ({"padding_side_after": "right"}, "padding_side_after"),
         ({"distinct_lengths": 1}, "nothing was ever padded"),
         ({"empty_outputs": [3]}, "generated nothing at all"),
+        ({"empty_batched_outputs": {"8": [2]}}, "inside the batch"),
         ({"singles": ["x"] * 2}, "largest batch was never actually formed"),
     ):
         broken = batched_generation_failures(_record(**over), "unsloth/Qwen3.5-2B")

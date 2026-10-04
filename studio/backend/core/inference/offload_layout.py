@@ -14,6 +14,7 @@ import logging
 import re
 from dataclasses import dataclass, field
 from typing import Optional
+import os
 
 logger = logging.getLogger(__name__)
 
@@ -55,6 +56,8 @@ class ModelLayout:
     # llama-model.cpp pins dev_input to the CPU unconditionally, so this is never charged to VRAM. Tracked because it IS
     # charged to host RAM.
     token_embd_bytes: int = 0
+    # Every tensor's bytes, excluded blocks included; the file size less its metadata.
+    tensor_bytes: int = 0
     # output_norm and friends: GPU-resident, too small to be worth spilling.
     other_resident_bytes: int = 0
     # Attention cache for ONE token at f16, across the attention layers only.
@@ -63,9 +66,8 @@ class ModelLayout:
     recurrent_bytes: int = 0
     n_ctx_train: int = 0
     is_moe: bool = False
-    # offloaded experts move only expert_used/expert_count per token, a dense FFN all of it
-    # Sparse-MoE routing: experts read per token is expert_used/expert_count. Offloaded experts move only that fraction
-    # per token, a dense FFN all of it.
+    # Sparse-MoE routing: experts read per token is expert_used/expert_count. Offloaded experts move only that
+    # fraction per token, a dense FFN all of it.
     n_expert: int = 0
     n_expert_used: int = 0
     # ``blocks`` drops the trailing nextn/MTP blk.<N> tensors: block_count counts them (llama-model.cpp reads it into
@@ -81,11 +83,10 @@ class ModelLayout:
     # from n_layer_all (llama-model.cpp:1449) puts those blocks on a GPU FIRST. llama.cpp's own fitter widens its
     # offloadable-layer count the same way (common/fit.cpp:139-142). Zero when nothing was dropped.
     excluded_block_bytes: int = 0
-    # sliding-window attention interleaves window-sized and full-context caches per layer
     # Sliding-window attention: some layers keep a window-sized cache, some the full context
-    # (llama-kv-cache-iswa.cpp:69-104 builds two caches and filters each by hparams.is_swa(il)), interleaved per layer.
-    # Every layer is still an attention layer, so n_attention_layers does NOT reveal this. A multi-device split has to
-    # know WHERE the big caches land, so the planner abstains.
+    # (llama-kv-cache-iswa.cpp:69-104 builds two caches and filters each by hparams.is_swa(il)), interleaved per
+    # layer. Every layer is still an attention layer, so n_attention_layers does NOT reveal this. A multi-device split
+    # has to know WHERE the big caches land, so the planner abstains.
     has_swa: bool = False
     # False when a needed quantity could not be read. The planner abstains.
     complete: bool = False
@@ -123,33 +124,63 @@ def _field(
         return default
 
 
-def layout_from_gguf(path: str) -> ModelLayout:
+_SPLIT_SHARD_RE = re.compile(r"^(.*)-(\d{5})-of-(\d{5})\.gguf$", re.IGNORECASE)
+
+
+def split_shard_paths(path: str) -> Optional[list[str]]:
+    """Every shard of the split *path* belongs to, in order, or None when the name
+    is not llama.cpp's ``<prefix>-NNNNN-of-MMMMM.gguf`` (llama_split_path)."""
+    directory, name = os.path.split(path)
+    match = _SPLIT_SHARD_RE.match(name)
+    if not match:
+        return None
+    prefix, _index, total = match.groups()
+    return [
+        os.path.join(directory, f"{prefix}-{i:05d}-of-{int(total):05d}.gguf")
+        for i in range(1, int(total) + 1)
+    ]
+
+
+def layout_from_gguf(path: str, *, all_shards: bool = False) -> ModelLayout:
     """Read ``path`` into a :class:`ModelLayout`.
 
     Returns an incomplete layout (``complete = False``) rather than raising when
     anything required is missing, so a surprising GGUF makes the planner abstain
     instead of failing a load that llama.cpp would have handled.
+    ``all_shards`` reads every sibling shard; all of them must be present.
     """
     try:
         from gguf import GGUFReader
-        reader = GGUFReader(path)
+        readers = [GGUFReader(path)]
+        if all_shards and int(_field(readers[0], "split.count") or 0) > 1:
+            shards = split_shard_paths(path)
+            if not shards or not all(os.path.isfile(p) for p in shards):
+                logger.debug("offload layout: split %s is missing a shard", path)
+                return ModelLayout()
+            readers = [GGUFReader(p) for p in shards]
     except Exception as exc:
         logger.debug("offload layout: cannot read %s (%s)", path, exc)
         return ModelLayout()
 
     try:
-        return _layout_from_reader(reader)
+        return _layout_from_readers(readers)
     except Exception as exc:
         logger.debug("offload layout: cannot interpret %s (%s)", path, exc)
         return ModelLayout()
 
 
 def _layout_from_reader(reader) -> ModelLayout:
+    return _layout_from_readers([reader])
+
+
+def _layout_from_readers(readers) -> ModelLayout:
+    """One reader per shard, the first carrying the metadata."""
+    reader = readers[0]
     # Split GGUF: llama.cpp loads every sibling shard (llama-model-loader.cpp:590-618), but GGUFReader memmaps only the
     # ONE path it was given. Shard 1 still carries the metadata, so the layout would look complete while undercounting
     # resident and spillable by most of the model -- an overstated fit, too few -ot patterns, and a startup OOM with
-    # --fit off. Abstain instead; the seam then reproduces --fit on exactly.
-    if int(_field(reader, "split.count") or 0) > 1:
+    # --fit off. Abstain unless every shard was handed over; the seam then reproduces --fit on exactly.
+    if (int(_field(reader, "split.count") or 0) or 1) != len(readers):
         return ModelLayout()
 
     arch = str(_field(reader, "general.architecture") or "")
@@ -186,7 +217,6 @@ def _layout_from_reader(reader) -> ModelLayout:
 
     kv_per_token = int(n_attention) * int(n_kv_head) * (int(key_len) + int(val_len)) * 2
 
-    # charging every layer the full context is the safe direction for the TOTAL
     # Charging every layer the full context above is the safe direction for the TOTAL; what it cannot say is which
     # layers hold the big caches.
     has_swa = bool(_field(reader, f"{arch}.attention.sliding_window") or 0)
@@ -213,7 +243,7 @@ def _layout_from_reader(reader) -> ModelLayout:
     token_embd = 0
     other_resident = 0
 
-    for tensor in reader.tensors:
+    for tensor in (t for r in readers for t in r.tensors):
         name = str(tensor.name)
         nbytes = int(tensor.n_bytes)
         match = _BLOCK_RE.match(name)
@@ -228,7 +258,8 @@ def _layout_from_reader(reader) -> ModelLayout:
             else:
                 resident[index] = resident.get(index, 0) + nbytes
             continue
-        if "token_embd" in name:
+        # token_embd_norm is a repeating-layer tensor, not a host-pinned input embedding.
+        if "token_embd" in name and not name.startswith("token_embd_norm"):
             token_embd += nbytes
         elif name == "output.weight":
             lm_head += nbytes
@@ -251,11 +282,10 @@ def _layout_from_reader(reader) -> ModelLayout:
     if not lm_head and token_embd:
         other_resident += token_embd
 
-    # trailing nextn/MTP blocks are not loaded unless a draft is engaged
-    # Trailing nextn/MTP blocks are NOT part of the target model and are not loaded unless a draft is engaged, so an -ot
-    # naming them moves nothing: measured, spilling only blk.<nextn> leaves the host buffer at exactly token_embd and
-    # the device buffer unchanged. Counting them spillable would credit bytes that can never be freed. Unsloth prices
-    # the drafter separately anyway.
+    # Trailing nextn/MTP blocks are NOT part of the target model and are not loaded unless a draft is engaged, so an
+    # -ot naming them moves nothing: measured, spilling only blk.<nextn> leaves the host buffer at exactly token_embd
+    # and the device buffer unchanged. Counting them spillable would credit bytes that can never be freed. Unsloth
+    # prices the drafter separately anyway.
     all_block_indices = set(spill) | set(resident)
     block_indices = sorted(i for i in all_block_indices if i < n_layers)
     has_excluded = any(i >= n_layers for i in all_block_indices)
@@ -279,6 +309,7 @@ def _layout_from_reader(reader) -> ModelLayout:
         blocks = blocks,
         lm_head_bytes = lm_head,
         token_embd_bytes = token_embd,
+        tensor_bytes = sum(int(t.n_bytes) for r in readers for t in r.tensors),
         other_resident_bytes = other_resident,
         kv_bytes_per_token_f16 = kv_per_token,
         recurrent_bytes = recurrent,

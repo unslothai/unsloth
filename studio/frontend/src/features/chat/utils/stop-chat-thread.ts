@@ -7,15 +7,11 @@ import {
 } from "../api/chat-generation-api";
 import { useChatRuntimeStore } from "../stores/chat-runtime-store";
 
-/**
- * Ask the server to stop whatever it still has running for this thread.
- *
- * The registries below are module-scoped React state, so a page reload empties them, while
- * a durable run is server-owned and outlives the tab that started it: the UI says a reply
- * is generating and every stop path says there is nothing to stop. The server's active-run
- * list still knows, so a thread with no local handle falls back to it. Fire and forget;
- * a thread with no run just reads an empty list.
- */
+/** Ask the server to stop whatever it still has running for this thread. The registries below are
+ *  module-scoped React state, so a page reload empties them, while a durable run is server-owned
+ *  and outlives the tab that started it: the UI says a reply is generating and every stop path
+ *  says there is nothing to stop. The server's active-run list still knows, so a thread with no
+ *  local handle falls back to it. Fire and forget. */
 function stopServerRunsForThread(threadId: string): void {
   void getActiveChatGenerationRuns(threadId)
     .then((runs) => {
@@ -24,21 +20,17 @@ function stopServerRunsForThread(threadId: string): void {
       }
     })
     .catch(() => {
-      // No durable-run endpoint, or the backend is gone. Either way there is nothing
-      // further this client can do about a run it holds no handle for.
+      // No durable-run endpoint, or the backend is gone. Either way there is nothing further this
+      // client can do about a run it holds no handle for.
     });
 }
 
-/**
- * Stop one conversation's generation, visible or not. Returns true if a stop was dispatched.
- *
- * `cancelByThreadId` is assistant-ui's `cancelRun()`, registered only for the thread on screen;
- * `serverCancelByThreadId` is registered for every run and POSTs that run's own `cancel_id`, so
- * it is the only handle a background conversation has. Both are per-run. Runs with an unresolved
- * thread id share the "__default" key, so stop every handle filed under it. With none of the
- * three, the server is asked directly rather than the call reporting nothing to do, so the
- * return means "a stop was sent", not "a local handle existed".
- */
+/** Stop one conversation's generation, visible or not. Returns true if a stop was dispatched.
+ *  `cancelByThreadId` is assistant-ui's `cancelRun()`, registered only for the thread on screen;
+ *  `serverCancelByThreadId` is registered for every run and POSTs that run's own `cancel_id`, so
+ *  it is the only handle a background conversation has. Runs with an unresolved thread id share
+ *  the "__default" key, so stop every handle filed under it. With none of the three, the server
+ *  is asked directly, so the return means "a stop was sent", not "a local handle existed". */
 export function stopChatThread(threadId: string | null | undefined): boolean {
   if (!threadId) return false;
   const { runningByThreadId, cancelByThreadId, serverCancelByThreadId } =

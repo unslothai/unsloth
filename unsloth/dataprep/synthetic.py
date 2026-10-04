@@ -1,11 +1,8 @@
 # Copyright 2023-present Daniel Han-Chen & the Unsloth team. All rights reserved.
-#
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
 # You may obtain a copy of the License at
-#
 #     http://www.apache.org/licenses/LICENSE-2.0
-#
 # Unless required by applicable law or agreed to in writing, software
 # distributed under the License is distributed on an "AS IS" BASIS,
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
@@ -20,11 +17,28 @@ import threading
 from collections import deque
 import time
 import os
+import importlib.util as _importlib_util
+
+
+def _hf_transfer_importable() -> bool:
+    # huggingface_hub < 1.0 raises on every download when the flag is on and the package is
+    # missing (it is optional, and absent on Windows on ARM). find_spec never imports it, and
+    # raises ValueError for a sys.modules stub whose __spec__ is None.
+    try:
+        return _importlib_util.find_spec("hf_transfer") is not None
+    except (ImportError, ValueError):
+        return False
+
 
 _OFFLINE_VALS = {"1", "true", "yes", "on"}
-if not (
-    os.environ.get("HF_HUB_OFFLINE", "").strip().lower() in _OFFLINE_VALS
-    or os.environ.get("TRANSFORMERS_OFFLINE", "").strip().lower() in _OFFLINE_VALS
+# An explicit value is the caller's (Studio sets "0" for its Xet fallback), as in unsloth_zoo.
+if (
+    "HF_HUB_ENABLE_HF_TRANSFER" not in os.environ
+    and not (
+        os.environ.get("HF_HUB_OFFLINE", "").strip().lower() in _OFFLINE_VALS
+        or os.environ.get("TRANSFORMERS_OFFLINE", "").strip().lower() in _OFFLINE_VALS
+    )
+    and _hf_transfer_importable()
 ):
     os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = "1"
 import requests
@@ -277,7 +291,9 @@ class SyntheticDataKit:
             stderr = subprocess.PIPE,
             start_new_session = True,
         )
-        ready_re = re.compile(r"Starting vLLM API server(?:\s+\d+)?\s+on\b")
+        # both "Starting vLLM API server on" (<= 0.18) and "Starting vLLM server on"
+        # (0.19), with the optional server index some versions insert
+        ready_re = re.compile(r"Starting vLLM(?:\s+API)?\s+server(?:\s+\d+)?\s+on\b")
         self.vllm_process = vllm_process
         self.stdout_capture = PipeCapture(
             vllm_process.stdout,
@@ -292,7 +308,8 @@ class SyntheticDataKit:
             keep_lines = 2000,
             echo = False,
             name = "vLLM STDERR",
-            ready_regex = None,
+            # vLLM >= 0.19 logs startup lines to STDERR
+            ready_regex = ready_re,
             text = False,
         )
         # stderr is not printed to console, but self.stderr_capture.tail(200) prints the last 200 lines.
@@ -344,6 +361,10 @@ class SyntheticDataKit:
                 self._fail_vllm_server(f"was not ready within {timeout} seconds")
             wait = poll_interval if remaining is None else min(poll_interval, remaining)
             if self.stdout_capture.wait_for_ready(timeout = wait):
+                return
+            # checked BEFORE the exit/closed arms, so a server that is ready on
+            # stderr is never reported as never having started
+            if self.stderr_capture.wait_for_ready(timeout = 0):
                 return
             returncode = self.vllm_process.poll()
             if returncode is not None:

@@ -201,7 +201,7 @@ def test_a_count_is_harvested_under_a_name_that_marks_it_as_an_invariant(tmp_pat
 
 def test_a_count_that_fell_reads_as_a_loss_and_never_as_faster(tmp_path):
     # The regression this catches: virtualization truncates select-all from 400k chars to 3k.
-    # Every timing improves, expect_ok stays true, and only this row can say so.
+    # Every timing improves, `expect_ok` stays true because chars > 0, and only this row can say so.
     stats = F.summarise([count_payload(tmp_path, "r", [(400000.0, 3000.0)] * 4)])
     floor = {"delta_pct": 0.0, "spread_pct": 1.0}
     _f, v = F.verdict_for(stats[COUNT_METRIC], floor, F.is_count_metric(COUNT_METRIC))
@@ -412,7 +412,8 @@ def test_an_incomplete_cell_is_not_measured(tmp_path):
 
 
 def test_a_shard_pairs_within_itself_and_never_across(tmp_path):
-    # Both shards number repetitions from rep0; pairing on the repetition alone would cross them over.
+    # Both shards number repetitions from rep0; pairing on the repetition alone would cross them over
+    # and silently compare one session's base with another's treatment.
     a = payload(tmp_path / "a", "s0", [(1000.0, 500.0)])
     b = payload(tmp_path / "b", "s0", [(2000.0, 1000.0)])
     pooled, _ = F.load([a, b])
@@ -683,7 +684,7 @@ def timed_action(cid: str, sid: str, ms: float) -> dict:
 
 
 def resumed_payload(tmp_path: Path, name: str, retry_session: str) -> Path:
-    """One arm completed, its partner died, and `--resume` re-ran the dead arm.
+    """One arm completed, its partner died, and only the dead arm was re-run: a PARTIAL resume.
 
     `retry_session` is the session the retry was recorded under. The real `--resume` mints a new
     one; passing the original back is the control that shows the refusal keys on the session and
@@ -722,9 +723,14 @@ def resumed_payload(tmp_path: Path, name: str, retry_session: str) -> Path:
 
 
 def test_an_arm_resumed_into_a_new_session_is_not_paired_with_the_old_one(tmp_path):
-    # `--resume` re-runs the dead arm under a NEW session id in the same shard; keyed on the
-    # repetition alone the two pair and the 8% drift is charged to the re-run arm.
-    # `scoring/ab.py` refuses exactly this.
+    # A LEGACY PARTIAL-RESUME PAYLOAD: one arm completed under the first session id and only its
+    # dead partner re-run under a NEW one, in the SAME shard directory. Today's `--resume` does not
+    # write this shape, since `__main__._resume_set` passes the completed set through
+    # `ab.skippable_cells`, which returns an EMPTY skip set while any A/B work remains, so both arms
+    # are re-run in the new session. It reaches the sweep from an older writer or an externally
+    # produced payload. Keyed on the repetition alone the two rows pair and the whole 8% session
+    # drift is charged to the re-run arm. `scoring/ab.py` refuses exactly this comparison, and the
+    # sweep's own pairing has to refuse it too.
     path = resumed_payload(tmp_path, "resumed", "s2")
     assert F.cell_metrics(F.read_rows(path))["r100K.treatment.rep0"] == {
         "message_menu.open_close_ms": 108.0

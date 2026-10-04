@@ -152,9 +152,8 @@ function measurableSpan(
   let resumed = false;
   for (let i = to - 1; i > 0; i -= 1) {
     if (samples[i].b <= samples[i - 1].b) continue;
-    // A silence past the stall window is a break, not a slow burst. Reaching
-    // across it averages the dead time in: 20 MB/s resuming after a 30 minute
-    // drop published 0.64 MB/s.
+    // A silence past the stall window is a break, not a slow burst. Reaching across it averages the
+    // dead time in: 20 MB/s resuming after a 30 minute drop published 0.64 MB/s.
     if (samples[newer].t - samples[i].t > stall) {
       resumed = true;
       break;

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { isTauri } from "@/lib/api-base";
+import { reportDownloadsActive } from "@/lib/downloads-activity";
 import { create } from "zustand";
 import { createJSONStorage, persist } from "zustand/middleware";
 import { INVENTORY_HINT_KIND } from "../inventory/constants";
@@ -23,7 +23,6 @@ import {
 import {
   ACTIVE_STATES,
   MAX_PROGRESS_FRACTION,
-  isPersistedJobState,
 } from "./download-manager-config";
 import {
   type DownloadManagerState,
@@ -32,6 +31,7 @@ import {
   downloadInventoryHintKind,
   scopedDownloadInventoryKind,
 } from "./download-manager-types";
+import { presentationForExpectedBytesUpdate } from "./download-presentation";
 import {
   clearRuntimeTimer,
   pruneSuppressedCompletedInventoryHints as pruneRuntimeSuppressedHints,
@@ -55,6 +55,35 @@ function finiteNumber(value: unknown, fallback: number): number {
 
 function nonNegativeNumber(value: unknown, fallback = 0): number {
   return Math.max(0, finiteNumber(value, fallback));
+}
+
+function presentationOfPersisted(value: Record<string, unknown>) {
+  if (!isRecord(value.presentation)) return {};
+  const { label, filename, expectedBytes, cachedPlanPrefixBytes } =
+    value.presentation;
+  if (
+    typeof label !== "string" ||
+    !label.trim() ||
+    typeof filename !== "string" ||
+    !filename.trim() ||
+    typeof expectedBytes !== "number" ||
+    !Number.isFinite(expectedBytes) ||
+    expectedBytes <= 0
+  ) {
+    return {};
+  }
+  return {
+    presentation: {
+      label: label.trim(),
+      filename: filename.trim(),
+      expectedBytes,
+      ...(typeof cachedPlanPrefixBytes === "number" &&
+      Number.isFinite(cachedPlanPrefixBytes) &&
+      cachedPlanPrefixBytes >= 0
+        ? { cachedPlanPrefixBytes }
+        : {}),
+    },
+  };
 }
 
 /**
@@ -92,7 +121,7 @@ function sanitizePersistedJob(
   const kind = isDownloadKind(value.kind) ? value.kind : null;
   const repoId = typeof value.repoId === "string" ? value.repoId : null;
   const state = value.state as DownloadJobState;
-  if (!kind || !repoId || !isPersistedJobState(state)) return null;
+  if (!kind || !repoId || !ACTIVE_STATES.has(state)) return null;
 
   const variant = typeof value.variant === "string" ? value.variant : null;
   const key = jobKeyOf(kind, repoId, variant);
@@ -106,6 +135,7 @@ function sanitizePersistedJob(
     completedBytes: nonNegativeNumber(value.completedBytes),
     completeOnDisk: false,
     expectedBytes: nonNegativeNumber(value.expectedBytes),
+    ...presentationOfPersisted(value),
     fraction: Math.min(Math.max(finiteNumber(value.fraction, 0), 0), 1),
     bytesPerSec: 0,
     etaSeconds: 0,
@@ -113,6 +143,9 @@ function sanitizePersistedJob(
     startedAt: nonNegativeNumber(value.startedAt, Date.now()),
     ...(Number.isSafeInteger(value.serverGeneration)
       ? { serverGeneration: Number(value.serverGeneration) }
+      : {}),
+    ...(Number.isSafeInteger(value.serverAttempt)
+      ? { serverAttempt: Number(value.serverAttempt) }
       : {}),
     ...(Array.isArray(value.scopedFiles) &&
     value.scopedFiles.every((f) => typeof f === "string")
@@ -168,11 +201,17 @@ function toPersistedJob(
     downloadedBytes: job.downloadedBytes,
     completedBytes: job.completedBytes,
     expectedBytes: job.expectedBytes,
+    ...(job.presentation !== undefined
+      ? { presentation: job.presentation }
+      : {}),
     fraction: job.fraction,
     error: job.error,
     startedAt: job.startedAt,
     ...(job.serverGeneration !== undefined
       ? { serverGeneration: job.serverGeneration }
+      : {}),
+    ...(job.serverAttempt !== undefined
+      ? { serverAttempt: job.serverAttempt }
       : {}),
     ...(job.scopedFiles !== undefined ? { scopedFiles: job.scopedFiles } : {}),
     ...(job.checkpoint !== undefined ? { checkpoint: job.checkpoint } : {}),
@@ -300,10 +339,7 @@ export const useDownloadManagerStore = create<DownloadManagerState>()(
     partialize: (state) => ({
       jobs: Object.fromEntries(
         Object.entries(state.jobs)
-          // External jobs have no hub job to resume into, so they are not saved.
-          // Failed and cancelled jobs stay: the Downloads list is the resume
-          // entry after a mid-transfer failure or a restart (#9780).
-          .filter(([, job]) => !job.external && isPersistedJobState(job.state))
+          .filter(([, job]) => !job.external && ACTIVE_STATES.has(job.state))
           .map(([key, job]) => [key, toPersistedJob(job)] as const),
       ),
       conflicts: {},
@@ -314,8 +350,6 @@ export const useDownloadManagerStore = create<DownloadManagerState>()(
 export const setState = useDownloadManagerStore.setState;
 export const getState = useDownloadManagerStore.getState;
 
-/**
- * A Tauri quit never fires beforeunload, and only this store knows a backend download is in flight. */
 export function hasActiveDownloadJob(
   jobs: Record<string, ManagedDownload>,
 ): boolean {
@@ -323,22 +357,8 @@ export function hasActiveDownloadJob(
   return Object.values(jobs).some((job) => ACTIVE_STATES.has(job.state));
 }
 
-function publishDownloadsActive(active: boolean): void {
-  if (!isTauri) return;
-  void import("@tauri-apps/api/core")
-    .then(({ invoke }) =>
-      invoke("set_renderer_activity", { kind: "downloads", active }),
-    )
-    .catch(() => {});
-}
-
-let lastPublishedDownloadsActive: boolean | null = null;
-
 function syncDownloadsActivity(state: DownloadManagerState): void {
-  const active = hasActiveDownloadJob(state.jobs);
-  if (active === lastPublishedDownloadsActive) return;
-  lastPublishedDownloadsActive = active;
-  publishDownloadsActive(active);
+  reportDownloadsActive("hub", hasActiveDownloadJob(state.jobs));
 }
 
 syncDownloadsActivity(getState());
@@ -375,6 +395,32 @@ export function findActiveJobForRepo(
   const repoIdentity = normalizeRepoIdentity(repoId);
   for (const job of Object.values(jobs)) {
     if (job.kind !== kind || normalizeRepoIdentity(job.repoId) !== repoIdentity)
+      continue;
+    if (!ACTIVE_STATES.has(job.state)) continue;
+    if (isPreferredRepoActiveJob(job, selected)) {
+      selected = job;
+    }
+  }
+  return selected;
+}
+
+export function findActiveScopedJobForRepo(
+  jobs: Record<string, ManagedDownload>,
+  kind: DownloadKind,
+  repoId: string,
+  inventoryKind?: "model" | "gguf",
+): ManagedDownload | null {
+  let selected: ManagedDownload | null = null;
+  const repoIdentity = normalizeRepoIdentity(repoId);
+  for (const job of Object.values(jobs)) {
+    if (job.kind !== kind || normalizeRepoIdentity(job.repoId) !== repoIdentity)
+      continue;
+    if (!job.variant?.startsWith("@")) continue;
+    if (
+      inventoryKind &&
+      downloadInventoryHintKind(job.kind, job.variant, job.inventoryKind) !==
+        inventoryKind
+    )
       continue;
     if (!ACTIVE_STATES.has(job.state)) continue;
     if (isPreferredRepoActiveJob(job, selected)) {
@@ -661,6 +707,11 @@ export function setExpectedBytesForJob(
   if (!job || job.state !== "running" || bytes <= job.expectedBytes) return;
   patchJob(job.key, {
     expectedBytes: bytes,
+    presentation: presentationForExpectedBytesUpdate(
+      job.presentation,
+      job.expectedBytes,
+      bytes,
+    ),
     // Measured against the old, smaller total, so wrong the moment the total grows.
     etaSeconds: 0,
     fraction:

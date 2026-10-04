@@ -119,6 +119,8 @@ export function ReleaseNotesPanel({
       // Clipped, not just capped: this is the one part of the card allowed to
       // give up height, so its content must not paint over the buttons below.
       className={UPDATE_NOTES_ROOT_CLASS}
+      // Lets the parent apply its floor only when this panel renders.
+      data-slot="update-release-notes"
       data-testid="update-release-notes-panel"
       data-notes-state={state}
       data-notes-version={version}
@@ -142,7 +144,9 @@ export function ReleaseNotesPanel({
                 markdown={markdown}
                 // Streamdown ships headings at mt-6 and code at text-sm, and
                 // clears max-width on descendants, so rescale and re-cap both.
-                className="max-h-none overflow-visible border-0 bg-transparent p-0 text-ui-11 [&_[data-streamdown=link-safety-modal]>*]:max-w-md [&_img]:h-auto [&_img]:max-w-full [&>*:first-child]:mt-0 [&>*>*:first-child]:mt-0 [&_code]:text-[0.92em] [&_h1]:mt-4 [&_h1]:font-heading [&_h1]:text-ui-13 [&_h2]:mt-4 [&_h2]:font-heading [&_h2]:text-ui-13 [&_h3]:mt-4 [&_h3]:font-heading [&_h3]:text-ui-11 [&_pre]:text-[0.92em]"
+                // Cells wrap at spaces: `anywhere` lets the table squeeze a
+                // column until "Download" splits mid-word.
+                className="max-h-none overflow-visible border-0 bg-transparent p-0 text-ui-11 [&_[data-streamdown=link-safety-modal]>*]:max-w-md [&_img]:h-auto [&_img]:max-w-full [&>*:first-child]:mt-0 [&>*>*:first-child]:mt-0 [&_code]:text-[0.92em] [&_h1]:mt-4 [&_h1]:font-heading [&_h1]:text-ui-13 [&_h2]:mt-4 [&_h2]:font-heading [&_h2]:text-ui-13 [&_h3]:mt-4 [&_h3]:font-heading [&_h3]:text-ui-11 [&_pre]:text-[0.92em] [&_td]:break-words [&_th]:break-words"
               />
               {notes?.truncated ? (
                 <p className="mt-2 text-ui-10 text-muted-foreground/80">

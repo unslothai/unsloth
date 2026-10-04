@@ -7,10 +7,11 @@ import { useLatestRef } from "../hooks/use-latest-ref";
 import type { ResolvedTransport } from "./constants";
 import type { TransportConflictInfo } from "./types";
 import {
-  conflictInfoForOwner,
   type DownloadKind,
+  type DownloadRequest,
   type JobListeners,
   downloadManager,
+  findActiveScopedJobForRepo,
   jobKeyOf,
   repoKeyOf,
   selectActiveJob,
@@ -40,6 +41,7 @@ export interface DownloadJob {
   requestStartDownload: (
     variant: string | null,
     expectedBytes: number,
+    presentation?: DownloadRequest["presentation"],
   ) => Promise<void>;
   cancelDownload: (variant: string | null) => void;
   setExpectedBytes: (bytes: number, variant?: string | null) => void;
@@ -57,6 +59,8 @@ export interface RepoDownloadConfig {
   onError?: JobListeners["onError"];
   // Attach to a no-variant backend download already running (GGUF surfaces adopt their own variant).
   autoAdopt?: boolean;
+  /** Non-GGUF scoped jobs only: a GGUF file job's progress and stop control belong to the GGUF card. */
+  includeScopedJobs?: boolean;
 }
 
 /**
@@ -73,6 +77,7 @@ export function useRepoDownload(config: RepoDownloadConfig): DownloadJob {
     onCancelled,
     onError,
     autoAdopt,
+    includeScopedJobs = false,
   } = config;
 
   const handlersRef = useLatestRef<JobListeners>({
@@ -104,7 +109,11 @@ export function useRepoDownload(config: RepoDownloadConfig): DownloadJob {
           repoPeerActive: false,
         };
       }
-      const active = selectActiveJob(state, kind, repoId, activeVariant);
+      const active =
+        selectActiveJob(state, kind, repoId, activeVariant) ??
+        (includeScopedJobs && activeVariant === null
+          ? findActiveScopedJobForRepo(state.jobs, kind, repoId, "model")
+          : null);
       const repoActive = selectActiveJob(state, kind, repoId);
       return {
         active,
@@ -124,11 +133,9 @@ export function useRepoDownload(config: RepoDownloadConfig): DownloadJob {
   const visibleConflict = useDownloadManagerStore(
     useShallow((state) => {
       const exact = state.conflicts[conflictKey];
-      const exactInfo = conflictInfoForOwner(exact, "caller");
-      if (exactInfo) return { key: conflictKey, info: exactInfo };
-      const scoped = Object.entries(state.conflicts).find(
-        ([key, entry]) =>
-          key.startsWith(`${repoConflictKey}#`) && entry.owner === "caller",
+      if (exact) return { key: conflictKey, info: exact.info };
+      const scoped = Object.entries(state.conflicts).find(([key]) =>
+        key.startsWith(`${repoConflictKey}#`),
       );
       return scoped
         ? { key: scoped[0], info: scoped[1].info }
@@ -164,7 +171,11 @@ export function useRepoDownload(config: RepoDownloadConfig): DownloadJob {
   );
 
   const requestStartDownload = useCallback(
-    async (variant: string | null, expectedBytes: number) => {
+    async (
+      variant: string | null,
+      expectedBytes: number,
+      presentation?: DownloadRequest["presentation"],
+    ) => {
       // This surface renders the conflict resolver (transportConflict), so the
       // start outcome is handled by the card UI; the awaited result is ignored.
       await downloadManager.requestStart({
@@ -172,6 +183,7 @@ export function useRepoDownload(config: RepoDownloadConfig): DownloadJob {
         repoId,
         variant,
         expectedBytes,
+        ...(presentation ? { presentation } : {}),
       });
     },
     [kind, repoId],

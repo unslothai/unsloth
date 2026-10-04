@@ -10,8 +10,11 @@ with a hand-built two-key marker. Platforms are simulated through ``HostInfo``: 
 covers the path decisions and payload tables, not macOS dyld.
 
 Run natively on Windows too (the parity workflow's windows-latest row), where the loader
-answers for real: ``_binary_image_runs`` sees an actual ``ERROR_BAD_EXE_FORMAT`` instead of
-a stubbed ``run_capture``. Two things stay POSIX-only there and are skipped rather than
+answers for real for every genuine image: the healthy rows start a real console launcher. The one
+file that is not an image is answered with the ``ERROR_BAD_EXE_FORMAT`` the loader gives it,
+without being started (see ``_windows_non_pe_is_refused_not_started``): a .exe that is not a
+PE is taken for a DOS program, and on a Windows desktop that raises the modal "Unsupported
+16-Bit Application" dialog. Two things stay POSIX-only there and are skipped rather than
 weakened: ``os.chmod`` cannot clear an execute bit Windows does not have, and
 ``os.access(X_OK)`` is true for any file that exists.
 """
@@ -19,7 +22,6 @@ weakened: ``os.chmod`` cannot clear an execute bit Windows does not have, and
 import importlib.util
 import json
 import os
-import shutil
 import signal
 import subprocess
 import sys
@@ -40,36 +42,33 @@ SKIP_X_OK = pytest.mark.skipif(
 def _windows_runnable_stub() -> bytes | None:
     """Bytes of a real .exe that still starts after being copied somewhere else.
 
-    The keep path execs what it finds, so a Windows row needs a genuine PE. Copying
-    python.exe alone loses python3xx.dll and dies 0xC0000135, hence a System32 tool
-    whose imports are all KnownDLLs. Verified by running the copy, not assumed: an
-    unverifiable stub skips the module instead of reporting the loader's refusal as
-    a back-compat failure.
+    The keep path execs what it finds, so a Windows row needs a genuine PE. A renamed
+    System32 tool would do, but a Microsoft binary sitting at llama-server.exe is an AV
+    heuristic, so this is a pip-style console launcher instead (tests/_shared).
+    Verified by running the copy, not assumed: an unverifiable stub skips the module
+    instead of reporting the loader's refusal as a back-compat failure.
     """
-    for name in ("where.exe", "hostname.exe"):
-        source = Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32" / name
-        if not source.is_file():
-            continue
-        with tempfile.TemporaryDirectory() as probe_dir:
-            copy = Path(probe_dir) / "llama-server.exe"
-            try:
-                shutil.copyfile(source, copy)
-                probe = subprocess.run([str(copy)], capture_output = True, timeout = 30)
-            except Exception:
-                continue
-            # A loader failure returns rather than raises, so an unchecked run would
-            # accept the very missing-DLL image this is picking a candidate to avoid,
-            # and every healthy fixture after it would inherit it.
-            if probe.returncode >= 0xC0000000:
-                continue
-        return source.read_bytes()
-    return None
+    from windows_console_stub import console_stub_bytes
+
+    stub = console_stub_bytes(0)
+    if stub is None:
+        return None
+    with tempfile.TemporaryDirectory() as probe_dir:
+        copy = Path(probe_dir) / "llama-server.exe"
+        try:
+            copy.write_bytes(stub)
+            probe = subprocess.run([str(copy)], capture_output = True, timeout = 60)
+        except Exception:
+            return None
+    # A loader failure returns rather than raises, so an unchecked run would accept the
+    # very image this is meant to rule out, and every healthy fixture would inherit it.
+    return stub if probe.returncode == 0 else None
 
 
 RUNNABLE_STUB = _windows_runnable_stub() if WINDOWS_HOST else None
 if WINDOWS_HOST and RUNNABLE_STUB is None:
     pytest.skip(
-        "no self-contained System32 .exe to stand in for llama-server",
+        "no runnable console launcher to stand in for llama-server",
         allow_module_level = True,
     )
 
@@ -83,6 +82,37 @@ sys.modules[SPEC.name] = ILP
 SPEC.loader.exec_module(ILP)
 
 HostInfo = ILP.HostInfo
+
+# ERROR_BAD_EXE_FORMAT, what CreateProcess answers for a file that is not a Windows image.
+_ERROR_BAD_EXE_FORMAT = 193
+
+
+@pytest.fixture(autouse = True)
+def _windows_non_pe_is_refused_not_started(monkeypatch):
+    """Windows only: a non-PE image gets the loader's answer without reaching CreateProcess.
+
+    Genuine images, the runnable stub included, still go through the real ``run_capture``.
+    A test that replaces ``run_capture`` itself replaces this too, as before. POSIX is left
+    alone: execve on a non-ELF raises ENOEXEC with no UI, so the real answer is kept there.
+    """
+    if not WINDOWS_HOST:
+        return
+    real = ILP.run_capture
+
+    def run_capture(command, *args, **kwargs):
+        target = Path(command[0]) if command else None
+        if target is not None and target.is_file():
+            with open(target, "rb") as handle:
+                if handle.read(2) != b"MZ":
+                    raise OSError(
+                        None,
+                        "%1 is not a valid Win32 application",
+                        str(target),
+                        _ERROR_BAD_EXE_FORMAT,
+                    )
+        return real(command, *args, **kwargs)
+
+    monkeypatch.setattr(ILP, "run_capture", run_capture)
 
 
 def _host(**kw) -> HostInfo:
@@ -127,10 +157,36 @@ _SHARED_PAYLOAD = {
         "libggml-base.so",
         "libggml-cpu.so",
         "libmtmd.so",
+        # The Linux half of the same impl split as llama-server-impl.dll below;
+        # llama-server and llama-quantize load these by DT_NEEDED.
+        "libllama-server-impl.so",
+        "libllama-quantize-impl.so",
     ],
-    "windows": ["llama.dll"],
-    "macos": ["libllama.dylib", "libggml.dylib", "libmtmd.dylib"],
+    # Written unconditionally: the check is "has", not "has only".
+    "windows": [
+        "llama.dll",
+        "llama-common.dll",
+        "llama-server-impl.dll",
+        "llama-quantize-impl.dll",
+        "ggml.dll",
+        "ggml-base.dll",
+        "ggml-cpu.dll",
+        "mtmd.dll",
+    ],
+    # The names the real macos-arm64 bundle ships, one per library the runtime
+    # links against.
+    "macos": [
+        "libllama-common.dylib",
+        "libllama.dylib",
+        "libggml.dylib",
+        "libggml-base.dylib",
+        "libggml-cpu.dylib",
+        "libmtmd.dylib",
+    ],
 }
+# Non-empty, because a zero-byte runtime library is now rejected as damage, and long
+# enough for tests that corrupt a payload by halving it to have something left.
+_PAYLOAD_BYTES = "xxxx"
 _BACKEND_PAYLOAD = {
     ("linux", "cuda"): ["libggml-cuda.so"],
     ("linux", "rocm"): ["libggml-hip.so"],
@@ -189,7 +245,8 @@ def build_install(
             else (runnable if runnable_root is None else runnable_root)
         )
         # The keep path execs these. The not-ok file has to be a bad image: ENOEXEC on
-        # POSIX, a non-PE on Windows, where an empty file is a valid do-nothing program.
+        # POSIX, a non-PE on Windows, where an empty file is a valid do-nothing program. The
+        # Windows non-PE is answered by _windows_non_pe_is_refused_not_started, never started.
         if WINDOWS_HOST:
             path.write_bytes(RUNNABLE_STUB if ok else b"not a PE image\n")
         else:
@@ -209,16 +266,16 @@ def build_install(
 
     if payload:
         for name in _SHARED_PAYLOAD[platform]:
-            (runtime_dir / name).write_text("", encoding = "utf-8")
+            (runtime_dir / name).write_text(_PAYLOAD_BYTES, encoding = "utf-8")
         if payload_backend != "unset":
             for name in _BACKEND_PAYLOAD.get((platform, payload_backend), ()):
-                (runtime_dir / name).write_text("", encoding = "utf-8")
+                (runtime_dir / name).write_text(_PAYLOAD_BYTES, encoding = "utf-8")
         if visual_server:
             for name in _PUBLISHED_PAYLOAD[platform]:
-                (runtime_dir / name).write_text("", encoding = "utf-8")
+                (runtime_dir / name).write_text(_PAYLOAD_BYTES, encoding = "utf-8")
         if cudart:
             for name in _CUDART_TRIO:
-                (runtime_dir / name).write_text("", encoding = "utf-8")
+                (runtime_dir / name).write_text(_PAYLOAD_BYTES, encoding = "utf-8")
     return install_dir
 
 
@@ -534,6 +591,7 @@ def test_the_stored_backend_choice_reads_the_same_from_every_shape(tmp_path, mar
     assert ILP.persisted_backend_request(install_dir) == expected
 
 
+# ---------------------------------------------------------------------------
 ARM64_LINUX = _host(machine = "aarch64", is_x86_64 = False, is_arm64 = True)
 MACOS_X64 = _host(
     system = "Darwin",

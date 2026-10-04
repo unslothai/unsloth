@@ -793,9 +793,11 @@ def _run_holding_out_dir(args, ab_ref, specs, arm_labels, windowed, paths, out_l
 
         init_scripts = []
         # ONE PROVIDER PER ORIGIN: the provider lives in the backend and localStorage is per-origin, so
-        # an attached null control is two sides on one Unsloth. `register_provider` is idempotent by
-        # DISPLAY NAME, so registering per side deletes the id the first side's seed script captured.
-        # `is_null_control` is what recognises it.
+        # an attached null control (`--attach U --attach-b U`) is two sides on one Unsloth.
+        # `register_provider` is idempotent by DISPLAY NAME, so registering per side deletes the id the
+        # first side's seed script captured, and that script keeps selecting the dead id on every
+        # navigation it wins: the order init scripts run in is not defined and `StudioAuth.rotate`
+        # re-adds them mid-run. `is_null_control` is what recognises it.
         registered: dict = {}
         for index, side in enumerate(sides):
             side_install = installs[index][0]
@@ -1021,7 +1023,8 @@ def _run_holding_out_dir(args, ab_ref, specs, arm_labels, windowed, paths, out_l
 
         if args.tier == "fast":
             # Said in the log AND recorded. A fast-tier reading is a DIRECTION, not a number: one rung, a 47 s
-            # film, a wider detection floor and no null control, so the analysis layer must refuse to pool it.
+            # film, however few repetitions were asked for, a wider detection floor, and no null control of
+            # its own unless one is run alongside. So the analysis layer must refuse to pool it.
             _log("")
             _log("  FAST TIER: for iteration while you are changing something, not for reporting.")
             _log(
@@ -1200,7 +1203,9 @@ def _run_holding_out_dir(args, ab_ref, specs, arm_labels, windowed, paths, out_l
                     "base_ref": sides[0]["ref"],
                     "treatment_ref": sides[1]["ref"],
                     # WHICH SERVER THE TREATMENT WAS, when the caller attached one: without it a resume compares only
-                    # the `--ab` label, which says nothing about the build that answered. Empty when we installed it.
+                    # the `--ab` label, which says nothing about the build that answered. `run_meta` records the
+                    # base the same way in `studio_ref`; see `requested_identity`. Empty when this run installed
+                    # the treatment itself, since then the ref above IS its identity.
                     "treatment_url": "" if sides[1]["owns"] else sides[1]["base_url"],
                     # The treatment's half of `studio_commit`. Same reason, same emptiness rule.
                     "treatment_commit": sides[1].get("commit") or "",
