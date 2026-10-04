@@ -12,8 +12,9 @@ that tiles the decode (streaming / whole-model offload) shows them; resident loa
 encode (img2img and edit inputs on the same tiers) has the same geometry.
 
 Here a tile is at least 32 latents with at least a 16-latent overlap (ComfyUI's decode overlap). A decode
-uses larger tiles, down to one untiled decode, when half the free VRAM holds them: fewer tiles decode less
-overlap, so they are faster and leave fewer seams. Otherwise it uses 32x32, which the planner budgets. Tiles
+uses larger tiles, down to one untiled decode, when three quarters of the free VRAM hold them: fewer tiles
+decode less overlap, so they are faster and leave fewer seams. Otherwise it uses 32x32, which the planner
+budgets. Tiles
 are spread evenly so the last one ends at the image edge at full size (no sliver). A tile gets no weight within
 4 latents of an edge it shares with another tile and ramps to full weight over the next 8, normalised where
 more than two tiles meet (a stride under 16 latents, e.g. 1344 or 2400 px). A canvas that fits one tile is
@@ -104,8 +105,9 @@ def _decode_tile(vae: Any, z: Any) -> Any:
 
 # Unfused bf16 decode peak per latent of tile area (measured: 1,697 MiB for 32x32, 6,717 MiB for 64x64 untiled).
 DECODE_MIB_PER_LATENT = 1.7
-# Share of the free VRAM a decode tile may take (the fused tile batching takes half as well).
-FREE_FRACTION = 0.5
+# Share of the free VRAM (after the output accumulator) a decode tile may take; the per-area figure above is an
+# upper bound on the measured peaks, so this keeps at least a quarter of the free memory unused.
+FREE_FRACTION = 0.75
 MAX_TILE_ENV = "UNSLOTH_DIFFUSION_VAE_MAX_TILE"
 
 
@@ -168,7 +170,7 @@ def tiled_decode(vae: Any, z: Any, return_dict: bool = True, max_area: Any = "au
     if max_area == "auto":
         max_area = decode_tile_budget(vae, z)
     th, tw = choose_tiles(height, width, max_area)
-    vae._unsloth_last_decode_tile = (th, tw)
+    vae._unsloth_last_decode_tile = (th, tw, max_area)
     hs = tile_starts(height, th)
     ws = tile_starts(width, tw)
     if len(hs) == 1 and len(ws) == 1:

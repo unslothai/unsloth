@@ -328,5 +328,5 @@ def test_larger_tiles_decode_like_untiled_when_the_budget_allows():
         two = vt.tiled_decode(vae, z, return_dict = False, max_area = 40 * 40)[0]
         small = vt.tiled_decode(vae, z, return_dict = False, max_area = 32 * 32)[0]
     assert torch.equal(whole, untiled)
-    assert vae._unsloth_last_decode_tile == (32, 32)
+    assert vae._unsloth_last_decode_tile == (32, 32, 32 * 32)
     assert _line_error(two, untiled) <= _line_error(small, untiled)
