@@ -3,22 +3,21 @@
 
 """SQLite storage for the RAG engine.
 
-Same pattern as providers_db.py / studio_db.py (module functions, raw sqlite3,
-WAL, per-call connections, lazy schema), but every connection also loads
-sqlite-vec (vec0 needs it per-connection). If it cannot load, get_connection()
-raises RagExtensionUnavailable rather than failing import, and rag_available()
-reports the machine as one where RAG cannot run.
+Same pattern as providers_db.py / studio_db.py (module functions, raw sqlite3, WAL, per-call connections, lazy
+schema), but every connection also loads sqlite-vec (vec0 needs it per-connection). If it cannot load,
+get_connection() raises RagExtensionUnavailable rather than failing import, and rag_available() reports the
+machine as one where RAG cannot run.
 
-One rag.db holds the ``documents`` / ``chunks`` model, the FTS5 lexical index
-(``chunks_fts``) and the sqlite-vec dense index (``chunks_vec``, created lazily
-by ensure_vec once the embedding dim is known, since vec0 bakes the dim into the
-column type).
+One rag.db holds the ``documents`` / ``chunks`` model, the FTS5 lexical index (``chunks_fts``) and the
+sqlite-vec dense index (``chunks_vec``, created lazily by ensure_vec once the embedding dim is known, since vec0
+bakes the dim into the column type).
 """
 
 import logging
 import re
 import sqlite3
 import threading
+from pathlib import Path
 from datetime import datetime, timezone
 
 logger = logging.getLogger(__name__)
@@ -38,15 +37,14 @@ _RAG_UNAVAILABLE_MSG = "RAG unavailable: sqlite-vec extension could not be loade
 
 
 class RagExtensionUnavailable(RuntimeError):
-    """sqlite-vec is installed but its native library will not load (a missing
-    vec0 binary in the venv is the common macOS case). Subclasses RuntimeError so
-    existing ``except RuntimeError`` callers are unaffected; it exists so a caller
-    can tell "RAG is switched off on this machine" from a real database error and
-    degrade instead of returning 500 on every poll."""
+    """sqlite-vec is installed but its native library will not load (a missing vec0 binary in the venv is the
+    common macOS case). Subclasses RuntimeError so existing ``except RuntimeError`` callers are unaffected; it
+    exists so a caller can tell "RAG is switched off on this machine" from a real database error and degrade
+    instead of returning 500 on every poll."""
 
 
 _schema_lock = threading.Lock()
-_schema_ready = False
+_schema_ready: set[Path] = set()
 # The dylib is either there or it is not, and the UI polls the KB list on a timer, so one warning
 # per process says everything the repeats would.
 _unavailable_lock = threading.Lock()
@@ -57,7 +55,6 @@ _extension_loaded = False
 
 
 def _warn_unavailable_once(exc: BaseException | None = None) -> None:
-    """Log the sqlite-vec unavailability at most once per process."""
     global _unavailable_warned
     with _unavailable_lock:
         if _unavailable_warned:
@@ -71,18 +68,14 @@ def _warn_unavailable_once(exc: BaseException | None = None) -> None:
 
 
 def rag_available() -> bool:
-    """Whether RAG can actually run in this process.
-
-    RAG_AVAILABLE only records that ``import sqlite_vec`` worked. The vec0 native
-    library it loads is a separate file, and a venv can have the package without it
-    (the common macOS case), which nothing finds out until a connection tries. So try,
-    unless one already got through: a machine where RAG works answers from the flag
-    instead of opening a second connection per request, and a machine where it does not
-    pays the same failed connect it paid before, quietly.
-
-    A genuine database error (locked, corrupt, bad schema) is not an answer to this
-    question, so it propagates instead of being reported as "RAG is off here".
-    """
+    """Whether RAG can actually run in this process. RAG_AVAILABLE only records that ``import
+    sqlite_vec`` worked. The vec0 native library it loads is a separate file, and a venv can have
+    the package without it (the common macOS case), which nothing finds out until a connection
+    tries. So try, unless one already got through: a machine where RAG works answers from the flag
+    instead of opening a second connection per request, and a machine where it does not pays the
+    same failed connect it paid before, quietly. A genuine database error (locked, corrupt, bad
+    schema) is not an answer to this question, so it propagates instead of being reported as "RAG is
+    off here"."""
     if not RAG_AVAILABLE:
         return False
     if _extension_loaded:
@@ -96,9 +89,8 @@ def rag_available() -> bool:
 
 
 def _ensure_schema(conn: sqlite3.Connection) -> None:
-    """Create the RAG tables if absent (once per process). ``chunks_vec`` is
-    skipped: its column type needs the embedding dim, so ensure_vec() makes it
-    lazily at first ingest."""
+    """Create the RAG tables if absent (once per process). ``chunks_vec`` is skipped: its column type needs the
+    embedding dim, so ensure_vec() makes it lazily at first ingest."""
     conn.execute("PRAGMA journal_mode=WAL")
     conn.executescript(
         """
@@ -265,9 +257,8 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         "CREATE INDEX IF NOT EXISTS idx_documents_archive_ordinal "
         "ON documents(scope, archive_ordinal) WHERE archive_ordinal IS NOT NULL"
     )
-    # After the ALTER that adds the column on an older database. Partial, so it holds only
-    # folder-owned rows and is empty with nothing linked, which keeps the lexical fast-path gate an
-    # index probe rather than a scan.
+    # After the ALTER that adds the column on an older database. Partial, so it holds only folder-owned rows and
+    # is empty with nothing linked, which keeps the lexical fast-path gate an index probe rather than a scan.
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_documents_linked_folder "
         "ON documents(linked_folder_id) WHERE linked_folder_id IS NOT NULL"
@@ -277,11 +268,9 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
 
 
 def ensure_linked_folder_columns(conn: sqlite3.Connection) -> None:
-    """Add the linked-folder columns a database created by an earlier build is missing.
-
-    Also called for the metadata connection, which skips _ensure_schema so that scope
-    retirement keeps working when the vector extension cannot load.
-    """
+    """Add the linked-folder columns a database created by an earlier build is missing. Also called for
+    the metadata connection, which skips _ensure_schema so that scope retirement keeps working when
+    the vector extension cannot load."""
     job_cols = {r[1] for r in conn.execute("PRAGMA table_info(linked_folder_sync_jobs)").fetchall()}
     # the queued follow-up request; it replaced a flag that only recorded rebuilds
     if job_cols and "successor_kind" not in job_cols:
@@ -297,9 +286,14 @@ def ensure_linked_folder_columns(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE linked_folders ADD COLUMN withheld_paths TEXT")
 
 
+def reset_schema_state_for_tests() -> None:
+    with _schema_lock:
+        _schema_ready.clear()
+
+
 def get_connection() -> sqlite3.Connection:
     """Open rag.db (WAL + sqlite-vec loaded, schema created once). Raises if the extension is unavailable."""
-    global _schema_ready, _extension_loaded
+    global _extension_loaded
     if not RAG_AVAILABLE:
         raise RagExtensionUnavailable(_RAG_UNAVAILABLE_MSG)
 
@@ -322,12 +316,13 @@ def get_connection() -> sqlite3.Connection:
     # database does next. A monotonic flip, so no lock.
     _extension_loaded = True
 
-    if not _schema_ready:
+    if db_path not in _schema_ready:
         with _schema_lock:
-            if not _schema_ready:
+            schema_path = db_path.resolve()
+            if schema_path not in _schema_ready:
                 try:
                     _ensure_schema(conn)
-                    _schema_ready = True
+                    _schema_ready.add(schema_path)
                 except Exception:
                     conn.close()
                     raise
@@ -335,12 +330,9 @@ def get_connection() -> sqlite3.Connection:
 
 
 def get_metadata_connection() -> sqlite3.Connection:
-    """Open rag.db without loading sqlite-vec.
-
-    This connection is only for ordinary SQLite metadata tables. It lets lifecycle
-    tombstones remain writable when the optional native vector extension is temporarily
-    unavailable. Callers must not query or mutate the vec0 virtual table.
-    """
+    """Open rag.db without loading sqlite-vec. This connection is only for ordinary SQLite metadata
+    tables. It lets lifecycle tombstones remain writable when the optional native vector extension
+    is temporarily unavailable. Callers must not query or mutate the vec0 virtual table."""
     db_path = rag_db_path()
     ensure_dir(db_path.parent)
     conn = sqlite3.connect(str(db_path))
@@ -361,11 +353,10 @@ def vec_table_dim(conn: sqlite3.Connection) -> int | None:
 
 
 def ensure_vec(conn: sqlite3.Connection, dim: int) -> None:
-    """Create the dense ``chunks_vec`` table once the embedding dim is known
-    (vec0 bakes it into the column type). A width change (embedding model
-    switched in Settings) drops the table: the old vectors live in a foreign
-    space and would only block inserts, while lexical search keeps serving old
-    chunks until they are re-uploaded."""
+    """Create the dense ``chunks_vec`` table once the embedding dim is known (vec0 bakes it into the column
+    type). A width change (embedding model switched in Settings) drops the table: the old vectors live in a
+    foreign space and would only block inserts, while lexical search keeps serving old chunks until they are
+    re-uploaded."""
     existing = vec_table_dim(conn)
     if existing is not None and existing != int(dim):
         logger.warning(
@@ -392,9 +383,9 @@ def vec_table_exists(conn: sqlite3.Connection) -> bool:
 
 
 def _delete_document_chunks(conn, document_id: str) -> None:
-    """Delete a document's chunk rows (chunks/chunks_fts/chunks_vec), keeping the
-    documents row. Used when reconciling a half-ingested doc to failed: retrieval
-    filters by scope not status, so leftover chunks would stay citable."""
+    """Delete a document's chunk rows (chunks/chunks_fts/chunks_vec), keeping the documents row. Used when
+    reconciling a half-ingested doc to failed: retrieval filters by scope not status, so leftover chunks would
+    stay citable."""
     chunk_ids = [
         r["id"]
         for r in conn.execute(
@@ -412,11 +403,9 @@ def _delete_document_chunks(conn, document_id: str) -> None:
 
 
 def reconcile_orphaned_ingestion_jobs() -> int:
-    """Fail ingestion jobs/documents left mid-flight by a crash so they stop
-    showing as stuck "processing" and become re-ingestible. Work owned by another
-    live backend is left alone until its lease expires. No-op without RAG. Returns
-    the number of jobs reset.
-    """
+    """Fail ingestion jobs/documents left mid-flight by a crash so they stop showing as stuck
+    "processing" and become re-ingestible. Work owned by another live backend is left alone until
+    its lease expires. No-op without RAG. Returns the number of jobs reset."""
     # rag_available(), not RAG_AVAILABLE: a venv with the package but no vec0 binary would raise out of
     # startup and be logged as a reconcile failure when there is nothing to reconcile.
     if not rag_available():

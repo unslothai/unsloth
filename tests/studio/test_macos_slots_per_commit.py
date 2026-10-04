@@ -43,7 +43,35 @@ def _on(doc):
     return doc.get(True) if True in doc else doc.get("on")
 
 
-def _job_runs_on_macos(job) -> bool:
+_SELECTED_MATRIX = re.compile(r"fromJSON\(\s*needs\.([\w-]+)\.outputs\.([\w-]+)\s*\)")
+
+
+def _matrix(job, doc) -> dict:
+    """The matrix ``job`` expands, as a mapping, wherever its legs are written down.
+
+    A literal `strategy.matrix` is returned as is. The install workflows instead take
+    `matrix: ${{ fromJSON(needs.select.outputs.<job>) }}` from a `select` job that reads
+    `.github/ci/*-matrix.yml` (see .github/scripts/select_install_matrix.py), so the legs
+    are resolved from that file: the `MATRIX_FILE` env of the producing job's steps names
+    it, and the output name is the key. Every leg is returned, PR subset or not, because
+    this file asks which images a job CAN allocate.
+    """
+    matrix = (job.get("strategy") or {}).get("matrix") or {}
+    if isinstance(matrix, dict):
+        return matrix
+    match = _SELECTED_MATRIX.search(str(matrix))
+    if not match or not isinstance(doc, dict):
+        return {}
+    producer = (doc.get("jobs") or {}).get(match.group(1)) or {}
+    for step in producer.get("steps") or []:
+        matrix_file = ((step.get("env") or {}) if isinstance(step, dict) else {}).get("MATRIX_FILE")
+        if matrix_file:
+            legs = yaml.safe_load((REPO / matrix_file).read_text(encoding = "utf-8")) or {}
+            return {"include": list(legs.get(match.group(2)) or [])}
+    return {}
+
+
+def _job_runs_on_macos(job, doc = None) -> bool:
     """Whether ``job`` schedules a macOS runner.
 
     Reads `runs-on` and, when that is a matrix expression, the matrix values it selects
@@ -61,7 +89,7 @@ def _job_runs_on_macos(job) -> bool:
             return True
         # `runs-on: ${{ matrix.os }}` -- resolve against the matrix it names.
         for key in re.findall(r"matrix\.([\w-]+)", value):
-            matrix = (job.get("strategy") or {}).get("matrix") or {}
+            matrix = _matrix(job, doc)
             candidates = list(matrix.get(key) or [])
             for entry in matrix.get("include") or []:
                 if isinstance(entry, dict) and key in entry:
@@ -78,7 +106,7 @@ def _macos_workflows():
         doc = yaml.safe_load(text)
         if not isinstance(doc, dict) or not isinstance(doc.get("jobs"), dict):
             continue
-        if any(_job_runs_on_macos(j) for j in doc["jobs"].values() if isinstance(j, dict)):
+        if any(_job_runs_on_macos(j, doc) for j in doc["jobs"].values() if isinstance(j, dict)):
             yield path.name, doc, text
 
 
@@ -315,8 +343,7 @@ def _macos_labels():
             # runs-on plus the matrix it may select from: a retired image hides in an `include:`
             # list just as easily as in a literal runs-on.
             blob = str(job.get("runs-on", ""))
-            strategy = job.get("strategy") or {}
-            blob += str((strategy.get("matrix") or {}) if isinstance(strategy, dict) else "")
+            blob += str(_matrix(job, doc) if isinstance(job.get("strategy"), dict) else "")
             # Only things shaped like a GitHub image name. The loose MACOS pattern used elsewhere
             # in this file also matches build targets that merely contain "macos":
             # release-desktop's matrix carries `macos-aarch64`, which is a Rust triple's nickname
