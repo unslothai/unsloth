@@ -59,6 +59,7 @@ from .diffusion_families import (
     _is_local_path,
     canonical_base,
     cache_holds_files,
+    comfy_flow_shift_for,
     default_generation_params,
     detect_family_for_pick,
     excluded_model_reason,
@@ -131,6 +132,8 @@ from .diffusion_memory import (
     normalize_memory_mode,
     plan_diffusion_memory,
     plan_fits_total_capacity,
+    denoisers_pinned_resident,
+    install_encode_release,
     plan_keeps_transformer_resident,
     prequant_seed_device,
     raise_on_image_activation_shortfall,
@@ -159,6 +162,7 @@ from .diffusion_memory import (
 )
 from .diffusion_torchao_patches import install_torchao_int_mm_patch
 from .image_orientation import exif_upright
+from .mcp_images import flattened_rgb
 from .media_decode_phase import decode_phase
 from .diffusion_speed import (
     SPEED_DEFAULT,
@@ -166,6 +170,7 @@ from .diffusion_speed import (
     SPEED_MAX,
     SPEED_OFF,
     apply_speed_optims,
+    engage_pinned_denoisers,
     auto_dynamic_active,
     compile_dynamic,
     compile_eligible,
@@ -240,6 +245,15 @@ from .diffusion_precision import (
     torchao_quantize_importable,
 )
 from .diffusion_te_prequant import te_prequant_pipe_kwargs
+from .diffusion_fast_load import start_load_prefetch, stop_prefetch, te_precast_components
+from .diffusion_flow_shift import apply_comfy_flow_shift
+from .diffusion_text_length import (
+    IDEOGRAM4_COMFY_GUIDANCE,
+    ideogram4_comfy_guidance_schedule,
+    ideogram4_comfy_mu_std,
+    flux_t5_kwarg,
+    true_cfg_needs_empty_negative,
+)
 from .diffusion_denoiser_prequant import (
     DENOISER_COMPONENT,
     PIPELINE_SEED_DECLINED,
@@ -573,7 +587,7 @@ def decode_b64_image(
         raise  # the size guard's own message; don't wrap it as a decode error
     except Exception as exc:  # noqa: BLE001 - surfaced as a 400 to the client
         raise ValueError(f"Could not decode image: {exc}") from exc
-    return img.convert(mode)
+    return flattened_rgb(img) if mode == "RGB" else img.convert(mode)
 
 
 def _snap_to_multiple(img: Any, multiple: int = 16) -> Any:
@@ -2018,6 +2032,11 @@ class DiffusionBackend:
         target = resolve_diffusion_device_target(ordinal = ordinal)
         # The INDEXED string, so _resolve_device_target can rebuild a selection an override would erase.
         return target.torch_device, target.dtype
+
+    def _stop_load_prefetch(self) -> None:
+        """End a load's page-cache prefetch (diffusion_fast_load.start_load_prefetch), if one is running."""
+        stop_prefetch(getattr(self, "_load_prefetch", None))
+        self._load_prefetch = None
 
     def _raise_if_load_cancelled(self, token: int) -> None:
         # The epoch alone: unload() bumps _load_token before any teardown, so a load that started
@@ -6315,6 +6334,20 @@ class DiffusionBackend:
                                 }
                                 if hf_token:
                                     pipe_kwargs["token"] = hf_token
+                                # Stopped once the pipeline is built.
+                                self._stop_load_prefetch()
+                                self._load_prefetch = start_load_prefetch(
+                                    fam,
+                                    _base_local_dir or fetch_base,
+                                    prequant_scheme = pipeline_seed_scheme,
+                                    prequant_path_override = transformer_prequant_path,
+                                    prequant_base_repo = base,
+                                    text_encoders_replaced = te_precast_components(
+                                        fam, fetch_base, text_encoder_quant, target
+                                    ),
+                                    cache_dir = hub_cache_dir(),
+                                    logger = logger,
+                                )
                                 if fam.name == HIDREAM_FAMILY_NAME:
                                     # The repo names a Llama text_encoder_4 it does not ship; supply it from the open
                                     # mirror
@@ -6441,9 +6474,12 @@ class DiffusionBackend:
                                     )
                                 # The prefetched snapshot dir keeps from_pretrained off the hub (24 GB per FLUX.1
                                 # otherwise)
-                                pipe = pipeline_cls.from_pretrained(
-                                    _base_local_dir or fetch_base, **pipe_kwargs
-                                )
+                                try:
+                                    pipe = pipeline_cls.from_pretrained(
+                                        _base_local_dir or fetch_base, **pipe_kwargs
+                                    )
+                                finally:
+                                    self._stop_load_prefetch()
                                 if small_host is not None and small_host.engaged:
                                     plan = self._apply_small_host_route(
                                         pipe,
@@ -6987,6 +7023,10 @@ class DiffusionBackend:
                         )
 
                     self._raise_if_load_cancelled(_load_token)
+                    # Before from_pipe copies the scheduler.
+                    apply_comfy_flow_shift(
+                        pipe, comfy_flow_shift_for(fam, gguf_filename, repo_id, base), logger
+                    )
                     # Before the speed optims so their decode compile lands inside the non-finite check; `off` keeps fp32.
                     vae_fp16 = str(
                         speed_mode or ""
@@ -7139,6 +7179,11 @@ class DiffusionBackend:
                         pipe._unsloth_cuda_graphs = ()
                         pipe._unsloth_cuda_graph_reason = "offload active"
                         speed_applied["cuda_graph"] = False
+                    # streams the whole-resident denoiser back to the flat room while the encoders run
+                    install_encode_release(pipe, plan, logger)
+                    # the speed layer saw only the plan; placement may have pinned every denoiser group since
+                    if denoisers_pinned_resident(pipe):
+                        engage_pinned_denoisers(pipe, speed_applied, logger)
 
                     # Per-control provenance for status. cpu_offload=False is the unset default, so only True is
                     # explicit.
@@ -7337,6 +7382,7 @@ class DiffusionBackend:
                     _clear_exception_frames(exc)
                     raise
                 finally:
+                    self._stop_load_prefetch()
                     # Pre-commit failure: roll back the process-wide mutations (symmetric with _unload_locked).
                     if not state_committed:
                         # First: its gate sits in front of the CUDA-graph layer uninstalled by identity below.
@@ -9008,6 +9054,8 @@ class DiffusionBackend:
             and _denoiser_hooked(state.pipe),
             logger = logger,
         )
+        if denoisers_pinned_resident(state.pipe):
+            engage_pinned_denoisers(state.pipe, speed_applied, logger)
         if getattr(getattr(state.pipe, "vae", None), "_unsloth_fp16_decode", False):
             speed_applied["vae_fp16_decode"] = True
         object.__setattr__(state, "speed_mode", SPEED_DEFAULT)
@@ -9405,7 +9453,19 @@ class DiffusionBackend:
                     if steps == 48 and abs(float(guidance) - 7.0) < 1e-6:
                         kwargs.pop(state.family.cfg_kwarg, None)
                     else:
-                        kwargs["guidance_schedule"] = None
+                        # ComfyUI preset for this step count; the 7 -> 3 CFG override only at guidance 7.
+                        mu, std = ideogram4_comfy_mu_std(steps)
+                        if "mu" in call_params:
+                            kwargs["mu"] = mu
+                        if "std" in call_params:
+                            kwargs["std"] = std
+                        if abs(float(guidance) - IDEOGRAM4_COMFY_GUIDANCE) < 1e-6:
+                            kwargs.pop(state.family.cfg_kwarg, None)
+                            kwargs["guidance_schedule"] = ideogram4_comfy_guidance_schedule(
+                                steps, width, height
+                            )
+                        else:
+                            kwargs["guidance_schedule"] = None
                 if state.family.name == LUMINA2_FAMILY_NAME and "cfg_trunc_ratio" in call_params:
                     # Lumina 2's card recipe truncates the CFG double-forward to the first quarter
                     # (cfg_trunc_ratio=0.25); the 1.0 default oversaturates.
@@ -9437,6 +9497,11 @@ class DiffusionBackend:
                         kwargs["height"] = ih
                 if negative_prompt and "negative_prompt" in call_params:
                     kwargs["negative_prompt"] = negative_prompt
+                elif "negative_prompt" in call_params and true_cfg_needs_empty_negative(
+                    state.family.cfg_kwarg, guidance
+                ):
+                    # Qwen-Image true CFG needs a negative present; ComfyUI encodes an empty one.
+                    kwargs["negative_prompt"] = ""
                 if workflow == "controlnet" and control_pil is not None:
                     # CN pipeline takes the control map + scale; guidance start/end bound its step range. Every kwarg
                     # is signature-gated.
@@ -9635,6 +9700,10 @@ class DiffusionBackend:
                                 chunk_kwargs["negative_prompt"] = [
                                     chunk_kwargs["negative_prompt"]
                                 ] * len(chunk)
+                        # Per chunk, since a prompts list varies in length.
+                        t5_len = flux_t5_kwarg(state.family.name, pipe, call_params, chunk_kwargs)
+                        if t5_len is not None:
+                            chunk_kwargs["max_sequence_length"] = t5_len
                         # A step cache keys residuals on the cond/uncond context, which a graph key
                         # cannot see. Per chunk because an AUTO decision is re-taken per generation.
                         if state.cuda_graphs:

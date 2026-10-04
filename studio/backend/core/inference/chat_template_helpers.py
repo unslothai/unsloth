@@ -2647,7 +2647,7 @@ def _normalize_tool_call_arguments(messages: list) -> list:
             if isinstance(args, str):
                 try:
                     parsed = json.loads(args)
-                except (ValueError, TypeError):
+                except (ValueError, TypeError, RecursionError):
                     parsed = None
                 if isinstance(parsed, dict):
                     call = {**call, "function": {**fn, "arguments": parsed}}
