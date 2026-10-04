@@ -49,6 +49,8 @@ def test_the_shell_guards():
         'post({ type: "upload" }); return;',
         'event.effectiveDirective !== "frame-src"',
         "if (raw.length > 1) followHash(raw);",
+        'const value = node.type === "password" ? "" : node.value;',
+        "if (result === false) cancelled = true;",
     ):
         assert guard in shell, guard
     # The child is locked against navigation only after it is in place.

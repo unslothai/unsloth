@@ -231,7 +231,23 @@ _FRAME_HTML = r"""<!doctype html>
             defaultPrevented: { get: () => cancelled },
             returnValue: { get: () => !cancelled, set: (value) => { if (value === false) cancelled = true; } },
           });
-          setTimeout(() => { if (!cancelled) action(); });
+          // An inline handler's "return false" cancels inside the engine: wrap them for this event.
+          const slot = "on" + event.type;
+          const inline = [];
+          for (const node of event.composedPath()) {
+            const handler = node[slot];
+            if (typeof handler !== "function") continue;
+            inline.push([node, handler]);
+            node[slot] = function (...args) {
+              const result = handler.apply(this, args);
+              if (result === false) cancelled = true;
+              return result;
+            };
+          }
+          setTimeout(() => {
+            for (const [node, handler] of inline) node[slot] = handler;
+            if (!cancelled) action();
+          });
         };
         const onLinkClick = (event) => {
           const link = linkFrom(event);

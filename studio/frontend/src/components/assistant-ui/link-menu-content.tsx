@@ -191,16 +191,23 @@ export function FileMenuContent({ file }: { file: ContextFile }) {
       .catch(failed("linkMenu.openFailed"));
   // A tab in the user's own browser; text is retyped so it shows as text rather than runs.
   const tabType = browserTabType(file.name, contentType);
-  const openInTab = () =>
+  const openInTab = () => {
+    if (!tabType) return;
+    // Opened now, while the click still counts for the popup blocker; loading can take a fetch.
+    const tab = window.open("", "_blank");
+    if (tab) tab.opener = null;
     void file
       .load()
       .then((blob) => {
-        if (!tabType) return;
         const url = URL.createObjectURL(new Blob([blob], { type: tabType }));
-        window.open(url, "_blank", "noopener,noreferrer");
+        if (tab) tab.location.href = url;
         window.setTimeout(() => URL.revokeObjectURL(url), 60_000);
       })
-      .catch(failed("linkMenu.openFailed"));
+      .catch(() => {
+        tab?.close();
+        failed("linkMenu.openFailed")();
+      });
+  };
   const saveAs = () =>
     void file
       .load()

@@ -17,7 +17,6 @@ import {
   type PropsWithChildren,
   type ReactElement,
   useCallback,
-  useContext,
   useLayoutEffect,
   useRef,
 } from "react";
@@ -137,13 +136,24 @@ function blobLoader(source: AttachmentSource): (() => Promise<Blob>) | null {
 
 type MenuProps = { source: AttachmentSource; children: ReactElement } & Omit<ComponentProps<"button">, "children">;
 
-const AttachmentMenu: FC<MenuProps & { load: () => Promise<Blob> }> = ({ source, load, children, ...rest }) => {
-  // Opening does what a click does where the attachment opens in the browser.
-  const open = useContext(AttachmentBrowserOpenContext) ?? undefined;
+const AttachmentMenu: FC<MenuProps & { load: () => Promise<Blob> }> = ({
+  source,
+  load,
+  children,
+  onContextMenu,
+  ...rest
+}) => {
+  // Open does what clicking the chip does, so the open-in-browser setting and a missing panel
+  // apply; the menu's own browser item stays the explicit choice.
+  const chip = useRef<HTMLElement | null>(null);
   return (
     <FileContextMenu
-      file={{ name: source.name || "attachment", contentType: source.contentType, load, open }}
+      file={{ name: source.name || "attachment", contentType: source.contentType, load, open: () => chip.current?.click() }}
       {...rest}
+      onContextMenu={(event) => {
+        chip.current = event.currentTarget;
+        onContextMenu?.(event as Parameters<NonNullable<typeof onContextMenu>>[0]);
+      }}
     >
       {children}
     </FileContextMenu>

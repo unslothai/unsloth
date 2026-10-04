@@ -112,7 +112,7 @@ function onNativeEvent(event: NativeEvent): void {
   const history = useBrowserHistoryStore.getState();
   switch (event.kind) {
     case "load":
-      store.updateTab(tab.id, { loading: event.loading, displayUrl: event.url });
+      store.updateTab(tab.id, { loading: event.loading, displayUrl: event.url, ...leftOpenedPage(tab, event.url) });
       page(tab.id).url = event.url;
       remember(tab.id, event.url);
       if (!event.loading) history.recordVisit(event.url, tab.title);
@@ -123,7 +123,7 @@ function onNativeEvent(event: NativeEvent): void {
       history.recordVisit(tab.displayUrl ?? currentEntryUrl(tab), event.title);
       break;
     case "url":
-      store.updateTab(tab.id, { displayUrl: event.url });
+      store.updateTab(tab.id, { displayUrl: event.url, ...leftOpenedPage(tab, event.url) });
       page(tab.id).url = event.url;
       remember(tab.id, event.url);
       break;
@@ -151,7 +151,7 @@ function onNativeEvent(event: NativeEvent): void {
         newTabTimes.push(now);
         store.openUrl(event.url, { newTab: true });
       } else {
-        prompt(t("browser.native.externalPrompt", { host: hostOf(currentEntryUrl(tab)), url: event.url }), {
+        prompt(t("browser.native.externalPrompt", { host: hostOf(shownUrl(tab)), url: event.url }), {
           label: t("browser.native.open"),
           onClick: () => store.openUrl(event.url, { newTab: true }),
         });
@@ -160,7 +160,7 @@ function onNativeEvent(event: NativeEvent): void {
     }
     case "external":
       // Pages can ask without a click, so the user decides.
-      prompt(t("browser.native.externalPrompt", { host: hostOf(currentEntryUrl(tab)), url: event.url }), {
+      prompt(t("browser.native.externalPrompt", { host: hostOf(shownUrl(tab)), url: event.url }), {
         label: t("browser.native.open"),
         onClick: () => openExternalLink(event.url),
       });
@@ -190,10 +190,22 @@ function prompt(message: string, action: { label: string; onClick: () => void })
   toast(message, { id: PROMPT_ID, action });
 }
 
-/** Keyed by the entry the view holds, not the tab's current one, which may not have loaded yet. */
+/** Keyed by the entry the view holds, not the tab's current one, which may not have loaded yet.
+ *  Web addresses only: a blob: or data: page goes with the view that made it. */
 function remember(tabId: string, url: string): void {
   const entry = views.get(tabId);
-  if (entry !== undefined) resume.set(tabId, { entry, url });
+  if (entry !== undefined && /^https?:/i.test(url)) resume.set(tabId, { entry, url });
+}
+
+/** The page the native view shows, which links and redirects move past the tab's entry. */
+function shownUrl(tab: BrowserTab): string {
+  return tab.displayUrl ?? currentEntryUrl(tab);
+}
+
+/** Once the view moves off the address the tab was opened for, opening that address again
+ *  opens it rather than focusing this tab. */
+function leftOpenedPage(tab: BrowserTab, url: string): { openKey?: null } {
+  return tab.openKey?.startsWith("url:") && tab.openKey !== `url:${url}` ? { openKey: null } : {};
 }
 
 function currentEntryUrl(tab: BrowserTab): string {

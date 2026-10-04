@@ -59,7 +59,8 @@ export const useImageViewerStore = create<ImageViewerState>((set, get) => ({
       index: Math.min(Math.max(index, 0), images.length - 1),
       open: true,
     }),
-  close: () => set({ open: false }),
+  // The body unmounts on close, so the images (and the blobs their loaders hold) can go too.
+  close: () => set({ images: [], index: 0, open: false }),
   step: (delta) => {
     const { images, index } = get();
     const next = index + delta;
