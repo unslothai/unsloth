@@ -79,14 +79,15 @@ export function audioWorkflowForPick(pick: {
   audioType?: string | null;
 }): AudioWorkflowId | null {
   const workflow = audioWorkflowForTask(pick.task);
-  if (workflow !== "speak") {
+  if (workflow !== null && workflow !== "speak") {
     return workflow;
   }
+  // No task (or a speech one): the audio type or catalog entry can still name the page.
   const catalog = audioCppModelFor(pick.id);
   if (MUSIC_AUDIO_TYPES.has(pick.audioType ?? "") || catalog?.task === "music") {
     return "music";
   }
   return catalog?.workflows && !catalog.workflows.includes("speak")
-    ? (catalog.workflows[0] ?? "speak")
-    : "speak";
+    ? (catalog.workflows[0] ?? workflow)
+    : workflow;
 }
