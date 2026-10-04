@@ -86,7 +86,7 @@ test("a provider with no sandbox uses Unsloth's own tools", () => {
       hostedCodeExecutionForThisTurn: false,
       providerHostsCodeExecution: false,
     }),
-    { local: ["python", "terminal", "edit_file"], hosted: [] },
+    { local: ["python", "terminal", "edit_file", "view_image"], hosted: [] },
   );
 });
 

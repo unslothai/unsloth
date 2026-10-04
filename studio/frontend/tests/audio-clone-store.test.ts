@@ -7,6 +7,7 @@ import test from "node:test";
 
 import {
   installLocalStorageFake,
+  readSrc,
   registerBundlerResolver,
 } from "./helpers/kit.ts";
 
@@ -171,4 +172,37 @@ test("Add it again under Generate drops the expired clip's transcript too", () =
   store().adoptReference(null);
   store().adoptReference(b);
   assert.equal(store().referenceText, "");
+});
+
+test("a failed voice deletion puts back only that voice", () => {
+  const src = readSrc("features/audio/stores/audio-voices-store.ts");
+  const body = src.slice(src.indexOf("remove: async (id) => {"));
+  const handler = body.slice(0, body.indexOf("\n  },"));
+  assert.doesNotMatch(handler, /set\(\{ voices: before \}\)/);
+  assert.match(handler, /voices\.splice\(Math\.min\(index, voices\.length\), 0, failed\)/);
+});
+
+test("a failed voice rename puts back only that voice", () => {
+  const src = readSrc("features/audio/stores/audio-voices-store.ts");
+  const body = src.slice(src.indexOf("rename: async (id, patch) => {"));
+  const handler = body.slice(0, body.indexOf("\n  },"));
+  assert.doesNotMatch(handler, /set\(\{ voices: before \}\)/);
+  assert.match(handler, /voice\.id === id \? previous : voice/);
+});
+
+test("voice previews are bounded, stale ones dropped, and the menu follows disabled", () => {
+  const src = readSrc("features/audio/components/voice-picker.tsx");
+  assert.match(src, /const voiceUrls = new BlobUrlCache\(/);
+  assert.match(src, /voiceUrls\.prune\(\[voice\.id\]\)/);
+  assert.match(src, /if \(request !== previewRequest\.current\) return;\s*audio\.src = url;/);
+  assert.match(src, /await remove\(voice\.id\);\s*voiceUrls\.delete\(voice\.id\);/);
+  assert.match(src, /aria-label=\{`More for \$\{voice\.name\}`\}\s*disabled=\{disabled\}/);
+});
+
+test("a voice list fetched across a save, rename or delete is fetched again", () => {
+  const src = readSrc("features/audio/stores/audio-voices-store.ts");
+  assert.match(src, /const started = mutations;[\s\S]*?if \(started !== mutations\) \{\s*set\(\{ loading: false \}\);\s*return get\(\)\.refresh\(\);/);
+  for (const call of ["createVoice\\(request\\)", "updateVoice\\(id, patch\\)", "deleteVoice\\(id\\)"]) {
+    assert.match(src, new RegExp(`await ${call};\\s*mutations \\+= 1;`), call);
+  }
 });

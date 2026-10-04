@@ -299,6 +299,21 @@ def test_a_saved_voice_resolves_to_an_account_path_and_is_recorded(
     )
 
 
+def test_a_cleared_transcript_is_not_refilled_from_the_saved_voice(stub):
+    backend = stub["use"](
+        "audio-cpp/audio.cpp-gguf/VoxCPM2-GGUF",
+        _clone_info(workflows = ("speak", "clone"), reference_text = "optional"),
+    )
+    voice = _voice(ALICE, _input(ALICE), transcript = "Okay, I'm Cemo.")
+    with _client(ALICE) as client:
+        response = _run(
+            client, inputs = {"reference": {"voice_id": voice["id"]}, "reference_text": ""}
+        )
+    assert response.status_code == 200, response.text
+    (call,) = backend.calls
+    assert call.get("reference_text") is None
+
+
 _COSY = _clone_info(waived = [["template_name", ["cross_lingual", "instruct"]]])
 
 

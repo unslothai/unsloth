@@ -472,7 +472,14 @@ export function ModelsPage() {
       } = {},
     ): Promise<void> => {
       const seq = ++residentStatusSeq.current;
-      const read = Promise.all([getInferenceStatus(), readIdleUnloadArmed()])
+      const selected = useChatRuntimeStore.getState().params.checkpoint;
+      const read = Promise.all([
+        getInferenceStatus(
+          undefined,
+          selected && !isExternalModelId(selected) ? selected : undefined,
+        ),
+        readIdleUnloadArmed(),
+      ])
         .then(([status, idleUnloadArmed]) => {
           if (seq !== residentStatusSeq.current)
             return supersedingRefresh(residentStatusSupersession.current, seq);

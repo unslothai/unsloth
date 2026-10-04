@@ -59,3 +59,11 @@ test("remembering the same model again leaves the state untouched", () => {
   useAudioWorkspaceStore.getState().rememberModel("speak", "kokoro");
   assert.equal(useAudioWorkspaceStore.getState().lastModelByWorkflow, before);
 });
+
+test("any committed switch settles a pending request, so it never fires later", () => {
+  const ws = useAudioWorkspaceStore;
+  ws.getState().requestWorkflow("music");
+  ws.getState().commitWorkflow("transcribe");
+  assert.equal(ws.getState().requestedWorkflow, null);
+  ws.getState().commitWorkflow("speak");
+});

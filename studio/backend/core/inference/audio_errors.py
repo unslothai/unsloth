@@ -71,15 +71,28 @@ class AudioRuntimeError(RuntimeError):
         super().__init__(detail)
 
 
-def sanitize_runtime_detail(text: str) -> str:
-    """One bounded line of runtime error text with credentials and filesystem paths removed."""
+def _redacted_line(text: str) -> str:
     from utils.log_redaction import redact_log_text
 
     cleaned = redact_log_text(str(text or ""))
     cleaned = _ABSOLUTE_PATH_RE.sub(_path_tail, cleaned)
-    cleaned = " ".join(cleaned.split())
+    return " ".join(cleaned.split())
+
+
+def sanitize_runtime_detail(text: str) -> str:
+    """One bounded line of runtime error text with credentials and filesystem paths removed."""
+    cleaned = _redacted_line(text)
     if len(cleaned) > _MAX_RUNTIME_DETAIL_CHARS:
         cleaned = cleaned[: _MAX_RUNTIME_DETAIL_CHARS - 3].rstrip() + "..."
+    return cleaned
+
+
+def sanitize_runtime_tail(text: str, limit: int = 280) -> str:
+    """The last ``limit`` characters of a runtime log, redacted before the cut so a path or token
+    straddling it is never shown half-redacted."""
+    cleaned = _redacted_line(text)
+    if len(cleaned) > limit:
+        cleaned = "..." + cleaned[-(limit - 3) :].split(" ", 1)[-1]
     return cleaned
 
 

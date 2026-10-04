@@ -206,6 +206,9 @@ def test_apply_falls_back_on_unavailable_kernel(monkeypatch):
 def test_apply_failed_kernel_restores_native_when_polluted(monkeypatch):
     # Requested kernel fails AND the global is polluted: restore native before returning.
     monkeypatch.setattr(att, "_active_attention_backend", lambda: "_native_cudnn")
+    # The set itself must be what fails here, not the sageattention version floor in front of it.
+    monkeypatch.setattr(att, "_sage_version_too_old", lambda: None)
+    monkeypatch.setattr(att, "_install_sage_dispatch_guard", lambda: True)
 
     class _FailOnceTransformer:
         def __init__(self):
@@ -882,6 +885,26 @@ def test_any_subquadratic_kernel_means_not_math_only(kernels, monkeypatch):
     # the score matrix is never materialised and there is nothing to warn about.
     _stub_probe(monkeypatch, kernels)
     assert att.sdpa_math_only(_target()) is False
+
+
+def test_a_fused_launch_that_fails_late_is_not_reported_available(monkeypatch):
+    # Windows ROCm gfx1151: the fused call returns, and its hipErrorInvalidValue only surfaces on
+    # the next checked kernel. The probe must take that error itself, not hand it to a later op.
+    torch = pytest.importorskip("torch")
+
+    class _Pending:
+        def float(self):
+            raise RuntimeError("CUDA error: invalid argument")
+
+    real = torch.nn.functional.scaled_dot_product_attention
+
+    def _sdpa(q, k, v, *a, **kw):
+        if not torch.backends.cuda.math_sdp_enabled():
+            return _Pending()
+        return real(q, k, v, *a, **kw)
+
+    monkeypatch.setattr(torch.nn.functional, "scaled_dot_product_attention", _sdpa)
+    assert att._probe_sdpa_kernels("cpu", torch.float32) == ("math",)
 
 
 def test_an_unanswerable_probe_is_not_a_math_only_verdict(monkeypatch):
