@@ -50,6 +50,7 @@ on:
       - 'studio/frontend/package-lock.json'
       - 'studio/frontend/.npmrc'
       - 'studio/backend/core/data_recipe/oxc-validator/package-lock.json'
+      - 'studio/backend/core/data_recipe/oxc-validator/.npmrc'
       - 'studio/src-tauri/Cargo.toml'
       - 'studio/src-tauri/Cargo.lock'
       - 'studio/src-tauri/build.rs'
