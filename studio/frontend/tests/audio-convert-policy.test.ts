@@ -356,6 +356,20 @@ test("Use again re-uploads a conversion's kept source instead of its expiring up
     page,
     /\(\) => \{\s*if \(untouched\(\) && kept\) store\.setSource\(\{ \.\.\.kept, expiresAt: EXPIRED_AT \}\);/,
   );
+  // An uploaded target has no kept copy: it is placed after a liveness probe, expired on a 404.
+  assert.match(
+    page,
+    /if \(target\?\.kind === "input"\) \{[\s\S]{0,400}?store\.setTarget\(null\);/,
+  );
+  assert.match(
+    page,
+    /audioInputAlive\(target\.id\)\.then\(\(alive\) => \{[\s\S]{0,200}?store\.setTarget\(alive \? named : \{ \.\.\.named, expiresAt: EXPIRED_AT \}\);/,
+  );
+  const api = readSrc("features/audio/api.ts");
+  assert.match(
+    api,
+    /export async function audioInputAlive\(inputId: string\)[\s\S]{0,300}?method: "HEAD"[\s\S]{0,120}?return response\.status !== 404;/,
+  );
 });
 
 const SEND_TO_HAS_CONVERT = /convert: \(\) => handleSendToConvert\(clip\),/;

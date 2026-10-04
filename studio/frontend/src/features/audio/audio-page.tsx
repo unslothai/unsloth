@@ -33,6 +33,7 @@ import { useShallow } from "zustand/react/shallow";
 
 import {
   type AudioGalleryClip,
+  audioInputAlive,
   fetchAudioBlob,
   uploadAudioInput,
 } from "./api";
@@ -155,8 +156,9 @@ function reuseConvertInputs(clip: AudioGalleryClip) {
   // An upload expires within a day; the clip kept what it converted, so upload that copy again.
   // The card stays empty until the live id is known: placed first, the old id let Generate race
   // the upload and 404 on it. The kept id goes in only when the upload fails, marked expired.
+  reuseSeq += 1;
   if (!clip.source_clip_id && clip.source_saved && sourceId) {
-    const seq = ++reuseSeq;
+    const seq = reuseSeq;
     const untouched = () => seq === reuseSeq && useAudioConvertStore.getState().source === null;
     store.setSource(null);
     void fetchAudioBlob(
@@ -188,7 +190,17 @@ function reuseConvertInputs(clip: AudioGalleryClip) {
       : clip.target_input_id
         ? { kind: "input" as const, id: clip.target_input_id }
         : null;
-  if (target) {
+  if (target?.kind === "input") {
+    // An uploaded target has no kept copy to upload again, so ask whether it is still there
+    // before placing it: placed bare, an expired one reads as ready until the card's own 404.
+    const seq = reuseSeq;
+    const named = { ...target, name: clip.reference_name ?? "Target voice", durationS: null };
+    store.setTarget(null);
+    void audioInputAlive(target.id).then((alive) => {
+      if (seq !== reuseSeq || useAudioConvertStore.getState().target !== null) return;
+      store.setTarget(alive ? named : { ...named, expiresAt: EXPIRED_AT });
+    });
+  } else if (target) {
     store.setTarget({
       ...target,
       name: clip.reference_name ?? "Target voice",
