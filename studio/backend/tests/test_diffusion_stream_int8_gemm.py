@@ -193,34 +193,28 @@ def _blocks(n, k, version):
 @needs_cuda
 @pytest.mark.parametrize("version", [None, 2])
 def test_prefetched_weights_run_the_fused_gemm_bit_identically(forced, version):
-    """The weights reach each block through the event-fenced prefetch (copy stream, two groups ahead); every int8
-    Linear still takes the fused GEMM, and the output equals stock torchao on resident weights, forward after forward."""
-    hooks = pytest.importorskip("diffusers.hooks")
-    from core.inference.diffusion_offload_prefetch import install_group_prefetch, module_prefetcher
+    """Studio's block streaming (diffusers group offload driven by the event-fenced prefetch, two groups ahead): the
+    weights reach each block through the copy stream, every int8 Linear still takes the fused GEMM, and the output
+    equals stock torchao on resident weights, forward after forward."""
+    pytest.importorskip("diffusers.hooks")
+    from core.inference import diffusion_memory as dm
+    from core.inference.diffusion_offload_prefetch import module_prefetcher
 
     n, k = 6, 1024
     stock = _blocks(n, k, version)
     streamed = _blocks(n, k, version).cpu()
-    hooks.apply_group_offloading(
-        streamed,
-        onload_device = torch.device("cuda"),
-        offload_device = torch.device("cpu"),
-        offload_type = "block_level",
-        num_blocks_per_group = 1,
-        use_stream = True,
-        record_stream = True,
-        non_blocking = True,
-    )
-    if install_group_prefetch(streamed, torch.device("cuda")) == 0:
+    pipe = types.SimpleNamespace(transformer = streamed, components = {"transformer": streamed})
+    assert dm._apply_group_offload(pipe, "cuda", None)
+    pf = module_prefetcher(streamed)
+    if pf is None:
         pytest.skip("this diffusers keeps its own stream prefetch")
+    assert all(lin.weight.device.type == "cpu" for block in streamed.blocks for lin in block)
     assert g8.install(streamed, device = "cuda") == n
-    xs = [torch.randn(300, k, device = "cuda", dtype = torch.bfloat16) * 3 for _ in range(3)]
+    xs = [torch.randn(300, k, device = "cuda", dtype = torch.bfloat16) * 3 for _ in range(4)]
     with torch.no_grad():  # group offload's swap_tensors onload cannot run on inference tensors
         for x in xs:
             before = g8.call_count()
             out = streamed(x)
             assert g8.call_count() == before + n
             assert torch.equal(out, stock(x))
-    pf = module_prefetcher(streamed)
     assert pf.stats["prefetched"] > 0 and pf.stats["missed"] == 0
-    assert all(lin.weight.device.type == "cpu" for block in streamed.blocks for lin in block)
