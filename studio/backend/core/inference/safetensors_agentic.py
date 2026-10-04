@@ -686,6 +686,21 @@ def run_safetensors_tool_loop(
         permission_mode, bypass_permissions
     )
     stream_tool_execution = account_tool_stream(stream_tool_execution)
+    from core.inference.skill_mentions import load_mentioned_skills
+
+    yield from load_mentioned_skills(
+        conversation,
+        tools if max_tool_iterations > 0 else [],
+        permission_mode = permission_mode,
+        bypass_permissions = bypass_permissions,
+        confirm_tool_calls = confirm_tool_calls,
+        session_id = session_id,
+        cancel_event = cancel_event,
+        context_length = context_length,
+        continue_final_message = continue_final_message,
+        # The downstream tokenizer owns fitting; only system context is guaranteed.
+        dedup_tool_context = False,
+    )
 
     # Forced first-pass RAG (mirrors the GGUF loop) so doc Qs don't lose to
     # web_search. Skip only when a retrieval call would actually prompt (ask

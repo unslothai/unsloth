@@ -204,7 +204,7 @@ export interface GgufVariantsResponse {
   variants: GgufVariantDetail[];
   has_vision: boolean;
   default_variant: string | null;
-  /** True only when Hub metadata resolved every required companion. */
+  /** True when Hub metadata or a complete cached download plan proves companion readiness. */
   dependencies_resolved?: boolean;
   /** Native max context from GGUF metadata; present once a variant is downloaded. */
   context_length?: number | null;

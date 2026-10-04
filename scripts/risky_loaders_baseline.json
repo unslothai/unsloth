@@ -83,6 +83,14 @@
       "reason": "Module name comes from a fixed table or constant in this file, not from a model, request or download."
     },
     {
+      "file": "studio/backend/core/inference/diffusion_int8_fused.py",
+      "rule": "dynamic-import",
+      "sink": "import_module",
+      "digest": "8a43c55c018acccf",
+      "count": 1,
+      "reason": "Imports a name from the constant _TORCHAO_INTMM_MODULES tuple (torchao's safe_int_mm homes); never a model, request or download name."
+    },
+    {
       "file": "studio/backend/core/inference/diffusion_prequant.py",
       "rule": "dynamic-import",
       "sink": "__import__",

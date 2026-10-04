@@ -65,6 +65,7 @@ _INDUCTOR_FLAGS = (
 )
 _INDUCTOR_TRITON_FLAGS = (("unique_kernel_names", "inductor_triton_unique_kernel_names"),)
 _DYNAMO_MODULE = "torch._dynamo.config"
+REDUCTION_FILTER_OPTION = "test_configs.force_filter_reduction_configs"
 _INDUCTOR_MODULE = "torch._inductor.config"
 _INDUCTOR_TRITON_MODULE = "torch._inductor.config.triton"
 
@@ -426,6 +427,7 @@ def apply_speed_optims(
     cuda_graph_default: bool = True,
     cache_engaged: Optional[bool] = None,
     denoiser_offloaded: Optional[bool] = None,
+    stream_int8_gemm: bool = False,
     logger: Any = None,
 ) -> dict[str, bool]:
     """Apply the opt-in speed optims for ``speed_mode`` to a built pipeline, BEFORE placement /
@@ -434,6 +436,7 @@ def apply_speed_optims(
     ``offload_active`` (offload policy != none) installs ``@torch.compiler.disable``d onload hooks,
     so the compile must drop ``fullgraph`` (like an active step cache) or it crashes at step 1.
     ``denoiser_offloaded`` (None = ``offload_active``) limits the CUDA-graph refusal to a moved denoiser.
+    ``stream_int8_gemm``: a moved denoiser still takes the fused int8 GEMM, installed against its onload device.
 
     ``cuda_graph_default`` is what the CUDA-graph arm assumes for a family that declares nothing:
     True on the image backend, False on video, where ``supports_cuda_graph`` opts in.
@@ -471,6 +474,7 @@ def apply_speed_optims(
 
     on_cuda = getattr(target, "device", None) == "cuda"
     family_allows_compile = bool(getattr(family, "supports_torch_compile", True))
+    filter_reductions = compile_config.family_filters_reductions(family)
 
     applied["vae_single_frame"] = _vae_single_frame(pipe, logger)
     # Lossless: a channels-last VAE speeds up its convs with no numeric change.
@@ -515,6 +519,8 @@ def apply_speed_optims(
                 cache_active = cache_active,
                 offload_active = offload_active,
                 denoiser_offloaded = denoiser_offloaded,
+                onload_device = _onload_device(target) if stream_int8_gemm else None,
+                filter_reductions = filter_reductions,
             )
     elif (
         mode == SPEED_MAX
@@ -528,6 +534,8 @@ def apply_speed_optims(
             cache_active = cache_active,
             offload_active = offload_active,
             denoiser_offloaded = denoiser_offloaded,
+            onload_device = _onload_device(target) if stream_int8_gemm else None,
+            filter_reductions = filter_reductions,
         )
 
     if applied["compiled"]:
@@ -600,6 +608,14 @@ def apply_speed_optims(
                 _warn(logger, "cuda graph capture", exc)
 
     return applied
+
+
+def _onload_device(target: Any) -> Optional[str]:
+    """Onload device of an offloaded denoiser, else None. NVIDIA only: ROCm runs int8 weight-only, never this GEMM."""
+    if getattr(target, "device", None) != "cuda" or getattr(target, "backend", "cuda") != "cuda":
+        return None
+    device = getattr(target, "torch_device", None)
+    return str(device) if isinstance(device, str) and device.startswith("cuda") else "cuda"
 
 
 def engage_pinned_denoisers(
@@ -679,6 +695,9 @@ def _vae_channels_last(
         return False
     try:
         import torch
+
+        if _has_conv3d(vae):
+            return _vae_channels_last_3d(vae, logger, fused = fused)
         vae.to(memory_format = torch.channels_last)
         return True
     except Exception as exc:  # noqa: BLE001 - optimisation only
@@ -686,12 +705,67 @@ def _vae_channels_last(
         return False
 
 
+VAE_CHANNELS_LAST_3D_ENV = "UNSLOTH_VAE_CHANNELS_LAST_3D"
+
+
+def _has_conv3d(vae: Any) -> bool:
+    modules = getattr(vae, "modules", None)
+    if not callable(modules):
+        return False
+    import torch
+
+    return any(isinstance(m, torch.nn.Conv3d) for m in modules())
+
+
+def _vae_channels_last_3d(vae: Any, logger: Any, *, fused: bool) -> bool:
+    """Per-rank channels_last(_3d) on post_quant_conv + decoder; ``Module.to(channels_last)`` raises at the first 5D
+    weight. Skipped without the fused passes (slower there); the encoder is kept (channels_last encoded slower)."""
+    import torch
+
+    name = type(vae).__name__
+    if os.environ.get(VAE_CHANNELS_LAST_3D_ENV, "").strip().lower() in _VAE_FALSE_TOKENS:
+        reason = f"{VAE_CHANNELS_LAST_3D_ENV}=0"
+    elif not fused:
+        reason = "3D-conv VAE without the fused VAE passes (channels_last_3d measured slower there)"
+    else:
+        reason = None
+    if reason is not None:
+        if logger is not None:
+            logger.info("diffusion.speed: channels_last skipped for %s: %s", name, reason)
+        return False
+    relaid = 0
+    for part in (getattr(vae, "post_quant_conv", None), getattr(vae, "decoder", None)):
+        if part is None or not callable(getattr(part, "modules", None)):
+            continue
+        for module in part.modules():
+            weight = getattr(module, "weight", None)
+            if not isinstance(module, (torch.nn.Conv2d, torch.nn.Conv3d)) or not isinstance(
+                weight, torch.Tensor
+            ):
+                continue
+            fmt = torch.channels_last if weight.dim() == 4 else torch.channels_last_3d
+            if not weight.is_contiguous(memory_format = fmt):
+                weight.data = weight.data.contiguous(memory_format = fmt)
+            relaid += 1
+    if logger is not None:
+        logger.info(
+            "diffusion.speed: channels_last(_3d) decode weights on %s (%d convs)", name, relaid
+        )
+    return relaid > 0
+
+
+VIDEO_VAE_HALF_ENV = "UNSLOTH_VIDEO_VAE_HALF"
+
+
 def _video_vae_half_decode(pipe: Any, target: Any, family: Any, logger: Any) -> bool:
     """fp16 channels_last(_3d) decode for fp32-pinned video VAEs (Wan) on NVIDIA sm75+; non-finite output reruns fp32.
 
-    fp16, not bf16 (the pin exists because bf16 bands). channels_last_3d alone slows HV1.5 / LTX-2: keep it Wan-only.
-    """
+    fp16, not bf16: bf16 is 9 dB further from fp32. ``UNSLOTH_VIDEO_VAE_HALF=0`` keeps fp32."""
     if not getattr(family, "vae_force_fp32", False) or getattr(target, "device", None) != "cuda":
+        return False
+    if os.environ.get(VIDEO_VAE_HALF_ENV, "").strip().lower() in _VAE_FALSE_TOKENS:
+        if logger is not None:
+            logger.info("diffusion.speed: video VAE decode kept in fp32 (%s=0)", VIDEO_VAE_HALF_ENV)
         return False
     vae = getattr(pipe, "vae", None)
     decoder = getattr(vae, "decoder", None)
@@ -869,6 +943,8 @@ def _compile_repeated_blocks(
     cache_active: bool = False,
     offload_active: bool = False,
     denoiser_offloaded: Optional[bool] = None,
+    onload_device: Any = None,
+    filter_reductions: bool = False,
 ) -> bool:
     dits = [
         t for t in _denoiser_dits(pipe) if callable(getattr(t, "compile_repeated_blocks", None))
@@ -902,6 +978,8 @@ def _compile_repeated_blocks(
     }
     if max_autotune:
         kwargs["mode"] = "max-autotune-no-cudagraphs"
+    if filter_reductions:
+        pin_reduction_configs(kwargs, logger)
     try:
         import torch
 
@@ -945,6 +1023,8 @@ def _compile_repeated_blocks(
         unet_kwargs: dict[str, Any] = {"fullgraph": kwargs["fullgraph"], "dynamic": False}
         if max_autotune:
             unet_kwargs["mode"] = "max-autotune-no-cudagraphs"
+        if filter_reductions:
+            pin_reduction_configs(unet_kwargs, logger)
         try:
             unet.compile(**unet_kwargs)
             return True
@@ -982,14 +1062,17 @@ def _compile_repeated_blocks(
         try:
             from .diffusion_int8_gemm import install as install_int8_gemm
 
-            # Keyed on the DENOISER's placement: a group plan that streams only the encoders keeps it resident.
-            transformer._unsloth_int8_gemm = install_int8_gemm(
-                transformer,
-                logger,
-                offload_active = offload_active
-                if denoiser_offloaded is None
-                else bool(denoiser_offloaded),
-            )
+            # Keyed on the DENOISER's placement (an encoder-only stream keeps it resident). A moved denoiser installs
+            # against its onload device; a weight found elsewhere at call time keeps the stock path.
+            moved = offload_active if denoiser_offloaded is None else bool(denoiser_offloaded)
+            if moved and onload_device is not None:
+                transformer._unsloth_int8_gemm = install_int8_gemm(
+                    transformer, logger, device = onload_device
+                )
+            else:
+                transformer._unsloth_int8_gemm = install_int8_gemm(
+                    transformer, logger, offload_active = moved
+                )
         except Exception as exc:  # noqa: BLE001 - optimisation only
             _warn(logger, "int8 fused-dequant gemm", exc)
         if type(transformer).__name__ == "QwenImageTransformer2DModel":
@@ -1025,6 +1108,12 @@ def _compile_repeated_blocks(
         # compile_repeated_blocks is lazy: inductor only runs on the first forward, inside generate(), where a lowering
         # bug would fail the render. Guard every compiled block so such a failure drops this DiT to eager instead.
         guard_compiled_blocks(transformer, logger)
+        # After the guard (it wraps the guarded call): FLUX.1's first single block otherwise compiles a second graph.
+        try:
+            from . import diffusion_block_restride
+            diffusion_block_restride.install(transformer, logger)
+        except Exception as exc:  # noqa: BLE001 - optimisation only
+            _warn(logger, "block restride", exc)
         # Inductor turns the prefix KV cache's clone into a view of the full K/V buffer, which pins it for the render.
         try:
             from .diffusion_prefix_kv import install_prefix_kv_compaction
@@ -1040,6 +1129,28 @@ def _compile_repeated_blocks(
         except Exception as exc:  # noqa: BLE001 - optimisation only
             _warn(logger, "cache-hook inner compile", exc)
     return engaged
+
+
+def pin_reduction_configs(kwargs: dict[str, Any], logger: Any = None) -> bool:
+    """Keep one config per multi-config reduction instead of a per-process benchmark whose pick changes the sum order
+    (LTX-2 block RMSNorm: R0_BLOCK 4096 vs 2048 tie on B200, half the servers rendered another clip). Per-compile
+    ``options`` (``mode`` folded in), never the global knob: HunyuanVideo-1.5 is ~2% slower per step with it.
+    config.deterministic is unusable: dynamo resets it after the first frame. Returns True when engaged."""
+    if not compile_config.reduction_config_filter_available():
+        return False
+    try:
+        options = dict(kwargs.get("options") or {})
+        mode = kwargs.get("mode")
+        if mode is not None:
+            from torch._inductor import list_mode_options
+            options = {**list_mode_options(mode, kwargs.get("dynamic")), **options}
+        options[REDUCTION_FILTER_OPTION] = True
+    except Exception as exc:  # noqa: BLE001 - optimisation only
+        _warn(logger, "reduction config filter", exc)
+        return False
+    kwargs.pop("mode", None)
+    kwargs["options"] = options
+    return True
 
 
 def _install_inductor_backports(logger: Any) -> bool:
