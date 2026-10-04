@@ -3,31 +3,16 @@
 
 """Event-fenced prefetch for a block-streamed denoiser's diffusers offload groups.
 
-diffusers fences its stream prefetch on the host: every group's ``onload_`` starts with ``stream.synchronize()``, a
-group that relied on its predecessor's prefetch synchronizes again in ``pre_forward``, and Studio's resident groups
-synchronize for a streamed predecessor (about 35 host waits per Qwen-Image-2.1 step). It also prefetches only the next
-group, so a streamed block behind a run of resident ones is copied with nothing left to overlap.
+diffusers fences its stream prefetch on the host (``stream.synchronize()`` per onload) and copies one group ahead.
+Here the compute stream waits on a per-group CUDA event instead, and up to ``depth`` streamed groups are copied ahead
+in the order the first forward recorded.
 
-Here the groups of one streamed module are driven by a ``GroupPrefetcher``: copies go on diffusers' copy stream as
-before, but the compute stream waits on a per-group CUDA event (``wait_event``) instead of the host waiting on the
-stream, and up to ``depth`` streamed groups are in flight ahead of the running one, in the order the first forward
-recorded. No host wait, no ``.item()`` / ``.cpu()`` and no device synchronize on the per-group path.
+A forward's first copies are queued at the first block's onload (behind a compute-stream event when the top-level
+group uploads on the compute stream): queued earlier they hold that upload back on the copy engine.
 
-A dense top-level group (Studio's pinned upload) is copied on the compute stream when the forward starts. Block
-copies that reach the copy engine before it hold it back (on a slow link, one or two whole block copies per forward),
-and the previous forward's last offload already lets the copy stream run before the compute stream gets there. So
-the first copies of a forward are queued at the first block's onload (a streamed group's ``onload``, or a resident
-group's ``kick`` through the module's stream state), behind a compute-stream event recorded there when the
-top-level group is not one of ours.
-
-Device memory stays bounded without a host wait: a group's offload records an event on the compute stream and the
-copy stream waits on it before anything later is queued there, so a block freed by the offload can be handed to the
-next prefetch (allocated on the copy stream) at once and is written only after the compute that read it. The bytes
-in flight never pass ``window`` (``depth + 1`` groups by default). Host copies are diffusers' own (pinned, or pinned
-per onload by the host allocator, which fences its own block reuse on the copy).
-
-Installed per group as instance attributes (``group.onload_`` / ``group.offload_``) and per module as forward
-hooks; diffusers' classes are untouched, so other users of group offloading in the process are unaffected.
+Memory stays bounded without a host wait: each offload records a compute-stream event the copy stream waits on, so a
+freed block goes to the next prefetch only after the compute that read it. Bytes in flight never pass ``window``.
+Hooks are per-group / per-module instance attributes; diffusers' classes are untouched.
 """
 
 from __future__ import annotations
@@ -143,9 +128,7 @@ def _generic_to_device(src: Any, device: Any) -> Any:
 
 
 def _to_device(src: Any, device: Any) -> Any:
-    """``src.to(device, non_blocking=True)``. torchao <= 0.17 drops ``non_blocking`` in the v1 int8 weights' ``to`` and in
-    its common ``_to_copy`` (a host wait per inner tensor), so those payloads are moved directly; same tensors, same
-    wrapper as ``to``."""
+    """``src.to(device, non_blocking=True)``; torchao <= 0.17 int8 payloads (whose ``to`` drops it) are moved directly."""
     if _generic_to_copy_drops_non_blocking(type(src)):
         return _generic_to_device(src, device)
     name = type(src).__name__
@@ -174,10 +157,8 @@ def _group_nbytes(group: Any) -> int:
 
 
 class GroupPrefetcher:
-    """Drives the streamed offload groups of one module (see the module docstring).
-
-    ``ready``: group id -> CUDA event of its queued copy (None once the compute stream waited on it). A group is on
-    the device exactly while its id is in ``ready``."""
+    """``ready``: group id -> CUDA event of its queued copy (None once waited on); a group is on the device exactly
+    while its id is in ``ready``."""
 
     def __init__(
         self,
@@ -208,11 +189,9 @@ class GroupPrefetcher:
         self.pending = False
         streams = [g.stream for g in self.groups if getattr(g, "stream", None) is not None]
         self.stream = streams[0] if streams else None
-        # set by install_group_prefetch: the top-level group uploads on the compute stream, so fence the first copies
         self.fence_first = False
         self.stats = {"forwards": 0, "copies": 0, "prefetched": 0, "missed": 0, "dropped": 0}
 
-    # ------------------------------------------------------------------------------------------------ per group
     def owns(self, group: Any) -> bool:
         return getattr(group, "__dict__", {}).get("onload_") is getattr(
             group, "_unsloth_prefetch_onload", None
@@ -228,9 +207,7 @@ class GroupPrefetcher:
 
         pinner = getattr(group, _BG_PIN_ATTR, None)
         if pinner is not None:
-            pinner.wait(
-                group
-            )  # the background pinner swaps host copies; never copy one being replaced
+            pinner.wait(group)
         go = _go()
         is_torchao = getattr(go, "_is_torchao_tensor", lambda t: False)
         swap = getattr(go, "_swap_torchao_tensor", None)
@@ -303,14 +280,11 @@ class GroupPrefetcher:
             self.stats["dropped"] += 1
         done = torch.cuda.Event()
         done.record(compute)
-        # Everything queued on the copy stream from here on runs after the compute that read this group, so the blocks
-        # freed below can go straight to the next prefetch.
+        # later copy-stream work runs after the compute that read this group, so its freed blocks are reusable at once
         group.stream.wait_event(done)
         if counted:
             self.inflight_bytes -= self.nbytes.get(id(group), 0)
-        type(group).offload_(
-            group
-        )  # re-points the tensors at the host copies (record_stream=True: no sync)
+        type(group).offload_(group)
 
     def _forget_disowned(self) -> None:
         """Groups made resident while on the device (their onload_ replaced) leave the window without a release."""
@@ -343,7 +317,6 @@ class GroupPrefetcher:
             self._issue(group)
             ahead += 1
 
-    # ------------------------------------------------------------------------------------------------ per forward
     def begin(self) -> None:
         self.stats["forwards"] += 1
         self._forget_disowned()
@@ -351,7 +324,7 @@ class GroupPrefetcher:
         self.pos = 0
         self.active = True
         self.on_order = bool(self.order)
-        self.pending = True  # the first copies wait for the first block's onload (module docstring)
+        self.pending = True
 
     def kick(self) -> None:
         """First block onload of a forward (streamed or resident): queue the first ``depth`` streamed groups."""
@@ -372,7 +345,6 @@ class GroupPrefetcher:
         self.on_order = False
         self.pending = False
         self._forget_disowned()
-        # A group copied ahead but not run (conditional block, exception mid-forward) goes back to its host copy.
         for gid in list(self.ready):
             group = self.by_id.get(gid)
             if group is not None:
@@ -388,11 +360,8 @@ def _adopt_top_group(
     stream: Any,
     logger: Any = None,
 ) -> Optional[Any]:
-    """A block-streamed module's top-level group (embedders, norm_out, proj_out) has no stream in diffusers: every
-    forward uploads it synchronously and copies it back to fresh host memory. Studio pins the dense case on the compute
-    stream (``_pin_top_level_group``); torchao weights are skipped there. Give such a group pinned host copies (the
-    stream groups' ``_to_cpu``) and the module's copy stream, so the prefetcher drives it like a block. None if left
-    as it was (another onload already installed, disk offload, unpinnable, or over the pinnable host budget)."""
+    """Give a torchao top-level group (no stream in diffusers: synchronous upload, copy-back every forward) pinned host
+    copies and the module's copy stream, so the prefetcher drives it like a block. None if left as it was."""
     import torch
 
     from .diffusion_memory import (
@@ -450,9 +419,7 @@ def _adopt_top_group(
     group.record_stream = True
     group.non_blocking = True
     group.low_cpu_mem_usage = False
-    type(group).offload_(
-        group
-    )  # point the tensors at the pinned copies (the pageable ones are dropped)
+    type(group).offload_(group)
     if logger is not None:
         logger.info(
             "diffusion.memory: %s torchao top-level weights (%d MiB) stream from a pinned copy on the copy stream",
@@ -463,8 +430,6 @@ def _adopt_top_group(
 
 
 def _tensor_holder(tensors: list) -> Any:
-    """A throwaway holder exposing ``parameters()`` / ``buffers()`` so the pinned-host sizing helper can price them."""
-
     class _Holder:
         def parameters(self, recurse: bool = True):
             return iter(tensors)
@@ -545,8 +510,7 @@ def install_group_prefetch(
             return disable(fn) if callable(disable) else fn
 
         owned = {id(g) for g in groups}
-        # diffusers' own prefetch chain (and the tracer that builds it after the first forward) would onload the next
-        # group and synchronize the stream around it; every owned group onloads itself through the prefetcher instead.
+        # diffusers' prefetch chain and its tracer would onload the next group with a host sync
         registry = getattr(module, "_diffusers_hook", None)
         for name in ("_LAZY_PREFETCH_GROUP_OFFLOADING", "_LAYER_EXECUTION_TRACKER"):
             key = getattr(go, name, None)
@@ -586,7 +550,6 @@ def install_group_prefetch(
         module.register_forward_pre_hook(_eager(lambda *_a, **_k: pf.begin()))
         module.register_forward_hook(_eager(lambda *_a, **_k: pf.end()), always_call = True)
         setattr(module, PREFETCHER_ATTR, pf)
-        # Studio's resident groups stop waiting on the copy stream for a streamed predecessor: none relies on them now.
         state = getattr(module, "_unsloth_stream_state", None)
         if not isinstance(state, dict):
             state = {"streamed": 1}
@@ -607,9 +570,7 @@ def install_group_prefetch(
         return len(groups)
     except Exception as exc:  # noqa: BLE001 - diffusers' own onload stays
         if top is not None and "onload_" not in getattr(top, "__dict__", {}):
-            top.stream = (
-                None  # back to diffusers' synchronous top-level path, now from the pinned copies
-            )
+            top.stream = None
             top.record_stream = False
         if logger is not None:
             logger.warning("diffusion.memory: event-fenced prefetch unavailable (%s)", exc)
