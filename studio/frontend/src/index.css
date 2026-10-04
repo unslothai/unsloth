@@ -4601,8 +4601,9 @@ html[data-chat-font] .aui-root {
 		0 8px 24px -6px rgba(0, 0, 0, 0.14) !important;
 }
 
+/* Icon starts at the first line's cap height, never above the text. */
 [data-sonner-toast][data-styled='true'] [data-icon] {
-	margin: calc(2px * var(--ui-space-scale, 1)) 0 0 !important;
+	margin: 0.4em 0 0 !important;
 }
 
 [data-sonner-toast][data-styled='true'] [data-content] {
@@ -4671,11 +4672,6 @@ html[data-chat-font] .aui-root {
 	gap: calc(12px * var(--ui-space-scale, 1)) !important;
 	padding-top: calc(16px * var(--ui-space-scale, 1)) !important;
 	padding-bottom: calc(18px * var(--ui-space-scale, 1)) !important;
-}
-
-/* Extra room between the spinner and the text. */
-[data-sonner-toast][data-styled='true'].chat-model-load-toast [data-icon] {
-	margin-right: calc(4px * var(--ui-space-scale, 1)) !important;
 }
 
 [data-sonner-toast][data-styled='true'].chat-model-load-toast [data-content] {
