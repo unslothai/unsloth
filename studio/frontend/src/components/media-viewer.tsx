@@ -2,8 +2,11 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import {
+  ArrowLeft02Icon,
+  ArrowRight02Icon,
   ArrowTurnBackwardIcon,
   Cancel01Icon,
+  Copy01Icon,
   Delete02Icon,
   Download01Icon,
   Folder01Icon,
@@ -45,6 +48,15 @@ export interface MediaViewerActions {
   onToggleFavorite?: () => void;
   onAddToProject?: (projectId: string) => Promise<{ already: boolean }>;
   onDelete?: () => void;
+  /** Delete's label when it only takes the file out of something, e.g. an unsent message. */
+  deleteLabel?: string;
+  copy?: { label: string; onClick: () => void };
+}
+
+/** Moving through the pictures around this one, e.g. the other images in a message. */
+export interface MediaViewerGallery {
+  onPrevious?: () => void;
+  onNext?: () => void;
 }
 
 const MEDIA_ZOOMS = [0.25, 0.5, 0.75, 1, 1.25, 1.5] as const;
@@ -64,7 +76,7 @@ function percent(scale: number, locale: string): string {
 
 // The lightbox's controls float over the blurred page, raised a little off it, as ChatGPT has them.
 const FLOATING =
-  "bg-card shadow-[0_2px_10px_-2px_rgba(0,0,0,0.14)] ring-1 ring-[color-mix(in_oklab,var(--foreground)_8%,transparent)] hover:bg-[color-mix(in_oklab,var(--card),var(--foreground)_5%)] aria-expanded:bg-[color-mix(in_oklab,var(--card),var(--foreground)_5%)] dark:bg-[color-mix(in_oklab,var(--card),var(--foreground)_6%)] dark:shadow-none dark:hover:bg-[color-mix(in_oklab,var(--card),var(--foreground)_12%)] dark:aria-expanded:bg-[color-mix(in_oklab,var(--card),var(--foreground)_12%)]";
+  "bg-card shadow-[0_2px_10px_-2px_rgba(0,0,0,0.14)] hover:bg-[color-mix(in_oklab,var(--card),var(--foreground)_5%)] aria-expanded:bg-[color-mix(in_oklab,var(--card),var(--foreground)_5%)] dark:bg-[color-mix(in_oklab,var(--card),var(--foreground)_6%)] dark:shadow-none dark:hover:bg-[color-mix(in_oklab,var(--card),var(--foreground)_12%)] dark:aria-expanded:bg-[color-mix(in_oklab,var(--card),var(--foreground)_12%)]";
 
 export function ScaleMenu({
   value,
@@ -122,6 +134,35 @@ export function ScaleMenu({
   );
 }
 
+function GalleryArrow({
+  label,
+  icon,
+  onClick,
+  className,
+}: {
+  label: string;
+  icon: IconSvgElement;
+  onClick?: () => void;
+  className: string;
+}) {
+  return (
+    <button
+      type="button"
+      aria-label={label}
+      title={label}
+      disabled={!onClick}
+      onClick={onClick}
+      className={cn(
+        "absolute top-1/2 z-10 flex size-11 -translate-y-1/2 cursor-pointer items-center justify-center rounded-full outline-none transition-[background-color,opacity] focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-default disabled:opacity-35",
+        FLOATING,
+        className,
+      )}
+    >
+      <HugeiconsIcon icon={icon} strokeWidth={1.75} className="size-5" />
+    </button>
+  );
+}
+
 export function MediaViewer({
   open,
   onOpenChange,
@@ -135,6 +176,8 @@ export function MediaViewer({
   flush = false,
   redactFromReload = false,
   variant = "card",
+  gallery,
+  itemKey,
   children,
 }: {
   open: boolean;
@@ -150,6 +193,9 @@ export function MediaViewer({
   redactFromReload?: boolean;
   /** "lightbox": the picture alone over the blurred page, its controls floating above it. */
   variant?: "card" | "lightbox";
+  gallery?: MediaViewerGallery;
+  /** Changes when the gallery shows another picture, which then opens at its fit. */
+  itemKey?: string;
   children: ReactNode;
 }) {
   const t = useT();
@@ -161,6 +207,11 @@ export function MediaViewer({
     setWasOpen(open);
     if (open) setZoom("fit");
   }
+  const [shownKey, setShownKey] = useState(itemKey);
+  if (itemKey !== shownKey) {
+    setShownKey(itemKey);
+    setZoom("fit");
+  }
   const returnFocus = useRef<HTMLElement | null>(null);
   const project = useProjectSubmenu({ noun, onAddToProject: actions.onAddToProject });
   const lightbox = variant === "lightbox";
@@ -171,7 +222,8 @@ export function MediaViewer({
       )
     : "flex size-9 shrink-0 items-center justify-center rounded-full outline-none transition-colors hover:bg-muted focus-visible:ring-2 focus-visible:ring-ring aria-expanded:bg-muted";
   const hasMenu = Boolean(
-    actions.viewOriginal ||
+    actions.copy ||
+      actions.viewOriginal ||
       actions.reveal ||
       actions.onToggleFavorite ||
       actions.onAddToProject ||
@@ -230,6 +282,15 @@ export function MediaViewer({
             sideOffset={lightbox ? 6 : undefined}
             className="unsloth-plus-menu sidebar-row-menu menu-flat-destructive w-56"
           >
+            {actions.copy && (
+              <>
+                <DropdownMenuItem onClick={actions.copy.onClick}>
+                  <HugeiconsIcon icon={Copy01Icon} strokeWidth={1.75} className="size-icon" />
+                  {actions.copy.label}
+                </DropdownMenuItem>
+                <DropdownMenuSeparator />
+              </>
+            )}
             {actions.viewOriginal && (
               <DropdownMenuItem onClick={actions.viewOriginal.onClick}>
                 <HugeiconsIcon icon={ArrowTurnBackwardIcon} strokeWidth={1.75} className="size-icon" />
@@ -261,7 +322,7 @@ export function MediaViewer({
             {actions.onDelete && (
               <DropdownMenuItem variant="destructive" onClick={actions.onDelete}>
                 <HugeiconsIcon icon={Delete02Icon} strokeWidth={1.75} className="size-icon" />
-                {t("common.delete")}
+                {actions.deleteLabel ?? t("common.delete")}
               </DropdownMenuItem>
             )}
           </DropdownMenuContent>
@@ -280,7 +341,22 @@ export function MediaViewer({
       <DialogContent
         showCloseButton={false}
         data-reload-snapshot-sensitive={redactFromReload ? "" : undefined}
-        onKeyDown={onKeyDown}
+        onKeyDown={(event) => {
+          onKeyDown?.(event);
+          if (event.defaultPrevented || !gallery) return;
+          // Not while typing, or inside a menu, which uses the arrows itself.
+          const target = event.target as HTMLElement;
+          if (target.closest("input, textarea, [role=menu]")) return;
+          const step =
+            event.key === "ArrowLeft"
+              ? gallery.onPrevious
+              : event.key === "ArrowRight"
+                ? gallery.onNext
+                : undefined;
+          if (!step) return;
+          event.preventDefault();
+          step();
+        }}
         onOpenAutoFocus={() => {
           const active = document.activeElement;
           returnFocus.current = active instanceof HTMLElement && active !== document.body ? active : null;
@@ -293,7 +369,7 @@ export function MediaViewer({
         }}
         overlayClassName={
           lightbox
-            ? "bg-[color-mix(in_oklab,var(--background)_78%,transparent)] supports-backdrop-filter:backdrop-blur-xl duration-150"
+            ? "bg-[color-mix(in_oklab,var(--background)_93%,transparent)] supports-backdrop-filter:backdrop-blur-[1.5px] duration-150"
             : undefined
         }
         className={
@@ -307,7 +383,7 @@ export function MediaViewer({
           <>
             {/* Clicking around the picture closes, as it does in ChatGPT; a drag to pan never does. */}
             <div
-              className="absolute inset-x-[calc(4rem*var(--ui-space-scale,1))] top-[calc(4.75rem*var(--ui-space-scale,1))] bottom-[calc(2.5rem*var(--ui-space-scale,1))] flex max-sm:inset-x-3"
+              className="absolute inset-x-[calc(7rem*var(--ui-space-scale,1))] top-[calc(6.5rem*var(--ui-space-scale,1))] bottom-[calc(4.5rem*var(--ui-space-scale,1))] flex max-sm:inset-x-3"
               onClick={(event) => {
                 const target = event.target;
                 if (!(target instanceof HTMLImageElement || target instanceof HTMLVideoElement)) {
@@ -323,6 +399,22 @@ export function MediaViewer({
                 children
               )}
             </div>
+            {gallery && (gallery.onPrevious || gallery.onNext) ? (
+              <>
+                <GalleryArrow
+                  label={t("imageViewer.previous")}
+                  icon={ArrowLeft02Icon}
+                  onClick={gallery.onPrevious}
+                  className="left-3"
+                />
+                <GalleryArrow
+                  label={t("imageViewer.next")}
+                  icon={ArrowRight02Icon}
+                  onClick={gallery.onNext}
+                  className="right-3"
+                />
+              </>
+            ) : null}
             <div className="pointer-events-none absolute inset-x-0 top-0 flex items-start gap-2 p-3">
               <div
                 className={cn(

@@ -3,7 +3,7 @@
 
 export { useLibraryChatHandoffStore } from "./chat-handoff-store";
 export { LIBRARY_CHATS_PREFS_STORAGE_KEY } from "./chats/prefs-store";
-export { useLibraryFavorite, useLibraryFavorites } from "./favorites-store";
+export { useLibraryFavorite, useLibraryFavorites, useLibraryFavoritesStore } from "./favorites-store";
 export { ConfirmDeleteDialog } from "./components/library-dialogs";
 export { chatAboutMedia, startLibraryChat } from "./start-chat";
 export { revealInFolder, useRevealLabel } from "./reveal";
@@ -26,8 +26,10 @@ export { LibraryStorageBar } from "./components/storage-bar";
 export {
   type LibraryItem,
   type LibraryLocation,
+  addLibraryItemToProject,
   errorMessage,
   getLibraryLocations,
   moveLibraryLocation,
   revealLibraryLocation,
+  uploadLibraryFiles,
 } from "./api";

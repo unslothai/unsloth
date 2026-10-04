@@ -54,6 +54,7 @@ import {
 import {
   FileEmpty02Icon,
   Comment01Icon,
+  InternetIcon,
   TextAlignLeft01Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
@@ -257,8 +258,14 @@ const AnnotationsAttachmentUI: FC<{ annotations: DocumentAnnotations; isComposer
               // biome-ignore lint/suspicious/noArrayIndexKey: the list is fixed once sent
               <div key={index} className="flex min-w-0 flex-col gap-1.5 px-4 py-3">
                 <span className="flex min-w-0 items-center gap-2 text-ui-13 text-primary">
-                  <AttachmentKindIcon kind={kind} className={cn("size-4", ATTACHMENT_KIND_ICON_CLASS[kind])} />
-                  <span className="truncate">{annotations.file}</span>
+                  {annotations.url ? (
+                    <HugeiconsIcon icon={InternetIcon} strokeWidth={1.75} className="size-4 text-muted-foreground" />
+                  ) : (
+                    <AttachmentKindIcon kind={kind} className={cn("size-4", ATTACHMENT_KIND_ICON_CLASS[kind])} />
+                  )}
+                  <span className="truncate" title={annotations.url}>
+                    {annotations.file}
+                  </span>
                 </span>
                 <span className="truncate text-ui-13 text-muted-foreground">{item.quote}</span>
                 <span className="whitespace-pre-wrap break-words text-ui-14 text-foreground">{item.request}</span>

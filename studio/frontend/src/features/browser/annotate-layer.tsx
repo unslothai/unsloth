@@ -10,11 +10,14 @@ import { HugeiconsIcon } from "@hugeicons/react";
 import { cn } from "@/lib/utils";
 import {
   type PointerEvent as ReactPointerEvent,
+  type RefObject,
   useEffect,
   useLayoutEffect,
   useRef,
   useState,
 } from "react";
+import type { AnnotateEvent, AnnotateRect } from "./frame-message";
+import { frameRect, onFrameAnnotate, sendFrameCommand } from "./page-frame";
 import { useBrowserStore } from "./store";
 
 // The blocks a click marks whole. Anything else marks the nearest element that holds text itself.
@@ -207,7 +210,6 @@ export function AnnotateLayer({
   const [pending, setPending] = useState<Pending | null>(null);
   const [draft, setDraft] = useState("");
   const [, setFrame] = useState(0);
-  const [offset, setOffset] = useState({ x: 0, y: 0 });
   const { setAnnotating, sendAnnotations } = useBrowserStore.getState();
 
   const exit = () => setAnnotating(null);
@@ -414,41 +416,12 @@ export function AnnotateLayer({
     if (pending) inputRef.current?.focus();
   }, [pending]);
 
-  const dragBar = (event: ReactPointerEvent<HTMLButtonElement>) => {
-    event.preventDefault();
-    const start = { x: event.clientX - offset.x, y: event.clientY - offset.y };
-    const move = (moveEvent: PointerEvent) =>
-      setOffset({
-        x: moveEvent.clientX - start.x,
-        y: moveEvent.clientY - start.y,
-      });
-    const up = () => {
-      window.removeEventListener("pointermove", move);
-      window.removeEventListener("pointerup", up);
-    };
-    window.addEventListener("pointermove", move);
-    window.addEventListener("pointerup", up);
-  };
-
   const origin = layerRef.current?.getBoundingClientRect() ?? new DOMRect();
-  const layerWidth = origin.width;
   const hoverBox = hover ? boxOf(hover, origin) : null;
   // Kept after the pointer leaves, so the outline fades where it was rather than jumping away.
   if (hoverBox) lastHoverBox.current = hoverBox;
   const shownHover = hoverBox ?? lastHoverBox.current;
   const pendingBox = pending ? boxOf(pending.ranges, origin) : null;
-  const inputWidth = Math.min(448, Math.max(240, layerWidth - 24));
-  const inputTop = pendingBox
-    ? pendingBox.top + pendingBox.height + 8 + 48 > origin.height
-      ? pendingBox.top - 56
-      : pendingBox.top + pendingBox.height + 8
-    : 0;
-  const inputLeft = pendingBox
-    ? Math.min(
-        Math.max(12, pendingBox.left + pendingBox.width - inputWidth),
-        layerWidth - inputWidth - 12,
-      )
-    : 0;
   const count = items.length;
   // A first comment still being typed can go too: Send commits it.
   const canSend = count > 0 || (pending?.id === null && draft.trim() !== "");
@@ -495,94 +468,25 @@ export function AnnotateLayer({
       {pending && pendingBox ? (
         <>
           <Mark box={pendingBox} label={draft} />
-          <form
-            data-annotate-ui=""
-            onSubmit={(event) => {
-              event.preventDefault();
-              save();
-            }}
-            className="pointer-events-auto absolute flex h-12 animate-in items-center gap-2 rounded-full bg-neutral-800 pr-1.5 pl-5 text-white shadow-xl fade-in-0 zoom-in-95 duration-150"
-            style={{ top: inputTop, left: inputLeft, width: inputWidth }}
-          >
-            <input
-              ref={inputRef}
-              value={draft}
-              onChange={(event) => setDraft(event.target.value)}
-              placeholder={t("browser.annotate.placeholder")}
-              aria-label={t("browser.annotate.placeholder")}
-              className="min-w-0 flex-1 bg-transparent text-ui-15 outline-none placeholder:text-neutral-400"
-            />
-            <button
-              type="submit"
-              aria-label={t("browser.annotate.save")}
-              disabled={!draft.trim() && pending.id === null}
-              className="flex size-9 shrink-0 cursor-pointer items-center justify-center rounded-full bg-white text-neutral-900 transition-opacity disabled:cursor-default disabled:opacity-30"
-            >
-              <HugeiconsIcon
-                icon={ArrowUp02Icon}
-                strokeWidth={2}
-                className="size-4.5"
-              />
-            </button>
-          </form>
+          <CommentForm
+            inputRef={inputRef}
+            box={pendingBox}
+            layer={origin}
+            draft={draft}
+            onDraft={setDraft}
+            onSave={save}
+            canSave={Boolean(draft.trim()) || pending.id !== null}
+          />
         </>
       ) : null}
-      <div
-        data-annotate-ui=""
-        className="pointer-events-auto absolute bottom-5 left-1/2 flex h-12 items-center gap-1 rounded-2xl bg-neutral-800 pr-1.5 pl-1 text-ui-15 text-white shadow-xl"
-        style={{
-          transform: `translate(calc(-50% + ${offset.x}px), ${offset.y}px)`,
-        }}
-      >
-        <button
-          type="button"
-          aria-label={t("browser.annotate.move")}
-          onPointerDown={dragBar}
-          className="flex h-9 w-7 cursor-grab touch-none items-center justify-center text-neutral-400 active:cursor-grabbing"
-        >
-          <HugeiconsIcon
-            icon={DragDropVerticalIcon}
-            strokeWidth={2}
-            className="size-4.5"
-          />
-        </button>
-        <span className="whitespace-nowrap px-2">
-          {count === 0
-            ? t("browser.annotate.hint")
-            : t(
-                count === 1
-                  ? "browser.annotate.countOne"
-                  : "browser.annotate.countMany",
-                { count },
-              )}
-        </span>
-        {canSend ? (
-          <span aria-hidden={true} className="mx-1 h-5 w-px bg-neutral-600" />
-        ) : null}
-        <button
-          type="button"
-          onClick={exit}
-          className="h-9 cursor-pointer whitespace-nowrap rounded-xl px-3 transition-colors hover:bg-neutral-700"
-        >
-          {t("browser.annotate.cancel")}
-        </button>
-        {canSend ? (
-          <button
-            type="button"
-            onClick={send}
-            disabled={!sendAnnotations}
-            className="h-9 cursor-pointer whitespace-nowrap rounded-xl bg-primary px-4 font-medium text-primary-foreground transition-opacity hover:opacity-90 disabled:cursor-default disabled:opacity-50"
-          >
-            {t("browser.annotate.send")}
-          </button>
-        ) : null}
-      </div>
-      <div
-        ref={cursorRef}
-        aria-hidden={true}
-        data-shown="false"
-        className="absolute top-0 left-0 size-7 rounded-full rounded-bl-[4px] bg-primary shadow-md ring-2 ring-background transition-[opacity,scale] duration-100 data-[shown=false]:scale-50 data-[shown=false]:opacity-0 motion-reduce:transition-none"
+      <AnnotateBar
+        count={count}
+        canSend={canSend}
+        sendDisabled={!sendAnnotations}
+        onSend={send}
+        onExit={exit}
       />
+      <div ref={cursorRef} aria-hidden={true} data-shown="false" className={CURSOR} />
     </div>
   );
 }
@@ -609,5 +513,379 @@ function Mark({
         style={{ left: box.left + box.width - 14, top: box.top - 18 }}
       />
     </>
+  );
+}
+
+// The pointer while annotating: a comment bubble, its tail at the point.
+const CURSOR =
+  "absolute top-0 left-0 size-7 rounded-full rounded-bl-[4px] bg-primary shadow-md ring-2 ring-background transition-[opacity,scale] duration-100 data-[shown=false]:scale-50 data-[shown=false]:opacity-0 motion-reduce:transition-none";
+
+/** The comment field for a mark: below it, or above when there is no room under it. */
+function CommentForm({
+  inputRef,
+  box,
+  layer,
+  draft,
+  onDraft,
+  onSave,
+  canSave,
+  placeholder,
+}: {
+  placeholder?: string;
+  inputRef: RefObject<HTMLInputElement | null>;
+  box: Box;
+  layer: { width: number; height: number };
+  draft: string;
+  onDraft: (value: string) => void;
+  onSave: () => void;
+  canSave: boolean;
+}) {
+  const t = useT();
+  const width = Math.min(448, Math.max(240, layer.width - 24));
+  const top =
+    box.top + box.height + 8 + 48 > layer.height
+      ? Math.max(8, box.top - 56)
+      : box.top + box.height + 8;
+  const left = Math.min(Math.max(12, box.left + box.width - width), layer.width - width - 12);
+  return (
+    <form
+      data-annotate-ui=""
+      onSubmit={(event) => {
+        event.preventDefault();
+        onSave();
+      }}
+      className="pointer-events-auto absolute flex h-12 animate-in items-center gap-2 rounded-full bg-neutral-800 pr-1.5 pl-5 text-white shadow-xl fade-in-0 zoom-in-95 duration-150"
+      style={{ top, left, width }}
+    >
+      <input
+        ref={inputRef}
+        value={draft}
+        onChange={(event) => onDraft(event.target.value)}
+        placeholder={placeholder ?? t("browser.annotate.placeholder")}
+        aria-label={placeholder ?? t("browser.annotate.placeholder")}
+        className="min-w-0 flex-1 bg-transparent text-ui-15 outline-none placeholder:text-neutral-400"
+      />
+      <button
+        type="submit"
+        aria-label={t("browser.annotate.save")}
+        disabled={!canSave}
+        className="flex size-9 shrink-0 cursor-pointer items-center justify-center rounded-full bg-white text-neutral-900 transition-opacity disabled:cursor-default disabled:opacity-30"
+      >
+        <HugeiconsIcon icon={ArrowUp02Icon} strokeWidth={2} className="size-4.5" />
+      </button>
+    </form>
+  );
+}
+
+/** The bar along the bottom: how many marks, Cancel, Send. Drag its handle to move it. */
+function AnnotateBar({
+  count,
+  canSend,
+  sendDisabled,
+  onSend,
+  onExit,
+  hint,
+}: {
+  hint?: string;
+  count: number;
+  canSend: boolean;
+  sendDisabled: boolean;
+  onSend: () => void;
+  onExit: () => void;
+}) {
+  const t = useT();
+  const [offset, setOffset] = useState({ x: 0, y: 0 });
+  const dragBar = (event: ReactPointerEvent<HTMLButtonElement>) => {
+    event.preventDefault();
+    const start = { x: event.clientX - offset.x, y: event.clientY - offset.y };
+    const move = (moveEvent: PointerEvent) =>
+      setOffset({
+        x: moveEvent.clientX - start.x,
+        y: moveEvent.clientY - start.y,
+      });
+    const up = () => {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", up);
+    };
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", up);
+  };
+  return (
+    <div
+      data-annotate-ui=""
+      className="pointer-events-auto absolute bottom-5 left-1/2 flex h-12 items-center gap-1 rounded-2xl bg-neutral-800 pr-1.5 pl-1 text-ui-15 text-white shadow-xl"
+      style={{
+        transform: `translate(calc(-50% + ${offset.x}px), ${offset.y}px)`,
+      }}
+    >
+      <button
+        type="button"
+        aria-label={t("browser.annotate.move")}
+        onPointerDown={dragBar}
+        className="flex h-9 w-7 cursor-grab touch-none items-center justify-center text-neutral-400 active:cursor-grabbing"
+      >
+        <HugeiconsIcon icon={DragDropVerticalIcon} strokeWidth={2} className="size-4.5" />
+      </button>
+      <span className="whitespace-nowrap px-2">
+        {count === 0
+          ? (hint ?? t("browser.annotate.hint"))
+          : t(count === 1 ? "browser.annotate.countOne" : "browser.annotate.countMany", { count })}
+      </span>
+      {canSend ? <span aria-hidden={true} className="mx-1 h-5 w-px bg-neutral-600" /> : null}
+      <button
+        type="button"
+        onClick={onExit}
+        className="h-9 cursor-pointer whitespace-nowrap rounded-xl px-3 transition-colors hover:bg-neutral-700"
+      >
+        {t("browser.annotate.cancel")}
+      </button>
+      {canSend ? (
+        <button
+          type="button"
+          onClick={onSend}
+          disabled={sendDisabled}
+          className="h-9 cursor-pointer whitespace-nowrap rounded-xl bg-primary px-4 font-medium text-primary-foreground transition-opacity hover:opacity-90 disabled:cursor-default disabled:opacity-50"
+        >
+          {t("browser.annotate.send")}
+        </button>
+      ) : null}
+    </div>
+  );
+}
+
+type WebMark = { id: number; quote: string; request: string };
+type WebPending = { id: number; quote: string; saved: boolean };
+
+/**
+ * Ask about a web page: the same marks and comments as a file's, drawn over the page's frame. The
+ * page is another origin, so its own script finds what is under the pointer (see `annotation` in
+ * routes/browser.py) and reports boxes in its viewport; this layer moves them onto the frame.
+ */
+export function WebAnnotateLayer({
+  tabId,
+  title,
+  url,
+}: { tabId: string; title: string; url: string }) {
+  const t = useT();
+  const layerRef = useRef<HTMLDivElement | null>(null);
+  const inputRef = useRef<HTMLInputElement | null>(null);
+  const lastHover = useRef<AnnotateRect | null>(null);
+  const settleRef = useRef(0);
+  const [hover, setHover] = useState<AnnotateRect | null>(null);
+  const [area, setArea] = useState<AnnotateRect | null>(null);
+  const [pointer, setPointer] = useState<{ x: number; y: number } | null>(null);
+  const [rects, setRects] = useState<ReadonlyMap<number, AnnotateRect | null>>(new Map());
+  const [items, setItems] = useState<WebMark[]>([]);
+  const [pending, setPending] = useState<WebPending | null>(null);
+  const [draft, setDraft] = useState("");
+  const [, setLayout] = useState(0);
+  const { setAnnotating, sendAnnotations } = useBrowserStore.getState();
+
+  const exit = () => setAnnotating(null);
+  const forget = (id: number) => sendFrameCommand(tabId, { command: "annotateForget", id });
+
+  /** The marks with the open comment applied; an emptied comment removes its mark. */
+  const committed = (): WebMark[] => {
+    if (!pending) return items;
+    const request = draft.trim();
+    if (!pending.saved) {
+      if (!request) return items;
+      return [...items, { id: pending.id, quote: pending.quote, request }];
+    }
+    return request
+      ? items.map((item) => (item.id === pending.id ? { ...item, request } : item))
+      : items.filter((item) => item.id !== pending.id);
+  };
+
+  const save = () => {
+    if (!pending) return;
+    const next = committed();
+    if (!next.some((item) => item.id === pending.id)) forget(pending.id);
+    setItems(next);
+    setPending(null);
+    setDraft("");
+  };
+
+  const discard = () => {
+    if (pending && !pending.saved) forget(pending.id);
+    setPending(null);
+    setDraft("");
+  };
+
+  const send = () => {
+    const outgoing = committed();
+    if (outgoing.length === 0) return;
+    sendAnnotations?.({
+      file: title || url,
+      url,
+      items: outgoing.map(({ quote, request }) => ({ quote, request })),
+    });
+    exit();
+  };
+
+  // Read on each report, so one always sees this render's state.
+  const handle = (event: AnnotateEvent) => {
+    switch (event.kind) {
+      case "ready":
+        sendFrameCommand(tabId, { command: "annotate", on: true });
+        break;
+      case "up":
+        save();
+        break;
+      case "escape":
+        if (pending) discard();
+        else exit();
+        break;
+      case "pointer":
+        setPointer(event.point);
+        break;
+      case "hover":
+        setHover(event.rect);
+        break;
+      case "area":
+        setArea(event.rect);
+        break;
+      case "mark": {
+        const quote =
+          event.quote || (event.image ? event.alt || t("browser.annotate.imageQuote") : "");
+        if (!quote) {
+          forget(event.id);
+          break;
+        }
+        setRects((current) => new Map(current).set(event.id, event.rect));
+        setPending({ id: event.id, quote, saved: false });
+        setDraft("");
+        break;
+      }
+      case "rects": {
+        // Outlines glide between blocks, but track a scrolling page exactly.
+        const layer = layerRef.current;
+        layer?.setAttribute("data-scrolling", "");
+        window.clearTimeout(settleRef.current);
+        settleRef.current = window.setTimeout(() => layer?.removeAttribute("data-scrolling"), 150);
+        setRects(new Map(event.rects));
+        setHover(event.hover);
+        break;
+      }
+    }
+  };
+  const handleRef = useRef(handle);
+  handleRef.current = handle;
+
+  useEffect(() => {
+    const stop = onFrameAnnotate(tabId, (event) => handleRef.current(event));
+    // Now, for a page already loaded; a page still loading asks with "ready".
+    sendFrameCommand(tabId, { command: "annotate", on: true });
+    return () => {
+      stop();
+      sendFrameCommand(tabId, { command: "annotate", on: false });
+    };
+  }, [tabId]);
+
+  useEffect(() => {
+    const layer = layerRef.current;
+    if (!layer) return;
+    const observer = new ResizeObserver(() => setLayout((value) => value + 1));
+    observer.observe(layer);
+    return () => observer.disconnect();
+  }, []);
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      event.preventDefault();
+      if (pending) discard();
+      else exit();
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  });
+
+  useLayoutEffect(() => {
+    if (pending) inputRef.current?.focus();
+  }, [pending]);
+
+  const origin = layerRef.current?.getBoundingClientRect() ?? new DOMRect();
+  const frame = frameRect(tabId) ?? origin;
+  const dx = frame.left - origin.left;
+  const dy = frame.top - origin.top;
+  const onLayer = (rect: AnnotateRect | null | undefined): Box | null =>
+    rect ? { left: rect.left + dx, top: rect.top + dy, width: rect.width, height: rect.height } : null;
+  const hoverBox = onLayer(hover);
+  if (hoverBox) lastHover.current = hover;
+  const shownHover = hoverBox ?? onLayer(lastHover.current);
+  const pendingBox = pending ? onLayer(rects.get(pending.id)) : null;
+  const count = items.length;
+  const canSend = count > 0 || (pending?.saved === false && draft.trim() !== "");
+
+  return (
+    <div
+      ref={layerRef}
+      className="group/annotate pointer-events-none absolute inset-0 z-10 overflow-hidden"
+    >
+      {shownHover ? (
+        <div
+          className={cn(
+            "absolute rounded-md border-[1.5px] border-primary/70 transition-[left,top,width,height,opacity] duration-150 ease-out group-data-[scrolling]/annotate:transition-none motion-reduce:transition-none",
+            hoverBox && !area ? "opacity-100" : "opacity-0",
+          )}
+          style={shownHover}
+        />
+      ) : null}
+      {area ? (
+        <div
+          className="absolute rounded-md border-[1.5px] border-dashed border-primary/70 bg-primary/5"
+          style={onLayer(area) ?? undefined}
+        />
+      ) : null}
+      {items.map((item) => {
+        const box = item.id === pending?.id ? null : onLayer(rects.get(item.id));
+        return box ? (
+          <Mark
+            key={item.id}
+            box={box}
+            label={item.request}
+            onOpen={() => {
+              save();
+              setPending({ id: item.id, quote: item.quote, saved: true });
+              setDraft(item.request);
+            }}
+          />
+        ) : null;
+      })}
+      {pending && pendingBox ? (
+        <>
+          <Mark box={pendingBox} label={draft} />
+          <CommentForm
+            inputRef={inputRef}
+            box={pendingBox}
+            layer={origin}
+            draft={draft}
+            onDraft={setDraft}
+            onSave={save}
+            canSave={Boolean(draft.trim()) || pending.saved}
+            placeholder={t("browser.annotate.pagePlaceholder")}
+          />
+        </>
+      ) : null}
+      <AnnotateBar
+        count={count}
+        canSend={canSend}
+        sendDisabled={!sendAnnotations}
+        onSend={send}
+        onExit={exit}
+        hint={t("browser.annotate.pageHint")}
+      />
+      <div
+        aria-hidden={true}
+        data-shown={pointer ? "true" : "false"}
+        className={CURSOR}
+        style={
+          pointer
+            ? { transform: `translate(${pointer.x + dx}px, ${pointer.y + dy - BUBBLE}px)` }
+            : undefined
+        }
+      />
+    </div>
   );
 }

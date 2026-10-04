@@ -137,6 +137,9 @@ function useFrameMessages(tabId: string, origin: string | null) {
   );
 }
 
+// Stands in for the app's name while translating, so the name can be set in bold.
+const APP_MARK = "\u0000";
+
 function PageError({
   url,
   message,
@@ -161,15 +164,23 @@ function PageError({
       <p className="text-sm text-muted-foreground">
         {resubmit
           ? t("browser.error.resubmit")
-          : t(
-              botCheck
-                ? // The desktop app's native views pass these checks; point web users there.
-                  isTauri
-                  ? "browser.error.botCheckDescription"
-                  : "browser.error.botCheckDescriptionWeb"
-                : "browser.error.description",
-              { host: hostOf(url) },
-            )}
+          : botCheck && !isTauri
+            ? // The desktop app's native views pass these checks; point web users there.
+              t("browser.error.botCheckDescriptionWeb", { host: hostOf(url), app: APP_MARK })
+                .split(APP_MARK)
+                .flatMap((part, index) =>
+                  index === 0
+                    ? [part]
+                    : [
+                        <strong key={index} className="font-semibold text-foreground">
+                          {t("browser.error.desktopApp")}
+                        </strong>,
+                        part,
+                      ],
+                )
+            : t(botCheck ? "browser.error.botCheckDescription" : "browser.error.description", {
+                host: hostOf(url),
+              })}
       </p>
       {message ? (
         <p className="break-all rounded-lg bg-muted/60 px-3 py-2 font-mono text-xs text-muted-foreground">{message}</p>

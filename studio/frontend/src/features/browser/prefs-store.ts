@@ -13,10 +13,14 @@ interface BrowserPrefsState {
   searchEngine: SearchEngineId;
   /** Show the query and fragment in the address bar, not just the site and path. */
   showFullUrl: boolean;
+  /** Sites taken off the new tab's Suggested, by host. */
+  hiddenSuggestions: string[];
   setOpenLinksInBrowser: (value: boolean) => void;
   setOpenFilesInBrowser: (value: boolean) => void;
   setSearchEngine: (value: SearchEngineId) => void;
   setShowFullUrl: (value: boolean) => void;
+  hideSuggestion: (host: string) => void;
+  restoreSuggestions: () => void;
 }
 
 export const useBrowserPrefsStore = create<BrowserPrefsState>()(
@@ -26,10 +30,18 @@ export const useBrowserPrefsStore = create<BrowserPrefsState>()(
       openFilesInBrowser: true,
       searchEngine: "duckduckgo",
       showFullUrl: false,
+      hiddenSuggestions: [],
       setOpenLinksInBrowser: (openLinksInBrowser) => set({ openLinksInBrowser }),
       setOpenFilesInBrowser: (openFilesInBrowser) => set({ openFilesInBrowser }),
       setSearchEngine: (searchEngine) => set({ searchEngine }),
       setShowFullUrl: (showFullUrl) => set({ showFullUrl }),
+      hideSuggestion: (host) =>
+        set((state) =>
+          state.hiddenSuggestions.includes(host)
+            ? state
+            : { hiddenSuggestions: [...state.hiddenSuggestions, host] },
+        ),
+      restoreSuggestions: () => set({ hiddenSuggestions: [] }),
     }),
     {
       name: "unsloth_browser_prefs",

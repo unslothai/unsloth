@@ -43,3 +43,14 @@ test("the composer's File carries its annotations by identity", () => {
   assert.equal(annotationsOfFile(file), annotations);
   assert.equal(annotationsOfFile(new File(["x"], "annotations.txt")), undefined);
 });
+
+test("a web page's annotations keep its address", () => {
+  const page = {
+    file: "Xyrena | Luckyscent",
+    url: "https://www.luckyscent.com/product/xyrena?ref=a&b=1",
+    items: [{ quote: "Image", request: "how much" }],
+  };
+  const text = annotationsContentText(page);
+  assert.ok(text.includes("the web page Xyrena | Luckyscent (https://www.luckyscent.com/product/xyrena?ref=a&b=1)"));
+  assert.deepEqual(parseAnnotationsContent(text), page);
+});

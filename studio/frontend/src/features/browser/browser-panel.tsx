@@ -73,7 +73,7 @@ import { type ReactNode, memo, useEffect, useRef, useState } from "react";
 import { fileNameFromUrl, hostOf, resolveAddress } from "./address";
 import { type BrowserDownload, saveBrowserDownload } from "./downloads";
 import { ClearBrowsingDataDialog } from "./clear-data-dialog";
-import { AnnotateLayer } from "./annotate-layer";
+import { AnnotateLayer, WebAnnotateLayer } from "./annotate-layer";
 import { browserTabType, textFileKind } from "./file-kind";
 import { EnterFullViewIcon, ExitFullViewIcon, SplitPaneIcon } from "./icons";
 import { sendFrameCommand } from "./page-frame";
@@ -156,6 +156,10 @@ function stepZoom(zoom: number, direction: 1 | -1): number {
 const PILL =
   "border border-border/80 bg-card dark:border-transparent dark:bg-accent";
 
+// A web page's toolbar buttons: dark while they do something, faded while they can't.
+const TOOLBAR_BUTTON =
+  "size-8 text-foreground disabled:hover:text-foreground disabled:opacity-30";
+
 type ButtonProps = {
   label: string;
   shortcut?: string | null;
@@ -234,7 +238,14 @@ function KindIcon({
   name,
   contentType,
   className,
-}: { name: string; contentType?: string; className?: string }) {
+  mono = false,
+}: {
+  name: string;
+  contentType?: string;
+  className?: string;
+  /** In the text's own colour, as the file's toolbar shows it; only its tab is coloured. */
+  mono?: boolean;
+}) {
   const kind = attachmentFileKind(name, contentType);
   return (
     <HugeiconsIcon
@@ -242,7 +253,7 @@ function KindIcon({
       strokeWidth={1.75}
       className={cn(
         "size-4 shrink-0",
-        ATTACHMENT_KIND_ICON_CLASS[kind],
+        !mono && ATTACHMENT_KIND_ICON_CLASS[kind],
         className,
       )}
     />
@@ -325,7 +336,7 @@ function TabStrip({
     // Above the desktop titlebar's drag strip (z-40), which would swallow tab clicks.
     <div
       data-tauri-drag-region={true}
-      className="relative z-40 flex h-[var(--studio-chat-header-height,48px)] min-w-0 shrink-0 items-center gap-1 pl-1.5 pr-[calc(0.5rem*var(--ui-space-scale,1)+var(--studio-window-control-inset,0px))]"
+      className="browser-chrome relative z-40 flex h-[var(--studio-chat-header-height,48px)] min-w-0 shrink-0 items-center gap-1 pl-1.5 pr-[calc(0.5rem*var(--ui-space-scale,1)+var(--studio-window-control-inset,0px))]"
     >
       <div
         role="tablist"
@@ -483,7 +494,7 @@ function AddressBar({ tab }: { tab: BrowserTab | undefined }) {
           autoCorrect="off"
           className={cn(
             PILL,
-            "h-8 w-full min-w-0 rounded-full px-4 text-ui-13 text-foreground outline-none transition-colors placeholder:text-muted-foreground focus:bg-[color-mix(in_oklab,var(--card),var(--foreground)_5%)] dark:focus:bg-[color-mix(in_oklab,var(--accent),var(--foreground)_6%)]",
+            "h-9 w-full min-w-0 rounded-full px-4 text-ui-14 text-foreground outline-none transition-colors placeholder:text-muted-foreground focus:bg-[color-mix(in_oklab,var(--card),var(--foreground)_5%)] dark:focus:bg-[color-mix(in_oklab,var(--accent),var(--foreground)_6%)]",
             // The input keeps the full URL, so focusing never changes its text or selection.
             !editing && address && "text-transparent",
           )}
@@ -491,7 +502,7 @@ function AddressBar({ tab }: { tab: BrowserTab | undefined }) {
         {!editing && address ? (
           <span
             aria-hidden={true}
-            className="pointer-events-none absolute inset-0 flex items-center justify-center px-4 text-ui-13 text-foreground"
+            className="pointer-events-none absolute inset-0 flex items-center justify-center px-4 text-ui-14 text-foreground"
           >
             <span className="truncate">
               {displayAddress(address, showFullUrl)}
@@ -531,24 +542,23 @@ function WebActions({ tab }: { tab: BrowserTab | undefined }) {
   const webUrl = webAddress(tab);
   const download = tabDownload(tab);
   return (
-    <div
-      className={cn(
-        PILL,
-        "flex h-8 shrink-0 items-center gap-0.5 rounded-full px-0.5",
-      )}
-    >
+    <div className={cn(PILL, "flex h-9 shrink-0 items-center rounded-full px-0.5")}>
       <IconButton
         label={t("browser.openExternal")}
-        icon={LinkSquare02Icon}
         disabled={!webUrl}
         onClick={() => webUrl && openExternalLink(webUrl)}
-      />
+        className={TOOLBAR_BUTTON}
+      >
+        <HugeiconsIcon icon={LinkSquare02Icon} strokeWidth={1.75} className="size-4.75" />
+      </IconButton>
       <IconButton
         label={t("browser.download")}
-        icon={Download01Icon}
         disabled={!download}
         onClick={() => download && void saveBrowserDownload(download)}
-      />
+        className={TOOLBAR_BUTTON}
+      >
+        <HugeiconsIcon icon={Download01Icon} strokeWidth={1.75} className="size-4.75" />
+      </IconButton>
     </div>
   );
 }
@@ -645,13 +655,13 @@ function PanelMenu({ tab }: { tab: BrowserTab | undefined }) {
                 aria-label={t("browser.more")}
                 className={cn(
                   PILL,
-                  "flex size-8 shrink-0 cursor-pointer items-center justify-center rounded-full text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+                  "flex size-9 shrink-0 cursor-pointer items-center justify-center rounded-full text-foreground transition-colors hover:bg-card focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring dark:hover:bg-accent",
                 )}
               >
                 <HugeiconsIcon
                   icon={MoreHorizontalIcon}
                   strokeWidth={1.75}
-                  className="size-4.5"
+                  className="size-5"
                 />
               </button>
             </DropdownMenuTrigger>
@@ -724,6 +734,34 @@ function nativePage(tab: BrowserTab | undefined): boolean {
   return Boolean(tab && currentEntry(tab).kind === "web" && hasNativeView(tab.id));
 }
 
+/** Ask about the page: mark parts of it and comment, as with a file's Request edits. Pages in a
+ *  native view (the desktop app) can't be drawn over, so they go without. */
+function AnnotatePageButton({ tab }: { tab: BrowserTab | undefined }) {
+  const t = useT();
+  const canAnnotate = useBrowserStore((state) => state.sendAnnotations !== null);
+  const annotating = useBrowserStore((state) => tab !== undefined && state.annotateTabId === tab.id);
+  if (!canAnnotate || nativePage(tab)) return null;
+  return (
+    <IconButton
+      label={t("browser.annotate.page")}
+      disabled={!tab || !showsWebPage(tab)}
+      onClick={() => tab && useBrowserStore.getState().setAnnotating(annotating ? null : tab.id)}
+      className={cn(
+        PILL,
+        "size-9 text-foreground hover:bg-card disabled:opacity-40 disabled:hover:bg-card disabled:hover:text-foreground dark:hover:bg-accent",
+        annotating &&
+          "border-transparent bg-primary/12 text-primary hover:bg-primary/18 hover:text-primary dark:bg-primary/20 dark:hover:bg-primary/25",
+      )}
+    >
+      <HugeiconsIcon
+        icon={CursorRectangleSelection02Icon}
+        strokeWidth={1.75}
+        className="size-4.75"
+      />
+    </IconButton>
+  );
+}
+
 function WebToolbar({ tab }: { tab: BrowserTab | undefined }) {
   const t = useT();
   const { goBack, goForward, reload } = useBrowserStore.getState();
@@ -747,27 +785,26 @@ function WebToolbar({ tab }: { tab: BrowserTab | undefined }) {
   };
   return (
     <>
-      <div
-        className={cn(
-          PILL,
-          "flex h-8 shrink-0 items-center gap-0.5 rounded-full px-0.5",
-        )}
-      >
+      <div className={cn(PILL, "flex h-9 shrink-0 items-center rounded-full px-0.5")}>
         <IconButton
           label={t("browser.back")}
-          icon={ArrowLeft02Icon}
           disabled={!canGoBack}
           onClick={back}
-        />
+          className={TOOLBAR_BUTTON}
+        >
+          <HugeiconsIcon icon={ArrowLeft02Icon} strokeWidth={1.75} className="size-4.75" />
+        </IconButton>
         <IconButton
           label={t("browser.forward")}
-          icon={ArrowRight02Icon}
           disabled={!canGoForward}
           onClick={forward}
-        />
+          className={TOOLBAR_BUTTON}
+        >
+          <HugeiconsIcon icon={ArrowRight02Icon} strokeWidth={1.75} className="size-4.75" />
+        </IconButton>
         <span
           aria-hidden={true}
-          className="mx-0.5 h-4 w-px shrink-0 bg-[color-mix(in_oklab,var(--foreground)_calc(15%*var(--contrast-wash-gain,1)),transparent)]"
+          className="mx-1 h-5 w-px shrink-0 bg-[color-mix(in_oklab,var(--foreground)_calc(15%*var(--contrast-wash-gain,1)),transparent)]"
         />
         <IconButton
           label={t("browser.reload")}
@@ -777,10 +814,12 @@ function WebToolbar({ tab }: { tab: BrowserTab | undefined }) {
             if (native) nativeAction(tab.id, "reload");
             else reload(tab.id);
           }}
+          className={TOOLBAR_BUTTON}
         >
-          <RefreshGlyph strokeWidth={1.75} className="size-4" />
+          <RefreshGlyph strokeWidth={1.75} className="size-4.5" />
         </IconButton>
       </div>
+      <AnnotatePageButton tab={tab} />
       <AddressBar key={tab?.id ?? "none"} tab={tab} />
       <WebActions tab={tab} />
       <PanelMenu tab={tab} />
@@ -870,6 +909,7 @@ function FileToolbar({
               name={entry.name}
               contentType={entry.contentType}
               className="size-4.5"
+              mono={true}
             />
             <span className="min-w-0 truncate">{fileTitle(entry.name)}</span>
             <HugeiconsIcon
@@ -889,6 +929,7 @@ function FileToolbar({
               name={entry.name}
               contentType={entry.contentType}
               className="mt-0.5 size-4.5"
+              mono={true}
             />
             <span className="min-w-0 break-words">{entry.name}</span>
           </div>
@@ -1324,7 +1365,7 @@ export const BrowserPanel = memo(function BrowserPanel() {
       >
         <div
           className={cn(
-            "flex shrink-0 items-center gap-1.5 px-2.5 py-2",
+            "browser-chrome flex shrink-0 items-center gap-2 px-2.5 py-2",
             // A file's controls float over it with nothing behind them, so the page scrolls under.
             fileTab &&
               "browser-file-toolbar @container pointer-events-none absolute inset-x-0 top-0 z-20 *:pointer-events-auto",
@@ -1386,6 +1427,18 @@ export const BrowserPanel = memo(function BrowserPanel() {
               key={activeTab.id}
               page={pageElement}
               fileName={activeEntry.name}
+            />
+          ) : null}
+          {activeTab &&
+          annotateTabId === activeTab.id &&
+          showsWebPage(activeTab) &&
+          !nativePage(activeTab) ? (
+            // A new page starts over: its marks were the last page's.
+            <WebAnnotateLayer
+              key={`${activeTab.id}:${activeTab.index}`}
+              tabId={activeTab.id}
+              title={activeTab.title}
+              url={webAddress(activeTab) ?? ""}
             />
           ) : null}
         </div>

@@ -310,18 +310,206 @@ _FRAME_HTML = r"""<!doctype html>
           if (document.documentElement) applyZoom(cfg.zoom);
           document.addEventListener("DOMContentLoaded", () => applyZoom(cfg.zoom), { once: true });
         }
+        // Annotate: the panel marks parts of the page to ask about. While it is on, pointer input
+        // is the panel's: the page only reports the block under the pointer, what a click or drag
+        // marks, and where the marks sit as it scrolls.
+        const annotation = (() => {
+          const BLOCK = "p, li, h1, h2, h3, h4, h5, h6, pre, blockquote, td, th, dt, dd, figcaption, caption, img, picture, video, svg, button, label";
+          // A list item marks its own line, not the lists nested under it.
+          const NESTED = "ul, ol, table, pre, blockquote, div";
+          const MEDIA = /^(img|picture|video|svg)$/i;
+          const PAD = 5, DRAG = 4, MAX_QUOTE = 280;
+          const marks = new Map();
+          let on = false, press = null, hover = null, nextId = 1, rectFrame = 0, moveFrame = 0, lastMove = null;
+          const send = (event, data) => post({ type: "annotate", event, ...data });
+          const hasOwnText = (element) =>
+            [...element.childNodes].some((node) => node.nodeType === Node.TEXT_NODE && node.textContent.trim());
+          const rangeOf = (element) => {
+            const range = document.createRange();
+            if (MEDIA.test(element.tagName) || !element.textContent.trim()) { range.selectNode(element); return range; }
+            range.selectNodeContents(element);
+            if (element.tagName === "LI") {
+              const nested = [...element.children].find((child) => child.matches(NESTED));
+              if (nested) range.setEndBefore(nested);
+            }
+            return range;
+          };
+          // Its block, else the nearest element holding text itself, else what is under the pointer.
+          const blockAt = (target) => {
+            if (!(target instanceof Element)) return null;
+            let element = target.closest(BLOCK);
+            if (!element) {
+              let node = target;
+              while (node && node !== document.body && !hasOwnText(node)) node = node.parentElement;
+              element = node && node !== document.body ? node : target;
+            }
+            if (element === document.body || element === document.documentElement) return null;
+            return [rangeOf(element)];
+          };
+          const overlaps = (a, b) =>
+            a.width > 0 && a.height > 0 && a.left < b.right && a.right > b.left && a.top < b.bottom && a.bottom > b.top;
+          // Everything a dragged area touches, block by block, leaving out blocks around other hits.
+          const blocksIn = (area) => {
+            const found = [...document.body.querySelectorAll(BLOCK)]
+              .filter((element) => overlaps(element.getBoundingClientRect(), area))
+              .map((element) => ({ element, range: rangeOf(element) }))
+              .filter(({ range }) => [...range.getClientRects()].some((rect) => overlaps(rect, area)));
+            const hits = found.filter(({ element }) => !found.some((other) => other.element !== element && element.contains(other.element)));
+            if (hits.length) return hits.map(({ range }) => range);
+            const middle = document.elementFromPoint(area.left + area.width / 2, area.top + area.height / 2);
+            return blockAt(middle) || [];
+          };
+          const boxOf = (ranges) => {
+            let left = Infinity, top = Infinity, right = -Infinity, bottom = -Infinity;
+            for (const range of ranges) {
+              for (const rect of range.getClientRects()) {
+                if (!rect.width && !rect.height) continue;
+                left = Math.min(left, rect.left); top = Math.min(top, rect.top);
+                right = Math.max(right, rect.right); bottom = Math.max(bottom, rect.bottom);
+              }
+            }
+            if (!Number.isFinite(left)) return null;
+            return { left: left - PAD, top: top - PAD, width: right - left + PAD * 2, height: bottom - top + PAD * 2 };
+          };
+          const quoteOf = (ranges) => {
+            const text = ranges.map((range) => range.toString()).join(" ").replace(/\s+/g, " ").trim();
+            return text.length > MAX_QUOTE ? text.slice(0, MAX_QUOTE - 1) + "\u2026" : text;
+          };
+          // The first picture marked, by its alt text; null when none is.
+          const pictureOf = (ranges) => {
+            for (const range of ranges) {
+              const picture = range.cloneContents().querySelector("img, picture, video, svg");
+              if (picture) return (picture.getAttribute("alt") || picture.getAttribute("aria-label") || "").slice(0, 300);
+            }
+            return null;
+          };
+          const same = (a, b) =>
+            a && b && a.length === b.length && a.every((range, index) =>
+              range.startContainer === b[index].startContainer && range.startOffset === b[index].startOffset &&
+              range.endContainer === b[index].endContainer && range.endOffset === b[index].endOffset);
+          const setHover = (next) => {
+            if (same(next, hover) || (!next && !hover)) return;
+            hover = next;
+            send("hover", { rect: next ? boxOf(next) : null });
+          };
+          const mark = (ranges) => {
+            if (!ranges || !ranges.length) return;
+            const quote = quoteOf(ranges);
+            const picture = pictureOf(ranges);
+            if (!quote && picture === null) return;
+            const id = nextId++;
+            marks.set(id, ranges);
+            send("mark", { id, rect: boxOf(ranges), quote, image: picture !== null, alt: picture || "" });
+          };
+          // Positions after a scroll or resize: the page moves, the panel draws.
+          const reportRects = () => {
+            rectFrame = 0;
+            send("rects", { rects: [...marks].map(([id, ranges]) => [id, boxOf(ranges)]), hover: hover ? boxOf(hover) : null });
+          };
+          const scheduleRects = () => { if (on && !rectFrame) rectFrame = requestAnimationFrame(reportRects); };
+          const areaFrom = (event) => ({
+            left: Math.min(press.x, event.clientX), top: Math.min(press.y, event.clientY),
+            width: Math.abs(event.clientX - press.x), height: Math.abs(event.clientY - press.y),
+          });
+          const swallow = (event) => { event.preventDefault(); event.stopPropagation(); };
+          const handleMove = (event) => {
+            send("pointer", { point: { x: event.clientX, y: event.clientY } });
+            if (press) {
+              if (!press.dragging && Math.hypot(event.clientX - press.x, event.clientY - press.y) < DRAG) return;
+              press.dragging = true;
+              setHover(null);
+              send("area", { rect: areaFrom(event) });
+              return;
+            }
+            setHover(blockAt(event.target));
+          };
+          const onMove = (event) => {
+            event.stopPropagation();
+            lastMove = event;
+            if (moveFrame) return;
+            moveFrame = requestAnimationFrame(() => {
+              moveFrame = 0;
+              const latest = lastMove;
+              lastMove = null;
+              if (latest && on) handleMove(latest);
+            });
+          };
+          const onDown = (event) => {
+            swallow(event);
+            if (event.button !== 0) return;
+            press = { x: event.clientX, y: event.clientY, dragging: false };
+          };
+          const onUp = (event) => {
+            swallow(event);
+            if (!press) return;
+            const { dragging } = press;
+            const area = dragging ? areaFrom(event) : null;
+            press = null;
+            // Before the mark, so the panel keeps the comment it had open.
+            send("up");
+            if (area) {
+              send("area", { rect: null });
+              mark(blocksIn(new DOMRect(area.left, area.top, area.width, area.height)));
+            } else mark(blockAt(event.target));
+          };
+          const onLeave = (event) => {
+            if (event.relatedTarget) return;
+            send("pointer", { point: null });
+            setHover(null);
+          };
+          const onKey = (event) => {
+            if (event.key !== "Escape") return;
+            swallow(event);
+            send("escape");
+          };
+          const style = document.createElement("style");
+          style.textContent = "*, *::before, *::after { cursor: none !important; user-select: none !important; -webkit-user-select: none !important; }";
+          const listeners = [
+            ["pointerdown", onDown], ["pointermove", onMove], ["pointerup", onUp], ["click", swallow],
+            ["dblclick", swallow], ["auxclick", swallow], ["mousedown", swallow], ["mouseup", swallow],
+            ["contextmenu", swallow], ["dragstart", swallow], ["keydown", onKey],
+          ];
+          const start = () => {
+            if (on) return;
+            on = true;
+            for (const [type, listener] of listeners) window.addEventListener(type, listener, true);
+            document.addEventListener("mouseout", onLeave, true);
+            window.addEventListener("scroll", scheduleRects, true);
+            window.addEventListener("resize", scheduleRects);
+            (document.head || document.documentElement).appendChild(style);
+          };
+          const stop = () => {
+            if (!on) return;
+            on = false;
+            for (const [type, listener] of listeners) window.removeEventListener(type, listener, true);
+            document.removeEventListener("mouseout", onLeave, true);
+            window.removeEventListener("scroll", scheduleRects, true);
+            window.removeEventListener("resize", scheduleRects);
+            style.remove();
+            cancelAnimationFrame(rectFrame);
+            cancelAnimationFrame(moveFrame);
+            rectFrame = moveFrame = 0;
+            press = hover = lastMove = null;
+            marks.clear();
+          };
+          return { start, stop, forget: (id) => marks.delete(id) };
+        })();
         // Commands from the panel, relayed by the shell (the only parent this page has).
         window.addEventListener("message", (event) => {
           if (event.source !== parent) return;
           const data = event.data;
           if (!data || data.type !== "unsloth:browser-command") return;
-          if (data.command === "zoom") applyZoom(data.value);
+          if (data.command === "annotate") data.on === true ? annotation.start() : annotation.stop();
+          else if (data.command === "annotateForget") annotation.forget(Number(data.id));
+          else if (data.command === "zoom") applyZoom(data.value);
           else if (data.command === "find" && typeof data.query === "string" && data.query) {
             let found = false;
             try { found = window.find(data.query, false, Boolean(data.backwards), true, false, false, false); } catch {}
             post({ type: "found", found });
           }
         });
+        // The panel may have asked for annotate before this page could hear it.
+        post({ type: "annotate", event: "ready" });
       };
       const escapeAttr = (value) => value.replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;");
       const inject = (html, tags) => {

@@ -4,7 +4,8 @@
 /** A part of a document the user marked in the browser, and what they asked for there. */
 export type DocumentAnnotation = { quote: string; request: string };
 
-export type DocumentAnnotations = { file: string; items: DocumentAnnotation[] };
+/** A file's annotations, or a web page's: `file` is then the page's title and `url` its address. */
+export type DocumentAnnotations = { file: string; url?: string; items: DocumentAnnotation[] };
 
 const TAG = "document_annotations";
 const MIME = "text/plain";
@@ -35,11 +36,16 @@ const quoteAttr = (value: string) => value.replace(/[\n"]/g, " ");
 /** What the model reads: JSON items, so the chip can parse them back from a stored message. */
 export function annotationsContentText({
   file,
+  url,
   items,
 }: DocumentAnnotations): string {
   return [
-    `<${TAG} file="${quoteAttr(file)}">`,
-    `The user selected parts of ${file} and asked for a change or a question on each. Apply each request to its selection.`,
+    url
+      ? `<${TAG} file="${quoteAttr(file)}" url="${quoteAttr(url)}">`
+      : `<${TAG} file="${quoteAttr(file)}">`,
+    url
+      ? `The user selected parts of the web page ${file} (${url}) and asked a question or made a request about each. Answer each request about its selection.`
+      : `The user selected parts of ${file} and asked for a change or a question on each. Apply each request to its selection.`,
     JSON.stringify(
       items.map((item) => ({ selection: item.quote, request: item.request })),
       null,
@@ -58,16 +64,17 @@ export function parseAnnotationsContent(
   text: string | undefined,
 ): DocumentAnnotations | null {
   if (!text || !isAnnotationsContent(text)) return null;
-  const file =
-    /^<document_annotations file="([^"]*)">/.exec(
-      text.slice(0, HEADER_SCAN_CHARS),
-    )?.[1] ?? "";
+  const header = /^<document_annotations file="([^"]*)"(?: url="([^"]*)")?>/.exec(
+    text.slice(0, HEADER_SCAN_CHARS),
+  );
+  const file = header?.[1] ?? "";
+  const source = header?.[2] ? { file, url: header[2] } : { file };
   const start = text.indexOf("\n[");
   const end = text.lastIndexOf("]");
-  if (start === -1 || end < start) return { file, items: [] };
+  if (start === -1 || end < start) return { ...source, items: [] };
   try {
     const parsed: unknown = JSON.parse(text.slice(start + 1, end + 1));
-    if (!Array.isArray(parsed)) return { file, items: [] };
+    if (!Array.isArray(parsed)) return { ...source, items: [] };
     const items = parsed.flatMap((entry) => {
       if (typeof entry !== "object" || entry === null) return [];
       const { selection, request } = entry as {
@@ -78,8 +85,8 @@ export function parseAnnotationsContent(
         ? [{ quote: selection, request }]
         : [];
     });
-    return { file, items };
+    return { ...source, items };
   } catch {
-    return { file, items: [] };
+    return { ...source, items: [] };
   }
 }

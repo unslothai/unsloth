@@ -19,18 +19,93 @@ export type FrameMessage =
   | { type: "upload" }
   | { type: "scriptNavigation" }
   | { type: "found"; found: boolean }
-  | { type: "shortcut"; key: string; shift: boolean };
+  | { type: "shortcut"; key: string; shift: boolean }
+  | { type: "annotate"; event: AnnotateEvent };
+
+/** A box in the page's viewport. */
+export type AnnotateRect = { left: number; top: number; width: number; height: number };
+
+/** What the page reports while annotating: see `annotation` in the frame shell (routes/browser.py). */
+export type AnnotateEvent =
+  | { kind: "ready" }
+  | { kind: "up" }
+  | { kind: "escape" }
+  | { kind: "pointer"; point: { x: number; y: number } | null }
+  | { kind: "hover"; rect: AnnotateRect | null }
+  | { kind: "area"; rect: AnnotateRect | null }
+  | { kind: "mark"; id: number; rect: AnnotateRect | null; quote: string; image: boolean; alt: string }
+  | { kind: "rects"; rects: Array<[number, AnnotateRect | null]>; hover: AnnotateRect | null };
 
 // Same limits as the fetch endpoint.
 const MAX_URL_CHARS = 8192;
 const MAX_BODY_CHARS = 1024 * 1024;
 const MAX_TITLE_CHARS = 1024;
 const SHORTCUT_KEYS = new Set(["l", "t", "w", "r", "f"]);
+const MAX_QUOTE_CHARS = 300;
+const MAX_MARKS = 500;
+// Far past any screen, so a page can't make the panel draw something huge.
+const MAX_COORD = 1_000_000;
 
 const text = (value: unknown, max: number): string | null =>
   typeof value === "string" && value.length <= max ? value : null;
 
 const title = (value: unknown): string => (typeof value === "string" ? value.slice(0, MAX_TITLE_CHARS) : "");
+
+const coord = (value: unknown): number | null =>
+  typeof value === "number" && Number.isFinite(value) && Math.abs(value) <= MAX_COORD ? value : null;
+
+function rect(value: unknown): AnnotateRect | null {
+  if (!value || typeof value !== "object") return null;
+  const box = value as Record<string, unknown>;
+  const left = coord(box.left);
+  const top = coord(box.top);
+  const width = coord(box.width);
+  const height = coord(box.height);
+  return left === null || top === null || width === null || height === null || width < 0 || height < 0
+    ? null
+    : { left, top, width, height };
+}
+
+function annotateEvent(message: Record<string, unknown>): AnnotateEvent | null {
+  switch (message.event) {
+    case "ready":
+    case "up":
+    case "escape":
+      return { kind: message.event };
+    case "pointer": {
+      const point = message.point as Record<string, unknown> | null;
+      if (point === null) return { kind: "pointer", point: null };
+      const x = coord(point?.x);
+      const y = coord(point?.y);
+      return x === null || y === null ? null : { kind: "pointer", point: { x, y } };
+    }
+    case "hover":
+    case "area":
+      return { kind: message.event, rect: rect(message.rect) };
+    case "mark": {
+      const id = message.id;
+      if (typeof id !== "number" || !Number.isSafeInteger(id)) return null;
+      return {
+        kind: "mark",
+        id,
+        rect: rect(message.rect),
+        quote: typeof message.quote === "string" ? message.quote.slice(0, MAX_QUOTE_CHARS) : "",
+        image: message.image === true,
+        alt: typeof message.alt === "string" ? message.alt.slice(0, MAX_QUOTE_CHARS) : "",
+      };
+    }
+    case "rects": {
+      if (!Array.isArray(message.rects)) return null;
+      const rects = message.rects.slice(0, MAX_MARKS).flatMap((entry): Array<[number, AnnotateRect | null]> => {
+        if (!Array.isArray(entry) || typeof entry[0] !== "number") return [];
+        return [[entry[0], rect(entry[1])]];
+      });
+      return { kind: "rects", rects, hover: rect(message.hover) };
+    }
+    default:
+      return null;
+  }
+}
 
 /** A message from a page, checked field by field: pages can post anything. */
 export function parseFrameMessage(data: unknown): FrameMessage | null {
@@ -70,6 +145,10 @@ export function parseFrameMessage(data: unknown): FrameMessage | null {
       return typeof message.key === "string" && SHORTCUT_KEYS.has(message.key)
         ? { type: "shortcut", key: message.key, shift: message.shift === true }
         : null;
+    case "annotate": {
+      const event = annotateEvent(message);
+      return event ? { type: "annotate", event } : null;
+    }
     default:
       return null;
   }

@@ -18,7 +18,10 @@ import {
 } from "@/components/assistant-ui/attachment-viewer-meta";
 import { AudioPlayer } from "@/components/assistant-ui/audio-player";
 import { CodeToggleIcon } from "@/components/assistant-ui/code-toggle-icon";
-import type { AttachmentVideoPart } from "@/components/assistant-ui/attachment-selection";
+import {
+  type AttachmentVideoPart,
+  selectAttachmentSource,
+} from "@/components/assistant-ui/attachment-selection";
 import {
   type AttachmentSource,
   useAttachmentSource,
@@ -38,12 +41,18 @@ import {
   readAttachmentText,
   truncateAttachmentPreviewText,
 } from "@/features/chat";
-import { ConfirmDeleteDialog, useLibraryFavorite } from "@/features/library";
+import {
+  ConfirmDeleteDialog,
+  addLibraryItemToProject,
+  uploadLibraryFiles,
+  useLibraryFavorite,
+  useLibraryFavoritesStore,
+} from "@/features/library";
 import { useT } from "@/i18n";
 import { MAX_HIGHLIGHT_CHARS } from "@/lib/markdown-plugins";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
-import { useAuiState } from "@assistant-ui/react";
+import { useAui, useAuiState } from "@assistant-ui/react";
 import { PlayIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import {
@@ -80,62 +89,259 @@ const Zoomed: FC<{ scale: number; children: ReactNode }> = ({ scale, children })
   </div>
 );
 
-type ImageLibraryActions = Pick<MediaViewerActions, "favorite" | "onToggleFavorite" | "onDelete">;
+type ImageActions = Omit<MediaViewerActions, "primary" | "onDownload">;
 
-const AttachmentImageDialog: FC<
+/** An image in the same message or composer as the one opened, which the viewer can move to. */
+type GalleryImage = {
+  id: string;
+  name: string;
+  contentType: string | undefined;
+  file: File | undefined;
+  image: string | undefined;
+};
+
+type AttachmentState = Parameters<typeof selectAttachmentSource>[0]["attachment"] & { id: string };
+
+const galleryImagesOf = (attachments: readonly unknown[] | undefined): GalleryImage[] =>
+  (attachments ?? []).flatMap((attachment) => {
+    const state = attachment as AttachmentState;
+    const source = selectAttachmentSource({ attachment: state });
+    if (source.kind !== "image" || !(source.file || source.image)) return [];
+    return [
+      {
+        id: state.id,
+        name: source.name,
+        contentType: source.contentType,
+        file: source.file,
+        image: source.image,
+      },
+    ];
+  });
+
+const useObjectUrl = (file: File | undefined): string | undefined => {
+  const [url, setUrl] = useState<{ file: File; url: string } | null>(null);
+  useEffect(() => {
+    if (!file) return;
+    const next = URL.createObjectURL(file);
+    setUrl({ file, url: next });
+    return () => URL.revokeObjectURL(next);
+  }, [file]);
+  return file && url?.file === file ? url.url : undefined;
+};
+
+const loadGalleryImage = (image: GalleryImage): Promise<Blob> =>
+  image.file ? Promise.resolve(image.file) : fetchBlob(image.image ?? "");
+
+/** As PNG: the one image type every browser's clipboard takes. */
+const pngOf = async (blob: Blob): Promise<Blob> => {
+  if (blob.type === "image/png") return blob;
+  const bitmap = await createImageBitmap(blob);
+  const canvas = document.createElement("canvas");
+  canvas.width = bitmap.width;
+  canvas.height = bitmap.height;
+  canvas.getContext("2d")?.drawImage(bitmap, 0, 0);
+  bitmap.close();
+  return new Promise((resolve, reject) =>
+    canvas.toBlob((png) => (png ? resolve(png) : reject(new Error("PNG encoding failed"))), "image/png"),
+  );
+};
+
+const copyImage = (image: GalleryImage, t: ReturnType<typeof useT>): void => {
+  if (typeof ClipboardItem === "undefined" || !navigator.clipboard?.write) {
+    toast.error(t("imageViewer.copyFailed"));
+    return;
+  }
+  // The item is made now, inside the click, and resolves later: Safari refuses a write made after.
+  navigator.clipboard
+    .write([new ClipboardItem({ "image/png": loadGalleryImage(image).then(pngOf) })])
+    .then(
+      () => toast.success(t("imageViewer.copied")),
+      () => toast.error(t("imageViewer.copyFailed")),
+    );
+};
+
+/**
+ * The full-window viewer for an image attachment, with arrows to the other images beside it.
+ * Opened from one tile, it keeps that tile's dialog and shows whichever image is current.
+ */
+const ImageGalleryDialog: FC<
   PropsWithChildren<{
-    source: AttachmentSource;
-    src: string;
-    redactFromReload?: boolean;
+    owner: GalleryImage;
+    images: GalleryImage[];
     open: boolean;
     onOpenChange: (open: boolean) => void;
-    libraryActions?: ImageLibraryActions;
+    shownId: string;
+    onShow: (id: string) => void;
+    redactFromReload: boolean;
+    actionsFor: (image: GalleryImage) => ImageActions;
   }>
-> = ({ children, source, src, redactFromReload = false, open, onOpenChange, libraryActions }) => {
+> = ({ children, owner, images, open, onOpenChange, shownId, onShow, redactFromReload, actionsFor }) => {
   const t = useT();
-  const [failed, setFailed] = useState(false);
+  const [failedId, setFailedId] = useState<string | null>(null);
+  const index = images.findIndex((image) => image.id === shownId);
+  const current = images[index] ?? owner;
+  const objectUrl = useObjectUrl(open ? current.file : undefined);
+  const src = current.file ? objectUrl : current.image;
+  const failed = failedId === current.id;
+  const previous = index > 0 ? images[index - 1] : undefined;
+  const next = index >= 0 && index < images.length - 1 ? images[index + 1] : undefined;
   return (
     <AttachmentViewer
       trigger={children}
       open={open}
       onOpenChange={onOpenChange}
-      source={source}
-      meta={attachmentViewerMeta(source, source.file?.size)}
+      source={current}
+      meta={attachmentViewerMeta(current, current.file?.size)}
       media={!failed}
       noun="image"
       redactFromReload={redactFromReload}
-      load={() => (source.file ? Promise.resolve(source.file) : fetchBlob(src))}
-      libraryActions={libraryActions}
+      load={() => loadGalleryImage(current)}
+      libraryActions={{
+        copy: { label: t("imageViewer.copy"), onClick: () => copyImage(current, t) },
+        ...actionsFor(current),
+      }}
       variant="lightbox"
+      itemKey={current.id}
+      gallery={
+        images.length > 1
+          ? {
+              onPrevious: previous ? () => onShow(previous.id) : undefined,
+              onNext: next ? () => onShow(next.id) : undefined,
+            }
+          : undefined
+      }
     >
       {failed ? (
         <p className="m-auto text-sm text-muted-foreground">{t("library.preview.cannotPreview")}</p>
-      ) : (
+      ) : src ? (
         <img
+          key={current.id}
           src={src}
-          alt={source.name || "Image attachment"}
-          onError={() => setFailed(true)}
-          className="size-full rounded-lg object-contain shadow-[0_8px_40px_-12px_rgba(0,0,0,0.35)]"
+          alt={current.name || "Image attachment"}
+          onError={() => setFailedId(current.id)}
+          className="size-full object-contain"
         />
+      ) : (
+        <Spinner className="m-auto size-6" />
       )}
     </AttachmentViewer>
   );
 };
 
+/** Opened on its own tile's image, each time. */
+const useGalleryState = (ownerId: string) => {
+  const [open, setOpen] = useState(false);
+  const [shownId, setShownId] = useState(ownerId);
+  const onOpenChange = (next: boolean) => {
+    if (next) setShownId(ownerId);
+    setOpen(next);
+  };
+  return { open, onOpenChange, shownId, onShow: setShownId };
+};
+
+/** The neighbour to show once `id` leaves the gallery, or undefined when it was the only one. */
+const neighbourOf = (images: GalleryImage[], id: string): GalleryImage | undefined => {
+  const index = images.findIndex((image) => image.id === id);
+  return images[index + 1] ?? images[index - 1];
+};
+
+// A composer image saved to the Library to star it or add it to a project, kept so a second
+// action reuses that copy rather than uploading another.
+const savedComposerImages = new WeakMap<File, Promise<string>>();
+
+const saveComposerImage = (image: GalleryImage): Promise<string> => {
+  const file = image.file;
+  if (!file) return Promise.reject(new Error("This image has no file to save."));
+  let saved = savedComposerImages.get(file);
+  if (!saved) {
+    saved = uploadLibraryFiles({ files: [file] }, null).then(([id]) => {
+      if (!id) throw new Error("The Library didn't keep the file.");
+      return id;
+    });
+    savedComposerImages.set(file, saved);
+    saved.catch(() => savedComposerImages.delete(file));
+  }
+  return saved;
+};
+
+/** An unsent image: the Library's star and projects save a copy there; delete takes it out of the message. */
 const ComposerImageDialog: FC<PropsWithChildren<{ source: AttachmentSource; src: string }>> = ({
   children,
   source,
   src,
 }) => {
-  const [open, setOpen] = useState(false);
+  const t = useT();
+  const aui = useAui();
+  const attachmentId = useAuiState(({ attachment }) => attachment.id);
+  const attachments = useAuiState(({ composer }) => composer.attachments);
+  const images = useMemo(() => galleryImagesOf(attachments), [attachments]);
+  const owner = useMemo(
+    () => ({
+      id: attachmentId,
+      name: source.name,
+      contentType: source.contentType,
+      file: source.file,
+      image: src,
+    }),
+    [attachmentId, source.name, source.contentType, source.file, src],
+  );
+  const gallery = useGalleryState(attachmentId);
+  const shown = images.find((image) => image.id === gallery.shownId) ?? owner;
+  // Re-read on change, so the star shows once a first save lands.
+  const [savedIds, setSavedIds] = useState<ReadonlyMap<File, string>>(new Map());
+  const savedId = shown.file ? (savedIds.get(shown.file) ?? null) : null;
+  const { favorite } = useLibraryFavorite(savedId, gallery.open);
+  const save = (image: GalleryImage) =>
+    saveComposerImage(image).then((id) => {
+      const file = image.file;
+      if (file) setSavedIds((current) => new Map(current).set(file, id));
+      return id;
+    });
   return (
-    <AttachmentImageDialog source={source} src={src} redactFromReload={true} open={open} onOpenChange={setOpen}>
+    <ImageGalleryDialog
+      owner={owner}
+      images={images}
+      redactFromReload={true}
+      {...gallery}
+      actionsFor={(image) => ({
+        favorite: image.id === shown.id && favorite,
+        onToggleFavorite: () =>
+          void save(image)
+            .then((id) =>
+              useLibraryFavoritesStore
+                .getState()
+                .setFavorite(id, !useLibraryFavoritesStore.getState().ids.has(id)),
+            )
+            .catch((error: unknown) =>
+              toast.error(t("library.toast.favoritesFailed"), {
+                description: error instanceof Error ? error.message : undefined,
+              }),
+            ),
+        onAddToProject: image.file
+          ? (projectId) => save(image).then((id) => addLibraryItemToProject(id, projectId))
+          : undefined,
+        deleteLabel: t("imageViewer.removeFromMessage"),
+        onDelete: () => {
+          const neighbour = neighbourOf(images, image.id);
+          if (image.id === attachmentId || !neighbour) gallery.onOpenChange(false);
+          else gallery.onShow(neighbour.id);
+          void aui.composer().attachment({ id: image.id }).remove();
+        },
+      })}
+    >
       {children}
-    </AttachmentImageDialog>
+    </ImageGalleryDialog>
   );
 };
 
-/** A sent image is a Library item too, so its viewer has the Library's star and delete. */
+// The Library's id for a sent attachment, as _attachment_id in backend/core/library.py quotes it.
+const attachmentItemId = (messageId: string, attachmentId: string): string =>
+  `attachment:${encodeURIComponent(messageId).replace(
+    /[!'()*]/g,
+    (char) => `%${char.charCodeAt(0).toString(16).toUpperCase()}`,
+  )}:${attachmentId}`;
+
+/** A sent image is a Library item too, so its viewer has the Library's star, projects and delete. */
 const SentImageDialog: FC<PropsWithChildren<{ source: AttachmentSource; src: string }>> = ({
   children,
   source,
@@ -144,40 +350,59 @@ const SentImageDialog: FC<PropsWithChildren<{ source: AttachmentSource; src: str
   const t = useT();
   const messageId = useAuiState(({ message }) => message.id);
   const attachmentId = useAuiState(({ attachment }) => attachment.id);
-  const [open, setOpen] = useState(false);
-  const [confirming, setConfirming] = useState(false);
-  // The Library's id for it: see _attachment_id in backend/core/library.py.
-  const itemId = `attachment:${encodeURIComponent(messageId)}:${attachmentId}`;
-  const { favorite, toggleFavorite } = useLibraryFavorite(itemId, open);
-  const name = source.name || t("imageViewer.title");
+  const attachments = useAuiState(({ message }) => message.attachments);
+  const images = useMemo(() => galleryImagesOf(attachments), [attachments]);
+  const owner = useMemo(
+    () => ({
+      id: attachmentId,
+      name: source.name,
+      contentType: source.contentType,
+      file: source.file,
+      image: src,
+    }),
+    [attachmentId, source.name, source.contentType, source.file, src],
+  );
+  const gallery = useGalleryState(attachmentId);
+  const [deleting, setDeleting] = useState<GalleryImage | null>(null);
+  const shown = images.find((image) => image.id === gallery.shownId) ?? owner;
+  const { favorite, toggleFavorite } = useLibraryFavorite(
+    attachmentItemId(messageId, shown.id),
+    gallery.open,
+  );
   return (
     <>
-      <AttachmentImageDialog
-        source={source}
-        src={src}
-        open={open}
-        onOpenChange={setOpen}
-        libraryActions={{
+      <ImageGalleryDialog
+        owner={owner}
+        images={images}
+        redactFromReload={false}
+        {...gallery}
+        actionsFor={(image) => ({
           favorite,
           onToggleFavorite: toggleFavorite,
-          onDelete: () => setConfirming(true),
-        }}
+          onAddToProject: (projectId) =>
+            addLibraryItemToProject(attachmentItemId(messageId, image.id), projectId),
+          onDelete: () => setDeleting(image),
+        })}
       >
         {children}
-      </AttachmentImageDialog>
+      </ImageGalleryDialog>
       <ConfirmDeleteDialog
-        open={confirming}
-        title={t("library.dialog.deleteTitle", { name })}
+        open={deleting !== null}
+        title={t("library.dialog.deleteTitle", { name: deleting?.name || t("imageViewer.title") })}
         description={t("library.dialog.deleteAttachment")}
         confirmLabel={t("common.delete")}
-        onOpenChange={setConfirming}
+        onOpenChange={(next) => !next && setDeleting(null)}
         onConfirm={() => {
-          setConfirming(false);
-          setOpen(false);
+          const image = deleting;
+          setDeleting(null);
+          if (!image) return;
+          const neighbour = neighbourOf(images, image.id);
+          if (image.id === attachmentId || !neighbour) gallery.onOpenChange(false);
+          else gallery.onShow(neighbour.id);
           // Removing it from the Library also takes it out of this message. The store loads
           // lazily, as the chat's other uses of it do.
           import("@/features/library/store")
-            .then(({ removeLibraryItem }) => removeLibraryItem(itemId))
+            .then(({ removeLibraryItem }) => removeLibraryItem(attachmentItemId(messageId, image.id)))
             .catch((error: unknown) =>
               toast.error(t("library.toast.deleteFailed"), {
                 description: error instanceof Error ? error.message : undefined,

@@ -5825,6 +5825,13 @@ html:has([data-blocking-screen]) .interface-zoom-position {
 	padding-top: var(--browser-file-toolbar-inset);
 }
 
+/* Dark mode: the browser's tabs and controls a step lighter than the panel, their text brighter. */
+.dark .browser-chrome {
+	--accent: color-mix(in oklab, var(--accent-base), white 7%);
+	--foreground: color-mix(in oklab, var(--foreground-base), white 55%);
+	--muted-foreground: color-mix(in oklab, var(--foreground-base) 90%, black);
+}
+
 .browser-file-toolbar > :not([aria-hidden]) {
 	box-shadow: 0 1px 3px rgb(0 0 0 / 0.08);
 }

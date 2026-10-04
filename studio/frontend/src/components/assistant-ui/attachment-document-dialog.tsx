@@ -12,7 +12,12 @@ import { AttachmentBrowserOpenContext } from "@/components/assistant-ui/attachme
 import { filesOpenInBrowser } from "@/features/browser";
 import { DocumentView, documentKind, isMarkdown } from "@/components/file-viewer";
 import { MarkdownPreview } from "@/components/markdown/markdown-preview";
-import { type MediaViewerActions, MediaViewer, ScaleMenu } from "@/components/media-viewer";
+import {
+  type MediaViewerActions,
+  type MediaViewerGallery,
+  MediaViewer,
+  ScaleMenu,
+} from "@/components/media-viewer";
 import { Spinner } from "@/components/ui/spinner";
 import {
   attachmentBodyText,
@@ -53,8 +58,10 @@ export const AttachmentViewer: FC<{
   flush?: boolean;
   extra?: ReactNode;
   /** The Library's own actions on the attachment, for one it lists. */
-  libraryActions?: Pick<MediaViewerActions, "favorite" | "onToggleFavorite" | "onDelete">;
+  libraryActions?: Omit<MediaViewerActions, "primary" | "onDownload">;
   variant?: "card" | "lightbox";
+  gallery?: MediaViewerGallery;
+  itemKey?: string;
   children: ReactNode;
 }> = ({
   trigger,
@@ -71,6 +78,8 @@ export const AttachmentViewer: FC<{
   extra,
   libraryActions,
   variant,
+  gallery,
+  itemKey,
   children,
 }) => {
   const t = useT();
@@ -132,6 +141,8 @@ export const AttachmentViewer: FC<{
           extra={extra}
           actions={actions}
           variant={variant}
+          gallery={gallery}
+          itemKey={itemKey}
         >
           {open && children}
         </MediaViewer>

@@ -3,7 +3,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { browserFrameUrl } from "./api";
-import { type FrameMessage, parseFrameMessage } from "./frame-message";
+import { type AnnotateEvent, type FrameMessage, parseFrameMessage } from "./frame-message";
 
 export type { FrameMessage };
 
@@ -12,7 +12,26 @@ let loadCounter = 0;
 // The page frame showing each tab, for commands from the panel (find, zoom).
 const frames = new Map<string, HTMLIFrameElement>();
 
-export type FrameCommand = { command: "find"; query: string; backwards?: boolean } | { command: "zoom"; value: number };
+export type FrameCommand =
+  | { command: "find"; query: string; backwards?: boolean }
+  | { command: "zoom"; value: number }
+  | { command: "annotate"; on: boolean }
+  | { command: "annotateForget"; id: number };
+
+// Who hears a tab's annotate reports: the panel's annotate layer, while it is on.
+const annotateListeners = new Map<string, (event: AnnotateEvent) => void>();
+
+export function onFrameAnnotate(tabId: string, listener: (event: AnnotateEvent) => void): () => void {
+  annotateListeners.set(tabId, listener);
+  return () => {
+    if (annotateListeners.get(tabId) === listener) annotateListeners.delete(tabId);
+  };
+}
+
+/** Where a tab's page sits on screen, for drawing over it; null if the tab shows no page. */
+export function frameRect(tabId: string): DOMRect | null {
+  return frames.get(tabId)?.getBoundingClientRect() ?? null;
+}
 
 /** Send a command to a tab's page; false if the tab shows no page. */
 export function sendFrameCommand(tabId: string, command: FrameCommand): boolean {
@@ -60,8 +79,10 @@ export function PageFrame({
 }) {
   const frameRef = useRef<HTMLIFrameElement | null>(null);
   const onMessageRef = useRef(onMessage);
+  const tabIdRef = useRef(tabId);
   useEffect(() => {
     onMessageRef.current = onMessage;
+    tabIdRef.current = tabId;
   });
   // One shell per page.
   const [loadId] = useState(() => String(++loadCounter));
@@ -77,6 +98,10 @@ export function PageFrame({
       if (!frame || event.source !== frame.contentWindow) return;
       let message = parseFrameMessage(event.data);
       if (!message) return;
+      if (message.type === "annotate") {
+        annotateListeners.get(tabIdRef.current)?.(message.event);
+        return;
+      }
       if (isUserAction(message)) {
         if (!userActive(frame, message)) return;
         // Shortcuts move focus off the page or replace it, so they bound themselves.
