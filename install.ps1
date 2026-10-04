@@ -8298,26 +8298,25 @@ exit 0
         }
     }
 
-    $venvDirExistedBeforeCreation = Test-Path -LiteralPath $VenvDir
-    $venvDirHasOwnershipEvidence = Test-Path -LiteralPath (Join-Path $VenvDir ".unsloth-studio-owned") -PathType Leaf
+    # Anything here now predates uv, so the --clear repair below must not touch it.
+    $venvDirHadEntries = Test-DirectoryHasEntries -Path $VenvDir
     $fallbackVenvExit = $null
-
     if (-not (Test-Path -LiteralPath $VenvPython)) {
         step "venv" "creating Python $($DetectedPython.Version) virtual environment"
         substep "$VenvDir"
         $venvExit = Invoke-InstallCommand -Label "create virtual environment" { & $script:UvExe venv $VenvDir --python "$($DetectedPython.Path)" }
         $uvVenvReady = ($venvExit -eq 0 -and (Test-VenvPythonReady -PythonExe $VenvPython))
         if (-not $uvVenvReady) {
-            if ($venvDirExistedBeforeCreation -and -not $venvDirHasOwnershipEvidence) {
-                Write-StudioLine "[ERROR] Refusing to repair an existing directory that is not a managed Studio environment." -ForegroundColor Red
+            if ($venvDirHadEntries) {
+                Write-StudioLine "[ERROR] $VenvDir was not empty before uv ran; refusing to rebuild over it." -ForegroundColor Red
                 Write-StudioLine "        Move $VenvDir aside or choose an empty UNSLOTH_STUDIO_HOME." -ForegroundColor Yellow
-                return (Exit-InstallFailure "Refusing to repair unowned virtual environment directory $VenvDir")
+                return (Exit-InstallFailure "Refusing to rebuild non-empty virtual environment directory $VenvDir")
             }
             Write-StudioLine "[WARN] uv did not produce a usable virtual environment; repairing with the selected Python." -ForegroundColor Yellow
             if (-not (Test-VenvPythonReady -PythonExe $DetectedPython.Path)) {
                 $fallbackVenvExit = 1
             } else {
-                $fallbackVenvExit = Invoke-InstallCommand -Label "repair virtual environment" { & $DetectedPython.Path -m venv $VenvDir }
+                $fallbackVenvExit = Invoke-InstallCommand -Label "repair virtual environment" { & $DetectedPython.Path -m venv --clear $VenvDir }
             }
         }
     } else {

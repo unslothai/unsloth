@@ -539,15 +539,21 @@ def _run_uv_venv_creation_result(
     foreign: bool = False,
     detected_python_missing: bool = False,
     foreign_pyvenv: bool = False,
+    empty_dir: bool = False,
 ) -> dict[str, str]:
     source = INSTALL_PS1.read_text(encoding = "utf-8")
     readiness = _extract(r"    function Test-VenvPythonReady \{.*?\n    \}\n", source)
+    has_entries = _extract(r"    function Test-DirectoryHasEntries \{.*?\n    \}\n", source)
     creation = _extract(
-        r"    \$venvDirExistedBeforeCreation = Test-Path -LiteralPath \$VenvDir\n    \$venvDirHasOwnershipEvidence = Test-Path -LiteralPath .*?\n    \$fallbackVenvExit = \$null\n    if \(-not \(Test-Path -LiteralPath \$VenvPython\)\) \{.*?(?=\n\n    # Mark the managed venv)",
+        r"    \$venvDirHadEntries = Test-DirectoryHasEntries .*?(?=\n\n    # Mark the managed venv)",
         source,
     )
-    marker_and_readiness = _extract(
-        r"    # Mark the managed venv before probing.*?(?=\n\n    # .*Helper: run amd-smi)",
+    marker = _extract(
+        r"    # Mark the managed venv before probing.*?(?=\n\n    # The venv itself has to be ARM64)",
+        source,
+    )
+    final_gate = _extract(
+        r"    if \(-not \(Test-VenvPythonReady -PythonExe \$VenvPython\)\) \{\n        \$recordedBaseHome.*?\n    \}\n",
         source,
     )
 
@@ -562,6 +568,7 @@ def _run_uv_venv_creation_result(
         """
 $target = $args[1]
 New-Item -ItemType Directory -Force -Path $target | Out-Null
+Set-Content -LiteralPath (Join-Path $target "stale-uv-sitecustomize.py") -Value "stale"
 if ($env:TEST_UV_MODE -eq "ready") {
     New-Item -ItemType Directory -Force -Path (Join-Path $target "Scripts") | Out-Null
     Copy-Item -LiteralPath $env:TEST_REAL_PYTHON -Destination (Join-Path $target "Scripts\\python.exe") -Force
@@ -581,11 +588,10 @@ exit 0
         """
 if ($args[0] -eq "-c") { exit 0 }
 [System.IO.File]::WriteAllText($env:TEST_FALLBACK_LOG, ($args -join "|"))
-$target = $args[2]
+$target = $args[3]
 New-Item -ItemType Directory -Force -Path $target | Out-Null
-$pythonPath = Join-Path $target "Scripts\\python.exe"
-if (Test-Path -LiteralPath $pythonPath) {
-    Remove-Item -LiteralPath $pythonPath -Force -Recurse
+if ($args[2] -eq "--clear") {
+    Get-ChildItem -LiteralPath $target -Force | Remove-Item -Force -Recurse
 }
 if ($env:TEST_FALLBACK_MODE -eq "ready") {
     New-Item -ItemType Directory -Force -Path (Join-Path $target "Scripts") | Out-Null
@@ -633,10 +639,14 @@ function Invoke-InstallCommand {{
 }}
 
 {readiness}
+{has_entries}
 
 if ($env:TEST_MIGRATED -eq "1") {{
     New-Item -ItemType Directory -Force -Path (Split-Path -Parent $VenvPython) | Out-Null
     Copy-Item -LiteralPath $env:TEST_REAL_PYTHON -Destination $VenvPython -Force
+}}
+if ($env:TEST_EMPTY_DIR -eq "1") {{
+    New-Item -ItemType Directory -Force -Path $VenvDir | Out-Null
 }}
 if ($env:TEST_FOREIGN_DIR -eq "1") {{
     New-Item -ItemType Directory -Force -Path $VenvDir | Out-Null
@@ -648,7 +658,8 @@ if ($env:TEST_FOREIGN_DIR -eq "1") {{
 
 function Invoke-TestCreation {{
 {creation}
-{marker_and_readiness}
+{marker}
+{final_gate}
     $script:PackageInstallReached = $true
 }}
 Invoke-TestCreation | Out-Null
@@ -668,6 +679,7 @@ Write-Output ("failure=" + ($null -ne $script:FailureMessage))
 Write-Output ("failure_code=" + $script:FailureExitCode)
 Write-Output ("failure_message=" + $script:FailureMessage)
 Write-Output ("foreign=" + (Test-Path -LiteralPath (Join-Path $VenvDir "foreign.txt") -PathType Leaf))
+Write-Output ("stale=" + (Test-Path -LiteralPath (Join-Path $VenvDir "stale-uv-sitecustomize.py") -PathType Leaf))
 Write-Output ("package=" + $script:PackageInstallReached)
 """
     env = os.environ.copy()
@@ -683,6 +695,7 @@ Write-Output ("package=" + $script:PackageInstallReached)
     env["TEST_MIGRATED"] = "1" if migrated else "0"
     env["TEST_FOREIGN_DIR"] = "1" if foreign else "0"
     env["TEST_FOREIGN_PYVENV"] = "1" if foreign_pyvenv else "0"
+    env["TEST_EMPTY_DIR"] = "1" if empty_dir else "0"
     env["PATH"] = os.pathsep.join((str(Path(sys.executable).parent), env.get("PATH", "")))
     output = _run_powershell(shell, script, env)
     return dict(line.split("=", 1) for line in output.splitlines())
@@ -718,8 +731,9 @@ def test_uv_venv_creation_result_zero_exit_unusable_uv_uses_fallback(
     assert state["calls"] == "create virtual environment,repair virtual environment", state
     _assert_uv_invocation(state, tmp_path)
     args = state["fallback_args"].split("|")
-    assert args[:2] == ["-m", "venv"], state
-    assert Path(args[2]).resolve() == (tmp_path / "managed venv with spaces").resolve(), state
+    assert args[:3] == ["-m", "venv", "--clear"], state
+    assert Path(args[3]).resolve() == (tmp_path / "managed venv with spaces").resolve(), state
+    assert state["stale"] == "False", state
     assert state["marker"] == "True", state
     assert state["failure"] == "False", state
     assert state["package"] == "True", state
@@ -734,8 +748,9 @@ def test_uv_venv_creation_result_nonzero_uv_uses_selected_python_fallback(
     assert state["calls"] == "create virtual environment,repair virtual environment", state
     _assert_uv_invocation(state, tmp_path)
     args = state["fallback_args"].split("|")
-    assert args[:2] == ["-m", "venv"], state
-    assert Path(args[2]).resolve() == (tmp_path / "managed venv with spaces").resolve(), state
+    assert args[:3] == ["-m", "venv", "--clear"], state
+    assert Path(args[3]).resolve() == (tmp_path / "managed venv with spaces").resolve(), state
+    assert state["stale"] == "False", state
     assert state["marker"] == "True", state
     assert state["failure"] == "False", state
     assert state["package"] == "True", state
@@ -811,9 +826,19 @@ def test_uv_venv_creation_result_preserves_foreign_target(
     assert state["marker"] == "False", state
     assert state["failure"] == "True", state
     assert state["failure_code"] == "1", state
-    assert "unowned virtual environment directory" in state["failure_message"], state
+    assert "non-empty virtual environment directory" in state["failure_message"], state
     assert state["foreign"] == "True", state
     assert state["package"] == "False", state
+
+
+@pytest.mark.skipif(not POWERSHELLS, reason = "PowerShell is unavailable")
+@pytest.mark.parametrize("shell", POWERSHELLS)
+def test_uv_venv_creation_result_repairs_preexisting_empty_target(tmp_path: Path, shell: str):
+    state = _run_uv_venv_creation_result(tmp_path, shell, "missing", "ready", empty_dir = True)
+    assert state["calls"] == "create virtual environment,repair virtual environment", state
+    assert state["stale"] == "False", state
+    assert state["failure"] == "False", state
+    assert state["package"] == "True", state
 
 
 @pytest.mark.skipif(not POWERSHELLS, reason = "PowerShell is unavailable")
