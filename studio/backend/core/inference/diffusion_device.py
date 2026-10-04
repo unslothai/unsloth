@@ -217,6 +217,9 @@ def install_rocm_vae_bf16_decode(
     decode = getattr(vae, "decode", None)
     if not callable(decode) or getattr(decode, "_unsloth_bf16_decode", False):
         return None
+    # NVIDIA's fp16 decode (diffusion_speed) owns the decoder dtype and recasts it to fp32 on a non-finite output.
+    if getattr(vae, "_unsloth_half_decode", False):
+        return None
     import torch
 
     if getattr(vae, "dtype", None) is not torch.float32:

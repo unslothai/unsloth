@@ -249,3 +249,33 @@ def test_nvidia_real_vae_untouched(tiny_wan_vae, gpu):
         is None
     )
     assert all(p.dtype == torch.float32 for p in vae.parameters())
+
+
+@pytest.mark.skipif(
+    not torch.cuda.is_available(), reason = "needs a real CUDA device for the NVIDIA fp16 decode"
+)
+def test_forced_bf16_leaves_nvidia_fp16_decode_alone(monkeypatch):
+    # Stacked, the fp16 wrapper's non-finite fallback recasts the decoder to fp32 under bf16 input hooks: crash.
+    diffusers = pytest.importorskip("diffusers")
+    from core.inference import diffusion_speed as ds
+
+    monkeypatch.setenv(dd.VAE_BF16_DECODE_ENV, "1")
+    torch.manual_seed(0)
+    vae = (
+        diffusers.AutoencoderKLWan(
+            base_dim = 8, z_dim = 4, dim_mult = [1, 2], num_res_blocks = 1, temperal_downsample = [True]
+        )
+        .eval()
+        .cuda()
+    )
+    pipe = types.SimpleNamespace(vae = vae)
+    target = dd.diffusion_device_target_from_torch_device("cuda", torch.bfloat16)
+    if target.backend != "cuda" or not ds._video_vae_half_decode(
+        pipe, target, types.SimpleNamespace(vae_force_fp32 = True), None
+    ):
+        pytest.skip("this device has no NVIDIA fp16 VAE decode")
+    assert install_rocm_vae_bf16_decode(pipe, target) is None
+    with torch.no_grad():
+        vae.decode(torch.full((1, 4, 2, 4, 4), float("nan"), device = "cuda"), return_dict = False)
+        out = vae.decode(torch.randn(1, 4, 2, 4, 4, device = "cuda"), return_dict = False)[0]
+    assert out.dtype == torch.float32 and bool(torch.isfinite(out).all())
