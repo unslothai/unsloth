@@ -112,8 +112,9 @@ export function useAudioSource({
   useEffect(() => {
     if (seenKey.current === valueKey) return;
     seenKey.current = valueKey;
-    if (valueKey && (phase === "error" || phase === "expired"))
+    if (valueKey && (phase === "error" || phase === "expired")) {
       dispatch({ type: "reset" });
+    }
   }, [valueKey, phase]);
   useEffect(() => {
     if (!(value && valueKey)) return;

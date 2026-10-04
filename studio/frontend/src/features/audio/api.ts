@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { authFetch, getAuthToken } from "@/features/auth";
+import { accountTransitionPending } from "@/lib/account-transition";
 import { apiUrl } from "@/lib/api-base";
 import {
   formatApiErrorBody,
@@ -358,6 +359,11 @@ function uploadWithProgress(
   signal?: AbortSignal,
 ): Promise<{ status: number; body: unknown }> {
   return new Promise((resolve, reject) => {
+    // Same fence as authFetch: mid-switch, this tab's file would be stored under the next account.
+    if (accountTransitionPending()) {
+      reject(new Error("Another tab is switching accounts; this tab will reload."));
+      return;
+    }
     const xhr = new XMLHttpRequest();
     xhr.open("POST", apiUrl(url));
     const token = getAuthToken();

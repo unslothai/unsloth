@@ -19,13 +19,15 @@ import {
   Tick02Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
+import { BlobUrlCache } from "@/lib/blob-url-cache";
 import { useEffect, useRef, useState } from "react";
 import { type AudioVoice, fetchAudioBlob } from "../api";
 import { useAudioVoicesStore } from "../stores/audio-voices-store";
 import { SaveVoiceDialog } from "./save-voice-dialog";
 import { formatSeconds } from "./waveform-peaks";
 
-const voiceUrls = new Map<string, string>();
+// About 20 saved voices (30 s of 24 kHz mono each); older previews re-fetch.
+const voiceUrls = new BlobUrlCache(32 * 1024 * 1024);
 
 export function VoicePicker({
   selectedId,
@@ -48,6 +50,7 @@ export function VoicePicker({
   const rename = useAudioVoicesStore((state) => state.rename);
   const remove = useAudioVoicesStore((state) => state.remove);
   const audioRef = useRef<HTMLAudioElement | null>(null);
+  const previewRequest = useRef(0);
   const [playingId, setPlayingId] = useState<string | null>(null);
   const [editing, setEditing] = useState<AudioVoice | null>(null);
 
@@ -70,16 +73,24 @@ export function VoicePicker({
       setPlayingId(null);
       return;
     }
+    const request = ++previewRequest.current;
     try {
       let url = voiceUrls.get(voice.id);
-      if (!url) {
-        url = URL.createObjectURL(await fetchAudioBlob(voice.url));
-        voiceUrls.set(voice.id, url);
+      if (url) {
+        voiceUrls.touch(voice.id);
+      } else {
+        const blob = await fetchAudioBlob(voice.url);
+        url = URL.createObjectURL(blob);
+        voiceUrls.set(voice.id, url, blob.size);
+        voiceUrls.prune([voice.id]);
       }
+      // A later preview click wins over this one's slower fetch.
+      if (request !== previewRequest.current) return;
       audio.src = url;
       await audio.play();
       setPlayingId(voice.id);
     } catch {
+      if (request !== previewRequest.current) return;
       setPlayingId(null);
       toast.error(`Could not play ${voice.name}.`);
     }
@@ -92,6 +103,7 @@ export function VoicePicker({
     }
     try {
       await remove(voice.id);
+      voiceUrls.delete(voice.id);
       if (voice.id === selectedId) onDeselect?.();
       toast.success(`Deleted ${voice.name}.`);
     } catch (reason) {
@@ -133,7 +145,7 @@ export function VoicePicker({
           )}
         </p>
       ) : (
-        <ul className="hover-scrollbar grid max-h-[calc(196px*var(--ui-space-scale,1))] gap-0.5 overflow-y-auto">
+        <ul className="hover-scrollbar grid min-w-0 max-h-[calc(196px*var(--ui-space-scale,1))] grid-cols-[minmax(0,1fr)] gap-0.5 overflow-y-auto">
           {voices.map((voice) => {
             const selected = voice.id === selectedId;
             const playing = voice.id === playingId;
@@ -141,7 +153,7 @@ export function VoicePicker({
               <li
                 key={voice.id}
                 className={cn(
-                  "group flex items-center gap-1 rounded-full pr-1 transition-colors hover:bg-accent",
+                  "group flex min-w-0 items-center gap-1 rounded-full pr-1 transition-colors hover:bg-accent",
                   selected && "bg-muted",
                 )}
               >
@@ -202,6 +214,7 @@ export function VoicePicker({
                       size="icon"
                       className="size-[calc(28px*var(--ui-space-scale,1))] shrink-0"
                       aria-label={`More for ${voice.name}`}
+                      disabled={disabled}
                     >
                       <HugeiconsIcon
                         icon={MoreHorizontalIcon}
@@ -242,6 +255,7 @@ export function VoicePicker({
           if (!open) setEditing(null);
         }}
         mode="edit"
+        voiceId={editing?.id}
         initial={{
           name: editing?.name ?? "",
           transcript: editing?.transcript ?? "",

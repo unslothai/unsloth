@@ -22637,7 +22637,12 @@ async def run_audio_workflow(
     paths = {role: str(path) for role, (_source, path) in prepared.items()}
     reference_source = prepared["reference"][0] if "reference" in prepared else None
     reference_text = (body.inputs.reference_text or "").strip() or None
-    if reference_text is None and reference_source is not None and reference_source.kind == "voice":
+    # An omitted transcript falls back to the saved voice's; a sent blank one was cleared on purpose.
+    if (
+        body.inputs.reference_text is None
+        and reference_source is not None
+        and reference_source.kind == "voice"
+    ):
         from core.inference import audio_voices
         voice = await asyncio.to_thread(audio_voices.get, reference_source.id)
         reference_text = ((voice or {}).get("transcript") or "").strip() or None

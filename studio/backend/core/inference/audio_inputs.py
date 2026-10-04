@@ -11,6 +11,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import threading
 import time
 import uuid
 import wave
@@ -20,6 +21,8 @@ from typing import Any, AsyncIterable, Optional
 
 from core.inference import audio_gallery
 from loggers import get_logger
+from utils.account_context import OWNER, AccountContext, is_owner_context, run_as
+from utils.paths.storage_roots import account_path
 from utils.upload_limits import AUDIO_INPUT_MAX_BYTES
 
 logger = get_logger(__name__)
@@ -290,6 +293,46 @@ def _finish_upload(
     return _record(input_id, meta), True
 
 
+def _has_inputs() -> bool:
+    """Whether the acting account has an inputs folder, checked without creating one."""
+    if is_owner_context():
+        return (audio_gallery.gallery_dir() / "inputs").is_dir()
+    return (account_path("audio") / "inputs").is_dir()
+
+
+def sweep_all_accounts() -> int:
+    """``sweep`` for the owner and every account with inputs; otherwise an account's expired
+    inputs would wait on disk for its next upload."""
+    from auth.storage import list_accounts
+
+    accounts = [OWNER] + [
+        AccountContext(row["account_id"], row["username"], row["role"])
+        for row in list_accounts()
+        if row["account_id"] != OWNER.account_id and row["role"] != OWNER.role
+    ]
+    removed = 0
+    for account in accounts:
+        try:
+            removed += run_as(account, lambda: sweep() if _has_inputs() else 0)
+        except Exception as exc:  # noqa: BLE001 - housekeeping never fails the server
+            logger.debug("audio input sweep skipped for an account: %s", exc)
+    return removed
+
+
+def start_sweeper(interval_seconds: float = 3600.0) -> None:
+    """Sweep every account at startup and then hourly, on a daemon thread."""
+
+    def loop() -> None:
+        while True:
+            try:
+                sweep_all_accounts()
+            except Exception as exc:  # noqa: BLE001 - e.g. the auth database is not ready yet
+                logger.debug("audio input sweep failed: %s", exc)
+            time.sleep(interval_seconds)
+
+    threading.Thread(target = loop, daemon = True, name = "audio-inputs-sweep").start()
+
+
 def _derived(directory: Path, stem: str) -> list[Path]:
     """Prepared copies made from one input (``{id}.24000.mono....wav``)."""
     try:
@@ -455,6 +498,9 @@ def prepared_path(
             os.utime(dst)
         return dst
     transcode(source.path, dst, rate = rate, mono = True, max_seconds = max_seconds, cut = True)
+    if source.kind != "input":
+        # Cloning from history or a saved voice may never upload, so expired copies go here too.
+        sweep()
     return dst
 
 

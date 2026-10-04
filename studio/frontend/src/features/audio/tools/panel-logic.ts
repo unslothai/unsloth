@@ -5,6 +5,7 @@
 
 import { type AudioSourceSelection, sourceRefOf } from "../audio-run-request";
 import { INDEX_TTS2_EMOTIONS, emotionVectorString } from "../clone-policy";
+import type { AudioSourceStatus } from "../hooks/audio-source-state";
 import type { AudioRunPatch, AudioToolPanel } from "./types";
 
 type AudioToolPanelLogic<V> = Omit<AudioToolPanel<V>, "Component">;
@@ -40,6 +41,17 @@ export interface EmotionValue {
   vector: number[];
   alpha: number;
   source: AudioSourceSelection | null;
+  /** Why the emotion clip cannot be sent yet (uploading, failed, expired); set by its input. */
+  sourceProblem?: string | null;
+}
+
+export function emotionSourceProblem(status: AudioSourceStatus): string | null {
+  if (status.phase === "uploading" || status.phase === "recording") {
+    return "Waiting for the emotion clip to finish uploading.";
+  }
+  if (status.phase === "error") return status.message;
+  if (status.phase === "expired") return "The emotion clip expired. Add it again.";
+  return null;
 }
 
 export const EMOTION_AUDIO_MISSING =
@@ -95,7 +107,9 @@ export const indexTts2EmotionLogic: AudioToolPanelLogic<EmotionValue> = {
       : {};
   },
   validate: (value) =>
-    value.mode === "audio" && !value.source ? EMOTION_AUDIO_MISSING : null,
+    value.mode !== "audio"
+      ? null
+      : (value.sourceProblem ?? (value.source ? null : EMOTION_AUDIO_MISSING)),
 };
 
 export interface ExpressivenessValue {
@@ -204,6 +218,8 @@ export interface SpeakVoiceValue {
 
 export const SAVED_VOICE_MISSING =
   "Pick a saved voice, or switch Voice to Built-in.";
+export const SAVED_VOICE_DELETED =
+  "That saved voice was deleted. Pick another one, or switch Voice to Built-in.";
 
 export const speakVoiceLogic: AudioToolPanelLogic<SpeakVoiceValue> = {
   id: "speak-voice",
@@ -211,18 +227,26 @@ export const speakVoiceLogic: AudioToolPanelLogic<SpeakVoiceValue> = {
   workflows: ["speak"],
   title: "Voice",
   claims: [],
+  // Speak sends no transcript, so a model that needs one (Fish Audio) clones only on Clone.
   appliesTo: (ctx) =>
     Boolean(
       ctx.audioWorkflows?.includes("speak") &&
-        ctx.audioWorkflows.includes("clone"),
+        ctx.audioWorkflows.includes("clone") &&
+        ctx.referenceTextMode !== "required",
     ),
   initial: () => ({ source: "builtin", voiceId: null }),
   toRequest: (value) =>
     value.source === "saved" && value.voiceId
       ? { inputs: { reference: { voice_id: value.voiceId } } }
       : {},
-  validate: (value) =>
-    value.source === "saved" && !value.voiceId ? SAVED_VOICE_MISSING : null,
+  validate: (value, _core, ctx) => {
+    if (value.source !== "saved") return null;
+    if (!value.voiceId) return SAVED_VOICE_MISSING;
+    // Deleting a voice on Clone does not reach the choice kept here.
+    return ctx.savedVoiceIds && !ctx.savedVoiceIds.includes(value.voiceId)
+      ? SAVED_VOICE_DELETED
+      : null;
+  },
 };
 
 // The backend formats plain text into `Speaker N:` lines, so nothing is sent.
