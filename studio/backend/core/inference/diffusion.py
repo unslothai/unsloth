@@ -7407,6 +7407,11 @@ class DiffusionBackend:
                         self._raise_if_load_cancelled(_load_token)
                         self._state = state
                         state_committed = True
+                    try:
+                        from . import diffusion_vae_prebuild
+                        diffusion_vae_prebuild.maybe_kick(pipe, compile_ctx, logger)
+                    except Exception:  # noqa: BLE001 - a prebuild, never a failed load
+                        pass
                 except BaseException as exc:
                     _clear_exception_frames(exc)
                     raise
@@ -10114,6 +10119,9 @@ class DiffusionBackend:
         # Restore the process-wide backend flags this load flipped so the next `off` load is bit-identical. All
         # idempotent.
         restore_backend_flags(state.backend_flags_before)
+        prebuild = sys.modules.get(f"{__package__}.diffusion_vae_prebuild")
+        if prebuild is not None:
+            prebuild.cancel_all()
         compile_cache.restore(state.compile_cache_ctx, logger = logger)
         # Before clear_gpu_cache(), or the graph pool stays reserved for the life of the process.
         cuda_graph.uninstall_all(state.cuda_graphs)
