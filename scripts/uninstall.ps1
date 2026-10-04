@@ -541,9 +541,7 @@ Environment:
         return $false
     }
 
-    # install.ps1 writes <root>\cache\uv-cache-dir (the cache that install used).
-    # A Studio-owned cache sits under that root and goes with the rm; a shared
-    # cache does not. Read the marker before any root is deleted.
+    # install.ps1 records its uv cache in <root>\cache\uv-cache-dir; one outside every removed root is shared and stays.
     function _RecordedUvCache {
         param([string]$Root)
         $marker = Join-Path $Root "cache\uv-cache-dir"
@@ -553,8 +551,7 @@ Environment:
         } catch {
             return $null
         }
-        if ($raw.EndsWith("`n")) { $raw = $raw.Substring(0, $raw.Length - 1) }
-        if ($raw.EndsWith("`r")) { $raw = $raw.Substring(0, $raw.Length - 1) }
+        $raw = $raw.TrimEnd("`r", "`n")
         if ([string]::IsNullOrWhiteSpace($raw)) { return $null }
         return $raw
     }
@@ -565,10 +562,8 @@ Environment:
         $normCache = $Cache.TrimEnd('\', '/')
         $normRoot = $Root.TrimEnd('\', '/')
         if ($normCache -eq $normRoot) { return $true }
-        $sep = [IO.Path]::DirectorySeparatorChar
-        if ($normCache.StartsWith($normRoot + $sep, [StringComparison]::OrdinalIgnoreCase)) { return $true }
-        if ($normCache.StartsWith($normRoot + '/', [StringComparison]::OrdinalIgnoreCase)) { return $true }
-        return $false
+        return $normCache.StartsWith($normRoot + '\', [StringComparison]::OrdinalIgnoreCase) -or
+            $normCache.StartsWith($normRoot + '/', [StringComparison]::OrdinalIgnoreCase)
     }
 
     # Hard deny list: never recursively delete a drive root, USERPROFILE, its parent or a system dir.
@@ -1028,19 +1023,12 @@ Environment:
 
     $uvSawMarker = $false
     $uvLeftovers = @()
-    $uvRemovedRoots = @()
-    if ($defaultStudioHome) { $uvRemovedRoots += $defaultStudioHome }
-    foreach ($r in $customRoots) {
-        if (_IsUnsafeRoot $r) { continue }
-        if (-not (_IsStudioRoot $r)) { continue }
-        $uvRemovedRoots += $r
-    }
-    foreach ($r in $uvRemovedRoots) {
+    foreach ($r in $ownedRoots) {
         $rec = _RecordedUvCache $r
         if ($null -eq $rec) { continue }
         $uvSawMarker = $true
         $under = $false
-        foreach ($root in $uvRemovedRoots) {
+        foreach ($root in $ownedRoots) {
             if (_UvCacheUnderRoot $rec $root) { $under = $true; break }
         }
         if (-not $under -and $uvLeftovers -notcontains $rec) { $uvLeftovers += $rec }
@@ -1477,7 +1465,7 @@ Environment:
     if ($uvLeftovers.Count -gt 0) {
         foreach ($p in $uvLeftovers) {
             Write-Host "Note: the uv package cache at $p was left in place (it may be shared with other tools)."
-            Write-Host "      Free it with 'uv cache clean', or 'uv cache clean torch' for the CUDA wheels."
+            Write-Host "      Free it with 'uv cache clean'."
         }
     } elseif (-not $uvSawMarker) {
         Write-Host 'Note: if install reused a shared uv cache (`uv cache dir`), it was left in place.'

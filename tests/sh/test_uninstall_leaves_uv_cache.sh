@@ -1,11 +1,7 @@
 #!/bin/bash
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
-#
-# Uninstall must leave a shared uv cache on disk and only name it when the
-# install recorded one outside the removed tree. A Studio-owned cache under
-# the install root goes with the rm; telling the user to `uv cache clean`
-# after that would wipe an unrelated cache.
+# A shared uv cache stays and is named; a Studio-owned one goes silently with the root (#9651).
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"

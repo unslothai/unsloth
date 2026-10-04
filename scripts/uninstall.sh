@@ -276,60 +276,33 @@ _markers_unavailable() {
     return 1
 }
 
-# install.sh writes $STUDIO_HOME/cache/uv-cache-dir (the cache that install used).
-# A Studio-owned cache sits under that root and goes with the rm; a shared cache
-# does not. Read the marker before any root is deleted.
-_uv_register_root() {
-    [ -n "$1" ] || return 0
-    [ -n "$_UV_ROOTS_FILE" ] || return 0
-    printf '%s\n' "$1" >> "$_UV_ROOTS_FILE" 2>/dev/null || true
-}
-
+# install.sh records its uv cache in <root>/cache/uv-cache-dir. One under a removed root goes with
+# it; any other is shared and stays. Read before any root is deleted.
 _uv_cache_under_any_root() {
-    _uv_c="$1"
-    [ -n "$_uv_c" ] || return 1
-    [ -f "$_UV_ROOTS_FILE" ] || return 1
     while IFS= read -r _uv_r; do
-        [ -n "$_uv_r" ] || continue
-        case "$_uv_c" in
-            "$_uv_r"|"$_uv_r"/*) return 0 ;;
-        esac
+        case "$1" in "$_uv_r"|"$_uv_r"/*) return 0 ;; esac
     done < "$_UV_ROOTS_FILE"
     return 1
 }
 
-_uv_collect_marker() {
-    _uv_root="$1"
-    [ -n "$_uv_root" ] || return 0
-    _uv_marker="$_uv_root/cache/uv-cache-dir"
-    [ -f "$_uv_marker" ] || return 0
-    _set_marker "$_UV_SAW_MARKER_FLAG"
-    # One record, one trailing delimiter. Match unsloth_cli/commands/studio.py.
-    _uv_rec=$(sed -n '1p' "$_uv_marker" 2>/dev/null || true)
-    _uv_rec=$(printf '%s' "$_uv_rec" | tr -d '\r')
-    [ -n "$_uv_rec" ] || return 0
-    if _uv_cache_under_any_root "$_uv_rec"; then
-        return 0
-    fi
-    [ -n "$_UV_LEFTOVER_FILE" ] || return 0
-    printf '%s\n' "$_uv_rec" >> "$_UV_LEFTOVER_FILE" 2>/dev/null || true
-}
-
 _uv_collect_from_install_roots() {
-    _uv_register_root "$HOME/.unsloth/studio"
-    _custom_studio_roots | while IFS= read -r _uv_custom; do
-        [ -n "$_uv_custom" ] || continue
-        _is_unsafe_root "$_uv_custom" && continue
-        _is_studio_root "$_uv_custom" || continue
-        _uv_register_root "$_uv_custom"
-    done
-    _uv_collect_marker "$HOME/.unsloth/studio"
-    _custom_studio_roots | while IFS= read -r _uv_custom; do
-        [ -n "$_uv_custom" ] || continue
-        _is_unsafe_root "$_uv_custom" && continue
-        _is_studio_root "$_uv_custom" || continue
-        _uv_collect_marker "$_uv_custom"
-    done
+    [ -n "$_UV_ROOTS_FILE" ] || return 0
+    {
+        printf '%s\n' "$HOME/.unsloth/studio"
+        _custom_studio_roots | while IFS= read -r _uv_root; do
+            [ -n "$_uv_root" ] || continue
+            if ! _is_unsafe_root "$_uv_root" && _is_studio_root "$_uv_root"; then
+                printf '%s\n' "$_uv_root"
+            fi
+        done
+    } > "$_UV_ROOTS_FILE" 2>/dev/null || return 0
+    while IFS= read -r _uv_root; do
+        [ -f "$_uv_root/cache/uv-cache-dir" ] || continue
+        _set_marker "$_UV_SAW_MARKER_FLAG"
+        _uv_rec=$(sed -n '1p' "$_uv_root/cache/uv-cache-dir" 2>/dev/null | tr -d '\r') || _uv_rec=""
+        [ -n "$_uv_rec" ] || continue
+        _uv_cache_under_any_root "$_uv_rec" || printf '%s\n' "$_uv_rec" >> "$_UV_LEFTOVER_FILE" 2>/dev/null || true
+    done < "$_UV_ROOTS_FILE"
 }
 
 _uv_print_leftover_notes() {
@@ -337,7 +310,7 @@ _uv_print_leftover_notes() {
         awk '!seen[$0]++' "$_UV_LEFTOVER_FILE" 2>/dev/null | while IFS= read -r _uv_path; do
             [ -n "$_uv_path" ] || continue
             echo "Note: the uv package cache at $_uv_path was left in place (it may be shared with other tools)."
-            echo "      Free it with 'uv cache clean', or 'uv cache clean torch' for the CUDA wheels."
+            echo "      Free it with 'uv cache clean'."
         done
     elif ! _marker_set "$_UV_SAW_MARKER_FLAG"; then
         echo "Note: if install reused a shared uv cache (\`uv cache dir\`), it was left in place."
