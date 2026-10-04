@@ -135,7 +135,11 @@ def test_an_upload_decodes_dedupes_and_deletes(client, fmt, codec, rate, layout,
         assert (w.getframerate(), w.getnchannels(), w.getsampwidth()) == (rate, channels, 2)
     assert (directory := audio_inputs.inputs_dir()) == gallery.gallery_dir() / "inputs"
     again = _upload(client, data, "other.wav")
-    assert again.status_code == 200 and again.json() == record
+    assert again.status_code == 200
+    # A re-upload refreshes the expiry, which can cross a second boundary.
+    reused = again.json()
+    assert reused.pop("expires_at") >= record["expires_at"]
+    assert reused == {k: v for k, v in record.items() if k != "expires_at"}
     assert len(list(directory.glob("*.json"))) == 1
     assert audio_inputs.prepare_reference({"input_id": record["id"]})[1].is_file()
     assert client.delete(f"{INPUTS}/{record['id']}").json() == {"removed": True}
