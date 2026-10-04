@@ -75,6 +75,12 @@ import { useShallow } from "zustand/react/shallow";
 const SAMPLE_COMPLETION =
   "<reasoning>\n48 + 24 = 72\n</reasoning>\n<answer>\n72\n</answer>";
 
+const SANDBOX_NAME: Record<string, string> = {
+  "mxc-processcontainer": "Windows MXC",
+  bubblewrap: "bubblewrap",
+  "macos-seatbelt": "macOS Seatbelt",
+};
+
 const RULE_ICON: Record<RuleType, IconSvgElement> = {
   regex: RegexIcon,
   exact_match: EqualSignIcon,
@@ -418,6 +424,10 @@ export function RewardsSection(): ReactElement {
       setIsolation(res.isolation);
       setPreviewError(null);
     } catch (err) {
+      // Stale scores next to an error read as if the failing reward had scored.
+      setPreview(null);
+      setPreviewTotal(null);
+      setIsolation(null);
       setPreviewError(err instanceof Error ? err.message : String(err));
     }
   }, [rewards, completion, reference, previewRow, promptColumn, mapping]);
@@ -678,7 +688,9 @@ export function RewardsSection(): ReactElement {
           >
             <HugeiconsIcon icon={Shield01Icon} className="size-3.5 shrink-0" />
             {isolation.os_isolation
-              ? t("rl.rewards.isolationOs", { backend: isolation.backend })
+              ? t("rl.rewards.isolationOs", {
+                  backend: SANDBOX_NAME[isolation.backend] ?? isolation.backend,
+                })
               : t("rl.rewards.isolationSoftware")}
           </p>
         )}

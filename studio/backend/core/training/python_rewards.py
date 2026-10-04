@@ -4,7 +4,7 @@
 """Python rewards: user code scored in one long-lived worker inside the OS sandbox.
 
 The worker is launched through the same ``os_sandbox`` path as the chat Python tool (MXC on
-Windows, Landlock/seccomp on Linux, Seatbelt on macOS) in ``auto`` mode, so a host without OS
+Windows, bubblewrap on Linux, Seatbelt on macOS) in ``auto`` mode, so a host without OS
 isolation falls back to the software safeguards and the run records which one it got.
 """
 
