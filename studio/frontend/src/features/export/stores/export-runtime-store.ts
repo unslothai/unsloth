@@ -139,8 +139,11 @@ export interface RunExportParams {
   exportMethod: ExportMethod;
   isAdapter: boolean;
   quantLevels: string[];
-  /** GGUF: use an importance matrix (auto-download); required for the IQ quants. */
+  /** GGUF: use an importance matrix, auto-downloaded unless imatrixPath is set; required for the IQ quants. */
   useImatrix?: boolean;
+  imatrixPath?: string;
+  /** GGUF: also write a FastFlowLM Q4NX folder for the AMD Ryzen AI NPU. */
+  npuQ4nx?: boolean;
   /** Merged: precision formats, each exported to its own sibling directory. Defaults to 16-bit.
    *  `label` is the display name for the success banner's per-format output line. */
   mergedSelections?: {
@@ -150,6 +153,7 @@ export interface RunExportParams {
   }[];
   /** LoRA: also emit a GGUF LoRA adapter (llama.cpp `--lora`), and its output float type. */
   loraGguf?: boolean;
+  adapterFormat?: "mlx" | "peft";
   loraGgufOuttype?: string;
   saveDirectory: string;
   destination: ExportDestination;
@@ -157,6 +161,7 @@ export interface RunExportParams {
   token?: string;
   privateRepo: boolean;
   baseModelId?: string | null;
+  installMissingDependencies?: boolean;
   summary: ExportRunSummary;
 }
 
@@ -305,9 +310,8 @@ export const useExportRuntimeStore = create<ExportRuntimeStore>()((set, get) => 
           startedAt: state.startedAt ?? Date.now(),
         };
       }
-      // A recovered (not store-owned) run finished on the backend. Settle from
-      // the last-op record when present (accurate success/error/output path),
-      // else fall back to the optimistic guess.
+      // A recovered (not store-owned) run finished on the backend. Settle from the last-op record
+      // when present (accurate success/error/output path), else fall back to the optimistic guess.
       if (!status.is_export_active && state.isExporting && !state.ownsRun) {
         // A standalone load_checkpoint (or no recorded op) is not an export and
         // must never settle as a finished export. A completed export ends on its
@@ -476,6 +480,9 @@ export const useExportRuntimeStore = create<ExportRuntimeStore>()((set, get) => 
               repo_id: params.repoId,
               hf_token: params.token,
               private: params.privateRepo,
+              install_missing_dependencies: Boolean(
+                params.installMissingDependencies,
+              ),
             }),
           );
           if (outputPath) outputs.push({ label: sel.label, path: outputPath });
@@ -495,10 +502,18 @@ export const useExportRuntimeStore = create<ExportRuntimeStore>()((set, get) => 
             // token when there is no hub-upload token (both are the same HF token).
             hf_token: params.token ?? params.loadToken ?? null,
             imatrix: params.useImatrix,
+            imatrix_path: params.useImatrix
+              ? params.imatrixPath?.trim() || null
+              : null,
             private: params.privateRepo,
+            npu_q4nx: params.npuQ4nx,
           }),
         );
         if (outputPath) outputs.push({ label: "GGUF", path: outputPath });
+        if (outputPath && params.npuQ4nx) {
+          const sep = outputPath.includes("\\") ? "\\" : "/";
+          outputs.push({ label: "AMD NPU (Q4NX)", path: `${outputPath}${sep}npu-q4nx` });
+        }
         if (!isCurrent()) return;
         set({ quantIndex: get().quantTotal });
       } else if (params.exportMethod === "lora") {
@@ -513,6 +528,7 @@ export const useExportRuntimeStore = create<ExportRuntimeStore>()((set, get) => 
             private: params.privateRepo,
             gguf: params.loraGguf ?? false,
             gguf_outtype: params.loraGgufOuttype ?? "q8_0",
+            adapter_format: params.adapterFormat,
           }),
         );
         if (outputPath) {

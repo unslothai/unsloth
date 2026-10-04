@@ -6,7 +6,7 @@ from __future__ import annotations
 import asyncio
 
 import pytest
-from fastapi import Depends, FastAPI, HTTPException, status
+from fastapi import Depends, FastAPI, HTTPException, Request, status
 from fastapi.security import HTTPAuthorizationCredentials
 from fastapi.testclient import TestClient
 
@@ -26,6 +26,15 @@ CREDENTIAL_PATH = "/credential"
 PASSWORD_CHANGE_PATH = "/password-change"
 DESKTOP_ONLY_PATH = "/desktop-only"
 DESKTOP_REQUIRED_DETAIL = "This action requires the Unsloth desktop app."
+
+
+def _accept_api_key(monkeypatch) -> None:
+    record = {"account_id": 1, "username": SUBJECT, "role": "owner"}
+    monkeypatch.setattr(
+        authentication,
+        "validate_api_key_account",
+        lambda token: (record, CREDENTIAL_SECRET) if token == API_KEY else None,
+    )
 
 
 def _protected_route(subject: str = Depends(authentication.get_current_subject)) -> dict[str, str]:
@@ -75,11 +84,7 @@ def test_reload_secret_delegates_to_loader(monkeypatch) -> None:
 def test_x_api_key_authenticates_protected_routes(monkeypatch) -> None:
     app = FastAPI()
     app.get(TEST_PATH)(_protected_route)
-    monkeypatch.setattr(
-        authentication,
-        "validate_api_key_with_credential",
-        lambda token: (SUBJECT, CREDENTIAL_SECRET) if token == API_KEY else None,
-    )
+    _accept_api_key(monkeypatch)
 
     response = TestClient(app).get(
         TEST_PATH,
@@ -119,11 +124,7 @@ def test_bearer_api_key_is_still_reported_as_programmatic_auth() -> None:
 def test_x_api_key_preserves_credential_generation(monkeypatch) -> None:
     app = FastAPI()
     app.get(CREDENTIAL_PATH)(_credential_route)
-    monkeypatch.setattr(
-        authentication,
-        "validate_api_key_with_credential",
-        lambda token: (SUBJECT, CREDENTIAL_SECRET) if token == API_KEY else None,
-    )
+    _accept_api_key(monkeypatch)
 
     response = TestClient(app).get(
         CREDENTIAL_PATH,
@@ -138,11 +139,7 @@ def test_x_api_key_preserves_credential_generation(monkeypatch) -> None:
 
 
 def test_x_api_key_takes_precedence_over_keyless_admission(monkeypatch) -> None:
-    monkeypatch.setattr(
-        authentication,
-        "validate_api_key_with_credential",
-        lambda token: (SUBJECT, CREDENTIAL_SECRET) if token == API_KEY else None,
-    )
+    _accept_api_key(monkeypatch)
     monkeypatch.setattr(
         authentication,
         "get_user_and_secret",
@@ -249,11 +246,7 @@ def test_bearer_credentials_take_precedence_over_dummy_x_api_key() -> None:
 def test_x_api_key_allows_password_change_dependency(monkeypatch) -> None:
     app = FastAPI()
     app.get(PASSWORD_CHANGE_PATH)(_password_change_route)
-    monkeypatch.setattr(
-        authentication,
-        "validate_api_key_with_credential",
-        lambda token: (SUBJECT, CREDENTIAL_SECRET) if token == API_KEY else None,
-    )
+    _accept_api_key(monkeypatch)
 
     response = TestClient(app).get(
         PASSWORD_CHANGE_PATH,
@@ -267,11 +260,7 @@ def test_x_api_key_allows_password_change_dependency(monkeypatch) -> None:
 def test_x_api_key_password_change_routes_reach_desktop_guard(monkeypatch) -> None:
     app = FastAPI()
     app.get(DESKTOP_ONLY_PATH)(_desktop_only_route)
-    monkeypatch.setattr(
-        authentication,
-        "validate_api_key_with_credential",
-        lambda token: (SUBJECT, CREDENTIAL_SECRET) if token == API_KEY else None,
-    )
+    _accept_api_key(monkeypatch)
 
     response = TestClient(app, raise_server_exceptions = False).get(
         DESKTOP_ONLY_PATH,
@@ -285,7 +274,7 @@ def test_x_api_key_password_change_routes_reach_desktop_guard(monkeypatch) -> No
 def test_invalid_x_api_key_is_rejected(monkeypatch) -> None:
     app = FastAPI()
     app.get(TEST_PATH)(_protected_route)
-    monkeypatch.setattr(authentication, "validate_api_key_with_credential", lambda _token: None)
+    monkeypatch.setattr(authentication, "validate_api_key_account", lambda _token: None)
 
     response = TestClient(app).get(
         TEST_PATH,
@@ -325,3 +314,26 @@ def test_dependency_rejects_missing_credentials_when_security_yields_none() -> N
 
     assert caught.value.status_code == status.HTTP_401_UNAUTHORIZED
     assert caught.value.detail == authentication.NOT_AUTHENTICATED_DETAIL
+
+
+def test_real_x_api_key_is_not_recorded_as_keyless_admission(monkeypatch) -> None:
+    from utils import keyless_api_access
+
+    _accept_api_key(monkeypatch)
+    monkeypatch.setattr(keyless_api_access, "keyless_request_allowed", lambda _request: True)
+    app = FastAPI()
+
+    @app.get(TEST_PATH)
+    def _route(request: Request, subject: str = Depends(authentication.get_current_subject)):
+        return {
+            "subject": subject,
+            "keyless": authentication.request_admitted_without_credential(request),
+        }
+
+    client = TestClient(app)
+    response = client.get(TEST_PATH, headers = {authentication.X_API_KEY_HEADER: API_KEY})
+    assert response.status_code == status.HTTP_200_OK
+    assert response.json() == {"subject": SUBJECT, "keyless": False}
+
+    dummy = client.get(TEST_PATH, headers = {authentication.X_API_KEY_HEADER: DUMMY_X_API_KEY})
+    assert dummy.json()["keyless"] is True

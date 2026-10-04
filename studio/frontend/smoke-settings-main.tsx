@@ -6,7 +6,9 @@
 
 import { TooltipProvider } from "@/components/ui/tooltip";
 /* eslint-disable no-restricted-imports -- a harness entry point, not app code. */
-import { SettingsDialog } from "@/features/settings/settings-dialog";
+import { SettingsDialogMount } from "@/features/settings/settings-dialog-mount";
+import { useMonitorOverlayStore } from "@/features/settings/stores/monitor-overlay-store";
+
 import {
   type SettingsTab,
   useSettingsDialogStore,
@@ -20,9 +22,19 @@ import {
   createRoute,
   createRouter,
 } from "@tanstack/react-router";
-import { Component, StrictMode, type ReactNode } from "react";
+import { Component, type ReactNode, StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import "./src/index.css";
+import { AUTH_TOKEN_KEY } from "@/features/auth/session";
+
+// The Accounts tab is owner-only and the owner is read from the token's claims, so the harness carries an unsigned owner token.
+if (!localStorage.getItem(AUTH_TOKEN_KEY)) {
+  const claims = btoa(JSON.stringify({ sub: "unsloth", role: "owner" }))
+    .replace(/\+/g, "-")
+    .replace(/\//g, "_")
+    .replace(/=+$/, "");
+  localStorage.setItem(AUTH_TOKEN_KEY, `smoke.${claims}.smoke`);
+}
 
 declare global {
   interface Window {
@@ -31,6 +43,8 @@ declare global {
       open: (tab?: string) => void;
       openArchived: (shelf: string) => void;
       close: () => void;
+
+      setMonitor: (open: boolean) => void;
       setTab: (tab: string) => void;
       state: () => {
         open: boolean;
@@ -75,11 +89,18 @@ window.__settingsSmoke = {
   },
   // The archive toasts' deep-open: straight to Data, on the shelf they name.
   openArchived: (shelf: string) => {
-    if (shelf === "chats") store.getState().openArchivedChats();
-    else store.getState().openArchivedMedia(shelf as "images" | "videos");
+    if (shelf === "chats") {
+      store.getState().openArchivedChats();
+    } else {
+      store.getState().openArchivedMedia(shelf as "images" | "videos");
+    }
   },
   close: () => {
     store.getState().closeDialog();
+  },
+
+  setMonitor: (open: boolean) => {
+    useMonitorOverlayStore.getState().setIsOpen(open);
   },
   setTab: (tab: string) => {
     store.getState().setActiveTab(tab as SettingsTab);
@@ -100,7 +121,7 @@ function Harness() {
     <TooltipProvider>
       <div data-testid="harness-root">
         <Boundary>
-          <SettingsDialog />
+          <SettingsDialogMount active />
         </Boundary>
       </div>
     </TooltipProvider>
@@ -120,7 +141,9 @@ const harnessRouter = createRouter({
 });
 
 const rootElement = document.getElementById("root");
-if (!rootElement) throw new Error("Root element not found");
+if (!rootElement) {
+  throw new Error("Root element not found");
+}
 const root = createRoot(rootElement);
 const strict = !new URLSearchParams(window.location.search).has("nostrict");
 

@@ -32,24 +32,23 @@ from loggers import get_logger
 
 logger = get_logger(__name__)
 
-# Spawn, never fork: a forked CUDA context is unusable, and Windows/macOS have no fork.
+# spawn, never fork: a forked CUDA context is unusable, and Windows/macOS have no fork
 _CTX = mp.get_context("spawn")
 
 _BACKEND_PATH = str(Path(__file__).resolve().parent.parent.parent)
 
-# Both bounds only break a hang: a cold-disk large-v3 load and a 30 minute
-# transcription are both legitimately slow.
+# both bounds only break a hang: a cold-disk large-v3 load and a 30 minute transcription are legitimately slow
 _LOAD_TIMEOUT_SECONDS = 600.0
 _TRANSCRIBE_TIMEOUT_SECONDS = 600.0
-# How long a cancelled command gets before the child is killed. Generation stops
-# within a token, but a load inside from_pretrained never sees the cancel, and
-# training is waiting for that memory.
+# How long a cancelled command gets before the child is killed. Generation stops within a token, but a load inside
+# from_pretrained never sees the cancel, and training is waiting for that memory.
 _CANCEL_GRACE_SECONDS = 10.0
 _SHUTDOWN_TIMEOUT_SECONDS = 10.0
 _POLL_SECONDS = 0.1
+_TIMESTAMPS_PER_SECOND = 50
 
-# Errors the child may report that the parent must re-raise as themselves; any
-# other failure crosses as a RuntimeError carrying the child's message.
+# Errors the child may report that the parent must re-raise as themselves; any other failure crosses as a RuntimeError
+# carrying the child's message.
 _FORWARDED_ERRORS = (
     "SttLoadCancelledError",
     "SttTranscriptionCancelledError",
@@ -69,11 +68,6 @@ class SttWorkerSpawnError(SttWorkerError):
     Distinct because it says nothing about the model or the device, so the
     caller answers it by loading in process rather than by giving up.
     """
-
-
-# ---------------------------------------------------------------------------
-# Child process
-# ---------------------------------------------------------------------------
 
 
 def _ensure_backend_on_path() -> None:
@@ -114,8 +108,8 @@ def load_whisper(
     dtype = getattr(torch, dtype_name, None) or torch.float32
     processor = WhisperProcessor.from_pretrained(snapshot_path, local_files_only = True)
     _raise_if_cancelled(cancel_event)
-    # use_safetensors forces the pickle-free load path even if a pytorch_model.bin
-    # reached the cache; the selector and completeness check exclude them upstream.
+    # use_safetensors forces the pickle-free load path even if a pytorch_model.bin reached the cache; the selector and
+    # completeness check exclude them upstream.
     model = WhisperForConditionalGeneration.from_pretrained(
         snapshot_path, torch_dtype = dtype, local_files_only = True, use_safetensors = True
     )
@@ -143,20 +137,62 @@ def transcribe_window(
 
     segment = np.frombuffer(pcm, dtype = np.float32)
     kwargs = dict(generate_kwargs)
+    return_timestamps = bool(kwargs.get("return_timestamps"))
+    if return_timestamps:
+        kwargs["force_unique_generate_call"] = True
     if cancel_event is not None:
         from transformers import StoppingCriteriaList
         kwargs["stopping_criteria"] = StoppingCriteriaList([_CancelCriteria(cancel_event)])
     from core.inference.stt_sidecar import _TARGET_SAMPLE_RATE
 
-    inputs = processor(segment, sampling_rate = _TARGET_SAMPLE_RATE, return_tensors = "pt")
+    inputs = processor(
+        segment,
+        sampling_rate = _TARGET_SAMPLE_RATE,
+        return_tensors = "pt",
+        return_attention_mask = return_timestamps,
+    )
     features = inputs.input_features.to(model.device)
     target_dtype = getattr(model, "dtype", None)
     if target_dtype is not None:
         features = features.to(target_dtype)
+    if return_timestamps:
+        kwargs["attention_mask"] = inputs.attention_mask.to(model.device)
     with torch.no_grad():
         generated = model.generate(features, **kwargs)
+    consumed = len(segment)
+    if return_timestamps:
+        raw_tokens = [int(token) for token in generated[0]]
+        indices, end = _complete_segment_indices(raw_tokens, model.generation_config)
+        if end:
+            consumed = end * _TARGET_SAMPLE_RATE // _TIMESTAMPS_PER_SECOND
+        generated = [[raw_tokens[index] for index in indices]]
     text = processor.batch_decode(generated, skip_special_tokens = True)
-    return text[0] if text else ""
+    return (text[0] if text else ""), consumed
+
+
+def _complete_segment_indices(tokens: list, generation_config) -> tuple:
+    # whisper's long-form seek decodes a segment cut off by the window again from the next window
+    timestamp_begin = generation_config.no_timestamps_token_id + 1
+    indexed_tokens = [
+        (index, token)
+        for index, token in enumerate(tokens)
+        if token < generation_config.eos_token_id or token >= timestamp_begin
+    ]
+    is_timestamp = [token >= timestamp_begin for _, token in indexed_tokens]
+    pairs = [i for i in range(1, len(indexed_tokens)) if is_timestamp[i - 1] and is_timestamp[i]]
+    if not pairs or is_timestamp[-2:] == [False, True]:
+        return [index for index, _ in indexed_tokens], 0
+    return (
+        [index for index, _ in indexed_tokens[: pairs[-1]]],
+        indexed_tokens[pairs[-1] - 1][1] - timestamp_begin,
+    )
+
+
+def _supports_segment_timestamps(generation_config) -> bool:
+    return all(
+        isinstance(getattr(generation_config, field, None), int)
+        for field in ("no_timestamps_token_id", "eos_token_id")
+    )
 
 
 def _error_response(exc: BaseException) -> dict:
@@ -213,16 +249,13 @@ def run_stt_worker(
     except Exception as exc:  # noqa: BLE001 - logging setup must not fail dictation
         logger.debug("STT worker logging setup failed: %s", exc)
 
-    # Say this interpreter is up before any model work. Without it the parent has
-    # only the exit code, and Windows has no signals: a native crash inside the model
-    # load ends the child with a positive status there exactly as a child that never
-    # bootstrapped does, and reading that crash as a host that cannot spawn moves the
-    # same crashing load into the backend, which the backend does not survive.
-    #
-    # An Event, not a queue message: Queue.put only hands the object to a feeder
-    # thread, so a child that faults before that thread drains the buffer never
-    # delivers it (measured here, the queued word was lost in 17 of 20 runs). An
-    # Event is shared memory, set the moment it returns, and was lost in none.
+    # Say this interpreter is up before any model work. Without it the parent has only the exit code, and Windows has no
+    # signals: a native crash inside the model load ends the child with a positive status there exactly as a child that
+    # never bootstrapped does, and reading that crash as a host that cannot spawn moves the same crashing load into the
+    # backend, which the backend does not survive. An Event, not a queue message: Queue.put only hands the object to a
+    # feeder thread, so a child that faults before that thread drains the buffer never delivers it (measured here, the
+    # queued word was lost in 17 of 20 runs). An Event is shared memory, set the moment it returns, and was lost in
+    # none.
     if ready_event is not None:
         ready_event.set()
 
@@ -248,6 +281,7 @@ def run_stt_worker(
                 engine = (model, processor)
                 generation_config = getattr(model, "generation_config", None)
                 is_multilingual = getattr(generation_config, "is_multilingual", None)
+                supports_timestamps = _supports_segment_timestamps(generation_config)
                 _send(
                     resp_queue,
                     {
@@ -256,13 +290,14 @@ def run_stt_worker(
                         "is_multilingual": (
                             is_multilingual if isinstance(is_multilingual, bool) else None
                         ),
+                        "supports_timestamps": supports_timestamps,
                     },
                 )
             elif kind == "transcribe":
                 if engine is None:
                     raise SttWorkerError("The dictation worker has no model loaded.")
                 cancellable = bool(command.get("cancellable"))
-                text = transcribe_window(
+                text, consumed = transcribe_window(
                     engine[0],
                     engine[1],
                     command["audio"],
@@ -272,7 +307,7 @@ def run_stt_worker(
                 if cancellable and cancel_event.is_set():
                     from core.inference.stt_sidecar import SttTranscriptionCancelledError
                     raise SttTranscriptionCancelledError("Transcription cancelled.")
-                _send(resp_queue, {"type": "text", "text": text})
+                _send(resp_queue, {"type": "text", "text": text, "consumed": consumed})
             elif kind == "shutdown":
                 _send(resp_queue, {"type": "shutdown_ack"})
                 return
@@ -288,14 +323,8 @@ def run_stt_worker(
         except BaseException as exc:  # noqa: BLE001 - every failure is reported, then handled
             _send(resp_queue, _error_response(exc))
             if kind == "load":
-                # Nothing is resident after a failed load, and the attempt may
-                # already have taken a context; exiting returns it.
+                # nothing is resident after a failed load, and the attempt may already have taken a context
                 return
-
-
-# ---------------------------------------------------------------------------
-# Parent process
-# ---------------------------------------------------------------------------
 
 
 def _raise_worker_error(response: dict) -> None:
@@ -321,18 +350,17 @@ class WhisperWorker:
         self._cmd_queue = None
         self._resp_queue = None
         self._cancel_event = None
-        # Set by the child before any model work, so this separates a host that
-        # cannot bring a child up from a child that failed at something.
+        # set by the child before any model work, so this separates a host that cannot bring a child up from a child
+        # that failed at something
         self._ready_event = None
         self._answered = False
-        # Set once close() found a child that outlived terminate and kill. The handle
-        # is kept so its memory stays accounted, but a child that answered neither
-        # signal answers no later command either, and its terminate left the queues
-        # liable to corruption, so it must never be handed to a later dictation.
+        # Set once close() found a child that outlived terminate and kill. The handle is kept so its memory stays
+        # accounted, but a child that answered neither signal answers no later command either, and its terminate left
+        # the queues liable to corruption, so it must never be handed to a later dictation.
         self.survived_kill = False
         self.device: Optional[str] = None
-        # Read by the sidecar the way it read the model's, so an English-only
-        # checkpoint still drops the task/language kwargs it rejects.
+        # Read by the sidecar the way it read the model's, so an English-only checkpoint still drops the task/language
+        # kwargs it rejects.
         self.generation_config = SimpleNamespace(is_multilingual = None)
 
     def start(
@@ -348,8 +376,15 @@ class WhisperWorker:
             native_path_secret_removed_for_child_start,
             run_without_native_path_secret,
         )
-        from utils.process_lifetime import adopt_pid
+        from utils.process_lifetime import adopt_pid, is_process_shutting_down
 
+        # One flag at every spawn: no _graceful_shutdown step unloads this sidecar and
+        # cancel_pending_loads only reaches the chat /load attempts, so without this a
+        # quit during an STT load starts a worker the step-7 sweep has already passed.
+        if is_process_shutting_down():
+            raise SttWorkerSpawnError(
+                "Unsloth is shutting down; not starting the dictation worker."
+            )
         cache_env = get_hf_cache_paths().child_env({})
         try:
             with (
@@ -361,8 +396,8 @@ class WhisperWorker:
                 self._cancel_event = _CTX.Event()
                 self._ready_event = _CTX.Event()
                 self._process = _CTX.Process(
-                    # The shared shim binds the child to this process's lifetime and
-                    # applies the Hub cache environment before any import.
+                    # the shared shim binds the child to this process's lifetime and applies the Hub cache environment
+                    # before any import
                     target = run_without_native_path_secret,
                     args = ("core.inference.stt_transformers_worker", "run_stt_worker", cache_env),
                     kwargs = {
@@ -374,17 +409,39 @@ class WhisperWorker:
                     },
                     daemon = True,
                 )
-                self._process.start()
+                # Local handle, and started through it: a concurrent teardown can clear
+                # self._process while start() is still returning, and re-reading the
+                # attribute afterwards would lose the only reference to a live child.
+                _spawned_proc = self._process
+                _spawned_proc.start()
         except Exception as exc:  # noqa: BLE001 - any refusal to spawn reads the same
-            # Nothing was started, so nothing to kill; raise a class the caller can act on.
             self._process = None
             self._close_queues()
             raise SttWorkerSpawnError(
                 f"Could not start the dictation worker process: {exc}"
             ) from exc
-        adopt_pid(self._process.pid)  # terminate_all backstop for graceful exits
+        adopt_pid(_spawned_proc.pid)  # terminate_all backstop for graceful exits
+        # Recheck once the pid is recorded: the latch can be set between the gate above
+        # and this record. Adoption runs first, so a child reaped here is still in the
+        # sweep record.
+        if is_process_shutting_down():
+            logger.info("shutdown began during the spawn; reaping the new dictation worker")
+            try:
+                if _spawned_proc.is_alive():
+                    _spawned_proc.terminate()
+                    _spawned_proc.join(5)
+                if _spawned_proc.is_alive():
+                    _spawned_proc.kill()
+                    _spawned_proc.join(5)
+            except Exception:  # noqa: BLE001 - the reap is best-effort
+                pass
+            self._process = None
+            self._close_queues()
+            raise SttWorkerSpawnError(
+                "Unsloth is shutting down; not starting the dictation worker."
+            )
         logger.info(
-            "STT worker started (pid=%s) for %s on %s", self._process.pid, snapshot_path, device
+            "STT worker started (pid=%s) for %s on %s", _spawned_proc.pid, snapshot_path, device
         )
         try:
             self._send(
@@ -406,15 +463,17 @@ class WhisperWorker:
                 ) from exc
             raise
         self.device = response.get("device") or device
-        self.generation_config = SimpleNamespace(is_multilingual = response.get("is_multilingual"))
+        self.generation_config = SimpleNamespace(
+            is_multilingual = response.get("is_multilingual"),
+            supports_timestamps = response.get("supports_timestamps") is True,
+        )
 
     def transcribe_window(
         self,
         pcm: bytes,
         generate_kwargs: dict,
         cancel_event: Optional[threading.Event] = None,
-    ) -> str:
-        """Transcribe one decoded window and return its text."""
+    ) -> tuple[str, int]:
         if self._cancel_event is not None:
             self._cancel_event.clear()
         self._send(
@@ -427,7 +486,7 @@ class WhisperWorker:
         )
         response = self._await("text", _TRANSCRIBE_TIMEOUT_SECONDS, cancel_event, "transcribe")
         text = response.get("text")
-        return text if isinstance(text, str) else ""
+        return (text if isinstance(text, str) else ""), response["consumed"]
 
     def is_alive(self) -> bool:
         process = self._process
@@ -507,9 +566,9 @@ class WhisperWorker:
                     "pid record so the sweep can still reach it",
                     process.pid,
                 )
-                # Recorded on the handle, not just returned: a cancelled or timed-out
-                # command closes the worker from inside _await and raises over this
-                # answer, so the sidecar would keep offering the wedged child otherwise.
+                # Recorded on the handle, not just returned: a cancelled or timed-out command closes the worker from
+                # inside _await and raises over this answer, so the sidecar would keep offering the wedged child
+                # otherwise.
                 self.survived_kill = True
                 return False
             try:
@@ -553,10 +612,6 @@ class WhisperWorker:
                 if cancel_deadline is None:
                     cancel_deadline = time.monotonic() + _CANCEL_GRACE_SECONDS
                 elif time.monotonic() >= cancel_deadline:
-                    # A load inside from_pretrained never sees the event and the memory
-                    # is wanted now, so end the process. The grace WAS the graceful
-                    # shutdown, and a child too busy to read the cancel will not read a
-                    # shutdown, so terminate rather than wait _SHUTDOWN_TIMEOUT_SECONDS more.
                     self.close(graceful_timeout = 0.0)
                     self._raise_cancelled(phase)
             try:
@@ -566,9 +621,8 @@ class WhisperWorker:
                     raise SttWorkerError(self._crash_message(phase))
                 if time.monotonic() >= deadline:
                     if cancel_deadline is not None:
-                        # A cancel landing near the end of the timeout is still a cancel:
-                        # the caller is owed the phase's own error (409 load, 499
-                        # transcription), and a child that ignored it ignores a shutdown.
+                        # A cancel landing near the end of the timeout is still a cancel: the caller is owed the phase's
+                        # own error (409 load, 499 transcription), and a child that ignored it ignores a shutdown.
                         self.close(graceful_timeout = 0.0)
                         self._raise_cancelled(phase)
                     self.close()
@@ -651,7 +705,8 @@ class InProcessWhisperEngine:
         generation_config = getattr(model, "generation_config", None)
         is_multilingual = getattr(generation_config, "is_multilingual", None)
         self.generation_config = SimpleNamespace(
-            is_multilingual = is_multilingual if isinstance(is_multilingual, bool) else None
+            is_multilingual = is_multilingual if isinstance(is_multilingual, bool) else None,
+            supports_timestamps = _supports_segment_timestamps(generation_config),
         )
         logger.info("STT model loaded in process on the CPU from %s", snapshot_path)
 
@@ -660,16 +715,16 @@ class InProcessWhisperEngine:
         pcm: bytes,
         generate_kwargs: dict,
         cancel_event: Optional[threading.Event] = None,
-    ) -> str:
+    ) -> tuple[str, int]:
         if self._model is None:
             raise SttWorkerError("The dictation worker has no model loaded.")
-        text = transcribe_window(
+        result = transcribe_window(
             self._model, self._processor, pcm, dict(generate_kwargs), cancel_event
         )
         if cancel_event is not None and cancel_event.is_set():
             from core.inference.stt_sidecar import SttTranscriptionCancelledError
             raise SttTranscriptionCancelledError("Transcription cancelled.")
-        return text
+        return result
 
     def is_alive(self) -> bool:
         return self._model is not None

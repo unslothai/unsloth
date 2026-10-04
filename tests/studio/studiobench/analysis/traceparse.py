@@ -37,18 +37,17 @@ from typing import Any, Iterable, Iterator, Sequence
 
 from . import CellFailure
 
-# Complete-duration events are the only phase that forms the task tree. Async
-# (`b`/`e`/`n`), flow (`s`/`t`/`f`), instant (`I`/`R`), sample (`P`), counter
-# (`C`) and metadata (`M`) events are carried alongside but never nested, since
-# their timestamps do not describe a stack.
+# Complete-duration events are the only phase that forms the task tree. Async (`b`/`e`/`n`), flow
+# (`s`/`t`/`f`), instant (`I`/`R`), sample (`P`), counter (`C`) and metadata (`M`) events are
+# carried alongside but never nested, since their timestamps do not describe a stack.
 _PHASE_COMPLETE = "X"
 _PHASE_BEGIN = "B"
 _PHASE_END = "E"
 
-# When two events share both `ts` and `dur`, the trace gives no ordering. On the
-# main thread the devtools view (`RunTask`) is conceptually the outer frame and
-# the scheduler view (`ThreadControllerImpl::RunTask`) the inner one, so pin
-# that order rather than letting dict ordering decide which is the parent.
+# When two events share both `ts` and `dur` the trace gives no ordering. On the main thread the
+# devtools view (`RunTask`) is conceptually the outer frame and the scheduler view
+# (`ThreadControllerImpl::RunTask`) the inner one, so pin that order rather than letting dict
+# ordering decide.
 _OUTERMOST_FIRST = {
     "RunTask": 0,
     "ThreadControllerImpl::RunTask": 1,
@@ -137,7 +136,7 @@ class Trace:
                     self._thread_names[key] = name  # type: ignore[index]
         self._threads: dict[tuple[int, int], Thread] = {}
 
-    # ---------------------------------------------------------------- loading
+    # loading
 
     @classmethod
     def from_json_text(cls, text: str) -> "Trace":
@@ -154,8 +153,8 @@ class Trace:
         try:
             doc = json.loads(text)
         except json.JSONDecodeError as exc:
-            # A truncated JSON document is the signature of a drained stream that
-            # was cut short. That is a failed cell, never a short trace.
+            # A truncated JSON document is the signature of a drained stream that was cut short: a failed cell,
+            # never a short trace.
             raise CellFailure(
                 "trace_truncated",
                 f"trace JSON did not parse ({exc}); {len(text)} bytes drained",
@@ -303,9 +302,9 @@ def build_tree(events: Iterable[dict[str, Any]]) -> list[Task]:
     for t in complete:
         while stack and t.ts >= stack[-1].end:
             stack.pop()
-        # An event that starts inside its would-be parent but ends after it is
-        # not nested; the trace is inconsistent there. Treat it as a sibling
-        # rather than corrupting self-time arithmetic for the whole subtree.
+        # An event that starts inside its would-be parent but ends after it is not nested; the trace is
+        # inconsistent there, so treat it as a sibling rather than corrupting self-time arithmetic for the
+        # whole subtree.
         while stack and t.end > stack[-1].end:
             stack.pop()
         if stack:

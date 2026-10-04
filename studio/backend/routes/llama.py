@@ -4,17 +4,16 @@
 """llama.cpp prebuilt update endpoints -- the single main update item.
 
 GET  /api/llama/update-status  -> is a newer prebuilt available + job state
+GET  /api/llama/update-changelog -> new carried changes since the installed build
 POST /api/llama/update         -> download + atomically swap to the latest
 
-Detection reuses utils.llama_cpp_freshness; the swap reuses
-install_llama_prebuilt.py via utils.llama_cpp_update. Both fail open so the UI
-never blocks on a missing marker / offline GitHub.
+Detection reuses utils.llama_cpp_freshness; the swap reuses install_llama_prebuilt.py via
+utils.llama_cpp_update. Both fail open so the UI never blocks on a missing marker / offline GitHub.
 
-whisper.cpp updates piggyback here: the status payload carries a whisper
-sub-status (update_available is the llama OR whisper union) and the apply job
-chains a whisper phase after the llama phase when whisper is behind, with a
-per-phase breakdown in job.phases. All pre-existing top-level fields keep
-their shape, so older clients keep working unchanged.
+whisper.cpp updates piggyback here: the status payload carries a whisper sub-status (update_available is the
+llama OR whisper union) and the apply job chains a whisper phase after the llama phase when whisper is behind,
+with a per-phase breakdown in job.phases. All pre-existing top-level fields keep their shape, so older clients
+keep working unchanged.
 """
 
 from __future__ import annotations
@@ -26,10 +25,12 @@ from typing import Literal, Optional
 from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel, Field
 
+from auth import policy
 from auth.authentication import get_current_subject
 from loggers import get_logger
 from utils.llama_cpp_update import (
     get_backend_status,
+    get_update_changelog,
     get_update_status,
     start_backend_switch,
     start_update,
@@ -111,10 +112,48 @@ class LlamaUpdateStatusResponse(BaseModel):
     update_size_bytes: Optional[int] = Field(
         None, description = "Download size of the prebuilt Update would fetch, in bytes."
     )
+    backend_migration_available: bool = Field(
+        False,
+        description = (
+            "True when the install recorded an AUTOMATIC backend choice and detection "
+            "now resolves elsewhere, so Update would move it. Independent of "
+            "update_available: the release can be current while the backend has drifted."
+        ),
+    )
+    from_backend: Optional[str] = Field(
+        None, description = "Installed backend, when a migration is available."
+    )
+    to_backend: Optional[str] = Field(
+        None, description = "Backend a re-applied automatic selection would install."
+    )
     whisper: Optional[WhisperSubStatus] = Field(
         None, description = "Whisper piggyback sub-status; None when the probe is unavailable."
     )
     job: LlamaUpdateJob = Field(default_factory = LlamaUpdateJob)
+
+
+class LlamaUpdateChangeLink(BaseModel):
+    label: str
+    url: str
+
+
+class LlamaUpdateChange(BaseModel):
+    summary: str
+    links: list[LlamaUpdateChangeLink] = Field(default_factory = list)
+
+
+class LlamaUpdateChangelogResponse(BaseModel):
+    matched: bool = Field(
+        False,
+        description = "True when both releases were resolved and compared.",
+    )
+    installed_tag: Optional[str] = None
+    latest_tag: Optional[str] = None
+    changes: list[LlamaUpdateChange] = Field(default_factory = list)
+    total_changes: int = 0
+    truncated: bool = False
+    release_url: Optional[str] = None
+    error: Optional[str] = None
 
 
 class LlamaUpdateActionResponse(BaseModel):
@@ -141,7 +180,7 @@ def _log_llama_update_progress(job: LlamaUpdateJob) -> None:
             return
         _last_llama_update_step = step
         if step < prev:
-            return  # new update; resync without logging
+            return
     logger.info("llama_update_progress", to_tag = job.to_tag or "", percent = step * 10)
 
 
@@ -159,12 +198,42 @@ async def llama_update_status(
     return resp
 
 
-@router.post("/update", response_model = LlamaUpdateActionResponse)
+# Replaces the installation's llama and whisper executables for everyone, so it is owner-only.
+@router.post(
+    "/update",
+    response_model = LlamaUpdateActionResponse,
+    dependencies = [Depends(get_current_subject), Depends(policy.require_owner)],
+)
 async def llama_update(
     current_subject: str = Depends(get_current_subject),
 ) -> LlamaUpdateActionResponse:
     action = await asyncio.to_thread(start_update)
     return LlamaUpdateActionResponse(**action)
+
+
+@router.get("/update-changelog", response_model = LlamaUpdateChangelogResponse)
+async def llama_update_changelog(
+    force_refresh: bool = Query(False, description = "Retry the exact release lookups."),
+    installed_tag: Optional[str] = Query(
+        None,
+        max_length = 200,
+        description = "Installed tag the caller is displaying; ignored unless it still matches.",
+    ),
+    latest_tag: Optional[str] = Query(
+        None,
+        max_length = 200,
+        description = "Target the caller is displaying, so a newer one cached meanwhile "
+        "does not retarget the comparison.",
+    ),
+    current_subject: str = Depends(get_current_subject),
+) -> LlamaUpdateChangelogResponse:
+    result = await asyncio.to_thread(
+        get_update_changelog,
+        force_refresh = force_refresh,
+        installed_tag = installed_tag,
+        latest_tag = latest_tag,
+    )
+    return LlamaUpdateChangelogResponse(**result)
 
 
 class LlamaBackendOption(BaseModel):
@@ -238,7 +307,11 @@ async def llama_backend_status(
     return LlamaBackendStatusResponse(**status)
 
 
-@router.post("/backend", response_model = LlamaUpdateActionResponse)
+@router.post(
+    "/backend",
+    response_model = LlamaUpdateActionResponse,
+    dependencies = [Depends(get_current_subject), Depends(policy.require_owner)],
+)
 async def llama_backend_switch(
     request: LlamaBackendRequest, current_subject: str = Depends(get_current_subject)
 ) -> LlamaUpdateActionResponse:

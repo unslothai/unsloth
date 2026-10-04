@@ -89,8 +89,8 @@ def test_no_two_jobs_share_a_cache_name():
 
 
 def test_jobs_sharing_key_files_still_have_distinct_names():
-    # Jobs given the same key-files are the likeliest to be given the same name,
-    # which is the exact case that produced the original defect.
+    # Jobs given the same key-files are the likeliest to be given the same name, which is the exact case that produced
+    # the original defect.
     by_files = {}
     for path in WORKFLOWS:
         for job, steps in _jobs(path):

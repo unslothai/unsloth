@@ -1,10 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// The "the user stopped the server on purpose" marker.
-//
-// sessionStorage outlives webview reloads but not the app process, so an explicit stop
-// holds across Reload while a fresh launch still auto-starts.
+// The "the user stopped the server on purpose" marker. sessionStorage outlives webview reloads but
+// not the app process, so an explicit stop holds across Reload while a fresh launch still
+// auto-starts.
 export const USER_STOPPED_KEY = "unsloth_server_user_stopped";
 
 // Every access is wrapped: private browsing, blocked cookies and opaque webview origins

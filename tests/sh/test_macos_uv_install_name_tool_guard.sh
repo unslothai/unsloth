@@ -7,21 +7,8 @@
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+. "$SCRIPT_DIR/_harness.sh"
 INSTALL_SH="$SCRIPT_DIR/../../install.sh"
-PASS=0
-FAIL=0
-
-assert_eq() {
-    _label="$1"; _expected="$2"; _actual="$3"
-    if [ "$_actual" = "$_expected" ]; then
-        echo "  PASS: $_label"
-        PASS=$((PASS + 1))
-    else
-        echo "  FAIL: $_label (expected '$_expected', got '$_actual')"
-        FAIL=$((FAIL + 1))
-    fi
-}
-
 assert_empty() {
     _label="$1"; _path="$2"
     if [ ! -s "$_path" ]; then
@@ -180,7 +167,6 @@ for _sh in sh bash; do
     run_case "$_sh" xcode
 done
 
-
 echo "=== exact generic/user and non-macOS forwarding ==="
 for _sh in sh bash; do
     _case="$_ROOT/${_sh}-forwarding"
@@ -280,7 +266,6 @@ for _sh in sh bash; do
         FAIL=$((FAIL + 1))
     fi
 done
-
 
 echo ""
 echo "Passed: $PASS, Failed: $FAIL"

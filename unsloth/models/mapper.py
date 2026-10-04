@@ -1,11 +1,8 @@
 # Copyright 2023-present Daniel Han-Chen & the Unsloth team. All rights reserved.
-#
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
 # You may obtain a copy of the License at
-#
 #     http://www.apache.org/licenses/LICENSE-2.0
-#
 # Unless required by applicable law or agreed to in writing, software
 # distributed under the License is distributed on an "AS IS" BASIS,
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
@@ -83,7 +80,6 @@ __INT_TO_FLOAT_MAPPER = \
         "TinyLlama/TinyLlama-1.1B-Chat-v1.0",
     ),
     "unsloth/mistral-7b-instruct-v0.1-bnb-4bit" : (
-        "unsloth/mistral-7b-instruct-v0.1",
         "mistralai/Mistral-7B-Instruct-v0.1",
     ),
     "unsloth/mistral-7b-instruct-v0.2-bnb-4bit" : (
@@ -338,7 +334,6 @@ __INT_TO_FLOAT_MAPPER = \
         "NousResearch/Hermes-3-Llama-3.1-8B",
     ),
     "unsloth/Hermes-3-Llama-3.1-70B-bnb-4bit" : (
-        "unsloth/Hermes-3-Llama-3.1-70B",
         "NousResearch/Hermes-3-Llama-3.1-70B",
     ),
     "unsloth/Hermes-3-Llama-3.1-405B-bnb-4bit" : (
@@ -571,7 +566,6 @@ __INT_TO_FLOAT_MAPPER = \
         "Qwen/Qwen2-VL-7B",
     ),
     "unsloth/Qwen2-VL-72B-bnb-4bit" : (
-        "unsloth/Qwen2-VL-72B",
         "Qwen/Qwen2-VL-72B",
     ),
     "unsloth/Llama-3.2-11B-Vision-Instruct-unsloth-bnb-4bit" : (
@@ -614,7 +608,6 @@ __INT_TO_FLOAT_MAPPER = \
         "allenai/Llama-3.1-Tulu-3-8B",
     ),
     "unsloth/Llama-3.1-Tulu-3-70B-bnb-4bit" : (
-        "unsloth/Llama-3.1-Tulu-3-70B",
         "allenai/Llama-3.1-Tulu-3-70B",
     ),
     "unsloth/QwQ-32B-Preview-bnb-4bit" : (
@@ -702,7 +695,6 @@ __INT_TO_FLOAT_MAPPER = \
         "unsloth/DeepScaleR-1.5B-Preview-bnb-4bit",
     ),
     "unsloth/OpenThinker-7B-unsloth-bnb-4bit" : (
-        "unsloth/OpenThinker-7B",
         "open-thoughts/OpenThinker-7B",
         "unsloth/OpenThinker-7B-bnb-4bit",
     ),
@@ -1116,8 +1108,8 @@ __INT_TO_FLOAT_MAPPER = \
             "unsloth/Magistral-Small-2509-bnb-4bit",
         ),
     },
-    # No Unsloth 16bit repo exists at this size, so this is a 1-tuple naming the
-    # real upstream, same as the other 70B and 405B rows.
+    # No Unsloth 16bit repo exists at this size, so this is a 1-tuple naming the real upstream, like the
+    # other 70B and 405B rows.
     "unsloth/Apertus-70B-Instruct-2509-unsloth-bnb-4bit" : (
         "swiss-ai/Apertus-70B-Instruct-2509",
     ),
@@ -1311,7 +1303,6 @@ __INT_TO_FLOAT_MAPPER = \
         "google/functiongemma-270m-it",
         "unsloth/functiongemma-270m-it-unsloth-bnb-4bit",
     ),
-    # Ministral 3 models
     "unsloth/Ministral-3-3B-Instruct-2512-unsloth-bnb-4bit" : {
         "8" : (
             "mistralai/Ministral-3-3B-Instruct-2512",
@@ -1426,7 +1417,7 @@ def build_mappers(__INT_TO_FLOAT_MAPPER):
         if type(values) is dict:
             assert "16" in values
             float16_values = values["16"]
-            # Float8 and other quantized types
+            # Float8 and other quantized types.
             if "8" in values:
                 float8_values = values["8"]
                 assert len(float8_values) == 3
@@ -1448,21 +1439,21 @@ def build_mappers(__INT_TO_FLOAT_MAPPER):
                 for value in float8_values:
                     if value is not None:
                         FLOAT_TO_INT_MAPPER[value] = key
-                        FLOAT_TO_INT_MAPPER[value.lower()] = key.lower()
+                        FLOAT_TO_INT_MAPPER[value.lower()] = key
             values = float16_values
         INT_TO_FLOAT_MAPPER[key] = values[0]
 
         for value in values:
             FLOAT_TO_INT_MAPPER[value] = key
 
-        # Map to Unsloth version for 16bit versions
+        # Map to the Unsloth version for 16bit.
         if len(values) == 2:
             if values[0].startswith("unsloth"):
                 _add_with_lower(MAP_TO_UNSLOTH_16bit, values[1], values[0])
                 _add_with_lower(MAP_TO_UNSLOTH_16bit, block, values[0])
                 _add_with_lower(MAP_TO_UNSLOTH_16bit, row, values[0])
         elif len(values) == 3:
-            # Dynamic Unsloth quantization
+            # Dynamic Unsloth quantization.
             if values[0].startswith("unsloth"):
                 _add_with_lower(MAP_TO_UNSLOTH_16bit, values[1], values[0])
                 _add_with_lower(MAP_TO_UNSLOTH_16bit, values[2], values[0])
@@ -1470,12 +1461,11 @@ def build_mappers(__INT_TO_FLOAT_MAPPER):
                 _add_with_lower(MAP_TO_UNSLOTH_16bit, row, values[0])
             pass
 
-        # Get lowercased
-        lowered_key = key.lower()
-        INT_TO_FLOAT_MAPPER[lowered_key] = values[0].lower()
+        # Lowercased keys, exact-case values: HF_ENDPOINT mirrors and case-sensitive caches reject a lowercased repo id (#2506).
+        INT_TO_FLOAT_MAPPER[key.lower()] = values[0]
 
         for value in values:
-            FLOAT_TO_INT_MAPPER[value.lower()] = lowered_key
+            FLOAT_TO_INT_MAPPER[value.lower()] = key
 
     _add_with_lower(MAP_TO_UNSLOTH_16bit, "google/gemma-4-26B-A4B", "unsloth/gemma-4-26B-A4B")
     _add_with_lower(MAP_TO_UNSLOTH_16bit, "LiquidAI/LFM2.5-1.2B-Instruct", "unsloth/LFM2.5-1.2B-Instruct")

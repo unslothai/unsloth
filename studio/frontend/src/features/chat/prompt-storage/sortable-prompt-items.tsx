@@ -3,6 +3,7 @@
 
 import { MarkdownPreview } from "@/components/markdown/markdown-preview";
 import { cn } from "@/lib/utils";
+import { autoscrollDelta, clipSpan } from "./autoscroll";
 import { flipShifts, insertionIndex, ownsDrag } from "./reorder";
 import { GripVerticalIcon, XIcon } from "lucide-react";
 import {
@@ -44,8 +45,8 @@ export function AutoTextarea({
   // Layout effect: measuring after paint flashes the wrong height while typing.
   useLayoutEffect(measure, [value, measure]);
 
-  // A width change rewraps the text without touching `value`, and overflowY may
-  // be "hidden", so the new lines would be clipped until the next keystroke.
+  // A width change rewraps the text without touching `value`, and overflowY may be "hidden", so
+  // the new lines would be clipped until the next keystroke.
   useEffect(() => {
     const el = ref.current;
     if (!el) return;
@@ -100,6 +101,19 @@ function nextUid(): string {
   return `i${uidSeq}`;
 }
 
+// Scrollable ancestors, nearest first, so running the inner pane out hands off to the dialog.
+function findScrollParents(el: HTMLElement | null): HTMLElement[] {
+  const out: HTMLElement[] = [];
+  let node = el?.parentElement ?? null;
+  while (node) {
+    const overflowY = getComputedStyle(node).overflowY;
+    // Scrollability is checked per frame instead: rows grow as you type.
+    if (overflowY === "auto" || overflowY === "scroll") out.push(node);
+    node = node.parentElement;
+  }
+  return out;
+}
+
 // Rows are keyed by a synthetic uid, not array index: index keys would swap the
 // values under the caret on reorder and break the animation.
 export function SortablePromptItems({
@@ -122,31 +136,27 @@ export function SortablePromptItems({
   const rowRefs = useRef(new Map<string, HTMLDivElement>());
   const prevOffsets = useRef(new Map<string, number>());
   const uidsRef = useRef(uids);
-  // Only a reorder animates, or an auto-growing textarea would make the rows
-  // below it wobble as you type.
+  // Only a reorder animates, or an auto-growing textarea would make the rows below it wobble as you type.
   const reorderTick = useRef(0);
   const animatedTick = useRef(0);
 
-  // Resync when the count changes from outside (revert, switching lists, import).
-  // During render rather than in an effect, which would paint the new row once
-  // under a stale key first.
+  // Resync when the count changes from outside (revert, switching lists, import). During render
+  // rather than in an effect, which would paint the new row once under a stale key first.
   let rowUids = uids;
   if (uids.length !== items.length) {
     rowUids = items.map((_, i) => uids[i] ?? nextUid());
     setUids(rowUids);
   }
 
-  // Layout offsets, not client rects: a rect moves with the scroll position, so
-  // scrolling the pane between reorders would bake that distance into every
-  // transform and jump the whole list.
+  // Layout offsets, not client rects: rects shift with scroll, which autoscroll changes per frame.
   const measureOffsets = useCallback(() => {
     const offsets = new Map<string, number>();
     rowRefs.current.forEach((el, uid) => offsets.set(uid, el.offsetTop));
     return offsets;
   }, []);
 
-  // FLIP: snap each moved row back to where it was, then release, so the browser
-  // animates one transform per row rather than animating layout.
+  // FLIP: snap each moved row back to where it was, then release, so the browser animates one
+  // transform per row rather than animating layout.
   useLayoutEffect(() => {
     if (reorderTick.current === animatedTick.current) return;
     animatedTick.current = reorderTick.current;
@@ -162,9 +172,8 @@ export function SortablePromptItems({
     });
   }, [uids, measureOffsets]);
 
-  // Mirrors, so the drag listener does not resubscribe on every keystroke. A
-  // layout effect, not an assignment during render: they only have to be
-  // current before the next pointer event, and this runs well before that.
+  // Mirrors, so the drag listener does not resubscribe on every keystroke. A layout effect, not
+  // an assignment during render: they only have to be current before the next pointer event.
   const itemsRef = useRef(items);
   const onChangeRef = useRef(onChange);
   useLayoutEffect(() => {
@@ -175,15 +184,15 @@ export function SortablePromptItems({
 
   const applyOrder = useCallback((from: number, to: number) => {
     if (from === to) return;
-    // FLIP's "first", read now rather than at whichever commit last recorded it:
-    // the preview toggle and a resize change row heights on their own, and
-    // animating from those stale offsets shifted the whole list.
+    // FLIP's "first", read now rather than at whichever commit last recorded it: the preview
+    // toggle and a resize change row heights on their own, and animating from those stale
+    // offsets shifted the whole list.
     prevOffsets.current = measureOffsets();
     reorderTick.current += 1;
     const nextItems = move(itemsRef.current, from, to);
     const nextUids = move(uidsRef.current, from, to);
-    // Advance the mirrors here too. A drag reorders faster than a commit, and
-    // the next hit-test must not run against the pre-move order.
+    // Advance the mirrors here too. A drag reorders faster than a commit, and the next hit-test
+    // must not run against the pre-move order.
     itemsRef.current = nextItems;
     uidsRef.current = nextUids;
     onChangeRef.current(nextItems);
@@ -192,15 +201,14 @@ export function SortablePromptItems({
 
   const handlePointerDown = useCallback(
     (uid: string, e: React.PointerEvent<HTMLButtonElement>) => {
-      // Primary press only: a right/middle drag reports buttons 2 or 4, which
-      // the zero-buttons release check below cannot end.
+      // Primary press only: a right or middle drag reports buttons 2 or 4, which the zero-buttons
+      // release check below cannot end.
       if (e.button !== 0 || !e.isPrimary) return;
       // isPrimary is per pointer type, so a mouse press can pass it mid-touch-drag.
       if (pointerIdRef.current !== null) return;
       pointerIdRef.current = e.pointerId;
-      // No setPointerCapture: reordering moves the row's DOM node, and detaching
-      // releases capture, killing the drag one row in. The window listener below
-      // outlives the move instead.
+      // No setPointerCapture: reordering moves the row's DOM node, and detaching releases capture,
+      // killing the drag one row in. The window listener below outlives the move instead.
       e.preventDefault();
       pointerYRef.current = e.clientY;
       setDraggingUid(uid);
@@ -212,14 +220,16 @@ export function SortablePromptItems({
     if (!draggingUid) return;
     const container = containerRef.current;
     if (!container) return;
+    const scrollers = findScrollParents(container);
+    let raf = 0;
 
     const evaluate = () => {
       const order = uidsRef.current;
       const from = order.indexOf(draggingUid);
       if (from < 0) return;
 
-      // Layout offsets, not client rects: mid-FLIP a client rect still reports
-      // the pre-animation position. offsetTop/offsetHeight ignore transforms.
+      // Layout offsets, not client rects: mid-FLIP a client rect still reports the pre-animation
+      // position. offsetTop/offsetHeight ignore transforms.
       const localY = pointerYRef.current - container.getBoundingClientRect().top;
       const boxes = order.map((uid) => {
         const el = rowRefs.current.get(uid);
@@ -229,22 +239,44 @@ export function SortablePromptItems({
       if (to !== from) applyOrder(from, to);
     };
 
+    // pointerdown suppresses native drag scrolling, so scroll here and re-run the hit-test.
+    const tick = () => {
+      for (let i = 0; i < scrollers.length; i++) {
+        const scroller = scrollers[i];
+        const limit = scroller.scrollHeight - scroller.clientHeight;
+        if (limit <= 0) continue;
+        const span = clipSpan(scroller.getBoundingClientRect(), [
+          ...scrollers.slice(i + 1).map((el) => el.getBoundingClientRect()),
+          { top: 0, bottom: window.innerHeight },
+        ]);
+        if (!span) continue;
+        const delta = autoscrollDelta(pointerYRef.current, span.top, span.bottom);
+        if (delta === 0) continue;
+        const before = scroller.scrollTop;
+        const next = Math.max(0, Math.min(limit, before + delta));
+        if (next === before) continue;
+        scroller.scrollTop = next;
+        evaluate();
+        break;
+      }
+      raf = requestAnimationFrame(tick);
+    };
+    raf = requestAnimationFrame(tick);
+
     const endDrag = () => {
       pointerIdRef.current = null;
       setDraggingUid(null);
     };
 
-    // Window listeners see every pointer; a second finger would otherwise
-    // reorder with its own clientY and its release would end this drag. An
-    // already-ended drag owns no pointer, so nothing matches until the cleanup
-    // below unsubscribes.
+    // Window listeners see every pointer; a second finger would otherwise reorder with its own
+    // clientY and its release would end this drag. An already-ended drag owns no pointer.
     const isDragPointer = (e: PointerEvent) =>
       ownsDrag(pointerIdRef.current, e.pointerId);
 
     const onMove = (e: PointerEvent) => {
       if (!isDragPointer(e)) return;
-      // Releasing outside the window delivers no pointerup, so treat the first
-      // move with no buttons held as the release we missed.
+      // Releasing outside the window delivers no pointerup, so treat the first move with no buttons
+      // held as the release we missed.
       if (e.buttons === 0) {
         endDrag();
         return;
@@ -264,6 +296,7 @@ export function SortablePromptItems({
     // Release entirely outside the page, where no move follows to catch it.
     window.addEventListener("blur", endDrag);
     return () => {
+      cancelAnimationFrame(raf);
       window.removeEventListener("pointermove", onMove);
       window.removeEventListener("pointerup", onPointerEnd);
       window.removeEventListener("pointercancel", onPointerEnd);
@@ -287,8 +320,7 @@ export function SortablePromptItems({
       ref={containerRef}
       className={cn(
         "relative flex flex-col gap-2",
-        // The drag tracks the pointer window-wide; without this it paints a
-        // text selection behind itself.
+        // The drag tracks the pointer window-wide; without this it paints a text selection behind itself.
         draggingUid && "select-none",
       )}
     >

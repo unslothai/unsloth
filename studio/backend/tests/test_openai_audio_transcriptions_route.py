@@ -31,6 +31,7 @@ def _make_client(monkeypatch, transcribe = None):
         fast,
         engine = None,
         request = None,
+        device = None,
     ):
         calls.append(
             {

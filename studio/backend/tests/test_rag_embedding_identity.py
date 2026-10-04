@@ -220,6 +220,7 @@ def test_identity_distinguishes_the_backends_and_the_gguf_repo(monkeypatch):
 
 def test_llama_identity_uses_the_resolved_stored_repo(monkeypatch):
     monkeypatch.setattr(embeddings, "active_backend_is_llama", lambda *_a, **_k: True)
+    monkeypatch.setattr(embeddings, "_llama_pooling", lambda *_a, **_k: None)
     monkeypatch.setattr(
         config,
         "effective_gguf_repo_for_embedding_model",
@@ -386,7 +387,11 @@ def test_a_swap_between_batches_re_embeds_the_document(
     passes = {"n": 0}
     real_pass = ingestion._embed_pass
 
-    def swap_during_the_first_pass(texts, model_name):
+    def swap_during_the_first_pass(
+        texts,
+        model_name,
+        on_progress = None,
+    ):
         passes["n"] += 1
         if passes["n"] == 1:
             calls = {"n": 0}
@@ -402,7 +407,7 @@ def test_a_swap_between_batches_re_embeds_the_document(
                 return out
 
             monkeypatch.setattr(embeddings, "encode_with_identity", swap_after_one_batch)
-        return real_pass(texts, model_name)
+        return real_pass(texts, model_name, on_progress)
 
     monkeypatch.setattr(ingestion, "_embed_pass", swap_during_the_first_pass)
     scope = store.kb_scope("K8")
