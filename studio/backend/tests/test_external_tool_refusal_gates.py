@@ -146,6 +146,20 @@ def _run(transport, *, tool_choice = None):
     return asyncio.run(asyncio.wait_for(_collect(), timeout = 30))
 
 
+def _events(lines, kind):
+    events = []
+    for line in lines:
+        if not line.startswith("data: "):
+            continue
+        try:
+            payload = json.loads(line[6:])
+        except ValueError:
+            continue
+        if isinstance(payload, dict) and payload.get("type") == kind:
+            events.append(payload)
+    return events
+
+
 # ── tool_choice: "none" is enforced, not just advertised ─────────────
 
 
@@ -156,8 +170,30 @@ def test_tool_choice_none_refuses_a_call_the_provider_sent_anyway(executed):
     endpoint into emitting a python call must not get one executed.
     """
     transport = FakeTransport([[_call_line(), _finish("tool_calls")], [_DONE]])
-    _run(transport, tool_choice = "none")
+    lines = _run(transport, tool_choice = "none")
+
     assert executed == []
+
+    starts = _events(lines, "tool_start")
+    ends = _events(lines, "tool_end")
+
+    assert [event["tool_call_id"] for event in starts] == ["c1"]
+    assert [event["tool_call_id"] for event in ends] == ["c1"]
+    assert ends[0]["tool_name"] == "web_search"
+    assert "tool_choice" in ends[0]["result"]
+    assert "none" in ends[0]["result"]
+
+
+def test_tool_choice_none_does_not_double_close_a_truncated_call(executed):
+    """Truncation already closes an announced call; tool_choice must not close it twice."""
+    transport = FakeTransport([[_call_line(), _finish("length")], [_DONE]])
+    lines = _run(transport, tool_choice = "none")
+
+    assert executed == []
+
+    ends = _events(lines, "tool_end")
+    assert [event["tool_call_id"] for event in ends] == ["c1"]
+    assert "output limit" in ends[0]["result"]
 
 
 def test_tool_choice_none_still_withdraws_the_catalog(executed):
