@@ -407,9 +407,11 @@ def sweep(
         live.sort(reverse = True)
         running = 0
         for index, (_touched_at, input_id, size) in enumerate(live):
-            running += size
-            if running > byte_cap and index > 0 and input_id != keep:
+            # Only kept inputs count toward the cap, so one eviction does not doom every older one.
+            if running + size > byte_cap and index > 0 and input_id != keep:
                 removed += _remove(directory, input_id)
+                continue
+            running += size
         for path in directory.iterdir():
             name = path.name
             age = now - _mtime(path)
