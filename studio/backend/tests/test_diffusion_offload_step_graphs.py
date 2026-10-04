@@ -312,19 +312,27 @@ def test_streamed_step_copies_land_in_the_slot_ring_not_the_graph_pool(monkeypat
     _cuda()
     ref = _net().cuda()
     want = [_call(ref, s) for s in range(4)]
-    pools = {}
+    real_to_device = op._to_device
+    fresh = []
+
+    def to_device(src, device):
+        if torch.cuda.is_current_stream_capturing():
+            fresh.append(tuple(src.shape))  # a copy the graph records into a pool allocation
+        return real_to_device(src, device)
+
+    monkeypatch.setattr(op, "_to_device", to_device)
+    counts = {}
     for slots in (False, True):
         cg._POOL_BOX[0] = None
+        fresh.clear()
         net, handle = _armed_streamed(monkeypatch, slots)
         pf = op.module_prefetcher(net)
         got = [_call(net, 0), _call(net, 1)]  # records, then replays
-        for seed in (2, 3):
-            out, syncs = _syncs(lambda: _call(net, seed))
-            got.append(out)
+        got += [_call(net, 2), _call(net, 3)]
         for a, b in zip(got, want):
             assert torch.equal(a, b)
         assert handle.stats["captures"] == 1 and handle.stats["replays"] == 4
-        pools[slots] = handle.stats["pool_bytes"]
+        counts[slots] = len(fresh)
         if slots:
             assert handle.placement._slots and pf.slot_raw and pf.stats["slot_fills"] > 0
             assert pf.stats.get("slot_fallbacks", 0) == 0
@@ -332,8 +340,9 @@ def test_streamed_step_copies_land_in_the_slot_ring_not_the_graph_pool(monkeypat
             assert not pf.slot_raw
         handle.free()
         monkeypatch.delenv(cg.STEP_SLOTS_ENV, raising = False)
-    # 7 of the 8 blocks stream (256x256 fp32 each, ~0.25 MiB): without the ring the pool holds their copies
-    assert pools[True] < pools[False]
+    # without the ring every streamed block's weight and bias is a fresh pool allocation inside the recording; with
+    # it only the dense top-level group's are (proj_in / proj_out: 4 tensors)
+    assert counts[False] >= 2 * 7 and counts[True] <= 4
 
 
 def test_a_declined_streamed_placement_hands_the_ring_back_and_runs_eager(monkeypatch):

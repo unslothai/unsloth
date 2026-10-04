@@ -555,6 +555,7 @@ def test_the_eager_reference_is_the_callers_own_steps_not_the_recorded_warm_ups(
     _cuda()
     monkeypatch.delenv(cg.SPEED_CHECK_ENV, raising = False)
     monkeypatch.setattr(cg, "SPEED_MARGIN", 1e9)  # this checks where the reference comes from, not a tiny net's speed
+    monkeypatch.setattr(cg, "SPEED_GAIN", -1e9)  # nor whether a streamed key gains enough to keep its memory
     seeds = list(range(8))
     want = _eager_reference(None, seeds)
     torch.manual_seed(0)
@@ -585,6 +586,7 @@ def test_the_timed_eager_steps_run_on_capture_like_copies(monkeypatch):
     _cuda()
     monkeypatch.delenv(cg.SPEED_CHECK_ENV, raising = False)
     monkeypatch.setattr(cg, "SPEED_MARGIN", 1e9)
+    monkeypatch.setattr(cg, "SPEED_GAIN", -1e9)  # nor whether a streamed key gains enough to keep its memory
     torch.manual_seed(0)
     net = _streamed(_Net())
     handles, _ = cg.arm_after_placement(_pipe(net))
@@ -609,6 +611,7 @@ def test_every_key_times_its_own_eager_reference_before_it_records(monkeypatch):
     _cuda()
     monkeypatch.delenv(cg.SPEED_CHECK_ENV, raising = False)
     monkeypatch.setattr(cg, "SPEED_MARGIN", 1e9)
+    monkeypatch.setattr(cg, "SPEED_GAIN", -1e9)  # nor whether a streamed key gains enough to keep its memory
     torch.manual_seed(0)
     net = _streamed(_Net())
     handles, _ = cg.arm_after_placement(_pipe(net))
