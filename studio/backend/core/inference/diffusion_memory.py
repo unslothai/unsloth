@@ -2511,8 +2511,7 @@ def _keep_groups_resident(
         def _resident_onload(stream: Any) -> Callable[[], None]:
             # a prefetching predecessor skips its own copy-stream wait and relies on this onload_ to do it
             def onload_(*args: Any, **kwargs: Any) -> None:
-                # with the event-fenced prefetch every streamed group waits for its own copy (diffusion_offload_prefetch)
-                # and the first resident block starts the forward's prefetch
+                # event-fenced prefetch: streamed groups wait on their own copy; a resident block may start the forward's fill
                 kick = state.get("kick")
                 if callable(kick):
                     kick()

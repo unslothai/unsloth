@@ -13,7 +13,6 @@ landing in a reused block.
 from __future__ import annotations
 
 import copy
-import time
 import types
 import warnings
 
@@ -36,7 +35,6 @@ def _clean_env(monkeypatch):
         monkeypatch.delenv(name, raising = False)
 
 
-# ------------------------------------------------------------------------------------------------ scheduling (CPU)
 class _Group:
     def __init__(self, name: str):
         self.name = name
@@ -153,10 +151,10 @@ def test_resident_groups_are_skipped_and_not_counted():
     log.clear()
     pf.begin()
     assert not log
-    pf.kick()  # the first resident block's onload
+    pf.kick()
     # the streamed tail is queued while the resident head runs
     assert [n for k, n in log if k == "copy"] == ["d", "e"]
-    pf.kick()  # later resident blocks queue nothing more
+    pf.kick()
     assert [n for k, n in log if k == "copy"] == ["d", "e"]
     pf.end()
 
@@ -176,7 +174,7 @@ def test_exception_mid_forward_releases_everything_on_the_device():
     _forward(pf, groups)
     pf.begin()
     pf.onload(groups[0])
-    pf.end()  # the module's forward hook runs with always_call
+    pf.end()
     assert not pf.ready and pf.inflight_bytes == 0
 
 
@@ -198,6 +196,10 @@ def test_depth_env(monkeypatch):
 
 
 def test_resident_onload_skips_the_copy_stream_wait_when_fenced(monkeypatch):
+    pytest.importorskip(
+        "diffusers.hooks"
+    )  # _keep_groups_resident imports it and leaves the groups alone without it
+
     class Stream:
         waits = 0
 
@@ -238,7 +240,6 @@ def test_resident_onload_skips_the_copy_stream_wait_when_fenced(monkeypatch):
     assert Stream.waits == 2
 
 
-# ------------------------------------------------------------------------------------------------ CUDA
 def _cuda():
     if not torch.cuda.is_available():
         pytest.skip("needs CUDA: diffusers stream group offload")
@@ -315,7 +316,7 @@ def test_streamed_forward_is_bit_identical_with_no_host_sync(depth, resident_mib
     x = torch.randn(4, 64, device = "cuda")
     with torch.no_grad():
         want = ref(x)
-        net(x)  # records the order
+        net(x)
         for _ in range(3):
             got, syncs = _count_syncs(lambda: net(x))
             assert syncs == 0
@@ -340,12 +341,10 @@ def test_dense_top_level_upload_never_waits_behind_a_block_copy(tmp_path):
     _streamed(net)
     pf = op.module_prefetcher(net)
     top = net._diffusers_hook.get_hook("group_offloading").group
-    assert (
-        top not in pf.groups and "onload_" in top.__dict__ and pf.fence_first
-    )  # Studio's pinned upload
+    assert top not in pf.groups and "onload_" in top.__dict__ and pf.fence_first
     x = torch.randn(4, 64, device = "cuda")
     with torch.no_grad():
-        net(x)  # records the order
+        net(x)
         net(x)
         torch.cuda.synchronize()
         with profile(activities = [ProfilerActivity.CPU, ProfilerActivity.CUDA]) as prof:
@@ -359,9 +358,7 @@ def test_dense_top_level_upload_never_waits_behind_a_block_copy(tmp_path):
     h2d = [e for e in events if e.get("cat") == "gpu_memcpy" and "HtoD" in e["name"]]
     top_up = [(e["ts"], e["ts"] + e["dur"]) for e in h2d if e["args"].get("stream") in compute]
     blocks = [(e["ts"], e["ts"] + e["dur"]) for e in h2d if e["args"].get("stream") not in compute]
-    assert len(top_up) == 4 * 4 and len(blocks) == 4 * 2 * len(
-        net.blocks
-    )  # weight + bias per Linear
+    assert len(top_up) == 4 * 4 and len(blocks) == 4 * 2 * len(net.blocks)
     assert not [(a, b) for a in top_up for b in blocks if a[0] < b[1] and b[0] < a[1]]
     assert pf.stats["missed"] == 0
 
@@ -405,18 +402,15 @@ def test_slow_gpu_keeps_memory_in_the_window_and_reads_the_right_weights(monkeyp
         torch.cuda.empty_cache()
         base = torch.cuda.memory_reserved()
         torch.cuda.reset_peak_memory_stats()
-        t0 = time.perf_counter()
         got = net(x)
-        host_s = time.perf_counter() - t0
+        host_ahead = not torch.cuda.current_stream().query()
         torch.cuda.synchronize()
-        gpu_s = time.perf_counter() - t0
         # reserved, not allocated: a block freed under record_stream leaves the allocated count but stays reserved
         peak = torch.cuda.max_memory_reserved() - base
     assert torch.equal(got, want)
-    assert host_s < gpu_s / 4  # the host really ran ahead
+    assert host_ahead  # the forward returned while the GPU was still running its blocks
     block_bytes = 2048 * 2048 * 4 + 2048 * 4
-    # the window (2 groups) plus activations and the top-level group; diffusers' record_stream prefetch reserved about
-    # one block per block the host ran ahead (204 vs 44 MiB here)
+    # window (2 groups) + activations + top-level group; diffusers' record_stream path reserved 204 vs 44 MiB here
     assert peak <= pf.window + 2 * block_bytes, (peak, pf.window)
 
 
@@ -494,7 +488,7 @@ def test_partial_residency_release_and_restore_stay_bit_identical():
         restore()
         for _ in range(2):
             assert torch.equal(net(x), want)
-    assert pf.stats["missed"] <= len(groups)  # re-recorded once after each residency change
+    assert pf.stats["missed"] <= len(groups)
 
 
 def test_unpinned_host_copies_stream_bit_identical(monkeypatch):
