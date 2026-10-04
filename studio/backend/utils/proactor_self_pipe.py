@@ -21,10 +21,9 @@ from loggers import get_logger
 logger = get_logger(__name__)
 
 # A filter that closes every new pair immediately must not turn the fix into a socket churn loop: after a quick
-# repeat, wait this long before re-arming. Cross-thread wakeups wait at most this long while backed off.
+# repeat, wait this long before re-arming. A failed socketpair() is retried on the same period, warning once per
+# streak. With no read armed, this timer is what wakes an idle loop, so cross-thread work waits at most this long.
 _REBUILD_BACKOFF_SECONDS = 1.0
-# A socketpair() that keeps failing is retried with doubling delays up to this cap, warning once per streak.
-_MAX_RETRY_SECONDS = 60.0
 _installed = False
 _cpython_loop_self_reading = None
 # Indirection so tests can stand in a filter that closes each new pair.
@@ -43,11 +42,6 @@ def _swap_failed(loop, exc) -> bool:
     log = logger.warning if failures == 0 else logger.debug
     log("Could not rebuild the event loop self-pipe (attempt %d): %s", failures + 1, exc)
     return False
-
-
-def _retry_delay(loop) -> float:
-    failures = max(1, getattr(loop, "_unsloth_self_pipe_failures", 1))
-    return min(_REBUILD_BACKOFF_SECONDS * 2 ** (failures - 1), _MAX_RETRY_SECONDS)
 
 
 def _swap_self_pipe(loop) -> bool:
@@ -111,7 +105,7 @@ def install_proactor_self_pipe_guard() -> bool:
             )
         if not _swap_self_pipe(self):
             # f stays current, so the retry lands back here and tries the swap again.
-            self.call_later(_retry_delay(self), self._loop_self_reading, f)
+            self.call_later(_REBUILD_BACKOFF_SECONDS, self._loop_self_reading, f)
             return None
         if quick_repeat:
             self.call_later(_REBUILD_BACKOFF_SECONDS, original, self, None)

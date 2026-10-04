@@ -6,6 +6,7 @@ from pathlib import Path
 import socket
 import sys
 import threading
+import time
 import types as _types
 
 import pytest
@@ -197,7 +198,7 @@ class _RecordingLogger:
 
 
 @windows_only
-def test_persistent_socketpair_failure_backs_off_and_warns_once(reads, monkeypatch):
+def test_persistent_socketpair_failure_warns_once_per_streak_and_keeps_wakeups(reads, monkeypatch):
     assert psp.install_proactor_self_pipe_guard() is True
     monkeypatch.setattr(psp, "_REBUILD_BACKOFF_SECONDS", 0.1)
     log = _RecordingLogger()
@@ -208,23 +209,73 @@ def test_persistent_socketpair_failure_backs_off_and_warns_once(reads, monkeypat
         attempts["n"] += 1
         raise OSError("no buffer space")
 
+    async def wakeup_delay(loop):
+        # No other timer is pending here, so only the retry timer can wake the loop.
+        woke = loop.create_future()
+        sent = {}
+
+        def send():
+            sent["at"] = time.monotonic()
+            loop.call_soon_threadsafe(woke.set_result, None)
+
+        threading.Timer(0.05, send).start()
+        await asyncio.wait_for(woke, 5)
+        return time.monotonic() - sent["at"]
+
     async def main():
         loop = asyncio.get_running_loop()
         await asyncio.sleep(0.1)
         psp._socketpair = failing_socketpair
         loop._csock.shutdown(socket.SHUT_WR)
-        await asyncio.sleep(2.0)
+        await asyncio.sleep(1.0)
+        during_failure = await wakeup_delay(loop)
+        # Recovery resets the streak, so a later failure streak warns again.
+        psp._socketpair = socket.socketpair
+        await asyncio.sleep(0.3)
+        psp._socketpair = failing_socketpair
+        loop._csock.shutdown(socket.SHUT_WR)
+        await asyncio.sleep(0.5)
+        return during_failure
 
     loop = asyncio.ProactorEventLoop()
     try:
-        loop.run_until_complete(main())
+        during_failure = loop.run_until_complete(main())
     finally:
         loop.close()
-    # Doubling delays from 0.1s: attempts at about 0, 0.1, 0.3, 0.7 and 1.5s, not one every 0.1s.
-    assert 3 <= attempts["n"] <= 6
+    # Retries keep the fixed period rather than growing, so cross-thread work still lands within about one period.
+    assert during_failure < 0.5
+    assert 8 <= attempts["n"] <= 30
     warnings = [line for level, line in log.lines if level == "warning"]
-    assert len(warnings) == 2  # "rebuilding it" once, then the first failure; the rest go to debug
+    # "rebuilding it" once, then the first failure of each of the two streaks; every other retry logs at debug.
+    assert len(warnings) == 3, warnings
     assert reads["n"] < 50
+
+
+@windows_only
+def test_swap_closes_new_sockets_when_setblocking_fails(monkeypatch):
+    made = []
+
+    class _Sock:
+        def __init__(self):
+            self.closed = False
+
+        def setblocking(self, flag):
+            raise OSError("setblocking failed")
+
+        def close(self):
+            self.closed = True
+
+    def broken_socketpair():
+        made.extend([_Sock(), _Sock()])
+        return made[-2], made[-1]
+
+    monkeypatch.setattr(psp, "_socketpair", broken_socketpair)
+    monkeypatch.setattr(psp, "logger", _RecordingLogger())
+    loop = _types.SimpleNamespace(_ssock = object(), _csock = object())
+    old = (loop._ssock, loop._csock)
+    assert psp._swap_self_pipe(loop) is False
+    assert all(sock.closed for sock in made) and len(made) == 2
+    assert (loop._ssock, loop._csock) == old
 
 
 @windows_only
