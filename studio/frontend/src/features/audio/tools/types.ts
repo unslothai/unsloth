@@ -18,6 +18,8 @@ export interface AudioModelContext {
   audioWorkflows?: readonly string[];
   requiredInputs?: readonly string[];
   referenceTextMode?: AudioReferenceTextMode | null;
+  /** Ids of the saved voices, once the list has loaded. */
+  savedVoiceIds?: readonly string[] | null;
 }
 
 export interface AudioRunPatch {

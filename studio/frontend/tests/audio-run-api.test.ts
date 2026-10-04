@@ -49,6 +49,24 @@ test("a clone run sends ids only, with the contract's keys", () => {
   assert.doesNotMatch(JSON.stringify(body), PATHLIKE);
 });
 
+test("a cleared transcript is sent blank, an omitted one is left out", () => {
+  const cleared = buildAudioRunBody({
+    workflow: "clone",
+    text: "Hi",
+    inputs: { reference: { voice_id: "v1" }, reference_text: "  " },
+  });
+  assert.deepEqual(cleared.inputs, {
+    reference: { voice_id: "v1" },
+    reference_text: "",
+  });
+  const omitted = buildAudioRunBody({
+    workflow: "clone",
+    text: "Hi",
+    inputs: { reference: { voice_id: "v1" }, reference_text: null },
+  });
+  assert.deepEqual(omitted.inputs, { reference: { voice_id: "v1" } });
+});
+
 test("whatever a caller spreads in, no path or bytes reach the body", () => {
   const sneaky = {
     workflow: "speak" as const,
