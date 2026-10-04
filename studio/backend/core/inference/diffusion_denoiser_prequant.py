@@ -19,9 +19,7 @@ PIPELINE_SEED_DECLINED = "__declined__"
 
 DENOISER_COMPONENT = "transformer"
 
-# Ideogram is assembled per component and has a second denoiser: its assembler never sees ``pipe_kwargs``, so a seed
-# would be dropped after the plan had dropped its dense shards. Krea 2 is assembled per component too, but from the
-# same ``pipe_kwargs`` (pre-cast TE and seeded denoiser included), so it seeds like every other family.
+# Ideogram's assembler never sees ``pipe_kwargs``, so a seed would be dropped after the plan dropped its dense shards.
 _UNSEEDABLE_PIPELINE_FAMILIES = (IDEOGRAM4_FAMILY_NAME,)
 
 

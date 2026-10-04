@@ -1,13 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Hosted pre-quant checkpoints built under an older contract load with the runtime's contract.
-
-Real torchao (whatever this venv ships: 0.17 builds the v1 int8 wrapper, 0.18+ ``Int8Tensor``), CPU only:
-- an fp8 weight built before ``activation_value_lb`` gets exactly the floor ``_make_quant_config`` sets, and with it
-  an all-zero activation row gets a finite scale;
-- Krea 2 pipeline picks seed their hosted denoiser like every other family.
-"""
+"""Legacy hosted pre-quant checkpoints load with the runtime's contract (real torchao, CPU)."""
 
 from __future__ import annotations
 
@@ -70,7 +64,6 @@ def test_restored_floor_is_the_runtime_config_floor():
     assert pq._fp8_activation_floor_restorable(state_dict) is True
     assert pq._restore_fp8_activation_floor(state_dict) == 1
     after = tensor.act_quant_kwargs
-    # Only the floor moves: every other activation kwarg and the weight bytes are untouched.
     assert after == dataclasses.replace(before, hp_value_lb = config.activation_value_lb)
     assert torch.equal(tensor.qdata.view(torch.uint8), qdata.view(torch.uint8))
     assert torch.equal(tensor.scale, scale)
@@ -116,8 +109,6 @@ def _krea_pipeline_calls() -> list:
 
 
 def test_the_krea2_pipeline_assembly_takes_the_seeded_denoiser():
-    # The pipeline-pick assembly must hand over the denoiser the seed put in pipe_kwargs (None when unseeded, which
-    # makes load_krea2_pipeline read the dense shards as before), next to the pre-cast text encoder.
     calls = _krea_pipeline_calls()
     seeded = [c for c in calls if c.get("transformer") == "pipe_kwargs.get('transformer')"]
     assert len(seeded) == 1

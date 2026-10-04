@@ -59,10 +59,7 @@ _REQUIRE_BF16_SCHEMES = (TQ_FP8, TQ_MXFP8)
 # metadata, so a stale per-TENSOR checkpoint is rejected and rebuilt.
 FP8_GRANULARITY = "per_row"
 
-# The fp8 per-row activation scale floor (torchao ``activation_value_lb``). Not calibrated per family: it only keeps an
-# ALL-ZERO activation row from dividing by an amax of 0 (scale 0, NaN qdata, black frames), so any positive value far
-# below real activation magnitudes behaves the same. It touches no weight bytes: the prequant loader writes this same
-# value into a hosted checkpoint built before the floor existed.
+# torchao ``activation_value_lb``: keeps an all-zero activation row off scale 0 (NaN, black frames); not calibrated.
 FP8_ACTIVATION_VALUE_LB = 1e-12
 
 # Skip linears below this feature size: a small FLOP share, so leaving them bf16 costs ~nothing.

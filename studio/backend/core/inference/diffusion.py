@@ -6437,11 +6437,8 @@ class DiffusionBackend:
                                 self._raise_if_load_cancelled(_load_token)
                                 small_host = None
                                 if fam.name == KREA2_FAMILY_NAME:
-                                    # krea ships transformers-5.x configs the 4.x line cannot parse, so assemble
-                                    # per-component. It takes the pre-cast TE and the seeded denoiser from the
-                                    # pipe_kwargs built above (the seed, the bf16 re-plan and the shard restore are the
-                                    # same as every other family's), and fetches every OTHER component from the id
-                                    # given, so it gets the mirror and the no-download promise.
+                                    # krea's transformers-5.x configs break the 4.x line: assemble per component from
+                                    # pipe_kwargs (pre-cast TE, seeded denoiser or None = dense shards).
                                     try:
                                         pipe = load_krea2_pipeline(
                                             fetch_base,

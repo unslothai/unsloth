@@ -1206,7 +1206,6 @@ def load_prequantized_transformer(
         # The only check reading what the artifact HOLDS: corruption after build passes the rest.
         if not _verify_packed_fingerprint(state_dict, ckpt.get("metadata") or {}, logger = logger):
             return None
-        # After the fingerprint, which describes the bytes as built.
         _repair_legacy_checkpoint(ckpt, scheme, logger)
         _pin_kernel_preference(state_dict, logger)
 
@@ -1537,8 +1536,7 @@ def _fp8_activation_floor_present(
     *,
     warn: bool = True,
 ) -> bool:
-    """True unless the first Float8Tensor has no activation lower bound (by class: NVFP4Tensor lacks one too).
-    ``warn = False`` only answers, without recording a load failure."""
+    """True unless the first Float8Tensor has no activation lower bound (by class: NVFP4Tensor lacks one too)."""
     from .diffusion_transformer_quant import TQ_FP8
 
     try:
@@ -1569,7 +1567,6 @@ def _fp8_activation_floor_present(
 
 
 def _fp8_kwargs_missing_floor(tensor: Any) -> Optional[Any]:
-    """The ``act_quant_kwargs`` of a Float8Tensor that carries no positive activation floor, else None."""
     if type(tensor).__name__ != _FLOAT8_TENSOR_CLASS:
         return None
     kwargs = getattr(tensor, "act_quant_kwargs", None)
@@ -1579,14 +1576,10 @@ def _fp8_kwargs_missing_floor(tensor: Any) -> Optional[Any]:
 
 
 def _fp8_activation_floor_restorable(state_dict: Any) -> bool:
-    """Whether every unfloored Float8Tensor can take the runtime floor without changing anything else.
+    """Whether every unfloored Float8Tensor differs from the runtime config in the floor alone.
 
-    The floor lives ONLY in ``act_quant_kwargs.hp_value_lb``: torchao's fp8 weight quantiser never reads it, so the
-    weight bytes of an artifact built before ``activation_value_lb`` are exactly what the runtime path produces today
-    (measured: 500/500 FLUX.1-dev, 106/106 FLUX.2-klein-4B, FLUX.2-dev and Qwen-Image-2512 weights bit-identical to
-    ``quantize_`` with ``_make_quant_config``). Writing the runtime floor into the kwargs therefore yields the same
-    tensor the dense-quantise fallback would build. Restorable only when the kwargs exposes the field and sets no upper
-    bound, i.e. it differs from the runtime config in the floor alone."""
+    torchao's fp8 weight quantiser never reads ``hp_value_lb``, so the weight bytes of an artifact built before
+    ``activation_value_lb`` equal what ``_make_quant_config`` builds today."""
     try:
         items = state_dict.items() if hasattr(state_dict, "items") else ()
         for _name, tensor in items:
@@ -1605,10 +1598,7 @@ def _fp8_activation_floor_restorable(state_dict: Any) -> bool:
 
 def _restore_fp8_activation_floor(state_dict: Any, logger: Any = None) -> int:
     """Write the runtime activation floor into every unfloored Float8Tensor; returns how many.
-
-    A fresh kwargs object per tensor (``dataclasses.replace``), since a pickle may share one instance between tensors.
-    Like ``_pin_kernel_preference`` this rewrites a runtime knob, not weight data, so the packed fingerprint and the
-    checkpoint's sha256 still describe the tensors."""
+    Fresh kwargs per tensor: a pickle may share one instance between tensors."""
     import copy
     import dataclasses
 
@@ -1641,10 +1631,8 @@ def _repair_legacy_checkpoint(
     scheme: str,
     logger: Any = None,
 ) -> None:
-    """Bring an artifact ``_validate_checkpoint`` accepted as repairable to the runtime's exact contract."""
     from .diffusion_nvfp4_policy import declares_policy
     from .diffusion_transformer_quant import TQ_FP8
-
     if scheme == TQ_FP8 or declares_policy(ckpt.get("metadata") or {}):
         _restore_fp8_activation_floor(ckpt["state_dict"], logger)
 
@@ -1828,12 +1816,10 @@ def _validate_checkpoint(
     # act_quant_kwargs.hp_value_lb, so an artifact built before the fix stays broken however it is loaded, and it
     # predates any metadata field we could stamp -- and "absent is accepted for back-compat", the convention every
     # check above follows, is exactly wrong here. Reading the tensors is fail-closed and needs no format bump.
-    # An artifact built before the floor existed is not lost, though: the floor is a runtime knob on each tensor, not
-    # weight data, so ``_repair_legacy_checkpoint`` writes the runtime value in and the load proceeds. Refused only
-    # when the kwargs differs from the runtime config in more than the floor.
+    # Unless the floor is the only difference: it is not weight data, so ``_repair_legacy_checkpoint`` writes it in.
     if holds_fp8 and not _fp8_activation_floor_present(ckpt.get("state_dict"), logger, warn = False):
         if not _fp8_activation_floor_restorable(ckpt.get("state_dict")):
-            _fp8_activation_floor_present(ckpt.get("state_dict"), logger)  # records the refusal
+            _fp8_activation_floor_present(ckpt.get("state_dict"), logger)
             return False
         if logger is not None:
             logger.info(
