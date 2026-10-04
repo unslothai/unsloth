@@ -1,10 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-/** Reuse activity-card/approval storage without representing a model-emitted call.
- * studio_load_skill is UI-only and is explicitly excluded from model history.
- * Only the backend control channel can author these events (provider frames are sanitized).
- */
+/** UI-only card for a backend skill load; excluded from model history, provider frames sanitized. */
 export function skillLoadCardEvent(
   event: Record<string, unknown>,
 ): Record<string, unknown> {

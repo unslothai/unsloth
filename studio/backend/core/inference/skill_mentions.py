@@ -1,12 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Backend-authored instruction loads, not model tool calls or script execution.
-
-The composer serializes selected and typed mentions identically. Unquoted exact
-plain-text tokens are the contract; Markdown code/quotes and URLs are not intent.
-Loads are request-local: a retry/compaction never relies on a previous UI card.
-"""
+"""Backend-authored @skill loads before generation; contract in studio/SKILL_MENTIONS.md."""
 
 from __future__ import annotations
 
@@ -45,8 +40,7 @@ def mentioned_skill_names(text: str) -> list[str]:
         else:
             lines.append(line)
     text = "".join(lines)
-    # An apostrophe in didn't is prose, not an opening quote. Mask paired spans
-    # conservatively, including inline code with any backtick delimiter length.
+    # (?<!\w)' so the apostrophe in didn't is not an opening quote.
     text = re.sub(r"(`+).*?\1", " ", text, flags = re.DOTALL)
     text = re.sub(r'"[^"]*"|“[^”]*”|‘[^’]*’|(?<!\w)\'[^\']*\'', " ", text)
     return list(dict.fromkeys(match[1] for match in _TOKEN.finditer(text)))
@@ -88,13 +82,7 @@ def load_mentioned_skills(
     protected_message_ids = None,
     dedup_tool_context = True,
 ):
-    """Yield truthful UI-only events and inject complete manifests before generation.
-
-    Call only after selecting the effective model's allowed catalog. A read_skill
-    entry is the existing Code/capability/account gate, not a new global policy.
-    Ask mode uses the same scoped approval handshake as an ordinary read_skill.
-    Failures never inject a partial manifest; the model gets an explicit notice.
-    """
+    """Inject complete manifests before generation; never a partial one. Caller gates on read_skill."""
     if continue_final_message or not any(
         tool.get("function", {}).get("name") == "read_skill" for tool in (tools or [])
     ):
@@ -105,8 +93,7 @@ def load_mentioned_skills(
     names = mentioned_skill_names(_text(messages[-1]))
     if not names:
         return
-    # @john / @everyone are people, not skills: no card, approval prompt or notice.
-    # Known but unusable skills still report unavailable, without asking approval first.
+    # @john is a person, not a skill: no card or approval. Known-but-unusable skills report unavailable.
     try:
         known = list_skills()
     except (SkillError, OSError):
@@ -144,8 +131,7 @@ def load_mentioned_skills(
                 continue
         yield {**event, "status": "loading"}
         try:
-            # Revalidates enabled, valid, non-shadowed, account-scoped discovery
-            # and resource identity. No cache, paging splice, or execute_tool.
+            # Re-validates enabled/account-scoped discovery; never a cached or paged read.
             content = read_skill_instructions(name)
             size = len(content.encode("utf-8"))
             existing = next(

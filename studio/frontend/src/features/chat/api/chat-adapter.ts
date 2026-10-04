@@ -1413,8 +1413,7 @@ function serializeAssistantReplayMessages(
 
     if (part.type === "tool-call") {
       const toolPart = part as ToolCallMessagePart;
-      // A persisted backend preload card is evidence, not an assistant function call.
-      // Its request-local instructions are securely re-read on the next explicit mention.
+      // Backend preload card is UI evidence, not a model function call.
       if (toolPart.toolName === "studio_load_skill") continue;
       const toolCall = serializeAssistantToolCallPart(toolPart);
       if (!toolCall) continue;

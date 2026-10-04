@@ -36348,8 +36348,7 @@ class LlamaCppBackend:
             raise RuntimeError("llama-server is not loaded")
 
         conversation = list(messages)
-        # Explicit skill loads may rely on a complete existing tool result.
-        # Preserve it through fitting, rather than assuming its old read survived.
+        # Seeded with tool results an explicit skill load relies on, so fitting keeps them.
         _rolling_anchor_ids: set[int] = set(instruction_anchor_ids or ())
         # The loop refits on every iteration; recall must fire once per request, or each
         # pass stacks another block of recalled turns onto the prompt.
