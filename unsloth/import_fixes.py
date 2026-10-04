@@ -1697,6 +1697,144 @@ def fix_transformers5_image_processing_reexports():
         logger.info(f"Unsloth: Failed patching get_class_in_module ({e})")
 
 
+_UNTRUSTED_CONFIG_PATCH_FLAG = "_unsloth_patched_untrusted_config_fields"
+# Set only through attn_implementation= / experts_implementation=; transformers' to_dict never writes
+# them, so a config.json carrying them was crafted (CVE-2026-4372, fixed upstream in 5.3.0).
+_INTERNAL_IMPLEMENTATION_KEYS = (
+    "_attn_implementation_internal",
+    "_experts_implementation_internal",
+)
+
+
+def _strip_untrusted_config_fields(config_dict, strip_internal, strip_lightglue):
+    if not isinstance(config_dict, dict):
+        return config_dict
+    cleaned = None
+    for key, value in config_dict.items():
+        drop = (strip_internal and key in _INTERNAL_IMPLEMENTATION_KEYS) or (
+            strip_lightglue
+            and key == "trust_remote_code"
+            and config_dict.get("model_type") == "lightglue"
+        )
+        new_value = _strip_untrusted_config_fields(value, strip_internal, strip_lightglue)
+        if drop or new_value is not value:
+            if cleaned is None:
+                cleaned = dict(config_dict)
+            if drop:
+                cleaned.pop(key, None)
+            else:
+                cleaned[key] = new_value
+    return config_dict if cleaned is None else cleaned
+
+
+def fix_transformers_untrusted_config_fields():
+    """Drop config.json fields that let a model repo run code without trust_remote_code.
+
+    CVE-2026-4372 (transformers < 5.3.0): `_attn_implementation_internal` read from config.json
+    names a Hub kernel repo, which `kernels` downloads and imports when the model is built.
+    CVE-2026-5241 (transformers 4.54.0 - 5.4.x): LightGlueConfig takes `trust_remote_code` from
+    config.json and forwards it to a nested AutoConfig.from_pretrained on a repo the config names.
+    Both enter through PretrainedConfig.from_dict, so the loaded dict is cleaned there. Keyword
+    arguments are applied after from_dict and are left alone, so an explicit
+    attn_implementation="kernels-community/..." keeps working.
+    """
+    try:
+        import transformers
+
+        version = Version(transformers.__version__)
+        strip_internal = version < Version("5.3.0")
+        strip_lightglue = version < Version("5.5.0")
+        if not (strip_internal or strip_lightglue):
+            return
+        from transformers.configuration_utils import PretrainedConfig
+    except Exception as e:
+        logger.info(f"Unsloth: Skipping the untrusted config field fix ({e})")
+        return
+    current = PretrainedConfig.__dict__.get("from_dict")
+    if not isinstance(current, classmethod):
+        return
+    # The mark travels on the wrapper, so a second call or a reload is detected rather than stacked.
+    if getattr(current.__func__, _UNTRUSTED_CONFIG_PATCH_FLAG, False):
+        return
+    original = current.__func__
+
+    @functools.wraps(original)
+    def from_dict(cls, config_dict, *args, **kwargs):
+        config_dict = _strip_untrusted_config_fields(config_dict, strip_internal, strip_lightglue)
+        return original(cls, config_dict, *args, **kwargs)
+
+    setattr(from_dict, _UNTRUSTED_CONFIG_PATCH_FLAG, True)
+    try:
+        PretrainedConfig.from_dict = classmethod(from_dict)
+    except Exception as e:
+        logger.info(f"Unsloth: Failed patching PretrainedConfig.from_dict ({e})")
+
+
+_CHAT_TEMPLATE_NAME_PATCH_FLAG = "_unsloth_patched_chat_template_names"
+
+
+def _chat_template_name_escapes(template_name):
+    # Upstream's test (#46191: the resolved parent must be the template dir), without touching disk.
+    base = os.path.abspath(os.path.join(os.sep, "unsloth_chat_templates"))
+    target = os.path.normpath(os.path.join(base, f"{template_name}.jinja"))
+    return os.path.dirname(target) != base
+
+
+def _check_chat_template_names(obj, kwargs):
+    chat_template = getattr(obj, "chat_template", None)
+    if not isinstance(chat_template, dict) or not kwargs.get("save_jinja_files", True):
+        return
+    for template_name in chat_template:
+        if template_name != "default" and _chat_template_name_escapes(str(template_name)):
+            raise ValueError(f"Invalid chat template name: {template_name!r}")
+
+
+def fix_transformers_chat_template_path_traversal():
+    """Refuse to save a named chat template whose name escapes the save directory.
+
+    CVE-2026-9856 (transformers < 5.10.0): tokenizer and processor save_pretrained write each
+    named chat template to `additional_chat_templates/<name>.jinja`, and the name comes from the
+    loaded tokenizer_config.json, so a repo naming one `../../x` writes outside the save directory
+    on the next save. Raises upstream's ValueError, before anything is written.
+    """
+    try:
+        import transformers
+        if Version(transformers.__version__) >= Version("5.10.0"):
+            return
+    except Exception as e:
+        logger.info(f"Unsloth: Skipping the chat template name fix ({e})")
+        return
+    targets = []
+    try:
+        from transformers.tokenization_utils_base import PreTrainedTokenizerBase
+        targets.append(PreTrainedTokenizerBase)
+    except Exception:
+        pass
+    try:
+        from transformers.processing_utils import ProcessorMixin
+        targets.append(ProcessorMixin)
+    except Exception:
+        pass
+
+    def wrap(original):
+        @functools.wraps(original)
+        def save_pretrained(self, *args, **kwargs):
+            _check_chat_template_names(self, kwargs)
+            return original(self, *args, **kwargs)
+
+        setattr(save_pretrained, _CHAT_TEMPLATE_NAME_PATCH_FLAG, True)
+        return save_pretrained
+
+    for target in targets:
+        original = target.__dict__.get("save_pretrained")
+        if original is None or getattr(original, _CHAT_TEMPLATE_NAME_PATCH_FLAG, False):
+            continue
+        try:
+            target.save_pretrained = wrap(original)
+        except Exception as e:
+            logger.info(f"Unsloth: Failed patching {target.__name__}.save_pretrained ({e})")
+
+
 _SDPA_MASK_PATCH_FLAG = "_unsloth_patched_sdpa_mask"
 
 
