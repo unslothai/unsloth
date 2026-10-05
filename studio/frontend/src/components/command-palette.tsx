@@ -37,7 +37,6 @@ import {
   DownloadSquare01Icon,
   FlimSlateIcon,
   Folder01Icon,
-  InternetIcon,
   Image03Icon,
   LibrariesIcon,
   Message01Icon,
@@ -46,6 +45,7 @@ import {
   Settings02Icon,
   Sun03Icon,
   TestTube01Icon,
+  ApiIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useNavigate, useRouterState } from "@tanstack/react-router";
@@ -303,7 +303,7 @@ function PaletteContent() {
             onSelect={runAndClose(() => void navigate({ to: "/api-monitor" }))}
             keywords={["api", "monitor", "requests"]}
           >
-            <HugeiconsIcon icon={InternetIcon} strokeWidth={1.75} />
+            <HugeiconsIcon icon={ApiIcon} strokeWidth={1.75} />
             <span>{t("shell.navigation.api")}</span>
           </PaletteItem>
           <PaletteItem onSelect={openSettings()} keywords={["preferences"]}>

@@ -42,11 +42,11 @@ _TEMPLATE_APPLYING_PROVIDERS = frozenset({"vllm", "llama_cpp", "ollama", "custom
 # The subset documenting "continue_final_message" + "add_generation_prompt" on /v1/chat/completions.
 _CONTINUATION_FLAG_PROVIDERS = frozenset({"vllm", "llama_cpp"})
 
-# The subset documenting stream_options.include_usage. An OAI-compatible stream omits usage without it, and these
-# providers report no llama.cpp timings either, so the monitor has no token count to derive a speed from. Same caution
-# as the flag above: "custom" is any user-supplied base_url and a strict endpoint 400s on an unknown field. "openai"
-# is absent because it routes to /v1/responses, which reports usage on its own.
-_USAGE_STREAM_OPTION_PROVIDERS = frozenset({"vllm", "openrouter", "kimi", "lemonade"})
+# The subset documenting stream_options.include_usage. An OAI-compatible stream omits usage without it, leaving the
+# chat context bar without prompt_tokens and, where no llama.cpp timings arrive, the monitor without a speed. Same
+# caution as the flag above: "custom" is any user-supplied base_url and a strict endpoint 400s on an unknown field.
+# "openai" is absent because it routes to /v1/responses, which reports usage on its own.
+_USAGE_STREAM_OPTION_PROVIDERS = frozenset({"vllm", "llama_cpp", "openrouter", "kimi", "lemonade"})
 
 # llama-server reads repeat_penalty, not repetition_penalty (as routes/inference does).
 _REPETITION_PENALTY_BODY_KEY = {"llama_cpp": "repeat_penalty"}

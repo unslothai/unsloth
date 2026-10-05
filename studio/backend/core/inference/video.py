@@ -87,6 +87,7 @@ from .diffusion_device import (
     diffusion_device_scope,
     force_float32_rope,
     install_decoder_sync,
+    install_rocm_vae_bf16_decode,
     pin_cuda_ordinal,
     placed_cuda_ordinal,
     resolve_diffusion_device_target,
@@ -6570,6 +6571,11 @@ class VideoBackend:
                     speed_optims += ("vae_untiled_when_fits",)
             # Wan's decode also grows within a single tile, which tiling alone cannot bound.
             install_decoder_sync(pipe, target, logger = logger)
+            # Last, so the bf16 entry wraps whatever decode path the steps above installed. Not on SPEED_OFF.
+            if getattr(fam, "vae_force_fp32", False) and effective_speed != SPEED_OFF:
+                vae_bf16_mode = install_rocm_vae_bf16_decode(pipe, target, logger = logger)
+                if vae_bf16_mode:
+                    speed_optims += ("vae_bf16_decode", f"vae_bf16_{vae_bf16_mode}")
 
             resolved = build_resolved_record(
                 {
@@ -7348,10 +7354,18 @@ class VideoBackend:
 
                         if denoiser_streamed in ("stream", "stream_lazy"):
                             from .video_minimax_h3_residency import pin_streamed_top_level_group
+
                             try:
                                 pin_streamed_top_level_group(denoiser, logger = logger)
                             except Exception as exc:  # noqa: BLE001 -- a speed-up only
                                 logger.warning("video.h3_top_group: %s", exc)
+                            # after the top-level pin (it becomes one of the prefetched groups), before the residency fit
+                            from .video_minimax_h3_residency import install_h3_stream_prefetch
+
+                            try:
+                                install_h3_stream_prefetch(denoiser, device, logger = logger)
+                            except Exception as exc:  # noqa: BLE001 -- a speed-up only
+                                logger.warning("video.h3_stream_prefetch: %s", exc)
                         if h3_dit_resident_enabled() and denoiser_streamed in (
                             "stream",
                             "stream_lazy",
