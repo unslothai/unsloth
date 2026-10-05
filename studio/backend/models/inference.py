@@ -34,7 +34,6 @@ from core.inference.llama_server_args import (
 from core.inference.runtime_context import MAX_REQUESTABLE_CONTEXT
 from core.inference.video_families import MAX_VIDEO_NUM_FRAMES
 from picker.schemas import MAX_CHAT_TEMPLATE_BYTES
-from models.llama_custom_config import LlamaCppConfigFields
 from utils.reasoning_budget import validate_reasoning_budget_message
 
 
@@ -55,7 +54,7 @@ def resolve_inventory_handle(value: str) -> str:
     return resolved
 
 
-class LoadRequest(LlamaCppConfigFields):
+class LoadRequest(BaseModel):
     """Request to load a model for inference"""
 
     engine_parallelism: Literal["tensor", "pipeline", "data"] = "tensor"
@@ -559,7 +558,7 @@ class SttLoadRequest(BaseModel):
         return self
 
 
-class ValidateModelRequest(LlamaCppConfigFields):
+class ValidateModelRequest(BaseModel):
     """Check whether an identifier resolves to a ModelConfig; does NOT load weights."""
 
     engine_parallelism: Literal["tensor", "pipeline", "data"] = "tensor"
@@ -847,7 +846,6 @@ class ValidateModelResponse(BaseModel):
     """
 
     valid: bool = Field(..., description = "Whether the model identifier looks valid")
-    llama_cpp_config_summary: Optional[Dict[str, Any]] = None
     message: str = Field(..., description = "Human-readable validation message")
     identifier: Optional[str] = Field(None, description = "Resolved model identifier")
     resident: bool = Field(
@@ -1335,8 +1333,6 @@ class _InferenceRuntimeFields(BaseModel):
         description = "Active inference engine. 'auto' denotes Studio's default backend; "
         "'vllm' and 'sglang' denote optional managed engines.",
     )
-    requested_llama_cpp_config: Optional[Dict[str, Any]] = None
-    llama_cpp_config_summary: Optional[Dict[str, Any]] = None
 
     is_vision: bool = Field(False, description = "Whether model is a vision model")
     is_diffusion: bool = Field(

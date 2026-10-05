@@ -89,7 +89,6 @@ _DENYLIST_GROUPS: tuple[frozenset[str], ...] = (
     frozenset({"--path"}),
     frozenset({"--api-prefix"}),
     frozenset({"--reuse-port"}),
-    frozenset({"--rpc"}),
     # Auth / TLS: Unsloth terminates auth; upstream --api-key / TLS shadows Unsloth's key and breaks the proxy hop
     frozenset({"--api-key"}),
     frozenset({"--api-key-file"}),
@@ -1873,7 +1872,6 @@ DENIED_ENV_VARS: tuple[str, ...] = (
     "LLAMA_ARG_HOST",
     "LLAMA_ARG_PORT",
     "LLAMA_ARG_REUSE_PORT",
-    "LLAMA_ARG_RPC",
     "LLAMA_ARG_N_PARALLEL",
     "LLAMA_ARG_POOLING",
     "LLAMA_ARG_EMBEDDINGS",

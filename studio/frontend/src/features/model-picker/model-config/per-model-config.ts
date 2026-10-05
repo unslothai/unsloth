@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { normalizeLlamaCppConfig, type LlamaCppConfig } from "./llama-cpp-config";
 import type { GpuIndexKind } from "@/hooks/use-gpu-info";
 import {
   cachedRepoConfigId,
@@ -53,7 +52,6 @@ export interface PerModelConfig {
      *  alive); `null` means the user cleared the box and must be sent as an explicit `[]`; a non-empty list is what
      *  to launch with. */
   llamaExtraArgs?: string[] | null;
-  llamaCppConfig?: LlamaCppConfig;
   // GPU Memory controls (per-model, GGUF-only), optional so older blobs parse. Absent or null
   // selectedGpuIds means automatic.
   gpuMemoryMode?: "auto" | "manual";
@@ -378,9 +376,8 @@ const LEGACY_MIGRATION_FLAG = "unsloth_model_configs_migrated";
 // would normalize the unknown field straight back out of the record.
 // v2 added nBatch/nUbatch, v3 llamaExtraArgs, v4 disableVision, v5 the llama-server tuning group
 // (loadMode / specDraftCacheDtype / ctxCheckpoints / cacheRam), v6 the reasoning budget pair,
-// v7 mlxKvQuant, and v8 custom llama.cpp configuration.
-const STORAGE_SCHEMA_VERSION = 8;
-const PRE_LLAMA_CPP_CONFIG_SCHEMA_VERSION = 7;
+// v7 mlxKvQuant
+const STORAGE_SCHEMA_VERSION = 7;
 const PRE_MLX_KV_QUANT_SCHEMA_VERSION = 6;
 const PRE_REASONING_BUDGET_SCHEMA_VERSION = 5;
 const PRE_SERVER_TUNING_SCHEMA_VERSION = 4;
@@ -437,7 +434,6 @@ const STORED_CONFIG_FIELDS = new Set([
   "disableVision",
   "chatTemplateOverride",
   "llamaExtraArgs",
-  "llamaCppConfig",
   "gpuMemoryMode",
   "gpuLayers",
   "nCpuMoe",
@@ -1087,7 +1083,6 @@ function normalizeV1(partial: RawConfig): PerModelConfig {
         ? partial.chatTemplateOverride
         : null,
     llamaExtraArgs: normalizeLlamaExtraArgs(partial.llamaExtraArgs),
-    llamaCppConfig: normalizeLlamaCppConfig(partial.llamaCppConfig),
     ...normalizeGpuFields(partial),
   };
 }
@@ -1116,11 +1111,8 @@ function normalize(raw: unknown): PerModelConfig {
  *  client reconstructs anyway, and stamping every record v4 would put the whole store out of reach.
  *  The tuning group and the reasoning pair follow the same rule. */
 function storedSchemaVersion(normalized: PerModelConfig): number {
-  if (normalized.llamaCppConfig !== undefined) {
-    return STORAGE_SCHEMA_VERSION;
-  }
   if (normalized.mlxKvQuant != null) {
-    return PRE_LLAMA_CPP_CONFIG_SCHEMA_VERSION;
+    return STORAGE_SCHEMA_VERSION;
   }
   const hasReasoningBudget =
     normalized.reasoningBudget !== -1 || normalized.reasoningBudgetMessage !== "";
@@ -1320,7 +1312,6 @@ export function isDefaultConfig(config: PerModelConfig): boolean {
     // Or a config whose only change is Extra Arguments reads as default, and savePerModelConfig
     // deletes the entry it was asked to remember.
     (config.llamaExtraArgs == null || config.llamaExtraArgs.length === 0) &&
-    config.llamaCppConfig === undefined &&
     gpuFieldsAtDefault(config)
   );
 }
@@ -1344,9 +1335,6 @@ export function savePerModelConfig(
      *  without this their server overrides would keep applying with nothing in the UI able to forget them. */
   evicted?: { modelId: string; ggufVariant: string | null }[],
 ): boolean {
-  if (config.llamaCppConfig !== undefined && normalizeLlamaCppConfig(config.llamaCppConfig) === undefined) {
-    return false;
-  }
   if (
     typeof config.chatTemplateOverride === "string" &&
     !isChatTemplateWithinLimit(config.chatTemplateOverride)

@@ -2631,6 +2631,79 @@ class TestChatCompletionRequestToolFields:
             assert "confirm_tool_calls requires stream=true" in entry["error"]
         assert monitor.active_count() == 0
 
+    def test_safetensors_client_tools_keep_the_template_default_after_the_date(self, monkeypatch):
+        import routes.inference as inference_route
+
+        from core.inference import chat_template_helpers
+
+        captured = {}
+
+        class _NoGGUFBackend:
+            is_loaded = False
+            supports_tools = False
+
+        class _InferenceBackend:
+            active_model_name = "test-model"
+            models = {
+                "test-model": {
+                    "is_vision": False,
+                    "chat_template_info": {"template": "tool-template"},
+                    "context_length": 4096,
+                }
+            }
+
+            def generate_chat_response(self, **kwargs):
+                captured.update(kwargs)
+                yield "ok"
+
+            def reset_generation_state(self, cancel_event = None):
+                pass
+
+        monkeypatch.setattr(
+            inference_route,
+            "_detect_safetensors_features",
+            lambda *a, **k: {"supports_tools": True},
+        )
+        monkeypatch.setattr(
+            inference_route,
+            "_local_template_system_turn",
+            lambda _today, image = False, tools = False, controls = (): (
+                True,
+                "You are Qwen." if tools else "",
+            ),
+        )
+        monkeypatch.setattr(
+            inference_route,
+            "current_date_prompt_line",
+            lambda **_kwargs: "The current date is 2026-10-04.",
+        )
+        monkeypatch.setattr(
+            chat_template_helpers,
+            "renderable_tool_catalog_for_targets",
+            lambda tools, *_args, **_kwargs: tools,
+        )
+        monkeypatch.setattr(inference_route, "api_monitor", ApiMonitor(max_entries = 3))
+        client = self._v1_client(monkeypatch, _NoGGUFBackend(), _InferenceBackend())
+        resp = client.post(
+            "/v1/chat/completions",
+            json = {
+                "messages": [{"role": "user", "content": "use client tool"}],
+                "enable_tools": False,
+                "tools": _lookup_tools(),
+            },
+        )
+
+        assert resp.status_code == 200, resp.text
+        assert captured["system_prompt"] == ""
+        assert captured["messages"][:2] == [
+            {
+                "role": "system",
+                "content": "The current date is 2026-10-04.\n\nYou are Qwen.",
+            },
+            {"role": "user", "content": "use client tool"},
+        ]
+        assert captured["tools"] == _lookup_tools()
+
     def test_multiturn_tool_loop_messages(self):
         req = ChatCompletionRequest(
             messages = [
@@ -6463,6 +6536,7 @@ class TestGgufVisionToolRouting:
         monkeypatch,
         date_line: str,
         messages = None,
+        chat_template = None,
     ) -> list[dict]:
         """Run one non-tool GGUF completion with the current-date setting pinned."""
         import routes.inference as inf_mod
@@ -6485,6 +6559,8 @@ class TestGgufVisionToolRouting:
             model_identifier = "test-gguf",
             context_length = 4096,
             generate_chat_completion = _generate,
+            chat_template = chat_template,
+            chat_template_override = None,
         )
         monkeypatch.setattr(inf_mod, "get_llama_cpp_backend", lambda: backend)
         # Pinned, not left to the host's stored setting, so the assertion is the same everywhere.
@@ -6521,21 +6597,39 @@ class TestGgufVisionToolRouting:
             {"role": "user", "content": "hi"},
         ]
 
-    def test_standard_gguf_without_a_system_prompt_keeps_the_template_default(self, monkeypatch):
-        sent = self._drive_standard_gguf(
-            monkeypatch,
-            "The current date is 2026-08-15.",
-            messages = [
-                {"role": "user", "content": "first"},
-                {"role": "assistant", "content": "ok"},
-                {"role": "user", "content": "second"},
-            ],
-        )
-        assert sent == [
-            {"role": "user", "content": "[Current date: 2026-08-15]\n\nfirst"},
+    @pytest.mark.parametrize(
+        ("chat_template", "system"),
+        [
+            (
+                "{% if messages[0]['role'] == 'system' %}{% set s = messages[0]['content'] %}"
+                "{% set rest = messages[1:] %}{% else %}{% set s = 'You are Qwen.' %}"
+                "{% set rest = messages %}{% endif %}<|im_start|>system\n{{ s }}<|im_end|>\n"
+                "{% for m in rest %}<|im_start|>{{ m['role'] }}\n{{ m['content'] }}<|im_end|>\n"
+                "{% endfor %}",
+                "The current date is 2026-08-15.\n\nYou are Qwen.",
+            ),
+            (
+                "{% for m in messages %}<start_of_turn>{{ m['role'] }}\n{{ m['content'] }}"
+                "<end_of_turn>\n{% endfor %}",
+                "The current date is 2026-08-15.",
+            ),
+        ],
+    )
+    def test_standard_gguf_without_a_system_prompt_dates_a_system_turn(
+        self, monkeypatch, chat_template, system
+    ):
+        history = [
+            {"role": "user", "content": "first"},
             {"role": "assistant", "content": "ok"},
             {"role": "user", "content": "second"},
         ]
+        sent = self._drive_standard_gguf(
+            monkeypatch,
+            "The current date is 2026-08-15.",
+            messages = history,
+            chat_template = chat_template,
+        )
+        assert sent == [{"role": "system", "content": system}, *history]
 
     @pytest.mark.parametrize(
         ("seed", "expected"),

@@ -7016,8 +7016,12 @@ class ExternalProviderClient:
                 raw_models = data.get("data") or []
                 if isinstance(raw_models, list):
                     models = [model for model in raw_models if isinstance(model, dict)]
-            if not models and self.provider_type == "ollama":
-                models = await self._list_ollama_native_models()
+            if self.provider_type == "ollama":
+                # Only /api/tags carries the per-model "thinking" capability.
+                if not models:
+                    models = await self._list_ollama_native_models()
+                else:
+                    models = await self._with_ollama_capabilities(models)
             # Gemini's native /v1beta/models uses a different shape; repackage into the OpenAI-compatible one Unsloth
             # expects.
             if not models and self.provider_type == "gemini":
@@ -7067,8 +7071,16 @@ class ExternalProviderClient:
             )
         return out
 
+    @staticmethod
+    def _ollama_capability_names(entry: dict[str, Any]) -> Optional[list[str]]:
+        # None = the row is silent (older Ollama), not "no capabilities".
+        raw = entry.get("capabilities")
+        if not isinstance(raw, list):
+            return None
+        return [name for name in raw if isinstance(name, str) and name]
+
     async def _list_ollama_native_models(self) -> list[dict[str, Any]]:
-        """Fallback when Ollama's /v1/models returns an empty or null catalog."""
+        """Ollama's /api/tags catalog, with per-model capabilities when reported."""
         root = self.base_url.removesuffix("/v1").rstrip("/")
         response = await _client().get(
             f"{root}/api/tags",
@@ -7082,11 +7094,39 @@ class ExternalProviderClient:
         raw_models = payload.get("models") or []
         if not isinstance(raw_models, list):
             return []
-        return [
-            {"id": entry.get("name", "").strip(), "owned_by": "ollama"}
-            for entry in raw_models
-            if isinstance(entry, dict) and entry.get("name", "").strip()
-        ]
+        models: list[dict[str, Any]] = []
+        for entry in raw_models:
+            if not isinstance(entry, dict):
+                continue
+            model_id = entry.get("name", "").strip()
+            if not model_id:
+                continue
+            model: dict[str, Any] = {"id": model_id, "owned_by": "ollama"}
+            capabilities = self._ollama_capability_names(entry)
+            if capabilities is not None:
+                model["capabilities"] = capabilities
+            models.append(model)
+        return models
+
+    async def _with_ollama_capabilities(self, models: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        # A working /v1/models must still list when /api/tags fails.
+        try:
+            native = await self._list_ollama_native_models()
+        except (httpx.HTTPError, ValueError) as exc:
+            logger.debug("Ollama /api/tags capabilities unavailable: %s", exc)
+            return models
+        capabilities = {
+            entry["id"]: entry["capabilities"]
+            for entry in native
+            if entry.get("capabilities") is not None
+        }
+        if not capabilities:
+            return models
+        merged: list[dict[str, Any]] = []
+        for model in models:
+            names = capabilities.get(model.get("id", ""))
+            merged.append(model if names is None else {**model, "capabilities": names})
+        return merged
 
     async def verify_models_endpoint_lightweight(self) -> None:
         """Confirm GET /models returns 200 without buffering the full response body. Used for
