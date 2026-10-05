@@ -52,6 +52,26 @@ export function shouldShowCompactionNotice(
   );
 }
 
+/** Count the compactions represented by an ordered thread transcript. */
+export function countAutomaticCompactions(
+  truncations: readonly (ContextTruncation | undefined)[],
+): number {
+  let previousBoundary = 0;
+  let count = 0;
+
+  for (const truncation of truncations) {
+    const boundary = compactionBoundary(truncation);
+    if (shouldShowCompactionNotice(truncation, previousBoundary)) {
+      count += 1;
+    }
+    // Keep the high-water mark even for a replay or a checkpoint whose saved boundary
+    // did not advance. A rollback must not make an already-counted boundary count again.
+    previousBoundary = Math.max(previousBoundary, boundary);
+  }
+
+  return count;
+}
+
 function nonNegativeInt(value: number | undefined): number {
   // A propagated NaN would print "NaN tokens on its own" at the user.
   return Number.isFinite(value) ? Math.max(0, Math.trunc(value as number)) : 0;

@@ -6,6 +6,7 @@ import test from "node:test";
 import {
   type ContextTruncation,
   compactionBoundary,
+  countAutomaticCompactions,
   shouldShowCompactionNotice,
   mergeContextTruncation,
   promptWasShortened,
@@ -16,6 +17,9 @@ import { readSrc } from "./helpers/kit.ts";
 const COMPACTION_NOTICE = readSrc("components/assistant-ui/compaction-notice.tsx");
 const THREAD = readSrc("components/assistant-ui/thread.tsx");
 const CHAT_ADAPTER = readSrc("features/chat/api/chat-adapter.ts");
+const RUNTIME_PROVIDER = readSrc("features/chat/runtime-provider.tsx");
+const CHAT_PAGE = readSrc("features/chat/chat-page.tsx");
+const CONTEXT_USAGE_BAR = readSrc("features/chat/components/context-usage-bar.tsx");
 
 const adapter = readSrc("features/chat/api/chat-adapter.ts");
 const transport = readSrc("features/chat/api/chat-api.ts");
@@ -259,6 +263,51 @@ test("a boundary that goes BACKWARDS does not re-announce", () => {
   // A rollback leaves a shorter branch needing less eviction. Less is missing than
   // before, so there is nothing to say and the baseline must not be dragged down.
   assert.deepStrictEqual(noticeTurns([52, 20, 20, 20]), [0]);
+});
+
+test("automatic compaction count follows the notice boundary high-water mark", () => {
+  assert.equal(countAutomaticCompactions([]), 0);
+  assert.equal(
+    countAutomaticCompactions([
+      { dropped_messages: 12, boundary_messages: 4, fits: true },
+      { dropped_messages: 4, boundary_messages: 4, fits: true },
+      { dropped_messages: 3, boundary_messages: 8, fits: true },
+      { dropped_messages: 1, boundary_messages: 2, fits: true },
+      { dropped_messages: 5, boundary_messages: 10, fits: true },
+    ]),
+    3,
+  );
+});
+
+test("automatic compaction count includes a checkpoint without a boundary move", () => {
+  assert.equal(
+    countAutomaticCompactions([
+      { dropped_messages: 4, boundary_messages: 4, fits: true },
+      {
+        dropped_messages: 2,
+        boundary_messages: 4,
+        checkpoint_started: true,
+        fits: true,
+      },
+      { dropped_messages: 2, boundary_messages: 4, fits: true },
+    ]),
+    2,
+  );
+  assert.equal(
+    countAutomaticCompactions([
+      { dropped_messages: 0, boundary_messages: 0, fits: false },
+      undefined,
+    ]),
+    0,
+  );
+});
+
+test("the context meter receives the transcript-derived compaction count", () => {
+  assert.match(RUNTIME_PROVIDER, /countAutomaticCompactions\(truncations\)/);
+  assert.match(RUNTIME_PROVIDER, /<CompactionCountRegistrar onCountChange=/);
+  assert.match(CHAT_PAGE, /onCompactionCountChange=\{/);
+  assert.match(CHAT_PAGE, /compactionCount=\{compactionCount\}/);
+  assert.match(CONTEXT_USAGE_BAR, /Automatic compactions/);
 });
 
 /** The source of one function, by brace matching from its declaration. */

@@ -53,6 +53,10 @@ import {
   streamChatCompletions,
   uploadChatAttachmentOriginal,
 } from "./api/chat-api";
+import {
+  countAutomaticCompactions,
+  type ContextTruncation,
+} from "./utils/context-truncation";
 import { selectCodeToolNames } from "./api/code-tool-placement";
 import { getResearchThreadState } from "./api/research-api";
 import {
@@ -3614,6 +3618,36 @@ function ActiveBranchRegistrar({
   return null;
 }
 
+// The header meter sits outside AssistantRuntimeProvider, so publish the transcript-derived
+// count through a callback rather than calling useAuiState from ChatPage itself.
+function CompactionCountRegistrar({
+  onCountChange,
+}: {
+  onCountChange: (threadId: string, count: number) => void;
+}): ReactElement | null {
+  const threadId = useAuiState(({ threadListItem }) => threadListItem.remoteId);
+  const count = useAuiState(({ thread }) => {
+    const truncations = thread.messages
+      .filter((message) => message.role === "assistant")
+      .map((message) => {
+        const metadata = message.metadata as
+          | { custom?: { contextTruncation?: unknown } }
+          | undefined;
+        const value = metadata?.custom?.contextTruncation;
+        return value && typeof value === "object"
+          ? (value as ContextTruncation)
+          : undefined;
+      });
+    return countAutomaticCompactions(truncations);
+  });
+
+  useEffect(() => {
+    if (threadId) onCountChange(threadId, count);
+  }, [count, onCountChange, threadId]);
+
+  return null;
+}
+
 // Price whichever thread the bar points at whenever it has nothing to show. Only two paths reach
 // it: a model change empties contextUsageByThreadId while a mounted thread does not rerun
 // its history loader, and on a deep link the loader and status can each land before the other.
@@ -3938,6 +3972,7 @@ export function ChatRuntimeProvider({
   listThreads = true,
   backgrounded = false,
   onInitialHistoryReady,
+  onCompactionCountChange,
 }: {
   children: ReactNode;
   modelType?: ModelType;
@@ -3951,6 +3986,7 @@ export function ChatRuntimeProvider({
   // stays alive, and everything driving the shared single-chat state stands down.
   backgrounded?: boolean;
   onInitialHistoryReady?: () => void;
+  onCompactionCountChange?: (threadId: string, count: number) => void;
 }): ReactElement {
   const signalReady = useAppShellReadySignal();
   // Read by the history adapter's own active-thread publication, the sibling of
@@ -4038,6 +4074,9 @@ export function ChatRuntimeProvider({
         <ThreadContextUsageRecount
           enabled={modelType === "base" && !pairId && !backgrounded}
         />
+        {onCompactionCountChange ? (
+          <CompactionCountRegistrar onCountChange={onCompactionCountChange} />
+        ) : null}
         <ThreadBackendAutosave
           modelType={modelType}
           pairId={pairId}
