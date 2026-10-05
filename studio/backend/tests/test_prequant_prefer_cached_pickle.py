@@ -585,10 +585,13 @@ def test_kill_switch_probe_plans_the_safetensors_download(hub, monkeypatch):
     assert pq.cached_checkpoint_path(_dit(), online = False) == hub.cached[(REPO, "Model-INT8.pt")]
 
 
-def test_te_pickle_in_another_root_does_not_win_over_the_twin(hub, monkeypatch):
-    """The TE resolver downloads into ``cache_dir`` only, so a pickle cached under another root is not reused."""
+def test_te_pickle_in_the_default_root_is_reused_through_that_root(hub, monkeypatch):
+    """A pickle cached only under huggingface_hub's default root is what the planner and the video
+    prefetch count, so the TE resolver reuses it through that root instead of fetching the twin."""
     hub.cache("Model-text_encoder-FP8.pt")
     real = hub.try_to_load_from_cache
+    real_dl = hub.hf_hub_download
+    roots = []
 
     def _default_root_only(
         repo_id,
@@ -598,9 +601,20 @@ def test_te_pickle_in_another_root_does_not_win_over_the_twin(hub, monkeypatch):
     ):
         return real(repo_id, filename) if cache_dir is None else None
 
+    def _dl(
+        repo_id,
+        filename,
+        cache_dir = None,
+        **kw,
+    ):
+        roots.append(cache_dir)
+        return real_dl(repo_id, filename, cache_dir = cache_dir, **kw)
+
     monkeypatch.setattr(huggingface_hub, "try_to_load_from_cache", _default_root_only)
-    tpq._resolve_checkpoint_path(_te(), None, cache_dir = "/live")
-    assert hub.fetched == ["Model-text_encoder-FP8.safetensors"]
+    monkeypatch.setattr(huggingface_hub, "hf_hub_download", _dl)
+    got = tpq._resolve_checkpoint_path(_te(), None, cache_dir = "/live")
+    assert got == hub.cached[(REPO, "Model-text_encoder-FP8.pt")]
+    assert hub.fetched == ["Model-text_encoder-FP8.pt"] and roots == [None]
 
 
 def test_local_files_only_reachability_uses_the_cached_fallback(hub, monkeypatch):

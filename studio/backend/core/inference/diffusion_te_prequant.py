@@ -621,7 +621,6 @@ def _resolve_checkpoint_path(
         expanded = os.path.expanduser(source.location)
         return expanded if os.path.isfile(expanded) else None
     if source.kind == "repo":
-        from huggingface_hub import hf_hub_download
         from huggingface_hub.errors import EntryNotFoundError, LocalEntryNotFoundError
 
         # Which exception means "this NAME is absent" depends on the mode, and the two are not
@@ -652,17 +651,18 @@ def _resolve_checkpoint_path(
             readable = te_candidate_is_readable,
             cache_dir = cache_dir,
             logger = logger,
-            roots = (cache_dir,),  # hf_hub_download below reads only this root
+            roots = tuple(dict.fromkeys((cache_dir, None))),  # what _download_checkpoint_name reuses
         )
-        from .diffusion_prequant import explain_container_choice
+        from .diffusion_prequant import _download_checkpoint_name, explain_container_choice
 
-        for name in names:
+        for index, name in enumerate(names):
             try:
-                path = hf_hub_download(
-                    repo_id = source.location,
-                    filename = name,
-                    token = hf_token,
-                    cache_dir = cache_dir,
+                path = _download_checkpoint_name(
+                    source,
+                    name,
+                    hf_token,
+                    cache_dir,
+                    propagate_missing = index < len(names) - 1,
                     local_files_only = local_files_only,
                 )
                 explain_container_choice(
