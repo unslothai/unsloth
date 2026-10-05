@@ -348,7 +348,6 @@ def test_visible_void_hr_still_renders():
 @pytest.mark.parametrize(
     "html, expected",
     [
-        # GitHub READMEs and docs sites render loose lists with a <p> in every item.
         (
             "<ul>\n<li>\n<p>First item</p>\n</li>\n<li>\n<p>Second item</p>\n</li>\n</ul>",
             "* First item\n\n* Second item",

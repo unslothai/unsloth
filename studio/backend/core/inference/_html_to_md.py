@@ -334,7 +334,7 @@ class _MarkdownRenderer(HTMLParser):
 
         self._list_stack: list[str] = []  # "ul" or "ol"
         self._ol_counter: list[int] = []
-        # Set right after a list marker: a block opening the item (<li><p>, as in loose lists) stays on its line.
+        # Just emitted a list marker: a block opening the item (loose <li><p>) stays on the marker line.
         self._li_marker_pending: bool = False
 
         self._in_table: bool = False
