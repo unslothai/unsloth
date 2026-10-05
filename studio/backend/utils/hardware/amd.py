@@ -640,7 +640,6 @@ def amd_kfd_gpu_gfx_targets(
             with open(os.path.join(nodes, entry, "properties"), encoding = "utf-8") as fh:
                 properties = fh.read()
         except (OSError, UnicodeDecodeError):
-            # A skipped GPU would shift every later ordinal onto the wrong target.
             return None
         simd = re.search(r"\bsimd_count\s+(\d+)\b", properties)
         if not re.search(r"\bvendor_id\s+4098\b", properties) or (

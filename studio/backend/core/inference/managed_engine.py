@@ -288,10 +288,8 @@ def _wsl_amd_usable_mib(gpu_ids) -> list[float] | None:
     """MiB each selected AMD GPU can allocate through WSL, or None when Windows cannot say.
 
     Through DXG the pool HIP reports is the dedicated memory plus a share of the host's RAM, and an
-    allocation past what the host can back stalls instead of failing: on a 128 GB gfx1151 whose WSL
-    torch reported 102 GiB, touching 80 GiB took 13 s and 88 GiB never returned, and vLLM sized at
-    84.5 GiB hung after warmup. So a discrete card keeps its dedicated memory, and an APU adds 80%
-    of the host RAM Windows reports available now."""
+    allocation past what the host can back hangs instead of failing. So a discrete card keeps its
+    dedicated memory, and an APU adds 80% of the host RAM Windows reports available now."""
     try:
         import psutil
         import torch
@@ -611,7 +609,6 @@ class ManagedEngine:
                     except httpx.HTTPError:
                         pass
                     self._cancel.wait(0.25)
-                # The last output says where it stalled, as a failed start's does.
                 raise RuntimeError(
                     "Engine startup timed out. Try a smaller model or context length.\n"
                     + "\n".join(list(self._tail)[-20:])
