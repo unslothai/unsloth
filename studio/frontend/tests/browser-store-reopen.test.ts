@@ -41,6 +41,27 @@ test("reopening a rewritten file shows its new bytes; an unchanged one keeps its
   assert.equal(await browserFile(shown() ?? "")?.text(), "version 5");
 });
 
+test("a large file differing only in its last byte is told apart across compare slices", async () => {
+  const store = useBrowserStore.getState();
+  const bytes = new Uint8Array(2.5 * 1024 * 1024 + 3).fill(7);
+  const open = (data: Uint8Array) => store.openFile({ blob: new Blob([data]), name: "big.bin", key: "sandbox/big.bin" });
+  const shown = () => {
+    const tab = useBrowserStore.getState().tabs.find((candidate) => candidate.openKey === "file:sandbox/big.bin");
+    const entry = tab && currentEntry(tab);
+    return entry?.kind === "file" ? entry.fileId : null;
+  };
+  open(bytes);
+  const first = shown();
+  open(bytes.slice());
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  assert.equal(shown(), first);
+  const changed = bytes.slice();
+  changed[changed.length - 1] = 8;
+  open(changed);
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  assert.notEqual(shown(), first);
+});
+
 test("a native tab's navigations replace its entry unless asked to keep it", () => {
   setNativeWebHistory(true);
   const store = useBrowserStore.getState();

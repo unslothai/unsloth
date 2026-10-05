@@ -703,7 +703,8 @@ fn create_view<R: Runtime>(
 
     let builder = WebviewBuilder::new(&label, WebviewUrl::External(initial))
         .on_navigation(move |url| {
-            if navigation_allowed(url) {
+            // An address too long to report would leave the bar showing the last page's: refused.
+            if navigation_allowed(url) && reportable(url.as_str()) {
                 return true;
             }
             if is_external_handoff(url) && reportable(url.as_str()) {

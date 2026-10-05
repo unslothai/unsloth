@@ -181,13 +181,15 @@ test("only a switch clears the desktop browser's site data, before the new sessi
   await transitionBrowserAccount("alice", "/chat", () => events.push("same"), b.browser, clear);
   await transitionBrowserAccount("bob", "/chat", () => events.push("bob"), b.browser, clear);
   assert.deepEqual(events, ["same", "clear", "bob"]);
-  const failing = browserWith({ [BROWSER_ACCOUNT_KEY]: "bob" });
+  const failing = browserWith({ [BROWSER_ACCOUNT_KEY]: "bob", "unsloth-draft": "kept" });
   await assert.rejects(
     transitionBrowserAccount("carol", "/chat", () => events.push("carol"), failing.browser, () =>
       Promise.reject(new Error("clear failed")),
     ),
   );
   assert.equal(events.includes("carol"), false);
+  // The clear runs first, so a failed one leaves the signed-in account's data whole.
+  assert.equal(failing.browser.localStorage.getItem("unsloth-draft"), "kept");
 });
 
 test("a switch keeps the machine's llama.cpp runtime repair record", async () => {

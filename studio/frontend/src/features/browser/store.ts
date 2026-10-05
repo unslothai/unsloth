@@ -162,10 +162,28 @@ function webEntry(url: string, method?: "GET" | "POST", body?: string): BrowserE
 const refreshes = new Map<string, Promise<void>>();
 const queuedFiles = new Set<string>();
 
+const COMPARE_CHUNK_BYTES = 1024 * 1024;
+
+// In slices, a word at a time: a 50 MB file never holds the UI thread or both copies whole.
 async function sameBytes(a: Blob | undefined, b: Blob): Promise<boolean> {
   if (!a || a.size !== b.size) return false;
-  const [x, y] = (await Promise.all([a.arrayBuffer(), b.arrayBuffer()])).map((buffer) => new Uint8Array(buffer));
-  return x.every((byte, index) => byte === y[index]);
+  for (let start = 0; start < b.size; start += COMPARE_CHUNK_BYTES) {
+    const end = start + COMPARE_CHUNK_BYTES;
+    const [x, y] = await Promise.all([a.slice(start, end).arrayBuffer(), b.slice(start, end).arrayBuffer()]);
+    if (!sameBuffer(x, y)) return false;
+  }
+  return true;
+}
+
+function sameBuffer(x: ArrayBuffer, y: ArrayBuffer): boolean {
+  const words = x.byteLength >> 2;
+  const wx = new Uint32Array(x, 0, words);
+  const wy = new Uint32Array(y, 0, words);
+  for (let i = 0; i < words; i++) if (wx[i] !== wy[i]) return false;
+  const bx = new Uint8Array(x);
+  const by = new Uint8Array(y);
+  for (let i = words << 2; i < bx.length; i++) if (bx[i] !== by[i]) return false;
+  return true;
 }
 
 function releaseFiles(tabs: BrowserTab[]): void {

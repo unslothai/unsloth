@@ -208,6 +208,8 @@ export async function transitionBrowserAccount(
     parseAccountMarker(marker),
   );
   if (changed) {
+    // First, as it can fail: a failure then leaves this account's data in place, not half purged.
+    await clearSiteData();
     const keys = Array.from({ length: storage.length }, (_, index) =>
       storage.key(index),
     );
@@ -226,12 +228,11 @@ export async function transitionBrowserAccount(
     }
     purgeImportedFonts(storage);
     clearAccountSessionStorage(browser);
-    await Promise.all([
-      ...ACCOUNT_DATABASES.map((name) =>
+    await Promise.all(
+      ACCOUNT_DATABASES.map((name) =>
         deleteAccountDatabase(browser.indexedDB, name),
       ),
-      clearSiteData(),
-    ]);
+    );
   }
   // Fence first: peers see it before the tokens, so nothing of the previous account goes out
   // under the new credentials while their reload is pending.
