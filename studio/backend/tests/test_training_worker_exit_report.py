@@ -108,6 +108,14 @@ def test_a_marked_recovered_traceback_is_not_the_cause():
     assert first_crash_line(text) == ""
 
 
+def test_native_threads_do_not_push_the_reason_out():
+    threads = "".join(
+        f"Thread 0x{n:04x} (most recent call first):\n  <no Python frame>\n" for n in range(40)
+    )
+    text = "Fatal Python error: Aborted\n\n" + threads
+    assert first_crash_line(text) == "Fatal Python error: Aborted"
+
+
 def _die_after_a_long_stack(path: str) -> None:
     assert install_worker_stderr_mirror(path) is True
     sys.stderr.write("LLVM ERROR: Cannot select: intrinsic %llvm.amdgcn.fdot2.bf16.bf16\n")
