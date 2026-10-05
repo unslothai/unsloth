@@ -221,10 +221,7 @@ _INT8_FAMILY_CONVROT: dict[str, tuple[int, tuple[str, ...]]] = {
             "img_mlp.out",
         ),
     ),
-    # Every int8 Linear of the blocks (layers / noise_refiner / context_refiner) plus the caption embedder: the set the
-    # hosted INT8 checkpoint quantizes, all on a 256-divisible input axis (2560 / 3840 / 10240). ComfyUI's
-    # int8_convrot Z-Image file rotates the same block Linears at group 256. Measured on B200, 1024px, 9 steps, 16
-    # prompts: LPIPS vs bf16 0.206 -> 0.068 (16 of 16 images closer), same weight bytes.
+    # exactly the Linears the hosted INT8 checkpoint quantizes (all input axes 256-divisible)
     "z-image": (
         256,
         (
@@ -245,8 +242,7 @@ _INT8_FAMILY_CONVROT_FILENAME: dict[str, str] = {
     "qwen-image-2.1": "Qwen-Image-2.1-INT8-ConvRot.safetensors",
     "z-image": "Z-Image-Turbo-INT8-ConvRot.safetensors",
 }
-# The one repo each rotated artifact is published to: a variant base's own repo, or any other repo the family resolves,
-# never gets the name prepended (it would 404 at best, and a same-named file elsewhere is not this build).
+# Only this repo gets the rotated name prepended: a same-named file elsewhere is not this build.
 _INT8_FAMILY_CONVROT_REPO: dict[str, str] = {
     "qwen-image-2.1": "unsloth/Qwen-Image-2.1-FP8",
     "z-image": "unsloth/Z-Image-Turbo-FP8",

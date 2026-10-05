@@ -47,15 +47,14 @@ _SWIGLU_ATTR = "_unsloth_i8_swiglu"
 _LOCK = threading.Lock()
 # Read by the traced forwards: dynamo must not trace into the lru_cache'd registration.
 _OP_HANDLE: Any = None
-# The per-row act quant op, set once it matched torchao bit for bit on the device (None = torchao's own quant).
+# set once the act quant kernel matched torchao bit for bit on a device; None = torchao's quant
 _ACTQ_HANDLE: Any = None
 # torchao's safe_int_mm home, resolved at install (outside any trace) for the same reason.
 _INTMM_MODULE: Any = None
 # Marker on each patched module (no global registry: it would pin an unloaded transformer).
 _MARK = "_unsloth_i8_fused_prev"
 _NO_PREV = object()
-# diffusion_int8_gemm's marker on a Linear whose forward runs its fused-dequant GEMM (sm80 / sm89 / sm120): int8_linear
-# leaves those to that forward.
+# diffusion_int8_gemm's marker: int8_linear leaves those Linears to their fused-dequant GEMM forward
 _I8_GEMM_MARK = "_unsloth_i8_gemm_prev"
 
 
