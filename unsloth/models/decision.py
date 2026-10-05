@@ -427,7 +427,14 @@ class ClefDecisionModel(torch.nn.Module):
             else self.encoder
         )
 
-    def forward(self, input_ids, attention_mask, records, head = None, **kwargs):
+    def forward(
+        self,
+        input_ids,
+        attention_mask,
+        records,
+        head = None,
+        **kwargs,
+    ):
         head = self.head if head is None else head
         backbone = self._backbone()
         text_model = backbone.model
@@ -583,7 +590,13 @@ def _decision_logits(model, tokenizer, items: list) -> tuple:
 
 # Kept in 16-bit like unsloth/Qwen3.8-27B-unsloth-bnb-4bit: Clef's backbone is a merged
 # fine-tune, not stock Qwen, so it is quantized on load with the same dynamic list.
-CLEF_4BIT_SKIP_MODULES = ("model.visual", r".*\.visual\..*", "in_proj_a", "in_proj_b", "in_proj_qkv")
+CLEF_4BIT_SKIP_MODULES = (
+    "model.visual",
+    r".*\.visual\..*",
+    "in_proj_a",
+    "in_proj_b",
+    "in_proj_qkv",
+)
 
 
 def _clef_bnb_config(dtype):
@@ -622,7 +635,6 @@ def _load_clef(
     fast = _device().type != "cpu"
     if fast:
         from .loader import FastModel
-
         if load_in_4bit and kwargs.get("quantization_config") is None:
             kwargs["quantization_config"] = _clef_bnb_config(dtype)
         # A float16 request (or a GPU without bfloat16) puts Qwen3.5 on Unsloth's float32 path,
@@ -701,7 +713,12 @@ def _clef_peft_model(model, target_modules, use_gradient_checkpointing, random_s
     return model
 
 
-def _commit_staged(staging: Path, output: Path, marker: str, stale = ()) -> None:
+def _commit_staged(
+    staging: Path,
+    output: Path,
+    marker: str,
+    stale = (),
+) -> None:
     # Old files stay until the new ones are complete; the marker that makes a folder a
     # checkpoint moves in last, so a failed save leaves the previous checkpoint loadable.
     import shutil
@@ -747,11 +764,11 @@ def _fold_temperature(state: dict, temperature: float) -> bool:
         scales[name] = value
     for name, value in scales.items():
         state[name] = torch.tensor(value, dtype = state[name].dtype)
-    last = max(
-        int(key.split(".")[1]) for key in state if key.startswith("residual_scorer.")
-    )
+    last = max(int(key.split(".")[1]) for key in state if key.startswith("residual_scorer."))
     for kind in ("weight", "bias"):
-        state[f"residual_scorer.{last}.{kind}"] = state[f"residual_scorer.{last}.{kind}"] / temperature
+        state[f"residual_scorer.{last}.{kind}"] = (
+            state[f"residual_scorer.{last}.{kind}"] / temperature
+        )
     return True
 
 
@@ -868,7 +885,9 @@ class DecisionTrainer(Trainer):
         if label_smoothing is None:
             label_smoothing = args.label_smoothing_factor or recipe.get("label_smoothing", 0.0)
         self.label_smoothing = float(label_smoothing)
-        self.brier_weight = float(recipe.get("brier_weight", 0.0) if brier_weight is None else brier_weight)
+        self.brier_weight = float(
+            recipe.get("brier_weight", 0.0) if brier_weight is None else brier_weight
+        )
         self.ordinal_weight = float(
             recipe.get("ordinal_weight", 0.0) if ordinal_weight is None else ordinal_weight
         )
@@ -913,7 +932,8 @@ class DecisionTrainer(Trainer):
             if clef:
                 kwargs["data_collator"] = ClefDataCollator(
                     pad_token_id,
-                    tokenizer = kwargs["processing_class"] or getattr(model, "_saved_temp_tokenizer", None),
+                    tokenizer = kwargs["processing_class"]
+                    or getattr(model, "_saved_temp_tokenizer", None),
                     max_len = model.decision_config["max_len"],
                     permute_fields = permute_fields,
                     seed = args.seed,
@@ -1125,7 +1145,10 @@ def _calibrate_clef(config: dict, logits, items) -> dict:
 
     everything = range(len(items))
     if len(items) < MIN_CALIBRATION_ITEMS:
-        return {**_metrics(logits, items, _served_temperatures(config, logits, items)), "fitted_types": []}
+        return {
+            **_metrics(logits, items, _served_temperatures(config, logits, items)),
+            "fitted_types": [],
+        }
     head, relative, fitted = fit(everything)
     half = {row: i % 2 for i, row in enumerate(sorted({item["row"] for item in items}))}
     per_item = [1.0] * len(items)

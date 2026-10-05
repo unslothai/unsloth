@@ -819,7 +819,9 @@ def test_clef_loads_scores_like_cloudflares_model_and_trains(clef_checkpoint, tm
     assert "accuracy" in calibration
     # Fitted to the gold labels, so the calibrated confidence tracks being right.
     head_temperature = model.decision_config["head_temperature"]
-    assert decision.HEAD_TEMPERATURE_RANGE[0] <= head_temperature <= decision.HEAD_TEMPERATURE_RANGE[1]
+    assert (
+        decision.HEAD_TEMPERATURE_RANGE[0] <= head_temperature <= decision.HEAD_TEMPERATURE_RANGE[1]
+    )
 
     model.save_pretrained_merged(str(tmp_path / "out"))
     assert (tmp_path / "out" / "joint_schema_model.py").is_file()
@@ -927,7 +929,10 @@ def _clef_head_inputs():
         for i in range(2)
     ]
     batch = decision.ClefDataCollator(tokenizer.pad_token_id)(
-        [{"input_ids": list(r.input_ids), "record": r, "targets": [[1.0]], "qtypes": [0]} for r in encoded]
+        [
+            {"input_ids": list(r.input_ids), "record": r, "targets": [[1.0]], "qtypes": [0]}
+            for r in encoded
+        ]
     )
     torch.manual_seed(0)
     head = JointSchemaHead(**CLEF_HEAD)
@@ -989,14 +994,21 @@ def test_clef_collator_permutes_fields_but_keeps_targets_with_their_questions():
         orders.add(tuple(q.question_id for q in record.questions))
         by_name = dict(zip(items[0]["source"]["questions"], items[0]["targets"]))
         for row, question in enumerate(record.questions):
-            assert batch["target"][row, : len(question.option_ids)].tolist() == by_name[question.question_id]
+            assert (
+                batch["target"][row, : len(question.option_ids)].tolist()
+                == by_name[question.question_id]
+            )
             assert bool(batch["ordinal"][row]) == (question.question_type == 2)
     assert len(orders) > 1
     assert fixed(items[:1])["records"][0] == items[0]["record"]
 
 
-def test_a_failed_save_leaves_the_previous_laya_checkpoint_loadable(checkpoint, tmp_path, monkeypatch):
-    model, tokenizer = FastDecisionModel.from_pretrained(str(checkpoint), use_gradient_checkpointing = False)
+def test_a_failed_save_leaves_the_previous_laya_checkpoint_loadable(
+    checkpoint, tmp_path, monkeypatch
+):
+    model, tokenizer = FastDecisionModel.from_pretrained(
+        str(checkpoint), use_gradient_checkpointing = False
+    )
     out = tmp_path / "out"
     model.save_pretrained_merged(out)
     before = sorted(p.name for p in out.iterdir())
@@ -1017,7 +1029,9 @@ def test_a_failed_save_leaves_the_previous_laya_checkpoint_loadable(checkpoint, 
     FastDecisionModel.from_pretrained(str(out), use_gradient_checkpointing = False)
 
 
-def test_a_failed_save_leaves_the_previous_clef_checkpoint_loadable(clef_checkpoint, tmp_path, monkeypatch):
+def test_a_failed_save_leaves_the_previous_clef_checkpoint_loadable(
+    clef_checkpoint, tmp_path, monkeypatch
+):
     import safetensors.torch
 
     model, processor = FastDecisionModel.from_pretrained(str(clef_checkpoint), max_seq_length = 512)
@@ -1108,5 +1122,6 @@ def test_clef_calibration_fits_being_right_and_serves_through_the_head_temperatu
     assert config["head_temperature"] < 1.0
     served = decision._served_temperatures(config, logits, items)
     assert served[0] == pytest.approx(
-        config["head_temperature"] * decision._laya().common.clamp_temperature(config["temperature"][0])
+        config["head_temperature"]
+        * decision._laya().common.clamp_temperature(config["temperature"][0])
     )
