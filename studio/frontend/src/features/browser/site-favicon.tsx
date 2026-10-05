@@ -31,8 +31,7 @@ function iconsFor(
   ];
 }
 
-/** A site's icon, as its tab showed it: `icon` if given, then the one its pages declared, then its
- *  /favicon.ico, each through the guarded proxy, fetched once on screen. A globe until one loads. */
+/** A site's icon, via the guarded proxy once on screen: `icon`, then the declared one, then /favicon.ico; a globe until one loads. */
 export function SiteFavicon({
   url,
   icon,
@@ -40,8 +39,7 @@ export function SiteFavicon({
   fallbackClassName,
 }: {
   url: string;
-  /** Tried first: a site's known icon. A path is Studio's own, and a data: image one already
-   *  fetched (a bookmark's), both used as is. */
+  /** Tried first. A path is Studio's own, and a data: image already fetched (a bookmark's): both used as is. */
   icon?: string;
   className?: string;
   fallbackClassName?: string;

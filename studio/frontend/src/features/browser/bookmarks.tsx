@@ -84,7 +84,6 @@ function bookmarkIcon(src: string): Promise<string | null> {
   });
 }
 
-/** Keeps the bookmark of `url` showing the icon its tab has now. */
 function saveBookmarkIcon(url: string, favicon: string | null): void {
   if (!favicon?.startsWith("data:image/")) return;
   const bookmark = useBrowserBookmarksStore.getState().bookmarks.find((candidate) => candidate.url === url);
@@ -111,12 +110,10 @@ useBrowserStore.subscribe((state, previous) => {
   }
 });
 
-/** A bookmark's name, or its site while it has none. */
 export function bookmarkTitle(bookmark: Bookmark): string {
   return bookmark.title || hostOf(bookmark.url) || bookmark.url;
 }
 
-/** Removes a bookmark with a toast that can put it back. */
 export function removeBookmarkWithUndo(bookmark: Bookmark, t: ReturnType<typeof useT>): void {
   const store = useBrowserBookmarksStore.getState();
   const index = store.bookmarks.findIndex((other) => other.id === bookmark.id);
@@ -129,15 +126,13 @@ export function removeBookmarkWithUndo(bookmark: Bookmark, t: ReturnType<typeof 
   });
 }
 
-/** Opens a bookmark as a browser does: here, or in a new tab with ⌘/Ctrl or the middle button. */
 function openBookmark(url: string, tabId: string | undefined, newTab: boolean): void {
   const store = useBrowserStore.getState();
   if (newTab || !tabId) store.openUrl(url, { newTab: true });
   else store.navigate(tabId, { url });
 }
 
-/** Firefox's bookmark panel: name, folder, and whether it opens when saving. Edits apply as it
- *  closes, unless it is cancelled; cancelling a bookmark just made takes it back off. */
+/** The bookmark editor: edits apply as it closes unless cancelled; cancelling a new bookmark removes it. */
 function BookmarkEditor({
   bookmark,
   isNew,
@@ -242,7 +237,6 @@ function BookmarkEditor({
   );
 }
 
-/** A bookmark's editor, shown at the `PopoverAnchor` among `children`. */
 export function BookmarkEditPopover({
   bookmark,
   isNew = false,
@@ -285,7 +279,6 @@ export function BookmarkEditPopover({
 
 let handledBookmarkSequence = 0;
 
-/** The address bar's star, as Firefox's: saves the page, filled once saved, and opens the editor. */
 export function BookmarkStar({
   url,
   title,
@@ -293,7 +286,6 @@ export function BookmarkStar({
 }: {
   url: string | null;
   title: string;
-  /** The tab's icon, kept with the bookmark. */
   favicon: string | null;
 }) {
   const t = useT();
@@ -438,7 +430,6 @@ function BookmarkItem({
   );
 }
 
-/** A menu of bookmarks: the folder at the bar's end, or the ones the bar has no room for. */
 function BookmarkMenu({
   label,
   icon,
@@ -500,9 +491,7 @@ function BookmarkMenu({
   );
 }
 
-/** Which bar items are cut off by its end, so they move under » rather than show clipped. Measured
- *  directly whenever the bar or an item resizes: an IntersectionObserver saw every item cut off
- *  while the panel opened from nothing, and misreads them under the interface's CSS zoom. */
+/** Bar items cut off by its end, measured on resize: an IntersectionObserver misread them as the panel opened and under CSS zoom. */
 function useClippedItems(ids: string): [RefObject<HTMLDivElement | null>, Set<string>] {
   const ref = useRef<HTMLDivElement>(null);
   const [clipped, setClipped] = useState<Set<string>>(() => new Set());
@@ -532,7 +521,6 @@ function useClippedItems(ids: string): [RefObject<HTMLDivElement | null>, Set<st
   return [ref, clipped];
 }
 
-/** Firefox's bookmarks toolbar, under the address bar: on a new tab only, always, or never. */
 export function BookmarksBar({ tab }: { tab: BrowserTab | undefined }) {
   const t = useT();
   const mode = useBrowserPrefsStore((state) => state.bookmarksToolbar);

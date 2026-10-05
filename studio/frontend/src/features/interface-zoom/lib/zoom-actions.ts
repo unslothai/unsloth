@@ -31,8 +31,7 @@ export function zoomInterface(direction: ZoomDirection): void {
   useZoomPopupStore.getState().show();
 }
 
-/** Something with its own zoom, as the browser panel zooms its page: while focus or the pointer
- *  is inside it, the zoom keys, Ctrl+wheel and the View menu zoom it instead of the interface. */
+/** Something with its own zoom (the browser's page): zoom keys, Ctrl+wheel and the View menu zoom it while focus or the pointer is inside. */
 export type ZoomScope = {
   contains: (element: Element) => boolean;
   zoom: (direction: ZoomDirection) => void;
@@ -40,7 +39,6 @@ export type ZoomScope = {
 
 const scopes = new Set<ZoomScope>();
 
-/** Adds a zoom scope; returns its removal. */
 export function registerZoomScope(scope: ZoomScope): () => void {
   scopes.add(scope);
   return () => {
@@ -48,7 +46,6 @@ export function registerZoomScope(scope: ZoomScope): () => void {
   };
 }
 
-/** The scope `target` is in, if any. */
 export function zoomScopeFor(target: EventTarget | null): ZoomScope | null {
   if (!(target instanceof Element)) return null;
   for (const scope of scopes) if (scope.contains(target)) return scope;
@@ -71,7 +68,6 @@ export function zoomInterfaceFromChord(direction: ZoomDirection): void {
   if (!echoed("chord")) zoomInterface(direction);
 }
 
-/** A zoom chord pressed inside `scope`, here or in a page it frames. */
 export function zoomScopeFromChord(scope: ZoomScope, direction: ZoomDirection): void {
   if (!echoed("chord")) scope.zoom(direction);
 }

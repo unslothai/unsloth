@@ -6,7 +6,6 @@ import { createJSONStorage, persist } from "zustand/middleware";
 import { accountDatabaseName } from "@/lib/account-transition";
 import { MAX_TITLE_CHARS, MAX_URL_CHARS } from "./history-store";
 
-/** Firefox's two places a bookmark goes: the bar under the address bar, or the folder at its end. */
 export type BookmarkFolder = "toolbar" | "other";
 export type Bookmark = {
   id: string;
@@ -14,7 +13,7 @@ export type Bookmark = {
   title: string;
   folder: BookmarkFolder;
   addedAt: number;
-  /** The page's icon when it was last seen, as a small PNG data: URL, as Firefox keeps one per bookmark. */
+  /** The page's icon when last seen, as a small PNG data: URL. */
   icon?: string;
 };
 
@@ -26,16 +25,13 @@ let nextId = 0;
 const newId = () => `${Date.now().toString(36)}-${(nextId++).toString(36)}`;
 
 interface BrowserBookmarksState {
-  /** Oldest first, the order they sit in on the bar. */
   bookmarks: Bookmark[];
-  /** Where the next bookmark goes: the last folder one was saved to, as Firefox remembers it. */
   lastFolder: BookmarkFolder;
   /** Saves `url`, or returns the bookmark it already has; null for an address too long to keep. */
   addBookmark: (url: string, title: string, folder?: BookmarkFolder) => Bookmark | null;
   updateBookmark: (id: string, patch: { title?: string; folder?: BookmarkFolder }) => void;
   removeBookmark: (id: string) => void;
   setBookmarkIcon: (id: string, icon: string) => void;
-  /** Puts back a removed bookmark where it was, for undo. */
   restoreBookmark: (bookmark: Bookmark, index: number) => void;
 }
 
@@ -88,7 +84,6 @@ export const useBrowserBookmarksStore = create<BrowserBookmarksState>()(
         }),
     }),
     {
-      // Per account, as history is.
       name: accountDatabaseName("unsloth_browser_bookmarks"),
       version: 1,
       storage: createJSONStorage(() => localStorage),
@@ -96,7 +91,6 @@ export const useBrowserBookmarksStore = create<BrowserBookmarksState>()(
   ),
 );
 
-/** The bookmark saved for `url`, if any. */
 export function useBookmarkFor(url: string | null): Bookmark | undefined {
   return useBrowserBookmarksStore((state) =>
     url ? state.bookmarks.find((bookmark) => bookmark.url === url) : undefined,

@@ -25,7 +25,6 @@ import { useBrowserStore } from "./store";
 export const CONTEXT_MENU = "unsloth-plus-menu sidebar-row-menu w-56";
 const MENU_ICON = "size-icon";
 
-/** One row of a browser context menu. */
 export function MenuRow({
   icon,
   children,
@@ -48,9 +47,7 @@ export function MenuRow({
   );
 }
 
-/** The right-click menu of anything in the browser that stands for a page: open it here (with
- *  `tabId`), in a new tab or the system browser, copy its link; then what `extra` adds, such as a
- *  way off the list it is in. With no `url` (a file from chat), only `extra`. */
+/** The right-click menu of anything that stands for a page; with no `url` (a file from chat), only `extra`. */
 export function LinkContextMenu({
   url,
   tabId,

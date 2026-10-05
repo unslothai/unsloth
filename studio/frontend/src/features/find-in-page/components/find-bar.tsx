@@ -68,14 +68,12 @@ function useSettledQuery(query: string): [string, () => void] {
   return [settled, () => setSettled(query)];
 }
 
-/** Searches a find target (the browser's page) as `useFindInPage` searches the chat: the target
- *  does the matching, this asks and reads back its count. */
+/** Searches a find target (the browser's page) as `useFindInPage` searches the chat; the target does the matching. */
 function useTargetFind(target: FindTarget | undefined, query: string) {
   useEffect(() => {
     if (!target) return;
     target.search(query);
   }, [target, query]);
-  // Cleared when the bar closes or moves to another scope.
   useEffect(() => {
     if (!target) return;
     return () => target.search("");
@@ -311,7 +309,6 @@ export default function FindBar({
         <ArrowDownIcon strokeWidth={1.75} className="size-[calc(18px*var(--ui-space-scale,1))]" />
       </Button>
       {targets.length > 0 ? (
-        // Chat or the browser's page, as the bar was opened from; either can be picked here.
         <div className="flex shrink-0 items-center border-border border-l pl-1">
           {[null, ...targets.map((candidate) => candidate.id)].map((id) => {
             const label = t(id === null ? "shell.find.searchChat" : "shell.find.searchBrowser");

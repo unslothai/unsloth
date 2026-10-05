@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// The browser page as a target of Studio's find bar: the bar's query is matched inside the active
-// tab's page (by the frame script, or the native view's own find), painted like the chat's matches.
+// The active tab's page as a find-bar target, matched by the frame script or the native view's own find.
 
 import {
   EMPTY_FIND_RESULT,
@@ -17,7 +16,6 @@ import { type BrowserTab, currentEntry, useBrowserStore } from "./store";
 export const BROWSER_FIND_TARGET = "browser";
 
 let query = "";
-/** The tab holding the current highlights, cleared when another becomes active. */
 let searchedTabId: string | null = null;
 let result: FindTargetResult = EMPTY_FIND_RESULT;
 
@@ -59,17 +57,14 @@ function run(): void {
   else if (!sendFrameCommand(tabId, { command: "find", query })) setResult(EMPTY_FIND_RESULT);
 }
 
-/** A page's answer to a search; ignored unless it comes from the tab being searched. */
 export function receiveFindResult(tabId: string, count: number, active: number): void {
   if (tabId === searchedTabId && query) setResult({ count, active });
 }
 
-/** A page finished loading: searched again, so its matches show without retyping. */
 export function pageLoadedForFind(tabId: string): void {
   if (query && tabId === activeTab()?.id) run();
 }
 
-/** Offers the active tab's page to the find bar while `contains` holds the panel. */
 export function registerBrowserFind(contains: (node: Node) => boolean): () => void {
   const unregister = registerFindTarget({
     id: BROWSER_FIND_TARGET,

@@ -1,16 +1,13 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Print and Take a screenshot for the panel's page. The page's sandbox can't open the print dialog,
-// so a copy of it is printed from a frame that can; a screenshot is a frame of this tab's own
-// screen capture, cropped to the page.
+// The page's sandbox can't open the print dialog, so a copy prints from a frame that can.
 
 import { apiUrl } from "@/lib/api-base";
 import { requestFrameSnapshot } from "./page-frame";
 
 const PRINT_TIMEOUT_MS = 20_000;
 
-/** Prints the page in `tabId`'s frame; false if it couldn't be copied or the print frame failed. */
 export async function printFramePage(tabId: string): Promise<boolean> {
   const html = await requestFrameSnapshot(tabId);
   if (!html) return false;
@@ -54,7 +51,6 @@ function cropTargets(): CropTargetApi | null {
   return typeof api?.fromElement === "function" ? api : null;
 }
 
-/** Whether this browser can capture its own tab cropped to an element (Chromium). */
 export function canScreenshot(): boolean {
   return (
     typeof navigator !== "undefined" &&
@@ -63,7 +59,6 @@ export function canScreenshot(): boolean {
   );
 }
 
-/** Thrown when the reader shared something other than this tab, so the crop can't apply. */
 export class OtherSurfaceError extends Error {}
 
 function nextFrame(video: HTMLVideoElement): Promise<void> {
@@ -73,10 +68,7 @@ function nextFrame(video: HTMLVideoElement): Promise<void> {
   });
 }
 
-/**
- * A PNG of `element` as it is on screen, via this tab's screen capture (the browser asks first).
- * Rejects when the reader declines; OtherSurfaceError when they pick another tab or window.
- */
+ /** A PNG of `element` via this tab's screen capture; rejects if declined, OtherSurfaceError for another surface. */
 export async function screenshotElement(element: HTMLElement): Promise<Blob | null> {
   const crop = cropTargets();
   if (!crop) return null;
@@ -84,7 +76,6 @@ export async function screenshotElement(element: HTMLElement): Promise<Blob | nu
   const stream = await navigator.mediaDevices.getDisplayMedia({
     video: { displaySurface: "browser", frameRate: 10 },
     audio: false,
-    // Chromium's own options: offer this tab first and nothing to switch to.
     preferCurrentTab: true,
     selfBrowserSurface: "include",
     surfaceSwitching: "exclude",

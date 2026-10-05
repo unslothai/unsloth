@@ -195,11 +195,8 @@ const PILL =
 const TOOLBAR_BUTTON =
   "size-8 text-foreground disabled:hover:text-foreground disabled:opacity-30";
 
-// The page toolbar as Firefox draws it: bare buttons with a rounded square on hover, and a filled
-// address bar with no border, a shade deeper while typing.
 const NAV_BUTTON =
   "size-8 rounded-md text-foreground disabled:hover:text-foreground disabled:opacity-30";
-// Back, forward and reload as one set, drawn alike as Firefox's are: one family, size and weight.
 const NAV_ICON = "size-4.5";
 const NAV_STROKE = 2;
 const URLBAR =
@@ -347,7 +344,6 @@ function TabIcon({ tab }: { tab: BrowserTab }) {
     <HugeiconsIcon
       icon={InternetIcon}
       strokeWidth={1.75}
-      // A step under a site's icon, as Firefox draws its globe; the margin keeps titles in line.
       className="mx-px size-3.5 shrink-0"
     />
   );
@@ -363,14 +359,12 @@ function useTabTitle() {
   };
 }
 
-/** A tab's right-click menu, as a browser's tab strip has it. */
 function TabContextMenu({
   tab,
   others,
   children,
 }: {
   tab: BrowserTab;
-  /** Whether there are other tabs to close. */
   others: boolean;
   children: ReactElement;
 }) {
@@ -430,7 +424,6 @@ function TabContextMenu({
   );
 }
 
-/** How far the pointer moves before a press on a tab becomes a drag, so clicks stay clicks. */
 const TAB_DRAG_THRESHOLD_PX = 5;
 const TAB_SHIFT_TRANSITION = "transform 160ms cubic-bezier(0.2, 0, 0, 1)";
 
@@ -448,7 +441,6 @@ type TabDrag = {
   startX: number;
   grabX: number;
   moved: boolean;
-  /** Set as the drag starts: the strip's tabs in order, where each sat, and the drop slot. */
   elements: HTMLElement[];
   lefts: number[];
   widths: number[];
@@ -457,9 +449,7 @@ type TabDrag = {
   target: number;
 };
 
-/** Drag a tab along the strip to move it, as in Firefox: it follows the pointer and the others
- *  slide aside as it passes their middles. The order changes once, on release: moving tabs while
- *  dragging would move the dragged tab's own node, which drops its pointer capture. */
+/** Drag a tab to move it; the order changes once, on release: moving tabs mid-drag would move the dragged node and drop its pointer capture. */
 function useTabDrag(listRef: RefObject<HTMLDivElement | null>, tabCount: number) {
   const drag = useRef<TabDrag | null>(null);
   // A drag ends in a click on the tab it started on; that click shouldn't count.
@@ -468,7 +458,6 @@ function useTabDrag(listRef: RefObject<HTMLDivElement | null>, tabCount: number)
     const current = drag.current;
     drag.current = null;
     if (!current?.moved) return;
-    // Back in place at once, so nothing animates from where it was shown to where it now is.
     for (const element of current.elements) {
       element.style.transition = "none";
       element.style.transform = "";
@@ -508,15 +497,12 @@ function useTabDrag(listRef: RefObject<HTMLDivElement | null>, tabCount: number)
     if (!list || !element) return;
     const width = current.widths[current.slot] ?? 0;
     const natural = current.lefts[current.slot] ?? 0;
-    // Kept within the row of tabs, not the strip's visible part, so a tab half scrolled out of
-    // view doesn't jump as it's picked up.
     const last = current.lefts.length - 1;
     const first = current.lefts[0] ?? natural;
     const end = (current.lefts[last] ?? natural) + (current.widths[last] ?? width) - width;
     const left = Math.min(Math.max(clientX - current.grabX, first), end);
     element.style.transform = `translateX(${left - natural}px)`;
-    // The drop slot: the nearest one to where it's held, so it swaps with a neighbour once it's
-    // halfway over it, the same either way. Tabs share one width, so slots are a step apart.
+    // The drop slot nearest where it's held: tabs share one width, so slots are a step apart.
     const target = Math.min(
       Math.max(current.slot + Math.round((left - natural) / (current.step || 1)), 0),
       last,
@@ -537,7 +523,6 @@ function useTabDrag(listRef: RefObject<HTMLDivElement | null>, tabCount: number)
     },
     handlers: (tabId: string) => ({
       onPointerDown: (event: ReactPointerEvent<HTMLElement>) => {
-        // The close button is its own control.
         if (event.button !== 0 || (event.target as Element).closest("button")) return;
         dragged.current = false;
         drag.current = {
@@ -573,7 +558,6 @@ function useTabDrag(listRef: RefObject<HTMLDivElement | null>, tabCount: number)
         if (current?.moved && current.pointerId === event.pointerId) {
           follow(current, event.clientX);
           const { id, target, slot } = current;
-          // Reset and reorder in one handler, so they paint together.
           reset();
           if (target !== slot) useBrowserStore.getState().moveTab(id, target);
         } else {
@@ -626,7 +610,6 @@ function TabStrip({
         role="tablist"
         data-tauri-drag-region={true}
         aria-label={t("browser.tabs")}
-        // A wheel scrolls the tabs sideways once they no longer fit, as Firefox's do.
         onWheel={(event) => {
           if (Math.abs(event.deltaY) > Math.abs(event.deltaX))
             event.currentTarget.scrollLeft += event.deltaY;
@@ -637,8 +620,6 @@ function TabStrip({
           const active = tab.id === activeTabId;
           const title = tabTitle(tab, currentEntry(tab));
           return (
-            // Firefox's tab sizes: as wide as 240px, and wide enough at their narrowest that a few
-            // letters of the title show, with a short fade.
             <TabContextMenu key={tab.id} tab={tab} others={tabs.length > 1}>
               <div
                 role="tab"
@@ -677,7 +658,6 @@ function TabStrip({
                   }}
                   className={cn(
                     "flex size-5 shrink-0 cursor-pointer items-center justify-center rounded-md text-muted-foreground hover:bg-[color-mix(in_oklab,var(--foreground)_calc(10%*var(--contrast-wash-gain,1)),transparent)] hover:text-foreground",
-                    // Only on the open tab and the one under the pointer.
                     !active &&
                       "hidden group-hover/tab:flex group-focus-visible/tab:flex focus-visible:flex",
                   )}
@@ -724,7 +704,6 @@ function AddressBar({
   actions,
 }: {
   tab: BrowserTab | undefined;
-  /** Page actions at the bar's end, as Firefox keeps its zoom and reader buttons there. */
   actions?: ReactNode;
 }) {
   const t = useT();
@@ -819,9 +798,7 @@ function pageVerified(tab: BrowserTab | undefined): boolean {
 
 const LEARN_MORE_URL = "https://support.mozilla.org/kb/how-do-i-tell-if-my-connection-is-secure";
 
-/** The button at the bar's start, as Firefox's: a shield that opens the site's panel, with whether
- *  the connection is secure (and a Security view with more on it) and the browser's data and
- *  settings. A magnifier while typing or on a new tab, where there is no site. */
+/** The shield at the bar's start: the site panel (connection, Security view, data, settings); a magnifier when there is no site. */
 function SiteIdentity({ address, tab }: { address: string; tab: BrowserTab | undefined }) {
   const t = useT();
   const [clearOpen, setClearOpen] = useState(false);
@@ -865,7 +842,6 @@ function SiteIdentity({ address, tab }: { address: string; tab: BrowserTab | und
                 aria-label={label}
                 className="flex size-7 shrink-0 cursor-pointer items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-[color-mix(in_oklab,var(--foreground)_calc(8%*var(--contrast-wash-gain,1)),transparent)] hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring aria-expanded:bg-[color-mix(in_oklab,var(--foreground)_calc(10%*var(--contrast-wash-gain,1)),transparent)] aria-expanded:text-foreground"
               >
-                {/* The composer's shields, so a safe site reads like "Approve for me". */}
                 {secure ? (
                   <ShieldCheck strokeWidth={2} className="size-4" />
                 ) : (
@@ -988,7 +964,6 @@ function SiteIdentity({ address, tab }: { address: string; tab: BrowserTab | und
   );
 }
 
-/** The zoom level in the address bar while it is not 100%, as Firefox shows it; a click resets it. */
 function ZoomBadge({ tab }: { tab: BrowserTab | undefined }) {
   const t = useT();
   const locale = useLocale();
@@ -1067,7 +1042,6 @@ function showsWebPage(tab: BrowserTab | undefined): boolean {
 function ZoomControl({ tab }: { tab: BrowserTab | undefined }) {
   const t = useT();
   const locale = useLocale();
-  // A new tab or the browser's own pages show nothing to zoom.
   const zoomable = canZoom(tab);
   const zoom = zoomable ? tab.zoom : 1;
   const setZoom = (next: number) =>
@@ -1125,7 +1099,6 @@ function ZoomControl({ tab }: { tab: BrowserTab | undefined }) {
   );
 }
 
-/** Takes a screenshot of the page area into the chat's composer, or saves it without a chat. */
 async function takeScreenshot(tab: BrowserTab, page: HTMLElement, t: ReturnType<typeof useT>): Promise<void> {
   let blob: Blob | null;
   try {
@@ -1834,8 +1807,7 @@ export const BrowserPanel = memo(function BrowserPanel({ active = true }: { acti
   const annotateTabId = useBrowserStore((state) => state.annotateTabId);
   const [pageElement, setPageElement] = useState<HTMLDivElement | null>(null);
   const sectionRef = useRef<HTMLElement>(null);
-  // Zoom keys, Ctrl+wheel and the View menu zoom the page while focus or the pointer is in here,
-  // not the interface, as a browser keeps its page zoom apart from its own.
+  // Zoom keys, Ctrl+wheel and the View menu zoom the page, not the interface, while focus or the pointer is here.
   useEffect(() => {
     if (!active) return;
     return registerZoomScope({
@@ -1882,7 +1854,6 @@ export const BrowserPanel = memo(function BrowserPanel({ active = true }: { acti
       // The chat's find skips the browser's chrome; the page is searched as its own target.
       {...{ [FIND_SKIP_ATTRIBUTE]: "" }}
       onKeyDown={(event) => {
-        // ⌘D / Ctrl+D bookmarks the page, as in a browser; pages forward theirs through the frame.
         if (
           (event.metaKey || event.ctrlKey) &&
           !event.shiftKey &&
