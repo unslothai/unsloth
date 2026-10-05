@@ -191,12 +191,17 @@ test("a closed thought with no recorded time stays untimed", () => {
   assert.deepEqual(tracker.metadata(), {});
 });
 
-test("Continue response sits after Edit response and yields to the Resume bar", () => {
+test("Continue response leads the More menu and yields to the Resume bar", () => {
   const thread = readSrc("components/assistant-ui/thread.tsx");
-  // Bar order: Edit, Continue, Read aloud (or Stop reading), Refresh.
+  // Continue response is the More menu's first item, before Edit response.
   assert.match(
     thread,
-    /\{inlineEdit && <EditAssistantMessageButton \/>\}\n\s*<ContinueResponseButton \/>\n\s*\{ttsEnabled && \(\n\s*<MessagePrimitive\.If speaking=\{false\}>\n\s*<ActionBarPrimitive\.Speak[\s\S]*?<\/ActionBarPrimitive\.StopSpeaking>\n\s*<\/MessagePrimitive\.If>\n\s*\{!researchRunId && !researchActive && \(\n\s*<ActionBarPrimitive\.Reload/,
+    /<ContinueResponseMenuItem \/>\n\s*\{!inlineEdit && <EditAssistantMessageMenuItem \/>\}/,
+  );
+  // Bar order: Edit, Read aloud (or Stop reading), Fork, Refresh.
+  assert.match(
+    thread,
+    /\{inlineEdit && <EditAssistantMessageButton \/>\}\n\s*\{ttsEnabled && \(\n\s*<MessagePrimitive\.If speaking=\{false\}>\n\s*<ActionBarPrimitive\.Speak[\s\S]*?<\/ActionBarPrimitive\.StopSpeaking>\n\s*<\/MessagePrimitive\.If>\n\s*<ForkCountBadge \/>\n\s*<ForkMessageButton \/>\n\s*\{!researchRunId && !researchActive && \(\n\s*<ActionBarPrimitive\.Reload/,
   );
   // Delete is the More menu's last item, not a bar button.
   assert.match(thread, /<DeleteMessageMenuItem \/>\n\s*<\/div>\n\s*<\/ActionBarMorePrimitive\.Content>/);

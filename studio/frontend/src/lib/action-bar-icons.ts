@@ -3,28 +3,32 @@
 
 import type { IconSvgElement } from "@hugeicons/react";
 
-// Message action bar glyphs, rescaled about the centre so they match Refresh01Icon's optical size
-// at the same stroke. Hugeicons (MIT).
+// Message action bar glyphs, rescaled about the centre (stroke unchanged) so they match the stock
+// ones' optical size. Hugeicons (MIT).
 
 const path = (d: string, key: string) =>
   ["path", { d, stroke: "currentColor", strokeLinecap: "round", strokeLinejoin: "round", key }] as const;
 
-// copy-01 at 0.9x: the stock one fills the whole canvas.
-export const CopyActionIcon = [
+// volume-02 at 1.1x: the stock one draws short beside Copy.
+export const ReadAloudIcon = [
   path(
-    "M9.3 14.7C9.3 12.1544 9.3 10.8817 10.0908 10.0908C10.8817 9.3 12.1544 9.3 14.7 9.3L15.6 9.3C18.1456 9.3 19.4183 9.3 20.2092 10.0908C21 10.8817 21 12.1544 21 14.7V15.6C21 18.1456 21 19.4183 20.2092 20.2092C19.4183 21 18.1456 21 15.6 21H14.7C12.1544 21 10.8817 21 10.0908 20.2092C9.3 19.4183 9.3 18.1456 9.3 15.6L9.3 14.7Z",
+    "M14.2 15.0948V8.9051C14.2 5.4454 14.2 3.7155 13.1822 3.285C12.1643 2.8545 10.9663 4.0777 8.5706 6.5241C7.3298 7.791 6.6219 8.0716 4.8566 8.0716C3.3128 8.0716 2.5409 8.0716 1.9864 8.4499C0.8354 9.2352 1.0094 10.7702 1.0094 12C1.0094 13.2298 0.8354 14.7647 1.9864 15.5501C2.5409 15.9284 3.3128 15.9284 4.8566 15.9284C6.6219 15.9284 7.3298 16.209 8.5706 17.4759C10.9663 19.9223 12.1643 21.1455 13.1822 20.715C14.2 20.2844 14.2 18.5546 14.2 15.0948Z",
     "0",
   ),
   path(
-    "M16.4999 9.3C16.4977 6.6386 16.4575 5.2601 15.6828 4.3162C15.5332 4.1339 15.3661 3.9668 15.1838 3.8172C14.1881 3 12.7088 3 9.75 3C6.7913 3 5.3119 3 4.3162 3.8172C4.1339 3.9668 3.9668 4.1339 3.8172 4.3162C3 5.3119 3 6.7913 3 9.75C3 12.7088 3 14.1881 3.8172 15.1838C3.9668 15.3661 4.1339 15.5332 4.3162 15.6828C5.2601 16.4575 6.6386 16.4977 9.3 16.4999",
+    "M17.5 8.7C18.1879 9.6016 18.6 10.7497 18.6 12C18.6 13.2503 18.1879 14.3983 17.5 15.3",
     "1",
+  ),
+  path(
+    "M20.8 6.5C22.1759 8.0027 23 9.9163 23 12C23 14.0837 22.1759 15.9973 20.8 17.5",
+    "2",
   ),
 ] as unknown as IconSvgElement;
 
-// arrow-right-02 at 1.35x: the stock one draws small and thin.
+// arrow-right-02 at 1.25x: the stock one draws small and thin beside the other icons.
 export const ContinueArrowIcon = [
-  path("M20.775 12L2.55 12", "0"),
-  path("M13.35 20.1C13.35 20.1 21.45 14.1345 21.45 12C21.45 9.8654 13.35 3.9 13.35 3.9", "1"),
+  path("M20.125 12L3.25 12", "0"),
+  path("M13.25 19.5C13.25 19.5 20.75 13.9764 20.75 12C20.75 10.0235 13.25 4.5 13.25 4.5", "1"),
 ] as unknown as IconSvgElement;
 
 // Plain straight chevrons for the branch picker.

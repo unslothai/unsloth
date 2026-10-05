@@ -2389,10 +2389,9 @@ html[data-chat-font] .aui-root {
 	}
 
 	/* Branch picker chevrons: small glyphs with no hover fill, so they read as part of the count. */
-	/* The footer pulls right by --icon-btn-inset (sized for 32px buttons); this lands the › tip,
-	   stroke included, on the bubble's edge: its 20px button, 16px glyph, tip 6px from centre. */
+	/* Lands the › tip where a last action icon's ink would end, inside the bubble's edge. */
 	.aui-user-branch-picker {
-		margin-right: calc(var(--icon-btn-inset) - 10px * var(--ui-space-scale, 1) + 2.6px);
+		margin-right: calc(3.4px * var(--ui-space-scale, 1));
 	}
 	.aui-branch-chevron-btn {
 		@apply inline-flex size-[calc(20px*var(--ui-space-scale,1))] shrink-0 cursor-pointer items-center justify-center rounded-full p-0 text-chat-icon-fg transition-colors hover:text-black active:text-black dark:hover:text-white dark:active:text-white focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-30 disabled:hover:text-chat-icon-fg dark:disabled:hover:text-chat-icon-fg;
