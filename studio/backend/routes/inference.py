@@ -13655,7 +13655,10 @@ def _localized_estimate_config(config: ModelConfig, gguf_path: str) -> ModelConf
     search_root = _local_gguf_companion_search_root(gguf_path, gguf_path)
     try:
         if getattr(local, "is_vision", False) and not local.gguf_mmproj_file:
-            local.gguf_mmproj_file = detect_mmproj_file(gguf_path, search_root)
+            # A hand-added one may sit above the snapshot, past this search root (#9286).
+            local.gguf_mmproj_file = detect_mmproj_file(gguf_path, search_root) or getattr(
+                local, "gguf_local_mmproj_file", None
+            )
         if not local.gguf_mtp_file:
             local.gguf_mtp_file = detect_mtp_file(gguf_path, search_root)
         if not local.gguf_dspark_file:

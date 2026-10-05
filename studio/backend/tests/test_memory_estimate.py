@@ -697,6 +697,14 @@ class TestLocalizedEstimateConfig:
         config = _local_config(gqa_gguf)
         assert ri._localized_estimate_config(config, gqa_gguf) is config
 
+    def test_a_hand_added_projector_above_the_snapshot_is_priced(self, gqa_gguf, tmp_path):
+        # #9286: the projector sits in models--<repo>/, past the localizer's search root.
+        projector = tmp_path / "mmproj-F16.gguf"
+        projector.write_bytes(b"x")
+        config = _repo_config(is_vision = True, gguf_local_mmproj_file = str(projector))
+        local = ri._localized_estimate_config(config, gqa_gguf)
+        assert local.gguf_mmproj_file == str(projector)
+
     def test_repo_config_is_copied_never_mutated(self, gqa_gguf):
         # The original is sitting in _estimate_config_cache for the TTL, shared by
         # every later tick of the slider. A half-localized config escaping into
