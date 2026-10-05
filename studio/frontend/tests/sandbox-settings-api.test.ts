@@ -114,6 +114,7 @@ test("the status maps to camelCase and keeps the saved and effective values apar
     terminalShell: "cmd_isolated",
     windows: {
       runtimeInstalled: true,
+      runtimeUnsupported: null,
       allowDaclFallback: true,
       allowDaclFallbackSaved: false,
       daclLockedByEnvironment: true,
@@ -288,4 +289,24 @@ test("a job maps its fields and an idle answer carries no id", async () => {
   const idle = await api.loadHostPreparation("fallback");
   assert.equal(idle.state, "idle");
   assert.equal(idle.id, null);
+});
+
+test("an unsupported Windows is passed through, anything unknown is dropped", async () => {
+  for (const [value, expected] of [
+    ["arch", "arch"],
+    ["build", "build"],
+    ["later", null],
+  ] as const) {
+    const { api } = loadApi(() =>
+      json({
+        ...WINDOWS_STATUS,
+        windows: { ...WINDOWS_STATUS.windows, runtime_unsupported: value },
+      }),
+    );
+    const status = await api.loadSandboxStatus(false, "fallback");
+    assert.equal(
+      (status.windows as { runtimeUnsupported: unknown }).runtimeUnsupported,
+      expected,
+    );
+  }
 });

@@ -4594,6 +4594,8 @@ class SandboxToolStatus(BaseModel):
 
 class SandboxWindowsStatus(BaseModel):
     runtime_installed: bool
+    # None: this Windows can run MXC; "arch" (not x64) or "build" (older than 26100) otherwise.
+    runtime_unsupported: Optional[Literal["arch", "build"]] = None
     allow_dacl_fallback: bool
     allow_dacl_fallback_saved: bool
     dacl_locked_by_environment: bool
@@ -4703,7 +4705,13 @@ def _sandbox_terminal_target() -> tuple[str, Optional[str]]:
 
 
 def _sandbox_windows_status() -> SandboxWindowsStatus:
-    from core.inference import mxc_adapter, mxc_policy, mxc_read_grants, mxc_runtime
+    from core.inference import (
+        mxc_adapter,
+        mxc_policy,
+        mxc_read_grants,
+        mxc_runtime,
+        sandbox_setup_plan,
+    )
     from utils import mxc_isolation_settings as saved
 
     try:
@@ -4717,6 +4725,7 @@ def _sandbox_windows_status() -> SandboxWindowsStatus:
         missing = None if steps is None else list(steps)
     return SandboxWindowsStatus(
         runtime_installed = installed,
+        runtime_unsupported = sandbox_setup_plan.windows_runtime_unsupported(),
         allow_dacl_fallback = mxc_policy.dacl_fallback_enabled(),
         allow_dacl_fallback_saved = saved.dacl_fallback_setting(),
         dacl_locked_by_environment = saved.locked_by_environment(mxc_policy.DACL_FALLBACK_ENV),
@@ -4938,7 +4947,8 @@ async def start_sandbox_prepare(
         await asyncio.to_thread(mxc_runtime.installation_identity)
     except Exception as exc:
         raise HTTPException(
-            status_code = 409, detail = "The MXC runtime is not installed; rerun Studio setup."
+            status_code = 409,
+            detail = "The MXC runtime is not installed; install it from Settings > Sandbox first.",
         ) from exc
     mxc_host_prep_job.add_finish_hook(_forget_sandbox_status)
     try:
@@ -4982,7 +4992,10 @@ async def start_sandbox_setup(
     current_subject: str = Depends(get_current_subject),
     _ui_session: None = Depends(_require_ui_session),
 ) -> SandboxSetupJob:
-    """Install or prepare the OS sandbox here; the password or administrator prompt appears on this computer."""
+    """Install or prepare the OS sandbox here; the password or administrator prompt appears on this computer.
+
+    The Windows runtime-only install needs no prompt, so unlike the rest it also works from a remote browser.
+    """
     import sys
 
     from core.inference import mxc_policy, sandbox_setup_job, sandbox_setup_plan
@@ -4990,7 +5003,10 @@ async def start_sandbox_setup(
     from utils.client_ip import is_direct_local_request
 
     # Stricter than client_ip(): a loopback peer carrying proxy headers is a remote browser relayed here.
-    if not is_direct_local_request(request):
+    # The runtime-only install has no prompt (it is setup.ps1's unelevated step), so it works remotely.
+    if payload.operation != sandbox_setup_plan.WINDOWS_RUNTIME and not is_direct_local_request(
+        request
+    ):
         raise HTTPException(
             status_code = 403,
             detail = (

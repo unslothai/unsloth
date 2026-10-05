@@ -34,7 +34,6 @@ import { SettingsSection } from "../components/settings-section";
 import {
   HOST_PREP_POLL_MS,
   type HostPrepStatus,
-  canInstallWindowsRuntime,
   isOlderJob,
   jobOutputLines,
   jobResult,
@@ -305,6 +304,11 @@ export function SandboxTab() {
 
   const windows = status?.windows ?? null;
   const view = windows ? windowsView(windows, job, saving) : null;
+  // The runtime-only install reports under its own row; the setup row keeps the other operations.
+  const runtimeJob = setupJob?.operation === "windows-runtime" ? setupJob : null;
+  const runtimeRunning = runtimeJob?.state === "running";
+  const runtimeFailed = jobResult(runtimeJob) === "failed";
+  const runtimeOutput = jobOutputLines(runtimeJob);
   const result = jobResult(job);
   const outputLines = jobOutputLines(job);
   const prepKey = view ? PREP_STATUS_KEYS[view.prep] : null;
@@ -318,9 +322,6 @@ export function SandboxTab() {
       ? (setupJob?.note ?? "")
       : "";
   const setupRunning = setupJob?.state === "running";
-  const windowsRuntimeInstallable = status
-    ? canInstallWindowsRuntime(status)
-    : false;
 
   return (
     <div className="settings-page">
@@ -480,42 +481,41 @@ export function SandboxTab() {
               title={t("settings.sandbox.windowsSection")}
               description={t("settings.sandbox.windowsDescription")}
             >
-              {view.runtimeMissing ? (
+              {view.unsupported ? (
+                <p className="py-3 text-sm text-muted-foreground">
+                  {view.unsupported === "arch"
+                    ? t("settings.sandbox.unsupportedArch")
+                    : t("settings.sandbox.unsupportedBuild")}
+                </p>
+              ) : view.runtimeMissing ? (
                 <div className="flex flex-col gap-2 py-3">
-                  <p className="text-sm text-muted-foreground">
-                    {t("settings.sandbox.runtimeMissing")}
-                  </p>
-                  {windowsRuntimeInstallable || setupRunning ? (
-                    <div className="flex flex-wrap items-center gap-2">
+                  <SettingsRow
+                    label={t("settings.sandbox.runtimeLabel")}
+                    description={t("settings.sandbox.runtimeMissing")}
+                  >
+                    {view.showInstallRuntime || runtimeRunning ? (
                       <Button
                         size="sm"
                         variant="outline"
                         disabled={setupRunning}
                         onClick={() => void runSetup("windows-runtime", false)}
                       >
-                        {setupRunning ? <Spinner /> : null}
-                        {t("settings.sandbox.installRuntime")}
+                        {runtimeRunning ? <Spinner /> : null}
+                        {runtimeRunning
+                          ? t("settings.sandbox.installingRuntime")
+                          : t("settings.sandbox.installRuntime")}
                       </Button>
-                      {setupRunning ? (
-                        <span className="text-xs text-muted-foreground">
-                          {t("sandboxSetup.running")}
-                        </span>
-                      ) : null}
-                    </div>
-                  ) : null}
-                  {setupResult === "declined" || setupResult === "failed" ? (
+                    ) : null}
+                  </SettingsRow>
+                  {runtimeFailed ? (
                     <p className="text-xs text-destructive">
-                      {setupResult === "declined"
-                        ? t("sandboxSetup.declined")
-                        : t("sandboxSetup.failed")}
+                      {runtimeJob?.note ||
+                        t("settings.sandbox.installRuntimeFailed")}
                     </p>
                   ) : null}
-                  {setupNote ? (
-                    <p className="text-xs text-destructive">{setupNote}</p>
-                  ) : null}
-                  {setupOutput.length > 0 ? (
+                  {runtimeOutput.length > 0 ? (
                     <pre className="whitespace-pre-wrap break-words font-mono text-ui-11 text-muted-foreground">
-                      {setupOutput.join("\n")}
+                      {runtimeOutput.join("\n")}
                     </pre>
                   ) : null}
                   {setupError ? (

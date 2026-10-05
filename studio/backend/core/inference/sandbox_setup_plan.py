@@ -329,16 +329,35 @@ def _linux_plan() -> SetupPlan:
     )
 
 
-_ARM64_NOTE = (
-    "The MXC runtime Unsloth installs is built for x64 Windows, and this PC is not x64, so there "
-    "is nothing Unsloth can install here yet."
-)
+# Same floor as mxc_probe: older Windows has no MXC ProcessContainer to run.
+MXC_MIN_WINDOWS_BUILD = 26100
+
+
+def windows_runtime_unsupported() -> str | None:
+    """None when this Windows can run MXC; else "arch" (not x64) or "build" (older than 26100)."""
+    import platform
+
+    if platform.machine().lower() not in ("amd64", "x86_64"):
+        return "arch"
+    try:
+        build = sys.getwindowsversion().build
+    except AttributeError:  # not Windows
+        return None
+    return "build" if build < MXC_MIN_WINDOWS_BUILD else None
 
 
 def windows_runtime_supported() -> bool:
-    """The MXC runtime Unsloth installs is built for x64 Windows only."""
-    import platform
-    return platform.machine().lower() in ("amd64", "x86_64")
+    """The MXC runtime Unsloth installs is built for x64 Windows 11 build 26100 or newer."""
+    return windows_runtime_unsupported() is None
+
+
+_UNSUPPORTED_NOTES = {
+    "arch": "The MXC runtime is built for x64 Windows, and this PC is not x64.",
+    "build": (
+        f"The MXC sandbox needs Windows 11 build {MXC_MIN_WINDOWS_BUILD} (24H2) or newer, "
+        "and this PC runs an older build."
+    ),
+}
 
 
 def windows_runtime_installed() -> bool:
@@ -353,8 +372,9 @@ def windows_runtime_installed() -> bool:
 def windows_runtime_plan() -> SetupPlan:
     if windows_runtime_installed():
         return SetupPlan(platform = sys.platform, reason = "The MXC runtime is already installed.")
-    if not windows_runtime_supported():
-        return SetupPlan(platform = sys.platform, reason = _ARM64_NOTE)
+    unsupported = windows_runtime_unsupported()
+    if unsupported is not None:
+        return SetupPlan(platform = sys.platform, reason = _UNSUPPORTED_NOTES[unsupported])
     step = tuple(windows_runtime_install_command())
     return SetupPlan(
         platform = sys.platform,
@@ -388,9 +408,10 @@ def _windows_plan() -> SetupPlan:
     from . import mxc_adapter, mxc_policy, mxc_probe, mxc_runtime
     from utils import mxc_isolation_settings as saved
 
+    unsupported = windows_runtime_unsupported()
+    if unsupported is not None:
+        return SetupPlan(platform = sys.platform, reason = _UNSUPPORTED_NOTES[unsupported])
     installed = windows_runtime_installed()
-    if not installed and not windows_runtime_supported():
-        return SetupPlan(platform = sys.platform, reason = _ARM64_NOTE)
     missing = None
     if installed:
         try:

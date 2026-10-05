@@ -20,8 +20,12 @@ export type SandboxToolStatus = {
 
 export type TerminalShell = "bash" | "cmd_isolated" | "cmd_fallback";
 
+// "arch": not x64 Windows; "build": older than Windows 11 build 26100. MXC cannot run on either.
+export type RuntimeUnsupported = "arch" | "build";
+
 export type WindowsSandboxStatus = {
   runtimeInstalled: boolean;
+  runtimeUnsupported: RuntimeUnsupported | null;
   allowDaclFallback: boolean;
   allowDaclFallbackSaved: boolean;
   daclLockedByEnvironment: boolean;
@@ -97,6 +101,8 @@ type ApiSetupPlan = {
 type ApiWindowsStatus = {
   // biome-ignore lint/style/useNamingConvention: API schema
   runtime_installed?: boolean;
+  // biome-ignore lint/style/useNamingConvention: API schema
+  runtime_unsupported?: string | null;
   // biome-ignore lint/style/useNamingConvention: API schema
   allow_dacl_fallback?: boolean;
   // biome-ignore lint/style/useNamingConvention: API schema
@@ -175,6 +181,11 @@ function windowsFromApi(
   if (!windows) return null;
   return {
     runtimeInstalled: windows.runtime_installed ?? false,
+    runtimeUnsupported:
+      windows.runtime_unsupported === "arch" ||
+      windows.runtime_unsupported === "build"
+        ? windows.runtime_unsupported
+        : null,
     allowDaclFallback: windows.allow_dacl_fallback ?? false,
     allowDaclFallbackSaved: windows.allow_dacl_fallback_saved ?? false,
     daclLockedByEnvironment: windows.dacl_locked_by_environment ?? false,

@@ -355,6 +355,18 @@ def test_windows_runtime_only_is_a_windows_operation(host, windows):
     assert saved["dacl"] is False
 
 
+def test_a_remote_owner_may_install_the_runtime_but_not_prepare(host, windows, monkeypatch):
+    # The runtime install has no administrator prompt; the chained setup ends in one (UAC).
+    monkeypatch.setattr(client_ip, "is_direct_local_request", lambda _request: False)
+    calls, _saved, _plan = host
+    with _client(OWNER) as client:
+        assert (
+            client.post("/sandbox/setup", json = {"operation": "windows-runtime"}).status_code == 200
+        )
+        assert client.post("/sandbox/setup", json = {"operation": "windows-setup"}).status_code == 403
+    assert calls["start"] == ["windows-runtime"]
+
+
 def test_windows_setup_without_consent_leaves_the_opt_in_alone(host, windows):
     calls, saved, _plan = host
     with _client(OWNER) as client:

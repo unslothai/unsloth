@@ -10,7 +10,6 @@ import type {
 } from "../src/features/chat/api/sandbox-capability.ts";
 import type { SandboxStatus } from "../src/features/settings/api/sandbox-isolation.ts";
 import {
-  canInstallWindowsRuntime,
   setupRowView,
 } from "../src/features/settings/tabs/sandbox-tab-state.ts";
 import * as tabState from "../src/features/settings/tabs/sandbox-tab-state.ts";
@@ -675,53 +674,6 @@ test("a failed install shows the job's command; a running one keeps the button",
   assert.equal(running.show, true);
   assert.equal(running.showInstall, true);
   assert.equal(running.installDisabled, true);
-});
-
-test("the Windows runtime install is offered only when missing and allowed", () => {
-  const windowsBlock = {
-    runtimeInstalled: false,
-    allowDaclFallback: false,
-    allowDaclFallbackSaved: false,
-    daclLockedByEnvironment: false,
-    persistentReadGrants: true,
-    persistentReadGrantsSaved: true,
-    grantsLockedByEnvironment: false,
-    hostPrepMissing: null,
-    prepareRepeatsAfterRestart: true,
-  };
-  const setup = {
-    action: "windows-setup" as const,
-    elevation: "uac",
-    manualCommand: "",
-    reason: "",
-    canRun: true,
-  };
-  assert.equal(
-    canInstallWindowsRuntime(
-      status({ platform: "win32", windows: windowsBlock, setup }),
-    ),
-    true,
-  );
-  assert.equal(
-    canInstallWindowsRuntime(
-      status({
-        platform: "win32",
-        windows: { ...windowsBlock, runtimeInstalled: true },
-        setup,
-      }),
-    ),
-    false,
-  );
-  assert.equal(
-    canInstallWindowsRuntime(
-      status({
-        platform: "win32",
-        windows: windowsBlock,
-        setup: { ...setup, canRun: false },
-      }),
-    ),
-    false,
-  );
 });
 
 test("a capability still unknown applies the mode instead of offering an install", async () => {

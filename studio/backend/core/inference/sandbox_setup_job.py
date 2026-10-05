@@ -26,6 +26,8 @@ logger = logging.getLogger(__name__)
 OUTPUT_TAIL_LINES = 20
 PKEXEC_DISMISSED = 126
 PKEXEC_NOT_AUTHORIZED = 127
+# install_mxc_prebuilt.py: a running MXC process holds the runtime files.
+_RUNTIME_IN_USE = 3
 _SUDO_NEEDS_PASSWORD = "a password is required"
 
 _lock = threading.Lock()
@@ -170,6 +172,12 @@ def _outcome(job: SetupJob, argv: list[str], code: int | None, lines: list[str])
     if any(_DECLINED_MARKER in line for line in lines):
         job.note = "The administrator prompt was declined."
         return "declined"
+    if (
+        "install_mxc_prebuilt.py" in " ".join(argv)
+        and "--prepare-host" not in argv
+        and code == _RUNTIME_IN_USE
+    ):
+        job.note = "A running Python or Terminal call is using the runtime; try again once it ends."
     return "failed"
 
 

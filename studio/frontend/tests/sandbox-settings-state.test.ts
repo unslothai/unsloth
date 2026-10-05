@@ -22,6 +22,7 @@ const windows = (
   overrides: Partial<WindowsSandboxStatus> = {},
 ): WindowsSandboxStatus => ({
   runtimeInstalled: true,
+  runtimeUnsupported: null,
   allowDaclFallback: true,
   allowDaclFallbackSaved: true,
   daclLockedByEnvironment: false,
@@ -228,4 +229,26 @@ test("the setup job's first read is held to the same rule", () => {
   const started = { id: "s2", startedAt: 20 };
   assert.equal(isOlderJob({ id: "s1", startedAt: 10 }, started), true);
   assert.equal(isOlderJob({ id: "s2", startedAt: 20 }, started), false);
+});
+
+test("a missing runtime offers the install unless this Windows cannot run MXC", () => {
+  const missing = windowsView(windows({ runtimeInstalled: false }), null, false);
+  assert.equal(missing.runtimeMissing, true);
+  assert.equal(missing.showInstallRuntime, true);
+  assert.equal(missing.unsupported, null);
+  for (const reason of ["arch", "build"] as const) {
+    const view = windowsView(
+      windows({ runtimeInstalled: false, runtimeUnsupported: reason }),
+      null,
+      false,
+    );
+    assert.equal(view.unsupported, reason);
+    assert.equal(view.showInstallRuntime, false);
+  }
+  // Installed on a build that cannot run it: the note still replaces the controls.
+  assert.equal(
+    windowsView(windows({ runtimeUnsupported: "build" }), null, false)
+      .unsupported,
+    "build",
+  );
 });
