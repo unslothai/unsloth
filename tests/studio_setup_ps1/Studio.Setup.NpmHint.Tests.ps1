@@ -35,6 +35,13 @@ npm error code EPERM
 npm error syscall rename
 npm error Error: EPERM: operation not permitted, rename 'C:\npm-cache\_cacache\tmp\x'
 '@
+    $script:CacheAclOutput = @'
+npm error code EPERM
+npm error syscall mkdir
+npm error path D:\a\_temp\x\cache\_cacache
+npm error errno EPERM
+npm error FetchError: Invalid response body while trying to fetch https://registry.npmjs.org/is-number: EPERM: operation not permitted, mkdir 'D:\a\_temp\x\cache\_cacache'
+'@
     $script:NetworkOutput = @'
 npm error code ENOTFOUND
 npm error network request to https://registry.npmjs.org/oxlint failed, reason: getaddrinfo ENOTFOUND registry.npmjs.org
@@ -86,6 +93,12 @@ Describe 'Show-NpmRegistryHint' {
         $out | Should -Match 'local file error'
         $out | Should -Not -Match "refused node's connection"
         $out | Should -Not -Match 'looks blocked \(corporate firewall/proxy\?\)'
+    }
+
+    It 'reports an unwritable cache (FetchError with a path) as a file error' {
+        $out = Invoke-CapturingHint -FailureOutput $script:CacheAclOutput
+        $out | Should -Match 'local file error'
+        $out | Should -Not -Match "refused node's connection"
     }
 
     It 'strips ANSI colour before matching the code line' {

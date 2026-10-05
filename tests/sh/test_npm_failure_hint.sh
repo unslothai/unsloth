@@ -40,6 +40,13 @@ _EPERM_LOG="npm ERR! code EPERM
 npm ERR! syscall rename
 npm ERR! Error: EPERM: operation not permitted, rename 'C:\\npm-cache\\_cacache\\tmp\\x'"
 
+# Real npm 10.9 output for a cache dir with a deny-write ACL: FetchError, but with a path.
+_CACHE_ACL_LOG="npm error code EPERM
+npm error syscall mkdir
+npm error path D:\\a\\_temp\\x\\cache\\_cacache
+npm error errno EPERM
+npm error FetchError: Invalid response body while trying to fetch https://registry.npmjs.org/is-number: EPERM: operation not permitted, mkdir 'D:\\a\\_temp\\x\\cache\\_cacache'"
+
 _ESC=$(printf '\033')
 _COLOR_EPERM_LOG="${_ESC}[31mnpm${_ESC}[39m ${_ESC}[31merror${_ESC}[39m ${_ESC}[90mcode${_ESC}[39m EPERM
 ${_ESC}[31mnpm${_ESC}[39m ${_ESC}[31merror${_ESC}[39m syscall rename"
@@ -80,6 +87,7 @@ check() {
 
 check "#8725 socket EACCES gets the connection hint" "$_EACCES_LOG" socket
 check "EPERM on a cache file gets the file hint" "$_EPERM_LOG" file
+check "unwritable cache (FetchError + path) gets the file hint" "$_CACHE_ACL_LOG" file
 check "colored (color=always) EPERM log gets the file hint" "$_COLOR_EPERM_LOG" file
 check "ENOTFOUND log gets the registry hint" "$_NETWORK_LOG" registry
 check "network failure with EPERM cleanup warnings gets the registry hint" "$_NETWORK_CLEANUP_LOG" registry

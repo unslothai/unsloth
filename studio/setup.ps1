@@ -3105,8 +3105,8 @@ $script:NpmLocalFailureRe = 'npm (error|ERR!) code (EACCES|EPERM|EBUSY|ENOSPC|EN
 $script:NpmNetworkFailureRe = '40[13]|ENOTFOUND|ECONNREFUSED|ECONNRESET|ETIMEDOUT|EAI_AGAIN|ConnectionRefused|failed to resolve|registry\.npmjs\.org|getaddrinfo|tunneling socket|network|proxy|self.?signed|unable to (get|verify)'
 
 function Show-NpmLocalFailureHint {
-    # -Socket: errno from the HTTP request (FetchError), i.e. a per-program firewall /
-    # antivirus rule on node.exe, not a file.
+    # -Socket: FetchError with no "npm error path" line, i.e. the OS refused node.exe's
+    # socket (per-program firewall / antivirus rule). A cache write failure has a path.
     param([switch]$Socket)
     Write-StudioLine ""
     if ($Socket) {
@@ -3137,7 +3137,7 @@ function Show-NpmRegistryHint {
     param([string]$FailureOutput = "")
     if ($FailureOutput) {
         $FailureOutput = $FailureOutput -replace "$([char]27)\[[0-9;]*m", ''
-        if ($FailureOutput -cmatch $script:NpmLocalFailureRe) { Show-NpmLocalFailureHint -Socket:($FailureOutput -cmatch 'FetchError'); return }
+        if ($FailureOutput -cmatch $script:NpmLocalFailureRe) { Show-NpmLocalFailureHint -Socket:($FailureOutput -cmatch 'FetchError' -and $FailureOutput -cnotmatch 'npm (error|ERR!) path '); return }
         if ($FailureOutput -inotmatch $script:NpmNetworkFailureRe) { return }
     }
     if ($env:UNSLOTH_NPM_REGISTRY) { return }

@@ -578,8 +578,8 @@ _npm_mirror_retry() {
 # registry.npmjs.org even on a local error (#8725). Keep in sync with setup.ps1.
 _NPM_LOCAL_FAILURE_RE='npm (error|ERR!) code (EACCES|EPERM|EBUSY|ENOSPC|ENFILE|EMFILE)|operation was rejected by your operating system'
 
-# $1 = "socket": errno from the HTTP request (FetchError), i.e. a per-program firewall /
-# antivirus rule on node, not a file.
+# $1 = "socket": FetchError with no "npm error path" line, i.e. the OS refused node's
+# socket (per-program firewall / antivirus rule). A cache write failure has a path.
 _suggest_npm_local_failure() {
     printf '\n' >&2
     if [ "${1:-}" = socket ]; then
@@ -603,7 +603,11 @@ _suggest_npm_registry() {
     # Strip ANSI colour (npm color=always) so the code-line match still sees "npm error code".
     if [ -n "$_log" ] && [ -s "$_log" ]; then _plain="$(sed "s/$(printf '\033')\[[0-9;]*m//g" "$_log")"; fi
     if [ -n "$_plain" ] && grep -Eq "$_NPM_LOCAL_FAILURE_RE" <<<"$_plain"; then
-        if grep -q 'FetchError' <<<"$_plain"; then _suggest_npm_local_failure socket; else _suggest_npm_local_failure; fi
+        if grep -q 'FetchError' <<<"$_plain" && ! grep -Eq 'npm (error|ERR!) path ' <<<"$_plain"; then
+            _suggest_npm_local_failure socket
+        else
+            _suggest_npm_local_failure
+        fi
         return 0
     fi
     [ -n "${UNSLOTH_NPM_REGISTRY:-}" ] && return 0
