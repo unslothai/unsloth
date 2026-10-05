@@ -118,13 +118,34 @@ function localSelection(
   };
 }
 
-type PendingDownload = { id: string; meta: ModelSelectorChangeMeta };
+// The monitor reports a llama.cpp model as "<id>:<quant>"; Ollama ids carry their own ":<tag>".
+function monitorSelection(activeModel: string | null | undefined): {
+  id: string;
+  ggufVariant: string | null;
+} {
+  if (!activeModel) {
+    return { id: "", ggufVariant: null };
+  }
+  const split = activeModel.startsWith("ollama/")
+    ? null
+    : splitQuantSuffix(activeModel);
+  return split
+    ? { id: split[0], ggufVariant: split[1] }
+    : { id: activeModel, ggufVariant: null };
+}
+
+type PendingDownload = {
+  id: string;
+  meta: ModelSelectorChangeMeta;
+  originModel: string | null;
+};
 
 // Starts a staged pick's managed download and loads it on completion, as Chat does. The listener
 // is bound before the start, and a newer pick cancels this one's start result.
 function useLoadAfterDownload(
   pending: PendingDownload | null,
   setPending: Dispatch<SetStateAction<PendingDownload | null>>,
+  activeModel: string | null,
   load: (id: string, meta: ModelSelectorChangeMeta) => void,
   onStartError: (message: string) => void,
 ): void {
@@ -133,7 +154,8 @@ function useLoadAfterDownload(
       return;
     }
     setPending(null);
-    if (loadIt) {
+    // An unload, reload or API switch since the pick means the user moved on.
+    if (loadIt && pending.originModel === activeModel) {
       load(pending.id, { ...pending.meta, isDownloaded: true });
     }
   };
@@ -269,7 +291,7 @@ export function ApiModelLoadControls({
           current?.id === value &&
           (current.meta.ggufVariant ?? null) === (meta.ggufVariant ?? null)
             ? current
-            : { id: value, meta },
+            : { id: value, meta, originModel: activeModel ?? null },
         );
         return;
       }
@@ -296,12 +318,13 @@ export function ApiModelLoadControls({
         setActionError(loadErrorMessage(err, "Failed to load model"));
       }
     },
-    [selectModel, loadNpuModel, onSettled, refreshLastLoadLabel],
+    [selectModel, loadNpuModel, onSettled, refreshLastLoadLabel, activeModel],
   );
 
   useLoadAfterDownload(
     pendingDownload,
     setPendingDownload,
+    activeModel ?? null,
     (id, meta) => {
       handlePick(id, meta);
     },
@@ -350,13 +373,8 @@ export function ApiModelLoadControls({
         ? `Reload ${lastLoadLabel}`
         : RELOAD_MISSING_HISTORY_MESSAGE;
 
-  // The monitor reports a llama.cpp model as "<id>:<quant>"; Ollama ids carry their own ":<tag>".
-  const quantSplit =
-    activeModel && !activeModel.startsWith("ollama/")
-      ? splitQuantSuffix(activeModel)
-      : null;
-  const effectiveModel = quantSplit?.[0] ?? activeModel ?? "";
-  const activeGgufVariant = quantSplit?.[1] ?? null;
+  const { id: effectiveModel, ggufVariant: activeGgufVariant } =
+    monitorSelection(activeModel);
   const isLoaded = Boolean(activeModel);
 
   return (
