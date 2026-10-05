@@ -45,9 +45,10 @@ BACKEND = Path(__file__).resolve().parents[1]
 INFERENCE = BACKEND / "core" / "inference"
 FIXTURE = Path(__file__).resolve().parent / "fixtures" / "vae_tile_configs.json"
 
+# The floor, when the tree has no image tile module to read it from (diffusion_vae_tiling: TILE_LATENTS,
+# OVERLAP_LATENTS; its rule also wants every tile, the edge one included, at least TILE_LATENTS long).
 MIN_TILE = 32
 MIN_OVERLAP = 16
-MIN_EDGE = 16
 # Studio's smallest canvas side; the probe holds the other axis here so that only the swept axis tiles.
 MIN_SIDE = 256
 LTX23 = "ltx-2.3"
@@ -61,12 +62,43 @@ class Floor:
     why: str
 
 
+def _module(name: str):
+    try:
+        return importlib.import_module(f"core.inference.{name}")
+    except ImportError:
+        return None
+
+
+def default_floor() -> Floor:
+    """The image tile module's own rule (tile >= TILE_LATENTS, overlap >= OVERLAP_LATENTS, no tile shorter than
+    TILE_LATENTS), so the guard and the fix cannot drift apart; 32 / 16 / 32 when the tree has no such module."""
+    mod = _module("diffusion_vae_tiling")
+    tile = int(getattr(mod, "TILE_LATENTS", MIN_TILE))
+    overlap = int(getattr(mod, "OVERLAP_LATENTS", MIN_OVERLAP))
+    src = "diffusion_vae_tiling" if mod is not None and hasattr(mod, "TILE_LATENTS") else "default"
+    return Floor(tile, overlap, tile, src)
+
+
+def ltx_floor() -> Floor:
+    """LTX-2's floor from its tile module (MIN_TILE_LATENTS, OVERLAP_LATENTS), 16 / 8 when the tree has none."""
+    mod = _module("video_ltx2_vae_tiles")
+    tile = int(getattr(mod, "MIN_TILE_LATENTS", 16))
+    overlap = int(getattr(mod, "OVERLAP_LATENTS", 8))
+    return Floor(tile, overlap, overlap, "LTX-2 wide tiles (video_ltx2_vae_tiles); seam bench clean")
+
+
+def keep_stock() -> dict[str, str]:
+    """VAE classes the image tile module deliberately leaves on diffusers' tiles, with its measured reason."""
+    return dict(getattr(_module("diffusion_vae_tiling"), "KEEP_STOCK", {}) or {})
+
+
 # "VAE class@ratio" -> the smaller geometry it is proven seam-free at. Only with a measurement: a tiled decode of a real
 # latent against the untiled decode, at that geometry, without lines.
 SMALLER_GEOMETRY_OK: dict[str, Floor] = {
     # 32x VAE: 16 latents are 512 px, the stock tile and what the tightest tier can afford. PR #12698's tiles (16
     # latents, >= 8-latent overlaps, 3-latent margin, 2-latent ramp), seam bench at the tightest tier, every preset:
     # worst 64 px window 1.88 levels (LTX-2) / 1.09 (LTX-2.3), PSNR >= 53 dB; the stock 2-latent overlaps: 2.3-7.7.
+    # (read from video_ltx2_vae_tiles when present: ltx_floor)
     "AutoencoderKLLTX2Video@32x": Floor(16, 8, 8, "PR #12698's 16-latent tiles, 8-latent overlaps: seam bench clean"),
     # Wan2.1 VAE (Wan2.2-T2V-A14B), stock 32-latent tiles with 8-latent overlaps and 8-latent edge tiles: the seam
     # bench (two photos, every preset, tightest tier, 9-frame pan) stays within 1.93 levels of the untiled decode in
@@ -76,12 +108,16 @@ SMALLER_GEOMETRY_OK: dict[str, Floor] = {
     # 20 dB against the input photo, the tiled decode 30 dB), Studio always decodes it tiled, and diffusers spreads
     # the 16-latent tiles evenly with >= 4-latent overlaps and no sliver. A smaller tile or a sliver still fails.
     "AutoencoderKLMiniMaxH3@16x": Floor(16, 4, 16, "decoder works at its 256 px tile; untiled is out of distribution"),
+    # 16x video VAEs at their stock 16-latent tiles / 4-latent overlaps / 4-latent edge tiles. Video seam audit (real
+    # 33-frame clip, every preset, stock tiles vs untiled): HunyuanVideo-1.5 PSNR 50.6-52.5 dB, Wan2.2-TI2V-5B 49.3 dB,
+    # the boundary score on |tiled - untiled| 1.7-2.4 (no line); seam bench worst 64 px window 2.9-3.6 levels.
+    "AutoencoderKLHunyuanVideo15@16x": Floor(16, 4, 4, "video seam audit: PSNR >= 50.6 dB, no line at the boundaries"),
+    "AutoencoderKLWan@16x": Floor(16, 4, 8, "video seam audit: PSNR 49.3 dB, no line at the boundaries"),
 }
 
 _AKL = "8x AutoencoderKL: 128-latent tiles end in a 2-10 latent sliver at 1552-1648 px"
 _FLUX2 = "AutoencoderKLFlux2: 128-latent tiles end in a 2-10 latent sliver at 1552-1648 px"
 _QWEN = "8x Qwen-Image VAE: 32-latent tiles, 8-latent overlaps, 8-latent edge tiles"
-_HV15 = "16x HunyuanVideo-1.5 VAE: 16-latent tiles, 4-latent overlaps, 4-latent edge tiles"
 # family -> a geometry below the floor that is a measured seam bug, or not yet proven seam-free. Strict xfail: the
 # fix (wide tiles) or an allow-list entry backed by a measurement turns it into a failure until the entry goes.
 # Numbers: seam bench on main, tightest tier, worst 64 px window of |tiled - untiled| in 8-bit levels.
@@ -91,10 +127,6 @@ KNOWN_SEAMS: dict[str, str] = {
     **{f: f"{_FLUX2}; 1600 px window 15.9-20.4 levels, PSNR 28 dB" for f in ("flux.2-klein", "flux.2-dev", "ideogram-4")},
     **{f: f"{_QWEN}; 1024 px window 12.5 levels" for f in ("qwen-image", "qwen-image-edit", "krea-2")},
     "hunyuanimage-2.1": "32x HunyuanImage-2.1 VAE: 12-latent tiles, 3-latent overlaps; 1024 px window 31-61 levels",
-    "hunyuanvideo-1.5": f"{_HV15}; 720p presets window 3.5-3.6 levels",
-    "hunyuanvideo-1.5-720p": f"{_HV15}; 1280x720 window 3.5 levels, 960x960 3.6",
-    "wan2.2-ti2v-5b": "16x Wan2.2 VAE: 16-latent tiles, 4-latent overlaps; bench passes (worst window 2.91 levels, "
-    "limit 3.0) but not with margin, so not allow-listed",
 }
 
 # Modules that rebind a VAE's tiled_decode without changing its tile grid (same attributes, batched).
@@ -396,7 +428,12 @@ def _family_params():
 @pytest.mark.parametrize("family", _family_params())
 def test_tile_geometry(family):
     name, ratio, applied, grid, temporal = geometry(family)
-    floor = SMALLER_GEOMETRY_OK.get(f"{name}@{ratio}x", Floor(MIN_TILE, MIN_OVERLAP, MIN_EDGE, "default"))
+    kept = keep_stock()
+    if name in kept:
+        # the image module keeps this VAE on diffusers' tiles on purpose, with a measurement: its reason stands
+        pytest.skip(f"{name} in diffusion_vae_tiling.KEEP_STOCK: {kept[name]}")
+    floor = ltx_floor() if name == "AutoencoderKLLTX2Video" else None
+    floor = floor or SMALLER_GEOMETRY_OK.get(f"{name}@{ratio}x", default_floor())
     bad = {side: (tiles, check_axis(tiles, floor)) for side, tiles in grid.items()}
     bad = {side: v for side, v in bad.items() if v[1]}
     msgs = []
@@ -415,7 +452,7 @@ def test_tile_geometry(family):
 
 
 def test_check_axis_flags_each_threshold():
-    ok = Floor(MIN_TILE, MIN_OVERLAP, MIN_EDGE, "default")
+    ok = Floor(32, 16, 16, "test")
     assert check_axis([(0, 64)], ok) == []
     assert check_axis([(0, 32), (16, 48), (32, 64)], ok) == []
     # Qwen-Image-2.1 on main at 1024 px: 16-latent tiles, 4-latent overlaps, a 4-latent sliver
