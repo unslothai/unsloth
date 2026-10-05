@@ -1304,7 +1304,8 @@ def test_lean_lora_forward_matches_peft(checkpoint, scaling):
         x = torch.randn(2, 5, layer.in_features, device = device, requires_grad = True)
         outputs = []
         for forward in (layer.forward, layer._unsloth_peft_forward):
-            with torch.autocast(device.type, dtype = torch.bfloat16, enabled = enabled):
+            # The dtype the model trains in on this GPU: fp16 on a T4, which cannot run bf16.
+            with torch.autocast(device.type, dtype = decision._amp_dtype(device), enabled = enabled):
                 out = forward(x)
             grads = torch.autograd.grad(out.float().square().sum(), [x, layer.lora_A["default"].weight])
             outputs.append((out, *grads))
