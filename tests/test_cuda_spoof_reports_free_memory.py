@@ -52,8 +52,7 @@ def _memory_tuples(path):
             if not (isinstance(value, ast.Tuple) and len(value.elts) == 2):
                 continue
             try:
-                # `literal_eval` cannot fold `60 * 1024**3`, so evaluate with
-                # nothing in scope instead.
+                # `literal_eval` cannot fold `60 * 1024**3`, so evaluate with nothing in scope instead.
                 found.append(
                     tuple(eval(ast.unparse(e), {"__builtins__": {}}, {}) for e in value.elts)
                 )

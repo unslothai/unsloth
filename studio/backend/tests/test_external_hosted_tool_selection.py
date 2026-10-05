@@ -14,6 +14,8 @@ the loop is up, so forwarding them too would run both sides of one tool and bill
 the provider for its half.
 """
 
+from __future__ import annotations
+
 import asyncio
 
 from types import SimpleNamespace
@@ -32,6 +34,7 @@ class _FakeExternalClient:
 
     def __init__(self, **kwargs):
         _FakeExternalClient.last = {"ctor": kwargs}
+        self.provider_type = kwargs.get("provider_type")
 
     def stream_chat_completion(self, **kwargs):
         async def gen():
@@ -52,13 +55,20 @@ def _request():
         return False
 
     return SimpleNamespace(
-        headers = {},
+        # These cases drive the tool loop, whose confirm gate asks over these frames.
+        headers = {"X-Unsloth-Events": "1"},
         state = SimpleNamespace(skip_api_monitor = True),
         is_disconnected = is_disconnected,
     )
 
 
-def _install(monkeypatch, provider_type: str):
+def _install(
+    monkeypatch,
+    provider_type: str,
+    *,
+    base_url = None,
+    api_type = None,
+):
     from core.inference.providers import get_base_url
     from routes import inference as inf
 
@@ -68,7 +78,8 @@ def _install(monkeypatch, provider_type: str):
         lambda _pid: {
             "id": _pid,
             "provider_type": provider_type,
-            "base_url": get_base_url(provider_type) or "http://127.0.0.1:8080/v1",
+            "base_url": base_url or get_base_url(provider_type) or "http://127.0.0.1:8080/v1",
+            "api_type": api_type or "chat_completions",
             "display_name": "Saved connection",
             "is_enabled": True,
         },
@@ -77,6 +88,9 @@ def _install(monkeypatch, provider_type: str):
     monkeypatch.setattr(inf, "ExternalProviderClient", _FakeExternalClient)
 
     def _loop_raiser(transport, **_kwargs):
+        transport._selected_local_tool_names = [
+            tool["function"]["name"] for tool in _kwargs["policy"].tools
+        ]
         raise _LoopEntered(transport)
 
     monkeypatch.setattr(inf, "stream_with_studio_tools", _loop_raiser)
@@ -97,9 +111,17 @@ def _payload(**overrides):
     return ChatCompletionRequest(**base)
 
 
-def _loop_transport(monkeypatch, provider_type: str, selection: list[str], **overrides):
+def _loop_transport(
+    monkeypatch,
+    provider_type: str,
+    selection: list[str],
+    *,
+    base_url: str | None = None,
+    api_type: str | None = None,
+    **overrides,
+):
     """Run the route and return the transport the loop was handed."""
-    inf = _install(monkeypatch, provider_type)
+    inf = _install(monkeypatch, provider_type, base_url = base_url, api_type = api_type)
 
     async def go():
         resp = await inf._proxy_to_external_provider(
@@ -203,3 +225,29 @@ def test_the_loop_keeps_its_own_search(monkeypatch):
 def test_a_self_hosted_loop_is_still_sent_no_tool_flags(monkeypatch):
     transport = _loop_transport(monkeypatch, "llama_cpp", ["web_search", "python"])
     assert transport._request_kwargs["enabled_tools"] is None
+
+
+@pytest.mark.parametrize(
+    "base_url,expected_hosted_tools",
+    [
+        ("https://api.openai.com/v1", ["code_execution", "image_generation"]),
+        (
+            "https://resource.services.ai.azure.com/openai/v1",
+            ["code_execution", "image_generation"],
+        ),
+        ("https://gateway.example/v1", None),
+        ("https://api.openai.com.attacker.example/v1", None),
+    ],
+)
+def test_custom_mixed_tools_keep_local_search_and_scope_hosted_tools(
+    monkeypatch, base_url, expected_hosted_tools
+):
+    transport = _loop_transport(
+        monkeypatch,
+        "custom",
+        ["web_search", "code_execution", "image_generation"],
+        base_url = base_url,
+        api_type = "responses",
+    )
+    assert "web_search" in transport._selected_local_tool_names
+    assert transport._request_kwargs["enabled_tools"] == expected_hosted_tools

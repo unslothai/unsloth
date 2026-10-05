@@ -13,10 +13,30 @@ import json
 from pathlib import Path
 from typing import Optional
 
-VALID_AUDIO_TYPES = ("snac", "csm", "bicodec", "dac", "whisper", "audio_vlm")
+NATIVE_OUTPUT_AUDIO_TYPES = frozenset(
+    {
+        "higgs_tts2",
+        "moss_tts_local",
+        "moss_tts_nano",
+        "higgs_tts3",
+        "minimax_music3",
+    }
+)
+
+VALID_AUDIO_TYPES = (
+    "snac",
+    "csm",
+    "bicodec",
+    "dac",
+    *sorted(NATIVE_OUTPUT_AUDIO_TYPES),
+    "whisper",
+    "audio_vlm",
+)
 
 # Emit speech; a chat turn sent to one comes back as audio, never as text.
 TTS_AUDIO_TYPES = frozenset({"snac", "csm", "bicodec", "dac"})
+GGUF_TTS_AUDIO_TYPES = frozenset({"snac", "bicodec", "dac"})
+OUTPUT_AUDIO_TYPES = TTS_AUDIO_TYPES | NATIVE_OUTPUT_AUDIO_TYPES
 
 
 def _count_prefix_exceeds(tokens, prefix: str, threshold: int) -> bool:
@@ -31,9 +51,8 @@ def _count_prefix_exceeds(tokens, prefix: str, threshold: int) -> bool:
     return False
 
 
-# ORDER MATTERS: first match wins, so codec fingerprints precede the generic audio_vlm
-# marker. Orpheus carries 28k <custom_token_N> SNAC codes AND a stray <|audio|>, and
-# audio_vlm first typed it as audio-input.
+# ORDER MATTERS: first match wins, so codec fingerprints precede the generic audio_vlm marker. Orpheus carries 28k
+# <custom_token_N> SNAC codes AND a stray <|audio|>, and audio_vlm first typed it as audio-input.
 AUDIO_TOKEN_PATTERNS = {
     "csm": lambda tokens: "<|AUDIO|>" in tokens and "<|audio_eos|>" in tokens,
     "whisper": lambda tokens: "<|startoftranscript|>" in tokens,
@@ -49,19 +68,18 @@ AUDIO_TOKEN_PATTERNS = {
     "audio_vlm": lambda tokens: "<audio_soft_token>" in tokens or "<|audio|>" in tokens,
 }
 
-# Every substring a pattern needs, so text holding none of them is settled without a
-# parse -- json.loads of an ordinary large tokenizer_config was the bulk of a cold /loras
-# scan. The patterns are lambdas, so this cannot be derived from them; a codec added
-# there without its marker here would silently stop being detected, and
-# test_audio_token_detection.py fails when the two drift.
+# Every substring a pattern needs, so text holding none is settled without a parse. The patterns are lambdas, so a codec
+# added there without its marker here silently stops being detected.
+# json.loads of an ordinary large tokenizer_config was the bulk of a cold /loras scan, and test_audio_token_detection.py
+# fails when the two drift.
 AUDIO_TOKEN_MARKERS = (
-    "<|AUDIO|>",  # csm
-    "<|startoftranscript|>",  # whisper
-    "<|bicodec_",  # bicodec
-    "<|audio_start|>",  # dac
-    "<custom_token_",  # snac
-    "<audio_soft_token>",  # audio_vlm (Gemma 3n)
-    "<|audio|>",  # audio_vlm (Gemma 4)
+    "<|AUDIO|>",
+    "<|startoftranscript|>",
+    "<|bicodec_",
+    "<|audio_start|>",
+    "<custom_token_",
+    "<audio_soft_token>",
+    "<|audio|>",
 )
 
 AUDIO_TOKENIZER_CONFIG_PATHS = (
@@ -91,6 +109,41 @@ def classify_audio_tokens(tok_config: dict) -> Optional[str]:
     return None
 
 
+# Keep token order and strictness aligned with LlamaCppBackend._detect_audio_type_strict.
+SNAC_PROBE_TOKEN_IDS = (128258, 128259)
+
+GGUF_AUDIO_CLASSIFIER_TOKENS = frozenset(
+    {
+        "<|AUDIO|>",
+        "<|audio_eos|>",
+        "<|startoftranscript|>",
+        "<audio_soft_token>",
+        "<|audio|>",
+        "<|bicodec_semantic_0|>",
+        "<|bicodec_global_0|>",
+        "<|c1_0|>",
+        "<|c2_0|>",
+    }
+)
+
+
+def classify_gguf_vocab_audio_type(tokens: set, snac_probe_is_codes: bool) -> Optional[str]:
+    if snac_probe_is_codes:
+        return "snac"
+    if "<|AUDIO|>" in tokens and "<|audio_eos|>" in tokens:
+        return "csm"
+    if "<|startoftranscript|>" in tokens:
+        return "whisper"
+    # Match the serving detector: audio-input markers take precedence over codecs.
+    if "<audio_soft_token>" in tokens or "<|audio|>" in tokens:
+        return "audio_vlm"
+    if "<|bicodec_semantic_0|>" in tokens and "<|bicodec_global_0|>" in tokens:
+        return "bicodec"
+    if "<|c1_0|>" in tokens and "<|c2_0|>" in tokens:
+        return "dac"
+    return None
+
+
 def is_audio_input_type(audio_type: Optional[str]) -> bool:
     """True if an audio_type accepts audio input: whisper (ASR), audio_vlm (Gemma3n)."""
     return audio_type in ("whisper", "audio_vlm")
@@ -100,6 +153,11 @@ def is_tts_audio_type(audio_type: Optional[str]) -> bool:
     """True for a speech-emitting codec. audio_vlm is absent on purpose: Gemma 3n takes
     audio in and answers in text."""
     return audio_type in TTS_AUDIO_TYPES
+
+
+def is_output_audio_type(audio_type: Optional[str]) -> bool:
+    """True for a model that emits audio instead of a text chat response."""
+    return audio_type in OUTPUT_AUDIO_TYPES
 
 
 def detect_local_tts_audio_type(directory) -> Optional[str]:

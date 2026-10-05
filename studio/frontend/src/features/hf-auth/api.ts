@@ -2,8 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { authFetch } from "@/features/auth";
-// This header helper is API-layer-only and is not part of the feature's
-// React-facing public barrel.
+// This header helper is API-layer-only and is not part of the feature's React-facing public barrel.
 // eslint-disable-next-line no-restricted-imports
 import { hubTokenHeader } from "@/features/hub/lib/hub-token-header";
 
@@ -37,8 +36,11 @@ export async function validateHfToken(
     status?: HfTokenValidationStatus;
     retry_after_seconds?: number | null;
   };
+  const status = body.status ?? "unavailable";
+  // A "valid" here may be the backend's cached verdict from before the token was revoked,
+  // so it never clears a refusal a real read saw; a read the token answers again does.
   return {
-    status: body.status ?? "unavailable",
+    status,
     retryAfterSeconds: body.retry_after_seconds ?? null,
   };
 }

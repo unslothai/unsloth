@@ -16,7 +16,11 @@ from hub.services.models.common import (
     _iter_gguf_paths,
     _local_path_can_chat,
 )
-from utils.gguf_archs import SPEECH_GGUF_ARCHS, is_speech_gguf_architecture
+from utils.gguf_archs import (
+    SPEECH_GGUF_ARCHS,
+    is_audio_cpp_gguf_architecture,
+    is_speech_gguf_architecture,
+)
 from utils.paths.path_utils import file_contents_available_locally
 
 
@@ -34,20 +38,43 @@ _VIDEO_GEN_TASK = "text-to-video"
 # and the media preflight all have to agree.
 _SPEECH_GGUF_ARCHS = SPEECH_GGUF_ARCHS
 _SPEECH_TASK = "text-to-speech"
+# An audio.cpp GGUF of a kind Studio has no page for (separation, diarization, ...): not chat either.
+_AUDIO_CPP_UNSUPPORTED_TASK = "audio-to-audio"
 _UNSUPPORTED_DIFFUSION_TASK = "image-diffusion-unsupported"
 _H3_DENOISER_GGUF_PREFIXES = ("minimax_h3_fl2va", "minimax_h3_ref2va")
 _LOADABLE_MEDIA_GGUF_TASKS = frozenset({"text-to-image", _VIDEO_GEN_TASK})
 _MAX_TASK_CLASSIFY_GGUFS = 64
 _TASK_CLASSIFY_WALK_SECONDS = 0.75
 _TASK_CLASSIFY_READ_SECONDS = 1.5
+# ":" separates an Ollama size tag ("qwen3-asr:0.6b"), where a filename would use "-".
 _QWEN3_ASR_HINT = re.compile(
-    r"(?<![a-z0-9])qwen3[-_. ]*asr[-_. ]*(?:0[._]6|1[._]7)b(?![a-z0-9])",
+    r"(?<![a-z0-9])qwen3[-_. ]*asr[-_. :]*(?:0[._]6|1[._]7)b(?![a-z0-9])",
     re.IGNORECASE,
 )
 _ORPHEUS_GGUF_HINT = re.compile(
-    r"(?<![a-z0-9])orpheus[-_. ]*3b(?![a-z0-9])",
+    r"(?<![a-z0-9])orpheus[-_. :]*3b(?![a-z0-9])",
     re.IGNORECASE,
 )
+
+
+class _LocalProbeModel:
+    def __init__(self, model, path: str):
+        self._model = model
+        self.path = path
+
+    def __getattr__(self, name):
+        return getattr(self._model, name)
+
+
+def _local_probe_model(model):
+    if getattr(model, "source", None) != "hf_cache" or _hf_cache_snapshot_repo_id(model.path):
+        return model
+    try:
+        from hub.utils.inventory_scan import resolve_hf_cache_realpath
+        path = resolve_hf_cache_realpath(Path(model.path))
+    except Exception:
+        path = None
+    return _LocalProbeModel(model, path) if path and path != model.path else model
 
 
 def _is_h3_bundle_gguf_hint(hint: Optional[str]) -> bool:
@@ -64,11 +91,9 @@ def _is_h3_bundle_gguf_hint(hint: Optional[str]) -> bool:
 
 
 def _gguf_architecture(path: str) -> Optional[str]:
-    # Every read inventory classification makes goes through here, so this is where "never open
-    # a cloud placeholder" holds: opening one recalls its whole payload. The task probes below
-    # ask the same question again because an unhydrated file needs a different ROUTE, not just a
-    # skipped read; the audio-type probe has no route to pick and relies on this alone. Load-time
-    # inspection calls read_gguf_architecture directly and still hydrates, on purpose.
+    # Every read inventory classification makes goes through here, so this is where "never open a
+    # cloud placeholder" holds: opening one recalls its whole payload. Load-time inspection calls
+    # read_gguf_architecture directly and still hydrates, on purpose.
     if not file_contents_available_locally(path):
         return None
     from utils.models.gguf_metadata import read_gguf_architecture
@@ -145,20 +170,99 @@ def _unhydrated_gguf_task(name_hints: tuple[Optional[str], ...]) -> Optional[str
     """
     if any(_is_h3_bundle_gguf_hint(hint) for hint in name_hints):
         return _VIDEO_GEN_TASK
-    # Leaves only. A filesystem row hands over its whole path, and family detection matches a
-    # keyword in ANY segment of it, so a chat GGUF under .../FLUX.1-dev-GGUF/extra/ read as
-    # text-to-image. With an architecture that mismatch only picks the wrong family; here the
-    # name is the entire case, so an ancestor directory -- the user's shelf, not this model --
-    # must not decide it.
-    return _name_hint_media_task(tuple(_hint_leaf(hint) for hint in name_hints if hint), None)
+    from core.inference.video_families import detect_video_family
+
+    # Leaves only: family detection matches a keyword in ANY path segment, so a chat GGUF under
+    # .../FLUX.1-dev-GGUF/extra/ read as text-to-image.
+    leaves = tuple(_hint_leaf(hint) for hint in name_hints if hint)
+    # H3 denoisers matched by prefix above; any other H3 name (qwen3vl_32b_minimax_h3-*) is the conditioner.
+    if any(getattr(detect_video_family(leaf), "name", None) == "minimax-h3" for leaf in leaves):
+        return None
+    return _name_hint_media_task(leaves, None)
+
+
+def _audio_cpp_classification(
+    path: Optional[str | Path], name_hints: tuple[Optional[str], ...]
+) -> tuple[str, Optional[str]]:
+    """``(task, audio_type)`` of an audio.cpp GGUF: its family from the header when a path is given,
+    else from the names, mapped to the page that runs it."""
+    try:
+        from core.inference import audio_cpp_models as acm
+    except Exception:
+        return _SPEECH_TASK, None
+    header = acm.read_local_header(path) if path is not None else None
+    names = tuple(str(hint) for hint in name_hints if hint)
+    family = (header.family if header is not None else None) or acm.family_from_names(names)
+    if not family:
+        return _AUDIO_CPP_UNSUPPORTED_TASK, None
+    policy = acm.family_policy(family, header.spec if header is not None else None, names)
+    task = acm.HUB_TASKS.get(policy.task)
+    if task is None or policy.unsupported:
+        return _AUDIO_CPP_UNSUPPORTED_TASK, None
+    audio_type = {
+        "tts": acm.AUDIO_CPP_TTS_AUDIO_TYPE,
+        "music": acm.AUDIO_CPP_MUSIC_AUDIO_TYPE,
+        "sep": acm.AUDIO_CPP_SEP_AUDIO_TYPE,
+    }.get(policy.task)
+    return task, audio_type
+
+
+def _audio_cpp_workflows(
+    path: Optional[str | Path], name_hints: tuple[Optional[str], ...]
+) -> Optional[list[str]]:
+    """The Audio page workflows an audio.cpp GGUF serves (a clone-only family lists ``clone``
+    alone), from the same family policy the loader uses; None when it is not a runnable one."""
+    try:
+        from core.inference import audio_cpp_models as acm
+    except Exception:
+        return None
+    header = acm.read_local_header(path) if path is not None else None
+    names = tuple(str(hint) for hint in name_hints if hint)
+    family = (header.family if header is not None else None) or acm.family_from_names(names)
+    if not family:
+        return None
+    policy = acm.family_policy(family, header.spec if header is not None else None, names)
+    if policy.unsupported or not policy.task:
+        return None
+    return list(policy.workflows) or None
+
+
+def _gguf_path_audio_workflows(
+    path: str | Path, id_hints: tuple[Optional[str], ...] = ()
+) -> Optional[list[str]]:
+    """The union of ``_audio_cpp_workflows`` over the audio.cpp GGUFs at ``path`` (a file or a
+    folder): the umbrella repo is one row holding every downloaded family."""
+    from core.inference.audio_workflows import AUDIO_WORKFLOW_IDS
+
+    model_path = Path(path)
+    found: set[str] = set()
+    try:
+        paths = [model_path] if model_path.is_file() else _iter_gguf_paths(model_path)
+        for gguf_path in paths:
+            if is_audio_cpp_gguf_architecture(_gguf_architecture(str(gguf_path))):
+                found.update(_audio_cpp_workflows(gguf_path, id_hints + (gguf_path.name,)) or ())
+    except Exception:
+        return None
+    return [w for w in AUDIO_WORKFLOW_IDS if w in found] or None
+
+
+def _gguf_file_task(path: str | Path, name_hints: tuple[Optional[str], ...]) -> Optional[str]:
+    """``_arch_to_task`` for a file on disk, which can also read an audio.cpp family."""
+    arch = _gguf_architecture(str(path))
+    if is_audio_cpp_gguf_architecture(arch):
+        return _audio_cpp_classification(path, name_hints)[0]
+    return _arch_to_task(arch, name_hints = name_hints)
 
 
 def _arch_to_task(arch: Optional[str], name_hints: tuple[Optional[str], ...] = ()) -> Optional[str]:
     if any(_is_h3_bundle_gguf_hint(hint) for hint in name_hints):
         return _VIDEO_GEN_TASK
     if arch is None:
-        return None
+        # Qwen-Image-2.1 GGUFs have kv_count 0, so the name is the only evidence, as for a cloud placeholder.
+        return _unhydrated_gguf_task(name_hints)
     normalized = arch.lower()
+    if is_audio_cpp_gguf_architecture(normalized):
+        return _audio_cpp_classification(None, name_hints)[0]
     if normalized == "qwen3" and any(
         _QWEN3_ASR_HINT.search(str(hint)) for hint in name_hints if hint
     ):
@@ -218,6 +322,8 @@ def _arch_to_audio_type(
     if arch is None:
         return None
     normalized = arch.strip().lower()
+    if is_audio_cpp_gguf_architecture(normalized):
+        return _audio_cpp_classification(None, name_hints)[1]
     if normalized == "llama" and any(
         _ORPHEUS_GGUF_HINT.search(str(hint)) for hint in name_hints if hint
     ):
@@ -254,8 +360,8 @@ def _gguf_folder_task(
     fallback: Optional[str] = None
     try:
         scored: list[tuple[tuple[str, str], Path]] = []
-        # Recorded as the tail is dropped, never inferred from `scored` afterwards: trimming cuts
-        # back to the cap, so an overflowing folder is indistinguishable from one that fit.
+        # Recorded as the tail is dropped, never inferred from scored afterwards: trimming cuts back to the
+        # cap, so an overflowing folder would be indistinguishable from one that fit.
         overflowed = False
         for path in _iter_gguf_paths(root, deadline):
             name = path.name
@@ -268,8 +374,7 @@ def _gguf_folder_task(
                 overflowed = True
         scored.sort(key = lambda item: item[0])
         paths = [path for _, path in scored[:_MAX_TASK_CLASSIFY_GGUFS]]
-        # Whether every candidate made it into `paths`: the walk gives up at its own deadline and
-        # the cap drops the tail, so either can leave a sibling unseen.
+        # The walk gives up at its own deadline and the cap drops the tail, so either can leave a sibling unseen.
         complete = (
             not overflowed
             and len(scored) <= _MAX_TASK_CLASSIFY_GGUFS
@@ -287,23 +392,23 @@ def _gguf_folder_task(
         hints = id_hints + (path.name,)
         try:
             if file_contents_available_locally(path):
-                task = _arch_to_task(_gguf_architecture(str(path)), name_hints = hints)
+                task = _gguf_file_task(path, hints)
             else:
-                # Its header stays unread, so a name that says nothing leaves the candidate
-                # unclassified rather than voting text-generation for the whole folder.
+                # Its header stays unread, so a name that says nothing leaves the candidate unclassified rather than
+                # voting text-generation for the whole folder.
                 task = _unhydrated_gguf_task(hints)
         except Exception:
             # Unread, so unranked: this file might have been the runnable sibling.
             complete = False
             continue
         if task is None:
-            # A truncated header gives no architecture, and _arch_to_task answers None.
+            # No architecture and a name that says nothing: unclassified.
             complete = False
             continue
         if task in _LOADABLE_MEDIA_GGUF_TASKS:
             return task
-        # Speech is last resort: nothing here runs a llama-csm GGUF, so answering speech while a
-        # sibling is loadable hides that sibling. A speech-only folder still tags speech.
+        # Speech is last resort: nothing here runs a llama-csm GGUF, so answering speech while a sibling is
+        # loadable hides that sibling.
         if task == _SPEECH_TASK:
             if speech is None:
                 speech = task
@@ -328,16 +433,15 @@ def _gguf_path_audio_type(
 ) -> Optional[str]:
     model_path = Path(path)
     try:
-        paths = (
-            [model_path]
-            if model_path.suffix.lower() == ".gguf" and model_path.is_file()
-            else _iter_gguf_paths(model_path)
-        )
+        # No extension check: an Ollama model is a blob named by its digest.
+        paths = [model_path] if model_path.is_file() else _iter_gguf_paths(model_path)
         for gguf_path in paths:
-            audio_type = _arch_to_audio_type(
-                _gguf_architecture(str(gguf_path)),
-                name_hints = id_hints + (gguf_path.name,),
-            )
+            hints = id_hints + (gguf_path.name,)
+            arch = _gguf_architecture(str(gguf_path))
+            if is_audio_cpp_gguf_architecture(arch):
+                audio_type = _audio_cpp_classification(gguf_path, hints)[1]
+            else:
+                audio_type = _arch_to_audio_type(arch, name_hints = hints)
             if audio_type is not None:
                 return audio_type
     except Exception:
@@ -356,14 +460,11 @@ def _repo_gguf_audio_type(repo_info, selected: Optional[Path] = None) -> Optiona
 def _gguf_path_task(path: str | Path, id_hints: tuple[Optional[str], ...] = ()) -> Optional[str]:
     model_path = Path(path)
     try:
-        if model_path.suffix.lower() == ".gguf" and model_path.is_file():
+        if model_path.is_file():
             hints = id_hints + (model_path.name,)
             if not file_contents_available_locally(model_path):
                 return _unhydrated_gguf_task(hints)
-            return _arch_to_task(
-                _gguf_architecture(str(model_path)),
-                name_hints = hints,
-            )
+            return _gguf_file_task(model_path, hints)
         return _gguf_folder_task(model_path, id_hints)
     except Exception:
         return None
@@ -398,14 +499,22 @@ def _local_family_needles(model) -> tuple[str, ...]:
 
 
 def _local_model_can_chat(model) -> Optional[bool]:
+    model = _local_probe_model(model)
     return _local_path_can_chat(model.path, getattr(model, "base_model", None))
 
 
 def _local_model_task(model) -> Optional[str]:
+    model = _local_probe_model(model)
     path = model.path
     id_hints = (model.model_id, model.display_name, model.id)
     if model.model_format == "gguf" or Path(path).suffix.lower() == ".gguf":
         return _gguf_path_task(path, id_hints)
+    try:
+        from core.inference.native_audio import native_audio_type_from_local_path
+        if native_audio_type_from_local_path(path):
+            return "text-to-speech"
+    except Exception:
+        pass
     if not _local_is_diffusers(model):
         return None
     try:
@@ -438,9 +547,17 @@ def _local_model_task(model) -> Optional[str]:
 
 
 def _local_model_audio_type(model) -> Optional[str]:
+    model = _local_probe_model(model)
     path = model.path
     if model.model_format == "gguf" or Path(path).suffix.lower() == ".gguf":
         return _gguf_path_audio_type(path, (model.model_id, model.display_name, model.id))
+    try:
+        from core.inference.native_audio import native_audio_type_from_local_path
+        native_audio_type = native_audio_type_from_local_path(path)
+        if native_audio_type is not None:
+            return native_audio_type
+    except Exception:
+        pass
     try:
         from utils.audio_tokens import detect_local_tts_audio_type
         return detect_local_tts_audio_type(path)
@@ -448,18 +565,38 @@ def _local_model_audio_type(model) -> Optional[str]:
         return None
 
 
-def _local_model_classification(model) -> tuple[Optional[str], Optional[str]]:
-    """Return picker task and decoder provenance from one local-row probe."""
-    task = _local_model_task(model)
-    audio_type = _local_model_audio_type(model) if task is None or task == _SPEECH_TASK else None
+def _local_model_classification_for_task(
+    model, task: Optional[str]
+) -> tuple[Optional[str], Optional[str]]:
+    """Add decoder provenance to an already classified local-row task."""
+    probe = task is None or task in (_SPEECH_TASK, "audio-to-audio")
+    audio_type = _local_model_audio_type(model) if probe else None
+    # As for cached rows: only a separation GGUF is an audio-to-audio row Studio has a page for.
+    if task == "audio-to-audio" and audio_type != "audiocpp_sep":
+        audio_type = None
     if task is None and audio_type is not None:
-        from utils.audio_tokens import is_tts_audio_type
-        if is_tts_audio_type(audio_type):
+        from utils.audio_tokens import is_output_audio_type
+        if is_output_audio_type(audio_type):
             task = _SPEECH_TASK
     return task, audio_type
 
 
+def local_audio_workflows(model, audio_type: Optional[str]) -> Optional[list[str]]:
+    """The audio.cpp family's own workflows for a local speech row (a clone-only one is not
+    Speak); None keeps the task-derived default."""
+    if audio_type != "audiocpp_tts":
+        return None
+    model = _local_probe_model(model)
+    return _gguf_path_audio_workflows(model.path, (model.model_id, model.display_name, model.id))
+
+
+def _local_model_classification(model) -> tuple[Optional[str], Optional[str]]:
+    """Return picker task and decoder provenance from one local-row probe."""
+    return _local_model_classification_for_task(model, _local_model_task(model))
+
+
 def _local_is_diffusers(model) -> bool:
+    model = _local_probe_model(model)
     try:
         path = Path(model.path)
         if path.is_dir() and _is_diffusers_pipeline_dir(path):
@@ -498,10 +635,9 @@ def _repo_is_diffusers(repo_info, selected: Optional[Path] = None) -> bool:
             return True
     except Exception:
         pass
-    # Video too, as _local_is_diffusers already asks. _cached_repo_task returns None for an
-    # unbuildable video repo, so a single-file video checkpoint with no pipeline index carried
-    # no task and no diffusers flag, and an inconclusive config leaves can_chat set: every gate
-    # the chat picker has passes and the video weights reach the text loader.
+    # _cached_repo_task returns None for an unbuildable video repo, so a single-file video checkpoint
+    # with no pipeline index carried no task and no diffusers flag, and an inconclusive config leaves
+    # can_chat set: the video weights reach the text loader.
     try:
         from core.inference.video_families import detect_video_family
         return detect_video_family(repo_id) is not None

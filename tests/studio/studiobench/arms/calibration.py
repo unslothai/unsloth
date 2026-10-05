@@ -41,13 +41,13 @@ from ..scoring.schema import Measure
 from .manifest import Arm, ArmOutcome, ArmStatus, Invariance, PotencyCounter
 
 #: The spike sizes every batch runs. 0.1 ms is below any plausible per-update mechanism and is
-#: expected to be INVISIBLE; it is included precisely so the detection floor has something to sit
-#: on. 2.0 ms is comfortably above, and must be seen or the instrument is broken.
+#: expected to be INVISIBLE, so the detection floor has something to sit on; 2.0 ms is comfortably
+#: above and must be seen or the instrument is broken.
 SPIKE_SIZES_MS: tuple[float, ...] = (0.1, 0.5, 2.0)
 
-#: A spike is considered recovered when the observed delta is this close to the burned cost.
-#: Wide on purpose: the point is "the instrument sees roughly the right amount", not calibration
-#: to three digits, and a tight band would fail on a machine that is merely noisy.
+#: A spike is considered recovered when the observed delta is this close to the burned cost. Wide on
+#: purpose: the point is "roughly the right amount", not calibration to three digits, and a tight
+#: band would fail on a merely noisy machine.
 RECOVERY_MIN = 0.5
 RECOVERY_MAX = 2.0
 
