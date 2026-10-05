@@ -822,11 +822,9 @@ def test_cap_tool_text_cuts_a_single_line_mid_line_when_no_break_is_near():
     assert body == big[:MAX_TOOL_TEXT_CHARS]
 
 
-def test_cap_tool_text_is_idempotent():
-    big = "\n".join(f"line-{i}" for i in range(250_000))
-    assert len(big) > MAX_TOOL_TEXT_CHARS
-    once = cap_tool_text(big)
-    assert cap_tool_text(once) is once
+def test_text_that_merely_quotes_the_notice_is_still_capped():
+    big = "x" * (MAX_TOOL_TEXT_CHARS + 50_000) + _NOTICE
+    assert cap_tool_text(big) == "x" * MAX_TOOL_TEXT_CHARS + _NOTICE
 
 
 def test_an_oversized_result_is_capped_for_the_card_and_the_model_alike():
@@ -893,7 +891,6 @@ def test_an_oversized_result_is_spilled_and_the_model_is_told_how_to_search_it(_
     assert f"grep -n 'pattern' {path}" in notice
     assert f"sed -n '1,200p' {path}" in notice
     assert "open(" not in notice
-    assert cap_tool_text(content) is content
 
 
 def test_the_hint_names_only_the_reader_the_model_has(_sandbox):
@@ -958,7 +955,6 @@ def test_the_hard_cap_is_tunable(monkeypatch):
         " the full output is not retained in model context.)"
     )
     assert "truncated to 1,000 chars" in content
-    assert cap_tool_text(content) is content
 
 
 def test_the_spill_masks_studio_credentials_like_the_model_copy(_sandbox):

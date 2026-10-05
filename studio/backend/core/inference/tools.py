@@ -20482,10 +20482,6 @@ def _tool_text_notice_head() -> str:
     return f"\n\n... (tool result truncated to {MAX_TOOL_TEXT_CHARS:,} chars for the model;"
 
 
-def _tool_text_is_capped(text: str) -> bool:
-    return text.rfind(_tool_text_notice_head(), max(0, len(text) - 2_000)) != -1
-
-
 def _tool_text_search_hint(path: str, readers: "frozenset[str]") -> str:
     ways = []
     if "terminal" in readers and _posix_tools_available():
@@ -20509,7 +20505,7 @@ def cap_tool_text(
     When the model has a tool that can read the chat's sandbox, the full text is spilled there and
     the notice says how to search it.
     """
-    if len(text) <= MAX_TOOL_TEXT_CHARS or _tool_text_is_capped(text):
+    if len(text) <= MAX_TOOL_TEXT_CHARS:
         return text
     head = _head_whole_lines(text, MAX_TOOL_TEXT_CHARS)[0]
     readers = readers & _TOOL_TEXT_READERS
