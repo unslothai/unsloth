@@ -26,10 +26,7 @@ const {
   createChatModelHistoryReader,
   resolveChatModelSwitchTarget,
 } = await import("../src/features/chat/components/chat-model-notice-switch.ts");
-const { compareModelDisplayName } = await import(
-  "../src/features/chat/lib/external-model-label.ts"
-);
-const { modelDisplayName, publicModelId } = await import(
+const { modelDisplayName } = await import(
   "../src/features/hub/lib/model-identity.ts"
 );
 const { chatLocalModelOptions } = await import(
@@ -193,100 +190,81 @@ test("only models that can actually be selected are offered", () => {
   }
 });
 
-test("a snapshot-path chat is selectable through its repo row", () => {
-  const snapshotPath =
-    "/home/u/.cache/huggingface/hub/models--unsloth--Repo-GGUF/snapshots/2f1c9ab";
-  const repoId = "unsloth/Repo-GGUF";
-  assert.equal(chatModelSelectableId(snapshotPath, new Set([repoId])), repoId);
-  assert.equal(
-    chatModelSelectableId(snapshotPath, new Set([repoId])) != null,
-    true,
-  );
-  assert.equal(
-    chatModelSelectableId(snapshotPath, new Set(["unsloth/Other-GGUF"])) != null,
-    false,
-  );
-  assert.equal(chatModelSelectableId(repoId, new Set([repoId])) != null, true);
-  assert.equal(
-    chatModelSelectableId("/srv/models/a/Repo-Q4_K_M.gguf", new Set(["Repo-Q4_K_M"])) != null,
-    false,
-  );
-});
+const HUB = "/home/u/.cache/huggingface/hub";
+const REPO_ID = "unsloth/Repo-GGUF";
+const SNAPSHOT_A = `${HUB}/models--unsloth--Repo-GGUF/snapshots/aaa1111`;
+const SNAPSHOT_B = `${HUB}/models--unsloth--Repo-GGUF/snapshots/bbb2222`;
 
-test("Switch Back loads the live picker row when the saved snapshot is gone", () => {
-  const snapshotA =
-    "/home/u/.cache/huggingface/hub/models--unsloth--Repo-GGUF/snapshots/aaa1111";
-  const snapshotB =
-    "/home/u/.cache/huggingface/hub/models--unsloth--Repo-GGUF/snapshots/bbb2222";
-  const repoId = "unsloth/Repo-GGUF";
-  assert.equal(chatModelSelectableId(snapshotA, new Set([snapshotA])), snapshotA);
-  assert.equal(chatModelSelectableId(snapshotA, new Set([snapshotB])), snapshotB);
-  assert.equal(chatModelSelectableId(snapshotA, new Set([repoId])), repoId);
+test("Switch Back resolves a snapshot-path chat to the live picker row", () => {
   assert.equal(
-    chatModelIsResident({ modelId: snapshotA, ggufVariant: "Q4_K_M" }, snapshotB, "Q4_K_M"),
-    true,
+    chatModelSelectableId(SNAPSHOT_A, new Set([SNAPSHOT_A, REPO_ID])),
+    SNAPSHOT_A,
+  );
+  assert.equal(chatModelSelectableId(SNAPSHOT_A, new Set([REPO_ID])), REPO_ID);
+  assert.equal(
+    chatModelSelectableId(SNAPSHOT_A, new Set([SNAPSHOT_B])),
+    SNAPSHOT_B,
+  );
+  assert.equal(
+    chatModelSelectableId(SNAPSHOT_A, new Set(["unsloth/Other-GGUF"])),
+    null,
   );
   assert.equal(
     chatModelSelectableId(
-      snapshotA,
-      new Set([
-        "/home/u/.cache/huggingface/hub/models--unsloth--Other-GGUF/snapshots/ccc3333",
-      ]),
+      SNAPSHOT_A,
+      new Set([`${HUB}/models--unsloth--Other-GGUF/snapshots/ccc3333`]),
+    ),
+    null,
+  );
+  // a plain local file collapses to a bare stem, which is no repo
+  assert.equal(
+    chatModelSelectableId(
+      "/srv/models/a/Repo-Q4_K_M.gguf",
+      new Set(["Repo-Q4_K_M"]),
     ),
     null,
   );
 });
 
-test("a case-distinct external id is not already resident", () => {
-  const upper = `external::vendor::${encodeURIComponent("Vendor/Qwen3.8-27B")}`;
-  const lower = `external::vendor::${encodeURIComponent("vendor/qwen3.8-27b")}`;
-  assert.equal(chatModelIsResident({ modelId: upper }, upper, null), true);
-  assert.equal(chatModelIsResident({ modelId: upper }, lower, null), false);
-  assert.equal(chatModelSelectableId(upper, new Set([lower])) != null, false);
-  assert.equal(chatModelSelectableId(upper, new Set([upper])) != null, true);
-});
-
-test("a case-distinct ollama-manifest id is not already resident", () => {
-  const upper = `ollama-manifest:${encodeURIComponent(
-    "/home/u/.ollama/manifests/Llama",
-  )}`;
-  const lower = `ollama-manifest:${encodeURIComponent(
-    "/home/u/.ollama/manifests/llama",
-  )}`;
-  assert.equal(chatModelIsResident({ modelId: upper }, upper, null), true);
-  assert.equal(chatModelIsResident({ modelId: upper }, lower, null), false);
-  assert.equal(chatModelSelectableId(upper, new Set([lower])) != null, false);
-  assert.equal(chatModelSelectableId(upper, new Set([upper])) != null, true);
-});
-
 test("a snapshot-path chat is already on its repo-id checkpoint", () => {
-  const snapshotPath =
-    "/home/u/.cache/huggingface/hub/models--unsloth--Repo-GGUF/snapshots/2f1c9ab";
-  const repoId = "unsloth/Repo-GGUF";
-  const created = { modelId: snapshotPath, ggufVariant: "Q4_K_M" };
-  assert.equal(chatModelIsResident(created, repoId, "Q4_K_M"), true);
-  assert.equal(chatModelIsResident(created, snapshotPath, "Q4_K_M"), true);
+  const created = { modelId: SNAPSHOT_A, ggufVariant: "Q4_K_M" };
+  assert.equal(chatModelIsResident(created, REPO_ID, "Q4_K_M"), true);
+  assert.equal(chatModelIsResident(created, SNAPSHOT_B, "Q4_K_M"), true);
   assert.equal(
     chatModelIsResident(
-      { modelId: repoId, ggufVariant: "Q4_K_M" },
-      snapshotPath,
+      { modelId: REPO_ID, ggufVariant: "Q4_K_M" },
+      SNAPSHOT_A,
       "Q4_K_M",
     ),
     true,
   );
-  assert.equal(chatModelIsResident(created, repoId, "Q8_0"), false);
+  assert.equal(chatModelIsResident(created, REPO_ID, "Q8_0"), false);
   assert.equal(
     chatModelIsResident(created, "unsloth/Other-GGUF", "Q4_K_M"),
     false,
   );
 });
 
+test("external and ollama-manifest ids never alias across case", () => {
+  for (const [upper, lower] of [
+    [
+      `external::vendor::${encodeURIComponent("Vendor/Qwen3.8-27B")}`,
+      `external::vendor::${encodeURIComponent("vendor/qwen3.8-27b")}`,
+    ],
+    [
+      `ollama-manifest:${encodeURIComponent("/home/u/.ollama/manifests/Llama")}`,
+      `ollama-manifest:${encodeURIComponent("/home/u/.ollama/manifests/llama")}`,
+    ],
+  ]) {
+    assert.equal(chatModelIsResident({ modelId: upper }, upper, null), true);
+    assert.equal(chatModelIsResident({ modelId: upper }, lower, null), false);
+    assert.equal(chatModelSelectableId(upper, new Set([lower])), null);
+    assert.equal(chatModelSelectableId(upper, new Set([upper])), upper);
+  }
+});
+
 test("a snapshot-path chat is labelled by its repo name, not the revision sha", () => {
-  const snapshotPath =
-    "/home/u/.cache/huggingface/hub/models--unsloth--Repo-GGUF/snapshots/2f1c9ab";
-  assert.equal(compareModelDisplayName(snapshotPath), "2f1c9ab");
-  assert.equal(publicModelId("org/model.gguf"), "model");
-  assert.equal(modelDisplayName(snapshotPath), "Repo-GGUF");
+  assert.equal(modelDisplayName(SNAPSHOT_A), "Repo-GGUF");
   assert.equal(modelDisplayName("org/model.gguf"), "model.gguf");
   const body = notice.slice(notice.indexOf("export function ChatModelNotice"));
   assert.match(body, /externalModelLabel\(createdModel\.modelId\)/);
@@ -313,7 +291,10 @@ test("the notice clears the chat header instead of rendering underneath it", () 
   assert.match(div, /\babsolute\b/);
   // Offset by the SAME header height the header, its fade and the drop overlay use,
   // so a change to either variable moves all four together.
-  assert.match(div, /top-\[calc\(var\(--studio-content-top-inset,0px\)\+var\(--studio-chat-header-height,48px\)\)\]/);
+  assert.match(
+    div,
+    /top-\[calc\(var\(--studio-content-top-inset,0px\)\+var\(--studio-chat-header-height,48px\)\)\]/,
+  );
   // Between the header fade (z-20) and the header itself (z-40): over the gradient,
   // under the model picker, whose menu must stay clickable.
   const z = /\bz-(\d+)\b/.exec(div);
@@ -324,7 +305,11 @@ test("the notice clears the chat header instead of rendering underneath it", () 
   );
   // An overlay over the scrolling conversation must be opaque, or messages read
   // through it. bg-muted/40 was fine only while the bar took its own row.
-  assert.doesNotMatch(div, /bg-muted\//, "a translucent overlay lets messages show through");
+  assert.doesNotMatch(
+    div,
+    /bg-muted\//,
+    "a translucent overlay lets messages show through",
+  );
 });
 
 test("the conversation reserves the space the notice overlay takes", () => {
@@ -441,8 +426,15 @@ test("a chat started as New Chat gets the notice once its row exists", () => {
   // ?new=<nonce> carries no thread in the URL and keeps none after the first send, so
   // the notice saw nothing until the chat was reopened. The store's id is only this
   // chat's after ThreadNewChatSwitch has blanked the previous one, hence the latch.
-  const gate = slice(page, "const newChatBlankedRef", "const newChatThreadId =");
-  assert.match(gate, /activeThreadId === null \|\| isAssistantLocalThreadId\(activeThreadId\)/);
+  const gate = slice(
+    page,
+    "const newChatBlankedRef",
+    "const newChatThreadId =",
+  );
+  assert.match(
+    gate,
+    /activeThreadId === null \|\| isAssistantLocalThreadId\(activeThreadId\)/,
+  );
   assert.match(gate, /newChatBlankedRef\.current = search\.new;/);
 
   const derived = slice(page, "const newChatThreadId =", "\n  const");
@@ -452,7 +444,10 @@ test("a chat started as New Chat gets the notice once its row exists", () => {
   assert.match(derived, /: null/);
 
   const notice = slice(page, "<ChatModelNotice", "/>");
-  assert.match(notice, /threadId=\{view\.threadId \?\? newChatThreadId \?\? undefined\}/);
+  assert.match(
+    notice,
+    /threadId=\{view\.threadId \?\? newChatThreadId \?\? undefined\}/,
+  );
 });
 
 test("a chat thread keeps the GGUF variant it started on", () => {
@@ -493,7 +488,10 @@ test("a queued empty-model send backfills its resolved GGUF variant", () => {
     "../src/features/chat/utils/queued-chat-run-settings.ts",
   );
   assert.match(queuedSettings, /"activeGgufVariant"/);
-  assert.match(thread, /modelGgufVariant: runSettingsAtQueueStart\.activeGgufVariant/);
+  assert.match(
+    thread,
+    /modelGgufVariant: runSettingsAtQueueStart\.activeGgufVariant/,
+  );
 });
 
 test("queued model backfill changes only a fresh empty thread row", () => {
@@ -505,7 +503,11 @@ test("queued model backfill changes only a fresh empty thread row", () => {
   assert.equal(shouldPersistResolvedQueuedModel(undefined), false);
   // The caller has already returned on a queued checkpoint four lines earlier.
   assert.match(
-    slice(adapter, "const persistResolvedQueuedModel", "if (queuedRunSettings)"),
+    slice(
+      adapter,
+      "const persistResolvedQueuedModel",
+      "if (queuedRunSettings)",
+    ),
     /queuedRunSettings\.params\.checkpoint \|\|/,
   );
 });
@@ -600,7 +602,11 @@ test("switching back to a hub GGUF loads it instead of staging a download", () =
     true,
   );
   // The selection mapping above and the predicate under test are the page's own.
-  const built = slice(page, "const selection = {", "await stageOrLoad(selection);");
+  const built = slice(
+    page,
+    "const selection = {",
+    "await stageOrLoad(selection);",
+  );
   for (const field of [
     "source: meta?.source",
     "isLora: meta?.isLora",
@@ -609,7 +615,10 @@ test("switching back to a hub GGUF loads it instead of staging a download", () =
   ]) {
     assert.ok(built.includes(field), `selection lost ${field}`);
   }
-  assert.match(built, /isDownloaded: meta\?\.isDownloaded \|\| isSameLoadedModel/);
+  assert.match(
+    built,
+    /isDownloaded: meta\?\.isDownloaded \|\| isSameLoadedModel/,
+  );
   assert.match(
     page,
     /const wantManagerStaging = wantsDownloadManagerStaging\(selection\);/,
@@ -725,7 +734,10 @@ test("a legacy GGUF directory does not infer a quant from config alone", () => {
       customContextLength: 32768,
     }),
   );
-  assert.equal(resolveChatModelSwitchTarget({ modelId }).ggufVariant, undefined);
+  assert.equal(
+    resolveChatModelSwitchTarget({ modelId }).ggufVariant,
+    undefined,
+  );
 });
 
 test("the switch back leaves the remembered config to stageOrLoad", () => {
@@ -751,8 +763,15 @@ test("the switch back leaves the remembered config to stageOrLoad", () => {
     slice(switchSource, "import type {", "export type ChatModelSwitchTarget"),
     /resolveInitialConfig/,
   );
-  const stage = slice(page, "const stageOrLoad = useCallback", "useRepoDownload(");
-  assert.match(stage, /selection\.config \?\? rememberedConfigFor\(selection\)/);
+  const stage = slice(
+    page,
+    "const stageOrLoad = useCallback",
+    "useRepoDownload(",
+  );
+  assert.match(
+    stage,
+    /selection\.config \?\? rememberedConfigFor\(selection\)/,
+  );
   const remembered = slice(
     page,
     "const rememberedConfigFor = useCallback",
