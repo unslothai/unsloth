@@ -290,6 +290,19 @@ def _clef_fine_tune(outputs, folder):
     return catalog.CLEF_FINE_TUNE_PREFIX + folder
 
 
+def _spoof_device(monkeypatch, kind):
+    # ROCm hosts report DeviceType.CUDA, like NVIDIA ones.
+    from utils.hardware import hardware
+    device = {
+        "cuda": hardware.DeviceType.CUDA,
+        "rocm": hardware.DeviceType.CUDA,
+        "mlx": hardware.DeviceType.MLX,
+        "xpu": hardware.DeviceType.XPU,
+        "cpu": hardware.DeviceType.CPU,
+    }[kind]
+    monkeypatch.setattr(hardware, "get_device", lambda: device)
+
+
 @pytest.fixture
 def clef(home, monkeypatch):
     from core.systemone import clef_runtime
@@ -311,6 +324,7 @@ def clef(home, monkeypatch):
             self.closed = True
 
     monkeypatch.setattr(clef_runtime, "ClefAgent", Agent)
+    _spoof_device(monkeypatch, "cuda")
     monkeypatch.setattr(laya_runtime, "_load_checkpoint", _REAL_LOAD)
     monkeypatch.setattr(laya_runtime, "_training_active", lambda: state.training)
     return state
@@ -347,3 +361,40 @@ def test_the_catalog_offers_the_stock_clef_models():
         checkpoint = catalog.CHECKPOINTS[name]
         assert (checkpoint.source, checkpoint.layout, checkpoint.subfolder) == (repo, "clef", None)
     assert all(c.layout == "laya" for n, c in catalog.CHECKPOINTS.items() if n.startswith("laya"))
+
+
+@pytest.mark.parametrize("kind", ["mlx", "xpu", "cpu"])
+def test_clef_refuses_a_machine_without_an_nvidia_or_amd_gpu(home, client, clef, monkeypatch, kind):
+    served = _clef_fine_tune(home, "clef_nogpu_1")
+    assert _put(client, enabled = True, model = served).status_code == 200
+    _spoof_device(monkeypatch, kind)
+
+    refused = _post(client)
+    assert refused.status_code == 400
+    assert refused.json()["detail"]["message"] == catalog.CLEF_NEEDS_GPU
+    assert clef.agents == []
+    models = {m["name"]: m for m in client.get("/api/settings/systemone").json()["models"]}
+    for name in (served, "clef", "clef-flash"):
+        assert models[name]["available"] is False
+        assert models[name]["unavailable_reason"] == catalog.CLEF_NEEDS_GPU
+    assert all(m["available"] for n, m in models.items() if n.startswith("laya"))
+
+
+@pytest.mark.parametrize("kind", ["cuda", "rocm"])
+def test_clef_serves_on_nvidia_and_amd_gpus(home, client, clef, monkeypatch, kind):
+    served = _clef_fine_tune(home, "clef_gpu_1")
+    assert _put(client, enabled = True, model = served).status_code == 200
+    _spoof_device(monkeypatch, kind)
+    assert _post(client).status_code == 200
+    models = client.get("/api/settings/systemone").json()["models"]
+    assert all(m["available"] and m["unavailable_reason"] is None for m in models)
+
+
+def test_a_failed_device_probe_does_not_refuse_clef(monkeypatch):
+    from utils.hardware import hardware
+
+    def broken():
+        raise RuntimeError("probe failed")
+
+    monkeypatch.setattr(hardware, "get_device", broken)
+    assert catalog.clef_unsupported_reason() is None

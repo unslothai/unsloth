@@ -75,9 +75,9 @@ function errorMessage(error: unknown): string | null {
 export function DecisionApiSection(): ReactElement | null {
   const t = useT();
   const [settings, setSettings] = useState<SystemOneSettings | null>(null);
-  const [connections, setConnections] = useState<
-    SystemOneConnection[] | null
-  >(null);
+  const [connections, setConnections] = useState<SystemOneConnection[] | null>(
+    null,
+  );
   const [planState, setPlanState] = useState<{
     model: string;
     plan: SystemOneDownloadPlan;
@@ -119,7 +119,10 @@ export function DecisionApiSection(): ReactElement | null {
   useEffect(() => {
     if (scrollTarget !== "api-keys-decision-api" || !settings) return;
     const frame = window.requestAnimationFrame(() => {
-      sectionRef.current?.scrollIntoView({ block: "start", behavior: "smooth" });
+      sectionRef.current?.scrollIntoView({
+        block: "start",
+        behavior: "smooth",
+      });
       useSettingsDialogStore
         .getState()
         .consumeScrollTarget("api-keys-decision-api");
@@ -500,7 +503,9 @@ export function DecisionApiSection(): ReactElement | null {
                   title={longLabel ? modelLabel(settings.model) : undefined}
                 >
                   <SelectValue className="min-w-0">
-                    <span className="truncate">{modelLabel(settings.model)}</span>
+                    <span className="truncate">
+                      {modelLabel(settings.model)}
+                    </span>
                   </SelectValue>
                 </SelectTrigger>
                 <SelectContent>
@@ -509,7 +514,12 @@ export function DecisionApiSection(): ReactElement | null {
                       {t("settings.apiKeys.decisionApi.thisMachine")}
                     </SelectLabel>
                     {settings.models.map((option) => (
-                      <SelectItem key={option.name} value={option.name}>
+                      <SelectItem
+                        key={option.name}
+                        value={option.name}
+                        disabled={!option.available}
+                        title={option.unavailableReason ?? undefined}
+                      >
                         <span className="flex items-center gap-2">
                           {modelLabel(option.name)}
                           {option.kind === "fine_tune" ? null : (

@@ -12,6 +12,8 @@ export type SystemOneModel = {
   downloadBytes: number;
   kind: "catalog" | "fine_tune";
   label: string | null;
+  available: boolean;
+  unavailableReason: string | null;
 };
 
 export type SystemOneSettings = {
@@ -81,6 +83,9 @@ type ApiSystemOneSettings = {
     download_bytes: number;
     kind?: "catalog" | "fine_tune";
     label?: string | null;
+    available?: boolean;
+    // biome-ignore lint/style/useNamingConvention: API schema
+    unavailable_reason?: string | null;
   }[];
   // biome-ignore lint/style/useNamingConvention: API schema
   loaded_model: string | null;
@@ -113,7 +118,8 @@ export function subscribeSystemOneSettings(
     listener((event as CustomEvent<SystemOneSettings>).detail);
   };
   window.addEventListener(SYSTEMONE_SETTINGS_EVENT, handleChange);
-  return () => window.removeEventListener(SYSTEMONE_SETTINGS_EVENT, handleChange);
+  return () =>
+    window.removeEventListener(SYSTEMONE_SETTINGS_EVENT, handleChange);
 }
 
 function publishSystemOneSettings(settings: SystemOneSettings) {
@@ -149,6 +155,8 @@ function fromApi(settings: ApiSystemOneSettings): SystemOneSettings {
       downloadBytes: m.download_bytes,
       kind: m.kind ?? "catalog",
       label: m.label ?? null,
+      available: m.available ?? true,
+      unavailableReason: m.unavailable_reason ?? null,
     })),
     loadedModel: settings.loaded_model,
     loadedDevice: settings.loaded_device,
