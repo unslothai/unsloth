@@ -114,7 +114,9 @@ def _diffusers_vae():
     diffusers = pytest.importorskip("diffusers")
     cls = getattr(diffusers, "AutoencoderKLQwenImage21", None)
     if cls is None:
-        pytest.skip("diffusers without AutoencoderKLQwenImage21")
+        pytest.skip(
+            reason = "needs diffusers >= 0.41 (AutoencoderKLQwenImage21); the 0.40.0 pin predates it"
+        )
     torch.manual_seed(0)
     return cls(
         base_dim = 8,
