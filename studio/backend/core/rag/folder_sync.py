@@ -698,10 +698,9 @@ def retire_and_delete_kb(kb_id: str) -> bool:
 def delete_retired_scope(scope: str) -> bool:
     """Purge an ownerless scope and retain its tombstone permanently.
 
-    Scope identifiers are treated as non-reusable lifecycle IDs. Keeping the small
-    tombstone closes late cross-database upload/link races without a distributed transaction.
-    File removal happens before database rows are discarded, so any failure remains
-    retryable from durable metadata.
+    The tombstone closes late cross-database upload/link races while the scope is ownerless; only a
+    same-id project recreate clears it (``unretire_scope``). File removal happens before database rows
+    are discarded, so any failure remains retryable from durable metadata.
     """
     conn = rag_db.get_connection()
     try:
@@ -845,7 +844,7 @@ def reconcile_retired_scopes(project_exists) -> dict[str, list[str]]:
 
 
 def unretire_scope(scope: str) -> bool:
-    """Drop the tombstone of a scope whose owner exists again, so it can be used."""
+    """Drop the tombstone of a scope whose owner exists again, purged or not, so it can be used."""
     with _scope_lock(scope):
         conn = _retirement_connection()
         try:
