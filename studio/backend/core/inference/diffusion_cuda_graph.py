@@ -20,6 +20,9 @@ import weakref
 from functools import update_wrapper
 from typing import Any, Optional
 
+from .diffusion_bg_compile import capture_suppressed as _bg_capture_suppressed
+from .diffusion_bg_compile import eager_forced as _bg_eager_forced
+
 CUDA_GRAPH_DISABLE_ENV = "UNSLOTH_DISABLE_CUDA_GRAPH"
 
 # Per module. Legitimate second keys exist, but each costs a pool-sized slice of VRAM.
@@ -433,8 +436,12 @@ class GraphedForward:
         return self.orig(*args, **kwargs)
 
     def __call__(self, *args, **kwargs):
+        if _bg_capture_suppressed():
+            # Background compile thread: never capture off the render thread.
+            return self.orig(*args, **kwargs)
         if (
             not self.enabled
+            or _bg_eager_forced()
             or self.bypassed
             or self.poisoned
             # Belt to the caller's per-chunk bypass: one step's cond and uncond share a key.
@@ -664,6 +671,13 @@ def graph_eligible(
     # A whole-compiled U-Net serves from ``_compiled_call_impl``: GraphedCompiledCall captures there.
     if not _denoiser_dits(pipe) and _denoiser_unet(pipe) is None:
         return False, "no denoiser transformer"
+
+    # Sage (pip or hub build) under a replayed graph renders noise (FLUX.1-schnell, A100); ungraphed is correct.
+    if any(
+        getattr(m, "_unsloth_attention_backend", None) in ("sage", "sage_hub")
+        for m in _denoiser_dits(pipe)
+    ):
+        return False, "SageAttention is not CUDA-graph safe"
 
     try:
         cuda = getattr(_torch(), "cuda", None)

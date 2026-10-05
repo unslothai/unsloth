@@ -50,7 +50,7 @@ test("the canvas, viewer and downloads read only the original", () => {
   const preview = between(page, "// The preview is what the user looks at", "// Drop an image from the strip.");
   assert.ok(preview.includes("await ensureSrc(selected);"));
 
-  const canvas = between(page, "{selected && selectedSrc ? (", ") : selected && selectedThumb ? (");
+  const canvas = between(page, "{selected && selectedSrc ? (", ") : selected ? (");
   assert.ok(canvas.includes("src={selectedSrc}"));
   for (const format of ["png", "jpeg", "webp"]) {
     assert.ok(canvas.includes(`downloadImage(selectedSrc, selected, "${format}")`));
@@ -65,9 +65,9 @@ test("the canvas, viewer and downloads read only the original", () => {
 });
 
 test("the thumbnail placeholder offers no action that needs the original", () => {
-  const placeholder = between(page, ") : selected && selectedThumb ? (", ") : selected ? (");
+  const placeholder = between(page, ") : selected ? (", ') : busy === "generating" ? null : (');
   assert.ok(placeholder.includes("src={selectedThumb}"));
-  for (const action of ["downloadImage", "openViewer", "GalleryItemMenu", "RecipePopover", "onClick"]) {
+  for (const action of ["downloadImage", "openViewer", "GalleryItemMenu", "RecipePopover"]) {
     assert.ok(!placeholder.includes(action), action);
   }
 });

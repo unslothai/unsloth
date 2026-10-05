@@ -19,9 +19,11 @@ export {
 } from "./settings-store";
 export { STORAGE_LABELS, refreshLibraryStorage, useLibraryStorage } from "./storage";
 export { formatSize } from "./format";
+export { KIND_ICONS, fileKind, isModelItem, modelLabelKey } from "./file-kind";
 export { parentFolder } from "./paths";
 export { LibraryStorageBar } from "./components/storage-bar";
 export {
+  type LibraryItem,
   type LibraryLocation,
   errorMessage,
   getLibraryLocations,

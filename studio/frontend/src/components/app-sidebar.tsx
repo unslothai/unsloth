@@ -78,12 +78,20 @@ import {
   useImageWorkflowStore,
 } from "@/features/images/stores/image-workflow-store";
 import { WORKFLOW_TABS, type WorkflowId } from "@/features/images/workflows";
+import { useAudioWorkspaceStore } from "@/features/audio/stores/audio-workspace-store";
+import {
+  AUDIO_WORKFLOWS,
+  type AudioWorkflowId,
+} from "@/features/audio/workflows";
 /* eslint-enable no-restricted-imports */
 import { cn } from "@/lib/utils";
+import { createNavigationNonce } from "@/lib/navigation-nonce";
 import { copyToClipboardFrom } from "@/lib/copy-to-clipboard";
 import { isTauri } from "@/lib/api-base";
 import { useWebUpdateCheck } from "@/hooks/use-web-update-check";
 import { useUiSpaceScale } from "@/hooks/use-ui-space-scale";
+import { useHoverFlyout } from "@/hooks/use-hover-flyout";
+import { NAV_FLYOUT_INTENT, NAV_TOOLTIP_INTENT } from "@/lib/hover-intent";
 import {
   Archive03Icon,
   Cancel01Icon,
@@ -101,7 +109,6 @@ import {
   Folder01Icon,
   Folder02Icon,
   FlimSlateIcon,
-  Globe02Icon,
   HelpCircleIcon,
   Image03Icon,
   InformationCircleIcon,
@@ -128,6 +135,7 @@ import {
   LeftToRightListBulletIcon,
   ArrowUpDownIcon,
   LayerIcon,
+  ApiIcon,
 } from "@hugeicons/core-free-icons";
 import {
   MessageCircleIcon,
@@ -136,12 +144,14 @@ import {
 import {
   Tooltip,
   TooltipContent,
+  TooltipProvider,
 } from "@/components/ui/tooltip";
 import { Tooltip as TooltipPrimitive } from "radix-ui";
-import { HugeiconsIcon } from "@hugeicons/react";
+import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react";
 import { ArrowRightIcon, ChevronDown, GitBranchIcon, Moon } from "lucide-react";
 import {
   Link,
+  type NavigateOptions,
   useNavigate,
   useRouter,
   useRouterState,
@@ -205,6 +215,12 @@ import {
   sectionKeyLanding,
   useSectionDrag,
 } from "@/features/chat";
+import {
+  imeOwnsInputKeydown,
+  inputImeHandlers,
+  newInputImeState,
+  resetInputIme,
+} from "@/features/chat/utils/composer-preferences";
 import { sandboxSessionIdFor } from "@/components/assistant-ui/sandbox-files";
 import { NewProjectDialog } from "@/features/chat/components/new-project-dialog";
 import {
@@ -224,6 +240,7 @@ import type {
 } from "@/features/settings";
 import { useEffectiveProfile, UserAvatar } from "@/features/profile";
 import { resolveNavRowState } from "@/components/nav-row-state";
+import { createNavigationCoalescer } from "@/components/sidebar-navigation";
 import { fetchDeviceType, usePlatformStore } from "@/config/env";
 import { videoNavHint } from "@/config/hardware-verdict";
 import {
@@ -254,6 +271,7 @@ import {
   useMemo,
   useRef,
   useState,
+  type ComponentProps,
   type ComponentType,
   type ReactNode,
 } from "react";
@@ -332,6 +350,12 @@ type NavRowDef = {
 };
 
 // An expanded project shows this many recent chats before "Show more".
+// Row kebab with centred dots: Hugeicons draws them half a unit low.
+const MoreVerticalCenteredIcon = MoreVerticalIcon.map(([tag, attrs]) => [
+  tag,
+  { ...attrs, transform: "translate(0 -0.5)" },
+]) as unknown as IconSvgElement;
+
 const PROJECT_CHAT_LIMIT = 4;
 // And the Projects section shows this many folders before its own "Show more".
 const SIDEBAR_PROJECT_LIMIT = 5;
@@ -558,13 +582,6 @@ function formatRelativeShort(iso: string): string {
   return `${d}d`;
 }
 
-function createNavigationNonce(): string {
-  if (typeof globalThis.crypto?.randomUUID === "function") {
-    return globalThis.crypto.randomUUID();
-  }
-  return `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
-}
-
 function preloadSilently(request: Promise<unknown>): void {
   void request.catch(() => undefined);
 }
@@ -695,14 +712,13 @@ const INVENTORY_SENSITIVE_REASONS = new Set([
   "detection_failed",
 ]);
 
-/** One workflow in the list under the Images row. */
 function WorkflowChoice({
   tab,
   active,
   enabled,
   onSelect,
 }: {
-  tab: (typeof WORKFLOW_TABS)[number];
+  tab: { icon: IconSvgElement; label: string };
   active: boolean;
   enabled: boolean;
   onSelect: () => void;
@@ -732,10 +748,21 @@ function WorkflowChoice({
   );
 }
 
-/** Expands the workflow list on rows that do not list it outright, i.e. off the Images page. */
-function ImagesNavDisclosure() {
-  const expanded = useImageWorkflowStore((s) => s.navExpanded);
-  const setExpanded = useImageWorkflowStore((s) => s.setNavExpanded);
+// Spelled out per media so Tailwind sees each group name.
+const IMAGES_DISCLOSURE_REVEAL =
+  "group-hover/images-item:opacity-100 group-hover/images-item:pointer-events-auto";
+const AUDIO_DISCLOSURE_REVEAL =
+  "group-hover/audio-item:opacity-100 group-hover/audio-item:pointer-events-auto";
+
+function MediaNavDisclosure({
+  expanded,
+  setExpanded,
+  revealClassName,
+}: {
+  expanded: boolean;
+  setExpanded: (expanded: boolean) => void;
+  revealClassName: string;
+}) {
   return (
     // Row action, so it gets the shared hover circle. Shown on row hover, kept while open.
     <button
@@ -747,7 +774,9 @@ function ImagesNavDisclosure() {
         setExpanded(!expanded);
       }}
       className={cn(
-        "sidebar-row-action group-hover/images-item:opacity-100 group-hover/images-item:pointer-events-auto focus-visible:opacity-100 focus-visible:pointer-events-auto",
+        "sidebar-row-action",
+        revealClassName,
+        "focus-visible:opacity-100 focus-visible:pointer-events-auto",
         expanded && "is-disclosure-open",
       )}
     >
@@ -760,6 +789,47 @@ function ImagesNavDisclosure() {
         />
       </span>
     </button>
+  );
+}
+
+function MediaWorkflowList<Id extends string>({
+  tabs,
+  current,
+  enabled,
+  listed,
+  onPick,
+}: {
+  tabs: ReadonlyArray<{ id: Id; icon: IconSvgElement; label: string }>;
+  current: Id | null;
+  enabled: (id: Id) => boolean;
+  listed: boolean;
+  onPick: (id: Id) => void;
+}) {
+  if (!listed) return null;
+  return (
+    <div className="mt-0.5 flex flex-col gap-px pl-5">
+      {tabs.map((tab) => (
+        <WorkflowChoice
+          key={tab.id}
+          tab={tab}
+          active={current === tab.id}
+          enabled={enabled(tab.id)}
+          onSelect={() => onPick(tab.id)}
+        />
+      ))}
+    </div>
+  );
+}
+
+function ImagesNavDisclosure() {
+  const expanded = useImageWorkflowStore((s) => s.navExpanded);
+  const setExpanded = useImageWorkflowStore((s) => s.setNavExpanded);
+  return (
+    <MediaNavDisclosure
+      expanded={expanded}
+      setExpanded={setExpanded}
+      revealClassName={IMAGES_DISCLOSURE_REVEAL}
+    />
   );
 }
 
@@ -780,24 +850,63 @@ function ImagesWorkflowList({
   const supported = useImageWorkflowStore((s) => s.supported);
   const pageMode = useImageWorkflowStore((s) => s.pageMode);
   const expanded = useImageWorkflowStore((s) => s.navExpanded);
-  if (collapsed) return null;
-  if (active ? pageMode === "train" : !expanded) return null;
   // Nothing here is current unless the page is actually showing a workflow.
   const current = active && pageMode === "create" ? workflow : null;
   return (
-    <div className="mt-0.5 flex flex-col gap-px pl-5">
-      {WORKFLOW_TABS.map((tab) => (
-        <WorkflowChoice
-          key={tab.id}
-          tab={tab}
-          active={current === tab.id}
-          enabled={isWorkflowEnabled(tab.id, supported)}
-          onSelect={() => onPick(tab.id)}
-        />
-      ))}
-    </div>
+    <MediaWorkflowList
+      tabs={WORKFLOW_TABS}
+      current={current}
+      enabled={(id) => isWorkflowEnabled(id, supported)}
+      listed={!collapsed && (active ? pageMode !== "train" : expanded)}
+      onPick={onPick}
+    />
   );
 }
+
+function AudioNavDisclosure() {
+  const expanded = useAudioWorkspaceStore((s) => s.navExpanded);
+  const setExpanded = useAudioWorkspaceStore((s) => s.setNavExpanded);
+  return (
+    <MediaNavDisclosure
+      expanded={expanded}
+      setExpanded={setExpanded}
+      revealClassName={AUDIO_DISCLOSURE_REVEAL}
+    />
+  );
+}
+
+const audioWorkflowAlwaysEnabled = () => true;
+
+function AudioWorkflowList({
+  active,
+  collapsed,
+  onPick,
+}: {
+  active: boolean;
+  collapsed: boolean;
+  onPick: (id: AudioWorkflowId) => void;
+}) {
+  const workflow = useAudioWorkspaceStore((s) => s.workflow);
+  const requested = useAudioWorkspaceStore((s) => s.requestedWorkflow);
+  const expanded = useAudioWorkspaceStore((s) => s.navExpanded);
+  const current = active ? (requested ?? workflow) : null;
+  return (
+    <MediaWorkflowList
+      tabs={AUDIO_WORKFLOWS}
+      current={current}
+      enabled={audioWorkflowAlwaysEnabled}
+      listed={!collapsed && (active || expanded)}
+      onPick={onPick}
+    />
+  );
+}
+
+// Hugeicons' three dots, spread 1.5 units and centred vertically (its own sit half a unit low).
+const MORE_DOTS_ICON: IconSvgElement = [
+  ["circle", { cx: "4.5", cy: "12", r: "1", stroke: "currentColor", strokeWidth: "1.5", key: "0" }],
+  ["circle", { cx: "12", cy: "12", r: "1", stroke: "currentColor", strokeWidth: "1.5", key: "1" }],
+  ["circle", { cx: "19.5", cy: "12", r: "1", stroke: "currentColor", strokeWidth: "1.5", key: "2" }],
+];
 
 // A NavItem's affordances in dropdown-item form, for the "More" flyout.
 function MoreMenuItem({
@@ -837,6 +946,64 @@ function MoreMenuItem({
       {badge && <NavBadge label={badge} />}
       {spinner && <Spinner className="size-3.5 shrink-0 text-muted-foreground" />}
     </DropdownMenuItem>
+  );
+}
+
+function AudioMoreSubmenu({
+  icon,
+  label,
+  active,
+  disabled,
+  tooltip,
+  badge,
+  spinner,
+  onIntent,
+  onPick,
+  contentProps,
+}: {
+  icon: typeof ZapIcon;
+  label: string;
+  active: boolean;
+  disabled?: boolean;
+  tooltip?: string;
+  badge?: string;
+  spinner?: boolean;
+  onIntent?: () => void;
+  onPick: (id: AudioWorkflowId) => void;
+  contentProps: ComponentProps<typeof DropdownMenuSubContent>;
+}) {
+  const workflow = useAudioWorkspaceStore((s) => s.workflow);
+  const requested = useAudioWorkspaceStore((s) => s.requestedWorkflow);
+  const current = active ? (requested ?? workflow) : null;
+  return (
+    <DropdownMenuSub>
+      <DropdownMenuSubTrigger
+        disabled={disabled}
+        title={tooltip}
+        onPointerEnter={disabled ? undefined : onIntent}
+        onFocus={disabled ? undefined : onIntent}
+        className={cn("gap-2.5", active && "bg-accent/60")}
+      >
+        <HugeiconsIcon icon={icon} strokeWidth={1.75} />
+        <span className="min-w-0 flex-1 truncate">{label}</span>
+        {badge && <NavBadge label={badge} />}
+        {spinner && (
+          <Spinner className="size-3.5 shrink-0 text-muted-foreground" />
+        )}
+      </DropdownMenuSubTrigger>
+      <DropdownMenuSubContent {...contentProps} className="w-44 p-1">
+        {AUDIO_WORKFLOWS.map((tab) => (
+          <DropdownMenuItem
+            key={tab.id}
+            onSelect={() => onPick(tab.id)}
+            className={cn(current === tab.id && "bg-accent/60")}
+          >
+            <HugeiconsIcon icon={tab.icon} strokeWidth={1.75} />
+            <span className="min-w-0 flex-1 truncate">{tab.label}</span>
+          </DropdownMenuItem>
+        ))}
+      </DropdownMenuSubContent>
+    </DropdownMenuSub>
   );
 }
 
@@ -883,6 +1050,21 @@ export function AppSidebar() {
   } = useSidebar();
   const navigate = useNavigate();
   const router = useRouter();
+  const [rowNavigation] = useState(() =>
+    createNavigationCoalescer<NavigateOptions>({
+      navigate: (options) => navigate(options),
+      currentHref: () => router.latestLocation.href,
+      hrefOf: (options) => router.buildLocation(options).href,
+      currentEntry: () => router.latestLocation.state.__TSR_key,
+      asReplace: (options) => ({ ...options, replace: true }),
+    }),
+  );
+  const navigateFromRow = rowNavigation.go;
+  useEffect(
+    () =>
+      router.subscribe("onResolved", () => rowNavigation.resolved()),
+    [router, rowNavigation],
+  );
   const imagesPageMode = useImageWorkflowStore((s) => s.pageMode);
 
   // `webUpdate` is non-null only when the installed (PyPI) version is behind the latest release.
@@ -1004,7 +1186,29 @@ export function AppSidebar() {
   const isStudioRoute = pathname === "/studio" || pathname.startsWith("/studio/");
   const [chatOpen, setChatOpen] = useState(true);
 
-  const [moreOpen, setMoreOpen] = useState(false);
+  // Mouse hover previews the flyout; a press pins or unpins it. Touch and keyboard pin it.
+  const [morePinnedOpen, setMorePinnedOpen] = useState(false);
+  const moreTriggerRef = useRef<HTMLButtonElement | null>(null);
+  const moreContentRef = useRef<HTMLDivElement | null>(null);
+  const moreHover = useHoverFlyout(NAV_FLYOUT_INTENT, moreContentRef);
+  const { dismiss: dismissMoreHover } = moreHover;
+  const moreOpen = moreHover.open || morePinnedOpen;
+  // A hover preview must not move focus in or out of the composer.
+  const moreChosen = useRef(false);
+  const setMoreOpen = useCallback(
+    (next: boolean) => {
+      dismissMoreHover();
+      if (next) moreChosen.current = true;
+      setMorePinnedOpen(next);
+    },
+    [dismissMoreHover],
+  );
+  // Radix forwards onOpenAutoFocus at runtime but omits it from DropdownMenuContent's types.
+  const moreContentFocusProps = {
+    onOpenAutoFocus: (event: Event) => {
+      if (!moreChosen.current) event.preventDefault();
+    },
+  } as Record<string, unknown>;
   const [moreTooltipOpen, setMoreTooltipOpen] = useState(false);
   const moreFocusReturning = useRef(false);
   const handleMoreTooltipOpenChange = useCallback((next: boolean) => {
@@ -1024,7 +1228,25 @@ export function AppSidebar() {
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const [scrolled, setScrolled] = useState(false);
   // Bottom fade hides at the very bottom / for short lists so the last row isn't washed out.
-  const [canScrollDown, setCanScrollDown] = useState(false);
+  // Written to the DOM like the rail: the observer below drives it, and state there loops (#185).
+  const fadeRef = useRef<HTMLDivElement | null>(null);
+  const syncFade = useCallback((el: HTMLDivElement) => {
+    const fade = fadeRef.current;
+    if (!fade) return;
+    // Only rows count: what is left below the bottom padding. Scrolling also grows the pinned
+    // group above by a few px, which leaves that much padding out of view at the very bottom.
+    const hidden = el.scrollHeight - el.scrollTop - el.clientHeight;
+    const visible = String(hidden > parseFloat(getComputedStyle(el).paddingBottom) + 1);
+    if (fade.dataset.visible !== visible) fade.dataset.visible = visible;
+  }, []);
+  // The footer mounts after the scroller, so the first measure lands here.
+  const attachFade = useCallback(
+    (node: HTMLDivElement | null) => {
+      fadeRef.current = node;
+      if (node && scrollRef.current) syncFade(scrollRef.current);
+    },
+    [syncFade],
+  );
   // Rail width: 0 where scrollbars overlay (macOS default) or the list fits, the platform's thin rail
   // where they are classic. Only rows inside the scroller lose it, so the rows outside pad by it to
   // keep one edge. Written to the DOM, and only on a change: state here would loop (React #185).
@@ -1040,38 +1262,59 @@ export function AppSidebar() {
   // swaps it for the desktop one, so the scroller is a new node each time and an effect keyed on a
   // stable callback never re-runs. Still runs before paint.
   const railObserverRef = useRef<ResizeObserver | null>(null);
+  const sectionObserverRef = useRef<MutationObserver | null>(null);
   const attachScroller = useCallback(
     (el: HTMLDivElement | null) => {
       railObserverRef.current?.disconnect();
       railObserverRef.current = null;
+      sectionObserverRef.current?.disconnect();
+      sectionObserverRef.current = null;
       scrollRef.current = el;
       // Per node: a new parent has no variable yet even at the same rail, and
       // the cache would otherwise skip the write.
       railWidthRef.current = null;
       if (!el) return;
       measureScrollRail(el);
+      syncFade(el);
       // Watch the box, not renders: the Images disclosure and the project toggles change the row count
       // without rendering this component, and a scrollbar appearing shrinks the content box. Safe where
-      // the earlier observer was not: it writes a variable, never state, so nothing feeds back.
-      const observer = new ResizeObserver(() => measureScrollRail(el));
+      // the earlier observer was not: it writes the DOM, never state, so nothing feeds back.
+      const observer = new ResizeObserver(() => {
+        measureScrollRail(el);
+        syncFade(el);
+      });
       observer.observe(el);
+      // The sections too, so the fade follows the content height, not just the box.
+      for (const section of el.children) observer.observe(section);
+      // Sections come and go with their disclosures. A new one reports its size on its own; a gone
+      // one is unobserved, or the observer keeps the detached subtree alive, so re-measure here.
+      const sections = new MutationObserver((records) => {
+        for (const record of records) {
+          for (const node of record.removedNodes) {
+            if (node instanceof Element) observer.unobserve(node);
+          }
+          for (const node of record.addedNodes) {
+            if (node instanceof Element) observer.observe(node);
+          }
+        }
+        syncFade(el);
+      });
+      sections.observe(el, { childList: true });
       railObserverRef.current = observer;
+      sectionObserverRef.current = sections;
     },
-    [measureScrollRail],
+    [measureScrollRail, syncFade],
   );
 
-  // Driven only from onScroll + a content-change effect below. No
-  // ResizeObserver: its callback-driven setState caused a render loop (React
-  // #185). Both setters bail out when unchanged, so neither path can loop.
-  const syncScrollState = useCallback((el: HTMLDivElement) => {
-    const nextScrolled = el.scrollTop > 0;
-    setScrolled((prev) => (prev === nextScrolled ? prev : nextScrolled));
-    const nextCanScrollDown =
-      el.scrollHeight - el.scrollTop - el.clientHeight > 1;
-    setCanScrollDown((prev) =>
-      prev === nextCanScrollDown ? prev : nextCanScrollDown,
-    );
-  }, []);
+  // The setter bails out when unchanged, so this cannot loop.
+  const syncScrollState = useCallback(
+    (el: HTMLDivElement) => {
+      const nextScrolled = el.scrollTop > 0;
+      setScrolled((prev) => (prev === nextScrolled ? prev : nextScrolled));
+      syncFade(el);
+    },
+    [syncFade],
+  );
 
   const isRecipesRoute = pathname.startsWith("/data-recipes");
   const isExportRoute = pathname === "/export" || pathname.startsWith("/export/");
@@ -1640,20 +1883,7 @@ export function AppSidebar() {
       return next;
     });
   }, []);
-  // Rows the open custom sections draw. Creating, filling, hiding or folding one changes the list's
-  // height with no scroll to re-measure the bottom fade off.
-  const customSectionRowCount = useMemo(
-    () =>
-      visibleCustomSections.reduce(
-        (count, section) =>
-          collapsedSectionIds.has(section.id)
-            ? count
-            : count + (customSectionRows.get(section.id)?.length ?? 0),
-        0,
-      ),
-    [visibleCustomSections, collapsedSectionIds, customSectionRows],
-  );
-  // The folders the custom sections draw, open or not: the bottom fade counts their chats.
+  // The folders the custom sections draw, open or not.
   const customSectionProjectRecords = useMemo(
     () =>
       visibleCustomSections.flatMap((section) =>
@@ -1861,35 +2091,6 @@ export function AppSidebar() {
     }
     return map;
   }, [sortedChatsByProjectId]);
-  // Nested rows across both sections, so the bottom fade re-measures when the list height changes.
-  const projectChatRowCount = useMemo(() => {
-    // Only folders list chats, and only this organization has folders that do.
-    if (organizeBy !== "project") return 0;
-    let rows = 0;
-    for (const project of [
-      ...pinnedProjectRecords,
-      ...customSectionProjectRecords,
-      ...visibleProjectRecords,
-    ]) {
-      if (collapsedProjectIds.has(project.id)) continue;
-      const chats = sortedChatsByProjectId.get(project.id) ?? [];
-      rows += expandedChatProjectIds.has(project.id)
-        ? chats.length
-        : Math.min(chats.length, PROJECT_CHAT_LIMIT);
-      // "Show more" and an empty folder's "No chats" are rows too.
-      if (chats.length > PROJECT_CHAT_LIMIT) rows += 1;
-      if (chats.length === 0) rows += 1;
-    }
-    return rows;
-  }, [
-    organizeBy,
-    pinnedProjectRecords,
-    customSectionProjectRecords,
-    visibleProjectRecords,
-    collapsedProjectIds,
-    expandedChatProjectIds,
-    sortedChatsByProjectId,
-  ]);
 
   // Multi-select. Ids only: a row that gets deleted elsewhere drops out of
   // selectedChatItems on its own rather than leaving a ghost to act on.
@@ -2474,54 +2675,6 @@ export function AppSidebar() {
   // The Train-page status poll doesn't run off-route; keep state fresh so the spinner clears.
   useTrainingCompletionWatch();
 
-  // Recompute bottom-fade on mount and whenever list height can change: onScroll never fires
-  // for short, non-scrolling lists. Guarded setState below can't loop.
-  useEffect(() => {
-    const el = scrollRef.current;
-    if (!el) return;
-    const next = el.scrollHeight - el.scrollTop - el.clientHeight > 1;
-    setCanScrollDown((prev) => (prev === next ? prev : next));
-  }, [
-    recentChatItems.length,
-    runItems.length,
-    projects.length,
-    chatOpen,
-    runsOpen,
-    pinnedOpen,
-    isStudioRoute,
-    // The update card grows the footer, so the scroll area shrinks under it.
-    showUpdateCard,
-    // Regrouping, collapsing a folder or revealing more adds and removes rows
-    // with no scroll and no collapsible animation to re-measure off.
-    projectsOpen,
-    projectChatRowCount,
-    visibleProjectRecords.length,
-    // Pinning a folder moves rows between sections, leaving both counts above unchanged.
-    pinnedProjectRecords.length,
-    // Pinning a project chat adds a Pinned row while Recents and the folder
-    // counts both stay put, so nothing else here moves.
-    pinnedChatItems.length,
-    // And with no chats in them, folders appear and disappear on their own.
-    organizeBy,
-    // Custom sections: an empty one still draws its header and hint, and folding it hides both.
-    visibleCustomSections.length,
-    collapsedSectionIds,
-    customSectionRowCount,
-    projectsSectionHidden,
-  ]);
-
-  // Resizing changes clientHeight without firing onScroll, so the fade would
-  // stay hidden while rows are still clipped. Window events only: no element
-  // observer, so this can't feed back into the loop that caused React #185.
-  useEffect(() => {
-    const onResize = () => {
-      const el = scrollRef.current;
-      if (el) syncScrollState(el);
-    };
-    window.addEventListener("resize", onResize);
-    return () => window.removeEventListener("resize", onResize);
-  }, [syncScrollState]);
-
   const chatDisabled = trainingInProgress;
   const usesDesktopTitlebar = usesCustomTitlebar || usesNativeMacTitlebar;
 
@@ -2537,7 +2690,7 @@ export function AppSidebar() {
   const unrailedRowPadding = usesDesktopTitlebar ? "px-[calc(5px*var(--ui-space-scale,1))]" : "px-1.5";
 
   // Headers follow unrailedRowPadding: the label starts where row content does, and the
-  // actions end where a hovered row's "…" does. 18px / 12px normally (the class defaults), 17px / 11px here.
+  // actions end where a hovered row's "…" does. 18px / 9px normally (the class defaults), 17px / 8px here.
   const headerInset = usesDesktopTitlebar
     ? "sidebar-sticky-label-desktop"
     : null;
@@ -2549,7 +2702,7 @@ export function AppSidebar() {
       label: t("shell.navigation.projects"),
       active: pathname === "/projects" || pathname.startsWith("/projects/"),
       onClick: () => {
-        navigate({ to: "/projects" });
+        navigateFromRow({ to: "/projects" });
         closeMobileIfOpen();
       },
       onIntent: () => {
@@ -2584,7 +2737,7 @@ export function AppSidebar() {
       label: t("shell.navigation.library"),
       active: pathname === "/library",
       onClick: () => {
-        navigate({ to: "/library" });
+        navigateFromRow({ to: "/library" });
         closeMobileIfOpen();
       },
       onIntent: () => {
@@ -2596,7 +2749,7 @@ export function AppSidebar() {
       label: t("shell.navigation.hub"),
       active: pathname === "/hub" || pathname.startsWith("/hub/"),
       onClick: () => {
-        navigate({ to: "/hub" });
+        navigateFromRow({ to: "/hub" });
         closeMobileIfOpen();
       },
       onIntent: () => {
@@ -2609,7 +2762,7 @@ export function AppSidebar() {
       // No "New" pill: the row's trailing slot holds the workflow disclosure instead.
       active: pathname === "/images" || pathname.startsWith("/images/"),
       onClick: () => {
-        navigate({ to: "/images" });
+        navigateFromRow({ to: "/images" });
         closeMobileIfOpen();
       },
       onIntent: () => {
@@ -2627,7 +2780,7 @@ export function AppSidebar() {
       pendingTooltip: t("shell.navigation.trainChecking"),
       onClick: () => {
         if (chatOnlyMeasured) return;
-        navigate({ to: "/studio" });
+        navigateFromRow({ to: "/studio" });
         closeMobileIfOpen();
       },
       onIntent: () => {
@@ -2644,7 +2797,7 @@ export function AppSidebar() {
       pending: capabilitiesUnknown,
       pendingTooltip: t("shell.navigation.videoChecking"),
       onClick: () => {
-        navigate({ to: "/video" });
+        navigateFromRow({ to: "/video" });
         closeMobileIfOpen();
       },
       onIntent: () => {
@@ -2656,7 +2809,7 @@ export function AppSidebar() {
       label: t("shell.navigation.audio"),
       active: pathname === "/audio" || pathname.startsWith("/audio/"),
       onClick: () => {
-        navigate({ to: "/audio" });
+        navigateFromRow({ to: "/audio" });
         closeMobileIfOpen();
       },
       onIntent: () => {
@@ -2668,7 +2821,7 @@ export function AppSidebar() {
       label: t("shell.navigation.recipes"),
       active: isRecipesRoute,
       onClick: () => {
-        navigate({ to: "/data-recipes" });
+        navigateFromRow({ to: "/data-recipes" });
         closeMobileIfOpen();
       },
       onIntent: () => {
@@ -2686,7 +2839,7 @@ export function AppSidebar() {
       active: pathname === "/export" || pathname.startsWith("/export/"),
       spinner: exportInProgress,
       onClick: () => {
-        navigate({ to: "/export" });
+        navigateFromRow({ to: "/export" });
         closeMobileIfOpen();
       },
       onIntent: () => {
@@ -2700,11 +2853,11 @@ export function AppSidebar() {
     },
     // The monitor page, not the API keys dialog the profile menu opens.
     api: {
-      icon: Globe02Icon,
+      icon: ApiIcon,
       label: t("shell.navigation.api"),
       active: pathname === "/api-monitor" || pathname.startsWith("/api-monitor/"),
       onClick: () => {
-        navigate({ to: "/api-monitor" });
+        navigateFromRow({ to: "/api-monitor" });
         closeMobileIfOpen();
       },
       onIntent: () => {
@@ -2729,6 +2882,13 @@ export function AppSidebar() {
   const imagesWorkflowsListed =
     sidebarRowsLabelled &&
     !(navRows.images.active && imagesPageMode === "train");
+  const audioWorkflowsListed = sidebarRowsLabelled;
+  // Sidebar and More-flyout picks only ask; the Audio page switches once it is free to.
+  const pickAudioWorkflow = (workflowId: AudioWorkflowId) => {
+    useAudioWorkspaceStore.getState().requestWorkflow(workflowId);
+    navigate({ to: "/audio" });
+    closeMobileIfOpen();
+  };
 
   const showSidebarBrand = true;
 
@@ -2887,6 +3047,7 @@ export function AppSidebar() {
   const [renameDraft, setRenameDraft] = useState("");
   // Skips the inline rename input's blur-commit when Enter/Escape already handled it.
   const skipRenameBlurRef = useRef(false);
+  const renameImeRef = useRef(newInputImeState());
   // Optimistic title while the debounced sidebar refresh catches up, so the old name doesn't flash.
   const [pendingRename, setPendingRename] = useState<{
     id: string;
@@ -2972,6 +3133,8 @@ export function AppSidebar() {
   function handleInlineRenameKeyDown(
     event: React.KeyboardEvent<HTMLInputElement>,
   ) {
+    // IME Enter/Escape must not finish the rename; check before preventDefault.
+    if (imeOwnsInputKeydown(event, renameImeRef.current)) return;
     if (event.key === "Enter") {
       event.preventDefault();
       skipRenameBlurRef.current = true;
@@ -3279,7 +3442,7 @@ export function AppSidebar() {
     clearSelection();
     clearChatNotifications(item);
     noteViewed(item.id);
-    navigate({
+    navigateFromRow({
       to: "/chat",
       search:
         item.type === "single"
@@ -3817,8 +3980,7 @@ export function AppSidebar() {
                     block to the bottom of the section, so every pixel down there is inside it
                     and a chat meant to go after the folder was filed into it instead.
                     Always drawn, never only while a row is carried: a row appearing at drag
-                    start shifts every section under it after the pointer was sampled, and the
-                    bottom fade measures a height this one would not be counted in.
+                    start shifts every section under it after the pointer was sampled.
                     It draws its own line, since the line under the folder's last chat already
                     means "into the folder, last" and the same pixels cannot mean both. */}
                 <SidebarMenuItem
@@ -4534,8 +4696,15 @@ export function AppSidebar() {
             value={renameDraft}
             onChange={(event) => setRenameDraft(event.target.value)}
             onKeyDown={handleInlineRenameKeyDown}
-            onBlur={handleInlineRenameBlur}
-            onFocus={(event) => event.currentTarget.select()}
+            {...inputImeHandlers(renameImeRef.current)}
+            onBlur={() => {
+              resetInputIme(renameImeRef.current);
+              handleInlineRenameBlur();
+            }}
+            onFocus={(event) => {
+              resetInputIme(renameImeRef.current);
+              event.currentTarget.select();
+            }}
             maxLength={120}
             aria-label={translate("shell.dialog.renameChat.placeholder")}
             className={cn(
@@ -4702,7 +4871,7 @@ export function AppSidebar() {
                   className={actionClass}
                 >
                   <span className="sidebar-row-action-glyph">
-                    <HugeiconsIcon icon={MoreVerticalIcon} strokeWidth={1.75} className="size-icon" />
+                    <HugeiconsIcon icon={MoreVerticalCenteredIcon} strokeWidth={1.75} className="size-icon" />
                   </span>
                 </button>
               )}
@@ -4890,7 +5059,7 @@ export function AppSidebar() {
                 className="sidebar-row-action sidebar-touch-reveal group-hover/recent-item:opacity-100 group-hover/recent-item:pointer-events-auto focus-visible:opacity-100 focus-visible:pointer-events-auto"
               >
                 <span className="sidebar-row-action-glyph">
-                  <HugeiconsIcon icon={MoreVerticalIcon} strokeWidth={1.75} className="size-icon" />
+                  <HugeiconsIcon icon={MoreVerticalCenteredIcon} strokeWidth={1.75} className="size-icon" />
                 </span>
               </button>
             )}
@@ -4952,6 +5121,7 @@ export function AppSidebar() {
   return (
     <>
       {slotShortcuts}
+    <TooltipProvider {...NAV_TOOLTIP_INTENT}>
     <Sidebar
       collapsible="icon"
       collapseToZero={isTauri}
@@ -4959,16 +5129,18 @@ export function AppSidebar() {
       className={cn(
         // Rail background comes from --sidebar-surface (index.css) so the footer fade can match it.
         "font-heading group-data-[collapsible=icon]:[&_[data-sidebar=sidebar]]:bg-[var(--sidebar-surface)]",
-        usesNativeMacTitlebar &&
-          "group-data-[collapsible=icon]:[&_[data-sidebar=sidebar]]:border-r-0",
+        !(usesCustomTitlebar && pinned) &&
+          "[&_[data-sidebar=sidebar]]:border-r [&_[data-sidebar=sidebar]]:border-sidebar-edge dark:[&_[data-sidebar=sidebar]]:border-r-0",
       )}
     >
       <SidebarHeader
         className={cn(
           "relative",
-          usesDesktopTitlebar
-            ? "shrink-0 p-0 pt-[calc(var(--studio-desktop-titlebar-height,34px)+calc(17px*var(--ui-space-scale,1)))]"
-            : "pl-3 pr-3 pt-[calc(14px*var(--ui-space-scale,1))] pb-[calc(8px*var(--ui-space-scale,1))] group-data-[collapsible=icon]:px-0",
+          usesCustomTitlebar
+            ? "shrink-0 p-0 pt-[calc(var(--studio-content-top-inset,0px)+var(--studio-chat-header-padding-top,11px))]"
+            : usesNativeMacTitlebar
+              ? "shrink-0 p-0 pt-[calc(var(--studio-desktop-titlebar-height,34px)+calc(17px*var(--ui-space-scale,1)))]"
+              : "pl-3 pr-3 pt-[calc(14px*var(--ui-space-scale,1))] pb-[calc(8px*var(--ui-space-scale,1))] group-data-[collapsible=icon]:px-0",
         )}
       >
         {showSidebarBrand && (
@@ -4991,6 +5163,7 @@ export function AppSidebar() {
                 usesDesktopTitlebar
                   ? "justify-between pl-4 pr-3"
                   : "justify-between",
+                usesCustomTitlebar && "h-[var(--studio-chat-control-height,34px)]",
               )}
             >
                 <Link
@@ -5014,7 +5187,7 @@ export function AppSidebar() {
                   <img
                     src="/circle-logo-small.png"
                     alt="Unsloth"
-                    className="relative top-px h-[calc(22px+0.5rem*var(--ui-font-scale,1))] w-[calc(22px+0.5rem*var(--ui-font-scale,1))] shrink-0 rounded-full object-cover"
+                    className="relative top-px -left-px h-[calc(22px+0.5rem*var(--ui-font-scale,1))] w-[calc(22px+0.5rem*var(--ui-font-scale,1))] shrink-0 rounded-full object-cover"
                   />
                   <span className="relative -top-px truncate font-heading text-[calc(13px+0.5rem*var(--ui-font-scale,1))] font-semibold tracking-[0em] leading-tight text-black dark:text-foreground dark:tracking-[0.02em]">
                     unsloth
@@ -5032,10 +5205,10 @@ export function AppSidebar() {
                         useChatSearchStore.getState().open();
                         closeMobileIfOpen();
                       }}
-                      className="inline-flex size-[calc(30px*var(--ui-space-scale,1))] cursor-pointer items-center justify-center rounded-[10px] text-nav-icon-idle dark:text-nav-fg-muted transition-colors hover:bg-nav-surface-hover hover:text-black dark:hover:text-white focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                      className="relative top-px inline-flex size-[calc(30px*var(--ui-space-scale,1))] cursor-pointer items-center justify-center rounded-[10px] text-nav-fg transition-colors hover:bg-nav-surface-hover hover:text-black dark:hover:text-white focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                       aria-label={t("shell.navigation.search")}
                     >
-                      <HugeiconsIcon icon={Search01Icon} strokeWidth={1.75} className="size-icon" />
+                      <HugeiconsIcon icon={Search01Icon} strokeWidth={1.75} className="size-4" />
                     </button>
                   </TooltipPrimitive.Trigger>
                   <TooltipContent
@@ -5061,7 +5234,7 @@ export function AppSidebar() {
                         className="inline-flex size-[calc(30px*var(--ui-space-scale,1))] cursor-pointer items-center justify-center rounded-[10px] text-nav-icon-idle dark:text-nav-fg-muted transition-colors hover:bg-nav-surface-hover hover:text-black dark:hover:text-white focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                         aria-label={t("shell.aria.closeSidebar")}
                       >
-                        <HugeiconsIcon icon={LayoutAlignLeftIcon} strokeWidth={1.75} className="size-icon" />
+                        <HugeiconsIcon icon={PanelLeftIcon} strokeWidth={1.75} className="size-icon" />
                       </button>
                     </TooltipPrimitive.Trigger>
                     <TooltipContent
@@ -5076,7 +5249,8 @@ export function AppSidebar() {
               </div>
             </div>
             {!isMobile && (!usesDesktopTitlebar || usesNativeMacTitlebar) && (
-              <div className="relative z-10 hidden group-data-[collapsible=icon]:flex h-[calc(33px*var(--ui-space-scale,1))] items-center justify-center w-full">
+              // Level with the expanded header's 30px close button, so the toggle doesn't jump.
+              <div className="relative z-10 hidden group-data-[collapsible=icon]:flex h-[calc(33px*var(--ui-space-scale,1))] items-start justify-center w-full pt-[calc(1px*var(--ui-space-scale,1))]">
                 <Tooltip>
                   <TooltipPrimitive.Trigger asChild>
                     <button
@@ -5210,9 +5384,11 @@ export function AppSidebar() {
                     icon={row.icon}
                     label={row.label}
                     badge={row.badge}
-                    // While the workflows are listed, the current one carries the highlight, not the Images row.
                     active={
-                      id === "images" && imagesWorkflowsListed ? false : row.active
+                      (id === "images" && imagesWorkflowsListed) ||
+                      (id === "audio" && audioWorkflowsListed)
+                        ? false
+                        : row.active
                     }
                     disabled={rowState.disabled}
                     tooltip={rowState.tooltip}
@@ -5224,6 +5400,7 @@ export function AppSidebar() {
                     className={cn(
                       row.className,
                       id === "images" && "group/images-item",
+                      id === "audio" && "group/audio-item",
                     )}
                     // Off the Images page the list is folded, so the row offers a way to open it.
                     overlay={
@@ -5231,6 +5408,10 @@ export function AppSidebar() {
                       !row.active &&
                       sidebarRowsLabelled ? (
                         <ImagesNavDisclosure />
+                      ) : id === "audio" &&
+                        !row.active &&
+                        sidebarRowsLabelled ? (
+                        <AudioNavDisclosure />
                       ) : undefined
                     }
                   >
@@ -5246,6 +5427,12 @@ export function AppSidebar() {
                           navigate({ to: "/images" });
                           closeMobileIfOpen();
                         }}
+                      />
+                    ) : id === "audio" ? (
+                      <AudioWorkflowList
+                        active={row.active}
+                        collapsed={!sidebarRowsLabelled}
+                        onPick={pickAudioWorkflow}
                       />
                     ) : (
                       row.children
@@ -5269,16 +5456,28 @@ export function AppSidebar() {
                       <TooltipPrimitive.Trigger asChild>
                         <DropdownMenuTrigger asChild>
                           <SidebarMenuButton
+                            ref={moreTriggerRef}
+                            {...moreHover.trigger}
                             // More is a container, not a destination: no active style just because the current page
                             // lives inside it. Keeps the row highlighted while the panel is open, after the pointer
                             // has left. Not data-state: the tooltip and menu triggers both write that one.
                             data-menu-open={moreOpen ? "true" : undefined}
+                            // Pin a hover-opened flyout instead of letting the trigger toggle it shut.
+                            onPointerDown={(event) => {
+                              if (event.pointerType !== "mouse" || event.button !== 0 || event.ctrlKey) return;
+                              event.preventDefault();
+                              // An open preview never mounts again, so focus it as a click-open would.
+                              if (!morePinnedOpen && moreHover.open) {
+                                moreContentRef.current?.focus({ preventScroll: true });
+                              }
+                              setMoreOpen(!morePinnedOpen);
+                            }}
                             className="sidebar-nav-btn h-[calc(33px*var(--ui-space-scale,1))] rounded-full gap-[calc(8.5px*var(--ui-space-scale,1))] pl-3 pr-2.5 font-medium group-data-[collapsible=icon]:!p-0 group-data-[collapsible=icon]:!size-[calc(28px*var(--ui-space-scale,1))] group-data-[collapsible=icon]:my-[calc(2.5px*var(--ui-space-scale,1))] group-data-[collapsible=icon]:mx-auto"
                           >
                             <HugeiconsIcon
-                              icon={MoreHorizontalIcon}
+                              icon={MORE_DOTS_ICON}
                               strokeWidth={1.75}
-                              className="size-icon! shrink-0 group-hover/menu-button:animate-icon-pop"
+                              className="size-icon! shrink-0 translate-x-0.5 group-data-[collapsible=icon]:translate-x-0 group-hover/menu-button:animate-icon-pop"
                             />
                             <span className="text-ui-14p5 leading-ui-19 tracking-nav">
                               {t("shell.navigation.more")}
@@ -5297,11 +5496,24 @@ export function AppSidebar() {
                       </TooltipContent>
                     </Tooltip>
                     <DropdownMenuContent
+                      ref={moreContentRef}
                       side="right"
                       align="start"
                       sideOffset={6}
                       className="w-48 p-1"
-                      onCloseAutoFocus={() => {
+                      {...moreHover.content}
+                      // The trigger handles its own presses.
+                      onPointerDownOutside={(event) => {
+                        if (moreTriggerRef.current?.contains(event.target as Node)) event.preventDefault();
+                      }}
+                      {...moreContentFocusProps}
+                      onCloseAutoFocus={(event) => {
+                        const chosen = moreChosen.current;
+                        moreChosen.current = false;
+                        if (!chosen) {
+                          event.preventDefault();
+                          return;
+                        }
                         moreFocusReturning.current = true;
                         queueMicrotask(() => {
                           moreFocusReturning.current = false;
@@ -5312,6 +5524,27 @@ export function AppSidebar() {
                         const row = navRows[id];
                         // Same pending handling as the inline rows above.
                         const rowState = resolveNavRowState(row);
+                        if (id === "audio") {
+                          return (
+                            <AudioMoreSubmenu
+                              key={id}
+                              icon={row.icon}
+                              label={row.label}
+                              badge={row.badge}
+                              active={row.active}
+                              disabled={rowState.disabled}
+                              tooltip={rowState.tooltip}
+                              spinner={rowState.spinner}
+                              onIntent={row.onIntent}
+                              onPick={pickAudioWorkflow}
+                              contentProps={{
+                                ...sidebarSubmenuOffsets,
+                                // Portaled outside the flyout, so the flyout's hover grace has to cover it too.
+                                ...moreHover.content,
+                              }}
+                            />
+                          );
+                        }
                         return (
                           <MoreMenuItem
                             key={id}
@@ -5524,7 +5757,7 @@ export function AppSidebar() {
                               className="sidebar-row-action group-hover/run-item:opacity-100 group-hover/run-item:pointer-events-auto focus-visible:opacity-100 focus-visible:pointer-events-auto"
                             >
                               <span className="sidebar-row-action-glyph">
-                                <HugeiconsIcon icon={MoreVerticalIcon} strokeWidth={1.75} className="size-icon" />
+                                <HugeiconsIcon icon={MoreVerticalCenteredIcon} strokeWidth={1.75} className="size-icon" />
                               </span>
                             </button>
                           )}
@@ -5571,6 +5804,7 @@ export function AppSidebar() {
             shows fully (Gemini-style). Stops at the rail: the thumb ends its
             travel in this band and a full-width gradient washed it out. */}
         <div
+          ref={attachFade}
           aria-hidden="true"
           className={cn(
             // The scroll area hard-clips at the fade's bottom edge, so a plain ramp is still part-transparent
@@ -5580,7 +5814,8 @@ export function AppSidebar() {
             // Shorter fade with the update card so the list reads closer to
             // it, but still tall enough to clear a row.
             showUpdateCard ? "h-7" : "h-10",
-            canScrollDown ? "opacity-100" : "opacity-0",
+            // data-visible is written by syncFade, not React.
+            "opacity-0 data-[visible=true]:opacity-100",
           )}
         />
         {/* Collapsed: cog sits one nav-row step above the avatar. */}
@@ -5696,7 +5931,7 @@ export function AppSidebar() {
                         key={item.id}
                         onSelect={() => useSettingsDialogStore.getState().openDialog("api-keys")}
                       >
-                        <HugeiconsIcon icon={Globe02Icon} strokeWidth={1.75} className="size-[calc(18px*var(--ui-space-scale,1))]" />
+                        <HugeiconsIcon icon={ApiIcon} strokeWidth={1.75} className="size-[calc(18px*var(--ui-space-scale,1))]" />
                         <span>{t("shell.navigation.api")}</span>
                       </DropdownMenuItem>
                     );
@@ -5831,6 +6066,7 @@ export function AppSidebar() {
         </SidebarMenu>
       </SidebarFooter>
     </Sidebar>
+    </TooltipProvider>
     <ChatSearchDialog />
     {!isTauri && (
       <ShutdownDialog
@@ -5947,7 +6183,13 @@ export function AppSidebar() {
         if (!open) setRenamingTarget(null);
       }}
     >
-      <DialogContent className="corner-squircle dialog-soft-surface sm:max-w-md">
+      <DialogContent
+        className="corner-squircle dialog-soft-surface sm:max-w-md"
+        // Radix handles Escape before the input; don't close on IME dismissal.
+        onEscapeKeyDown={(event) => {
+          if (event.isComposing || event.keyCode === 229) event.preventDefault();
+        }}
+      >
         <DialogHeader>
           <DialogTitle>
             {renamingTarget?.kind === "run"
@@ -5958,7 +6200,9 @@ export function AppSidebar() {
         <Input
           value={renameDraft}
           onChange={(event) => setRenameDraft(event.target.value)}
+          {...inputImeHandlers(renameImeRef.current)}
           onKeyDown={(event) => {
+            if (imeOwnsInputKeydown(event, renameImeRef.current)) return;
             if (event.key === "Enter") {
               event.preventDefault();
               void commitRename();
