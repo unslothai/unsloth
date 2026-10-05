@@ -9,6 +9,10 @@ from pathlib import Path
 from typing import Optional
 
 
+# Free space a concurrent writer can move between the two reads of one pool.
+_SAME_POOL_SLACK = 1 << 30
+
+
 def _hub_cache() -> Optional[Path]:
     try:
         from utils.hf_cache_settings import get_hf_cache_paths
@@ -37,10 +41,16 @@ def models_disk_usage(cache: Optional[Path] = None) -> Optional[dict]:
         return None
     try:
         target = _nearest_existing(Path(os.path.realpath(cache)))
-        if _device(target) == _device(Path(os.path.abspath(os.sep))):
+        root = Path(os.path.abspath(os.sep))
+        if _device(target) == _device(root):
             return None
         usage = shutil.disk_usage(target)
+        system = shutil.disk_usage(root)
     except (OSError, ValueError):
+        return None
+    # APFS volumes in one container (macOS `/` vs the Data volume) and btrfs subvolumes (Fedora's
+    # /home) have their own st_dev but share one pool: same size, same free space.
+    if usage.total == system.total and abs(usage.free - system.free) < _SAME_POOL_SLACK:
         return None
     # psutil's percent (root-reserved blocks excluded), matching the system disk reading.
     seen = usage.used + usage.free

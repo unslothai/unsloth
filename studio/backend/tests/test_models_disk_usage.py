@@ -30,8 +30,9 @@ def second_drive(tmp_path, monkeypatch):
         return Path(path).is_relative_to(second)
 
     def fake_usage(path):
-        assert on_second(path), f"measured {path}, not the models drive"
-        return _Usage(2000 * GB, 500 * GB, 1500 * GB)
+        if on_second(path):
+            return _Usage(2000 * GB, 500 * GB, 1500 * GB)
+        return _Usage(100 * GB, 60 * GB, 40 * GB)
 
     def fake_device(path):
         if not Path(path).exists():
@@ -65,6 +66,24 @@ def test_cache_on_the_system_disk_adds_nothing(second_drive, tmp_path):
 
 def test_cache_not_created_yet_uses_its_parent_volume(second_drive):
     assert system_disk.models_disk_usage(second_drive / "new" / "hub")["total_gb"] == 2000.0
+
+
+def test_volume_sharing_the_system_pool_adds_nothing(second_drive, monkeypatch):
+    # APFS Data volume / btrfs subvolume: own st_dev, same pool as `/`.
+    pool = _Usage(2000 * GB, 1200 * GB, 800 * GB)
+    shared = _Usage(2000 * GB, 300 * GB, 800 * GB - 5 * 10**6)
+    monkeypatch.setattr(
+        system_disk.shutil,
+        "disk_usage",
+        lambda p: shared if Path(p).is_relative_to(second_drive) else pool,
+    )
+    assert system_disk.models_disk_usage(second_drive / "hf" / "hub") is None
+
+
+@pytest.mark.skipif(not os.environ.get("GITHUB_ACTIONS"), reason = "hosted runners have one disk")
+def test_hosted_runner_home_cache_is_the_system_disk():
+    # macos runners put home on the APFS Data volume (own st_dev, same container as `/`).
+    assert system_disk.models_disk_usage(Path.home() / ".cache" / "huggingface" / "hub") is None
 
 
 def test_unreadable_cache_is_omitted(monkeypatch):
