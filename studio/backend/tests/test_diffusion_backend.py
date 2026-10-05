@@ -3050,6 +3050,9 @@ def test_unload_cancels_pipeline_construction(
         if phase.startswith("dense"):
             mp.setattr(diff_mod, "dense_transformer_supported", lambda target: True)
             mp.setattr(diff_mod, "select_transformer_quant_scheme", lambda *a, **k: "int8")
+            # Z-Image declares its rotated INT8 artifact, so an auto GGUF pick (dense_fallback) would decline the
+            # uncached hosted pre-quant and never reach the dense attempt this phase parks in. Treat it as cached.
+            mp.setattr(diff_mod, "_uncached_prequant_repo", lambda *a, **k: None)
             mp.setattr(
                 backend,
                 "_dense_transformer_resident_bytes",

@@ -17,7 +17,7 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::Duration;
-use tauri::{AppHandle, WebviewWindow};
+use tauri::AppHandle;
 use tauri_plugin_dialog::DialogExt;
 
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
@@ -406,8 +406,8 @@ fn prune_expired(inner: &mut NativeIntakeInner) {
         .retain(|intent| intent.path.expires_at_ms > now);
 }
 
-pub(crate) fn ensure_main_window(window: &WebviewWindow) -> Result<(), String> {
-    if window.label() == "main" {
+pub(crate) fn ensure_main_window(webview: &tauri::Webview) -> Result<(), String> {
+    if webview.label() == "main" {
         Ok(())
     } else {
         Err("Native path commands are only available to the main window.".to_string())
@@ -416,50 +416,50 @@ pub(crate) fn ensure_main_window(window: &WebviewWindow) -> Result<(), String> {
 
 #[tauri::command]
 pub fn drain_native_intents(
-    window: WebviewWindow,
+    webview: tauri::Webview,
     state: tauri::State<'_, NativeIntakeState>,
 ) -> Result<Vec<NativeIntent>, String> {
-    ensure_main_window(&window)?;
+    ensure_main_window(&webview)?;
     state.drain_intents()
 }
 
 #[tauri::command]
 pub fn register_native_model_path(
-    window: WebviewWindow,
+    webview: tauri::Webview,
     state: tauri::State<'_, NativeIntakeState>,
     path: String,
 ) -> Result<NativeIntent, String> {
-    ensure_main_window(&window)?;
+    ensure_main_window(&webview)?;
     state.register_model_path(path, NativePathSourceKind::Drop)
 }
 
 #[tauri::command]
 pub fn register_native_attachment_path(
-    window: WebviewWindow,
+    webview: tauri::Webview,
     state: tauri::State<'_, NativeIntakeState>,
     path: String,
 ) -> Result<NativeIntent, String> {
-    ensure_main_window(&window)?;
+    ensure_main_window(&webview)?;
     state.register_attachment_path(path, NativePathSourceKind::Drop)
 }
 
 #[tauri::command]
 pub fn register_native_dataset_path(
-    window: WebviewWindow,
+    webview: tauri::Webview,
     state: tauri::State<'_, NativeIntakeState>,
     path: String,
 ) -> Result<NativeIntent, String> {
-    ensure_main_window(&window)?;
+    ensure_main_window(&webview)?;
     state.register_dataset_path(path, NativePathSourceKind::Drop)
 }
 
 #[tauri::command]
 pub async fn pick_native_model(
-    window: WebviewWindow,
+    webview: tauri::Webview,
     app: AppHandle,
     state: tauri::State<'_, NativeIntakeState>,
 ) -> Result<Option<NativeIntent>, String> {
-    ensure_main_window(&window)?;
+    ensure_main_window(&webview)?;
     let (tx, rx) = tokio::sync::oneshot::channel();
     app.dialog()
         .file()
@@ -481,10 +481,10 @@ pub async fn pick_native_model(
 
 #[tauri::command]
 pub async fn pick_hugging_face_cache_dir(
-    window: WebviewWindow,
+    webview: tauri::Webview,
     app: AppHandle,
 ) -> Result<Option<String>, String> {
-    ensure_main_window(&window)?;
+    ensure_main_window(&webview)?;
     let (tx, rx) = tokio::sync::oneshot::channel();
     app.dialog()
         .file()
@@ -509,11 +509,11 @@ pub async fn pick_hugging_face_cache_dir(
 
 #[tauri::command]
 pub async fn pick_native_document_folder(
-    window: WebviewWindow,
+    webview: tauri::Webview,
     app: AppHandle,
     state: tauri::State<'_, NativeIntakeState>,
 ) -> Result<Option<NativeDocumentFolderSelection>, String> {
-    ensure_main_window(&window)?;
+    ensure_main_window(&webview)?;
     let (tx, rx) = tokio::sync::oneshot::channel();
     app.dialog()
         .file()
@@ -532,12 +532,12 @@ pub async fn pick_native_document_folder(
 
 #[tauri::command]
 pub fn consume_native_path_token(
-    window: WebviewWindow,
+    webview: tauri::Webview,
     state: tauri::State<'_, NativeIntakeState>,
     token: String,
     operation: NativePathOperation,
 ) -> Result<NativePathLeaseResponse, String> {
-    ensure_main_window(&window)?;
+    ensure_main_window(&webview)?;
     match operation {
         NativePathOperation::Reveal | NativePathOperation::Open => {
             Err("Reveal/Open do not use backend path grants.".to_string())
@@ -548,22 +548,22 @@ pub fn consume_native_path_token(
 
 #[tauri::command]
 pub fn register_artifact_path(
-    window: WebviewWindow,
+    webview: tauri::Webview,
     state: tauri::State<'_, NativeIntakeState>,
     kind: NativeArtifactKind,
     path: String,
 ) -> Result<NativePathRef, String> {
-    ensure_main_window(&window)?;
+    ensure_main_window(&webview)?;
     state.register_artifact(kind, path)
 }
 
 #[tauri::command]
 pub fn reveal_path_token(
-    window: WebviewWindow,
+    webview: tauri::Webview,
     state: tauri::State<'_, NativeIntakeState>,
     token: String,
 ) -> Result<(), String> {
-    ensure_main_window(&window)?;
+    ensure_main_window(&webview)?;
     let entry = state.path_for_operation(&token, NativePathOperation::Reveal)?;
     #[cfg(target_os = "macos")]
     {
@@ -594,11 +594,11 @@ pub fn reveal_path_token(
 
 #[tauri::command]
 pub fn open_path_token(
-    window: WebviewWindow,
+    webview: tauri::Webview,
     state: tauri::State<'_, NativeIntakeState>,
     token: String,
 ) -> Result<(), String> {
-    ensure_main_window(&window)?;
+    ensure_main_window(&webview)?;
     let entry = state.path_for_operation(&token, NativePathOperation::Open)?;
     crate::process::open_detached(entry.canonical_path)
         .map_err(|e| format!("Failed to open path: {e}"))
@@ -849,11 +849,11 @@ fn read_attachment_payload(entry: &NativePathEntry) -> Result<NativeAttachmentFi
 // token lookup stays here; State is not 'static and validation hits the disk.
 #[tauri::command]
 pub async fn read_native_attachment_file(
-    window: WebviewWindow,
+    webview: tauri::Webview,
     state: tauri::State<'_, NativeIntakeState>,
     token: String,
 ) -> Result<NativeAttachmentFile, String> {
-    ensure_main_window(&window)?;
+    ensure_main_window(&webview)?;
     let entry = state.entry_for_operation(&token, NativePathOperation::Attach)?;
     tokio::task::spawn_blocking(move || {
         validate_entry_path(&entry, NativePathOperation::Attach)?;

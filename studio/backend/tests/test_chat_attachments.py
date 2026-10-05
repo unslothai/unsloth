@@ -375,6 +375,23 @@ def test_attachment_file_serves_text_parts(tmp_path, monkeypatch):
     assert response.media_type.startswith("text/plain")
 
 
+def test_attachment_file_unwraps_a_pasted_text_attachment(tmp_path, monkeypatch):
+    attachment = {
+        "id": "att-paste",
+        "type": "document",
+        "name": "Pasted text",
+        "content": [
+            {
+                "type": "text",
+                "text": "<pasted_text name=Pasted text bytes=11>\nhello\nworld\n</pasted_text>",
+            }
+        ],
+    }
+    _seed(tmp_path, monkeypatch, [attachment])
+    response = chat_history.get_attachment_file("msg-1", "att-paste", current_subject = "unsloth")
+    assert response.body.decode("utf-8") == "hello\nworld"
+
+
 def test_attachment_file_no_content_is_404(tmp_path, monkeypatch):
     _seed(tmp_path, monkeypatch, [{"id": "att-empty", "name": "ghost", "content": []}])
     with pytest.raises(HTTPException) as excinfo:

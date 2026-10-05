@@ -187,7 +187,9 @@ async def get_public_key(current_subject: str = Depends(get_current_subject)):
 
 @router.get("/registry", response_model = list[ProviderRegistryEntry])
 async def list_registry(
-    include_hidden: bool = False, current_subject: str = Depends(get_current_subject)
+    include_hidden: bool = False,
+    include_oauth: bool = False,
+    current_subject: str = Depends(get_current_subject),
 ):
     """List all supported provider types with their default configurations.
 
@@ -196,8 +198,9 @@ async def list_registry(
     needs. It is opt-in so that a browser still running a pre-capability bundle,
     which does not know to filter on ``hidden``, keeps seeing exactly the list
     it saw before and cannot render them as duplicate dropdown options.
+    OAuth rows need ``include_hidden`` or ``include_oauth``.
     """
-    return list_available_providers(include_hidden = include_hidden)
+    return list_available_providers(include_hidden = include_hidden, include_oauth = include_oauth)
 
 
 @router.get("/pricing")
@@ -1002,6 +1005,14 @@ async def list_provider_model_capabilities(
     return capabilities
 
 
+def _model_capability_names(model: dict) -> Optional[list[str]]:
+    # Another server's shape under this key must not fail the listing's validation.
+    values = model.get("capabilities")
+    if not isinstance(values, list):
+        return None
+    return [name for name in values if isinstance(name, str) and name]
+
+
 @router.post("/models", response_model = list[ProviderModelInfo])
 async def list_provider_models(
     payload: ProviderModelsRequest,
@@ -1126,6 +1137,7 @@ async def list_provider_models(
                 display_name = m.get("id", ""),
                 context_length = m.get("context_length") or m.get("context_window"),
                 owned_by = m.get("owned_by"),
+                capabilities = _model_capability_names(m),
             )
             for m in models
         ]

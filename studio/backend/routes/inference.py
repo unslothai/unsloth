@@ -3960,7 +3960,6 @@ from core.inference.providers import (
 from core.inference.external_provider import (
     ExternalProviderClient,
     _is_openai_family_cloud,
-    caches_at_the_last_block,
 )
 from core.inference.external_tool_transport import OAICompatTransport
 from core.inference.sse_control_frames import (
@@ -3982,13 +3981,11 @@ import base64
 import zlib
 
 from utils.current_date_prompt_settings import (
-    CURRENT_DATE_PROMPT_LINE_RE,
     CURRENT_DATE_PROMPT_PREFIX,
-    CURRENT_DATE_UPDATE_NOTE_RE,
-    CURRENT_DATE_UPDATE_PREFIX,
+    PROBE_TOOLS,
     contains_current_date_prompt_line,
-    conversation_start_date,
     current_date_prompt_line,
+    template_system_turn,
     replace_current_date_prompt_lines,
 )
 
@@ -5588,6 +5585,17 @@ def _cancelable_nonstreaming_client() -> httpx.AsyncClient:
     )
 
 
+class _NonStreamingRequestCancelled(Exception):
+    """Internal signal for an expected non-streaming cancel/disconnect."""
+
+    __slots__ = ()
+
+
+def _raise_if_nonstreaming_request_cancelled(cancel_event) -> None:
+    if cancel_event is not None and cancel_event.is_set():
+        raise _NonStreamingRequestCancelled("Request cancelled.")
+
+
 async def _await_cancel_or_disconnect_then_close_client(
     *, cancel_event, request: Optional[Request], client: httpx.AsyncClient
 ) -> None:
@@ -6508,123 +6516,98 @@ def _wants_current_date(request: Any) -> bool:
     return not _request_has_api_key(request)
 
 
-def _current_date_parts(request: Any, thread_id: Any) -> tuple[str, str]:
-    """(system line, user-turn note); a thread keeps its start date so its cached prefix survives."""
-    date_line = current_date_prompt_line(request = request)
-    if not date_line or not thread_id or request is None or not _wants_current_date(request):
-        return date_line, ""
-    today = CURRENT_DATE_PROMPT_LINE_RE.fullmatch(date_line)
-    started = conversation_start_date(thread_id, request) if today else None
-    if started is None:
-        return date_line, ""
-    today_iso = date_line[len(CURRENT_DATE_PROMPT_PREFIX) : -1]
-    # a browser clock running ahead can stamp a future creation day; never state a later "start".
-    if started.isoformat() >= today_iso:
-        return date_line, ""
-    return (
-        f"{CURRENT_DATE_PROMPT_PREFIX}{started.isoformat()}.",
-        f"{CURRENT_DATE_UPDATE_PREFIX}{today_iso}]",
-    )
-
-
 def _date_gate_blocks(request: Any, include_api_key: bool) -> bool:
     if request is not None and not _wants_current_date(request):
         return not include_api_key or _request_is_internal_workflow(request)
     return False
 
 
-def _is_folded_tool_json(text: Any) -> bool:
-    if not isinstance(text, str) or not text.lstrip().startswith("{"):
-        return False
+def _local_chat_template(image: bool = False, tools: bool = False) -> Optional[str]:
+    """The template the loaded local model renders this chat with, if any."""
     try:
-        parsed = json.loads(text)
-    except ValueError:
-        return False
-    return isinstance(parsed, dict) and "tool_response" in parsed
-
-
-def _is_folded_tool_result(content: Any) -> bool:
-    # only a turn that is ALL folded result: a follow-up coalesced onto one is the user's text.
-    if isinstance(content, list):
-        texts = [
-            p.get("text")
-            for p in content
-            if isinstance(p, dict) and isinstance(p.get("text"), str) and p["text"].strip()
-        ]
-        return bool(texts) and all(_is_folded_tool_json(t) for t in texts)
-    return _is_folded_tool_json(content)
-
-
-def _append_current_date_note(
-    messages: list[dict],
-    request: Any = None,
-    *,
-    include_api_key: bool = False,
-    thread_id: Any = None,
-    note: str | None = None,
-    system_prompt: str | None = None,
-    oldest: bool = False,
-) -> list[dict]:
-    """Lead the newest user turn with the date-change note; earlier turns keep their own bytes."""
-    if note is None:
-        if _date_gate_blocks(request, include_api_key):
-            return messages
-        date_line, note = _current_date_parts(request, thread_id)
-        if system_prompt == "" and CURRENT_DATE_PROMPT_LINE_RE.fullmatch(date_line):
-            # the first turn stands in for the system line, so the cached prefix survives.
-            messages = _append_current_date_note(messages, note = note)
-            note = f"{CURRENT_DATE_UPDATE_PREFIX}{date_line[len(CURRENT_DATE_PROMPT_PREFIX) : -1]}]"
-            oldest = True
-    if not note:
-        return messages
-    for index in range(len(messages)) if oldest else range(len(messages) - 1, -1, -1):
-        msg = messages[index]
-        if not isinstance(msg, dict) or msg.get("role") != "user":
-            continue
-        content = msg.get("content")
-        if _is_folded_tool_result(content):
-            continue
-        if isinstance(content, str):
-            if content.startswith(note) or (oldest and CURRENT_DATE_UPDATE_NOTE_RE.match(content)):
-                return messages
-            new_content: Any = f"{note}\n\n{content}"
-            has_text = bool(content.strip())
-        elif isinstance(content, list):
-            if content and all(
-                isinstance(p, dict) and p.get("type") == "tool_result" for p in content
-            ):
-                continue
-            first = next(
-                (
-                    i
-                    for i, p in enumerate(content)
-                    if isinstance(p, dict) and isinstance(p.get("text"), str) and p["text"].strip()
-                ),
-                None,
-            )
-            has_text = first is not None
-            if has_text and (
-                content[first]["text"].startswith(note)
-                or (oldest and CURRENT_DATE_UPDATE_NOTE_RE.match(content[first]["text"]))
-            ):
-                return messages
-            new_content = list(content)
-            if has_text:
-                new_content[first] = {
-                    **content[first],
-                    "text": f"{note}\n\n{content[first]['text']}",
-                }
+        llama = get_llama_cpp_backend()
+        if llama.is_loaded:
+            template = llama.chat_template_override or llama.chat_template
         else:
-            continue
-        # a media-only turn falls back to "transcribe" / "describe" defaults the note would replace.
-        if not has_text:
-            if oldest:
-                continue
-            return messages
-        copied = list(messages)
-        copied[index] = {**msg, "content": new_content}
-        return copied
-    return messages
+            from core.inference.orchestrator import peek_inference_backend
+
+            backend = peek_inference_backend()
+            info = (backend.models.get(backend.active_model_name) or {}) if backend else {}
+            template_info = info.get("chat_template_info") or {}
+            # an image or clip renders through the processor's template, as generation picks it.
+            template = template_info.get("processor_template") if image else None
+            if template is None:
+                template = info.get("chat_template_override_requested")
+                if (
+                    not isinstance(template, str)
+                    or not template.strip()
+                    or info.get("chat_template_override_reason")
+                ):
+                    # a text render installs the mapped template at generate time, when there is one.
+                    mapped = None if image else template_info.get("mapped_template")
+                    template = mapped or template_info.get("template")
+        from core.inference.chat_template_helpers import _selected_template_strings_from_value
+
+        # a tool request renders a named template's tool_use body; a processor never picks it.
+        selected = _selected_template_strings_from_value(
+            template, PROBE_TOOLS if tools else None, prefer_tool_use = not image
+        )
+    except Exception:
+        return None
+    return selected[0] if selected else None
+
+
+def _local_managed_engine() -> bool:
+    try:
+        if get_llama_cpp_backend().is_loaded:
+            return False
+        from core.inference.orchestrator import peek_inference_backend
+
+        backend = peek_inference_backend()
+        info = (backend.models.get(backend.active_model_name) or {}) if backend else {}
+    except Exception:
+        return False
+    return info.get("engine") in ("vllm", "sglang")
+
+
+# llama-server flags in the user's pass-through args that choose the template it renders, or how.
+_TEMPLATE_EXTRA_FLAGS = frozenset(
+    ("--chat-template", "--chat-template-file", "--chat-template-kwargs", "--no-jinja")
+)
+
+
+def _local_extra_args_pick_the_template() -> bool:
+    try:
+        llama = get_llama_cpp_backend()
+        args = (getattr(llama, "extra_args", None) or []) if llama.is_loaded else []
+    except Exception:
+        return False
+    return any(str(arg).split("=", 1)[0] in _TEMPLATE_EXTRA_FLAGS for arg in args)
+
+
+def _local_template_system_turn(
+    today: Any,
+    image: bool = False,
+    tools: bool = False,
+    controls: tuple = (),
+) -> tuple[bool, Optional[str]]:
+    if _local_managed_engine() or _local_extra_args_pick_the_template():
+        # the server renders a template Studio never sees, so nothing says a system turn is safe.
+        return False, None
+    return template_system_turn(_local_chat_template(image, tools), today, tools, controls)
+
+
+def _template_controls(payload: Any) -> tuple:
+    """The reasoning controls this request's chat template is rendered with."""
+    names = ("enable_thinking", "reasoning_effort", "preserve_thinking")
+    values = [getattr(payload, name, None) for name in names]
+    try:
+        llama = get_llama_cpp_backend()
+        if llama.is_loaded:
+            return tuple(sorted((llama._request_reasoning_kwargs(*values) or {}).items()))
+    except Exception:
+        pass
+    return tuple((name, value) for name, value in zip(names, values) if value is not None)
 
 
 def _apply_current_date_prompt(
@@ -6632,25 +6615,47 @@ def _apply_current_date_prompt(
     request: Any = None,
     *,
     include_api_key: bool = False,
-    thread_id: Any = None,
+    template_default: bool = True,
+    image: bool = False,
+    tools: bool = False,
+    controls: tuple = (),
 ) -> str:
     """Prefix the user's system prompt with the date when the setting is on.
 
     Kept ahead of the user's own text so a system prompt that ends in an instruction still reads
     as the last word to the model.
     """
-    # a system turn would displace the chat template's default one; the user-turn note carries it.
-    if not system_prompt and (request is None or _wants_current_date(request)):
-        return system_prompt
     if _date_gate_blocks(request, include_api_key):
         return system_prompt
-    date_line = _current_date_parts(request, thread_id)[0]
+    date_line = current_date_prompt_line(request = request)
     if not date_line:
         return system_prompt
     refreshed_prompt, stated, _ = _refresh_stated_date(system_prompt, date_line)
     if stated:
         return refreshed_prompt
+    if not system_prompt:
+        from datetime import date
+
+        today = date.fromisoformat(date_line[len(CURRENT_DATE_PROMPT_PREFIX) : -1])
+        takes_turn, default = _local_template_system_turn(today, image, tools, controls)
+        if not takes_turn or (template_default and default is None):
+            # no system turn renders here as the template's own would, and the date never goes into
+            # the user's own turns.
+            return ""
+        if template_default:
+            # a system turn displaces the chat template's default one, so carry that default along,
+            # rendered for the user's day rather than the server's.
+            system_prompt = default
     return f"{date_line}\n\n{system_prompt.lstrip()}" if system_prompt else date_line
+
+
+# The backends' own instruction for an audio turn that brings no system prompt, stated here so the
+# date goes ahead of it rather than replacing it.
+_AUDIO_INPUT_SYSTEM_PROMPT = "You are an assistant that transcribes speech accurately."
+
+
+def _audio_input_system_prompt(system_prompt: str, request: Any) -> str:
+    return _apply_current_date_prompt(system_prompt or _AUDIO_INPUT_SYSTEM_PROMPT, request)
 
 
 # Ollama applies the Modelfile SYSTEM only when `req.Messages[0].Role != "system"` (its
@@ -6665,7 +6670,6 @@ def _prepend_current_date_to_messages(
     *,
     include_api_key: bool = False,
     provider_type: str | None = None,
-    thread_id: Any = None,
 ) -> list[dict]:
     """Apply the date to an already-built message list for a provider Studio proxies to.
 
@@ -6676,10 +6680,9 @@ def _prepend_current_date_to_messages(
     """
     if _date_gate_blocks(request, include_api_key):
         return messages
-    date_line, note = _current_date_parts(request, thread_id)
+    date_line = current_date_prompt_line(request = request)
     if not date_line:
         return messages
-    messages = _append_current_date_note(messages, note = note)
     copied = [dict(msg) for msg in messages]
     stated = False
     refreshed = False
@@ -7908,18 +7911,17 @@ def _owner_chosen_launch(
     config_identifier = None,
     variant = None,
 ):
-    """Path args and custom configs the owner already chose for this model: its saved override
+    """Path args the owner already chose for this model: its saved override
     (written only through owner routes) and the resident same-model load (which passed this check
     or was the owner's). Replaying these is not a new path, so auto-switch loads and the UI resending
     an inherited or echoed setting keep working."""
-    from core.inference.llama_custom_config import parse_config_source
     from core.inference.llama_server_args import owner_only_path_args
     from utils.openai_auto_switch_settings import resolve_override_for_load
 
     sources = []
     if identifier:
         _, override = resolve_override_for_load(identifier, config_identifier, variant)
-        sources.append((override.get("llama_extra_args"), override.get("llama_cpp_config")))
+        sources.append(override.get("llama_extra_args"))
         intent = getattr(get_llama_cpp_backend(), "last_load_intent", None)
         if (
             intent is not None
@@ -7936,16 +7938,11 @@ def _owner_chosen_launch(
                 or (getattr(intent, "hf_variant", None) or "").casefold() == variant.casefold()
             )
         ):
-            sources.append(
-                (getattr(intent, "extra_args", None), getattr(intent, "llama_cpp_config", None))
-            )
+            sources.append(getattr(intent, "extra_args", None))
     pairs: set[tuple[str, str]] = set()
-    configs = []
-    for args, source in sources:
+    for args in sources:
         pairs.update(owner_only_path_args(args))
-        if source is not None:
-            configs.append(parse_config_source(source))
-    return pairs, configs
+    return pairs
 
 
 def _snapshot_repo_or_self(model_id, require_cache = False):
@@ -7977,7 +7974,6 @@ def _refuse_managed_custom_projector(
     identifier: Optional[str] = None,
     config_identifier: Optional[str] = None,
     variant: Optional[str] = None,
-    sent_config = None,
 ) -> None:
     """A pass-through path (projector, drafter, adapter, template, grammar...) skips account model
     access, so only the owner may name one. Values the owner already chose for this model pass."""
@@ -7988,11 +7984,7 @@ def _refuse_managed_custom_projector(
     found = owner_only_path_args(extra_args)
     if not found:
         return
-    owner_pairs, owner_configs = _owner_chosen_launch(identifier, config_identifier, variant)
-    if sent_config is not None:
-        from core.inference.llama_custom_config import parse_config_source
-        if parse_config_source(sent_config) in owner_configs:
-            return
+    owner_pairs = _owner_chosen_launch(identifier, config_identifier, variant)
     flags = list(dict.fromkeys(flag for flag, value in found if (flag, value) not in owner_pairs))
     if {"--mmproj", "-mm"} & set(flags):
         raise HTTPException(
@@ -8282,8 +8274,6 @@ def _llama_runtime_fields(llama_backend: LlamaCppBackend) -> dict:
         # running with no extras would come back carrying the arguments of the load
         # that just failed. None stays for "nothing was ever set", which is the only
         # case where inheriting is the right answer.
-        requested_llama_cpp_config = getattr(llama_backend, "requested_llama_cpp_config", None),
-        llama_cpp_config_summary = getattr(llama_backend, "llama_cpp_config_summary", None),
         requested_llama_extra_args = (
             None
             if llama_backend.is_diffusion
@@ -8345,15 +8335,9 @@ def _gguf_load_response(
         is_lora = False,
         is_gguf = True,
         is_local_model = is_local_model,
-        # A custom INI's sampling seeds the chat controls like a model recommendation.
-        inference = {
-            **load_inference_config(
-                inference_identifier or llama_backend.model_identifier or model
-            ),
-            **(getattr(llama_backend, "llama_cpp_config_summary", None) or {}).get(
-                "request_defaults", {}
-            ),
-        },
+        inference = load_inference_config(
+            inference_identifier or llama_backend.model_identifier or model
+        ),
         # Advisory, and None on nearly every load. Recorded by load_model when the
         # weights outgrow fast memory, so the client can say why generation is slow.
         # getattr: older/custom backend doubles predate this additive field.
@@ -11922,32 +11906,33 @@ def _effective_load_in_4bit(config: ModelConfig, requested: bool) -> bool:
     return load_in_4bit
 
 
+def _projector_survives_vision_off(mmproj_path: str) -> bool:
+    """Whether the Vision switch leaves *mmproj_path* loaded (audio-only projectors
+    stay). Unreadable reads as image-capable, hence suppressed, matching the loader."""
+    try:
+        from utils.models.gguf_metadata import mmproj_accepts_image
+        return not mmproj_accepts_image(str(mmproj_path))
+    except Exception as exc:
+        logger.debug(f"mmproj capability read failed: {exc}")
+        return False
+
+
 def _load_keeps_a_projector(config, *, disable_vision: bool) -> bool:
     """Whether the launch will actually open a projector for *config*.
 
-    The Vision switch turns IMAGES off, and llama_cpp.py keeps an audio-only
-    projector regardless because there is no image tower in it to drop. Only the
-    file's own metadata distinguishes the two, so this answers precisely when the
-    file is already on disk. A projector that is not (a remote repo, nothing
-    downloaded yet) reads as kept: the callers use this to decide whether the load
-    needs the GPU, and over-claiming is recoverable where under-claiming is not.
+    Answers precisely when the file is on disk. A projector that is not (a remote
+    repo, nothing downloaded yet) reads as kept: the callers use this to decide
+    whether the load needs the GPU, and over-claiming is recoverable where
+    under-claiming is not.
     """
     if not getattr(config, "is_vision", False):
         return False
     if not disable_vision:
         return True
-    mmproj = getattr(config, "gguf_mmproj_file", None)
-    if not mmproj:
-        return True
-    try:
-        from utils.models.gguf_metadata import mmproj_accepts_image
-
-        # Image-capable means the switch really does suppress it. Unreadable reads
-        # as image-capable upstream, which matches what the loader will do with it.
-        return not mmproj_accepts_image(str(mmproj))
-    except Exception as exc:
-        logger.debug(f"mmproj capability read failed: {exc}")
-        return False
+    mmproj = getattr(config, "gguf_mmproj_file", None) or getattr(
+        config, "gguf_local_mmproj_file", None
+    )
+    return True if not mmproj else _projector_survives_vision_off(str(mmproj))
 
 
 def _remote_gguf_companion_bytes(
@@ -11960,6 +11945,7 @@ def _remote_gguf_companion_bytes(
     include_dflash: bool = False,
     dspark_first: bool = False,
     weight_bytes: int = 0,
+    local_mmproj_bytes: int = 0,
 ) -> int:
     """Bytes of companion GGUFs the requested launch keeps resident. 0 on error.
 
@@ -11983,7 +11969,7 @@ def _remote_gguf_companion_bytes(
 
         # A refused token must not zero the companion bytes and slip past the training budget.
         info = call_hub_with_anonymous_retry(model_info, hf_token, repo, files_metadata = True)
-        total = 0
+        listed_mmproj_bytes = 0
         mtp_bytes = 0
         dspark_candidates: list[tuple[str, int]] = []
         dflash_sizes: dict[str, int] = {}
@@ -12003,7 +11989,7 @@ def _remote_gguf_companion_bytes(
             if include_mtp and is_root_mtp:
                 mtp_bytes += size
             elif include_mmproj and "mmproj" in base:
-                total += size
+                listed_mmproj_bytes += size
             if include_dspark and _is_dspark_drafter_path(name):
                 dspark_candidates.append((name, size))
             # Root level only, exactly as _download_dflash's picker is: a nested
@@ -12035,6 +12021,8 @@ def _remote_gguf_companion_bytes(
         # target too, so the guard stops charging for the oversized candidates the
         # fetch itself now refuses.
         dflash_bytes = dflash_budget_bytes(dflash_sizes, _gguf_extra_shards, weight_bytes)
+        # Alternatives, never both: the fetch uses the local one only when none is listed.
+        total = max(int(local_mmproj_bytes), listed_mmproj_bytes)
         if not dspark_first:
             return total + mtp_bytes + dspark_bytes + dflash_bytes
         if dspark_families:
@@ -12056,7 +12044,7 @@ def _remote_gguf_companion_bytes(
         return total + mtp_bytes
     except Exception as e:
         logger.warning(f"Could not size GGUF companions for {repo}: {e}")
-        return 0
+        return int(local_mmproj_bytes)
 
 
 # What an unreadable remote drafter costs the guard. Sized to the largest drafter
@@ -13108,17 +13096,9 @@ def _estimate_gguf_required_gb(
             _sized_attrs = []
         elif disable_vision:
             _dv_mmproj = _mmproj_override or getattr(config, "gguf_mmproj_file", None)
-            _dv_opens_projector = False
-            if _dv_mmproj:
-                try:
-                    from utils.models.gguf_metadata import mmproj_accepts_image
-
-                    # Kept for audio, so its bytes stay charged. An unreadable file
-                    # reads as image-capable upstream, hence suppressed and uncharged,
-                    # which matches what the loader will then do with it.
-                    _dv_opens_projector = not mmproj_accepts_image(str(_dv_mmproj))
-                except Exception as _dv_exc:
-                    logger.debug(f"mmproj capability read failed: {_dv_exc}")
+            _dv_opens_projector = bool(_dv_mmproj) and _projector_survives_vision_off(
+                str(_dv_mmproj)
+            )
             if not _dv_opens_projector:
                 _sized_attrs = []
         # A --mmproj in the extras last-wins at the child: the launch emits Studio's
@@ -13268,6 +13248,16 @@ def _estimate_gguf_required_gb(
             main_bytes = selected.size_bytes if selected is not None else None
             if main_bytes is None:
                 return None
+            _local_mmproj = getattr(config, "gguf_local_mmproj_file", None)
+            _local_mmproj_bytes = 0
+            # A --mmproj in the extras replaces it and is charged on its own.
+            if (
+                _local_mmproj
+                and _mmproj_override is None
+                and not extra_args_disable_mmproj(llama_extra_args)
+            ):
+                if not disable_vision or _projector_survives_vision_off(str(_local_mmproj)):
+                    _local_mmproj_bytes = LlamaCppBackend._get_gguf_size_bytes(str(_local_mmproj))
             companions = _remote_gguf_companion_bytes(
                 repo,
                 hf_token = hf_token,
@@ -13291,6 +13281,8 @@ def _estimate_gguf_required_gb(
                 # What the DFlash bound measures candidates against, so the guard stops
                 # charging for weights the fetch refuses as too big to be a drafter.
                 weight_bytes = int(main_bytes or 0),
+                # Hand-added (#9286): invisible to the listing, still resident.
+                local_mmproj_bytes = _local_mmproj_bytes,
                 # ... except where the listing settles it. Auto launches exactly
                 # one drafter, in a fixed order, so once the listing says which
                 # kinds the repo has, charging the losers is not caution, it is a
@@ -13672,7 +13664,10 @@ def _localized_estimate_config(config: ModelConfig, gguf_path: str) -> ModelConf
     search_root = _local_gguf_companion_search_root(gguf_path, gguf_path)
     try:
         if getattr(local, "is_vision", False) and not local.gguf_mmproj_file:
-            local.gguf_mmproj_file = detect_mmproj_file(gguf_path, search_root)
+            # A hand-added one may sit above the snapshot, past this search root (#9286).
+            local.gguf_mmproj_file = detect_mmproj_file(gguf_path, search_root) or getattr(
+                local, "gguf_local_mmproj_file", None
+            )
         if not local.gguf_mtp_file:
             local.gguf_mtp_file = detect_mtp_file(gguf_path, search_root)
         if not local.gguf_dspark_file:
@@ -15659,8 +15654,6 @@ async def _prepare_load_placement(
     request: LoadRequest | ValidateModelRequest,
     extra_args: Optional[list[str]],
 ) -> _LoadPlacement:
-    if _custom_llama_config(request):
-        return _LoadPlacement(None, None, False, _classify_diffusion_gguf(config))
     requested = request.gpu_ids or None
     if not config.is_gguf:
         return _LoadPlacement(requested, None, False, False)
@@ -16125,12 +16118,6 @@ def _guard_chat_load_against_training(
             )
         return
 
-    if _custom_llama_config(request):
-        raise HTTPException(
-            status_code = 409,
-            detail = "Custom llama.cpp placement cannot be verified beside active training. Stop training before loading this configuration.",
-        )
-
     from core.inference.llama_cpp import _diffusion_manual_ngl, _scale_diffusion_required_gb
 
     is_gguf = bool(getattr(config, "is_gguf", False))
@@ -16354,76 +16341,6 @@ def _guard_chat_load_against_training(
     raise HTTPException(status_code = 409, detail = detail)
 
 
-def _custom_llama_config(request) -> bool:
-    source = getattr(request, "llama_cpp_config", None)
-    return isinstance(source, dict) and source.get("mode") == "custom"
-
-
-def _resolve_llama_cpp_config(
-    request,
-    config = None,
-    model_identifier = None,
-):
-    """Request's own source, else this model row's saved override, else the resident same-model load's."""
-    from core.inference.llama_custom_config import parse_config_source
-    from utils.openai_auto_switch_settings import resolve_override_for_load
-
-    source = getattr(request, "llama_cpp_config", None)
-    identifier = model_identifier or request.model_path
-    variant = getattr(request, "gguf_variant", None) or getattr(config, "gguf_variant", None)
-    if source is None:
-        _, override = resolve_override_for_load(
-            identifier, getattr(config, "identifier", None), variant
-        )
-        source = override.get("llama_cpp_config")
-    if source is None:
-        resident = get_llama_cpp_backend()
-        intent = getattr(resident, "last_load_intent", None)
-        if (
-            intent is not None
-            and _same_loaded_identifier(getattr(intent, "model_identifier", None), identifier)
-            and (getattr(intent, "hf_variant", None) or "").casefold() == (variant or "").casefold()
-        ):
-            source = getattr(intent, "llama_cpp_config", None)
-    if source is None:
-        return request
-    source = parse_config_source(source)
-    return request.model_copy(update = {"llama_cpp_config": source.to_wire()})
-
-
-async def _preflight_custom_llama_config(
-    request,
-    config,
-    *,
-    caller_sent_custom = False,
-):
-    """Compile a custom config before any backend or GPU owner can be evicted. A config the caller
-    sent itself (not the owner's saved override) is held to the same path rules as pass-through args."""
-    if not _custom_llama_config(request):
-        return None
-    if not config.is_gguf or _classify_diffusion_gguf(config) is True:
-        raise HTTPException(
-            status_code = 400,
-            detail = "Custom llama.cpp configuration needs a GGUF chat model.",
-        )
-    intent = GgufLoadIntent(
-        model_identifier = config.identifier, llama_cpp_config = request.llama_cpp_config
-    )
-    try:
-        compiled = await asyncio.to_thread(get_llama_cpp_backend().prepare_custom_config, intent)
-    except ValueError as exc:
-        raise HTTPException(status_code = 400, detail = redact_native_paths(str(exc))) from exc
-    if caller_sent_custom:
-        _refuse_managed_custom_projector(
-            list(compiled.argv),
-            request.model_path,
-            getattr(request, "_override_alias_id", None) or config.identifier,
-            getattr(request, "gguf_variant", None) or getattr(config, "gguf_variant", None),
-            sent_config = request.llama_cpp_config,
-        )
-    return compiled
-
-
 def _resolve_inherited_extra_args(
     request,
     config: ModelConfig,
@@ -16434,8 +16351,6 @@ def _resolve_inherited_extra_args(
     """Effective pass-through extras for a GGUF request that omitted the field:
     the previous same-model load's extras, shadow-stripped, so a settings-Apply
     reload (which does not round-trip the extras field) keeps them (#5401)."""
-    if _custom_llama_config(request):
-        return []
     if getattr(request, "llama_extra_args", None) is not None:
         return extra_llama_args
     if not getattr(config, "is_gguf", False):
@@ -17980,27 +17895,17 @@ async def _load_model_impl(
     gguf_load_stack = ExitStack()
     token_rejections = gguf_load_stack.enter_context(collecting_hub_token_rejections())
     try:
-        requested_llama_cpp_config = request.llama_cpp_config
-
         # Validate user pass-through args up front so a managed-flag collision
-        # returns 400 before any model work. Custom mode launches without them.
-        def _validated_extra_args(req):
-            if _custom_llama_config(req):
-                return []
-            try:
-                return validate_extra_args(req.llama_extra_args)
-            except ValueError as exc:
-                # Keep the curated validation message (names the flag); just strip paths.
-                logger.warning("inference.validate_extra_args_failed: %s", exc)
-                raise HTTPException(
-                    status_code = 400,
-                    detail = redact_native_paths(str(exc)),
-                )
-
-        extra_llama_args = _validated_extra_args(request)
-        request = _resolve_llama_cpp_config(request)
-        if _custom_llama_config(request):
-            extra_llama_args = []
+        # returns 400 before any model work.
+        try:
+            extra_llama_args = validate_extra_args(request.llama_extra_args)
+        except ValueError as exc:
+            # Keep the curated validation message (names the flag); just strip paths.
+            logger.warning("inference.validate_extra_args_failed: %s", exc)
+            raise HTTPException(
+                status_code = 400,
+                detail = redact_native_paths(str(exc)),
+            )
         # Re-narrow []-from-None back to None so the inheritance path below can
         # tell "caller omitted" from "caller explicit []".
         extra_llama_args: Optional[list[str]] = (
@@ -18192,12 +18097,7 @@ async def _load_model_impl(
             )
 
         is_direct_gguf_request = model_identifier.lower().endswith(".gguf")
-        if (
-            llama_backend.is_loaded
-            and (request.gguf_variant or is_direct_gguf_request)
-            and getattr(request, "llama_cpp_config", None) is None
-            and getattr(llama_backend, "requested_llama_cpp_config", None) is None
-        ):
+        if llama_backend.is_loaded and (request.gguf_variant or is_direct_gguf_request):
             reused = _reuse_loaded_gguf(
                 _active_gguf_intent(
                     request,
@@ -18215,9 +18115,7 @@ async def _load_model_impl(
                 if not llama_backend.holds_no_vram:
                     await asyncio.to_thread(acquire_for_request, CHAT)
                 return reused
-        if not (request.gguf_variant or is_direct_gguf_request) and not _custom_llama_config(
-            request
-        ):
+        if not (request.gguf_variant or is_direct_gguf_request):
             _inherit_resident_load_in_4bit(backend, request, model_identifier)
             if (
                 _same_loaded_identifier(backend.active_model_name, model_identifier)
@@ -18343,22 +18241,6 @@ async def _load_model_impl(
                 detail = f"Invalid model identifier: {model_log_label}",
             )
         await asyncio.to_thread(_require_resolved_base_access, config)
-
-        request = _resolve_llama_cpp_config(
-            request.model_copy(update = {"llama_cpp_config": requested_llama_cpp_config}),
-            config,
-            public_model_identifier,
-        )
-        extra_llama_args = _validated_extra_args(request)
-        custom_compiled = await _preflight_custom_llama_config(
-            request,
-            config,
-            caller_sent_custom = isinstance(requested_llama_cpp_config, dict)
-            and requested_llama_cpp_config.get("mode") == "custom",
-        )
-        if custom_compiled is not None:
-            _n_parallel = custom_compiled.n_parallel or _n_parallel
-            effective_chat_template_override = None
 
         # Resolve inherited extras once before command-dependent preflights.
         extra_llama_args = _resolve_inherited_extra_args(
@@ -18610,8 +18492,6 @@ async def _load_model_impl(
                 request.speculative_type,
             )
         )
-        if custom_compiled is not None:
-            chat_load_needs_gpu = not custom_compiled.cpu_only
         # Ahead of the arbiter: acquire_for evicts a resident Images/Video pipeline and the
         # confirmation below cancels the running generations, both before load_model's own
         # copy of this check runs. A header-sized read spares them. Fails open into that copy.
@@ -18826,18 +18706,13 @@ async def _load_model_impl(
             # loading; the response reports the backend's actual tensor_parallel
             # state so the UI toggle reflects the fallback.
             try:
-                if custom_compiled is not None:
-                    success = await _run_gguf_load_attempt(
-                        llama_backend, load_intent, load_cancel_event
-                    )
-                else:
-                    success = await load_with_tensor_fallback(
-                        _attempt_gguf_load,
-                        requested_tensor = request.tensor_parallel,
-                        extra_args = extra_llama_args,
-                        label = config.identifier,
-                        cancelled = lambda: _gguf_load_cancelled(llama_backend, load_cancel_event),
-                    )
+                success = await load_with_tensor_fallback(
+                    _attempt_gguf_load,
+                    requested_tensor = request.tensor_parallel,
+                    extra_args = extra_llama_args,
+                    label = config.identifier,
+                    cancelled = lambda: _gguf_load_cancelled(llama_backend, load_cancel_event),
+                )
             except Exception:
                 # A GGUF load can raise before tearing down the old llama-server (e.g. an
                 # update-in-progress guard fires before _kill_process), leaving the prior
@@ -19523,14 +19398,6 @@ async def validate_model(
             _reject_unsupported_managed_kind(request, config)
             await _managed_engine_options(request, config, request.hf_token)
 
-        caller_sent_custom = _custom_llama_config(request)
-        request = _resolve_llama_cpp_config(
-            request, config, _public_model_identifier(request.model_path, model_identifier)
-        )
-        custom_compiled = await _preflight_custom_llama_config(
-            request, config, caller_sent_custom = caller_sent_custom
-        )
-
         # The caller's own list when it sent one, or the resolver hands back this
         # fourth argument unchanged and a --ctx-size the load is about to use would
         # be missing from the estimate that approves it.
@@ -19837,9 +19704,6 @@ async def validate_model(
         return restore_inventory_handles(
             ValidateModelResponse(
                 valid = True,
-                llama_cpp_config_summary = custom_compiled.summary()
-                if custom_compiled is not None
-                else None,
                 message = " ".join(
                     ["Model identifier is valid."] + _hub_access_warnings(token_rejections)
                 ),
@@ -20542,9 +20406,6 @@ async def estimate_memory(
         strip_split_mode_only,
     )
 
-    request = _resolve_llama_cpp_config(request)
-    if _custom_llama_config(request):
-        return EstimateMemoryResponse(available = False, reason = "unsizable")
     # Sizing reads the files those flags name, so a path the load would refuse
     # is not sized either (the panel shows "unsizable", not an error).
     try:
@@ -27576,7 +27437,6 @@ async def _proxy_to_external_provider(
             chat_messages,
             request,
             include_api_key = bool(studio_tool_payloads),
-            thread_id = getattr(payload, "thread_id", None),
         )
         cancel_event = threading.Event()
         cancel_keys = tuple(
@@ -27949,10 +27809,6 @@ async def _proxy_to_external_provider(
         request,
         include_api_key = run_studio_tool_loop,
         provider_type = None if _external_nudge else provider_type,
-        # a thread's date note would sit on the cache breakpoint and move off it next turn.
-        thread_id = None
-        if caches_at_the_last_block(provider_type, model, payload.enable_prompt_caching)
-        else getattr(payload, "thread_id", None),
     )
     if _external_nudge:
         chat_messages = _append_to_system_message(chat_messages, _external_nudge)
@@ -28822,19 +28678,6 @@ async def delete_openai_container(
         await client.close()
 
 
-def _custom_request_defaults(model_id) -> dict:
-    backend = get_llama_cpp_backend()
-    summary = getattr(backend, "llama_cpp_config_summary", None)
-    if not isinstance(summary, dict) or not _same_loaded_identifier(
-        getattr(backend, "model_identifier", None), model_id
-    ):
-        return {}
-    defaults = dict(summary.get("request_defaults") or {})
-    if "repeat_penalty" in defaults:
-        defaults["repetition_penalty"] = defaults.pop("repeat_penalty")
-    return defaults
-
-
 _REASONING_EFFORT_VALUES = {"none", "minimal", "low", "medium", "high", "max", "xhigh"}
 
 
@@ -28945,9 +28788,7 @@ def _fill_recommended_sampling_openai(payload, model_id) -> None:
         f: (getattr(payload, f) if f in payload.model_fields_set else None)
         for f in SAMPLING_FIELD_NAMES
     }
-    effective = resolve_effective_sampling(
-        model_id, explicit, preset_defaults = _custom_request_defaults(model_id)
-    )
+    effective = resolve_effective_sampling(model_id, explicit)
     for field, value in effective.items():
         setattr(payload, field, value)
 
@@ -28972,9 +28813,7 @@ def _fill_recommended_sampling_completions(body: dict, model_id) -> None:
     from utils.inference.inference_config import resolve_effective_sampling, SAMPLING_FIELD_NAMES
 
     explicit = {f: body.get(_COMPLETIONS_SAMPLING_BODY_KEY.get(f, f)) for f in SAMPLING_FIELD_NAMES}
-    effective = resolve_effective_sampling(
-        model_id, explicit, fill_defaults = False, preset_defaults = _custom_request_defaults(model_id)
-    )
+    effective = resolve_effective_sampling(model_id, explicit, fill_defaults = False)
     for field, value in effective.items():
         body[_COMPLETIONS_SAMPLING_BODY_KEY.get(field, field)] = value
 
@@ -29683,15 +29522,7 @@ async def produce_openai_chat_completions(
                 system_prompt, chat_messages, _ = await _extract_content_parts_async(
                     payload.messages
                 )
-                system_prompt = _apply_current_date_prompt(
-                    system_prompt, request, thread_id = getattr(payload, "thread_id", None)
-                )
-                chat_messages = _append_current_date_note(
-                    chat_messages,
-                    request,
-                    thread_id = getattr(payload, "thread_id", None),
-                    system_prompt = system_prompt,
-                )
+                system_prompt = _audio_input_system_prompt(system_prompt, request)
             except _DecodedAudioTooLongError as e:
                 # A limit the caller can act on, not a server fault.
                 api_monitor.fail(monitor_id, str(e))
@@ -30154,14 +29985,20 @@ async def produce_openai_chat_completions(
             payload.messages, keep_tool_images = True
         )
     # applied once so both backends inherit it, with or without tools, and never state it twice.
-    system_prompt = _apply_current_date_prompt(
-        system_prompt, request, thread_id = getattr(payload, "thread_id", None)
+    _user_system_prompt = system_prompt
+    # what makes generation render through the processor's template: an attachment, a clip, or an
+    # MCP picture it really promotes, checked off the loop as the envelope can be 12 MB.
+    _renders_media = (
+        _request_has_attached_image(payload)
+        or _request_has_video(payload)
+        or (
+            _request_has_promotable_mcp_images(payload, exact = False)
+            and await asyncio.to_thread(_request_has_promotable_mcp_images, payload)
+        )
     )
-    chat_messages = _append_current_date_note(
-        chat_messages,
-        request,
-        thread_id = getattr(payload, "thread_id", None),
-        system_prompt = system_prompt,
+    _date_controls = _template_controls(payload)
+    system_prompt = _apply_current_date_prompt(
+        system_prompt, request, image = _renders_media, controls = _date_controls
     )
 
     if not chat_messages:
@@ -30233,12 +30070,6 @@ async def produce_openai_chat_completions(
             _gguf_replayed_image_parts,
         )
         gguf_messages = _set_or_prepend_system_message(gguf_messages, system_prompt)
-        gguf_messages = _append_current_date_note(
-            gguf_messages,
-            request,
-            thread_id = getattr(payload, "thread_id", None),
-            system_prompt = system_prompt,
-        )
         image_b64 = None
         for audio_b64, audio_format in prepared_audio:
             _inject_audio_part(gguf_messages, audio_b64, audio_format)
@@ -30389,11 +30220,14 @@ async def produce_openai_chat_completions(
                 )
             if _wants_multiple_choices(payload):
                 raise _reject_unsupported_n("GGUF tool chat completions")
+            # main's tool turn: the date and the caller's prompt, not the template's chat default.
             system_prompt = _apply_current_date_prompt(
-                system_prompt,
+                _user_system_prompt,
                 request,
                 include_api_key = True,
-                thread_id = getattr(payload, "thread_id", None),
+                template_default = False,
+                tools = True,
+                controls = _date_controls,
             )
             gguf_messages = _set_or_prepend_system_message(gguf_messages, system_prompt)
             # ── Tool-use system prompt nudge ──────────────────────
@@ -32083,12 +31917,6 @@ async def produce_openai_chat_completions(
             payload.messages, _legacy_distinct
         ):
             chat_messages, served_images = _msgs, _payloads
-            chat_messages = _append_current_date_note(
-                chat_messages,
-                request,
-                thread_id = getattr(payload, "thread_id", None),
-                system_prompt = system_prompt,
-            )
 
     # Decode image (from content parts OR legacy field)
     image_b64 = extracted_image_b64 or payload.image_base64
@@ -32118,13 +31946,6 @@ async def produce_openai_chat_completions(
             )
             if message.get("role") not in ("system", "developer")
         ]
-        # Rebuilt from the payload, so the date note added to the original messages is gone.
-        chat_messages = _append_current_date_note(
-            chat_messages,
-            request,
-            thread_id = getattr(payload, "thread_id", None),
-            system_prompt = system_prompt,
-        )
         if any(
             isinstance(message.get("content"), list)
             and any(part.get("type") == "image_url" for part in message["content"])
@@ -32530,10 +32351,13 @@ async def produce_openai_chat_completions(
         _sf_nudge = _apply_compaction_nudge(_sf_nudge, _sf_tools_to_use)
 
         _sf_system_prompt = _apply_current_date_prompt(
-            system_prompt,
+            _user_system_prompt,
             request,
             include_api_key = True,
-            thread_id = getattr(payload, "thread_id", None),
+            template_default = False,
+            image = _sf_has_any_image or _video_clip is not None,
+            tools = True,
+            controls = _date_controls,
         )
         if _sf_nudge:
             if _sf_system_prompt:
@@ -33166,6 +32990,34 @@ async def produce_openai_chat_completions(
         # Re-derive from payload.messages so tool_calls / role="tool" history
         # survives templating; fold system/developer into one leading system
         # message (templates reject "developer") and clear prompt to avoid a dup.
+        #
+        # tool_choice="none": keep history templating but advertise no tools
+        # (heal_gate is off, markup would relay as prose). A forced function
+        # narrows templating to that one schema. Both mirror the GGUF path,
+        # where llama-server honors tool_choice itself.
+        _sf_tc = payload.tool_choice
+        _sf_forced = None
+        if isinstance(_sf_tc, dict) and isinstance(_sf_tc.get("function"), dict):
+            _sf_forced = _sf_tc["function"].get("name")
+        if _sf_tc == "none":
+            _sf_client_catalog = None
+        elif isinstance(_sf_forced, str):
+            _sf_client_catalog = [
+                t
+                for t in payload.tools or []
+                if isinstance(t, dict)
+                and isinstance(t.get("function"), dict)
+                and t["function"].get("name") == _sf_forced
+            ] or None
+        else:
+            _sf_client_catalog = payload.tools
+        _sf_client_system_prompt = _apply_current_date_prompt(
+            _user_system_prompt,
+            request,
+            image = _sf_has_any_image or _video_clip is not None,
+            tools = bool(_sf_client_catalog),
+            controls = _date_controls,
+        )
         if served_images:
             # One pass over the conversation this renders, so markers and payloads stay in step.
             _sf_rebuilt, _sf_payloads = _conversation_with_image_markers(
@@ -33183,13 +33035,8 @@ async def produce_openai_chat_completions(
             gen_kwargs["images"] = await _decode_request_images(
                 backend, _sf_rebuilt_images, dict(zip(served_images, images)), reject = _reject
             )
-            gen_kwargs["messages"] = _append_current_date_note(
-                _set_or_prepend_system_message(
-                    _structured_tool_history_for_local_template(_sf_rebuilt), system_prompt
-                ),
-                request,
-                thread_id = getattr(payload, "thread_id", None),
-                system_prompt = system_prompt,
+            gen_kwargs["messages"] = _set_or_prepend_system_message(
+                _structured_tool_history_for_local_template(_sf_rebuilt), _sf_client_system_prompt
             )
         else:
             #
@@ -33213,11 +33060,8 @@ async def produce_openai_chat_completions(
                 trim_mcp_image_turns(
                     _sf_rebuilt, _sf_rebuilt_images, limit = _MCP_MAX_TOTAL_MODEL_IMAGES - 1
                 )
-            gen_kwargs["messages"] = _append_current_date_note(
-                _set_or_prepend_system_message(_sf_rebuilt, system_prompt),
-                request,
-                thread_id = getattr(payload, "thread_id", None),
-                system_prompt = system_prompt,
+            gen_kwargs["messages"] = _set_or_prepend_system_message(
+                _sf_rebuilt, _sf_client_system_prompt
             )
             gen_kwargs["images"] = _sf_rebuilt_images or None
         # Mark the turn that owns the image so the newest-user-turn scan does not move an
@@ -33232,26 +33076,7 @@ async def produce_openai_chat_completions(
                     gen_kwargs["messages"], _sf_image_ordinal
                 )
         gen_kwargs["system_prompt"] = ""
-        # tool_choice="none": keep history templating but advertise no tools
-        # (heal_gate is off, markup would relay as prose). A forced function
-        # narrows templating to that one schema. Both mirror the GGUF path,
-        # where llama-server honors tool_choice itself.
-        _sf_tc = payload.tool_choice
-        _sf_forced = None
-        if isinstance(_sf_tc, dict) and isinstance(_sf_tc.get("function"), dict):
-            _sf_forced = _sf_tc["function"].get("name")
-        if _sf_tc == "none":
-            gen_kwargs["tools"] = None
-        elif isinstance(_sf_forced, str):
-            gen_kwargs["tools"] = [
-                t
-                for t in payload.tools or []
-                if isinstance(t, dict)
-                and isinstance(t.get("function"), dict)
-                and t["function"].get("name") == _sf_forced
-            ] or None
-        else:
-            gen_kwargs["tools"] = payload.tools
+        gen_kwargs["tools"] = _sf_client_catalog
     elif _sf_renders_image and not sf_mcp_images:
         # The plain route too: later turns then share the prefix that holds the image.
         #
@@ -34103,14 +33928,84 @@ async def list_sandbox_files(
     return {"path": sandbox_dir, "files": files}
 
 
+def _sandbox_regular_file(session_id: str, filename: str) -> tuple[str, str]:
+    """(sandbox_dir, contained path) of a regular (not linked) file in the sandbox, or a 404."""
+    import stat as _stat
+
+    sandbox_dir, path = _contained_sandbox_path(session_id, filename)
+    try:
+        entry = os.lstat(path)
+    except OSError:
+        raise HTTPException(status_code = 404, detail = "Not found") from None
+    if not _stat.S_ISREG(entry.st_mode):
+        raise HTTPException(status_code = 404, detail = "Not found")
+    return sandbox_dir, path
+
+
+def _unmoved_sandbox_file(root: str, path: str) -> str:
+    """``path`` resolved, if it still names the same file under ``root``; a link swapped in since
+    the check is refused, since a reveal hands the file manager a name."""
+    try:
+        real = os.path.realpath(path)
+        expected = os.path.relpath(os.path.abspath(path), os.path.abspath(root))
+        actual = os.path.relpath(real, os.path.realpath(root))
+    except ValueError:
+        raise FileNotFoundError(path) from None
+    if expected != actual or actual.startswith(os.pardir) or not os.path.isfile(real):
+        raise FileNotFoundError(path)
+    return real
+
+
+@router.post("/sandbox/{session_id}/open")
+async def open_sandbox_file(
+    session_id: str,
+    request: Request,
+    file: str,
+    token: Optional[str] = None,
+    session: Optional[str] = None,
+):
+    """Open one of this chat's sandbox files with the OS default app.
+
+    Like reveal, this is the backend host's desktop, so it only means anything in
+    the desktop app. Only document and media types open: the files are
+    model-written, and a script or app would run rather than be viewed.
+    """
+    await _authenticate_header_or_query(request, token)
+    # It launches an app on the host's desktop, like the library and model reveals.
+    account_access.require_installation_owner()
+
+    from pathlib import Path
+
+    from starlette.concurrency import run_in_threadpool
+
+    from utils.paths.path_utils import open_in_default_app
+
+    root, path = await run_in_threadpool(_sandbox_regular_file, session or session_id, file)
+    try:
+        await run_in_threadpool(open_in_default_app, Path(path), Path(root))
+    except PermissionError:
+        raise HTTPException(
+            status_code = 415, detail = "This kind of file does not open outside Studio"
+        ) from None
+    except FileNotFoundError:
+        raise HTTPException(status_code = 404, detail = "Not found") from None
+    except Exception:
+        logger.error(f"Failed to open sandbox file {path}", exc_info = True)
+        raise HTTPException(status_code = 500, detail = "Failed to open the file") from None
+    return {"status": "ok"}
+
+
 @router.post("/sandbox/{session_id}/reveal")
 async def reveal_sandbox_dir(
     session_id: str,
     request: Request,
     token: Optional[str] = None,
     session: Optional[str] = None,
+    file: Optional[str] = None,
 ):
     """Open this chat's sandbox directory in the OS file manager.
+
+    With ``file``, that file is selected in its folder instead.
 
     The file manager is the backend host's, so this only means anything when the
     backend runs on the user's own machine, which is the desktop app.
@@ -34118,6 +34013,25 @@ async def reveal_sandbox_dir(
     await _authenticate_header_or_query(request, token)
 
     from starlette.concurrency import run_in_threadpool
+
+    if file:
+        # Like open: it drives the host's desktop, so only its owner may.
+        account_access.require_installation_owner()
+
+        from pathlib import Path
+
+        from utils.paths.path_utils import reveal_in_file_manager
+
+        root, path = await run_in_threadpool(_sandbox_regular_file, session or session_id, file)
+        try:
+            real = await run_in_threadpool(_unmoved_sandbox_file, root, path)
+            await run_in_threadpool(reveal_in_file_manager, Path(real))
+        except FileNotFoundError:
+            raise HTTPException(status_code = 404, detail = "Not found") from None
+        except Exception:
+            logger.error(f"Failed to reveal sandbox file {path}", exc_info = True)
+            raise HTTPException(status_code = 500, detail = "Failed to open file manager") from None
+        return {"status": "ok", "path": path}
 
     def _resolve_existing() -> "str | None":
         sandbox_dir = _sandbox_dir_for(session or session_id, create = False)
@@ -35124,6 +35038,54 @@ async def openai_list_models(
     return {"object": "list", "data": data}
 
 
+def _resident_gguf_quants() -> dict[str, str]:
+    """Lowercased public id -> loaded quant, per slot: outside a slot get_llama_cpp_backend() is the primary."""
+    resident: dict[str, str] = {}
+
+    def _probe():
+        backend = get_llama_cpp_backend()
+        quant = getattr(backend, "hf_variant", None)
+        public = _llama_public_model_id(backend) if backend.is_loaded else None
+        return (public, quant) if public and quant else None
+
+    for slot in (None, *model_slots.visible()):
+        found = model_slots.in_slot(slot, _probe)
+        if found:
+            resident.setdefault(found[0].lower(), found[1])
+    return resident
+
+
+def _pinned_quant_object(model_id: str, objects: list[dict]) -> Optional[dict]:
+    """``<listed id>:<on-disk quant>``, the same pin chat completions accept (#9340), else None."""
+    from core.inference.local_model_resolver import local_gguf_pinned_variant
+
+    base, sep, _ = model_id.rpartition(":")
+    if not sep or not base:
+        return None
+    listed = next(
+        (m for m in objects if isinstance(m.get("id"), str) and m["id"].lower() == base.lower()),
+        None,
+    )
+    if listed is None:
+        return None
+    variant = local_gguf_pinned_variant(f"{listed['id']}:{model_id[len(base) + 1:]}")
+    if not variant:
+        return None
+    pinned_id = f"{listed['id']}:{variant}"
+    if listed.get("loaded"):
+        # A cold index leaves "quant" off the loaded row until it can prove the pin.
+        resident = listed.get("quant") or _resident_gguf_quants().get(listed["id"].lower())
+        if str(resident or "").lower() == variant.lower():
+            return {**listed, "id": pinned_id, "quant": variant}
+    # The listed row's context fields describe the resident quant, not this one.
+    shared = {
+        k: listed[k]
+        for k in ("object", "created", "owned_by", "display_name", "task")
+        if k in listed
+    }
+    return {"id": pinned_id, **shared, "loaded": False, "quant": variant}
+
+
 @router.get("/models/{model_id:path}")
 async def openai_retrieve_model(model_id: str, current_subject: str = Depends(get_current_subject)):
     """
@@ -35173,6 +35135,9 @@ async def openai_retrieve_model(model_id: str, current_subject: str = Depends(ge
             for entry in _loaded:
                 if entry["id"] == clean:
                     return {**entry, "loaded": True}
+    pinned = await asyncio.to_thread(_pinned_quant_object, model_id, objects)
+    if pinned is not None:
+        return pinned
     raise HTTPException(
         status_code = 404,
         detail = openai_error_body(
@@ -35508,11 +35473,12 @@ async def openai_completions(request: Request, current_subject: str = Depends(ge
                 )
             except httpx.RequestError:
                 # The watcher closed the client out from under the request: report the cancel, not a transport failure.
-                if _cancel_event.is_set():
-                    raise asyncio.CancelledError()
+                _raise_if_nonstreaming_request_cancelled(_cancel_event)
                 raise
-            if _cancel_event.is_set():
-                raise asyncio.CancelledError()
+            _raise_if_nonstreaming_request_cancelled(_cancel_event)
+        except _NonStreamingRequestCancelled as exc:
+            api_monitor.finish(monitor_id, "cancelled")
+            raise _openai_admission_http_exception(exc, status_code = 499)
         except asyncio.CancelledError:
             api_monitor.finish(monitor_id, "cancelled")
             raise
@@ -35898,13 +35864,15 @@ async def _studio_embeddings(
         while not acquire.done():
             await asyncio.wait({acquire}, timeout = 0.25)
             if not acquire.done() and await _embeddings_client_gone(request):
-                raise asyncio.CancelledError()
-    except asyncio.CancelledError:
+                raise _NonStreamingRequestCancelled("Request cancelled.")
+    except (asyncio.CancelledError, _NonStreamingRequestCancelled) as exc:
         if not acquire.done():
             acquire.cancel()
         elif not acquire.cancelled() and acquire.exception() is None:
             semaphore.release()
         api_monitor.finish(monitor_id, "cancelled")
+        if isinstance(exc, _NonStreamingRequestCancelled):
+            raise _openai_admission_http_exception(exc, status_code = 499)
         raise
     try:
         gone = await _embeddings_client_gone(request)
@@ -35915,7 +35883,9 @@ async def _studio_embeddings(
     if gone:
         semaphore.release()
         api_monitor.finish(monitor_id, "cancelled")
-        raise asyncio.CancelledError()
+        raise _openai_admission_http_exception(
+            _NonStreamingRequestCancelled("Request cancelled."), status_code = 499
+        )
     worker = asyncio.ensure_future(asyncio.to_thread(_embed))
 
     def _release_embed_permit(finished) -> None:
@@ -36129,11 +36099,12 @@ async def openai_embeddings(request: Request, current_subject: str = Depends(get
             )
         except httpx.RequestError:
             # The watcher closed the client out from under the request: report the cancel, not a transport failure.
-            if _cancel_event.is_set():
-                raise asyncio.CancelledError()
+            _raise_if_nonstreaming_request_cancelled(_cancel_event)
             raise
-        if _cancel_event.is_set():
-            raise asyncio.CancelledError()
+        _raise_if_nonstreaming_request_cancelled(_cancel_event)
+    except _NonStreamingRequestCancelled as exc:
+        api_monitor.finish(monitor_id, "cancelled")
+        raise _openai_admission_http_exception(exc, status_code = 499)
     except asyncio.CancelledError:
         api_monitor.finish(monitor_id, "cancelled")
         raise
@@ -39171,15 +39142,21 @@ async def _mlx_count_chat_tokens(payload, request = None) -> Optional[JSONRespon
     system_prompt, messages, _image = await _extract_content_parts_async(payload.messages)
     # The completion applies this once for both non-GGUF backends before it branches.
     # Only with a request: the helper's requestless mode injects the date unconditionally.
+    _user_system_prompt = system_prompt
+    # what makes generation render through the processor's template: an attachment, a clip, or an
+    # MCP picture it really promotes, checked off the loop as the envelope can be 12 MB.
+    _renders_media = (
+        _request_has_attached_image(payload)
+        or _request_has_video(payload)
+        or (
+            _request_has_promotable_mcp_images(payload, exact = False)
+            and await asyncio.to_thread(_request_has_promotable_mcp_images, payload)
+        )
+    )
+    _date_controls = _template_controls(payload)
     if request is not None:
         system_prompt = _apply_current_date_prompt(
-            system_prompt, request, thread_id = getattr(payload, "thread_id", None)
-        )
-        messages = _append_current_date_note(
-            messages,
-            request,
-            thread_id = getattr(payload, "thread_id", None),
-            system_prompt = system_prompt,
+            system_prompt, request, image = _renders_media, controls = _date_controls
         )
 
     from state.tool_policy import get_tool_policy as _get_tool_policy_mlx
@@ -39295,12 +39272,16 @@ async def _mlx_count_chat_tokens(payload, request = None) -> Optional[JSONRespon
             ),
             vision = False,
         )
-        messages = _append_current_date_note(
-            _set_or_prepend_system_message(messages, system_prompt),
-            request,
-            thread_id = getattr(payload, "thread_id", None),
-            system_prompt = system_prompt,
-        )
+        _client_system_prompt = _user_system_prompt
+        if request is not None:
+            _client_system_prompt = _apply_current_date_prompt(
+                _user_system_prompt,
+                request,
+                image = _renders_media,
+                tools = bool(_tools_to_use),
+                controls = _date_controls,
+            )
+        messages = _set_or_prepend_system_message(messages, _client_system_prompt)
         system_prompt = ""
     elif _tools_to_use:
         # A PENDING turn is the shape this loop answers from exactly these messages, splicing
@@ -39354,10 +39335,13 @@ async def _mlx_count_chat_tokens(payload, request = None) -> Optional[JSONRespon
         # so without this the count is short exactly that line for these completions.
         if request is not None:
             system_prompt = _apply_current_date_prompt(
-                system_prompt,
+                _user_system_prompt,
                 request,
                 include_api_key = True,
-                thread_id = getattr(payload, "thread_id", None),
+                template_default = False,
+                image = _renders_media,
+                tools = True,
+                controls = _date_controls,
             )
         if _nudge:
             system_prompt = (system_prompt.rstrip() + "\n\n" + _nudge) if system_prompt else _nudge
@@ -39562,18 +39546,13 @@ async def chat_count_tokens(
         openai_messages = _coalesce_consecutive_user_turns(openai_messages)
     _system_prompt, _, _ = await _extract_content_parts_async(payload.messages)
     # the verbatim passthrough carries no date line, so counting one here would overcount it.
+    _user_system_prompt = _system_prompt
+    _date_controls = _template_controls(payload)
     if not _takes_passthrough:
         _system_prompt = _apply_current_date_prompt(
-            _system_prompt, request, thread_id = getattr(payload, "thread_id", None)
+            _system_prompt, request, controls = _date_controls
         )
     openai_messages = _set_or_prepend_system_message(openai_messages, _system_prompt)
-    if not _takes_passthrough:
-        openai_messages = _append_current_date_note(
-            openai_messages,
-            request,
-            thread_id = getattr(payload, "thread_id", None),
-            system_prompt = _system_prompt,
-        )
 
     # A PENDING turn (unanswered user message or tool result) is the one shape the tool loop
     # answers from exactly these messages, splicing in whatever build_rag_autoinject retrieves --
@@ -39641,10 +39620,12 @@ async def chat_count_tokens(
             openai_messages = _set_or_prepend_system_message(
                 openai_messages,
                 _apply_current_date_prompt(
-                    _system_prompt,
+                    _user_system_prompt,
                     request,
                     include_api_key = True,
-                    thread_id = getattr(payload, "thread_id", None),
+                    template_default = False,
+                    tools = True,
+                    controls = _date_controls,
                 ),
             )
             _count_nudge = await _apply_rag_nudge(
@@ -39893,7 +39874,6 @@ async def anthropic_count_tokens(
             openai_messages,
             request,
             include_api_key = _count_server_tools,
-            thread_id = getattr(payload, "thread_id", None),
         )
     if _count_server_tools:
         openai_tools = _count_selected_server_tools
@@ -40206,9 +40186,6 @@ async def anthropic_messages(
             "repetition_penalty": payload.repetition_penalty,
             "presence_penalty": payload.presence_penalty,
         },
-        preset_defaults = _custom_request_defaults(
-            getattr(llama_backend, "model_identifier", None) or model_name
-        ),
     )
     temperature = _anthropic_sampling["temperature"]
     top_p = _anthropic_sampling["top_p"]
@@ -40290,7 +40267,6 @@ async def anthropic_messages(
             openai_messages,
             request,
             include_api_key = server_tools,
-            thread_id = getattr(payload, "thread_id", None),
         )
 
     # Anthropic tool_choice.disable_parallel_tool_use caps the response to a
@@ -40319,6 +40295,9 @@ async def anthropic_messages(
     async def _monitored_anthropic(coro):
         try:
             response = await coro
+        except _NonStreamingRequestCancelled as exc:
+            api_monitor.finish(monitor_id, "cancelled")
+            raise _anthropic_admission_http_exception(exc, status_code = 499)
         except asyncio.CancelledError:
             cancel_event.set()
             api_monitor.finish(monitor_id, "cancelled")
@@ -42268,19 +42247,26 @@ async def _anthropic_passthrough_non_streaming(
         )
     )
 
-    async def _post(payload_body):
-        nonlocal target_url
+    async def _post_once(payload_body):
         try:
-            return await _client.post(
+            response = await _client.post(
                 target_url,
                 json = payload_body,
                 timeout = _llama_non_streaming_generation_timeout(),
             )
-        except httpx.RequestError as exc:
+        except httpx.RequestError:
             # The watcher closes the client to break a blocked POST, so a transport error
             # with the event set is the cancel, not a failure.
-            if cancel_event is not None and cancel_event.is_set():
-                raise asyncio.CancelledError()
+            _raise_if_nonstreaming_request_cancelled(cancel_event)
+            raise
+        _raise_if_nonstreaming_request_cancelled(cancel_event)
+        return response
+
+    async def _post(payload_body):
+        nonlocal target_url
+        try:
+            return await _post_once(payload_body)
+        except httpx.RequestError as exc:
             # Nothing was returned yet, so retry once against the respawned server's
             # new port; the nudge retry below then reuses the same fresh URL.
             retry_url = (
@@ -42291,11 +42277,7 @@ async def _anthropic_passthrough_non_streaming(
             if retry_url is None:
                 raise
             target_url = retry_url
-            return await _client.post(
-                target_url,
-                json = payload_body,
-                timeout = _llama_non_streaming_generation_timeout(),
-            )
+            return await _post_once(payload_body)
 
     try:
         resp = await _post(body)
@@ -44195,6 +44177,9 @@ async def _openai_passthrough_non_streaming(
             status_code = 499,
             detail = _openai_admission_error_body(exc, status_code = 499),
         )
+    except _NonStreamingRequestCancelled as exc:
+        api_monitor.finish(monitor_id, "cancelled")
+        raise _openai_admission_http_exception(exc, status_code = 499)
     except asyncio.CancelledError:
         api_monitor.finish(monitor_id, "cancelled")
         reservation.cancel()
@@ -44273,11 +44258,9 @@ async def _openai_passthrough_non_streaming_upstream(
                     timeout = _llama_non_streaming_generation_timeout(),
                 )
             except httpx.RequestError:
-                if cancel.is_set():
-                    raise asyncio.CancelledError()
+                _raise_if_nonstreaming_request_cancelled(cancel)
                 raise
-            if cancel.is_set():
-                raise asyncio.CancelledError()
+            _raise_if_nonstreaming_request_cancelled(cancel)
             return response
         finally:
             # Bounded: the watcher polls Request.is_disconnected(), which can swallow
