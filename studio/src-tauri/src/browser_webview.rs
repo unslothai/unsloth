@@ -28,6 +28,66 @@ const URL_POLL: Duration = Duration::from_millis(800);
 #[cfg(target_os = "macos")]
 const PAGE_DATA_STORE: [u8; 16] = *b"unsloth-browser1";
 
+/// Mute tab for WebKit, which has no public mute for a view: media plays muted (in the page or not,
+/// as `new Audio()` makes) and Web Audio contexts made after it are suspended. Run in the page's
+/// world, so a page can undo it for itself; installed once per document, then toggled.
+#[cfg(target_os = "macos")]
+const MUTE_SCRIPT: &str = r#"((muted) => {
+  const key = Symbol.for("unsloth.browser.mute");
+  if (!window[key]) {
+    let on = false;
+    const silenced = new Set();
+    const contexts = new Set();
+    const paused = new Set();
+    const pause = (context) => {
+      if (context.state !== "running") return;
+      paused.add(context);
+      context.suspend().catch(() => {});
+    };
+    const silence = (media) => {
+      if (!on || media.muted) return;
+      media.muted = true;
+      silenced.add(media);
+    };
+    const play = HTMLMediaElement.prototype.play;
+    HTMLMediaElement.prototype.play = function (...args) {
+      silence(this);
+      return play.apply(this, args);
+    };
+    document.addEventListener("play", (event) => event.target instanceof HTMLMediaElement && silence(event.target), true);
+    document.addEventListener("volumechange", (event) => event.target instanceof HTMLMediaElement && silence(event.target), true);
+    for (const name of ["AudioContext", "webkitAudioContext"]) {
+      const Base = window[name];
+      if (typeof Base !== "function") continue;
+      window[name] = class extends Base {
+        constructor(...args) {
+          super(...args);
+          contexts.add(this);
+          if (on) pause(this);
+        }
+        resume() {
+          if (!on) return super.resume();
+          paused.add(this);
+          return Promise.resolve();
+        }
+      };
+    }
+    window[key] = (value) => {
+      on = value;
+      if (on) {
+        for (const media of document.querySelectorAll("audio, video")) silence(media);
+        for (const context of contexts) pause(context);
+        return;
+      }
+      for (const media of silenced) media.muted = false;
+      silenced.clear();
+      for (const context of paused) context.resume().catch(() => {});
+      paused.clear();
+    };
+  }
+  window[key](muted);
+})"#;
+
 /// Read after a load or title change. Pages can spoof it; it only feeds the panel's buttons.
 const STATE_SCRIPT: &str = r#"(() => {
   try {
@@ -54,6 +114,8 @@ struct ViewsState {
     downloads: HashMap<String, Vec<PathBuf>>,
     download_starts: HashMap<String, VecDeque<Instant>>,
     polling: bool,
+    /** Tabs the reader muted; macOS mutes each page they load, Windows the view once. */
+    muted: HashSet<String>,
 }
 
 pub fn new_browser_views() -> BrowserViews {
@@ -746,6 +808,18 @@ fn create_view<R: Runtime>(
                     loading,
                 },
             );
+            // Each page starts unmuted: mute it as it commits, and again once it has loaded.
+            #[cfg(target_os = "macos")]
+            if app
+                .state::<BrowserViews>()
+                .inner
+                .lock()
+                .unwrap()
+                .muted
+                .contains(&load_tab)
+            {
+                let _ = webview.eval(format!("{MUTE_SCRIPT}(true)"));
+            }
             if !loading {
                 refresh_history(&webview);
             }
@@ -912,6 +986,10 @@ fn create_view<R: Runtime>(
     let webview = window
         .add_child(builder, position, size)
         .map_err(|error| error.to_string())?;
+    // A muted tab whose view closed (four at most stay open) opens muted again.
+    if app.state::<BrowserViews>().inner.lock().unwrap().muted.contains(&tab) {
+        let _ = apply_mute(&webview, true);
+    }
     if let Some(url) = deferred {
         load_when_protected(&webview, url);
     }
@@ -1180,6 +1258,59 @@ pub async fn browser_view_find<R: Runtime>(
         .unwrap_or(false))
 }
 
+/// Mute or unmute a tab's page. Windows mutes the whole view (Web Audio too) and keeps it muted
+/// across loads; macOS mutes the page's media, and each page it loads after (see `MUTE_SCRIPT`).
+#[tauri::command]
+pub async fn browser_view_mute<R: Runtime>(
+    webview: Webview<R>,
+    state: State<'_, BrowserViews>,
+    tab_id: String,
+    muted: bool,
+) -> Result<(), String> {
+    require_main(&webview)?;
+    label_for(&tab_id)?;
+    {
+        let mut inner = state.inner.lock().unwrap();
+        if muted {
+            inner.muted.insert(tab_id.clone());
+        } else {
+            inner.muted.remove(&tab_id);
+        }
+    }
+    // No view yet: it is muted as it opens (`create_view`).
+    let Ok(page) = view(webview.app_handle(), &tab_id) else {
+        return Ok(());
+    };
+    apply_mute(&page, muted)
+}
+
+#[cfg(target_os = "macos")]
+fn apply_mute<R: Runtime>(page: &Webview<R>, muted: bool) -> Result<(), String> {
+    page.eval(format!("{MUTE_SCRIPT}({muted})"))
+        .map_err(|error| error.to_string())
+}
+
+#[cfg(windows)]
+fn apply_mute<R: Runtime>(page: &Webview<R>, muted: bool) -> Result<(), String> {
+    page.with_webview(move |platform| {
+        use webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2_8;
+        use windows_core::Interface;
+        let _ = unsafe {
+            platform
+                .controller()
+                .CoreWebView2()
+                .and_then(|webview| webview.cast::<ICoreWebView2_8>())
+                .and_then(|webview| webview.SetIsMuted(muted))
+        };
+    })
+    .map_err(|error| error.to_string())
+}
+
+#[cfg(not(any(target_os = "macos", windows)))]
+fn apply_mute<R: Runtime>(_page: &Webview<R>, _muted: bool) -> Result<(), String> {
+    Ok(())
+}
+
 #[tauri::command]
 pub fn browser_view_close<R: Runtime>(
     webview: Webview<R>,
@@ -1191,6 +1322,7 @@ pub fn browser_view_close<R: Runtime>(
         let mut inner = state.inner.lock().unwrap();
         inner.urls.remove(&tab_id);
         inner.download_starts.remove(&tab_id);
+        inner.muted.remove(&tab_id);
         if inner.shown.as_deref() == Some(tab_id.as_str()) {
             inner.shown = None;
         }

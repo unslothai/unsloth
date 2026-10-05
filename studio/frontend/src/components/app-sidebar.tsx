@@ -291,6 +291,7 @@ import {
 import { ShutdownDialog } from "@/components/shutdown-dialog";
 import { buildChatItemMarkdown } from "@/features/chat/prompt-storage/prompt-storage-dialog";
 import { useActiveChatMenuStore } from "@/features/chat/stores/active-chat-menu-store";
+import { PinnedPageRows, usePinnedPageCount } from "@/features/browser";
 import { translate, useT, type TranslationKey } from "@/i18n";
 
 const RECENT_SLOT_NUMBERS = [1, 2, 3, 4, 5, 6] as const;
@@ -1451,6 +1452,7 @@ export function AppSidebar() {
     [allChatItems, pinnedIdSet, sectionByChatId, organizeBy],
   );
   const [pinnedOpen, setPinnedOpen] = useState(true);
+  const pinnedPageCount = usePinnedPageCount();
   const [projectsOpen, setProjectsOpen] = useState(true);
   const [showAllProjects, setShowAllProjects] = useState(false);
   // Pinning a project moves its folder into the Pinned section, beside the pinned chats.
@@ -3980,7 +3982,8 @@ export function AppSidebar() {
   // them into decides where it goes.
   // Pinned: folders and chats in one list, in the order they were dropped into.
   function renderPinnedSection(): ReactNode {
-    if (isStudioRoute || showTrainingRecents || pinnedRows.length === 0) return null;
+    if (isStudioRoute || showTrainingRecents || (pinnedRows.length === 0 && pinnedPageCount === 0)) return null;
+    const firstPinnedRow = pinnedRows[0];
     return (
       <Collapsible open={pinnedOpen} onOpenChange={setPinnedOpen} asChild>
         {/* While open, the next section rides up over the tail strip below, so the strip adds
@@ -3997,11 +4000,9 @@ export function AppSidebar() {
               {
                 section: "pinned",
                 header: true,
-                row: {
-                  id: pinnedRows[0].id,
-                  kind: pinnedRows[0].kind,
-                  scope: PINNED_ORDER_SCOPE,
-                },
+                row: firstPinnedRow
+                  ? { id: firstPinnedRow.id, kind: firstPinnedRow.kind, scope: PINNED_ORDER_SCOPE }
+                  : undefined,
               },
               { closed: !pinnedOpen },
             )}
@@ -4040,6 +4041,8 @@ export function AppSidebar() {
                         sort: { value: pinnedSort, set: setPinnedSort },
                       }),
                 )}
+                {/* Pages pinned from a browser tab's menu, after the chats and folders. */}
+                <PinnedPageRows />
                 {/* The end of the list, as somewhere to aim. A folder last in Pinned runs its
                     block to the bottom of the section, so every pixel down there is inside it
                     and a chat meant to go after the folder was filed into it instead.

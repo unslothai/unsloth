@@ -65,6 +65,11 @@ export type BrowserTab = {
   zoom: number;
   nativeHistory: { back: boolean; forward: boolean } | null;
   nativeError: string | null;
+  /** The name the reader gave the tab; kept as it navigates. */
+  customTitle: string | null;
+  muted: boolean;
+  /** The sidebar pin this tab shows (pinned-pages-store), kept as it navigates. */
+  pinnedId: string | null;
 };
 
 export type OpenFileInput = {
@@ -150,6 +155,25 @@ function createTab(entry: BrowserEntry, openKey: string | null = null): BrowserT
     zoom: 1,
     nativeHistory: null,
     nativeError: null,
+    customTitle: null,
+    muted: false,
+    pinnedId: null,
+  };
+}
+
+export const MAX_TAB_TITLE_CHARS = 120;
+
+// A copy of each entry, so the copy keeps its own cached pages and native view.
+function copyTab(tab: BrowserTab): BrowserTab {
+  return {
+    ...createTab({ kind: "newtab" }),
+    history: tab.history.map((entry) => ({ ...entry })),
+    index: tab.index,
+    title: tab.title,
+    favicon: tab.favicon,
+    documentType: tab.documentType,
+    zoom: tab.zoom,
+    customTitle: tab.customTitle,
   };
 }
 
@@ -223,6 +247,20 @@ type BrowserState = {
   closePanel: () => void;
   togglePanel: () => void;
   newTab: () => void;
+  /** A new tab just after `tabId`, as its menu's New tab to the right opens. */
+  newTabAfter: (tabId: string) => void;
+  /** A copy of the tab and its history, just after it. */
+  duplicateTab: (tabId: string) => void;
+  /** Opens a pinned page in a tab of its own, or shows the tab already showing it. */
+  openPinned: (pinnedId: string, url: string, title: string) => void;
+  setTabPinned: (tabId: string, pinnedId: string | null) => void;
+  renamingTabId: string | null;
+  setRenamingTab: (tabId: string | null) => void;
+  /** A name for the tab, or null for the page's own title. */
+  renameTab: (tabId: string, title: string | null) => void;
+  setMuted: (tabId: string, muted: boolean) => void;
+  closeOtherTabs: (tabId: string) => void;
+  closeTabsToRight: (tabId: string) => void;
   openUrl: (
     url: string,
     options?: { newTab?: boolean; background?: boolean; method?: "GET" | "POST"; body?: string },
@@ -299,14 +337,19 @@ function showPanel(): void {
 }
 
 export const useBrowserStore = create<BrowserState>((set, get) => {
-  const openTab = (tab: BrowserTab, background = false) => {
+  const openTab = (tab: BrowserTab, background = false, after?: string) => {
     showPanel();
-    set((state) => ({
-      open: true,
-      tabs: [...state.tabs, tab],
-      activeTabId: background && state.activeTabId ? state.activeTabId : tab.id,
-      openSequence: state.openSequence + 1,
-    }));
+    set((state) => {
+      const at = after ? state.tabs.findIndex((other) => other.id === after) : -1;
+      const tabs = [...state.tabs];
+      tabs.splice(at < 0 ? tabs.length : at + 1, 0, tab);
+      return {
+        open: true,
+        tabs,
+        activeTabId: background && state.activeTabId ? state.activeTabId : tab.id,
+        openSequence: state.openSequence + 1,
+      };
+    });
   };
   const focusExisting = (openKey: string): boolean => {
     const existing = get().tabs.find((tab) => tab.openKey === openKey);
@@ -354,6 +397,44 @@ export const useBrowserStore = create<BrowserState>((set, get) => {
     newTab: () => {
       openTab(createTab({ kind: "newtab" }));
       get().focusAddress();
+    },
+    newTabAfter: (tabId) => {
+      openTab(createTab({ kind: "newtab" }), false, tabId);
+      get().focusAddress();
+    },
+    duplicateTab: (tabId) => {
+      const tab = get().tabs.find((candidate) => candidate.id === tabId);
+      if (!tab) return;
+      openTab(copyTab(tab), false, tabId);
+    },
+    openPinned: (pinnedId, url, title) => {
+      const shown = get().tabs.find((tab) => tab.pinnedId === pinnedId);
+      showPanel();
+      if (shown) {
+        set((state) => ({ open: true, activeTabId: shown.id, openSequence: state.openSequence + 1 }));
+        return;
+      }
+      if (!isWeb(url)) return;
+      openTab({ ...createTab(webEntry(url)), pinnedId, title, loading: true });
+    },
+    setTabPinned: (tabId, pinnedId) =>
+      set((state) => ({ tabs: patchTab(state.tabs, tabId, (tab) => ({ ...tab, pinnedId })) })),
+    renamingTabId: null,
+    setRenamingTab: (renamingTabId) => set({ renamingTabId }),
+    renameTab: (tabId, title) => {
+      const customTitle = title?.trim().slice(0, MAX_TAB_TITLE_CHARS) || null;
+      set((state) => ({ tabs: patchTab(state.tabs, tabId, (tab) => ({ ...tab, customTitle })) }));
+    },
+    setMuted: (tabId, muted) =>
+      set((state) => ({ tabs: patchTab(state.tabs, tabId, (tab) => (tab.muted === muted ? tab : { ...tab, muted })) })),
+    closeOtherTabs: (tabId) => {
+      for (const tab of get().tabs) if (tab.id !== tabId) get().closeTab(tab.id);
+    },
+    closeTabsToRight: (tabId) => {
+      const { tabs } = get();
+      const index = tabs.findIndex((tab) => tab.id === tabId);
+      if (index < 0) return;
+      for (const tab of tabs.slice(index + 1)) get().closeTab(tab.id);
     },
     openUrl: (url, options) => {
       if (!isWeb(url)) return;
@@ -466,13 +547,14 @@ export const useBrowserStore = create<BrowserState>((set, get) => {
       pageDownloads.delete(tabId);
       const { [tabId]: _closed, ...fileViews } = get().fileViews;
       const annotateTabId = get().annotateTabId === tabId ? null : get().annotateTabId;
+      const renamingTabId = get().renamingTabId === tabId ? null : get().renamingTabId;
       if (remaining.length === 0) {
-        set({ tabs: [], activeTabId: null, open: false, fullView: false, annotateTabId: null, fileViews });
+        set({ tabs: [], activeTabId: null, open: false, fullView: false, annotateTabId: null, renamingTabId, fileViews });
         return;
       }
       const nextActive =
         activeTabId === tabId ? (remaining[Math.min(index, remaining.length - 1)]?.id ?? null) : activeTabId;
-      set({ tabs: remaining, activeTabId: nextActive, annotateTabId, fileViews });
+      set({ tabs: remaining, activeTabId: nextActive, annotateTabId, renamingTabId, fileViews });
     },
     updateTab: (tabId, patch) =>
       set((state) => {

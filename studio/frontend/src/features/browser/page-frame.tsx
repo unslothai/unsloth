@@ -16,6 +16,7 @@ export type FrameCommand =
   | { command: "findStep"; delta: -1 | 1 }
   | { command: "snapshot" }
   | { command: "zoom"; value: number }
+  | { command: "mute"; on: boolean }
   | { command: "annotate"; on: boolean; color?: string }
   | { command: "annotateForget"; id: number }
   | { command: "annotateNumbers"; numbers: Array<[number, number]> };
@@ -82,10 +83,12 @@ export function PageFrame({
   title,
   tabId,
   zoom = 1,
+  muted = false,
   onMessage,
 }: {
   tabId: string;
   zoom?: number;
+  muted?: boolean;
   html: string;
   url: string | null;
   base: string | null;
@@ -160,6 +163,14 @@ export function PageFrame({
     if (postedRef.current) sendFrameCommand(tabId, { command: "zoom", value: zoom });
   }, [tabId, zoom]);
 
+  // Muting goes with the page too, so a muted tab's next page loads muted.
+  const mutedRef = useRef(muted);
+  useEffect(() => {
+    if (mutedRef.current === muted) return;
+    mutedRef.current = muted;
+    if (postedRef.current) sendFrameCommand(tabId, { command: "mute", on: muted });
+  }, [tabId, muted]);
+
   return (
     <iframe
       ref={frameRef}
@@ -172,7 +183,15 @@ export function PageFrame({
         if (postedRef.current) return;
         postedRef.current = true;
         frameRef.current?.contentWindow?.postMessage(
-          { type: "unsloth:browser-html", html, url, base, refresh: refresh ?? null, zoom: zoomRef.current },
+          {
+            type: "unsloth:browser-html",
+            html,
+            url,
+            base,
+            refresh: refresh ?? null,
+            zoom: zoomRef.current,
+            muted: mutedRef.current,
+          },
           "*",
         );
       }}

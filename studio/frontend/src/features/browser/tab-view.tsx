@@ -306,6 +306,7 @@ function WebPage({
       title={tab.title || hostOf(page.url)}
       tabId={tab.id}
       zoom={tab.zoom}
+      muted={tab.muted}
       onMessage={onFrameMessage}
     />
   );

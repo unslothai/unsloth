@@ -7,7 +7,6 @@ import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover
 import {
   ContextMenu,
   ContextMenuContent,
-  ContextMenuSeparator,
   ContextMenuTrigger,
 } from "@/components/ui/context-menu";
 import {
@@ -56,12 +55,9 @@ import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
 import {
   Add01Icon,
-  CancelSquareIcon,
   Search01Icon,
   Settings02Icon,
-  Copy02Icon,
   Delete02Icon,
-  ReloadIcon,
   ArrowUpRight01Icon,
   BubbleChatAddIcon,
   Cancel01Icon,
@@ -71,7 +67,6 @@ import {
   CursorRectangleSelection02Icon,
   Download01Icon,
   InternetIcon,
-  LinkSquare02Icon,
   MinusSignIcon,
   MoreHorizontalIcon,
   PaintBoardIcon,
@@ -82,6 +77,7 @@ import {
   Tablet01Icon,
   TextWrapIcon,
   ViewIcon,
+  VolumeMute02Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react";
 import {
@@ -113,7 +109,8 @@ import { AnnotateLayer, WebAnnotateLayer } from "./annotate-layer";
 import { BookmarkStar, BookmarksBar } from "./bookmarks";
 import { useBookmarkFor } from "./bookmarks-store";
 import { browserTabType, textFileKind } from "./file-kind";
-import { CONTEXT_MENU, MenuRow } from "./link-context-menu";
+import { CONTEXT_MENU } from "./link-context-menu";
+import { CONTEXT_TAB_MENU, TabMenuItems, focusRenameField, renameTabTo, setTabMuted } from "./tab-menu";
 import {
   CertificateIcon,
   EnterFullViewIcon,
@@ -134,6 +131,7 @@ import {
   type BrowserEntry,
   type BrowserTab,
   DEFAULT_FILE_VIEW,
+  MAX_TAB_TITLE_CHARS,
   type DeviceMode,
   type FileViewState,
   browserFile,
@@ -352,6 +350,7 @@ function TabIcon({ tab }: { tab: BrowserTab }) {
 function useTabTitle() {
   const t = useT();
   return (tab: BrowserTab, entry: BrowserEntry) => {
+    if (tab.customTitle) return tab.customTitle;
     if (tab.title) return tab.title;
     if (entry.kind === "newtab") return t("browser.newTab");
     if (entry.kind === "internal") return t(`browser.pages.${entry.page}`);
@@ -359,68 +358,66 @@ function useTabTitle() {
   };
 }
 
-function TabContextMenu({
-  tab,
-  others,
-  children,
-}: {
-  tab: BrowserTab;
-  others: boolean;
-  children: ReactElement;
-}) {
-  const t = useT();
-  const store = useBrowserStore.getState();
-  const url = webAddress(tab);
+function TabContextMenu({ tab, children }: { tab: BrowserTab; children: ReactElement }) {
+  // Rename moves focus into the tab; the closing menu mustn't take it back to the tab.
+  const keepFocus = useRef(false);
   return (
     <ContextMenu>
       <ContextMenuTrigger asChild={true}>{children}</ContextMenuTrigger>
-      <ContextMenuContent className={CONTEXT_MENU}>
-        <MenuRow icon={Add01Icon} onSelect={store.newTab}>
-          {t("browser.newTab")}
-        </MenuRow>
-        <ContextMenuSeparator />
-        <MenuRow
-          icon={ReloadIcon}
-          onSelect={() => (nativePage(tab) ? nativeAction(tab.id, "reload") : store.reload(tab.id))}
-        >
-          {t("browser.reload")}
-        </MenuRow>
-        {url ? (
-          <>
-            <MenuRow icon={Copy02Icon} onSelect={() => store.openUrl(url, { newTab: true })}>
-              {t("browser.tabMenu.duplicate")}
-            </MenuRow>
-            <ContextMenuSeparator />
-            <MenuRow
-              icon={Copy01Icon}
-              onSelect={() =>
-                void copyToClipboard(url).then((ok) => ok && toast.success(t("browser.linkCopied")))
-              }
-            >
-              {t("browser.copyLink")}
-            </MenuRow>
-            <MenuRow icon={LinkSquare02Icon} onSelect={() => openExternalLink(url)}>
-              {t("browser.openExternal")}
-            </MenuRow>
-          </>
-        ) : null}
-        <ContextMenuSeparator />
-        <MenuRow icon={Cancel01Icon} onSelect={() => store.closeTab(tab.id)}>
-          {t("browser.closeTab")}
-        </MenuRow>
-        {others ? (
-          <MenuRow
-            icon={CancelSquareIcon}
-            onSelect={() => {
-              const { tabs, closeTab } = useBrowserStore.getState();
-              for (const other of tabs) if (other.id !== tab.id) closeTab(other.id);
-            }}
-          >
-            {t("browser.tabMenu.closeOthers")}
-          </MenuRow>
-        ) : null}
+      <ContextMenuContent
+        className={CONTEXT_MENU}
+        onCloseAutoFocus={(event) => {
+          if (!keepFocus.current) return;
+          keepFocus.current = false;
+          event.preventDefault();
+          // The menu's focus trap held focus while the field mounted, so autoFocus came to nothing.
+          focusRenameField(`[data-tab-id="${CSS.escape(tab.id)}"] input`);
+        }}
+      >
+        <TabMenuItems
+          P={CONTEXT_TAB_MENU}
+          tab={tab}
+          strip={true}
+          onRename={() => {
+            keepFocus.current = true;
+            useBrowserStore.getState().setRenamingTab(tab.id);
+          }}
+        />
       </ContextMenuContent>
     </ContextMenu>
+  );
+}
+
+/** The tab's name, edited in place: Enter or leaving keeps it, Escape doesn't, empty clears it. */
+function TabRenameInput({ tab, title }: { tab: BrowserTab; title: string }) {
+  const t = useT();
+  const done = useRef(false);
+  const finish = (value: string | null) => {
+    if (done.current) return;
+    done.current = true;
+    if (value !== null && value.trim() !== title) renameTabTo(tab, undefined, value);
+    useBrowserStore.getState().setRenamingTab(null);
+  };
+  return (
+    <input
+      // biome-ignore lint/a11y/noAutofocus: opened from the tab's Rename, to type the name
+      autoFocus={true}
+      defaultValue={title}
+      maxLength={MAX_TAB_TITLE_CHARS}
+      aria-label={t("browser.tabMenu.renameLabel")}
+      onFocus={(event) => event.currentTarget.select()}
+      onBlur={(event) => finish(event.currentTarget.value)}
+      onKeyDown={(event) => {
+        event.stopPropagation();
+        if (event.key === "Enter") finish(event.currentTarget.value);
+        else if (event.key === "Escape") finish(null);
+      }}
+      // The tab drags and activates on these; the field is for typing and selecting.
+      onPointerDown={(event) => event.stopPropagation()}
+      onClick={(event) => event.stopPropagation()}
+      onDoubleClick={(event) => event.stopPropagation()}
+      className="min-w-0 flex-1 rounded-[5px] bg-background px-1 text-ui-13 text-foreground outline-none ring-1 ring-ring"
+    />
   );
 }
 
@@ -578,6 +575,7 @@ function TabStrip({
   const t = useT();
   const tabTitle = useTabTitle();
   const fullView = useBrowserStore((state) => state.fullView);
+  const renamingTabId = useBrowserStore((state) => state.renamingTabId);
   const { activateTab, closeTab, newTab, closePanel, setFullView } =
     useBrowserStore.getState();
   const fullViewShortcut = useShortcutLabel("toggleBrowserFullView");
@@ -620,7 +618,7 @@ function TabStrip({
           const active = tab.id === activeTabId;
           const title = tabTitle(tab, currentEntry(tab));
           return (
-            <TabContextMenu key={tab.id} tab={tab} others={tabs.length > 1}>
+            <TabContextMenu key={tab.id} tab={tab}>
               <div
                 role="tab"
                 aria-selected={active}
@@ -646,9 +644,27 @@ function TabStrip({
                 )}
               >
                 <TabIcon tab={tab} />
-                <span className="min-w-0 flex-1 overflow-hidden whitespace-nowrap [mask-image:linear-gradient(to_right,black_calc(100%_-_0.625rem),transparent)]">
-                  {title}
-                </span>
+                {renamingTabId === tab.id ? (
+                  <TabRenameInput tab={tab} title={title} />
+                ) : (
+                  <span className="min-w-0 flex-1 overflow-hidden whitespace-nowrap [mask-image:linear-gradient(to_right,black_calc(100%_-_0.625rem),transparent)]">
+                    {title}
+                  </span>
+                )}
+                {tab.muted ? (
+                  <button
+                    type="button"
+                    aria-label={t("browser.tabMenu.unmute")}
+                    title={t("browser.tabMenu.unmute")}
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      setTabMuted(tab, false);
+                    }}
+                    className="flex size-5 shrink-0 cursor-pointer items-center justify-center rounded-md text-muted-foreground hover:bg-[color-mix(in_oklab,var(--foreground)_calc(10%*var(--contrast-wash-gain,1)),transparent)] hover:text-foreground"
+                  >
+                    <HugeiconsIcon icon={VolumeMute02Icon} strokeWidth={1.75} className="size-3.5" />
+                  </button>
+                ) : null}
                 <button
                   type="button"
                   aria-label={t("browser.closeTab")}

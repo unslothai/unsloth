@@ -368,6 +368,63 @@ _FRAME_HTML = r"""<!doctype html>
           if (document.documentElement) applyZoom(cfg.zoom);
           document.addEventListener("DOMContentLoaded", () => applyZoom(cfg.zoom), { once: true });
         }
+        // Mute tab: media elements (in the page or not, as new Audio() makes) play muted, and
+        // Web Audio is suspended. Set before the page's scripts run, so it sees every element.
+        const setMuted = (() => {
+          let muted = false;
+          const silenced = new Set();
+          const contexts = new Set();
+          // Contexts this suspended, so unmuting resumes only those and not one the page paused.
+          const paused = new Set();
+          const pause = (context) => {
+            if (context.state !== "running") return;
+            paused.add(context);
+            context.suspend().catch(() => {});
+          };
+          const silence = (media) => {
+            if (!muted || media.muted) return;
+            media.muted = true;
+            silenced.add(media);
+          };
+          const play = HTMLMediaElement.prototype.play;
+          HTMLMediaElement.prototype.play = function (...args) {
+            silence(this);
+            return play.apply(this, args);
+          };
+          document.addEventListener("play", (event) => event.target instanceof HTMLMediaElement && silence(event.target), true);
+          // A page unmuting its own player while the tab is muted is muted again.
+          document.addEventListener("volumechange", (event) => event.target instanceof HTMLMediaElement && silence(event.target), true);
+          for (const name of ["AudioContext", "webkitAudioContext"]) {
+            const Base = window[name];
+            if (typeof Base !== "function") continue;
+            window[name] = class extends Base {
+              constructor(...args) {
+                super(...args);
+                contexts.add(this);
+                if (muted) pause(this);
+              }
+              resume() {
+                if (!muted) return super.resume();
+                // Held until the tab is unmuted, which resumes it then.
+                paused.add(this);
+                return Promise.resolve();
+              }
+            };
+          }
+          return (value) => {
+            muted = value === true;
+            if (muted) {
+              for (const media of document.querySelectorAll("audio, video")) silence(media);
+              for (const context of contexts) pause(context);
+              return;
+            }
+            for (const media of silenced) media.muted = false;
+            silenced.clear();
+            for (const context of paused) context.resume().catch(() => {});
+            paused.clear();
+          };
+        })();
+        if (cfg.muted) setMuted(true);
         // Annotate: the panel marks parts of the page to ask about. While it is on, pointer input
         // is the panel's: the page only reports the block under the pointer, what a click or drag
         // marks, and where the marks sit as it scrolls.
@@ -844,6 +901,7 @@ _FRAME_HTML = r"""<!doctype html>
           else if (data.command === "annotateForget") annotation.forget(Number(data.id));
           else if (data.command === "annotateNumbers") annotation.number(data.numbers);
           else if (data.command === "zoom") applyZoom(data.value);
+          else if (data.command === "mute") setMuted(data.on === true);
           else if (data.command === "find" && typeof data.query === "string" && data.query.length <= 1000) finder.search(data.query);
           else if (data.command === "findStep") finder.step(data.delta === -1 ? -1 : 1);
           else if (data.command === "snapshot") post({ type: "snapshot", html: snapshot() });
@@ -875,7 +933,7 @@ _FRAME_HTML = r"""<!doctype html>
         }
         // Only the parent may drive the shell, once.
         if (!data || data.type !== "unsloth:browser-html" || typeof data.html !== "string") return;
-        const cfg = { url: data.url || null, refresh: data.refresh || null, zoom: Number(data.zoom) || 1 };
+        const cfg = { url: data.url || null, refresh: data.refresh || null, zoom: Number(data.zoom) || 1, muted: data.muted === true };
         const base = data.base ? `<base href="${escapeAttr(data.base)}">` : "";
         const script = `<script>(${boot.toString()})(${JSON.stringify(cfg).replace(/</g, "\\u003c")});<\/script>`;
         page = document.createElement("iframe");

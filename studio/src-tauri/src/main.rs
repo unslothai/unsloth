@@ -2210,6 +2210,7 @@ fn main() {
             browser_webview::browser_view_find,
             browser_webview::browser_view_close,
             browser_webview::browser_view_clear_data,
+            browser_webview::browser_view_mute,
             browser_capture::browser_capture,
             browser_capture::browser_view_print,
             set_training_active,
