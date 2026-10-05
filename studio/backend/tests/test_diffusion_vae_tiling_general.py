@@ -333,7 +333,7 @@ def test_budget_uses_the_fused_figure_only_where_the_fused_kernels_are_installed
     vae = _hunyuan_image()
     qi = _qwen_image()
     monkeypatch.delenv(vt.MAX_TILE_ENV)
-    monkeypatch.setattr(vt, "_free_mib", lambda v, z: (1000.0, 1.0))
+    monkeypatch.setattr(vt, "_free_mib", lambda v, z, **k: (1000.0, 1.0))
     for v in (vae, qi):
         assert vt.install(v)
         if fused:
@@ -352,6 +352,40 @@ def test_budget_uses_the_fused_figure_only_where_the_fused_kernels_are_installed
     # a fused path that fell back is unfused again
     qi._unsloth_vae_fused_failed = True
     assert vt.decode_tile_budget(qi, z) == int(vt.FREE_FRACTION * 1000 / 0.27)
+
+
+def test_only_large_stock_tile_vaes_size_past_the_floor_from_device_free_memory(monkeypatch):
+    """AutoencoderKL / FLUX.2 take the wide tiles only to drop a sliver: their tiles grow past the floor only into the
+    device's free memory, not the allocator's cached blocks (an untiled FLUX.1 decode out of the denoiser's cache
+    stalled on cache flushes at 8 GB: 0.21 s median against stock's 0.08). The Wan family and HunyuanImage count the
+    cache, as #12696 does for Qwen-Image-2.1 (it measured faster there)."""
+    monkeypatch.delenv(vt.MAX_TILE_ENV)
+    seen = {}
+
+    def free(v, z, cached = True):
+        seen[type(v).__name__] = cached
+        return 1000.0 if cached else 100.0, 1.0
+
+    monkeypatch.setattr(vt, "_free_mib", free)
+    for build, z in ((_kl, torch.zeros(1, 4, 64, 64)), (lambda: _kl(cls = "AutoencoderKLFlux2"), torch.zeros(1, 4, 64, 64)),
+                     (_qwen_image, torch.zeros(1, 4, 1, 64, 64)), (_qwen_image_21, torch.zeros(1, 4, 1, 64, 64)),
+                     (_hunyuan_image, torch.zeros(1, 8, 64, 64))):
+        vae = build()
+        assert vt.install(vae)
+        vt.decode_tile_budget(vae, z)
+    assert seen == {
+        "AutoencoderKL": False,
+        "AutoencoderKLFlux2": False,
+        "AutoencoderKLQwenImage": True,
+        "AutoencoderKLQwenImage21": True,
+        "AutoencoderKLHunyuanImage": True,
+    }
+    # and the floor-fit check (stock fallback) still counts the cache for every VAE
+    vae = _hunyuan_image()
+    assert vt.install(vae)
+    seen.clear()
+    vt.floor_shortfall(vae, torch.zeros(1, 8, 64, 64))
+    assert seen == {"AutoencoderKLHunyuanImage": True}
 
 
 def _stock_decoded(length, tile, overlap):
@@ -431,20 +465,20 @@ def test_floor_that_cannot_fit_decodes_in_the_stock_tiles_and_says_why(monkeypat
     log = _Log()
     assert vt.install(vae, log)
     monkeypatch.delenv(vt.MAX_TILE_ENV)
-    monkeypatch.setattr(vt, "_free_mib", lambda v, zz: (500.0, 1.0))  # 32x32 x 1.3 MiB = 1,331 MiB needed
+    monkeypatch.setattr(vt, "_free_mib", lambda v, zz, **k: (500.0, 1.0))  # 32x32 x 1.3 MiB = 1,331 MiB needed
     assert "floor tile needs about 1331 MiB" in vt.floor_shortfall(vae, z)
     assert torch.equal(_decode_with(vae, z), stock)
     assert _decode_with(vae, z).shape == stock.shape
     assert [k for k, _ in log.records] == ["warning", "debug"]
     assert "HunyuanImage" in log.records[0][1] and "stock tiles" in log.records[0][1]
     # with room for the floor, the wide tiles again
-    monkeypatch.setattr(vt, "_free_mib", lambda v, zz: (2000.0, 1.0))
+    monkeypatch.setattr(vt, "_free_mib", lambda v, zz, **k: (2000.0, 1.0))
     assert vt.floor_shortfall(vae, z) is None
     assert not torch.equal(_decode_with(vae, z), stock)
     # unknown free memory (CPU) and an explicit tile cap are never a shortfall
-    monkeypatch.setattr(vt, "_free_mib", lambda v, zz: None)
+    monkeypatch.setattr(vt, "_free_mib", lambda v, zz, **k: None)
     assert vt.floor_shortfall(vae, z) is None
-    monkeypatch.setattr(vt, "_free_mib", lambda v, zz: (1.0, 1.0))
+    monkeypatch.setattr(vt, "_free_mib", lambda v, zz, **k: (1.0, 1.0))
     monkeypatch.setenv(vt.MAX_TILE_ENV, "32")
     assert vt.floor_shortfall(vae, z) is None
 
@@ -457,7 +491,7 @@ def test_no_stock_fallback_where_the_stock_tile_is_as_large(monkeypatch, build):
     assert vt.install(vae)
     vae._unsloth_vae_fused_installed = 3
     monkeypatch.delenv(vt.MAX_TILE_ENV)
-    monkeypatch.setattr(vt, "_free_mib", lambda v, zz: (1.0, 1.0))
+    monkeypatch.setattr(vt, "_free_mib", lambda v, zz, **k: (1.0, 1.0))
     z = torch.zeros(1, 4, 1, 200, 200) if hasattr(vae, "tile_sample_stride_height") else torch.zeros(1, 4, 200, 200)
     assert vt.floor_shortfall(vae, z) is None
 
@@ -470,12 +504,12 @@ def test_floor_fit_uses_the_fused_peak_so_qwen_image_21_keeps_its_wide_floor(mon
     vae._unsloth_vae_fused_installed = 5
     monkeypatch.delenv(vt.MAX_TILE_ENV)
     z = torch.zeros(1, 4, 1, 64, 64)
-    monkeypatch.setattr(vt, "_free_mib", lambda v, zz: (500.0, 1.0))
+    monkeypatch.setattr(vt, "_free_mib", lambda v, zz, **k: (500.0, 1.0))
     assert vt.floor_shortfall(vae, z) is None
-    monkeypatch.setattr(vt, "_free_mib", lambda v, zz: (400.0, 1.0))
+    monkeypatch.setattr(vt, "_free_mib", lambda v, zz, **k: (400.0, 1.0))
     assert vt.floor_shortfall(vae, z)
     vae._unsloth_vae_fused_failed = True
-    monkeypatch.setattr(vt, "_free_mib", lambda v, zz: (1500.0, 1.0))
+    monkeypatch.setattr(vt, "_free_mib", lambda v, zz, **k: (1500.0, 1.0))
     assert vt.floor_shortfall(vae, z)
 
 
@@ -602,7 +636,7 @@ def test_stock_fallback_keeps_the_fused_batched_loop_on_the_wan_family(monkeypat
         killed = vae.decode(z).sample
         monkeypatch.delenv(vt.WIDE_TILES_ENV)
         monkeypatch.delenv(vt.MAX_TILE_ENV)
-        monkeypatch.setattr(vt, "_free_mib", lambda v, zz: (1.0, 1.0))
+        monkeypatch.setattr(vt, "_free_mib", lambda v, zz, **k: (1.0, 1.0))
         short = vae.decode(z).sample
     assert len(calls) == 2 and torch.equal(killed, short)
     vae._unsloth_wide_stock_decode = batched

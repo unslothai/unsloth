@@ -274,14 +274,16 @@ def choose_tiles(
     return best
 
 
-def _free_mib(vae: Any, z: Any) -> Optional[tuple[float, float]]:
-    """(free VRAM after the fp32 output accumulator, in MiB; bytes per decoder parameter / 2) now; None off CUDA."""
+def _free_mib(vae: Any, z: Any, cached: bool = True) -> Optional[tuple[float, float]]:
+    """(free VRAM after the fp32 output accumulator, in MiB; bytes per decoder parameter / 2) now; None off CUDA.
+    ``cached`` counts the allocator's reserved but unused blocks as free too."""
     import torch
 
     if getattr(z, "device", None) is None or z.device.type != "cuda":
         return None
     free, _ = torch.cuda.mem_get_info(z.device)
-    free += torch.cuda.memory_reserved(z.device) - torch.cuda.memory_allocated(z.device)
+    if cached:
+        free += torch.cuda.memory_reserved(z.device) - torch.cuda.memory_allocated(z.device)
     ratio = _geometry(vae)[0]
     frames = z.shape[2] if z.dim() == 5 else 1
     # fp32 accumulator
@@ -305,7 +307,14 @@ def decode_tile_budget(vae: Any, z: Any) -> Optional[int]:
     if raw.isdigit() and int(raw) > 0:
         return int(raw) ** 2
     try:
-        free = _free_mib(vae, z)
+        _, tile, _ = _geometry(vae)
+        # A VAE whose stock tile is the floor tile (AutoencoderKL, FLUX.2) takes the wide tiles only to drop an edge
+        # sliver; it grows them past the floor only into memory the device has free. Its untiled decode out of the
+        # allocator's cache (the denoiser's activation blocks, too small for the decoder's full-size activations)
+        # stalled on cache flushes: FLUX.1 at 1600 px on an 8 GB tier decoded in 0.21 s median against stock's 0.08.
+        stock_tile = vae.__dict__.get("_unsloth_wide_stock_tile") or (stock_tiles(vae) or (0, 0))[0]
+        large_stock = stock_tile >= tile > TILE_LATENTS
+        free = _free_mib(vae, z, cached = not large_stock)
         if free is None:
             return None
         mib, scale = free
