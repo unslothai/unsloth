@@ -9,11 +9,11 @@ import json
 import os
 import re
 import shutil
-import subprocess
 import sys
 from pathlib import Path
 
 import pytest
+from unsloth_pwsh_runner import run_pwsh
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -47,6 +47,7 @@ def _resolve(
     install_exit: int = 0,
     find: str = "",
     skip: list[str] | None = None,
+    extra_env: dict[str, str] | None = None,
 ):
     (tmp_path / "uv.ps1").write_text(FAKE_UV, encoding = "utf-8")
     log = tmp_path / "uv.log"
@@ -63,8 +64,7 @@ function Invoke-InstallCommand {{
 $PythonVersion = "{HOST_MINOR}"
 $PythonFallbackFullVersion = "{HOST_MINOR}.99"
 $PythonSkip = @({skip_list})
-$script:UvExe = '{tmp_path / "uv.ps1"}'
-{_function("Remove-SkippedPython")}
+$script:UvExe = $env:FAKE_UV_EXE
 {_function("Resolve-UvManagedPython")}
 $r = Resolve-UvManagedPython
 if ($r) {{ $r | ConvertTo-Json -Compress }} else {{ 'null' }}
@@ -72,14 +72,17 @@ if ($r) {{ $r | ConvertTo-Json -Compress }} else {{ 'null' }}
     env = dict(
         os.environ,
         FAKE_UV_LOG = str(log),
+        FAKE_UV_EXE = str(tmp_path / "uv.ps1"),
         FAKE_UV_INSTALL_EXIT = str(install_exit),
         FAKE_UV_FIND = find,
+        **(extra_env or {}),
     )
-    out = subprocess.run(
+    out = run_pwsh(
         [shell, "-NoProfile", "-NonInteractive", "-Command", script],
         check = True,
         capture_output = True,
         text = True,
+        encoding = "utf-8",
         env = env,
         timeout = 60,
     ).stdout.strip()
@@ -126,6 +129,24 @@ def test_nothing_found_falls_back(shell, tmp_path):
 @pytest.mark.parametrize("shell", POWERSHELLS)
 def test_a_skipped_patch_asks_uv_for_the_pinned_one(shell, tmp_path):
     result, calls = _resolve(shell, tmp_path, find = sys.executable, skip = [HOST_FULL])
+    assert result is None
+    assert f"python install --no-bin --no-registry {HOST_MINOR}.99" in calls
+
+
+@needs_pwsh
+@needs_supported_host
+@pytest.mark.parametrize("shell", POWERSHELLS)
+def test_a_startup_banner_does_not_hide_a_skipped_patch(shell, tmp_path):
+    site = tmp_path / "site"
+    site.mkdir()
+    (site / "sitecustomize.py").write_text("print('banner')\n", encoding = "utf-8")
+    result, calls = _resolve(
+        shell,
+        tmp_path,
+        find = sys.executable,
+        skip = [HOST_FULL],
+        extra_env = {"PYTHONPATH": str(site)},
+    )
     assert result is None
     assert f"python install --no-bin --no-registry {HOST_MINOR}.99" in calls
 

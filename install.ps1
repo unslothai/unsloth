@@ -7625,15 +7625,20 @@ exit 0
             } catch {}
             $exe = "$exe".Trim()
             if (-not $exe -or -not (Test-Path -LiteralPath $exe -PathType Leaf)) { return $null }
-            $minor = ""
+            # -S: a sitecustomize banner would otherwise be read as the version.
+            $full = ""
             try {
-                $minor = (& $exe -S -c "import sys; print('{}.{}'.format(*sys.version_info[:2]))" 2>$null | Select-Object -First 1)
+                $full = (& $exe -S -c "import sys; print('{}.{}.{}'.format(*sys.version_info[:3]))" 2>$null | Select-Object -First 1)
             } catch {}
-            $minor = "$minor".Trim()
-            if ($minor -notmatch '^3\.1[1-3]$') { return $null }
+            $full = "$full".Trim()
+            if ($full -notmatch '^(3\.1[1-3])\.\d+$') { return $null }
+            $minor = $Matches[1]
             # A store already holding a skipped patch answers the minor with it: ask for the pinned patch.
-            $candidate = Remove-SkippedPython @{ Version = $minor; Path = $exe; Arch = "" }
-            if ($candidate) { return $candidate }
+            if ($PythonSkip -contains $full) {
+                substep "Python $full cannot import torch -- asking uv for another." "Yellow"
+                continue
+            }
+            return @{ Version = $minor; Path = $exe; Arch = "" }
         }
         return $null
     }
