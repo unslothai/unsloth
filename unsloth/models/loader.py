@@ -597,9 +597,25 @@ def _compiled_auto_model(auto_model):
         and replacement is not auto_model
         and replacement.__name__ == auto_model.__name__
         and callable(getattr(replacement, "from_pretrained", None))
+        and _built_by_unsloth_compiler(replacement)
     ):
         return replacement
     return auto_model
+
+
+def _built_by_unsloth_compiler(cls):
+    """True when `cls` is exported by a module the compiler generated (unsloth_compiled_module_*).
+
+    The compiled class keeps the original `__module__`, so check where it actually lives; a same-named
+    class another library rebound in the modeling module is not taken.
+    """
+    for name, module in list(sys.modules.items()):
+        if (
+            name.rsplit(".", 1)[-1].startswith("unsloth_compiled_module_")
+            and getattr(module, cls.__name__, None) is cls
+        ):
+            return True
+    return False
 
 
 def _resolve_omni_auto_model(
