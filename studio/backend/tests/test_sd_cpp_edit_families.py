@@ -60,7 +60,13 @@ def _png(size = (770, 500), color = (200, 10, 10)) -> str:
     return base64.b64encode(buf.getvalue()).decode()
 
 
-def _state(fam, files, *, mode = "oneshot", server = None):
+def _state(
+    fam,
+    files,
+    *,
+    mode = "oneshot",
+    server = None,
+):
     return bk._SdState(
         repo_id = "unsloth/x-GGUF",
         base_repo = fam.base_repo,
@@ -201,7 +207,9 @@ def test_oneshot_kontext_sends_the_source_as_a_ref_image_at_its_own_size(monkeyp
     # Source-sized as on the diffusers engine: 770x500 snaps to 768x496, the requested 1024 is ignored.
     assert argv[argv.index("--width") + 1] == "768" and argv[argv.index("--height") + 1] == "496"
     assert seen["ref"].size == (768, 496)
-    assert argv[argv.index("--cfg-scale") + 1] == "1" and argv[argv.index("--guidance") + 1] == "2.5"
+    assert (
+        argv[argv.index("--cfg-scale") + 1] == "1" and argv[argv.index("--guidance") + 1] == "2.5"
+    )
     for flag, path in (
         ("--vae", "/m/ae.safetensors"),
         ("--clip_l", "/m/clip_l.safetensors"),
@@ -251,9 +259,7 @@ def test_server_body_carries_the_source_as_the_one_ref_image(
 ):
     b = SdCppDiffusionBackend(engine = _FakeEngine())
     b._state, server = _server_state(fam, files)
-    b.generate(
-        prompt = "p", steps = 20, guidance = guidance, seed = 3, init_image = _png(), workflow = "edit"
-    )
+    b.generate(prompt = "p", steps = 20, guidance = guidance, seed = 3, init_image = _png(), workflow = "edit")
     body = server.payloads[-1]
     assert (body["width"], body["height"]) == (768, 496)
     assert body["sample_params"]["guidance"] == expect_guidance
@@ -316,14 +322,28 @@ def test_source_size_snaps_like_the_diffusers_engine_and_fits_an_oversized_sourc
 
     for size in ((770, 500), (776, 520), (1000, 1000), (513, 1999)):
         w, h, _blobs = bk._native_condition_images(
-            KONTEXT, _png(size), None, None, 1024, 1024, full_fidelity = False, pad_to_output = True,
+            KONTEXT,
+            _png(size),
+            None,
+            None,
+            1024,
+            1024,
+            full_fidelity = False,
+            pad_to_output = True,
             source_sized = True,
         )
         assert (w, h) == _snap_to_multiple(Image.new("RGB", size)).size, size
     # 4000x3000 exceeds the 2048 side / 2048*2048 pixel bounds: scaled to fit, aspect kept, never refused.
     w, h, blobs = bk._native_condition_images(
-        QWEN_EDIT, _png((4000, 3000)), None, None, None, None, full_fidelity = False,
-        pad_to_output = False, source_sized = True,
+        QWEN_EDIT,
+        _png((4000, 3000)),
+        None,
+        None,
+        None,
+        None,
+        full_fidelity = False,
+        pad_to_output = False,
+        source_sized = True,
     )
     assert (w, h) == (2048, 1536)
     assert Image.open(io.BytesIO(blobs[0])).size == (2048, 1536)
