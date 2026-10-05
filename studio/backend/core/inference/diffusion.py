@@ -197,6 +197,7 @@ from .diffusion_attention import (
     _ensure_attention_backend_installed,
 )
 from . import diffusion_compile_cache as compile_cache
+from .diffusion_compile_config import family_filters_reductions
 from . import diffusion_cond_cache as cond_cache
 from . import diffusion_prompt_cache as prompt_cache
 from . import diffusion_gguf_compile as gguf_compile
@@ -215,7 +216,9 @@ from .diffusion_cache import (
     TC_AUTO,
     TC_STATIC,
     apply_step_cache,
+    auto_static_skip_plan,
     auto_step_cache_allowed,
+    skip_tier,
     cache_breaks_graph,
     effective_denoise_steps,
     effective_request_strength,
@@ -225,9 +228,11 @@ from .diffusion_cache import (
     step_cache_supported,
 )
 from .diffusion_step_skip import (
+    auto_static_settings,
     install_static_step_skip,
     mark_step_end,
     reset_static_step_skip,
+    static_skip_is_auto,
     static_skip_stats,
     static_skip_view,
     uninstall_static_step_skip,
@@ -1055,6 +1060,8 @@ class _LoadState:
     eager_patched: bool = False
     # Deferred speed auto: the load stays eager, generate() engages `default` at the 3rd generation
     speed_deferred: bool = False
+    # Auto static skip plan for that deferred `default` tier, installed when it engages.
+    deferred_static_plan: Optional[dict] = None
     # Successful generations on this load; drives the deferred engagement above.
     generation_count: int = 0
     # Pre-warmed torch.compile cache context when a compiled tier ran, else None.
@@ -1919,8 +1926,12 @@ def _dense_fast_path_reason(
     kind: str,
     path_override: Optional[str],
     loras: Any = None,
+    failure: Optional[str] = None,
 ) -> str:
-    """Name an unreadable hosted checkpoint only when it was in play (not override/GGUF/LoRA bake)."""
+    """Name an unreadable hosted checkpoint only when it was in play (not override/GGUF/LoRA bake).
+
+    ``failure`` is why a pre-quantized checkpoint that WAS tried did not load (``last_prequant_failure``):
+    planning thought it readable, so only the load can say what went wrong."""
     note = (
         prequant_unreadable_reason(fam, scheme, base_repo = base)
         if kind == "pipeline" and not path_override and not _has_active_lora(loras)
@@ -1928,6 +1939,11 @@ def _dense_fast_path_reason(
     )
     if note:
         return f"engaged on the dense fast path; {note}, so the dense bf16 transformer was quantized instead"
+    if failure:
+        return (
+            f"engaged on the dense fast path; the pre-quantized {scheme} checkpoint did not load "
+            f"({failure}), so the dense bf16 transformer was quantized instead"
+        )
     return "engaged on the dense fast path"
 
 
@@ -2586,17 +2602,14 @@ class DiffusionBackend:
         # Capacity gate: mirror plan_fits_total_capacity against TOTAL capacity, else load_pipeline declines the dense
         # path anyway
         from .diffusion_memory import (
-            _reserve_mib,
             snapshot_device_memory,
+            total_capacity_budget_mib,
         )
 
-        memory = snapshot_device_memory(target)
-        total = memory.total_mib
+        budget = total_capacity_budget_mib(snapshot_device_memory(target))
         steady = getattr(candidate, "steady_total_mib", None)
-        if total is not None and steady is not None:
-            budget = int((int(total) - _reserve_mib(memory.memory_kind, int(total))) * 0.85)
-            if int(steady) > budget:
-                return False
+        if budget is not None and steady is not None and int(steady) > budget:
+            return False
         return True
 
     def _hosted_prequant_reachable(self, fam: Any, scheme: Optional[str], kwargs: dict) -> bool:
@@ -5344,6 +5357,8 @@ class DiffusionBackend:
                     self._active_generate_cancel.set()
             self._reserve_teardown_locked()
         with self._model_transition_slot():
+            # Per load: a previous load's pre-quant failure must never reach this one's status.
+            self._prequant_fallback_note = None
             with self._lock:
                 try:
                     self._raise_if_load_cancelled(_load_token)
@@ -6290,32 +6305,7 @@ class DiffusionBackend:
 
                     if pipe is None:
                         if kind == "pipeline":
-                            if fam.name == KREA2_FAMILY_NAME:
-                                # krea ships transformers-5.x configs the 4.x line cannot parse, so assemble
-                                # per-component; that path never sees pipe_kwargs, so pass the pre-cast TE. Fetches EVERY
-                                # component from the id given, so it must get the mirror.
-                                pipe = load_krea2_pipeline(
-                                    fetch_base,
-                                    dtype,
-                                    hf_token = hf_token,
-                                    check_cancelled = lambda: self._raise_if_load_cancelled(
-                                        _load_token
-                                    ),
-                                    # The branch never sees pipe_kwargs, so the one keyword that keeps the no-download
-                                    # promise has to be handed over with the rest
-                                    local_files_only = local_files_only,
-                                    text_encoder = te_prequant_pipe_kwargs(
-                                        fam,
-                                        fetch_base,
-                                        te_quant_mode = text_encoder_quant,
-                                        target = target,
-                                        dtype = dtype,
-                                        hf_token = hf_token,
-                                        logger = logger,
-                                        local_files_only = local_files_only,
-                                    ).get("text_encoder"),
-                                )
-                            elif fam.name == IDEOGRAM4_FAMILY_NAME:
+                            if fam.name == IDEOGRAM4_FAMILY_NAME:
                                 # ideogram ships the same transformers-5.x Qwen stack as krea; assemble per-component too,
                                 # from the mirror for the same reason.
                                 pipe = load_ideogram4_pipeline(
@@ -6413,9 +6403,20 @@ class DiffusionBackend:
                                         )
                                     else:
                                         # The plan was priced on the seed landing, so re-plan at bf16 without it.
+                                        from utils.native_path_leases import redact_native_paths
+
+                                        from .diffusion_prequant import last_prequant_failure
+
+                                        failure = last_prequant_failure()
+                                        self._prequant_fallback_note = (
+                                            redact_native_paths(failure)
+                                            if failure
+                                            else "the checkpoint was unavailable"
+                                        )
                                         logger.warning(
                                             "diffusion.denoiser_prequant: no pre-quantized denoiser was "
-                                            "seeded; re-planning memory at the released bf16 size"
+                                            "seeded (%s); re-planning memory at the released bf16 size",
+                                            self._prequant_fallback_note,
                                         )
                                         pipeline_seed_scheme = None
                                         plan = bf16_pipeline_plan
@@ -6460,26 +6461,45 @@ class DiffusionBackend:
                                     )
                                     bf16_pipeline_plan = plan
                                 self._raise_if_load_cancelled(_load_token)
-                                # bf16 -> fp16 conversion materialises in host RAM (35 GB for FLUX.1)
-                                small_host = self._small_host_decision(
-                                    _base_local_dir or fetch_base,
-                                    pipe_kwargs,
-                                    target,
-                                    dtype,
-                                    lora_active = _has_active_lora(loras),
-                                )
-                                if small_host is not None and small_host.engaged:
-                                    pipe_kwargs["torch_dtype"] = small_host_torch_dtype_map(
-                                        small_host, dtype
+                                small_host = None
+                                if fam.name == KREA2_FAMILY_NAME:
+                                    # krea's transformers-5.x configs break the 4.x line: assemble per component from
+                                    # pipe_kwargs (pre-cast TE, seeded denoiser or None = dense shards).
+                                    try:
+                                        pipe = load_krea2_pipeline(
+                                            fetch_base,
+                                            dtype,
+                                            hf_token = hf_token,
+                                            check_cancelled = lambda: self._raise_if_load_cancelled(
+                                                _load_token
+                                            ),
+                                            local_files_only = local_files_only,
+                                            text_encoder = pipe_kwargs.get("text_encoder"),
+                                            transformer = pipe_kwargs.get("transformer"),
+                                        )
+                                    finally:
+                                        self._stop_load_prefetch()
+                                else:
+                                    # bf16 -> fp16 conversion materialises in host RAM (35 GB for FLUX.1)
+                                    small_host = self._small_host_decision(
+                                        _base_local_dir or fetch_base,
+                                        pipe_kwargs,
+                                        target,
+                                        dtype,
+                                        lora_active = _has_active_lora(loras),
                                     )
-                                # The prefetched snapshot dir keeps from_pretrained off the hub (24 GB per FLUX.1
-                                # otherwise)
-                                try:
-                                    pipe = pipeline_cls.from_pretrained(
-                                        _base_local_dir or fetch_base, **pipe_kwargs
-                                    )
-                                finally:
-                                    self._stop_load_prefetch()
+                                    if small_host is not None and small_host.engaged:
+                                        pipe_kwargs["torch_dtype"] = small_host_torch_dtype_map(
+                                            small_host, dtype
+                                        )
+                                    # The prefetched snapshot dir keeps from_pretrained off the hub (24 GB per FLUX.1
+                                    # otherwise)
+                                    try:
+                                        pipe = pipeline_cls.from_pretrained(
+                                            _base_local_dir or fetch_base, **pipe_kwargs
+                                        )
+                                    finally:
+                                        self._stop_load_prefetch()
                                 if small_host is not None and small_host.engaged:
                                     plan = self._apply_small_host_route(
                                         pipe,
@@ -6903,15 +6923,33 @@ class DiffusionBackend:
                         gguf_filename
                     )
                     default_steps: Optional[int] = None
+                    static_plan: Optional[dict] = None
                     if cache_auto:
                         default_steps, _ = default_generation_params(
                             gguf_filename, repo_id, base, fam.name
                         )
-                        cache_request = resolve_auto_step_cache(effective_speed, default_steps)
+                        static_plan = auto_static_skip_plan(
+                            (repo_id, base), skip_tier(speed_mode, effective_speed), default_steps
+                        )
+                        cache_request = resolve_auto_step_cache(
+                            effective_speed, default_steps, static_plan = static_plan
+                        )
+                    cache_engaged = None
                     if cache_request == TC_STATIC:
-                        # Explicit only: auto never resolves to static.
-                        cache_engaged = install_static_step_skip(pipe, logger = logger)
-                    else:
+                        cache_engaged = (
+                            install_static_step_skip(
+                                pipe,
+                                settings = auto_static_settings(static_plan, logger = logger),
+                                logger = logger,
+                            )
+                            if static_plan
+                            else install_static_step_skip(pipe, logger = logger)
+                        )
+                        if cache_engaged is None and static_plan:
+                            # Declined (second denoiser, no forward): auto falls back to what it picked before.
+                            static_plan = None
+                            cache_request = resolve_auto_step_cache(effective_speed, default_steps)
+                    if cache_request != TC_STATIC:
                         cache_engaged = apply_step_cache(
                             pipe,
                             mode = cache_request,
@@ -6923,15 +6961,37 @@ class DiffusionBackend:
                             length_changes_ok = not cache_auto,
                             logger = logger,
                         )
+                    # Speed unset on a dense load: `default` engages on the 3rd image, and the skip with it.
+                    deferred_static_plan = (
+                        auto_static_skip_plan((repo_id, base), SPEED_DEFAULT, default_steps)
+                        if cache_auto and speed_deferred and cache_engaged is None
+                        else None
+                    )
                     cache_graph_break = cache_breaks_graph(cache_engaged)
                     self._raise_if_load_cancelled(_load_token)
                     # Arm only where FBCache can engage: a live toggle drops fullgraph and retries every generation.
-                    cache_may_toggle = cache_auto_live and (
-                        cache_engaged is not None
-                        or (cache_request is None and step_cache_supported(pipe, logger = logger))
+                    cache_may_toggle = (
+                        cache_auto_live
+                        and cache_engaged != TC_STATIC
+                        and (
+                            cache_engaged is not None
+                            or (cache_request is None and step_cache_supported(pipe, logger = logger))
+                        )
                     )
                     if cache_auto:
-                        if not cache_auto_live:
+                        if cache_engaged == TC_STATIC:
+                            cache_reason = (
+                                f"auto: static step skip (every {static_plan['every']}) for this model "
+                                f"at {static_plan['min_steps']}+ steps; set "
+                                "UNSLOTH_DIFFUSION_AUTO_STEP_SKIP=0 to turn it off"
+                            )
+                        elif deferred_static_plan:
+                            cache_reason = (
+                                f"auto: static step skip (every {deferred_static_plan['every']}) engages "
+                                "with the compiled profile on the 3rd image; set "
+                                "UNSLOTH_DIFFUSION_AUTO_STEP_SKIP=0 to turn it off"
+                            )
+                        elif not cache_auto_live:
                             # Only name the max tier where it would help: SDXL / LTX-2 never cache on any tier.
                             cache_reason = (
                                 "auto: step caching engages on the max speed tier only"
@@ -7020,6 +7080,7 @@ class DiffusionBackend:
                                 "vae_decode": vae_decode_compile_allowed(pipe, effective_speed),
                             },
                             logger = logger,
+                            reduction_filter = family_filters_reductions(fam),
                         )
 
                     self._raise_if_load_cancelled(_load_token)
@@ -7043,6 +7104,7 @@ class DiffusionBackend:
                         cache_engaged = cache_graph_break,
                         offload_active = plan.offload_policy != OFFLOAD_NONE,
                         denoiser_offloaded = not plan_keeps_transformer_resident(plan),
+                        stream_int8_gemm = True,
                         logger = logger,
                     )
                     if vae_fp16:
@@ -7059,6 +7121,17 @@ class DiffusionBackend:
                             "diffusion.transformer_quant: %s engaged but the transformer is NOT "
                             "compiled; eager torchao quant is ~30x slower than GGUF here",
                             transformer_quant_engaged,
+                        )
+                    # Before the cast and placement, so the unused head is never cast or moved.
+                    from .diffusion_text_encoder_trim import trim_text_encoder
+
+                    te_trim = trim_text_encoder(
+                        getattr(pipe, "text_encoder", None), family = fam.name
+                    )
+                    if te_trim.get("lm_head") == "dropped" and te_trim.get("params"):
+                        logger.info(
+                            "diffusion.text_encoder: dropped unused lm_head (%.2fM params); hidden states unchanged",
+                            te_trim["params"] / 1e6,
                         )
                     # Quantise the dense companion text encoder(s) before placement so offload moves the smaller
                     # weights.
@@ -7237,6 +7310,7 @@ class DiffusionBackend:
                                     kind,
                                     transformer_prequant_path,
                                     loras,
+                                    failure = getattr(self, "_prequant_fallback_note", None),
                                 ),
                                 # Honored when the quant engaged AND when the ask was "off" (a request NOT to
                                 # quantise, which the GGUF build satisfies)
@@ -7361,6 +7435,7 @@ class DiffusionBackend:
                         cache_threshold = transformer_cache_threshold,
                         eager_patched = eager_patched,
                         speed_deferred = speed_deferred,
+                        deferred_static_plan = deferred_static_plan,
                         compile_cache_ctx = compile_ctx,
                         bg_compile = load_bg_compile,
                         hf_token = hf_token,
@@ -7378,6 +7453,11 @@ class DiffusionBackend:
                         self._raise_if_load_cancelled(_load_token)
                         self._state = state
                         state_committed = True
+                    try:
+                        from . import diffusion_vae_prebuild
+                        diffusion_vae_prebuild.maybe_kick(pipe, compile_ctx, logger)
+                    except Exception:  # noqa: BLE001 - a prebuild, never a failed load
+                        pass
                 except BaseException as exc:
                     _clear_exception_frames(exc)
                     raise
@@ -7539,6 +7619,7 @@ class DiffusionBackend:
             self._raise_if_load_cancelled(_load_token)
 
         check_cancelled()
+        self._prequant_fallback_note = None
         fetch_base = fetch_base or prefer_ungated_mirror(base, hf_token)
         # 1. Pre-quantized checkpoint, when one is configured for the resolved scheme.
         scheme = _planned_quant_scheme(
@@ -7587,6 +7668,25 @@ class DiffusionBackend:
                     placement_device = None if seed_device == device else seed_device,
                 )
                 check_cancelled()
+                if transformer is None:
+                    # Never a silent swap: the status names why the checkpoint was not used.
+                    from utils.native_path_leases import redact_native_paths
+
+                    from .diffusion_prequant import last_prequant_failure
+
+                    failure = last_prequant_failure()
+                    self._prequant_fallback_note = (
+                        redact_native_paths(failure)
+                        if failure
+                        else "the checkpoint was unavailable"
+                    )
+                    logger.warning(
+                        "diffusion.prequant: %s checkpoint from %s not used (%s); quantizing the dense "
+                        "transformer instead",
+                        scheme,
+                        getattr(source, "location", "?"),
+                        self._prequant_fallback_note,
+                    )
                 if transformer is not None:
                     if scheme == TQ_NVFP4:
                         from .diffusion_nvfp4_linear import nvfp4_prewarm
@@ -7613,8 +7713,11 @@ class DiffusionBackend:
         if not allow_dense_fallback:
             # The plan only budgeted the prequant-sized build, so the dense bf16 transformer would exceed it after
             # eviction.
+            note = getattr(self, "_prequant_fallback_note", None)
             raise RuntimeError(
-                "prequant checkpoint unavailable and the dense transformer does not fit resident"
+                "prequant checkpoint unavailable"
+                + (f" ({note})" if note else "")
+                + " and the dense transformer does not fit resident"
             )
         # Deliberately the hub id, not base_local_dir: diffusers treats a local directory as terminal (_get_model_file
         # raises rather than falling back to the hub) and a sharded load raises per missing shard, so a partial
@@ -8990,6 +9093,42 @@ class DiffusionBackend:
                 pass
 
     def _engage_deferred_speed(self, state: _LoadState) -> None:
+        """The deferred `default` profile plus its auto static skip; a failed profile takes the skip back off."""
+        object.__setattr__(state, "speed_deferred", False)
+        plan = state.deferred_static_plan
+        object.__setattr__(state, "deferred_static_plan", None)
+        tc = (state.resolved or {}).get("transformer_cache")
+        tc_before = dict(tc) if isinstance(tc, dict) else None
+        installed = False
+        # Before compile, as at load: the skip is an outer forward on the transformer.
+        if plan and state.transformer_cache is None:
+            installed = (
+                install_static_step_skip(
+                    state.pipe, settings = auto_static_settings(plan, logger = logger), logger = logger
+                )
+                == TC_STATIC
+            )
+            if installed:
+                object.__setattr__(state, "transformer_cache", TC_STATIC)
+                if isinstance(tc, dict):
+                    tc["value"] = TC_STATIC
+                    tc["reason"] = (
+                        f"auto: static step skip (every {plan['every']}) for this model at "
+                        f"{plan['min_steps']}+ steps, engaged with the compiled profile; set "
+                        "UNSLOTH_DIFFUSION_AUTO_STEP_SKIP=0 to turn it off"
+                    )
+        try:
+            self._engage_deferred_profile(state)
+        except BaseException:
+            if installed:
+                uninstall_static_step_skip(state.pipe)
+                object.__setattr__(state, "transformer_cache", None)
+                if isinstance(tc, dict) and tc_before is not None:
+                    tc.clear()
+                    tc.update(tc_before)
+            raise
+
+    def _engage_deferred_profile(self, state: _LoadState) -> None:
         """Engage the deferred `default` speed profile at the start of the 3rd generation this
         session. The load left the pipe fully eager (bit-identical reference); by the 3rd image
         repeated use is established, so pay the one-time compile now: eager patches + attention
@@ -9039,6 +9178,7 @@ class DiffusionBackend:
                     "vae_decode": vae_decode_compile_allowed(state.pipe, SPEED_DEFAULT),
                 },
                 logger = logger,
+                reduction_filter = family_filters_reductions(state.family),
             )
             object.__setattr__(state, "compile_cache_ctx", compile_ctx)
         speed_applied = apply_speed_optims(
@@ -9052,6 +9192,7 @@ class DiffusionBackend:
             offload_active = state.offload_policy != OFFLOAD_NONE,
             denoiser_offloaded = state.offload_policy != OFFLOAD_NONE
             and _denoiser_hooked(state.pipe),
+            stream_int8_gemm = True,
             logger = logger,
         )
         if denoisers_pinned_resident(state.pipe):
@@ -9711,9 +9852,14 @@ class DiffusionBackend:
                                 state.cuda_graphs, cache_breaks_graph(state.transformer_cache)
                             )
                         if static_skip:
+                            # Auto skip was measured on txt2img only; explicit "static" applies to every workflow.
+                            auto_only_txt2img = workflow != "txt2img" and static_skip_is_auto(
+                                state.pipe
+                            )
                             reset_static_step_skip(
                                 state.pipe,
                                 denoise_steps,
+                                compute_all = auto_only_txt2img,
                                 step_signal = "callback_on_step_end" in chunk_kwargs,
                                 keep_stats = static_chunks_run > 0,
                                 owner = current_account_id(),
@@ -10061,6 +10207,9 @@ class DiffusionBackend:
         # Restore the process-wide backend flags this load flipped so the next `off` load is bit-identical. All
         # idempotent.
         restore_backend_flags(state.backend_flags_before)
+        prebuild = sys.modules.get(f"{__package__}.diffusion_vae_prebuild")
+        if prebuild is not None:
+            prebuild.cancel_all()
         compile_cache.restore(state.compile_cache_ctx, logger = logger)
         # Before clear_gpu_cache(), or the graph pool stays reserved for the life of the process.
         cuda_graph.uninstall_all(state.cuda_graphs)

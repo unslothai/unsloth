@@ -6,6 +6,7 @@ import test from "node:test";
 import vm from "node:vm";
 
 import { readSrc, readText } from "./helpers/kit.ts";
+import { readAudioWorkspaceSource } from "./helpers/audio-workspace.ts";
 
 const script = readText("../public/reload-snapshot.js");
 const indexHtml = readText("../index.html");
@@ -20,7 +21,7 @@ const attachmentPreviewSource = readSrc("components/assistant-ui/attachment-prev
 const attachmentSource = readSrc("components/assistant-ui/attachment.tsx");
 const imagesPageSource = readSrc("features/images/images-page.tsx");
 const videoPageSource = readSrc("features/video/video-page.tsx");
-const audioPageSource = readSrc("features/audio/audio-page.tsx");
+const audioPageSource = readAudioWorkspaceSource();
 const hubPageSource = readSrc("features/hub/hub-page.tsx");
 const referencePickerSource = readSrc("features/video/reference-picker.tsx");
 
