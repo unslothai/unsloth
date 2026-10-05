@@ -436,7 +436,9 @@ def test_train_calibrate_save_and_serve(checkpoint, tmp_path, lora):
     assert all(torch.equal(weights[k], v.detach().cpu().half()) for k, v in expected.items())
 
 
-def test_toy_task_beats_the_base_model(checkpoint, tmp_path):
+def test_toy_task_beats_the_base_model(checkpoint, tmp_path, monkeypatch):
+    # CPU: the head's dropout draws from the device RNG, and 45 held-out decisions swing 0.67-0.84 by stream.
+    monkeypatch.setattr(decision, "_device", lambda: torch.device("cpu"))
     model, tokenizer = FastDecisionModel.from_pretrained(
         str(checkpoint), use_gradient_checkpointing = False
     )
@@ -446,7 +448,13 @@ def test_toy_task_beats_the_base_model(checkpoint, tmp_path):
     base = FastDecisionModel.evaluate(model, tokenizer, held)
     DecisionTrainer(
         model = model,
-        args = _args(tmp_path, max_steps = 80, learning_rate = 5e-3, per_device_train_batch_size = 16),
+        args = _args(
+            tmp_path,
+            max_steps = 80,
+            learning_rate = 5e-3,
+            per_device_train_batch_size = 16,
+            use_cpu = True,
+        ),
         train_dataset = train,
         processing_class = tokenizer,
         head_learning_rate = 5e-3,
