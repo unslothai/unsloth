@@ -601,6 +601,25 @@ class TestDateStaysInTheSystemTurn:
         assert not self.inference._local_template_rejects_system_turn()
         assert self.inference._local_template_rejects_system_turn(tools = True)
 
+    def test_a_text_request_probes_the_mapped_template(self, monkeypatch):
+        from types import SimpleNamespace
+
+        from core.inference import orchestrator
+
+        monkeypatch.undo()
+        info = {"chat_template_info": {"template": _CHATML, "mapped_template": _QWEN25_LIKE}}
+        backend = SimpleNamespace(active_model_name = "mapped", models = {"mapped": info})
+        monkeypatch.setattr(
+            self.inference, "get_llama_cpp_backend", lambda: SimpleNamespace(is_loaded = False)
+        )
+        monkeypatch.setattr(orchestrator, "peek_inference_backend", lambda: backend)
+        assert (
+            self.inference._local_template_default_system_prompt(_DAY)
+            == "You are Qwen, a helpful assistant."
+        )
+        # the mapper runs on the text path only; an image render keeps the loaded template.
+        assert self.inference._local_template_default_system_prompt(_DAY, True) == ""
+
     def test_an_image_request_probes_the_processor_template(self, monkeypatch):
         from types import SimpleNamespace
 

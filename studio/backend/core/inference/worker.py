@@ -812,6 +812,12 @@ def _handle_load(backend, config: dict, resp_queue: Any) -> None:
             # Forward chat_template_info so the parent can classify capabilities.
             try:
                 _tpl_info = _entry.get("chat_template_info")
+                _mapped_tpl = None
+                if isinstance(_tpl_info, dict) and not model_info["is_mlx"]:
+                    from core.inference.chat_template_helpers import mapped_chat_template
+                    _mapped_tpl = mapped_chat_template(
+                        _entry, getattr(backend, "active_model_name", None) or mc.identifier
+                    )
                 if isinstance(_tpl_info, dict):
                     model_info["chat_template_info"] = {
                         "has_template": bool(_tpl_info.get("has_template", False)),
@@ -823,6 +829,8 @@ def _handle_load(backend, config: dict, resp_queue: Any) -> None:
                         "processor_template": _tpl_info.get("processor_template"),
                         "renders_image": _tpl_info.get("renders_image"),
                         "accepts_multiple_images": _tpl_info.get("accepts_multiple_images"),
+                        # The body a text render installs at generate time, when the model is mapped.
+                        "mapped_template": _mapped_tpl,
                     }
             except Exception as _tpl_exc:
                 logger.warning("chat_template_info forward failed: %s", _tpl_exc)

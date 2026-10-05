@@ -6517,7 +6517,9 @@ def _local_chat_template(image: bool = False, tools: bool = False) -> Optional[s
                     or not template.strip()
                     or info.get("chat_template_override_reason")
                 ):
-                    template = template_info.get("template")
+                    # a text render installs the mapped template at generate time, when there is one.
+                    mapped = None if image else template_info.get("mapped_template")
+                    template = mapped or template_info.get("template")
         from core.inference.chat_template_helpers import _selected_template_strings_from_value
 
         # a tool request renders a named template's tool_use body; a processor never picks it.
