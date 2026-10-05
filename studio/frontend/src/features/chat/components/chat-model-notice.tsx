@@ -4,12 +4,12 @@
 import { useEffect, useState } from "react";
 
 import { Button } from "@/components/ui/button";
+import { modelDisplayName } from "../../model-picker/model-config/model-identity";
 import {
   CHAT_HISTORY_UPDATED_EVENT,
   type ChatHistoryUpdatedDetail,
 } from "../api/chat-api";
 import { externalModelLabel } from "../lib/external-model-label";
-import { modelDisplayName } from "../../model-picker/model-config/model-identity";
 import { getStoredChatThread } from "../utils/chat-history-storage";
 import {
   type ChatModelSwitchTarget,
