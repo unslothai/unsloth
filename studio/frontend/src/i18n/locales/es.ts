@@ -1928,6 +1928,7 @@ export const es = {
         cpu: "CPU",
         ram: "RAM",
         disk: "Disco",
+        modelsDisk: "Disco de modelos",
         vram: "VRAM",
         cpuCores: "{logical} núcleos lógicos / {physical} físicos",
         currentLoad: "Carga actual",
@@ -2039,6 +2040,7 @@ export const es = {
       storage: {
         title: "Almacenamiento",
         systemDisk: "Disco del sistema",
+        modelsDisk: "Disco de modelos",
         diskUsage: "{used} en uso / {total}",
         diskFree: "Libre: {free}",
         modelsFolder: "Carpeta de modelos",
