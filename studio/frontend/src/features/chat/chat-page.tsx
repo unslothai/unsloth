@@ -331,8 +331,7 @@ function getExternalProviderDropdownRank(providerType: string): number {
 
 type RuntimeStoreState = ReturnType<typeof useChatRuntimeStore.getState>;
 
-// The newest message's usage, only if it matches the active checkpoint, else the relaxed render gate
-// shows stale stats.
+// The newest saved usage if the active checkpoint and window could have produced it, else null.
 function savedUsageFor(
   messages: MessageRecord[],
   store: RuntimeStoreState,
@@ -342,17 +341,12 @@ function savedUsageFor(
   if (!usage) return null;
   const activeCheckpoint = store.params.checkpoint;
   const usageModelId = (usage as { modelId?: unknown }).modelId;
-  // Scope by modelId when present; reject if no active checkpoint, since model-scoped usage cannot
-  // be attributed to "nothing".
   if (typeof usageModelId === "string" && usageModelId) {
     if (!activeCheckpoint || usageModelId !== activeCheckpoint) {
       return null;
     }
   }
-  // For local turns, also require the restored count to fit in the active window. Skip when unknown
-  // (external provider). llama.cpp only: it stops at the window, so a count past it is stale by definition.
-  // MLX generates straight past instead, where an over-window count is the true one and the bar has a state
-  // for it.
+  // llama.cpp stops at the window, so a count past it is stale; MLX runs past it, so its count stands.
   const limit = store.loadedIsGguf ? store.loadedContextLength : null;
   if (typeof limit === "number" && limit > 0 && (usage.totalTokens ?? 0) > limit) {
     return null;
@@ -4139,7 +4133,6 @@ export function ChatPage({
     }
     viewBeforeCompareRef.current = null;
     navigate({ to: "/chat", search: saved });
-    // Restore the saved usage, else estimate it from the stored text.
     const threadId =
       saved.thread ?? useChatRuntimeStore.getState().activeThreadId;
     if (threadId) {

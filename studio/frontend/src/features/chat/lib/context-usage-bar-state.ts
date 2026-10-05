@@ -30,7 +30,6 @@ export type ContextUsageBarInput = {
   /** context_length_enforced as the load reported it; null where it does not answer. */
   contextEnforced?: boolean | null;
   contextBudget?: number | null;
-  // a text-length guess made before any model counted the chat
   estimated?: boolean;
 };
 
