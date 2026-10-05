@@ -673,7 +673,9 @@ def _maskless_causal_sdpa_forward(module, query, key, value, args, kwargs):
         return None
     if kwargs.get("position_bias", None) is not None:
         return None
-    if getattr(module, "is_causal", True) is not True:
+    # Vision / encoder callers also pass None to flex, meaning bidirectional: only a module
+    # that declares itself causal is rerouted.
+    if getattr(module, "is_causal", None) is not True:
         return None
     if not (hasattr(query, "dim") and query.dim() == 4 and key.dim() == 4):
         return None
