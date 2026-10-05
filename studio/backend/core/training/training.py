@@ -1240,7 +1240,6 @@ class TrainingBackend:
         self._model_download_repo_id: Optional[str] = None
         self._xet_fallback_used: bool = False
         self._needs_xet_respawn: bool = False
-        # #7843 mirror. None when the temp file could not be opened; the spawn still proceeds.
         self._stderr_capture = None
 
         logger.info("TrainingBackend initialized (subprocess mode)")
@@ -2892,7 +2891,6 @@ class TrainingBackend:
             logger.exception("Training event pump: failed to handle %s event; skipping", etype)
 
     def _open_worker_stderr_capture(self) -> None:
-        """Replace the #7843 sink. A failed open leaves the spawn on inherited stderr."""
         previous = self._stderr_capture
         self._stderr_capture = None
         if previous is not None:

@@ -124,7 +124,7 @@ def stderr_tail_from_bytes(
     return joined
 
 
-# A native abort prints the reason and then the stack. The last lines are the frames.
+# A native abort prints the reason first, then the stack.
 _CRASH_LINE_MARKERS = ("llvm error", "fatal exception", "out of memory")
 _CRASH_LINE_LIMIT = 500
 
@@ -154,7 +154,6 @@ def first_crash_line(text: str) -> str:
 
 
 def unexpected_exit_message(pid, exitcode, text: str) -> str:
-    """What the UI shows when a worker dies without an error event."""
     pid_text = str(pid) if pid is not None else "unknown"
     message = (
         "Training process exited unexpectedly "
@@ -230,7 +229,7 @@ class WorkerStderrCapture:
         return stderr_tail_from_bytes(data, max_lines = max_lines, max_chars = max_chars)
 
     def text(self, limit: int = MIRROR_FILE_CAP_BYTES) -> str:
-        """The sink from the start, not the tail. The crash reason is the first line."""
+        """From the start, not the tail: the crash reason precedes the stack."""
         try:
             fd = os.open(self._path, os.O_RDONLY | _O_NOFOLLOW | _O_BINARY)
         except OSError:

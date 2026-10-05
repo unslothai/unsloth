@@ -62,8 +62,7 @@ _stub("utils.hardware", _hw)
 
 
 def _stub_run_without_native_path_secret(*args, **kwargs):
-    # Named on purpose. The training spawn pickles this target, and a lambda cannot
-    # cross the Windows spawn boundary.
+    # Not a lambda: the spawn pickles this target on Windows.
     return None
 
 
