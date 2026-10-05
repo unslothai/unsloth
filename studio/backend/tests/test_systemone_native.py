@@ -207,3 +207,21 @@ def test_errors_media_refusal_and_cancellation_cleanup(native, monkeypatch):
     monkeypatch.setattr(LlamaCppBackend, "_enumerated_gpu_devices", staticmethod(lambda *_: []))
     with pytest.raises(ClefWorkerError, match = "no usable GPU"):
         native_worker.NativeWorker().start(path, model, "gpu", threading.Event())
+
+
+@pytest.mark.parametrize("backend", ["llama.cpp", "pytorch"])
+def test_cache_delete_guard_matches_the_resident_backend(monkeypatch, backend):
+    from core.systemone import catalog, runtime
+    from hub.services.models import deletion
+
+    monkeypatch.setattr(
+        runtime, "status", lambda: {"loaded_model": "clef-flash", "backend": backend}
+    )
+    monkeypatch.setattr(runtime, "loading_repo_ids", lambda: ())
+    native_repo = catalog.NATIVE_CHECKPOINTS["clef-flash"].source
+    torch_repo = catalog.CHECKPOINTS["clef-flash"].source
+    resident, unused = (
+        (native_repo, torch_repo) if backend == "llama.cpp" else (torch_repo, native_repo)
+    )
+    assert deletion._decisions_blocks_delete(resident) is not None
+    assert deletion._decisions_blocks_delete(unused) is None

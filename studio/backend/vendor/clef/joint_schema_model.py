@@ -512,7 +512,7 @@ def load_release_model(
         **from_pretrained_kwargs,
     )
     backbone.config.use_cache = False
-    head_config = json.loads((path / "joint_head_config.json").read_text())
+    head_config = json.loads((path / "joint_head_config.json").read_text(encoding="utf-8"))
     head = JointSchemaHead(**head_config)
     head.load_state_dict(load_file(path / "joint_head.safetensors"), strict=True)
     head = head.to(device=device, dtype=dtype)

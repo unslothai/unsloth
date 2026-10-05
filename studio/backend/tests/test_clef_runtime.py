@@ -253,3 +253,76 @@ def test_another_load_waits_until_the_retiring_process_exits(monkeypatch):
         release.set()
         thread.join(5)
     assert not thread.is_alive() and not worker.is_alive()
+
+
+@pytest.mark.parametrize("retirement", ["unload", "idle", "handoff"])
+def test_gpu_retirement_does_not_evict_a_later_cpu_worker(monkeypatch, retirement):
+    from core.inference import gpu_arbiter as arb
+
+    monkeypatch.setattr(arb, "_owner", None)
+    monkeypatch.setattr(arb, "_owner_account", None)
+    monkeypatch.setattr(arb, "other_accounts_active", lambda _: 0)
+    monkeypatch.setattr(arb, "_release_idle_video_servers", lambda _: None)
+    clef_runtime.decide(_checkpoint(), "state", {"q": {"type": "noul"}}, [])
+    monkeypatch.setattr(clef_runtime, "_device_name", "cuda")
+    arb.acquire_for(arb.DECISIONS)
+    worker = clef_runtime._worker
+    if retirement == "handoff":
+        thread = threading.Thread(target = lambda: arb.acquire_for(arb.CHAT))
+        thread.start()
+        thread.join(5)
+        assert not thread.is_alive(), "Eviction must not re-enter the arbiter lock"
+    elif retirement == "idle":
+        clef_runtime._idle_unload(worker, clef_runtime._generation)
+    else:
+        clef_runtime.unload()
+    expected = arb.CHAT if retirement == "handoff" else None
+    _wait(lambda: arb.current_owner() == expected)
+    assert not worker.is_alive()
+    clef_runtime.decide(_checkpoint("clef-cpu"), "state", {"q": {"type": "noul"}}, [])
+    cpu_worker = clef_runtime._worker
+    arb.acquire_for(arb.CHAT, allow_evict = False)
+    assert cpu_worker.is_alive(), "A GPU acquisition must leave CPU Clef resident"
+
+
+@pytest.mark.parametrize("accelerator", [None, "cuda", "xpu", "mps"])
+@pytest.mark.parametrize("requested", ["cpu", "gpu"])
+def test_pytorch_device_selection_never_silently_falls_back(accelerator, requested):
+    torch = SimpleNamespace(
+        cuda = SimpleNamespace(
+            is_available = lambda: accelerator == "cuda", is_bf16_supported = lambda: True
+        ),
+        xpu = SimpleNamespace(
+            is_available = lambda: accelerator == "xpu", is_bf16_supported = lambda: True
+        ),
+        backends = SimpleNamespace(mps = SimpleNamespace(is_available = lambda: accelerator == "mps")),
+        float32 = "fp32",
+        float16 = "fp16",
+        bfloat16 = "bf16",
+    )
+    if requested == "gpu" and accelerator is None:
+        with pytest.raises(clef_worker.ClefWorkerError, match = "GPU"):
+            clef_worker._actual_device(torch, requested)
+        return
+    device, dtype, available = clef_worker._actual_device(torch, requested)
+    assert available is (accelerator is not None)
+    if requested == "cpu":
+        assert (device, dtype) == ("cpu", "fp32")
+    else:
+        assert device == ("mps" if accelerator == "mps" else f"{accelerator}:0")
+        assert dtype == ("fp16" if accelerator == "mps" else "bf16")
+
+
+def test_shutdown_racing_adoption_closes_the_worker(monkeypatch, tmp_path):
+    from utils import process_lifetime
+
+    adopted = []
+    adopt = process_lifetime.adopt_pid
+    monkeypatch.setattr(
+        process_lifetime, "adopt_pid", lambda pid: adopted.append(pid) or adopt(pid)
+    )
+    monkeypatch.setattr(process_lifetime, "is_process_shutting_down", lambda: bool(adopted))
+    worker = clef_runtime.ClefWorker(_fake_worker)
+    with pytest.raises(clef_runtime.ClefWorkerCancelled, match = "cancelled"):
+        worker.start(tmp_path, _checkpoint(), "cpu", threading.Event())
+    assert adopted and not worker.is_alive()

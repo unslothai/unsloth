@@ -728,7 +728,10 @@ def _decisions_blocks_delete(repo_id: Optional[str] = None) -> Optional[str]:
     from core.systemone import catalog, runtime
 
     held = runtime.status()
-    checkpoint = catalog.CHECKPOINTS.get(held.get("loaded_model"))
+    checkpoints = (
+        catalog.NATIVE_CHECKPOINTS if held.get("backend") == "llama.cpp" else catalog.CHECKPOINTS
+    )
+    checkpoint = checkpoints.get(held.get("loaded_model"))
     if checkpoint is not None and (
         repo_id is None or _loaded_id_matches_repo(checkpoint.source, repo_id)
     ):

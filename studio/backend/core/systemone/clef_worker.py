@@ -17,17 +17,8 @@ from typing import Any
 MAX_CONTEXT_TOKENS = 16_384
 # Overflow guard for the reference encoder's max_length argument.
 _UNBOUNDED_ENCODE_LENGTH = (1 << 31) - 1
-_SOURCE_SHA256 = "0e304cf7c6500e8bb59bef7e2afd2c6373f82596dfb3b57d1aa93c175e2dc3a3"
+_SOURCE_SHA256 = "96a08c84e38ae5b17cddb1b5310d0479442fcacee39ecd8f0381e1d6313ae2e0"
 _VENDORED_CLEF = Path(__file__).resolve().parent.parent.parent / "vendor" / "clef"
-
-
-class _UTF8Path(type(Path())):
-    def read_text(
-        self,
-        encoding = None,
-        errors = None,
-    ):
-        return super().read_text(encoding = encoding or "utf-8", errors = errors)
 
 
 class ClefWorkerError(RuntimeError):
@@ -75,22 +66,31 @@ def _reference_module():
         sys.modules.pop(name, None)
         raise
 
-    # Preserve source bytes while fixing its bare Path.read_text() locale default.
-    module.Path = _UTF8Path
     return module
 
 
 def _actual_device(torch, requested_device: str) -> tuple[str, Any, bool]:
     """Return one concrete device and its dtype; never use an auto/multi-GPU map."""
-    gpu_available = bool(getattr(torch, "cuda", None) and torch.cuda.is_available())
-    if requested_device == "gpu" and gpu_available:
-        # cuda:0 is the arbiter-selected visible GPU, never an auto map.
-        return "cuda:0", torch.bfloat16, True
-    return "cpu", torch.float32, gpu_available
+    backends = (
+        ("cuda", getattr(torch, "cuda", None)),
+        ("xpu", getattr(torch, "xpu", None)),
+        ("mps", getattr(getattr(torch, "backends", None), "mps", None)),
+    )
+    available = next(((name, api) for name, api in backends if api and api.is_available()), None)
+    if requested_device != "gpu":
+        return "cpu", torch.float32, available is not None
+    if available is None:
+        raise ClefWorkerError(
+            "No usable PyTorch GPU is available. Select CPU or install the matching accelerator runtime."
+        )
+    name, api = available
+    bf16 = name != "mps" and api.is_bf16_supported()
+    device = "mps" if name == "mps" else f"{name}:0"
+    return device, torch.bfloat16 if bf16 else torch.float16, True
 
 
 def _load(snapshot_path: str, requested_device: str, cancel_event):
-    """Load only from a complete local snapshot, using CPU fp32 or GPU bf16."""
+    """Load only from a complete local snapshot, using CPU fp32 or GPU reduced precision."""
     _cancelled(cancel_event)
     path = Path(snapshot_path)
     if not path.is_dir():
@@ -116,8 +116,7 @@ def _load(snapshot_path: str, requested_device: str, cancel_event):
             f"Could not load the local Clef checkpoint: {type(exc).__name__}: {exc}"
         ) from exc
     _cancelled(cancel_event)
-    # Report the actual device if GPU availability changed during startup.
-    return model, processor, ("cuda" if device.startswith("cuda") else "cpu"), gpu_available
+    return model, processor, device.split(":")[0], gpu_available
 
 
 def _decode_images(images: list[bytes]) -> list[Any]:

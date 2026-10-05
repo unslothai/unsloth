@@ -95,6 +95,8 @@ class ClefWorker:
                 # Linux's parent-death signal follows the spawning thread's lifetime.
                 spawn_on_lifetime_thread(self._process.start)
             adopt_pid(self._process.pid)
+            if cancelled.is_set() or is_process_shutting_down():
+                raise ClefWorkerCancelled("Clef model loading was cancelled.")
             self._send(
                 dict(
                     type = "load",
@@ -235,6 +237,18 @@ def _claim_repository_lease(checkpoint):
     return registry, checkpoint.source, owner
 
 
+def _release_gpu_if_idle():
+    from core.inference.gpu_arbiter import DECISIONS, release_if
+    def idle():
+        with _state_lock:
+            return _loading is None and not _retiring and (_worker is None or _device_name == "cpu")
+
+    # Eviction/registration can hold the arbiter lock; recheck ownership off-thread.
+    threading.Thread(
+        target = lambda: release_if(DECISIONS, idle), name = "clef-gpu-release", daemon = True
+    ).start()
+
+
 def _retire(
     worker,
     lease,
@@ -248,6 +262,7 @@ def _retire(
                 logger.warning("Clef cache lease was no longer owned for %s", repo)
         with _state_lock:
             _retiring.discard(worker)
+        _release_gpu_if_idle()
 
     if worker is None:
         release()
@@ -421,6 +436,7 @@ def _load_worker(load):
         with _state_lock:
             if _loading is load:
                 _loading = None
+        _release_gpu_if_idle()
         load.done.set()
 
 
