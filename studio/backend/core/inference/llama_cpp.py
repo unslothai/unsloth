@@ -9049,9 +9049,7 @@ class LlamaCppBackend:
         igpu_room = {i: max(0.0, usable_mib.get(i, 0.0)) for i in igpus}
         room_total = sum(igpu_room.values())
         for i in igpus:
-            shares[i] = (
-                left * igpu_room[i] / room_total if room_total > 0 else left / len(igpus)
-            )
+            shares[i] = left * igpu_room[i] / room_total if room_total > 0 else left / len(igpus)
         return [shares[i] for i in gpu_indices]
 
     @staticmethod
