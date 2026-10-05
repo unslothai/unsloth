@@ -25,7 +25,7 @@ _VENDOR_LIST = "Unsloth currently only works on NVIDIA, AMD and Intel GPUs."
 def helper():
     """The shipped function, without importing unsloth (it `del`s the name at import)."""
     tree = ast.parse(_GPU_INIT.read_text(encoding = "utf-8"))
-    names = (_HELPER, "_nvidia_smi_gpu_name", "_cuda_visible_devices_hides_nvidia")
+    names = (_HELPER, "_nvidia_smi_gpu_name")
     wanted = [n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name in names]
     assert _HELPER in [n.name for n in wanted]
     namespace = {"subprocess": subprocess, "os": os, "sys": sys}
@@ -143,7 +143,7 @@ def test_a_partial_mask_keeps_the_hint_but_names_itself(helper, monkeypatch, mas
         helper(NotImplementedError(_NO_ACCELERATOR))
 
     assert "NVIDIA GB10" in str(excinfo.value)
-    assert f"CUDA_VISIBLE_DEVICES is set to {mask!r}" in str(excinfo.value)
+    assert f"CUDA_VISIBLE_DEVICES={mask!r}" in str(excinfo.value)
 
 
 def test_no_mask_note_when_the_variable_is_unset(helper, monkeypatch):

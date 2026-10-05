@@ -190,44 +190,26 @@ def _nvidia_smi_gpu_name():
     return smi.stdout.strip().splitlines()[0].strip()
 
 
-def _cuda_visible_devices_hides_nvidia():
-    mask = os.environ.get("CUDA_VISIBLE_DEVICES")
-    if mask is None:
-        return False
-    mask = "".join(mask.split())
-    return mask in ("", "-1")
-
-
 def _reraise_device_type_error_with_gpu_hint(exception):
+    mask = os.environ.get("CUDA_VISIBLE_DEVICES")
     # Zoo's generic error lists AMD, so only "ROCm" identifies its ROCm advice.
-    if "ROCm" in str(exception):
-        raise exception
-    if _cuda_visible_devices_hides_nvidia():
+    # An empty or "-1" mask hides every GPU on purpose.
+    if "ROCm" in str(exception) or (mask is not None and "".join(mask.split()) in ("", "-1")):
         raise exception
     gpu_name = _nvidia_smi_gpu_name()
     if gpu_name is None:
         raise exception
     try:
         import torch as _torch
-        torch_cuda_build = getattr(getattr(_torch, "version", None), "cuda", None) or "unknown"
+        torch_cuda = _torch.version.cuda or "cpu-only"
     except Exception:
-        torch_cuda_build = "unknown"
-    mask = os.environ.get("CUDA_VISIBLE_DEVICES")
-    mask_note = ""
-    if mask is not None:
-        mask_note = (
-            f"CUDA_VISIBLE_DEVICES is set to {mask!r}; if it selects no installed GPU, "
-            f"PyTorch may be working correctly.\n"
-        )
+        torch_cuda = "unknown"
+    mask_note = "" if mask is None else f", CUDA_VISIBLE_DEVICES={mask!r}"
     raise NotImplementedError(
-        f"Unsloth: nvidia-smi detects an NVIDIA GPU ({gpu_name}), but PyTorch cannot use it "
-        f"(torch.cuda.is_available() is False).\n"
-        f"PyTorch CUDA build: {torch_cuda_build}.\n"
-        f"{mask_note}"
-        f"This usually means PyTorch does not match this machine's CUDA driver or platform. "
-        f"Follow the installation guide to replace PyTorch and its companion packages in "
-        f"the environment that raised this error ({sys.executable}):\n"
-        f"    https://github.com/unslothai/unsloth#-install"
+        f"Unsloth: nvidia-smi sees {gpu_name} but torch.cuda.is_available() is False "
+        f"(torch CUDA build {torch_cuda}{mask_note}). PyTorch likely does not match this "
+        f"machine; reinstall it for {sys.executable} per "
+        f"https://github.com/unslothai/unsloth#-install"
     ) from exception
 
 
@@ -319,11 +301,7 @@ try:
     )
 except NotImplementedError as device_type_error:
     _reraise_device_type_error_with_gpu_hint(device_type_error)
-del (
-    _reraise_device_type_error_with_gpu_hint,
-    _nvidia_smi_gpu_name,
-    _cuda_visible_devices_hides_nvidia,
-)
+del _reraise_device_type_error_with_gpu_hint, _nvidia_smi_gpu_name
 
 from .import_fixes import (
     fix_transformers5_bare_annotation_configs,
