@@ -12,7 +12,7 @@ import {
   nativeImportSource,
 } from "./chat-import";
 
-export const CHAT_IMPORT_ACCEPT = ".json,.jsonl,.ndjson,.csv";
+export const CHAT_IMPORT_ACCEPT = ".json,.jsonl,.ndjson,.csv,.md,.markdown";
 
 /** Where imported chats land: a project (null for none), optionally filed in a section. */
 export interface ChatImportTarget {

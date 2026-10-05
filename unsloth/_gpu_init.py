@@ -260,6 +260,8 @@ from .import_fixes import (
     fix_transformers5_image_processing_reexports,
     fix_transformers_composite_prefix_renaming,
     fix_transformers_fully_masked_rows,
+    fix_transformers_untrusted_config_fields,
+    fix_transformers_chat_template_path_traversal,
     fix_transformers_chunked_mask_block_sequence_ids,
     fix_transformers_longcat_lsa_config,
     fix_transformers_rope_scaling_drops_theta,
@@ -281,6 +283,8 @@ from .import_fixes import (
     check_vllm_torch_sm100_compatibility,
     fix_vllm_guided_decoding_params,
     fix_vllm_pdl_blackwell,
+    fix_cudnn_sdpa_d256_masked_backward,
+    fix_rocm_windows_fused_sdpa,
     fix_triton_compiled_kernel_missing_attrs,
     fix_dynamo_config_thread_visibility,
     patch_trunc_normal_precision_issue,
@@ -291,6 +295,7 @@ from .import_fixes import (
     patch_psutil_cpu_freq,
     patch_enable_input_require_grads,
     patch_unsafe_trainer_rng_load,
+    patch_torch_export_pt2_unsafe_load,
     fix_openenv_no_vllm,
     patch_openspiel_env_async,
     fix_executorch,
@@ -303,6 +308,7 @@ from .import_fixes import (
     fix_peft_transformers_tensor_parallel_import_compat,
     fix_peft_transformers_weight_conversion_import,
     patch_peft_weight_converter_compatibility,
+    patch_peft_float8_adapter_upcast,
     fix_peft_stale_torchao_import_error,
     fix_peft_torchao_missing_tensor_subclass,
     patch_accelerate_recursively_apply,
@@ -316,6 +322,9 @@ fix_transformers5_bare_annotation_configs()
 # same process is covered too (#9708).
 fix_transformers_fully_masked_rows()
 fix_transformers_chunked_mask_block_sequence_ids()
+# CVE-2026-4372 / 5241 / 9856, no-ops once transformers carries the fix; before any config loads.
+fix_transformers_untrusted_config_fields()
+fix_transformers_chat_template_path_traversal()
 # Probe-gated: no-ops unless this transformers merges a submodule's own prefix renaming into a
 # composite model's conversion mapping. Ordered here, before anything loads a checkpoint, so a
 # plain transformers.from_pretrained in the same process keeps its bitsandbytes quant_state too.
@@ -363,6 +372,9 @@ check_vllm_torch_sm100_compatibility()
 fix_vllm_guided_decoding_params()
 fix_trl_vllm_ascend()
 fix_vllm_pdl_blackwell()
+fix_cudnn_sdpa_d256_masked_backward()
+# Windows ROCm only, probe-gated: fused attention fails on every call there (gfx1151, torch 2.11).
+fix_rocm_windows_fused_sdpa()
 fix_triton_compiled_kernel_missing_attrs()
 # Must run before unsloth_zoo's patch_torch_compile and the gpt-oss patches raise the dynamo
 # recompile limits, so those settings reach the autograd worker threads on torch >= 2.12.
@@ -376,6 +388,7 @@ patch_datasets()
 patch_psutil_cpu_freq()
 patch_enable_input_require_grads()
 patch_unsafe_trainer_rng_load()
+patch_torch_export_pt2_unsafe_load()
 fix_openenv_no_vllm()
 patch_openspiel_env_async()
 fix_executorch()
@@ -391,6 +404,7 @@ fix_accelerate_dtensor_check_without_torch_distributed()
 fix_peft_transformers_tensor_parallel_import_compat()
 fix_peft_transformers_weight_conversion_import()
 patch_peft_weight_converter_compatibility()
+patch_peft_float8_adapter_upcast()
 # After peft is importable, so the already-bound is_torchao_available in peft.tuners.lora.torchao is
 # replaced too, not just import_utils'.
 fix_peft_stale_torchao_import_error()
@@ -401,6 +415,8 @@ patch_accelerate_recursively_apply()
 
 del fix_transformers5_bare_annotation_configs
 del fix_transformers5_legacy_config_types
+del fix_transformers_untrusted_config_fields
+del fix_transformers_chat_template_path_traversal
 del fix_transformers_rope_scaling_drops_theta
 del fix_transformers_fp8_modulelist_experts
 del fix_transformers_fp8_unscaled_checkpoint_linears
@@ -420,6 +436,8 @@ del check_vllm_torch_sm100_compatibility
 del fix_vllm_guided_decoding_params
 del fix_trl_vllm_ascend
 del fix_vllm_pdl_blackwell
+del fix_cudnn_sdpa_d256_masked_backward
+del fix_rocm_windows_fused_sdpa
 del fix_triton_compiled_kernel_missing_attrs
 del fix_dynamo_config_thread_visibility
 del patch_trunc_normal_precision_issue
@@ -441,6 +459,7 @@ del fix_accelerate_dtensor_check_without_torch_distributed
 del fix_peft_transformers_tensor_parallel_import_compat
 del fix_peft_transformers_weight_conversion_import
 del patch_peft_weight_converter_compatibility
+del patch_peft_float8_adapter_upcast
 del fix_peft_stale_torchao_import_error
 del fix_peft_torchao_missing_tensor_subclass
 del patch_accelerate_recursively_apply

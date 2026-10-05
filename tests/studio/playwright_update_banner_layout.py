@@ -114,6 +114,42 @@ RELEASE_NOTES = {
 }
 # A successful lookup with no previewable body.
 RELEASE_NOTES_NONE = dict(RELEASE_NOTES, markdown = "", matched = False)
+# A Platform | Link table as release notes carry it. The cells inherited overflow-wrap:anywhere, so the table sized
+# the Link column below "Download" and split it ("Downloa / d"). The bare URL may wrap or scroll, never leave the card.
+_DL = "https://github.com/unslothai/unsloth/releases/latest/download"
+RELEASE_NOTES_TABLE = dict(
+    RELEASE_NOTES,
+    markdown = "\n".join(
+        [
+            NOTES_MARKDOWN,
+            "",
+            "## Download Unsloth Desktop",
+            "",
+            "| Platform | Link |",
+            "|---|---|",
+            f"| macOS (Apple Silicon, M1 or newer, macOS 12 and later) | [Download]({_DL}/Unsloth-Desktop-MacOS.dmg) |",
+            f"| Windows 10 / 11 (x64 installer with automatic updates) | [Download]({_DL}/Unsloth-Desktop-Windows.exe) |",
+            f"| Linux AppImage (x86_64, runs on most distributions) | [Download]({_DL}/Unsloth-Desktop-Linux.AppImage) |",
+            "",
+            "| Platform | URL |",
+            "|---|---|",
+            f"| macOS | {_DL}/Unsloth-Desktop-MacOS.dmg |",
+        ]
+    ),
+)
+TABLE_VIEWPORTS = [(1440, 900), (390, 844)]
+NOTES_TABLES = """
+() => {
+  const scroll = document.querySelector('[data-testid="update-release-notes-scroll"]');
+  const card = document.querySelector('[data-testid="web-update-banner"]');
+  if (!scroll || !card) return null;
+  const right = card.getBoundingClientRect().right;
+  return [...scroll.querySelectorAll('table')].map((table) => ({
+    links: [...table.querySelectorAll('td a')].map((a) => [a.textContent, a.getClientRects().length]),
+    pastCard: Math.max(0, table.parentElement.getBoundingClientRect().right - right),
+  }));
+}
+"""
 LLAMA_STATUS = {
     "supported": True,
     "update_available": True,
@@ -967,6 +1003,43 @@ LLAMA_CHANGELOG_GEOMETRY = """
 """
 
 
+# How many change rows sit wholly inside the list's scrollport, the part of it that is on screen.
+LLAMA_CHANGELOG_ROWS_IN_VIEW = """
+() => {
+  const list = document.querySelector('[data-testid="llama-update-changelog-list"]');
+  if (!list) return null;
+  const box = list.getBoundingClientRect();
+  const style = getComputedStyle(list);
+  const top = box.top + list.clientTop + parseFloat(style.paddingTop);
+  const bottom = box.top + list.clientTop + list.clientHeight - parseFloat(style.paddingBottom);
+  const items = [...list.children];
+  const whole = items.filter((item) => {
+    const r = item.getBoundingClientRect();
+    return r.height > 0 && r.top >= top - 0.5 && r.bottom <= bottom + 0.5;
+  }).length;
+  return {whole, items: items.length, viewport: Math.round(bottom - top), list: Math.round(box.height)};
+}
+"""
+
+
+def settle_llama_changelog(page, timeout_s: float = 3.0) -> None:
+    """Return once the open changelog's height has held for three frames in a row."""
+    deadline = time.monotonic() + timeout_s
+    last, steady = None, 0
+    while time.monotonic() < deadline:
+        height = page.evaluate(
+            """() => new Promise((resolve) => requestAnimationFrame(() => {
+              const list = document.querySelector('[data-testid="llama-update-changelog-list"]');
+              resolve(list ? list.getBoundingClientRect().height : null);
+            }))"""
+        )
+        steady = steady + 1 if height == last else 0
+        if steady >= 3:
+            return
+        last = height
+    info(f"WARN the open llama.cpp changelog never held one height for 3 frames (last={last})")
+
+
 def exercise_llama_changelog(page, label: str) -> None:
     toggle = page.locator('[data-testid="llama-update-changelog-toggle"]')
     check(
@@ -979,7 +1052,15 @@ def exercise_llama_changelog(page, label: str) -> None:
         toggle.click()
     listing = page.locator('[data-testid="llama-update-changelog-list"]')
     listing.wait_for(state = "visible", timeout = 10_000)
-    text = listing.inner_text()
+    # The open card first lays out at its full height, then shrinks to its floor in the capped stack
+    # a frame or two later. Read the settled card: straight after "visible" most runs caught the
+    # first layout, which is why WebKit failed this only some of the time.
+    settle_llama_changelog(page)
+    # textContent, not innerText: this check is about WHICH changes are listed, and WebKit's
+    # innerText drops text clipped out of its scroller while Chromium's and Firefox's keep it, so
+    # the same settled list read "" on WebKit and in full elsewhere (Chat UI Tests (chat), WebKit
+    # pass, 768x500, twice on 09-28/29). How much of it is in view is reported just below.
+    text = listing.text_content() or ""
     check(
         f"{label}: expansion shows only the new carried changes",
         "GLM-5-Next" in text
@@ -987,6 +1068,12 @@ def exercise_llama_changelog(page, label: str) -> None:
         and "Add TML Inkling" not in text,
         f"list={text!r}",
     )
+    # Reported, not gated: at 768x500 with both update cards up the settled list shows no whole
+    # change on any engine (its floor, 117px + 93px of type, leaves the list its padding alone).
+    # Room for a row has to come from the other card's preview or from the stack scrolling the
+    # actions off screen, which is a layout decision rather than something this read can settle.
+    rows = page.evaluate(LLAMA_CHANGELOG_ROWS_IN_VIEW)
+    info(f"{label}: open llama.cpp changelog shows {rows}")
     check(
         f"{label}: expansion exposes its state to assistive technology",
         toggle.get_attribute("aria-expanded") == "true",
@@ -1199,6 +1286,43 @@ def main() -> int:
                 panel.wait_for(state = "visible", timeout = 10_000)
                 settle_cards(page)
                 measure(page, f"{width}x{height} with no preview, expanded")
+            context.close()
+
+        for width, height in TABLE_VIEWPORTS[:1] if SPOT else TABLE_VIEWPORTS:
+            size = f"{width}x{height}"
+            phase(f"release-notes tables at {size}")
+            context = browser.new_context(
+                viewport = {"width": width, "height": height},
+                reduced_motion = "reduce",
+            )
+            context.add_init_script(seed_js)
+            for pattern, payload in (
+                ("**/api/studio/update-status*", UPDATE_STATUS),
+                ("**/api/studio/release-notes*", RELEASE_NOTES_TABLE),
+                ("**/api/llama/update-status*", LLAMA_STATUS),
+                ("**/api/llama/update-changelog*", LLAMA_CHANGELOG),
+            ):
+                context.route(pattern, stub(payload))
+            page = context.new_page()
+            boot(page, "/")
+            page.locator('[data-testid="web-update-release-notes-toggle"]').click()
+            page.wait_for_selector(
+                '[data-testid="update-release-notes-scroll"] table', timeout = 10_000
+            )
+            settle_cards(page)
+            tables = page.evaluate(NOTES_TABLES) or []
+            words = tables[0]["links"] if tables else []
+            check(
+                f"{size}: every Download link in the notes table is on one line",
+                len(words) == 3 and all(text == "Download" and lines == 1 for text, lines in words),
+                f"links={words}",
+            )
+            check(
+                f"{size}: no notes table paints past the card",
+                len(tables) == 2 and all(t["pastCard"] <= 0.5 for t in tables),
+                f"tables={tables}",
+            )
+            page.screenshot(path = str(ART / f"{size}-notes-tables.png"))
             context.close()
 
         # The loaded models indicator, switched on. It is the last child of the

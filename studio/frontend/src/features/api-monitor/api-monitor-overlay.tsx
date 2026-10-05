@@ -17,7 +17,7 @@ import { cn } from "@/lib/utils";
 import {
   ExpandIcon,
   DragDropVerticalIcon,
-  Globe02Icon,
+  ApiIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useNavigate, useRouterState } from "@tanstack/react-router";
@@ -356,7 +356,7 @@ function ApiMonitorPanel({
         <div className="flex shrink-0 items-center justify-between gap-2 px-1.5 pb-2 pt-0.5">
           <div className="flex min-w-0 flex-1 items-center gap-2">
             <HugeiconsIcon
-              icon={Globe02Icon}
+              icon={ApiIcon}
               strokeWidth={1.75}
               className="size-icon shrink-0 text-nav-fg"
             />

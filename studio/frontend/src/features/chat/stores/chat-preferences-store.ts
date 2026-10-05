@@ -59,6 +59,8 @@ export interface ChatPreferencesState {
   setPastedTextMinChars: (value: number) => void;
   autoScrollWhileGenerating: boolean;
   setAutoScrollWhileGenerating: (value: boolean) => void;
+  showScrollToBottomButton: boolean;
+  setShowScrollToBottomButton: (value: boolean) => void;
 }
 
 // A stale stored value would leave the dropdown blank and unfixable.
@@ -112,6 +114,9 @@ export const useChatPreferencesStore = create<ChatPreferencesState>()(
       autoScrollWhileGenerating: true,
       setAutoScrollWhileGenerating: (autoScrollWhileGenerating) =>
         set({ autoScrollWhileGenerating }),
+      showScrollToBottomButton: true,
+      setShowScrollToBottomButton: (showScrollToBottomButton) =>
+        set({ showScrollToBottomButton }),
     }),
     {
       name: "unsloth_chat_preferences",
@@ -149,6 +154,7 @@ export const useChatPreferencesStore = create<ChatPreferencesState>()(
             saved?.pastedTextMinChars,
           ),
           autoScrollWhileGenerating: saved?.autoScrollWhileGenerating ?? true,
+          showScrollToBottomButton: saved?.showScrollToBottomButton ?? true,
         };
       },
     },
