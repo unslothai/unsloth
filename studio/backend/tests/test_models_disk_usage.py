@@ -80,7 +80,10 @@ def test_volume_sharing_the_system_pool_adds_nothing(second_drive, monkeypatch):
     assert system_disk.models_disk_usage(second_drive / "hf" / "hub") is None
 
 
-@pytest.mark.skipif(not os.environ.get("GITHUB_ACTIONS"), reason = "hosted runners have one disk")
+@pytest.mark.skipif(
+    not os.environ.get("GITHUB_ACTIONS") or sys.platform == "win32",
+    reason = "hosted Linux / macOS runners have one disk (Windows checks out on D:, home on C:)",
+)
 def test_hosted_runner_home_cache_is_the_system_disk():
     # macos runners put home on the APFS Data volume (own st_dev, same container as `/`).
     assert system_disk.models_disk_usage(Path.home() / ".cache" / "huggingface" / "hub") is None
