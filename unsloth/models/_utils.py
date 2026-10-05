@@ -92,12 +92,13 @@ __all__ = [
     "usable_cuda_bytes",
     "skip_checkpointing",
     "refuse_block_swap_load",
+    "legacy_offload_layers",
     "block_swap_load_device",
     "begin_block_swap_load",
     "finish_block_swap_load",
     "planned_prefetch_depth",
     "trim_config_for_block_swap",
-    "attach_block_swap_layers",
+    "attach_offload_layers",
     "skip_swapped_checkpoint_keys",
     "get_moe_target_parameters",
     "get_moe_target_modules",
@@ -187,7 +188,7 @@ except ImportError:  # unsloth_zoo predates loading any architecture straight to
     load_layers_to_host = None
 try:
     from unsloth_zoo.block_swap import auto_swap_indices, estimate_training_reserve_bytes
-except ImportError:  # unsloth_zoo predates block_swap_layers = "auto"
+except ImportError:  # unsloth_zoo predates offload_layers = "auto"
     auto_swap_indices = estimate_training_reserve_bytes = None
 from unsloth_zoo.gradient_checkpointing import (
     Unsloth_Offloaded_Gradient_Checkpointer,
@@ -6123,20 +6124,20 @@ def hf_login(token: Optional[str] = None) -> Optional[str]:
 def _check_block_swap(model_or_config):
     if BlockSwap is None:
         raise ImportError(
-            "Unsloth: block_swap_layers needs a newer unsloth_zoo. "
+            "Unsloth: offload_layers needs a newer unsloth_zoo. "
             "Run `pip install --upgrade unsloth_zoo`."
         )
     if is_moe_model(model_or_config):
         print(
-            "Unsloth: block_swap_layers on an MoE model copies every expert across PCIe "
+            "Unsloth: offload_layers on an MoE model copies every expert across PCIe "
             "while only the routed ones compute, so steps can be copy-bound."
         )
     if not torch.cuda.is_available():
         # Prefetch runs on CUDA/HIP streams; XPU, NPU and CPU have none.
-        raise ValueError("Unsloth: block_swap_layers needs a CUDA or ROCm GPU.")
+        raise ValueError("Unsloth: offload_layers needs a CUDA or ROCm GPU.")
     if is_integrated_unified_memory_gpu():
         raise ValueError(
-            "Unsloth: block_swap_layers has nothing to swap to on a unified-memory "
+            "Unsloth: offload_layers has nothing to swap to on a unified-memory "
             "GPU; host and device already share the same RAM."
         )
 
@@ -6151,14 +6152,22 @@ def _new_block_swap(layers, n, *args, placement, **kwargs):
         return BlockSwap(layers, n, *args, **kwargs)
 
 
-def refuse_block_swap_load(block_swap_layers, reason):
+def legacy_offload_layers(kwargs, offload_layers = None):
+    """`offload_layers`, or its original name `block_swap_layers` from `kwargs` when it was not given (0 = off)."""
+    legacy = kwargs.pop("block_swap_layers", None)
+    if offload_layers is None:
+        return 0 if legacy is None else legacy
+    return offload_layers
+
+
+def refuse_block_swap_load(offload_layers, reason):
     """A load-to-host restriction: `"auto"` falls back to loading onto the GPU (0), a count raises."""
-    if block_swap_layers == "auto":
+    if offload_layers == "auto":
         print(
-            f"Unsloth: block_swap_layers = 'auto' loads every layer onto the GPU: loading into host RAM {reason}"
+            f"Unsloth: offload_layers = 'auto' loads every layer onto the GPU: loading into host RAM {reason}"
         )
         return 0
-    raise ValueError(f"Unsloth: from_pretrained(block_swap_layers = ...) {reason}")
+    raise ValueError(f"Unsloth: from_pretrained(offload_layers = ...) {reason}")
 
 
 def block_swap_load_device(device_map):
@@ -6182,18 +6191,18 @@ def block_swap_load_device(device_map):
 
 
 def begin_block_swap_load(
-    block_swap_layers,
+    offload_layers,
     device_map,
     embeddings = False,
 ):
-    """from_pretrained(block_swap_layers = N) on any architecture: the context the weight load runs in,
+    """from_pretrained(offload_layers = N) on any architecture: the context the weight load runs in,
     moving N decoder layers (and with `embeddings`, the large extra token tables) to host RAM as each
     finishes loading. nullcontext when N is 0."""
-    if not block_swap_layers and not embeddings:
+    if not offload_layers and not embeddings:
         return contextlib.nullcontext()
     if embeddings:
-        return load_layers_to_host(block_swap_layers, placement = "spread", embeddings = True)
-    return load_layers_to_host(block_swap_layers, placement = "spread")
+        return load_layers_to_host(offload_layers, placement = "spread", embeddings = True)
+    return load_layers_to_host(offload_layers, placement = "spread")
 
 
 def planned_prefetch_depth(device_map_planner_kwargs):
@@ -6358,7 +6367,7 @@ def _auto_block_swap_indices(model, prefetch_depth):
     """Layers to swap so each GPU keeps a training step's reserve free; [] when it already does."""
     if auto_swap_indices is None:
         raise ImportError(
-            "Unsloth: block_swap_layers = 'auto' needs a newer unsloth_zoo. "
+            "Unsloth: offload_layers = 'auto' needs a newer unsloth_zoo. "
             "Run `pip install --upgrade unsloth_zoo`."
         )
     layers = find_decoder_layers(model)
@@ -6369,38 +6378,38 @@ def _auto_block_swap_indices(model, prefetch_depth):
         indices, left = auto_swap_indices(layers, reserve, prefetch_depth)
     if not indices:
         print(
-            f"Unsloth: block_swap_layers = 'auto' swaps nothing: every GPU keeps the "
+            f"Unsloth: offload_layers = 'auto' swaps nothing: every GPU keeps the "
             f"{reserve / 2**30:.2f} GiB a {seq_len}-token step needs."
         )
     else:
         print(
-            f"Unsloth: block_swap_layers = 'auto' keeps {len(indices)} of {len(layers)} decoder layers "
+            f"Unsloth: offload_layers = 'auto' keeps {len(indices)} of {len(layers)} decoder layers "
             f"in host RAM so {reserve / 2**30:.2f} GiB stays free for a {seq_len}-token step."
         )
     if left > 0:
         print(
-            f"Unsloth: block_swap_layers = 'auto' is still {left / 2**30:.2f} GiB short; "
-            "lower max_seq_length, or load with from_pretrained(block_swap_layers = 'auto')."
+            f"Unsloth: offload_layers = 'auto' is still {left / 2**30:.2f} GiB short; "
+            "lower max_seq_length, or load with from_pretrained(offload_layers = 'auto')."
         )
     return indices
 
 
 def install_block_swap(
     model,
-    block_swap_layers = 0,
+    offload_layers = 0,
     prefetch_depth = 2,
     use_gradient_checkpointing = "unsloth",
 ):
-    """Stream frozen decoder blocks from pinned host RAM: `block_swap_layers` of them, or "auto" for
+    """Stream frozen decoder blocks from pinned host RAM: `offload_layers` of them, or "auto" for
     as few as keep a training step's reserve free on every GPU; off at 0."""
     existing = getattr(model, "_unsloth_block_swap", None)
     if existing is None and (
-        not block_swap_layers or (block_swap_layers != "auto" and block_swap_layers <= 0)
+        not offload_layers or (offload_layers != "auto" and offload_layers <= 0)
     ):
         return None
     if not use_gradient_checkpointing:
         raise ValueError(
-            "Unsloth: block_swap_layers needs use_gradient_checkpointing. Without "
+            "Unsloth: offload_layers needs use_gradient_checkpointing. Without "
             "it every swapped block stays on the card until backward, so there is "
             "nothing to save and the slot pool runs dry mid-forward."
         )
@@ -6408,22 +6417,22 @@ def install_block_swap(
         return existing
     if getattr(model, "vllm_engine", None) is not None:
         raise ValueError(
-            "Unsloth: block_swap_layers cannot be combined with fast_inference = True, "
+            "Unsloth: offload_layers cannot be combined with fast_inference = True, "
             "since evicted weights would sync to vLLM as empty tensors."
         )
-    if block_swap_layers == "auto":
+    if offload_layers == "auto":
         # Nothing to swap to without a discrete CUDA / ROCm card: auto means no swap there.
         if not torch.cuda.is_available() or is_integrated_unified_memory_gpu():
             return None
         if BlockSwap is None:
             _check_block_swap(model)
-        block_swap_layers = _auto_block_swap_indices(model, prefetch_depth)
-        if not block_swap_layers:
+        offload_layers = _auto_block_swap_indices(model, prefetch_depth)
+        if not offload_layers:
             return None
     _check_block_swap(model)
     layers = find_decoder_layers(model)
     # Spaced evenly, each copy hides behind several layers of compute instead of one.
-    swapper = _new_block_swap(layers, block_swap_layers, prefetch_depth, placement = "spread")
+    swapper = _new_block_swap(layers, offload_layers, prefetch_depth, placement = "spread")
     # On the layer list too: the fast decode loop only sees the inner model.
     layers._unsloth_block_swap = swapper
     model._unsloth_block_swap = swapper
@@ -6476,9 +6485,7 @@ def _checkpoint_tensors(
     for shard in shards:
         path = _get(shard)
         if path is None:
-            raise RuntimeError(
-                f"Unsloth: block_swap_layers could not find {shard} for {model_name}."
-            )
+            raise RuntimeError(f"Unsloth: offload_layers could not find {shard} for {model_name}.")
         h = safe_open(path, framework = "pt", device = "cpu")
         handles.append(h)
         for key in h.keys():
@@ -6486,18 +6493,18 @@ def _checkpoint_tensors(
     return tensors, handles
 
 
-def trim_config_for_block_swap(config, block_swap_layers):
+def trim_config_for_block_swap(config, offload_layers):
     """Trim the swapped tail off the config; returns the originals to restore, or None."""
-    if not block_swap_layers or block_swap_layers <= 0:
+    if not offload_layers or offload_layers <= 0:
         return None
     if build_host_layers is None:
         raise ImportError(
-            "Unsloth: from_pretrained(block_swap_layers = ...) needs a newer unsloth_zoo. "
+            "Unsloth: from_pretrained(offload_layers = ...) needs a newer unsloth_zoo. "
             "Run `pip install --upgrade unsloth_zoo`."
         )
     _check_block_swap(config)
     total = config.num_hidden_layers
-    n = min(int(block_swap_layers), total - 1)
+    n = min(int(offload_layers), total - 1)
     saved = {"num_hidden_layers": total}
     for key, value in list(vars(config).items()):
         if isinstance(value, (list, tuple)) and len(value) == total:
@@ -6538,7 +6545,7 @@ def skip_swapped_checkpoint_keys(saved, kept):
     return undo
 
 
-def attach_block_swap_layers(
+def attach_offload_layers(
     model,
     saved,
     model_name,

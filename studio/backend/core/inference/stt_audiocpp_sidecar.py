@@ -7,33 +7,42 @@ Serves any audio.cpp ASR GGUF (Qwen3-ASR, Parakeet, Canary, Moonshine, Nemotron 
 whatever else audio.cpp transcribes) through one ``audiocpp_server`` child, with the same lifecycle as the
 whisper.cpp sidecar: loads on demand, stays warm for the keep-alive window, yields
 to training, and is paused while the managed runtime is being replaced. Audio is
-decoded with PyAV like every other engine and sent as 16 kHz mono WAV, since the
-default server build reads WAV only.
+decoded with PyAV like every other engine and handed to the server as a 16 kHz mono
+WAV file it reads by path (``/v1/audio/transcriptions/details``), which also returns
+the timestamps and speakers a model produces.
 """
 
 from __future__ import annotations
 
 import json
 import subprocess
+import tempfile
 import threading
+import wave
 from contextlib import contextmanager
+from dataclasses import replace
 from pathlib import Path
-from typing import Iterator, Optional
+from typing import Callable, Iterator, Optional
 
-from core.inference import audio_cpp_files, audio_cpp_server
+from core.inference import audio_cpp_files, audio_cpp_server, stt_details
 from core.inference.audio_cpp_models import (
+    AUDIO_CPP_REPO,
+    CPU_ONLY_FAMILIES,
     DEFAULT_AUDIO_CPP_STT_MODEL,
     is_legacy_key,
     legacy_keys,
     RECOMMENDED_STT_MODELS,
     AudioCppModel,
     AudioCppModelError,
+    CompanionModel,
     downloaded_models,
+    forget,
     parse_identifier,
     require_runnable,
     resolve,
     split_variant_ref,
 )
+from core.inference.audio_errors import sanitize_runtime_detail
 from core.inference.audio_cpp_server import (
     AudioCppRequestCancelledError,
     AudioCppRequestError,
@@ -56,7 +65,6 @@ from core.inference.stt_sidecar import (
     _downloaded_file_bytes,
     _HF_COMMIT_SHA,
     _prepare_stt_cache_for_http,
-    _TARGET_SAMPLE_RATE,
     _training_active,
     normalize_whisper_language,
 )
@@ -67,10 +75,75 @@ from loggers import get_logger
 logger = get_logger(__name__)
 
 _TRANSCRIBE_TIMEOUT_SECONDS = 600.0
+_DETAILS_PATH = "/v1/audio/transcriptions/details"
+
+# Fixed chunking keeps the runtime off its Silero VAD, which Studio does not ship.
+QWEN3_ALIGNER = CompanionModel(
+    f"{AUDIO_CPP_REPO}/Qwen3-ForcedAligner-0.6B-GGUF",
+    "Q8_0",
+    "qwen3_asr.forced_aligner_model_path",
+)
+_ALIGNED_FAMILIES = frozenset({"qwen3_asr"})
+# Without preserve_punctuation the runtime rebuilds text from aligned words, losing punctuation.
+_TIMESTAMP_OPTIONS = {
+    "return_timestamps": "true",
+    "audio_chunk_mode": "fixed",
+    "qwen3_asr.preserve_punctuation": "true",
+}
 
 
 class SttEngineUnavailableError(SttUnavailableError):
     """audiocpp_server is not installed or stopped serving; the audio.cpp dictation engine is off."""
+
+
+def _stt_tmp_dir() -> Path:
+    """Where the WAVs the server reads by path are written: ``<studio_root>/cache/audiocpp-stt``."""
+    from utils.paths.storage_roots import ensure_dir, studio_root, tmp_root
+    try:
+        return ensure_dir(studio_root() / "cache" / "audiocpp-stt")
+    except Exception:  # noqa: BLE001 - an unusable studio root falls back to the temp dir
+        directory = tmp_root()
+        directory.mkdir(parents = True, exist_ok = True)
+        return directory
+
+
+@contextmanager
+def _temp_wav(wav_bytes: bytes) -> Iterator[Path]:
+    """``wav_bytes`` in a private file for the server to read, removed however the request ends."""
+    handle = tempfile.NamedTemporaryFile(
+        dir = _stt_tmp_dir(), prefix = "stt-", suffix = ".wav", delete = False
+    )
+    path = Path(handle.name)
+    try:
+        with handle:
+            handle.write(wav_bytes)
+        yield path
+    finally:
+        try:
+            path.unlink(missing_ok = True)
+        except OSError:
+            # Windows refuses while the server still holds the file open.
+            logger.debug("audio.cpp: could not remove a transcription temp file")
+
+
+def _wav_rate_and_duration(path: Path) -> tuple[int, Optional[float]]:
+    try:
+        with wave.open(str(path), "rb") as w:
+            rate, frames = w.getframerate(), w.getnframes()
+    except (OSError, EOFError, wave.Error) as exc:
+        raise SttAudioDecodeError("Could not read the audio.") from exc
+    if rate <= 0:
+        raise SttAudioDecodeError("Could not read the audio.")
+    return rate, (round(frames / rate, 3) if frames else None)
+
+
+def _notify(on_phase: Optional[Callable[[str], None]], phase: str) -> None:
+    if on_phase is None:
+        return
+    try:
+        on_phase(phase)
+    except Exception:  # noqa: BLE001 - progress reporting never fails a transcription
+        logger.debug("audio.cpp: phase callback failed", exc_info = True)
 
 
 # Rows the dictation picker recommends, in order; any other audio.cpp ASR GGUF works too.
@@ -428,6 +501,10 @@ def cancel_model_download() -> bool:
     return _download_state.cancel()
 
 
+def _launches_on_cpu(entry: AudioCppModel, force_cpu: bool) -> bool:
+    return force_cpu or _training_active() or entry.family in CPU_ONLY_FAMILIES
+
+
 class AudioCppSttSidecar:
     """Owns one audiocpp_server serving an ASR model and proxies dictation to it."""
 
@@ -443,6 +520,8 @@ class AudioCppSttSidecar:
         self._forced_cpu = False
         # Where the server actually runs: training also puts it on the CPU, without the user asking.
         self._launched_cpu = False
+        # Tracked separately: ``model_options`` is not part of AudioCppModel equality.
+        self._aligned = False
         self._idle_timer: Optional[threading.Timer] = None
         self._idle_generation = 0
         self._keep_alive_seconds = keep_alive_seconds
@@ -547,6 +626,7 @@ class AudioCppSttSidecar:
         self._loaded_as = None
         self._forced_cpu = False
         self._launched_cpu = False
+        self._aligned = False
         if server is not None:
             server.stop()
 
@@ -643,19 +723,67 @@ class AudioCppSttSidecar:
             # A path the runtime cannot open (Windows MAX_PATH) is a runtime limit, not a missing download.
             raise SttEngineUnavailableError(str(exc)) from exc
 
+    def _ensure_aligner_downloaded(
+        self,
+        entry: AudioCppModel,
+        on_phase: Optional[Callable[[str], None]] = None,
+    ) -> None:
+        from core.inference import audio_cpp_backend
+
+        try:
+            aligner = audio_cpp_backend._resolve_companion(entry, QWEN3_ALIGNER, network = False)
+            if audio_cpp_files.is_downloaded(aligner):
+                return
+        except RuntimeError:
+            pass
+        _notify(on_phase, "downloading_aligner")
+        try:
+            aligner = audio_cpp_backend._resolve_companion(entry, QWEN3_ALIGNER, network = True)
+            audio_cpp_backend.AudioCppBackend._download_missing(aligner, None)
+        except Exception as exc:  # noqa: BLE001 - every failure reads the same to the user
+            reason = sanitize_runtime_detail(str(exc)) or type(exc).__name__
+            logger.warning("audio.cpp: timestamp aligner download failed: %s", reason)
+            raise SttModelNotDownloadedError(
+                f"Could not download the timestamp aligner ({reason}). "
+                "Turn off Timestamps to transcribe without them."
+            ) from exc
+        forget(QWEN3_ALIGNER.id)
+
+    def _with_aligner(self, entry: AudioCppModel) -> AudioCppModel:
+        from core.inference import audio_cpp_backend
+
+        try:
+            aligner = audio_cpp_backend._resolve_companion(entry, QWEN3_ALIGNER, network = False)
+            aligner_path = audio_cpp_files.materialize(aligner)
+        except AudioCppUnavailableError as exc:
+            raise SttEngineUnavailableError(str(exc)) from exc
+        except (FileNotFoundError, RuntimeError):
+            raise SttModelNotDownloadedError(
+                "The timestamp aligner is not downloaded. Turn off Timestamps to transcribe "
+                "without them."
+            ) from None
+        options = dict(entry.model_options or {})
+        session = dict(options.get("session_options") or {})
+        session[QWEN3_ALIGNER.session_option] = aligner_path
+        return replace(entry, model_options = {**options, "session_options": session})
+
     def load(
         self,
         model: Optional[str] = None,
         request_cancel_event: Optional[threading.Event] = None,
         device: Optional[str] = None,
+        *,
+        timestamps: bool = False,
+        on_phase: Optional[Callable[[str], None]] = None,
     ) -> None:
-        """Start (or switch) audiocpp_server for the requested audio.cpp ASR model."""
+        """A server already holding the aligner keeps it for untimestamped requests (no restart)."""
         from core.inference.audio_device import audio_device_forces_cpu
 
         if request_cancel_event is not None and request_cancel_event.is_set():
             raise SttTranscriptionCancelledError("Transcription cancelled.")
         self._raise_if_update_in_progress()
         entry = resolve_audio_cpp_stt_model(self.keep_loaded_variant(model))
+        aligned = bool(timestamps) and entry.family in _ALIGNED_FAMILIES
         with self._lock:
             if request_cancel_event is not None and request_cancel_event.is_set():
                 raise SttTranscriptionCancelledError("Transcription cancelled.")
@@ -671,12 +799,17 @@ class AudioCppSttSidecar:
                 and self._model == entry
                 and self._forced_cpu == force_cpu
                 # A server training moved to the CPU goes back to the GPU once training ends.
-                and self._launched_cpu == (force_cpu or _training_active())
+                and self._launched_cpu == _launches_on_cpu(entry, force_cpu)
+                and (self._aligned or not aligned)
             ):
                 self._loaded_as = _reported_name(model, entry)
                 self._schedule_idle_unload_locked()
                 return
             model_path = self._ensure_model_downloaded(entry)
+            served = entry
+            if aligned:
+                self._ensure_aligner_downloaded(entry, on_phase)
+                served = self._with_aligner(entry)
             cancel_event = (
                 request_cancel_event if request_cancel_event is not None else threading.Event()
             )
@@ -690,8 +823,9 @@ class AudioCppSttSidecar:
                     raise SttLoadCancelledError("Dictation model loading was cancelled.")
                 # Decided under the loading flag: training admission reads is_loading() without the lock. During training
                 # the model goes to CPU so a dictation cannot reclaim the VRAM training just freed.
-                run_on_cpu = force_cpu or _training_active()
+                run_on_cpu = _launches_on_cpu(entry, force_cpu)
                 self._release_locked()
+                _notify(on_phase, "loading")
 
                 def _track(process: subprocess.Popen) -> None:
                     with self._load_state_lock:
@@ -699,7 +833,7 @@ class AudioCppSttSidecar:
 
                 try:
                     server = AudioCppServer.start(
-                        entry,
+                        served,
                         model_path,
                         force_cpu = run_on_cpu,
                         cancel_event = cancel_event,
@@ -715,6 +849,7 @@ class AudioCppSttSidecar:
                 self._loaded_as = _reported_name(model, entry)
                 self._forced_cpu = force_cpu
                 self._launched_cpu = run_on_cpu
+                self._aligned = aligned
                 self._schedule_idle_unload_locked()
             finally:
                 with self._load_state_lock:
@@ -732,13 +867,10 @@ class AudioCppSttSidecar:
         fast: bool = False,
         cancel_event: Optional[threading.Event] = None,
     ) -> dict:
-        """Transcribe encoded audio bytes via audiocpp_server. Returns {text, language, duration, model}."""
         del fast  # audio.cpp ASR families decode greedily; there is no beam knob to trade.
         self._raise_if_update_in_progress()
         ensure_engine_available()
-        target = self.keep_loaded_variant(model)
-        entry = resolve_audio_cpp_stt_model(target)
-        lang = normalize_whisper_language(language)
+        entry = resolve_audio_cpp_stt_model(self.keep_loaded_variant(model))
         if cancel_event is not None and cancel_event.is_set():
             raise SttTranscriptionCancelledError("Transcription cancelled.")
         # A missing model fails before decoding so a long clip does not burn CPU only to 409. The
@@ -748,15 +880,54 @@ class AudioCppSttSidecar:
         decoded_audio = _decode_audio_bounded(audio, cancel_event)
         if cancel_event is not None and cancel_event.is_set():
             raise SttTranscriptionCancelledError("Transcription cancelled.")
-        wav_bytes = _pcm_to_wav_bytes(decoded_audio)
+        with _temp_wav(_pcm_to_wav_bytes(decoded_audio)) as path:
+            return self.transcribe_path(path, model, language, cancel_event = cancel_event)
+
+    def ensure_aligner(
+        self,
+        model: Optional[str],
+        on_phase: Optional[Callable[[str], None]] = None,
+    ) -> None:
+        """Runs before the load so a 1.1 GB download holds neither the load lock nor dictation."""
+        entry = resolve_audio_cpp_stt_model(self.keep_loaded_variant(model))
+        if entry.family in _ALIGNED_FAMILIES:
+            self._ensure_aligner_downloaded(entry, on_phase)
+
+    def transcribe_path(
+        self,
+        path: Path,
+        model: Optional[str],
+        language: Optional[str],
+        *,
+        timestamps: bool = False,
+        cancel_event: Optional[threading.Event] = None,
+        on_phase: Optional[Callable[[str], None]] = None,
+    ) -> dict:
+        """Transcribe a server-local 16/24 kHz mono WAV in place."""
+        self._raise_if_update_in_progress()
+        ensure_engine_available()
+        target = self.keep_loaded_variant(model)
+        entry = resolve_audio_cpp_stt_model(target)
+        lang = normalize_whisper_language(language)
+        if not audio_cpp_files.is_downloaded(entry):
+            self._ensure_model_downloaded(entry)
+        rate, duration = _wav_rate_and_duration(Path(path))
+        aligned = bool(timestamps) and entry.family in _ALIGNED_FAMILIES
+        if cancel_event is not None and cancel_event.is_set():
+            raise SttTranscriptionCancelledError("Transcription cancelled.")
         with self._lock:
             try:
                 # The caller's own name, so a legacy key stays the name status reports.
-                if cancel_event is None:
-                    self.load(target)
-                else:
-                    self.load(target, request_cancel_event = cancel_event)
-                text = self._post_transcription(wav_bytes, lang, cancel_event)
+                self.load(
+                    target,
+                    request_cancel_event = cancel_event,
+                    timestamps = aligned,
+                    on_phase = on_phase,
+                )
+                _notify(on_phase, "transcribing")
+                payload = self._post_details(
+                    path, lang, cancel_event, dict(_TIMESTAMP_OPTIONS) if aligned else {}
+                )
                 if cancel_event is not None and cancel_event.is_set():
                     raise SttTranscriptionCancelledError("Transcription cancelled.")
             except Exception:
@@ -765,55 +936,64 @@ class AudioCppSttSidecar:
                 raise
             finally:
                 self._schedule_idle_unload_locked()
-        duration = (len(decoded_audio) / _TARGET_SAMPLE_RATE) if len(decoded_audio) else None
-        return {
-            "text": text,
-            "language": lang,
+        details = stt_details.normalize(payload, entry.family, rate)
+        result = {
+            "text": details["text"],
+            "language": lang or details["language"],
             "duration": duration,
             "model": _reported_name(model, entry),
         }
+        for key in ("segments", "words"):
+            if details.get(key):
+                result[key] = details[key]
+        if details.get("speaker_ids"):
+            result["speakers"] = list(details["speaker_ids"])
+        return result
 
     def cancel_transcription(self, cancel_event: threading.Event) -> bool:
         already_cancelled = cancel_event.is_set()
         cancel_event.set()
         return self._cancel_owned_load(cancel_event) or not already_cancelled
 
-    def _post_transcription(
-        self, wav_bytes: bytes, lang: Optional[str], cancel_event: Optional[threading.Event]
-    ) -> str:
+    def _post_details(
+        self,
+        path: Path,
+        lang: Optional[str],
+        cancel_event: Optional[threading.Event],
+        options: dict,
+    ) -> dict:
         server = self._server
         if server is None:
             raise SttEngineUnavailableError("The audio runtime is not running.")
-        fields = {"model": server.model_id}
+        body: dict = {"model": server.model_id, "audio": str(path)}
         if lang:
-            fields["language"] = lang
+            body["language"] = lang
+        if options:
+            body["options"] = dict(options)
 
-        def post(form: dict[str, str]) -> bytes:
-            return server.post_multipart(
-                "/v1/audio/transcriptions",
-                form,
-                "dictation.wav",
-                wav_bytes,
-                "audio/wav",
+        def post(request: dict) -> bytes:
+            return server.post_json(
+                _DETAILS_PATH,
+                request,
                 timeout = _TRANSCRIBE_TIMEOUT_SECONDS,
                 cancel_event = cancel_event,
             )[1]
 
         try:
             try:
-                data = post(fields)
+                data = post(body)
             except AudioCppRequestError as exc:
-                if "language" not in fields or not 400 <= exc.status < 500:
+                if "language" not in body or not 400 <= exc.status < 500:
                     raise
                 # English-only families (Moonshine, Nemotron, Parakeet) reject a language option; a
                 # dictation language preference is a hint, so transcribe without it rather than fail.
                 logger.info(
                     "audio.cpp: %s rejected language %r (%s); retrying without it",
                     server.model.family,
-                    fields["language"],
+                    body["language"],
                     exc.detail,
                 )
-                data = post({k: v for k, v in fields.items() if k != "language"})
+                data = post({k: v for k, v in body.items() if k != "language"})
             payload = json.loads(data.decode("utf-8"))
         except AudioCppRequestCancelledError as exc:
             # The server keeps decoding the abandoned clip and would queue the next request behind it;
@@ -821,22 +1001,23 @@ class AudioCppSttSidecar:
             self._release_locked()
             raise SttTranscriptionCancelledError("Transcription cancelled.") from exc
         except AudioCppRequestError as exc:
+            # The runtime's own words reach the client, so strip paths and credentials first.
+            detail = sanitize_runtime_detail(exc.detail) or "The audio runtime refused the request."
             if 400 <= exc.status < 500:
                 # The server rejected this clip or option (e.g. an unsupported language), not a broken runtime.
-                raise SttAudioDecodeError(exc.detail) from exc
+                raise SttAudioDecodeError(detail) from exc
             note_runtime_inference_failure(str(exc))
-            raise SttEngineUnavailableError(f"The audio runtime failed: {exc.detail}") from exc
+            raise SttEngineUnavailableError(f"The audio runtime failed: {detail}") from exc
         except (AudioCppUnavailableError, ValueError) as exc:
             if cancel_event is None or not cancel_event.is_set():
                 note_runtime_inference_failure(f"{type(exc).__name__}: {exc}")
             raise SttEngineUnavailableError(
                 "The audio runtime did not answer the request."
             ) from exc
-        text = payload.get("text") if isinstance(payload, dict) else None
-        if not isinstance(text, str):
+        if not isinstance(payload, dict) or not isinstance(payload.get("text"), str):
             raise SttAudioDecodeError("Could not decode the audio.")
         clear_runtime_inference_failure()
-        return " ".join(part.strip() for part in text.splitlines() if part.strip()).strip()
+        return payload
 
 
 _sidecar: Optional[AudioCppSttSidecar] = None

@@ -28,9 +28,11 @@ from core.inference.audio_device import audio_device_forces_cpu, audio_load_runs
 from core.inference.context_refusal import ContextBudgetExceeded
 from core.inference.native_audio import NATIVE_AUDIO_TYPES, is_native_audio_model
 from core.inference.audio_errors import (
+    AUDIO_RUNTIME_ERROR_CODE,
     AUDIO_UNSUPPORTED_CODE,
     AudioBackendUnsupportedError,
     AudioGenerationCancelledError,
+    AudioRuntimeError,
 )
 from core.inference.worker import PendingTeardowns, StopLedger
 from utils.hardware import get_device, prepare_gpu_selection
@@ -385,6 +387,19 @@ def _mirrored_model_entry(model_info: dict, model_name: str) -> dict:
         "audio_family": model_info.get("audio_family"),
         "audio_options": model_info.get("audio_options"),
         "gguf_variant": model_info.get("gguf_variant"),
+        "audio_workflows": model_info.get("audio_workflows"),
+        "audio_reference_text": model_info.get("audio_reference_text"),
+        "audio_required_inputs": model_info.get("audio_required_inputs"),
+        "audio_clone": model_info.get("audio_clone"),
+        "audio_options_by_workflow": model_info.get("audio_options_by_workflow"),
+        "audio_workflow_tasks": model_info.get("audio_workflow_tasks"),
+        "audio_server_task": model_info.get("audio_server_task"),
+        "audio_convert": model_info.get("audio_convert"),
+        "audio_convert_route": model_info.get("audio_convert_route"),
+        "audio_convert_rules": model_info.get("audio_convert_rules"),
+        "audio_edit": model_info.get("audio_edit"),
+        "audio_music": model_info.get("audio_music"),
+        "audio_cpp_backend": model_info.get("audio_cpp_backend"),
     }
 
 
@@ -2513,11 +2528,12 @@ class InferenceOrchestrator:
         engine: str,
         request_cancel_event: Optional[threading.Event] = None,
         device: Optional[str] = None,
+        **options,
     ) -> None:
         """Make a dictation model resident on its sidecar. ``device`` is the user's audio device
         preference (``auto``/``cpu``/``gpu``)."""
         from core.inference import stt_registry
-        stt_registry.load(model, engine, request_cancel_event, device = device)
+        stt_registry.load(model, engine, request_cancel_event, device = device, **options)
 
     def unload_stt_model(
         self,
@@ -3325,6 +3341,26 @@ class InferenceOrchestrator:
         except RuntimeError:
             self._teardown_not_sent()
 
+    def separate_audio_response(
+        self,
+        source_path: str,
+        output_dir: str,
+        audio_options: Optional[dict] = None,
+        cancel_event = None,
+    ) -> list[dict]:
+        """Split a prepared 44.1 kHz WAV into stems under ``output_dir``; the full token budget
+        gives the watchdog the same hour the runtime request has."""
+        outputs, _sample_rate = self.generate_audio_response(
+            text = "",
+            max_new_tokens = AUDIO_GENERATION_MAX_TOKENS,
+            cancel_event = cancel_event,
+            audio_options = audio_options,
+            workflow = "separate",
+            audio_inputs = {"source": source_path},
+            output_dir = output_dir,
+        )
+        return outputs
+
     def generate_audio_response(
         self,
         text: str,
@@ -3340,10 +3376,20 @@ class InferenceOrchestrator:
         language: Optional[str] = None,
         seed: Optional[int] = None,
         audio_options: Optional[dict] = None,
+        workflow: Optional[str] = None,
+        audio_inputs: Optional[dict[str, str]] = None,
+        reference_text: Optional[str] = None,
+        speed: Optional[float] = None,
+        convert: Optional[dict] = None,
+        edit: Optional[dict] = None,
+        music: Optional[dict] = None,
+        output_dir: Optional[str] = None,
         stats_holder: Optional[dict] = None,
     ) -> Tuple[bytes, int]:
         """Generate TTS audio. Returns (wav_bytes, sample_rate). Blocking: sends the command and
-        waits for the full audio response."""
+        waits for the full audio response. ``audio_inputs`` maps a role (reference, emotion,
+        source, target) to a server-local WAV path; audio bytes never cross the queue. A separation
+        (``output_dir`` set) returns (outputs, sample_rate) instead, see ``separate_audio_response``."""
         if not self._ensure_subprocess_alive():
             raise RuntimeError("Inference subprocess is not running")
         if not self.active_model_name:
@@ -3412,6 +3458,28 @@ class InferenceOrchestrator:
                     cmd["seed"] = int(seed)
                 if audio_options:
                     cmd["audio_options"] = dict(audio_options)
+                if workflow is not None:
+                    cmd["workflow"] = workflow
+                if audio_inputs is not None:
+                    cmd["audio_inputs"] = {str(k): str(v) for k, v in audio_inputs.items()}
+                if reference_text is not None:
+                    cmd["reference_text"] = reference_text
+                if speed is not None:
+                    cmd["speed"] = float(speed)
+                if convert is not None:
+                    cmd["convert"] = dict(convert)
+                if edit is not None:
+                    cmd["edit"] = dict(edit)
+                if music is not None:
+                    cmd["music"] = dict(music)
+                    try:
+                        music_wait = float(music.get("timeout_s") or 0.0)
+                    except (TypeError, ValueError):
+                        music_wait = 0.0
+                    # Outlast the worker's wait so its error, not the watchdog, reaches the caller.
+                    generation_timeout = max(generation_timeout, music_wait + 60.0)
+                if output_dir is not None:
+                    cmd["output_dir"] = str(output_dir)
 
                 # Same shared-queue hazard as _generate_inner: see _direct_reader.
                 read_one, _drain, release_mailbox = self._direct_reader(request_id, cancel_event)
@@ -3468,11 +3536,25 @@ class InferenceOrchestrator:
                             worker_started = True
                             continue
 
+                        if rtype in ("audio_done", "audio_error") and isinstance(
+                            resp.get("audio_runtime"), dict
+                        ):
+                            entry = self.models.get(expected_model)
+                            if entry is not None:
+                                entry.update(resp["audio_runtime"])
+
                         if rtype == "audio_done":
                             if cancel_event is not None and cancel_event.is_set():
                                 raise AudioGenerationCancelledError("Audio generation cancelled")
+                            if resp.get("outputs") is not None:
+                                return resp["outputs"], int(resp.get("sample_rate") or 0)
                             wav_bytes = base64.b64decode(resp["wav_base64"])
                             sample_rate = resp["sample_rate"]
+                            status_patch = resp.get("status_patch")
+                            if isinstance(status_patch, dict):
+                                live = self.models.get(expected_model)
+                                if live is not None and "audio_music" in status_patch:
+                                    live["audio_music"] = status_patch["audio_music"]
                             if stats_holder is not None:
                                 stats_holder["stats"] = resp.get("stats")
                             return wav_bytes, sample_rate
@@ -3487,6 +3569,11 @@ class InferenceOrchestrator:
                                 raise AudioBackendUnsupportedError(
                                     resp.get("error", "This backend cannot generate audio."),
                                     hint = resp.get("hint"),
+                                )
+                            if resp.get("code") == AUDIO_RUNTIME_ERROR_CODE:
+                                raise AudioRuntimeError(
+                                    resp.get("error", "Audio generation failed"),
+                                    status = resp.get("status"),
                                 )
                             raise RuntimeError(resp.get("error", "Audio generation failed"))
 
