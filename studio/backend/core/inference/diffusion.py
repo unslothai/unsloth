@@ -4422,7 +4422,13 @@ class DiffusionBackend:
                 }
             )
 
+        from .diffusion_te_prequant import te_prequant_unmirrored
+
         for repo, files in te_files.values():
+            # A mirrored encoder still drops the dense shards above but is never staged: the Hub may not hold it.
+            files = te_prequant_unmirrored(repo, files)
+            if not files:
+                continue
             add_missing_entry(
                 repo,
                 [name for name, _size in files],

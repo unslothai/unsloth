@@ -984,6 +984,13 @@ def _validate_checkpoint(ckpt: Any, scheme: str, component: str, base: str, logg
     return True
 
 
+def te_prequant_unmirrored(
+    repo_id: Optional[str], files: list[tuple[str, int]]
+) -> list[tuple[str, int]]:
+    """``files`` minus those a configured mirror serves: the loader reads those in place, never from the Hub."""
+    return [(name, size) for name, size in files if te_prequant_mirror_path(repo_id, name) is None]
+
+
 def te_prequant_hub_files(
     sources: dict[str, "TePrequantSource"],
     api: Any,
