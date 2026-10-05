@@ -251,6 +251,19 @@ def test_compile_moves_below_the_offload_hook_and_the_kill_switch_keeps_it_trace
     assert not any(isinstance(b._unsloth_below_hook_ref.forward, bg.BlockGraph) for b in net.blocks)
 
 
+def test_compile_below_the_hook_keeps_the_block_restride():
+    from core.inference import diffusion_block_restride as restride
+
+    net = _hooked_net(blocks = 2)
+    net._unsloth_regional_compile_kwargs = {"fullgraph": False, "dynamic": True}
+    marker = lambda *a, **k: None  # noqa: E731
+    net.blocks[0]._compiled_call_impl = restride.wrap(marker)
+    net.blocks[1]._compiled_call_impl = marker
+    assert bg.compile_below_offload_hooks(net) == 2
+    assert restride.is_wrapped(net.blocks[0]._unsloth_below_hook_ref.forward)
+    assert not restride.is_wrapped(net.blocks[1]._unsloth_below_hook_ref.forward)
+
+
 def test_static_buffers_keep_the_storage_offset_of_a_view():
     full = torch.arange(24.0).view(2, 12)
     view = full[:, 4:]
@@ -713,6 +726,24 @@ def test_alternating_layouts_both_record():
                 assert torch.equal(net(x), ref(x))
     s = handle.stats
     assert s["captures"] == 4 and s["replays"] >= 8 and s["fallbacks"] == 0
+    handle.free()
+
+
+def test_evicted_layouts_free_their_static_buffers():
+    _cuda()
+    net = _net(blocks = 2).cuda()
+    ref = copy.deepcopy(net)
+    handle, _ = bg.install_block_graphs(net, device = "cuda", slots = False)
+    for g in handle.graphs:
+        g.max_graphs = 2
+    shared = handle.graphs[0].shared
+    with torch.inference_mode():
+        for rows in range(3, 11):  # a new layout per render, as a new prompt length is
+            x = torch.randn(rows, 16, device = "cuda")
+            for _ in range(3):
+                assert torch.equal(net(x), ref(x))
+    assert handle.stats["evictions"] > 0
+    assert len(shared.static_in) == 2 and len(shared.static_out) == 2
     handle.free()
 
 

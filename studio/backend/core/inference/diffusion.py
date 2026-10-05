@@ -203,7 +203,7 @@ from . import diffusion_prompt_cache as prompt_cache
 from . import diffusion_gguf_compile as gguf_compile
 from . import diffusion_bg_compile as bg_compile
 from . import diffusion_cuda_graph as cuda_graph
-from .diffusion_block_graph import compile_pipe_below_offload_hooks
+from .diffusion_block_graph import compile_below_hooks_enabled, compile_pipe_below_offload_hooks
 from . import diffusion_render_thread as render_thread
 from .diffusion_batched import (
     chunk_jobs,
@@ -7079,6 +7079,14 @@ class DiffusionBackend:
                                 if effective_speed == SPEED_MAX
                                 else "default",
                                 "vae_decode": vae_decode_compile_allowed(pipe, effective_speed),
+                                # An offloaded denoiser compiles its blocks below the hooks, a different graph than a
+                                # bundle from the traced-hook compile holds.
+                                **(
+                                    {"below_hooks": True}
+                                    if plan.offload_policy != OFFLOAD_NONE
+                                    and compile_below_hooks_enabled()
+                                    else {}
+                                ),
                             },
                             logger = logger,
                             reduction_filter = family_filters_reductions(fam),
@@ -9185,6 +9193,11 @@ class DiffusionBackend:
                     "dynamic": compile_dynamic(getattr(state.pipe, "transformer", None), True),
                     "mode": "default",
                     "vae_decode": vae_decode_compile_allowed(state.pipe, SPEED_DEFAULT),
+                    **(
+                        {"below_hooks": True}
+                        if state.offload_policy != OFFLOAD_NONE and compile_below_hooks_enabled()
+                        else {}
+                    ),
                 },
                 logger = logger,
                 reduction_filter = family_filters_reductions(state.family),

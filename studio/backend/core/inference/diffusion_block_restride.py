@@ -58,6 +58,25 @@ def _restrided(hidden: Any, encoder: Any) -> Any:
     return buf[:, text:], buf[:, :text]
 
 
+def wrap(compiled: Any) -> Any:
+    """``compiled`` behind the restride: its block-0 inputs arrive as slices of one buffer."""
+
+    def restride(*args: Any, **kwargs: Any) -> Any:
+        if not args and "hidden_states" in kwargs and "encoder_hidden_states" in kwargs:
+            pair = _restrided(kwargs["hidden_states"], kwargs["encoder_hidden_states"])
+            if pair is not None:
+                kwargs = dict(kwargs)
+                kwargs["hidden_states"], kwargs["encoder_hidden_states"] = pair
+        return compiled(*args, **kwargs)
+
+    setattr(restride, _MARK, True)
+    return restride
+
+
+def is_wrapped(fn: Any) -> bool:
+    return bool(getattr(fn, _MARK, False))
+
+
 def install(transformer: Any, logger: Any = None) -> bool:
     """Wrap the first single block's compiled call. Idempotent; True when installed. Never raises."""
     if not enabled():
@@ -78,16 +97,7 @@ def install(transformer: Any, logger: Any = None) -> bool:
             return False
         if getattr(compiled, _MARK, False):
             return True
-
-        def restride(*args: Any, **kwargs: Any) -> Any:
-            if not args and "hidden_states" in kwargs and "encoder_hidden_states" in kwargs:
-                pair = _restrided(kwargs["hidden_states"], kwargs["encoder_hidden_states"])
-                if pair is not None:
-                    kwargs = dict(kwargs)
-                    kwargs["hidden_states"], kwargs["encoder_hidden_states"] = pair
-            return compiled(*args, **kwargs)
-
-        setattr(restride, _MARK, True)
+        restride = wrap(compiled)
         # Keep the guard's identity visible: guard_compiled_blocks skips modules already wrapped.
         guard = getattr(compiled, "_unsloth_compile_guard", None)
         if guard is not None:
