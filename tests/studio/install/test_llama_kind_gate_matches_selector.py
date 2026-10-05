@@ -28,6 +28,7 @@ import itertools
 import pathlib
 import re
 import shutil
+import hashlib
 import sys
 
 import pytest
@@ -58,10 +59,21 @@ ASSET_NAMES = (
     f"llama-{TAG}-bin-win-vulkan-x64.zip",
     f"llama-{TAG}-bin-win-hip-radeon-x64.zip",
 )
+
+
+def _fixture_digest(name: str) -> str:
+    """Stand-in for the digest GitHub publishes; a fixture without one selects nothing."""
+    return hashlib.sha256(name.encode()).hexdigest()
+
+
 RELEASE = {
     "tag_name": TAG,
     "assets": [
-        {"name": name, "browser_download_url": f"https://example.invalid/{name}"}
+        {
+            "name": name,
+            "browser_download_url": f"https://example.invalid/{name}",
+            "digest": f"sha256:{_fixture_digest(name)}",
+        }
         for name in ASSET_NAMES
     ],
 }
@@ -116,6 +128,7 @@ def _expected_kinds(*, arm64_venv: bool, nvidia: bool, rocm: bool, opt_out: bool
             "function Test-WoaPersistableIndex { param($i) return ($i -like '*nvidia*') }",
             f"$env:UNSLOTH_LLAMA_ARM64_CUDA = '{'0' if opt_out else '1'}'",
             f"$HasNvidiaSmi = ${str(nvidia).lower()}",
+            f"$HasNvidiaDriverEvidence = ${str(nvidia).lower()}",
             f"$HasROCm = ${str(rocm).lower()}",
             "$script:ROCmGfxArch = " + ("'gfx1201'" if rocm else "$null"),
             block,

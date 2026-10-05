@@ -67,6 +67,10 @@ _SPOOFED_CALLS = {
 # meta-test below can insist every newly spoofed name lands in one bucket or the other.
 _SPOOFED_NON_PREDICATES = {
     ("torch", "Tensor", "is_pinned"),
+    # A stream handle, not a question: unsloth/kernels/utils.py reads it at import under
+    # `if DEVICE_COUNT > 0` and wraps it in ctypes.c_void_p. Nothing branches on it, so no
+    # skip guard could read it.
+    ("torch", "_C", "_cuda_getCurrentRawStream"),
     ("torch", "Tensor", "pin_memory"),
     ("torch", "cuda", "Event"),
     ("torch", "cuda", "Stream"),

@@ -125,6 +125,28 @@ def test_visible_text_holds_partial_think_prefix():
     assert visible_text("2 < 3", show_thinking = False) == "2 < 3"
 
 
+def test_finished_stream_keeps_a_trailing_think_prefix(capsys):
+    from unsloth_cli._inference import stream_to_stdout
+
+    def stream():
+        yield "Use the less-than operator"
+        yield "Use the less-than operator <"
+        yield {"done": True}
+
+    assert collect_stream(stream(), show_thinking = False) == "Use the less-than operator <"
+    assert visible_text("x <th", show_thinking = False, final = True) == "x <th"
+    assert visible_text("done.<think>more", show_thinking = False, final = True) == "done."
+
+    raw = stream_to_stdout(stream(), show_thinking = False)
+    assert raw == "Use the less-than operator <"
+    assert capsys.readouterr().out == "Use the less-than operator <\n"
+
+    # "<th" is printed once "<th<" rules it out, then "<think>" shrinks the render: no reprint.
+    shrinking = iter(["x <th", "x <th<", "x <th<think>r", {"done": True}])
+    stream_to_stdout(shrinking, show_thinking = False)
+    assert capsys.readouterr().out == "x <th\n"
+
+
 def _option(command_fn, name):
     return inspect.signature(command_fn).parameters[name].default
 
@@ -316,6 +338,49 @@ def test_chatbackend_gguf_leaves_max_tokens_unset_for_llama_server():
     list(backend.stream([{"role": "user", "content": "x"}], **_STREAM_KWARGS))
 
     assert [call["max_tokens"] for call in fake.calls] == [None, 8]
+
+
+_UNSET_SAMPLING = dict(temperature = None, top_p = None, top_k = None, repetition_penalty = None)
+_GEMMA3_SAMPLING = dict(temperature = 1.0, top_p = 0.95, top_k = 64, repetition_penalty = 1.0)
+
+
+def _clear_sampling_pins(monkeypatch):
+    for field in _GEMMA3_SAMPLING:
+        monkeypatch.delenv(f"UNSLOTH_SAMPLING_{field.upper()}", raising = False)
+
+
+def test_chatbackend_resolves_unset_sampling_to_the_model_recommendation(monkeypatch):
+    _clear_sampling_pins(monkeypatch)
+    fake = _FakeBackend()
+    fake.active_model_name = "unsloth/gemma-3-270m-it"
+    backend = ChatBackend("unsloth", fake)
+
+    list(
+        backend.stream([{"role": "user", "content": "x"}], **{**_STREAM_KWARGS, **_UNSET_SAMPLING})
+    )
+
+    kwargs = fake.calls[0][2]
+    assert {field: kwargs[field] for field in _GEMMA3_SAMPLING} == _GEMMA3_SAMPLING
+
+
+def test_chatbackend_gguf_resolves_unset_sampling_but_keeps_explicit_values(monkeypatch):
+    _clear_sampling_pins(monkeypatch)
+    fake = _FakeGgufBackend()
+    fake.model_identifier = "unsloth/gemma-3-4b-it-GGUF"
+    backend = ChatBackend("gguf", fake)
+
+    list(
+        backend.stream(
+            [{"role": "user", "content": "x"}],
+            **{**_STREAM_KWARGS, **_UNSET_SAMPLING, "temperature": 0.3},
+        )
+    )
+
+    call = fake.calls[0]
+    assert {field: call[field] for field in _GEMMA3_SAMPLING} == {
+        **_GEMMA3_SAMPLING,
+        "temperature": 0.3,
+    }
 
 
 class _FakeStatsBackend:
@@ -1177,6 +1242,44 @@ def test_http_backend_sends_an_explicit_max_tokens(monkeypatch):
     assert _http_stream_body(monkeypatch, 128)["max_tokens"] == 128
 
 
+@pytest.mark.parametrize("command", ["chat", "inference"])
+def test_cli_leaves_unset_sampling_to_the_server(monkeypatch, command):
+    from unsloth_cli.commands import inference as infermod
+
+    module, app, argv = {
+        "chat": (chatmod, _chat_app(), ["fake-model"]),
+        "inference": (infermod, _inference_app(), ["fake-model", "hello"]),
+    }[command]
+    backend = HttpChatBackend("http://localhost:8888", "token")
+    bodies = []
+
+    def fake_request(
+        method,
+        path,
+        payload = None,
+        timeout = None,
+    ):
+        bodies.append(payload)
+        return _FakeSSEResponse([b"data: [DONE]\n"])
+
+    monkeypatch.setattr(backend, "_request", fake_request)
+    monkeypatch.setattr(backend, "close", lambda: None)
+    monkeypatch.setattr(module, "connect_studio_server", lambda *a, **k: backend)
+    if command == "chat":
+        monkeypatch.setattr(chatmod, "resolve_model_config", lambda *a, **k: _FakeConfig())
+        monkeypatch.setattr(chatmod, "_compare_needs_second_model", lambda: False)
+
+    for extra in ([], ["--temperature", "0.3"]):
+        result = CliRunner().invoke(app, [*argv, *extra], input = "hi\n/exit\n")
+        assert result.exit_code == 0, result.output
+
+    sampling = ("temperature", "top_p", "top_k", "repetition_penalty")
+    assert [{k: body[k] for k in sampling if k in body} for body in bodies] == [
+        {},
+        {"temperature": 0.3},
+    ]
+
+
 def _http_finish(monkeypatch, finish_reason):
     backend = HttpChatBackend("http://localhost:8888", "token")
     chunk = json.dumps({"choices": [{"delta": {"content": "hi"}, "finish_reason": finish_reason}]})
@@ -1243,7 +1346,7 @@ def test_http_backend_load_forwards_gguf_runtime_options(monkeypatch):
         llama_extra_args = ["--top-k", "20"],
     )
 
-    assert requests == [
+    assert [r for r in requests if r[0] == "POST"] == [
         (
             "POST",
             "/api/inference/load",
@@ -1283,7 +1386,116 @@ def test_http_backend_load_sends_explicit_false_tensor_parallel(monkeypatch):
         tensor_parallel = False,
     )
 
-    assert requests[0][2]["tensor_parallel"] is False
+    assert requests[-1][2]["tensor_parallel"] is False
+
+
+class _FakeStatusResponse:
+    def __init__(self, status) -> None:
+        self._body = json.dumps(status).encode()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc) -> None:
+        pass
+
+    def read(self) -> bytes:
+        return self._body
+
+
+_RESIDENT_Q8 = {
+    "is_gguf": True,
+    "active_model": "unsloth/Qwen3-0.6B-GGUF",
+    "model_identifier": "unsloth/Qwen3-0.6B-GGUF",
+    "gguf_variant": "Q8_0",
+}
+
+
+@pytest.mark.parametrize(
+    ("model", "status", "expected"),
+    [
+        ("unsloth/Qwen3-0.6B-GGUF", _RESIDENT_Q8, "Q8_0"),
+        ("unsloth/qwen3-0.6b-gguf", _RESIDENT_Q8, "Q8_0"),
+        ("unsloth/Qwen3-1.7B-GGUF", _RESIDENT_Q8, None),
+        (
+            "/models/Qwen3-0.6B-Q4_K_M.gguf",
+            {**_RESIDENT_Q8, "model_identifier": "/models/Qwen3-0.6B-Q4_K_M.gguf"},
+            None,
+        ),
+        (
+            "Qwen3-0.6B-GGUF",
+            {
+                **_RESIDENT_Q8,
+                "active_model": "Qwen3-0.6B-GGUF",
+                "model_identifier": "/models/Qwen3-0.6B-GGUF",
+            },
+            None,
+        ),
+        (
+            "Qwen3-0.6B-GGUF",
+            {**_RESIDENT_Q8, "active_model": "Qwen3-0.6B-GGUF", "model_identifier": None},
+            None,
+        ),
+        ("Qwen3-0.6B-GGUF", _RESIDENT_Q8, "Q8_0"),
+        ("C:\\Models\\Foo", {**_RESIDENT_Q8, "model_identifier": "C:\\Models\\Foo"}, "Q8_0"),
+        ("unsloth/Qwen3-0.6B-GGUF", {**_RESIDENT_Q8, "model_identifier": None}, "Q8_0"),
+        ("unsloth/Qwen3-0.6B-GGUF", {**_RESIDENT_Q8, "is_gguf": False}, None),
+        ("unsloth/Qwen3-0.6B-GGUF", None, None),
+    ],
+)
+def test_http_backend_load_keeps_the_resident_quant(monkeypatch, model, status, expected):
+    """A bare repo id lets the server auto-pick a quant, evicting the one already serving it."""
+    backend = HttpChatBackend("http://localhost:8888", "token")
+    loads = []
+
+    def fake_request(
+        method,
+        path,
+        payload = None,
+        timeout = None,
+    ):
+        if path == "/api/inference/status":
+            if status is None:
+                raise OSError("status unavailable")
+            return _FakeStatusResponse(status)
+        loads.append(payload)
+        return _FakeLoadResponse()
+
+    monkeypatch.setattr(backend, "_request", fake_request)
+
+    backend.ensure_loaded(model, hf_token = None, max_seq_length = 4096, load_in_4bit = None)
+
+    assert len(loads) == 1
+    assert loads[0].get("gguf_variant") == expected
+
+
+def test_http_backend_load_keeps_the_resident_quant_across_windows_path_spellings(monkeypatch):
+    import ntpath
+
+    import unsloth_cli._inference as inference
+
+    backend = HttpChatBackend("http://localhost:8888", "token")
+    resident = {**_RESIDENT_Q8, "active_model": "Foo", "model_identifier": "C:\\Models\\Foo"}
+    loads = []
+
+    def fake_request(
+        method,
+        path,
+        payload = None,
+        timeout = None,
+    ):
+        if path == "/api/inference/status":
+            return _FakeStatusResponse(resident)
+        loads.append(payload)
+        return _FakeLoadResponse()
+
+    monkeypatch.setattr(backend, "_request", fake_request)
+    monkeypatch.setattr(inference.os.path, "exists", lambda p: True)
+    monkeypatch.setattr(inference.os.path, "normcase", ntpath.normcase)
+
+    backend.ensure_loaded("c:/models/foo", hf_token = None, max_seq_length = 4096, load_in_4bit = None)
+
+    assert loads[0].get("gguf_variant") == "Q8_0"
 
 
 # ── A load slower than the proxy timer (see routes/inference.py _tunnel_safe_json) ──
@@ -1777,7 +1989,7 @@ def test_chat_forwards_gguf_runtime_options_to_loader(monkeypatch):
             {
                 "hf_token": None,
                 "max_seq_length": 0,
-                "load_in_4bit": True,
+                "load_in_4bit": None,
                 "tensor_parallel": True,
                 "speculative_type": "dspark",
                 "spec_draft_n_max": 3,
@@ -1830,7 +2042,7 @@ def test_inference_forwards_gguf_runtime_options_to_loader(monkeypatch):
             {
                 "hf_token": None,
                 "max_seq_length": 0,
-                "load_in_4bit": True,
+                "load_in_4bit": None,
                 "tensor_parallel": True,
                 "speculative_type": "dspark",
                 "spec_draft_n_max": 3,
@@ -1840,6 +2052,141 @@ def test_inference_forwards_gguf_runtime_options_to_loader(monkeypatch):
     ]
     assert streams[0][0] == [{"role": "user", "content": "hello"}]
     assert closed == [True]
+
+
+def _command_and_argv(command):
+    from unsloth_cli.commands import inference as infermod
+    return {
+        "chat": (chatmod, _chat_app(), ["fake-model"]),
+        "inference": (infermod, _inference_app(), ["fake-model", "hello"]),
+    }[command]
+
+
+@pytest.mark.parametrize("command", ["chat", "inference"])
+@pytest.mark.parametrize(
+    ("flags", "expected"),
+    [([], "omitted"), (["--load-in-4bit"], True), (["--no-load-in-4bit"], False)],
+)
+def test_server_load_sends_load_in_4bit_only_when_typed(monkeypatch, command, flags, expected):
+    """An untyped default must not make the server reload a 16-bit model in 4-bit."""
+    from unsloth_cli import _inference
+
+    module, app, argv = _command_and_argv(command)
+    payloads = []
+
+    def fake_request(
+        self,
+        method,
+        path,
+        payload = None,
+        timeout = None,
+    ):
+        payloads.append(payload)
+        return _FakeLoadResponse()
+
+    monkeypatch.delenv("UNSLOTH_STUDIO_URL", raising = False)
+    monkeypatch.setattr(_inference, "find_studio_server", lambda: "http://127.0.0.1:8888")
+    monkeypatch.setattr(_inference, "verify_studio_identity", lambda base: True)
+    monkeypatch.setattr(_inference, "_studio_token", lambda: "token")
+    monkeypatch.setattr(HttpChatBackend, "_request", fake_request)
+    monkeypatch.setattr(HttpChatBackend, "stream", lambda self, *a, **k: iter(["answer"]))
+    monkeypatch.setattr(module, "load_chat_backend", lambda *a, **k: pytest.fail("loaded locally"))
+    if command == "chat":
+        monkeypatch.setattr(chatmod, "resolve_model_config", lambda *a, **k: _FakeConfig())
+        monkeypatch.setattr(chatmod, "_compare_needs_second_model", lambda: False)
+
+    result = CliRunner().invoke(app, [*argv, *flags], input = "/exit\n")
+
+    assert result.exit_code == 0, result.output
+    payloads = [p for p in payloads if p is not None]
+    assert len(payloads) == 1
+    assert payloads[0].get("load_in_4bit", "omitted") == expected
+
+
+@pytest.mark.parametrize(
+    ("model", "display_name", "picked", "resident", "banner"),
+    [
+        (
+            "unsloth/Qwen3-0.6B-GGUF",
+            "Qwen3-0.6B-GGUF (UD-Q4_K_XL)",
+            "UD-Q4_K_XL",
+            _RESIDENT_Q8,
+            "Qwen3-0.6B-GGUF (Q8_0)",
+        ),
+        (
+            "/models/Qwen3-0.6B-GGUF",
+            "Qwen3-0.6B-Q4_K_M",
+            None,
+            {**_RESIDENT_Q8, "model_identifier": "/models/Qwen3-0.6B-GGUF"},
+            "Qwen3-0.6B-GGUF (Q8_0)",
+        ),
+    ],
+)
+def test_server_chat_banner_names_the_kept_quant(
+    monkeypatch, model, display_name, picked, resident, banner
+):
+    from unsloth_cli import _inference
+
+    class _GgufConfig(_FakeConfig):
+        is_gguf = True
+        is_lora = False
+
+    _GgufConfig.display_name = display_name
+    _GgufConfig.gguf_variant = picked
+
+    def fake_request(
+        self,
+        method,
+        path,
+        payload = None,
+        timeout = None,
+    ):
+        if path == "/api/inference/status":
+            return _FakeStatusResponse(resident)
+        return _FakeLoadResponse()
+
+    monkeypatch.delenv("UNSLOTH_STUDIO_URL", raising = False)
+    monkeypatch.setattr(_inference, "find_studio_server", lambda: "http://127.0.0.1:8888")
+    monkeypatch.setattr(_inference, "verify_studio_identity", lambda base: True)
+    monkeypatch.setattr(_inference, "_studio_token", lambda: "token")
+    monkeypatch.setattr(HttpChatBackend, "_request", fake_request)
+    monkeypatch.setattr(chatmod, "load_chat_backend", lambda *a, **k: pytest.fail("loaded locally"))
+    monkeypatch.setattr(chatmod, "resolve_model_config", lambda *a, **k: _GgufConfig())
+    monkeypatch.setattr(chatmod, "_compare_needs_second_model", lambda: False)
+
+    result = CliRunner().invoke(_chat_app(), [model], input = "/exit\n")
+
+    assert result.exit_code == 0, result.output
+    assert f"Chatting with {banner}" in result.output
+
+
+@pytest.mark.parametrize("command", ["chat", "inference"])
+def test_local_load_still_gets_a_load_in_4bit_bool(monkeypatch, command):
+    module, app, argv = _command_and_argv(command)
+    loads = []
+
+    class _FakeBackend:
+        def stream(self, *a, **k):
+            return iter(["answer"])
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(module, "connect_studio_server", lambda *a, **k: None)
+    monkeypatch.setattr(
+        module,
+        "load_chat_backend",
+        lambda model, **kwargs: (loads.append(kwargs["load_in_4bit"]), _FakeBackend())[1],
+    )
+    if command == "chat":
+        monkeypatch.setattr(chatmod, "resolve_model_config", lambda *a, **k: _FakeConfig())
+        monkeypatch.setattr(chatmod, "_compare_needs_second_model", lambda: False)
+
+    for flags in ([], ["--no-load-in-4bit"]):
+        result = CliRunner().invoke(app, [*argv, *flags], input = "/exit\n")
+        assert result.exit_code == 0, result.output
+
+    assert loads == [True, False]
 
 
 @pytest.mark.parametrize("command", ["chat", "inference"])

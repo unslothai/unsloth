@@ -298,6 +298,59 @@ def test_models_dev_catalog_is_trimmed_and_remapped():
     assert catalog["gemini"]["gemini-9-flash"] == {"reasoning": True, "input": ["text", "image"]}
 
 
+#: `limit` shapes that must and must not yield a context window. The frontend merges this payload
+#: over its bundled snapshot per model, so emitting a junk value is worse than emitting none: it
+#: displaces a good bundled window rather than falling back to it.
+_CONTEXT_CASES = [
+    ({"context": 1_050_000, "output": 100_000}, 1_050_000),
+    ({"context": 480}, 480),
+    (None, None),
+    ("not-a-dict", None),
+    ({"output": 4096}, None),
+    ({"context": None}, None),
+    ({"context": 0}, None),
+    ({"context": -1}, None),
+    # bool is an int in Python, and True > 0, so without the explicit bool check this would
+    # emit `"context": True` for any provider that sends a flag here.
+    ({"context": True}, None),
+    ({"context": False}, None),
+    ({"context": 1000.5}, None),
+    ({"context": "1000"}, None),
+]
+
+
+@pytest.mark.parametrize(("limit", "expected"), _CONTEXT_CASES)
+def test_the_published_context_window_survives_trimming(limit, expected):
+    from core.inference.provider_model_capabilities import _trim_models_dev_model
+
+    model = {"modalities": {"input": ["text"]}}
+    if limit is not None:
+        model["limit"] = limit
+    entry = _trim_models_dev_model(model)
+    assert entry.get("context") == expected
+
+
+def test_the_context_window_reaches_the_served_catalog():
+    from core.inference.provider_model_capabilities import trim_models_dev_catalog
+
+    raw = {
+        "openrouter": {
+            "models": {
+                "openai/gpt-4o": {
+                    "modalities": {"input": ["text", "image"]},
+                    "limit": {"context": 128_000, "input": 120_000, "output": 16_384},
+                }
+            }
+        }
+    }
+    catalog = trim_models_dev_catalog(raw)
+    # limit.input is the prompt share and limit.output the completion cap; neither is the window.
+    assert catalog["openrouter"]["openai/gpt-4o"] == {
+        "input": ["text", "image"],
+        "context": 128_000,
+    }
+
+
 class _FakeCatalogClient:
     calls = 0
     fail = False

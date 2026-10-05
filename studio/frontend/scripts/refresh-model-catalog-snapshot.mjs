@@ -47,6 +47,9 @@ function trimModel(model) {
   if (options.some((option) => option?.type === "toggle")) entry.toggle = true;
   const input = model.modalities?.input;
   if (Array.isArray(input) && input.length > 0) entry.input = input;
+  // Total context window. limit.input is the prompt share, limit.output the completion cap.
+  const context = model.limit?.context;
+  if (typeof context === "number" && context > 0) entry.context = context;
   return entry;
 }
 
@@ -80,6 +83,8 @@ const lines = [
   "  efforts?: readonly string[];",
   "  toggle?: true;",
   "  input?: readonly string[];",
+  "  /** Published context window in tokens. */",
+  "  context?: number;",
   "}",
   "",
   "export const MODEL_CATALOG_SNAPSHOT: Readonly<",

@@ -1213,6 +1213,321 @@ def test_rope_theta_carry_only_writes_when_the_base_would_be_lost():
     assert parameters == {"rope_type": "default"}
 
 
+# The two shapes the carry got wrong when it first landed (#11037).
+
+T5GEMMA2_LAYER_TYPES = ["sliding_attention", "sliding_attention", "full_attention"]
+T5GEMMA2_ROPE = {
+    "sliding_attention": {"rope_type": "default", "rope_theta": 10000.0},
+    "full_attention": {"rope_type": "default", "rope_theta": 1000000.0},
+}
+DEEPSEEK_V4_LABELS = ("main", "compress")
+DEEPSEEK_V4_ROPE = {
+    "main": {"rope_type": "default", "rope_theta": 10000.0, "partial_rotary_factor": 0.125},
+    "compress": {"rope_type": "default", "rope_theta": 160000.0, "partial_rotary_factor": 0.125},
+}
+
+
+def test_rope_theta_carry_never_puts_a_per_label_mapping_in_the_scalar_slot():
+    """``_carry_per_layer_rope_theta`` returns ``None`` for the no-op too, and #11037 as merged
+    read that as "fall through", carrying the mapping into the scalar ``config.rope_theta``."""
+    from types import SimpleNamespace
+
+    from unsloth.import_fixes import _carry_rope_theta_across_assignment as carry
+
+    parameters = {k: dict(v) for k, v in T5GEMMA2_ROPE.items()}
+    config = SimpleNamespace(
+        rope_parameters = parameters,
+        layer_types = list(T5GEMMA2_LAYER_TYPES),
+    )
+    carried = {"sliding_attention": 10000.0, "full_attention": 1000000.0}
+
+    assert (
+        carry(config, carried) is None
+    ), "the carry reported it carried a base across an assignment that lost nothing"
+    assert not hasattr(config, "rope_theta"), (
+        f"a per-label MAPPING reached the scalar rope_theta slot: "
+        f"{getattr(config, 'rope_theta', None)!r}. A base frequency is a number, and a "
+        f"config that had no rope_theta must not gain one from a no-op assignment."
+    )
+    assert config.rope_parameters == {
+        k: dict(v) for k, v in T5GEMMA2_ROPE.items()
+    }, "the nested parameters were rewritten by an assignment that lost nothing"
+
+    # Same refusal when the nested write is REFUSED rather than a no-op.
+    stubborn = {
+        "sliding_attention": {"rope_type": "default"},
+        "full_attention": {"rope_type": "default"},
+    }
+
+    class _Frozen(SimpleNamespace):
+        def __setattr__(self, name, value):
+            if name == "rope_parameters" and getattr(self, "_locked", False):
+                raise AttributeError("read-only")
+            super().__setattr__(name, value)
+
+    frozen = _Frozen(rope_parameters = stubborn, layer_types = list(T5GEMMA2_LAYER_TYPES))
+    frozen._locked = True
+    assert carry(frozen, carried) is None
+    assert not isinstance(
+        getattr(frozen, "rope_theta", None), dict
+    ), "a refused nested write fell through and put the mapping in the scalar slot"
+
+
+def test_rope_theta_carry_follows_rope_type_labels_not_only_layer_types():
+    """``standardize_rope_params`` resolves the nesting axis as ``getattr(self,
+    "_rope_type_labels", getattr(self, "layer_types", None))`` (transformers 5.17.0
+    ``modeling_rope_utils.py``); on DeepseekV4 the two name different things."""
+    from types import SimpleNamespace
+
+    from unsloth.import_fixes import (
+        _carry_rope_theta_across_assignment as carry,
+        _rope_parameters_are_per_layer,
+        _rope_theta_snapshot,
+    )
+
+    parameters = {k: dict(v) for k, v in DEEPSEEK_V4_ROPE.items()}
+    config = SimpleNamespace(
+        _rope_type_labels = DEEPSEEK_V4_LABELS,
+        layer_types = ["heavily_compressed_attention", "compressed_sparse_attention"],
+        rope_theta = 10000.0,
+        rope_parameters = parameters,
+    )
+
+    assert _rope_parameters_are_per_layer(
+        config, parameters
+    ), "rope keyed by _rope_type_labels was read as a flat dict"
+    assert _rope_theta_snapshot(config) == {
+        "main": 10000.0,
+        "compress": 160000.0,
+    }, f"the per-label bases were not snapshotted: {_rope_theta_snapshot(config)!r}"
+    carried = _rope_theta_snapshot(config)
+
+    config.rope_parameters = {
+        "main": {"rope_type": "linear", "factor": 4.0},
+        "compress": {"rope_type": "default"},
+    }
+    carry(config, carried)
+
+    restored = config.rope_parameters
+    assert "rope_theta" not in restored, (
+        f"a top-level rope_theta was written into a NESTED rope dict: {restored!r}. "
+        f"transformers would hand that one global base to every label."
+    )
+    assert restored["compress"]["rope_theta"] == 160000.0, (
+        f"the compression base was lost: {restored['compress'].get('rope_theta')!r} "
+        f"(expected 160000.0). standardize_rope_params would setdefault the 10000.0 "
+        f"global base into it instead."
+    )
+    assert restored["main"]["rope_theta"] == 10000.0
+    assert restored["main"]["factor"] == 4.0, "the caller's scaling was damaged"
+    assert config.rope_theta == 10000.0, "the stated global base went stale"
+
+    # Flat replacement, same config: the two bases disagree, so the config's own base is used.
+    flat = SimpleNamespace(
+        _rope_type_labels = DEEPSEEK_V4_LABELS,
+        rope_theta = 10000.0,
+        rope_parameters = {"rope_type": "linear", "factor": 4.0},
+    )
+    assert carry(flat, {"main": 10000.0, "compress": 160000.0}) == 10000.0
+    assert flat.rope_parameters["rope_theta"] == 10000.0
+
+
+def test_rope_carry_handles_rope_labels_not_all_present_in_layer_types():
+    """transformers asks ``isdisjoint``, not ``issubset``: laguna, mellum and zaya ship a rope
+    dict naming a label their default ``layer_types`` omits. Under the subset test all their
+    bases went to ``None`` -- the ``TypeError: ... 'NoneType' and 'Tensor'`` #11037 prevents."""
+    from types import SimpleNamespace
+
+    from unsloth.import_fixes import (
+        _carry_rope_theta_across_assignment as carry,
+        _rope_parameters_are_per_layer,
+        _rope_theta_snapshot,
+    )
+
+    parameters = {
+        "full_attention": {"rope_type": "default", "rope_theta": 500000.0},
+        "sliding_attention": {"rope_type": "default", "rope_theta": 10000.0},
+    }
+    config = SimpleNamespace(rope_parameters = parameters, layer_types = ["full_attention"])
+
+    assert _rope_parameters_are_per_layer(config, parameters), (
+        "a nested rope dict was read as flat because one of its labels is absent from "
+        "layer_types; transformers asks isdisjoint, not issubset"
+    )
+    carried = _rope_theta_snapshot(config)
+    assert carried == {
+        "full_attention": 500000.0,
+        "sliding_attention": 10000.0,
+    }, f"the per-label bases were not snapshotted: {carried!r}"
+
+    config.rope_parameters = {
+        "full_attention": {"rope_type": "linear", "factor": 4.0},
+        "sliding_attention": {"rope_type": "default"},
+    }
+    carry(config, carried)
+
+    restored = config.rope_parameters
+    assert (
+        restored["full_attention"]["rope_theta"] == 500000.0
+    ), f"the full-attention base was lost: {restored['full_attention'].get('rope_theta')!r}"
+    assert restored["sliding_attention"]["rope_theta"] == 10000.0, (
+        f"the sliding-attention base was lost: "
+        f"{restored['sliding_attention'].get('rope_theta')!r}"
+    )
+    assert (
+        "rope_theta" not in restored
+    ), f"a top-level rope_theta was written into a NESTED rope dict: {restored!r}"
+    assert not hasattr(
+        config, "rope_theta"
+    ), "a nested-only config gained a scalar rope_theta attribute it never had"
+
+
+def test_rope_carry_on_the_real_nested_configs():
+    """The stub shapes above on the real config classes, so a transformers change is caught."""
+    pytest.importorskip("transformers")
+    import copy as _copy
+
+    from unsloth.import_fixes import fix_transformers_rope_scaling_drops_theta
+
+    fix_transformers_rope_scaling_drops_theta()
+
+    try:
+        from transformers.models.t5gemma2.configuration_t5gemma2 import T5Gemma2DecoderConfig
+    except Exception as exc:
+        pytest.skip(f"T5Gemma2DecoderConfig unavailable: {exc!r}")
+
+    config = T5Gemma2DecoderConfig()
+    before = config.to_json_string()
+    had_theta = hasattr(config, "rope_theta")
+    config.rope_scaling = _copy.deepcopy(config.rope_parameters)
+    assert not isinstance(
+        getattr(config, "rope_theta", None), dict
+    ), f"T5Gemma2 rope_theta became a mapping: {config.rope_theta!r}"
+    assert (
+        hasattr(config, "rope_theta") == had_theta
+    ), "a no-op assignment gave the config a rope_theta attribute it never had"
+    assert (
+        config.to_json_string() == before
+    ), "assigning a config its own rope_parameters back changed what it serializes"
+
+    try:
+        from transformers.models.deepseek_v4.configuration_deepseek_v4 import DeepseekV4Config
+    except Exception as exc:
+        pytest.skip(f"DeepseekV4Config unavailable: {exc!r}")
+
+    deepseek = DeepseekV4Config()
+    expected_compress = deepseek.rope_parameters["compress"]["rope_theta"]
+    deepseek.rope_scaling = {
+        "main": {"rope_type": "linear", "factor": 4.0},
+        "compress": {"rope_type": "default"},
+    }
+    assert (
+        "rope_theta" not in deepseek.rope_parameters
+    ), f"stray top-level rope_theta in a nested dict: {deepseek.rope_parameters!r}"
+    deepseek.standardize_rope_params()
+    resolved = deepseek.rope_parameters
+    assert resolved["compress"]["rope_theta"] == expected_compress, (
+        f"the compression base resolved to {resolved['compress']['rope_theta']!r}, "
+        f"expected {expected_compress!r}"
+    )
+
+
+def test_rope_carry_keeps_every_nested_base_on_every_real_config():
+    """Swept, not enumerated, so a new nested-rope model is covered the day it lands. On 5.17.0:
+    deepseek_v4 (``_rope_type_labels``) and laguna / mellum / zaya, all four broken by issubset."""
+    pytest.importorskip("transformers")
+
+    from unsloth.import_fixes import fix_transformers_rope_scaling_drops_theta
+
+    fix_transformers_rope_scaling_drops_theta()
+
+    from transformers.models.auto.configuration_auto import CONFIG_MAPPING
+
+    checked, damaged = [], {}
+    # Told apart on purpose from `checked` below. A build with no `rope_parameters` at all is
+    # transformers 4.x, where this whole carry does not exist and there is nothing to sweep; a
+    # build that HAS the attribute but exposes no nested config is drift worth failing on.
+    # Collapsing the two would either red the 4.x job forever or silently stop testing 5.x.
+    saw_rope_parameters = False
+    # keys(), then resolve inside the try. CONFIG_MAPPING is lazy: .items() imports every
+    # config module to hand back the classes, so ONE model whose module needs an optional
+    # dependency takes the whole sweep down before the loop body runs. Seen with
+    # transformers.models.gemma3n, which imports timm.data.ImageNetInfo and raises ImportError
+    # on a timm that does not export it. A config that cannot be built on this machine cannot
+    # be the one that regressed, so it is skipped rather than allowed to end the sweep.
+    for name in sorted(CONFIG_MAPPING.keys()):
+        try:
+            config = CONFIG_MAPPING[name]()
+        except Exception:
+            continue
+        parameters = getattr(config, "rope_parameters", None)
+        if not isinstance(parameters, dict):
+            continue
+        saw_rope_parameters = True
+        labels = [k for k, v in parameters.items() if isinstance(v, dict)]
+        if len(labels) < 2:
+            continue
+        expected = {k: parameters[k].get("rope_theta") for k in labels}
+        if any(v is None for v in expected.values()):
+            continue
+        try:
+            config.rope_scaling = {k: {"rope_type": "default"} for k in labels}
+        except Exception:
+            continue
+        restored = config.rope_parameters
+        actual = {k: (restored.get(k) or {}).get("rope_theta") for k in labels}
+        checked.append(name)
+        if actual != expected or "rope_theta" in restored:
+            damaged[name] = {
+                "expected": expected,
+                "actual": actual,
+                "stray_top_level_rope_theta": "rope_theta" in restored,
+            }
+
+    if not saw_rope_parameters:
+        pytest.skip(
+            "this transformers has no config.rope_parameters, so there is no per-label rope "
+            "dict for a scaling replacement to damage (4.x keeps rope_scaling as a plain "
+            "attribute; test_rope_scaling_replacement_keeps_the_base_frequency covers it)"
+        )
+
+    assert checked, "no config with a nested rope dict was found to check"
+    assert not damaged, (
+        f"a per-label scaling replacement lost bases on {sorted(damaged)} "
+        f"(checked {len(checked)} nested configs): {damaged}"
+    )
+
+
+def test_rope_carry_leaves_the_zoo_gemma_local_base_alone_on_a_real_config():
+    """``unsloth_zoo/empty_model.py`` sets Gemma's LOCAL base, then replaces the scaling."""
+    pytest.importorskip("transformers")
+
+    from unsloth.import_fixes import fix_transformers_rope_scaling_drops_theta
+
+    fix_transformers_rope_scaling_drops_theta()
+
+    try:
+        from transformers import Gemma2Config
+    except Exception as exc:
+        pytest.skip(f"Gemma2Config unavailable: {exc!r}")
+
+    config = Gemma2Config(num_hidden_layers = 2)
+    config.rope_theta = 10000.0
+    config.rope_scaling = {"rope_type": "default"}
+
+    assert (
+        config.rope_theta == 10000.0
+    ), f"the carry overwrote the local rotary base with {config.rope_theta!r}"
+    # getattr, not attribute access: the isinstance check below already says this is optional,
+    # but transformers 4.x RAISES rather than returning None here, so reading it directly made
+    # the tolerance unreachable and failed the test on the 4.x job.
+    parameters = getattr(config, "rope_parameters", None)
+    if isinstance(parameters, dict):
+        assert (
+            parameters.get("rope_theta") == 10000.0
+        ), f"the local base did not reach rope_parameters: {parameters!r}"
+
+
 def test_rope_scaling_patch_wired_into_gpu_init():
     source = Path(__file__).resolve().parent.parent / "unsloth" / "_gpu_init.py"
     source = source.read_text(encoding = "utf-8")
@@ -1397,3 +1712,249 @@ def test_a_per_layer_snapshot_never_becomes_a_scalar_rope_theta():
         written = config.rope_parameters.get("rope_theta", None)
         assert not isinstance(written, dict), written
         assert not isinstance(getattr(config, "rope_theta", None), dict)
+
+
+def test_the_torchvision_backend_still_breaks_the_4x_numpy_contract():
+    """DRIFT DETECTOR for the method shim: `normalize` refuses ndarray and
+    `rescale` silently returns float64 where 4.x returned float32. Both halves
+    are asserted; if upstream restores either, drop that entry from
+    `_LEGACY_NUMPY_IMAGE_METHODS` rather than wrap a method with itself.
+    """
+    transformers = pytest.importorskip("transformers")
+    np = pytest.importorskip("numpy")
+    from packaging.version import Version
+
+    if Version(transformers.__version__) < Version("5.0.0"):
+        pytest.skip("the torchvision backend does not exist before transformers 5")
+    # transformers' own probe, not `import torchvision`: an unusable wheel still
+    # imports while `tvF` goes unbound, and the backend then raises NameError.
+    backends = pytest.importorskip("transformers.image_processing_backends")
+    from transformers.utils import is_torchvision_available
+
+    if not is_torchvision_available() or not hasattr(backends, "tvF"):
+        pytest.skip("torchvision is not usable here, so the backend cannot run")
+    siglip2 = pytest.importorskip("transformers.models.siglip2.image_processing_siglip2")
+
+    processor = siglip2.Siglip2ImageProcessor()
+    image = np.arange(4 * 4 * 3, dtype = np.uint8).reshape(4, 4, 3)
+
+    rescaled = processor.rescale(
+        image = image,
+        scale = 1 / 255.0,
+        input_data_format = "channels_last",
+    )
+    assert rescaled.dtype == np.float64, (
+        "DRIFT DETECTED: BaseImageProcessor.rescale no longer returns float64 on numpy, so "
+        "the 4.x dtype contract may be back. Re-verify before keeping `rescale` in "
+        "`_LEGACY_NUMPY_IMAGE_METHODS`."
+    )
+
+    with pytest.raises(TypeError):
+        processor.normalize(
+            image = rescaled,
+            mean = [0.5, 0.5, 0.5],
+            std = [0.5, 0.5, 0.5],
+            input_data_format = "channels_last",
+        )
+
+
+def test_the_4x_numpy_helpers_the_method_shim_forwards_to_still_exist():
+    """DRIFT DETECTOR: the shim forwards to transformers' own 4.x functions.
+
+    Drop them upstream and there is no verified implementation left to restore,
+    so the shim must be reconsidered rather than reimplemented.
+    """
+    pytest.importorskip("transformers")
+    np = pytest.importorskip("numpy")
+    from transformers import image_transforms
+
+    image = np.arange(4 * 4 * 3, dtype = np.uint8).reshape(4, 4, 3)
+    for name in ("rescale", "normalize"):
+        assert callable(getattr(image_transforms, name, None)), (
+            f"DRIFT DETECTED: transformers.image_transforms.{name} is gone, so the numpy "
+            "image method shim has nothing to forward to."
+        )
+
+    rescaled = image_transforms.rescale(
+        image,
+        scale = 1 / 255.0,
+        input_data_format = "channels_last",
+    )
+    assert rescaled.dtype == np.float32, (
+        "DRIFT DETECTED: image_transforms.rescale stopped defaulting to float32, which is "
+        "the dtype the shim exists to restore."
+    )
+    normalized = image_transforms.normalize(
+        rescaled,
+        mean = [0.5, 0.5, 0.5],
+        std = [0.5, 0.5, 0.5],
+        input_data_format = "channels_last",
+    )
+    assert normalized.dtype == np.float32
+    assert normalized.shape == image.shape
+
+
+def test_the_numpy_image_method_shim_is_wired_into_the_remote_code_hook():
+    """The installer must be reachable from the hook, or real loads never see it."""
+    source = Path(__file__).resolve().parent.parent / "unsloth" / "import_fixes.py"
+    source = source.read_text(encoding = "utf-8")
+    assert "_install_legacy_numpy_image_methods_now(loaded)" in source, (
+        "DRIFT DETECTED: the numpy image method shim is defined but never called from the "
+        "get_class_in_module wrapper, so a checkpoint's own image processor is never patched."
+    )
+    assert "_install_remote_image_processor_finder()" in source, (
+        "DRIFT DETECTED: the meta path finder is never installed, so a spawn-started worker "
+        "rebuilds an unpatched class when it unpickles a processor."
+    )
+
+
+# ===========================================================================
+# transformers -- a submodule's prefix renaming leaks into the composite model
+# ===========================================================================
+
+
+def test_transformers_scopes_a_submodules_conversion_mapping():
+    """``fix_transformers_composite_prefix_renaming``: transformers 5.4.0 to 5.5.4
+    merge a submodule's own prefix renaming into the parent's conversion mapping
+    verbatim, which renames a composite model's real weight names into names it does
+    not have and throws away the bitsandbytes quant_state sidecars with them."""
+    transformers = pytest.importorskip("transformers")
+    from packaging.version import Version
+
+    from unsloth.import_fixes import (
+        _composite_prefix_renaming_repaired,
+        _transformers_rescopes_submodule_prefix_renamings,
+    )
+
+    if _transformers_rescopes_submodule_prefix_renamings():
+        return
+    # Unscoped. Inside 5.4.0 to 5.5.4 that is the defect the repair exists for, and a lane that
+    # pins `transformers<5.5` lands there on purpose, so the drift is not the defect but a
+    # defect nobody repaired. On a release that ships upstream's fix, it is the probe that drifted.
+    if Version(transformers.__version__) >= Version("5.6.0"):
+        pytest.fail(
+            f"DRIFT DETECTED: transformers=={transformers.__version__} ships the submodule "
+            "re-scoping of PR #45567, but the probe finds none of its three spellings (no "
+            "model_prefix argument, no PrefixChange.with_submodel_prefix, no scope_prefix "
+            "field). fix_transformers_composite_prefix_renaming would wrap "
+            "get_model_conversion_mapping on a build that does not need it; teach the probe "
+            "the new spelling."
+        )
+    assert _composite_prefix_renaming_repaired(), (
+        f"DRIFT DETECTED: transformers=={transformers.__version__} recurses into submodules "
+        "for conversion mappings without scoping them, and no repair is live -- neither "
+        "fix_transformers_composite_prefix_renaming nor unsloth_zoo's copy wrapped "
+        "get_model_conversion_mapping. Pre-quantized multimodal checkpoints load with "
+        "quant_state=None here."
+    )
+
+
+def test_composite_renaming_probe_agrees_with_the_real_mapping():
+    """The install gate is a claim about behaviour, so check it against the behaviour.
+
+    Builds a real composite Qwen3.5 on the meta device -- no weights, no download --
+    and asks whether the mapping transformers really produces rewrites that model's
+    own parameter names into names it does not have.
+    """
+    torch = pytest.importorskip("torch")
+    pytest.importorskip("transformers")
+    from unsloth.import_fixes import _transformers_rescopes_submodule_prefix_renamings
+
+    try:
+        import transformers
+        from transformers.conversion_mapping import get_model_conversion_mapping
+        from transformers.core_model_loading import WeightRenaming
+        from transformers.models.auto.configuration_auto import CONFIG_MAPPING
+    except Exception as exc:
+        pytest.skip(f"this transformers has no conversion mapping machinery: {exc!r}")
+    if "qwen3_5" not in CONFIG_MAPPING:
+        pytest.skip("this transformers has no qwen3_5 model type")
+
+    config = CONFIG_MAPPING["qwen3_5"]()
+    config.text_config.num_hidden_layers = 2
+    config.text_config.layer_types = ["linear_attention", "full_attention"]
+    if hasattr(config.text_config, "mtp_num_hidden_layers"):
+        config.text_config.mtp_num_hidden_layers = 0
+    config.vision_config.depth = 1
+    try:
+        with torch.device("meta"):
+            model = transformers.AutoModelForImageTextToText.from_config(config)
+    except Exception as exc:
+        pytest.skip(f"cannot build a meta qwen3_5: {exc!r}")
+
+    # Past EVERY wrapper, not just the first: unsloth_zoo patches the same function and
+    # keeps its original in a closure cell, so stopping at `__wrapped__` would measure this
+    # fix through this fix and report no pathology on a transformers that has one.
+    mapping = get_model_conversion_mapping
+    seen = set()
+    while id(mapping) not in seen:
+        seen.add(id(mapping))
+        nxt = getattr(mapping, "__wrapped__", None)
+        if nxt is None:
+            for cell in getattr(mapping, "__closure__", None) or ():
+                try:
+                    candidate = cell.cell_contents
+                except ValueError:
+                    continue
+                if callable(candidate) and getattr(candidate, "__name__", "") == (
+                    "get_model_conversion_mapping"
+                ):
+                    nxt = candidate
+                    break
+        if nxt is None:
+            break
+        mapping = nxt
+    keys = {name for name, _ in model.named_parameters(remove_duplicate = False)}
+    keys |= {name for name, _ in model.named_buffers(remove_duplicate = False)}
+    leaks = []
+    for conversion in mapping(model):
+        if not isinstance(conversion, WeightRenaming):
+            continue
+        for key in sorted(keys):
+            renamed, matched = conversion.rename_source_key(key)
+            if matched is not None and renamed != key and renamed not in keys:
+                leaks.append((conversion.source_patterns, key, renamed))
+                break
+
+    rescopes = _transformers_rescopes_submodule_prefix_renamings()
+    assert bool(leaks) != bool(rescopes), (
+        f"DRIFT DETECTED: the probe says rescopes={rescopes}, but the mapping this "
+        f"transformers builds for a composite Qwen3.5 {'does' if leaks else 'does not'} "
+        f"rewrite the model's own weight names off the map: {leaks[:3]}"
+    )
+
+
+def test_composite_renaming_patch_wired_into_gpu_init():
+    """The patch must be installed at startup, not only importable."""
+    source = Path(__file__).resolve().parent.parent / "unsloth" / "_gpu_init.py"
+    source = source.read_text(encoding = "utf-8")
+    assert "fix_transformers_composite_prefix_renaming()" in source, (
+        "DRIFT DETECTED: fix_transformers_composite_prefix_renaming is defined but "
+        "never called in _gpu_init.py, so real imports never install it."
+    )
+
+
+def test_no_top_level_definition_is_shadowed_by_a_later_one():
+    """A second `def` of the same name silently wins and the first becomes dead code.
+
+    This branch stacks on #11450, which moved `_transformers_rescopes_submodule_prefix_renamings`
+    into the base. The merge landed both copies in different regions of the file, so git
+    reported no conflict while Python bound the later one and the earlier one, which
+    answered differently when `core_model_loading` failed to import, stopped running.
+    """
+    import ast
+    from collections import Counter
+
+    source = (Path(__file__).resolve().parent.parent / "unsloth" / "import_fixes.py").read_text(
+        encoding = "utf-8"
+    )
+    counts = Counter(
+        node.name
+        for node in ast.parse(source).body
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    )
+    shadowed = {name: n for name, n in counts.items() if n > 1}
+    assert not shadowed, (
+        f"DRIFT DETECTED: import_fixes.py defines these names more than once at module "
+        f"level, so every copy but the last is dead code: {shadowed}"
+    )

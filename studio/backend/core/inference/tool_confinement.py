@@ -30,6 +30,8 @@ _FS_EXECUTE = 1 << 0
 _FS_WRITE_FILE = 1 << 1
 _FS_READ_FILE = 1 << 2
 _FS_READ_DIR = 1 << 3
+_FS_MAKE_CHAR = 1 << 6
+_FS_MAKE_BLOCK = 1 << 11
 _FS_MAKE_SYM = 1 << 12
 _FS_REFER = 1 << 13  # ABI 2
 _FS_TRUNCATE = 1 << 14  # ABI 3
@@ -111,6 +113,11 @@ class Confinement:
 
     def wrap(self, argv: list[str]) -> list[str]:
         return [*self.wrapper, *argv] if self.wrapper else argv
+
+    @property
+    def confines(self) -> bool:
+        """Whether this confines anything; ``unconfined-by-owner`` is a placeholder and must not skip the generic sandbox."""
+        return self.preexec is not None or bool(self.wrapper)
 
 
 def unconfined_tools_allowed() -> bool:
@@ -305,6 +312,13 @@ def _handled_mask(abi: int) -> int:
     return mask
 
 
+def _writable_access(handled: int) -> int:
+    """Rights on a writable root. No symlink creation: the server follows links, so a tool must not
+    plant an escaping one. No device nodes or device ioctls either: a root-run Studio would otherwise
+    let a tool mknod a disk in its workspace; real devices come only from the explicit device rules."""
+    return handled & ~(_FS_MAKE_SYM | _FS_MAKE_CHAR | _FS_MAKE_BLOCK | _FS_IOCTL_DEV)
+
+
 def _device_nodes() -> list[str]:
     import glob
     return _existing((*_DEVICE_NODES, *_ACCELERATOR_NODES, *sorted(glob.glob("/dev/nvidia[0-9]*"))))
@@ -331,8 +345,7 @@ def _landlock_rules(abi: int, sandbox_site_dir: str) -> list[tuple[str, int]]:
         rules.append((path, read))
     for path in _device_nodes():
         rules.append((path, device | (_FS_READ_DIR if os.path.isdir(path) else 0)))
-    # No symlink creation: the server follows links, so a tool must not plant an escaping one.
-    writable = handled & ~_FS_MAKE_SYM
+    writable = _writable_access(handled)
     for path in writable_roots:
         rules.append((path, writable))
     return rules

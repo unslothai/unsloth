@@ -85,7 +85,8 @@ for _fn in get_torch_index_url _has_amd_rocm_gpu _has_usable_nvidia_gpu \
            _infer_amd_gfx_arch_from_gpu_name _amd_gpu_present_via_pci _run_bounded \
            _rocm_tag_from_amd_smi _rocm_tag_from_hipconfig _rocm_tag_from_rpm \
            _rocm_tag_from_dpkg _rocm_tag_from_version_file _highest_rocm_tag \
-           _trim_index_path_slashes _cvd_hides_nvidia _ensure_rocm_probe_env; do
+           _trim_index_path_slashes _cvd_hides_nvidia _ensure_rocm_probe_env \
+           _rocm_torch_explicitly_requested; do
     grep -q "^$_fn()" "$_FUNCS" || \
         _fatal "install.sh no longer defines $_fn() at column 0 (splice would silently answer cpu)"
 done

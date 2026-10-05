@@ -86,12 +86,13 @@ export function ChatModelNotice({
   const label = compareModelDisplayName(createdModel.modelId);
   return (
     // Positioned, not in flow. The chat header is `absolute ... z-40` with an opaque `bg-background`,
-    // so an in-flow sibling starts at y=0 UNDER it and the bar is invisible bar the 10px the
-    // header's `right-[10px]` leaves uncovered. Offset by the same header height the drop overlay
+    // so an in-flow sibling starts at y=0 UNDER it and the bar is invisible bar the scrollbar gutter
+    // the header leaves uncovered. Offset by the same header height the drop overlay
     // and the header fade use, above the fade (z-20) and below the header (z-40).
     <div
       data-chat-model-notice=""
-      className="absolute left-0 right-[10px] top-[calc(var(--studio-content-top-inset,0px)+var(--studio-chat-header-height,48px))] z-30 flex h-[var(--studio-chat-notice-height,2.25rem)] items-center gap-2 border-b border-border/60 bg-muted px-4 text-ui-12 text-muted-foreground"
+      data-side-panel-inset=""
+      className="absolute left-[var(--studio-side-panel-left,0px)] right-[calc(var(--thread-scrollbar-gutter,10px)+var(--studio-side-panel-width,0px))] top-[calc(var(--studio-content-top-inset,0px)+var(--studio-chat-header-height,48px))] z-30 flex h-[var(--studio-chat-notice-height,2.25rem)] items-center gap-2 border-b border-border/60 bg-muted px-4 text-ui-12 text-muted-foreground"
     >
       <span className="min-w-0 truncate">
         This chat was started on <span className="font-medium">{label}</span>.

@@ -114,6 +114,13 @@ def _trim_models_dev_model(model: dict[str, Any]) -> dict[str, Any]:
     inputs = modalities.get("input") if isinstance(modalities, dict) else None
     if isinstance(inputs, list) and inputs:
         entry["input"] = [m for m in inputs if isinstance(m, str)]
+    # Total context window. The frontend merges this payload over its bundled snapshot per model,
+    # so a field missing here erases the bundled one. limit.input is the prompt share of the
+    # window and limit.output the completion cap, which max_output_tokens already carries.
+    limit = model.get("limit")
+    context = limit.get("context") if isinstance(limit, dict) else None
+    if isinstance(context, int) and not isinstance(context, bool) and context > 0:
+        entry["context"] = context
     return entry
 
 

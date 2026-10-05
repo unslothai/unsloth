@@ -32,6 +32,7 @@ from loggers import get_logger
 from utils.process_lifetime import is_signalable_pid
 
 from hub.utils import state_dir
+from hub.utils.hf_errors import modelscope_missing
 from hub.utils.state_dir import RepoType
 
 logger = get_logger(__name__)
@@ -97,7 +98,11 @@ def http_size_ceiling_reason(largest_file_bytes: Optional[int]) -> Optional[str]
 
 
 def humanize_worker_error(text: str, *, largest_file_bytes: Optional[int] = None) -> str:
-    """Replace the hub's misleading >50GB dependency error with the transport limit."""
+    """Name a repo missing on ModelScope, and replace the hub's misleading >50GB dependency
+    error with the transport limit."""
+    missing = modelscope_missing(text)
+    if missing:
+        return missing
     if not text or _HTTP_SIZE_CEILING_MARKER not in text:
         return text
     reason = http_size_ceiling_reason(largest_file_bytes)
@@ -796,7 +801,7 @@ def prepare_cache_for_transport(
     return total_purged
 
 
-_HF_TOKEN_RE = re.compile(r"hf_[A-Za-z0-9]{20,}")
+_HF_TOKEN_RE = re.compile(r"hf_(?:oauth_[A-Za-z0-9._~+/=-]{20,}|[A-Za-z0-9]{20,})")
 _BEARER_RE = re.compile(r"(?i)bearer\s+[A-Za-z0-9._\-]+")
 
 
@@ -1135,6 +1140,8 @@ class DownloadMetadata:
     xet_cache: Optional[str] = None
     # Scoped jobs only: the exact files to fetch, kept so the XET -> HTTP retry respawns the same scoped download.
     scoped_files: tuple[str, ...] = ()
+    owner: Optional[str] = None
+    load_attached: bool = False
 
 
 @dataclass(frozen = True)
@@ -1217,9 +1224,13 @@ class DownloadRegistry:
         self._cancel_marker_transports: dict[str, str] = {}
         self._pending_cancel: dict[str, Optional[int]] = {}
         self._generations: dict[str, int] = {}
+        self._attempts: dict[str, int] = {}
         # Monotonic across keys so an evicted then re-claimed key never reuses a prior generation, which would let a stale cancel match a new run.
         self._generation_seq = 0
         self._deleting: dict[str, set[Optional[str]]] = {}
+        # A whole-cache purge, which begin_delete cannot express: it reserves one
+        # repository, and emptying the root has to hold every one of them.
+        self._purging = 0
         # Publish external cache owners under the same lock as Model Hub jobs.
         self._repository_owners: dict[str, object] = {}
         self._lock = threading.Lock()
@@ -1240,6 +1251,7 @@ class DownloadRegistry:
                     self._jobs.pop(stale_key, None)
                     self._metadata.pop(stale_key, None)
                     self._generations.pop(stale_key, None)
+                    self._attempts.pop(stale_key, None)
                     if len(self._jobs) <= self._max_terminal:
                         break
 
@@ -1318,6 +1330,34 @@ class DownloadRegistry:
                 return
             self._metadata[key] = replace(metadata, transport = transport)
 
+    def release_owned(self, key: str, owner: str) -> bool:
+        key = normalize_job_key(key)
+        with self._lock:
+            metadata = self._metadata.get(key)
+            if metadata is None or metadata.owner != owner:
+                return False
+            if self._jobs.get(key, DownloadState("idle")).state not in _ACTIVE_STATES:
+                return False
+            self._jobs[key] = DownloadState("idle")
+            self._discard_active_locked(key)
+            return True
+
+    def _discard_active_locked(self, key: str) -> None:
+        repo = _repo_of_key(key)
+        active = self._repo_active.get(repo)
+        if active is not None:
+            active.discard(key)
+            if not active:
+                self._repo_active.pop(repo, None)
+
+    def mark_load_attached(self, key: str, attached: bool) -> None:
+        key = normalize_job_key(key)
+        with self._lock:
+            metadata = self._metadata.get(key)
+            if metadata is None or metadata.load_attached == attached:
+                return
+            self._metadata[key] = replace(metadata, load_attached = attached)
+
     def release_active_slot(self, key: str) -> None:
         key = normalize_job_key(key)
         repo = _repo_of_key(key)
@@ -1338,6 +1378,11 @@ class DownloadRegistry:
         key = normalize_job_key(key)
         with self._lock:
             return self._generations.get(key, 0)
+
+    def current_attempt(self, key: str) -> int:
+        key = normalize_job_key(key)
+        with self._lock:
+            return self._attempts.get(key, 1)
 
     def get_job_metadata(self, key: str) -> Optional[DownloadMetadata]:
         key = normalize_job_key(key)
@@ -1454,6 +1499,7 @@ class DownloadRegistry:
         hub_cache: Optional[str] = None,
         xet_cache: Optional[str] = None,
         scoped_files: Optional[Sequence[str]] = None,
+        owner: Optional[str] = None,
     ) -> tuple[bool, str]:
         key = normalize_job_key(key)
         repo = _repo_of_key(key)
@@ -1465,6 +1511,8 @@ class DownloadRegistry:
             # Run the final admission check under the registry lock: the GGUF load path establishes its marker before its active-job probe, so either this claim sees that marker or the load sees this claim.
             if admission_check is not None and not admission_check():
                 return False, "admission_blocked"
+            if self._purging:
+                return False, "deleting"
             deleting_scopes = self._deleting.get(repo)
             if deleting_scopes is not None and (
                 None in deleting_scopes or variant_from_key(key) in deleting_scopes
@@ -1512,8 +1560,11 @@ class DownloadRegistry:
             if generation is None:
                 self._generation_seq += 1
                 self._generations[key] = self._generation_seq
+                self._attempts[key] = 1
             else:
                 self._generations[key] = generation
+                self._attempts[key] = self._attempts.get(key, 1) + 1
+            previous = self._metadata.get(key) if current in _ACTIVE_STATES else None
             self._jobs[key] = DownloadState("running")
             self._repo_active.setdefault(repo, active).add(key)
             if repo_type and repo_id:
@@ -1532,6 +1583,8 @@ class DownloadRegistry:
                     hub_cache = hub_cache,
                     xet_cache = xet_cache,
                     scoped_files = tuple(scoped_files or ()),
+                    owner = owner,
+                    load_attached = previous.load_attached if previous is not None else False,
                 )
                 if cancel_marker_transport is not None:
                     self._cancel_marker_transports[key] = cancel_marker_transport
@@ -1548,7 +1601,7 @@ class DownloadRegistry:
         with self._lock:
             if repo in self._repository_owners:
                 return False, "repository_owned"
-            if repo in self._deleting:
+            if self._purging or repo in self._deleting:
                 return False, "deleting"
             for key, job in self._jobs.items():
                 if _repo_of_key(key) != repo or job.state not in _ACTIVE_STATES:
@@ -1571,6 +1624,9 @@ class DownloadRegistry:
         """True when *key* itself has a live job a client can attach to. Lets a rejected claim distinguish a collision with this key's own in-flight job (pollable) from one blocked by a different repo job or an in-progress delete, where no job exists for this key."""
         key = normalize_job_key(key)
         with self._lock:
+            metadata = self._metadata.get(key)
+            if metadata is not None and metadata.owner is not None:
+                return False
             return self._jobs.get(key, DownloadState("idle")).state in _ACTIVE_STATES
 
     def _active_job_variant_locked(self, key: str) -> Optional[str]:
@@ -1688,12 +1744,37 @@ class DownloadRegistry:
         repo_id = normalize_repo_key(repo_id)
         variant_key = (variant or "").strip().lower() or None
         with self._lock:
-            if repo_id in self._repository_owners:
+            if repo_id in self._repository_owners or self._purging:
                 return False
             if self._delete_blocked_by_active_locked(repo_id, variant_key):
                 return False
             self._deleting.setdefault(repo_id, set()).add(variant_key)
             return True
+
+    def begin_cache_purge(self) -> bool:
+        """Reserve the WHOLE cache for a purge. False while anything is active.
+
+        ``begin_delete`` closes the check-then-delete race for one repository by
+        making :func:`claim` reject it until the delete finishes. A purge empties
+        the root instead, so it needs the same promise over every repository, or
+        a worker that claims just after the check writes into a tree already
+        being removed. The two exclude each other in both directions, since a
+        scoped delete is removing files from the same root. Counted, so
+        overlapping purges of two caches that share this registry nest.
+        """
+        with self._lock:
+            if not self._purging:
+                if self._repository_owners or self._deleting:
+                    return False
+                if any(job.state in _ACTIVE_STATES for job in self._jobs.values()):
+                    return False
+            self._purging += 1
+            return True
+
+    def end_cache_purge(self) -> None:
+        with self._lock:
+            if self._purging:
+                self._purging -= 1
 
     def end_delete(
         self,
@@ -1766,6 +1847,11 @@ class DownloadRegistry:
             # Settle active jobs without a live worker: a retry parked in the reclaim wait has dropped its worker, and a registered worker that errored before its watcher ran would stay running and spawn an HTTP retry. Skip one that exited cleanly, which would strand a stale marker.
             for key, job in list(self._jobs.items()):
                 if job.state not in _ACTIVE_STATES or key in live_keys:
+                    continue
+                placeholder = self._metadata.get(key)
+                if placeholder is not None and placeholder.owner is not None:
+                    self._jobs[key] = DownloadState("idle")
+                    self._discard_active_locked(key)
                     continue
                 proc = self._processes.get(key)
                 if proc is not None:

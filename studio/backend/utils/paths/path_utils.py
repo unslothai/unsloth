@@ -303,6 +303,47 @@ def reset_cache_case_resolution_state() -> None:
         _CACHE_CASE_RESOLUTION_STATS[key] = 0
 
 
+def _comparable_path(path, pathmod) -> str:
+    """*path* spelled the way two paths are compared: on Windows without the extended-length
+    prefix, which realpath keeps on one side only for a long path, and case folded."""
+    text = os.fspath(path)
+    if pathmod.sep == "\\":
+        if text[:8].upper() == "\\\\?\\UNC\\":
+            text = "\\\\" + text[8:]
+        elif text[:4] == "\\\\?\\":
+            text = text[4:]
+    return pathmod.normcase(pathmod.normpath(text))
+
+
+def is_path_within(
+    path,
+    root,
+    *,
+    allow_root: bool = False,
+    pathmod = os.path,
+) -> bool:
+    """Whether resolved *path* sits inside resolved *root*.
+
+    commonpath rather than a prefix test: a drive root already ends in a separator, and ``C:\\a``
+    must not contain ``C:\\ab``. Paths on different drives are simply not inside."""
+    candidate, base = _comparable_path(path, pathmod), _comparable_path(root, pathmod)
+    try:
+        common = pathmod.commonpath([candidate, base])
+    except ValueError:
+        return False
+    return common == base and (allow_root or candidate != base)
+
+
+def same_path(
+    left,
+    right,
+    *,
+    pathmod = os.path,
+) -> bool:
+    """Whether two resolved paths are one, compared as ``is_path_within`` compares them."""
+    return _comparable_path(left, pathmod) == _comparable_path(right, pathmod)
+
+
 def _wsl_reveal_in_explorer(path: Path, is_file: bool) -> bool:
     import subprocess
     if not _IS_WSL:
@@ -319,8 +360,11 @@ def _wsl_reveal_in_explorer(path: Path, is_file: bool) -> bool:
         ).stdout.strip()
         if not windows_path:
             return False
-        argument = f"/select,{windows_path}" if is_file else windows_path
-        subprocess.Popen(["explorer.exe", argument])
+        subprocess.Popen(
+            ["explorer.exe", "/select,", windows_path]
+            if is_file
+            else ["explorer.exe", windows_path]
+        )
         return True
     except (OSError, subprocess.SubprocessError):
         return False
@@ -358,10 +402,204 @@ def reveal_in_file_manager(path: Path, expect_dir: bool = False) -> None:
         cmd = ["open", "-R", target] if is_file else ["open", target]
         subprocess.Popen(cmd)
     elif os.name == "nt":
-        if is_file:
-            subprocess.Popen(["explorer", f"/select,{target}"])
+        if is_file and '"' not in target:
+            subprocess.Popen(f'explorer /select,"{target}"')
+        elif is_file:
+            os.startfile(str(path.parent))  # noqa: S606 - local user's own file manager
         else:
             os.startfile(target)  # noqa: S606 - local user's own file manager
     elif not _wsl_reveal_in_explorer(path, is_file):
         # No cross-desktop "select file" standard on Linux; open the directory.
         subprocess.Popen(["xdg-open", str(path.parent) if is_file else target])
+
+
+# What "Open in default app" may hand to the OS: documents and media, which open in a viewer. A
+# script, app bundle or installer would run instead, and these files are model-written.
+DEFAULT_APP_OPEN_EXTENSIONS = frozenset(
+    {
+        ".pdf",
+        ".txt",
+        ".md",
+        ".markdown",
+        ".csv",
+        ".tsv",
+        ".json",
+        ".jsonl",
+        ".xml",
+        ".yaml",
+        ".yml",
+        ".log",
+        ".rtf",
+        ".docx",
+        ".xlsx",
+        ".pptx",
+        ".odt",
+        ".ods",
+        ".odp",
+        ".png",
+        ".jpg",
+        ".jpeg",
+        ".gif",
+        ".webp",
+        ".bmp",
+        ".avif",
+        ".tif",
+        ".tiff",
+        ".mp3",
+        ".wav",
+        ".flac",
+        ".ogg",
+        ".m4a",
+        ".mp4",
+        ".mov",
+        ".webm",
+        ".mkv",
+        ".parquet",
+        ".ipynb",
+    }
+)
+
+
+_OPEN_STAGING_MAX_AGE_S = 24 * 60 * 60
+
+
+def _prune_open_staging(root: Path) -> None:
+    import shutil
+    import time
+
+    cutoff = time.time() - _OPEN_STAGING_MAX_AGE_S
+    try:
+        entries = list(root.iterdir())
+    except OSError:
+        return
+    for entry in entries:
+        try:
+            if entry.lstat().st_mtime < cutoff:
+                shutil.rmtree(entry, ignore_errors = True)
+        except OSError:
+            continue
+
+
+def _opened_path(handle: int) -> Optional[str]:
+    """Where an open file really is, or None where the OS can't say."""
+    if sys.platform == "darwin":
+        import fcntl
+        return os.fsdecode(fcntl.fcntl(handle, fcntl.F_GETPATH, bytes(1024)).rstrip(b"\0"))
+    proc = f"/proc/self/fd/{handle}"
+    return os.readlink(proc) if os.path.islink(proc) else None
+
+
+def _stage_for_open(path: Path, root: Optional[Path] = None) -> Path:
+    """A name for *path*'s current file in a private directory, for the OS opener.
+
+    Tool code runs in the sandbox and can swap *path* for a symlink (to an app or a script outside
+    it) between any check and the opener resolving the name. So the file is opened once without
+    following links, and the inode that open returned is hard-linked (or, across filesystems,
+    copied) into a fresh directory only Studio writes to. That name is what the OS opens.
+    O_NOFOLLOW only covers the last component, so a swapped parent is caught by checking where the
+    opened file really is against *root*.
+    """
+    import shutil
+    import stat as stat_module
+    import tempfile
+
+    from utils.paths.storage_roots import cache_root
+
+    try:
+        handle = os.open(
+            path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_BINARY", 0)
+        )
+    except OSError as exc:
+        raise FileNotFoundError(str(path)) from exc
+    try:
+        info = os.fstat(handle)
+        if not stat_module.S_ISREG(info.st_mode):
+            raise FileNotFoundError(str(path))
+        if root is not None:
+            real = _opened_path(handle)
+            if real is None:
+                # By name, so it must still be the file that was opened (Windows junctions).
+                real = os.path.realpath(path)
+                same = os.stat(real)
+                if (same.st_dev, same.st_ino) != (info.st_dev, info.st_ino):
+                    raise FileNotFoundError(str(path))
+            if not Path(real).is_relative_to(os.path.realpath(root)):
+                raise FileNotFoundError(str(path))
+        staging = cache_root() / "open-staging"
+        staging.mkdir(parents = True, exist_ok = True)
+        _prune_open_staging(staging)
+        target = Path(tempfile.mkdtemp(dir = staging)) / path.name
+        try:
+            os.link(path, target, follow_symlinks = False)
+            linked = os.lstat(target)
+            # Swapped since the open: copy what was opened.
+            if (linked.st_dev, linked.st_ino) != (info.st_dev, info.st_ino):
+                target.unlink()
+                raise OSError("file changed")
+        except (OSError, NotImplementedError):
+            with os.fdopen(os.dup(handle), "rb") as source, open(target, "xb") as copy:
+                shutil.copyfileobj(source, copy)
+        return target
+    finally:
+        os.close(handle)
+
+
+def open_in_default_app(path: Path, root: Optional[Path] = None) -> None:
+    """Open the regular file *path* (inside *root*, if given) with the OS default app.
+
+    Refuses (``PermissionError``) anything outside ``DEFAULT_APP_OPEN_EXTENSIONS`` and raises
+    ``FileNotFoundError`` when *path* is not a regular file; a symlink is refused like a missing file.
+    The opener gets a private name for the file (see ``_stage_for_open``), never *path* itself.
+    """
+    import stat as stat_module
+    import subprocess
+
+    if path.suffix.lower() not in DEFAULT_APP_OPEN_EXTENSIONS:
+        raise PermissionError(str(path))
+    try:
+        entry = os.lstat(path)
+    except OSError as exc:
+        raise FileNotFoundError(str(path)) from exc
+    if not stat_module.S_ISREG(entry.st_mode):
+        raise FileNotFoundError(str(path))
+    target = str(_stage_for_open(path, root))
+    if sys.platform == "darwin":
+        subprocess.Popen(["open", target])
+    elif os.name == "nt":
+        os.startfile(target)  # noqa: S606 - local user's own default app
+    elif _IS_WSL:
+        windows_path = subprocess.run(
+            ["wslpath", "-w", target],
+            capture_output = True,
+            text = True,
+            encoding = "utf-8",
+            errors = "replace",
+            check = True,
+            timeout = 10,
+        ).stdout.strip()
+        subprocess.Popen(["explorer.exe", windows_path])
+    else:
+        subprocess.Popen(["xdg-open", target])
+
+
+# pathconf's _PC_CASE_SENSITIVE on macOS, which Python has no name for.
+_PC_CASE_SENSITIVE = 11
+
+
+def macos_volume_ignores_case(path: str) -> bool:
+    """Whether the macOS volume holding ``path`` (or its nearest folder that exists) ignores case,
+    as APFS and HFS+ do unless formatted case-sensitive. True off macOS, where only a test acting
+    as macOS asks."""
+    if sys.platform != "darwin":
+        return True
+    probe = path
+    while True:
+        try:
+            return os.pathconf(probe, _PC_CASE_SENSITIVE) == 0
+        except FileNotFoundError:
+            parent = os.path.dirname(probe)
+            if not parent or parent == probe:
+                return True
+            probe = parent
+        except (OSError, ValueError):
+            return True

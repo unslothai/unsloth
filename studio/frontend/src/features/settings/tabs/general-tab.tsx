@@ -12,7 +12,11 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
-import { PermissionModeDropdown, useChatRuntimeStore } from "@/features/chat";
+import {
+  PermissionModeDropdown,
+  useActivePermissionMode,
+  useChatRuntimeStore,
+} from "@/features/chat";
 // From the keys module, not the barrel or the store: both are in an import cycle with this file,
 // so the key was still in its temporal dead zone when the module-scope list below read it, killing
 // the module graph. The keys module imports nothing, so it is always evaluated first.
@@ -30,7 +34,9 @@ import {
 } from "@/features/training";
 import {
   setShowLlamaUpdateBanner,
+  setShowWhisperUpdateBanner,
   useShowLlamaUpdateBanner,
+  useShowWhisperUpdateBanner,
 } from "@/hooks/use-llama-update-pref";
 import { useHfTokenValidation } from "@/hooks";
 import { LOCALE_STORAGE_KEY, useT } from "@/i18n";
@@ -59,6 +65,11 @@ import {
 import { loadCloseToTray, updateCloseToTray } from "../api/close-to-tray";
 import { loadLaunchAtLogin, updateLaunchAtLogin } from "../api/launch-at-login";
 import { useIsAccountOwner } from "@/features/auth";
+import {
+  LIBRARY_CHATS_PREFS_STORAGE_KEY,
+  LIBRARY_SETTINGS_STORAGE_KEY,
+  LIBRARY_VIEW_STORAGE_KEY,
+} from "@/features/library";
 import { ChangePasswordDialog } from "../components/change-password-dialog";
 import { DesktopRepairControl } from "../components/desktop-repair-control";
 import {
@@ -69,6 +80,7 @@ import { DocumentsRagSection } from "../components/documents-rag-section";
 import { LanguageSelect } from "../components/language-select";
 import { TRANSPORT_MODE_STORAGE_KEY } from "@/features/hub";
 import { DownloadTransportRow } from "../components/download-transport-row";
+import { HubSettingsSection } from "../components/hub-settings-section";
 import { SettingsRow } from "../components/settings-row";
 import { SettingsSection } from "../components/settings-section";
 import { StudioVersionSection } from "../components/studio-version-section";
@@ -76,6 +88,7 @@ import { useDesktopBooleanSetting } from "../hooks/use-desktop-boolean-setting";
 import { KEYBOARD_SHORTCUTS_STORAGE_KEY } from "../stores/keyboard-shortcuts-store";
 import { INTERFACE_SCALE_STORAGE_KEY } from "../stores/interface-scale-store";
 import { SETTINGS_PANEL_PREFS_STORAGE_KEY } from "../stores/settings-panel-prefs-store";
+import { useSettingsDialogStore } from "../stores/settings-dialog-store";
 import { CHAT_PROJECT_ATTACHMENT_TARGET_KEY } from "@/features/chat/utils/project-attachment-target";
 
 // Keys cleared by "Reset all local preferences". NEVER include auth/session keys here -- that
@@ -93,6 +106,9 @@ const PREFS_KEYS: string[] = [
   "sidebar_width",
   "chat_settings_width",
   "unsloth_sidebar_navigate_open",
+  LIBRARY_SETTINGS_STORAGE_KEY,
+  LIBRARY_VIEW_STORAGE_KEY,
+  LIBRARY_CHATS_PREFS_STORAGE_KEY,
   // Grouping, sort and the manual row order.
   SIDEBAR_ORGANIZATION_STORAGE_KEY,
   "unsloth_settings_active_tab",
@@ -150,6 +166,7 @@ const PREFS_KEYS: string[] = [
   "tour:studio:v1",
   // Update notifications
   "unsloth_show_llama_update_banner",
+  "unsloth_show_whisper_update_banner",
   "unsloth_monitor_overlay",
   LOADED_MODELS_PREFERENCE_KEYS.show,
   LOADED_MODELS_PREFERENCE_KEYS.collapsed,
@@ -180,6 +197,20 @@ function resetAllPrefs() {
 export function GeneralTab() {
   const isOwner = useIsAccountOwner();
   const t = useT();
+  const permissionsRef = useRef<HTMLElement | null>(null);
+  const activePermission = useActivePermissionMode();
+  const scrollTarget = useSettingsDialogStore((s) => s.scrollTarget);
+  const consumeScrollTarget = useSettingsDialogStore((s) => s.consumeScrollTarget);
+
+  // Learn more in the permission menus.
+  useEffect(() => {
+    if (scrollTarget !== "general-permissions") return;
+    const frame = window.requestAnimationFrame(() => {
+      permissionsRef.current?.scrollIntoView({ block: "start", behavior: "smooth" });
+      consumeScrollTarget("general-permissions");
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [consumeScrollTarget, scrollTarget]);
   const hfToken = useChatRuntimeStore((s) => s.hfToken);
   const setHfToken = useChatRuntimeStore((s) => s.setHfToken);
 
@@ -187,6 +218,7 @@ export function GeneralTab() {
     (s) => s.persistenceError,
   );
   const showLlamaUpdates = useShowLlamaUpdateBanner();
+  const showWhisperUpdates = useShowWhisperUpdateBanner();
   const showLoadedModels = useShowLoadedModels();
 
   const [draftToken, setDraftToken] = useState(hfToken ?? "");
@@ -331,7 +363,6 @@ export function GeneralTab() {
     };
   }, [t, isOwner]);
 
-
   const saveHelperPrecache = async (enabled: boolean) => {
     setIsSavingHelperPrecache(true);
     setHelperPrecacheError(null);
@@ -414,7 +445,7 @@ export function GeneralTab() {
   };
 
   return (
-    <div className="flex flex-col gap-6">
+    <div className="settings-page">
       <header className="flex flex-col gap-1">
         <h1 className="text-xl font-semibold font-heading">
           {t("settings.general.title")}
@@ -439,65 +470,9 @@ export function GeneralTab() {
         <SettingsRow
           label={t("settings.general.huggingFaceToken")}
           description={t("settings.general.huggingFaceTokenDescription")}
-        >
-          <div className="flex flex-col items-end gap-1.5">
-            <div className="flex items-center gap-2">
-              <div className="relative w-[260px]">
-                <Input
-                  type={showToken ? "text" : "password"}
-                  name="hf-token"
-                  autoComplete="new-password"
-                  spellCheck={false}
-                  placeholder="hf_…"
-                  value={draftToken}
-                  onChange={(e) => setDraftToken(e.target.value)}
-                  onBlur={commitToken}
-                  className={cn(
-                    "h-8 w-full font-mono text-xs",
-                    tokenValidated ? "pr-14" : "pr-8",
-                  )}
-                />
-                {tokenValidated ? (
-                  // Decorative: pointer-events-none lets clicks reach the input underneath.
-                  <span
-                    className="pointer-events-none absolute right-7 top-1/2 flex size-5 -translate-y-1/2 items-center justify-center text-emerald-600 duration-150 animate-in fade-in zoom-in dark:text-emerald-500"
-                    role="img"
-                    aria-label={t("settings.general.tokenValidated")}
-                  >
-                    <Check className="size-4" strokeWidth={2.5} />
-                  </span>
-                ) : null}
-                <button
-                  type="button"
-                  onClick={() => setShowToken((s) => !s)}
-                  className="absolute right-1.5 top-1/2 flex size-5 -translate-y-1/2 items-center justify-center rounded text-muted-foreground transition-colors hover:text-foreground"
-                  aria-label={
-                    showToken
-                      ? t("settings.general.hideToken")
-                      : t("settings.general.showToken")
-                  }
-                  tabIndex={-1}
-                >
-                  {showToken ? (
-                    <EyeOff className="size-3.5" />
-                  ) : (
-                    <Eye className="size-3.5" />
-                  )}
-                </button>
-              </div>
-              <Button
-                type="button"
-                variant="outline"
-                size="sm"
-                className="h-8"
-                disabled={!draftToken && !hfToken}
-                onClick={clearHfToken}
-              >
-                {t("settings.general.clearToken")}
-              </Button>
-            </div>
-            {hfTokenPersistenceError ? (
-              <p className="max-w-[330px] text-right text-xs text-destructive">
+          below={
+            hfTokenPersistenceError ? (
+              <p className="max-w-[calc(330px*var(--ui-space-scale,1))] text-right text-xs text-destructive">
                 {hfTokenPersistenceError}
               </p>
             ) : tokenValidation.isChecking ? (
@@ -505,10 +480,66 @@ export function GeneralTab() {
                 {t("settings.general.checkingToken")}
               </p>
             ) : tokenValidation.error ? (
-              <p className="max-w-[330px] text-right text-xs text-destructive">
+              <p className="max-w-[calc(330px*var(--ui-space-scale,1))] text-right text-xs text-destructive">
                 {tokenValidation.error}
               </p>
-            ) : null}
+            ) : null
+          }
+        >
+          <div className="flex max-w-full items-center gap-2">
+            <div className="relative w-[calc(260px*var(--ui-space-scale,1))] min-w-0">
+              <Input
+                type={showToken ? "text" : "password"}
+                name="hf-token"
+                autoComplete="new-password"
+                spellCheck={false}
+                placeholder="hf_…"
+                value={draftToken}
+                onChange={(e) => setDraftToken(e.target.value)}
+                onBlur={commitToken}
+                className={cn(
+                  "h-8 w-full font-mono text-xs",
+                  tokenValidated ? "pr-14" : "pr-8",
+                )}
+              />
+              {tokenValidated ? (
+                // Decorative: pointer-events-none lets clicks reach the input underneath.
+                <span
+                  className="pointer-events-none absolute right-7 top-1/2 flex size-5 -translate-y-1/2 items-center justify-center text-emerald-600 duration-150 animate-in fade-in zoom-in dark:text-emerald-500"
+                  role="img"
+                  aria-label={t("settings.general.tokenValidated")}
+                >
+                  <Check className="size-4" strokeWidth={2.5} />
+                </span>
+              ) : null}
+              <button
+                type="button"
+                onClick={() => setShowToken((s) => !s)}
+                className="absolute right-1.5 top-1/2 flex size-5 -translate-y-1/2 items-center justify-center rounded text-muted-foreground transition-colors hover:text-foreground"
+                aria-label={
+                  showToken
+                    ? t("settings.general.hideToken")
+                    : t("settings.general.showToken")
+                }
+                tabIndex={-1}
+              >
+                {showToken ? (
+                  <EyeOff className="size-3.5" />
+                ) : (
+                  <Eye className="size-3.5" />
+                )}
+              </button>
+            </div>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              className="h-8"
+              disabled={!draftToken && !hfToken}
+              onClick={clearHfToken}
+            >
+              {t("settings.general.clearToken")}
+            </Button>
           </div>
         </SettingsRow>
         {/* The desktop owner authenticates via desktop auto-auth with a generated
@@ -533,12 +564,16 @@ export function GeneralTab() {
         </SettingsRow>
       </SettingsSection>
 
-      <SettingsSection title={t("settings.general.permissions.sectionTitle")}>
+      <SettingsSection
+        ref={permissionsRef}
+        title={t("settings.general.permissions.sectionTitle")}
+      >
+        {/* The selected level, explained in full. */}
         <SettingsRow
-          label={t("settings.general.permissions.bypassLabel")}
-          description={t("settings.general.permissions.bypassDescription")}
+          label={t(`settings.general.permissions.names.${activePermission.value}`)}
+          description={t(`settings.general.permissions.details.${activePermission.value}`)}
         >
-          <PermissionModeDropdown />
+          <PermissionModeDropdown learnMore={false} />
         </SettingsRow>
       </SettingsSection>
 
@@ -547,42 +582,42 @@ export function GeneralTab() {
           <SettingsRow
             label={t("settings.general.startup.launchAtLogin")}
             description={t("settings.general.startup.launchAtLoginDescription")}
-          >
-            <div className="flex flex-col items-end gap-1">
-              <Switch
-                checked={launchAtLoginSetting.value ?? false}
-                disabled={
-                  launchAtLoginSetting.value === null || launchAtLoginSetting.saving
-                }
-                onCheckedChange={(enabled) => void launchAtLoginSetting.update(enabled)}
-              />
-              {launchAtLoginSetting.error ? (
-                <span className="max-w-[260px] text-right text-xs text-destructive">
+            below={
+              launchAtLoginSetting.error ? (
+                <span className="max-w-[calc(260px*var(--ui-space-scale,1))] text-right text-xs text-destructive">
                   {launchAtLoginSetting.error}
                 </span>
-              ) : null}
-            </div>
+              ) : null
+            }
+          >
+            <Switch
+              checked={launchAtLoginSetting.value ?? false}
+              disabled={
+                launchAtLoginSetting.value === null || launchAtLoginSetting.saving
+              }
+              onCheckedChange={(enabled) => void launchAtLoginSetting.update(enabled)}
+            />
           </SettingsRow>
 
           {closeToTraySetting.supported ? (
             <SettingsRow
               label={t("settings.general.startup.closeToTray")}
               description={t("settings.general.startup.closeToTrayDescription")}
-            >
-              <div className="flex flex-col items-end gap-1">
-                <Switch
-                  checked={closeToTraySetting.value ?? false}
-                  disabled={
-                    closeToTraySetting.value === null || closeToTraySetting.saving
-                  }
-                  onCheckedChange={(enabled) => void closeToTraySetting.update(enabled)}
-                />
-                {closeToTraySetting.error ? (
-                  <span className="max-w-[260px] text-right text-xs text-destructive">
+              below={
+                closeToTraySetting.error ? (
+                  <span className="max-w-[calc(260px*var(--ui-space-scale,1))] text-right text-xs text-destructive">
                     {closeToTraySetting.error}
                   </span>
-                ) : null}
-              </div>
+                ) : null
+              }
+            >
+              <Switch
+                checked={closeToTraySetting.value ?? false}
+                disabled={
+                  closeToTraySetting.value === null || closeToTraySetting.saving
+                }
+                onCheckedChange={(enabled) => void closeToTraySetting.update(enabled)}
+              />
             </SettingsRow>
           ) : null}
         </SettingsSection>
@@ -611,6 +646,17 @@ export function GeneralTab() {
             onCheckedChange={setShowLlamaUpdateBanner}
           />
         </SettingsRow>
+        <SettingsRow
+          label={t("settings.general.notifications.showWhisperUpdates")}
+          description={t(
+            "settings.general.notifications.showWhisperUpdatesDescription",
+          )}
+        >
+          <Switch
+            checked={showWhisperUpdates}
+            onCheckedChange={setShowWhisperUpdateBanner}
+          />
+        </SettingsRow>
       </SettingsSection>
 
       {/* Installation-wide settings: owner-only routes, so a managed account gets no dead controls. */}
@@ -622,19 +668,19 @@ export function GeneralTab() {
         <SettingsRow
           label={t("settings.general.previewSharing.enableLabel")}
           description={t("settings.general.previewSharing.enableDescription")}
-        >
-          <div className="flex flex-col items-end gap-1">
-            <Switch
-              checked={previewSharing?.enabled ?? false}
-              disabled={!previewSharing || isSavingPreviewSharing}
-              onCheckedChange={(enabled) => void savePreviewSharing(enabled)}
-            />
-            {previewSharingError ? (
-              <span className="max-w-[260px] text-right text-xs text-destructive">
+          below={
+            previewSharingError ? (
+              <span className="max-w-[calc(260px*var(--ui-space-scale,1))] text-right text-xs text-destructive">
                 {previewSharingError}
               </span>
-            ) : null}
-          </div>
+            ) : null
+          }
+        >
+          <Switch
+            checked={previewSharing?.enabled ?? false}
+            disabled={!previewSharing || isSavingPreviewSharing}
+            onCheckedChange={(enabled) => void savePreviewSharing(enabled)}
+          />
         </SettingsRow>
         <SettingsRow
           destructive={true}
@@ -654,6 +700,8 @@ export function GeneralTab() {
 
       <DocumentsRagSection />
 
+      <HubSettingsSection />
+
       <SettingsSection title={t("settings.general.downloads.sectionTitle")}>
         <DownloadTransportRow />
       </SettingsSection>
@@ -666,38 +714,38 @@ export function GeneralTab() {
               uploadLimit?.defaultUploadSizeMb ?? DEFAULT_UPLOAD_LIMIT_MB,
             ),
           })}
-        >
-          <div className="flex flex-col items-end gap-1">
-            <div className="flex items-center gap-2">
-              <div className="flex items-center gap-1.5">
-                <Input
-                  type="number"
-                  min={uploadLimit?.minUploadSizeMb ?? 1}
-                  max={uploadLimit?.maxAllowedUploadSizeMb ?? 8192}
-                  step={1}
-                  value={draftUploadLimit}
-                  aria-label={t("settings.general.uploads.maxUploadSize")}
-                  onChange={(event) => setDraftUploadLimit(event.target.value)}
-                  className="h-8 w-24"
-                />
-                <span className="text-xs font-medium text-muted-foreground">
-                  MB
-                </span>
-              </div>
-              <Button
-                variant="outline"
-                size="sm"
-                disabled={isSavingUploadLimit}
-                onClick={() => void saveUploadLimit()}
-              >
-                {isSavingUploadLimit ? t("common.saving") : t("common.save")}
-              </Button>
-            </div>
-            {uploadLimitError ? (
-              <span className="max-w-[260px] text-right text-xs text-destructive">
+          below={
+            uploadLimitError ? (
+              <span className="max-w-[calc(260px*var(--ui-space-scale,1))] text-right text-xs text-destructive">
                 {uploadLimitError}
               </span>
-            ) : null}
+            ) : null
+          }
+        >
+          <div className="flex items-center gap-2">
+            <div className="flex items-center gap-1.5">
+              <Input
+                type="number"
+                min={uploadLimit?.minUploadSizeMb ?? 1}
+                max={uploadLimit?.maxAllowedUploadSizeMb ?? 8192}
+                step={1}
+                value={draftUploadLimit}
+                aria-label={t("settings.general.uploads.maxUploadSize")}
+                onChange={(event) => setDraftUploadLimit(event.target.value)}
+                className="h-8 w-24"
+              />
+              <span className="text-xs font-medium text-muted-foreground">
+                MB
+              </span>
+            </div>
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={isSavingUploadLimit}
+              onClick={() => void saveUploadLimit()}
+            >
+              {isSavingUploadLimit ? t("common.saving") : t("common.save")}
+            </Button>
           </div>
         </SettingsRow>
       </SettingsSection>
@@ -709,27 +757,27 @@ export function GeneralTab() {
           description={t(
             "settings.general.helperLlm.preloadOnStartupDescription",
           )}
-        >
-          <div className="flex flex-col items-end gap-1">
-            <Switch
-              checked={helperPrecache?.enabled ?? false}
-              disabled={
-                !helperPrecache ||
-                isSavingHelperPrecache ||
-                helperPrecache.disabledByEnv
-              }
-              onCheckedChange={(enabled) => void saveHelperPrecache(enabled)}
-            />
-            {helperPrecache?.disabledByEnv ? (
-              <span className="max-w-[260px] text-right text-xs text-muted-foreground">
+          below={
+            helperPrecache?.disabledByEnv ? (
+              <span className="max-w-[calc(260px*var(--ui-space-scale,1))] text-right text-xs text-muted-foreground">
                 {t("settings.general.helperLlm.disabledByEnv")}
               </span>
             ) : helperPrecacheError ? (
-              <span className="max-w-[260px] text-right text-xs text-destructive">
+              <span className="max-w-[calc(260px*var(--ui-space-scale,1))] text-right text-xs text-destructive">
                 {helperPrecacheError}
               </span>
-            ) : null}
-          </div>
+            ) : null
+          }
+        >
+          <Switch
+            checked={helperPrecache?.enabled ?? false}
+            disabled={
+              !helperPrecache ||
+              isSavingHelperPrecache ||
+              helperPrecache.disabledByEnv
+            }
+            onCheckedChange={(enabled) => void saveHelperPrecache(enabled)}
+          />
         </SettingsRow>
       </SettingsSection>
         </>

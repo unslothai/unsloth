@@ -9,7 +9,7 @@ import { readSrc } from "./helpers/kit.ts";
 const resourcesTab = readSrc("features/settings/tabs/resources-tab.tsx");
 
 test("Resources separates dedicated VRAM from shared GPU memory", () => {
-  assert.match(resourcesTab, /gpuMemoryTotalsGb\(devices\)/);
+  assert.match(resourcesTab, /gpuMemoryTotalsGb\(usageDevices\)/);
   assert.match(resourcesTab, /metrics\.vramShared > 0/);
   assert.match(resourcesTab, /environment\.vramWithShared/);
   assert.match(resourcesTab, /vram: formatGiB\(metrics\.vramDedicated\)/);
