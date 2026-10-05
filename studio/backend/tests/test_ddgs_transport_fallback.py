@@ -33,7 +33,14 @@ def test_install_ddgs_transport_fallback_forces_duckduckgo_http1(monkeypatch):
             self.closed = True
 
     class FakeHttpClient2:
-        def __init__(self, headers=None, proxy=None, timeout=10, *, verify=True):
+        def __init__(
+            self,
+            headers = None,
+            proxy = None,
+            timeout = 10,
+            *,
+            verify = True,
+        ):
             self.client = FakeHttpxClient()
             self._headers = headers
             self._proxy = proxy
@@ -46,7 +53,7 @@ def test_install_ddgs_transport_fallback_forces_duckduckgo_http1(monkeypatch):
     ddgs_http_client2 = types.ModuleType("ddgs.http_client2")
     ddgs_http_client2.HttpClient2 = FakeHttpClient2
 
-    def _fake_ssl_context(*, verify=True):
+    def _fake_ssl_context(*, verify = True):
         return "ssl-context" if verify else False
 
     ddgs_http_client2._get_random_ssl_context = _fake_ssl_context
