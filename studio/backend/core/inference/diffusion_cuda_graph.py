@@ -209,11 +209,8 @@ def _drop_pool_if_unused() -> None:
         pass
 
 
-# A capture that fails before ``capture_end`` gets past ``cudaStreamEndCapture`` leaves both caching allocators
-# recording to its pool. Python can take only the device one off it (``_abandon_capture_pool``): from torch 2.11 the
-# pinned host allocator keeps the pool in its ``captures_underway_`` for the life of the process, with an allocation
-# filter that holds a raw pointer to the failed CUDAGraph. So a failed graph is never freed (the filter must not read
-# freed memory) and its pool is never recorded into again (the host allocator refuses: "already recording").
+# A failed capture leaves the pinned host allocator (torch >= 2.11) recording to its pool for good, with a filter
+# holding a raw pointer to the failed CUDAGraph: so that graph is never freed and its pool never recorded into again.
 MAX_FAILED_CAPTURES = 16
 _FAILED_GRAPHS: list = []
 _COLLIDED_GRAPHS: list = []
@@ -288,7 +285,7 @@ def _heal_generators() -> None:
             restore = getattr(gen, "graphsafe_set_state", None)
             if callable(clone) and callable(restore):
                 restore(clone())
-    except Exception:  # noqa: BLE001 - nothing to heal on a torch without graph-safe generator states
+    except Exception:  # noqa: BLE001
         pass
 
 
@@ -1087,7 +1084,7 @@ def arm_block_graphs(
             handle, reason = install_block_graphs(
                 transformer, device = getattr(target, "torch_device", None), logger = logger
             )
-        except Exception as exc:  # noqa: BLE001 - the load proceeds ungraphed
+        except Exception as exc:  # noqa: BLE001
             _warn(logger, "block graph install", exc)
             handle, reason = None, f"install failed ({type(exc).__name__})"
         if handle is not None:

@@ -152,7 +152,7 @@ def _inner(t: Any) -> list:
         if is_traceable_wrapper_subclass(t):
             names, _ = t.__tensor_flatten__()
             return [(n, getattr(t, n)) for n in names]
-    except Exception:  # noqa: BLE001 - not a wrapper: a plain tensor
+    except Exception:  # noqa: BLE001
         pass
     return []
 
@@ -203,7 +203,6 @@ def _slot_views(raw: Any, sources: list, device: Any) -> list:
         if not inner:
             view, offset = _carve(raw, offset, src)
             return view
-        # a device wrapper with the source's metadata, its inner tensors then re-pointed into the slot
         wrapper = _to_device(src, device)
         for name, x in inner:
             setattr(wrapper, name, build(x))
@@ -215,7 +214,6 @@ def _slot_views(raw: Any, sources: list, device: Any) -> list:
 
 
 def _copy_into(dst: Any, src: Any) -> None:
-    """Copy ``src`` (host) into ``dst`` (device) in place, through wrapper subclasses' inner tensors."""
     inner = _inner(dst)
     if inner:
         for name, d in inner:
@@ -255,7 +253,6 @@ def _point_at(t: Any, buf: Any, torchao: bool, swap: Any) -> None:
 
 
 def _detach_from_slot(group: Any, buffers: list) -> None:
-    """Point a group that aliases slot ``buffers`` at private device copies."""
     ptrs = set()
     for b in buffers:
         for x in _plain_leaves(b):
@@ -530,7 +527,7 @@ class GroupPrefetcher:
             cpu = getattr(group, "cpu_param_dict", None) or {}
             try:
                 need = _packed_bytes([cpu.get(t, t) for t in _group_tensors(group)])
-            except Exception:  # noqa: BLE001 - a layout we cannot read keeps fresh copies
+            except Exception:  # noqa: BLE001
                 need = None
             if need is None:
                 continue
