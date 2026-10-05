@@ -604,12 +604,52 @@ def test_retrieve_pin_of_the_resident_quant_on_a_cold_index(monkeypatch):
     _pin_setup(monkeypatch, [_base_row(loaded = True, context_length = 4096)])
     llama = _FakeLlama()
     llama.hf_variant = "Q8_0"
+    llama.model_identifier = "publisher/Qwen3"
     monkeypatch.setattr(inf, "get_llama_cpp_backend", lambda: llama)
 
     model = _retrieve("publisher/Qwen3:Q8_0")
     assert model["loaded"] is True
     assert model["quant"] == "Q8_0"
     assert _retrieve("publisher/Qwen3:Q4_K_M")["loaded"] is False
+
+
+def test_retrieve_pin_reads_residency_from_the_slot_holding_the_model(monkeypatch):
+    _pin_setup(monkeypatch, [_base_row(loaded = True, context_length = 4096)])
+    primary, extra = _FakeLlama(), _FakeLlama()
+    primary.model_identifier, primary.hf_variant = "other/Model", "Q4_K_M"
+    extra.model_identifier, extra.hf_variant = "publisher/Qwen3", "Q8_0"
+    current = {"backend": primary}
+
+    def _in_slot(slot, fn):
+        current["backend"] = extra if slot is not None else primary
+        try:
+            return fn()
+        finally:
+            current["backend"] = primary
+
+    monkeypatch.setattr(inf, "get_llama_cpp_backend", lambda: current["backend"])
+    monkeypatch.setattr(inf.model_slots, "visible", lambda: ["extra"])
+    monkeypatch.setattr(inf.model_slots, "in_slot", _in_slot)
+
+    assert _retrieve("publisher/Qwen3:Q8_0")["loaded"] is True
+    assert _retrieve("publisher/Qwen3:Q4_K_M")["loaded"] is False
+
+
+def test_retrieve_pin_accepts_a_legacy_label_and_keeps_the_task(monkeypatch):
+    from core.inference.local_model_resolver import _LocalGgufEntry
+
+    _pin_setup(monkeypatch, [_base_row(loaded = False, quant = "Q8_0", task = "text-to-speech")])
+    entry = _LocalGgufEntry(
+        "publisher/Qwen3",
+        "/hf/models--publisher--Qwen3/snapshots/a",
+        ("Q8_0", "Q4_K_M"),
+        aliases = (("bf16", "Q4_K_M"),),
+    )
+    monkeypatch.setattr(resolver, "_index", lambda: {"publisher/qwen3": entry})
+
+    model = _retrieve("publisher/Qwen3:BF16")
+    assert model["id"] == "publisher/Qwen3:Q4_K_M"
+    assert model["task"] == "text-to-speech"
 
 
 def test_retrieve_pin_404s_when_the_quant_or_model_is_not_listed(monkeypatch):

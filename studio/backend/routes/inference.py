@@ -34954,14 +34954,29 @@ async def openai_list_models(
     return {"object": "list", "data": data}
 
 
+def _resident_gguf_quants() -> dict[str, str]:
+    """Lowercased public id -> loaded quant, per slot: outside a slot get_llama_cpp_backend() is the primary."""
+    resident: dict[str, str] = {}
+
+    def _probe():
+        backend = get_llama_cpp_backend()
+        quant = getattr(backend, "hf_variant", None)
+        public = _llama_public_model_id(backend) if backend.is_loaded else None
+        return (public, quant) if public and quant else None
+
+    for slot in (None, *model_slots.visible()):
+        found = model_slots.in_slot(slot, _probe)
+        if found:
+            resident.setdefault(found[0].lower(), found[1])
+    return resident
+
+
 def _pinned_quant_object(model_id: str, objects: list[dict]) -> Optional[dict]:
     """``<listed id>:<on-disk quant>``, the same pin chat completions accept (#9340), else None."""
-    from core.inference.local_model_resolver import resolve_local_gguf
-    from core.inference.openai_auto_download import looks_like_quant
+    from core.inference.local_model_resolver import local_gguf_pinned_variant
 
-    base, sep, quant = model_id.rpartition(":")
-    # ":latest" names no quant, so the resolver would answer it with the repo's default one.
-    if not sep or not base or not looks_like_quant(quant):
+    base, sep, _ = model_id.rpartition(":")
+    if not sep or not base:
         return None
     listed = next(
         (m for m in objects if isinstance(m.get("id"), str) and m["id"].lower() == base.lower()),
@@ -34969,18 +34984,20 @@ def _pinned_quant_object(model_id: str, objects: list[dict]) -> Optional[dict]:
     )
     if listed is None:
         return None
-    resolved = resolve_local_gguf(f"{listed['id']}:{quant}")
-    variant = resolved[1] if resolved else None
+    variant = local_gguf_pinned_variant(f"{listed['id']}:{model_id[len(base) + 1:]}")
     if not variant:
         return None
     pinned_id = f"{listed['id']}:{variant}"
-    # A cold index leaves "quant" off the loaded row until it can prove the pin.
-    resident = listed.get("quant") or getattr(get_llama_cpp_backend(), "hf_variant", None)
-    if listed.get("loaded") and str(resident or "").lower() == variant.lower():
-        return {**listed, "id": pinned_id, "quant": variant}
+    if listed.get("loaded"):
+        # A cold index leaves "quant" off the loaded row until it can prove the pin.
+        resident = listed.get("quant") or _resident_gguf_quants().get(listed["id"].lower())
+        if str(resident or "").lower() == variant.lower():
+            return {**listed, "id": pinned_id, "quant": variant}
     # The listed row's context fields describe the resident quant, not this one.
     shared = {
-        k: listed[k] for k in ("object", "created", "owned_by", "display_name") if k in listed
+        k: listed[k]
+        for k in ("object", "created", "owned_by", "display_name", "task")
+        if k in listed
     }
     return {"id": pinned_id, **shared, "loaded": False, "quant": variant}
 
