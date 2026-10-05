@@ -53,7 +53,6 @@ _PACKED_INFO_CACHE: dict = {}
 # Cache per device for build_sdpa_packed_attention_mask to avoid repeated D2H sync across layers
 _SDPA_MASK_CACHE: dict = {}
 
-# Cache per device for packed_segment_lengths, same reason
 _SEGMENT_LENGTHS_CACHE: dict = {}
 
 # Cache per device for build_xformers_block_causal_mask to avoid repeated D2H sync across layers

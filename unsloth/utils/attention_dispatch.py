@@ -78,9 +78,7 @@ _XFORMERS_FP32_UNSUPPORTED = (
 )
 SDPA_HAS_GQA = "enable_gqa" in (scaled_dot_product_attention.__doc__ or "")
 
-# Packed rows on SDPA run one call per segment instead of one call under a dense (T, T)
-# block-diagonal mask: a mask rules out the flash kernel, and with enable_gqa only the math kernel
-# is left, which holds every (T, T) score (1 GiB per layer at 4096 tokens). 0 = the dense mask path.
+# Packed SDPA runs per segment: a dense (T, T) mask + enable_gqa leaves only the math kernel.
 _SDPA_PACKED_SEGMENTS = os.environ.get("UNSLOTH_SDPA_PACKED_SEGMENTS", "1").lower() not in (
     "0",
     "false",
@@ -90,9 +88,7 @@ _SDPA_PACKED_SEGMENTS = os.environ.get("UNSLOTH_SDPA_PACKED_SEGMENTS", "1").lowe
 
 
 def _sdpa_flash_takes_gqa(Q: Tensor) -> bool:
-    # enable_gqa is accepted by the flash and math kernels only, so elsewhere (pre-sm80, fp32, wide
-    # heads, ROCm whose capability numbering is not CUDA's) K/V are expanded instead and the
-    # memory-efficient kernel stays available.
+    # Only flash / math take enable_gqa: expand K/V elsewhere (pre-sm80, fp32, wide heads, ROCm).
     return (
         SDPA_HAS_GQA
         and Q.is_cuda
@@ -127,7 +123,6 @@ def _sdpa_packed_segments(
     lengths = [length for length in lengths if length > 0]
     while i < len(lengths):
         length = lengths[i]
-        # Consecutive equal-length segments run as one batched call.
         j = i
         while j < len(lengths) and lengths[j] == length:
             j += 1
