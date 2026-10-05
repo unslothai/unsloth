@@ -47,7 +47,7 @@ export function ModelLoadDescription({
     splitProgressLabel(progressLabel);
 
   return (
-    <div className={cn("relative flex min-h-12 w-full items-stretch gap-2", className)}>
+    <div className={cn("relative flex min-h-12 w-full items-stretch gap-3", className)}>
       <div className="flex h-full shrink-0 items-center self-center">
         <Spinner className="size-3.5 text-muted-foreground" />
       </div>
@@ -97,14 +97,14 @@ export function ModelLoadInlineStatus({
   const hasProgress = typeof progressPercent === "number";
 
   return (
-    <div className="flex min-w-[20rem] items-center gap-2.5 text-muted-foreground" title={title}>
+    <div className="flex min-w-[min(calc(20rem*var(--ui-space-scale,1)),100%)] max-sm:min-w-0 max-sm:flex-1 items-center gap-2.5 text-muted-foreground" title={title}>
       <div className="flex items-center gap-1.5 shrink-0">
         <Spinner className="size-3.5 shrink-0" />
         <span className="text-xs">{label}</span>
       </div>
       {hasProgress ? (
         <div className="flex min-w-0 flex-[1.35] items-center gap-2.5">
-          <div className="min-w-[7rem] flex-1">
+          <div className="min-w-[calc(7rem*var(--ui-space-scale,1))] max-sm:min-w-[calc(3rem*var(--ui-space-scale,1))] flex-1">
             <Progress value={clampProgress(progressPercent)} className="h-1 bg-[color-mix(in_oklab,var(--foreground)_calc(8%*var(--contrast-wash-gain,1)),transparent)]" />
           </div>
           <div

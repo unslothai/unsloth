@@ -57,13 +57,14 @@ export function addCodexReasoning(
   };
 }
 
-export function readCodexReasoning(
+function readReasoningLedger(
   metadata: unknown,
+  key: string,
 ): CodexReasoningLedger | undefined {
   if (!metadata || typeof metadata !== "object") return undefined;
   const custom = (metadata as { custom?: unknown }).custom;
   if (!custom || typeof custom !== "object") return undefined;
-  const value = (custom as Record<string, unknown>).openaiCodexReasoning;
+  const value = (custom as Record<string, unknown>)[key];
   if (Array.isArray(value)) {
     return value.length > 0 ? { byToolCall: {}, final: value } : undefined;
   }
@@ -82,6 +83,18 @@ export function readCodexReasoning(
   return Object.keys(byToolCall).length > 0 || final
     ? { byToolCall, ...(final ? { final } : {}) }
     : undefined;
+}
+
+export function readCodexReasoning(
+  metadata: unknown,
+): CodexReasoningLedger | undefined {
+  return readReasoningLedger(metadata, "openaiCodexReasoning");
+}
+
+export function readOpenAIResponsesReasoning(
+  metadata: unknown,
+): CodexReasoningLedger | undefined {
+  return readReasoningLedger(metadata, "openaiResponsesReasoning");
 }
 
 export function codexReasoningForToolCalls(

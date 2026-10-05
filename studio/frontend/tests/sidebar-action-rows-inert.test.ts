@@ -51,9 +51,21 @@ test("desktop branding clears the titlebar actions", async () => {
   );
 });
 
+test("custom titlebar branding centers on the chat header's model picker", async () => {
+  const header = APP_SIDEBAR.split("<SidebarHeader")[1].split("</SidebarHeader>")[0];
+  assert.match(
+    header,
+    /usesCustomTitlebar\s*\?\s*"shrink-0 p-0 pt-\[calc\(var\(--studio-content-top-inset,0px\)\+var\(--studio-chat-header-padding-top,11px\)\)\]"/,
+  );
+  assert.match(
+    header,
+    /usesCustomTitlebar && "h-\[var\(--studio-chat-control-height,34px\)\]"/,
+  );
+});
+
 test("desktop branding keeps an 11px gap above New chat", async () => {
   const source = APP_SIDEBAR;
-  assert.match(source, /usesDesktopTitlebar \? "pt-\[11px\]" : "pt-\[9px\]"/);
+  assert.match(source, /usesDesktopTitlebar \? "pt-\[11px\]" : "pt-\[7px\]"/);
 });
 
 test("footer profile sits 11px above the sidebar edge", async () => {
@@ -69,10 +81,11 @@ test("navigation rows align while the profile footer ignores the scroll rail", a
   // lose the rail's width, so New Chat adds it back and both end on one edge.
   // The profile footer is unrelated to that list and must keep its full width
   // when the scrollbar appears. Logical sides, since the rail moves under rtl.
+  // Both insets scale; only the measured rail stays fixed.
   const source = APP_SIDEBAR;
   assert.match(
     source,
-    /const rowPadding = usesDesktopTitlebar\s*\?\s*"ps-\[5px\] pe-\[calc\(var\(--sidebar-rail,0px\)\+5px\)\]"\s*:\s*"ps-1\.5 pe-\[calc\(var\(--sidebar-rail,0px\)\+6px\)\]"/,
+    /const rowPadding = usesDesktopTitlebar\s*\?\s*"ps-\[5px\] pe-\[calc\(var\(--sidebar-rail,0px\)\+5px\*var\(--ui-space-scale,1\)\)\]"\s*:\s*"ps-1\.5 pe-\[calc\(var\(--sidebar-rail,0px\)\+6px\*var\(--ui-space-scale,1\)\)\]"/,
   );
   assert.match(
     source,
@@ -80,9 +93,9 @@ test("navigation rows align while the profile footer ignores the scroll rail", a
   );
   // New Chat is the only outside row that aligns with the scroller's rail.
   assert.equal(source.match(/(?<!const )rowPadding[,}]/g)?.length, 1);
-  // Nav rows, pinned chats, Projects, Recents, and training runs sit inside the
-  // scroller; the footer is the sixth unrailed use outside it.
-  assert.equal(source.match(/unrailedRowPadding[,}]/g)?.length, 6);
+  // Nav rows, pinned chats, custom sections, Projects, Recents, and training runs sit
+  // inside the scroller; the footer is the seventh unrailed use outside it.
+  assert.equal(source.match(/unrailedRowPadding[,}]/g)?.length, 7);
 
   const footer = source
     .split("<SidebarFooter")[1]
@@ -122,10 +135,15 @@ test("the sidebar list measures its scroll rail", async () => {
   // appearing shrinks the content box.
   assert.match(
     source,
-    /const observer = new ResizeObserver\(\(\) => measureScrollRail\(el\)\);\s*observer\.observe\(el\);\s*railObserverRef\.current = observer;/,
+    /const observer = new ResizeObserver\(\(\) => \{\s*measureScrollRail\(el\);\s*syncFade\(el\);\s*\}\);\s*observer\.observe\(el\);/,
   );
-  // Writes a variable, never state: that pairing is what looped.
+  // Writes the DOM, never state: that pairing is what looped.
   assert.equal(/new ResizeObserver\([^)]*set[A-Z]/.test(source), false);
+  assert.match(source, /if \(fade\.dataset\.visible !== visible\) fade\.dataset\.visible = visible;/);
+  assert.equal(/setCanScrollDown/.test(source), false);
+  // The sections too, so the fade follows content that grows without rendering AppSidebar.
+  assert.match(source, /for \(const section of el\.children\) observer\.observe\(section\);/);
+  assert.match(source, /sections\.observe\(el, \{ childList: true \}\);/);
   // And only on a change, so it cannot re-trigger itself.
   assert.match(source, /if \(rail === railWidthRef\.current\) return;/);
   // The fade stops at the rail too: the thumb ends its travel in that band.
@@ -133,15 +151,18 @@ test("the sidebar list measures its scroll rail", async () => {
     source,
     /absolute start-0 end-\[var\(--sidebar-rail,0px\)\] bottom-full/,
   );
-  // Only the Windows auto reset may set a width; hiding the rail is what a
+  // Only the Windows-wide auto reset may set a width; hiding the rail is what a
   // width override caused before.
   const railWidthDecls = (
     INDEX.match(
       /\.sidebar-scroll-fade[^{]*\{[^}]*scrollbar-width:\s*[^;}]+/g,
     ) ?? []
   ).map((rule) => /scrollbar-width:\s*([^;}]+)/.exec(rule)?.[1].trim());
-  assert.deepEqual(railWidthDecls, ["auto"]);
-  assert.match(INDEX, /:root\.client-windows \.sidebar-scroll-fade,/);
+  assert.deepEqual(railWidthDecls, []);
+  assert.match(
+    INDEX,
+    /:root\.client-windows \*,\s*:root\.client-windows \*:hover \{\s*scrollbar-width: auto;/,
+  );
   assert.equal(
     /\.sidebar-scroll-fade::-webkit-scrollbar \{/.test(INDEX),
     false,
@@ -159,10 +180,8 @@ test("the sidebar list measures its scroll rail", async () => {
   );
 });
 
-test("Tauri chat Recents label keeps its 2px shift", async () => {
+test("Tauri chat Recents label takes the shared header inset, not a shift", async () => {
   const source = APP_SIDEBAR;
-  assert.match(
-    source,
-    /scrolled && "is-scrolled",\s*usesDesktopTitlebar && "translate-x-\[2px\]"/,
-  );
+  assert.match(source, /headerInset,\s*scrolled && "is-scrolled",\s*!chatOpen/);
+  assert.doesNotMatch(source, /translate-x-\[2px\]/);
 });

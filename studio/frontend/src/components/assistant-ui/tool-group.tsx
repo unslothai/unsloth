@@ -184,7 +184,8 @@ function ToolGroupTrigger({
         <HugeiconsIcon
           icon={Wrench01Icon}
           data-slot="tool-group-trigger-wrench"
-          className="size-4 shrink-0 text-muted-foreground transition-colors group-hover/trigger:text-foreground"
+          // Full foreground, like the glyph on the rows this group summarises.
+          className="size-4 shrink-0 text-foreground"
           strokeWidth={2}
         />
       )}

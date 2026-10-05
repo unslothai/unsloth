@@ -29,6 +29,7 @@ from core.training.account_jobs import (
     worker_alive,
 )
 from utils.account_context import account_thread
+from utils.gpu_memory_events import invalidates_gpu_memory as _invalidates_gpu_memory
 import contextlib
 import json
 import math
@@ -605,6 +606,7 @@ class DiffusionTrainingService:
             with self._lock:
                 self._gpu_admissions = max(0, self._gpu_admissions - 1)
 
+    @_invalidates_gpu_memory("diffusion training start")
     @owned_job()
     def start(self, config: dict) -> str:
         """Validate ``config``, spawn the trainer, and start pumping its events.
@@ -689,6 +691,7 @@ class DiffusionTrainingService:
             self._pump.start()
             return job_id
 
+    @_invalidates_gpu_memory("diffusion training stop")
     @job_control
     def stop(self, save: bool = True) -> bool:
         """Request a clean stop: the trainer finishes the current step, then either saves

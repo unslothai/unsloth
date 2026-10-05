@@ -37,9 +37,27 @@ on:
       # The Playwright test files themselves -- a PR that ONLY edits
       # the test must still trigger UI CI. Kept as a directory glob, which
       # test_stt_model_search_locator_contract.py asserts.
-      - 'tests/studio/**'
+      # The files under tests/ the jobs execute, not all of tests/studio (hundreds of
+      # guard tests and PowerShell units no step here runs). Every lane runs
+      # tests/studio/playwright_*.py scripts as plain python, and their only local
+      # imports are _playwright_robust.py and other playwright_* modules (log_budget
+      # comes from studio/backend/tests, listed above). The pytest step runs
+      # test_stt_model_search_locator_contract.py from the repo root, which loads
+      # tests/conftest.py, the tests package and tests/_shared.
+      - 'tests/studio/playwright_*.py'
+      - 'tests/studio/_playwright_robust.py'
+      - 'tests/studio/test_stt_model_search_locator_contract.py'
+      - 'tests/conftest.py'
+      - 'tests/__init__.py'
+      - 'tests/_shared/**'
       - '.github/scripts/run-studio-permission-browser.sh'
       - '.github/scripts/run-studio-indicator-browser.sh'
+      # Reached by the installer this workflow already triggers on, so a commit touching
+      # only one of these changes what the job runs while matching nothing else in the
+      # list. install.sh --local hands off to the checked-out studio/setup.sh
+      # (install.sh:7351), setup.sh runs nvidia_probe.py (setup.sh:266), and setup.ps1
+      # runs install_python_stack.py and install_llama_prebuilt.py (setup.ps1:8127, 8655).
+      - 'studio/nvidia_probe.py'
       - '.github/workflows/studio-ui-smoke.yml'
       # Every server boot in this workflow shells out to that script, so an edit
       # to it changes what this workflow actually runs.
@@ -61,6 +79,43 @@ on:
       - '.github/actions/uv-cache-save/action.yml'
   push:
     branches: [main]
+    paths:
+      - 'studio/backend/**'
+      - 'studio/frontend/**'
+      - 'studio/setup.sh'
+      - 'studio/install_*.py'
+      - 'studio/node_prebuilt_pins.json'
+      - 'studio/prebuilt_core.py'
+      - 'studio/install_manifest.py'
+      - 'unsloth_cli/**'
+      - 'install.sh'
+      - 'pyproject.toml'
+      # The files under tests/ the jobs execute, not all of tests/studio (hundreds of
+      # guard tests and PowerShell units no step here runs). Every lane runs
+      # tests/studio/playwright_*.py scripts as plain python, and their only local
+      # imports are _playwright_robust.py and other playwright_* modules (log_budget
+      # comes from studio/backend/tests, listed above). The pytest step runs
+      # test_stt_model_search_locator_contract.py from the repo root, which loads
+      # tests/conftest.py, the tests package and tests/_shared.
+      - 'tests/studio/playwright_*.py'
+      - 'tests/studio/_playwright_robust.py'
+      - 'tests/studio/test_stt_model_search_locator_contract.py'
+      - 'tests/conftest.py'
+      - 'tests/__init__.py'
+      - 'tests/_shared/**'
+      - '.github/scripts/run-studio-permission-browser.sh'
+      - '.github/scripts/run-studio-indicator-browser.sh'
+      - 'studio/nvidia_probe.py'
+      - '.github/workflows/studio-ui-smoke.yml'
+      - '.github/scripts/boot-studio-api-only.sh'
+      - '.github/scripts/wait-for-health.sh'
+      - '.github/scripts/hf-download-with-retry.sh'
+      - '.github/scripts/retry-with-apt-lock.sh'
+      - '.github/actions/install-unsloth-local/action.yml'
+      - '.github/actions/frontend-dist-restore/action.yml'
+      - '.github/actions/frontend-dist-save/action.yml'
+      - '.github/actions/uv-cache-restore/action.yml'
+      - '.github/actions/uv-cache-save/action.yml'
   workflow_dispatch:
 
 concurrency:
@@ -77,7 +132,7 @@ concurrency:
   # in 37 minutes cancelled three consecutive main runs of this workflow and none
   # completed. Detection survives on the tip, since the tree is cumulative;
   # per-commit attribution does not.
-  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: read

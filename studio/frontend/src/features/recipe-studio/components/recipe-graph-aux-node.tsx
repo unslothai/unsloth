@@ -138,7 +138,7 @@ function AuxNodeBase({
         </BaseNodeHeader>
         <BaseNodeContent className="gap-2 px-3 py-2">
           <Textarea
-            className="corner-squircle nodrag nowheel max-h-40 min-h-[88px] w-full resize-none overflow-y-auto text-xs"
+            className="corner-squircle nodrag nowheel max-h-40 min-h-[calc(88px*var(--ui-space-scale,1))] w-full resize-none overflow-y-auto text-xs"
             aria-invalid={hasInvalidRefs}
             value={value}
             disabled={executionLocked}

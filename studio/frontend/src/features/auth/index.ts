@@ -16,6 +16,7 @@ export {
   getPostAuthRoute,
   hasAuthToken,
   hasRefreshToken,
+  hasSettledAuthSession,
   mustChangePassword,
   setMustChangePassword,
   storeAuthTokens,

@@ -15,6 +15,7 @@
   --format-checkpoint: #f472b6;
   --format-adapter: #8b5cf6;
   --format-mlx: #f59e0b;
+  --format-npu: #06b6d4;
   --status-warning: #eab308;
   --status-danger: #ef4444;
   --status-success: #11b686;
@@ -30,6 +31,7 @@
   --format-checkpoint: #f472b6;
   --format-adapter: #a78bfa;
   --format-mlx: #fbbf24;
+  --format-npu: #22d3ee;
   --status-warning: #fbbf24;
   --status-danger: #ef4444;
   --status-success: #11b686;
@@ -41,6 +43,7 @@
   --color-format-checkpoint: var(--format-checkpoint);
   --color-format-adapter: var(--format-adapter);
   --color-format-mlx: var(--format-mlx);
+  --color-format-npu: var(--format-npu);
   --color-status-warning: var(--status-warning);
   --color-status-danger: var(--status-danger);
   --color-status-success: var(--status-success);
@@ -62,6 +65,22 @@
     --hub-readme-measure: 1400px;
   }
 
+  /* Wrap long tokens in readmes on small screens instead of clipping. */
+  @media (max-width: 1023px) {
+    .hub-readme-prose :is(p, li, td, th, code) {
+      overflow-wrap: break-word;
+    }
+  }
+
+  /* Wider column on 4K / ultrawide. */
+  @media (min-width: 2560px) {
+    .hub-page {
+      --hub-measure: clamp(1100px, 90%, 2200px);
+      --hub-measure-compact: clamp(860px, 90%, 1440px);
+      --hub-readme-measure: 1600px;
+    }
+  }
+
   /* Filled-control surface — Hub search, Hub filter triggers, picker
 	   search bars. Borderless soft fill matching the .hub-tab-toggle pills:
 	     - Resting: 5% bg, no border
@@ -79,8 +98,15 @@
     transition: background-color 160ms ease;
   }
 
+  /* [aria-expanded] as well as [data-state]: the option-menu triggers (the
+     picker's format and sort controls, the Hub's filters) are plain buttons
+     that mark themselves open with aria-expanded, so a data-state-only rule
+     left them at rest while their menu was showing. :active covers the press
+     itself on anything that opens nothing. */
   .field-soft:hover,
-  .field-soft[data-state="open"] {
+  .field-soft:active,
+  .field-soft[data-state="open"],
+  .field-soft[aria-expanded="true"] {
     background-color: color-mix(in srgb, var(--foreground) calc(8% * var(--contrast-wash-gain, 1)), transparent) !important;
   }
 
@@ -89,19 +115,28 @@
     outline: none;
   }
 
+  /* Rest sits below the hover tone; hover and focus take --accent, the one
+     hover colour the app uses. Focus must never fall back to the panel or
+     the field looks empty while typing.
+
+     Rest is the hover colour held back, not a separate wash: a translucent
+     --accent cannot reach an opaque one over any backdrop, so the two keep
+     their order at every contrast setting. Carrying its own foreground wash,
+     rest was scaled by the wash gain while the hover token only nudged, and
+     the pair met at the top of the slider. Matches the old resting tone. */
   .dark .field-soft {
-    background-color: color-mix(in srgb, var(--foreground) calc(5% * var(--contrast-wash-gain, 1)), transparent) !important;
+    background-color: color-mix(in srgb, var(--accent) 60%, transparent) !important;
   }
 
   .dark .field-soft:hover,
-  .dark .field-soft[data-state="open"] {
-    background-color: color-mix(in srgb, var(--foreground) calc(9% * var(--contrast-wash-gain, 1)), transparent) !important;
+  .dark .field-soft:active,
+  .dark .field-soft[data-state="open"],
+  .dark .field-soft[aria-expanded="true"] {
+    background-color: var(--accent) !important;
   }
 
   .dark .field-soft:focus-visible {
-    /* #1c1c1c, written as the wash its resting twin uses so focus keeps its
-       distance from rest at any contrast. */
-    background-color: color-mix(in srgb, var(--foreground) calc(1.73% * var(--contrast-wash-gain, 1)), var(--background)) !important;
+    background-color: var(--accent) !important;
   }
 
   /* The Hub search field is `type="search"` (so the browser won't offer saved
@@ -167,7 +202,7 @@
     pointer-events: none;
     position: absolute;
     z-index: 5;
-    width: 44px;
+    width: calc(44px * var(--ui-space-scale, 1));
     opacity: 0;
     transition: opacity 240ms ease;
   }
@@ -179,7 +214,7 @@
   .hub-page .hub-carousel-fade-left {
     /* -8px matches the scroller's -mx-2 bleed so the opaque edge sits on the
        clip edge and no card peeks out beside the fade. */
-    left: -8px;
+    left: calc(-8px * var(--ui-space-scale, 1));
     background: linear-gradient(
       to right,
       var(--background),
@@ -190,7 +225,7 @@
 
   .hub-page .hub-carousel-fade-right {
     /* Mirror of fade-left: offset by the -mx-2 bleed to reach the clip edge. */
-    right: -8px;
+    right: calc(-8px * var(--ui-space-scale, 1));
     background: linear-gradient(
       to left,
       var(--background),
@@ -331,8 +366,8 @@
   }
 
   html.dark .hub-page .hub-model-card:hover {
-    /* #202020 at the default, on the same curve as the resting fill above. */
-    background-color: color-mix(in srgb, var(--foreground) calc(3.46% * var(--contrast-wash-gain, 1)), var(--background));
+    /* #3a3a3a at the default: the one hover colour, as everywhere else. */
+    background-color: var(--accent);
     border-color: transparent;
   }
 
@@ -556,7 +591,7 @@
 
   html.dark .hub-page .hub-tag-soft:hover,
   html.dark .hub-page .hub-tag-meta:hover {
-    background-color: color-mix(in srgb, var(--foreground) calc(4% * var(--contrast-wash-gain, 1)), transparent);
+    background-color: var(--accent);
   }
 
   /* List rows share the cards' flat neutral surface: no border, no gradient,
@@ -593,7 +628,7 @@
   }
 
   html.dark .hub-page .hub-result-row:hover {
-    background-color: color-mix(in srgb, var(--foreground) calc(10% * var(--contrast-wash-gain, 1)), var(--background));
+    background-color: var(--accent);
     box-shadow: none;
   }
 
@@ -603,8 +638,13 @@
     background-color: color-mix(in srgb, var(--foreground) calc(5% * var(--contrast-wash-gain, 1)), var(--card));
   }
 
+  /* Derived from the hover tone rather than washed over the page, so the
+     selected row cannot sink below the row you are merely pointing at. As a
+     wash it was 11% against a hover that had moved up to the --accent token,
+     which put a clicked row three levels DARKER than a hovered one, and the
+     gap widened as the contrast slider came down. */
   html.dark .hub-page .hub-result-row[data-selected="true"] {
-    background-color: color-mix(in srgb, var(--foreground) calc(11% * var(--contrast-wash-gain, 1)), var(--background));
+    background-color: color-mix(in srgb, var(--foreground) 6%, var(--accent));
     box-shadow: none;
   }
 
@@ -621,7 +661,7 @@
   }
 
   html.dark .hub-page .hub-recent-item:hover {
-    background-color: color-mix(in srgb, var(--foreground) calc(8% * var(--contrast-wash-gain, 1)), transparent);
+    background-color: var(--accent);
   }
 
   .hub-page .hub-recent-clear:hover,
@@ -655,15 +695,22 @@
     color: var(--foreground);
   }
 
+  /* --accent, the app's one hover tone, carrying a little --foreground: the
+     menu now rests at the tone --accent alone would sit 8 levels above, which
+     is not enough to pick a row out. Same step the track keeps from the pill. */
   html.dark .hub-menu-instant [data-slot="select-item"]:focus,
   html.dark .hub-menu-instant [data-slot="select-item"][data-highlighted],
   html.dark .hub-menu-instant [role="option"][data-highlighted] {
-    background-color: color-mix(in srgb, var(--foreground) calc(8% * var(--contrast-wash-gain, 1)), transparent);
+    background-color: color-mix(in srgb, var(--foreground) 6%, var(--accent));
     color: var(--foreground);
   }
 
+  /* The trigger's resting tone, not the panel's, so an open menu reads as the
+     control it came from instead of a hole in the panel. Opaque rather than
+     .field-soft's translucent rest, because a floating menu has no fixed
+     backdrop and would land on a different colour per surface. */
   html.dark .hub-menu-instant {
-    background-color: color-mix(in oklab, #2e2f31, var(--contrast-target, transparent) var(--contrast-surface-mix, 0%)) !important;
+    background-color: color-mix(in srgb, var(--accent) 60%, var(--popover)) !important;
   }
 
   .hub-menu-instant *,
@@ -687,10 +734,37 @@
     box-shadow: none;
   }
 
+  /* 6.5%, in line with .hub-chip. At 4.5% the track sat 9 levels off the page
+     and the unselected half of the control had nothing to stand on. Set as a
+     variable so the nearest surface picks the track (see below). */
+  html.dark {
+    --hub-tab-track: color-mix(in srgb, var(--foreground) calc(6.5% * var(--contrast-wash-gain, 1)), transparent);
+  }
+
   html.dark .hub-tab-toggle {
-    background-color: color-mix(in srgb, var(--foreground) calc(4.5% * var(--contrast-wash-gain, 1)), transparent);
+    background-color: var(--hub-tab-track);
     border: 0;
     box-shadow: none;
+  }
+
+  /* The track is a wash on whatever sits behind it, so how far it lands from
+     the selected pill depends on that surface: 21 levels below --accent on the
+     page, but only 7 on an elevated panel, where the two halves of the control
+     stop reading apart. Panels therefore sink the track toward the page
+     instead of lifting it off the panel, stopping under it at #232323. No
+     wash gain here: that guard keeps lit washes from fading out, and this one
+     darkens. */
+  html.dark :is(.menu-soft-surface, .menu-soft-surface-up, [data-slot="dialog-content"]),
+  html.dark :is(.menu-soft-surface, .menu-soft-surface-up, [data-slot="dialog-content"]) .bg-background[class*="dark:bg-"] {
+    --hub-tab-track: color-mix(in srgb, var(--background) 27%, transparent);
+  }
+
+  /* A page-coloured pane inside a panel (the Settings content pane) is the
+     page again. Sunk there, the track matched the pane and vanished. A card
+     that repaints its bg-background in dark is raised again, so it stays
+     sunk (above). */
+  html.dark :is(.menu-soft-surface, .menu-soft-surface-up, [data-slot="dialog-content"]) .bg-background:not([class*="dark:bg-"]) {
+    --hub-tab-track: color-mix(in srgb, var(--foreground) calc(6.5% * var(--contrast-wash-gain, 1)), transparent);
   }
 
   html:not(.dark) .hub-tab-toggle-pill {
@@ -704,14 +778,35 @@
     background-color: color-mix(in srgb, var(--foreground) calc(5% * var(--contrast-wash-gain, 1)), var(--background));
   }
 
-  html.dark .hub-tab-toggle-pill {
-    background-color: color-mix(in srgb, var(--foreground) calc(10% * var(--contrast-wash-gain, 1)), transparent);
+  /* A tab is a real button, so unlike the sliding indicator it can hover. In
+     light the pill is already the lightest thing on the panel, so it stays
+     put rather than moving the only direction left, which is down. */
+  html:not(.dark) .hub-tab-toggle-pill[role="tab"]:hover {
+    background-color: var(--background);
+  }
+
+  /* The selected segment takes --accent, the app's one selection colour, so it
+     reads like every other lit row. As its own wash it was scaled by the wash
+     gain, which falls much further than the token does: at the bottom of the
+     contrast range the selected tab sank to barely above its own track. Hover
+     is the same colour, so a selected segment stays put under the pointer. */
+  html.dark .hub-tab-toggle-pill,
+  html.dark .hub-tab-toggle-pill:hover {
+    background-color: var(--accent);
     border: 0;
     box-shadow: none;
   }
 
-  html.dark .hub-tab-toggle-pill:hover {
-    background-color: color-mix(in srgb, var(--foreground) calc(18% * var(--contrast-wash-gain, 1)), transparent);
+  /* Standalone buttons borrow the pill look without being a segment, so they
+     want back the hover the rule above pins away. Mixed into --accent rather
+     than washed over the element, which would paint on whatever sits behind
+     the pill and composite below it. Press returns to --accent. */
+  html.dark .hub-tab-toggle-pill.hub-pill-action:hover {
+    background-color: color-mix(in srgb, var(--foreground) 8%, var(--accent));
+  }
+
+  html.dark .hub-tab-toggle-pill.hub-pill-action:active {
+    background-color: var(--accent);
   }
 
   html:not(.dark) .hub-page .catalog-row {
@@ -737,11 +832,14 @@
   }
 
   html.dark .hub-page .catalog-row:hover {
-    background-color: color-mix(in srgb, var(--foreground) calc(3.5% * var(--contrast-wash-gain, 1)), transparent);
+    background-color: var(--accent);
   }
 
+  /* Above the hover tone it is derived from, for the reason the result rows
+     carry: a 7% wash on the page lands below --accent, so selecting a row you
+     were hovering dimmed it. */
   html.dark .hub-page .catalog-row[data-selected="true"] {
-    background-color: color-mix(in srgb, var(--foreground) calc(7% * var(--contrast-wash-gain, 1)), transparent);
+    background-color: color-mix(in srgb, var(--foreground) 6%, var(--accent));
   }
 }
 
@@ -767,8 +865,10 @@
     border-radius: 9999px;
   }
 
+  /* 6%, landing on --card. At 3.5% the quant row it holds was 7 levels off the
+     page and read as loose text rather than a control. */
   .dark .hub-download-card {
-    background-color: color-mix(in srgb, var(--foreground) calc(3.5% * var(--contrast-wash-gain, 1)), transparent);
+    background-color: color-mix(in srgb, var(--foreground) calc(6% * var(--contrast-wash-gain, 1)), transparent);
     border: 1px solid color-mix(in srgb, var(--foreground) calc(5.5% * var(--contrast-edge-gain, 1)), transparent);
     box-shadow: none;
   }
@@ -788,8 +888,8 @@
   .hub-download-fab {
     position: relative;
     display: inline-flex;
-    width: 2.75rem;
-    height: 2.75rem;
+    width: calc(2.75rem * var(--ui-space-scale, 1));
+    height: calc(2.75rem * var(--ui-space-scale, 1));
     cursor: pointer;
     align-items: center;
     justify-content: center;
@@ -822,9 +922,9 @@
     top: -3px;
     right: -3px;
     display: inline-flex;
-    width: 1.125rem;
-    min-width: 1.125rem;
-    height: 1.125rem;
+    width: calc(1.125rem * var(--ui-space-scale, 1));
+    min-width: calc(1.125rem * var(--ui-space-scale, 1));
+    height: calc(1.125rem * var(--ui-space-scale, 1));
     align-items: center;
     justify-content: center;
     border-radius: 9999px;
@@ -1097,7 +1197,7 @@
 	   @apply so the cascade is explicit and predictable. */
   .hub-action-btn {
     display: inline-flex;
-    height: 2.25rem;
+    height: calc(2.25rem * var(--ui-space-scale, 1));
     cursor: pointer;
     align-items: center;
     justify-content: center;
@@ -1120,25 +1220,24 @@
   }
 
   .dark .hub-action-btn:hover:not(:disabled) {
-    background-color: color-mix(in srgb, var(--foreground) calc(5% * var(--contrast-wash-gain, 1)), transparent);
+    background-color: var(--accent);
   }
 
   .hub-action-btn:disabled {
     cursor: not-allowed;
   }
 
-  /* Every glyph inside a hub action button — explicit icon, spinner, or
-	   embedded SVG — locks to 16px so swapping icons or replacing the
-	   spinner can't drift the layout. */
+  /* Every glyph in a hub action button (icon, spinner or embedded SVG) locks
+	   to one scaled size so swapping icons can't drift the layout. */
   .hub-action-btn svg {
-    width: 1rem;
-    height: 1rem;
+    width: calc(1rem * var(--ui-space-scale, 1));
+    height: calc(1rem * var(--ui-space-scale, 1));
     flex-shrink: 0;
   }
 
   .hub-run-action-btn {
     display: inline-flex;
-    height: 2.25rem;
+    height: calc(2.25rem * var(--ui-space-scale, 1));
     cursor: pointer;
     align-items: center;
     justify-content: center;
@@ -1179,8 +1278,8 @@
   }
 
   .hub-run-action-btn svg {
-    width: 0.9rem;
-    height: 0.9rem;
+    width: calc(0.9rem * var(--ui-space-scale, 1));
+    height: calc(0.9rem * var(--ui-space-scale, 1));
     flex-shrink: 0;
   }
 
@@ -1190,8 +1289,8 @@
   .hub-cta-indicator {
     position: relative;
     display: inline-flex;
-    width: 1rem;
-    height: 1rem;
+    width: calc(1rem * var(--ui-space-scale, 1));
+    height: calc(1rem * var(--ui-space-scale, 1));
     flex-shrink: 0;
     align-items: center;
     justify-content: center;
@@ -1204,11 +1303,11 @@
 	   `.group/dl` ancestor for the hover scope (the Hub download row). */
   .hub-row-action {
     position: absolute;
-    right: 0.25rem;
+    right: calc(0.25rem * var(--ui-space-scale, 1));
     top: 50%;
     display: inline-flex;
-    width: 1.75rem;
-    height: 1.75rem;
+    width: calc(1.75rem * var(--ui-space-scale, 1));
+    height: calc(1.75rem * var(--ui-space-scale, 1));
     transform: translateY(-50%);
     align-items: center;
     justify-content: center;
@@ -1233,8 +1332,8 @@
   }
 
   .hub-row-action svg {
-    width: 1rem;
-    height: 1rem;
+    width: calc(1rem * var(--ui-space-scale, 1));
+    height: calc(1rem * var(--ui-space-scale, 1));
     flex-shrink: 0;
   }
 }
@@ -1257,7 +1356,7 @@
     flex-shrink: 0;
     align-items: center;
     gap: calc(0.4rem * var(--ui-space-scale, 1));
-    height: 2rem;
+    height: calc(2rem * var(--ui-space-scale, 1));
     padding-inline: calc(0.7rem * var(--ui-space-scale, 1));
     border-radius: 9999px;
     border: 1px solid color-mix(in srgb, var(--foreground) calc(8% * var(--contrast-edge-gain, 1)), transparent);
@@ -1268,8 +1367,9 @@
     white-space: nowrap;
   }
 
+  /* The toolbar pills read as one family with the chips below them. */
   html.dark .hub-page .hub-stat-pill {
-    background-color: color-mix(in srgb, var(--foreground) calc(4% * var(--contrast-wash-gain, 1)), transparent);
+    background-color: color-mix(in srgb, var(--foreground) calc(6.5% * var(--contrast-wash-gain, 1)), transparent);
   }
 
   .hub-page .hub-stat-pill-value {
@@ -1392,7 +1492,7 @@
   }
 
   html.dark .hub-page .hub-hero {
-    --hub-hero-fill: #1c1c1c;
+    --hub-hero-fill: var(--card);
     --hub-card-border-accent: var(--foreground);
     --hub-card-edge-mix: 2.8%;
     --hub-card-inner-accent: var(--foreground);
