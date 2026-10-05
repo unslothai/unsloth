@@ -68,11 +68,23 @@ def test_dense_gemma4_is_refused_at_the_gate():
     assert not any("is_vlm_config" in test for test in parents)
     only_moe = {"VLLM_MOE_ONLY_VLM": _module_constant("VLLM_MOE_ONLY_VLM"), "fast_inference": True}
     assert _evaluate(gate, model_types = ["gemma4"], auto_config = GEMMA4_DENSE, **only_moe)
-    assert _evaluate(gate, model_types = ["gemma4_text", "gemma4"], auto_config = GEMMA4_DENSE.text_config, **only_moe)
+    assert _evaluate(
+        gate,
+        model_types = ["gemma4_text", "gemma4"],
+        auto_config = GEMMA4_DENSE.text_config,
+        **only_moe,
+    )
     assert not _evaluate(gate, model_types = ["gemma4"], auto_config = GEMMA4_MOE, **only_moe)
-    assert not _evaluate(gate, model_types = ["gemma4_text"], auto_config = GEMMA4_MOE.text_config, **only_moe)
+    assert not _evaluate(
+        gate, model_types = ["gemma4_text"], auto_config = GEMMA4_MOE.text_config, **only_moe
+    )
     assert not _evaluate(gate, model_types = ["qwen3_5"], auto_config = QWEN3_5_DENSE, **only_moe)
-    assert not _evaluate(gate, **{**only_moe, "fast_inference": False}, model_types = ["gemma4"], auto_config = GEMMA4_DENSE)
+    assert not _evaluate(
+        gate,
+        **{**only_moe, "fast_inference": False},
+        model_types = ["gemma4"],
+        auto_config = GEMMA4_DENSE,
+    )
 
 
 def test_the_4bit_refusal_uses_the_same_moe_test():
@@ -162,19 +174,34 @@ def test_bnb_moe_loads_are_refused_without_load_in_4bit():
     def quant_type(method):
         return lambda config: method
 
-    def refused(load_in_4bit, model_name, method, config = GEMMA4_MOE, model_types = ("gemma4",), load_in_8bit = False):
-        return bool(_evaluate(
-            gate, load_in_4bit = load_in_4bit, load_in_8bit = load_in_8bit, model_name = model_name,
-            get_quant_type = quant_type(method),
-            model_config = config, model_types = list(model_types),
-        ))
+    def refused(
+        load_in_4bit,
+        model_name,
+        method,
+        config = GEMMA4_MOE,
+        model_types = ("gemma4",),
+        load_in_8bit = False,
+    ):
+        return bool(
+            _evaluate(
+                gate,
+                load_in_4bit = load_in_4bit,
+                load_in_8bit = load_in_8bit,
+                model_name = model_name,
+                get_quant_type = quant_type(method),
+                model_config = config,
+                model_types = list(model_types),
+            )
+        )
 
     assert refused(True, "google/gemma-4-26B-A4B-it", None)
     assert refused(False, "unsloth/gemma-4-26B-A4B-it-bnb-4bit", None)
     assert refused(False, "someone/gemma-4-26b-moe-4bit", "bitsandbytes")
     assert refused(False, "Qwen/Qwen3.6-35B-A3B", "bitsandbytes", QWEN3_5_MOE, ("qwen3_5_moe",))
     # load_vllm has no 8-bit mode, so the experts would silently load in 16-bit.
-    assert refused(False, "Qwen/Qwen3.6-35B-A3B", None, QWEN3_5_MOE, ("qwen3_5_moe",), load_in_8bit = True)
+    assert refused(
+        False, "Qwen/Qwen3.6-35B-A3B", None, QWEN3_5_MOE, ("qwen3_5_moe",), load_in_8bit = True
+    )
     assert not refused(False, "google/gemma-4-26B-A4B-it", None)
     assert not refused(False, "Qwen/Qwen3.6-35B-A3B-FP8", "fp8", QWEN3_5_MOE, ("qwen3_5_moe",))
     assert not refused(False, "unsloth/gemma-4-E2B-it-bnb-4bit", "bitsandbytes", GEMMA4_DENSE)
