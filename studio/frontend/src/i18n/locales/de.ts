@@ -2924,7 +2924,7 @@ export const de = {
       offloadPanelVram: "VRAM",
       offloadPanelDepth: "Prefetch-Tiefe",
       offloadPanelPinned: "gepinnt",
-      offloadPanelSweepNote: "Das wandernde Fenster spielt den letzten Schritt in gemessener Geschwindigkeit ab.",
+      offloadPanelSweepNote: "Das wandernde Fenster zeigt, in welcher Reihenfolge Schichten geholt werden, verlangsamt, damit man es sieht; die Zahlen sind am letzten Schritt gemessen.",
       gradCheckpoint: "Grad-Checkpoint",
       gradCheckpointTooltip:
         "Rechenaufwand gegen Speicher tauschen, indem Aktivierungen neu berechnet werden.",

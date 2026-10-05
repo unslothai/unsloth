@@ -126,3 +126,31 @@ def test_snapshot_keys_layers_as_strings(monkeypatch):
     )
     snap = _trainer(model = SimpleNamespace(_unsloth_block_swap = swapper))._offload_snapshot()
     assert snap["state"] == {"14": "host", "15": "gpu"} and snap["prefetch_depth"] == 2
+
+
+def test_offload_route_reports_inactive_until_a_step_carries_stats(monkeypatch):
+    import asyncio
+    from routes import training as route
+
+    progress = SimpleNamespace(offload = None)
+    monkeypatch.setattr(route, "get_training_backend", lambda: SimpleNamespace(training_progress = progress))
+    assert asyncio.run(route.get_offload_state(current_subject = "u")) == {"active": False}
+    progress.offload = {"swapped": [3], "prefetch_depth": 2}
+    assert asyncio.run(route.get_offload_state(current_subject = "u")) == {
+        "active": True,
+        "swapped": [3],
+        "prefetch_depth": 2,
+    }
+
+
+def test_progress_events_keep_the_last_offload_snapshot():
+    import inspect
+    from core.training import training, worker
+
+    assert '"offload": getattr(progress, "offload", None)' in inspect.getsource(
+        worker._create_trainer_progress_callback
+    )
+    # A step without stats (eval, status) must not blank the panel.
+    assert 'offload = event.get("offload") or self.training_progress.offload' in inspect.getsource(
+        training
+    )

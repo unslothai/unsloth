@@ -2785,7 +2785,7 @@ export const zhCN = {
       offloadPanelVram: "显存",
       offloadPanelDepth: "预取深度",
       offloadPanelPinned: "已固定",
-      offloadPanelSweepNote: "移动窗口按实测速度重放上一步。",
+      offloadPanelSweepNote: "移动窗口放慢显示各层的取入顺序；数字是上一步的实测值。",
       gradCheckpoint: "梯度检查点",
       gradCheckpointTooltip: "通过重算激活以时间换 VRAM。",
       none: "无",

@@ -2890,7 +2890,7 @@ export const en = {
       offloadPanelVram: "VRAM",
       offloadPanelDepth: "prefetch depth",
       offloadPanelPinned: "pinned",
-      offloadPanelSweepNote: "The moving window replays the last step at its measured speed.",
+      offloadPanelSweepNote: "The moving window shows the order layers are fetched in, slowed down to be visible; the numbers are measured on the last step.",
       gradCheckpoint: "Grad Checkpoint",
       gradCheckpointTooltip:
         "Trade compute for memory by recomputing activations.",

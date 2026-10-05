@@ -2873,7 +2873,7 @@ export const hi = {
       offloadPanelVram: "VRAM",
       offloadPanelDepth: "प्रीफ़ेच गहराई",
       offloadPanelPinned: "पिन की गई",
-      offloadPanelSweepNote: "चलती खिड़की पिछले स्टेप को उसकी मापी गई गति से दोहराती है।",
+      offloadPanelSweepNote: "चलती खिड़की दिखाती है कि परतें किस क्रम में लाई जाती हैं, दिखने लायक धीमा करके; संख्याएँ पिछले स्टेप पर मापी गई हैं।",
       gradCheckpoint: "ग्रेडिएंट चेकपॉइंट",
       gradCheckpointTooltip:
         "एक्टिवेशन की दोबारा गणना करके अतिरिक्त कंप्यूट के बदले मेमोरी बचाएँ।",

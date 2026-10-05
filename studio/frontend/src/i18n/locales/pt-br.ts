@@ -2890,7 +2890,7 @@ export const ptBR = {
       offloadPanelVram: "VRAM",
       offloadPanelDepth: "profundidade de pré-busca",
       offloadPanelPinned: "fixada",
-      offloadPanelSweepNote: "A janela móvel repete o último passo na velocidade medida.",
+      offloadPanelSweepNote: "A janela móvel mostra a ordem em que as camadas são buscadas, desacelerada para ficar visível; os números são medidos no último passo.",
       gradCheckpoint: "Checkpoint de gradiente",
       gradCheckpointTooltip:
         "Reduz o uso de memória ao recalcular as ativações, em troca de maior custo computacional.",

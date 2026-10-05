@@ -2926,7 +2926,7 @@ export const it = {
       offloadPanelVram: "VRAM",
       offloadPanelDepth: "profondità di prefetch",
       offloadPanelPinned: "bloccata",
-      offloadPanelSweepNote: "La finestra mobile ripete l'ultimo passo alla velocità misurata.",
+      offloadPanelSweepNote: "La finestra mobile mostra l'ordine in cui i livelli vengono caricati, rallentato per essere visibile; i numeri sono misurati sull'ultimo passo.",
       gradCheckpoint: "Checkpoint del gradiente",
       gradCheckpointTooltip:
         "Riduce l'uso della memoria ricalcolando le attivazioni, al costo di più calcoli.",

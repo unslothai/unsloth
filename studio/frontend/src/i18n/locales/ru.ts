@@ -2890,7 +2890,7 @@ export const ru = {
       offloadPanelVram: "Видеопамять",
       offloadPanelDepth: "глубина предзагрузки",
       offloadPanelPinned: "закреплено",
-      offloadPanelSweepNote: "Движущееся окно повторяет последний шаг с измеренной скоростью.",
+      offloadPanelSweepNote: "Движущееся окно показывает порядок загрузки слоёв, замедленно, чтобы его было видно; числа измерены на последнем шаге.",
       gradCheckpoint: "Чекпоинт градиента",
       gradCheckpointTooltip:
         "Обменять вычисления на память, пересчитывая активации.",

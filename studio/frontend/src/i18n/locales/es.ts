@@ -2917,7 +2917,7 @@ export const es = {
       offloadPanelVram: "VRAM",
       offloadPanelDepth: "profundidad de precarga",
       offloadPanelPinned: "fijada",
-      offloadPanelSweepNote: "La ventana móvil repite el último paso a su velocidad medida.",
+      offloadPanelSweepNote: "La ventana móvil muestra el orden en que se traen las capas, ralentizado para que se vea; los números se miden en el último paso.",
       gradCheckpoint: "Checkpoint de gradiente",
       gradCheckpointTooltip:
         "Intercambia cómputo por memoria recalculando las activaciones.",

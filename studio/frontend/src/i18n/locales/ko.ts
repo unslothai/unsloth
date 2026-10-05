@@ -2860,7 +2860,7 @@ export const ko = {
       offloadPanelVram: "VRAM",
       offloadPanelDepth: "프리페치 깊이",
       offloadPanelPinned: "고정됨",
-      offloadPanelSweepNote: "움직이는 창은 마지막 스텝을 측정된 속도로 재생합니다.",
+      offloadPanelSweepNote: "움직이는 창은 레이어를 가져오는 순서를 보이도록 느리게 보여 줍니다. 숫자는 마지막 스텝에서 측정한 값입니다.",
       gradCheckpoint: "그래디언트 체크포인팅",
       gradCheckpointTooltip:
         "활성화를 재계산해 연산량을 늘리는 대신 메모리 사용량을 줄입니다.",

@@ -2818,7 +2818,7 @@ export const ja = {
       offloadPanelVram: "VRAM",
       offloadPanelDepth: "プリフェッチ深度",
       offloadPanelPinned: "ピン留め",
-      offloadPanelSweepNote: "移動するウィンドウは直前のステップを実測速度で再生します。",
+      offloadPanelSweepNote: "移動するウィンドウは層を取り込む順序を、見えるように遅くして示します。数値は直前のステップの実測値です。",
       gradCheckpoint: "勾配チェックポイント",
       gradCheckpointTooltip: "アクティベーションを再計算することで、計算量と引き換えにメモリを節約します。",
       none: "なし",

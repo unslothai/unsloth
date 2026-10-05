@@ -2866,7 +2866,7 @@ export const ar = {
       offloadPanelVram: "ذاكرة الفيديو",
       offloadPanelDepth: "عمق الجلب المسبق",
       offloadPanelPinned: "مثبّتة",
-      offloadPanelSweepNote: "النافذة المتحركة تعيد آخر خطوة بسرعتها المقاسة.",
+      offloadPanelSweepNote: "تُظهر النافذة المتحركة ترتيب جلب الطبقات بعد إبطائها لتكون مرئية؛ أما الأرقام فمقاسة في آخر خطوة.",
       gradCheckpoint: "نقطة تحقق التدرّج",
       gradCheckpointTooltip:
         "مقايضة الحوسبة بالذاكرة عبر إعادة حساب التنشيطات.",
