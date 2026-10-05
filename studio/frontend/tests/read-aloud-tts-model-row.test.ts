@@ -5,10 +5,11 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { readSrc } from "./helpers/kit.ts";
+import { readAudioWorkspaceSource } from "./helpers/audio-workspace.ts";
 
 const source = readSrc("features/settings/tabs/voice-tab.tsx");
 const en = readSrc("i18n/locales/en.ts");
-const audioSource = readSrc("features/audio/audio-page.tsx");
+const audioSource = readAudioWorkspaceSource();
 
 test("the studio TTS row offers the Audio page it tells the user to use", () => {
   // Settings is a modal, so it must close or Audio opens behind it.
@@ -26,15 +27,16 @@ test("the row lands on the TTS selector, not the mode Audio was left in", () => 
     source,
     /to: "\/audio",\s*search: \{ task: "text-to-speech" \},/,
   );
-  // Audio ignored a task without a model, so the intent needs handling at the other end.
+  // Audio ignored a task without a model, so the intent needs handling at the other end:
+  // the task names the page, through the same busy gate as ?workflow=.
   assert.match(
     audioSource,
-    /const task = routeSearch\.task;\s*if \(!task\) return;\s*const intended =\s*task === "automatic-speech-recognition" \? "transcribe" : "speak";/,
+    /const routedWorkflow = audioRouteIntent\(routeSearch\);\s*if \(routedWorkflow === null\) return;/,
   );
   // A refused switch keeps the parameter, so the retry rides the effect's busy dep.
   assert.match(
     audioSource,
-    /if \(intended !== mode && !transitionMode\(intended\)\) return;\s*void navigateSelf\(\{ to: "\/audio", search: \{\}, replace: true \}\);/,
+    /if \(!transitionWorkflow\(routedWorkflow\)\) return;\s*void navigateSelf\(\{ to: "\/audio", search: \{\}, replace: true \}\);/,
   );
 });
 

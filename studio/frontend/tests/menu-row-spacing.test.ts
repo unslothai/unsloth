@@ -115,3 +115,25 @@ test("menu surfaces keep whole-pixel padding, margin and width, so the hover pil
   );
   assert.match(readSrc("components/app-sidebar.tsx"), /app-user-menu sidebar-menu[^"]*w-\[round\(calc\(16rem\*var\(--ui-space-scale,1\)\),1px\)\]/);
 });
+
+test("a surface is snapped once, however often its ref callback runs again", async () => {
+  const { snapRowInsets } = await import("../src/lib/snap-padding.ts");
+  const computed: Record<string, string> = {
+    paddingLeft: "7.466px",
+    paddingRight: "7.466px",
+    marginLeft: "0px",
+    marginRight: "0px",
+  };
+  const element = { style: {} as Record<string, string>, offsetWidth: 0 };
+  const saved = { window: globalThis.window, getComputedStyle: globalThis.getComputedStyle };
+  Object.assign(globalThis, { window: {}, getComputedStyle: () => computed });
+  try {
+    snapRowInsets(element as unknown as HTMLElement);
+    computed.paddingLeft = "10.333px";
+    computed.paddingRight = "9.5px";
+    snapRowInsets(element as unknown as HTMLElement);
+  } finally {
+    Object.assign(globalThis, saved);
+  }
+  assert.deepEqual(element.style, { paddingLeft: "7px", paddingRight: "7px" });
+});

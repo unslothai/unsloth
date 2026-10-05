@@ -5,6 +5,7 @@
 
 from core.training.account_jobs import (
     account_event_stream,
+    account_path,
     job_busy,
     job_is_foreign,
     require_job_owner,
@@ -49,6 +50,8 @@ from models import (
     ExportBaseModelRequest,
     ExportGGUFRequest,
     ExportLoRAAdapterRequest,
+    ConvertQ4NXRequest,
+    LlmCompressorExportProbeResponse,
 )
 
 router = APIRouter()
@@ -382,6 +385,7 @@ async def export_merged_model(
             ),
             private = request.private,
             compressed_method = request.compressed_method,
+            install_missing_dependencies = request.install_missing_dependencies,
         )
 
         if not success:
@@ -404,6 +408,15 @@ async def export_merged_model(
             status_code = 500,
             detail = "Failed to export merged model",
         )
+
+
+@router.get("/llm-compressor-probe", response_model = LlmCompressorExportProbeResponse)
+async def probe_llm_compressor_export(current_subject: str = Depends(get_current_subject)):
+    del current_subject
+    from utils.llm_compressor_export import probe_llm_compressor_for_compressed_export
+    return LlmCompressorExportProbeResponse(
+        **probe_llm_compressor_for_compressed_export(),
+    )
 
 
 @router.post("/export/base", response_model = ExportOperationResponse)
@@ -485,6 +498,7 @@ async def export_gguf(
             ),
             imatrix_file = imatrix_file,
             private = request.private,
+            npu_q4nx = request.npu_q4nx,
         )
 
         if not success:
@@ -507,6 +521,65 @@ async def export_gguf(
             status_code = 500,
             detail = "Failed to export GGUF model",
         )
+
+
+@router.post("/convert/q4nx", response_model = ExportOperationResponse)
+async def convert_q4nx(
+    request: ConvertQ4NXRequest,
+    current_subject: str = Depends(get_current_subject),
+    allow_ambient: bool = Depends(allow_ambient_hf_token),
+):
+    """Convert an existing GGUF (local file or Hub repo) to FastFlowLM Q4NX for the AMD NPU.
+
+    Needs no loaded checkpoint or GPU, so it runs here rather than in the export worker.
+    """
+    validate_job_paths(request.model_dump())
+    # A managed account may only read a GGUF inside its own workspace.
+    account_path(request.gguf_path)
+    if bool(request.gguf_path) == bool(request.repo_id and request.filename):
+        raise HTTPException(
+            status_code = 400,
+            detail = "Give either a local gguf_path or a repo_id with a filename.",
+        )
+    token = _resolve_export_hf_token(request.hf_token, allow_ambient = allow_ambient)
+    base_model = request.base_model.strip()
+    # The shared HF cache can hold another account's private repo: check this caller's access.
+    hub_repos = [request.repo_id] if request.repo_id else []
+    if not Path(base_model).expanduser().is_dir():
+        hub_repos.append(base_model)
+    for repo in hub_repos:
+        await asyncio.to_thread(account_access.authorize_download, repo, "model", token)
+
+    def run() -> str:
+        from core.export import q4nx
+        from utils.paths import resolve_export_write_dir
+
+        q4nx.require_converter_deps()
+        if request.gguf_path:
+            source = Path(request.gguf_path)
+            if not source.is_file() or source.suffix.lower() != ".gguf":
+                raise ValueError(f"{source} is not a .gguf file.")
+        else:
+            from huggingface_hub import hf_hub_download
+            source = Path(hf_hub_download(request.repo_id, request.filename, token = token))
+        out = q4nx.convert_existing_gguf(
+            source,
+            base_model,
+            Path(resolve_export_write_dir(request.save_directory)),
+            token = token,
+        )
+        return str(out.resolve())
+
+    try:
+        output_path = await asyncio.to_thread(run)
+    except Exception as e:
+        logger.error(f"Q4NX conversion failed: {e}", exc_info = True)
+        raise HTTPException(status_code = 400, detail = f"Q4NX conversion failed: {e}")
+    return ExportOperationResponse(
+        success = True,
+        message = "Converted to Q4NX for the AMD NPU",
+        details = await asyncio.to_thread(_export_details, output_path, refresh_index = True),
+    )
 
 
 @router.post("/export/lora", response_model = ExportOperationResponse)
@@ -536,6 +609,7 @@ async def export_lora_adapter(
             private = request.private,
             gguf = request.gguf,
             gguf_outtype = request.gguf_outtype,
+            adapter_format = request.adapter_format,
         )
 
         if not success:
