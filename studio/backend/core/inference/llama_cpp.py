@@ -4312,6 +4312,31 @@ def _kv_bytes_per_elem(cache_type: Optional[str]) -> float:
     }.get((cache_type or "f16").strip().lower(), 2.0)
 
 
+# Not a CUDA/HIP FlashAttention KV type (ggml_cuda_fattn_kv_type_supported), so attention runs
+# on the CPU. q4_1 / q5_0 / q5_1 did too until ggml-org/llama.cpp#28079 added an f16 fallback.
+_GPU_UNACCELERATED_CACHE_TYPES = frozenset({"iq4_nl"})
+
+
+def _kv_cache_gpu_fallback_warning(
+    cache_type_kv: Optional[str],
+    gpu_memory_mode: str,
+    gpu_layers: int,
+    installed_backends: Callable[[], frozenset[str]],
+) -> Optional[str]:
+    """Warning for a KV cache type that runs attention on the CPU of a CUDA/HIP launch."""
+    if cache_type_kv not in _GPU_UNACCELERATED_CACHE_TYPES:
+        return None
+    if gpu_memory_mode == "manual" and gpu_layers == 0:
+        return None
+    if not {"cuda", "hip"} & installed_backends():
+        return None
+    return (
+        f"KV cache type {cache_type_kv} has no CUDA/HIP flash-attention kernel, so attention "
+        "falls back to CPU, causing high CPU load and slow generation. "
+        "q8_0 or q4_0 is a GPU-accelerated quantized option."
+    )
+
+
 # Upper bound on any current tokenizer, for output rows when a truncated header drops
 # the token array. Above Llama 4 / Gemma 3 (256k), the widest shipping.
 _ASSUMED_MAX_VOCAB = 262144
@@ -27980,6 +28005,18 @@ class LlamaCppBackend:
                         cmd.extend(["--cache-type-v", cache_type_kv])
                     self._cache_type_kv = cache_type_kv
                     logger.info(f"KV cache type: {cache_type_kv}")
+                    gpu_fallback_warning = (
+                        None
+                        if intent.cpu_fallback or _extras_cache is not None
+                        else _kv_cache_gpu_fallback_warning(
+                            cache_type_kv,
+                            gpu_memory_mode,
+                            gpu_layers,
+                            lambda: self._installed_ggml_backends(binary),
+                        )
+                    )
+                    if gpu_fallback_warning:
+                        logger.warning(gpu_fallback_warning)
                 else:
                     # An env-only type is left inherited (untouched) so an
                     # asymmetric K/V env reaches the child as set.
