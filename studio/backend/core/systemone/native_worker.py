@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import math
 import mmap
+import re
 import secrets
 import subprocess
 import threading
@@ -314,9 +315,16 @@ class NativeWorker:
             ) from error
         response, status = outcome["response"], int(outcome["response"].status_code)
         if not 200 <= status < 300:
-            if status not in {401, 403} and 400 <= status < 500:
-                raise ClefWorkerInputError(_detail(response))
-            raise ClefWorkerError(f"Native Clef server returned HTTP {status}: {_detail(response)}")
+            detail = _detail(response)
+            # llama.cpp reports this input-bound failure as HTTP 500.
+            overflow = status == 500 and re.fullmatch(
+                r"input \(\d+ tokens\) is too large to process\. increase the physical batch size "
+                r"\(current batch size: \d+\)",
+                detail,
+            )
+            if overflow or (status not in {401, 403} and 400 <= status < 500):
+                raise ClefWorkerInputError(detail)
+            raise ClefWorkerError(f"Native Clef server returned HTTP {status}: {detail}")
         try:
             return _validate_result(response.json(), checkpoint, wire_questions)
         except ValueError as exc:

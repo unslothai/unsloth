@@ -182,6 +182,18 @@ def test_errors_media_refusal_and_cancellation_cleanup(native, monkeypatch):
     worker.start(path, model, "gpu", threading.Event())
     with pytest.raises(ClefWorkerError, match = "HTTP 401: bad process key"):
         worker.decide(model, "state", {"q": {"type": "noul"}}, [])
+    _Client.responses = [
+        _Response(
+            500,
+            {
+                "error": {
+                    "message": "input (8291 tokens) is too large to process. increase the physical batch size (current batch size: 2048)"
+                }
+            },
+        )
+    ]
+    with pytest.raises(ClefWorkerInputError, match = "too large"):
+        worker.decide(model, "state", {"q": {"type": "noul"}}, [])
     assert worker.device == "CUDA0" and worker.gpu_available is True
     worker.cancel()
     assert process.terminated and forgotten == [process.pid]
