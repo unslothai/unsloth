@@ -133,7 +133,6 @@ _OPENCODE_PROVIDER = "unsloth-studio"
 # OpenCode sends min(limit.output, this) as max_tokens unless the env var below raises it.
 _OPENCODE_OUTPUT_TOKEN_MAX = 32_000
 _OPENCODE_OUTPUT_TOKEN_MAX_ENV = "OPENCODE_EXPERIMENTAL_OUTPUT_TOKEN_MAX"
-# Vibe selects a model by alias; VIBE_ACTIVE_MODEL (env layer) outranks a trusted project ./.vibe/config.toml.
 _VIBE_PROVIDER = "unsloth-studio"
 _VIBE_MODEL_ALIAS = "unsloth"
 _VIBE_ENV_KEY = "UNSLOTH_API_KEY"
@@ -5071,51 +5070,38 @@ def write_hermes_config(
         typer.echo(f"Updated {path}")
 
 
-def write_vibe_config(
+def _vibe_env(
     base: str,
     model: dict,
-    path: Path,
     request_body: Optional[dict] = None,
-) -> None:
-    """Write a session-owned Vibe config.toml (under VIBE_HOME) pointing at Unsloth."""
-    model_lines = [
-        # ensure_ascii=False: TOML rejects the surrogate pairs json emits for non-BMP path chars.
-        f"name = {json.dumps(model['id'], ensure_ascii = False)}",
-        f"provider = {json.dumps(_VIBE_PROVIDER)}",
-        f"alias = {json.dumps(_VIBE_MODEL_ALIAS)}",
-    ]
+) -> dict:
+    """Vibe settings as VIBE_* env vars: that layer outranks user and project config.toml, so
+    nothing is written where Vibe persists the user's own /config edits."""
+    entry = {"name": model["id"], "provider": _VIBE_PROVIDER, "alias": _VIBE_MODEL_ALIAS}
     # Vibe sends its own temperature (0.2 by default) with every request.
     temperature = (request_body or {}).get("temperature")
     if temperature is not None:
-        model_lines.append(f"temperature = {float(temperature)!r}")
+        entry["temperature"] = float(temperature)
     window = model.get("context_length") or model.get("max_context_length")
     if window:
         # Vibe compacts at 200k tokens by default, past most local windows.
-        model_lines.append(f"auto_compact_threshold = {max(1, int(int(window) * 0.9))}")
-    text = "\n".join(
-        [
-            f"active_model = {json.dumps(_VIBE_MODEL_ALIAS)}",
-            "enable_telemetry = false",
-            "enable_update_checks = false",
-            "enable_auto_update = false",
-            "enable_notifications = false",
-            "",
-            "[[providers]]",
-            f"name = {json.dumps(_VIBE_PROVIDER)}",
-            f"api_base = {json.dumps(f'{base}/v1')}",
-            f"api_key_env_var = {json.dumps(_VIBE_ENV_KEY)}",
-            'api_style = "openai"',
-            'backend = "generic"',
-            "",
-            "[[models]]",
-            *model_lines,
-            "",
-        ]
-    )
-    if not path.exists() or path.read_text(encoding = "utf-8") != text:
-        path.parent.mkdir(parents = True, exist_ok = True)
-        path.write_text(text, encoding = "utf-8")
-        typer.echo(f"Updated {path}")
+        entry["auto_compact_threshold"] = max(1, int(int(window) * 0.9))
+    provider = {
+        "name": _VIBE_PROVIDER,
+        "api_base": f"{base}/v1",
+        "api_key_env_var": _VIBE_ENV_KEY,
+        "api_style": "openai",
+        "backend": "generic",
+    }
+    return {
+        "VIBE_PROVIDERS": json.dumps([provider]),
+        "VIBE_MODELS": json.dumps([entry]),
+        "VIBE_ACTIVE_MODEL": _VIBE_MODEL_ALIAS,
+        "VIBE_ENABLE_TELEMETRY": "false",
+        "VIBE_ENABLE_UPDATE_CHECKS": "false",
+        "VIBE_ENABLE_AUTO_UPDATE": "false",
+        "VIBE_ENABLE_NOTIFICATIONS": "false",
+    }
 
 
 def write_pi_config(
@@ -6984,11 +6970,10 @@ def vibe(
     )
     command = ["vibe", *_yolo_command_flags("vibe", yolo), *ctx.args]
     with _session_config("vibe", launch, persist = persist) as home:
-        # VIBE_HOME holds all of Vibe's state, so the user's ~/.vibe is left untouched.
-        write_vibe_config(base, entry, home / "config.toml", server_options.request_body())
+        # VIBE_HOME keeps Vibe's sessions and config.toml out of the user's ~/.vibe.
         env = {
             _VIBE_ENV_KEY: key,
             "VIBE_HOME": str(home),
-            "VIBE_ACTIVE_MODEL": _VIBE_MODEL_ALIAS,
+            **_vibe_env(base, entry, server_options.request_body()),
         }
         _run(base, entry, env, command, launch = launch, install_hint = install_hint)

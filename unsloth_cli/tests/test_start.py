@@ -6965,13 +6965,14 @@ def test_connect_dsh_no_launch(fake_studio, tmp_path):
 # ── Vibe (Mistral, OpenAI-compatible /v1, key via env, ~/.vibe relocated via VIBE_HOME) ──
 
 
-def test_write_vibe_config(tmp_path):
-    path = tmp_path / "config.toml"
-    start.write_vibe_config(BASE, MODEL, path)
-    config = _parse_toml(path.read_text())
-    assert config["active_model"] == start._VIBE_MODEL_ALIAS
-    assert config["enable_telemetry"] is False
-    assert config["providers"] == [
+def _vibe_settings(env: dict) -> tuple:
+    return json.loads(env["VIBE_PROVIDERS"]), json.loads(env["VIBE_MODELS"])
+
+
+def test_vibe_env(tmp_path):
+    env = start._vibe_env(BASE, MODEL)
+    providers, models = _vibe_settings(env)
+    assert providers == [
         {
             "name": start._VIBE_PROVIDER,
             "api_base": f"{BASE}/v1",
@@ -6980,7 +6981,7 @@ def test_write_vibe_config(tmp_path):
             "backend": "generic",
         }
     ]
-    assert config["models"] == [
+    assert models == [
         {
             "name": MODEL["id"],
             "provider": start._VIBE_PROVIDER,
@@ -6988,58 +6989,43 @@ def test_write_vibe_config(tmp_path):
             "auto_compact_threshold": int(MODEL["context_length"] * 0.9),
         }
     ]
-    before = path.read_text()
-    start.write_vibe_config(BASE, MODEL, path)
-    assert path.read_text() == before
+    assert env["VIBE_ACTIVE_MODEL"] == start._VIBE_MODEL_ALIAS
+    assert env["VIBE_ENABLE_TELEMETRY"] == "false"
 
 
-def test_write_vibe_config_carries_temperature_and_odd_model_ids(tmp_path):
-    path = tmp_path / "config.toml"
+def test_vibe_env_carries_temperature_and_odd_model_ids():
     model = {"id": 'C:\\models\\q"\U0001f600.gguf', "max_context_length": 32768}
-    start.write_vibe_config(BASE, model, path, {"temperature": 0.7})
-    entry = _parse_toml(path.read_text(encoding = "utf-8"))["models"][0]
-    assert entry["name"] == model["id"]
-    assert entry["temperature"] == 0.7
-    assert entry["auto_compact_threshold"] == int(32768 * 0.9)
-    start.write_vibe_config(BASE, {"id": "m"}, path)
-    assert set(_parse_toml(path.read_text())["models"][0]) == {"name", "provider", "alias"}
+    _, models = _vibe_settings(start._vibe_env(BASE, model, {"temperature": 0.7}))
+    assert models[0]["name"] == model["id"]
+    assert models[0]["temperature"] == 0.7
+    assert models[0]["auto_compact_threshold"] == int(32768 * 0.9)
+    _, models = _vibe_settings(start._vibe_env(BASE, {"id": "m"}))
+    assert set(models[0]) == {"name", "provider", "alias"}
 
 
-def test_connect_vibe_no_launch(fake_studio, tmp_path):
+def test_connect_vibe_no_launch_keeps_user_config(fake_studio, tmp_path):
+    home = tmp_path / "agents" / "vibe"
+    home.mkdir(parents = True)
+    # Vibe persists /config edits here; a stable --no-launch home must keep them.
+    user_config = 'vim_keybindings = true\ndefault_agent = "plan"\n'
+    (home / "config.toml").write_text(user_config)
     result = CliRunner().invoke(start.start_app, ["vibe", "--no-launch", "--yolo"])
     assert result.exit_code == 0, result.output
-    home = tmp_path / "agents" / "vibe"
     _assert_env_set(result.output, "UNSLOTH_API_KEY", "sk-unsloth-feedfacefeedface")
     _assert_env_set(result.output, "VIBE_HOME", str(home))
     _assert_env_set(result.output, "VIBE_ACTIVE_MODEL", start._VIBE_MODEL_ALIAS)
     assert _launch_command(result.output) == ["vibe", "--auto-approve"]
-    config = _parse_toml((home / "config.toml").read_text())
-    assert config["models"][0]["name"] == MODEL["id"]
-    # The key travels only in the environment.
-    assert not (home / ".env").exists()
+    assert (home / "config.toml").read_text() == user_config
+    assert sorted(p.name for p in home.iterdir()) == ["config.toml"]
 
 
 def test_vibe_launch_keeps_user_home(fake_studio, monkeypatch):
     monkeypatch.setattr(start.shutil, "which", lambda _: "/usr/local/bin/vibe")
-    monkeypatch.setattr(start, "_managed_node_tools", lambda: None)
-    seen = {}
-
-    def run(
-        command,
-        env = None,
-        **kwargs,
-    ):
-        seen.update(command = command, env = env)
-        seen["config"] = (Path(env["VIBE_HOME"]) / "config.toml").read_text()
-        return SimpleNamespace(returncode = 0)
-
-    monkeypatch.setattr(start.subprocess, "run", run)
-    result = CliRunner().invoke(start.start_app, ["vibe", "--temperature", "0.6", "-p", "hi"])
-    assert result.exit_code == 0, result.output
-    assert seen["command"][-3:] == ["/usr/local/bin/vibe", "-p", "hi"]
+    captured = _capture_launch(monkeypatch, ["vibe", "--temperature", "0.6", "-p", "hi"])
+    assert captured["command"][-3:] == ["/usr/local/bin/vibe", "-p", "hi"]
     # Vibe's tools run git/ssh/gh, which need the user's real HOME.
-    assert seen["env"].get("HOME") == os.environ.get("HOME")
-    assert _parse_toml(seen["config"])["models"][0]["temperature"] == 0.6
+    assert captured["env"].get("HOME") == os.environ.get("HOME")
+    assert _vibe_settings(captured["env"])[1][0]["temperature"] == 0.6
 
 
 @pytest.mark.skipif(shutil.which("vibe") is None, reason = "needs the mistral-vibe CLI")

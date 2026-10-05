@@ -366,13 +366,13 @@ crosscheck_contract() {
     vibe)
       grep -q 'UNSLOTH_API_KEY' "$raw" \
         || guide_fail "Vibe env key is no longer UNSLOTH_API_KEY (start.py _VIBE_ENV_KEY)"
-      home="$(raw_env VIBE_HOME)"
-      [ -n "$home" ] || guide_fail "VIBE_HOME missing from connect output (start.py vibe())"
-      cfg="$home/config.toml"
-      [ -f "$cfg" ] || guide_fail "Vibe config $cfg missing (start.py write_vibe_config)"
-      grep -q 'api_style = "openai"' "$cfg" \
-        || echo "::warning::Vibe provider api_style is no longer 'openai' (write_vibe_config)"
-      cp "$cfg" "$REDACTED_DIR/vibe-config.toml"
+      [ -n "$(raw_env VIBE_HOME)" ] || guide_fail "VIBE_HOME missing from connect output (start.py vibe())"
+      # Provider and model ride in the env layer (start.py _vibe_env), not a config file.
+      cfg="$(raw_env VIBE_PROVIDERS)"
+      [ -n "$cfg" ] || guide_fail "VIBE_PROVIDERS missing from connect output (start.py _vibe_env)"
+      grep -q '"api_style": "openai"' <<<"$cfg" \
+        || echo "::warning::Vibe provider api_style is no longer 'openai' (start.py _vibe_env)"
+      printf '%s\n%s\n' "$cfg" "$(raw_env VIBE_MODELS)" > "$REDACTED_DIR/vibe-env.json"
       ;;
   esac
   redact "$REDACTED_DIR"/* 2>/dev/null || true
