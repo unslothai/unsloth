@@ -959,10 +959,10 @@ def test_uv_base_prefix_junction_grants_concrete_runtime(monkeypatch, tmp_path):
     alias = tmp_path / "cpython-3.13"
     if os.name == "nt":
         import subprocess
-
         subprocess.run(
             ["cmd.exe", "/d", "/c", "mklink", "/J", str(alias), str(base)],
-            check = True, capture_output = True,
+            check = True,
+            capture_output = True,
         )
     else:
         alias.symlink_to(base, target_is_directory = True)
