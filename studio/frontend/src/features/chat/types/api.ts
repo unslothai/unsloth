@@ -45,18 +45,23 @@ export interface ListLorasResponse {
 }
 
 export interface LoadModelRequest {
+  engine_parallelism?: "tensor" | "pipeline" | "data";
+  engine_precision?: "auto" | "bf16" | "fp16" | "int4" | "int8" | "fp8";
+  engine?: "auto" | "vllm" | "sglang";
   model_path: string;
   /** Opaque client attempt ID used to cancel only this in-flight load. */
   load_request_id?: string | null;
 
   /** Start a fresh runtime even when the active settings already match. */
   force_reload?: boolean;
+  alongside?: boolean;
   /** Stop any chats still generating instead of getting a 409: a load replaces the single
    *  llama-server they all decode on. Set only after the user confirms. */
   force_cancel_active?: boolean;
   nativePathLease?: string | null;
   hf_token: string | null;
   max_seq_length: number;
+  max_seq_length_auto_derived?: boolean;
   load_in_4bit: boolean;
   is_lora: boolean;
   gguf_variant?: string | null;
@@ -66,7 +71,7 @@ export interface LoadModelRequest {
   approved_remote_code_fingerprint?: string | null;
   chat_template_override?: string | null;
   cache_type_kv?: string | null;
-  mlx_kv_bits?: number | null;
+  mlx_kv_quant?: string | null;
   /** Speculative decoding mode for GGUF models: "auto" (platform-aware DSpark/DFlash when the model
    *  ships that sidecar, else MTP on MTP GGUFs, ngram-mod for sub-3B), "mtp", "dspark",
    *  "dflash", "ngram", "mtp+ngram", "off". The legacy spellings are still accepted. */
@@ -191,7 +196,7 @@ export interface GgufVariantsResponse {
   variants: GgufVariantDetail[];
   has_vision: boolean;
   default_variant: string | null;
-  /** True only when Hub metadata resolved every required companion. */
+  /** True when Hub metadata or a complete cached download plan proves companion readiness. */
   dependencies_resolved?: boolean;
   /** Native max context from GGUF metadata; present once a variant is downloaded. */
   context_length?: number | null;
@@ -217,7 +222,11 @@ export function isMultimodalResponse(
 }
 
 export interface LoadModelResponse {
+  engine_parallelism?: "tensor" | "pipeline" | "data";
+  engine_precision?: "auto" | "bf16" | "fp16" | "int4" | "int8" | "fp8";
+  engine?: "auto" | "vllm" | "sglang";
   is_mlx?: boolean;
+  evicted?: string[];
   is_npu?: boolean;
   status: string;
   model: string;
@@ -237,6 +246,7 @@ export interface LoadModelResponse {
   diffusion_requested_ngl?: number | null;
   is_audio?: boolean;
   audio_type?: string | null;
+  audio_workflows?: string[] | null;
   has_audio_input?: boolean;
   has_video_input?: boolean;
   inference?: {
@@ -252,6 +262,7 @@ export interface LoadModelResponse {
   max_context_length?: number | null;
   native_context_length?: number | null;
   context_length_enforced?: boolean | null;
+  context_unbounded_when_batched?: boolean;
   supports_reasoning?: boolean;
   reasoning_style?:
     | "enable_thinking"
@@ -263,8 +274,8 @@ export interface LoadModelResponse {
   preserve_thinking_default?: boolean;
   supports_tools?: boolean;
   cache_type_kv?: string | null;
-  mlx_kv_bits?: number | null;
-  mlx_kv_bits_requested?: number | null;
+  mlx_kv_quant?: string | null;
+  mlx_kv_quant_requested?: string | null;
   mlx_kv_quant_eligibility?: string | null;
   mlx_kv_quant_reason?: string | null;
   chat_template_override_reason?: string | null;
@@ -284,6 +295,10 @@ export interface LoadModelResponse {
   gpu_memory_mode?: "auto" | "manual";
   gpu_layers?: number;
   /** Set when an automatic Vulkan startup crash was recovered by loading on CPU. */
+  offloaded_layers?: number | null;
+  offload_total_layers?: number | null;
+  offload_overridden?: boolean | null;
+  gpu_backend_unavailable?: boolean | null;
   cpu_fallback_reason?: CpuFallbackReason | null;
   /** How Unsloth recovered after a multimodal projector failed at startup. */
   mmproj_fallback_reason?: MmprojFallbackReason | null;
@@ -296,7 +311,6 @@ export interface LoadModelResponse {
   gpu_ids?: number[] | null;
   /** User-requested GPU placement pool before fit-time narrowing. */
   requested_gpu_ids?: number[] | null;
-  /** Slots the load was invoked with (else the --parallel default). Null for non-GGUF loads. */
   requested_parallel_slots?: number | null;
   reasoning_budget?: number;
   reasoning_budget_message?: string;
@@ -305,7 +319,6 @@ export interface LoadModelResponse {
   requested_reasoning_budget?: number;
   // biome-ignore lint/style/useNamingConvention: API schema
   requested_reasoning_budget_message?: string;
-  /** Slots llama-server actually runs, after any fit-time reduction. Null for non-GGUF loads. */
   parallel_slots?: number | null;
   /** batch size (--batch-size) the load was invoked with; null = default */
   requested_n_batch?: number | null;
@@ -333,6 +346,9 @@ export interface UnloadModelRequest {
 }
 
 export interface InferenceStatusResponse {
+  engine_parallelism?: "tensor" | "pipeline" | "data";
+  engine_precision?: "auto" | "bf16" | "fp16" | "int4" | "int8" | "fp8";
+  engine?: "auto" | "vllm" | "sglang";
   is_mlx?: boolean;
   is_npu?: boolean;
   active_model: string | null;
@@ -348,10 +364,32 @@ export interface InferenceStatusResponse {
   memory_warning?: string | null;
   is_audio?: boolean;
   audio_type?: string | null;
+  /** GGUF audio runtime family of the loaded speech or music model ("kokoro_tts", "yue2"). */
+  audio_family?: string | null;
+  /** The loaded GGUF audio model's generation options, as its spec declares them. Unknown-shaped
+   *  on purpose: the Audio page validates it with parseAudioOptions. */
+  audio_options?: unknown;
+  /** Audio page workflows the loaded model can run ("speak", "clone", "music", "transcribe"); empty when it is not an audio model. */
+  audio_workflows?: string[] | null;
+  audio_reference_text?: "required" | "optional" | "unused" | null;
+  audio_options_by_workflow?: Record<string, unknown> | null;
+  /** e.g. {"clone": "clon", "convert": "vc", "convert:singing": "svc"}; a task other than audio_server_task reloads. */
+  audio_workflow_tasks?: Record<string, string> | null;
+  audio_server_task?: string | null;
+  audio_convert_route?: string | null;
+  audio_convert?: AudioConvertCaps | null;
+  /** e.g. Maya1: "instruct" (its voice description). */
+  audio_required_inputs?: string[] | null;
+  /** Unknown-shaped on purpose: validated by parseMusicCapabilities. */
+  audio_music?: unknown;
   has_audio_input?: boolean;
   has_video_input?: boolean;
   loading: string[];
   loaded: string[];
+  /** The models answering requests; `loaded` also names one only held behind the active model. */
+  serving?: string[];
+  /** Per `serving` entry, the id to select, load and unload it by: a local model's path. */
+  serving_checkpoints?: string[];
   inference?: {
     temperature?: number;
     top_p?: number;
@@ -376,9 +414,10 @@ export interface InferenceStatusResponse {
   max_context_length?: number | null;
   native_context_length?: number | null;
   context_length_enforced?: boolean | null;
+  context_unbounded_when_batched?: boolean;
   cache_type_kv?: string | null;
-  mlx_kv_bits?: number | null;
-  mlx_kv_bits_requested?: number | null;
+  mlx_kv_quant?: string | null;
+  mlx_kv_quant_requested?: string | null;
   mlx_kv_quant_eligibility?: string | null;
   mlx_kv_quant_reason?: string | null;
   chat_template_override_reason?: string | null;
@@ -397,6 +436,10 @@ export interface InferenceStatusResponse {
   gpu_memory_mode?: "auto" | "manual";
   gpu_layers?: number;
   /** Set while the active model is a recovered CPU-only Vulkan load. */
+  offloaded_layers?: number | null;
+  offload_total_layers?: number | null;
+  offload_overridden?: boolean | null;
+  gpu_backend_unavailable?: boolean | null;
   cpu_fallback_reason?: CpuFallbackReason | null;
   /** How the active GGUF recovered after a multimodal projector startup failure. */
   mmproj_fallback_reason?: MmprojFallbackReason | null;
@@ -409,7 +452,6 @@ export interface InferenceStatusResponse {
   gpu_ids?: number[] | null;
   /** User-requested GPU placement pool before fit-time narrowing. */
   requested_gpu_ids?: number[] | null;
-  /** Slots the active load was invoked with (else the --parallel default). Null when no GGUF model is loaded. */
   requested_parallel_slots?: number | null;
   reasoning_budget?: number;
   reasoning_budget_message?: string;
@@ -418,7 +460,6 @@ export interface InferenceStatusResponse {
   requested_reasoning_budget?: number;
   // biome-ignore lint/style/useNamingConvention: API schema
   requested_reasoning_budget_message?: string;
-  /** Slots llama-server actually runs, after any fit-time reduction. Null when no GGUF model is loaded. */
   parallel_slots?: number | null;
   /** batch size (--batch-size) the active load was invoked with; null = default */
   requested_n_batch?: number | null;
@@ -498,6 +539,14 @@ export interface ApiMonitorEntry {
   reason?: "manual" | "idle" | "api" | null;
   // 0-100 while a download row is running.
   progress?: number | null;
+  running_phase?: "prompt_processing" | "token_generation" | null;
+  prompt_progress?: {
+    total: number | null;
+    processed: number | null;
+    cached: number | null;
+    time_ms: number | null;
+    percent: number | null;
+  } | null;
   // Server-side time to first token (measured, else engine prefill).
   ttft_ms?: number | null;
   tok_per_sec?: number | null;
@@ -610,6 +659,8 @@ export interface OpenAIChatCompletionsRequest {
   seed?: number;
   image_base64?: string;
   audio_base64?: string;
+  /** Further clips after audio_base64, in attach order. */
+  extra_audio_base64?: string[];
   video_base64?: string;
   use_adapter?: boolean | string | null;
   enable_thinking?: boolean | null;
@@ -632,6 +683,8 @@ export interface OpenAIChatCompletionsRequest {
   enabled_tools?: string[];
   /** Local models + enable_tools only. */
   mcp_enabled?: boolean;
+  /** Data URL a mapped MCP tool field receives after the user approves each call. */
+  mcp_image?: string;
   /** The replayed tool calls came from Studio's own local tool loop. */
   studio_tool_history?: boolean;
   /** Local models + enable_tools only. */
@@ -697,7 +750,8 @@ export interface OpenAIChatCompletionsRequest {
 
 export interface OpenAIChatDelta {
   role?: string;
-  content?: string | null;
+  /** Magistral streams structured content parts: read through extractDeltaText. */
+  content?: string | unknown[] | null;
   /** Streamed assistant tool calls. The Gemini and OpenAI Responses translators emit incremental
    *  deltas so the chat-adapter can render tool cards as they arrive. */
   tool_calls?: OpenAIToolCallPart[];
@@ -719,6 +773,8 @@ export interface OpenAIChatChunk {
     total_tokens: number;
   };
   timings?: Record<string, number>;
+  /** Studio heuristic: the response may have stopped mid-quote. */
+  quote_cut?: boolean;
   context_truncated?: {
     dropped_messages: number;
     prompt_tokens_before?: number;
@@ -760,4 +816,16 @@ export interface OpenAIChatChunk {
     // must fit inside. Not re-derived here: the formula lives in the fit.
     prompt_target?: number;
   };
+}
+
+export interface AudioConvertCaps {
+  modes: ("speech" | "singing")[];
+  target: "audio" | "builtin";
+  builtin_voices: { id: string; label: string }[];
+  pitch: Partial<
+    Record<"speech" | "singing", { auto: boolean; shift_with_auto?: boolean }>
+  >;
+  style: boolean;
+  route_reloads: boolean;
+  source_max_seconds: number;
 }

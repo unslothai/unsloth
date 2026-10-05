@@ -13,6 +13,7 @@ from .._version import __version__
 
 __all__ = [
     "SUPPORTS_BFLOAT16",
+    "config_return_dict",
     "is_bfloat16_supported",
     "_requested_float32",
     "_mark_requested_float32",
@@ -30,6 +31,8 @@ __all__ = [
     "USE_MODELSCOPE",
     "platform_system",
     "patch_tokenizer",
+    "patch_harmony_tool_call_eos",
+    "patch_harmony_tool_call_eos_vllm",
     "get_statistics",
     "Unsloth_Offloaded_Gradient_Checkpointer",
     "offload_to_disk",
@@ -84,6 +87,19 @@ __all__ = [
     "hf_login",
     "maybe_prefetch_hf_snapshot",
     "is_moe_model",
+    "install_block_swap",
+    "offload_embedding_if_tight",
+    "usable_cuda_bytes",
+    "skip_checkpointing",
+    "refuse_block_swap_load",
+    "legacy_offload_layers",
+    "block_swap_load_device",
+    "begin_block_swap_load",
+    "finish_block_swap_load",
+    "planned_prefetch_depth",
+    "trim_config_for_block_swap",
+    "attach_offload_layers",
+    "skip_swapped_checkpoint_keys",
     "get_moe_target_parameters",
     "get_moe_target_modules",
     "get_moe_expert_submodule_leaves",
@@ -108,6 +124,7 @@ __all__ = [
     "_patch_transformers_trainer_data_parallel",
     "patch_flex_attention_kernel_options",
 ]
+
 
 import torch
 from typing import Union, Optional, List, Any, Callable, Tuple, Iterator
@@ -137,7 +154,7 @@ from ..device_type import (
     apply_gfx101x_triton_workaround,
     gfx101x_triton_workaround_applied,
 )
-from ..import_fixes import UNSLOTH_ENABLE_LOGGING
+from ..import_fixes import UNSLOTH_ENABLE_LOGGING, stale_kernel_hint
 from unsloth_zoo.log import logger
 from unsloth_zoo.tokenizer_utils import (
     patch_tokenizer as _patch_tokenizer,
@@ -155,6 +172,24 @@ from unsloth_zoo.patching_utils import (
     patch_model_and_tokenizer,
     patch_compiled_autograd,
 )
+from ._uma_safetensors import is_integrated_unified_memory_gpu
+
+try:
+    from unsloth_zoo.block_swap import BlockSwap, find_decoder_layers
+except ImportError:  # unsloth_zoo predates block_swap
+    BlockSwap = find_decoder_layers = None
+try:
+    from unsloth_zoo.block_swap import build_host_layers
+except ImportError:  # unsloth_zoo predates loading straight to host
+    build_host_layers = None
+try:
+    from unsloth_zoo.block_swap import load_layers_to_host
+except ImportError:  # unsloth_zoo predates loading any architecture straight to host
+    load_layers_to_host = None
+try:
+    from unsloth_zoo.block_swap import auto_swap_indices, estimate_training_reserve_bytes
+except ImportError:  # unsloth_zoo predates offload_layers = "auto"
+    auto_swap_indices = estimate_training_reserve_bytes = None
 from unsloth_zoo.gradient_checkpointing import (
     Unsloth_Offloaded_Gradient_Checkpointer,
     unsloth_offloaded_gradient_checkpoint,
@@ -298,6 +333,17 @@ def _unsloth_install_pretrain_detector(model):
     return model
 
 
+def _unsloth_dataset_column_names(dataset):
+    columns = getattr(dataset, "column_names", None)
+    if columns is not None:
+        return columns
+    try:
+        row = dataset[0] if isinstance(dataset, (list, tuple)) else next(iter(dataset))
+    except (IndexError, StopIteration):
+        return []
+    return list(row.keys()) if hasattr(row, "keys") else []
+
+
 def _unsloth_reset_stray_compile_cache(self):
     # A manual forward/backward under torch.compile BEFORE trainer.train() caches a forward plus AOTAutograd backward graph in a one-off context, and reusing it poisons training with NaN/zero gradients, so drop the cache. Module-level, so the SFT auto-packing wrapper and the plain-Trainer loop can run it too.
     import os
@@ -384,8 +430,9 @@ DISABLE_SDPA_MODEL_NAMES = [
     "gemma3_text",  # Gemma3TextModel (EmbeddingGemma) - substring match, keep underscore
     "gpt_oss",
 ]
-_FLASH_EXCLUDED_MODELS = ("gpt_oss", "deepseek_v4")
+_FLASH_EXCLUDED_MODELS = ("gpt_oss", "deepseek_v4", "mllama")
 # deepseek_v4's custom attention is sdpa/flash-incompatible: force eager, and it is excluded above so an explicit request cannot re-enable the crash.
+# mllama declares flash support, but its vision and cross attention modules have no is_causal, which the flash path reads.
 _EAGER_ONLY_PREFIXES = ("gemma3n", "deepseek_v4")
 _FLASH_ATTENTION_MAX_HEAD_DIM = 256
 _FLASH_ATTENTION_DISABLED_WARNED = set()
@@ -488,13 +535,23 @@ _CUDNN_LARGE_HEAD_DIM_MIN_CAPABILITY = (10, 0)
 
 
 def _sdpa_reaches_cudnn_at_head_dim_256():
-    """True when plain SDPA already dispatches cuDNN for a MASKED head_dim 256 on this box."""
+    """True when plain SDPA already dispatches cuDNN for a MASKED head_dim 256 on this box.
+
+    False under fix_cudnn_sdpa_d256_masked_backward: it moves that training onto the efficient
+    kernel, where flex is faster again.
+    """
     try:
         if Version(torch.__version__.split("+")[0]) < Version(_CUDNN_LARGE_HEAD_DIM_TORCH_VERSION):
             return False
         if getattr(torch.version, "hip", None):
             return False
         if not torch.cuda.is_available():
+            return False
+        if getattr(
+            torch.nn.functional.scaled_dot_product_attention,
+            "_unsloth_avoids_cudnn_d256_masked_backward",
+            False,
+        ):
             return False
         return all(
             torch.cuda.get_device_capability(index) >= _CUDNN_LARGE_HEAD_DIM_MIN_CAPABILITY
@@ -587,8 +644,19 @@ def _flex_kernel_options_for_head_dim(head_dim):
     return dict(_FLEX_LARGE_HEAD_DIM_KERNEL_OPTIONS)
 
 
+def _flex_call_needs_backward(query, key, value):
+    """True when this flex call is recorded for autograd on an accelerator."""
+    try:
+        if not torch.is_grad_enabled() or query.device.type == "cpu":
+            return False
+        return any(getattr(t, "requires_grad", False) for t in (query, key, value))
+    except Exception:
+        return False
+
+
 def _wrap_flex_attention_forward(flex_attention_forward):
-    """Add kernel_options to a registered `flex_attention` function, for large head dims only."""
+    """Add kernel_options to a registered `flex_attention` function: block sizes above head_dim
+    256, and the main flex kernel for calls that need a backward."""
     if getattr(flex_attention_forward, "_unsloth_flex_kernel_options", False):
         return flex_attention_forward
 
@@ -603,6 +671,14 @@ def _wrap_flex_attention_forward(flex_attention_forward):
             )
         except Exception:
             kernel_options = None
+        # Inductor picks flex_decoding for a static query length below 128. Its logsumexp gets a
+        # padded batch stride (comprehensive_padding) that the backward template ignores, so every
+        # batch row after the first reads a shifted LSE and the gradients blow up.
+        if _flex_call_needs_backward(query, key, value) and "BACKEND" not in (
+            kwargs.get("kernel_options") or {}
+        ):
+            kernel_options = kernel_options or {}
+            kernel_options["FORCE_USE_FLEX_ATTENTION"] = True
         if kernel_options is not None:
             # A caller that already asked for something keeps it: only fill the gaps.
             requested = kwargs.get("kernel_options") or {}
@@ -616,7 +692,7 @@ def _wrap_flex_attention_forward(flex_attention_forward):
 
 
 def patch_flex_attention_kernel_options():
-    """Wrap the registered flex_attention to pass kernel_options above head_dim 256.
+    """Wrap the registered flex_attention to pass the kernel_options of _wrap_flex_attention_forward.
 
     Unconditional, since explicit requests and _FLEX_PREFERRED_MODELS reach flex too. Returns True
     when the registered function is wrapped.
@@ -728,6 +804,90 @@ def _flex_attn_impl_for(config, other_attn_implementation):
     return None
 
 
+def _sibling_model_class_for_config(model_class, child_config):
+    """Sibling PreTrainedModel for a tower the Auto classes do not register (Apertus 1.5 vision tokenizer)."""
+    import sys
+
+    module = sys.modules.get(getattr(model_class, "__module__", None) or "")
+    if module is None:
+        return None
+    try:
+        from transformers.modeling_utils import PreTrainedModel
+    except Exception:
+        return None
+    config_type = type(child_config)
+    candidates = []
+    for value in vars(module).values():
+        if (
+            isinstance(value, type)
+            and issubclass(value, PreTrainedModel)
+            and getattr(value, "config_class", None) is config_type
+        ):
+            candidates.append(value)
+    if not candidates:
+        return None
+    # Concrete model over its *PreTrainedModel base: the class Transformers validates.
+    candidates.sort(key = lambda klass: (klass.__name__.endswith("PreTrainedModel"), klass.__name__))
+    return candidates[0]
+
+
+def _flash_unsupported_sub_configs(config, model_class = None):
+    """{sub-config: fallback} for towers lacking flash, which Transformers rejects (LFM2-VL SigLIP2)."""
+    try:
+        from transformers import AutoModel, AutoModelForCausalLM
+        mappings = (AutoModel._model_mapping, AutoModelForCausalLM._model_mapping)
+    except Exception:
+        return {}
+    # Encoder-decoder composites (Donut, MusicGen) name their towers "encoder" / "decoder".
+    declared = getattr(config, "sub_configs", None) or ()
+    out = {}
+    for field_name, child_config in _config_items(config):
+        if not isinstance(field_name, str):
+            continue
+        if not (field_name.endswith("_config") or field_name in declared):
+            continue
+        if not hasattr(child_config, "model_type"):
+            continue
+        child_class = None
+        for mapping in mappings:
+            try:
+                child_class = mapping[type(child_config)]
+                break
+            except Exception:
+                continue
+        if isinstance(child_class, (list, tuple)):
+            child_class = child_class[0] if child_class else None
+        if child_class is None and model_class is not None:
+            child_class = _sibling_model_class_for_config(model_class, child_config)
+        if child_class is None:
+            continue
+        if getattr(child_class, "_supports_flash_attn", False) or getattr(
+            child_class, "_supports_flash_attn_2", False
+        ):
+            continue
+        out[field_name] = "sdpa" if getattr(child_class, "_supports_sdpa", False) else "eager"
+    return out
+
+
+def _scoped_flash_attention(
+    config,
+    supports_sdpa,
+    model_class = None,
+):
+    if model_class is None:
+        unsupported = _flash_unsupported_sub_configs(config)
+    else:
+        unsupported = _flash_unsupported_sub_configs(config, model_class)
+    if not unsupported:
+        return "flash_attention_2"
+    if not _transformers_supports_attn_impl_mapping():
+        # One plain value reaches every tower, so it must suit the weakest (Pixtral on 4.51).
+        if not supports_sdpa or "eager" in unsupported.values():
+            return "eager"
+        return "sdpa"
+    return {"": "flash_attention_2", **unsupported}
+
+
 def _flex_support_anchor_class(model_class):
     """The architecture's own PreTrainedModel base, so `_supports_flex_attn` also covers the inner
     text model Transformers validates separately under a mapping."""
@@ -777,6 +937,22 @@ def _declares_flex_support(model_class):
     return None
 
 
+def _declares_no_sdpa(model_class):
+    # An explicit `_supports_sdpa = False` below PreTrainedModel (MiMo-V2-Flash sinks) beats the zoo's source-level guess.
+    try:
+        from transformers.modeling_utils import PreTrainedModel
+    except Exception:
+        return False
+    for klass in getattr(model_class, "__mro__", ()):
+        if klass is PreTrainedModel:
+            break
+        if not isinstance(klass, type):
+            continue
+        if "_supports_sdpa" in vars(klass):
+            return vars(klass)["_supports_sdpa"] is False
+    return False
+
+
 def _model_class_supports_flash_attention(model_class):
     """Whether installed transformers lets this class dispatch flash attention."""
     if model_class is None:
@@ -788,12 +964,48 @@ def _model_class_supports_flash_attention(model_class):
     new_flag_dispatched = PreTrainedModel is not None and hasattr(
         PreTrainedModel, "_supports_flash_attn"
     )
+    if not _flash_attention_2_is_compatible(model_class):
+        return False
     if new_flag_dispatched and not _flash_dispatch_reads_legacy_flag(PreTrainedModel):
         return bool(getattr(model_class, "_supports_flash_attn", False))
     return bool(
         getattr(model_class, "_supports_flash_attn_2", False)
         or getattr(model_class, "_supports_flash_attn", False)
     )
+
+
+def _flash_attention_2_is_compatible(model_class):
+    # transformers 5 silently rewrites flash_attention_2 to compatible[0] (_check_and_adjust_attn_implementation).
+    compatible = getattr(model_class, "_compatible_flash_implementations", None)
+    if not isinstance(compatible, (list, tuple)) or not compatible:
+        return True
+    if any(str(name).split("|")[-1] == "flash_attention_2" for name in compatible):
+        return True
+    return _flash_implementation_available(str(compatible[0]).split("|")[-1])
+
+
+def _flash_implementation_available(name):
+    try:
+        from transformers.utils import import_utils
+    except Exception:
+        return False
+    checks = {
+        "flash_attention_3": "is_flash_attn_3_available",
+        "flash_attention_4": "is_flash_attn_4_available",
+    }
+    if name in checks:
+        check = getattr(import_utils, checks[name], None)
+        try:
+            return bool(check()) if check is not None else False
+        except Exception:
+            return False
+    if "/" in name:
+        check = getattr(import_utils, "is_kernels_available", None)
+        try:
+            return bool(check()) if check is not None else False
+        except Exception:
+            return False
+    return False
 
 
 def _flash_dispatch_reads_legacy_flag(PreTrainedModel) -> bool:
@@ -998,6 +1210,8 @@ def _get_max_attention_head_dim(config):
 def _get_flash_attention_disable_reason(config):
     model_type = _config_get(config, "model_type", "").lower()
     if _is_flash_excluded(model_type):
+        if model_type == "mllama":
+            return "mllama vision and cross attention do not run under Flash Attention 2"
         return f"{model_type} uses custom sink attention kernels"
     max_head_dim = _get_max_attention_head_dim(config)
     if max_head_dim is not None and max_head_dim > _FLASH_ATTENTION_MAX_HEAD_DIM:
@@ -1034,6 +1248,43 @@ def _disable_flash_attention_if_needed(
 
     # Only an implementation passed by the caller is an explicit request: config values are synthesized by the loaders or come from Transformers defaults.
     explicit_request = attn_implementation
+
+    # A per-sub-config mapping keeps the entries a scalar request would keep; flash and excluded backends take the fallback.
+    if isinstance(explicit_request, dict):
+        excluded_model_type = _config_get(config, "model_type", "").lower()
+
+        def _needs_fallback(impl):
+            if _is_flash_attention_requested(impl):
+                return True
+            if impl == "sdpa":
+                return _is_sdpa_excluded(excluded_model_type)
+            if impl == "flex_attention":
+                return not supports_flex_attention
+            return False
+
+        fallback = _disable_flash_attention_if_needed(
+            config,
+            supports_sdpa = supports_sdpa,
+            supports_flex_attention = supports_flex_attention,
+            would_use_flash_attention = any(
+                _is_flash_attention_requested(v) for v in explicit_request.values()
+            ),
+            disable_reason = disable_reason,
+            honor_config_attn_implementation = False,
+        )
+
+        def _fallback_for(key):
+            if isinstance(fallback, dict):
+                return fallback.get(key, fallback.get("", "eager"))
+            return fallback
+
+        return _set_attn_impl(
+            config,
+            {
+                k: (_fallback_for(k) if _needs_fallback(v) else v)
+                for k, v in explicit_request.items()
+            },
+        )
 
     # Off for a float32 load: with no flash-specific reason the config never steered the choice, so a config-seeded "eager" must not drag an fp32 load from sdpa down to eager.
     requested_attn_implementation = attn_implementation
@@ -1103,10 +1354,52 @@ def _attn_impl_label(impl):
     return impl
 
 
+def _undeclared_nested_configs(config):
+    """Nested configs outside `sub_configs`, which transformers' attn setter never reaches (Nemotron-Omni `llm_config`)."""
+    try:
+        from transformers import PretrainedConfig
+    except Exception:
+        return []
+    if not isinstance(config, PretrainedConfig):
+        return []
+    # Read from the instance: DPT / DETR / VitMatte on 4.57 define `sub_configs` as a property.
+    declared = getattr(config, "sub_configs", None)
+    declared = set(declared) if isinstance(declared, dict) else set()
+    return [
+        value
+        for name, value in vars(config).items()
+        if name not in declared and value is not config and isinstance(value, PretrainedConfig)
+    ]
+
+
+def _sync_baked_attn_impl(config, previous, impl):
+    # Remote __init__ bakes its flash default into nested configs; follow the top value over stale or flash copies.
+    if not isinstance(impl, str):
+        return
+    for nested in _undeclared_nested_configs(config):
+        current = getattr(nested, "_attn_implementation", None)
+        if (
+            current is not None
+            and current != impl
+            and (
+                current == previous
+                or (
+                    _is_flash_attention_requested(current)
+                    and not _is_flash_attention_requested(impl)
+                )
+            )
+        ):
+            _write_attn_impl(nested, impl)
+        if isinstance(getattr(nested, "use_flash_attn", None), bool):
+            nested.use_flash_attn = _is_flash_attention_requested(impl)
+
+
 def _write_attn_impl(config, impl):
+    previous = _config_get(config, "_attn_implementation", None)
     _config_set(config, "_attn_implementation", impl)
     if isinstance(config, dict) or hasattr(config, "attn_implementation"):
         _config_set(config, "attn_implementation", impl)
+    _sync_baked_attn_impl(config, previous, impl)
 
 
 def _set_attn_impl(config, impl):
@@ -1464,6 +1757,7 @@ def _apply_text_only_key_mapping(kwargs, parent_config, text_config):
     ):
         _TEXT_ONLY_PARENT_MODEL_TYPES[text_model_type] = parent_model_type
         _install_text_only_conversion_carry()
+    return mapping
 
 
 def _cast_text_only_prequantized_params(model, dtype):
@@ -1509,6 +1803,454 @@ def _cast_text_only_prequantized_params(model, dtype):
     return n_cast
 
 
+def _is_remote_code_config(config):
+    # A config class defined by repo code (trust_remote_code), not one transformers ships.
+    return type(config).__module__.startswith("transformers_modules")
+
+
+def _checkpoint_weight_names(
+    model_name,
+    token = None,
+    revision = None,
+    local_files_only = False,
+    subfolder = None,
+    variant = None,
+    cache_dir = None,
+):
+    # Checkpoint tensor names (safetensors index/header or sharded .bin index); None when unknown. Never unpickles a .bin.
+    import json, os
+
+    def _add_variant(name):
+        if not variant:
+            return name
+        stem, ext = name.rsplit(".", 1)
+        return f"{stem}.{variant}.{ext}"
+
+    index_name = _add_variant("model.safetensors.index.json")
+    single_name = _add_variant("model.safetensors")
+    bin_index_name = _add_variant("pytorch_model.bin.index.json")
+    if os.path.isdir(str(model_name)):
+        model_name = os.path.join(model_name, subfolder) if subfolder else model_name
+        index_path = os.path.join(model_name, index_name)
+        if os.path.isfile(index_path):
+            with open(index_path, "r", encoding = "utf-8") as f:
+                return set(json.load(f).get("weight_map", {}))
+        single_path = os.path.join(model_name, single_name)
+        if os.path.isfile(single_path):
+            from safetensors import safe_open
+            with safe_open(single_path, framework = "pt") as f:
+                return set(f.keys())
+        bin_index_path = os.path.join(model_name, bin_index_name)
+        if os.path.isfile(bin_index_path):
+            with open(bin_index_path, "r", encoding = "utf-8") as f:
+                return set(json.load(f).get("weight_map", {})) or None
+        return None
+    try:
+        from huggingface_hub import hf_hub_download
+        index_path = hf_hub_download(
+            model_name,
+            index_name,
+            token = token,
+            revision = revision,
+            subfolder = subfolder or None,
+            local_files_only = local_files_only,
+            cache_dir = cache_dir,
+        )
+        with open(index_path, "r", encoding = "utf-8") as f:
+            return set(json.load(f).get("weight_map", {}))
+    except Exception:
+        pass
+    try:
+        # An unsharded checkpoint already in the cache: read its header, never download it.
+        from safetensors import safe_open
+        single_path = hf_hub_download(
+            model_name,
+            single_name,
+            token = token,
+            revision = revision,
+            subfolder = subfolder or None,
+            local_files_only = True,
+            cache_dir = cache_dir,
+        )
+        with safe_open(single_path, framework = "pt") as f:
+            return set(f.keys())
+    except Exception:
+        pass
+    if not local_files_only and not subfolder and not variant:
+        # get_safetensors_metadata reads the repo root's unvarianted files only.
+        try:
+            from huggingface_hub import get_safetensors_metadata
+
+            meta = get_safetensors_metadata(model_name, token = token, revision = revision)
+            names = set(getattr(meta, "weight_map", {}) or {})
+            if names:
+                return names
+        except Exception:
+            pass
+    try:
+        bin_index_path = hf_hub_download(
+            model_name,
+            bin_index_name,
+            token = token,
+            revision = revision,
+            subfolder = subfolder or None,
+            local_files_only = local_files_only,
+            cache_dir = cache_dir,
+        )
+        with open(bin_index_path, "r", encoding = "utf-8") as f:
+            return set(json.load(f).get("weight_map", {})) or None
+    except Exception:
+        return None
+
+
+def _infer_text_submodel_prefix(expected_names, checkpoint_names):
+    # The one checkpoint prefix under which EVERY parameter of the standalone text model is stored (language_model.), or None.
+    expected = set(expected_names)
+    if not expected or not checkpoint_names:
+        return None
+    counts = {}
+    for name in checkpoint_names:
+        start = 0
+        while True:
+            dot = name.find(".", start)
+            if dot == -1:
+                break
+            prefix, suffix = name[: dot + 1], name[dot + 1 :]
+            if suffix in expected:
+                counts[prefix] = counts.get(prefix, 0) + 1
+            start = dot + 1
+    full = [p for p, n in counts.items() if n == len(expected)]
+    if len(full) != 1:
+        # None covers everything (weights would be random), or two prefixes do and the choice is ambiguous.
+        return None
+    return full[0]
+
+
+def _resolve_text_causal_lm_class(
+    text_config,
+    model_name,
+    trust_remote_code,
+    token = None,
+    revision = None,
+    local_files_only = False,
+    cache_dir = None,
+    code_revision = None,
+):
+    # The class AutoModelForCausalLM.from_pretrained(model_name, config = text_config) will build: repo code first when trusted.
+    auto_map = getattr(text_config, "auto_map", None) or {}
+    class_ref = auto_map.get("AutoModelForCausalLM") if isinstance(auto_map, dict) else None
+    if class_ref is not None:
+        if not trust_remote_code:
+            return None
+        if "--" in str(class_ref):
+            # Code from another repository, named only in a nested config that remote-code scanners
+            # (which read the top-level auto_map) never see: keep the full-composite load instead of importing it.
+            return None
+        from transformers.dynamic_module_utils import get_class_from_dynamic_module
+
+        return get_class_from_dynamic_module(
+            class_ref,
+            model_name,
+            token = token,
+            revision = revision,
+            # from_pretrained reads repo code at code_revision when given, else at revision.
+            code_revision = code_revision,
+            local_files_only = local_files_only,
+            cache_dir = cache_dir,
+        )
+    from transformers import AutoModelForCausalLM
+
+    return resolve_model_class(AutoModelForCausalLM, text_config)
+
+
+def _meta_parameter_names(model_class, config):
+    # Meta-device param names: (tied counted once, all names incl. tied aliases).
+    import torch
+
+    config = copy.deepcopy(config)
+    try:
+        # The build only needs names; a hardcoded flash_attention_2 would refuse to init without a GPU.
+        config._attn_implementation = "eager"
+    except Exception:
+        pass
+    with torch.device("meta"):
+        model = model_class(config)
+    return (
+        [name for name, _ in model.named_parameters()],
+        [name for name, _ in model.named_parameters(remove_duplicate = False)],
+    )
+
+
+def _get_remote_composite_text_only(
+    model_config,
+    model_name,
+    trust_remote_code = False,
+    token = None,
+    revision = None,
+    local_files_only = False,
+    fast_inference = False,
+    subfolder = None,
+    device_map = None,
+    variant = None,
+    cache_dir = None,
+    code_revision = None,
+):
+    # Text-only load plan for a repo-code composite (Nemotron-Omni: llm_config + vision/sound) whose text sub-model is a whole causal LM stored under one prefix.
+    # Returns (text_config, key_mapping, text_parameter_names) or None; None keeps the previous full-model load.
+    if not trust_remote_code or not _is_remote_code_config(model_config):
+        return None
+    if isinstance(device_map, dict) and any(key != "" for key in device_map):
+        # Keys name the composite's modules (language_model, vision_model), which the standalone decoder does not have.
+        return None
+    if fast_inference:
+        # vLLM loads the repo's own composite config and weights by name, with no prefix rewrite for a standalone text config.
+        return None
+    if Version(transformers_version) < Version("5.0.0"):
+        # transformers 4.x key_mapping cannot strip a wrapper prefix (corrupted state dict or random weights).
+        return None
+    try:
+        text_config = model_config.get_text_config()
+    except Exception:
+        text_config = None
+    if text_config is None:
+        text_config = getattr(model_config, "text_config", None)
+    if text_config is None or text_config is model_config:
+        # InternVL / Nemotron-Nano-VL keep the decoder config as llm_config without the text_config alias get_text_config() looks for.
+        text_config = None
+        for attr in ("llm_config", "language_config"):
+            sub = getattr(model_config, attr, None)
+            if sub is not None and sub is not model_config and hasattr(sub, "to_dict"):
+                text_config = sub
+                break
+        if text_config is None:
+            return None
+    text_config = copy.copy(text_config)
+    qc = getattr(model_config, "quantization_config", None)
+    if qc is not None and getattr(text_config, "quantization_config", None) is None:
+        text_config.quantization_config = qc
+    if getattr(text_config, "_commit_hash", None) is None:
+        # A nested config carries no commit; the load runs the parent repo's code and weights, so pin to the parent's.
+        text_config._commit_hash = getattr(model_config, "_commit_hash", None)
+    # Probe the commit the load is pinned to (the one the config was read at), not a branch that may have moved.
+    revision = getattr(text_config, "_commit_hash", None) or revision
+    try:
+        text_class = _resolve_text_causal_lm_class(
+            text_config,
+            model_name,
+            trust_remote_code,
+            token = token,
+            revision = revision,
+            local_files_only = local_files_only,
+            cache_dir = cache_dir,
+            code_revision = code_revision,
+        )
+        if text_class is None:
+            return None
+        parent_class_names = set()
+        for ref in (getattr(model_config, "auto_map", None) or {}).values():
+            parent_class_names.update(ref if isinstance(ref, (list, tuple)) else (ref,))
+        if (
+            f"{text_class.__module__.rsplit('.', 1)[-1]}.{text_class.__name__}"
+            in parent_class_names
+        ):
+            return None  # the text entry points back at the wrapper itself
+        expected, text_names = _meta_parameter_names(text_class, text_config)
+    except Exception:
+        return None
+    names = _checkpoint_weight_names(
+        model_name,
+        token = token,
+        revision = revision,
+        local_files_only = local_files_only,
+        subfolder = subfolder,
+        variant = variant,
+        cache_dir = cache_dir,
+    )
+    prefix = _infer_text_submodel_prefix(expected, names)
+    if prefix is None:
+        return None
+    qc = getattr(text_config, "quantization_config", None)
+    if qc is not None:
+        qc = _strip_skip_module_prefix(qc, prefix)
+        if qc is None:
+            return None
+        text_config.quantization_config = qc
+    return text_config, {"^" + re.escape(prefix): ""}, text_names
+
+
+_QC_MODULE_NAME_FIELDS = (
+    "llm_int8_skip_modules",
+    "modules_to_not_convert",
+    "ignore",  # compressed-tensors, modelopt
+    "exclude_modules",
+)
+
+
+def _strip_skip_module_prefix(qc, prefix):
+    # Wrapper-root module names -> text-model names; None for a regex naming the prefix (caller keeps the full model).
+    is_dict = isinstance(qc, dict)
+    dot = r"\\?\."  # a regex entry may escape any of the prefix's dots
+    stem = re.compile(
+        r"(?:^|[^A-Za-z0-9_])" + dot.join(map(re.escape, prefix.rstrip(".").split("."))) + dot
+    )
+    updates = {}
+    for field in _QC_MODULE_NAME_FIELDS:
+        names = qc.get(field) if is_dict else getattr(qc, field, None)
+        if not names or not isinstance(names, (list, tuple)):
+            continue
+        remapped = []
+        for name in names:
+            if isinstance(name, str) and name.startswith(prefix):
+                name = name[len(prefix) :]
+            elif isinstance(name, str) and stem.search(name):
+                return None
+            remapped.append(name)
+        updates[field] = list(dict.fromkeys(remapped))
+    if not updates:
+        return qc
+    qc = dict(qc) if is_dict else copy.copy(qc)
+    for field, names in updates.items():
+        if is_dict:
+            qc[field] = names
+        else:
+            setattr(qc, field, names)
+    return qc
+
+
+def _rebase_user_quantization_config(kwargs, key_mapping):
+    # Caller's quantization_config overrides the config's, so rebase its skip names too, on a copy.
+    qc = kwargs.get("quantization_config", None)
+    if qc is None:
+        return
+    for pattern, replacement in key_mapping.items():
+        if pattern.startswith("^") and not replacement:
+            qc = _strip_skip_module_prefix(qc, re.sub(r"\\(.)", r"\1", pattern[1:])) or qc
+    kwargs["quantization_config"] = qc
+
+
+def _trusted_remote_code_commit(
+    model_name,
+    commit,
+    code_revision = None,
+    token = None,
+    cache_dir = None,
+    local_files_only = False,
+):
+    # The commit whose repo code a trusted load ran, which the export's trusted config re-read pins to (unsloth-zoo).
+    # from_pretrained runs a Hub repo's code at code_revision when given, not at the weights' commit.
+    import os
+
+    if code_revision is None or os.path.isdir(str(model_name)):
+        return commit
+    if re.fullmatch(r"[0-9a-f]{40}", str(code_revision)):
+        return code_revision
+    resolved = None
+    try:
+        from transformers.utils.hub import cached_file, extract_commit_hash
+        path = cached_file(
+            model_name,
+            "config.json",
+            revision = code_revision,
+            token = token,
+            cache_dir = cache_dir,
+            local_files_only = local_files_only,
+        )
+        resolved = extract_commit_hash(path, None)
+    except Exception:
+        pass
+    if resolved is None and not local_files_only:
+        try:
+            from huggingface_hub import HfApi
+            resolved = HfApi().model_info(model_name, revision = code_revision, token = token).sha
+        except Exception:
+            pass
+    # Unresolved: "", not None, which unsloth-zoo would replace with the weights' commit.
+    return resolved or ""
+
+
+def _merge_key_mapping(kwargs, mapping):
+    user_mapping = kwargs.get("key_mapping", None)
+    kwargs["key_mapping"] = {**mapping, **user_mapping} if user_mapping else mapping
+
+
+def _drop_text_only_key_mapping(model, mapping):
+    # transformers 5 reverses key_mapping in save_pretrained; drop only the plan's own entries.
+    conversions = getattr(model, "_weight_conversions", None)
+    if not mapping or not isinstance(conversions, list):
+        return
+    own = {(pattern, replacement) for pattern, replacement in mapping.items()}
+
+    def _is_own(conversion):
+        sources = getattr(conversion, "source_patterns", None)
+        targets = getattr(conversion, "target_patterns", None)
+        if type(conversion).__name__ != "WeightRenaming" or not sources or not targets:
+            return False
+        if len(sources) != 1 or len(targets) != 1:
+            return False
+        return (sources[0], targets[0]) in own
+
+    model._weight_conversions = [c for c in conversions if not _is_own(c)]
+
+
+def _adapter_fits_text_model(
+    adapter_name,
+    key_mapping,
+    token = None,
+    revision = None,
+    local_files_only = False,
+    cache_dir = None,
+    text_names = None,
+):
+    # False when the adapter targets the composite (wrapper prefix or wrapper-only module) or is unreadable.
+    import os
+
+    names = None
+    # PEFT's own order: safetensors first, then a safe_serialization = False adapter_model.bin.
+    for file_name in ("adapter_model.safetensors", "adapter_model.bin"):
+        try:
+            if os.path.isdir(str(adapter_name)):
+                path = os.path.join(adapter_name, file_name)
+                if not os.path.isfile(path):
+                    continue
+            else:
+                from huggingface_hub import hf_hub_download
+                path = hf_hub_download(
+                    adapter_name,
+                    file_name,
+                    token = token,
+                    revision = revision,
+                    local_files_only = local_files_only,
+                    cache_dir = cache_dir,
+                )
+            if file_name.endswith(".safetensors"):
+                from safetensors import safe_open
+                with safe_open(path, framework = "pt") as f:
+                    names = list(f.keys())
+            else:
+                import torch
+
+                # An adapter is small; weights_only never runs pickled code.
+                names = list(torch.load(path, map_location = "cpu", weights_only = True))
+            break
+        except Exception:
+            continue
+    if not names:
+        return False
+    patterns = [re.compile(p) for p in key_mapping]
+    # Standalone decoder modules that own a weight; LoRA tensors hang off them (q_proj.lora_A.weight).
+    owners = {n.rsplit(".", 1)[0] for n in text_names or () if "." in n}
+    for name in names:
+        name = name.removeprefix("base_model.model.")
+        if any(p.match(name) for p in patterns):
+            return False
+        if text_names is None or name in text_names:
+            continue
+        parts = name.split(".")
+        if not any(".".join(parts[:i]) in owners for i in range(1, len(parts))):
+            return False
+    return True
+
+
 def resolve_attention_implementation(
     model_class,
     config,
@@ -1520,7 +2262,7 @@ def resolve_attention_implementation(
     model_type = model_type_name.lower()
     if supports_sdpa is None:
         supports_sdpa = model_class is not None and getattr(model_class, "_supports_sdpa", False)
-    if _is_sdpa_excluded(model_type):
+    if _is_sdpa_excluded(model_type) or _declares_no_sdpa(model_class):
         supports_sdpa = False
     supports_flash_attention = _model_class_supports_flash_attention(
         model_class
@@ -1560,7 +2302,9 @@ def resolve_attention_implementation(
             and supports_flash_attention
             and not flex_forced_for_head_dim
         ):
-            attn_impl = _set_attn_impl(config, "flash_attention_2")
+            attn_impl = _set_attn_impl(
+                config, _scoped_flash_attention(config, supports_sdpa, model_class)
+            )
         elif flash_attention_disabled:
             attn_impl = _disable_flash_attention_if_needed(
                 config,
@@ -1608,6 +2352,8 @@ def resolve_attention_implementation(
         )
     else:
         final_attn_impl = requested_attn_implementation
+        if final_attn_impl == "flash_attention_2":
+            final_attn_impl = _scoped_flash_attention(config, supports_sdpa, model_class)
         _set_attn_impl(config, final_attn_impl)
 
     # An explicit "sdpa" is kept even on a conservatively unsupported model, except where SDPA is known-broken, which still downgrades to eager just as flex falls back for _FLEX_EXCLUDED_MODELS. A synthesized default sdpa (requested is None) also downgrades.
@@ -2767,11 +3513,13 @@ elif DEVICE_TYPE == "cuda":
                         "To update flash-attn, do the below:\n"
                         '\npip install --no-deps --no-build-isolation --upgrade "flash-attn>=2.6.3"'
                     )
-            except:
+            except Exception as error:
                 print(
                     "Unsloth: Your Flash Attention 2 installation seems to be broken. "
                     "Using Xformers instead. No performance changes will be seen."
                 )
+                if hint := stale_kernel_hint("flash_attn", error):
+                    print(hint)
 
                 import transformers.utils.import_utils
 
@@ -3412,6 +4160,19 @@ def _accelerate_execution_device(module):
     return device
 
 
+def embedding_applies_scale(embedding) -> bool:
+    """True if the embedding applies sqrt(hidden_size) itself (Gemma / Gemma2 from transformers 5.4.0), through PEFT wrappers."""
+    for _ in range(4):
+        if embedding is None:
+            return False
+        if getattr(embedding, "embed_scale", None) is not None:
+            return True
+        embedding = getattr(embedding, "base_layer", None) or getattr(
+            embedding, "original_module", None
+        )
+    return False
+
+
 def per_layer_device(module, default = 0):
     """Where this decoder layer lives, as (device, buffer_index); gemma, gemma2 and cohere
     still need the index, to subscript a per-device tuple. Probed, not version-gated: an older
@@ -3579,6 +4340,11 @@ def offload_output_embeddings(model, temporary_location: str = "_unsloth_tempora
     new_output_embeddings._offloaded_file_location = offloaded_W._offloaded_file_location
     model.set_output_embeddings(new_output_embeddings)
     return
+
+
+def config_return_dict(config):
+    # use_return_dict without its transformers 5 deprecation warning, a torch.compile graph break.
+    return getattr(config, "return_dict", True) and not getattr(config, "torchscript", False)
 
 
 def is_bfloat16_supported():
@@ -3942,11 +4708,45 @@ def _unsloth_train_if_needed(model):
         and _unsloth_wrappees_are_in_train_mode(model)
     ):
         return model
+    _unsloth_freeze_norm_running_stats(model)
     model.train()
     try:
         model._unsloth_train_mode_asserted = True
     except Exception:
         pass
+    return model
+
+
+_UNSLOTH_RUNNING_STAT_NORMS = (
+    torch.nn.modules.batchnorm._BatchNorm,
+    torch.nn.modules.instancenorm._InstanceNorm,
+)
+
+
+def _unsloth_norm_stats_are_frozen(module):
+    """Running-stat norm with all own params frozen. UNSLOTH_FREEZE_NORM_RUNNING_STATS=0 opts out."""
+    if os.environ.get("UNSLOTH_FREEZE_NORM_RUNNING_STATS", "1") == "0":
+        return False
+    if not getattr(module, "track_running_stats", False):
+        return False
+    params = list(module.parameters(recurse = False))
+    return len(params) > 0 and not any(p.requires_grad for p in params)
+
+
+def _unsloth_norm_train(module, mode = True):
+    if mode and _unsloth_norm_stats_are_frozen(module):
+        mode = False
+    return type(module).train(module, mode)
+
+
+def _unsloth_freeze_norm_running_stats(model):
+    """Keep frozen running-stat norms in eval (LoRA never saves their buffers); rechecked per train() call."""
+    if not isinstance(model, torch.nn.Module):
+        return model
+    for module in model.modules():
+        if isinstance(module, _UNSLOTH_RUNNING_STAT_NORMS) and "train" not in module.__dict__:
+            # partial, not a bound method, so deepcopy / pickle still work.
+            module.train = functools.partial(_unsloth_norm_train, module)
     return model
 
 
@@ -4178,6 +4978,9 @@ def patch_gradient_accumulation_fix(Trainer):
                             pass
             except Exception:
                 pass
+            if getattr(self, "is_fsdp_enabled", False):
+                from .llama import _decline_fused_lora_for_fsdp
+                _decline_fused_lora_for_fsdp(getattr(self, "model", None))
 
         _unsloth_trainer_init.__wrapped__ = _original_trainer_init
         Trainer.__init__ = _unsloth_trainer_init
@@ -4306,6 +5109,165 @@ def apply_accepts_loss_kwargs_fix(model):
         return f"default (signature inspection, {reason})"
     _shadow_accepts_loss_kwargs(model, value)
     return f"{value} ({reason})"
+
+
+# unsloth/gpt-oss-* generation_config predates upstream adding <|call|> (200012) to eos (#5162):
+# tool calls then run on into plain-text harmony markup. Only generation_config is widened.
+_HARMONY_TOOL_CALL_TOKEN = "<|call|>"
+_HARMONY_FINGERPRINT_TOKENS = ("<|call|>", "<|channel|>", "<|return|>")
+
+
+def _harmony_tool_call_token_id(tokenizer):
+    if tokenizer is None:
+        return None
+    convert = getattr(tokenizer, "convert_tokens_to_ids", None)
+    if not callable(convert):
+        return None
+    unknown = getattr(tokenizer, "unk_token_id", None)
+    seen = {}
+    for token in _HARMONY_FINGERPRINT_TOKENS:
+        try:
+            token_id = convert(token)
+        except Exception:
+            return None
+        if not isinstance(token_id, int) or token_id < 0 or token_id == unknown:
+            return None
+        seen[token] = token_id
+    if len(set(seen.values())) != len(_HARMONY_FINGERPRINT_TOKENS):
+        return None
+    return seen[_HARMONY_TOOL_CALL_TOKEN]
+
+
+def patch_harmony_tool_call_eos(model, tokenizer):
+    if model is None:
+        return model
+    generation_config = getattr(model, "generation_config", None)
+    if generation_config is None:
+        return model
+    call_id = _harmony_tool_call_token_id(tokenizer)
+    if call_id is None:
+        return model
+
+    current = getattr(generation_config, "eos_token_id", None)
+    if current is None:
+        # <|call|> as the only terminator would drop <|return|>; only widen an existing set.
+        return model
+    elif isinstance(current, bool):
+        return model
+    elif isinstance(current, int):
+        eos_ids = [current]
+    elif isinstance(current, (list, tuple)):
+        # Decline, never raise: this runs inside from_pretrained.
+        eos_ids = []
+        for token_id in current:
+            if isinstance(token_id, bool) or not isinstance(token_id, int):
+                return model
+            eos_ids.append(token_id)
+    else:
+        return model
+    if call_id in eos_ids:
+        return model
+    if not eos_ids:
+        # Same as None: nothing to widen.
+        return model
+
+    # Remote-code configs may have a read-only or validating eos_token_id.
+    try:
+        generation_config.eos_token_id = eos_ids + [call_id]
+    except Exception as error:
+        logger.warning(
+            f"Unsloth: Could not add `{_HARMONY_TOOL_CALL_TOKEN}` to the generation stop "
+            f"tokens ({error}). Tool calls may not stop on their own terminator. Pass "
+            "`eos_token_id` to `generate` to work around it."
+        )
+        return model
+    logger.warning(
+        f"Unsloth: Added `{_HARMONY_TOOL_CALL_TOKEN}` (id {call_id}) to the generation stop "
+        "tokens. Harmony ends a tool call with it, and without it generation runs past a "
+        "finished tool call into plain-text harmony markup."
+    )
+    return model
+
+
+# fast_inference builds the vLLM engine before the tokenizer, so widen the generation-config
+# dict vLLM re-applies per request (caller SamplingParams too; ignore_eos still opts out).
+# Internal and moved between versions: look up defensively, never raise.
+_VLLM_GENERATION_CONFIG_FIELD_PATHS = (
+    ("llm_engine", "input_processor"),
+    ("input_processor",),
+    ("llm_engine", "processor"),
+    ("processor",),
+)
+# vLLM rejects larger stop sets when min_tokens > 0.
+_VLLM_MAX_STOP_TOKEN_IDS = 128
+
+
+def _vllm_generation_config_fields(engine):
+    for path in _VLLM_GENERATION_CONFIG_FIELD_PATHS:
+        holder = engine
+        for attribute in path:
+            holder = getattr(holder, attribute, None)
+            if holder is None:
+                break
+        else:
+            fields = getattr(holder, "generation_config_fields", None)
+            if isinstance(fields, dict):
+                return fields
+    return None
+
+
+def patch_harmony_tool_call_eos_vllm(model, tokenizer):
+    engine = getattr(model, "vllm_engine", None)
+    if engine is None:
+        return model
+    try:
+        call_id = _harmony_tool_call_token_id(tokenizer)
+        if call_id is None:
+            return model
+        fields = _vllm_generation_config_fields(engine)
+        if fields is None:
+            logger.warning(
+                f"Unsloth: Could not reach the vLLM stop-token set, so `{_HARMONY_TOOL_CALL_TOKEN}` "
+                "was not added to it. Tool calls under `fast_inference = True` may not stop on "
+                "their own terminator. Pass `stop_token_ids` to work around it."
+            )
+            return model
+
+        current = fields.get("eos_token_id", None)
+        if isinstance(current, bool):
+            return model
+        elif isinstance(current, int):
+            eos_ids = [current]
+        elif isinstance(current, (list, tuple)):
+            eos_ids = []
+            for token_id in current:
+                if isinstance(token_id, bool) or not isinstance(token_id, int):
+                    return model
+                eos_ids.append(token_id)
+        elif current is None:
+            # Safe to seed, unlike HF: vLLM tracks the primary eos separately off the tokenizer.
+            eos_ids = []
+        else:
+            return model
+
+        if call_id in eos_ids:
+            return model
+        if len(eos_ids) + 1 > _VLLM_MAX_STOP_TOKEN_IDS:
+            return model
+
+        fields["eos_token_id"] = eos_ids + [call_id]
+        logger.warning(
+            f"Unsloth: Added `{_HARMONY_TOOL_CALL_TOKEN}` (id {call_id}) to the vLLM stop "
+            "tokens. Harmony ends a tool call with it, and without it generation runs past a "
+            "finished tool call into plain-text harmony markup."
+        )
+    except Exception as error:
+        logger.warning(
+            f"Unsloth: Could not add `{_HARMONY_TOOL_CALL_TOKEN}` to the vLLM stop tokens "
+            f"({error}). Tool calls under `fast_inference = True` may not stop on their own "
+            "terminator."
+        )
+    return model
 
 
 def _loss_kwargs_chain(model):
@@ -4524,6 +5486,8 @@ def patch_tokenizer(model, tokenizer):
     model, tokenizer = _patch_tokenizer(model, tokenizer)
     if model is not None:
         model.config.update({"unsloth_version": __version__})
+    model = patch_harmony_tool_call_eos(model, tokenizer)
+    model = patch_harmony_tool_call_eos_vllm(model, tokenizer)
     return model, tokenizer
 
 
@@ -4774,11 +5738,14 @@ def fast_inference_setup(model_name, model_config):
 
 def save_lora_adapter(model, save_directory, *args, **kwargs):
     """`save_pretrained` over the adapter, cast to the embedding dtype. PEFT's own selection decides what an adapter contains, so it is handed the whole state dict and only the adapter tensors are cast: filtering down to `.lora_A.`/`.lora_B.` first, as the Zoo helper does, makes PEFT raise `KeyError` looking up `modules_to_save.<adapter>.weight`, and a DoRA run loses its `lora_magnitude_vector` the same way. Both are reachable without vLLM, since `get_peft_model` adds `embed_tokens` and `lm_head` to `modules_to_save` once new tokens are trained. Non-adapter entries pass through by reference."""
+    from .compressed_tensors_int4 import adapter_only_state_dict
+
     dtype = model.get_input_embeddings().weight.dtype
-    kwargs["state_dict"] = {
-        key: (value.to(dtype) if "lora_" in key else value)
-        for key, value in model.state_dict().items()
-    }
+    with adapter_only_state_dict():
+        kwargs["state_dict"] = {
+            key: (value.to(dtype) if "lora_" in key else value)
+            for key, value in model.state_dict().items()
+        }
     return model.save_pretrained(save_directory, *args, **kwargs)
 
 
@@ -5108,10 +6075,10 @@ patch_hf_quantizer()
 
 def verify_fp8_support_if_applicable(model_config):
     quant_method = get_quant_type(model_config)
-    if quant_method in ["fbgemm_fp8", "fp8"] and DEVICE_TYPE != "cuda":
+    if quant_method in ["fbgemm_fp8", "fp8"] and DEVICE_TYPE not in ("cuda", "xpu"):
         # In case of block quantized, we allow L4 because we fall back to torchao kernels.
         raise ValueError(
-            f"Unsloth: FP8 quantization is only supported on CUDA GPUs. You are using {DEVICE_TYPE}."
+            f"Unsloth: FP8 quantization is only supported on CUDA and XPU GPUs. You are using {DEVICE_TYPE}."
         )
 
     if DEVICE_TYPE == "cuda":
@@ -5152,6 +6119,488 @@ def hf_login(token: Optional[str] = None) -> Optional[str]:
     except Exception as e:
         logger.info(f"Failed to login to huggingface using token with error: {e}")
     return token
+
+
+def _check_block_swap(model_or_config):
+    if BlockSwap is None:
+        raise ImportError(
+            "Unsloth: offload_layers needs a newer unsloth_zoo. "
+            "Run `pip install --upgrade unsloth_zoo`."
+        )
+    if is_moe_model(model_or_config):
+        print(
+            "Unsloth: offload_layers on an MoE model copies every expert across PCIe "
+            "while only the routed ones compute, so steps can be copy-bound."
+        )
+    if not torch.cuda.is_available():
+        # Prefetch runs on CUDA/HIP streams; XPU, NPU and CPU have none.
+        raise ValueError("Unsloth: offload_layers needs a CUDA or ROCm GPU.")
+    if is_integrated_unified_memory_gpu():
+        raise ValueError(
+            "Unsloth: offload_layers has nothing to swap to on a unified-memory "
+            "GPU; host and device already share the same RAM."
+        )
+
+
+def _new_block_swap(layers, n, *args, placement, **kwargs):
+    try:
+        return BlockSwap(layers, n, *args, placement = placement, **kwargs)
+    except TypeError as e:
+        if "placement" not in str(e):
+            raise
+        # unsloth_zoo before placement support always swaps the last n.
+        return BlockSwap(layers, n, *args, **kwargs)
+
+
+def legacy_offload_layers(kwargs, offload_layers = None):
+    """`offload_layers`, or its original name `block_swap_layers` from `kwargs` when it was not given (0 = off)."""
+    legacy = kwargs.pop("block_swap_layers", None)
+    if offload_layers is None:
+        return 0 if legacy is None else legacy
+    return offload_layers
+
+
+def refuse_block_swap_load(offload_layers, reason):
+    """A load-to-host restriction: `"auto"` falls back to loading onto the GPU (0), a count raises."""
+    if offload_layers == "auto":
+        print(
+            f"Unsloth: offload_layers = 'auto' loads every layer onto the GPU: loading into host RAM {reason}"
+        )
+        return 0
+    raise ValueError(f"Unsloth: from_pretrained(offload_layers = ...) {reason}")
+
+
+def block_swap_load_device(device_map):
+    """The one CUDA card a load puts every layer on, else None: loading to host fetches onto one card."""
+    if DEVICE_TYPE_TORCH != "cuda" or not torch.cuda.is_available():
+        return None
+    target = device_map
+    if isinstance(device_map, dict):
+        if len(set(device_map.values())) != 1:
+            return None
+        target = next(iter(device_map.values()))
+    if target is None or target in ("auto", "balanced", "balanced_low_0", "sequential"):
+        return torch.cuda.current_device() if torch.cuda.device_count() == 1 else None
+    try:
+        target = torch.device("cuda", target) if isinstance(target, int) else torch.device(target)
+    except (RuntimeError, TypeError, ValueError):
+        return None
+    if target.type != "cuda":
+        return None
+    return target.index if target.index is not None else torch.cuda.current_device()
+
+
+def begin_block_swap_load(
+    offload_layers,
+    device_map,
+    embeddings = False,
+):
+    """from_pretrained(offload_layers = N) on any architecture: the context the weight load runs in,
+    moving N decoder layers (and with `embeddings`, the large extra token tables) to host RAM as each
+    finishes loading. nullcontext when N is 0."""
+    if not offload_layers and not embeddings:
+        return contextlib.nullcontext()
+    if embeddings:
+        return load_layers_to_host(offload_layers, placement = "spread", embeddings = True)
+    return load_layers_to_host(offload_layers, placement = "spread")
+
+
+def planned_prefetch_depth(device_map_planner_kwargs):
+    # The depth "auto" sized the slot pool with; the swapper must allocate the same pool.
+    return int((device_map_planner_kwargs or {}).get("prefetch_depth", 2))
+
+
+def finish_block_swap_load(
+    model,
+    state,
+    prefetch_depth = 2,
+):
+    """Install the swap over the layers `begin_block_swap_load` moved, once the loader is done
+    patching (their host copies are what the slot pool streams)."""
+    if state is None or getattr(state, "layers", None) is None or not state.indices:
+        return None
+    head = model.get_output_embeddings() if hasattr(model, "get_output_embeddings") else None
+    weight = getattr(head, "weight", None)
+    device = weight.device if weight is not None and weight.device.type == "cuda" else None
+    if device is None:
+        # Headless backbones (AutoModel): a retained layer names the card, which need not be the current one.
+        swapped = set(state.indices)
+        device = next(
+            (
+                p.device
+                for i, layer in enumerate(state.layers)
+                if i not in swapped
+                for p in layer.parameters()
+                if p.device.type == "cuda"
+            ),
+            None,
+        )
+    if device is None:
+        device = torch.device("cuda", torch.cuda.current_device())
+    swapper = _new_block_swap(
+        state.layers, state.indices, prefetch_depth, device = device, placement = "spread"
+    )
+    state.layers._unsloth_block_swap = swapper
+    model._unsloth_block_swap = swapper
+    return swapper
+
+
+# loader_utils.OFFLOAD_EMBEDDING_AUTO; loader_utils imports this module, so not imported from there.
+_OFFLOAD_EMBEDDING_AUTO = "auto"
+
+
+def _offload_embedding_for_room(model, require_frozen = True):
+    """Move the input-side embeddings lm_head does not share to host RAM, unless the caller passed
+    offload_embedding = False. After get_peft_model they must also be frozen."""
+    if getattr(model, "_unsloth_offload_embedding_mode", _OFFLOAD_EMBEDDING_AUTO) is False:
+        return False
+    from .vision import offload_spare_embeddings
+
+    return offload_spare_embeddings(model, require_frozen = require_frozen) > 0
+
+
+def _training_reserve_bytes(
+    model,
+    seq_len = None,
+    trainable = True,
+):
+    # Grads, AdamW's two fp32 moments and the foreach temp; before get_peft_model every param still says requires_grad.
+    extra = 0
+    if trainable:
+        extra = sum(
+            p.numel() * (p.element_size() + 12) for p in model.parameters() if p.requires_grad
+        )
+    seq_len = seq_len or getattr(model, "max_seq_length", None) or 2048
+    return estimate_training_reserve_bytes(model.config, seq_len, extra_bytes = extra), seq_len
+
+
+def _skip_aware_flag(cls):
+    # for_training, gradient_checkpointing_enable and the trainer rewrite the flag; a marked layer keeps reading False.
+    if cls.__dict__.get("_unsloth_skip_aware", False):
+        return
+
+    def _get(self):
+        if self.__dict__.get("_unsloth_skip_checkpoint", False):
+            return False
+        # Unmarked layers of the class still hold the flag in their own dict.
+        return self.__dict__.get(
+            "_unsloth_gc_flag", self.__dict__.get("gradient_checkpointing", False)
+        )
+
+    def _set(self, value):
+        self.__dict__["_unsloth_gc_flag"] = value
+
+    cls.gradient_checkpointing = property(_get, _set)
+    cls._unsloth_skip_aware = True
+
+
+def skip_checkpointing(model, layers = 0):
+    """get_peft_model(checkpoint_skip_layers = K | "max"): K decoder layers (evenly spaced; "max" =
+    all) keep their activations instead of recomputing them in backward. Faster, at the cost of
+    each layer's activations on the card. Block-swapped layers keep checkpointing."""
+    if not layers:
+        return []
+    layer_list = find_decoder_layers(model)
+    swapper = getattr(model, "_unsloth_block_swap", None)
+    swapped = set(getattr(swapper, "indices", None) or ())
+    eligible = [i for i in range(len(layer_list)) if i not in swapped]
+    if layers == "max":
+        chosen = eligible
+    else:
+        count = max(0, min(int(layers), len(eligible)))
+        chosen = (
+            [eligible[(k + 1) * len(eligible) // count - 1] for k in range(count)] if count else []
+        )
+    for i in chosen:
+        layer = layer_list[i]
+        if not hasattr(layer, "gradient_checkpointing"):
+            continue
+        current = layer.__dict__.pop("gradient_checkpointing", None)
+        _skip_aware_flag(type(layer))
+        if current is not None:
+            layer.__dict__["_unsloth_gc_flag"] = current
+        layer.__dict__["_unsloth_skip_checkpoint"] = True
+    return chosen
+
+
+def usable_cuda_bytes(device):
+    """Bytes this process can still allocate on `device`: free card memory plus blocks torch's
+    caching allocator holds unused, capped by torch.cuda.set_per_process_memory_fraction."""
+    free, total = torch.cuda.mem_get_info(device)
+    allocated = torch.cuda.memory_allocated(device)
+    usable = free + torch.cuda.memory_reserved(device) - allocated
+    get_fraction = getattr(torch.cuda, "get_per_process_memory_fraction", None)
+    try:
+        fraction = get_fraction(device) if get_fraction is not None else 1.0
+    except Exception:
+        fraction = 1.0
+    if fraction < 1.0:
+        usable = min(usable, int(total * fraction) - allocated)
+    return max(0, int(usable))
+
+
+def offload_embedding_if_tight(
+    model,
+    seq_len = None,
+    at_load = False,
+):
+    """offload_embedding = "auto": move the input embedding to host RAM only when its GPU lacks a
+    training step's reserve (activations, logits, trainable state), on any architecture. Runs after
+    the load and again in get_peft_model, once the trainable parameters are known."""
+    if estimate_training_reserve_bytes is None or not torch.cuda.is_available():
+        return False
+    if getattr(model, "_unsloth_offload_embedding_mode", None) != _OFFLOAD_EMBEDDING_AUTO:
+        return False
+    try:
+        weight = getattr(model.get_input_embeddings(), "weight", None)
+    except Exception:
+        return False
+    if weight is None or weight.device.type != "cuda":
+        return False
+    reserve, _ = _training_reserve_bytes(model, seq_len, trainable = not at_load)
+    if usable_cuda_bytes(weight.device) >= reserve:
+        return False
+    return _offload_embedding_for_room(model, require_frozen = not at_load)
+
+
+def _auto_block_swap_indices(model, prefetch_depth):
+    """Layers to swap so each GPU keeps a training step's reserve free; [] when it already does."""
+    if auto_swap_indices is None:
+        raise ImportError(
+            "Unsloth: offload_layers = 'auto' needs a newer unsloth_zoo. "
+            "Run `pip install --upgrade unsloth_zoo`."
+        )
+    layers = find_decoder_layers(model)
+    reserve, seq_len = _training_reserve_bytes(model)
+    indices, left = auto_swap_indices(layers, reserve, prefetch_depth)
+    # Only the looked-up rows cross PCIe, so the embedding goes before any layer.
+    if indices and _offload_embedding_for_room(model):
+        indices, left = auto_swap_indices(layers, reserve, prefetch_depth)
+    if not indices:
+        print(
+            f"Unsloth: offload_layers = 'auto' swaps nothing: every GPU keeps the "
+            f"{reserve / 2**30:.2f} GiB a {seq_len}-token step needs."
+        )
+    else:
+        print(
+            f"Unsloth: offload_layers = 'auto' keeps {len(indices)} of {len(layers)} decoder layers "
+            f"in host RAM so {reserve / 2**30:.2f} GiB stays free for a {seq_len}-token step."
+        )
+    if left > 0:
+        print(
+            f"Unsloth: offload_layers = 'auto' is still {left / 2**30:.2f} GiB short; "
+            "lower max_seq_length, or load with from_pretrained(offload_layers = 'auto')."
+        )
+    return indices
+
+
+def install_block_swap(
+    model,
+    offload_layers = 0,
+    prefetch_depth = 2,
+    use_gradient_checkpointing = "unsloth",
+):
+    """Stream frozen decoder blocks from pinned host RAM: `offload_layers` of them, or "auto" for
+    as few as keep a training step's reserve free on every GPU; off at 0."""
+    existing = getattr(model, "_unsloth_block_swap", None)
+    if existing is None and (
+        not offload_layers or (offload_layers != "auto" and offload_layers <= 0)
+    ):
+        return None
+    if not use_gradient_checkpointing:
+        raise ValueError(
+            "Unsloth: offload_layers needs use_gradient_checkpointing. Without "
+            "it every swapped block stays on the card until backward, so there is "
+            "nothing to save and the slot pool runs dry mid-forward."
+        )
+    if existing is not None:
+        return existing
+    if getattr(model, "vllm_engine", None) is not None:
+        raise ValueError(
+            "Unsloth: offload_layers cannot be combined with fast_inference = True, "
+            "since evicted weights would sync to vLLM as empty tensors."
+        )
+    if offload_layers == "auto":
+        # Nothing to swap to without a discrete CUDA / ROCm card: auto means no swap there.
+        if not torch.cuda.is_available() or is_integrated_unified_memory_gpu():
+            return None
+        if BlockSwap is None:
+            _check_block_swap(model)
+        offload_layers = _auto_block_swap_indices(model, prefetch_depth)
+        if not offload_layers:
+            return None
+    _check_block_swap(model)
+    layers = find_decoder_layers(model)
+    # Spaced evenly, each copy hides behind several layers of compute instead of one.
+    swapper = _new_block_swap(layers, offload_layers, prefetch_depth, placement = "spread")
+    # On the layer list too: the fast decode loop only sees the inner model.
+    layers._unsloth_block_swap = swapper
+    model._unsloth_block_swap = swapper
+    return swapper
+
+
+def _checkpoint_tensors(
+    model_name,
+    token = None,
+    revision = None,
+    cache_dir = None,
+    local_files_only = False,
+    subfolder = None,
+    variant = None,
+):
+    from safetensors import safe_open
+    import json
+
+    def _named(filename):
+        if variant is None:
+            return filename
+        stem, ext = filename.rsplit(".", 1)
+        return f"{stem}.{variant}.{ext}"
+
+    def _get(filename):
+        if os.path.isdir(model_name):
+            path = os.path.join(model_name, subfolder or "", filename)
+            return path if os.path.exists(path) else None
+        from huggingface_hub import hf_hub_download
+        try:
+            return hf_hub_download(
+                model_name,
+                filename,
+                subfolder = subfolder,
+                revision = revision,
+                token = token,
+                cache_dir = cache_dir,
+                local_files_only = local_files_only,
+            )
+        except Exception:
+            return None
+
+    index = _get(_named("model.safetensors.index.json"))
+    if index is not None:
+        with open(index, "r", encoding = "utf-8") as f:
+            shards = sorted(set(json.load(f)["weight_map"].values()))
+    else:
+        shards = [_named("model.safetensors")]
+    handles, tensors = [], {}
+    for shard in shards:
+        path = _get(shard)
+        if path is None:
+            raise RuntimeError(f"Unsloth: offload_layers could not find {shard} for {model_name}.")
+        h = safe_open(path, framework = "pt", device = "cpu")
+        handles.append(h)
+        for key in h.keys():
+            tensors[key] = lambda h = h, key = key: h.get_tensor(key)
+    return tensors, handles
+
+
+def trim_config_for_block_swap(config, offload_layers):
+    """Trim the swapped tail off the config; returns the originals to restore, or None."""
+    if not offload_layers or offload_layers <= 0:
+        return None
+    if build_host_layers is None:
+        raise ImportError(
+            "Unsloth: from_pretrained(offload_layers = ...) needs a newer unsloth_zoo. "
+            "Run `pip install --upgrade unsloth_zoo`."
+        )
+    _check_block_swap(config)
+    total = config.num_hidden_layers
+    n = min(int(offload_layers), total - 1)
+    saved = {"num_hidden_layers": total}
+    for key, value in list(vars(config).items()):
+        if isinstance(value, (list, tuple)) and len(value) == total:
+            saved[key] = value
+            setattr(config, key, type(value)(value[: total - n]))
+    config.num_hidden_layers = total - n
+    return saved
+
+
+_SWAPPED_LAYER_KEY = re.compile(r"(?:^|\.)layers\.(\d+)\.")
+
+
+def skip_swapped_checkpoint_keys(saved, kept):
+    """Hide the swapped tail's checkpoint keys from the standard load; returns an undo callable.
+
+    transformers 4.x still loads every key its renaming mapping keeps: the tail's bnb stats reach the
+    quantizer (ModuleList has no attribute `N`) and plain weights log "were not used", which
+    RaiseUninitialized turns into an error. 5.x has no such method and already drops them."""
+    from transformers.modeling_utils import PreTrainedModel
+
+    original = PreTrainedModel.__dict__.get("_get_key_renaming_mapping")
+    if saved is None or original is None:
+        return lambda: None
+
+    def _get_key_renaming_mapping(self, checkpoint_keys, *args, **kwargs):
+        keep = []
+        for key in checkpoint_keys:
+            m = _SWAPPED_LAYER_KEY.search(key)
+            if m is None or int(m.group(1)) < kept:
+                keep.append(key)
+        return original(self, keep, *args, **kwargs)
+
+    PreTrainedModel._get_key_renaming_mapping = _get_key_renaming_mapping
+
+    def undo():
+        PreTrainedModel._get_key_renaming_mapping = original
+
+    return undo
+
+
+def attach_offload_layers(
+    model,
+    saved,
+    model_name,
+    dtype,
+    load_in_4bit,
+    skip_modules = (),
+    prefetch_depth = 2,
+    **hub_kwargs,
+):
+    if saved is None:
+        return None
+    layers = find_decoder_layers(model)
+    first = len(layers)
+    config = model.config
+    for key, value in saved.items():
+        setattr(config, key, value)
+    count = config.num_hidden_layers - first
+    layer_cls = type(layers[0])
+    # The tail fetches onto the head's card, where a multi-GPU plan reserved its slot pool.
+    head = model.get_output_embeddings() if hasattr(model, "get_output_embeddings") else None
+    weight = getattr(head, "weight", None)
+    device = weight.device if weight is not None else next(layers[first - 1].parameters()).device
+    if device.type != "cuda":
+        device = torch.device("cuda", torch.cuda.current_device())
+    tensors, handles = _checkpoint_tensors(model_name, **hub_kwargs)
+    try:
+        new = build_host_layers(
+            lambda idx: layer_cls(config, idx),
+            first,
+            count,
+            tensors,
+            device = device,
+            compute_dtype = dtype,
+            quantize_4bit = load_in_4bit,
+            skip_modules = skip_modules,
+        )
+    finally:
+        del handles
+    # Carry over plain attributes post_patch set on loaded layers (Gemma's norm variance_epsilon).
+    reference = dict(layers[0].named_modules())
+    for layer in new:
+        for name, module in layer.named_modules():
+            ref = reference.get(name)
+            if ref is None:
+                continue
+            for key, value in vars(ref).items():
+                if key.startswith("_") or key in vars(module):
+                    continue
+                if not isinstance(value, (torch.Tensor, torch.nn.Module)):
+                    setattr(module, key, value)
+        layers.append(layer)
+    swapper = _new_block_swap(layers, count, prefetch_depth, device = device, placement = "tail")
+    layers._unsloth_block_swap = swapper
+    model._unsloth_block_swap = swapper
+    return swapper
 
 
 def is_moe_model(model) -> bool:
@@ -5881,3 +7330,80 @@ try:
     patch_flex_attention_kernel_options()
 except Exception:
     pass
+
+
+@functools.lru_cache(maxsize = 1)
+def _gradient_checkpointing_layer_class():
+    try:
+        from transformers.modeling_layers import GradientCheckpointingLayer
+    except ImportError:
+        return None
+    return GradientCheckpointingLayer
+
+
+@functools.lru_cache(maxsize = None)
+def _forward_reads_checkpoint_function(cls):
+    try:
+        return "_gradient_checkpointing_func" in inspect.getsource(cls.forward)
+    except Exception:
+        return True  # cannot read it: assume it does, as _forward_calls_checkpointing does
+
+
+def _calls_checkpoint_function(module):
+    """Calls `self._gradient_checkpointing_func` when its flag is on (also older / remote-code backbones)."""
+    layer_class = _gradient_checkpointing_layer_class()
+    if layer_class is not None and isinstance(module, layer_class):
+        return True
+    return hasattr(module, "gradient_checkpointing") and _forward_reads_checkpoint_function(
+        type(module)
+    )
+
+
+def _is_unarmed(module):
+    return (
+        _calls_checkpoint_function(module)
+        and getattr(module, "_gradient_checkpointing_func", None) is None
+    )
+
+
+def resolve_training_gradient_checkpointing(model, use_gradient_checkpointing):
+    """`None` keeps the mode chosen at load / get_peft_model instead of forcing it on."""
+    if use_gradient_checkpointing is not None:
+        return use_gradient_checkpointing
+    if hasattr(model, "_unsloth_gradient_checkpointing"):
+        return model._unsloth_gradient_checkpointing
+    # Nothing recorded (no adapter, full finetuning): loading's choice is whether it armed the layers.
+    checkpointing = [m for m in model.modules() if _calls_checkpoint_function(m)]
+    if checkpointing:
+        return any(not _is_unarmed(m) for m in checkpointing)
+    return True
+
+
+def arm_gradient_checkpointing(model):
+    """Install the checkpoint function a load with checkpointing off never gave the layers."""
+    if not any(_is_unarmed(m) for m in model.modules()):
+        return False
+    # Outer model, not get_base_model(): Gemma 3N / 4 and DeepSeek-V4.1 install their override there.
+    try:
+        model.gradient_checkpointing_enable()
+    except Exception as e:
+        logger.warning(
+            f"Unsloth: could not turn on gradient checkpointing ({e}); training without it."
+        )
+        return False
+    # As the load path does: a layer handed a cache skips checkpointing (_checkpointed_layer_forward).
+    try:
+        from unsloth_zoo.training_utils import disable_use_cache
+    except ImportError:
+        return True
+    disable_use_cache(model)
+    return True
+
+
+def set_module_gradient_checkpointing(module, value):
+    """Never turn on a module without its checkpoint function: its next training forward would raise."""
+    if value and _is_unarmed(module):
+        module.gradient_checkpointing = False
+        return False
+    module.gradient_checkpointing = value
+    return True

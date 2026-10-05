@@ -48,6 +48,8 @@ ROCM_SHELL_ENV_ALLOWLIST: tuple[str, ...] = (
     "MIOPEN_USER_DB_PATH",
     "MIOPEN_CUSTOM_CACHE_DIR",
     "MIOPEN_FIND_MODE",
+    # Preserve shell overrides, including an explicit opt-out (0).
+    "MIOPEN_SEARCH_CUTOFF",
     "HIP_VISIBLE_DEVICES",
     "ROCR_VISIBLE_DEVICES",
     "GPU_DEVICE_ORDINAL",

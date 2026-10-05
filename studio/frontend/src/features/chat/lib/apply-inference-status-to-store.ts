@@ -10,6 +10,7 @@ import {
   savedContextPin,
 } from "@/features/model-picker";
 // eslint-disable-next-line no-restricted-imports -- Avoid the hub barrel's React and download-manager exports.
+import { normalizeMlxKvQuant } from "@/features/model-picker/model-config/per-model-config";
 import { modelDisplayName } from "@/features/hub/lib/model-identity";
 import { getInferenceStatus } from "../api/chat-api";
 import { isSpeechOnlyStatus } from "./speech-only-status";
@@ -43,6 +44,7 @@ import { sameGpuSelection } from "@/hooks/gpu-selection";
 import { resolveBatchSizeSeed } from "./resolve-batch-size-seed";
 import { resolveChatTemplateSeed } from "./resolve-chat-template-seed";
 import { resolveCtxPinSeed } from "./resolve-ctx-pin-seed";
+import { resolveLlamaExtraArgsSeed } from "./resolve-llama-extra-args-seed";
 import { shouldSeedVisionSwitch } from "./resolve-vision-switch-seed";
 
 type LocalReasoningEffort = Extract<ReasoningEffort, "low" | "medium" | "high">;
@@ -156,18 +158,26 @@ export function applyActiveModelStatusToStore(
 
   // Only reached with a model active, so this is the one place both the status poll and the
   // readopt path can publish residency from. Without it a load looks unloaded for up to 10s.
-  useChatRuntimeStore.setState({ residentCheckpoint: checkpointId });
+  useChatRuntimeStore.setState({
+    residentCheckpoint: checkpointId,
+    loadedEngine: status.engine ?? "auto",
+    loadedEnginePrecision: status.engine_precision ?? "auto",
+    loadedEngineParallelism: status.engine_parallelism ?? "tensor",
+  });
   // Before the settings panel can open on it, which reads only the repo id.
   adoptCachedRepoConfig(checkpointId, status.gguf_variant ?? null);
 
   const store = useChatRuntimeStore.getState();
+  if ((store.params.engine ?? "auto") !== (status.engine ?? "auto") || (store.params.enginePrecision ?? "auto") !== (status.engine_precision ?? "auto") || (store.params.engineParallelism ?? "tensor") !== (status.engine_parallelism ?? "tensor")) {
+    store.setParams({ ...store.params, engine: status.engine ?? "auto", enginePrecision: status.engine_precision ?? "auto", engineParallelism: status.engine_parallelism ?? "tensor" });
+  }
   const previousCheckpoint =
     options.previousCheckpoint ?? store.params.checkpoint;
 
   if (status.inference) {
     store.setParams(
       mergeBackendRecommendedInference({
-        current: store.params,
+        current: { ...store.params, engine: status.engine ?? "auto", enginePrecision: status.engine_precision ?? "auto", engineParallelism: status.engine_parallelism ?? "tensor" },
         response: status,
         modelId: checkpointId,
         presetSource: store.activePresetSource,
@@ -253,10 +263,9 @@ export function applyActiveModelStatusToStore(
       : hydratingExistingModel)
       ? resolveResidentInitialConfig(checkpointId, status.gguf_variant ?? null)
       : null;
-  const rememberedNParallel =
-    status.is_gguf && remembered?.remembered
-      ? (remembered.config.nParallel ?? null)
-      : null;
+  const rememberedNParallel = remembered?.remembered
+    ? (remembered.config.nParallel ?? null)
+    : null;
   const rememberedNBatch =
     status.is_gguf && remembered?.remembered
       ? (remembered.config.nBatch ?? null)
@@ -534,11 +543,11 @@ export function applyActiveModelStatusToStore(
     // and request move together; a late reply can overwrite a newer one.
     ...(seedLoadParams &&
       hydratingExistingModel &&
-      status.mlx_kv_bits !== undefined &&
+      status.mlx_kv_quant_requested !== undefined &&
       (status.is_mlx === true
         ? {
-            mlxKvBits: status.mlx_kv_bits_requested ?? null,
-            loadedMlxKvBitsRequested: status.mlx_kv_bits_requested ?? null,
+            mlxKvQuant: normalizeMlxKvQuant(status.mlx_kv_quant_requested),
+            loadedMlxKvQuantRequested: normalizeMlxKvQuant(status.mlx_kv_quant_requested),
             mlxKvQuantReason: status.mlx_kv_quant_reason ?? null,
             chatTemplateOverrideReason:
               status.chat_template_override_reason ?? null,
@@ -546,7 +555,7 @@ export function applyActiveModelStatusToStore(
           }
         : {
             // The verdict retires; the editable width is dormant, not wrong.
-            loadedMlxKvBitsRequested: null,
+            loadedMlxKvQuantRequested: null,
             mlxKvQuantReason: null,
             chatTemplateOverrideReason: null,
             mlxKvQuantNote: null,
@@ -556,30 +565,26 @@ export function applyActiveModelStatusToStore(
     ...(seedLoadParams &&
       !hydratingExistingModel &&
       status.is_mlx === true &&
-      status.mlx_kv_bits !== undefined &&
-      prevState.mlxKvBits === null &&
-      prevState.loadedMlxKvBitsRequested === null &&
+      status.mlx_kv_quant_requested !== undefined &&
+      prevState.mlxKvQuant === null &&
+      prevState.loadedMlxKvQuantRequested === null &&
       prevState.mlxKvQuantReason === null &&
       prevState.chatTemplateOverrideReason === null && {
-        mlxKvBits: status.mlx_kv_bits_requested ?? null,
-        loadedMlxKvBitsRequested: status.mlx_kv_bits_requested ?? null,
+        mlxKvQuant: normalizeMlxKvQuant(status.mlx_kv_quant_requested),
+        loadedMlxKvQuantRequested: normalizeMlxKvQuant(status.mlx_kv_quant_requested),
         mlxKvQuantReason: status.mlx_kv_quant_reason ?? null,
         chatTemplateOverrideReason: status.chat_template_override_reason ?? null,
         mlxKvQuantNote: status.mlx_kv_quant_note ?? null,
       }),
     // Baseline only, never the control: the echo is the RESOLVED count and would pin a blank
-    // "server default" control. The rollback re-sends the baseline, so without this a rollback
-    // after a tab reload loses the override. Refresh on every echo: another client
-    // can reload the same model with a different count.
     ...(seedLoadParams &&
       status.requested_parallel_slots != null && {
         loadedNParallel: status.requested_parallel_slots,
       }),
-    // A slotless model must not keep the previous GGUF's baseline, since the rollback re-sends
-    // it. /status omits the echo for non-GGUF and nulls it for diffusion, so an absent field
-    // on a GGUF means an older backend.
+    // A slotless load must not keep the previous model's baseline, since the rollback
+    // re-sends it. /status nulls the echo for a load that decodes one reply at a time.
     ...(seedLoadParams &&
-      (status.is_gguf === false || status.requested_parallel_slots === null) && {
+      status.requested_parallel_slots === null && {
         loadedNParallel: null,
       }),
     // Per-model: a change underneath this tab blanks the control like performLoad's cross-model
@@ -625,11 +630,12 @@ export function applyActiveModelStatusToStore(
     // status, not just the first: another client can reload the SAME model with different
     // arguments, and a pinned baseline would resurrect arguments that are not running.
     // seedLoadParams still guards it, so a mid-switch poll cannot overwrite performLoad.
-    ...(status.requested_llama_extra_args !== undefined &&
-      (status.is_gguf ?? true) &&
-      seedLoadParams && {
-        loadedLlamaExtraArgs: status.requested_llama_extra_args ?? null,
-      }),
+    ...resolveLlamaExtraArgsSeed({
+      incoming: status.requested_llama_extra_args,
+      isGguf: status.is_gguf ?? true,
+      hydratingExistingModel,
+      seedLoadParams,
+    }),
     // one rule per batch pair, see resolveBatchSizeSeed
     ...("loaded" in nBatchSeed && { loadedNBatch: nBatchSeed.loaded ?? null }),
     ...("value" in nBatchSeed && { nBatch: nBatchSeed.value ?? null }),

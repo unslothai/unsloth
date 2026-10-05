@@ -43,13 +43,10 @@ import {
   updateKnowledgeBase,
 } from "../api/rag-api";
 import { useRagAvailabilityStore } from "../api/rag-availability";
-import {
-  type KnowledgeBase,
-  RAG_UPLOAD_ACCEPT,
-  isLinkedFolderManaged,
-} from "../types/rag";
+import { type KnowledgeBase, isLinkedFolderManaged } from "../types/rag";
 import { DocumentStatusChip } from "./document-status-chip";
 import { LinkedFoldersManager } from "./linked-folders-manager";
+import { RAG_SOURCE_UPLOAD_ACCEPT } from "./source-drop-policy";
 import { useRagDocuments } from "./use-rag-documents";
 import { useSourceDrop } from "./use-source-drop";
 
@@ -249,7 +246,7 @@ export function KnowledgeBaseDialog({
                 No knowledge bases yet.
               </div>
             ) : (
-              <ul className="flex max-h-[60dvh] flex-col divide-y overflow-y-auto rounded-md border">
+              <ul className="flex max-h-[60dvh] flex-col divide-y overflow-y-auto scroll-rounded rounded-md border">
                 {kbs.map((kb) => (
                   <li
                     key={kb.id}
@@ -376,7 +373,7 @@ function KnowledgeBaseDocuments({
           ref={fileInputRef}
           type="file"
           multiple={true}
-          accept={RAG_UPLOAD_ACCEPT}
+          accept={RAG_SOURCE_UPLOAD_ACCEPT}
           className="hidden"
           onChange={(e) => {
             if (e.target.files?.length) void upload(e.target.files);
@@ -401,7 +398,7 @@ function KnowledgeBaseDocuments({
       ) : (
         <div
           className={cn(
-            "flex max-h-[55dvh] flex-wrap gap-1.5 overflow-y-auto rounded-md pr-0.5 transition-colors",
+            "flex max-h-[55dvh] flex-wrap gap-1.5 overflow-y-auto scroll-rounded rounded-md pr-0.5 transition-colors",
             dragging && "bg-primary/5 ring-1 ring-primary/60",
           )}
         >

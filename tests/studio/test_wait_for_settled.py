@@ -19,9 +19,16 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from _playwright_robust import chromium_launch_args, wait_for_settled  # noqa: E402
+from _playwright_robust import (  # noqa: E402
+    chromium_launch_args,
+    usable_sync_api,
+    wait_for_settled,
+)
 
-sync_api = pytest.importorskip("playwright.sync_api")
+# Not importorskip: in the CPU job another module's stub answers to playwright.sync_api.
+sync_api = usable_sync_api()
+if sync_api is None:
+    pytest.skip("playwright is not installed here", allow_module_level = True)
 
 
 @pytest.fixture(scope = "module")

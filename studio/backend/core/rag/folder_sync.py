@@ -53,6 +53,7 @@ _MAX_NAMED_FAILURES = 3
 _MAX_WITHHELD_PATHS = 500
 _JOB_EVENT_KEEPALIVE_S = 4.0
 _SQLITE_INTEGER_MAX = (1 << 63) - 1
+# Dependency, VCS and cache trees would flood the index with third-party source.
 _IGNORE_SCAN_DIRS = frozenset(
     {
         ".git",
@@ -60,7 +61,6 @@ _IGNORE_SCAN_DIRS = frozenset(
         ".hg",
         ".venv",
         "venv",
-        "env",
         "node_modules",
         "bower_components",
         "__pycache__",
@@ -68,32 +68,21 @@ _IGNORE_SCAN_DIRS = frozenset(
         ".mypy_cache",
     }
 )
-_IGNORE_SCAN_EXACT_FILES = frozenset(
-    {
-        "package-lock.json",
-        "pnpm-lock.yaml",
-        "pnpm-lock.yml",
-        "npm-shrinkwrap.json",
-        "pipfile.lock",
-        "poetry.lock",
-        "cargo.lock",
-        "yarn.lock",
-        "composer.lock",
-        "gemfile.lock",
-        "flake.lock",
-        "bun.lockb",
-        "bun.lock",
-    }
+_LOCKFILES = frozenset(
+    {"package-lock.json", "npm-shrinkwrap.json", "pnpm-lock.yaml", "pnpm-lock.yml"}
 )
 
 
+def _is_ignored_scan_dir(name: str, path: str) -> bool:
+    return name.lower() in _IGNORE_SCAN_DIRS or os.path.exists(os.path.join(path, "pyvenv.cfg"))
+
+
 def _is_ignored_scan_file(name: str) -> bool:
+    # .env files hold secrets that retrieval would paste into prompts; lockfiles are generated noise.
     lower = name.lower()
-    if lower.startswith(".env") or lower.endswith(".env"):
+    if lower == ".env" or lower.startswith(".env.") or lower.endswith(".env"):
         return True
-    if lower.endswith(".lock") or lower.endswith(".lockb"):
-        return True
-    return lower in _IGNORE_SCAN_EXACT_FILES
+    return lower.endswith((".lock", ".lockb")) or lower in _LOCKFILES
 
 
 class _SyncStopped(Exception):
@@ -1024,7 +1013,7 @@ def _scan(
                 if entry.is_symlink():
                     continue
                 if entry.is_dir(follow_symlinks = False):
-                    if entry.name.lower() in _IGNORE_SCAN_DIRS:
+                    if _is_ignored_scan_dir(entry.name, full):
                         continue
                     resolved = os.path.realpath(full)
                     if (
@@ -1065,7 +1054,7 @@ def _scan(
                     continue
                 if _is_ignored_scan_file(entry.name):
                     continue
-                if os.path.splitext(entry.name)[1].lower() not in config.ALL_UPLOAD_EXTS:
+                if os.path.splitext(entry.name)[1].lower() not in config.UPLOAD_EXTS:
                     continue
                 # Finder metadata carries the document's extension, so a text parser would embed and cite it as a
                 # real chunk.
@@ -1530,6 +1519,7 @@ def _reconcile_folder(job_id: str) -> None:
                 model_name = embedding_model,
                 background = False,
                 content_hash = content_hash,
+                reuse_identical = not rebuild,
             )
             result = ingestion.get_job_status(ingestion_job)
             if result is None:

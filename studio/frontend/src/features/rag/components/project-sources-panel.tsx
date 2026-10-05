@@ -4,8 +4,8 @@
 import { Button } from "@/components/ui/button";
 import { useNativeFileDrop } from "@/features/native-intents";
 import type { NativeIntent } from "@/features/native-intents";
+import { FolderPlusIcon } from "@/lib/hugeicons-derived";
 import { cn } from "@/lib/utils";
-import { FolderAddIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useCallback, useEffect, useRef } from "react";
 import {
@@ -14,9 +14,10 @@ import {
   listProjectDocuments,
   subscribeProjectSourcesUpdated,
 } from "../api/rag-api";
-import { RAG_SOURCE_UPLOAD_ACCEPT, isLinkedFolderManaged } from "../types/rag";
+import { isLinkedFolderManaged } from "../types/rag";
 import { DocumentStatusChip } from "./document-status-chip";
 import { LinkedFoldersManager } from "./linked-folders-manager";
+import { RAG_SOURCE_UPLOAD_ACCEPT } from "./source-drop-policy";
 import {
   type RagUploadItem,
   fileItems,
@@ -139,7 +140,7 @@ export function ProjectSourcesPanel({ projectId }: { projectId: string }) {
         >
           <span className="flex size-12 items-center justify-center rounded-full bg-muted text-muted-foreground">
             <HugeiconsIcon
-              icon={FolderAddIcon}
+              icon={FolderPlusIcon}
               strokeWidth={1.75}
               className="size-6"
             />

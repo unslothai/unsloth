@@ -134,7 +134,7 @@ fn cookie_re() -> &'static Regex {
 
 fn token_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| Regex::new(r"(?i)\b(hf_[A-Za-z0-9]{16,}|github_pat_[A-Za-z0-9_]{20,}|ghp_[A-Za-z0-9]{20,}|sk-[A-Za-z0-9]{20,})\b").unwrap())
+    RE.get_or_init(|| Regex::new(r"(?i)\b(hf_(?:oauth_)?[A-Za-z0-9]{16,}|github_pat_[A-Za-z0-9_]{20,}|ghp_[A-Za-z0-9]{20,}|sk-[A-Za-z0-9]{20,})\b").unwrap())
 }
 
 fn env_secret_re() -> &'static Regex {
@@ -184,6 +184,16 @@ fn email_re() -> &'static Regex {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn redacts_hugging_face_oauth_tokens_whole() {
+        let token = "hf_oauth_A1b2C3d4E5A1b2C3d4E5A1b2C3d4E5A1b2C3d4E5";
+        let input = format!("download failed while using {token} for org/model\n");
+        let mut report = RedactionReport::default();
+        let redacted = redact_text(&input, &mut report);
+        assert!(!redacted.contains("A1b2C3d4E5"));
+        assert!(redacted.contains("for org/model"));
+    }
 
     #[test]
     fn redacts_common_secret_and_path_patterns() {
