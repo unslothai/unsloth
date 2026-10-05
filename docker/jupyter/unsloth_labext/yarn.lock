@@ -2662,14 +2662,14 @@ __metadata:
   languageName: node
   linkType: hard
 
-"dayjs@npm:^1.11.21":
+"dayjs@npm:^1.11.21, dayjs@npm:^1.11.23":
   version: 1.11.23
   resolution: "dayjs@npm:1.11.23"
   checksum: 2149ddb54548066e892a35099c7d90cba3eb467fe717b5df16f04ff4225e64bd653e14e7b420dd02bcf10566c1879508705798ca604f91c2424cc10de9135e84
   languageName: node
   linkType: hard
 
-"deepmerge@npm:^4.2.2":
+"deepmerge@npm:^4.3.1":
   version: 4.3.1
   resolution: "deepmerge@npm:4.3.1"
   checksum: 2024c6a980a1b7128084170c4cf56b0fd58a63f2da1660dcfe977415f27b17dbe5888668b59d0b063753f3220719d5e400b7f113609489c90160bb9a5518d052
@@ -2685,30 +2685,30 @@ __metadata:
   languageName: node
   linkType: hard
 
-"dom-serializer@npm:^2.0.0":
-  version: 2.0.0
-  resolution: "dom-serializer@npm:2.0.0"
+"dom-serializer@npm:^3.0.0":
+  version: 3.1.1
+  resolution: "dom-serializer@npm:3.1.1"
   dependencies:
-    domelementtype: ^2.3.0
-    domhandler: ^5.0.2
-    entities: ^4.2.0
-  checksum: cd1810544fd8cdfbd51fa2c0c1128ec3a13ba92f14e61b7650b5de421b88205fd2e3f0cc6ace82f13334114addb90ed1c2f23074a51770a8e9c1273acbc7f3e6
+    domelementtype: ^3.0.0
+    domhandler: ^6.0.0
+    entities: ^8.0.0
+  checksum: 0735af64a9501dcdec15302b1d06566bf6aa28f77a14ed41af97bb44d815592c5f61083153320123a5c260c6df69a4dedd8e0bf2dd784247282350b6a18b447e
   languageName: node
   linkType: hard
 
-"domelementtype@npm:^2.3.0":
-  version: 2.3.0
-  resolution: "domelementtype@npm:2.3.0"
-  checksum: ee837a318ff702622f383409d1f5b25dd1024b692ef64d3096ff702e26339f8e345820f29a68bcdcea8cfee3531776b3382651232fbeae95612d6f0a75efb4f6
+"domelementtype@npm:^3.0.0":
+  version: 3.0.0
+  resolution: "domelementtype@npm:3.0.0"
+  checksum: 6b5120222f7e8b3491ad2f00036a1a14965bccab91014bfa54fa7789081b71f88141bf3b5b264c75ca4916b08e16ac1233a4f3b38067acb3fca9a7b21327cec1
   languageName: node
   linkType: hard
 
-"domhandler@npm:^5.0.2, domhandler@npm:^5.0.3":
-  version: 5.0.3
-  resolution: "domhandler@npm:5.0.3"
+"domhandler@npm:^6.0.0":
+  version: 6.0.1
+  resolution: "domhandler@npm:6.0.1"
   dependencies:
-    domelementtype: ^2.3.0
-  checksum: 0f58f4a6af63e6f3a4320aa446d28b5790a009018707bce2859dcb1d21144c7876482b5188395a188dfa974238c019e0a1e610d2fc269a12b2c192ea2b0b131c
+    domelementtype: ^3.0.0
+  checksum: 4df482581d885ddff9e2bfc7700d79b59039cefcbfca1b79b13c703c2a31e4514ca0ee2c927afffc0f90bc8c33c2a4554e792349078d0b63dc78d8ce474947a2
   languageName: node
   linkType: hard
 
@@ -2724,14 +2724,14 @@ __metadata:
   languageName: node
   linkType: hard
 
-"domutils@npm:^3.0.1":
-  version: 3.2.2
-  resolution: "domutils@npm:3.2.2"
+"domutils@npm:^4.0.2":
+  version: 4.0.2
+  resolution: "domutils@npm:4.0.2"
   dependencies:
-    dom-serializer: ^2.0.0
-    domelementtype: ^2.3.0
-    domhandler: ^5.0.3
-  checksum: ae941d56f03d857077d55dde9297e960a625229fc2b933187cc4123084d7c2d2517f58283a7336567127029f1e008449bac8ac8506d44341e29e3bb18e02f906
+    dom-serializer: ^3.0.0
+    domelementtype: ^3.0.0
+    domhandler: ^6.0.0
+  checksum: aac5446c2944aec1de8dcaaa6c65ce1f37fd7603e1425a3c6e883280f321e5e995e208a0e367d34e3782ca6be203839675f09030cf7b884fe822ef2e69fd8c2f
   languageName: node
   linkType: hard
 
@@ -2775,10 +2775,10 @@ __metadata:
   languageName: node
   linkType: hard
 
-"entities@npm:^4.2.0, entities@npm:^4.4.0":
-  version: 4.5.0
-  resolution: "entities@npm:4.5.0"
-  checksum: 853f8ebd5b425d350bffa97dd6958143179a5938352ccae092c62d1267c4e392a039be1bae7d51b6e4ffad25f51f9617531fedf5237f15df302ccfb452cbf2d7
+"entities@npm:^8.0.0":
+  version: 8.1.0
+  resolution: "entities@npm:8.1.0"
+  checksum: 1d10a455a8ef76e05082168e6c69b9640fda3a3dd3ea4023f89885d298cf8183f957fd2225eec97729e3f624e9d90229d718e90068a6918f016a72b3fa47ba39
   languageName: node
   linkType: hard
 
@@ -2946,15 +2946,15 @@ __metadata:
   languageName: node
   linkType: hard
 
-"htmlparser2@npm:^8.0.0":
-  version: 8.0.2
-  resolution: "htmlparser2@npm:8.0.2"
+"htmlparser2@npm:^12.0.0":
+  version: 12.0.0
+  resolution: "htmlparser2@npm:12.0.0"
   dependencies:
-    domelementtype: ^2.3.0
-    domhandler: ^5.0.3
-    domutils: ^3.0.1
-    entities: ^4.4.0
-  checksum: 29167a0f9282f181da8a6d0311b76820c8a59bc9e3c87009e21968264c2987d2723d6fde5a964d4b7b6cba663fca96ffb373c06d8223a85f52a6089ced942700
+    domelementtype: ^3.0.0
+    domhandler: ^6.0.0
+    domutils: ^4.0.2
+    entities: ^8.0.0
+  checksum: a459a93a3e0c1eeaddc690037d3093e3d5ecab7b149485db794ee88b4f93d778e5f15ce20fce66d0a3e0c3dfbabeef2d4cfe24b09b0d89f5237a7731cfd0adc6
   languageName: node
   linkType: hard
 
@@ -3013,7 +3013,7 @@ __metadata:
   languageName: node
   linkType: hard
 
-"is-plain-object@npm:^5.0.0":
+"is-plain-object@npm:^5.1.0":
   version: 5.1.0
   resolution: "is-plain-object@npm:5.1.0"
   checksum: 100adc3c2a7ef53968957346aecd1ee427053e1cfa5a12a0b6e49466dd86703d9f52440772f0aa296539691ac164deadfdff5c24c7cadb8635c6a00a9fcaf7ba
@@ -3139,6 +3139,15 @@ __metadata:
   version: 6.0.3
   resolution: "kind-of@npm:6.0.3"
   checksum: 3ab01e7b1d440b22fe4c31f23d8d38b4d9b91d9f291df683476576493d5dfd2e03848a8b05813dd0c3f0e835bc63f433007ddeceb71f05cb25c45ae1b19c6d3b
+  languageName: node
+  linkType: hard
+
+"launder@npm:^1.7.2":
+  version: 1.7.2
+  resolution: "launder@npm:1.7.2"
+  dependencies:
+    dayjs: ^1.11.23
+  checksum: 4822c9b511faa2e5617ac9555866435b82aa8ff13e6ccf60c57138e45561f6d788b713c3be75401ad99fea572ccd0a891aeb2b0aed3c284af4c62d6fc20590a5
   languageName: node
   linkType: hard
 
@@ -3520,7 +3529,7 @@ __metadata:
   languageName: node
   linkType: hard
 
-"postcss@npm:^8.3.11, postcss@npm:^8.4.40":
+"postcss@npm:^8.4.40, postcss@npm:^8.5.27":
   version: 8.5.28
   resolution: "postcss@npm:8.5.28"
   dependencies:
@@ -3649,17 +3658,18 @@ __metadata:
   languageName: node
   linkType: hard
 
-"sanitize-html@npm:~2.12.1":
-  version: 2.12.1
-  resolution: "sanitize-html@npm:2.12.1"
+"sanitize-html@npm:^2.17.7":
+  version: 2.18.0
+  resolution: "sanitize-html@npm:2.18.0"
   dependencies:
-    deepmerge: ^4.2.2
+    deepmerge: ^4.3.1
     escape-string-regexp: ^4.0.0
-    htmlparser2: ^8.0.0
-    is-plain-object: ^5.0.0
+    htmlparser2: ^12.0.0
+    is-plain-object: ^5.1.0
+    launder: ^1.7.2
     parse-srcset: ^1.0.2
-    postcss: ^8.3.11
-  checksum: fb96ea7170d51b5af2607f5cfd84464c78fc6f47e339407f55783e781c6a0288a8d40bbf97ea6a8758924ba9b2d33dcc4846bb94caacacd90d7f2de10ed8541a
+    postcss: ^8.5.27
+  checksum: 6a4e57f8c9714699a6e67bc9694e5a326d250f41dddda75e954f244cfaec5e25e3f89f11df7635228d542c8970b24b9eada56f2d5b9c2879a1ec282b6c0c6e33
   languageName: node
   linkType: hard
 
