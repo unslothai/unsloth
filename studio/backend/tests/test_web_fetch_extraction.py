@@ -361,6 +361,11 @@ def test_block_opening_list_item_stays_on_marker_line(html, expected):
     assert html_to_markdown(html) == expected
 
 
+def test_empty_header_does_not_consume_the_list_marker():
+    html = "<ul><li><header></header><p>text text text</p></li></ul>"
+    assert html_to_markdown(html, main_content = True) == "* text text text"
+
+
 # ── html_to_markdown: main-content scoping ───────────────────────
 
 

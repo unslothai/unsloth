@@ -369,7 +369,8 @@ class _MarkdownRenderer(HTMLParser):
         return len(self._bq_stack) > frame.outer_bq_depth
 
     def _emit(self, text: str) -> None:
-        self._li_marker_pending = False
+        if text:
+            self._li_marker_pending = False
         frame = self._header_stack[-1] if self._header_stack else None
         # Tee wherever the text routes, so a heading in a nested buffer is captured. A link opened inside the frame
         # delivers twice, so tee only the formatted form; an enclosing link, once.
