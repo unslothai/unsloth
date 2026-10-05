@@ -34,8 +34,9 @@ import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import type { DateRange } from "react-day-picker";
 import { hostOf } from "./address";
 import { ClearBrowsingDataDialog } from "./clear-data-dialog";
-import { proxiedFavicon } from "./favicon";
 import { type DownloadItem, type HistoryItem, useBrowserHistoryStore } from "./history-store";
+import { LinkContextMenu, MenuRow } from "./link-context-menu";
+import { SiteFavicon } from "./site-favicon";
 import { type InternalPage, useBrowserStore } from "./store";
 
 function startOfDay(time: number): number {
@@ -139,6 +140,7 @@ function Row({
   title,
   detail,
   time,
+  url,
   onOpen,
   onRemove,
 }: {
@@ -146,34 +148,45 @@ function Row({
   title: string;
   detail: string;
   time: string;
+  /** The page it came from, for the right-click menu; null for a file from chat. */
+  url: string | null;
   onOpen?: () => void;
   onRemove: () => void;
 }) {
   const t = useT();
   return (
-    <li className="group/row flex items-center gap-1 rounded-xl pr-1 hover:bg-[color-mix(in_oklab,var(--foreground)_calc(4%*var(--contrast-wash-gain,1)),transparent)]">
-      <button
-        type="button"
-        onClick={onOpen}
-        disabled={!onOpen}
-        className="flex min-w-0 flex-1 cursor-pointer items-center gap-3 rounded-xl px-3 py-2 text-start focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-default"
-      >
-        {icon}
-        <span className="min-w-0 flex-1">
-          <span className="block truncate text-ui-13p5 text-foreground">{title}</span>
-          <span className="block truncate text-ui-12 text-muted-foreground">{detail}</span>
-        </span>
-        <span className="shrink-0 text-ui-12 tabular-nums text-muted-foreground">{time}</span>
-      </button>
-      <button
-        type="button"
-        aria-label={t("browser.pages.remove")}
-        onClick={onRemove}
-        className="flex size-7 shrink-0 cursor-pointer items-center justify-center rounded-full text-muted-foreground opacity-0 hover:bg-[color-mix(in_oklab,var(--foreground)_calc(8%*var(--contrast-wash-gain,1)),transparent)] hover:text-foreground focus-visible:opacity-100 group-hover/row:opacity-100"
-      >
-        <HugeiconsIcon icon={Cancel01Icon} strokeWidth={2} className="size-3.5" />
-      </button>
-    </li>
+    <LinkContextMenu
+      url={url}
+      extra={
+        <MenuRow icon={Delete02Icon} onSelect={onRemove}>
+          {t("browser.pages.remove")}
+        </MenuRow>
+      }
+    >
+      <li className="group/row flex items-center gap-1 rounded-xl pr-1 hover:bg-[color-mix(in_oklab,var(--foreground)_calc(4%*var(--contrast-wash-gain,1)),transparent)] data-[state=open]:bg-[color-mix(in_oklab,var(--foreground)_calc(4%*var(--contrast-wash-gain,1)),transparent)]">
+        <button
+          type="button"
+          onClick={onOpen}
+          disabled={!onOpen}
+          className="flex min-w-0 flex-1 cursor-pointer items-center gap-3 rounded-xl px-3 py-2 text-start focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-default"
+        >
+          {icon}
+          <span className="min-w-0 flex-1">
+            <span className="block truncate text-ui-13p5 text-foreground">{title}</span>
+            <span className="block truncate text-ui-12 text-muted-foreground">{detail}</span>
+          </span>
+          <span className="shrink-0 text-ui-12 tabular-nums text-muted-foreground">{time}</span>
+        </button>
+        <button
+          type="button"
+          aria-label={t("browser.pages.remove")}
+          onClick={onRemove}
+          className="flex size-7 shrink-0 cursor-pointer items-center justify-center rounded-full text-muted-foreground opacity-0 hover:bg-[color-mix(in_oklab,var(--foreground)_calc(8%*var(--contrast-wash-gain,1)),transparent)] hover:text-foreground focus-visible:opacity-100 group-hover/row:opacity-100"
+        >
+          <HugeiconsIcon icon={Cancel01Icon} strokeWidth={2} className="size-3.5" />
+        </button>
+      </li>
+    </LinkContextMenu>
   );
 }
 
@@ -236,44 +249,6 @@ function rangeBounds(range: HistoryRange, dates: DateRange | undefined): { since
   return { since: 0, until: Infinity };
 }
 
-function HistoryIcon({ url }: { url: string }) {
-  const ref = useRef<HTMLSpanElement>(null);
-  const [icon, setIcon] = useState<string | null>(null);
-  const [failed, setFailed] = useState(false);
-  useEffect(() => {
-    const node = ref.current;
-    let origin: string;
-    try {
-      const parsed = new URL(url);
-      if (!/^https?:$/.test(parsed.protocol)) return;
-      origin = parsed.origin;
-    } catch {
-      return;
-    }
-    if (!node) return;
-    let live = true;
-    const observer = new IntersectionObserver((entries) => {
-      if (!entries.some((entry) => entry.isIntersecting)) return;
-      observer.disconnect();
-      void proxiedFavicon(`${origin}/favicon.ico`).then((found) => live && setIcon(found));
-    });
-    observer.observe(node);
-    return () => {
-      live = false;
-      observer.disconnect();
-    };
-  }, [url]);
-  return (
-    <span ref={ref} className="flex size-5 shrink-0 items-center justify-center">
-      {icon && !failed ? (
-        <img src={icon} alt="" onError={() => setFailed(true)} className="size-4 rounded-[3px] object-contain" />
-      ) : (
-        <HugeiconsIcon icon={InternetIcon} strokeWidth={1.75} className="size-4 text-muted-foreground" />
-      )}
-    </span>
-  );
-}
-
 function HistoryRow({
   item,
   tabId,
@@ -291,54 +266,74 @@ function HistoryRow({
   const host = hostOf(item.url);
   const title = item.title || host;
   return (
-    <li
-      className={cn(
-        "relative flex h-12 items-center gap-3 px-4 before:absolute before:inset-x-4 before:top-0 before:h-px before:bg-border",
-        selected ? SELECTED_WASH : HOVER_WASH,
-      )}
+    <LinkContextMenu
+      url={item.url}
+      tabId={tabId}
+      extra={
+        <MenuRow
+          icon={Delete02Icon}
+          onSelect={() => useBrowserHistoryStore.getState().removeVisit(item.id)}
+        >
+          {t("browser.pages.removeFromHistory")}
+        </MenuRow>
+      }
     >
-      <Checkbox
-        checked={selected}
-        onCheckedChange={(checked) => onSelect(checked === true)}
-        aria-label={t("browser.pages.select", { title })}
-      />
-      <button
-        type="button"
-        onClick={() => useBrowserStore.getState().navigate(tabId, { url: item.url })}
-        className="flex h-full min-w-0 flex-1 cursor-pointer items-center gap-3 text-start focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
+      <li
+        className={cn(
+          "relative flex h-12 items-center gap-3 px-4 before:absolute before:inset-x-4 before:top-0 before:h-px before:bg-border",
+          selected ? SELECTED_WASH : HOVER_WASH,
+          "data-[state=open]:bg-[color-mix(in_oklab,var(--foreground)_calc(4%*var(--contrast-wash-gain,1)),transparent)]",
+        )}
       >
-        <HistoryIcon url={item.url} />
-        <span className="min-w-0 max-w-[65%] shrink-0 truncate text-ui-14 text-foreground">{title}</span>
-        <span className="min-w-0 flex-1 truncate text-ui-13 text-muted-foreground">{host}</span>
-        <span className="shrink-0 text-ui-13 tabular-nums text-muted-foreground">{time}</span>
-      </button>
-      <DropdownMenu>
-        <DropdownMenuTrigger asChild>
-          <button
-            type="button"
-            aria-label={t("browser.pages.pageActions", { title })}
-            className={cn(
-              "flex size-8 shrink-0 cursor-pointer items-center justify-center rounded-lg text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
-              HOVER_WASH,
-              OPEN_WASH,
-              "data-[state=open]:text-foreground",
-            )}
-          >
-            <HugeiconsIcon icon={MoreHorizontalIcon} strokeWidth={2} className="size-4" />
-          </button>
-        </DropdownMenuTrigger>
-        <DropdownMenuContent align="end" className="min-w-48">
-          <DropdownMenuItem onSelect={() => useBrowserStore.getState().openUrl(item.url, { newTab: true })}>
-            <HugeiconsIcon icon={LinkSquare02Icon} strokeWidth={1.75} />
-            {t("browser.pages.openPage")}
-          </DropdownMenuItem>
-          <DropdownMenuItem onSelect={() => useBrowserHistoryStore.getState().removeVisit(item.id)}>
-            <HugeiconsIcon icon={Delete02Icon} strokeWidth={1.75} />
-            {t("browser.pages.removeFromHistory")}
-          </DropdownMenuItem>
-        </DropdownMenuContent>
-      </DropdownMenu>
-    </li>
+        <Checkbox
+          checked={selected}
+          onCheckedChange={(checked) => onSelect(checked === true)}
+          aria-label={t("browser.pages.select", { title })}
+        />
+        <button
+          type="button"
+          onClick={() => useBrowserStore.getState().navigate(tabId, { url: item.url })}
+          className="flex h-full min-w-0 flex-1 cursor-pointer items-center gap-3 text-start focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
+        >
+          <span className="flex size-5 shrink-0 items-center justify-center">
+            <SiteFavicon
+              url={item.url}
+              className="size-4 rounded-[3px]"
+              fallbackClassName="size-4 text-muted-foreground"
+            />
+          </span>
+          <span className="min-w-0 max-w-[65%] shrink-0 truncate text-ui-14 text-foreground">{title}</span>
+          <span className="min-w-0 flex-1 truncate text-ui-13 text-muted-foreground">{host}</span>
+          <span className="shrink-0 text-ui-13 tabular-nums text-muted-foreground">{time}</span>
+        </button>
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <button
+              type="button"
+              aria-label={t("browser.pages.pageActions", { title })}
+              className={cn(
+                "flex size-8 shrink-0 cursor-pointer items-center justify-center rounded-lg text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+                HOVER_WASH,
+                OPEN_WASH,
+                "data-[state=open]:text-foreground",
+              )}
+            >
+              <HugeiconsIcon icon={MoreHorizontalIcon} strokeWidth={2} className="size-4" />
+            </button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="end" className="min-w-48">
+            <DropdownMenuItem onSelect={() => useBrowserStore.getState().openUrl(item.url, { newTab: true })}>
+              <HugeiconsIcon icon={LinkSquare02Icon} strokeWidth={1.75} />
+              {t("browser.pages.openPage")}
+            </DropdownMenuItem>
+            <DropdownMenuItem onSelect={() => useBrowserHistoryStore.getState().removeVisit(item.id)}>
+              <HugeiconsIcon icon={Delete02Icon} strokeWidth={1.75} />
+              {t("browser.pages.removeFromHistory")}
+            </DropdownMenuItem>
+          </DropdownMenuContent>
+        </DropdownMenu>
+      </li>
+    </LinkContextMenu>
   );
 }
 
@@ -662,6 +657,7 @@ function DownloadsPage() {
               title={item.name}
               detail={`${formatSize(item.size, locale)} · ${source}`}
               time={timeFormat.format(item.downloadedAt)}
+              url={item.url}
               // Files are not kept; reopen the page they came from.
               onOpen={item.url ? () => useBrowserStore.getState().openUrl(item.url ?? "", { newTab: true }) : undefined}
               onRemove={() => removeDownload(item.id)}

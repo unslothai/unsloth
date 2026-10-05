@@ -20,6 +20,8 @@ const MAX_DOWNLOADS = 200;
 // Pages pick their URLs and titles; cap them so history can't fill Studio's storage.
 const MAX_URL_CHARS = 2048;
 const MAX_TITLE_CHARS = 200;
+// The icons sites declare, by host: most sites name theirs in the page, not at /favicon.ico.
+const MAX_ICONS = 300;
 const PERSIST_DELAY_MS = 1000;
 
 /** localStorage with batched writes, since history is one big JSON value; a full storage is ignored. */
@@ -57,7 +59,10 @@ const newId = () => `${Date.now().toString(36)}-${(nextId++).toString(36)}`;
 interface BrowserHistoryState {
   history: HistoryItem[];
   downloads: DownloadItem[];
+  /** Host to the icon its pages declared, newest last. */
+  icons: Record<string, string>;
   recordVisit: (url: string, title: string) => void;
+  recordIcon: (host: string, icon: string) => void;
   recordDownload: (item: Omit<DownloadItem, "id" | "downloadedAt">) => void;
   removeVisit: (id: string) => void;
   removeVisits: (ids: ReadonlySet<string>) => void;
@@ -71,6 +76,15 @@ export const useBrowserHistoryStore = create<BrowserHistoryState>()(
     (set) => ({
       history: [],
       downloads: [],
+      icons: {},
+      recordIcon: (host, icon) =>
+        set((state) => {
+          if (!host || icon.length > MAX_URL_CHARS || state.icons[host] === icon) return state;
+          const { [host]: _replaced, ...rest } = state.icons;
+          const hosts = Object.keys(rest);
+          for (const old of hosts.slice(0, Math.max(0, hosts.length + 1 - MAX_ICONS))) delete rest[old];
+          return { icons: { ...rest, [host]: icon } };
+        }),
       recordVisit: (url, fullTitle) =>
         set((state) => {
           if (url.length > MAX_URL_CHARS) return state;
@@ -99,7 +113,7 @@ export const useBrowserHistoryStore = create<BrowserHistoryState>()(
       removeVisit: (id) => set((state) => ({ history: state.history.filter((item) => item.id !== id) })),
       removeVisits: (ids) => set((state) => ({ history: state.history.filter((item) => !ids.has(item.id)) })),
       removeDownload: (id) => set((state) => ({ downloads: state.downloads.filter((item) => item.id !== id) })),
-      clearHistory: () => set({ history: [] }),
+      clearHistory: () => set({ history: [], icons: {} }),
       clearDownloads: () => set({ downloads: [] }),
     }),
     {

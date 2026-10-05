@@ -69,6 +69,10 @@ export const es = {
       openInNewTab: "Abrir en una pestaña nueva",
       remove: "Quitar de sugeridos",
     },
+    tabMenu: {
+      duplicate: "Duplicar pestaña",
+      closeOthers: "Cerrar otras pestañas",
+    },
     tools: "Herramientas",
     recents: "Recientes",
     website: "Sitio web",

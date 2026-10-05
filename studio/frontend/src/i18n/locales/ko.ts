@@ -69,6 +69,10 @@ export const ko = {
       openInNewTab: "새 탭에서 열기",
       remove: "추천에서 제거",
     },
+    tabMenu: {
+      duplicate: "탭 복제",
+      closeOthers: "다른 탭 닫기",
+    },
     tools: "도구",
     recents: "최근 항목",
     website: "웹사이트",

@@ -69,6 +69,10 @@ export const de = {
       openInNewTab: "In neuem Tab öffnen",
       remove: "Aus Vorschlägen entfernen",
     },
+    tabMenu: {
+      duplicate: "Tab duplizieren",
+      closeOthers: "Andere Tabs schließen",
+    },
     tools: "Werkzeuge",
     recents: "Zuletzt verwendet",
     website: "Website",

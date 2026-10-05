@@ -69,6 +69,10 @@ export const fr = {
       openInNewTab: "Ouvrir dans un nouvel onglet",
       remove: "Retirer des suggestions",
     },
+    tabMenu: {
+      duplicate: "Dupliquer l'onglet",
+      closeOthers: "Fermer les autres onglets",
+    },
     tools: "Outils",
     recents: "Récents",
     website: "Site web",

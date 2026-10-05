@@ -68,6 +68,10 @@ export const it = {
       openInNewTab: "Apri in una nuova scheda",
       remove: "Rimuovi dai suggeriti",
     },
+    tabMenu: {
+      duplicate: "Duplica scheda",
+      closeOthers: "Chiudi le altre schede",
+    },
     tools: "Strumenti",
     recents: "Recenti",
     website: "Sito web",

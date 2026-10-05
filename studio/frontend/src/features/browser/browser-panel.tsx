@@ -4,6 +4,12 @@
 import { ATTACHMENT_PAGE_SCALES } from "@/components/assistant-ui/attachment-viewer-meta";
 import { ScaleMenu } from "@/components/media-viewer";
 import {
+  ContextMenu,
+  ContextMenuContent,
+  ContextMenuSeparator,
+  ContextMenuTrigger,
+} from "@/components/ui/context-menu";
+import {
   DropdownMenu,
   DropdownMenuCheckboxItem,
   DropdownMenuContent,
@@ -43,6 +49,9 @@ import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
 import {
   Add01Icon,
+  CancelSquareIcon,
+  Copy02Icon,
+  ReloadIcon,
   ArrowDown01Icon,
   ArrowLeft02Icon,
   ArrowRight02Icon,
@@ -69,12 +78,13 @@ import {
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react";
 import { useNavigate } from "@tanstack/react-router";
-import { type ReactNode, memo, useEffect, useRef, useState } from "react";
+import { type ReactElement, type ReactNode, memo, useEffect, useRef, useState } from "react";
 import { fileNameFromUrl, hostOf, resolveAddress } from "./address";
 import { type BrowserDownload, saveBrowserDownload } from "./downloads";
 import { ClearBrowsingDataDialog } from "./clear-data-dialog";
 import { AnnotateLayer, WebAnnotateLayer } from "./annotate-layer";
 import { browserTabType, textFileKind } from "./file-kind";
+import { CONTEXT_MENU, MenuRow } from "./link-context-menu";
 import { EnterFullViewIcon, ExitFullViewIcon, SplitPaneIcon } from "./icons";
 import { sendFrameCommand } from "./page-frame";
 import {
@@ -316,6 +326,70 @@ function useTabTitle() {
   };
 }
 
+/** A tab's right-click menu, as a browser's tab strip has it. */
+function TabContextMenu({
+  tab,
+  others,
+  children,
+}: {
+  tab: BrowserTab;
+  /** Whether there are other tabs to close. */
+  others: boolean;
+  children: ReactElement;
+}) {
+  const t = useT();
+  const store = useBrowserStore.getState();
+  const url = webAddress(tab);
+  return (
+    <ContextMenu>
+      <ContextMenuTrigger asChild={true}>{children}</ContextMenuTrigger>
+      <ContextMenuContent className={CONTEXT_MENU}>
+        <MenuRow icon={Add01Icon} onSelect={store.newTab}>
+          {t("browser.newTab")}
+        </MenuRow>
+        <ContextMenuSeparator />
+        <MenuRow icon={ReloadIcon} onSelect={() => store.reload(tab.id)}>
+          {t("browser.reload")}
+        </MenuRow>
+        {url ? (
+          <>
+            <MenuRow icon={Copy02Icon} onSelect={() => store.openUrl(url, { newTab: true })}>
+              {t("browser.tabMenu.duplicate")}
+            </MenuRow>
+            <ContextMenuSeparator />
+            <MenuRow
+              icon={Copy01Icon}
+              onSelect={() =>
+                void copyToClipboard(url).then((ok) => ok && toast.success(t("browser.linkCopied")))
+              }
+            >
+              {t("browser.copyLink")}
+            </MenuRow>
+            <MenuRow icon={LinkSquare02Icon} onSelect={() => openExternalLink(url)}>
+              {t("browser.openExternal")}
+            </MenuRow>
+          </>
+        ) : null}
+        <ContextMenuSeparator />
+        <MenuRow icon={Cancel01Icon} onSelect={() => store.closeTab(tab.id)}>
+          {t("browser.closeTab")}
+        </MenuRow>
+        {others ? (
+          <MenuRow
+            icon={CancelSquareIcon}
+            onSelect={() => {
+              const { tabs, closeTab } = useBrowserStore.getState();
+              for (const other of tabs) if (other.id !== tab.id) closeTab(other.id);
+            }}
+          >
+            {t("browser.tabMenu.closeOthers")}
+          </MenuRow>
+        ) : null}
+      </ContextMenuContent>
+    </ContextMenu>
+  );
+}
+
 function TabStrip({
   tabs,
   activeTabId,
@@ -365,48 +439,50 @@ function TabStrip({
                   !divided && "invisible",
                 )}
               />
-              <div
-                role="tab"
-                aria-selected={active}
-                tabIndex={0}
-                title={title}
-                onClick={() => activateTab(tab.id)}
-                onAuxClick={(event) => {
-                  if (event.button === 1) closeTab(tab.id);
-                }}
-                onKeyDown={(event) => {
-                  if (event.key === "Enter" || event.key === " ")
-                    activateTab(tab.id);
-                }}
-                className={cn(
-                  "group/tab mx-0.5 flex h-[calc(30px*var(--ui-space-scale,1))] min-w-0 flex-1 cursor-pointer items-center gap-2 rounded-[10px] pl-2.5 pr-1 text-ui-13 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
-                  active
-                    ? "bg-card text-foreground shadow-[0_1px_2px_rgb(0_0_0/0.06)] dark:bg-accent dark:shadow-none"
-                    : "text-muted-foreground hover:bg-[color-mix(in_oklab,var(--foreground)_calc(5%*var(--contrast-wash-gain,1)),transparent)] hover:text-foreground",
-                )}
-              >
-                <TabIcon tab={tab} />
-                <span className="min-w-0 flex-1 truncate">{title}</span>
-                <button
-                  type="button"
-                  aria-label={t("browser.closeTab")}
-                  onClick={(event) => {
-                    event.stopPropagation();
-                    closeTab(tab.id);
+              <TabContextMenu tab={tab} others={tabs.length > 1}>
+                <div
+                  role="tab"
+                  aria-selected={active}
+                  tabIndex={0}
+                  title={title}
+                  onClick={() => activateTab(tab.id)}
+                  onAuxClick={(event) => {
+                    if (event.button === 1) closeTab(tab.id);
+                  }}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter" || event.key === " ")
+                      activateTab(tab.id);
                   }}
                   className={cn(
-                    "flex size-5 shrink-0 cursor-pointer items-center justify-center rounded-md text-muted-foreground hover:bg-[color-mix(in_oklab,var(--foreground)_calc(8%*var(--contrast-wash-gain,1)),transparent)] hover:text-foreground",
-                    !active &&
-                      "opacity-0 group-hover/tab:opacity-100 focus-visible:opacity-100",
+                    "group/tab mx-0.5 flex h-[calc(30px*var(--ui-space-scale,1))] min-w-0 flex-1 cursor-pointer items-center gap-2 rounded-[10px] pl-2.5 pr-1 text-ui-13 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+                    active
+                      ? "bg-card text-foreground shadow-[0_1px_2px_rgb(0_0_0/0.06)] dark:bg-accent dark:shadow-none"
+                      : "text-muted-foreground hover:bg-[color-mix(in_oklab,var(--foreground)_calc(5%*var(--contrast-wash-gain,1)),transparent)] hover:text-foreground",
                   )}
                 >
-                  <HugeiconsIcon
-                    icon={Cancel01Icon}
-                    strokeWidth={2}
-                    className="size-3.5"
-                  />
-                </button>
-              </div>
+                  <TabIcon tab={tab} />
+                  <span className="min-w-0 flex-1 truncate">{title}</span>
+                  <button
+                    type="button"
+                    aria-label={t("browser.closeTab")}
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      closeTab(tab.id);
+                    }}
+                    className={cn(
+                      "flex size-5 shrink-0 cursor-pointer items-center justify-center rounded-md text-muted-foreground hover:bg-[color-mix(in_oklab,var(--foreground)_calc(8%*var(--contrast-wash-gain,1)),transparent)] hover:text-foreground",
+                      !active &&
+                        "opacity-0 group-hover/tab:opacity-100 focus-visible:opacity-100",
+                    )}
+                  >
+                    <HugeiconsIcon
+                      icon={Cancel01Icon}
+                      strokeWidth={2}
+                      className="size-3.5"
+                    />
+                  </button>
+                </div>
+              </TabContextMenu>
             </div>
           );
         })}

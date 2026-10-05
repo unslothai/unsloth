@@ -1,37 +1,24 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import {
-  ContextMenu,
-  ContextMenuContent,
-  ContextMenuItem,
-  ContextMenuSeparator,
-  ContextMenuTrigger,
-} from "@/components/ui/context-menu";
 import { useLocale, useT } from "@/i18n";
-import { copyToClipboard } from "@/lib/copy-to-clipboard";
-import { openExternalLink } from "@/lib/open-link";
-import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
 import {
   ArrowDown01Icon,
   ArrowUp01Icon,
-  ArrowUpRight01Icon,
   Cancel01Icon,
   Clock01Icon,
-  Copy01Icon,
+  Delete02Icon,
   Download01Icon,
-  InternetIcon,
-  LinkSquare02Icon,
-  PlusSignIcon,
   ViewOffSlashIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react";
-import { type ReactNode, useEffect, useMemo, useState } from "react";
+import { type ReactNode, useMemo, useState } from "react";
 import { hostOf } from "./address";
-import { proxiedFavicon } from "./favicon";
 import { type HistoryItem, useBrowserHistoryStore } from "./history-store";
+import { LinkContextMenu, MenuRow } from "./link-context-menu";
 import { useBrowserPrefsStore } from "./prefs-store";
+import { SiteFavicon } from "./site-favicon";
 import { useBrowserStore } from "./store";
 
 // Unsloth's sites have no /favicon.ico, so they use Studio's own sticker.
@@ -56,7 +43,10 @@ const SUGGESTED_COUNT = 4;
 const RECENTS_PER_PAGE = 5;
 
 /** Most visited sites first, topped up with the defaults, leaving out the ones taken off. */
-function suggestedSites(history: HistoryItem[], hidden: readonly string[]): Site[] {
+function suggestedSites(
+  history: HistoryItem[],
+  hidden: readonly string[],
+): Site[] {
   const byHost = new Map<string, { site: Site; visits: number }>();
   for (const item of history) {
     const host = hostOf(item.url);
@@ -91,106 +81,58 @@ function recentPages(history: HistoryItem[]): HistoryItem[] {
 }
 
 function SiteIcon({ site }: { site: Site }) {
-  const local = site.icon?.startsWith("/") ? site.icon : null;
-  const [icon, setIcon] = useState<string | null>(local);
-  const [failed, setFailed] = useState(false);
-  useEffect(() => {
-    if (local) return;
-    let live = true;
-    void proxiedFavicon(
-      site.icon ?? `${new URL(site.url).origin}/favicon.ico`,
-    ).then((blobUrl) => {
-      if (!live) return;
-      setIcon(blobUrl);
-      setFailed(!blobUrl);
-    });
-    return () => {
-      live = false;
-    };
-  }, [local, site.icon, site.url]);
-  if (failed || !icon) {
-    return (
-      <HugeiconsIcon
-        icon={InternetIcon}
-        strokeWidth={1.5}
-        className="size-9 text-foreground"
-      />
-    );
-  }
   return (
-    <img
-      src={icon}
-      alt=""
-      onError={() => setFailed(true)}
-      className="size-9 rounded-lg object-contain"
+    <SiteFavicon
+      url={site.url}
+      icon={site.icon}
+      className="size-9 rounded-lg"
+      fallbackClassName="size-9 text-foreground"
     />
   );
 }
 
-const MENU_ICON = "size-icon";
-
 function SuggestedSite({ site, tabId }: { site: Site; tabId: string }) {
   const t = useT();
-  const { navigate, openUrl } = useBrowserStore.getState();
+  const { navigate } = useBrowserStore.getState();
   const remove = () =>
     useBrowserPrefsStore.getState().hideSuggestion(hostOf(site.url));
   return (
-    <ContextMenu>
-      <ContextMenuTrigger asChild={true}>
-        <div className="group/site relative min-w-0">
-          <button
-            type="button"
-            title={`${site.title}\n${site.url}`}
-            onClick={() => navigate(tabId, { url: site.url })}
-            className="flex w-full min-w-0 cursor-pointer flex-col items-center gap-4 rounded-2xl px-2 pb-4 pt-5 transition-colors hover:bg-[color-mix(in_oklab,var(--foreground)_calc(4%*var(--contrast-wash-gain,1)),transparent)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring group-data-[state=open]/site:bg-[color-mix(in_oklab,var(--foreground)_calc(4%*var(--contrast-wash-gain,1)),transparent)]"
-          >
-            <SiteIcon site={site} />
-            <span className="w-full truncate text-center text-ui-15 text-foreground">
-              {site.title}
-            </span>
-          </button>
-          <button
-            type="button"
-            aria-label={t("browser.suggestedMenu.remove")}
-            title={t("browser.suggestedMenu.remove")}
-            onClick={remove}
-            className="absolute right-1.5 top-1.5 flex size-6 cursor-pointer items-center justify-center rounded-full text-muted-foreground opacity-0 transition-opacity hover:bg-[color-mix(in_oklab,var(--foreground)_calc(8%*var(--contrast-wash-gain,1)),transparent)] hover:text-foreground focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring group-hover/site:opacity-100"
-          >
-            <HugeiconsIcon icon={Cancel01Icon} strokeWidth={1.75} className="size-3.5" />
-          </button>
-        </div>
-      </ContextMenuTrigger>
-      <ContextMenuContent className="unsloth-plus-menu sidebar-row-menu w-56">
-        <ContextMenuItem onSelect={() => navigate(tabId, { url: site.url })}>
-          <HugeiconsIcon icon={ArrowUpRight01Icon} strokeWidth={1.75} className={MENU_ICON} />
-          {t("browser.suggestedMenu.open")}
-        </ContextMenuItem>
-        <ContextMenuItem onSelect={() => openUrl(site.url, { newTab: true })}>
-          <HugeiconsIcon icon={PlusSignIcon} strokeWidth={1.75} className={MENU_ICON} />
-          {t("browser.suggestedMenu.openInNewTab")}
-        </ContextMenuItem>
-        <ContextMenuItem onSelect={() => openExternalLink(site.url)}>
-          <HugeiconsIcon icon={LinkSquare02Icon} strokeWidth={1.75} className={MENU_ICON} />
-          {t("browser.openExternal")}
-        </ContextMenuItem>
-        <ContextMenuSeparator />
-        <ContextMenuItem
-          onSelect={() =>
-            void copyToClipboard(site.url).then(
-              (ok) => ok && toast.success(t("browser.linkCopied")),
-            )
-          }
-        >
-          <HugeiconsIcon icon={Copy01Icon} strokeWidth={1.75} className={MENU_ICON} />
-          {t("browser.copyLink")}
-        </ContextMenuItem>
-        <ContextMenuSeparator />
-        <ContextMenuItem onSelect={remove}>
-          <HugeiconsIcon icon={ViewOffSlashIcon} strokeWidth={1.75} className={MENU_ICON} />
+    <LinkContextMenu
+      url={site.url}
+      tabId={tabId}
+      extra={
+        <MenuRow icon={ViewOffSlashIcon} onSelect={remove}>
           {t("browser.suggestedMenu.remove")}
-        </ContextMenuItem>
-      </ContextMenuContent>
-    </ContextMenu>
+        </MenuRow>
+      }
+    >
+      <div className="group/site relative min-w-0">
+        <button
+          type="button"
+          title={`${site.title}\n${site.url}`}
+          onClick={() => navigate(tabId, { url: site.url })}
+          className="flex w-full min-w-0 cursor-pointer flex-col items-center gap-4 rounded-2xl px-2 pb-4 pt-5 transition-colors hover:bg-[color-mix(in_oklab,var(--foreground)_calc(4%*var(--contrast-wash-gain,1)),transparent)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring group-data-[state=open]/site:bg-[color-mix(in_oklab,var(--foreground)_calc(4%*var(--contrast-wash-gain,1)),transparent)]"
+        >
+          <SiteIcon site={site} />
+          <span className="w-full truncate text-center text-ui-15 text-foreground">
+            {site.title}
+          </span>
+        </button>
+        <button
+          type="button"
+          aria-label={t("browser.suggestedMenu.remove")}
+          title={t("browser.suggestedMenu.remove")}
+          onClick={remove}
+          className="absolute right-1.5 top-1.5 flex size-6 cursor-pointer items-center justify-center rounded-full text-muted-foreground opacity-0 transition-opacity hover:bg-[color-mix(in_oklab,var(--foreground)_calc(8%*var(--contrast-wash-gain,1)),transparent)] hover:text-foreground focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring group-hover/site:opacity-100"
+        >
+          <HugeiconsIcon
+            icon={Cancel01Icon}
+            strokeWidth={1.75}
+            className="size-3.5"
+          />
+        </button>
+      </div>
+    </LinkContextMenu>
   );
 }
 
@@ -258,8 +200,20 @@ export function NewTabPage({ tabId }: { tabId: string }) {
   const { navigate, openInternal } = useBrowserStore.getState();
   const [page, setPage] = useState(0);
   const hidden = useBrowserPrefsStore((state) => state.hiddenSuggestions);
-  const sites = useMemo(() => suggestedSites(history, hidden), [history, hidden]);
+  const sites = useMemo(
+    () => suggestedSites(history, hidden),
+    [history, hidden],
+  );
   const recents = useMemo(() => recentPages(history), [history]);
+  // A recent stands for its page, so taking it off takes every visit to that page.
+  const removeFromHistory = (url: string) =>
+    useBrowserHistoryStore
+      .getState()
+      .removeVisits(
+        new Set(
+          history.filter((item) => item.url === url).map((item) => item.id),
+        ),
+      );
   const pages = Math.max(1, Math.ceil(recents.length / RECENTS_PER_PAGE));
   const shownPage = Math.min(page, pages - 1);
   const shown = recents.slice(
@@ -332,34 +286,47 @@ export function NewTabPage({ tabId }: { tabId: string }) {
             </SectionTitle>
             <div className="flex flex-col gap-1">
               {shown.map((item) => (
-                <button
+                <LinkContextMenu
                   key={item.id}
-                  type="button"
-                  title={item.url}
-                  onClick={() => navigate(tabId, { url: item.url })}
-                  className={cn(
-                    "flex min-w-0 cursor-pointer items-center gap-4 rounded-2xl px-3 py-3 text-start transition-colors hover:bg-[color-mix(in_oklab,var(--foreground)_calc(4%*var(--contrast-wash-gain,1)),transparent)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
-                  )}
+                  url={item.url}
+                  tabId={tabId}
+                  extra={
+                    <MenuRow
+                      icon={Delete02Icon}
+                      onSelect={() => removeFromHistory(item.url)}
+                    >
+                      {t("browser.pages.removeFromHistory")}
+                    </MenuRow>
+                  }
                 >
-                  <span className="flex size-10 shrink-0 items-center justify-center rounded-xl bg-[color-mix(in_oklab,var(--foreground)_calc(6%*var(--contrast-wash-gain,1)),transparent)]">
-                    <HugeiconsIcon
-                      icon={InternetIcon}
-                      strokeWidth={1.75}
-                      className="size-5 text-muted-foreground"
-                    />
-                  </span>
-                  <span className="min-w-0 flex-1">
-                    <span className="block truncate text-ui-15 text-foreground">
-                      {item.title || hostOf(item.url)}
+                  <button
+                    type="button"
+                    title={item.url}
+                    onClick={() => navigate(tabId, { url: item.url })}
+                    className={cn(
+                      "flex min-w-0 cursor-pointer items-center gap-4 rounded-2xl px-3 py-3 text-start transition-colors hover:bg-[color-mix(in_oklab,var(--foreground)_calc(4%*var(--contrast-wash-gain,1)),transparent)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring data-[state=open]:bg-[color-mix(in_oklab,var(--foreground)_calc(4%*var(--contrast-wash-gain,1)),transparent)]",
+                    )}
+                  >
+                    <span className="flex size-10 shrink-0 items-center justify-center rounded-xl bg-[color-mix(in_oklab,var(--foreground)_calc(6%*var(--contrast-wash-gain,1)),transparent)]">
+                      <SiteFavicon
+                        url={item.url}
+                        className="size-5 rounded-[4px]"
+                        fallbackClassName="size-5 text-muted-foreground"
+                      />
                     </span>
-                    <span className="block truncate text-ui-13 text-muted-foreground">
-                      {t("browser.website")}
+                    <span className="min-w-0 flex-1">
+                      <span className="block truncate text-ui-15 text-foreground">
+                        {item.title || hostOf(item.url)}
+                      </span>
+                      <span className="block truncate text-ui-13 text-muted-foreground">
+                        {t("browser.website")}
+                      </span>
                     </span>
-                  </span>
-                  <span className="shrink-0 text-ui-13 tabular-nums text-muted-foreground">
-                    {when(item.visitedAt)}
-                  </span>
-                </button>
+                    <span className="shrink-0 text-ui-13 tabular-nums text-muted-foreground">
+                      {when(item.visitedAt)}
+                    </span>
+                  </button>
+                </LinkContextMenu>
               ))}
             </div>
           </section>

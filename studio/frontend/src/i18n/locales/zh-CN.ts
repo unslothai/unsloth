@@ -69,6 +69,10 @@ export const zhCN = {
       openInNewTab: "在新标签页中打开",
       remove: "从推荐中移除",
     },
+    tabMenu: {
+      duplicate: "复制标签页",
+      closeOthers: "关闭其他标签页",
+    },
     tools: "工具",
     recents: "最近",
     website: "网站",

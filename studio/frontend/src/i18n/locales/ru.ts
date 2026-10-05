@@ -69,6 +69,10 @@ export const ru = {
       openInNewTab: "Открыть в новой вкладке",
       remove: "Убрать из рекомендаций",
     },
+    tabMenu: {
+      duplicate: "Дублировать вкладку",
+      closeOthers: "Закрыть другие вкладки",
+    },
     tools: "Инструменты",
     recents: "Недавние",
     website: "Веб-сайт",

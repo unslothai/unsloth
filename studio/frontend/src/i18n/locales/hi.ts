@@ -69,6 +69,10 @@ export const hi = {
       openInNewTab: "नए टैब में खोलें",
       remove: "सुझावों से हटाएँ",
     },
+    tabMenu: {
+      duplicate: "टैब डुप्लिकेट करें",
+      closeOthers: "दूसरे टैब बंद करें",
+    },
     tools: "टूल",
     recents: "हाल ही के",
     website: "वेबसाइट",

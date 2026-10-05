@@ -69,6 +69,10 @@ export const ptBR = {
       openInNewTab: "Abrir em nova aba",
       remove: "Remover das sugestões",
     },
+    tabMenu: {
+      duplicate: "Duplicar aba",
+      closeOthers: "Fechar outras abas",
+    },
     tools: "Ferramentas",
     recents: "Recentes",
     website: "Site",

@@ -66,6 +66,10 @@ export const en = {
       openInNewTab: "Open in new tab",
       remove: "Remove from suggested",
     },
+    tabMenu: {
+      duplicate: "Duplicate tab",
+      closeOthers: "Close other tabs",
+    },
     tools: "Tools",
     recents: "Recents",
     website: "Website",

@@ -70,6 +70,10 @@ export const ja = {
       openInNewTab: "新しいタブで開く",
       remove: "おすすめから削除",
     },
+    tabMenu: {
+      duplicate: "タブを複製",
+      closeOthers: "他のタブを閉じる",
+    },
     tools: "ツール",
     recents: "最近",
     website: "ウェブサイト",

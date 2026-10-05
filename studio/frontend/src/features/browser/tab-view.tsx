@@ -85,6 +85,10 @@ function useFrameMessages(tabId: string, origin: string | null) {
           const tab = store.tabs.find((candidate) => candidate.id === tabId);
           const entry = tab ? currentEntry(tab) : null;
           const favicon = safeFavicon(message.favicon);
+          // Kept by site, so Recents, History and Suggested show it once the tab is gone.
+          if (favicon && tab && entry?.kind === "web") {
+            useBrowserHistoryStore.getState().recordIcon(hostOf(tab.displayUrl ?? entry.url), favicon);
+          }
           if (favicon && entry) {
             void proxiedFavicon(favicon).then((icon) => {
               const now = useBrowserStore.getState().tabs.find((candidate) => candidate.id === tabId);

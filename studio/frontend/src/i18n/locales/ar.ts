@@ -69,6 +69,10 @@ export const ar = {
       openInNewTab: "فتح في علامة تبويب جديدة",
       remove: "إزالة من المقترحات",
     },
+    tabMenu: {
+      duplicate: "تكرار علامة التبويب",
+      closeOthers: "إغلاق علامات التبويب الأخرى",
+    },
     tools: "الأدوات",
     recents: "الأخيرة",
     website: "موقع ويب",
