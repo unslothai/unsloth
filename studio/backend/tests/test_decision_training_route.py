@@ -475,6 +475,7 @@ def device(monkeypatch):
             "xpu": hardware.DeviceType.XPU,
         }[kind]
         monkeypatch.setattr(hardware, "get_device", lambda: value)
+        monkeypatch.setattr(hardware, "DEVICE", value)
 
     use("cuda")
     return use

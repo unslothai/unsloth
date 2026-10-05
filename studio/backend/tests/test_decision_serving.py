@@ -293,6 +293,7 @@ def _clef_fine_tune(outputs, folder):
 def _spoof_device(monkeypatch, kind):
     # ROCm hosts report DeviceType.CUDA, like NVIDIA ones.
     from utils.hardware import hardware
+
     device = {
         "cuda": hardware.DeviceType.CUDA,
         "rocm": hardware.DeviceType.CUDA,
@@ -301,6 +302,7 @@ def _spoof_device(monkeypatch, kind):
         "cpu": hardware.DeviceType.CPU,
     }[kind]
     monkeypatch.setattr(hardware, "get_device", lambda: device)
+    monkeypatch.setattr(hardware, "DEVICE", device)
 
 
 @pytest.fixture
@@ -398,3 +400,16 @@ def test_a_failed_device_probe_does_not_refuse_clef(monkeypatch):
 
     monkeypatch.setattr(hardware, "get_device", broken)
     assert catalog.clef_unsupported_reason() is None
+
+
+def test_settings_never_wait_on_device_detection(monkeypatch):
+    from utils.hardware import hardware
+
+    def slow():
+        raise AssertionError("Settings must not run device detection")
+
+    monkeypatch.setattr(hardware, "get_device", slow)
+    monkeypatch.setattr(hardware, "DEVICE", None)
+    assert catalog.clef_unsupported_reason(wait = False) is None
+    monkeypatch.setattr(hardware, "DEVICE", hardware.DeviceType.MLX)
+    assert catalog.clef_unsupported_reason(wait = False) == catalog.CLEF_NEEDS_GPU

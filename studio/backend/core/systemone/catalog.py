@@ -86,11 +86,16 @@ CLEF_NEEDS_GPU = (
 )
 
 
-def clef_unsupported_reason() -> str | None:
+def clef_unsupported_reason(wait: bool = True) -> str | None:
     # ROCm reports DeviceType.CUDA too. A failed probe answers None: detection only ever widens.
+    # wait=False reads only a finished detection, so a settings read never waits on torch import.
     try:
-        from utils.hardware.hardware import DeviceType, get_device
-        return None if get_device() == DeviceType.CUDA else CLEF_NEEDS_GPU
+        from utils.hardware import hardware
+
+        device = hardware.get_device() if wait else hardware.DEVICE
+        if device is None:
+            return None
+        return None if device == hardware.DeviceType.CUDA else CLEF_NEEDS_GPU
     except Exception:
         return None
 
