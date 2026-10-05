@@ -27078,6 +27078,10 @@ class LlamaCppBackend:
                         )
 
                     kv_cache_bytes = _kv_bytes(effective_ctx)
+                    # The Manual launch branch below emits --fit off; decide it before the
+                    # decision line so the log matches the argv (#10821).
+                    if gpu_memory_mode == "manual" and gpu_layers >= 0:
+                        use_fit = False
                     # Everything the spill planner needs, snapshotted as plain ints
                     # where it is already evaluated.
                     _spill_inputs = {
@@ -27171,7 +27175,10 @@ class LlamaCppBackend:
                         f"{_mtp_note}"
                         f"context: {effective_ctx}, "
                         # --fit flag state, not "does it fit": off means this subset provably fits.
-                        f"GPUs free: {gpus}, selected: {gpu_indices}, --fit: {'on' if use_fit else 'off'}"
+                        # Manual modes empty gpus on purpose; say so, not a failed probe.
+                        f"GPUs free: {gpus}"
+                        f"{' (manual mode)' if not gpus and gpu_memory_mode == 'manual' else ''}, "
+                        f"selected: {gpu_indices}, --fit: {'on' if use_fit else 'off'}"
                     )
                     _on = list(gpu_indices or [idx for idx, _ in gpus])
                     if _on:
