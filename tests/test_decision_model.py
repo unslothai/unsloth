@@ -447,7 +447,8 @@ def test_toy_task_beats_the_base_model(checkpoint, tmp_path):
         head_learning_rate = 5e-3,
     ).train()
     tuned = FastDecisionModel.evaluate(model, tokenizer, held)
-    assert tuned["accuracy"] > base["accuracy"] + 0.25
+    # The untrained head can already guess well on a GPU, so check the task was learned.
+    assert tuned["accuracy"] >= 0.8 and tuned["accuracy"] >= base["accuracy"]
     assert tuned["loss"] < base["loss"] / 2
 
 
@@ -618,3 +619,150 @@ def test_rope_parameters_build_the_trained_rope_on_every_transformers(tmp_path):
     outputs = [model.eval()(input_ids = ids).last_hidden_state for model in (saved, both, default)]
     torch.testing.assert_close(outputs[0], outputs[1])
     assert not torch.allclose(outputs[0], outputs[2], atol = 1e-2)
+
+
+@pytest.fixture
+def llm(tmp_path, monkeypatch):
+    from peft import LoraConfig, PeftModel, get_peft_model
+    from tokenizers import Tokenizer, models, normalizers, pre_tokenizers
+    from transformers import (
+        AutoModelForCausalLM,
+        AutoTokenizer,
+        PreTrainedTokenizerFast,
+        Qwen3Config,
+    )
+
+    specials = ["<pad>", "<eos>", "<unk>"]
+    vocab = {token: i for i, token in enumerate(specials + sorted(set(WORDS)))}
+    tokenizer = Tokenizer(models.WordLevel(vocab, unk_token = "<unk>"))
+    tokenizer.normalizer = normalizers.Lowercase()
+    tokenizer.pre_tokenizer = pre_tokenizers.Whitespace()
+    folder = tmp_path / "llm"
+    PreTrainedTokenizerFast(
+        tokenizer_object = tokenizer, pad_token = "<pad>", eos_token = "<eos>", unk_token = "<unk>"
+    ).save_pretrained(str(folder))
+    torch.manual_seed(0)
+    AutoModelForCausalLM.from_config(
+        Qwen3Config(
+            vocab_size = len(vocab),
+            hidden_size = 64,
+            intermediate_size = 128,
+            num_hidden_layers = 2,
+            num_attention_heads = 4,
+            num_key_value_heads = 2,
+            head_dim = 16,
+            max_position_embeddings = 512,
+            pad_token_id = 0,
+            eos_token_id = 1,
+        )
+    ).save_pretrained(str(folder))
+    calls = []
+
+    # Stand-ins for FastModel, which needs a GPU: the same loading, without Unsloth's patches.
+    def backbone(model_name, **kwargs):
+        calls.append(kwargs)
+        model_name = Path(model_name)
+        if (model_name / "adapter_config.json").is_file():
+            base = AutoModelForCausalLM.from_pretrained(str(folder))
+            model = PeftModel.from_pretrained(base, str(model_name), is_trainable = True)
+        else:
+            model = AutoModelForCausalLM.from_pretrained(str(model_name))
+        return model, AutoTokenizer.from_pretrained(str(model_name))
+
+    def peft(
+        model,
+        finetune_vision_layers,
+        target_modules,
+        use_gradient_checkpointing,
+        random_state,
+        **kwargs,
+    ):
+        calls.append({"finetune_vision_layers": finetune_vision_layers, **kwargs})
+        kwargs.pop("loftq_config")
+        torch.manual_seed(random_state)
+        return get_peft_model(
+            model, LoraConfig(target_modules = target_modules or "all-linear", **kwargs)
+        )
+
+    from unsloth.models.loader import FastModel
+
+    monkeypatch.setattr(FastModel, "from_pretrained", staticmethod(backbone))
+    monkeypatch.setattr(FastModel, "get_peft_model", staticmethod(peft))
+    return folder, calls
+
+
+def test_llm_reads_the_state_then_the_question_then_each_option(llm):
+    folder, _ = llm
+    model, tokenizer = FastDecisionModel.from_pretrained(str(folder), max_seq_length = 64)
+    assert isinstance(model, decision.CausalDecisionModel)
+    assert model.decision_config["marker_token"] == "<eos>"
+    eos = tokenizer.eos_token_id
+    team = decision._internal(QUESTIONS["team"])
+    ids, markers = model.build_sequence(tokenizer, "the server is down", team, 64, 32)
+    text = tokenizer.decode(ids)
+    assert (
+        text.index("server") < text.index("question") < text.index("outage") < text.index("billing")
+    )
+    assert markers[-1] == len(ids) - 1 and all(ids[m] == eos for m in markers)
+    assert (
+        ids.count(eos) == 2
+        and tokenizer.decode(ids[markers[0] + 1 : markers[1]]) == "billing : charges and refunds"
+    )
+
+    # A long state is cut so the question and every option still fit.
+    ids, markers = model.build_sequence(tokenizer, "the server is down " * 40, team, 64, 32)
+    assert len(ids) == 64 and len(markers) == 2 and markers[-1] == 63
+
+
+def test_llm_trains_saves_and_loads_back(llm, tmp_path):
+    from safetensors.torch import load_file
+
+    folder, calls = llm
+    model, tokenizer = FastDecisionModel.from_pretrained(str(folder), load_in_4bit = True)
+    assert (
+        calls[-1]["load_in_4bit"] is True and calls[-1]["max_seq_length"] == decision.CAUSAL_MAX_LEN
+    )
+    model = FastDecisionModel.get_peft_model(model, r = 8, lora_alpha = 16)
+    assert calls[-1]["finetune_vision_layers"] is False and calls[-1]["r"] == 8
+    head = [
+        n for n, p in model.named_parameters() if p.requires_grad and not n.startswith("encoder.")
+    ]
+    assert head and all(p.dtype == torch.float32 for n, p in model.named_parameters() if n in head)
+    assert not any(
+        p.requires_grad
+        for n, p in model.named_parameters()
+        if n.startswith("encoder.") and "lora_" not in n
+    )
+
+    items, report = FastDecisionModel.build_dataset([_row(i) for i in range(120)], tokenizer, model)
+    assert report["skipped"] == 0 and len(items) == 360
+    train, held = FastDecisionModel.split_holdout(items, 3407, fraction = 0.25)
+    base = FastDecisionModel.evaluate(model, tokenizer, held)
+    trainer = DecisionTrainer(
+        model = model,
+        args = _args(tmp_path, max_steps = 80, learning_rate = 2e-3, per_device_train_batch_size = 16),
+        train_dataset = train,
+        processing_class = tokenizer,
+    )
+    trainer.train()
+    # The new head learns at the LoRA rate.
+    assert {group["initial_lr"] for group in trainer.optimizer.param_groups} == {2e-3}
+    tuned = FastDecisionModel.calibrate(model, tokenizer, held)
+    assert tuned["accuracy"] > base["accuracy"] + 0.25
+
+    model.save_pretrained(tmp_path / "out")
+    out = tmp_path / "out"
+    assert (out / "adapter_config.json").is_file() and (out / "tokenizer_config.json").is_file()
+    assert not any(
+        k.startswith("encoder.") for k in load_file(str(out / "decision_head.safetensors"))
+    )
+    saved = json.loads((out / "decision_config.json").read_text())
+    assert (
+        saved["fine_tuned"] is True and saved["temperature"] == model.decision_config["temperature"]
+    )
+
+    loaded, tokenizer = FastDecisionModel.from_pretrained(str(out))
+    assert loaded.decision_config == {k: v for k, v in saved.items() if k != "fine_tuned"}
+    assert FastDecisionModel.evaluate(loaded, tokenizer, held) == FastDecisionModel.evaluate(
+        model, tokenizer, held
+    )

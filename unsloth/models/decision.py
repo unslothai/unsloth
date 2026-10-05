@@ -47,6 +47,9 @@ HEAD_LEARNING_RATE = 1e-4
 QUESTION_TYPES = ("choice", "score", "noul")
 _FILES = ("rl_agent_config.json", "model.safetensors")
 _DIRS = ("encoder", "tokenizer")
+CAUSAL_MAX_LEN, CAUSAL_HEAD_MAX_LEN = 2048, 512
+CAUSAL_HEAD_WIDTH = 1024
+_CAUSAL_CONFIG, _CAUSAL_HEAD = "decision_config.json", "decision_head.safetensors"
 # laya 0.3.5 ships inside Unsloth for Studio's Decision API (studio/backend/vendor/README.md).
 _VENDORED_LAYA = (
     Path(__file__).resolve().parents[2] / "studio" / "backend" / "vendor" / "laya" / "__init__.py"
@@ -87,18 +90,45 @@ def is_decision_checkpoint(folder) -> bool:
     )
 
 
+def _snapshot_download(*args, **kwargs) -> str:
+    try:
+        from unsloth_zoo.hf_xet_fallback import (
+            snapshot_download_with_xet_fallback as snapshot_download,
+        )
+    except ImportError:
+        from huggingface_hub import snapshot_download
+    return snapshot_download(*args, **kwargs)
+
+
+def _decision_files(model_name, subfolder, token, revision, local_files_only) -> Path:
+    # Only the small decision files, so a plain LLM repo costs one listing.
+    root = Path(model_name).expanduser()
+    if not root.is_dir():
+        prefix = f"{subfolder}/" if subfolder else ""
+        try:
+            root = Path(
+                _snapshot_download(
+                    model_name,
+                    token = token,
+                    revision = revision,
+                    local_files_only = local_files_only,
+                    allow_patterns = [
+                        prefix + name for name in (_FILES[0], _CAUSAL_CONFIG, _CAUSAL_HEAD)
+                    ],
+                )
+            )
+        except Exception:
+            # Not reachable here; FastModel.from_pretrained reports why.
+            return root
+    return root / subfolder if subfolder else root
+
+
 def _checkpoint_folder(model_name, subfolder, token, revision, local_files_only) -> Path:
     root = Path(model_name).expanduser()
     if not root.is_dir():
-        try:
-            from unsloth_zoo.hf_xet_fallback import (
-                snapshot_download_with_xet_fallback as snapshot_download,
-            )
-        except ImportError:
-            from huggingface_hub import snapshot_download
         prefix = f"{subfolder}/" if subfolder else ""
         root = Path(
-            snapshot_download(
+            _snapshot_download(
                 model_name,
                 token = token,
                 revision = revision,
@@ -243,6 +273,76 @@ def _target(internal: dict, gold) -> tuple:
     raise DecisionDataError("gold has no usable label or probabilities")
 
 
+class CausalDecisionModel(torch.nn.Module):
+    # A causal LM reads the state, the question and every option, each option ending on a marker
+    # token that has seen all of it. Laya's typed head then compares the markers.
+    def __init__(
+        self,
+        encoder,
+        marker_token_id: int,
+        width: int = CAUSAL_HEAD_WIDTH,
+        head_layers: int = 2,
+        dropout: float = 0.1,
+    ):
+        super().__init__()
+        nn = torch.nn
+        self.encoder = encoder
+        self.marker_token_id = marker_token_id
+        hidden = encoder.config.get_text_config().hidden_size
+        self.proj = nn.Sequential(nn.LayerNorm(hidden), nn.Linear(hidden, width))
+        layer = nn.TransformerEncoderLayer(
+            width, width // 64, 4 * width, dropout, batch_first = True, norm_first = True
+        )
+        self.head = nn.TransformerEncoder(layer, head_layers, enable_nested_tensor = False)
+        self.type_emb = nn.Embedding(3, width)
+        nn.init.normal_(self.type_emb.weight, std = 0.02)
+        self.scorer = nn.Sequential(
+            nn.LayerNorm(width), nn.Linear(width, width), nn.GELU(), nn.Linear(width, 1)
+        )
+
+    def _body(self):
+        # The transformer without its LM head: no logits over the whole vocabulary.
+        model = self.encoder
+        if hasattr(model, "get_base_model"):
+            model = model.get_base_model()
+        return getattr(model, model.base_model_prefix)
+
+    def forward(self, input_ids, attention_mask, marker_pos, marker_mask, qtype):
+        h = self._body()(input_ids = input_ids, attention_mask = attention_mask).last_hidden_state
+        h = self.proj(h.to(self.proj[1].weight.dtype)) + self.type_emb(qtype)[:, None, :]
+        pad = ~attention_mask.bool()
+        for layer in self.head.layers:
+            h = layer(h, src_key_padding_mask = pad)
+        m = torch.gather(h, 1, marker_pos[:, :, None].expand(-1, -1, h.size(-1)))
+        logits = self.scorer(m).squeeze(-1).float().masked_fill(~marker_mask, -1e4)
+        return logits, None
+
+    def build_sequence(self, tokenizer, state, internal: dict, max_len: int, head_max_len: int):
+        common = _laya().common
+        marker = tokenizer.convert_ids_to_tokens(self.marker_token_id)
+
+        def encode(text):
+            return tokenizer(text.replace(marker, " "), add_special_tokens = False)["input_ids"]
+
+        # Laya's budget: options up to 48 tokens, shortened together when the head runs out.
+        options = [encode(" " + text)[:48] for text in common.render_options(internal)]
+        budget = head_max_len - sum(len(option) + 1 for option in options)
+        if budget < 16:
+            per = max(4, (head_max_len - 16) // max(1, len(options))) - 1
+            options = [option[:per] for option in options]
+            budget = head_max_len - sum(len(option) + 1 for option in options)
+        question = encode(f"\n\n{internal['t']} question: {internal['ins']}\n")[: max(8, budget)]
+        # BOS for the models that start with one.
+        ids = tokenizer("", add_special_tokens = True)["input_ids"]
+        room = max_len - len(ids) - len(question) - sum(len(option) + 1 for option in options)
+        ids = ids + encode(common.serialize_state(state))[: max(0, room)] + question
+        markers = []
+        for option in options:
+            ids = ids + option + [self.marker_token_id]
+            markers.append(len(ids) - 1)
+        return ids[:max_len], [m for m in markers if m < max_len]
+
+
 def _soft_cross_entropy(logits, target, mask):
     logits = logits.float().masked_fill(~mask, -1e4)
     return -(target * torch.log_softmax(logits, -1)).sum(-1).mean()
@@ -367,7 +467,14 @@ class DecisionTrainer(Trainer):
             return self.optimizer
         model = self.model if model is None else model
         decay = set(self.get_decay_parameter_names(model))
-        head_lr = HEAD_LEARNING_RATE if self.head_learning_rate is None else self.head_learning_rate
+        head_lr = self.head_learning_rate
+        if head_lr is None:
+            # A new LLM head learns at the LoRA rate; Laya's trained head moves slower.
+            head_lr = (
+                self.args.learning_rate
+                if isinstance(model, CausalDecisionModel)
+                else HEAD_LEARNING_RATE
+            )
         groups = {}
         for name, param in model.named_parameters():
             if param.requires_grad:
@@ -540,7 +647,136 @@ def push_to_hub_merged(
     print(f"Unsloth: Saved the decision model to https://huggingface.co/{repo_id}")
 
 
-# Decision models in Laya's rl_agent_config.json layout: any encoder plus a typed decision head.
+def _save_causal(
+    self,
+    save_directory,
+    tokenizer = None,
+    save_method = "lora",
+    **kwargs,
+) -> None:
+    from safetensors.torch import save_file
+
+    output = Path(save_directory)
+    output.mkdir(parents = True, exist_ok = True)
+    (output / _CAUSAL_CONFIG).unlink(missing_ok = True)
+    tokenizer = self._saved_temp_tokenizer if tokenizer is None else tokenizer
+    if save_method == "lora" and hasattr(self.encoder, "peft_config"):
+        self.encoder.save_pretrained(str(output))
+        tokenizer.save_pretrained(str(output))
+    else:
+        save_method = "merged_16bit" if save_method == "lora" else save_method
+        self.encoder.save_pretrained_merged(
+            str(output), tokenizer, save_method = save_method, **kwargs
+        )
+    head = {
+        name: value.detach().to("cpu", torch.float32).contiguous()
+        for name, value in self.state_dict().items()
+        if not name.startswith("encoder.")
+    }
+    save_file(head, str(output / _CAUSAL_HEAD))
+    # Written last: a folder with decision_config.json is a complete decision model.
+    partial = output / f"{_CAUSAL_CONFIG}.tmp"
+    partial.write_text(json.dumps({**self.decision_config, "fine_tuned": True}, indent = 2))
+    os.replace(partial, output / _CAUSAL_CONFIG)
+
+
+def save_pretrained_causal(
+    self,
+    save_directory,
+    tokenizer = None,
+    **kwargs,
+) -> None:
+    _save_causal(self, save_directory, tokenizer, "lora", **kwargs)
+
+
+def save_pretrained_merged_causal(
+    self,
+    save_directory,
+    tokenizer = None,
+    save_method = "merged_16bit",
+    **kwargs,
+) -> None:
+    _save_causal(self, save_directory, tokenizer, save_method, **kwargs)
+
+
+def push_to_hub_causal(
+    self,
+    repo_id,
+    tokenizer = None,
+    token = None,
+    private = None,
+    **kwargs,
+):
+    push_to_hub_merged(self, repo_id, tokenizer, "lora", token, private)
+
+
+def _causal_backbone(model_name, **kwargs):
+    from .loader import FastModel
+    return FastModel.from_pretrained(model_name, **kwargs)
+
+
+def _causal_peft(model, **kwargs):
+    from .loader import FastModel
+    return FastModel.get_peft_model(model, finetune_vision_layers = False, **kwargs)
+
+
+def _causal_from_pretrained(model_name, folder: Path, max_seq_length, full_finetuning, **kwargs):
+    from safetensors.torch import load_file
+
+    saved = (folder / _CAUSAL_CONFIG).is_file()
+    config = json.loads((folder / _CAUSAL_CONFIG).read_text()) if saved else {}
+    config.pop("fine_tuned", None)
+    max_len = int(max_seq_length or config.get("max_len", CAUSAL_MAX_LEN))
+    backbone, processor = _causal_backbone(
+        model_name, max_seq_length = max_len, full_finetuning = full_finetuning, **kwargs
+    )
+    tokenizer = getattr(processor, "tokenizer", processor)
+    if tokenizer.pad_token_id is None:
+        tokenizer.pad_token = tokenizer.eos_token
+    marker = config.get("marker_token", tokenizer.eos_token)
+    marker_id = tokenizer.convert_tokens_to_ids(marker) if marker is not None else None
+    if marker_id is None or marker_id == tokenizer.unk_token_id:
+        raise ValueError(
+            f"Unsloth: {model_name}'s tokenizer has no end-of-sequence token to mark options with."
+        )
+    torch.manual_seed(kwargs["random_state"])
+    model = CausalDecisionModel(
+        backbone,
+        marker_id,
+        int(config.get("head_width", CAUSAL_HEAD_WIDTH)),
+        int(config.get("head_layers", 2)),
+    )
+    if saved:
+        missing, unexpected = model.load_state_dict(
+            load_file(str(folder / _CAUSAL_HEAD)), strict = False
+        )
+        if unexpected or any(not name.startswith("encoder.") for name in missing):
+            raise ValueError(f"Unsloth: {folder / _CAUSAL_HEAD} does not match the decision head.")
+    device = next(backbone.parameters()).device
+    for name, module in model.named_children():
+        if name != "encoder":
+            module.to(device)
+    model.decision_config = {
+        **config,
+        "format": "causal",
+        "marker_token": marker,
+        "head_width": model.proj[1].out_features,
+        "head_layers": len(model.head.layers),
+        "max_len": max_len,
+        "head_max_len": min(max_len // 2, int(config.get("head_max_len", CAUSAL_HEAD_MAX_LEN))),
+        "temperature": config.get("temperature", [1.0] * 3),
+    }
+    _mark_full_finetuning(model, full_finetuning)
+    model._saved_temp_tokenizer = processor
+    model.save_pretrained = types.MethodType(save_pretrained_causal, model)
+    model.save_pretrained_merged = types.MethodType(save_pretrained_merged_causal, model)
+    model.push_to_hub = types.MethodType(push_to_hub_causal, model)
+    model.push_to_hub_merged = types.MethodType(push_to_hub_merged, model)
+    return model, tokenizer
+
+
+# Decision models: Laya checkpoints (an encoder plus a typed decision head), or any causal LM that
+# FastModel loads, with a new head that reads it.
 class FastDecisionModel:
     @staticmethod
     def from_pretrained(
@@ -558,9 +794,26 @@ class FastDecisionModel:
         random_state: int = 3407,
         **kwargs,
     ):
+        folder = _decision_files(model_name, subfolder, token, revision, local_files_only)
+        if subfolder is None and not (folder / _FILES[0]).is_file():
+            return _causal_from_pretrained(
+                model_name,
+                folder,
+                max_seq_length = max_seq_length,
+                dtype = dtype,
+                load_in_4bit = load_in_4bit,
+                load_in_8bit = load_in_8bit,
+                full_finetuning = full_finetuning,
+                token = token,
+                revision = revision,
+                use_gradient_checkpointing = use_gradient_checkpointing,
+                random_state = random_state,
+                **({"local_files_only": True} if local_files_only else {}),
+                **kwargs,
+            )
         if load_in_4bit or load_in_8bit:
             raise NotImplementedError(
-                "Unsloth: decision models train in 16-bit, so load_in_4bit and load_in_8bit are not supported."
+                "Unsloth: Laya models train in 16-bit, so load_in_4bit and load_in_8bit are not supported."
             )
         from safetensors.torch import load_file
         from transformers import AutoModel, AutoTokenizer
@@ -633,6 +886,26 @@ class FastDecisionModel:
             return model
         if hasattr(model.encoder, "peft_config"):
             raise RuntimeError("Unsloth: You already added LoRA adapters to your model!")
+        if isinstance(model, CausalDecisionModel):
+            model.encoder = _causal_peft(
+                model.encoder,
+                r = r,
+                target_modules = None if target_modules == "all-linear" else target_modules,
+                lora_alpha = lora_alpha,
+                lora_dropout = lora_dropout,
+                bias = bias,
+                layers_to_transform = layers_to_transform,
+                layers_pattern = layers_pattern,
+                use_gradient_checkpointing = use_gradient_checkpointing,
+                random_state = random_state,
+                use_rslora = use_rslora,
+                modules_to_save = modules_to_save,
+                init_lora_weights = init_lora_weights,
+                loftq_config = loftq_config,
+                **({"use_dora": True} if use_dora else {}),
+                **kwargs,
+            )
+            return model
         from peft import LoraConfig, get_peft_model
         from transformers import set_seed
 
@@ -681,6 +954,11 @@ class FastDecisionModel:
         max_len = int(model.decision_config.get("max_len", 512))
         head_max_len = int(model.decision_config.get("head_max_len", 192))
         items, report, skips = [], {"total": 0, "skipped": 0, "reason": None}, {}
+        build_sequence = (
+            model.build_sequence
+            if isinstance(model, CausalDecisionModel)
+            else common.build_sequence
+        )
 
         def skip(
             index,
@@ -710,9 +988,7 @@ class FastDecisionModel:
                         validate(name, question)
                     internal = _internal(question)
                     target, label = _target(internal, _parsed(gold[name]))
-                    ids, markers = common.build_sequence(
-                        tokenizer, state, internal, max_len, head_max_len
-                    )
+                    ids, markers = build_sequence(tokenizer, state, internal, max_len, head_max_len)
                 except (TypeError, ValueError) as exc:
                     skip(index, str(exc), name)
                     continue
