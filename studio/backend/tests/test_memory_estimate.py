@@ -697,6 +697,14 @@ class TestLocalizedEstimateConfig:
         config = _local_config(gqa_gguf)
         assert ri._localized_estimate_config(config, gqa_gguf) is config
 
+    def test_a_hand_added_projector_above_the_snapshot_is_priced(self, gqa_gguf, tmp_path):
+        # #9286: the projector sits in models--<repo>/, past the localizer's search root.
+        projector = tmp_path / "mmproj-F16.gguf"
+        projector.write_bytes(b"x")
+        config = _repo_config(is_vision = True, gguf_local_mmproj_file = str(projector))
+        local = ri._localized_estimate_config(config, gqa_gguf)
+        assert local.gguf_mmproj_file == str(projector)
+
     def test_repo_config_is_copied_never_mutated(self, gqa_gguf):
         # The original is sitting in _estimate_config_cache for the TTL, shared by
         # every later tick of the slider. A half-localized config escaping into
@@ -1575,6 +1583,36 @@ class TestEstimateMemoryRoute:
         assert resp.layer_count == _GQA_FIELDS["block_count"]
         assert resp.weights_bytes > 0
         assert resp.n_ctx == 4096
+
+
+class TestInt8PrefillAvailabilityRoute:
+    @pytest.mark.parametrize(
+        "downloaded,takes_int8,answer",
+        [
+            (True, True, (True, None)),
+            (False, True, (False, "not_downloaded")),
+            (True, False, (False, "unsupported_zoo")),
+        ],
+    )
+    def test_the_answer(self, monkeypatch, tmp_path, downloaded, takes_int8, answer):
+        from core.inference import mlx_inference
+        from models.inference import Int8PrefillAvailabilityRequest
+
+        asked = []
+        zoo = _types.ModuleType("unsloth_zoo.mlx.inference")
+        zoo.nax_quantized_linear = (lambda m, int8_prefill = None: m) if takes_int8 else len
+        verdict = SimpleNamespace(available = True, reason = "")
+        zoo.int8_prefill_checkpoint_available = lambda path: asked.append(path) or verdict
+        monkeypatch.setitem(sys.modules, "unsloth_zoo.mlx.inference", zoo)
+        monkeypatch.setattr(mlx_inference, "_int8_prefill_checkpoint_cache", {})
+        model_dir = str(tmp_path) if downloaded else None
+        TestEstimateMemoryRoute._mlx_target(monkeypatch, model_dir)
+        request = Int8PrefillAvailabilityRequest(model_path = "org/model")
+        resp = asyncio.run(ri.int8_prefill_availability(request, current_subject = "test"))
+        assert (resp.available, resp.reason) == answer
+        if answer[0]:
+            assert mlx_inference.mlx_int8_prefill_checkpoint_status(model_dir) == (True, "")
+        assert asked == ([model_dir] if answer[0] else [])
 
 
 class TestParallelSlotResolution:

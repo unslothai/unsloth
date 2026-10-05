@@ -280,6 +280,12 @@ const FIELDS: FieldCase[] = [
     same: true,
     different: false,
   },
+  {
+    key: "mlxInt8Prefill",
+    statusKey: "mlx_int8_prefill_requested",
+    same: true,
+    different: false,
+  },
 ];
 
 for (const [accelerator, base] of Object.entries(ACCELERATORS)) {

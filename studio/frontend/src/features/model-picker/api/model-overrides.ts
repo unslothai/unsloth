@@ -40,6 +40,8 @@ export interface ApiModelOverride {
   mlx_kv_quant?: string;
   mlx_kv_bits?: number;
   // biome-ignore lint/style/useNamingConvention: API schema
+  mlx_int8_prefill?: boolean;
+  // biome-ignore lint/style/useNamingConvention: API schema
   speculative_type?: string;
   // biome-ignore lint/style/useNamingConvention: API schema
   spec_draft_n_max?: number;
@@ -348,6 +350,7 @@ export function fromApiOverride(
     // Both are stored only when true, so an absent one is a gap like any other.
     tensorParallel: override.tensor_parallel ?? local.tensorParallel,
     disableVision: override.disable_vision ?? local.disableVision,
+    mlxInt8Prefill: override.mlx_int8_prefill ?? local.mlxInt8Prefill,
     chatTemplateOverride:
       override.chat_template_override ?? local.chatTemplateOverride,
     llamaExtraArgs: extraArgs,
@@ -438,6 +441,9 @@ export function toApiOverride(config: PerModelConfig | null): ApiModelOverride {
   }
   if (config.disableVision) {
     payload.disable_vision = true;
+  }
+  if (config.mlxInt8Prefill) {
+    payload.mlx_int8_prefill = true;
   }
   if (config.chatTemplateOverride?.trim()) {
     payload.chat_template_override = config.chatTemplateOverride;

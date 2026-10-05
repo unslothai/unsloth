@@ -83,3 +83,25 @@ test("details drop malformed entries, server paths and unknown source kinds", ()
   );
   assert.deepEqual(detailsFrom({}), EMPTY_TRANSCRIPT_DETAILS);
 });
+
+test("details come back in time order, whatever order the record kept", () => {
+  const details = detailsFrom({
+    segments: [
+      { start: 5, end: 6, text: "c", speaker: "S02" },
+      { start: 0, end: 1, text: "a", speaker: "S01" },
+      { start: 2, end: 3, text: "b", speaker: "S01" },
+    ],
+    words: [
+      { start: 2, end: 3, word: "b" },
+      { start: 0, end: 1, word: "a" },
+    ],
+  });
+  assert.deepEqual(
+    details.segments.map((s) => s.text),
+    ["a", "b", "c"],
+  );
+  assert.deepEqual(
+    details.words.map((w) => w.word),
+    ["a", "b"],
+  );
+});

@@ -839,3 +839,226 @@ def test_int8_flux_under_fbcache_renders_through_the_fused_kernel():
     out = run(model)
     assert torch.equal(out[0], ref[0]) and torch.equal(out[1], ref[1])
     assert all(fused.is_installed(b) for b in model.single_transformer_blocks)
+
+
+def _zimage_convrot_ff(rotate):
+    """Z-Image FeedForward(256, 512) with ``rotate`` of w1 / w2 / w3 ConvRot-rotated at group 256, then int8."""
+    from torchao.quantization import Int8DynamicActivationInt8WeightConfig, quantize_
+
+    from core.inference.diffusion_convrot import rotate_linears_, warm_rotation_cache
+
+    zmod = pytest.importorskip("diffusers.models.transformers.transformer_z_image")
+    torch.manual_seed(0)
+    ff = zmod.FeedForward(256, 512).cuda().to(torch.bfloat16).eval()
+    for p in ff.parameters():
+        p.data.normal_(0, 0.05)
+    rotate_linears_(ff, list(rotate), 256)
+    warm_rotation_cache(ff, "cuda", torch.bfloat16)
+    quantize_(ff, _int8tensor_config(Int8DynamicActivationInt8WeightConfig))
+    return _require_int8tensor(ff)
+
+
+def _int8tensor_config(cls):
+    """The Int8Tensor (v2) config the hosted int8 checkpoints carry; torchao <= 0.17 defaults to the legacy tensor."""
+    try:
+        return cls(version = 2)
+    except TypeError:
+        return cls()
+
+
+def _outlier_input():
+    g = torch.Generator(device = "cpu").manual_seed(3)
+    x = torch.randn(2, 150, 256, generator = g)
+    x[..., :4] *= 40  # a few heavy channels: what the rotation exists for
+    return x.to(torch.bfloat16).cuda()
+
+
+@needs_cuda
+@pytest.mark.parametrize(
+    "rotate, groups",
+    [(("w1", "w2", "w3"), (256, 256)), (("w1", "w3"), (256, 0)), (("w2",), (0, 256))],
+)
+def test_zimage_convrot_swiglu_fuses_and_matches_stock_eager(rotate, groups):
+    if not groups[1] and not _act_scale_is_fp32():
+        # A plain w2 runs the SwiGLU kernel's own quant, which matches torchao's fp32-scale act quant (>= 0.18) only;
+        # this is the kernel's existing contract, unchanged here (the all-rotated MLP never reaches that quant).
+        pytest.skip(
+            "the fused SwiGLU kernel's act quant matches torchao >= 0.18 (fp32 activation scale) only"
+        )
+    ff = _zimage_convrot_ff(rotate)
+    x = _outlier_input()
+    with torch.no_grad():
+        ref = ff(x)
+        torch._dynamo.reset()
+        stock_compiled = torch.compile(ff, fullgraph = True)(x)
+        assert fused.install(ff) == 1
+        assert ff.__dict__[fused._SWIGLU_ATTR][6:] == groups
+        out = ff(x)
+        torch._dynamo.reset()
+        compiled = torch.compile(ff, fullgraph = True)(x)
+    # one rotation + one act quant for w1 and w3 instead of two of each: the same ops on the same input
+    assert torch.equal(out, ref)
+    _assert_within_compile_floor(compiled, stock_compiled, ref)
+
+
+@needs_cuda
+def test_zimage_convrot_swiglu_with_disagreeing_gate_and_value_keeps_stock():
+    ff = _zimage_convrot_ff(("w1",))  # w3 plain: the two halves no longer share one input
+    assert fused.install(ff) == 0
+    assert not fused.is_installed(ff)
+
+
+def _act_scale_is_fp32() -> bool:
+    from torchao.quantization.granularity import PerRow
+    from torchao.quantization.quantize_.workflows.int8.int8_tensor import Int8Tensor
+
+    x = torch.ones(32, 64, dtype = torch.bfloat16)
+    return Int8Tensor.from_hp(x, PerRow()).scale.dtype == torch.float32
+
+
+@needs_cuda
+@pytest.mark.parametrize(
+    "m, k", [(4224, 3840), (4224, 10240), (77, 2560), (17, 4096), (40, 4352), (3, 256)]
+)
+def test_act_quant_kernel_is_bit_exact_vs_torchao(m, k):
+    assert fused._act_quant_device_ok(torch.cuda.current_device())
+    g = torch.Generator(device = "cpu").manual_seed(m + k)
+    x = torch.randn(m, k, generator = g) * (torch.rand(1, k, generator = g) * 4)
+    x[:, :5] *= 80
+    x[min(1, m - 1)] = 0
+    x = x.to(torch.bfloat16).cuda()
+    q, s = fused._act_quant_op()(x)
+    rq, rs = fused.reference_act_quant(x)
+    # torchao's own scale dtype: bf16 up to 0.17, fp32 from 0.18
+    assert s.dtype == rs.dtype == (torch.float32 if fused._act_scale_fp32() else torch.bfloat16)
+    assert torch.equal(q, rq) and torch.equal(s, rs)
+    with torch.no_grad():
+        torch._dynamo.reset()
+        cq, cs = torch.compile(lambda t: fused._act_quant_op()(t), fullgraph = True)(x)
+    assert torch.equal(cq, rq) and torch.equal(cs, rs)
+
+
+@needs_cuda
+@pytest.mark.parametrize("fast_quant", [False, True])
+@pytest.mark.parametrize("rotated", [False, True])
+@pytest.mark.parametrize("bias", [False, True])
+def test_int8_linear_equals_the_module_without_the_zero_point_pass(
+    rotated, bias, fast_quant, monkeypatch
+):
+    monkeypatch.setattr(fused, "_ACTQ_HANDLE", fused._act_quant_op() if fast_quant else None)
+    monkeypatch.setattr(fused, "_ACTQ_DEVICES", frozenset({torch.cuda.current_device()}))
+    from torchao.quantization import Int8DynamicActivationInt8WeightConfig, quantize_
+
+    from core.inference.diffusion_convrot import rotate_linears_, warm_rotation_cache
+
+    torch.manual_seed(0)
+    holder = torch.nn.Sequential(torch.nn.Linear(512, 384, bias = bias)).cuda().to(torch.bfloat16)
+    if rotated:
+        rotate_linears_(holder, ["0"], 256)
+        warm_rotation_cache(holder, "cuda", torch.bfloat16)
+    quantize_(holder, _int8tensor_config(Int8DynamicActivationInt8WeightConfig))
+    lin = _require_int8tensor(holder)[0]
+    x = _outlier_input().repeat(1, 1, 2)
+    with torch.no_grad():
+        ref = lin(x)
+        out = fused.int8_linear(lin, x)
+        torch._dynamo.reset()
+        compiled = torch.compile(lambda t: fused.int8_linear(lin, t), fullgraph = True)(x)
+        stock_compiled = torch.compile(lin, fullgraph = True)(x)
+    assert torch.equal(out, ref)  # y - 0 == y: the dropped term is exactly zero
+    _assert_within_compile_floor(compiled, stock_compiled, ref)
+    # anything it cannot reproduce is the module itself
+    small = x[:, :4]
+    assert torch.equal(fused.int8_linear(lin, small), lin(small))
+
+
+def test_kill_switch_also_drops_the_act_quant_kernel(monkeypatch):
+    monkeypatch.setattr(fused, "_ACTQ_HANDLE", object())
+    monkeypatch.setattr(fused, "_ACTQ_DEVICES", frozenset({0}))
+    monkeypatch.setenv(fused.INT8_FUSED_ENV, "0")
+    assert fused.install(torch.nn.Linear(8, 8)) == 0
+    assert fused._ACTQ_HANDLE is None and not fused._ACTQ_DEVICES
+
+
+@needs_cuda
+def test_kill_switch_makes_int8_linear_the_module(monkeypatch):
+    class Reached(Exception):
+        pass
+
+    def reached(*a, **k):
+        raise Reached
+
+    # a Linear int8_linear would otherwise run itself
+    monkeypatch.setattr(fused, "_plain_int8_weight", lambda w: True)
+    monkeypatch.setattr(fused, "_fast_act_quant", reached)
+    lin = torch.nn.Linear(64, 32).cuda().to(torch.bfloat16)
+    x = torch.randn(32, 64, device = "cuda", dtype = torch.bfloat16)
+    monkeypatch.delenv(fused.INT8_FUSED_ENV, raising = False)
+    fused.install(None)
+    with pytest.raises(Reached):
+        fused.int8_linear(lin, x)
+    monkeypatch.setenv(fused.INT8_FUSED_ENV, "0")
+    fused.install(None)
+    assert torch.equal(fused.int8_linear(lin, x), lin(x))
+    monkeypatch.delenv(fused.INT8_FUSED_ENV)
+    fused.install(None)
+    assert fused._LINEAR_OFF is False
+
+
+@needs_cuda
+def test_int8_linear_leaves_offload_hooks_and_off_device_weights_to_the_module(monkeypatch):
+    from accelerate.hooks import ModelHook, add_hook_to_module
+
+    class Reached(Exception):
+        pass
+
+    def reached(*a, **k):
+        raise Reached
+
+    monkeypatch.setattr(fused, "_LINEAR_OFF", False)
+    monkeypatch.setattr(fused, "_plain_int8_weight", lambda w: True)
+    monkeypatch.setattr(fused, "_fast_act_quant", reached)
+    x = torch.randn(32, 64, device = "cuda", dtype = torch.bfloat16)
+    lin = torch.nn.Linear(64, 32).cuda().to(torch.bfloat16)
+    with pytest.raises(Reached):  # the control: a bare Linear is run by int8_linear itself
+        fused.int8_linear(lin, x)
+
+    calls = []
+
+    class Onload(ModelHook):
+        def pre_forward(self, module, *args, **kwargs):
+            calls.append(module.weight.device.type)
+            module.to("cuda")
+            return args, kwargs
+
+    # a hook runs even when the weight already sits on the input's device
+    hooked = torch.nn.Linear(64, 32).cuda().to(torch.bfloat16)
+    add_hook_to_module(hooked, Onload())
+    assert torch.equal(fused.int8_linear(hooked, x), hooked(x)) and calls == ["cuda", "cuda"]
+    # no hook and the weight elsewhere: module(x) (torch's own device error), never the int8 path
+    off_device = torch.nn.Linear(64, 32).to(torch.bfloat16)
+    with pytest.raises(RuntimeError):
+        fused.int8_linear(off_device, x)
+
+
+@needs_cuda
+def test_act_quant_kernel_only_runs_on_a_device_that_passed_its_probe(monkeypatch):
+    calls = []
+    monkeypatch.setattr(fused, "_ACTQ_HANDLE", lambda x: calls.append(x) or (x, x[:, 0]))
+    monkeypatch.setattr(fused, "_act_quant", lambda x, w: ("stock", None))
+    x = torch.zeros(32, 256, device = "cuda", dtype = torch.bfloat16)
+    monkeypatch.setattr(fused, "_ACTQ_DEVICES", frozenset({x.device.index + 1}))
+    assert fused._fast_act_quant(x, None) == ("stock", None) and not calls
+    monkeypatch.setattr(fused, "_ACTQ_DEVICES", frozenset({x.device.index}))
+    fused._fast_act_quant(x, None)
+    assert len(calls) == 1
+
+
+def test_int8_linear_leaves_an_installed_int8_gemm_forward_alone(monkeypatch):
+    from core.inference import diffusion_int8_gemm as g8
+
+    assert fused._I8_GEMM_MARK == g8._MARK
+    lin = torch.nn.Linear(8, 8)
+    lin.__dict__[g8._MARK] = object()  # what diffusion_int8_gemm.install leaves on a swapped Linear
+    lin.forward = lambda x: "int8_gemm forward"
+    assert fused.int8_linear(lin, torch.randn(32, 8)) == "int8_gemm forward"

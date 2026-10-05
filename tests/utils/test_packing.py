@@ -1216,26 +1216,14 @@ def test_packing_sdpa(tmp_path):
     )
     assert seq_info is not None
 
-    original_mask = attention_dispatch_utils.build_sdpa_packed_attention_mask
-    mask_calls = []
+    original_lengths = attention_dispatch_utils.packed_segment_lengths
+    segment_calls = []
     captured_loss_labels = {}
 
-    def _capture_mask(
-        seq_info,
-        dtype,
-        device,
-        *,
-        sliding_window = None,
-        total_tokens = None,
-    ):
-        mask_calls.append(tuple(seq_info[0].tolist()))
-        return original_mask(
-            seq_info,
-            dtype = dtype,
-            device = device,
-            sliding_window = sliding_window,
-            total_tokens = total_tokens,
-        )
+    def _capture_lengths(seq_info, total_tokens = None):
+        lengths = original_lengths(seq_info, total_tokens)
+        segment_calls.append(lengths)
+        return lengths
 
     def _capture_loss(*, logits, labels, **loss_kwargs):
         captured_loss_labels["labels"] = labels.detach().to("cpu")
@@ -1247,8 +1235,8 @@ def test_packing_sdpa(tmp_path):
         stack.enter_context(
             patch.object(
                 attention_dispatch_utils,
-                "build_sdpa_packed_attention_mask",
-                side_effect = _capture_mask,
+                "packed_segment_lengths",
+                side_effect = _capture_lengths,
             )
         )
         stack.enter_context(
@@ -1261,7 +1249,9 @@ def test_packing_sdpa(tmp_path):
         with torch.no_grad():
             outputs = model(**inputs)
 
-    assert mask_calls, "SDPA packed mask was not constructed"
+    assert segment_calls, "SDPA packed path did not split the row into its segments"
+    packed = tuple(batch["packed_seq_lengths"].tolist())
+    assert all(lengths[: len(packed)] == packed for lengths in segment_calls)
     assert outputs.loss is not None
     assert "labels" in captured_loss_labels
     flat_loss_labels = captured_loss_labels["labels"].reshape(-1)

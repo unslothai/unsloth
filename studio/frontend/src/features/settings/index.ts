@@ -3,6 +3,11 @@
 
 export { SettingsDialogMount } from "./settings-dialog-mount";
 export {
+  type JobResult,
+  jobOutputLines,
+  jobResult,
+} from "./tabs/sandbox-tab-state";
+export {
   type DownloadTransportMode,
   type DownloadTransportSettings,
   loadDownloadTransportSettings,

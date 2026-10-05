@@ -515,6 +515,12 @@ MODEL_NAME_MAPPING = {
         "Qwen/Qwen3-VL-8B-Instruct",
         "unsloth/Qwen3-VL-8B-Instruct-bnb-4bit",
     ],
+    "unsloth_Qwen3.5.yaml": [
+        f"{org}/Qwen3.5-{size}{suffix}"
+        for size in ("0.8B", "2B", "4B", "9B", "27B", "35B-A3B")
+        for org in ("unsloth", "Qwen")
+        for suffix in (("",) if size == "27B" else ("", "-Base"))
+    ],
     "sesame_csm-1b.yaml": [
         "sesame/csm-1b",
         "unsloth/csm-1b",
@@ -985,6 +991,11 @@ if backend_dir not in sys.path:
 try:
     from utils.native_tls import activate_native_tls
     activate_native_tls()
+except Exception:
+    pass
+try:
+    from utils.happy_eyeballs import activate_happy_eyeballs
+    activate_happy_eyeballs()
 except Exception:
     pass
 
@@ -2986,6 +2997,27 @@ def _local_gguf_companion_search_root(selected_path: str, gguf_file: str) -> str
     return str(search_dir)
 
 
+def _hf_cache_repo_dir(weight_path: str) -> Optional[str]:
+    """The ``models--<repo>`` dir *weight_path* was cached into, or None elsewhere.
+
+    Never wider than the weight's own repo, so a sibling repo's projector stays out of
+    reach. Case-insensitive: cache resolution finds a weight in any case variant.
+    """
+    for directory in Path(weight_path).parents:
+        parent = directory.parent
+        if parent.name.casefold() == "snapshots" and parent.parent.name.casefold().startswith(
+            "models--"
+        ):
+            return str(parent.parent)
+    return None
+
+
+def _hf_cached_local_mmproj(weight_path: str) -> Optional[str]:
+    """A hand-added projector in *weight_path*'s snapshot, ``snapshots/`` or
+    ``models--<repo>/``, or None (#9286). Metadata pairing decides between them."""
+    return detect_mmproj_file(weight_path, search_root = _hf_cache_repo_dir(weight_path))
+
+
 def _snapshot_selection_key(snapshot: Path) -> tuple[float, str]:
     """Order snapshots by mtime, then by resolved path.
 
@@ -4241,6 +4273,8 @@ class ModelConfig:
     # ``sizes`` covers that file and every shard beside it.
     gguf_verified: Optional[tuple[str, str, str, tuple[tuple[str, int], ...]]] = None
     gguf_mmproj_file: Optional[str] = None  # Full path to the mmproj .gguf file (vision projection)
+    # Remote (-hf) only: hand-added projector for VRAM accounting, never passed to llama-server.
+    gguf_local_mmproj_file: Optional[str] = None
     gguf_mtp_file: Optional[str] = None  # Full path to the separate MTP drafter (local mode)
     gguf_dspark_file: Optional[str] = None  # Full path to a DSpark sidecar (local mode)
     gguf_dflash_file: Optional[str] = None  # Full path to a DFlash sidecar (local mode)
@@ -4661,6 +4695,12 @@ class ModelConfig:
                     if sizes:
                         verified_gguf = (identifier, variant, verified_file, sizes)
 
+                # A projector hand-added beside the cached weight (#9286).
+                local_mmproj: Optional[str] = None
+                if not has_vision and verified_file:
+                    local_mmproj = _hf_cached_local_mmproj(verified_file)
+                    has_vision = local_mmproj is not None
+
                 display_name = f"{identifier.split('/')[-1]} ({variant})"
                 # Debug: from_identifier is re-resolved on every validate, estimate and
                 # load. The load path announces the model it actually starts.
@@ -4679,6 +4719,7 @@ class ModelConfig:
                     is_gguf = True,
                     gguf_file = None,
                     gguf_verified = verified_gguf,
+                    gguf_local_mmproj_file = local_mmproj,
                     gguf_hf_repo = identifier,
                     gguf_variant = variant,
                 )

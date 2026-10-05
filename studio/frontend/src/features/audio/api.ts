@@ -396,6 +396,21 @@ export async function uploadAudioInput(
   return parseAudioJson<AudioInputRecord>(response);
 }
 
+/** Whether an upload is still on the server; anything but a 404 counts as alive.
+ * GET, not HEAD: the FastAPI route answers HEAD with 405, which would read as alive. */
+export async function audioInputAlive(inputId: string): Promise<boolean> {
+  try {
+    const response = await authFetch(
+      `/api/inference/audio/inputs/${encodeURIComponent(inputId)}/file`,
+      { headers: { Range: "bytes=0-0" } },
+    );
+    void response.body?.cancel().catch(() => undefined);
+    return response.status !== 404;
+  } catch {
+    return true;
+  }
+}
+
 export async function fetchAudioBlob(
   url: string,
   signal?: AbortSignal,

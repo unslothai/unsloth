@@ -1797,3 +1797,15 @@ def test_a_repaint_past_the_end_sizes_its_work_to_the_range_end(stub):
     assert short.status_code == 200 and long.status_code == 200, long.text
     first, second = backend.calls
     assert second["music"]["timeout_s"] > first["music"]["timeout_s"]
+
+
+def test_a_convert_expiry_names_the_side_that_expired():
+    """Both uploads shared "This reference expired", so the page marked both cards when one went."""
+    from core.inference.audio_inputs import AudioInputError
+    from routes.inference import CONVERT_EXPIRED_DETAIL, _convert_role_error
+
+    gone = AudioInputError(404, "This reference expired. Add it again.")
+    assert _convert_role_error(gone, "source").detail == CONVERT_EXPIRED_DETAIL["source"]
+    assert _convert_role_error(gone, "target").detail == CONVERT_EXPIRED_DETAIL["target"]
+    other = AudioInputError(404, "That clip is gone.")
+    assert _convert_role_error(other, "target") is other
