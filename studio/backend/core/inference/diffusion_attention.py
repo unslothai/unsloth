@@ -258,9 +258,8 @@ def select_attention_backend(
 
     An explicit alias is honored (apply falls back if its kernel is unavailable). ``auto``
     upgrades to cuDNN on NVIDIA CUDA only when a speed profile is active (so ``off`` stays
-    bit-identical), and to verified ROCm flash for the ``family`` names in ``ROCM_AUTO_FLASH_FAMILIES`` on
-    gfx11 under a speed profile or an unset speed (ROCm resolves unset to ``off``; an explicit ``off`` stays
-    native); elsewhere returns None (native)."""
+    bit-identical), and to verified ROCm flash for ``ROCM_AUTO_FLASH_FAMILIES`` on gfx11 unless speed is
+    explicitly ``off``; elsewhere returns None (native)."""
     alias = normalize_attention_backend(requested)
     if alias != ATTN_AUTO:
         backend = _ALIASES[alias]
@@ -299,15 +298,13 @@ def _is_cuda_rocm(target: Any) -> bool:
 
 # ``auto`` -> verified ROCm flash under a speed profile. Off: gfx1151 gains over AOTriton SDPA were too small/narrow.
 ROCM_AUTO_FLASH = False
-# ``auto`` -> verified ROCm flash for these families only, on ROCM_AUTO_FLASH_ARCHES, also with the speed unset (what
-# the UI sends; ROCm resolves it to `off`, so this is the default path). gfx1151 (v6, FLUX.2-klein-4B,
-# 1024x1024, 4 steps): 7.37 to 7.40 s vs 8.04 to 8.09 s on SDPA, LPIPS 0.008. FLUX.1 stays native until measured.
+# Also with speed unset (the UI default). gfx1151 klein 1024^2: 7.37-7.40 s vs SDPA 8.04-8.09 s, LPIPS 0.008.
+# FLUX.1 measured LPIPS 0.048 vs SDPA (over the 0.02 bar): stays native.
 ROCM_AUTO_FLASH_FAMILIES = frozenset({"flux.2-klein"})
 ROCM_AUTO_FLASH_ARCHES = ("gfx11",)
 
 
 def _rocm_gfx_arch(target: Any) -> str:
-    """gfx arch of the target's card ("" when unknown)."""
     try:
         import torch
         from utils.hardware.hardware import _props_gfx_arch
