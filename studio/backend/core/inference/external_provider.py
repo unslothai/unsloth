@@ -2593,6 +2593,12 @@ class ExternalProviderClient:
                 # Assistant tool_calls -> Anthropic tool_use blocks appended to the same message: the native Messages
                 # API does not accept OpenAI's top-level `tool_calls` field, the call lives inside a content block
                 # `{type:"tool_use", id, name, input}`.
+                # Native client calls keep their streamed position; the loop's retained calls fill them in place.
+                native_calls = {
+                    block.get("id"): i
+                    for i, block in enumerate(anthropic_parts)
+                    if block.get("type") == "tool_use"
+                }
                 if msg.get("role") == "assistant" and isinstance(msg.get("tool_calls"), list):
                     for _tc in msg["tool_calls"]:
                         if not isinstance(_tc, dict):
@@ -2607,14 +2613,22 @@ class ExternalProviderClient:
                             _input = {"_raw": _raw}
                         if not isinstance(_input, dict):
                             _input = {"value": _input}
-                        anthropic_parts.append(
-                            {
-                                "type": "tool_use",
-                                "id": _tc.get("id") or f"toolu_{time.time_ns()}",
-                                "name": _fn["name"],
-                                "input": _input,
-                            }
-                        )
+                        _tool_use = {
+                            "type": "tool_use",
+                            "id": _tc.get("id") or f"toolu_{time.time_ns()}",
+                            "name": _fn["name"],
+                            "input": _input,
+                        }
+                        _slot = native_calls.pop(_tool_use["id"], None)
+                        if _slot is None:
+                            anthropic_parts.append(_tool_use)
+                        else:
+                            anthropic_parts[_slot] = _tool_use
+                if native_calls:
+                    _withheld = set(native_calls.values())
+                    anthropic_parts = [
+                        part for i, part in enumerate(anthropic_parts) if i not in _withheld
+                    ]
                 # Skip whole-message append when nothing usable survived. An empty content array (e.g. user dropped
                 # only an unparseable `input_document`) would 400 with "messages.N.content: at least one block is
                 # required".
@@ -3272,7 +3286,7 @@ class ExternalProviderClient:
                             block_type = content_block.get("type")
                             block_name = content_block.get("name")
                             block_index = event.get("index", 0)
-                            if tools and block_type != "tool_use":
+                            if tools:
                                 replay_blocks[block_index] = dict(content_block)
                             if block_type == "tool_use":
                                 client_tool_indices[block_index] = len(client_tool_indices)
