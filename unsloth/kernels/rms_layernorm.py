@@ -160,20 +160,13 @@ def _gemma_rms_layernorm_forward(
 
 @triton.jit
 def _fold_lanes(x, ROWS: tl.constexpr, WARPS: tl.constexpr, HALF: tl.constexpr):
-    # [ROWS, WARPS, 2 * HALF] -> [ROWS, WARPS, HALF]: lane l + lane l ^ HALF, one add per pair.
     return tl.sum(tl.reshape(x, (ROWS, WARPS, 2, HALF)), axis = 2)
 
 
 @triton.jit
 def _row_dot_in_row_kernel_order(a, b, ROWS: tl.constexpr, WARPS: tl.constexpr):
-    """
-    tl.sum(a * b, axis = 1) over [ROWS, 32 * WARPS] tiles, rounded exactly like
-    tl.sum(a * b, axis = 0) in the one-row kernels (4 warps, one element per lane and WARPS of
-    them holding data, so 64 <= BLOCK_SIZE <= 128). There lane l < 16 fuses its product into the first shuffle,
-    fma(a_l, b_l, a_(l + 16) * b_(l + 16)), lanes then add by xor 8, 4, 2, 1 and warps by xor 2, 1.
-    Every step here is one explicit fma or one add of two values, so the result does not depend
-    on how this kernel lays out its tile.
-    """
+    # Bit-exact replay of the one-row kernels' tl.sum (4 warps, 64 <= BLOCK_SIZE <= 128):
+    # fma(a_l, b_l, a_(l+16) * b_(l+16)), lane xor 8, 4, 2, 1, warp xor 2, 1; explicit steps only.
     a = tl.permute(tl.reshape(a, (ROWS, WARPS, 2, 16)), (0, 1, 3, 2))
     b = tl.permute(tl.reshape(b, (ROWS, WARPS, 2, 16)), (0, 1, 3, 2))
     a_lo, a_hi = tl.split(a)
@@ -205,7 +198,6 @@ def _rms_layernorm_forward_rows(
     ROWS: tl.constexpr,
     WARPS: tl.constexpr,
 ):
-    # ROWS rows per program for narrow rows (q/k head_dim norms); same math as the one-row kernels.
     rows = tl.program_id(0).to(tl.int64) * ROWS + tl.arange(0, ROWS)
     col_offsets = tl.arange(0, BLOCK_SIZE)
     row_mask = rows < n_rows
@@ -285,9 +277,7 @@ def _rms_layernorm_backward_rows(
         tl.store(dY + rows[:, None] * dY_row_stride + col_offsets[None, :], output, mask = mask)
 
 
-# Narrow rows (Qwen3's per-head q/k norms) run ROWS rows per program. Off on ROCm: 64-lane
-# wavefronts reduce in a different order there. Off before Triton 3.6: the backward was slower
-# than one row per program on Triton 3.2. UNSLOTH_RMSNORM_MULTIROW=0 turns it off.
+# Off on ROCm (64-lane wavefronts reduce in another order) and before Triton 3.6 (slower backward).
 def _triton_at_least(major, minor):
     try:
         return tuple(int(v) for v in triton.__version__.split(".")[:2]) >= (major, minor)
@@ -305,8 +295,7 @@ _MULTIROW_NUM_WARPS = 4
 
 
 def _multirow_settings(n_cols):
-    # None keeps the one-row kernels; else (BLOCK_SIZE, ROWS, WARPS, num_warps). The row sum
-    # replays the one-row kernel's order for one element per lane, 64 <= BLOCK_SIZE <= 128.
+    # Only widths 33..128 (one element per lane) can replay the one-row order; others stay one-row.
     if not _MULTIROW:
         return None
     BLOCK_SIZE, num_warps = calculate_settings(n_cols)
@@ -315,7 +304,6 @@ def _multirow_settings(n_cols):
     return BLOCK_SIZE, _MULTIROW_ELEMENTS // BLOCK_SIZE, BLOCK_SIZE // 32, _MULTIROW_NUM_WARPS
 
 
-# (device, X dtype, W dtype, n_cols, gemma) -> multi-row bytes == one-row bytes on a small tensor.
 _MULTIROW_CHECKED = {}
 
 
@@ -363,7 +351,6 @@ def _multirow_self_check(device, dtype, W_dtype, n_cols, eps, gemma, multirow):
 
 
 def _multirow_checked(X, W, eps, gemma):
-    # Multi-row settings once this (device, dtypes, width, variant) passed the self-check, else None.
     n_cols = X.shape[1]
     multirow = _multirow_settings(n_cols)
     if multirow is None:

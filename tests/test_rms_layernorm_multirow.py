@@ -118,7 +118,6 @@ class _Norm(torch.nn.Module):
 
 
 def _qk_norm_case(fn, dtype, gemma):
-    # Qwen3's q norm: (batch, seq, heads, head_dim), normalised over head_dim.
     g = torch.Generator(device = "cuda").manual_seed(0)
     norm = _Norm(128, dtype)
     X = torch.randn(2, 37, 16, 128, device = "cuda", generator = g).to(dtype).requires_grad_(True)
@@ -143,7 +142,6 @@ def test_multirow_compiled_matches_one_row_eager(multirow, gemma):
     got = _qk_norm_case(compiled, dtype, gemma)
     torch._dynamo.reset()
     assert sum(dynamo_utils.counters["graph_break"].values()) == 0
-    # The self-check ran once while tracing, outside the graph, and kept the multi-row kernels.
     assert list(rms_layernorm._MULTIROW_CHECKED.values()) == [True]
     assert rms_layernorm._MULTIROW
     for a, b, name in zip(ref, got, ("Y", "dX")):
@@ -151,7 +149,6 @@ def test_multirow_compiled_matches_one_row_eager(multirow, gemma):
 
 
 class _Raising:
-    # Stands in for a kernel whose launch fails (JIT / PTX / resource error).
     def __init__(self, error):
         self.error = error
 
@@ -163,7 +160,6 @@ class _Raising:
 
 
 class _OffByOneUlp:
-    # The real multi-row forward, then the first output element nudged by one ulp.
     def __init__(self, kernel):
         self.kernel = kernel
 
@@ -193,7 +189,6 @@ def _assert_bits(one_row, got):
 def test_multirow_launch_failure_falls_back(multirow, kernel):
     """A failed multi-row launch runs the one-row kernel and turns the lever off process-wide."""
     X, W, dY, one_row = _narrow_case(multirow)
-    # Already self-checked, so the failure comes from the launch itself.
     multirow.setitem(rms_layernorm._MULTIROW_CHECKED, (X.device, X.dtype, W.dtype, 128, False), True)
     multirow.setattr(rms_layernorm, kernel, _Raising(RuntimeError("PTX JIT compilation failed")))
     with pytest.warns(UserWarning, match = "launch failed"):
@@ -214,7 +209,6 @@ def test_multirow_launch_failure_reraises(multirow, error):
     multirow.setattr(rms_layernorm, "_rms_layernorm_forward_rows", _Raising(error))
     with pytest.raises(type(error)):
         _run(X, W, dY, False)
-    # Under a trace (any wrap but the eager one) every error propagates.
     with pytest.raises(RuntimeError):
         rms_layernorm._rms_forward(X, W, 1e-6, False, lambda kernel: _Raising(RuntimeError("x")))
     assert rms_layernorm._MULTIROW
