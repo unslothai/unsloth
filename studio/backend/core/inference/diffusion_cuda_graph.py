@@ -859,8 +859,7 @@ class GraphedForward:
             if not self.cache:
                 self.capture_error = {"type": "Refused", "msg": reason}
                 if not ring:
-                    # (with a ring, its drop at the end of this forward flushes once, pool and workspace included: a
-                    # flush here too, mid-forward, left the compute stream's cache fragmented higher on an RTX PRO 6000)
+                    # (with a ring, its drop at the end of this forward flushes once: a mid-forward flush fragments the cache)
                     self._release()
 
     def _timed_eager(self, call: Any, args: tuple, kwargs: dict, key: Any) -> Any:
@@ -872,8 +871,7 @@ class GraphedForward:
         self.stats["eager_calls"] += 1
         self.stats["speed_eager"] += 1
         # On copies laid out like the capture's statics, as the shape warm-up does: compiled code guards on strides and
-        # storage offsets, so steps on the caller's views compile a variant the capture then compiles again (6.6 s more
-        # on a cold Qwen-Image-2.1 render on an RTX PRO 6000).
+        # storage offsets, so steps on the caller's views compile a variant the capture then compiles again.
         live: list = []
         spec = _flatten((args, kwargs), live)
         args, kwargs = _rebuild(spec, self._statics(live))
@@ -945,10 +943,8 @@ class GraphedForward:
             if token != self.valid_token:
                 if self.cache:
                     self.stats["invalidations"] += 1
-                    # Not reset(): its gc + empty_cache on every move (a model-offload onload per render) freed the
-                    # allocator's cached blocks and the next onload paid the cudaMallocs again (+0.5 s per image). The
-                    # dropped pool's blocks stay with the allocator, which frees them on its own if an allocation
-                    # would otherwise fail.
+                    # Not reset(): its empty_cache on every model-offload onload makes the next onload pay the
+                    # cudaMallocs again. The dropped pool's blocks stay with the allocator.
                     self.cache.clear()
                     _drop_pool_if_unused()  # the next capture must not record into a pool no graph holds
                 self._warmed.clear()  # a planned key re-warms with a real step on the new placement
@@ -1234,8 +1230,7 @@ class GraphedForward:
         # Side stream: a workspace first created DURING capture is only valid while recording.
         # A planned module re-captures on every new prompt length. Its first capture runs exactly like any other;
         # later ones were warmed by a real step of the same key (``__call__``), so they record without a warm-up
-        # and skip the cache flushes in ``torch.cuda.graph`` (device and pinned host: ~3.6 s on a B200 with
-        # Qwen-Image-2.1 loaded, plus the re-mallocs that follow).
+        # and skip the device and pinned-host cache flushes in ``torch.cuda.graph``.
         recapture = self.plan is not None and self.stats["captures"] > 0
         # An offloaded module re-recording a key it recorded before, after its weights moved (a model-offload onload,
         # a release / restore): its kernels, workspaces and compiled variants all exist, so it records as a planned
@@ -1333,7 +1328,7 @@ class GraphedCompiledCall(GraphedForward):
         return self
 
 
-# ------------------------------------------------------------------------------------------- offloaded denoisers
+# Offloaded denoisers.
 
 
 def _leaf_ptrs(t: Any, out: list) -> None:

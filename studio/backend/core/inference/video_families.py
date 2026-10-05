@@ -83,8 +83,7 @@ class VideoFamily:
     # Opt-in to the CUDA-graph capture of the denoiser forward (diffusion_cuda_graph.py): only for a family that runs
     # ONE forward per step with no CFG and no step cache, so a capture has one stable input tree to replay.
     supports_cuda_graph: bool = False
-    # Opt-in to the capture only when the denoiser is offloaded (block-streamed or model-offloaded): the replay then
-    # records the onloads too and the steps run with no host wait. Set from a measured capped-card A/B.
+    # Opt-in to the capture when the denoiser is offloaded: the replay then records the onloads too (set from an A/B).
     offload_cuda_graph: bool = False
     # Status text when the family declines the capture (the measured reason), instead of "family opts out".
     cuda_graph_decline: Optional[str] = None
@@ -212,9 +211,8 @@ _FAMILIES: tuple[VideoFamily, ...] = (
         # capture peak, on a family already needing 87.5 GB, and 31.1 s on the first render (break-even ~530 videos).
         # This is the CHEAPEST grid H3 ships, so the larger presets can only be more GPU-bound.
         supports_cuda_graph = False,
-        # Streamed (16 / 12 GB), H3's prequant groups onload through diffusers' own stream path, which waits on the
-        # host per group: 27 host waits a step measured at 16 GB (640x384x25, B200), so a capture cannot hold them
-        # (arm_after_placement refuses it by name when the family is forced).
+        # Streamed, H3's prequant groups onload through diffusers' stream path, which waits on the host per group: a
+        # capture cannot hold them (arm_after_placement refuses it by name when the family is forced).
         cuda_graph_decline = (
             "measured GPU-bound: 1.0018x resident for 3.93 GB held; streamed, its group onloads wait on the host "
             "(27 per step at 16 GB), which a graph cannot record"
@@ -313,8 +311,7 @@ _FAMILIES: tuple[VideoFamily, ...] = (
         bf16_components_gb = (10.0, 11.4, 2.8),
         vae_force_fp32 = True,
         cudnn_benchmark = False,
-        # Streamed at 12 GB on an RTX PRO 6000 (int8, 704x384x49, 10 steps, CFG 5): 0.2114 vs 0.2177 s/step eager
-        # (A/A spread 0.09%), final latents bit-identical; two replays per step (CFG), one graph per input shape.
+        # Streamed: faster than eager with bit-identical latents; two replays per step (CFG), one graph per shape.
         offload_cuda_graph = True,
         # UMT5 keeps its overflowing `wo` in fp32 itself; the VAE stays fp32 (vae_force_fp32).
         fp16_guard = "native",
@@ -392,10 +389,7 @@ _FAMILIES: tuple[VideoFamily, ...] = (
         bf16_components_gb = (16.6, 14.8, 2.4),
         fp16_guard = "native",
         cudnn_benchmark = False,
-        # Block-offloaded at 16 GB on an RTX PRO 6000 (int8, 640x368x33, 10 steps, CFG through the guider): 0.5156 vs
-        # 0.5229 s/step eager (A/A spread 0.33%), host waits 49 to 1.3 per step, latents within the arm's own
-        # cross-process spread and bit-identical to eager in-process. Needs the capture-safe forward
-        # (diffusion_capture_safe) and the memoized trim (diffusion_attention).
+        # Needs the capture-safe forward (diffusion_capture_safe) and the memoized trim (diffusion_attention).
         offload_cuda_graph = True,
     ),
     # The 720p t2v repack: same architecture and footprint as the 480p entry, only the trained resolution differs. Its
