@@ -1220,10 +1220,28 @@ def test_replace_with_busy_retry_offers_only_a_root_repair_for_an_unlistable_tre
     with pytest.raises(OSError):
         replace_with_busy_retry(source, destination, attempts = 2)
     assert f'takeown /F "{source}"' in logged
-    assert f'icacls "{source}" /reset' in logged
+    assert f'icacls "{source}" /reset /L' in logged
     assert not any(
         "/R" in line or "/T" in line for line in logged if "takeown" in line or "icacls" in line
     )
+
+
+def test_replace_with_busy_retry_offers_a_root_repair_when_the_root_cannot_be_read(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    source, destination, logged = _run_denied_replace(tmp_path, monkeypatch, failures = 99)
+    real_lstat = type(source).lstat
+
+    def denied_lstat(self):
+        if self == source:
+            raise PermissionError(errno.EACCES, "Access is denied")
+        return real_lstat(self)
+
+    monkeypatch.setattr(type(source), "lstat", denied_lstat)
+    with pytest.raises(OSError):
+        replace_with_busy_retry(source, destination, attempts = 2)
+    assert f'takeown /F "{source}"' in logged
+    assert not any("contains a link" in line for line in logged)
 
 
 def test_replace_with_busy_retry_skips_acl_repair_when_denial_clears(

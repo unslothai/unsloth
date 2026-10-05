@@ -4811,7 +4811,11 @@ def blocked_replace_hint(winerror: object) -> str:
 
 
 def _tree_link_state(root: Path) -> str:
-    """ "link", "unreadable" (a directory could not be listed) or "clean"."""
+    """Return "link", "unreadable" (root or a directory not readable) or "clean"."""
+    try:
+        root.lstat()
+    except OSError:
+        return "unreadable"
     if _is_link_or_junction(root):
         return "link"
     unreadable: list[OSError] = []
@@ -4837,7 +4841,8 @@ def log_acl_repair(path: Path) -> None:
         )
         recursive = state == "clean"
         log(f'takeown /F "{path}"' + (" /R /D Y" if recursive else ""))
-        log(f'icacls "{path}" /reset' + (" /T" if recursive else ""))
+        # /L: if an unreadable root is a link after all, reset the link, not its target.
+        log(f'icacls "{path}" /reset' + (" /T" if recursive else " /L"))
         if not recursive:
             log("then run the install again")
     log(
