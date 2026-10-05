@@ -588,6 +588,7 @@ def prefer_cached_pickle_twins(
     cache_dir: Optional[str] = None,
     logger: Any = None,
     log: bool = True,
+    roots: Optional[Sequence[Optional[str]]] = None,
 ) -> list:
     """``names`` with a cached, readable ``<stem>.pt``/``.pth`` moved ahead of its uncached
     ``<stem>.safetensors`` twin, so an existing user does not re-download the same weights.
@@ -603,7 +604,8 @@ def prefer_cached_pickle_twins(
     if (os.environ.get(PREFER_SAFETENSORS_ENV) or "").strip().lower() in ("1", "true", "yes", "on"):
         return out
     try:
-        roots = _twin_cache_roots(cache_dir)
+        # only the roots the caller's download will reuse, else it re-fetches the pickle it was promised
+        roots = tuple(roots) if roots is not None else _twin_cache_roots(cache_dir)
 
         def _cached(name: str) -> bool:
             return any(_hub_name_cached(repo_id, name, root) is not None for root in roots)
@@ -648,15 +650,6 @@ def prefer_cached_pickle_twins(
     return out
 
 
-def _container_stem(name: str) -> str:
-    """``name`` without its container suffix."""
-    lower = name.lower()
-    for suffix in (".safetensors", *_PICKLE_SUFFIXES):
-        if lower.endswith(suffix):
-            return name[: -len(suffix)]
-    return name
-
-
 def hub_offline() -> bool:
     """huggingface_hub's offline switch. Never raises."""
     try:
@@ -699,8 +692,9 @@ def first_cached_as_resolved(
 ) -> Optional[str]:
     """The first cached name in ``names`` (resolver order) the load opens without downloading anything
     first, else None. Offline that is the first cached name. Online an uncached name ahead of it blocks
-    (the resolver would fetch it) unless it is the hit's container twin or the cache recorded its 404;
-    otherwise a cached INT8 ``.pt`` reads as free while the load fetches an uncached INT8-ConvRot.
+    (the resolver would fetch it) unless the cache recorded its 404; otherwise a cached INT8 ``.pt``
+    reads as free while the load fetches an uncached INT8-ConvRot. A twin still ahead of the hit was
+    not reordered (kill switch, unreadable pickle), so the load fetches it too.
     ``online=None`` reads huggingface_hub's offline switch. Never raises."""
     try:
         if online is None:
@@ -713,10 +707,7 @@ def first_cached_as_resolved(
                 ahead.append(name)
                 continue
             if online:
-                stem = _container_stem(name)
                 for other in ahead:
-                    if _container_stem(other) == stem:
-                        continue
                     if not hub_name_known_absent(repo_id, other, cache_dir):
                         return None
             return name
@@ -1786,6 +1777,7 @@ def _resolve_checkpoint_path(
             readable = lambda n: restricted_prequant_load_supported(scheme, n),
             cache_dir = cache_dir,
             logger = logger,
+            roots = tuple(dict.fromkeys((cache_dir, None))),  # what _download_checkpoint_name reuses
         )
         for index, name in enumerate(names):
             last = index == len(names) - 1

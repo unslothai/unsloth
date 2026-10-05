@@ -534,6 +534,7 @@ def test_te_pricing_does_not_call_a_cached_fp8_encoder_free(hub, monkeypatch, tm
     snap = tmp_path / "snap"
     snap.mkdir()
     (snap / "Model-text_encoder-FP8.pt").write_bytes(b"x" * 4096)
+    hub.cache("Model-text_encoder-FP8.pt")
     convrot = ("Model-text_encoder-INT8-ConvRot.safetensors",)
 
     def _sources(*a, **k):
@@ -574,3 +575,40 @@ def test_te_pricing_does_not_call_a_cached_fp8_encoder_free(hub, monkeypatch, tm
         fam, "base/Model", None, "int8"
     )
     assert exact is True and mib == 3
+
+
+def test_kill_switch_probe_plans_the_safetensors_download(hub, monkeypatch):
+    """With the kill switch the resolver fetches the uncached safetensors, so the probe must not call it free."""
+    hub.cache("Model-INT8.pt")
+    monkeypatch.setenv(KILL_SWITCH, "1")
+    assert pq.cached_checkpoint_path(_dit(), online = True) is None
+    assert pq.cached_checkpoint_path(_dit(), online = False) == hub.cached[(REPO, "Model-INT8.pt")]
+
+
+def test_te_pickle_in_another_root_does_not_win_over_the_twin(hub, monkeypatch):
+    """The TE resolver downloads into ``cache_dir`` only, so a pickle cached under another root is not reused."""
+    hub.cache("Model-text_encoder-FP8.pt")
+    real = hub.try_to_load_from_cache
+
+    def _default_root_only(
+        repo_id,
+        filename,
+        cache_dir = None,
+        **kw,
+    ):
+        return real(repo_id, filename) if cache_dir is None else None
+
+    monkeypatch.setattr(huggingface_hub, "try_to_load_from_cache", _default_root_only)
+    tpq._resolve_checkpoint_path(_te(), None, cache_dir = "/live")
+    assert hub.fetched == ["Model-text_encoder-FP8.safetensors"]
+
+
+def test_local_files_only_reachability_uses_the_cached_fallback(hub, monkeypatch):
+    """local_files_only skips the uncached ConvRot and opens the cached INT8, so the prequant is reachable."""
+    import core.inference.diffusion as dmod
+
+    hub.cache("Model-INT8.pt")
+    monkeypatch.setattr(dmod, "usable_prequant_source", lambda *a, **k: _convrot_dit())
+    backend = dmod.DiffusionBackend.__new__(dmod.DiffusionBackend)
+    assert backend._hosted_prequant_reachable(None, "int8", {"local_files_only": True}) is True
+    assert _resolve(_convrot_dit(), local_files_only = True) == hub.cached[(REPO, "Model-INT8.pt")]

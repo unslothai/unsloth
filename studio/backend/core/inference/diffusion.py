@@ -1522,6 +1522,7 @@ def _uncached_prequant_repo(
     *,
     base_repo: Optional[str],
     prequant_path: Optional[str],
+    online: Optional[bool] = None,
 ) -> Optional[str]:
     """The hosted pre-quant repo an AUTO-derived quant would have to DOWNLOAD for this pick, or None
     when it costs no extra bytes (no hosted source, a local override, or already cached).
@@ -1539,7 +1540,7 @@ def _uncached_prequant_repo(
         )
         if source is None or source.kind != "repo":
             return None
-        if prequant_checkpoint_cached(source, cache_dir = hub_cache_dir()):
+        if prequant_checkpoint_cached(source, cache_dir = hub_cache_dir(), online = online):
             return None
         return source.location
     except Exception:  # noqa: BLE001 - a probe that cannot answer keeps the prequant shortcut
@@ -2626,7 +2627,12 @@ class DiffusionBackend:
             )
             if source is None or getattr(source, "kind", None) != "repo":
                 return True
-            if prequant_checkpoint_cached(source, cache_dir = hub_cache_dir()):
+            # local_files_only opens the first cached name, like an offline load
+            if prequant_checkpoint_cached(
+                source,
+                cache_dir = hub_cache_dir(),
+                online = False if kwargs.get("local_files_only") else None,
+            ):
                 return True
             if kwargs.get("local_files_only"):
                 return False
@@ -3939,7 +3945,9 @@ class DiffusionBackend:
                 return False
             if getattr(source, "kind", None) != "repo":
                 return True
-            if prequant_checkpoint_cached(source, cache_dir = hub_cache_dir()):
+            if prequant_checkpoint_cached(
+                source, cache_dir = hub_cache_dir(), online = False if local_files_only else None
+            ):
                 return True
             if local_files_only:
                 return False
@@ -5654,6 +5662,7 @@ class DiffusionBackend:
                         transformer_quant,
                         base_repo = base,
                         prequant_path = transformer_prequant_path,
+                        online = False if local_files_only else None,
                     )
                     if uncached_prequant is not None:
                         logger.info(

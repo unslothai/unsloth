@@ -652,6 +652,7 @@ def _resolve_checkpoint_path(
             readable = te_candidate_is_readable,
             cache_dir = cache_dir,
             logger = logger,
+            roots = (cache_dir,),  # hf_hub_download below reads only this root
         )
         from .diffusion_prequant import explain_container_choice
 
