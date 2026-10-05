@@ -148,6 +148,7 @@ _STACK_LINE_PREFIXES = (
     "0x",
 )
 _CRASH_LINE_LIMIT = 500
+_CRASH_TAIL_LINES = 12
 _ERROR_LINE = re.compile(r"error|exception|abort|fatal|fault", re.IGNORECASE)
 
 
@@ -163,22 +164,37 @@ def format_exit_code(exitcode: "int | None") -> str:
     return str(exitcode)
 
 
+def _is_crash_marker(line: str) -> bool:
+    lowered = line.lower()
+    return any(marker in lowered for marker in _CRASH_LINE_MARKERS)
+
+
 def first_crash_line(text: str) -> str:
-    """The first marker line, else the last error-looking non-stack line, else empty."""
+    """The reason in the terminal crash block, else empty (a SIGKILL leaves the exit code alone)."""
     lines = [line.strip() for line in (text or "").splitlines() if line.strip()]
-    if not lines:
-        return ""
-    for index, line in enumerate(lines):
-        lowered = line.lower()
-        if any(marker in lowered for marker in _CRASH_LINE_MARKERS):
-            # C++ abort: "terminate called after throwing ..." then "what():  <reason>".
-            following = lines[index + 1] if index + 1 < len(lines) else ""
-            if lowered.startswith("terminate called") and following.startswith("what():"):
-                line = following
-            return line[:_CRASH_LINE_LIMIT]
-    # Routine output (offline notices, progress) is never the reason: a SIGKILL leaves the exit code alone.
+    # Only the last few non-stack lines: an earlier, recovered "out of memory" is not the cause.
+    tail = []
     for line in reversed(lines):
-        if not line.startswith(_STACK_LINE_PREFIXES) and _ERROR_LINE.search(line):
+        if line.startswith(_STACK_LINE_PREFIXES):
+            continue
+        tail.append(line)
+        if len(tail) == _CRASH_TAIL_LINES:
+            break
+    tail.reverse()
+    marked = [index for index, line in enumerate(tail) if _is_crash_marker(line)]
+    if marked:
+        # The first of the last run: "LLVM ERROR ..." precedes "Windows fatal exception ...".
+        index = marked[-1]
+        while index > 0 and _is_crash_marker(tail[index - 1]):
+            index -= 1
+        line = tail[index]
+        following = tail[index + 1] if index + 1 < len(tail) else ""
+        # C++ abort: "terminate called after throwing ..." then "what():  <reason>".
+        if line.lower().startswith("terminate called") and following.startswith("what():"):
+            line = following
+        return line[:_CRASH_LINE_LIMIT]
+    for line in reversed(tail):
+        if _ERROR_LINE.search(line):
             return line[:_CRASH_LINE_LIMIT]
     return ""
 

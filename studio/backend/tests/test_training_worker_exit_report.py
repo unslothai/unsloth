@@ -38,7 +38,7 @@ def test_windows_breakpoint_status_is_hex():
 
 def test_the_reason_is_kept_when_the_stack_is_what_follows():
     reason = "LLVM ERROR: Cannot select: intrinsic %llvm.amdgcn.fdot2.bf16.bf16"
-    text = reason + "\n" + "\n".join(f"frame {index}" for index in range(400))
+    text = reason + "\n" + "\n".join(f'  File "m.py", line {index} in f' for index in range(400))
     assert first_crash_line(text) == reason
     message = unexpected_exit_message(356, 2147483651, text)
     assert message.startswith("Training process exited unexpectedly (pid=356, exitcode=0x80000003)")
@@ -80,13 +80,23 @@ def test_a_killed_worker_does_not_blame_routine_output():
     assert first_crash_line("loading\nRuntimeError: boom\n") == "RuntimeError: boom"
 
 
+def test_a_recovered_warning_is_not_the_cause():
+    text = "CUDA out of memory; reducing batch size and retrying\n" + "step log\n" * 50
+    assert first_crash_line(text) == ""
+    windows = "LLVM ERROR: Cannot select\nWindows fatal exception: code 0x80000003\n"
+    assert (
+        first_crash_line(text + windows + '  File "m.py", line 1 in f\n')
+        == "LLVM ERROR: Cannot select"
+    )
+
+
 def _die_after_a_long_stack(path: str) -> None:
     assert install_worker_stderr_mirror(path) is True
     sys.stderr.write("LLVM ERROR: Cannot select: intrinsic %llvm.amdgcn.fdot2.bf16.bf16\n")
     sys.stderr.write("Windows fatal exception: code 0x80000003\n")
     sys.stderr.flush()
     # Longer than the 64 KiB tail window, shorter than the 256 KiB sink cap.
-    os.write(2, b"frame\n" * 12000)
+    os.write(2, b'  File "m.py", line 1 in f\n' * 2500)
     if sys.platform == "win32":
         ctypes.windll.kernel32.ExitProcess(0x80000003)
     os._exit(3)
@@ -112,7 +122,8 @@ def test_the_mirror_keeps_the_reason_that_the_tail_window_drops(tmp_path):
 def test_the_reason_after_a_long_routine_log_is_read(tmp_path):
     capture = WorkerStderrCapture(directory = str(tmp_path), prefix = "unsloth-test-")
     Path(capture.path).write_text(
-        "step log\n" * 35000 + "LLVM ERROR: late\n" + "frame\n" * 100, encoding = "utf-8"
+        "step log\n" * 35000 + "LLVM ERROR: late\n" + '  File "m.py", line 1 in f\n' * 100,
+        encoding = "utf-8",
     )
     assert first_crash_line(capture.text()) == "LLVM ERROR: late"
 
@@ -163,7 +174,7 @@ def test_the_pump_reports_the_exit_code_and_the_llvm_line(training_backend, tmp_
     capture = WorkerStderrCapture(directory = str(tmp_path), prefix = "unsloth-test-")
     capture_path = Path(capture.path)
     capture_path.write_text(
-        "LLVM ERROR: Cannot select: intrinsic demo\n" + "frame\n" * 12000,
+        "LLVM ERROR: Cannot select: intrinsic demo\n" + '  File "m.py", line 1 in f\n' * 2500,
         encoding = "utf-8",
     )
     training_backend._stderr_capture = capture
@@ -176,7 +187,7 @@ def test_the_pump_reports_the_exit_code_and_the_llvm_line(training_backend, tmp_
     assert training_backend._progress.is_training is False
     assert "0x80000003" in training_backend._progress.error
     assert "LLVM ERROR: Cannot select: intrinsic demo" in training_backend._progress.error
-    assert "frame" not in training_backend._progress.error
+    assert "m.py" not in training_backend._progress.error
 
 
 def test_a_queued_error_wins_over_the_exit_line(training_backend):
