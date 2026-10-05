@@ -91,10 +91,12 @@ _SDPA_PACKED_SEGMENTS = os.environ.get("UNSLOTH_SDPA_PACKED_SEGMENTS", "1").lowe
 
 def _sdpa_flash_takes_gqa(Q: Tensor) -> bool:
     # enable_gqa is accepted by the flash and math kernels only, so elsewhere (pre-sm80, fp32, wide
-    # heads) K/V are expanded instead and the memory-efficient kernel stays available.
+    # heads, ROCm whose capability numbering is not CUDA's) K/V are expanded instead and the
+    # memory-efficient kernel stays available.
     return (
         SDPA_HAS_GQA
         and Q.is_cuda
+        and torch.version.hip is None
         and Q.dtype in (torch.float16, torch.bfloat16)
         and Q.shape[-1] <= 256
         and Q.shape[-1] % 8 == 0
