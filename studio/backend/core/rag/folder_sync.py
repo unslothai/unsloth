@@ -78,11 +78,11 @@ def _is_ignored_scan_dir(name: str, path: str) -> bool:
 
 
 def _is_ignored_scan_file(name: str) -> bool:
-    # .env files hold secrets that retrieval would paste into prompts; lockfiles are generated noise.
+    # .env and Terraform state hold plaintext secrets that retrieval would paste into prompts; lockfiles are noise.
     lower = name.lower()
     if lower == ".env" or lower.startswith(".env.") or lower.endswith(".env"):
         return True
-    return lower.endswith((".lock", ".lockb")) or lower in _LOCKFILES
+    return lower.endswith((".lock", ".lockb", ".tfstate")) or lower in _LOCKFILES
 
 
 class _SyncStopped(Exception):

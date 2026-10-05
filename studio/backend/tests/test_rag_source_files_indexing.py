@@ -56,6 +56,7 @@ def test_scan_indexes_source_and_skips_dependencies_and_secrets(tmp_path):
         "src/index.php": "a",
         "build/out.js": "a",
         "infra/env/main.tf": "a",
+        "infra/env/terraform.tfstate": "a",
         "src/unsupported.exe": "a",
         "src/.env": "a",
         "src/.env.local": "a",
