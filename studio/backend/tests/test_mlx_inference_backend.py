@@ -5383,19 +5383,25 @@ def test_a_speculative_load_drafts_eligible_single_replies(monkeypatch):
     monkeypatch.setitem(sys.modules, "mlx_vlm.utils", utils)
     prepared = []
     draft = SimpleNamespace(draft_kind = "mtp", draft_n = 6, draft_n_accepted = 4)
-    draft.prepare = lambda ids, sampling: prepared.append((ids, sampling.temperature))
+    draft.prepare = lambda ids, sampling, given: prepared.append(
+        (ids, sampling.temperature)
+    ) or setattr(draft, "given", given)
     backend = mlx_inference.MLXInferenceBackend()
     backend._speculative_draft = draft
 
-    seen = _drive_vlm_generation(backend, monkeypatch, temperature = 0.5)
+    seen = _drive_vlm_generation(backend, monkeypatch, temperature = 0.5, repetition_penalty = 1.1)
     assert seen["draft_model"] is draft and seen["extra"] == 1 and prepared == [([7, 8, 9], 0.5)]
+    # The draft is told every processor the reply runs: none reaches mlx-vlm as a shortcut.
+    assert "repetition_penalty" not in seen and draft.given == seen["logits_processors"] != []
+    monkeypatch.setattr(
+        mlx_inference, "_mlx_sampling_processors", lambda **_: [lambda tokens, logits: logits]
+    )
     timings = backend.last_generation_stats["timings"]
     assert (timings["draft_n"], timings["draft_n_accepted"]) == (6, 4)
     for request in (
         {"repetition_penalty": 1.1},
         {"tools": [{"type": "function"}]},
         {"tool_protocol_active": True},
-        {"logit_bias": {5: 1.0}},
     ):
         seen = _drive_vlm_generation(backend, monkeypatch, **request)
         assert "max_tokens" in seen and "draft_model" not in seen

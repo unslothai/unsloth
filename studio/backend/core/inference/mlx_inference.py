@@ -3118,6 +3118,7 @@ def _make_mlx_presence_penalty_processor(penalty: float):
         logits = logits - mask[:vocab]
         return logits
 
+    _processor.history_only = True
     return _processor
 
 
@@ -3162,6 +3163,7 @@ def _make_mlx_frequency_penalty_processor(penalty: float):
         counts = mx.zeros((vocab + 1,), dtype = mx.float32).at[safe].add(1.0)
         return logits - (penalty * counts[:vocab]).astype(logits.dtype)
 
+    _processor.history_only = True
     return _processor
 
 
@@ -3186,6 +3188,7 @@ def _make_mlx_logit_bias_processor(logit_bias: dict):
         mask = mx.zeros((vocab + 1,), dtype = mx.float32).at[state["safe"]].add(state["values"])
         return logits + mask[:vocab].astype(logits.dtype)
 
+    _processor.history_only = True
     return _processor
 
 
@@ -3249,7 +3252,11 @@ def _mlx_sampling_processors(
         processors.append(_make_mlx_logit_bias_processor(logit_bias))
     if repetition_penalty is not None and float(repetition_penalty) not in (0.0, 1.0):
         from mlx_lm.sample_utils import make_logits_processors
-        processors.extend(make_logits_processors(repetition_penalty = float(repetition_penalty)))
+
+        repetition = make_logits_processors(repetition_penalty = float(repetition_penalty))
+        for processor in repetition:
+            processor.history_only = True
+        processors.extend(repetition)
     if presence_penalty:
         processors.append(_make_mlx_presence_penalty_processor(float(presence_penalty)))
     if frequency_penalty:
@@ -6212,7 +6219,14 @@ class MLXInferenceBackend:
                 "constrain the next token. Load an autoregressive model to use "
                 "guided decoding."
             )
-        if presence_penalty or frequency_penalty or logit_bias or constraint is not None:
+        draft = self._speculative_draft
+        if (
+            presence_penalty
+            or frequency_penalty
+            or logit_bias
+            or constraint is not None
+            or (_rep_active and draft is not None)
+        ):
             # These need custom processors: pass the full list (repetition + the rest) instead of the
             # repetition_penalty shortcut so all apply.
             vlm_kwargs["logits_processors"] = _mlx_sampling_processors(
@@ -6279,16 +6293,15 @@ class MLXInferenceBackend:
         else:
             vlm_kwargs.update(self._kv_quant_generate_kwargs())
         session_scope = session if session is not None else nullcontext()
-        draft = self._speculative_draft
-        # Processors (penalties, logit_bias, grammars) and tool turns decode as before; a clip
-        # reaches the drafter as nothing it was built for.
+        processors = vlm_kwargs.get("logits_processors") or ()
+        # The draft is told these processors, and takes only ones that read just the history (a grammar's
+        # matcher advances per call); tool turns decode as before; a clip is nothing a drafter was built for.
         if (
             draft is None
             or tools
             or tool_protocol_active
             or video is not None
-            or "logits_processors" in vlm_kwargs
-            or "repetition_penalty" in vlm_kwargs
+            or not all(getattr(processor, "history_only", False) for processor in processors)
             or _vlm_generation_is_diffusion(self._model)
         ):
             draft = None
@@ -6338,6 +6351,7 @@ class MLXInferenceBackend:
                             min_p = float(min_p or 0.0),
                             seed = seed,
                         ),
+                        processors,
                     )
                     vlm_kwargs.update(draft_model = draft, draft_kind = draft.draft_kind)
                 try:
