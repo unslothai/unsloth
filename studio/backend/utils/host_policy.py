@@ -174,7 +174,9 @@ def published_url_host(host: str) -> str:
 
 def dial_host(host: str) -> str:
     """Authority host for a URL this process dials itself. The IPv6 zone id stays literal: httpx hands the RFC 6874 escaping `published_url_host` applies to the resolver unchanged."""
-    return f"[{host}]" if ":" in host else host
+    if ":" not in host or (host.startswith("[") and host.endswith("]")):
+        return host
+    return f"[{host}]"
 
 
 # Self-call address resolution. A `--host` other than a wildcard binds one interface only, so loopback is not served and a hardcoded `127.0.0.1` self-call cannot connect.

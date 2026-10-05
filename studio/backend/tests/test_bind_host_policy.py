@@ -12,6 +12,7 @@ from utils.host_policy import (
     is_wildcard_host,
     normalize_wildcard_bind_host,
     resolved_bind_address_count,
+    dial_host,
     published_url_host,
     wildcard_ip_versions,
     wildcard_loopback_host,
@@ -253,6 +254,14 @@ def test_run_server_rejects_an_ephemeral_multi_address_bind(monkeypatch):
 )
 def test_published_url_host_builds_a_url_authority(host, expected):
     assert published_url_host(host) == expected
+
+
+@pytest.mark.parametrize(
+    "host, expected",
+    [("[::1]", "[::1]"), ("::1", "[::1]"), ("127.0.0.1", "127.0.0.1")],
+)
+def test_dial_host_is_idempotent_for_bracketed_ipv6(host, expected):
+    assert dial_host(host) == expected
 
 
 def test_run_server_publishes_urls_through_the_shared_formatter():
