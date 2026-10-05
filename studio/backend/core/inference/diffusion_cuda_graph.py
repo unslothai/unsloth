@@ -536,7 +536,13 @@ def live_pool_free_bytes() -> int:
         return 0
     try:
         free = 0
-        for seg in _torch().cuda.memory_snapshot():
+        cuda = _torch().cuda
+        device = (
+            cuda.current_device()
+        )  # the snapshot spans every card; the caller's numbers are this one's
+        for seg in cuda.memory_snapshot():
+            if seg.get("device", device) != device:
+                continue
             if tuple(seg.get("segment_pool_id") or ()) in pools:
                 free += int(seg.get("total_size", 0)) - int(seg.get("allocated_size", 0))
         return max(0, free)
@@ -1100,6 +1106,7 @@ class GraphedForward:
                 _heal_generators()  # before anything eager draws from the CUDA RNG
                 if self.placement is not None:
                     self.placement.recover()  # the eager retry must not wait on the dead capture's copies
+                    self.placement.release_slots()  # nothing will replay into the ring for this load
                 self.poison(exc)
                 self.stats["fallbacks"] += 1
                 if self.logger is not None:
@@ -1133,6 +1140,14 @@ class GraphedForward:
         live: list = []
         _flatten((args, kwargs), live)
         last = entry.last
+        state = self._judge.get(key) if self.placement is not None else None
+        timing = (
+            state is not None and state["verdict"] is None and len(state["graph"]) < SPEED_SAMPLES
+        )
+        if timing:
+            # Through the input copies and output clones: the eager step pays neither.
+            start, end = _timing_events()
+            start.record()
         with _copy_mode(entry):
             for index, (dst, src) in enumerate(zip(entry.static, live)):
                 if last is not None and entry.sticky[index]:
@@ -1143,14 +1158,9 @@ class GraphedForward:
                     last[index] = weakref.ref(src)
                     continue
                 dst.copy_(src)
-        state = self._judge.get(key) if self.placement is not None else None
-        timing = (
-            state is not None and state["verdict"] is None and len(state["graph"]) < SPEED_SAMPLES
-        )
-        if timing:
-            start, end = _timing_events()
-            start.record()
         entry.graph.replay()
+        # Cloned: every replay writes the SAME buffers, which the pipeline holds across steps.
+        outs = [t.clone() for t in entry.out_tensors]
         if timing:
             end.record()
             state["graph"].append((start, end))
@@ -1160,8 +1170,7 @@ class GraphedForward:
             # The replay passed the (pass-through) skip layer by: count the computed step as it would have.
             skip.stats["calls"] += 1
             skip.stats["computed"] += 1
-        # Cloned: every replay writes the SAME buffers, which the pipeline holds across steps.
-        return _rebuild(entry.out_spec, [t.clone() for t in entry.out_tensors])
+        return _rebuild(entry.out_spec, outs)
 
     def _statics(self, live: list) -> list:
         """Fresh copies of ``live``, as a capture records from (and the shape warm-up step runs on)."""

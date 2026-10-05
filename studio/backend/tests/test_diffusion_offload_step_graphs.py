@@ -282,11 +282,48 @@ def test_every_live_graph_pool_stays_out_of_the_reclaimable_memory(monkeypatch):
     live = _Wrapper({"k": types.SimpleNamespace(pool_token = (0, 7))})
     monkeypatch.setattr(cg, "_LIVE_WRAPPERS", {live})
     segments = [
-        {"segment_pool_id": (0, 7), "total_size": 100, "allocated_size": 40},
-        {"segment_pool_id": (0, 0), "total_size": 500, "allocated_size": 0},
+        {"device": 0, "segment_pool_id": (0, 7), "total_size": 100, "allocated_size": 40},
+        {"device": 0, "segment_pool_id": (0, 0), "total_size": 500, "allocated_size": 0},
+        {
+            "device": 1,
+            "segment_pool_id": (0, 7),
+            "total_size": 900,
+            "allocated_size": 0,
+        },  # another card
     ]
     monkeypatch.setattr(torch.cuda, "memory_snapshot", lambda: segments)
+    monkeypatch.setattr(torch.cuda, "current_device", lambda: 0)
     assert cg.live_pool_free_bytes() == 60
+
+
+def test_only_the_streamed_groups_slots_are_allocated_before_a_capture(monkeypatch):
+    pf = op.GroupPrefetcher.__new__(op.GroupPrefetcher)
+    streamed, resident = types.SimpleNamespace(), types.SimpleNamespace(_unsloth_resident = True)
+    others = [types.SimpleNamespace(_unsloth_resident = True) for _ in range(2)]
+    pf.groups = [resident, others[0], streamed, others[1]]
+    pf.slot_of = {id(g): i % 3 for i, g in enumerate(pf.groups)}
+    pf.slot_size, pf.slot_raw = 16, {}
+    made = []
+    monkeypatch.setattr(pf, "_alloc_slot", lambda where: made.append(where), raising = False)
+    pf.materialize_slots()
+    assert made == [2]
+
+
+def test_a_failed_streamed_capture_hands_the_ring_back(monkeypatch):
+    _cuda()
+    net, handle = _armed_streamed(monkeypatch)
+    pf = op.module_prefetcher(net)
+
+    def broken(*args, **kwargs):
+        handle.placement.before_capture()
+        raise RuntimeError("capture failed")
+
+    monkeypatch.setattr(handle, "_capture", broken)
+    ref = _net().cuda()
+    _call(net, 0)
+    assert torch.equal(_call(net, 1), _call(ref, 1))
+    assert handle.poisoned and not pf.slot_raw
+    handle.free()
 
 
 def test_a_declined_placement_refuses_every_later_call():

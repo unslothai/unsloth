@@ -605,7 +605,13 @@ class GroupPrefetcher:
         """Allocate every slot of the ring now (a whole-step capture must not carve one out of its graph pool)."""
         if not self.slot_of or not self.slot_size:
             return
-        for where in sorted(set(self.slot_of.values())):
+        # Only the slots a streamed group fills: a resident group that is released later allocates its own on use.
+        streamed = {
+            self.slot_of[id(g)]
+            for g in self.groups
+            if id(g) in self.slot_of and not getattr(g, "_unsloth_resident", False)
+        }
+        for where in sorted(streamed):
             if where not in self.slot_raw:
                 self._alloc_slot(where)
 
