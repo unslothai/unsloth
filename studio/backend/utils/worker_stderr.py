@@ -135,6 +135,22 @@ _CRASH_LINE_MARKERS = (
     "terminate called",
     "cuda error",
     "hip error",
+    "cudaerror",
+    # The native forms the inference crash parser knows (orchestrator._DIAGNOSTIC_START_RE).
+    "bus error",
+    "illegal instruction",
+    "floating point exception",
+    "trace/breakpoint trap",
+    "stack smashing",
+    "double free",
+    "free():",
+    "malloc():",
+    "munmap_chunk",
+    "corrupted size",
+    "corrupted double-linked",
+    "bad_alloc",
+    "libc++abi",
+    "ggml_assert",
 )
 _STACK_LINE_PREFIXES = (
     'File "',

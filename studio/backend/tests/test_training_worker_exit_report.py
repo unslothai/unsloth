@@ -116,6 +116,20 @@ def test_native_threads_do_not_push_the_reason_out():
     assert first_crash_line(text) == "Fatal Python error: Aborted"
 
 
+@pytest.mark.parametrize(
+    "reason",
+    [
+        "Bus error",
+        "Illegal instruction",
+        "free(): invalid pointer",
+        "*** stack smashing detected ***: terminated",
+        "GGML_ASSERT(ctx) failed",
+    ],
+)
+def test_other_native_reasons(reason):
+    assert first_crash_line(reason + "\n" + '  File "m.py", line 1 in f\n') == reason
+
+
 def _die_after_a_long_stack(path: str) -> None:
     assert install_worker_stderr_mirror(path) is True
     sys.stderr.write("LLVM ERROR: Cannot select: intrinsic %llvm.amdgcn.fdot2.bf16.bf16\n")
