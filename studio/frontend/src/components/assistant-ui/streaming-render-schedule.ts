@@ -212,8 +212,6 @@ function hasLinkReference(text: string): boolean {
   }
   return false;
 }
-// Still the first line of a single block, for `updateLinkDefinitionParity` below.
-const FENCED_CODE_BLOCK_RE = /^ {0,3}(?:```|~~~)/;
 const WORD_CHARACTER_RE = /[\p{L}\p{N}_]/u;
 const HTML_TAG_START_RE = /[a-zA-Z/]/;
 
@@ -374,9 +372,10 @@ const createRepairParity = (
 // Marked keeps link reference definitions in one document-wide map and emits no token for a label
 // it has already seen, so a definition retained while its twin is still live would be lexed apart
 // and shown as a literal line. Keeping every definition in the live tail makes the two lexes agree.
-// Marked reads a fenced block as code, so those do not count.
+// Same test as `documentProse`: a bare `[...]:` probe also caught `list[str]:` in a list-nested
+// fence or `d["key"]: int`, stalling the tail into the sticky full-document path (#10529).
 function updateLinkDefinitionParity(parity: RepairParity, text: string): void {
-  if (!FENCED_CODE_BLOCK_RE.test(text) && hasLinkDefinition(text)) {
+  if (!isCodeBlock(text) && LINK_DEFINITION_LINE_RE.test(text)) {
     parity.linkDefinition = true;
   }
 }
@@ -1465,10 +1464,13 @@ export class IncrementalMarkdownCache {
     // full-document mode -- answer without it, and the precise scope costs a lex of everything
     // received so far. Reaching this point means the reply is still a retention candidate,
     // which is the only case where the answer is used.
+    // `updateLinkDefinitionParity` never commits a block `documentProse` would read as a
+    // definition, so with no `]:` left in the tail the whole-reply lex can only say `blocks`.
     if (
       FOOTNOTE_REFERENCE_RE.test(repaired) ||
       FOOTNOTE_DEFINITION_RE.test(repaired) ||
-      markdownRenderScope(markdown) === "document"
+      (hasLinkDefinition(this.tail) &&
+        markdownRenderScope(markdown) === "document")
     ) {
       return this.renderFullDocument(markdown);
     }
