@@ -3918,7 +3918,9 @@ class VideoBackend:
             )
             return False
         if local_files_only:
-            repo = self._denoiser_prequant_cached_repo(fam, transformer_quant, base, h3_task)
+            repo = self._denoiser_prequant_cached_repo(
+                fam, transformer_quant, base, h3_task, online = False
+            )
         else:
             try:
                 from huggingface_hub import HfApi
@@ -3977,7 +3979,12 @@ class VideoBackend:
 
             if not restricted_prequant_load_supported("nvfp4"):
                 return False
-            if self._denoiser_prequant_cached_repo(fam, "nvfp4", base, task) is not None:
+            if (
+                self._denoiser_prequant_cached_repo(
+                    fam, "nvfp4", base, task, online = False if local_files_only else None
+                )
+                is not None
+            ):
                 return True
             if local_files_only:
                 return False
@@ -4414,24 +4421,40 @@ class VideoBackend:
         transformer_quant: Optional[str],
         base: Optional[str],
         h3_task: Optional[str] = None,
+        online: Optional[bool] = None,
     ) -> Optional[str]:
         """The hosted pre-quantized denoiser repo when its checkpoint is ALREADY cached, else None.
 
-        Offline twin of ``_denoiser_prequant_hub_files``; a cached name is taken at face value."""
+        Offline twin of ``_denoiser_prequant_hub_files``. Offline (``online=False``) any cached name is what the load
+        opens; online a cached name only counts when no other artifact ahead of it would be downloaded first, see
+        ``first_cached_as_resolved``."""
         sources = VideoBackend._denoiser_prequant_source_list(fam, transformer_quant, base, h3_task)
         # A local override is on disk by definition; only a hosted checkpoint has a cache to probe
         if not sources or any(getattr(src, "kind", None) != "repo" for src in sources):
             return None
         from core.inference.diffusion import DiffusionBackend
 
-        from core.inference.diffusion_prequant import candidate_filenames_of
+        from core.inference.diffusion_prequant import (
+            candidate_filenames_of,
+            first_cached_as_resolved,
+            prefer_cached_pickle_twins,
+        )
 
         cached: list[str] = []
         for src in sources:
-            for name in candidate_filenames_of(src):
-                if DiffusionBackend._hub_file_is_cached(src.location, name):
-                    cached.append(src.location)
-                    break
+            ordered = prefer_cached_pickle_twins(
+                src.location, list(candidate_filenames_of(src)), cache_dir = hub_cache_dir(), log = False
+            )
+            hit = first_cached_as_resolved(
+                src.location,
+                ordered,
+                is_cached = lambda n, repo = src.location: DiffusionBackend._hub_file_is_cached(repo, n),
+                declared = getattr(src, "declared_filenames", ()) or (),
+                online = online,
+                cache_dir = hub_cache_dir(),
+            )
+            if hit is not None:
+                cached.append(src.location)
         if len(cached) == len(sources):
             return cached[0]
         # No log here: the caller reports the same "keeping its dense denoiser shards" outcome for a miss, and logging

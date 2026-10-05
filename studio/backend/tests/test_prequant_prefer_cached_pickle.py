@@ -21,6 +21,7 @@ import core.inference.diffusion_te_prequant as tpq
 
 REPO = "unsloth/Model-FP8"
 KILL_SWITCH = "UNSLOTH_PREQUANT_PREFER_SAFETENSORS"
+NO_EXIST = object()  # stands in for huggingface_hub's recorded-404 sentinel
 
 
 class FakeHub:
@@ -35,6 +36,8 @@ class FakeHub:
         self.tmp = tmp_path
         self.cached: dict = {}
         self.hosted = set(hosted) if hosted is not None else None
+        # names a 404 was recorded for, as huggingface_hub's .no_exist markers
+        self.absent: set = set()
         self.downloads: list = []
         for name in cached:
             self.cache(name)
@@ -56,6 +59,8 @@ class FakeHub:
         cache_dir = None,
         **_,
     ):
+        if (repo_id, filename) in self.absent:
+            return NO_EXIST
         return self.cached.get((repo_id, filename))
 
     def hf_hub_download(
@@ -74,6 +79,7 @@ class FakeHub:
                 raise LocalEntryNotFoundError(f"{filename} not cached")
             return hit
         if self.hosted is not None and filename not in self.hosted:
+            self.absent.add((repo_id, filename))
             raise EntryNotFoundError(f"404 {filename}")
         if hit is None:
             self.cache(filename, repo_id)
@@ -390,3 +396,138 @@ def test_install_without_safetensors_support_downloads_the_pickle_and_says_why(
     assert _resolve(_dit()) == hub.cached[(REPO, "Model-INT8.pt")]
     assert hub.fetched == ["Model-INT8.pt"]
     assert "cannot read the .safetensors container" in caplog.text
+
+
+# ---- cache probes: "nothing to download" must mean the file the load will open ----
+
+CONVROT = ("Model-INT8-ConvRot.safetensors",)
+PLAIN = ("Model-INT8.safetensors", "Model-INT8.pt", "transformer_int8.pt")
+
+
+def _convrot_dit(declared = True):
+    names = CONVROT + PLAIN
+    return pq.PrequantSource(
+        kind = "repo",
+        location = REPO,
+        filename = names[0],
+        fallback_filenames = names[1:],
+        declared_filenames = CONVROT if declared else (),
+    )
+
+
+def test_cached_int8_is_not_free_when_a_declared_convrot_is_ahead(hub):
+    """An existing user's INT8 .pt is cached and the family now declares an INT8-ConvRot build.
+    Online the load downloads the ConvRot file first, so the planner and the disk gate must not be
+    told this costs nothing."""
+    hub.cache("Model-INT8.pt")
+    src = _convrot_dit()
+    assert pq.cached_checkpoint_path(src, online = True) is None
+    assert pq.prequant_checkpoint_cached(src, online = True) is False
+    # and that is what the load really does
+    _resolve(src)
+    assert hub.fetched == ["Model-INT8-ConvRot.safetensors"]
+
+
+def test_offline_the_cached_int8_is_what_loads(hub):
+    hub.cache("Model-INT8.pt")
+    src = _convrot_dit()
+    assert pq.cached_checkpoint_path(src, online = False) == hub.cached[(REPO, "Model-INT8.pt")]
+    assert _resolve(src, local_files_only = True) == hub.cached[(REPO, "Model-INT8.pt")]
+
+
+def test_a_stale_404_marker_does_not_clear_a_declared_name(hub):
+    """The marker belongs to the revision the cache last saw. A ConvRot file published since then
+    is exactly the case that matters, so a declared name is never cleared by one."""
+    hub.cache("Model-INT8.pt")
+    hub.absent.add((REPO, "Model-INT8-ConvRot.safetensors"))
+    assert pq.cached_checkpoint_path(_convrot_dit(), online = True) is None
+
+
+def test_a_derived_name_is_cleared_by_the_resolvers_own_404(hub):
+    """A derived name is a guess. Once the resolver has asked and the Hub said 404, the cached
+    name behind it is what loads, and the probe agrees with the resolver."""
+    hub.cache("Model-INT8.pt")
+    src = _convrot_dit(declared = False)
+    assert pq.cached_checkpoint_path(src, online = True) is None
+    hub.hosted = {"Model-INT8.pt"}
+    got = _resolve(src)
+    assert got == hub.cached[(REPO, "Model-INT8.pt")]
+    assert pq.cached_checkpoint_path(src, online = True) == got
+
+
+def test_the_cached_pickle_twin_still_counts_online(hub):
+    """The safetensors twin of a cached .pt never blocks it: the resolver opens the .pt."""
+    hub.cache("Model-INT8.pt")
+    src = _dit()
+    assert pq.cached_checkpoint_path(src, online = True) == hub.cached[(REPO, "Model-INT8.pt")]
+    assert pq.cached_checkpoint_path(src, online = True) == _resolve(src)
+    assert hub.fetched == ["Model-INT8.pt"]
+
+
+def test_a_cached_convrot_is_free(hub):
+    hub.cache("Model-INT8.pt")
+    hub.cache("Model-INT8-ConvRot.safetensors")
+    got = pq.cached_checkpoint_path(_convrot_dit(), online = True)
+    assert got == hub.cached[(REPO, "Model-INT8-ConvRot.safetensors")]
+
+
+def test_video_cached_repo_probe_follows_the_same_rule(hub, monkeypatch):
+    from core.inference.diffusion import DiffusionBackend
+    from core.inference.video import VideoBackend
+
+    hub.cache("Model-INT8.pt")
+    monkeypatch.setattr(
+        VideoBackend,
+        "_denoiser_prequant_source_list",
+        staticmethod(lambda *a, **k: [_convrot_dit()]),
+    )
+    monkeypatch.setattr(
+        DiffusionBackend,
+        "_hub_file_is_cached",
+        staticmethod(lambda repo, name, *a, **k: (repo, name) in hub.cached),
+    )
+    probe = VideoBackend._denoiser_prequant_cached_repo
+    assert probe(None, "int8", "base/Model", online = True) is None
+    assert probe(None, "int8", "base/Model", online = False) == REPO
+
+
+def test_te_pricing_does_not_call_a_cached_fp8_encoder_free(hub, monkeypatch, tmp_path):
+    """The text-encoder size estimate: a cached FP8 encoder is not what loads when the family
+    declares an uncached INT8-ConvRot encoder ahead of it, so the size is not exact."""
+    import core.inference.diffusion as diffusion
+    from core.inference.diffusion import DiffusionBackend
+
+    snap = tmp_path / "snap"
+    snap.mkdir()
+    (snap / "Model-text_encoder-FP8.pt").write_bytes(b"x" * 4096)
+    declared = ("Model-text_encoder-INT8-ConvRot.safetensors",)
+
+    def _sources(*a, **k):
+        names = declared + ("Model-text_encoder-FP8.safetensors", "Model-text_encoder-FP8.pt")
+        return {
+            "text_encoder": tpq.TePrequantSource(
+                kind = "repo",
+                location = REPO,
+                filename = names[0],
+                fallback_filenames = names[1:],
+                declared_filenames = declared,
+            )
+        }
+
+    monkeypatch.setattr(tpq, "te_prequant_sources_for_base", _sources)
+    monkeypatch.setattr(
+        DiffusionBackend,
+        "_union_over_cached_revs",
+        staticmethod(lambda base, fn, staged_dir = None: sum(fn(snap).values())),
+    )
+    monkeypatch.setattr(diffusion, "family_bf16_components_gb", lambda fam, base: (10.0, 16.0))
+    monkeypatch.setattr(pq, "hub_offline", lambda: False)
+    fam = types.SimpleNamespace(name = "probe")
+    mib, components, exact = DiffusionBackend._precast_text_encoder_mib(fam, "base/Model", None, "int8")
+    assert components == ("text_encoder",)
+    assert exact is False
+    # Once the ConvRot encoder is cached it is what loads, and the size is the file's own.
+    (snap / "Model-text_encoder-INT8-ConvRot.safetensors").write_bytes(b"x" * (3 << 20))
+    mib, components, exact = DiffusionBackend._precast_text_encoder_mib(fam, "base/Model", None, "int8")
+    assert exact is True and mib == 3
+

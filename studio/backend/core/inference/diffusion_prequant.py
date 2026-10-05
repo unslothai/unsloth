@@ -592,6 +592,7 @@ def prefer_cached_pickle_twins(
     readable: Any = None,
     cache_dir: Optional[str] = None,
     logger: Any = None,
+    log: bool = True,
 ) -> list:
     """``names`` with a CACHED pickle twin moved ahead of its UNCACHED safetensors sibling.
 
@@ -603,7 +604,8 @@ def prefer_cached_pickle_twins(
     different stem) never jumps the queue, however cached it is. A cached safetensors keeps its place,
     and the twin stays in the chain behind it, so nothing becomes unreachable: a twin that the Hub has
     since removed 404s and the safetensors name is tried next. ``PREFER_SAFETENSORS_ENV`` turns this
-    off. Pure cache lookups, never raises."""
+    off. ``log=False`` is for planners, which ask the same question without loading anything. Pure
+    cache lookups, never raises."""
     import os
 
     out = [n for n in names if n]
@@ -638,7 +640,7 @@ def prefer_cached_pickle_twins(
             out.remove(twin)
             out.insert(out.index(st), twin)
             key = (repo_id, twin)
-            if key not in _logged_twin_choices:
+            if log and key not in _logged_twin_choices:
                 _logged_twin_choices.add(key)
                 log = logger
                 if log is None:
@@ -655,6 +657,103 @@ def prefer_cached_pickle_twins(
     except Exception:  # noqa: BLE001 - a preference, never a new failure
         return [n for n in names if n]
     return out
+
+
+def _container_stem(name: str) -> str:
+    """``name`` without its checkpoint container suffix, so ``X.safetensors`` and ``X.pt`` compare equal."""
+    lower = name.lower()
+    for suffix in (".safetensors", *_PICKLE_SUFFIXES):
+        if lower.endswith(suffix):
+            return name[: -len(suffix)]
+    return name
+
+
+def hub_offline() -> bool:
+    """huggingface_hub's own offline switch: when set, every resolve is a walk of the cache. Never raises."""
+    try:
+        from huggingface_hub import constants
+
+        return bool(constants.HF_HUB_OFFLINE)
+    except Exception:  # noqa: BLE001 - no hub library: nothing can be downloaded either
+        return True
+
+
+def hub_name_known_absent(
+    repo_id: Optional[str], name: Optional[str], cache_dir: Optional[str] = None
+) -> bool:
+    """True when a Hub cache root records ``name`` as ABSENT at the revision it last saw, i.e. the
+    ``.no_exist`` marker huggingface_hub leaves behind when a download of that name got a 404.
+    Never raises."""
+    if not repo_id or not name:
+        return False
+    try:
+        from huggingface_hub import try_to_load_from_cache
+    except Exception:  # noqa: BLE001 - no cache API: nothing is known
+        return False
+    for root in _twin_cache_roots(cache_dir):
+        try:
+            hit = try_to_load_from_cache(repo_id, name, cache_dir = root)
+        except Exception:  # noqa: BLE001 - a malformed cache entry says nothing
+            continue
+        # a str is a cached path and None is "never asked"; the remaining sentinel is the marker
+        if hit is not None and not isinstance(hit, str):
+            return True
+    return False
+
+
+def first_cached_as_resolved(
+    repo_id: Optional[str],
+    names: Sequence[str],
+    *,
+    is_cached: Any,
+    declared: Sequence[str] = (),
+    online: Optional[bool] = None,
+    cache_dir: Optional[str] = None,
+) -> Optional[str]:
+    """The first cached name in ``names`` (already in the resolver's order) that a load would really
+    open without downloading anything else first, or None.
+
+    Offline the resolver walks the chain to the first cached name, so that is the answer. Online it
+    downloads the first name the Hub HOLDS, so a cached name further down only loads when every
+    other artifact ahead of it is absent from the Hub. Taking the first cached name regardless is
+    how an existing INT8 ``.pt`` read as "nothing to download" while the chain led with an uncached
+    INT8-ConvRot that the load then fetched, several GB the planner and the disk gate never saw.
+    Each uncached name ahead of the hit is judged on its own:
+
+    - a container twin of the hit (same stem) never blocks: ``prefer_cached_pickle_twins`` already
+      put the cached container first, so the resolver opens it without asking for the twin;
+    - a DECLARED name blocks: the family says the repo hosts it. Its ``.no_exist`` marker is not
+      trusted, because the marker belongs to the revision the cache last saw and a file published
+      since then (a ConvRot build added to a repo that already hosts the plain one) is exactly the
+      case this exists for;
+    - a DERIVED name, a guess from the repo id, blocks unless the cache records it as absent, which
+      the resolver's own 404 on it leaves behind.
+
+    ``online=None`` reads huggingface_hub's offline switch. Never raises."""
+    try:
+        if online is None:
+            online = not hub_offline()
+        declared_set = set(declared or ())
+        ahead: list = []
+        for name in names:
+            if not name:
+                continue
+            if not is_cached(name):
+                ahead.append(name)
+                continue
+            if online:
+                stem = _container_stem(name)
+                for other in ahead:
+                    if _container_stem(other) == stem:
+                        continue
+                    if other in declared_set or not hub_name_known_absent(
+                        repo_id, other, cache_dir
+                    ):
+                        return None
+            return name
+    except Exception:  # noqa: BLE001 - a planning aid: unanswerable reads as not cached
+        return None
+    return None
 
 
 @dataclass(frozen = True)
@@ -1233,7 +1332,7 @@ def usable_prequant_source(
         # the dense shards, then resolve neither file.
         if (
             not any(n in declared for n in readable)
-            and cached_checkpoint_path(src, names = readable) is None
+            and cached_checkpoint_path(src, names = readable, online = False) is None
         ):
             return None
     if src.kind == "path":
@@ -1249,6 +1348,7 @@ def cached_checkpoint_path(
     *,
     cache_dir: Optional[str] = None,
     names: Optional[Sequence[str]] = None,
+    online: Optional[bool] = None,
 ) -> Optional[str]:
     """The path of a hosted (``kind == "repo"``) checkpoint ALREADY in the local Hub cache. A pure
     lookup (a refs read plus a stat, no network), so memory planning can ask on every pick.
@@ -1268,6 +1368,13 @@ def cached_checkpoint_path(
     cache hit was about and finds the other name uncached. Asked per NAME rather than per scheme,
     because the container is what decides it.
 
+    The answer is the file the LOAD would open, which online is not simply the first cached name:
+    ``first_cached_as_resolved`` says when an uncached artifact ahead of it (a declared INT8-ConvRot
+    in front of a cached INT8 ``.pt``) would be downloaded first, and then this is None. A cached
+    ``.pt`` whose safetensors twin is not cached still counts, as the resolver opens it.
+    ``online=False`` asks the plain question instead, is ANY readable name cached, which is what an
+    offline load opens and what a caller looking for evidence of a file wants.
+
     ``names`` narrows the chain further, to a caller's own subset.
 
     Both cache roots are searched: Unsloth pins the LIVE cache setting while an unpinned
@@ -1286,16 +1393,33 @@ def cached_checkpoint_path(
         for n in candidate_filenames_of(source)
         if (wanted is None or n in wanted) and _readable(n)
     ]
+    location = getattr(source, "location", None)
     if getattr(source, "kind", None) == "repo":
-        mirrored = _first_mirrored(getattr(source, "location", None), candidates, _readable)
+        mirrored = _first_mirrored(location, candidates, _readable)
         if mirrored is not None:
             return mirrored
-    for name in candidates:
-        for root in roots:
-            hit = _cached_in_root(source, root, name)
-            if hit is not None:
-                return hit
-    return None
+    hits: dict = {}
+
+    def _hit(name: str) -> Optional[str]:
+        if name not in hits:
+            hits[name] = next(
+                (h for h in (_cached_in_root(source, root, name) for root in roots) if h is not None),
+                None,
+            )
+        return hits[name]
+
+    ordered = prefer_cached_pickle_twins(
+        location, candidates, readable = _readable, cache_dir = cache_dir, log = False
+    )
+    name = first_cached_as_resolved(
+        location,
+        ordered,
+        is_cached = lambda n: _hit(n) is not None,
+        declared = getattr(source, "declared_filenames", ()) or (),
+        online = online,
+        cache_dir = cache_dir,
+    )
+    return _hit(name) if name else None
 
 
 def _cached_in_root(
@@ -1324,9 +1448,11 @@ def _cached_in_root(
     return hit if isinstance(hit, str) and os.path.isfile(hit) else None
 
 
-def prequant_checkpoint_cached(source: Any, *, cache_dir: Optional[str] = None) -> bool:
+def prequant_checkpoint_cached(
+    source: Any, *, cache_dir: Optional[str] = None, online: Optional[bool] = None
+) -> bool:
     """True when ``source`` resolves from the cache, i.e. enabling prequant costs no download."""
-    return cached_checkpoint_path(source, cache_dir = cache_dir) is not None
+    return cached_checkpoint_path(source, cache_dir = cache_dir, online = online) is not None
 
 
 def _pin_kernel_preference(state_dict: Any, logger: Any = None) -> int:
@@ -1728,7 +1854,7 @@ def _resolve_checkpoint_path(
                         None
                         if last
                         else cached_checkpoint_path(
-                            source, cache_dir = cache_dir, names = names[index + 1 :]
+                            source, cache_dir = cache_dir, names = names[index + 1 :], online = False
                         )
                     )
                     if cached is None:
@@ -2561,7 +2687,7 @@ def prequant_unreadable_reason(
             declared = set(getattr(src, "declared_filenames", ()) or ())
             if (
                 not declared.intersection(readable)
-                and cached_checkpoint_path(src, names = readable) is None
+                and cached_checkpoint_path(src, names = readable, online = False) is None
             ):
                 readable = []
         if readable:

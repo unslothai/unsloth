@@ -5092,6 +5092,7 @@ class DiffusionBackend:
                 TE_PREQUANT_BUDGET_SCALE,
                 TE_PREQUANT_COMPONENTS,
                 te_candidate_filenames,
+                te_candidate_is_readable,
                 te_prequant_sources_for_base,
             )
 
@@ -5117,19 +5118,45 @@ class DiffusionBackend:
                     except OSError:
                         size = 0
                 elif kind == "repo":
-                    names = te_candidate_filenames(source)
+                    from .diffusion_prequant import (
+                        first_cached_as_resolved,
+                        prefer_cached_pickle_twins,
+                    )
 
-                    def _sizes(d: Path, names = names) -> dict[str, int]:
-                        for name in names:
+                    repo = str(source.location)
+                    sized: dict[str, int] = {}
+
+                    def _size_of(name: str) -> int:
+                        def _sizes(d: Path) -> dict[str, int]:
                             f = d / name
                             if f.is_file():
                                 try:
                                     return {"precast": f.stat().st_size}
                                 except OSError:
                                     return {}
-                        return {}
+                            return {}
 
-                    size = DiffusionBackend._union_over_cached_revs(str(source.location), _sizes)
+                        if name not in sized:
+                            sized[name] = DiffusionBackend._union_over_cached_revs(repo, _sizes)
+                        return sized[name]
+
+                    # The file the load will OPEN, in the resolver's order: a cached older encoder does not
+                    # make an uncached declared one ahead of it free, the load downloads that one first.
+                    names = [n for n in te_candidate_filenames(source) if te_candidate_is_readable(n)]
+                    hit = first_cached_as_resolved(
+                        repo,
+                        prefer_cached_pickle_twins(
+                            repo,
+                            names,
+                            readable = te_candidate_is_readable,
+                            cache_dir = hub_cache_dir(),
+                            log = False,
+                        ),
+                        is_cached = lambda n: _size_of(n) > 0,
+                        declared = getattr(source, "declared_filenames", ()) or (),
+                        cache_dir = hub_cache_dir(),
+                    )
+                    size = _size_of(hit) if hit else 0
                 if size > 0:
                     total += int(size)
                     continue

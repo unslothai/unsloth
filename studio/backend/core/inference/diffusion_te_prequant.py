@@ -151,6 +151,9 @@ class TePrequantSource:
     # Names to try after ``filename``, in order, when the repo does not carry it. Only the "repo"
     # kind uses this: a local path either exists or it does not.
     fallback_filenames: tuple = ()
+    # Names the family DECLARED the repo hosts, as on ``PrequantSource``: the cache probe never lets an
+    # older cached artifact stand in for an uncached declared one the online resolver would fetch first.
+    declared_filenames: tuple = ()
 
 
 def te_prequant_repo_stem(repo_id: str, component: str, scheme: str) -> str:
