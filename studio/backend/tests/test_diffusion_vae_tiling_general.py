@@ -261,7 +261,11 @@ def test_qwen_image_tiled_encode_is_closer_to_untiled():
 def test_kill_switch_keeps_every_stock_decode(monkeypatch, build, ratio, stock, floor):
     vae = build()
     side = max(floor[0] + 8, stock[0] + 8)
-    shape = (1, 4, side, side) if not hasattr(vae, "tile_sample_stride_height") else (1, 4, 1, side, side)
+    shape = (
+        (1, 4, side, side)
+        if not hasattr(vae, "tile_sample_stride_height")
+        else (1, 4, 1, side, side)
+    )
     if ratio == 32:
         shape = (1, 8, side, side)
     if ratio * side > 1300:
@@ -286,7 +290,9 @@ def test_keep_stock_list_skips_the_install(monkeypatch):
 
 
 def test_unreadable_geometry_keeps_the_stock_decode():
-    cls = type("SomeFutureVAE", (), {"_decode": lambda self: None, "tiled_decode": lambda self: None})
+    cls = type(
+        "SomeFutureVAE", (), {"_decode": lambda self: None, "tiled_decode": lambda self: None}
+    )
     vae = cls()
     vae.use_tiling, vae.spatial_compression_ratio = False, 16
     assert vt.stock_tiles(vae) is None
@@ -308,7 +314,10 @@ _MEASURED_FLOOR_TILE_PEAK_MIB = {
     (8, 32): 314,  # Qwen-Image / Qwen-Image-Edit / Krea-2 (AutoencoderKLQwenImage)
     (16, 32): 1_697,  # Qwen-Image-2.1 (AutoencoderKLQwenImage21, #12696)
     (32, 32): 1_332,  # HunyuanImage-2.1 (AutoencoderKLHunyuanImage)
-    (8, 128): 2_486,  # FLUX.1 / FLUX.2 / SDXL (AutoencoderKL, AutoencoderKLFlux2) at an edge-sliver size
+    (
+        8,
+        128,
+    ): 2_486,  # FLUX.1 / FLUX.2 / SDXL (AutoencoderKL, AutoencoderKLFlux2) at an edge-sliver size
 }
 
 
@@ -356,7 +365,9 @@ def test_load_installs_for_every_image_family():
     """The load path installs unconditionally (the rule decides per VAE), not behind a family check."""
     from core.inference import diffusion
 
-    src = textwrap.dedent(inspect.getsource(inspect.unwrap(diffusion.DiffusionBackend.load_pipeline)))
+    src = textwrap.dedent(
+        inspect.getsource(inspect.unwrap(diffusion.DiffusionBackend.load_pipeline))
+    )
     calls = [
         node
         for node in ast.walk(ast.parse(src))
@@ -368,4 +379,6 @@ def test_load_installs_for_every_image_family():
     for node in ast.walk(ast.parse(src)):
         # not nested under an `if` on the family / VAE class
         if isinstance(node, ast.If) and any(c in ast.walk(node) for c in calls):
-            assert "fam" not in ast.unparse(node.test) and "vae" not in ast.unparse(node.test).lower()
+            assert (
+                "fam" not in ast.unparse(node.test) and "vae" not in ast.unparse(node.test).lower()
+            )
