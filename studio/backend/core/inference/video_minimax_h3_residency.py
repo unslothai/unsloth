@@ -112,6 +112,19 @@ def _noop() -> None:
     return None
 
 
+def _resident_onload(group: Any) -> Any:
+    """A resident group's onload kicks the prefetch, else the first streamed block behind it is never prefetched."""
+    prefetcher = getattr(group, "_unsloth_prefetcher", None)
+    kick = getattr(prefetcher, "kick", None)
+    if not callable(kick):
+        return _noop
+
+    def onload_(*_a: Any, **_k: Any) -> None:
+        kick()
+
+    return _outside_inference_mode(onload_)
+
+
 def is_resident(group: Any) -> bool:
     return bool(getattr(group, "_unsloth_resident", False))
 
@@ -123,14 +136,20 @@ def make_resident(group: Any) -> None:
     if is_resident(group):
         return
     # The instance attribute, not the class method: an instance override (pinned top group) is an onload path too.
-    group.onload_()
+    # Except the prefetcher's own: a group leaving the stream must not count against its in-flight window.
+    prefetcher = getattr(group, "_unsloth_prefetcher", None)
+    owns = getattr(prefetcher, "owns", None)
+    if callable(owns) and owns(group):
+        _outside_inference_mode(type(group).onload_)(group)
+    else:
+        group.onload_()
     stream = getattr(group, "stream", None)
     if stream is not None:
         stream.synchronize()
     if torch.cuda.is_available():
         torch.cuda.current_stream().synchronize()
     group._unsloth_saved_io = (group.__dict__.get("onload_"), group.__dict__.get("offload_"))
-    group.onload_ = _noop
+    group.onload_ = _resident_onload(group)
     group.offload_ = _noop
     group._unsloth_resident = True
 
@@ -442,6 +461,117 @@ def pin_streamed_top_level_group(transformer: Any, logger: Any = None) -> bool:
             group_payload_bytes(top) / 1e9,
         )
     return True
+
+
+H3_STREAM_PREFETCH_ENV = "UNSLOTH_H3_STREAM_PREFETCH"
+
+
+def h3_stream_prefetch_depth(block_bytes: list, default_depth: int) -> int:
+    """Groups copied ahead: as many as ``H3_STREAM_WINDOW_GB`` (reserved by the residency plan) holds next to the
+    running block, capped by ``default_depth``, at least 1."""
+    largest = max(block_bytes) if block_bytes else 0
+    if largest <= 0:
+        return max(1, int(default_depth))
+    fits = int(H3_STREAM_WINDOW_GB * 1e9 // largest) - 1
+    return max(1, min(int(default_depth), fits))
+
+
+def h3_stream_prefetch_window(top_bytes: int, block_bytes: list) -> int:
+    """Bytes the prefetcher may hold on the device: the top-level group plus two blocks, diffusers' own footprint."""
+    largest = max(block_bytes) if block_bytes else 0
+    return int(max(0, top_bytes) + 2 * largest)
+
+
+def install_h3_stream_prefetch(
+    transformer: Any,
+    device: Any,
+    logger: Any = None,
+) -> int:
+    """Drive a block-streamed H3 denoiser's offload groups with the event-fenced prefetch (no host sync per onload).
+    Run after the top-level pin, before the residency fit; returns groups covered. ``UNSLOTH_H3_STREAM_PREFETCH=0`` off."""
+    if str(os.environ.get(H3_STREAM_PREFETCH_ENV, "")).strip().lower() in (
+        "0",
+        "off",
+        "false",
+        "no",
+    ):
+        return 0
+    try:
+        from .diffusion_offload_prefetch import install_group_prefetch, prefetch_depth
+    except ImportError:
+        return 0
+    top, blocks = h3_offload_groups(transformer)
+    if not blocks:
+        return 0
+    depth = h3_stream_prefetch_depth([group_payload_bytes(g) for g in blocks], prefetch_depth())
+    from .diffusion_memory import _pinned_memory_capped
+
+    if _pinned_memory_capped():
+        depth = 1  # each in-flight group is pinned on the fly; diffusers' own path holds two near a ~1 GiB cap
+    # The prefetcher refuses groups whose onload_ is replaced: lift the outside-inference_mode wrappers (torchao v1
+    # int8 cannot be re-pointed inside it), install, then wrap its moves the same way.
+    groups = _all_offload_groups(transformer)
+    # A top-level group the H3 pin left unstreamed (kill switch, host refusal) keeps its wrapper, so the generic
+    # top-group adoption cannot pin it.
+    kept = top if top is not None and getattr(top, "stream", None) is None else None
+    lifted = [g for g in groups if g is not kept and _lift_outside_inference_wrappers(g)]
+    try:
+        covered = install_group_prefetch(transformer, device, logger, depth = depth)
+    except Exception:  # noqa: BLE001 -- install_group_prefetch never raises today; keep the wrappers either way
+        covered = 0
+    for group in lifted:
+        for name in ("onload_", "offload_"):
+            setattr(group, name, _outside_inference_mode(getattr(group, name)))
+    if covered:
+        from .diffusion_offload_prefetch import module_prefetcher
+
+        prefetcher = module_prefetcher(transformer)
+        for group in groups:
+            if getattr(group, "_unsloth_prefetcher", None) is prefetcher:
+                # owns() compares the instance onload_ with this
+                group._unsloth_prefetch_onload = group.__dict__.get("onload_")
+        if prefetcher is not None:
+            # (depth + 1) x the 0.8 GB top-level group would leave no block ahead once that group streams (12 GB).
+            prefetcher.window = h3_stream_prefetch_window(
+                group_payload_bytes(top) if top is not None else 0,
+                [group_payload_bytes(g) for g in blocks],
+            )
+            # end() puts groups copied ahead but never run back on the host copy; kick() queues copies
+            for name in ("end", "kick"):
+                setattr(prefetcher, name, _outside_inference_mode(getattr(prefetcher, name)))
+    return covered
+
+
+def _all_offload_groups(transformer: Any) -> list:
+    out: list = []
+    seen: set = set()
+    for sub in transformer.modules():
+        group = getattr(_group_hook(sub), "group", None)
+        if group is not None and id(group) not in seen:
+            seen.add(id(group))
+            out.append(group)
+    return out
+
+
+def _lift_outside_inference_wrappers(group: Any) -> bool:
+    """Drop the instance onload_ / offload_ that only re-enter the class methods outside inference_mode."""
+    attrs = getattr(group, "__dict__", {})
+    if is_resident(group) or not any(name in attrs for name in ("onload_", "offload_")):
+        return False
+    for name in ("onload_", "offload_"):
+        attrs.pop(name, None)
+    return True
+
+
+def _outside_inference_mode(fn: Any) -> Any:
+    import torch
+
+    def call(*args: Any, **kwargs: Any) -> Any:
+        with torch.inference_mode(False), torch.no_grad():
+            return fn(*args, **kwargs)
+
+    disable = getattr(getattr(torch, "compiler", None), "disable", None)
+    return disable(call) if callable(disable) else call
 
 
 H3_VAE_PINNED_SWAP_ENV = "UNSLOTH_H3_VAE_PINNED_SWAP"

@@ -83,6 +83,7 @@ def _append_mcp_images_owned(
 
 from core.inference.tool_loop_controller import (
     ToolLoopController,
+    _reject_json_constant,
     awaiting_approval_status,
     canonical_arguments_text,
     mcp_display_parts,
@@ -401,11 +402,6 @@ class ToolLoopPolicy:
     # Called when a provider turn ends, however it ended. Headerless only: clears the stripper's withheld-call flag,
     # which the wire cannot always close because a turn may end on [DONE] alone.
     on_provider_turn_end: Callable[[], None] | None = None
-
-
-def _reject_json_constant(name: str) -> Any:
-    """Refuse ``NaN`` / ``Infinity``: ``json.loads`` takes them, ``JSON.parse`` does not."""
-    raise ValueError(f"{name} is not JSON")
 
 
 def _split_top_level_json_objects(text: str) -> tuple[list[str], str]:
@@ -1280,6 +1276,39 @@ async def stream_with_studio_tools(
     confirm_tool_calls = policy.confirm_calls
     rag_scope = policy.rag_scope
 
+    from core.inference.skill_mentions import load_mentioned_skills
+
+    skill_loads = load_mentioned_skills(
+        conversation,
+        # "none" / a zero budget withdraw read_skill, so they withdraw the preload too.
+        tools if tool_choice != "none" and (unlimited or remaining > 0) else [],
+        permission_mode = permission_mode,
+        bypass_permissions = bypass_permissions,
+        confirm_tool_calls = confirm_tool_calls,
+        session_id = session_id,
+        cancel_event = cancel_event,
+        continue_final_message = run.continue_final_message,
+    )
+    load_task = None
+    flush_approval = False
+    try:
+        while True:
+            load_task = asyncio.ensure_future(asyncio.to_thread(next, skill_loads, _STEP_DONE))
+            # Same handshake as a gated tool card: early separate keepalive, then heartbeats while Ask waits.
+            timeout = _TOOL_APPROVAL_FLUSH_DELAY_S if flush_approval else TOOL_HEARTBEAT_INTERVAL_S
+            done, _pending = await asyncio.wait({load_task}, timeout = timeout)
+            while not done:
+                yield _SSE_KEEPALIVE
+                done, _pending = await asyncio.wait({load_task}, timeout = TOOL_HEARTBEAT_INTERVAL_S)
+            event = load_task.result()
+            load_task = None
+            if event is _STEP_DONE:
+                break
+            flush_approval = event.get("status") == "awaiting_approval"
+            yield _sse(event)
+    finally:
+        await _drain_step_task(load_task, cancel_event)
+        skill_loads.close()
     # The promotion allowlist is the selected catalog, never None: an unrestricted parse re-opens markerless tool-call
     # promotion.
     heal_names = (
@@ -1647,12 +1676,14 @@ async def stream_with_studio_tools(
         for call in calls:
             if cancel_event.is_set():
                 break
+            # Before the gate: an exhausted call is replayed too, and only the decision's replay is guaranteed to parse.
+            decision = controller.prepare_call(call)
             if not unlimited and remaining <= 0:
                 # Budget spent.
                 for card_line in _unrun_call_card(
                     tool_name = call["function"]["name"],
                     tool_call_id = call.get("card_id") or call.get("stream_id") or call["id"],
-                    arguments = call.get("arguments"),
+                    arguments = decision.tool_start_payload()["arguments"],
                     result = _TOOL_BUDGET_EXHAUSTED,
                     provenance = _unrun_provenance(call["function"]["name"], round_id),
                 ):
@@ -1660,13 +1691,7 @@ async def stream_with_studio_tools(
                 # The result below has to be replayed with its call: only the call that spent the last slot reaches
                 # assistant_tool_calls further down, so this one would arrive as an orphan role="tool" message and
                 # OpenAI, Anthropic and Gemini all reject that history instead of answering.
-                exhausted_call: dict[str, Any] = {
-                    "id": call["id"],
-                    "type": "function",
-                    # Copied: the normalized call also carries a parsed arguments dict that must not reach the
-                    # provider
-                    "function": dict(call["function"]),
-                }
+                exhausted_call = decision.as_assistant_tool_call()
                 exhausted_extra = call.get("extra_content")
                 if isinstance(exhausted_extra, dict) and exhausted_extra:
                     exhausted_call["extra_content"] = exhausted_extra
@@ -1680,9 +1705,8 @@ async def stream_with_studio_tools(
                     }
                 )
                 continue
-            decision = controller.prepare_call(call)
             # The frontend groups a round's reasoning by this id (codexLocalToolRoundId), so every tool card the loop
-            # emits has to carry it, not just the budget-exhausted one built by hand above.
+            # emits has to carry it, including the budget-exhausted card above.
             decision.provenance["round_id"] = round_id
             if not decision.should_execute:
                 completion = controller.record_noop(decision)

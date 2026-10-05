@@ -715,6 +715,175 @@ def test_local_inventory_prefers_active_cache_when_copies_are_equally_complete(t
     assert local_inventory._dedupe_local_models([previous, active]) == [active]
 
 
+def _path_model_row(tmp_path: Path, source: str):
+    path = tmp_path / "models" / "gpt-oss-20b-GGUF"
+    return model_common._local_model_info(
+        scan_path = path,
+        load_path = path,
+        source = source,
+        model_format = "gguf",
+        model_id = "unsloth/gpt-oss-20b-GGUF" if source == "lmstudio" else None,
+        size_bytes = 10,
+    )
+
+
+@pytest.mark.parametrize("reverse", [False, True])
+def test_local_inventory_dedupes_same_path_across_lmstudio_and_custom(tmp_path, reverse):
+    lmstudio = _path_model_row(tmp_path, "lmstudio")
+    custom = local_inventory._promote_to_custom_source(lmstudio)
+    alternate_path = str(Path(lmstudio.path).parent) + "/./" + Path(lmstudio.path).name
+    custom = custom.model_copy(
+        update = {
+            "path": alternate_path,
+            "load_id": alternate_path,
+            "id": alternate_path,
+        }
+    )
+    rows = [lmstudio, custom]
+    if reverse:
+        rows.reverse()
+
+    assert local_inventory._dedupe_local_models(rows) == [lmstudio]
+
+
+def _scanned_gguf_row(
+    path: Path,
+    source: str,
+    scan_root: Path | None = None,
+):
+    row = model_common._local_model_info(
+        scan_path = path,
+        load_path = path,
+        source = source,
+        model_format = "gguf",
+        size_bytes = 10,
+    )
+    if source == "custom":
+        row = local_inventory._promote_to_custom_source(row)
+        row._scan_root = str(scan_root)
+    return row
+
+
+def test_local_inventory_drops_custom_folder_overlapping_lmstudio(tmp_path):
+    lm_root = tmp_path / ".lmstudio" / "models"
+    model_dir = lm_root / "unsloth" / "gpt-oss-20b-GGUF"
+    model_dir.mkdir(parents = True)
+    (model_dir / "gpt-oss-20b-Q4_K_M.gguf").write_bytes(b"x" * 10)
+    lmstudio = _scanned_gguf_row(model_dir, "lmstudio")
+    custom = _scanned_gguf_row(model_dir, "custom", scan_root = tmp_path / ".lmstudio")
+
+    assert local_inventory._dedupe_local_models([custom, lmstudio]) == [lmstudio]
+
+
+def test_local_inventory_keeps_trainable_custom_row_over_lmstudio_copy(tmp_path):
+    lm_root = tmp_path / ".lmstudio" / "models"
+    model_dir = lm_root / "org" / "tiny-model"
+    model_dir.mkdir(parents = True)
+    (model_dir / "config.json").write_text("{}")
+    (model_dir / "model.safetensors").write_bytes(b"x" * 10)
+    rows = []
+    for source in ("lmstudio", "custom"):
+        row = model_common._local_model_info(
+            scan_path = model_dir,
+            load_path = model_dir,
+            source = source,
+            model_format = "safetensors",
+            size_bytes = 10,
+        )
+        if source == "custom":
+            row = local_inventory._promote_to_custom_source(row)
+            row._scan_root = str(lm_root)
+        rows.append(row)
+    assert rows[1].capabilities.can_train
+
+    assert local_inventory._dedupe_local_models(rows) == [rows[1]]
+
+
+def test_local_inventory_keeps_custom_symlink_alias_of_lmstudio_model(tmp_path):
+    model_dir = tmp_path / "lmstudio" / "gpt-oss-20b-GGUF"
+    model_dir.mkdir(parents = True)
+    (model_dir / "model.gguf").write_bytes(b"x" * 10)
+    scan_root = tmp_path / "custom"
+    scan_root.mkdir()
+    alias = scan_root / "alias"
+    try:
+        alias.symlink_to(model_dir, target_is_directory = True)
+    except OSError as error:
+        pytest.skip(f"symlink creation unavailable: {error}")
+    lmstudio = _scanned_gguf_row(model_dir, "lmstudio")
+    custom = _scanned_gguf_row(alias, "custom", scan_root = scan_root)
+
+    result = local_inventory._dedupe_local_models([lmstudio, custom])
+
+    assert {row.path for row in result} == {lmstudio.path, custom.path}
+
+
+def test_local_inventory_keeps_formats_separate_at_same_path(tmp_path):
+    path = tmp_path / "models" / "shared"
+    gguf = model_common._local_model_info(
+        scan_path = path,
+        load_path = path,
+        source = "lmstudio",
+        model_format = "gguf",
+        size_bytes = 10,
+    )
+    safetensors = model_common._local_model_info(
+        scan_path = path,
+        load_path = path,
+        source = "lmstudio",
+        model_format = "safetensors",
+        size_bytes = 20,
+    )
+
+    result = local_inventory._dedupe_local_models([gguf, safetensors])
+
+    assert {row.model_format for row in result} == {"gguf", "safetensors"}
+
+
+@pytest.mark.parametrize("reverse", [False, True])
+def test_local_inventory_dedupes_physical_file_aliases_across_sources(tmp_path, reverse):
+    original = tmp_path / "Model-Q4.gguf"
+    alias = tmp_path / "model-latest.gguf"
+    original.write_bytes(b"model")
+    alias.hardlink_to(original)
+    rows = [
+        model_common._local_model_info(
+            scan_path = path,
+            load_path = path,
+            source = source,
+            model_format = "gguf",
+            format_variant = variant,
+        )
+        for path, source, variant in [
+            (original, "lmstudio", "Q4"),
+            (alias, "custom", "latest"),
+        ]
+    ]
+    expected = rows[0]
+    assert original.samefile(alias)
+    if reverse:
+        rows.reverse()
+    assert local_inventory._dedupe_local_models(rows) == [expected]
+
+
+def test_local_inventory_keeps_distinct_case_sensitive_files(tmp_path):
+    paths = [tmp_path / "Model.gguf", tmp_path / "model.gguf"]
+    for path in paths:
+        path.write_bytes(b"model")
+    if paths[0].samefile(paths[1]):
+        pytest.skip(reason = "case-insensitive filesystem cannot hold both spellings")
+    rows = [
+        model_common._local_model_info(
+            scan_path = path,
+            load_path = path,
+            source = source,
+            model_format = "gguf",
+        )
+        for path, source in zip(paths, ["lmstudio", "custom"])
+    ]
+    assert len(local_inventory._dedupe_local_models(rows)) == 2
+
+
 def _custom_gguf_row(
     tmp_path: Path,
     *,

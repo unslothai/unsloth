@@ -47,3 +47,36 @@ def test_rope_backward_matches_reference(use_indices, grad_kind):
 
     torch.testing.assert_close(q, rq, atol = 1e-5, rtol = 1e-5)
     torch.testing.assert_close(x.grad, x_ref.grad, atol = 1e-4, rtol = 1e-4)
+
+
+@pytest.mark.parametrize("implementation", ["single", "indexed_qk", "slow"])
+def test_rope_backward_preserves_shared_dense_gradient(implementation):
+    from unsloth.kernels.rope_embedding import (
+        Fast_RoPE_Embedding,
+        Fast_RoPE_Embedding_QK,
+        Slow_RoPE_Embedding,
+    )
+
+    torch.manual_seed(1)
+    b, h, s, d = 2, 4, 16, 64
+    inv = 1.0 / (10000 ** (torch.arange(0, d, 2, device = "cuda").float() / d))
+    freqs = torch.outer(torch.arange(s, device = "cuda").float(), inv)
+    emb = torch.cat((freqs, freqs), -1)
+    cos, sin = emb.cos(), emb.sin()
+    x = torch.randn(b, h, s, d, device = "cuda", requires_grad = True)
+    z = torch.randn_like(x, requires_grad = True)
+
+    if implementation == "single":
+        q = Fast_RoPE_Embedding.apply(x.transpose(1, 2).contiguous(), cos, sin)
+        k = Fast_RoPE_Embedding.apply(z.transpose(1, 2).contiguous(), cos, sin)
+    elif implementation == "indexed_qk":
+        indices = torch.arange(s, device = "cuda").expand(b, s).contiguous()
+        q, k = Fast_RoPE_Embedding_QK.apply(x, z, cos, sin, indices)
+    else:
+        q = Slow_RoPE_Embedding.apply(x, cos[None, None], sin[None, None], None)
+        k = Slow_RoPE_Embedding.apply(z, cos[None, None], sin[None, None], None)
+
+    grad = torch.randn_like(q)
+    grad_before = grad.clone()
+    (q + k).backward(grad)
+    assert torch.equal(grad, grad_before)

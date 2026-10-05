@@ -122,6 +122,12 @@ export function buildResearchInferenceRequest(input: {
       input.reasoningEffort,
       input.reasoningEffortLevels,
     );
+  } else if (
+    input.reasoningStyle === "reasoning_effort" &&
+    input.external?.supportsReasoningOff
+  ) {
+    // Ollama thinks when no control arrives; gated as "none" is not in every ladder (gpt-5).
+    request.reasoningEffort = "none";
   }
   return request;
 }

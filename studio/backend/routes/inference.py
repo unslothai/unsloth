@@ -7,6 +7,7 @@ Inference API routes for model loading and text generation.
 
 import math
 import os
+import shutil
 import sys
 import time
 import uuid
@@ -100,7 +101,11 @@ from hub.services.models.ollama import (
 from core.inference.audio_errors import (
     AudioBackendUnsupportedError,
     AudioGenerationCancelledError,
+    AudioRuntimeError,
+    audio_runtime_http_error,
+    sanitize_runtime_detail,
 )
+from core.inference.audio_cpp_outputs import NO_STEMS
 from core.inference import context_refusal
 from core.inference.context_window import (
     estimate_message_tokens as _estimate_message_tokens,
@@ -3695,6 +3700,17 @@ from models.inference import (
     AudioGalleryFlagsPatch,
     AudioGalleryItem,
     AudioGalleryListResponse,
+    AudioInputRecord,
+    AudioInputTranscribeRequest,
+    AudioInputTranscript,
+    AudioRunRequest,
+    AudioRunResponse,
+    AudioVoice,
+    AudioVoiceCreate,
+    AudioVoiceListResponse,
+    AudioVoicePatch,
+    TranscribeSourceRequest,
+    TranscriptPatch,
     LoadResponse,
     LoadProgressResponse,
     UnloadResponse,
@@ -3944,7 +3960,6 @@ from core.inference.providers import (
 from core.inference.external_provider import (
     ExternalProviderClient,
     _is_openai_family_cloud,
-    caches_at_the_last_block,
 )
 from core.inference.external_tool_transport import OAICompatTransport
 from core.inference.sse_control_frames import (
@@ -3966,13 +3981,11 @@ import base64
 import zlib
 
 from utils.current_date_prompt_settings import (
-    CURRENT_DATE_PROMPT_LINE_RE,
     CURRENT_DATE_PROMPT_PREFIX,
-    CURRENT_DATE_UPDATE_NOTE_RE,
-    CURRENT_DATE_UPDATE_PREFIX,
+    PROBE_TOOLS,
     contains_current_date_prompt_line,
-    conversation_start_date,
     current_date_prompt_line,
+    template_system_turn,
     replace_current_date_prompt_lines,
 )
 
@@ -5572,6 +5585,17 @@ def _cancelable_nonstreaming_client() -> httpx.AsyncClient:
     )
 
 
+class _NonStreamingRequestCancelled(Exception):
+    """Internal signal for an expected non-streaming cancel/disconnect."""
+
+    __slots__ = ()
+
+
+def _raise_if_nonstreaming_request_cancelled(cancel_event) -> None:
+    if cancel_event is not None and cancel_event.is_set():
+        raise _NonStreamingRequestCancelled("Request cancelled.")
+
+
 async def _await_cancel_or_disconnect_then_close_client(
     *, cancel_event, request: Optional[Request], client: httpx.AsyncClient
 ) -> None:
@@ -5865,9 +5889,10 @@ def _skill_tool_tip(*, can_create: bool, compact: bool = False) -> str:
     )
     return (
         "Enabled Agent Skills are listed below. Use their descriptions to select one when "
-        "helpful, then call read_skill before following its instructions. If the latest user "
-        "message mentions an enabled skill as @skill-name, call read_skill for that named skill "
-        "before answering."
+        "helpful, then call read_skill before following its instructions unless the complete "
+        "SKILL.md is already in context. Studio loads explicit @skill-name mentions before "
+        "generation when permitted; do not read an already loaded manifest again or claim a "
+        "failed/denied load succeeded."
         + create_tip
         + " Skill allowed-tools metadata never overrides Unsloth tool permissions.\n"
         + catalog
@@ -6491,123 +6516,98 @@ def _wants_current_date(request: Any) -> bool:
     return not _request_has_api_key(request)
 
 
-def _current_date_parts(request: Any, thread_id: Any) -> tuple[str, str]:
-    """(system line, user-turn note); a thread keeps its start date so its cached prefix survives."""
-    date_line = current_date_prompt_line(request = request)
-    if not date_line or not thread_id or request is None or not _wants_current_date(request):
-        return date_line, ""
-    today = CURRENT_DATE_PROMPT_LINE_RE.fullmatch(date_line)
-    started = conversation_start_date(thread_id, request) if today else None
-    if started is None:
-        return date_line, ""
-    today_iso = date_line[len(CURRENT_DATE_PROMPT_PREFIX) : -1]
-    # a browser clock running ahead can stamp a future creation day; never state a later "start".
-    if started.isoformat() >= today_iso:
-        return date_line, ""
-    return (
-        f"{CURRENT_DATE_PROMPT_PREFIX}{started.isoformat()}.",
-        f"{CURRENT_DATE_UPDATE_PREFIX}{today_iso}]",
-    )
-
-
 def _date_gate_blocks(request: Any, include_api_key: bool) -> bool:
     if request is not None and not _wants_current_date(request):
         return not include_api_key or _request_is_internal_workflow(request)
     return False
 
 
-def _is_folded_tool_json(text: Any) -> bool:
-    if not isinstance(text, str) or not text.lstrip().startswith("{"):
-        return False
+def _local_chat_template(image: bool = False, tools: bool = False) -> Optional[str]:
+    """The template the loaded local model renders this chat with, if any."""
     try:
-        parsed = json.loads(text)
-    except ValueError:
-        return False
-    return isinstance(parsed, dict) and "tool_response" in parsed
-
-
-def _is_folded_tool_result(content: Any) -> bool:
-    # only a turn that is ALL folded result: a follow-up coalesced onto one is the user's text.
-    if isinstance(content, list):
-        texts = [
-            p.get("text")
-            for p in content
-            if isinstance(p, dict) and isinstance(p.get("text"), str) and p["text"].strip()
-        ]
-        return bool(texts) and all(_is_folded_tool_json(t) for t in texts)
-    return _is_folded_tool_json(content)
-
-
-def _append_current_date_note(
-    messages: list[dict],
-    request: Any = None,
-    *,
-    include_api_key: bool = False,
-    thread_id: Any = None,
-    note: str | None = None,
-    system_prompt: str | None = None,
-    oldest: bool = False,
-) -> list[dict]:
-    """Lead the newest user turn with the date-change note; earlier turns keep their own bytes."""
-    if note is None:
-        if _date_gate_blocks(request, include_api_key):
-            return messages
-        date_line, note = _current_date_parts(request, thread_id)
-        if system_prompt == "" and CURRENT_DATE_PROMPT_LINE_RE.fullmatch(date_line):
-            # the first turn stands in for the system line, so the cached prefix survives.
-            messages = _append_current_date_note(messages, note = note)
-            note = f"{CURRENT_DATE_UPDATE_PREFIX}{date_line[len(CURRENT_DATE_PROMPT_PREFIX) : -1]}]"
-            oldest = True
-    if not note:
-        return messages
-    for index in range(len(messages)) if oldest else range(len(messages) - 1, -1, -1):
-        msg = messages[index]
-        if not isinstance(msg, dict) or msg.get("role") != "user":
-            continue
-        content = msg.get("content")
-        if _is_folded_tool_result(content):
-            continue
-        if isinstance(content, str):
-            if content.startswith(note) or (oldest and CURRENT_DATE_UPDATE_NOTE_RE.match(content)):
-                return messages
-            new_content: Any = f"{note}\n\n{content}"
-            has_text = bool(content.strip())
-        elif isinstance(content, list):
-            if content and all(
-                isinstance(p, dict) and p.get("type") == "tool_result" for p in content
-            ):
-                continue
-            first = next(
-                (
-                    i
-                    for i, p in enumerate(content)
-                    if isinstance(p, dict) and isinstance(p.get("text"), str) and p["text"].strip()
-                ),
-                None,
-            )
-            has_text = first is not None
-            if has_text and (
-                content[first]["text"].startswith(note)
-                or (oldest and CURRENT_DATE_UPDATE_NOTE_RE.match(content[first]["text"]))
-            ):
-                return messages
-            new_content = list(content)
-            if has_text:
-                new_content[first] = {
-                    **content[first],
-                    "text": f"{note}\n\n{content[first]['text']}",
-                }
+        llama = get_llama_cpp_backend()
+        if llama.is_loaded:
+            template = llama.chat_template_override or llama.chat_template
         else:
-            continue
-        # a media-only turn falls back to "transcribe" / "describe" defaults the note would replace.
-        if not has_text:
-            if oldest:
-                continue
-            return messages
-        copied = list(messages)
-        copied[index] = {**msg, "content": new_content}
-        return copied
-    return messages
+            from core.inference.orchestrator import peek_inference_backend
+
+            backend = peek_inference_backend()
+            info = (backend.models.get(backend.active_model_name) or {}) if backend else {}
+            template_info = info.get("chat_template_info") or {}
+            # an image or clip renders through the processor's template, as generation picks it.
+            template = template_info.get("processor_template") if image else None
+            if template is None:
+                template = info.get("chat_template_override_requested")
+                if (
+                    not isinstance(template, str)
+                    or not template.strip()
+                    or info.get("chat_template_override_reason")
+                ):
+                    # a text render installs the mapped template at generate time, when there is one.
+                    mapped = None if image else template_info.get("mapped_template")
+                    template = mapped or template_info.get("template")
+        from core.inference.chat_template_helpers import _selected_template_strings_from_value
+
+        # a tool request renders a named template's tool_use body; a processor never picks it.
+        selected = _selected_template_strings_from_value(
+            template, PROBE_TOOLS if tools else None, prefer_tool_use = not image
+        )
+    except Exception:
+        return None
+    return selected[0] if selected else None
+
+
+def _local_managed_engine() -> bool:
+    try:
+        if get_llama_cpp_backend().is_loaded:
+            return False
+        from core.inference.orchestrator import peek_inference_backend
+
+        backend = peek_inference_backend()
+        info = (backend.models.get(backend.active_model_name) or {}) if backend else {}
+    except Exception:
+        return False
+    return info.get("engine") in ("vllm", "sglang")
+
+
+# llama-server flags in the user's pass-through args that choose the template it renders, or how.
+_TEMPLATE_EXTRA_FLAGS = frozenset(
+    ("--chat-template", "--chat-template-file", "--chat-template-kwargs", "--no-jinja")
+)
+
+
+def _local_extra_args_pick_the_template() -> bool:
+    try:
+        llama = get_llama_cpp_backend()
+        args = (getattr(llama, "extra_args", None) or []) if llama.is_loaded else []
+    except Exception:
+        return False
+    return any(str(arg).split("=", 1)[0] in _TEMPLATE_EXTRA_FLAGS for arg in args)
+
+
+def _local_template_system_turn(
+    today: Any,
+    image: bool = False,
+    tools: bool = False,
+    controls: tuple = (),
+) -> tuple[bool, Optional[str]]:
+    if _local_managed_engine() or _local_extra_args_pick_the_template():
+        # the server renders a template Studio never sees, so nothing says a system turn is safe.
+        return False, None
+    return template_system_turn(_local_chat_template(image, tools), today, tools, controls)
+
+
+def _template_controls(payload: Any) -> tuple:
+    """The reasoning controls this request's chat template is rendered with."""
+    names = ("enable_thinking", "reasoning_effort", "preserve_thinking")
+    values = [getattr(payload, name, None) for name in names]
+    try:
+        llama = get_llama_cpp_backend()
+        if llama.is_loaded:
+            return tuple(sorted((llama._request_reasoning_kwargs(*values) or {}).items()))
+    except Exception:
+        pass
+    return tuple((name, value) for name, value in zip(names, values) if value is not None)
 
 
 def _apply_current_date_prompt(
@@ -6615,25 +6615,47 @@ def _apply_current_date_prompt(
     request: Any = None,
     *,
     include_api_key: bool = False,
-    thread_id: Any = None,
+    template_default: bool = True,
+    image: bool = False,
+    tools: bool = False,
+    controls: tuple = (),
 ) -> str:
     """Prefix the user's system prompt with the date when the setting is on.
 
     Kept ahead of the user's own text so a system prompt that ends in an instruction still reads
     as the last word to the model.
     """
-    # a system turn would displace the chat template's default one; the user-turn note carries it.
-    if not system_prompt and (request is None or _wants_current_date(request)):
-        return system_prompt
     if _date_gate_blocks(request, include_api_key):
         return system_prompt
-    date_line = _current_date_parts(request, thread_id)[0]
+    date_line = current_date_prompt_line(request = request)
     if not date_line:
         return system_prompt
     refreshed_prompt, stated, _ = _refresh_stated_date(system_prompt, date_line)
     if stated:
         return refreshed_prompt
+    if not system_prompt:
+        from datetime import date
+
+        today = date.fromisoformat(date_line[len(CURRENT_DATE_PROMPT_PREFIX) : -1])
+        takes_turn, default = _local_template_system_turn(today, image, tools, controls)
+        if not takes_turn or (template_default and default is None):
+            # no system turn renders here as the template's own would, and the date never goes into
+            # the user's own turns.
+            return ""
+        if template_default:
+            # a system turn displaces the chat template's default one, so carry that default along,
+            # rendered for the user's day rather than the server's.
+            system_prompt = default
     return f"{date_line}\n\n{system_prompt.lstrip()}" if system_prompt else date_line
+
+
+# The backends' own instruction for an audio turn that brings no system prompt, stated here so the
+# date goes ahead of it rather than replacing it.
+_AUDIO_INPUT_SYSTEM_PROMPT = "You are an assistant that transcribes speech accurately."
+
+
+def _audio_input_system_prompt(system_prompt: str, request: Any) -> str:
+    return _apply_current_date_prompt(system_prompt or _AUDIO_INPUT_SYSTEM_PROMPT, request)
 
 
 # Ollama applies the Modelfile SYSTEM only when `req.Messages[0].Role != "system"` (its
@@ -6648,7 +6670,6 @@ def _prepend_current_date_to_messages(
     *,
     include_api_key: bool = False,
     provider_type: str | None = None,
-    thread_id: Any = None,
 ) -> list[dict]:
     """Apply the date to an already-built message list for a provider Studio proxies to.
 
@@ -6659,10 +6680,9 @@ def _prepend_current_date_to_messages(
     """
     if _date_gate_blocks(request, include_api_key):
         return messages
-    date_line, note = _current_date_parts(request, thread_id)
+    date_line = current_date_prompt_line(request = request)
     if not date_line:
         return messages
-    messages = _append_current_date_note(messages, note = note)
     copied = [dict(msg) for msg in messages]
     stated = False
     refreshed = False
@@ -7891,18 +7911,17 @@ def _owner_chosen_launch(
     config_identifier = None,
     variant = None,
 ):
-    """Path args and custom configs the owner already chose for this model: its saved override
+    """Path args the owner already chose for this model: its saved override
     (written only through owner routes) and the resident same-model load (which passed this check
     or was the owner's). Replaying these is not a new path, so auto-switch loads and the UI resending
     an inherited or echoed setting keep working."""
-    from core.inference.llama_custom_config import parse_config_source
     from core.inference.llama_server_args import owner_only_path_args
     from utils.openai_auto_switch_settings import resolve_override_for_load
 
     sources = []
     if identifier:
         _, override = resolve_override_for_load(identifier, config_identifier, variant)
-        sources.append((override.get("llama_extra_args"), override.get("llama_cpp_config")))
+        sources.append(override.get("llama_extra_args"))
         intent = getattr(get_llama_cpp_backend(), "last_load_intent", None)
         if (
             intent is not None
@@ -7919,16 +7938,11 @@ def _owner_chosen_launch(
                 or (getattr(intent, "hf_variant", None) or "").casefold() == variant.casefold()
             )
         ):
-            sources.append(
-                (getattr(intent, "extra_args", None), getattr(intent, "llama_cpp_config", None))
-            )
+            sources.append(getattr(intent, "extra_args", None))
     pairs: set[tuple[str, str]] = set()
-    configs = []
-    for args, source in sources:
+    for args in sources:
         pairs.update(owner_only_path_args(args))
-        if source is not None:
-            configs.append(parse_config_source(source))
-    return pairs, configs
+    return pairs
 
 
 def _snapshot_repo_or_self(model_id, require_cache = False):
@@ -7960,7 +7974,6 @@ def _refuse_managed_custom_projector(
     identifier: Optional[str] = None,
     config_identifier: Optional[str] = None,
     variant: Optional[str] = None,
-    sent_config = None,
 ) -> None:
     """A pass-through path (projector, drafter, adapter, template, grammar...) skips account model
     access, so only the owner may name one. Values the owner already chose for this model pass."""
@@ -7971,11 +7984,7 @@ def _refuse_managed_custom_projector(
     found = owner_only_path_args(extra_args)
     if not found:
         return
-    owner_pairs, owner_configs = _owner_chosen_launch(identifier, config_identifier, variant)
-    if sent_config is not None:
-        from core.inference.llama_custom_config import parse_config_source
-        if parse_config_source(sent_config) in owner_configs:
-            return
+    owner_pairs = _owner_chosen_launch(identifier, config_identifier, variant)
     flags = list(dict.fromkeys(flag for flag, value in found if (flag, value) not in owner_pairs))
     if {"--mmproj", "-mm"} & set(flags):
         raise HTTPException(
@@ -8235,6 +8244,15 @@ def _llama_runtime_fields(llama_backend: LlamaCppBackend) -> dict:
         # llama-server never serves an audio GGUF; those load through the audio worker.
         audio_family = None,
         audio_options = None,
+        audio_workflows = None,
+        audio_reference_text = None,
+        audio_required_inputs = None,
+        audio_options_by_workflow = None,
+        audio_workflow_tasks = None,
+        audio_server_task = None,
+        audio_convert = None,
+        audio_convert_route = None,
+        audio_music = None,
         # Older/custom backend doubles predate this additive runtime field.
         preserve_thinking_default = bool(getattr(llama_backend, "preserve_thinking_default", False)),
         speculative_type = llama_backend.requested_spec_mode,
@@ -8256,8 +8274,6 @@ def _llama_runtime_fields(llama_backend: LlamaCppBackend) -> dict:
         # running with no extras would come back carrying the arguments of the load
         # that just failed. None stays for "nothing was ever set", which is the only
         # case where inheriting is the right answer.
-        requested_llama_cpp_config = getattr(llama_backend, "requested_llama_cpp_config", None),
-        llama_cpp_config_summary = getattr(llama_backend, "llama_cpp_config_summary", None),
         requested_llama_extra_args = (
             None
             if llama_backend.is_diffusion
@@ -8319,15 +8335,9 @@ def _gguf_load_response(
         is_lora = False,
         is_gguf = True,
         is_local_model = is_local_model,
-        # A custom INI's sampling seeds the chat controls like a model recommendation.
-        inference = {
-            **load_inference_config(
-                inference_identifier or llama_backend.model_identifier or model
-            ),
-            **(getattr(llama_backend, "llama_cpp_config_summary", None) or {}).get(
-                "request_defaults", {}
-            ),
-        },
+        inference = load_inference_config(
+            inference_identifier or llama_backend.model_identifier or model
+        ),
         # Advisory, and None on nearly every load. Recorded by load_model when the
         # weights outgrow fast memory, so the client can say why generation is slow.
         # getattr: older/custom backend doubles predate this additive field.
@@ -15633,8 +15643,6 @@ async def _prepare_load_placement(
     request: LoadRequest | ValidateModelRequest,
     extra_args: Optional[list[str]],
 ) -> _LoadPlacement:
-    if _custom_llama_config(request):
-        return _LoadPlacement(None, None, False, _classify_diffusion_gguf(config))
     requested = request.gpu_ids or None
     if not config.is_gguf:
         return _LoadPlacement(requested, None, False, False)
@@ -16099,12 +16107,6 @@ def _guard_chat_load_against_training(
             )
         return
 
-    if _custom_llama_config(request):
-        raise HTTPException(
-            status_code = 409,
-            detail = "Custom llama.cpp placement cannot be verified beside active training. Stop training before loading this configuration.",
-        )
-
     from core.inference.llama_cpp import _diffusion_manual_ngl, _scale_diffusion_required_gb
 
     is_gguf = bool(getattr(config, "is_gguf", False))
@@ -16328,76 +16330,6 @@ def _guard_chat_load_against_training(
     raise HTTPException(status_code = 409, detail = detail)
 
 
-def _custom_llama_config(request) -> bool:
-    source = getattr(request, "llama_cpp_config", None)
-    return isinstance(source, dict) and source.get("mode") == "custom"
-
-
-def _resolve_llama_cpp_config(
-    request,
-    config = None,
-    model_identifier = None,
-):
-    """Request's own source, else this model row's saved override, else the resident same-model load's."""
-    from core.inference.llama_custom_config import parse_config_source
-    from utils.openai_auto_switch_settings import resolve_override_for_load
-
-    source = getattr(request, "llama_cpp_config", None)
-    identifier = model_identifier or request.model_path
-    variant = getattr(request, "gguf_variant", None) or getattr(config, "gguf_variant", None)
-    if source is None:
-        _, override = resolve_override_for_load(
-            identifier, getattr(config, "identifier", None), variant
-        )
-        source = override.get("llama_cpp_config")
-    if source is None:
-        resident = get_llama_cpp_backend()
-        intent = getattr(resident, "last_load_intent", None)
-        if (
-            intent is not None
-            and _same_loaded_identifier(getattr(intent, "model_identifier", None), identifier)
-            and (getattr(intent, "hf_variant", None) or "").casefold() == (variant or "").casefold()
-        ):
-            source = getattr(intent, "llama_cpp_config", None)
-    if source is None:
-        return request
-    source = parse_config_source(source)
-    return request.model_copy(update = {"llama_cpp_config": source.to_wire()})
-
-
-async def _preflight_custom_llama_config(
-    request,
-    config,
-    *,
-    caller_sent_custom = False,
-):
-    """Compile a custom config before any backend or GPU owner can be evicted. A config the caller
-    sent itself (not the owner's saved override) is held to the same path rules as pass-through args."""
-    if not _custom_llama_config(request):
-        return None
-    if not config.is_gguf or _classify_diffusion_gguf(config) is True:
-        raise HTTPException(
-            status_code = 400,
-            detail = "Custom llama.cpp configuration needs a GGUF chat model.",
-        )
-    intent = GgufLoadIntent(
-        model_identifier = config.identifier, llama_cpp_config = request.llama_cpp_config
-    )
-    try:
-        compiled = await asyncio.to_thread(get_llama_cpp_backend().prepare_custom_config, intent)
-    except ValueError as exc:
-        raise HTTPException(status_code = 400, detail = redact_native_paths(str(exc))) from exc
-    if caller_sent_custom:
-        _refuse_managed_custom_projector(
-            list(compiled.argv),
-            request.model_path,
-            getattr(request, "_override_alias_id", None) or config.identifier,
-            getattr(request, "gguf_variant", None) or getattr(config, "gguf_variant", None),
-            sent_config = request.llama_cpp_config,
-        )
-    return compiled
-
-
 def _resolve_inherited_extra_args(
     request,
     config: ModelConfig,
@@ -16408,8 +16340,6 @@ def _resolve_inherited_extra_args(
     """Effective pass-through extras for a GGUF request that omitted the field:
     the previous same-model load's extras, shadow-stripped, so a settings-Apply
     reload (which does not round-trip the extras field) keeps them (#5401)."""
-    if _custom_llama_config(request):
-        return []
     if getattr(request, "llama_extra_args", None) is not None:
         return extra_llama_args
     if not getattr(config, "is_gguf", False):
@@ -17954,27 +17884,17 @@ async def _load_model_impl(
     gguf_load_stack = ExitStack()
     token_rejections = gguf_load_stack.enter_context(collecting_hub_token_rejections())
     try:
-        requested_llama_cpp_config = request.llama_cpp_config
-
         # Validate user pass-through args up front so a managed-flag collision
-        # returns 400 before any model work. Custom mode launches without them.
-        def _validated_extra_args(req):
-            if _custom_llama_config(req):
-                return []
-            try:
-                return validate_extra_args(req.llama_extra_args)
-            except ValueError as exc:
-                # Keep the curated validation message (names the flag); just strip paths.
-                logger.warning("inference.validate_extra_args_failed: %s", exc)
-                raise HTTPException(
-                    status_code = 400,
-                    detail = redact_native_paths(str(exc)),
-                )
-
-        extra_llama_args = _validated_extra_args(request)
-        request = _resolve_llama_cpp_config(request)
-        if _custom_llama_config(request):
-            extra_llama_args = []
+        # returns 400 before any model work.
+        try:
+            extra_llama_args = validate_extra_args(request.llama_extra_args)
+        except ValueError as exc:
+            # Keep the curated validation message (names the flag); just strip paths.
+            logger.warning("inference.validate_extra_args_failed: %s", exc)
+            raise HTTPException(
+                status_code = 400,
+                detail = redact_native_paths(str(exc)),
+            )
         # Re-narrow []-from-None back to None so the inheritance path below can
         # tell "caller omitted" from "caller explicit []".
         extra_llama_args: Optional[list[str]] = (
@@ -18166,12 +18086,7 @@ async def _load_model_impl(
             )
 
         is_direct_gguf_request = model_identifier.lower().endswith(".gguf")
-        if (
-            llama_backend.is_loaded
-            and (request.gguf_variant or is_direct_gguf_request)
-            and getattr(request, "llama_cpp_config", None) is None
-            and getattr(llama_backend, "requested_llama_cpp_config", None) is None
-        ):
+        if llama_backend.is_loaded and (request.gguf_variant or is_direct_gguf_request):
             reused = _reuse_loaded_gguf(
                 _active_gguf_intent(
                     request,
@@ -18189,9 +18104,7 @@ async def _load_model_impl(
                 if not llama_backend.holds_no_vram:
                     await asyncio.to_thread(acquire_for_request, CHAT)
                 return reused
-        if not (request.gguf_variant or is_direct_gguf_request) and not _custom_llama_config(
-            request
-        ):
+        if not (request.gguf_variant or is_direct_gguf_request):
             _inherit_resident_load_in_4bit(backend, request, model_identifier)
             if (
                 _same_loaded_identifier(backend.active_model_name, model_identifier)
@@ -18317,22 +18230,6 @@ async def _load_model_impl(
                 detail = f"Invalid model identifier: {model_log_label}",
             )
         await asyncio.to_thread(_require_resolved_base_access, config)
-
-        request = _resolve_llama_cpp_config(
-            request.model_copy(update = {"llama_cpp_config": requested_llama_cpp_config}),
-            config,
-            public_model_identifier,
-        )
-        extra_llama_args = _validated_extra_args(request)
-        custom_compiled = await _preflight_custom_llama_config(
-            request,
-            config,
-            caller_sent_custom = isinstance(requested_llama_cpp_config, dict)
-            and requested_llama_cpp_config.get("mode") == "custom",
-        )
-        if custom_compiled is not None:
-            _n_parallel = custom_compiled.n_parallel or _n_parallel
-            effective_chat_template_override = None
 
         # Resolve inherited extras once before command-dependent preflights.
         extra_llama_args = _resolve_inherited_extra_args(
@@ -18584,8 +18481,6 @@ async def _load_model_impl(
                 request.speculative_type,
             )
         )
-        if custom_compiled is not None:
-            chat_load_needs_gpu = not custom_compiled.cpu_only
         # Ahead of the arbiter: acquire_for evicts a resident Images/Video pipeline and the
         # confirmation below cancels the running generations, both before load_model's own
         # copy of this check runs. A header-sized read spares them. Fails open into that copy.
@@ -18800,18 +18695,13 @@ async def _load_model_impl(
             # loading; the response reports the backend's actual tensor_parallel
             # state so the UI toggle reflects the fallback.
             try:
-                if custom_compiled is not None:
-                    success = await _run_gguf_load_attempt(
-                        llama_backend, load_intent, load_cancel_event
-                    )
-                else:
-                    success = await load_with_tensor_fallback(
-                        _attempt_gguf_load,
-                        requested_tensor = request.tensor_parallel,
-                        extra_args = extra_llama_args,
-                        label = config.identifier,
-                        cancelled = lambda: _gguf_load_cancelled(llama_backend, load_cancel_event),
-                    )
+                success = await load_with_tensor_fallback(
+                    _attempt_gguf_load,
+                    requested_tensor = request.tensor_parallel,
+                    extra_args = extra_llama_args,
+                    label = config.identifier,
+                    cancelled = lambda: _gguf_load_cancelled(llama_backend, load_cancel_event),
+                )
             except Exception:
                 # A GGUF load can raise before tearing down the old llama-server (e.g. an
                 # update-in-progress guard fires before _kill_process), leaving the prior
@@ -19146,6 +19036,15 @@ async def _load_model_impl(
             has_video_input = _model_info.get("has_video_input", False),
             audio_family = _model_info.get("audio_family"),
             audio_options = _model_info.get("audio_options"),
+            audio_workflows = _model_info.get("audio_workflows"),
+            audio_reference_text = _model_info.get("audio_reference_text"),
+            audio_options_by_workflow = _model_info.get("audio_options_by_workflow"),
+            audio_workflow_tasks = _model_info.get("audio_workflow_tasks"),
+            audio_server_task = _model_info.get("audio_server_task"),
+            audio_convert = _model_info.get("audio_convert"),
+            audio_convert_route = _model_info.get("audio_convert_route"),
+            audio_required_inputs = _model_info.get("audio_required_inputs"),
+            audio_music = _model_info.get("audio_music"),
             is_mlx = bool(_model_info.get("is_mlx", False)),
             mlx_kv_quant = _model_info.get("mlx_kv_quant"),
             mlx_kv_quant_requested = _model_info.get("mlx_kv_quant_requested"),
@@ -19488,14 +19387,6 @@ async def validate_model(
             _reject_unsupported_managed_kind(request, config)
             await _managed_engine_options(request, config, request.hf_token)
 
-        caller_sent_custom = _custom_llama_config(request)
-        request = _resolve_llama_cpp_config(
-            request, config, _public_model_identifier(request.model_path, model_identifier)
-        )
-        custom_compiled = await _preflight_custom_llama_config(
-            request, config, caller_sent_custom = caller_sent_custom
-        )
-
         # The caller's own list when it sent one, or the resolver hands back this
         # fourth argument unchanged and a --ctx-size the load is about to use would
         # be missing from the estimate that approves it.
@@ -19802,9 +19693,6 @@ async def validate_model(
         return restore_inventory_handles(
             ValidateModelResponse(
                 valid = True,
-                llama_cpp_config_summary = custom_compiled.summary()
-                if custom_compiled is not None
-                else None,
                 message = " ".join(
                     ["Model identifier is valid."] + _hub_access_warnings(token_rejections)
                 ),
@@ -20507,9 +20395,6 @@ async def estimate_memory(
         strip_split_mode_only,
     )
 
-    request = _resolve_llama_cpp_config(request)
-    if _custom_llama_config(request):
-        return EstimateMemoryResponse(available = False, reason = "unsizable")
     # Sizing reads the files those flags name, so a path the load would refuse
     # is not sized either (the panel shows "unsizable", not an error).
     try:
@@ -21825,6 +21710,15 @@ async def _slot_status(current_subject: str):
             has_video_input = has_video_input,
             audio_family = model_info.get("audio_family"),
             audio_options = model_info.get("audio_options"),
+            audio_workflows = model_info.get("audio_workflows"),
+            audio_options_by_workflow = model_info.get("audio_options_by_workflow"),
+            audio_workflow_tasks = model_info.get("audio_workflow_tasks"),
+            audio_server_task = model_info.get("audio_server_task"),
+            audio_convert = model_info.get("audio_convert"),
+            audio_convert_route = model_info.get("audio_convert_route"),
+            audio_reference_text = model_info.get("audio_reference_text"),
+            audio_required_inputs = model_info.get("audio_required_inputs"),
+            audio_music = model_info.get("audio_music"),
             gguf_variant = model_info.get("gguf_variant"),
             is_mlx = bool(model_info.get("is_mlx", False)),
             mlx_kv_quant = model_info.get("mlx_kv_quant"),
@@ -21974,6 +21868,120 @@ def _audio_cpp_music_request_problem(
         return "MiniMax Music 3 needs lyrics."
     if family == "yue2" and not str(description or "").strip():
         return "YuE2 needs a style description."
+    if family == "heartmula":
+        if not str(lyrics or "").strip() or not str(description or "").strip():
+            return "HeartMuLa needs lyrics and a description of the style."
+    return None
+
+
+def _audio_model_label(model_name: Optional[str]) -> str:
+    """``audio-cpp/audio.cpp-gguf/Maya1-GGUF`` -> ``Maya1``, for a sentence naming the model."""
+    label = str(model_name or "").rstrip("/").rsplit("/", 1)[-1]
+    label = re.sub(r"[-_.]gguf$", "", label, flags = re.IGNORECASE)
+    return label or "This model"
+
+
+def _audio_request_problem(
+    model_info: dict,
+    model_name: Optional[str],
+    audio_type: Optional[str],
+    payload: ChatCompletionRequest,
+    run_inputs: Optional[dict],
+) -> Optional[str]:
+    """Why the loaded model cannot serve this request, in words for the user; else None."""
+    workflows = model_info.get("audio_workflows")
+    label = _audio_model_label(model_name)
+    inputs = (run_inputs or {}).get("audio_inputs") or {}
+    if (run_inputs or {}).get("workflow") == "edit":
+        from core.inference import audio_edit
+
+        # The llama.cpp direct path reports no workflows.
+        if not workflows or "edit" not in workflows or not model_info.get("audio_edit"):
+            return "Load a model that can edit speech."
+        if not inputs.get("source"):
+            return "Add a recording to edit."
+        return audio_edit.request_problem(
+            model_info.get("audio_edit"),
+            run_inputs.get("edit"),
+            str(run_inputs.get("text") or ""),
+            run_inputs.get("reference_text"),
+            label,
+        )
+    if run_inputs and run_inputs.get("workflow") == "music":
+        # The model may have changed since the route checked the mode.
+        if not model_info.get("audio_music"):
+            return _audio_music_unavailable(label)
+        return None
+    converting = bool(run_inputs) and run_inputs.get("workflow") == "convert"
+    cloning = (
+        bool(run_inputs)
+        and not converting
+        and (run_inputs.get("workflow") == "clone" or bool(inputs))
+    )
+    if converting:
+        problem = _audio_convert_problem(model_info, label, run_inputs)
+        if problem:
+            return problem
+    elif cloning:
+        if not workflows or "clone" not in workflows:
+            return "Load a model that can clone a voice."
+        if not inputs.get("reference"):
+            return "Add a reference clip to clone."
+        rules = model_info.get("audio_clone") or {}
+        if inputs.get("emotion") and not rules.get("emotion_audio"):
+            return f"{label} does not take an emotion clip."
+        if (
+            rules.get("reference_text") == "required"
+            and not str((run_inputs or {}).get("reference_text") or "").strip()
+        ):
+            from core.inference.audio_cpp_models import option_matches
+            if not option_matches(rules.get("reference_text_waived") or [], payload.audio_options):
+                return "Type what's said in the reference clip."
+    elif (
+        workflows is not None
+        and audio_type == "audiocpp_tts"
+        and "speak" not in workflows
+        and "clone" in workflows
+    ):
+        return f"{label} speaks in a voice cloned from a recording. Open Clone and add one."
+    elif (
+        workflows is not None
+        and audio_type == "audiocpp_tts"
+        and "speak" not in workflows
+        and "convert" in workflows
+    ):
+        return f"{label} converts recordings. Open Convert and add one."
+    if (
+        "instruct" in (model_info.get("audio_required_inputs") or [])
+        and not str(payload.audio_instructions or "").strip()
+    ):
+        return f"{label} needs a voice description."
+    return None
+
+
+def _audio_convert_problem(model_info: dict, label: str, run_inputs: dict) -> Optional[str]:
+    caps = model_info.get("audio_convert")
+    if "convert" not in (model_info.get("audio_workflows") or []) or not caps:
+        return "Load a model that can convert a voice."
+    given = run_inputs.get("convert_inputs") or ()
+    if "source" not in given:
+        return "Add the recording to convert."
+    builtin = caps.get("target") == "builtin"
+    if builtin and "target" in given:
+        return f"{label} converts to its built-in voices; pick one under Built-in."
+    if not builtin and "target" not in given:
+        return "Add the target voice."
+    params = run_inputs.get("convert") or {}
+    mode = params.get("mode") or "speech"
+    if mode not in (caps.get("modes") or []):
+        return f"{label} does not convert {mode}."
+    if (
+        caps.get("style")
+        and params.get("style") == "target"
+        and mode == "speech"
+        and not str(params.get("source_text") or "").strip()
+    ):
+        return "Type what's said in the recording, or press Transcribe."
     return None
 
 
@@ -21985,10 +21993,13 @@ async def _generate_tts_wav(
     *,
     speech_api_default_max_tokens: bool = False,
     requested_model: str = _RELOAD_ONLY_MODEL,
+    run_inputs: Optional[dict] = None,
     stats_holder: Optional[dict] = None,
 ) -> tuple[bytes, int, str, Optional[str]]:
-    """Shared core of /audio/generate and /audio/speech. Returns
-    (wav_bytes, sample_rate, model_name, audio_type)."""
+    """Shared core of /audio/generate, /audio/speech and /audio/run. Returns
+    (wav_bytes, sample_rate, model_name, audio_type). ``run_inputs`` is /audio/run's ``workflow``,
+    ``audio_inputs`` (role -> server-local WAV path), ``reference_text``, ``speed`` and ``convert``;
+    a conversion fills ``audio_inputs`` via ``prepare_audio_inputs(model_info)``."""
     # A named target must be budgeted against its own context after preflight.
     if requested_model == _RELOAD_ONLY_MODEL:
         _raise_if_prompt_leaves_no_speech_budget(text)
@@ -22021,6 +22032,7 @@ async def _generate_tts_wav(
 
     # Pick backend - both return (wav_bytes, sample_rate)
     audio_family = None
+    model_info: dict = {}
     llama_backend = get_llama_cpp_backend()
     # GGUF TTS goes straight to llama-server /completion, holding a slot with no
     # admission lease, so only the direct counter can show it in the slot readout.
@@ -22080,17 +22092,47 @@ async def _generate_tts_wav(
             language = payload.audio_language,
             seed = payload.seed,
             **({"audio_options": payload.audio_options} if payload.audio_options else {}),
+            **{
+                key: value
+                for key, value in (run_inputs or {}).items()
+                if key
+                in (
+                    "workflow",
+                    "audio_inputs",
+                    "reference_text",
+                    "speed",
+                    "convert",
+                    "edit",
+                    "music",
+                    "output_dir",
+                )
+                and value is not None
+            },
             stats_holder = stats_holder,
         )
 
+    if audio_type == "audiocpp_sep":
+        raise HTTPException(
+            status_code = 400,
+            detail = f"{_audio_model_label(model_name)} separates audio into stems. Open Audio, then Separate.",
+        )
     if audio_type not in supported_audio_types:
         raise HTTPException(
             status_code = 400,
             detail = f"Active model does not support text-to-speech (audio_type={audio_type or 'unknown'}).",
         )
+    _request_problem = _audio_request_problem(
+        model_info, model_name, audio_type, payload, run_inputs
+    )
+    if _request_problem:
+        raise HTTPException(status_code = 400, detail = _request_problem)
+    _prepare_audio_inputs = (run_inputs or {}).get("prepare_audio_inputs")
+    if _prepare_audio_inputs is not None:
+        # The gen lambda reads run_inputs when it runs, so the prepared paths reach the worker.
+        run_inputs["audio_inputs"] = await asyncio.to_thread(_prepare_audio_inputs, model_info)
     if audio_type == "minimax_music3" and not str(payload.audio_instructions or "").strip():
         raise HTTPException(status_code = 400, detail = _MINIMAX_NEEDS_DESCRIPTION)
-    if audio_type == "audiocpp_music":
+    if audio_type == "audiocpp_music" and (run_inputs or {}).get("workflow") != "music":
         _music_request_problem = _audio_cpp_music_request_problem(
             audio_family, text, payload.audio_instructions
         )
@@ -22141,6 +22183,10 @@ async def _generate_tts_wav(
             if isinstance(e, AudioBackendUnsupportedError):
                 logger.info("Audio generation unsupported on this backend: %s", e.detail)
                 raise HTTPException(status_code = 501, detail = e.message)
+            if isinstance(e, AudioRuntimeError):
+                status_code, detail = audio_runtime_http_error(e)
+                logger.warning("Audio generation refused by the runtime: %s", e)
+                raise HTTPException(status_code = status_code, detail = detail)
             if audio_type == "minimax_music3" and _MINIMAX_PROMPT_OVERFLOW.fullmatch(str(e)):
                 raise HTTPException(status_code = 400, detail = str(e))
             logger.error(f"Audio generation error: {e}", exc_info = True)
@@ -22166,23 +22212,34 @@ def _wav_duration_seconds(wav_bytes: bytes, sample_rate: int) -> float:
 
 
 def _persist_tts_clip(
-    wav_bytes: bytes, sample_rate: int, text: str, model_name: str, audio_type: Optional[str]
+    wav_bytes: bytes,
+    sample_rate: int,
+    text: str,
+    model_name: str,
+    audio_type: Optional[str],
+    extra_meta: Optional[dict] = None,
+    workflow: Optional[str] = None,
+    source_wav: Optional[str] = None,
 ) -> Optional[dict[str, Any]]:
     """Best-effort gallery save: persistence never fails the request that produced
     the audio. Blocking, so callers run it off the event loop."""
     from core.inference import audio_gallery
+    from core.inference.audio_workflows import workflow_for_audio_type
+
+    meta = {
+        "prompt": text,
+        "model": model_name,
+        "audio_type": audio_type or "unknown",
+        "workflow": workflow or workflow_for_audio_type(audio_type),
+        "sample_rate": sample_rate,
+        "duration_s": _wav_duration_seconds(wav_bytes, sample_rate),
+        "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+    }
+    meta.update({k: v for k, v in (extra_meta or {}).items() if v is not None})
     try:
-        return audio_gallery.save(
-            wav_bytes,
-            {
-                "prompt": text,
-                "model": model_name,
-                "audio_type": audio_type or "unknown",
-                "sample_rate": sample_rate,
-                "duration_s": _wav_duration_seconds(wav_bytes, sample_rate),
-                "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-            },
-        )
+        if source_wav is not None:
+            return audio_gallery.save(wav_bytes, meta, Path(source_wav))
+        return audio_gallery.save(wav_bytes, meta)
     except Exception as exc:  # noqa: BLE001 - log and serve the audio anyway
         logger.warning("audio_gallery.persist_failed: %s", exc)
         return None
@@ -22294,6 +22351,932 @@ async def generate_audio(
                 }
             ],
         }
+    )
+
+
+def _audio_source_error(exc) -> HTTPException:
+    return HTTPException(status_code = exc.status, detail = exc.detail)
+
+
+def _audio_run_settings(body: AudioRunRequest, reference_text_used: bool) -> dict[str, Any]:
+    """The run's recipe for history: scalar options only."""
+    options = {
+        str(name): value
+        for name, value in (body.options or {}).items()
+        if isinstance(value, (bool, int, float)) or (isinstance(value, str) and len(value) <= 4000)
+    }
+    return {
+        "language": body.language,
+        "instructions": body.instructions,
+        "options": options,
+        "reference_text_used": reference_text_used,
+        "speed": body.speed,
+    }
+
+
+def _audio_edit_settings(body: AudioRunRequest) -> dict[str, Any]:
+    """An edit's recipe for history; never a file or server path."""
+    from core.inference import audio_edit
+
+    edit = body.edit.model_dump(exclude_none = True) if body.edit is not None else {}
+    settings: dict[str, Any] = {
+        "mode": edit.get("mode", "words"),
+        "changes": audio_edit.change_count(edit),
+        "original_text": (body.inputs.reference_text or "").strip() or None,
+        "options": _audio_run_settings(body, False)["options"],
+    }
+    if edit.get("mode") == "delivery":
+        for name in ("speed", "pitch_steps"):
+            if edit.get(name) is not None:
+                settings[name] = edit[name]
+    return settings
+
+
+def _audio_run_clip(record: dict[str, Any], role: str = "output") -> dict[str, Any]:
+    return {
+        "role": role,
+        **{k: record[k] for k in ("id", "url", "sample_rate", "duration_s", "workflow")},
+    }
+
+
+def _audio_run_response(
+    record: Optional[dict[str, Any]],
+    wav_bytes: bytes,
+    sample_rate: int,
+    model_name: str,
+    sources: list[dict[str, Any]] = (),
+) -> AudioRunResponse:
+    """The clips a run made; the WAV inline when history could not keep it."""
+    import base64
+
+    if record is None:
+        audio = {"data": base64.b64encode(wav_bytes).decode("ascii"), "sample_rate": sample_rate}
+        return AudioRunResponse(clips = list(sources), model = model_name, audio = audio)
+    return AudioRunResponse(clips = [_audio_run_clip(record), *sources], model = model_name)
+
+
+async def _run_audio_edit(
+    body: AudioRunRequest, request: Request, current_subject: str
+) -> AudioRunResponse:
+    """Edit speech on a recording from the caller's account, prepared as 24 kHz mono. Over 30 s is
+    refused, never cut; an uploaded recording is kept in history as the run's source."""
+    from core.inference import audio_edit, audio_inputs
+
+    if any(
+        name in body.model_fields_set and getattr(body, name) not in (None, False, 1)
+        for name in _MUSIC_ONLY_FIELDS
+        if name != "edit"
+    ):
+        raise HTTPException(
+            status_code = 400,
+            detail = "A music mode, lyrics and variations apply to Music only.",
+        )
+    source_ref = body.inputs.source
+    if source_ref is None:
+        raise HTTPException(status_code = 400, detail = "Add a recording to edit.")
+    if source_ref.voice_id:
+        raise HTTPException(status_code = 400, detail = "Pick a recording or a history clip to edit.")
+    ref = source_ref.model_dump(exclude_none = True)
+    limit = audio_edit.EDIT_SOURCE_MAX_SECONDS + 0.05
+
+    def prepare():
+        source = audio_inputs.resolve_source(ref)
+        seconds = audio_edit.wav_seconds(source.path)
+        if seconds is not None and seconds > limit:
+            raise audio_inputs.AudioInputError(400, audio_edit.TOO_LONG)
+        path = audio_inputs.prepared_path(source, audio_inputs.REFERENCE_RATE)
+        if seconds is None and (audio_edit.wav_seconds(path) or 0.0) > limit:
+            raise audio_inputs.AudioInputError(400, audio_edit.TOO_LONG)
+        return source, path
+
+    try:
+        source, source_path = await asyncio.to_thread(prepare)
+    except audio_inputs.AudioInputError as exc:
+        raise _audio_source_error(exc) from None
+    reference_text = (body.inputs.reference_text or "").strip() or None
+    edit = body.edit.model_dump(exclude_none = True) if body.edit is not None else {}
+    payload = ChatCompletionRequest(
+        messages = [{"role": "user", "content": body.text}],
+        max_tokens = body.max_tokens,
+        audio_options = body.options,
+        seed = body.seed,
+    )
+    wav_bytes, sample_rate, model_name, audio_type = await _generate_tts_wav(
+        body.text,
+        payload,
+        request,
+        current_subject,
+        run_inputs = {
+            "workflow": "edit",
+            "audio_inputs": {"source": str(source_path)},
+            "reference_text": reference_text,
+            "edit": edit,
+            # For the request check; the worker gets the text as the prompt.
+            "text": body.text,
+        },
+    )
+    source_record = None
+    try:
+        source_record = await asyncio.to_thread(
+            audio_edit.save_source_clip, source, source_path, reference_text
+        )
+    except Exception as exc:  # noqa: BLE001 - the edit is served even when its source is not kept
+        logger.warning("audio_edit.source_save_failed: %s", exc)
+    if source_record is not None:
+        source_clip_id = source_record["id"]
+    else:
+        source_clip_id = source.id if source.kind == "clip" else None
+    extra_meta: dict[str, Any] = {
+        "role": "output",
+        "source_clip_id": source_clip_id,
+        "reference_name": source.name,
+        "settings": _audio_edit_settings(body),
+    }
+    record = await asyncio.to_thread(
+        _persist_tts_clip,
+        wav_bytes,
+        sample_rate,
+        body.text,
+        model_name,
+        audio_type,
+        extra_meta,
+        "edit",
+    )
+    sources = [_audio_run_clip(source_record, "source")] if source_record is not None else []
+    return _audio_run_response(record, wav_bytes, sample_rate, model_name, sources)
+
+
+_REPAINT_BEYOND_END_S = 30.0
+_MUSIC_ONLY_FIELDS = ("mode", "lyrics", "instrumental", "duration_s", "variations", "edit")
+_MUSIC_MODE_NAMES = {"song": "songs", "sfx": "sound effects", "edit": "edits"}
+
+
+def _audio_music_unavailable(label: str) -> str:
+    return f"{label} does not work in the Music studio. Load an audio.cpp music model."
+
+
+def _music_mode_rules(rules: Optional[dict], mode: Optional[str]) -> Optional[dict]:
+    for entry in (rules or {}).get("modes") or []:
+        if isinstance(entry, dict) and entry.get("id") == mode:
+            return entry
+    return None
+
+
+def _audio_music_body_problem(
+    body: AudioRunRequest, rules: Optional[dict], label: str
+) -> Optional[str]:
+    """User-facing reason the loaded model cannot run this request, else None."""
+    if body.inputs.reference or body.inputs.emotion or body.inputs.reference_text:
+        return "Music takes a clip to edit, not a voice reference. Remove the reference."
+    if not rules:
+        return _audio_music_unavailable(label)
+    mode = _music_mode_rules(rules, body.mode)
+    if mode is None:
+        return f"{label} does not make {_MUSIC_MODE_NAMES.get(body.mode, body.mode)}."
+    text = body.text.strip()
+    if body.mode != "edit":
+        if body.edit is not None or body.inputs.source is not None:
+            return "A source clip and edit settings apply to Edit only."
+        variations = mode.get("variations")
+        if body.variations > 1 and not variations:
+            return f"{label} makes one take at a time. Set variations to 1."
+        if variations and body.variations > int(variations.get("max") or 1):
+            return f"{label} makes at most {variations.get('max')} variations at a time."
+        if body.mode == "sfx":
+            return None if text else "Describe the sound to make."
+        lyrics = (body.lyrics or "").strip()
+        if body.instrumental and mode.get("instrumental") == "never":
+            return f"{label} always sings. Turn off Instrumental and add lyrics."
+        if mode.get("lyrics") == "required" and not lyrics:
+            return f"{label} needs lyrics."
+        if mode.get("description") == "required" and not text:
+            return f"{label} needs a description of the music."
+        if not text and not lyrics:
+            return "Describe the music or add lyrics."
+        return None
+    if body.variations > 1:
+        return "An edit makes one take at a time. Set variations to 1."
+    source = body.inputs.source
+    if source is None:
+        return "Add a clip to edit."
+    if source.voice_id:
+        return "Edit an upload or a clip from history. Saved voices cannot be edited."
+    edit = body.edit
+    if edit is None:
+        return "Choose what to do to the clip."
+    if edit.action not in (mode.get("actions") or []):
+        return f"{label} cannot {edit.action} a clip."
+    if edit.action in ("repaint", "inpaint") and not edit.ranges:
+        return "Select the part of the clip to change."
+    if edit.action in ("extend", "cover", "continue", "restyle") and edit.ranges:
+        return f"{edit.action.capitalize()} changes the whole clip; clear the selected parts."
+    if len(edit.ranges) > int(mode.get("max_ranges") or 0):
+        return f"{label} changes at most {mode.get('max_ranges')} part(s) of a clip at a time."
+    if edit.action == "extend" and not edit.extend_s:
+        return "Choose how many seconds to add."
+    if not text:
+        return "Describe the change."
+    return None
+
+
+def _audio_music_source_problem(
+    body: AudioRunRequest, rules: dict, source_s: float, song_max: float
+) -> Optional[str]:
+    mode = _music_mode_rules(rules, "edit") or {}
+    max_source = float(mode.get("max_source_s") or 240.0)
+    if source_s > max_source + 0.05:
+        return f"Edit clips up to {_music_length_words(max_source)}. Trim it first."
+    edit = body.edit
+    for r in edit.ranges:
+        if r.start_s >= source_s:
+            return "A selected part starts after the clip ends. Select inside the clip."
+        if edit.action == "repaint" and r.end_s > song_max:
+            return f"A repaint can reach at most {_music_length_words(song_max)} into the song."
+        # The page draws at most this much tail past the clip; extend covers longer additions.
+        if edit.action == "repaint" and r.end_s > source_s + _REPAINT_BEYOND_END_S + 0.05:
+            return f"A repaint can reach at most {_REPAINT_BEYOND_END_S:g} s past the end."
+    if edit.action == "extend" and source_s + float(edit.extend_s or 0) > song_max + 0.05:
+        return f"The extended clip would pass {_music_length_words(song_max)}. Add fewer seconds."
+    return None
+
+
+def _music_length_words(seconds: float) -> str:
+    if seconds >= 60 and float(seconds) % 60 == 0:
+        minutes = int(seconds // 60)
+        return f"{minutes} minute{'s' if minutes != 1 else ''}"
+    return f"{seconds:g} s"
+
+
+def _audio_music_settings(
+    body: AudioRunRequest,
+    duration_s: Optional[float],
+    seed: Optional[int],
+    variation: Optional[int],
+    song: Optional[dict] = None,
+) -> dict[str, Any]:
+    """Scalars only: never a file or server path. Records what ran: an always-instrumental model
+    is instrumental and takes no lyrics, whatever the request said."""
+    instrumental = lyrics = None
+    if body.mode == "song":
+        how = (song or {}).get("instrumental")
+        instrumental = how == "always" or (body.instrumental and how != "never")
+        if (song or {}).get("lyrics") != "unused":
+            lyrics = body.lyrics
+    settings = _audio_run_settings(body, False)
+    settings.update(
+        {
+            "mode": body.mode,
+            "variation": variation,
+            "seed": seed,
+            "duration_s": duration_s,
+            "instrumental": instrumental,
+            "lyrics": lyrics,
+        }
+    )
+    if body.edit is not None:
+        settings["edit"] = {
+            "action": body.edit.action,
+            "ranges": [{"start_s": r.start_s, "end_s": r.end_s} for r in body.edit.ranges],
+            "strength": body.edit.strength,
+            "extend_s": body.edit.extend_s,
+        }
+    return settings
+
+
+def _read_music_outputs(run_dir: Path) -> list[tuple[bytes, int, Optional[int]]]:
+    """A listed file outside ``run_dir`` is never read."""
+    from core.inference.audio_task_outputs import wav_header
+
+    try:
+        manifest = json.loads((run_dir / "outputs.json").read_text(encoding = "utf-8"))
+    except (OSError, ValueError):
+        return []
+    root = run_dir.resolve()
+    outputs: list[tuple[bytes, int, Optional[int]]] = []
+    for entry in manifest if isinstance(manifest, list) else []:
+        if not isinstance(entry, dict) or not isinstance(entry.get("file"), str):
+            continue
+        path = (run_dir / entry["file"]).resolve()
+        if path.parent != root or not path.is_file():
+            logger.warning("audio.music: ignoring an output outside the run folder")
+            continue
+        data = path.read_bytes()
+        try:
+            rate = wav_header(data)[0]
+        except Exception:  # noqa: BLE001 - not a WAV
+            continue
+        seed = entry.get("seed")
+        outputs.append((data, rate, seed if isinstance(seed, int) else None))
+    return outputs
+
+
+async def _run_music_workflow(
+    body: AudioRunRequest, request: Request, current_subject: str
+) -> AudioRunResponse:
+    import base64
+    import shutil
+
+    from core.inference import audio_inputs
+    from core.inference.audio_cpp_models import MUSIC_SPECS
+    from core.inference.audio_cpp_music import frames_for, timeout_seconds
+
+    await _maybe_auto_switch_model(
+        _RELOAD_ONLY_MODEL,
+        request,
+        current_subject,
+        claim_resident = False,
+        require_speech = True,
+    )
+    backend = await asyncio.to_thread(get_inference_backend)
+    if not backend.active_model_name:
+        raise HTTPException(status_code = 400, detail = "Load a music model first.")
+    model_info = backend.models.get(backend.active_model_name, {}) or {}
+    label = _audio_model_label(_orchestrator_public_model_id(backend))
+    rules = model_info.get("audio_music")
+    problem = _audio_music_body_problem(body, rules, label)
+    if problem:
+        raise HTTPException(status_code = 400, detail = problem)
+    family = model_info.get("audio_family")
+    song = _music_mode_rules(rules, "song") or {}
+    song_max = float((song.get("duration") or {}).get("max") or 240.0)
+
+    run_dir = audio_inputs.inputs_dir() / "runs" / uuid.uuid4().hex
+    try:
+        source_path = None
+        source = None
+        seconds: Optional[float] = None
+        if body.mode == "edit":
+            spec = MUSIC_SPECS.get(str(family or ""))
+            rate = spec.edit_rate if spec is not None else None
+            if not rate:
+                raise HTTPException(status_code = 400, detail = f"{label} cannot edit a clip.")
+            try:
+                source = await asyncio.to_thread(
+                    audio_inputs.resolve_source, body.inputs.source.model_dump(exclude_none = True)
+                )
+                source_s = float(
+                    (await asyncio.to_thread(audio_inputs.wav_info, source.path))["duration_s"]
+                )
+                problem = _audio_music_source_problem(body, rules, source_s, song_max)
+                if problem:
+                    raise HTTPException(status_code = 400, detail = problem)
+                source_path = await asyncio.to_thread(
+                    audio_inputs.prepared_path, source, rate, None, True
+                )
+            except audio_inputs.AudioInputError as exc:
+                raise _audio_source_error(exc) from None
+            work_s = source_s + float(body.edit.extend_s or 0.0)
+            # A repaint range past the end pads the source out to it.
+            work_s = max([work_s, *(r.end_s for r in body.edit.ranges)])
+            if body.edit.action == "continue" and body.duration_s:
+                seconds = min(song_max, float(body.duration_s))
+                work_s = max(work_s, seconds)
+        else:
+            mode = _music_mode_rules(rules, body.mode) or {}
+            bounds = mode.get("duration") or {}
+            low = float(bounds.get("min") or 1.0)
+            high = float(bounds.get("max") or 240.0)
+            wanted = body.duration_s if body.duration_s is not None else bounds.get("default")
+            seconds = max(low, min(high, float(wanted if wanted is not None else low)))
+            work_s = seconds
+        variations = body.variations if body.mode != "edit" else 1
+        cpu = model_info.get("audio_cpp_backend") == "cpu"
+        music = {
+            "mode": body.mode,
+            "text": body.text,
+            "lyrics": body.lyrics,
+            "instrumental": body.instrumental,
+            "duration_s": seconds,
+            "variations": variations,
+            "edit": body.edit.model_dump() if body.edit is not None else None,
+            "timeout_s": timeout_seconds(family, work_s, variations, cpu),
+        }
+        run_dir.mkdir(parents = True, exist_ok = True)
+        payload = ChatCompletionRequest(
+            messages = [{"role": "user", "content": body.text or body.lyrics or ""}],
+            # Only scales the orchestrator's deadline.
+            max_tokens = max(1, min(8192, frames_for(work_s, variations))),
+            audio_options = body.options,
+            seed = body.seed,
+        )
+        wav_bytes, sample_rate, model_name, audio_type = await _generate_tts_wav(
+            body.text,
+            payload,
+            request,
+            current_subject,
+            run_inputs = {
+                "workflow": "music",
+                "audio_inputs": {"source": str(source_path)} if source_path else None,
+                "music": music,
+                "output_dir": str(run_dir),
+            },
+        )
+        outputs = await asyncio.to_thread(_read_music_outputs, run_dir)
+    finally:
+        await asyncio.to_thread(shutil.rmtree, run_dir, ignore_errors = True)
+    if not outputs:
+        outputs = [(wav_bytes, sample_rate, body.seed)]
+    group_id = uuid.uuid4().hex if len(outputs) > 1 else None
+    role = "edit" if body.mode == "edit" else ("variation" if len(outputs) > 1 else "output")
+    prompt = body.text.strip() or " ".join((body.lyrics or "").split())[:200]
+    clips = []
+    for index, (wav, rate, seed) in enumerate(outputs):
+        extra_meta: dict[str, Any] = {
+            "role": role,
+            "group_id": group_id,
+            "settings": _audio_music_settings(
+                body, seconds, seed, index + 1 if len(outputs) > 1 else None, song
+            ),
+        }
+        if source is not None:
+            extra_meta["reference_name"] = source.name
+            if source.kind == "clip":
+                extra_meta["source_clip_id"] = source.id
+        record = await asyncio.to_thread(
+            _persist_tts_clip, wav, rate, prompt, model_name, audio_type, extra_meta, "music"
+        )
+        if record is None:
+            if not clips:
+                return AudioRunResponse(
+                    clips = [],
+                    model = model_name,
+                    audio = {
+                        "data": base64.b64encode(wav).decode("ascii"),
+                        "format": "wav",
+                        "sample_rate": rate,
+                    },
+                )
+            continue
+        clips.append(
+            {
+                "id": record["id"],
+                "role": role,
+                "url": record["url"],
+                "sample_rate": record["sample_rate"],
+                "duration_s": record["duration_s"],
+                "workflow": record["workflow"],
+            }
+        )
+    return AudioRunResponse(clips = clips, group_id = group_id, model = model_name)
+
+
+async def _run_audio_convert(
+    body: AudioRunRequest, request: Request, current_subject: str
+) -> AudioRunResponse:
+    from core.inference import audio_inputs
+    from core.inference.audio_cpp_convert import (
+        CONVERT_SOURCE_MAX_SECONDS,
+        CONVERT_TARGET_MAX_SECONDS,
+    )
+
+    if any(
+        name in body.model_fields_set and getattr(body, name) not in (None, False, 1)
+        for name in _MUSIC_ONLY_FIELDS
+    ):
+        raise HTTPException(
+            status_code = 400,
+            detail = "A music mode, lyrics, variations and edits apply to Music only.",
+        )
+    params = body.convert.model_dump()
+    refs = {"source": body.inputs.source, "target": body.inputs.target}
+    if refs["source"] is None:
+        raise HTTPException(status_code = 400, detail = "Add the recording to convert.")
+    resolved: dict[str, Any] = {}
+    try:
+        for role, ref in refs.items():
+            if ref is not None:
+                resolved[role] = await asyncio.to_thread(
+                    audio_inputs.resolve_source, ref.model_dump(exclude_none = True)
+                )
+    except audio_inputs.AudioInputError as exc:
+        raise _audio_source_error(exc) from None
+    source, target = resolved["source"], resolved.get("target")
+    max_seconds = {"source": CONVERT_SOURCE_MAX_SECONDS, "target": CONVERT_TARGET_MAX_SECONDS}
+    seen: dict[str, Any] = {}
+
+    def _prepare(model_info: dict) -> dict[str, str]:
+        seen["model_info"] = model_info
+        rules = model_info.get("audio_convert_rules") or {}
+        try:
+            seen["paths"] = {
+                role: str(
+                    audio_inputs.prepared_path(
+                        item,
+                        int(rules.get(f"{role}_rate") or 16000),
+                        max_seconds = max_seconds[role],
+                    )
+                )
+                for role, item in resolved.items()
+            }
+        except audio_inputs.AudioInputError as exc:
+            raise _audio_source_error(exc) from None
+        return seen["paths"]
+
+    source_text = (body.inputs.source_text or "").strip() or None
+    payload = ChatCompletionRequest(
+        messages = [{"role": "user", "content": source.name}],
+        audio_options = body.options,
+        seed = body.seed,
+    )
+    wav_bytes, sample_rate, model_name, audio_type = await _generate_tts_wav(
+        source.name,
+        payload,
+        request,
+        current_subject,
+        run_inputs = {
+            "workflow": "convert",
+            "audio_inputs": None,
+            "convert": {**params, "source_text": source_text},
+            "convert_inputs": tuple(resolved),
+            "prepare_audio_inputs": _prepare,
+        },
+    )
+    builtin = None
+    if target is not None:
+        target_name = target.name
+    else:
+        voices = ((seen.get("model_info") or {}).get("audio_convert") or {}).get("builtin_voices")
+        voices = voices or [{"id": params.get("voice"), "label": "Built-in"}]
+        voice = next((v for v in voices if v.get("id") == params.get("voice")), voices[0])
+        builtin, target_name = voice.get("id"), voice.get("label") or voice.get("id")
+    extra_meta: dict[str, Any] = {
+        "role": "output",
+        "source_name": source.name,
+        "reference_name": target_name,
+        "target_builtin": builtin,
+        "settings": {
+            **{key: params.get(key) for key in ("mode", "pitch", "pitch_auto", "style")},
+            "options": _audio_run_settings(body, False)["options"],
+        },
+    }
+    if source.kind == "clip":
+        extra_meta["source_clip_id"] = source.id
+    elif source.kind == "input":
+        extra_meta["source_input_id"] = source.id
+    if target is not None:
+        key = {"voice": "voice_id", "clip": "target_clip_id", "input": "target_input_id"}
+        if target.kind in key:
+            extra_meta[key[target.kind]] = target.id
+    record = await asyncio.to_thread(
+        _persist_tts_clip,
+        wav_bytes,
+        sample_rate,
+        f"{source.name} → {target_name}",
+        model_name,
+        audio_type,
+        extra_meta,
+        "convert",
+        # An upload expires within a day; a history clip does not.
+        (seen.get("paths") or {}).get("source") if source.kind == "input" else None,
+    )
+    return _audio_run_response(record, wav_bytes, sample_rate, model_name)
+
+
+@router.post("/audio/run", response_model = AudioRunResponse)
+async def run_audio_workflow(
+    body: AudioRunRequest,
+    request: Request,
+    current_subject: str = Depends(get_current_subject),
+):
+    """Run one Audio page workflow (Clone, Speak in a saved voice, Edit, Convert, Music or
+    Separate); clips go to history. Audio is named by id and resolved here in the caller's account;
+    the worker gets a prepared copy's path, never bytes."""
+    if body.workflow == "separate":
+        return await _run_separation(body, request, current_subject)
+    import base64
+
+    from core.inference import audio_inputs
+
+    if body.workflow == "convert":
+        return await _run_audio_convert(body, request, current_subject)
+    if body.workflow == "edit":
+        return await _run_audio_edit(body, request, current_subject)
+    if body.workflow == "music":
+        return await _run_music_workflow(body, request, current_subject)
+    music_fields = sorted(
+        name
+        for name in _MUSIC_ONLY_FIELDS
+        if name in body.model_fields_set and getattr(body, name) not in (None, False, 1)
+    )
+    if music_fields or body.inputs.source is not None:
+        raise HTTPException(
+            status_code = 400,
+            detail = "A music mode, lyrics, variations, a source clip and edits apply to Music only.",
+        )
+
+    if body.workflow == "clone" and body.inputs.reference is None:
+        raise HTTPException(status_code = 400, detail = "Add a reference clip to clone.")
+    prepared = {}
+    try:
+        for role in ("reference", "emotion"):
+            ref = getattr(body.inputs, role)
+            if ref is not None:
+                prepared[role] = await asyncio.to_thread(
+                    audio_inputs.prepare_reference, ref.model_dump(exclude_none = True)
+                )
+    except audio_inputs.AudioInputError as exc:
+        raise _audio_source_error(exc) from None
+    paths = {role: str(path) for role, (_source, path) in prepared.items()}
+    reference_source = prepared["reference"][0] if "reference" in prepared else None
+    reference_text = (body.inputs.reference_text or "").strip() or None
+    # An omitted transcript falls back to the saved voice's; a sent blank one was cleared on purpose.
+    if (
+        body.inputs.reference_text is None
+        and reference_source is not None
+        and reference_source.kind == "voice"
+    ):
+        from core.inference import audio_voices
+        voice = await asyncio.to_thread(audio_voices.get, reference_source.id)
+        reference_text = ((voice or {}).get("transcript") or "").strip() or None
+
+    payload = ChatCompletionRequest(
+        messages = [{"role": "user", "content": body.text}],
+        max_tokens = body.max_tokens,
+        audio_instructions = body.instructions,
+        audio_language = body.language,
+        audio_options = body.options,
+        seed = body.seed,
+    )
+    wav_bytes, sample_rate, model_name, audio_type = await _generate_tts_wav(
+        body.text,
+        payload,
+        request,
+        current_subject,
+        run_inputs = {
+            "workflow": body.workflow,
+            "audio_inputs": paths or None,
+            "reference_text": reference_text,
+            "speed": body.speed,
+        },
+    )
+    extra_meta: dict[str, Any] = {
+        "role": "output",
+        "settings": _audio_run_settings(body, reference_text is not None),
+    }
+    if reference_source is not None:
+        extra_meta["reference_name"] = reference_source.name
+        if reference_source.kind == "clip":
+            extra_meta["source_clip_id"] = reference_source.id
+        elif reference_source.kind == "voice":
+            extra_meta["voice_id"] = reference_source.id
+    record = await asyncio.to_thread(
+        _persist_tts_clip,
+        wav_bytes,
+        sample_rate,
+        body.text,
+        model_name,
+        audio_type,
+        extra_meta,
+        body.workflow,
+    )
+    return _audio_run_response(record, wav_bytes, sample_rate, model_name)
+
+
+# Stems in the order the Separate page lists them; ids a runtime adds follow in its own order.
+_STEM_ORDER = ("vocals", "drums", "bass", "guitar", "piano", "other", "instrumental")
+_SEPARATE_MAX_SECONDS = 600.0
+_SEPARATE_RATE = 44100
+
+
+def _separation_options(body: AudioRunRequest, family: Optional[str], label: str) -> Optional[dict]:
+    """The run's separation options, checked against what the loaded family takes."""
+    from core.inference.audio_cpp_models import FAMILIES
+
+    options = body.options or {}
+    if not options:
+        return None
+    policy = FAMILIES.get(family or "")
+    if policy is None or policy.separation is None or not policy.separation.overlap_option:
+        raise HTTPException(status_code = 400, detail = f"{label} has no separation options.")
+    for name in options:
+        if name != "num_overlap":
+            raise HTTPException(status_code = 400, detail = f"Unknown option '{name}'.")
+    value = options["num_overlap"]
+    if isinstance(value, bool) or not isinstance(value, int) or not 1 <= value <= 8:
+        raise HTTPException(
+            status_code = 400, detail = "num_overlap must be a whole number from 1 to 8."
+        )
+    return {"num_overlap": value}
+
+
+def _clock(seconds: float) -> str:
+    whole = int(math.ceil(seconds))
+    return f"{whole // 60}:{whole % 60:02d}"
+
+
+def _probe_audio_with_av(path) -> Optional[tuple[int, float]]:
+    """``(channels, seconds)`` of the first audio stream, through FFmpeg; None if unreadable."""
+    try:
+        import av
+
+        from core.inference.audio_inputs import _av_open
+        with _av_open(av, str(path)) as container:
+            stream = container.streams.audio[0]
+            if stream.duration is not None and stream.time_base is not None:
+                seconds = float(stream.duration * stream.time_base)
+            elif container.duration is not None:
+                seconds = container.duration / 1_000_000
+            else:
+                return None
+            return int(stream.channels), seconds
+    except Exception:  # noqa: BLE001 - any failure reads as an unreadable track
+        return None
+
+
+def _prepare_separation_source(ref: dict[str, Any]):
+    """``(source, prepared 44.1 kHz path)``, after the 10-minute cap; stereo stays stereo."""
+    import wave
+
+    from core.inference import audio_inputs
+
+    source = audio_inputs.resolve_source(ref)
+    try:
+        with wave.open(str(source.path), "rb") as wav:
+            channels = wav.getnchannels()
+            seconds = wav.getnframes() / wav.getframerate()
+    except Exception:  # noqa: BLE001 - e.g. a float stem from history, which wave cannot open
+        probed = _probe_audio_with_av(source.path)
+        if probed is None:
+            raise audio_inputs.AudioInputError(400, "This track could not be read. Add it again.")
+        channels, seconds = probed
+    if seconds > _SEPARATE_MAX_SECONDS:
+        raise HTTPException(
+            status_code = 400,
+            detail = "Separate tracks up to 10 minutes long. This one is "
+            f"{_clock(seconds)}. Pick a shorter track.",
+        )
+    return source, audio_inputs.prepared_path(source, _SEPARATE_RATE, stereo = channels == 2)
+
+
+def _stem_rank(ids: list[str]):
+    runtime = {stem_id: index for index, stem_id in enumerate(ids)}
+    return lambda stem_id: (
+        _STEM_ORDER.index(stem_id) if stem_id in _STEM_ORDER else len(_STEM_ORDER),
+        runtime[stem_id],
+    )
+
+
+def _checked_stems(outputs: Any, staging: Path) -> list[dict]:
+    """The worker's stems, each a WAV inside ``staging``, in display order; 502 otherwise."""
+    if not isinstance(outputs, list) or not outputs:
+        raise HTTPException(status_code = 502, detail = NO_STEMS)
+    root = staging.resolve()
+    stems = []
+    for output in outputs:
+        try:
+            path = Path(str(output["path"])).resolve()
+            path.relative_to(root)
+            with open(path, "rb") as f:
+                riff = f.read(4) == b"RIFF"
+            stem = {
+                "id": str(output["id"]),
+                "path": path,
+                "sample_rate": int(output["sample_rate"]),
+                "duration_s": float(output["duration_s"]),
+            }
+        except (KeyError, TypeError, ValueError, OSError):
+            riff = False
+        if not riff:
+            logger.warning("audio.separate: the worker returned an unusable stem")
+            raise HTTPException(status_code = 502, detail = NO_STEMS)
+        stems.append(stem)
+    rank = _stem_rank([stem["id"] for stem in stems])
+    return sorted(stems, key = lambda stem: rank(stem["id"]))
+
+
+def _save_stems(stems: list[dict], base_meta: dict[str, Any]) -> list[dict]:
+    """Save every stem to history under one group, all or none, then prune once."""
+    from core.inference import audio_gallery
+
+    records: list[dict] = []
+    try:
+        for stem in stems:
+            meta = {
+                **base_meta,
+                "sample_rate": stem["sample_rate"],
+                "duration_s": stem["duration_s"],
+                "role": stem["id"],
+            }
+            records.append(audio_gallery.save_file(stem["path"], meta, prune = False))
+    except Exception:
+        for record in records:
+            audio_gallery.delete(record["id"])
+        raise
+    audio_gallery._prune_to_cap()
+    return records
+
+
+async def _run_separation(
+    body: AudioRunRequest, request: Request, current_subject: str
+) -> AudioRunResponse:
+    """Split a track into stems saved as one history group; worker paths are checked to stay in
+    the account's gallery and never reach the client."""
+    from core.inference import audio_gallery, audio_inputs
+
+    if body.text is not None:
+        raise HTTPException(status_code = 400, detail = "Separate takes no text.")
+    if any(
+        name in body.model_fields_set and getattr(body, name) not in (None, False, 1)
+        for name in _MUSIC_ONLY_FIELDS
+    ):
+        raise HTTPException(
+            status_code = 400,
+            detail = "A music mode, lyrics, variations and edits apply to Music only.",
+        )
+    inputs = body.inputs
+    if inputs.reference is not None or inputs.emotion is not None or inputs.reference_text:
+        raise HTTPException(status_code = 400, detail = "Separate takes only a track.")
+    source_ref = inputs.source
+    if source_ref is None:
+        raise HTTPException(status_code = 400, detail = "Add a track to separate.")
+    if source_ref.voice_id:
+        raise HTTPException(status_code = 400, detail = "Pick a track to separate, not a saved voice.")
+    await _maybe_auto_switch_model(
+        _RELOAD_ONLY_MODEL, request, current_subject, claim_resident = False
+    )
+    backend = await asyncio.to_thread(get_inference_backend)
+    model_info = (
+        backend.models.get(backend.active_model_name, {}) if backend.active_model_name else {}
+    )
+    if "separate" not in (model_info.get("audio_workflows") or []):
+        raise HTTPException(status_code = 400, detail = "Load a model that can separate audio.")
+    model_name = _orchestrator_public_model_id(backend)
+    options = _separation_options(
+        body, model_info.get("audio_family"), _audio_model_label(model_name)
+    )
+    ref = source_ref.model_dump(exclude_none = True)
+    try:
+        source, prepared = await asyncio.to_thread(_prepare_separation_source, ref)
+    except audio_inputs.AudioInputError as exc:
+        if exc.status == 404 and source_ref.input_id:
+            raise HTTPException(status_code = 404, detail = "This track expired. Add it again.")
+        raise _audio_source_error(exc) from None
+
+    staging = await asyncio.to_thread(
+        lambda: audio_gallery.gallery_dir() / f".separate-{uuid.uuid4().hex}"
+    )
+    try:
+        await asyncio.to_thread(staging.mkdir, parents = True)
+        cancel = threading.Event()
+        with _TrackedCancel(cancel, model = model_name, kind = "audio"):
+            watcher = asyncio.create_task(_await_disconnect_then_cancel(request, cancel))
+            try:
+                outputs = await asyncio.to_thread(
+                    backend.separate_audio_response, str(prepared), str(staging), options, cancel
+                )
+            except Exception as e:
+                if cancel.is_set() or isinstance(e, AudioGenerationCancelledError):
+                    raise HTTPException(status_code = 499, detail = "Audio generation cancelled")
+                if isinstance(e, AudioBackendUnsupportedError):
+                    raise HTTPException(status_code = 501, detail = e.message)
+                if isinstance(e, AudioRuntimeError):
+                    status_code, detail = audio_runtime_http_error(e)
+                    logger.warning("Audio separation refused by the runtime: %s", e)
+                    raise HTTPException(status_code = status_code, detail = detail)
+                logger.error(f"Audio separation error: {e}", exc_info = True)
+                raise HTTPException(status_code = 500, detail = safe_error_detail(e))
+            finally:
+                await _stop_local_disconnect_cancel_watcher(watcher)
+        stems = _checked_stems(outputs, staging)
+        group_id = uuid.uuid4().hex
+        base_meta: dict[str, Any] = {
+            "prompt": source.name,
+            "model": model_name,
+            "audio_type": "audiocpp_sep",
+            "workflow": "separate",
+            "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            "group_id": group_id,
+            "settings": {
+                "stems": [stem["id"] for stem in stems],
+                "num_overlap": (options or {}).get("num_overlap"),
+            },
+        }
+        if source.kind == "clip":
+            base_meta["source_clip_id"] = source.id
+        try:
+            records = await asyncio.to_thread(_save_stems, stems, base_meta)
+        except Exception as exc:  # noqa: BLE001 - every stem of the group was rolled back
+            logger.warning("audio_gallery.separate_save_failed: %s", exc)
+            reason = sanitize_runtime_detail(str(exc)) or "unknown error"
+            raise HTTPException(
+                status_code = 500, detail = f"Could not save the stems to history: {reason}"
+            )
+    finally:
+        await asyncio.to_thread(shutil.rmtree, staging, True)
+    return AudioRunResponse(
+        clips = [
+            {
+                "id": record["id"],
+                "role": record["role"],
+                "url": record["url"],
+                "sample_rate": record["sample_rate"],
+                "duration_s": record["duration_s"],
+                "workflow": record["workflow"],
+            }
+            for record in records
+        ],
+        group_id = group_id,
+        model = model_name,
     )
 
 
@@ -23413,9 +24396,15 @@ async def _transcribe_audio_result(
     request: Optional[Request] = None,
     device: Optional[str] = None,
     on_progress = None,
+    *,
+    source_path: Optional[Path] = None,
+    timestamps: bool = False,
 ) -> dict:
     """STT for already-decoded bytes, sidecar errors mapped to HTTP statuses.
-    Returns the sidecar's result dict so callers own the response shape."""
+    Returns the sidecar's result dict so callers own the response shape.
+
+    ``source_path`` (a prepared WAV inside the account) replaces ``raw``: audio.cpp reads it in
+    place, with ``timestamps`` when asked; every other engine gets its bytes."""
     if account_access.managed_account():
         await asyncio.to_thread(
             account_access.require_model_access, _stt_repo_reference(model, engine)
@@ -23433,12 +24422,19 @@ async def _transcribe_audio_result(
         SttTranscriptionCancelledError,
     )
 
-    if not raw:
-        raise HTTPException(status_code = 400, detail = "Audio is empty.")
-    if len(raw) > _MAX_AUDIO_RAW_BYTES:
-        raise HTTPException(status_code = 413, detail = "Audio is too large.")
+    if source_path is None:
+        if not raw:
+            raise HTTPException(status_code = 400, detail = "Audio is empty.")
+        if len(raw) > _MAX_AUDIO_RAW_BYTES:
+            raise HTTPException(status_code = 413, detail = "Audio is too large.")
 
     serving_engine = _resolve_serving_stt_engine(engine)
+    if source_path is not None and serving_engine != "audiocpp":
+        # Prepared WAVs are capped at 30 min; the encoded-upload cap would refuse past ~13 min.
+        raw = await asyncio.to_thread(source_path.read_bytes)
+        source_path = None
+        if not raw:
+            raise HTTPException(status_code = 400, detail = "Audio is empty.")
     await asyncio.to_thread(
         _prepare_runtime_fallback_checkpoint,
         engine,
@@ -23460,13 +24456,37 @@ async def _transcribe_audio_result(
         # timers fired, which is what OOMs a device that fits either alone. A no-op once
         # the model is resident, so the steady state costs a residency check.
         load_stt, _ = _stt_lifecycle()
+        on_phase = (
+            (lambda phase: on_progress({"text": "", "phase": phase}))
+            if on_progress is not None and source_path is not None
+            else None
+        )
+        load_options = {"on_phase": on_phase} if on_phase is not None else {}
+        if source_path is not None and timestamps:
+            await asyncio.to_thread(sidecar.ensure_aligner, model, on_phase)
+            # Started with its aligner now, or transcribe_path would restart it.
+            load_options["timestamps"] = True
         await asyncio.to_thread(
-            functools.partial(load_stt, model, serving_engine, cancel_event, device = device)
+            functools.partial(
+                load_stt, model, serving_engine, cancel_event, device = device, **load_options
+            )
         )
         loaded = getattr(sidecar, "loaded_model", None)
         if loaded is not None and loaded == _stt_resolved_model_id(model, serving_engine):
             account_access.note_resident_account(f"stt:{serving_engine}", loaded)
-        if on_progress is not None and serving_engine in ("transformers", "mtmd"):
+        if source_path is not None:
+            result = await asyncio.to_thread(
+                functools.partial(
+                    sidecar.transcribe_path,
+                    source_path,
+                    model,
+                    language,
+                    timestamps = timestamps,
+                    cancel_event = cancel_event,
+                    on_phase = on_phase,
+                )
+            )
+        elif on_progress is not None and serving_engine in ("transformers", "mtmd"):
             result = await asyncio.to_thread(
                 sidecar.transcribe,
                 raw,
@@ -23524,6 +24544,10 @@ async def _transcribe_audio_result(
     finally:
         if disconnect_watcher is not None:
             await _stop_local_disconnect_cancel_watcher(disconnect_watcher)
+    speakers = result.get("speakers") if isinstance(result, dict) else None
+    if isinstance(speakers, list) and all(isinstance(s, str) for s in speakers):
+        from core.inference.stt_capabilities import label_speakers
+        result = {**result, "speakers": label_speakers(speakers)}
     return result
 
 
@@ -23600,6 +24624,86 @@ async def transcribe_audio_raw(
             b"".join(chunks), model, language, fast, engine, request, device
         )
     )
+
+
+def _source_transcript(result: dict, source, speakers: bool) -> dict:
+    out = dict(result)
+    if not (speakers and out.get("speakers")):
+        out.pop("speakers", None)
+        if out.get("segments"):
+            out["segments"] = [
+                {k: v for k, v in s.items() if k != "speaker"} for s in out["segments"]
+            ]
+    out["source"] = {"kind": source.kind, "id": source.id, "name": source.name}
+    out["timestamps"] = bool(out.get("segments"))
+    return out
+
+
+@studio_router.post("/audio/transcribe/source")
+async def transcribe_audio_source(
+    body: TranscribeSourceRequest, current_subject: str = Depends(get_current_subject)
+):
+    """Transcribe Audio page audio named by id, streamed as NDJSON and saved to history."""
+    from core.inference import audio_inputs, stt_capabilities, stt_details
+    from core.inference.transcript_stream import stream_transcript
+
+    engine = body.engine or await asyncio.to_thread(_stt_engine_for_model, body.model)
+    serving_engine = _resolve_serving_stt_engine(engine)
+    caps = await asyncio.to_thread(stt_capabilities.capabilities_for, body.model, serving_engine)
+    if body.timestamps and caps["timestamps"] == "unsupported":
+        raise HTTPException(
+            status_code = 422,
+            detail = "This model cannot add timestamps. Pick Qwen3-ASR (audio.cpp), Parakeet-TDT, "
+            "MOSS-Transcribe-Diarize or VibeVoice-ASR.",
+        )
+    if body.speakers and not caps["speakers"]:
+        raise HTTPException(
+            status_code = 422,
+            detail = "This model cannot tell speakers apart. Pick MOSS-Transcribe-Diarize or "
+            "VibeVoice-ASR.",
+        )
+    rate = stt_details.FIXED_SPAN_RATES.get(caps["family"], 16000)
+
+    def _prepare():
+        source = audio_inputs.resolve_source(body.source.model_dump(exclude_none = True))
+        return source, audio_inputs.prepared_path(source, rate)
+
+    try:
+        source, path = await asyncio.to_thread(_prepare)
+    except audio_inputs.AudioInputError as exc:
+        raise _audio_source_error(exc) from None
+
+    async def _run(on_progress):
+        result = await _transcribe_audio_result(
+            b"",
+            body.model,
+            body.language,
+            False,
+            engine,
+            None,
+            body.device,
+            on_progress,
+            source_path = path,
+            timestamps = body.timestamps,
+        )
+        return _source_transcript(result, source, body.speakers)
+
+    return StreamingResponse(
+        stream_transcript(_run, body.title or source.name),
+        media_type = "application/x-ndjson",
+        headers = {"Cache-Control": "no-store", "X-Accel-Buffering": "no"},
+    )
+
+
+@studio_router.get("/audio/stt/capabilities")
+async def stt_model_capabilities(
+    model: Optional[str] = Query(None, max_length = 512),
+    engine: Optional[str] = Query(None, max_length = 64),
+    current_subject: str = Depends(get_current_subject),
+):
+    """What ``model`` can add to a transcript (timestamps, speakers) and where it runs. Offline."""
+    from core.inference import stt_capabilities
+    return await asyncio.to_thread(stt_capabilities.capabilities_for, model, engine)
 
 
 # =====================================================================
@@ -26322,7 +27426,6 @@ async def _proxy_to_external_provider(
             chat_messages,
             request,
             include_api_key = bool(studio_tool_payloads),
-            thread_id = getattr(payload, "thread_id", None),
         )
         cancel_event = threading.Event()
         cancel_keys = tuple(
@@ -26695,10 +27798,6 @@ async def _proxy_to_external_provider(
         request,
         include_api_key = run_studio_tool_loop,
         provider_type = None if _external_nudge else provider_type,
-        # a thread's date note would sit on the cache breakpoint and move off it next turn.
-        thread_id = None
-        if caches_at_the_last_block(provider_type, model, payload.enable_prompt_caching)
-        else getattr(payload, "thread_id", None),
     )
     if _external_nudge:
         chat_messages = _append_to_system_message(chat_messages, _external_nudge)
@@ -27568,19 +28667,6 @@ async def delete_openai_container(
         await client.close()
 
 
-def _custom_request_defaults(model_id) -> dict:
-    backend = get_llama_cpp_backend()
-    summary = getattr(backend, "llama_cpp_config_summary", None)
-    if not isinstance(summary, dict) or not _same_loaded_identifier(
-        getattr(backend, "model_identifier", None), model_id
-    ):
-        return {}
-    defaults = dict(summary.get("request_defaults") or {})
-    if "repeat_penalty" in defaults:
-        defaults["repetition_penalty"] = defaults.pop("repeat_penalty")
-    return defaults
-
-
 _REASONING_EFFORT_VALUES = {"none", "minimal", "low", "medium", "high", "max", "xhigh"}
 
 
@@ -27691,9 +28777,7 @@ def _fill_recommended_sampling_openai(payload, model_id) -> None:
         f: (getattr(payload, f) if f in payload.model_fields_set else None)
         for f in SAMPLING_FIELD_NAMES
     }
-    effective = resolve_effective_sampling(
-        model_id, explicit, preset_defaults = _custom_request_defaults(model_id)
-    )
+    effective = resolve_effective_sampling(model_id, explicit)
     for field, value in effective.items():
         setattr(payload, field, value)
 
@@ -27718,9 +28802,7 @@ def _fill_recommended_sampling_completions(body: dict, model_id) -> None:
     from utils.inference.inference_config import resolve_effective_sampling, SAMPLING_FIELD_NAMES
 
     explicit = {f: body.get(_COMPLETIONS_SAMPLING_BODY_KEY.get(f, f)) for f in SAMPLING_FIELD_NAMES}
-    effective = resolve_effective_sampling(
-        model_id, explicit, fill_defaults = False, preset_defaults = _custom_request_defaults(model_id)
-    )
+    effective = resolve_effective_sampling(model_id, explicit, fill_defaults = False)
     for field, value in effective.items():
         body[_COMPLETIONS_SAMPLING_BODY_KEY.get(field, field)] = value
 
@@ -28429,15 +29511,7 @@ async def produce_openai_chat_completions(
                 system_prompt, chat_messages, _ = await _extract_content_parts_async(
                     payload.messages
                 )
-                system_prompt = _apply_current_date_prompt(
-                    system_prompt, request, thread_id = getattr(payload, "thread_id", None)
-                )
-                chat_messages = _append_current_date_note(
-                    chat_messages,
-                    request,
-                    thread_id = getattr(payload, "thread_id", None),
-                    system_prompt = system_prompt,
-                )
+                system_prompt = _audio_input_system_prompt(system_prompt, request)
             except _DecodedAudioTooLongError as e:
                 # A limit the caller can act on, not a server fault.
                 api_monitor.fail(monitor_id, str(e))
@@ -28900,14 +29974,20 @@ async def produce_openai_chat_completions(
             payload.messages, keep_tool_images = True
         )
     # applied once so both backends inherit it, with or without tools, and never state it twice.
-    system_prompt = _apply_current_date_prompt(
-        system_prompt, request, thread_id = getattr(payload, "thread_id", None)
+    _user_system_prompt = system_prompt
+    # what makes generation render through the processor's template: an attachment, a clip, or an
+    # MCP picture it really promotes, checked off the loop as the envelope can be 12 MB.
+    _renders_media = (
+        _request_has_attached_image(payload)
+        or _request_has_video(payload)
+        or (
+            _request_has_promotable_mcp_images(payload, exact = False)
+            and await asyncio.to_thread(_request_has_promotable_mcp_images, payload)
+        )
     )
-    chat_messages = _append_current_date_note(
-        chat_messages,
-        request,
-        thread_id = getattr(payload, "thread_id", None),
-        system_prompt = system_prompt,
+    _date_controls = _template_controls(payload)
+    system_prompt = _apply_current_date_prompt(
+        system_prompt, request, image = _renders_media, controls = _date_controls
     )
 
     if not chat_messages:
@@ -28979,12 +30059,6 @@ async def produce_openai_chat_completions(
             _gguf_replayed_image_parts,
         )
         gguf_messages = _set_or_prepend_system_message(gguf_messages, system_prompt)
-        gguf_messages = _append_current_date_note(
-            gguf_messages,
-            request,
-            thread_id = getattr(payload, "thread_id", None),
-            system_prompt = system_prompt,
-        )
         image_b64 = None
         for audio_b64, audio_format in prepared_audio:
             _inject_audio_part(gguf_messages, audio_b64, audio_format)
@@ -29135,11 +30209,14 @@ async def produce_openai_chat_completions(
                 )
             if _wants_multiple_choices(payload):
                 raise _reject_unsupported_n("GGUF tool chat completions")
+            # main's tool turn: the date and the caller's prompt, not the template's chat default.
             system_prompt = _apply_current_date_prompt(
-                system_prompt,
+                _user_system_prompt,
                 request,
                 include_api_key = True,
-                thread_id = getattr(payload, "thread_id", None),
+                template_default = False,
+                tools = True,
+                controls = _date_controls,
             )
             gguf_messages = _set_or_prepend_system_message(gguf_messages, system_prompt)
             # ── Tool-use system prompt nudge ──────────────────────
@@ -29236,7 +30313,26 @@ async def produce_openai_chat_completions(
                     )
 
             def gguf_generate_with_tools():
-                return llama_backend.generate_chat_completion_with_tools(
+                from core.inference.skill_mentions import load_mentioned_skills
+
+                skill_instruction_ids = set()
+                yield from load_mentioned_skills(
+                    gguf_messages,
+                    # "none" / a zero budget withdraw read_skill, so they withdraw the preload too.
+                    tools_to_use
+                    if payload.tool_choice != "none" and payload.max_tool_calls_per_message != 0
+                    else [],
+                    permission_mode = payload.permission_mode,
+                    bypass_permissions = bool(payload.bypass_permissions),
+                    confirm_tool_calls = _effective_confirm,
+                    session_id = payload.session_id,
+                    cancel_event = cancel_event,
+                    context_length = llama_backend.context_length,
+                    continue_final_message = _continue_final_message(payload, thought = True),
+                    protected_message_ids = skill_instruction_ids,
+                )
+                yield from llama_backend.generate_chat_completion_with_tools(
+                    instruction_anchor_ids = skill_instruction_ids,
                     messages = gguf_messages,
                     replayed_image_parts = tuple(_gguf_replayed_image_parts),
                     tools = tools_to_use,
@@ -29521,7 +30617,11 @@ async def produce_openai_chat_completions(
 
                         # Anything after the gated tool_start means the user answered.
                         if not (
-                            event["type"] == "tool_start" and event.get("awaiting_confirmation")
+                            (event["type"] == "tool_start" and event.get("awaiting_confirmation"))
+                            or (
+                                event["type"] == "skill_load"
+                                and event.get("status") == "awaiting_approval"
+                            )
                         ):
                             await _park_admission(False)
 
@@ -29530,7 +30630,13 @@ async def produce_openai_chat_completions(
                             yield _OPENAI_TOOL_HEARTBEAT_SSE
                             continue
 
-                        if event["type"] in ("tool_output", "tool_args"):
+                        if event["type"] in ("tool_output", "tool_args", "skill_load"):
+                            if (
+                                event["type"] == "skill_load"
+                                and event.get("status") == "awaiting_approval"
+                            ):
+                                await _park_admission(True)
+                                approval_flush_pending = True
                             # Live stdout/stderr or tool-call arguments, forwarded
                             # verbatim for the UI. Final result still arrives in tool_end.
                             if _ui_events:
@@ -30800,12 +31906,6 @@ async def produce_openai_chat_completions(
             payload.messages, _legacy_distinct
         ):
             chat_messages, served_images = _msgs, _payloads
-            chat_messages = _append_current_date_note(
-                chat_messages,
-                request,
-                thread_id = getattr(payload, "thread_id", None),
-                system_prompt = system_prompt,
-            )
 
     # Decode image (from content parts OR legacy field)
     image_b64 = extracted_image_b64 or payload.image_base64
@@ -30835,13 +31935,6 @@ async def produce_openai_chat_completions(
             )
             if message.get("role") not in ("system", "developer")
         ]
-        # Rebuilt from the payload, so the date note added to the original messages is gone.
-        chat_messages = _append_current_date_note(
-            chat_messages,
-            request,
-            thread_id = getattr(payload, "thread_id", None),
-            system_prompt = system_prompt,
-        )
         if any(
             isinstance(message.get("content"), list)
             and any(part.get("type") == "image_url" for part in message["content"])
@@ -31247,10 +32340,13 @@ async def produce_openai_chat_completions(
         _sf_nudge = _apply_compaction_nudge(_sf_nudge, _sf_tools_to_use)
 
         _sf_system_prompt = _apply_current_date_prompt(
-            system_prompt,
+            _user_system_prompt,
             request,
             include_api_key = True,
-            thread_id = getattr(payload, "thread_id", None),
+            template_default = False,
+            image = _sf_has_any_image or _video_clip is not None,
+            tools = True,
+            controls = _date_controls,
         )
         if _sf_nudge:
             if _sf_system_prompt:
@@ -31491,6 +32587,13 @@ async def produce_openai_chat_completions(
                             yield _OPENAI_PASSTHROUGH_SSE_KEEPALIVE
                         continue
 
+                    if event["type"] == "skill_load":
+                        approval_flush_pending = event.get("status") == "awaiting_approval"
+                        if _ui_events:
+                            yield f"data: {json.dumps(event)}\n\n"
+                        elif _drop_keepalive.due():
+                            yield _OPENAI_PASSTHROUGH_SSE_KEEPALIVE
+                        continue
                     if event["type"] in ("tool_start", "tool_end"):
                         if event["type"] == "tool_start":
                             # Same as the GGUF loop, gated with the card for the same reason:
@@ -31876,6 +32979,34 @@ async def produce_openai_chat_completions(
         # Re-derive from payload.messages so tool_calls / role="tool" history
         # survives templating; fold system/developer into one leading system
         # message (templates reject "developer") and clear prompt to avoid a dup.
+        #
+        # tool_choice="none": keep history templating but advertise no tools
+        # (heal_gate is off, markup would relay as prose). A forced function
+        # narrows templating to that one schema. Both mirror the GGUF path,
+        # where llama-server honors tool_choice itself.
+        _sf_tc = payload.tool_choice
+        _sf_forced = None
+        if isinstance(_sf_tc, dict) and isinstance(_sf_tc.get("function"), dict):
+            _sf_forced = _sf_tc["function"].get("name")
+        if _sf_tc == "none":
+            _sf_client_catalog = None
+        elif isinstance(_sf_forced, str):
+            _sf_client_catalog = [
+                t
+                for t in payload.tools or []
+                if isinstance(t, dict)
+                and isinstance(t.get("function"), dict)
+                and t["function"].get("name") == _sf_forced
+            ] or None
+        else:
+            _sf_client_catalog = payload.tools
+        _sf_client_system_prompt = _apply_current_date_prompt(
+            _user_system_prompt,
+            request,
+            image = _sf_has_any_image or _video_clip is not None,
+            tools = bool(_sf_client_catalog),
+            controls = _date_controls,
+        )
         if served_images:
             # One pass over the conversation this renders, so markers and payloads stay in step.
             _sf_rebuilt, _sf_payloads = _conversation_with_image_markers(
@@ -31893,13 +33024,8 @@ async def produce_openai_chat_completions(
             gen_kwargs["images"] = await _decode_request_images(
                 backend, _sf_rebuilt_images, dict(zip(served_images, images)), reject = _reject
             )
-            gen_kwargs["messages"] = _append_current_date_note(
-                _set_or_prepend_system_message(
-                    _structured_tool_history_for_local_template(_sf_rebuilt), system_prompt
-                ),
-                request,
-                thread_id = getattr(payload, "thread_id", None),
-                system_prompt = system_prompt,
+            gen_kwargs["messages"] = _set_or_prepend_system_message(
+                _structured_tool_history_for_local_template(_sf_rebuilt), _sf_client_system_prompt
             )
         else:
             #
@@ -31923,11 +33049,8 @@ async def produce_openai_chat_completions(
                 trim_mcp_image_turns(
                     _sf_rebuilt, _sf_rebuilt_images, limit = _MCP_MAX_TOTAL_MODEL_IMAGES - 1
                 )
-            gen_kwargs["messages"] = _append_current_date_note(
-                _set_or_prepend_system_message(_sf_rebuilt, system_prompt),
-                request,
-                thread_id = getattr(payload, "thread_id", None),
-                system_prompt = system_prompt,
+            gen_kwargs["messages"] = _set_or_prepend_system_message(
+                _sf_rebuilt, _sf_client_system_prompt
             )
             gen_kwargs["images"] = _sf_rebuilt_images or None
         # Mark the turn that owns the image so the newest-user-turn scan does not move an
@@ -31942,26 +33065,7 @@ async def produce_openai_chat_completions(
                     gen_kwargs["messages"], _sf_image_ordinal
                 )
         gen_kwargs["system_prompt"] = ""
-        # tool_choice="none": keep history templating but advertise no tools
-        # (heal_gate is off, markup would relay as prose). A forced function
-        # narrows templating to that one schema. Both mirror the GGUF path,
-        # where llama-server honors tool_choice itself.
-        _sf_tc = payload.tool_choice
-        _sf_forced = None
-        if isinstance(_sf_tc, dict) and isinstance(_sf_tc.get("function"), dict):
-            _sf_forced = _sf_tc["function"].get("name")
-        if _sf_tc == "none":
-            gen_kwargs["tools"] = None
-        elif isinstance(_sf_forced, str):
-            gen_kwargs["tools"] = [
-                t
-                for t in payload.tools or []
-                if isinstance(t, dict)
-                and isinstance(t.get("function"), dict)
-                and t["function"].get("name") == _sf_forced
-            ] or None
-        else:
-            gen_kwargs["tools"] = payload.tools
+        gen_kwargs["tools"] = _sf_client_catalog
     elif _sf_renders_image and not sf_mcp_images:
         # The plain route too: later turns then share the prefix that holds the image.
         #
@@ -32813,14 +33917,84 @@ async def list_sandbox_files(
     return {"path": sandbox_dir, "files": files}
 
 
+def _sandbox_regular_file(session_id: str, filename: str) -> tuple[str, str]:
+    """(sandbox_dir, contained path) of a regular (not linked) file in the sandbox, or a 404."""
+    import stat as _stat
+
+    sandbox_dir, path = _contained_sandbox_path(session_id, filename)
+    try:
+        entry = os.lstat(path)
+    except OSError:
+        raise HTTPException(status_code = 404, detail = "Not found") from None
+    if not _stat.S_ISREG(entry.st_mode):
+        raise HTTPException(status_code = 404, detail = "Not found")
+    return sandbox_dir, path
+
+
+def _unmoved_sandbox_file(root: str, path: str) -> str:
+    """``path`` resolved, if it still names the same file under ``root``; a link swapped in since
+    the check is refused, since a reveal hands the file manager a name."""
+    try:
+        real = os.path.realpath(path)
+        expected = os.path.relpath(os.path.abspath(path), os.path.abspath(root))
+        actual = os.path.relpath(real, os.path.realpath(root))
+    except ValueError:
+        raise FileNotFoundError(path) from None
+    if expected != actual or actual.startswith(os.pardir) or not os.path.isfile(real):
+        raise FileNotFoundError(path)
+    return real
+
+
+@router.post("/sandbox/{session_id}/open")
+async def open_sandbox_file(
+    session_id: str,
+    request: Request,
+    file: str,
+    token: Optional[str] = None,
+    session: Optional[str] = None,
+):
+    """Open one of this chat's sandbox files with the OS default app.
+
+    Like reveal, this is the backend host's desktop, so it only means anything in
+    the desktop app. Only document and media types open: the files are
+    model-written, and a script or app would run rather than be viewed.
+    """
+    await _authenticate_header_or_query(request, token)
+    # It launches an app on the host's desktop, like the library and model reveals.
+    account_access.require_installation_owner()
+
+    from pathlib import Path
+
+    from starlette.concurrency import run_in_threadpool
+
+    from utils.paths.path_utils import open_in_default_app
+
+    root, path = await run_in_threadpool(_sandbox_regular_file, session or session_id, file)
+    try:
+        await run_in_threadpool(open_in_default_app, Path(path), Path(root))
+    except PermissionError:
+        raise HTTPException(
+            status_code = 415, detail = "This kind of file does not open outside Studio"
+        ) from None
+    except FileNotFoundError:
+        raise HTTPException(status_code = 404, detail = "Not found") from None
+    except Exception:
+        logger.error(f"Failed to open sandbox file {path}", exc_info = True)
+        raise HTTPException(status_code = 500, detail = "Failed to open the file") from None
+    return {"status": "ok"}
+
+
 @router.post("/sandbox/{session_id}/reveal")
 async def reveal_sandbox_dir(
     session_id: str,
     request: Request,
     token: Optional[str] = None,
     session: Optional[str] = None,
+    file: Optional[str] = None,
 ):
     """Open this chat's sandbox directory in the OS file manager.
+
+    With ``file``, that file is selected in its folder instead.
 
     The file manager is the backend host's, so this only means anything when the
     backend runs on the user's own machine, which is the desktop app.
@@ -32828,6 +34002,25 @@ async def reveal_sandbox_dir(
     await _authenticate_header_or_query(request, token)
 
     from starlette.concurrency import run_in_threadpool
+
+    if file:
+        # Like open: it drives the host's desktop, so only its owner may.
+        account_access.require_installation_owner()
+
+        from pathlib import Path
+
+        from utils.paths.path_utils import reveal_in_file_manager
+
+        root, path = await run_in_threadpool(_sandbox_regular_file, session or session_id, file)
+        try:
+            real = await run_in_threadpool(_unmoved_sandbox_file, root, path)
+            await run_in_threadpool(reveal_in_file_manager, Path(real))
+        except FileNotFoundError:
+            raise HTTPException(status_code = 404, detail = "Not found") from None
+        except Exception:
+            logger.error(f"Failed to reveal sandbox file {path}", exc_info = True)
+            raise HTTPException(status_code = 500, detail = "Failed to open file manager") from None
+        return {"status": "ok", "path": path}
 
     def _resolve_existing() -> "str | None":
         sandbox_dir = _sandbox_dir_for(session or session_id, create = False)
@@ -33704,7 +34897,7 @@ def _audio_cpp_speech_model_objects(created: int) -> list[dict]:
             return []
         objects = []
         for model in downloaded_models():
-            if model.audio_type is None:
+            if model.audio_type is None or model.task not in ("tts", "music"):
                 continue
             if account_access.managed_account() and not account_access.model_visible(
                 model.repo_id or model.id
@@ -34218,11 +35411,12 @@ async def openai_completions(request: Request, current_subject: str = Depends(ge
                 )
             except httpx.RequestError:
                 # The watcher closed the client out from under the request: report the cancel, not a transport failure.
-                if _cancel_event.is_set():
-                    raise asyncio.CancelledError()
+                _raise_if_nonstreaming_request_cancelled(_cancel_event)
                 raise
-            if _cancel_event.is_set():
-                raise asyncio.CancelledError()
+            _raise_if_nonstreaming_request_cancelled(_cancel_event)
+        except _NonStreamingRequestCancelled as exc:
+            api_monitor.finish(monitor_id, "cancelled")
+            raise _openai_admission_http_exception(exc, status_code = 499)
         except asyncio.CancelledError:
             api_monitor.finish(monitor_id, "cancelled")
             raise
@@ -34608,13 +35802,15 @@ async def _studio_embeddings(
         while not acquire.done():
             await asyncio.wait({acquire}, timeout = 0.25)
             if not acquire.done() and await _embeddings_client_gone(request):
-                raise asyncio.CancelledError()
-    except asyncio.CancelledError:
+                raise _NonStreamingRequestCancelled("Request cancelled.")
+    except (asyncio.CancelledError, _NonStreamingRequestCancelled) as exc:
         if not acquire.done():
             acquire.cancel()
         elif not acquire.cancelled() and acquire.exception() is None:
             semaphore.release()
         api_monitor.finish(monitor_id, "cancelled")
+        if isinstance(exc, _NonStreamingRequestCancelled):
+            raise _openai_admission_http_exception(exc, status_code = 499)
         raise
     try:
         gone = await _embeddings_client_gone(request)
@@ -34625,7 +35821,9 @@ async def _studio_embeddings(
     if gone:
         semaphore.release()
         api_monitor.finish(monitor_id, "cancelled")
-        raise asyncio.CancelledError()
+        raise _openai_admission_http_exception(
+            _NonStreamingRequestCancelled("Request cancelled."), status_code = 499
+        )
     worker = asyncio.ensure_future(asyncio.to_thread(_embed))
 
     def _release_embed_permit(finished) -> None:
@@ -34839,11 +36037,12 @@ async def openai_embeddings(request: Request, current_subject: str = Depends(get
             )
         except httpx.RequestError:
             # The watcher closed the client out from under the request: report the cancel, not a transport failure.
-            if _cancel_event.is_set():
-                raise asyncio.CancelledError()
+            _raise_if_nonstreaming_request_cancelled(_cancel_event)
             raise
-        if _cancel_event.is_set():
-            raise asyncio.CancelledError()
+        _raise_if_nonstreaming_request_cancelled(_cancel_event)
+    except _NonStreamingRequestCancelled as exc:
+        api_monitor.finish(monitor_id, "cancelled")
+        raise _openai_admission_http_exception(exc, status_code = 499)
     except asyncio.CancelledError:
         api_monitor.finish(monitor_id, "cancelled")
         raise
@@ -37881,15 +39080,21 @@ async def _mlx_count_chat_tokens(payload, request = None) -> Optional[JSONRespon
     system_prompt, messages, _image = await _extract_content_parts_async(payload.messages)
     # The completion applies this once for both non-GGUF backends before it branches.
     # Only with a request: the helper's requestless mode injects the date unconditionally.
+    _user_system_prompt = system_prompt
+    # what makes generation render through the processor's template: an attachment, a clip, or an
+    # MCP picture it really promotes, checked off the loop as the envelope can be 12 MB.
+    _renders_media = (
+        _request_has_attached_image(payload)
+        or _request_has_video(payload)
+        or (
+            _request_has_promotable_mcp_images(payload, exact = False)
+            and await asyncio.to_thread(_request_has_promotable_mcp_images, payload)
+        )
+    )
+    _date_controls = _template_controls(payload)
     if request is not None:
         system_prompt = _apply_current_date_prompt(
-            system_prompt, request, thread_id = getattr(payload, "thread_id", None)
-        )
-        messages = _append_current_date_note(
-            messages,
-            request,
-            thread_id = getattr(payload, "thread_id", None),
-            system_prompt = system_prompt,
+            system_prompt, request, image = _renders_media, controls = _date_controls
         )
 
     from state.tool_policy import get_tool_policy as _get_tool_policy_mlx
@@ -38005,12 +39210,16 @@ async def _mlx_count_chat_tokens(payload, request = None) -> Optional[JSONRespon
             ),
             vision = False,
         )
-        messages = _append_current_date_note(
-            _set_or_prepend_system_message(messages, system_prompt),
-            request,
-            thread_id = getattr(payload, "thread_id", None),
-            system_prompt = system_prompt,
-        )
+        _client_system_prompt = _user_system_prompt
+        if request is not None:
+            _client_system_prompt = _apply_current_date_prompt(
+                _user_system_prompt,
+                request,
+                image = _renders_media,
+                tools = bool(_tools_to_use),
+                controls = _date_controls,
+            )
+        messages = _set_or_prepend_system_message(messages, _client_system_prompt)
         system_prompt = ""
     elif _tools_to_use:
         # A PENDING turn is the shape this loop answers from exactly these messages, splicing
@@ -38064,10 +39273,13 @@ async def _mlx_count_chat_tokens(payload, request = None) -> Optional[JSONRespon
         # so without this the count is short exactly that line for these completions.
         if request is not None:
             system_prompt = _apply_current_date_prompt(
-                system_prompt,
+                _user_system_prompt,
                 request,
                 include_api_key = True,
-                thread_id = getattr(payload, "thread_id", None),
+                template_default = False,
+                image = _renders_media,
+                tools = True,
+                controls = _date_controls,
             )
         if _nudge:
             system_prompt = (system_prompt.rstrip() + "\n\n" + _nudge) if system_prompt else _nudge
@@ -38272,18 +39484,13 @@ async def chat_count_tokens(
         openai_messages = _coalesce_consecutive_user_turns(openai_messages)
     _system_prompt, _, _ = await _extract_content_parts_async(payload.messages)
     # the verbatim passthrough carries no date line, so counting one here would overcount it.
+    _user_system_prompt = _system_prompt
+    _date_controls = _template_controls(payload)
     if not _takes_passthrough:
         _system_prompt = _apply_current_date_prompt(
-            _system_prompt, request, thread_id = getattr(payload, "thread_id", None)
+            _system_prompt, request, controls = _date_controls
         )
     openai_messages = _set_or_prepend_system_message(openai_messages, _system_prompt)
-    if not _takes_passthrough:
-        openai_messages = _append_current_date_note(
-            openai_messages,
-            request,
-            thread_id = getattr(payload, "thread_id", None),
-            system_prompt = _system_prompt,
-        )
 
     # A PENDING turn (unanswered user message or tool result) is the one shape the tool loop
     # answers from exactly these messages, splicing in whatever build_rag_autoinject retrieves --
@@ -38351,10 +39558,12 @@ async def chat_count_tokens(
             openai_messages = _set_or_prepend_system_message(
                 openai_messages,
                 _apply_current_date_prompt(
-                    _system_prompt,
+                    _user_system_prompt,
                     request,
                     include_api_key = True,
-                    thread_id = getattr(payload, "thread_id", None),
+                    template_default = False,
+                    tools = True,
+                    controls = _date_controls,
                 ),
             )
             _count_nudge = await _apply_rag_nudge(
@@ -38603,7 +39812,6 @@ async def anthropic_count_tokens(
             openai_messages,
             request,
             include_api_key = _count_server_tools,
-            thread_id = getattr(payload, "thread_id", None),
         )
     if _count_server_tools:
         openai_tools = _count_selected_server_tools
@@ -38916,9 +40124,6 @@ async def anthropic_messages(
             "repetition_penalty": payload.repetition_penalty,
             "presence_penalty": payload.presence_penalty,
         },
-        preset_defaults = _custom_request_defaults(
-            getattr(llama_backend, "model_identifier", None) or model_name
-        ),
     )
     temperature = _anthropic_sampling["temperature"]
     top_p = _anthropic_sampling["top_p"]
@@ -39000,7 +40205,6 @@ async def anthropic_messages(
             openai_messages,
             request,
             include_api_key = server_tools,
-            thread_id = getattr(payload, "thread_id", None),
         )
 
     # Anthropic tool_choice.disable_parallel_tool_use caps the response to a
@@ -39029,6 +40233,9 @@ async def anthropic_messages(
     async def _monitored_anthropic(coro):
         try:
             response = await coro
+        except _NonStreamingRequestCancelled as exc:
+            api_monitor.finish(monitor_id, "cancelled")
+            raise _anthropic_admission_http_exception(exc, status_code = 499)
         except asyncio.CancelledError:
             cancel_event.set()
             api_monitor.finish(monitor_id, "cancelled")
@@ -40978,19 +42185,26 @@ async def _anthropic_passthrough_non_streaming(
         )
     )
 
-    async def _post(payload_body):
-        nonlocal target_url
+    async def _post_once(payload_body):
         try:
-            return await _client.post(
+            response = await _client.post(
                 target_url,
                 json = payload_body,
                 timeout = _llama_non_streaming_generation_timeout(),
             )
-        except httpx.RequestError as exc:
+        except httpx.RequestError:
             # The watcher closes the client to break a blocked POST, so a transport error
             # with the event set is the cancel, not a failure.
-            if cancel_event is not None and cancel_event.is_set():
-                raise asyncio.CancelledError()
+            _raise_if_nonstreaming_request_cancelled(cancel_event)
+            raise
+        _raise_if_nonstreaming_request_cancelled(cancel_event)
+        return response
+
+    async def _post(payload_body):
+        nonlocal target_url
+        try:
+            return await _post_once(payload_body)
+        except httpx.RequestError as exc:
             # Nothing was returned yet, so retry once against the respawned server's
             # new port; the nudge retry below then reuses the same fresh URL.
             retry_url = (
@@ -41001,11 +42215,7 @@ async def _anthropic_passthrough_non_streaming(
             if retry_url is None:
                 raise
             target_url = retry_url
-            return await _client.post(
-                target_url,
-                json = payload_body,
-                timeout = _llama_non_streaming_generation_timeout(),
-            )
+            return await _post_once(payload_body)
 
     try:
         resp = await _post(body)
@@ -42905,6 +44115,9 @@ async def _openai_passthrough_non_streaming(
             status_code = 499,
             detail = _openai_admission_error_body(exc, status_code = 499),
         )
+    except _NonStreamingRequestCancelled as exc:
+        api_monitor.finish(monitor_id, "cancelled")
+        raise _openai_admission_http_exception(exc, status_code = 499)
     except asyncio.CancelledError:
         api_monitor.finish(monitor_id, "cancelled")
         reservation.cancel()
@@ -42983,11 +44196,9 @@ async def _openai_passthrough_non_streaming_upstream(
                     timeout = _llama_non_streaming_generation_timeout(),
                 )
             except httpx.RequestError:
-                if cancel.is_set():
-                    raise asyncio.CancelledError()
+                _raise_if_nonstreaming_request_cancelled(cancel)
                 raise
-            if cancel.is_set():
-                raise asyncio.CancelledError()
+            _raise_if_nonstreaming_request_cancelled(cancel)
             return response
         finally:
             # Bounded: the watcher polls Request.is_disconnected(), which can swallow
@@ -44386,6 +45597,25 @@ async def get_gallery_audio_file(
     )
 
 
+@studio_router.get("/audio/gallery/{audio_id}/source/file")
+async def get_gallery_audio_source_file(
+    audio_id: str, current_subject: str = Depends(get_current_subject)
+):
+    """The upload a conversion clip converted, when it kept a copy."""
+    from core.inference import audio_gallery
+
+    path = await asyncio.to_thread(audio_gallery.owned_source_path, audio_id)
+    if path is None:
+        raise HTTPException(status_code = 404, detail = "Audio not found.")
+    from fastapi.responses import FileResponse
+
+    return FileResponse(
+        path,
+        media_type = "audio/wav",
+        headers = {"Cache-Control": "private, max-age=31536000, immutable"},
+    )
+
+
 @studio_router.patch("/audio/gallery/{audio_id}", response_model = AudioGalleryItem)
 async def update_gallery_audio_flags(
     audio_id: str,
@@ -44462,12 +45692,15 @@ async def delete_gallery_audio(audio_id: str, current_subject: str = Depends(get
 
 
 @studio_router.delete("/audio/gallery")
-async def clear_gallery_audio(current_subject: str = Depends(get_current_subject)):
+async def clear_gallery_audio(
+    workflow: Optional[Literal["speak", "clone", "edit", "convert", "music", "separate"]] = None,
+    current_subject: str = Depends(get_current_subject),
+):
     from core.inference import audio_gallery
     from core.inference.gallery_flags import FlagsUnavailable
 
     try:
-        removed = await asyncio.to_thread(audio_gallery.clear)
+        removed = await asyncio.to_thread(audio_gallery.clear, workflow = workflow)
     except FlagsUnavailable as exc:
         logger.warning("audio_gallery.clear_blocked: %s", exc)
         raise HTTPException(
@@ -44476,6 +45709,163 @@ async def clear_gallery_audio(current_subject: str = Depends(get_current_subject
             "avoid deleting archived clips.",
         )
     return {"removed": removed}
+
+
+@studio_router.post("/audio/inputs", status_code = 201, response_model = AudioInputRecord)
+async def upload_audio_input(
+    request: Request,
+    response: Response,
+    name: str = Query("audio", max_length = 255),
+    current_subject: str = Depends(get_current_subject),
+):
+    """Store a raw audio body (any container), decoded once to WAV; a re-upload of the same audio
+    returns the existing record with 200."""
+    from core.inference import audio_inputs
+    from utils.upload_limits import AUDIO_INPUT_MAX_BYTES
+
+    declared = request.headers.get("content-length")
+    try:
+        if declared is not None and int(declared) > AUDIO_INPUT_MAX_BYTES:
+            raise HTTPException(status_code = 413, detail = "Audio is too large.")
+    except ValueError:
+        pass
+    try:
+        record, created = await audio_inputs.save_stream(request.stream(), name)
+    except audio_inputs.AudioInputError as exc:
+        raise _audio_source_error(exc) from None
+    if not created:
+        response.status_code = 200
+    return AudioInputRecord(**record)
+
+
+@studio_router.get("/audio/inputs/{input_id}/file")
+async def get_audio_input_file(input_id: str, current_subject: str = Depends(get_current_subject)):
+    from core.inference import audio_inputs
+    from fastapi.responses import FileResponse
+
+    path = await asyncio.to_thread(audio_inputs.input_path, input_id)
+    if path is None:
+        raise HTTPException(status_code = 404, detail = "This reference expired. Add it again.")
+    return FileResponse(
+        path, media_type = "audio/wav", headers = {"Cache-Control": "private, max-age=3600"}
+    )
+
+
+@studio_router.delete("/audio/inputs/{input_id}")
+async def delete_audio_input(input_id: str, current_subject: str = Depends(get_current_subject)):
+    from core.inference import audio_inputs
+    if not await asyncio.to_thread(audio_inputs.delete, input_id):
+        raise HTTPException(status_code = 404, detail = "Audio not found.")
+    return {"removed": True}
+
+
+@studio_router.post("/audio/inputs/{input_id}/transcribe", response_model = AudioInputTranscript)
+async def transcribe_audio_input(
+    input_id: str,
+    body: AudioInputTranscribeRequest,
+    request: Request,
+    clip_id: Optional[str] = Query(None, max_length = 128),
+    voice_id: Optional[str] = Query(None, max_length = 128),
+    current_subject: str = Depends(get_current_subject),
+):
+    """What is said in an input (or, with the path id ``source``, a history clip or saved voice),
+    over the first 30 s a clone uses. Saves nothing to the transcript history."""
+    from core.inference import audio_inputs
+    from core.inference.audio_cpp_convert import CONVERT_SOURCE_MAX_SECONDS
+
+    ref = {
+        # ``source`` (or ``-``) stands for "the clip_id or voice_id in the query". A real input id
+        # together with one of those names two sources and is refused.
+        "input_id": None if input_id in ("source", "-") else input_id,
+        "clip_id": clip_id,
+        "voice_id": voice_id,
+    }
+
+    def _prepare() -> bytes:
+        source = audio_inputs.resolve_source(ref)
+        if body.purpose == "convert":
+            cap = CONVERT_SOURCE_MAX_SECONDS
+        else:
+            cap = None if source.kind == "voice" else audio_inputs.REFERENCE_MAX_SECONDS
+        path = audio_inputs.prepared_path(source, 16000, max_seconds = cap)
+        return path.read_bytes()
+
+    try:
+        raw = await asyncio.to_thread(_prepare)
+    except audio_inputs.AudioInputError as exc:
+        raise _audio_source_error(exc) from None
+    result = await _transcribe_audio_result(
+        raw, body.model, body.language, False, body.engine, request, body.device
+    )
+    return AudioInputTranscript(
+        text = str(result.get("text") or "").strip(),
+        language = result.get("language") or None,
+        model = body.model,
+    )
+
+
+@studio_router.get("/audio/voices", response_model = AudioVoiceListResponse)
+async def list_audio_voices(current_subject: str = Depends(get_current_subject)):
+    from core.inference import audio_voices
+    return AudioVoiceListResponse(voices = await asyncio.to_thread(audio_voices.list_voices))
+
+
+@studio_router.post("/audio/voices", status_code = 201, response_model = AudioVoice)
+async def create_audio_voice(
+    body: AudioVoiceCreate, current_subject: str = Depends(get_current_subject)
+):
+    from core.inference import audio_inputs, audio_voices
+    def _create() -> dict:
+        source = audio_inputs.resolve_source(body.source.model_dump(exclude_none = True))
+        return audio_voices.create(
+            source.path,
+            {"name": body.name, "transcript": body.transcript, "language": body.language},
+        )
+
+    try:
+        return AudioVoice(**await asyncio.to_thread(_create))
+    except audio_inputs.AudioInputError as exc:
+        raise _audio_source_error(exc) from None
+
+
+@studio_router.patch("/audio/voices/{voice_id}", response_model = AudioVoice)
+async def update_audio_voice(
+    voice_id: str,
+    body: AudioVoicePatch,
+    current_subject: str = Depends(get_current_subject),
+):
+    from core.inference import audio_inputs, audio_voices
+
+    try:
+        record = await asyncio.to_thread(
+            audio_voices.update, voice_id, body.model_dump(exclude_unset = True)
+        )
+    except audio_inputs.AudioInputError as exc:
+        raise _audio_source_error(exc) from None
+    if record is None:
+        raise HTTPException(status_code = 404, detail = "Voice not found.")
+    return AudioVoice(**record)
+
+
+@studio_router.delete("/audio/voices/{voice_id}")
+async def delete_audio_voice(voice_id: str, current_subject: str = Depends(get_current_subject)):
+    from core.inference import audio_voices
+    if not await asyncio.to_thread(audio_voices.delete, voice_id):
+        raise HTTPException(status_code = 404, detail = "Voice not found.")
+    return {"removed": True}
+
+
+@studio_router.get("/audio/voices/{voice_id}/file")
+async def get_audio_voice_file(voice_id: str, current_subject: str = Depends(get_current_subject)):
+    from core.inference import audio_voices
+    from fastapi.responses import FileResponse
+
+    path = await asyncio.to_thread(audio_voices.voice_path, voice_id)
+    if path is None:
+        raise HTTPException(status_code = 404, detail = "Voice not found.")
+    return FileResponse(
+        path, media_type = "audio/wav", headers = {"Cache-Control": "private, max-age=3600"}
+    )
 
 
 @studio_router.get("/audio/transcripts")
@@ -44489,20 +45879,48 @@ async def list_gallery_transcripts(
     return await asyncio.to_thread(transcript_gallery.list_transcripts, limit, before, archived)
 
 
-@studio_router.patch("/audio/transcripts/{transcript_id}")
-async def archive_gallery_transcript(
-    transcript_id: str,
-    patch: AudioGalleryFlagsPatch,
-    current_subject: str = Depends(get_current_subject),
+@studio_router.get("/audio/transcripts/{transcript_id}")
+async def get_gallery_transcript(
+    transcript_id: str, current_subject: str = Depends(get_current_subject)
 ):
+    """One transcript in full: its segments, words and speakers included."""
     from core.inference import transcript_gallery
 
-    if patch.archived is None:
-        raise HTTPException(status_code = 422, detail = "Specify whether to archive this transcript.")
-    record = await asyncio.to_thread(transcript_gallery.set_archived, transcript_id, patch.archived)
+    record = await asyncio.to_thread(transcript_gallery.get, transcript_id)
     if record is None:
         raise HTTPException(status_code = 404, detail = "Transcript not found.")
     return record
+
+
+@studio_router.patch("/audio/transcripts/{transcript_id}")
+async def archive_gallery_transcript(
+    transcript_id: str,
+    patch: TranscriptPatch,
+    current_subject: str = Depends(get_current_subject),
+):
+    """Archive or restore a transcript, and name its speakers; returns its list row."""
+    from core.inference import transcript_gallery
+
+    if patch.archived is None and patch.speaker_names is None:
+        raise HTTPException(status_code = 422, detail = "Specify whether to archive this transcript.")
+    record = None
+    if patch.speaker_names is not None:
+        try:
+            record = await asyncio.to_thread(
+                transcript_gallery.set_speaker_names, transcript_id, patch.speaker_names
+            )
+        except transcript_gallery.TranscriptPatchError as exc:
+            raise HTTPException(status_code = 422, detail = str(exc)) from None
+        if record is None:
+            raise HTTPException(status_code = 404, detail = "Transcript not found.")
+    if patch.archived is not None:
+        archived = await asyncio.to_thread(
+            transcript_gallery.set_archived, transcript_id, patch.archived
+        )
+        if archived is None:
+            raise HTTPException(status_code = 404, detail = "Transcript not found.")
+        record = archived
+    return transcript_gallery.summary(record)
 
 
 @studio_router.delete("/audio/transcripts/{transcript_id}")

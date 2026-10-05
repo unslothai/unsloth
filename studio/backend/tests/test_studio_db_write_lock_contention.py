@@ -192,6 +192,52 @@ def test_concurrent_openers_all_get_normal(db):
     assert results == [NORMAL] * 16
 
 
+def test_studio_db_factories_serialize_connection_close(db, monkeypatch):
+    """#10022: every studio.db opener shares one open/close gate (SQLite 3.51.0-3.51.1 deadlock)."""
+    from storage import credential_secrets, library_db, mcp_servers_db, providers_db
+
+    modules = (providers_db, mcp_servers_db, credential_secrets, library_db)
+    for module in modules:
+        monkeypatch.setattr(module, "studio_db_path", lambda db = db: db)
+        monkeypatch.setattr(module, "_schema_ready", set())
+    factories = [studio_db.get_connection] + [module.get_connection for module in modules]
+
+    class TrackingLock:
+        def __init__(self):
+            self._lock = threading.Lock()
+            self.active = self.maximum = self.entered = 0
+
+        def __enter__(self):
+            self._lock.acquire()
+            self.active += 1
+            self.entered += 1
+            self.maximum = max(self.maximum, self.active)
+
+        def __exit__(self, *exc):
+            self.active -= 1
+            self._lock.release()
+
+    gate = TrackingLock()
+    monkeypatch.setattr(studio_db, "_CONNECTION_GATE", gate)
+    barrier = threading.Barrier(len(factories))
+    errors = []
+
+    def open_and_close(factory):
+        try:
+            conn = factory()
+            barrier.wait(timeout = 5)
+            conn.close()
+        except BaseException as exc:  # noqa: BLE001
+            errors.append(exc)
+
+    threads = [threading.Thread(target = open_and_close, args = (f,)) for f in factories]
+    _shared_setup_1(threads)
+
+    assert not errors, errors
+    assert gate.entered >= 2 * len(factories)
+    assert gate.maximum == 1
+
+
 # --- the attachment inventory is dirtied by attachments, not by bookkeeping -------------
 
 
