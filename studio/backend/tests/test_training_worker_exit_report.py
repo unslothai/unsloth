@@ -98,6 +98,16 @@ def test_the_reason_is_redacted():
     assert "hf_abcdefghijklmnopqrstuvwxyz0123" not in message
 
 
+def test_a_marked_recovered_traceback_is_not_the_cause():
+    text = (
+        "\x1fretry failed\n"
+        "    | Traceback (most recent call last):\n"
+        "    | RuntimeError: transient failure\n"
+        "step log\n"
+    )
+    assert first_crash_line(text) == ""
+
+
 def _die_after_a_long_stack(path: str) -> None:
     assert install_worker_stderr_mirror(path) is True
     sys.stderr.write("LLVM ERROR: Cannot select: intrinsic %llvm.amdgcn.fdot2.bf16.bf16\n")

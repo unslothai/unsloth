@@ -95,6 +95,13 @@ def _default_target(
     # First thing in the child (before torch): self-bind to parent death and scrub the native path
     # secret, like the other workers. Token policy first of all, ahead of the account branch
     # below, which returns: both children need it applied.
+    if unsloth_stderr_mirror_path:
+        # Before the token setup below, so its failure is captured too.
+        try:
+            from utils.worker_stderr import install_worker_stderr_mirror
+            install_worker_stderr_mirror(unsloth_stderr_mirror_path)
+        except Exception:
+            pass
     if not config.get("allow_ambient", True):
         # Before any huggingface_hub import, as the LLM worker does: a child env is seeded from
         # the parent's, so not setting a token is not denying one.
@@ -108,10 +115,6 @@ def _default_target(
             os.environ["HF_TOKEN_PATH"] = os.devnull
 
     account = config.pop("_job_account", None)
-    mirror = {}
-    if unsloth_stderr_mirror_path:
-        from utils.native_path_leases import STDERR_MIRROR_KWARG
-        mirror[STDERR_MIRROR_KWARG] = unsloth_stderr_mirror_path
     if account is not None:
         from core.training.account_jobs import run_account_child
         from utils.native_path_leases import run_without_native_path_secret
@@ -124,7 +127,6 @@ def _default_target(
             event_queue = event_queue,
             stop_queue = stop_queue,
             config = config,
-            **mirror,
         )
         return
     from utils.native_path_leases import run_without_native_path_secret
@@ -134,7 +136,6 @@ def _default_target(
         event_queue = event_queue,
         stop_queue = stop_queue,
         config = config,
-        **mirror,
     )
 
 

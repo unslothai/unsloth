@@ -171,7 +171,13 @@ def _is_crash_marker(line: str) -> bool:
 
 def first_crash_line(text: str) -> str:
     """The reason in the terminal crash block, else empty (a SIGKILL leaves the exit code alone)."""
-    lines = [line.strip() for line in (text or "").splitlines() if line.strip()]
+    # Marked log records (a recovered `logger.exception`) are never the cause.
+    lines = [
+        line.strip()
+        for line in (text or "").splitlines()
+        if line.strip()
+        and not line.startswith((LOG_RECORD_START_MARK, LOG_RECORD_CONTINUATION_PREFIX))
+    ]
     # Only the last few non-stack lines: an earlier, recovered "out of memory" is not the cause.
     tail = []
     for line in reversed(lines):
