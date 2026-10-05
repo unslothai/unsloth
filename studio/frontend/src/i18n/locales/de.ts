@@ -2245,8 +2245,6 @@ export const de = {
       showResponseModel: "Antwortmodell anzeigen",
       showResponseModelDescription:
         "Modellmetadaten in Antworten des Assistenten anzeigen.",
-      inlineReadAloud: "Vorlesen bei Antworten",
-      inlineReadAloudDescription: "Vorlesen bei jeder Antwort anzeigen statt im Menü „Mehr“.",
       inlineEditResponse: "Antwort bearbeiten bei Antworten",
       inlineEditResponseDescription: "Antwort bearbeiten bei jeder Antwort anzeigen statt im Menü „Mehr“.",
       modelDisclaimer: "Modell-Hinweis anzeigen",

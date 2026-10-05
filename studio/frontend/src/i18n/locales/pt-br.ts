@@ -2223,8 +2223,6 @@ export const ptBR = {
       showResponseModel: "Mostrar o modelo da resposta",
       showResponseModelDescription:
         "Mostra os metadados do modelo nas respostas do assistente.",
-      inlineReadAloud: "Leitura em voz alta nas respostas",
-      inlineReadAloudDescription: "Mostrar Leitura em voz alta em cada resposta, em vez de no menu Mais.",
       inlineEditResponse: "Editar resposta nas respostas",
       inlineEditResponseDescription: "Mostrar Editar resposta em cada resposta, em vez de no menu Mais.",
       modelDisclaimer: "Mostrar aviso do modelo",

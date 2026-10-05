@@ -320,6 +320,7 @@ import { MicIcon } from "@/lib/mic-icon";
 import { downloadFile, isDownloadCancelled } from "@/lib/native-files";
 import { toast } from "@/lib/toast";
 import { Tick02Icon } from "@/lib/tick-icon";
+import { BranchNextIcon, BranchPrevIcon, ContinueArrowIcon, CopyActionIcon } from "@/lib/action-bar-icons";
 import { cn } from "@/lib/utils";
 import {
   ActionBarMorePrimitive,
@@ -339,7 +340,6 @@ import {
   AttachmentIcon,
   Bookmark02Icon,
   CodeIcon,
-  Copy01Icon,
   Delete02Icon,
   Download01Icon,
   Edit03Icon,
@@ -350,7 +350,6 @@ import {
   Image03Icon,
   McpServerIcon,
   PencilRulerIcon,
-  PlayIcon,
   Scroll01Icon,
   Telescope02Icon,
   VolumeMute02Icon,
@@ -363,8 +362,6 @@ import {
   ArrowDownIcon,
   ArrowUpIcon,
   ChevronDownIcon,
-  ChevronLeftIcon,
-  ChevronRightIcon,
   Columns2Icon,
   SlidersHorizontalIcon,
   GitBranchIcon,
@@ -8304,7 +8301,8 @@ const useThreadResearchActive = (): boolean => {
   });
 };
 
-const DeleteMessageButton: FC = () => {
+/** Deletes this message (a prompt with its replies); `hidden` for research messages. */
+function useDeleteMessage() {
   const aui = useAui();
   const messageId = useAuiState(({ message }) => message.id);
   const isRunning = useAuiState(({ thread }) => thread.isRunning);
@@ -8354,7 +8352,12 @@ const DeleteMessageButton: FC = () => {
     }
   };
 
-  if (researchRunId || ownsResearchMessage) {
+  return { handleDelete, isRunning, hidden: Boolean(researchRunId || ownsResearchMessage) };
+}
+
+const DeleteMessageButton: FC = () => {
+  const { handleDelete, isRunning, hidden } = useDeleteMessage();
+  if (hidden) {
     return null;
   }
 
@@ -8371,6 +8374,24 @@ const DeleteMessageButton: FC = () => {
         className="size-icon"
       />
     </TooltipIconButton>
+  );
+};
+
+// The More menu's Delete, last and in red.
+const DeleteMessageMenuItem: FC = () => {
+  const { handleDelete, isRunning, hidden } = useDeleteMessage();
+  if (hidden) {
+    return null;
+  }
+  return (
+    <ActionBarMorePrimitive.Item
+      disabled={isRunning}
+      onSelect={() => void handleDelete()}
+      className="aui-action-bar-more-item flex cursor-pointer select-none items-center gap-2 rounded-[12px] px-3 py-2 text-sm text-destructive outline-none hover:bg-destructive/10 focus:bg-destructive/10 data-[disabled]:pointer-events-none data-[disabled]:opacity-50"
+    >
+      <HugeiconsIcon icon={Delete02Icon} strokeWidth={1.75} className="size-icon" />
+      Delete
+    </ActionBarMorePrimitive.Item>
   );
 };
 
@@ -8402,7 +8423,7 @@ const CopyButton: FC = () => {
   return (
     <TooltipIconButton tooltip="Copy" onClick={handleCopy}>
       <HugeiconsIcon
-        icon={copied ? Tick02Icon : Copy01Icon}
+        icon={copied ? Tick02Icon : CopyActionIcon}
         strokeWidth={1.75}
         className="size-icon"
       />
@@ -8461,7 +8482,7 @@ const ContinueResponseButtonForLastMessage: FC = () => {
         startContinuation();
       }}
     >
-      <HugeiconsIcon icon={PlayIcon} strokeWidth={1.75} className="size-icon" />
+      <HugeiconsIcon icon={ContinueArrowIcon} strokeWidth={1.75} className="size-icon" />
     </TooltipIconButton>
   );
 };
@@ -8516,8 +8537,7 @@ const AssistantActionBar: FC = () => {
   const activeProjectId = useChatRuntimeStore((s) => s.activeProjectId);
   const [detailsOpen, setDetailsOpen] = useState(false);
   const ttsEnabled = useVoiceSettingsStore((s) => s.ttsEnabled);
-  // Off by default: Read aloud and Edit response live in the More menu.
-  const inlineReadAloud = useChatPreferencesStore((s) => s.showInlineReadAloud);
+  // Off by default: Edit response lives in the More menu.
   const inlineEdit = useChatPreferencesStore((s) => s.showInlineEditResponse);
   // hideWhenRunning is thread-level, so a new run would hide this bar and its
   // only Stop reading control while read-aloud keeps playing; keep it shown.
@@ -8547,16 +8567,7 @@ const AssistantActionBar: FC = () => {
         <CopyButton />
         {inlineEdit && <EditAssistantMessageButton />}
         <ContinueResponseButton />
-        {!researchRunId && !researchActive && (
-          <ActionBarPrimitive.Reload asChild={true}>
-            <TooltipIconButton tooltip="Refresh">
-              <RefreshGlyph strokeWidth={1.75} className="size-icon" />
-            </TooltipIconButton>
-          </ActionBarPrimitive.Reload>
-        )}
-        <ForkCountBadge />
-        <DeleteMessageButton />
-        {inlineReadAloud && ttsEnabled && (
+        {ttsEnabled && (
           <MessagePrimitive.If speaking={false}>
             <ActionBarPrimitive.Speak asChild={true}>
               <TooltipIconButton tooltip="Read aloud" aria-label="Read aloud">
@@ -8578,6 +8589,14 @@ const AssistantActionBar: FC = () => {
             </TooltipIconButton>
           </ActionBarPrimitive.StopSpeaking>
         </MessagePrimitive.If>
+        {!researchRunId && !researchActive && (
+          <ActionBarPrimitive.Reload asChild={true}>
+            <TooltipIconButton tooltip="Refresh">
+              <RefreshGlyph strokeWidth={1.75} className="size-icon" />
+            </TooltipIconButton>
+          </ActionBarPrimitive.Reload>
+        )}
+        <ForkCountBadge />
         {/* Non-modal: a modal Radix menu writes `pointer-events: none` on <body>, and
             that is an INHERITED property, so every open invalidates style for the whole
             document. On a long thread that recalc is the bulk of the open+close cost. */}
@@ -8601,23 +8620,9 @@ const AssistantActionBar: FC = () => {
             {/* Scroll an inner viewport: a scrollbar on the rounded surface squares its corners.
                 The surface padding insets it clear of the curve. */}
             <div className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto">
-              {/* Prevent an outside dismissal from triggering Delete. */}
+              {/* Keep the click that dismisses the menu off the bar's buttons. */}
               <MenuDismissGuard triggerRef={moreMenuTriggerRef} />
               <MessageMenuTime onShowDetails={() => setDetailsOpen(true)} />
-              {!inlineReadAloud && ttsEnabled && (
-                <MessagePrimitive.If speaking={false}>
-                  <ActionBarPrimitive.Speak asChild={true}>
-                    <ActionBarMorePrimitive.Item className="aui-action-bar-more-item flex cursor-pointer select-none items-center gap-2 rounded-[12px] px-3 py-2 text-sm outline-none hover:bg-accent hover:text-accent-foreground focus:bg-accent focus:text-accent-foreground data-[disabled]:pointer-events-none data-[disabled]:opacity-50">
-                      <HugeiconsIcon
-                        icon={Volume02Icon}
-                        strokeWidth={1.75}
-                        className="size-icon"
-                      />
-                      Read aloud
-                    </ActionBarMorePrimitive.Item>
-                  </ActionBarPrimitive.Speak>
-                </MessagePrimitive.If>
-              )}
               {!inlineEdit && <EditAssistantMessageMenuItem />}
               <ActionBarMorePrimitive.Item
                 disabled={forkDisabled}
@@ -8693,6 +8698,7 @@ const AssistantActionBar: FC = () => {
                   Save to project sources
                 </ActionBarMorePrimitive.Item>
               )}
+              <DeleteMessageMenuItem />
             </div>
           </ActionBarMorePrimitive.Content>
         </ActionBarMorePrimitive.Root>
@@ -8873,10 +8879,10 @@ const BranchPicker: FC<BranchPickerPrimitive.Root.Props> = ({
           aria-label="Previous"
           className="aui-branch-chevron-btn"
         >
-          <ChevronLeftIcon strokeWidth={1.25} className="size-[calc(36px*var(--ui-space-scale,1))]" />
+          <HugeiconsIcon icon={BranchPrevIcon} strokeWidth={1.75} className="size-4" />
         </button>
       </BranchPickerPrimitive.Previous>
-      <span className="aui-branch-picker-state font-mono text-ui-13 tabular-nums">
+      <span className="aui-branch-picker-state text-ui-13 leading-none tabular-nums">
         <BranchPickerPrimitive.Number />/<BranchPickerPrimitive.Count />
       </span>
       <BranchPickerPrimitive.Next asChild={true}>
@@ -8885,7 +8891,7 @@ const BranchPicker: FC<BranchPickerPrimitive.Root.Props> = ({
           aria-label="Next"
           className="aui-branch-chevron-btn"
         >
-          <ChevronRightIcon strokeWidth={1.25} className="size-[calc(36px*var(--ui-space-scale,1))]" />
+          <HugeiconsIcon icon={BranchNextIcon} strokeWidth={1.75} className="size-4" />
         </button>
       </BranchPickerPrimitive.Next>
     </BranchPickerPrimitive.Root>
