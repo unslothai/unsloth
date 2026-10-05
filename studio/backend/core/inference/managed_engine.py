@@ -26,6 +26,7 @@ from utils.hardware.hardware import resolve_requested_gpu_ids
 
 from .engine_install import (
     ENGINE_NAMES,
+    built_for_this_gpu,
     driver_library_path,
     engine_lease,
     installed,
@@ -82,7 +83,9 @@ def validate_load(engine: str, request) -> list[int]:
         raise ValueError(
             f"Studio's packages changed since {ENGINE_NAMES[engine]} was installed. Repair it in Settings > System > Inference engines."
         )
-    if info.get("profile_digest") != profile_digest(engine) and not info.get("restored"):
+    if info.get("profile_digest") != profile_digest(engine) and not (
+        info.get("restored") and built_for_this_gpu(engine, info)
+    ):
         raise ValueError(
             f"Update {ENGINE_NAMES[engine]} in Settings > System > Inference engines first."
         )

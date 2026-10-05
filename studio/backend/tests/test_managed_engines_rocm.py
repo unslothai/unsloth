@@ -309,6 +309,47 @@ def test_amd_refuses_4_bit_before_unloading(rocm, monkeypatch):
         )
 
 
+@_LINUX
+def test_a_rollback_never_crosses_gpu_platforms(rocm, monkeypatch, tmp_path):
+    from models.inference import LoadRequest
+
+    monkeypatch.setattr(install, "engine_root", lambda: tmp_path)
+    monkeypatch.setattr(install, "support_reason", lambda *a, **k: None)
+    monkeypatch.setattr(install, "_studio_packages", lambda: {})
+    monkeypatch.setattr(install, "_jobs", {})
+    monkeypatch.setattr(managed_engine, "support_reason", lambda *a: None)
+    monkeypatch.setattr(managed_engine, "resolve_requested_gpu_ids", lambda ids: [0])
+    for directory in ("env-cuda", "env-rocm"):
+        (tmp_path / "vllm" / directory / "bin").mkdir(parents = True)
+        (tmp_path / "vllm" / directory / "bin" / "python").touch()
+    # A CUDA environment from before the NVIDIA card was swapped for an AMD one, then updated.
+    cuda = {"directory": "env-cuda", "version": "0.30.0", "profile_digest": "cuda"}
+    marker = tmp_path / "vllm" / "active.json"
+    marker.write_text(
+        json.dumps(
+            {
+                "directory": "env-rocm",
+                "platform": "rocm",
+                "profile_digest": install.profile_digest("vllm"),
+                "previous_directory": "env-cuda",
+                "previous": cuda,
+            }
+        )
+    )
+    assert install.status("vllm")["can_rollback"] is False
+    with pytest.raises(RuntimeError, match = "another GPU platform"):
+        install.rollback("vllm")
+    # One restored before the swap is neither ready nor loaded, so the resident model stays.
+    request = LoadRequest(model_path = "m", engine = "vllm")
+    marker.write_text(json.dumps({**cuda, "restored": True}))
+    assert install.status("vllm")["restored"] is False
+    with pytest.raises(ValueError, match = "^Update vLLM"):
+        managed_engine.validate_load("vllm", request)
+    marker.write_text(json.dumps({**cuda, "platform": "rocm", "restored": True}))
+    assert install.status("vllm")["restored"] is True
+    managed_engine.validate_load("vllm", request)
+
+
 def test_amd_refuses_bitsandbytes_checkpoints_and_skips_nvidia_smi(rocm, monkeypatch, tmp_path):
     config = SimpleNamespace(is_local = True, path = str(tmp_path))
     (tmp_path / "config.json").write_text(

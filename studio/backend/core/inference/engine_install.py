@@ -549,6 +549,12 @@ def stale(info: dict) -> bool:
     )
 
 
+def built_for_this_gpu(engine: str, info: dict) -> bool:
+    """Whether an environment runs on this host's GPU platform; one from before AMD support is CUDA.
+    A restored environment skips the profile check, so this keeps it off the other vendor's GPU."""
+    return info.get("platform", "cuda") == profile(engine)["platform"]
+
+
 # Runs in the engine's interpreter, so it checks both layers as the engine imports them.
 _CHECK = r"""
 import importlib.metadata as metadata, json, re, sys
@@ -1010,10 +1016,15 @@ def status(engine: str) -> dict:
         "current": bool(
             info and info.get("profile_digest") == profile_digest(engine) and not outdated
         ),
-        "restored": bool(info and info.get("restored") and not outdated),
+        "restored": bool(
+            info and info.get("restored") and not outdated and built_for_this_gpu(engine, info)
+        ),
         "shared": bool(info and info.get("shared")),
         "can_rollback": bool(
-            info and isinstance(info.get("previous"), dict) and not stale(info["previous"])
+            info
+            and isinstance(info.get("previous"), dict)
+            and not stale(info["previous"])
+            and built_for_this_gpu(engine, info["previous"])
         ),
         "unsupported_reason": support_reason(engine, wait = False),
         "precisions": list(wanted["precisions"]),
@@ -1726,6 +1737,10 @@ def rollback(engine: str) -> dict:
         if stale(previous):
             raise RuntimeError(
                 "The previous engine installation was built on packages Studio no longer has. Repair the engine instead."
+            )
+        if not built_for_this_gpu(engine, previous):
+            raise RuntimeError(
+                "The previous engine installation was built for another GPU platform. Update the engine instead."
             )
         _atomic_json(
             root / "active.json",
