@@ -3914,7 +3914,7 @@ class FastBaseModel:
         max_seq_length = model.max_seq_length
         # Passing loftq_config = None gives an error.
         loftq_config = validate_loftq_config(
-            loftq_config, lora_dropout, bias, init_lora_weights, model
+            loftq_config, lora_dropout, bias, init_lora_weights, model, r
         )
 
         # Prefer the caller's ORIGINAL explicit leaf list over the scoped regex so an attention-only request does not train experts, but only while MLP and language families are both in scope: with finetune_mlp_modules or finetune_language_layers False the scoped regex already dropped the experts.
@@ -4082,6 +4082,7 @@ class FastBaseModel:
 
         with fast_lora_init():
             model = _get_peft_model(model, lora_config)
+        snapshot_residual_lora_init(model, init_lora_weights)
 
         # PEFT may have wrapped an endpoint this load repaired; the hook stays on base_layer and the adapter branch reads the caller's tensor.
         try:

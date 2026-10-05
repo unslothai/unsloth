@@ -75,7 +75,10 @@ __all__ = [
     "set_task_config_attr",
     "patch_fast_lora",
     "validate_loftq_config",
-    "check_mica_init",
+    "validate_init_lora_weights",
+    "RESIDUAL_INIT_LORA_WEIGHTS",
+    "snapshot_residual_lora_init",
+    "lora_relative_to_original_base",
     "freeze_peft_variant_weights",
     "RaiseUninitialized",
     "fast_inference_setup",
@@ -5629,21 +5632,130 @@ for function in ("__reduce__", "__reduce_ex__", "__getstate__", "__setstate__"):
         pass
 
 
-def check_mica_init(model):
-    try:
-        from peft.tuners.lora.variants import MiCALinearVariant
-    except ImportError:
-        import peft
-        raise RuntimeError(
-            f"Unsloth: Your PEFT version of {peft.__version__} does not support MiCA init.\n"
-            "Please install PEFT 0.20.0 or higher: `pip install --upgrade peft`"
-        )
-    if getattr(model.config, "quantization_config", None) is not None:
+_INIT_LORA_WEIGHTS = (
+    "gaussian",
+    "eva",
+    "olora",
+    "pissa",
+    "corda",
+    "loftq",
+    "orthogonal",
+    "lora_ga",
+    "mica",
+)
+# Inits that rewrite the base weight to W - scaling * B @ A (save_pretrained_merged must not use the original W).
+RESIDUAL_INIT_LORA_WEIGHTS = ("pissa", "olora", "corda", "loftq", "lora_ga")
+
+
+def validate_init_lora_weights(
+    init_lora_weights,
+    model,
+    r = None,
+):
+    if type(init_lora_weights) is bool:
+        return
+    name = init_lora_weights if isinstance(init_lora_weights, str) else None
+    if name is not None and name.startswith("pissa_niter_"):
+        if not name[len("pissa_niter_") :].isdigit():
+            raise ValueError(
+                f"Unsloth: `init_lora_weights = {name!r}` must be `pissa_niter_<non-negative int>`."
+            )
+        name = "pissa"
+    if name not in _INIT_LORA_WEIGHTS:
         raise ValueError(
-            "Unsloth: You are using `mica` init, yet your model is quantized.\n"
-            "MiCA runs an SVD of the base weights, which PEFT only supports for float32/float16/bfloat16.\n"
+            "Unsloth: `init_lora_weights` must be True, False, `pissa_niter_<int>` or one of "
+            f"{list(_INIT_LORA_WEIGHTS)}, got {init_lora_weights!r}."
+        )
+    import peft
+    from peft.tuners.lora import LoraLayer
+
+    def _require(supported, version):
+        if not supported:
+            raise RuntimeError(
+                f"Unsloth: Your PEFT version of {peft.__version__} does not support "
+                f"`init_lora_weights = {init_lora_weights!r}`.\n"
+                f"Please install PEFT {version} or higher: `pip install --upgrade peft`"
+            )
+
+    if name == "mica":
+        try:
+            from peft.tuners.lora.variants import MiCALinearVariant
+        except ImportError:
+            _require(False, "0.20.0")
+    elif name == "lora_ga":
+        _require(hasattr(LoraLayer, "lora_ga_init"), "0.19.0")
+
+    # olora dequantizes + requantizes bnb weights itself; the others read or write the float weight.
+    quantized = getattr(getattr(model, "config", None), "quantization_config", None) is not None
+    if quantized and name in ("pissa", "corda", "loftq", "lora_ga", "mica", "orthogonal"):
+        raise ValueError(
+            f"Unsloth: `init_lora_weights = {init_lora_weights!r}` needs float32/float16/bfloat16 base weights, "
+            "yet your model is quantized.\n"
             "Reload your model with `load_in_4bit = False` and `load_in_8bit = False`."
         )
+    if name == "orthogonal" and r is not None and r % 2 != 0:
+        raise ValueError(
+            f"Unsloth: `init_lora_weights = 'orthogonal'` needs an even rank, got r = {r}."
+        )
+    if name in ("corda", "lora_ga"):
+        attr = "eigens" if name == "corda" else "_peft_loraga_grad"
+        if not any(hasattr(module, attr) for module in model.modules()):
+            preprocess = (
+                "peft.tuners.lora.corda.preprocess_corda"
+                if name == "corda"
+                else "peft.preprocess_loraga"
+            )
+            # lora_ga silently falls back to the default init without it.
+            raise ValueError(
+                f"Unsloth: `init_lora_weights = {name!r}` needs `{preprocess}(model, lora_config, ...)` "
+                "to be run on the model before `get_peft_model`."
+            )
+    if name == "eva":
+        logger.warning_once(
+            "Unsloth: `init_lora_weights = 'eva'` only zeroes lora_B. Call "
+            "`peft.initialize_lora_eva_weights(model, dataloader)` after `get_peft_model` to run EVA."
+        )
+
+
+def snapshot_residual_lora_init(model, init_lora_weights):
+    if not isinstance(init_lora_weights, str):
+        return
+    if init_lora_weights.split("_niter_")[0] not in RESIDUAL_INIT_LORA_WEIGHTS:
+        return
+    for module in model.modules():
+        lora_A = getattr(module, "lora_A", None)
+        if isinstance(lora_A, torch.nn.ModuleDict) and len(lora_A):
+            module._unsloth_initial_lora = {
+                k: (lora_A[k].weight.detach().clone(), module.lora_B[k].weight.detach().clone())
+                for k in lora_A
+            }
+
+
+@contextlib.contextmanager
+def lora_relative_to_original_base(model):
+    # Residual inits trained against W - s * B0 @ A0, but merge_and_overwrite_lora adds the adapter to the
+    # checkpoint's original W, so merge the rank-2r adapter [B, -B0] @ [A; A0] (PEFT's
+    # path_initial_model_for_weight_conversion formula).
+    swapped = []
+    try:
+        for module in model.modules():
+            initial = getattr(module, "_unsloth_initial_lora", None)
+            if not initial:
+                continue
+            for k, (A0, B0) in initial.items():
+                a, b = module.lora_A[k], module.lora_B[k]
+                swapped.append((a, a.weight, b, b.weight))
+                a.weight = torch.nn.Parameter(
+                    torch.cat([a.weight.detach(), A0.to(a.weight.dtype)], 0), requires_grad = False
+                )
+                b.weight = torch.nn.Parameter(
+                    torch.cat([b.weight.detach(), -B0.to(b.weight.dtype)], 1), requires_grad = False
+                )
+        yield
+    finally:
+        for a, weight_A, b, weight_B in swapped:
+            a.weight = weight_A
+            b.weight = weight_B
 
 
 def freeze_peft_variant_weights(model):
@@ -5653,7 +5765,14 @@ def freeze_peft_variant_weights(model):
             module._freeze_non_trainable_peft_weights()
 
 
-def validate_loftq_config(loftq_config, lora_dropout, bias, init_lora_weights, model):
+def validate_loftq_config(
+    loftq_config,
+    lora_dropout,
+    bias,
+    init_lora_weights,
+    model,
+    r = None,
+):
     from peft import LoraConfig
 
     if loftq_config is None:
@@ -5674,16 +5793,7 @@ def validate_loftq_config(loftq_config, lora_dropout, bias, init_lora_weights, m
             f"Unsloth will patch all other layers, except LoRA matrices, causing a performance hit."
         )
 
-    if not (
-        type(init_lora_weights) is bool
-        or init_lora_weights == "gaussian"
-        or init_lora_weights == "loftq"
-        or init_lora_weights == "corda"
-        or init_lora_weights == "mica"
-    ):
-        raise ValueError(
-            'Unsloth: `init_lora_weights` must be either [True, False, "gaussian", "loftq", "corda", "mica"].'
-        )
+    validate_init_lora_weights(init_lora_weights, model, r)
 
     if init_lora_weights == "loftq":
         if not SUPPORTS_LOFTQ:
@@ -5701,14 +5811,6 @@ def validate_loftq_config(loftq_config, lora_dropout, bias, init_lora_weights, m
                 "We shall use `loftq_config = LoftQConfig(loftq_bits = 4, loftq_iter = 1)`."
             )
             loftq_config = LoftQConfig(loftq_bits = 4, loftq_iter = 1)
-
-        if hasattr(model.config, "quantization_config"):
-            raise ValueError(
-                "Unsloth: You are using `loftq` init, yet `load_in_4bit = True` was set.\n"
-                "Reload your model without any quantization by setting `load_in_4bit = False`."
-            )
-    if init_lora_weights == "mica":
-        check_mica_init(model)
 
     return loftq_config
 

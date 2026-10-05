@@ -68,7 +68,7 @@ from .models.loader_utils import (
     _tokenizer_revision,
     _tokenizer_wants_local_only,
 )
-from .models._utils import _convert_torchao_model
+from .models._utils import _convert_torchao_model, lora_relative_to_original_base
 from .models.mistral_format import raise_if_merging_mistral_format_view
 from .ollama_template_mappers import OLLAMA_TEMPLATES, MODEL_TO_OLLAMA_TEMPLATE_MAPPER
 from transformers import ProcessorMixin, PreTrainedTokenizerBase
@@ -5711,19 +5711,20 @@ def unsloth_generic_save(
         _prewarm_base_model_hub_cache(model, save_method = save_method, token = token)
         from unsloth_zoo.saving_utils import merge_and_overwrite_lora
 
-        merge_and_overwrite_lora(
-            get_model_name,
-            model = model,
-            tokenizer = tokenizer,
-            save_directory = save_directory,
-            push_to_hub = push_to_hub,
-            private = private,
-            token = token,
-            save_method = save_method,
-            output_dtype = None,
-            low_disk_space_usage = True,
-            use_temp_file = False,
-        )
+        with lora_relative_to_original_base(model):
+            merge_and_overwrite_lora(
+                get_model_name,
+                model = model,
+                tokenizer = tokenizer,
+                save_directory = save_directory,
+                push_to_hub = push_to_hub,
+                private = private,
+                token = token,
+                save_method = save_method,
+                output_dtype = None,
+                low_disk_space_usage = True,
+                use_temp_file = False,
+            )
 
     if push_to_hub and datasets:
         try:
