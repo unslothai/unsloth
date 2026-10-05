@@ -5232,7 +5232,13 @@ class VideoBackend:
                 readable = te_candidate_is_readable,
             )
             got = False
+            from .diffusion_te_prequant import te_prequant_mirror_path
+
             for name in names:
+                # The loader reads a mirrored file in place (_resolve_checkpoint_path), as the plan assumes.
+                if te_prequant_mirror_path(source.location, name) is not None:
+                    got = True
+                    break
                 try:
                     hf_hub_download_with_xet_fallback(
                         source.location,
