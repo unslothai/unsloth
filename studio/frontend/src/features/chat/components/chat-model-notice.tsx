@@ -87,10 +87,7 @@ export function ChatModelNotice({
   if (!selectableId) {
     return null;
   }
-  const switchTarget =
-    selectableId === createdModel.modelId
-      ? createdModel
-      : { ...createdModel, modelId: selectableId };
+  const switchTarget = { ...createdModel, modelId: selectableId };
   const label =
     externalModelLabel(createdModel.modelId) ??
     modelDisplayName(createdModel.modelId);
