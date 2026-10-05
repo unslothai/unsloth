@@ -371,6 +371,14 @@ def test_an_llm_decision_model_waits_for_training_and_restarts_a_dead_worker(
     assert len(llm_worker.agents) == 3 and llm_worker.agents[1].closed
 
 
+def test_the_train_page_button_stores_an_llm_run_under_its_own_name(home, client, llm_worker):
+    llm = _llm_fine_tune(home, "qwen_run_1")
+    # The Train page names every finished decision run laya-ft:<folder>.
+    assert _put(client, enabled = True, model = "laya-ft:qwen_run_1").status_code == 200
+    assert client.get("/api/settings/systemone").json()["model"] == llm
+    assert _post(client).json()["model"] == llm
+
+
 def test_the_environment_can_point_at_an_llm_decision_folder(home, client, llm_worker, monkeypatch):
     _llm_fine_tune(home, "qwen_run_1")
     assert _put(client, enabled = True).status_code == 200

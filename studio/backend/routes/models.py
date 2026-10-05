@@ -2260,6 +2260,7 @@ async def get_model_config(
     hf_token: Optional[str] = Query(None),
     prefer_local_cache: bool = False,
     local_path: Optional[str] = None,
+    as_decision: bool = False,
     header_hf_token: Optional[str] = Depends(get_hf_token),
     allow_ambient_token: bool = Depends(allow_ambient_hf_token),
     current_subject: str = Depends(get_current_subject),
@@ -2352,6 +2353,7 @@ async def get_model_config(
                     for c in CHECKPOINTS.values()
                     if c.source == model_name
                 ] or None
+            decision_layout = "laya" if is_decision else None
             audio_type, audio_type_definitive = detect_audio_type_checked(
                 _audio_probe_target(inspection_target),
                 hf_token = hf_token,
@@ -2390,6 +2392,16 @@ async def get_model_config(
                 except Exception:
                     pass
 
+            # A text or vision LLM the caller wants to train as a decision model.
+            if (
+                as_decision
+                and not is_decision
+                and not (is_embedding or is_lora or audio_type is not None)
+            ):
+                from utils.models.model_config import load_llm_decision_defaults
+                is_decision, decision_layout = True, "llm"
+                config_dict = load_llm_decision_defaults()
+
             logger.info(
                 f"Model config result for {model_name}: is_vision={is_vision}, is_embedding={is_embedding}, audio_type={audio_type}, audio_type_known={audio_type_definitive}, is_lora={is_lora}, max_position_embeddings={max_position_embeddings}"
             )
@@ -2401,6 +2413,7 @@ async def get_model_config(
                 is_embedding = is_embedding,
                 is_decision = is_decision,
                 decision_checkpoints = decision_checkpoints,
+                decision_layout = decision_layout,
                 is_lora = is_lora,
                 is_audio = audio_type is not None,
                 audio_type = audio_type,

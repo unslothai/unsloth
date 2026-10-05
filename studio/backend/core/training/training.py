@@ -269,6 +269,7 @@ def _build_training_worker_config(values: dict[str, Any]) -> dict[str, Any]:
         "is_dataset_audio": values.get("is_dataset_audio", False),
         "is_embedding": values.get("is_embedding", False),
         "is_decision": values.get("is_decision", False),
+        "decision_layout": values.get("decision_layout"),
         "model_subfolder": values.get("model_subfolder"),
         "num_epochs": values.get("num_epochs", 3),
         "learning_rate": values.get("learning_rate", "2e-4"),

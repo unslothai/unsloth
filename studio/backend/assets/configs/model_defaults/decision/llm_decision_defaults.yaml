@@ -1,0 +1,29 @@
+# Defaults for training a decision model from an LLM (Qwen3.5, Llama, Gemma...) with FastDecisionModel
+# Measured on typed-decisions with Qwen3.5-4B in 4-bit: 81% test accuracy after 2 epochs
+
+training:
+  num_epochs: 2
+  learning_rate: 2e-4
+  batch_size: 8
+  gradient_accumulation_steps: 4
+  warmup_steps: 10
+  max_steps: 0
+  max_seq_length: 2048
+  weight_decay: 0.01
+  random_seed: 3407
+  packing: false
+  train_on_completions: false
+  gradient_checkpointing: "unsloth"
+  optim: "adamw_torch"
+  lr_scheduler_type: "cosine"
+
+lora:
+  lora_r: 16
+  lora_alpha: 16
+  lora_dropout: 0.0
+
+logging:
+  enable_wandb: false
+  wandb_project: "decision-finetuning"
+  enable_tensorboard: false
+  log_frequency: 1

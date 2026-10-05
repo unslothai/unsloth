@@ -42,6 +42,7 @@ const NON_PERSISTED_STATE_KEYS: ReadonlySet<keyof TrainingConfigState> =
     "trainOnCompletionsDefaultPendingFor",
     "maxPositionEmbeddings",
     "decisionCheckpoints",
+    "decisionLayout",
     "s3Config",
     "wandbToken",
   ]);
@@ -444,6 +445,7 @@ export function mergeTrainingConfig(
     settingsBeforeDecision: normalizeSettingsBeforeDecision(
       persistedState.settingsBeforeDecision,
     ),
+    trainAsDecision: persistedState.trainAsDecision === true,
   };
   return {
     ...merged,

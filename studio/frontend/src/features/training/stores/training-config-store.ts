@@ -140,6 +140,7 @@ function leaveDecisionWithoutDefaults(
     ...buildTrainingMethodPatch(generic, method),
     modelSubfolder: null,
     decisionCheckpoints: null,
+    decisionLayout: null,
     settingsBeforeDecision: null,
   };
 }
@@ -248,6 +249,7 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
           requestState.selectedModel === modelName
             ? requestState.modelLocalPath
             : null;
+        const requestedAsDecision = requestState.trainAsDecision;
         const canApplyTrainingDefaults = () =>
           applyTrainingDefaults &&
           _modelDefaultsEditGeneration === requestedModelDefaultsEditGeneration;
@@ -275,13 +277,22 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
           {
             preferLocalCache,
             localPath: preferLocalCache ? requestedLocalPath : null,
+            asDecision: requestedAsDecision,
           },
         )
           .then((modelDetails) => {
             if (controller.signal.aborted) return;
             if (!requestMatchesSelection()) return;
+            // Answered for the other side of the decision switch.
+            if (get().trainAsDecision !== requestedAsDecision) return;
 
             const isDecision = modelDetails.model_type === "decision";
+            const decisionLayout = isDecision
+              ? (modelDetails.decision_layout ?? "laya")
+              : null;
+            // An LLM decision model trains in 4-bit too; Laya trains in 16-bit.
+            const decisionAdapterMethod =
+              decisionLayout === "llm" ? "qlora" : "lora";
             const settingsBeforeDecision = get().settingsBeforeDecision;
             // Moving to or from a decision model replaces the whole recipe, even over edits made during the load.
             const recipeChanged = isDecision
@@ -298,9 +309,12 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
                 _trainingMethodEditGeneration !== trainingMethodEditGeneration;
               const keepMethod =
                 method === "lora" ||
+                (method === "qlora" && decisionLayout === "llm") ||
                 (method === "full" && (!recipeChanged || methodWasEdited));
               set({
-                ...(keepMethod ? {} : buildTrainingMethodPatch(get(), "lora")),
+                ...(keepMethod
+                  ? {}
+                  : buildTrainingMethodPatch(get(), decisionAdapterMethod)),
                 settingsBeforeDecision: settingsBeforeDecision ?? {
                   trainingMethod: method,
                   datasetStreaming: get().datasetStreaming,
@@ -349,6 +363,7 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
                     }
                   : {}),
                 modelType: null,
+                decisionLayout: null,
                 modelFormat: "adapter",
                 isVisionModel: false,
                 isEmbeddingModel: false,
@@ -587,6 +602,11 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
               modelType: inferredModelType,
               modelSubfolder,
               decisionCheckpoints,
+              decisionLayout,
+              // Asked for a decision model the backend cannot make one of (audio, embeddings).
+              ...(requestedAsDecision && !isDecision
+                ? { trainAsDecision: false }
+                : {}),
               isVisionModel: modelDetails.is_vision,
               isEmbeddingModel: isEmbedding,
               isAudioModel: isAudio,
@@ -1202,6 +1222,13 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
           });
         },
         setModelSubfolder: (modelSubfolder) => setUserEdit({ modelSubfolder }),
+        setTrainAsDecision: (trainAsDecision) => {
+          if (get().trainAsDecision === trainAsDecision) return;
+          set({ trainAsDecision });
+          const { selectedModel } = get();
+          // Reloading the model's defaults switches the whole recipe, as picking a Laya model does.
+          if (selectedModel) loadAndApplyModelDefaults(selectedModel);
+        },
         setProjectName: (projectName) => setUserEdit({ projectName }),
         setTrainingMethod: (trainingMethod) => {
           _trainingMethodEditGeneration += 1;

@@ -496,6 +496,59 @@ def test_llm_output_scans_skip_decision_outputs(studio_home):
     assert [name for name, _, _ in scan_checkpoints(str(root))] == ["llama_merged_1"]
 
 
+def test_llm_decision_outputs_are_not_chat_models(studio_home):
+    from utils.models.checkpoints import scan_checkpoints
+    from utils.models.model_config import scan_trained_models
+    from utils.paths import outputs_root
+
+    root = outputs_root()
+    decision = root / "qwen_decisions_1"
+    (decision / "checkpoint-2").mkdir(parents = True)
+    for folder in (decision, decision / "checkpoint-2"):
+        (folder / "adapter_config.json").write_text("{}", encoding = "utf-8")
+        (folder / "adapter_model.safetensors").write_bytes(b"x")
+        (folder / "decision_config.json").write_text("{}", encoding = "utf-8")
+    chat = root / "qwen_chat_2"
+    chat.mkdir()
+    (chat / "adapter_config.json").write_text("{}", encoding = "utf-8")
+    (chat / "adapter_model.safetensors").write_bytes(b"x")
+
+    assert [name for name, _, _ in scan_trained_models(str(root))] == ["qwen_chat_2"]
+    assert [name for name, _, _ in scan_checkpoints(str(root))] == ["qwen_chat_2"]
+
+
+def test_model_config_offers_an_llm_as_a_decision_model(studio_home):
+    import asyncio
+
+    from routes.models import get_model_config
+
+    llm = studio_home / "llm"
+    llm.mkdir()
+    config = {
+        "model_type": "llama",
+        "architectures": ["LlamaForCausalLM"],
+        "hidden_size": 64,
+        "num_hidden_layers": 2,
+        "num_attention_heads": 4,
+        "vocab_size": 64,
+    }
+    (llm / "config.json").write_text(json.dumps(config), encoding = "utf-8")
+    (llm / "model.safetensors").write_bytes(b"x")
+
+    def fetch(**kwargs):
+        return asyncio.run(
+            get_model_config(model_name = str(llm), hf_token = None, current_subject = "tester", **kwargs)
+        )
+
+    plain = fetch()
+    assert plain.model_type == "text" and plain.decision_layout is None
+    decision = fetch(as_decision = True)
+    assert decision.model_type == "decision" and decision.is_decision is True
+    assert decision.decision_layout == "llm" and decision.decision_checkpoints is None
+    assert float(decision.config["training"]["learning_rate"]) == 2e-4
+    assert decision.config["lora"]["lora_r"] == 16
+
+
 def test_model_config_classifies_a_local_laya_folder(base):
     import asyncio
 
@@ -505,6 +558,7 @@ def test_model_config_classifies_a_local_laya_folder(base):
         get_model_config(model_name = str(base), hf_token = None, current_subject = "tester")
     )
     assert result.model_type == "decision" and result.is_decision is True
+    assert result.decision_layout == "laya"
     assert float(result.config["training"]["learning_rate"]) == 8e-4
     assert result.config["training"]["optim"] == "adamw_torch"
     assert result.config["lora"]["lora_r"] == 64

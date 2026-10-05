@@ -290,21 +290,34 @@ def _run(event_queue: Any, stop_queue: Any, config: dict, output_dir: str) -> No
     use_lora = config["training_type"] == "LoRA/QLoRA"
     gradient_checkpointing = normalize_gradient_checkpointing(config["gradient_checkpointing"])
 
+    is_llm = config.get("decision_layout") == "llm"
     status("Loading decision model...")
-    try:
-        root = laya_runtime._checkpoint_dir(Checkpoint("base", model_name, subfolder, ""))
-    except LocalEntryNotFoundError as exc:
-        send("error", error = f"Could not download {model_name}: {exc}", stack = "")
-        return
-    except FileNotFoundError as exc:
-        send("error", error = f"Not a Laya decision checkpoint: {exc}", stack = "")
-        return
-    model, tokenizer = FastDecisionModel.from_pretrained(
-        str(root),
-        subfolder = subfolder,
-        full_finetuning = not use_lora,
-        use_gradient_checkpointing = gradient_checkpointing,
-    )
+    if is_llm:
+        # Any LLM FastModel loads, with a new decision head on top.
+        model, tokenizer = FastDecisionModel.from_pretrained(
+            model_name,
+            max_seq_length = int(config["max_seq_length"]),
+            load_in_4bit = bool(use_lora and config["load_in_4bit"]),
+            full_finetuning = not use_lora,
+            token = hf_token or None,
+            use_gradient_checkpointing = gradient_checkpointing,
+            random_state = seed,
+        )
+    else:
+        try:
+            root = laya_runtime._checkpoint_dir(Checkpoint("base", model_name, subfolder, ""))
+        except LocalEntryNotFoundError as exc:
+            send("error", error = f"Could not download {model_name}: {exc}", stack = "")
+            return
+        except FileNotFoundError as exc:
+            send("error", error = f"Not a Laya decision checkpoint: {exc}", stack = "")
+            return
+        model, tokenizer = FastDecisionModel.from_pretrained(
+            str(root),
+            subfolder = subfolder,
+            full_finetuning = not use_lora,
+            use_gradient_checkpointing = gradient_checkpointing,
+        )
     if use_lora:
         model = FastDecisionModel.get_peft_model(
             model,
@@ -436,7 +449,9 @@ def _run(event_queue: Any, stop_queue: Any, config: dict, output_dir: str) -> No
     model.decision_config["training"] = {
         "base": model_name,
         "subfolder": subfolder,
-        "method": "lora" if use_lora else "full",
+        "method": ("qlora" if model.decision_config.get("load_in_4bit") else "lora")
+        if use_lora
+        else "full",
         "objective": "soft_cross_entropy",
         "dataset": [Path(path).name for path in config.get("local_datasets") or []]
         or config.get("hf_dataset")
@@ -452,7 +467,11 @@ def _run(event_queue: Any, stop_queue: Any, config: dict, output_dir: str) -> No
         "peak_memory_gb": peak_gb and round(peak_gb, 2),
         "date": datetime.now(timezone.utc).isoformat(timespec = "seconds"),
     }
-    model.save_pretrained_merged(output_dir, tokenizer)
+    if is_llm:
+        # LoRA adapters (or the full LLM) plus the head; the base LLM is fetched when it loads.
+        model.save_pretrained(output_dir)
+    else:
+        model.save_pretrained_merged(output_dir, tokenizer)
     logger.info("Decision model saved to %s: %s", output_dir, model.decision_config["training"])
 
     message = "Decision training completed"

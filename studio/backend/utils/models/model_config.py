@@ -3776,8 +3776,30 @@ def _has_model_weight_files(model_dir: Path) -> bool:
     return False
 
 
+LLM_DECISION_DEFAULTS = (
+    Path(__file__).parent.parent.parent
+    / "assets"
+    / "configs"
+    / "model_defaults"
+    / "decision"
+    / "llm_decision_defaults.yaml"
+)
+
+
+def load_llm_decision_defaults() -> Dict[str, Any]:
+    with open(LLM_DECISION_DEFAULTS, "r", encoding = "utf-8") as f:
+        return yaml.safe_load(f) or {}
+
+
+def is_decision_output(model_dir: Path) -> bool:
+    # An LLM decision model saves LoRA adapters too, but its head only the Decision API can run.
+    return (model_dir / "decision_config.json").is_file()
+
+
 def _detect_training_output_type(model_dir: Path) -> Optional[str]:
     """Classify an Unsloth training output as LoRA or full finetune."""
+    if is_decision_output(model_dir):
+        return None
     adapter_config = model_dir / "adapter_config.json"
     adapter_model = model_dir / "adapter_model.safetensors"
     if adapter_config.exists() or adapter_model.exists():

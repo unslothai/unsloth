@@ -81,6 +81,7 @@ export interface ModelConfigResponse {
   is_embedding?: boolean;
   is_decision?: boolean;
   decision_checkpoints?: DecisionCheckpoint[] | null;
+  decision_layout?: DecisionLayout | null;
   is_audio: boolean;
   // False when the repo's tokenizer_config.json was unreadable (gated, offline,
   // upstream error), so is_audio false means unknown rather than "not audio".
@@ -92,9 +93,14 @@ export interface ModelConfigResponse {
   model_size_bytes?: number | null;
 }
 
+// laya: a Laya checkpoint. llm: an LLM trained with a new decision head.
+export type DecisionLayout = "laya" | "llm";
+
 export interface ModelConfigRequestOptions {
   preferLocalCache?: boolean;
   localPath?: string | null;
+  // Ask for an LLM's defaults as a decision model; Laya checkpoints are decision models anyway.
+  asDecision?: boolean;
 }
 
 export interface LocalModelInfo {
@@ -161,6 +167,9 @@ export async function getModelConfig(
   }
   if (options?.localPath) {
     params.set("local_path", options.localPath);
+  }
+  if (options?.asDecision) {
+    params.set("as_decision", "true");
   }
   const query = params.toString();
   const response = await authFetch(

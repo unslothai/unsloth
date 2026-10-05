@@ -206,6 +206,9 @@ def parse_adapter_features(
 # Both probe every outputs folder, so an unreadable one is skipped, not fatal to the scan.
 def _has_own_model(path: Path) -> bool:
     try:
+        # An LLM decision model's adapters only serve the Decision API, not chat or export.
+        if own_entry(path / "decision_config.json"):
+            return False
         return own_entry(path / "config.json") or own_entry(path / "adapter_config.json")
     except OSError:
         return False

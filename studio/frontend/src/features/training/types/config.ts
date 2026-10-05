@@ -10,7 +10,11 @@ import type {
   S3Config,
   TrainingMethod,
 } from "@/types/training";
-import type { BackendModelConfig, DecisionCheckpoint } from "../api/models-api";
+import type {
+  BackendModelConfig,
+  DecisionCheckpoint,
+  DecisionLayout,
+} from "../api/models-api";
 
 export type LoraVariant = "lora" | "rslora" | "loftq" | "dora";
 
@@ -68,6 +72,9 @@ export interface TrainingConfigState {
   modelFormat: ModelInventoryFormat | null;
   modelSubfolder: string | null;
   decisionCheckpoints: DecisionCheckpoint[] | null;
+  // The user's choice to train a text or vision LLM as a decision model.
+  trainAsDecision: boolean;
+  decisionLayout: DecisionLayout | null;
   settingsBeforeDecision: {
     trainingMethod: TrainingMethod;
     datasetStreaming: boolean;
@@ -200,6 +207,7 @@ export interface TrainingConfigActions {
     localPath: string | null,
   ) => void;
   setModelSubfolder: (subfolder: string | null) => void;
+  setTrainAsDecision: (value: boolean) => void;
   setProjectName: (value: string) => void;
   ensureModelDefaultsLoaded: () => void;
   ensureDatasetChecked: () => void;

@@ -3570,7 +3570,8 @@ def _download_decision_checkpoint(event_queue: Any, config: dict) -> None:
     from utils.paths import is_local_path
 
     model_name = config["model_name"]
-    if is_local_path(model_name):
+    # An LLM downloads through FastModel's own loader in the trainer.
+    if is_local_path(model_name) or config.get("decision_layout") == "llm":
         return
     hf_token = _worker_hf_token(config)
     if hf_token:
@@ -3779,8 +3780,8 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
     #    lazy_load it without calling is_causal_conv1d_available.
     # 2) mamba-ssm + flash-attn keep their substring / size gates.
     # 3) FLA gated-delta kernels: vendored by unsloth_zoo, nothing to install.
-    # Decision models are encoders: none of these apply, and they ignore max_seq_length.
-    if not config.get("is_decision"):
+    # Laya decision models are encoders: none of these apply, and they ignore max_seq_length.
+    if not (config.get("is_decision") and config.get("decision_layout") != "llm"):
         try:
             from utils.ssm_runtime import resolved_model_wants_causal_conv1d
 

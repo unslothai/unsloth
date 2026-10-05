@@ -3,6 +3,7 @@
 
 import asyncio
 import importlib.util
+import json
 import os
 import sys
 import threading
@@ -302,28 +303,24 @@ def test_a_cached_decision_run_reports_no_download(hub_cache):
 
 
 @pytest.mark.parametrize(
-    ("files", "accepted"),
+    ("files", "layout"),
     [
-        (["config.json", "model.safetensors"], False),
-        (["rl_agent_config.json", "model.safetensors", "encoder/config.json"], True),
+        (["config.json", "model.safetensors"], "llm"),
+        (["rl_agent_config.json", "model.safetensors", "encoder/config.json"], "laya"),
     ],
 )
-def test_a_hub_repo_must_be_a_decision_model(route, files, accepted):
+def test_a_hub_repo_trains_as_laya_or_as_an_llm(route, files, layout):
     from utils.models import model_config
 
     info = SimpleNamespace(siblings = [SimpleNamespace(rfilename = name) for name in files])
+    request = _request(model_name = "org/model")
     with (
         patch.object(route, "_remote_untrainable_model_format", return_value = None),
         patch.object(model_config, "_hub_model_info", return_value = info),
     ):
-        if accepted:
-            route._reject_untrainable_model_request(_request(model_name = "org/model"))
-            return
-        with pytest.raises(HTTPException) as refused:
-            route._reject_untrainable_model_request(_request(model_name = "org/model"))
+        route._reject_untrainable_model_request(request)
 
-    assert refused.value.status_code == 400
-    assert refused.value.detail["code"] == "training_remote_model_not_decision"
+    assert request.decision_layout == layout
 
 
 def test_a_local_checkpoint_is_checked_at_its_subfolder(route, tmp_path):
@@ -333,22 +330,45 @@ def test_a_local_checkpoint_is_checked_at_its_subfolder(route, tmp_path):
 
     assert route._reject_untrainable_model_request(request).model_name == str(root.resolve())
 
+    # The root holds neither a Laya checkpoint nor an LLM.
     with pytest.raises(HTTPException) as refused:
         route._reject_untrainable_model_request(_request(model_name = str(root)))
-    assert refused.value.detail["code"] == "training_local_model_not_decision"
+    assert refused.value.detail["code"] == "training_local_model_weights_missing"
 
 
-def test_a_local_llm_is_not_trained_as_a_decision_model(route, tmp_path):
-    llm = tmp_path / "llm"
-    llm.mkdir()
-    (llm / "config.json").write_text("{}", encoding = "utf-8")
-    (llm / "model.safetensors").write_bytes(b"x")
+def _llm_folder(folder: Path) -> Path:
+    folder.mkdir()
+    config = {"model_type": "llama", "architectures": ["LlamaForCausalLM"], "hidden_size": 64}
+    (folder / "config.json").write_text(json.dumps(config), encoding = "utf-8")
+    (folder / "model.safetensors").write_bytes(b"x")
+    return folder
 
-    with pytest.raises(HTTPException) as refused:
-        route._reject_untrainable_model_request(_request(model_name = str(llm)))
 
-    assert refused.value.status_code == 400
-    assert refused.value.detail["code"] == "training_local_model_not_decision"
+def test_a_local_llm_trains_as_a_decision_model(route, tmp_path):
+    llm = _llm_folder(tmp_path / "llm")
+    request = _request(model_name = str(llm))
+
+    assert route._reject_untrainable_model_request(request).model_name == str(llm.resolve())
+    assert request.decision_layout == "llm"
+
+
+def test_an_llm_decision_run_takes_qlora_and_its_own_recipe(route, tmp_path):
+    llm = _llm_folder(tmp_path / "llm")
+    request = _request(model_name = str(llm), load_in_4bit = True, decision_layout = "laya")
+
+    route._validate_decision_request(request)
+
+    assert request.decision_layout == "llm" and request.load_in_4bit is True
+    assert float(request.learning_rate) == 2e-4
+    assert (request.num_epochs, request.warmup_steps, request.max_seq_length) == (2, 10, 2048)
+    assert (request.batch_size, request.gradient_accumulation_steps) == (8, 4)
+    assert (request.lora_r, request.lora_alpha, request.lora_dropout) == (16, 16, 0.0)
+
+
+def test_a_plain_request_carries_no_decision_layout(route):
+    request = _request(is_decision = False, model_name = "org/llm", decision_layout = "llm")
+    route._validate_decision_request(request)
+    assert request.decision_layout is None
 
 
 def test_a_hub_checkpoint_downloads_under_the_stall_watchdog(monkeypatch, tmp_path):
@@ -397,6 +417,10 @@ def test_a_hub_checkpoint_downloads_under_the_stall_watchdog(monkeypatch, tmp_pa
 
     events.clear()
     worker._download_decision_checkpoint(queue, {"model_name": str(tmp_path)})
+    # An LLM downloads through FastModel in the trainer.
+    worker._download_decision_checkpoint(
+        queue, {"model_name": "unsloth/Qwen3.5-4B", "decision_layout": "llm"}
+    )
     assert events == [] and len(downloads) == 1
 
 

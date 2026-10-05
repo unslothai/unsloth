@@ -166,6 +166,9 @@ function TrainingMethodSelect() {
   const trainingMethod = useTrainingConfigStore((s) => s.trainingMethod);
   const setTrainingMethod = useTrainingConfigStore((s) => s.setTrainingMethod);
   const isDecision = useTrainingConfigStore((s) => s.modelType === "decision");
+  const isLlmDecision = useTrainingConfigStore(
+    (s) => s.modelType === "decision" && s.decisionLayout === "llm",
+  );
   const deviceType = usePlatformStore((state) => state.deviceType);
   const activeMeta = TRAINING_METHOD_META[trainingMethod];
   const activeLabel = activeMeta ? t(activeMeta.labelKey) : trainingMethod;
@@ -203,7 +206,11 @@ function TrainingMethodSelect() {
         className="rounded-[14px] ring-0"
       >
         {TRAINING_METHOD_ORDER.filter(
-          (method) => !isDecision || method === "lora" || method === "full",
+          (method) =>
+            !isDecision ||
+            method === "lora" ||
+            method === "full" ||
+            (isLlmDecision && method === "qlora"),
         ).map((method) => {
           const meta = TRAINING_METHOD_META[method];
           const unsupportedOnMlx = !isTrainingMethodSupportedOnDevice(
@@ -243,6 +250,47 @@ function TrainingMethodSelect() {
             </Tooltip>
           );
         })}
+      </SelectContent>
+    </Select>
+  );
+}
+
+function TrainAsSelect() {
+  const t = useT();
+  const trainAsDecision = useTrainingConfigStore((s) => s.trainAsDecision);
+  const setTrainAsDecision = useTrainingConfigStore(
+    (s) => s.setTrainAsDecision,
+  );
+  const value = trainAsDecision ? "decision" : "language";
+  const label = (option: string) =>
+    option === "decision"
+      ? t("studio.wizard.trainAsDecision")
+      : t("studio.wizard.trainAsLanguage");
+  return (
+    <Select
+      value={value}
+      onValueChange={(next) => setTrainAsDecision(next === "decision")}
+    >
+      <SelectTrigger
+        aria-label={`${t("studio.wizard.trainAsLabel")}: ${label(value)}`}
+        className={cn(PICKER_TRIGGER_CLASS, "w-full justify-between")}
+      >
+        <span className="truncate font-medium text-foreground">
+          {label(value)}
+        </span>
+      </SelectTrigger>
+      <SelectContent
+        position="popper"
+        side="bottom"
+        align="start"
+        sideOffset={8}
+        className="rounded-[14px] ring-0"
+      >
+        {["language", "decision"].map((option) => (
+          <SelectItem key={option} value={option}>
+            {label(option)}
+          </SelectItem>
+        ))}
       </SelectContent>
     </Select>
   );
@@ -304,6 +352,14 @@ function ModelPanel() {
   const decisionCheckpoints = useTrainingConfigStore((s) =>
     s.modelType === "decision" ? s.decisionCheckpoints : null,
   );
+  // Text and vision LLMs can also train as decision models; Laya, audio and embeddings cannot.
+  const canTrainAsDecision = useTrainingConfigStore(
+    (s) =>
+      s.selectedModel !== null &&
+      (s.decisionLayout === "llm" ||
+        s.modelType === "text" ||
+        s.modelType === "vision"),
+  );
   return (
     <div className="grid grid-cols-1 gap-4 @md/train-section:grid-cols-2 @2xl/train-section:grid-cols-[minmax(0,1fr)_180px_200px]">
       <div className="@md/train-section:col-span-2 @2xl/train-section:col-span-1">
@@ -329,6 +385,14 @@ function ModelPanel() {
           onOpenSettings={() => openSettings("general")}
         />
       </SetupField>
+      {canTrainAsDecision ? (
+        <SetupField
+          label={t("studio.wizard.trainAsLabel")}
+          hint={t("studio.wizard.trainAsTooltip")}
+        >
+          <TrainAsSelect />
+        </SetupField>
+      ) : null}
       {decisionCheckpoints && decisionCheckpoints.length > 0 ? (
         <SetupField
           label={t("studio.wizard.checkpointLabel")}

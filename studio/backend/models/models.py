@@ -95,6 +95,9 @@ class ModelDetails(BaseModel):
     decision_checkpoints: Optional[List[Dict[str, Any]]] = Field(
         None, description = "Checkpoints a decision model repo offers for training"
     )
+    decision_layout: Optional[Literal["laya", "llm"]] = Field(
+        None, description = "laya for a Laya checkpoint, llm for an LLM trained as a decision model"
+    )
     is_lora: bool = Field(False, description = "Whether model is a LoRA adapter")
     is_gguf: bool = Field(False, description = "Whether model is a GGUF model (llama.cpp format)")
     is_mlx: bool = Field(

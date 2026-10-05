@@ -1043,7 +1043,7 @@ def _reject_untrainable_model_request(
                 )
 
         refuse_unauthorized_cache(has_cached_model)
-        if request.is_decision:
+        if _decision_layout(request) == "laya":
             from core.systemone import laya_runtime
             from core.systemone.catalog import Checkpoint
 
@@ -1104,7 +1104,9 @@ def _reject_untrainable_model_request(
             )
         else:
             if remote_format is None:
-                if request.is_decision and not is_decision_model(request.model_name, hf_token):
+                if _decision_layout(request) == "laya" and not is_decision_model(
+                    request.model_name, hf_token
+                ):
                     raise _training_start_error(
                         400,
                         "training_remote_model_not_decision",
@@ -1122,7 +1124,7 @@ def _reject_untrainable_model_request(
                 "training_remote_model_adapter_only",
                 "Adapter models are inference-only and cannot be trained as base models.",
             )
-    if request.is_decision:
+    if _decision_layout(request) == "laya":
         folder = path / request.model_subfolder if request.model_subfolder else path
         if not is_decision_model(str(folder)):
             raise _training_start_error(
@@ -1205,8 +1207,23 @@ _CHECKPOINT_SUBFOLDER = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
 _DECISION_FULL_FINETUNING_LR = "2.5e-5"
 
 
+def _decision_layout(request: TrainingStartRequest) -> Optional[str]:
+    if not request.is_decision:
+        return None
+    if request.decision_layout is None:
+        from core.systemone.catalog import CHECKPOINTS
+        is_laya = (
+            bool(request.model_subfolder)
+            or request.model_name in {c.source for c in CHECKPOINTS.values()}
+            or is_decision_model(request.model_name, request.hf_token)
+        )
+        request.decision_layout = "laya" if is_laya else "llm"
+    return request.decision_layout
+
+
 def _validate_decision_request(request: TrainingStartRequest) -> None:
     if not request.is_decision:
+        request.decision_layout = None
         return
     from core.systemone.catalog import CHECKPOINTS, LAYA_REPO
     from utils.account_context import is_owner_context
@@ -1240,6 +1257,16 @@ def _validate_decision_request(request: TrainingStartRequest) -> None:
             detail = "dataset_streaming is not supported for decision model training.",
         )
     unset = TrainingStartRequest.model_fields.keys() - request.model_fields_set
+    # Worked out from the model, whatever a caller sent.
+    request.decision_layout = None
+    if _decision_layout(request) == "llm":
+        from utils.models.model_config import load_llm_decision_defaults
+
+        # Any LLM Unsloth trains, with a new decision head: QLoRA works, and there are no subfolders.
+        _fill_unset(request, unset, load_llm_decision_defaults())
+        if "learning_rate" in unset and request.training_type == "Full Finetuning":
+            request.learning_rate = _DECISION_FULL_FINETUNING_LR
+        return
     if (
         request.training_type == "LoRA/QLoRA"
         and request.load_in_4bit
@@ -1247,7 +1274,7 @@ def _validate_decision_request(request: TrainingStartRequest) -> None:
     ):
         raise HTTPException(
             status_code = 400,
-            detail = "Decision models train in 16-bit, so QLoRA is not available for them. "
+            detail = "Laya decision models train in 16-bit, so QLoRA is not available for them. "
             "Set load_in_4bit to false to train with LoRA.",
         )
     subfolder = request.model_subfolder
@@ -1263,14 +1290,17 @@ def _validate_decision_request(request: TrainingStartRequest) -> None:
             detail = f"Invalid checkpoint subfolder {subfolder!r} for {request.model_name}.",
         )
     request.load_in_4bit = False
-    # Fields an API or MCP caller left out take the Laya recipe the UI starts from.
-    defaults = load_model_defaults(LAYA_REPO)
-    for section in ("training", "lora", "logging"):
-        for key, value in (defaults.get(section) or {}).items():
-            if key in unset:
-                setattr(request, key, value)
+    _fill_unset(request, unset, load_model_defaults(LAYA_REPO))
     if "learning_rate" in unset and request.training_type == "Full Finetuning":
         request.learning_rate = _DECISION_FULL_FINETUNING_LR
+
+
+def _fill_unset(request: TrainingStartRequest, unset: set, defaults: dict) -> None:
+    # Fields an API or MCP caller left out take the recipe the UI starts from.
+    for section in ("training", "lora", "logging"):
+        for key, value in (defaults.get(section) or {}).items():
+            if key in unset and key in TrainingStartRequest.model_fields:
+                setattr(request, key, value)
 
 
 _RESUME_DATASET_DEFAULTS = {
@@ -1912,6 +1942,7 @@ async def start_training(
             "is_dataset_audio": request.is_dataset_audio,
             "is_embedding": request.is_embedding,
             "is_decision": request.is_decision,
+            "decision_layout": request.decision_layout,
             "model_subfolder": request.model_subfolder,
             "enable_wandb": request.enable_wandb,
             "wandb_token": request.wandb_token or "",
