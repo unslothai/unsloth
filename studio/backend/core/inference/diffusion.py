@@ -276,6 +276,7 @@ from .diffusion_prequant import (
     prequant_checkpoint_cached,
     prequant_unreadable_reason,
     resolve_prequant_source,
+    scoped_local_files_only,
     usable_prequant_source,
 )
 from .diffusion_auto_policy import (
@@ -1524,6 +1525,7 @@ def _uncached_prequant_repo(
     *,
     base_repo: Optional[str],
     prequant_path: Optional[str],
+    online: Optional[bool] = None,
 ) -> Optional[str]:
     """The hosted pre-quant repo an AUTO-derived quant would have to DOWNLOAD for this pick, or None
     when it costs no extra bytes (no hosted source, a local override, or already cached).
@@ -1541,7 +1543,7 @@ def _uncached_prequant_repo(
         )
         if source is None or source.kind != "repo":
             return None
-        if prequant_checkpoint_cached(source, cache_dir = hub_cache_dir()):
+        if prequant_checkpoint_cached(source, cache_dir = hub_cache_dir(), online = online):
             return None
         return source.location
     except Exception:  # noqa: BLE001 - a probe that cannot answer keeps the prequant shortcut
@@ -2633,7 +2635,11 @@ class DiffusionBackend:
             )
             if source is None or getattr(source, "kind", None) != "repo":
                 return True
-            if prequant_checkpoint_cached(source, cache_dir = hub_cache_dir()):
+            if prequant_checkpoint_cached(
+                source,
+                cache_dir = hub_cache_dir(),
+                online = False if kwargs.get("local_files_only") else None,
+            ):
                 return True
             if kwargs.get("local_files_only"):
                 return False
@@ -3120,6 +3126,7 @@ class DiffusionBackend:
         ).start()
         return self.status()
 
+    @scoped_local_files_only
     def _run_load(self, **kwargs: Any) -> None:
         token = kwargs.get("_load_token")
         # This load's own event: a later load replaces self._cancel_event rather than clearing it.
@@ -3897,9 +3904,19 @@ class DiffusionBackend:
         sizes = {s.rfilename: int(getattr(s, "size", 0) or 0) for s in (info.siblings or [])}
         # Every candidate, in the order the loader tries them: safetensors first, then the pickle
         # spellings. Reading only two of them would miss the artifact on a repo that hosts the third.
-        from .diffusion_prequant import candidate_filenames_of, restricted_prequant_load_supported
+        from .diffusion_prequant import (
+            candidate_filenames_of,
+            prefer_cached_pickle_twins,
+            restricted_prequant_load_supported,
+        )
 
-        for name in candidate_filenames_of(source):
+        # The resolver's order, so a cached .pt is priced and staged instead of its uncached twin.
+        ordered = prefer_cached_pickle_twins(
+            source.location,
+            candidate_filenames_of(source),
+            readable = lambda n: restricted_prequant_load_supported(scheme, n),
+        )
+        for name in ordered:
             if name and name in sizes and restricted_prequant_load_supported(scheme, name):
                 return (source.location, name, int(sizes[name]))
         # The repo answered and holds NEITHER name. Not "no prequant is used": this pick is configured to
@@ -3936,7 +3953,9 @@ class DiffusionBackend:
                 return False
             if getattr(source, "kind", None) != "repo":
                 return True
-            if prequant_checkpoint_cached(source, cache_dir = hub_cache_dir()):
+            if prequant_checkpoint_cached(
+                source, cache_dir = hub_cache_dir(), online = False if local_files_only else None
+            ):
                 return True
             if local_files_only:
                 return False
@@ -5088,6 +5107,7 @@ class DiffusionBackend:
                 TE_PREQUANT_BUDGET_SCALE,
                 TE_PREQUANT_COMPONENTS,
                 te_candidate_filenames,
+                te_candidate_is_readable,
                 te_prequant_sources_for_base,
             )
 
@@ -5113,19 +5133,45 @@ class DiffusionBackend:
                     except OSError:
                         size = 0
                 elif kind == "repo":
-                    names = te_candidate_filenames(source)
+                    from .diffusion_prequant import (
+                        first_cached_as_resolved,
+                        prefer_cached_pickle_twins,
+                    )
 
-                    def _sizes(d: Path, names = names) -> dict[str, int]:
-                        for name in names:
+                    repo = str(source.location)
+                    sized: dict[str, int] = {}
+
+                    def _size_of(name: str) -> int:
+                        def _sizes(d: Path) -> dict[str, int]:
                             f = d / name
                             if f.is_file():
                                 try:
                                     return {"precast": f.stat().st_size}
                                 except OSError:
                                     return {}
-                        return {}
+                            return {}
 
-                    size = DiffusionBackend._union_over_cached_revs(str(source.location), _sizes)
+                        if name not in sized:
+                            sized[name] = DiffusionBackend._union_over_cached_revs(repo, _sizes)
+                        return sized[name]
+
+                    # The file the load opens: a cached older encoder does not make an uncached one ahead free.
+                    names = [
+                        n for n in te_candidate_filenames(source) if te_candidate_is_readable(n)
+                    ]
+                    hit = first_cached_as_resolved(
+                        repo,
+                        prefer_cached_pickle_twins(
+                            repo,
+                            names,
+                            readable = te_candidate_is_readable,
+                            cache_dir = hub_cache_dir(),
+                            log = False,
+                        ),
+                        is_cached = lambda n: _size_of(n) > 0,
+                        cache_dir = hub_cache_dir(),
+                    )
+                    size = _size_of(hit) if hit else 0
                 if size > 0:
                     total += int(size)
                     continue
@@ -5191,6 +5237,7 @@ class DiffusionBackend:
     @_invalidates_gpu_memory("diffusion load")
     @_account_owned_load
     @_plans_at_requested_speed
+    @scoped_local_files_only
     def load_pipeline(
         self,
         repo_id: str,
@@ -5624,6 +5671,7 @@ class DiffusionBackend:
                         transformer_quant,
                         base_repo = base,
                         prequant_path = transformer_prequant_path,
+                        online = False if local_files_only else None,
                     )
                     if uncached_prequant is not None:
                         logger.info(
