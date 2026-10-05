@@ -1,17 +1,10 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Query-chunked VAE attention where no fused SDPA kernel takes the shape (ROCm).
+"""Query-chunked VAE attention on ROCm, where no fused SDPA kernel takes head dim 384 / 512.
 
-Image VAE mid-blocks run single-head attention with head dim 384 or 512 over every latent pixel. AOTriton caps
-gfx11 at head dim 256, so on ROCm ``scaled_dot_product_attention`` falls back to the math kernel, which
-materialises the full fp32 score matrix: 16 GiB for a 2048x2048 FLUX.1 decode (65536 tokens). Unmasked,
-non-causal query rows are independent, so the same math kernel run over row chunks gives the same rows with a
-bounded score tile.
-
-``install(vae, target)`` patches the attention modules of a VAE instance on ROCm only. Each SDPA call inside
-them is chunked only when torch reports that neither flash nor memory-efficient attention (nor cuDNN) would run
-it and the full score matrix is larger than the budget; everything else calls the stock kernel unchanged.
+AOTriton caps gfx11 at head dim 256, so SDPA falls back to the math kernel and materialises the full fp32 score
+matrix (16 GiB for a 2048x2048 FLUX.1 decode). Unmasked query rows are independent, so chunking them is exact.
 ``UNSLOTH_VAE_ATTN_CHUNKED=0`` disables it; ``UNSLOTH_VAE_ATTN_CHUNK_MB`` sets the per-chunk fp32 score budget.
 """
 
@@ -42,9 +35,7 @@ def score_budget_bytes() -> int:
 
 
 def fused_sdpa_available(q: Any, k: Any, v: Any) -> bool:
-    """Whether torch would run this unmasked call on a fused kernel (flash, memory-efficient or cuDNN).
-
-    Anything that is not a CUDA/HIP tensor, or a torch without the query API, counts as fused (stock path)."""
+    """Whether flash, memory-efficient or cuDNN SDPA takes this call; non-CUDA tensors or query errors count as yes."""
     import torch
 
     if getattr(q, "device", None) is None or q.device.type != "cuda":
@@ -131,8 +122,6 @@ def _mode_class() -> Any:
     from torch.overrides import TorchFunctionMode
 
     class ChunkedVaeAttentionMode(TorchFunctionMode):
-        """Chunks oversized SDPA calls that no fused kernel takes; counts them in ``chunked``."""
-
         def __init__(self, budget: int):
             super().__init__()
             self.budget = budget
@@ -192,7 +181,6 @@ def _patch(module: Any) -> None:
 
 
 def wants_install(vae: Any, target: Any = None) -> bool:
-    """ROCm (HIP torch, a ``rocm`` target when one is given) and not disabled."""
     if vae is None or chunking_disabled() or not callable(getattr(vae, "modules", None)):
         return False
     if target is not None and getattr(target, "backend", None) != "rocm":
