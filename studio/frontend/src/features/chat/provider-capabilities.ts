@@ -1308,7 +1308,15 @@ export function getExternalReasoningCapabilities(
     options?.apiType !== "responses"
   ) {
     const config = normalizeCustomReasoningConfig(options?.reasoningConfig);
-    if (!config?.enabled) return withEnableThinkingStyle();
+    if (!config?.enabled) {
+      return isOpenRouterMandatoryReasoningModel(modelId ?? "")
+        ? withEnableThinkingStyle({
+            supportsReasoning: true,
+            reasoningAlwaysOn: true,
+            supportsReasoningOff: false,
+          })
+        : withEnableThinkingStyle();
+    }
     return config.style === "reasoning_effort" || config.style === "reasoning"
       ? withReasoningEffortStyle({
           supportsReasoning: true,

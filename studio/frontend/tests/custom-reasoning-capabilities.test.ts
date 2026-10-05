@@ -40,3 +40,14 @@ for (const style of [
     }
   });
 }
+
+test("unconfigured Custom keeps mandatory-reasoning routes always on", () => {
+  const caps = getExternalReasoningCapabilities("custom", "deepseek/deepseek-r1", {});
+  assert.equal(caps.supportsReasoning, true);
+  assert.equal(caps.reasoningAlwaysOn, true);
+  assert.equal(caps.supportsReasoningOff, false);
+  assert.equal(
+    getExternalReasoningCapabilities("custom", "unlisted-model", {}).supportsReasoning,
+    false,
+  );
+});
