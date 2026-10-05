@@ -158,7 +158,10 @@ def test_amd_support_reads_the_target_the_gpu_presents(amd_host):
     assert install.support_reason("vllm", 0).endswith("(found gfx1102).")
     amd_host.arches.update({0: "gfx1100"})
     assert install.support_reason("vllm", 0) is None
-    assert install.support_reason("vllm", 1).endswith("GPU.")
+    amd_host.targets["value"] = ["gfx1102", "gfx1030"]
+    assert install.support_reason("vllm", 1).endswith("(found gfx1030).")
+    # A GPU nothing names is left to vLLM, which refuses one it has no kernels for.
+    assert install.support_reason("vllm", 2) is None
 
 
 def test_rocm_environment_uses_a_managed_python_with_headers(rocm):

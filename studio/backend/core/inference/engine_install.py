@@ -826,14 +826,19 @@ def _rocm_reason(
     # The target each GPU presents to the engine (an HSA_OVERRIDE_GFX_VERSION spoof included),
     # else the one the kernel reports.
     arches = _rocm_gpu_arches()
-    if arches:
-        selected = list(arches.values()) if gpu_id is None else [arches.get(gpu_id, "")]
+    if gpu_id is None:
+        selected = list(arches.values()) or amd_kfd_gpu_gfx_targets() or []
+    elif gpu_id in arches:
+        selected = [arches[gpu_id]]
     else:
-        targets = amd_kfd_gpu_gfx_targets() or []
-        selected = targets if gpu_id is None else targets[gpu_id : gpu_id + 1]
+        selected = (amd_kfd_gpu_gfx_targets() or [])[gpu_id : gpu_id + 1]
+    selected = [target for target in selected if target]
+    if gpu_id is not None and not selected:
+        # Nothing names this GPU's target; vLLM refuses one it has no kernels for itself.
+        return None
     if any(target in wanted["gfx"] for target in selected):
         return None
-    return _unsupported_amd_gpu([target for target in selected if target])
+    return _unsupported_amd_gpu(selected)
 
 
 def _atomic_json(path: Path, data: dict) -> None:
