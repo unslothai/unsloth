@@ -41,10 +41,24 @@ def mlx_inference_patches(monkeypatch, native_vlm_generation_context):
     monkeypatch.setattr(mlx_inference, "_vlm_generation_context", contextlib.nullcontext)
     module = types.ModuleType("unsloth_zoo.mlx.inference")
     for name in FUSIONS:
-        setattr(module, f"fused_{name}", contextlib.nullcontext)
+        setattr(module, f"fused_{name}", _neutral_scope)
     module.__getattr__ = _neutral_zoo_helper
     monkeypatch.setitem(sys.modules, "unsloth_zoo.mlx.inference", module)
     return module
+
+
+def _neutral_scope(
+    model = None,
+    *_args,
+    **_kwargs,
+):
+    """A scope that does nothing and yields the model, whatever else zoo passes.
+
+    contextlib.nullcontext takes one argument, so it stood in only while every helper took just the
+    model. unsloth_zoo #1546 calls nax_quantized_linear(model, int8_prefill), and the stub raised
+    TypeError inside generation_mode on every macOS vision batch test.
+    """
+    return contextlib.nullcontext(model)
 
 
 def _neutral_zoo_helper(name):
@@ -56,7 +70,7 @@ def _neutral_zoo_helper(name):
     """
     if name.startswith("_") or name.startswith("fused_"):
         raise AttributeError(name)
-    return contextlib.nullcontext
+    return _neutral_scope
 
 
 @pytest.fixture
@@ -384,6 +398,46 @@ def test_an_unknown_zoo_helper_is_neutral_but_a_deleted_fusion_stays_missing(
     with pytest.raises(ImportError):
         from unsloth_zoo.mlx.inference import fused_moe_router  # noqa: F401
     assert not hasattr(mlx_inference_patches, "_private")
+
+
+@pytest.mark.parametrize(
+    "args, kwargs",
+    [((), {}), ((object(),), {}), ((object(), True), {}), ((object(),), {"int8_prefill": False})],
+)
+def test_every_stub_scope_takes_any_arguments_and_yields_the_model(
+    mlx_inference_patches, args, kwargs
+):
+    for name in [*(f"fused_{f}" for f in FUSIONS), "nax_quantized_linear", "some_future_helper"]:
+        with getattr(mlx_inference_patches, name)(*args, **kwargs) as active:
+            assert active is (args[0] if args else None), name
+
+
+def test_the_stub_accepts_every_call_zoo_makes_to_an_inference_helper(mlx_inference_patches):
+    """Read zoo's calls to the helpers it imports from mlx.inference and replay each one's shape
+    against the stub, so a new argument fails here on Linux, not only in the macOS job."""
+    import importlib.util
+
+    spec = importlib.util.find_spec("unsloth_zoo")
+    if spec is None or not spec.submodule_search_locations:
+        pytest.skip("unsloth_zoo source is not available")
+    imported = _zoo_inference_imports()
+    root = Path(next(iter(spec.submodule_search_locations))) / "mlx"
+    calls = []
+    for path in sorted(root.glob("*.py")):
+        for node in ast.walk(ast.parse(path.read_text(encoding = "utf-8"))):
+            if (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Name)
+                and node.func.id in imported
+            ):
+                calls.append((path.name, node))
+    if not calls:
+        pytest.skip("this unsloth_zoo calls no mlx.inference helper by name")
+    for filename, call in calls:
+        args = [object() for _ in call.args]
+        kwargs = {kw.arg: object() for kw in call.keywords if kw.arg}
+        with getattr(mlx_inference_patches, call.func.id)(*args, **kwargs):
+            pass
 
 
 @pytest.mark.parametrize("feature", FUSIONS)
