@@ -14,6 +14,8 @@ import {
   useShortcutAvailable,
 } from "@/features/settings";
 import { Z_LAYER } from "@/lib/z-layers";
+import { Search01Icon } from "@hugeicons/core-free-icons";
+import { HugeiconsIcon } from "@hugeicons/react";
 import {
   type ReactNode,
   Suspense,
@@ -107,8 +109,14 @@ function FindBarLoading({
       role="search"
       aria-busy="true"
       aria-label={t("shell.find.label")}
-      className="find-bar-surface fixed top-[calc(var(--studio-content-top-inset,0px)+3.5rem)] right-4 z-50 flex h-13 max-w-[calc(100vw-2rem)] items-center rounded-full px-5"
+      className="find-bar-surface fixed top-[calc(var(--studio-content-top-inset,0px)+3.5rem)] right-4 z-50 flex h-13 max-w-[calc(100vw-2rem)] items-center gap-1 rounded-full pr-5 pl-4.5"
     >
+      <HugeiconsIcon
+        icon={Search01Icon}
+        strokeWidth={1.75}
+        aria-hidden={true}
+        className="mr-1.5 size-[calc(18px*var(--ui-space-scale,1))] shrink-0 text-muted-foreground"
+      />
       <input
         ref={inputRef}
         type="text"

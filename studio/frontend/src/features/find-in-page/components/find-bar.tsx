@@ -5,7 +5,8 @@ import { Button } from "@/components/ui/button";
 import { isImeComposing } from "@/features/settings";
 import { useT } from "@/i18n";
 import { cn } from "@/lib/utils";
-import { BubbleChatIcon, Cancel01Icon, InternetIcon } from "@hugeicons/core-free-icons";
+import { MessageCircleIcon } from "@/lib/hugeicons-derived";
+import { Cancel01Icon, InternetIcon, Search01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 // lucide supplies the directional arrows used throughout the app.
 import { ArrowDownIcon, ArrowUpIcon } from "lucide-react";
@@ -246,10 +247,16 @@ export default function FindBar({
       // biome-ignore lint/a11y/useSemanticElements: this landmark contains the field and its navigation controls.
       role="search"
       aria-label={t("shell.find.label")}
-      // Scoped: 4.5rem more for the scope buttons, so the field keeps its width.
+      // Scoped: 5.5rem more for the scope buttons and divider, so the field keeps its width.
       data-scoped={targets.length > 0 ? "" : undefined}
-      className="find-bar-surface fixed top-[calc(var(--studio-content-top-inset,0px)+3.5rem)] right-4 z-50 flex h-13 w-[calc(22.25rem*var(--ui-space-scale,1))] max-w-[calc(100vw-2rem)] items-center gap-1 rounded-full pr-4 pl-5 data-scoped:w-[calc(26.75rem*var(--ui-space-scale,1))] sm:w-[calc(28.25rem*var(--ui-space-scale,1))] sm:data-scoped:w-[calc(32.75rem*var(--ui-space-scale,1))]"
+      className="find-bar-surface fixed top-[calc(var(--studio-content-top-inset,0px)+3.5rem)] right-4 z-50 flex h-13 w-[calc(22.25rem*var(--ui-space-scale,1))] max-w-[calc(100vw-2rem)] items-center gap-1 rounded-full pr-4 pl-4.5 data-scoped:w-[calc(27.75rem*var(--ui-space-scale,1))] sm:w-[calc(28.25rem*var(--ui-space-scale,1))] sm:data-scoped:w-[calc(33.75rem*var(--ui-space-scale,1))]"
     >
+      <HugeiconsIcon
+        icon={Search01Icon}
+        strokeWidth={1.75}
+        aria-hidden={true}
+        className="mr-1.5 size-[calc(18px*var(--ui-space-scale,1))] shrink-0 text-muted-foreground"
+      />
       <input
         ref={inputRef}
         type="text"
@@ -308,10 +315,10 @@ export default function FindBar({
       >
         <ArrowDownIcon strokeWidth={1.75} className="size-[calc(18px*var(--ui-space-scale,1))]" />
       </Button>
-      {targets.length > 0 ? (
-        <div className="flex shrink-0 items-center border-border border-l pl-1">
-          {[null, ...targets.map((candidate) => candidate.id)].map((id) => {
+      {targets.length > 0
+        ? [null, ...targets.map((candidate) => candidate.id)].map((id) => {
             const label = t(id === null ? "shell.find.searchChat" : "shell.find.searchBrowser");
+            const selected = scope === id;
             return (
               <Button
                 key={id ?? "chat"}
@@ -319,25 +326,25 @@ export default function FindBar({
                 size="icon"
                 className={cn(
                   FIND_BUTTON_CLASS,
-                  scope === id &&
-                    "bg-[rgb(0_0_0_/_calc(0.08*var(--contrast-wash-gain,1)))] text-foreground dark:bg-[rgb(255_255_255_/_calc(0.14*var(--contrast-wash-gain,1)))]",
+                  "shrink-0",
+                  selected ? "text-foreground" : "text-muted-foreground/70 hover:text-foreground",
                 )}
-                aria-pressed={scope === id}
+                aria-pressed={selected}
                 onMouseDown={keepFocusInField}
                 onClick={() => setScope(id)}
                 aria-label={label}
                 title={label}
               >
                 <HugeiconsIcon
-                  icon={id === null ? BubbleChatIcon : InternetIcon}
+                  icon={id === null ? MessageCircleIcon : InternetIcon}
                   strokeWidth={1.75}
                   className="size-[calc(18px*var(--ui-space-scale,1))]"
                 />
               </Button>
             );
-          })}
-        </div>
-      ) : null}
+          })
+        : null}
+      {targets.length > 0 ? <span aria-hidden={true} className="mx-1 h-5 w-px shrink-0 bg-border" /> : null}
       <Button
         variant="ghost"
         size="icon"
