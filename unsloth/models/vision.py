@@ -1118,8 +1118,7 @@ VLLM_MOE_ONLY_VLM = ("gemma4", "gemma4_text")
 def _is_sparse_moe_config(config):
     text_config = getattr(config, "text_config", None) or config
     return bool(
-        getattr(text_config, "num_experts", None)
-        or getattr(text_config, "enable_moe_block", False)
+        getattr(text_config, "num_experts", None) or getattr(text_config, "enable_moe_block", False)
     )
 
 
@@ -2939,13 +2938,18 @@ class FastBaseModel:
                     "Unsloth: Idefics3 fast_inference needs a newer unsloth_zoo. "
                     "Please run `pip install --upgrade unsloth_zoo`."
                 )
-            if any(arch in VLLM_MOE_ONLY_VLM for arch in model_types) and not _is_sparse_moe_config(auto_config):
+            if any(arch in VLLM_MOE_ONLY_VLM for arch in model_types) and not _is_sparse_moe_config(
+                auto_config
+            ):
                 raise RuntimeError(
                     f"Unsloth: fast_inference = True is only supported for the MoE {model_type_arch} "
                     "checkpoints (such as gemma-4-26B-A4B), not the dense ones yet. "
                     "Please set fast_inference = False."
                 )
-            if any(arch in VLLM_ZOO_MOE_VLM for arch in model_types) and not _zoo_supports_moe_fast_inference():
+            if (
+                any(arch in VLLM_ZOO_MOE_VLM for arch in model_types)
+                and not _zoo_supports_moe_fast_inference()
+            ):
                 raise RuntimeError(
                     f"Unsloth: {model_type_arch} fast_inference needs a newer unsloth_zoo. "
                     "Please run `pip install --upgrade unsloth_zoo`."

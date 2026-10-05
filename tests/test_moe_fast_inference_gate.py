@@ -22,7 +22,10 @@ def _is_sparse_moe_config():
     for node in TREE.body:
         if isinstance(node, ast.FunctionDef) and node.name == "_is_sparse_moe_config":
             namespace = {}
-            exec(compile(ast.Module(body = [node], type_ignores = []), str(VISION_PATH), "exec"), namespace)
+            exec(
+                compile(ast.Module(body = [node], type_ignores = []), str(VISION_PATH), "exec"),
+                namespace,
+            )
             return namespace["_is_sparse_moe_config"]
     raise AssertionError("_is_sparse_moe_config not found")
 
@@ -30,7 +33,9 @@ def _is_sparse_moe_config():
 # Shaped like the real config.json files: model_type gemma4 / qwen3_5_moe at the top, the
 # expert count on text_config.
 GEMMA4_MOE = SimpleNamespace(text_config = SimpleNamespace(num_experts = 128, enable_moe_block = True))
-GEMMA4_DENSE = SimpleNamespace(text_config = SimpleNamespace(num_experts = None, enable_moe_block = False))
+GEMMA4_DENSE = SimpleNamespace(
+    text_config = SimpleNamespace(num_experts = None, enable_moe_block = False)
+)
 QWEN3_5_MOE = SimpleNamespace(text_config = SimpleNamespace(num_experts = 256))
 QWEN3_5_DENSE = SimpleNamespace(text_config = SimpleNamespace(num_experts = None))
 
