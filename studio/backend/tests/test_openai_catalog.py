@@ -542,3 +542,76 @@ def test_embeddings_monitor_row_names_the_loaded_model_not_the_client_alias(monk
     assert response.status_code == 200
     [entry] = monitor.snapshot()
     assert entry["model"] == "bge-m3:q8_0"
+
+
+def _pin_setup(
+    monkeypatch,
+    listed,
+    resident_quant = None,
+):
+    from core.inference.local_model_resolver import _LocalGgufEntry
+
+    loaded = [m for m in listed if m.get("loaded")]
+
+    async def _catalog():
+        return listed
+
+    monkeypatch.setattr(inf, "_openai_model_objects", lambda: loaded)
+    monkeypatch.setattr(inf, "_openai_catalog_objects", _catalog)
+    monkeypatch.setattr(inf, "get_llama_cpp_backend", lambda: _FakeLlama(loaded = bool(loaded)))
+    monkeypatch.setattr(inf, "get_inference_backend", lambda: _FakeUnsloth())
+    entry = _LocalGgufEntry(
+        "publisher/Qwen3", "/hf/models--publisher--Qwen3/snapshots/a", ("Q8_0", "Q4_K_M")
+    )
+    monkeypatch.setattr(resolver, "_index", lambda: {"publisher/qwen3": entry})
+
+
+def _retrieve(model_id):
+    return asyncio.run(inf.openai_retrieve_model(model_id, current_subject = "t"))
+
+
+def _base_row(**extra):
+    return {
+        "id": "publisher/Qwen3",
+        "object": "model",
+        "created": 1,
+        "owned_by": "unsloth-studio",
+        **extra,
+    }
+
+
+def test_retrieve_resolves_an_on_disk_quant_pin(monkeypatch):
+    # #9340: chat completions accept "<id>:<quant>", so retrieval must not 404 it.
+    _pin_setup(monkeypatch, [_base_row(loaded = False, quant = "Q8_0")])
+
+    model = _retrieve("publisher/qwen3:q4_k_m")
+    assert model["id"] == "publisher/Qwen3:Q4_K_M"
+    assert model["quant"] == "Q4_K_M"
+    assert model["loaded"] is False
+
+
+def test_retrieve_pin_of_the_resident_quant_keeps_its_loaded_fields(monkeypatch):
+    _pin_setup(monkeypatch, [_base_row(loaded = True, quant = "Q8_0", context_length = 4096)])
+
+    model = _retrieve("publisher/Qwen3:Q8_0")
+    assert model["loaded"] is True
+    assert model["context_length"] == 4096
+    other = _retrieve("publisher/Qwen3:Q4_K_M")
+    assert other["loaded"] is False
+    assert "context_length" not in other
+
+
+def test_retrieve_pin_404s_when_the_quant_or_model_is_not_listed(monkeypatch):
+    import pytest
+    from fastapi import HTTPException
+
+    _pin_setup(monkeypatch, [_base_row(loaded = False, quant = "Q8_0")])
+    for missing in ("publisher/Qwen3:Q2_K", "publisher/Qwen3:latest", "other/Model:Q8_0"):
+        with pytest.raises(HTTPException) as err:
+            _retrieve(missing)
+        assert err.value.status_code == 404, missing
+
+    # Indexed but not in this caller's listing (e.g. hidden from a managed account).
+    _pin_setup(monkeypatch, [])
+    with pytest.raises(HTTPException):
+        _retrieve("publisher/Qwen3:Q4_K_M")

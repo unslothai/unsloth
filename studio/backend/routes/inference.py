@@ -34954,6 +34954,35 @@ async def openai_list_models(
     return {"object": "list", "data": data}
 
 
+def _pinned_quant_object(model_id: str, objects: list[dict]) -> Optional[dict]:
+    """``<listed id>:<on-disk quant>``, the same pin chat completions accept (#9340), else None."""
+    from core.inference.local_model_resolver import resolve_local_gguf
+    from core.inference.openai_auto_download import looks_like_quant
+
+    base, sep, quant = model_id.rpartition(":")
+    # ":latest" names no quant, so the resolver would answer it with the repo's default one.
+    if not sep or not base or not looks_like_quant(quant):
+        return None
+    listed = next(
+        (m for m in objects if isinstance(m.get("id"), str) and m["id"].lower() == base.lower()),
+        None,
+    )
+    if listed is None:
+        return None
+    resolved = resolve_local_gguf(f"{listed['id']}:{quant}")
+    variant = resolved[1] if resolved else None
+    if not variant:
+        return None
+    pinned_id = f"{listed['id']}:{variant}"
+    if listed.get("loaded") and str(listed.get("quant", "")).lower() == variant.lower():
+        return {**listed, "id": pinned_id}
+    # The listed row's context fields describe the resident quant, not this one.
+    shared = {
+        k: listed[k] for k in ("object", "created", "owned_by", "display_name") if k in listed
+    }
+    return {"id": pinned_id, **shared, "loaded": False, "quant": variant}
+
+
 @router.get("/models/{model_id:path}")
 async def openai_retrieve_model(model_id: str, current_subject: str = Depends(get_current_subject)):
     """
@@ -35003,6 +35032,9 @@ async def openai_retrieve_model(model_id: str, current_subject: str = Depends(ge
             for entry in _loaded:
                 if entry["id"] == clean:
                     return {**entry, "loaded": True}
+    pinned = await asyncio.to_thread(_pinned_quant_object, model_id, objects)
+    if pinned is not None:
+        return pinned
     raise HTTPException(
         status_code = 404,
         detail = openai_error_body(
