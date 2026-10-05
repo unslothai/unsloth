@@ -116,6 +116,11 @@ def current_date_prompt_line(today: date | None = None, request: Any = None) -> 
 
 _PROBE_SYSTEM = "UNSLOTH_DATE_PROBE_SYSTEM"
 _PROBE_USER = "UNSLOTH_DATE_PROBE_USER"
+# stand-ins for the tokenizer's control tokens, so a default that carries one can be told apart.
+_PROBE_SPECIAL_TOKENS = {
+    "bos_token": "UNSLOTH_DATE_PROBE_BOS",
+    "eos_token": "UNSLOTH_DATE_PROBE_EOS",
+}
 # a catalog a tool request's branch can render, for probing the template it selects.
 PROBE_TOOLS = [
     {
@@ -149,8 +154,7 @@ def _render_probe(
     return env.from_string(chat_template).render(
         messages = messages,
         add_generation_prompt = False,
-        bos_token = "",
-        eos_token = "",
+        **_PROBE_SPECIAL_TOKENS,
         **({"tools": tools} if tools else {}),
         **(controls or {}),
     )
@@ -205,7 +209,9 @@ def template_system_turn(
             replayed = render(default)
         except Exception:
             replayed = None
-        return True, (default.strip() if replayed == bare else None)
+        # replayed as text, a control token in the default would no longer be one.
+        carries_token = any(token in default for token in _PROBE_SPECIAL_TOKENS.values())
+        return True, (default.strip() if replayed == bare and not carries_token else None)
     return not renders_chat, ("" if not renders_chat else None)
 
 
