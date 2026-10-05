@@ -166,7 +166,7 @@ def test_a_reachable_address_late_in_the_list_is_still_dialled(monkeypatch):
 
         def select(self, timeout):
             if timeout:
-                time.sleep(timeout)
+                time.sleep(timeout + 0.03)  # a loaded runner oversleeps every stagger
             return []
 
         def close(self):
@@ -226,10 +226,11 @@ def test_a_refused_port_still_raises_immediately(monkeypatch):
 
     start = time.monotonic()
     with pytest.raises(OSError) as excinfo:
-        he.happy_eyeballs_connection(("refused.invalid", 1), 5)
+        he.happy_eyeballs_connection(("refused.invalid", 1), 30)
     elapsed = time.monotonic() - start
 
-    assert elapsed < 2.0, f"a refused connect waited {elapsed:.1f}s instead of failing"
+    # Windows retries a reset SYN for ~2s; the stdlib pays that per address too.
+    assert elapsed < 10.0, f"a refused connect waited {elapsed:.1f}s instead of failing"
     assert excinfo.value.errno in (errno.ECONNREFUSED, errno.EADDRNOTAVAIL)
 
 

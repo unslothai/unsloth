@@ -60,12 +60,6 @@ def _interleave(infos: list) -> list:
     return ordered
 
 
-def _remaining(deadline: float | None) -> float | None:
-    if deadline is None:
-        return None
-    return deadline - time.monotonic()
-
-
 def happy_eyeballs_connection(
     address,
     timeout = socket._GLOBAL_DEFAULT_TIMEOUT,
@@ -73,7 +67,7 @@ def happy_eyeballs_connection(
     *,
     all_errors = False,
 ):
-    """Drop-in ``socket.create_connection``: ends within ``timeout + (n - 1) * delay``."""
+    """Drop-in ``socket.create_connection``: attempts overlap, each with the whole ``timeout``."""
     host, port = address
     if timeout is socket._GLOBAL_DEFAULT_TIMEOUT:
         resolved_timeout = socket.getdefaulttimeout()
@@ -93,31 +87,34 @@ def happy_eyeballs_connection(
 
     ordered = _interleave(infos)
     delay = attempt_delay()
-    # The last attempt opens (n - 1) staggers in and must still get the whole timeout.
-    deadline = (
-        None
-        if resolved_timeout is None
-        else time.monotonic() + resolved_timeout + (len(ordered) - 1) * delay
-    )
     exceptions: list = []
     failed: dict = {}  # sockaddr -> its failure
-    pending: dict = {}  # socket -> sockaddr
+    pending: dict = {}  # socket -> (sockaddr, expiry); every attempt gets the whole timeout
     winner = None
-    timed_out = False
 
-    def _settle(sock):
-        sock.setblocking(True)
-        sock.settimeout(resolved_timeout)
-        return sock
+    def _fail(sa, exc):
+        exceptions.append(exc)
+        failed[sa] = exc
 
     sel = selectors.DefaultSelector()
     try:
         index = 0
+        next_due = 0.0
+        kick = True  # a failed attempt lets the next one start at once (RFC 8305)
         while True:
-            started_one = False
-            if index < len(ordered) and (deadline is None or _remaining(deadline) > 0):
+            now = time.monotonic()
+            for sock, (sa, expiry) in list(pending.items()):
+                if expiry is not None and expiry <= now:
+                    sel.unregister(sock)
+                    del pending[sock]
+                    sock.close()
+                    _fail(sa, socket.timeout("timed out"))
+                    kick = True
+            if index < len(ordered) and (kick or not pending or now >= next_due):
+                kick = False
                 af, socktype, proto, _canon, sa = ordered[index]
                 index += 1
+                next_due = now + delay
                 sock = None
                 try:
                     sock = socket.socket(af, socktype, proto)
@@ -130,51 +127,38 @@ def happy_eyeballs_connection(
                         break
                     if err not in _IN_FLIGHT:
                         raise OSError(err, os.strerror(err))
-                    sel.register(sock, selectors.EVENT_WRITE, sa)
-                    pending[sock] = sa
-                    started_one = True
+                    sel.register(sock, selectors.EVENT_WRITE)
+                    pending[sock] = (
+                        sa,
+                        None if resolved_timeout is None else now + resolved_timeout,
+                    )
                 except OSError as exc:
-                    exceptions.append(exc)
-                    failed[sa] = exc
+                    _fail(sa, exc)
+                    kick = True
                     if sock is not None:
                         sock.close()
-
+                    continue
             if not pending:
                 if index >= len(ordered):
                     break
-                if deadline is not None and _remaining(deadline) <= 0:
-                    break
                 continue
 
-            budget = _remaining(deadline)
+            wakes = [e for _sa, e in pending.values() if e is not None]
             if index < len(ordered):
-                wait = delay if started_one else 0.0
-                if budget is not None:
-                    wait = min(wait, max(0.0, budget))
-            else:
-                wait = budget
-            if wait is not None and wait <= 0 and budget is not None and budget <= 0:
-                timed_out = True
-                break
-
+                wakes.append(next_due)
+            wait = max(0.0, min(wakes) - time.monotonic()) if wakes else None
             for key, _mask in sel.select(wait):
                 sock = key.fileobj
                 err = sock.getsockopt(socket.SOL_SOCKET, socket.SO_ERROR)
                 sel.unregister(sock)
-                sa = pending.pop(sock, None)
+                sa, _expiry = pending.pop(sock)
                 if err == 0:
                     winner = sock
                     break
-                exc = OSError(err, os.strerror(err))
-                exceptions.append(exc)
-                failed[sa] = exc
                 sock.close()
+                _fail(sa, OSError(err, os.strerror(err)))
+                kick = True
             if winner is not None:
-                break
-            if index >= len(ordered) and not pending:
-                break
-            if deadline is not None and _remaining(deadline) <= 0:
-                timed_out = bool(pending)
                 break
     finally:
         for sock in list(pending):
@@ -187,9 +171,11 @@ def happy_eyeballs_connection(
         sel.close()
 
     if winner is not None:
-        return _settle(winner)
+        winner.setblocking(True)
+        winner.settimeout(resolved_timeout)
+        return winner
 
-    if timed_out or not exceptions:
+    if not exceptions:
         exceptions.append(socket.timeout("timed out"))
     if all_errors and _HAS_EXCEPTION_GROUP:
         raise ExceptionGroup("create_connection failed", exceptions)  # novermin
