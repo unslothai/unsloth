@@ -1314,6 +1314,37 @@ def _held_head_leaves_the_hold(batch: "_ResidentBatch", held: list) -> bool:
     return head.get("type") == "generate" and batch.unavailable_reason(head) is None
 
 
+class _MLXIdleWarmth:
+    def __init__(self):
+        self.enabled = os.environ.get("UNSLOTH_MLX_GPU_KEEP_WARM", "1").lower() in (
+            "1",
+            "true",
+            "yes",
+        )
+        self.deadline = 0.0
+
+    def active(self):
+        self.deadline = time.monotonic() + 60.0
+
+    def clear(self):
+        self.deadline = 0.0
+
+    def timeout(self, loaded):
+        return 0.5 if self.enabled and loaded and time.monotonic() < self.deadline else 1.0
+
+    def tick(self, loaded):
+        if self.timeout(loaded) != 0.5:
+            return
+        try:
+            import mlx.core as mx
+
+            # Avoid the first-command stall after the GPU enters its idle power state.
+            mx.eval(mx.zeros((1,), dtype = mx.float32) + 1)
+        except Exception as exc:
+            self.enabled = False
+            logger.warning("MLX GPU keep-warm disabled after an idle tick failed: %s", exc)
+
+
 class _ResidentBatch:
     """The replies an MLX worker is decoding at once."""
 
@@ -2025,6 +2056,7 @@ def run_inference_process(
 
         logger.info("MLX inference subprocess ready, entering command loop")
         batch = _ResidentBatch(backend, resp_queue)
+        warmth = _MLXIdleWarmth()
         deferred: list[dict] = []
         stops = _Stops(stop_ledger, resp_queue, batch, deferred)
         if stop_ledger is not None:
@@ -2033,6 +2065,8 @@ def run_inference_process(
             stops.answer()
             tearing_down = pending_teardowns is not None and pending_teardowns.any_in_flight()
             if not tearing_down:
+                if batch.rows_in_flight:
+                    warmth.active()
                 batch.step()
             from_deferred = False
             if _held_head_leaves_the_hold(batch, deferred):
@@ -2043,9 +2077,18 @@ def run_inference_process(
                     cmd = cmd_queue.get(
                         timeout = 0.0
                         if (batch.rows_in_flight or deferred) and not tearing_down
-                        else 1.0
+                        else warmth.timeout(getattr(backend, "active_model_name", None))
                     )
                 except _queue.Empty:
+                    if (
+                        not batch.rows_in_flight
+                        and not deferred
+                        and not (
+                            pending_teardowns is not None and pending_teardowns.any_in_flight()
+                        )
+                        and not (drain_event is not None and drain_event.is_set())
+                    ):
+                        warmth.tick(getattr(backend, "active_model_name", None))
                     continue
                 except (EOFError, OSError):
                     batch.close()
@@ -2053,6 +2096,8 @@ def run_inference_process(
             if cmd is None:
                 continue
             cmd_type = cmd.get("type", "")
+            if cmd_type in ("load", "unload", "reset", "cancel", "shutdown"):
+                warmth.clear()
             if pending_teardowns is not None and cmd_type in _TEARDOWN_COMMANDS:
                 pending_teardowns.taken()
             try:
@@ -2214,6 +2259,9 @@ def run_inference_process(
                 if cmd_type != "generate":
                     _payload["type"] = "error"
                 _send_response(resp_queue, _payload)
+            finally:
+                if cmd_type in ("generate", "generate_audio_input"):
+                    warmth.active()
         return
 
     # Windows Triton check, ahead of the torchao stub below, matching the training and export workers' gate-then-stub
