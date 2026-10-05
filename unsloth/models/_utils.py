@@ -4981,6 +4981,7 @@ def patch_gradient_accumulation_fix(Trainer):
             if getattr(self, "is_fsdp_enabled", False):
                 from .llama import _decline_fused_lora_for_fsdp
                 _decline_fused_lora_for_fsdp(getattr(self, "model", None))
+            _replan_auto_offload_safely(self)
 
         _unsloth_trainer_init.__wrapped__ = _original_trainer_init
         Trainer.__init__ = _unsloth_trainer_init
@@ -6259,10 +6260,16 @@ def _offload_embedding_for_room(model, require_frozen = True):
     return offload_spare_embeddings(model, require_frozen = require_frozen) > 0
 
 
+# get_peft_model(offload_layers = "auto") runs before the trainer: plan for the notebooks'
+# per_device_train_batch_size until the trainer re-plans with its own.
+_AUTO_OFFLOAD_BATCH_SIZE = 2
+
+
 def _training_reserve_bytes(
     model,
     seq_len = None,
     trainable = True,
+    batch_size = None,
 ):
     # Grads, AdamW's two fp32 moments and the foreach temp; before get_peft_model every param still says requires_grad.
     extra = 0
@@ -6271,7 +6278,10 @@ def _training_reserve_bytes(
             p.numel() * (p.element_size() + 12) for p in model.parameters() if p.requires_grad
         )
     seq_len = seq_len or getattr(model, "max_seq_length", None) or 2048
-    return estimate_training_reserve_bytes(model.config, seq_len, extra_bytes = extra), seq_len
+    reserve = estimate_training_reserve_bytes(
+        model.config, seq_len, batch_size = batch_size or 1, extra_bytes = extra
+    )
+    return reserve, seq_len
 
 
 def _skip_aware_flag(cls):
@@ -6363,7 +6373,12 @@ def offload_embedding_if_tight(
     return _offload_embedding_for_room(model, require_frozen = not at_load)
 
 
-def _auto_block_swap_indices(model, prefetch_depth):
+def _auto_block_swap_indices(
+    model,
+    prefetch_depth,
+    batch_size = None,
+    seq_len = None,
+):
     """Layers to swap so each GPU keeps a training step's reserve free; [] when it already does."""
     if auto_swap_indices is None:
         raise ImportError(
@@ -6371,7 +6386,9 @@ def _auto_block_swap_indices(model, prefetch_depth):
             "Run `pip install --upgrade unsloth_zoo`."
         )
     layers = find_decoder_layers(model)
-    reserve, seq_len = _training_reserve_bytes(model)
+    reserve, seq_len = _training_reserve_bytes(
+        model, seq_len, batch_size = batch_size or _AUTO_OFFLOAD_BATCH_SIZE
+    )
     indices, left = auto_swap_indices(layers, reserve, prefetch_depth)
     # Only the looked-up rows cross PCIe, so the embedding goes before any layer.
     if indices and _offload_embedding_for_room(model):
@@ -6426,16 +6443,115 @@ def install_block_swap(
             return None
         if BlockSwap is None:
             _check_block_swap(model)
+        # The trainer re-plans marked models for its real batch size (replan_auto_offload_for_trainer).
+        model._unsloth_offload_layers_auto = prefetch_depth
         offload_layers = _auto_block_swap_indices(model, prefetch_depth)
         if not offload_layers:
             return None
     _check_block_swap(model)
+    return _attach_block_swap(model, offload_layers, prefetch_depth)
+
+
+def _attach_block_swap(model, offload_layers, prefetch_depth):
     layers = find_decoder_layers(model)
     # Spaced evenly, each copy hides behind several layers of compute instead of one.
     swapper = _new_block_swap(layers, offload_layers, prefetch_depth, placement = "spread")
     # On the layer list too: the fast decode loop only sees the inner model.
     layers._unsloth_block_swap = swapper
     model._unsloth_block_swap = swapper
+    return swapper
+
+
+_REPLAN_FAILED_PRINTED = False
+
+
+def _replan_auto_offload_safely(trainer):
+    global _REPLAN_FAILED_PRINTED
+    try:
+        return replan_auto_offload_for_trainer(trainer)
+    except Exception as e:
+        if not _REPLAN_FAILED_PRINTED:
+            _REPLAN_FAILED_PRINTED = True
+            print(
+                f"Unsloth: offload_layers = 'auto' could not re-plan for the trainer ({e}); "
+                "keeping the current plan."
+            )
+        return None
+
+
+def _trainer_offload_replan_skip(trainer):
+    """Why the trainer must keep the attach-time plan, or None."""
+    args = getattr(trainer, "args", None)
+    if (getattr(args, "world_size", 1) or 1) > 1:
+        return "distributed"
+    if getattr(trainer, "is_fsdp_enabled", False) or getattr(
+        trainer, "is_deepspeed_enabled", False
+    ):
+        return "distributed"
+    # A pre-built optimizer holds the current parameters; a rebuild must not move them under it.
+    if getattr(trainer, "optimizer", None) is not None:
+        return "optimizer"
+    if auto_swap_indices is None or estimate_training_reserve_bytes is None:
+        return "zoo"
+    if not torch.cuda.is_available():
+        return "cuda"
+    return None
+
+
+def replan_auto_offload_for_trainer(trainer):
+    """get_peft_model(offload_layers = "auto") planned for _AUTO_OFFLOAD_BATCH_SIZE rows; once the
+    trainer knows per_device_train_batch_size and its max length, swap more layers if the real step
+    does not fit. Never fewer layers than before; returns the swapper in use."""
+    model = getattr(trainer, "model", None)
+    prefetch_depth = getattr(model, "_unsloth_offload_layers_auto", None)
+    if prefetch_depth is None or _trainer_offload_replan_skip(trainer) is not None:
+        return None
+    args = getattr(trainer, "args", None)
+    batch_size = getattr(args, "per_device_train_batch_size", None) or _AUTO_OFFLOAD_BATCH_SIZE
+    seq_len = (
+        getattr(args, "max_length", None)
+        or getattr(args, "max_seq_length", None)
+        or getattr(model, "max_seq_length", None)
+    )
+    reserve, seq_len = _training_reserve_bytes(model, seq_len, batch_size = batch_size)
+    swapper = getattr(model, "_unsloth_block_swap", None)
+    old = list(getattr(swapper, "indices", None) or ())
+    layers = find_decoder_layers(model)
+    if old:
+        # Swapped layers already left the card, so free memory counts them once.
+        free = usable_cuda_bytes(swapper.device)
+        if free >= reserve:
+            return swapper
+        restore = swapper.host_bytes()
+        if restore > free:
+            per_layer = max(1, restore // len(old))
+            want = min(len(layers) - 1, len(old) + -(-(reserve - free) // per_layer))
+            print(
+                f"Unsloth: offload_layers = 'auto' kept {len(old)} layers for batch size "
+                f"{_AUTO_OFFLOAD_BATCH_SIZE}, but per_device_train_batch_size = {batch_size} at "
+                f"{seq_len} tokens needs {(reserve - free) / 2**30:.2f} GiB more, and re-planning "
+                f"would first restore {restore / 2**30:.2f} GiB. Pass "
+                f"get_peft_model(offload_layers = {want}) or lower per_device_train_batch_size."
+            )
+            return swapper
+    elif not auto_swap_indices(layers, reserve, prefetch_depth)[0]:
+        return swapper
+    if swapper is not None:
+        swapper.remove()
+        layers._unsloth_block_swap = None
+        model._unsloth_block_swap = None
+    indices = _auto_block_swap_indices(
+        model, prefetch_depth, batch_size = batch_size, seq_len = seq_len
+    )
+    if len(indices) < len(old):
+        indices = old
+    if not indices:
+        return None
+    swapper = _attach_block_swap(model, indices, prefetch_depth)
+    print(
+        f"Unsloth: offload_layers = 'auto' re-planned for per_device_train_batch_size = "
+        f"{batch_size}: {len(old)} -> {len(indices)} decoder layers in host RAM."
+    )
     return swapper
 
 
