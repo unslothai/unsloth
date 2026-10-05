@@ -451,7 +451,10 @@ def GraniteModel_fast_forward_inference(
     )
 
     next_decoder_cache = []
+    block_swap = getattr(self.model.layers, "_unsloth_block_swap", None)
     for idx, decoder_layer in enumerate(self.model.layers):
+        if block_swap is not None:
+            block_swap.enter(idx)
         layer_device, _ = per_layer_device(decoder_layer)
         hidden_states, position_ids = move_to_device(layer_device, hidden_states, position_ids)
 
@@ -475,6 +478,8 @@ def GraniteModel_fast_forward_inference(
         )
         hidden_states = fast_swiglu_inference(decoder_layer.mlp, hidden_states)
         hidden_states = torch.add(residual, hidden_states, alpha = residual_multiplier)
+        if block_swap is not None:
+            block_swap.leave(idx)
 
         next_decoder_cache.append(present_key_value)
     hidden_states = fast_rms_layernorm_inference(self.model.norm, hidden_states)

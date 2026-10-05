@@ -11,14 +11,13 @@ import {
   MAX_TOTAL_MCP_IMAGES,
   MAX_MCP_IMAGE_MIME_CHARS,
   MAX_TOTAL_MCP_IMAGE_CHARS,
-  MCP_IMAGE_PARSE_ERROR_TEXT,
   planMcpImageBound,
   MCP_IMAGES_MARKER,
   boundMcpImageEnvelopes,
   mcpImagesEnvelope,
+  isImageToolName,
   splitMcpImages,
   stripMcpImageEnvelopes,
-  toolTextForModel,
 } from "../src/features/chat/api/mcp-images.ts";
 import { providerModelTakesMcpImages } from "../src/features/chat/external-providers.ts";
 import { localToolExchangeIndexes } from "../src/features/chat/codex-reasoning.ts";
@@ -58,7 +57,7 @@ test("replaying a tool result re-attaches its images for the backend", () => {
   assert.match(adapter, /content \+= mcpImagesEnvelope\(result\.images\);/);
 });
 
-test("only an MCP tool call carries the privileged envelope", () => {
+test("only an image tool call carries the privileged envelope", () => {
   // A client tool is free to answer {text, images:[{data, mimeType}]}, which is
   // the shape isMcpImageToolResult accepts. Without the provenance gate its bytes
   // would be promoted into model image input on the next request.
@@ -68,7 +67,7 @@ test("only an MCP tool call carries the privileged envelope", () => {
   // The envelope is gated...
   assert.match(
     adapter,
-    /if \(isMcpImageToolResult\(result\) && isMcpToolName\(tc\.toolName\)\) \{\n\s*content \+= mcpImagesEnvelope\(result\.images\);/,
+    /if \(isMcpImageToolResult\(result\) && isImageToolName\(tc\.toolName\)\) \{\n\s*content \+= mcpImagesEnvelope\(result\.images\);/,
   );
   // ...but the wrapper branch is NOT: excluding a non-MCP wrapper there dropped it
   // into JSON.stringify, which replays the whole base64 array as prompt text.
@@ -576,50 +575,13 @@ test("a message's results are batched by replay exchange, not as one block", () 
   );
 });
 
-test("a result whose marker does not parse is fail-closed for missing/mcp__ provenance", () => {
-  const bad = "log" + MCP_IMAGES_MARKER + "{oops: " + "A".repeat(2_000_000);
-  assert.equal(toolTextForModel(bad, "mcp__fs__read_media_file"), MCP_IMAGE_PARSE_ERROR_TEXT);
-  assert.equal(toolTextForModel(bad, undefined), MCP_IMAGE_PARSE_ERROR_TEXT);
-  assert.equal(toolTextForModel(bad, ""), MCP_IMAGE_PARSE_ERROR_TEXT);
-  const nonMcp = toolTextForModel(bad, "read_file");
-  assert.equal(nonMcp, bad);
-  const small = "log" + MCP_IMAGES_MARKER + "{oops}";
-  assert.equal(toolTextForModel(small, "read_file"), small);
-  assert.equal(toolTextForModel(small, "web_search"), small);
-  const literal = "before" + MCP_IMAGES_MARKER + " literal\nafter";
-  assert.equal(toolTextForModel(literal, "read_file"), literal);
-});
-
-test("a valid envelope's payload still comes off for the model", () => {
-  const text = "[1 image returned]" + mcpImagesEnvelope(IMAGES);
-  assert.equal(toolTextForModel(text, "mcp__fs__read_media_file"), "[1 image returned]");
-});
-
-test("the serializer applies the fail-closed notice to string results", () => {
-  assert.match(adapter, /toolTextForModel\(result, tc\.toolName\)/);
-});
-
-test("a dead envelope uploads neither bytes nor base64 on a text-only target", () => {
-  const invalid = [
-    {
-      role: "tool",
-      name: "mcp__fs__shot",
-      content: "log" + MCP_IMAGES_MARKER + "{oops: " + "A".repeat(2_000_000),
-    },
-  ];
-  const stripped = stripMcpImageEnvelopes(invalid);
-  assert.equal(stripped[0].content, MCP_IMAGE_PARSE_ERROR_TEXT);
-  const bounded = boundMcpImageEnvelopes(invalid);
-  assert.equal(bounded[0].content, MCP_IMAGE_PARSE_ERROR_TEXT);
-});
-
 test("a client tool's structured result is not unwrapped as the MCP wrapper", () => {
   // Unwrapping by shape alone reduced {text, images, ...} from a non-MCP client tool
   // to its text, silently dropping every other field. The bare live-parser wrapper
   // is still unwrapped, since JSON of it would replay base64 as prompt text.
   assert.match(
     adapter,
-    /\(isMcpImageToolResult\(result\) &&\n\s*\(isMcpToolName\(tc\.toolName\) \|\| isBareMcpImageWrapper\(result\)\)\) \|\|/,
+    /\(isMcpImageToolResult\(result\) &&\n\s*\(isImageToolName\(tc\.toolName\) \|\| isBareMcpImageWrapper\(result\)\)\) \|\|/,
   );
   assert.match(
     adapter,
@@ -627,7 +589,16 @@ test("a client tool's structured result is not unwrapped as the MCP wrapper", ()
   );
 });
 
-test("the wire contract matches the backend envelope exactly", () => {
-  assert.equal(MCP_IMAGES_MARKER, "\n__MCP_IMAGES__:");
-  assert.equal(MCP_IMAGE_PARSE_ERROR_TEXT, "[MCP image could not be parsed]");
+
+test("sandbox image viewer replays bounded images without trusting arbitrary tools", () => {
+  assert.equal(isImageToolName("view_image"), true);
+  assert.equal(isImageToolName("python"), false);
+  assert.equal(isImageToolName("mcp__files__image"), true);
+  const messages = [
+    { role: "tool", name: "view_image", content: RESULT },
+    { role: "tool", name: "python", content: RESULT },
+  ];
+  const bounded = boundMcpImageEnvelopes(messages);
+  assert.equal(splitMcpImages(bounded[0].content).images.length, 1);
+  assert.equal(splitMcpImages(bounded[1].content).images.length, 0);
 });

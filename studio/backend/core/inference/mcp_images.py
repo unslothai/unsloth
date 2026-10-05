@@ -44,6 +44,10 @@ MAX_IMAGE_EDGE = 1024
 MAX_IMAGE_PIXELS = 40_000_000
 
 
+def is_image_tool(name: str) -> bool:
+    return name == "view_image" or name.startswith(MCP_TOOL_PREFIX)
+
+
 def split_images(result: str) -> tuple[str, list[dict]]:
     """Validated, so tool text that merely mentions the marker is not truncated."""
     head, sep, payload = result.rpartition("\n" + SENTINEL)
@@ -132,32 +136,6 @@ def mentions_images(result: str) -> bool:
     loop parsed a permitted 12 MB envelope right there. A false positive here costs
     a thread hop; the worker validates for real."""
     return ("\n" + SENTINEL) in result
-
-
-# Fail-closed stand-in when an envelope does not parse; it is never replayed as tool text.
-MCP_IMAGE_PARSE_ERROR_TEXT = "[MCP image could not be parsed]"
-
-
-def sanitize_tool_text(result: str, tool_name: "str | None" = None) -> str:
-    """Strip a valid envelope's payload; it is image input, resolved in _promote.
-    A result that merely mentions the sentinel but does not parse fails closed to
-    a one-line notice -- the whole result goes, head included, because an
-    unparseable envelope gives no trustworthy place to cut."""
-    text, images = split_images(result)
-    if images:
-        return text
-    if mentions_images(result) and (
-        tool_name is None or tool_name == "" or tool_name.startswith(MCP_TOOL_PREFIX)
-    ):
-        logger.warning(
-            "Tool %r returned a result that mentions %r but does not parse into image "
-            "entries; %d chars withheld from the model.",
-            tool_name,
-            SENTINEL,
-            len(result),
-        )
-        return MCP_IMAGE_PARSE_ERROR_TEXT
-    return result
 
 
 def _decoded_urls(
@@ -277,7 +255,7 @@ def eligible_replay_images(
         if not isinstance(content, str):
             return None
         name = messages[position].get("name") or call_names.get(position)
-        if isinstance(name, str) and name and not name.startswith(MCP_TOOL_PREFIX):
+        if isinstance(name, str) and name and not is_image_tool(name):
             return None
         _text, images = split_images(content)
         return images or None
@@ -346,14 +324,14 @@ def png_payloads_per_result(
 
 
 def flattened_rgb(image):
-    """RGB with any transparency composited onto white, not simply dropped.
+    """RGB with any transparency composited onto white (black for light ink), not dropped.
 
     ``convert("RGB")`` keeps whatever colour sits UNDER the alpha, and a tool that
     never painted a background leaves that black -- so a transparent screenshot's
     dark text or line art converts to black on black and the model is handed a
     blank rectangle. Only images that actually carry alpha take the composite.
     """
-    from PIL import Image
+    from PIL import Image, ImageChops, ImageStat
 
     # Match routes/inference.py's _image_bytes_to_png_b64: scale declared I;16
     # values to 8-bit before RGB conversion clips them. I;16B/I;16L must pass
@@ -362,14 +340,22 @@ def flattened_rgb(image):
         if image.mode != "I;16":
             image = image.convert("I")
         image = image.point(lambda v: v * (1.0 / 257), mode = "L")
-    has_alpha = image.mode in ("RGBA", "LA", "PA") or (
-        image.mode == "P" and "transparency" in image.info
-    )
+        # A 16-bit tRNS key would match the wrong 8-bit samples; drop it, as convert("RGB") did.
+        image.info.pop("transparency", None)
+    # "transparency" also keys a colour out of L / RGB PNGs (tRNS), not just P.
+    has_alpha = image.mode in ("RGBA", "LA", "PA") or "transparency" in image.info
     if not has_alpha:
         return image.convert("RGB")
-    rgba = image.convert("RGBA")
-    canvas = Image.new("RGB", rgba.size, (255, 255, 255))
-    canvas.paste(rgba, mask = rgba.getchannel("A"))
+    rgba = image if image.mode == "RGBA" else image.convert("RGBA")
+    alpha = rgba.getchannel("A")
+    # Browser canvas exports are RGBA even when opaque; skip the composite (same pixels).
+    if alpha.getextrema()[0] == 255:
+        return rgba.convert("RGB")
+    # Alpha-weighted: light ink (dark-mode logos, white text) goes onto black, not white.
+    ink = ImageStat.Stat(ImageChops.multiply(rgba.convert("L"), alpha)).sum[0]
+    light = 255 * ink > 128 * ImageStat.Stat(alpha).sum[0] > 0
+    canvas = Image.new("RGB", rgba.size, (0, 0, 0) if light else (255, 255, 255))
+    canvas.paste(rgba, mask = alpha)
     return canvas
 
 
@@ -1186,32 +1172,19 @@ def _promote(
         content = message.get("content")
         if message.get("role") == "tool" and isinstance(content, str):
             text, images = split_images(content)
+            # The suffix always comes off -- it is megabytes of base64 and the model
+            # must never read it as text. Provenance decides only whether it becomes
+            # IMAGE input: a named non-MCP tool that happens to end in a valid
+            # envelope is not one an MCP server served.
             name = message.get("name") or call_names.get(position)
-            if not images:
-                if (
-                    name is None or name == "" or name.startswith(MCP_TOOL_PREFIX)
-                ) and mentions_images(content):
-                    logger.warning(
-                        "Replay of tool result (name=%r) mentions %r but does not parse "
-                        "into image entries; %d chars withheld from the model.",
-                        name,
-                        SENTINEL,
-                        len(content),
-                    )
-                    text = MCP_IMAGE_PARSE_ERROR_TEXT
-                else:
-                    text = content
-            # The suffix always comes off; provenance decides whether it is IMAGE input,
-            # and a named non-MCP tool's envelope is not one an MCP server served.
-            if isinstance(name, str) and name and not name.startswith(MCP_TOOL_PREFIX):
+            if isinstance(name, str) and name and not is_image_tool(name):
                 # A non-MCP result sitting between the images and their turn makes
                 # "the tool call above" name web_search or read_file.
                 if pending:
                     interrupted[0] = True
-                if images or text != content:
-                    out.append({**message, "content": text or "[image returned]"})
-                else:
-                    out.append(message)
+                out.append(
+                    {**message, "content": text or "[image returned]"} if images else message
+                )
                 continue
             if images:
                 # Only the entries the cap can still admit. The suffix comes off the
@@ -1231,10 +1204,7 @@ def _promote(
                 returned_totals.append(_returned_count(images))
             elif pending:
                 interrupted[0] = True
-            if images or text != content:
-                out.append({**message, "content": text or "[image returned]"})
-            else:
-                out.append(message)
+            out.append({**message, "content": text or "[image returned]"} if images else message)
             continue
         if pending and vision and message.get("role") == "user":
             # Merged, not inserted ahead of it: two user turns in a row is what

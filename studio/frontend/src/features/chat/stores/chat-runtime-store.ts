@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { authFetch } from "@/features/auth";
+import type { ImageDisclosure } from "../api/mcp-image";
 import {
   mirrorHfTokenInto,
   useHfTokenStore,
@@ -2101,6 +2102,7 @@ export function requestedGpuIdsFromResponse(resp: {
 // Store fields derived from a load/status response's GPU-memory settings, shared by every
 // load path so the manual-knob round-trip cannot drift.
 export function loadedGpuMemoryFields(resp: {
+  engine?: "auto" | "vllm" | "sglang";
   is_gguf?: boolean;
   is_diffusion?: boolean;
   gpu_memory_mode?: "auto" | "manual";
@@ -2120,11 +2122,16 @@ export function loadedGpuMemoryFields(resp: {
     // Clear the GPU pick / offload baseline a prior GGUF load left, else a stale loadedGpuIds reads as
     // dirty. gpuIdsDirty is ungated, so Reset would restore it while the picker is hidden. gpuMemoryMode
     // is kept as the standing preference, but its loaded baseline clears to null.
+    const managed = resp.engine === "vllm" || resp.engine === "sglang";
+    const gpuIds = managed
+      ? (requestedGpuIdsFromResponse(resp) ?? resp.gpu_ids ?? [0])
+      : null;
+    const indexKind = managed ? ("physical" as const) : null;
     return {
-      selectedGpuIds: null,
-      selectedGpuIndexKind: null,
-      loadedGpuIds: null,
-      loadedGpuIndexKind: null,
+      selectedGpuIds: gpuIds,
+      selectedGpuIndexKind: indexKind,
+      loadedGpuIds: gpuIds,
+      loadedGpuIndexKind: indexKind,
       loadedGpuMemoryMode: null,
       loadedCpuFallback: false,
       gpuLayers: GPU_LAYERS_AUTO,
@@ -2246,6 +2253,8 @@ type ToolStatusEntry = {
   owner?: () => void;
 };
 
+export type LoadedModelSummary = { id: string; quant?: string | null; checkpoint?: string };
+
 type ChatRuntimeStore = {
   settingsHydrated: boolean;
   /** The open chat's settings were asked for but have not arrived, so the store shows the
@@ -2282,10 +2291,15 @@ type ChatRuntimeStore = {
   /** What /api/inference/status says is resident, as opposed to what the picker selected.
    *  undefined until the first read, so the header does not flash "not loaded". */
   residentCheckpoint: string | null | undefined;
+  loadedModels: LoadedModelSummary[];
   activeModelIsLocal: boolean;
   loadedContextLength: number | null;
   maxContextLength: number | null;
   nativeContextLength: number | null;
+  /** The resident's own engine launch settings, which a failed switch rolls back to. */
+  loadedEngine: "auto" | "vllm" | "sglang";
+  loadedEnginePrecision: NonNullable<InferenceParams["enginePrecision"]>;
+  loadedEngineParallelism: NonNullable<InferenceParams["engineParallelism"]>;
   /** The backend's own is_gguf for the loaded model; null until one loads. Set wherever
    *  loadedContextLength is, so a context never arrives unattributed. */
   loadedIsGguf: boolean | null;
@@ -2324,6 +2338,8 @@ type ChatRuntimeStore = {
   /** Whether the provider exposes server-side web_fetch (Anthropic `web_fetch_*`). Gates the
    *  composer's Fetch pill, independent of Search. */
   supportsBuiltinWebFetch: boolean;
+  /** Mirrors the backend Settings switch "Keep multiple models loaded". */
+  keepModelsLoaded: boolean;
   toolsEnabled: boolean;
   /** Persisted Code preference. Use codeToolsOn() for the effective value. */
   codeToolsEnabled: boolean;
@@ -2375,7 +2391,12 @@ type ChatRuntimeStore = {
    *  `autoAllowKey` scopes "Always allow" per chat. Backend-gated local calls only. */
   toolConfirmations: Record<
     string,
-    { approvalId: string; sessionId: string; autoAllowKey: string }
+    {
+      approvalId: string;
+      sessionId: string;
+      autoAllowKey: string;
+      imageDisclosure?: ImageDisclosure;
+    }
   >;
   /** Fetch pill state, independent of `toolsEnabled` (Search). Read only when the provider
    *  supports builtin web_fetch. */
@@ -2619,6 +2640,7 @@ type ChatRuntimeStore = {
   setReasoningEffort: (effort: ReasoningEffort) => void;
   setPreserveThinking: (value: boolean) => void;
   setToolsEnabled: (enabled: boolean, options?: { persist?: boolean }) => void;
+  setKeepModelsLoaded: (keep: boolean) => void;
   setCodeToolsEnabled: (enabled: boolean) => void;
   setImageToolsEnabled: (enabled: boolean) => void;
   setDeepResearchEnabled: (enabled: boolean) => void;
@@ -2643,6 +2665,7 @@ type ChatRuntimeStore = {
     approvalId: string,
     sessionId: string,
     autoAllowKey: string,
+    imageDisclosure?: ImageDisclosure,
   ) => void;
   clearToolConfirmation: (toolCallId: string) => void;
   setWebFetchToolsEnabled: (enabled: boolean) => void;
@@ -4101,10 +4124,14 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   lastModelLoadError: null,
   activeGgufVariant: null,
   residentCheckpoint: undefined,
+  loadedModels: [],
   activeModelIsLocal: false,
   loadedContextLength: null,
   maxContextLength: null,
   nativeContextLength: null,
+  loadedEngine: "auto",
+  loadedEnginePrecision: "auto",
+  loadedEngineParallelism: "tensor",
   loadedIsGguf: null,
   loadedIsMlx: null,
   loadedContextEnforced: null,
@@ -4128,6 +4155,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   supportsBuiltinImageGeneration: false,
   supportsBuiltinWebFetch: false,
   toolsEnabled: loadBool(CHAT_TOOLS_ENABLED_KEY, false),
+  keepModelsLoaded: false,
   codeToolsEnabled: loadBool(CHAT_CODE_TOOLS_ENABLED_KEY, false),
   codeToolsDeclinedUnderFullAccess: false,
   imageToolsEnabled: loadBool(CHAT_IMAGE_TOOLS_ENABLED_KEY, false),
@@ -5311,6 +5339,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
         queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
       };
     }),
+  setKeepModelsLoaded: (keepModelsLoaded) => set({ keepModelsLoaded }),
   setCodeToolsEnabled: (codeToolsEnabled) =>
     set((state) => {
       saveBool(CHAT_CODE_TOOLS_ENABLED_KEY, codeToolsEnabled);
@@ -5521,11 +5550,17 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       next.set(sessionId, new Set(current ?? []).add(toolName));
       return { alwaysAllowToolsBySession: next };
     }),
-  setToolConfirmation: (toolCallId, approvalId, sessionId, autoAllowKey) =>
+  setToolConfirmation: (
+    toolCallId,
+    approvalId,
+    sessionId,
+    autoAllowKey,
+    imageDisclosure,
+  ) =>
     set((state) => ({
       toolConfirmations: {
         ...state.toolConfirmations,
-        [toolCallId]: { approvalId, sessionId, autoAllowKey },
+        [toolCallId]: { approvalId, sessionId, autoAllowKey, imageDisclosure },
       },
     })),
   clearToolConfirmation: (toolCallId) =>

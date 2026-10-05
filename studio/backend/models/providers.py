@@ -7,7 +7,7 @@ from typing import Literal, Optional
 
 from pydantic import BaseModel, Field
 
-ProviderApiType = Literal["chat_completions", "responses"]
+ProviderApiType = Literal["chat_completions", "responses", "systemone"]
 
 MAX_JSON_SAFE_INTEGER = 9_007_199_254_740_991
 
@@ -162,6 +162,10 @@ class ProviderModelInfo(BaseModel):
     display_name: str = Field("", description = "Human-readable model name")
     context_length: Optional[int] = Field(None, description = "Maximum context length in tokens")
     owned_by: Optional[str] = Field(None, description = "Model owner/organization")
+    capabilities: Optional[list[str]] = Field(
+        None,
+        description = "Per-model capability names (Ollama /api/tags: thinking, tools, vision, ...)",
+    )
 
 
 class ProviderModelReasoningInfo(BaseModel):
