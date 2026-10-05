@@ -137,6 +137,9 @@ export function clearPageCache(): void {
   pageCache.clear();
 }
 
+// Posted entries already sent: loading one again asks rather than resubmitting (tab-view.tsx).
+export const sentPosts = new WeakSet<BrowserEntry>();
+
 let nextId = 0;
 const newId = (prefix: string) => `${prefix}-${Date.now().toString(36)}-${(nextId++).toString(36)}`;
 
@@ -167,7 +170,12 @@ export const MAX_TAB_TITLE_CHARS = 120;
 function copyTab(tab: BrowserTab): BrowserTab {
   return {
     ...createTab({ kind: "newtab" }),
-    history: tab.history.map((entry) => ({ ...entry })),
+    history: tab.history.map((entry) => {
+      const copy = { ...entry };
+      // A form result is not sent again unasked just because the tab was copied.
+      if (entry.kind === "web" && entry.method === "POST") sentPosts.add(copy);
+      return copy;
+    }),
     index: tab.index,
     title: tab.title,
     favicon: tab.favicon,

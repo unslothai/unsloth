@@ -6,7 +6,7 @@ import { register } from "node:module";
 import { test } from "node:test";
 
 register("./helpers/browser-store-resolver.mjs", import.meta.url);
-const { browserFile, cachePage, cachedPage, currentEntry, setNativeWebHistory, useBrowserStore } = await import(
+const { browserFile, cachePage, cachedPage, currentEntry, sentPosts, setNativeWebHistory, useBrowserStore } = await import(
   "../src/features/browser/store.ts"
 );
 
@@ -126,4 +126,23 @@ test("a dragged tab moves to where it is dropped, keeping which tab is open", ()
   store.moveTab(first?.id ?? "", 0);
   assert.deepEqual(hosts(), ["a", "b", "c"]);
   assert.equal(useBrowserStore.getState().activeTabId, active);
+});
+
+test("a duplicated form result asks before posting again; a duplicated page just loads", () => {
+  const store = useBrowserStore.getState();
+  store.openUrl("https://example.com/order", { method: "POST", body: "item=1" });
+  store.openUrl("https://example.com/page", { newTab: true });
+  const [posted, page] = useBrowserStore.getState().tabs.slice(-2);
+  store.duplicateTab(posted?.id ?? "");
+  store.duplicateTab(page?.id ?? "");
+  const copyOf = (id: string | undefined) => {
+    const tabs = useBrowserStore.getState().tabs;
+    return tabs[tabs.findIndex((tab) => tab.id === id) + 1];
+  };
+  const [postTab, pageTab] = [copyOf(posted?.id), copyOf(page?.id)];
+  assert.ok(postTab && pageTab);
+  const postCopy = currentEntry(postTab);
+  assert.equal(postCopy.kind === "web" && postCopy.method, "POST");
+  assert.equal(sentPosts.has(postCopy), true);
+  assert.equal(sentPosts.has(currentEntry(pageTab)), false);
 });

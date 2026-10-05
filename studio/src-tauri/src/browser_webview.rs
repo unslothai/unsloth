@@ -1322,7 +1322,7 @@ pub fn browser_view_close<R: Runtime>(
         let mut inner = state.inner.lock().unwrap();
         inner.urls.remove(&tab_id);
         inner.download_starts.remove(&tab_id);
-        inner.muted.remove(&tab_id);
+        // `muted` stays: a pruned view reopens muted; unmuting is what forgets it.
         if inner.shown.as_deref() == Some(tab_id.as_str()) {
             inner.shown = None;
         }

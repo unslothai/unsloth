@@ -30,6 +30,7 @@ import {
   cachedPage,
   currentEntry,
   entryKey,
+  sentPosts,
   setPageDownload,
   useBrowserStore,
 } from "./store";
@@ -39,8 +40,6 @@ type LoadState =
   | { status: "error"; message: string; botCheck: boolean; resubmit?: boolean }
   | { status: "ready"; page: BrowserPage };
 
-// Posted entries: going back to one whose response is gone asks rather than resubmitting.
-const sentPosts = new WeakSet<BrowserEntry>();
 const resubmits = new WeakSet<BrowserEntry>();
 
 function sameOrigin(url: string, origin: string): boolean {
