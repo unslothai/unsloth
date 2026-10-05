@@ -50,13 +50,12 @@ OVERLAP_LATENTS = 16
 # Blend: a tile gets no weight within MARGIN latents of an edge it shares, then ramps to full over RAMP latents.
 MARGIN_LATENTS = 4
 RAMP_LATENTS = 8
-# Encode: twice the decode tile (stable-diffusion.cpp's ratio), so a 1024 px condition image, Studio's default
-# reference resolution, encodes as one tile, bit-identical to the untiled encode. The encoder's middle block attends
-# over the whole tile, so smaller tiles shift the latent everywhere, not only at the seams.
+# Encode: a 1024 px reference image (Studio's default) is one tile, bit-identical to the untiled encode.
 ENCODE_TILE_LATENTS = 64
 ENCODE_OVERLAP_LATENTS = 32
 ENCODE_MARGIN_LATENTS = 8
 ENCODE_RAMP_LATENTS = 16
+
 
 def wide_tiles_disabled() -> bool:
     return (os.environ.get(WIDE_TILES_ENV) or "").strip().lower() in ("0", "off", "false", "no")
@@ -67,9 +66,7 @@ def tile_starts(
     tile: int = TILE_LATENTS,
     overlap: int = OVERLAP_LATENTS,
 ) -> list[int]:
-    """Start offsets of the fewest full-size tiles covering ``length`` with every neighbour overlap >= ``overlap``.
-
-    The first tile starts at 0 and the last ends at ``length``; the rest are spread evenly between them."""
+    """Starts of the fewest full-size tiles covering ``length`` with overlaps >= ``overlap``, first at 0, last at the end."""
     length, tile, overlap = int(length), int(tile), int(overlap)
     if length <= tile:
         return [0]
@@ -91,15 +88,10 @@ def axis_weights(
     margin: int = MARGIN_LATENTS,
     ramp: int = RAMP_LATENTS,
 ) -> list:
-    """Per-tile blend weights (fp32, ``min(tile, length) * scale`` long) along one axis, summing to 1 at every pixel.
-
-    A tile's weight is 0 within ``margin`` latents of an edge it shares with another tile (where its decode lacks
-    context), rises linearly over the next ``ramp`` latents, and is 1 deeper in; image borders are not shared edges.
-    When three tiles overlap (a stride under 16 latents) the outer tile's edge region still gets no weight. With every
-    overlap >= 16 latents, each pixel lies >= 8 latents inside some tile, so a margin under 8 keeps the sum positive;
-    with margin 4 and ramp 8 a two-tile overlap of exactly 16 is a linear cross-fade over its middle 8 latents."""
+    """Per-tile fp32 blend weights along one axis, summing to 1 at every pixel: 0 within ``margin`` latents of a
+    shared edge, linear over the next ``ramp``. Overlaps >= 16 put every pixel >= 8 latents inside some tile, so a
+    margin under 8 keeps the sum positive."""
     size = min(tile, length) * scale
-    # pixel centres, in latents
     pos = (torch.arange(size, dtype = torch.float64, device = device) + 0.5) / scale
     total = torch.zeros(length * scale, dtype = torch.float64, device = device)
     weights = []
@@ -117,7 +109,7 @@ def axis_weights(
 
 
 def _decode_tile(vae: Any, z: Any) -> Any:
-    """The VAE's own untiled decode of one tile (fused / compiled module forwards still apply)."""
+    """The VAE's own untiled decode of one tile (fused / compiled forwards still apply)."""
     prev = vae.use_tiling
     vae.use_tiling = False
     try:
@@ -176,7 +168,10 @@ def choose_tiles(
             if th is None or tw is None or th * tw > max_area:
                 continue
             cost = (
-                len(tile_starts(height, th, overlap)) * th * len(tile_starts(width, tw, overlap)) * tw,
+                len(tile_starts(height, th, overlap))
+                * th
+                * len(tile_starts(width, tw, overlap))
+                * tw,
                 th * tw,
             )
             if best_cost is None or cost < best_cost:
@@ -268,9 +263,7 @@ def _encode_tile(vae: Any, x: Any) -> Any:
 
 
 def tiled_encode(vae: Any, x: Any) -> Any:
-    """Encode ``x`` (B, C, T, H, W pixels) to moments in evenly spread 64-latent tiles with 32-latent overlaps,
-    blended in latent space with the decode's normalised ramp (no weight within 8 latents of a shared edge, full
-    weight 16 latents further in). Stock ``tiled_encode`` uses 16-latent tiles, 4-latent blends and sliver tiles."""
+    """Encode ``x`` (B, C, T, H, W pixels) to moments in 64-latent tiles, blended in latent space."""
     import torch
 
     height_px, width_px = x.shape[-2], x.shape[-1]
@@ -385,7 +378,9 @@ def _wants_wide_tiles(vae: Any) -> bool:
     config = getattr(vae, "config", None)
     # A patchified Wan-family VAE (patch_size set) blends its stock tiles in patch space; FLUX.2's patch_size is the
     # pipeline's latent packing, which its decode never sees.
-    if getattr(config, "patch_size", None) is not None and hasattr(vae, "tile_sample_stride_height"):
+    if getattr(config, "patch_size", None) is not None and hasattr(
+        vae, "tile_sample_stride_height"
+    ):
         return False
     if stock_tiles(vae) is None:
         return False
