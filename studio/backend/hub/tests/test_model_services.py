@@ -775,6 +775,30 @@ def test_local_inventory_drops_custom_folder_overlapping_lmstudio(tmp_path):
     assert local_inventory._dedupe_local_models([custom, lmstudio]) == [lmstudio]
 
 
+def test_local_inventory_keeps_trainable_custom_row_over_lmstudio_copy(tmp_path):
+    lm_root = tmp_path / ".lmstudio" / "models"
+    model_dir = lm_root / "org" / "tiny-model"
+    model_dir.mkdir(parents = True)
+    (model_dir / "config.json").write_text("{}")
+    (model_dir / "model.safetensors").write_bytes(b"x" * 10)
+    rows = []
+    for source in ("lmstudio", "custom"):
+        row = model_common._local_model_info(
+            scan_path = model_dir,
+            load_path = model_dir,
+            source = source,
+            model_format = "safetensors",
+            size_bytes = 10,
+        )
+        if source == "custom":
+            row = local_inventory._promote_to_custom_source(row)
+            row._scan_root = str(lm_root)
+        rows.append(row)
+    assert rows[1].capabilities.can_train
+
+    assert local_inventory._dedupe_local_models(rows) == [rows[1]]
+
+
 def test_local_inventory_keeps_custom_symlink_alias_of_lmstudio_model(tmp_path):
     model_dir = tmp_path / "lmstudio" / "gpt-oss-20b-GGUF"
     model_dir.mkdir(parents = True)
