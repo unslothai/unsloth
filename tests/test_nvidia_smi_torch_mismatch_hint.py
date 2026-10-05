@@ -73,7 +73,7 @@ def test_every_raise_site_is_wrapped():
             isinstance(c, ast.Call) and getattr(c.func, "id", None) == _HELPER for c in ast.walk(n)
         )
     ]
-    assert len(handlers) == 3, [h.lineno for h in handlers]
+    assert len(handlers) == 2, [h.lineno for h in handlers]
 
     deletes = [n for n in ast.walk(tree) if isinstance(n, ast.Delete)]
     freed = [
