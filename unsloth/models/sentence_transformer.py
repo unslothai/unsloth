@@ -2668,6 +2668,24 @@ class FastSentenceTransformer(FastModel):
         st_model = SentenceTransformer(modules = modules, device = st_device)
         st_model.no_modules = no_modules
 
+        from sentence_transformers.util import load_file_path
+
+        st_config_path = load_file_path(
+            model_name,
+            "config_sentence_transformers.json",
+            token = token,
+            cache_folder = kwargs.get("cache_dir")
+            or kwargs.get("cache_folder")
+            or os.environ.get("SENTENCE_TRANSFORMERS_HOME"),
+            revision = revision,
+        )
+        if st_config_path is not None:
+            with open(st_config_path, encoding = "utf8") as f:
+                st_config = json.load(f)
+            st_model.prompts.update(st_config.get("prompts") or {})
+            st_model.default_prompt_name = st_config.get("default_prompt_name")
+            st_model.similarity_fn_name = st_config.get("similarity_fn_name")
+
         def _save_pretrained_merged(
             self,
             save_directory,
