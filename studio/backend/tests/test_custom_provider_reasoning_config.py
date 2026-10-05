@@ -9,8 +9,7 @@ import json
 import os
 import re
 import sqlite3
-import threading
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from http.server import BaseHTTPRequestHandler
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -28,6 +27,7 @@ from models.inference import ChatCompletionRequest
 from models.providers import ProviderCreate, ProviderUpdate
 from routes import inference, providers
 from storage import credential_secrets, providers_db
+from .test_external_provider_sampling_over_the_wire import _Server
 
 STYLES = ("reasoning_effort", "reasoning", "thinking", "chat_template_kwargs.enable_thinking")
 BAD = [
@@ -95,11 +95,6 @@ def harness(tmp_path, monkeypatch, request):
     app.dependency_overrides[providers.get_current_subject] = lambda: "alice"
     app.dependency_overrides[providers.get_current_credential] = lambda: ("alice", None)
     app.dependency_overrides[providers.authenticated_via_api_key] = lambda: False
-    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
-    server.recorded = []
-    thread = threading.Thread(target = server.serve_forever, daemon = True)
-    thread.start()
-    url = f"http://127.0.0.1:{server.server_address[1]}/v1"
 
     async def disconnected():
         return False
@@ -107,36 +102,36 @@ def harness(tmp_path, monkeypatch, request):
     route_request = SimpleNamespace(
         headers = {}, state = SimpleNamespace(skip_api_monitor = True), is_disconnected = disconnected
     )
+    with _Server(Handler) as server, TestClient(app) as client:
 
-    async def send(
-        mode = "client",
-        cfg = None,
-        api_type = "chat_completions",
-        **fields,
-    ):
-        async with httpx.AsyncClient(trust_env = False) as transport:
-            monkeypatch.setattr(ep, "_http_client", transport)
-            if mode == "client":
-                options = {"api_type": api_type, "reasoning_config": cfg}
-                client = ep.ExternalProviderClient("custom", url, "", **options)
-                output = client.stream_chat_completion(**CHAT, **fields)
-            else:
-                defaults = dict(
-                    CHAT,
-                    stream = True,
-                    provider_type = "custom",
-                    provider_base_url = url,
-                    provider_reasoning_config = cfg,
-                )
-                payload = ChatCompletionRequest(**{**defaults, **fields})
-                response = await inference._proxy_to_external_provider(payload, route_request)
-                output = response.body_iterator
-            assert "ok" in "".join([line async for line in output])
-        path = "responses" if api_type == "responses" else "chat/completions"
-        assert server.recorded[-1]["path"] == f"/v1/{path}"
-        return server.recorded[-1]["body"]
-
-    with TestClient(app) as client:
+        async def send(
+            mode = "client",
+            cfg = None,
+            api_type = "chat_completions",
+            **fields,
+        ):
+            async with httpx.AsyncClient(trust_env = False) as transport:
+                monkeypatch.setattr(ep, "_http_client", transport)
+                if mode == "client":
+                    upstream = ep.ExternalProviderClient(
+                        "custom", server.base_url, "", api_type = api_type, reasoning_config = cfg
+                    )
+                    output = upstream.stream_chat_completion(**CHAT, **fields)
+                else:
+                    defaults = dict(
+                        CHAT,
+                        stream = True,
+                        provider_type = "custom",
+                        provider_base_url = server.base_url,
+                        provider_reasoning_config = cfg,
+                    )
+                    payload = ChatCompletionRequest(**{**defaults, **fields})
+                    response = await inference._proxy_to_external_provider(payload, route_request)
+                    output = response.body_iterator
+                assert "ok" in "".join([line async for line in output])
+            path = "responses" if api_type == "responses" else "chat/completions"
+            assert server.bodies[-1]["path"] == f"/v1/{path}"
+            return server.bodies[-1]["body"]
 
         def api(
             method,
@@ -150,20 +145,17 @@ def harness(tmp_path, monkeypatch, request):
 
         yield SimpleNamespace(
             db = providers_db.studio_db_path(),
-            url = url,
+            url = server.base_url,
             api = api,
             send = lambda *args, **kwargs: asyncio.run(send(*args, **kwargs)),
-            recorded = server.recorded,
+            recorded = server.bodies,
         )
-    server.shutdown()
-    server.server_close()
-    thread.join(timeout = 10)
     root = os.environ.get("UNSLOTH_REASONING_EVIDENCE_DIR")
     if root:
         path = Path(root)
         path.mkdir(parents = True, exist_ok = True)
         name = re.sub(r"[^a-zA-Z0-9_.-]", "_", request.node.name)
-        (path / f"{name}.json").write_text(json.dumps(server.recorded, indent = 2) + "\n")
+        (path / f"{name}.json").write_text(json.dumps(server.bodies, indent = 2) + "\n")
 
 
 @pytest.mark.parametrize("schema", [ProviderCreate, ProviderUpdate, ChatCompletionRequest])
