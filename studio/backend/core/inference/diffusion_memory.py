@@ -2223,8 +2223,7 @@ PARTIAL_RESIDENT_ENV = "UNSLOTH_DIFFUSION_PARTIAL_RESIDENT"
 
 # Worst measured CUDA MiB above the resident weights, one 1024x1024 image, encoder + every step + VAE decode, torchao
 # int8 / fp8 denoisers on the compiled tiers (Qwen-Image-2.1: encoder 1849 streamed, denoise 1442, decode 1730).
-# FLUX.1 / Z-Image: the untiled VAE decode of _MEASURED_IMAGE_ACTIVATION_MIB (2666 MiB, the same 16-channel VAE) is
-# the worst phase; their encoder and denoise phases are smaller on both tiers.
+# FLUX.1 / Z-Image: their worst phase is the untiled 16-channel VAE decode (_MEASURED_IMAGE_ACTIVATION_MIB).
 _MEASURED_IMAGE_PEAK_MIB: dict[str, int] = {"qwen-image-2.1": 1849, "flux.1": 2666, "z-image": 2666}
 _MEASURED_PEAK_SPEED_MODES = ("default", "max")
 _MEASURED_PEAK_MARGIN = 1.15
@@ -2345,8 +2344,7 @@ STREAMED_RESIDENCY_ENV = "UNSLOTH_DIFFUSION_STREAMED_RESIDENCY"
 
 
 def _stream_window_mib(pipe: Any) -> int:
-    """Device MiB the block prefetcher holds for the streamed denoiser groups: ``depth + 1`` of the largest block
-    (diffusers' own one-ahead prefetch holds fewer)."""
+    """Device MiB the block prefetcher holds in flight: ``depth + 1`` of the largest denoiser block, or -1."""
     try:
         import torch
 
@@ -2370,16 +2368,14 @@ def _stream_window_mib(pipe: Any) -> int:
                             nbytes += sum(_storage_nbytes(t))
                     largest = max(largest, nbytes * DEFAULT_GROUP_BLOCKS)
         if largest <= 0:
-            return -1  # no block list found: nothing to size the window by
+            return -1
         return -(-largest * (prefetch_depth() + 1) // (1024 * 1024))
     except Exception:  # noqa: BLE001 - unsizeable: callers keep the flat room
         return -1
 
 
 def _streamed_dit_room_mib(memory: Any, headroom_mib: int, other_mib: int, window_mib: int) -> int:
-    """Denoiser MiB that can stay resident while the rest streams: free memory less the slack, the non-encoder
-    companions, the measured peak and the prefetch window (the whole-resident fit plus the window, instead of the
-    flat budget's reserve AND base overhead on top of the measured peak)."""
+    """Partial room: the whole-resident fit plus the prefetch window, not the flat reserve AND base overhead."""
     free = getattr(memory, "free_mib", None)
     if free is None or window_mib < 0 or _env_off(STREAMED_RESIDENCY_ENV):
         return 0

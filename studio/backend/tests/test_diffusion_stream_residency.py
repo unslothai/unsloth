@@ -1,14 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Partial residency of a streamed torchao denoiser (``refine_plan_from_loaded_weights``).
-
-The planner inputs are what real auto loads logged: FLUX.1-dev int8 on a 16 GB budget (``safe_device_budget_mib
-13668``, group tier with the encoders streamed) kept no block resident because FLUX.1 had no measured peak, and
-Qwen-Image-2.1 int8 on an 8 GB budget (``safe_device_budget_mib 5476``) kept 479 MiB because the room took the flat
-reserve and the 2 GiB base overhead on top of the measured peak. CPU-only: loaded sizes, the torchao check and the
-prefetch window are stubbed, except the window sizing test, which builds a small module.
-"""
+"""Partial residency of a streamed torchao denoiser; planner inputs are what real FLUX.1-dev / Qwen-Image-2.1 int8
+auto loads logged."""
 
 from __future__ import annotations
 
@@ -92,12 +86,11 @@ def test_flux_and_z_image_have_a_measured_peak(monkeypatch):
         assert dm.measured_image_runtime_mib(family, "default") == 3072
         assert dm.measured_image_runtime_mib(family, "max") == 3072
         assert dm.measured_image_runtime_mib(family, "default", width = 2048, height = 2048) == 12288
-        # eager tiers stay on the flat estimate, as for Qwen-Image-2.1
         assert dm.measured_image_runtime_mib(family, "off") is None
 
 
 def test_flux_int8_16gb_keeps_most_blocks_resident(stub):
-    """The logged 16 GB FLUX.1-dev plan streamed all 58 groups; the denoiser now keeps everything the fit allows."""
+    """The logged 16 GB FLUX.1-dev plan streamed all 58 groups."""
     pipe = stub(FLUX_LOADED, FLUX_WINDOW)
     plan = _plan(FLUX_FLAT, 13668, 16384)
     assert plan.offload_policy == dm.OFFLOAD_GROUP and plan.stream_text_encoders
@@ -110,10 +103,8 @@ def test_flux_int8_16gb_keeps_most_blocks_resident(stub):
     assert new.resident_transformer_mib == room
     assert 8000 < room < 11420
     assert new.resident_text_encoder_mib is None
-    # the encode keeps the flat room the measured placement had before
     assert new.estimates["encode_resident_transformer_mib"] == 13668 - 3072 - 2048 - 160
     assert new.estimates["stream_window_mib"] == FLUX_WINDOW
-    # the measured reserve is recorded so a bigger canvas streams groups again
     assert new.estimates["measured_runtime_headroom_mib"] == 3072
 
 
@@ -141,7 +132,6 @@ def test_q21_int8_8gb_drops_the_double_reserve(stub):
 
 
 def test_never_past_free_memory(stub):
-    """resident + companions + measured peak + window + slack never exceed the free memory read at load."""
     for loaded, flat, window, family, budgets in (
         (
             FLUX_LOADED,
@@ -171,7 +161,6 @@ def test_never_past_free_memory(stub):
 
 
 def test_whole_tier_still_wins_when_it_fits(stub):
-    """12 GB Qwen-Image-2.1: the whole-resident tier (no window needed) is unchanged."""
     pipe = stub(Q21_LOADED, Q21_WINDOW)
     new = _refine(pipe, _plan(Q21_FLAT, 9550, 12288), "qwen-image-2.1")
     assert new.resident_transformer_mib == 6922
@@ -181,7 +170,7 @@ def test_whole_tier_still_wins_when_it_fits(stub):
 def test_kill_switch_and_unsized_window_keep_the_flat_room(stub, monkeypatch):
     plan = _plan(Q21_FLAT, 5476, 8192)
     flat_room = 5476 - 2304 - dm.DEFAULT_BASE_OVERHEAD_MIB - 645
-    pipe = stub(Q21_LOADED, -1)  # no block list to size the window by
+    pipe = stub(Q21_LOADED, -1)
     assert _refine(pipe, plan, "qwen-image-2.1").resident_transformer_mib == flat_room
     pipe = stub(Q21_LOADED, Q21_WINDOW)
     monkeypatch.setenv("UNSLOTH_DIFFUSION_STREAMED_RESIDENCY", "0")
