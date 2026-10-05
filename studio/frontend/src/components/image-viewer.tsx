@@ -177,7 +177,7 @@ function ViewerBody() {
     width: number;
     height: number;
   } | null>(null);
-  const [zoom, setZoom] = useState<{ key: string; value: number } | null>(null);
+  const [zoom, setZoom] = useState<{ key: string; value: number; fit: boolean } | null>(null);
   const size = natural && image && natural.key === image.key ? natural : null;
 
   const fitZoom = () => {
@@ -191,11 +191,26 @@ function ViewerBody() {
   };
   useLayoutEffect(() => {
     if (size && image && zoom?.key !== image.key)
-      setZoom({ key: image.key, value: fitZoom() });
+      setZoom({ key: image.key, value: fitZoom(), fit: true });
   });
+  // Fitted, the image follows the viewer's size: a window resize or rotation refits it.
+  const fitted = Boolean(zoom?.fit && image && zoom.key === image.key);
+  // biome-ignore lint/correctness/useExhaustiveDependencies: refit only when fit mode or the image's size changes
+  useEffect(() => {
+    const stage = stageRef.current;
+    if (!fitted || !stage) return;
+    const observer = new ResizeObserver(() =>
+      setZoom((current) => {
+        const value = fitZoom();
+        return current?.fit && current.value !== value ? { ...current, value } : current;
+      }),
+    );
+    observer.observe(stage);
+    return () => observer.disconnect();
+  }, [fitted, size]);
   const scale = zoom && image && zoom.key === image.key ? zoom.value : null;
-  const setScale = (value: number) =>
-    image && setZoom({ key: image.key, value });
+  const setScale = (value: number, fit = false) =>
+    image && setZoom({ key: image.key, value, fit });
   const zoomBy = (direction: 1 | -1) => {
     if (scale === null) return;
     const next =
@@ -211,7 +226,7 @@ function ViewerBody() {
       else if (event.key === "ArrowRight") step(1);
       else if (event.key === "+" || event.key === "=") zoomBy(1);
       else if (event.key === "-") zoomBy(-1);
-      else if (event.key === "0") setScale(fitZoom());
+      else if (event.key === "0") setScale(fitZoom(), true);
       else return;
       event.preventDefault();
     };
@@ -335,7 +350,7 @@ function ViewerBody() {
         <button
           type="button"
           aria-label={t("imageViewer.fit")}
-          onClick={() => setScale(fitZoom())}
+          onClick={() => setScale(fitZoom(), true)}
           className="min-w-18 cursor-pointer text-center text-ui-15 tabular-nums"
         >
           {percent}
