@@ -229,3 +229,53 @@ def test_console_entry_works_without_typer(tmp_path):
     )
     assert result.returncode == 0, result.stderr
     assert "usage: unsloth install-kernels" in result.stdout
+
+
+def test_host_package_run_with_dash_m_is_not_intercepted(tmp_path):
+    host = tmp_path / "hostapp"
+    host.mkdir()
+    (host / "__init__.py").write_text("import unsloth_cli\n")
+    (host / "__main__.py").write_text("print('host main ran')\n")
+    env = dict(os.environ, PYTHONPATH = os.pathsep.join([str(tmp_path), str(_REPO)]))
+    result = subprocess.run(
+        [sys.executable, "-m", "hostapp", "install-kernels", "--help"],
+        cwd = tmp_path,
+        env = env,
+        capture_output = True,
+        text = True,
+        timeout = 300,
+    )
+    assert result.returncode == 0, result.stderr
+    assert "host main ran" in result.stdout
+    assert "usage: unsloth install-kernels" not in result.stdout
+
+
+def test_mirror_credentials_are_not_printed(monkeypatch, capsys):
+    monkeypatch.setenv("UNSLOTH_PYTORCH_MIRROR", "https://user:secret@mirror.example/whl?token=abc")
+    for dry_run in (True, False):
+        kernel_install.install_kernel(
+            "xformers",
+            _COLAB,
+            dry_run = dry_run,
+            run = _Runner([False, True]),
+            exists = lambda url: True,
+        )
+    out = capsys.readouterr().out
+    assert "mirror.example/whl/cu130/xformers-0.0.35" in out
+    assert "secret" not in out and "token=abc" not in out
+
+
+def test_failed_uninstall_is_not_reported_as_removed(uv, capsys):
+    uv(False)
+
+    def run(cmd, **kwargs):
+        return SimpleNamespace(
+            returncode = 1 if cmd[1] in ("-c",) or "uninstall" in cmd else 0, stdout = ""
+        )
+
+    assert (
+        kernel_install.install_kernel("causal_conv1d", _COLAB, run = run, exists = lambda url: True)
+        == 1
+    )
+    out = capsys.readouterr().out
+    assert "removed it" not in out and "pip uninstall causal-conv1d" in out

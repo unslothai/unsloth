@@ -25,18 +25,20 @@ from utils.wheel_utils import (
     direct_wheel_url,
     install_wheel,
     probe_torch_wheel_env,
+    redact_url_credentials,
     url_exists,
     xformers_wheel_url,
 )
 
-# name -> (pip distribution, import check that loads the compiled extension)
+# name -> (pip distribution, check that loads the compiled extension). The package imports are no
+# proof: `import causal_conv1d` never loads it, and `import mamba_ssm` fails on einops under --no-deps.
 KERNELS = {
     "xformers": (
         "xformers",
         "from xformers._cpp_lib import _register_extensions; _register_extensions()",
     ),
-    "causal_conv1d": ("causal-conv1d", "import causal_conv1d"),
-    "mamba_ssm": ("mamba-ssm", "import mamba_ssm"),
+    "causal_conv1d": ("causal-conv1d", "import torch, causal_conv1d_cuda"),
+    "mamba_ssm": ("mamba-ssm", "import torch, selective_scan_cuda"),
 }
 
 _RELEASES = {
@@ -79,13 +81,13 @@ def _outside_venv() -> bool:
     return sys.prefix == sys.base_prefix
 
 
-def _uninstall(distribution: str, run: Callable[..., subprocess.CompletedProcess]) -> None:
+def _uninstall(distribution: str, run: Callable[..., subprocess.CompletedProcess]) -> bool:
     if shutil.which("uv"):
         system = ["--system"] if _outside_venv() else []
         cmd = ["uv", "pip", "uninstall", *system, "--python", sys.executable, distribution]
     else:
         cmd = [sys.executable, "-m", "pip", "uninstall", "-y", distribution]
-    run(cmd, stdout = subprocess.DEVNULL, stderr = subprocess.DEVNULL)
+    return run(cmd, stdout = subprocess.DEVNULL, stderr = subprocess.DEVNULL).returncode == 0
 
 
 def install_kernel(
@@ -103,8 +105,10 @@ def install_kernel(
     if url is None or exists(url) is False:
         print(f"Unsloth: no prebuilt {name} for {torch_desc}; using the torch fallback.")
         return 0
+    # UNSLOTH_PYTORCH_MIRROR may carry credentials, and notebook output gets shared.
+    shown = redact_url_credentials(url)
     if dry_run:
-        print(url)
+        print(shown)
         return 0
     if _loads(check, run):
         print(f"Unsloth: {name} already installed and loads.")
@@ -120,17 +124,20 @@ def install_kernel(
     result = attempts[-1][1]
     if result.returncode != 0:
         print(
-            f"Unsloth: installing {name} from {url} failed; using the torch fallback.\n{result.stdout[-2000:]}"
+            f"Unsloth: installing {name} from {shown} failed; using the torch fallback.\n"
+            + result.stdout[-2000:].replace(url, shown)
         )
         return 1
     if not _loads(check, run):
         # A wheel that imports but whose extension cannot load would be picked up and crash later.
-        _uninstall(distribution, run)
+        removed = (
+            "removed it" if _uninstall(distribution, run) else f"run `pip uninstall {distribution}`"
+        )
         print(
-            f"Unsloth: {name} from {url} does not load with {torch_desc}; removed it, using the torch fallback."
+            f"Unsloth: {name} from {shown} does not load with {torch_desc}; {removed}, using the torch fallback."
         )
         return 1
-    print(f"Unsloth: installed {name} ({url.rsplit('/', 1)[-1]}).")
+    print(f"Unsloth: installed {name} ({shown.rsplit('/', 1)[-1]}).")
     return 0
 
 

@@ -54,7 +54,14 @@ if _is_entry_point:
     _reconfigure_entry_point_streams()
 
 # Before typer and the command imports: notebooks run this right after `pip install --no-deps unsloth`.
-if (_is_entry_point or _entry_base == "-m") and _sys.argv[1:2] == ["install-kernels"]:
+# `-m` alone could be a host package that imports us, so name the module it runs.
+_orig_argv = getattr(_sys, "orig_argv", [])
+_runs_unsloth_cli = "-munsloth_cli" in _orig_argv or any(
+    a == "-m" and b == "unsloth_cli" for a, b in zip(_orig_argv, _orig_argv[1:])
+)
+if (_is_entry_point or (_entry_base == "-m" and _runs_unsloth_cli)) and _sys.argv[1:2] == [
+    "install-kernels"
+]:
     from unsloth_cli._install_kernels import main as _install_kernels_main
     _sys.exit(_install_kernels_main(_sys.argv[2:]))
 
@@ -123,7 +130,7 @@ def _prepare_entry_point():
 # Canonicalise `-np<N>` only under the console-script; imports keep their argv intact.
 if _is_entry_point:
     _prepare_entry_point()
-del _entry_base, _is_entry_point
+del _entry_base, _is_entry_point, _orig_argv, _runs_unsloth_cli
 
 
 def show_version(value: bool):
