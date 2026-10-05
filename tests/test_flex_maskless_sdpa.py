@@ -1,8 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2023-present Daniel Han-Chen & the Unsloth team. All rights reserved.
 
-"""A flex call whose causal mask unsloth_zoo dropped runs SDPA is_causal; everything else stays on flex."""
-
 import pytest
 import torch
 

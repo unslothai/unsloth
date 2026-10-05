@@ -654,9 +654,8 @@ def _flex_call_needs_backward(query, key, value):
         return False
 
 
-# unsloth_zoo drops the causal mask of an unpadded, unpacked, cache-free batch (patch_transformers_masks).
-# Under flex that None goes to SDPA is_causal (flash at head_dim 256, no compile), so flex compiles
-# only once a padded or packed batch arrives. UNSLOTH_FLEX_MASKLESS_SDPA=0 keeps flex for every batch.
+# unsloth_zoo drops the causal mask of unpadded, cache-free batches; route that None to SDPA is_causal.
+# Kill switch: UNSLOTH_FLEX_MASKLESS_SDPA=0.
 _FLEX_MASKLESS_SDPA_ENABLED = os.environ.get("UNSLOTH_FLEX_MASKLESS_SDPA", "1") != "0"
 FLEX_MASKLESS_SDPA_STATS = {"sdpa": 0, "flex": 0}
 
@@ -673,8 +672,7 @@ def _maskless_causal_sdpa_forward(module, query, key, value, args, kwargs):
         return None
     if kwargs.get("position_bias", None) is not None:
         return None
-    # Vision / encoder callers also pass None to flex, meaning bidirectional: only a module
-    # that declares itself causal is rerouted.
+    # Vision callers pass None meaning bidirectional: reroute only modules declaring is_causal.
     if getattr(module, "is_causal", None) is not True:
         return None
     if not (hasattr(query, "dim") and query.dim() == 4 and key.dim() == 4):
