@@ -1,29 +1,13 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Keep part of a block-streamed Wan denoiser on the GPU, re-fitted per request.
+"""Keep the top-level group and a block prefix of a group-offloaded Wan denoiser resident, re-fitted per request.
 
-A Wan load that does not fit the card (Wan2.2-TI2V-5B on a 15 GB T4) streams its denoiser with diffusers group
-offloading. Two costs come with that, both on every denoiser call (two per step under CFG):
-
-- the top-level group (patch embedding, condition embedder, output head) has no copy stream, so its ~190 MiB is
-  uploaded from pageable host memory on the compute stream before each call;
-- every block is uploaded again, although the denoise peak leaves several GB of the card unused.
-
-Here the top-level group and then a prefix of the blocks stay resident within the room the request leaves: free memory
-plus the allocator's unused cache plus what is already resident, minus the streamed floor, the base overhead and the
-request's runtime estimate (``estimate_video_runtime_mib``, which covers the decode). The room is re-read for every
-request, so a longer clip streams some blocks again first. Resident groups keep their host copy, so streaming them
-again is a pointer swap.
-
-After a request completes (decode and export included), its peak CUDA allocation above what was allocated when it
-started is recorded per load. A later request no larger than a recorded one (pixels x frames) is sized from that
-measured peak instead: room = free + unused cache + resident - measured peak x 1.15 - 1 GiB. The estimate stays the
-floor of the room, so the measured path only ever widens it, and a cancelled or failed request records nothing.
-
-Kill switches: ``UNSLOTH_VIDEO_DIT_RESIDENT=0`` streams everything as before; ``UNSLOTH_VIDEO_DIT_RESIDENT_BLOCKS=0``
-keeps only the top-level group resident; ``UNSLOTH_VIDEO_DIT_RESIDENT_MEASURED=0`` sizes every request from the
-estimate.
+Room = free + unused cache + already resident - need. Need is the streamed floor + base overhead + the runtime estimate,
+or, for a request no larger (pixels x frames) than a completed one, that request's measured peak x 1.15 + 1 GiB; the
+estimate stays the lower bound. Resident groups keep their host copy, so streaming them again is a pointer swap.
+Kill switches: UNSLOTH_VIDEO_DIT_RESIDENT=0, UNSLOTH_VIDEO_DIT_RESIDENT_BLOCKS=0 (top-level group only),
+UNSLOTH_VIDEO_DIT_RESIDENT_MEASURED=0 (estimate only).
 """
 
 from __future__ import annotations
@@ -89,7 +73,6 @@ def applies(
 
 
 def resident_bytes(module: Any) -> int:
-    """Bytes of ``module``'s offload groups currently held resident by this module's placement."""
     from .diffusion_memory import _offload_groups
 
     total = 0
@@ -147,7 +130,6 @@ def room_mib(
 def measured_room_mib(
     *, free_mib: int, unused_cache_mib: int, resident_mib_now: int, peak_extra_mib: int
 ) -> int:
-    """Room from a measured request peak: what the request allocated above its start, plus margin and slack."""
     available = int(free_mib) + max(0, int(unused_cache_mib)) + max(0, int(resident_mib_now))
     need = int(max(0, int(peak_extra_mib)) * MEASURED_PEAK_MARGIN) + MEASURED_SLACK_MIB
     return max(0, available - need)
@@ -161,8 +143,7 @@ def _measured_extra_mib(module: Any, work: int) -> Optional[int]:
 
 
 def record_request_peak(pipe: Any, *, logger: Any = None) -> Optional[int]:
-    """Record the completed request's peak CUDA allocation above its start (on the device its fit read). Call only
-    after decode and export."""
+    """Record the request's peak allocation above its start; call only after decode and export."""
     module = getattr(pipe, "transformer", None)
     pending = getattr(module, "_unsloth_video_pending", None)
     if module is None or pending is None:
@@ -198,8 +179,8 @@ def fit_for_request(
     frames: int,
     logger: Any = None,
 ) -> Optional[int]:
-    """Re-fit the resident set of ``pipe.transformer`` for one request. Returns the resident MiB, or None when skipped.
-    Never raises: any failure streams every group again, which is the plain group-offload placement."""
+    """Re-fit ``pipe.transformer``'s resident set for one request; returns resident MiB or None. Never raises: a
+    failure streams every group again (plain group offload)."""
     module = getattr(pipe, "transformer", None)
     if module is None or floor_mib is None:
         return None
@@ -250,7 +231,6 @@ def fit_for_request(
                 released = max(0, current - resident_mib(module))
         after_release = resident_mib(module)
         if room > after_release:
-            # contiguous room for the promoted weights; the request's own allocations come after
             torch.cuda.empty_cache()
             _keep_groups_resident(module, room, dev, logger)
             promoted = max(0, resident_mib(module) - after_release)

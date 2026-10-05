@@ -8911,7 +8911,7 @@ class VideoBackend:
                 if len(video_frames) and not fam.modular_workflow:
                     from . import video_stream_residency
 
-                    # decode and export done: this request's peak sizes the next one of its size
+                    # after decode and export: this peak sizes the next request of its size
                     video_stream_residency.record_request_peak(pipe, logger = logger)
                 duration_s = len(video_frames) / float(out_fps) if out_fps else 0.0
                 self._gen = {"active": False}
