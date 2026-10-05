@@ -888,12 +888,16 @@ def _build_index() -> dict[str, _LocalGgufEntry]:
         for folder in list_scan_folders():
             try:
                 fp = Path(folder["path"])
-                custom_found += dedupe_custom_gguf_rows(
+                rows = (
                     _scan_models_dir(fp, limit = 200)
                     + [row for hub in scan_folder_hf_caches(fp) for row in _scan_hf_once(hub)]
                     + _scan_lmstudio_dir(fp)
                     + _scan_ollama_dir(fp, limit = 200, materialize_links = False)
                 )
+                if folder.get("recursive"):
+                    from routes.models import _scan_nested_compat_rows
+                    rows += _scan_nested_compat_rows(fp, rows, limit = 200)
+                custom_found += dedupe_custom_gguf_rows(rows)
             except Exception as exc:
                 logger.debug("auto-switch: scan folder %r failed: %s", folder, exc)
         found += suppress_grouped_gguf_file_rows(custom_found)
