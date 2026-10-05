@@ -125,7 +125,6 @@ def stderr_tail_from_bytes(
     return joined
 
 
-# A native abort prints the reason first, then the stack.
 _CRASH_LINE_MARKERS = (
     "llvm error",
     "fatal exception",
@@ -136,7 +135,7 @@ _CRASH_LINE_MARKERS = (
     "cuda error",
     "hip error",
     "cudaerror",
-    # The native forms the inference crash parser knows (orchestrator._DIAGNOSTIC_START_RE).
+    # As orchestrator._DIAGNOSTIC_START_RE.
     "bus error",
     "illegal instruction",
     "floating point exception",
@@ -197,7 +196,7 @@ def first_crash_line(text: str) -> str:
         if line.strip()
         and not line.startswith((LOG_RECORD_START_MARK, LOG_RECORD_CONTINUATION_PREFIX))
     ]
-    # Only the last few non-stack lines: an earlier, recovered "out of memory" is not the cause.
+    # Last few non-stack lines only: an earlier recovered "out of memory" is not the cause.
     tail = []
     for line in reversed(lines):
         if line.startswith(_STACK_LINE_PREFIXES):
