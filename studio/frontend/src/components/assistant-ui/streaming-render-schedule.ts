@@ -915,12 +915,13 @@ const INCOMPLETE_LINK_REPAIR = "](streamdown:incomplete-link)";
 
 export function hasIncompleteLinkRepair(
   source: string,
-  repaired = remend(source),
+  repaired?: string,
 ): boolean {
-  if (!repaired.includes(INCOMPLETE_LINK_REPAIR)) return false;
-  if (!source.includes(INCOMPLETE_LINK_REPAIR)) return true;
+  // Only an unclosed `[` gets the placeholder, so bracket-free replies skip the remend pass.
+  if (!source.includes("[")) return false;
+  const after = repaired ?? remend(source);
   return (
-    repaired.split(INCOMPLETE_LINK_REPAIR).length >
+    after.split(INCOMPLETE_LINK_REPAIR).length >
     source.split(INCOMPLETE_LINK_REPAIR).length
   );
 }
