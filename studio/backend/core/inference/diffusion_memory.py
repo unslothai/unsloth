@@ -693,6 +693,16 @@ def reclaimable_snapshot_device_memory(target: Any) -> DeviceMemory:
         reclaimable = int(torch.cuda.memory_reserved()) - int(torch.cuda.memory_allocated())
     except Exception:  # noqa: BLE001 -- no allocator reading: the plain snapshot still stands
         return snapshot
+    try:
+        # Per-block graph pools are reserved, mostly unallocated between replays, and never reusable by anything else.
+        from .diffusion_block_graph import pool_bytes as _block_graph_pool_bytes
+        try:
+            device = torch.cuda.current_device()
+        except Exception:  # noqa: BLE001 - no current CUDA device: count every pool
+            device = None
+        reclaimable -= _block_graph_pool_bytes(device)
+    except Exception:  # noqa: BLE001
+        pass
     if reclaimable <= 0:
         return snapshot
     free = int(snapshot.free_mib) + reclaimable // (1024 * 1024)

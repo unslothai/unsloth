@@ -24,6 +24,8 @@ from .diffusion_bg_compile import capture_suppressed as _bg_capture_suppressed
 from .diffusion_bg_compile import eager_forced as _bg_eager_forced
 
 CUDA_GRAPH_DISABLE_ENV = "UNSLOTH_DISABLE_CUDA_GRAPH"
+# Master switch for every diffusion CUDA graph (whole-forward and per-block): "0" turns them all off.
+CUDA_GRAPHS_ENV = "UNSLOTH_DIFFUSION_CUDA_GRAPHS"
 
 # Per module. Legitimate second keys exist, but each costs a pool-sized slice of VRAM.
 MAX_GRAPHS_PER_MODULE = 4
@@ -41,8 +43,16 @@ def _torch():
 
 
 def cuda_graph_disabled() -> bool:
-    """Whether the env kill switch is set. Read before any torch or pipe inspection."""
+    """Whether an env kill switch is set. Read before any torch or pipe inspection."""
+    if os.environ.get(CUDA_GRAPHS_ENV, "").strip().lower() in ("0", "off", "false", "no"):
+        return True
     return os.environ.get(CUDA_GRAPH_DISABLE_ENV, "").strip().lower() in _TRUE_TOKENS
+
+
+def _disabled_reason() -> str:
+    if os.environ.get(CUDA_GRAPHS_ENV, "").strip().lower() in ("0", "off", "false", "no"):
+        return f"disabled by {CUDA_GRAPHS_ENV}=0"
+    return f"disabled by {CUDA_GRAPH_DISABLE_ENV}"
 
 
 # ``torch.cuda.graph`` begins its capture in CUDA's default global mode, which prohibits the
@@ -197,6 +207,112 @@ def _drop_pool_if_unused() -> None:
         _POOL_BOX[0] = None
     except Exception:  # noqa: BLE001
         pass
+
+
+# A failed capture leaves the pinned host allocator (torch >= 2.11) recording to its pool for good, with a filter
+# holding a raw pointer to the failed CUDAGraph: so that graph is never freed and its pool never recorded into again.
+MAX_FAILED_CAPTURES = 16
+_FAILED_GRAPHS: list = []
+_COLLIDED_GRAPHS: list = []
+_FAILED_LOCK = threading.Lock()
+
+
+def captures_exhausted() -> bool:
+    """True once MAX_FAILED_CAPTURES recordings failed in this process; every later capture then runs eager."""
+    return len(_FAILED_GRAPHS) >= MAX_FAILED_CAPTURES
+
+
+def refuse_if_exhausted(logger: Any = None) -> None:
+    """Raise (the caller's failed-capture path then runs eager) once the failure budget is spent; log that once."""
+    global _EXHAUSTED_LOGGED
+    if not captures_exhausted():
+        return
+    with _FAILED_LOCK:
+        first = not _EXHAUSTED_LOGGED
+        _EXHAUSTED_LOGGED = True
+    if first and logger is not None:
+        logger.warning(
+            "diffusion.cuda_graph: %d graph captures failed in this process; no further captures are attempted",
+            len(_FAILED_GRAPHS),
+        )
+    raise RuntimeError(
+        f"{len(_FAILED_GRAPHS)} graph captures failed in this process; capture is off"
+    )
+
+
+_EXHAUSTED_LOGGED = False
+
+
+def _abandon_capture_pool(pool: Any) -> bool:
+    """After a capture that raised: take the device allocator off the capture's pool if ``capture_end`` never did.
+
+    ``CUDAGraph::capture_end`` checks ``cudaStreamEndCapture`` before ``endAllocateToPool``, so an invalidated capture
+    leaves the pool in the allocator's ``captures_underway``: on torch 2.6 every later ``empty_cache`` then trips
+    ``INTERNAL ASSERT captures_underway.empty()``; later torch skips the global release instead, so ``empty_cache``
+    frees nothing. That failed graph never releases the reference its ``capture_begin`` took (its reset releases only
+    once ``capture_end`` got past the pool), so it is released here, and ONLY when this call ended the recording: had
+    ``capture_end`` got that far the graph owns the reference and releases it itself. True when this call ended it."""
+    torch = _torch()
+    end = getattr(torch._C, "_cuda_endAllocateToPool", None) or getattr(
+        torch._C, "_cuda_endAllocateCurrentStreamToPool", None
+    )
+    if end is None or pool is None:
+        return False
+    try:
+        device = torch.cuda.current_device()
+        end(device, pool)
+    except Exception:  # noqa: BLE001 - capture_end already took it off, or capture_begin never put it on
+        return False
+    try:
+        torch._C._cuda_releasePool(device, pool)
+    except Exception:  # noqa: BLE001
+        pass
+    return True
+
+
+def _heal_generators() -> None:
+    """Take every CUDA default generator out of graph-capture mode after a FAILED capture.
+
+    ``CUDAGraph.capture_end`` ends the generators' capture only after ``cudaStreamEndCapture`` succeeds. When the
+    capture was invalidated (a host sync inside it, a kernel that may not be recorded) it raises first, and every later
+    eager draw from the generator (``torch.randn(device = "cuda")``, a pipeline's noise) fails with "Offset increment
+    outside graph capture encountered unexpectedly" for the rest of the process. A clone of the state keeps the seed
+    and the eager offset, so the eager sequence continues as if the capture had never run."""
+    try:
+        torch = _torch()
+        for gen in getattr(torch.cuda, "default_generators", ()) or ():
+            clone = getattr(gen, "clone_state", None)
+            restore = getattr(gen, "graphsafe_set_state", None)
+            if callable(clone) and callable(restore):
+                restore(clone())
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def retire_failed_capture(
+    graph: Any,
+    pool: Any,
+    exc: Optional[BaseException] = None,
+) -> None:
+    """Clean up after a capture into ``pool`` that raised. The caller must stop handing ``pool`` to captures.
+
+    "already recording" comes from ``capture_begin`` finding the pool in another capture: that recording is not ours
+    to end. A graph whose recording did end (the forward raised, instantiate failed) is reset, which releases its pool
+    reference and graph, and kept as an empty husk like the rest."""
+    begun_elsewhere = exc is not None and "already recording" in str(exc)
+    ended_here = False if begun_elsewhere else _abandon_capture_pool(pool)
+    if not begun_elsewhere:  # the generators then belong to the other thread's live capture
+        _heal_generators()
+    if not ended_here and not begun_elsewhere:
+        try:
+            graph.reset()
+        except Exception:  # noqa: BLE001
+            pass
+    with _FAILED_LOCK:
+        # A collision with another recording left nothing behind: kept alive, but not a failure the budget counts.
+        (_COLLIDED_GRAPHS if begun_elsewhere else _FAILED_GRAPHS).append(graph)
+    if pool is not None and _POOL_BOX[0] == pool:
+        _POOL_BOX[0] = None
 
 
 def _nvfp4_flashinfer_linears(module: Any) -> list:
@@ -580,10 +696,18 @@ class GraphedForward:
         torch.cuda.current_stream().wait_stream(side)
         torch.cuda.synchronize()
 
+        refuse_if_exhausted(self.logger)
         graph = torch.cuda.CUDAGraph()
-        # ``pool = None`` is identical to omitting the argument, so both captures take one path.
-        with _capturing(), torch.cuda.graph(graph, pool = _POOL_BOX[0]):
-            out = self.orig(*static_args, **static_kwargs)
+        # An explicit pool id, never None: a capture that fails must hand its pool back (retire_failed_capture).
+        pool = _POOL_BOX[0]
+        if pool is None and callable(getattr(torch.cuda, "graph_pool_handle", None)):
+            pool = torch.cuda.graph_pool_handle()
+        try:
+            with _capturing(), torch.cuda.graph(graph, pool = pool):
+                out = self.orig(*static_args, **static_kwargs)
+        except BaseException as exc:
+            retire_failed_capture(graph, pool, exc)
+            raise
         if _POOL_BOX[0] is None:
             try:
                 _POOL_BOX[0] = graph.pool()
@@ -643,7 +767,7 @@ def graph_eligible(
 ) -> tuple[bool, str]:
     """Whether this load may be graphed, and a short reason when it may not. Cheapest first."""
     if cuda_graph_disabled():
-        return False, f"disabled by {CUDA_GRAPH_DISABLE_ENV}"
+        return False, _disabled_reason()
 
     device = getattr(target, "device", None)
     if device != "cuda":
@@ -813,6 +937,9 @@ def never_engaged(handles: Any) -> Optional[str]:
     """Why the armed graphs never replayed a step; None before the first call or once any engaged."""
     if not handles:
         return None
+    reasons = [h.why_off() for h in handles if callable(getattr(h, "why_off", None))]
+    if reasons and len(reasons) == len(handles):
+        return None if any(r is None for r in reasons) else "; ".join(reasons)
     s = stats(handles)
     if all(getattr(h, "poisoned", False) for h in handles):
         error = s["capture_error"] or {}
@@ -846,3 +973,172 @@ def live_status(resolved: Any, speed_optims: Any, handles: Any) -> tuple:
             "cuda_graph": {**resolved["cuda_graph"], "value": "off", "reason": why},
         }
     return resolved, optims
+
+
+# Per-block graphs (diffusion_block_graph) for the loads the whole-forward recording cannot hold.
+
+WHOLE_REASON = "denoiser step captured per input shape, replayed bit-identically"
+
+
+def _block_basics(
+    target: Any, family: Any, cache_engaged: bool, speed_mode: str, family_default: bool
+) -> Optional[str]:
+    """The whole-forward checks that also bind per-block recording (everything except offload and capture-safety)."""
+    if cuda_graph_disabled():
+        return _disabled_reason()
+    if getattr(target, "device", None) != "cuda":
+        return f"device is {getattr(target, 'device', None) or 'unknown'}"
+    backend = getattr(target, "backend", "cuda")
+    if backend != "cuda":
+        return f"backend is {backend}"
+    if cache_engaged:
+        return "step cache active"
+    mode = str(speed_mode or "").strip().lower()
+    if mode not in ("default", "max"):
+        return f"speed tier {mode or 'off'}"
+    if not bool(getattr(family, "supports_cuda_graph", family_default)):
+        return "family opts out"
+    try:
+        torch = _torch()
+        if not torch.cuda.is_available() or not hasattr(torch.cuda, "graph_pool_handle"):
+            return "torch.cuda unavailable"
+    except Exception:  # noqa: BLE001
+        return "torch.cuda unavailable"
+    return None
+
+
+def arm_block_graphs(
+    pipe: Any,
+    applied: dict,
+    *,
+    target: Any,
+    family: Any,
+    hooked: bool,
+    pinned: bool = False,
+    cache_engaged: bool = False,
+    speed_mode: str = "default",
+    family_default: bool = True,
+    logger: Any = None,
+) -> tuple:
+    """After placement: keep a whole-forward recording where it holds, else record per block.
+
+    Per-block recording is the default only where every block stays on the device (``not hooked``, or ``pinned``
+    resident under its hooks); streamed and model-offloaded denoisers need ``UNSLOTH_DIFFUSION_BLOCK_GRAPHS=1``.
+
+    A whole forward cannot be recorded once an offload hook moves the denoiser (``hooked``) or when the forward is
+    not capture-safe (Qwen-Image-2.1's prefix K/V object); its repeated blocks still can, keyed by where their weights
+    sit. Updates ``applied["cuda_graph"]`` and the pipe's reason / handles; returns the handles now armed."""
+    handles = tuple(getattr(pipe, "_unsloth_cuda_graphs", ()) or ())
+    whole = [h for h in handles if isinstance(h, GraphedForward)]
+    prior = str(getattr(pipe, "_unsloth_cuda_graph_reason", None) or "")
+    if not hooked and (whole or "not capture-safe" not in prior):
+        # Nothing moves the denoiser: the speed layer's decision stands, except a forward that is not capture-safe,
+        # whose blocks still record.
+        return handles
+    why = _block_basics(target, family, cache_engaged, speed_mode, family_default)
+    if whole:
+        uninstall_all(whole, logger = logger)
+    pipe._unsloth_cuda_graph_mode = None
+    if why is not None:
+        _set_reason(pipe, why)
+        applied["cuda_graph"] = False
+        pipe._unsloth_cuda_graphs = ()
+        return ()
+    try:
+        from .diffusion_block_graph import (
+            MODEL_OFFLOAD_REASON,
+            OPT_IN_REASON,
+            block_graphs_disabled,
+            block_graphs_requested,
+            install_block_graphs,
+        )
+        from .diffusion_speed import _denoiser_dits
+    except Exception as exc:  # noqa: BLE001
+        _warn(logger, "block graph import", exc)
+        applied["cuda_graph"] = False
+        pipe._unsloth_cuda_graphs = ()
+        _set_reason(pipe, "offload active" if hooked else prior or "block graphs unavailable")
+        return ()
+    if any(
+        getattr(t, "_unsloth_attention_backend", None) in ("sage", "sage_hub")
+        for t in _denoiser_dits(pipe)
+    ):
+        applied["cuda_graph"] = False
+        pipe._unsloth_cuda_graphs = ()
+        _set_reason(pipe, "SageAttention is not CUDA-graph safe")
+        return ()
+    model_offload = any(getattr(t, "_hf_hook", None) is not None for t in _denoiser_dits(pipe))
+    stays = (not hooked or bool(pinned)) and not model_offload
+    if block_graphs_disabled() or not (stays or block_graphs_requested()):
+        applied["cuda_graph"] = False
+        pipe._unsloth_cuda_graphs = ()
+        if block_graphs_disabled():
+            _set_reason(pipe, "disabled by UNSLOTH_DIFFUSION_BLOCK_GRAPHS=0")
+        else:
+            _set_reason(pipe, MODEL_OFFLOAD_REASON if model_offload else OPT_IN_REASON)
+        return ()
+    armed: list = []
+    reasons: list = []
+    for transformer in _denoiser_dits(pipe):
+        try:
+            handle, reason = install_block_graphs(
+                transformer, device = getattr(target, "torch_device", None), logger = logger
+            )
+        except Exception as exc:  # noqa: BLE001
+            _warn(logger, "block graph install", exc)
+            handle, reason = None, f"install failed ({type(exc).__name__})"
+        if handle is not None:
+            armed.append(handle)
+        else:
+            reasons.append(reason)
+    pipe._unsloth_cuda_graphs = tuple(armed)
+    applied["cuda_graph"] = bool(armed)
+    if armed:
+        where = (
+            "pinned denoiser"
+            if hooked and pinned
+            else "offloaded denoiser"
+            if hooked
+            else "denoiser"
+        )
+        slots = sum(int(getattr(h, "slots_mib", 0) or 0) for h in armed)
+        _set_reason(
+            pipe,
+            f"{where} recorded per block, keyed by input shape and weight placement"
+            + (f"; streamed blocks read a {slots} MiB slot ring" if slots else ""),
+        )
+        pipe._unsloth_cuda_graph_mode = "blocks"
+    else:
+        _set_reason(
+            pipe, "; ".join(r for r in reasons if r) or "no denoiser block could be recorded"
+        )
+    return tuple(armed)
+
+
+def _set_reason(pipe: Any, reason: str) -> None:
+    try:
+        pipe._unsloth_cuda_graph_reason = reason
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def status_reason(pipe: Any, on: bool) -> str:
+    """The cuda_graph badge text: the block layer's own sentence when it armed, else why graphs are off."""
+    if on:
+        if getattr(pipe, "_unsloth_cuda_graph_mode", None) == "blocks":
+            return str(getattr(pipe, "_unsloth_cuda_graph_reason", None) or WHOLE_REASON)
+        return WHOLE_REASON
+    return str(getattr(pipe, "_unsloth_cuda_graph_reason", None) or "speed tier does not capture")
+
+
+def held_bytes(handles: Any) -> int:
+    """Device bytes the armed graphs hold outside the caching allocator's reach (pools, static buffers, slot ring)."""
+    total = 0
+    for handle in handles or ():
+        fn = getattr(handle, "held_bytes", None)
+        if callable(fn):
+            try:
+                total += int(fn())
+            except Exception:  # noqa: BLE001
+                pass
+    return total

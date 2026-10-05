@@ -205,6 +205,7 @@ from . import diffusion_prompt_cache as prompt_cache
 from . import diffusion_gguf_compile as gguf_compile
 from . import diffusion_bg_compile as bg_compile
 from . import diffusion_cuda_graph as cuda_graph
+from .diffusion_block_graph import compile_below_hooks_enabled, compile_pipe_below_offload_hooks
 from . import diffusion_render_thread as render_thread
 from .diffusion_batched import (
     chunk_jobs,
@@ -7143,6 +7144,14 @@ class DiffusionBackend:
                                 if effective_speed == SPEED_MAX
                                 else "default",
                                 "vae_decode": vae_decode_compile_allowed(pipe, effective_speed),
+                                # An offloaded denoiser compiles its blocks below the hooks, a different graph than a
+                                # bundle from the traced-hook compile holds.
+                                **(
+                                    {"below_hooks": True}
+                                    if plan.offload_policy != OFFLOAD_NONE
+                                    and compile_below_hooks_enabled()
+                                    else {}
+                                ),
                             },
                             logger = logger,
                             reduction_filter = family_filters_reductions(fam),
@@ -7317,16 +7326,27 @@ class DiffusionBackend:
                         placement_device = target.torch_device,
                         logger = logger,
                     )
-                    if speed_applied.get("cuda_graph") and _denoiser_hooked(pipe):
-                        cuda_graph.uninstall_all(getattr(pipe, "_unsloth_cuda_graphs", ()) or ())
-                        pipe._unsloth_cuda_graphs = ()
-                        pipe._unsloth_cuda_graph_reason = "offload active"
-                        speed_applied["cuda_graph"] = False
                     # streams the whole-resident denoiser back to the flat room while the encoders run
                     install_encode_release(pipe, plan, logger)
                     # the speed layer saw only the plan; placement may have pinned every denoiser group since
                     if denoisers_pinned_resident(pipe):
                         engage_pinned_denoisers(pipe, speed_applied, logger)
+                    # Placement decides the graph layer: a whole-forward recording holds only while no hook moves the
+                    # denoiser; otherwise (and for a forward that is not capture-safe) its blocks are recorded instead.
+                    if not speed_deferred:
+                        if _denoiser_hooked(pipe):
+                            compile_pipe_below_offload_hooks(pipe, logger)
+                        cuda_graph.arm_block_graphs(
+                            pipe,
+                            speed_applied,
+                            target = target,
+                            family = fam,
+                            hooked = _denoiser_hooked(pipe),
+                            pinned = denoisers_pinned_resident(pipe),
+                            cache_engaged = bool(cache_graph_break),
+                            speed_mode = effective_speed,
+                            logger = logger,
+                        )
 
                     # Per-control provenance for status. cpu_offload=False is the unset default, so only True is
                     # explicit.
@@ -7429,11 +7449,8 @@ class DiffusionBackend:
                             "cuda_graph": (
                                 None,
                                 "on" if speed_applied.get("cuda_graph") else "off",
-                                "denoiser step captured per input shape, replayed bit-identically"
-                                if speed_applied.get("cuda_graph")
-                                else str(
-                                    getattr(pipe, "_unsloth_cuda_graph_reason", None)
-                                    or "speed tier does not capture"
+                                cuda_graph.status_reason(
+                                    pipe, bool(speed_applied.get("cuda_graph"))
                                 ),
                             ),
                             "cpu_offload": (
@@ -9258,6 +9275,11 @@ class DiffusionBackend:
                     "dynamic": compile_dynamic(getattr(state.pipe, "transformer", None), True),
                     "mode": "default",
                     "vae_decode": vae_decode_compile_allowed(state.pipe, SPEED_DEFAULT),
+                    **(
+                        {"below_hooks": True}
+                        if state.offload_policy != OFFLOAD_NONE and compile_below_hooks_enabled()
+                        else {}
+                    ),
                 },
                 logger = logger,
                 reduction_filter = family_filters_reductions(state.family),
@@ -9279,6 +9301,19 @@ class DiffusionBackend:
         )
         if denoisers_pinned_resident(state.pipe):
             engage_pinned_denoisers(state.pipe, speed_applied, logger)
+        if _denoiser_hooked(state.pipe):
+            compile_pipe_below_offload_hooks(state.pipe, logger)
+        cuda_graph.arm_block_graphs(
+            state.pipe,
+            speed_applied,
+            target = target,
+            family = state.family,
+            hooked = _denoiser_hooked(state.pipe),
+            pinned = denoisers_pinned_resident(state.pipe),
+            cache_engaged = cache_breaks_graph(state.transformer_cache),
+            speed_mode = SPEED_DEFAULT,
+            logger = logger,
+        )
         if getattr(getattr(state.pipe, "vae", None), "_unsloth_fp16_decode", False):
             speed_applied["vae_fp16_decode"] = True
         object.__setattr__(state, "speed_mode", SPEED_DEFAULT)
@@ -9302,13 +9337,8 @@ class DiffusionBackend:
         graph = (state.resolved or {}).get("cuda_graph")
         if isinstance(graph, dict):
             graph["value"] = "on" if speed_applied.get("cuda_graph") else "off"
-            graph["reason"] = (
-                "denoiser step captured per input shape, replayed bit-identically"
-                if speed_applied.get("cuda_graph")
-                else str(
-                    getattr(state.pipe, "_unsloth_cuda_graph_reason", None)
-                    or "speed tier does not capture"
-                )
+            graph["reason"] = cuda_graph.status_reason(
+                state.pipe, bool(speed_applied.get("cuda_graph"))
             )
         bg_module = _bg_compile_module(
             state.pipe,
