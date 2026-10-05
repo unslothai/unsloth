@@ -56,7 +56,9 @@ _BASE_TAG_RE = re.compile(r"<base\b" + _TAG_BODY, re.IGNORECASE)
 _ATTR_HREF_RE = re.compile(r"""\bhref\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))""", re.IGNORECASE)
 _META_TAG_RE = re.compile(r"<meta\b" + _TAG_BODY, re.IGNORECASE)
 _HTTP_EQUIV_RE = re.compile(r"""\bhttp-equiv\s*=\s*["']?([\w-]+)""", re.IGNORECASE)
-_CONTENT_ATTR_RE = re.compile(r"""\bcontent\s*=\s*(?:"([^"]*)"|'([^']*)')""", re.IGNORECASE)
+_CONTENT_ATTR_RE = re.compile(
+    r"""\bcontent\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'<>]{1,4096}))""", re.IGNORECASE
+)
 _REFRESH_RE = re.compile(
     r"^\s*(\d+(?:\.\d+)?)\s*(?:[;,]\s*(?:url\s*=\s*)?['\"]?([^'\"]*)['\"]?)?", re.IGNORECASE
 )
@@ -742,22 +744,35 @@ _BOMS = (
 )
 
 
+# Browsers read these labels as windows-1252 (WHATWG Encoding), which fills 0x80-0x9F with quotes and dashes.
+_WINDOWS_1252_LABELS = frozenset(
+    "ansi_x3.4-1968 ascii cp1252 cp819 csisolatin1 ibm819 iso-8859-1 iso-ir-100 iso8859-1 iso88591 "
+    "iso_8859-1 iso_8859-1:1987 l1 latin1 latin-1 us-ascii windows-1252 x-cp1252".split()
+)
+
+
+def _codec(label: str) -> str:
+    label = label.strip().lower()
+    return "cp1252" if label in _WINDOWS_1252_LABELS else label
+
+
 def _decode_html(raw: bytes, charset: Optional[str]) -> str:
     # A byte order mark wins over any declared charset, as in browsers.
     for bom, codec in _BOMS:
         if raw.startswith(bom):
             return raw.decode(codec, errors = "replace")
-    candidates = [charset] if charset else []
+    candidates = [_codec(charset)] if charset else []
     sniffed = _META_CHARSET_RE.search(raw[:4096])
     if sniffed:
-        candidates.append(sniffed.group(1).decode("ascii", "ignore"))
+        candidates.append(_codec(sniffed.group(1).decode("ascii", "ignore")))
     candidates.append("utf-8")
     for candidate in candidates:
         try:
             return raw.decode(candidate)
         except (LookupError, UnicodeDecodeError):
             continue
-    return raw.decode("utf-8", errors = "replace")
+    # Unlabelled and not UTF-8: windows-1252, as browsers default to.
+    return raw.decode("cp1252", errors = "replace")
 
 
 def _attr(match: "re.Match[str] | None") -> Optional[str]:
@@ -878,7 +893,7 @@ def _build_response(
     if textual and charset and charset.lower().replace("_", "-") not in ("utf-8", "utf8"):
         # Text in another encoding goes out as UTF-8, the encoding the response is labelled with.
         try:
-            body = body.decode(charset, errors = "replace").encode("utf-8")
+            body = body.decode(_codec(charset), errors = "replace").encode("utf-8")
         except LookupError:
             pass
     return Response(

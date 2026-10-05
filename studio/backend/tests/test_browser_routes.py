@@ -110,6 +110,19 @@ def test_decode_prefers_the_header_then_the_meta_charset():
     assert browser_mod._decode_html(b'<meta charset="latin-1">' + body, None).endswith("café")
 
 
+def test_legacy_labels_and_unlabelled_pages_decode_as_windows_1252():
+    quoted = "\u201cquoted\u201d \u2014 caf\u00e9".encode("cp1252")
+    assert browser_mod._decode_html(quoted, "ISO-8859-1") == "\u201cquoted\u201d \u2014 caf\u00e9"
+    assert browser_mod._decode_html(quoted, None) == "\u201cquoted\u201d \u2014 caf\u00e9"
+
+
+def test_an_unquoted_refresh_is_followed():
+    _, _, refresh = browser_mod._prepare_page(
+        "<meta http-equiv=refresh content=0;url=/next><p>x</p>", "https://example.com/a"
+    )
+    assert refresh == {"delay": 0.0, "url": "https://example.com/next"}
+
+
 def _fetch(
     monkeypatch,
     result,
