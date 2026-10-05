@@ -650,3 +650,20 @@ def test_local_files_only_reachability_uses_the_cached_fallback(hub, monkeypatch
     backend = dmod.DiffusionBackend.__new__(dmod.DiffusionBackend)
     assert backend._hosted_prequant_reachable(None, "int8", {"local_files_only": True}) is True
     assert _resolve(_convrot_dit(), local_files_only = True) == hub.cached[(REPO, "Model-INT8.pt")]
+
+
+def test_a_local_files_only_load_probes_like_an_offline_one(hub, monkeypatch):
+    """Inside a local_files_only load every default probe (auto policy, retry rung, plan source) opens
+    the cached fallback, as the resolver will; outside it the uncached ConvRot still plans a download."""
+    monkeypatch.setattr(pq, "hub_offline", lambda: False)
+    hub.cache("Model-INT8.pt")
+    seen = {}
+
+    @pq.scoped_local_files_only
+    def _load(*, local_files_only = False):
+        seen["inner"] = pq.prequant_checkpoint_cached(_convrot_dit())
+        return pq.prequant_checkpoint_cached(_convrot_dit())
+
+    assert _load(local_files_only = True) is True and seen["inner"] is True
+    assert _load(local_files_only = False) is False
+    assert pq.prequant_checkpoint_cached(_convrot_dit()) is False

@@ -274,6 +274,7 @@ from .diffusion_prequant import (
     prequant_checkpoint_cached,
     prequant_unreadable_reason,
     resolve_prequant_source,
+    scoped_local_files_only,
     usable_prequant_source,
 )
 from .diffusion_auto_policy import (
@@ -3119,6 +3120,7 @@ class DiffusionBackend:
         ).start()
         return self.status()
 
+    @scoped_local_files_only
     def _run_load(self, **kwargs: Any) -> None:
         token = kwargs.get("_load_token")
         # This load's own event: a later load replaces self._cancel_event rather than clearing it.
@@ -5229,6 +5231,7 @@ class DiffusionBackend:
     @_invalidates_gpu_memory("diffusion load")
     @_account_owned_load
     @_plans_at_requested_speed
+    @scoped_local_files_only
     def load_pipeline(
         self,
         repo_id: str,

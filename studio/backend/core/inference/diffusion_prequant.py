@@ -29,6 +29,8 @@ caller falls back to dense-quantise (then GGUF). Inert with nothing configured.
 
 from __future__ import annotations
 
+import contextvars
+import functools
 import re as _re
 import threading as _threading
 from dataclasses import dataclass
@@ -650,6 +652,26 @@ def prefer_cached_pickle_twins(
     return out
 
 
+_LOCAL_FILES_ONLY = contextvars.ContextVar("unsloth_prequant_local_files_only", default = False)
+
+
+def scoped_local_files_only(fn: Any) -> Any:
+    """Run ``fn`` with its ``local_files_only`` kwarg visible to every cache probe it reaches, so a
+    load that may not download plans like an offline one. Nested calls keep an outer True."""
+
+    @functools.wraps(fn)
+    def _wrapper(*args: Any, **kwargs: Any) -> Any:
+        token = _LOCAL_FILES_ONLY.set(
+            bool(kwargs.get("local_files_only")) or _LOCAL_FILES_ONLY.get()
+        )
+        try:
+            return fn(*args, **kwargs)
+        finally:
+            _LOCAL_FILES_ONLY.reset(token)
+
+    return _wrapper
+
+
 def hub_offline() -> bool:
     """huggingface_hub's offline switch. Never raises."""
     try:
@@ -695,10 +717,10 @@ def first_cached_as_resolved(
     (the resolver would fetch it) unless the cache recorded its 404; otherwise a cached INT8 ``.pt``
     reads as free while the load fetches an uncached INT8-ConvRot. A twin still ahead of the hit was
     not reordered (kill switch, unreadable pickle), so the load fetches it too.
-    ``online=None`` reads huggingface_hub's offline switch. Never raises."""
+    ``online=None`` reads huggingface_hub's offline switch and the load's ``local_files_only``. Never raises."""
     try:
         if online is None:
-            online = not hub_offline()
+            online = not hub_offline() and not _LOCAL_FILES_ONLY.get()
         ahead: list = []
         for name in names:
             if not name:

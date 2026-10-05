@@ -56,6 +56,7 @@ from .diffusion_attention import (
     select_attention_backend,
 )
 from .diffusion_flow_shift import apply_comfy_flow_shift
+from .diffusion_prequant import scoped_local_files_only
 from .diffusion_cache import (
     FBCACHE_MIN_STEPS,
     TC_AUTO,
@@ -2852,6 +2853,7 @@ class VideoBackend:
         ).start()
         return self.status()
 
+    @scoped_local_files_only
     def _run_load(self, **kwargs: Any) -> None:
         token = kwargs.get("_load_token")
         # This load's own event: a later load replaces self._cancel_event rather than clearing it.
@@ -5445,6 +5447,7 @@ class VideoBackend:
     # ── the load itself ──────────────────────────────────────────────────────
 
     @_invalidates_gpu_memory("video load")
+    @scoped_local_files_only
     def load_pipeline(
         self,
         repo_id: str,
