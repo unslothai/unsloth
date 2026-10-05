@@ -97,7 +97,7 @@ function CaptionGlyph({
     ((Math.round((pixels - strokePixels) / 2) + strokePixels / 2) * 10) /
     pixels;
   const corner = Math.min(2, 2.5 - inset);
-  // round caps overshoot their endpoints, so the x ends pull in to keep its old size
+  // round caps overshoot their endpoints; x and minimize ends pull in so both match and the gaps stay even
   const tip = inset * 1.5;
   return (
     <svg
@@ -112,7 +112,7 @@ function CaptionGlyph({
       strokeLinejoin="round"
       className="shrink-0"
     >
-      {kind === "minimize" && <path d={`M${inset} ${middle}H${edge}`} />}
+      {kind === "minimize" && <path d={`M${tip} ${middle}H${10 - tip}`} />}
       {kind === "maximize" && (
         <rect
           x={inset}
