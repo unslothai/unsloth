@@ -64,7 +64,7 @@ from core.inference.native_tool_tokens import (
     reasoning_control_tokens,
     stop_token_text,
 )
-from core.inference.mlx_inference import _mlx_stop_cut, _mlx_stop_sequences
+from core.inference.mlx_inference import _mlx_stop_cut, _mlx_stop_sequences, _scaling_image_marker
 from io import StringIO
 import structlog
 from loggers import get_logger
@@ -3317,6 +3317,9 @@ class InferenceBackend:
         except Exception:
             processes_images = processor is not None and hasattr(processor, "image_processor")
         chat_template_info["renders_image"] = bool(processes_images)
+        chat_template_info["accepts_multiple_images"] = bool(processes_images) and bool(
+            _scaling_image_marker(tokenizer, processor, self.models[model_name].get("model"))
+        )
         if processes_images:
             processor_template = getattr(processor, "chat_template", None)
             # Narrowing the named-template list form away disables the image-turn override.
