@@ -1111,7 +1111,7 @@ def uninstall(vae: Any) -> None:
     for m in vae.modules():
         if isinstance(getattr(m, "processor", None), FusedSingleHeadProcessor):
             m.processor = m.processor.fallback
-    for attr in ("tiled_decode", "blend_v", "blend_h", "blend_t"):
+    for attr in ("tiled_decode", "blend_v", "blend_h", "blend_t", "_unsloth_wide_stock_decode"):
         if getattr(vae.__dict__.get(attr), "_unsloth_vae_fused", False):
             delattr(vae, attr)
     for module in vae.modules():
@@ -1607,9 +1607,12 @@ def _stock_tiled_decode_clamps(cls: type) -> Optional[bool]:
 
 
 def install_wan_tile_batch(vae: Any, logger: Any = None) -> bool:
+    # diffusion_vae_tiling's wide tiles own ``tiled_decode``; the batched loop then backs the stock tiles they fall
+    # back to (the kill switch, or a free VRAM under even their floor tile), as fast as without them.
+    wide = vae is not None and bool(getattr(vae, "_unsloth_wide_tiles", False))
     if (
         vae is None
-        or "tiled_decode" in vae.__dict__
+        or ("tiled_decode" in vae.__dict__ and not wide)
         or not callable(getattr(vae, "tiled_decode", None))
     ):
         return False
@@ -1635,6 +1638,9 @@ def install_wan_tile_batch(vae: Any, logger: Any = None) -> bool:
             return stock(z, return_dict = return_dict)
 
     tiled_decode._unsloth_vae_fused = True
+    if wide:
+        vae._unsloth_wide_stock_decode = tiled_decode
+        return False  # ``tiled_decode`` itself stays the wide tiles'
     vae.tiled_decode = tiled_decode
     return True
 

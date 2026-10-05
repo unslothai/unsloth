@@ -226,7 +226,9 @@ def test_kl_vae_takes_the_wide_tiles_for_an_edge_sliver():
     assert vt.stock_layout_ok(vt.stock_tiles(vae), 100, 100) is False
     stock_err, wide_err = _line_error(stock, untiled), _line_error(wide, untiled)
     assert wide_err < stock_err / 3, (stock_err, wide_err)
-    assert vae._unsloth_last_decode_tile[:2] == (64, 64)
+    # two 58-latent tiles per side with the stock 16-latent overlap (116 decoded latents), not two 64s (128) or the
+    # stock 64 + 48 + 4 (116, plus a sliver tile)
+    assert vae._unsloth_last_decode_tile[:2] == (58, 58)
 
 
 def test_kl_encode_is_untouched_and_qwen_image_encode_is_wide():
@@ -293,29 +295,223 @@ def test_unreadable_geometry_keeps_the_stock_decode():
     assert vt.install(vae) is False
 
 
-@pytest.mark.parametrize("ratio", [8, 16, 32])
-def test_decode_budget_scales_with_the_tile_pixels(ratio):
-    """1.7 MiB per latent at 16x, the per-pixel figure for every ratio, so Qwen-Image-2.1's budget is unchanged."""
-    per_latent = vt.DECODE_MIB_PER_LATENT * (ratio / vt.DECODE_MIB_RATIO) ** 2
-    assert per_latent / ratio**2 == pytest.approx(1.7 / 256)
-    if ratio == 16:
-        assert per_latent == vt.DECODE_MIB_PER_LATENT
-
-
-# Unfused bf16 decode peak over the weights with floor tiles, real diffusers VAE weights on a B200, worst over 1024 to
-# 2048 px canvases (fp32 output accumulator included): the per-pixel budget figure must bound each covered VAE.
-_MEASURED_FLOOR_TILE_PEAK_MIB = {
-    (8, 32): 314,  # Qwen-Image / Qwen-Image-Edit / Krea-2 (AutoencoderKLQwenImage)
-    (16, 32): 1_697,  # Qwen-Image-2.1 (AutoencoderKLQwenImage21, #12696)
-    (32, 32): 1_332,  # HunyuanImage-2.1 (AutoencoderKLHunyuanImage)
-    (8, 128): 2_486,  # FLUX.1 / FLUX.2 / SDXL (AutoencoderKL, AutoencoderKLFlux2) at an edge-sliver size
+# bf16 decode peak per latent of tile area, (unfused, fused) MiB: one untiled ``_decode`` of a t x t latent, t = 8 to
+# 128, on the real diffusers VAE weights (B200, diffusers 0.41.0.dev0, temp calibration run); the worst side per VAE.
+_MEASURED_MIB_PER_LATENT = {
+    "AutoencoderKLQwenImage": (8, 0.270, 0.179),  # Qwen-Image / Qwen-Image-Edit / Krea-2
+    "AutoencoderKLQwenImage21": (16, 1.650, 0.425),  # Qwen-Image-2.1 (the 8-latent fused side, 0.59, is never a tile)
+    "AutoencoderKLHunyuanImage": (32, 1.255, 1.255),  # HunyuanImage-2.1, no fused path
+    "AutoencoderKL": (8, 0.166, 0.086),  # FLUX.1 / Kontext / Z-Image / HiDream / Lumina 2 / SDXL
+    "AutoencoderKLFlux2": (8, 0.166, 0.086),  # FLUX.2 / Ideogram 4
 }
 
 
-def test_budget_figure_bounds_the_measured_floor_tile_peaks():
-    for (ratio, tile), peak in _MEASURED_FLOOR_TILE_PEAK_MIB.items():
-        budget = vt.DECODE_MIB_PER_LATENT * (ratio / vt.DECODE_MIB_RATIO) ** 2 * tile * tile
-        assert budget >= peak, (ratio, tile, budget, peak)
+@pytest.mark.parametrize("cls", sorted(_MEASURED_MIB_PER_LATENT))
+def test_calibrated_figures_bound_the_measured_peaks_and_are_tight(cls):
+    """Not the old per-pixel scaling (6.8 MiB per latent at 32x, 5x HunyuanImage's peak; 0.43 at 8x, 2.9x
+    AutoencoderKL's): within 10% of each VAE's measured peak (Qwen-Image-2.1: #12696's 1.7), so the free VRAM buys
+    the largest tiles it really holds."""
+    ratio, unfused, fused = _MEASURED_MIB_PER_LATENT[cls]
+    assert unfused <= vt.decode_mib_per_latent(ratio, False, cls) <= 1.1 * unfused
+    assert fused <= vt.decode_mib_per_latent(ratio, True, cls) <= 1.1 * fused
+    # a class not measured takes the worst VAE of its ratio
+    worst = max(u for r, u, _ in _MEASURED_MIB_PER_LATENT.values() if r == ratio)
+    worst_fused = max(f for r, _, f in _MEASURED_MIB_PER_LATENT.values() if r == ratio)
+    assert vt.decode_mib_per_latent(ratio, False, "SomeFutureVAE") >= worst
+    assert vt.decode_mib_per_latent(ratio, True, "SomeFutureVAE") >= worst_fused
+
+
+def test_calibrated_figures_other_ratios():
+    # Qwen-Image-2.1's unfused figure is #12696's
+    assert vt.decode_mib_per_latent(16) == 1.7
+    # an unmeasured ratio keeps the per-pixel scaling of the 16x figure
+    assert vt.decode_mib_per_latent(4) == pytest.approx(1.7 / 16)
+
+
+@pytest.mark.parametrize("fused", [False, True])
+def test_budget_uses_the_fused_figure_only_where_the_fused_kernels_are_installed(monkeypatch, fused):
+    vae = _hunyuan_image()
+    qi = _qwen_image()
+    monkeypatch.delenv(vt.MAX_TILE_ENV)
+    monkeypatch.setattr(vt, "_free_mib", lambda v, z: (1000.0, 1.0))
+    for v in (vae, qi):
+        assert vt.install(v)
+        if fused:
+            v._unsloth_vae_fused_installed = 7
+    z = torch.zeros(1, 4, 1, 64, 64)
+    want = int(vt.FREE_FRACTION * 1000 / (0.18 if fused else 0.27))
+    assert vt.decode_tile_budget(qi, z) == want
+    assert vt.decode_tile_budget(vae, torch.zeros(1, 8, 64, 64)) == int(vt.FREE_FRACTION * 1000 / 1.3)
+    kl = _kl()
+    assert vt.install(kl)
+    if fused:
+        kl._unsloth_vae_fused_installed = 3
+    assert vt.decode_tile_budget(kl, torch.zeros(1, 4, 64, 64)) == int(
+        vt.FREE_FRACTION * 1000 / (0.09 if fused else 0.17)
+    )
+    # a fused path that fell back is unfused again
+    qi._unsloth_vae_fused_failed = True
+    assert vt.decode_tile_budget(qi, z) == int(vt.FREE_FRACTION * 1000 / 0.27)
+
+
+def _stock_decoded(length, tile, overlap):
+    """Latents diffusers' stock loop decodes along one side (a tile every tile - overlap, the last one cut short)."""
+    if length <= tile:
+        return length
+    return sum(min(tile, length - s) for s in range(0, length, tile - overlap))
+
+
+@pytest.mark.parametrize("length", list(range(129, 420)))
+def test_large_floor_tiles_never_decode_more_than_stock(length):
+    """FLUX.1 / SDXL / FLUX.2 sliver sizes: before, the floor kept 128-latent tiles and spread them (two 128s with a
+    56-latent overlap on a 200-latent side, 7% more decode than stock and 9% slower). Now the fewest tiles of the
+    smallest side >= 32 that still overlap by 32 (two 116s): never more decoded latents than stock, never a sliver,
+    and never a larger tile than the 128-latent one the planner budgets."""
+    if vt.stock_layout_ok((128, 32), length, length):
+        return  # no sliver: these sizes decode through the stock tiles
+    th, tw = vt.choose_tiles(length, length, None, 128, 32)
+    # within the floor tile's area (what the planner budgets), every side >= 32 latents
+    assert th * tw <= 128 * 128 and min(th, tw) >= vt.TILE_LATENTS
+    stock_calls = len(range(0, length, 96))
+    for side in (th, tw):
+        starts = vt.tile_starts(length, side, 32)
+        assert starts[0] == 0 and starts[-1] + side == length or starts == [0]
+        assert all(b + 32 <= a + side for a, b in zip(starts, starts[1:]))
+        # fewer decoder calls than stock (no sliver tile) and, up to rounding to equal tiles, no more latents
+        assert len(starts) < stock_calls
+        assert len(starts) * side <= _stock_decoded(length, 128, 32) + len(starts) - 1
+    if length == 200:
+        assert (th, tw) == (116, 116) and vt.tile_starts(200, 116, 32) == [0, 84]
+
+
+@pytest.mark.parametrize("length", list(range(1, 400)))
+@pytest.mark.parametrize("max_area", [None, 0, 1024])
+def test_the_32_latent_floor_layout_is_unchanged(length, max_area):
+    """Qwen-Image, Qwen-Image-2.1 and HunyuanImage at the floor: 32-latent tiles, as #12696 picks."""
+    assert vt.choose_tiles(length, length, max_area) == (min(32, length), min(32, length))
+
+
+def _decode_with(vae, z):
+    with torch.no_grad():
+        vae.enable_tiling()
+        return vae.decode(z).sample
+
+
+class _Log:
+    def __init__(self):
+        self.records = []
+
+    def info(self, *a):
+        pass
+
+    def debug(self, *a):
+        self.records.append(("debug", a[0] % a[1:]))
+
+    def warning(self, *a):
+        self.records.append(("warning", a[0] % a[1:]))
+
+
+def test_floor_that_cannot_fit_decodes_in_the_stock_tiles_and_says_why(monkeypatch):
+    """HunyuanImage's 32-latent floor tile peaks at ~1.3 GiB, its 12-latent stock tile at ~0.2: with less free than the
+    floor needs, OOM loses to a seam, so the decode takes the stock tiles and logs the reason (once per VAE)."""
+    vae = _hunyuan_image()
+    z = torch.randn(1, 8, 40, 40, generator = torch.Generator().manual_seed(1))
+    stock = _decode_with(vae, z)
+    log = _Log()
+    assert vt.install(vae, log)
+    monkeypatch.delenv(vt.MAX_TILE_ENV)
+    monkeypatch.setattr(vt, "_free_mib", lambda v, zz: (500.0, 1.0))  # 32x32 x 1.3 MiB = 1,331 MiB needed
+    assert "floor tile needs about 1331 MiB" in vt.floor_shortfall(vae, z)
+    assert torch.equal(_decode_with(vae, z), stock)
+    assert _decode_with(vae, z).shape == stock.shape
+    assert [k for k, _ in log.records] == ["warning", "debug"]
+    assert "HunyuanImage" in log.records[0][1] and "stock tiles" in log.records[0][1]
+    # with room for the floor, the wide tiles again
+    monkeypatch.setattr(vt, "_free_mib", lambda v, zz: (2000.0, 1.0))
+    assert vt.floor_shortfall(vae, z) is None
+    assert not torch.equal(_decode_with(vae, z), stock)
+    # unknown free memory (CPU) and an explicit tile cap are never a shortfall
+    monkeypatch.setattr(vt, "_free_mib", lambda v, zz: None)
+    assert vt.floor_shortfall(vae, z) is None
+    monkeypatch.setattr(vt, "_free_mib", lambda v, zz: (1.0, 1.0))
+    monkeypatch.setenv(vt.MAX_TILE_ENV, "32")
+    assert vt.floor_shortfall(vae, z) is None
+
+
+@pytest.mark.parametrize("build", [_qwen_image, _kl, lambda: _kl(cls = "AutoencoderKLFlux2")])
+def test_no_stock_fallback_where_the_stock_tile_is_as_large(monkeypatch, build):
+    """Qwen-Image (32-latent stock tiles) and AutoencoderKL / FLUX.2 (128): the stock tiles need as much memory as the
+    floor, so a low free VRAM keeps the wide tiles (the FLUX.1 sliver fix held at 2 GiB free only after this)."""
+    vae = build()
+    assert vt.install(vae)
+    vae._unsloth_vae_fused_installed = 3
+    monkeypatch.delenv(vt.MAX_TILE_ENV)
+    monkeypatch.setattr(vt, "_free_mib", lambda v, zz: (1.0, 1.0))
+    z = torch.zeros(1, 4, 1, 200, 200) if hasattr(vae, "tile_sample_stride_height") else torch.zeros(1, 4, 200, 200)
+    assert vt.floor_shortfall(vae, z) is None
+
+
+def test_floor_fit_uses_the_fused_peak_so_qwen_image_21_keeps_its_wide_floor(monkeypatch):
+    """Qwen-Image-2.1's fused floor tile peaks at ~0.43 GiB: it stays on the wide floor down to that (where #12696
+    would OOM), not at the 1.7 GiB unfused figure."""
+    vae = _qwen_image_21()
+    assert vt.install(vae)
+    vae._unsloth_vae_fused_installed = 5
+    monkeypatch.delenv(vt.MAX_TILE_ENV)
+    z = torch.zeros(1, 4, 1, 64, 64)
+    monkeypatch.setattr(vt, "_free_mib", lambda v, zz: (500.0, 1.0))
+    assert vt.floor_shortfall(vae, z) is None
+    monkeypatch.setattr(vt, "_free_mib", lambda v, zz: (400.0, 1.0))
+    assert vt.floor_shortfall(vae, z)
+    vae._unsloth_vae_fused_failed = True
+    monkeypatch.setattr(vt, "_free_mib", lambda v, zz: (1500.0, 1.0))
+    assert vt.floor_shortfall(vae, z)
+
+
+def test_oom_retries_at_the_floor_then_in_the_stock_tiles(monkeypatch):
+    vae = _qwen_image()
+    z = torch.randn(1, 4, 1, 64, 64, generator = torch.Generator().manual_seed(1))
+    stock = _decode_with(vae, z)
+    assert vt.install(vae, _Log())
+    floor = _decode_with(vae, z)  # the autouse 1-latent cap: the floor tiles
+    real = vt.tiled_decode
+    calls = []
+
+    def flaky(v, zz, return_dict = True, max_area = "auto", fail = ("auto",)):
+        calls.append(max_area)
+        if max_area in fail:
+            v._unsloth_last_decode_tile = (48, 48, 2304) if max_area == "auto" else (32, 32, 0)
+            raise torch.OutOfMemoryError("CUDA out of memory. Tried to allocate 1 GiB")
+        return real(v, zz, return_dict = return_dict, max_area = max_area)
+
+    monkeypatch.setattr(vt, "tiled_decode", flaky)
+    assert torch.equal(_decode_with(vae, z), floor)
+    assert calls == ["auto", 0]
+    calls.clear()
+    monkeypatch.setattr(vt, "tiled_decode", lambda *a, **k: flaky(*a, **k, fail = ("auto", 0)))
+    assert torch.equal(_decode_with(vae, z), stock)
+    assert calls == ["auto", 0]
+    # an error that is not an OOM propagates
+    monkeypatch.setattr(vt, "tiled_decode", lambda *a, **k: (_ for _ in ()).throw(ValueError("bad")))
+    with pytest.raises(ValueError):
+        _decode_with(vae, z)
+
+
+def test_geometry_and_blend_weights_are_cached_per_vae(monkeypatch):
+    vae = _qwen_image()
+    assert vt.install(vae)
+    assert vae._unsloth_wide_geometry == (8, 32, 16)
+    built = []
+    real = vt.axis_weights
+    monkeypatch.setattr(vt, "axis_weights", lambda *a, **k: built.append(a[:3]) or real(*a, **k))
+    monkeypatch.setattr(vt, "compression_ratio", lambda v: pytest.fail("ratio re-read per decode"))
+    z = torch.randn(1, 4, 1, 48, 48, generator = torch.Generator().manual_seed(1))
+    first = _decode_with(vae, z)
+    assert len(built) == 1  # one axis layout, shared by height and width
+    second = _decode_with(vae, z)
+    assert len(built) == 1 and torch.equal(first, second)
+    vt.uninstall(vae)
+    assert "_unsloth_wide_weights" not in vae.__dict__ and "_unsloth_wide_geometry" not in vae.__dict__
 
 
 def _image_family_vae_classes():
@@ -369,3 +565,40 @@ def test_load_installs_for_every_image_family():
         # not nested under an `if` on the family / VAE class
         if isinstance(node, ast.If) and any(c in ast.walk(node) for c in calls):
             assert "fam" not in ast.unparse(node.test) and "vae" not in ast.unparse(node.test).lower()
+
+
+def test_stock_fallback_keeps_the_fused_batched_loop_on_the_wan_family(monkeypatch):
+    """Under the wide tiles the fused VAE layer cannot take ``tiled_decode`` (they own it), so before this the stock
+    fallback (kill switch, or a floor that cannot fit) ran diffusers' one-tile-per-call loop, slower than main's
+    batched one. Now the batched loop backs the fallback, and is ``tiled_decode`` again after an uninstall."""
+    from core.inference import diffusion_vae_fused as fused
+
+    vae = _qwen_image_21()
+    assert vt.install(vae)
+    ours = vae.__dict__["tiled_decode"]
+    assert fused.install_wan_tile_batch(vae) is False  # ``tiled_decode`` stays the wide tiles'
+    assert vae.__dict__["tiled_decode"] is ours
+    batched = vae.__dict__["_unsloth_wide_stock_decode"]
+    assert getattr(batched, "_unsloth_vae_fused", False)
+    calls = []
+    vae._unsloth_wide_stock_decode = lambda z, return_dict = True: calls.append(z.shape) or batched(
+        z, return_dict = return_dict
+    )
+    z = torch.randn(1, 4, 1, 48, 48, generator = torch.Generator().manual_seed(1))
+    with torch.no_grad():
+        vae.enable_tiling()
+        monkeypatch.setenv(vt.WIDE_TILES_ENV, "0")
+        killed = vae.decode(z).sample
+        monkeypatch.delenv(vt.WIDE_TILES_ENV)
+        monkeypatch.delenv(vt.MAX_TILE_ENV)
+        monkeypatch.setattr(vt, "_free_mib", lambda v, zz: (1.0, 1.0))
+        short = vae.decode(z).sample
+    assert len(calls) == 2 and torch.equal(killed, short)
+    vae._unsloth_wide_stock_decode = batched
+    vt.uninstall(vae)
+    assert vae.__dict__.get("tiled_decode") is batched
+    # without the wide tiles the batched loop installs on ``tiled_decode`` as before
+    plain = _qwen_image_21()
+    assert fused.install_wan_tile_batch(plain)
+    assert getattr(plain.__dict__["tiled_decode"], "_unsloth_vae_fused", False)
+    assert "_unsloth_wide_stock_decode" not in plain.__dict__
