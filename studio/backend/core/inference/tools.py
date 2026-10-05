@@ -10194,7 +10194,7 @@ def _terminal_profile(disable_sandbox: bool = False) -> str:
         return host_default
     try:
         if bash:
-            # Either MXC tier: BaseContainer hosts hit the same MSYS failure as the DACL tier.
+            # Either MXC tier: any bash failure tries cmd.
             verdict = os_sandbox.capability_snapshot(
                 execution_kind = "terminal", selected_executable = bash
             )
