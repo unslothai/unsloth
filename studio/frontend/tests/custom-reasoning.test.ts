@@ -4,8 +4,8 @@
 import assert from "node:assert/strict";
 import test, { after } from "node:test";
 import { createServer } from "vite";
-import { installLocalStorageFake } from "./helpers/kit.ts";
 import type { ExternalProviderConfig } from "../src/features/chat/external-providers.ts";
+import { installLocalStorageFake } from "./helpers/kit.ts";
 
 installLocalStorageFake();
 Object.assign(window.location, { href: "http://localhost/" });
