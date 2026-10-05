@@ -174,17 +174,18 @@ def scan_comfy_quant(path: Optional[str]) -> Optional[ComfyQuantScan]:
                 declared.setdefault(key[: -len(".scale_weight")], {"format": fmt})
 
     scaled = {
-        key[: -len(suffix)]
-        for key in keys
-        for suffix in _SCALE_SUFFIXES
-        if key.endswith(suffix)
+        key[: -len(suffix)] for key in keys for suffix in _SCALE_SUFFIXES if key.endswith(suffix)
     }
     for name in sorted(scaled - set(declared)):
         # Undeclared scales: only an fp8 weight with a plain weight_scale has one meaning.
         weight = header.get(name + ".weight") or {}
         dtype = weight.get("dtype")
         fmt = next((f for f, d in FP8_FORMATS.items() if d == dtype), None)
-        extra = [s for s in _SCALE_SUFFIXES if name + s in keys and s not in (".weight_scale", ".input_scale")]
+        extra = [
+            s
+            for s in _SCALE_SUFFIXES
+            if name + s in keys and s not in (".weight_scale", ".input_scale")
+        ]
         if fmt is not None and name + ".weight_scale" in keys and not extra:
             declared[name] = {"format": fmt}
         else:
@@ -232,17 +233,16 @@ def scan_comfy_quant(path: Optional[str]) -> Optional[ComfyQuantScan]:
                 leftover = [
                     s
                     for s in _SCALE_SUFFIXES
-                    if name + s in keys
-                    and _LEGACY_RENAME.get(s, s) not in _CONSUMED[fmt]
+                    if name + s in keys and _LEGACY_RENAME.get(s, s) not in _CONSUMED[fmt]
                 ]
                 if leftover:
-                    why = f"{fmt} layer carries {', '.join(leftover)}, which this format does not use"
+                    why = (
+                        f"{fmt} layer carries {', '.join(leftover)}, which this format does not use"
+                    )
         if why:
             scan.problems.append(f"{name}: {why}")
             continue
-        scan.layers[name] = ComfyQuantLayer(
-            name, fmt, convrot, int(group) if convrot else 0
-        )
+        scan.layers[name] = ComfyQuantLayer(name, fmt, convrot, int(group) if convrot else 0)
     for fmt, count in sorted(unsupported.items()):
         scan.problems.append(f"{count} layer(s) in ComfyUI format {fmt!r}")
     return scan
@@ -250,7 +250,6 @@ def scan_comfy_quant(path: Optional[str]) -> Optional[ComfyQuantScan]:
 
 def _is_power_of_four(size: Any) -> bool:
     from .diffusion_convrot import is_power_of_four
-
     return is_power_of_four(size)
 
 
@@ -386,7 +385,6 @@ def comfy_int8_backend(
             native_quant_scheme,
             select_transformer_quant_scheme,
         )
-
         if native_quant_scheme(target, TQ_INT8, family = family, offload = offload) == TQ_INT8:
             return "native"
         if not offload and (
@@ -498,7 +496,9 @@ def load_comfy_quant_transformer(
     rotations: dict = {}
     native: dict = {}
     built = 0
-    for name in [k for k, v in converted.items() if torch.is_tensor(v) and v.dtype == torch.float64]:
+    for name in [
+        k for k, v in converted.items() if torch.is_tensor(v) and v.dtype == torch.float64
+    ]:
         segments = _decode_rows(name, converted[name], int8_sources)
         sources = {int8_sources[i][0].group for i, _r, _n in segments}
         if len(sources) != 1:
@@ -561,7 +561,9 @@ def load_comfy_quant_transformer(
             parent = model.get_submodule(parent_name) if parent_name else model
             # the Linear supplies only shapes, compute dtype and bias (assigned from the checkpoint below)
             linear = getattr(parent, leaf).to(dtype)
-            layer = cls(linear, TQ_INT8, act_int8 = act_int8, rot_group = group, codes = codes, scale = scale)
+            layer = cls(
+                linear, TQ_INT8, act_int8 = act_int8, rot_group = group, codes = codes, scale = scale
+            )
             setattr(parent, leaf, layer)
             converted[fqn + ".weight_q"] = layer.weight_q
             converted[fqn + ".weight_scale"] = layer.weight_scale
@@ -571,7 +573,6 @@ def load_comfy_quant_transformer(
     ignore = getattr(model, "_keys_to_ignore_on_load_unexpected", None) or []
     if ignore:
         import re
-
         unexpected = [k for k in unexpected if not any(re.search(p, k) for p in ignore)]
     if missing:
         raise ValueError(
@@ -604,14 +605,12 @@ def load_comfy_quant_transformer(
         if device is not None:
             try:
                 from .diffusion_convrot import warm_rotation_cache
-
                 warm_rotation_cache(model, device, dtype)
             except Exception:  # noqa: BLE001 -- only saves one recompile
                 pass
     if built:
         if not native:
             from .diffusion_transformer_quant import apply_small_m_padding
-
             apply_small_m_padding(model, TQ_INT8, family, logger = logger)
         try:
             model._unsloth_runtime_quant = TQ_INT8

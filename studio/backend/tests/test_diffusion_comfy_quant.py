@@ -42,7 +42,11 @@ def _int8(weight: torch.Tensor, group: int = 0) -> tuple:
     return torch.round(w / scale).clamp(-127, 127).to(torch.int8), scale
 
 
-def _save(path, tensors, metadata = None) -> str:
+def _save(
+    path,
+    tensors,
+    metadata = None,
+) -> str:
     tensors = {k: v.contiguous().clone() for k, v in tensors.items()}
     safetensors_torch.save_file(tensors, str(path), metadata = metadata)
     return str(path)
@@ -79,7 +83,9 @@ def test_per_layer_int8_convrot_is_detected(tmp_path):
     assert cq.comfy_quant_error(scan) is None
 
 
-@pytest.mark.parametrize("fmt", ["nvfp4", "mxfp8", "convrot_w4a4", "asym_w4a8_int8", "w6a8_int8", "brand_new"])
+@pytest.mark.parametrize(
+    "fmt", ["nvfp4", "mxfp8", "convrot_w4a4", "asym_w4a8_int8", "w6a8_int8", "brand_new"]
+)
 def test_unsupported_formats_are_refused_by_name(tmp_path, fmt):
     path = _save(
         tmp_path / "m.safetensors",
@@ -140,7 +146,10 @@ def test_undeclared_scales(tmp_path):
     """An fp8 weight with a plain weight_scale has one meaning; scaled int8 with no format does not."""
     fp8 = _save(
         tmp_path / "f.safetensors",
-        {"a.weight": torch.zeros(8, 8).to(torch.float8_e4m3fn), "a.weight_scale": torch.tensor(2.0)},
+        {
+            "a.weight": torch.zeros(8, 8).to(torch.float8_e4m3fn),
+            "a.weight_scale": torch.tensor(2.0),
+        },
     )
     assert cq.refuse_comfy_quant(fp8).counts() == {"float8_e4m3fn": 1}
     int8 = _save(
@@ -154,11 +163,29 @@ def test_undeclared_scales(tmp_path):
 @pytest.mark.parametrize(
     "tensors, why",
     [
-        ({"a.weight": torch.zeros(8, GROUP, dtype = torch.int8), "a.weight_scale": torch.ones(8, 4)}, "block scales"),
+        (
+            {
+                "a.weight": torch.zeros(8, GROUP, dtype = torch.int8),
+                "a.weight_scale": torch.ones(8, 4),
+            },
+            "block scales",
+        ),
         ({"a.weight": torch.zeros(8, GROUP, dtype = torch.int8)}, "weight_scale is missing"),
-        ({"a.weight": torch.zeros(8, GROUP, dtype = torch.uint8), "a.weight_scale": torch.ones(8, 1)}, "stored as U8"),
+        (
+            {
+                "a.weight": torch.zeros(8, GROUP, dtype = torch.uint8),
+                "a.weight_scale": torch.ones(8, 1),
+            },
+            "stored as U8",
+        ),
         ({"a.weight_scale": torch.ones(8, 1)}, "no a.weight"),
-        ({"a.weight": torch.zeros(2, 8, GROUP, dtype = torch.int8), "a.weight_scale": torch.ones(2, 8, 1)}, "2-D"),
+        (
+            {
+                "a.weight": torch.zeros(2, 8, GROUP, dtype = torch.int8),
+                "a.weight_scale": torch.ones(2, 8, 1),
+            },
+            "2-D",
+        ),
     ],
 )
 def test_malformed_int8_layers_are_refused(tmp_path, tensors, why):
@@ -197,7 +224,11 @@ class _Tiny(nn.Module):
     _keep_in_fp32_modules = None
     _keys_to_ignore_on_load_unexpected = None
 
-    def __init__(self, dim: int = DIM, blocks: int = 2) -> None:
+    def __init__(
+        self,
+        dim: int = DIM,
+        blocks: int = 2,
+    ) -> None:
         super().__init__()
         self.blocks = nn.ModuleList(_Block(dim) for _ in range(blocks))
         self.norm = nn.LayerNorm(dim)
@@ -216,7 +247,12 @@ class _Tiny(nn.Module):
         return cls(**config)
 
 
-def _convert(checkpoint = None, config = None, mix_columns = False, **_kwargs):
+def _convert(
+    checkpoint = None,
+    config = None,
+    mix_columns = False,
+    **_kwargs,
+):
     out = {}
     for key, value in checkpoint.items():
         if key.endswith(".qkv.weight") or key.endswith(".qkv.bias"):
@@ -250,7 +286,10 @@ def comfy_file(tmp_path, monkeypatch):
     for b, block in enumerate(dense.blocks):
         qkv = torch.cat([block.to_q.weight, block.to_k.weight, block.to_v.weight]).detach()
         layers = {
-            f"blocks.{b}.qkv": (qkv, torch.cat([block.to_q.bias, block.to_k.bias, block.to_v.bias])),
+            f"blocks.{b}.qkv": (
+                qkv,
+                torch.cat([block.to_q.bias, block.to_k.bias, block.to_v.bias]),
+            ),
             f"blocks.{b}.out": (block.to_out.weight.detach(), block.to_out.bias),
             f"blocks.{b}.adaLN_modulation.0": (
                 block.adaLN_modulation[0].weight.detach(),
@@ -284,13 +323,20 @@ def _load(path, **kwargs):
 
 
 def _cos(a, b) -> float:
-    return torch.nn.functional.cosine_similarity(a.flatten().float(), b.flatten().float(), dim = 0).item()
+    return torch.nn.functional.cosine_similarity(
+        a.flatten().float(), b.flatten().float(), dim = 0
+    ).item()
 
 
 def test_dequant_path_reproduces_the_dense_weights(comfy_file):
     path, dense, _ = comfy_file
     model = _load(path)
-    assert model._unsloth_comfy_quant == {"backend": None, "int8": 0, "convrot": 0, "dequantized": 6}
+    assert model._unsloth_comfy_quant == {
+        "backend": None,
+        "int8": 0,
+        "convrot": 0,
+        "dequantized": 6,
+    }
     assert not any(is_rotated_linear(m) for m in model.modules())
     ref = dense.state_dict()
     for key, value in model.state_dict().items():
@@ -310,7 +356,12 @@ def test_int8_runtime_keeps_codes_and_scales_unchanged(comfy_file):
     if not model._unsloth_comfy_quant["int8"]:
         pytest.skip("this torchao has no Int8Tensor")
     # 2 blocks x (q, k, v, out) as int8; adaLN is a modulation Linear Studio keeps dense
-    assert model._unsloth_comfy_quant == {"backend": "torchao", "int8": 8, "convrot": 8, "dequantized": 2}
+    assert model._unsloth_comfy_quant == {
+        "backend": "torchao",
+        "int8": 8,
+        "convrot": 8,
+        "dequantized": 2,
+    }
     assert model._unsloth_runtime_quant == "int8"
     for b, block in enumerate(model.blocks):
         q, s = tensors[f"blocks.{b}.qkv.weight"], tensors[f"blocks.{b}.qkv.weight_scale"]
@@ -331,7 +382,12 @@ def test_native_backend_keeps_codes_and_computes_the_dense_product(comfy_file):
 
     path, dense, tensors = comfy_file
     model = _load(path, int8_backend = "native")
-    assert model._unsloth_comfy_quant == {"backend": "native", "int8": 8, "convrot": 8, "dequantized": 2}
+    assert model._unsloth_comfy_quant == {
+        "backend": "native",
+        "int8": 8,
+        "convrot": 8,
+        "dequantized": 2,
+    }
     block = model.blocks[1]
     linear = block.to_k
     assert is_native_linear(linear) and linear.rot_group == GROUP
@@ -378,7 +434,10 @@ def test_missing_weights_after_conversion_are_refused(comfy_file, monkeypatch):
     monkeypatch.setattr(
         cq,
         "_mapping",
-        lambda cls: (lambda **kw: {k: v for k, v in _convert(**kw).items() if "norm" not in k}, _sfm()),
+        lambda cls: (
+            lambda **kw: {k: v for k, v in _convert(**kw).items() if "norm" not in k},
+            _sfm(),
+        ),
     )
     with pytest.raises(ValueError, match = "missing 2 weight"):
         _load(path)
@@ -395,4 +454,6 @@ def test_the_loader_refuses_what_the_scan_refuses(tmp_path):
     )
     scan = cq.scan_comfy_quant(path)
     with pytest.raises(ValueError, match = "mxfp8"):
-        cq.load_comfy_quant_transformer(_Tiny, path, scan, {"config": "base/repo"}, int8_backend = None)
+        cq.load_comfy_quant_transformer(
+            _Tiny, path, scan, {"config": "base/repo"}, int8_backend = None
+        )

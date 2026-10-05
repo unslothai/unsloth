@@ -87,8 +87,9 @@ def native_linear_class():
                 wq, scale = codes, scale.reshape(-1, 1)
                 if self.rot_group:
                     from .diffusion_convrot import build_convrot_hadamard
-
-                    h = build_convrot_hadamard(self.rot_group, device = codes.device, dtype = torch.float32)
+                    h = build_convrot_hadamard(
+                        self.rot_group, device = codes.device, dtype = torch.float32
+                    )
                     self.register_buffer("rot_h", h.to(self.compute_dtype), persistent = False)
             else:
                 weight = linear.weight.detach()
@@ -97,9 +98,13 @@ def native_linear_class():
                     if self.rot_group:
                         from .diffusion_convrot import build_convrot_hadamard
 
-                        h = build_convrot_hadamard(self.rot_group, device = w.device, dtype = torch.float32)
+                        h = build_convrot_hadamard(
+                            self.rot_group, device = w.device, dtype = torch.float32
+                        )
                         g = self.rot_group
-                        w = (w.reshape(self.out_features, -1, g) @ h.T).reshape(self.out_features, -1)
+                        w = (w.reshape(self.out_features, -1, g) @ h.T).reshape(
+                            self.out_features, -1
+                        )
                         self.register_buffer("rot_h", h.to(self.compute_dtype), persistent = False)
                     scale = w.abs().amax(dim = 1, keepdim = True).clamp(min = 1e-12) / _QMAX[scheme]
                     if scheme == NATIVE_INT8:

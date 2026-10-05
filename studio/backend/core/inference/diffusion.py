@@ -5455,9 +5455,7 @@ class DiffusionBackend:
                 assert_flux2_gguf_matches_base(fam, base, single_file_path)
                 # A ComfyUI-quantized file loads through its own path below; a format it cannot run is refused here,
                 # from the header, before planning or reading a weight, rather than loaded with its scales dropped.
-                comfy_scan = (
-                    refuse_comfy_quant(single_file_path) if kind == "single_file" else None
-                )
+                comfy_scan = refuse_comfy_quant(single_file_path) if kind == "single_file" else None
                 transformer_cls = getattr(diffusers, fam.transformer_class)
                 pipeline_cls = getattr(diffusers, fam.pipeline_class)
 

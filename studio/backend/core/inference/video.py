@@ -6138,7 +6138,9 @@ class VideoBackend:
                         logger = logger,
                     )
                 else:
-                    transformer = transformer_cls.from_single_file(str(checkpoint_path), **sf_kwargs)
+                    transformer = transformer_cls.from_single_file(
+                        str(checkpoint_path), **sf_kwargs
+                    )
                 pipe = pipeline_cls.from_pretrained(
                     _base_local_dir or base, transformer = transformer, **pipe_kwargs
                 )
