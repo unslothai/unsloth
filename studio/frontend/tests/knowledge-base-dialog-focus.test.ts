@@ -353,3 +353,19 @@ test("files handed to a missing knowledge base go to the one opened next, once",
   await app.settle();
   assert.deepEqual(app.uploads, [[ITEM]]);
 });
+
+test("a handoff that arrives while another waits joins it instead of replacing it", async () => {
+  const app = harness();
+  await app.open({ kbId: "kb-deleted", uploads: [ITEM] });
+  assert.deepEqual(app.uploads, []);
+  // The chat's next drop is handed over while the first batch is still waiting here.
+  const LATER = { kind: "native", token: "tok-faq", name: "faq.md" };
+  await app.open({ kbId: KB.id, uploads: [LATER] });
+  assert.equal(app.title, KB.name);
+  assert.deepEqual(app.uploads, [[ITEM, LATER]]);
+
+  // Once uploading, the batch is no longer waiting, so a later handoff goes alone.
+  const LAST = { kind: "native", token: "tok-last", name: "last.md" };
+  await app.open({ kbId: KB.id, uploads: [LAST] });
+  assert.deepEqual(app.uploads, [[ITEM, LATER], [LAST]]);
+});

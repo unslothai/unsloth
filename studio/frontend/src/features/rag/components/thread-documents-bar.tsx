@@ -32,7 +32,6 @@ import {
   isThreadIncognito,
 } from "@/features/chat";
 import {
-  type NativeIntent,
   useNativeAttachmentTargetKey,
   useNativeIntentStore,
 } from "@/features/native-intents";
@@ -588,22 +587,16 @@ export function ThreadDocumentsBar({
     null,
   );
   const kbChipRef = useRef<HTMLButtonElement>(null);
-  // The one outstanding drop offer. A later drop folds into it, since two offers would
-  // each own a batch and an Add on one can replace the other's handoff.
-  const kbDropOfferRef = useRef<{
-    id: string | number;
-    intents: NativeIntent[];
-  } | null>(null);
-  useEffect(
-    () => () => {
-      // The toaster outlives this bar, and an "Add" clicked after it unmounts would open
-      // nothing while the batch is already out of the native-intent store.
-      const offer = kbDropOfferRef.current;
-      kbDropOfferRef.current = null;
-      if (offer) toast.dismiss(offer.id);
-    },
-    [],
-  );
+  // The toaster outlives this bar, and an "Add" clicked after it unmounts would open
+  // nothing while the batch is already out of the native-intent store.
+  const kbDropOffersRef = useRef(new Set<string | number>());
+  useEffect(() => {
+    const offers = kbDropOffersRef.current;
+    return () => {
+      for (const id of offers) toast.dismiss(id);
+      offers.clear();
+    };
+  }, []);
   const activeKbName = useKnowledgeBaseName(
     ragEnabled && ragSource.type === "kb" ? ragSource.kbId : null,
   );
@@ -622,17 +615,14 @@ export function ThreadDocumentsBar({
       return;
     }
     const store = useNativeIntentStore.getState();
-    const dropped = store.takeAttachments(nativeAttachmentTargetKey);
-    if (dropped.length === 0) {
+    const intents = store.takeAttachments(nativeAttachmentTargetKey);
+    if (intents.length === 0) {
       return;
     }
     // A KB-scoped chat uploads through the KB dialog, so a thread upload here would
     // index into something this bar never shows. The action carries the drop there.
     if (ragEnabled && ragSource.type === "kb") {
       const kbId = ragSource.kbId;
-      const previous = kbDropOfferRef.current;
-      const intents = [...(previous?.intents ?? []), ...dropped];
-      if (previous) toast.dismiss(previous.id);
       const files =
         intents.length === 1
           ? `"${intents[0].displayLabel}"`
@@ -643,7 +633,7 @@ export function ThreadDocumentsBar({
       // Nothing else holds these files, so the offer lasts while their path tokens can
       // still be read, not the default few seconds.
       const expiresAt = Math.min(...intents.map((intent) => intent.path.expiresAtMs));
-      const id = toast(`Add ${files} to ${target}?`, {
+      const offer = toast(`Add ${files} to ${target}?`, {
         description:
           "This chat retrieves from that knowledge base, not from files dropped in the chat.",
         duration: Number.isFinite(expiresAt)
@@ -651,22 +641,14 @@ export function ThreadDocumentsBar({
           : Infinity,
         action: {
           label: "Add",
-          onClick: () => {
-            kbDropOfferRef.current = null;
+          onClick: () =>
             setKbDialogFocus({
               kbId,
               uploads: intents.map(uploadItemFromIntent),
-            });
-          },
-        },
-        onDismiss: () => {
-          if (kbDropOfferRef.current?.id === id) kbDropOfferRef.current = null;
-        },
-        onAutoClose: () => {
-          if (kbDropOfferRef.current?.id === id) kbDropOfferRef.current = null;
+            }),
         },
       });
-      kbDropOfferRef.current = { id, intents };
+      kbDropOffersRef.current.add(offer);
       return;
     }
     // A stale KB preference is inactive while RAG is off; use thread retrieval.
@@ -674,7 +656,7 @@ export function ThreadDocumentsBar({
       setRagSource({ type: "thread" });
       setRagEnabled(true);
     }
-    attach(dropped.map(uploadItemFromIntent));
+    attach(intents.map(uploadItemFromIntent));
   }, [
     hasPendingAttachments,
     projectUnresolved,

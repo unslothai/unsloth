@@ -80,11 +80,11 @@ export function KnowledgeBaseDialog({
   const [kbs, setKbs] = useState<KnowledgeBase[]>([]);
   const [loading, setLoading] = useState(false);
   const [view, setView] = useState<View>({ kind: "list" });
-  // A handoff whose knowledge base could not be resolved. Nothing else holds the batch,
-  // so it goes to whichever knowledge base is opened or created next.
-  const [pendingUploads, setPendingUploads] = useState<RagUploadItem[] | null>(
-    null,
-  );
+  // Handed-over files not uploading yet; nothing else holds them. A handoff arriving
+  // meanwhile joins them, and if their knowledge base cannot be resolved they go to
+  // whichever one is opened or created next.
+  const handoffRef = useRef<RagUploadItem[]>([]);
+  const handedFocusRef = useRef<KnowledgeBaseFocus | null>(null);
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
   const [saving, setSaving] = useState(false);
@@ -118,26 +118,36 @@ export function KnowledgeBaseDialog({
   }, []);
 
   useEffect(() => {
-    if (!open) return;
+    if (!open) {
+      handoffRef.current = [];
+      handedFocusRef.current = null;
+      return;
+    }
+    // Once per handoff, though StrictMode runs this twice for the same one.
+    if (focus !== handedFocusRef.current) {
+      handedFocusRef.current = focus;
+      handoffRef.current = [...handoffRef.current, ...(focus?.uploads ?? [])];
+    }
+    const uploads = handoffRef.current;
     let cancelled = false;
     setView({ kind: "list" });
-    setPendingUploads(null);
     void refresh().then((rows) => {
       if (cancelled || !focus) return;
       const kb = rows?.find((row) => row.id === focus.kbId);
       if (!kb) {
-        if (focus.uploads?.length) {
-          setPendingUploads(focus.uploads);
-          // A failed load already said so.
-          if (rows) {
-            toast.error("Knowledge base not found", {
-              description: "Open or create one below and the files go there.",
-            });
-          }
+        // A failed load already said so.
+        if (uploads.length && rows) {
+          toast.error("Knowledge base not found", {
+            description: "Open or create one below and the files go there.",
+          });
         }
         return;
       }
-      setView({ kind: "documents", kb, uploads: focus.uploads });
+      setView({
+        kind: "documents",
+        kb,
+        uploads: uploads.length ? uploads : undefined,
+      });
     });
     return () => {
       cancelled = true;
@@ -161,13 +171,18 @@ export function KnowledgeBaseDialog({
   }
 
   function openDocuments(kb: KnowledgeBase) {
-    setView({ kind: "documents", kb, uploads: pendingUploads ?? undefined });
-    setPendingUploads(null);
+    const uploads = handoffRef.current;
+    setView({
+      kind: "documents",
+      kb,
+      uploads: uploads.length ? uploads : undefined,
+    });
   }
 
   // Handed-over files are a one-time handoff. The view outlives a close and a reopen
   // renders it once before resetting, so the files leave it as soon as they start.
   const takeUploads = useCallback(() => {
+    handoffRef.current = [];
     setView((current) =>
       current.kind === "documents" && current.uploads
         ? { kind: "documents", kb: current.kb }
