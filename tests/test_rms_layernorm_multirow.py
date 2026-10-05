@@ -22,12 +22,13 @@ if torch.version.hip:
 BF16_OK = torch.cuda.get_device_capability()[0] >= 8
 DTYPES = [torch.float16, torch.float32] + ([torch.bfloat16] if BF16_OK else [])
 NARROW = [33, 64, 96, 100, 127, 128]
-_eager = lambda kernel: kernel
+_eager = rms_layernorm._eager_kernel
 
 
 @pytest.fixture
 def multirow(monkeypatch):
     monkeypatch.setattr(rms_layernorm, "_MULTIROW", True)
+    monkeypatch.setattr(rms_layernorm, "_MULTIROW_CHECKED", {})
     return monkeypatch
 
 
@@ -142,5 +143,115 @@ def test_multirow_compiled_matches_one_row_eager(multirow, gemma):
     got = _qk_norm_case(compiled, dtype, gemma)
     torch._dynamo.reset()
     assert sum(dynamo_utils.counters["graph_break"].values()) == 0
+    # The self-check ran once while tracing, outside the graph, and kept the multi-row kernels.
+    assert list(rms_layernorm._MULTIROW_CHECKED.values()) == [True]
+    assert rms_layernorm._MULTIROW
     for a, b, name in zip(ref, got, ("Y", "dX")):
         assert torch.equal(_bits(a), _bits(b)), name
+
+
+class _Raising:
+    # Stands in for a kernel whose launch fails (JIT / PTX / resource error).
+    def __init__(self, error):
+        self.error = error
+
+    def __getitem__(self, grid):
+        def launch(*args, **kwargs):
+            raise self.error
+
+        return launch
+
+
+class _OffByOneUlp:
+    # The real multi-row forward, then the first output element nudged by one ulp.
+    def __init__(self, kernel):
+        self.kernel = kernel
+
+    def __getitem__(self, grid):
+        def launch(Y, *args, **kwargs):
+            self.kernel[grid](Y, *args, **kwargs)
+            _bits(Y).view(-1)[0] ^= 1
+
+        return launch
+
+
+def _narrow_case(monkeypatch, gemma = False):
+    dtype = torch.bfloat16 if BF16_OK else torch.float16
+    X, W, dY = _inputs(129, 128, dtype, "wide", seed = 2)
+    monkeypatch.setattr(rms_layernorm, "_MULTIROW", False)
+    one_row = _run(X, W, dY, gemma)
+    monkeypatch.setattr(rms_layernorm, "_MULTIROW", True)
+    return X, W, dY, one_row
+
+
+def _assert_bits(one_row, got):
+    for a, b, name in zip(one_row, got, ("Y", "r", "dX")):
+        assert torch.equal(_bits(a), _bits(b)), name
+
+
+@pytest.mark.parametrize("kernel", ["_rms_layernorm_forward_rows", "_rms_layernorm_backward_rows"])
+def test_multirow_launch_failure_falls_back(multirow, kernel):
+    """A failed multi-row launch runs the one-row kernel and turns the lever off process-wide."""
+    X, W, dY, one_row = _narrow_case(multirow)
+    # Already self-checked, so the failure comes from the launch itself.
+    multirow.setitem(rms_layernorm._MULTIROW_CHECKED, (X.device, X.dtype, W.dtype, 128, False), True)
+    multirow.setattr(rms_layernorm, kernel, _Raising(RuntimeError("PTX JIT compilation failed")))
+    with pytest.warns(UserWarning, match = "launch failed"):
+        got = _run(X, W, dY, False)
+    assert not rms_layernorm._MULTIROW
+    _assert_bits(one_row, got)
+
+
+@pytest.mark.parametrize(
+    "error",
+    [torch.cuda.OutOfMemoryError("CUDA out of memory"), torch._dynamo.exc.TorchRuntimeError("traced")],
+    ids = ["oom", "dynamo"],
+)
+def test_multirow_launch_failure_reraises(multirow, error):
+    """OOM and dynamo errors are not launch failures: they propagate and keep the lever on."""
+    X, W, dY, _ = _narrow_case(multirow)
+    multirow.setitem(rms_layernorm._MULTIROW_CHECKED, (X.device, X.dtype, W.dtype, 128, False), True)
+    multirow.setattr(rms_layernorm, "_rms_layernorm_forward_rows", _Raising(error))
+    with pytest.raises(type(error)):
+        _run(X, W, dY, False)
+    # Under a trace (any wrap but the eager one) every error propagates.
+    with pytest.raises(RuntimeError):
+        rms_layernorm._rms_forward(X, W, 1e-6, False, lambda kernel: _Raising(RuntimeError("x")))
+    assert rms_layernorm._MULTIROW
+
+
+@pytest.mark.parametrize("gemma", [False, True], ids = ["llama", "gemma"])
+def test_multirow_self_check_disables_on_mismatch(multirow, gemma):
+    """A multi-row kernel that differs by one ulp is caught before use: one-row bytes, lever off."""
+    X, W, dY, one_row = _narrow_case(multirow, gemma)
+    multirow.setattr(
+        rms_layernorm,
+        "_rms_layernorm_forward_rows",
+        _OffByOneUlp(rms_layernorm._rms_layernorm_forward_rows),
+    )
+    with pytest.warns(UserWarning, match = "self-check mismatch"):
+        got = _run(X, W, dY, gemma)
+    assert not rms_layernorm._MULTIROW
+    assert list(rms_layernorm._MULTIROW_CHECKED.values()) == [False]
+    _assert_bits(one_row, got)
+
+
+def test_multirow_self_check_runs_once(multirow):
+    """One check per (device, dtypes, width, variant); later calls only read the verdict."""
+    X, W, dY, one_row = _narrow_case(multirow)
+    calls = []
+    check = rms_layernorm._multirow_self_check
+    multirow.setattr(rms_layernorm, "_multirow_self_check", lambda *a: calls.append(a) or check(*a))
+    launches = []
+    rows_kernel = rms_layernorm._rms_layernorm_forward_rows
+
+    class _Counting:
+        def __getitem__(self, grid):
+            launches.append(grid)
+            return rows_kernel[grid]
+
+    multirow.setattr(rms_layernorm, "_rms_layernorm_forward_rows", _Counting())
+    for _ in range(3):
+        _assert_bits(one_row, _run(X, W, dY, False))
+    assert len(calls) == 1 and rms_layernorm._MULTIROW
+    assert len(launches) == 1 + 3  # the check's own launch, then every call

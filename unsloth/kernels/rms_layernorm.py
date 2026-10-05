@@ -11,6 +11,7 @@
 
 import hashlib
 import os
+import warnings
 import triton
 import triton.language as tl
 import torch
@@ -314,30 +315,102 @@ def _multirow_settings(n_cols):
     return BLOCK_SIZE, _MULTIROW_ELEMENTS // BLOCK_SIZE, BLOCK_SIZE // 32, _MULTIROW_NUM_WARPS
 
 
-def _rms_forward(X, W, eps, gemma, wrap):
+# (device, X dtype, W dtype, n_cols, gemma) -> multi-row bytes == one-row bytes on a small tensor.
+_MULTIROW_CHECKED = {}
+
+
+def _multirow_disable(reason):
+    global _MULTIROW
+    if _MULTIROW:
+        _MULTIROW = False
+        warnings.warn(f"Unsloth: narrow-row RMSNorm kernels disabled ({reason}); using one row per program.")
+
+
+def _multirow_must_raise(error, wrap):
+    # Never fall back while torch.compile traces, nor on OOM or dynamo / inductor errors.
+    return (
+        wrap is not _eager_kernel
+        or isinstance(error, torch.cuda.OutOfMemoryError)
+        or type(error).__module__.startswith(("torch._dynamo", "torch._inductor"))
+        or torch.compiler.is_compiling()
+    )
+
+
+def _bits(t):
+    return t.view({2: torch.int16, 4: torch.int32}[t.element_size()])
+
+
+def _multirow_self_check(device, dtype, W_dtype, n_cols, eps, gemma, multirow):
+    # Runs eagerly even when called from a trace: real tensors, nothing recorded in the graph.
+    from torch.utils._python_dispatch import _disable_current_modes
+
+    with _disable_current_modes(), torch.no_grad(), torch_gpu_device(device):
+        g = torch.Generator(device = device).manual_seed(3407)
+        shape = (2 * multirow[1] + 3, n_cols)
+        X = torch.randn(shape, device = device, generator = g)
+        X = X * torch.exp2(torch.randint(-12, 13, shape, device = device, generator = g).float())
+        dY = torch.randn(shape, device = device, generator = g)
+        X[0], dY[0, ::2] = 0, 0  # all-zero row: signed zeros in dX
+        X, dY = X.to(dtype), dY.to(dtype)
+        W = torch.randn(n_cols, device = device, generator = g).to(W_dtype)
+        results = []
+        for rows in (False, multirow):
+            Y, r = _rms_forward(X, W, eps, gemma, _eager_kernel, rows)
+            dX = dY.clone()
+            _rms_backward(dY.clone() if gemma else dX, dX, X, W, r, eps, gemma, _eager_kernel, rows)
+            results.append((Y, r, dX))
+        return all(torch.equal(_bits(a), _bits(b)) for a, b in zip(*results))
+
+
+def _multirow_checked(X, W, eps, gemma):
+    # Multi-row settings once this (device, dtypes, width, variant) passed the self-check, else None.
+    n_cols = X.shape[1]
+    multirow = _multirow_settings(n_cols)
+    if multirow is None:
+        return None
+    key = (X.device, X.dtype, W.dtype, int(n_cols), gemma)
+    verdict = _MULTIROW_CHECKED.get(key)
+    if verdict is None:
+        if X.device.type == "cuda" and torch.cuda.is_current_stream_capturing():
+            return None  # check on a later uncaptured call
+        verdict = _multirow_self_check(X.device, X.dtype, W.dtype, n_cols, eps, gemma, multirow)
+        _MULTIROW_CHECKED[key] = verdict
+        if not verdict:
+            _multirow_disable(f"self-check mismatch for {key}")
+    return multirow if verdict and _MULTIROW else None
+
+
+def _rms_forward(X, W, eps, gemma, wrap, multirow = None):
+    # multirow: None picks (self-checked), False forces one row, settings force multi-row.
     n_rows, n_cols = X.shape
     Y = torch.empty((n_rows, n_cols), dtype = X.dtype, device = X.device)
     r = torch.empty(n_rows, dtype = torch.float32, device = X.device)
-    multirow = _multirow_settings(n_cols)
-    if multirow is not None:
+    if multirow is None:
+        multirow = _multirow_checked(X, W, eps, gemma)
+    if multirow:
         BLOCK_SIZE, ROWS, WARPS, num_warps = multirow
-        wrap(_rms_layernorm_forward_rows)[((n_rows + ROWS - 1) // ROWS,)](
-            Y,
-            Y.stride(0),
-            X,
-            X.stride(0),
-            W,
-            r,
-            n_rows,
-            n_cols,
-            eps,
-            GEMMA = gemma,
-            BLOCK_SIZE = BLOCK_SIZE,
-            ROWS = ROWS,
-            WARPS = WARPS,
-            num_warps = num_warps,
-        )
-        return Y, r
+        try:
+            wrap(_rms_layernorm_forward_rows)[((n_rows + ROWS - 1) // ROWS,)](
+                Y,
+                Y.stride(0),
+                X,
+                X.stride(0),
+                W,
+                r,
+                n_rows,
+                n_cols,
+                eps,
+                GEMMA = gemma,
+                BLOCK_SIZE = BLOCK_SIZE,
+                ROWS = ROWS,
+                WARPS = WARPS,
+                num_warps = num_warps,
+            )
+            return Y, r
+        except Exception as error:
+            if _multirow_must_raise(error, wrap):
+                raise
+            _multirow_disable(f"launch failed: {error!r}")
     BLOCK_SIZE, num_warps = calculate_settings(n_cols)
     fx = _gemma_rms_layernorm_forward if gemma else _rms_layernorm_forward
     wrap(fx)[(n_rows,)](
@@ -357,31 +430,37 @@ def _rms_forward(X, W, eps, gemma, wrap):
     return Y, r
 
 
-def _rms_backward(dY, dX, X, W, r, eps, gemma, wrap):
+def _rms_backward(dY, dX, X, W, r, eps, gemma, wrap, multirow = None):
     # Non-Gemma writes dX over dY (the kernel ignores dX); Gemma writes into dX.
     n_rows, n_cols = dY.shape
-    multirow = _multirow_settings(n_cols)
-    if multirow is not None:
+    if multirow is None:
+        multirow = _multirow_checked(X, W, eps, gemma)
+    if multirow:
         BLOCK_SIZE, ROWS, WARPS, num_warps = multirow
-        wrap(_rms_layernorm_backward_rows)[((n_rows + ROWS - 1) // ROWS,)](
-            dY,
-            dY.stride(0),
-            dX,
-            dX.stride(0),
-            X,
-            X.stride(0),
-            W,
-            r,
-            n_rows,
-            n_cols,
-            eps,
-            GEMMA = gemma,
-            BLOCK_SIZE = BLOCK_SIZE,
-            ROWS = ROWS,
-            WARPS = WARPS,
-            num_warps = num_warps,
-        )
-        return
+        try:
+            wrap(_rms_layernorm_backward_rows)[((n_rows + ROWS - 1) // ROWS,)](
+                dY,
+                dY.stride(0),
+                dX,
+                dX.stride(0),
+                X,
+                X.stride(0),
+                W,
+                r,
+                n_rows,
+                n_cols,
+                eps,
+                GEMMA = gemma,
+                BLOCK_SIZE = BLOCK_SIZE,
+                ROWS = ROWS,
+                WARPS = WARPS,
+                num_warps = num_warps,
+            )
+            return
+        except Exception as error:
+            if _multirow_must_raise(error, wrap):
+                raise
+            _multirow_disable(f"launch failed: {error!r}")
     BLOCK_SIZE, num_warps = calculate_settings(n_cols)
     wrap(_rms_layernorm_backward)[(n_rows,)](
         dY,
