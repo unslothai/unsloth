@@ -4817,6 +4817,10 @@ def log_acl_repair(path: Path) -> None:
     )
     log(f'takeown /F "{path}" /R /D Y')
     log(f'icacls "{path}" /reset /T')
+    log(
+        "if access stays denied, Controlled folder access or antivirus may be blocking "
+        "the path: allow or exclude it there"
+    )
 
 
 def replace_with_busy_retry(

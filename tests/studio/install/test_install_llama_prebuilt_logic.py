@@ -1164,6 +1164,7 @@ def test_replace_with_busy_retry_prints_acl_repair_once_when_denial_persists(
     assert logged.count(f'takeown /F "{source}" /R /D Y') == 1
     assert logged.count(f'icacls "{source}" /reset /T') == 1
     assert not any(str(destination) in line for line in logged if "takeown" in line)
+    assert any("Controlled folder access" in line for line in logged)
 
 
 def test_replace_with_busy_retry_skips_acl_repair_when_denial_clears(
