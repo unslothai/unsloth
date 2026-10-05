@@ -2679,8 +2679,8 @@ function mediaPageForTask(
 // task itself must stay, since FLUX.2-klein carries it too.
 const IMAGE_EDIT_KEYWORDS = ["edit", "kontext", "inpaint", "layered"] as const;
 // Editing families the backend now SUPPORTS: not hidden despite the edit keyword. Mirrors the
-// backend's qwen-image-edit family.
-const SUPPORTED_EDIT_KEYWORDS = ["qwen-image-edit", "kontext"] as const;
+// backend's qwen-image-edit, flux.1-kontext and qwen-image-layered families.
+const SUPPORTED_EDIT_KEYWORDS = ["qwen-image-edit", "kontext", "qwen-image-layered"] as const;
 // Match a keyword as a whole path/name segment, not a raw substring, so "edit" does not hide
 // ".../edited/...". Keywords are [a-z-] literals, so no escaping. Mirrors _token_in_needle.
 function idHasSegment(id: string, keyword: string): boolean {
