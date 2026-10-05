@@ -41,9 +41,36 @@ def mlx_inference_patches(monkeypatch, native_vlm_generation_context):
     monkeypatch.setattr(mlx_inference, "_vlm_generation_context", contextlib.nullcontext)
     module = types.ModuleType("unsloth_zoo.mlx.inference")
     for name in FUSIONS:
-        setattr(module, f"fused_{name}", contextlib.nullcontext)
+        setattr(module, f"fused_{name}", _neutral_scope)
+    module.__getattr__ = _neutral_zoo_helper
     monkeypatch.setitem(sys.modules, "unsloth_zoo.mlx.inference", module)
     return module
+
+
+def _neutral_scope(
+    model = None,
+    *_args,
+    **_kwargs,
+):
+    """A scope that does nothing and yields the model, whatever else zoo passes.
+
+    contextlib.nullcontext takes one argument, so it stood in only while every helper took just the
+    model. unsloth_zoo #1546 calls nax_quantized_linear(model, int8_prefill), and the stub raised
+    TypeError inside generation_mode on every macOS vision batch test.
+    """
+    return contextlib.nullcontext(model)
+
+
+def _neutral_zoo_helper(name):
+    """Every other public helper zoo's generate.py enters around a model is neutral too.
+
+    unsloth_zoo #1541 added nax_quantized_linear to that import list, and a stub holding only the
+    fused_* names failed every real-model test on macOS with an ImportError. fused_* stay explicit,
+    so a test that deletes one still sees it missing.
+    """
+    if name.startswith("_") or name.startswith("fused_"):
+        raise AttributeError(name)
+    return _neutral_scope
 
 
 @pytest.fixture
@@ -327,6 +354,90 @@ def test_mlx_audio_input_generation_survives_every_fusion_refusing(
         )
     ) == ["H", "e", "l"]
     assert Counter(refused) == Counter(dict.fromkeys(FUSIONS, 1))
+
+
+def _zoo_inference_imports():
+    """Names zoo's own modules import from unsloth_zoo.mlx.inference, read from source without importing zoo."""
+    import importlib.util
+
+    spec = importlib.util.find_spec("unsloth_zoo")
+    if spec is None or not spec.submodule_search_locations:
+        pytest.skip("unsloth_zoo source is not available")
+    root = Path(next(iter(spec.submodule_search_locations))) / "mlx"
+    names = set()
+    for path in sorted(root.glob("*.py")):
+        for node in ast.walk(ast.parse(path.read_text(encoding = "utf-8"))):
+            if isinstance(node, ast.ImportFrom) and (
+                (node.level == 1 and node.module == "inference")
+                or node.module == "unsloth_zoo.mlx.inference"
+            ):
+                names.update(alias.name for alias in node.names)
+    if not names:
+        pytest.skip("this unsloth_zoo imports nothing from mlx.inference")
+    return names
+
+
+def test_the_stub_answers_every_helper_zoo_imports_from_inference(mlx_inference_patches):
+    import importlib
+
+    stub = importlib.import_module("unsloth_zoo.mlx.inference")
+    assert stub is mlx_inference_patches
+    missing = sorted(name for name in _zoo_inference_imports() if not hasattr(stub, name))
+    assert not missing, f"zoo imports {missing} from mlx.inference and the stub cannot answer them"
+
+
+def test_an_unknown_zoo_helper_is_neutral_but_a_deleted_fusion_stays_missing(
+    monkeypatch, mlx_inference_patches
+):
+    from unsloth_zoo.mlx.inference import nax_quantized_linear  # noqa: F401
+
+    model = object()
+    with mlx_inference_patches.some_future_helper(model) as active:
+        assert active is model
+    monkeypatch.delattr(mlx_inference_patches, "fused_moe_router")
+    with pytest.raises(ImportError):
+        from unsloth_zoo.mlx.inference import fused_moe_router  # noqa: F401
+    assert not hasattr(mlx_inference_patches, "_private")
+
+
+@pytest.mark.parametrize(
+    "args, kwargs",
+    [((), {}), ((object(),), {}), ((object(), True), {}), ((object(),), {"int8_prefill": False})],
+)
+def test_every_stub_scope_takes_any_arguments_and_yields_the_model(
+    mlx_inference_patches, args, kwargs
+):
+    for name in [*(f"fused_{f}" for f in FUSIONS), "nax_quantized_linear", "some_future_helper"]:
+        with getattr(mlx_inference_patches, name)(*args, **kwargs) as active:
+            assert active is (args[0] if args else None), name
+
+
+def test_the_stub_accepts_every_call_zoo_makes_to_an_inference_helper(mlx_inference_patches):
+    """Read zoo's calls to the helpers it imports from mlx.inference and replay each one's shape
+    against the stub, so a new argument fails here on Linux, not only in the macOS job."""
+    import importlib.util
+
+    spec = importlib.util.find_spec("unsloth_zoo")
+    if spec is None or not spec.submodule_search_locations:
+        pytest.skip("unsloth_zoo source is not available")
+    imported = _zoo_inference_imports()
+    root = Path(next(iter(spec.submodule_search_locations))) / "mlx"
+    calls = []
+    for path in sorted(root.glob("*.py")):
+        for node in ast.walk(ast.parse(path.read_text(encoding = "utf-8"))):
+            if (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Name)
+                and node.func.id in imported
+            ):
+                calls.append((path.name, node))
+    if not calls:
+        pytest.skip("this unsloth_zoo calls no mlx.inference helper by name")
+    for filename, call in calls:
+        args = [object() for _ in call.args]
+        kwargs = {kw.arg: object() for kw in call.keywords if kw.arg}
+        with getattr(mlx_inference_patches, call.func.id)(*args, **kwargs):
+            pass
 
 
 @pytest.mark.parametrize("feature", FUSIONS)
@@ -4642,6 +4753,15 @@ _TOOL_TEMPLATE = (
     "{% if m.tool_calls %}<tool_call>{{ m.tool_calls[0].function.name }}</tool_call>{% endif %}"
     "{% endfor %}"
 )
+_DEFAULT_TOOL_TEMPLATE = (
+    "{% if messages[0]['role'] == 'system' %}{% set system = messages[0]['content'] %}"
+    "{% set rest = messages[1:] %}{% else %}{% set system = 'You are Qwen.' %}"
+    "{% set rest = messages %}{% endif %}{{ system }}"
+    "{% if tools %}{% for tool in tools %}{{ tool.function.name }}{% endfor %}{% endif %}"
+    "{% for message in rest %}{{ message['content'] }}"
+    "{% if message.tool_calls %}<tool_call>{{ message.tool_calls[0].function.name }}"
+    "</tool_call>{% endif %}{% endfor %}"
+)
 _NAMED_TOOL_TEMPLATE = {"default": _PLAIN_TEMPLATE, "tool_use": _TOOL_TEMPLATE}
 
 
@@ -5379,10 +5499,49 @@ def test_an_mlx_count_prices_the_current_date_the_completion_prepends(monkeypatc
 
     line = current_date_prompt_line(request = interactive)
     assert line, "the harness must actually produce a date line"
-    note = f"[Current date: {line.removeprefix('The current date is ')[:-1]}]"
-    assert backend.messages[-1]["content"].startswith(
-        note
-    ), f"the count dropped the date the completion adds: {backend.messages!r}"
+    assert (
+        backend.system == line
+    ), f"the count dropped the date the completion adds: {backend.system!r}"
+    assert backend.messages == [{"role": "user", "content": "hi"}]
+
+
+def test_an_mlx_client_tool_count_keeps_the_template_default_after_the_date(monkeypatch):
+    from starlette.datastructures import Headers
+
+    from routes import inference as route
+
+    monkeypatch.setattr(
+        route,
+        "_local_template_system_turn",
+        lambda _today, image = False, tools = False, controls = (): (
+            True,
+            "You are Qwen." if tools else "",
+        ),
+    )
+    interactive = SimpleNamespace(headers = Headers({}), query_params = {}, cookies = {})
+    backend = _RenderRecordingBackend()
+    _count_hi(
+        monkeypatch,
+        backend,
+        template = _DEFAULT_TOOL_TEMPLATE,
+        request = interactive,
+        enable_tools = False,
+        tools = [
+            {
+                "type": "function",
+                "function": {
+                    "name": "lookup",
+                    "description": "Look up a value.",
+                    "parameters": {"type": "object", "properties": {}},
+                },
+            }
+        ],
+    )
+    from routes.inference import current_date_prompt_line
+
+    line = current_date_prompt_line(request = interactive)
+    assert backend.system == ""
+    assert backend.messages[0] == {"role": "system", "content": f"{line}\n\nYou are Qwen."}
 
 
 def test_an_mlx_count_prices_the_archive_tool_and_its_compaction_nudge(monkeypatch):

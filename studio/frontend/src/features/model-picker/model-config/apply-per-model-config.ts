@@ -45,8 +45,16 @@ export function applyPerModelConfigToRuntime(
     normalizeMaxSeqLength(config.maxSeqLength) ??
     defaultInferenceParams.maxSeqLength;
   const store = useChatRuntimeStore.getState();
-  if (maxSeqLength !== store.params.maxSeqLength) {
-    store.setParams({ ...store.params, maxSeqLength });
+  const engine = config.engine ?? "auto";
+  const engineParallelism = config.engineParallelism ?? "tensor";
+  const enginePrecision = config.enginePrecision ?? "auto";
+  if (
+    maxSeqLength !== store.params.maxSeqLength ||
+    engine !== (store.params.engine ?? "auto") ||
+    enginePrecision !== (store.params.enginePrecision ?? "auto") ||
+    engineParallelism !== (store.params.engineParallelism ?? "tensor")
+  ) {
+    store.setParams({ ...store.params, maxSeqLength, engine, enginePrecision, engineParallelism });
   }
   const gpuSelection =
     config.selectedGpuIds !== undefined
@@ -118,6 +126,9 @@ export function currentRuntimePerModelConfig(
 ): PerModelConfig {
   const s = useChatRuntimeStore.getState();
   return {
+    engine: s.params.engine ?? "auto",
+    enginePrecision: s.params.enginePrecision ?? "auto",
+    engineParallelism: s.params.engineParallelism ?? "tensor",
     customContextLength: s.customContextLength ?? null,
     maxSeqLength: options.includeMaxSeqLength
       ? normalizeMaxSeqLength(s.params.maxSeqLength)
@@ -166,6 +177,9 @@ export function perModelConfigsEqual(
     ? resolvedSpeculativeType
     : normalizeSpeculativeType;
   return (
+    (a.engine ?? "auto") === (b.engine ?? "auto") &&
+    (a.enginePrecision ?? "auto") === (b.enginePrecision ?? "auto") &&
+    (a.engineParallelism ?? "tensor") === (b.engineParallelism ?? "tensor") &&
     (a.customContextLength ?? null) === (b.customContextLength ?? null) &&
     normalizeMaxSeqLength(a.maxSeqLength) ===
       normalizeMaxSeqLength(b.maxSeqLength) &&

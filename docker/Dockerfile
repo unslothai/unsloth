@@ -222,7 +222,7 @@ RUN set -eux \
 # rebuilds. The resolve must NOT move torch/numpy/numba (asserted below).
 RUN ${VENV}/bin/uv pip install \
         --python ${VENV}/bin/python \
-        "jupyterlab==4.6.0" "notebook==7.6.0" "ipywidgets==8.1.8" "matplotlib==3.11.0" \
+        "jupyterlab==4.6.4" "notebook==7.6.3" "ipywidgets==8.1.8" "matplotlib==3.11.0" \
         "soundfile==0.14.0" "evaluate==0.4.6" "jiwer==4.0.0" "tensorboard==2.20.0" \
         "langid==1.1.6" "easydict==1.13" "protobuf==6.33.6" \
         "omegaconf==2.3.1" "einx==0.4.3" "librosa==0.11.0" "ftfy==6.3.1" \

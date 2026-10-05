@@ -48,6 +48,9 @@ export function loadedConfigSignature(
     return "none";
   }
   return [
+    config.engine ?? "auto",
+    config.enginePrecision ?? "auto",
+    config.engineParallelism ?? "tensor",
     config.customContextLength ?? "",
     config.maxSeqLength ?? "",
     config.kvCacheDtype ?? "",
