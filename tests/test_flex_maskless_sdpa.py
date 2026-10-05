@@ -34,29 +34,45 @@ def qkv():
 def test_the_wrapper_advertises_the_reroute():
     U.patch_flex_attention_kernel_options()
     function = ALL_ATTENTION_FUNCTIONS["flex_attention"]
-    assert getattr(function, "_unsloth_maskless_causal_sdpa", False) is U._FLEX_MASKLESS_SDPA_ENABLED
+    assert (
+        getattr(function, "_unsloth_maskless_causal_sdpa", False) is U._FLEX_MASKLESS_SDPA_ENABLED
+    )
 
 
 def test_a_dropped_mask_runs_sdpa_is_causal(qkv):
     q, k, v = qkv
     before = dict(U.FLEX_MASKLESS_SDPA_STATS)
-    out = U._maskless_causal_sdpa_forward(Causal(), q, k, v, (None,), {"scaling": D ** -0.5})
+    out = U._maskless_causal_sdpa_forward(Causal(), q, k, v, (None,), {"scaling": D**-0.5})
     assert out is not None and U.FLEX_MASKLESS_SDPA_STATS["sdpa"] == before["sdpa"] + 1
     reference = torch.nn.functional.scaled_dot_product_attention(
-        q, k, v, is_causal = True, scale = D ** -0.5, enable_gqa = True,
+        q,
+        k,
+        v,
+        is_causal = True,
+        scale = D**-0.5,
+        enable_gqa = True,
     ).transpose(1, 2)
     assert torch.equal(out[0], reference)
 
 
-@pytest.mark.parametrize("case", ["mask", "softcap", "s_aux", "not_causal", "no_is_causal", "decode", "cache"])
+@pytest.mark.parametrize(
+    "case", ["mask", "softcap", "s_aux", "not_causal", "no_is_causal", "decode", "cache"]
+)
 def test_everything_else_stays_on_flex(qkv, case):
     q, k, v = qkv
     module, args, kwargs = Causal(), (None,), {}
-    if case == "mask": args = (torch.ones(B, 1, T, T, device = "cuda", dtype = torch.bool),)
-    if case == "softcap": kwargs = {"softcap": 30.0}
-    if case == "s_aux": kwargs = {"s_aux": torch.zeros(H, device = "cuda")}
-    if case == "not_causal": module.is_causal = False
-    if case == "no_is_causal": module = torch.nn.Module()  # vision callers: None means bidirectional
-    if case == "decode": q = q[:, :, :1]
-    if case == "cache": q = q[:, :, : T // 2]
+    if case == "mask":
+        args = (torch.ones(B, 1, T, T, device = "cuda", dtype = torch.bool),)
+    if case == "softcap":
+        kwargs = {"softcap": 30.0}
+    if case == "s_aux":
+        kwargs = {"s_aux": torch.zeros(H, device = "cuda")}
+    if case == "not_causal":
+        module.is_causal = False
+    if case == "no_is_causal":
+        module = torch.nn.Module()  # vision callers: None means bidirectional
+    if case == "decode":
+        q = q[:, :, :1]
+    if case == "cache":
+        q = q[:, :, : T // 2]
     assert U._maskless_causal_sdpa_forward(module, q, k, v, args, kwargs) is None
