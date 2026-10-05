@@ -115,19 +115,10 @@ SMALLER_GEOMETRY_OK: dict[str, Floor] = {
     "AutoencoderKLWan@16x": Floor(16, 4, 8, "video seam audit: PSNR 49.3 dB, no line at the boundaries"),
 }
 
-_AKL = "8x AutoencoderKL: 128-latent tiles end in a 2-10 latent sliver at 1552-1648 px"
-_FLUX2 = "AutoencoderKLFlux2: 128-latent tiles end in a 2-10 latent sliver at 1552-1648 px"
-_QWEN = "8x Qwen-Image VAE: 32-latent tiles, 8-latent overlaps, 8-latent edge tiles"
 # family -> a geometry below the floor that is a measured seam bug, or not yet proven seam-free. Strict xfail: the
 # fix (wide tiles) or an allow-list entry backed by a measurement turns it into a failure until the entry goes.
-# Numbers: seam bench on main, tightest tier, worst 64 px window of |tiled - untiled| in 8-bit levels.
-KNOWN_SEAMS: dict[str, str] = {
-    **{f: f"{_AKL}; 1600 px window 5.0-9.0 levels" for f in ("flux.1", "flux.1-kontext", "z-image", "lumina-2", "hidream-i1")},
-    "sdxl": f"{_AKL}; 1600 px window 3.1-7.7 levels",
-    **{f: f"{_FLUX2}; 1600 px window 15.9-20.4 levels, PSNR 28 dB" for f in ("flux.2-klein", "flux.2-dev", "ideogram-4")},
-    **{f: f"{_QWEN}; 1024 px window 12.5 levels" for f in ("qwen-image", "qwen-image-edit", "krea-2")},
-    "hunyuanimage-2.1": "32x HunyuanImage-2.1 VAE: 12-latent tiles, 3-latent overlaps; 1024 px window 31-61 levels",
-}
+# Empty: every image family's tiled decode meets the floor since the seam-free wide tiles (#12736).
+KNOWN_SEAMS: dict[str, str] = {}
 
 # Modules that rebind a VAE's tiled_decode without changing its tile grid (same attributes, batched).
 GEOMETRY_PRESERVING = {
