@@ -57,6 +57,16 @@ ALL_BYTES = sum(size for _name, size in Z_IMAGE_FILES)
 
 
 @pytest.fixture(autouse = True)
+def _unmeasured_torchao(monkeypatch):
+    """Pin "no measured torchao" so the installed release does not decide the offload tiers."""
+    from core.inference import diffusion_memory
+
+    monkeypatch.setattr(diffusion_memory, "_installed_torchao_version", lambda: None)
+    # Studio's diffusers pin, so tests that opt into a measured torchao do not depend on the runner.
+    monkeypatch.setattr(diffusion_memory, "_installed_diffusers_version", lambda: (0, 40))
+
+
+@pytest.fixture(autouse = True)
 def _safetensors_readable_regardless_of_the_installed_torchao(monkeypatch):
     """Pin the torchao floor so planning tests ignore the installed release."""
     import core.inference.prequant_safetensors as prequant_safetensors
@@ -1029,6 +1039,50 @@ def test_an_artifact_plan_that_streams_the_transformer_still_declines(monkeypatc
     assert _settle(backend) == PIPELINE_SEED_DECLINED
 
 
+@pytest.mark.parametrize("policy", ["group", "streaming"])
+def test_an_artifact_plan_that_streams_the_transformer_seeds_on_a_measured_torchao(
+    monkeypatch, policy
+):
+    from core.inference import diffusion_memory
+
+    monkeypatch.setattr(diffusion_memory, "_installed_torchao_version", lambda: (0, 18))
+    monkeypatch.setattr(diffusion_memory, "_torchao_stream_pinnable", lambda plan, *_a: True)
+    backend = _settle_backend(monkeypatch)
+    monkeypatch.setattr(
+        DiffusionBackend,
+        "_plan_memory",
+        lambda *_a, **_k: types.SimpleNamespace(offload_policy = policy, stream_transformer = True),
+    )
+    assert _settle(backend) == "fp8"
+
+
+def test_a_resident_rung_still_beats_a_streamed_one(monkeypatch):
+    from core.inference import diffusion_memory
+
+    monkeypatch.setattr(diffusion_memory, "_installed_torchao_version", lambda: (0, 18))
+    monkeypatch.setattr(diffusion_memory, "_torchao_stream_pinnable", lambda plan, *_a: True)
+    backend = _settle_backend_walking(
+        monkeypatch, artifacts = ("int8", "fp8"), candidates = ("int8", "fp8")
+    )
+    monkeypatch.setattr(
+        DiffusionBackend,
+        "_plan_memory",
+        lambda *_a, **k: types.SimpleNamespace(
+            offload_policy = "group" if k["transformer_resident_override_mib"] >= 31_000 else "none",
+            stream_transformer = True,
+        ),
+    )
+    assert _settle(backend) == "fp8"
+    # no resident rung: the first streamed one is seeded
+    backend = _settle_backend_walking(monkeypatch, artifacts = ("int8",), candidates = ("int8", "fp8"))
+    monkeypatch.setattr(
+        DiffusionBackend,
+        "_plan_memory",
+        lambda *_a, **_k: types.SimpleNamespace(offload_policy = "group", stream_transformer = True),
+    )
+    assert _settle(backend) == "int8"
+
+
 def test_a_seed_whose_load_plan_streams_only_the_encoders_is_kept(fake_runtime, monkeypatch):
     backend, spy = _load_backend(monkeypatch, offload = "group")
     real_plan = DiffusionBackend._plan_memory
@@ -1711,3 +1765,29 @@ def test_the_kept_bf16_weights_are_placed_by_the_plan_that_proved_the_fit(
 
     assert spy.quantised == []
     assert placed == ["none"]
+
+
+@pytest.mark.parametrize("outgoing_host_mib, expected", [(0, False), (10_000, True)])
+def test_the_streamed_seed_credits_host_ram_the_outgoing_pipeline_frees(
+    monkeypatch, outgoing_host_mib, expected
+):
+    # The plan runs before the previous pipeline unloads, so its host weights must not veto the pin.
+    from core.inference import diffusion_memory
+
+    monkeypatch.setattr(diffusion_memory, "_installed_torchao_version", lambda: (0, 18))
+    monkeypatch.setattr(diffusion_memory, "_pinned_memory_capped", lambda: False)
+    monkeypatch.delenv(diffusion_memory.GROUP_OFFLOAD_PIN_ENV, raising = False)
+    monkeypatch.setattr(diffusion_memory, "_pin_budget_mib", lambda: 4_000)
+    monkeypatch.setattr(dmod, "pipeline_host_mib", lambda pipe: outgoing_host_mib)
+    backend = _settle_backend(monkeypatch)
+    backend._state = types.SimpleNamespace(pipe = object())
+    monkeypatch.setattr(
+        DiffusionBackend,
+        "_plan_memory",
+        lambda *_a, **_k: types.SimpleNamespace(
+            offload_policy = "group",
+            stream_transformer = True,
+            estimates = {"model_dense_mib": 20_000, "companion_dense_mib": 8_000},
+        ),
+    )
+    assert (_settle(backend) == "fp8") is expected

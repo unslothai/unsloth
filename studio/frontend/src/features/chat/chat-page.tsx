@@ -158,6 +158,7 @@ import { ProjectSwitcher } from "./components/project-switcher";
 import { EditProjectDialog } from "./components/edit-project-dialog";
 import {
   buildExternalModelId,
+  isDecisionConnection,
   isExternalModelId,
   parseExternalModelId,
 
@@ -188,6 +189,9 @@ import { useFileProjectInSection } from "./hooks/use-file-project-in-section";
 import {
   clearTrainingCompareHandoff,
   getTrainingCompareHandoff,
+  normalizeModelRef,
+  pickTrainingCompareTarget,
+  trainingCompareSelection,
 } from "./lib/training-compare-handoff";
 import {
   externalReasoningTakesEffort,
@@ -282,13 +286,6 @@ const ProjectSourcesPanel = lazy(() =>
   })),
 );
 
-type LoraCandidate = {
-  id: string;
-  baseModel: string;
-  updatedAt?: number;
-  exportType?: "lora" | "merged" | "gguf";
-};
-
 const EXTERNAL_PROVIDER_DROPDOWN_ORDER: Record<string, number> = {
   openai: 0,
   anthropic: 1,
@@ -296,38 +293,6 @@ const EXTERNAL_PROVIDER_DROPDOWN_ORDER: Record<string, number> = {
 
 function getExternalProviderDropdownRank(providerType: string): number {
   return EXTERNAL_PROVIDER_DROPDOWN_ORDER[providerType] ?? 2;
-}
-
-function normalizeModelRef(value: string | null | undefined): string {
-  return value?.trim().toLowerCase() ?? "";
-}
-
-function pickBestLoraForBase(
-  loras: LoraCandidate[],
-  baseModel: string | null,
-): LoraCandidate | null {
-  const adapterOnly = loras.filter((lora) => lora.exportType === "lora");
-  if (adapterOnly.length === 0) return null;
-  const sorted = [...adapterOnly].sort(
-    (a, b) => (b.updatedAt ?? -1) - (a.updatedAt ?? -1),
-  );
-  const normalizedBase = normalizeModelRef(baseModel);
-  if (!normalizedBase) return sorted[0] ?? null;
-
-  const exact = sorted.find(
-    (lora) => normalizeModelRef(lora.baseModel) === normalizedBase,
-  );
-  if (exact) return exact;
-
-  const partial = sorted.find((lora) => {
-    const normalizedLoraBase = normalizeModelRef(lora.baseModel);
-    if (!normalizedLoraBase) return false;
-    return (
-      normalizedLoraBase.includes(normalizedBase) ||
-      normalizedBase.includes(normalizedLoraBase)
-    );
-  });
-  return partial ?? sorted[0] ?? null;
 }
 
 function messageHasImage(message: MessageRecord): boolean {
@@ -2394,6 +2359,7 @@ export function ChatPage({
   const residentCheckpoint = useChatRuntimeStore(
     (state) => state.residentCheckpoint,
   );
+  const loadedCount = useChatRuntimeStore((state) => state.loadedModels.length);
   const loadedContextLength = useChatRuntimeStore(
     (state) => state.loadedContextLength,
   );
@@ -2508,6 +2474,7 @@ export function ChatPage({
     selectModel,
     loadNpuModel,
     ejectModel,
+    ejectAllModels,
     cancelLoading,
     loadingModel,
     loadProgress,
@@ -3642,13 +3609,16 @@ export function ChatPage({
       handleCheckpointChange,
     ],
   );
-  const handleEject = useCallback(() => {
-    void (async () => {
-      if (await ejectModel()) {
-        resetArtifacts();
-      }
-    })();
-  }, [ejectModel, resetArtifacts]);
+  const handleEject = useCallback(
+    (modelId?: string) => {
+      const ejectedSelected = !modelId || modelId === inferenceParams.checkpoint;
+      void ejectModel(modelId).then((ok) => ok && ejectedSelected && resetArtifacts());
+    },
+    [ejectModel, inferenceParams.checkpoint, resetArtifacts],
+  );
+  const handleEjectAll = useCallback(() => {
+    void ejectAllModels().then((ok) => ok && resetArtifacts());
+  }, [ejectAllModels, resetArtifacts]);
 
   // Pins the picker open so a stray click cannot dismiss the step under it. Tour steps only: the
   // effect below shuts anything left pinned once the tour is gone.
@@ -3885,7 +3855,8 @@ export function ChatPage({
   );
   const externalModels = useMemo<ExternalModelOption[]>(
     () =>
-      [...externalProvidersForChat]
+      externalProvidersForChat
+        .filter((provider) => !isDecisionConnection(provider))
         .sort(
           (a, b) =>
             getExternalProviderDropdownRank(a.providerType) -
@@ -4058,9 +4029,12 @@ export function ChatPage({
         if (canceled) return;
 
         const state = useChatRuntimeStore.getState();
-        const targetLora = pickBestLoraForBase(state.loras, handoff.baseModel);
+        const target = pickTrainingCompareTarget(state.loras, handoff);
         const selectWithConfig = async (
-          selection: Pick<SelectedModelInput, "id" | "isLora">,
+          selection: Pick<
+            SelectedModelInput,
+            "id" | "isLora" | "isDownloaded"
+          >,
         ) => {
           const previousConfig = currentRuntimePerModelConfig({
             includeMaxSeqLength: true,
@@ -4076,18 +4050,19 @@ export function ChatPage({
             ...(remembered ? { config: remembered } : {}),
           });
         };
-        if (targetLora) {
-          console.info("[chat-handoff] loading lora", {
-            id: targetLora.id,
-            baseModel: targetLora.baseModel,
+        if (target) {
+          const selection = trainingCompareSelection(target);
+          console.info("[chat-handoff] loading trained model", {
+            ...selection,
+            baseModel: target.baseModel,
           });
-          await selectWithConfig({ id: targetLora.id, isLora: true });
+          await selectWithConfig(selection);
           if (canceled) return;
           useChatRuntimeStore.getState().setActiveThreadId(null);
           useChatRuntimeStore.getState().setContextUsage(null);
           navigate({ to: "/chat", search: { compare: crypto.randomUUID() } });
           clearHandoff();
-          console.info("[chat-handoff] loaded lora + opened compare");
+          console.info("[chat-handoff] loaded trained model + opened compare");
           return;
         }
 
@@ -4222,7 +4197,7 @@ export function ChatPage({
               "right-[var(--thread-scrollbar-gutter,10px)] left-auto w-auto bg-transparent pl-0 pr-[calc(0.5rem*var(--ui-space-scale,1)+var(--studio-chat-header-right-inset,var(--studio-window-control-inset,0px)))]",
           )}
         >
-          <div className="pointer-events-auto flex items-center gap-1">
+          <div className="pointer-events-auto flex min-w-0 items-center gap-1">
             {isTauri && !isMobile && !pinned && view.mode !== "compare" && (
               <Button
                 type="button"
@@ -4231,7 +4206,7 @@ export function ChatPage({
                 title="New chat"
                 aria-label="New chat"
                 onClick={handleDesktopNewChat}
-                className="!size-[calc(30px*var(--ui-space-scale,1))] rounded-[10px] text-muted-foreground"
+                className="!size-[calc(30px*var(--ui-space-scale,1))] shrink-0 rounded-[10px] text-muted-foreground"
               >
                 <HugeiconsIcon
                   icon={PencilEdit02Icon}
@@ -4263,6 +4238,8 @@ export function ChatPage({
                 onConfigRequestAdopted={handleModelConfigRequestAdopted}
                 onValueChange={handleCheckpointChange}
                 onEject={handleEject}
+                onEjectAll={handleEjectAll}
+                loadedCount={loadedCount}
                 onFoldersChange={refreshLocalModels}
                 onModelsChange={refreshModelLists}
                 deleteDisabled={modelOperationInProgress}
@@ -4346,7 +4323,7 @@ export function ChatPage({
               </div>
             ) : null}
           </div>
-          <div className="pointer-events-auto ml-auto flex items-center gap-1">
+          <div className="pointer-events-auto ml-auto flex min-w-min max-w-max grow basis-0 items-center gap-1 *:shrink-0">
             {showContextWindowUsage &&
             view.mode === "single" &&
             (contextUsage || contextWindowKnown) ? (

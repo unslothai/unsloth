@@ -19,6 +19,10 @@ from .local_callable_validators import (
     register_oxc_local_callable_validators,
     split_oxc_local_callable_validators,
 )
+from .text_format_validators import (
+    register_text_format_local_callable_validators,
+    split_text_format_local_callable_validators,
+)
 
 _IMAGE_CONTEXT_PATCHED = False
 
@@ -45,6 +49,11 @@ def _load_image_file_to_base64(path_value: str, *, base_path: str | None = None)
 
         for candidate in candidates:
             if not candidate.exists() or not candidate.is_file():
+                continue
+            # The cwd fallback is a different file from the one checked above.
+            try:
+                account_path(candidate)
+            except HTTPException:
                 continue
             with candidate.open("rb") as f:
                 return _encode_bytes_to_base64(f.read())
@@ -374,10 +383,15 @@ def build_config_builder(recipe: dict[str, Any]):
     }
     recipe_core = _strip_frontend_model_config_metadata(recipe_core)
     recipe_core, oxc_local_callable_specs = split_oxc_local_callable_validators(recipe_core)
+    recipe_core, text_format_specs = split_text_format_local_callable_validators(recipe_core)
     builder = DataDesignerConfigBuilder.from_config({"data_designer": recipe_core})
     register_oxc_local_callable_validators(
         builder = builder,
         specs = oxc_local_callable_specs,
+    )
+    register_text_format_local_callable_validators(
+        builder = builder,
+        specs = text_format_specs,
     )
 
     # DataDesignerConfigBuilder.from_config skips processors; re-attach so drop_columns/schema_transform

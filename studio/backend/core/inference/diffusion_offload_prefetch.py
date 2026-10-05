@@ -1,0 +1,581 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+"""Event-fenced prefetch for a block-streamed denoiser's diffusers offload groups.
+
+diffusers fences its stream prefetch on the host (``stream.synchronize()`` per onload) and copies one group ahead.
+Here the compute stream waits on a per-group CUDA event instead, and up to ``depth`` streamed groups are copied ahead
+in the order the first forward recorded.
+
+A forward's first copies are queued at the first block's onload (behind a compute-stream event when the top-level
+group uploads on the compute stream): queued earlier they hold that upload back on the copy engine.
+
+Memory stays bounded without a host wait: each offload records a compute-stream event the copy stream waits on, so a
+freed block goes to the next prefetch only after the compute that read it. Bytes in flight never pass ``window``.
+Hooks are per-group / per-module instance attributes; diffusers' classes are untouched.
+"""
+
+from __future__ import annotations
+
+import os
+from typing import Any, Optional
+
+ASYNC_PREFETCH_ENV = "UNSLOTH_DIFFUSION_ASYNC_PREFETCH"
+PREFETCH_DEPTH_ENV = "UNSLOTH_DIFFUSION_PREFETCH_DEPTH"
+DEFAULT_PREFETCH_DEPTH = 2
+MAX_PREFETCH_DEPTH = 8
+PREFETCHER_ATTR = "_unsloth_group_prefetcher"
+_BG_PIN_ATTR = "_unsloth_background_pin"
+
+
+def async_prefetch_enabled() -> bool:
+    return (os.environ.get(ASYNC_PREFETCH_ENV) or "").strip().lower() not in (
+        "0",
+        "off",
+        "false",
+        "no",
+    )
+
+
+def prefetch_depth() -> int:
+    raw = (os.environ.get(PREFETCH_DEPTH_ENV) or "").strip()
+    try:
+        depth = int(raw) if raw else DEFAULT_PREFETCH_DEPTH
+    except ValueError:
+        depth = DEFAULT_PREFETCH_DEPTH
+    return max(1, min(MAX_PREFETCH_DEPTH, depth))
+
+
+def _go() -> Any:
+    from diffusers.hooks import group_offloading as go
+    return go
+
+
+def _group_tensors(group: Any) -> list:
+    """The tensors diffusers' stream onload moves, in its order (module params, module buffers, then the group's)."""
+    out: list = []
+    seen: set = set()
+    for module in getattr(group, "modules", None) or ():
+        for t in module.parameters():
+            if id(t) not in seen:
+                seen.add(id(t))
+                out.append(t)
+        for t in module.buffers():
+            if id(t) not in seen:
+                seen.add(id(t))
+                out.append(t)
+    for t in list(getattr(group, "parameters", None) or ()) + list(
+        getattr(group, "buffers", None) or ()
+    ):
+        if id(t) not in seen:
+            seen.add(id(t))
+            out.append(t)
+    return out
+
+
+_GENERIC_TO_COPY_DROPS_NON_BLOCKING: dict = {}
+
+
+def _generic_to_copy_drops_non_blocking(cls: Any) -> bool:
+    """torchao < 0.18's common ``aten._to_copy`` (every tensor class declaring ``tensor_data_names``, e.g. ``Int8Tensor``)
+    moves the inner tensors with ``.to(device)``, dropping ``non_blocking``: one host wait per inner tensor. 0.18 passes
+    it through. True only for that generic handler on such a torchao, never for a class with its own ``_to_copy``."""
+    hit = _GENERIC_TO_COPY_DROPS_NON_BLOCKING.get(cls)
+    if hit is not None:
+        return hit
+    hit = False
+    try:
+        import torch
+        import torchao
+
+        major, minor = (int(x) for x in str(torchao.__version__).split("+")[0].split(".")[:2])
+        if (
+            (major, minor) < (0, 18)
+            and hasattr(cls, "tensor_data_names")
+            and hasattr(cls, "tensor_attribute_names")
+        ):
+            fn = (
+                (getattr(cls, "_ATEN_OP_TABLE", {}) or {})
+                .get(cls, {})
+                .get(torch.ops.aten._to_copy.default)
+            )
+            inner = getattr(fn, "__wrapped__", None)
+            hit = bool(
+                inner is not None
+                and getattr(inner, "__module__", "") == "torchao.utils"
+                and "_implements_common_tensor_ops" in getattr(inner, "__qualname__", "")
+            )
+    except Exception:  # noqa: BLE001 - unknown layout: keep the stock to()
+        hit = False
+    _GENERIC_TO_COPY_DROPS_NON_BLOCKING[cls] = hit
+    return hit
+
+
+def _generic_to_device(src: Any, device: Any) -> Any:
+    """torchao 0.18's common ``_to_copy`` (same constructor call, inner tensors moved with ``non_blocking=True``)."""
+
+    def move(t: Any) -> Any:
+        return None if t is None else t.to(device, non_blocking = True)
+
+    tensors = [move(getattr(src, n)) for n in src.tensor_data_names]
+    optional = [move(getattr(src, n)) for n in getattr(src, "optional_tensor_data_names", ())]
+    attrs = [getattr(src, a) if a != "device" else device for a in src.tensor_attribute_names]
+    optional_attrs = [
+        getattr(src, a) if a != "device" else device
+        for a in getattr(src, "optional_tensor_attribute_names", ())
+    ]
+    return type(src)(*tensors, *attrs, *optional, *optional_attrs)
+
+
+def _to_device(src: Any, device: Any) -> Any:
+    """``src.to(device, non_blocking=True)``; torchao <= 0.17 int8 payloads (whose ``to`` drops it) are moved directly."""
+    if _generic_to_copy_drops_non_blocking(type(src)):
+        return _generic_to_device(src, device)
+    name = type(src).__name__
+    if name == "LinearActivationQuantizedTensor":
+        inner = getattr(src, "original_weight_tensor", None)
+        if type(inner).__name__ == "AffineQuantizedTensor" and type(
+            getattr(inner, "tensor_impl", None)
+        ).__name__ == ("PlainAQTTensorImpl"):
+            return src._apply_fn_to_data(lambda w: _to_device(w, device))
+    elif name == "AffineQuantizedTensor":
+        if type(getattr(src, "tensor_impl", None)).__name__ == "PlainAQTTensorImpl":
+            return src._apply_fn_to_data(
+                lambda impl: impl._apply_fn_to_data(lambda x: x.to(device, non_blocking = True))
+            )
+    return src.to(device, non_blocking = True)
+
+
+def _group_nbytes(group: Any) -> int:
+    from .diffusion_memory import _storage_nbytes
+
+    cpu = getattr(group, "cpu_param_dict", None) or {}
+    total = 0
+    for t in _group_tensors(group):
+        total += sum(_storage_nbytes(cpu.get(t, t)))
+    return int(total)
+
+
+class GroupPrefetcher:
+    """``ready``: group id -> CUDA event of its queued copy (None once waited on); a group is on the device exactly
+    while its id is in ``ready``."""
+
+    def __init__(
+        self,
+        module: Any,
+        groups: list,
+        device: Any,
+        depth: int,
+        window_bytes: Optional[int] = None,
+    ):
+        import torch
+
+        self.module = module
+        self.device = torch.device(device)
+        self.depth = int(depth)
+        self.groups = list(groups)
+        self.by_id = {id(g): g for g in self.groups}
+        self.nbytes = {id(g): _group_nbytes(g) for g in self.groups}
+        largest = max(self.nbytes.values()) if self.nbytes else 0
+        self.window = int(window_bytes) if window_bytes else (self.depth + 1) * largest
+        self.ready: dict = {}
+        self.inflight_bytes = 0
+        self.peak_inflight_bytes = 0
+        self.order: list = []
+        self.seen: list = []
+        self.pos = 0
+        self.active = False
+        self.on_order = False
+        self.pending = False
+        streams = [g.stream for g in self.groups if getattr(g, "stream", None) is not None]
+        self.stream = streams[0] if streams else None
+        self.fence_first = False
+        self.stats = {"forwards": 0, "copies": 0, "prefetched": 0, "missed": 0, "dropped": 0}
+
+    def owns(self, group: Any) -> bool:
+        return getattr(group, "__dict__", {}).get("onload_") is getattr(
+            group, "_unsloth_prefetch_onload", None
+        )
+
+    def _compute(self) -> Any:
+        import torch
+        return torch.cuda.current_stream(self.device)
+
+    def _issue(self, group: Any) -> None:
+        """Queue ``group``'s host-to-device copy on its copy stream and point its tensors at the destinations."""
+        import torch
+
+        pinner = getattr(group, _BG_PIN_ATTR, None)
+        if pinner is not None:
+            pinner.wait(group)
+        go = _go()
+        is_torchao = getattr(go, "_is_torchao_tensor", lambda t: False)
+        swap = getattr(go, "_swap_torchao_tensor", None)
+        cpu = group.cpu_param_dict
+        stream = group.stream
+        with torch.cuda.stream(stream):
+            for t in _group_tensors(group):
+                src = cpu[t]
+                if not src.is_pinned():
+                    src = (
+                        src.pin_memory()
+                    )  # diffusers' low_cpu_mem_usage path: the host allocator fences reuse
+                moved = _to_device(src, self.device)
+                if is_torchao(t) and swap is not None:
+                    swap(t, moved)
+                else:
+                    t.data = moved
+        ready = torch.cuda.Event()
+        ready.record(stream)
+        gid = id(group)
+        self.ready[gid] = ready
+        self.inflight_bytes += self.nbytes.get(gid, 0)
+        self.peak_inflight_bytes = max(self.peak_inflight_bytes, self.inflight_bytes)
+        self.stats["copies"] += 1
+
+    def onload(self, group: Any) -> None:
+        gid = id(group)
+        self.kick()  # first block of the forward: this group is order[pos], so it is queued first
+        if self.active:
+            self.seen.append(gid)
+            if self.on_order and self.pos < len(self.order) and self.order[self.pos] == gid:
+                self.pos += 1
+            else:
+                self.on_order = False  # off the recorded order: no prefetch this forward, the next one re-records
+        if gid not in self.ready:
+            self._issue(group)
+            if self.active and self.order:
+                self.stats["missed"] += 1
+        elif self.ready[gid] is not None:
+            self.stats["prefetched"] += 1
+        event = self.ready[gid]
+        if event is not None:
+            self._compute().wait_event(event)
+            self.ready[gid] = None
+        self._fill()
+
+    def offload(self, group: Any) -> None:
+        gid = id(group)
+        if gid in self.ready:
+            self._release(group, self.ready.pop(gid))
+        else:
+            self._release(
+                group, None, counted = False
+            )  # placed by someone else (a resident group demoted)
+        self._fill()
+
+    def _release(
+        self,
+        group: Any,
+        event: Any,
+        counted: bool = True,
+    ) -> None:
+        import torch
+
+        compute = self._compute()
+        if event is not None:
+            compute.wait_event(
+                event
+            )  # copied ahead but never run: the copy must land before the block is freed
+            self.stats["dropped"] += 1
+        done = torch.cuda.Event()
+        done.record(compute)
+        # later copy-stream work runs after the compute that read this group, so its freed blocks are reusable at once
+        group.stream.wait_event(done)
+        if counted:
+            self.inflight_bytes -= self.nbytes.get(id(group), 0)
+        type(group).offload_(group)
+
+    def _forget_disowned(self) -> None:
+        """Groups made resident while on the device (their onload_ replaced) leave the window without a release."""
+        compute = None
+        for gid in list(self.ready):
+            group = self.by_id.get(gid)
+            if group is not None and self.owns(group):
+                continue
+            event = self.ready.pop(gid)
+            if event is not None:
+                compute = compute or self._compute()
+                compute.wait_event(event)
+            self.inflight_bytes -= self.nbytes.get(gid, 0)
+
+    def _fill(self) -> None:
+        if not (self.active and self.on_order):
+            return
+        ahead = 0
+        for gid in self.order[self.pos :]:
+            if ahead >= self.depth:
+                break
+            group = self.by_id.get(gid)
+            if group is None or not self.owns(group):
+                continue  # made resident since the order was recorded
+            if gid in self.ready:
+                ahead += 1
+                continue
+            if self.inflight_bytes + self.nbytes.get(gid, 0) > self.window and self.ready:
+                break
+            self._issue(group)
+            ahead += 1
+
+    def begin(self) -> None:
+        self.stats["forwards"] += 1
+        self._forget_disowned()
+        self.seen = []
+        self.pos = 0
+        self.active = True
+        self.on_order = bool(self.order)
+        self.pending = True
+
+    def kick(self) -> None:
+        """First block onload of a forward (streamed or resident): queue the first ``depth`` streamed groups."""
+        if self.pending:
+            self.pending = False
+            if self.fence_first and self.stream is not None and self.on_order:
+                import torch
+
+                after_top = torch.cuda.Event()
+                after_top.record(self._compute())
+                self.stream.wait_event(after_top)
+            self._fill()
+
+    def end(self) -> None:
+        if not self.active:
+            return
+        self.active = False
+        self.on_order = False
+        self.pending = False
+        self._forget_disowned()
+        for gid in list(self.ready):
+            group = self.by_id.get(gid)
+            if group is not None:
+                self._release(group, self.ready.pop(gid))
+        self.ready.clear()
+        self.inflight_bytes = 0
+        if self.seen:
+            self.order = list(self.seen)
+
+
+def _adopt_top_group(
+    module: Any,
+    stream: Any,
+    logger: Any = None,
+) -> Optional[Any]:
+    """Give a torchao top-level group (no stream in diffusers: synchronous upload, copy-back every forward) pinned host
+    copies and the module's copy stream, so the prefetcher drives it like a block. None if left as it was."""
+    import torch
+
+    from .diffusion_memory import (
+        GROUP_OFFLOAD_PIN_ENV,
+        PIN_TOP_GROUP_ENV,
+        _module_host_mib,
+        _pin_budget_mib,
+        _pinned_memory_capped,
+    )
+
+    off = ("0", "off", "false", "no")
+    if (os.environ.get(PIN_TOP_GROUP_ENV) or "").strip().lower() in off:
+        return None
+    if str(os.environ.get(GROUP_OFFLOAD_PIN_ENV, "")).strip().lower() in off:
+        return None
+    go = _go()
+    registry = getattr(module, "_diffusers_hook", None)
+    get_hook = getattr(registry, "get_hook", None)
+    hook = (
+        get_hook(getattr(go, "_GROUP_OFFLOADING", "group_offloading"))
+        if callable(get_hook)
+        else None
+    )
+    group = getattr(hook, "group", None)
+    if (
+        group is None
+        or getattr(group, "stream", None) is not None
+        or getattr(group, "offload_to_disk_path", None)
+        or getattr(getattr(group, "onload_device", None), "type", None) != "cuda"
+        or "onload_" in getattr(group, "__dict__", {})
+        or getattr(group, "_unsloth_resident", False)
+    ):
+        return None
+    tensors = _group_tensors(group)
+    is_torchao = getattr(go, "_is_torchao_tensor", lambda t: False)
+    if not tensors or not any(is_torchao(t) for t in tensors):
+        return None  # dense: _pin_top_level_group's compute-stream upload already has no host wait
+    holder = _tensor_holder(tensors)
+    need = _module_host_mib(holder)
+    budget = None if _pinned_memory_capped() else _pin_budget_mib()
+    if budget is None or need > budget:
+        return None
+    to_cpu = getattr(type(group), "_to_cpu", None)
+    if to_cpu is None:
+        return None
+    host = {}
+    for t in tensors:
+        src = t if t.device.type == "cpu" else t.cpu()
+        copy = to_cpu(src, False)
+        if not copy.is_pinned():
+            return None
+        host[t] = copy
+    group.cpu_param_dict = host
+    group.stream = stream
+    group.record_stream = True
+    group.non_blocking = True
+    group.low_cpu_mem_usage = False
+    type(group).offload_(group)
+    if logger is not None:
+        logger.info(
+            "diffusion.memory: %s torchao top-level weights (%d MiB) stream from a pinned copy on the copy stream",
+            type(module).__name__,
+            need,
+        )
+    return group
+
+
+def _tensor_holder(tensors: list) -> Any:
+    class _Holder:
+        def parameters(self, recurse: bool = True):
+            return iter(tensors)
+
+        def buffers(self, recurse: bool = True):
+            return iter(())
+
+    return _Holder()
+
+
+def install_group_prefetch(
+    module: Any,
+    device: Any,
+    logger: Any = None,
+    *,
+    depth: Optional[int] = None,
+) -> int:
+    """Drive ``module``'s streamed diffusers offload groups with a ``GroupPrefetcher``. Returns the number of groups
+    covered (0: unchanged, e.g. kill switch, no CUDA, disk offload, or an older diffusers without stream groups)."""
+    if not async_prefetch_enabled():
+        return 0
+    top = None
+    try:
+        import torch
+
+        if torch.device(device).type != "cuda" or not torch.cuda.is_available():
+            return 0
+        if getattr(module, PREFETCHER_ATTR, None) is not None:
+            return 0
+        from .diffusion_memory import _offload_groups
+
+        go = _go()
+        hook_name = getattr(go, "_GROUP_OFFLOADING", "group_offloading")
+        hooks = []
+        for sub in module.modules():
+            registry = getattr(sub, "_diffusers_hook", None)
+            get_hook = getattr(registry, "get_hook", None)
+            hook = get_hook(hook_name) if callable(get_hook) else None
+            if hook is not None and getattr(hook, "group", None) is not None:
+                hooks.append(hook)
+        groups = [g for g in _offload_groups(module) if getattr(g, "stream", None) is not None]
+
+        def _refusal(g: Any) -> Optional[str]:
+            if getattr(g, "offload_to_disk_path", None):
+                return "disk offload"
+            if getattr(g, "_unsloth_resident", False) or "onload_" in getattr(g, "__dict__", {}):
+                return "onload already replaced"
+            cpu = getattr(g, "cpu_param_dict", None)
+            if not isinstance(cpu, dict) or any(t not in cpu for t in _group_tensors(g)):
+                return "no host copies"
+            if not getattr(g, "record_stream", False):
+                return "record_stream off"
+            return None
+
+        # All or nothing: a stream group left to diffusers would onload itself with no fence once the chain is cut.
+        refused = (
+            next((r for r in map(_refusal, groups) if r), None) if groups else "no stream groups"
+        )
+        if refused:
+            if logger is not None:
+                logger.info(
+                    "diffusion.memory: %s keeps diffusers' stream prefetch (%s)",
+                    type(module).__name__,
+                    refused,
+                )
+            return 0
+        streams = {id(g.stream) for g in groups}
+        if len(streams) != 1:
+            return 0
+        top = _adopt_top_group(module, groups[0].stream, logger)
+        if top is not None:
+            groups = [top] + groups
+        pf = GroupPrefetcher(module, groups, device, prefetch_depth() if depth is None else depth)
+        pf.fence_first = top is None
+        disable = getattr(getattr(torch, "compiler", None), "disable", None)
+
+        def _eager(fn: Any) -> Any:
+            return disable(fn) if callable(disable) else fn
+
+        owned = {id(g) for g in groups}
+        # diffusers' prefetch chain and its tracer would onload the next group with a host sync
+        registry = getattr(module, "_diffusers_hook", None)
+        for name in ("_LAZY_PREFETCH_GROUP_OFFLOADING", "_LAYER_EXECUTION_TRACKER"):
+            key = getattr(go, name, None)
+            if isinstance(key, str) and registry is not None:
+                try:
+                    registry.remove_hook(key, recurse = True)
+                except Exception:  # noqa: BLE001 - not registered on this module
+                    pass
+        for hook in hooks:
+            group = hook.group
+            nxt = getattr(hook, "next_group", None)
+            if id(group) in owned or (nxt is not None and id(nxt) in owned):
+                hook.next_group = None
+            if id(group) in owned:
+                group.onload_self = True
+                group.non_blocking = True
+        for group in groups:
+
+            def onload_(
+                *_a: Any,
+                _g: Any = group,
+                **_k: Any,
+            ) -> None:
+                pf.onload(_g)
+
+            def offload_(
+                *_a: Any,
+                _g: Any = group,
+                **_k: Any,
+            ) -> None:
+                pf.offload(_g)
+
+            group.onload_ = _eager(onload_)
+            group.offload_ = _eager(offload_)
+            group._unsloth_prefetch_onload = group.onload_
+            group._unsloth_prefetcher = pf
+        module.register_forward_pre_hook(_eager(lambda *_a, **_k: pf.begin()))
+        module.register_forward_hook(_eager(lambda *_a, **_k: pf.end()), always_call = True)
+        setattr(module, PREFETCHER_ATTR, pf)
+        state = getattr(module, "_unsloth_stream_state", None)
+        if not isinstance(state, dict):
+            state = {"streamed": 1}
+            try:
+                module._unsloth_stream_state = state
+            except AttributeError:
+                pass
+        state["fenced"] = True
+        state["kick"] = pf.kick
+        if logger is not None:
+            logger.info(
+                "diffusion.memory: %s streams %d offload groups with event-fenced prefetch (%d ahead, %d MiB window)",
+                type(module).__name__,
+                len(groups),
+                pf.depth,
+                pf.window >> 20,
+            )
+        return len(groups)
+    except Exception as exc:  # noqa: BLE001 - diffusers' own onload stays
+        if top is not None and "onload_" not in getattr(top, "__dict__", {}):
+            top.stream = None
+            top.record_stream = False
+        if logger is not None:
+            logger.warning("diffusion.memory: event-fenced prefetch unavailable (%s)", exc)
+        return 0
+
+
+def module_prefetcher(module: Any) -> Optional[GroupPrefetcher]:
+    return getattr(module, PREFETCHER_ATTR, None)

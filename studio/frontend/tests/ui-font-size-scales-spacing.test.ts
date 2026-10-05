@@ -365,16 +365,20 @@ test("a scaled minimum never outgrows its own cap", () => {
 test("a scaled dialog keeps the viewport cap it replaces", () => {
   // A call-site max-h drops DialogContent's own viewport cap, so it restates it.
   const cap = "calc(100dvh-var(--studio-window-chrome-top,0px)-2rem)";
+  // The recipe dialogs share RecipeDialogContent, which carries the cap.
+  assert.ok(
+    readSrc("features/recipe-studio/dialogs/shared/recipe-dialog-content.tsx").includes(
+      `max-h-[min(calc(650px*var(--ui-space-scale,1)),${cap})]`,
+    ),
+    "recipe dialogs can outgrow the viewport",
+  );
   for (const file of [
     "features/recipe-studio/dialogs/config-dialog.tsx",
     "features/recipe-studio/dialogs/import-dialog.tsx",
     "features/recipe-studio/dialogs/preview-dialog.tsx",
     "features/recipe-studio/dialogs/processors-dialog.tsx",
   ]) {
-    assert.ok(
-      readSrc(file).includes(`max-h-[min(calc(650px*var(--ui-space-scale,1)),${cap})]`),
-      `${file} can outgrow the viewport`,
-    );
+    assert.match(readSrc(file), /<RecipeDialogContent\b/, file);
   }
 });
 

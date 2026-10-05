@@ -20,6 +20,9 @@ const parser = await import(
 const { createGenerationToolRecovery } = await import(
   "../src/features/chat/utils/generation-tool-recovery.ts"
 );
+const { RUN_CHECKPOINT_INTERVAL_MS } = await import(
+  "../src/features/chat/utils/run-checkpoint-scheduler.ts"
+);
 
 const start = (id = "call_0") => ({
   type: "tool_start",
@@ -61,6 +64,42 @@ test("replay resumes an existing card without duplicating it", () => {
   const carried = [{ at: 12, part: saved }];
   createGenerationToolRecovery(carried, "run").apply(end(), 20, 2);
   assert.deepEqual(carried, [{ at: 12, part: { ...saved, result: "ok" } }]);
+});
+
+test("a finished card saved past the cursor is not minted a second time", () => {
+  const carried: Carried[] = [];
+  let replay = createGenerationToolRecovery(carried, "run").apply;
+  replay(start(), 12, 4897);
+  replay(end(), 12, 4898);
+  const finished = { ...(carried[0].part as Record<string, unknown>) };
+  replay = createGenerationToolRecovery(carried, "run", 4800).apply;
+  replay(start(), 12, 4897);
+  replay(end(), 12, 4898);
+  assert.deepEqual(
+    carried.map((entry) => entry.part),
+    [finished],
+  );
+});
+
+test("a live card saved past the cursor is not recovered as a second card", () => {
+  const live = {
+    type: "tool-call",
+    toolCallId: "call_0:live-uuid",
+    backendToolCallId: "call_0",
+    generationToolCallId: "run:4897",
+    toolName: "edit_file",
+    args: { path: "scene.glsl" },
+    argsText: '{"path":"scene.glsl"}',
+    result: "ok",
+  };
+  const carried: Carried[] = [{ at: 12, part: live }];
+  const replay = createGenerationToolRecovery(carried, "run", 4800).apply;
+  replay(start(), 12, 4897);
+  replay(end(), 12, 4898);
+  assert.deepEqual(
+    carried.map((entry) => (entry.part as Record<string, unknown>).toolCallId),
+    ["call_0:live-uuid"],
+  );
 });
 
 test("reused backend ids get separate cards across rounds and reloads", () => {
@@ -324,8 +363,11 @@ async function recoverRun(
     cursor?: number;
     viewContent?: unknown[];
     metadata?: Record<string, unknown>;
+    /** Stall the follow after the payloads, short of this snapshot lastEventSeq. */
+    stallBefore?: number;
   } = {},
 ) {
+  class ChatGenerationStalledError extends Error {}
   let shown = {
     messages: [
       { message: { id: "msg", content: options.viewContent ?? content } },
@@ -353,8 +395,8 @@ async function recoverRun(
     id: "run",
     threadId: "thread",
     assistantMessageId: "msg",
-    status: "completed",
-    lastEventSeq: payloads.length,
+    status: options.stallBefore ? "running" : "completed",
+    lastEventSeq: options.stallBefore ?? payloads.length,
     requestPayload: { model: "test", session_id: "saved-session" },
     createdAt: 1,
     startedAt: 1,
@@ -364,6 +406,7 @@ async function recoverRun(
     ...recovery,
     ...parser,
     createGenerationToolRecovery,
+    RUN_CHECKPOINT_INTERVAL_MS,
     generationRecoveries,
     useChatRuntimeStore: { getState: () => runtime },
     cancelChatGenerationRun: async () => {},
@@ -389,11 +432,12 @@ async function recoverRun(
         yield update;
         yield update;
       }
+      if (options.stallBefore) throw new ChatGenerationStalledError();
     },
     restoredAssistantStatus: () => ({ type: "complete", reason: "stop" }),
-    isTerminalChatGenerationRun: () => true,
+    isTerminalChatGenerationRun: () => !options.stallBefore,
     forgetServerActiveGenerationRun() {},
-    ChatGenerationStalledError: class extends Error {},
+    ChatGenerationStalledError,
   });
   vm.runInContext(executable, context);
   context.scheduleGenerationRecovery(
@@ -424,7 +468,9 @@ async function recoverRun(
   await generationRecoveries.get("run").promise;
   const final = snapshots.at(-1);
   assert.ok(final);
-  assert.equal(final.metadata.generationSettled, true);
+  if (!options.stallBefore) {
+    assert.equal(final.metadata.generationSettled, true);
+  }
   assert.equal(final.metadata.generationSeq, payloads.length);
   return {
     content: final.content,
@@ -457,6 +503,42 @@ test("the recovery scheduler persists later tool events between reasoning groups
       .map((part) => part.text),
     ["before", "after"],
   );
+});
+
+test("reopening a run that finished without the tab saves and renders only its end", async () => {
+  // The harness yields every update twice, allowing two settlements; production stops at one.
+  const payloads = Array.from({ length: 400 }, (_, index) => ({
+    choices: [{ delta: { content: `w${index} ` } }],
+  }));
+  const text = payloads.map((payload) => payload.choices[0].delta.content).join("");
+  const { snapshots, imports } = await recoverRun([], payloads);
+  assert.ok(snapshots.length <= 2, `saved ${snapshots.length} times`);
+  for (const snapshot of snapshots) {
+    assert.equal(snapshot.metadata.generationSettled, true);
+    assert.equal(snapshot.content.map((part) => part.text).join(""), text);
+  }
+  assert.ok(imports.length <= 2, `rendered ${imports.length} times`);
+});
+
+test("a follow that stalls during catch-up saves its cursor with the replayed usage", async () => {
+  const payloads = [
+    { choices: [{ delta: { content: "partial" } }] },
+    {
+      choices: [],
+      usage: { completion_tokens: 7 },
+      timings: { predicted_n: 7 },
+    },
+  ];
+  const { snapshots } = await recoverRun([], payloads, { stallBefore: 10 });
+  assert.equal(snapshots.length, 1, "nothing is published before catch-up");
+  const { metadata, content } = snapshots[0];
+  assert.deepEqual(metadata.incomplete, { reason: "interrupted" });
+  assert.equal(content.map((part) => part.text).join(""), "partial");
+  // A later recovery resumes after seq 2, so the usage chunk must be saved with that cursor.
+  assert.deepEqual(metadata.generationRecoveryUsage, { completion_tokens: 7 });
+  assert.deepEqual(metadata.generationRecoveryTimings, { predicted_n: 7 });
+  assert.equal(metadata.generationChunkCount, 1);
+  assert.equal(metadata.generationFirstChunkAt, 1);
 });
 
 test("a recovered turn keeps the reasoning cut the backend reported", async () => {

@@ -4946,7 +4946,13 @@ def test_chat_count_tokens_forwards_enabled_tools(monkeypatch):
     _switched, counted = _count_tokens_backend(monkeypatch, count = 99, supports_tools = True)
     gate = {}
 
-    async def _select(payload, *, tools_on, mcp_allowed):
+    async def _select(
+        payload,
+        *,
+        tools_on,
+        mcp_allowed,
+        supports_vision = False,
+    ):
         gate.update(tools_on = tools_on, mcp_allowed = mcp_allowed)
         return [{"type": "function", "function": {"name": "web_search"}}]
 
@@ -4992,7 +4998,13 @@ def test_chat_count_tokens_strips_replayed_tool_markup(monkeypatch, fields, expe
     rendering, so a count that keeps it prices text the completion removes."""
     _switched, counted = _count_tokens_backend(monkeypatch, count = 99, supports_tools = True)
 
-    async def _select(_payload, *, tools_on, mcp_allowed):
+    async def _select(
+        _payload,
+        *,
+        tools_on,
+        mcp_allowed,
+        supports_vision = False,
+    ):
         return [{"type": "function", "function": {"name": "web_search"}}]
 
     monkeypatch.setattr(inference_route, "_select_request_tools", _select)
@@ -5094,7 +5106,13 @@ def test_chat_count_tokens_prices_the_route_the_completion_takes(
     """
     _switched, counted = _count_tokens_backend(monkeypatch, count = 99, supports_tools = True)
 
-    async def _select(payload, *, tools_on, mcp_allowed):
+    async def _select(
+        payload,
+        *,
+        tools_on,
+        mcp_allowed,
+        supports_vision = False,
+    ):
         return [{"type": "function", "function": {"name": "web_search"}}]
 
     monkeypatch.setattr(inference_route, "_select_request_tools", _select)
@@ -5193,10 +5211,7 @@ def test_chat_count_tokens_prices_the_current_date(monkeypatch):
     thread = [{"role": "user", "content": "hi"}]
 
     _counted_body(_count_request(thread))
-    assert counted["messages"][0] == {
-        "role": "system",
-        "content": "The current date is 2026-08-15.",
-    }
+    assert counted["messages"] == [{"role": "user", "content": "[Current date: 2026-08-15]\n\nhi"}]
 
     # The passthrough forwards the caller's request verbatim, so counting a date it never sends
     # would overcount exactly those prompts.
@@ -5212,7 +5227,13 @@ def test_chat_count_tokens_dates_only_api_server_tool_prompts(monkeypatch):
         lambda **_kwargs: "The current date is 2026-08-15.",
     )
 
-    async def _select(_payload, *, tools_on, mcp_allowed):
+    async def _select(
+        _payload,
+        *,
+        tools_on,
+        mcp_allowed,
+        supports_vision = False,
+    ):
         return [{"type": "function", "function": {"name": "web_search"}}]
 
     monkeypatch.setattr(inference_route, "_select_request_tools", _select)
@@ -5618,7 +5639,13 @@ def test_chat_count_tokens_counts_an_empty_chat_the_cli_policy_fills(monkeypatch
     """
     _switched, counted = _count_tokens_backend(monkeypatch, count = 850, supports_tools = True)
 
-    async def _select(payload, *, tools_on, mcp_allowed):
+    async def _select(
+        payload,
+        *,
+        tools_on,
+        mcp_allowed,
+        supports_vision = False,
+    ):
         return [{"type": "function", "function": {"name": "web_search"}}]
 
     monkeypatch.setattr(inference_route, "_select_request_tools", _select)
@@ -5920,7 +5947,8 @@ def test_an_empty_chat_sends_the_empty_list_unchanged(monkeypatch):
     shipped templates for Llama-3.2-1B-Instruct, Qwen3-8B, Phi-4, gemma-3-270m-it and
     mistral-7b-instruct-v0.3 driven through llama-server with --jinja: all five render.
     Injecting a placeholder system turn would add a system block to the count for Qwen3
-    (+30 chars) and Phi-4 (+38), overcounting the empty chat the bar exists to show."""
+    (+30 chars) and Phi-4 (+38), overcounting the empty chat the bar exists to show. Templates
+    that raise on no messages (Qwen3.5+) are re-priced only after refusing; see below."""
     seen = {}
 
     class _FakeResponse:
@@ -5961,6 +5989,132 @@ def test_an_empty_chat_sends_the_empty_list_unchanged(monkeypatch):
     count = _CountBackend().count_chat_tokens([], None, None, strict = True)
     assert seen["messages"] == [], "the count must not invent a turn the caller never sent"
     assert count > 0, "a fresh chat still prices the template preamble"
+
+
+class _RefusingEmptyRenderClient:
+    """llama-server with a Qwen3.5+ template that raises on no messages; strips a trailing assistant."""
+
+    sent = []
+    down = False
+    empty_status = 500
+
+    def __init__(self, **_kwargs):
+        pass
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_exc):
+        return False
+
+    def post(
+        self,
+        url,
+        json = None,
+    ):
+        body = json or {}
+        if url.endswith(("/apply-template", "/input_tokens")):
+            messages = body.get("messages")
+            type(self).sent.append((url.rsplit("/", 1)[-1], messages))
+            if type(self).down:
+                raise RuntimeError("timed out")
+            rendered = list(messages or [])
+            if rendered and rendered[-1].get("role") == "assistant":
+                rendered = rendered[:-1]
+            if not rendered:
+                status = type(self).empty_status
+                return _CountResponse(
+                    {"error": {"code": status, "message": "No messages provided."}},
+                    status_code = status,
+                )
+            if url.endswith("/input_tokens"):
+                return _CountResponse({"input_tokens": 7})
+            return _CountResponse(
+                {"prompt": "<|im_start|>user\n<|im_end|>\n<|im_start|>assistant\n"}
+            )
+        return _CountResponse({"tokens": str(body.get("content", "")).split()})
+
+
+class _CountResponse:
+    def __init__(
+        self,
+        payload,
+        status_code = 200,
+    ):
+        self._payload = payload
+        self.status_code = status_code
+
+    def json(self):
+        return self._payload
+
+
+@pytest.fixture
+def refusing_client(monkeypatch):
+    _RefusingEmptyRenderClient.sent = []
+    _RefusingEmptyRenderClient.down = False
+    _RefusingEmptyRenderClient.empty_status = 500
+    monkeypatch.setattr(llama_cpp_mod.httpx, "Client", _RefusingEmptyRenderClient)
+    return _RefusingEmptyRenderClient
+
+
+@pytest.mark.parametrize("prefer_native", [False, True])
+@pytest.mark.parametrize(
+    "messages",
+    [[], [{"role": "assistant", "content": '{"name": "terminal"}'}]],
+    ids = ["new_chat", "lone_pending_call"],
+)
+def test_a_template_refusing_an_empty_render_is_priced_behind_one_empty_user_turn(
+    refusing_client, prefer_native, messages
+):
+    """#12327: an empty render the template refuses is priced behind one empty user turn, once per load."""
+    backend = _CountBackend()
+    count = backend.count_chat_tokens(
+        messages, None, None, strict = True, prefer_native = prefer_native
+    )
+    assert count > 0, "a refused empty render must still be priced, not refused"
+    assert refusing_client.sent[0][1] == messages, "what the caller sent is still tried first"
+    assert refusing_client.sent[-1][1] == [{"role": "user", "content": ""}] + messages
+
+    refusing_client.sent = []
+    assert (
+        backend.count_chat_tokens(messages, None, None, strict = True, prefer_native = prefer_native)
+        == count
+    )
+    assert all(
+        sent == [{"role": "user", "content": ""}] + messages for _, sent in refusing_client.sent
+    ), "a known refusal must not be re-sent on every recount"
+
+
+def test_a_conversation_the_template_renders_costs_one_request(refusing_client):
+    """The chat path counts real conversations on every turn; the fallback must add nothing there."""
+    backend = _CountBackend()
+    backend._empty_chat_render_refused = True
+    conversation = [
+        {"role": "system", "content": "rules"},
+        {"role": "user", "content": "Read ./README.md"},
+    ]
+    backend.count_chat_tokens(conversation, None, None, strict = True)
+    assert refusing_client.sent == [("apply-template", conversation)]
+
+
+def test_an_unreachable_server_is_not_retried_or_taken_for_a_refusal(refusing_client):
+    """A timeout says nothing about the template: no second round trip, and no remembered refusal."""
+    refusing_client.down = True
+    backend = _CountBackend()
+    with pytest.raises(RuntimeError):
+        backend.count_chat_tokens([], None, None, strict = True)
+    assert len(refusing_client.sent) == 1
+    assert backend._empty_chat_render_refused is False
+
+
+def test_a_busy_server_is_not_taken_for_a_refusal(refusing_client):
+    """llama-server answers 503 while loading or out of slots; only a 500 is a template refusal."""
+    refusing_client.empty_status = 503
+    backend = _CountBackend()
+    with pytest.raises(RuntimeError):
+        backend.count_chat_tokens([], None, None, strict = True)
+    assert [m for _, m in refusing_client.sent] == [[]], "a busy server is not retried"
+    assert backend._empty_chat_render_refused is False
 
 
 def test_a_count_never_spawns_mcp_servers():
@@ -7206,6 +7360,26 @@ def test_model_override_load_kwargs_gates_gpu_placement_on_gguf():
     LoadRequest(model_path = "unsloth/B-GGUF", **gguf)
 
 
+@pytest.mark.parametrize("engine", ["vllm", "sglang"])
+@pytest.mark.parametrize("mode", ["tensor", "pipeline", "data"])
+def test_optional_engine_override_preserves_precision_and_gpu_order(engine, mode):
+    kwargs = settings.model_override_load_kwargs(
+        {
+            "engine": engine,
+            "engine_precision": "int4",
+            "engine_parallelism": mode,
+            "gpu_ids": [1, 0],
+        },
+        is_gguf = False,
+    )
+    request = LoadRequest(model_path = "unsloth/Qwen2.5-0.5B-Instruct", **kwargs)
+    assert request.engine == engine
+    assert request.engine_precision == "int4"
+    assert request.engine_parallelism == mode
+    assert request.gpu_ids == [1, 0]
+    assert request.load_in_4bit is False
+
+
 def test_a_carried_ctx_flag_cannot_outrank_a_freshly_saved_context(monkeypatch):
     # The settings page has no control for pass-through flags, so a save carries over the
     # ones already stored while writing the field the user just edited, leaving one entry
@@ -7304,6 +7478,19 @@ def test_a_saved_ctx_flag_sets_only_the_context_fields_sent(
         key: entry[key] for key in ("max_seq_length", "custom_context_length") if key in entry
     }
     assert stored == expected
+
+
+@pytest.mark.parametrize("engine", ["vllm", "sglang"])
+def test_context_save_preserves_managed_engine_settings(monkeypatch, engine):
+    _mock_override_store(monkeypatch)
+    model = "unsloth/model"
+    _put(model, engine = engine, engine_parallelism = "pipeline", engine_precision = "fp8")
+    saved = _put(model, llama_extra_args = ["-c", "65536"], custom_context_length = 4096)
+    entry = saved.overrides[model]
+    assert entry["custom_context_length"] == 65536
+    assert entry["engine"] == engine
+    assert entry["engine_parallelism"] == "pipeline"
+    assert entry["engine_precision"] == "fp8"
 
 
 def test_a_fill_keeps_the_sent_context_when_it_does_not_store_the_flag(monkeypatch):
@@ -9970,7 +10157,16 @@ def test_a_diffusers_pipeline_is_not_a_servable_chat_model(tmp_path):
     # The Images and Video backends own these; /v1/chat/completions cannot serve them.
 
     pipeline = _local_checkpoint(tmp_path, "SomeDiffusionPipeline")
-    (pipeline / "model_index.json").write_text("{}")
+    manifest = {
+        "_class_name": "DiffusionPipeline",
+        "transformer": ["diffusers", "Transformer2DModel"],
+    }
+    (pipeline / "model_index.json").write_text(json.dumps(manifest))
+    (pipeline / "transformer").mkdir()
+    (pipeline / "transformer" / "config.json").write_text("{}")
+    (pipeline / "transformer" / "diffusion_pytorch_model.safetensors").write_bytes(
+        _safetensors_bytes()
+    )
     info = SimpleNamespace(id = str(pipeline), path = str(pipeline))
     assert resolver.local_servable_model(info) is None
 
@@ -11937,3 +12133,64 @@ def test_preset_reasoning_budget_rejects_booleans():
     with pytest.raises(ValueError, match = "Expected a number, got a boolean"):
         ChatPresetLoadConfig(reasoningBudget = True)
     assert ChatPresetLoadConfig(reasoningBudget = 0).reasoningBudget == 0
+
+
+@pytest.mark.parametrize(
+    "image_preflight",
+    [{"b64": None, "multiple": True}, {"b64": None, "multiple": False, "remote": True}],
+    ids = ["multiple images", "remote url"],
+)
+def test_a_saved_managed_engine_target_skips_the_default_image_preflight(
+    monkeypatch, image_preflight
+):
+    from utils import openai_auto_switch_settings as settings
+
+    llama = _FakeBackend("org/A-GGUF")
+
+    class _FakeOrchestrator:
+        active_model_name = None
+        models: dict = {}
+
+    orchestrator = _FakeOrchestrator()
+    calls = []
+
+    async def _load(request, *_args, **_kwargs):
+        calls.append(request)
+        orchestrator.active_model_name = request.model_path
+
+    _wire_on(
+        monkeypatch,
+        resolves_to = ("/srv/models/Vision", None, "org/Vision"),
+        backend = llama,
+        recorder = _load,
+    )
+    monkeypatch.setattr(inference_route, "get_inference_backend", lambda: orchestrator)
+    monkeypatch.setattr(inference_route, "_peek_inference_backend", lambda: orchestrator)
+    monkeypatch.setattr(resolver, "local_target_is_gguf", lambda *_a, **_kw: False)
+    monkeypatch.setattr(inference_route, "_target_accepts_request_input", lambda *_a: True)
+    monkeypatch.setattr(
+        settings,
+        "resolve_override_for_load",
+        lambda *_a: ("org/Vision", {"engine": "vllm", "engine_precision": "auto"}),
+    )
+
+    try:
+        asyncio.run(
+            inference_route._maybe_auto_switch_model(
+                "org/Vision",
+                object(),
+                "tester",
+                require_vision = True,
+                image_preflight = image_preflight,
+            )
+        )
+    except HTTPException as exc:
+        assert exc.status_code != 400 or "image" not in str(exc.detail).lower(), exc.detail
+    assert calls and calls[0].engine == "vllm"
+
+
+def test_the_legacy_bare_delete_clears_a_managed_engine_choice(override_store):
+    settings.set_model_override("org/Model", engine = "vllm", engine_precision = "int4")
+
+    _put("org/Model")
+    assert settings.get_model_override("org/Model") == {}

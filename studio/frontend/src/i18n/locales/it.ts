@@ -1,7 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { en } from "./en.ts";
+
 export const it = {
+  // English fallback until this experimental feature is translated.
+  managedEngines: en.managedEngines,
   composerSettings: {
     title: "Composizione dei messaggi",
     plainText: "Composizione in testo semplice",
@@ -179,6 +183,45 @@ export const it = {
       actions: "Azioni",
       chat: "Chat",
       searchChats: "Cerca nelle chat...",
+    },
+    search: {
+      placeholder: "Cerca",
+      tabs: {
+        all: "Tutti",
+        chats: "Chat",
+        projects: "Progetti",
+        files: "File",
+        models: "Modelli",
+      },
+      recents: "Recenti",
+      actions: "Azioni",
+      newChat: "Nuova chat",
+      newTemporaryChat: "Nuova chat temporanea",
+      fineTune: "Fai il fine-tune di un modello",
+      generateImage: "Genera un'immagine",
+      generateVideo: "Genera un video",
+      untitledChat: "Chat senza titolo",
+      compare: "Confronto",
+      loading: "Caricamento...",
+      empty: {
+        all: "Ancora niente da cercare.",
+        chats: "Ancora nessuna chat.",
+        projects: "Ancora nessun progetto.",
+        files: "Ancora nessun file nella tua Libreria.",
+        models: "Ancora nessun modello scaricato.",
+      },
+      noMatches: "Nessun risultato.",
+      when: {
+        today: "Oggi",
+        pastWeek: "Ultima settimana",
+        pastMonth: "Ultimo mese",
+        older: "Meno recenti",
+      },
+      footer: {
+        close: "Chiudi",
+        changeType: "Cambia tipo",
+        open: "Apri",
+      },
     },
     notFound: {
       title: "Pagina non trovata",
@@ -1097,9 +1140,22 @@ export const it = {
       },
       permissions: {
         sectionTitle: "Autorizzazioni",
-        bypassLabel: "Autorizzazioni degli strumenti",
-        bypassDescription:
-          "Come Unsloth approva le chiamate agli strumenti della chat (terminale, python, web, MCP) prima che vengano eseguite. La modalità «Full access» disattiva le approvazioni e la sandbox del codice.",
+        names: {
+          ask: "Chiedi conferma",
+          auto: "Approva per me",
+          off: "Esegui automaticamente",
+          full: "Accesso completo",
+        },
+        details: {
+          ask:
+            "Chiede conferma prima di ogni chiamata agli strumenti, compresi codice da terminale e Python, ricerche web, modifiche ai file e strumenti MCP. Gli strumenti eseguiti da un provider esterno non vengono messi in pausa. Ideale se vuoi controllare ogni passaggio.",
+          auto:
+            "Esegue da solo le chiamate abituali e chiede conferma solo quando un'azione sembra rischiosa, come leggere credenziali, aumentare i privilegi o eseguire comandi distruttivi.",
+          off:
+            "Esegue ogni chiamata agli strumenti senza chiedere. Il codice Python e da terminale viene comunque eseguito nella sandbox, che limita i file del tuo computer a cui può accedere.",
+          full:
+            "Esegue ogni chiamata agli strumenti senza chiedere e disattiva la sandbox del codice, così il codice Python e da terminale può leggere e modificare qualsiasi file accessibile al tuo account. Ideale per attività affidabili che devono lavorare fuori dalla sandbox.",
+        },
       },
       notifications: {
         sectionTitle: "Notifiche",
@@ -1358,20 +1414,13 @@ export const it = {
           wide: "Ampia",
           full: "Larghezza piena",
         },
-        composerAttachments: {
-          label: "Allegati nel campo di testo",
-          description:
-            "Schede grandi che ingrandiscono il campo di testo, oppure una riga compatta di riquadri.",
-          cards: "Schede grandi",
-          compact: "Riquadri compatti",
-        },
         sentAttachments: {
           label: "Allegati nei messaggi inviati",
           description:
-            "Un elenco con il tipo di ogni file, oppure piccole etichette. Automatico passa alle etichette oltre i sei file.",
+            "Standard mostra ogni file con il suo tipo, Compatto ne mette di più su ogni riga. Automatico passa a compatto oltre i sei file.",
           auto: "Automatico",
-          list: "Elenco",
-          chips: "Etichette",
+          list: "Standard",
+          chips: "Compatto",
         },
         reset: "Ripristina",
         resetAll: "Ripristina la personalizzazione",
@@ -1597,6 +1646,9 @@ export const it = {
         noRamReserve: "Non riservare RAM di sistema per il modello",
         noRamReserveDescription: "Riduce la RAM occupata dai pesi del modello.",
         noRamReserveHint: "Salta il caricamento mappato in memoria sulle build Windows supportate quando il modello è interamente scaricato sulla GPU, così le sue pagine non restano residenti. Altrimenti mantiene il caricamento mappato in memoria. I buffer CPU necessari possono comunque occupare RAM. Rimuove --no-mmap e --mlock.",
+        multiModel: "Mantieni più modelli caricati",
+        multiModelDescription: "Caricare un modello mantiene gli altri in memoria.",
+        multiModelHint: "Ogni modello caricato risponde alle richieste che lo nominano. Con più GPU, un nuovo modello va su una GPU che nessun altro modello usa, se c'è spazio. Se non entra accanto agli altri, vengono prima scaricati i modelli non in uso, poi sostituisce il modello attivo. L'addestramento scarica i modelli aggiuntivi prima di quello attivo.",
         mlockVetoed: "--mlock resta disattivato: bloccare il modello riserverebbe RAM per l'intero modello. Lo scaricamento automatico in inattività resta disattivato.",
         mlockNotApplicable: "Interamente sulla GPU: nulla da bloccare nella RAM di sistema. Lo scaricamento automatico in inattività resta disattivato.",
         memlockCapped: "Questo sistema limita la memoria bloccata a {limit}. Un modello più grande non verrà bloccato del tutto; aumenta il limite con ulimit -l.",
@@ -1841,9 +1893,6 @@ export const it = {
         "Il testo incollato di almeno {count} caratteri diventa un allegato .txt. Il testo più breve resta nel campo del messaggio.",
       pastedTextOffDescription:
         "Tutto il testo incollato resta nel campo del messaggio, indipendentemente dalla lunghezza.",
-      projectsSection: "Mostra la sezione Progetti",
-      projectsSectionDescription:
-        "Raggruppa le chat di progetto sotto un titolo Progetti. Disattivalo per elencarle in Recenti.",
       title: "Chat",
       description:
         "Personalizza il comportamento della chat su questo dispositivo.",
@@ -1881,6 +1930,11 @@ export const it = {
       autoScrollManual: "Manuale",
       autoScrollKeywords:
         "scorrimento scorrere automatico seguire fondo saltare streaming generazione vista bloccare scroll autoscroll follow",
+      scrollToBottomButton: "Pulsante per scorrere in fondo",
+      scrollToBottomButtonDescription:
+        "Mostra un pulsante per tornare all'ultimo messaggio dopo aver scorso verso l'alto.",
+      scrollToBottomButtonKeywords:
+        "scorrere fondo saltare ultimo freccia pulsante nascondere scroll bottom button",
       showResponseModel: "Mostra il modello della risposta",
       showResponseModelDescription:
         "Mostra i metadati del modello nelle risposte dell'assistente.",
@@ -2259,11 +2313,13 @@ export const it = {
       revoking: "Revoca in corso...",
       decisionApi: {
         title: "API decisionale",
-        description: "Rispondi a domande sì/no, a scelta multipla e a punteggio sul testo con un modello Laya locale. Funziona con l'SDK di TypeSafe.",
+        description: "Rispondi a domande sì/no, a scelta multipla e a punteggio sul testo con un modello su questo computer o un modello decisionale dalle Connessioni. Funziona con l'SDK di TypeSafe.",
         enable: "Rispondi alle richieste",
         enableDescription: "Gestisce /v1/systemone. Attivandolo si scarica il modello.",
+        enableRemoteDescription: "Gestisce /v1/systemone.",
         lockedByEnv: "Impostato da {name}.",
         model: "Modello",
+        thisMachine: "Questo computer",
         modelMultilingual: "Multilingue",
         modelEnglish: "Inglese",
         modelTypedDecisions: "Decisioni tipizzate",
@@ -2288,6 +2344,10 @@ export const it = {
         downloadFailed: "Impossibile avviare il download.",
         saveFailed: "Impossibile salvare l'impostazione dell'API decisionale.",
         loadError: "Impossibile caricare le impostazioni dell'API decisionale.",
+        sendsTo: "Le richieste vengono inviate a {provider}.",
+        connectionMissing: "Questa connessione non esiste più o non ha modelli decisionali. Scegli un altro modello.",
+        addConnection: "Per usare un modello decisionale ospitato, aggiungi TypeSafe, Liquid AI o OpenRouter in Connessioni.",
+        openConnections: "Apri Connessioni",
       },
     },
     about: {
@@ -2485,6 +2545,7 @@ export const it = {
       context: "Contesto",
       lr: "LR",
       hardware: "Hardware",
+      vram: "VRAM",
       noGpu: "Nessuna GPU rilevata",
       hfToken: "Token HF",
       saved: "Salvato",
@@ -3214,6 +3275,7 @@ export const it = {
     discardDescription: "Le modifiche non salvate a {name} andranno perse.",
     discard: "Scarta",
     mentions: "Competenze",
+    manage: "Gestisci competenze",
   },
   library: {
     tabs: {

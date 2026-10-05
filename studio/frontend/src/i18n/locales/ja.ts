@@ -3,9 +3,11 @@
 // See /studio/LICENSE.AGPL-3.0
 
 import type { DeepPartialMessageTree } from "../types";
-import type { en } from "./en";
+import { en } from "./en.ts";
 
 export const ja = {
+  // English fallback until this experimental feature is translated.
+  managedEngines: en.managedEngines,
   composerSettings: {
     title: "入力欄",
     plainText: "プレーンテキスト入力",
@@ -219,6 +221,45 @@ export const ja = {
       actions: "アクション",
       chat: "チャット",
       searchChats: "チャットを検索...",
+    },
+    search: {
+      placeholder: "検索",
+      tabs: {
+        all: "すべて",
+        chats: "チャット",
+        projects: "プロジェクト",
+        files: "ファイル",
+        models: "モデル",
+      },
+      recents: "最近",
+      actions: "アクション",
+      newChat: "新規チャット",
+      newTemporaryChat: "新しい一時チャット",
+      fineTune: "モデルをファインチューン",
+      generateImage: "画像を生成",
+      generateVideo: "動画を生成",
+      untitledChat: "無題のチャット",
+      compare: "比較",
+      loading: "読み込み中...",
+      empty: {
+        all: "まだ検索できるものはありません。",
+        chats: "チャットはまだありません。",
+        projects: "プロジェクトはまだありません。",
+        files: "ライブラリにファイルはまだありません。",
+        models: "ダウンロード済みのモデルはまだありません。",
+      },
+      noMatches: "結果がありません。",
+      when: {
+        today: "今日",
+        pastWeek: "過去 1 週間",
+        pastMonth: "過去 1 か月",
+        older: "それ以前",
+      },
+      footer: {
+        close: "閉じる",
+        changeType: "種類を切り替え",
+        open: "開く",
+      },
     },
     notFound: {
       title: "ページが見つかりません",
@@ -1232,9 +1273,22 @@ export const ja = {
       },
       permissions: {
         sectionTitle: "権限",
-        bypassLabel: "ツールの権限",
-        bypassDescription:
-          "チャットのツール呼び出し (ターミナル、python、ウェブ、MCP) を実行する前に、Unsloth がどのように承認するかを決めます。「Full access」にすると承認とコードサンドボックスが無効になります。",
+        names: {
+          ask: "承認を求める",
+          auto: "代わりに承認",
+          off: "自動で実行",
+          full: "フルアクセス",
+        },
+        details: {
+          ask:
+            "ターミナルや Python のコード、ウェブ検索、ファイル編集、MCP ツールを含め、すべてのツール呼び出しの前に確認します。外部プロバイダーが実行するツールは一時停止されません。各ステップを確認したいときに最適です。",
+          auto:
+            "通常のツール呼び出しは自動で実行し、認証情報の読み取り、権限昇格、破壊的なコマンドなど、危険そうな操作のときだけ確認します。",
+          off:
+            "すべてのツール呼び出しを確認なしで実行します。Python とターミナルのコードは引き続きサンドボックス内で実行され、コンピューター上でアクセスできるファイルが制限されます。",
+          full:
+            "すべてのツール呼び出しを確認なしで実行し、コードサンドボックスをオフにします。Python とターミナルのコードは、アカウントがアクセスできる任意のファイルを読み取り、変更できます。サンドボックスの外で作業する必要がある、信頼できるタスクに最適です。",
+        },
       },
     },
     profile: {
@@ -1355,20 +1409,13 @@ export const ja = {
           wide: "広い",
           full: "全幅",
         },
-        composerAttachments: {
-          label: "入力欄の添付ファイル",
-          description:
-            "入力欄を広げる大きなカード、またはコンパクトなタイルの列で表示します。",
-          cards: "大きなカード",
-          compact: "コンパクトなタイル",
-        },
         sentAttachments: {
           label: "送信済みメッセージの添付ファイル",
           description:
-            "各ファイルの種類を示すリスト、または小さなチップで表示します。自動では 7 件以上でチップに切り替わります。",
+            "標準では各ファイルを種類付きで表示し、コンパクトでは 1 行により多く表示します。自動では 7 件以上でコンパクトに切り替わります。",
           auto: "自動",
-          list: "リスト",
-          chips: "チップ",
+          list: "標準",
+          chips: "コンパクト",
         },
         reset: "リセット",
         resetAll: "カスタマイズをリセット",
@@ -1588,6 +1635,9 @@ export const ja = {
         noRamReserve: "モデル用にシステム RAM を確保しない",
         noRamReserveDescription: "モデルの重みが占有する RAM を減らします。",
         noRamReserveHint: "モデルが GPU に完全にオフロードされている場合、対応する Windows ビルドではメモリマップ読み込みを行わず、ファイルのページが常駐しないようにします。それ以外ではメモリマップ読み込みを維持します。必要な CPU バッファは RAM を使用することがあります。--no-mmap と --mlock を除去します。",
+        multiModel: "複数のモデルを読み込んだままにする",
+        multiModelDescription: "モデルを読み込んでも、他のモデルはメモリに残ります。",
+        multiModelHint: "読み込まれた各モデルは、そのモデルを指定したリクエストに応答します。複数の GPU がある場合、空きがあれば新しいモデルは他のモデルが使っていない GPU に配置されます。他のモデルと並べて収まらない場合は、使用中でないモデルを先にアンロードし、それでも足りなければアクティブなモデルを置き換えます。トレーニングはアクティブなモデルより先に追加のモデルをアンロードします。",
         mlockVetoed: "--mlock は無効のままです。モデルを固定するとモデル全体分の RAM を確保することになります。アイドル時の自動アンロードは引き続き無効です。",
         mlockNotApplicable: "すべて GPU 上にあるため、システム RAM に固定するものはありません。アイドル時の自動アンロードは無効のままです。",
         memlockCapped: "このシステムはロック可能なメモリを {limit} に制限しています。これより大きいモデルは完全には固定されません。ulimit -l で上限を引き上げてください。",
@@ -1829,9 +1879,6 @@ export const ja = {
         "{count}文字以上の貼り付けテキストは .txt 添付ファイルになります。短いテキストは入力欄に残ります。",
       pastedTextOffDescription:
         "長さに関係なく、貼り付けたテキストはすべて入力欄に残ります。",
-      projectsSection: "プロジェクトセクションを表示",
-      projectsSectionDescription:
-        "プロジェクトのチャットを「プロジェクト」の見出しにまとめます。オフにすると「最近」に表示されます。",
       title: "チャット",
       description: "このデバイスでのチャットの動作をカスタマイズします。",
       modelSelection: {
@@ -1868,6 +1915,11 @@ export const ja = {
       autoScrollManual: "手動",
       autoScrollKeywords:
         "スクロール 自動スクロール 追従 下 ジャンプ ストリーミング 生成 固定 scroll autoscroll follow",
+      scrollToBottomButton: "一番下へスクロールボタン",
+      scrollToBottomButtonDescription:
+        "上にスクロールしたときに、最新のメッセージへ戻るボタンを表示します。",
+      scrollToBottomButtonKeywords:
+        "スクロール 一番下 最新 矢印 ボタン 非表示 scroll bottom button",
       showResponseModel: "応答モデルを表示",
       showResponseModelDescription:
         "アシスタントの応答にモデルのメタデータを表示します。",
@@ -2224,11 +2276,13 @@ export const ja = {
       revoking: "失効中...",
       decisionApi: {
         title: "判定 API",
-        description: "ローカルの Laya モデルで、テキストに関するはい/いいえ・選択式・スコアの質問に答えます。TypeSafe SDK で使えます。",
+        description: "このマシン上のモデル、または接続の判定モデルで、テキストに関するはい/いいえ・選択式・スコアの質問に答えます。TypeSafe SDK で使えます。",
         enable: "リクエストに応答",
         enableDescription: "/v1/systemone を提供します。オンにするとモデルをダウンロードします。",
+        enableRemoteDescription: "/v1/systemone を提供します。",
         lockedByEnv: "{name} で設定されています。",
         model: "モデル",
+        thisMachine: "このマシン",
         modelMultilingual: "多言語",
         modelEnglish: "英語",
         modelTypedDecisions: "型付き判定",
@@ -2253,6 +2307,10 @@ export const ja = {
         downloadFailed: "ダウンロードを開始できませんでした。",
         saveFailed: "判定 API の設定を保存できませんでした。",
         loadError: "判定 API の設定を読み込めませんでした。",
+        sendsTo: "リクエストは {provider} に送信されます。",
+        connectionMissing: "この接続は存在しないか、判定モデルがありません。別のモデルを選んでください。",
+        addConnection: "ホスト型の判定モデルを使うには、接続で TypeSafe、Liquid AI、OpenRouter のいずれかを追加してください。",
+        openConnections: "接続を開く",
       },
       usageNoModel:
         "モデルを読み込むかダウンロードすると、実行できる例が表示されます。このサーバーにはまだ指定できるモデルがありません。",
@@ -2404,6 +2462,7 @@ export const ja = {
       context: "コンテキスト",
       lr: "LR",
       hardware: "ハードウェア",
+      vram: "VRAM",
       noGpu: "GPU が検出されませんでした",
       hfToken: "HF トークン",
       saved: "保存済み",
@@ -3095,6 +3154,7 @@ export const ja = {
     discardDescription: "{name} の保存されていない変更は失われます。",
     discard: "破棄",
     mentions: "スキル",
+    manage: "スキルを管理",
   },
   library: {
     tabs: {

@@ -165,7 +165,8 @@ test("the adapter and recovery follow the turn's think parse state", () => {
   assert.match(adapter, /parseThink && thinkTags\.endsInsideThink\(\)/);
   assert.match(
     adapter,
-    /setParseThink\(\s*isExternalRequest\s*\? requestParsesThinkTags\(externalReasoningFields\)\s*: reasoningAlwaysOn \|\| requestParsesThinkTags\(localReasoningFields\),\s*\);/,
+    // A resumed thought is reasoning whatever the request's own setting says.
+    /setParseThink\(\s*isExternalRequest\s*\? requestParsesThinkTags\(externalReasoningFields\)\s*: reasoningAlwaysOn \|\|\s*Boolean\(resumedThought\) \|\|\s*requestParsesThinkTags\(localReasoningFields\),\s*\);/,
     "the live stream and recovery must read thinking off from the same request fields",
   );
   assert.match(adapter, /\.\.\.externalReasoningFields,/);

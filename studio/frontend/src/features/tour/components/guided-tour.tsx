@@ -245,6 +245,7 @@ export function GuidedTour({
                 <motion.div
                   // The shared slot, so modal checks see the tour.
                   data-slot="dialog-overlay"
+                  data-viewport-backdrop={true}
                   className="fixed inset-0 z-50"
                   initial={{ opacity: 0 }}
                   animate={{ opacity: 1 }}

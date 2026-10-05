@@ -3,6 +3,7 @@
 
 import assert from "node:assert/strict";
 import test from "node:test";
+import { fromMarkdown } from "mdast-util-from-markdown";
 
 import type {
   MessageRecord,
@@ -10,6 +11,9 @@ import type {
   ThreadRecord,
 } from "../src/features/chat/types.ts";
 import { filterArchivedChatExport } from "../src/features/chat/utils/archived-chat-export.ts";
+import type { ImportOptions } from "../src/features/chat/utils/chat-import.ts";
+import { buildNamedConversationsMarkdown } from "../src/features/chat/utils/conversation-markdown-export.ts";
+import { buildConversationMarkdown } from "../src/features/chat/utils/conversation-markdown.ts";
 import { loadWithStubs } from "./helpers/module-stubs.ts";
 
 type ImportSource = {
@@ -33,18 +37,25 @@ type Module = {
   importConversationsFromSource: (
     source: ImportSource,
     projectId?: string | null,
+    options?: ImportOptions,
   ) => Promise<{ imported: number; failed: number }>;
 };
 
-function harness(existingProjects: ProjectRecord[] = []) {
+function harness(
+  existingProjects: ProjectRecord[] = [],
+  rejectAt?: "thread" | "messages",
+) {
   const threads: ThreadRecord[] = [];
   const messages = new Map<string, MessageRecord[]>();
   const projects = [...existingProjects];
+  const events = { historyUpdated: 0 };
+  const deleted: string[] = [];
   const module = loadWithStubs<Module>(
     new URL("../src/features/chat/utils/chat-import.ts", import.meta.url),
     {
+      "mdast-util-from-markdown": { fromMarkdown },
       "../api/chat-api": {
-        notifyChatHistoryUpdated: () => {},
+        notifyChatHistoryUpdated: () => { events.historyUpdated++; },
         listChatProjects: async () => projects,
         saveChatProject: async (project: ProjectRecord) => {
           projects.push(project);
@@ -54,6 +65,9 @@ function harness(existingProjects: ProjectRecord[] = []) {
       },
       "./chat-history-storage": {
         saveStoredChatThread: async (thread: ThreadRecord) => {
+          if (rejectAt === "thread" && thread.title === "Rejected") {
+            throw new ChatThreadWriteError("Request failed (500)", 500);
+          }
           threads.push(thread);
           return thread;
         },
@@ -61,19 +75,36 @@ function harness(existingProjects: ProjectRecord[] = []) {
           threadId: string,
           records: MessageRecord[],
         ) => {
+          if (
+            rejectAt === "messages" &&
+            threads.find(({ id }) => id === threadId)?.title === "Rejected"
+          ) {
+            throw new Error("Message sync failed");
+          }
           messages.set(threadId, records);
           return records;
         },
-        deleteStoredChatThreads: async () => [],
+        deleteStoredChatThreads: async (ids: string[]) => {
+          deleted.push(...ids);
+          for (const id of ids) {
+            const index = threads.findIndex((thread) => thread.id === id);
+            if (index !== -1) threads.splice(index, 1);
+            messages.delete(id);
+          }
+          return ids;
+        },
       },
     },
     { relativePassthrough: true },
   );
-  return { module, threads, messages, projects };
+  return { module, threads, messages, projects, events, deleted };
 }
 
 function sourceOf(name: string, data: unknown): ImportSource {
-  const text = JSON.stringify(data, null, 2);
+  return sourceText(name, JSON.stringify(data, null, 2));
+}
+
+function sourceText(name: string, text: string): ImportSource {
   const half = Math.floor(text.length / 2);
   return {
     name,
@@ -83,6 +114,44 @@ function sourceOf(name: string, data: unknown): ImportSource {
       yield { text: text.slice(half), bytes: text.length - half };
     },
   };
+}
+
+for (const rejectAt of ["thread", "messages"] as const) {
+  test(`combined markdown continues after a ${rejectAt} save failure`, async () => {
+    const { module, threads, messages, events, deleted } = harness([], rejectAt);
+    const conversations = ["First", "Rejected", "Last"].map((title) => ({
+      id: title,
+      title,
+    }));
+    const text = await buildNamedConversationsMarkdown(
+      conversations,
+      async (id) => buildConversationMarkdown([{ role: "user", content: id }]),
+    );
+    const saved: string[] = [];
+    const progress: Array<{ imported: number; failed: number }> = [];
+    const result = await module.importConversationsFromSource(
+      sourceText("combined.md", text),
+      null,
+      {
+        onSaved: (id) => saved.push(id),
+        onProgress: ({ imported, failed }) => progress.push({ imported, failed }),
+      },
+    );
+
+    assert.deepEqual(result, { imported: 2, failed: 1 });
+    assert.deepEqual(threads.map(({ title }) => title), ["First", "Last"]);
+    assert.deepEqual(saved, threads.map(({ id }) => id));
+    assert.deepEqual(
+      threads.map(({ id }) => messages.get(id)?.[0]?.content),
+      [
+        [{ type: "text", text: "First" }],
+        [{ type: "text", text: "Last" }],
+      ],
+    );
+    assert.equal(events.historyUpdated, 1);
+    assert.deepEqual(progress.at(-1), { imported: 2, failed: 1 });
+    assert.equal(deleted.length, rejectAt === "messages" ? 1 : 0);
+  });
 }
 
 function message(
@@ -412,6 +481,7 @@ test("a settings snapshot this build rejects costs the settings, not the chat", 
   const module = loadWithStubs<Module>(
     new URL("../src/features/chat/utils/chat-import.ts", import.meta.url),
     {
+      "mdast-util-from-markdown": { fromMarkdown },
       "../api/chat-api": {
         notifyChatHistoryUpdated: () => {},
         listChatProjects: async () => [],
@@ -535,6 +605,7 @@ test("a backend that is merely down keeps the settings instead of quietly droppi
   const module = loadWithStubs<Module>(
     new URL("../src/features/chat/utils/chat-import.ts", import.meta.url),
     {
+      "mdast-util-from-markdown": { fromMarkdown },
       "../api/chat-api": {
         notifyChatHistoryUpdated: () => {},
         listChatProjects: async () => [],
