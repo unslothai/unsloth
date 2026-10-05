@@ -125,7 +125,21 @@ def stderr_tail_from_bytes(
 
 
 # A native abort prints the reason first, then the stack.
-_CRASH_LINE_MARKERS = ("llvm error", "fatal exception", "out of memory")
+_CRASH_LINE_MARKERS = (
+    "llvm error",
+    "fatal exception",
+    "fatal python error",
+    "segmentation fault",
+    "out of memory",
+)
+# faulthandler dump lines: never the reason.
+_STACK_LINE_PREFIXES = (
+    'File "',
+    "Thread 0x",
+    "Current thread 0x",
+    "Stack (most recent",
+    "Extension modules:",
+)
 _CRASH_LINE_LIMIT = 500
 
 
@@ -142,7 +156,7 @@ def format_exit_code(exitcode: "int | None") -> str:
 
 
 def first_crash_line(text: str) -> str:
-    """The first useful line, else the last non-empty one. Empty when *text* is empty."""
+    """The first marker line, else the last non-stack line, else empty."""
     lines = [line.strip() for line in (text or "").splitlines() if line.strip()]
     if not lines:
         return ""
@@ -150,7 +164,10 @@ def first_crash_line(text: str) -> str:
         lowered = line.lower()
         if any(marker in lowered for marker in _CRASH_LINE_MARKERS):
             return line[:_CRASH_LINE_LIMIT]
-    return lines[-1][:_CRASH_LINE_LIMIT]
+    for line in reversed(lines):
+        if not line.startswith(_STACK_LINE_PREFIXES):
+            return line[:_CRASH_LINE_LIMIT]
+    return ""
 
 
 def unexpected_exit_message(pid, exitcode, text: str) -> str:

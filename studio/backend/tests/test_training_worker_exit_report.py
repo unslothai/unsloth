@@ -46,6 +46,19 @@ def test_the_reason_is_kept_when_the_stack_is_what_follows():
     assert reason in message
 
 
+def test_linux_segfault_reports_the_reason_not_a_frame():
+    text = (
+        "Fatal Python error: Segmentation fault\n\n"
+        "Current thread 0x0000758f06f62080 (most recent call first):\n"
+        '  File "/usr/lib/python3.13/ctypes/__init__.py", line 546 in string_at\n'
+        "\nExtension modules: numpy._core._multiarray_umath, torch._C (total: 2)\n"
+    )
+    assert first_crash_line(text) == "Fatal Python error: Segmentation fault"
+    assert (
+        first_crash_line('Thread 0x1 (most recent call first):\n  File "x.py", line 1 in f\n') == ""
+    )
+
+
 def _die_after_a_long_stack(path: str) -> None:
     assert install_worker_stderr_mirror(path) is True
     sys.stderr.write("LLVM ERROR: Cannot select: intrinsic %llvm.amdgcn.fdot2.bf16.bf16\n")
