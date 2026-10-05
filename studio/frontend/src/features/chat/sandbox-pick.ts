@@ -3,6 +3,7 @@
 
 import {
   type SandboxCapability,
+  cachedSandboxCapability,
   capabilityPending,
   loadSettledSandboxCapability,
   sandboxReady,
@@ -27,8 +28,15 @@ export function pickSandboxedMode(
   currentMode: () => PermissionMode,
   load: () => Promise<SandboxCapability | null> = loadSettledSandboxCapability,
   watchModeChanges?: (onChange: () => void) => () => void,
+  peek: () => SandboxCapability | null = cachedSandboxCapability,
 ): Promise<void> {
   const pick = ++sandboxedPicks;
+  // Known ready: apply at once instead of waiting on a fresh probe. The backend still checks each call.
+  const known = peek();
+  if (known !== null && sandboxReady(known)) {
+    setPermissionMode("off");
+    return Promise.resolve();
+  }
   const before = currentMode();
   let changed = false;
   const stopWatching = watchModeChanges?.(() => {

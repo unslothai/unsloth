@@ -235,6 +235,7 @@ const pickModule = loadWithStubs<PickModule>(
   {
     "./api/sandbox-capability": {
       loadSettledSandboxCapability: async () => null,
+      cachedSandboxCapability: () => null,
       sandboxReady: (c: SandboxCapability) =>
         c.pythonOsIsolated && c.terminalOsIsolated,
       capabilityPending: (c: SandboxCapability) =>
@@ -347,6 +348,24 @@ test("only the latest pick acts; a missing sandbox opens the setup instead of ap
       capability({ pythonOsIsolated: true, terminalOsIsolated: true }),
   );
   assert.deepEqual(applied, ["off"]);
+});
+
+test("a sandbox already known to work applies Run automatically without a fresh probe", async () => {
+  const applied: string[] = [];
+  let reads = 0;
+  await pickModule.pickSandboxedMode(
+    (next) => applied.push(next),
+    () => assert.fail("no setup dialog"),
+    () => "auto" as never,
+    async () => {
+      reads++;
+      return null;
+    },
+    undefined,
+    () => capability({ pythonOsIsolated: true, terminalOsIsolated: true }),
+  );
+  assert.deepEqual(applied, ["off"]);
+  assert.equal(reads, 0);
 });
 
 type SetupState = typeof import("../src/features/chat/sandbox-setup-state.ts");
