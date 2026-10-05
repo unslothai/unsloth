@@ -368,8 +368,10 @@ test("Use again re-uploads a conversion's kept source instead of its expiring up
   const api = readSrc("features/audio/api.ts");
   assert.match(
     api,
-    /export async function audioInputAlive\(inputId: string\)[\s\S]{0,300}?method: "HEAD"[\s\S]{0,120}?return response\.status !== 404;/,
+    /export async function audioInputAlive\(inputId: string\)[\s\S]{0,300}?headers: \{ Range: "bytes=0-0" \} \}[\s\S]{0,160}?return response\.status !== 404;/,
   );
+  // HEAD on a FastAPI GET route is a 405, which the !== 404 check would read as alive.
+  assert.doesNotMatch(api, /method: "HEAD"/);
 });
 
 const SEND_TO_HAS_CONVERT = /convert: \(\) => handleSendToConvert\(clip\),/;
