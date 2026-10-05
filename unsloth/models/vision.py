@@ -722,14 +722,18 @@ def _install_offload_embedding_hooks(embed_tokens, output_embeddings, return_dev
     op = None
     cls_forward = type(embed_tokens).forward
     scaled = False
-    if cls_forward is not torch.nn.Embedding.forward and isinstance(embed_tokens, torch.nn.Embedding):
+    if cls_forward is not torch.nn.Embedding.forward and isinstance(
+        embed_tokens, torch.nn.Embedding
+    ):
         try:
             import inspect
 
             # Matched on source: Unsloth's float32 Gemma patch is a different forward.
-            scaled = isinstance(getattr(embed_tokens, "embed_scale", None), torch.Tensor) and "".join(
-                inspect.getsource(cls_forward).split()
-            ).endswith("returnsuper().forward(input_ids)*self.embed_scale.to(self.weight.dtype)")
+            scaled = isinstance(
+                getattr(embed_tokens, "embed_scale", None), torch.Tensor
+            ) and "".join(inspect.getsource(cls_forward).split()).endswith(
+                "returnsuper().forward(input_ids)*self.embed_scale.to(self.weight.dtype)"
+            )
         except Exception:
             scaled = False
     if (
@@ -777,7 +781,9 @@ def _install_offload_embedding_hooks(embed_tokens, output_embeddings, return_dev
 
         def _unsloth_offload_forward(self, input_ids, *args, **kwargs):
             if not args and not kwargs and _use_op(self, input_ids):
-                return op(input_ids, self.weight, self.padding_idx, self.embed_scale if scaled else None)
+                return op(
+                    input_ids, self.weight, self.padding_idx, self.embed_scale if scaled else None
+                )
             return cls_forward(self, input_ids, *args, **kwargs)
 
         import types

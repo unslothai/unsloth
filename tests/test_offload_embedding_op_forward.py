@@ -28,7 +28,9 @@ try:
 except Exception:
     _zoo_op = None
 
-pytestmark = pytest.mark.skipif(_zoo_op is None, reason = "unsloth_zoo without the shared offloaded_embedding op")
+pytestmark = pytest.mark.skipif(
+    _zoo_op is None, reason = "unsloth_zoo without the shared offloaded_embedding op"
+)
 needs_cuda = pytest.mark.skipif(not torch.cuda.is_available(), reason = "needs CUDA")
 
 
@@ -47,7 +49,13 @@ install = _load_installer()
 
 class ScaledWordEmbedding(nn.Embedding):
     # Same forward as transformers' Gemma*TextScaledWordEmbedding.
-    def __init__(self, num_embeddings, embedding_dim, padding_idx = None, embed_scale = 1.0):
+    def __init__(
+        self,
+        num_embeddings,
+        embedding_dim,
+        padding_idx = None,
+        embed_scale = 1.0,
+    ):
         super().__init__(num_embeddings, embedding_dim, padding_idx)
         self.register_buffer("embed_scale", torch.tensor(embed_scale), persistent = False)
 
@@ -58,7 +66,10 @@ class ScaledWordEmbedding(nn.Embedding):
 class Float32ScaledWordEmbedding(ScaledWordEmbedding):
     # Like Unsloth's float32 Gemma patch: a different product.
     def forward(self, input_ids: torch.Tensor):
-        return nn.functional.embedding(input_ids, self.weight, self.padding_idx).float() * self.embed_scale
+        return (
+            nn.functional.embedding(input_ids, self.weight, self.padding_idx).float()
+            * self.embed_scale
+        )
 
 
 V, H = 5003, 64
@@ -69,9 +80,9 @@ def _make(kind = "plain", **kw):
     if kind == "plain":
         emb = nn.Embedding(V, H, **kw)
     elif kind == "scaled":
-        emb = ScaledWordEmbedding(V, H, padding_idx = 0, embed_scale = H ** 0.5)
+        emb = ScaledWordEmbedding(V, H, padding_idx = 0, embed_scale = H**0.5)
     else:
-        emb = Float32ScaledWordEmbedding(V, H, padding_idx = 0, embed_scale = H ** 0.5)
+        emb = Float32ScaledWordEmbedding(V, H, padding_idx = 0, embed_scale = H**0.5)
     return emb.to(torch.bfloat16).requires_grad_(False)
 
 
