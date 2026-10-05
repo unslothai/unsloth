@@ -26,6 +26,7 @@ import {
   CpuIcon,
   DatabaseSettingIcon,
   EnergyRectangleIcon,
+  InternetIcon,
   HelpCircleIcon,
   HomeWifiIcon,
   LibrariesIcon,
