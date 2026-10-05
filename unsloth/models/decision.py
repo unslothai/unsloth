@@ -157,7 +157,8 @@ def _checkpoint_folder(model_name, subfolder, token, revision, local_files_only)
         raise ValueError(
             f"Unsloth: {folder} is not a decision model checkpoint "
             "(rl_agent_config.json, model.safetensors, encoder/ and tokenizer/, "
-            "or a Clef backbone with joint_head.safetensors and joint_head_config.json)."
+            "or a Clef backbone with joint_head.safetensors and joint_head_config.json). "
+            'To turn a plain language model into a decision model, pass decision_head = "clef".'
         )
     return folder
 
@@ -662,11 +663,15 @@ def _load_clef(
             **kwargs,
         )
     else:
-        from transformers import AutoModelForImageTextToText, AutoProcessor
+        from transformers import AutoConfig, AutoProcessor, AutoTokenizer
 
-        backbone = AutoModelForImageTextToText.from_pretrained(
-            str(folder), dtype = dtype or torch.float32
-        )
+        # Clef's own backbones are vision models; ones converted from a text-only LM are not.
+        if getattr(AutoConfig.from_pretrained(str(folder)), "vision_config", None) is not None:
+            from transformers import AutoModelForImageTextToText as AutoClass
+        else:
+            from transformers import AutoModelForCausalLM as AutoClass
+            AutoProcessor = AutoTokenizer
+        backbone = AutoClass.from_pretrained(str(folder), dtype = dtype or torch.float32)
         processor = AutoProcessor.from_pretrained(str(folder))
         if not full_finetuning:
             backbone.requires_grad_(False)
@@ -719,7 +724,7 @@ def _clef_peft_model(model, target_modules, use_gradient_checkpointing, random_s
             backbone,
             LoraConfig(
                 target_modules = target_modules
-                or r"model\.language_model\.layers\.\d+\..*\.(q_proj|k_proj|v_proj|o_proj|in_proj_qkv|in_proj_z|out_proj|gate_proj|up_proj|down_proj)",
+                or r"model\.(?:language_model\.)?layers\.\d+\..*\.(q_proj|k_proj|v_proj|o_proj|in_proj_qkv|in_proj_z|out_proj|gate_proj|up_proj|down_proj)",
                 **kwargs,
             ),
         )
@@ -1294,6 +1299,22 @@ class FastDecisionModel:
     ):
         if load_in_8bit:
             raise NotImplementedError("Unsloth: decision models do not support load_in_8bit.")
+        if kwargs.get("decision_head") is not None:
+            # A plain language model plus a fresh (or given) decision head: see decision_from_lm.py.
+            from .decision_from_lm import load_lm_as_decision_model
+            return load_lm_as_decision_model(
+                model_name,
+                max_seq_length = max_seq_length,
+                dtype = dtype,
+                load_in_4bit = load_in_4bit,
+                full_finetuning = full_finetuning,
+                token = token,
+                revision = revision,
+                local_files_only = local_files_only,
+                use_gradient_checkpointing = use_gradient_checkpointing,
+                random_state = random_state,
+                **kwargs,
+            )
         from safetensors.torch import load_file
         from transformers import AutoModel, AutoTokenizer
 
@@ -1418,6 +1439,17 @@ class FastDecisionModel:
         )
         _gradient_checkpointing(model, use_gradient_checkpointing)
         return model
+
+    @staticmethod
+    def freeze_backbone(model):
+        # Head-only warm-up for a fresh decision head; undo with unfreeze_backbone.
+        from .decision_from_lm import freeze_backbone
+        return freeze_backbone(model)
+
+    @staticmethod
+    def unfreeze_backbone(model):
+        from .decision_from_lm import unfreeze_backbone
+        return unfreeze_backbone(model)
 
     @staticmethod
     def for_inference(model):
