@@ -324,11 +324,38 @@ _FRAME_HTML = r"""<!doctype html>
           setTimeout(() => post({ type: "navigate", url: cfg.refresh.url, replace: true }), cfg.refresh.delay * 1000);
         }
         window.addEventListener("keydown", (event) => {
-          if ((event.metaKey || event.ctrlKey) && ["l", "t", "w", "r", "f"].includes(event.key.toLowerCase())) {
+          if ((event.metaKey || event.ctrlKey) && ["l", "t", "w", "r", "f", "d"].includes(event.key.toLowerCase())) {
             event.preventDefault();
             post({ type: "shortcut", key: event.key.toLowerCase(), shift: event.shiftKey });
           }
         }, true);
+        // Zoom keys and Ctrl+wheel (a pinch, too) zoom this page through the panel, not the app
+        // around it: Cmd on macOS, Ctrl elsewhere, as the app's own zoom keys.
+        const mac = /Mac|iPhone|iPad/.test(navigator.platform);
+        window.addEventListener("keydown", (event) => {
+          if (event.isComposing || event.altKey || !(mac ? event.metaKey && !event.ctrlKey : event.ctrlKey && !event.metaKey)) return;
+          const key = event.key;
+          const code = event.code;
+          const direction = key === "+" || key === "=" || code === "NumpadAdd" || code === "Equal" ? 1
+            : key === "-" || key === "_" || code === "NumpadSubtract" || code === "Minus" ? -1
+            : key === "0" || code === "Digit0" || code === "Numpad0" ? 0 : null;
+          if (direction === null) return;
+          event.preventDefault();
+          post({ type: "zoom", direction, wheel: false });
+        }, true);
+        let wheelTravel = 0;
+        let wheelAt = 0;
+        window.addEventListener("wheel", (event) => {
+          if (!event.ctrlKey || event.metaKey || event.altKey || event.deltaY === 0) return;
+          event.preventDefault();
+          const delta = event.deltaY * (event.deltaMode === 1 ? 40 : event.deltaMode === 2 ? 800 : 1);
+          if (event.timeStamp - wheelAt > 250 || Math.sign(delta) !== Math.sign(wheelTravel)) wheelTravel = 0;
+          wheelAt = event.timeStamp;
+          wheelTravel += delta;
+          if (Math.abs(wheelTravel) < 50) return;
+          post({ type: "zoom", direction: wheelTravel < 0 ? 1 : -1, wheel: true });
+          wheelTravel = 0;
+        }, { passive: false, capture: true });
         const applyZoom = (zoom) => {
           const value = Number(zoom);
           if (!(value >= 0.25 && value <= 5)) return;

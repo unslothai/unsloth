@@ -107,3 +107,23 @@ test("closing the last tab leaves full view, so the browser reopens beside the c
   assert.equal(useBrowserStore.getState().open, false);
   assert.equal(useBrowserStore.getState().fullView, false);
 });
+
+test("a dragged tab moves to where it is dropped, keeping which tab is open", () => {
+  const store = useBrowserStore.getState();
+  for (const tab of useBrowserStore.getState().tabs) store.closeTab(tab.id);
+  for (const host of ["a", "b", "c"]) store.openUrl(`https://${host}.example/`, { newTab: true });
+  const hosts = () =>
+    useBrowserStore.getState().tabs.map((tab) => {
+      const entry = currentEntry(tab);
+      return entry.kind === "web" ? new URL(entry.url).hostname[0] : "?";
+    });
+  const [first] = useBrowserStore.getState().tabs;
+  const active = useBrowserStore.getState().activeTabId;
+  store.moveTab(first?.id ?? "", 2);
+  assert.deepEqual(hosts(), ["b", "c", "a"]);
+  store.moveTab(first?.id ?? "", 99);
+  assert.deepEqual(hosts(), ["b", "c", "a"]);
+  store.moveTab(first?.id ?? "", 0);
+  assert.deepEqual(hosts(), ["a", "b", "c"]);
+  assert.equal(useBrowserStore.getState().activeTabId, active);
+});

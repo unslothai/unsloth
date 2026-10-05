@@ -55,11 +55,14 @@ export function LinkContextMenu({
   url,
   tabId,
   extra,
+  onCloseAutoFocus,
   children,
 }: {
   url: string | null;
   tabId?: string;
   extra?: ReactNode;
+  /** Lets a row that opens something keep focus there as the menu closes. */
+  onCloseAutoFocus?: (event: Event) => void;
   children: ReactElement;
 }) {
   const t = useT();
@@ -67,7 +70,7 @@ export function LinkContextMenu({
   return (
     <ContextMenu>
       <ContextMenuTrigger asChild={true}>{children}</ContextMenuTrigger>
-      <ContextMenuContent className={CONTEXT_MENU}>
+      <ContextMenuContent className={CONTEXT_MENU} onCloseAutoFocus={onCloseAutoFocus}>
         {url ? (
           <>
             {tabId ? (

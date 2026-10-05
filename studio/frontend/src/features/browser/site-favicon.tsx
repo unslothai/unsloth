@@ -40,14 +40,15 @@ export function SiteFavicon({
   fallbackClassName,
 }: {
   url: string;
-  /** Tried first: a site's known icon. A path is Studio's own, used as is. */
+  /** Tried first: a site's known icon. A path is Studio's own, and a data: image one already
+   *  fetched (a bookmark's), both used as is. */
   icon?: string;
   className?: string;
   fallbackClassName?: string;
 }) {
   const ref = useRef<HTMLSpanElement>(null);
   const declared = useBrowserHistoryStore((state) => state.icons[hostOf(url)]);
-  const local = icon?.startsWith("/") ? icon : null;
+  const local = icon?.startsWith("/") || icon?.startsWith("data:image/") ? icon : null;
   const [found, setFound] = useState<string | null>(null);
   const [broken, setBroken] = useState(false);
   const candidates = iconsFor(url, declared, local ? undefined : icon).join(

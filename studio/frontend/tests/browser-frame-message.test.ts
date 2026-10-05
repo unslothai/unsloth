@@ -53,3 +53,12 @@ test("an upload notice carries nothing a page could fill", () => {
   assert.deepEqual(from({ type: "upload", url: "https://evil.example/" }), { type: "upload" });
   assert.deepEqual(from({ type: "scriptNavigation", url: "https://evil.example/" }), { type: "scriptNavigation" });
 });
+
+test("a page's zoom is a step in, out or back to 100%, and nothing else", () => {
+  assert.deepEqual(from({ type: "zoom", direction: 1 }), { type: "zoom", direction: 1, wheel: false });
+  assert.deepEqual(from({ type: "zoom", direction: -1, wheel: true }), { type: "zoom", direction: -1, wheel: true });
+  assert.deepEqual(from({ type: "zoom", direction: 0, wheel: "yes" }), { type: "zoom", direction: 0, wheel: false });
+  assert.equal(from({ type: "zoom", direction: 3 }), null);
+  assert.equal(from({ type: "zoom", direction: "1" }), null);
+  assert.equal(from({ type: "zoom" }), null);
+});

@@ -18,8 +18,8 @@ export type DownloadItem = {
 const MAX_HISTORY = 1000;
 const MAX_DOWNLOADS = 200;
 // Pages pick their URLs and titles; cap them so history can't fill Studio's storage.
-const MAX_URL_CHARS = 2048;
-const MAX_TITLE_CHARS = 200;
+export const MAX_URL_CHARS = 2048;
+export const MAX_TITLE_CHARS = 200;
 // The icons sites declare, by host: most sites name theirs in the page, not at /favicon.ico.
 const MAX_ICONS = 300;
 const PERSIST_DELAY_MS = 1000;

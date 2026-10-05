@@ -15,6 +15,9 @@ import {
   DropdownMenuCheckboxItem,
   DropdownMenuContent,
   DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuRadioGroup,
+  DropdownMenuRadioItem,
   DropdownMenuSeparator,
   DropdownMenuShortcut,
   DropdownMenuSub,
@@ -39,30 +42,27 @@ import {
   useShortcut,
   useShortcutLabel,
 } from "@/features/settings";
+import { registerZoomScope } from "@/features/interface-zoom";
 import { useLocale, useT } from "@/i18n";
 import { isTauri } from "@/lib/api-base";
 import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import { copyToClipboard, copyToClipboardFrom } from "@/lib/copy-to-clipboard";
 import { openExternalLink } from "@/lib/open-link";
 import { RefreshGlyph } from "@/lib/refresh-icon";
+import { ShieldAlertGlyph } from "@/lib/shield-alert-icon";
 import { Tick02Icon } from "@/lib/tick-icon";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
 import {
   Add01Icon,
   CancelSquareIcon,
-  LockIcon,
+  Certificate01Icon,
   Search01Icon,
-  SecurityCheckIcon,
   Settings02Icon,
-  SecurityWarningIcon,
-  SquareUnlock02Icon,
   Copy02Icon,
   Delete02Icon,
   ReloadIcon,
   ArrowDown01Icon,
-  ArrowLeft02Icon,
-  ArrowRight02Icon,
   ArrowUp01Icon,
   ArrowUpRight01Icon,
   BubbleChatAddIcon,
@@ -80,18 +80,40 @@ import {
   PlusSignIcon,
   SmartPhone01Icon,
   SourceCodeIcon,
+  StarIcon,
   Tablet01Icon,
   TextWrapIcon,
   ViewIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react";
+import {
+  ArrowLeft,
+  ArrowRight,
+  ChevronRight,
+  Lock,
+  LockOpen,
+  RotateCw,
+  ShieldCheck,
+  XIcon,
+} from "lucide-react";
 import { useNavigate } from "@tanstack/react-router";
-import { type ReactElement, type ReactNode, memo, useEffect, useRef, useState } from "react";
+import {
+  type PointerEvent as ReactPointerEvent,
+  type ReactElement,
+  type ReactNode,
+  type RefObject,
+  memo,
+  useEffect,
+  useRef,
+  useState,
+} from "react";
 import { fileNameFromUrl, hostOf, resolveAddress } from "./address";
 import { type BrowserDownload, saveBrowserDownload } from "./downloads";
 import { ClearBrowsingDataDialog } from "./clear-data-dialog";
 import { SiteFavicon } from "./site-favicon";
 import { AnnotateLayer, WebAnnotateLayer } from "./annotate-layer";
+import { BookmarkStar, BookmarksBar } from "./bookmarks";
+import { useBookmarkFor } from "./bookmarks-store";
 import { browserTabType, textFileKind } from "./file-kind";
 import { CONTEXT_MENU, MenuRow } from "./link-context-menu";
 import { EnterFullViewIcon, ExitFullViewIcon, SplitPaneIcon } from "./icons";
@@ -104,7 +126,7 @@ import {
   startNativeViews,
   useNativeBrowser,
 } from "./native-view";
-import { useBrowserPrefsStore } from "./prefs-store";
+import { type BookmarksToolbarMode, useBrowserPrefsStore } from "./prefs-store";
 import {
   type BrowserEntry,
   type BrowserTab,
@@ -112,12 +134,14 @@ import {
   type DeviceMode,
   type FileViewState,
   browserFile,
+  cachedPage,
   currentEntry,
   entryKey,
   pageDownload,
   useBrowserStore,
 } from "./store";
 import { TabView } from "./tab-view";
+import { ZOOM_STEPS, canZoom, stepZoom, zoomTab } from "./zoom";
 
 function tabAddress(tab: BrowserTab | undefined): string {
   if (!tab) return "";
@@ -162,17 +186,6 @@ export function fileTitle(name: string): string {
   );
 }
 
-const ZOOM_STEPS = [
-  0.25, 0.33, 0.5, 0.67, 0.75, 0.8, 0.9, 1, 1.1, 1.25, 1.5, 1.75, 2, 2.5, 3, 4,
-  5,
-];
-
-function stepZoom(zoom: number, direction: 1 | -1): number {
-  if (direction > 0)
-    return ZOOM_STEPS.find((step) => step > zoom + 0.001) ?? zoom;
-  return [...ZOOM_STEPS].reverse().find((step) => step < zoom - 0.001) ?? zoom;
-}
-
 const PILL =
   "border border-border/80 bg-card dark:border-transparent dark:bg-accent";
 
@@ -183,6 +196,9 @@ const TOOLBAR_BUTTON =
 // address bar with no border, a shade deeper while typing.
 const NAV_BUTTON =
   "size-8 rounded-md text-foreground disabled:hover:text-foreground disabled:opacity-30";
+// Back, forward and reload as one set, drawn alike as Firefox's are: one family, size and weight.
+const NAV_ICON = "size-4.5";
+const NAV_STROKE = 2;
 const URLBAR =
   "bg-[color-mix(in_oklab,var(--foreground)_calc(6%*var(--contrast-wash-gain,1)),transparent)] focus-within:bg-[color-mix(in_oklab,var(--foreground)_calc(9%*var(--contrast-wash-gain,1)),transparent)]";
 
@@ -285,6 +301,12 @@ function KindIcon({
   );
 }
 
+const INTERNAL_PAGE_ICONS = {
+  history: Clock01Icon,
+  downloads: Download01Icon,
+  bookmarks: StarIcon,
+} as const;
+
 function TabIcon({ tab }: { tab: BrowserTab }) {
   const [failedFor, setFailedFor] = useState<string | null>(null);
   const entry = currentEntry(tab);
@@ -292,7 +314,7 @@ function TabIcon({ tab }: { tab: BrowserTab }) {
   if (entry.kind === "file")
     return <KindIcon name={entry.name} contentType={entry.contentType} />;
   if (entry.kind === "internal") {
-    const icon = entry.page === "history" ? Clock01Icon : Download01Icon;
+    const icon = INTERNAL_PAGE_ICONS[entry.page];
     return (
       <HugeiconsIcon
         icon={icon}
@@ -322,7 +344,8 @@ function TabIcon({ tab }: { tab: BrowserTab }) {
     <HugeiconsIcon
       icon={InternetIcon}
       strokeWidth={1.75}
-      className="size-4 shrink-0"
+      // A step under a site's icon, as Firefox draws its globe; the margin keeps titles in line.
+      className="mx-px size-3.5 shrink-0"
     />
   );
 }
@@ -332,12 +355,7 @@ function useTabTitle() {
   return (tab: BrowserTab, entry: BrowserEntry) => {
     if (tab.title) return tab.title;
     if (entry.kind === "newtab") return t("browser.newTab");
-    if (entry.kind === "internal")
-      return t(
-        entry.page === "history"
-          ? "browser.pages.history"
-          : "browser.pages.downloads",
-      );
+    if (entry.kind === "internal") return t(`browser.pages.${entry.page}`);
     return entry.kind === "web" ? hostOf(entry.url) : entry.name;
   };
 }
@@ -409,6 +427,162 @@ function TabContextMenu({
   );
 }
 
+/** How far the pointer moves before a press on a tab becomes a drag, so clicks stay clicks. */
+const TAB_DRAG_THRESHOLD_PX = 5;
+const TAB_SHIFT_TRANSITION = "transform 160ms cubic-bezier(0.2, 0, 0, 1)";
+
+/** Which way the tab at `position` slides while the one from `slot` is held over `target`: the
+ *  tabs it has passed move one place toward where it came from. */
+function tabShift(position: number, slot: number, target: number): -1 | 0 | 1 {
+  if (slot < target && position > slot && position <= target) return -1;
+  if (target < slot && position >= target && position < slot) return 1;
+  return 0;
+}
+
+type TabDrag = {
+  id: string;
+  pointerId: number;
+  startX: number;
+  grabX: number;
+  moved: boolean;
+  /** Set as the drag starts: the strip's tabs in order, where each sat, and the drop slot. */
+  elements: HTMLElement[];
+  lefts: number[];
+  widths: number[];
+  slot: number;
+  step: number;
+  target: number;
+};
+
+/** Drag a tab along the strip to move it, as in Firefox: it follows the pointer and the others
+ *  slide aside as it passes their middles. The order changes once, on release: moving tabs while
+ *  dragging would move the dragged tab's own node, which drops its pointer capture. */
+function useTabDrag(listRef: RefObject<HTMLDivElement | null>, tabCount: number) {
+  const drag = useRef<TabDrag | null>(null);
+  // A drag ends in a click on the tab it started on; that click shouldn't count.
+  const dragged = useRef(false);
+  const reset = () => {
+    const current = drag.current;
+    drag.current = null;
+    if (!current?.moved) return;
+    // Back in place at once, so nothing animates from where it was shown to where it now is.
+    for (const element of current.elements) {
+      element.style.transition = "none";
+      element.style.transform = "";
+      element.style.zIndex = "";
+    }
+    requestAnimationFrame(() => {
+      for (const element of current.elements) element.style.transition = "";
+    });
+  };
+  // A tab opened or closed mid-drag makes the measured places wrong: drop the drag.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: the tab count is the trigger
+  useEffect(() => reset(), [tabCount]);
+  const begin = (current: TabDrag, element: HTMLElement) => {
+    const list = listRef.current;
+    if (!list) return false;
+    const elements = [...list.querySelectorAll<HTMLElement>("[data-tab-id]")];
+    const slot = elements.indexOf(element);
+    if (slot < 0) return false;
+    const rects = elements.map((tab) => tab.getBoundingClientRect());
+    current.elements = elements;
+    current.lefts = rects.map((rect) => rect.left);
+    current.widths = rects.map((rect) => rect.width);
+    current.slot = slot;
+    current.target = slot;
+    // Measured now, not on press: selecting the tab can scroll the strip under the pointer.
+    current.grabX = current.startX - (rects[slot]?.left ?? 0);
+    current.step = (rects[slot]?.width ?? 0) + (Number.parseFloat(getComputedStyle(list).columnGap) || 0);
+    for (const [position, tab] of elements.entries()) {
+      tab.style.transition = position === slot ? "none" : TAB_SHIFT_TRANSITION;
+    }
+    element.style.zIndex = "10";
+    return true;
+  };
+  const follow = (current: TabDrag, clientX: number) => {
+    const list = listRef.current;
+    const element = current.elements[current.slot];
+    if (!list || !element) return;
+    const width = current.widths[current.slot] ?? 0;
+    const natural = current.lefts[current.slot] ?? 0;
+    // Kept within the row of tabs, not the strip's visible part, so a tab half scrolled out of
+    // view doesn't jump as it's picked up.
+    const last = current.lefts.length - 1;
+    const first = current.lefts[0] ?? natural;
+    const end = (current.lefts[last] ?? natural) + (current.widths[last] ?? width) - width;
+    const left = Math.min(Math.max(clientX - current.grabX, first), end);
+    element.style.transform = `translateX(${left - natural}px)`;
+    // The drop slot: the nearest one to where it's held, so it swaps with a neighbour once it's
+    // halfway over it, the same either way. Tabs share one width, so slots are a step apart.
+    const target = Math.min(
+      Math.max(current.slot + Math.round((left - natural) / (current.step || 1)), 0),
+      last,
+    );
+    if (target === current.target) return;
+    current.target = target;
+    for (const [position, tab] of current.elements.entries()) {
+      if (position === current.slot) continue;
+      const shift = tabShift(position, current.slot, target) * current.step;
+      tab.style.transform = shift ? `translateX(${shift}px)` : "";
+    }
+  };
+  return {
+    consumeClick: () => {
+      const was = dragged.current;
+      dragged.current = false;
+      return was;
+    },
+    handlers: (tabId: string) => ({
+      onPointerDown: (event: ReactPointerEvent<HTMLElement>) => {
+        // The close button is its own control.
+        if (event.button !== 0 || (event.target as Element).closest("button")) return;
+        dragged.current = false;
+        drag.current = {
+          id: tabId,
+          pointerId: event.pointerId,
+          startX: event.clientX,
+          grabX: 0,
+          moved: false,
+          elements: [],
+          lefts: [],
+          widths: [],
+          slot: -1,
+          step: 0,
+          target: -1,
+        };
+        event.currentTarget.setPointerCapture(event.pointerId);
+        // Selected on press, as Firefox does, so the strip has settled before a drag measures it.
+        useBrowserStore.getState().activateTab(tabId);
+      },
+      onPointerMove: (event: ReactPointerEvent<HTMLElement>) => {
+        const current = drag.current;
+        if (!current || current.pointerId !== event.pointerId) return;
+        if (!current.moved) {
+          if (Math.abs(event.clientX - current.startX) < TAB_DRAG_THRESHOLD_PX) return;
+          if (!begin(current, event.currentTarget)) return;
+          current.moved = true;
+          dragged.current = true;
+        }
+        follow(current, event.clientX);
+      },
+      onPointerUp: (event: ReactPointerEvent<HTMLElement>) => {
+        const current = drag.current;
+        if (current?.moved && current.pointerId === event.pointerId) {
+          follow(current, event.clientX);
+          const { id, target, slot } = current;
+          // Reset and reorder in one handler, so they paint together.
+          reset();
+          if (target !== slot) useBrowserStore.getState().moveTab(id, target);
+        } else {
+          reset();
+        }
+      },
+      onPointerCancel: reset,
+      onLostPointerCapture: reset,
+    }),
+  };
+}
+
 function TabStrip({
   tabs,
   activeTabId,
@@ -429,6 +603,15 @@ function TabStrip({
     },
     { enabled: active },
   );
+  const listRef = useRef<HTMLDivElement>(null);
+  const tabDrag = useTabDrag(listRef, tabs.length);
+  // Tabs shrink to fit first, so this only scrolls once they're at their narrowest.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: the active tab and tab count are triggers, read from the DOM
+  useEffect(() => {
+    listRef.current
+      ?.querySelector('[role="tab"][aria-selected="true"]')
+      ?.scrollIntoView({ block: "nearest", inline: "nearest" });
+  }, [activeTabId, tabs.length]);
   return (
     // Above the desktop titlebar's drag strip (z-40), which would swallow tab clicks.
     <div
@@ -436,73 +619,74 @@ function TabStrip({
       className="browser-chrome relative z-40 flex h-[var(--studio-chat-header-height,48px)] min-w-0 shrink-0 items-center gap-1 pl-1.5 pr-[calc(0.5rem*var(--ui-space-scale,1)+var(--studio-window-control-inset,0px))]"
     >
       <div
+        ref={listRef}
         role="tablist"
         data-tauri-drag-region={true}
         aria-label={t("browser.tabs")}
-        className="flex min-w-0 flex-1 items-center overflow-x-auto [scrollbar-width:none]"
+        // A wheel scrolls the tabs sideways once they no longer fit, as Firefox's do.
+        onWheel={(event) => {
+          if (Math.abs(event.deltaY) > Math.abs(event.deltaX))
+            event.currentTarget.scrollLeft += event.deltaY;
+        }}
+        className="browser-tablist flex min-w-0 flex-1 items-center gap-1 overflow-x-auto overflow-y-hidden"
       >
-        {tabs.map((tab, index) => {
+        {tabs.map((tab) => {
           const active = tab.id === activeTabId;
           const title = tabTitle(tab, currentEntry(tab));
-          const divided =
-            index > 0 && !active && tabs[index - 1]?.id !== activeTabId;
           return (
-            <div
-              key={tab.id}
-              className="flex min-w-24 max-w-56 flex-1 items-center"
-            >
-              <span
-                aria-hidden={true}
+            // Firefox's tab sizes: as wide as 240px, and wide enough at their narrowest that a few
+            // letters of the title show, with a short fade.
+            <TabContextMenu key={tab.id} tab={tab} others={tabs.length > 1}>
+              <div
+                role="tab"
+                aria-selected={active}
+                tabIndex={0}
+                title={title}
+                data-tab-id={tab.id}
+                {...tabDrag.handlers(tab.id)}
+                onClick={() => {
+                  if (!tabDrag.consumeClick()) activateTab(tab.id);
+                }}
+                onAuxClick={(event) => {
+                  if (event.button === 1) closeTab(tab.id);
+                }}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter" || event.key === " ")
+                    activateTab(tab.id);
+                }}
                 className={cn(
-                  "h-4 w-px shrink-0 bg-border",
-                  !divided && "invisible",
+                  "group/tab relative flex h-[calc(34px*var(--ui-space-scale,1))] min-w-[calc(88px*var(--ui-space-scale,1))] max-w-60 flex-1 basis-0 cursor-pointer touch-none select-none items-center gap-1.5 rounded-[10px] pl-2 pr-1.5 text-ui-13 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring",
+                  active
+                    ? "bg-card text-foreground dark:bg-accent"
+                    : "text-muted-foreground hover:bg-[color-mix(in_oklab,var(--foreground)_calc(6%*var(--contrast-wash-gain,1)),transparent)] hover:text-foreground",
                 )}
-              />
-              <TabContextMenu tab={tab} others={tabs.length > 1}>
-                <div
-                  role="tab"
-                  aria-selected={active}
-                  tabIndex={0}
-                  title={title}
-                  onClick={() => activateTab(tab.id)}
-                  onAuxClick={(event) => {
-                    if (event.button === 1) closeTab(tab.id);
-                  }}
-                  onKeyDown={(event) => {
-                    if (event.key === "Enter" || event.key === " ")
-                      activateTab(tab.id);
+              >
+                <TabIcon tab={tab} />
+                <span className="min-w-0 flex-1 overflow-hidden whitespace-nowrap [mask-image:linear-gradient(to_right,black_calc(100%_-_0.625rem),transparent)]">
+                  {title}
+                </span>
+                <button
+                  type="button"
+                  aria-label={t("browser.closeTab")}
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    closeTab(tab.id);
                   }}
                   className={cn(
-                    "group/tab mx-0.5 flex h-[calc(30px*var(--ui-space-scale,1))] min-w-0 flex-1 cursor-pointer items-center gap-2 rounded-[10px] pl-2.5 pr-1 text-ui-13 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
-                    active
-                      ? "bg-card text-foreground shadow-[0_1px_2px_rgb(0_0_0/0.06)] dark:bg-accent dark:shadow-none"
-                      : "text-muted-foreground hover:bg-[color-mix(in_oklab,var(--foreground)_calc(5%*var(--contrast-wash-gain,1)),transparent)] hover:text-foreground",
+                    "flex size-5 shrink-0 cursor-pointer items-center justify-center rounded-md text-muted-foreground hover:bg-[color-mix(in_oklab,var(--foreground)_calc(10%*var(--contrast-wash-gain,1)),transparent)] hover:text-foreground",
+                    // Only on the open tab and the one under the pointer.
+                    !active &&
+                      "hidden group-hover/tab:flex group-focus-visible/tab:flex focus-visible:flex",
                   )}
                 >
-                  <TabIcon tab={tab} />
-                  <span className="min-w-0 flex-1 truncate">{title}</span>
-                  <button
-                    type="button"
-                    aria-label={t("browser.closeTab")}
-                    onClick={(event) => {
-                      event.stopPropagation();
-                      closeTab(tab.id);
-                    }}
-                    className={cn(
-                      "flex size-5 shrink-0 cursor-pointer items-center justify-center rounded-md text-muted-foreground hover:bg-[color-mix(in_oklab,var(--foreground)_calc(8%*var(--contrast-wash-gain,1)),transparent)] hover:text-foreground",
-                      !active &&
-                        "opacity-0 group-hover/tab:opacity-100 focus-visible:opacity-100",
-                    )}
-                  >
-                    <HugeiconsIcon
-                      icon={Cancel01Icon}
-                      strokeWidth={2}
-                      className="size-3.5"
-                    />
-                  </button>
-                </div>
-              </TabContextMenu>
-            </div>
+                  <HugeiconsIcon
+                    icon={Cancel01Icon}
+                    strokeWidth={2}
+                    className="size-3.5"
+                  />
+                </button>
+              </div>
+            </TabContextMenu>
           );
         })}
       </div>
@@ -573,7 +757,7 @@ function AddressBar({
       }}
     >
       <div className={cn("flex h-9 items-center gap-1 rounded-lg pl-1 pr-1 transition-colors", URLBAR)}>
-        <SiteIdentity address={editing ? "" : address} />
+        <SiteIdentity address={editing ? "" : address} tab={tab} />
         <div className="relative min-w-0 flex-1">
           <input
             ref={inputRef}
@@ -620,13 +804,26 @@ function AddressBar({
   );
 }
 
+/** Whether `tab` shows its page as fetched: over https, Studio's fetch checks the certificate and
+ *  host name, so a page that loaded had a valid one. A native view checks it itself. */
+function pageVerified(tab: BrowserTab | undefined): boolean {
+  if (!tab) return false;
+  const entry = currentEntry(tab);
+  if (entry.kind !== "web") return false;
+  // A fetched page is cached only once its fetch succeeded, whether or not the frame has drawn it.
+  return nativePage(tab) ? !tab.loading && !tab.nativeError : cachedPage(entry) !== undefined;
+}
+
+const LEARN_MORE_URL = "https://support.mozilla.org/kb/how-do-i-tell-if-my-connection-is-secure";
+
 /** The button at the bar's start, as Firefox's: a shield that opens the site's panel, with whether
- *  the connection is secure and the browser's data and settings. A magnifier while typing or on a
- *  new tab, where there is no site. */
-function SiteIdentity({ address }: { address: string }) {
+ *  the connection is secure (and a Security view with more on it) and the browser's data and
+ *  settings. A magnifier while typing or on a new tab, where there is no site. */
+function SiteIdentity({ address, tab }: { address: string; tab: BrowserTab | undefined }) {
   const t = useT();
   const [clearOpen, setClearOpen] = useState(false);
   const [open, setOpen] = useState(false);
+  const [view, setView] = useState<"site" | "security">("site");
   let url: URL | null = null;
   try {
     url = address ? new URL(address) : null;
@@ -641,12 +838,22 @@ function SiteIdentity({ address }: { address: string }) {
     );
   }
   const secure = url.protocol === "https:";
+  const verified = secure && pageVerified(tab);
   const label = t("browser.siteInfo.label");
   const row =
     "flex w-full cursor-pointer items-center gap-2.5 rounded-[11px] px-3 py-2 text-start text-sm transition-colors hover:bg-accent focus-visible:bg-accent focus-visible:outline-none";
+  const iconButton =
+    "flex size-7 shrink-0 cursor-pointer items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring";
+  const LockGlyph = secure ? Lock : LockOpen;
   return (
     <>
-      <Popover open={open} onOpenChange={setOpen}>
+      <Popover
+        open={open}
+        onOpenChange={(next) => {
+          setOpen(next);
+          if (!next) setView("site");
+        }}
+      >
         <Tooltip>
           <TooltipTrigger asChild={true}>
             <PopoverTrigger asChild={true}>
@@ -655,11 +862,12 @@ function SiteIdentity({ address }: { address: string }) {
                 aria-label={label}
                 className="flex size-7 shrink-0 cursor-pointer items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-[color-mix(in_oklab,var(--foreground)_calc(8%*var(--contrast-wash-gain,1)),transparent)] hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring aria-expanded:bg-[color-mix(in_oklab,var(--foreground)_calc(10%*var(--contrast-wash-gain,1)),transparent)] aria-expanded:text-foreground"
               >
-                <HugeiconsIcon
-                  icon={secure ? SecurityCheckIcon : SecurityWarningIcon}
-                  strokeWidth={1.75}
-                  className="size-4.25"
-                />
+                {/* The composer's shields, so a safe site reads like "Approve for me". */}
+                {secure ? (
+                  <ShieldCheck strokeWidth={2} className="size-4" />
+                ) : (
+                  <ShieldAlertGlyph strokeWidth={2} className="size-4" />
+                )}
               </button>
             </PopoverTrigger>
           </TooltipTrigger>
@@ -668,45 +876,106 @@ function SiteIdentity({ address }: { address: string }) {
           </TooltipContent>
         </Tooltip>
         <PopoverContent align="start" sideOffset={8} className="w-80 gap-0 rounded-[14px] p-1.5">
-          <div className="flex min-w-0 items-center gap-2.5 px-3 py-2">
-            <SiteFavicon
-              url={url.href}
-              className="size-4 rounded-[3px]"
-              fallbackClassName="size-4 text-muted-foreground"
-            />
-            <span className="min-w-0 flex-1 truncate text-sm font-medium text-foreground">{url.host}</span>
-            <span className="flex shrink-0 items-center gap-1.5 text-ui-13 text-muted-foreground">
-              <HugeiconsIcon
-                icon={secure ? LockIcon : SquareUnlock02Icon}
-                strokeWidth={1.75}
-                className="size-4"
-              />
-              {t(secure ? "browser.siteInfo.secure" : "browser.siteInfo.insecure")}
-            </span>
-          </div>
-          <div className="mx-3 my-1 h-px bg-border" />
-          <button
-            type="button"
-            className={row}
-            onClick={() => {
-              setOpen(false);
-              setClearOpen(true);
-            }}
-          >
-            <HugeiconsIcon icon={Delete02Icon} strokeWidth={1.75} className="size-icon" />
-            {t("browser.menu.clearData")}
-          </button>
-          <button
-            type="button"
-            className={row}
-            onClick={() => {
-              setOpen(false);
-              useSettingsDialogStore.getState().openDialog("browser");
-            }}
-          >
-            <HugeiconsIcon icon={Settings02Icon} strokeWidth={1.75} className="size-icon" />
-            {t("browser.settings")}
-          </button>
+          {view === "site" ? (
+            <>
+              <div className="flex min-w-0 items-center gap-2.5 px-3 py-2">
+                <SiteFavicon
+                  url={url.href}
+                  className="size-4 rounded-[3px]"
+                  fallbackClassName="size-4 text-muted-foreground"
+                />
+                <span className="min-w-0 flex-1 truncate text-sm font-medium text-foreground">{url.host}</span>
+              </div>
+              <div className="mx-3 my-1 h-px bg-border" />
+              <button type="button" className={row} onClick={() => setView("security")}>
+                <LockGlyph strokeWidth={2} className="size-4 shrink-0" />
+                <span className="flex-1">
+                  {t(secure ? "browser.siteInfo.secure" : "browser.siteInfo.insecure")}
+                </span>
+                <ChevronRight strokeWidth={2} className="size-4 shrink-0 text-muted-foreground rtl:-scale-x-100" />
+              </button>
+              <div className="mx-3 my-1 h-px bg-border" />
+              <button
+                type="button"
+                className={row}
+                onClick={() => {
+                  setOpen(false);
+                  setClearOpen(true);
+                }}
+              >
+                <HugeiconsIcon icon={Delete02Icon} strokeWidth={1.75} className="size-icon" />
+                {t("browser.menu.clearData")}
+              </button>
+              <button
+                type="button"
+                className={row}
+                onClick={() => {
+                  setOpen(false);
+                  useSettingsDialogStore.getState().openDialog("browser");
+                }}
+              >
+                <HugeiconsIcon icon={Settings02Icon} strokeWidth={1.75} className="size-icon" />
+                {t("browser.settings")}
+              </button>
+            </>
+          ) : (
+            <>
+              <div className="flex items-start gap-1.5 px-1.5 pb-2.5 pt-1.5">
+                <button
+                  type="button"
+                  aria-label={t("browser.siteInfo.back")}
+                  className={iconButton}
+                  onClick={() => setView("site")}
+                >
+                  <ArrowLeft strokeWidth={2} className="size-4 rtl:-scale-x-100" />
+                </button>
+                <div className="min-w-0 flex-1 pt-0.5">
+                  <p className="text-sm font-semibold text-foreground">{t("browser.siteInfo.security")}</p>
+                  <p className="truncate text-ui-13 text-muted-foreground">{url.host}</p>
+                </div>
+                <button
+                  type="button"
+                  aria-label={t("browser.siteInfo.close")}
+                  className={iconButton}
+                  onClick={() => setOpen(false)}
+                >
+                  <XIcon strokeWidth={2} className="size-4" />
+                </button>
+              </div>
+              <div className="mx-3 h-px bg-border" />
+              <div className="flex gap-3 px-3 pb-2 pt-3">
+                <LockGlyph strokeWidth={2} className="mt-0.5 size-4 shrink-0 text-muted-foreground" />
+                <div className="min-w-0 flex-1">
+                  <p className="text-sm font-medium text-foreground">
+                    {t(secure ? "browser.siteInfo.secureTitle" : "browser.siteInfo.insecureTitle")}
+                  </p>
+                  <p className="mt-0.5 text-ui-13 leading-relaxed text-muted-foreground">
+                    {t(secure ? "browser.siteInfo.secureDescription" : "browser.siteInfo.insecureDescription")}{" "}
+                    <button
+                      type="button"
+                      className="cursor-pointer text-primary underline underline-offset-2 hover:opacity-80"
+                      onClick={() => {
+                        setOpen(false);
+                        useBrowserStore.getState().openUrl(LEARN_MORE_URL, { newTab: true });
+                      }}
+                    >
+                      {t("browser.siteInfo.learnMore")}
+                    </button>
+                  </p>
+                </div>
+              </div>
+              {verified ? (
+                <div className="flex items-center gap-3 px-3 pb-3 pt-1">
+                  <HugeiconsIcon
+                    icon={Certificate01Icon}
+                    strokeWidth={1.75}
+                    className="size-4 shrink-0 text-muted-foreground"
+                  />
+                  <span className="text-sm text-foreground">{t("browser.siteInfo.certificateValid")}</span>
+                </div>
+              ) : null}
+            </>
+          )}
         </PopoverContent>
       </Popover>
       <ClearBrowsingDataDialog open={clearOpen} onOpenChange={setClearOpen} />
@@ -719,7 +988,7 @@ function ZoomBadge({ tab }: { tab: BrowserTab | undefined }) {
   const t = useT();
   const locale = useLocale();
   const zoom = tab?.zoom ?? 1;
-  if (!tab || Math.abs(zoom - 1) < 0.001) return null;
+  if (!canZoom(tab) || Math.abs(zoom - 1) < 0.001) return null;
   const label = t("browser.menu.zoomReset");
   return (
     <Tooltip>
@@ -793,9 +1062,11 @@ function showsWebPage(tab: BrowserTab | undefined): boolean {
 function ZoomControl({ tab }: { tab: BrowserTab | undefined }) {
   const t = useT();
   const locale = useLocale();
-  const zoom = tab?.zoom ?? 1;
+  // A new tab or the browser's own pages show nothing to zoom.
+  const zoomable = canZoom(tab);
+  const zoom = zoomable ? tab.zoom : 1;
   const setZoom = (next: number) =>
-    tab && useBrowserStore.getState().setZoom(tab.id, next);
+    zoomable && useBrowserStore.getState().setZoom(tab.id, next);
   const percent = new Intl.NumberFormat(locale, {
     style: "percent",
     maximumFractionDigits: 0,
@@ -809,7 +1080,7 @@ function ZoomControl({ tab }: { tab: BrowserTab | undefined }) {
         <button
           type="button"
           aria-label={t("browser.menu.zoomOut")}
-          disabled={!tab || zoom <= (ZOOM_STEPS[0] ?? 0)}
+          disabled={!zoomable || zoom <= (ZOOM_STEPS[0] ?? 0)}
           onClick={() => setZoom(stepZoom(zoom, -1))}
           className={step}
         >
@@ -825,7 +1096,7 @@ function ZoomControl({ tab }: { tab: BrowserTab | undefined }) {
         <button
           type="button"
           aria-label={t("browser.menu.zoomIn")}
-          disabled={!tab || zoom >= (ZOOM_STEPS[ZOOM_STEPS.length - 1] ?? 5)}
+          disabled={!zoomable || zoom >= (ZOOM_STEPS[ZOOM_STEPS.length - 1] ?? 5)}
           onClick={() => setZoom(stepZoom(zoom, 1))}
           className={step}
         >
@@ -839,7 +1110,7 @@ function ZoomControl({ tab }: { tab: BrowserTab | undefined }) {
       <button
         type="button"
         aria-label={t("browser.menu.zoomReset")}
-        disabled={!tab || zoom === 1}
+        disabled={!zoomable || zoom === 1}
         onClick={() => setZoom(1)}
         className={cn(step, "rounded-md")}
       >
@@ -854,6 +1125,10 @@ function PanelMenu({ tab }: { tab: BrowserTab | undefined }) {
   const device = useBrowserStore((state) => state.device);
   const [clearOpen, setClearOpen] = useState(false);
   const webUrl = webAddress(tab);
+  const bookmarked = useBookmarkFor(webUrl) !== undefined;
+  const toolbarMode = useBrowserPrefsStore((state) => state.bookmarksToolbar);
+  // The star's editor opens as the menu closes; focus going back to the menu button would shut it.
+  const keepFocus = useRef(false);
   const webPage = showsWebPage(tab);
   const store = useBrowserStore.getState();
   const mod =
@@ -884,6 +1159,11 @@ function PanelMenu({ tab }: { tab: BrowserTab | undefined }) {
           align="end"
           sideOffset={6}
           className="min-w-72 rounded-[20px] p-1.5 [&_[data-slot=dropdown-menu-separator]]:mx-3 [&_[data-slot=dropdown-menu-separator]]:my-1.5"
+          onCloseAutoFocus={(event) => {
+            if (!keepFocus.current) return;
+            keepFocus.current = false;
+            event.preventDefault();
+          }}
         >
           <DropdownMenuItem
             disabled={!webPage}
@@ -922,6 +1202,39 @@ function PanelMenu({ tab }: { tab: BrowserTab | undefined }) {
             )}
           </DropdownMenuItem>
           <DropdownMenuSeparator />
+          <DropdownMenuSub>
+            <DropdownMenuSubTrigger>{t("browser.pages.bookmarks")}</DropdownMenuSubTrigger>
+            <DropdownMenuSubContent className="min-w-60 rounded-[20px] p-1.5 [&_[data-slot=dropdown-menu-separator]]:mx-3 [&_[data-slot=dropdown-menu-separator]]:my-1.5">
+              <DropdownMenuItem
+                disabled={!webUrl}
+                onSelect={() => {
+                  keepFocus.current = true;
+                  store.bookmarkPage();
+                }}
+              >
+                {t(bookmarked ? "browser.bookmarks.edit" : "browser.bookmarks.bookmarkPage")}
+                <DropdownMenuShortcut>{mod}D</DropdownMenuShortcut>
+              </DropdownMenuItem>
+              <DropdownMenuSeparator />
+              <DropdownMenuLabel className="text-ui-12 font-normal text-muted-foreground">
+                {t("browser.bookmarks.toolbar")}
+              </DropdownMenuLabel>
+              <DropdownMenuRadioGroup
+                value={toolbarMode}
+                onValueChange={(value) =>
+                  useBrowserPrefsStore.getState().setBookmarksToolbar(value as BookmarksToolbarMode)
+                }
+              >
+                <DropdownMenuRadioItem value="always">{t("browser.bookmarks.toolbarAlways")}</DropdownMenuRadioItem>
+                <DropdownMenuRadioItem value="newtab">{t("browser.bookmarks.toolbarNewTab")}</DropdownMenuRadioItem>
+                <DropdownMenuRadioItem value="never">{t("browser.bookmarks.toolbarNever")}</DropdownMenuRadioItem>
+              </DropdownMenuRadioGroup>
+              <DropdownMenuSeparator />
+              <DropdownMenuItem onSelect={() => store.openInternal("bookmarks")}>
+                {t("browser.bookmarks.manage")}
+              </DropdownMenuItem>
+            </DropdownMenuSubContent>
+          </DropdownMenuSub>
           <DropdownMenuItem onSelect={() => store.openInternal("downloads")}>
             {t("browser.pages.downloads")}
           </DropdownMenuItem>
@@ -993,7 +1306,7 @@ function WebToolbar({ tab }: { tab: BrowserTab | undefined }) {
     <>
       <div className="flex shrink-0 items-center gap-0.5">
         <IconButton label={t("browser.back")} disabled={!canGoBack} onClick={back} className={NAV_BUTTON}>
-          <HugeiconsIcon icon={ArrowLeft02Icon} strokeWidth={1.75} className="size-4.75" />
+          <ArrowLeft strokeWidth={NAV_STROKE} className={NAV_ICON} />
         </IconButton>
         <IconButton
           label={t("browser.forward")}
@@ -1001,7 +1314,7 @@ function WebToolbar({ tab }: { tab: BrowserTab | undefined }) {
           onClick={forward}
           className={NAV_BUTTON}
         >
-          <HugeiconsIcon icon={ArrowRight02Icon} strokeWidth={1.75} className="size-4.75" />
+          <ArrowRight strokeWidth={NAV_STROKE} className={NAV_ICON} />
         </IconButton>
         <IconButton
           label={t("browser.reload")}
@@ -1013,13 +1326,18 @@ function WebToolbar({ tab }: { tab: BrowserTab | undefined }) {
           }}
           className={NAV_BUTTON}
         >
-          <RefreshGlyph strokeWidth={1.75} className="size-4.5" />
+          <RotateCw strokeWidth={NAV_STROKE} className={cn(NAV_ICON, "scale-[0.94]")} />
         </IconButton>
       </div>
       <AddressBar
         key={tab?.id ?? "none"}
         tab={tab}
-        actions={<ZoomBadge tab={tab} />}
+        actions={
+          <>
+            <ZoomBadge tab={tab} />
+            <BookmarkStar url={webAddress(tab)} title={tab?.title ?? ""} favicon={tab?.favicon ?? null} />
+          </>
+        }
       />
       <div className="flex shrink-0 items-center gap-0.5">
         <WebActions tab={tab} />
@@ -1525,6 +1843,19 @@ export const BrowserPanel = memo(function BrowserPanel({ active = true }: { acti
   const device = useBrowserStore((state) => state.device);
   const annotateTabId = useBrowserStore((state) => state.annotateTabId);
   const [pageElement, setPageElement] = useState<HTMLDivElement | null>(null);
+  const sectionRef = useRef<HTMLElement>(null);
+  // Zoom keys, Ctrl+wheel and the View menu zoom the page while focus or the pointer is in here,
+  // not the interface, as a browser keeps its page zoom apart from its own.
+  useEffect(() => {
+    if (!active) return;
+    return registerZoomScope({
+      contains: (element) => sectionRef.current?.contains(element) ?? false,
+      zoom: (direction) => {
+        const tabId = useBrowserStore.getState().activeTabId;
+        if (tabId) zoomTab(tabId, direction);
+      },
+    });
+  }, [active]);
   const native = useNativeBrowser((state) => state.enabled);
   useEffect(() => (native ? startNativeViews() : undefined), [native]);
   const activeTab = tabs.find((tab) => tab.id === activeTabId);
@@ -1551,18 +1882,29 @@ export const BrowserPanel = memo(function BrowserPanel({ active = true }: { acti
 
   return (
     <section
+      ref={sectionRef}
       aria-label={t("browser.title")}
-      className="relative flex h-full min-h-0 flex-col overflow-hidden bg-muted pt-[var(--studio-content-top-inset,0px)]"
+      onKeyDown={(event) => {
+        // ⌘D / Ctrl+D bookmarks the page, as in a browser; pages forward theirs through the frame.
+        if (
+          (event.metaKey || event.ctrlKey) &&
+          !event.shiftKey &&
+          !event.altKey &&
+          event.key.toLowerCase() === "d"
+        ) {
+          event.preventDefault();
+          useBrowserStore.getState().bookmarkPage();
+        }
+      }}
+      className={cn(
+        "relative flex h-full min-h-0 flex-col overflow-hidden bg-muted pt-[var(--studio-content-top-inset,0px)]",
+        documentShown
+          ? "[--browser-surface:color-mix(in_oklab,var(--muted)_55%,var(--card))]"
+          : "[--browser-surface:var(--card)]",
+      )}
     >
       <TabStrip tabs={tabs} activeTabId={activeTabId} active={active} />
-      <div
-        className={cn(
-          "relative flex min-h-0 flex-1 flex-col overflow-hidden border-t border-border/60 dark:border-transparent",
-          documentShown
-            ? "bg-[color-mix(in_oklab,var(--muted)_55%,var(--card))]"
-            : "bg-card",
-        )}
-      >
+      <div className="relative flex min-h-0 flex-1 flex-col overflow-hidden bg-[var(--browser-surface)]">
         <div
           className={cn(
             "browser-chrome flex shrink-0 items-center gap-2 px-2.5 py-2",
@@ -1576,6 +1918,7 @@ export const BrowserPanel = memo(function BrowserPanel({ active = true }: { acti
             <WebToolbar tab={activeTab} />
           )}
         </div>
+        {fileTab ? null : <BookmarksBar tab={activeTab} />}
         {findOpen && showsWebPage(activeTab) ? (
           <FindBar key={activeTabId} tab={activeTab} />
         ) : null}

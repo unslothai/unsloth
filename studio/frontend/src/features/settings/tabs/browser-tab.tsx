@@ -11,6 +11,7 @@ import {
 } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import {
+  type BookmarksToolbarMode,
   ClearBrowsingDataDialog,
   SEARCH_ENGINES,
   type SearchEngineId,
@@ -32,12 +33,20 @@ export function BrowserTab() {
   const openFilesInBrowser = useBrowserPrefsStore((state) => state.openFilesInBrowser);
   const searchEngine = useBrowserPrefsStore((state) => state.searchEngine);
   const showFullUrl = useBrowserPrefsStore((state) => state.showFullUrl);
-  const { setOpenLinksInBrowser, setOpenFilesInBrowser, setSearchEngine, setShowFullUrl } =
-    useBrowserPrefsStore.getState();
+  const bookmarksToolbar = useBrowserPrefsStore((state) => state.bookmarksToolbar);
+  const showBookmarkEditor = useBrowserPrefsStore((state) => state.showBookmarkEditor);
+  const {
+    setOpenLinksInBrowser,
+    setOpenFilesInBrowser,
+    setSearchEngine,
+    setShowFullUrl,
+    setBookmarksToolbar,
+    setShowBookmarkEditor,
+  } = useBrowserPrefsStore.getState();
   const [clearOpen, setClearOpen] = useState(false);
   // History and downloads open as browser tabs, so only beside a chat.
   const canOpenPages = browserPanelAvailable();
-  const openPage = (page: "history" | "downloads") => {
+  const openPage = (page: "history" | "downloads" | "bookmarks") => {
     useSettingsDialogStore.getState().closeDialog();
     useBrowserStore.getState().openInternal(page);
   };
@@ -105,6 +114,45 @@ export function BrowserTab() {
             checked={showFullUrl}
             onCheckedChange={setShowFullUrl}
           />
+        </SettingsRow>
+      </SettingsSection>
+
+      <SettingsSection title={t("browser.bookmarksTitle")}>
+        <SettingsRow
+          label={t("browser.bookmarksToolbarSetting")}
+          description={t("browser.bookmarksToolbarSettingDescription")}
+        >
+          <Select
+            value={bookmarksToolbar}
+            onValueChange={(value) => setBookmarksToolbar(value as BookmarksToolbarMode)}
+          >
+            <SelectTrigger className="w-48" aria-label={t("browser.bookmarksToolbarSetting")}>
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="always">{t("browser.bookmarks.toolbarAlways")}</SelectItem>
+              <SelectItem value="newtab">{t("browser.bookmarks.toolbarNewTab")}</SelectItem>
+              <SelectItem value="never">{t("browser.bookmarks.toolbarNever")}</SelectItem>
+            </SelectContent>
+          </Select>
+        </SettingsRow>
+        <SettingsRow
+          label={t("browser.bookmarks.showEditor")}
+          description={t("browser.bookmarkEditorSettingDescription")}
+        >
+          <Switch
+            aria-label={t("browser.bookmarks.showEditor")}
+            checked={showBookmarkEditor}
+            onCheckedChange={setShowBookmarkEditor}
+          />
+        </SettingsRow>
+        <SettingsRow
+          label={t("browser.pages.bookmarks")}
+          description={t(canOpenPages ? "browser.bookmarksSettingDescription" : "browser.pagesFromChat")}
+        >
+          <Button variant="outline" size="sm" disabled={!canOpenPages} onClick={() => openPage("bookmarks")}>
+            {t("browser.manage")}
+          </Button>
         </SettingsRow>
       </SettingsSection>
 

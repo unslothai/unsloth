@@ -20,6 +20,8 @@ export type FrameMessage =
   | { type: "scriptNavigation" }
   | { type: "found"; found: boolean }
   | { type: "shortcut"; key: string; shift: boolean }
+  /** A zoom key or Ctrl+wheel in the page: a step in (1), out (-1), or back to 100% (0). */
+  | { type: "zoom"; direction: 1 | -1 | 0; wheel: boolean }
   | { type: "annotate"; event: AnnotateEvent };
 
 export type AnnotateRect = { left: number; top: number; width: number; height: number };
@@ -45,7 +47,7 @@ export type AnnotateEvent =
 const MAX_URL_CHARS = 8192;
 const MAX_BODY_CHARS = 1024 * 1024;
 const MAX_TITLE_CHARS = 1024;
-const SHORTCUT_KEYS = new Set(["l", "t", "w", "r", "f"]);
+const SHORTCUT_KEYS = new Set(["l", "t", "w", "r", "f", "d"]);
 const MAX_QUOTE_CHARS = 300;
 export const MAX_MARKS = 500;
 // Far past any screen, so a page can't make the panel draw something huge.
@@ -144,6 +146,10 @@ export function parseFrameMessage(data: unknown): FrameMessage | null {
     case "shortcut":
       return typeof message.key === "string" && SHORTCUT_KEYS.has(message.key)
         ? { type: "shortcut", key: message.key, shift: message.shift === true }
+        : null;
+    case "zoom":
+      return message.direction === 1 || message.direction === -1 || message.direction === 0
+        ? { type: "zoom", direction: message.direction, wheel: message.wheel === true }
         : null;
     case "annotate": {
       const event = annotateEvent(message);

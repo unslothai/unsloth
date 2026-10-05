@@ -8,6 +8,7 @@ import {
   ArrowUp01Icon,
   Cancel01Icon,
   Clock01Icon,
+  StarIcon,
   Delete02Icon,
   Download01Icon,
   ViewOffSlashIcon,
@@ -239,7 +240,12 @@ export function NewTabPage({ tabId }: { tabId: string }) {
       <div className="mx-auto flex w-full max-w-4xl flex-col gap-9 px-6 pb-10 pt-8">
         <section className="flex flex-col gap-3">
           <SectionTitle>{t("browser.tools")}</SectionTitle>
-          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+            <ToolButton
+              icon={StarIcon}
+              label={t("browser.pages.bookmarks")}
+              onClick={() => openInternal("bookmarks")}
+            />
             <ToolButton
               icon={Clock01Icon}
               label={t("browser.pages.history")}

@@ -5,17 +5,25 @@ import { create } from "zustand";
 import { persist } from "zustand/middleware";
 import type { SearchEngineId } from "./address";
 
+/** When the bookmarks toolbar shows, as Firefox offers it. */
+export type BookmarksToolbarMode = "always" | "newtab" | "never";
+
 interface BrowserPrefsState {
   openLinksInBrowser: boolean;
   openFilesInBrowser: boolean;
   searchEngine: SearchEngineId;
   showFullUrl: boolean;
+  bookmarksToolbar: BookmarksToolbarMode;
+  /** Whether saving a bookmark opens its name and location editor. */
+  showBookmarkEditor: boolean;
   /** Sites taken off the new tab's Suggested, by host. */
   hiddenSuggestions: string[];
   setOpenLinksInBrowser: (value: boolean) => void;
   setOpenFilesInBrowser: (value: boolean) => void;
   setSearchEngine: (value: SearchEngineId) => void;
   setShowFullUrl: (value: boolean) => void;
+  setBookmarksToolbar: (value: BookmarksToolbarMode) => void;
+  setShowBookmarkEditor: (value: boolean) => void;
   hideSuggestion: (host: string) => void;
   restoreSuggestions: () => void;
 }
@@ -27,11 +35,15 @@ export const useBrowserPrefsStore = create<BrowserPrefsState>()(
       openFilesInBrowser: true,
       searchEngine: "duckduckgo",
       showFullUrl: false,
+      bookmarksToolbar: "newtab",
+      showBookmarkEditor: true,
       hiddenSuggestions: [],
       setOpenLinksInBrowser: (openLinksInBrowser) => set({ openLinksInBrowser }),
       setOpenFilesInBrowser: (openFilesInBrowser) => set({ openFilesInBrowser }),
       setSearchEngine: (searchEngine) => set({ searchEngine }),
       setShowFullUrl: (showFullUrl) => set({ showFullUrl }),
+      setBookmarksToolbar: (bookmarksToolbar) => set({ bookmarksToolbar }),
+      setShowBookmarkEditor: (showBookmarkEditor) => set({ showBookmarkEditor }),
       hideSuggestion: (host) =>
         set((state) =>
           state.hiddenSuggestions.includes(host)

@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { Button } from "@/components/ui/button";
+import { zoomScopeFromChord } from "@/features/interface-zoom";
 import { useT } from "@/i18n";
 import { isTauri } from "@/lib/api-base";
 import { openExternalLink } from "@/lib/open-link";
@@ -16,6 +17,7 @@ import { useBrowserHistoryStore } from "./history-store";
 import { InternalPageView } from "./internal-pages";
 import { useNativeBrowser } from "./native-view";
 import { NewTabPage } from "./new-tab-page";
+import { zoomTab } from "./zoom";
 import type { FrameMessage } from "./page-frame";
 import { PageFrame } from "./page-frame";
 import {
@@ -130,6 +132,12 @@ function useFrameMessages(tabId: string, origin: string | null) {
           else if (message.key === "t") store.newTab();
           else if (message.key === "w") store.closeTab(tabId);
           else if (message.key === "r") store.reload(tabId);
+          else if (message.key === "d") store.bookmarkPage();
+          break;
+        case "zoom":
+          // A key goes through the scope, so the View menu repeating it doesn't zoom twice.
+          if (message.wheel) zoomTab(tabId, message.direction);
+          else zoomScopeFromChord({ contains: () => true, zoom: (direction) => zoomTab(tabId, direction) }, message.direction);
           break;
       }
     },

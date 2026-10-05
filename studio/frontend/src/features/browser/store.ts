@@ -20,7 +20,7 @@ export type BrowserEntry =
       plainText?: boolean;
     };
 
-export type InternalPage = "history" | "downloads";
+export type InternalPage = "history" | "downloads" | "bookmarks";
 
 export type DeviceMode = "off" | "mobile" | "tablet";
 
@@ -201,6 +201,8 @@ type BrowserState = {
   /** Bumped on open, so the panel re-expands after a drag shut. */
   openSequence: number;
   focusAddressSequence: number;
+  /** Bumped by ⌘D, so the address bar's star bookmarks the page or opens its editor. */
+  bookmarkSequence: number;
   findOpen: boolean;
   findMiss: boolean;
   device: DeviceMode;
@@ -234,6 +236,8 @@ type BrowserState = {
   reload: (tabId: string) => void;
   activateTab: (tabId: string) => void;
   closeTab: (tabId: string) => void;
+  /** Moves a tab to `index` in the strip, as dragging it there does. */
+  moveTab: (tabId: string, index: number) => void;
   updateTab: (
     tabId: string,
     patch: Partial<
@@ -244,6 +248,7 @@ type BrowserState = {
     >,
   ) => void;
   focusAddress: () => void;
+  bookmarkPage: () => void;
   openInternal: (page: InternalPage) => void;
   setZoom: (tabId: string, zoom: number) => void;
   setFindOpen: (open: boolean) => void;
@@ -317,6 +322,7 @@ export const useBrowserStore = create<BrowserState>((set, get) => {
     activeTabId: null,
     openSequence: 0,
     focusAddressSequence: 0,
+    bookmarkSequence: 0,
     findOpen: false,
     findMiss: false,
     device: "off",
@@ -441,6 +447,16 @@ export const useBrowserStore = create<BrowserState>((set, get) => {
       }));
     },
     activateTab: (tabId) => set({ activeTabId: tabId, findOpen: false, findMiss: false, annotateTabId: null }),
+    moveTab: (tabId, index) =>
+      set((state) => {
+        const from = state.tabs.findIndex((tab) => tab.id === tabId);
+        const to = Math.max(0, Math.min(index, state.tabs.length - 1));
+        if (from < 0 || from === to) return state;
+        const tabs = [...state.tabs];
+        const [moved] = tabs.splice(from, 1);
+        if (moved) tabs.splice(to, 0, moved);
+        return { tabs };
+      }),
     closeTab: (tabId) => {
       const { tabs, activeTabId } = get();
       const index = tabs.findIndex((tab) => tab.id === tabId);
@@ -467,6 +483,7 @@ export const useBrowserStore = create<BrowserState>((set, get) => {
         return { tabs: patchTab(state.tabs, tabId, (current) => ({ ...current, ...patch })) };
       }),
     focusAddress: () => set((state) => ({ focusAddressSequence: state.focusAddressSequence + 1 })),
+    bookmarkPage: () => set((state) => ({ bookmarkSequence: state.bookmarkSequence + 1 })),
     openInternal: (page) => {
       const openKey = `internal:${page}`;
       if (focusExisting(openKey)) return;

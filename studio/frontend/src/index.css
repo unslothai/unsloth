@@ -4947,6 +4947,15 @@ html.force-reduced-motion .sidebar-section-drop-line {
 	display: none;
 }
 
+/* The browser's tabs scroll sideways once they're at their narrowest, with no bar. */
+.browser-tablist {
+	scrollbar-width: none;
+}
+
+.browser-tablist::-webkit-scrollbar {
+	display: none;
+}
+
 /* The negative margin cancels the surface's p-2.5; the clip keeps cards inside its rounded top corners. */
 .unsloth-composer-surface .aui-composer-attachment-cards[data-layout="strip"] {
 	margin-inline: -0.625rem;

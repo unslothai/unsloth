@@ -27,12 +27,15 @@ import {
   InternetIcon,
   LinkSquare02Icon,
   MoreHorizontalIcon,
+  PencilEdit02Icon,
   Search01Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import type { DateRange } from "react-day-picker";
 import { hostOf } from "./address";
+import { BookmarkEditPopover, bookmarkTitle, removeBookmarkWithUndo } from "./bookmarks";
+import { type Bookmark, useBrowserBookmarksStore } from "./bookmarks-store";
 import { ClearBrowsingDataDialog } from "./clear-data-dialog";
 import { type DownloadItem, type HistoryItem, useBrowserHistoryStore } from "./history-store";
 import { LinkContextMenu, MenuRow } from "./link-context-menu";
@@ -103,8 +106,9 @@ function PageShell({
   title: string;
   query: string;
   onQueryChange: (query: string) => void;
-  onClear: () => void;
-  clearLabel: string;
+  /** Left out where clearing everything at once would be a loss, as for bookmarks. */
+  onClear?: () => void;
+  clearLabel?: string;
   empty: boolean;
   children: ReactNode;
 }) {
@@ -114,9 +118,11 @@ function PageShell({
       <div className="mx-auto flex w-full max-w-2xl flex-col gap-5 px-6 pb-10 pt-8">
         <div className="flex items-center gap-3">
           <h1 className="min-w-0 flex-1 truncate text-ui-18 font-medium text-foreground">{title}</h1>
-          <Button type="button" variant="ghost" size="sm" disabled={empty} onClick={onClear}>
-            {clearLabel}
-          </Button>
+          {onClear ? (
+            <Button type="button" variant="ghost" size="sm" disabled={empty} onClick={onClear}>
+              {clearLabel}
+            </Button>
+          ) : null}
         </div>
         <label className="flex h-9 items-center gap-2 rounded-full border border-border/80 bg-card px-3.5 dark:border-transparent dark:bg-accent">
           <HugeiconsIcon icon={Search01Icon} strokeWidth={1.75} className="size-4 shrink-0 text-muted-foreground" />
@@ -143,6 +149,8 @@ function Row({
   url,
   onOpen,
   onRemove,
+  menu,
+  anchor,
 }: {
   icon: ReactNode;
   title: string;
@@ -152,18 +160,26 @@ function Row({
   url: string | null;
   onOpen?: () => void;
   onRemove: () => void;
+  /** Rows of the right-click menu ahead of Remove, and what to do with focus as it closes. */
+  menu?: { rows: ReactNode; onCloseAutoFocus?: (event: Event) => void };
+  /** Something placed over the row, such as the anchor of a popover it opens. */
+  anchor?: ReactNode;
 }) {
   const t = useT();
   return (
     <LinkContextMenu
       url={url}
+      onCloseAutoFocus={menu?.onCloseAutoFocus}
       extra={
-        <MenuRow icon={Delete02Icon} onSelect={onRemove}>
-          {t("browser.pages.remove")}
-        </MenuRow>
+        <>
+          {menu?.rows}
+          <MenuRow icon={Delete02Icon} onSelect={onRemove}>
+            {t("browser.pages.remove")}
+          </MenuRow>
+        </>
       }
     >
-      <li className="group/row flex items-center gap-1 rounded-xl pr-1 hover:bg-[color-mix(in_oklab,var(--foreground)_calc(4%*var(--contrast-wash-gain,1)),transparent)] data-[state=open]:bg-[color-mix(in_oklab,var(--foreground)_calc(4%*var(--contrast-wash-gain,1)),transparent)]">
+      <li className="group/row relative flex items-center gap-1 rounded-xl pr-1 hover:bg-[color-mix(in_oklab,var(--foreground)_calc(4%*var(--contrast-wash-gain,1)),transparent)] data-[state=open]:bg-[color-mix(in_oklab,var(--foreground)_calc(4%*var(--contrast-wash-gain,1)),transparent)]">
         <button
           type="button"
           onClick={onOpen}
@@ -185,6 +201,7 @@ function Row({
         >
           <HugeiconsIcon icon={Cancel01Icon} strokeWidth={2} className="size-3.5" />
         </button>
+        {anchor}
       </li>
     </LinkContextMenu>
   );
@@ -669,6 +686,93 @@ function DownloadsPage() {
   );
 }
 
+function BookmarkRow({ bookmark, tabId, time }: { bookmark: Bookmark; tabId: string; time: string }) {
+  const t = useT();
+  const [editing, setEditing] = useState(false);
+  const editChosen = useRef(false);
+  return (
+    <BookmarkEditPopover bookmark={bookmark} open={editing} onOpenChange={setEditing} align="start">
+      <Row
+        icon={
+          <SiteFavicon
+            url={bookmark.url}
+            icon={bookmark.icon}
+            className="size-4 rounded-[3px]"
+            fallbackClassName="size-4 text-muted-foreground"
+          />
+        }
+        title={bookmarkTitle(bookmark)}
+        detail={bookmark.url}
+        time={time}
+        url={bookmark.url}
+        onOpen={() => useBrowserStore.getState().navigate(tabId, { url: bookmark.url })}
+        onRemove={() => removeBookmarkWithUndo(bookmark, t)}
+        menu={{
+          rows: (
+            <MenuRow
+              icon={PencilEdit02Icon}
+              onSelect={() => {
+                editChosen.current = true;
+                setEditing(true);
+              }}
+            >
+              {t("browser.bookmarks.edit")}
+            </MenuRow>
+          ),
+          onCloseAutoFocus: (event) => {
+            // Focus stays in the editor the menu opened.
+            if (!editChosen.current) return;
+            editChosen.current = false;
+            event.preventDefault();
+          },
+        }}
+        anchor={<PopoverAnchor className="pointer-events-none absolute inset-x-3 bottom-0 h-0" />}
+      />
+    </BookmarkEditPopover>
+  );
+}
+
+function BookmarksPage({ tabId }: { tabId: string }) {
+  const t = useT();
+  const locale = useLocale();
+  const bookmarks = useBrowserBookmarksStore((state) => state.bookmarks);
+  const [query, setQuery] = useState("");
+  const needle = query.trim().toLowerCase();
+  const groups = useMemo(() => {
+    const matches = needle
+      ? bookmarks.filter(
+          (bookmark) =>
+            bookmark.title.toLowerCase().includes(needle) || bookmark.url.toLowerCase().includes(needle),
+        )
+      : bookmarks;
+    return (["toolbar", "other"] as const)
+      .map((folder) => ({
+        label: t(folder === "toolbar" ? "browser.bookmarks.toolbar" : "browser.bookmarks.other"),
+        items: matches.filter((bookmark) => bookmark.folder === folder),
+      }))
+      .filter((group) => group.items.length > 0);
+  }, [bookmarks, needle, t]);
+  const dateFormat = useMemo(() => new Intl.DateTimeFormat(locale, { dateStyle: "medium" }), [locale]);
+  return (
+    <PageShell title={t("browser.pages.bookmarks")} query={query} onQueryChange={setQuery} empty={bookmarks.length === 0}>
+      <Groups
+        groups={groups}
+        emptyLabel={t(needle ? "browser.pages.noMatches" : "browser.pages.noBookmarks")}
+        render={(bookmark) => (
+          <BookmarkRow
+            key={bookmark.id}
+            bookmark={bookmark}
+            tabId={tabId}
+            time={dateFormat.format(bookmark.addedAt)}
+          />
+        )}
+      />
+    </PageShell>
+  );
+}
+
 export function InternalPageView({ page, tabId }: { page: InternalPage; tabId: string }) {
-  return page === "history" ? <HistoryPage tabId={tabId} /> : <DownloadsPage />;
+  if (page === "history") return <HistoryPage tabId={tabId} />;
+  if (page === "bookmarks") return <BookmarksPage tabId={tabId} />;
+  return <DownloadsPage />;
 }
