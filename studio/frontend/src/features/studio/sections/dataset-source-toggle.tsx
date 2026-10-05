@@ -45,7 +45,7 @@ export function DatasetSourceToggle({
       }}
       ariaLabel={t("studio.dataset.sourceAriaLabel")}
       size="compact"
-      className="@md/train-card:w-[200px]"
+      className="@md/train-card:w-[calc(200px*var(--ui-space-scale,1))]"
     />
   );
 }

@@ -5,7 +5,7 @@
 // store notification and on every render, and useShallow gates the re-render,
 // not the selector. Building a "data:audio/wav;base64,..." string in there
 // therefore copies the whole clip per token of a streamed reply, twice over:
-// AttachmentThumb and AttachmentPreviewDialog each mount the hook.
+// the composer card and AttachmentPreviewDialog each mount the hook.
 
 import assert from "node:assert/strict";
 import test from "node:test";
@@ -86,7 +86,48 @@ test("the audio data URL is built in the dialog, not on every attachment tile", 
     true,
     "the audio data URL is built outside AttachmentAudioBody",
   );
-  assert.match(preview, /<DialogContent[\s\S]*<AttachmentAudioBody/);
+  assert.match(preview, /<AttachmentViewer[\s\S]*<AttachmentAudioBody/);
+  const viewer = readSrc("components/assistant-ui/attachment-document-dialog.tsx");
+  assert.match(viewer, /\{open && children\}/);
+});
+
+test("the attachment selector resolves a video from the composer and from a sent message", () => {
+  const part = { type: "file", filename: "clip.mp4", data: "A".repeat(1024), mimeType: "video/mp4" };
+  const state = {
+    attachment: { type: "file", name: "clip.mp4", contentType: "video/mp4", content: [part] },
+  };
+  const sent = selectAttachmentSource(state);
+  assert.equal(sent.kind, "video");
+  assert.equal(Object.is(sent.video, part), true, "the selector copied the clip's payload");
+  assert.equal(sent.audio, undefined);
+
+  const file = new File(["x"], "clip.webm", { type: "video/webm" });
+  const unsent = { attachment: { type: "file", name: "clip.webm", contentType: "video/webm", file } };
+  const composer = selectAttachmentSource(unsent);
+  assert.equal(composer.kind, "video");
+  assert.equal(composer.file, file);
+
+  const listen = selectAttachmentSource({
+    attachment: {
+      type: "file",
+      name: "talk.mp4",
+      contentType: "audio/mp4",
+      content: [{ type: "audio" as const, audio: { data: "AAA", format: "wav" } }],
+    },
+  });
+  assert.equal(listen.kind, "audio");
+  assert.equal(listen.video, undefined);
+});
+
+test("the video data URL is built in the viewer, not on every attachment tile", () => {
+  const hook = readSrc("components/assistant-ui/use-attachment-source.ts");
+  assert.match(hook, /video: source\.video/);
+  assert.doesNotMatch(hook, /attachmentVideoSrc/);
+  const preview = readSrc("components/assistant-ui/attachment-preview.tsx");
+  const body = preview.slice(preview.indexOf("const AttachmentVideoBody"));
+  assert.match(body, /attachmentVideoSrc\(source\.video\)/);
+  assert.match(preview, /<AttachmentViewer[\s\S]*<AttachmentVideoBody/);
+  assert.match(preview, /source\.kind === "video"[\s\S]*?<AttachmentVideoDialog/);
 });
 
 // A plain text/document attachment must keep working: the control that has to
@@ -116,14 +157,14 @@ test("the attachment selector still resolves text and image attachments", () => 
 });
 
 // ComposerPrimitive.Attachments keys its providers by list index. Removing the
-// first attachment therefore reuses AttachmentUI for the next attachment, so
+// first attachment therefore reuses ComposerAttachmentCard for the next attachment, so
 // every stateful preview/source branch needs the attachment identity as its own
 // reset boundary.
 test("attachment previews reset when an index is reused for another attachment", () => {
   const attachment = readSrc("components/assistant-ui/attachment.tsx");
   const ui = attachment.slice(
-    attachment.indexOf("const AttachmentUI"),
-    attachment.indexOf("const AttachmentRemove"),
+    attachment.indexOf("const ComposerAttachmentCard: FC"),
+    attachment.indexOf("const SentAttachmentLayoutContext"),
   );
 
   assert.match(ui, ATTACHMENT_ID_SELECTOR_RE);

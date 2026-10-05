@@ -268,6 +268,7 @@ def test_external_chat_explicit_key_honors_edited_target(monkeypatch):
         "provider_type": "custom",
         "base_url": "https://new.example/v1",
         "api_key": "replacement-key",
+        "api_type": "chat_completions",
     }
 
 

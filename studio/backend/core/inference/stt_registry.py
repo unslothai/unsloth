@@ -16,12 +16,13 @@ import threading
 from typing import Any, Optional, Sequence
 
 from loggers import get_logger
+from utils.gpu_memory_events import invalidates_gpu_memory as _invalidates_gpu_memory
 
 logger = get_logger(__name__)
 
 # Every engine a dictation model can be resident on. Order is the order an unload sweeps them, which matters only for
 # logging.
-STT_ENGINES = ("transformers", "gguf", "mtmd")
+STT_ENGINES = ("transformers", "gguf", "mtmd", "audiocpp")
 
 # Serialises load-then-release so two loads on different engines cannot leave both resident.
 _load_lock = threading.Lock()
@@ -35,16 +36,21 @@ def sidecar_for(engine: str) -> Any:
     if engine == "gguf":
         from core.inference.stt_ggml_sidecar import get_ggml_stt_sidecar
         return get_ggml_stt_sidecar()
+    if engine == "audiocpp":
+        from core.inference.stt_audiocpp_sidecar import get_audio_cpp_stt_sidecar
+        return get_audio_cpp_stt_sidecar()
     from core.inference.stt_sidecar import get_stt_sidecar
 
     return get_stt_sidecar()
 
 
+@_invalidates_gpu_memory("stt load")
 def load(
     model: Optional[str],
     engine: str,
     request_cancel_event: Optional[threading.Event] = None,
     device: Optional[str] = None,
+    **options,
 ) -> None:
     """Make ``model`` resident on ``engine``, then release every idle other engine.
 
@@ -67,11 +73,11 @@ def load(
         if _model_is_downloaded(engine, model):
             unload(others, wait = False)
             sidecar_for(engine).load(
-                model, request_cancel_event = request_cancel_event, device = device
+                model, request_cancel_event = request_cancel_event, device = device, **options
             )
         else:
             sidecar_for(engine).load(
-                model, request_cancel_event = request_cancel_event, device = device
+                model, request_cancel_event = request_cancel_event, device = device, **options
             )
             unload(others, wait = False)
 
@@ -89,6 +95,13 @@ def _model_is_downloaded(engine: str, model: str) -> bool:
         if engine == "gguf":
             from core.inference import stt_ggml_sidecar
             return stt_ggml_sidecar._cached_model_path(model) is not None
+        if engine == "audiocpp":
+            from core.inference import stt_audiocpp_sidecar
+
+            # A missing runtime refuses the load just as surely as missing weights.
+            return stt_audiocpp_sidecar.is_available() and stt_audiocpp_sidecar.is_model_downloaded(
+                model
+            )
         from core.inference import stt_sidecar
 
         return (
@@ -99,6 +112,7 @@ def _model_is_downloaded(engine: str, model: str) -> bool:
         return False
 
 
+@_invalidates_gpu_memory("stt unload")
 def unload(
     engines: Optional[Sequence[str]] = None,
     *,
