@@ -136,6 +136,23 @@
 			transparent
 		);
 	}
+	/* Model picker list: reaches into the panel padding for an overlay scrollbar so rows keep their
+	   18px inset; rows give way only for what is left. --list-room is already clear of row actions. */
+	.model-list-scroll {
+		--list-reach: min(var(--overlay-scrollbar-gutter, 0px), var(--spacing));
+		--list-room: calc(var(--spacing) * 2 + var(--list-reach));
+		margin-right: calc(var(--spacing) - var(--list-reach));
+		padding-right: calc(var(--spacing) * 1.5 + var(--list-reach));
+	}
+	[data-external] .model-list-scroll {
+		--list-reach: min(var(--overlay-scrollbar-gutter, 0px), var(--spacing) * 2);
+		--list-room: calc(var(--spacing) + var(--list-reach));
+		margin-right: calc(0px - var(--list-reach));
+		padding-right: calc(var(--spacing) * 0.5 + var(--list-reach));
+	}
+	.model-list-gutter {
+		padding-right: max(0px, var(--overlay-scrollbar-gutter, 0px) - var(--list-room));
+	}
 	/* RAG chip strip: sidebar-style bottom fade while more chips sit below
 	   the scroll fold (JS-toggled). */
 	.rag-docs-bottom-fade {
