@@ -1296,12 +1296,12 @@ class ToolLoopController:
     def _cap_result(self, text: str, tool_name: str | None) -> str:
         """The card and the model get the same capped body; the frontend envelope stays whole."""
         from core.inference.tools import (  # noqa: PLC0415 -- import cycle
-            MAX_TOOL_TEXT_CHARS,
+            _hard_cap_chars,
             _split_frontend_suffix,
             cap_tool_text,
         )
 
-        if len(text) <= MAX_TOOL_TEXT_CHARS:
+        if len(text) <= _hard_cap_chars():
             return text
         body, suffix = _split_frontend_suffix(text, tool_name)
         capped = cap_tool_text(

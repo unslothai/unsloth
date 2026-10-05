@@ -948,13 +948,13 @@ def test_the_hard_cap_is_tunable(monkeypatch):
 
     monkeypatch.setenv("UNSLOTH_TOOL_RESULT_HARD_CAP_CHARS", "1000")
     assert tools._env_int("UNSLOTH_TOOL_RESULT_HARD_CAP_CHARS", 256_000) == 1000
-    monkeypatch.setattr(tools, "MAX_TOOL_TEXT_CHARS", 1000)
-    completion = _spilled(["mcp__docs__dump"], "w" * 5000)
+    monkeypatch.setattr(tools, "MAX_TOOL_TEXT_CHARS", 50_000)
+    completion = _spilled(["mcp__docs__dump"], "w" * 60_000)
     content = completion.tool_message()["content"]
-    assert content == "w" * 1000 + _tool_text_notice_head() + (
+    assert content == "w" * 50_000 + _tool_text_notice_head() + (
         " the full output is not retained in model context.)"
     )
-    assert "truncated to 1,000 chars" in content
+    assert "truncated to 50,000 chars" in content
 
 
 def test_the_spill_masks_studio_credentials_like_the_model_copy(_sandbox):
@@ -966,3 +966,16 @@ def test_the_spill_masks_studio_credentials_like_the_model_copy(_sandbox):
     spilled = (_sandbox / path).read_text()
     assert key not in spilled and key not in content
     assert spilled.startswith("token [redacted]")
+
+
+def test_a_hard_cap_below_the_window_cap_leaves_truncated_terminal_output_alone(monkeypatch):
+    import core.inference.tools as tools
+
+    monkeypatch.setattr(tools, "MAX_TOOL_TEXT_CHARS", 1000)
+    already = tools._truncate("t\n" * 50_000, workdir = None)
+    assert len(already) > 1000
+    controller = ToolLoopController(tools = [_tool("terminal")])
+    completion = controller.record_result(
+        controller.prepare_call(_call("terminal", {"command": "yes t"})), already
+    )
+    assert completion.tool_message()["content"] == already

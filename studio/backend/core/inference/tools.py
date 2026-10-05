@@ -20478,8 +20478,14 @@ MAX_TOOL_TEXT_CHARS = _env_int("UNSLOTH_TOOL_RESULT_HARD_CAP_CHARS", 256_000)
 _TOOL_TEXT_READERS = frozenset({"terminal", "python"})
 
 
+def _hard_cap_chars() -> int:
+    """Never below the window-aware cap plus its notice, so output `_truncate` already cut (and
+    spilled) passes through with its own spill reference intact."""
+    return max(MAX_TOOL_TEXT_CHARS, _MAX_OUTPUT_CHARS + 4_000)
+
+
 def _tool_text_notice_head() -> str:
-    return f"\n\n... (tool result truncated to {MAX_TOOL_TEXT_CHARS:,} chars for the model;"
+    return f"\n\n... (tool result truncated to {_hard_cap_chars():,} chars for the model;"
 
 
 def _tool_text_search_hint(path: str, readers: "frozenset[str]") -> str:
@@ -20505,9 +20511,10 @@ def cap_tool_text(
     When the model has a tool that can read the chat's sandbox, the full text is spilled there and
     the notice says how to search it.
     """
-    if len(text) <= MAX_TOOL_TEXT_CHARS:
+    limit = _hard_cap_chars()
+    if len(text) <= limit:
         return text
-    head = _head_whole_lines(text, MAX_TOOL_TEXT_CHARS)[0]
+    head = _head_whole_lines(text, limit)[0]
     readers = readers & _TOOL_TEXT_READERS
     if readers and session_id and _spill_scope(session_id, thread_id) is not None:
         try:
