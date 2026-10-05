@@ -4,4 +4,3 @@ lib/
 unsloth-jupyterlab/
 .yarn/
 .pnp.*
-yarn.lock

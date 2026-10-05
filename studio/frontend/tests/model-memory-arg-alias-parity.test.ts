@@ -159,3 +159,12 @@ test("underscore spellings are classified like their dashed twins", () => {
   assert.equal(extraArgsOwnPlacement(["not_a_flag"]), false);
   assert.equal(extraArgsOwnPlacement(["--temp", "0.7"]), false);
 });
+
+test("both projector spellings add resident files", () => {
+  for (const flag of ["--mmproj", "-mm"]) {
+    assert.ok(
+      extraArgsAddResidentFiles([flag, "/models/p.gguf"]),
+      `${flag} was not recognised`,
+    );
+  }
+});

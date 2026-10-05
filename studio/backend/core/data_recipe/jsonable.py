@@ -50,6 +50,14 @@ def _to_pil_from_hf_image_dict(value: Any) -> Any | None:
 
     path_value = value.get("path")
     if isinstance(path_value, str) and path_value.strip():
+        # Row cells are user data: a managed account may only preview files it could read itself.
+        from fastapi import HTTPException
+        from core.training.account_jobs import account_path
+
+        try:
+            account_path(path_value)
+        except (HTTPException, OSError, RuntimeError, ValueError, TypeError):
+            return None
         try:
             from PIL import Image  # type: ignore
             with Image.open(Path(path_value)) as image:

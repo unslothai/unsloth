@@ -7,6 +7,12 @@
 
 import { normalizeDenseQuantSchemes } from "../../../../lib/dense-quant-schemes.ts";
 import {
+  AUDIO_CPP_MODELS,
+  type AudioCppModel,
+  type AudioCppTask,
+  audioCppDisplayName,
+} from "../../../audio/audio-cpp-catalog.ts";
+import {
   type GgufFitClass,
   type GgufVariantSizes,
   classifyGgufFit as classifyGgufFitForDevice,
@@ -50,7 +56,7 @@ export interface ModelArtifact {
   approxSizeGb?: number;
   /** Measured CPU-offload fit tiers. Any tier whose GPU and available-RAM floors are both met can
    *  auto-route this artifact without the resident 70% rule. */
-  offloadFitTiers?: readonly { gpuGb: number; systemRamGb: number }[];
+  offloadFitTiers?: readonly OffloadFitTier[];
   /** Extra search tokens beyond the id/label ("4bit", "nf4", ...). */
   keywords?: readonly string[];
   /** Parameter count of THIS artifact's checkpoint, for the row's size chip. Only a fallback: the
@@ -168,6 +174,39 @@ const bf16Single = (
   ...extra,
 });
 
+const AUDIO_GGUF_DESCRIPTIONS: Record<AudioCppTask, string> = {
+  tts: "Text-to-speech",
+  music: "Text-to-music",
+  asr: "Speech-to-text",
+  sep: "Source separation",
+};
+
+function audioGgufDescription(model: AudioCppModel): string {
+  const workflows = model.workflows;
+  if (!workflows || workflows.includes("speak")) {
+    return AUDIO_GGUF_DESCRIPTIONS[model.task];
+  }
+  const clones = workflows.includes("clone");
+  const converts = workflows.includes("convert");
+  if (clones && converts) return "Voice cloning and conversion";
+  if (converts) return "Voice conversion";
+  if (clones) return "Voice cloning";
+  return AUDIO_GGUF_DESCRIPTIONS[model.task];
+}
+
+// Recommended audio GGUFs the backend runs on its audio runtime. They are plain GGUF rows, so the
+// quant ladder, fit and downloads work as for any other; the backend routes them by GGUF header.
+// Music lives in Speak like MiniMax Music 3, since both load into the main audio slot.
+const audioGgufGroups = (tasks: readonly AudioCppTask[]): CatalogGroup[] =>
+  AUDIO_CPP_MODELS.filter((model) => tasks.includes(model.task)).map((model) => ({
+    canonicalId: model.id,
+    displayName: audioCppDisplayName(model.id),
+    description: audioGgufDescription(model),
+    scope: "audio",
+    task: model.task === "asr" ? "stt" : "tts",
+    artifacts: [gguf(model.id)],
+  }));
+
 // Sizes are steady resident estimates (GB) used only for routing; missing = never auto-pick
 // unless downloaded. GGUF entries carry none: pickDefaultQuant sizes the .gguf files.
 
@@ -178,7 +217,8 @@ export const IMAGE_CATALOG: CatalogGroup[] = [
     description: "Text-to-image",
     scope: "image",
     artifacts: [
-      bf16Mirror("Tongyi-MAI/Z-Image-Turbo", 30, {
+      // Resident bf16 GiB, not the Hub's fp32 DiT: 11.5 DiT + 7.5 Qwen3-4B + 0.2 VAE.
+      bf16Mirror("Tongyi-MAI/Z-Image-Turbo", 19.1, {
         totalParams: 6154908736,
         prequantRepo: "unsloth/Z-Image-Turbo-FP8",
         prequantSizeGb: { fp8: 5.86, int8: 5.86 },
@@ -436,7 +476,9 @@ export const VIDEO_CATALOG: CatalogGroup[] = [
         // mirror are decimal GB (video.py divides by 1_000_000_000), so never copy figures across:
         // converted, these are 79.5 / 150.3 and 132.1 / 85.9 GB, matching the estimators' 78.74 / 150
         // and 132 / 85. Copying applies the conversion twice and sends capable hosts to GGUF.
+        // 30 GiB: streamed int8 denoiser + int8 conditioner, measured 27.6 GB peak VRAM on a 32 GiB-capped B200.
         offloadFitTiers: [
+          { gpuGb: 30, systemRamGb: 80, requiresQuantisedStreaming: true },
           { gpuGb: 74, systemRamGb: 140 },
           { gpuGb: 123, systemRamGb: 80 },
         ],
@@ -631,6 +673,7 @@ export const AUDIO_CATALOG: CatalogGroup[] = [
       }),
     ],
   },
+  ...audioGgufGroups(["tts", "music", "sep"]),
   // Llasa is deliberately absent: it speaks XCodec2 (65,536 <|s_N|> tokens), which is in neither
   // _AUDIO_TOKEN_PATTERNS nor AudioCodecManager, so a curated row loaded then failed at generation.
   // Training still works (unsloth_Llasa-3B.yaml). Re-add both rows with an xcodec2 decoder.
@@ -700,6 +743,7 @@ export const AUDIO_CATALOG: CatalogGroup[] = [
     task: "stt",
     artifacts: [bf16Pipeline("unsloth/whisper-tiny", 1, { label: "Safetensors" })],
   },
+  ...audioGgufGroups(["asr"]),
 ];
 
 
@@ -1087,6 +1131,18 @@ export function groupMatchesQuery(group: CatalogGroup, query: string): boolean {
 }
 
 
+export interface OffloadFitTier {
+  gpuGb: number;
+  systemRamGb: number;
+  /** Only offered where `/api/system.quantised_streaming` says group offload streams torchao weights. */
+  requiresQuantisedStreaming?: boolean;
+}
+
+function offloadTierMet(tier: OffloadFitTier, budget: DeviceBudget): boolean {
+  if (tier.requiresQuantisedStreaming && budget.quantisedStreaming !== true) return false;
+  return budget.gpuGb >= tier.gpuGb && budget.systemRamGb >= tier.systemRamGb;
+}
+
 export interface DeviceBudget {
   /** Total GPU memory in GB (0/undefined = unknown or none). */
   gpuGb: number;
@@ -1098,6 +1154,23 @@ export interface DeviceBudget {
   gpuCount?: number;
   /** Dense quant schemes this host runs, best first; empty keeps the bf16 sizing rule. */
   denseQuantSchemes?: readonly string[];
+  /** Group offload can stream torchao weights; absent = unknown, so streamed tiers are not offered. */
+  quantisedStreaming?: boolean;
+  /** Backend-reported extra offload tiers per lower-cased repo id (`/api/system.diffusers_offload_tiers`).
+   *  Unioned with an artifact's own `offloadFitTiers`, so they can only widen; ignored for artifacts
+   *  without catalog tiers, whose size rule they must not replace. */
+  extraOffloadFitTiers?: Readonly<Record<string, readonly OffloadFitTier[]>>;
+}
+
+/** The artifact's catalog tiers plus any the backend reports for it. Empty when the catalog has none. */
+function artifactOffloadTiers(
+  artifact: ModelArtifact,
+  budget: DeviceBudget,
+): readonly OffloadFitTier[] {
+  const own = artifact.offloadFitTiers ?? [];
+  if (!own.length) return own;
+  const extra = budget.extraOffloadFitTiers?.[artifact.repoId.trim().toLowerCase()];
+  return extra?.length ? [...own, ...extra] : own;
 }
 
 /** GGUF fit, delegated to the one formula the Hub badge already uses. Its old private rule
@@ -1290,8 +1363,8 @@ function fitsArtifactBudget(
   budget: DeviceBudget,
 ): boolean {
   if (artifact.offloadFitTiers?.length) {
-    return artifact.offloadFitTiers.some(
-      (tier) => budget.gpuGb >= tier.gpuGb && budget.systemRamGb >= tier.systemRamGb,
+    return artifactOffloadTiers(artifact, budget).some(
+      (tier) => offloadTierMet(tier, budget),
     );
   }
   const allowanceGb = budget.gpuGb * 0.7;
@@ -1411,8 +1484,8 @@ export function catalogGroupFitsDevice(
     // matching pickDefaultArtifact.
     if (a.format === "gguf") return true;
     if (a.offloadFitTiers?.length) {
-      return a.offloadFitTiers.some(
-        (tier) => budget.gpuGb >= tier.gpuGb && budget.systemRamGb >= tier.systemRamGb,
+      return artifactOffloadTiers(a, budget).some(
+        (tier) => offloadTierMet(tier, budget),
       );
     }
     // The same quantised sizing the row badge and pickDefaultArtifact use: the dense figure would

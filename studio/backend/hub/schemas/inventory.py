@@ -6,12 +6,24 @@
 Kept independent from upstream models/models.py so the Hub module can ship
 without modifying any upstream schema."""
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, PrivateAttr, model_validator
 from typing import List, Literal, Optional
+
+from core.inference.audio_workflows import inventory_audio_workflows
 
 
 ModelFormat = Literal["gguf", "safetensors", "adapter", "checkpoint", "unknown"]
 ModelRuntime = Literal["llama_cpp", "transformers", "adapter", "unknown"]
+LocalArtifactKind = Literal[
+    "diffusers_pipeline",
+    "diffusers_modular_pipeline",
+    "diffusers_dual_pipeline",
+    "transformers_model",
+    "single_file_checkpoint",
+    "gguf",
+    "adapter",
+    "unknown",
+]
 
 
 class GgufVariantDetail(BaseModel):
@@ -146,6 +158,8 @@ class LocalModelCapabilities(BaseModel):
 class LocalModelInfo(BaseModel):
     """Discovered local model candidate."""
 
+    _scan_root: Optional[str] = PrivateAttr(None)
+
     id: str = Field(..., description = "Identifier to use for loading/training")
     inventory_id: Optional[str] = Field(
         None, description = "Stable semantic inventory row identifier"
@@ -157,6 +171,10 @@ class LocalModelInfo(BaseModel):
     path: str = Field(..., description = "Local path where model data was discovered")
     size_bytes: int = Field(0, description = "Observed model artifact size in bytes")
     model_format: ModelFormat = Field("unknown", description = "Model file format")
+    artifact_kind: LocalArtifactKind = Field(
+        "unknown",
+        description = "Structural contract, e.g. a Diffusers pipeline root vs a Transformers dir",
+    )
     runtime: ModelRuntime = Field("unknown", description = "Expected runtime backend")
     format_variant: Optional[str] = Field(
         None, description = "Format variant label, for example a GGUF quant"
@@ -188,6 +206,10 @@ class LocalModelInfo(BaseModel):
     audio_type: Optional[str] = Field(
         None,
         description = "Detected output-audio architecture or codec used by Audio runtime policy",
+    )
+    audio_workflows: Optional[List[str]] = Field(
+        None,
+        description = "Audio page workflows (speak, clone, music, transcribe) this row serves; null when not audio",
     )
     base_model: Optional[str] = Field(
         None,
@@ -233,6 +255,12 @@ class LocalModelInfo(BaseModel):
         ),
     )
 
+    @model_validator(mode = "after")
+    def derive_audio_workflows(self):
+        if self.audio_workflows is None:
+            self.audio_workflows = inventory_audio_workflows(self.task, self.audio_type)
+        return self
+
 
 class LocalModelListResponse(BaseModel):
     """Response schema for listing local/cached models."""
@@ -275,6 +303,7 @@ class CachedRepoBase(BaseModel):
     inventory_id: Optional[str] = None
     load_id: Optional[str] = None
     model_format: ModelFormat = "unknown"
+    artifact_kind: LocalArtifactKind = "unknown"
     runtime: ModelRuntime = "unknown"
     format_variant: Optional[str] = None
     capabilities: LocalModelCapabilities = Field(default_factory = LocalModelCapabilities)
@@ -282,6 +311,14 @@ class CachedRepoBase(BaseModel):
     # diffusion pick by it, so a row without one is dropped from those lists.
     task: Optional[str] = None
     audio_type: Optional[str] = None
+    # Audio page workflows the row serves, from the task first: audio.cpp music rows carry no audio_type.
+    audio_workflows: Optional[List[str]] = None
+
+    @model_validator(mode = "after")
+    def derive_audio_workflows(self):
+        if self.audio_workflows is None:
+            self.audio_workflows = inventory_audio_workflows(self.task, self.audio_type)
+        return self
 
 
 class CachedGgufRepo(CachedRepoBase):

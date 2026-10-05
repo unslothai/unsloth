@@ -206,6 +206,10 @@ def test_apply_falls_back_on_unavailable_kernel(monkeypatch):
 def test_apply_failed_kernel_restores_native_when_polluted(monkeypatch):
     # Requested kernel fails AND the global is polluted: restore native before returning.
     monkeypatch.setattr(att, "_active_attention_backend", lambda: "_native_cudnn")
+    # The set itself must be what fails here, not the sageattention version floor in front of it.
+    monkeypatch.setattr(att, "_sage_version_too_old", lambda: None)
+    monkeypatch.setattr(att, "_pip_sage2_installed", lambda: True)
+    monkeypatch.setattr(att, "_install_sage_dispatch_guard", lambda: True)
 
     class _FailOnceTransformer:
         def __init__(self):
@@ -290,6 +294,8 @@ def test_install_skipped_when_module_present(monkeypatch):
     monkeypatch.setattr(
         importlib.util, "find_spec", lambda name: object() if name == "sageattention" else None
     )
+    # A pip SageAttention 2 serves "sage": nothing is installed.
+    monkeypatch.setattr(att, "_pip_sage2_installed", lambda: True)
     run = _Recorder()
     _stub_subprocess(monkeypatch, run)
     att._ensure_attention_backend_installed("sage")
@@ -301,29 +307,29 @@ def test_install_runs_wheel_only_for_missing_kernel(monkeypatch):
     import importlib.util
 
     monkeypatch.setattr(importlib.util, "find_spec", lambda name: None)
+    monkeypatch.setattr(att, "_pip_sage2_installed", lambda: False)
+    monkeypatch.setattr(att, "_kernels_hub_compatible", lambda: True)
     run = _Recorder()
     _stub_subprocess(monkeypatch, run)
     att._ensure_attention_backend_installed("sage")
     assert len(run.calls) == 1
     cmd = run.calls[0]
     assert "--only-binary" in cmd and ":all:" in cmd
-    assert any(a.startswith("sageattention") for a in cmd)
 
 
-def test_sage_install_carries_the_dispatcher_version_floor(monkeypatch):
-    # PyPI's newest sageattention wheel is 1.0.6 but diffusers refuses anything below 2.1.1, so an unpinned install "succeeds",
-    # writes an unusable 1.0.6 into the user's venv and is then rejected. The requirement carries the floor so pip resolves nothing.
+def test_sage_install_never_asks_pypi_for_sageattention(monkeypatch):
+    # PyPI has only SageAttention 1, so "sage" installs the kernels package for the hub build.
     monkeypatch.setenv("UNSLOTH_DIFFUSION_ATTENTION_INSTALL", "auto")
     import importlib.util
 
     monkeypatch.setattr(importlib.util, "find_spec", lambda name: None)
+    monkeypatch.setattr(att, "_pip_sage2_installed", lambda: False)
+    monkeypatch.setattr(att, "_kernels_hub_compatible", lambda: True)
     run = _Recorder()
     _stub_subprocess(monkeypatch, run)
     att._ensure_attention_backend_installed("sage")
-    req = next(a for a in run.calls[0] if a.startswith("sageattention"))
-    assert req == "sageattention>=2.1.1", req
-    # Unversioned kernels are unaffected.
-    assert att._pip_requirement("xformers", "xformers") == "xformers"
+    assert run.calls and not any("sageattention" in part for cmd in run.calls for part in cmd)
+    assert run.calls[0][-1] == "kernels"
 
 
 _XFORMERS_WHEEL = "https://download.pytorch.org/whl/cu130/xformers-0.0.34-cp39-abi3-win_amd64.whl"
@@ -544,7 +550,7 @@ def test_xformers_resolution_skipped_when_already_installed(monkeypatch):
 
 
 def test_matched_wheel_path_does_not_touch_other_backends(monkeypatch):
-    """sage / flash / kernels still go to pip by name -- only xFormers has the silent
+    """sage (via kernels) / flash / kernels still go to pip by name -- only xFormers has the silent
     ABI failure that forces URL resolution."""
     assert att._MATCHED_WHEEL_BACKENDS == frozenset({"xformers"})
     monkeypatch.setenv("UNSLOTH_DIFFUSION_ATTENTION_INSTALL", "auto")
@@ -556,9 +562,11 @@ def test_matched_wheel_path_does_not_touch_other_backends(monkeypatch):
     )
     run = _Recorder()
     _stub_subprocess(monkeypatch, run)
+    monkeypatch.setattr(att, "_pip_sage2_installed", lambda: False)
+    monkeypatch.setattr(att, "_kernels_hub_compatible", lambda: True)
     att._ensure_attention_backend_installed("sage")
     assert len(run.calls) == 1
-    assert "sageattention>=2.1.1" in run.calls[0]
+    assert run.calls[0][-1] == "kernels"
 
 
 def test_failed_install_not_retried_in_same_process(monkeypatch):
@@ -577,8 +585,8 @@ def test_failed_install_not_retried_in_same_process(monkeypatch):
         raise sp.CalledProcessError(returncode = 1, cmd = cmd)
 
     _stub_subprocess(monkeypatch, _boom)
-    att._ensure_attention_backend_installed("sage")  # pre-install attempt (outside lock)
-    att._ensure_attention_backend_installed("sage")  # in-lock retry -> must be skipped
+    att._ensure_attention_backend_installed("flash")  # pre-install attempt (outside lock)
+    att._ensure_attention_backend_installed("flash")  # in-lock retry -> must be skipped
     assert len(calls) == 1
 
 
@@ -592,7 +600,7 @@ def test_install_invalidates_import_caches_on_success(monkeypatch):
     _stub_subprocess(monkeypatch, _Recorder())
     invalidated = []
     monkeypatch.setattr(importlib, "invalidate_caches", lambda: invalidated.append(True))
-    att._ensure_attention_backend_installed("sage")
+    att._ensure_attention_backend_installed("flash")
     assert invalidated == [True]
 
 
@@ -648,7 +656,7 @@ def test_install_failure_logs_pip_stderr(monkeypatch):
         def warning(self, msg, *args):
             warnings.append(msg % args if args else msg)
 
-    att._ensure_attention_backend_installed("sage", _Logger())
+    att._ensure_attention_backend_installed("flash", _Logger())
     assert warnings and "No matching distribution found" in warnings[-1]
 
 
@@ -703,18 +711,19 @@ def test_kernels_install_allowed_on_supported_hub(monkeypatch):
     assert len(run.calls) == 1 and "kernels" in run.calls[0]
 
 
-def test_kernels_gate_only_applies_to_kernels_package(monkeypatch):
-    # sage / xformers / flash-attn wheels do not import huggingface_hub at module scope, so the
-    # hub gate must not block them.
+def test_kernels_gate_also_covers_sage(monkeypatch):
     monkeypatch.setenv("UNSLOTH_DIFFUSION_ATTENTION_INSTALL", "auto")
     import importlib.util
 
     monkeypatch.setattr(importlib.util, "find_spec", lambda name: None)
     monkeypatch.setattr(att, "_kernels_hub_compatible", lambda: False)
+    monkeypatch.setattr(att, "_pip_sage2_installed", lambda: False)
     run = _Recorder()
     _stub_subprocess(monkeypatch, run)
-    att._ensure_attention_backend_installed("sage")
-    assert len(run.calls) == 1 and any("sageattention" in part for part in run.calls[0])
+    assert att._ensure_attention_backend_installed("sage") is not None
+    assert run.calls == []
+    att._ensure_attention_backend_installed("flash")
+    assert len(run.calls) == 1 and any("flash-attn" in part for part in run.calls[0])
 
 
 def test_kernels_hub_compatible_reads_hub_version(monkeypatch):
@@ -882,6 +891,26 @@ def test_any_subquadratic_kernel_means_not_math_only(kernels, monkeypatch):
     # the score matrix is never materialised and there is nothing to warn about.
     _stub_probe(monkeypatch, kernels)
     assert att.sdpa_math_only(_target()) is False
+
+
+def test_a_fused_launch_that_fails_late_is_not_reported_available(monkeypatch):
+    # Windows ROCm gfx1151: the fused call returns, and its hipErrorInvalidValue only surfaces on
+    # the next checked kernel. The probe must take that error itself, not hand it to a later op.
+    torch = pytest.importorskip("torch")
+
+    class _Pending:
+        def float(self):
+            raise RuntimeError("CUDA error: invalid argument")
+
+    real = torch.nn.functional.scaled_dot_product_attention
+
+    def _sdpa(q, k, v, *a, **kw):
+        if not torch.backends.cuda.math_sdp_enabled():
+            return _Pending()
+        return real(q, k, v, *a, **kw)
+
+    monkeypatch.setattr(torch.nn.functional, "scaled_dot_product_attention", _sdpa)
+    assert att._probe_sdpa_kernels("cpu", torch.float32) == ("math",)
 
 
 def test_an_unanswerable_probe_is_not_a_math_only_verdict(monkeypatch):

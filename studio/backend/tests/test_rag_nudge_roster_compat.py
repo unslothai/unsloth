@@ -651,7 +651,13 @@ def test_count_tokens_prices_the_same_roster_the_completion_sends(rag_conn, monk
     _doc(rag_conn, "project_p1", "d2", "allotment.pdf")
     _switched, counted = _count_tokens_backend(monkeypatch, count = 99, supports_tools = True)
 
-    async def _select(payload, *, tools_on, mcp_allowed):
+    async def _select(
+        payload,
+        *,
+        tools_on,
+        mcp_allowed,
+        supports_vision = False,
+    ):
         return TOOLS
 
     from routes import inference as inference_routes
