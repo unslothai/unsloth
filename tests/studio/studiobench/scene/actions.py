@@ -719,8 +719,15 @@ async (timeoutMs) => {
     const target = D.lastAssistantMessage();
     if (!target) return false;
     target.dispatchEvent(new PointerEvent("pointerover", { bubbles: true, pointerType: "mouse" }));
-    const button = D.actionButton("Delete message");
-    if (!button) return false;
+    // Delete is the More menu's last item since #12735; see DELETE_JS.
+    const trigger = D.actionButton("More");
+    if (!trigger) return false;
+    const button = (await D.openMenuAndFind(trigger, "Delete", 1000)).item;
+    if (!button) {
+      document.dispatchEvent(new KeyboardEvent("keydown",
+        { key: "Escape", bubbles: true, cancelable: true }));
+      return false;
+    }
     const started = performance.now();
     button.click();
     while (performance.now() - started < timeoutMs) {
@@ -2339,23 +2346,40 @@ async (opts) => {
   // "a running message hides it" was already the diagnosis in the line this replaced, and the
   // action still reported NOT RUN on the first sample rather than waiting for the running message
   // to stop running. Same wait, same bound and same reporting as `message_menu`.
-  const found = await D.waitForActionButton("Delete message", opts.waitForButtonMs);
-  const button = found.el;
+  //
+  // Delete is the last item of the reply's More menu since #12735, not a button on the bar, so
+  // the wait is for the More trigger and the menu is opened BEFORE the clock starts: what this
+  // action times is the delete, and `message_menu` already times the menu.
+  const found = await D.waitForActionButton("More", opts.waitForButtonMs);
   const waitedMs = found.waitedMs;
-  if (!button) {
+  if (!found.el) {
     return {
       ran: false,
       waitedMs,
       running: found.running,
       reason:
-        "no Delete button after waiting " + waitedMs + "ms" +
+        "no More button after waiting " + waitedMs + "ms" +
         (found.running ? ": the thread was still generating, which unmounts the action bar" : ""),
+    };
+  }
+  const menu = await D.openMenuAndFind(found.el, "Delete", opts.waitForButtonMs);
+  const button = menu.item;
+  if (!button) {
+    document.dispatchEvent(new KeyboardEvent("keydown",
+      { key: "Escape", bubbles: true, cancelable: true }));
+    return {
+      ran: false,
+      waitedMs,
+      reason:
+        "no Delete item in the More menu (opened=" + menu.opened + ", items=" + menu.items +
+        ", after " + menu.openMs + "ms)",
     };
   }
   const target = D.lastAssistantMessage();
   const before = D.threadTotal();
   const mountedBefore = D.messageCount();
   const started = performance.now();
+  // A Radix menu item selects on click, unlike its trigger.
   button.click();
   let ms = null;
   // isConnected on the captured node is O(1). Re-counting [data-role] every frame would put an
@@ -2375,7 +2399,8 @@ async (opts) => {
   // alongside rather than replacing it: on a windowed mount `messageCount()` is the size of the
   // window and a recycled node would read as a delete. `waitedMs` is how long the bar was waited
   // for, which the row reports so a slot that opened too early is visible.
-  return { ran: true, waitedMs, ms: ms === null ? null : Math.round(ms * 10) / 10,
+  return { ran: true, waitedMs, menuOpenMs: menu.openMs,
+           ms: ms === null ? null : Math.round(ms * 10) / 10,
            before, after: D.threadTotal(),
            mountedBefore, mountedAfter: D.messageCount() };
 }
@@ -2407,6 +2432,7 @@ def delete_message(ctx: ActionContext) -> ActionResult:
             "mounted_before": raw.get("mountedBefore"),
             "mounted_after": raw.get("mountedAfter"),
             "action_bar_wait_ms": raw.get("waitedMs"),
+            "menu_open_ms": raw.get("menuOpenMs"),
         },
         timings = {"delete_ms": raw["ms"]},
         reason = None if ok else f"the message count went {raw['before']} -> {raw['after']}",
