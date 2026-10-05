@@ -4684,8 +4684,7 @@ class ModelConfig:
                     if sizes:
                         verified_gguf = (identifier, variant, verified_file, sizes)
 
-                # The listing publishes no projector, but the user may have hand-added
-                # one beside the cached weight (#9286).
+                # A projector hand-added beside the cached weight (#9286).
                 local_mmproj: Optional[str] = None
                 if not has_vision and verified_file:
                     local_mmproj = _hf_cached_local_mmproj(verified_file)

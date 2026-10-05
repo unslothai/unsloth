@@ -13085,7 +13085,6 @@ def _estimate_gguf_required_gb(
             _dv_opens_projector = False
             _sized_attrs = []
         elif disable_vision:
-            # Kept for audio, so its bytes stay charged; suppressed, so they are not.
             _dv_mmproj = _mmproj_override or getattr(config, "gguf_mmproj_file", None)
             _dv_opens_projector = bool(_dv_mmproj) and _projector_survives_vision_off(
                 str(_dv_mmproj)
