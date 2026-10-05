@@ -72,6 +72,13 @@ def _dump(value: Any) -> Any:
     return value
 
 
+def _dump_redacted(value: Any) -> Any:
+    """Diffusion status and run records name absolute output and checkpoint paths. A remote MCP
+    caller is shown them the way an API-key caller is on the HTTP routes: as opaque references."""
+    from hub.utils.host_paths import redact_host_paths
+    return redact_host_paths(_dump(value), via_api_key = True)
+
+
 def _clamp(value: int, low: int, high: int) -> int:
     """Clamp an MCP-supplied integer into an inclusive range. MCP tools call the Unsloth route functions
     directly, which skips FastAPI's Query(ge=, le=) validation, so we re-apply the same bounds here.
@@ -162,7 +169,7 @@ def create_studio_mcp() -> FastMCP:
     async def get_diffusion_training_status() -> dict[str, Any]:
         """Read the active diffusion (Images) LoRA training job, its step, loss, and metrics."""
         from routes.training import diffusion_training_status
-        return _dump(await diffusion_training_status(current_subject = "mcp"))
+        return _dump_redacted(await diffusion_training_status(current_subject = "mcp"))
 
     @mcp.tool
     async def start_diffusion_training(config: dict[str, Any]) -> dict[str, Any]:
@@ -175,7 +182,7 @@ def create_studio_mcp() -> FastMCP:
         from routes.training import start_diffusion_training as start
 
         request = DiffusionTrainingStartRequest.model_validate(config)
-        return _dump(await start(request, current_subject = "mcp", via_api_key = True))
+        return _dump_redacted(await start(request, current_subject = "mcp", via_api_key = True))
 
     @mcp.tool
     async def stop_diffusion_training(save: bool = True) -> dict[str, Any]:
@@ -183,13 +190,15 @@ def create_studio_mcp() -> FastMCP:
         from models.training import DiffusionTrainingStopRequest
         from routes.training import stop_diffusion_training as stop
 
-        return _dump(await stop(DiffusionTrainingStopRequest(save = save), current_subject = "mcp"))
+        return _dump_redacted(
+            await stop(DiffusionTrainingStopRequest(save = save), current_subject = "mcp")
+        )
 
     @mcp.tool
     async def list_diffusion_training_runs(limit: int = 20) -> dict[str, Any]:
         """List finished diffusion training runs, newest first."""
         from routes.training import list_diffusion_training_runs as list_runs
-        return _dump(await list_runs(limit = _clamp(limit, 1, 200), current_subject = "mcp"))
+        return _dump_redacted(await list_runs(limit = _clamp(limit, 1, 200), current_subject = "mcp"))
 
     @mcp.tool
     def validate_recipe(recipe: dict[str, Any]) -> dict[str, Any]:

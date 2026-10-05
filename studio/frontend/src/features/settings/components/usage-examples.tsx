@@ -149,6 +149,7 @@ const TRAIN = {
   imageBase: "stabilityai/stable-diffusion-xl-base-1.0",
   imageData: "my-images",
   imageOut: "my-images-lora",
+  imagePrompt: "a photo of sks cat",
   imageSteps: 500,
 } as const;
 
@@ -377,10 +378,13 @@ const trainBody = {
   format_type: "auto",
   max_steps: TRAIN.maxSteps,
 };
+// The upload above sends bare images, and the preflight refuses a set with no captions. The
+// instance prompt captions every image that has no .txt of its own.
 const imageTrainBody = {
   base_model: TRAIN.imageBase,
   data_dir: TRAIN.imageData,
   output_dir: TRAIN.imageOut,
+  instance_prompt: TRAIN.imagePrompt,
   train_steps: TRAIN.imageSteps,
 };
 
@@ -482,6 +486,7 @@ requests.post(f"{BASE}/api/train/diffusion/start", headers=HEADERS, json={
     "base_model": ${j(TRAIN.imageBase)},
     "data_dir": ${j(TRAIN.imageData)},
     "output_dir": ${j(TRAIN.imageOut)},
+    "instance_prompt": ${j(TRAIN.imagePrompt)},
     "train_steps": ${TRAIN.imageSteps},
 }).raise_for_status()
 
