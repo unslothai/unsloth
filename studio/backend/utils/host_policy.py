@@ -224,15 +224,12 @@ _LOOPBACK_ORIGIN_REGEX = r"^https?://(localhost|127\.0\.0\.1|\[::1\])(:[0-9]{1,5
 
 
 def _is_desktop_cors_lockdown(api_only: bool, secure: bool) -> bool:
-    """The one mode CORS is not any-origin in. Secure publishes the API over Cloudflare,
-    so it must stay reachable from remote browser origins."""
+    """Secure mode publishes the API over Cloudflare, so only plain api-only is locked down."""
     return api_only and not secure
 
 
 def cors_origins_for_mode(*, api_only: bool, secure: bool) -> list[str]:
-    """Allowed CORS origins: the Tauri desktop app under lockdown, else any origin.
-    UNSLOTH_CORS_ORIGINS only ever extends the lockdown list: narrowing ["*"] would drop
-    the webview's own origin the moment a secure-mode tunnel drops."""
+    """Tauri origins plus UNSLOTH_CORS_ORIGINS under lockdown, else ["*"] (never narrowed: the webview would lose access when a tunnel drops)."""
     if not _is_desktop_cors_lockdown(api_only, secure):
         return ["*"]
     custom = [
@@ -244,14 +241,8 @@ def cors_origins_for_mode(*, api_only: bool, secure: bool) -> list[str]:
 
 
 def cors_origin_regex_for_mode(*, api_only: bool, secure: bool) -> str | None:
-    """Origin regex for the lockdown, off by default so no page on another local port can
-    make credentialed calls. UNSLOTH_CORS_ALLOW_LOOPBACK=1 opts in.
-
-    The pattern is this constant and never an operator string. `Origin` is attacker
-    controlled and matched before route authentication, so an operator regex would let a
-    nested quantifier decide how long the event loop spends on an unauthenticated OPTIONS:
-    measured with `^https?://(a+)+\\.example$`, one request stalled the server past 30s and
-    no header length cap bounds it. Name the origins in UNSLOTH_CORS_ORIGINS instead."""
+    """Loopback-any-port regex, only with UNSLOTH_CORS_ALLOW_LOOPBACK=1 under lockdown.
+    Never an operator regex: Origin is matched pre-auth, so a nested quantifier is a ReDoS."""
     if not _is_desktop_cors_lockdown(api_only, secure):
         return None
     if os.environ.get("UNSLOTH_CORS_ALLOW_LOOPBACK") == "1":

@@ -30,7 +30,6 @@ def _middleware(
     secure = False,
     cloudflare_url = None,
 ):
-    """The class main.py mounts, not a stand-in: a copy keeps passing once the two drift."""
     from main import RemoteAccessCORSMiddleware
     return RemoteAccessCORSMiddleware(
         lambda *_: None,
@@ -81,8 +80,6 @@ def test_cors_origins_for_mode_env_override(monkeypatch):
 
 @pytest.mark.parametrize("api_only,secure", [(False, False), (False, True), (True, True)])
 def test_cors_origins_env_never_narrows_any_origin_modes(monkeypatch, api_only, secure):
-    # is_allowed_origin only waves origins through while a Cloudflare URL is published, so
-    # an env list replacing ["*"] would 400 tauri://localhost the moment the tunnel drops.
     monkeypatch.setenv("UNSLOTH_CORS_ORIGINS", "http://localhost:8080")
     assert cors_origins_for_mode(api_only = api_only, secure = secure) == ["*"]
 
@@ -116,10 +113,6 @@ def test_cors_origin_regex_only_applies_to_the_desktop_lockdown(monkeypatch, api
 
 
 def test_no_env_var_can_put_an_operator_regex_in_front_of_origin(monkeypatch):
-    # Origin is attacker controlled and matched before route authentication, so the only
-    # pattern Starlette may ever compile is the vetted constant. An operator regex with a
-    # nested quantifier stalled a live api-only server past 30s on ONE unauthenticated
-    # OPTIONS, and no header length cap bounds it.
     for name in ("UNSLOTH_CORS_ORIGIN_REGEX", "UNSLOTH_CORS_REGEX", "UNSLOTH_CORS_ALLOW_REGEX"):
         monkeypatch.setenv(name, r"^https?://(a+)+\.example$")
     assert cors_origin_regex_for_mode(api_only = True, secure = False) is None
@@ -129,8 +122,6 @@ def test_no_env_var_can_put_an_operator_regex_in_front_of_origin(monkeypatch):
 
 
 def test_the_built_in_loopback_regex_is_linear_on_a_hostile_origin():
-    # The constant above is only safe because it has no nested quantifier: literal
-    # alternation plus one bounded optional group.
     import re
     import time
 
@@ -142,7 +133,6 @@ def test_the_built_in_loopback_regex_is_linear_on_a_hostile_origin():
 
 
 def test_main_passes_the_origin_regex_to_the_mounted_middleware():
-    # The policy helpers are only worth anything if main.py hands them to add_middleware.
     src = (_BACKEND / "main.py").read_text(encoding = "utf-8")
     assert "allow_origin_regex = _cors_origin_regex" in src
 
@@ -184,7 +174,6 @@ def test_desktop_cors_opt_in_origins(monkeypatch):
         assert resp.status_code == 200
         assert resp.headers.get("access-control-allow-origin") == origin
 
-    # The list is an allowlist, not a loopback pass: a port not on it stays blocked.
     for origin in ("http://localhost:9000", "http://evil.com"):
         resp = _preflight(middleware, origin)
         assert resp.status_code == 400
