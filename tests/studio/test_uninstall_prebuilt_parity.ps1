@@ -74,7 +74,6 @@ Check "uninstall.ps1 sweeps stale install locks" ($ps1Text -match '\.install\.lo
 Check "uninstall.ps1 prunes ~/.unsloth only when empty" `
     ($ps1Text -match 'Get-ChildItem -LiteralPath \$defaultUnslothHome')
 
-# #9651: both read the installer's uv-cache-dir marker.
 Check "uninstall.sh reads uv-cache-dir"  ($shText  -match 'uv-cache-dir')
 Check "uninstall.ps1 reads uv-cache-dir" ($ps1Text -match 'uv-cache-dir')
 Check "uninstall.sh names uv cache clean"  ($shText  -match 'uv cache clean')
