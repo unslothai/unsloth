@@ -157,6 +157,9 @@ export const ko = {
     },
     menu: {
       find: "페이지에서 찾기",
+      print: "인쇄",
+      printFailed: "이 페이지를 인쇄할 수 없습니다",
+      screenshot: "스크린샷 찍기",
       zoom: "확대/축소",
       zoomIn: "확대",
       zoomOut: "축소",
@@ -164,12 +167,11 @@ export const ko = {
       deviceToolbar: "기기 툴바 표시",
       clearData: "인터넷 사용 기록 삭제",
     },
-    find: {
-      placeholder: "페이지에서 찾기",
-      previous: "이전 결과",
-      next: "다음 결과",
-      close: "찾기 닫기",
-      noMatches: "일치하는 항목 없음",
+    screenshot: {
+      added: "스크린샷을 채팅에 추가했습니다",
+      save: "저장",
+      failed: "스크린샷을 찍을 수 없습니다",
+      otherSurface: "페이지 스크린샷을 찍으려면 이 탭을 공유하세요",
     },
     device: {
       mobile: "모바일",
@@ -423,6 +425,8 @@ export const ko = {
       next: "다음 결과",
       close: "찾기 닫기",
       truncated: "이 페이지는 너무 길어 전체를 검색할 수 없습니다.",
+      searchChat: "채팅 검색",
+      searchBrowser: "브라우저 페이지 검색",
     },
     zoom: {
       label: "확대/축소",

@@ -157,6 +157,9 @@ export const ar = {
     },
     menu: {
       find: "البحث في الصفحة",
+      print: "طباعة",
+      printFailed: "تعذّرت طباعة هذه الصفحة",
+      screenshot: "التقاط لقطة شاشة",
       zoom: "التكبير",
       zoomIn: "تكبير",
       zoomOut: "تصغير",
@@ -164,12 +167,11 @@ export const ar = {
       deviceToolbar: "إظهار شريط أدوات الأجهزة",
       clearData: "مسح بيانات التصفح",
     },
-    find: {
-      placeholder: "البحث في الصفحة",
-      previous: "التطابق السابق",
-      next: "التطابق التالي",
-      close: "إغلاق البحث",
-      noMatches: "لا توجد تطابقات",
+    screenshot: {
+      added: "أُضيفت لقطة الشاشة إلى الدردشة",
+      save: "حفظ",
+      failed: "تعذّر التقاط لقطة الشاشة",
+      otherSurface: "شارك علامة التبويب هذه لالتقاط لقطة شاشة للصفحة",
     },
     device: {
       mobile: "الهاتف المحمول",
@@ -423,6 +425,8 @@ export const ar = {
       next: "التطابق التالي",
       close: "إغلاق البحث",
       truncated: "هذه الصفحة أطول من أن يتم البحث فيها بالكامل.",
+      searchChat: "البحث في الدردشة",
+      searchBrowser: "البحث في صفحة المتصفح",
     },
     zoom: {
       label: "التكبير",

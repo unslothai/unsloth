@@ -12,7 +12,9 @@ let loadCounter = 0;
 const frames = new Map<string, HTMLIFrameElement>();
 
 export type FrameCommand =
-  | { command: "find"; query: string; backwards?: boolean }
+  | { command: "find"; query: string }
+  | { command: "findStep"; delta: -1 | 1 }
+  | { command: "snapshot" }
   | { command: "zoom"; value: number }
   | { command: "annotate"; on: boolean; color?: string }
   | { command: "annotateForget"; id: number }
@@ -25,6 +27,23 @@ export function onFrameAnnotate(tabId: string, listener: (event: AnnotateEvent) 
   return () => {
     if (annotateListeners.get(tabId) === listener) annotateListeners.delete(tabId);
   };
+}
+
+const snapshotRequests = new Map<string, (html: string | null) => void>();
+
+/** The page's markup as it is now (see `snapshot` in routes/browser.py); null if it can't say. */
+export function requestFrameSnapshot(tabId: string): Promise<string | null> {
+  return new Promise((resolve) => {
+    snapshotRequests.get(tabId)?.(null);
+    const finish = (html: string | null) => {
+      clearTimeout(timer);
+      if (snapshotRequests.get(tabId) === finish) snapshotRequests.delete(tabId);
+      resolve(html);
+    };
+    const timer = setTimeout(() => finish(null), 5000);
+    snapshotRequests.set(tabId, finish);
+    if (!sendFrameCommand(tabId, { command: "snapshot" })) finish(null);
+  });
 }
 
 export function frameRect(tabId: string): DOMRect | null {
@@ -96,6 +115,10 @@ export function PageFrame({
       if (!message) return;
       if (message.type === "annotate") {
         annotateListeners.get(tabIdRef.current)?.(message.event);
+        return;
+      }
+      if (message.type === "snapshot") {
+        snapshotRequests.get(tabIdRef.current)?.(message.html);
         return;
       }
       if (isUserAction(message)) {

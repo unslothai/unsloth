@@ -154,6 +154,9 @@ export const en = {
     },
     menu: {
       find: "Find in page",
+      print: "Print",
+      printFailed: "Couldn't print this page",
+      screenshot: "Take a screenshot",
       zoom: "Zoom",
       zoomIn: "Zoom in",
       zoomOut: "Zoom out",
@@ -161,12 +164,11 @@ export const en = {
       deviceToolbar: "Show device toolbar",
       clearData: "Clear browsing data",
     },
-    find: {
-      placeholder: "Find in page",
-      previous: "Previous match",
-      next: "Next match",
-      close: "Close find",
-      noMatches: "No matches",
+    screenshot: {
+      added: "Screenshot added to chat",
+      save: "Save",
+      failed: "Couldn't take a screenshot",
+      otherSurface: "Share this tab to take a screenshot of the page",
     },
     device: {
       mobile: "Mobile",
@@ -463,6 +465,8 @@ export const en = {
       next: "Next match",
       close: "Close find",
       truncated: "This page is too long to search in full.",
+      searchChat: "Search chat",
+      searchBrowser: "Search browser page",
     },
     zoom: {
       label: "Zoom",

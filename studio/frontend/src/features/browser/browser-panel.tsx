@@ -42,6 +42,7 @@ import {
   useShortcut,
   useShortcutLabel,
 } from "@/features/settings";
+import { FIND_SKIP_ATTRIBUTE, requestFind } from "@/features/find-in-page";
 import { registerZoomScope } from "@/features/interface-zoom";
 import { useLocale, useT } from "@/i18n";
 import { isTauri } from "@/lib/api-base";
@@ -56,14 +57,11 @@ import { cn } from "@/lib/utils";
 import {
   Add01Icon,
   CancelSquareIcon,
-  Certificate01Icon,
   Search01Icon,
   Settings02Icon,
   Copy02Icon,
   Delete02Icon,
   ReloadIcon,
-  ArrowDown01Icon,
-  ArrowUp01Icon,
   ArrowUpRight01Icon,
   BubbleChatAddIcon,
   Cancel01Icon,
@@ -90,8 +88,6 @@ import {
   ArrowLeft,
   ArrowRight,
   ChevronRight,
-  Lock,
-  LockOpen,
   RotateCw,
   ShieldCheck,
   XIcon,
@@ -108,7 +104,9 @@ import {
   useState,
 } from "react";
 import { fileNameFromUrl, hostOf, resolveAddress } from "./address";
+import { OtherSurfaceError, canScreenshot, printFramePage, screenshotElement } from "./capture";
 import { type BrowserDownload, saveBrowserDownload } from "./downloads";
+import { BROWSER_FIND_TARGET, registerBrowserFind } from "./find";
 import { ClearBrowsingDataDialog } from "./clear-data-dialog";
 import { SiteFavicon } from "./site-favicon";
 import { AnnotateLayer, WebAnnotateLayer } from "./annotate-layer";
@@ -116,12 +114,17 @@ import { BookmarkStar, BookmarksBar } from "./bookmarks";
 import { useBookmarkFor } from "./bookmarks-store";
 import { browserTabType, textFileKind } from "./file-kind";
 import { CONTEXT_MENU, MenuRow } from "./link-context-menu";
-import { EnterFullViewIcon, ExitFullViewIcon, SplitPaneIcon } from "./icons";
-import { sendFrameCommand } from "./page-frame";
+import {
+  CertificateIcon,
+  EnterFullViewIcon,
+  ExitFullViewIcon,
+  PadlockIcon,
+  PadlockOpenIcon,
+  SplitPaneIcon,
+} from "./icons";
 import {
   hasNativeView,
   nativeAction,
-  nativeFind,
   returnToNativePage,
   startNativeViews,
   useNativeBrowser,
@@ -844,7 +847,7 @@ function SiteIdentity({ address, tab }: { address: string; tab: BrowserTab | und
     "flex w-full cursor-pointer items-center gap-2.5 rounded-[11px] px-3 py-2 text-start text-sm transition-colors hover:bg-accent focus-visible:bg-accent focus-visible:outline-none";
   const iconButton =
     "flex size-7 shrink-0 cursor-pointer items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring";
-  const LockGlyph = secure ? Lock : LockOpen;
+  const padlock = secure ? PadlockIcon : PadlockOpenIcon;
   return (
     <>
       <Popover
@@ -886,15 +889,13 @@ function SiteIdentity({ address, tab }: { address: string; tab: BrowserTab | und
                 />
                 <span className="min-w-0 flex-1 truncate text-sm font-medium text-foreground">{url.host}</span>
               </div>
-              <div className="mx-3 my-1 h-px bg-border" />
               <button type="button" className={row} onClick={() => setView("security")}>
-                <LockGlyph strokeWidth={2} className="size-4 shrink-0" />
+                <HugeiconsIcon icon={padlock} strokeWidth={1.75} className="size-icon shrink-0" />
                 <span className="flex-1">
                   {t(secure ? "browser.siteInfo.secure" : "browser.siteInfo.insecure")}
                 </span>
                 <ChevronRight strokeWidth={2} className="size-4 shrink-0 text-muted-foreground rtl:-scale-x-100" />
               </button>
-              <div className="mx-3 my-1 h-px bg-border" />
               <button
                 type="button"
                 className={row}
@@ -944,7 +945,11 @@ function SiteIdentity({ address, tab }: { address: string; tab: BrowserTab | und
               </div>
               <div className="mx-3 h-px bg-border" />
               <div className="flex gap-3 px-3 pb-2 pt-3">
-                <LockGlyph strokeWidth={2} className="mt-0.5 size-4 shrink-0 text-muted-foreground" />
+                <HugeiconsIcon
+                  icon={padlock}
+                  strokeWidth={1.75}
+                  className="size-icon shrink-0 text-muted-foreground"
+                />
                 <div className="min-w-0 flex-1">
                   <p className="text-sm font-medium text-foreground">
                     {t(secure ? "browser.siteInfo.secureTitle" : "browser.siteInfo.insecureTitle")}
@@ -967,9 +972,9 @@ function SiteIdentity({ address, tab }: { address: string; tab: BrowserTab | und
               {verified ? (
                 <div className="flex items-center gap-3 px-3 pb-3 pt-1">
                   <HugeiconsIcon
-                    icon={Certificate01Icon}
+                    icon={CertificateIcon}
                     strokeWidth={1.75}
-                    className="size-4 shrink-0 text-muted-foreground"
+                    className="size-icon shrink-0 text-muted-foreground"
                   />
                   <span className="text-sm text-foreground">{t("browser.siteInfo.certificateValid")}</span>
                 </div>
@@ -1120,6 +1125,37 @@ function ZoomControl({ tab }: { tab: BrowserTab | undefined }) {
   );
 }
 
+/** Takes a screenshot of the page area into the chat's composer, or saves it without a chat. */
+async function takeScreenshot(tab: BrowserTab, page: HTMLElement, t: ReturnType<typeof useT>): Promise<void> {
+  let blob: Blob | null;
+  try {
+    blob = await screenshotElement(page);
+  } catch (error) {
+    // Declining the browser's prompt is an answer, not a failure.
+    if (error instanceof DOMException && error.name === "NotAllowedError") return;
+    toast.error(t(error instanceof OtherSurfaceError ? "browser.screenshot.otherSurface" : "browser.screenshot.failed"));
+    return;
+  }
+  if (!blob) {
+    toast.error(t("browser.screenshot.failed"));
+    return;
+  }
+  const entry = currentEntry(tab);
+  const now = new Date();
+  const pad = (value: number) => String(value).padStart(2, "0");
+  const stamp = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())} ${pad(now.getHours())}.${pad(now.getMinutes())}.${pad(now.getSeconds())}`;
+  const name = `Screenshot ${entry.kind === "web" ? hostOf(entry.url) : tab.title || "page"} ${stamp}.png`.replace(/[\\/:*?"<>|]+/g, "-");
+  const download: BrowserDownload = { blob, name, contentType: "image/png", url: null };
+  const attach = useBrowserStore.getState().attachToChat;
+  if (attach && (await attach(new File([blob], name, { type: "image/png" })))) {
+    toast.success(t("browser.screenshot.added"), {
+      action: { label: t("browser.screenshot.save"), onClick: () => void saveBrowserDownload(download) },
+    });
+    return;
+  }
+  await saveBrowserDownload(download);
+}
+
 function PanelMenu({ tab }: { tab: BrowserTab | undefined }) {
   const t = useT();
   const device = useBrowserStore((state) => state.device);
@@ -1130,6 +1166,9 @@ function PanelMenu({ tab }: { tab: BrowserTab | undefined }) {
   // The star's editor opens as the menu closes; focus going back to the menu button would shut it.
   const keepFocus = useRef(false);
   const webPage = showsWebPage(tab);
+  // A framed page; a native view prints and captures outside Studio's reach.
+  const printable = webPage && !nativePage(tab);
+  const triggerRef = useRef<HTMLButtonElement>(null);
   const store = useBrowserStore.getState();
   const mod =
     typeof navigator !== "undefined" &&
@@ -1143,6 +1182,7 @@ function PanelMenu({ tab }: { tab: BrowserTab | undefined }) {
           <TooltipTrigger asChild={true}>
             <DropdownMenuTrigger asChild={true}>
               <button
+                ref={triggerRef}
                 type="button"
                 aria-label={t("browser.more")}
                 className="flex size-8 shrink-0 cursor-pointer items-center justify-center rounded-md text-foreground transition-colors hover:bg-[color-mix(in_oklab,var(--foreground)_calc(6%*var(--contrast-wash-gain,1)),transparent)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring aria-expanded:bg-[color-mix(in_oklab,var(--foreground)_calc(8%*var(--contrast-wash-gain,1)),transparent)]"
@@ -1167,10 +1207,25 @@ function PanelMenu({ tab }: { tab: BrowserTab | undefined }) {
         >
           <DropdownMenuItem
             disabled={!webPage}
-            onSelect={() => store.setFindOpen(true)}
+            onSelect={() => {
+              // The find bar takes focus; the menu button mustn't take it back.
+              keepFocus.current = true;
+              requestFind(BROWSER_FIND_TARGET);
+            }}
           >
             {t("browser.menu.find")}
             <DropdownMenuShortcut>{mod}F</DropdownMenuShortcut>
+          </DropdownMenuItem>
+          <DropdownMenuItem
+            disabled={!printable}
+            onSelect={() =>
+              tab &&
+              void printFramePage(tab.id).then(
+                (printed) => printed || toast.error(t("browser.menu.printFailed")),
+              )
+            }
+          >
+            {t("browser.menu.print")}
           </DropdownMenuItem>
           <DropdownMenuItem
             disabled={!webUrl}
@@ -1201,6 +1256,17 @@ function PanelMenu({ tab }: { tab: BrowserTab | undefined }) {
                 : "browser.device.close",
             )}
           </DropdownMenuItem>
+          {canScreenshot() ? (
+            <DropdownMenuItem
+              disabled={!tab || nativePage(tab)}
+              onSelect={() => {
+                const page = triggerRef.current?.closest("section")?.querySelector<HTMLElement>("[data-browser-page]");
+                if (tab && page) void takeScreenshot(tab, page, t);
+              }}
+            >
+              {t("browser.menu.screenshot")}
+            </DropdownMenuItem>
+          ) : null}
           <DropdownMenuSeparator />
           <DropdownMenuSub>
             <DropdownMenuSubTrigger>{t("browser.pages.bookmarks")}</DropdownMenuSubTrigger>
@@ -1693,81 +1759,6 @@ function FileToolbar({
   );
 }
 
-function FindBar({ tab }: { tab: BrowserTab | undefined }) {
-  const t = useT();
-  const miss = useBrowserStore((state) => state.findMiss);
-  const [query, setQuery] = useState("");
-  const inputRef = useRef<HTMLInputElement | null>(null);
-  const { setFindOpen, setFindMiss } = useBrowserStore.getState();
-  useEffect(() => {
-    inputRef.current?.focus();
-  }, []);
-  const find = (backwards = false) => {
-    if (!tab || !query) return;
-    if (nativePage(tab)) {
-      void nativeFind(tab.id, query, backwards).then((found) => setFindMiss(!found));
-      return;
-    }
-    if (!sendFrameCommand(tab.id, { command: "find", query, backwards }))
-      setFindMiss(true);
-  };
-  return (
-    <div className="flex shrink-0 items-center gap-1.5 px-2.5 pb-2">
-      <input
-        ref={inputRef}
-        value={query}
-        onChange={(event) => {
-          setQuery(event.target.value);
-          setFindMiss(false);
-        }}
-        onKeyDown={(event) => {
-          if (event.key === "Enter") find(event.shiftKey);
-          else if (event.key === "Escape") setFindOpen(false);
-        }}
-        placeholder={t("browser.find.placeholder")}
-        aria-label={t("browser.menu.find")}
-        spellCheck={false}
-        className={cn(
-          PILL,
-          "h-8 min-w-0 flex-1 rounded-full px-4 text-ui-13 outline-none placeholder:text-muted-foreground focus:ring-2 focus:ring-ring/40",
-          miss &&
-            query &&
-            "ring-2 ring-destructive/40 focus:ring-destructive/40",
-        )}
-      />
-      {miss && query ? (
-        <span className="shrink-0 text-ui-12 text-muted-foreground">
-          {t("browser.find.noMatches")}
-        </span>
-      ) : null}
-      <div
-        className={cn(
-          PILL,
-          "flex h-8 shrink-0 items-center gap-0.5 rounded-full px-0.5",
-        )}
-      >
-        <IconButton
-          label={t("browser.find.previous")}
-          icon={ArrowUp01Icon}
-          disabled={!query}
-          onClick={() => find(true)}
-        />
-        <IconButton
-          label={t("browser.find.next")}
-          icon={ArrowDown01Icon}
-          disabled={!query}
-          onClick={() => find()}
-        />
-      </div>
-      <CircleButton
-        label={t("browser.find.close")}
-        icon={Cancel01Icon}
-        onClick={() => setFindOpen(false)}
-      />
-    </div>
-  );
-}
-
 const DEVICE_WIDTHS: Record<Exclude<DeviceMode, "off">, number> = {
   mobile: 390,
   tablet: 820,
@@ -1839,7 +1830,6 @@ export const BrowserPanel = memo(function BrowserPanel({ active = true }: { acti
   const t = useT();
   const tabs = useBrowserStore((state) => state.tabs);
   const activeTabId = useBrowserStore((state) => state.activeTabId);
-  const findOpen = useBrowserStore((state) => state.findOpen);
   const device = useBrowserStore((state) => state.device);
   const annotateTabId = useBrowserStore((state) => state.annotateTabId);
   const [pageElement, setPageElement] = useState<HTMLDivElement | null>(null);
@@ -1855,6 +1845,11 @@ export const BrowserPanel = memo(function BrowserPanel({ active = true }: { acti
         if (tabId) zoomTab(tabId, direction);
       },
     });
+  }, [active]);
+  // Studio's find bar searches the page while focus is in here, or when switched to it.
+  useEffect(() => {
+    if (!active) return;
+    return registerBrowserFind((node) => sectionRef.current?.contains(node) ?? false);
   }, [active]);
   const native = useNativeBrowser((state) => state.enabled);
   useEffect(() => (native ? startNativeViews() : undefined), [native]);
@@ -1884,6 +1879,8 @@ export const BrowserPanel = memo(function BrowserPanel({ active = true }: { acti
     <section
       ref={sectionRef}
       aria-label={t("browser.title")}
+      // The chat's find skips the browser's chrome; the page is searched as its own target.
+      {...{ [FIND_SKIP_ATTRIBUTE]: "" }}
       onKeyDown={(event) => {
         // ⌘D / Ctrl+D bookmarks the page, as in a browser; pages forward theirs through the frame.
         if (
@@ -1919,12 +1916,10 @@ export const BrowserPanel = memo(function BrowserPanel({ active = true }: { acti
           )}
         </div>
         {fileTab ? null : <BookmarksBar tab={activeTab} />}
-        {findOpen && showsWebPage(activeTab) ? (
-          <FindBar key={activeTabId} tab={activeTab} />
-        ) : null}
         {deviceWidth ? <DeviceBar /> : null}
         <div
           ref={setPageElement}
+          data-browser-page=""
           className={cn(
             "relative min-h-0 flex-1 overflow-hidden",
             fileTab ? "browser-file-page" : "border-t border-border/70",

@@ -156,6 +156,9 @@ export const it = {
     },
     menu: {
       find: "Trova nella pagina",
+      print: "Stampa",
+      printFailed: "Impossibile stampare questa pagina",
+      screenshot: "Acquisisci uno screenshot",
       zoom: "Zoom",
       zoomIn: "Aumenta zoom",
       zoomOut: "Riduci zoom",
@@ -163,12 +166,11 @@ export const it = {
       deviceToolbar: "Mostra barra dei dispositivi",
       clearData: "Cancella dati di navigazione",
     },
-    find: {
-      placeholder: "Trova nella pagina",
-      previous: "Risultato precedente",
-      next: "Risultato successivo",
-      close: "Chiudi ricerca",
-      noMatches: "Nessun risultato",
+    screenshot: {
+      added: "Screenshot aggiunto alla chat",
+      save: "Salva",
+      failed: "Impossibile acquisire lo screenshot",
+      otherSurface: "Condividi questa scheda per acquisire la pagina",
     },
     device: {
       mobile: "Mobile",
@@ -382,6 +384,8 @@ export const it = {
       next: "Risultato successivo",
       close: "Chiudi ricerca",
       truncated: "Questa pagina è troppo lunga per essere cercata per intero.",
+      searchChat: "Cerca nella chat",
+      searchBrowser: "Cerca nella pagina del browser",
     },
     zoom: {
       label: "Zoom",

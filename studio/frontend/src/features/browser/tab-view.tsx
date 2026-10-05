@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { Button } from "@/components/ui/button";
+import { requestFind } from "@/features/find-in-page";
 import { zoomScopeFromChord } from "@/features/interface-zoom";
 import { useT } from "@/i18n";
 import { isTauri } from "@/lib/api-base";
@@ -13,6 +14,7 @@ import { fileNameFromUrl, hostOf } from "./address";
 import { BrowserFetchError, type BrowserPage, fetchBrowserPage } from "./api";
 import { proxiedFavicon } from "./favicon";
 import { FileView } from "./file-view";
+import { BROWSER_FIND_TARGET, pageLoadedForFind, receiveFindResult } from "./find";
 import { useBrowserHistoryStore } from "./history-store";
 import { InternalPageView } from "./internal-pages";
 import { useNativeBrowser } from "./native-view";
@@ -84,6 +86,7 @@ function useFrameMessages(tabId: string, origin: string | null) {
           break;
         case "loaded": {
           store.updateTab(tabId, { title: message.title, favicon: null, loading: false });
+          pageLoadedForFind(tabId);
           const tab = store.tabs.find((candidate) => candidate.id === tabId);
           const entry = tab ? currentEntry(tab) : null;
           const favicon = safeFavicon(message.favicon);
@@ -103,8 +106,8 @@ function useFrameMessages(tabId: string, origin: string | null) {
           }
           break;
         }
-        case "found":
-          store.setFindMiss(!message.found);
+        case "findResult":
+          receiveFindResult(tabId, message.count, message.active);
           break;
         case "title":
           if (message.title) store.updateTab(tabId, { title: message.title });
@@ -128,7 +131,7 @@ function useFrameMessages(tabId: string, origin: string | null) {
         }
         case "shortcut":
           if (message.key === "l") store.focusAddress();
-          else if (message.key === "f") store.setFindOpen(true);
+          else if (message.key === "f") requestFind(BROWSER_FIND_TARGET);
           else if (message.key === "t") store.newTab();
           else if (message.key === "w") store.closeTab(tabId);
           else if (message.key === "r") store.reload(tabId);

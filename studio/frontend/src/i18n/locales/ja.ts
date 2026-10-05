@@ -158,6 +158,9 @@ export const ja = {
     },
     menu: {
       find: "ページ内を検索",
+      print: "印刷",
+      printFailed: "このページを印刷できませんでした",
+      screenshot: "スクリーンショットを撮る",
       zoom: "ズーム",
       zoomIn: "拡大",
       zoomOut: "縮小",
@@ -165,12 +168,11 @@ export const ja = {
       deviceToolbar: "デバイスツールバーを表示",
       clearData: "閲覧データを消去",
     },
-    find: {
-      placeholder: "ページ内を検索",
-      previous: "前の一致",
-      next: "次の一致",
-      close: "検索を閉じる",
-      noMatches: "一致なし",
+    screenshot: {
+      added: "スクリーンショットをチャットに追加しました",
+      save: "保存",
+      failed: "スクリーンショットを撮れませんでした",
+      otherSurface: "ページのスクリーンショットを撮るには、このタブを共有してください",
     },
     device: {
       mobile: "モバイル",
@@ -425,6 +427,8 @@ export const ja = {
       next: "次の一致",
       close: "検索を閉じる",
       truncated: "このページは長すぎるため、全体を検索できません。",
+      searchChat: "チャットを検索",
+      searchBrowser: "ブラウザのページを検索",
     },
     zoom: {
       label: "ズーム",

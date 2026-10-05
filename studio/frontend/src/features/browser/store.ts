@@ -35,6 +35,9 @@ export type SendAnnotations = (annotations: DocumentAnnotations) => Promise<bool
 
 export type OpenInCanvas = (file: { title: string; code: string }) => void;
 
+/** Stages a file in the chat's composer; false when it refused it (it says why). */
+export type AttachToChat = (file: File) => Promise<boolean>;
+
 export type FileViewMode = "preview" | "source";
 
 export type FileViewState = {
@@ -203,8 +206,6 @@ type BrowserState = {
   focusAddressSequence: number;
   /** Bumped by ⌘D, so the address bar's star bookmarks the page or opens its editor. */
   bookmarkSequence: number;
-  findOpen: boolean;
-  findMiss: boolean;
   device: DeviceMode;
   fullView: boolean;
   chatDock: ChatDock;
@@ -213,6 +214,7 @@ type BrowserState = {
   requestEdits: RequestEdits | null;
   sendAnnotations: SendAnnotations | null;
   openInCanvas: OpenInCanvas | null;
+  attachToChat: AttachToChat | null;
   annotateTabId: string | null;
   setAnnotating: (tabId: string | null) => void;
   fileViews: Record<string, FileViewState>;
@@ -251,8 +253,6 @@ type BrowserState = {
   bookmarkPage: () => void;
   openInternal: (page: InternalPage) => void;
   setZoom: (tabId: string, zoom: number) => void;
-  setFindOpen: (open: boolean) => void;
-  setFindMiss: (miss: boolean) => void;
   setDevice: (device: DeviceMode) => void;
   setFullView: (fullView: boolean) => void;
   setChatDock: (dock: ChatDock) => void;
@@ -323,8 +323,6 @@ export const useBrowserStore = create<BrowserState>((set, get) => {
     openSequence: 0,
     focusAddressSequence: 0,
     bookmarkSequence: 0,
-    findOpen: false,
-    findMiss: false,
     device: "off",
     fullView: false,
     chatDock: "composer",
@@ -332,6 +330,7 @@ export const useBrowserStore = create<BrowserState>((set, get) => {
     requestEdits: null,
     sendAnnotations: null,
     openInCanvas: null,
+    attachToChat: null,
     annotateTabId: null,
     setAnnotating: (annotateTabId) => set({ annotateTabId }),
     fileViews: {},
@@ -446,7 +445,7 @@ export const useBrowserStore = create<BrowserState>((set, get) => {
         tabs: patchTab(state.tabs, tabId, (tab) => ({ ...tab, reloadKey: tab.reloadKey + 1 })),
       }));
     },
-    activateTab: (tabId) => set({ activeTabId: tabId, findOpen: false, findMiss: false, annotateTabId: null }),
+    activateTab: (tabId) => set({ activeTabId: tabId, annotateTabId: null }),
     moveTab: (tabId, index) =>
       set((state) => {
         const from = state.tabs.findIndex((tab) => tab.id === tabId);
@@ -493,8 +492,6 @@ export const useBrowserStore = create<BrowserState>((set, get) => {
       set((state) => ({
         tabs: patchTab(state.tabs, tabId, (tab) => ({ ...tab, zoom: Math.min(5, Math.max(0.25, zoom)) })),
       })),
-    setFindOpen: (findOpen) => set({ findOpen, findMiss: false }),
-    setFindMiss: (findMiss) => set({ findMiss }),
     setDevice: (device) => set({ device }),
     setFullView: (fullView) => set({ fullView, chatDock: "composer" }),
     setChatDock: (chatDock) => set({ chatDock }),

@@ -1084,6 +1084,7 @@ _FRAME_SHELL_PATHS = frozenset(
         _ARTIFACT_PREVIEW_FRAME_PATH,
         "/api/inference/mcp-app-frame",
         _browser_routes.BROWSER_FRAME_PATH,
+        _browser_routes.BROWSER_PRINT_PATH,
     }
 )
 _DOCS_FONT_CSS = "https://fonts.googleapis.com"

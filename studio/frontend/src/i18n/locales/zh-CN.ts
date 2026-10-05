@@ -157,6 +157,9 @@ export const zhCN = {
     },
     menu: {
       find: "在页面中查找",
+      print: "打印",
+      printFailed: "无法打印此页面",
+      screenshot: "截取屏幕截图",
       zoom: "缩放",
       zoomIn: "放大",
       zoomOut: "缩小",
@@ -164,12 +167,11 @@ export const zhCN = {
       deviceToolbar: "显示设备工具栏",
       clearData: "清除浏览数据",
     },
-    find: {
-      placeholder: "在页面中查找",
-      previous: "上一个匹配项",
-      next: "下一个匹配项",
-      close: "关闭查找",
-      noMatches: "无匹配项",
+    screenshot: {
+      added: "截图已添加到聊天",
+      save: "保存",
+      failed: "无法截取屏幕截图",
+      otherSurface: "请共享此标签页以截取页面",
     },
     device: {
       mobile: "手机",
@@ -421,6 +423,8 @@ export const zhCN = {
       next: "下一个匹配项",
       close: "关闭查找",
       truncated: "此页面过长，无法搜索全部内容。",
+      searchChat: "搜索聊天",
+      searchBrowser: "搜索浏览器页面",
     },
     zoom: {
       label: "缩放",

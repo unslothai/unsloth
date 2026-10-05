@@ -157,6 +157,9 @@ export const ptBR = {
     },
     menu: {
       find: "Localizar na página",
+      print: "Imprimir",
+      printFailed: "Não foi possível imprimir esta página",
+      screenshot: "Fazer uma captura de tela",
       zoom: "Zoom",
       zoomIn: "Aumentar zoom",
       zoomOut: "Diminuir zoom",
@@ -164,12 +167,11 @@ export const ptBR = {
       deviceToolbar: "Mostrar barra de dispositivos",
       clearData: "Limpar dados de navegação",
     },
-    find: {
-      placeholder: "Localizar na página",
-      previous: "Resultado anterior",
-      next: "Próximo resultado",
-      close: "Fechar pesquisa",
-      noMatches: "Nenhum resultado",
+    screenshot: {
+      added: "Captura de tela adicionada ao chat",
+      save: "Salvar",
+      failed: "Não foi possível fazer a captura de tela",
+      otherSurface: "Compartilhe esta aba para capturar a página",
     },
     device: {
       mobile: "Celular",
@@ -425,6 +427,8 @@ export const ptBR = {
       next: "Próxima ocorrência",
       close: "Fechar busca",
       truncated: "Esta página é longa demais para ser pesquisada por completo.",
+      searchChat: "Pesquisar no chat",
+      searchBrowser: "Pesquisar na página do navegador",
     },
     zoom: {
       label: "Zoom",

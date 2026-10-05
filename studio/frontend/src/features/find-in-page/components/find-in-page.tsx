@@ -27,6 +27,7 @@ import {
 import { createPortal } from "react-dom";
 import { FIND_SCOPE_ATTRIBUTE } from "../lib/find-attributes.ts";
 import { isFindScopeBackgrounded } from "../lib/find-backgrounded.ts";
+import { findTarget, findTargetHolding, onFindRequest } from "../lib/find-targets.ts";
 
 const DISMISSIBLE_SURFACE_SELECTOR =
   '[data-slot="popover-content"], [role="menu"], [role="listbox"]';
@@ -142,6 +143,8 @@ export function FindInPage({ enabled = true }: { enabled?: boolean }) {
   // unmounting the shell drops it without keeping a module-global user value.
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
+  /** What the bar searches: the chat (null), or a find target such as the browser's page. */
+  const [scope, setScope] = useState<string | null>(null);
   const [focusToken, setFocusToken] = useState(0);
   const loadingSelectionRef = useRef<{
     start: number;
@@ -191,8 +194,13 @@ export function FindInPage({ enabled = true }: { enabled?: boolean }) {
     [],
   );
   const originRef = useRef<HTMLElement | null>(null);
-  const requestFocus = useCallback(() => {
+  const requestFocus = useCallback((targetId?: string | null) => {
     const active = document.activeElement;
+    // Searches where the reader is: the page while focus is in the browser, else the chat. Pressed
+    // again from the bar's own field, it keeps searching what it was.
+    if (targetId !== undefined) setScope(targetId);
+    else if (!(active instanceof Element && active.closest('[role="search"]')))
+      setScope(findTargetHolding(active)?.id ?? null);
     if (
       originRef.current === null &&
       active instanceof HTMLElement &&
@@ -248,8 +256,17 @@ export function FindInPage({ enabled = true }: { enabled?: boolean }) {
     });
   }, []);
 
+  // The browser asks for its page from its menu, or when the chord is pressed inside the page.
+  useEffect(
+    () =>
+      onFindRequest((targetId) => {
+        if (enabled && (targetId === null || findTarget(targetId)?.available())) requestFocus(targetId);
+      }),
+    [enabled, requestFocus],
+  );
+
   // The chord works from text fields, including the composer and an already-open find input.
-  useShortcut("findInPage", requestFocus, {
+  useShortcut("findInPage", () => requestFocus(), {
     enabled,
     // A modal backgrounds the shell and owns the chord while its surface is active.
     claims: () => !isFindScopeBackgrounded(),
@@ -297,6 +314,8 @@ export function FindInPage({ enabled = true }: { enabled?: boolean }) {
             <FindBar
               query={query}
               setQuery={setQuery}
+              scope={scope}
+              setScope={setScope}
               close={close}
               focusToken={focusToken}
               restoreSelection={restoreLoadingSelection}

@@ -10,7 +10,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { useShortcut, useShortcutLabel } from "@/features/settings";
 import { useT } from "@/i18n";
-import { Add01Icon, AddSquareIcon } from "@hugeicons/core-free-icons";
+import { Add01Icon, InternetIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useEffect, useRef, useState } from "react";
 import { EnterFullViewIcon } from "./icons";
@@ -108,7 +108,7 @@ export function BrowserToggleButton({ active = true }: { active?: boolean }) {
           onClick={() => openTab()}
           className="flex size-[calc(30px*var(--ui-space-scale,1))] cursor-pointer items-center justify-center rounded-[10px] text-nav-fg transition-colors hover:bg-nav-surface-hover hover:text-black focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring aria-expanded:bg-nav-surface-hover aria-expanded:text-black dark:hover:text-white dark:aria-expanded:text-white"
         >
-          <HugeiconsIcon icon={AddSquareIcon} strokeWidth={1.75} className="size-icon" />
+          <HugeiconsIcon icon={InternetIcon} strokeWidth={1.75} className="size-icon" />
         </button>
       </DropdownMenuTrigger>
       <DropdownMenuContent

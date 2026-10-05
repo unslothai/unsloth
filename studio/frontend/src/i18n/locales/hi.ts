@@ -157,6 +157,9 @@ export const hi = {
     },
     menu: {
       find: "पेज में खोजें",
+      print: "प्रिंट करें",
+      printFailed: "यह पेज प्रिंट नहीं हो सका",
+      screenshot: "स्क्रीनशॉट लें",
       zoom: "ज़ूम",
       zoomIn: "ज़ूम इन करें",
       zoomOut: "ज़ूम आउट करें",
@@ -164,12 +167,11 @@ export const hi = {
       deviceToolbar: "डिवाइस टूलबार दिखाएँ",
       clearData: "ब्राउज़िंग डेटा साफ़ करें",
     },
-    find: {
-      placeholder: "पेज में खोजें",
-      previous: "पिछला मिलान",
-      next: "अगला मिलान",
-      close: "खोज बंद करें",
-      noMatches: "कोई मिलान नहीं",
+    screenshot: {
+      added: "स्क्रीनशॉट चैट में जोड़ा गया",
+      save: "सहेजें",
+      failed: "स्क्रीनशॉट नहीं लिया जा सका",
+      otherSurface: "पेज का स्क्रीनशॉट लेने के लिए यह टैब शेयर करें",
     },
     device: {
       mobile: "मोबाइल",
@@ -426,6 +428,8 @@ export const hi = {
       next: "अगला मिलान",
       close: "खोज बंद करें",
       truncated: "यह पेज पूरी तरह खोजने के लिए बहुत लंबा है।",
+      searchChat: "चैट में खोजें",
+      searchBrowser: "ब्राउज़र पेज में खोजें",
     },
     zoom: {
       label: "ज़ूम",

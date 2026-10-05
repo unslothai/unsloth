@@ -8,7 +8,9 @@ rendered in ``/frame``, an opaque-origin sandbox; an injected script routes navi
 from __future__ import annotations
 
 import asyncio
+import base64
 import codecs
+import hashlib
 import html as _html
 import json
 import re
@@ -34,6 +36,7 @@ logger = get_logger(__name__)
 router = APIRouter()
 
 BROWSER_FRAME_PATH = "/api/browser/frame"
+BROWSER_PRINT_PATH = "/api/browser/print"
 KIND_HEADER = "X-Unsloth-Browser-Kind"
 URL_HEADER = "X-Unsloth-Browser-Url"
 NAME_HEADER = "X-Unsloth-Browser-Filename"
@@ -689,6 +692,149 @@ _FRAME_HTML = r"""<!doctype html>
           };
           return { start, stop, forget, number };
         })();
+        // The page as it is now, for printing: scripts' DOM, typed values and canvases included.
+        // Printed from a copy in a separate frame, as this sandbox can't open the print dialog.
+        const snapshot = () => {
+          try {
+            const source = document.documentElement;
+            const copy = source.cloneNode(true);
+            const twins = (selector) => [source.querySelectorAll(selector), copy.querySelectorAll(selector)];
+            const [fields, fieldCopies] = twins("input, textarea, select");
+            fields.forEach((field, index) => {
+              const twin = fieldCopies[index];
+              if (!twin) return;
+              if (field.tagName === "TEXTAREA") twin.textContent = field.value;
+              else if (field.tagName === "SELECT") [...twin.options].forEach((option, at) => option.toggleAttribute("selected", Boolean(field.options[at]?.selected)));
+              else if (field.type === "checkbox" || field.type === "radio") twin.toggleAttribute("checked", field.checked);
+              else if (field.type !== "password" && field.type !== "file") twin.setAttribute("value", field.value);
+            });
+            const [canvases, canvasCopies] = twins("canvas");
+            canvases.forEach((canvas, index) => {
+              const twin = canvasCopies[index];
+              if (!twin) return;
+              try {
+                const image = document.createElement("img");
+                for (const name of ["class", "style", "width", "height"]) if (twin.hasAttribute(name)) image.setAttribute(name, twin.getAttribute(name));
+                image.src = canvas.toDataURL();
+                twin.replaceWith(image);
+              } catch {}
+            });
+            // Styles added through the CSSOM (CSS-in-JS) aren't in the markup.
+            const [styles, styleCopies] = twins("style");
+            styles.forEach((style, index) => {
+              try {
+                const rules = style.sheet ? [...style.sheet.cssRules].map((rule) => rule.cssText).join("\n") : null;
+                if (rules && styleCopies[index]) styleCopies[index].textContent = rules;
+              } catch {}
+            });
+            try {
+              const adopted = (document.adoptedStyleSheets || []).flatMap((sheet) => [...sheet.cssRules].map((rule) => rule.cssText));
+              if (adopted.length) {
+                const extra = document.createElement("style");
+                extra.textContent = adopted.join("\n");
+                (copy.querySelector("head") || copy).appendChild(extra);
+              }
+            } catch {}
+            for (const node of copy.querySelectorAll("script, [data-unsloth-annotate]")) node.remove();
+            const html = "<!doctype html>" + copy.outerHTML;
+            return html.length <= 8 * 1024 * 1024 ? html : null;
+          } catch {
+            return null;
+          }
+        };
+
+        // Find in page for Studio's find bar: every visible match of the query, case-insensitive,
+        // painted with the same two highlights as the chat's (all matches, then the active one) and
+        // counted back to the bar. Highlights sit over the text, so the page itself is not changed.
+        const finder = (() => {
+          const MAX = 1000;
+          const SKIP = new Set(["SCRIPT", "STYLE", "NOSCRIPT", "TEMPLATE", "SELECT", "OPTION", "TEXTAREA"]);
+          const painted = typeof Highlight === "function" && typeof CSS !== "undefined" && CSS.highlights;
+          let ranges = [];
+          let active = -1;
+          let styled = false;
+          const style = () => {
+            if (styled || !painted) return;
+            styled = true;
+            const sheet = document.createElement("style");
+            sheet.textContent = "::highlight(unsloth-find){background-color:#ffd84d;color:#1a1a1a}::highlight(unsloth-find-active){background-color:#ff8c1a;color:#1a1a1a}";
+            (document.head || document.documentElement).appendChild(sheet);
+          };
+          const shown = (element) => {
+            if (typeof element.checkVisibility === "function") return element.checkVisibility({ visibilityProperty: true });
+            return element.getClientRects().length > 0;
+          };
+          const collect = (query) => {
+            const needle = query.toLowerCase();
+            const found = [];
+            if (!document.body) return found;
+            const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT, {
+              acceptNode: (node) => {
+                const element = node.parentElement;
+                if (!element || SKIP.has(element.tagName) || element.closest("[data-unsloth-annotate]")) return NodeFilter.FILTER_REJECT;
+                return NodeFilter.FILTER_ACCEPT;
+              },
+            });
+            for (let node = walker.nextNode(); node && found.length < MAX; node = walker.nextNode()) {
+              const text = node.nodeValue || "";
+              const lower = text.toLowerCase();
+              // Lowercasing can change a few characters' lengths; those nodes would map wrongly.
+              if (lower.length !== text.length) continue;
+              let at = lower.indexOf(needle);
+              if (at < 0 || !shown(node.parentElement)) continue;
+              while (at >= 0 && found.length < MAX) {
+                const range = document.createRange();
+                range.setStart(node, at);
+                range.setEnd(node, at + needle.length);
+                found.push(range);
+                at = lower.indexOf(needle, at + needle.length);
+              }
+            }
+            return found;
+          };
+          const paint = () => {
+            if (!painted) return;
+            style();
+            if (ranges.length) CSS.highlights.set("unsloth-find", new Highlight(...ranges));
+            else CSS.highlights.delete("unsloth-find");
+            if (ranges[active]) CSS.highlights.set("unsloth-find-active", new Highlight(ranges[active]));
+            else CSS.highlights.delete("unsloth-find-active");
+          };
+          const reveal = () => {
+            const range = ranges[active];
+            if (!range) return;
+            const rect = range.getBoundingClientRect();
+            if (rect.top < 48 || rect.bottom > innerHeight - 24 || rect.left < 0 || rect.right > innerWidth) {
+              range.startContainer.parentElement?.scrollIntoView({ block: "center", inline: "nearest" });
+            }
+            // Without highlights, the selection marks the match instead.
+            if (!painted) {
+              const selection = getSelection();
+              selection?.removeAllRanges();
+              selection?.addRange(range);
+            }
+          };
+          const report = () => post({ type: "findResult", count: ranges.length, active });
+          return {
+            search: (query) => {
+              ranges = query ? collect(query) : [];
+              // From where the reader is: the first match at or below the top of the view.
+              const below = ranges.findIndex((range) => range.getBoundingClientRect().bottom >= 0);
+              active = ranges.length ? Math.max(below, 0) : -1;
+              paint();
+              reveal();
+              report();
+            },
+            step: (delta) => {
+              if (ranges.length) {
+                active = (active + delta + ranges.length) % ranges.length;
+                paint();
+                reveal();
+              }
+              report();
+            },
+          };
+        })();
         // Commands from the panel, relayed by the shell (the only parent this page has).
         window.addEventListener("message", (event) => {
           if (event.source !== parent) return;
@@ -698,11 +844,9 @@ _FRAME_HTML = r"""<!doctype html>
           else if (data.command === "annotateForget") annotation.forget(Number(data.id));
           else if (data.command === "annotateNumbers") annotation.number(data.numbers);
           else if (data.command === "zoom") applyZoom(data.value);
-          else if (data.command === "find" && typeof data.query === "string" && data.query) {
-            let found = false;
-            try { found = window.find(data.query, false, Boolean(data.backwards), true, false, false, false); } catch {}
-            post({ type: "found", found });
-          }
+          else if (data.command === "find" && typeof data.query === "string" && data.query.length <= 1000) finder.search(data.query);
+          else if (data.command === "findStep") finder.step(data.delta === -1 ? -1 : 1);
+          else if (data.command === "snapshot") post({ type: "snapshot", html: snapshot() });
         });
         // The panel may have asked for annotate before this page could hear it.
         post({ type: "annotate", event: "ready" });
@@ -754,6 +898,68 @@ _FRAME_HTML = r"""<!doctype html>
     </script>
   </body>
 </html>"""
+
+
+# Print shell: the panel posts it a copy of the page (`snapshot` above), which it shows without
+# scripts and prints. Its own sandbox allows the print dialog, which the page's does not; its CSP
+# runs only this script, so nothing in the copy can.
+_PRINT_SCRIPT = r"""
+(() => {
+  let started = false;
+  const tell = (type) => parent.postMessage({ source: "unsloth-print", type }, "*");
+  addEventListener("message", (event) => {
+    const data = event.data;
+    if (started || event.source !== parent || !data || data.type !== "unsloth:browser-print" || typeof data.html !== "string") return;
+    started = true;
+    const copy = new DOMParser().parseFromString(data.html, "text/html");
+    for (const node of copy.querySelectorAll("script, iframe, frame, frameset, object, embed, meta[http-equiv]")) node.remove();
+    for (const node of copy.querySelectorAll("*")) {
+      for (const attribute of [...node.attributes]) if (/^on/i.test(attribute.name)) node.removeAttribute(attribute.name);
+    }
+    // Lazy images below the fold would print empty.
+    for (const image of copy.querySelectorAll("img[loading]")) image.removeAttribute("loading");
+    document.replaceChild(document.adoptNode(copy.documentElement), document.documentElement);
+    const settled = (element) => new Promise((resolve) => {
+      element.addEventListener("load", resolve, { once: true });
+      element.addEventListener("error", resolve, { once: true });
+    });
+    const waits = [
+      ...[...document.querySelectorAll('link[rel~="stylesheet"]')].filter((link) => !link.sheet).map(settled),
+      ...[...document.images].filter((image) => !image.complete).map(settled),
+      document.fonts ? document.fonts.ready : null,
+    ];
+    Promise.race([Promise.all(waits), new Promise((resolve) => setTimeout(resolve, 5000))]).then(() => {
+      setTimeout(() => {
+        try {
+          print();
+        } finally {
+          tell("printed");
+        }
+      }, 50);
+    });
+  });
+  tell("ready");
+})();
+"""
+_PRINT_HTML = (
+    '<!doctype html><html><head><meta charset="utf-8"></head><body><script>'
+    + _PRINT_SCRIPT
+    + "</script></body></html>"
+)
+_PRINT_CSP = (
+    "default-src 'none'; "
+    f"script-src 'sha256-{base64.b64encode(hashlib.sha256(_PRINT_SCRIPT.encode()).digest()).decode()}'; "
+    "style-src 'unsafe-inline' https: data: blob:; "
+    "img-src https: data: blob:; "
+    "font-src https: data: blob:; "
+    "media-src https: data: blob:; "
+    "base-uri http: https:; "
+    "form-action 'none'; "
+    f"frame-ancestors {_FRAME_ANCESTORS}; "
+    "upgrade-insecure-requests; "
+    "sandbox allow-scripts allow-modals; "
+    "treat-as-public-address"
+)
 
 
 class BrowserFetchRequest(BaseModel):
@@ -962,6 +1168,21 @@ async def browser_fetch(
                 raise HTTPException(status_code = 499, detail = "Client closed request")
     finally:
         cancel_event.set()
+
+
+@router.get("/print", include_in_schema = False)
+async def browser_print():
+    """Print shell; static and unauthenticated like ``/frame``."""
+    return Response(
+        content = _PRINT_HTML,
+        media_type = "text/html; charset=utf-8",
+        headers = {
+            "Cache-Control": "no-store",
+            "Content-Security-Policy": _PRINT_CSP,
+            "Referrer-Policy": "no-referrer",
+            "X-Content-Type-Options": "nosniff",
+        },
+    )
 
 
 @router.get("/frame", include_in_schema = False)

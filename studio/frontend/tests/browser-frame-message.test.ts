@@ -62,3 +62,18 @@ test("a page's zoom is a step in, out or back to 100%, and nothing else", () => 
   assert.equal(from({ type: "zoom", direction: "1" }), null);
   assert.equal(from({ type: "zoom" }), null);
 });
+
+test("find results are counts a page can't stretch", () => {
+  assert.deepEqual(from({ type: "findResult", count: 3, active: 1 }), { type: "findResult", count: 3, active: 1 });
+  assert.deepEqual(from({ type: "findResult", count: 0, active: -1 }), { type: "findResult", count: 0, active: -1 });
+  assert.equal(from({ type: "findResult", count: 2, active: 2 }), null);
+  assert.equal(from({ type: "findResult", count: -1, active: -1 }), null);
+  assert.equal(from({ type: "findResult", count: 1.5, active: 0 }), null);
+  assert.equal(from({ type: "findResult", count: "3", active: 0 }), null);
+});
+
+test("a snapshot is markup or nothing", () => {
+  assert.deepEqual(from({ type: "snapshot", html: "<p>x</p>" }), { type: "snapshot", html: "<p>x</p>" });
+  assert.deepEqual(from({ type: "snapshot", html: 5 }), { type: "snapshot", html: null });
+  assert.deepEqual(from({ type: "snapshot", html: "x".repeat(8 * 1024 * 1024 + 1) }), { type: "snapshot", html: null });
+});

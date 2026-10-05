@@ -468,11 +468,20 @@ const SingleContent = memo(function SingleContent({
         useBrowserStore.getState().closePanel();
         useChatArtifactsStore.getState().openArtifact(artifact, { surface: "panel" });
       },
+      attachToChat: (file) =>
+        aui
+          .composer()
+          .addAttachment(file)
+          .then(() => {
+            document.querySelector<HTMLTextAreaElement>(COMPOSER_INPUT_SELECTOR)?.focus();
+            return true;
+          })
+          .catch(() => false),
     });
     return () => {
       setBrowserPanelAvailable(false);
       setInAppLinkHandler(null);
-      useBrowserStore.setState({ requestEdits: null, sendAnnotations: null, openInCanvas: null });
+      useBrowserStore.setState({ requestEdits: null, sendAnnotations: null, openInCanvas: null, attachToChat: null });
     };
   }, [chatActive, isMobile, aui]);
   useEffect(() => {

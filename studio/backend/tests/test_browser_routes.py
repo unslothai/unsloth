@@ -35,6 +35,30 @@ def test_the_shell_is_isolated():
     assert "X-Unsloth-Browser-Kind" in browser_mod.EXPOSED_HEADERS
 
 
+def test_the_print_shell_runs_only_its_own_script():
+    import base64
+    import hashlib
+
+    import main
+
+    response = asyncio.run(browser_mod.browser_print())
+    csp = response.headers["content-security-policy"]
+    digest = base64.b64encode(hashlib.sha256(browser_mod._PRINT_SCRIPT.encode()).digest()).decode()
+    assert f"script-src 'sha256-{digest}';" in csp
+    assert "unsafe-inline' https" not in csp.split("script-src")[1].split(";")[0]
+    assert "sandbox allow-scripts allow-modals;" in csp
+    assert "allow-same-origin" not in csp and "connect-src" not in csp
+    assert csp.startswith("default-src 'none';")
+    assert browser_mod._PRINT_SCRIPT in response.body.decode()
+    for guard in (
+        "event.source !== parent",
+        'copy.querySelectorAll("script, iframe, frame, frameset, object, embed, meta[http-equiv]")',
+        "if (/^on/i.test(attribute.name)) node.removeAttribute(attribute.name);",
+    ):
+        assert guard in browser_mod._PRINT_SCRIPT, guard
+    assert browser_mod.BROWSER_PRINT_PATH in main._FRAME_SHELL_PATHS
+
+
 def test_the_shell_guards():
     shell = browser_mod._FRAME_HTML
     for guard in (

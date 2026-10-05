@@ -18,7 +18,10 @@ export type FrameMessage =
   | { type: "reload" }
   | { type: "upload" }
   | { type: "scriptNavigation" }
-  | { type: "found"; found: boolean }
+  /** Find in page: how many matches the query has, and which one is shown (-1: none). */
+  | { type: "findResult"; count: number; active: number }
+  /** The page's current markup, for printing; null when it couldn't be copied or was too large. */
+  | { type: "snapshot"; html: string | null }
   | { type: "shortcut"; key: string; shift: boolean }
   /** A zoom key or Ctrl+wheel in the page: a step in (1), out (-1), or back to 100% (0). */
   | { type: "zoom"; direction: 1 | -1 | 0; wheel: boolean }
@@ -46,6 +49,8 @@ export type AnnotateEvent =
 // Same limits as the fetch endpoint.
 const MAX_URL_CHARS = 8192;
 const MAX_BODY_CHARS = 1024 * 1024;
+// The frame script caps its copy at the same size.
+const MAX_SNAPSHOT_CHARS = 8 * 1024 * 1024;
 const MAX_TITLE_CHARS = 1024;
 const SHORTCUT_KEYS = new Set(["l", "t", "w", "r", "f", "d"]);
 const MAX_QUOTE_CHARS = 300;
@@ -141,8 +146,14 @@ export function parseFrameMessage(data: unknown): FrameMessage | null {
     case "upload":
     case "scriptNavigation":
       return { type: message.type };
-    case "found":
-      return { type: "found", found: message.found === true };
+    case "findResult": {
+      const { count, active } = message;
+      return Number.isInteger(count) && Number.isInteger(active) && (count as number) >= 0 && (active as number) >= -1 && (active as number) < Math.max(count as number, 1)
+        ? { type: "findResult", count: count as number, active: active as number }
+        : null;
+    }
+    case "snapshot":
+      return { type: "snapshot", html: typeof message.html === "string" && message.html.length <= MAX_SNAPSHOT_CHARS ? message.html : null };
     case "shortcut":
       return typeof message.key === "string" && SHORTCUT_KEYS.has(message.key)
         ? { type: "shortcut", key: message.key, shift: message.shift === true }
