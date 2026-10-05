@@ -146,3 +146,45 @@ def test_a_local_selection_keeps_the_root_it_always_had(tmp_path):
     root = _local_gguf_companion_search_root(str(weight.parent), str(weight))
     assert root == str(weight.parent)
     assert detect_mmproj_file(str(weight), search_root = root) is None
+
+
+def _resident(weight: Path, **overrides):
+    from types import SimpleNamespace
+
+    from core.inference.llama_cpp import GgufLoadIntent, LlamaCppBackend
+
+    state = dict(
+        _is_vision = False,
+        _disable_vision = False,
+        _hf_repo = "org/Model-GGUF",
+        _gguf_path = str(weight),
+        _last_load_intent = GgufLoadIntent(model_identifier = "org/Model-GGUF", is_vision = False),
+    )
+    state.update(overrides)
+    backend = SimpleNamespace(**state)
+    return lambda extras = (): LlamaCppBackend._hand_added_projector_since_launch(
+        backend, list(extras)
+    )
+
+
+def test_a_projector_dropped_after_a_text_only_load_forces_a_reload(tmp_path):
+    _repo, weight = _hf_repo(tmp_path)
+    probe = _resident(weight)
+    assert probe() is False
+
+    _projector(weight.parent / "mmproj-F16.gguf")
+    assert probe() is True
+    assert probe(["--no-mmproj"]) is False
+
+
+def test_the_reload_trigger_leaves_other_residents_alone(tmp_path):
+    from core.inference.llama_cpp import GgufLoadIntent
+
+    _repo, weight = _hf_repo(tmp_path)
+    _projector(weight.parent / "mmproj-F16.gguf")
+
+    assert _resident(weight, _is_vision = True)() is False
+    assert _resident(weight, _disable_vision = True)() is False
+    assert _resident(weight, _hf_repo = None)() is False
+    vision_intent = GgufLoadIntent(model_identifier = "org/Model-GGUF", is_vision = True)
+    assert _resident(weight, _last_load_intent = vision_intent)() is False

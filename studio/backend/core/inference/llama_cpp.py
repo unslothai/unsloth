@@ -24408,6 +24408,21 @@ class LlamaCppBackend:
                             cancel_event = download_cancel_event,
                             near_path = model_path,
                         )
+                    elif (
+                        not is_vision
+                        and not mmproj_path
+                        and model_path
+                        and not extra_args_disable_mmproj(extra_args)
+                    ):
+                        # The listing publishes none and the config had no cached weight to
+                        # pair a hand-added projector against (#9286); now there is one.
+                        from utils.models.model_config import _hf_cached_local_mmproj
+                        mmproj_path = _hf_cached_local_mmproj(model_path)
+                        if mmproj_path:
+                            logger.info(
+                                "Using hand-added mmproj from the HF cache: %s", mmproj_path
+                            )
+                            is_vision = True
                     # Auto-download the separate MTP drafter (e.g. Gemma) when
                     # the requested spec mode can use it. The size gate stays out
                     # of it: a separate drafter speeds up even sub-3B (Gemma E2B),
@@ -32935,12 +32950,37 @@ class LlamaCppBackend:
         if _launched_frac is not None and float(_launched_frac) != _active_frac:
             logger.info("VRAM budget changed since launch; forcing a reload")
             return False
+        if self._hand_added_projector_since_launch(candidate_extra_args):
+            logger.info("A projector was added beside the cached weight; forcing a reload")
+            return False
         if not self._runtime_matches_intent(intent, candidate_extra_args):
             return False
         self._record_matching_gpu_request(
             list(intent.gpu_ids) if intent.gpu_ids is not None else None
         )
         return True
+
+    def _hand_added_projector_since_launch(self, extra_args: list) -> bool:
+        """A text-only -hf launch whose repo publishes no projector, with one now
+        dropped beside the cached weight (#9286). Without this the next Apply dedupes
+        onto the projector-less server until Studio restarts."""
+        last = getattr(self, "_last_load_intent", None)
+        if (
+            self._is_vision
+            or self._disable_vision
+            or not self._hf_repo
+            or not self._gguf_path
+            or last is None
+            or last.is_vision
+            or extra_args_disable_mmproj(extra_args)
+        ):
+            return False
+        try:
+            from utils.models.model_config import _hf_cached_local_mmproj
+            return _hf_cached_local_mmproj(self._gguf_path) is not None
+        except Exception as exc:
+            logger.debug("Hand-added mmproj probe failed: %s", exc)
+            return False
 
     def matches_load_source(self, intent: GgufLoadIntent) -> bool:
         """Whether the resident model has the intent's identity and weights."""
