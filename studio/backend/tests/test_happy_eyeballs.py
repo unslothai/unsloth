@@ -3,11 +3,8 @@
 
 """A black-holed address family must cost one stagger, not one timeout per address.
 
-Where the clock is the thing under test, the black hole is real: 100::/64 is the RFC
-6666 discard prefix, so a connect() to it hangs exactly as it does behind a VPN that
-carries no IPv6. Where the thing under test is which attempt opens, and when, the socket
-is scripted instead, because a discard address is refused outright rather than silent on
-a host with no IPv6 route at all.
+100::/64 is the RFC 6666 discard prefix; on a host with no IPv6 route it is refused
+outright, so ordering cases script the socket instead.
 """
 
 from __future__ import annotations
@@ -29,13 +26,9 @@ _TESTS_DIR = str(Path(__file__).resolve().parent)
 if _TESTS_DIR not in sys.path:
     sys.path.insert(0, _TESTS_DIR)
 
-# Imported rather than restated. The first version of this guard copied the list and
-# dropped three of them -- including hub/workers/hf_download.py, the Hub downloader this
-# whole change exists for -- while its docstring claimed to mirror that file.
 from test_native_tls_entrypoints import _ENTRYPOINTS as _NATIVE_TLS_ENTRYPOINTS  # noqa: E402
 
-# Activates inside the spawned child function rather than at import, so the native TLS
-# guard (which checks module-level calls by AST) does not list it.
+# Activates inside the spawned child function, so the native TLS guard does not list it.
 _EXTRA_ENTRYPOINTS = ("core/training/diffusion_training_service.py",)
 
 
@@ -44,7 +37,6 @@ DISCARD = [f"100::{i + 1}" for i in range(8)]
 
 @pytest.fixture
 def listener():
-    """A real acceptor, so a winning connect is a genuine TCP handshake."""
     srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     srv.bind(("127.0.0.1", 0))
@@ -118,13 +110,11 @@ def test_eight_black_holed_aaaa_cost_one_stagger(listener, monkeypatch):
     finally:
         sock.close()
 
-    # The stdlib pays 8 x 10s here; 3s leaves slack for a loaded CI box.
+    # The stdlib pays 8 x 10s.
     assert elapsed < 3.0, f"took {elapsed:.1f}s; the AAAA records were walked in order"
 
 
 def test_the_whole_walk_costs_one_timeout_plus_staggers_not_one_timeout_each(monkeypatch):
-    """With no A record to win, six black-holed AAAA must fail at one budget plus the
-    staggers that opened them, not at six budgets."""
     monkeypatch.setattr(socket, "getaddrinfo", _resolver(443, aaaa = 6, with_a = False))
 
     start = time.monotonic()
@@ -132,26 +122,15 @@ def test_the_whole_walk_costs_one_timeout_plus_staggers_not_one_timeout_each(mon
         he.happy_eyeballs_connection(("hub.invalid", 443), 3)
     elapsed = time.monotonic() - start
 
-    # 3s + five staggers = 4.25s; 6s leaves slack for a loaded CI box and is still well
-    # under the 18s the stdlib pays.
+    # 3s + five staggers = 4.25s; the stdlib pays 18s.
     assert (
         elapsed < 6.0
     ), f"took {elapsed:.1f}s for a 3s budget; the timeout is still applied per address"
 
 
 def test_a_reachable_address_late_in_the_list_is_still_dialled(monkeypatch):
-    """The stdlib hands every resolved address the caller's whole timeout, so a host
-    whose only reachable address sits late in the list connects, however slowly. Sharing
-    one budget of ``timeout`` across the race took that away: once ``timeout / delay``
-    attempts had opened, the deadline had passed and the addresses behind them were never
-    tried at all. The budget now carries one stagger per extra address, so every attempt
-    still gets the whole timeout.
-
-    One family, because interleaving is what saves a host whose families differ. A host
-    with eight dead A records and one live one has no second family to cut in.
-
-    Scripted rather than dialled: the case is about which attempts open and when.
-    """
+    """Every attempt keeps the whole timeout, so a live address opened past
+    ``timeout / delay`` staggers is still dialled, as the stdlib would."""
     monkeypatch.setenv(he._DELAY_ENV, "0.05")
     good = "127.0.0.1"
     dialled = []
@@ -170,15 +149,12 @@ def test_a_reachable_address_late_in_the_list_is_still_dialled(monkeypatch):
         def connect_ex(self, sa):
             dialled.append(sa[0])
             self.peer = sa[0]
-            # Every black hole stays in flight forever; the one live address answers.
             return 0 if sa[0] == good else errno.EINPROGRESS
 
         def close(self):
             pass
 
     class _NeverReady:
-        """No black hole ever becomes writable, so only the clock moves the loop on."""
-
         def register(self, *_args, **_kwargs):
             pass
 
@@ -193,8 +169,7 @@ def test_a_reachable_address_late_in_the_list_is_still_dialled(monkeypatch):
         def close(self):
             pass
 
-    # 192.0.2.0/24 is TEST-NET-1. The live address is ninth, due 0.4s in, where a shared
-    # 0.2s budget had already run out.
+    # TEST-NET-1 black holes; the live address is ninth, due 0.4s in.
     monkeypatch.setattr(
         socket,
         "getaddrinfo",
@@ -256,10 +231,7 @@ def test_a_refused_port_still_raises_immediately(monkeypatch):
 
 
 def test_the_last_failure_is_raised_not_the_first(monkeypatch):
-    """``create_connection(all_errors = False)`` raises the LAST error, and callers read
-    which one it is: utils.utils.hf_tcp_reachable treats ECONNREFUSED as proof the
-    endpoint answered, so handing it an earlier family's ENETUNREACH instead declares the
-    Hub unreachable and switches the offline guard on."""
+    """hf_tcp_reachable reads ECONNREFUSED as "the Hub answered"."""
     scripted = {"100::1": errno.ENETUNREACH, "127.0.0.1": errno.ECONNREFUSED}
 
     class _Stub:
@@ -295,13 +267,6 @@ def test_the_last_failure_is_raised_not_the_first(monkeypatch):
 
 
 def test_a_deadline_reached_with_attempts_in_flight_raises_a_timeout(monkeypatch):
-    """An address still in flight when the budget runs out is a timeout, not whatever an
-    address that failed earlier happened to report.
-
-    Scripted rather than dialled: whether a discard-prefix address hangs or is refused
-    outright depends on whether the host has an IPv6 route at all.
-    """
-
     class _Stub:
         def __init__(self, family, *_args, **_kwargs):
             self.family = family
@@ -316,8 +281,6 @@ def test_a_deadline_reached_with_attempts_in_flight_raises_a_timeout(monkeypatch
             pass
 
     class _NeverReady:
-        """Nothing ever becomes writable, so the in-flight attempt outlives the budget."""
-
         def register(self, *_args, **_kwargs):
             pass
 
@@ -348,9 +311,7 @@ def test_a_deadline_reached_with_attempts_in_flight_raises_a_timeout(monkeypatch
 
 
 def _mixed_list_connector(monkeypatch, order):
-    """Script a list where "hole" never answers and "refused" fails at once, in *order*,
-    and return what the connector raises for it. Delay is shortened so the deadline
-    arrives inside the test."""
+    """What the connector raises for "hole" (never answers) and "refused" in *order*."""
     monkeypatch.setenv(he._DELAY_ENV, "0.05")
     addr = {"hole": ("192.0.2.1", 443), "refused": ("127.0.0.1", 1)}
 
@@ -396,10 +357,6 @@ def _mixed_list_connector(monkeypatch, order):
 
 
 def test_a_black_hole_then_a_refused_address_raises_refused_as_the_stdlib_does(monkeypatch):
-    """The stdlib walks every address and raises whatever the LAST one did. With the
-    refused address last, that is ConnectionRefusedError, and hf_tcp_reachable reads it as
-    "the endpoint answered". A deadline rule that turned every in-flight attempt into a
-    timeout raised TimeoutError here instead, and flipped that verdict to unreachable."""
     exc = _mixed_list_connector(monkeypatch, ("hole", "refused"))
     assert isinstance(
         exc, ConnectionRefusedError
@@ -407,8 +364,6 @@ def test_a_black_hole_then_a_refused_address_raises_refused_as_the_stdlib_does(m
 
 
 def test_a_refused_address_then_a_black_hole_raises_a_timeout_as_the_stdlib_does(monkeypatch):
-    """The mirror: with the black hole last, the stdlib's attempt on it times out, and
-    that is what it raises. Parity means the same answer, not the more informative one."""
     exc = _mixed_list_connector(monkeypatch, ("refused", "hole"))
     assert isinstance(
         exc, socket.timeout
@@ -416,7 +371,6 @@ def test_a_refused_address_then_a_black_hole_raises_a_timeout_as_the_stdlib_does
 
 
 def test_the_winning_socket_is_blocking_with_the_callers_timeout(listener, monkeypatch):
-    """Attempts run non-blocking; what the caller gets back must not."""
     monkeypatch.setattr(socket, "getaddrinfo", _resolver(listener, aaaa = 2))
 
     sock = he.happy_eyeballs_connection(("hub.invalid", listener), 7)
@@ -445,10 +399,7 @@ def test_activation_installs_the_connector_and_is_idempotent(monkeypatch):
 
 
 def test_every_network_entry_point_activates_it():
-    """Injection does not survive a spawn, so a worker that activates native TLS without
-    this one still pays one timeout per resolved address."""
     import pathlib
-
     backend = pathlib.Path(he.__file__).resolve().parent.parent
     for rel in tuple(_NATIVE_TLS_ENTRYPOINTS) + _EXTRA_ENTRYPOINTS:
         src = (backend / rel).read_text(encoding = "utf-8")
@@ -456,6 +407,4 @@ def test_every_network_entry_point_activates_it():
         assert (
             "activate_happy_eyeballs()" in src
         ), f"{rel} activates native TLS but not happy eyeballs"
-        # Parsed, not just grepped: an activation inside a function can be misindented
-        # and still grep clean.
         ast.parse(src)

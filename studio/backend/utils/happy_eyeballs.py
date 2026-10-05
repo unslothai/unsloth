@@ -1,35 +1,12 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Race address families when connecting, instead of walking them in order (RFC 8305).
+"""RFC 8305 Happy Eyeballs for sync connects.
 
-``socket.create_connection`` tries ``getaddrinfo()`` results one at a time and applies
-the caller's ``timeout`` to each, with no overall deadline. On a network that black-holes
-one family (a VPN carrying no IPv6, say) every address in that family burns the full
-timeout before the other family is tried.
-
-``httpx`` bottoms out there through ``httpcore``'s sync backend, and ``urllib.request``
-through ``http.client``, so the fix goes in at the socket rather than per client. That
-covers ``huggingface_hub`` 1.x, whose ``get_session()`` is an ``httpx.Client``. Async
-httpx already races through anyio.
-
-``requests`` is NOT covered: urllib3 2.x implements its own ``getaddrinfo`` loop in
-``urllib3.util.connection.create_connection`` and never calls the stdlib's. So the raw
-Hub API fallback in ``utils/models/model_config.py`` still pays one timeout per address,
-as does ``huggingface_hub`` on Python 3.9, where requirements pin the requests-based
-``huggingface-hub==0.36.2``. Closing that means patching urllib3's connector too, which
-is a separate decision from patching the stdlib and is left out deliberately.
-
-CPython tracks this as python/cpython#88810 (open since 2021). Waiting is not a plan: it
-would land in a future version, stdlib features are not backported, and Studio supports
-3.9 through 3.14.
-
-Attempts are interleaved across families and staggered 250ms apart, so a black-holed
-family costs one stagger rather than one timeout per address. Every attempt still keeps
-the caller's whole timeout, so no address connects on less budget here than the stdlib
-gave it. Installed
-process-wide like :mod:`utils.native_tls`; injection does not survive a spawn, so every
-network-touching entry point activates it before its first connection.
+``socket.create_connection`` applies ``timeout`` per resolved address, so a black-holed
+family (VPN without IPv6) costs one timeout per address (python/cpython#88810). httpx's
+sync backend and ``http.client`` call it; ``requests`` does not (urllib3 2.x has its own
+loop). Spawned children must re-activate, like :mod:`utils.native_tls`.
 """
 
 from __future__ import annotations
@@ -49,10 +26,7 @@ _FALSEY = ("0", "false", "no", "off")
 # Connection Attempt Delay, RFC 8305 section 5.
 _DEFAULT_DELAY = 0.25
 
-# connect_ex() results for an attempt still in flight: EINPROGRESS on POSIX,
-# EWOULDBLOCK on Windows, EALREADY on a retry.
 _IN_FLIGHT = frozenset({errno.EINPROGRESS, errno.EWOULDBLOCK, errno.EALREADY})
-# ExceptionGroup and create_connection's all_errors are both 3.11. Studio supports 3.9.
 _HAS_EXCEPTION_GROUP = sys.version_info >= (3, 11)
 
 _logger = logging.getLogger(__name__)
@@ -61,13 +35,10 @@ _activated = False
 
 
 def happy_eyeballs_enabled() -> bool:
-    """On unless ``UNSLOTH_STUDIO_HAPPY_EYEBALLS`` opts out; the bug is CPython's, so no
-    platform default."""
     return os.environ.get(_ENV, "").strip().lower() not in _FALSEY
 
 
 def attempt_delay() -> float:
-    """Stagger between attempts, overridable for tests and odd links."""
     try:
         value = float(os.environ.get(_DELAY_ENV, "").strip() or _DEFAULT_DELAY)
     except ValueError:
@@ -76,8 +47,7 @@ def attempt_delay() -> float:
 
 
 def _interleave(infos: list) -> list:
-    """Round-robin across families, resolver order kept within each; ``getaddrinfo``
-    groups by family."""
+    """Round-robin across families, resolver order kept within each."""
     by_family: dict = {}
     for info in infos:
         by_family.setdefault(info[0], []).append(info)
@@ -103,12 +73,7 @@ def happy_eyeballs_connection(
     *,
     all_errors = False,
 ):
-    """Drop-in ``socket.create_connection`` that races families instead of walking them.
-
-    ``timeout`` is what every attempt gets, as in the stdlib. Attempts overlap rather
-    than queue, so the whole connect ends within ``timeout`` plus one stagger per extra
-    address, where the stdlib takes ``timeout`` times the number of addresses.
-    """
+    """Drop-in ``socket.create_connection``: ends within ``timeout + (n - 1) * delay``."""
     host, port = address
     if timeout is socket._GLOBAL_DEFAULT_TIMEOUT:
         resolved_timeout = socket.getdefaulttimeout()
@@ -117,11 +82,7 @@ def happy_eyeballs_connection(
 
     infos = socket.getaddrinfo(host, port, 0, socket.SOCK_STREAM)
     if len(infos) <= 1:
-        # Nothing to race; delegate so CPython's semantics and error types are kept.
         if _HAS_EXCEPTION_GROUP:
-            # The branch this sits in IS the guard for the 3.11 all_errors kwarg. vermin
-            # reads names rather than control flow, so it cannot see that; the marker goes
-            # on the call's first line, which is the line it attributes the kwarg to.
             return _original_create_connection(  # novermin
                 address,
                 timeout,
@@ -132,27 +93,19 @@ def happy_eyeballs_connection(
 
     ordered = _interleave(infos)
     delay = attempt_delay()
-    # Each attempt keeps the caller's whole timeout, the way the stdlib hands it to every
-    # address. Attempt k opens (k-1) staggers in, so the shared deadline carries the last
-    # attempt's stagger on top of the timeout; without that, an address late in the list
-    # would get less budget here than the stdlib gave it, and a host whose only reachable
-    # address sits there would fail where it used to connect. The walk still ends within
-    # timeout + (n-1) staggers, against the stdlib's n x timeout.
+    # The last attempt opens (n - 1) staggers in and must still get the whole timeout.
     deadline = (
         None
         if resolved_timeout is None
         else time.monotonic() + resolved_timeout + (len(ordered) - 1) * delay
     )
-    # Appended in COMPLETION order, which is what lets the raise below pick the last
-    # failure the way the stdlib does.
     exceptions: list = []
-    failed: dict = {}  # sockaddr -> its failure, for the raise below
+    failed: dict = {}  # sockaddr -> its failure
     pending: dict = {}  # socket -> sockaddr
     winner = None
     timed_out = False
 
     def _settle(sock):
-        """Hand back a socket with the blocking mode the caller expects."""
         sock.setblocking(True)
         sock.settimeout(resolved_timeout)
         return sock
@@ -193,8 +146,6 @@ def happy_eyeballs_connection(
                     break
                 continue
 
-            # Only until the next attempt is due, so a silent family does not hold the
-            # others back; once all are in flight, wait out the deadline.
             budget = _remaining(deadline)
             if index < len(ordered):
                 wait = delay if started_one else 0.0
@@ -241,30 +192,20 @@ def happy_eyeballs_connection(
     if timed_out or not exceptions:
         exceptions.append(socket.timeout("timed out"))
     if all_errors and _HAS_EXCEPTION_GROUP:
-        # novermin -- ExceptionGroup is 3.11, and the condition above IS the guard.
-        raise ExceptionGroup("create_connection failed", exceptions)
-    # What the stdlib raises: it walks every address and reports whatever the last one in
-    # resolver order did. Callers read which error they got; utils.utils.hf_tcp_reachable
-    # treats ECONNREFUSED as proof the endpoint answered. So the last address decides: its
-    # own failure if it had one, else a timeout, since at the deadline it was still in
-    # flight and the stdlib's attempt on it would have timed out as well.
+        raise ExceptionGroup("create_connection failed", exceptions)  # novermin
+    # Like the stdlib, the last address in resolver order decides the error:
+    # hf_tcp_reachable reads ECONNREFUSED as "the endpoint answered".
     raise failed.get(infos[-1][4]) or socket.timeout("timed out")
 
 
 def activate_happy_eyeballs() -> bool:
-    """Idempotently install the racing connector process-wide.
-
-    Returns True when it is active. Failure is non-fatal: the stdlib's sequential walk
-    is the pre-existing behaviour, slow rather than wrong.
-    """
+    """Idempotently install the connector process-wide; True when active."""
     global _activated
     if _activated:
         return True
     if not happy_eyeballs_enabled():
         return False
     try:
-        # http.client reads this in HTTPConnection.__init__, not at class definition, so
-        # patching before the first request reaches urllib.request too.
         socket.create_connection = happy_eyeballs_connection
     except Exception as exc:  # noqa: BLE001
         _logger.warning(
