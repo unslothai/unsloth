@@ -571,7 +571,6 @@ def explain_container_choice(
             log = logger
             if log is None:
                 import logging
-
                 log = logging.getLogger(__name__)
             log.info(
                 "diffusion.prequant_pickle: %s: using %s instead of %s because %s",
