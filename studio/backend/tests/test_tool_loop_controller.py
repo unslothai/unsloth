@@ -40,6 +40,7 @@ from core.inference.tool_call_parser import TOOL_ERROR_NUDGE, parse_tool_calls_f
 from core.inference.tools import (
     ALL_TOOLS,
     MAX_TOOL_TEXT_CHARS,
+    _TOOL_TEXT_TRUNCATION_MARKER,
     _TOOL_TEXT_TRUNCATION_NOTICE,
     _mcp_specs_for_server,
     cap_tool_text,
@@ -826,15 +827,14 @@ def test_cap_tool_text_is_idempotent():
     assert cap_tool_text(once) is once
 
 
-def test_model_message_caps_an_oversized_result_but_the_card_payload_keeps_the_full_result():
+def test_an_oversized_result_is_capped_for_the_card_and_the_model_alike():
     controller = ToolLoopController(tools = [_tool("terminal")])
     decision = controller.prepare_call(_call("terminal", {"command": "cat big.log"}))
     huge = "line of output\n" * 400_000
     completion = controller.record_result(decision, huge)
 
-    assert completion.tool_end_payload()["result"] == huge
-
     content = completion.tool_message()["content"]
+    assert completion.tool_end_payload()["result"] == content
     assert content.endswith(_TOOL_TEXT_TRUNCATION_NOTICE)
     body = content[: -len(_TOOL_TEXT_TRUNCATION_NOTICE)]
     assert len(body) <= MAX_TOOL_TEXT_CHARS
@@ -842,7 +842,7 @@ def test_model_message_caps_an_oversized_result_but_the_card_payload_keeps_the_f
     assert huge[len(body)] == "\n"
 
 
-def test_model_message_caps_after_the_suffix_strip_not_the_card_envelope():
+def test_the_cap_keeps_the_card_envelope_whole_and_off_the_model():
     envelope = '\n__WEB_IMAGES__:[{"id": "a1b2c3d4e5f6", "title": "A chart", "domain": "example.com", "source": "https://example.com/a.png"}]'
     huge = ("z" * (MAX_TOOL_TEXT_CHARS + 2000)) + envelope
     controller = ToolLoopController(tools = [_tool("web_search")])
@@ -850,14 +850,66 @@ def test_model_message_caps_after_the_suffix_strip_not_the_card_envelope():
         controller.prepare_call(_call("web_search", {"url": "https://example.com/a"})), huge
     )
 
-    assert completion.tool_end_payload()["result"] == huge
+    capped = "z" * MAX_TOOL_TEXT_CHARS + _TOOL_TEXT_TRUNCATION_NOTICE
+    assert completion.tool_end_payload()["result"] == capped + envelope
+    assert completion.tool_message()["content"] == capped
 
-    content = completion.tool_message()["content"]
-    assert content.endswith(_TOOL_TEXT_TRUNCATION_NOTICE)
-    assert "__WEB_IMAGES__" not in content
-    body = content[: -len(_TOOL_TEXT_TRUNCATION_NOTICE)]
-    assert huge.startswith(body)
-    assert body == huge[:MAX_TOOL_TEXT_CHARS]
+
+@pytest.fixture
+def _sandbox(tmp_path, monkeypatch):
+    import core.inference.tools as tools
+
+    records = tmp_path / "records"
+    records.mkdir()
+    workdir = tmp_path / "sandbox"
+    workdir.mkdir()
+    monkeypatch.setattr(tools, "_spill_records_dir", lambda: str(records))
+    monkeypatch.setattr(tools, "_get_workdir", lambda session_id = None: str(workdir))
+    return workdir
+
+
+def _spilled(
+    names,
+    result,
+    session_id = "chat-1",
+):
+    controller = ToolLoopController(
+        tools = [_tool(name) for name in names], session_id = session_id, thread_id = "t1"
+    )
+    return controller.record_result(
+        controller.prepare_call(_call(names[0], {"server": "x", "q": "y"})), result
+    )
+
+
+def test_an_oversized_result_is_spilled_and_the_model_is_told_how_to_search_it(_sandbox):
+    huge = "".join(f"row {i}\n" for i in range(60_000))
+    content = _spilled(["mcp__docs__dump", "terminal"], huge).tool_message()["content"]
+
+    notice = content[content.index(_TOOL_TEXT_TRUNCATION_MARKER) :]
+    path = notice.split("saved to ")[1].split(" ")[0]
+    assert (_sandbox / path).read_text() == huge
+    assert f"grep -n 'pattern' {path}" in notice
+    assert f"sed -n '1,200p' {path}" in notice
+    assert "open(" not in notice
+    assert cap_tool_text(content) is content
+
+
+def test_the_hint_names_only_the_reader_the_model_has(_sandbox):
+    huge = "q" * (MAX_TOOL_TEXT_CHARS + 1)
+    content = _spilled(["mcp__docs__dump", "python"], huge).tool_message()["content"]
+    assert "open('.unsloth_tool_output/" in content
+    assert "grep" not in content
+
+
+def test_no_reader_tool_or_a_shared_sandbox_gets_the_plain_notice(_sandbox):
+    huge = "q" * (MAX_TOOL_TEXT_CHARS + 1)
+    plain = "q" * MAX_TOOL_TEXT_CHARS + _TOOL_TEXT_TRUNCATION_NOTICE
+    assert _spilled(["mcp__docs__dump"], huge).tool_message()["content"] == plain
+    assert (
+        _spilled(["mcp__docs__dump", "terminal"], huge, session_id = None).tool_message()["content"]
+        == plain
+    )
+    assert not (_sandbox / ".unsloth_tool_output").exists()
 
 
 def test_model_message_leaves_an_already_capped_result_alone():

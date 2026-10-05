@@ -748,6 +748,8 @@ def run_safetensors_tool_loop(
     tool_controller = ToolLoopController(
         tools = (None if unrestricted_tools else _authorized),
         auto_heal_tool_calls = auto_heal_tool_calls,
+        session_id = session_id,
+        thread_id = thread_id,
     )
     # RAG: cap knowledge-base searches per assistant turn (controller-agnostic).
     kb_search_count = 0

@@ -20474,19 +20474,59 @@ def _split_frontend_suffix(text: str, name: "str | None") -> "tuple[str, str]":
 
 
 MAX_TOOL_TEXT_CHARS = 256_000
+# Shared prefix of every cap notice; mirrored by `tool-text-cap.ts`, which keys idempotency on it.
+_TOOL_TEXT_TRUNCATION_MARKER = "\n\n... (tool result truncated to 256,000 chars for the model;"
 _TOOL_TEXT_TRUNCATION_NOTICE = (
-    "\n\n... (tool result truncated to 256,000 chars for the model; "
-    "the full output is not retained in model context.)"
+    _TOOL_TEXT_TRUNCATION_MARKER + " the full output is not retained in model context.)"
 )
+_TOOL_TEXT_READERS = frozenset({"terminal", "python"})
 
 
-def cap_tool_text(text: str) -> str:
-    """Unconditional floor for model-bound tool text, priced window or not; mirrors ``capToolText``."""
-    if len(text) <= MAX_TOOL_TEXT_CHARS:
+def _tool_text_is_capped(text: str) -> bool:
+    return text.rfind(_TOOL_TEXT_TRUNCATION_MARKER, max(0, len(text) - 2_000)) != -1
+
+
+def _tool_text_search_hint(path: str, readers: "frozenset[str]") -> str:
+    ways = []
+    if "terminal" in readers and _posix_tools_available():
+        ways += [f"grep -n 'pattern' {path}", f"sed -n '1,200p' {path}"]
+    elif "terminal" in readers:
+        ways.append(f'findstr /n "pattern" {path}')
+    if "python" in readers:
+        ways.append(f"open({path!r}) in python")
+    return "Search it instead of re-running the call, e.g. " + ", or ".join(ways)
+
+
+def cap_tool_text(
+    text: str,
+    *,
+    session_id: "str | None" = None,
+    thread_id: "str | None" = None,
+    readers: "frozenset[str]" = frozenset(),
+) -> str:
+    """Unconditional floor for model-bound tool text, priced window or not; mirrors ``capToolText``.
+
+    When the model has a tool that can read the chat's sandbox, the full text is spilled there and
+    the notice says how to search it.
+    """
+    if len(text) <= MAX_TOOL_TEXT_CHARS or _tool_text_is_capped(text):
         return text
-    if text.endswith(_TOOL_TEXT_TRUNCATION_NOTICE):
-        return text
-    return _head_whole_lines(text, MAX_TOOL_TEXT_CHARS)[0] + _TOOL_TEXT_TRUNCATION_NOTICE
+    head = _head_whole_lines(text, MAX_TOOL_TEXT_CHARS)[0]
+    readers = readers & _TOOL_TEXT_READERS
+    if readers and session_id and _spill_scope(session_id, thread_id) is not None:
+        try:
+            workdir = _get_workdir(session_id)
+        except Exception:  # noqa: BLE001 -- no sandbox means the plain notice
+            logger.debug("tool text spill: no workdir", exc_info = True)
+            workdir = None
+        spill, complete = _spill_full_output(text, workdir, _spill_scope(session_id, thread_id))
+        if spill is not None:
+            return (
+                head
+                + f"{_TOOL_TEXT_TRUNCATION_MARKER} {_spill_phrase(spill, complete)} in the working "
+                f"directory. {_tool_text_search_hint(spill, readers)}.)"
+            )
+    return head + _TOOL_TEXT_TRUNCATION_NOTICE
 
 
 def _head_whole_lines(text: str, limit: int) -> "tuple[str, bool]":

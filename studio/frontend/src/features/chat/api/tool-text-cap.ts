@@ -3,14 +3,19 @@
 
 export const MAX_TOOL_TEXT_CHARS = 256_000;
 
-const TOOL_TEXT_TRUNCATION_NOTICE =
-  "\n\n... (tool result truncated to 256,000 chars for the model; the full output is not retained in model context.)";
+// Shared prefix of every cap notice, including the backend's spill notice that names the saved file.
+const TOOL_TEXT_TRUNCATION_MARKER =
+  "\n\n... (tool result truncated to 256,000 chars for the model;";
+const TOOL_TEXT_TRUNCATION_NOTICE = `${TOOL_TEXT_TRUNCATION_MARKER} the full output is not retained in model context.)`;
 
 export function capToolText(text: string): string {
   if (text.length <= MAX_TOOL_TEXT_CHARS) {
     return text;
   }
-  if (text.endsWith(TOOL_TEXT_TRUNCATION_NOTICE)) {
+  if (
+    text.lastIndexOf(TOOL_TEXT_TRUNCATION_MARKER) >=
+    Math.max(0, text.length - 2_000)
+  ) {
     return text;
   }
   // Never end on a lone high surrogate: the backend cannot UTF-8 encode it.

@@ -51,3 +51,8 @@ test("a cut never splits a surrogate pair", () => {
   assert.equal(body, "a".repeat(MAX_TOOL_TEXT_CHARS - 1));
   assert.ok(encodeURIComponent(body));
 });
+
+test("a backend spill notice is left alone", () => {
+  const spilled = `${"s".repeat(MAX_TOOL_TEXT_CHARS)}\n\n... (tool result truncated to 256,000 chars for the model; full output saved to .unsloth_tool_output/abc123def456.txt in the working directory. Search it instead of re-running the call, e.g. grep -n 'pattern' .unsloth_tool_output/abc123def456.txt.)`;
+  assert.equal(capToolText(spilled), spilled);
+});
