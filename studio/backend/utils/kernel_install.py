@@ -75,10 +75,21 @@ def resolve_wheel_url(name: str, env: dict[str, str] | None) -> str | None:
 
 
 def _gpu_capability(run: Callable[..., subprocess.CompletedProcess]) -> tuple[int, int] | None:
-    check = "import torch; print(*torch.cuda.get_device_capability()) if torch.cuda.is_available() else None"
-    result = run(
-        [sys.executable, "-c", check], stdout = subprocess.PIPE, stderr = subprocess.DEVNULL, text = True
+    """The best compute capability across the visible GPUs, or None."""
+    check = (
+        "import torch; n = torch.cuda.device_count() if torch.cuda.is_available() else 0; "
+        "print(*max(torch.cuda.get_device_capability(i) for i in range(n))) if n else None"
     )
+    try:
+        result = run(
+            [sys.executable, "-c", check],
+            stdout = subprocess.PIPE,
+            stderr = subprocess.DEVNULL,
+            text = True,
+            timeout = 120,
+        )
+    except subprocess.TimeoutExpired:
+        return None
     try:
         major, minor = (int(part) for part in result.stdout.split())
     except ValueError:
@@ -116,18 +127,18 @@ def install_kernel(
     exists: Callable[[str], bool | None] = url_exists,
 ) -> int:
     distribution, check = KERNELS[name]
-    if name == "flash_attn":
+    url = resolve_wheel_url(name, env)
+    if name == "flash_attn" and url is not None:
         # FlashAttention 2 needs Ampere or newer, and Unsloth only enables it there.
         capability = _gpu_capability(run)
         if capability is None or capability < (8, 0):
             gpu = (
                 "no CUDA GPU is visible"
                 if capability is None
-                else "this GPU is sm%d%d" % capability
+                else "the best GPU is sm%d%d" % capability
             )
             print(f"Unsloth: skipping flash_attn, which needs sm80 or newer ({gpu}).")
             return 0
-    url = resolve_wheel_url(name, env)
     torch_desc = f"torch {env.get('torch_version')}" if env else "this environment"
     # Only a 404 proves nothing is published; an unreachable check falls through to the install.
     if url is None or exists(url) is False:

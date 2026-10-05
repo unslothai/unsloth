@@ -372,3 +372,27 @@ def test_main_installs_all_by_default_in_dependency_order(monkeypatch, argv, exp
     )
     assert kernel_install.main(argv) == 0
     assert order == expected
+
+
+def test_flash_attn_without_a_wheel_never_probes_the_gpu():
+    run = _Runner([])
+    assert kernel_install.install_kernel("flash_attn", None, run = run, exists = lambda url: True) == 0
+    assert run.calls == []
+
+
+def test_capability_probe_timeout_counts_as_no_gpu():
+    def run(cmd, **kwargs):
+        raise subprocess.TimeoutExpired(cmd, kwargs.get("timeout"))
+
+    assert kernel_install._gpu_capability(run) is None
+
+
+def test_capability_probe_takes_the_best_visible_gpu():
+    seen = {}
+
+    def run(cmd, **kwargs):
+        seen["check"], seen["timeout"] = cmd[2], kwargs.get("timeout")
+        return SimpleNamespace(returncode = 0, stdout = "9 0\n")
+
+    assert kernel_install._gpu_capability(run) == (9, 0)
+    assert "max(torch.cuda.get_device_capability(i)" in seen["check"] and seen["timeout"]
