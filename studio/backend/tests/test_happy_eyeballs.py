@@ -28,8 +28,11 @@ if _TESTS_DIR not in sys.path:
 
 from test_native_tls_entrypoints import _ENTRYPOINTS as _NATIVE_TLS_ENTRYPOINTS  # noqa: E402
 
-# Activates inside the spawned child function, so the native TLS guard does not list it.
-_EXTRA_ENTRYPOINTS = ("core/training/diffusion_training_service.py",)
+# Activate inside a spawned child function or inline script, so the native TLS guard does not list them.
+_EXTRA_ENTRYPOINTS = (
+    "core/training/diffusion_training_service.py",
+    "utils/models/model_config.py",
+)
 
 
 DISCARD = [f"100::{i + 1}" for i in range(8)]
