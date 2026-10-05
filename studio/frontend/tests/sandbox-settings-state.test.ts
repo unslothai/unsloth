@@ -15,6 +15,7 @@ import {
   jobResult,
   shouldPollJob,
   toolRowView,
+  toolRowsQuiet,
   windowsView,
 } from "../src/features/settings/tabs/sandbox-tab-state.ts";
 
@@ -52,11 +53,13 @@ test("tool rows name the OS backend when isolated and the reason when not", () =
     reason: "",
     limitations: [],
     protectionState: null,
+    remediation: "",
   };
   assert.deepEqual(toolRowView(tool), {
     isolated: true,
     backendLabel: "Seatbelt",
     reason: "",
+    remediation: "",
     runsInCmd: false,
   });
   assert.equal(
@@ -80,6 +83,15 @@ test("tool rows name the OS backend when isolated and the reason when not", () =
   });
   assert.equal(fallback.isolated, false);
   assert.equal(fallback.reason, "bwrap: denied");
+  assert.equal(
+    toolRowView({ ...tool, available: false, remediation: "run this" })
+      .remediation,
+    "run this",
+  );
+  assert.equal(
+    toolRowView({ ...tool, remediation: "run this" }).remediation,
+    "",
+  );
 });
 
 test("host preparation reads a lone null-device step as a post-restart repeat", () => {
@@ -214,6 +226,12 @@ test("a late read of an earlier job never replaces the one this tab started", ()
   assert.equal(isOlderJob(job({ id: "j3", startedAt: 30 }), started), false);
 });
 
+test("the setup job's first read is held to the same rule", () => {
+  const started = { id: "s2", startedAt: 20 };
+  assert.equal(isOlderJob({ id: "s1", startedAt: 10 }, started), true);
+  assert.equal(isOlderJob({ id: "s2", startedAt: 20 }, started), false);
+});
+
 test("a missing runtime offers the install unless this Windows cannot run MXC", () => {
   const missing = windowsView(windows({ runtimeInstalled: false }), null, false);
   assert.equal(missing.runtimeMissing, true);
@@ -234,4 +252,20 @@ test("a missing runtime offers the install unless this Windows cannot run MXC", 
       .unsupported,
     "build",
   );
+});
+
+test("the tool rows keep only their badge while a section below has the answer", () => {
+  assert.equal(toolRowsQuiet(true, null), true);
+  assert.equal(toolRowsQuiet(false, null), false);
+  const view = (overrides: Partial<WindowsSandboxStatus>) =>
+    windowsView(windows(overrides), null, false);
+  assert.equal(toolRowsQuiet(false, view({ runtimeInstalled: false })), true);
+  assert.equal(toolRowsQuiet(false, view({ allowDaclFallback: false })), true);
+  assert.equal(
+    toolRowsQuiet(false, view({ hostPrepMissing: ["prepare-null-device"] })),
+    true,
+  );
+  assert.equal(toolRowsQuiet(false, view({ runtimeUnsupported: "build" })), true);
+  // Prepared, yet a tool still fails: its own reason is the only clue left.
+  assert.equal(toolRowsQuiet(false, view({})), false);
 });

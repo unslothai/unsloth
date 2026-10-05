@@ -4,6 +4,7 @@
 import type {
   HostPrepJob,
   RuntimeUnsupported,
+  SandboxStatus,
   SandboxToolStatus,
   TerminalShell,
   WindowsSandboxStatus,
@@ -24,6 +25,7 @@ export type ToolRowView = {
   isolated: boolean;
   backendLabel: string;
   reason: string;
+  remediation: string;
   runsInCmd: boolean;
 };
 
@@ -35,6 +37,7 @@ export function toolRowView(
     isolated: tool.available,
     backendLabel: BACKEND_LABELS[tool.backend] ?? tool.backend,
     reason: tool.reason,
+    remediation: tool.available ? "" : tool.remediation,
     runsInCmd: shell === "cmd_isolated",
   };
 }
@@ -108,6 +111,22 @@ export function windowsView(
   };
 }
 
+/** A section below already says why and what to do: the Python and Terminal rows keep only their badge. */
+export function toolRowsQuiet(
+  setupRowShown: boolean,
+  windows: WindowsView | null,
+): boolean {
+  if (setupRowShown) return true;
+  if (!windows) return false;
+  return (
+    windows.unsupported !== null ||
+    windows.prep === "runtimeMissing" ||
+    windows.prep === "off" ||
+    windows.prep === "needsPreparing" ||
+    windows.prep === "needsPreparingAgain"
+  );
+}
+
 export type JobResult = "succeeded" | "declined" | "failed" | null;
 
 export function jobResult(job: HostPrepJob | null): JobResult {
@@ -127,9 +146,11 @@ export function shouldPollJob(job: HostPrepJob | null): boolean {
 }
 
 // A read that returns after this tab started a newer job must not replace it.
+type JobStamp = Pick<HostPrepJob, "id" | "startedAt">;
+
 export function isOlderJob(
-  loaded: HostPrepJob,
-  current: HostPrepJob | null,
+  loaded: JobStamp,
+  current: JobStamp | null,
 ): boolean {
   if (!current || current.id === null || loaded.id === current.id) return false;
   return (loaded.startedAt ?? 0) <= (current.startedAt ?? 0);
@@ -139,4 +160,56 @@ export function isOlderJob(
 export function jobOutputLines(job: HostPrepJob | null, max = 6): string[] {
   if (!job || job.state !== "failed") return [];
   return job.outputTail.filter((line) => line.trim() !== "").slice(-max);
+}
+
+export type SetupRowView = {
+  show: boolean;
+  builtIn: boolean;
+  showInstall: boolean;
+  installDisabled: boolean;
+  command: string;
+  reason: string;
+};
+
+const HIDDEN_SETUP_ROW: SetupRowView = {
+  show: false,
+  builtIn: false,
+  showInstall: false,
+  installDisabled: true,
+  command: "",
+  reason: "",
+};
+
+export function setupRowView(
+  status: SandboxStatus,
+  job: HostPrepJob | null,
+  manualCommandFromJob = "",
+): SetupRowView {
+  if (status.platform === "win32") return HIDDEN_SETUP_ROW;
+  const isolated = status.python.available && status.terminal.available;
+  const running = job?.state === "running";
+  if (status.platform === "darwin") {
+    if (isolated) return HIDDEN_SETUP_ROW;
+    return {
+      ...HIDDEN_SETUP_ROW,
+      show: true,
+      builtIn: true,
+      reason: status.setup?.reason || status.python.reason,
+    };
+  }
+  const setup = status.setup;
+  if (!setup) return HIDDEN_SETUP_ROW;
+  const showInstall = setup.action === "linux-install" && setup.canRun;
+  const failed = job?.state === "failed" || job?.state === "declined";
+  const command =
+    failed && manualCommandFromJob ? manualCommandFromJob : setup.manualCommand;
+  if (!showInstall && command === "" && !running) return HIDDEN_SETUP_ROW;
+  return {
+    show: true,
+    builtIn: false,
+    showInstall: showInstall || running,
+    installDisabled: running,
+    command,
+    reason: setup.reason,
+  };
 }

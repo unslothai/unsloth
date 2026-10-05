@@ -174,6 +174,17 @@ def test_a_windows_refresh_picks_the_terminal_from_fresh_verdicts(host, windows,
     assert forced == [("python", True), ("terminal", False)]
 
 
+def test_a_windows_refresh_still_records_what_it_just_checked(host, windows, monkeypatch):
+    monkeypatch.setattr(settings, "_sandbox_terminal_target", lambda: ("cmd.exe", "cmd_isolated"))
+    monkeypatch.setattr(settings, "_sandbox_setup_status", lambda _ready: None)
+    os_sandbox.forget_tool_isolation()
+    with _client(OWNER) as client:
+        assert client.get("/sandbox", params = {"refresh": "true"}).status_code == 200
+    assert os_sandbox.cached_tool_isolation("python") is True
+    assert os_sandbox.cached_tool_isolation("terminal") is True
+    os_sandbox.forget_tool_isolation()
+
+
 def test_windows_status_carries_the_opt_in_block(host, windows):
     with _client(OWNER) as client:
         body = client.get("/sandbox").json()
@@ -263,6 +274,20 @@ def test_prepare_starts_one_job_from_the_local_console(host, windows):
             "steps": [],
         }
     assert calls["start"] == 1
+
+
+def test_prepare_refused_while_another_setup_runs_is_a_conflict(host, windows, monkeypatch):
+    from core.inference import mxc_host_prep_job, sandbox_setup_job
+
+    def busy():
+        raise sandbox_setup_job.SetupUnavailable(
+            "Another sandbox setup (windows-runtime) is still running"
+        )
+
+    monkeypatch.setattr(mxc_host_prep_job, "start", busy)
+    with _client(OWNER) as client:
+        response = client.post("/sandbox/prepare")
+    assert response.status_code == 409 and "windows-runtime" in response.json()["detail"]
 
 
 def test_prepare_is_refused_from_a_remote_browser(host, windows, monkeypatch):

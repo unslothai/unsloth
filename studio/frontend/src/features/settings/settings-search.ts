@@ -376,6 +376,7 @@ export const SETTINGS_SEARCH_KEYWORDS: Partial<
 > = {
   "settings.resources.storage.modelsFolder":
     "settings.resources.storage.modelsFolderKeywords",
+  "settings.sandbox.toolsSection": "settings.sandbox.setupKeywords",
   // "purge", "prune" and the tool names are in none of the labels, so the row
   // the feature is named after was unreachable by search.
   "settings.resources.storage.caches.label":

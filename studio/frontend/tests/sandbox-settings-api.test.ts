@@ -17,8 +17,6 @@ type Api = {
   ) => Promise<Record<string, unknown>>;
   startHostPreparation: (fallback: string) => Promise<Record<string, unknown>>;
   loadHostPreparation: (fallback: string) => Promise<Record<string, unknown>>;
-  startRuntimeInstall: (fallback: string) => Promise<Record<string, unknown>>;
-  loadRuntimeInstall: (fallback: string) => Promise<Record<string, unknown>>;
 };
 
 type Call = { url: string; init?: RequestInit };
@@ -103,6 +101,7 @@ test("the status maps to camelCase and keeps the saved and effective values apar
       reason: "passed",
       limitations: ["mxc_preview_not_a_security_boundary"],
       protectionState: "preview",
+      remediation: "",
     },
     terminal: {
       backend: "mxc-processcontainer",
@@ -110,6 +109,7 @@ test("the status maps to camelCase and keeps the saved and effective values apar
       reason: "bash failed",
       limitations: [],
       protectionState: null,
+      remediation: "",
     },
     terminalShell: "cmd_isolated",
     windows: {
@@ -124,8 +124,58 @@ test("the status maps to camelCase and keeps the saved and effective values apar
       hostPrepMissing: ["prepare-null-device"],
       prepareRepeatsAfterRestart: true,
     },
+    setup: null,
     checkedAt: 12,
   });
+});
+
+test("the setup plan and per-tool remediation reach the tab", async () => {
+  const { api } = loadApi(() =>
+    json({
+      platform: "linux",
+      python: {
+        backend: "bubblewrap",
+        available: false,
+        reason: "bwrap is not installed",
+        limitations: [],
+        remediation: "apt-get install bubblewrap",
+      },
+      terminal: { backend: "bubblewrap", available: false, reason: "x" },
+      windows: null,
+      setup: {
+        action: "linux-install",
+        elevation: "pkexec",
+        manual_command: "apt-get install -y bubblewrap",
+        reason: "bubblewrap is missing",
+        can_run: true,
+      },
+    }),
+  );
+  const status = await api.loadSandboxStatus(false, "fallback");
+  assert.equal(
+    (status.python as { remediation: string }).remediation,
+    "apt-get install bubblewrap",
+  );
+  assert.deepEqual(status.setup, {
+    action: "linux-install",
+    elevation: "pkexec",
+    manualCommand: "apt-get install -y bubblewrap",
+    reason: "bubblewrap is missing",
+    canRun: true,
+  });
+});
+
+test("an unknown setup action or a refused request never offers the button", async () => {
+  for (const setup of [
+    { action: "rm-rf", manual_command: "x", can_run: true },
+    { action: "linux-install", manual_command: "x", can_run: false },
+  ]) {
+    const { api } = loadApi(() =>
+      json({ platform: "linux", python: {}, terminal: {}, setup }),
+    );
+    const status = await api.loadSandboxStatus(false, "fallback");
+    assert.equal((status.setup as { canRun: boolean }).canRun, false);
+  }
 });
 
 test("a non-Windows status has no Windows block and a plain load skips refresh", async () => {
@@ -239,40 +289,6 @@ test("a job maps its fields and an idle answer carries no id", async () => {
   const idle = await api.loadHostPreparation("fallback");
   assert.equal(idle.state, "idle");
   assert.equal(idle.id, null);
-});
-
-test("the runtime install posts the one fixed operation and maps its note", async () => {
-  const { api, calls } = loadApi((call) =>
-    call.init?.method === "POST"
-      ? json({
-          id: "rt1",
-          operation: "windows-runtime",
-          state: "failed",
-          started_at: 5,
-          finished_at: 6,
-          exit_code: 3,
-          output_tail: ["busy"],
-          steps: [],
-          note: "in use",
-        })
-      : json({ state: "idle" }),
-  );
-  const started = await api.startRuntimeInstall("fallback");
-  assert.equal(calls[0].url, "/api/settings/sandbox/setup");
-  assert.equal(calls[0].init?.body, JSON.stringify({ operation: "windows-runtime" }));
-  assert.deepEqual(started, {
-    id: "rt1",
-    state: "failed",
-    startedAt: 5,
-    finishedAt: 6,
-    exitCode: 3,
-    outputTail: ["busy"],
-    steps: [],
-    note: "in use",
-  });
-  const idle = await api.loadRuntimeInstall("fallback");
-  assert.equal(idle.state, "idle");
-  assert.equal(idle.note, "");
 });
 
 test("an unsupported Windows is passed through, anything unknown is dropped", async () => {
