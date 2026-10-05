@@ -573,7 +573,7 @@ _SAGE_OP_LOCK = threading.Lock()
 
 
 def _sage_custom_op(sage_fn: Any, op_name: str = _SAGE_OP_NAME) -> Optional[Any]:
-    """An opaque ``torch.library`` op around diffusers' sage function (NHD), or None."""
+    """An opaque ``torch.library`` op around a diffusers attention function (NHD), or None. Used for Sage and FA4."""
     with _SAGE_OP_LOCK:
         slot = _SAGE_OPS.setdefault(op_name, {})
         if "op" in slot:
@@ -712,9 +712,16 @@ def _note_fa4_reroute(reason: str) -> None:
     _note_reroute("FlashAttention 4", reason, _FA4_ROUTED, _FA4_ROUTED_LOGGED)
 
 
+# The hub FA4 launch (CuTe DSL, tvm-ffi) breaks a fullgraph compile 5 times per Flux block: keep it opaque, like Sage.
+_FA4_OP_NAME = "unsloth_studio::flash_4_hub_attention_nhd"
+
+
 def _install_fa4_dispatch_guard() -> bool:
     return _install_dispatch_guard(
-        "flash_4_hub", lambda *a: _fa4_reroute_reason(*a), _note_fa4_reroute
+        "flash_4_hub",
+        lambda *a: _fa4_reroute_reason(*a),
+        _note_fa4_reroute,
+        lambda fn: _sage_custom_op(fn, _FA4_OP_NAME),
     )
 
 
