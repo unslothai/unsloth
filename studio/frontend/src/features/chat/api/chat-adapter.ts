@@ -2500,6 +2500,8 @@ const VISIBLE_MODEL_RUNTIME_KEYS = [
   "loadedMlxKvQuantRequested",
   "mlxKvQuantReason",
   "mlxKvQuantNote",
+  "mlxInt8Prefill",
+  "loadedMlxInt8PrefillRequested",
   "loadedContextBudget",
   "loadedIsMultimodal",
   "loadedIsDiffusion",
@@ -3546,6 +3548,7 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
       chat_template_override: effectiveChatTemplateOverride,
       cache_type_kv: config.kvCacheDtype,
       mlx_kv_quant: config.mlxKvQuant ?? null,
+      mlx_int8_prefill: config.mlxInt8Prefill ?? false,
       speculative_type: effectiveSpeculativeType,
       spec_draft_n_max: effectiveSpecDraftNMax,
       reasoning_budget:

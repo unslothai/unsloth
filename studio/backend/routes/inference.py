@@ -3732,6 +3732,8 @@ from models.inference import (
     ValidateModelResponse,
     EstimateMemoryRequest,
     EstimateMemoryResponse,
+    Int8PrefillAvailabilityRequest,
+    Int8PrefillAvailabilityResponse,
     TransformersUpgradeInfo,
     TransformersUpgradeCheckRequest,
     TransformersUpgradeCheckResponse,
@@ -8250,6 +8252,9 @@ def _llama_runtime_fields(llama_backend: LlamaCppBackend) -> dict:
         mlx_kv_quant_eligibility = None,
         mlx_kv_quant_reason = None,
         mlx_kv_quant_note = None,
+        mlx_int8_prefill = None,
+        mlx_int8_prefill_requested = None,
+        mlx_int8_prefill_reason = None,
         mlx_context_budget = None,
         chat_template_override_reason = None,
         context_length_enforced = True,
@@ -16909,9 +16914,13 @@ def _mlx_runtime_settings_match(backend, request) -> bool:
     from core.inference.mlx_inference import encode_mlx_kv_quant, parse_mlx_kv_quant
 
     requested = encode_mlx_kv_quant(*parse_mlx_kv_quant(getattr(request, "mlx_kv_quant", None)))
-    return entry["mlx_kv_quant_requested"] == requested and (
-        entry.get("chat_template_override_requested") or None
-    ) == (request.chat_template_override or None)
+    return (
+        entry["mlx_kv_quant_requested"] == requested
+        and (entry.get("chat_template_override_requested") or None)
+        == (request.chat_template_override or None)
+        and bool(entry.get("mlx_int8_prefill_requested"))
+        == bool(getattr(request, "mlx_int8_prefill", False))
+    )
 
 
 def _inherit_resident_load_in_4bit(backend, request, model_identifier: str) -> None:
@@ -18198,6 +18207,9 @@ async def _load_model_impl(
                     mlx_kv_quant_eligibility = _model_info.get("mlx_kv_quant_eligibility"),
                     mlx_kv_quant_reason = _model_info.get("mlx_kv_quant_reason"),
                     mlx_kv_quant_note = _model_info.get("mlx_kv_quant_note"),
+                    mlx_int8_prefill = _model_info.get("mlx_int8_prefill"),
+                    mlx_int8_prefill_requested = _model_info.get("mlx_int8_prefill_requested"),
+                    mlx_int8_prefill_reason = _model_info.get("mlx_int8_prefill_reason"),
                     # Requested, as /status reports it: a null override would read
                     # as "using the default".
                     chat_template_override = _model_info.get("chat_template_override_requested"),
@@ -18918,6 +18930,7 @@ async def _load_model_impl(
                 ),
                 subject = current_subject,
                 mlx_kv_quant = request.mlx_kv_quant,
+                mlx_int8_prefill = request.mlx_int8_prefill,
                 chat_template_override = request.chat_template_override,
                 load_cancel_event = load_cancel_event,
                 on_prior_worker_released = _release_chat_after_teardown,
@@ -19079,6 +19092,9 @@ async def _load_model_impl(
             mlx_kv_quant_eligibility = _model_info.get("mlx_kv_quant_eligibility"),
             mlx_kv_quant_reason = _model_info.get("mlx_kv_quant_reason"),
             mlx_kv_quant_note = _model_info.get("mlx_kv_quant_note"),
+            mlx_int8_prefill = _model_info.get("mlx_int8_prefill"),
+            mlx_int8_prefill_requested = _model_info.get("mlx_int8_prefill_requested"),
+            mlx_int8_prefill_reason = _model_info.get("mlx_int8_prefill_reason"),
             # Requested, as /status reports it: a null override would read as
             # "using the default".
             chat_template_override = _model_info.get("chat_template_override_requested"),
@@ -20409,6 +20425,43 @@ def _cached_estimate_config(
         # stopped existing on exactly the models it was added for.
         _estimate_config_cache[key] = (time.monotonic(), config)
     return config
+
+
+@router.post("/int8-prefill-availability", response_model = Int8PrefillAvailabilityResponse)
+async def int8_prefill_availability(
+    request: Int8PrefillAvailabilityRequest, current_subject: str = Depends(get_current_subject)
+):
+    """Whether MLX int8 prefill would apply to this model, judged from its downloaded checkpoint
+    without loading it. The first answer on a new macOS or MLX version builds the kernels once."""
+    if account_access.managed_account():
+        await asyncio.to_thread(account_access.require_model_access, request.model_path)
+    if is_ollama_manifest_ref(request.model_path):
+        return Int8PrefillAvailabilityResponse(available = False, reason = "unsupported_model")
+
+    def _check() -> Int8PrefillAvailabilityResponse:
+        if not _mlx_estimate_available():
+            return Int8PrefillAvailabilityResponse(available = False, reason = "unsupported_model")
+        config = _cached_estimate_config(request.model_path, None, request.hf_token, False)
+        if config is _ESTIMATE_NOT_ON_DISK:
+            return Int8PrefillAvailabilityResponse(available = False, reason = "not_downloaded")
+        from core.inference.native_audio import is_native_audio_model
+
+        if (
+            config is None
+            or getattr(config, "is_gguf", False)
+            or getattr(config, "is_lora", False)
+            or is_native_audio_model(request.model_path)
+        ):
+            return Int8PrefillAvailabilityResponse(available = False, reason = "unsupported_model")
+        model_dir = _local_mlx_model_dir(config)
+        if not model_dir:
+            return Int8PrefillAvailabilityResponse(available = False, reason = "not_downloaded")
+        from core.inference.mlx_inference import mlx_int8_prefill_checkpoint_status
+
+        available, reason = mlx_int8_prefill_checkpoint_status(model_dir)
+        return Int8PrefillAvailabilityResponse(available = available, reason = reason or None)
+
+    return await asyncio.to_thread(_check)
 
 
 @router.post("/estimate-memory", response_model = EstimateMemoryResponse)
@@ -21784,6 +21837,9 @@ async def _slot_status(current_subject: str):
             mlx_kv_quant_eligibility = model_info.get("mlx_kv_quant_eligibility"),
             mlx_kv_quant_reason = model_info.get("mlx_kv_quant_reason"),
             mlx_kv_quant_note = model_info.get("mlx_kv_quant_note"),
+            mlx_int8_prefill = model_info.get("mlx_int8_prefill"),
+            mlx_int8_prefill_requested = model_info.get("mlx_int8_prefill_requested"),
+            mlx_int8_prefill_reason = model_info.get("mlx_int8_prefill_reason"),
             chat_template_override = model_info.get("chat_template_override_requested"),
             chat_template_override_reason = model_info.get("chat_template_override_reason"),
             loading = _loading_models,

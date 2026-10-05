@@ -3390,6 +3390,118 @@ def test_reload_comparison_and_response_carry_the_resolved_setting():
     assert resp.mlx_kv_quant == "8" and resp.mlx_kv_quant_note == "n"
 
 
+def _int8_zoo(
+    module,
+    available = True,
+    events = None,
+):
+    events = [] if events is None else events
+
+    @contextmanager
+    def nax_quantized_linear(model, int8_prefill = None):
+        events.append(("int8", int8_prefill))
+        yield
+        events.append(("int8_exit", int8_prefill))
+
+    module.nax_quantized_linear = nax_quantized_linear
+    reason = "" if available else "no_eligible_projections"
+    verdict = SimpleNamespace(available = available, reason = reason)
+    module.int8_prefill_available = lambda m: verdict
+    return events
+
+
+def test_int8_prefill_reloads_on_change_and_reports_why_it_is_off(mlx_inference_patches):
+    from core.inference import mlx_inference
+    from models.inference import LoadRequest
+    from routes.inference import _mlx_runtime_settings_match
+
+    req = lambda **knobs: LoadRequest(model = "m", model_path = "m", **knobs)
+    entry = {"mlx_kv_quant_requested": "auto"}
+    be = SimpleNamespace(active_model_name = "m", models = {"m": entry})
+    assert _mlx_runtime_settings_match(be, req())
+    assert not _mlx_runtime_settings_match(be, req(mlx_int8_prefill = True))
+    be.models["m"]["mlx_int8_prefill_requested"] = True
+    assert _mlx_runtime_settings_match(be, req(mlx_int8_prefill = True))
+    assert not _mlx_runtime_settings_match(be, req())
+
+    from core.inference import orchestrator
+
+    assert "mlx_int8_prefill_requested" in orchestrator._MLX_RUNTIME_MIRROR_FIELDS
+    status = mlx_inference._int8_prefill_status
+    _int8_zoo(mlx_inference_patches)
+    mlx_inference_patches.nax_quantized_linear = lambda model: contextlib.nullcontext()
+    assert status(True, object())["reason"] == "unsupported_zoo"
+    _int8_zoo(mlx_inference_patches, available = False)
+    assert status(True, object())["reason"] == "no_eligible_projections"
+    _int8_zoo(mlx_inference_patches)
+    assert status(True, object())["active"] and status(False, object())["scope"] is None
+
+
+@pytest.mark.parametrize("requested,available", [(True, True), (True, False), (False, True)])
+def test_int8_prefill_is_the_outermost_scope_of_generation_only_when_active(
+    monkeypatch, mlx_inference_patches, requested, available
+):
+    from core.inference import mlx_inference
+
+    events = _int8_zoo(mlx_inference_patches, available = available)
+
+    @contextmanager
+    def fusion(_model):
+        events.append(("fusion", None))
+        yield
+
+    for name in FUSIONS:
+        monkeypatch.setattr(mlx_inference_patches, f"fused_{name}", fusion)
+    mlx_vlm = types.ModuleType("mlx_vlm")
+    mlx_vlm.prompt_utils = SimpleNamespace(
+        MODEL_CONFIG = {}, apply_chat_template = lambda *_a, **_k: "<image> prompt"
+    )
+
+    def stream(*_a, **_k):
+        events.append(("stream", None))
+        yield SimpleNamespace(text = "ok", prompt_tokens = 1, generation_tokens = 1)
+
+    mlx_vlm.stream_generate = stream
+    monkeypatch.setitem(sys.modules, "mlx_vlm", mlx_vlm)
+    monkeypatch.setattr(
+        "core.inference.chat_template_helpers.apply_chat_template_for_generation",
+        lambda *_a, **_k: "<image> prompt",
+    )
+    monkeypatch.setattr(
+        mlx_inference, "_temporary_mlx_adapter_state", lambda *_a, **_k: contextlib.nullcontext()
+    )
+    backend = mlx_inference.MLXInferenceBackend()
+    backend._model = SimpleNamespace(config = {"model_type": "generic_vlm"})
+    backend._processor = SimpleNamespace(chat_template = "template")
+    backend._is_vlm = backend._reads_vision = True
+    backend._int8_prefill = mlx_inference._int8_prefill_status(requested, backend._model)
+    args = ([{"role": "user", "content": [{"type": "image"}]}], [object()], 0.7, 0.9, 40, 0.01, 4)
+    assert list(backend._generate_vlm(*args, 1.0, None)) == ["ok"]
+
+    expected = [("int8", True)] + [("fusion", None)] * len(FUSIONS) + [("stream", None)]
+    assert events == (expected + [("int8_exit", True)] if requested and available else expected[1:])
+
+
+def test_a_batch_session_holds_int8_prefill_for_its_whole_life(monkeypatch, mlx_inference_patches):
+    from core.inference import mlx_inference
+
+    events = _int8_zoo(mlx_inference_patches)
+    engine = _batch_engine(monkeypatch)
+    monkeypatch.setattr(engine, "GenerationDefaults", SimpleNamespace, raising = False)
+    stream = SimpleNamespace(close = lambda: events.append(("close", None)))
+    built = lambda *a, **k: events.append(("stream", None)) or stream
+    monkeypatch.setattr(engine, "BatchStream", built, raising = False)
+    backend = mlx_inference.MLXInferenceBackend()
+    backend._model = backend._processor = object()
+    for requested in (True, False):
+        events.clear()
+        backend._int8_prefill = mlx_inference._int8_prefill_status(requested, backend._model)
+        mlx_inference._VisionBatchSession(backend, width = 2).close()
+        # Off is pinned too, or Zoo's own scopes would read UNSLOTH_MLX_INT8_PREFILL.
+        want = [("int8", requested), ("stream", None), ("close", None), ("int8_exit", requested)]
+        assert events == want
+
+
 def test_kv_quant_probe_reports_what_the_runtime_would_really_do(monkeypatch):
     """Attempt the conversion instead of predicting it from config or names.
 

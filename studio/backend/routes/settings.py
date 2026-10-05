@@ -992,6 +992,7 @@ class ModelOverridePayload(BaseModel):
     mirrors_reasoning_budget: bool = False
     tensor_parallel: bool = False
     disable_vision: bool = False
+    mlx_int8_prefill: bool = False
     # Validated in bytes below: pydantic counts characters, so a multi-byte template would pass.
     chat_template_override: Optional[str] = None
     gpu_memory_mode: Optional[Literal["auto", "manual"]] = None
@@ -2356,10 +2357,11 @@ def update_openai_auto_switch_override(
             is_removal = (
                 not payload.tensor_parallel
                 and not payload.disable_vision
+                and not payload.mlx_int8_prefill
                 and not {
                     key: value
                     for key, value in saved_fields.items()
-                    if key not in ("tensor_parallel", "disable_vision")
+                    if key not in ("tensor_parallel", "disable_vision", "mlx_int8_prefill")
                 }
             )
         if requested_extra_args is None and not is_removal:
@@ -2567,6 +2569,7 @@ def update_openai_auto_switch_override(
                 cache_ram = _kept_tuning["cache_ram"],
                 tensor_parallel = payload.tensor_parallel,
                 disable_vision = payload.disable_vision,
+                mlx_int8_prefill = payload.mlx_int8_prefill,
                 chat_template_override = payload.chat_template_override,
                 gpu_memory_mode = payload.gpu_memory_mode,
                 gpu_layers = payload.gpu_layers,

@@ -252,6 +252,9 @@ _MLX_RUNTIME_MIRROR_FIELDS = (
     "mlx_kv_quant_eligibility",
     "mlx_kv_quant_reason",
     "mlx_kv_quant_note",
+    "mlx_int8_prefill",
+    "mlx_int8_prefill_requested",
+    "mlx_int8_prefill_reason",
     "chat_template_override_requested",
     "chat_template_override_reason",
 )
@@ -2002,6 +2005,7 @@ class InferenceOrchestrator:
         tensor_parallel: bool = False,
         mlx_distributed: bool = False,
         mlx_kv_quant: Optional[str] = None,
+        mlx_int8_prefill: bool = False,
         chat_template_override: Optional[str] = None,
         load_cancel_event: Optional[threading.Event] = None,
         post_handoff_expected_free_gb: Optional[dict[int, float]] = None,
@@ -2067,6 +2071,7 @@ class InferenceOrchestrator:
                 if mlx_distributed
                 else None,
                 "mlx_kv_quant": mlx_kv_quant,
+                "mlx_int8_prefill": bool(mlx_int8_prefill),
                 "chat_template_override": chat_template_override,
                 # Read in the worker, which hides the accelerators before detection.
                 "audio_device": audio_device,

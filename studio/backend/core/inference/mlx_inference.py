@@ -7,6 +7,7 @@ import difflib
 import functools
 import hashlib
 import importlib
+import inspect
 import os
 import re
 import sys
@@ -930,6 +931,76 @@ def _mlx_fused_moe_routed_experts(model):
 
 def _mlx_fused_residual_norm_handoff(model):
     return _mlx_optional_fusion("fused_residual_norm_handoff", model)
+
+
+def _int8_prefill_zoo():
+    """unsloth_zoo's MLX inference module when it can run int8 prefill, else None."""
+    try:
+        zoo = importlib.import_module("unsloth_zoo.mlx.inference")
+        if "int8_prefill" in inspect.signature(zoo.nax_quantized_linear).parameters:
+            return zoo
+    except Exception:
+        pass
+    return None
+
+
+def _int8_prefill_status(requested, model):
+    """Whether a load runs int8 prefill: asked for, and the loaded model can use it here."""
+    status = {"requested": bool(requested), "active": False, "reason": "", "scope": None}
+    if not requested:
+        return status
+    zoo = _int8_prefill_zoo()
+    available = getattr(zoo, "int8_prefill_available", None)
+    if available is None:
+        status["reason"] = "unsupported_zoo"
+        return status
+    try:
+        verdict = available(model)
+    except Exception as exc:
+        if is_metal_queue_dead(exc):
+            raise
+        logger.warning("MLX int8 prefill check failed: %s", exc)
+        status["reason"] = "probe_failed"
+        return status
+    status["reason"] = verdict.reason
+    if verdict.available:
+        status["active"] = True
+        status["scope"] = zoo.nax_quantized_linear
+    else:
+        logger.info("MLX int8 prefill not applied: %s", verdict.reason)
+    return status
+
+
+# Keyed by checkpoint fingerprint: the panel asks again on every model switch.
+_int8_prefill_checkpoint_cache: dict = {}
+_int8_prefill_checkpoint_lock = threading.Lock()
+
+
+def mlx_int8_prefill_checkpoint_status(model_dir) -> tuple[bool, str]:
+    """(available, reason) of int8 prefill for a downloaded MLX checkpoint, without loading it."""
+    check = getattr(_int8_prefill_zoo(), "int8_prefill_checkpoint_available", None)
+    if check is None:
+        return False, "unsupported_zoo"
+    try:
+        from core.inference.mlx_memory import _checkpoint_fingerprint
+        key = (os.path.realpath(model_dir), _checkpoint_fingerprint(model_dir))
+    except Exception:
+        key = None
+    with _int8_prefill_checkpoint_lock:
+        if key in _int8_prefill_checkpoint_cache:
+            return _int8_prefill_checkpoint_cache[key]
+    try:
+        verdict = check(model_dir)
+        answer = (bool(verdict.available), verdict.reason)
+    except Exception as exc:
+        logger.debug("MLX int8 prefill checkpoint check failed for %s: %s", model_dir, exc)
+        return False, "probe_failed"
+    if key is not None and answer[1] != "probe_failed":
+        with _int8_prefill_checkpoint_lock:
+            _int8_prefill_checkpoint_cache[key] = answer
+            while len(_int8_prefill_checkpoint_cache) > 32:
+                _int8_prefill_checkpoint_cache.pop(next(iter(_int8_prefill_checkpoint_cache)))
+    return answer
 
 
 def _vlm_generation_context():
@@ -3472,6 +3543,7 @@ class _TextBatchSession:
                 self._held.enter_context(
                     _temporary_mlx_adapter_state(backend._model, adapter_state)
                 )
+            self._held.enter_context(backend._int8_prefill_scope())
             self.generator = BatchGenerator(
                 backend._model,
                 stop_tokens = [
@@ -3754,6 +3826,7 @@ class _VisionBatchSession:
                 self._held.enter_context(
                     _temporary_mlx_adapter_state(backend._model, adapter_state)
                 )
+            self._held.enter_context(backend._int8_prefill_scope(zoo_generation = True))
             self.stream = BatchStream(
                 backend._model,
                 backend._processor,
@@ -3934,6 +4007,7 @@ class MLXInferenceBackend:
         # Load-time runtime knobs; every generation path reads them from here rather than from per-request kwargs.
         # Bound now so a load that fails before installing leaves readers a dict rather than raising.
         self._kv_quant = _kv_quant_status(None, None, False)
+        self._int8_prefill = _int8_prefill_status(False, None)
         self._kv_cache_window = None
         self._kv_context_budget = None
         self._served_context = None
@@ -4217,6 +4291,15 @@ class MLXInferenceBackend:
             max_new_tokens = max(1, min(int(max_new_tokens), int(budget) - len(prompt_tokens)))
         return max_new_tokens
 
+    def _int8_prefill_scope(self, zoo_generation = False):
+        """Outermost scope of a generation, which every Zoo scope nested in it inherits. A path
+        running Zoo's own generation scopes is pinned off when inactive, or they read the env."""
+        scope = (getattr(self, "_int8_prefill", None) or {}).get("scope")
+        if scope is not None:
+            return scope(self._model, True)
+        zoo = _int8_prefill_zoo() if zoo_generation else None
+        return zoo.nax_quantized_linear(self._model, False) if zoo is not None else nullcontext()
+
     def _kv_quant_bits(self):
         return (getattr(self, "_kv_quant", None) or {}).get("kv_bits")
 
@@ -4471,6 +4554,7 @@ class MLXInferenceBackend:
         distributed_group = None,
         kv_quant = None,
         chat_template_override = None,
+        int8_prefill = False,
     ) -> bool:
         import mlx.core as mx
 
@@ -4682,6 +4766,7 @@ class MLXInferenceBackend:
                 self._kv_quant["kv_bits"],
                 self._kv_quant["eligibility"],
             )
+        self._int8_prefill = _int8_prefill_status(int8_prefill, self._model)
 
         # Captured before installing, so chat_template_info keeps reporting what the model shipped with. From the
         # render target, not the nested tokenizer: on a processor owning its own template those differ, and saving the
@@ -4766,6 +4851,9 @@ class MLXInferenceBackend:
             "mlx_kv_quant_eligibility": self._kv_quant["eligibility"],
             "mlx_kv_quant_reason": self._kv_quant["reason"],
             "mlx_kv_quant_note": self._kv_quant["note"],
+            "mlx_int8_prefill": self._int8_prefill["active"],
+            "mlx_int8_prefill_requested": self._int8_prefill["requested"],
+            "mlx_int8_prefill_reason": self._int8_prefill["reason"],
             "chat_template_override_requested": self._template_override["requested"],
             "chat_template_override_reason": self._template_override["reason"],
         }
@@ -5311,6 +5399,7 @@ class MLXInferenceBackend:
         with (
             self._generation_lock,
             _temporary_mlx_adapter_state(self._model, _adapter_state),
+            self._int8_prefill_scope(),
             _mlx_fused_moe_gate_up(self._model),
             _mlx_fused_decode_conv_silu(self._model),
             _mlx_fused_residual_norm(self._model),
@@ -6061,6 +6150,7 @@ class MLXInferenceBackend:
             with (
                 self._generation_lock,
                 _temporary_mlx_adapter_state(self._model, _adapter_state),
+                self._int8_prefill_scope(),
                 ExitStack() as generation_scope,
                 session_scope,
             ):
@@ -6389,7 +6479,11 @@ class MLXInferenceBackend:
             completion_batch_size = len(plans),
         )
 
-        with self._generation_lock, _temporary_mlx_adapter_state(self._model, _adapter_state):
+        with (
+            self._generation_lock,
+            _temporary_mlx_adapter_state(self._model, _adapter_state),
+            self._int8_prefill_scope(zoo_generation = True),
+        ):
             if any(plan.images for plan in plans):
                 self._release_vlm_snapshots()
             logger.info(
@@ -6567,6 +6661,7 @@ class MLXInferenceBackend:
         with (
             self._generation_lock,
             _temporary_mlx_adapter_state(self._model, use_adapter),
+            self._int8_prefill_scope(),
             ExitStack() as generation_scope,
         ):
             # As on the image path: the tower gets the headroom, under the lock.
