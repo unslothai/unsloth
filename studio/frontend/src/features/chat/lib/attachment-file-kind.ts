@@ -121,16 +121,16 @@ export const ATTACHMENT_KIND_ICON_CLASS: Record<AttachmentFileKind, string> = {
   pdf: "text-red-500",
   audio: "text-violet-500",
   video: "text-pink-400 scale-90",
-  // Google Docs' blue, close to Word's lighter blue.
+  // Google Docs' blue, close to Word's lighter blue. Only docs are blue.
   word: "text-[#4285F4]",
-  document: "text-blue-500",
+  document: "text-foreground",
   spreadsheet: "text-emerald-500",
   presentation: "text-orange-500",
   web: "text-foreground",
-  code: "text-blue-500",
-  text: "text-blue-500",
+  code: "text-foreground",
+  text: "text-foreground",
   archive: "text-amber-500",
-  file: "text-muted-foreground",
+  file: "text-foreground",
 };
 
 const KIND_LABELS: Record<Exclude<AttachmentFileKind, "file">, string> = {

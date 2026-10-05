@@ -134,11 +134,12 @@ test("the chords match the ones the View menu shows", () => {
   assert.ok(chords.includes(`"actual-size": { chord: "${ZOOM_CHORDS[0]}" }`));
 });
 
-test("the popup is mounted on every route and only takes chords in the desktop app", () => {
+test("the popup is mounted on every route and only takes chords in the desktop app, or in a zoom scope", () => {
   const root = readSrc("app/routes/__root.tsx");
   const zoom = readSrc("features/interface-zoom/components/interface-zoom.tsx");
   assert.match(root, /<InterfaceZoom \/>/);
-  assert.match(zoom, /if \(!isTauri\) return;/);
+  assert.match(zoom, /const scope = zoomScopeFor\(event\.target\);\s*if \(!\(scope \|\| isTauri\)\) return;/);
+  assert.match(zoom, /if \(scope\) zoomScopeFromChord\(scope, direction\);\s*else zoomInterfaceFromChord\(direction\);/);
   assert.match(
     zoom,
     /if \(zoomChordTaken\(event, direction, mac, owned\)\) return;/,
@@ -201,16 +202,15 @@ test("the popup keeps one on-screen size and does not dismiss a modal", () => {
     zoom,
     /\{isTauri && <ZoomAnnouncer open=\{open\} \/>\}\s*\{open && <ZoomPopup \/>\}/,
   );
-  // Canvases that zoom on Ctrl+wheel themselves get the event first; macOS keeps its own.
-  // Only a wheel the accumulator would take is prevented.
+  // Canvases that zoom on Ctrl+wheel themselves get the event first; a zoom scope takes its own
+  // pinch everywhere, and outside one macOS and the web keep theirs. Only a wheel the
+  // accumulator would take is prevented.
   assert.match(
     zoom,
-    /if \(event\.defaultPrevented \|\| !isZoomWheel\(event\)\) return;\s*event\.preventDefault\(\);/,
+    /if \(event\.defaultPrevented \|\| !isZoomWheel\(event\)\) return;\s*const scope = zoomScopeFor\(event\.target\);\s*if \(scope\) \{\s*event\.preventDefault\(\);/,
   );
-  assert.match(
-    zoom,
-    /if \(!mac\) window\.addEventListener\("wheel", onWheel, \{ passive: false \}\)/,
-  );
+  assert.match(zoom, /if \(!isTauri \|\| mac\) return;\s*event\.preventDefault\(\);/);
+  assert.match(zoom, /window\.addEventListener\("wheel", onWheel, \{ passive: false \}\)/);
   // Below the shortcut recorder's window capture listener, so recording Mod+= does not zoom.
   assert.match(zoom, /document\.addEventListener\("keydown", onKeyDown, true\)/);
   assert.match(
