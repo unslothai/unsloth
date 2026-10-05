@@ -654,15 +654,26 @@ def _resolve_checkpoint_path(
             cache_dir = cache_dir,
             logger = logger,
         )
+        from .diffusion_prequant import explain_container_choice
+
         for name in names:
             try:
-                return hf_hub_download(
+                path = hf_hub_download(
                     repo_id = source.location,
                     filename = name,
                     token = hf_token,
                     cache_dir = cache_dir,
                     local_files_only = local_files_only,
                 )
+                explain_container_choice(
+                    source.location,
+                    name,
+                    te_candidate_filenames(source),
+                    names,
+                    readable = te_candidate_is_readable,
+                    logger = logger,
+                )
+                return path
             except LocalEntryNotFoundError:
                 # Online this is the Hub being unreachable, not a missing name: re-raise as itself
                 # rather than blaming the next candidate for it.

@@ -533,6 +533,57 @@ def _twin_cache_roots(cache_dir: Optional[str]) -> tuple:
     return tuple(roots)
 
 
+def explain_container_choice(
+    repo_id: Optional[str],
+    chosen: Optional[str],
+    candidates: Sequence[str],
+    order: Sequence[str],
+    readable: Any = None,
+    logger: Any = None,
+) -> Optional[str]:
+    """Log, once per file, WHY a pickle was resolved when the chain also names its safetensors twin.
+
+    The policy is: new users get the safetensors container, existing users keep a cached ``.pt``.
+    So a ``.pt`` is only ever resolved for one of three reasons, and the log says which: it was the
+    cached twin (``prefer_cached_pickle_twins`` already said so), the repo does not host the
+    safetensors twin yet, or this install cannot read safetensors. Returns the reason. Never raises."""
+    try:
+        if not repo_id or not chosen or not chosen.lower().endswith(_PICKLE_SUFFIXES):
+            return None
+        stem = chosen[: chosen.rfind(".")]
+        twin = stem + ".safetensors"
+        if twin not in candidates:
+            return None
+        try:
+            twin_ok = readable is None or bool(readable(twin))
+        except Exception:  # noqa: BLE001
+            twin_ok = False
+        if not twin_ok:
+            reason = "this install cannot read the .safetensors container"
+        elif twin in order and chosen in order and order.index(chosen) < order.index(twin):
+            return "cached"
+        else:
+            reason = "the repo does not host the .safetensors twin yet"
+        key = (repo_id, chosen, reason)
+        if key not in _logged_twin_choices:
+            _logged_twin_choices.add(key)
+            log = logger
+            if log is None:
+                import logging
+
+                log = logging.getLogger(__name__)
+            log.info(
+                "diffusion.prequant_pickle: %s: using %s instead of %s because %s",
+                repo_id,
+                chosen,
+                twin,
+                reason,
+            )
+        return reason
+    except Exception:  # noqa: BLE001 - a log line, never a failure
+        return None
+
+
 def prefer_cached_pickle_twins(
     repo_id: Optional[str],
     names: Sequence[str],
@@ -1617,6 +1668,7 @@ def _resolve_checkpoint_path(
     if source.kind == "repo":
         EntryNotFoundError, LocalEntryNotFoundError = _entry_not_found_errors()
         names = list(candidate_filenames_of(source))
+        all_names = list(names)
         if scheme is not None:
             readable = [n for n in names if restricted_prequant_load_supported(scheme, n)]
             # Only when it leaves something. An empty filter means the source should never have
@@ -1642,7 +1694,7 @@ def _resolve_checkpoint_path(
         for index, name in enumerate(names):
             last = index == len(names) - 1
             try:
-                return _download_checkpoint_name(
+                path = _download_checkpoint_name(
                     source,
                     name,
                     hf_token,
@@ -1653,6 +1705,15 @@ def _resolve_checkpoint_path(
                     propagate_missing = not last,
                     local_files_only = local_files_only,
                 )
+                explain_container_choice(
+                    source.location,
+                    name,
+                    all_names,
+                    names,
+                    readable = lambda n: restricted_prequant_load_supported(scheme, n),
+                    logger = logger,
+                )
+                return path
             except LocalEntryNotFoundError:
                 # Caught BEFORE the base it subclasses, because the two mean different things and
                 # only the mode says which. huggingface_hub documents this one as "not on the disk
