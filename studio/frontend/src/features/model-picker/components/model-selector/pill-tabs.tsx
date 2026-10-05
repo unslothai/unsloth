@@ -8,6 +8,7 @@ export interface PillTab {
   value: string;
   label: string;
   icon?: ReactNode;
+  disabled?: boolean;
 }
 
 /** Segmented pill toggle reusing the Hub's .hub-tab-toggle styling (extended in hub.css to also
@@ -75,13 +76,17 @@ export function PillTabs({
           // Roving tabindex: only the active tab is in the tab order; Arrow Left/Right move between tabs
           // (WAI-ARIA tablist pattern). ArrowDown bubbles so the picker's "enter the list" handler runs.
           tabIndex={value === tab.value ? 0 : -1}
-          disabled={disabled}
+          disabled={disabled || tab.disabled}
           onKeyDown={(e) => {
             if (e.key !== "ArrowRight" && e.key !== "ArrowLeft") return;
             e.preventDefault();
-            const next =
-              (index + (e.key === "ArrowRight" ? 1 : -1) + tabs.length) %
-              tabs.length;
+            const step = e.key === "ArrowRight" ? 1 : -1;
+            let next = (index + step + tabs.length) % tabs.length;
+            // Skip disabled tabs; stay put when none is open.
+            while (tabs[next].disabled && next !== index) {
+              next = (next + step + tabs.length) % tabs.length;
+            }
+            if (next === index) return;
             onValueChange(tabs[next].value);
             e.currentTarget.parentElement
               ?.querySelectorAll<HTMLElement>('button[role="tab"]')
@@ -91,7 +96,7 @@ export function PillTabs({
           onClick={() => onValueChange(tab.value)}
           className={cn(
             "relative z-10 inline-flex items-center justify-center gap-1.5 rounded-full transition-colors",
-            disabled && "cursor-not-allowed opacity-50",
+            (disabled || tab.disabled) && "cursor-not-allowed opacity-50",
             fit ? "min-w-0 shrink" : "min-w-0 flex-1",
             compact
               ? "h-7 px-2.5 text-ui-11"

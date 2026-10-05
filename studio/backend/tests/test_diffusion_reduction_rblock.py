@@ -250,6 +250,8 @@ def _filter_reaching_compile(monkeypatch, family):
 
 
 def test_only_ltx_opts_into_the_reduction_filter(monkeypatch):
+    # Off sm120, where the image families' arch-scoped opt-in (test_diffusion_reduction_filter_arch.py) is inert.
+    monkeypatch.setattr(cc, "_device_capability", lambda: (10, 0))
     assert _filter_reaching_compile(monkeypatch, _family("ltx-2")) is True
     for name in ("hunyuanvideo-1.5", "wan2.2-ti2v-5b", "flux.1"):
         assert _filter_reaching_compile(monkeypatch, _family(name)) is False, name
@@ -376,6 +378,28 @@ def _ltx_like_block_norm():
     return head, (x, temb)
 
 
+def _qwen_like_text_norm():
+    """Qwen-Image block, text stream: LayerNorm (no affine, eps 1e-6, fp32 statistics) over the 3072 hidden of 64 bf16
+    text tokens, then the AdaLN modulation (shift / scale chunks of the timestep embedding, addcmul). With the int8
+    GEMM's bf16 producer on sm120 this reduction gets R0_BLOCK 4096 (one Welford pass) and 2048 (two, then combined).
+    The modulated output stays fp32 here so the two statistics orders show on every GPU."""
+
+    class Head(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.norm = torch.nn.LayerNorm(3072, elementwise_affine = False, eps = 1e-6)
+
+        def forward(self, x, mod):
+            shift, scale = mod.float().chunk(2, dim = -1)
+            return torch.addcmul(shift.unsqueeze(1), self.norm(x.float()), 1 + scale.unsqueeze(1))
+
+    torch.manual_seed(0)
+    head = Head().cuda()
+    x = (torch.randn(1, 64, 3072, device = "cuda") * 3 + 0.2).to(torch.bfloat16)
+    mod = (torch.randn(1, 6144, device = "cuda") * 0.5).to(torch.bfloat16)
+    return head, (x, mod)
+
+
 def _run_norm(
     monkeypatch,
     tmp_path,
@@ -422,7 +446,9 @@ def _run_norm(
 @pytest.mark.gpu
 @_needs_filter
 @pytest.mark.parametrize(
-    "build", [_wan_like_block_head, _ltx_like_block_norm], ids = ["wan_layernorm", "ltx23_rmsnorm"]
+    "build",
+    [_wan_like_block_head, _ltx_like_block_norm, _qwen_like_text_norm],
+    ids = ["wan_layernorm", "ltx23_rmsnorm", "qwen_image_text_layernorm"],
 )
 def test_filter_option_gives_the_norm_one_config(monkeypatch, tmp_path, build):
     if not torch.cuda.is_available() or torch.cuda.get_device_capability()[0] < 8:

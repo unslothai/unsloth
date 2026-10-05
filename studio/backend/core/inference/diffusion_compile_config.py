@@ -34,6 +34,29 @@ def reduction_config_filter_available() -> bool:
         return False
 
 
+def family_filters_reductions(family: Any) -> bool:
+    """``filter_reduction_configs`` on every arch, or the current CUDA device listed in ``filter_reduction_configs_archs``."""
+    if family is None:
+        return False
+    if bool(getattr(family, "filter_reduction_configs", False)):
+        return True
+    archs = getattr(family, "filter_reduction_configs_archs", None) or ()
+    if not archs:
+        return False
+    cap = _device_capability()
+    return cap is not None and cap in {tuple(int(v) for v in a) for a in archs}
+
+
+def _device_capability() -> Any:
+    try:
+        import torch
+        if not torch.cuda.is_available() or getattr(torch.version, "hip", None):
+            return None
+        return tuple(int(v) for v in torch.cuda.get_device_capability())
+    except Exception:  # noqa: BLE001 - no CUDA: nothing pinned
+        return None
+
+
 _LOCK = threading.Lock()
 _KNOBS: dict[tuple[str, str], Any] = {}
 _generation = 0

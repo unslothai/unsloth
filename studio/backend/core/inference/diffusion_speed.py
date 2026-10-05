@@ -427,6 +427,7 @@ def apply_speed_optims(
     cuda_graph_default: bool = True,
     cache_engaged: Optional[bool] = None,
     denoiser_offloaded: Optional[bool] = None,
+    stream_int8_gemm: bool = False,
     logger: Any = None,
 ) -> dict[str, bool]:
     """Apply the opt-in speed optims for ``speed_mode`` to a built pipeline, BEFORE placement /
@@ -435,6 +436,7 @@ def apply_speed_optims(
     ``offload_active`` (offload policy != none) installs ``@torch.compiler.disable``d onload hooks,
     so the compile must drop ``fullgraph`` (like an active step cache) or it crashes at step 1.
     ``denoiser_offloaded`` (None = ``offload_active``) limits the CUDA-graph refusal to a moved denoiser.
+    ``stream_int8_gemm``: a moved denoiser still takes the fused int8 GEMM, installed against its onload device.
 
     ``cuda_graph_default`` is what the CUDA-graph arm assumes for a family that declares nothing:
     True on the image backend, False on video, where ``supports_cuda_graph`` opts in.
@@ -472,7 +474,7 @@ def apply_speed_optims(
 
     on_cuda = getattr(target, "device", None) == "cuda"
     family_allows_compile = bool(getattr(family, "supports_torch_compile", True))
-    filter_reductions = bool(getattr(family, "filter_reduction_configs", False))
+    filter_reductions = compile_config.family_filters_reductions(family)
 
     applied["vae_single_frame"] = _vae_single_frame(pipe, logger)
     # Lossless: a channels-last VAE speeds up its convs with no numeric change.
@@ -517,6 +519,7 @@ def apply_speed_optims(
                 cache_active = cache_active,
                 offload_active = offload_active,
                 denoiser_offloaded = denoiser_offloaded,
+                onload_device = _onload_device(target) if stream_int8_gemm else None,
                 filter_reductions = filter_reductions,
             )
     elif (
@@ -531,6 +534,7 @@ def apply_speed_optims(
             cache_active = cache_active,
             offload_active = offload_active,
             denoiser_offloaded = denoiser_offloaded,
+            onload_device = _onload_device(target) if stream_int8_gemm else None,
             filter_reductions = filter_reductions,
         )
 
@@ -604,6 +608,14 @@ def apply_speed_optims(
                 _warn(logger, "cuda graph capture", exc)
 
     return applied
+
+
+def _onload_device(target: Any) -> Optional[str]:
+    """Onload device of an offloaded denoiser, else None. NVIDIA only: ROCm runs int8 weight-only, never this GEMM."""
+    if getattr(target, "device", None) != "cuda" or getattr(target, "backend", "cuda") != "cuda":
+        return None
+    device = getattr(target, "torch_device", None)
+    return str(device) if isinstance(device, str) and device.startswith("cuda") else "cuda"
 
 
 def engage_pinned_denoisers(
@@ -931,6 +943,7 @@ def _compile_repeated_blocks(
     cache_active: bool = False,
     offload_active: bool = False,
     denoiser_offloaded: Optional[bool] = None,
+    onload_device: Any = None,
     filter_reductions: bool = False,
 ) -> bool:
     dits = [
@@ -1049,14 +1062,17 @@ def _compile_repeated_blocks(
         try:
             from .diffusion_int8_gemm import install as install_int8_gemm
 
-            # Keyed on the DENOISER's placement: a group plan that streams only the encoders keeps it resident.
-            transformer._unsloth_int8_gemm = install_int8_gemm(
-                transformer,
-                logger,
-                offload_active = offload_active
-                if denoiser_offloaded is None
-                else bool(denoiser_offloaded),
-            )
+            # Keyed on the DENOISER's placement (an encoder-only stream keeps it resident). A moved denoiser installs
+            # against its onload device; a weight found elsewhere at call time keeps the stock path.
+            moved = offload_active if denoiser_offloaded is None else bool(denoiser_offloaded)
+            if moved and onload_device is not None:
+                transformer._unsloth_int8_gemm = install_int8_gemm(
+                    transformer, logger, device = onload_device
+                )
+            else:
+                transformer._unsloth_int8_gemm = install_int8_gemm(
+                    transformer, logger, offload_active = moved
+                )
         except Exception as exc:  # noqa: BLE001 - optimisation only
             _warn(logger, "int8 fused-dequant gemm", exc)
         if type(transformer).__name__ == "QwenImageTransformer2DModel":
