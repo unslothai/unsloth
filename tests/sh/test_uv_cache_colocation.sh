@@ -26,11 +26,19 @@ INSTALL_SH="$SCRIPT_DIR/../../install.sh"
 _FN_FILE=$(mktemp)
 _TMP=$(mktemp -d)
 trap 'rm -rf "$_FN_FILE" "$_TMP"' EXIT
+# The helper first: the block asks it whether the cache is usable, and leaving it out does not
+# fail loudly. `command not found` exits 127, `if !` reads that as "not writable", and every
+# case quietly reports an unset UV_CACHE_DIR.
+awk '/^_uv_cache_root_is_writable\(\) \{$/,/^\}$/' "$INSTALL_SH" > "$_FN_FILE"
 awk '/^# Keep uv.s cache on the same filesystem as the venv it fills\.$/,/^fi$/' \
-    "$INSTALL_SH" > "$_FN_FILE"
+    "$INSTALL_SH" >> "$_FN_FILE"
 
 if ! grep -q 'UV_CACHE_DIR="\$STUDIO_HOME/cache/uv"' "$_FN_FILE"; then
     echo "FAIL: could not extract the UV_CACHE_DIR block from install.sh"
+    exit 1
+fi
+if ! grep -q '^_uv_cache_root_is_writable() {' "$_FN_FILE"; then
+    echo "FAIL: could not extract _uv_cache_root_is_writable from install.sh"
     exit 1
 fi
 
@@ -106,10 +114,10 @@ assert_eq "precedes uv bootstrap" "yes" \
 # Match the call that creates the venv, not the label it carries: the literal
 # 'run_install_cmd "create venv" uv venv' stopped existing when #8479 moved venv
 # creation behind _run_uv_venv, and a label this file cannot find reads as "the cache
-# is set too late" rather than "the grep is stale". Comment lines are dropped so the
-# prose above the helper does not answer first.
+# is set too late" rather than "the grep is stale". Comment lines and case globs are
+# dropped so the prose above the helper, or a pattern matching the call, does not answer first.
 _venv_line=$(grep -nE '(^|[^[:alnum:]_"`])uv venv([[:space:]]|$)' "$INSTALL_SH" \
-    | grep -vE '^[0-9]+:[[:space:]]*#' | head -1 | cut -d: -f1)
+    | grep -vE '^[0-9]+:[[:space:]]*#' | grep -v '\*" uv venv "\*' | head -1 | cut -d: -f1)
 assert_eq "found the venv creation call" "yes" "$([ -n "$_venv_line" ] && echo yes || echo no)"
 assert_eq "precedes venv creation" "yes" \
     "$([ -n "$_set_line" ] && [ -n "$_venv_line" ] && [ "$_set_line" -lt "$_venv_line" ] && echo yes || echo no)"

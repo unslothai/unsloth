@@ -305,6 +305,57 @@ def test_reexeced_child_consumes_start_api_key_marker_env(monkeypatch):
     assert studio_mod._START_API_KEY_MARKER_ENV not in studio_mod.os.environ
 
 
+def test_in_venv_child_reports_bound_port_before_start_api_key(
+    monkeypatch, tmp_path, stub_tool_policy_state
+):
+    import types
+
+    studio_mod = _load_run_command()
+    fake_venv = tmp_path / "studio" / "venv" / "unsloth_studio"
+    monkeypatch.setattr(sys, "prefix", str(fake_venv))
+    monkeypatch.setattr(studio_mod, "STUDIO_HOME", fake_venv.parent)
+
+    from unsloth_cli import _tool_policy as _tp_mod
+
+    monkeypatch.setattr(_tp_mod, "resolve_tool_policy", lambda host, flag, yes, silent: False)
+
+    class _App:
+        class state:
+            server_port = 8889
+            server_request_host = "127.0.0.1"
+
+    backend = types.ModuleType("studio.backend.run")
+    backend.run_server = lambda **_kwargs: _App()
+    backend._server = object()
+    backend._graceful_shutdown = lambda server: None
+    monkeypatch.setitem(sys.modules, "studio.backend.run", backend)
+    monkeypatch.setattr(studio_mod, "_RUN_MODULE", backend)
+    monkeypatch.setattr(studio_mod, "_wait_for_server", lambda port, **_kwargs: True)
+    monkeypatch.setattr(studio_mod, "_create_api_key_inprocess", lambda name: "sk-unsloth-test")
+
+    def stop_before_load(**_kwargs):
+        raise RuntimeError("stopped before load")
+
+    monkeypatch.setattr(studio_mod, "_load_model_via_http", stop_before_load)
+
+    import typer as _typer
+
+    app = _typer.Typer()
+    app.command(
+        context_settings = {
+            "allow_extra_args": True,
+            "ignore_unknown_options": True,
+        },
+    )(studio_mod.run)
+    result = CliRunner().invoke(
+        app,
+        _BASE + ["--port", "8888", "--start-api-key-marker"],
+        catch_exceptions = True,
+    )
+
+    assert "UNSLOTH_START_PORT: 8889\nUNSLOTH_START_API_KEY: sk-unsloth-test\n" in result.output
+
+
 def test_run_default_sets_tool_call_env(monkeypatch):
     """Plain `unsloth run` enables healing and nudging via the inherited env
     (written before the re-exec so the child server picks them up at import)."""

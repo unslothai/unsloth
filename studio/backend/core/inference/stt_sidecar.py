@@ -16,6 +16,7 @@ the process holding it lives and the backend must not be the process that takes 
 
 from __future__ import annotations
 
+from hub.utils.hf_errors import modelscope_missing
 from hub.utils.hf_tokens import normalize_token
 
 import gc
@@ -54,6 +55,11 @@ _HF_COMMIT_SHA = re.compile(r"^[0-9a-f]{40}$")
 # Bound decoded PCM length so a crafted upload cannot exhaust memory (callers also cap the encoded bytes).
 _MAX_AUDIO_SECONDS = 30 * 60
 _TARGET_SAMPLE_RATE = 16000
+_STT_WINDOW_SECONDS = 30
+_STT_WINDOW_SILENCE_LOOKBACK_SECONDS = 3
+_STT_ENERGY_FRAME_SECONDS = 0.02
+_STT_MIN_SILENCE_SECONDS = 0.1
+_STT_SILENCE_ENERGY_RATIO = 0.01
 
 # Non-weight files WhisperProcessor/WhisperForConditionalGeneration may load. Weight selection is built from pinned Hub
 # metadata. A custom repo id is attacker-controllable, so only safetensors weights are accepted: a pytorch_model.bin is
@@ -258,6 +264,34 @@ def normalize_whisper_language(language: Optional[str]) -> Optional[str]:
         return None
     primary = normalized.split("-", 1)[0]
     return _WHISPER_LANGUAGE_ALIASES.get(primary, primary)
+
+
+def _stt_quiet_window_end(decoded_audio, start: int, window: int) -> Optional[int]:
+    """Return a nearby quiet window boundary, or None when speech fills it."""
+    import numpy as np
+
+    hard_end = min(start + window, len(decoded_audio))
+    if hard_end == len(decoded_audio):
+        return None
+
+    lookback = _STT_WINDOW_SILENCE_LOOKBACK_SECONDS * _TARGET_SAMPLE_RATE
+    search_start = hard_end - lookback
+    candidate = decoded_audio[search_start:hard_end]
+    frame = round(_STT_ENERGY_FRAME_SECONDS * _TARGET_SAMPLE_RATE)
+    frame_count = len(candidate) // frame
+    framed = candidate[: frame_count * frame].reshape(frame_count, frame).astype(np.float64)
+    framed -= np.mean(framed, axis = 1, keepdims = True)
+    energy = np.mean(np.square(np.diff(framed, axis = 1)), axis = 1)
+    silence_frames = round(_STT_MIN_SILENCE_SECONDS / _STT_ENERGY_FRAME_SECONDS)
+    smoothed = np.convolve(
+        energy, np.ones(silence_frames, dtype = np.float64) / silence_frames, mode = "valid"
+    )
+    quietest = int(np.argmin(smoothed))
+    active_reference = float(np.mean(np.partition(energy, -silence_frames)[-silence_frames:]))
+    if active_reference <= 0 or smoothed[quietest] > active_reference * _STT_SILENCE_ENERGY_RATIO:
+        return None
+    silence_midpoint = round(_STT_MIN_SILENCE_SECONDS * _TARGET_SAMPLE_RATE / 2)
+    return search_start + quietest * frame + silence_midpoint
 
 
 def _known_whisper_languages() -> Optional[frozenset[str]]:
@@ -886,7 +920,7 @@ class _SnapshotDownloadState:
             with self._lock:
                 if not self._cancelled:
                     logger.warning("STT snapshot download failed for %s: %s", repo, exc)
-                    self._error = f"Download failed for '{repo}'."
+                    self._error = modelscope_missing(exc) or f"Download failed for '{repo}'."
         finally:
             if registry is not None and owner is not None:
                 registry.release_repository_owner(repo, owner)
@@ -1049,6 +1083,18 @@ def _close_engine(engine) -> bool:
         return not _engine_is_alive(engine)
 
 
+def _av_open(av, source):
+    """Open ``source`` for reading with undecodable metadata ignored. PyAV 19 removed ``metadata_errors`` from ``av.open``, so passing it there raises TypeError before anything is read; retry without it."""
+    try:
+        return av.open(source, mode = "r", metadata_errors = "ignore")
+    except TypeError as exc:
+        if "metadata_errors" not in str(exc):
+            raise
+        # format = None is PyAV's own default (probe the container); spelling it keeps this call
+        # distinguishable from Path.open for the text-encoding lint.
+        return av.open(source, mode = "r", format = None)
+
+
 def _decode_audio_bounded(audio: bytes, cancel_event = None):
     """Decode to 16 kHz mono PCM without buffering unbounded audio.
 
@@ -1092,7 +1138,7 @@ def _decode_audio_bounded(audio: bytes, cancel_event = None):
         raw_buffer.write(array)
 
     try:
-        with av.open(io.BytesIO(audio), mode = "r", metadata_errors = "ignore") as container:
+        with _av_open(av, io.BytesIO(audio)) as container:
             if not container.streams.audio:
                 raise SttAudioDecodeError("Could not decode the audio.")
             frames = iter(container.decode(audio = 0))
@@ -1609,6 +1655,7 @@ class WhisperSttSidecar:
         decoded_audio,
         generate_kwargs: dict,
         cancel_event: Optional[threading.Event] = None,
+        on_progress = None,
     ) -> str:
         """Run Whisper on already-decoded 16 kHz mono PCM and return text.
 
@@ -1632,16 +1679,35 @@ class WhisperSttSidecar:
             # passing them here.
             effective_generate_kwargs.pop("task", None)
             effective_generate_kwargs.pop("language", None)
-        window = 30 * _TARGET_SAMPLE_RATE
+        window = _STT_WINDOW_SECONDS * _TARGET_SAMPLE_RATE
         parts: list[str] = []
-        for start in range(0, max(len(decoded_audio), 1), window):
+        supports_timestamps = getattr(generation_config, "supports_timestamps", True) is not False
+        start = 0
+        while start < len(decoded_audio):
             if cancel_event is not None and cancel_event.is_set():
                 raise SttTranscriptionCancelledError("Transcription cancelled.")
-            segment = decoded_audio[start : start + window]
-            if segment.size == 0:
-                continue
+            end = min(start + window, len(decoded_audio))
+            window_generate_kwargs = dict(effective_generate_kwargs)
+            if end < len(decoded_audio):
+                quiet_end = _stt_quiet_window_end(decoded_audio, start, window)
+                if quiet_end is not None:
+                    end = quiet_end
+                elif supports_timestamps:
+                    # Whisper's long-form seek: keep only finished segments and resume where the last one ended.
+                    window_generate_kwargs["return_timestamps"] = True
+            segment = decoded_audio[start:end]
             pcm = np.ascontiguousarray(segment, dtype = np.float32).tobytes()
-            parts.append(engine.transcribe_window(pcm, effective_generate_kwargs, cancel_event))
+            text, consumed = engine.transcribe_window(pcm, window_generate_kwargs, cancel_event)
+            parts.append(text)
+            start += consumed
+            if on_progress is not None:
+                on_progress(
+                    {
+                        "text": " ".join(part.strip() for part in parts if part.strip()),
+                        "processed_seconds": min(start, len(decoded_audio)) / _TARGET_SAMPLE_RATE,
+                        "duration": len(decoded_audio) / _TARGET_SAMPLE_RATE,
+                    }
+                )
             if cancel_event is not None and cancel_event.is_set():
                 raise SttTranscriptionCancelledError("Transcription cancelled.")
         return " ".join(part.strip() for part in parts if part.strip()).strip()
@@ -1653,6 +1719,7 @@ class WhisperSttSidecar:
         language: Optional[str] = None,
         fast: bool = False,
         cancel_event: Optional[threading.Event] = None,
+        on_progress = None,
     ) -> dict:
         """Transcribe encoded audio bytes to text.
 
@@ -1693,7 +1760,11 @@ class WhisperSttSidecar:
             generate_kwargs["num_beams"] = 1
         with self._lock:
             try:
-                if cancel_event is None:
+                if on_progress is not None:
+                    text = self._transcribe_decoded(
+                        model_id, decoded_audio, generate_kwargs, cancel_event, on_progress
+                    )
+                elif cancel_event is None:
                     text = self._transcribe_decoded(model_id, decoded_audio, generate_kwargs)
                 else:
                     text = self._transcribe_decoded(
@@ -1757,7 +1828,9 @@ class WhisperSttSidecar:
         if not self._lock.acquire(blocking = wait):
             return
         try:
-            if not self._holds_expected_model(expected_model):
+            # Nothing resident: the registry releases idle engines on every other engine's
+            # transcription, and a full gc.collect each time cost ~130 ms per request.
+            if self._model_id is None or not self._holds_expected_model(expected_model):
                 return
             self._release_engine_locked()
         finally:

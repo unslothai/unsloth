@@ -3,13 +3,10 @@
 
 """Opt-in idle auto-unload (TTL keep-warm) for the local llama.cpp model.
 
-Off by default (idle seconds = 0). When enabled, a background loop unloads the
-loaded GGUF once it has been idle for the configured TTL, freeing VRAM. A
-pure-ASGI middleware tracks in-flight inference requests so a long stream that
-outlives the TTL is never unloaded mid-response.
-
-The same loop and the same middleware drive the image/video side (media_keepwarm),
-so Unsloth has one idle mechanism rather than one per backend.
+Off by default (idle seconds = 0). A background loop unloads the GGUF after the TTL, and a
+pure-ASGI middleware tracks in-flight requests so a long stream is never unloaded mid-response.
+The resident model is shared, so any account's activity resets the one global idle clock. The
+same loop and middleware drive media_keepwarm.
 """
 
 from __future__ import annotations
@@ -58,14 +55,19 @@ _kv_resume = None
 _lifecycle_lock = threading.Lock()
 
 
+_load_lock = threading.Lock()
+
+
 @contextlib.asynccontextmanager
-async def _unload_gate(cancel_event: threading.Event | None = None):
+async def _unload_gate(
+    cancel_event: threading.Event | None = None, lock: threading.Lock = _lifecycle_lock
+):
     # Acquire off the loop: non-blocking first (the common uncontended case), else poll a non-blocking acquire off a
     # short sleep. Polling keeps the wait off this loop AND cancellation-safe -- a cancel lands during the sleep, when
     # the gate is not held, so it never leaks (mirrors the auto-switch swap gate).
     acquired = False
     try:
-        while not _lifecycle_lock.acquire(blocking = False):
+        while not lock.acquire(blocking = False):
             if cancel_event is not None and cancel_event.is_set():
                 raise asyncio.CancelledError()
             await asyncio.sleep(0.02)
@@ -75,7 +77,7 @@ async def _unload_gate(cancel_event: threading.Event | None = None):
         yield
     finally:
         if acquired:
-            _lifecycle_lock.release()
+            lock.release()
 
 
 _INFERENCE_PREFIXES = ("/v1/", "/api/inference/")
@@ -503,6 +505,10 @@ def inference_lifecycle_gate():
     return _unload_gate()
 
 
+def model_load_gate():
+    return _unload_gate(lock = _load_lock)
+
+
 def note_model_loaded(backend = None) -> None:
     """Stamp activity and synchronously drop any reload stash."""
     _note_activity()
@@ -839,12 +845,17 @@ async def idle_unload_loop(poll_seconds: float = 15.0) -> None:
             ttl = await asyncio.to_thread(get_auto_unload_idle_seconds)
             if ttl <= 0:
                 continue
-            from routes.inference import get_llama_cpp_backend
+            from core.inference.model_slots import unload_extra_models
+            from routes.inference import get_llama_cpp_backend, release_chat_gpu_claim
 
             backend = get_llama_cpp_backend()
             # track by (id, variant): a (re)loaded model counts as activity so it survives one TTL before its first
             # request
             async with _unload_gate():
+                if _is_idle(ttl) and await asyncio.to_thread(
+                    unload_extra_models, _user_pinned, True
+                ):
+                    await asyncio.to_thread(release_chat_gpu_claim)
                 # Purging the stash mid-reload would race the restore.
                 current = _loaded_identity(backend)
                 if current != seen_model:
@@ -896,6 +907,16 @@ async def idle_unload_loop(poll_seconds: float = 15.0) -> None:
                         logger.info("Idle auto-unload: saved slot KV for restore on reload")
                     elif manifest:
                         _delete_resume_files(manifest)
+                    # As /unload: a kept claim hides the empty GPU from other accounts. After the
+                    # stash, so a failed release never loses the reload identity.
+                    try:
+                        from hub.services.models.account_access import clear_resident
+                        from routes.inference import release_chat_gpu_claim
+
+                        clear_resident("chat")
+                        await asyncio.to_thread(release_chat_gpu_claim)
+                    except Exception as exc:  # noqa: BLE001 - the unload already happened
+                        logger.debug("Idle auto-unload: claim release failed: %s", exc)
                     logger.info("Idle auto-unload: freed GGUF after %ss idle", ttl)
                     # An idle unload stashes for reload and skips note_model_unloaded.
                     _note_idle_unload_event(freed)

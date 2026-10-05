@@ -217,7 +217,8 @@ class GaLoreProjector:
             current_vector = float_ortho[:, :1].flatten()
 
         if self.past_ortho_vector is not None:
-            cos_sim = torch.dot(self.past_ortho_vector, current_vector).item()
+            # Singular vectors are sign-ambiguous: a negated basis is the same subspace.
+            cos_sim = abs(torch.dot(self.past_ortho_vector, current_vector).item())
 
             self.queue.append(cos_sim)
 
@@ -275,8 +276,8 @@ def _quantize(
         w = w.reshape(-1, q_group_size)
     assert w.dim() == 2
 
-    max_val = w.amax(dim = 1, keepdim = True)
-    min_val = w.amin(dim = 1, keepdim = True)
+    max_val = w.amax(dim = 1, keepdim = True).clamp(min = 0)
+    min_val = w.amin(dim = 1, keepdim = True).clamp(max = 0)
     max_int = 2**n_bit - 1
     min_int = 0
     scales = (max_val - min_val).clamp(min = 1e-5) / max_int
@@ -324,8 +325,8 @@ def _quantize_stochastic(
         w = w.reshape(-1, q_group_size)
     assert w.dim() == 2
 
-    max_val = w.amax(dim = 1, keepdim = True)
-    min_val = w.amin(dim = 1, keepdim = True)
+    max_val = w.amax(dim = 1, keepdim = True).clamp(min = 0)
+    min_val = w.amin(dim = 1, keepdim = True).clamp(max = 0)
     max_int = 2**n_bit - 1
     min_int = 0
     scales = (max_val - min_val).clamp(min = 1e-5) / max_int

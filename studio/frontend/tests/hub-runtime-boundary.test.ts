@@ -87,11 +87,11 @@ test("residency remains a cache mutation safety input", () => {
     "utf8",
   );
 
-  assert.match(hubPage, /getInferenceStatus\(\)/);
+  assert.match(hubPage, /getInferenceStatus\(\s*undefined,/);
   assert.match(hubPage, /adoptResidentModelStatus\(/);
   assert.match(
     hubPage,
-    /Promise\.all\(\[getInferenceStatus\(\), readIdleUnloadArmed\(\)\]\)\s*\.then\(\(\[status, idleUnloadArmed\]\) => \{/,
+    /Promise\.all\(\[\s*getInferenceStatus\([\s\S]*?\),\s*readIdleUnloadArmed\(\),\s*\]\)\s*\.then\(\(\[status, idleUnloadArmed\]\) => \{/,
   );
   assert.match(
     hubPage,

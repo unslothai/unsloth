@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+
 import json
 import asyncio
 import threading
@@ -19,6 +20,7 @@ from hub.schemas.inventory import ModelFormat
 from hub.utils import inventory_scan as hf_cache_scan
 from hub.utils import download_manifest, download_registry
 from hub.utils.hf_cache_state import snapshot_selection_key
+from hub.utils.host_paths import scrub_paths
 from hub.utils.snapshot_filters import (
     snapshot_download_blob_hashes,
     snapshot_download_size,
@@ -26,6 +28,7 @@ from hub.utils.snapshot_filters import (
 from hub.services.models.common import (
     _capabilities_for_format,
     _classify_non_gguf_model_format,
+    _diffusers_pipeline_artifact_kind,
     _gguf_variant_state_summary,
     _is_adapter_weight_name,
     _is_checkpoint_weight_name,
@@ -45,6 +48,7 @@ from hub.services.models.common import (
 from utils.paths.path_utils import is_appledouble_metadata
 from utils.audio_tokens import detect_local_tts_audio_type
 from utils.hidden_models import (
+    is_audio_cpp_repo_id,
     is_curated_stt_repo_id,
     is_curated_tts_repo_id,
     is_hidden_model,
@@ -79,6 +83,12 @@ _last_confirmed_inventory: dict[str, list[dict]] = {}
 
 # Identity for a cached file with no HF blob: on Windows without Developer Mode hf moves the blob into snapshots/ and leaves blobs/ empty.
 _LOCAL_SIZE_IDENTITY_PREFIX = "size:"
+
+
+def _account_access():
+    """Imported on use: the CLI reads this inventory without FastAPI, which account_access needs."""
+    from hub.services.models import account_access
+    return account_access
 
 
 def get_repo_snapshot_metadata_cached(
@@ -128,8 +138,96 @@ def get_repo_snapshot_metadata_cached(
     return total, blob_hashes
 
 
+_mlx_plan_cache: OrderedDict = OrderedDict()
+
+
+def _cached_mlx_siblings(repo_id):
+    from huggingface_hub.hf_api import RepoSibling
+
+    # The raw tree retains LFS SHA256s, not just Git pointer IDs.
+    from huggingface_hub._tree_cache import read_tree_cache
+    from hub.utils.hf_cache_state import preferred_repo_cache_dirs
+
+    for entry in preferred_repo_cache_dirs("model", repo_id):
+        snapshot = hf_cache_scan.default_ref_snapshot(entry)
+        tree = read_tree_cache(str(entry), snapshot.name) if snapshot is not None else None
+        if tree:
+            return [
+                RepoSibling(rfilename = path, size = item.size, blob_id = item.lfs_sha256 or item.blob_id)
+                for path, item in tree.items()
+            ]
+    return []
+
+
+def get_mlx_load_plan_cached(repo_id: str, hf_token: Optional[str] = None):
+    from hub.utils.snapshot_filters import blob_hashes_for_siblings, mlx_load_siblings
+    from huggingface_hub import HfApi
+
+    key = (repo_id, hf_cache_scan.token_fingerprint(hf_token))
+    with _repo_size_cache_lock:
+        cached = _mlx_plan_cache.get(key)
+        if cached is not None and time.monotonic() - cached[1] < _REPO_SIZE_POS_TTL:
+            _mlx_plan_cache.move_to_end(key)
+            return cached[0]
+    try:
+        siblings = (
+            HfApi(token = hf_token)
+            .model_info(
+                repo_id,
+                files_metadata = True,
+                timeout = _MODEL_METADATA_TIMEOUT_SECONDS,
+            )
+            .siblings
+        )
+    except Exception:
+        try:
+            siblings = _cached_mlx_siblings(repo_id)
+        except Exception:
+            siblings = []
+    siblings = mlx_load_siblings(siblings)
+    files = tuple(
+        download_manifest.ExpectedFile(
+            path = item.rfilename,
+            size = int(item.size or 0),
+            sha256 = getattr(getattr(item, "lfs", None), "sha256", None),
+        )
+        for item in siblings
+    )
+    plan = (sum(file.size for file in files), blob_hashes_for_siblings(siblings), files)
+    if not siblings and cached is not None:
+        plan = cached[0]
+    with _repo_size_cache_lock:
+        _mlx_plan_cache[key] = (plan, time.monotonic())
+        _mlx_plan_cache.move_to_end(key)
+        while len(_mlx_plan_cache) > _REPO_SIZE_CACHE_MAX:
+            _mlx_plan_cache.popitem(last = False)
+    return plan
+
+
 def all_hf_cache_scans():
     return hf_cache_scan.all_hf_cache_scans()
+
+
+def _blob_key(file_obj, fallback: str) -> str:
+    """Key existing files by inode: no-symlink snapshot paths are their own blob_path, and reuse hard links them."""
+    blob_path = getattr(file_obj, "blob_path", None)
+    if not blob_path:
+        return fallback
+    try:
+        st = Path(blob_path).stat()
+    except OSError:
+        return str(blob_path)
+    return f"inode:{st.st_dev}:{st.st_ino}" if st.st_ino else str(blob_path)
+
+
+def repo_unique_size_bytes(repo_info) -> int:
+    """Every file across revisions, each stored copy counted once (see ``_blob_key``)."""
+    unique: dict[str, int] = {}
+    for revision in repo_info.revisions:
+        rev_id = getattr(revision, "commit_hash", None) or str(id(revision))
+        for f in cached_repo_files(revision):
+            unique[_blob_key(f, f"{rev_id}:{f.file_name}")] = int(f.size_on_disk or 0)
+    return sum(unique.values())
 
 
 def _repo_gguf_size_bytes(repo_info) -> int:
@@ -141,12 +239,7 @@ def _repo_gguf_size_bytes(repo_info) -> int:
             # Snapshot-relative: only the directory marks an MTP/ drafter as a companion.
             name = _cached_repo_file_name(f)
             if _is_main_gguf_filename(name):
-                blob_path = getattr(f, "blob_path", None)
-                size = f.size_on_disk or 0
-                if blob_path:
-                    unique_blobs[str(blob_path)] = size
-                else:
-                    unique_blobs[f"{rev_id}:{name}"] = size
+                unique_blobs[_blob_key(f, f"{rev_id}:{name}")] = f.size_on_disk or 0
     return sum(unique_blobs.values())
 
 
@@ -382,7 +475,7 @@ def _cache_inventory_fields(
     ):
         capabilities["supports_vision"] = True
     # Qwen3-ASR's required mmproj is an audio projector, not a vision one, and stt_only covers any repo whose config sniffs as Whisper, curated or not: a third-party checkpoint or a user's own fine-tune is just as unchattable. can_chat is what auto-load and the chat picker filter on, neither of which looks at the task, so task-scoping alone would leave curated STT rows eligible for chat auto-load.
-    if stt_only or is_curated_stt_repo_id(repo_id):
+    if stt_only or is_curated_stt_repo_id(repo_id) or is_audio_cpp_repo_id(repo_id):
         capabilities["supports_vision"] = False
         capabilities["can_chat"] = False
     # The codec probe covers uncurated safetensors copies and native audio architectures are passed explicitly; a GGUF repo ships no tokenizer_config to probe, so the curated ids answer for those.
@@ -452,6 +545,11 @@ def _cached_row_companion(repo_id: str, snapshot: Optional[Path] = None) -> bool
         return False
 
 
+_AUDIO_ONLY_GGUF_TASKS = frozenset(
+    {"text-to-speech", "text-to-audio", "automatic-speech-recognition", "audio-to-audio"}
+)
+
+
 def _cached_row_task(
     repo_info,
     *,
@@ -505,10 +603,11 @@ def _scan_cached_gguf(
         )
     except Exception as e:
         # The index is built once for the whole scan and outside the per-repository try, so one undecodable cache directory name, hashed for the repo key, answered 500 with every valid row hidden.
-        logger.warning("Could not build shared cached-GGUF state index: %s", e)
+        logger.warning("Could not build shared cached-GGUF state index: %s", scrub_paths(e))
         variant_states = None
 
     seen_lower: dict[str, dict] = {}
+    repo_cache_roots: dict[str, set[Path]] = {}
     for hf_cache in cache_scans:
         for repo_info in hf_cache.repos:
             try:
@@ -537,7 +636,7 @@ def _scan_cached_gguf(
                     str(repo_path),
                     str(snapshot_path) if snapshot_path is not None else None,
                 )
-                is_curated_stt = is_curated_stt_repo_id(repo_id)
+                is_curated_stt = is_curated_stt_repo_id(repo_id) or is_audio_cpp_repo_id(repo_id)
                 # Hide infra repos unless the user downloaded a variant: variant state only exists for user downloads, and curated STT repos are still emitted as management rows.
                 if is_hidden_infra and not is_curated_stt and not has_variant_state:
                     continue
@@ -570,12 +669,23 @@ def _scan_cached_gguf(
                     selected = gguf_identity.load_snapshot or gguf_snapshot,
                 )
                 row_audio_type = None
-                if row_task == "text-to-speech":
+                row_audio_workflows = None
+                if row_task in ("text-to-speech", "audio-to-audio"):
                     try:
                         from hub.services.models import catalog_classification
+
                         row_audio_type = catalog_classification._repo_gguf_audio_type(
                             repo_info, gguf_identity.load_snapshot or gguf_snapshot
                         )
+                        if row_task == "audio-to-audio" and row_audio_type != "audiocpp_sep":
+                            row_audio_type = None
+                        if row_audio_type in ("audiocpp_tts", "audiocpp_sep"):
+                            row_audio_workflows = catalog_classification._gguf_path_audio_workflows(
+                                gguf_identity.load_snapshot
+                                or gguf_snapshot
+                                or Path(repo_info.repo_path),
+                                (repo_id,),
+                            )
                     except Exception:
                         pass
                 row = {
@@ -590,6 +700,8 @@ def _scan_cached_gguf(
                     "partial_transport": None,
                     "partial_resumable": False,
                 }
+                if row_audio_workflows is not None:
+                    row["audio_workflows"] = row_audio_workflows
                 last_modified = max(last_modified, (existing or {}).get("last_modified", 0.0))
                 if last_modified > 0:
                     row["last_modified"] = last_modified
@@ -607,18 +719,32 @@ def _scan_cached_gguf(
                         gguf_snapshot = gguf_snapshot,
                         repo_info = repo_info,
                         hidden_infra = is_hidden_infra,
-                        tts_only = row_task == "text-to-speech",
+                        # Only the audio runtime serves these, standalone repos included (Yue2, MiniMax).
+                        tts_only = row_task in _AUDIO_ONLY_GGUF_TASKS,
                     )
                 )
-                # Only the winning cache root loads, so the loser's vision flag must not carry over.
+                # Preserve a snapshot-pinned load id for a single cache: refs/main can
+                # be stale or dangling even when a different snapshot holds the quant.
+                # Only a repository spanning distinct cache roots needs repo-wide
+                # resolution so chat can choose the requested quant's owning copy.
+                repo_cache_roots.setdefault(key, set()).add(repo_path.parent)
                 if _prefer_cache_row(row, existing):
                     seen_lower[key] = row
                 elif last_modified > existing.get("last_modified", 0.0):
                     existing["last_modified"] = last_modified
             except Exception as e:
                 repo_label = getattr(repo_info, "repo_id", "<unknown>")
-                logger.warning(f"Skipping cached GGUF repo {repo_label}: {e}")
+                logger.warning("Skipping cached GGUF repo %s: %s", repo_label, scrub_paths(e))
                 continue
+    from hub.utils.gguf_sources import CHAT_GGUF_TASKS
+
+    for key, row in seen_lower.items():
+        if (
+            len(repo_cache_roots.get(key, ())) > 1
+            and not row["partial"]
+            and row["task"] in CHAT_GGUF_TASKS
+        ):
+            row["load_id"] = row["repo_id"]
     return sorted(seen_lower.values(), key = lambda c: c["repo_id"])
 
 
@@ -667,7 +793,12 @@ async def list_cached_gguf_response(hf_token: Optional[str] = None):
     """List GGUF repos downloaded to HF cache, legacy Unsloth cache, and HF default cache."""
     try:
         scan = await _shared_cached_inventory_scan("gguf", _scan_cached_gguf)
-        return {"cached": scan.rows, "scan_confirmed": scan.confirmed}
+        rows = (
+            await asyncio.to_thread(_account_access().filter_model_rows, scan.rows)
+            if _account_access().managed_account()
+            else scan.rows
+        )
+        return {"cached": rows, "scan_confirmed": scan.confirmed}
     except Exception as e:
         from fastapi import HTTPException
         logger.error(
@@ -755,9 +886,8 @@ def _repo_non_gguf_model_payload(repo_info) -> _CachedNonGgufPayload:
     def _record_blob(
         target: dict[str, tuple[int, float]], file_obj, rev_id: str, file_name: str
     ) -> None:
-        blob_path = getattr(file_obj, "blob_path", None)
         size = int(file_obj.size_on_disk or 0)
-        key = str(blob_path) if blob_path else f"{rev_id}:{file_name}"
+        key = _blob_key(file_obj, f"{rev_id}:{file_name}")
         value = (size, _blob_mtime(file_obj))
         target[key] = value
         all_weight_blobs[key] = value
@@ -963,7 +1093,7 @@ def _scan_cached_models(
             active_hub_cache = active_hub_cache,
         )
     except Exception as e:
-        logger.warning("Could not build shared cached-model state index: %s", e)
+        logger.warning("Could not build shared cached-model state index: %s", scrub_paths(e))
         variant_states = None
 
     seen_lower: dict[str, dict] = {}
@@ -985,7 +1115,7 @@ def _scan_cached_models(
                     str(repo_path),
                     str(snapshot_path) if snapshot_path is not None else None,
                 )
-                is_curated_stt = is_curated_stt_repo_id(repo_id)
+                is_curated_stt = is_curated_stt_repo_id(repo_id) or is_audio_cpp_repo_id(repo_id)
                 snapshot_metadata = _cached_model_local_metadata(repo_path, snapshot_path)
                 is_whisper_stt = bool(snapshot_metadata.get("_hidden_stt"))
                 if is_hidden_infra and not is_curated_stt and not is_whisper_stt:
@@ -1062,13 +1192,17 @@ def _scan_cached_models(
                     if not any(tag.lower() == "whisper" for tag in tags):
                         tags.append("whisper")
                     local_metadata["tags"] = tags
+                pipeline_artifact_kind = _diffusers_pipeline_artifact_kind(load_snapshot)
                 row = {
                     "repo_id": repo_id,
                     "size_bytes": payload.size_bytes,
                     "cache_path": str(repo_info.repo_path),
+                    "artifact_kind": pipeline_artifact_kind or "unknown",
                     "task": row_task,
                     "audio_type": audio_type,
                     "partial": snapshot_partial,
+                    # Still partial so no picker loads it, but the Hub must not offer "Continue": that pulls the denoiser a GGUF replaces.
+                    "companion_prefetch": companion_only and not download_partial,
                     "partial_transport": (
                         hf_cache_scan.partial_transport_for(
                             "model",
@@ -1116,6 +1250,9 @@ def _scan_cached_models(
                         tts_only = is_output_audio,
                     )
                 )
+                # Pin the immutable snapshot, not the bare id: refs/main can move after this structural scan.
+                if row_task is None and pipeline_artifact_kind is not None:
+                    row["load_id"] = str(load_snapshot)
                 # Native backend selection reads the load identity itself, so a custom native fork addressed only by repo id is indistinguishable from an ordinary LLM.
                 if native_audio_type and load_snapshot is not None:
                     row["load_id"] = str(load_snapshot)
@@ -1125,7 +1262,7 @@ def _scan_cached_models(
                     existing["last_modified"] = last_modified
             except Exception as e:
                 repo_label = getattr(repo_info, "repo_id", "<unknown>")
-                logger.warning(f"Skipping cached model repo {repo_label}: {e}")
+                logger.warning("Skipping cached model repo %s: %s", repo_label, scrub_paths(e))
                 continue
     cached = sorted(seen_lower.values(), key = lambda c: c["repo_id"])
     logger.info(
@@ -1142,7 +1279,12 @@ async def list_cached_models_response(hf_token: Optional[str] = None):
     """List non-GGUF model repos downloaded to HF cache, legacy Unsloth cache, and HF default cache."""
     try:
         scan = await _shared_cached_inventory_scan("models", _scan_cached_models)
-        return {"cached": scan.rows, "scan_confirmed": scan.confirmed}
+        rows = (
+            await asyncio.to_thread(_account_access().filter_model_rows, scan.rows)
+            if _account_access().managed_account()
+            else scan.rows
+        )
+        return {"cached": rows, "scan_confirmed": scan.confirmed}
     except Exception as e:
         from fastapi import HTTPException
         logger.error(

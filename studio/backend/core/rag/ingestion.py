@@ -8,15 +8,19 @@ daemon thread, pushing progress onto a per-job queue (streamed as SSE by
 
 from __future__ import annotations
 
+from core.training.account_jobs import account_is_retired, account_key, account_path
+from utils.account_context import account_thread, current_account
 import hashlib
 import logging
 import os
 import queue
 import re
+import shutil
 import threading
+import uuid
 from collections.abc import Callable
 
-from storage import rag_db
+from core.rag import account_db as rag_db
 
 from . import captioner, chunking, config, embeddings, job_leases, parsers, pdf_ocr, store
 
@@ -33,6 +37,8 @@ _SHA256_HEX_RE = re.compile(r"^[0-9a-f]{64}$")
 # Poll with a timeout so the generator notices a gone client or a worker that died without the None sentinel.
 _SSE_POLL_SECONDS = 1.0
 _TERMINAL_JOB_STATUSES = {"completed", "failed", "cancelled"}
+
+_RETIRE_JOIN_SECONDS = 10.0
 
 
 def _sha256_file(path: str) -> str:
@@ -66,9 +72,24 @@ def _remove_upload(stored_path: str | None, *, keep_path: str | None = None) -> 
         logger.warning("failed to remove RAG upload %s", stored_path, exc_info = True)
 
 
+def _copy_upload(stored_path: str | None) -> str | None:
+    if not stored_path or not os.path.isfile(stored_path):
+        return None
+    from utils.paths import ensure_dir, rag_uploads_root
+
+    ext = os.path.splitext(stored_path)[1].lower()
+    target = str(ensure_dir(rag_uploads_root()) / f"{uuid.uuid4().hex}{ext}")
+    try:
+        shutil.copyfile(stored_path, target)
+    except OSError:
+        _remove_upload(target)
+        raise
+    return target
+
+
 def _emit(job_id: str, event: dict) -> None:
     with _jobs_lock:
-        q = _jobs.get(job_id)
+        q = _jobs.get(account_key(job_id))
     if q is not None:
         q.put(event)
 
@@ -95,6 +116,8 @@ def _set_job(
 
 
 def _progress(conn, job_id: str, stage: str, progress: float) -> None:
+    if account_is_retired():
+        raise job_leases.JobLeaseLost("Account is retired")
     if not job_leases.renew_owned(conn, job_leases.INGESTION, job_id):
         raise job_leases.JobLeaseLost("Ingestion job lease was reclaimed")
     _set_job(conn, job_id, status = "running", stage = stage, progress = progress)
@@ -110,7 +133,7 @@ def _abort_if_document_deleted(conn, job_id: str, document_id: str) -> bool:
     indexed and retire the document it was replacing.
     """
     conn.execute("BEGIN IMMEDIATE")
-    if store.get_document(conn, document_id) is not None:
+    if not account_is_retired() and store.get_document(conn, document_id) is not None:
         return False
     conn.rollback()
     _set_job(conn, job_id, status = "cancelled", stage = "done", progress = 1.0)
@@ -444,7 +467,7 @@ def _run(
             conn.close()
         job_leases.release(job_leases.INGESTION, job_id)
         with _jobs_lock:
-            _workers.pop(job_id, None)
+            _workers.pop(account_key(job_id), None)
         _emit(job_id, None)
 
 
@@ -464,6 +487,7 @@ def start_ingestion(
     linked_relative_path: str | None = None,
     background: bool = True,
     content_hash: str | None = None,
+    reuse_identical: bool = False,
 ) -> tuple[str, str]:
     """Create the document + job rows and spawn the worker, returning
     ``(document_id, job_id)``. A duplicate content hash in this scope returns the
@@ -474,7 +498,13 @@ def start_ingestion(
     reconciliation hashes it to detect content-identical renames) pass that digest
     through instead of paying for a second full read of the file. Must be the lowercase
     hex sha256 of ``stored_path``; a mismatched value would misfile the document under
-    the wrong hash, so it is trusted as given and never reverified here."""
+    the wrong hash, so it is trusted as given and never reverified here.
+
+    ``reuse_identical`` (dedupe=False only) copies a completed same-hash document's index
+    onto a new row instead of re-embedding, keeping per-path ownership for linked folders."""
+    account_path(stored_path)
+    if account_is_retired():
+        raise RuntimeError("Account is retired")
     ext = os.path.splitext(stored_path)[1].lower()
     if ext not in config.UPLOAD_EXTS:
         raise ValueError(f"unsupported file type: {ext}")
@@ -491,6 +521,12 @@ def start_ingestion(
         # RESERVED lock that long fails concurrent writers with "database is locked".
         effective_model = model_name or config.effective_embedding_model()
         effective_identity = embeddings.embedding_identity(effective_model)
+        # Prefetch before BEGIN IMMEDIATE: a cold read scans the vec0 partition and would starve other writers.
+        prefetched = None
+        if reuse_identical and not dedupe:
+            candidate = store.reusable_document_by_hash(conn, scope, sha, ext, effective_identity)
+            if candidate is not None:
+                prefetched = (candidate["id"], store.prefetch_donor_vectors(conn, candidate))
         # The job lease is committed in the same transaction as the document, so cleanup never observes an
         # unowned in-flight document.
         conn.execute("BEGIN IMMEDIATE")
@@ -536,7 +572,7 @@ def start_ingestion(
                 job_id = _new_job(conn, existing, scope, status = "completed", progress = 1.0)
                 _remove_upload(stored_path, keep_path = doc.get("stored_path"))
                 with _jobs_lock:
-                    _jobs[job_id] = queue.Queue()
+                    _jobs[account_key(job_id)] = queue.Queue()
                 _emit(
                     job_id,
                     {"type": "complete", "num_chunks": doc.get("num_chunks") or 0, "deduped": True},
@@ -547,6 +583,59 @@ def start_ingestion(
             for failed in store.failed_documents_by_hash(conn, scope, sha):
                 store.delete_document(conn, failed["id"], commit = False)
                 _remove_upload(failed.get("stored_path"), keep_path = stored_path)
+
+        if reuse_identical and not dedupe:
+            donor = store.reusable_document_by_hash(conn, scope, sha, ext, effective_identity)
+            if donor is not None:
+                conn.execute("SAVEPOINT reuse_identical")
+                reused_id = store.create_document(
+                    conn,
+                    scope = scope,
+                    filename = filename,
+                    sha256 = sha,
+                    kb_id = kb_id,
+                    thread_id = thread_id,
+                    project_id = project_id,
+                    status = "completed",
+                    stored_path = stored_path,
+                    embedding_model = donor["embedding_model"],
+                    linked_folder_id = linked_folder_id,
+                    linked_relative_path = linked_relative_path,
+                    commit = False,
+                )
+                donor_chunks = donor["num_chunks"] or 0
+                copied = store.copy_document_index(
+                    conn,
+                    donor,
+                    reused_id,
+                    scope,
+                    prefetched[1] if prefetched and prefetched[0] == donor["id"] else None,
+                )
+                if rag_db.vec_table_exists(conn) and copied != donor_chunks:
+                    # Donor lost vectors: ingest normally rather than copy a dense-search-invisible doc.
+                    conn.execute("ROLLBACK TO reuse_identical")
+                    conn.execute("RELEASE reuse_identical")
+                    logger.info(
+                        "linked-folder reuse donor %s in scope %s is missing vectors; "
+                        "falling back to a normal ingest",
+                        donor["id"],
+                        scope,
+                    )
+                else:
+                    conn.execute("RELEASE reuse_identical")
+                    conn.execute(
+                        "UPDATE documents SET num_chunks=? WHERE id=?",
+                        (donor_chunks, reused_id),
+                    )
+                    job_id = _new_job(conn, reused_id, scope, status = "completed", progress = 1.0)
+                    with _jobs_lock:
+                        _jobs[account_key(job_id)] = queue.Queue()
+                    _emit(
+                        job_id,
+                        {"type": "complete", "num_chunks": donor_chunks, "reused": True},
+                    )
+                    _emit(job_id, None)
+                    return reused_id, job_id
 
         document_id = store.create_document(
             conn,
@@ -570,7 +659,7 @@ def start_ingestion(
     try:
         job_leases.activate(job_leases.INGESTION, job_id)
         with _jobs_lock:
-            _jobs[job_id] = queue.Queue()
+            _jobs[account_key(job_id)] = queue.Queue()
         args = (
             job_id,
             document_id,
@@ -584,7 +673,7 @@ def start_ingestion(
         if not background:
             _run(*args)
             return document_id, job_id
-        worker = threading.Thread(
+        worker = account_thread(
             target = _run,
             # effective_model, not the raw model_name, pins the embedder for the whole job: a Settings change
             # mid-ingestion must not switch tokenizer or embedder between batches.
@@ -592,11 +681,11 @@ def start_ingestion(
             daemon = True,
         )
         with _jobs_lock:
-            _workers[job_id] = worker
+            _workers[account_key(job_id)] = worker
         worker.start()
     except Exception:
         with _jobs_lock:
-            _workers.pop(job_id, None)
+            _workers.pop(account_key(job_id), None)
         job_leases.release(job_leases.INGESTION, job_id)
         fail_stalled_job(job_id, "Ingestion worker could not start")
         # _run never entered, so its finally cannot retire the orphan this retry replaced.
@@ -612,7 +701,7 @@ def start_ingestion(
 def job_worker_alive(job_id: str) -> bool:
     """Return whether this process still has a live worker for a persisted job."""
     with _jobs_lock:
-        worker = _workers.get(job_id)
+        worker = _workers.get(account_key(job_id))
     return worker is not None and worker.is_alive()
 
 
@@ -689,12 +778,17 @@ def _reap_finished_jobs() -> None:
     forever. Safe while streaming: ``job_events`` holds its queue reference.
     """
     with _jobs_lock:
-        job_ids = list(_jobs.keys())
+        job_ids = [
+            key if isinstance(key, str) else key[1]
+            for key in _jobs
+            if (isinstance(key, str) and current_account().is_owner)
+            or (isinstance(key, tuple) and key[0] == current_account().account_id)
+        ]
     for jid in job_ids:
         row = get_job_status(jid)
         if row is not None and row.get("status") in _TERMINAL_JOB_STATUSES:
             with _jobs_lock:
-                _jobs.pop(jid, None)
+                _jobs.pop(account_key(jid), None)
 
 
 def delete_terminal_job(job_id: str) -> bool:
@@ -710,7 +804,7 @@ def delete_terminal_job(job_id: str) -> bool:
         conn.close()
     if cursor.rowcount:
         with _jobs_lock:
-            _jobs.pop(job_id, None)
+            _jobs.pop(account_key(job_id), None)
         return True
     return False
 
@@ -729,7 +823,7 @@ def job_events(job_id: str):
     The stream ends only on a terminal status, the ``None`` sentinel, or disconnect.
     """
     with _jobs_lock:
-        q = _jobs.get(job_id)
+        q = _jobs.get(account_key(job_id))
     if q is None:
         return
     terminal = False
@@ -772,7 +866,7 @@ def job_events(job_id: str):
                 terminal = False
         if terminal:
             with _jobs_lock:
-                _jobs.pop(job_id, None)
+                _jobs.pop(account_key(job_id), None)
 
 
 def get_job_status(job_id: str) -> dict | None:
@@ -789,3 +883,31 @@ def get_job_status(job_id: str) -> dict | None:
         return dict(row) if row else None
     finally:
         conn.close()
+
+
+def retire_account_ingestions() -> None:
+    """Stop renewing this account's jobs, then reap their workers before the roots move:
+    a thread parked in a long parse only notices retirement at its next checkpoint."""
+    with _jobs_lock:
+        keys = [
+            key
+            for key in _workers
+            if (isinstance(key, str) and current_account().is_owner)
+            or (isinstance(key, tuple) and key[0] == current_account().account_id)
+        ]
+    for key in keys:
+        job_leases.release(job_leases.INGESTION, key if isinstance(key, str) else key[1])
+    stragglers = []
+    for key in keys:
+        with _jobs_lock:
+            worker = _workers.get(key)
+        # Never join from the worker itself.
+        if worker is None or worker is threading.current_thread():
+            continue
+        worker.join(timeout = _RETIRE_JOIN_SECONDS)
+        if worker.is_alive():
+            stragglers.append(key if isinstance(key, str) else key[1])
+    if stragglers:
+        raise RuntimeError(
+            f"Retired account ingestion workers have not stopped: {sorted(stragglers)}"
+        )

@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+from utils.account_context import current_account, run_as
 import asyncio
 import json
 import re
@@ -21,7 +22,7 @@ from auth.authentication import get_current_subject
 from core.inference.message_content import message_text_with_pastes
 from core.inference.web_access_policy import normalize_website_policy
 from storage import research_runs_db as db
-from core.inference.providers import provider_runs_local_tools
+from core.inference.providers import answers_decisions_only, provider_runs_local_tools
 from models.providers import MAX_JSON_SAFE_INTEGER
 from storage import providers_db
 from storage.studio_db import get_chat_message, get_chat_thread, upsert_chat_message
@@ -221,6 +222,8 @@ def _sanitize_config(
         "maxOutputTokensPublished",
         "enableThinking",
         "reasoningEffort",
+        "supportsReasoning",
+        "supportsReasoningOff",
     }
     unknown = set(request) - allowed
     if unknown:
@@ -255,7 +258,11 @@ def _sanitize_config(
         # sent: a self-hosted connection is stored under the backend "openai" type but surfaced as "custom" / "vllm" /
         # "ollama" / "llama_cpp", so comparing the two for equality 400s exactly the connections this path serves.
         saved_provider_type = provider["provider_type"]
-        if not provider_runs_local_tools(saved_provider_type) or not provider["is_enabled"]:
+        if (
+            not provider_runs_local_tools(saved_provider_type)
+            or not provider["is_enabled"]
+            or answers_decisions_only(saved_provider_type, provider.get("api_type"))
+        ):
             raise HTTPException(
                 status_code = 400,
                 detail = "Durable research requires an enabled connection whose provider supports Unsloth tools",
@@ -296,6 +303,9 @@ def _sanitize_config(
             request["maxOutputTokensFromSavedCap"], bool
         ):
             raise ValueError
+        for flag in ("supportsReasoning", "supportsReasoningOff"):
+            if flag in request and not isinstance(request[flag], bool):
+                raise ValueError
         if "maxOutputTokensPublished" in request:
             published = request["maxOutputTokensPublished"]
             if isinstance(published, bool) or not isinstance(published, int):
@@ -565,6 +575,8 @@ async def research_events(
             # off the default executor: parked followers there starved the run's own db writes.
             events = await loop.run_in_executor(
                 _EVENT_WAIT_EXECUTOR,
+                run_as,
+                current_account(),
                 db.wait_for_events,
                 run_id,
                 cursor,

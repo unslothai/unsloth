@@ -5,10 +5,23 @@
 
 from __future__ import annotations
 
+from hub.services.models import account_access
+
 import asyncio
 import errno
+import inspect
 from pathlib import Path
 from typing import Optional
+
+try:
+    from huggingface_hub.utils._shared_blobs import shared_blob_target, sweep_shared_blob
+
+    # Private huggingface_hub API: a release that keeps the names but changes the arguments would raise TypeError mid-delete, after the snapshot links are gone, so fall back to the plain unlink instead.
+    inspect.signature(shared_blob_target).bind(Path(), Path())
+    inspect.signature(sweep_shared_blob).bind(Path(), cache_dir = Path())
+except (ImportError, TypeError, ValueError):
+    shared_blob_target = None
+    sweep_shared_blob = None
 
 from fastapi import HTTPException
 from loggers import get_logger
@@ -78,6 +91,25 @@ def _blob_hash_from_path(blob: Path) -> Optional[str]:
     if not name or name.endswith(INCOMPLETE_SUFFIX):
         return None
     return name
+
+
+def _unlink_variant_blob(blob: Path, cache_dir: Optional[Path]) -> int:
+    shared_target = None
+    if shared_blob_target is not None:
+        # huggingface_hub matches paths lexically, so try the cache root in the blob's own form first: a resolved root misses a symlinked cache or a Windows 8.3 short name and would leak the payload.
+        for root in dict.fromkeys(
+            r for r in (blob.parent.parent.parent, cache_dir) if r is not None
+        ):
+            shared_target = shared_blob_target(blob, root)
+            if shared_target is not None:
+                cache_dir = root
+                break
+    if shared_target is None:
+        freed = blob.stat().st_size
+        blob.unlink()
+        return freed
+    blob.unlink()
+    return sweep_shared_blob(shared_target, cache_dir = cache_dir)
 
 
 def _path_exists_or_symlink(path: Path) -> bool:
@@ -228,6 +260,28 @@ def _variant_keys_to_delete(target_repo, variant: str) -> set[str]:
     return aliased if len(aliased) == 1 else {wanted}
 
 
+def _audio_cpp_package_scope(target_repo, variant: str) -> tuple[frozenset[str], frozenset[str]]:
+    """``(own files, protected files)`` of an audio.cpp package mix being deleted.
+
+    A package mix (MiniMax Music 3, YuE2) is several GGUFs plus configs, some of them shared with
+    other mixes, so the quant key alone neither finds all of its files nor knows which a sibling
+    still needs. Own files are the mix's whole file list; protected files are every file of the
+    other mixes still fully on disk. Both empty for any other repo.
+    """
+    try:
+        from core.inference.audio_cpp_models import package_variant_files
+    except Exception:  # noqa: BLE001 - no audio.cpp support, no package layout
+        return frozenset(), frozenset()
+    names = [name for _snap, _blob, name in _repo_file_matches(target_repo, lambda name: True)]
+    packages = package_variant_files(names)
+    if not packages:
+        return frozenset(), frozenset()
+    wanted = (variant or "").strip().lower()
+    own = next((files for key, files in packages.items() if key.lower() == wanted), ())
+    protected = {path for key, files in packages.items() if key.lower() != wanted for path in files}
+    return frozenset(own), frozenset(protected)
+
+
 def _delete_gguf_variant_from_repos(
     repo_id: str,
     variant: str,
@@ -246,11 +300,18 @@ def _delete_gguf_variant_from_repos(
     for target_repo in target_repos:
         repo_dir = Path(target_repo.repo_path) if getattr(target_repo, "repo_path", None) else None
         wanted_keys = _variant_keys_to_delete(target_repo, variant)
-        matched = _repo_file_matches(
-            target_repo,
-            lambda name, keys = wanted_keys: _is_main_gguf_filename(name)
-            and gguf_variant_key(name).lower() in keys,
-        )
+        package_files, protected = _audio_cpp_package_scope(target_repo, variant)
+        matched = [
+            match
+            for match in _repo_file_matches(
+                target_repo,
+                lambda name, keys = wanted_keys: name in package_files
+                or (_is_main_gguf_filename(name) and gguf_variant_key(name).lower() in keys),
+            )
+            # A component another downloaded mix still loads (MiniMax's Q4_0 and Q8_0 share one
+            # depth decoder) stays.
+            if match[2] not in protected
+        ]
 
         for snap, _blob, name in matched:
             try:
@@ -277,6 +338,9 @@ def _delete_gguf_variant_from_repos(
                     failures.append(f"{name}: {e}")
 
         ref_counts = _snapshot_blob_reference_counts(repo_dir)
+        cache_dir = root
+        if cache_dir is None and repo_dir is not None:
+            cache_dir = repo_dir.parent
         seen_blobs: set[Path] = set()
         for _snap, blob, name in [*matched, *companion_matches]:
             if blob is None:
@@ -295,8 +359,7 @@ def _delete_gguf_variant_from_repos(
                 continue
             try:
                 if blob.exists():
-                    deleted_bytes += blob.stat().st_size
-                    blob.unlink()
+                    deleted_bytes += _unlink_variant_blob(blob, cache_dir)
                     deleted_blobs += 1
             except OSError as e:
                 failures.append(f"{name}: {e}")
@@ -501,8 +564,7 @@ def reclaim_replaced_gguf_variant(
                 continue
             try:
                 if blob.exists():
-                    deleted_bytes += blob.stat().st_size
-                    blob.unlink()
+                    deleted_bytes += _unlink_variant_blob(blob, target_hub_cache)
                     deleted_blobs += 1
             except OSError as e:
                 failures.append(f"{name}: {e}")
@@ -589,27 +651,26 @@ _LOAD_STATE_UNVERIFIABLE_DETAIL = (
 def _llama_cpp_blocks_delete(repo_id: str, variant: Optional[str]) -> bool:
     """Whether the llama.cpp backend holds *repo_id* (/variant). Acquiring fails open (import error means nothing loaded); reading load state is unguarded so a raise propagates and the caller fails closed rather than delete a live model."""
     try:
+        from core.inference import model_slots
         from routes.inference import get_llama_cpp_backend
-        backend = get_llama_cpp_backend()
+
+        backends = [get_llama_cpp_backend(), *(slot.llama for slot in model_slots.resident())]
+        filling = model_slots.filling_model()
     except Exception as e:
         logger.debug(f"llama.cpp backend unavailable during delete guard for {repo_id}: {e}")
         return False
-    loaded_id = backend.model_identifier
-    loaded_variant = getattr(backend, "hf_variant", None)
-    if backend.is_active and not backend.is_loaded and loaded_id:
-        return _loaded_repo_variant_blocks_delete(
-            loaded_id,
-            repo_id,
-            variant,
-            loaded_variant,
-        )
-    if backend.is_loaded and loaded_id:
-        return _loaded_repo_variant_blocks_delete(
-            loaded_id,
-            repo_id,
-            variant,
-            loaded_variant,
-        )
+    if filling and _loaded_id_matches_repo(filling, repo_id):
+        return True
+    for backend in backends:
+        loaded_id = backend.model_identifier
+        if (backend.is_active or backend.is_loaded) and loaded_id:
+            if _loaded_repo_variant_blocks_delete(
+                loaded_id,
+                repo_id,
+                variant,
+                getattr(backend, "hf_variant", None),
+            ):
+                return True
     return False
 
 
@@ -617,14 +678,23 @@ def _inference_backend_blocks_delete(repo_id: str) -> bool:
     """Whether the subprocess inference backend holds *repo_id*; same fail-open-on-acquire / surface-on-query contract as :func:`_llama_cpp_blocks_delete`."""
     try:
         from core.inference.orchestrator import peek_inference_backend
-        backend = peek_inference_backend()
+        from core.inference import model_slots
+
+        primary = peek_inference_backend()
+        kept = [slot.orchestrator for slot in model_slots.resident()]
     except Exception as e:
         logger.debug(f"Inference backend unavailable during delete guard for {repo_id}: {e}")
         return False
-    if backend is None:
-        return False
-    active_name = backend.active_model_name
-    return bool(active_name) and _loaded_id_matches_repo(active_name, repo_id)
+    for backend in (primary, *kept):
+        if backend is None:
+            continue
+        active_name = backend.active_model_name
+        if active_name and _loaded_id_matches_repo(active_name, repo_id):
+            return True
+    for backend in kept:
+        if any(_loaded_id_matches_repo(m, repo_id) for m in getattr(backend, "loading_models", ())):
+            return True
+    return False
 
 
 def _diffusion_blocks_delete(repo_id: str) -> Optional[str]:
@@ -647,6 +717,110 @@ def _diffusion_blocks_delete(repo_id: str) -> Optional[str]:
     for lid in getattr(engine, "loading_repo_ids", tuple)():
         if _loaded_id_matches_repo(str(lid), repo_id):
             return "An Images model load is using this repo; wait for it to finish"
+    # Cancelled but not yet unwound: deleting here yanks blobs from under a live Hub call.
+    for lid in getattr(engine, "draining_repo_ids", tuple)():
+        if _loaded_id_matches_repo(str(lid), repo_id):
+            return "An Images model load is still releasing this repo; wait for it to finish"
+    return None
+
+
+def any_model_load_blocks_cache_clear() -> Optional[str]:
+    """The refusal detail if ANY inference backend is holding a cached model, else None.
+
+    The guards above ask whether one repo is in use. Emptying the whole Hugging Face cache is
+    every repo at once, so there is no repo to match on and anything loaded or loading is enough.
+    sd.cpp in particular re-reads its companion VAE and text-encoder files for every generation,
+    so a clear can break a model that was loaded long before it.
+
+    Fail-open on ACQUIRE, like the guards above: a backend that cannot be reached is not holding
+    anything this process can see. A backend that IS reachable and raises while being asked is a
+    different matter, and the caller fails closed on it rather than unlink weights blindly.
+    """
+    try:
+        from core.inference import model_slots
+        from routes.inference import get_llama_cpp_backend
+
+        backend = get_llama_cpp_backend()
+        kept = model_slots.resident()
+        kept_loading = model_slots.any_loading()
+    except Exception as exc:  # noqa: BLE001 - unavailable is not "in use"
+        logger.debug(f"llama.cpp backend unavailable during the cache-clear guard: {exc}")
+    else:
+        if (backend.is_loaded or backend.is_active) and backend.model_identifier:
+            return "Unload the model before clearing the model cache"
+        if any(
+            model_slots.in_use(slot) or slot.llama.is_loaded or slot.llama.is_active
+            for slot in kept
+        ):
+            return "Unload the model before clearing the model cache"
+        if kept_loading:
+            return "A model load is using the cache; wait for it to finish"
+
+    # is_active above only covers a live llama-server process, which an HF-backed chat load does
+    # not have until its GGUF finished downloading: minutes, per chat_load_active's own docstring.
+    # Those files come down through hf_hub_download_with_xet_fallback rather than the download
+    # registry, so the reservation taken later in the purge does not cover them either.
+    try:
+        from core.inference.llama_cpp import chat_load_active
+        loading_chat = chat_load_active()
+    except Exception as exc:  # noqa: BLE001 - unavailable is not "in use", as above
+        logger.debug(f"Chat load state unavailable during the cache-clear guard: {exc}")
+    else:
+        if loading_chat:
+            return "A model load is using the cache; wait for it to finish"
+
+    try:
+        from core.inference.orchestrator import peek_inference_backend
+
+        # Peek, never construct: building one just to learn nothing is loaded imports torch.
+        engine = peek_inference_backend()
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(f"Inference backend unavailable during the cache-clear guard: {exc}")
+    else:
+        if engine is not None and engine.active_model_name:
+            return "Unload the model before clearing the model cache"
+
+    for label, load in (
+        ("Images", "core.inference.diffusion_engine_router:get_active_diffusion_engine"),
+        ("Video", "core.inference.video:get_video_backend"),
+    ):
+        module_name, _, attr = load.partition(":")
+        try:
+            module = __import__(module_name, fromlist = [attr])
+            held = getattr(module, attr)()
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(f"{label} backend unavailable during the cache-clear guard: {exc}")
+            continue
+        if held is None:
+            continue
+        if held.status().get("loaded"):
+            return "Unload the model before clearing the model cache"
+        if any(getattr(held, "loaded_repo_ids", tuple)()):
+            return "Unload the model before clearing the model cache"
+        if any(getattr(held, "loading_repo_ids", tuple)()):
+            return f"An {label} model load is using the cache; wait for it to finish"
+        # A cancelled load leaves loading_repo_ids() at once but keeps its repos in
+        # draining_repo_ids() while the worker thread reads on inside _prefetch_files,
+        # holding no lock. _diffusion_blocks_delete already refuses on that; emptying the
+        # whole cache is every repo at once, so it cannot ask less than the per-repo path.
+        if any(getattr(held, "draining_repo_ids", tuple)()):
+            return f"An {label} model load is still unwinding; wait for it to finish"
+
+    # Dictation is the fifth backend and the one none of the four above reports. Its sidecars are
+    # managed by stt_registry, and stt_sidecar resolves their checkpoints under the SAME hub cache
+    # this clear empties (_find_complete_cached_snapshot -> _repo_cache_dir -> hub_cache), so a
+    # resident Whisper / Parakeet worker re-reading its snapshot is exactly the case the docstring
+    # above says is enough on its own.
+    try:
+        from core.inference import stt_registry
+        dictation = stt_registry.resident()
+    except Exception as exc:  # noqa: BLE001 - unavailable is not "in use", as above
+        logger.debug(f"Dictation unavailable during the cache-clear guard: {exc}")
+    else:
+        if dictation.get("model"):
+            return "Unload the dictation model before clearing the model cache"
+        if dictation.get("loading"):
+            return "A dictation model load is using the cache; wait for it to finish"
     return None
 
 
@@ -726,7 +900,16 @@ async def delete_cached_model_response(
     cache_path: Optional[str] = None,
     only_if_orphan: bool = False,
 ):
-    """Delete a cached model repo (or a specific GGUF variant) from the HF cache. When *variant* is provided, only the GGUF files matching that quant label are removed (e.g. ``UD-Q4_K_XL``); otherwise the entire repo is deleted. Refuses if the model is currently loaded for inference. *only_if_orphan* is Free up space's precondition: 409 rather than delete when the repo has become an installed checkpoint since the list the caller is acting on was built."""
+    """Delete a cached model repo (or a specific GGUF variant) from the HF cache.
+
+    When *variant* is provided, only the GGUF files matching that quant label
+    are removed (e.g. ``UD-Q4_K_XL``).  Otherwise the entire repo is deleted.
+    Refuses if the model is currently loaded for inference.
+
+    *only_if_orphan* is Free up space's precondition: 409 rather than delete when the repo has
+    become an installed checkpoint since the list the caller is acting on was built.
+    """
+    account_access.require_installation_owner()
     if not _is_valid_repo_id(repo_id):
         raise HTTPException(status_code = 400, detail = "Invalid repo_id format")
     variant = (variant or "").strip() or None
@@ -742,6 +925,8 @@ async def delete_cached_model_response(
             _inference_backend_blocks_delete(repo_id)
         ):
             return "Unload the model before deleting"
+        if _audio_cpp_blocks_delete(repo_id):
+            return "Unload the audio model before deleting"
         return _diffusion_blocks_delete(repo_id) or _video_blocks_delete(repo_id)
 
     try:
@@ -781,7 +966,7 @@ async def delete_cached_model_response(
                 status_code = 400,
                 detail = blocks_detail,
             )
-        return await asyncio.to_thread(
+        result = await asyncio.to_thread(
             _delete_cached_model_blocking,
             repo_id,
             variant,
@@ -789,9 +974,50 @@ async def delete_cached_model_response(
             cache_path,
             only_if_orphan = only_if_orphan,
         )
+        # The audio.cpp link farm hardlinks the deleted blobs; without this they keep their disk space.
+        # Any GGUF repo can be an audio.cpp model, and pruning an absent or current farm is a no-op.
+        from core.inference.audio_cpp_files import prune_link_farm
+        from hub.utils.hf_cache_state import hf_cache_roots
+
+        # Every remembered root, not one recomputed from cache_path: an omitted path deletes from
+        # the sole owning cache, which need not be the active one. Pruning drops only stale entries.
+        def _prune_all() -> None:
+            for root in hf_cache_roots():
+                prune_link_farm(root)
+
+        await asyncio.to_thread(_prune_all)
+        from core.inference.audio_cpp_models import forget
+
+        forget()
+        return result
     finally:
         downloads.registry.end_delete(repo_key, variant)
         cache_inventory.invalidate_hf_cache_scans()
+
+
+def _audio_cpp_blocks_delete(repo_id: str) -> bool:
+    """Whether an audio.cpp model from this repo is resident or loading. An umbrella id names a
+    subfolder of the repo, so the id comparisons of the other guards never match it."""
+    from core.inference.audio_cpp_models import repo_of
+    from core.inference.orchestrator import peek_inference_backend
+    from core.inference.stt_audiocpp_sidecar import get_audio_cpp_stt_sidecar
+
+    wanted = (repo_id or "").strip().lower()
+
+    def holds(name) -> bool:
+        repo = repo_of(name) if isinstance(name, str) else None
+        return bool(repo and repo.lower() == wanted)
+
+    backend = peek_inference_backend()
+    active = getattr(backend, "active_model_name", None) if backend is not None else None
+    loading = tuple(getattr(backend, "loading_models", ()) or ()) if backend is not None else ()
+    sidecar = get_audio_cpp_stt_sidecar()
+    return (
+        holds(active)
+        or any(holds(name) for name in loading)
+        or holds(sidecar.loaded_model)
+        or holds(sidecar.loading_model)
+    )
 
 
 def _delete_cached_model_blocking(
@@ -802,7 +1028,11 @@ def _delete_cached_model_blocking(
     *,
     only_if_orphan: bool = False,
 ) -> dict:
-    # Free up space's list can be minutes old, and a background download finishing turns that orphan into an installed checkpoint neither guard below catches.
+    from hub.utils.gguf_sources import cached_gguf_action_path
+
+    cache_path = cached_gguf_action_path(repo_id, variant, cache_path)
+    # Free up space's list can be minutes old, and a background download finishing turns that orphan
+    # into an installed checkpoint neither guard below catches.
     if only_if_orphan:
         from hub.services.models import companion_cleanup
         from hub.utils import companion_assets
