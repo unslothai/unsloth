@@ -220,14 +220,17 @@ def _python(engine: str) -> tuple[int, int]:
     return profile(engine)["python"]
 
 
-def _venv_python_args(engine: str) -> list[str]:
+def _venv_python_args(engine: str, guest: bool = False) -> list[str]:
     """uv venv's interpreter. Triton compiles its HIP driver module against the interpreter's
     Python.h at run time, and Ubuntu's python3.12 has none without python3.12-dev, so the ROCm
-    environment always gets a uv-managed CPython, which ships its headers."""
+    environment always gets a uv-managed CPython, which ships its headers. Studio's own
+    interpreter serves only a local environment, never the WSL guest's."""
     version = "{}.{}".format(*_python(engine))
     if profile(engine)["platform"] == "rocm":
         return ["--python", version, "--python-preference", "only-managed"]
-    return ["--python", sys.executable if sys.version_info[:2] == _python(engine) else version]
+    if not guest and sys.version_info[:2] == _python(engine):
+        return ["--python", sys.executable]
+    return ["--python", version]
 
 
 def requirements(engine: str) -> Path:
@@ -1466,7 +1469,7 @@ def _install_wsl(engine: str, cancel: threading.Event) -> None:
         if rocm:
             _install_wsl_rocm(engine, guest_run, progress, cancel)
         _update(engine, phase = "creating", message = "Preparing an isolated Python environment")
-        guest_run([uv, "venv", *_venv_python_args(engine), destination])
+        guest_run([uv, "venv", *_venv_python_args(engine, guest = True), destination])
         _update(engine, phase = "installing", message = "Downloading and installing engine packages")
         lock = wsl_host.to_guest_path(requirements(engine))
         guest_run(

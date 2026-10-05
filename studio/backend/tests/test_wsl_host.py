@@ -602,6 +602,36 @@ def test_amd_on_windows_installs_rocm_inside_wsl(amd, monkeypatch):
     assert install.profile("vllm")["lock"] == "vllm-linux-rocm723"
 
 
+@pytest.mark.parametrize("engine", ["vllm", "sglang"])
+def test_nvidia_wsl_venv_never_gets_the_windows_interpreter(wsl, monkeypatch, engine):
+    import threading
+
+    # Studio's Windows Python matching the engine's version must not reach the Linux uv.
+    windows_python = r"C:\Unsloth\Scripts\python.exe"
+    monkeypatch.setattr(install, "gpu_platform", lambda: "cuda")
+    monkeypatch.setattr(install, "_python", lambda engine: sys.version_info[:2])
+    monkeypatch.setattr(install.sys, "executable", windows_python)
+    monkeypatch.setattr(install, "_record_manifest", lambda engine: None)
+    monkeypatch.setattr(wsl_host, "prepare", lambda progress, cancel, platform: None)
+    monkeypatch.setattr(wsl_host, "to_guest_path", lambda path: "/mnt/c/" + Path(path).name)
+    monkeypatch.setattr(wsl_host, "put", lambda path, text, mode = "644": None)
+    monkeypatch.setattr(
+        wsl_host,
+        "guest",
+        lambda argv, **_: json.dumps({"cuda_environment": {}, "deep_gemm_unloadable": False})
+        if argv[-2].endswith("finalize.py")
+        else "",
+    )
+    commands = []
+    monkeypatch.setattr(
+        install, "_run", lambda engine, argv, cancel, env = None: commands.append(argv)
+    )
+    install._install_wsl(engine, threading.Event())
+    venv = next(c for c in commands if "venv" in c)
+    assert venv[-3:-1] == ["--python", "{}.{}".format(*sys.version_info[:2])]
+    assert install._venv_python_args(engine) == ["--python", windows_python]
+
+
 @pytest.mark.parametrize(("agents", "supported"), [("gfx1151", True), ("gfx1030", False)])
 def test_amd_wsl_install_sets_up_rocm_before_the_engine(
     amd, monkeypatch, tmp_path, agents, supported
