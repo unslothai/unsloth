@@ -34,12 +34,14 @@ function harness(
   let cursor = 0;
   const slots: unknown[] = [];
   const effects: Array<() => void> = [];
+  const cleanups: Array<() => void> = [];
   const uploads: Scope[] = [];
   const errors: string[] = [];
   const toasts: Array<{
     title: string;
     data: { duration?: number; action?: { label: string; onClick: () => void } };
   }> = [];
+  const dismissed: number[] = [];
   const adopted: string[] = [];
   const itemId = options.itemId ?? ID;
   const storedIds = new Set(options.storedIds ?? []);
@@ -155,8 +157,11 @@ function harness(
       "@/lib/toast": {
         toast: Object.assign(
           (title: string, data: (typeof toasts)[number]["data"]) =>
-            toasts.push({ title, data }),
-          { error: (message: string) => errors.push(message) },
+            toasts.push({ title, data }) - 1,
+          {
+            error: (message: string) => errors.push(message),
+            dismiss: (id: number) => dismissed.push(id),
+          },
         ),
       },
       "@/components/ui/dropdown-menu": {},
@@ -205,7 +210,10 @@ function harness(
     tree = ThreadDocumentsBar({
       threadId: options.propId === undefined ? ID : options.propId,
     });
-    effects.splice(0).forEach((effect) => effect());
+    effects.splice(0).forEach((effect) => {
+      const cleanup = (effect as () => unknown)();
+      if (typeof cleanup === "function") cleanups.push(cleanup as () => void);
+    });
   }
   function pick() {
     const input = findElement(tree, "input")!;
@@ -223,7 +231,11 @@ function harness(
     uploads,
     errors,
     toasts,
+    dismissed,
     adopted,
+    unmount() {
+      cleanups.splice(0).forEach((cleanup) => cleanup());
+    },
     setRagSource(source: { type: "thread" } | { type: "kb"; kbId: string }) {
       state.ragSource = source;
     },
@@ -438,4 +450,17 @@ test("an open dialog keeps its place when deleting the active knowledge base mov
     first: "KnowledgeBaseDialog",
   });
   assert.equal(kbDialog(app.tree)!.props.open, true);
+});
+
+test("leaving the chat dismisses a drop's offer, whose Add could no longer open anything", async () => {
+  const app = harness({ ragSource: { type: "kb", kbId: "kb-1" } });
+  app.render();
+  await flush();
+  app.render();
+  app.drop();
+  await flush();
+  assert.equal(app.toasts.length, 1);
+  assert.deepEqual(app.dismissed, []);
+  app.unmount();
+  assert.deepEqual(app.dismissed, [0]);
 });

@@ -587,6 +587,16 @@ export function ThreadDocumentsBar({
     null,
   );
   const kbChipRef = useRef<HTMLButtonElement>(null);
+  // The toaster outlives this bar, and an "Add" clicked after it unmounts would open
+  // nothing while the batch is already out of the native-intent store.
+  const kbDropOffersRef = useRef(new Set<string | number>());
+  useEffect(() => {
+    const offers = kbDropOffersRef.current;
+    return () => {
+      for (const id of offers) toast.dismiss(id);
+      offers.clear();
+    };
+  }, []);
   const activeKbName = useKnowledgeBaseName(
     ragEnabled && ragSource.type === "kb" ? ragSource.kbId : null,
   );
@@ -623,7 +633,7 @@ export function ThreadDocumentsBar({
       // Nothing else holds these files, so the offer lasts while their path tokens can
       // still be read, not the default few seconds.
       const expiresAt = Math.min(...intents.map((intent) => intent.path.expiresAtMs));
-      toast(`Add ${files} to ${target}?`, {
+      const offer = toast(`Add ${files} to ${target}?`, {
         description:
           "This chat retrieves from that knowledge base, not from files dropped in the chat.",
         duration: Number.isFinite(expiresAt)
@@ -638,6 +648,7 @@ export function ThreadDocumentsBar({
             }),
         },
       });
+      kbDropOffersRef.current.add(offer);
       return;
     }
     // A stale KB preference is inactive while RAG is off; use thread retrieval.
