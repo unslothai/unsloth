@@ -4729,12 +4729,23 @@ def _build_sandbox_status(force: bool) -> SandboxStatusResponse:
 
     from core.inference import os_sandbox
 
+    windows_refresh = force and sys.platform == "win32"
+    if windows_refresh:
+        # The Terminal's bash-or-cmd choice reads cached verdicts; a Refresh must choose from fresh ones.
+        from core.inference import mxc_probe, sandbox_probe, tools
+
+        sandbox_probe.reset_probe_cache()
+        mxc_probe.invalidate_cache()
+        tools.reset_terminal_profile_cache()
     python = os_sandbox.capability_snapshot(
         force = force, execution_kind = "python", selected_executable = sys.executable
     )
     terminal_exe, shell = _sandbox_terminal_target()
+    # On Windows the choice above just probed this executable.
     terminal = os_sandbox.capability_snapshot(
-        force = force, execution_kind = "terminal", selected_executable = terminal_exe
+        force = force and not windows_refresh,
+        execution_kind = "terminal",
+        selected_executable = terminal_exe,
     )
     return SandboxStatusResponse(
         platform = sys.platform,

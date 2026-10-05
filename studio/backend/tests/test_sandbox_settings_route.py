@@ -151,6 +151,29 @@ def test_owner_reads_status_and_it_is_cached_until_refresh(host, posix):
         assert calls["snapshot"] == 4
 
 
+def test_a_windows_refresh_picks_the_terminal_from_fresh_verdicts(host, windows, monkeypatch):
+    from core.inference import sandbox_probe
+
+    calls, _saved = host
+    order = []
+    monkeypatch.setattr(sandbox_probe, "reset_probe_cache", lambda: order.append("reset"))
+    monkeypatch.setattr(
+        settings, "_sandbox_terminal_target", lambda: order.append("target") or ("cmd.exe", None)
+    )
+    forced = []
+
+    def snapshot(force = False, **kw):
+        forced.append((kw["execution_kind"], force))
+        return _cap()
+
+    monkeypatch.setattr(os_sandbox, "capability_snapshot", snapshot)
+    with _client(OWNER) as client:
+        client.get("/sandbox", params = {"refresh": "true"})
+    assert order == ["reset", "target"]
+    assert calls["invalidate"] == 1 and calls["profile_reset"] == 1
+    assert forced == [("python", True), ("terminal", False)]
+
+
 def test_windows_status_carries_the_opt_in_block(host, windows):
     with _client(OWNER) as client:
         body = client.get("/sandbox").json()
