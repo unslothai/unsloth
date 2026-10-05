@@ -91,7 +91,7 @@ export function ApiModelLoadControls({
   }, []);
 
   useEffect(() => {
-    refresh({ includeLoras: false });
+    refresh();
     refreshLocalModels();
     refreshLastLoadLabel();
   }, [refresh, refreshLocalModels, refreshLastLoadLabel]);
