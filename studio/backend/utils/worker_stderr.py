@@ -258,8 +258,8 @@ class WorkerStderrCapture:
             return ""
         return stderr_tail_from_bytes(data, max_lines = max_lines, max_chars = max_chars)
 
-    def text(self, limit: int = MIRROR_FILE_CAP_BYTES) -> str:
-        """From the start, not the tail: the crash reason precedes the stack."""
+    def text(self, limit: int = 4 * MIRROR_FILE_CAP_BYTES) -> str:
+        """The whole sink (compaction lets it reach 2x the cap); past *limit*, its last *limit* bytes."""
         try:
             fd = os.open(self._path, os.O_RDONLY | _O_NOFOLLOW | _O_BINARY)
         except OSError:
@@ -270,6 +270,8 @@ class WorkerStderrCapture:
             os.close(fd)
             return ""
         try:
+            size = handle.seek(0, os.SEEK_END)
+            handle.seek(max(0, size - limit))
             data = handle.read(limit)
         except OSError:
             return ""

@@ -109,6 +109,14 @@ def test_the_mirror_keeps_the_reason_that_the_tail_window_drops(tmp_path):
         assert proc.exitcode == 2147483651
 
 
+def test_the_reason_after_a_long_routine_log_is_read(tmp_path):
+    capture = WorkerStderrCapture(directory = str(tmp_path), prefix = "unsloth-test-")
+    Path(capture.path).write_text(
+        "step log\n" * 35000 + "LLVM ERROR: late\n" + "frame\n" * 100, encoding = "utf-8"
+    )
+    assert first_crash_line(capture.text()) == "LLVM ERROR: late"
+
+
 class _DeadProc:
     def __init__(self, exitcode: int):
         self.exitcode = exitcode
