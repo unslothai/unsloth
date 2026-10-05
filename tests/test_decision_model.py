@@ -860,3 +860,77 @@ def test_clef_backbone_runs_the_compiled_gated_delta_and_conv_kernels(clef_check
         assert chosen["torch_chunk_gated_delta_rule"].startswith("fla.")
         if is_causal_conv1d_available():
             assert chosen["causal_conv1d_fn"].startswith("causal_conv1d")
+
+
+def test_clef_temperature_folds_into_the_head_exactly():
+    from unsloth.models.clef import EncodedQuestion, EncodedRecord, JointSchemaHead
+
+    torch.manual_seed(0)
+    head = JointSchemaHead(**CLEF_HEAD).double()
+    with torch.no_grad():
+        for param in head.parameters():
+            param.add_(torch.randn_like(param) * 0.1)
+    record = EncodedRecord(
+        input_ids = tuple(range(12)),
+        questions = (
+            EncodedQuestion("a", 1, (0, 3), ((3, 5), (5, 7), (7, 9)), ("x", "y", "z")),
+            EncodedQuestion("b", 0, (1, 4), ((9, 10), (10, 12)), ("true", "false")),
+        ),
+        record_id = "r",
+    )
+    hidden = torch.randn(1, 12, CLEF_HEAD["hidden_size"], dtype = torch.float64)
+    ids, mask = torch.arange(12)[None], torch.ones(1, 12, dtype = torch.long)
+    embeddings = torch.randn(32, CLEF_HEAD["hidden_size"], dtype = torch.float64)
+    before = head(hidden, ids, mask, [record], embeddings)[0]
+    for temperature in (0.6, 1.7):
+        folded = JointSchemaHead(**CLEF_HEAD).double()
+        folded.load_state_dict(decision._fold_temperature(head.state_dict(), temperature))
+        after = folded(hidden, ids, mask, [record], embeddings)[0]
+        for z, z_folded in zip(before, after):
+            torch.testing.assert_close(z_folded, z / temperature)
+    # Past the clamp the scale cannot carry the temperature, so nothing is folded.
+    with torch.no_grad():
+        head.prior_logit_scale.fill_(math.log(100.0))
+    assert decision._fold_temperature(head.state_dict(), 0.5) is None
+
+
+def test_clef_saves_its_calibration_where_cloudflares_loader_reads_it(clef_checkpoint, tmp_path):
+    reference, _ = _clef_reference()
+    model, processor = FastDecisionModel.from_pretrained(str(clef_checkpoint), max_seq_length = 512)
+    items, _ = FastDecisionModel.build_dataset(_clef_rows(32), processor, model)
+    FastDecisionModel.calibrate(model, processor, items)
+    temperature = model.decision_config["global_temperature"]
+    per_type = list(model.decision_config["temperature"])
+    model.save_pretrained_merged(str(tmp_path / "out"))
+    saved = json.loads((tmp_path / "out" / "unsloth_decision_config.json").read_text())
+    assert saved["folded_temperature"] == temperature and "global_temperature" not in saved
+    assert saved["temperature"] == pytest.approx([t / temperature for t in per_type])
+    device = next(model.parameters()).device
+    released, _ = reference.load_release_model(
+        str(tmp_path / "out"), device = device, dtype = torch.float32
+    )
+    encoded = reference.encode_record(
+        processor.tokenizer, {"state": "help now", "questions": QUESTIONS}
+    )
+    batch = reference.collate_records([encoded], processor.tokenizer.pad_token_id, device)
+    with torch.no_grad():
+        ours, _ = model(batch["input_ids"], batch["attention_mask"], batch["records"])
+        model.head.to(torch.bfloat16).float()
+        theirs = released(batch)[0]
+    for row, z in enumerate(theirs):
+        assert torch.allclose(z.float(), ours[row, : len(z)].float() / temperature, atol = 0.05)
+
+
+def test_label_smoothing_and_brier_terms():
+    logits = torch.tensor([[2.0, 0.0, -1.0], [1.0, -1.0, 5.0]])
+    mask = torch.tensor([[True, True, True], [True, True, False]])
+    target = torch.tensor([[1.0, 0.0, 0.0], [0.0, 1.0, 0.0]])
+    plain = decision._soft_cross_entropy(logits, target, mask)
+    assert torch.equal(plain, decision._soft_cross_entropy(logits, target, mask, 0.0, 0.0))
+    log_p = torch.log_softmax(logits.masked_fill(~mask, -1e4), -1)
+    smoothed = torch.tensor([[0.9 + 0.1 / 3, 0.1 / 3, 0.1 / 3], [0.05, 0.95, 0.0]])
+    brier = ((log_p.exp() - target) ** 2 * mask).sum(-1).mean()
+    expected = -(smoothed * log_p).sum(-1).mean() + 0.5 * brier
+    torch.testing.assert_close(
+        decision._soft_cross_entropy(logits, target, mask, 0.1, 0.5), expected
+    )

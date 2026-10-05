@@ -255,9 +255,24 @@ def _target_for(kind: str, keys: list, gold) -> tuple:
     raise DecisionDataError("gold has no usable label or probabilities")
 
 
-def _soft_cross_entropy(logits, target, mask):
+def _soft_cross_entropy(
+    logits,
+    target,
+    mask,
+    label_smoothing = 0.0,
+    brier_weight = 0.0,
+):
     logits = logits.float().masked_fill(~mask, -1e4)
-    return -(target * torch.log_softmax(logits, -1)).sum(-1).mean()
+    log_p = torch.log_softmax(logits, -1)
+    smoothed = target
+    if label_smoothing:
+        uniform = mask.float() / mask.sum(-1, keepdim = True).clamp(min = 1)
+        smoothed = (1.0 - label_smoothing) * target + label_smoothing * uniform
+    loss = -(smoothed * log_p).sum(-1).mean()
+    if brier_weight:
+        # Cloudflare trains Clef with label smoothed cross entropy plus a Brier term for calibration.
+        loss = loss + brier_weight * ((log_p.exp() - target) ** 2 * mask).sum(-1).mean()
+    return loss
 
 
 class DecisionDataCollator:
@@ -572,6 +587,27 @@ def _clef_peft_model(model, target_modules, use_gradient_checkpointing, random_s
     return model
 
 
+def _fold_temperature(state: dict, temperature: float):
+    # logits / T = prior / T + gate * (joint_scale / T * cosine + residual / T), exactly, as long
+    # as both exp(scale) stay under the head's clamp at log(100).
+    limit, shift = math.log(100.0), math.log(temperature)
+    folded = dict(state)
+    for name in ("prior_logit_scale", "joint_logit_scale"):
+        scale = state[name].float().clamp(max = limit) - shift
+        if scale > limit:
+            return None
+        folded[name] = scale.to(state[name].dtype)
+    last = max(
+        int(k.split(".")[1])
+        for k in state
+        if k.startswith("residual_scorer.") and k.endswith(".weight")
+    )
+    for kind in ("weight", "bias"):
+        key = f"residual_scorer.{last}.{kind}"
+        folded[key] = (state[key].float() / temperature).to(state[key].dtype)
+    return folded
+
+
 def _save_clef(self, save_directory, tokenizer) -> None:
     import shutil
 
@@ -594,8 +630,24 @@ def _save_clef(self, save_directory, tokenizer) -> None:
     for name in _CLEF_EXTRA_FILES:
         if (source / name).is_file() and not (output / name).exists():
             shutil.copyfile(source / name, output / name)
+    config = {**self.decision_config, "fine_tuned": True}
+    state = self.head.state_dict()
+    temperature = config.pop("global_temperature", None)
+    folded = _fold_temperature(state, temperature) if temperature else None
+    if folded is not None:
+        # Cloudflare's loader reads only the head, so the calibration lives in its weights;
+        # the per type temperatures stay relative to the folded logits.
+        state, config["folded_temperature"] = folded, temperature
+        config["temperature"] = [t / temperature for t in config.get("temperature", [1.0] * 3)]
+        if config.get("temperature_by_options"):
+            config["temperature_by_options"] = {
+                k: v / temperature for k, v in config["temperature_by_options"].items()
+            }
+    elif temperature:
+        # Folding would push a logit scale past the head's clamp, so only Unsloth applies it.
+        config["global_temperature"] = temperature
     weights = {}
-    for name, value in self.head.state_dict().items():
+    for name, value in state.items():
         value = value.detach().to("cpu", torch.bfloat16).contiguous()
         if not torch.isfinite(value).all():
             raise ValueError(
@@ -603,7 +655,7 @@ def _save_clef(self, save_directory, tokenizer) -> None:
             )
         weights[name] = value
     (output / "unsloth_decision_config.json").write_text(
-        json.dumps({**self.decision_config, "fine_tuned": True}, indent = 2), encoding = "utf-8"
+        json.dumps(config, indent = 2), encoding = "utf-8"
     )
     (output / _CLEF_HEAD_FILES[1]).write_text(
         json.dumps(self.head.config, indent = 2), encoding = "utf-8"
@@ -645,6 +697,8 @@ class DecisionTrainer(Trainer):
         args = None,
         *,
         head_learning_rate: Optional[float] = None,
+        label_smoothing: float = 0.0,
+        brier_weight: float = 0.0,
         tokenizer = None,
         **kwargs,
     ):
@@ -679,6 +733,7 @@ class DecisionTrainer(Trainer):
                 pad_token_id
             )
         self.head_learning_rate = head_learning_rate
+        self.label_smoothing, self.brier_weight = label_smoothing, brier_weight
         super().__init__(model = model, args = args, **kwargs)
 
     def _get_train_sampler(self, train_dataset = None):
@@ -699,7 +754,9 @@ class DecisionTrainer(Trainer):
     ):
         target = inputs.pop("target")
         logits, _ = model(**inputs)
-        loss = _soft_cross_entropy(logits, target, inputs["marker_mask"])
+        loss = _soft_cross_entropy(
+            logits, target, inputs["marker_mask"], self.label_smoothing, self.brier_weight
+        )
         return (loss, {"loss": loss, "logits": logits}) if return_outputs else loss
 
     def create_optimizer(self, model = None):
@@ -1167,6 +1224,9 @@ class FastDecisionModel:
                 if half[items[i]["row"]] == side:
                     per_item[i] = side_temperature[items[i]["qtype"]]
         config["temperature"] = temperature
+        if getattr(model, "is_clef", False):
+            # The released head has one set of logit scales, so one temperature for every type.
+            config["global_temperature"] = common.clamp_temperature(_fit_temperature(logits, items))
         buckets = {
             key: value
             for key, value in (config.pop("temperature_by_options", None) or {}).items()
