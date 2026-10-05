@@ -80,6 +80,11 @@ export function KnowledgeBaseDialog({
   const [kbs, setKbs] = useState<KnowledgeBase[]>([]);
   const [loading, setLoading] = useState(false);
   const [view, setView] = useState<View>({ kind: "list" });
+  // A handoff whose knowledge base could not be resolved. Nothing else holds the batch,
+  // so it goes to whichever knowledge base is opened or created next.
+  const [pendingUploads, setPendingUploads] = useState<RagUploadItem[] | null>(
+    null,
+  );
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
   const [saving, setSaving] = useState(false);
@@ -116,14 +121,19 @@ export function KnowledgeBaseDialog({
     if (!open) return;
     let cancelled = false;
     setView({ kind: "list" });
+    setPendingUploads(null);
     void refresh().then((rows) => {
-      if (cancelled || !focus || !rows) return;
-      const kb = rows.find((row) => row.id === focus.kbId);
+      if (cancelled || !focus) return;
+      const kb = rows?.find((row) => row.id === focus.kbId);
       if (!kb) {
         if (focus.uploads?.length) {
-          toast.error("Knowledge base not found", {
-            description: "Open one below and add the files there.",
-          });
+          setPendingUploads(focus.uploads);
+          // A failed load already said so.
+          if (rows) {
+            toast.error("Knowledge base not found", {
+              description: "Open or create one below and the files go there.",
+            });
+          }
         }
         return;
       }
@@ -148,6 +158,11 @@ export function KnowledgeBaseDialog({
 
   function backToList() {
     setView({ kind: "list" });
+  }
+
+  function openDocuments(kb: KnowledgeBase) {
+    setView({ kind: "documents", kb, uploads: pendingUploads ?? undefined });
+    setPendingUploads(null);
   }
 
   // Handed-over files are a one-time handoff. The view outlives a close and a reopen
@@ -194,7 +209,8 @@ export function KnowledgeBaseDialog({
       }
       // A new knowledge base is empty, so open it where files are added.
       const created = (await refresh())?.find((row) => row.id === createdId);
-      setView(created ? { kind: "documents", kb: created } : { kind: "list" });
+      if (created) openDocuments(created);
+      else setView({ kind: "list" });
     } catch (err) {
       toast.error("Save failed", {
         description: err instanceof Error ? err.message : String(err),
@@ -304,7 +320,7 @@ export function KnowledgeBaseDialog({
                   >
                     <button
                       type="button"
-                      onClick={() => setView({ kind: "documents", kb })}
+                      onClick={() => openDocuments(kb)}
                       title="Open to add or remove documents"
                       className="-my-1 -ml-2 flex min-w-0 flex-1 items-center gap-2 rounded-md px-2 py-1 text-left transition-colors hover:bg-muted/60 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                     >

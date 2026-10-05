@@ -334,3 +334,22 @@ test("a missing knowledge base says so only when files were handed over", async 
   assert.equal(fromChip.title, "Knowledge bases");
   assert.deepEqual(fromChip.errors, []);
 });
+
+test("files handed to a missing knowledge base go to the one opened next, once", async () => {
+  const app = harness();
+  await app.open({ kbId: "kb-deleted", uploads: [ITEM] });
+  assert.equal(app.title, "Knowledge bases");
+  assert.deepEqual(app.errors, ["Knowledge base not found"]);
+  assert.deepEqual(app.uploads, []);
+
+  app.openRow();
+  await app.settle();
+  assert.equal(app.title, KB.name);
+  assert.deepEqual(app.uploads, [[ITEM]]);
+
+  app.back();
+  await app.settle();
+  app.openRow();
+  await app.settle();
+  assert.deepEqual(app.uploads, [[ITEM]]);
+});
