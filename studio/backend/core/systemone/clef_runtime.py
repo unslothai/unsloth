@@ -76,7 +76,11 @@ class ClefWorker:
             native_path_secret_removed_for_child_start,
             run_without_native_path_secret,
         )
-        from utils.process_lifetime import adopt_pid, is_process_shutting_down
+        from utils.process_lifetime import (
+            adopt_pid,
+            is_process_shutting_down,
+            spawn_on_lifetime_thread,
+        )
 
         if cancelled.is_set() or is_process_shutting_down():
             raise ClefWorkerCancelled("Clef model loading was cancelled.")
@@ -97,19 +101,20 @@ class ClefWorker:
                     target = self._target
                     args = ()
                 process = _CTX.Process(
-                    target=target,
-                    args=args,
-                    kwargs={
+                    target = target,
+                    args = args,
+                    kwargs = {
                         "cmd_queue": self._cmd_queue,
                         "resp_queue": self._resp_queue,
                         "cancel_event": self._cancel_event,
                         "ready_event": self._ready_event,
                         "config": {},
                     },
-                    daemon=True,
+                    daemon = True,
                 )
                 self._process = process
-                process.start()
+                # Linux parent-death signals follow the spawning thread, not just its process.
+                spawn_on_lifetime_thread(process.start)
         except Exception as exc:
             self._process = None
             self._close_queues()
@@ -120,11 +125,11 @@ class ClefWorker:
             adopt_pid(process.pid)
         except Exception:
             logger.debug(
-                "Could not register Clef worker %s for shutdown", process.pid, exc_info=True
+                "Could not register Clef worker %s for shutdown", process.pid, exc_info = True
             )
         if cancelled.is_set() or is_process_shutting_down():
             self.cancel()
-            self.close(graceful_timeout=0.0)
+            self.close(graceful_timeout = 0.0)
             raise ClefWorkerCancelled("Clef model loading was cancelled.")
 
         try:
@@ -138,7 +143,7 @@ class ClefWorker:
             )
             response = self._await("loaded", LOAD_WAIT_S, cancelled, "load")
         except BaseException:
-            self.close(graceful_timeout=0.0)
+            self.close(graceful_timeout = 0.0)
             raise
         self.device = str(response.get("device") or "cpu")
         self.gpu_available = response.get("gpu_available") is True
@@ -217,10 +222,9 @@ class ClefWorker:
                     return False
                 try:
                     from utils.process_lifetime import forget_pid
-
                     forget_pid(process.pid)
                 except Exception:
-                    logger.debug("Could not forget Clef worker %s", process.pid, exc_info=True)
+                    logger.debug("Could not forget Clef worker %s", process.pid, exc_info = True)
             self._process = None
             self._close_queues()
             return True
@@ -235,11 +239,7 @@ class ClefWorker:
             raise ClefWorkerError(f"Could not reach the Clef worker: {exc}") from exc
 
     def _await(
-        self,
-        expected: str,
-        timeout: float,
-        cancelled: threading.Event | None,
-        phase: str,
+        self, expected: str, timeout: float, cancelled: threading.Event | None, phase: str
     ) -> dict[str, Any]:
         deadline = time.monotonic() + timeout
         cancel_deadline: float | None = None
@@ -249,18 +249,18 @@ class ClefWorker:
                 if cancel_deadline is None:
                     cancel_deadline = time.monotonic() + CANCEL_GRACE_S
                 elif time.monotonic() >= cancel_deadline:
-                    self.close(graceful_timeout=0.0)
+                    self.close(graceful_timeout = 0.0)
                     raise ClefWorkerCancelled("Clef model loading was cancelled.")
             response_queue = self._resp_queue
             if response_queue is None:
                 raise ClefWorkerCancelled("The Clef worker was unloaded.")
             try:
-                response = response_queue.get(timeout=_POLL_S)
+                response = response_queue.get(timeout = _POLL_S)
             except _queue.Empty:
                 if not self.is_alive():
                     raise ClefWorkerError(self._crash_message(phase))
                 if time.monotonic() >= deadline:
-                    self.close(graceful_timeout=0.0)
+                    self.close(graceful_timeout = 0.0)
                     raise ClefWorkerError(f"The Clef worker timed out while {phase}.")
                 continue
             except (EOFError, OSError, ValueError) as exc:
@@ -365,20 +365,25 @@ def _release_repository_lease(lease: _RepositoryLease | None) -> None:
         if not lease.registry.release_repository_owner(lease.repo, lease.owner):
             logger.warning("Clef cache lease was no longer owned for %s", lease.repo)
     except Exception:
-        logger.warning("Could not release Clef cache lease for %s", lease.repo, exc_info=True)
+        logger.warning("Could not release Clef cache lease for %s", lease.repo, exc_info = True)
 
 
 def _ensure_not_retiring() -> None:
     with _state_lock:
         if _retiring:
             raise Unavailable(
-                503, "model_loading", "The previous Clef worker is still stopping; retry shortly.",
-                retry_after=1,
+                503,
+                "model_loading",
+                "The previous Clef worker is still stopping; retry shortly.",
+                retry_after = 1,
             )
 
 
 def _retire(
-    worker: ClefWorker | None, lease: _RepositoryLease | None, *, graceful_timeout: float = 0.0
+    worker: ClefWorker | None,
+    lease: _RepositoryLease | None,
+    *,
+    graceful_timeout: float = 0.0,
 ) -> None:
     if worker is None:
         _release_repository_lease(lease)
@@ -391,17 +396,17 @@ def _retire(
         with _state_lock:
             _retiring.discard(worker)
 
-    if worker.close(graceful_timeout=graceful_timeout):
+    if worker.close(graceful_timeout = graceful_timeout):
         release()
         return
 
     def release_after_exit() -> None:
         while worker.is_alive():
             time.sleep(_POLL_S)
-        worker.close(graceful_timeout=0.0)
+        worker.close(graceful_timeout = 0.0)
         release()
 
-    threading.Thread(target=release_after_exit, name="clef-retire", daemon=True).start()
+    threading.Thread(target = release_after_exit, name = "clef-retire", daemon = True).start()
 
 
 def _watch_resident(worker: ClefWorker, lease: _RepositoryLease | None, generation: int) -> None:
@@ -440,11 +445,11 @@ def _checkpoint_dir(checkpoint: ClefCheckpoint) -> Path:
         root = Path(
             snapshot_download(
                 checkpoint.source,
-                revision=checkpoint.revision,
-                cache_dir=active_hf_hub_cache(),
-                local_files_only=True,
-                allow_patterns=list(files),
-                token=False,
+                revision = checkpoint.revision,
+                cache_dir = active_hf_hub_cache(),
+                local_files_only = True,
+                allow_patterns = list(files),
+                token = False,
             )
         )
     missing = [name for name in files if not (root / name).is_file()]
@@ -493,7 +498,6 @@ def loading_repo_ids() -> tuple[str, ...]:
 def _requested_device() -> str:
     # Read saved settings without probing torch/CUDA in the parent.
     from utils.systemone_settings import get_device
-
     return "gpu" if get_device() == "gpu" else "cpu"
 
 
@@ -551,7 +555,7 @@ def _start_loading(checkpoint: ClefCheckpoint) -> _Load | None:
             _loading = load
             try:
                 load.thread = threading.Thread(
-                    target=_load_worker, args=(load,), name="clef-systemone-load", daemon=True
+                    target = _load_worker, args = (load,), name = "clef-systemone-load", daemon = True
                 )
                 load.thread.start()
             except Exception as exc:
@@ -565,7 +569,7 @@ def _start_loading(checkpoint: ClefCheckpoint) -> _Load | None:
                 error = (_failure[1], FAILURE_BACKOFF_S, "model_unavailable")
     _retire(old_worker, old_lease)
     if error is not None:
-        raise Unavailable(503, error[2], error[0], retry_after=error[1])
+        raise Unavailable(503, error[2], error[0], retry_after = error[1])
     return None if already_loaded else load
 
 
@@ -606,17 +610,17 @@ def _load_worker(load: _Load) -> None:
             published = True
             _touch_locked(worker)
         threading.Thread(
-            target=_watch_resident,
-            args=(worker, lease, watch_generation),
-            name="clef-watch",
-            daemon=True,
+            target = _watch_resident,
+            args = (worker, lease, watch_generation),
+            name = "clef-watch",
+            daemon = True,
         ).start()
         logger.info("Clef loaded %s on %s", load.checkpoint.name, worker.device)
     except ClefWorkerCancelled:
         pass
     except Exception as exc:
         message = f"Could not load {load.checkpoint.name}: {type(exc).__name__}: {exc}"
-        logger.warning("Clef load failed: %s", message, exc_info=True)
+        logger.warning("Clef load failed: %s", message, exc_info = True)
         with _state_lock:
             if _loading is load and not load.cancel.is_set() and not _shutdown_requested:
                 _failure = (load.checkpoint, message, time.monotonic() + FAILURE_BACKOFF_S)
@@ -648,7 +652,7 @@ def _worker_for(checkpoint: ClefCheckpoint) -> ClefWorker:
             503,
             "model_loading",
             f"{checkpoint.name} is still loading",
-            retry_after=5,
+            retry_after = 5,
         )
     with _state_lock:
         if _loaded == checkpoint and _worker is not None and _worker.is_alive():
@@ -659,9 +663,9 @@ def _worker_for(checkpoint: ClefCheckpoint) -> ClefWorker:
                 503,
                 "model_unavailable",
                 failure[1],
-                retry_after=max(1.0, failure[2] - time.monotonic()),
+                retry_after = max(1.0, failure[2] - time.monotonic()),
             )
-    raise Unavailable(503, "model_loading", f"{checkpoint.name} is reloading", retry_after=1)
+    raise Unavailable(503, "model_loading", f"{checkpoint.name} is reloading", retry_after = 1)
 
 
 def _cancel_idle_locked() -> None:
@@ -675,7 +679,7 @@ def _touch_locked(worker: ClefWorker) -> None:
     global _idle_timer, _last_activity
     _cancel_idle_locked()
     _last_activity = time.monotonic()
-    timer = threading.Timer(IDLE_UNLOAD_S, _idle_unload, args=(worker, _generation))
+    timer = threading.Timer(IDLE_UNLOAD_S, _idle_unload, args = (worker, _generation))
     timer.daemon = True
     _idle_timer = timer
     timer.start()
@@ -691,8 +695,8 @@ def _idle_unload(worker: ClefWorker, generation: int) -> None:
             or time.monotonic() - _last_activity < IDLE_UNLOAD_S
         ):
             return
-        if not _run_lock.acquire(blocking=False):
-            timer = threading.Timer(1.0, _idle_unload, args=(worker, generation))
+        if not _run_lock.acquire(blocking = False):
+            timer = threading.Timer(1.0, _idle_unload, args = (worker, generation))
             timer.daemon = True
             _idle_timer = timer
             timer.start()
@@ -704,7 +708,7 @@ def _idle_unload(worker: ClefWorker, generation: int) -> None:
         _loaded = _device_name = None
         _generation += 1
     try:
-        _retire(worker, lease, graceful_timeout=SHUTDOWN_WAIT_S)
+        _retire(worker, lease, graceful_timeout = SHUTDOWN_WAIT_S)
     finally:
         _run_lock.release()
 
@@ -716,8 +720,8 @@ def decide(
     images: list[bytes] | None = None,
 ) -> dict[str, Any]:
     """Return a Clef SystemOne wire object through one bounded owned worker."""
-    if not _admission.acquire(blocking=False):
-        raise Unavailable(529, "overloaded", "System One is busy; retry shortly", retry_after=1)
+    if not _admission.acquire(blocking = False):
+        raise Unavailable(529, "overloaded", "System One is busy; retry shortly", retry_after = 1)
     try:
         return _decide(checkpoint, state, questions, list(images or ()))
     finally:
@@ -731,13 +735,13 @@ def _decide(
     images: list[bytes],
 ) -> dict[str, Any]:
     worker = _worker_for(checkpoint)
-    if not _run_lock.acquire(timeout=RUN_WAIT_S):
-        raise Unavailable(529, "overloaded", "System One is busy; retry shortly", retry_after=1)
+    if not _run_lock.acquire(timeout = RUN_WAIT_S):
+        raise Unavailable(529, "overloaded", "System One is busy; retry shortly", retry_after = 1)
     try:
         with _state_lock:
             if _worker is not worker or _loaded != checkpoint:
                 raise Unavailable(
-                    503, "model_loading", f"{checkpoint.name} is reloading", retry_after=1
+                    503, "model_loading", f"{checkpoint.name} is reloading", retry_after = 1
                 )
             _cancel_idle_locked()
         try:
@@ -745,14 +749,14 @@ def _decide(
         except ClefWorkerInputError as exc:
             raise Unavailable(422, "invalid_request_error", str(exc)) from None
         except ClefWorkerCancelled as exc:
-            raise Unavailable(503, "model_loading", str(exc), retry_after=1) from None
+            raise Unavailable(503, "model_loading", str(exc), retry_after = 1) from None
         except ClefWorkerError as exc:
             _forget_failed_worker(worker, checkpoint, str(exc))
-            raise Unavailable(503, "model_unavailable", str(exc), retry_after=1) from None
+            raise Unavailable(503, "model_unavailable", str(exc), retry_after = 1) from None
         with _state_lock:
             if _worker is not worker or _loaded != checkpoint:
                 raise Unavailable(
-                    503, "model_loading", f"{checkpoint.name} is reloading", retry_after=1
+                    503, "model_loading", f"{checkpoint.name} is reloading", retry_after = 1
                 )
             _touch_locked(worker)
         return result
@@ -782,7 +786,7 @@ def _forget_failed_worker(worker: ClefWorker, checkpoint: ClefCheckpoint, messag
 def ensure_can_unload() -> None:
     """Only a running decision blocks retirement; loads are generation-cancellable."""
     _ensure_not_retiring()
-    if not _run_lock.acquire(blocking=False):
+    if not _run_lock.acquire(blocking = False):
         raise Unavailable(
             409,
             "model_loading",
@@ -832,17 +836,17 @@ def _invalidate(
 def unload() -> bool:
     """Cancel a load or retire an idle worker; never interrupt a decision."""
     ensure_can_unload()
-    if not _run_lock.acquire(blocking=False):
+    if not _run_lock.acquire(blocking = False):
         raise Unavailable(
             409, "model_loading", "Wait for the Clef decision to finish before unloading."
         )
     try:
-        worker, loading, lease, was_loaded = _invalidate(stopping=False)
-        _retire(worker, lease, graceful_timeout=SHUTDOWN_WAIT_S)
+        worker, loading, lease, was_loaded = _invalidate(stopping = False)
+        _retire(worker, lease, graceful_timeout = SHUTDOWN_WAIT_S)
         if loading is not None:
             pending_worker = loading.worker
             if pending_worker is not None and pending_worker is not worker:
-                pending_worker.close(graceful_timeout=0.0)
+                pending_worker.close(graceful_timeout = 0.0)
             loading.done.wait(LOAD_CANCEL_WAIT_S)
         _ensure_not_retiring()
         return was_loaded
@@ -852,13 +856,13 @@ def unload() -> bool:
 
 def shutdown() -> bool:
     """Force-retire every owned worker, including a running decision or load."""
-    worker, loading, lease, was_loaded = _invalidate(stopping=True)
+    worker, loading, lease, was_loaded = _invalidate(stopping = True)
     _retire(worker, lease)
     if loading is not None:
         loading.done.wait(LOAD_CANCEL_WAIT_S)
         pending_worker = loading.worker
         if pending_worker is not None and pending_worker is not worker:
-            pending_worker.close(graceful_timeout=0.0)
+            pending_worker.close(graceful_timeout = 0.0)
     return was_loaded
 
 

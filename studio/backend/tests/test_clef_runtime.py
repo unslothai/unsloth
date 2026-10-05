@@ -23,7 +23,17 @@ def _error(queue, phase, kind, message):
     queue.put({"type": "error", "phase": phase, "kind": kind, "message": message})
 
 
-def _fake_worker(*, cmd_queue, resp_queue, cancel_event, ready_event=None, config=None):
+def _fake_worker(
+    *,
+    cmd_queue,
+    resp_queue,
+    cancel_event,
+    ready_event = None,
+    config = None,
+):
+    from utils.process_lifetime import bind_current_process_to_parent_lifetime
+
+    bind_current_process_to_parent_lifetime()
     while True:
         command = cmd_queue.get()
         phase, model = command.get("type"), command.get("model")
@@ -45,11 +55,11 @@ def _fake_worker(*, cmd_queue, resp_queue, cancel_event, ready_event=None, confi
         resp_queue.put({"type": "result", "result": result})
 
 
-def _checkpoint(name="clef-test"):
+def _checkpoint(name = "clef-test"):
     return ClefCheckpoint(name, f"Cloudflare/{name}", None, "test", 123, "a" * 40, ("config.json",))
 
 
-def _wait(predicate, timeout=5):
+def _wait(predicate, timeout = 5):
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline and not predicate():
         time.sleep(0.02)
@@ -57,7 +67,11 @@ def _wait(predicate, timeout=5):
 
 
 class _Registry:
-    def __init__(self, granted=True, state="owned"):
+    def __init__(
+        self,
+        granted = True,
+        state = "owned",
+    ):
         self.granted, self.state, self.events, self.releases, self.owner, self.process = (
             granted,
             state,
@@ -79,7 +93,7 @@ class _Registry:
         return owner is self.owner
 
 
-@pytest.fixture(autouse=True)
+@pytest.fixture(autouse = True)
 def _runtime(monkeypatch, tmp_path):
     clef_runtime.shutdown()
     with clef_runtime._state_lock:
@@ -115,6 +129,12 @@ def test_worker_holds_cache_lease_until_unload_or_idle_retirement(monkeypatch, t
         {"q": {"type": "noul"}},
     )
     clef_runtime.prepare(checkpoint)
+    if not idle:
+        load_thread = clef_runtime._loading.thread
+        load_thread.join(5)
+        assert not load_thread.is_alive()
+        time.sleep(0.1)
+        assert clef_runtime._worker.is_alive(), "The resident worker must outlive the loader thread"
     assert clef_runtime.decide(checkpoint, state, questions, [])["echo"] == {
         "state": state,
         "questions": questions,
@@ -135,13 +155,13 @@ def test_cache_claim_rejection_prevents_snapshot_resolution(monkeypatch):
     registry, resolved = _Registry(False, "deleting"), []
     monkeypatch.setattr(downloads, "get_models_registry", lambda: registry)
     monkeypatch.setattr(clef_runtime, "_checkpoint_dir", lambda _: resolved.append(True))
-    with pytest.raises(Unavailable, match="being deleted"):
+    with pytest.raises(Unavailable, match = "being deleted"):
         clef_runtime.decide(_checkpoint(), "state", {"q": {"type": "noul"}}, [])
     assert registry.events == ["claim"] and not resolved
 
 
 def test_load_failure_and_pre_spawn_cancellation_leave_no_worker(monkeypatch, tmp_path):
-    with pytest.raises(Unavailable, match="planned load failure"):
+    with pytest.raises(Unavailable, match = "planned load failure"):
         clef_runtime.decide(_checkpoint("clef-fail"), "state", {"q": {"type": "noul"}}, [])
     entered, release, factories = threading.Event(), threading.Event(), []
 
@@ -158,7 +178,7 @@ def test_load_failure_and_pre_spawn_cancellation_leave_no_worker(monkeypatch, tm
     )
     clef_runtime.prepare(_checkpoint("clef-race"))
     assert entered.wait(5)
-    thread = threading.Thread(target=clef_runtime.unload)
+    thread = threading.Thread(target = clef_runtime.unload)
     thread.start()
     _wait(lambda: clef_runtime._loading is None)
     release.set()
@@ -175,12 +195,12 @@ def test_shutdown_force_retires_an_active_decision_worker():
         except BaseException as exc:
             outcome.append(exc)
 
-    thread = threading.Thread(target=run)
+    thread = threading.Thread(target = run)
     thread.start()
     _wait(lambda: clef_runtime.status()["loaded_model"] == checkpoint.name)
     process = clef_runtime._worker._process
     _wait(clef_runtime._run_lock.locked)
-    with pytest.raises(Unavailable, match="Wait for the Clef decision"):
+    with pytest.raises(Unavailable, match = "Wait for the Clef decision"):
         clef_runtime.ensure_can_unload()
     clef_runtime.shutdown()
     thread.join(5)
@@ -193,12 +213,12 @@ def test_local_cache_is_pinned_and_over_context_is_refused(monkeypatch, tmp_path
 
     checkpoint, seen = _checkpoint(), {}
     for name in checkpoint.files:
-        (tmp_path / name).write_text("x", encoding="utf-8")
+        (tmp_path / name).write_text("x", encoding = "utf-8")
     monkeypatch.setattr(clef_runtime, "_checkpoint_dir", _REAL_CHECKPOINT_DIR)
     monkeypatch.setattr(
         huggingface_hub,
         "snapshot_download",
-        lambda repo, **kwargs: seen.update(repo=repo, **kwargs) or str(tmp_path),
+        lambda repo, **kwargs: seen.update(repo = repo, **kwargs) or str(tmp_path),
     )
     assert clef_runtime.is_cached(checkpoint)
     assert seen["revision"] == checkpoint.revision and seen["local_files_only"] is True
@@ -206,9 +226,9 @@ def test_local_cache_is_pinned_and_over_context_is_refused(monkeypatch, tmp_path
     class Reference:
         @staticmethod
         def encode_record(*_args, **_kwargs):
-            return SimpleNamespace(input_ids=tuple(range(clef_worker.MAX_CONTEXT_TOKENS + 1)))
+            return SimpleNamespace(input_ids = tuple(range(clef_worker.MAX_CONTEXT_TOKENS + 1)))
 
-    with pytest.raises(ValueError, match="require 16385 tokens"):
+    with pytest.raises(ValueError, match = "require 16385 tokens"):
         clef_worker.encode_record_untruncated(Reference, "tokenizer", {"state": "x"}, "processor")
 
 
@@ -224,11 +244,11 @@ def test_another_load_waits_until_the_retiring_process_exits(monkeypatch):
         return close(*args, **kwargs)
 
     monkeypatch.setattr(worker, "close", blocked_close)
-    thread = threading.Thread(target=clef_runtime.unload)
+    thread = threading.Thread(target = clef_runtime.unload)
     thread.start()
     try:
         assert entered.wait(5)
-        with pytest.raises(Unavailable, match="still stopping"):
+        with pytest.raises(Unavailable, match = "still stopping"):
             clef_runtime.prepare(_checkpoint("clef-next"))
     finally:
         release.set()
