@@ -7,7 +7,7 @@ import {
   PlusSignIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { ChevronLeftIcon, UploadIcon } from "lucide-react";
+import { ChevronLeftIcon, ChevronRightIcon, UploadIcon } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import {
@@ -47,23 +47,32 @@ import { type KnowledgeBase, isLinkedFolderManaged } from "../types/rag";
 import { DocumentStatusChip } from "./document-status-chip";
 import { LinkedFoldersManager } from "./linked-folders-manager";
 import { RAG_SOURCE_UPLOAD_ACCEPT } from "./source-drop-policy";
-import { useRagDocuments } from "./use-rag-documents";
+import { type RagUploadItem, useRagDocuments } from "./use-rag-documents";
 import { useSourceDrop } from "./use-source-drop";
 
 type View =
   | { kind: "list" }
   | { kind: "create" }
   | { kind: "edit"; kb: KnowledgeBase }
-  | { kind: "documents"; kb: KnowledgeBase };
+  | { kind: "documents"; kb: KnowledgeBase; uploads?: RagUploadItem[] };
+
+export interface KnowledgeBaseFocus {
+  kbId: string;
+  /** Files to upload into that knowledge base once its documents view opens. */
+  uploads?: RagUploadItem[];
+}
 
 export interface KnowledgeBaseDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
+  /** Open straight to this knowledge base's documents instead of the list. */
+  focus?: KnowledgeBaseFocus | null;
 }
 
 export function KnowledgeBaseDialog({
   open,
   onOpenChange,
+  focus = null,
 }: KnowledgeBaseDialogProps) {
   const [kbs, setKbs] = useState<KnowledgeBase[]>([]);
   const [loading, setLoading] = useState(false);
@@ -84,14 +93,17 @@ export function KnowledgeBaseDialog({
     ? (ragUnavailableReason ?? undefined)
     : undefined;
 
-  const refresh = useCallback(async () => {
+  const refresh = useCallback(async (): Promise<KnowledgeBase[] | null> => {
     setLoading(true);
     try {
-      setKbs(await listKnowledgeBases());
+      const rows = await listKnowledgeBases();
+      setKbs(rows);
+      return rows;
     } catch (err) {
       toast.error("Failed to load knowledge bases", {
         description: err instanceof Error ? err.message : String(err),
       });
+      return null;
     } finally {
       setLoading(false);
     }
@@ -99,9 +111,25 @@ export function KnowledgeBaseDialog({
 
   useEffect(() => {
     if (!open) return;
+    let cancelled = false;
     setView({ kind: "list" });
-    void refresh();
-  }, [open, refresh]);
+    void refresh().then((rows) => {
+      if (cancelled || !focus || !rows) return;
+      const kb = rows.find((row) => row.id === focus.kbId);
+      if (!kb) {
+        if (focus.uploads?.length) {
+          toast.error("Knowledge base not found", {
+            description: "Open one below and add the files there.",
+          });
+        }
+        return;
+      }
+      setView({ kind: "documents", kb, uploads: focus.uploads });
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [open, focus, refresh]);
 
   function startCreate() {
     setName("");
@@ -135,6 +163,7 @@ export function KnowledgeBaseDialog({
     }
     setSaving(true);
     try {
+      let createdId: string | null = null;
       if (view.kind === "edit") {
         await updateKnowledgeBase(view.kb.id, {
           name: trimmed,
@@ -142,14 +171,17 @@ export function KnowledgeBaseDialog({
         });
         toast.success("Knowledge base updated");
       } else {
-        await createKnowledgeBase({
-          name: trimmed,
-          description: description.trim() || undefined,
-        });
+        createdId = (
+          await createKnowledgeBase({
+            name: trimmed,
+            description: description.trim() || undefined,
+          })
+        ).id;
         toast.success("Knowledge base created");
       }
-      backToList();
-      await refresh();
+      // A new knowledge base is empty, so open it where files are added.
+      const created = (await refresh())?.find((row) => row.id === createdId);
+      setView(created ? { kind: "documents", kb: created } : { kind: "list" });
     } catch (err) {
       toast.error("Save failed", {
         description: err instanceof Error ? err.message : String(err),
@@ -187,7 +219,11 @@ export function KnowledgeBaseDialog({
         </DialogHeader>
 
         {view.kind === "documents" ? (
-          <KnowledgeBaseDocuments kb={view.kb} onBack={backToList} />
+          <KnowledgeBaseDocuments
+            kb={view.kb}
+            uploads={view.uploads}
+            onBack={backToList}
+          />
         ) : showForm ? (
           <div className="flex flex-col gap-4">
             <div className="grid gap-2">
@@ -255,14 +291,20 @@ export function KnowledgeBaseDialog({
                     <button
                       type="button"
                       onClick={() => setView({ kind: "documents", kb })}
-                      className="min-w-0 flex-1 text-left"
+                      title="Open to add or remove documents"
+                      className="-my-1 -ml-2 flex min-w-0 flex-1 items-center gap-2 rounded-md px-2 py-1 text-left hover:bg-muted/60"
                     >
-                      <div className="truncate font-medium">{kb.name}</div>
-                      <div className="truncate text-xs text-muted-foreground">
-                        {kb.documentCount ?? 0} document
-                        {(kb.documentCount ?? 0) === 1 ? "" : "s"}
-                        {kb.description ? ` · ${kb.description}` : ""}
-                      </div>
+                      <span className="block min-w-0 flex-1">
+                        <span className="block truncate font-medium">
+                          {kb.name}
+                        </span>
+                        <span className="block truncate text-xs text-muted-foreground">
+                          {kb.documentCount ?? 0} document
+                          {(kb.documentCount ?? 0) === 1 ? "" : "s"}
+                          {kb.description ? ` · ${kb.description}` : ""}
+                        </span>
+                      </span>
+                      <ChevronRightIcon className="size-4 shrink-0 text-muted-foreground" />
                     </button>
                     <div className="flex items-center gap-1">
                       <Button
@@ -329,9 +371,12 @@ export function KnowledgeBaseDialog({
 
 function KnowledgeBaseDocuments({
   kb,
+  uploads,
   onBack,
 }: {
   kb: KnowledgeBase;
+  /** Files handed over to upload here once, e.g. a drop the chat could not take. */
+  uploads?: RagUploadItem[];
   onBack: () => void;
 }) {
   const lister = useCallback(() => listKnowledgeBaseDocuments(kb.id), [kb.id]);
@@ -349,6 +394,19 @@ function KnowledgeBaseDocuments({
       ? "An upload is already running. Add these when it finishes."
       : undefined,
   });
+
+  // `upload` changes identity every render, so the ref, which survives StrictMode's remount,
+  // is what keeps a batch from going twice. Deferred a tick so it starts on the mount that
+  // stays: the hook's unmount cleanup would abort an upload started on StrictMode's first one.
+  const startedUploadsRef = useRef<RagUploadItem[] | null>(null);
+  useEffect(() => {
+    if (!uploads?.length || startedUploadsRef.current === uploads) return;
+    const timer = window.setTimeout(() => {
+      startedUploadsRef.current = uploads;
+      void upload(uploads);
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, [uploads, upload]);
 
   return (
     <div

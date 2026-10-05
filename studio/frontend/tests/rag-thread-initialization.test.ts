@@ -24,6 +24,7 @@ function harness(
     persist?: Promise<void>;
     itemId?: string;
     storedIds?: string[];
+    ragSource?: { type: "thread" } | { type: "kb"; kbId: string };
   } = {},
 ) {
   let initialized = options.initialized ?? false;
@@ -35,12 +36,13 @@ function harness(
   const effects: Array<() => void> = [];
   const uploads: Scope[] = [];
   const errors: string[] = [];
+  const toastActions: Array<{ label: string; onClick: () => void }> = [];
   const adopted: string[] = [];
   const itemId = options.itemId ?? ID;
   const storedIds = new Set(options.storedIds ?? []);
   const state = {
     ragEnabled: true,
-    ragSource: { type: "thread" },
+    ragSource: options.ragSource ?? { type: "thread" },
     activeProjectId: null,
     projectAttachmentTarget: "thread",
     projectAttachmentTargetByThread: {},
@@ -143,7 +145,15 @@ function harness(
         useNativeIntentStore: nativeStore,
       },
       "@/lib/toast": {
-        toast: { error: (message: string) => errors.push(message) },
+        toast: {
+          error: (
+            message: string,
+            data?: { action?: { label: string; onClick: () => void } },
+          ) => {
+            errors.push(message);
+            if (data?.action) toastActions.push(data.action);
+          },
+        },
       },
       "@/components/ui/dropdown-menu": {},
       "@/components/ui/alert-dialog": {},
@@ -155,7 +165,16 @@ function harness(
       },
       "../types/rag": { RAG_UPLOAD_ACCEPT: ".docx" },
       "./document-status-chip": {},
+      "./knowledge-base-dialog": { KnowledgeBaseDialog: "KnowledgeBaseDialog" },
       "./use-rag-documents": {
+        uploadItemFromIntent: (intent: {
+          path: { token: string };
+          displayLabel: string;
+        }) => ({
+          kind: "native",
+          token: intent.path.token,
+          name: intent.displayLabel,
+        }),
         useRagDocuments: () => ({
           documents: [],
           uploading: false,
@@ -197,7 +216,11 @@ function harness(
     pick,
     uploads,
     errors,
+    toastActions,
     adopted,
+    get tree() {
+      return tree;
+    },
     drop() {
       nativePending = true;
       render();
@@ -296,4 +319,48 @@ test("initialization tags a temporary chat before the persistence check", async 
   assert.deepEqual(app.errors, []);
   assert.equal(app.initializeCalls, 1);
   assert.equal(app.uploads[0]?.threadId, ID);
+});
+
+function kbDialog(tree: StubElement): StubElement {
+  const children = tree.props.children as StubElement[];
+  return children.find((child) => child?.type === "KnowledgeBaseDialog")!;
+}
+
+test("a native drop into a knowledge base chat offers to add the files to that knowledge base", async () => {
+  const app = harness({ ragSource: { type: "kb", kbId: "kb-1" } });
+  app.render();
+  await flush();
+  app.render();
+  app.drop();
+  await flush();
+  // Nothing goes to the thread: a thread upload would index somewhere this chat never reads.
+  assert.deepEqual(app.uploads, []);
+  assert.equal(app.initializeCalls, 0);
+  assert.deepEqual(app.errors, ["This chat retrieves from a knowledge base"]);
+  assert.equal(kbDialog(app.tree).props.open, false);
+
+  assert.equal(app.toastActions.length, 1);
+  app.toastActions[0].onClick();
+  app.render();
+  const dialog = kbDialog(app.tree);
+  assert.equal(dialog.props.open, true);
+  assert.deepEqual(dialog.props.focus, {
+    kbId: "kb-1",
+    uploads: [{ kind: "native", token: "native-docx", name: "report.docx" }],
+  });
+
+  (dialog.props.onOpenChange as (open: boolean) => void)(false);
+  app.render();
+  assert.equal(kbDialog(app.tree).props.open, false);
+});
+
+test("the knowledge base chip opens that knowledge base without uploading anything", () => {
+  const app = harness({ ragSource: { type: "kb", kbId: "kb-1" } });
+  app.render();
+  const chip = (app.tree.props.children as StubElement[])[0];
+  (chip.props.onOpen as () => void)();
+  app.render();
+  const dialog = kbDialog(app.tree);
+  assert.equal(dialog.props.open, true);
+  assert.deepEqual(dialog.props.focus, { kbId: "kb-1" });
 });

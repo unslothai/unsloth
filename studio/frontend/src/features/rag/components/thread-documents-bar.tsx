@@ -62,10 +62,21 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { DocumentStatusChip } from "./document-status-chip";
-import { useRagDocuments } from "./use-rag-documents";
+import {
+  type KnowledgeBaseFocus,
+  KnowledgeBaseDialog,
+} from "./knowledge-base-dialog";
+import { uploadItemFromIntent, useRagDocuments } from "./use-rag-documents";
 
-// Read-only chip shown when retrieval comes from a KB, so the source isn't invisible.
-function KnowledgeBaseSourceChip({ kbId }: { kbId: string }) {
+// Shown when retrieval comes from a KB, so the source isn't invisible. Opens that KB's
+// documents, since this bar cannot upload into it.
+function KnowledgeBaseSourceChip({
+  kbId,
+  onOpen,
+}: {
+  kbId: string;
+  onOpen: () => void;
+}) {
   const [name, setName] = useState<string | null>(null);
   useEffect(() => {
     let cancelled = false;
@@ -82,9 +93,11 @@ function KnowledgeBaseSourceChip({ kbId }: { kbId: string }) {
   }, [kbId]);
   return (
     <div className="mb-2 flex w-full flex-row items-center gap-1.5 pl-0.5 pr-1.5 pt-0.5 pb-1">
-      <span
-        className="composer-pill-btn shrink-0 cursor-default"
-        title="This chat retrieves from a knowledge base. Change the source in RAG retrieval settings."
+      <button
+        type="button"
+        onClick={onOpen}
+        className="composer-pill-btn shrink-0"
+        title="Add or remove this knowledge base's documents. Change the source from the RAG pill."
       >
         <HugeiconsIcon
           icon={FileDatabaseIcon}
@@ -92,7 +105,7 @@ function KnowledgeBaseSourceChip({ kbId }: { kbId: string }) {
           className="size-3.5"
         />
         <span>{name ? `Knowledge base: ${name}` : "Knowledge base"}</span>
-      </span>
+      </button>
     </div>
   );
 }
@@ -537,6 +550,9 @@ export function ThreadDocumentsBar({
   // Desktop drops land in the native-intent store because the drop listener lives on
   // the chat page; only the chat that received the OS drop may drain its batch.
   const nativeAttachmentTargetKey = useNativeAttachmentTargetKey();
+  const [kbDialogFocus, setKbDialogFocus] = useState<KnowledgeBaseFocus | null>(
+    null,
+  );
   const hasPendingAttachments = useNativeIntentStore((s) =>
     Boolean(
       nativeAttachmentTargetKey &&
@@ -557,10 +573,19 @@ export function ThreadDocumentsBar({
       return;
     }
     // A KB-scoped chat uploads through the KB dialog, so a thread upload here would
-    // index into something this bar never shows.
+    // index into something this bar never shows. The action carries the drop there.
     if (ragEnabled && ragSource.type === "kb") {
+      const kbId = ragSource.kbId;
       toast.error("This chat retrieves from a knowledge base", {
         description: "Add these files to the knowledge base instead.",
+        action: {
+          label: "Add to knowledge base",
+          onClick: () =>
+            setKbDialogFocus({
+              kbId,
+              uploads: intents.map(uploadItemFromIntent),
+            }),
+        },
       });
       return;
     }
@@ -569,15 +594,7 @@ export function ThreadDocumentsBar({
       setRagSource({ type: "thread" });
       setRagEnabled(true);
     }
-    attach(
-      intents.map((intent) => ({
-        kind: "native" as const,
-        token: intent.path.token,
-        name: intent.displayLabel,
-        sizeBytes: intent.path.sizeBytes,
-        modifiedMs: intent.path.modifiedMs,
-      })),
-    );
+    attach(intents.map(uploadItemFromIntent));
   }, [
     hasPendingAttachments,
     projectUnresolved,
@@ -612,7 +629,22 @@ export function ThreadDocumentsBar({
 
   // A KB source uploads via the KB dialog, not here; show which KB is active.
   if (ragEnabled && ragSource.type === "kb") {
-    return <KnowledgeBaseSourceChip kbId={ragSource.kbId} />;
+    const kbId = ragSource.kbId;
+    return (
+      <>
+        <KnowledgeBaseSourceChip
+          kbId={kbId}
+          onOpen={() => setKbDialogFocus({ kbId })}
+        />
+        <KnowledgeBaseDialog
+          open={kbDialogFocus !== null}
+          onOpenChange={(next) => {
+            if (!next) setKbDialogFocus(null);
+          }}
+          focus={kbDialogFocus}
+        />
+      </>
+    );
   }
   // Project sources retrieve whether the Docs pill is on or not (chat-adapter's projectRagEnabled),
   // so list them either way rather than letting the model answer from files the user cannot see.
