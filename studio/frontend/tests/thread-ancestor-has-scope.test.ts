@@ -233,3 +233,10 @@ test("data-chat-model-notice is on the root element ChatModelNotice returns", ()
       + "data-chat-model-notice, so has-[>[data-chat-model-notice]] cannot match",
   );
 });
+
+test("index.css has no descendant-argument :has() on the panels that hold the thread", () => {
+  const css = readText("../src/index.css");
+  const offenders =
+    css.match(/(?:#chat-thread|\.chat-artifact-split|\.chat-thread-pane)[^{},]*:has\((?!\s*>)/g) ?? [];
+  assert.deepEqual(offenders, [], `descendant-argument :has() on a thread ancestor: ${offenders.join(" | ")}`);
+});
