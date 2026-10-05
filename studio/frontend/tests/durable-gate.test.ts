@@ -45,7 +45,16 @@ test("a plain text turn stays durable", () => {
 });
 
 test("only a browser-executed tool forces the legacy stream", () => {
-  assert.equal(BROWSER_EXECUTED_TOOLS.size, 0, "nothing is browser-executed today");
+  // the desktop browser tools act on the pane beside this tab, so the tab has to stay.
+  assert.ok(BROWSER_EXECUTED_TOOLS.has("browser_click"));
+  assert.ok(![...BROWSER_EXECUTED_TOOLS].some((name) => !name.startsWith("browser_")));
+  assert.equal(
+    turnRequiresLegacyStream({
+      enable_tools: true,
+      enabled_tools: ["web_search", "browser_navigate", "browser_click"],
+    }),
+    true,
+  );
 });
 
 // ── The gate itself: every term of the conjunction, as a truth table ─────────────────────

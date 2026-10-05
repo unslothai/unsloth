@@ -20,4 +20,6 @@ export const nativeBrowserTransport: BrowserTransport = {
       visible,
     }),
   snapshot: (sessionId) => invoke("desktop_browser_snapshot", { sessionId }),
+  agent: (sessionId, op, args) =>
+    invoke("desktop_browser_agent", { sessionId, op, args }),
 };

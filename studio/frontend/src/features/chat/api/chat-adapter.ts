@@ -380,6 +380,14 @@ import {
 } from "./chat-generation-api";
 import { isDurableRunCandidate, turnRequiresLegacyStream } from "./durable-gate";
 import {
+  browserToolsForTurn,
+  desktopBrowserToolsOn,
+  parseBrowserClientRequest,
+  runBrowserClientRequest,
+  supersedeBrowserSnapshots,
+  useDesktopBrowserStore,
+} from "@/features/desktop-browser";
+import {
   type OffloadCounts,
   offloadCountsFrom,
   offloadWarning,
@@ -1945,11 +1953,13 @@ export async function buildLocalTokenCountHistory(
     localMarkers: activeModel?.isGguf === false,
   });
   const survivingMessages = pruneOutboundHistory(messages, true);
-  const outboundMessages = survivingMessages
-    .flatMap((message) => toOpenAIMessages(message, true))
-    .filter((message): message is NonNullable<typeof message> =>
-      Boolean(message),
-    );
+  const outboundMessages = supersedeBrowserSnapshots(
+    survivingMessages
+      .flatMap((message) => toOpenAIMessages(message, true))
+      .filter((message): message is NonNullable<typeof message> =>
+        Boolean(message),
+      ),
+  );
   const safeSystemPrompt =
     typeof params.systemPrompt === "string"
       ? resolveSystemPromptVariables(
@@ -2085,9 +2095,13 @@ export async function buildLocalTokenCountExtras(
     getSkillsSnapshot().skills,
     codeToolsEnabled,
   );
+  const browserTools = desktopBrowserToolsOn(threadId ?? null)
+    ? browserToolsForTurn(localTargetReadsImages(state))
+    : [];
   if (
     !toolsEnabled &&
     !codeToolsEnabled &&
+    browserTools.length === 0 &&
     !artifactsEnabled &&
     !mcpEnabledForChat &&
     !ragOn &&
@@ -2122,6 +2136,7 @@ export async function buildLocalTokenCountExtras(
       ...(artifactsEnabled ? ["render_html"] : []),
       // Same gate as the request: with no enabled skill neither tool is sent, so neither is priced.
       ...(hasEnabledSkills ? ["read_skill", "create_skill"] : []),
+      ...browserTools,
     ],
     mcp_enabled: mcpEnabledForChat,
     // Top level, not inside rag_scope: an archived thread puts search_conversation and its
@@ -4274,6 +4289,13 @@ export function createOpenAIStreamAdapter(
       unstable_threadId,
       unstable_assistantMessageId,
     }) {
+      // the chat on screen at send, before any await lets the user switch away while the model loads
+      const browserViewKey = useDesktopBrowserStore.getState().viewKey;
+      const browserToolsAtSend = desktopBrowserToolsOn(
+        unstable_threadId ??
+          useChatRuntimeStore.getState().activeThreadId ??
+          null,
+      );
       // Before the first await: send() awaits document extraction and initialize() does not await
       // its row write, so the store is no longer a safe reading of the project. Null still wins.
       const creationClaim = unstable_threadId
@@ -4867,6 +4889,8 @@ export function createOpenAIStreamAdapter(
         ragAutoInjectMinScore,
       } = runtime;
       const codeToolsEnabled = codeToolsOn(runtime);
+      // the pane belongs to the chat on screen, so a send from any other chat never offers it.
+      const browserToolsEnabled = browserToolsAtSend;
       if (
         deepResearchArmed &&
         !supportsTools &&
@@ -5030,6 +5054,7 @@ export function createOpenAIStreamAdapter(
         .filter((message): message is NonNullable<typeof message> =>
           Boolean(message),
         );
+      outboundMessages = supersedeBrowserSnapshots(outboundMessages);
       if (selectedImageEditReference) {
         const referenceMessage = toOpenAIImageEditReferenceMessage(
           selectedImageEditReference,
@@ -5311,6 +5336,17 @@ export function createOpenAIStreamAdapter(
       // Per-run abort chained to assistant-ui's signal: cancelByThreadId only holds the visible thread's cancelRun().
       const runAbort = new AbortController();
       const runSignal = runAbort.signal;
+      // ends with the run however it ends, so an approval or handoff the backend gave up on cannot hold the next turn.
+      const browserRunEnd = new AbortController();
+      const browserSignal =
+        typeof AbortSignal.any === "function"
+          ? AbortSignal.any([runSignal, browserRunEnd.signal])
+          : browserRunEnd.signal;
+      if (typeof AbortSignal.any !== "function") {
+        runSignal.addEventListener("abort", () => browserRunEnd.abort(), {
+          once: true,
+        });
+      }
       const forwardAbort = () => runAbort.abort(abortSignal.reason);
       // Declared here because it doubles as this run's identity token on the per-thread maps.
       const serverCancel = () => runAbort.abort();
@@ -6393,6 +6429,7 @@ export function createOpenAIStreamAdapter(
               ...(supportsStudioToolsForThisTurn &&
               (toolsEnabled ||
                 studioLocalCodeTools.length > 0 ||
+                browserToolsEnabled ||
                 mcpEnabledForChat ||
                 ragEnabled ||
                 projectRagEnabled ||
@@ -6411,6 +6448,9 @@ export function createOpenAIStreamAdapter(
                         ? ["read_skill", "create_skill"]
                         : []),
                       ...studioLocalCodeTools,
+                      ...(browserToolsEnabled
+                        ? browserToolsForTurn(targetReadsImages)
+                        : []),
                       // Hosted tools with no local stand-in; their pills stay lit regardless, so listing only local
                       // names dropped Images/Fetch whenever another tool selected this branch. Search is excluded
                       // (Unsloth runs it above); Code rides along only when it resolved to the provider's sandbox.
@@ -6610,6 +6650,7 @@ export function createOpenAIStreamAdapter(
             ...(supportsTools &&
               (toolsEnabled ||
                 codeToolsEnabled ||
+                browserToolsEnabled ||
                 renderHtmlToolEnabledForThisTurn ||
                 mcpEnabledForChat ||
                 ragEnabled ||
@@ -6632,6 +6673,9 @@ export function createOpenAIStreamAdapter(
                       : []),
                     ...(renderHtmlToolEnabledForThisTurn
                       ? ["render_html"]
+                      : []),
+                    ...(browserToolsEnabled
+                      ? browserToolsForTurn(targetReadsImages)
                       : []),
                   ],
                   mcp_enabled: mcpEnabledForChat,
@@ -7045,6 +7089,22 @@ export function createOpenAIStreamAdapter(
                   const backendToolCallId =
                     (toolEvent.tool_call_id as string) || "";
                   const liveId = resolveToolPartId(backendToolCallId);
+                  // a browser call the backend parked for this tab to run (browser_tools.py)
+                  const browserRequest = parseBrowserClientRequest(
+                    toolEvent.client_request,
+                  );
+                  if (browserRequest) {
+                    void runBrowserClientRequest(browserRequest, {
+                      backendSessionId: sandboxSessionId ?? "",
+                      partId: liveId,
+                      threadId: resolvedThreadId ?? null,
+                      viewKey: browserViewKey,
+                      permissionMode,
+                      signal: browserSignal,
+                      stop: serverCancel,
+                    });
+                    continue;
+                  }
                   const liveText =
                     typeof toolEvent.text === "string" ? toolEvent.text : "";
                   if (liveId && liveText) {
@@ -8501,6 +8561,7 @@ export function createOpenAIStreamAdapter(
         }
         runSignal.removeEventListener("abort", onAbortCancel);
         abortSignal.removeEventListener("abort", forwardAbort);
+        browserRunEnd.abort();
         // Resolve once: the clears below drop the owner the lookup keys on.
         const cleanupKey = liveThreadKey(serverCancel);
         const confirmStore = useChatRuntimeStore.getState();

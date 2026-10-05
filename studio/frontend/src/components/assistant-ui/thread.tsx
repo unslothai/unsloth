@@ -56,6 +56,7 @@ import { RenderHtmlToolUI } from "@/components/assistant-ui/tool-ui-render-html"
 import { PythonToolUI } from "@/components/assistant-ui/tool-ui-python";
 import { TerminalToolUI } from "@/components/assistant-ui/tool-ui-terminal";
 import { WebSearchToolUI } from "@/components/assistant-ui/tool-ui-web-search";
+import { BrowserToolUI } from "@/components/assistant-ui/tool-ui-browser";
 import { ChatDictationBar } from "@/components/assistant-ui/chat-dictation-bar";
 import {
   ChatAudioUploadMount,
@@ -308,6 +309,8 @@ import { useVoiceSettingsStore } from "@/features/settings/stores/voice-settings
 import { applyQwenThinkingParams } from "@/features/chat/utils/qwen-params";
 import { isTauri } from "@/lib/api-base";
 import { InternetGlyph } from "@/lib/internet-icon";
+import { BROWSER_TOOL_NAMES } from "@/lib/browser-tool-names";
+import { useDesktopBrowserStore } from "@/features/desktop-browser";
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import { MenuDismissGuard } from "@/lib/menu-dismiss-guard";
 import { useWindowChromeCollisionPadding } from "@/lib/window-chrome";
@@ -334,6 +337,7 @@ import { flushResourcesSync } from "@assistant-ui/tap";
 import {
   AttachmentIcon,
   Bookmark02Icon,
+  BrowserIcon,
   CodeIcon,
   Copy01Icon,
   Delete02Icon,
@@ -5369,6 +5373,7 @@ const Composer: FC<{
               ) : null}
               <WebSearchToggle />
               <CodeToolsToggle />
+              <BrowserToolsToggle />
               <ImagesToggle />
               <KnowledgeBaseComposerButton side={effectiveMenuSide} />
               {artifactsEnabled ? <ArtifactsToggle /> : null}
@@ -6212,6 +6217,58 @@ const WebSearchToggle: FC = () => {
   );
 };
 
+/** the browser tools run in Studio's own tool loop, so the model must be one that loop serves. */
+function useBrowserToolsDisabled(): boolean {
+  const modelLoaded = useChatRuntimeStore(
+    (s) => !!s.params.checkpoint && !s.modelLoading,
+  );
+  const checkpoint = useChatRuntimeStore((s) => s.params.checkpoint);
+  const supportsTools = useChatRuntimeStore((s) => s.supportsTools);
+  const connectionsEnabled = useExternalProvidersStore(
+    (s) => s.connectionsEnabled,
+  );
+  const providers = useExternalProvidersStore((s) => s.providers);
+  const external = parseExternalModelId(checkpoint);
+  if (external) {
+    const provider = connectionsEnabled
+      ? providers.find((p) => p.id === external.providerId)
+      : undefined;
+    return (
+      providerModelSupportsStudioTools(provider?.providerType, external.modelId) !==
+      true
+    );
+  }
+  return modelLoaded && !supportsTools;
+}
+
+const BrowserToolsToggle: FC = () => {
+  const available = useDesktopBrowserStore((s) => s.available);
+  const enabled = useDesktopBrowserStore((s) => s.agentEnabled);
+  const setEnabled = useDesktopBrowserStore((s) => s.setAgentEnabled);
+  const disabled = useBrowserToolsDisabled();
+  if (!isTauri || !available) return null;
+  return (
+    <button
+      type="button"
+      disabled={disabled}
+      onClick={() => setEnabled(!enabled)}
+      className="composer-pill-btn"
+      data-pill-label="Browser"
+      data-active={enabled && !disabled ? "true" : "false"}
+      aria-label={enabled ? "Stop letting the model use the browser" : "Let the model use the browser"}
+    >
+      <PillGlyph>
+        <HugeiconsIcon
+          icon={BrowserIcon}
+          className="size-[calc(16px*var(--ui-space-scale,1))]"
+          strokeWidth={2}
+        />
+      </PillGlyph>
+      <span>Browser</span>
+    </button>
+  );
+};
+
 const CodeToolsToggle: FC = () => {
   const modelLoaded = useChatRuntimeStore(
     (s) => !!s.params.checkpoint && !s.modelLoading,
@@ -6439,6 +6496,12 @@ const ComposerToolsMenu: FC<{
   const setToolsEnabled = useChatRuntimeStore((s) => s.setToolsEnabled);
   const codeToolsEnabled = useChatRuntimeStore(codeToolsOn);
   const setCodeToolsEnabled = useChatRuntimeStore((s) => s.setCodeToolsEnabled);
+  const browserAvailable = useDesktopBrowserStore((s) => s.available);
+  const browserToolsEnabled = useDesktopBrowserStore((s) => s.agentEnabled);
+  const setBrowserToolsEnabled = useDesktopBrowserStore(
+    (s) => s.setAgentEnabled,
+  );
+  const browserDisabled = useBrowserToolsDisabled();
   const artifactsEnabled = useChatRuntimeStore((s) => s.artifactsEnabled);
   const setArtifactsEnabled = useChatRuntimeStore((s) => s.setArtifactsEnabled);
   const showCanvasMenuItem = useChatRuntimeStore((s) => s.showCanvasMenuItem);
@@ -6950,6 +7013,27 @@ const ComposerToolsMenu: FC<{
             />
           ) : null}
         </DropdownMenuItem>
+        {isTauri && browserAvailable ? (
+          <DropdownMenuItem
+            disabled={browserDisabled}
+            className={
+              browserToolsEnabled && !browserDisabled
+                ? "text-primary font-medium"
+                : undefined
+            }
+            onSelect={() => setBrowserToolsEnabled(!browserToolsEnabled)}
+          >
+            <HugeiconsIcon icon={BrowserIcon} strokeWidth={2} />
+            Browser
+            {browserToolsEnabled && !browserDisabled ? (
+              <HugeiconsIcon
+                icon={Tick02Icon}
+                strokeWidth={2}
+                className="ml-auto"
+              />
+            ) : null}
+          </DropdownMenuItem>
+        ) : null}
         {researchAvailable ? (
           <DropdownMenuItem
             disabled={researchDisabled && !deepResearchEnabled}
@@ -7708,6 +7792,13 @@ const ReadSkillToolUIConfirmable = withToolConfirmation((props) => (
   <ReadSkillToolUI {...props} />
 ));
 const ToolFallbackConfirmable = withToolConfirmation(ToolFallback);
+// read at render time, not module scope, because the browser store module reaches the chat barrel.
+const BrowserToolUIConfirmable = withToolConfirmation((props) => (
+  <BrowserToolUI {...props} />
+));
+const BROWSER_TOOL_COMPONENTS = Object.fromEntries(
+  BROWSER_TOOL_NAMES.map((name) => [name, BrowserToolUIConfirmable]),
+);
 
 /**
  * At module scope on purpose. The memo comparator in
@@ -7734,6 +7825,7 @@ const ASSISTANT_PART_COMPONENTS = {
       code_execution: CodeExecutionToolUIConfirmable,
       image_generation: ImageGenerationToolUIConfirmable,
       render_html: RenderHtmlToolUIConfirmable,
+      ...BROWSER_TOOL_COMPONENTS,
     },
     Fallback: ToolFallbackConfirmable,
   },

@@ -7,7 +7,13 @@ import {
   ResizablePanelGroup,
 } from "@/components/ui/resizable";
 import { isTauri } from "@/lib/api-base";
-import { type ReactNode, useCallback, useEffect, useRef } from "react";
+import {
+  type ReactNode,
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+} from "react";
 import type { PanelImperativeHandle } from "react-resizable-panels";
 import { BrowserPane } from "./browser-pane";
 
@@ -19,6 +25,18 @@ export function BrowserSplit({
   const chatRef = useRef<PanelImperativeHandle | null>(null);
   const measureRef = useRef<(() => void) | null>(null);
   const frameRef = useRef(0);
+  // full view keeps the chat at its minimum rather than hiding it, since the agent's approvals and Stop live there.
+  const [expanded, setExpanded] = useState(false);
+  // reopening starts at the even split, so full view resets during render rather than in the effect below
+  const [wasOpen, setWasOpen] = useState(open);
+  if (wasOpen !== open) {
+    setWasOpen(open);
+    if (open) setExpanded(false);
+  }
+  const toggleExpanded = useCallback(() => {
+    chatRef.current?.resize(expanded ? "50%" : "320px");
+    setExpanded(!expanded);
+  }, [expanded]);
   const resampleBrowser = useCallback(() => {
     if (frameRef.current) return;
     frameRef.current = requestAnimationFrame(() => {
@@ -74,7 +92,12 @@ export function BrowserSplit({
             minSize="320px"
             className="min-h-0 min-w-0 overflow-hidden"
           >
-            <BrowserPane onClose={onClose} measureRef={measureRef} />
+            <BrowserPane
+              onClose={onClose}
+              measureRef={measureRef}
+              expanded={expanded}
+              onToggleExpanded={toggleExpanded}
+            />
           </ResizablePanel>
         </>
       ) : null}

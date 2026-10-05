@@ -27,6 +27,13 @@ export type BrowserAction =
   | "stop"
   | "focus"
   | "dismiss-popup";
+/** what the page runtime or the native layer answered for one agent operation. */
+export type BrowserAgentReply = {
+  ok: boolean;
+  error?: string;
+  code?: string;
+  [key: string]: unknown;
+};
 export type BrowserTransport = {
   open: (
     sessionId: string,
@@ -43,6 +50,11 @@ export type BrowserTransport = {
   snapshot: (sessionId: string) => Promise<BrowserSnapshot>;
   navigate: (sessionId: string, url: string) => Promise<void>;
   action: (sessionId: string, action: BrowserAction) => Promise<void>;
+  agent: (
+    sessionId: string,
+    op: string,
+    args: Record<string, unknown>,
+  ) => Promise<BrowserAgentReply>;
 };
 
 export function resolveAddress(input: string): string {
@@ -72,6 +84,12 @@ export function resolveAddress(input: string): string {
     return `https://duckduckgo.com/?q=${encodeURIComponent(value)}`;
   }
   return new URL(`https://${value}`).href;
+}
+
+/** drops https:// and a lone trailing slash so a narrow pane still shows the site; http:// stays, since it says something. */
+export function displayAddress(url: string): string {
+  const shown = url.replace(/^https:\/\//i, "");
+  return shown.replace(/^([^/?#]+)\/$/, "$1");
 }
 
 // getBoundingClientRect is CSS pixels; Tauri expects window-relative logical pixels.
@@ -188,6 +206,9 @@ export class BrowserSession {
   get error(): string | null {
     return this.errorValue;
   }
+  get isReady(): boolean {
+    return this.ready;
+  }
   subscribe(
     listener: (snapshot: BrowserSnapshot | null, error: string | null) => void,
   ): () => void {
@@ -283,6 +304,31 @@ export class BrowserSession {
   }
   async action(action: BrowserAction): Promise<void> {
     await this.command(() => this.transport.action(this.id, action));
+  }
+  /** unlike navigate/action, failures reach the caller: the agent reports them to the model. */
+  async agent(
+    op: string,
+    args: Record<string, unknown> = {},
+  ): Promise<BrowserAgentReply> {
+    if (!this.ready) throw new Error("The browser is not open");
+    return this.transport.agent(this.id, op, args);
+  }
+  /** the native state now, not the last poll's. */
+  async refresh(): Promise<BrowserSnapshot | null> {
+    if (!this.ready) return null;
+    const generation = this.generation;
+    const snapshot = await this.transport.snapshot(this.id);
+    if (generation === this.generation) this.publish(snapshot, null);
+    return snapshot;
+  }
+  /** navigation for the agent: errors are thrown rather than painted. */
+  async go(url: string): Promise<void> {
+    if (!this.ready) throw new Error("The browser is not open");
+    await this.transport.navigate(this.id, url);
+  }
+  async goAction(action: BrowserAction): Promise<void> {
+    if (!this.ready) throw new Error("The browser is not open");
+    await this.transport.action(this.id, action);
   }
   private async command(run: () => Promise<void>): Promise<void> {
     if (!this.ready) return;

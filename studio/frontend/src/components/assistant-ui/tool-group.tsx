@@ -9,6 +9,8 @@ import {
   type PropsWithChildren,
 } from "react";
 import { useAuiState } from "@assistant-ui/react";
+// eslint-disable-next-line no-restricted-imports -- this file is in the startup cycle; the barrel would close it.
+import { useDesktopBrowserStore } from "@/features/desktop-browser/browser-store";
 import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
 import { useChatPreferencesStore } from "@/features/chat/stores/chat-preferences-store";
 // eslint-disable-next-line no-restricted-imports -- this file is in the startup cycle; the chat barrel closes it.
@@ -272,10 +274,25 @@ const ToolGroupImpl: FC<
   // A blocking allow/deny prompt must never be hidden inside a collapsed
   // group, so force the group open while any of its calls awaits confirmation.
   const toolConfirmations = useChatRuntimeStore((s) => s.toolConfirmations);
+  // the browser tools ask in the client, not through the backend's gate.
+  const browserApprovals = useDesktopBrowserStore((s) => s.approvals);
+  const browserHandoffs = useDesktopBrowserStore((s) => s.handoffs);
   const hasPendingConfirmation = useAuiState(({ message }) =>
     message.parts
       .slice(startIndex, endIndex + 1)
-      .some((part) => awaitsConfirmation(part, toolConfirmations)),
+      .some(
+        (part) =>
+          awaitsConfirmation(part, toolConfirmations) ||
+          (part.type === "tool-call" &&
+            (Object.prototype.hasOwnProperty.call(
+              browserApprovals,
+              part.toolCallId,
+            ) ||
+              Object.prototype.hasOwnProperty.call(
+                browserHandoffs,
+                part.toolCallId,
+              ))),
+      ),
   );
   const messageRunning = useAuiState(
     ({ message }) => message.status?.type === "running",

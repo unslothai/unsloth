@@ -1,16 +1,17 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { BROWSER_TOOL_NAMES } from "@/lib/browser-tool-names";
+
 /**
  * Tools the BROWSER has to execute itself, so a turn that uses one genuinely cannot proceed once the tab is gone
  * and must stay on the subscriber-owned (cancel-on-disconnect) stream.
  *
- * Intentionally empty: every tool Studio runs for a local model - web_search, web_fetch, python, terminal,
- * edit_file, render_html, image_generation, MCP - is executed by the SERVER and streams as chunk events, so it is
- * durable like plain text. The set exists to name the exception the durable gate keys on, not to re-list the
- * server's own tools. Add a name here only if a tool truly needs a live tab.
+ * only the desktop browser tools, which act on the native pane beside this tab and cannot run on the server.
  */
-export const BROWSER_EXECUTED_TOOLS: ReadonlySet<string> = new Set<string>([]);
+export const BROWSER_EXECUTED_TOOLS: ReadonlySet<string> = new Set<string>(
+  BROWSER_TOOL_NAMES,
+);
 
 /**
  * Whether this turn must fall back to the legacy stream that cancels when the browser disconnects.

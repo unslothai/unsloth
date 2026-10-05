@@ -82,7 +82,12 @@ import {
 import { isNpuModelId } from "@/features/npu";
 import { GuidedTour, useGuidedTourController } from "@/features/tour";
 import { isTauri } from "@/lib/api-base";
-import { BrowserSplit, shouldCloseBrowser, type BrowserContext } from "@/features/desktop-browser";
+import {
+  BrowserSplit,
+  shouldCloseBrowser,
+  type BrowserContext,
+  useDesktopBrowserStore,
+} from "@/features/desktop-browser";
 import { chatModelLoaded } from "./lib/chat-model-loaded";
 import { hasKnownContextWindow } from "./lib/context-window-known";
 import { isDownloadCancelled } from "@/lib/native-files";
@@ -94,6 +99,7 @@ import {
 } from "./utils/conversation-markdown";
 import {
   Archive03Icon,
+  BrowserIcon,
   BubbleChatTemporaryIcon,
   Delete02Icon,
   Download01Icon,
@@ -4146,7 +4152,8 @@ export function ChatPage({
     selectedArtifact &&
       (view.mode === "compare" || artifactSurface === "overlay"),
   );
-  const [browserOpen, setBrowserOpen] = useState(false);
+  const browserOpen = useDesktopBrowserStore((s) => s.open);
+  const setBrowserOpen = useDesktopBrowserStore((s) => s.setOpen);
   const browserThreadId = view.mode === "single" ? (view.threadId ?? activeThreadId ?? null) : null;
   const browserNewNonce = view.mode === "single" ? (view.newThreadNonce ?? null) : null;
   const browserContext: BrowserContext = useMemo(() => ({
@@ -4167,6 +4174,17 @@ export function ChatPage({
     previousBrowserContext.current = browserContext;
   }, [browserOpen, browserContext]);
   const showDesktopBrowser = isTauri && active && view.mode === "single" && !browserContext.research && !browserContext.canvas;
+  // the agent opens the pane through the store, so the store tracks when opening is allowed.
+  const browserViewOrigin = useRef<{ context: BrowserContext; key: string } | null>(null);
+  useEffect(() => {
+    const key = browserThreadId ?? `new:${browserNewNonce ?? ""}`;
+    const previous = browserViewOrigin.current;
+    // a first send adopts an id in place, and a run sent before that still belongs to this view
+    const origin = previous && !shouldCloseBrowser(previous.context, browserContext) ? previous.key : key;
+    browserViewOrigin.current = { context: browserContext, key: origin };
+    useDesktopBrowserStore.getState().setAvailable(showDesktopBrowser, browserThreadId, key, origin);
+  }, [showDesktopBrowser, browserThreadId, browserNewNonce, browserContext]);
+  useEffect(() => () => useDesktopBrowserStore.getState().setAvailable(false, null, null, null), []);
 
   return (
     // Provides `active` to ChatRuntimeProvider (drops the message views while off-route, keeping the
@@ -4341,17 +4359,36 @@ export function ChatPage({
           </div>
           <div className="pointer-events-auto ml-auto flex min-w-min max-w-max grow basis-0 items-center gap-1 *:shrink-0">
             {showDesktopBrowser ? (
-              <button
-                type="button"
-                data-testid="desktop-browser-toggle"
-                aria-label="Browser"
-                aria-pressed={browserOpen}
-                title={browserOpen ? "Close browser" : "Open browser"}
-                onClick={() => setBrowserOpen((open) => !open)}
-                className="flex h-[var(--studio-chat-control-height,34px)] items-center rounded-lg px-2 text-xs text-nav-fg hover:bg-nav-surface-hover"
-              >
-                Browser
-              </button>
+              <Tooltip>
+                <TooltipPrimitive.Trigger asChild={true}>
+                  <button
+                    type="button"
+                    data-testid="desktop-browser-toggle"
+                    onClick={() => setBrowserOpen(!browserOpen)}
+                    className={cn(
+                      "flex size-[calc(30px*var(--ui-space-scale,1))] cursor-pointer items-center justify-center rounded-[10px] transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
+                      browserOpen
+                        ? "bg-primary/10 text-primary hover:bg-primary/15"
+                        : "text-nav-fg hover:bg-nav-surface-hover hover:text-black dark:hover:text-white",
+                    )}
+                    aria-label={browserOpen ? "Close browser" : "Open browser"}
+                    aria-pressed={browserOpen}
+                  >
+                    <HugeiconsIcon
+                      icon={BrowserIcon}
+                      strokeWidth={1.75}
+                      className="size-icon"
+                    />
+                  </button>
+                </TooltipPrimitive.Trigger>
+                <TooltipContent
+                  side="bottom"
+                  sideOffset={6}
+                  className="tooltip-compact"
+                >
+                  {browserOpen ? "Close browser" : "Open browser"}
+                </TooltipContent>
+              </Tooltip>
             ) : null}
             {showContextWindowUsage &&
             view.mode === "single" &&
