@@ -470,7 +470,8 @@ export function SandboxTab() {
               <Button
                 size="sm"
                 variant="outline"
-                disabled={loading}
+                // A read started mid-save can see the old value and would drop the save's answer.
+                disabled={loading || saving}
                 onClick={() => {
                   setLoading(true);
                   void refresh(true);
