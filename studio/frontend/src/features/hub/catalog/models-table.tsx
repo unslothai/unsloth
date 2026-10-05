@@ -213,7 +213,7 @@ export function HubListHeader({
 
   return (
     <div
-      className="flex items-center justify-between gap-4 pb-3"
+      className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2 pb-3"
       aria-label={accessibleLabel}
     >
       <div className="flex min-w-0 items-center gap-1.5">
@@ -268,9 +268,7 @@ export function HubListHeader({
         )}
       </div>
       {(actions || onViewChange) && (
-        // min-w-0 (not shrink-0) so shrinkable actions (the On-device filter
-        // pills) compress before the title is forced onto two lines.
-        <div className="flex min-w-0 items-center gap-2">
+        <div className="ml-auto flex min-w-0 flex-wrap items-center justify-end gap-2">
           {actions}
           {onViewChange && (
             <div

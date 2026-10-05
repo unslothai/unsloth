@@ -184,8 +184,10 @@ shell process, repeat on every run" is a cluster behavioural engines score, and 
 changed nothing it is also pure waste. So both install.ps1 and install.sh snapshot the icon and run
 the heavy path only on a first install or an actual change, preserving start2.bin.
 
-SHChangeNotify stays, and with it one shell32 import: a permanently wrong desktop icon is a worse
-outcome than one import.
+SHChangeNotify stays, called through a Windows Python's ctypes in both install.ps1 and the WSL
+shortcut script install.sh generates, so neither defines a native type. Where no interpreter can be
+reached the per-item refresh is skipped: a stale icon on a shortcut that works is cosmetic, and the
+heavier refresh above still runs on a first install or an icon change.
 
 ## uv comes from a pinned archive, not from a remote install script
 

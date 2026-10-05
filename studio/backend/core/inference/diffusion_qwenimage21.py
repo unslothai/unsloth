@@ -21,6 +21,7 @@ import weakref
 from typing import Any, Optional
 
 FAST_STEP_ENV = "UNSLOTH_DIFFUSION_Q21_FAST_STEP"
+COMPACT_KV_ENV = "UNSLOTH_DIFFUSION_Q21_COMPACT_KV"
 
 _MODULE = "diffusers.models.transformers.transformer_qwenimage21"
 _CLASS = "QwenImage21Transformer2DModel"
@@ -400,6 +401,7 @@ def _make_forward(mod: Any, stock: Any) -> Any:
             cache_write_slice = slice(0, prefix_len) if kv_cache_mode == "extract" else None
             block_key_valid = joint_key_valid
 
+        compact_kv = compact_kv_enabled()
         for index_block, block in enumerate(self.transformer_blocks):
             layer_cache = kv_cache.get_layer(index_block) if kv_cache is not None else None
             joint_hidden_states = block(
@@ -414,6 +416,8 @@ def _make_forward(mod: Any, stock: Any) -> Any:
                 segments = block_segments,
                 key_valid = block_key_valid,
             )
+            if layer_cache is not None and cache_write_slice is not None and compact_kv:
+                _compact_layer_cache(layer_cache)
 
         joint_hidden_states = self.norm_out(joint_hidden_states, temb, modulation_mask)
         output = self.proj_out(joint_hidden_states)
@@ -427,6 +431,27 @@ def _make_forward(mod: Any, stock: Any) -> Any:
     wrapped.__unsloth_q21_fast_step__ = True
     wrapped.__unsloth_stock_forward__ = stock
     return wrapped
+
+
+def compact_kv_enabled() -> bool:
+    return (os.environ.get(COMPACT_KV_ENV) or "").strip().lower() not in ("0", "off", "false", "no")
+
+
+def _compact_layer_cache(layer_cache: Any) -> None:
+    """Copy a prefix K/V entry that is a view of a larger buffer. Under compile Inductor turns the extract step's
+    ``key[:, :prefix].clone()`` into a view of the full text + image K/V, pinning ~2 GiB across 32 blocks at 1 MP for
+    step 0. Bit-identical."""
+    for name in ("k", "v"):
+        tensor = getattr(layer_cache, name, None)
+        try:
+            if (
+                tensor is None
+                or tensor.untyped_storage().nbytes() <= tensor.numel() * tensor.element_size()
+            ):
+                continue
+            setattr(layer_cache, name, tensor.clone())
+        except Exception:  # noqa: BLE001 - a memory saving only; keep the entry as stored
+            continue
 
 
 def install(logger: Any = None) -> bool:

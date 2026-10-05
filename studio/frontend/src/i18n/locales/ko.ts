@@ -2,9 +2,11 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import type { DeepPartialMessageTree } from "../types";
-import type { en } from "./en";
+import { en } from "./en.ts";
 
 export const ko = {
+  // English fallback until this experimental feature is translated.
+  managedEngines: en.managedEngines,
   composerSettings: {
     title: "메시지 입력",
     plainText: "일반 텍스트 입력",
@@ -94,6 +96,7 @@ export const ko = {
     useModelScope: "ModelScope 사용",
     useModelScopeHint: "대신 ModelScope에서 검색하고 다운로드합니다. 설정에서 다시 바꿀 수 있습니다.",
     useModelScopeFailed: "ModelScope로 전환하지 못했습니다.",
+    updateToken: "토큰 업데이트",
     hfToken: {
       label: "HF 토큰",
       saved: "저장됨",
@@ -140,6 +143,13 @@ export const ko = {
       next: "다음 결과",
       close: "찾기 닫기",
       truncated: "이 페이지는 너무 길어 전체를 검색할 수 없습니다.",
+    },
+    zoom: {
+      label: "확대/축소",
+      zoomOut: "축소",
+      zoomIn: "확대",
+      reset: "재설정",
+      announce: "확대/축소 {percent}%",
     },
     beta: "BETA",
     brand: "unsloth",
@@ -201,6 +211,53 @@ export const ko = {
       help: "도움말",
       logOut: "로그아웃",
       shutdown: "종료",
+    },
+    commandPalette: {
+      placeholder: "명령어를 입력하거나 검색하세요...",
+      noResults: "결과를 찾을 수 없습니다.",
+      navigation: "탐색",
+      actions: "작업",
+      chat: "채팅",
+      searchChats: "채팅 검색...",
+    },
+    search: {
+      placeholder: "검색",
+      tabs: {
+        all: "전체",
+        chats: "채팅",
+        projects: "프로젝트",
+        files: "파일",
+        models: "모델",
+      },
+      recents: "최근 항목",
+      actions: "작업",
+      newChat: "새 채팅",
+      newTemporaryChat: "새 임시 채팅",
+      fineTune: "모델 파인튜닝",
+      generateImage: "이미지 생성",
+      generateVideo: "동영상 생성",
+      untitledChat: "제목 없는 채팅",
+      compare: "비교",
+      loading: "로딩 중...",
+      empty: {
+        all: "아직 검색할 항목이 없습니다.",
+        chats: "아직 채팅이 없습니다.",
+        projects: "아직 프로젝트가 없습니다.",
+        files: "아직 라이브러리에 파일이 없습니다.",
+        models: "아직 다운로드한 모델이 없습니다.",
+      },
+      noMatches: "결과가 없습니다.",
+      when: {
+        today: "오늘",
+        pastWeek: "지난주",
+        pastMonth: "지난달",
+        older: "이전",
+      },
+      footer: {
+        close: "닫기",
+        changeType: "유형 변경",
+        open: "열기",
+      },
     },
     notFound: {
       title: "페이지를 찾을 수 없습니다",
@@ -478,6 +535,10 @@ export const ko = {
           label: "키보드 단축키",
           description: "이 단축키 목록을 엽니다",
         },
+        openCommandPalette: {
+          label: "명령 팔레트",
+          description: "명령 팔레트 열기",
+        },
         searchChats: {
           label: "채팅 검색",
           description: "채팅 검색 창을 엽니다",
@@ -715,6 +776,7 @@ export const ko = {
       disabled: "파일 로깅이 꺼져 있습니다 (UNSLOTH_STUDIO_NO_FILE_LOG=1).",
       missing: "로그 파일을 찾을 수 없습니다.",
       unreadable: "로그 파일을 읽을 수 없습니다.",
+      viewLogs: "로그 보기",
       timeout: "로그 요청 시간이 초과되었습니다. 서버에 연결할 수 없을 수 있습니다.",
       droppedNotice: "일부 줄이 누락되었습니다. 로그를 읽는 속도보다 기록되는 속도가 빨랐습니다.",
       morePending: "아직 더 많은 줄을 읽고 있습니다. 다음 새로 고침에 표시됩니다.",
@@ -1081,6 +1143,9 @@ export const ko = {
         source: "모델 소스",
         sourceDescription: "모델 허브가 검색하고 다운로드하는 곳입니다. 네트워크에서 Hugging Face가 차단되었거나 느리면 ModelScope를 선택하세요.",
         sourceFallback: "ModelScope를 시작할 수 없어 Hugging Face를 사용하고 있습니다. Unsloth 로그를 확인하세요.",
+        autoSourceTitle: "모델 소스를 ModelScope로 전환했습니다",
+        autoSourceDescription: "현재 지역에서는 Hugging Face가 느리거나 차단되는 경우가 많아 Unsloth가 이제 ModelScope에서 모델을 다운로드합니다.",
+        autoSourceAction: "모델 소스 설정 열기",
         sectionTitle: "모델 허브",
         endpoint: "Hugging Face 엔드포인트",
         endpointDescription: "모델과 데이터셋을 내려받는 곳입니다. 비워 두면 huggingface.co를 사용하고, 미러를 쓰려면 https://hf-mirror.com 같은 주소를 입력하세요.",
@@ -1182,9 +1247,22 @@ export const ko = {
       },
       permissions: {
         sectionTitle: "권한",
-        bypassLabel: "도구 권한",
-        bypassDescription:
-          "채팅의 도구 호출(터미널, python, 웹, MCP)을 실행하기 전에 Unsloth가 승인하는 방식입니다. “Full access”를 선택하면 승인과 코드 샌드박스가 꺼집니다.",
+        names: {
+          ask: "승인 요청",
+          auto: "대신 승인",
+          off: "자동 실행",
+          full: "전체 액세스",
+        },
+        details: {
+          ask:
+            "터미널 및 Python 코드, 웹 검색, 파일 편집, MCP 도구를 포함해 모든 도구 호출 전에 묻습니다. 외부 제공업체가 실행하는 도구는 멈추지 않습니다. 각 단계를 직접 확인하고 싶을 때 적합합니다.",
+          auto:
+            "일반적인 도구 호출은 알아서 실행하고, 자격 증명 읽기, 권한 상승, 파괴적인 명령 실행처럼 위험해 보이는 작업일 때만 묻습니다.",
+          off:
+            "모든 도구 호출을 묻지 않고 실행합니다. Python과 터미널 코드는 여전히 샌드박스 안에서 실행되어 컴퓨터에서 접근할 수 있는 파일이 제한됩니다.",
+          full:
+            "모든 도구 호출을 묻지 않고 실행하며 코드 샌드박스를 꺼서, Python과 터미널 코드가 계정이 접근할 수 있는 모든 파일을 읽고 변경할 수 있습니다. 샌드박스 밖에서 작업해야 하는 신뢰할 수 있는 작업에 적합합니다.",
+        },
       },
     },
     profile: {
@@ -1307,20 +1385,13 @@ export const ko = {
           wide: "넓게",
           full: "전체 너비",
         },
-        composerAttachments: {
-          label: "입력창의 첨부 파일",
-          description:
-            "입력창을 키우는 큰 카드 또는 작은 타일 한 줄로 표시합니다.",
-          cards: "큰 카드",
-          compact: "작은 타일",
-        },
         sentAttachments: {
           label: "보낸 메시지의 첨부 파일",
           description:
-            "각 파일의 형식을 보여 주는 목록 또는 작은 칩으로 표시합니다. 자동은 파일이 6개를 넘으면 칩으로 바뀝니다.",
+            "표준은 각 파일을 형식과 함께 표시하고, 컴팩트는 한 줄에 더 많이 표시합니다. 자동은 파일이 6개를 넘으면 컴팩트로 바뀝니다.",
           auto: "자동",
-          list: "목록",
-          chips: "칩",
+          list: "표준",
+          chips: "컴팩트",
         },
         reset: "초기화",
         resetAll: "사용자 지정 초기화",
@@ -1541,7 +1612,11 @@ export const ko = {
         noRamReserve: "모델을 위해 시스템 RAM을 예약하지 않음",
         noRamReserveDescription: "모델 가중치가 차지하는 RAM을 줄입니다.",
         noRamReserveHint: "모델이 GPU에 완전히 오프로드된 경우 지원되는 Windows 빌드에서 메모리 매핑 로딩을 건너뛰어 파일 페이지가 상주하지 않도록 합니다. 그렇지 않으면 메모리 매핑 로딩을 유지합니다. 필요한 CPU 버퍼는 여전히 RAM을 사용할 수 있습니다. --no-mmap과 --mlock을 제거합니다.",
+        multiModel: "여러 모델을 로드된 상태로 유지",
+        multiModelDescription: "모델을 로드해도 다른 모델이 메모리에 남아 있습니다.",
+        multiModelHint: "로드된 각 모델은 해당 모델을 지정한 요청에 응답합니다. GPU가 여러 개이면 여유가 있을 때 새 모델은 다른 모델이 사용하지 않는 GPU에 배치됩니다. 다른 모델과 함께 들어가지 않으면 사용하지 않는 모델을 먼저 언로드하고, 그래도 부족하면 활성 모델을 대체합니다. 학습은 활성 모델보다 추가 모델을 먼저 언로드합니다.",
         mlockVetoed: "--mlock은 꺼진 상태로 유지됩니다. 모델을 고정하면 모델 전체 크기만큼 RAM을 예약하게 됩니다. 유휴 시 자동 언로드는 계속 비활성화됩니다.",
+        mlockNotApplicable: "모두 GPU에 있어 시스템 RAM에 고정할 것이 없습니다. 유휴 시 자동 언로드는 계속 꺼져 있습니다.",
         memlockCapped: "이 시스템은 잠금 메모리를 {limit}로 제한합니다. 더 큰 모델은 완전히 고정되지 않습니다. ulimit -l로 한도를 늘리세요.",
         reloadRequired: "새 메모리 옵션을 적용하려면 모델을 다시 로드하세요.",
         loadError: "모델 메모리 설정을 불러오지 못했습니다",
@@ -1776,9 +1851,6 @@ export const ko = {
         "붙여넣은 텍스트가 {count}자 이상이면 .txt 첨부 파일이 됩니다. 더 짧은 텍스트는 입력창에 남습니다.",
       pastedTextOffDescription:
         "길이와 관계없이 붙여넣은 모든 텍스트가 입력창에 남습니다.",
-      projectsSection: "프로젝트 섹션 표시",
-      projectsSectionDescription:
-        "프로젝트 채팅을 프로젝트 제목 아래에 모읍니다. 끄면 최근 항목에 표시됩니다.",
       title: "채팅",
       description: "이 기기에서 채팅이 작동하는 방식을 사용자 지정합니다.",
       modelSelection: {
@@ -1815,6 +1887,11 @@ export const ko = {
       autoScrollManual: "수동",
       autoScrollKeywords:
         "스크롤 자동 스크롤 따라가기 아래 이동 스트리밍 생성 고정 scroll autoscroll follow",
+      scrollToBottomButton: "맨 아래로 스크롤 버튼",
+      scrollToBottomButtonDescription:
+        "위로 스크롤한 뒤 최신 메시지로 돌아가는 버튼을 표시합니다.",
+      scrollToBottomButtonKeywords:
+        "스크롤 맨 아래 최신 화살표 버튼 숨기기 scroll bottom button",
       showResponseModel: "응답 모델 표시",
       showResponseModelDescription:
         "어시스턴트 응답에 모델 메타데이터를 표시합니다.",
@@ -1887,6 +1964,22 @@ export const ko = {
           "설정 → 채팅에서 “{setting}”을 켜면 Canvas가 외부 리소스를 불러올 수 있습니다. 이 Canvas에서만 허용할 수도 있습니다.",
         blockedSettingsAction: "설정 열기",
         blockedDismiss: "닫기",
+        errorTitle: "이 Canvas에서 오류가 발생했습니다",
+        errorTitlePlural: "이 Canvas에서 오류 {count}개가 발생했습니다",
+        errorHint: "“모델로 수정”은 오류를 메시지 입력창에 넣기만 합니다. 직접 보내기 전에는 아무것도 전송되지 않습니다.",
+        errorBannerAction: "모델로 수정",
+        errorConsoleAction: "콘솔 열기",
+        errorConsoleHideAction: "콘솔 숨기기",
+        errorLocation: "{line}행, {column}열",
+        errorLine: "{line}행",
+        consoleTitle: "콘솔",
+        reloadCanvas: "다시 실행",
+        consoleMessageCount: "메시지 {count}개",
+        consoleMessageCountPlural: "메시지 {count}개",
+        consoleClear: "콘솔 지우기",
+        consoleClose: "콘솔 닫기",
+        consoleEmpty: "아직 콘솔 출력이 없습니다.",
+        consoleCapped: "최근 {count}개만 유지되며 이전 출력은 삭제되었습니다.",
       },
       data: "데이터",
       exportHistory: "채팅 기록 내보내기",
@@ -2168,11 +2261,13 @@ export const ko = {
       revoking: "폐기 중...",
       decisionApi: {
         title: "판단 API",
-        description: "로컬 Laya 모델로 텍스트에 대한 예/아니오, 객관식, 점수 질문에 답합니다. TypeSafe SDK와 함께 사용할 수 있습니다.",
+        description: "이 컴퓨터의 모델이나 연결의 판단 모델로 텍스트에 대한 예/아니오, 객관식, 점수 질문에 답합니다. TypeSafe SDK와 함께 사용할 수 있습니다.",
         enable: "요청 처리",
         enableDescription: "/v1/systemone을 제공합니다. 켜면 모델을 다운로드합니다.",
+        enableRemoteDescription: "/v1/systemone을 제공합니다.",
         lockedByEnv: "{name}(으)로 설정됨.",
         model: "모델",
+        thisMachine: "이 컴퓨터",
         modelMultilingual: "다국어",
         modelEnglish: "영어",
         modelTypedDecisions: "유형별 판단",
@@ -2189,11 +2284,18 @@ export const ko = {
         loading: "로드 중…",
         loadedOn: "{device}에 로드됨",
         download: "다운로드",
+        downloadConfirmTitle: "Laya {model}을(를) 다운로드할까요?",
+        downloadConfirmBody:
+          "Decision API가 요청에 응답하려면 이 모델이 필요합니다. 약 {size}이며 Hugging Face 캐시에 한 번만 다운로드됩니다.",
         unload: "언로드",
         downloadBusy: "판단 API 모델이 이미 다운로드 중입니다.",
         downloadFailed: "다운로드를 시작하지 못했습니다.",
         saveFailed: "판단 API 설정을 저장하지 못했습니다.",
         loadError: "판단 API 설정을 불러오지 못했습니다.",
+        sendsTo: "요청은 {provider}(으)로 전송됩니다.",
+        connectionMissing: "이 연결이 없거나 판단 모델이 없습니다. 다른 모델을 선택하세요.",
+        addConnection: "호스팅된 판단 모델을 사용하려면 연결에서 TypeSafe, Liquid AI 또는 OpenRouter를 추가하세요.",
+        openConnections: "연결 열기",
       },
       usageNoModel:
         "모델을 로드하거나 다운로드하면 실행 가능한 예제가 표시됩니다. 이 서버에는 아직 지정할 모델이 없습니다.",
@@ -2349,6 +2451,7 @@ export const ko = {
       context: "컨텍스트",
       lr: "LR",
       hardware: "하드웨어",
+      vram: "VRAM",
       noGpu: "GPU가 감지되지 않았습니다",
       hfToken: "HF 토큰",
       saved: "저장됨",
@@ -2429,6 +2532,8 @@ export const ko = {
       tokenRejectedTitle: "Hugging Face 토큰이 거부되었습니다",
       tokenRejectedBody:
         "설정 → 일반에서 토큰을 업데이트한 후 다시 시도하세요.",
+      tokenRejectedAnonymousBody:
+        "공개 모델은 토큰 없이 표시됩니다. 비공개 및 접근 제한 모델을 사용하려면 설정 → 일반에서 토큰을 업데이트하세요.",
       hubUnreachable: "Hugging Face에 연결하지 못했습니다",
       cantUseModel: "이 모델은 학습에 사용할 수 없습니다",
       reasonTypeMismatch:
@@ -3057,6 +3162,7 @@ export const ko = {
     discardDescription: "{name}의 저장되지 않은 변경 사항이 사라집니다.",
     discard: "버리기",
     mentions: "스킬",
+    manage: "스킬 관리",
   },
   library: {
     tabs: {

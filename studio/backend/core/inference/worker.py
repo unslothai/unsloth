@@ -12,6 +12,7 @@ mp.Queue, and exits on shutdown or unload. Pattern follows core/training/worker.
 
 from __future__ import annotations
 
+import functools
 import base64
 import inspect
 import json
@@ -26,7 +27,12 @@ from pathlib import Path
 from typing import Any, Optional
 
 logger = get_logger(__name__)
-from core.inference.audio_errors import AUDIO_UNSUPPORTED_CODE
+from core.inference.audio_errors import (
+    AUDIO_RUNTIME_ERROR_CODE,
+    AUDIO_UNSUPPORTED_CODE,
+    AudioBackendUnsupportedError,
+    AudioRuntimeError,
+)
 from core.inference.context_refusal import ContextBudgetExceeded
 from utils.hardware import apply_gpu_ids, is_apple_silicon
 
@@ -509,9 +515,115 @@ def _worker_reclaimable_gpu_gb(config: dict) -> dict[str, float] | None:
         return None
 
 
+def _load_download_repos(
+    mc,
+    load_in_4bit: bool,
+    backend,
+    companions = (),
+) -> list[str]:
+    from hub.utils.paths import is_valid_repo_id
+    from utils.paths import is_local_path
+    from utils.security.file_security import load_scan_target
+    from utils.third_party_source import SPEECH_CODEC_REPOSITORIES
+
+    audio_type = getattr(mc, "audio_type", None)
+    repos = [str(mc.identifier), *(str(repo) for repo in companions)]
+    base = getattr(mc, "base_model", None)
+    if base:
+        repos.append(str(base))
+        mapped = None
+        if getattr(backend, "device", None) == "mlx":
+            from core.inference.model_ids import mlx_bnb_base_repo
+            mapped = mlx_bnb_base_repo(str(base))
+        else:
+            try:
+                from unsloth.models import loader
+                from unsloth.models.loader_utils import get_model_name
+
+                quantized = (
+                    load_in_4bit
+                    and not getattr(mc, "is_audio", False)
+                    and getattr(loader, "ALLOW_BITSANDBYTES", True)
+                )
+                mapped = get_model_name(str(base), load_in_4bit = quantized)
+                if mapped and not getattr(loader, "ALLOW_PREQUANTIZED_MODELS", True):
+                    mapped = loader._strip_unsloth_bnb_4bit_suffix(mapped)
+            except Exception:
+                mapped = None
+        if mapped:
+            repos.append(str(mapped))
+    repos.extend(SPEECH_CODEC_REPOSITORIES.get(audio_type, ()))
+    hub_ids: list[str] = []
+    for repo in repos:
+        repo, _subdirs = load_scan_target(repo, ())
+        if is_valid_repo_id(repo) and not is_local_path(repo) and repo not in hub_ids:
+            hub_ids.append(repo)
+    return hub_ids
+
+
+def _hub_cache_dir() -> Optional[str]:
+    try:
+        from utils.hf_cache_settings import get_hf_cache_paths
+        return str(get_hf_cache_paths().hub_cache)
+    except Exception:
+        return None
+
+
+# The token env before a load scrubbed it; the next load restores it.
+_TOKEN_ENV_BEFORE_ANONYMOUS_LOAD: Optional[dict] = None
+
+
+def _token_env_keys() -> tuple:
+    from hub.utils.hf_tokens import _HF_TOKEN_ENV_KEYS
+    return (*_HF_TOKEN_ENV_KEYS, "HF_HUB_DISABLE_IMPLICIT_TOKEN")
+
+
+def _restore_token_environment() -> None:
+    """Undo an earlier load's anonymous scrub (the token may have been replaced since)."""
+    global _TOKEN_ENV_BEFORE_ANONYMOUS_LOAD
+    saved, _TOKEN_ENV_BEFORE_ANONYMOUS_LOAD = _TOKEN_ENV_BEFORE_ANONYMOUS_LOAD, None
+    for key, value in (saved or {}).items():
+        if value is None:
+            os.environ.pop(key, None)
+        else:
+            os.environ[key] = value
+
+
+def _drop_a_rejected_token(config: dict) -> None:
+    """The Hub refused this load's token while anonymous reads worked: load the rest anonymously."""
+    global _TOKEN_ENV_BEFORE_ANONYMOUS_LOAD
+    from hub.utils.hf_tokens import saved_token_rejected
+
+    token = _config_hf_token(config)
+    if token is not False and saved_token_rejected(token):
+        config["anonymous_hf_access"] = True
+        if _TOKEN_ENV_BEFORE_ANONYMOUS_LOAD is None:
+            _TOKEN_ENV_BEFORE_ANONYMOUS_LOAD = {k: os.environ.get(k) for k in _token_env_keys()}
+        _apply_worker_hf_token_environment(config)
+        logger.warning(
+            "Hugging Face rejected the token for %s; loading it without the token.",
+            config.get("model_name"),
+        )
+
+
+def _in_token_rejection_scope(handler):
+    """Run one load in its own rejected-token scope, so a verdict never outlives it."""
+
+    @functools.wraps(handler)
+    def scoped(*args, **kwargs):
+        from hub.utils.hf_tokens import token_rejection_scope
+        with token_rejection_scope():
+            return handler(*args, **kwargs)
+
+    return scoped
+
+
+@_in_token_rejection_scope
 def _handle_load(backend, config: dict, resp_queue: Any) -> None:
+    _restore_token_environment()
     try:
         mc = _build_model_config(config)
+        _drop_a_rejected_token(config)
 
         hf_token = _config_hf_token(config)
         load_in_4bit = _resolve_lora_4bit(mc, config.get("load_in_4bit", True))
@@ -596,6 +708,15 @@ def _handle_load(backend, config: dict, resp_queue: Any) -> None:
                     },
                 )
 
+        _send_response(
+            resp_queue,
+            {
+                "type": "downloads",
+                "repo_ids": _load_download_repos(mc, load_in_4bit, backend, targets),
+                "xet_disabled": os.environ.get("HF_HUB_DISABLE_XET") == "1",
+                "hub_cache": _hub_cache_dir(),
+            },
+        )
         heartbeat_stop = start_watchdog(
             repo_ids = watch_repos,
             on_stall = lambda msg: _send_response(resp_queue, {"type": "stall", "message": msg}),
@@ -662,7 +783,28 @@ def _handle_load(backend, config: dict, resp_queue: Any) -> None:
             model_info.update(
                 {
                     k: _entry[k]
-                    for k in ("is_audio", "audio_type", "has_audio_input", "has_video_input")
+                    for k in (
+                        "is_audio",
+                        "audio_type",
+                        "has_audio_input",
+                        "has_video_input",
+                        "audio_family",
+                        "audio_options",
+                        "gguf_variant",
+                        "audio_workflows",
+                        "audio_reference_text",
+                        "audio_required_inputs",
+                        "audio_clone",
+                        "audio_options_by_workflow",
+                        "audio_workflow_tasks",
+                        "audio_server_task",
+                        "audio_convert",
+                        "audio_convert_route",
+                        "audio_convert_rules",
+                        "audio_edit",
+                        "audio_music",
+                        "audio_cpp_backend",
+                    )
                     if k in _entry
                 }
             )
@@ -688,6 +830,12 @@ def _handle_load(backend, config: dict, resp_queue: Any) -> None:
             # Forward chat_template_info so the parent can classify capabilities.
             try:
                 _tpl_info = _entry.get("chat_template_info")
+                _mapped_tpl = None
+                if isinstance(_tpl_info, dict) and not model_info["is_mlx"]:
+                    from core.inference.chat_template_helpers import mapped_chat_template
+                    _mapped_tpl = mapped_chat_template(
+                        _entry, getattr(backend, "active_model_name", None) or mc.identifier
+                    )
                 if isinstance(_tpl_info, dict):
                     model_info["chat_template_info"] = {
                         "has_template": bool(_tpl_info.get("has_template", False)),
@@ -699,6 +847,8 @@ def _handle_load(backend, config: dict, resp_queue: Any) -> None:
                         "processor_template": _tpl_info.get("processor_template"),
                         "renders_image": _tpl_info.get("renders_image"),
                         "accepts_multiple_images": _tpl_info.get("accepts_multiple_images"),
+                        # The body a text render installs at generate time, when the model is mapped.
+                        "mapped_template": _mapped_tpl,
                     }
             except Exception as _tpl_exc:
                 logger.warning("chat_template_info forward failed: %s", _tpl_exc)
@@ -1462,11 +1612,62 @@ def _handle_share_object(backend, cmd: dict, resp_queue: Any) -> None:
         )
 
 
+def _audio_runtime(backend) -> dict:
+    fields = getattr(backend, "runtime_fields", None)
+    if not callable(fields):
+        return {}
+    try:
+        return {"audio_runtime": dict(fields())}
+    except Exception as exc:  # noqa: BLE001 - status detail, never fails the request
+        logger.debug("audio runtime fields unavailable: %s", exc)
+        return {}
+
+
 def _handle_generate_audio(backend, cmd: dict, resp_queue: Any, cancel_event) -> None:
-    """Handle TTS audio generation — returns WAV bytes + sample_rate."""
+    """Handle TTS audio generation — returns WAV bytes + sample_rate.
+
+    A separation returns the paths of the stems it wrote under the route's ``output_dir``
+    instead: hundreds of megabytes of audio never cross the queue."""
     request_id = cmd.get("request_id", "")
     try:
         logger.info("Starting audio generation for request_id=%s", request_id)
+        if cmd.get("workflow") == "separate":
+            separate = getattr(backend, "separate_audio", None)
+            if separate is None:
+                raise AudioBackendUnsupportedError("This model cannot separate audio.")
+            outputs = separate(
+                source_path = cmd["audio_inputs"]["source"],
+                output_dir = cmd["output_dir"],
+                options = cmd.get("audio_options"),
+                cancel_event = cancel_event,
+            )
+            _send_response(
+                resp_queue,
+                {
+                    "type": "audio_done",
+                    "request_id": request_id,
+                    "outputs": outputs,
+                    "sample_rate": 44100,
+                },
+            )
+            logger.info("Finished audio separation for request_id=%s", request_id)
+            return
+        # Only audio.cpp models take per-model options; other backends never see the keyword.
+        extra = {"audio_options": cmd["audio_options"]} if cmd.get("audio_options") else {}
+        # Run fields reach only a backend that takes them: a Speak run on a native TTS model carries a
+        # workflow its backend has no keyword for.
+        params = inspect.signature(backend.generate_audio_response).parameters
+        takes_any = any(p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values())
+        for key in ("workflow", "audio_inputs", "reference_text", "speed", "convert", "edit"):
+            if cmd.get(key) is None:
+                continue
+            if takes_any or key in params:
+                extra[key] = cmd[key]
+            elif key == "audio_inputs":
+                raise AudioRuntimeError("This model cannot clone a voice.", status = 400)
+        for key in ("music", "output_dir"):
+            if cmd.get(key) is not None:
+                extra[key] = cmd[key]
         wav_bytes, sample_rate = backend.generate_audio_response(
             text = cmd["text"],
             temperature = cmd.get("temperature", 0.6),
@@ -1480,36 +1681,43 @@ def _handle_generate_audio(backend, cmd: dict, resp_queue: Any, cancel_event) ->
             instructions = cmd.get("instructions"),
             language = cmd.get("language"),
             seed = cmd.get("seed"),
+            **extra,
         )
 
         # Send WAV bytes as base64 (bytes can't go through mp.Queue directly).
-        _send_response(
-            resp_queue,
-            {
-                "type": "audio_done",
-                "request_id": request_id,
-                "wav_base64": base64.b64encode(wav_bytes).decode("ascii"),
-                "sample_rate": sample_rate,
-            },
-        )
+        done = {
+            "type": "audio_done",
+            "request_id": request_id,
+            "wav_base64": base64.b64encode(wav_bytes).decode("ascii"),
+            "sample_rate": sample_rate,
+            **_audio_runtime(backend),
+            "stats": getattr(backend, "last_generation_stats", None),
+        }
+        take_status_patch = getattr(backend, "take_status_patch", None)
+        status_patch = take_status_patch() if callable(take_status_patch) else None
+        if isinstance(status_patch, dict) and status_patch:
+            done["status_patch"] = status_patch
+        _send_response(resp_queue, done)
         logger.info("Finished audio generation for request_id=%s", request_id)
 
     except Exception as exc:
         logger.error("Audio generation error: %s", exc, exc_info = True)
-        _send_response(
-            resp_queue,
-            {
-                "type": "audio_error",
-                "request_id": request_id,
-                "error": str(exc),
-                # The route's own cancel event is not set when the worker's shared event is
-                # (an unload, a training admission, the GPU arbiter), so without this flag the
-                # orchestrator reports a cancellation as HTTP 500. Matching on the message text
-                # is what AudioGenerationCancelledError exists to avoid.
-                "cancelled": bool(cancel_event is not None and cancel_event.is_set()),
-                "stack": traceback.format_exc(limit = 20),
-            },
-        )
+        response = {
+            "type": "audio_error",
+            "request_id": request_id,
+            "error": str(exc),
+            # Flag a shared-event cancel (unload, training, arbiter) so the orchestrator does not report HTTP 500.
+            "cancelled": bool(cancel_event is not None and cancel_event.is_set()),
+            "stack": traceback.format_exc(limit = 20),
+            **_audio_runtime(backend),
+        }
+        if isinstance(exc, AudioRuntimeError):
+            response["code"] = AUDIO_RUNTIME_ERROR_CODE
+            response["status"] = exc.status
+        elif isinstance(exc, AudioBackendUnsupportedError):
+            response["code"] = AUDIO_UNSUPPORTED_CODE
+            response["hint"] = exc.hint
+        _send_response(resp_queue, response)
 
 
 def _handle_generate_audio_input(backend, cmd: dict, resp_queue: Any, cancel_event) -> None:
@@ -1519,8 +1727,15 @@ def _handle_generate_audio_input(backend, cmd: dict, resp_queue: Any, cancel_eve
     try:
         import numpy as np
 
-        # numpy arrays can't go through mp.Queue, so decode from list.
-        audio_array = np.array(cmd["audio_data"], dtype = np.float32)
+        # "audio_data" is the older single-clip list form.
+        if "audio_clips" in cmd:
+            # Copy: frombuffer views are read-only.
+            clips = [np.frombuffer(clip, dtype = np.float32).copy() for clip in cmd["audio_clips"]]
+        else:
+            clips = [np.array(cmd["audio_data"], dtype = np.float32)]
+        audio_array = clips[0]
+        # Passed only when present, so single-clip calls are unchanged.
+        extra_audio_kwargs = {"extra_audio_arrays": clips[1:]} if len(clips) > 1 else {}
 
         audio_type = cmd.get("audio_type")
 
@@ -1530,7 +1745,9 @@ def _handle_generate_audio_input(backend, cmd: dict, resp_queue: Any, cancel_eve
                 raise RuntimeError("Whisper transcription is not supported on the MLX backend yet.")
             generator = backend.generate_whisper_response(
                 audio_array = audio_array,
+                use_adapter = cmd.get("use_adapter"),
                 cancel_event = cancel_event,
+                **extra_audio_kwargs,
             )
         else:
             audio_kwargs = {
@@ -1554,7 +1771,7 @@ def _handle_generate_audio_input(backend, cmd: dict, resp_queue: Any, cancel_eve
                 backend, "stop", "generate_audio_input_response"
             ):
                 audio_kwargs["stop"] = cmd["stop"]
-            generator = backend.generate_audio_input_response(**audio_kwargs)
+            generator = backend.generate_audio_input_response(**audio_kwargs, **extra_audio_kwargs)
 
         logger.info("Starting audio input generation for request_id=%s", request_id)
 
@@ -1733,7 +1950,8 @@ def run_inference_process(
     # importing Unsloth; native_audio itself has no eager ML imports.
     from core.inference.native_audio import is_native_audio_model
 
-    _native_audio_worker = is_native_audio_model(model_name)
+    # The route marks an audio.cpp GGUF, which a bare Hub id does not reveal without a header read.
+    _native_audio_worker = bool(config.get("audio_cpp")) or is_native_audio_model(model_name)
 
     # Before detect_hardware(), whose probe would leave a CUDA context here; the route
     # skips the arbiter on the basis that this load reserves none.
@@ -2099,7 +2317,12 @@ def run_inference_process(
         _ensure_backend_on_path()
 
         if _native_audio_worker:
-            from core.inference.native_audio import NativeAudioBackend as InferenceBackend
+            from core.inference.native_audio import is_audio_cpp_audio_model
+            if config.get("audio_cpp") or is_audio_cpp_audio_model(model_name):
+                # Weights run in audiocpp_server; this worker only proxies to it.
+                from core.inference.audio_cpp_backend import AudioCppBackend as InferenceBackend
+            else:
+                from core.inference.native_audio import NativeAudioBackend as InferenceBackend
         else:
             # Recover from any namespace-package shadow before importing Unsloth.
             from core.import_guards import ensure_real_packages

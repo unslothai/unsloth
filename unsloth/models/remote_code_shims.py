@@ -354,6 +354,32 @@ def _rebind_accelerate_hook(model):
     model._old_forward = types.MethodType(type(model).forward, model)
 
 
+_PER_HEAD_PARAMETERS = ("A_log",)
+
+
+def _narrow_zero_padded_head_parameters(model):
+    # Kimi-K3 ships KDA A_log zero-padded ([128] for 96 heads); fla's backward does dA.view_as(A_log). vLLM narrows it too.
+    narrowed = []
+    for name, module in model.named_modules():
+        if not _is_remote_code(type(module)):
+            continue
+        heads = getattr(module, "num_heads", None)
+        if not isinstance(heads, int) or heads <= 0:
+            continue
+        for attr in _PER_HEAD_PARAMETERS:
+            param = module._parameters.get(attr, None)
+            if param is None or param.dim() != 1 or param.shape[0] <= heads:
+                continue
+            tail = param.detach()[heads:]
+            if tail.is_meta or bool(tail.any()):
+                continue
+            module._parameters[attr] = torch.nn.Parameter(
+                param.detach()[:heads].clone(), requires_grad = param.requires_grad
+            )
+            narrowed.append(f"{name}.{attr}")
+    return narrowed
+
+
 def apply_remote_code_shims(model):
     from transformers import PreTrainedModel
 
@@ -375,6 +401,11 @@ def apply_remote_code_shims(model):
         repaired.append(f"{cls.__name__}.forward")
     if _is_remote_code(cls) and _repair_multimodal_cache_indexing(cls):
         repaired.append(f"{cls.__name__}.prepare_inputs_labels_for_multimodal")
+    narrowed = _narrow_zero_padded_head_parameters(model)
+    if narrowed:
+        repaired.append(
+            f"{len(narrowed)} zero-padded per-head parameter(s) narrowed ({narrowed[0]}, ...)"
+        )
     _rebind_accelerate_hook(model)
     if repaired:
         print("Unsloth: Repaired remote modeling code so it trains: " + ", ".join(repaired) + ".")

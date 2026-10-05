@@ -2,9 +2,11 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import type { DeepPartialMessageTree } from "../types";
-import type { en } from "./en";
+import { en } from "./en.ts";
 
 export const ptBR = {
+  // English fallback until this experimental feature is translated.
+  managedEngines: en.managedEngines,
   composerSettings: {
     title: "Composição de mensagens",
     plainText: "Composição em texto simples",
@@ -96,6 +98,7 @@ export const ptBR = {
     useModelScope: "Usar ModelScope",
     useModelScopeHint: "Pesquise e baixe pelo ModelScope. Você pode voltar nas Configurações.",
     useModelScopeFailed: "Não foi possível mudar para o ModelScope.",
+    updateToken: "Atualizar token",
     hfToken: {
       label: "Token do HF",
       saved: "Salvo",
@@ -142,6 +145,13 @@ export const ptBR = {
       next: "Próxima ocorrência",
       close: "Fechar busca",
       truncated: "Esta página é longa demais para ser pesquisada por completo.",
+    },
+    zoom: {
+      label: "Zoom",
+      zoomOut: "Diminuir zoom",
+      zoomIn: "Aumentar zoom",
+      reset: "Redefinir",
+      announce: "Zoom {percent}%",
     },
     beta: "BETA",
     brand: "unsloth",
@@ -203,6 +213,53 @@ export const ptBR = {
       help: "Ajuda",
       logOut: "Sair",
       shutdown: "Desligar",
+    },
+    commandPalette: {
+      placeholder: "Digite um comando ou pesquise...",
+      noResults: "Nenhum resultado encontrado.",
+      navigation: "Navegação",
+      actions: "Ações",
+      chat: "Chat",
+      searchChats: "Buscar chats...",
+    },
+    search: {
+      placeholder: "Buscar",
+      tabs: {
+        all: "Tudo",
+        chats: "Chats",
+        projects: "Projetos",
+        files: "Arquivos",
+        models: "Modelos",
+      },
+      recents: "Recentes",
+      actions: "Ações",
+      newChat: "Novo chat",
+      newTemporaryChat: "Novo chat temporário",
+      fineTune: "Fazer fine-tune de um modelo",
+      generateImage: "Gerar uma imagem",
+      generateVideo: "Gerar um vídeo",
+      untitledChat: "Chat sem título",
+      compare: "Comparar",
+      loading: "Carregando...",
+      empty: {
+        all: "Nada para buscar ainda.",
+        chats: "Nenhum chat ainda.",
+        projects: "Nenhum projeto ainda.",
+        files: "Nenhum arquivo na sua Biblioteca ainda.",
+        models: "Nenhum modelo baixado ainda.",
+      },
+      noMatches: "Nenhum resultado.",
+      when: {
+        today: "Hoje",
+        pastWeek: "Última semana",
+        pastMonth: "Último mês",
+        older: "Mais antigos",
+      },
+      footer: {
+        close: "Fechar",
+        changeType: "Mudar tipo",
+        open: "Abrir",
+      },
     },
     notFound: {
       title: "Página não encontrada",
@@ -480,6 +537,10 @@ export const ptBR = {
           label: "Atalhos de teclado",
           description: "Abrir esta lista de atalhos",
         },
+        openCommandPalette: {
+          label: "Paleta de comandos",
+          description: "Abrir a paleta de comandos",
+        },
         searchChats: {
           label: "Pesquisar chats",
           description: "Abrir a busca de chats",
@@ -717,6 +778,7 @@ export const ptBR = {
       disabled: "O log em arquivo está desativado (UNSLOTH_STUDIO_NO_FILE_LOG=1).",
       missing: "Nenhum arquivo de log foi encontrado.",
       unreadable: "Não foi possível ler o arquivo de log.",
+      viewLogs: "Ver registros",
       timeout: "A solicitacao do registro expirou. O servidor pode estar inacessivel.",
       droppedNotice: "Algumas linhas foram ignoradas: o log foi gravado mais rápido do que era possível ler.",
       morePending: "Mais linhas ainda estao sendo lidas; elas chegam na proxima atualizacao.",
@@ -1095,6 +1157,9 @@ export const ptBR = {
         source: "Origem dos modelos",
         sourceDescription: "Onde o hub de modelos pesquisa e baixa. Escolha ModelScope se o Hugging Face estiver bloqueado ou lento na sua rede.",
         sourceFallback: "Não foi possível iniciar o ModelScope, então o Hugging Face está em uso. Verifique os logs do Unsloth.",
+        autoSourceTitle: "Origem dos modelos alterada para ModelScope",
+        autoSourceDescription: "O Hugging Face costuma ser lento ou bloqueado na sua região, então o Unsloth agora baixa os modelos do ModelScope.",
+        autoSourceAction: "Abrir as configurações da origem dos modelos",
         sectionTitle: "Hub de modelos",
         endpoint: "Endpoint do Hugging Face",
         endpointDescription: "De onde os modelos e conjuntos de dados são baixados. Deixe vazio para usar huggingface.co ou informe um espelho como https://hf-mirror.com.",
@@ -1199,9 +1264,22 @@ export const ptBR = {
       },
       permissions: {
         sectionTitle: "Permissões",
-        bypassLabel: "Permissões de ferramentas",
-        bypassDescription:
-          "Como o Unsloth aprova as chamadas de ferramentas do chat (terminal, python, web, MCP) antes de executá-las. O modo “Full access” desativa as aprovações e o sandbox de código.",
+        names: {
+          ask: "Pedir aprovação",
+          auto: "Aprovar por mim",
+          off: "Executar automaticamente",
+          full: "Acesso total",
+        },
+        details: {
+          ask:
+            "Pede aprovação antes de cada chamada de ferramenta, incluindo código de terminal e Python, buscas na web, edição de arquivos e ferramentas MCP. Ferramentas executadas por um provedor externo não são pausadas. Ideal quando você quer revisar cada etapa.",
+          auto:
+            "Executa sozinho as chamadas comuns e só pergunta quando uma ação parece arriscada, como ler credenciais, elevar privilégios ou executar comandos destrutivos.",
+          off:
+            "Executa todas as chamadas de ferramentas sem perguntar. O código de Python e terminal continua rodando no sandbox, que limita quais arquivos do seu computador ele pode acessar.",
+          full:
+            "Executa todas as chamadas de ferramentas sem perguntar e desativa o sandbox de código, assim o código de Python e terminal pode ler e alterar qualquer arquivo que sua conta acessa. Ideal para tarefas confiáveis que precisam trabalhar fora do sandbox.",
+        },
       },
     },
     profile: {
@@ -1324,20 +1402,13 @@ export const ptBR = {
           wide: "Ampla",
           full: "Largura total",
         },
-        composerAttachments: {
-          label: "Anexos no campo de texto",
-          description:
-            "Cartões grandes que aumentam o campo de texto ou uma fileira compacta de miniaturas.",
-          cards: "Cartões grandes",
-          compact: "Miniaturas compactas",
-        },
         sentAttachments: {
           label: "Anexos nas mensagens enviadas",
           description:
-            "Uma lista com o tipo de cada arquivo ou pequenas etiquetas. O modo automático muda para etiquetas com mais de seis arquivos.",
+            "Padrão mostra cada arquivo com seu tipo e Compacto cabe mais em cada linha. O modo automático muda para compacto com mais de seis arquivos.",
           auto: "Automático",
-          list: "Lista",
-          chips: "Etiquetas",
+          list: "Padrão",
+          chips: "Compacto",
         },
         reset: "Redefinir",
         resetAll: "Redefinir personalização",
@@ -1557,7 +1628,11 @@ export const ptBR = {
         noRamReserve: "Não reservar RAM do sistema para o modelo",
         noRamReserveDescription: "Reduz a RAM ocupada pelos pesos do modelo.",
         noRamReserveHint: "Ignora o carregamento mapeado em memória nas versões compatíveis do Windows quando o modelo está totalmente descarregado na GPU, para que suas páginas não fiquem residentes. Caso contrário, mantém o carregamento mapeado em memória. Buffers de CPU necessários ainda podem usar RAM. Remove --no-mmap e --mlock.",
+        multiModel: "Manter vários modelos carregados",
+        multiModelDescription: "Carregar um modelo mantém os outros na memória.",
+        multiModelHint: "Cada modelo carregado responde às solicitações que o nomeiam. Com várias GPUs, um novo modelo vai para uma GPU que nenhum outro modelo usa quando há espaço. Se não couber ao lado dos outros, os modelos fora de uso são descarregados primeiro e depois ele substitui o modelo ativo. O treinamento descarrega os modelos extras antes do ativo.",
         mlockVetoed: "--mlock continua desativado: fixar o modelo reservaria RAM para todo ele. A descarga automática por inatividade continua desativada.",
+        mlockNotApplicable: "Totalmente na GPU: nada para bloquear na RAM do sistema. A descarga automática por inatividade continua desativada.",
         memlockCapped: "Este sistema limita a memória bloqueada a {limit}. Um modelo maior não será totalmente fixado; aumente o limite com ulimit -l.",
         reloadRequired: "Recarregue o modelo para aplicar as novas opções de memória.",
         loadError: "Falha ao carregar as configurações de memória do modelo",
@@ -1797,9 +1872,6 @@ export const ptBR = {
         "Texto colado com {count} caracteres ou mais vira um anexo .txt. Textos menores ficam na caixa de mensagem.",
       pastedTextOffDescription:
         "Todo o texto colado fica na caixa de mensagem, independentemente do tamanho.",
-      projectsSection: "Mostrar a seção Projetos",
-      projectsSectionDescription:
-        "Agrupa as conversas de projeto sob um título Projetos. Desative para listá-las em Recentes.",
       title: "Chat",
       description: "Personalize o funcionamento do chat neste dispositivo.",
       modelSelection: {
@@ -1836,6 +1908,11 @@ export const ptBR = {
       autoScrollManual: "Manual",
       autoScrollKeywords:
         "rolagem rolar automática acompanhar fim pular streaming gerar visualização travar scroll autoscroll follow",
+      scrollToBottomButton: "Botão de rolar até o final",
+      scrollToBottomButtonDescription:
+        "Mostra um botão para voltar à mensagem mais recente depois de rolar para cima.",
+      scrollToBottomButtonKeywords:
+        "rolar final baixo pular recente seta botão ocultar scroll bottom button",
       showResponseModel: "Mostrar o modelo da resposta",
       showResponseModelDescription:
         "Mostra os metadados do modelo nas respostas do assistente.",
@@ -1908,6 +1985,22 @@ export const ptBR = {
           "Ative “{setting}” em Configurações → Chat para que os Canvas carreguem recursos externos, ou permita apenas neste Canvas.",
         blockedSettingsAction: "Abrir configurações",
         blockedDismiss: "Dispensar",
+        errorTitle: "Este Canvas encontrou um erro",
+        errorTitlePlural: "Este Canvas encontrou {count} erros",
+        errorHint: "“Corrigir com o modelo” coloca o erro na caixa de mensagem. Nada é enviado até você enviar.",
+        errorBannerAction: "Corrigir com o modelo",
+        errorConsoleAction: "Abrir console",
+        errorConsoleHideAction: "Ocultar console",
+        errorLocation: "linha {line}, coluna {column}",
+        errorLine: "linha {line}",
+        consoleTitle: "Console",
+        reloadCanvas: "Executar de novo",
+        consoleMessageCount: "{count} mensagem",
+        consoleMessageCountPlural: "{count} mensagens",
+        consoleClear: "Limpar console",
+        consoleClose: "Fechar console",
+        consoleEmpty: "Ainda não há saída no console.",
+        consoleCapped: "Apenas as ultimas {count} entradas sao mantidas; a saida anterior foi descartada.",
       },
       data: "Dados",
       exportHistory: "Exportar histórico de chat",
@@ -2191,11 +2284,13 @@ export const ptBR = {
       revoking: "Revogando...",
       decisionApi: {
         title: "API de decisões",
-        description: "Responda a perguntas de sim/não, múltipla escolha e pontuação sobre texto com um modelo Laya local. Funciona com o SDK da TypeSafe.",
+        description: "Responda a perguntas de sim/não, múltipla escolha e pontuação sobre texto com um modelo neste computador ou um modelo de decisões das Conexões. Funciona com o SDK da TypeSafe.",
         enable: "Atender solicitações",
         enableDescription: "Atende /v1/systemone. Ao ativar, o modelo é baixado.",
+        enableRemoteDescription: "Atende /v1/systemone.",
         lockedByEnv: "Definido por {name}.",
         model: "Modelo",
+        thisMachine: "Este computador",
         modelMultilingual: "Multilíngue",
         modelEnglish: "Inglês",
         modelTypedDecisions: "Decisões tipadas",
@@ -2212,11 +2307,18 @@ export const ptBR = {
         loading: "Carregando…",
         loadedOn: "Carregado em {device}",
         download: "Baixar",
+        downloadConfirmTitle: "Baixar Laya {model}?",
+        downloadConfirmBody:
+          "A API de decisão precisa deste modelo para responder às solicitações. Cerca de {size}, baixado uma única vez no seu cache do Hugging Face.",
         unload: "Descarregar",
         downloadBusy: "Um modelo da API de decisões já está sendo baixado.",
         downloadFailed: "Não foi possível iniciar o download.",
         saveFailed: "Não foi possível salvar a configuração da API de decisões.",
         loadError: "Não foi possível carregar as configurações da API de decisões.",
+        sendsTo: "As solicitações são enviadas para {provider}.",
+        connectionMissing: "Esta conexão não existe mais ou não tem modelos de decisões. Escolha outro modelo.",
+        addConnection: "Para usar um modelo de decisões hospedado, adicione TypeSafe, Liquid AI ou OpenRouter em Conexões.",
+        openConnections: "Abrir Conexões",
       },
       usageNoModel:
         "Carregue ou baixe um modelo para ver exemplos executáveis. Este servidor ainda não tem nenhum modelo para indicar.",
@@ -2376,6 +2478,7 @@ export const ptBR = {
       context: "Contexto",
       lr: "LR",
       hardware: "Hardware",
+      vram: "VRAM",
       noGpu: "Nenhuma GPU detectada",
       hfToken: "Token do HF",
       saved: "Salvo",
@@ -2450,6 +2553,8 @@ export const ptBR = {
       tokenRejectedTitle: "Token do Hugging Face rejeitado",
       tokenRejectedBody:
         "Atualize seu token em Configurações → Geral e tente novamente.",
+      tokenRejectedAnonymousBody:
+        "Os modelos públicos são exibidos sem ele. Atualize seu token em Configurações → Geral para acessar modelos privados e restritos.",
       hubUnreachable: "Não foi possível acessar o Hugging Face",
       cantUseModel: "Não é possível usar o modelo para treinamento",
       reasonTypeMismatch:
@@ -3091,6 +3196,7 @@ export const ptBR = {
     discardDescription: "As alterações não salvas em {name} serão perdidas.",
     discard: "Descartar",
     mentions: "Habilidades",
+    manage: "Gerenciar habilidades",
   },
   library: {
     tabs: {

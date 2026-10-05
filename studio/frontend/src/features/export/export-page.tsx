@@ -64,8 +64,10 @@ import { useSearch } from "@tanstack/react-router";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
 import type { ModelCheckpoints } from "./api/export-api";
+import { adapterCompatibilityTip, type AdapterFormat } from "./constants";
 import { ExportRunPanel } from "./components/export-run-panel";
 import { MethodPicker } from "./components/method-picker";
+import { Q4nxConvertCard } from "./components/q4nx-convert-card";
 import { QuantPicker } from "./components/quant-picker";
 import {
   EXPORT_METHODS,
@@ -73,6 +75,7 @@ import {
   GUIDE_STEPS,
   MERGED_FORMATS,
   type MergedFormatOption,
+  Q4NX_SOURCE_QUANTS,
   QUANT_OPTIONS,
   buildQuantSizeLabels,
   getEstimatedSize,
@@ -84,6 +87,7 @@ import {
   refreshCheckpoints,
   refreshLocalModels,
 } from "./export-navigation-cache";
+import { confirmLlmCompressorInstallIfNeeded } from "./hooks/use-llm-compressor-consent";
 import { useExportSizeEstimate } from "./hooks/use-export-size-estimate";
 import {
   isExportPanelActive,
@@ -213,6 +217,7 @@ export function ExportPage() {
   });
   // GGUF importance matrix (required for the IQ quants) and merged-export precision.
   const [useImatrix, setUseImatrix] = useState(false);
+  const [npuQ4nx, setNpuQ4nx] = useState(false);
   const [customImatrix, setCustomImatrix] = useState({ sourceKey: "", path: "" });
   // Merged precision: one or more MERGED_FORMATS values exported in one run; seeded like exportMethod.
   const [selectedFormats, setSelectedFormats] = useState<string[]>(() => {
@@ -225,13 +230,15 @@ export function ExportPage() {
   });
   // LoRA-only export: optionally also emit a GGUF LoRA adapter, and its output float type.
   const [loraAsGguf, setLoraAsGguf] = useState(false);
+  const [adapterFormat, setAdapterFormat] = useState<AdapterFormat>("mlx");
   const [loraGgufOuttype, setLoraGgufOuttype] = useState<string>("q8_0");
   // GGUF method: export the full model as GGUF quants, or (for an adapter checkpoint) a GGUF LoRA.
   const [ggufTarget, setGgufTarget] = useState<"model" | "lora">("model");
 
   const hardware = useHardwareInfo();
-  // GGUF LoRA conversion is rejected on the macOS / MLX path, so gate it out on a Mac host.
+  // On Mac, GGUF LoRA adapters ship through the LoRA method's toggle, not the GGUF method.
   const isMacHost = usePlatformStore((s) => s.deviceType) === "mac";
+  const torchaoUnavailable = !hardware.torchaoExportSupported;
   // Real CUDA (not ROCm); gates the NVIDIA-only compressed-tensors formats.
   const hasNvidia = hardware.cuda != null && hardware.rocm == null;
   // Only gray out on an authoritative unsupported response; the backend supplies the reason.
@@ -246,30 +253,44 @@ export function ExportPage() {
         // compressed-tensors (llm-compressor) is the NVIDIA path; shown only on an NVIDIA GPU.
         if (f.backend === "compressed") return hasNvidia;
         // Portable torchao is the fallback for hosts without the NVIDIA compressed path. Hidden on
-        // NVIDIA (use compressed-tensors) and on macOS/MLX (the backend rejects quantized export).
-        if (f.backend === "torchao") return !hasNvidia && !isMacHost;
+        // NVIDIA (use compressed-tensors), macOS/MLX (rejected) and where torchao cannot load.
+        if (f.backend === "torchao") return !hasNvidia && !isMacHost && !torchaoUnavailable;
         // Plain 16-bit is available everywhere.
         return true;
       }),
-    [hasNvidia, isMacHost],
+    [hasNvidia, isMacHost, torchaoUnavailable],
   );
   const toggleFormat = useCallback((value: string) => {
     setSelectedFormats((prev) =>
       prev.includes(value) ? prev.filter((v) => v !== value) : [...prev, value],
     );
   }, []);
-  // availableFormats already drops NVIDIA-only formats on other hardware, so no pruning needed.
+  // Drop picks the gate removed, only once hardware is loaded: before that hasNvidia reads false.
+  useEffect(() => {
+    if (!hardware.loaded) return;
+    const allowed = new Set(availableFormats.map((f) => f.value));
+    setSelectedFormats((prev) => {
+      const next = prev.filter((v) => allowed.has(v));
+      return next.length === prev.length ? prev : next;
+    });
+  }, [availableFormats, hardware.loaded]);
   // IQ quants are imatrix-only: force imatrix on when one is selected, else llama.cpp rejects it.
   const requiresImatrix = quantLevels.some(
     (q) => QUANT_OPTIONS.find((o) => o.value === q)?.imatrix,
   );
   const effectiveImatrix = useImatrix || requiresImatrix;
+  const q4nxSourceSelected = quantLevels.some((q) =>
+    Q4NX_SOURCE_QUANTS.includes(q),
+  );
 
   // Whether the inline export panel is expanded. The panel also shows itself whenever a run is
   // active/terminal (see `panelActive`), so it survives navigation even though this flag resets.
   const [panelOpen, setPanelOpen] = useState(false);
 
   const [destination, setDestination] = useState<"local" | "hub">("local");
+  // The converter writes beside the GGUFs, so a Hub-only export has nowhere to put it.
+  const effectiveNpuQ4nx =
+    npuQ4nx && q4nxSourceSelected && destination === "local";
   const [customSaveDirectory, setCustomSaveDirectory] = useState<string | null>(
     null,
   );
@@ -614,11 +635,22 @@ export function ExportPage() {
         return siblingGgufDirectory(localModel.path) ?? relative;
       }
     }
+    // Mac PEFT / GGUF adapters get their own folder: one folder holds one adapter format.
+    if (
+      isMacHost &&
+      exportMethod === "lora" &&
+      (loraAsGguf || adapterFormat === "peft")
+    ) {
+      return `${relative}-peft`;
+    }
     return relative;
   }, [
+    adapterFormat,
     checkpoint,
     exportMethod,
+    isMacHost,
     localMetaById,
+    loraAsGguf,
     modelSource,
     selectedModelIdx,
     selectedSourceModel,
@@ -748,8 +780,7 @@ export function ExportPage() {
     const token = pushToHub && actionHfToken ? actionHfToken : undefined;
     // The GGUF method with the LoRA target reuses the LoRA-adapter export path.
     const effectiveMethod: ExportMethod = ggufAsLora ? "lora" : exportMethod;
-    const emitLoraGguf =
-      ggufAsLora || (effectiveMethod === "lora" && loraAsGguf && !isMacHost);
+    const emitLoraGguf = ggufAsLora || (effectiveMethod === "lora" && loraAsGguf);
     const methodLabel = ggufAsLora
       ? "GGUF LoRA adapter"
       : (EXPORT_METHODS.find((m) => m.value === exportMethod)?.title ??
@@ -775,6 +806,15 @@ export function ExportPage() {
       if (!remoteCodeOk) return;
     }
 
+    let installMissingDependencies = false;
+    if (effectiveMethod === "merged") {
+      const llmCompressor = await confirmLlmCompressorInstallIfNeeded(
+        selectedFormats,
+      );
+      if (!llmCompressor.ok) return;
+      installMissingDependencies = llmCompressor.installMissingDependencies;
+    }
+
     void runExport({
       sourceMode,
       checkpointPath,
@@ -788,17 +828,20 @@ export function ExportPage() {
       quantLevels,
       useImatrix: effectiveImatrix,
       imatrixPath,
+      npuQ4nx: effectiveNpuQ4nx,
       mergedSelections: selectedFormats.map((v) => ({
         ...mergedFormatPayload(v),
         label: MERGED_FORMATS.find((f) => f.value === v)?.label ?? v,
       })),
       loraGguf: emitLoraGguf,
       loraGgufOuttype,
+      adapterFormat: isMacHost && !emitLoraGguf ? adapterFormat : undefined,
       saveDirectory,
       destination,
       repoId,
       token,
       privateRepo,
+      installMissingDependencies,
       baseModelId: selectedModelData?.base_model ?? undefined,
       summary: {
         baseModelName: sourceBaseModelName,
@@ -823,12 +866,14 @@ export function ExportPage() {
     quantLevels,
     effectiveImatrix,
     imatrixPath,
+    effectiveNpuQ4nx,
     selectedFormats,
     hubMultiFormat,
     ggufAsLora,
     loraAsGguf,
     isMacHost,
     loraGgufOuttype,
+    adapterFormat,
     exportUnsupported,
     destination,
     saveDirectory,
@@ -1523,11 +1568,19 @@ export function ExportPage() {
                       </div>
                     )}
 
-                    {!hasNvidia && (
+                    {!hasNvidia && !torchaoUnavailable && (
                       <div className="text-ui-11 text-muted-foreground">
                         No NVIDIA GPU detected: compressed-tensors formats are
                         hidden. 16-bit and portable FP8/INT8 (torchao) still
                         work here and load in vLLM.
+                      </div>
+                    )}
+
+                    {torchaoUnavailable && (
+                      <div className="text-ui-11 text-muted-foreground">
+                        Portable FP8/INT8 (torchao) export needs torchao, which
+                        is not installed here. Update Unsloth, or use
+                        16-bit or GGUF.
                       </div>
                     )}
                   </div>
@@ -1546,7 +1599,7 @@ export function ExportPage() {
                           variant={loraAsGguf ? "outline" : "default"}
                           size="sm"
                           onClick={() => setLoraAsGguf(false)}
-                          title="Standard PEFT adapter (adapter_model.safetensors)."
+                          title="Adapter weights as safetensors."
                         >
                           Adapter (safetensors)
                         </Button>
@@ -1554,25 +1607,65 @@ export function ExportPage() {
                           type="button"
                           variant={loraAsGguf ? "default" : "outline"}
                           size="sm"
-                          disabled={isMacHost}
                           onClick={() => setLoraAsGguf(true)}
-                          title={
-                            isMacHost
-                              ? "GGUF LoRA export is not available on macOS/MLX. Use the safetensors adapter."
-                              : "llama.cpp GGUF LoRA, loadable with `llama-cli --lora`."
-                          }
+                          title="llama.cpp GGUF LoRA, loadable with `llama-cli --lora`."
                         >
                           GGUF adapter
                         </Button>
                       </div>
                       <div className="text-xs text-muted-foreground">
-                        {isMacHost
-                          ? "GGUF LoRA is not available on macOS/MLX; exporting the safetensors adapter."
-                          : loraAsGguf
-                            ? "Converts the adapter to a GGUF LoRA (llama.cpp `--lora`). The base model stays separate."
+                        {loraAsGguf
+                          ? isMacHost
+                            ? "Converts the adapter to a GGUF LoRA (llama.cpp `--lora`); the adapter files are written in PEFT format. Not available for adapters with per-module alpha values, rsLoRA with per-module ranks, DoRA, replaced embeddings or modules_to_save, or expert-parameter targets."
+                            : "Converts the adapter to a GGUF LoRA (llama.cpp `--lora`). The base model stays separate."
+                          : isMacHost
+                            ? "Adapter weights only; pick the on-disk format below."
                             : "Standard PEFT adapter files. Pair with the base model at inference."}
                       </div>
                     </div>
+
+                    {!loraAsGguf && isMacHost && (
+                      <div
+                        className="space-y-2"
+                        data-testid="adapter-format-picker"
+                      >
+                        <div className="text-sm font-medium">
+                          Safetensors format
+                        </div>
+                        <div className="flex flex-wrap gap-2">
+                          <Button
+                            type="button"
+                            variant={
+                              adapterFormat === "mlx" ? "default" : "outline"
+                            }
+                            size="sm"
+                            onClick={() => setAdapterFormat("mlx")}
+                            title="Native mlx-lm adapter (adapters.safetensors)."
+                          >
+                            MLX
+                          </Button>
+                          <Button
+                            type="button"
+                            variant={
+                              adapterFormat === "peft" ? "default" : "outline"
+                            }
+                            size="sm"
+                            onClick={() => setAdapterFormat("peft")}
+                            title="Standard Hugging Face PEFT adapter (adapter_model.safetensors)."
+                          >
+                            PEFT
+                          </Button>
+                        </div>
+                        <div className="text-xs text-muted-foreground">
+                          {adapterCompatibilityTip(
+                            adapterFormat,
+                            selectedModelData?.adapter_features,
+                          )}{" "}
+                          Training checkpoints always remain MLX; this choice
+                          only affects the exported copy.
+                        </div>
+                      </div>
+                    )}
 
                     {loraAsGguf && (
                       <div className="space-y-1.5">
@@ -1711,6 +1804,26 @@ export function ExportPage() {
                           </p>
                         </div>
                       )}
+                      <div className="flex items-center justify-between gap-3 rounded-lg border p-3">
+                        <div className="space-y-0.5">
+                          <div className="text-sm font-medium">
+                            Also convert to Q4NX (AMD NPU)
+                          </div>
+                          <div className="text-xs text-muted-foreground">
+                            {destination !== "local"
+                              ? "Saves locally only: pick a local destination."
+                              : q4nxSourceSelected
+                                ? "Converts the Q4 GGUF into a FastFlowLM folder for Ryzen AI NPUs (XDNA 2), next to the GGUFs."
+                                : "Needs Q4_0, Q4_1 or Q4_K_M in the selection."}
+                          </div>
+                        </div>
+                        <Switch
+                          aria-label="Also convert to Q4NX (AMD NPU)"
+                          checked={effectiveNpuQ4nx}
+                          onCheckedChange={setNpuQ4nx}
+                          disabled={!q4nxSourceSelected || destination !== "local"}
+                        />
+                      </div>
                     </>
                   )}
                 </div>
@@ -1790,6 +1903,7 @@ export function ExportPage() {
             </>
           )}
         </SectionCard>
+        <Q4nxConvertCard />
       </main>
     </div>
   );

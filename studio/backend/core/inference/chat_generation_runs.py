@@ -36,9 +36,8 @@ _SHUTDOWN_CANCEL_SECONDS = 5.0
 # force-kills the backend after five seconds.
 _SWEEP_SHUTDOWN_SECONDS = 0.5
 # A durable run sets cancel_on_disconnect=False, so reaping is keyed on progress rather than on connectedness. The
-# default matches llama_cpp._DEFAULT_FIRST_TOKEN_TIMEOUT_S, the request path's own first-token budget: a lease older
-# than that cannot be legitimate prefill, and slow decode is safe at any speed. A century: clear of any real lease, far
-# below where integer milliseconds overflow.
+# default matches llama_cpp._DEFAULT_FIRST_TOKEN_TIMEOUT_S; prefill renews via `: prefill-progress`, decode via chunks.
+# A century: clear of any real lease, far below where integer milliseconds overflow.
 _MAX_ENV_SECONDS = 100.0 * 365.0 * 24.0 * 60.0 * 60.0
 # The longest admission keep-alive cadence worth deriving a lease from. A day already means the queue never reports,
 # and tripling it stays far inside _MAX_ENV_SECONDS.
@@ -70,6 +69,8 @@ def _background_request(
     run_id: str,
     cancel_event: threading.Event,
     timezone_headers: dict[str, str] | None = None,
+    *,
+    via_api_key: bool | None = None,
 ) -> Request:
     scope = {
         "type": "http",
@@ -92,7 +93,10 @@ def _background_request(
         "client": ("127.0.0.1", 0),
         "server": ("127.0.0.1", 0),
         "app": app,
-        "state": {"generation_cancel_event": cancel_event},
+        "state": {
+            "generation_cancel_event": cancel_event,
+            "api_monitor_via_api_key": via_api_key,
+        },
     }
 
     async def receive():
@@ -397,6 +401,8 @@ _ADMISSION_WAIT_MARKER = ": admission-wait"
 _ADMISSION_DONE_MARKER = ": admission-done"
 # A server-side tool still running. Rate limited like the wait marker.
 _TOOL_HEARTBEAT_MARKER = ": tool-heartbeat"
+# Prefill advancing while prompt_progress is dropped; renews the lease like the tool heartbeat.
+_PREFILL_PROGRESS_MARKER = ": prefill-progress"
 
 
 def _minimum_lease_seconds() -> float:
@@ -698,6 +704,8 @@ class ChatGenerationSupervisor:
         last_flush = time.monotonic()
         finish_reason: str | None = None
         error: str | None = None
+        # Sent on its own chunk, since the finish chunk still reads `stop`.
+        quote_cut = False
         saw_done = False
         worker_token: str | None = None
         next_raw_task: asyncio.Task | None = None
@@ -751,13 +759,16 @@ class ChatGenerationSupervisor:
 
                 request_payload = dict(run["requestPayload"])
                 timezone_headers = request_payload.pop(db.TIMEZONE_HEADERS_FIELD, None)
+                via_api_key = request_payload.pop(db.API_MONITOR_ORIGIN_FIELD, None)
                 payload = ChatCompletionRequest.model_validate(request_payload)
                 # Switching, idle reload and auto-download all happen in the call below, and llama.cpp's first-token
                 # budget only starts after it. One touch afterwards cannot cover a preparation longer than the lease
                 # itself.
                 response = await produce_openai_chat_completions(
                     payload,
-                    _background_request(self.app, run_id, cancel_event, timezone_headers),
+                    _background_request(
+                        self.app, run_id, cancel_event, timezone_headers, via_api_key = via_api_key
+                    ),
                     owner,
                     cancel_on_disconnect = False,
                 )
@@ -794,15 +805,16 @@ class ChatGenerationSupervisor:
                     break
                 next_raw_task = asyncio.create_task(iterator.__anext__())
                 text = raw.decode("utf-8", "replace") if isinstance(raw, bytes) else str(raw)
-                # Admission comments are progress; plain keep-alives are not. A queued run only emits `:
-                # admission-wait`, which _SSEDecoder drops, so nothing renewed the lease and a healthy queue reaped its
-                # own runs. `: keep-alive` is the opposite signal, emitted when the generator has produced NOTHING, so
-                # renewing on any byte would keep a wedged run alive forever. Rate limited because chunk traffic already
-                # renews through append_events.
+                # Admission / tool / prefill comments are progress (_SSEDecoder drops them); `: keep-alive`
+                # means nothing was produced, so renewing on it would keep a wedged run alive forever.
                 if _ADMISSION_DONE_MARKER in text:
                     last_keepalive = time.monotonic()
                     await self._try_touch_progress(run_id)
-                elif _ADMISSION_WAIT_MARKER in text or _TOOL_HEARTBEAT_MARKER in text:
+                elif (
+                    _ADMISSION_WAIT_MARKER in text
+                    or _TOOL_HEARTBEAT_MARKER in text
+                    or _PREFILL_PROGRESS_MARKER in text
+                ):
                     now_s = time.monotonic()
                     if now_s - last_keepalive >= _renew_interval_seconds():
                         last_keepalive = now_s
@@ -820,6 +832,7 @@ class ChatGenerationSupervisor:
                     pending.append(("chunk", chunk, db.now_ms()))
                     finish_reason = _chunk_finish_reason(chunk) or finish_reason
                     error = _chunk_error(chunk) or error
+                    quote_cut = quote_cut or chunk.get("quote_cut") is True
                     now = time.monotonic()
                     if (
                         len(pending) >= _EVENT_BATCH_SIZE
@@ -865,6 +878,7 @@ class ChatGenerationSupervisor:
                 finish_reason = finish_reason,
                 error = error,
                 pending_events = pending,
+                quote_cut = quote_cut,
             )
             pending = []
         except asyncio.CancelledError:
