@@ -161,6 +161,11 @@ def test_plain_lm_becomes_a_decision_model_that_trains_saves_and_reloads(base, t
     assert json.loads((out / "joint_head_config.json").read_text())["hidden_size"] == hidden
     reloaded, _ = FastDecisionModel.from_pretrained(str(out), max_seq_length = 512)
     assert reloaded.decision_config["temperature"] == model.decision_config["temperature"]
+    # calibrate() fits a head temperature that the save folds into the head weights.
+    head_temperature = model.decision_config.get("head_temperature", 1.0)
+    assert reloaded.decision_config.get("folded_temperature", 1.0) == pytest.approx(
+        head_temperature
+    )
     record = holdout[0]
     batch = {
         "input_ids": torch.tensor([record["input_ids"]]),
@@ -177,8 +182,34 @@ def test_plain_lm_becomes_a_decision_model_that_trains_saves_and_reloads(base, t
                 for k, v in batch.items()
             }
         )
-    # The head is saved in bf16.
-    assert torch.allclose(ours.float().cpu(), theirs.float().cpu(), atol = 0.05)
+    # Served probabilities: the saved head is bf16 and folded, which scales the logits by 1 / T.
+    ours, theirs = ours.float().cpu(), theirs.float().cpu()
+    mask = ours > -1e3
+    served = torch.softmax((ours / head_temperature).masked_fill(~mask, -1e4), -1)
+    reloaded_served = torch.softmax(theirs.masked_fill(~mask, -1e4), -1)
+    assert torch.allclose(served, reloaded_served, atol = 0.02)
+    if base == TINY_QWEN3_5:
+        # The base repo has no joint_schema_model.py; Unsloth ships Cloudflare's, so their loader works.
+        import importlib.util
+
+        assert (out / "joint_schema_model.py").is_file()
+        spec = importlib.util.spec_from_file_location(
+            "converted_reference", out / "joint_schema_model.py"
+        )
+        reference = importlib.util.module_from_spec(spec)
+        sys.modules[spec.name] = reference
+        spec.loader.exec_module(reference)
+        released, _ = reference.load_release_model(str(out), device = device, dtype = torch.float32)
+        with torch.no_grad():
+            released_logits = released(
+                {
+                    **{k: v.to(device) for k, v in batch.items() if torch.is_tensor(v)},
+                    "records": batch["records"],
+                    "media": {},
+                }
+            )[0]
+        for row, z in enumerate(released_logits):
+            assert int(z.argmax()) == int(theirs[row, : len(z)].argmax())
 
 
 def test_head_init_must_match_the_backbone(tmp_path):

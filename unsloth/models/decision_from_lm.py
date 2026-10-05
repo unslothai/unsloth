@@ -92,16 +92,15 @@ def _head_from(head_init, hidden_size, token, revision):
 
 
 def _load_backbone(model_name, max_len, dtype, load_in_4bit, full_finetuning, token, gc, kwargs):
-    from .decision import _device
+    from .decision import _clef_bnb_config, _device
 
-    if dtype == torch.float16:
-        # Qwen3.5's gated delta net NaNs in pure fp16; Unsloth picks the dtype instead.
-        print(
-            "Unsloth: decision models ignore dtype = torch.float16 and let Unsloth pick the dtype."
-        )
-        dtype = None
     if _device().type != "cpu":
         from .loader import FastModel
+
+        # The rules a Clef checkpoint loads with (decision._load_clef): Unsloth's dynamic 4-bit
+        # config, and a float16 request puts Qwen3.5 on Unsloth's float32 path.
+        if load_in_4bit and kwargs.get("quantization_config") is None:
+            kwargs["quantization_config"] = _clef_bnb_config(dtype)
         backbone, processor = FastModel.from_pretrained(
             str(model_name),
             max_seq_length = max_len,
@@ -205,8 +204,10 @@ def load_lm_as_decision_model(
         "base_model": str(model_name),
     }
     _mark_full_finetuning(model, full_finetuning)
+    model._unsloth_forced_float32 = bool(getattr(backbone, "_unsloth_forced_float32", False))
     model._unsloth_fast_backbone = fast
     model._saved_temp_tokenizer = processor
+    model._unsloth_source_vocab = len(tokenizer)
     source = _source_folder(model_name, token, revision, local_files_only)
     model._unsloth_source_folder = str(source) if source is not None else ""
     model.save_pretrained_merged = types.MethodType(_save_with_reference_code, model)
@@ -215,17 +216,8 @@ def load_lm_as_decision_model(
     return model, processor
 
 
-def _reference_code() -> Optional[Path]:
-    # Cloudflare's joint_schema_model.py, when Unsloth ships a copy of it.
-    here = Path(__file__).resolve().parent
-    for candidate in (
-        here / "_vendor" / "clef_joint_schema_model.py",
-        here / "_vendor" / "clef" / "joint_schema_model.py",
-        here / "clef_joint_schema_model.py",
-    ):
-        if candidate.is_file():
-            return candidate
-    return None
+# Cloudflare's joint_schema_model.py, vendored unmodified.
+_REFERENCE_CODE = Path(__file__).resolve().parents[1] / "_vendor" / "clef" / "joint_schema_model.py"
 
 
 def _save_with_reference_code(
@@ -241,9 +233,9 @@ def _save_with_reference_code(
     # Cloudflare's loader is for Qwen3.5 vision backbones; ship it so the folder loads there too.
     output = Path(save_directory)
     architectures = getattr(self._backbone().config, "architectures", None) or []
-    reference = _reference_code()
+    reference = _REFERENCE_CODE
     if (
-        reference is not None
+        reference.is_file()
         and "Qwen3_5ForConditionalGeneration" in architectures
         and not (output / "joint_schema_model.py").exists()
     ):

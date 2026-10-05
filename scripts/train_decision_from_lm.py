@@ -19,7 +19,6 @@ import time
 
 from unsloth import DecisionTrainer, FastDecisionModel  # noqa: I001  (Unsloth first)
 from unsloth.models import decision_datasets as dd
-from unsloth.models.decision import _decision_logits
 
 import torch
 from transformers import TrainingArguments
@@ -42,29 +41,10 @@ DEFAULT_SOURCES = (
 
 
 def _record_metrics(model, tokenizer, items) -> dict:
-    import numpy as np
-
-    logits, questions = _decision_logits(model, tokenizer, items)
-    temperatures = model.decision_config.get("temperature", [1.0] * 3)
-    correct, by_row, conf = [], {}, []
-    for z, q in zip(logits, questions):
-        p = torch.softmax(z / temperatures[q["qtype"]], -1)
-        ok = int(p.argmax()) == q["label"]
-        correct.append(ok)
-        conf.append(float(p.max()))
-        by_row.setdefault(q["row"], []).append(ok)
-    conf, correct = np.array(conf), np.array(correct, dtype = float)
-    bins = np.minimum((conf * 10).astype(int), 9)
-    ece = sum(
-        abs(correct[bins == b].mean() - conf[bins == b].mean()) * (bins == b).mean()
-        for b in range(10)
-        if (bins == b).any()
-    )
+    metrics = FastDecisionModel.evaluate(model, tokenizer, items)
     return {
-        "decisions": len(correct),
-        "accuracy": round(float(correct.mean()), 4),
-        "ece": round(float(ece), 4),
-        "record_accuracy": round(float(np.mean([all(v) for v in by_row.values()])), 4),
+        "decisions": sum(len(item.get("labels", [item.get("label")])) for item in items),
+        **{k: round(float(metrics[k]), 4) for k in ("accuracy", "ece", "record_accuracy")},
     }
 
 
