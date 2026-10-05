@@ -37,6 +37,15 @@ import {
   splitActiveModel,
 } from "../reload-last-model";
 
+// A pick superseded by a newer one rejects too; the newer pick owns the outcome.
+function loadErrorMessage(err: unknown, fallback: string): string | null {
+  const runtime = useChatRuntimeStore.getState();
+  if (runtime.modelLoading || runtime.loadingModelPick) {
+    return null;
+  }
+  return err instanceof Error ? err.message : fallback;
+}
+
 function toModelOptions(
   models: {
     id: string;
@@ -160,13 +169,12 @@ export function ApiModelLoadControls({
           previousConfig: currentRuntimePerModelConfig({
             includeMaxSeqLength: true,
           }),
+          throwOnError: true,
         });
         refreshLastLoadLabel();
         onSettled();
       } catch (err: unknown) {
-        setActionError(
-          err instanceof Error ? err.message : "Failed to load model",
-        );
+        setActionError(loadErrorMessage(err, "Failed to load model"));
       }
     },
     [selectModel, onSettled, refreshLastLoadLabel],
@@ -193,15 +201,14 @@ export function ApiModelLoadControls({
             previousConfig: currentRuntimePerModelConfig({
               includeMaxSeqLength: true,
             }),
+            throwOnError: true,
           });
         },
       });
       refreshLastLoadLabel();
       onSettled();
     } catch (err: unknown) {
-      setActionError(
-        err instanceof Error ? err.message : "Failed to reload model",
-      );
+      setActionError(loadErrorMessage(err, "Failed to reload model"));
     } finally {
       setReloading(false);
     }

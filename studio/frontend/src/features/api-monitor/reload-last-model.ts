@@ -57,7 +57,9 @@ export async function reloadLastModel<C>(
   return target;
 }
 
-// The monitor reports a llama.cpp model as "<id>:<quant>".
+const GGUF_QUANT_RE = /^(?:UD-)?(?:I?Q\d\w*|TQ\d\w*|B?F(?:16|32)|MXFP4\w*)$/i;
+
+// The monitor reports a llama.cpp model as "<id>:<quant>"; Ollama ids carry their own ":<tag>".
 export function splitActiveModel(activeModel: string | null | undefined): {
   id: string;
   ggufVariant: string | null;
@@ -67,7 +69,11 @@ export function splitActiveModel(activeModel: string | null | undefined): {
   }
   const sep = activeModel.lastIndexOf(":");
   const variant = activeModel.slice(sep + 1);
-  if (sep <= 0 || !variant || variant.includes("/")) {
+  if (
+    sep <= 0 ||
+    activeModel.startsWith("ollama/") ||
+    !GGUF_QUANT_RE.test(variant)
+  ) {
     return { id: activeModel, ggufVariant: null };
   }
   return { id: activeModel.slice(0, sep), ggufVariant: variant };
