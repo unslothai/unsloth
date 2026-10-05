@@ -926,10 +926,14 @@ export function hasIncompleteLinkRepair(
   );
 }
 
-/** `remend`, except an unfinished link stays literal (see `hasIncompleteLinkRepair`). */
+// Skips only remend's link pass, whose placeholder renders as "[blocked]"; every other repair still runs.
+export const LITERAL_LINK_REMEND = { links: false, images: false } as const;
+
 export function repairStreamingMarkdown(source: string): string {
   const repaired = remend(source);
-  return hasIncompleteLinkRepair(source, repaired) ? source : repaired;
+  return hasIncompleteLinkRepair(source, repaired)
+    ? remend(source, LITERAL_LINK_REMEND)
+    : repaired;
 }
 
 // Marker facts the retained prefix carries into the tail repair.
@@ -999,12 +1003,16 @@ function repairContextPrefix(context: RetainedContext): string {
   );
 }
 
-function repairTail(tail: string, context: RetainedContext): string {
+function repairTail(
+  tail: string,
+  context: RetainedContext,
+  options?: typeof LITERAL_LINK_REMEND,
+): string {
   const prefix = repairContextPrefix(context);
   if (!prefix) {
-    return remend(tail);
+    return remend(tail, options);
   }
-  return remend(prefix + tail).slice(prefix.length);
+  return remend(prefix + tail, options).slice(prefix.length);
 }
 
 // Where remend believes a fence is open. It toggles on any ``` run, wherever on the line that run
@@ -1479,9 +1487,10 @@ export class IncrementalMarkdownCache {
     const repaired =
       this.repairOpenFence() ?? repairTail(this.tail, this.context);
 
-    // remend's `streamdown:incomplete-link` placeholder renders as "[blocked]": keep the tail literal.
     if (hasIncompleteLinkRepair(this.tail, repaired)) {
-      return this.render(this.tail);
+      return this.render(
+        repairTail(this.tail, this.context, LITERAL_LINK_REMEND),
+      );
     }
 
     // globally scoped definitions must stay in the same rendered document as

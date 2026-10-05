@@ -45,6 +45,9 @@ test("an unfinished link stays literal instead of showing Streamdown's blocked p
     assert.match(html, /See \[example/);
   }
 
+  const list = new IncrementalMarkdownCache().update("- >= 16 GB\n\nSee [foo");
+  assert.equal(list.markdown, "- \\>= 16 GB\n\nSee [foo");
+
   const complete = "See [example](https://example.com)";
   assert.equal(cache.update(complete).markdown, complete);
   assert.equal(hasIncompleteLinkRepair(complete), false);

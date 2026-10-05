@@ -11,7 +11,10 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import remend from "remend";
 import { Streamdown } from "streamdown";
-import { hasIncompleteLinkRepair } from "../src/components/assistant-ui/streaming-render-schedule.ts";
+import {
+  LITERAL_LINK_REMEND,
+  hasIncompleteLinkRepair,
+} from "../src/components/assistant-ui/streaming-render-schedule.ts";
 
 /**
  * WHY THIS FILE EXISTS. `remend` is the incomplete-markdown repair Streamdown runs over a message
@@ -113,7 +116,7 @@ const MARKDOWN_TEXT = new URL(
  * streaming, so evaluating the real expression in that state is the same question the component
  * answers on the settled path.
  */
-function settledParseIncompleteMarkdown(pendingLinkRepair = false): boolean {
+function settledParseIncompleteMarkdown(): boolean {
   const source = readFileSync(MARKDOWN_TEXT, "utf8");
   const opened = source.indexOf("<Streamdown");
   assert.notEqual(
@@ -132,9 +135,8 @@ function settledParseIncompleteMarkdown(pendingLinkRepair = false): boolean {
   );
   const value: unknown = new Function(
     "incrementalRender",
-    "pendingLinkRepair",
     `return (${expression});`,
-  )(null, pendingLinkRepair);
+  )(null);
   assert.equal(
     typeof value,
     "boolean",
@@ -149,9 +151,10 @@ function renderSettled(markdown: string): string {
       Streamdown,
       {
         mode: "streaming",
-        parseIncompleteMarkdown: settledParseIncompleteMarkdown(
-          hasIncompleteLinkRepair(markdown),
-        ),
+        parseIncompleteMarkdown: settledParseIncompleteMarkdown(),
+        remend: hasIncompleteLinkRepair(markdown)
+          ? LITERAL_LINK_REMEND
+          : undefined,
       },
       markdown,
     ),
@@ -164,6 +167,10 @@ test("a settled unfinished link remains text without a blocked placeholder", () 
   assert.match(html, /https:\/\/exa/);
   assert.doesNotMatch(html, /\[blocked\]|streamdown:incomplete-link/);
   assert.match(renderSettled("See [example](javascript:alert)"), /\[blocked\]/);
+  // The repairs remend makes before its link pass still apply.
+  const list = renderSettled("- >= 16 GB\n\nSee [foo");
+  assert.match(list, /<li[^>]*>&gt;= 16 GB<\/li>/);
+  assert.doesNotMatch(list, /blockquote|\[blocked\]/);
 });
 
 test("the settled render path runs the repair, not just the package", () => {
