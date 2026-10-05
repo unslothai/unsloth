@@ -198,6 +198,7 @@ export function SandboxTab() {
     const timer = window.setTimeout(() => {
       void loadHostPreparation(t("settings.sandbox.prepareError"))
         .then((next) => {
+          if (!shouldPollJob(next)) forgetSandboxCapability();
           if (!mounted.current) return;
           setJob(next);
           if (!shouldPollJob(next)) {
@@ -228,6 +229,8 @@ export function SandboxTab() {
         update,
         t("settings.sandbox.saveError"),
       );
+      // The chat picker's cached answer predates this change (the opt-in decides MXC).
+      forgetSandboxCapability();
       if (!mounted.current) return;
       if (generation === statusGeneration.current) setStatus(next);
       setLoading(false);

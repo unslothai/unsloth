@@ -10,6 +10,7 @@ from __future__ import annotations
 from collections import deque
 from dataclasses import asdict, dataclass, field
 import logging
+import os
 import shlex
 import subprocess
 import sys
@@ -139,7 +140,9 @@ def _commands(plan: sandbox_setup_plan.SetupPlan) -> tuple[list[list[str]], dict
         raise SetupUnavailable(
             "No trusted /bin/sh was found; run the command in a terminal instead."
         )
-    return [[path, shell, "-c", pkexec_script(steps)]], env
+    # trusted_system_binary resolves links; BusyBox (Alpine) picks its applet from argv[0], so name it.
+    shell_argv = [shell, "sh"] if os.path.basename(shell) == "busybox" else [shell]
+    return [[path, *shell_argv, "-c", pkexec_script(steps)]], env
 
 
 def _drain(job: SetupJob, proc: subprocess.Popen, tail: deque) -> int | None:

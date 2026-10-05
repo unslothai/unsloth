@@ -262,6 +262,33 @@ def test_studio_loop_executes_and_replays_native_tool_calls(native, monkeypatch)
     assert api.active_generations.count() == 0
 
 
+def test_run_automatically_streams_arm_the_no_sandbox_gate(native, monkeypatch):
+    # Same rule as the llama.cpp and safetensors loops: a streaming UI chat in "off" arms the confirm
+    # gate, and the loop then asks only for a risky Python/Terminal call without OS isolation.
+    from core.inference import studio_tool_loop
+    from routes import managed_engine_chat
+
+    seen = []
+    original = managed_engine_chat.stream_with_studio_tools
+
+    def capture(*args, **kwargs):
+        seen.append(kwargs["policy"].confirm_calls)
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(managed_engine_chat, "stream_with_studio_tools", capture)
+    monkeypatch.setattr(studio_tool_loop, "execute_tool", lambda *a, **k: "3973")
+    run(
+        route_test._request(
+            enable_tools = True,
+            enabled_tools = ["python"],
+            permission_mode = "off",
+            max_tool_calls_per_message = 1,
+            stream = True,
+        )
+    )
+    assert seen == [True]
+
+
 @pytest.mark.parametrize(
     "choice", ["auto", "required", "none", {"type": "function", "function": {"name": "lookup"}}]
 )

@@ -162,6 +162,18 @@ def test_pkexec_asks_once_for_one_constant_script(monkeypatch, env):
     assert call[3] == job_mod.pkexec_script([_pinned(step) for step in _STEPS])
 
 
+def test_busybox_sh_is_run_as_its_sh_applet(monkeypatch, env):
+    # Alpine: /bin/sh is a link to /bin/busybox, which picks the applet from argv[0].
+    pkexec = env["fake"]("pkexec")
+    _linux_plan(monkeypatch, "pkexec", pkexec)
+    monkeypatch.setattr(
+        plan_mod, "trusted_system_binary", lambda name: "/bin/busybox" if name == "sh" else None
+    )
+    _settle(job_mod.start(plan_mod.LINUX_INSTALL))
+    (call,) = env["recorded"]()
+    assert call[:4] == [pkexec, "/bin/busybox", "sh", "-c"]
+
+
 def test_a_dismissed_polkit_prompt_is_declined(monkeypatch, env):
     _linux_plan(monkeypatch, "pkexec", env["fake"]("pkexec", code = job_mod.PKEXEC_DISMISSED))
     job = _settle(job_mod.start(plan_mod.LINUX_INSTALL))

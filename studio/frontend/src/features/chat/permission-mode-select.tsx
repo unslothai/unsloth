@@ -165,9 +165,12 @@ function useSandboxUnavailable(): boolean {
   const [unavailable, setUnavailable] = useState(false);
   useEffect(() => {
     let live = true;
+    // Only the newest read applies: an older answer resolving last must not undo a newer one.
+    let reads = 0;
     const read = () => {
+      const id = ++reads;
       void loadSandboxCapability().then((capability) => {
-        if (live) {
+        if (live && id === reads) {
           setUnavailable(
             capability !== null &&
               !capabilityPending(capability) &&

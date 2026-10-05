@@ -71,6 +71,8 @@ function SandboxSetupContent({
   const [stillUnavailable, setStillUnavailable] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
   const mounted = useRef(true);
+  // Only the newest check applies (a retry can overtake a slow first read).
+  const checks = useRef(0);
   // A level picked while the setup ran wins over turning Run automatically on at the end.
   const modeAtOpen = useRef(useChatRuntimeStore.getState().permissionMode);
 
@@ -82,8 +84,9 @@ function SandboxSetupContent({
   }, []);
 
   const check = useCallback(() => {
+    const id = ++checks.current;
     void loadSettledSandboxCapability().then((next) => {
-      if (!mounted.current) return;
+      if (!mounted.current || id !== checks.current) return;
       if (next === null) {
         setLoadFailed(true);
         return;
