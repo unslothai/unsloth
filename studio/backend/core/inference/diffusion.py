@@ -243,7 +243,6 @@ from .diffusion_step_skip import (
 )
 from .diffusion_nvfp4_protect import protect_generation
 from .diffusion_precision import (
-    TE_QUANT_FP8,
     effective_te_quant,
     normalize_te_quant,
     quantize_text_encoders,
@@ -3520,7 +3519,9 @@ class DiffusionBackend:
         if local_files_only:
             return {}
         try:
-            if normalize_te_quant(text_encoder_quant) != TE_QUANT_FP8:
+            from .diffusion_te_prequant import TE_PREQUANT_SCHEMES
+
+            if normalize_te_quant(text_encoder_quant) not in TE_PREQUANT_SCHEMES:
                 return {}
             from huggingface_hub import HfApi
 
@@ -4451,7 +4452,13 @@ class DiffusionBackend:
                 }
             )
 
+        from .diffusion_te_prequant import te_prequant_unmirrored
+
         for repo, files in te_files.values():
+            # A mirrored encoder still drops the dense shards above but is never staged: the Hub may not hold it.
+            files = te_prequant_unmirrored(repo, files)
+            if not files:
+                continue
             add_missing_entry(
                 repo,
                 [name for name, _size in files],
