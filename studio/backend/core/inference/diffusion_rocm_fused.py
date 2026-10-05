@@ -30,7 +30,7 @@ _MAX_D = 16384
 _LOCK = threading.Lock()
 _ROPE_STOCK: dict = {}
 _ADALN_PREV: dict = {}
-# Survives uninstall: a fused forward a later layer restores after our teardown still reaches a real forward.
+# Survives uninstall, so a fused forward restored later by another layer still reaches a real forward.
 _ADALN_ORIGINAL: dict = {}
 COUNTS = {"rope_fused": 0, "rope_stock": 0, "adaln_fused": 0, "adaln_stock": 0}
 
@@ -441,8 +441,7 @@ def install_adaln(dtype: Any, device: Any = "cuda") -> int:
 def uninstall_adaln() -> None:
     with _LOCK:
         for cls, prev in list(_ADALN_PREV.items()):
-            # A later layer (the deferred eager patch) still on top keeps the entry: once that layer restores our
-            # forward, the next uninstall puts ``prev`` back.
+            # Not ours on top (deferred eager patch): keep the entry for the uninstall after that layer's.
             if cls.__dict__.get("forward") in _FORWARDS.values():
                 cls.forward = prev
                 del _ADALN_PREV[cls]
