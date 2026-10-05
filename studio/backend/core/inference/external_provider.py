@@ -6,8 +6,10 @@
 
 import asyncio
 import base64
+import contextlib
 import io
 import json as _json
+import math
 import mimetypes
 import random
 import re
@@ -26,6 +28,7 @@ from core.inference.openai_responses_shared import (
     normalize_function_schema,
     responses_function_call,
     responses_function_output,
+    responses_usage_to_chat,
     response_event_type,
 )
 from core.inference.sse_control_frames import sanitize_provider_sse_line
@@ -34,16 +37,16 @@ from core.inference.sse_control_frames import sanitize_provider_sse_line
 # templated just like an in-process one (#7066). "custom" is a user-supplied OpenAI-compatible base_url, i.e. how a
 # self-hosted vLLM or llama.cpp registers without its preset. Unknown endpoint means assume a template applies:
 # sweeping a hosted API costs a space in delimiter-like text, not sweeping a local one costs a forged turn.
-_TEMPLATE_APPLYING_PROVIDERS = frozenset({"vllm", "llama_cpp", "ollama", "custom"})
+_TEMPLATE_APPLYING_PROVIDERS = frozenset({"vllm", "llama_cpp", "ollama", "custom", "lemonade"})
 
 # The subset documenting "continue_final_message" + "add_generation_prompt" on /v1/chat/completions.
 _CONTINUATION_FLAG_PROVIDERS = frozenset({"vllm", "llama_cpp"})
 
-# The subset documenting stream_options.include_usage. An OAI-compatible stream omits usage without it, and these
-# providers report no llama.cpp timings either, so the monitor has no token count to derive a speed from. Same caution
-# as the flag above: "custom" is any user-supplied base_url and a strict endpoint 400s on an unknown field. "openai"
-# is absent because it routes to /v1/responses, which reports usage on its own.
-_USAGE_STREAM_OPTION_PROVIDERS = frozenset({"vllm", "openrouter", "kimi"})
+# The subset documenting stream_options.include_usage. An OAI-compatible stream omits usage without it, leaving the
+# chat context bar without prompt_tokens and, where no llama.cpp timings arrive, the monitor without a speed. Same
+# caution as the flag above: "custom" is any user-supplied base_url and a strict endpoint 400s on an unknown field.
+# "openai" is absent because it routes to /v1/responses, which reports usage on its own.
+_USAGE_STREAM_OPTION_PROVIDERS = frozenset({"vllm", "llama_cpp", "openrouter", "kimi", "lemonade"})
 
 # llama-server reads repeat_penalty, not repetition_penalty (as routes/inference does).
 _REPETITION_PENALTY_BODY_KEY = {"llama_cpp": "repeat_penalty"}
@@ -137,12 +140,29 @@ def _append_provider_path(base_url: str, endpoint: str) -> str:
     return urlunsplit((parts.scheme, parts.netloc, path, parts.query, parts.fragment))
 
 
+def caches_at_the_last_block(
+    provider_type: Optional[str], model: Optional[str], enable_prompt_caching: Optional[bool]
+) -> bool:
+    if enable_prompt_caching is False:
+        return False
+    if provider_type == "anthropic":
+        return True
+    return provider_type == "openrouter" and (model or "").strip().lower().lstrip("~").startswith(
+        "anthropic/"
+    )
+
+
+def _is_azure_openai_host(host: str) -> bool:
+    return host.endswith((".openai.azure.com", ".services.ai.azure.com"))
+
+
 def _is_openai_family_cloud(base_url: Optional[str]) -> bool:
     """True iff ``base_url`` points at OpenAI cloud or Azure OpenAI Foundry. Anchored to the URL
     host so a path/subdomain like ``https://api.openai.com.attacker.com/v1`` cannot bypass it
     (CodeQL py/incomplete-url-substring-sanitization). Scopes cloud-only Responses-API extensions
     that 400 on non-cloud OAI-compat servers. Azure Foundry resources live at
-    ``<resource>.openai.azure.com``; the leading dot on `endswith` stops the apex from matching."""
+    ``<resource>.openai.azure.com`` and ``<resource>.services.ai.azure.com``; the leading
+    dots on `endswith` stop the apexes from matching."""
     if not base_url:
         return False
     try:
@@ -151,7 +171,7 @@ def _is_openai_family_cloud(base_url: Optional[str]) -> bool:
         return False
     if not host:
         return False
-    return host == "api.openai.com" or host.endswith(".openai.azure.com")
+    return host == "api.openai.com" or _is_azure_openai_host(host)
 
 
 # Claude Opus 4.7 and every Claude 5 family removed temperature/top_p/top_k, as did Mythos Preview; the API 400s with
@@ -164,6 +184,20 @@ _ANTHROPIC_MODEL_VERSION = re.compile(
     re.IGNORECASE,
 )
 _OPENAI_REASONING_SUMMARY_UNSUPPORTED = re.compile(r"^o3(?:[-.]|$)")
+_OPENAI_FIXED_SAMPLING_MODEL = re.compile(
+    r"^(?:gpt-5(?:[.-]|$)|gpt-4\.5(?:[.-]|$)|o\d+(?:[.-]|$)|codex-mini(?:[.-]|$)|gpt-6-astra(?:[.-]|$))"
+)
+_OPENAI_NON_REASONING_CHAT_ALIAS = re.compile(r"-chat(?:-latest)?$")
+
+
+def _openai_fixed_sampling_model(model: str) -> bool:
+    normalized = model.strip().lower()
+    return bool(
+        _OPENAI_FIXED_SAMPLING_MODEL.match(normalized)
+        and not _OPENAI_NON_REASONING_CHAT_ALIAS.search(normalized)
+    )
+
+
 # Gemini 3.x, dotted minor optional: gemini-3-, gemini-3.1-, gemini-3.6- ...
 _GEMINI3_FAMILY = re.compile(r"^gemini-(?:[3-9]|\d{2,})(?:\.\d+)?-")
 _GEMINI3_PRO = re.compile(r"^gemini-(?:[3-9]|\d{2,})(?:\.\d+)?-pro")
@@ -222,6 +256,15 @@ def _openai_response_error_message(event: Any) -> str:
     response_id = response.get("id")
     suffix = f" (response {response_id})" if isinstance(response_id, str) else ""
     return f"OpenAI response failed without error details{suffix}."
+
+
+def _openai_response_finish_reason(response: Any, *, has_tool_calls: bool = False) -> str:
+    """Map a completed Responses object to the closest Chat Completions finish reason."""
+    if isinstance(response, dict) and response.get("status") == "incomplete":
+        details = response.get("incomplete_details")
+        reason = details.get("reason") if isinstance(details, dict) else None
+        return "content_filter" if reason == "content_filter" else "length"
+    return "tool_calls" if has_tool_calls else "stop"
 
 
 def _openai_image_replay_requires_reasoning(model: str) -> bool:
@@ -369,6 +412,47 @@ def _split_pending_citation_tail(text: str) -> tuple[str, str]:
     if _OPENAI_CITE_STOP in text[last_open:]:
         return text, ""
     return text[:last_open], text[last_open:]
+
+
+def _record_openai_url_citation(
+    url_citations: list[dict[str, Any]], payload: dict[str, Any]
+) -> None:
+    """Normalize and append one Responses ``url_citation`` annotation.
+
+    API revisions have used ``source_id``, ``id``, ``locator``, and
+    ``source_ids`` for the marker aliases. Citations sharing a URL retain one
+    display index while accumulating every alias that can reference it.
+    """
+    if payload.get("type") != "url_citation":
+        return
+    url = payload.get("url")
+    if not isinstance(url, str) or not url:
+        return
+    aliases: list[str] = []
+    source_id = payload.get("source_id") or payload.get("id") or payload.get("locator")
+    if isinstance(source_id, str) and source_id:
+        aliases.append(source_id)
+    source_ids = payload.get("source_ids")
+    if isinstance(source_ids, list):
+        aliases.extend(alias for alias in source_ids if isinstance(alias, str) and alias)
+
+    for citation in url_citations:
+        if citation["url"] != url:
+            continue
+        existing_aliases = citation.setdefault("source_ids", [])
+        for alias in aliases:
+            if alias not in existing_aliases:
+                existing_aliases.append(alias)
+        return
+
+    url_citations.append(
+        {
+            "url": url,
+            "title": payload.get("title") or url,
+            "snippet": payload.get("snippet") or payload.get("quote") or "",
+            "source_ids": aliases,
+        }
+    )
 
 
 def _extract_web_search_action(item: dict[str, Any]) -> dict[str, Any]:
@@ -814,6 +898,8 @@ def _create_shared_http_client() -> httpx.AsyncClient:
 
 
 _http_client = _create_shared_http_client()
+# Studio's own loopback runtime: an env proxy would receive its key and prompts, or fail to reach it.
+_loopback_http_client = httpx.AsyncClient(trust_env = False)
 
 
 class _PinnedPublicTransport(httpx.AsyncBaseTransport):
@@ -934,6 +1020,49 @@ def restore_account_clients(account_id: str) -> None:
     reactivated under a tombstone would never be cached again, so no pooling and no cookies."""
     with _managed_clients_lock:
         _retired_accounts.discard(account_id)
+
+
+def _rejects_max_tokens(status_code: int, error_text: str) -> bool:
+    """400 from an upstream that wants `max_completion_tokens` (Azure gpt-5.x / o-series behind custom gateways, #10787)."""
+    if status_code != 400:
+        return False
+    try:
+        err = _json.loads(error_text).get("error")
+    except Exception:
+        err = None
+    if isinstance(err, dict) and err.get("param") == "max_tokens":
+        return err.get("code") == "unsupported_parameter" or "max_completion_tokens" in str(
+            err.get("message", "")
+        )
+    return "max_tokens" in error_text and "max_completion_tokens" in error_text
+
+
+def _with_max_completion_tokens(body: dict[str, Any]) -> dict[str, Any]:
+    body = dict(body)
+    body["max_completion_tokens"] = body.pop("max_tokens")
+    return body
+
+
+@contextlib.asynccontextmanager
+async def _stream_post_retrying_max_tokens(
+    http: httpx.AsyncClient, url: str, body: dict[str, Any], **kwargs
+):
+    """`http.stream("POST", ...)` that resends once with `max_completion_tokens` if the upstream rejects `max_tokens`.
+    Nothing has been yielded to the caller at the status check, so the retry is invisible."""
+    async with http.stream("POST", url, json = body, **kwargs) as response:
+        retry = (
+            response.status_code == 400
+            and "max_tokens" in body
+            and _rejects_max_tokens(400, (await response.aread()).decode("utf-8", errors = "replace"))
+        )
+        if not retry:
+            yield response
+            return
+    logger.info("Upstream rejected max_tokens; retrying with max_completion_tokens")
+    async with http.stream(
+        "POST", url, json = _with_max_completion_tokens(body), **kwargs
+    ) as response:
+        yield response
 
 
 def _client() -> httpx.AsyncClient:
@@ -1287,14 +1416,18 @@ class ExternalProviderClient:
         base_url: str,
         api_key: str,
         timeout: float = 120.0,
+        *,
+        api_type: str = "chat_completions",
+        managed_loopback: bool = False,
     ):
         self.provider_type = provider_type
-        # Single choke point for every outbound provider request (chat, models, responses, messages, containers): the
-        # URL is caller-controlled, so it is validated here even when a route already checked it. Routes turn the
-        # ValueError into a 400; reaching it here means a caller bypassed them.
+        self.api_type = api_type if provider_type == "custom" else "chat_completions"
         from core.inference.providers import validate_provider_base_url
 
-        self.base_url = validate_provider_base_url(base_url)
+        self.base_url = (
+            base_url.rstrip("/") if managed_loopback else validate_provider_base_url(base_url)
+        )
+        self._managed_loopback = managed_loopback
         # Strip a legacy `/openai` suffix from Google-hosted bases so configs saved before the native switch still
         # route correctly. Custom proxy paths ending in `/openai` are left untouched.
         if self.provider_type == "gemini":
@@ -1328,9 +1461,27 @@ class ExternalProviderClient:
                 auth_prefix = "Bearer "
 
         headers = {"Content-Type": "application/json"}
-        # Skip auth header when api_key is empty (optional for local providers); httpx rejects an empty `Bearer `
-        # value as "Illegal header value".
-        if self.api_key:
+        # Azure OpenAI accepts a resource key in `api-key` or an Entra access token as a Bearer token.
+        # A saved custom provider has only one credential field, so preserve raw JWT bearer credentials and let
+        # `Bearer <token>` explicitly select bearer auth for opaque Entra tokens. Never send both credentials.
+        azure_custom_responses = (
+            self.provider_type == "custom"
+            and self.api_type == "responses"
+            and _is_azure_openai_host((urlparse(self.base_url).hostname or "").lower())
+        )
+        if azure_custom_responses and self.api_key:
+            if self.api_key[:7].lower() == "bearer ":
+                bearer_token = self.api_key[7:].strip()
+            elif re.fullmatch(r"eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+", self.api_key):
+                bearer_token = self.api_key
+            else:
+                bearer_token = None
+            if bearer_token:
+                headers["Authorization"] = f"Bearer {bearer_token}"
+            elif bearer_token is None:
+                headers["api-key"] = self.api_key
+        # Skip auth when the key is empty (optional for local providers); httpx rejects an empty `Bearer `.
+        elif self.api_key:
             headers[auth_header] = f"{auth_prefix}{self.api_key}"
         # Merge provider-specific extra headers (anthropic-version, OpenRouter attribution).
         headers.update(provider_info.get("extra_headers", {}))
@@ -1353,7 +1504,7 @@ class ExternalProviderClient:
         self,
         messages: list[dict[str, Any]],
         model: str,
-        temperature: float = 0.7,
+        temperature: Optional[float] = 0.7,
         top_p: Optional[float] = 0.95,
         max_tokens: Optional[int] = None,
         presence_penalty: float = 0.0,
@@ -1374,6 +1525,8 @@ class ExternalProviderClient:
         continue_final_message: Optional[bool] = None,
         response_format: Optional[dict[str, Any]] = None,
         stream: bool = True,
+        preserve_thinking: Optional[bool] = None,
+        thread_id: Optional[str] = None,
     ) -> AsyncGenerator[str, None]:
         """Yield OpenAI-format SSE lines from the external provider. OpenAI-compatible providers
         forward lines verbatim; for Anthropic the native Messages API SSE is translated.
@@ -1386,6 +1539,28 @@ class ExternalProviderClient:
         tool_choice_disabled = (
             isinstance(tool_choice, str) and tool_choice.strip().lower() == "none"
         )
+
+        # Managed OpenAI Responses hosts do not apply a local chat template; preserve literal delimiter text there.
+        # Custom gateways and local endpoints still need their template-control-token protection.
+        managed_custom_responses = (
+            self.provider_type == "custom"
+            and self.api_type == "responses"
+            and _is_openai_family_cloud(self.base_url)
+        )
+        if self.provider_type in _TEMPLATE_APPLYING_PROVIDERS and not managed_custom_responses:
+            from core.inference.chat_template_helpers import (
+                neutralize_control_markup_in_messages,
+                neutralize_tool_descriptions,
+                reconciled_tool_choice,
+            )
+            messages = neutralize_control_markup_in_messages(messages)
+            if tools:
+                safe_tools = neutralize_tool_descriptions(tools)
+                # reconcile a forced tool choice when sanitization removes its function from a mixed catalog.
+                tool_choice = reconciled_tool_choice(tool_choice, tools, safe_tools)
+                if not safe_tools:
+                    tool_choice = None
+                tools = safe_tools
 
         if not self._is_openai_compatible():
             # Gemini speaks its own native REST shape (contents/parts); `_stream_gemini` translates request/response
@@ -1432,7 +1607,7 @@ class ExternalProviderClient:
         # OpenAI moved flagship models (gpt-5.x) off /v1/chat/completions -- those endpoints return 404 "This is not a
         # chat model" for the new families. Route all OpenAI traffic through /v1/responses instead and translate the
         # Responses SSE back into Chat Completions chunks so the frontend stays endpoint-agnostic.
-        if self.provider_type == "openai":
+        if self.provider_type == "openai" or self.api_type == "responses":
             async for line in self._stream_openai_responses(
                 messages,
                 model,
@@ -1448,6 +1623,7 @@ class ExternalProviderClient:
                 tools,
                 tool_choice,
                 response_format,
+                stream = stream if self.provider_type == "custom" else True,
             ):
                 yield line
             return
@@ -1474,25 +1650,6 @@ class ExternalProviderClient:
             ):
                 yield line
             return
-
-        # A self-hosted server templates client text just like the in-process paths, so the same "</think>" or turn
-        # marker forges a turn (#7066). Hosted APIs are left alone: their prompt assembly is not ours to rewrite.
-        if self.provider_type in _TEMPLATE_APPLYING_PROVIDERS:
-            from core.inference.chat_template_helpers import (
-                neutralize_control_markup_in_messages,
-                neutralize_tool_descriptions,
-                reconciled_tool_choice,
-            )
-            messages = neutralize_control_markup_in_messages(messages)
-            if tools:
-                safe_tools = neutralize_tool_descriptions(tools)
-                # A mixed catalog keeps safe_tools non-empty while dropping the one tool the client forced, so an
-                # empty check is not enough: without the passthrough builder's per-name reconciliation the body names
-                # an unadvertised function.
-                tool_choice = reconciled_tool_choice(tool_choice, tools, safe_tools)
-                if not safe_tools:
-                    tool_choice = None
-                tools = safe_tools
 
         # Both are set because a server rejects continuing while a generation prompt is still asked for. Sent only to
         # the two documenting the pair: "custom" is any user-supplied base_url and a strict endpoint 400s on an
@@ -1539,6 +1696,9 @@ class ExternalProviderClient:
         for field in provider_info.get("body_omit", ()):
             body.pop(field, None)
 
+        if self.provider_type == "llama_cpp" and preserve_thinking is not None:
+            body["chat_template_kwargs"] = {"preserve_thinking": preserve_thinking}
+
         # Kimi thinking is a top-level body field. kimi-k2-thinking is always on (ignore the toggle); kimi-k2.6
         # defaults on, can be disabled. `keep: all` preserves every chunk for the UI panel.
         if self.provider_type == "kimi" and enable_thinking is not None:
@@ -1575,6 +1735,8 @@ class ExternalProviderClient:
                 body["reasoning_effort"] = effort
         elif self.provider_type == "ollama":
             _apply_ollama_reasoning_controls(body, enable_thinking, reasoning_effort)
+        elif self.provider_type == "lemonade":
+            _apply_fastflowlm_reasoning_controls(body, enable_thinking, reasoning_effort)
 
         # OpenRouter's unified `reasoning` field gates per-model thinking. Some routes
         # (`*_MANDATORY_REASONING_MODELS`) 400 on explicit off.
@@ -1589,6 +1751,17 @@ class ExternalProviderClient:
                     body["reasoning"] = {"enabled": False}
             elif enable_thinking is True:
                 body["reasoning"] = {"enabled": True}
+
+            # Claude caches only behind cache_control; the top-level form advances the breakpoint every turn. Other
+            # families cache automatically and the field is documented for Claude's providers only.
+            if caches_at_the_last_block("openrouter", model, enable_prompt_caching):
+                cache_control = {"type": "ephemeral"}
+                if prompt_cache_ttl == "1h":
+                    cache_control["ttl"] = "1h"
+                body["cache_control"] = cache_control
+            # Sticky routing keeps a conversation on the provider that holds its cache.
+            if thread_id:
+                body["session_id"] = str(thread_id)[:256]
 
             # OpenRouter web plugin works on every model id including meta-routers (unlike `:online`). Forced-function
             # tool_choice suppresses it, matching Gemini/Anthropic.
@@ -1634,10 +1807,10 @@ class ExternalProviderClient:
         )
 
         try:
-            async with _client().stream(
-                "POST",
+            async with _stream_post_retrying_max_tokens(
+                _loopback_http_client if getattr(self, "_managed_loopback", False) else _client(),
                 url,
-                json = body,
+                body,
                 headers = self._auth_headers(),
                 timeout = self._stream_timeout,
             ) as response:
@@ -1665,7 +1838,9 @@ class ExternalProviderClient:
 
                 # Manual __anext__ (not `async for`) so we can close the response BEFORE lines_gen, avoiding the
                 # httpcore 1.0 GeneratorExit -> RuntimeError path on Python 3.13.
-                lines_gen = response.aiter_lines().__aiter__()
+                from .http_stream import closing_response_lines
+
+                lines_gen = closing_response_lines(response)
                 # Diagnostic counters for the OAI-compat path; surface OpenRouter mid-stream errors otherwise
                 # invisible server-side.
                 event_counts: dict[str, int] = {}
@@ -1813,6 +1988,11 @@ class ExternalProviderClient:
                                                         continue
                                                     for ann in envelope.get("annotations") or []:
                                                         _record_or_url_citation(ann)
+                        if self.provider_type == "lemonade":
+                            if line.startswith("{"):
+                                line = _bare_json_error_as_sse(line) or line
+                            else:
+                                line = _with_fastflowlm_timings(line)
                         # Verbatim relay, minus Unsloth's own UI control protocol: the frames this server writes to
                         # paint tool cards ride the same stream, so an endpoint that echoes them forges a card for a
                         # tool that never ran.
@@ -4474,6 +4654,9 @@ class ExternalProviderClient:
                 # 3.13 + httpcore 1.0.x GeneratorExit ordering).
                 lines_gen = response.aiter_lines().__aiter__()
                 final_finish_reason: Optional[str] = None
+                bare_json = ""
+                stream_error: Optional[str] = None
+                stream_error_message = ""
                 try:
                     while True:
                         try:
@@ -4482,9 +4665,18 @@ class ExternalProviderClient:
                             break
                         if not line.strip():
                             continue
-                        if not line.startswith("data:"):
+                        if line.startswith("data:"):
+                            data_str = line[len("data:") :].strip()
+                        elif bare_json or line.lstrip().startswith("{"):
+                            # Gemini sends a mid-stream error as bare multi-line JSON, not as a `data:` frame.
+                            bare_json += line
+                            try:
+                                _json.loads(bare_json)
+                            except ValueError:
+                                continue
+                            data_str, bare_json = bare_json, ""
+                        else:
                             continue
-                        data_str = line[len("data:") :].strip()
                         if not data_str or data_str == "[DONE]":
                             continue
                         try:
@@ -4497,6 +4689,19 @@ class ExternalProviderClient:
                             continue
                         if not isinstance(event, dict):
                             continue
+
+                        error = event.get("error")
+                        if isinstance(error, dict):
+                            code = error.get("code")
+                            stream_error = _error_sse_line(
+                                code if isinstance(code, int) else 502,
+                                _json.dumps(event),
+                                self.provider_type,
+                            )
+                            stream_error_message = str(
+                                error.get("message") or error.get("status") or code
+                            )
+                            break
 
                         # Latch usageMetadata across deltas -- the final fragment carries the complete totals.
                         usage_meta = event.get("usageMetadata")
@@ -4879,11 +5084,19 @@ class ExternalProviderClient:
                                 "type": "tool_end",
                                 "tool_call_id": web_search_tool_id,
                                 "result": (
-                                    "\n---\n".join(blocks) if blocks else "(search complete)"
+                                    f"(search aborted: {stream_error_message})"
+                                    if stream_error
+                                    else "\n---\n".join(blocks)
+                                    if blocks
+                                    else "(search complete)"
                                 ),
                             }
                         )
                         web_search_tool_ended = True
+
+                    if stream_error:
+                        yield stream_error
+                        return
 
                     if final_finish_reason:
                         # Gemini emits "STOP" even for a pure functionCall turn; override to "tool_calls" so OAI
@@ -4986,8 +5199,8 @@ class ExternalProviderClient:
         self,
         messages: list[dict[str, Any]],
         model: str,
-        temperature: float,
-        top_p: float,
+        temperature: Optional[float],
+        top_p: Optional[float],
         max_tokens: Optional[int],
         enable_thinking: Optional[bool],
         reasoning_effort: Optional[str],
@@ -4998,6 +5211,7 @@ class ExternalProviderClient:
         tools: Optional[list[dict[str, Any]]] = None,
         tool_choice: Optional[Any] = None,
         response_format: Optional[dict[str, Any]] = None,
+        stream: bool = True,
     ) -> AsyncGenerator[str, None]:
         """Call OpenAI's /v1/responses endpoint and translate its SSE stream back into OpenAI Chat
         Completions chunk format. The Responses API uses a different request shape (``input`` not
@@ -5007,8 +5221,23 @@ class ExternalProviderClient:
         import json as _json
 
         is_openai_cloud = _is_openai_family_cloud(self.base_url)
+        _responses_tool_choice_none = (
+            isinstance(tool_choice, str) and tool_choice.strip().lower() == "none"
+        )
+        _responses_tool_choice_forced_function = (
+            isinstance(tool_choice, dict)
+            and tool_choice.get("type") == "function"
+            and isinstance(tool_choice.get("function"), dict)
+            and bool(tool_choice["function"].get("name"))
+        )
+        _responses_hosted_builtins_allowed = (
+            not _responses_tool_choice_none and not _responses_tool_choice_forced_function
+        )
         image_generation_requested = bool(
-            enabled_tools and "image_generation" in enabled_tools and is_openai_cloud
+            _responses_hosted_builtins_allowed
+            and enabled_tools
+            and "image_generation" in enabled_tools
+            and is_openai_cloud
         )
 
         # Split system messages into a single `instructions` string and translate user/assistant messages into the
@@ -5250,12 +5479,13 @@ class ExternalProviderClient:
                     filtered_replay_items.append(item)
             openai_replay_items = filtered_replay_items
             if dropped_image_replay_without_reasoning:
-                yield _error_sse_line(
+                error_line = _error_sse_line(
                     400,
                     "OpenAI image edit reference is missing paired reasoning state. "
                     "Regenerate the image, then retry the edit.",
                     self.provider_type,
                 )
+                yield error_line if stream else error_line.removeprefix("data: ")
                 return
         image_generation_has_reference = bool(
             previous_response_id
@@ -5272,16 +5502,22 @@ class ExternalProviderClient:
                     break
             input_items[insert_at:insert_at] = openai_replay_items
 
-        # Reasoning families reject temperature/top_p, and the UI hides both sliders for the rest
-        # (provider-capabilities.ts), so the only values arriving here are ChatCompletionRequest's 0.6/0.95 defaults,
-        # which would override OpenAI's own with a number the user never chose.
-        del temperature, top_p  # accepted for API symmetry, not forwarded.
-
         body: dict[str, Any] = {
             "model": model,
             "input": input_items,
-            "stream": True,
+            "stream": stream,
         }
+        # Azure model ids are deployment names, which need not reveal a fixed-sampling model behind them.
+        # Omit both controls for Azure; on direct OpenAI cloud, use the model family. Gateways still receive them.
+        is_azure_openai = _is_azure_openai_host((urlparse(self.base_url).hostname or "").lower())
+        forward_custom_sampling = self.provider_type == "custom" and not (
+            is_azure_openai or (is_openai_cloud and _openai_fixed_sampling_model(model))
+        )
+        if forward_custom_sampling:
+            if temperature is not None:
+                body["temperature"] = temperature
+            if top_p is not None:
+                body["top_p"] = top_p
         if previous_response_id:
             body["previous_response_id"] = previous_response_id
         # `summary: "auto"` is what makes /v1/responses emit reasoning summary events; without it the reasoning panel
@@ -5381,6 +5617,8 @@ class ExternalProviderClient:
                     _entry["description"] = _fn["description"]
                 if isinstance(_fn.get("parameters"), dict):
                     _entry["parameters"] = normalize_function_schema(_fn["parameters"])
+                if _fn.get("strict") is not None:
+                    _entry["strict"] = bool(_fn["strict"])
                 responses_user_function_tools.append(_entry)
 
         # Translate tool_choice into the Responses shape.
@@ -5404,18 +5642,26 @@ class ExternalProviderClient:
             if isinstance(_name, str) and _name:
                 responses_tool_choice = {"type": "function", "name": _name}
 
-        _responses_tool_choice_none = _responses_tc_string == "none"
         # A pinned user function suppresses hosted builtins (privacy + billing), matching the Gemini / Anthropic /
         # OpenRouter gates.
-        _responses_tool_choice_forced_function = (
-            isinstance(tool_choice, dict)
-            and tool_choice.get("type") == "function"
-            and isinstance(tool_choice.get("function"), dict)
-            and bool(tool_choice["function"].get("name"))
+        _responses_image_generation_enabled = (
+            _responses_hosted_builtins_allowed and image_generation_enabled_openai
         )
-        _responses_hosted_builtins_allowed = (
-            not _responses_tool_choice_none and not _responses_tool_choice_forced_function
-        )
+        if _responses_image_generation_enabled and not stream:
+            yield _json.dumps(
+                {
+                    "error": {
+                        "message": (
+                            "image_generation is not supported for non-streaming Responses "
+                            "requests; set stream=true."
+                        ),
+                        "type": "invalid_request_error",
+                        "code": "400",
+                        "provider": self.provider_type,
+                    }
+                }
+            )
+            return
 
         if (enabled_tools or responses_user_function_tools) and not _responses_tool_choice_none:
             tools_array: list[dict[str, Any]] = list(responses_user_function_tools)
@@ -5437,14 +5683,14 @@ class ExternalProviderClient:
                 else:
                     shell_env = {"type": "container_auto"}
                 tools_array.append({"type": "shell", "environment": shell_env})
-            if _responses_hosted_builtins_allowed and image_generation_enabled_openai:
+            if _responses_image_generation_enabled:
                 tools_array.append(_openai_image_generation_tool())
             if tools_array:
                 body["tools"] = tools_array
         if responses_tool_choice is not None:
             body["tool_choice"] = responses_tool_choice
 
-        url = f"{self.base_url}/responses"
+        url = _append_provider_path(self.base_url, "/responses")
         completion_id = f"chatcmpl-openai-{model.replace('/', '-')}"
 
         logger.info("Proxying OpenAI Responses API to %s (model=%s)", url, model)
@@ -5471,7 +5717,7 @@ class ExternalProviderClient:
                     else:
                         env_attempt = {"type": "container_auto"}
                     tools_array_attempt.append({"type": "shell", "environment": env_attempt})
-                if _responses_hosted_builtins_allowed and image_generation_enabled_openai:
+                if _responses_image_generation_enabled:
                     tools_array_attempt.append(_openai_image_generation_tool())
                 if tools_array_attempt:
                     attempt_body["tools"] = tools_array_attempt
@@ -5520,19 +5766,142 @@ class ExternalProviderClient:
                             and _is_openai_container_expired_error(error_text)
                         )
                         if expired_container_4xx and not retried:
-                            yield (
-                                f"data: "
-                                f"{_json.dumps({'id': completion_id, 'object': 'chat.completion.chunk', 'choices': [{'index': 0, 'delta': {}, 'finish_reason': None}], '_toolEvent': {'type': 'container_invalidated'}})}"
-                            )
+                            if stream:
+                                yield (
+                                    f"data: "
+                                    f"{_json.dumps({'id': completion_id, 'object': 'chat.completion.chunk', 'choices': [{'index': 0, 'delta': {}, 'finish_reason': None}], '_toolEvent': {'type': 'container_invalidated'}})}"
+                                )
                             retried = True
                             attempt_container_id = None
                             continue
-                        yield _error_sse_line(
+                        error_line = _error_sse_line(
                             response.status_code,
                             error_text,
                             self.provider_type,
                             response.headers.get("Retry-After"),
                         )
+                        yield error_line if stream else error_line.removeprefix("data: ")
+                        return
+
+                    if not stream:
+                        response_payload = _json.loads(await response.aread())
+                        status = response_payload.get("status")
+                        if status == "failed" or response_payload.get("error"):
+                            yield _json.dumps(
+                                {
+                                    "error": {
+                                        "message": _openai_response_error_message(response_payload),
+                                        "type": "server_error",
+                                        "provider": self.provider_type,
+                                    }
+                                }
+                            )
+                            return
+                        text_parts: list[str] = []
+                        reasoning_summary_parts: list[str] = []
+                        refusal_parts: list[str] = []
+                        tool_calls: list[dict[str, Any]] = []
+                        reasoning_replay_items: list[dict[str, Any]] = []
+                        url_citations: list[dict[str, Any]] = []
+                        for item in response_payload.get("output") or []:
+                            if not isinstance(item, dict):
+                                continue
+                            if item.get("type") == "reasoning":
+                                summary = item.get("summary")
+                                if isinstance(summary, list):
+                                    for part in summary:
+                                        if not isinstance(part, dict):
+                                            continue
+                                        if part.get("type") != "summary_text":
+                                            continue
+                                        summary_text = part.get("text")
+                                        if isinstance(summary_text, str) and summary_text:
+                                            reasoning_summary_parts.append(summary_text)
+                                reasoning_item = _sanitize_openai_reasoning_replay_item(item)
+                                if reasoning_item:
+                                    reasoning_replay_items.append(reasoning_item)
+                            elif item.get("type") == "message":
+                                content = item.get("content") or []
+                                if isinstance(content, str):
+                                    text_parts.append(content)
+                                    continue
+                                for part in content:
+                                    if not isinstance(part, dict):
+                                        continue
+                                    if part.get("type") in ("output_text", "text"):
+                                        text = part.get("text")
+                                        if isinstance(text, str):
+                                            text_parts.append(text)
+                                        for annotation in part.get("annotations") or []:
+                                            if isinstance(annotation, dict):
+                                                _record_openai_url_citation(
+                                                    url_citations,
+                                                    annotation,
+                                                )
+                                    elif part.get("type") == "refusal":
+                                        refusal = part.get("refusal")
+                                        if isinstance(refusal, str):
+                                            refusal_parts.append(refusal)
+                            elif item.get("type") == "function_call":
+                                name = item.get("name")
+                                if not isinstance(name, str) or not name:
+                                    continue
+                                arguments = item.get("arguments", "")
+                                if not isinstance(arguments, str):
+                                    arguments = _json.dumps(arguments)
+                                tool_calls.append(
+                                    {
+                                        "id": item.get("call_id") or item.get("id") or "call_0",
+                                        "type": "function",
+                                        "function": {"name": name, "arguments": arguments},
+                                    }
+                                )
+                        if not text_parts and isinstance(response_payload.get("output_text"), str):
+                            text_parts.append(response_payload["output_text"])
+
+                        visible_text = "".join(text_parts)
+                        if reasoning_summary_parts:
+                            visible_text = (
+                                f"<think>{''.join(reasoning_summary_parts)}</think>{visible_text}"
+                            )
+                        visible_text = _replace_openai_citation_markers(
+                            visible_text,
+                            url_citations,
+                        )
+
+                        message: dict[str, Any] = {
+                            "role": "assistant",
+                            "content": visible_text or None,
+                        }
+                        if refusal_parts:
+                            message["refusal"] = "".join(refusal_parts)
+                        if tool_calls:
+                            message["tool_calls"] = tool_calls
+                            if reasoning_replay_items:
+                                message["extra_content"] = {
+                                    "openai_responses_reasoning": reasoning_replay_items
+                                }
+
+                        completion: dict[str, Any] = {
+                            "id": response_payload.get("id") or completion_id,
+                            "object": "chat.completion",
+                            "created": int(response_payload.get("created_at") or time.time()),
+                            "model": response_payload.get("model") or model,
+                            "choices": [
+                                {
+                                    "index": 0,
+                                    "message": message,
+                                    "finish_reason": _openai_response_finish_reason(
+                                        response_payload,
+                                        has_tool_calls = bool(tool_calls),
+                                    ),
+                                }
+                            ],
+                        }
+                        usage = responses_usage_to_chat(response_payload.get("usage"))
+                        if usage is not None:
+                            completion["usage"] = usage
+                        yield _json.dumps(completion)
                         return
 
                     # Same manual __anext__ loop as stream_chat_completion -- see there for the GeneratorExit / aclose
@@ -5677,40 +6046,7 @@ class ExternalProviderClient:
                         return "\n--- next command ---\n".join(parts) if parts else "(no output)"
 
                     def _record_url_citation(payload: dict[str, Any]) -> None:
-                        """Append a url_citation, deduped by URL: collect every source_id alias onto
-                        the entry's ``source_ids`` so the rewriter can resolve any alias. The id
-                        lives under source_id/id/locator across API revisions."""
-                        if payload.get("type") != "url_citation":
-                            return
-                        url = payload.get("url", "")
-                        if not url:
-                            return
-                        source_id = (
-                            payload.get("source_id")
-                            or payload.get("id")
-                            or payload.get("locator")
-                            or ""
-                        )
-                        # Single pass: either backfill aliases onto an existing URL entry (and return) or fall through
-                        # to append a fresh one.
-                        for c in all_url_citations:
-                            if c["url"] != url:
-                                continue
-                            if source_id:
-                                aliases = c.setdefault("source_ids", [])
-                                if source_id not in aliases:
-                                    aliases.append(source_id)
-                            return
-                        title = payload.get("title") or url
-                        snippet = payload.get("snippet") or payload.get("quote") or ""
-                        all_url_citations.append(
-                            {
-                                "url": url,
-                                "title": title,
-                                "snippet": snippet,
-                                "source_ids": [source_id] if source_id else [],
-                            }
-                        )
+                        _record_openai_url_citation(all_url_citations, payload)
 
                     def _record_openai_reasoning_replay_item(
                         payload: Any,
@@ -5919,6 +6255,14 @@ class ExternalProviderClient:
                                             pending_citation_segments.append(head_rewritten)
                                         elif head_rewritten:
                                             yield _chunk_with_text(head_rewritten)
+
+                            elif event_type == "response.refusal.delta":
+                                refusal_delta = event.get("delta", "")
+                                if isinstance(refusal_delta, str) and refusal_delta:
+                                    if reasoning_open:
+                                        yield _chunk_with_text("</think>")
+                                        reasoning_open = False
+                                    yield _chunk_with_text(refusal_delta)
 
                             elif event_type == "response.output_text.annotation.added":
                                 ann = event.get("annotation")
@@ -6306,7 +6650,9 @@ class ExternalProviderClient:
                                     yield usage_line
 
                             elif event_type == "response.incomplete":
-                                incomplete_usage = (event.get("response") or {}).get("usage")
+                                incomplete_response = dict(event.get("response") or {})
+                                incomplete_response.setdefault("status", "incomplete")
+                                incomplete_usage = incomplete_response.get("usage")
                                 if isinstance(incomplete_usage, dict):
                                     last_usage = incomplete_usage
                                 # Same flush as response.completed -- truncated streams can leave a half-marker in the
@@ -6369,7 +6715,9 @@ class ExternalProviderClient:
                                         {
                                             "index": 0,
                                             "delta": {},
-                                            "finish_reason": "length",
+                                            "finish_reason": _openai_response_finish_reason(
+                                                incomplete_response
+                                            ),
                                         }
                                     ],
                                 }
@@ -6448,25 +6796,28 @@ class ExternalProviderClient:
 
         except httpx.ConnectError as exc:
             logger.error("Connection error to %s: %s", self.provider_type, exc)
-            yield _error_sse_line(
+            error_line = _error_sse_line(
                 502,
                 f"Failed to connect to {self.provider_type}: {exc}",
                 self.provider_type,
             )
+            yield error_line if stream else error_line.removeprefix("data: ")
         except httpx.ReadTimeout as exc:
             logger.error("Read timeout from %s: %s", self.provider_type, exc)
-            yield _error_sse_line(
+            error_line = _error_sse_line(
                 504,
                 f"Timeout waiting for {self.provider_type} response",
                 self.provider_type,
             )
+            yield error_line if stream else error_line.removeprefix("data: ")
         except httpx.HTTPError as exc:
             logger.error("HTTP error from %s: %s", self.provider_type, exc)
-            yield _error_sse_line(
+            error_line = _error_sse_line(
                 502,
                 f"Error communicating with {self.provider_type}: {exc}",
                 self.provider_type,
             )
+            yield error_line if stream else error_line.removeprefix("data: ")
 
     async def chat_completion(
         self,
@@ -6496,12 +6847,20 @@ class ExternalProviderClient:
             else:
                 body["max_tokens"] = max_tokens
 
+        url = f"{self.base_url}/chat/completions"
         response = await _client().post(
-            f"{self.base_url}/chat/completions",
+            url,
             json = body,
             headers = self._auth_headers(),
             timeout = self._timeout,
         )
+        if "max_tokens" in body and _rejects_max_tokens(response.status_code, response.text):
+            response = await _client().post(
+                url,
+                json = _with_max_completion_tokens(body),
+                headers = self._auth_headers(),
+                timeout = self._timeout,
+            )
         response.raise_for_status()
         return response.json()
 
@@ -6593,6 +6952,53 @@ class ExternalProviderClient:
             media_type = "text/plain" if response_format == "text" else "application/json"
         return response.content, media_type
 
+    async def create_decision(
+        self, model: str, state: Any, questions: dict[str, dict[str, Any]]
+    ) -> dict[str, Any]:
+        def as_text(value: Any) -> Any:
+            return (
+                _json.dumps(value, ensure_ascii = False) if isinstance(value, (dict, list)) else value
+            )
+
+        sent = {}
+        for name, question in questions.items():
+            question = dict(question)
+            if "instructions" in question:
+                question["instructions"] = as_text(question["instructions"])
+            criteria = question.get("criteria")
+            if isinstance(criteria, dict):
+                question["criteria"] = {key: as_text(value) for key, value in criteria.items()}
+            elif isinstance(criteria, list):
+                question["criteria"] = [as_text(value) for value in criteria]
+            sent[name] = question
+        response = await _client().post(
+            re.sub(r"/systemone$", "", self.base_url.rstrip("/")) + "/systemone",
+            headers = self._auth_headers(),
+            json = {"model": model, "state": state, "questions": sent},
+            timeout = self._timeout,
+        )
+        response.raise_for_status()
+        return response.json()
+
+    async def list_decision_models(self) -> list[str]:
+        response = await _client().get(
+            re.sub(r"/systemone$", "", self.base_url.rstrip("/")) + "/models",
+            params = {"output_modalities": "decisions"},
+            headers = self._auth_headers(),
+            timeout = self._timeout,
+        )
+        response.raise_for_status()
+        data = response.json()
+        models = data.get("data") if isinstance(data, dict) else None
+        return [
+            model["id"]
+            for model in (models if isinstance(models, list) else [])
+            if isinstance(model, dict)
+            and isinstance(model.get("id"), str)
+            and isinstance(model.get("architecture"), dict)
+            and "decisions" in (model["architecture"].get("output_modalities") or [])
+        ]
+
     async def list_models(self) -> list[dict[str, Any]]:
         """GET /models to discover available models. Returns dicts with at least 'id'. All providers
         expose /models with the OpenAI {"data": [...]} shape, Anthropic included."""
@@ -6610,8 +7016,12 @@ class ExternalProviderClient:
                 raw_models = data.get("data") or []
                 if isinstance(raw_models, list):
                     models = [model for model in raw_models if isinstance(model, dict)]
-            if not models and self.provider_type == "ollama":
-                models = await self._list_ollama_native_models()
+            if self.provider_type == "ollama":
+                # Only /api/tags carries the per-model "thinking" capability.
+                if not models:
+                    models = await self._list_ollama_native_models()
+                else:
+                    models = await self._with_ollama_capabilities(models)
             # Gemini's native /v1beta/models uses a different shape; repackage into the OpenAI-compatible one Unsloth
             # expects.
             if not models and self.provider_type == "gemini":
@@ -6661,8 +7071,16 @@ class ExternalProviderClient:
             )
         return out
 
+    @staticmethod
+    def _ollama_capability_names(entry: dict[str, Any]) -> Optional[list[str]]:
+        # None = the row is silent (older Ollama), not "no capabilities".
+        raw = entry.get("capabilities")
+        if not isinstance(raw, list):
+            return None
+        return [name for name in raw if isinstance(name, str) and name]
+
     async def _list_ollama_native_models(self) -> list[dict[str, Any]]:
-        """Fallback when Ollama's /v1/models returns an empty or null catalog."""
+        """Ollama's /api/tags catalog, with per-model capabilities when reported."""
         root = self.base_url.removesuffix("/v1").rstrip("/")
         response = await _client().get(
             f"{root}/api/tags",
@@ -6676,11 +7094,39 @@ class ExternalProviderClient:
         raw_models = payload.get("models") or []
         if not isinstance(raw_models, list):
             return []
-        return [
-            {"id": entry.get("name", "").strip(), "owned_by": "ollama"}
-            for entry in raw_models
-            if isinstance(entry, dict) and entry.get("name", "").strip()
-        ]
+        models: list[dict[str, Any]] = []
+        for entry in raw_models:
+            if not isinstance(entry, dict):
+                continue
+            model_id = entry.get("name", "").strip()
+            if not model_id:
+                continue
+            model: dict[str, Any] = {"id": model_id, "owned_by": "ollama"}
+            capabilities = self._ollama_capability_names(entry)
+            if capabilities is not None:
+                model["capabilities"] = capabilities
+            models.append(model)
+        return models
+
+    async def _with_ollama_capabilities(self, models: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        # A working /v1/models must still list when /api/tags fails.
+        try:
+            native = await self._list_ollama_native_models()
+        except (httpx.HTTPError, ValueError) as exc:
+            logger.debug("Ollama /api/tags capabilities unavailable: %s", exc)
+            return models
+        capabilities = {
+            entry["id"]: entry["capabilities"]
+            for entry in native
+            if entry.get("capabilities") is not None
+        }
+        if not capabilities:
+            return models
+        merged: list[dict[str, Any]] = []
+        for model in models:
+            names = capabilities.get(model.get("id", ""))
+            merged.append(model if names is None else {**model, "capabilities": names})
+        return merged
 
     async def verify_models_endpoint_lightweight(self) -> None:
         """Confirm GET /models returns 200 without buffering the full response body. Used for
@@ -6892,6 +7338,102 @@ _ANTHROPIC_ERROR_STATUS = {
 }
 
 
+def _apply_fastflowlm_reasoning_controls(
+    body: dict[str, Any], enable_thinking: Optional[bool], reasoning_effort: Optional[str]
+) -> None:
+    """Translate reasoning controls to FastFlowLM's ``think`` field.
+
+    Explicit thinking preserves reasoning on length cutoffs; effort ``none`` disables it.
+    """
+    effort = (reasoning_effort or "").strip().lower()
+    if effort == "none":
+        body["think"] = False
+        return
+    if enable_thinking is not None:
+        body["think"] = bool(enable_thinking)
+    if effort in ("low", "medium", "high") and body.get("think", True):
+        body["reasoning_effort"] = effort
+
+
+def _bare_json_error_as_sse(line: str) -> Optional[str]:
+    try:
+        parsed = _json.loads(line)
+    except ValueError:
+        return None
+    if not isinstance(parsed, dict) or "error" not in parsed:
+        return None
+    error = parsed["error"]
+    if not isinstance(error, dict):
+        error = {"message": str(error), "type": "provider_error"}
+    return "data: " + _json.dumps({"error": error})
+
+
+def _seconds_or_rate(value: Any) -> Optional[float]:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    try:
+        value = float(value)
+    except OverflowError:
+        return None
+    return value if math.isfinite(value) and value >= 0 else None
+
+
+def _count(value: Any) -> Optional[int]:
+    return value if isinstance(value, int) and not isinstance(value, bool) else None
+
+
+def _fastflowlm_timings(usage: Any) -> Optional[dict[str, Any]]:
+    """Convert FastFlowLM usage metrics to llama-server timings for the UI and API monitor."""
+    if not isinstance(usage, dict):
+        return None
+    prefill_s = _seconds_or_rate(usage.get("prefill_duration_ttft"))
+    decode_s = _seconds_or_rate(usage.get("decoding_duration"))
+    if prefill_s is None and decode_s is None:
+        return None
+    timings: dict[str, Any] = {}
+    prompt_tokens = _count(usage.get("prompt_tokens"))
+    details = usage.get("prompt_tokens_details")
+    cached = _count(details.get("cached_tokens")) if isinstance(details, dict) else None
+    if prefill_s is not None:
+        timings["prompt_ms"] = prefill_s * 1000.0
+        if prompt_tokens is not None:
+            # FastFlowLM counts a cached prefix in prompt_tokens but not in its prefill speed.
+            timings["prompt_n"] = max(prompt_tokens - (cached or 0), 0)
+        rate = _seconds_or_rate(usage.get("prefill_speed_tps"))
+        if rate is not None:
+            timings["prompt_per_second"] = rate
+        if cached is not None:
+            timings["cache_n"] = cached
+    if decode_s is not None:
+        timings["predicted_ms"] = decode_s * 1000.0
+        completion_tokens = _count(usage.get("completion_tokens"))
+        if completion_tokens is not None:
+            timings["predicted_n"] = completion_tokens
+        rate = _seconds_or_rate(usage.get("decoding_speed_tps"))
+        if rate is not None:
+            timings["predicted_per_second"] = rate
+    return timings
+
+
+def _with_fastflowlm_timings(line: str) -> str:
+    """Add timings to FastFlowLM's final usage chunk."""
+    if '"decoding_duration"' not in line and '"prefill_duration_ttft"' not in line:
+        return line
+    if not line.startswith("data:"):
+        return line
+    try:
+        chunk = _json.loads(line[len("data:") :])
+    except ValueError:
+        return line
+    if not isinstance(chunk, dict) or "timings" in chunk:
+        return line
+    timings = _fastflowlm_timings(chunk.get("usage"))
+    if timings is None:
+        return line
+    chunk["timings"] = timings
+    return "data: " + _json.dumps(chunk)
+
+
 def _error_sse_line(
     status_code: int,
     message: str,
@@ -6960,26 +7502,25 @@ def _build_usage_chunk(
             usage_block["speed"] = speed
     else:
         prompt_tokens = last_usage.get("input_tokens") or 0
-        cached = 0
         details = last_usage.get("input_tokens_details")
-        if isinstance(details, dict):
-            cached = details.get("cached_tokens") or 0
+        prompt_details = dict(details) if isinstance(details, dict) else {}
+        cached = prompt_details.get("cached_tokens") or 0
+        prompt_details.setdefault("cached_tokens", cached)
         if not (prompt_tokens or completion_tokens or cached):
             return None
         usage_block = {
             "prompt_tokens": prompt_tokens,
             "completion_tokens": completion_tokens,
             "total_tokens": prompt_tokens + completion_tokens,
-            "prompt_tokens_details": {"cached_tokens": cached},
+            "prompt_tokens_details": prompt_details,
         }
         # Surface OpenAI Responses / Gemini reasoning-token detail. The caller pre-populates
         # last_usage["output_tokens_details"] with at least {"reasoning_tokens": ...}; mirror it into the OAI
         # `completion_tokens_details` shape so SDKs can render the hidden-thoughts slice.
         out_details = last_usage.get("output_tokens_details")
         if isinstance(out_details, dict) and out_details:
-            usage_block["completion_tokens_details"] = {
-                "reasoning_tokens": out_details.get("reasoning_tokens") or 0,
-            }
+            usage_block["completion_tokens_details"] = dict(out_details)
+            usage_block["completion_tokens_details"].setdefault("reasoning_tokens", 0)
             usage_block["output_tokens_details"] = out_details
 
     chunk = {

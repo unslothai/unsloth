@@ -106,6 +106,14 @@ def test_guard_suppresses_when_close_tag_is_special():
     assert detect_think_prefill(QWEN_PROMPT + "<think>\n", specials) == ""
 
 
+def test_guard_follows_the_path_s_rendering_not_the_token_metadata():
+    specials = ["<|im_end|>", "<think>", "</think>"]
+    assert (
+        detect_think_prefill(QWEN_PROMPT + "<think>\n", specials, preserves_think_close = True)
+        == "<think>\n"
+    )
+
+
 def test_guard_emits_when_think_not_special():
     specials = ["<|im_end|>", "<|endoftext|>"]
     assert detect_think_prefill(QWEN_PROMPT + "<think>\n", specials) == "<think>\n"

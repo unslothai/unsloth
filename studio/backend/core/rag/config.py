@@ -39,7 +39,15 @@ CONVERSATION_RECALL_ORDER = os.environ.get("RAG_CONVERSATION_RECALL_ORDER", "chr
 # still the right turn.
 CONVERSATION_FORCED_MIN_SCORE = float(os.environ.get("RAG_CONVERSATION_FORCED_MIN_SCORE", "0.0"))
 
-UPLOAD_EXTS = {".pdf", ".txt", ".md", ".markdown", ".docx", ".html", ".htm"}
+# Types parsers.parse handles; frontend and Rust parity tests read this literal.
+SUPPORTED_UPLOAD_EXTS = {".pdf", ".txt", ".md", ".markdown", ".docx", ".html", ".htm"}
+# RAG_UPLOAD_EXTS (e.g. ".md,.markdown") can only narrow: a type without a parser would fail every ingest.
+_requested_exts = {
+    "." + ext.strip().lstrip(".").lower()
+    for ext in os.environ.get("RAG_UPLOAD_EXTS", "").split(",")
+    if ext.strip().lstrip(".")
+}
+UPLOAD_EXTS = (SUPPORTED_UPLOAD_EXTS & _requested_exts) or set(SUPPORTED_UPLOAD_EXTS)
 # 0 disables the cap; bounds parse + vision work at ingest.
 MAX_UPLOAD_BYTES = int(os.environ.get("RAG_MAX_UPLOAD_BYTES", str(200 * 1024 * 1024)))
 
@@ -98,16 +106,19 @@ def embedding_identity(
     model: str,
     *,
     gguf_repo: str | None = None,
+    pooling: str | None = None,
 ) -> str:
     """Tagged identity for ``documents.embedding_model``.
 
     The configured model comes first so a row written before identities carried a tag
     still compares equal on it. llama-server appends the GGUF repo it actually embeds
-    through, which is the part that can differ from the model's ST form."""
+    through, which is the part that can differ from the model's ST form, and any pooling
+    other than the CLS it once forced on every GGUF."""
     model = _escape_identity_segment(model)
     if gguf_repo is None:
         return f"{backend}:{model}"
-    return f"{backend}:{model}:{_escape_identity_segment(gguf_repo)}"
+    identity = f"{backend}:{model}:{_escape_identity_segment(gguf_repo)}"
+    return identity if pooling is None else f"{identity}:{pooling}"
 
 
 def embedding_identity_model(identity: str | None) -> str | None:

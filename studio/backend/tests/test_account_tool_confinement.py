@@ -279,9 +279,15 @@ def test_confined_child_keeps_interpreter_and_system_tools(tmp_path):
 
 
 @pytest.mark.skipif(not LANDLOCK, reason = "Landlock not available on this kernel")
-def test_owner_child_remains_unconfined(tmp_path):
+def test_owner_bypass_remains_unconfined(tmp_path):
     files = _seed(tmp_path)
-    out = run_as(OWNER, tools._bash_exec, f"cat {files['alice']}", session_id = "chat")
+    out = run_as(
+        OWNER,
+        tools._bash_exec,
+        f"cat {files['alice']}",
+        session_id = "chat",
+        disable_sandbox = True,
+    )
     assert "ALICE_PRIVATE" in out
 
 
@@ -291,28 +297,39 @@ def test_landlock_rules_cover_own_roots_only(tmp_path):
     run_as(ALICE, tools._get_workdir, "chat")
     rules = run_as(ALICE, tool_confinement._landlock_rules, 3, tools._SANDBOX_SITE_DIR)
     handled = tool_confinement._handled_mask(3)
-    writable = [p for p, access in rules if access == handled & ~tool_confinement._FS_MAKE_SYM]
+    writable_access = tool_confinement._writable_access(handled)
+    writable = [p for p, access in rules if access == writable_access]
     alice_root = str((tmp_path / "studio" / "accounts" / "alice-id").resolve())
     assert alice_root not in writable
     assert f"{alice_root}/sandbox" in writable
     assert str((tmp_path / "projects" / "Accounts" / "alice-id" / "Projects").resolve()) in writable
-    assert alice_root in [
-        p for p, access in rules if access != handled & ~tool_confinement._FS_MAKE_SYM
-    ]
+    assert alice_root in [p for p, access in rules if access != writable_access]
     assert str((tmp_path / "studio").resolve()) not in [p for p, _ in rules]
     assert all(
         not p.startswith(str((tmp_path / "studio").resolve()) + os.sep) or p.startswith(alice_root)
         for p, _ in rules
     )
-    read_only = [
-        p
-        for p, access in rules
-        if access not in (handled, handled & ~tool_confinement._FS_MAKE_SYM)
-    ]
+    read_only = [p for p, access in rules if access not in (handled, writable_access)]
     assert any(
         p.startswith(os.path.realpath(sys.prefix)) or os.path.realpath(sys.prefix).startswith(p)
         for p in read_only
     )
+
+
+@pytest.mark.parametrize("abi", [1, 3, 5, 6])
+def test_writable_roots_cannot_make_devices_or_links(abi):
+    handled = tool_confinement._handled_mask(abi)
+    writable = tool_confinement._writable_access(handled)
+    for right in (
+        tool_confinement._FS_MAKE_SYM,
+        tool_confinement._FS_MAKE_CHAR,
+        tool_confinement._FS_MAKE_BLOCK,
+        tool_confinement._FS_IOCTL_DEV,
+    ):
+        assert not writable & right
+    # Ordinary file work stays granted, and nothing outside the handled set leaks in.
+    assert writable & tool_confinement._FS_WRITE_FILE and writable & tool_confinement._FS_READ_DIR
+    assert writable & ~handled == 0
 
 
 @pytest.mark.skipif(not LANDLOCK, reason = "Landlock not available on this kernel")
@@ -329,6 +346,26 @@ def test_managed_child_cannot_plant_a_link_in_its_own_tree(tmp_path):
     assert "rc=0" not in out
     assert not (bob_dir / "linked").is_symlink()
     assert "made" in out
+
+
+@pytest.mark.skipif(not LANDLOCK, reason = "Landlock not available on this kernel")
+def test_managed_child_cannot_make_a_device_node_in_its_own_tree(tmp_path):
+    """Landlock refuses the mknod (EACCES) before the capability check (EPERM) is reached, so a
+    root-run Studio cannot hand a tool a raw disk through its own workspace."""
+    _seed(tmp_path)
+    out = run_as(
+        BOB,
+        tools._python_exec,
+        "import errno, os, stat\n"
+        "try:\n"
+        "    os.mknod('dev0', 0o600 | stat.S_IFCHR, os.makedev(1, 3)); print('MADE')\n"
+        "except OSError as e:\n"
+        "    print('mknod', errno.errorcode[e.errno])\n"
+        "open('plain.txt', 'w').write('ok'); print('wrote', open('plain.txt').read())\n",
+        session_id = "chat",
+    )
+    assert "MADE" not in out and "mknod EACCES" in out, out
+    assert "wrote ok" in out, out
 
 
 @pytest.mark.skipif(not LANDLOCK, reason = "Landlock not available on this kernel")

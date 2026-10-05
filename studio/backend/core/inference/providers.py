@@ -25,6 +25,8 @@ PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
             "gpt-5.6-sol",
             "gpt-5.6-terra",
             "gpt-6-astra",
+            "gpt-6-luna",
+            "gpt-6-sol",
         ],
         "model_capabilities": {
             "gpt-5.4": {"vision": True, "studio_tools": True},
@@ -34,6 +36,8 @@ PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
             "gpt-5.6-sol": {"vision": True, "studio_tools": True},
             "gpt-5.6-terra": {"vision": True, "studio_tools": True},
             "gpt-6-astra": {"vision": True, "studio_tools": True},
+            "gpt-6-luna": {"vision": True, "studio_tools": True},
+            "gpt-6-sol": {"vision": True, "studio_tools": True},
         },
         "supports_streaming": True,
         "supports_vision": True,
@@ -405,6 +409,22 @@ PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
         "supports_chat_template_kwargs": True,
         "hidden": True,
     },
+    "lemonade": {
+        "display_name": "AMD NPU (FastFlowLM)",
+        "base_url": "",
+        "default_models": [],
+        "supports_streaming": True,
+        "supports_vision": True,
+        "supports_tool_calling": True,
+        "studio_tools": True,
+        "auth_header": "Authorization",
+        "auth_prefix": "Bearer ",
+        "notes": "Unsloth-managed Lemonade serving FastFlowLM on the AMD NPU.",
+        # FastFlowLM 1.0.3 parses min_p into an integer, so 0.05 arrives as 0.
+        "body_omit": ("min_p",),
+        "hidden": True,
+        "managed": True,
+    },
     "openrouter": {
         "display_name": "OpenRouter",
         "base_url": "https://openrouter.ai/api/v1",
@@ -444,11 +464,46 @@ PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
         "notes": "Unified gateway to 300+ models across all major providers. HTTP-Referer and X-Title headers sent for attribution.",
         "model_list_mode": "curated",
     },
+    "typesafe": {
+        "display_name": "TypeSafe",
+        "base_url": "https://api.typesafe.ai/v1",
+        "default_models": ["jev-latest", "jev-1.13"],
+        "supports_streaming": False,
+        "auth_header": "Authorization",
+        "auth_prefix": "Bearer ",
+        "notes": "System One decision models. Used by the Decision API, never by chat.",
+        "model_list_mode": "curated",
+        "decisions_only": True,
+    },
+    "liquid": {
+        "display_name": "Liquid AI",
+        "base_url": "https://api.liquid.ai/decisions/v1",
+        "default_models": ["d1:free"],
+        "supports_streaming": False,
+        "auth_header": "Authorization",
+        "auth_prefix": "Bearer ",
+        "notes": "System One decision models. Used by the Decision API, never by chat.",
+        "model_list_mode": "curated",
+        "decisions_only": True,
+    },
 }
 
 
 def get_provider_info(provider_type: str) -> dict[str, Any] | None:
     return PROVIDER_REGISTRY.get(provider_type)
+
+
+def get_connectable_provider_info(provider_type: str) -> dict[str, Any] | None:
+    """Return a user-configurable provider, excluding Studio-managed runtimes."""
+    info = PROVIDER_REGISTRY.get(provider_type)
+    return None if info is None or info.get("managed") else info
+
+
+def answers_decisions_only(provider_type: str | None, api_type: str | None = None) -> bool:
+    info = PROVIDER_REGISTRY.get(provider_type) if isinstance(provider_type, str) else None
+    return bool(info and info.get("decisions_only")) or (
+        provider_type == "custom" and api_type == "systemone"
+    )
 
 
 def get_base_url(provider_type: str) -> str | None:
@@ -611,7 +666,7 @@ _BLOCK_PRIVATE_ENV = "UNSLOTH_STUDIO_BLOCK_PRIVATE_PROVIDER_URLS"
 
 # Named in one place: a managed account meets this refusal from save, send and recipe alike.
 MANAGED_PRIVATE_URL_HINT = (
-    " The installation owner can allow private and LAN addresses in Settings > General."
+    " The installation owner can allow private and LAN addresses in Settings > Accounts."
 )
 MANAGED_PUBLIC_ONLY_TEXT = "Managed accounts may only use public-network provider base URLs."
 
@@ -1063,7 +1118,7 @@ def list_available_providers(include_hidden: bool = False) -> list[dict[str, Any
     """
     result = []
     for provider_type, info in PROVIDER_REGISTRY.items():
-        if info.get("hidden") and not include_hidden:
+        if (info.get("hidden") and not include_hidden) or info.get("managed"):
             continue
         result.append(
             {

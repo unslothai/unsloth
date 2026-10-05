@@ -486,7 +486,8 @@ async function targetForSelection(
 function hydratedFactory(
   w: ReturnType<typeof world>,
   target: Target,
-  hydrate = () => Promise.resolve(target),
+  hydrate: () => Promise<Target | null> = () => Promise.resolve(target),
+  cancelAudioUpload = () => undefined,
 ) {
   const pending = new Map();
   const deps = {
@@ -504,6 +505,7 @@ function hydratedFactory(
     shouldAbortPendingQueueForModelBoundary,
     shouldAbortPendingQueueForSettingsChange,
     createPromptQueueTarget: hydrate,
+    cancelAudioUpload,
     startPromptQueue: w.startPromptQueue,
     toast: { error: (message: string) => assert.fail(message) },
   };
@@ -522,6 +524,51 @@ function hydratedFactory(
     behavior?: "queue" | "steer",
   ) => boolean;
 }
+
+test("an accepted hydrated queue cancels the composer audio upload", async () => {
+  const w = world();
+  const target = makeTarget("chat");
+  let cancellations = 0;
+  const accept = hydratedFactory(
+    w,
+    target,
+    () => Promise.resolve(target),
+    () => {
+      cancellations += 1;
+    },
+  );
+  assert.equal(accept(["queued draft"], true), true);
+  await Promise.resolve();
+  assert.equal(cancellations, 1);
+});
+
+test("an aborted hydrated queue leaves the composer audio upload active", async () => {
+  const w = world();
+  let cancellations = 0;
+  let aborted = 0;
+  const accept = hydratedFactory(
+    w,
+    makeTarget("chat"),
+    () => Promise.resolve(null),
+    () => {
+      cancellations += 1;
+    },
+  );
+  assert.equal(
+    accept(
+      ["queued draft"],
+      true,
+      undefined,
+      () => {
+        aborted += 1;
+      },
+    ),
+    true,
+  );
+  await Promise.resolve();
+  assert.equal(aborted, 1);
+  assert.equal(cancellations, 0);
+});
 
 for (const firstBehavior of ["queue", "steer"] as const) {
   for (const latestBehavior of ["queue", "steer"] as const) {

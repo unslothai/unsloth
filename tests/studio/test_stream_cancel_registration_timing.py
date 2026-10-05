@@ -148,6 +148,25 @@ def test_async_generators_cleanup_tracker_in_finally():
     )
 
 
+# _sse_streaming_response is the shared SSE constructor; the test below pins that it stays same-task.
+_SAME_TASK_BUILDERS = ("_SameTaskStreamingResponse", "_sse_streaming_response")
+
+
+def test_sse_streaming_response_builds_a_same_task_response():
+    fn = next(
+        n
+        for n in ast.walk(_TREE)
+        if isinstance(n, ast.FunctionDef) and n.name == "_sse_streaming_response"
+    )
+    names = {
+        sub.func.id
+        for sub in ast.walk(fn)
+        if isinstance(sub, ast.Call) and isinstance(sub.func, ast.Name)
+    }
+    assert "_SameTaskStreamingResponse" in names
+    assert "StreamingResponse" not in names
+
+
 def test_chat_completions_streams_avoid_starlette_task_group():
     top = _async_function("produce_openai_chat_completions")
     legacy_calls = []
@@ -157,7 +176,7 @@ def test_chat_completions_streams_avoid_starlette_task_group():
             continue
         if sub.func.id == "StreamingResponse":
             legacy_calls.append(sub.lineno)
-        if sub.func.id == "_SameTaskStreamingResponse":
+        if sub.func.id in _SAME_TASK_BUILDERS:
             same_task_calls += 1
     assert not legacy_calls, (
         "Streaming /v1/chat/completions must use _SameTaskStreamingResponse, "
@@ -180,7 +199,7 @@ def test_openai_passthrough_stream_avoids_starlette_task_group():
                 continue
             if sub.func.id == "StreamingResponse":
                 legacy_calls.append(sub.lineno)
-            if sub.func.id == "_SameTaskStreamingResponse":
+            if sub.func.id in _SAME_TASK_BUILDERS:
                 same_task_calls += 1
     assert not legacy_calls, (
         "OpenAI passthrough streams must use _SameTaskStreamingResponse, "
@@ -253,6 +272,7 @@ _WANTED = {
     "_PENDING_CANCEL_TTL_S",
     "_prune_pending",
     "_TrackedCancel",
+    "_slot_lock",
     "_cancel_by_keys",
     "_cancel_by_cancel_id_or_stash",
 }
@@ -317,7 +337,9 @@ def _registry_source():
 def _load_registry_module():
     mod = {"active_generations": _load_active_generations()}
     exec(
-        "import threading, time\n_account_cancel_key = lambda key: key\n" + _registry_source(), mod
+        'import contextvars\nrouted_slot = contextvars.ContextVar("routed_slot", default = None)\n'
+        "import threading, time\n_account_cancel_key = lambda key: key\n" + _registry_source(),
+        mod,
     )
     return mod
 

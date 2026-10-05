@@ -940,6 +940,7 @@ def test_a_cache_reference_lists_the_quants_of_the_copy_it_names(monkeypatch, cl
         prefer_local_cache = False,
         offline = False,
         local_path = None,
+        include_cache_locations = False,
         hf_token = None,
     ):
         seen.update(repo_id = repo_id, local_path = local_path)
@@ -1568,7 +1569,7 @@ def test_the_chat_status_does_not_hand_back_the_path_the_load_resolved(monkeypat
     from models.inference import InferenceStatusResponse
     from routes import inference as inference_routes
 
-    async def _payload(current_subject: str):
+    async def _payload(current_subject: str, model = None):
         return InferenceStatusResponse(
             active_model = REPO_DIR,
             model_identifier = REPO_DIR,

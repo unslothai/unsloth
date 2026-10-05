@@ -52,6 +52,7 @@ try:
     from core.training.training import (
         TrainingStartCancellationCapacityError,
         TrainingStatusIdentitySnapshot,
+        normalize_training_optimizer_for_device,
     )
     from core.training.resume import (
         can_resume_run,
@@ -73,6 +74,7 @@ except ImportError:
     from core.training.training import (
         TrainingStartCancellationCapacityError,
         TrainingStatusIdentitySnapshot,
+        normalize_training_optimizer_for_device,
     )
     from core.training.resume import (
         can_resume_run,
@@ -1314,19 +1316,21 @@ async def get_hardware_utilization(current_subject: str = Depends(get_current_su
 
     Polled by the frontend during training.
     """
-    from utils.hardware import get_gpu_utilization
+    from utils.hardware import get_gpu_utilization, gpu_query
 
     # Off-loop: the first call blocks on detection while the warm is importing torch.
-    return await asyncio.to_thread(get_gpu_utilization)
+    with gpu_query.display_reads():
+        return await asyncio.to_thread(get_gpu_utilization)
 
 
 @router.get("/hardware/visible")
 async def get_visible_hardware_utilization(current_subject: str = Depends(get_current_subject)):
-    from utils.hardware import get_visible_gpu_utilization
+    from utils.hardware import get_visible_gpu_utilization, gpu_query
 
     # Off the event loop: the ROCm fallbacks shell out (Windows perf counters, sysfs) and the System view polls this
     # route.
-    return await asyncio.to_thread(get_visible_gpu_utilization)
+    with gpu_query.display_reads():
+        return await asyncio.to_thread(get_visible_gpu_utilization)
 
 
 @router.get("/start-requests/{start_request_id}", response_model = TrainingStartRequestStatus)
@@ -1720,6 +1724,12 @@ async def start_training(
             if not request.dataset_streaming and _hf_dataset_is_the_source(request):
                 await asyncio.to_thread(_refuse_unauthorized_cached_dataset, request, hf_token)
 
+        device_backend = getattr(_hw.DEVICE, "value", "") or ""
+        training_optimizer = normalize_training_optimizer_for_device(
+            request.optim,
+            device_backend = device_backend,
+        )
+
         training_kwargs = {
             "model_name": model_preflight.model_name,
             "project_name": request.project_name,
@@ -1766,7 +1776,7 @@ async def start_training(
             "cast_norm_output_to_input_dtype": request.cast_norm_output_to_input_dtype,
             "random_seed": request.random_seed,
             "packing": request.packing,
-            "optim": request.optim,
+            "optim": training_optimizer,
             "lr_scheduler_type": request.lr_scheduler_type,
             "use_lora": request.use_lora,
             "lora_r": request.lora_r,
@@ -1882,12 +1892,15 @@ async def start_training(
                 # The ACTIVE engine, not the diffusers singleton: on a native (sd_cpp) selection the diffusers backend
                 # reports unloaded while the native engine still holds state.
                 diffusion = get_active_diffusion_engine()
-                if diffusion.is_loaded:
-                    logger.info(
-                        "Unloading diffusion (Images) model to free GPU memory for training"
-                    )
-                diffusion.unload()
-                gpu_arbiter.release(gpu_arbiter.DIFFUSION)
+                if getattr(diffusion, "runs_off_torch_device", False) is True:
+                    logger.info("Keeping the Images model: it runs outside torch's GPUs")
+                else:
+                    if diffusion.is_loaded:
+                        logger.info(
+                            "Unloading diffusion (Images) model to free GPU memory for training"
+                        )
+                    diffusion.unload()
+                    gpu_arbiter.release(gpu_arbiter.DIFFUSION)
             except Exception as e:
                 logger.warning("Could not unload diffusion model for training: %s", e)
 
@@ -1930,9 +1943,12 @@ async def start_training(
                 if freed:
                     logger.info("Freed models for training: %s", freed)
             except Exception as e:
+                if getattr(e, "blocks_training", False):
+                    raise
                 logger.warning("Inference/training memory coordination failed; proceeding: %s", e)
 
         # The hook runs only once start guards pass -> VRAM freed iff training starts.
+        from routes.training_vram import ManagedEngineStillRunning
         from utils.transformers_version import SidecarSwapInProgress
 
         def _run_backend_start_without_admission() -> bool:
@@ -1944,7 +1960,11 @@ async def start_training(
                     resume_source_run_id = resume_run["id"] if resume_run else None,
                     **training_kwargs,
                 )
-            except (SidecarSwapInProgress, ExactResumeResourcesUnavailable) as exc:
+            except (
+                SidecarSwapInProgress,
+                ExactResumeResourcesUnavailable,
+                ManagedEngineStillRunning,
+            ) as exc:
                 _reject_start_request(backend, reserved_start_request_id, str(exc))
                 raise
             except ValueError as exc:
@@ -2001,7 +2021,7 @@ async def start_training(
         except SidecarSwapInProgress as exc:
             # Expected loss of the race against a sidecar install: a retryable 409, not an internal error.
             raise HTTPException(status_code = 409, detail = str(exc))
-        except ExactResumeResourcesUnavailable as exc:
+        except (ExactResumeResourcesUnavailable, ManagedEngineStillRunning) as exc:
             raise HTTPException(status_code = 409, detail = str(exc))
 
         if not success:
@@ -2900,10 +2920,13 @@ def _free_gpu_for_diffusion_training() -> None:
         # The ACTIVE engine, not the diffusers singleton: on a native (sd_cpp) selection the resident sd-server still
         # holds the GPU, so unloading only the singleton is a no-op.
         diffusion = get_active_diffusion_engine()
-        if diffusion.is_loaded:
-            logger.info("Unloading resident Images pipeline to free GPU memory for training")
-        diffusion.unload()
-        gpu_arbiter.release(gpu_arbiter.DIFFUSION)
+        if getattr(diffusion, "runs_off_torch_device", False) is True:
+            logger.info("Keeping the Images model: it runs outside torch's GPUs")
+        else:
+            if diffusion.is_loaded:
+                logger.info("Unloading resident Images pipeline to free GPU memory for training")
+            diffusion.unload()
+            gpu_arbiter.release(gpu_arbiter.DIFFUSION)
     except Exception as e:  # noqa: BLE001
         logger.warning("Could not unload Images pipeline for diffusion training: %s", e)
 
@@ -2927,6 +2950,8 @@ def _free_gpu_for_diffusion_training() -> None:
             freed = free_chat_models_for_training(reason = "diffusion training starting")
             logger.info("Freed chat model(s) for diffusion training: %s", freed)
     except Exception as e:  # noqa: BLE001
+        if getattr(e, "blocks_training", False):
+            raise
         logger.warning("Could not free chat models for diffusion training: %s", e)
 
 

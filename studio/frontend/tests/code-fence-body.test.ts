@@ -49,7 +49,7 @@ test("a blank line is one line tall, not nothing", () => {
   assert.equal(isBlankLine([{ content: " " }]), false);
   assert.equal(isBlankLine([{ content: "" }, { content: "" }]), false);
   assert.ok(
-    /if \(isBlankLine\(line\)\) \{\s*return <span className=\{LINE_CLASS\}>\{"\\n"\}<\/span>;/
+    /if \(!inline && isBlankLine\(line\)\) \{\s*return <span className=\{LINE_CLASS\}>\{"\\n"\}<\/span>;/
       .test(DEFER),
     "a blank line must render the newline streamdown renders for it",
   );
@@ -282,5 +282,20 @@ test("a fence source is highlighted once per revision, not twice", () => {
   assert.ok(
     /useLayoutEffect\(\(\) => \{/.test(hook),
     "the surviving effect runs before paint",
+  );
+});
+
+const TABLE_CONTROLS =
+  '[data-streamdown="table-wrapper"] > div:first-child:not(:last-child)';
+const TABLE_BUTTON =
+  /height: calc\(var\(--spacing\) \* 8\);[\s\S]*border-radius: 10px;\s*color: var\(--color-chat-icon-fg\);/;
+
+// Streamdown draws the table's buttons itself, 23px with no hover fill, beside these 32px ones.
+test("a table's toolbar buttons are drawn like the code block's", () => {
+  const css = readSrc("index.css");
+  const at = css.indexOf(`${TABLE_CONTROLS} > .relative > button {`);
+  assert.match(css.slice(at, css.indexOf("}", at)), TABLE_BUTTON);
+  assert.ok(
+    css.includes(`${TABLE_CONTROLS} > .relative {\n\t\tdisplay: flex;`),
   );
 });

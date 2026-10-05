@@ -176,6 +176,32 @@ def test_removed_bitsandbytes_options_are_rejected(name, value):
         _adamw_mod.QGaLoreAdamW8bit([nn.Parameter(torch.ones(2))], **{name: value})
 
 
+@pytest.mark.parametrize("out_features,in_features", [(4, 3), (3, 4)])
+def test_projected_step_preserves_full_rank_gradients(out_features, in_features):
+    bnb = pytest.importorskip("bitsandbytes")
+    try:
+        probe = nn.Parameter(torch.ones(2))
+        probe.grad = torch.zeros_like(probe)
+        bnb.optim.AdamW32bit([probe], lr = 0.0).step()
+    except Exception as exc:
+        pytest.skip(
+            reason = f"bitsandbytes build lacks CPU optimizer kernels (older releases): {exc}"
+        )
+    model = nn.Linear(in_features, out_features, bias = False)
+    optimizer = _adamw_mod.QGaLoreAdamW8bit(
+        [{"params": list(model.parameters()), "rank": 1, "quant": False}],
+        lr = 0.01,
+        weight_decay = 0.0,
+    )
+    inputs = torch.arange(2 * in_features, dtype = torch.float32).reshape(2, in_features)
+    for _ in range(2):
+        optimizer.zero_grad(set_to_none = False)
+        model(inputs).square().mean().backward()
+        expected_grad = model.weight.grad.clone()
+        optimizer.step()
+        torch.testing.assert_close(model.weight.grad, expected_grad)
+
+
 # ======================================================================
 # Projector tests
 # ======================================================================
@@ -247,17 +273,46 @@ class TestGaLoreProjector:
         proj = GaLoreProjector(
             rank = 4,
             update_proj_gap = 10,
-            cos_threshold = 0.0,  # Very low threshold → always triggers
+            cos_threshold = 0.9,
             gamma_proj = 2.0,
             queue_size = 2,
         )
-        # Near-identical gradients keep cosine similarity high.
+        # Near-identical gradients keep the subspace, so |cos| stays near 1.
         base_grad = torch.randn(16, 8)
         for i in range(5):
             grad = base_grad + torch.randn_like(base_grad) * 0.001
             proj.project(grad, step = i * 10)
 
-        assert proj.update_proj_gap > 10
+        assert proj.update_proj_gap > 10, list(proj.queue)
+
+    @staticmethod
+    def _scheduled_gap(monkeypatch, bases, cos_threshold):
+        """Drive the schedule with a fixed sequence of orthogonal bases, one per SVD."""
+        sequence = iter(bases)
+        monkeypatch.setattr(
+            GaLoreProjector,
+            "_compute_orthogonal",
+            staticmethod(lambda *args, **kwargs: next(sequence)),
+        )
+        proj = GaLoreProjector(
+            rank = 2, update_proj_gap = 1, cos_threshold = cos_threshold, gamma_proj = 2.0, queue_size = 2
+        )
+        grad = torch.zeros(8, 8)  # square -> right-side basis (rank, 8)
+        for step in range(len(bases)):
+            if step % proj.update_proj_gap == 0:
+                proj.project(grad, step = step)
+        return proj.update_proj_gap
+
+    def test_adaptive_scheduling_ignores_a_sign_flipped_basis(self, monkeypatch):
+        # A negated basis is the same subspace; a raw dot product reads it as cos = -1.
+        basis = torch.eye(8)[:2]
+        assert self._scheduled_gap(monkeypatch, [basis, -basis, basis], cos_threshold = 0.9) == 2
+
+    def test_adaptive_scheduling_still_rejects_a_rotated_basis(self, monkeypatch):
+        eye = torch.eye(8)
+        assert (
+            self._scheduled_gap(monkeypatch, [eye[:2], eye[2:4], eye[4:6]], cos_threshold = 0.4) == 1
+        )
 
     def test_scale_applied(self):
         """project_back applies the scale factor."""

@@ -59,6 +59,19 @@ export interface SystemInfoResponse {
   /** The dense quant schemes this host can run, best first. Absent on older backends, where readers
    * default to [] and name no precision. */
   dense_quant_schemes?: string[];
+  /** Absent on older backends, where readers treat it as off. */
+  nvfp4_diffusion?: boolean;
+  /** Whether group offload can stream torchao weights. Absent on older backends. */
+  quantised_streaming?: boolean;
+  /** Extra Diffusers offload fit tiers per lower-cased repo id, GiB VRAM / GiB available RAM. Absent on older backends. */
+  diffusers_offload_tiers?: Record<
+    string,
+    Array<{
+      gpu_gb: number;
+      system_ram_gb: number;
+      requires_quantised_streaming?: boolean;
+    }>
+  >;
   uptime_seconds: number | null;
   cpu: {
     logical_count: number;
