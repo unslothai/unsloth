@@ -492,6 +492,120 @@ def _first_mirrored(repo_id: Optional[str], names: Sequence[str], readable: Any)
     return None
 
 
+# Set to 1 to always download the safetensors container even when its pickle twin is already cached.
+PREFER_SAFETENSORS_ENV = "UNSLOTH_PREQUANT_PREFER_SAFETENSORS"
+
+_PICKLE_SUFFIXES = (".pt", ".pth")
+_logged_twin_choices: set = set()
+
+
+def _hub_name_cached(repo_id: Optional[str], name: Optional[str], root: Optional[str]) -> Optional[str]:
+    """``repo_id/name``'s path in ONE Hub cache root (None = huggingface_hub's own), else None. Never raises."""
+    if not repo_id or not name:
+        return None
+    try:
+        import os
+
+        from huggingface_hub import try_to_load_from_cache
+    except Exception:  # noqa: BLE001 - no cache API to ask: treat as not cached
+        return None
+    try:
+        hit = try_to_load_from_cache(repo_id, name, cache_dir = root)
+    except Exception:  # noqa: BLE001 - a malformed cache entry is not a hit
+        return None
+    # a str is the cached path; a miss is None and a known-absent file is a sentinel object
+    return hit if isinstance(hit, str) and os.path.isfile(hit) else None
+
+
+def _twin_cache_roots(cache_dir: Optional[str]) -> tuple:
+    """Every cache root a download could reuse: the caller's, the live setting, huggingface_hub's own."""
+    roots: list = []
+    live = None
+    try:
+        from utils.hf_cache_settings import active_hf_hub_cache
+
+        live = active_hf_hub_cache()
+    except Exception:  # noqa: BLE001 - outside the Studio backend there is no live setting
+        live = None
+    for root in (cache_dir, live, None):
+        if root not in roots:
+            roots.append(root)
+    return tuple(roots)
+
+
+def prefer_cached_pickle_twins(
+    repo_id: Optional[str],
+    names: Sequence[str],
+    *,
+    readable: Any = None,
+    cache_dir: Optional[str] = None,
+    logger: Any = None,
+) -> list:
+    """``names`` with a CACHED pickle twin moved ahead of its UNCACHED safetensors sibling.
+
+    The chain prefers safetensors, which is right for a new user and wrong for one who already holds
+    the multi-GB ``.pt`` of the very same weights: once a repo publishes the safetensors twin, walking
+    the chain in order would download it again. So a ``<stem>.safetensors`` that is in no local cache
+    root yields its slot to ``<stem>.pt`` / ``<stem>.pth`` when that twin is in ``names``, is readable on
+    this install, and IS cached. Twins only: a different artifact (another scheme, a rotated build, a
+    different stem) never jumps the queue, however cached it is. A cached safetensors keeps its place,
+    and the twin stays in the chain behind it, so nothing becomes unreachable: a twin that the Hub has
+    since removed 404s and the safetensors name is tried next. ``PREFER_SAFETENSORS_ENV`` turns this
+    off. Pure cache lookups, never raises."""
+    import os
+
+    out = [n for n in names if n]
+    if not repo_id or len(out) < 2:
+        return out
+    if (os.environ.get(PREFER_SAFETENSORS_ENV) or "").strip().lower() in ("1", "true", "yes", "on"):
+        return out
+    try:
+        roots = _twin_cache_roots(cache_dir)
+
+        def _cached(name: str) -> bool:
+            return any(_hub_name_cached(repo_id, name, root) is not None for root in roots)
+
+        def _ok(name: str) -> bool:
+            try:
+                return readable is None or bool(readable(name))
+            except Exception:  # noqa: BLE001 - an unanswerable question is a no
+                return False
+
+        for st in [n for n in out if n.lower().endswith(".safetensors")]:
+            stem = st[: -len(".safetensors")]
+            twin = next(
+                (
+                    stem + suffix
+                    for suffix in _PICKLE_SUFFIXES
+                    if stem + suffix in out and _ok(stem + suffix) and _cached(stem + suffix)
+                ),
+                None,
+            )
+            if twin is None or _cached(st):
+                continue
+            out.remove(twin)
+            out.insert(out.index(st), twin)
+            key = (repo_id, twin)
+            if key not in _logged_twin_choices:
+                _logged_twin_choices.add(key)
+                log = logger
+                if log is None:
+                    import logging
+
+                    log = logging.getLogger(__name__)
+                log.info(
+                    "diffusion.prequant_cached_pickle: %s: using the cached %s; the %s twin is not "
+                    "downloaded (set %s=1 to fetch it instead)",
+                    repo_id,
+                    twin,
+                    st,
+                    PREFER_SAFETENSORS_ENV,
+                )
+    except Exception:  # noqa: BLE001 - a preference, never a new failure
+        return [n for n in names if n]
+    return out
+
+
 @dataclass(frozen = True)
 class PrequantSource:
     """Where a pre-quantized checkpoint lives. ``kind`` is "path" (a local file) or "repo" (Hub repo
@@ -1249,7 +1363,12 @@ def load_prequantized_transformer(
             return None
 
         path = _resolve_checkpoint_path(
-            source, hf_token, cache_dir, local_files_only = local_files_only, scheme = scheme
+            source,
+            hf_token,
+            cache_dir,
+            local_files_only = local_files_only,
+            scheme = scheme,
+            logger = logger,
         )
         if path is None:
             return None
@@ -1476,6 +1595,7 @@ def _resolve_checkpoint_path(
     *,
     local_files_only: bool = False,
     scheme: Optional[str] = None,
+    logger: Any = None,
 ) -> Optional[str]:
     """The local file path for ``source``, downloading from the Hub if needed; None if absent.
     ``local_files_only`` is the caller's promise that this load may not fetch anything, so a
@@ -1511,6 +1631,14 @@ def _resolve_checkpoint_path(
         )
         if mirrored is not None:
             return mirrored
+        # An existing user's cached pickle answers before its uncached safetensors twin is fetched.
+        names = prefer_cached_pickle_twins(
+            source.location,
+            names,
+            readable = lambda n: restricted_prequant_load_supported(scheme, n),
+            cache_dir = cache_dir,
+            logger = logger,
+        )
         for index, name in enumerate(names):
             last = index == len(names) - 1
             try:

@@ -414,6 +414,7 @@ def load_prequant_text_encoder(
             hf_token,
             cache_dir = cache_dir,
             local_files_only = local_files_only,
+            logger = logger,
         )
         if path is None:
             return None
@@ -612,6 +613,7 @@ def _resolve_checkpoint_path(
     *,
     cache_dir: str,
     local_files_only: bool = False,
+    logger: Any = None,
 ) -> Optional[str]:
     """The local file path for ``source``, downloading from the Hub if needed; None if absent."""
     if source.kind == "path":
@@ -642,6 +644,16 @@ def _resolve_checkpoint_path(
         mirrored = _first_mirrored(source.location, names, te_candidate_is_readable)
         if mirrored is not None:
             return mirrored
+        from .diffusion_prequant import prefer_cached_pickle_twins
+
+        # An existing user's cached pickle answers before its uncached safetensors twin is fetched.
+        names = prefer_cached_pickle_twins(
+            source.location,
+            names,
+            readable = te_candidate_is_readable,
+            cache_dir = cache_dir,
+            logger = logger,
+        )
         for name in names:
             try:
                 return hf_hub_download(
@@ -737,7 +749,12 @@ def te_prequant_hub_files(
         # order, so the bytes counted here are the bytes that will actually be fetched. Matching
         # the primary name alone reported every .pt repo as having no pre-cast encoder at all the
         # moment safetensors became the preferred spelling.
-        for name in te_candidate_filenames(source):
+        from .diffusion_prequant import prefer_cached_pickle_twins
+
+        ordered = prefer_cached_pickle_twins(
+            source.location, te_candidate_filenames(source), readable = te_candidate_is_readable
+        )
+        for name in ordered:
             if name in sizes and te_candidate_is_readable(name):
                 found[component] = [(name, sizes[name])]
                 break

@@ -3890,9 +3890,20 @@ class DiffusionBackend:
         sizes = {s.rfilename: int(getattr(s, "size", 0) or 0) for s in (info.siblings or [])}
         # Every candidate, in the order the loader tries them: safetensors first, then the pickle
         # spellings. Reading only two of them would miss the artifact on a repo that hosts the third.
-        from .diffusion_prequant import candidate_filenames_of, restricted_prequant_load_supported
+        from .diffusion_prequant import (
+            candidate_filenames_of,
+            prefer_cached_pickle_twins,
+            restricted_prequant_load_supported,
+        )
 
-        for name in candidate_filenames_of(source):
+        # The resolver's own reordering, so a cached .pt is what gets priced and staged rather than its
+        # uncached safetensors twin.
+        ordered = prefer_cached_pickle_twins(
+            source.location,
+            candidate_filenames_of(source),
+            readable = lambda n: restricted_prequant_load_supported(scheme, n),
+        )
+        for name in ordered:
             if name and name in sizes and restricted_prequant_load_supported(scheme, name):
                 return (source.location, name, int(sizes[name]))
         # The repo answered and holds NEITHER name. Not "no prequant is used": this pick is configured to

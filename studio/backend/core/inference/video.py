@@ -4259,13 +4259,20 @@ class VideoBackend:
     ) -> None:
         """Pre-fetch the hosted denoiser checkpoint(s) under the load's cancel event; best effort except cancellation."""
         cancel = cancel_event if cancel_event is not None else self._cancel_event
-        from core.inference.diffusion_prequant import candidate_filenames_of
+        from core.inference.diffusion_prequant import (
+            candidate_filenames_of,
+            prefer_cached_pickle_twins,
+        )
         from utils.hf_xet_fallback import hf_hub_download_with_xet_fallback
 
         for source in sources:
             if getattr(source, "kind", None) != "repo":
                 continue
-            names = list(dict.fromkeys(candidate_filenames_of(source)))
+            names = prefer_cached_pickle_twins(
+                source.location,
+                list(dict.fromkeys(candidate_filenames_of(source))),
+                cache_dir = hub_cache_dir(),
+            )
             for index, name in enumerate(names):
                 try:
                     hf_hub_download_with_xet_fallback(
@@ -4383,12 +4390,18 @@ class VideoBackend:
         except Exception as exc:  # noqa: BLE001 -- unavailable prequant means the dense DiT
             logger.warning("video.denoiser_prequant_unavailable: %s: %s", location, exc)
             return None, []
-        from core.inference.diffusion_prequant import candidate_filenames_of
+        from core.inference.diffusion_prequant import (
+            candidate_filenames_of,
+            prefer_cached_pickle_twins,
+        )
 
         by_name = {s.rfilename: int(s.size or 0) for s in (info.siblings or [])}
         files: list[tuple[str, int]] = []
         for src in sources:
-            wanted = list(candidate_filenames_of(src))
+            # Same order the prefetch and the loader walk: a cached .pt ahead of its uncached safetensors twin.
+            wanted = prefer_cached_pickle_twins(
+                src.location, list(candidate_filenames_of(src)), cache_dir = hub_cache_dir()
+            )
             found = next((n for n in wanted if n in by_name), None)
             if found is None:
                 return None, []
@@ -5155,7 +5168,13 @@ class VideoBackend:
             # no skippable component, which is the dense encoder downloaded twice over.
             from .diffusion_te_prequant import te_candidate_filenames, te_candidate_is_readable
 
-            names = [n for n in te_candidate_filenames(source) if te_candidate_is_readable(n)]
+            from .diffusion_prequant import prefer_cached_pickle_twins
+
+            names = prefer_cached_pickle_twins(
+                source.location,
+                [n for n in te_candidate_filenames(source) if te_candidate_is_readable(n)],
+                readable = te_candidate_is_readable,
+            )
             got = False
             for name in names:
                 try:
