@@ -3,8 +3,9 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 # See /studio/LICENSE.AGPL-3.0
 #
-# _suggest_npm_registry in studio/setup.sh: a local npm errno (#8725) gets the
-# local hint, not "registry.npmjs.org looks blocked".
+# _suggest_npm_registry in studio/setup.sh: a local npm errno gets a local hint, not
+# "registry.npmjs.org looks blocked". #8725's EACCES came from the HTTP socket
+# (FetchError), so it gets the "OS refused node's connection" variant.
 
 set -u
 
@@ -55,33 +56,35 @@ npm error 403 Forbidden - GET https://registry.npmjs.org/oxlint"
 _UNRELATED_LOG="npm error code ELIFECYCLE
 npm error oxc-validator@1.0.0 postinstall script failed"
 
-# check <name> <log> <expect-local:yes|no> <expect-registry:yes|no>
+# check <name> <log> <expected hint: file|socket|registry|none>
 check() {
     printf '%s\n' "$2" > "$_log_file"
     [ -n "$2" ] || : > "$_log_file"
-    local _out _local=no _registry=no
+    local _out _got=""
     _out="$( _suggest_npm_registry "$_log_file" 2>&1 )"
-    case "$_out" in *"local file error"*) _local=yes ;; esac
-    case "$_out" in *"looks blocked (corporate firewall/proxy?)"*) _registry=yes ;; esac
-    if [ "$_local" = "$3" ] && [ "$_registry" = "$4" ]; then
+    case "$_out" in *"local file error"*) _got="$_got file" ;; esac
+    case "$_out" in *"refused node's connection"*) _got="$_got socket" ;; esac
+    case "$_out" in *"looks blocked (corporate firewall/proxy?)"*) _got="$_got registry" ;; esac
+    _got="${_got# }"
+    if [ "${_got:-none}" = "$3" ]; then
         PASS=$((PASS + 1)); echo "ok   $1"
     else
-        FAIL=$((FAIL + 1)); echo "FAIL $1 (want local=$3 registry=$4, got local=$_local registry=$_registry)"
+        FAIL=$((FAIL + 1)); echo "FAIL $1 (want $3, got ${_got:-none})"
         echo "     output: $_out"
     fi
 }
 
-check "EACCES log gets the local hint" "$_EACCES_LOG" yes no
-check "EPERM log gets the local hint" "$_EPERM_LOG" yes no
-check "ENOTFOUND log gets the registry hint" "$_NETWORK_LOG" no yes
-check "network failure with EPERM cleanup warnings gets the registry hint" "$_NETWORK_CLEANUP_LOG" no yes
-check "403 log gets the registry hint" "$_PROXY_LOG" no yes
-check "unrelated failure stays quiet" "$_UNRELATED_LOG" no no
-check "empty log keeps the registry hint" "" no yes
+check "#8725 socket EACCES gets the connection hint" "$_EACCES_LOG" socket
+check "EPERM on a cache file gets the file hint" "$_EPERM_LOG" file
+check "ENOTFOUND log gets the registry hint" "$_NETWORK_LOG" registry
+check "network failure with EPERM cleanup warnings gets the registry hint" "$_NETWORK_CLEANUP_LOG" registry
+check "403 log gets the registry hint" "$_PROXY_LOG" registry
+check "unrelated failure stays quiet" "$_UNRELATED_LOG" none
+check "empty log keeps the registry hint" "" registry
 UNSLOTH_NPM_REGISTRY="https://mirror.example/api/npm/" \
-    check "local hint survives UNSLOTH_NPM_REGISTRY" "$_EACCES_LOG" yes no
+    check "local hint survives UNSLOTH_NPM_REGISTRY" "$_EACCES_LOG" socket
 UNSLOTH_NPM_REGISTRY="https://mirror.example/api/npm/" \
-    check "UNSLOTH_NPM_REGISTRY still silences the registry hint" "$_NETWORK_LOG" no no
+    check "UNSLOTH_NPM_REGISTRY still silences the registry hint" "$_NETWORK_LOG" none
 
 echo ""
 echo "Results: $PASS passed, $FAIL failed"

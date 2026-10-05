@@ -578,8 +578,17 @@ _npm_mirror_retry() {
 # registry.npmjs.org even on a local error (#8725). Keep in sync with setup.ps1.
 _NPM_LOCAL_FAILURE_RE='npm (error|ERR!) code (EACCES|EPERM|EBUSY|ENOSPC|ENFILE|EMFILE)|operation was rejected by your operating system'
 
+# $1 = "socket" when the errno came from the HTTP request (FetchError): the OS refused
+# node's connection (firewall / antivirus web shield, per program path), not a file.
 _suggest_npm_local_failure() {
     printf '\n' >&2
+    if [ "${1:-}" = socket ]; then
+        step "frontend" "the OS refused node's connection to the npm registry" "$C_WARN" >&2
+        substep "A firewall, antivirus web protection or VPN client is blocking this node:" >&2
+        substep "  $(command -v node 2>/dev/null || echo node)" >&2
+        substep "Allow it in that tool, or install Node from another location (e.g. nvm)." >&2
+        return 0
+    fi
     step "frontend" "npm hit a local file error (permission, lock or disk), not a network block" "$C_WARN" >&2
     substep "Usual causes: antivirus or a file watcher locking a file in the npm cache," >&2
     substep "an unwritable npm cache, a read-only install directory, or a full disk." >&2
@@ -597,7 +606,7 @@ _suggest_npm_registry() {
     local _log="${1:-}"
     # Before the UNSLOTH_NPM_REGISTRY opt-out: a mirror does not unlock a cache.
     if [ -n "$_log" ] && [ -s "$_log" ] && grep -Eq "$_NPM_LOCAL_FAILURE_RE" "$_log"; then
-        _suggest_npm_local_failure
+        if grep -q 'FetchError' "$_log"; then _suggest_npm_local_failure socket; else _suggest_npm_local_failure; fi
         return 0
     fi
     [ -n "${UNSLOTH_NPM_REGISTRY:-}" ] && return 0

@@ -2,8 +2,9 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 # See /studio/LICENSE.AGPL-3.0
 #
-# Show-NpmRegistryHint in studio/setup.ps1: a local npm errno (#8725) gets the
-# local hint, not "registry.npmjs.org looks blocked".
+# Show-NpmRegistryHint in studio/setup.ps1: a local npm errno gets a local hint, not
+# "registry.npmjs.org looks blocked". #8725's EACCES came from the HTTP socket
+# (FetchError), so it gets the "OS refused node's connection" variant.
 
 BeforeAll {
     . (Join-Path $PSScriptRoot 'Get-FunctionSource.ps1')
@@ -28,6 +29,11 @@ BeforeAll {
 npm error code EACCES
 npm error FetchError: request to https://registry.npmjs.org/oxlint/-/oxlint-1.65.0.tgz failed, reason:
 npm error The operation was rejected by your operating system.
+'@
+    $script:EpermFileOutput = @'
+npm error code EPERM
+npm error syscall rename
+npm error Error: EPERM: operation not permitted, rename 'C:\npm-cache\_cacache\tmp\x'
 '@
     $script:NetworkOutput = @'
 npm error code ENOTFOUND
@@ -68,9 +74,17 @@ Describe 'Show-NpmRegistryHint' {
         $env:NPM_CONFIG_REGISTRY = $null
     }
 
-    It 'reports EACCES as local, not as a blocked registry' {
+    It 'reports the #8725 socket EACCES as a blocked node connection' {
         $out = Invoke-CapturingHint -FailureOutput $script:EaccesOutput
+        $out | Should -Match "refused node's connection"
+        $out | Should -Not -Match 'local file error'
+        $out | Should -Not -Match 'looks blocked \(corporate firewall/proxy\?\)'
+    }
+
+    It 'reports EPERM on a cache file as a local file error' {
+        $out = Invoke-CapturingHint -FailureOutput $script:EpermFileOutput
         $out | Should -Match 'local file error'
+        $out | Should -Not -Match "refused node's connection"
         $out | Should -Not -Match 'looks blocked \(corporate firewall/proxy\?\)'
     }
 
@@ -96,7 +110,7 @@ Describe 'Show-NpmRegistryHint' {
 
     It 'prints the local hint even with UNSLOTH_NPM_REGISTRY set' {
         $env:UNSLOTH_NPM_REGISTRY = 'https://mirror.example/api/npm/'
-        Invoke-CapturingHint -FailureOutput $script:EaccesOutput | Should -Match 'local file error'
+        Invoke-CapturingHint -FailureOutput $script:EaccesOutput | Should -Match "refused node's connection"
     }
 
     It 'passes the captured output at every call site' {

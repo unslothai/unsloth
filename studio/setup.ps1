@@ -3105,7 +3105,18 @@ $script:NpmLocalFailureRe = 'npm (error|ERR!) code (EACCES|EPERM|EBUSY|ENOSPC|EN
 $script:NpmNetworkFailureRe = '40[13]|ENOTFOUND|ECONNREFUSED|ECONNRESET|ETIMEDOUT|EAI_AGAIN|ConnectionRefused|failed to resolve|registry\.npmjs\.org|getaddrinfo|tunneling socket|network|proxy|self.?signed|unable to (get|verify)'
 
 function Show-NpmLocalFailureHint {
+    # -Socket: the errno came from the HTTP request (FetchError), i.e. the OS refused
+    # node's connection (firewall / antivirus web shield, per program path), not a file.
+    param([switch]$Socket)
     Write-StudioLine ""
+    if ($Socket) {
+        $nodePath = try { (Get-Command node -ErrorAction Stop).Source } catch { "node.exe" }
+        step "frontend" "the OS refused node's connection to the npm registry" "Yellow"
+        substep "A firewall, antivirus web protection or VPN client is blocking this node.exe:"
+        substep "  $nodePath"
+        substep "Allow it in that tool, or install Node from another location (e.g. nvm-windows)."
+        return
+    }
     step "frontend" "npm hit a local file error (permission, lock or disk), not a network block" "Yellow"
     substep "Usual causes: antivirus locking a file in the npm cache, an unwritable npm cache,"
     substep "a read-only install directory, or a full disk. Running as Administrator rarely helps."
@@ -3132,7 +3143,7 @@ function Show-NpmRegistryHint {
     # Empty output (verbose runs stream npm) keeps the unconditional registry hint.
     param([string]$FailureOutput = "")
     if ($FailureOutput) {
-        if ($FailureOutput -cmatch $script:NpmLocalFailureRe) { Show-NpmLocalFailureHint; return }
+        if ($FailureOutput -cmatch $script:NpmLocalFailureRe) { Show-NpmLocalFailureHint -Socket:($FailureOutput -cmatch 'FetchError'); return }
         if ($FailureOutput -inotmatch $script:NpmNetworkFailureRe) { return }
     }
     if ($env:UNSLOTH_NPM_REGISTRY) { return }
