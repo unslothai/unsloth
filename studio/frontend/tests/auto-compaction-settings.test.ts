@@ -82,9 +82,7 @@ test("a queued run keeps its own model's llama.cpp verdict after the picker move
   // carries no .gguf suffix, and the load reports no quant. loadedIsGguf is the only
   // evidence llama.cpp serves it.
   const resident = {
-    params: {
-      checkpoint: "ollama-manifest:%2Fhome%2Fu%2F.ollama%2Fmanifests%2Fq",
-    },
+    params: { checkpoint: "ollama-manifest:%2Fhome%2Fu%2F.ollama%2Fmanifests%2Fq" },
     activeGgufVariant: null,
     activeNativePathToken: null,
     loadedIsGguf: true,
@@ -122,23 +120,20 @@ test("a queued run keeps its own model's llama.cpp verdict after the picker move
   );
 });
 
-test("MLX opts into the existing policy and honors disabling auto compaction", () => {
-  const options = {
-    isGguf: false,
-    isMlx: true,
-    autoCompactEnabled: true,
-    contextPolicy: "rolling" as const,
-    compactionHeadroomRatio: 0.1,
-  };
+test("MLX chats opt in on the backend's own report and honor disabling auto compaction", () => {
+  const options = { isGguf: false, isMlx: true, autoCompactEnabled: true };
   assert.deepEqual(ggufCompactionRequestFields(options), {
     context_overflow: "truncate_oldest",
-    context_policy: "rolling",
-    compaction_headroom_ratio: 0.1,
   });
   assert.deepEqual(
     ggufCompactionRequestFields({ ...options, autoCompactEnabled: false }),
-    {
-      context_overflow: "error",
-    },
+    { context_overflow: "error" },
+  );
+  // loadedIsMlx, not a catalog row, as isGguf goes through isServedByLlamaCpp.
+  const adapter = readSrc("features/chat/api/chat-adapter.ts");
+  assert.match(adapter, /isMlx: isMlxForCompaction/);
+  assert.match(
+    adapter,
+    /isMlxForCompaction =\s*!isExternalModelId\(params\.checkpoint\) && runtime\.loadedIsMlx === true/,
   );
 });

@@ -5353,6 +5353,10 @@ export function createOpenAIStreamAdapter(
         activeNativePathToken: runtime.activeNativePathToken,
         checkpoint: params.checkpoint,
       });
+      // The backend's own report, for the same reason. An external id leaves it describing
+      // the local model still resident.
+      const isMlxForCompaction =
+        !isExternalModelId(params.checkpoint) && runtime.loadedIsMlx === true;
       const generationUserMessage = [...survivingMessages]
         .reverse()
         .find((message) => message.role === "user");
@@ -6585,7 +6589,7 @@ export function createOpenAIStreamAdapter(
             stream_options: { include_usage: true },
             ...ggufCompactionRequestFields({
               isGguf: isGgufForCompaction,
-              isMlx: activeModel?.isMlx === true,
+              isMlx: isMlxForCompaction,
               autoCompactEnabled: runtime.autoCompactEnabled,
             }),
             temperature: params.temperature,
