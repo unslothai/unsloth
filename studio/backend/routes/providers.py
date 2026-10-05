@@ -462,8 +462,7 @@ async def update_provider_config(
         for field, written in metadata_updates.items():
             if field == "id":
                 continue
-            # Nullable overrides are present only when explicitly requested; None clears them.
-            # Other None values mean "not sent", so there is nothing to take back.
+            # Explicit null clears nullable overrides; elsewhere it means "not sent".
             if written is None and field not in {"max_output_tokens", "reasoning_config"}:
                 continue
             if not _current_matches(current, field, written):

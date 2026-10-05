@@ -4837,7 +4837,6 @@ export function HubModelPicker({
       ),
     [externalProviders],
   );
-  // Per-connection opt-in, never inferred from a shared model id or endpoint URL.
   const externalReasoningConfigById = useMemo(
     () =>
       new Map(

@@ -27107,8 +27107,10 @@ async def _proxy_to_external_provider(
         base_url = managed.base_url
         api_type = "chat_completions"
         reasoning_config = None
-    elif payload.provider_id:
-        # Saved-provider SQLite reads must not block the event loop.
+    elif payload.provider_id and (
+        not payload.encrypted_api_key or payload.provider_reasoning_config is not None
+    ):
+        # Legacy explicit-key requests retain editable routing; reasoning opt-ins use the saved contract.
         config = await asyncio.to_thread(providers_db.get_provider, payload.provider_id)
         if config is None:
             raise HTTPException(
@@ -27774,7 +27776,7 @@ async def _proxy_to_external_provider(
         base_url = base_url,
         api_key = api_key,
         api_type = api_type,
-        reasoning_config = reasoning_config,
+        **({"reasoning_config": reasoning_config} if reasoning_config is not None else {}),
         **({"managed_loopback": True} if managed is not None else {}),
     )
     _non_stream_custom_responses = (

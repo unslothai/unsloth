@@ -15,7 +15,7 @@ export type CustomReasoningConfig = {
   style: CustomReasoningStyle;
 };
 
-/** Browser caches and older backends are untrusted inputs: malformed contracts fail closed. */
+/** Cached or legacy malformed contracts fail closed. */
 export function normalizeCustomReasoningConfig(
   value: unknown,
 ): CustomReasoningConfig | undefined {

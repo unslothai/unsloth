@@ -1161,7 +1161,6 @@ export interface ExternalReasoningResolveOptions {
   baseUrl?: string | null;
   /** Custom providers can opt into OpenAI's Responses API and its reasoning controls. */
   apiType?: "chat_completions" | "responses";
-  /** Validated per-connection Custom Chat Completions contract. */
   reasoningConfig?: unknown;
 }
 
@@ -1303,8 +1302,7 @@ export function getExternalReasoningCapabilities(
   modelId: string | null | undefined,
   options?: ExternalReasoningResolveOptions,
 ): ExternalReasoningCapabilities {
-  // Custom Chat Completions accepts only its explicit connection contract. Do this before
-  // model/catalog matching so a known reasoning model cannot opt an unconfigured gateway in.
+  // Check the connection before the catalog: known models must not opt Custom in.
   if (
     providerType?.trim().toLowerCase() === "custom" &&
     options?.apiType !== "responses"

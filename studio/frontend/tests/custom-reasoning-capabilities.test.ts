@@ -17,8 +17,7 @@ for (const style of [
   "chat_template_kwargs.enable_thinking",
 ]) {
   test(`Custom explicitly opts into ${style}, independently of model or URL`, () => {
-    // The options are deliberately structural: the before version must reach the assertion,
-    // not fail to import a new symbol.
+    // Structural options keep the red control failing on behavior, not imports.
     const options = { reasoningConfig: { enabled: true, style } };
     const caps = getExternalReasoningCapabilities(
       "custom",

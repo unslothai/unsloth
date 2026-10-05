@@ -73,7 +73,6 @@ export function ConnectedModelSettingsDialog({
   baseUrl?: string | null;
   /** A vLLM connection flagged as serving a reasoning model. */
   isReasoningProvider?: boolean;
-  /** The Custom connection's explicit opt-in, not a model-wide capability. */
   reasoningConfig?: CustomReasoningConfig;
   /** The connection's own output cap, which lowers the model's documented one. */
   connectionMaxOutputTokens?: number | null;

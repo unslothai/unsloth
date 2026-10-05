@@ -82,7 +82,6 @@ export function ConnectedModelInfoDialog({
   baseUrl?: string | null;
   /** A vLLM connection flagged as serving a reasoning model: the only signal a self-host gives. */
   isReasoningProvider?: boolean;
-  /** The Custom connection's explicit opt-in, not a model-wide capability. */
   reasoningConfig?: CustomReasoningConfig;
 }) {
   // Every figure below is read from the catalogue, which can land after this renders.
