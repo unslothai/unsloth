@@ -1,9 +1,10 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2023-present Daniel Han-Chen & the Unsloth team. All rights reserved.
 
-# Cloudflare's Clef decision models. The record encoding, layers and SystemOne answers are
-# Cloudflare's own joint_schema_model.py (Apache-2.0), vendored unmodified in unsloth/_vendor/clef;
-# this module only adds Unsloth's head forward on top of it.
+# Portions are derived from Cloudflare's joint_schema_model.py (https://huggingface.co/Cloudflare/clef),
+# Copyright 2026 Cloudflare, Inc., licensed under the Apache License, Version 2.0; the license text
+# is in unsloth/_vendor/clef/LICENSE. That file is vendored unmodified in unsloth/_vendor/clef: this
+# module imports its record encoding, layers and SystemOne answers, and adds Unsloth's head forward.
 
 import contextlib
 import math
