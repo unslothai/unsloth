@@ -11,8 +11,13 @@ import {
   readLastLocalModelLoad,
   useChatModelRuntime,
   useChatRuntimeStore,
+  wantsDownloadManagerStaging,
 } from "@/features/chat";
-import { useDeviceInventorySources } from "@/features/hub";
+import {
+  DOWNLOAD_KIND,
+  downloadManager,
+  useDeviceInventorySources,
+} from "@/features/hub";
 import {
   type LoraModelOption,
   type ModelOption,
@@ -44,6 +49,35 @@ function loadErrorMessage(err: unknown, fallback: string): string | null {
     return null;
   }
   return err instanceof Error ? err.message : fallback;
+}
+
+// An uncached Hub pick downloads through the manager first, so the resident model keeps serving
+// the API until the user loads the new one.
+async function startStagedDownload(
+  id: string,
+  meta: ModelSelectorChangeMeta | undefined,
+): Promise<string | null> {
+  const outcome = await downloadManager.requestStart({
+    kind: DOWNLOAD_KIND.MODEL,
+    repoId: id,
+    variant: meta?.ggufVariant ?? null,
+    expectedBytes: meta?.expectedBytes ?? 0,
+    presentation: meta?.downloadPresentation,
+    callerToast: {
+      title: "Downloading model",
+      description: "Pick it again once the download finishes to load it.",
+    },
+  });
+  if (outcome === "conflict") {
+    return "Resume this download from the Model hub.";
+  }
+  if (outcome === "busy") {
+    return "A download for this model is already in progress.";
+  }
+  if (outcome === "error") {
+    return "Failed to start the download.";
+  }
+  return null;
 }
 
 function toModelOptions(
@@ -147,6 +181,10 @@ export function ApiModelLoadControls({
       if (meta?.source === "external" || isExternalModelId(value)) {
         setActionError("External provider models are not served by the API.");
         onSettled();
+        return;
+      }
+      if (wantsDownloadManagerStaging({ id: value, ...meta })) {
+        setActionError(await startStagedDownload(value, meta));
         return;
       }
       try {
