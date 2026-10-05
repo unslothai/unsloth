@@ -56,18 +56,30 @@ def _stub_module(name: str, attrs: dict | None = None) -> None:
 
 @pytest.fixture(scope = "module", autouse = True)
 def _torchcodec_stub():
-    """Expose the CPU-only placeholder only while these import tests execute.
+    """Expose a package-shaped CPU-only placeholder while these tests execute.
 
     Keeping it out of module collection lets sibling tests import datasets,
-    which probes ``torchcodec.decoders`` while constructing Dataset fixtures.
+    which probes ``torchcodec.decoders`` while constructing Dataset fixtures. A
+    package-shaped stub also satisfies datasets 5.x when torchcodec is absent.
     """
+    if "torchcodec" in sys.modules or importlib.util.find_spec("torchcodec") is not None:
+        yield
+        return
+
+    class _NoDecoder:
+        pass
+
     _stub_module("torchcodec")
+    sys.modules["torchcodec"].__path__ = []
+    _stub_module("torchcodec.decoders", {"AudioDecoder": _NoDecoder, "VideoDecoder": _NoDecoder})
+    sys.modules["torchcodec"].decoders = sys.modules["torchcodec.decoders"]
     try:
         yield
     finally:
-        module = sys.modules.get("torchcodec")
-        if getattr(getattr(module, "__spec__", None), "origin", None) == "<test stub>":
-            del sys.modules["torchcodec"]
+        for name in ("torchcodec.decoders", "torchcodec"):
+            module = sys.modules.get(name)
+            if getattr(getattr(module, "__spec__", None), "origin", None) == "<test stub>":
+                del sys.modules[name]
 
 
 def _trl_version():

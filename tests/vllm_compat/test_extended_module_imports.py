@@ -62,14 +62,25 @@ _stub_module(
 
 @pytest.fixture(scope = "module", autouse = True)
 def _torchcodec_stub():
-    """Limit the placeholder to this module's tests, not pytest collection."""
+    """Limit a package-shaped CPU-only placeholder to test execution, not collection."""
+    if "torchcodec" in sys.modules or importlib.util.find_spec("torchcodec") is not None:
+        yield
+        return
+
+    class _NoDecoder:
+        pass
+
     _stub_module("torchcodec")
+    sys.modules["torchcodec"].__path__ = []
+    _stub_module("torchcodec.decoders", {"AudioDecoder": _NoDecoder, "VideoDecoder": _NoDecoder})
+    sys.modules["torchcodec"].decoders = sys.modules["torchcodec.decoders"]
     try:
         yield
     finally:
-        module = sys.modules.get("torchcodec")
-        if getattr(getattr(module, "__spec__", None), "origin", None) == "<test stub>":
-            del sys.modules["torchcodec"]
+        for name in ("torchcodec.decoders", "torchcodec"):
+            module = sys.modules.get(name)
+            if getattr(getattr(module, "__spec__", None), "origin", None) == "<test stub>":
+                del sys.modules[name]
 
 
 @pytest.fixture(autouse = True)

@@ -96,6 +96,8 @@ def test_segments_never_build_the_dense_mask(monkeypatch):
     assert out.shape == (1, 9, 2, 8)
 
 
+# has_real_cuda, not torch.cuda.is_available(): tests/_zoo_aggressive_cuda_spoof.py patches the
+# latter to True process-wide, and this body allocates on "cuda" (test_accelerator_skip_guards).
 @pytest.mark.skipif(not has_real_cuda(), reason = "needs CUDA")
 def test_peak_memory_is_linear_in_tokens(monkeypatch):
     # 2 x 2048-token segments, 16 heads over 8 KV heads, as Qwen3-0.6B under padding-free SFT.

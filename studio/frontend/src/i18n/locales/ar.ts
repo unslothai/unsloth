@@ -1905,6 +1905,7 @@ export const ar = {
         cpu: "CPU",
         ram: "RAM",
         disk: "القرص",
+        modelsDisk: "قرص النماذج",
         vram: "VRAM",
         cpuCores: "{logical} نواة منطقية / {physical} نواة فعلية",
         currentLoad: "الحمل الحالي",
@@ -2015,6 +2016,7 @@ export const ar = {
       storage: {
         title: "التخزين",
         systemDisk: "قرص النظام",
+        modelsDisk: "قرص النماذج",
         diskUsage: "{used} مستخدم / {total}",
         diskFree: "{free} متاح",
         modelsFolder: "مجلد النماذج",

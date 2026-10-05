@@ -358,7 +358,7 @@ jobs:
           # TRL last so it pulls the transformers/peft it requires.
           pip install ${{ matrix.pkg_pins }} \
             sentencepiece protobuf safetensors numpy 'pytest>=8' \
-            tqdm packaging psutil Pillow
+            tqdm packaging psutil Pillow requests
           pip install ${{ matrix.trl_pin }}
           pip install --no-deps -e "$RUNNER_TEMP/unsloth-zoo"
           pip install --no-deps -e ./unsloth
