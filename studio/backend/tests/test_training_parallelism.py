@@ -23,7 +23,19 @@ def test_auto_parallelism_accepts_no_explicit_gpu_ids():
 
 def test_auto_parallelism_rejects_explicit_gpu_ids():
     with pytest.raises(ValidationError, match = "parallelism_mode='auto'"):
-        request(gpu_ids = [0])
+        request(parallelism_mode = "auto", gpu_ids = [0])
+
+
+@pytest.mark.parametrize(
+    "gpu_ids, expected_mode", [([1], "single"), ([0, 2], "model_parallel")]
+)
+def test_legacy_gpu_selection_infers_placement_not_ddp(gpu_ids, expected_mode):
+    config = request(gpu_ids = gpu_ids)
+    assert config.parallelism_mode == expected_mode
+    assert config.gpu_ids == gpu_ids
+    restored = TrainingStartRequest.model_validate(config.model_dump())
+    assert restored.parallelism_mode == expected_mode
+    assert restored.gpu_ids == gpu_ids
 
 
 def test_single_parallelism_requires_one_gpu():

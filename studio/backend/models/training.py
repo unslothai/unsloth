@@ -661,6 +661,10 @@ class TrainingStartRequest(BaseModel):
     @model_validator(mode = "after")
     def _validate_parallelism_selection(self) -> "TrainingStartRequest":
         ids = self.gpu_ids or []
+        # Existing API/MCP callers select GPUs without specifying a mode.
+        # Preserve placement semantics; DDP must always be explicitly requested.
+        if "parallelism_mode" not in self.model_fields_set and ids:
+            self.parallelism_mode = "single" if len(ids) == 1 else "model_parallel"
         if self.parallelism_mode == "auto" and ids:
             raise ValueError("parallelism_mode='auto' cannot include gpu_ids.")
         if self.parallelism_mode == "single" and len(ids) != 1:
