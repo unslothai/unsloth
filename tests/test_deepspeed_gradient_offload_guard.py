@@ -18,7 +18,7 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
-SRC = (ROOT / "unsloth" / "models" / "_utils.py").read_text(encoding="utf-8")
+SRC = (ROOT / "unsloth" / "models" / "_utils.py").read_text(encoding = "utf-8")
 
 
 class _Logger:
@@ -85,8 +85,8 @@ def test_zero_1_and_2_fall_back_to_standard_checkpointing():
     for stage in (1, 2):
         calls, logger = _install_spies()
         with _environment(
-            ACCELERATE_USE_DEEPSPEED="true",
-            ACCELERATE_DEEPSPEED_ZERO_STAGE=stage,
+            ACCELERATE_USE_DEEPSPEED = "true",
+            ACCELERATE_DEEPSPEED_ZERO_STAGE = stage,
         ):
             assert apply_checkpointing("unsloth", 4096, "bf16") is True
         assert calls == ["unpatch"]
@@ -97,8 +97,8 @@ def test_zero_1_and_2_fall_back_to_standard_checkpointing():
 def test_zero_3_keeps_smart_checkpointing():
     calls, logger = _install_spies()
     with _environment(
-        ACCELERATE_USE_DEEPSPEED="true",
-        ACCELERATE_DEEPSPEED_ZERO_STAGE="3",
+        ACCELERATE_USE_DEEPSPEED = "true",
+        ACCELERATE_DEEPSPEED_ZERO_STAGE = "3",
     ):
         assert apply_checkpointing("unsloth", 4096, "bf16") == "unsloth"
     assert calls == [("patch", {"dtype": "bf16"})]
@@ -112,11 +112,11 @@ def test_config_file_zero_1_and_2_fall_back_to_standard_checkpointing():
             path = Path(directory) / "deepspeed.json"
             path.write_text(
                 json.dumps({"zero_optimization": {"stage": stage}}),
-                encoding="utf-8",
+                encoding = "utf-8",
             )
             with _environment(
-                ACCELERATE_USE_DEEPSPEED="true",
-                ACCELERATE_DEEPSPEED_CONFIG_FILE=path,
+                ACCELERATE_USE_DEEPSPEED = "true",
+                ACCELERATE_DEEPSPEED_CONFIG_FILE = path,
             ):
                 assert apply_checkpointing("unsloth", 4096, "bf16") is True
         assert calls == ["unpatch"]
@@ -129,19 +129,19 @@ def test_direct_stage_takes_precedence_over_config_file():
         path = Path(directory) / "deepspeed.json"
         path.write_text(
             json.dumps({"zero_optimization": {"stage": 2}}),
-            encoding="utf-8",
+            encoding = "utf-8",
         )
         with _environment(
-            ACCELERATE_USE_DEEPSPEED="true",
-            ACCELERATE_DEEPSPEED_ZERO_STAGE="3",
-            ACCELERATE_DEEPSPEED_CONFIG_FILE=path,
+            ACCELERATE_USE_DEEPSPEED = "true",
+            ACCELERATE_DEEPSPEED_ZERO_STAGE = "3",
+            ACCELERATE_DEEPSPEED_CONFIG_FILE = path,
         ):
             assert resolve_stage() == 3
 
 
 def test_stage_is_ignored_without_the_deepspeed_launch_flag():
     calls, logger = _install_spies()
-    with _environment(ACCELERATE_DEEPSPEED_ZERO_STAGE="2"):
+    with _environment(ACCELERATE_DEEPSPEED_ZERO_STAGE = "2"):
         assert resolve_stage() is None
         assert apply_checkpointing("unsloth", 4096, "bf16") == "unsloth"
     assert calls == [("patch", {"dtype": "bf16"})]
@@ -160,10 +160,10 @@ def test_invalid_or_incomplete_config_files_do_not_disable_offloading():
         calls, logger = _install_spies()
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "deepspeed.json"
-            path.write_text(content, encoding="utf-8")
+            path.write_text(content, encoding = "utf-8")
             with _environment(
-                ACCELERATE_USE_DEEPSPEED="true",
-                ACCELERATE_DEEPSPEED_CONFIG_FILE=path,
+                ACCELERATE_USE_DEEPSPEED = "true",
+                ACCELERATE_DEEPSPEED_CONFIG_FILE = path,
             ):
                 assert resolve_stage() is None
                 assert apply_checkpointing("unsloth", 4096, "bf16") == "unsloth"
@@ -174,8 +174,8 @@ def test_invalid_or_incomplete_config_files_do_not_disable_offloading():
 def test_missing_config_file_does_not_disable_offloading():
     calls, logger = _install_spies()
     with _environment(
-        ACCELERATE_USE_DEEPSPEED="true",
-        ACCELERATE_DEEPSPEED_CONFIG_FILE="/definitely/missing/deepspeed.json",
+        ACCELERATE_USE_DEEPSPEED = "true",
+        ACCELERATE_DEEPSPEED_CONFIG_FILE = "/definitely/missing/deepspeed.json",
     ):
         assert resolve_stage() is None
         assert apply_checkpointing("unsloth", 4096, "bf16") == "unsloth"
@@ -186,8 +186,8 @@ def test_missing_config_file_does_not_disable_offloading():
 def test_invalid_stage_does_not_disable_offloading():
     calls, logger = _install_spies()
     with _environment(
-        ACCELERATE_USE_DEEPSPEED="yes",
-        ACCELERATE_DEEPSPEED_ZERO_STAGE="not-an-integer",
+        ACCELERATE_USE_DEEPSPEED = "yes",
+        ACCELERATE_DEEPSPEED_ZERO_STAGE = "not-an-integer",
     ):
         assert apply_checkpointing("unsloth", 4096, "bf16") == "unsloth"
     assert calls == [("patch", {"dtype": "bf16"})]
