@@ -112,7 +112,8 @@ function hasOpenOverlay(settingsOpen: boolean): boolean {
 
 function firstVisible(selector: string): HTMLElement | null {
   for (const el of document.querySelectorAll<HTMLElement>(selector)) {
-    if (el.getClientRects().length > 0 && !el.closest("[inert]")) return el;
+    if (el.matches(":disabled") || el.closest("[inert]")) continue;
+    if (el.getClientRects().length > 0) return el;
   }
   return null;
 }

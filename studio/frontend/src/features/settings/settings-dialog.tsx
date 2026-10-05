@@ -18,6 +18,7 @@ import { useScrollFades } from "@/hooks/use-scroll-fades";
 import { useUiSpaceScale } from "@/hooks/use-ui-space-scale";
 import { scheduleIdleTask } from "@/lib/schedule-idle-task";
 import {
+  ApiIcon,
   BotIcon,
   Cancel01Icon,
   CloudIcon,
@@ -209,7 +210,7 @@ const TABS: TabDef[] = [
   {
     id: "api-keys",
     labelKey: "settings.tabs.apiKeys",
-    icon: InternetIcon,
+    icon: ApiIcon,
   },
   {
     id: "remote-lan",

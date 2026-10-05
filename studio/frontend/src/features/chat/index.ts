@@ -42,6 +42,7 @@ export type {
   ApiMonitorEntry,
   BackendModelDetails,
   GgufVariantDetail,
+  GgufVariantsResponse,
   InferenceStatusResponse,
 } from "./types/api";
 export {
@@ -217,6 +218,7 @@ export {
   releasePreStreamRunForThreadIds,
   releasePreStreamRunReservation,
   reservePreStreamRun,
+  subscribePreStreamRunReservations,
 } from "./utils/pre-stream-run-reservation";
 export { claimThreadCreation } from "./utils/chat-thread-creation-claim";
 export { useChatProjectScope } from "./chat-project-scope";

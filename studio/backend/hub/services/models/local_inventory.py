@@ -1013,6 +1013,30 @@ async def _load_custom_folders() -> list[dict]:
         return []
 
 
+def _merge_custom_rows_listed_natively(
+    custom_models: List[LocalModelInfo], native_models: List[LocalModelInfo]
+) -> tuple[list[LocalModelInfo], list[LocalModelInfo]]:
+    """A custom folder overlapping the models dir or LM Studio re-lists their models (#9164)."""
+    native: dict[tuple[str, str], LocalModelInfo] = {}
+    for model in native_models:
+        if model.source in ("models_dir", "lmstudio"):
+            native.setdefault((_inventory_physical_identity(model.path), model.model_format), model)
+    if not native:
+        return list(native_models), list(custom_models)
+    replaced: set[int] = set()
+    kept_custom: list[LocalModelInfo] = []
+    for model in custom_models:
+        twin = native.get((_inventory_physical_identity(model.path), model.model_format))
+        # A symlink below the scan root is a deliberate alias with its own settings (#10605), so it stays.
+        if twin is None or _local_model_path_is_symlink(_custom_alias_key(model)):
+            kept_custom.append(model)
+        elif twin.source == "lmstudio" and model.capabilities.can_train:
+            # The train picker refuses LM Studio rows, so the trainable custom row wins.
+            replaced.add(id(twin))
+            kept_custom.append(model)
+    return [m for m in native_models if id(m) not in replaced], kept_custom
+
+
 def _dedupe_local_models(local_models: List[LocalModelInfo]) -> list[LocalModelInfo]:
     deduped: dict[str, LocalModelInfo] = {}
     custom_models: list[LocalModelInfo] = []
@@ -1049,11 +1073,11 @@ def _dedupe_local_models(local_models: List[LocalModelInfo]) -> list[LocalModelI
         if prefer_candidate:
             deduped[key] = model
 
-    deduped_values = list(deduped.values()) + _dedupe_custom_local_models(custom_models)
-    custom_values = [model for model in deduped_values if model.source == "custom"]
+    native_values, custom_values = _merge_custom_rows_listed_natively(
+        _dedupe_custom_local_models(custom_models), list(deduped.values())
+    )
     return sorted(
-        [model for model in deduped_values if model.source != "custom"]
-        + gguf.suppress_grouped_gguf_file_rows(custom_values),
+        native_values + gguf.suppress_grouped_gguf_file_rows(custom_values),
         key = lambda item: item.updated_at or 0,
         reverse = True,
     )
@@ -1144,11 +1168,13 @@ async def list_local_models_response(models_dir: str = "./models") -> LocalModel
             models = []
             for model in response.models:
                 task, audio_type = catalog_classification._local_model_classification(model)
+                workflows = catalog_classification.local_audio_workflows(model, audio_type)
                 models.append(
                     model.model_copy(
                         update = {
                             "task": task,
                             "audio_type": audio_type,
+                            **({"audio_workflows": workflows} if workflows else {}),
                         }
                     )
                 )
