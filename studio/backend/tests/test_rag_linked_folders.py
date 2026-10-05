@@ -522,6 +522,124 @@ def test_reconcile_pins_one_embedding_model_for_every_file(rag_home, stub_embedd
 
 
 @requires_sqlite_vec
+def test_reconcile_overlaps_the_next_parse_with_embedding(rag_home, stub_embeddings, monkeypatch):
+    source, folder = _folder(rag_home)
+    (source / "a-first.txt").write_text("first document words", encoding = "utf-8")
+    (source / "b-second.txt").write_text("second document words", encoding = "utf-8")
+    monkeypatch.setattr(folder_sync.config, "FOLDER_INGEST_WORKERS", 2)
+
+    from core.rag import embeddings
+
+    real_parse = folder_sync.ingestion.parsers.parse
+    real_encode = embeddings.encode
+    second_parsed = threading.Event()
+    overlap_observed = []
+
+    def observe_parse(path):
+        pages = real_parse(path)
+        if any("second document" in page.text for page in pages):
+            second_parsed.set()
+        return pages
+
+    def observe_encode(
+        texts,
+        *,
+        model_name = None,
+        normalize = True,
+    ):
+        if any("first document" in text for text in texts):
+            overlap_observed.append(second_parsed.wait(5))
+        return real_encode(texts, model_name = model_name, normalize = normalize)
+
+    monkeypatch.setattr(folder_sync.ingestion.parsers, "parse", observe_parse)
+    monkeypatch.setattr(embeddings, "encode", observe_encode)
+
+    result = _run(folder["id"])
+
+    assert result["status"] == "completed"
+    assert overlap_observed == [True]
+    assert (
+        _row(
+            "SELECT COUNT(*) AS count FROM linked_folder_files WHERE folder_id=?",
+            (folder["id"],),
+        )["count"]
+        == 2
+    )
+
+
+@requires_sqlite_vec
+def test_reconcile_keeps_successful_sibling_when_parallel_ingest_fails(
+    rag_home, stub_embeddings, monkeypatch
+):
+    source, folder = _folder(rag_home)
+    (source / "a-good.txt").write_text("successful sibling words", encoding = "utf-8")
+    (source / "b-fails.txt").write_text("failed sibling words", encoding = "utf-8")
+    monkeypatch.setattr(folder_sync.config, "FOLDER_INGEST_WORKERS", 2)
+    real_start = folder_sync.ingestion.start_ingestion
+
+    def fail_one(*args, **kwargs):
+        if args[3] == "b-fails.txt":
+            raise RuntimeError("synthetic ingestion failure")
+        return real_start(*args, **kwargs)
+
+    monkeypatch.setattr(folder_sync.ingestion, "start_ingestion", fail_one)
+
+    result = _run(folder["id"])
+
+    assert result["status"] == "failed"
+    assert result["failed"] == 1
+    with _connection() as conn:
+        paths = {
+            row["relative_path"]
+            for row in conn.execute(
+                "SELECT relative_path FROM linked_folder_files WHERE folder_id=?",
+                (folder["id"],),
+            )
+        }
+        assert paths == {"a-good.txt"}
+        assert store.search_lexical(conn, folder["scope"], "successful", 5)
+        assert not store.search_lexical(conn, folder["scope"], "failed", 5)
+
+
+@requires_sqlite_vec
+def test_reconcile_ingests_new_files_alongside_renames(rag_home, stub_embeddings, monkeypatch):
+    source, folder = _folder(rag_home)
+    (source / "original.txt").write_text("original searchable text", encoding = "utf-8")
+    assert _run(folder["id"], rebuild = True)["status"] == "completed"
+    (source / "original.txt").rename(source / "renamed.txt")
+    (source / "new.txt").write_text("newly added searchable text", encoding = "utf-8")
+
+    progress = []
+    real_set_job = folder_sync._set_job
+
+    def track_progress(job_id, **kwargs):
+        if "progress" in kwargs:
+            progress.append(kwargs["progress"])
+        return real_set_job(job_id, **kwargs)
+
+    monkeypatch.setattr(folder_sync, "_set_job", track_progress)
+    result = _run(folder["id"])
+
+    assert result["status"] == "completed"
+    assert result["added"] == 1
+    assert result["renamed"] == 1
+    assert result["failed"] == 0
+    assert progress and all(0 <= value <= 1 for value in progress)
+    assert progress == sorted(progress)
+    with _connection() as conn:
+        paths = {
+            row["relative_path"]
+            for row in conn.execute(
+                "SELECT relative_path FROM linked_folder_files WHERE folder_id=?",
+                (folder["id"],),
+            )
+        }
+        assert paths == {"new.txt", "renamed.txt"}
+        assert store.search_lexical(conn, folder["scope"], "newly", 5)
+        assert conn.execute("SELECT COUNT(*) FROM ingestion_jobs").fetchone()[0] == 0
+
+
+@requires_sqlite_vec
 def test_reconcile_retains_mapping_when_missing_file_reappears(
     rag_home, stub_embeddings, monkeypatch
 ):
