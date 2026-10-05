@@ -2865,9 +2865,14 @@ class ExternalProviderClient:
                 ):
                     body.pop("thinking")
 
+        client_tool_names = {tool["name"] for tool in body.get("tools", [])}
+
         # Anthropic web_search (date-pinned per model family).
         if "web_search" in pending_hosted_tools or (
-            _anthropic_hosted_builtins_allowed and enabled_tools and "web_search" in enabled_tools
+            _anthropic_hosted_builtins_allowed
+            and enabled_tools
+            and "web_search" in enabled_tools
+            and "web_search" not in client_tool_names
         ):
             anthropic_tools = list(body.get("tools") or [])
             anthropic_tools.append(
@@ -2886,6 +2891,7 @@ class ExternalProviderClient:
                 _anthropic_hosted_builtins_allowed
                 and enabled_tools
                 and "web_fetch" in enabled_tools
+                and "web_fetch" not in client_tool_names
             )
         )
         if web_fetch_enabled:
@@ -2907,6 +2913,7 @@ class ExternalProviderClient:
                 _anthropic_hosted_builtins_allowed
                 and enabled_tools
                 and "code_execution" in enabled_tools
+                and "code_execution" not in client_tool_names
             )
         )
         if code_execution_enabled:

@@ -518,6 +518,23 @@ def test_detached_mcp_images_join_tool_result_only_on_followup(monkeypatch):
     assert json.dumps(messages) == original
 
 
+@pytest.mark.parametrize("name", ["web_search", "web_fetch", "code_execution"])
+def test_caller_names_take_precedence_over_automatic_hosted_tools(monkeypatch, name):
+    bodies = []
+    client = _client(
+        monkeypatch,
+        lambda request: (
+            bodies.append(json.loads(request.content)) or _response(_finish("end_turn"))
+        ),
+    )
+    tool = {
+        "type": "function",
+        "function": {"name": name, "parameters": {"type": "object", "properties": {}}},
+    }
+    _collect(client, tools = [tool], enabled_tools = [name])
+    assert bodies[0]["tools"] == [{"name": name, "input_schema": tool["function"]["parameters"]}]
+
+
 @pytest.mark.parametrize(
     "content", ["Rendered reply", None, [{"type": "text", "text": "Rendered reply"}], []]
 )
