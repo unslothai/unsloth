@@ -444,6 +444,15 @@ def test_unrelated_refusals_stay_off_with_their_reason(monkeypatch):
         assert cg.status_reason(pipe, False) == want
 
 
+def test_a_sage_denoiser_is_never_recorded_per_block(monkeypatch):
+    net = Net(blocks = 2)
+    net._unsloth_attention_backend = "sage"
+    pipe = _pipe_with(net)
+    handles, applied = _arm(pipe, monkeypatch, hooked = True, pinned = True)
+    assert handles == () and not applied["cuda_graph"]
+    assert "SageAttention" in cg.status_reason(pipe, False)
+
+
 def test_the_master_switch_turns_block_graphs_off_with_its_name(monkeypatch):
     monkeypatch.setenv(cg.CUDA_GRAPHS_ENV, "0")
     pipe = _pipe_with(Net(blocks = 2))
@@ -744,6 +753,28 @@ def test_evicted_layouts_free_their_static_buffers():
                 assert torch.equal(net(x), ref(x))
     assert handle.stats["evictions"] > 0
     assert len(shared.static_in) == 2 and len(shared.static_out) == 2
+    handle.free()
+
+
+def test_each_nvfp4_precision_branch_records_its_own_graph():
+    _cuda()
+    net = _net(blocks = 2).cuda()
+    ref = copy.deepcopy(net)
+    handle, _ = bg.install_block_graphs(net, device = "cuda", slots = False)
+    ctl = types.SimpleNamespace(armed = True, protected = False)
+    for g in handle.graphs:
+        g.protect = ctl
+    x = torch.randn(4, 16, device = "cuda")
+    with torch.inference_mode():
+        for protected in (False, True, False, True, False, True):
+            ctl.protected = protected
+            assert torch.equal(net(x), ref(x))
+    assert handle.stats["captures"] == 2 * len(handle.graphs)
+    for g in handle.graphs:
+        assert {k[1][1] for k in g.cache} == {
+            (("nvfp4_protect", False),),
+            (("nvfp4_protect", True),),
+        }
     handle.free()
 
 

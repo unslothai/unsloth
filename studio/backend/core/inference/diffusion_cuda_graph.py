@@ -1059,6 +1059,14 @@ def arm_block_graphs(
         pipe._unsloth_cuda_graphs = ()
         _set_reason(pipe, "offload active" if hooked else prior or "block graphs unavailable")
         return ()
+    if any(
+        getattr(t, "_unsloth_attention_backend", None) in ("sage", "sage_hub")
+        for t in _denoiser_dits(pipe)
+    ):
+        applied["cuda_graph"] = False
+        pipe._unsloth_cuda_graphs = ()
+        _set_reason(pipe, "SageAttention is not CUDA-graph safe")
+        return ()
     model_offload = any(getattr(t, "_hf_hook", None) is not None for t in _denoiser_dits(pipe))
     stays = (not hooked or bool(pinned)) and not model_offload
     if block_graphs_disabled() or not (stays or block_graphs_requested()):
