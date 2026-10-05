@@ -408,6 +408,27 @@ def test_a_sandbox_file_that_is_gone_takes_no_rename_a_later_file_would_inherit(
     assert _items(client)[0][_SANDBOX_A]["name"] == "a.txt"
 
 
+def test_a_sandbox_file_the_model_edits_keeps_its_name_star_and_folder(
+    client, signed_in, monkeypatch
+):
+    from core.inference.tools import execute_tool
+
+    monkeypatch.setattr(library, "_SOURCES", (library._sandbox_items,))
+    _directory, path = _sandbox_chat("report.txt", b"teh report\n")
+    folder = _folder(client, "Reports", None)
+    _patch(client, id = _SANDBOX_ID, name = "Q3 report", favorite = True, folderId = folder)
+    result = execute_tool(
+        "edit_file",
+        {"path": "report.txt", "edits": [{"old_string": "teh", "new_string": "the"}]},
+        session_id = "t-lib",
+    )
+    assert Path(path).read_bytes() == b"the report\n", result
+    library.invalidate_listing()
+    item = _items(client)[0][_SANDBOX_ID]
+    assert (item["name"], item["favorite"], item["folderId"]) == ("Q3 report", True, folder)
+    assert _favorites(client) == [_SANDBOX_ID]
+
+
 def test_a_sandbox_delete_takes_only_the_file_it_was_listed_as(client, signed_in, monkeypatch):
     monkeypatch.setattr(library, "_SOURCES", (library._sandbox_items,))
     _directory, path = _sandbox_chat("a.txt", b"listed")

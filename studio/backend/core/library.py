@@ -1216,6 +1216,24 @@ def fingerprint(item_id: str) -> Optional[str]:
         return None
 
 
+def file_replaced(path: str, before: os.stat_result) -> None:
+    old = _fingerprint(before)
+    try:
+        after = os.stat(path)
+        for item_id, entry in library_db.list_entries().items():
+            if entry["fingerprint"] != old or not item_id.startswith("sandbox:"):
+                continue
+            try:
+                listed = os.stat(_sandbox_path(item_id.partition(":")[2]))
+            except (LookupError, OSError):
+                continue
+            if os.path.samestat(listed, after):
+                library_db.carry_fingerprint(item_id, old, _fingerprint(after))
+                invalidate_listing()
+    except Exception:
+        logger.warning("library.overlay_carry_failed", exc_info = True)
+
+
 def safe_file_name(
     name: str,
     fallback: str = "file",
