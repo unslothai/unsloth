@@ -19528,6 +19528,9 @@ class LlamaCppBackend:
                 if attempt < 2:
                     cancel_event.wait(2**attempt)
 
+        # Captured before the cache fallback can name a file the live revision dropped.
+        listed_live = (target is not None) if listing_answered else None
+
         if target is None:
             try:
                 from utils.models.model_config import _iter_hf_cache_snapshots
@@ -19551,6 +19554,8 @@ class LlamaCppBackend:
             and (listing_answered or target is not None)
         ):
             outcome["listed"] = target is not None
+        if outcome is not None and not cancel_event.is_set() and listed_live is not None:
+            outcome["listed_live"] = listed_live
         if target is None or cancel_event.is_set():
             # The listing is the only step that can fail this far in.
             if target is None and listing_failed and not cancel_event.is_set():
@@ -19599,6 +19604,7 @@ class LlamaCppBackend:
             # absence rather than reloading on every Apply.
             if outcome is not None:
                 outcome["listed"] = False
+                outcome["listed_live"] = False
             return None
         try:
             logger.info(f"Downloading {label}: {hf_repo}/{target}")
@@ -19665,16 +19671,45 @@ class LlamaCppBackend:
         path, or None if none exists. ``cancel_event`` overrides
         ``self._cancel_event`` (defaults to it). ``near_path`` prefers a
         copy co-located with the main GGUF's cache snapshot.
+
+        Falls back to a projector hand-added beside the cached weight, only
+        when the live listing says the repo publishes none (#9286).
         """
 
-        return self._download_companion_gguf(
+        cancel_event = cancel_event if cancel_event is not None else self._cancel_event
+        if cancel_event.is_set():
+            return None
+
+        outcome: dict = {}
+        resolved = self._download_companion_gguf(
             hf_repo = hf_repo,
             hf_token = hf_token,
             pick = _pick_mmproj,
             label = "mmproj",
             cancel_event = cancel_event,
             near_path = near_path,
+            outcome = outcome,
         )
+        if resolved is not None:
+            # An interrupted zero-byte copy must not shadow a working projector.
+            try:
+                if Path(resolved).stat().st_size > 0:
+                    return resolved
+            except OSError:
+                return resolved
+            logger.info("Ignoring an empty mmproj resolved for %s: %s", hf_repo, resolved)
+        elif outcome.get("listed_live") is True:
+            # The repo publishes one and the fetch dropped: retry next Apply rather
+            # than launch a hand-added file in its place. Offline still falls back.
+            return None
+        if not near_path or cancel_event.is_set():
+            return None
+        from utils.models.model_config import _hf_cached_local_mmproj
+
+        cached = _hf_cached_local_mmproj(near_path)
+        if cached is not None:
+            logger.info("Reusing hand-added mmproj from the HF cache: %s", cached)
+        return cached
 
     def _cached_repo_mtp_drafter(
         self,
@@ -32592,12 +32627,37 @@ class LlamaCppBackend:
         if _launched_frac is not None and float(_launched_frac) != _active_frac:
             logger.info("VRAM budget changed since launch; forcing a reload")
             return False
+        if self._hand_added_projector_since_launch(candidate_extra_args):
+            logger.info("A projector was added beside the cached weight; forcing a reload")
+            return False
         if not self._runtime_matches_intent(intent, candidate_extra_args):
             return False
         self._record_matching_gpu_request(
             list(intent.gpu_ids) if intent.gpu_ids is not None else None
         )
         return True
+
+    def _hand_added_projector_since_launch(self, extra_args: list) -> bool:
+        """A text-only -hf launch whose repo publishes no projector, with one now
+        dropped beside the cached weight (#9286). Without this the next Apply dedupes
+        onto the projector-less server until Studio restarts."""
+        last = getattr(self, "_last_load_intent", None)
+        if (
+            self._is_vision
+            or self._disable_vision
+            or not self._hf_repo
+            or not self._gguf_path
+            or last is None
+            or last.is_vision
+            or extra_args_disable_mmproj(extra_args)
+        ):
+            return False
+        try:
+            from utils.models.model_config import _hf_cached_local_mmproj
+            return _hf_cached_local_mmproj(self._gguf_path) is not None
+        except Exception as exc:
+            logger.debug("Hand-added mmproj probe failed: %s", exc)
+            return False
 
     def matches_load_source(self, intent: GgufLoadIntent) -> bool:
         """Whether the resident model has the intent's identity and weights."""
