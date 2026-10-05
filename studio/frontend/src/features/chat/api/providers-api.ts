@@ -36,9 +36,10 @@ export interface ProviderRegistryEntry {
 }
 
 export type ProviderApiType = "chat_completions" | "responses";
+export type ConnectionApiType = ProviderApiType | "systemone";
 
 export interface ProviderConfig {
-  api_type?: ProviderApiType;
+  api_type?: ConnectionApiType;
   id: string;
   provider_type: string;
   display_name: string;
@@ -63,6 +64,8 @@ export interface ProviderModelInfo {
   owned_by?: string | null;
   /** Only the ChatGPT plan catalog reports this; the registry describes the rest. */
   vision?: boolean | null;
+  /** Only Ollama's /api/tags reports these; absent is not the same as none. */
+  capabilities?: string[] | null;
 }
 
 export interface ProviderModelReasoningInfo {
@@ -205,7 +208,7 @@ export async function createProviderConfig(payload: {
   providerType: string;
   displayName: string;
   baseUrl?: string | null;
-  apiType?: ProviderApiType;
+  apiType?: ConnectionApiType;
   models?: string[];
   availableModels?: string[];
   maxOutputTokens?: number | null;
@@ -252,7 +255,7 @@ export async function updateProviderConfig(
   payload: {
     displayName?: string;
     baseUrl?: string | null;
-    apiType?: ProviderApiType;
+    apiType?: ConnectionApiType;
     isEnabled?: boolean;
     models?: string[];
     availableModels?: string[];
@@ -327,7 +330,7 @@ export async function testProviderConnection(payload: {
   providerId?: string | null;
   apiKey: string;
   baseUrl?: string | null;
-  apiType?: ProviderApiType;
+  apiType?: ConnectionApiType;
   modelId?: string | null;
 }): Promise<ProviderTestResult> {
   return withApiKeyEncryptionRetry(payload.apiKey, async (encryptedApiKey) => {
@@ -354,7 +357,7 @@ export async function listProviderModels(payload: {
   providerId?: string | null;
   apiKey: string;
   baseUrl?: string | null;
-  apiType?: ProviderApiType;
+  apiType?: ConnectionApiType;
 }): Promise<ProviderModelInfo[]> {
   return withApiKeyEncryptionRetry(payload.apiKey, async (encryptedApiKey) => {
     const response = await authFetch("/api/providers/models", {

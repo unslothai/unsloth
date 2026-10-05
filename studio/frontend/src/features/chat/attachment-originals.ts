@@ -37,9 +37,16 @@ export async function withAttachmentOriginal(
   complete: CompleteAttachment,
   temporary: boolean,
   epoch: number,
+  forPythonTool: boolean,
 ): Promise<CompleteAttachment> {
-  const upload = complete.type === "document" ? originalUpload(pending.file) : null;
+  // Any other document is kept only for the python tool, which gets a copy in its sandbox: an
+  // upload no one reads would only delay the send.
+  const upload =
+    complete.type === "document" && !attachmentOriginal(complete)
+      ? (originalUpload(pending.file) ?? (forPythonTool ? pending.file : null))
+      : null;
   if (!upload) return complete;
+  // A temporary chat keeps its files in memory, python tool or not: it promises nothing is saved.
   if (temporary) return { ...complete, file: pending.file } as CompleteAttachment;
   try {
     const original: ChatAttachmentOriginal = await uploadChatAttachmentOriginal(upload, epoch);
@@ -57,7 +64,9 @@ export async function persistAttachmentOriginals(
     (attachments ?? []).map(async (attachment) => {
       const { file, ...rest } = attachment as CompleteAttachment & { file?: unknown };
       if (file === undefined) return attachment;
-      const upload = file instanceof File && !attachmentOriginal(rest) ? originalUpload(file) : null;
+      // A file was kept only because a send wanted it stored (a python turn keeps any document).
+      const upload =
+        file instanceof File && !attachmentOriginal(rest) ? (originalUpload(file) ?? file) : null;
       if (!upload) return rest as CompleteAttachment;
       try {
         const original: ChatAttachmentOriginal = await uploadChatAttachmentOriginal(upload, epoch);
@@ -67,4 +76,12 @@ export async function persistAttachmentOriginals(
       }
     }),
   );
+}
+
+// Originals no message names yet are swept an hour after upload; sending one staged half that long
+// uploads it again, which restarts its clock.
+const STAGED_UPLOAD_MAX_AGE_MS = 30 * 60 * 1000;
+
+export function reuseStagedUpload(stagedAt: number | undefined, now = Date.now()): boolean {
+  return stagedAt !== undefined && now - stagedAt < STAGED_UPLOAD_MAX_AGE_MS;
 }

@@ -244,36 +244,40 @@ def _host_prep_script(executable: Path, arguments: list[str]) -> str:
     def quote(value: str) -> str:
         return "'" + value.replace("'", "''") + "'"
 
-    return "\n".join(
-        (
-            "$ErrorActionPreference = 'Stop'",
-            # .NET only: cmdlets such as Get-FileHash fail to load when PSModulePath is pwsh 7's.
-            # Known folder, not $env:ProgramData: user variables can shadow it.
-            "$root = [Environment]::GetFolderPath('CommonApplicationData')",
-            "$dir = [IO.Path]::Combine($root, 'unsloth-mxc-host-prep-' + [guid]::NewGuid().ToString('N'))",
-            "if ([IO.Directory]::Exists($dir)) { exit 92 }",
-            "$null = [IO.Directory]::CreateDirectory($dir)",
-            "try {",
-            "  $icacls = [IO.Path]::Combine([Environment]::SystemDirectory, 'icacls.exe')",
-            "  $null = & $icacls $dir /inheritance:r /grant:r '*S-1-5-32-544:(OI)(CI)F' "
-            "'*S-1-5-18:(OI)(CI)F'",
-            "  if ($LASTEXITCODE -ne 0) { exit 90 }",
-            # Anything planted before the ACL change stays: the dir must still be empty.
-            "  if ([IO.Directory]::GetFileSystemEntries($dir).Length -ne 0) { exit 92 }",
-            "  $exe = [IO.Path]::Combine($dir, 'wxc-host-prep.exe')",
-            f"  [IO.File]::Copy({quote(str(executable))}, $exe)",
-            "  $stream = [IO.File]::OpenRead($exe)",
-            "  try { $digest = [Security.Cryptography.SHA256]::Create().ComputeHash($stream) }",
-            "  finally { $stream.Dispose() }",
-            "  $hash = [BitConverter]::ToString($digest).Replace('-', '')",
-            f"  if ($hash -ne '{mxc_runtime.WXC_HOST_PREP_SHA256.upper()}') {{ exit 91 }}",
-            f"  & $exe {' '.join(quote(value) for value in arguments)}",
-            "  exit $LASTEXITCODE",
-            "} finally {",
-            "  try { [IO.Directory]::Delete($dir, $true) } catch { }",
-            "}",
-        )
+    lines = (
+        "$ErrorActionPreference = 'Stop'",
+        # .NET only: cmdlets such as Get-FileHash fail to load when PSModulePath is pwsh 7's.
+        # Known folder, not $env:ProgramData: user variables can shadow it.
+        "$root = [Environment]::GetFolderPath('CommonApplicationData')",
+        "$dir = [IO.Path]::Combine($root, 'unsloth-mxc-host-prep-' + [guid]::NewGuid().ToString('N'))",
+        "if ([IO.Directory]::Exists($dir)) { exit 92 }",
+        "$null = [IO.Directory]::CreateDirectory($dir)",
+        "try {",
+        "  $icacls = [IO.Path]::Combine([Environment]::SystemDirectory, 'icacls.exe')",
+        "  $null = & $icacls $dir /inheritance:r /grant:r '*S-1-5-32-544:(OI)(CI)F' "
+        "'*S-1-5-18:(OI)(CI)F'",
+        "  if ($LASTEXITCODE -ne 0) { exit 90 }",
+        # Anything planted before the ACL change stays: the dir must still be empty.
+        "  if ([IO.Directory]::GetFileSystemEntries($dir).Length -ne 0) { exit 92 }",
+        "  $exe = [IO.Path]::Combine($dir, 'wxc-host-prep.exe')",
+        f"  [IO.File]::Copy({quote(str(executable))}, $exe)",
+        "  $stream = [IO.File]::OpenRead($exe)",
+        "  try { $digest = [Security.Cryptography.SHA256]::Create().ComputeHash($stream) } "
+        "finally { $stream.Dispose() }",
+        "  $hash = [BitConverter]::ToString($digest).Replace('-', '')",
+        f"  if ($hash -ne '{mxc_runtime.WXC_HOST_PREP_SHA256.upper()}') {{ exit 91 }}",
+        f"  & $exe {' '.join(quote(value) for value in arguments)}",
+        "  exit $LASTEXITCODE",
+        "} finally {",
+        "  try { [IO.Directory]::Delete($dir, $true) } catch { }",
+        "}",
     )
+    # One line for -Command: a statement ends in "; ", an opened block in a space.
+    script = "".join(line.strip() + (" " if line.endswith("{") else "; ") for line in lines)
+    # Only single-quoted literals: a double quote would be stripped by command-line parsing.
+    if '"' in script:
+        raise MxcInstallError("the host-prep path cannot be passed to PowerShell")
+    return script.rstrip("; ")
 
 
 _HOST_PREP_SCRIPT_ERRORS = {
@@ -284,13 +288,12 @@ _HOST_PREP_SCRIPT_ERRORS = {
 
 
 def _run_host_prep(executable: Path, step: str) -> int:
-    import base64
-
     arguments = [step, "--quiet"] if step == "prepare-null-device" else [step]
     system = _system_directory()
     powershell = os.path.join(system, "WindowsPowerShell", "v1.0", "powershell.exe")
-    encoded = base64.b64encode(_host_prep_script(executable, arguments).encode("utf-16-le"))
-    launcher = ["-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand", encoded.decode()]
+    # Inline text, never a script file: the elevated process must not read anything a user can rewrite.
+    script = _host_prep_script(executable, arguments)
+    launcher = ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", script]
     # Measured 3 to 7 minutes on a CI runner: it propagates an ACE across the whole system drive.
     print(f"[mxc-prebuilt] running wxc-host-prep {step}; this can take several minutes")
     if _is_elevated():
