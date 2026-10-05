@@ -670,8 +670,7 @@ def install(logger: Any = None) -> bool:
     if fast_step_disabled():
         return False
     try:
-        import importlib
-        mod = importlib.import_module(_MODULE)
+        mod = _module()
     except Exception:  # noqa: BLE001 - diffusers without Qwen-Image 2.1
         return False
     cls = getattr(mod, _CLASS, None)
