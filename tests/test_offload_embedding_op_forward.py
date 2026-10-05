@@ -36,12 +36,13 @@ needs_cuda = pytest.mark.skipif(not torch.cuda.is_available(), reason = "needs C
 
 def _load_installer():
     src = open(VISION, encoding = "utf-8").read()
+    ns = {"torch": torch}
+    wanted = {"_is_scaled_word_embedding_forward", "_install_offload_embedding_hooks"}
     for node in ast.parse(src).body:
-        if isinstance(node, ast.FunctionDef) and node.name == "_install_offload_embedding_hooks":
-            ns = {"torch": torch}
+        if isinstance(node, ast.FunctionDef) and node.name in wanted:
             exec(ast.get_source_segment(src, node), ns)
-            return ns["_install_offload_embedding_hooks"]
-    raise AssertionError("_install_offload_embedding_hooks not found in vision.py")
+    assert wanted <= ns.keys(), "offload embedding installer not found in vision.py"
+    return ns["_install_offload_embedding_hooks"]
 
 
 install = _load_installer()
@@ -105,6 +106,62 @@ def test_eligibility(kind, kw, expected):
     assert install(emb, _head("cpu"), torch.device("cpu")) is True
     assert bool(getattr(emb, "_unsloth_offload_op_forward", False)) is expected
     assert ("forward" in emb.__dict__) is expected
+
+
+class PreprocessingScaledEmbedding(ScaledWordEmbedding):
+    # Extra work before the same return: the op would skip the clamp.
+    def forward(self, input_ids: torch.Tensor):
+        input_ids = input_ids.clamp(max = 10)
+        return super().forward(input_ids) * self.embed_scale.to(self.weight.dtype)
+
+
+class ClampingEmbedding(nn.Embedding):
+    def forward(self, input):
+        return super().forward(input.clamp(max = 10))
+
+
+class OverScaledEmbedding(ClampingEmbedding):
+    # The scaled forward verbatim, but super() is not nn.Embedding.forward.
+    def __init__(self, *args, **kw):
+        super().__init__(*args, **kw)
+        self.register_buffer("embed_scale", torch.tensor(2.0), persistent = False)
+
+    def forward(self, input_ids: torch.Tensor):
+        return super().forward(input_ids) * self.embed_scale.to(self.weight.dtype)
+
+
+@pytest.mark.parametrize(
+    "emb",
+    [
+        lambda: PreprocessingScaledEmbedding(V, H, padding_idx = 0, embed_scale = 2.0),
+        lambda: OverScaledEmbedding(V, H),
+    ],
+)
+def test_scaled_forward_must_match_exactly(emb):
+    emb = emb().to(torch.bfloat16).requires_grad_(False)
+    install(emb, _head("cpu"), torch.device("cpu"))
+    assert not getattr(emb, "_unsloth_offload_op_forward", False)
+
+
+def test_input_keyword_still_works():
+    ref = _make()
+    emb = _make()
+    install(emb, _head("cpu"), torch.device("cpu"))
+    assert getattr(emb, "_unsloth_offload_op_forward", False)
+    ids = torch.randint(0, V, (2, 5))
+    assert torch.equal(emb(input = ids), ref(ids))
+
+
+def test_class_forward_patched_after_install_is_used():
+    class Patchable(nn.Embedding):
+        pass
+
+    torch.manual_seed(0)
+    emb = Patchable(V, H).to(torch.bfloat16).requires_grad_(False)
+    install(emb, _head("cpu"), torch.device("cpu"))
+    Patchable.forward = lambda self, ids: nn.Embedding.forward(self, ids) * 3
+    ids = torch.randint(0, V, (2, 5))
+    assert torch.equal(emb(ids), nn.Embedding.forward(emb, ids) * 3)
 
 
 def test_existing_instance_forward_is_left_alone():

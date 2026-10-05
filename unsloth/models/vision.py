@@ -680,6 +680,38 @@ def _unsloth_generate_accepts_kwarg(model, key):
     return key in model_args
 
 
+def _is_scaled_word_embedding_forward(cls, forward):
+    """Exactly transformers' `*ScaledWordEmbedding.forward` over nn.Embedding.forward: the op
+    reproduces only that product (Unsloth's float32 Gemma patch, or any extra work, is declined)."""
+    import ast
+    import inspect
+    import textwrap
+
+    owner = next((c for c in cls.__mro__ if c.__dict__.get("forward") is forward), None)
+    if (
+        owner is None
+        or getattr(super(owner, cls), "forward", None) is not torch.nn.Embedding.forward
+    ):
+        return False
+    fn = ast.parse(textwrap.dedent(inspect.getsource(forward))).body[0]
+    body = [
+        n
+        for n in fn.body
+        if not (isinstance(n, ast.Expr) and isinstance(getattr(n, "value", None), ast.Constant))
+    ]
+    expected = ast.parse(
+        "super().forward(input_ids) * self.embed_scale.to(self.weight.dtype)", mode = "eval"
+    ).body
+    return (
+        isinstance(fn, ast.FunctionDef)
+        and [a.arg for a in fn.args.args] == ["self", "input_ids"]
+        and not (fn.args.vararg or fn.args.kwarg or fn.args.kwonlyargs or fn.args.defaults)
+        and len(body) == 1
+        and isinstance(body[0], ast.Return)
+        and ast.dump(body[0].value) == ast.dump(expected)
+    )
+
+
 def _install_offload_embedding_hooks(embed_tokens, output_embeddings, return_device):
     # Lookup runs on the weight's current device (CPU when offloaded); the output returns to the decoder device read live from output_embeddings, so it tracks model.to() moves. A meta or missing lm_head falls back to return_device.
     if embed_tokens is None:
@@ -726,14 +758,9 @@ def _install_offload_embedding_hooks(embed_tokens, output_embeddings, return_dev
         embed_tokens, torch.nn.Embedding
     ):
         try:
-            import inspect
-
-            # Matched on source: Unsloth's float32 Gemma patch is a different forward.
             scaled = isinstance(
                 getattr(embed_tokens, "embed_scale", None), torch.Tensor
-            ) and "".join(inspect.getsource(cls_forward).split()).endswith(
-                "returnsuper().forward(input_ids)*self.embed_scale.to(self.weight.dtype)"
-            )
+            ) and _is_scaled_word_embedding_forward(type(embed_tokens), cls_forward)
         except Exception:
             scaled = False
     if (
@@ -779,12 +806,13 @@ def _install_offload_embedding_hooks(embed_tokens, output_embeddings, return_dev
                 return output
             return slow_post_hook(module, args, output)
 
-        def _unsloth_offload_forward(self, input_ids, *args, **kwargs):
-            if not args and not kwargs and _use_op(self, input_ids):
+        def _unsloth_offload_forward(self, *args, **kwargs):
+            if len(args) == 1 and not kwargs and _use_op(self, args[0]):
                 return op(
-                    input_ids, self.weight, self.padding_idx, self.embed_scale if scaled else None
+                    args[0], self.weight, self.padding_idx, self.embed_scale if scaled else None
                 )
-            return cls_forward(self, input_ids, *args, **kwargs)
+            # The class forward as it is now, in case it was patched after install.
+            return type(self).forward(self, *args, **kwargs)
 
         import types
 
