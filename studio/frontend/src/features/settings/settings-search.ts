@@ -293,6 +293,12 @@ export const SETTINGS_SEARCH_INDEX: Record<SettingsTab, TranslationKey[]> = {
     "settings.keyboardShortcuts.actions.renameChat.label",
     "settings.keyboardShortcuts.actions.openKeyboardShortcuts.label",
   ],
+  // The Windows rows render only on Windows, so only the rows every platform shows are indexed.
+  sandbox: [
+    "settings.sandbox.toolsSection",
+    "settings.sandbox.python",
+    "settings.sandbox.terminal",
+  ],
   debugging: [
     "settings.debugging.logSection",
     "settings.debugging.source",
@@ -369,6 +375,7 @@ export const SETTINGS_SEARCH_KEYWORDS: Partial<
 > = {
   "settings.resources.storage.modelsFolder":
     "settings.resources.storage.modelsFolderKeywords",
+  "settings.sandbox.toolsSection": "settings.sandbox.setupKeywords",
   // "purge", "prune" and the tool names are in none of the labels, so the row
   // the feature is named after was unreachable by search.
   "settings.resources.storage.caches.label":

@@ -7,6 +7,7 @@ import type { ComponentType } from "react";
 import { useEffect, useRef, useState } from "react";
 import { useFullAccessAllowed } from "@/features/auth/account-session";
 import { useSettingsDialogStore } from "@/features/settings";
+import { useT } from "@/i18n";
 
 import {
   AlertDialog,
@@ -37,6 +38,20 @@ import {
   InternetIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
+import {
+  capabilityPending,
+  loadSandboxCapability,
+  onSandboxCapabilityChange,
+  sandboxReady,
+} from "./api/sandbox-capability";
+import {
+  pickSandboxedMode as pickSandboxedModeWith,
+  samePickIsIgnored,
+} from "./sandbox-pick";
+import {
+  SandboxSetupDialog,
+  useSandboxSetupDialogStore,
+} from "./sandbox-setup-dialog";
 import {
   type PermissionMode,
   useChatRuntimeStore,
@@ -145,13 +160,62 @@ function useAccountPermissionMode() {
   };
 }
 
+/** False while unknown or when the server is too old to say; follows later reads and resets. */
+function useSandboxUnavailable(): boolean {
+  const [unavailable, setUnavailable] = useState(false);
+  useEffect(() => {
+    let live = true;
+    // Only the newest read applies: an older answer resolving last must not undo a newer one.
+    let reads = 0;
+    const read = () => {
+      const id = ++reads;
+      void loadSandboxCapability().then((capability) => {
+        if (live && id === reads) {
+          setUnavailable(
+            capability !== null &&
+              !capabilityPending(capability) &&
+              !sandboxReady(capability),
+          );
+        }
+      });
+    };
+    read();
+    const stop = onSandboxCapabilityChange(read);
+    return () => {
+      live = false;
+      stop();
+    };
+  }, []);
+  return unavailable;
+}
+
+export function pickSandboxedMode(
+  setPermissionMode: (mode: PermissionMode) => void,
+  onRequestSandboxSetup: () => void,
+): Promise<void> {
+  return pickSandboxedModeWith(
+    setPermissionMode,
+    onRequestSandboxSetup,
+    () => useChatRuntimeStore.getState().permissionMode,
+    undefined,
+    (onChange) =>
+      useChatRuntimeStore.subscribe((state, previous) => {
+        if (state.permissionMode !== previous.permissionMode) onChange();
+      }),
+  );
+}
+
 export function PermissionModeMenuItems({
   onRequestFullAccess,
+  onRequestSandboxSetup,
 }: {
   onRequestFullAccess: () => void;
+  onRequestSandboxSetup: () => void;
 }) {
+  const t = useT();
   const { permissionMode, fullAccessAllowed } = useAccountPermissionMode();
   const setPermissionMode = useChatRuntimeStore((s) => s.setPermissionMode);
+  const sandboxUnavailable = useSandboxUnavailable();
 
   return (
     <>
@@ -159,11 +223,13 @@ export function PermissionModeMenuItems({
         <DropdownMenuItem
           key={option.value}
           onSelect={() => {
-            if (option.value === permissionMode) {
+            if (samePickIsIgnored(option.value, permissionMode, sandboxUnavailable)) {
               return;
             }
             if (option.value === "full") {
               onRequestFullAccess();
+            } else if (option.value === "off") {
+              void pickSandboxedMode(setPermissionMode, onRequestSandboxSetup);
             } else {
               setPermissionMode(option.value);
             }
@@ -179,6 +245,11 @@ export function PermissionModeMenuItems({
             <span className="text-xs font-normal leading-snug text-muted-foreground">
               {option.description}
             </span>
+            {option.value === "off" && sandboxUnavailable ? (
+              <span className="text-xs font-normal leading-snug text-muted-foreground">
+                {t("sandboxSetup.unavailable")}
+              </span>
+            ) : null}
           </span>
           {permissionMode === option.value ? (
             <HugeiconsIcon
@@ -333,6 +404,7 @@ export function PermissionModeDropdown({
 } = {}) {
   const { permissionMode, fullAccessAllowed } = useAccountPermissionMode();
   const [confirmOpen, setConfirmOpen] = useState(false);
+  const [sandboxSetupOpen, setSandboxSetupOpen] = useState(false);
   const active = permissionModeOption(permissionMode);
   const ActiveIcon = active.icon;
 
@@ -366,12 +438,19 @@ export function PermissionModeDropdown({
             onRequestFullAccess={() =>
               setTimeout(() => setConfirmOpen(true), 0)
             }
+            onRequestSandboxSetup={() =>
+              setTimeout(() => setSandboxSetupOpen(true), 0)
+            }
           />
         </DropdownMenuContent>
       </DropdownMenu>
       <FullAccessConfirmDialog
         open={confirmOpen}
         onOpenChange={setConfirmOpen}
+      />
+      <SandboxSetupDialog
+        open={sandboxSetupOpen}
+        onOpenChange={setSandboxSetupOpen}
       />
     </>
   );
@@ -389,6 +468,7 @@ export function PermissionModeComposerPill({
   const setBypassConfirmOpen = useChatRuntimeStore(
     (s) => s.setBypassConfirmOpen,
   );
+  const setSandboxSetupOpen = useSandboxSetupDialogStore((s) => s.setOpen);
   const active = permissionModeOption(permissionMode);
   const ActiveIcon = active.icon;
 
@@ -425,6 +505,9 @@ export function PermissionModeComposerPill({
           // Defer past the menu-close focus restoration (see PermissionModeDropdown).
           onRequestFullAccess={() =>
             setTimeout(() => setBypassConfirmOpen(true), 0)
+          }
+          onRequestSandboxSetup={() =>
+            setTimeout(() => setSandboxSetupOpen(true), 0)
           }
         />
       </DropdownMenuContent>

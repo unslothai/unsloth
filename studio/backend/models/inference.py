@@ -2439,6 +2439,8 @@ class ChatCompletionRequest(BaseModel):
     # Accept unknown fields so future OpenAI fields aren't dropped before route
     # code runs. Mirrors AnthropicMessagesRequest and ResponsesRequest.
     model_config = {"extra": "allow"}
+    # "off" with the client's own confirm_tool_calls=false: no prompt at all, even without OS isolation.
+    _off_confirm_opt_out: bool = PrivateAttr(default = False)
 
     model: str = Field(
         "default",
@@ -3057,6 +3059,9 @@ class ChatCompletionRequest(BaseModel):
             # Legacy bypass callers map onto Full access (mirrors the tool loop).
             self.permission_mode = "full"
         elif self.permission_mode == "off":
+            self._off_confirm_opt_out = (
+                "confirm_tool_calls" in self.model_fields_set and self.confirm_tool_calls is False
+            )
             # "Off" never prompts, so route guards must see confirm disabled.
             self.confirm_tool_calls = False
         elif (
@@ -3976,7 +3981,7 @@ class AnthropicMessagesRequest(BaseModel):
     )
     permission_mode: Optional[str] = Field(
         None,
-        description = "[x-unsloth] Permission level for local tool calls: 'ask' pauses every call, 'auto' ('Approve for me') only pauses calls detected as high risk, 'off' never pauses (sandbox stays on), 'full' equals bypass_permissions=true. Unset defaults to 'auto' for the per-call gate; a non-streaming request without an explicit mode runs the loop. An unrecognized value (e.g. from a newer client) is treated as 'ask'. Declared explicitly so omitted requests default to None instead of raising AttributeError.",
+        description = "[x-unsloth] Permission level for local tool calls: 'ask' pauses every call, 'auto' ('Approve for me') only pauses calls detected as high risk, 'off' ('Run automatically') never pauses while Python and Terminal run in the OS sandbox and otherwise pauses their high-risk calls in a streaming UI chat, 'full' equals bypass_permissions=true. Unset defaults to 'auto' for the per-call gate; a non-streaming request without an explicit mode runs the loop. An unrecognized value (e.g. from a newer client) is treated as 'ask'. Declared explicitly so omitted requests default to None instead of raising AttributeError.",
     )
     auto_heal_tool_calls: Optional[bool] = Field(
         True,

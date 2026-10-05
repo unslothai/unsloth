@@ -10181,10 +10181,11 @@ def _windows_system_cmd() -> str:
 def _terminal_profile(disable_sandbox: bool = False) -> str:
     """Which shell the Terminal runs: "bash", "cmd_isolated" or "cmd_fallback".
 
-    Git Bash cannot start inside MXC (microsoft/mxc#1061), so when the MXC probe names exactly that
-    failure and cmd.exe qualifies instead, Auto runs the Terminal isolated on cmd rather than
-    unsandboxed on bash. Only the MSYS verdict triggers the cmd probe, so hosts without a working MXC
-    pay nothing extra. Full access and UNSLOTH_MXC_TERMINAL_CMD=0 keep the host shell.
+    Git Bash cannot start inside MXC (microsoft/mxc#1061), so when bash fails the MXC probe and
+    cmd.exe qualifies instead, Auto runs the Terminal isolated on cmd rather than unsandboxed on bash.
+    Any bash failure counts, not only the MSYS verdict: on a freshly prepared host bash fails without
+    that signature while cmd passes. Only a failed bash probes cmd. Full access and
+    UNSLOTH_MXC_TERMINAL_CMD=0 keep the host shell.
     """
     if sys.platform != "win32":
         return "bash"
@@ -10193,14 +10194,12 @@ def _terminal_profile(disable_sandbox: bool = False) -> str:
     if disable_sandbox or os.environ.get("UNSLOTH_MXC_TERMINAL_CMD") == "0":
         return host_default
     try:
-        from . import mxc_probe
-
         if bash:
-            # Either MXC tier: BaseContainer hosts hit the same MSYS failure as the DACL tier.
+            # Either MXC tier: any bash failure tries cmd.
             verdict = os_sandbox.capability_snapshot(
                 execution_kind = "terminal", selected_executable = bash
             )
-            if verdict.available or verdict.reason != mxc_probe.MSYS_NAMESPACE_REASON:
+            if verdict.available:
                 return "bash"
         cmd = os_sandbox.capability_snapshot(
             execution_kind = "terminal", selected_executable = _windows_system_cmd()
@@ -10215,12 +10214,25 @@ def _terminal_profile(disable_sandbox: bool = False) -> str:
 _request_profile: list = [None, 0.0]
 _request_profile_lock = threading.Lock()
 _REQUEST_PROFILE_REFRESH_SECONDS = 240.0
+# Bumped by every reset: a refresh that started earlier must not publish the profile it computed.
+_request_profile_generation = 0
+
+
+def reset_terminal_profile_cache() -> None:
+    """Forget the advertised Terminal profile, so the next request re-checks it (isolation settings changed)."""
+    global _request_profile_generation
+    with _request_profile_lock:
+        _request_profile[:] = [None, 0.0]
+        _request_profile_generation += 1
 
 
 def _refresh_request_profile() -> str:
+    with _request_profile_lock:
+        generation = _request_profile_generation
     profile = _terminal_profile(False)
     with _request_profile_lock:
-        _request_profile[:] = [profile, time.monotonic()]
+        if generation == _request_profile_generation:
+            _request_profile[:] = [profile, time.monotonic()]
     return profile
 
 

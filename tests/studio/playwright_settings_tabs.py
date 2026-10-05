@@ -47,6 +47,7 @@ TABS = [
     "keyboard-shortcuts",
     "browser",
     "debugging",
+    "sandbox",
     "about",
     "accounts",
 ]
