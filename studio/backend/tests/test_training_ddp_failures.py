@@ -13,6 +13,7 @@ import sys
 import pytest
 
 from core.training import ddp
+from core.training.dataset_bounds import world_size_from_env
 from core.training.ddp import (
     _RankEvents,
     model_load_dtype_for_training,
@@ -37,6 +38,10 @@ class _Events:
         (2, False, "llama", False, None),
         (2, True, "qwen3_moe", False, None),
         (2, True, "llama", True, None),
+        ("auto", True, "llama", False, None),
+        ("", True, "llama", False, None),
+        ("eight", True, "llama", False, None),
+        ("auto", True, "llama", False, False),
     ],
 )
 def test_dense_llama_ddp_checkpointing_disables_unused_parameter_discovery(
@@ -63,7 +68,14 @@ def test_dense_llama_ddp_checkpointing_disables_unused_parameter_discovery(
         )
     ]
     assert len(blocks) == 1
+    # Clear other launchers so this block reads only this test's WORLD_SIZE.
+    from core.training.dataset_bounds import WORLD_SIZE_ENV_FILES, WORLD_SIZE_ENV_VARS
+
+    for name in WORLD_SIZE_ENV_VARS + WORLD_SIZE_ENV_FILES:
+        monkeypatch.delenv(name, raising = False)
     monkeypatch.setenv("WORLD_SIZE", str(world_size))
+    if world_size == "auto" and expected is False:
+        monkeypatch.setenv("LOCAL_WORLD_SIZE", "2")
     config = {"gradient_checkpointing": checkpointing}
     backend = SimpleNamespace(
         is_audio = audio,
@@ -73,9 +85,25 @@ def test_dense_llama_ddp_checkpointing_disables_unused_parameter_discovery(
     )
     exec(
         compile(ast.Module(body = blocks, type_ignores = []), str(source), "exec"),
-        {"os": os, "self": backend, "config_args": config},
+        {"world_size_from_env": world_size_from_env, "self": backend, "config_args": config},
     )
     assert config.get("ddp_find_unused_parameters") is expected
+
+
+def test_embedding_worker_imports_only_used_unsloth_symbols():
+    source = Path(__file__).parents[1] / "core" / "training" / "worker.py"
+    tree = ast.parse(source.read_text(encoding = "utf-8"))
+    worker = next(
+        node for node in tree.body
+        if isinstance(node, ast.FunctionDef) and node.name == "_run_embedding_training"
+    )
+    imports = [
+        name.name
+        for node in ast.walk(worker)
+        if isinstance(node, ast.ImportFrom) and node.module == "unsloth"
+        for name in node.names
+    ]
+    assert imports == ["FastSentenceTransformer"]
 
 
 def test_nonzero_rank_oom_is_captured_and_signals_failure_without_duplicate_event():
