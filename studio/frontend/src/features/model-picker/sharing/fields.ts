@@ -50,7 +50,6 @@ export type SharedConfigKey = Exclude<
   | "engine"
   | "enginePrecision"
   | "engineParallelism"
-  | "llamaCppConfig"
 >;
 type Field = { label: string; valid: Validator; error?: string };
 

@@ -555,10 +555,15 @@ def test_a_catalog_with_tool_choice_none_is_plain_chat(native):
 
 
 @pytest.mark.parametrize("tools", [False, True])
-def test_managed_messages_keep_the_current_date_note(native, monkeypatch, tools):
+def test_managed_messages_get_no_unrequested_date(native, monkeypatch, tools):
+    from core.inference import orchestrator
+
     backend, requests = native
+    monkeypatch.setattr(orchestrator, "peek_inference_backend", lambda: backend)
     monkeypatch.setattr(api, "_date_gate_blocks", lambda *a: False)
-    monkeypatch.setattr(api, "_current_date_parts", lambda *a: ("", "[DATE NOTE]"))
+    monkeypatch.setattr(
+        api, "current_date_prompt_line", lambda **_k: "The current date is 2026-08-15."
+    )
     seen = []
     plain = backend._responder
 
@@ -572,6 +577,28 @@ def test_managed_messages_keep_the_current_date_note(native, monkeypatch, tools)
             enable_tools = False, **({"tools": [route_test.LOOKUP_TOOL]} if tools else {})
         )
     )
-    messages = requests[-1]["messages"] if tools else seen[-1]
-    user = [m for m in messages if m["role"] == "user"][-1]
-    assert "[DATE NOTE]" in json.dumps(user["content"])
+    if tools:
+        sent = requests[-1]["messages"]
+    else:
+        sent = [*seen[-1], {"role": "system", "content": backend.calls[-1]["system_prompt"]}]
+    # vLLM/SGLang render a template Studio never sees, so no system turn is made up for it.
+    assert "2026-08-15" not in json.dumps(sent)
+
+
+@pytest.mark.parametrize("vision", [False, True])
+def test_managed_engine_offers_image_viewer_to_vision_models_only(native, monkeypatch, vision):
+    from core.inference import studio_tool_loop
+
+    native[0].models["sf-model"]["is_vision"] = vision
+    monkeypatch.setattr(studio_tool_loop, "execute_tool", lambda *a, **kw: "3973")
+    run(
+        route_test._request(
+            enable_tools = True,
+            enabled_tools = ["python", "view_image"],
+            permission_mode = "off",
+            max_tool_calls_per_message = 1,
+        )
+    )
+    names = [t["function"]["name"] for t in native[1][0]["tools"]]
+    assert "python" in names
+    assert ("view_image" in names) == vision

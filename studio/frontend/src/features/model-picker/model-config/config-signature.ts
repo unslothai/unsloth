@@ -51,7 +51,6 @@ export function loadedConfigSignature(
     config.engine ?? "auto",
     config.enginePrecision ?? "auto",
     config.engineParallelism ?? "tensor",
-    JSON.stringify(config.llamaCppConfig) ?? "",
     config.customContextLength ?? "",
     config.maxSeqLength ?? "",
     config.kvCacheDtype ?? "",

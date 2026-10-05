@@ -1002,7 +1002,7 @@ def unsloth_save_model(
     if save_method != "lora" and save_method != "merged_16bit" and save_method != "merged_4bit":
         raise RuntimeError(
             "Unsloth: You must select one of 3 options when saving models:\n"
-            '"lora"         ==> This is the fastest and easiet. Just saves LoRA modules.\n'
+            '"lora"         ==> This is the fastest and easiest. Just saves LoRA modules.\n'
             '"merged_16bit" ==> This merges LoRA weights and saves to float16. Needed for llama.cpp / GGUF.\n'
             '"merged_4bit"  ==> This merges LoRA weights and saves to 4bit. Useful for DPO / inference.'
         )
@@ -2346,8 +2346,8 @@ def unsloth_save_pretrained_merged(
     converted to float16 with as few overhead as possible.
 
     Choose for `save_method` to be either:
-    1. `16bit`: Merge LoRA into float16 weights. Useful for GGUF / llama.cpp.
-    2.  `4bit`: Merge LoRA into int4 weights. Useful for DPO / HF inference.
+    1. `merged_16bit`: Merge LoRA into float16 weights. Useful for GGUF / llama.cpp.
+    2.  `merged_4bit`: Merge LoRA into int4 weights. Useful for DPO / HF inference.
     3.  `lora`: Save the LoRA adapter itself, with no merging: `adapter_config.json`
         plus `adapter_model.safetensors`, and no base-model weights at all (the adapter
         is written as `adapter_model.bin` instead when `safe_serialization = False`).
@@ -2485,8 +2485,8 @@ def unsloth_push_to_hub_merged(
     converted to float16 with as few overhead as possible.
 
     Choose for `save_method` to be either:
-    1. `16bit`: Merge LoRA into float16 weights. Useful for GGUF / llama.cpp.
-    2.  `4bit`: Merge LoRA into int4 weights. Useful for DPO / HF inference.
+    1. `merged_16bit`: Merge LoRA into float16 weights. Useful for GGUF / llama.cpp.
+    2.  `merged_4bit`: Merge LoRA into int4 weights. Useful for DPO / HF inference.
     3.  `lora`: Save the LoRA adapter itself, with no merging: `adapter_config.json`
         plus `adapter_model.safetensors`, and no base-model weights at all (the adapter
         is written as `adapter_model.bin` instead when `safe_serialization = False`).
@@ -5766,8 +5766,8 @@ def unsloth_generic_save_pretrained_merged(
     converted to float16 with as few overhead as possible.
 
     Choose for `save_method` to be either:
-    1. `16bit`: Merge LoRA into float16 weights. Useful for GGUF / llama.cpp.
-    2.  `4bit`: Merge LoRA into int4 weights. Useful for DPO / HF inference.
+    1. `merged_16bit`: Merge LoRA into float16 weights. Useful for GGUF / llama.cpp.
+    2.  `merged_4bit`: Merge LoRA into int4 weights. Useful for DPO / HF inference.
     3.  `lora`: Save the LoRA adapter itself, with no merging: `adapter_config.json`
         plus `adapter_model.safetensors`, and no base-model weights at all (the adapter
         is written as `adapter_model.bin` instead when `safe_serialization = False`).
@@ -5905,8 +5905,8 @@ def unsloth_generic_push_to_hub_merged(
     converted to float16 with as few overhead as possible.
 
     Choose for `save_method` to be either:
-    1. `16bit`: Merge LoRA into float16 weights. Useful for GGUF / llama.cpp.
-    2.  `4bit`: Merge LoRA into int4 weights. Useful for DPO / HF inference.
+    1. `merged_16bit`: Merge LoRA into float16 weights. Useful for GGUF / llama.cpp.
+    2.  `merged_4bit`: Merge LoRA into int4 weights. Useful for DPO / HF inference.
     3.  `lora`: Save the LoRA adapter itself, with no merging: `adapter_config.json`
         plus `adapter_model.safetensors`, and no base-model weights at all (the adapter
         is written as `adapter_model.bin` instead when `safe_serialization = False`).

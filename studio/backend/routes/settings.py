@@ -11,10 +11,10 @@ import re
 import threading
 import time
 from contextvars import ContextVar
-from typing import Any, Literal, Optional, get_args
+from typing import Annotated, Any, Literal, Optional, get_args
 from urllib.parse import unquote, urlsplit
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Request
+from fastapi import APIRouter, BackgroundTasks, Depends, Header, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from starlette.background import BackgroundTask
 from pydantic import (
@@ -23,6 +23,7 @@ from pydantic import (
     Field,
     StrictBool,
     StrictInt,
+    StringConstraints,
     ValidationError,
     field_validator,
     model_validator,
@@ -47,7 +48,6 @@ from core.rag.config import (
     effective_gguf_repo_for_embedding_model,
 )
 from loggers import get_logger
-from models.llama_custom_config import LlamaCppConfigFields
 from utils.utils import safe_curated_detail, safe_error_detail, log_and_http_error
 from utils.personalization_settings import (
     MAX_AVATAR_DATA_URL_BYTES,
@@ -94,6 +94,11 @@ from utils.hub_settings import (
 from picker.schemas import MAX_CHAT_TEMPLATE_BYTES, chat_template_byte_length
 from utils.reasoning_budget import validate_reasoning_budget_message
 from utils.coding_agents import CODING_AGENTS, detect_installed_coding_agents
+from utils.multi_model_settings import (
+    DEFAULT_MULTI_MODEL_ENABLED,
+    get_multi_model_enabled,
+    set_multi_model_enabled,
+)
 from utils.model_memory_settings import (
     DEFAULT_KEEP_RESIDENT,
     DEFAULT_NO_RAM_RESERVE,
@@ -545,6 +550,15 @@ def delete_custom_generation_preset(
     return {"deleted": True}
 
 
+class MultiModelPayload(BaseModel):
+    enabled: StrictBool
+
+
+class MultiModelResponse(BaseModel):
+    enabled: bool
+    default_enabled: bool = DEFAULT_MULTI_MODEL_ENABLED
+
+
 class UploadLimitPayload(BaseModel):
     max_upload_size_mb: int = Field(..., ge = MIN_UPLOAD_LIMIT_MB, le = MAX_UPLOAD_LIMIT_MB)
 
@@ -918,7 +932,7 @@ MAX_GGUF_VARIANT_KEY_LEN = 4096
 MAX_GPU_IDS = MAX_GPU_ID + 1
 
 
-class ModelOverridePayload(LlamaCppConfigFields):
+class ModelOverridePayload(BaseModel):
     """One model's saved launch config, applied when the API loads that model.
 
     Everything past ``model_id`` is optional and omitted means "app default", so a
@@ -1351,6 +1365,48 @@ def update_llama_cpp_path(
             log = logger,
         ) from exc
     return _llama_cpp_path_response()
+
+
+@_shared_settings_router.get("/multi-model", response_model = MultiModelResponse)
+def get_multi_model(current_subject: str = Depends(get_current_subject)) -> MultiModelResponse:
+    return MultiModelResponse(enabled = get_multi_model_enabled())
+
+
+@_owner_settings_router.put("/multi-model", response_model = MultiModelResponse)
+def update_multi_model(
+    payload: MultiModelPayload,
+    background_tasks: BackgroundTasks,
+    current_subject: str = Depends(get_current_subject),
+) -> MultiModelResponse:
+    """Keep the loaded models when another loads. Takes effect on the next load."""
+    try:
+        enabled = set_multi_model_enabled(payload.enabled)
+    except Exception as exc:
+        raise log_and_http_error(
+            exc,
+            500,
+            safe_error_detail(exc, fallback = "Could not save the multiple models setting."),
+            event = "settings.update_multi_model_failed",
+            log = logger,
+        ) from exc
+    logger.info("settings.multi_model_updated subject=%s enabled=%s", current_subject, enabled)
+    if not enabled:
+        # Back to one model: the idle kept ones go after the reply (a teardown can take minutes),
+        # a busy one once it is ejected. One that fails to unload stays tracked as stuck.
+        background_tasks.add_task(_unload_idle_models)
+    return MultiModelResponse(enabled = enabled)
+
+
+def _unload_idle_models() -> None:
+    from core.inference import model_slots
+    from routes.inference import release_chat_after_kept_models
+
+    try:
+        model_slots.unload_idle()
+    except Exception:
+        logger.warning("settings.multi_model_unload_idle_failed", exc_info = True)
+    # The primary's own unload kept CHAT while these were loaded.
+    release_chat_after_kept_models()
 
 
 @_shared_settings_router.get("/upload-limit", response_model = UploadLimitResponse)
@@ -1890,6 +1946,65 @@ class DiffusionAcceleratorFallbackResponse(BaseModel):
     diverting: bool = False
 
 
+PINNED_MODELS_SETTING_KEY = "model_picker_pinned"
+PINNED_CONNECTED_MODELS_SETTING_KEY = "model_picker_pinned_connected"
+MAX_PINNED_MODELS = 512
+# Room for a "::quant" suffix or an "external::<connection>::" prefix on top of a model id.
+_MAX_PIN_KEY_LEN = MAX_MODEL_OVERRIDE_KEY_LEN + 512
+_PinKey = Annotated[str, StringConstraints(min_length = 1, max_length = _MAX_PIN_KEY_LEN)]
+
+
+class PinnedModelsPayload(BaseModel):
+    """Either list may be omitted; only what is sent is replaced."""
+
+    model_config = ConfigDict(extra = "forbid")
+
+    pinned: Optional[list[_PinKey]] = Field(default = None, max_length = MAX_PINNED_MODELS)
+    connected: Optional[list[_PinKey]] = Field(default = None, max_length = MAX_PINNED_MODELS)
+
+
+class PinnedModelsResponse(BaseModel):
+    # None = never stored, so the browser seeds it.
+    pinned: Optional[list[str]] = None
+    connected: Optional[list[str]] = None
+
+
+def _pinned_models_response() -> PinnedModelsResponse:
+    from storage.studio_db import get_app_settings
+
+    stored = get_app_settings([PINNED_MODELS_SETTING_KEY, PINNED_CONNECTED_MODELS_SETTING_KEY])
+
+    def _ids(value: Any) -> Optional[list[str]]:
+        return [v for v in value if isinstance(v, str)] if isinstance(value, list) else None
+
+    return PinnedModelsResponse(
+        pinned = _ids(stored.get(PINNED_MODELS_SETTING_KEY)),
+        connected = _ids(stored.get(PINNED_CONNECTED_MODELS_SETTING_KEY)),
+    )
+
+
+@_account_settings_router.get("/pinned-models", response_model = PinnedModelsResponse)
+def get_pinned_models(current_subject: str = Depends(get_current_subject)) -> PinnedModelsResponse:
+    """Per-account picker pins: an account switch clears the browser copy."""
+    return _pinned_models_response()
+
+
+@_account_settings_router.put("/pinned-models", response_model = PinnedModelsResponse)
+def update_pinned_models(
+    payload: PinnedModelsPayload, current_subject: str = Depends(get_current_subject)
+) -> PinnedModelsResponse:
+    from storage.studio_db import upsert_app_settings
+
+    updates: dict[str, Any] = {}
+    if payload.pinned is not None:
+        updates[PINNED_MODELS_SETTING_KEY] = list(dict.fromkeys(payload.pinned))
+    if payload.connected is not None:
+        updates[PINNED_CONNECTED_MODELS_SETTING_KEY] = list(dict.fromkeys(payload.connected))
+    if updates:
+        upsert_app_settings(updates, read_back = False)
+    return _pinned_models_response()
+
+
 def _diffusion_accelerator_fallback_response() -> DiffusionAcceleratorFallbackResponse:
     from core.inference.sd_cpp_backend import accelerator_runtime_failure_state
     return DiffusionAcceleratorFallbackResponse(**accelerator_runtime_failure_state())
@@ -2025,7 +2140,9 @@ def update_openai_auto_switch(
     )
 
 
-@_owner_settings_router.get("/openai-auto-switch/overrides", response_model = ModelOverridesResponse)
+@_account_settings_router.get(
+    "/openai-auto-switch/overrides", response_model = ModelOverridesResponse
+)
 def get_openai_auto_switch_overrides(
     model_id: Optional[str] = None,
     alias_id: Optional[str] = None,
@@ -2199,7 +2316,9 @@ def _serialized_override_write(func):
     return wrapper
 
 
-@_owner_settings_router.put("/openai-auto-switch/overrides", response_model = ModelOverridesResponse)
+@_account_settings_router.put(
+    "/openai-auto-switch/overrides", response_model = ModelOverridesResponse
+)
 @_serialized_override_write
 def update_openai_auto_switch_override(
     payload: ModelOverridePayload, current_subject: str = Depends(get_current_subject)
@@ -2309,8 +2428,7 @@ def update_openai_auto_switch_override(
         _carried_fields = (() if payload.mirrors_server_tuning else _tuning_fields) + (
             () if payload.mirrors_reasoning_budget else _reasoning_fields
         )
-        _stored_row = None
-        if not is_removal and (_carried_fields or payload.llama_cpp_config is None):
+        if _carried_fields and not is_removal:
             # The same spellings the extra-args carry-over walks: a cached repo is not an ordinary folded match,
             # so a save under the repo id would find nothing and retire the alias with its tuning.
             _alias_ids = [payload.model_id]
@@ -2327,15 +2445,15 @@ def update_openai_auto_switch_override(
             # Taken as a unit from the first row that exists, not field by field down the list: a load stops at the
             # first non-empty row rather than merging, so filling a gap in the winner from a loser would switch
             # dormant tuning on.
-            _stored_row = next((row for row in map(get_model_override, _alias_ids) if row), None)
-        if _stored_row:
-            for name in _carried_fields:
-                if _kept_tuning[name] is None:
-                    _kept_tuning[name] = _stored_row.get(name)
+            for _alias_id in _alias_ids:
+                _stored_tuning = get_model_override(_alias_id)
+                if not _stored_tuning:
+                    continue
+                for name in _carried_fields:
+                    if _kept_tuning[name] is None:
+                        _kept_tuning[name] = _stored_tuning.get(name)
+                break
         removed_keys: list[str] = []
-        kept_custom_config = payload.llama_cpp_config
-        if kept_custom_config is None and _stored_row:
-            kept_custom_config = _stored_row.get("llama_cpp_config")
         if payload.remove is True:
             # An explicit remove wins over any other field. Remove the key a load resolves to, not the literal one sent
             # (the browser normalizes casing), and every spelling: clearing one of two leaves the survivor as the sole
@@ -2416,7 +2534,6 @@ def update_openai_auto_switch_override(
             set_model_override(
                 target_id,
                 llama_extra_args = extra_args,
-                llama_cpp_config = kept_custom_config,
                 keep_empty_extra_args = keep_empty,
                 engine_parallelism = payload.engine_parallelism
                 if payload.engine_parallelism is not None or is_removal

@@ -5345,7 +5345,12 @@ def test_write_openclaw_config_fresh(tmp_path):
     assert provider["apiKey"] == "sk-unsloth-abc"
     assert provider["api"] == "openai-completions"
     assert provider["models"] == [
-        {"id": MODEL["id"], "name": MODEL["id"], "contextWindow": MODEL["context_length"]}
+        {
+            "id": MODEL["id"],
+            "name": MODEL["id"],
+            "contextWindow": MODEL["context_length"],
+            "maxTokens": 32000,
+        }
     ]
     # The default model must be pinned or OpenClaw has nothing active.
     assert config["agents"]["defaults"]["model"]["primary"] == f"unsloth/{MODEL['id']}"
@@ -5355,6 +5360,25 @@ def test_write_openclaw_config_fresh(tmp_path):
     assert config["gateway"]["auth"]["mode"] == "none"  # unauth loopback gateway
     if os.name != "nt":  # the file holds an API key
         assert path.stat().st_mode & 0o777 == 0o600
+
+
+@pytest.mark.parametrize("window, expected", [(32_768, 8_192), (131_072, 32_000)])
+def test_openclaw_output_limit_follows_the_context(tmp_path, window, expected):
+    path = tmp_path / "openclaw.json"
+    start.write_openclaw_config(BASE, "sk-unsloth-abc", {**MODEL, "context_length": window}, path)
+    model = json.loads(path.read_text())["models"]["providers"]["unsloth"]["models"][0]
+    assert model["maxTokens"] == expected
+
+
+@pytest.mark.parametrize("max_tokens, expected", [("40000", 40000), ("200000", 65536)])
+def test_connect_openclaw_max_tokens(fake_studio, tmp_path, max_tokens, expected):
+    result = CliRunner().invoke(
+        start.start_app, ["openclaw", "--no-launch", "--max-tokens", max_tokens]
+    )
+    assert result.exit_code == 0, result.output
+    assert "--max-tokens" not in _launch_command(result.output)
+    config = json.loads((tmp_path / "agents" / "openclaw" / "openclaw.json").read_text())
+    assert config["models"]["providers"]["unsloth"]["models"][0]["maxTokens"] == expected
 
 
 def test_write_openclaw_config_clears_per_agent_path_overrides(tmp_path):
@@ -6145,6 +6169,22 @@ def test_write_hermes_config_small_window_claims_floor(hermes_config):
     assert config["compression"] == {"enabled": True, "threshold": 0.5625}
     # The same floor check runs against the compression model mid-session.
     assert config["auxiliary"]["compression"]["context_length"] == 65536
+    # Newer Hermes checks a local server's floor against ollama_num_ctx, not context_length.
+    assert config["model"]["ollama_num_ctx"] == 65536
+
+
+def test_write_hermes_config_large_window_drops_claimed_num_ctx(hermes_config):
+    yaml = pytest.importorskip("yaml")
+    start.write_hermes_config(BASE, {"id": "small", "context_length": 40960}, hermes_config)
+    start.write_hermes_config(BASE, MODEL, hermes_config)
+    assert "ollama_num_ctx" not in yaml.safe_load(hermes_config.read_text())["model"]
+
+
+def test_write_hermes_config_keeps_user_num_ctx(hermes_config):
+    yaml = pytest.importorskip("yaml")
+    hermes_config.write_text(yaml.safe_dump({"model": {"ollama_num_ctx": 100000}}))
+    start.write_hermes_config(BASE, MODEL, hermes_config)
+    assert yaml.safe_load(hermes_config.read_text())["model"]["ollama_num_ctx"] == 100000
 
 
 def test_write_hermes_config_preserves_and_idempotent(hermes_config):

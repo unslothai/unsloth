@@ -114,8 +114,7 @@ test("a record only claims the new schema version when it carries one", () => {
   // present, so an older client can still rewrite a record it fully knows.
   const source = readSrc("features/model-picker/model-config/per-model-config.ts");
   assert.match(source, /const STORAGE_SCHEMA_VERSION = 9;/);
-  assert.match(source, /const PRE_MLX_INT8_PREFILL_SCHEMA_VERSION = 8;/);
-  assert.match(source, /const PRE_LLAMA_CPP_CONFIG_SCHEMA_VERSION = 7;/);
+  assert.match(source, /const PRE_MLX_INT8_PREFILL_SCHEMA_VERSION = 7;/);
   assert.match(source, /const PRE_MLX_KV_QUANT_SCHEMA_VERSION = 6;/);
   assert.match(source, /const PRE_REASONING_BUDGET_SCHEMA_VERSION = 5;/);
   assert.match(source, /const PRE_SERVER_TUNING_SCHEMA_VERSION = 4;/);
@@ -125,11 +124,7 @@ test("a record only claims the new schema version when it carries one", () => {
   );
   assert.match(
     source,
-    /normalized\.llamaCppConfig !== undefined\)\s*\{\s*return PRE_MLX_INT8_PREFILL_SCHEMA_VERSION;/,
-  );
-  assert.match(
-    source,
-    /mlxKvQuant != null\)\s*\{\s*return PRE_LLAMA_CPP_CONFIG_SCHEMA_VERSION;/,
+    /mlxKvQuant != null\)\s*\{\s*return PRE_MLX_INT8_PREFILL_SCHEMA_VERSION;/,
   );
   assert.match(
     source,

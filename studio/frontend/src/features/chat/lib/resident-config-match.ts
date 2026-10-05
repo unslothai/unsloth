@@ -41,7 +41,6 @@ type ResidentRuntime = Pick<
   | "disable_vision"
   | "chat_template_override"
   | "requested_llama_extra_args"
-  | "requested_llama_cpp_config"
   | "gpu_memory_mode"
   | "gpu_layers"
   | "n_cpu_moe"
@@ -617,10 +616,6 @@ export function residentRuntimeMatchesConfig(
     ) {
       return false;
     }
-  }
-  if (config.llamaCppConfig?.mode === "custom" || status.requested_llama_cpp_config?.mode === "custom") {
-    // Only the server can tell whether a custom config is unchanged (binary, resources).
-    return false;
   }
   const placementPreserved =
     // A virtualised Metal device pins every GGUF request to the CPU before either comparator runs, so

@@ -3,6 +3,7 @@
 
 import { isExternalModelId, useChatRuntimeStore } from "@/features/chat";
 import { usePlatformStore } from "@/config/env";
+import { isNpuModelId } from "@/features/npu";
 import { useMemo } from "react";
 import {
   type PerModelConfig,
@@ -55,7 +56,6 @@ export function useActiveModelConfig(): ActiveModelConfigState {
   const loadMode = useChatRuntimeStore((s) => s.loadMode);
   const ctxCheckpoints = useChatRuntimeStore((s) => s.ctxCheckpoints);
   const cacheRam = useChatRuntimeStore((s) => s.cacheRam);
-  const llamaCppConfig = useChatRuntimeStore((s) => s.loadedLlamaCppConfig);
   const tensorParallel = useChatRuntimeStore((s) => s.tensorParallel);
   const disableVision = useChatRuntimeStore((s) => s.disableVision);
   const chatTemplateOverride = useChatRuntimeStore(
@@ -100,12 +100,11 @@ export function useActiveModelConfig(): ActiveModelConfigState {
       engine,
       enginePrecision,
       engineParallelism,
-      llamaCppConfig: isGguf ? llamaCppConfig ?? undefined : undefined,
       customContextLength: customContextLength ?? null,
       // A self-sizing backend carries no pin here, exactly as the GGUF path does: this
       // is the runtime's resolved length, and reading it back as the user's choice would
       // pin every reload to whatever the first load happened to get.
-      maxSeqLength: isGguf || isMlx ? null : maxSeqLength,
+      maxSeqLength: isGguf || isMlx || isNpuModelId(checkpoint) ? null : maxSeqLength,
       kvCacheDtype: kvCacheDtype ?? null,
       mlxKvQuant: effectiveMlxKvQuant,
       mlxInt8Prefill: effectiveMlxInt8Prefill,
@@ -165,7 +164,6 @@ export function useActiveModelConfig(): ActiveModelConfigState {
     loadMode,
     ctxCheckpoints,
     cacheRam,
-    llamaCppConfig,
     tensorParallel,
     disableVision,
     chatTemplateOverride,

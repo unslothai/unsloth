@@ -9,10 +9,15 @@ from __future__ import annotations
 
 import dataclasses
 import importlib
+import importlib.util
 import math
 
 import pytest
 
+
+# daily-fresh-fetch collects this directory with only pytest installed.
+if importlib.util.find_spec("torch") is None:
+    pytest.skip("torch not installed", allow_module_level = True)
 
 # Fields Unsloth changes on purpose (rl.py replacements, extra_args, or TRL deriving them from those).
 INTENDED = {
