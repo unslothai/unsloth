@@ -364,7 +364,10 @@ function TabContextMenu({
           {t("browser.newTab")}
         </MenuRow>
         <ContextMenuSeparator />
-        <MenuRow icon={ReloadIcon} onSelect={() => store.reload(tab.id)}>
+        <MenuRow
+          icon={ReloadIcon}
+          onSelect={() => (nativePage(tab) ? nativeAction(tab.id, "reload") : store.reload(tab.id))}
+        >
           {t("browser.reload")}
         </MenuRow>
         {url ? (

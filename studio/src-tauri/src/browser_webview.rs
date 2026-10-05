@@ -499,7 +499,15 @@ fn download_destination(dir: &Path, suggested: &Path, reserved: &HashSet<&Path>)
         })
         .filter(|name| !name.trim_matches('.').is_empty())
         .unwrap_or_else(|| "download".into());
-    let free = |path: &Path| !path.exists() && !reserved.contains(path);
+    // Windows and macOS file systems ignore case, so `Report.pdf` and `report.pdf` are one file.
+    let same = |a: &Path, b: &Path| {
+        if cfg!(any(windows, target_os = "macos")) {
+            a.to_string_lossy().to_lowercase() == b.to_string_lossy().to_lowercase()
+        } else {
+            a == b
+        }
+    };
+    let free = |path: &Path| !path.exists() && !reserved.iter().any(|taken| same(taken, path));
     let candidate = dir.join(&name);
     if free(&candidate) {
         return candidate;
@@ -1495,5 +1503,17 @@ mod tests {
         );
         assert_eq!(name(".."), dir.path().join("download"));
         assert_eq!(name("/x/evil\u{7}name.sh"), dir.path().join("evil_name.sh"));
+    }
+
+    #[cfg(any(windows, target_os = "macos"))]
+    #[test]
+    fn reserved_download_names_ignore_case() {
+        let dir = tempfile::tempdir().unwrap();
+        let taken = dir.path().join("Report.pdf");
+        let reserved = HashSet::from([taken.as_path()]);
+        assert_eq!(
+            download_destination(dir.path(), Path::new("report.pdf"), &reserved),
+            dir.path().join("report (1).pdf")
+        );
     }
 }

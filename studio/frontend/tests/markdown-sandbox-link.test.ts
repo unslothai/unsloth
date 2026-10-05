@@ -51,6 +51,8 @@ test("web links, anchors, words, app routes and escapes are not files", () => {
     "docs.unsloth.ai/get-started",
     "example.tech",
     "docs.museum/report.pdf",
+    "192.0.2.1/report.pdf",
+    "пример.рф/report.pdf",
   ]) {
     assert.equal(sandboxFileForHref(href), null, href);
   }

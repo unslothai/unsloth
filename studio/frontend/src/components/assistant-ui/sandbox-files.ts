@@ -196,8 +196,8 @@ const LINK_FILE_EXTS = new Set(
   ("csv tsv json jsonl txt md markdown html htm pdf png jpg jpeg gif webp svg bmp py ipynb js ts sh " +
     "yaml yml toml xml log xlsx xls docx doc pptx odt ods zip tar gz parquet wav mp3 mp4 webm mov").split(" "),
 );
-// A first segment shaped like a domain (`docs.museum/report.pdf`), not a folder.
-const HOST_SEGMENT_RE = /^(?:[a-z0-9-]+\.)+[a-z]{2,}(?::\d+)?$/i;
+// A first segment shaped like a domain (`docs.museum/report.pdf`, `пример.рф`) or an IPv4 address, not a folder.
+const HOST_SEGMENT_RE = /^(?:(?:[\p{L}\p{N}-]+\.)+(?:\p{L}{2,}|xn--[a-z\d-]+)|\d{1,3}(?:\.\d{1,3}){3})(?::\d+)?$/iu;
 
 /** Sandbox file a markdown link targets (`outputs/report.csv`); needs an extension, so `#intro` stays a link. */
 export function sandboxFileForHref(href: string): string | null {
