@@ -158,7 +158,7 @@ def _release(
         version = tag.removeprefix("v").replace(".", "_").replace("-", "_")
         base = f"Unsloth-Desktop-{version}" if legacy else "Unsloth-Desktop"
         names = ["latest.json", *(f"{base}-{suffix}" for suffix in SUFFIXES)]
-        names.append(f"{base}-ARM64.app.tar.gz")
+        names.append(f"{base}-MacOS-ARM64.app.tar.gz")
     names = [name for name in names if name not in drop]
     return {
         "id": release_id,
@@ -180,7 +180,7 @@ def _manifest(tag, *, legacy = False):
     return {
         "version": tag,
         "platforms": {
-            "darwin-aarch64": {"url": f"{prefix}{base}-ARM64.app.tar.gz", "signature": "c2ln"},
+            "darwin-aarch64": {"url": f"{prefix}{base}-MacOS-ARM64.app.tar.gz", "signature": "c2ln"},
             "linux-x86_64": {"url": f"{prefix}{base}-Linux.AppImage", "signature": "c2ln"},
             "windows-x86_64": {"url": f"{prefix}{base}-Windows.exe", "signature": "c2ln"},
         },
@@ -538,7 +538,7 @@ def test_a_manifest_naming_a_missing_bundle_is_refused(tmp_path):
         release_tag = "v0.1.53-beta",
         releases = [
             _release("v0.1.53-beta", release_id = 53, complete = False),
-            _release("v0.1.52-beta", release_id = 52, drop = ("Unsloth-Desktop-ARM64.app.tar.gz",)),
+            _release("v0.1.52-beta", release_id = 52, drop = ("Unsloth-Desktop-MacOS-ARM64.app.tar.gz",)),
         ],
         manifests = {"v0.1.52-beta": _manifest("v0.1.52-beta")},
     )

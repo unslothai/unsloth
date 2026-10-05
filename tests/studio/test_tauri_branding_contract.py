@@ -178,8 +178,8 @@ def test_desktop_release_asset_names_are_human_readable() -> None:
     assert "base_name = 'Unsloth-Desktop'" in workflow
     expected_suffixes = {
         "MacOS.dmg",
-        "ARM64.app.tar.gz",
-        "ARM64.app.tar.gz.sig",
+        "MacOS-ARM64.app.tar.gz",
+        "MacOS-ARM64.app.tar.gz.sig",
         "Linux.AppImage",
         "Linux.AppImage.sig",
         "Ubuntu.deb",
@@ -196,6 +196,7 @@ def test_desktop_release_asset_names_are_human_readable() -> None:
 
     for name in (
         "Unsloth-Desktop-MacOS.dmg",
+        "Unsloth-Desktop-MacOS-ARM64.app.tar.gz",
         "Unsloth-Desktop-Linux.AppImage",
         "Unsloth-Desktop-Ubuntu.deb",
         "Unsloth-Desktop-Ubuntu-ARM64.deb",
@@ -203,6 +204,13 @@ def test_desktop_release_asset_names_are_human_readable() -> None:
         "Unsloth-Desktop-Windows-ARM64.exe",
     ):
         assert name in workflow
+
+
+def test_macos_arm64_updater_bundle_does_not_reuse_linux_arm64_filename() -> None:
+    """Linux ARM64 ships as Unsloth-Desktop-Ubuntu-ARM64.deb; macOS must not publish a bare -ARM64.app name."""
+    workflow = read(REPO / ".github/workflows/release-desktop.yml")
+    assert "Unsloth-Desktop-ARM64.app.tar.gz" not in workflow
+    assert "Unsloth-Desktop-MacOS-ARM64.app.tar.gz" in workflow
 
 
 LOCALES = FRONTEND / "src/i18n/locales"
