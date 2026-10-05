@@ -967,6 +967,49 @@ def test_a_failed_save_leaves_the_previous_clef_checkpoint_loadable(clef_checkpo
     FastDecisionModel.from_pretrained(str(out), max_seq_length = 512)
 
 
+@pytest.mark.skipif(not has_real_cuda(), reason = "Unsloth's float16 path for Qwen3.5 needs a GPU")
+@pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
+def test_clef_trains_in_float16_and_bfloat16(clef_checkpoint, tmp_path, dtype):
+    model, processor = FastDecisionModel.from_pretrained(
+        str(clef_checkpoint), max_seq_length = 512, dtype = dtype
+    )
+    # float16 puts Qwen3.5 on Unsloth's float32 path (bfloat16 weights, no autocast), as on a T4.
+    assert decision._clef_forced_float32(model) == (dtype == torch.float16)
+    model = FastDecisionModel.get_peft_model(model, r = 8, lora_alpha = 8)
+    items, _ = FastDecisionModel.build_dataset(_clef_rows(32), processor, model)
+    grads = []
+
+    class Grads(TrainerCallback):
+        def on_log(
+            self,
+            args,
+            state,
+            control,
+            logs = None,
+            **kwargs,
+        ):
+            if logs and "loss" in logs:
+                grads.append((logs["loss"], logs.get("grad_norm")))
+
+    trainer = DecisionTrainer(
+        model = model,
+        tokenizer = processor,
+        train_dataset = items,
+        args = _args(
+            tmp_path,
+            max_steps = 6,
+            logging_steps = 1,
+            fp16 = dtype == torch.float16,
+            bf16 = dtype == torch.bfloat16,
+        ),
+        callbacks = [Grads()],
+    )
+    assert trainer.args.fp16 is False and trainer.args.bf16 == (dtype == torch.bfloat16)
+    trainer.train()
+    assert grads and all(math.isfinite(loss) and math.isfinite(g) and g > 0 for loss, g in grads)
+    assert math.isfinite(FastDecisionModel.evaluate(model, processor, items)["loss"])
+
+
 def test_clef_calibration_fits_being_right_and_serves_through_the_head_temperature():
     # Underconfident logits: right 80% of the time with a soft gold that says 60%.
     generator = torch.Generator().manual_seed(0)

@@ -464,10 +464,11 @@ def _clef_logits(
     from .clef import QUESTION_TYPES as CLEF_TYPES
 
     device = next(model.parameters()).device
-    # Never fp16 autocast: the gated delta net overflows in pure fp16, so off bf16 GPUs the
-    # backbone runs in the dtype Unsloth loaded it with.
+    # Never fp16 autocast: the gated delta net overflows in pure fp16, so a model on Unsloth's
+    # float32 path runs as Unsloth loaded it.
     amp_dtype = _amp_dtype(device)
-    amp_dtype = amp_dtype if amp_dtype == torch.bfloat16 else None
+    if amp_dtype != torch.bfloat16 or _clef_forced_float32(model):
+        amp_dtype = None
     collate = ClefDataCollator(pad_token_id)
     # Clef numbers question types noul, choice, score; Laya's metrics use choice, score, noul.
     laya_type = {CLEF_TYPES[kind]: QUESTION_TYPES.index(kind) for kind in QUESTION_TYPES}
@@ -503,6 +504,29 @@ def _decision_logits(model, tokenizer, items: list) -> tuple:
     return _logits(model, items, pad_token_id), items
 
 
+# Kept in 16-bit like unsloth/Qwen3.8-27B-unsloth-bnb-4bit: Clef's backbone is a merged
+# fine-tune, not stock Qwen, so it is quantized on load with the same dynamic list.
+CLEF_4BIT_SKIP_MODULES = ("model.visual", r".*\.visual\..*", "in_proj_a", "in_proj_b", "in_proj_qkv")
+
+
+def _clef_bnb_config(dtype):
+    from transformers import BitsAndBytesConfig
+    from unsloth_zoo.peft_utils import SKIP_QUANTIZATION_MODULES
+
+    float16 = dtype == torch.float16 or not is_bfloat16_supported()
+    return BitsAndBytesConfig(
+        load_in_4bit = True,
+        bnb_4bit_use_double_quant = True,
+        bnb_4bit_quant_type = "nf4",
+        bnb_4bit_compute_dtype = torch.float16 if float16 else torch.bfloat16,
+        llm_int8_skip_modules = list(SKIP_QUANTIZATION_MODULES) + list(CLEF_4BIT_SKIP_MODULES),
+    )
+
+
+def _clef_forced_float32(model) -> bool:
+    return bool(getattr(model, "_unsloth_forced_float32", False))
+
+
 def _load_clef(
     folder,
     max_seq_length,
@@ -518,13 +542,14 @@ def _load_clef(
     from .clef import JointSchemaHead
 
     max_len = int(max_seq_length or CLEF_MAX_LEN)
-    if dtype == torch.float16:
-        # Qwen3.5's gated delta net NaNs in pure fp16; Unsloth picks the dtype and keeps it in fp32 autocast.
-        print("Unsloth: Clef ignores dtype = torch.float16 and lets Unsloth pick the dtype.")
-        dtype = None
     fast = _device().type != "cpu"
     if fast:
         from .loader import FastModel
+
+        if load_in_4bit and kwargs.get("quantization_config") is None:
+            kwargs["quantization_config"] = _clef_bnb_config(dtype)
+        # A float16 request (or a GPU without bfloat16) puts Qwen3.5 on Unsloth's float32 path,
+        # which stores bfloat16 weights: the gated delta net NaNs in pure float16.
         backbone, processor = FastModel.from_pretrained(
             str(folder),
             max_seq_length = max_len,
@@ -557,6 +582,7 @@ def _load_clef(
         config.update(json.loads(saved.read_text(encoding = "utf-8")), max_len = max_len)
     model.decision_config = config
     _mark_full_finetuning(model, full_finetuning)
+    model._unsloth_forced_float32 = bool(getattr(backbone, "_unsloth_forced_float32", False))
     model._unsloth_fast_backbone = fast
     model._saved_temp_tokenizer = processor
     model._unsloth_source_folder = str(folder)
@@ -763,6 +789,8 @@ class DecisionTrainer(Trainer):
         if args.label_names is None:
             args.label_names = ["target"]
         clef = getattr(model, "is_clef", False)
+        if clef:
+            _clef_mixed_precision(model, args)
         if args.gradient_checkpointing:
             # Trainer would call model.gradient_checkpointing_enable, which only the encoder has.
             # Clef's backbone already got Unsloth's checkpointing when it loaded.
