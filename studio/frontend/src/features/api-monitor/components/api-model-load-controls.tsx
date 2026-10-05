@@ -243,7 +243,11 @@ export function ApiModelLoadControls({
           handleReload();
         }}
         disabled={reloadDisabled}
-        title={activeModel ? reloadTitle : `${reloadTitle} (no model loaded)`}
+        title={
+          activeModel || !lastLoadLabel
+            ? reloadTitle
+            : `${reloadTitle} (no model loaded)`
+        }
         className="h-9 gap-1.5 rounded-full"
       >
         <HugeiconsIcon
