@@ -312,7 +312,11 @@ def _rocm_gfx_arch(target: Any) -> str:
         import torch
         from utils.hardware.hardware import _props_gfx_arch
 
-        device = torch.device(_indexed_cuda_device(str(getattr(target, "device", None) or "")))
+        device = torch.device(
+            _indexed_cuda_device(
+                str(getattr(target, "torch_device", None) or getattr(target, "device", None) or "")
+            )
+        )
         index = device.index if device.index is not None else torch.cuda.current_device()
         return _props_gfx_arch(torch.cuda.get_device_properties(index))
     except Exception:  # noqa: BLE001

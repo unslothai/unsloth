@@ -290,6 +290,22 @@ def test_rocm_auto_stays_native_for_unmeasured_families(monkeypatch, family):
     assert calls == []
 
 
+def test_rocm_gfx_arch_reads_the_selected_card(monkeypatch):
+    import torch
+
+    asked = []
+
+    def props(index):
+        asked.append(index)
+        return types.SimpleNamespace(gcnArchName = "gfx1100" if index == 1 else "gfx90a")
+
+    monkeypatch.setattr(torch.cuda, "get_device_properties", props)
+    monkeypatch.setattr(torch.cuda, "current_device", lambda: 0)
+    target = types.SimpleNamespace(device = "cuda", torch_device = "cuda:1", dtype = "torch.bfloat16")
+    assert att._rocm_gfx_arch(target) == "gfx1100"
+    assert asked == [1]
+
+
 @pytest.mark.parametrize("arch", ["gfx942", "gfx90a", "gfx1201", "gfx1030", ""])
 def test_rocm_auto_klein_flash_gfx11_only(monkeypatch, arch):
     calls = _rocm(monkeypatch)
