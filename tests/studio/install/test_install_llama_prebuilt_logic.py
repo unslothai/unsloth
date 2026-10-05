@@ -1202,6 +1202,30 @@ def test_replace_with_busy_retry_offers_no_recursive_repair_over_a_nested_link(
     assert not any("takeown" in line or "icacls" in line for line in logged)
 
 
+def test_replace_with_busy_retry_offers_only_a_root_repair_for_an_unlistable_tree(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    source, destination, logged = _run_denied_replace(tmp_path, monkeypatch, failures = 99)
+
+    def denied_walk(
+        top,
+        onerror = None,
+        **_kwargs,
+    ):
+        onerror(PermissionError(errno.EACCES, "Access is denied", str(top)))
+        return iter(())
+
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "_is_link_or_junction", lambda p: False)
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT.os, "walk", denied_walk)
+    with pytest.raises(OSError):
+        replace_with_busy_retry(source, destination, attempts = 2)
+    assert f'takeown /F "{source}"' in logged
+    assert f'icacls "{source}" /reset' in logged
+    assert not any(
+        "/R" in line or "/T" in line for line in logged if "takeown" in line or "icacls" in line
+    )
+
+
 def test_replace_with_busy_retry_skips_acl_repair_when_denial_clears(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):

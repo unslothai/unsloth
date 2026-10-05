@@ -4810,27 +4810,36 @@ def blocked_replace_hint(winerror: object) -> str:
     return "a scanner is likely still holding the install open"
 
 
-def _tree_has_link(root: Path) -> bool:
+def _tree_link_state(root: Path) -> str:
+    """ "link", "unreadable" (a directory could not be listed) or "clean"."""
     if _is_link_or_junction(root):
-        return True
-    for current_dir, dirnames, filenames in os.walk(root, followlinks = False):
+        return "link"
+    unreadable: list[OSError] = []
+    for current_dir, dirnames, filenames in os.walk(
+        root, followlinks = False, onerror = unreadable.append
+    ):
         current_path = type(root)(current_dir)
         if any(_is_link_or_junction(current_path / name) for name in (*dirnames, *filenames)):
-            return True
-    return False
+            return "link"
+    return "unreadable" if unreadable else "clean"
 
 
 def log_acl_repair(path: Path) -> None:
     # Printed, never run: repairing permissions is the user's call (#9928).
-    if _tree_has_link(path):
-        # takeown /R and icacls /T follow links, so the repair would reach outside the tree.
+    # takeown /R and icacls /T follow links, so recursion is offered only for a tree
+    # fully listed and link-free; otherwise just the root, which is not a link.
+    state = _tree_link_state(path)
+    if state == "link":
         log(f"rename still denied after retrying; {path} contains a link, check its permissions")
     else:
         log(
             "rename still denied after retrying; if the permissions on this tree are broken, run in an elevated PowerShell:"
         )
-        log(f'takeown /F "{path}" /R /D Y')
-        log(f'icacls "{path}" /reset /T')
+        recursive = state == "clean"
+        log(f'takeown /F "{path}"' + (" /R /D Y" if recursive else ""))
+        log(f'icacls "{path}" /reset' + (" /T" if recursive else ""))
+        if not recursive:
+            log("then run the install again")
     log(
         "if access stays denied, Controlled folder access or antivirus may be blocking "
         "the path: allow or exclude it there"
