@@ -81,7 +81,6 @@ class OAICompatTransport:
         if tools:
             self._last_tools = tools
         elif self.tool_result_only_continuation and self._last_tools:
-            # A withdrawn catalog still has to be declared beside the tool blocks; "none" blocks new calls.
             tools, tool_choice = self._last_tools, "none"
         if self._initial_message_count is not None and self.tool_result_only_continuation:
             # Promoted MCP images join the tool result: a new user turn would end a pending server-tool turn.

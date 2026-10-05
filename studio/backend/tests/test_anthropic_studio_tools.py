@@ -267,7 +267,6 @@ def test_loop_executes_fragmented_calls_and_replays_signed_and_hosted_blocks(
     assert not any('"error"' in line for line in lines)
     assert len(bodies[1]["messages"]) == 3
     if max_calls == 2:
-        # The spent budget withdraws the catalog, but Anthropic still needs it declared beside the tool blocks.
         assert {"python", "web_search"} <= {tool["name"] for tool in bodies[1]["tools"]}
         assert bodies[1]["tool_choice"] == {"type": "none"}
     if pending_fetch:
