@@ -26,7 +26,10 @@ wired up fails here too, which is the same bug arriving from the other direction
 
 from __future__ import annotations
 
+import os
 import re
+import subprocess
+import sys
 from pathlib import Path
 
 import yaml
@@ -39,6 +42,11 @@ SUITE_DIRS = ("tests/version_compat", "tests/vllm_compat")
 # The bundled job. Named, not detected: if it is ever renamed, that should be a deliberate edit here rather than this
 # whole file quietly asserting nothing.
 BUNDLE_JOB = "pinned-symbol-matrix"
+
+# Cron-only; sweeps tests/version_compat/ with only pytest installed.
+SWEEP_JOB = "daily-fresh-fetch"
+# A None entry in sys.modules makes `import` raise and find_spec return None, as in that job.
+NOT_IN_THE_SWEEP = ("torch", "numpy", "transformers", "trl", "peft", "accelerate", "unsloth_zoo")
 
 # Suites with no pull_request home today.
 # This is a RECORDED GAP, not an approval, and both entries pre-date the bundling change that added this file.
@@ -139,6 +147,33 @@ def test_the_bundle_does_not_duplicate_the_install_bearing_jobs() -> None:
             f"{jid} and {BUNDLE_JOB} both run {overlap} on a pull request, so every commit "
             f"pays for it twice"
         )
+
+
+def test_the_daily_sweep_skips_what_it_cannot_import() -> None:
+    """A suite that needs torch must skip in the sweep, not fail (#12069 broke it daily on `import unsloth`).
+
+    Bundle suites are left out: they install nothing, already run per pull request, and fetch from the network.
+    """
+    sweep = _named_paths(_jobs()[SWEEP_JOB])
+    bundle = _named_paths(_jobs()[BUNDLE_JOB])
+    suites = sorted(s for s in _all_suites() if _covers(sweep, s) and s not in bundle)
+    assert suites, f"{SWEEP_JOB} sweeps none of {SUITE_DIRS}; retarget this test"
+
+    hide = f"import sys\nfor m in {NOT_IN_THE_SWEEP!r}: sys.modules[m] = None\nimport pytest\nsys.exit(pytest.main())"
+    proc = subprocess.run(
+        [sys.executable, "-c", hide, "-q", "-p", "no:cacheprovider", *suites],
+        cwd = REPO,
+        env = {**os.environ, "PYTHONPATH": str(REPO)},
+        capture_output = True,
+        text = True,
+        timeout = 600,
+    )
+    failed = [line for line in proc.stdout.splitlines() if line.startswith(("FAILED", "ERROR"))]
+    assert proc.returncode == 0 and not failed, (
+        f"{SWEEP_JOB} would go red: these fail without {NOT_IN_THE_SWEEP[0]} rather than skip. Guard them the way "
+        f"their neighbours do, `if importlib.util.find_spec('torch') is None: pytest.skip(...)`.\n"
+        + ("\n".join(failed[:20]) or proc.stdout[-3000:] + proc.stderr[-3000:])
+    )
 
 
 def test_the_bundle_stays_parallel_and_file_scoped() -> None:

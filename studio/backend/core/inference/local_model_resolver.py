@@ -1330,6 +1330,31 @@ def _resolve_from_index(
         return None
 
 
+def local_gguf_pinned_variant(requested: str) -> Optional[str]:
+    """The on-disk quant ``repo:VARIANT`` pins, by current label or legacy alias, else None.
+
+    Unlike :func:`resolve_local_gguf`, a suffix naming no quant (``:latest``) never falls back to the
+    repo's preferred one.
+    """
+    base, sep, wanted = requested.rpartition(":")
+    if not sep:
+        return None
+    try:
+        entry = _index().get(base.strip().lower())
+    except Exception:
+        return None
+    if entry is None:
+        return None
+    wanted = wanted.strip().lower()
+    for variant in entry.variants:
+        if variant.lower() == wanted:
+            return variant
+    for legacy, current in entry.aliases:
+        if legacy == wanted:
+            return current
+    return None
+
+
 def local_target_is_gguf(load_path: Optional[str], loader_id: Optional[str] = None) -> bool:
     """Whether an auto-switch target is served by llama.cpp rather than the orchestrator.
 
