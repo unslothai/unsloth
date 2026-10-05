@@ -9,7 +9,6 @@ from pathlib import Path
 from typing import Optional
 
 
-# Free space a concurrent writer can move between the two reads of one pool.
 _SAME_POOL_SLACK = 1 << 30
 
 
@@ -31,10 +30,9 @@ def _device(path: Path) -> int:
 
 
 def models_disk_usage(cache: Optional[Path] = None) -> Optional[dict]:
-    """Usage of the HF hub cache's volume, or None when it is the system disk or unreadable.
+    """The HF hub cache's volume, or None when it is the system disk or unreadable.
 
-    realpath first, so a cache path that does not exist yet behind a symlink climbs the target's
-    parents (the drive that will hold the bytes), not the link's.
+    realpath first: a not-yet-created cache behind a symlink climbs the target's parents.
     """
     cache = _hub_cache() if cache is None else cache
     if cache is None:
@@ -48,11 +46,10 @@ def models_disk_usage(cache: Optional[Path] = None) -> Optional[dict]:
         system = shutil.disk_usage(root)
     except (OSError, ValueError):
         return None
-    # APFS volumes in one container (macOS `/` vs the Data volume) and btrfs subvolumes (Fedora's
-    # /home) have their own st_dev but share one pool: same size, same free space.
+    # APFS Data volumes (macOS) and btrfs subvolumes (Fedora /home) have their own st_dev but share `/`'s pool.
     if usage.total == system.total and abs(usage.free - system.free) < _SAME_POOL_SLACK:
         return None
-    # psutil's percent (root-reserved blocks excluded), matching the system disk reading.
+    # psutil's percent formula, matching the system disk reading.
     seen = usage.used + usage.free
     return {
         "total_gb": round(usage.total / 1e9, 2),
