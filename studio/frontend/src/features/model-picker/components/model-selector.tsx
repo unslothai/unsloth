@@ -61,7 +61,11 @@ import {
   artifactForRepoId,
   type CatalogGroup,
 } from "./model-selector/model-catalog";
-import { HubModelPicker, hasDownloadedModels } from "./model-selector/pickers";
+import {
+  HubModelPicker,
+  hasDownloadedModels,
+  type ModelPickerRowFilter,
+} from "./model-selector/pickers";
 import { PillTabs } from "./model-selector/pill-tabs";
 import { loraOptionLabel } from "./model-selector/row-meta";
 import { isFineTunedSource } from "./model-selector/source-tabs";
@@ -83,6 +87,7 @@ export type {
   ModelSelectorChangeMeta,
 } from "./model-selector/types";
 export type { ExternalConnectionRef } from "./model-selector/missing-external-model";
+export type { ModelPickerRowFilter } from "./model-selector/pickers";
 
 interface ModelSelectorProps {
   models: ModelOption[];
@@ -139,6 +144,7 @@ interface ModelSelectorProps {
   communityModelPolicy?: CommunityModelPolicy;
   /** The one opaque on-device artifact kind this task runtime may load. */
   opaqueKind?: "diffusers_pipeline" | "diffusers_modular_pipeline";
+  rowFilter?: ModelPickerRowFilter;
   /** Hub filter the Search Hub button opens with. Also shows Search Hub on curated task pickers. */
   hubCapability?: CapabilityKey;
   /** Trigger text when nothing is loaded. Defaults to "Select model"; task pages name what they
@@ -369,6 +375,7 @@ function ModelSelectorContent({
   catalog,
   communityModelPolicy,
   opaqueKind,
+  rowFilter,
 }: {
   open: boolean;
   models: ModelOption[];
@@ -400,6 +407,7 @@ function ModelSelectorContent({
   catalog?: CatalogGroup[];
   communityModelPolicy?: CommunityModelPolicy;
   opaqueKind?: "diffusers_pipeline" | "diffusers_modular_pipeline";
+  rowFilter?: ModelPickerRowFilter;
 }) {
   const t = useT();
   const hasSelection = Boolean(value);
@@ -676,6 +684,7 @@ function ModelSelectorContent({
               catalog={catalog}
               communityModelPolicy={communityModelPolicy}
               opaqueKind={opaqueKind}
+              rowFilter={rowFilter}
               npu={npu}
               section={effectiveHubSection}
               sectionToggle={
@@ -739,6 +748,7 @@ export function ModelSelector({
   catalog,
   communityModelPolicy = "none",
   opaqueKind,
+  rowFilter,
   hubCapability,
   placeholder,
   loaded,
@@ -939,6 +949,7 @@ export function ModelSelector({
         catalog={catalog}
         communityModelPolicy={communityModelPolicy}
         opaqueKind={opaqueKind}
+        rowFilter={rowFilter}
       />
     </Popover>
   );

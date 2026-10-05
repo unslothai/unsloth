@@ -461,6 +461,26 @@ def test_a_clip_counts_its_recipe_toward_what_it_takes_on_disk(client, monkeypat
     assert "storageBytes" not in items[f"image:{image}"]
 
 
+def test_a_conversion_counts_the_recording_it_kept_toward_what_it_takes_on_disk(
+    client, monkeypatch, tmp_path
+):
+    from core.inference import audio_gallery
+
+    monkeypatch.setattr(library, "_SOURCES", (library._audio_items,))
+    source = tmp_path / "upload.wav"
+    source.write_bytes(b"S" * 1000)
+    meta = {"model": "sample-vc", "audio_type": "speech", "sample_rate": 24000, "duration_s": 1.0}
+    audio = audio_gallery.save(
+        b"RIFF0000WAVE", {**meta, "prompt": "Converted", "created_at": 1_700_000_000}, source
+    )["id"]
+    wav = audio_gallery.audio_path(audio)
+    item = _items(client)[0][f"audio:{audio}"]
+    assert item["sizeBytes"] == wav.stat().st_size
+    assert item["storageBytes"] == (
+        wav.stat().st_size + wav.with_suffix(".json").stat().st_size + 1000
+    )
+
+
 def test_listed_images_are_sized_without_resolving_each_but_links_are_still_checked(
     client, monkeypatch, tmp_path
 ):
