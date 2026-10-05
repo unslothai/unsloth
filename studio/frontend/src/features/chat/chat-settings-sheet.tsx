@@ -51,6 +51,7 @@ import {
 } from "@/features/model-picker";
 import { RetrievalSettingsSection } from "@/features/rag";
 import { useLlamaUpdateCheck } from "@/hooks/use-llama-update-check";
+import { useScrollFades } from "@/hooks/use-scroll-fades";
 import { useUiSpaceScale } from "@/hooks/use-ui-space-scale";
 import {
   CHAT_SETTINGS_WIDTH_MIN,
@@ -1094,7 +1095,12 @@ export function ChatSettingsPanel({
 
   useEffect(() => () => promptObserverRef.current?.disconnect(), []);
 
-  const settingsScrollRef = useRef<HTMLDivElement>(null);
+  // Settings dissolve at whichever edge they run past, as on Images and Video.
+  const {
+    attach: attachSettingsScroll,
+    onScroll: onSettingsScroll,
+    className: settingsFadeClass,
+  } = useScrollFades();
 
   const settingsContent = (
     <>
@@ -1139,8 +1145,12 @@ export function ChatSettingsPanel({
       </div>
 
       <div
-        ref={settingsScrollRef}
-        className="run-settings-scroll relative min-h-0 flex-1 overflow-y-auto"
+        ref={attachSettingsScroll}
+        onScroll={onSettingsScroll}
+        className={cn(
+          "run-settings-scroll panel-scroll-fade relative min-h-0 flex-1 overflow-y-auto",
+          settingsFadeClass,
+        )}
       >
       <div className="px-[calc(18px*var(--ui-space-scale,1))] pt-3">
         {(hasModelContent || modelConfig) && (
