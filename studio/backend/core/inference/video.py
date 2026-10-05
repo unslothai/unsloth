@@ -4279,9 +4279,12 @@ class VideoBackend:
         for source in sources:
             if getattr(source, "kind", None) != "repo":
                 continue
+            names = list(dict.fromkeys(candidate_filenames_of(source)))
+            # the resolver's filter: readable names, unless that leaves none
+            names = [n for n in names if restricted_prequant_load_supported(scheme, n)] or names
             names = prefer_cached_pickle_twins(
                 source.location,
-                list(dict.fromkeys(candidate_filenames_of(source))),
+                names,
                 readable = lambda n: restricted_prequant_load_supported(scheme, n),
                 cache_dir = hub_cache_dir(),
             )
@@ -4411,9 +4414,14 @@ class VideoBackend:
         by_name = {s.rfilename: int(s.size or 0) for s in (info.siblings or [])}
         files: list[tuple[str, int]] = []
         for src in sources:
+            names = list(candidate_filenames_of(src))
+            # the resolver's filter: readable names, unless that leaves none
+            names = [
+                n for n in names if restricted_prequant_load_supported(transformer_quant, n)
+            ] or names
             wanted = prefer_cached_pickle_twins(
                 src.location,
-                list(candidate_filenames_of(src)),
+                names,
                 readable = lambda n: restricted_prequant_load_supported(transformer_quant, n),
                 cache_dir = hub_cache_dir(),
             )
@@ -4449,9 +4457,14 @@ class VideoBackend:
 
         cached: list[str] = []
         for src in sources:
+            # only names the loader can open: a cached unreadable file must not drop the dense shards
             ordered = prefer_cached_pickle_twins(
                 src.location,
-                list(candidate_filenames_of(src)),
+                [
+                    n
+                    for n in candidate_filenames_of(src)
+                    if restricted_prequant_load_supported(transformer_quant, n)
+                ],
                 readable = lambda n: restricted_prequant_load_supported(transformer_quant, n),
                 cache_dir = hub_cache_dir(),
                 log = False,

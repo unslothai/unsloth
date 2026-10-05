@@ -525,6 +525,30 @@ def test_video_cached_repo_probe_follows_the_same_rule(hub, monkeypatch):
     assert probe(None, "int8", "base/Model", online = False) == REPO
 
 
+def test_video_cached_repo_probe_ignores_a_cached_unreadable_file(hub, monkeypatch):
+    """Offline, a cached safetensors this install cannot read is not what the loader opens."""
+    from core.inference.diffusion import DiffusionBackend
+    from core.inference.video import VideoBackend
+
+    hub.cache("Model-INT8.safetensors")
+    monkeypatch.setattr(
+        pq,
+        "restricted_prequant_load_supported",
+        lambda scheme = None, filename = None: not str(filename).endswith(".safetensors"),
+    )
+    monkeypatch.setattr(
+        VideoBackend, "_denoiser_prequant_source_list", staticmethod(lambda *a, **k: [_dit()])
+    )
+    monkeypatch.setattr(
+        DiffusionBackend,
+        "_hub_file_is_cached",
+        staticmethod(lambda repo, name, *a, **k: (repo, name) in hub.cached),
+    )
+    assert VideoBackend._denoiser_prequant_cached_repo(None, "int8", "b", online = False) is None
+    hub.cache("Model-INT8.pt")
+    assert VideoBackend._denoiser_prequant_cached_repo(None, "int8", "b", online = False) == REPO
+
+
 def test_te_pricing_does_not_call_a_cached_fp8_encoder_free(hub, monkeypatch, tmp_path):
     """The text-encoder size estimate: a cached FP8 encoder is not what loads when an uncached
     INT8-ConvRot encoder is ahead of it and no 404 for it is recorded, so the size is not exact."""
