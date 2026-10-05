@@ -840,8 +840,12 @@ def test_clef_loads_scores_like_cloudflares_model_and_trains(clef_checkpoint, tm
         again, _ = reloaded(batch["input_ids"], batch["attention_mask"], batch["records"])
         theirs = released(batch)[0]
     # Saved in bf16, so the reload rounds the trained weights.
-    valid = trained > -1e3
-    assert torch.allclose(trained[valid], again[valid] * folded, atol = 0.05)
+    # Compared as served probabilities: the folded head is trained / folded, and a small folded
+    # temperature would magnify bf16 rounding if the logits were compared directly.
+    mask = trained > -1e3
+    served = torch.softmax((trained / folded).masked_fill(~mask, -1e4), -1)
+    reloaded_served = torch.softmax(again.masked_fill(~mask, -1e4), -1)
+    assert torch.allclose(served, reloaded_served, atol = 0.02)
     for row, z in enumerate(theirs):
         assert int(z.argmax()) == int(again[row, : len(z)].argmax())
 
@@ -1125,3 +1129,14 @@ def test_clef_calibration_fits_being_right_and_serves_through_the_head_temperatu
         config["head_temperature"]
         * decision._laya().common.clamp_temperature(config["temperature"][0])
     )
+
+
+def test_clef_save_keeps_the_source_tokenizer_files_byte_identical(clef_checkpoint, tmp_path):
+    model, processor = FastDecisionModel.from_pretrained(str(clef_checkpoint), max_seq_length = 512)
+    out = tmp_path / "out"
+    model.save_pretrained_merged(str(out))
+    for name in ("tokenizer.json", "tokenizer_config.json", "processor_config.json"):
+        if (clef_checkpoint / name).is_file():
+            assert (out / name).read_bytes() == (clef_checkpoint / name).read_bytes(), name
+    # Without it transformers warns of an "incorrect regex pattern" when loading the tokenizer.
+    assert "transformers_version" in json.loads((out / "config.json").read_text())

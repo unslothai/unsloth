@@ -42,8 +42,18 @@ CLEF_RECIPE = {}
 _FILES = ("rl_agent_config.json", "model.safetensors")
 _DIRS = ("encoder", "tokenizer")
 _CLEF_HEAD_FILES = ("joint_head.safetensors", "joint_head_config.json")
-# Copied next to a saved Clef fine-tune so Cloudflare's own loader and chat template keep working.
-_CLEF_EXTRA_FILES = ("joint_schema_model.py", "chat_template.jinja", "LICENSE")
+# Copied byte for byte from the checkpoint a Clef fine-tune started from: Cloudflare's loader and
+# license, and the tokenizer / processor files, which transformers would otherwise rewrite (a
+# re-saved tokenizer_config.json trips transformers' "incorrect regex pattern" warning).
+_CLEF_EXTRA_FILES = (
+    "joint_schema_model.py",
+    "LICENSE",
+    "chat_template.jinja",
+    "tokenizer.json",
+    "tokenizer_config.json",
+    "processor_config.json",
+    "generation_config.json",
+)
 CLEF_MAX_LEN = 4096
 # laya 0.3.5 ships inside Unsloth for Studio's Decision API (studio/backend/vendor/README.md).
 _VENDORED_LAYA = (
@@ -675,6 +685,7 @@ def _load_clef(
     model._unsloth_fast_backbone = fast
     model._saved_temp_tokenizer = processor
     model._unsloth_source_folder = str(folder)
+    model._unsloth_source_vocab = len(getattr(processor, "tokenizer", processor))
     model.save_pretrained_merged = types.MethodType(save_pretrained_merged, model)
     model.push_to_hub_merged = types.MethodType(push_to_hub_merged, model)
     return model, processor
@@ -772,6 +783,19 @@ def _fold_temperature(state: dict, temperature: float) -> bool:
     return True
 
 
+def _stamp_transformers_version(config_file: Path) -> None:
+    # Unsloth's merged save writes config.json without transformers_version; transformers then
+    # cannot rule out an old Mistral tokenizer and warns of an "incorrect regex pattern" on load.
+    import transformers
+
+    if not config_file.is_file():
+        return
+    config = json.loads(config_file.read_text(encoding = "utf-8"))
+    if "transformers_version" not in config:
+        config["transformers_version"] = transformers.__version__
+        config_file.write_text(json.dumps(config, indent = 2) + "\n", encoding = "utf-8")
+
+
 def _save_clef(self, save_directory, tokenizer) -> None:
     import shutil
 
@@ -807,9 +831,15 @@ def _save_clef(self, save_directory, tokenizer) -> None:
                 encoder = copy.deepcopy(encoder).merge_and_unload()
             encoder.save_pretrained(str(staging))
             tokenizer.save_pretrained(str(staging))
+        text_tokenizer = getattr(tokenizer, "tokenizer", tokenizer)
+        # A tokenizer the caller grew (added tokens) is saved as it is.
+        same_tokenizer = len(text_tokenizer) == getattr(self, "_unsloth_source_vocab", -1)
         for name in _CLEF_EXTRA_FILES:
-            if (source / name).is_file() and not (staging / name).exists():
+            if not same_tokenizer and name.startswith("tokenizer"):
+                continue
+            if (source / name).is_file():
                 shutil.copyfile(source / name, staging / name)
+        _stamp_transformers_version(staging / "config.json")
         (staging / "unsloth_decision_config.json").write_text(
             json.dumps(config, indent = 2), encoding = "utf-8"
         )
