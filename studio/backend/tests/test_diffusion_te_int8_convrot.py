@@ -212,9 +212,6 @@ def test_int8_source_prefers_the_convrot_file_then_the_fp8_one():
         FP8_NAME,
         "Qwen-Image-2.1-text_encoder-FP8.pt",
     )
-    # Only the int8 file is declared: a cached fp8 encoder behind it must not size this load as
-    # download-free, since online the int8 file is fetched first.
-    assert src.declared_filenames == (INT8_NAME,)
     # An explicit fp8 request never asks for the int8 file.
     fp8 = tpq.te_prequant_sources(fam, te_quant_mode = "fp8", target = CUDA_BF16)["text_encoder"]
     assert INT8_NAME not in tpq.te_candidate_filenames(fp8)

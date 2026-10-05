@@ -232,9 +232,6 @@ class TePrequantSource:
     # Names to try after ``filename``, in order, when the repo does not carry it. Only the "repo"
     # kind uses this: a local path either exists or it does not.
     fallback_filenames: tuple = ()
-    # Names the family DECLARED the repo hosts, as on ``PrequantSource``: the cache probe never lets an
-    # older cached artifact stand in for an uncached declared one the online resolver would fetch first.
-    declared_filenames: tuple = ()
 
 
 def te_prequant_repo_stem(repo_id: str, component: str, scheme: str) -> str:
@@ -362,8 +359,6 @@ def resolve_te_prequant_source(
             location = repo_id,
             filename = filename,
             fallback_filenames = tuple(n for n in fallback if n != filename),
-            # Declared by the family table: a cached fp8 encoder behind it does not make this load download-free.
-            declared_filenames = (filename,),
         )
     repo_id = family_te_prequant_repo(fam, scheme, component)
     if repo_id:
