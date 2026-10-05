@@ -6260,8 +6260,7 @@ def _offload_embedding_for_room(model, require_frozen = True):
     return offload_spare_embeddings(model, require_frozen = require_frozen) > 0
 
 
-# get_peft_model(offload_layers = "auto") runs before the trainer: plan for the notebooks'
-# per_device_train_batch_size until the trainer re-plans with its own.
+# Attach-time "auto" plans for the notebooks' batch size until the trainer re-plans with its own.
 _AUTO_OFFLOAD_BATCH_SIZE = 2
 
 
@@ -6443,7 +6442,6 @@ def install_block_swap(
             return None
         if BlockSwap is None:
             _check_block_swap(model)
-        # The trainer re-plans marked models for its real batch size (replan_auto_offload_for_trainer).
         model._unsloth_offload_layers_auto = prefetch_depth
         offload_layers = _auto_block_swap_indices(model, prefetch_depth)
         if not offload_layers:
@@ -6509,9 +6507,7 @@ def _trainer_offload_replan_skip(trainer):
 
 
 def replan_auto_offload_for_trainer(trainer):
-    """get_peft_model(offload_layers = "auto") planned for _AUTO_OFFLOAD_BATCH_SIZE rows; once the
-    trainer knows per_device_train_batch_size and its max length, swap more layers if the real step
-    does not fit. Never fewer layers than before; returns the swapper in use."""
+    """Swap more layers when the trainer's real batch does not fit the attach-time "auto" plan; never fewer."""
     model = getattr(trainer, "model", None)
     prefetch_depth = getattr(model, "_unsloth_offload_layers_auto", None)
     if prefetch_depth is None or _trainer_offload_replan_skip(trainer) is not None:
@@ -6523,8 +6519,7 @@ def replan_auto_offload_for_trainer(trainer):
         or getattr(args, "max_seq_length", None)
         or getattr(model, "max_seq_length", None)
     )
-    # DPO / ORPO / CPO run chosen and rejected rows of each pair in one forward. Unsloth's copies
-    # (_UnslothDPOTrainer) do not inherit TRL's class, so match the name suffix.
+    # DPO / ORPO / CPO forward chosen + rejected rows; Unsloth's copies do not inherit TRL's class.
     pairs = any(c.__name__.endswith(_PAIRED_FORWARD_TRAINERS) for c in type(trainer).__mro__)
     rows = batch_size * (2 if pairs else 1)
     reserve, seq_len = _training_reserve_bytes(model, seq_len, batch_size = rows)
@@ -6532,8 +6527,7 @@ def replan_auto_offload_for_trainer(trainer):
     old = list(getattr(swapper, "indices", None) or ())
     layers = find_decoder_layers(model)
     if old:
-        # Swapped layers already left the card, so free memory counts them once. A device_map
-        # model needs the reserve free on every card holding a decoder layer.
+        # Every card with a decoder layer needs the reserve (swapped layers already left it).
         free = {device: usable_cuda_bytes(device) for device in _layer_devices(layers)}
         short = max(reserve - f for f in free.values())
         if short <= 0:
@@ -6567,8 +6561,7 @@ def replan_auto_offload_for_trainer(trainer):
         model._unsloth_block_swap = None
     try:
         indices = _auto_block_swap_indices(model, prefetch_depth, batch_size = rows, seq_len = seq_len)
-        # Union: the old plan's layers stay swapped (checkpoint_skip_layers chose among the others)
-        # and every layer the planner picked for a card's shortfall is kept.
+        # Union: old layers stay swapped (checkpoint_skip_layers chose among the rest), new picks kept.
         indices = sorted(set(old) | set(indices))
         if not indices:
             return None
@@ -6578,8 +6571,7 @@ def replan_auto_offload_for_trainer(trainer):
         if old:
             _attach_block_swap(model, old, prefetch_depth)
         raise
-    # checkpoint_skip_layers chose among the layers swapped at attach time; a swapped layer must
-    # recompute in backward, else its weights stay on the card and the slot pool grows.
+    # A swapped layer must recompute in backward, else its weights stay on the card.
     for i in swapper.indices:
         layers[i].__dict__.pop("_unsloth_skip_checkpoint", None)
     print(
