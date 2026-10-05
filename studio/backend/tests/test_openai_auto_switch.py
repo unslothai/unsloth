@@ -7320,7 +7320,7 @@ def test_spec_draft_n_max_only_stored_for_mtp_modes():
 def test_mlx_speculative_modes_and_drafter_survive_to_the_load():
     stored = {"spec_draft_n_max": 4, "spec_draft_model": " d "}
     for mode, is_gguf, kept in (
-        ("eagle3+ngram", False, {"spec_draft_n_max": 4, "spec_draft_model": "d"}),
+        ("eagle3", False, {"spec_draft_n_max": 4, "spec_draft_model": "d"}),
         ("eagle3", True, {}),
     ):
         entry = settings.normalize_model_override({"speculative_type": mode, **stored})

@@ -52,9 +52,7 @@ test("the rest of the mapping still resolves as before", () => {
 });
 
 test("MLX modes and an explicit Auto survive storage; the drafter only with a drafter mode", () => {
-  for (const mode of ["eagle3", "dflash+ngram"]) {
-    assert.equal(specOf(mode), mode);
-  }
+  assert.deepEqual([specOf("eagle3"), specOf("dflash+ngram")], ["eagle3", null]);
   const drafterOf = (speculativeType: string, specDraftModel: string) =>
     normalizePerModelConfig({ speculativeType, specDraftModel }).specDraftModel;
   assert.deepEqual(

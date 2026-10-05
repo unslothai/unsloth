@@ -21,14 +21,8 @@ export const SPECULATIVE_TYPES = [
   "off",
 ] as const;
 
-/** Values only an MLX load reads (studio/backend/core/inference/mlx_speculative.py): eagle3, and the
- *  `<kind>+ngram` spellings it reads as their kind. */
-export const MLX_ONLY_SPEC_TYPES = [
-  "eagle3",
-  "dspark+ngram",
-  "dflash+ngram",
-  "eagle3+ngram",
-] as const;
+/** Values only an MLX load reads (studio/backend/core/inference/mlx_speculative.py). */
+export const MLX_ONLY_SPEC_TYPES = ["eagle3"] as const;
 
 /** What the MLX control offers, in its order. */
 export const MLX_SPECULATIVE_TYPES = [
@@ -41,9 +35,9 @@ export const MLX_SPECULATIVE_TYPES = [
   "off",
 ] as const;
 
-/** The mode an MLX load runs: every drafter kind also copies repeated text, so `<kind>+ngram` is its kind. */
+/** The mode an MLX load runs: every drafter kind also copies repeated text, so llama.cpp's `mtp+ngram` is `mtp`. */
 export function mlxSpeculativeMode(mode: string): string {
-  return mode.endsWith("+ngram") ? mode.slice(0, -"+ngram".length) : mode;
+  return mode === "mtp+ngram" ? "mtp" : mode;
 }
 
 /**

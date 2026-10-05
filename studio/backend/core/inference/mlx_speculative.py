@@ -21,7 +21,7 @@ logger = get_logger(__name__)
 MLX_DRAFTER_KINDS = ("mtp", "dflash", "dspark", "eagle3")
 MLX_SPEC_MODES = frozenset({"auto", "off", "ngram", *MLX_DRAFTER_KINDS})
 _LEGACY_MODES = {
-    **{f"{kind}+ngram": kind for kind in MLX_DRAFTER_KINDS},
+    "mtp+ngram": "mtp",
     "default": "auto",
     "draft-mtp": "mtp",
     "draft-dspark": "dspark",

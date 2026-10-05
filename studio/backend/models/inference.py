@@ -217,7 +217,7 @@ class LoadRequest(BaseModel):
             "'ngram-mod' (-> ngram), and 'ngram-simple' (kept as-is) are "
             "still accepted. MLX models read 'auto', 'mtp', 'dflash', 'dspark', 'eagle3', "
             "'ngram' and 'off'; every drafter kind also copies repeated text (n-gram), "
-            "and '<kind>+ngram' reads as its kind. On MLX, 'auto' attaches the first "
+            "so 'mtp+ngram' reads as 'mtp'. On MLX, 'auto' attaches the first "
             "cached drafter (an MTP head or assistant, then DFlash2, DFlash, DSpark, EAGLE-3) that "
             "costs no context, on loads served through mlx-vlm. Ignored for other non-GGUF models."
         ),

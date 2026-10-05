@@ -337,7 +337,7 @@ VALID_KV_CACHE_DTYPES = frozenset(
     {"f16", "bf16", "q8_0", "q4_0", "q4_1", "q5_0", "q5_1", "iq4_nl", "f32"}
 )
 # The GGUF control never offers these, and a GGUF load drops them.
-MLX_ONLY_SPEC_TYPES = frozenset({"eagle3", "dspark+ngram", "dflash+ngram", "eagle3+ngram"})
+MLX_ONLY_SPEC_TYPES = frozenset({"eagle3"})
 VALID_SPECULATIVE_TYPES = MLX_ONLY_SPEC_TYPES | frozenset(
     {
         "auto",

@@ -1933,9 +1933,7 @@ export function normalizeSpeculativeType(
     return "ngram";
   }
   if (s === "mtp+ngram") return "mtp+ngram";
-  if (s === "eagle3" || s === "dspark+ngram" || s === "dflash+ngram" || s === "eagle3+ngram") {
-    return s;
-  }
+  if (s === "eagle3") return s;
   // Comma-chained legacy values (e.g. from older backend echoes).
   const parts = s
     .split(",")
