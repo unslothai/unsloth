@@ -53,6 +53,10 @@ time = { version = "0.3", features = ["formatting"] }
 libc = "0.2"
 signal-hook = "0.4"
 
+[dev-dependencies]
+# A paused clock for the address poll's tests (browser_webview.rs).
+tokio = { version = "1", features = ["test-util"] }
+
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = { version = "0.6", features = ["exception"] }
 
