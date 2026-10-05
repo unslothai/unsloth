@@ -804,7 +804,10 @@ class _MarkdownRenderer(HTMLParser):
         if not self._exit_tag(tag):
             return
 
-        if tag in _HEADING_TAGS:
+        if tag == "li":
+            self._li_marker_pending = False
+
+        elif tag in _HEADING_TAGS:
             self._emit("\n\n")
 
         elif tag == "a":

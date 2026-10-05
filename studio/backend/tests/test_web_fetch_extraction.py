@@ -354,6 +354,7 @@ def test_visible_void_hr_still_renders():
         ),
         ("<ol><li><p>One</p></li><li><div>Two</div></li></ol>", "1. One\n\n2. Two"),
         ("<ul><li><p>a</p><ul><li><p>b</p></li></ul></li></ul>", "* a\n\n  * b"),
+        ("<ul><li></li><p>outside</p></ul>", "*\n\noutside"),
     ],
 )
 def test_block_opening_list_item_stays_on_marker_line(html, expected):
