@@ -347,6 +347,7 @@ from routes import (
     video_openai_router,
     youtube_router,
 )
+import routes.browser as _browser_routes
 from routes.llama import router as llama_router
 from routes.engines import router as engines_router
 from routes.llama_compat import is_engine_probe_path, router as llama_compat_router
@@ -1078,7 +1079,14 @@ from starlette.datastructures import MutableHeaders  # noqa: E402
 _CSP_SCRIPT_NONCE_HEADER = "x-internal-script-nonce"
 _ARTIFACT_PREVIEW_FRAME_PATH = "/api/inference/artifact-preview-frame"
 # Framed shells: their own CSP frame-ancestors governs embedding, so no X-Frame-Options DENY.
-_FRAME_SHELL_PATHS = frozenset({_ARTIFACT_PREVIEW_FRAME_PATH, "/api/inference/mcp-app-frame"})
+_FRAME_SHELL_PATHS = frozenset(
+    {
+        _ARTIFACT_PREVIEW_FRAME_PATH,
+        "/api/inference/mcp-app-frame",
+        _browser_routes.BROWSER_FRAME_PATH,
+        _browser_routes.BROWSER_PRINT_PATH,
+    }
+)
 _DOCS_FONT_CSS = "https://fonts.googleapis.com"
 _DOCS_FONT_FILES = "https://fonts.gstatic.com"
 _DOCS_PATHS = frozenset({"/docs", "/docs/oauth2-redirect", "/redoc"})
@@ -1350,6 +1358,7 @@ _BODY_PROTECTED_PREFIXES = (
     "/api/train",
     "/api/export",
     "/api/library",
+    "/api/browser",
     "/mcp",
 )
 _DATASET_UPLOAD_PASSTHROUGH_PREFIXES = (
@@ -1663,6 +1672,7 @@ app.add_middleware(
         "x-typesafe-request-id",
         "X-Unsloth-Monitor-ID",
         *_hub_endpoint_proxy.EXPOSED_HEADERS,
+        *_browser_routes.EXPOSED_HEADERS,
     ],
     # is_allowed_origin closes the moment the tunnel URL clears, but a preflight already cached by the browser
     # does not. Measured in WebKit: with Starlette's 600s default, a state-changing request still REACHED the
@@ -1747,6 +1757,7 @@ for _prefix, _upstream, _pages in (
         tags = ["hub"],
     )
 app.include_router(youtube_router, prefix = "/api/youtube", tags = ["youtube"])
+app.include_router(_browser_routes.router, prefix = "/api/browser", tags = ["browser"])
 
 # Re-wrap /v1/* client errors into OpenAI/Anthropic envelopes; non-/v1 keeps {"detail": ...}.
 install_api_error_handlers(app)
@@ -2553,6 +2564,10 @@ def get_system_info(
         logger.debug(f"Failed to get disk usage: {e}")
         disk = None
 
+    from utils.system_disk import cached_models_disk_usage
+
+    models_disk = cached_models_disk_usage()
+
     try:
         current_process = psutil.Process(os.getpid())
         process_used_mb = round(current_process.memory_info().rss / 1024**2)
@@ -2602,6 +2617,8 @@ def get_system_info(
             "free_gb": round(disk.free / 1e9, 2) if disk else 0,
             "percent_used": disk.percent if disk else 0,
         },
+        # Additive: null unless the HF cache sits on another volume (e.g. a symlinked drive).
+        "models_disk": models_disk,
         "gpu": gpu_info,
         "inference_gpu": inference_gpu_info,
         "ml_packages": ml_packages,

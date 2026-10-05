@@ -9,8 +9,7 @@ import {
 } from "@/components/ui/collapsible";
 import { usePlatformStore } from "@/config/env";
 import {
-  TARGET_MODULES,
-  getCptUiTargetModules,
+  getUiTargetModules,
   isCptTargetModuleActive,
   toggleCptTargetModule,
 } from "@/config/training";
@@ -197,39 +196,29 @@ export function LoraParamsSection(): ReactElement | null {
                 {t("studio.params.targetModules")}
               </span>
               <div className="flex flex-wrap gap-1.5">
-                {(isCpt ? getCptUiTargetModules() : TARGET_MODULES).map(
-                  (module) => {
-                    const active = isCpt
-                      ? isCptTargetModuleActive(store.targetModules, module)
-                      : store.targetModules.includes(module);
-                    return (
-                      <button
-                        key={module}
-                        type="button"
-                        aria-pressed={active}
-                        onClick={() =>
-                          store.setTargetModules(
-                            isCpt
-                              ? toggleCptTargetModule(
-                                  store.targetModules,
-                                  module,
-                                )
-                              : active
-                                ? store.targetModules.filter(
-                                    (candidate) => candidate !== module,
-                                  )
-                                : [...store.targetModules, module],
-                          )
-                        }
-                        className={`cursor-pointer rounded-full border px-2.5 py-0.5 text-ui-11 font-mono transition-colors ${selectableOptionStateClassName(active)} ${
-                          active ? "text-foreground" : "text-muted-foreground"
-                        }`}
-                      >
-                        {module}
-                      </button>
-                    );
-                  },
-                )}
+                {getUiTargetModules(isCpt).map((module) => {
+                  const active = isCptTargetModuleActive(
+                    store.targetModules,
+                    module,
+                  );
+                  return (
+                    <button
+                      key={module}
+                      type="button"
+                      aria-pressed={active}
+                      onClick={() =>
+                        store.setTargetModules(
+                          toggleCptTargetModule(store.targetModules, module),
+                        )
+                      }
+                      className={`cursor-pointer rounded-full border px-2.5 py-0.5 text-ui-11 font-mono transition-colors ${selectableOptionStateClassName(active)} ${
+                        active ? "text-foreground" : "text-muted-foreground"
+                      }`}
+                    >
+                      {module}
+                    </button>
+                  );
+                })}
               </div>
             </div>
           )}
