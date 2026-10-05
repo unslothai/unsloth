@@ -2232,11 +2232,14 @@ def _estimate_eta(total_steps: int, step: int, first_step_at: float, now: float)
 def _map_guidance(
     fam: DiffusionFamily, guidance: Optional[float]
 ) -> tuple[Optional[float], Optional[float]]:
-    """(cfg_scale, guidance) for sd-cli from the single diffusers ``guidance`` value. FLUX families
-    take a distilled embedded ``--guidance``; everyone else uses real classifier-free
-    ``--cfg-scale``. A distilled 0/1 means CFG off (sd-cli's 1.0); a value > 1 is real CFG."""
-    if fam.name in ("flux.1", "flux.2-klein", "flux.2-dev"):
-        return None, (float(guidance) if guidance is not None else None)
+    """(cfg_scale, guidance) for sd-cli from the single diffusers ``guidance`` value. The
+    guidance-distilled FLUX families (FLUX.1 dev / schnell / Kontext, FLUX.2-dev) take an embedded
+    ``--guidance`` and run a single pass at cfg 1.0. Everyone else uses real classifier-free
+    ``--cfg-scale``: a distilled 0/1 means CFG off (1.0), a value > 1 is real CFG. That covers
+    FLUX.2-klein, which has no guidance embedder: the 4-step models default to 1.0, the undistilled
+    klein-base to real CFG. The cfg is always sent, because sd.cpp's own default is 7.0, not off."""
+    if fam.name in ("flux.1", "flux.1-kontext", "flux.2-dev"):
+        return 1.0, (float(guidance) if guidance is not None else None)
     if fam.name == "z-image":
         # diffusers Z-Image computes pos + g * (pos - neg), so its g is standard CFG minus 1 (sd.cpp's cfg 4 == g 3).
         return (float(guidance) + 1.0 if guidance is not None and guidance > 0.0 else 1.0), None
