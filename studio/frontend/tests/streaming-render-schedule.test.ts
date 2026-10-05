@@ -15,6 +15,7 @@ import {
   markdownRenderKey,
   markdownRenderScope,
   parseMarkdownIntoRenderableBlocks,
+  repairStreamingMarkdown,
   withoutStreamdownAnimationPlugin,
 } from "../src/components/assistant-ui/streaming-render-schedule.ts";
 import { preprocessLaTeX } from "../src/lib/latex.ts";
@@ -174,12 +175,9 @@ test("incremental blocks match a full Streamdown split at every prefix", () => {
     for (let length = 0; length <= source.length; length += 1) {
       const input = processStreamingText(source.slice(0, length));
       const render = cache.update(input);
-      const repaired = remend(input);
       assert.deepEqual(
         render.parseMarkdownIntoBlocks(render.markdown),
-        parseMarkdownIntoRenderableBlocks(
-          hasIncompleteLinkRepair(input, repaired) ? input : repaired,
-        ),
+        parseMarkdownIntoRenderableBlocks(repairStreamingMarkdown(input)),
         `block mismatch at prefix ${length} of ${JSON.stringify(source)}`,
       );
     }

@@ -925,6 +925,12 @@ export function hasIncompleteLinkRepair(
   );
 }
 
+/** `remend`, except an unfinished link stays literal (see `hasIncompleteLinkRepair`). */
+export function repairStreamingMarkdown(source: string): string {
+  const repaired = remend(source);
+  return hasIncompleteLinkRepair(source, repaired) ? source : repaired;
+}
+
 // Marker facts the retained prefix carries into the tail repair.
 type RetainedContext = {
   multilineKatex: boolean;
@@ -1364,10 +1370,7 @@ export class IncrementalMarkdownCache {
   private renderFullDocument(markdown: string): IncrementalMarkdownRender {
     this.resetIncrementalState(markdown);
     this.fullDocumentMode = true;
-    const repaired = remend(markdown);
-    return this.render(
-      hasIncompleteLinkRepair(markdown, repaired) ? markdown : repaired,
-    );
+    return this.render(repairStreamingMarkdown(markdown));
   }
 
   // The text handed to the cache is not always an extension of the last one: `preprocessLaTeX`
@@ -1475,8 +1478,7 @@ export class IncrementalMarkdownCache {
     const repaired =
       this.repairOpenFence() ?? repairTail(this.tail, this.context);
 
-    // Remend completes a pending link with an internal URL that Streamdown displays as
-    // "[blocked]". Keep the unfinished tail literal until its destination arrives.
+    // remend's `streamdown:incomplete-link` placeholder renders as "[blocked]": keep the tail literal.
     if (hasIncompleteLinkRepair(this.tail, repaired)) {
       return this.render(this.tail);
     }
