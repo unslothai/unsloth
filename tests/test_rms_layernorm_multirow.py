@@ -6,7 +6,10 @@
 import pytest
 import torch
 
-if not torch.cuda.is_available():
+from real_accelerator import has_real_cuda
+
+# The CUDA spoof patches torch.cuda probes to True process-wide; ask the pre-spoof answer.
+if not has_real_cuda():
     pytest.skip("needs a CUDA device", allow_module_level = True)
 
 pytest.importorskip("triton")
@@ -264,7 +267,7 @@ def test_multirow_self_check_runs_once(multirow):
     assert len(launches) == 1 + 3  # the check's own launch, then every call
 
 
-@pytest.mark.skipif(torch.cuda.device_count() < 2, reason = "needs two GPUs")
+@pytest.mark.skipif(not has_real_cuda() or torch.cuda.device_count() < 2, reason = "needs two GPUs")
 @pytest.mark.parametrize("path", ["eager", "compiled", "op"])
 def test_multirow_launches_on_the_tensors_device(multirow, path):
     """With cuda:0 current, cuda:1 inputs give the one-row bytes (launches use the tensor's device)."""
