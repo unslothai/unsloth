@@ -5249,7 +5249,8 @@ export function AppSidebar() {
               </div>
             </div>
             {!isMobile && (!usesDesktopTitlebar || usesNativeMacTitlebar) && (
-              <div className="relative z-10 hidden group-data-[collapsible=icon]:flex h-[calc(33px*var(--ui-space-scale,1))] items-center justify-center w-full">
+              // Level with the expanded header's 30px close button, so the toggle doesn't jump.
+              <div className="relative z-10 hidden group-data-[collapsible=icon]:flex h-[calc(33px*var(--ui-space-scale,1))] items-start justify-center w-full pt-[calc(1px*var(--ui-space-scale,1))]">
                 <Tooltip>
                   <TooltipPrimitive.Trigger asChild>
                     <button
