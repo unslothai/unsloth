@@ -1526,6 +1526,8 @@ test("every action has a useShortcut call site", async () => {
     "../src/features/chat/components/chat-search-dialog.tsx",
     "../src/features/api-monitor/api-monitor-overlay.tsx",
     "../src/features/find-in-page/components/find-in-page.tsx",
+    "../src/features/browser/browser-panel.tsx",
+    "../src/features/browser/browser-toggle.tsx",
   ];
   const sources = await Promise.all(
     files.map((file) => readFile(new URL(file, import.meta.url), "utf8")),

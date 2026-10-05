@@ -701,6 +701,7 @@ export function ChatTab() {
         </SettingsRow>
       </SettingsSection>
 
+
       <SettingsSection title={t("settings.chat.artifacts.title")}>
         <div ref={networkAccessRowRef}>
           <SettingsRow

@@ -5585,6 +5585,17 @@ def _cancelable_nonstreaming_client() -> httpx.AsyncClient:
     )
 
 
+class _NonStreamingRequestCancelled(Exception):
+    """Internal signal for an expected non-streaming cancel/disconnect."""
+
+    __slots__ = ()
+
+
+def _raise_if_nonstreaming_request_cancelled(cancel_event) -> None:
+    if cancel_event is not None and cancel_event.is_set():
+        raise _NonStreamingRequestCancelled("Request cancelled.")
+
+
 async def _await_cancel_or_disconnect_then_close_client(
     *, cancel_event, request: Optional[Request], client: httpx.AsyncClient
 ) -> None:
@@ -33906,14 +33917,84 @@ async def list_sandbox_files(
     return {"path": sandbox_dir, "files": files}
 
 
+def _sandbox_regular_file(session_id: str, filename: str) -> tuple[str, str]:
+    """(sandbox_dir, contained path) of a regular (not linked) file in the sandbox, or a 404."""
+    import stat as _stat
+
+    sandbox_dir, path = _contained_sandbox_path(session_id, filename)
+    try:
+        entry = os.lstat(path)
+    except OSError:
+        raise HTTPException(status_code = 404, detail = "Not found") from None
+    if not _stat.S_ISREG(entry.st_mode):
+        raise HTTPException(status_code = 404, detail = "Not found")
+    return sandbox_dir, path
+
+
+def _unmoved_sandbox_file(root: str, path: str) -> str:
+    """``path`` resolved, if it still names the same file under ``root``; a link swapped in since
+    the check is refused, since a reveal hands the file manager a name."""
+    try:
+        real = os.path.realpath(path)
+        expected = os.path.relpath(os.path.abspath(path), os.path.abspath(root))
+        actual = os.path.relpath(real, os.path.realpath(root))
+    except ValueError:
+        raise FileNotFoundError(path) from None
+    if expected != actual or actual.startswith(os.pardir) or not os.path.isfile(real):
+        raise FileNotFoundError(path)
+    return real
+
+
+@router.post("/sandbox/{session_id}/open")
+async def open_sandbox_file(
+    session_id: str,
+    request: Request,
+    file: str,
+    token: Optional[str] = None,
+    session: Optional[str] = None,
+):
+    """Open one of this chat's sandbox files with the OS default app.
+
+    Like reveal, this is the backend host's desktop, so it only means anything in
+    the desktop app. Only document and media types open: the files are
+    model-written, and a script or app would run rather than be viewed.
+    """
+    await _authenticate_header_or_query(request, token)
+    # It launches an app on the host's desktop, like the library and model reveals.
+    account_access.require_installation_owner()
+
+    from pathlib import Path
+
+    from starlette.concurrency import run_in_threadpool
+
+    from utils.paths.path_utils import open_in_default_app
+
+    root, path = await run_in_threadpool(_sandbox_regular_file, session or session_id, file)
+    try:
+        await run_in_threadpool(open_in_default_app, Path(path), Path(root))
+    except PermissionError:
+        raise HTTPException(
+            status_code = 415, detail = "This kind of file does not open outside Studio"
+        ) from None
+    except FileNotFoundError:
+        raise HTTPException(status_code = 404, detail = "Not found") from None
+    except Exception:
+        logger.error(f"Failed to open sandbox file {path}", exc_info = True)
+        raise HTTPException(status_code = 500, detail = "Failed to open the file") from None
+    return {"status": "ok"}
+
+
 @router.post("/sandbox/{session_id}/reveal")
 async def reveal_sandbox_dir(
     session_id: str,
     request: Request,
     token: Optional[str] = None,
     session: Optional[str] = None,
+    file: Optional[str] = None,
 ):
     """Open this chat's sandbox directory in the OS file manager.
+
+    With ``file``, that file is selected in its folder instead.
 
     The file manager is the backend host's, so this only means anything when the
     backend runs on the user's own machine, which is the desktop app.
@@ -33921,6 +34002,25 @@ async def reveal_sandbox_dir(
     await _authenticate_header_or_query(request, token)
 
     from starlette.concurrency import run_in_threadpool
+
+    if file:
+        # Like open: it drives the host's desktop, so only its owner may.
+        account_access.require_installation_owner()
+
+        from pathlib import Path
+
+        from utils.paths.path_utils import reveal_in_file_manager
+
+        root, path = await run_in_threadpool(_sandbox_regular_file, session or session_id, file)
+        try:
+            real = await run_in_threadpool(_unmoved_sandbox_file, root, path)
+            await run_in_threadpool(reveal_in_file_manager, Path(real))
+        except FileNotFoundError:
+            raise HTTPException(status_code = 404, detail = "Not found") from None
+        except Exception:
+            logger.error(f"Failed to reveal sandbox file {path}", exc_info = True)
+            raise HTTPException(status_code = 500, detail = "Failed to open file manager") from None
+        return {"status": "ok", "path": path}
 
     def _resolve_existing() -> "str | None":
         sandbox_dir = _sandbox_dir_for(session or session_id, create = False)
@@ -35311,11 +35411,12 @@ async def openai_completions(request: Request, current_subject: str = Depends(ge
                 )
             except httpx.RequestError:
                 # The watcher closed the client out from under the request: report the cancel, not a transport failure.
-                if _cancel_event.is_set():
-                    raise asyncio.CancelledError()
+                _raise_if_nonstreaming_request_cancelled(_cancel_event)
                 raise
-            if _cancel_event.is_set():
-                raise asyncio.CancelledError()
+            _raise_if_nonstreaming_request_cancelled(_cancel_event)
+        except _NonStreamingRequestCancelled as exc:
+            api_monitor.finish(monitor_id, "cancelled")
+            raise _openai_admission_http_exception(exc, status_code = 499)
         except asyncio.CancelledError:
             api_monitor.finish(monitor_id, "cancelled")
             raise
@@ -35701,13 +35802,15 @@ async def _studio_embeddings(
         while not acquire.done():
             await asyncio.wait({acquire}, timeout = 0.25)
             if not acquire.done() and await _embeddings_client_gone(request):
-                raise asyncio.CancelledError()
-    except asyncio.CancelledError:
+                raise _NonStreamingRequestCancelled("Request cancelled.")
+    except (asyncio.CancelledError, _NonStreamingRequestCancelled) as exc:
         if not acquire.done():
             acquire.cancel()
         elif not acquire.cancelled() and acquire.exception() is None:
             semaphore.release()
         api_monitor.finish(monitor_id, "cancelled")
+        if isinstance(exc, _NonStreamingRequestCancelled):
+            raise _openai_admission_http_exception(exc, status_code = 499)
         raise
     try:
         gone = await _embeddings_client_gone(request)
@@ -35718,7 +35821,9 @@ async def _studio_embeddings(
     if gone:
         semaphore.release()
         api_monitor.finish(monitor_id, "cancelled")
-        raise asyncio.CancelledError()
+        raise _openai_admission_http_exception(
+            _NonStreamingRequestCancelled("Request cancelled."), status_code = 499
+        )
     worker = asyncio.ensure_future(asyncio.to_thread(_embed))
 
     def _release_embed_permit(finished) -> None:
@@ -35932,11 +36037,12 @@ async def openai_embeddings(request: Request, current_subject: str = Depends(get
             )
         except httpx.RequestError:
             # The watcher closed the client out from under the request: report the cancel, not a transport failure.
-            if _cancel_event.is_set():
-                raise asyncio.CancelledError()
+            _raise_if_nonstreaming_request_cancelled(_cancel_event)
             raise
-        if _cancel_event.is_set():
-            raise asyncio.CancelledError()
+        _raise_if_nonstreaming_request_cancelled(_cancel_event)
+    except _NonStreamingRequestCancelled as exc:
+        api_monitor.finish(monitor_id, "cancelled")
+        raise _openai_admission_http_exception(exc, status_code = 499)
     except asyncio.CancelledError:
         api_monitor.finish(monitor_id, "cancelled")
         raise
@@ -40127,6 +40233,9 @@ async def anthropic_messages(
     async def _monitored_anthropic(coro):
         try:
             response = await coro
+        except _NonStreamingRequestCancelled as exc:
+            api_monitor.finish(monitor_id, "cancelled")
+            raise _anthropic_admission_http_exception(exc, status_code = 499)
         except asyncio.CancelledError:
             cancel_event.set()
             api_monitor.finish(monitor_id, "cancelled")
@@ -42076,19 +42185,26 @@ async def _anthropic_passthrough_non_streaming(
         )
     )
 
-    async def _post(payload_body):
-        nonlocal target_url
+    async def _post_once(payload_body):
         try:
-            return await _client.post(
+            response = await _client.post(
                 target_url,
                 json = payload_body,
                 timeout = _llama_non_streaming_generation_timeout(),
             )
-        except httpx.RequestError as exc:
+        except httpx.RequestError:
             # The watcher closes the client to break a blocked POST, so a transport error
             # with the event set is the cancel, not a failure.
-            if cancel_event is not None and cancel_event.is_set():
-                raise asyncio.CancelledError()
+            _raise_if_nonstreaming_request_cancelled(cancel_event)
+            raise
+        _raise_if_nonstreaming_request_cancelled(cancel_event)
+        return response
+
+    async def _post(payload_body):
+        nonlocal target_url
+        try:
+            return await _post_once(payload_body)
+        except httpx.RequestError as exc:
             # Nothing was returned yet, so retry once against the respawned server's
             # new port; the nudge retry below then reuses the same fresh URL.
             retry_url = (
@@ -42099,11 +42215,7 @@ async def _anthropic_passthrough_non_streaming(
             if retry_url is None:
                 raise
             target_url = retry_url
-            return await _client.post(
-                target_url,
-                json = payload_body,
-                timeout = _llama_non_streaming_generation_timeout(),
-            )
+            return await _post_once(payload_body)
 
     try:
         resp = await _post(body)
@@ -44003,6 +44115,9 @@ async def _openai_passthrough_non_streaming(
             status_code = 499,
             detail = _openai_admission_error_body(exc, status_code = 499),
         )
+    except _NonStreamingRequestCancelled as exc:
+        api_monitor.finish(monitor_id, "cancelled")
+        raise _openai_admission_http_exception(exc, status_code = 499)
     except asyncio.CancelledError:
         api_monitor.finish(monitor_id, "cancelled")
         reservation.cancel()
@@ -44081,11 +44196,9 @@ async def _openai_passthrough_non_streaming_upstream(
                     timeout = _llama_non_streaming_generation_timeout(),
                 )
             except httpx.RequestError:
-                if cancel.is_set():
-                    raise asyncio.CancelledError()
+                _raise_if_nonstreaming_request_cancelled(cancel)
                 raise
-            if cancel.is_set():
-                raise asyncio.CancelledError()
+            _raise_if_nonstreaming_request_cancelled(cancel)
             return response
         finally:
             # Bounded: the watcher polls Request.is_disconnected(), which can swallow
