@@ -653,7 +653,7 @@ def resolve_prequant_source(
         # safetensors spelling ahead of the pickle. Order-preserving dedup so a family that declares
         # exactly what the chain would derive does not make the downloader ask twice for it.
         declared = (preferred,) if preferred else ()
-        # rotated artifact first, only in its own repo; the plain chain stays behind it (not hosted yet, offline)
+        # rotated artifact (hosted) first, only in its own repo; the plain chain stays behind it (offline, older caches)
         from .diffusion_transformer_quant import (
             convrot_prequant_filename,
             convrot_prequant_repo,
