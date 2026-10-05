@@ -12821,3 +12821,39 @@ def test_resident_wan_load_decodes_untiled_when_it_fits(
     assert status["loaded"] is True
     assert calls == (["wan2.2-ti2v-5b"] if installed else [])
     assert ("vae_untiled_when_fits" in status["speed_optims"]) is installed
+
+
+def test_previewer_is_finished_when_the_render_fails_before_its_loop(fake_runtime, monkeypatch):
+    # The previewer starts a polling worker thread; a raise between its creation and the guarded
+    # render (here protect_generation) used to leave that thread polling for the life of the process.
+    import core.inference.diffusion_nvfp4_protect as protect_mod
+    import core.inference.diffusion_preview as preview_mod
+
+    _patch_events(monkeypatch)
+    started: list = []
+
+    class _Previewer:
+        finished = False
+
+        def on_step(self, *args, **kwargs):
+            pass
+
+        def finish(self):
+            self.finished = True
+
+    def _create(**kwargs):
+        started.append(_Previewer())
+        return started[-1]
+
+    def _refuse(*args, **kwargs):
+        raise RuntimeError("protect refused")
+
+    monkeypatch.setattr(preview_mod.LatentPreviewer, "create", staticmethod(_create))
+    monkeypatch.setattr(protect_mod, "protect_generation", _refuse)
+    backend = VideoBackend()
+    backend.load_pipeline(
+        "hunyuanvideo-community/HunyuanVideo-1.5-Diffusers-480p_t2v", model_kind = "pipeline"
+    )
+    with pytest.raises(RuntimeError, match = "protect refused"):
+        backend.generate(prompt = "a fox", steps = 3, num_frames = 9, fps = 24)
+    assert all(p.finished for p in started)

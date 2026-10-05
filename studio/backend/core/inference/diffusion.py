@@ -9774,9 +9774,14 @@ class DiffusionBackend:
                     gen.preview = url
                     gen.preview_seq = seq
 
+                # Started inside the try below, whose exits finish() it: its worker thread polls until then.
                 previewer = None
-                if "callback_on_step_end" in call_params:
+
+                def _start_previewer():
+                    if "callback_on_step_end" not in call_params:
+                        return None
                     from .diffusion_preview import LatentPreviewer
+
                     try:
                         # The size the forward runs at (img2img / edit take it from the input image).
                         preview_w, preview_h = _compile_shape_dims(
@@ -9784,7 +9789,7 @@ class DiffusionBackend:
                         )
                     except Exception:  # noqa: BLE001 - no size, no preview
                         preview_w = preview_h = None
-                    previewer = LatentPreviewer.create(
+                    return LatentPreviewer.create(
                         family = state.family.name,
                         requested = live_preview,
                         height = preview_h,
@@ -9902,6 +9907,7 @@ class DiffusionBackend:
                 graphs_before = fresh_compile_count()
                 compile_cache.note_use(state.compile_cache_ctx)
                 try:
+                    previewer = _start_previewer()
                     pending = list(chunks)
                     while pending:
                         chunk = pending.pop(0)

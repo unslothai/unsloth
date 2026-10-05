@@ -8673,15 +8673,8 @@ class VideoBackend:
 
                 from .diffusion_preview import LatentPreviewer, scheduler_step_preview
 
-                previewer = LatentPreviewer.create(
-                    family = fam.name,
-                    requested = live_preview,
-                    height = height,
-                    width = width,
-                    device = state.device,
-                    publish = _publish_preview,
-                    total_steps = steps,
-                )
+                # Started just before the try below, whose finally finish()es it: its worker thread polls until then.
+                previewer = None
 
                 def _enter_denoise() -> None:
                     if self._gen.get("phase") == "encode":
@@ -8872,6 +8865,15 @@ class VideoBackend:
                     if not _render_under_no_grad(state)
                     else torch.no_grad()
                 )
+                previewer = LatentPreviewer.create(
+                    family = fam.name,
+                    requested = live_preview,
+                    height = height,
+                    width = width,
+                    device = state.device,
+                    publish = _publish_preview,
+                    total_steps = steps,
+                )
                 try:
                     with grad_ctx, protect_ctx, progress_ctx(), sigma_ctx:
                         output = render_thread.run("video", lambda: pipe(**kwargs))
@@ -8889,9 +8891,9 @@ class VideoBackend:
                     # A guarded compiled block that failed to build at its first forward now runs eager; the status
                     # must not keep reporting it compiled (a forced-compile quantised load runs ~30x slower eager),
                     # whether this render finished, was cancelled or failed.
-                    settle_compile_fallback(state, pipe, logger)
                     if previewer is not None:
                         previewer.finish()
+                    settle_compile_fallback(state, pipe, logger)
                     if static_skip:
                         logger.debug(
                             "video.step_skip: %s", static_skip_stats(_skip_pipe(state, pipe))
