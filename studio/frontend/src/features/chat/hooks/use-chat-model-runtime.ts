@@ -3850,16 +3850,16 @@ export function useChatModelRuntime() {
       if (lifecycleLease === null) {
         return false;
       }
+      // Before the running-chats check, which open chat streams can queue in the browser (#10339).
+      const toastId = toast.loading("Unloading model", {
+        description: "Checking for running chats.",
+      });
       // Ejecting tears down llama-server, so every chat stops. Same prompt, but it leaves no model
       // loaded, so it must not be worded as a reload. With several loaded only this one's chats stop.
       const scope =
         !confirmed && useChatRuntimeStore.getState().loadedModels.length > 1
           ? params.checkpoint
           : undefined;
-      // Before the running-chats check, which open chat streams can queue in the browser (#10339).
-      const toastId = toast.loading("Unloading model", {
-        description: "Checking for running chats.",
-      });
       const stopDecision =
         confirmed ??
         (await confirmStopRunningChatsIfNeeded(
