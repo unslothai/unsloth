@@ -2844,29 +2844,19 @@ def count_chat_threads() -> int:
 
 
 def _unretire_project_rag_scope(project_id: str) -> None:
-    """A recreated id must not keep the previous project's RAG tombstone.
+    """Give a recreated project id back its RAG scope (#10567).
 
-    delete_retired_scope only purges while the tombstone is still unpurged, so
-    clearing it here under the scope lock is what SQLite can serialize against
-    that write. The Studio row is already committed, so a delete still sitting
-    on its last owner check will see the project and skip the purge; one that
-    already passed that check races this on the RAG database instead of two.
-
-    The owner re-check happens under that same lock: a pre-upsert snapshot can
-    lose a concurrent delete/recreate, and unretiring from it would either skip
-    a live project or clear a tombstone whose owner is already gone. A locked
-    or missing RAG database must not fail the Studio write that already landed.
-
-    That is the tradeoff delete_retired_scope documents: the permanent
-    tombstone closes ownerless upload and link races; a same-id recreate
-    deliberately gives the scope back. A late upload after this clear is the
-    live project's. A second delete still blocks, because this returns without
-    writing if get_chat_project is None under the lock.
+    Runs after the Studio row commits and under the scope lock the delete route purges in, so a
+    purged tombstone left by a racing delete is cleared instead of disabling RAG for good. The
+    owner is re-read under the lock: a delete that won it must keep its tombstone.
     """
-    from core.rag import folder_sync, store as rag_store
-
-    scope = rag_store.project_scope(project_id)
+    from utils.paths import rag_db_path
     try:
+        if not rag_db_path().exists():
+            return
+        from core.rag import folder_sync, store as rag_store
+
+        scope = rag_store.project_scope(project_id)
         with folder_sync.scope_lock(scope):
             if get_chat_project(project_id) is None:
                 return

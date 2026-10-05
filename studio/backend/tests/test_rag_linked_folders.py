@@ -2402,13 +2402,7 @@ def test_the_purge_is_skipped_for_a_project_recreated_after_the_ownership_check(
 
 @requires_sqlite_vec
 def test_a_project_recreated_before_the_purge_keeps_a_usable_rag_scope(rag_home, monkeypatch):
-    """A recreate between the last owner check and the purge must not lock RAG out.
-
-    The project is gone for every look until the purge itself, then it exists and
-    stays that way. A list popped per call would make it vanish again, which no
-    registry does, and would point the scenario at whichever probe happened to
-    be last.
-    """
+    """A recreate between the last owner check and the purge must not lock RAG out (#10567)."""
     from routes import chat_history
     from storage import studio_db
 
@@ -2425,7 +2419,6 @@ def test_a_project_recreated_before_the_purge_keeps_a_usable_rag_scope(rag_home,
     real_purge = folder_sync.delete_retired_scope
 
     def recreate_then_purge(purged_scope, **kwargs):
-        # the owner exists again before this transaction, not on a particular call index
         owner["row"] = studio_db.upsert_chat_project(
             {
                 "id": project_id,
@@ -2520,15 +2513,7 @@ def test_upsert_clears_a_tombstone_even_when_the_studio_row_already_existed(rag_
 
 @requires_sqlite_vec
 def test_late_upload_after_unretire_is_the_live_projects(rag_home, monkeypatch):
-    """A same-id recreate reopens the scope; a tombstone still present still refuses.
-
-    delete_retired_scope's permanent tombstone closes ownerless cross-database
-    upload and link races. Clearing it at upsert is the other half of that
-    tradeoff: the id has an owner again, so a late upload that arrives after
-    unretire is treated as the live project's. Unretire still runs under the
-    scope lock and only if the Studio row exists, so a second delete keeps
-    the ownerless path blocked.
-    """
+    """A same-id recreate reopens the scope; while ownerless the tombstone still refuses."""
     from routes import chat_history, rag as rag_routes
     from storage import studio_db
     from utils.paths import ensure_dir, rag_uploads_root
