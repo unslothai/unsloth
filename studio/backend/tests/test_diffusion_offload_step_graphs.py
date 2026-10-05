@@ -261,6 +261,34 @@ def test_a_streamed_key_is_kept_only_when_its_replay_pays():
     assert why == "" and placement.declined is None and "k" in handle.cache
 
 
+def test_no_key_is_judged_while_another_graph_records(monkeypatch):
+    monkeypatch.setattr(cg, "_CAPTURE_DEPTH", 1)
+    placement = _Placement(streams = True)
+    handle, why = _judged(placement, [100.0, 100.4], [99.6, 99.8, 99.7])
+    assert why is None and placement.declined is None and "k" in handle.cache
+    monkeypatch.setattr(cg, "_CAPTURE_DEPTH", 0)
+    handle._judge_keys()
+    assert handle._judge["k"]["verdict"]
+
+
+class _Wrapper:
+    def __init__(self, cache):
+        self.cache = cache
+
+
+def test_every_live_graph_pool_stays_out_of_the_reclaimable_memory(monkeypatch):
+    # an earlier graph's pool after a later capture failed and retired the shared id
+    monkeypatch.setattr(cg, "_POOL_BOX", [None])
+    live = _Wrapper({"k": types.SimpleNamespace(pool_token = (0, 7))})
+    monkeypatch.setattr(cg, "_LIVE_WRAPPERS", {live})
+    segments = [
+        {"segment_pool_id": (0, 7), "total_size": 100, "allocated_size": 40},
+        {"segment_pool_id": (0, 0), "total_size": 500, "allocated_size": 0},
+    ]
+    monkeypatch.setattr(torch.cuda, "memory_snapshot", lambda: segments)
+    assert cg.live_pool_free_bytes() == 60
+
+
 def test_a_declined_placement_refuses_every_later_call():
     placement = cg.OffloadPlacement.__new__(cg.OffloadPlacement)
     placement.mode = "group"

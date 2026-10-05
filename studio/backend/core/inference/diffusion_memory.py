@@ -3435,8 +3435,9 @@ class _GroupPinner:
                         if tensor.device.type == "cpu" and tensor.data_ptr() == src.data_ptr():
                             tensor.data = pinned
                         self.pinned += src.nbytes
-                _bump_placement_epoch()
+                # Done before the epoch: a capture check that sees the new epoch must also see this group ready.
                 self._done[id(group)].set()
+                _bump_placement_epoch()
         except Exception as exc:  # noqa: BLE001 - diffusers pins what is left on each onload
             failed = exc
         finally:
@@ -3444,6 +3445,8 @@ class _GroupPinner:
                 pool.shutdown(wait = True, cancel_futures = True)
             for event in self._done.values():
                 event.set()
+            if failed is not None:
+                _bump_placement_epoch()
         if self.logger is not None:
             try:
                 if failed is not None:

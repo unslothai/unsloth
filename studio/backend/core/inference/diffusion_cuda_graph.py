@@ -525,13 +525,19 @@ def live_pool_free_bytes() -> int:
     """Bytes of the live shared pool that are reserved but NOT allocated: what ``memory_reserved() -
     memory_allocated()`` would wrongly credit as reusable. The pool's allocated part (the graphs' static outputs) is
     already outside that difference. 0 when no graph lives or the snapshot is unreadable."""
-    pool = _POOL_BOX[0]
-    if pool is None or not any(w.cache for w in tuple(_LIVE_WRAPPERS)):
+    # Every pool a live graph recorded into: a failed capture retires the box's pool while earlier graphs keep it.
+    pools = {
+        tuple(entry.pool_token)
+        for w in tuple(_LIVE_WRAPPERS)
+        for entry in tuple(w.cache.values())
+        if getattr(entry, "pool_token", None) is not None
+    }
+    if not pools:
         return 0
     try:
         free = 0
         for seg in _torch().cuda.memory_snapshot():
-            if tuple(seg.get("segment_pool_id") or ()) == tuple(pool):
+            if tuple(seg.get("segment_pool_id") or ()) in pools:
                 free += int(seg.get("total_size", 0)) - int(seg.get("allocated_size", 0))
         return max(0, free)
     except Exception:  # noqa: BLE001 - fall back to the whole pool: over-counting only makes the guard stricter
@@ -816,15 +822,17 @@ class GraphedForward:
         for key, state in list(self._judge.items()):
             if state["verdict"] is not None or len(state["graph"]) < SPEED_SAMPLES:
                 continue
-            if not all(end.query() for _, end in state["graph"]):
-                continue
-            try:
-                # Best of each, so a stall on a shared card in either window cannot tip the verdict alone.
-                eager = min(start.elapsed_time(end) for start, end in state["eager"])
-                graph = min(start.elapsed_time(end) for start, end in state["graph"])
-            except Exception:  # noqa: BLE001 - unreadable events: keep the graph
-                state["verdict"] = ""
-                continue
+            # Event queries are prohibited while another thread records a graph: judge on a later call instead.
+            with hold_off_capture() as safe:
+                if not safe or not all(end.query() for _, end in state["graph"]):
+                    continue
+                try:
+                    # Best of each, so a stall on a shared card in either window cannot tip the verdict alone.
+                    eager = min(start.elapsed_time(end) for start, end in state["eager"])
+                    graph = min(start.elapsed_time(end) for start, end in state["graph"])
+                except Exception:  # noqa: BLE001 - unreadable events: keep the graph
+                    state["verdict"] = ""
+                    continue
             self.stats["eager_ms"] = round(eager, 3)
             self.stats["replay_ms"] = round(graph, 3)
             placement = getattr(self, "placement", None)
