@@ -1484,13 +1484,11 @@ export class IncrementalMarkdownCache {
 
     this.updateTail(markdown);
 
-    const repaired =
+    let repaired =
       this.repairOpenFence() ?? repairTail(this.tail, this.context);
-
-    if (hasIncompleteLinkRepair(this.tail, repaired)) {
-      return this.render(
-        repairTail(this.tail, this.context, LITERAL_LINK_REMEND),
-      );
+    const linkPending = hasIncompleteLinkRepair(this.tail, repaired);
+    if (linkPending) {
+      repaired = repairTail(this.tail, this.context, LITERAL_LINK_REMEND);
     }
 
     // globally scoped definitions must stay in the same rendered document as
@@ -1506,6 +1504,9 @@ export class IncrementalMarkdownCache {
       markdownRenderScope(markdown) === "document"
     ) {
       return this.renderFullDocument(markdown);
+    }
+    if (linkPending) {
+      return this.render(repaired);
     }
 
     const blocks = parseMarkdownIntoBlocks(repaired);

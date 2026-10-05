@@ -48,6 +48,23 @@ test("an unfinished link stays literal instead of showing Streamdown's blocked p
   const list = new IncrementalMarkdownCache().update("- >= 16 GB\n\nSee [foo");
   assert.equal(list.markdown, "- \\>= 16 GB\n\nSee [foo");
 
+  const scoped = new IncrementalMarkdownCache();
+  const body = Array.from({ length: 8 }, (_, i) => `Paragraph ${i}.`).join(
+    "\n\n",
+  );
+  const head = `Read [docs][r] first.\n\n${body}\n\n`;
+  scoped.update(head);
+  const both = `${head}[r]: https://example.com\n\nSee [foo`;
+  const scopedRender = scoped.update(both);
+  assert.equal(
+    (scoped as unknown as { fullDocumentMode: boolean }).fullDocumentMode,
+    true,
+  );
+  assert.deepEqual(
+    scopedRender.parseMarkdownIntoBlocks(scopedRender.markdown),
+    parseMarkdownIntoRenderableBlocks(repairStreamingMarkdown(both)),
+  );
+
   const complete = "See [example](https://example.com)";
   assert.equal(cache.update(complete).markdown, complete);
   assert.equal(hasIncompleteLinkRepair(complete), false);
