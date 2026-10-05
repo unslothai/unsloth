@@ -14,5 +14,7 @@ test("only the backend's own URLs count as Studio's, so others never get the sig
   assert.equal(isStudioUrl("/api/chat/attachments/a.png"), true);
   assert.equal(isStudioUrl("http://127.0.0.1:8888/api/chat/attachments/a.png"), true);
   assert.equal(isStudioUrl("http://127.0.0.1:9999/a.png"), false);
+  assert.equal(isStudioUrl("HTTPS://images.example/a.png"), false);
+  assert.equal(isStudioUrl("//images.example/a.png"), false);
   resetApiBase();
 });

@@ -54,9 +54,11 @@ export function apiUrl(path: string): string {
 
 /** Whether `url` is served by this Studio's backend, so a request to it may carry the sign-in. */
 export function isStudioUrl(url: string): boolean {
-  const base = typeof window === 'undefined' ? 'http://localhost/' : window.location.href
+  const page = typeof window === 'undefined' ? 'http://localhost/' : window.location.href
   try {
-    return new URL(apiUrl(url), base).origin === new URL(apiUrl('/'), base).origin
+    // Resolved, not prefixed: "HTTPS://x" and "//x" are other hosts, not backend paths.
+    const studio = new URL(apiBase || page)
+    return new URL(url, studio).origin === studio.origin
   } catch {
     return false
   }
