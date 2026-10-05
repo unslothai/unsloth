@@ -766,10 +766,15 @@ def _install_offload_embedding_hooks(embed_tokens, output_embeddings, return_dev
             ) and _is_scaled_word_embedding_forward(type(embed_tokens), cls_forward)
         except Exception:
             scaled = False
+    base_forward = torch.nn.Embedding.forward
     if (
         disable is not None
         and isinstance(embed_tokens, torch.nn.Embedding)
-        and (cls_forward is torch.nn.Embedding.forward or scaled)
+        # torch's own nn.Embedding.forward, not one patched globally before install.
+        and getattr(base_forward, "__module__", None) == "torch.nn.modules.sparse"
+        and getattr(base_forward, "__qualname__", None) == "Embedding.forward"
+        and not hasattr(base_forward, "__wrapped__")
+        and (cls_forward is base_forward or scaled)
         and embed_tokens.max_norm is None
         and not embed_tokens.sparse
         and "forward" not in embed_tokens.__dict__
@@ -790,6 +795,8 @@ def _install_offload_embedding_hooks(embed_tokens, output_embeddings, return_dev
                 and not torch.is_grad_enabled()
                 and not weight.requires_grad
                 and module.max_norm is None
+                # Only our pre-hook: any other one expects ids already moved to the table's device.
+                and len(module._forward_pre_hooks) == 1
                 and isinstance(input_ids, torch.Tensor)
                 and weight.device != input_ids.device
                 and type(module).forward is cls_forward

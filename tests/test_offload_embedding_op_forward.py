@@ -184,6 +184,29 @@ def test_max_norm_set_after_install_keeps_module():
     assert torch.equal(out.cpu(), expected)
 
 
+def test_globally_patched_embedding_forward_is_declined(monkeypatch):
+    original = nn.Embedding.forward
+    monkeypatch.setattr(nn.Embedding, "forward", lambda self, input: original(self, input) * 3)
+    emb = _make()
+    install(emb, _head("cpu"), torch.device("cpu"))
+    assert not getattr(emb, "_unsloth_offload_op_forward", False)
+
+
+@needs_cuda
+def test_other_pre_hook_keeps_module_path():
+    emb = _make()
+    head = _head("cuda")
+    install(emb, head, torch.device("cuda"))
+    seen = []
+    emb.register_forward_pre_hook(lambda m, args: seen.append(args[0].device))
+    ids = torch.randint(0, V, (4, 9), device = "cuda")
+    torch._dynamo.reset()
+    with torch.no_grad():
+        out = torch.compile(lambda i: emb(i), backend = "aot_eager")(ids)
+    assert seen and all(d.type == "cpu" for d in seen)
+    assert torch.equal(out.cpu(), _make()(ids.cpu()))
+
+
 def test_input_keyword_still_works():
     ref = _make()
     emb = _make()
