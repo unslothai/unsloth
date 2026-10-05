@@ -5208,10 +5208,14 @@ def test_chat_count_tokens_prices_the_current_date(monkeypatch):
         "current_date_prompt_line",
         lambda **_kwargs: "The current date is 2026-08-15.",
     )
+    monkeypatch.setattr(inference_route, "_local_template_system_turn", lambda *_a: (True, ""))
     thread = [{"role": "user", "content": "hi"}]
 
     _counted_body(_count_request(thread))
-    assert counted["messages"] == [{"role": "user", "content": "[Current date: 2026-08-15]\n\nhi"}]
+    assert counted["messages"] == [
+        {"role": "system", "content": "The current date is 2026-08-15."},
+        {"role": "user", "content": "hi"},
+    ]
 
     # The passthrough forwards the caller's request verbatim, so counting a date it never sends
     # would overcount exactly those prompts.
@@ -8493,7 +8497,7 @@ def test_async_scan_folder_routes_offload_storage_and_invalidation(monkeypatch):
     event_loop_thread = threading.get_ident()
     calls = []
 
-    def _add(path):
+    def _add(path, recursive = None):
         calls.append(("add", threading.get_ident()))
         return {"id": 7, "path": path, "created_at": "fake"}, True
 
@@ -8511,7 +8515,7 @@ def test_async_scan_folder_routes_offload_storage_and_invalidation(monkeypatch):
 
     async def _run():
         folder = await model_routes.add_scan_folder_endpoint(
-            SimpleNamespace(path = "/models/custom"), current_subject = "tester"
+            SimpleNamespace(path = "/models/custom", recursive = None), current_subject = "tester"
         )
         removed = await model_routes.remove_scan_folder_endpoint(7, current_subject = "tester")
         return folder, removed

@@ -34,7 +34,6 @@ from core.inference.llama_server_args import (
 from core.inference.runtime_context import MAX_REQUESTABLE_CONTEXT
 from core.inference.video_families import MAX_VIDEO_NUM_FRAMES
 from picker.schemas import MAX_CHAT_TEMPLATE_BYTES
-from models.llama_custom_config import LlamaCppConfigFields
 from utils.reasoning_budget import validate_reasoning_budget_message
 
 
@@ -55,7 +54,7 @@ def resolve_inventory_handle(value: str) -> str:
     return resolved
 
 
-class LoadRequest(LlamaCppConfigFields):
+class LoadRequest(BaseModel):
     """Request to load a model for inference"""
 
     engine_parallelism: Literal["tensor", "pipeline", "data"] = "tensor"
@@ -559,7 +558,7 @@ class SttLoadRequest(BaseModel):
         return self
 
 
-class ValidateModelRequest(LlamaCppConfigFields):
+class ValidateModelRequest(BaseModel):
     """Check whether an identifier resolves to a ModelConfig; does NOT load weights."""
 
     engine_parallelism: Literal["tensor", "pipeline", "data"] = "tensor"
@@ -847,7 +846,6 @@ class ValidateModelResponse(BaseModel):
     """
 
     valid: bool = Field(..., description = "Whether the model identifier looks valid")
-    llama_cpp_config_summary: Optional[Dict[str, Any]] = None
     message: str = Field(..., description = "Human-readable validation message")
     identifier: Optional[str] = Field(None, description = "Resolved model identifier")
     resident: bool = Field(
@@ -1335,8 +1333,6 @@ class _InferenceRuntimeFields(BaseModel):
         description = "Active inference engine. 'auto' denotes Studio's default backend; "
         "'vllm' and 'sglang' denote optional managed engines.",
     )
-    requested_llama_cpp_config: Optional[Dict[str, Any]] = None
-    llama_cpp_config_summary: Optional[Dict[str, Any]] = None
 
     is_vision: bool = Field(False, description = "Whether model is a vision model")
     is_diffusion: bool = Field(
@@ -4500,6 +4496,11 @@ class DiffusionGenerateRequest(BaseModel):
         "by this multiple and re-denoises at low strength. Requires init_image; "
         "ignored for txt2img/inpaint/edit.",
     )
+    live_preview: Optional[bool] = Field(
+        None,
+        description = "Stream a small live preview of the image while it denoises (generate-progress "
+        "'preview'). Null = the server default (on unless UNSLOTH_DIFFUSION_PREVIEW=0).",
+    )
     allow_oversized: bool = Field(
         False,
         description = "Run even when the generate-time memory check estimates this size will not "
@@ -4775,8 +4776,13 @@ class DiffusionGenerateProgressResponse(BaseModel):
     fraction: float = Field(0.0, description = "step / total_steps, clamped to [0,1]")
     eta_seconds: Optional[float] = Field(None, description = "Estimated seconds remaining")
     phase: Optional[str] = Field(
-        None, description = "denoise | decode; null from engines that report no phase (sd.cpp)"
+        None,
+        description = "encode | denoise | decode; null from engines that report no phase (sd.cpp)",
     )
+    preview: Optional[str] = Field(
+        None, description = "Live latent preview of the image being denoised, as a JPEG data URL"
+    )
+    preview_seq: int = Field(0, description = "Moves each time a new preview is published")
 
 
 class DiffusionLoadProgressResponse(BaseModel):
@@ -5755,6 +5761,11 @@ class VideoGenerateRequest(BaseModel):
         "where a downloaded model that is not the resident one is loaded first; omit to use "
         "whatever is loaded. The Video page never sends it.",
     )
+    live_preview: Optional[bool] = Field(
+        None,
+        description = "Stream a small live preview of the first frame while the clip denoises "
+        "(generate-progress 'preview'). Null = the server default (on unless UNSLOTH_DIFFUSION_PREVIEW=0).",
+    )
     # Width/height/num_frames/fps default per loaded family, so they are optional here. These bounds
     # stay a COARSE family-agnostic outer guard: the enforced rule is the LOADED family's own
     # (resolution presets and the k * frame_step + frame_offset lattice), which the route checks with
@@ -6004,7 +6015,7 @@ class VideoGenerateProgressResponse(BaseModel):
     active: bool = Field(False, description = "Whether a generation is running")
     phase: Optional[str] = Field(
         None,
-        description = "Current phase: queued | denoise | export | completed | failed | null",
+        description = "Current phase: queued | encode | denoise | decode | export | completed | failed | null",
     )
     step: int = Field(0, description = "Denoising steps completed so far")
     total: int = Field(0, description = "Total denoising steps for this run")
@@ -6012,6 +6023,11 @@ class VideoGenerateProgressResponse(BaseModel):
     total_steps: int = Field(0, description = "Total denoising steps (alias of total)")
     fraction: float = Field(0.0, description = "step / total, clamped to [0,1]")
     eta_seconds: Optional[float] = Field(None, description = "Estimated seconds remaining")
+    preview: Optional[str] = Field(
+        None,
+        description = "Live latent preview of the first frame being denoised, as a JPEG data URL",
+    )
+    preview_seq: int = Field(0, description = "Moves each time a new preview is published")
     video: Optional[GalleryVideo] = Field(
         None, description = "Saved gallery record when phase is 'completed'"
     )

@@ -30,7 +30,8 @@ entry. In a default-mode install it also removes the shared prebuilts that sit
 beside the install dir: ~/.unsloth/{llama.cpp,node,whisper.cpp,audio.cpp,.cache}.
 The Hugging Face cache at ~/.cache/huggingface is left in place (only audio.cpp's
 unsloth-audiocpp-links beside it goes), as is anything else you keep under
-~/.unsloth.
+~/.unsloth. A shared uv package cache (`uv cache dir`) is also left when install
+reused one.
 
 On WSL it also removes this distro's Windows-side shortcuts under /mnt/*/Users,
 strips the Unsloth block from ~/.bashrc, and uses sudo to delete
@@ -245,10 +246,16 @@ _MARKER_DIR=$(mktemp -d 2>/dev/null || true)
 _REMOVE_FAILED_FLAG=""
 _DB_REMOVED_FLAG=""
 _DB_KEPT_FLAG=""
+_UV_ROOTS_FILE=""
+_UV_LEFTOVER_FILE=""
+_UV_SAW_MARKER_FLAG=""
 if [ -n "$_MARKER_DIR" ] && [ -d "$_MARKER_DIR" ]; then
     _REMOVE_FAILED_FLAG="$_MARKER_DIR/remove-failed"
     _DB_REMOVED_FLAG="$_MARKER_DIR/db-removed"
     _DB_KEPT_FLAG="$_MARKER_DIR/db-kept"
+    _UV_ROOTS_FILE="$_MARKER_DIR/uv-roots"
+    _UV_LEFTOVER_FILE="$_MARKER_DIR/uv-leftovers"
+    _UV_SAW_MARKER_FLAG="$_MARKER_DIR/uv-saw-marker"
 fi
 
 # `printf`, never `: > "$f"`: `:` is a POSIX special builtin, so a redirection error on it kills a
@@ -267,6 +274,52 @@ _markers_unavailable() {
     [ -d "$_MARKER_DIR" ] || return 0
     [ -w "$_MARKER_DIR" ] || return 0
     return 1
+}
+
+# install.sh records its uv cache in <root>/cache/uv-cache-dir. One under a removed root goes with
+# it; any other is shared and stays. Read before any root is deleted.
+_uv_cache_under_any_root() {
+    while IFS= read -r _uv_r; do
+        # A symlinked root is only unlinked, so its target (and any cache in it) stays.
+        [ -L "$_uv_r" ] && continue
+        case "$1" in "$_uv_r"|"$_uv_r"/*) return 0 ;; esac
+    done < "$_UV_ROOTS_FILE"
+    return 1
+}
+
+_uv_collect_from_install_roots() {
+    [ -n "$_UV_ROOTS_FILE" ] || return 0
+    {
+        printf '%s\n' "$HOME/.unsloth/studio"
+        _custom_studio_roots | while IFS= read -r _uv_root; do
+            [ -n "$_uv_root" ] || continue
+            if ! _is_unsafe_root "$_uv_root" && _is_studio_root "$_uv_root"; then
+                printf '%s\n' "$_uv_root"
+            fi
+        done
+    } > "$_UV_ROOTS_FILE" 2>/dev/null || return 0
+    while IFS= read -r _uv_root; do
+        [ -f "$_uv_root/cache/uv-cache-dir" ] || continue
+        _set_marker "$_UV_SAW_MARKER_FLAG"
+        _uv_rec=$(sed -n '1p' "$_uv_root/cache/uv-cache-dir" 2>/dev/null | tr -d '\r') || _uv_rec=""
+        [ -n "$_uv_rec" ] || continue
+        _uv_cache_under_any_root "$_uv_rec" || printf '%s\n' "$_uv_rec" >> "$_UV_LEFTOVER_FILE" 2>/dev/null || true
+    done < "$_UV_ROOTS_FILE"
+}
+
+_uv_print_leftover_notes() {
+    if [ -s "$_UV_LEFTOVER_FILE" ]; then
+        awk '!seen[$0]++' "$_UV_LEFTOVER_FILE" 2>/dev/null | while IFS= read -r _uv_path; do
+            [ -n "$_uv_path" ] || continue
+            # --cache-dir: a bare `uv cache clean` cleans whichever cache uv resolves now.
+            _uv_q=$(printf '%s' "$_uv_path" | sed "s/'/'\\\\''/g")
+            echo "Note: the uv package cache at $_uv_path was left in place (it may be shared with other tools)."
+            echo "      Free it with: uv cache clean --cache-dir '$_uv_q'"
+        done
+    elif ! _marker_set "$_UV_SAW_MARKER_FLAG"; then
+        echo "Note: if install reused a shared uv cache (\`uv cache dir\`), it was left in place."
+        echo "      Free it with 'uv cache clean'."
+    fi
 }
 
 # EXIT, not a line at the end of main: --help, a bad argument and `set -e` all skip that.
@@ -754,6 +807,7 @@ _unsloth_uninstall_main() {
     _pkill_studio
 
     echo "Removing data and install directories..."
+    _uv_collect_from_install_roots
     # Resolved ONCE, before anything is deleted: _master_root can read its answer from a note
     # inside a Studio tree the loop below removes, after which the runtime siblings are stranded.
     _MASTER_ROOT_SAVED="$(_master_root)"
@@ -1207,6 +1261,7 @@ _unsloth_uninstall_main() {
     echo "      http://localhost:<port> origin you used to remove them."
     echo "Note: Hugging Face model cache at ~/.cache/huggingface was left in place."
     echo "Remove it manually with 'rm -rf ~/.cache/huggingface/hub' if desired."
+    _uv_print_leftover_notes
     # Env-mode installs leave no breadcrumb in $HOME, so a custom root is only found when the
     # user re-exports the variable. Hint when neither is set, so `curl | sh` does not silently miss.
     if [ -z "${UNSLOTH_STUDIO_HOME:-}" ] && [ -z "${STUDIO_HOME:-}" ]; then

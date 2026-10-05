@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { ImageViewer } from "@/components/image-viewer";
 import { useAppShellReadySignal } from "@/components/app-readiness";
 import { AppSidebar } from "@/components/app-sidebar";
 import { CommandPalette } from "@/components/command-palette";
@@ -56,6 +57,7 @@ import { useNativePathLeasesSupported } from "@/features/native-intents";
 import { useRagAvailabilityStore } from "@/features/rag";
 import { useIsMobileShell } from "@/hooks/use-mobile";
 import { useSidebarPin } from "@/hooks/use-sidebar-pin";
+import { useTypeToActivate } from "@/hooks/use-type-to-activate";
 import { type TranslationKey, useT } from "@/i18n";
 import { isTauri } from "@/lib/api-base";
 import { createNavigationNonce } from "@/lib/navigation-nonce";
@@ -443,6 +445,7 @@ function RootLayout() {
     : "pt-[calc(var(--studio-non-chat-content-top-inset,var(--studio-content-top-inset,0px))-var(--studio-non-chat-scroller-top,0px))] [--studio-titlebar-height:var(--studio-non-chat-content-top-inset,var(--studio-content-top-inset,0px))]";
 
   useTrainingUnloadGuard();
+  useTypeToActivate();
   // Global export driver: streams worker logs and tracks status from any route
   // so an export keeps running and stays visible while training / chatting.
   useExportRuntimeLifecycle();
@@ -683,6 +686,7 @@ function RootLayout() {
       <LlmCompressorConsentDialog />
       {/* At the root, not under /chat: a swap can start from the Hub too. */}
       <StopRunningChatsDialog />
+      <ImageViewer />
       {!hideNavbar && <CommandPalette />}
       {hideNavbar ? (
         <main className="flex-1 pt-[var(--studio-hidden-route-top-inset,0px)] [--studio-titlebar-height:var(--studio-hidden-route-top-inset,0px)]">
