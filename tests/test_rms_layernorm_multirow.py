@@ -36,7 +36,13 @@ def _bits(t):
     return t.contiguous().view({2: torch.int16, 4: torch.int32}[t.element_size()])
 
 
-def _inputs(n_rows, n_cols, dtype, kind, seed = 0):
+def _inputs(
+    n_rows,
+    n_cols,
+    dtype,
+    kind,
+    seed = 0,
+):
     g = torch.Generator(device = "cuda").manual_seed(seed)
     X = torch.randn(n_rows, n_cols, device = "cuda", generator = g)
     dY = torch.randn(n_rows, n_cols, device = "cuda", generator = g)
@@ -189,7 +195,9 @@ def _assert_bits(one_row, got):
 def test_multirow_launch_failure_falls_back(multirow, kernel):
     """A failed multi-row launch runs the one-row kernel and turns the lever off process-wide."""
     X, W, dY, one_row = _narrow_case(multirow)
-    multirow.setitem(rms_layernorm._MULTIROW_CHECKED, (X.device, X.dtype, W.dtype, 128, False), True)
+    multirow.setitem(
+        rms_layernorm._MULTIROW_CHECKED, (X.device, X.dtype, W.dtype, 128, False), True
+    )
     multirow.setattr(rms_layernorm, kernel, _Raising(RuntimeError("PTX JIT compilation failed")))
     with pytest.warns(UserWarning, match = "launch failed"):
         got = _run(X, W, dY, False)
@@ -199,13 +207,18 @@ def test_multirow_launch_failure_falls_back(multirow, kernel):
 
 @pytest.mark.parametrize(
     "error",
-    [torch.cuda.OutOfMemoryError("CUDA out of memory"), torch._dynamo.exc.TorchRuntimeError("traced")],
+    [
+        torch.cuda.OutOfMemoryError("CUDA out of memory"),
+        torch._dynamo.exc.TorchRuntimeError("traced"),
+    ],
     ids = ["oom", "dynamo"],
 )
 def test_multirow_launch_failure_reraises(multirow, error):
     """OOM and dynamo errors are not launch failures: they propagate and keep the lever on."""
     X, W, dY, _ = _narrow_case(multirow)
-    multirow.setitem(rms_layernorm._MULTIROW_CHECKED, (X.device, X.dtype, W.dtype, 128, False), True)
+    multirow.setitem(
+        rms_layernorm._MULTIROW_CHECKED, (X.device, X.dtype, W.dtype, 128, False), True
+    )
     multirow.setattr(rms_layernorm, "_rms_layernorm_forward_rows", _Raising(error))
     with pytest.raises(type(error)):
         _run(X, W, dY, False)
@@ -272,7 +285,9 @@ def test_multirow_launches_on_the_tensors_device(multirow, path):
             got, _ = torch.ops.unsloth.rms_layernorm(X, W, 1e-6, False)
         else:
             fn = lambda n, x: fast_rms_layernorm(n, x)
-            got = (torch.compile(fn, fullgraph = True) if path == "compiled" else fn)(norm, X).detach()
+            got = (torch.compile(fn, fullgraph = True) if path == "compiled" else fn)(
+                norm, X
+            ).detach()
             torch._dynamo.reset()
     assert torch.equal(_bits(ref), _bits(got))
     assert any(rms_layernorm._MULTIROW_CHECKED.values()) and rms_layernorm._MULTIROW

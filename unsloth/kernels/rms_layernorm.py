@@ -212,9 +212,7 @@ def _rms_layernorm_forward_rows(
     else:
         W_row = tl.load(W + col_offsets, mask = col_mask, other = 0)
 
-    row_var = (
-        _row_dot_in_row_kernel_order(X_rows, X_rows, ROWS, WARPS) / n_cols
-    )
+    row_var = _row_dot_in_row_kernel_order(X_rows, X_rows, ROWS, WARPS) / n_cols
     eps_f32 = tl.full((), eps, tl.float32)
     inv_var = tl.math.rsqrt(row_var + eps_f32)
     tl.store(r + rows, inv_var, mask = row_mask)
@@ -311,7 +309,9 @@ def _multirow_disable(reason):
     global _MULTIROW
     if _MULTIROW:
         _MULTIROW = False
-        warnings.warn(f"Unsloth: narrow-row RMSNorm kernels disabled ({reason}); using one row per program.")
+        warnings.warn(
+            f"Unsloth: narrow-row RMSNorm kernels disabled ({reason}); using one row per program."
+        )
 
 
 def _multirow_must_raise(error, wrap):
@@ -331,7 +331,6 @@ def _bits(t):
 def _multirow_self_check(device, dtype, W_dtype, n_cols, eps, gemma, multirow):
     # Runs eagerly even when called from a trace: real tensors, nothing recorded in the graph.
     from torch.utils._python_dispatch import _disable_current_modes
-
     with _disable_current_modes(), torch.no_grad(), torch_gpu_device(device):
         g = torch.Generator(device = device).manual_seed(3407)
         shape = (2 * multirow[1] + 3, n_cols)
@@ -367,7 +366,14 @@ def _multirow_checked(X, W, eps, gemma):
     return multirow if verdict and _MULTIROW else None
 
 
-def _rms_forward(X, W, eps, gemma, wrap, multirow = None):
+def _rms_forward(
+    X,
+    W,
+    eps,
+    gemma,
+    wrap,
+    multirow = None,
+):
     # multirow: None picks (self-checked), False forces one row, settings force multi-row.
     n_rows, n_cols = X.shape
     Y = torch.empty((n_rows, n_cols), dtype = X.dtype, device = X.device)
@@ -417,7 +423,17 @@ def _rms_forward(X, W, eps, gemma, wrap, multirow = None):
     return Y, r
 
 
-def _rms_backward(dY, dX, X, W, r, eps, gemma, wrap, multirow = None):
+def _rms_backward(
+    dY,
+    dX,
+    X,
+    W,
+    r,
+    eps,
+    gemma,
+    wrap,
+    multirow = None,
+):
     # Non-Gemma writes dX over dY (the kernel ignores dX); Gemma writes into dX.
     n_rows, n_cols = dY.shape
     if multirow is None:
