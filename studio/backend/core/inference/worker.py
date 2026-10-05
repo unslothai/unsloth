@@ -740,6 +740,7 @@ def _handle_load(backend, config: dict, resp_queue: Any) -> None:
                 load_kwargs["parallel_mode"] = config.get("mlx_parallel_mode")
                 load_kwargs["distributed_group"] = config.get("_mlx_distributed_group")
                 load_kwargs["kv_quant"] = config.get("mlx_kv_quant")
+                load_kwargs["int8_prefill"] = bool(config.get("mlx_int8_prefill"))
                 load_kwargs["chat_template_override"] = config.get("chat_template_override")
             success = backend.load_model(**load_kwargs)
         finally:
@@ -823,6 +824,9 @@ def _handle_load(backend, config: dict, resp_queue: Any) -> None:
                         "mlx_kv_quant_eligibility",
                         "mlx_kv_quant_reason",
                         "mlx_kv_quant_note",
+                        "mlx_int8_prefill",
+                        "mlx_int8_prefill_requested",
+                        "mlx_int8_prefill_reason",
                         "chat_template_override_requested",
                         "chat_template_override_reason",
                     )

@@ -23,6 +23,7 @@ type ResidentRuntime = Pick<
   | "requested_context_length"
   | "cache_type_kv"
   | "mlx_kv_quant_requested"
+  | "mlx_int8_prefill_requested"
   | "speculative_type"
   | "spec_draft_n_max"
   | "requested_parallel_slots"
@@ -268,6 +269,12 @@ const SETTING_CHECKS: SettingCheck[] = [
     pinned: () => true,
     agrees: (c, s) =>
       (c.mlxKvQuant ?? null) === normalizeMlxKvQuant(s.mlx_kv_quant_requested),
+  },
+  {
+    mlxComparable: true,
+    pinned: () => true,
+    agrees: (c, s) =>
+      Boolean(c.mlxInt8Prefill) === (s.mlx_int8_prefill_requested === true),
   },
   {
     // Always pinned: an unset mode resolves to the standing preference and the load sends it. Reading

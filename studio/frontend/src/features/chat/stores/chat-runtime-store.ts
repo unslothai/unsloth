@@ -2425,6 +2425,8 @@ type ChatRuntimeStore = {
   mlxKvQuantReason: string | null;
   chatTemplateOverrideReason: string | null;
   mlxKvQuantNote: string | null;
+  mlxInt8Prefill: boolean;
+  loadedMlxInt8PrefillRequested: boolean;
   loadedKvCacheDtype: string | null;
   speculativeType: string | null;
   loadedSpeculativeType: string | null;
@@ -4215,6 +4217,8 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   mlxKvQuantReason: null,
   chatTemplateOverrideReason: null,
   mlxKvQuantNote: null,
+  mlxInt8Prefill: false,
+  loadedMlxInt8PrefillRequested: false,
   loadedKvCacheDtype: null,
   speculativeType: readPersistedSpeculativeType(),
   loadedSpeculativeType: null,
@@ -5163,6 +5167,8 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       mlxKvQuantReason: null,
       chatTemplateOverrideReason: null,
       mlxKvQuantNote: null,
+      mlxInt8Prefill: false,
+      loadedMlxInt8PrefillRequested: false,
       loadedKvCacheDtype: null,
       speculativeType: readPersistedSpeculativeType(),
       loadedSpeculativeType: null,

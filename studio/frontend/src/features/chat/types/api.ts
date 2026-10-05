@@ -72,6 +72,7 @@ export interface LoadModelRequest {
   chat_template_override?: string | null;
   cache_type_kv?: string | null;
   mlx_kv_quant?: string | null;
+  mlx_int8_prefill?: boolean;
   /** Speculative decoding mode for GGUF models: "auto" (platform-aware DSpark/DFlash when the model
    *  ships that sidecar, else MTP on MTP GGUFs, ngram-mod for sub-3B), "mtp", "dspark",
    *  "dflash", "ngram", "mtp+ngram", "off". The legacy spellings are still accepted. */
@@ -280,6 +281,9 @@ export interface LoadModelResponse {
   mlx_kv_quant_reason?: string | null;
   chat_template_override_reason?: string | null;
   mlx_kv_quant_note?: string | null;
+  mlx_int8_prefill?: boolean | null;
+  mlx_int8_prefill_requested?: boolean | null;
+  mlx_int8_prefill_reason?: string | null;
   chat_template?: string | null;
   /** Canonical UI-facing mode the load request resolved to. See LoadModelRequest. */
   speculative_type?: string | null;
@@ -422,6 +426,9 @@ export interface InferenceStatusResponse {
   mlx_kv_quant_reason?: string | null;
   chat_template_override_reason?: string | null;
   mlx_kv_quant_note?: string | null;
+  mlx_int8_prefill?: boolean | null;
+  mlx_int8_prefill_requested?: boolean | null;
+  mlx_int8_prefill_reason?: string | null;
   chat_template_override?: string | null;
   /** Canonical UI-facing mode currently active. See LoadModelRequest. */
   speculative_type?: string | null;
