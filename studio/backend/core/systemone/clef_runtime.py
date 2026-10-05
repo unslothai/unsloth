@@ -27,8 +27,6 @@ CLOSE_TIMEOUT_S = 10.0
 MAX_LENGTH = 16384
 # bf16 weights plus activations must fit, else the backbone loads in 4-bit.
 _BF16_HEADROOM = 1.2
-# Laya's question type order, which the saved per-type temperatures follow.
-_TEMPERATURE_ORDER = ("choice", "score", "noul")
 
 
 class ClefWorkerError(RuntimeError):
@@ -83,20 +81,28 @@ def _decide(model, tokenizer, state, questions: dict[str, dict[str, Any]]) -> di
     import torch
 
     from unsloth.models.clef import encode_record, systemone_answer
+    from unsloth.models.decision import QUESTION_TYPES, _served_temperatures
 
     encoded = encode_record(
         tokenizer, {"state": state, "questions": questions}, max_length = MAX_LENGTH
     )
     device = next(model.parameters()).device
     ids = torch.tensor([encoded.input_ids], device = device)
-    temperatures = model.decision_config.get("temperature") or [1.0] * 3
     with torch.inference_mode(), torch.autocast(device.type, dtype = torch.bfloat16):
         logits, _ = model(input_ids = ids, attention_mask = torch.ones_like(ids), records = [encoded])
+    rows = [
+        row[: len(question.option_ids)]
+        for question, row in zip(encoded.questions, logits.float().cpu())
+    ]
+    # The trainer's own rule: per type, or per (type, option count) bucket, after any folded scale.
+    scales = _served_temperatures(
+        model.decision_config,
+        rows,
+        [{"qtype": QUESTION_TYPES.index(q["type"])} for q in questions.values()],
+    )
     answers = {}
-    for question, row in zip(encoded.questions, logits.float().cpu()):
-        kind = questions[question.question_id]["type"]
-        scale = float(temperatures[_TEMPERATURE_ORDER.index(kind)])
-        probabilities = (row[: len(question.option_ids)] / scale).softmax(-1).tolist()
+    for question, row, scale in zip(encoded.questions, rows, scales):
+        probabilities = (row / scale).softmax(-1).tolist()
         answers[question.question_id] = systemone_answer(
             questions[question.question_id], dict(zip(question.option_ids, probabilities))
         )
