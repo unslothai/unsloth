@@ -1787,6 +1787,11 @@ def arm_after_placement(
         if why is not None:
             refusals.append(f"{type(module).__name__}: {why}")
             continue
+        if placement is None and getattr(pipe, "_unsloth_cuda_graph_offload_only", False):
+            refusals.append(
+                f"{type(module).__name__}: the family records offloaded steps only, and it stays resident"
+            )
+            continue
         try:
             if placement is None:
                 kind = (

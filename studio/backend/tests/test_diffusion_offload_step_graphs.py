@@ -802,3 +802,15 @@ def test_a_capture_collision_leaves_the_cuda_generators_alone(monkeypatch):
         assert torch.equal(_call(net, seed), _call(ref, seed))
     assert handle.poisoned and healed == []
     handle.free()
+
+
+def test_an_offload_only_family_gets_no_resident_graph():
+    net = _net()
+    pipe = _pipe(net)
+    pipe._unsloth_cuda_graph_offload_only = True
+    handles, reason = cg.arm_after_placement(pipe)
+    assert handles == () and "offloaded steps only" in reason
+    pipe._unsloth_cuda_graph_offload_only = False
+    handles, _ = cg.arm_after_placement(pipe)
+    assert len(handles) == 1 and handles[0].placement is None
+    cg.uninstall_all(handles)

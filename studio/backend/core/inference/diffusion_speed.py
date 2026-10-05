@@ -601,6 +601,10 @@ def apply_speed_optims(
                 ok, reason = False, "armed after placement"
                 try:
                     pipe._unsloth_cuda_graph_after_placement = True
+                    # A family that opts in only offloaded must not get a resident graph if the denoiser stays put.
+                    pipe._unsloth_cuda_graph_offload_only = not bool(
+                        getattr(family, "supports_cuda_graph", cuda_graph_default)
+                    )
                 except Exception:  # noqa: BLE001
                     pass
         except Exception as exc:  # noqa: BLE001 - an unimportable graph layer means eager, never a failed load
