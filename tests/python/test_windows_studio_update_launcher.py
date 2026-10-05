@@ -792,14 +792,7 @@ def test_a_quarantined_away_launcher_with_a_broken_package_still_fails(
 
 
 def test_a_failed_recovery_reports_the_verdict_it_acted_on(monkeypatch, studio, tmp_path, capsys):
-    """Absence is what started the search, never what decided it.
-
-    With the launcher gone _launcher_health_error answers _LAUNCHER_ABSENT
-    whatever the cause, so reporting it named the one condition
-    _recovered_cli_health_error exists to excuse and said nothing about the
-    update. Issue #9804 is exactly that log: "not on disk", on an install whose
-    Studio then started normally, with no way to tell what actually failed.
-    """
+    """#9804: a failed recovery reports why, not that the launcher is absent."""
     _configure_windows(monkeypatch, studio, tmp_path, launcher = None)
     monkeypatch.setattr(studio, "_run_setup_script", lambda **_kwargs: None)
     monkeypatch.setattr(
@@ -817,12 +810,7 @@ def test_a_failed_recovery_reports_the_verdict_it_acted_on(monkeypatch, studio, 
 
 
 def test_a_failed_recovery_with_no_interpreter_says_both(monkeypatch, studio, tmp_path, capsys):
-    """The one branch where absence still belongs in the message.
-
-    _interpreter_health_error already spells this case out -- the launcher is
-    missing AND there is nothing beside it to ask -- so the reason carries the
-    absence itself and nothing is lost by reporting the reason alone.
-    """
+    """No interpreter: the reason itself carries the absence."""
     scripts, _launcher = _configure_windows(monkeypatch, studio, tmp_path, launcher = None)
     (scripts / "python.exe").unlink()
     monkeypatch.setattr(studio, "_run_setup_script", lambda **_kwargs: None)
@@ -831,9 +819,7 @@ def test_a_failed_recovery_with_no_interpreter_says_both(monkeypatch, studio, tm
     with pytest.raises(studio.typer.Exit):
         _update(studio)
 
-    # The whole clause, not "is missing": __enter__ already warns that the
-    # launcher is missing or invalid, and a loose match passes on that line
-    # alone -- which is what this test exists to catch.
+    # Whole clause: __enter__ already prints a "missing or invalid" warning.
     assert (
         "the updated launcher is missing and there is no managed interpreter"
         in capsys.readouterr().err
@@ -843,12 +829,7 @@ def test_a_failed_recovery_with_no_interpreter_says_both(monkeypatch, studio, tm
 def test_a_recovered_launcher_still_reports_what_setup_published(
     monkeypatch, studio, tmp_path, capsys
 ):
-    """Parity guard: the reason only speaks when recovery could not answer.
-
-    Setup publishing a launcher that cannot run is still a failure, and the
-    previous one going back does not change what to report -- there the sampled
-    error IS the operative cause, so it must survive.
-    """
+    """A broken published launcher is still the reported cause after a successful restore."""
     scripts, launcher = _configure_windows(monkeypatch, studio, tmp_path)
     monkeypatch.setattr(
         studio, "_run_setup_script", lambda **_kwargs: launcher.write_bytes(b"MZ-new")
@@ -874,13 +855,7 @@ def test_a_recovered_launcher_still_reports_what_setup_published(
 def test_a_published_launcher_keeps_its_own_verdict_when_recovery_also_fails(
     monkeypatch, studio, tmp_path, capsys
 ):
-    """The reason speaks for absence only, never over a launcher setup wrote.
-
-    With every candidate broken too, the reason is about the copy put back, not
-    about the update -- so reporting it here would trade the update's own
-    failure for the previous launcher's, which is the same discarded-verdict
-    mistake in the other direction.
-    """
+    """The restored copy's failure never replaces the published launcher's."""
     scripts, launcher = _configure_windows(monkeypatch, studio, tmp_path)
     published = b"MZ-published"
     monkeypatch.setattr(
