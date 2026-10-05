@@ -6,6 +6,7 @@ __all__ = [
     "DecisionTrainer",
 ]
 
+import contextlib
 import copy
 import functools
 import importlib.util
@@ -597,45 +598,126 @@ def _clef_peft_model(model, target_modules, use_gradient_checkpointing, random_s
     return model
 
 
+def _commit_staged(staging: Path, output: Path, marker: str, stale = ()) -> None:
+    # Old files stay until the new ones are complete; the marker that makes a folder a
+    # checkpoint moves in last, so a failed save leaves the previous checkpoint loadable.
+    import shutil
+
+    staged = sorted(staging.iterdir(), key = lambda path: path.name == marker)
+    names = {path.name for path in staged}
+    for path in staged:
+        target = output / path.name
+        if path.is_dir() and target.is_dir():
+            old = output / f".{path.name}.unsloth-old"
+            shutil.rmtree(old, ignore_errors = True)
+            os.replace(target, old)
+            os.replace(path, target)
+            shutil.rmtree(old, ignore_errors = True)
+        else:
+            os.replace(path, target)
+    for path in output.iterdir():
+        if path.name not in names and any(path.match(pattern) for pattern in stale):
+            path.unlink()
+
+
+@contextlib.contextmanager
+def _staging(output: Path):
+    import shutil
+
+    output.mkdir(parents = True, exist_ok = True)
+    staging = Path(tempfile.mkdtemp(prefix = ".unsloth-save-", dir = output))
+    try:
+        yield staging
+    finally:
+        shutil.rmtree(staging, ignore_errors = True)
+
+
+def _fold_temperature(state: dict, temperature: float) -> bool:
+    # logits / T == prior / T + gate * (joint_scale / T * cosine + residual / T): exact while the
+    # rescaled log-scales stay under the head's clamp(max = log 100).
+    cap = math.log(100.0)
+    scales = {}
+    for name in ("prior_logit_scale", "joint_logit_scale"):
+        value = min(float(state[name]), cap) - math.log(temperature)
+        if value > cap:
+            return False
+        scales[name] = value
+    for name, value in scales.items():
+        state[name] = torch.tensor(value, dtype = state[name].dtype)
+    last = max(
+        int(key.split(".")[1]) for key in state if key.startswith("residual_scorer.")
+    )
+    for kind in ("weight", "bias"):
+        state[f"residual_scorer.{last}.{kind}"] = state[f"residual_scorer.{last}.{kind}"] / temperature
+    return True
+
+
 def _save_clef(self, save_directory, tokenizer) -> None:
     import shutil
 
     from safetensors.torch import save_file
 
     output = Path(save_directory)
-    output.mkdir(parents = True, exist_ok = True)
-    for name in _CLEF_HEAD_FILES:
-        (output / name).unlink(missing_ok = True)
-    encoder = self.encoder
-    if hasattr(encoder, "save_pretrained_merged"):
-        # Unsloth's merge dequantizes a 4-bit base and writes the processor files too.
-        encoder.save_pretrained_merged(str(output), tokenizer, save_method = "merged_16bit")
-    else:
-        if hasattr(encoder, "merge_and_unload"):
-            encoder = copy.deepcopy(encoder).merge_and_unload()
-        encoder.save_pretrained(str(output))
-        tokenizer.save_pretrained(str(output))
-    source = Path(getattr(self, "_unsloth_source_folder", "") or output)
-    for name in _CLEF_EXTRA_FILES:
-        if (source / name).is_file() and not (output / name).exists():
-            shutil.copyfile(source / name, output / name)
+    config = {**self.decision_config, "fine_tuned": True}
+    state = {k: v.detach().to("cpu", torch.float32) for k, v in self.head.state_dict().items()}
+    # Folded in, so Cloudflare's loader serves calibrated confidences too; the per-type
+    # temperatures Unsloth applies are already relative to it.
+    temperature = config.pop("head_temperature", None)
+    if temperature and temperature != 1.0:
+        if _fold_temperature(state, temperature):
+            config["folded_temperature"] = config.get("folded_temperature", 1.0) * temperature
+        else:
+            config["head_temperature"] = temperature
     weights = {}
-    for name, value in self.head.state_dict().items():
-        value = value.detach().to("cpu", torch.bfloat16).contiguous()
+    for name, value in state.items():
+        value = value.to(torch.bfloat16).contiguous()
         if not torch.isfinite(value).all():
             raise ValueError(
                 f"Unsloth: head weight {name} is not finite, so the model cannot be saved."
             )
         weights[name] = value
-    (output / "unsloth_decision_config.json").write_text(
-        json.dumps({**self.decision_config, "fine_tuned": True}, indent = 2), encoding = "utf-8"
-    )
-    (output / _CLEF_HEAD_FILES[1]).write_text(
-        json.dumps(self.head.config, indent = 2), encoding = "utf-8"
-    )
-    # Written last: the head marks a complete Clef checkpoint.
-    save_file(weights, str(output / "joint_head.safetensors.tmp"))
-    os.replace(output / "joint_head.safetensors.tmp", output / _CLEF_HEAD_FILES[0])
+    source = Path(getattr(self, "_unsloth_source_folder", "") or output)
+    with _staging(output) as staging:
+        encoder = self.encoder
+        if hasattr(encoder, "save_pretrained_merged"):
+            # Unsloth's merge dequantizes a 4-bit base and writes the processor files too.
+            encoder.save_pretrained_merged(str(staging), tokenizer, save_method = "merged_16bit")
+        else:
+            if hasattr(encoder, "merge_and_unload"):
+                encoder = copy.deepcopy(encoder).merge_and_unload()
+            encoder.save_pretrained(str(staging))
+            tokenizer.save_pretrained(str(staging))
+        for name in _CLEF_EXTRA_FILES:
+            if (source / name).is_file() and not (staging / name).exists():
+                shutil.copyfile(source / name, staging / name)
+        (staging / "unsloth_decision_config.json").write_text(
+            json.dumps(config, indent = 2), encoding = "utf-8"
+        )
+        (staging / _CLEF_HEAD_FILES[1]).write_text(
+            json.dumps(self.head.config, indent = 2), encoding = "utf-8"
+        )
+        save_file(weights, str(staging / _CLEF_HEAD_FILES[0]))
+        _commit_staged(
+            staging,
+            output,
+            _CLEF_HEAD_FILES[0],
+            stale = ("model*.safetensors", "model.safetensors.index.json"),
+        )
+
+
+def _clef_mixed_precision(model, args) -> None:
+    # Unsloth's rule for Qwen3.5 (rl.py): on its float32 path a model never autocasts, since
+    # float16 NaNs the gated delta net; otherwise its bfloat16 weights pair with bf16 only.
+    if _clef_forced_float32(model):
+        if args.fp16 or args.bf16:
+            print("Unsloth: Clef trains in float32 here, since Qwen3.5 cannot train in float16.")
+        args.fp16 = args.bf16 = False
+    elif args.fp16:
+        print("Unsloth: Clef is in bfloat16, so fp16 = True is switched to bf16 = True.")
+        args.fp16, args.bf16 = False, True
+    # transformers 5 reads the accelerator's precision from here (4.x from fp16 / bf16).
+    if hasattr(args, "mixed_precision"):
+        args.mixed_precision = "bf16" if args.bf16 else "no"
 
 
 class _LengthGroupedBatches(torch.utils.data.Sampler):
@@ -844,10 +926,50 @@ def _served_temperatures(config: dict, logits, items) -> list:
         key: common.clamp_temperature(value)
         for key, value in (config.get("temperature_by_options") or {}).items()
     }
+    # A Clef temperature not yet folded into the head (_save_clef folds it on save).
+    head = config.get("head_temperature", 1.0)
     return [
-        buckets.get(common.temp_bucket(item["qtype"], len(z)), per_type[item["qtype"]])
+        head * buckets.get(common.temp_bucket(item["qtype"], len(z)), per_type[item["qtype"]])
         for z, item in zip(logits, items)
     ]
+
+
+HEAD_TEMPERATURE_RANGE = (0.05, 20.0)
+
+
+def _calibrate_clef(config: dict, logits, items) -> dict:
+    # Calibrated against being right (the gold label), not the soft gold distribution: Clef's
+    # confidence is read as the chance the answer is correct, and soft gold targets left a tuned
+    # model underconfident (confidence 0.61 at accuracy 0.78 on typed-decisions).
+    common = _laya().common
+    hard = [
+        {**item, "target": [float(j == item["label"]) for j in range(len(z))]}
+        for z, item in zip(logits, items)
+    ]
+
+    def fit(indices) -> tuple:
+        chosen = list(indices)
+        head = _fit_temperature([logits[i] for i in chosen], [hard[i] for i in chosen])
+        head = min(max(head, HEAD_TEMPERATURE_RANGE[0]), HEAD_TEMPERATURE_RANGE[1])
+        scaled = [z / head for z in logits]
+        relative, fitted = _fit_temperatures(scaled, hard, chosen, [1.0] * 3)
+        return head, relative, fitted
+
+    everything = range(len(items))
+    if len(items) < MIN_CALIBRATION_ITEMS:
+        return {**_metrics(logits, items, _served_temperatures(config, logits, items)), "fitted_types": []}
+    head, relative, fitted = fit(everything)
+    half = {row: i % 2 for i, row in enumerate(sorted({item["row"] for item in items}))}
+    per_item = [1.0] * len(items)
+    for side in (0, 1):
+        side_head, side_relative, _ = fit(i for i in everything if half[items[i]["row"]] != side)
+        for i in everything:
+            if half[items[i]["row"]] == side:
+                per_item[i] = side_head * common.clamp_temperature(side_relative[items[i]["qtype"]])
+    config["head_temperature"] = head
+    config["temperature"] = relative
+    config.pop("temperature_by_options", None)
+    return {**_metrics(logits, items, per_item), "fitted_types": sorted(fitted)}
 
 
 def save_pretrained_merged(
@@ -888,18 +1010,17 @@ def save_pretrained_merged(
     del encoder, state
     config = json.dumps({**self.decision_config, "fine_tuned": True}, indent = 2)
 
-    output = Path(save_directory)
-    output.mkdir(parents = True, exist_ok = True)
-    (output / "rl_agent_config.json").unlink(missing_ok = True)
-    save_file(weights, str(output / "model.safetensors"))
-    (output / "encoder").mkdir(exist_ok = True)
-    (output / "encoder" / "config.json").write_text(self._unsloth_encoder_config, encoding = "utf-8")
-    tokenizer.save_pretrained(str(output / "tokenizer"))
-    _laya().agent._fix_tokenizer_config(str(output))
-    # Written last: a folder with rl_agent_config.json is a complete checkpoint.
-    partial = output / "rl_agent_config.json.tmp"
-    partial.write_text(config, encoding = "utf-8")
-    os.replace(partial, output / "rl_agent_config.json")
+    with _staging(Path(save_directory)) as staging:
+        save_file(weights, str(staging / "model.safetensors"))
+        (staging / "encoder").mkdir()
+        (staging / "encoder" / "config.json").write_text(
+            self._unsloth_encoder_config, encoding = "utf-8"
+        )
+        tokenizer.save_pretrained(str(staging / "tokenizer"))
+        _laya().agent._fix_tokenizer_config(str(staging))
+        (staging / "rl_agent_config.json").write_text(config, encoding = "utf-8")
+        # A folder with rl_agent_config.json is a complete checkpoint, so it moves in last.
+        _commit_staged(staging, Path(save_directory), "rl_agent_config.json")
 
 
 def push_to_hub_merged(
@@ -1189,6 +1310,9 @@ class FastDecisionModel:
         config = model.decision_config
         fallback = [common.clamp_temperature(t) for t in config.get("temperature", [1.0] * 3)]
         logits, items = _decision_logits(model, tokenizer, items)
+        clef = getattr(model, "is_clef", False)
+        if clef:
+            return _calibrate_clef(config, logits, items)
         everything = range(len(items))
         temperature, fitted = _fit_temperatures(logits, items, everything, fallback)
         # Reported numbers score each half of the rows with temperatures fitted on the other half.
