@@ -119,8 +119,21 @@ def _require_qwen3_tts():
     return
 
 
-def _run_unsloth_attention(self, Q, K, V, bsz, q_len, n_heads, n_kv_heads, n_groups,
-                           head_dim, attention_mask, hidden_states, kwargs):
+def _run_unsloth_attention(
+    self,
+    Q,
+    K,
+    V,
+    bsz,
+    q_len,
+    n_heads,
+    n_kv_heads,
+    n_groups,
+    head_dim,
+    attention_mask,
+    hidden_states,
+    kwargs,
+):
     """Shared tail of the fast forwards: backend selection + attention + o_proj."""
     seq_info = get_packed_info_from_kwargs(kwargs, hidden_states.device)
     use_varlen = seq_info is not None
@@ -208,14 +221,28 @@ def Qwen3TTSTalkerAttention_fast_forward(
 
     cos, sin = position_embeddings
     Q, K = apply_multimodal_rotary_pos_emb(
-        Q, K, cos, sin,
+        Q,
+        K,
+        cos,
+        sin,
         self.rope_scaling["mrope_section"],
         self.rope_scaling["interleaved"],
     )
 
     attn_output = _run_unsloth_attention(
-        self, Q, K, V, bsz, q_len, n_heads, n_kv_heads, n_groups,
-        head_dim, attention_mask, hidden_states, kwargs,
+        self,
+        Q,
+        K,
+        V,
+        bsz,
+        q_len,
+        n_heads,
+        n_kv_heads,
+        n_groups,
+        head_dim,
+        attention_mask,
+        hidden_states,
+        kwargs,
     )
     return attn_output, None
 
@@ -268,8 +295,19 @@ def Qwen3TTSAttention_fast_forward(
     Q, K = apply_rotary_pos_emb(Q, K, cos, sin)
 
     attn_output = _run_unsloth_attention(
-        self, Q, K, V, bsz, q_len, n_heads, n_kv_heads, n_groups,
-        head_dim, attention_mask, hidden_states, kwargs,
+        self,
+        Q,
+        K,
+        V,
+        bsz,
+        q_len,
+        n_heads,
+        n_kv_heads,
+        n_groups,
+        head_dim,
+        attention_mask,
+        hidden_states,
+        kwargs,
     )
     return attn_output, None
 
