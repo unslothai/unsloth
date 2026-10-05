@@ -3969,8 +3969,7 @@ from utils.current_date_prompt_settings import (
     PROBE_TOOLS,
     contains_current_date_prompt_line,
     current_date_prompt_line,
-    template_default_system_prompt,
-    template_rejects_system_turn,
+    template_system_turn,
     replace_current_date_prompt_lines,
 )
 
@@ -6531,10 +6530,6 @@ def _local_chat_template(image: bool = False, tools: bool = False) -> Optional[s
     return selected[0] if selected else None
 
 
-def _local_template_default_system_prompt(today: Any, image: bool = False) -> str:
-    return template_default_system_prompt(_local_chat_template(image), today)
-
-
 def _local_managed_engine() -> bool:
     try:
         if get_llama_cpp_backend().is_loaded:
@@ -6548,11 +6543,29 @@ def _local_managed_engine() -> bool:
     return info.get("engine") in ("vllm", "sglang")
 
 
-def _local_template_rejects_system_turn(image: bool = False, tools: bool = False) -> bool:
+def _local_template_system_turn(
+    today: Any,
+    image: bool = False,
+    tools: bool = False,
+    controls: tuple = (),
+) -> tuple[bool, Optional[str]]:
     if _local_managed_engine():
         # vLLM/SGLang render a template Studio never sees, so nothing says a system turn is safe.
-        return True
-    return template_rejects_system_turn(_local_chat_template(image, tools), tools)
+        return False, None
+    return template_system_turn(_local_chat_template(image, tools), today, tools, controls)
+
+
+def _template_controls(payload: Any) -> tuple:
+    """The reasoning controls this request's chat template is rendered with."""
+    names = ("enable_thinking", "reasoning_effort", "preserve_thinking")
+    values = [getattr(payload, name, None) for name in names]
+    try:
+        llama = get_llama_cpp_backend()
+        if llama.is_loaded:
+            return tuple(sorted((llama._request_reasoning_kwargs(*values) or {}).items()))
+    except Exception:
+        pass
+    return tuple((name, value) for name, value in zip(names, values) if value is not None)
 
 
 def _apply_current_date_prompt(
@@ -6563,6 +6576,7 @@ def _apply_current_date_prompt(
     template_default: bool = True,
     image: bool = False,
     tools: bool = False,
+    controls: tuple = (),
 ) -> str:
     """Prefix the user's system prompt with the date when the setting is on.
 
@@ -6578,16 +6592,18 @@ def _apply_current_date_prompt(
     if stated:
         return refreshed_prompt
     if not system_prompt:
-        if _local_template_rejects_system_turn(image, tools):
-            # no system turn to carry it, and the date is never written into the user's own turns.
+        from datetime import date
+
+        today = date.fromisoformat(date_line[len(CURRENT_DATE_PROMPT_PREFIX) : -1])
+        takes_turn, default = _local_template_system_turn(today, image, tools, controls)
+        if not takes_turn or (template_default and default is None):
+            # no system turn renders here as the template's own would, and the date never goes into
+            # the user's own turns.
             return ""
         if template_default:
-            from datetime import date
-
             # a system turn displaces the chat template's default one, so carry that default along,
             # rendered for the user's day rather than the server's.
-            today = date.fromisoformat(date_line[len(CURRENT_DATE_PROMPT_PREFIX) : -1])
-            system_prompt = _local_template_default_system_prompt(today, image)
+            system_prompt = default
     return f"{date_line}\n\n{system_prompt.lstrip()}" if system_prompt else date_line
 
 
@@ -28860,7 +28876,10 @@ async def produce_openai_chat_completions(
             and await asyncio.to_thread(_request_has_promotable_mcp_images, payload)
         )
     )
-    system_prompt = _apply_current_date_prompt(system_prompt, request, image = _renders_media)
+    _date_controls = _template_controls(payload)
+    system_prompt = _apply_current_date_prompt(
+        system_prompt, request, image = _renders_media, controls = _date_controls
+    )
 
     if not chat_messages:
         raise _reject(400, "At least one non-system message is required.")
@@ -29088,6 +29107,7 @@ async def produce_openai_chat_completions(
                 include_api_key = True,
                 template_default = False,
                 tools = True,
+                controls = _date_controls,
             )
             gguf_messages = _set_or_prepend_system_message(gguf_messages, system_prompt)
             # ── Tool-use system prompt nudge ──────────────────────
@@ -31217,6 +31237,7 @@ async def produce_openai_chat_completions(
             template_default = False,
             image = _sf_has_any_image or _video_clip is not None,
             tools = True,
+            controls = _date_controls,
         )
         if _sf_nudge:
             if _sf_system_prompt:
@@ -31855,6 +31876,7 @@ async def produce_openai_chat_completions(
             template_default = False,
             image = _sf_has_any_image or _video_clip is not None,
             tools = True,
+            controls = _date_controls,
         )
         if served_images:
             # One pass over the conversation this renders, so markers and payloads stay in step.
@@ -37864,8 +37886,11 @@ async def _mlx_count_chat_tokens(payload, request = None) -> Optional[JSONRespon
             and await asyncio.to_thread(_request_has_promotable_mcp_images, payload)
         )
     )
+    _date_controls = _template_controls(payload)
     if request is not None:
-        system_prompt = _apply_current_date_prompt(system_prompt, request, image = _renders_media)
+        system_prompt = _apply_current_date_prompt(
+            system_prompt, request, image = _renders_media, controls = _date_controls
+        )
 
     from state.tool_policy import get_tool_policy as _get_tool_policy_mlx
 
@@ -37988,6 +38013,7 @@ async def _mlx_count_chat_tokens(payload, request = None) -> Optional[JSONRespon
                 template_default = False,
                 image = _renders_media,
                 tools = True,
+                controls = _date_controls,
             )
         messages = _set_or_prepend_system_message(messages, _client_system_prompt)
         system_prompt = ""
@@ -38049,6 +38075,7 @@ async def _mlx_count_chat_tokens(payload, request = None) -> Optional[JSONRespon
                 template_default = False,
                 image = _renders_media,
                 tools = True,
+                controls = _date_controls,
             )
         if _nudge:
             system_prompt = (system_prompt.rstrip() + "\n\n" + _nudge) if system_prompt else _nudge
@@ -38254,8 +38281,11 @@ async def chat_count_tokens(
     _system_prompt, _, _ = await _extract_content_parts_async(payload.messages)
     # the verbatim passthrough carries no date line, so counting one here would overcount it.
     _user_system_prompt = _system_prompt
+    _date_controls = _template_controls(payload)
     if not _takes_passthrough:
-        _system_prompt = _apply_current_date_prompt(_system_prompt, request)
+        _system_prompt = _apply_current_date_prompt(
+            _system_prompt, request, controls = _date_controls
+        )
     openai_messages = _set_or_prepend_system_message(openai_messages, _system_prompt)
 
     # A PENDING turn (unanswered user message or tool result) is the one shape the tool loop
@@ -38329,6 +38359,7 @@ async def chat_count_tokens(
                     include_api_key = True,
                     template_default = False,
                     tools = True,
+                    controls = _date_controls,
                 ),
             )
             _count_nudge = await _apply_rag_nudge(

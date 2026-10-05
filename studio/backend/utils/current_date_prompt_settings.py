@@ -134,6 +134,7 @@ def _render_probe(
     messages: list[dict],
     today: date,
     tools: list | None = None,
+    controls: dict | None = None,
 ) -> str:
     from jinja2.exceptions import TemplateError
     from jinja2.sandbox import ImmutableSandboxedEnvironment
@@ -151,58 +152,61 @@ def _render_probe(
         bos_token = "",
         eos_token = "",
         **({"tools": tools} if tools else {}),
+        **(controls or {}),
     )
 
 
-def _probe_renders(
-    chat_template: str,
+@lru_cache(maxsize = 16)
+def template_system_turn(
+    chat_template: str | None,
     today: date,
-    tools: list | None = None,
-) -> tuple[str, str] | None:
-    """A plain chat rendered without and with a system turn, when the template renders that turn."""
+    tools: bool = False,
+    controls: tuple = (),
+) -> tuple[bool, str | None]:
+    """How a system turn the chat did not send renders in this template on ``today``.
+
+    Whether one renders at all, and the default system prompt it has to carry so the prompt reads as
+    the template's own render: "" when there is none, None when no system turn reproduces it (the
+    template rewrites what it is given). A template the probe cannot render takes one carrying nothing.
+    """
+    if not chat_template:
+        return True, ""
+    catalog = PROBE_TOOLS if tools else None
+    kwargs = dict(controls)
+    renders_chat = False
     # some templates read message text only from content parts, as a vision processor sends it.
     for content in (lambda text: text, lambda text: [{"type": "text", "text": text}]):
         user = {"role": "user", "content": content(_PROBE_USER)}
+
+        def render(system: str | None) -> str:
+            turns = [{"role": "system", "content": content(system)}] if system is not None else []
+            return _render_probe(chat_template, [*turns, user], today, catalog, kwargs)
+
         try:
-            bare = _render_probe(chat_template, [user], today, tools)
-            with_system = _render_probe(
-                chat_template,
-                [{"role": "system", "content": content(_PROBE_SYSTEM)}, user],
-                today,
-                tools,
-            )
+            bare = render(None)
         except Exception:
             continue
-        if with_system.count(_PROBE_SYSTEM) == 1:
-            return bare, with_system
-    return None
-
-
-@lru_cache(maxsize = 8)
-def template_rejects_system_turn(chat_template: str | None, tools: bool = False) -> bool:
-    """A template that renders a plain chat but raises on, or drops, a system turn."""
-    if not chat_template:
-        return False
-    today = date.today()
-    catalog = PROBE_TOOLS if tools else None
-    try:
-        _render_probe(chat_template, [{"role": "user", "content": _PROBE_USER}], today, catalog)
-    except Exception:
-        return False
-    return _probe_renders(chat_template, today, catalog) is None
-
-
-@lru_cache(maxsize = 8)
-def template_default_system_prompt(chat_template: str | None, today: date) -> str:
-    """The system prompt a template renders on ``today`` when the chat sends none."""
-    renders = _probe_renders(chat_template, today) if chat_template else None
-    if renders is None:
-        return ""
-    bare, with_system = renders
-    head, tail = with_system.split(_PROBE_SYSTEM)
-    if len(bare) <= len(head) + len(tail) or not bare.startswith(head) or not bare.endswith(tail):
-        return ""
-    return bare[len(head) : len(bare) - len(tail)].strip()
+        renders_chat = True
+        try:
+            with_system = render(_PROBE_SYSTEM)
+        except Exception:
+            continue
+        if with_system.count(_PROBE_SYSTEM) != 1:
+            continue
+        head, tail = with_system.split(_PROBE_SYSTEM)
+        if (
+            len(bare) <= len(head) + len(tail)
+            or not bare.startswith(head)
+            or not bare.endswith(tail)
+        ):
+            return True, ""
+        default = bare[len(head) : len(bare) - len(tail)]
+        try:
+            replayed = render(default)
+        except Exception:
+            replayed = None
+        return True, (default.strip() if replayed == bare else None)
+    return not renders_chat, ("" if not renders_chat else None)
 
 
 def strip_current_date_update_note(text: str) -> str:

@@ -564,9 +564,6 @@ def test_managed_messages_get_no_unrequested_date(native, monkeypatch, tools):
     monkeypatch.setattr(
         api, "current_date_prompt_line", lambda **_k: "The current date is 2026-08-15."
     )
-    monkeypatch.setattr(
-        api, "_local_template_default_system_prompt", lambda _today, _image = False: ""
-    )
     seen = []
     plain = backend._responder
 
