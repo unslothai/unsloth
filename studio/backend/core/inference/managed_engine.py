@@ -66,20 +66,26 @@ def validate_load(engine: str, request) -> list[int]:
     from . import wsl_host
 
     if len(gpu_ids) > 1 and wsl_host.active() and profile(engine)["platform"] == "rocm":
-        raise ValueError(f"On Windows, {engine} runs on one AMD GPU. Select a single GPU.")
+        raise ValueError(
+            f"On Windows, {ENGINE_NAMES[engine]} runs on one AMD GPU. Select a single GPU."
+        )
     for gpu_id in gpu_ids:
         reason = support_reason(engine, gpu_id)
         if reason:
             raise ValueError(f"GPU {gpu_id}: {reason}")
     info = installed(engine)
     if not info:
-        raise ValueError(f"Install {engine} in Settings > System > Inference engines first.")
+        raise ValueError(
+            f"Install {ENGINE_NAMES[engine]} in Settings > System > Inference engines first."
+        )
     if stale(info):
         raise ValueError(
-            f"Studio's packages changed since {engine} was installed. Repair it in Settings > System > Inference engines."
+            f"Studio's packages changed since {ENGINE_NAMES[engine]} was installed. Repair it in Settings > System > Inference engines."
         )
     if info.get("profile_digest") != profile_digest(engine) and not info.get("restored"):
-        raise ValueError(f"Update {engine} in Settings > System > Inference engines first.")
+        raise ValueError(
+            f"Update {ENGINE_NAMES[engine]} in Settings > System > Inference engines first."
+        )
     if (
         request.gguf_variant
         or request.model_path.lower().endswith(".gguf")

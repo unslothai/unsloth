@@ -185,7 +185,7 @@ def test_amd_support_reports_an_unopenable_kfd_and_old_glibc(amd_host, monkeypat
     monkeypatch.setattr(install.os, "access", lambda *_: False)
     assert "/dev/kfd" in install.support_reason("vllm", wait = False)
     monkeypatch.setattr(install.platform, "libc_ver", lambda: ("glibc", "2.35"))
-    assert install.support_reason("vllm", wait = False) == "vllm requires glibc 2.39 or newer."
+    assert install.support_reason("vllm", wait = False) == "vLLM requires glibc 2.39 or newer."
 
 
 def test_sglang_on_amd_points_to_vllm(amd_host):

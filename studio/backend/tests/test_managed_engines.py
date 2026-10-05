@@ -298,7 +298,10 @@ def test_glibc_floor_matches_the_lock_platform(engine, monkeypatch):
     reason = install.support_reason(engine, wait = False)
     assert reason is None or "glibc" not in reason
     monkeypatch.setattr(install.platform, "libc_ver", lambda: ("glibc", "2.33"))
-    assert install.support_reason(engine, wait = False) == f"{engine} requires glibc 2.34 or newer."
+    assert (
+        install.support_reason(engine, wait = False)
+        == f"{install.ENGINE_NAMES[engine]} requires glibc 2.34 or newer."
+    )
 
 
 def fake_dist(site, name, version, *requires):

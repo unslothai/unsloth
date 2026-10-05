@@ -669,7 +669,7 @@ def support_reason(
     else:
         glibc = profile(engine).get("glibc", (2, 34))
         if tuple(int(x) for x in (platform.libc_ver()[1] or "0.0").split(".")[:2]) < glibc:
-            return f"{engine} requires glibc {glibc[0]}.{glibc[1]} or newer."
+            return f"{ENGINE_NAMES[engine]} requires glibc {glibc[0]}.{glibc[1]} or newer."
     if gpu_platform() == "rocm":
         return _rocm_reason(engine, gpu_id, wait)
     rows = _driver_rows(gpu_id, wait = wait)
