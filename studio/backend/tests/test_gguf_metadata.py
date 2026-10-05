@@ -370,6 +370,11 @@ def test_is_mmproj_by_metadata_signals():
     assert is_mmproj_by_metadata({"general.basename": "foo"}) is None
     assert is_mmproj_by_metadata({}) is None
     assert is_mmproj_by_metadata(None) is None
+    # llama.cpp's projector arch; ggml-org's SmolVLM projector says "clip-vision".
+    assert is_mmproj_by_metadata({"general.architecture": "clip", "general.type": "clip-vision"})
+    assert (
+        is_mmproj_by_metadata({"general.architecture": "llama", "general.type": "model"}) is False
+    )
 
 
 # --- pairing_score -----------------------------------------------------

@@ -239,6 +239,7 @@ import {
   SharedComposer,
 } from "./shared-composer";
 import { BypassPermissionsConfirmDialog } from "./bypass-permissions-menu-item";
+import { RootSandboxSetupDialog } from "./sandbox-setup-dialog";
 import {
   CHAT_CODE_TOOLS_ENABLED_KEY,
   CHAT_IMAGE_TOOLS_ENABLED_KEY,
@@ -282,6 +283,7 @@ import {
   createAnnotationsFile,
 } from "./utils/document-annotations";
 import { requestTemporaryPromptQueueStop } from "./utils/prompt-queue-boundary";
+import { estimateContextUsage } from "./utils/estimate-chat-tokens";
 import { isAssistantLocalThreadId } from "./utils/thread-ids";
 import {
   consumeProjectSourcesPending,
@@ -326,6 +328,31 @@ const EXTERNAL_PROVIDER_DROPDOWN_ORDER: Record<string, number> = {
 
 function getExternalProviderDropdownRank(providerType: string): number {
   return EXTERNAL_PROVIDER_DROPDOWN_ORDER[providerType] ?? 2;
+}
+
+type RuntimeStoreState = ReturnType<typeof useChatRuntimeStore.getState>;
+
+// The newest saved usage if the active checkpoint and window could have produced it, else null.
+function savedUsageFor(
+  messages: MessageRecord[],
+  store: RuntimeStoreState,
+): RuntimeStoreState["contextUsage"] {
+  const msg = [...messages].sort((a, b) => b.createdAt - a.createdAt)[0];
+  const usage = msg?.metadata?.contextUsage as RuntimeStoreState["contextUsage"];
+  if (!usage) return null;
+  const activeCheckpoint = store.params.checkpoint;
+  const usageModelId = (usage as { modelId?: unknown }).modelId;
+  if (typeof usageModelId === "string" && usageModelId) {
+    if (!activeCheckpoint || usageModelId !== activeCheckpoint) {
+      return null;
+    }
+  }
+  // llama.cpp stops at the window, so a count past it is stale; MLX runs past it, so its count stands.
+  const limit = store.loadedIsGguf ? store.loadedContextLength : null;
+  if (typeof limit === "number" && limit > 0 && (usage.totalTokens ?? 0) > limit) {
+    return null;
+  }
+  return usage;
 }
 
 function messageHasImage(message: MessageRecord): boolean {
@@ -4107,44 +4134,14 @@ export function ChatPage({
     }
     viewBeforeCompareRef.current = null;
     navigate({ to: "/chat", search: saved });
-    // Restore usage from the last assistant message, only if it matches the active checkpoint, else
-    // the relaxed render gate shows stale stats.
     const threadId =
       saved.thread ?? useChatRuntimeStore.getState().activeThreadId;
     if (threadId) {
       void listStoredChatMessages(threadId)
-        .then(
-          (messages) =>
-            [...messages].sort((a, b) => b.createdAt - a.createdAt)[0],
-        )
-        .then((msg) => {
-          const metadata = msg?.metadata as Record<string, unknown> | undefined;
-          const usage = metadata?.contextUsage as ReturnType<
-            typeof useChatRuntimeStore.getState
-          >["contextUsage"];
-          if (!usage) return;
+        .then((messages) => {
           const store = useChatRuntimeStore.getState();
-          const activeCheckpoint = store.params.checkpoint;
-          const usageModelId = (usage as { modelId?: unknown }).modelId;
-          // Scope by modelId when present; reject if no active checkpoint, since model-scoped usage cannot
-          // be attributed to "nothing".
-          if (typeof usageModelId === "string" && usageModelId) {
-            if (!activeCheckpoint || usageModelId !== activeCheckpoint) {
-              return;
-            }
-          }
-          // For local turns, also require the restored count to fit in the active window. Skip when unknown
-          // (external provider). llama.cpp only: it stops at the window, so a count past it is stale by definition.
-          // MLX generates straight past instead, where an over-window count is the true one and the bar has a state
-          // for it.
-          const limit = store.loadedIsGguf ? store.loadedContextLength : null;
-          if (
-            typeof limit === "number" &&
-            limit > 0 &&
-            (usage.totalTokens ?? 0) > limit
-          ) {
-            return;
-          }
+          const usage = savedUsageFor(messages, store) ?? estimateContextUsage(messages);
+          if (!usage) return;
           // Key by the thread this restore read, like the history loader: the await above can outlast a
           // switch away, and an unkeyed write would file this usage under the incoming thread.
           store.setThreadContextUsage(threadId, usage);
@@ -4483,6 +4480,7 @@ export function ChatPage({
           so it must live at one stable root, or Compare mode's composers would each render a copy.
           It also portals to body, so gate it on `active`. */}
       {active && <BypassPermissionsConfirmDialog />}
+      {active && <RootSandboxSetupDialog />}
       {/* The MCP servers dialog: its chord has to work before MCP is switched on, and the pill that
           used to own it only renders once it is. Mounted through the route change so it can close
           itself on the way out. */}
@@ -4669,6 +4667,7 @@ export function ChatPage({
                 contextUnboundedWhenBatched={loadedContextUnboundedWhenBatched}
                 parallelSlots={loadedParallelSlots}
                 contextBudget={loadedContextBudget}
+                estimated={contextUsage?.estimated}
                 className="h-[var(--studio-chat-control-height,34px)]"
               />
             ) : null}

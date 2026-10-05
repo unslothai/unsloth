@@ -17,6 +17,7 @@ export type FrameCommand =
   | { command: "snapshot" }
   | { command: "zoom"; value: number }
   | { command: "mute"; on: boolean }
+  | { command: "annotateInstall"; code: string }
   | { command: "annotate"; on: boolean; color?: string }
   | { command: "annotateForget"; id: number }
   | { command: "annotateNumbers"; numbers: Array<[number, number]> };

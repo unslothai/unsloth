@@ -460,6 +460,13 @@ def apply_speed_optims(
         "int8_gemm": False,
     }
     mode = normalize_speed_mode(speed_mode)
+    if getattr(target, "backend", None) == "rocm":
+        # Memory, not speed, so before the `off` return: ROCm has no fused SDPA for the VAE's head dim 384 / 512.
+        try:
+            from .diffusion_vae_attn_chunked import install as install_vae_attn_chunks
+            install_vae_attn_chunks(getattr(pipe, "vae", None), target, logger)
+        except Exception as exc:  # noqa: BLE001 - keep stock attention
+            _warn(logger, "vae attention chunks", exc)
     # TF32 (max) and cudnn.benchmark (any non-off CUDA load) are process-global; the caller restores them so a later
     # `off` load never inherits them.
     if mode == SPEED_OFF:

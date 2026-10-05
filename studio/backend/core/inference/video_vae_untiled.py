@@ -23,6 +23,13 @@ _OUTPUT_SCALE = {
     "wan2.2-ti2v-5b": (16, 4),
     "wan2.2-t2v-a14b": (8, 4),
 }
+# LTX-2 / 2.3 holds every frame: peak per output frame x latent pixel, 0.102-0.105 MiB measured bf16 (B200).
+_BYTES_PER_FRAME_LATENT_PIXEL = {
+    "ltx-2": 0.11 * 2**20,
+}
+_TEMPORAL_SCALE = {
+    "ltx-2": 8,
+}
 _MARGIN = 1.25
 _MARGIN_BYTES = 2 * 2**30
 
@@ -37,11 +44,17 @@ def untiled_decode_bytes(
     itemsize: int = 2,
 ) -> Optional[int]:
     """Extra bytes of an untiled decode of ``latent_shape`` (B, C, T, h, w), or None if unmeasured."""
-    coef = _BYTES_PER_LATENT_PIXEL.get(family)
-    if coef is None or len(latent_shape) != 5:
+    if len(latent_shape) != 5:
         return None
     batch, _, latent_frames, height, width = (int(x) for x in latent_shape)
     batch, itemsize = max(1, batch), max(2, itemsize)
+    per_frame = _BYTES_PER_FRAME_LATENT_PIXEL.get(family)
+    if per_frame is not None:
+        frames = (max(1, latent_frames) - 1) * _TEMPORAL_SCALE[family] + 1
+        return int(per_frame * itemsize / 2 * batch * frames * height * width)
+    coef = _BYTES_PER_LATENT_PIXEL.get(family)
+    if coef is None:
+        return None
     spatial, temporal = _OUTPUT_SCALE[family]
     frames = (max(1, latent_frames) - 1) * temporal + 1
     output = 2 * batch * 3 * frames * height * spatial * width * spatial * itemsize
@@ -82,7 +95,9 @@ def install_untiled_decode(
     decode = getattr(vae, "decode", None)
     if not _enabled() or vae is None or not callable(decode):
         return False
-    if family not in _BYTES_PER_LATENT_PIXEL or not getattr(vae, "use_tiling", False):
+    if (
+        family not in _BYTES_PER_LATENT_PIXEL and family not in _BYTES_PER_FRAME_LATENT_PIXEL
+    ) or not getattr(vae, "use_tiling", False):
         return False
     if getattr(decode, "_unsloth_untiled_decode", False):
         return True

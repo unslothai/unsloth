@@ -2439,6 +2439,8 @@ class ChatCompletionRequest(BaseModel):
     # Accept unknown fields so future OpenAI fields aren't dropped before route
     # code runs. Mirrors AnthropicMessagesRequest and ResponsesRequest.
     model_config = {"extra": "allow"}
+    # "off" with the client's own confirm_tool_calls=false: no prompt at all, even without OS isolation.
+    _off_confirm_opt_out: bool = PrivateAttr(default = False)
 
     model: str = Field(
         "default",
@@ -3057,6 +3059,9 @@ class ChatCompletionRequest(BaseModel):
             # Legacy bypass callers map onto Full access (mirrors the tool loop).
             self.permission_mode = "full"
         elif self.permission_mode == "off":
+            self._off_confirm_opt_out = (
+                "confirm_tool_calls" in self.model_fields_set and self.confirm_tool_calls is False
+            )
             # "Off" never prompts, so route guards must see confirm disabled.
             self.confirm_tool_calls = False
         elif (
@@ -3976,7 +3981,7 @@ class AnthropicMessagesRequest(BaseModel):
     )
     permission_mode: Optional[str] = Field(
         None,
-        description = "[x-unsloth] Permission level for local tool calls: 'ask' pauses every call, 'auto' ('Approve for me') only pauses calls detected as high risk, 'off' never pauses (sandbox stays on), 'full' equals bypass_permissions=true. Unset defaults to 'auto' for the per-call gate; a non-streaming request without an explicit mode runs the loop. An unrecognized value (e.g. from a newer client) is treated as 'ask'. Declared explicitly so omitted requests default to None instead of raising AttributeError.",
+        description = "[x-unsloth] Permission level for local tool calls: 'ask' pauses every call, 'auto' ('Approve for me') only pauses calls detected as high risk, 'off' ('Run automatically') never pauses while Python and Terminal run in the OS sandbox and otherwise pauses their high-risk calls in a streaming UI chat, 'full' equals bypass_permissions=true. Unset defaults to 'auto' for the per-call gate; a non-streaming request without an explicit mode runs the loop. An unrecognized value (e.g. from a newer client) is treated as 'ask'. Declared explicitly so omitted requests default to None instead of raising AttributeError.",
     )
     auto_heal_tool_calls: Optional[bool] = Field(
         True,
@@ -4496,6 +4501,11 @@ class DiffusionGenerateRequest(BaseModel):
         "by this multiple and re-denoises at low strength. Requires init_image; "
         "ignored for txt2img/inpaint/edit.",
     )
+    live_preview: Optional[bool] = Field(
+        None,
+        description = "Stream a small live preview of the image while it denoises (generate-progress "
+        "'preview'). Null = the server default (on unless UNSLOTH_DIFFUSION_PREVIEW=0).",
+    )
     allow_oversized: bool = Field(
         False,
         description = "Run even when the generate-time memory check estimates this size will not "
@@ -4771,8 +4781,13 @@ class DiffusionGenerateProgressResponse(BaseModel):
     fraction: float = Field(0.0, description = "step / total_steps, clamped to [0,1]")
     eta_seconds: Optional[float] = Field(None, description = "Estimated seconds remaining")
     phase: Optional[str] = Field(
-        None, description = "denoise | decode; null from engines that report no phase (sd.cpp)"
+        None,
+        description = "encode | denoise | decode; null from engines that report no phase (sd.cpp)",
     )
+    preview: Optional[str] = Field(
+        None, description = "Live latent preview of the image being denoised, as a JPEG data URL"
+    )
+    preview_seq: int = Field(0, description = "Moves each time a new preview is published")
 
 
 class DiffusionLoadProgressResponse(BaseModel):
@@ -5751,6 +5766,11 @@ class VideoGenerateRequest(BaseModel):
         "where a downloaded model that is not the resident one is loaded first; omit to use "
         "whatever is loaded. The Video page never sends it.",
     )
+    live_preview: Optional[bool] = Field(
+        None,
+        description = "Stream a small live preview of the first frame while the clip denoises "
+        "(generate-progress 'preview'). Null = the server default (on unless UNSLOTH_DIFFUSION_PREVIEW=0).",
+    )
     # Width/height/num_frames/fps default per loaded family, so they are optional here. These bounds
     # stay a COARSE family-agnostic outer guard: the enforced rule is the LOADED family's own
     # (resolution presets and the k * frame_step + frame_offset lattice), which the route checks with
@@ -6000,7 +6020,7 @@ class VideoGenerateProgressResponse(BaseModel):
     active: bool = Field(False, description = "Whether a generation is running")
     phase: Optional[str] = Field(
         None,
-        description = "Current phase: queued | denoise | export | completed | failed | null",
+        description = "Current phase: queued | encode | denoise | decode | export | completed | failed | null",
     )
     step: int = Field(0, description = "Denoising steps completed so far")
     total: int = Field(0, description = "Total denoising steps for this run")
@@ -6008,6 +6028,11 @@ class VideoGenerateProgressResponse(BaseModel):
     total_steps: int = Field(0, description = "Total denoising steps (alias of total)")
     fraction: float = Field(0.0, description = "step / total, clamped to [0,1]")
     eta_seconds: Optional[float] = Field(None, description = "Estimated seconds remaining")
+    preview: Optional[str] = Field(
+        None,
+        description = "Live latent preview of the first frame being denoised, as a JPEG data URL",
+    )
+    preview_seq: int = Field(0, description = "Moves each time a new preview is published")
     video: Optional[GalleryVideo] = Field(
         None, description = "Saved gallery record when phase is 'completed'"
     )

@@ -68,7 +68,9 @@ def denoiser_prequant_cached(
         return True
     try:
         from .diffusion_prequant import prequant_checkpoint_cached
-        return prequant_checkpoint_cached(source, cache_dir = cache_dir)
+
+        # Offline: the load walks to the first cached name, so any cached readable name is what it opens.
+        return prequant_checkpoint_cached(source, cache_dir = cache_dir, online = False)
     except Exception:  # noqa: BLE001 -- an unreadable cache is not proof the artifact is there
         return False
 

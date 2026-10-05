@@ -10720,6 +10720,29 @@ def test_cancellation_is_still_checked_before_the_step_runs(fake_runtime, monkey
     assert len(events) == 1
 
 
+def test_phase_reads_encode_until_the_denoise_loop_starts(fake_runtime, monkeypatch):
+    # The prompt encode runs inside pipe() before the first step; the bar said "denoise" through it.
+    _patch_events(monkeypatch)
+    backend = VideoBackend()
+    backend.load_pipeline(
+        "hunyuanvideo-community/HunyuanVideo-1.5-Diffusers-480p_t2v", model_kind = "pipeline"
+    )
+    pipe = _FakeHV15Pipeline.instance
+    phases: list = []
+    pipe.scheduler.on_step = lambda n: phases.append(backend._gen.get("phase"))
+    original_call = type(pipe).__call__
+
+    def _call(self, *args, **kwargs):
+        phases.append(("at_call", backend._gen.get("phase")))
+        return original_call(self, *args, **kwargs)
+
+    monkeypatch.setattr(type(pipe), "__call__", _call)
+    backend.generate(prompt = "a fox", steps = 3, num_frames = 9, fps = 24)
+    assert phases[0] == ("at_call", "encode")
+    # From the first step on, the host is in the loop: denoise (steps 2 and 3 are seen after step 1's tick).
+    assert phases[2:] == ["denoise", "denoise"]
+
+
 def test_hv15_bar_never_outruns_the_gpu_and_holds_the_phase(fake_runtime, monkeypatch):
     # End to end on the scheduler-wrap path (HunyuanVideo-1.5 exposes no step callback, like H3's
     # modular workflow). The host enqueues every step and enters the decoder while the GPU has
@@ -12511,6 +12534,7 @@ def test_the_ltx23_fp8_load_prefetches_the_hosted_dit_under_its_cancel_event(tmp
         *,
         cancel_event = None,
         local_files_only = False,
+        scheme = None,
     ):
         fetched.append(([src.location for src in sources], cancel_event, local_files_only))
 
@@ -12833,3 +12857,39 @@ def test_resident_wan_load_decodes_untiled_when_it_fits(
     assert status["loaded"] is True
     assert calls == (["wan2.2-ti2v-5b"] if installed else [])
     assert ("vae_untiled_when_fits" in status["speed_optims"]) is installed
+
+
+def test_previewer_is_finished_when_the_render_fails_before_its_loop(fake_runtime, monkeypatch):
+    # The previewer starts a polling worker thread; a raise between its creation and the guarded
+    # render (here protect_generation) used to leave that thread polling for the life of the process.
+    import core.inference.diffusion_nvfp4_protect as protect_mod
+    import core.inference.diffusion_preview as preview_mod
+
+    _patch_events(monkeypatch)
+    started: list = []
+
+    class _Previewer:
+        finished = False
+
+        def on_step(self, *args, **kwargs):
+            pass
+
+        def finish(self):
+            self.finished = True
+
+    def _create(**kwargs):
+        started.append(_Previewer())
+        return started[-1]
+
+    def _refuse(*args, **kwargs):
+        raise RuntimeError("protect refused")
+
+    monkeypatch.setattr(preview_mod.LatentPreviewer, "create", staticmethod(_create))
+    monkeypatch.setattr(protect_mod, "protect_generation", _refuse)
+    backend = VideoBackend()
+    backend.load_pipeline(
+        "hunyuanvideo-community/HunyuanVideo-1.5-Diffusers-480p_t2v", model_kind = "pipeline"
+    )
+    with pytest.raises(RuntimeError, match = "protect refused"):
+        backend.generate(prompt = "a fox", steps = 3, num_frames = 9, fps = 24)
+    assert all(p.finished for p in started)

@@ -291,12 +291,70 @@ def torch_dtype_map(decision: SmallHostDecision, compute_dtype: Any) -> Any:
     return mapping
 
 
+INT8_ACT_ENV = "UNSLOTH_DIFFUSION_SMALL_HOST_INT8_ACT"
+# Measured on a T4 (LPIPS inside the fp32-vs-bf16 spread); qwen-image-edit shares the DiT but is unmeasured.
+INT8_ACT_FAMILIES = frozenset({"qwen-image"})
+# torch._int_mm: rows M > 16, K and N multiples of 8.
+_INT8_ACT_MIN_ROWS = 17
+_INT8_ACT_ALIGN = 8
+_INT8_ACT_DEVICE_OK: dict[int, bool] = {}
+_INT8_ACT_COUNTS = {"int8_act": 0, "dequant": 0}
+
+
+def int8_act_disabled() -> bool:
+    return _env(INT8_ACT_ENV) in ("0", "off", "false", "no")
+
+
+def int8_act_family(fam: Any) -> bool:
+    """Whether ``fam``'s int8-stored denoiser may run W8A8 (still gated per device and per call)."""
+    if int8_act_disabled():
+        return False
+    name = str(getattr(fam, "name", fam) or "").strip().lower()
+    return name in INT8_ACT_FAMILIES
+
+
+def int8_act_counts() -> dict[str, int]:
+    return dict(_INT8_ACT_COUNTS)
+
+
+def int8_act_device_ok(device: Any) -> bool:
+    """sm_75 CUDA only (fp32-promoted, int8 tensor cores; on sm_80+ bf16 eager W8A8 does not win; ROCm capabilities
+    differ), and ``torch._int_mm`` must return the exact integer product there."""
+    import torch
+
+    try:
+        dev = torch.device(device)
+        if dev.type != "cuda" or getattr(torch.version, "hip", None):
+            return False
+        idx = dev.index if dev.index is not None else torch.cuda.current_device()
+    except Exception:  # noqa: BLE001
+        return False
+    hit = _INT8_ACT_DEVICE_OK.get(idx)
+    if hit is not None:
+        return hit
+    ok = False
+    try:
+        if tuple(torch.cuda.get_device_capability(idx)) == (7, 5) and hasattr(torch, "_int_mm"):
+            g = torch.Generator(device = "cpu").manual_seed(0)
+            a = torch.randint(-127, 128, (32, 64), generator = g, dtype = torch.int8)
+            b = torch.randint(-127, 128, (48, 64), generator = g, dtype = torch.int8)
+            want = a.to(torch.int64) @ b.to(torch.int64).t()
+            got = torch._int_mm(a.to(dev), b.to(dev).t())
+            ok = bool(torch.equal(got.cpu().to(torch.int64), want))
+    except Exception:  # noqa: BLE001 - no usable int8 GEMM: keep the dequantised path
+        ok = False
+    _INT8_ACT_DEVICE_OK[idx] = ok
+    return ok
+
+
 def _int8_linear_class():
     import torch
     import torch.nn.functional as F
 
     class Int8WeightLinear(torch.nn.Module):
-        """Linear with int8 per-output-channel weights, dequantised to the input dtype for each forward."""
+        """Linear with int8 per-output-channel weights, dequantised to the input dtype for each forward.
+
+        ``act_int8``: eligible float32 CUDA calls quantise activations per row and run ``torch._int_mm`` instead."""
 
         def __init__(self, qweight, scale, bias, in_features: int, out_features: int):
             super().__init__()
@@ -305,8 +363,34 @@ def _int8_linear_class():
             self.qweight = torch.nn.Parameter(qweight, requires_grad = False)
             self.scale = torch.nn.Parameter(scale, requires_grad = False)
             self.bias = None if bias is None else torch.nn.Parameter(bias, requires_grad = False)
+            self.act_int8 = False
+
+        def _int8_act_ok(self, x) -> bool:
+            if not self.act_int8 or x.dtype is not torch.float32 or not x.is_cuda:
+                return False
+            if self.in_features % _INT8_ACT_ALIGN or self.out_features % _INT8_ACT_ALIGN:
+                return False
+            if x.numel() // max(1, self.in_features) < _INT8_ACT_MIN_ROWS:
+                return False
+            return int8_act_device_ok(x.device)
+
+        def _forward_int8_act(self, x):
+            x2 = x.reshape(-1, self.in_features)
+            xs = torch.linalg.vector_norm(x2, ord = float("inf"), dim = 1, keepdim = True)
+            xs = xs.clamp_min_(1e-12).div_(127.0)
+            xq = torch.div(x2, xs).round_().clamp_(-127, 127).to(torch.int8)
+            acc = torch._int_mm(xq, self.qweight.t())
+            y = torch.mul(acc, xs).mul_(self.scale.reshape(1, -1).to(torch.float32))
+            if self.bias is not None:
+                y.add_(self.bias.to(torch.float32))
+            return y.reshape(*x.shape[:-1], self.out_features)
 
         def forward(self, x):
+            if self._int8_act_ok(x):
+                _INT8_ACT_COUNTS["int8_act"] += 1
+                return self._forward_int8_act(x)
+            if self.act_int8:
+                _INT8_ACT_COUNTS["dequant"] += 1
             scale = self.scale
             if scale.dtype == x.dtype:
                 # int8 * float promotes: cast + scale in one pass, bit-identical (int8 -> fp16/fp32 is exact).
@@ -337,9 +421,11 @@ def quantize_int8_weight_(
     compute_dtype: Any,
     work_device: Any,
     keep_device: Any = "cpu",
+    act_int8: bool = False,
 ) -> dict[str, int]:
     """Replace every large ``nn.Linear`` with per-row int8 weights in place, one Linear at a time (quantised on
-    ``work_device``, stored on ``keep_device``); everything else casts to ``compute_dtype``."""
+    ``work_device``, stored on ``keep_device``); everything else casts to ``compute_dtype``. ``act_int8`` lets the
+    new Linears run W8A8 where ``Int8WeightLinear`` allows it."""
     import torch
 
     cls = int8_linear_class()
@@ -365,6 +451,7 @@ def quantize_int8_weight_(
                 lin.in_features,
                 lin.out_features,
             )
+            new.act_int8 = bool(act_int8)
             del w, q, scale
         parent_name, _, attr = name.rpartition(".")
         parent = module.get_submodule(parent_name) if parent_name else module

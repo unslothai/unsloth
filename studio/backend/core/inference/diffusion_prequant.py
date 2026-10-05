@@ -29,6 +29,8 @@ caller falls back to dense-quantise (then GGUF). Inert with nothing configured.
 
 from __future__ import annotations
 
+import contextvars
+import functools
 import re as _re
 import threading as _threading
 from dataclasses import dataclass
@@ -492,6 +494,250 @@ def _first_mirrored(repo_id: Optional[str], names: Sequence[str], readable: Any)
     return None
 
 
+# Set to 1 to always download the safetensors container even when its pickle twin is already cached.
+PREFER_SAFETENSORS_ENV = "UNSLOTH_PREQUANT_PREFER_SAFETENSORS"
+
+_PICKLE_SUFFIXES = (".pt", ".pth")
+_logged_twin_choices: set = set()
+
+
+def _hub_name_cached(
+    repo_id: Optional[str], name: Optional[str], root: Optional[str]
+) -> Optional[str]:
+    """``repo_id/name``'s path in ONE Hub cache root (None = huggingface_hub's own), else None. Never raises."""
+    if not repo_id or not name:
+        return None
+    try:
+        import os
+
+        from huggingface_hub import try_to_load_from_cache
+    except Exception:  # noqa: BLE001 - no cache API to ask: treat as not cached
+        return None
+    try:
+        hit = try_to_load_from_cache(repo_id, name, cache_dir = root)
+    except Exception:  # noqa: BLE001 - a malformed cache entry is not a hit
+        return None
+    # a str is the cached path; a miss is None and a known-absent file is a sentinel object
+    return hit if isinstance(hit, str) and os.path.isfile(hit) else None
+
+
+def _twin_cache_roots(cache_dir: Optional[str]) -> tuple:
+    """Every cache root a download could reuse: the caller's, the live setting, huggingface_hub's own."""
+    roots: list = []
+    live = None
+    try:
+        from utils.hf_cache_settings import active_hf_hub_cache
+        live = active_hf_hub_cache()
+    except Exception:  # noqa: BLE001 - outside the Studio backend there is no live setting
+        live = None
+    for root in (cache_dir, live, None):
+        if root not in roots:
+            roots.append(root)
+    return tuple(roots)
+
+
+def explain_container_choice(
+    repo_id: Optional[str],
+    chosen: Optional[str],
+    candidates: Sequence[str],
+    order: Sequence[str],
+    readable: Any = None,
+    logger: Any = None,
+) -> Optional[str]:
+    """Log once per file why a ``.pt`` was resolved although the chain names its safetensors twin
+    (cached twin, twin not hosted yet, or safetensors unreadable here). Returns the reason. Never raises."""
+    try:
+        if not repo_id or not chosen or not chosen.lower().endswith(_PICKLE_SUFFIXES):
+            return None
+        stem = chosen[: chosen.rfind(".")]
+        twin = stem + ".safetensors"
+        if twin not in candidates:
+            return None
+        try:
+            twin_ok = readable is None or bool(readable(twin))
+        except Exception:  # noqa: BLE001
+            twin_ok = False
+        if not twin_ok:
+            reason = "this install cannot read the .safetensors container"
+        elif twin in order and chosen in order and order.index(chosen) < order.index(twin):
+            return "cached"
+        else:
+            reason = "the repo does not host the .safetensors twin yet"
+        key = (repo_id, chosen, reason)
+        if key not in _logged_twin_choices:
+            _logged_twin_choices.add(key)
+            log = logger
+            if log is None:
+                import logging
+                log = logging.getLogger(__name__)
+            log.info(
+                "diffusion.prequant_pickle: %s: using %s instead of %s because %s",
+                repo_id,
+                chosen,
+                twin,
+                reason,
+            )
+        return reason
+    except Exception:  # noqa: BLE001 - a log line, never a failure
+        return None
+
+
+def prefer_cached_pickle_twins(
+    repo_id: Optional[str],
+    names: Sequence[str],
+    *,
+    readable: Any = None,
+    cache_dir: Optional[str] = None,
+    logger: Any = None,
+    log: bool = True,
+    roots: Optional[Sequence[Optional[str]]] = None,
+) -> list:
+    """``names`` with a cached, readable ``<stem>.pt``/``.pth`` moved ahead of its uncached
+    ``<stem>.safetensors`` twin, so an existing user does not re-download the same weights.
+
+    Same stem only: a different artifact never jumps the queue. The safetensors name stays right
+    behind, so a twin since removed from the Hub 404s onto it. ``PREFER_SAFETENSORS_ENV`` disables.
+    Pure cache lookups, never raises."""
+    import os
+
+    out = [n for n in names if n]
+    if not repo_id or len(out) < 2:
+        return out
+    if (os.environ.get(PREFER_SAFETENSORS_ENV) or "").strip().lower() in ("1", "true", "yes", "on"):
+        return out
+    try:
+        # only the roots the caller's download will reuse, else it re-fetches the pickle it was promised
+        roots = tuple(roots) if roots is not None else _twin_cache_roots(cache_dir)
+
+        def _cached(name: str) -> bool:
+            return any(_hub_name_cached(repo_id, name, root) is not None for root in roots)
+
+        def _ok(name: str) -> bool:
+            try:
+                return readable is None or bool(readable(name))
+            except Exception:  # noqa: BLE001 - an unanswerable question is a no
+                return False
+
+        for st in [n for n in out if n.lower().endswith(".safetensors")]:
+            stem = st[: -len(".safetensors")]
+            twin = next(
+                (
+                    stem + suffix
+                    for suffix in _PICKLE_SUFFIXES
+                    if stem + suffix in out and _ok(stem + suffix) and _cached(stem + suffix)
+                ),
+                None,
+            )
+            if twin is None or _cached(st):
+                continue
+            out.remove(twin)
+            out.insert(out.index(st), twin)
+            key = (repo_id, twin)
+            if log and key not in _logged_twin_choices:
+                _logged_twin_choices.add(key)
+                sink = logger
+                if sink is None:
+                    import logging
+                    sink = logging.getLogger(__name__)
+                sink.info(
+                    "diffusion.prequant_cached_pickle: %s: using the cached %s; the %s twin is not "
+                    "downloaded (set %s=1 to fetch it instead)",
+                    repo_id,
+                    twin,
+                    st,
+                    PREFER_SAFETENSORS_ENV,
+                )
+    except Exception:  # noqa: BLE001 - a preference, never a new failure
+        return [n for n in names if n]
+    return out
+
+
+_LOCAL_FILES_ONLY = contextvars.ContextVar("unsloth_prequant_local_files_only", default = False)
+
+
+def scoped_local_files_only(fn: Any) -> Any:
+    """Run ``fn`` with its ``local_files_only`` kwarg visible to every cache probe it reaches, so a
+    load that may not download plans like an offline one. Nested calls keep an outer True."""
+
+    @functools.wraps(fn)
+    def _wrapper(*args: Any, **kwargs: Any) -> Any:
+        token = _LOCAL_FILES_ONLY.set(
+            bool(kwargs.get("local_files_only")) or _LOCAL_FILES_ONLY.get()
+        )
+        try:
+            return fn(*args, **kwargs)
+        finally:
+            _LOCAL_FILES_ONLY.reset(token)
+
+    return _wrapper
+
+
+def hub_offline() -> bool:
+    """huggingface_hub's offline switch. Never raises."""
+    try:
+        from huggingface_hub import constants
+        return bool(constants.HF_HUB_OFFLINE)
+    except Exception:  # noqa: BLE001 - no hub library: nothing can be downloaded either
+        return True
+
+
+def hub_name_known_absent(
+    repo_id: Optional[str],
+    name: Optional[str],
+    cache_dir: Optional[str] = None,
+) -> bool:
+    """True when a Hub cache root holds a ``.no_exist`` marker (a recorded 404) for ``name``. Never raises."""
+    if not repo_id or not name:
+        return False
+    try:
+        from huggingface_hub import try_to_load_from_cache
+    except Exception:  # noqa: BLE001 - no cache API: nothing is known
+        return False
+    for root in _twin_cache_roots(cache_dir):
+        try:
+            hit = try_to_load_from_cache(repo_id, name, cache_dir = root)
+        except Exception:  # noqa: BLE001 - a malformed cache entry says nothing
+            continue
+        # str = cached path, None = never asked, anything else = the .no_exist sentinel
+        if hit is not None and not isinstance(hit, str):
+            return True
+    return False
+
+
+def first_cached_as_resolved(
+    repo_id: Optional[str],
+    names: Sequence[str],
+    *,
+    is_cached: Any,
+    online: Optional[bool] = None,
+    cache_dir: Optional[str] = None,
+) -> Optional[str]:
+    """The first cached name in ``names`` (resolver order) the load opens without downloading anything
+    first, else None. Offline that is the first cached name. Online an uncached name ahead of it blocks
+    (the resolver would fetch it) unless the cache recorded its 404; otherwise a cached INT8 ``.pt``
+    reads as free while the load fetches an uncached INT8-ConvRot. A twin still ahead of the hit was
+    not reordered (kill switch, unreadable pickle), so the load fetches it too.
+    ``online=None`` reads huggingface_hub's offline switch and the load's ``local_files_only``. Never raises."""
+    try:
+        if online is None:
+            online = not hub_offline() and not _LOCAL_FILES_ONLY.get()
+        ahead: list = []
+        for name in names:
+            if not name:
+                continue
+            if not is_cached(name):
+                ahead.append(name)
+                continue
+            if online:
+                for other in ahead:
+                    if not hub_name_known_absent(repo_id, other, cache_dir):
+                        return None
+            return name
+    except Exception:  # noqa: BLE001 - a planning aid: unanswerable reads as not cached
+        return None
+    return None
+
+
 @dataclass(frozen = True)
 class PrequantSource:
     """Where a pre-quantized checkpoint lives. ``kind`` is "path" (a local file) or "repo" (Hub repo
@@ -653,11 +899,22 @@ def resolve_prequant_source(
         # safetensors spelling ahead of the pickle. Order-preserving dedup so a family that declares
         # exactly what the chain would derive does not make the downloader ask twice for it.
         declared = (preferred,) if preferred else ()
-        # opt-in rotated artifact goes first; the plain chain stays behind it (not yet hosted, or offline)
-        from .diffusion_transformer_quant import convrot_prequant_filename, int8_convrot_enabled
+        # rotated artifact (hosted) first, only in its own repo; the plain chain stays behind it (offline, older caches)
+        from .diffusion_transformer_quant import (
+            convrot_prequant_filename,
+            convrot_prequant_repo,
+            int8_convrot_enabled,
+        )
 
-        rotated = convrot_prequant_filename(scheme, getattr(fam, "name", None))
-        if rotated and int8_convrot_enabled():
+        fam_name = getattr(fam, "name", None)
+        rotated = convrot_prequant_filename(scheme, fam_name)
+        rotated_repo = convrot_prequant_repo(scheme, fam_name)
+        if (
+            rotated
+            and rotated_repo
+            and str(repo_id).strip().lower() == rotated_repo.lower()
+            and int8_convrot_enabled(fam_name)
+        ):
             declared = (rotated,) + declared
         names: list[str] = []
         for name in declared + derived:
@@ -947,18 +1204,80 @@ def _fingerprint_sampled(fqn: str) -> bool:
     return hashlib.md5(fqn.encode("utf-8")).digest()[0] % FINGERPRINT_SAMPLE_RATE == 0
 
 
+def _verified_marker(path: Any, expected: dict) -> Optional[tuple]:
+    """(marker file, identity) for a checkpoint whose full check passed before: same real file, size, mtime and
+    recorded fingerprint. None when the file cannot be identified (then every load checks in full)."""
+    import hashlib
+    import json
+    import os
+
+    try:
+        real = os.path.realpath(str(path))
+        st = os.stat(real)
+        from .diffusion_compile_cache import cache_root
+
+        recorded = hashlib.md5(json.dumps(expected, sort_keys = True).encode("utf-8")).hexdigest()
+        identity = {
+            "path": real,
+            "size": st.st_size,
+            "mtime_ns": st.st_mtime_ns,
+            "fingerprint": recorded,
+        }
+        name = hashlib.md5(real.encode("utf-8")).hexdigest() + ".json"
+        return cache_root() / "prequant_verified" / name, identity
+    except Exception:  # noqa: BLE001 -- unidentifiable: check in full
+        return None
+
+
+def _already_verified(marker: Optional[tuple]) -> bool:
+    import json
+    if marker is None:
+        return False
+    try:
+        return json.loads(marker[0].read_text(encoding = "utf-8")) == marker[1]
+    except Exception:  # noqa: BLE001 -- absent or unreadable marker: check in full
+        return False
+
+
+def _remember_verified(marker: Optional[tuple]) -> None:
+    import json
+    import os
+
+    if marker is None:
+        return
+    try:
+        marker[0].parent.mkdir(parents = True, exist_ok = True)
+        tmp = marker[0].with_suffix(".tmp")
+        tmp.write_text(json.dumps(marker[1], sort_keys = True), encoding = "utf-8")
+        os.replace(tmp, marker[0])
+    except Exception:  # noqa: BLE001 -- the next load just checks in full again
+        pass
+
+
 def _verify_packed_fingerprint(
     state_dict: Any,
     metadata: Any,
     *,
     logger: Any = None,
+    path: Any = None,
 ) -> bool:
-    """Check the artifact's packed fingerprint: a mismatch drops to dense, a missing or uncomputable block passes."""
+    """Check the artifact's packed fingerprint: a mismatch drops to dense, a missing or uncomputable block passes.
+
+    A full pass is remembered per file (real path, size, mtime, recorded fingerprint) in the Studio cache, so later
+    loads of the same unchanged file skip the md5 of every weight; any change to the file checks in full again."""
     block = (metadata or {}).get("fingerprint")
     expected = (block or {}).get("modules") if isinstance(block, dict) else None
     if not expected:
         return True
     mode = _fingerprint_mode()
+    marker = _verified_marker(path, expected) if path is not None and mode == "full" else None
+    if _already_verified(marker):
+        if logger is not None:
+            logger.info(
+                "diffusion.prequant: fingerprint verified on an earlier load of this unchanged file (%d weights)",
+                len(expected),
+            )
+        return True
     if mode == "off":
         if logger is not None:
             logger.debug(
@@ -997,6 +1316,7 @@ def _verify_packed_fingerprint(
                 len(expected),
                 mode,
             )
+        _remember_verified(marker)
         return True
     if logger is not None:
         logger.error(
@@ -1068,7 +1388,7 @@ def usable_prequant_source(
         # the dense shards, then resolve neither file.
         if (
             not any(n in declared for n in readable)
-            and cached_checkpoint_path(src, names = readable) is None
+            and cached_checkpoint_path(src, names = readable, online = False) is None
         ):
             return None
     if src.kind == "path":
@@ -1084,6 +1404,7 @@ def cached_checkpoint_path(
     *,
     cache_dir: Optional[str] = None,
     names: Optional[Sequence[str]] = None,
+    online: Optional[bool] = None,
 ) -> Optional[str]:
     """The path of a hosted (``kind == "repo"``) checkpoint ALREADY in the local Hub cache. A pure
     lookup (a refs read plus a stat, no network), so memory planning can ask on every pick.
@@ -1103,6 +1424,9 @@ def cached_checkpoint_path(
     cache hit was about and finds the other name uncached. Asked per NAME rather than per scheme,
     because the container is what decides it.
 
+    Online the answer is the file the load opens (``first_cached_as_resolved``); ``online=False`` asks
+    whether ANY readable name is cached.
+
     ``names`` narrows the chain further, to a caller's own subset.
 
     Both cache roots are searched: Unsloth pins the LIVE cache setting while an unpinned
@@ -1121,16 +1445,36 @@ def cached_checkpoint_path(
         for n in candidate_filenames_of(source)
         if (wanted is None or n in wanted) and _readable(n)
     ]
+    location = getattr(source, "location", None)
     if getattr(source, "kind", None) == "repo":
-        mirrored = _first_mirrored(getattr(source, "location", None), candidates, _readable)
+        mirrored = _first_mirrored(location, candidates, _readable)
         if mirrored is not None:
             return mirrored
-    for name in candidates:
-        for root in roots:
-            hit = _cached_in_root(source, root, name)
-            if hit is not None:
-                return hit
-    return None
+    hits: dict = {}
+
+    def _hit(name: str) -> Optional[str]:
+        if name not in hits:
+            hits[name] = next(
+                (
+                    h
+                    for h in (_cached_in_root(source, root, name) for root in roots)
+                    if h is not None
+                ),
+                None,
+            )
+        return hits[name]
+
+    ordered = prefer_cached_pickle_twins(
+        location, candidates, readable = _readable, cache_dir = cache_dir, log = False
+    )
+    name = first_cached_as_resolved(
+        location,
+        ordered,
+        is_cached = lambda n: _hit(n) is not None,
+        online = online,
+        cache_dir = cache_dir,
+    )
+    return _hit(name) if name else None
 
 
 def _cached_in_root(
@@ -1159,9 +1503,14 @@ def _cached_in_root(
     return hit if isinstance(hit, str) and os.path.isfile(hit) else None
 
 
-def prequant_checkpoint_cached(source: Any, *, cache_dir: Optional[str] = None) -> bool:
+def prequant_checkpoint_cached(
+    source: Any,
+    *,
+    cache_dir: Optional[str] = None,
+    online: Optional[bool] = None,
+) -> bool:
     """True when ``source`` resolves from the cache, i.e. enabling prequant costs no download."""
-    return cached_checkpoint_path(source, cache_dir = cache_dir) is not None
+    return cached_checkpoint_path(source, cache_dir = cache_dir, online = online) is not None
 
 
 def _pin_kernel_preference(state_dict: Any, logger: Any = None) -> int:
@@ -1249,7 +1598,12 @@ def load_prequantized_transformer(
             return None
 
         path = _resolve_checkpoint_path(
-            source, hf_token, cache_dir, local_files_only = local_files_only, scheme = scheme
+            source,
+            hf_token,
+            cache_dir,
+            local_files_only = local_files_only,
+            scheme = scheme,
+            logger = logger,
         )
         if path is None:
             return None
@@ -1272,7 +1626,9 @@ def load_prequantized_transformer(
             return None
         state_dict = ckpt["state_dict"]
         # The only check reading what the artifact HOLDS: corruption after build passes the rest.
-        if not _verify_packed_fingerprint(state_dict, ckpt.get("metadata") or {}, logger = logger):
+        if not _verify_packed_fingerprint(
+            state_dict, ckpt.get("metadata") or {}, logger = logger, path = path
+        ):
             return None
         _repair_legacy_checkpoint(ckpt, scheme, logger)
         _pin_kernel_preference(state_dict, logger)
@@ -1476,6 +1832,7 @@ def _resolve_checkpoint_path(
     *,
     local_files_only: bool = False,
     scheme: Optional[str] = None,
+    logger: Any = None,
 ) -> Optional[str]:
     """The local file path for ``source``, downloading from the Hub if needed; None if absent.
     ``local_files_only`` is the caller's promise that this load may not fetch anything, so a
@@ -1497,6 +1854,7 @@ def _resolve_checkpoint_path(
     if source.kind == "repo":
         EntryNotFoundError, LocalEntryNotFoundError = _entry_not_found_errors()
         names = list(candidate_filenames_of(source))
+        all_names = list(names)
         if scheme is not None:
             readable = [n for n in names if restricted_prequant_load_supported(scheme, n)]
             # Only when it leaves something. An empty filter means the source should never have
@@ -1511,10 +1869,18 @@ def _resolve_checkpoint_path(
         )
         if mirrored is not None:
             return mirrored
+        names = prefer_cached_pickle_twins(
+            source.location,
+            names,
+            readable = lambda n: restricted_prequant_load_supported(scheme, n),
+            cache_dir = cache_dir,
+            logger = logger,
+            roots = tuple(dict.fromkeys((cache_dir, None))),  # what _download_checkpoint_name reuses
+        )
         for index, name in enumerate(names):
             last = index == len(names) - 1
             try:
-                return _download_checkpoint_name(
+                path = _download_checkpoint_name(
                     source,
                     name,
                     hf_token,
@@ -1525,6 +1891,15 @@ def _resolve_checkpoint_path(
                     propagate_missing = not last,
                     local_files_only = local_files_only,
                 )
+                explain_container_choice(
+                    source.location,
+                    name,
+                    all_names,
+                    names,
+                    readable = lambda n: restricted_prequant_load_supported(scheme, n),
+                    logger = logger,
+                )
+                return path
             except LocalEntryNotFoundError:
                 # Caught BEFORE the base it subclasses, because the two mean different things and
                 # only the mode says which. huggingface_hub documents this one as "not on the disk
@@ -1539,7 +1914,7 @@ def _resolve_checkpoint_path(
                         None
                         if last
                         else cached_checkpoint_path(
-                            source, cache_dir = cache_dir, names = names[index + 1 :]
+                            source, cache_dir = cache_dir, names = names[index + 1 :], online = False
                         )
                     )
                     if cached is None:
@@ -2372,7 +2747,7 @@ def prequant_unreadable_reason(
             declared = set(getattr(src, "declared_filenames", ()) or ())
             if (
                 not declared.intersection(readable)
-                and cached_checkpoint_path(src, names = readable) is None
+                and cached_checkpoint_path(src, names = readable, online = False) is None
             ):
                 readable = []
         if readable:

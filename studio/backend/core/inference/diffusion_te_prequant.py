@@ -414,6 +414,7 @@ def load_prequant_text_encoder(
             hf_token,
             cache_dir = cache_dir,
             local_files_only = local_files_only,
+            logger = logger,
         )
         if path is None:
             return None
@@ -612,6 +613,7 @@ def _resolve_checkpoint_path(
     *,
     cache_dir: str,
     local_files_only: bool = False,
+    logger: Any = None,
 ) -> Optional[str]:
     """The local file path for ``source``, downloading from the Hub if needed; None if absent."""
     if source.kind == "path":
@@ -619,7 +621,6 @@ def _resolve_checkpoint_path(
         expanded = os.path.expanduser(source.location)
         return expanded if os.path.isfile(expanded) else None
     if source.kind == "repo":
-        from huggingface_hub import hf_hub_download
         from huggingface_hub.errors import EntryNotFoundError, LocalEntryNotFoundError
 
         # Which exception means "this NAME is absent" depends on the mode, and the two are not
@@ -642,15 +643,37 @@ def _resolve_checkpoint_path(
         mirrored = _first_mirrored(source.location, names, te_candidate_is_readable)
         if mirrored is not None:
             return mirrored
-        for name in names:
+        from .diffusion_prequant import prefer_cached_pickle_twins
+
+        names = prefer_cached_pickle_twins(
+            source.location,
+            names,
+            readable = te_candidate_is_readable,
+            cache_dir = cache_dir,
+            logger = logger,
+            roots = tuple(dict.fromkeys((cache_dir, None))),  # what _download_checkpoint_name reuses
+        )
+        from .diffusion_prequant import _download_checkpoint_name, explain_container_choice
+
+        for index, name in enumerate(names):
             try:
-                return hf_hub_download(
-                    repo_id = source.location,
-                    filename = name,
-                    token = hf_token,
-                    cache_dir = cache_dir,
+                path = _download_checkpoint_name(
+                    source,
+                    name,
+                    hf_token,
+                    cache_dir,
+                    propagate_missing = index < len(names) - 1,
                     local_files_only = local_files_only,
                 )
+                explain_container_choice(
+                    source.location,
+                    name,
+                    te_candidate_filenames(source),
+                    names,
+                    readable = te_candidate_is_readable,
+                    logger = logger,
+                )
+                return path
             except LocalEntryNotFoundError:
                 # Online this is the Hub being unreachable, not a missing name: re-raise as itself
                 # rather than blaming the next candidate for it.
@@ -737,7 +760,12 @@ def te_prequant_hub_files(
         # order, so the bytes counted here are the bytes that will actually be fetched. Matching
         # the primary name alone reported every .pt repo as having no pre-cast encoder at all the
         # moment safetensors became the preferred spelling.
-        for name in te_candidate_filenames(source):
+        from .diffusion_prequant import prefer_cached_pickle_twins
+
+        ordered = prefer_cached_pickle_twins(
+            source.location, te_candidate_filenames(source), readable = te_candidate_is_readable
+        )
+        for name in ordered:
             if name in sizes and te_candidate_is_readable(name):
                 found[component] = [(name, sizes[name])]
                 break

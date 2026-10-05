@@ -33,6 +33,7 @@ import {
   PaintBrush02Icon,
   Search01Icon,
   Settings02Icon,
+  Shield01Icon,
   UserCircleIcon,
 } from "@hugeicons/core-free-icons";
 import { MessageCircleIcon } from "@/lib/hugeicons-derived";
@@ -77,6 +78,8 @@ const TAB_LOADERS = {
   resources: () =>
     import("./tabs/resources-tab").then((m) => ({ default: m.ResourcesTab })),
   chat: () => import("./tabs/chat-tab").then((m) => ({ default: m.ChatTab })),
+  sandbox: () =>
+    import("./tabs/sandbox-tab").then((m) => ({ default: m.SandboxTab })),
   browser: () =>
     import("./tabs/browser-tab").then((m) => ({ default: m.BrowserTab })),
   voice: () =>
@@ -208,6 +211,11 @@ const TABS: TabDef[] = [
     id: "chat",
     labelKey: "settings.tabs.chat",
     icon: MessageCircleIcon,
+  },
+  {
+    id: "sandbox",
+    labelKey: "settings.tabs.sandbox",
+    icon: Shield01Icon,
   },
   {
     id: "api-keys",
@@ -431,6 +439,7 @@ export function SettingsDialog() {
     appearance: null,
     resources: null,
     chat: null,
+    sandbox: null,
     browser: null,
     voice: null,
     connections: null,

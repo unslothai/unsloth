@@ -248,13 +248,19 @@ def warn_if_sdpa_math_only(target: Any, logger: Any = None) -> bool:
 
 
 def select_attention_backend(
-    target: Any, requested: Optional[str], *, speed_active: bool
+    target: Any,
+    requested: Optional[str],
+    *,
+    speed_active: bool,
+    family: Any = None,
+    speed_unset: bool = False,
 ) -> Optional[str]:
     """The dispatcher backend name to apply, or None to leave the diffusers default.
 
     An explicit alias is honored (apply falls back if its kernel is unavailable). ``auto``
     upgrades to cuDNN on NVIDIA CUDA only when a speed profile is active (so ``off`` stays
-    bit-identical); elsewhere returns None (native)."""
+    bit-identical), and to verified ROCm flash for ``ROCM_AUTO_FLASH_FAMILIES`` on gfx11 unless speed is
+    explicitly ``off``; elsewhere returns None (native)."""
     alias = normalize_attention_backend(requested)
     if alias != ATTN_AUTO:
         backend = _ALIASES[alias]
@@ -282,7 +288,20 @@ def select_attention_backend(
         return "_native_cudnn"
     if speed_active and ROCM_AUTO_FLASH and _is_cuda_rocm(target) and _rocm_flash_attn_runs(target):
         return "flash"
+    if (speed_active or speed_unset) and _rocm_auto_flash(target, family):
+        return "flash"
     return None
+
+
+def auto_attention_reason(engaged: Optional[str]) -> str:
+    """Status reason for an ``auto`` pick that engaged ``engaged`` (None = native)."""
+    if not engaged:
+        return "diffusers default"
+    if "cudnn" in engaged:
+        return "cuDNN fused attention upgrade"
+    if engaged == "flash":
+        return "verified ROCm flash attention"
+    return f"{engaged} attention upgrade"
 
 
 def _is_cuda_rocm(target: Any) -> bool:
@@ -291,6 +310,51 @@ def _is_cuda_rocm(target: Any) -> bool:
 
 # ``auto`` -> verified ROCm flash under a speed profile. Off: gfx1151 gains over AOTriton SDPA were too small/narrow.
 ROCM_AUTO_FLASH = False
+# Also with speed unset (the UI default). gfx1151 klein 1024^2: 7.37-7.40 s vs SDPA 8.04-8.09 s, LPIPS 0.008.
+# FLUX.1 measured LPIPS 0.048 vs SDPA (over the 0.02 bar): stays native.
+ROCM_AUTO_FLASH_FAMILIES = frozenset({"flux.2-klein"})
+ROCM_AUTO_FLASH_ARCHES = ("gfx11",)
+
+
+def _rocm_gfx_arch(target: Any) -> str:
+    try:
+        import torch
+        from utils.hardware.hardware import _props_gfx_arch
+
+        device = torch.device(
+            _indexed_cuda_device(
+                str(getattr(target, "torch_device", None) or getattr(target, "device", None) or "")
+            )
+        )
+        index = device.index if device.index is not None else torch.cuda.current_device()
+        return _props_gfx_arch(torch.cuda.get_device_properties(index))
+    except Exception:  # noqa: BLE001
+        return ""
+
+
+def _flash_attn_installed() -> bool:
+    """Without importing it, so an ``auto`` load on a card without flash_attn logs nothing."""
+    import sys
+
+    if "flash_attn" in sys.modules:
+        return sys.modules["flash_attn"] is not None
+    try:
+        import importlib.util
+        return importlib.util.find_spec("flash_attn") is not None
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _rocm_auto_flash(target: Any, family: Any) -> bool:
+    if not _is_cuda_rocm(target):
+        return False
+    name = family if isinstance(family, str) else getattr(family, "name", None)
+    if name not in ROCM_AUTO_FLASH_FAMILIES:
+        return False
+    if not _rocm_gfx_arch(target).startswith(ROCM_AUTO_FLASH_ARCHES):
+        return False
+    return _flash_attn_installed() and _rocm_flash_attn_runs(target)
+
 
 # Max abs error of the probe's flash_attn output against an fp32 reference (bf16 eps is ~4e-3).
 _ROCM_FLASH_PROBE_TOL = 2e-2

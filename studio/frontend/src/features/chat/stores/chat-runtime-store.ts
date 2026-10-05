@@ -2238,6 +2238,8 @@ type ContextUsageSnapshot = {
   cachedTokens: number;
   // Anthropic-only; optional so pre-cache-stats persisted entries load.
   cacheWriteTokens?: number;
+  // a text-length guess from storage, replaced by any count
+  estimated?: boolean;
 };
 
 /** One live run behind `runningByThreadId[id]`, with the `local` flag it started with so the

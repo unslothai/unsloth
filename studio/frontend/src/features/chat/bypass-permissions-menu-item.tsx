@@ -16,6 +16,7 @@ import {
   PermissionMenuLabel,
   PermissionModeMenuItems,
 } from "./permission-mode-select";
+import { useSandboxSetupDialogStore } from "./sandbox-setup-dialog";
 
 // Dictation-only "+" menu fallback: the composer pill is the normal control, but it is hidden
 // while recording, so this is the sole way to reach permission mode then.
@@ -23,6 +24,7 @@ export function BypassPermissionsMenuItem() {
   const setBypassConfirmOpen = useChatRuntimeStore(
     (s) => s.setBypassConfirmOpen,
   );
+  const setSandboxSetupOpen = useSandboxSetupDialogStore((s) => s.setOpen);
 
   return (
     <DropdownMenuSub>
@@ -37,6 +39,9 @@ export function BypassPermissionsMenuItem() {
           // and breaks the dialog's focus trap.
           onRequestFullAccess={() =>
             setTimeout(() => setBypassConfirmOpen(true), 0)
+          }
+          onRequestSandboxSetup={() =>
+            setTimeout(() => setSandboxSetupOpen(true), 0)
           }
         />
       </DropdownMenuSubContent>
