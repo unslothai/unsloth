@@ -41,6 +41,16 @@ export interface ResolvedBadgeInfo {
 // toast DESCRIPTION under this title instead of as an unreadable single line.
 export const PRECISION_REFUSAL_TITLE = "Requested precision is not available";
 
+/** Load kinds that can reach the dense transformer-quant path. Mirrors the backend constant. */
+export const DENSE_QUANT_KINDS = ["gguf", "pipeline"] as const;
+
+/** Whether this load kind can reach the dense transformer-quant path at all. */
+export function isDenseQuantKind(kind: string | null | undefined): boolean {
+  return (DENSE_QUANT_KINDS as readonly string[]).includes(
+    (kind ?? "").trim().toLowerCase(),
+  );
+}
+
 /** Whether a load failure is that refusal, so it can be presented as an actionable choice. */
 export function isPrecisionRefusal(message: string): boolean {
   return /_quant='[^']*' could not be used/.test(message);
@@ -60,6 +70,8 @@ export function formatResolvedValue(key: string, value: string | boolean | null 
   if (value === null || value === undefined || value === "") return "Off";
   if (typeof value === "boolean") return value ? "On" : "Off";
   if (value === "_native_cudnn" || value.toLowerCase() === "cudnn") return "cuDNN";
+  // The kernels-hub build of the "sage" option.
+  if (value === "sage_hub") return "SAGE";
   // Deferred speed auto: the dense pipe stays exact/eager and compiles on the 3rd image (the tooltip carries the full reason).
   if (value === "deferred") return "On from 3rd image";
   return value.toUpperCase();
@@ -153,6 +165,9 @@ export function resolvedSelectValue<T extends string>(
  * whole blob re-ran the reseed mid-session and overwrote a Precision the user had picked but not
  * yet loaded. An edit made after the load is meant to survive until the next LOAD replaces it.
  *
+ * The text-encoder entry carries its engaged value because a request can be DOWNGRADED there (an
+ * int8 ask resolves to fp8) or declined to dense, and the select has to follow what ran.
+ *
  * Only the controls the reseed writes are in the key, and for attention only the REQUEST side:
  * `value` is the field the generation-time rewrite touches. A reload still re-fires, including a
  * Reapply with new options, because that always lands a different request or engaged value.
@@ -168,8 +183,10 @@ export function resolvedSeedKey(
   };
   return [
     part(resolved.transformer_quant, true),
+    part(resolved.text_encoder_quant, true),
     part(resolved.memory_mode, true),
     part(resolved.attention_backend, false),
+    part(resolved.family_override, true),
   ].join("|");
 }
 

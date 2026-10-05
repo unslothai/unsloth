@@ -32,7 +32,7 @@ if [ "${1:-}" = "--restore" ]; then
     if [ ! -d "$legacy" ]; then
         # No kept copy (first used after the split, or deleted): a pre-split image finds its
         # own tree hidden under the mount and links to nothing, so give it real copies.
-        [ -d "$APP" ] || die "no $legacy to restore and no $APP on this image: run --restore under an image that has the Studio code in $APP (the one that last ran this volume), it copies that code into the home for an older image"
+        [ -d "$APP" ] || die "no $legacy to restore and no $APP on this image: run --restore under an image that has the Unsloth Studio code in $APP (the one that last ran this volume), it copies that code into the home for an older image"
         copied=()
         for target in "$HOME_DIR"/*; do
             [ -L "$target" ] || continue
@@ -164,6 +164,25 @@ for target in "$HOME_DIR"/*; do
         "$APP"/*) [ -e "$link" ] || [ -L "$link" ] || rm -f -- "$target";;
     esac
 done
+
+# A killed update (docker stop ends in SIGKILL) can leave its previous tree beside src
+# and half-replaced packages; unsloth-studio-update keeps a record beside src until the
+# update is committed. Finish that restore here, before supervisord starts Studio on the
+# unverified tree. The home is linked by now, so the updater finds the venv.
+if [ -s "$APP/.src-update.rollback" ]; then
+    updater="${UNSLOTH_STUDIO_UPDATER:-/usr/local/bin/unsloth-studio-update}"
+    if [ -x "$updater" ]; then
+        log "an update was interrupted (record at $APP/.src-update.rollback); putting the previous install back before Unsloth Studio starts"
+        if UNSLOTH_STUDIO_HOME="$HOME_DIR" "$updater" --recover; then
+            log "the previous install is back"
+        else
+            log "WARNING: the previous install could not be put back (see above); Unsloth Studio may fail to start"
+            log "  finish it by hand: docker exec <container> unsloth-studio-update --recover"
+        fi
+    else
+        log "WARNING: an update was interrupted (record at $APP/.src-update.rollback) and $updater is not here to finish the restore"
+    fi
+fi
 
 if [ "${#moved[@]}" -gt 0 ]; then
     size="$(du -sh -- "$legacy" 2>/dev/null | cut -f1)"

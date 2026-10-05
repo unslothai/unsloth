@@ -18,4 +18,5 @@ export type PromptQueueStopEventDetail = {
 
 export type PromptQueueRunFailedEventDetail = {
   threadId?: string | null;
+  localOnly?: boolean;
 };

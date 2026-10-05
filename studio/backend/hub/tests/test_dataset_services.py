@@ -1119,6 +1119,7 @@ def test_dataset_download_status_preserves_idle_shape():
 
     assert status.state == "idle"
     assert status.error is None
+    assert status.attempt == 1
 
 
 def test_dataset_download_registry_key_is_case_insensitive():
@@ -1183,7 +1184,7 @@ def test_dataset_claim_register_cancel_uses_registry_marker_owner(monkeypatch):
     monkeypatch.setattr(
         downloads.download_registry,
         "download_transport_unavailable_reason",
-        lambda _transport: None,
+        lambda _transport, **_kwargs: None,
     )
     monkeypatch.setattr(
         downloads.download_lifecycle,

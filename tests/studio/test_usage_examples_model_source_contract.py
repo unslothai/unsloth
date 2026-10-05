@@ -229,7 +229,7 @@ def test_keyless_examples_match_transport_tool_and_full_scope_policy():
     assert "if (isLoopbackHost(host)) return true;" in eligibility
     assert 'return scope === "inference";' in eligibility
     assert "!(useTunnel && cloudflareUrl)" in src
-    assert "useExampleModelName(keylessBase && !apiKey)" in src
+    assert 'keylessBase && !apiKey && keylessScope === "inference"' in src
     section = KEYLESS_SECTION_TSX.read_text(encoding = "utf-8")
     assert "[cloudflareUrl, onSettingsChange]" in section
     assert "delete" in section[section.find("  full: {") : section.find("  tools: {")]

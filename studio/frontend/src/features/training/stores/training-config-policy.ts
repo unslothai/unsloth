@@ -69,6 +69,7 @@ export const initialTrainingConfigState: TrainingConfigState = {
     loraRankBeforeCpt: null,
     loraAlphaBeforeCpt: null,
     loraVariantBeforeCpt: null,
+    trainOnCompletionsBeforeCpt: null,
   },
   datasetSource: "huggingface",
   browseDatasetSelection: createHfBrowseDatasetSelection(null),

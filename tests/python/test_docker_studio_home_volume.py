@@ -27,6 +27,14 @@ STUDIO_DF = DOCKER / "Dockerfile.studio"
 ENTRYPOINT = DOCKER / "entrypoint.sh"
 LEGACY = ".unsloth-studio-legacy"
 
+# The actionable half of the "nothing to restore" refusal, quoted from studio_home.sh. Kept as a
+# named constant because it is asserted twice: once against the script's source, so a copy edit
+# fails naming the file and the line to change, and once against the stderr an actual run
+# produces, so a script that no longer reaches that branch cannot pass on the source check alone.
+# #11254 changed this sentence ("the Studio code" -> "the Unsloth Studio code") and left the
+# expectation behind, which failed as an opaque runtime mismatch in Repo tests (CPU, python).
+RESTORE_NEEDS_APP_HINT = "run --restore under an image that has the Unsloth Studio code in"
+
 pytestmark = pytest.mark.skipif(shutil.which("bash") is None, reason = "needs bash")
 
 
@@ -200,8 +208,20 @@ def test_restore_without_a_legacy_dir_or_an_app_dir_says_which_image_to_use(tmp_
     shutil.rmtree(app)
     res = _link(app, home, "--restore")
     assert res.returncode == 1
-    assert "run --restore under an image that has the Studio code" in res.stderr
+    assert RESTORE_NEEDS_APP_HINT in res.stderr
     assert (home / "src").is_symlink()
+
+
+def test_the_restore_hint_this_file_expects_is_the_one_the_script_prints() -> None:
+    """Catch a copy edit at the source, not as a mismatch in someone else's run.
+
+    The test above compares against stderr, so when the wording moves it fails with two long
+    strings and no indication that the fix is one line of shell. This names the file.
+    """
+    assert RESTORE_NEEDS_APP_HINT in LINKER.read_text(encoding = "utf-8"), (
+        f"{LINKER.relative_to(REPO)} no longer prints {RESTORE_NEEDS_APP_HINT!r}. If the wording "
+        f"changed on purpose, update RESTORE_NEEDS_APP_HINT here to match."
+    )
 
 
 def test_keep_legacy_0_deletes_instead(tmp_path):
@@ -444,7 +464,10 @@ def test_a_restore_copy_that_fails_leaves_the_link_and_no_half_tree(tmp_path):
     assert not (home / "src.restore-tmp").exists()
 
 
-@pytest.mark.skipif(os.geteuid() == 0, reason = "root ignores directory modes")
+@pytest.mark.skipif(
+    os.name != "posix" or os.geteuid() == 0,
+    reason = "needs POSIX directory modes, and root ignores them",
+)
 def test_a_read_only_home_fails_loudly_and_touches_nothing(tmp_path):
     app = _app(tmp_path)
     home = _legacy_home(tmp_path)
@@ -490,6 +513,40 @@ def test_a_src_lost_between_the_updaters_two_renames_is_put_back(tmp_path):
     assert not (app / ".src-prev.k9x2Qa").exists()
     assert (home / "src").is_symlink() and (home / "src" / "studio").is_dir()
     assert "put " in res.stderr
+
+
+def test_a_killed_updates_record_is_recovered_before_studio_starts(tmp_path):
+    """SIGKILL after the swap and the package replacement: no trap ran, so the record
+    unsloth-studio-update keeps beside src is still there at the next container start.
+    The linker hands it to the updater's --recover, with the home it just linked,
+    before supervisord starts Studio on the unverified tree."""
+    app = _app(tmp_path)
+    (app / ".src-prev.k9x2Qa").mkdir()
+    (app / ".src-update.rollback").write_text("-e file:///opt/prev-src\n")
+    home = tmp_path / "home"
+    stub = tmp_path / "stub" / "unsloth-studio-update"
+    stub.parent.mkdir()
+    stub.write_text(
+        '#!/usr/bin/env bash\necho "UPDATER $* home=$UNSLOTH_STUDIO_HOME" >> "$STUB_LOG"\nexit "${STUB_RC:-0}"\n'
+    )
+    stub.chmod(0o755)
+    log = tmp_path / "calls.log"
+    env = {"UNSLOTH_STUDIO_UPDATER": str(stub), "STUB_LOG": str(log)}
+    res = _link(app, home, env = env)
+    assert res.returncode == 0, res.stderr
+    assert log.read_text() == f"UPDATER --recover home={home}\n", log.read_text()
+    assert "the previous install is back" in res.stderr, res.stderr
+    assert (home / "unsloth_studio").is_symlink(), "recovery must run after the home is linked"
+    # a failed recovery is loud but does not stop the container from starting
+    log.unlink()
+    res = _link(app, home, env = {**env, "STUB_RC": "1"})
+    assert res.returncode == 0, res.stderr
+    assert "WARNING" in res.stderr and "--recover" in res.stderr, res.stderr
+    # no record: the updater is not run at all
+    (app / ".src-update.rollback").unlink()
+    log.unlink()
+    res = _link(app, home, env = env)
+    assert res.returncode == 0 and not log.exists()
 
 
 def test_two_previous_trees_are_left_for_a_human(tmp_path):
