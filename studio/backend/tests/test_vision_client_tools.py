@@ -499,11 +499,17 @@ class _TemplateProcessor:
         self.chat_template = chat_template
         self.image_token = image_token
 
-    def apply_chat_template(self, messages, add_generation_prompt = False, **_kwargs):
+    def apply_chat_template(
+        self,
+        messages,
+        add_generation_prompt = False,
+        **_kwargs,
+    ):
         import jinja2
-
-        return jinja2.Environment().from_string(self.chat_template).render(
-            messages = messages, add_generation_prompt = add_generation_prompt
+        return (
+            jinja2.Environment()
+            .from_string(self.chat_template)
+            .render(messages = messages, add_generation_prompt = add_generation_prompt)
         )
 
 
