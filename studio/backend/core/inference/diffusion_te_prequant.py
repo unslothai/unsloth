@@ -938,6 +938,8 @@ def _resolve_checkpoint_path(
                 # Online, the Hub is unreachable (not a missing name): take a later name already cached (fp8
                 # cached before the int8 file was published), else re-raise rather than blame the next one.
                 if not local_files_only:
+                    from huggingface_hub import hf_hub_download
+
                     unreachable = sys.exc_info()[1]
                     for cached_name in names[names.index(name) + 1 :]:
                         try:
