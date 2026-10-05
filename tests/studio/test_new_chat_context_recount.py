@@ -147,7 +147,7 @@ def _resident_fast_path() -> str:
     """
     return slice_between(
         read(RUNTIME),
-        "          const confirmedStatus = await getInferenceStatus().catch(() => null);",
+        "          const confirmedStatus = await readPickStatus();",
         # The lease claim, which the tail must not run into: the pick here never starts a load.
         # `lifecycleLease` sits inside a bounded retry loop, so its own declaration is the first
         # line that is about the load this tail does not start rather than about the adoption.
@@ -523,6 +523,7 @@ export async function adoptResidentModel(props: any): Promise<void> {
   let pendingReplacementRollback: any = null;
   const restorePreviousConfig = (): void => {};
   const getInferenceStatus = async (): Promise<any> => props.residentStatus;
+  const readPickStatus = async (): Promise<any> => props.residentStatus;
   const reconcilePersistedGpuIds = (ids: any): any => ids;
   const sameGpuSelection = (a: any, b: any): boolean =>
     JSON.stringify(a ?? null) === JSON.stringify(b ?? null);

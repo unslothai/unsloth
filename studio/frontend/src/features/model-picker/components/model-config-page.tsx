@@ -189,6 +189,7 @@ import {
   vramPercentToFraction,
 } from "../model-config/per-model-config";
 import { isAudioRuntimeGguf } from "../../audio/audio-cpp-catalog";
+import { isNpuModelId, NPU_DEFAULT_CONTEXT_LENGTH } from "../../npu";
 import {
   type RunConfigImport,
   SharedRunConfigControls,
@@ -455,6 +456,7 @@ function MaxSeqLengthSetting({
   pinned,
   fittedToMemory,
   windowUnknown,
+  hint,
 }: {
   value: number;
   max: number;
@@ -465,6 +467,7 @@ function MaxSeqLengthSetting({
   pinned?: boolean;
   fittedToMemory?: boolean;
   windowUnknown?: boolean;
+  hint?: string;
 }) {
   // MLX sizes itself when unpinned, so the control is the GGUF path's Context Length and
   // shows the length that will be served, not "Auto". A dash only while it is unknown.
@@ -475,13 +478,13 @@ function MaxSeqLengthSetting({
         <div className="flex min-w-0 items-center gap-1.5">
           <span className={LABEL_CLASS}>{label}</span>
           <InfoHint>
-            {isMlx
+            {hint ?? (isMlx
               ? "Tokens of context the model is sized for." +
                 (fittedToMemory
                   ? " Fitted to this machine's memory, which is less than the model's own " +
                     "window. Set a length to ask for a different one."
                   : "")
-              : "Maximum context window in tokens. Applies on load."}
+              : "Maximum context window in tokens. Applies on load.")}
           </InfoHint>
         </div>
         <NumericValueInput
@@ -2084,6 +2087,7 @@ export function ModelConfigPage({
   );
   // What settings are stored under, which is not always what loads; the probes keep target.id.
   const configId = target.configId ?? target.id;
+  const targetIsNpu = isNpuModelId(target.id);
   const gpuDevices = useGpuDevices();
   const resolveInitial = () => {
     const resolved = resolveInitialConfig(configId, target.ggufVariant);
@@ -2264,7 +2268,7 @@ export function ModelConfigPage({
   );
   const modelMaxPosition = useModelMaxPositionEmbeddings(
     target.id,
-    !target.isGguf,
+    !target.isGguf && !targetIsNpu,
   );
   const hasLoadedDefaultTemplate =
     isActiveModel && loadedDefaultChatTemplate != null;
@@ -2775,6 +2779,7 @@ export function ModelConfigPage({
     platform.deviceType,
     platform.chatOnlyReason,
   );
+  const pinsContextLength = targetIsMlx || targetIsNpu;
   const atBaseline = perModelConfigsEqual(config, baseline, {
     followGlobal: true,
   });
@@ -2791,8 +2796,11 @@ export function ModelConfigPage({
       DEFAULT_PER_MODEL_CONFIG,
     );
   const nativeMaxSeqLength =
-    floorMaxSeqLength(modelMaxPosition.maxPositionEmbeddings) ??
-    MAX_SEQ_LENGTH_MAX;
+    floorMaxSeqLength(
+      targetIsNpu
+        ? target.meta.contextLength
+        : modelMaxPosition.maxPositionEmbeddings,
+    ) ?? MAX_SEQ_LENGTH_MAX;
   // The pin, else the length a self-sizing backend would serve, so the control states a
   // context rather than declining to. Only an unread window falls back to the app default,
   // and Reset clears the pin to null so no fallback may rebuild one from a runtime value.
@@ -2912,9 +2920,14 @@ export function ModelConfigPage({
     mlxFittedWindow,
     mlxProspectiveWindow,
   );
+  const npuServedWindow = targetIsNpu
+    ? ((isActiveModel ? servedWindow(loadedContextLength) : null) ??
+      Math.min(NPU_DEFAULT_CONTEXT_LENGTH, nativeMaxSeqLength))
+    : null;
   const maxSeqLengthValue =
     servedWindow(savedContextPin(config)) ??
     mlxServedWindow ??
+    npuServedWindow ??
     clampMaxSeqLength(DEFAULT_MAX_SEQ_LENGTH, nativeMaxSeqLength);
   const maxSeqLengthMax = Math.min(
     MAX_SEQ_LENGTH_MAX,
@@ -3126,7 +3139,7 @@ export function ModelConfigPage({
       pendingPatch.customContextLength = committedContext;
     }
     if (committedMaxSeqLength != null) {
-      Object.assign(pendingPatch, contextPinPatch(committedMaxSeqLength, targetIsMlx));
+      Object.assign(pendingPatch, contextPinPatch(committedMaxSeqLength, pinsContextLength));
     }
     if (committedGpuLayers != null) {
       pendingPatch.gpuLayers = committedGpuLayers;
@@ -3300,10 +3313,8 @@ export function ModelConfigPage({
     if (!saved) {
       toast.error("Couldn't save these settings, loading with them anyway.");
     }
-    // MLX pins in customContextLength as GGUF does, so unpinned sends nothing.
-    const effectiveLoadConfig = target.isGguf
-      ? effectiveRuntimeConfig
-      : targetIsMlx
+    const effectiveLoadConfig =
+      target.isGguf || pinsContextLength
         ? effectiveRuntimeConfig
         : { ...effectiveRuntimeConfig, maxSeqLength: effectiveMaxSeqLengthValue };
     // Same reason as the numeric commits above: the budget row flushes on unmount,
@@ -3393,7 +3404,7 @@ export function ModelConfigPage({
         inert={customActive ? true : undefined}
         className={`min-w-0 space-y-5 ${customActive ? "opacity-50" : ""}`}
       >
-        {!target.isGguf && !targetIsMlx && !classifiedIsDiffusion && !target.meta.isLora && !target.meta.audioType && (
+        {!target.isGguf && !targetIsMlx && !targetIsNpu && !classifiedIsDiffusion && !target.meta.isLora && !target.meta.audioType && (
           <InferenceEnginePicker parallelism={config.engineParallelism ?? "tensor"} onParallelismChange={engineParallelism => update({ engineParallelism })} precision={config.enginePrecision ?? "auto"} onPrecisionChange={enginePrecision => update({ enginePrecision })} value={config.engine ?? "auto"} onChange={engine => update({ engine })} onReadyChange={setEngineReady} onUse={handleRun} gpuIds={config.selectedGpuIds} onGpuChange={ids => update({ selectedGpuIds: ids, selectedGpuIndexKind: "physical" })} />
         )}
         {audioRuntimeGguf ? (
@@ -3541,31 +3552,44 @@ export function ModelConfigPage({
             <MaxSeqLengthSetting
               value={maxSeqLengthValue}
               max={maxSeqLengthMax}
-              inputMax={MAX_SEQ_LENGTH_MAX}
+              inputMax={targetIsNpu ? maxSeqLengthMax : MAX_SEQ_LENGTH_MAX}
               inputRef={maxSeqLengthInputRef}
-              isMlx={targetIsMlx}
+              isMlx={pinsContextLength}
               pinned={savedContextPin(config) != null}
               fittedToMemory={
                 savedContextPin(config) == null && mlxFittedWindow != null
               }
               windowUnknown={
-                savedContextPin(config) == null && mlxServedWindow == null
+                savedContextPin(config) == null &&
+                mlxServedWindow == null &&
+                npuServedWindow == null
               }
-              onChange={(value) => update(contextPinPatch(value, targetIsMlx))}
+              hint={
+                targetIsNpu
+                  ? `Tokens of context FastFlowLM loads the model with. Unset, it loads ${NPU_DEFAULT_CONTEXT_LENGTH.toLocaleString()}, or the model's limit if that is lower.`
+                  : undefined
+              }
+              onChange={(value) =>
+                update(contextPinPatch(value, pinsContextLength))
+              }
             />
-            <AdvancedSettingsToggle
-              checked={showAdvanced}
-              onCheckedChange={toggleAdvanced}
-            />
-            {showAdvanced && (
-              <MlxAdvancedSettings
-                config={config}
-                update={update}
-                outcome={mlxKvQuantOutcome}
-                servedByMlx={servedByMlx}
-                onEditTemplate={() => setTemplateOpen(true)}
-                templateOutcome={chatTemplateOutcome}
-              />
+            {!targetIsNpu && (
+              <>
+                <AdvancedSettingsToggle
+                  checked={showAdvanced}
+                  onCheckedChange={toggleAdvanced}
+                />
+                {showAdvanced && (
+                  <MlxAdvancedSettings
+                    config={config}
+                    update={update}
+                    outcome={mlxKvQuantOutcome}
+                    servedByMlx={servedByMlx}
+                    onEditTemplate={() => setTemplateOpen(true)}
+                    templateOutcome={chatTemplateOutcome}
+                  />
+                )}
+              </>
             )}
           </>
         )}

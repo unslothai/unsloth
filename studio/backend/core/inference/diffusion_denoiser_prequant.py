@@ -12,7 +12,6 @@ from __future__ import annotations
 from typing import Any, Optional
 
 from .diffusion_families import IDEOGRAM4_FAMILY_NAME
-from .diffusion_krea2 import KREA2_FAMILY_NAME
 
 # The planner DECIDED against the seed, unlike never having asked: the pull kept the dense shards, so
 # the loader must not re-take the decision and fetch the artifact inline.
@@ -20,9 +19,8 @@ PIPELINE_SEED_DECLINED = "__declined__"
 
 DENOISER_COMPONENT = "transformer"
 
-# Families assembled PER COMPONENT, plus ideogram's second denoiser: their assemblers never see
-# ``pipe_kwargs``, so a seed would be dropped after the plan had dropped their dense shards.
-_UNSEEDABLE_PIPELINE_FAMILIES = (KREA2_FAMILY_NAME, IDEOGRAM4_FAMILY_NAME)
+# Ideogram's assembler never sees ``pipe_kwargs``, so a seed would be dropped after the plan dropped its dense shards.
+_UNSEEDABLE_PIPELINE_FAMILIES = (IDEOGRAM4_FAMILY_NAME,)
 
 
 def pipeline_seed_supported(fam: Any) -> bool:
