@@ -149,6 +149,9 @@ async def check(url):
             layouts = []
             for width, locale, scale in [
                 (375, "en", ".9375"),
+                # UI font size 12px, the minimum (UI_FONT_SIZE_RANGE): --ui-space-scale is 0.8 here, so a
+                # target sized as a multiple of it drops under 24px.
+                (375, "en", ".75"),
                 (320, "en", ".9375"),
                 (375, "ru", "1.25"),
                 (320, "ar", "1.25"),

@@ -2394,9 +2394,15 @@ html[data-chat-font] .aui-root {
 		margin-right: calc(3.4px * var(--ui-space-scale, 1));
 	}
 	.aui-branch-chevron-btn {
-		/* A 24px hit target (the size #12173 guarantees every footer control) in the 20px slot the layout was
-		   tuned to: the -2px margin gives the extra 4px back, so nothing moves and there is no fill to show it. */
-		@apply inline-flex -m-[calc(2px*var(--ui-space-scale,1))] size-[calc(24px*var(--ui-space-scale,1))] shrink-0 cursor-pointer items-center justify-center rounded-full p-0 text-chat-icon-fg transition-colors hover:text-black active:text-black dark:hover:text-white dark:active:text-white focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-30 disabled:hover:text-chat-icon-fg dark:disabled:hover:text-chat-icon-fg;
+		/* A hit target of at least 24px (what #12173 guarantees every footer control) in the 20px slot, scaled, that
+		   the layout was tuned to. 24px is a floor in CSS pixels, so it is not multiplied by --ui-space-scale; the
+		   negative margin hands the difference back, so nothing moves and, with no fill, nothing shows. */
+		--aui-chevron-slot: calc(20px * var(--ui-space-scale, 1));
+		--aui-chevron-hit: max(24px, var(--aui-chevron-slot));
+		width: var(--aui-chevron-hit);
+		height: var(--aui-chevron-hit);
+		margin: calc((var(--aui-chevron-slot) - var(--aui-chevron-hit)) / 2);
+		@apply inline-flex shrink-0 cursor-pointer items-center justify-center rounded-full p-0 text-chat-icon-fg transition-colors hover:text-black active:text-black dark:hover:text-white dark:active:text-white focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-30 disabled:hover:text-chat-icon-fg dark:disabled:hover:text-chat-icon-fg;
 	}
 	.sidebar-row-action:hover .sidebar-row-action-glyph,
 	.sidebar-row-action[data-state="open"] .sidebar-row-action-glyph {
