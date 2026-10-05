@@ -3,20 +3,11 @@
 
 """CUDA graphs per denoiser block, for denoisers whose weights an offload tier moves.
 
-``diffusion_cuda_graph.GraphedForward`` records one whole denoiser forward, which only holds while every weight
-stays at one address. Offload breaks that: model offload re-uploads the denoiser per render, group offload streams
-blocks through the copy stream, and the 12 GB tier releases resident groups around each prompt encode. Here each
-repeated block is recorded on its own, keyed by its inputs AND by the device addresses of its own weights:
-
-* A block whose weights sit where a recording read them replays it; one whose weights moved runs its compiled
-  forward once (that call is the warm-up) and records again on the next call at the new addresses.
-* Streamed blocks get fixed addresses from the prefetcher's slot ring (``GroupPrefetcher.enable_slots``): copies
-  land in place in one of a few per-shape slots, so a streamed block replays every step like a resident one.
-* The offload hooks stay eager around the recorded compute: onload / prefetch / offload never enter a graph.
-
-Inputs are copied into static buffers shared by every block of one class and input layout (the replays never
-overlap), the outputs are copied out of the graph into shared buffers and cloned, and every recording shares one
-pool per denoiser, so memory is one block's activations plus the static buffers, not one copy per block.
+A whole-forward graph only holds while every weight stays at one address. Here each repeated block records on its
+own, keyed by its inputs AND the device addresses of its weights: moved weights run eagerly once, then record again.
+Streamed blocks get fixed addresses from the prefetcher's slot ring (``GroupPrefetcher.enable_slots``). The offload
+hooks stay eager around the recorded compute. Static inputs are shared per (block class, layout) since replays never
+overlap, and all recordings share one pool per denoiser.
 """
 
 from __future__ import annotations
@@ -55,10 +46,8 @@ def block_graphs_requested() -> bool:
     return (os.environ.get(BLOCK_GRAPHS_ENV) or "").strip().lower() in ("1", "on", "true", "yes")
 
 
-# Default (env unset): recorded only where every block stays on the device (a resident forward that is not
-# capture-safe, or a denoiser pinned resident under its offload hooks). There a launch-bound host gains most (B200:
-# Qwen-Image-2.1 steps 2 to 3x faster); streamed steps are copy-bound (a tie that still holds a slot ring and a pool)
-# and model offload re-uploads the weights every render, so every block would record again.
+# Default: only where every block stays on the device. Streamed steps are copy-bound (no gain, extra VRAM); model
+# offload re-uploads the weights every render, so every block would record again.
 OPT_IN_REASON = (
     "offloaded denoiser streams its blocks: per-block CUDA graphs measured no faster (streamed steps are "
     "copy-bound) and hold extra VRAM; set " + BLOCK_GRAPHS_ENV + "=1 to record per block"
@@ -70,7 +59,6 @@ MODEL_OFFLOAD_REASON = (
 )
 
 
-# ---------------------------------------------------------------------------------------------------------------
 # Call trees. Like diffusion_cuda_graph's, plus the per-layer prefix K/V caches some DiTs pass to each block
 # (Qwen-Image-2.1, FLUX.2): read-only on a cached step, so their two tensors become static buffers too.
 
@@ -203,10 +191,6 @@ def _has_kv(key: tuple) -> bool:
     return False
 
 
-# ---------------------------------------------------------------------------------------------------------------
-# Weight placement
-
-
 def _is_wrapper_subclass(t: Any) -> bool:
     try:
         from torch.utils._python_dispatch import is_traceable_wrapper_subclass
@@ -258,9 +242,6 @@ def _leaves(t: Any) -> list:
         if x is not None:
             out.extend(_leaves(x))
     return out
-
-
-# ---------------------------------------------------------------------------------------------------------------
 
 
 _UNSEEN = object()
@@ -599,10 +580,6 @@ class BlockGraph:
                 exc,
             )
         exc.__traceback__ = None
-
-
-# ---------------------------------------------------------------------------------------------------------------
-# Installation
 
 
 def _group_offload_hook(module: Any) -> Any:
