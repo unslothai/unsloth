@@ -278,3 +278,23 @@ def test_video_load_installs_wide_tiles_on_every_tiling_load():
     assert (
         tiling < install < resident
     )  # after tiling is enabled, before (so beneath) the resident untiled wrapper
+
+
+def test_blend_weights_never_put_float64_on_the_device(monkeypatch):
+    # MPS cannot allocate float64; the weights are built on CPU and moved as float32.
+    made = []
+    for name in ("arange", "zeros", "ones"):
+        real = getattr(torch, name)
+
+        def spy(
+            *args,
+            _real = real,
+            **kwargs,
+        ):
+            made.append((kwargs.get("dtype"), str(kwargs.get("device", "cpu"))))
+            return _real(*args, **kwargs)
+
+        monkeypatch.setattr(torch, name, spy)
+    w = vt.axis_weights(vt.tile_starts(38, 16), 16, 38, 4, torch, torch.device("meta"))
+    assert all(x.device.type == "meta" and x.dtype == torch.float32 for x in w)
+    assert all(dev == "cpu" for dtype, dev in made if dtype == torch.float64)

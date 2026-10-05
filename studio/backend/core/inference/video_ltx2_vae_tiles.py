@@ -72,11 +72,11 @@ def axis_weights(
     margin = MARGIN_LATENTS if margin is None else margin
     ramp = RAMP_LATENTS if ramp is None else ramp
     size = min(tile, length) * scale
-    pos = (torch.arange(size, dtype = torch.float64, device = device) + 0.5) / scale
-    total = torch.zeros(length * scale, dtype = torch.float64, device = device)
+    pos = (torch.arange(size, dtype = torch.float64, device = "cpu") + 0.5) / scale
+    total = torch.zeros(length * scale, dtype = torch.float64, device = "cpu")
     weights = []
     for s in starts:
-        w = torch.ones(size, dtype = torch.float64, device = device)
+        w = torch.ones(size, dtype = torch.float64, device = "cpu")
         if s > 0:
             w = torch.minimum(w, ((pos - margin) / ramp).clamp(0, 1))
         if s + tile < length:
@@ -85,7 +85,11 @@ def axis_weights(
         weights.append(w)
     if float(total.min()) <= 0.0:
         raise ValueError(f"tiles {starts} leave pixels without weight on a {length}-latent axis")
-    return [(w / total[s * scale : s * scale + size]).float() for w, s in zip(weights, starts)]
+    # float64 on CPU: MPS has no float64.
+    return [
+        (w / total[s * scale : s * scale + size]).float().to(device)
+        for w, s in zip(weights, starts)
+    ]
 
 
 def output_frames(vae: Any, latent_frames: int) -> int:
