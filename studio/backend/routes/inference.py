@@ -34620,13 +34620,15 @@ async def _studio_embeddings(
         while not acquire.done():
             await asyncio.wait({acquire}, timeout = 0.25)
             if not acquire.done() and await _embeddings_client_gone(request):
-                raise asyncio.CancelledError()
-    except asyncio.CancelledError:
+                raise _NonStreamingRequestCancelled("Request cancelled.")
+    except (asyncio.CancelledError, _NonStreamingRequestCancelled) as exc:
         if not acquire.done():
             acquire.cancel()
         elif not acquire.cancelled() and acquire.exception() is None:
             semaphore.release()
         api_monitor.finish(monitor_id, "cancelled")
+        if isinstance(exc, _NonStreamingRequestCancelled):
+            raise _openai_admission_http_exception(exc, status_code = 499)
         raise
     try:
         gone = await _embeddings_client_gone(request)
@@ -34637,7 +34639,9 @@ async def _studio_embeddings(
     if gone:
         semaphore.release()
         api_monitor.finish(monitor_id, "cancelled")
-        raise asyncio.CancelledError()
+        raise _openai_admission_http_exception(
+            _NonStreamingRequestCancelled("Request cancelled."), status_code = 499
+        )
     worker = asyncio.ensure_future(asyncio.to_thread(_embed))
 
     def _release_embed_permit(finished) -> None:
