@@ -22,6 +22,8 @@ export function clearAutoOpenedArtifacts(): void {
 type ChatArtifactsState = {
   artifactsById: Record<string, ChatArtifact>;
   selectedArtifactId: string | null;
+  // Bumped on every open, so the panel can reopen after being dragged shut.
+  openSequence: number;
   surface: ChatArtifactSurface;
   // View the surface should show on the next open (Preview vs Code button).
   requestedView: ArtifactViewMode;
@@ -29,8 +31,13 @@ type ChatArtifactsState = {
     artifact: ChatArtifact,
     options?: { surface?: ChatArtifactSurface; view?: ArtifactViewMode },
   ) => void;
+  // Fix text awaiting a composer: the fullscreen overlay has none to reach. Never sent.
+  pendingFixPrompt: string | null;
+  stageFixPrompt: (prompt: string) => void;
+  clearFixPrompt: () => void;
   updateArtifact: (artifact: ChatArtifact) => void;
   closeArtifactSurface: () => void;
+  setArtifactView: (view: ArtifactViewMode) => void;
   clearArtifactsForThread: (threadId: string | null | undefined) => void;
   clearOrphanedArtifacts: () => void;
   resetArtifacts: () => void;
@@ -39,6 +46,7 @@ type ChatArtifactsState = {
 export const useChatArtifactsStore = create<ChatArtifactsState>((set) => ({
   artifactsById: {},
   selectedArtifactId: null,
+  openSequence: 0,
   surface: "panel",
   requestedView: "preview",
   openArtifact: (artifact, options) =>
@@ -48,9 +56,13 @@ export const useChatArtifactsStore = create<ChatArtifactsState>((set) => ({
         [artifact.id]: artifact,
       },
       selectedArtifactId: artifact.id,
+      openSequence: state.openSequence + 1,
       surface: options?.surface ?? state.surface,
       requestedView: options?.view ?? "preview",
     })),
+  pendingFixPrompt: null,
+  stageFixPrompt: (prompt) => set({ pendingFixPrompt: prompt }),
+  clearFixPrompt: () => set({ pendingFixPrompt: null }),
   updateArtifact: (artifact) =>
     set((state) =>
       state.artifactsById[artifact.id]
@@ -64,6 +76,7 @@ export const useChatArtifactsStore = create<ChatArtifactsState>((set) => ({
     ),
   closeArtifactSurface: () =>
     set({ selectedArtifactId: null, surface: "panel" }),
+  setArtifactView: (view) => set({ requestedView: view }),
   clearArtifactsForThread: (threadId) =>
     set((state) => {
       if (!threadId) return state;
@@ -100,6 +113,7 @@ export const useChatArtifactsStore = create<ChatArtifactsState>((set) => ({
       artifactsById: {},
       selectedArtifactId: null,
       surface: "panel",
+      pendingFixPrompt: null,
     }),
 }));
 

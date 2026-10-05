@@ -55,6 +55,9 @@ _account_registries = {}
 _account_registry_lock = threading.Lock()
 # The HF cache is shared across per-account registries, so a reservation must reach all of them.
 _deleting: set[str] = set()
+# Whole-cache purges in flight. Counted, like DownloadRegistry._purging, and kept here
+# so a registry created for an account DURING a purge starts out reserved too.
+_purging = 0
 
 
 def _account_registry():
@@ -67,6 +70,11 @@ def _account_registry():
             registry = download_registry.DownloadRegistry()
             for reserved in _deleting:
                 registry.begin_delete(reserved)
+            # Same reason as the line above: a purge holding every OTHER registry would not
+            # hold this one, and the account whose first download creates it would write into
+            # a tree being removed.
+            for _ in range(_purging):
+                registry.begin_cache_purge()
             _account_registries[account_id] = registry
         return registry
 
@@ -92,6 +100,37 @@ def end_delete(repo_id: str) -> None:
         _deleting.discard(key)
         for registry in (_registry, *_account_registries.values()):
             registry.end_delete(repo_id)
+
+
+def begin_cache_purge() -> bool:
+    """Reserve EVERY dataset registry for a whole-cache purge, or none of them.
+
+    A managed-account install does not have one dataset registry, it has one per account
+    (:func:`_account_registry`). Reserving only the singleton left every other account's
+    download invisible to the purge, which would then remove files under its worker. Same
+    all-or-nothing shape as :func:`begin_delete`, and the count is recorded so a registry
+    created after this returns is born reserved rather than free to claim work.
+    """
+    global _purging
+    with _account_registry_lock:
+        reserved = []
+        for registry in (_registry, *_account_registries.values()):
+            if not registry.begin_cache_purge():
+                for done in reserved:
+                    done.end_cache_purge()
+                return False
+            reserved.append(registry)
+        _purging += 1
+        return True
+
+
+def end_cache_purge() -> None:
+    global _purging
+    with _account_registry_lock:
+        if _purging:
+            _purging -= 1
+        for registry in (_registry, *_account_registries.values()):
+            registry.end_cache_purge()
 
 
 def _download_job_key(repo_id: str) -> str:
@@ -197,14 +236,20 @@ async def get_dataset_download_progress_response(
 
 
 def _dataset_status(key: str, *, repo_id: Optional[str] = None) -> DatasetDownloadJobStatus:
+    registry = _account_registry()
     state, error, generation = download_lifecycle.idle_status(
-        _account_registry(),
+        registry,
         key,
         repo_type = "dataset",
         repo_id = repo_id,
         variant = None,
     )
-    return DatasetDownloadJobStatus(state = state, error = error, generation = generation)
+    return DatasetDownloadJobStatus(
+        state = state,
+        error = error,
+        generation = generation,
+        attempt = registry.current_attempt(key),
+    )
 
 
 async def download_dataset_response(
@@ -235,88 +280,100 @@ async def download_dataset_response(
     repo_id = await asyncio.to_thread(resolve_cached_repo_id_case, repo_id, repo_type = "dataset")
     key = _download_job_key(repo_id)
 
-    # Off the event loop: resolving "auto" can run the Xet reachability probe, and a blackholed DNS
-    # makes that outlast its 3s budget while every other request waits behind it.
+    # Size and Auto resolution may perform network probes, so keep both off the event loop.
+    largest_file_bytes = await asyncio.to_thread(
+        download_lifecycle.largest_download_file_bytes,
+        "dataset",
+        repo_id,
+        hf_token = hf_token,
+        allow_ambient_token = allow_ambient_token,
+    )
     use_xet, transport_reason = await asyncio.to_thread(
         download_lifecycle.resolve_requested_use_xet,
         getattr(body, "transport_mode", None),
         body.use_xet,
+        largest_file_bytes = largest_file_bytes,
     )
-    transport = download_lifecycle.resolve_transport(use_xet)
+    transport = download_lifecycle.resolve_transport(use_xet, largest_file_bytes = largest_file_bytes)
     logger.info("Download transport for %s: %s (%s)", repo_id, transport, transport_reason)
     from utils.hf_cache_settings import get_hf_cache_paths
 
     cache_paths = get_hf_cache_paths()
     cache_env = cache_paths.child_env({})
 
-    registry = _account_registry()
-    claimed, claim_state = _claim_dataset_download(
-        registry,
-        key,
-        transport,
-        repo_type = "dataset",
-        repo_id = repo_id,
-        hub_cache = str(cache_paths.hub_cache),
-        xet_cache = str(cache_paths.xet_cache),
-    )
-    generation = registry.current_generation(key)
-    if not claimed:
-        # Both come from adoptable: an in-progress delete leaves no job, and only an in-flight job of this
-        # repo attached to anything.
-        adoptable = registry.adoptable(key)
+    def claim_and_launch():
+        # Claim and launch as one operation, off the loop: a cancel while queued must not
+        # leave a claimed job with no worker, and token resolution can do network I/O.
+        registry = _account_registry()
+        claimed, claim_state = _claim_dataset_download(
+            registry,
+            key,
+            transport,
+            repo_type = "dataset",
+            repo_id = repo_id,
+            hub_cache = str(cache_paths.hub_cache),
+            xet_cache = str(cache_paths.xet_cache),
+        )
+        generation = registry.current_generation(key)
+        if not claimed:
+            # Both come from adoptable: an in-progress delete leaves no job, and only an in-flight job of this
+            # repo attached to anything.
+            adoptable = registry.adoptable(key)
+            return {
+                "repo_id": repo_id,
+                "state": claim_state,
+                "accepted": adoptable,
+                "attached": adoptable,
+                "generation": generation,
+                # An adopted job keeps the transport it started on, so report it rather than let the caller assume
+                # the one it asked for.
+                "transport": registry.job_transport(key),
+                # And its cancel marker: a run that fell back from Xet to HTTP still cancels into a restart-only
+                # partial.
+                "cancel_transport": registry.job_cancel_transport(key),
+            }
+        # Record ownership with the claim, not at launch: retirement scans this registry, and an
+        # unattributed job makes its cancel raise "Download not found" and abort the deletion.
+        download_lifecycle.record_download_account(registry, key)
+        download_manifest.clear_cancel_marker(
+            "dataset",
+            repo_id,
+            None,
+            hub_cache = cache_paths.hub_cache,
+        )
+
+        state = download_lifecycle.launch_worker(
+            registry,
+            key,
+            spawn = lambda: download_lifecycle.spawn_worker(
+                ["--repo-id", repo_id, "--dataset"],
+                hf_token,
+                use_xet = use_xet,
+                cache_env = cache_env,
+                allow_ambient_token = allow_ambient_token,
+            ),
+            hf_token = hf_token,
+            allow_ambient_token = allow_ambient_token,
+            label = repo_id,
+            log_prefix = "Dataset download",
+            logger = logger,
+            repo_type = "dataset",
+            repo_id = repo_id,
+            transport = transport,
+            watch_name = f"hf-dataset-download-watch-{repo_id}",
+        )
+
         return {
             "repo_id": repo_id,
-            "state": claim_state,
-            "accepted": adoptable,
-            "attached": adoptable,
+            "state": state,
+            "accepted": True,
+            "attached": False,
             "generation": generation,
-            # An adopted job keeps the transport it started on, so report it rather than let the caller assume
-            # the one it asked for.
-            "transport": registry.job_transport(key),
-            # And its cancel marker: a run that fell back from Xet to HTTP still cancels into a restart-only
-            # partial.
-            "cancel_transport": registry.job_cancel_transport(key),
+            # See models: the resolved transport, which a downgrade can make different from the one requested.
+            "transport": transport,
         }
-    # Record ownership with the claim, not at launch: retirement scans this registry, and an
-    # unattributed job makes its cancel raise "Download not found" and abort the deletion.
-    download_lifecycle.record_download_account(registry, key)
-    download_manifest.clear_cancel_marker(
-        "dataset",
-        repo_id,
-        None,
-        hub_cache = cache_paths.hub_cache,
-    )
 
-    state = download_lifecycle.launch_worker(
-        registry,
-        key,
-        spawn = lambda: download_lifecycle.spawn_worker(
-            ["--repo-id", repo_id, "--dataset"],
-            hf_token,
-            use_xet = use_xet,
-            cache_env = cache_env,
-            allow_ambient_token = allow_ambient_token,
-        ),
-        hf_token = hf_token,
-        allow_ambient_token = allow_ambient_token,
-        label = repo_id,
-        log_prefix = "Dataset download",
-        logger = logger,
-        repo_type = "dataset",
-        repo_id = repo_id,
-        transport = transport,
-        watch_name = f"hf-dataset-download-watch-{repo_id}",
-    )
-
-    return {
-        "repo_id": repo_id,
-        "state": state,
-        "accepted": True,
-        "attached": False,
-        "generation": generation,
-        # See models: the resolved transport, which a downgrade can make different from the one requested.
-        "transport": transport,
-    }
+    return await asyncio.to_thread(claim_and_launch)
 
 
 async def cancel_dataset_download_response(body: CancelDatasetDownloadRequest) -> dict:

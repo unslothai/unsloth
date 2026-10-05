@@ -588,6 +588,9 @@ def archive_turns(
                 written += 1
             if _INGEST_FAILED:
                 globals()["_INGEST_FAILED"] = False
+    except embeddings.EmbeddingModelDownloadRequiredError as exc:
+        globals()["_INGEST_FAILED"] = True
+        _log_embedder_pending(model, exc)
     except Exception:
         # A chat that cannot archive still beats one that raises. Whatever was written before the failure stays
         # searchable.
@@ -610,6 +613,17 @@ def archive_turns(
         delete_for_thread(thread_id)
         return 0
     return written
+
+
+# A Settings pick whose download has not finished is not a fault; logged once, not per compaction.
+_EMBEDDER_PENDING_LOGGED: set = set()
+
+
+def _log_embedder_pending(model, exc: Exception) -> None:
+    if model in _EMBEDDER_PENDING_LOGGED:
+        return
+    _EMBEDDER_PENDING_LOGGED.add(model)
+    logger.info("conversation_archive.embedder_pending: %s", exc)
 
 
 # Set when an archive write fails, cleared by the next one that succeeds. Process-wide on purpose: what fails here is
@@ -2299,6 +2313,8 @@ def _candidates(conn, scope: str, query: str, model, fetch: int, thread_id: str)
                     seen.add(hit.chunk_id)
                 if len(hits) >= fetch:
                     break
+        except embeddings.EmbeddingModelDownloadRequiredError as exc:
+            _log_embedder_pending(model, exc)
         except Exception:
             # Dense retrieval raises rather than degrading when no embedder can start. The lexical hits stand on their
             # own, so this top-up may fail.
@@ -2481,11 +2497,11 @@ def recall(
 
 
 def _scope_select(scope: str, created_before: Optional[str]) -> tuple:
-    """The scope's document ids, optionally cut at ``created_before``. See `delete_for_thread`."""
+    """The scope's documents, optionally cut at ``created_before`` (see `delete_for_thread`)."""
     if not created_before:
-        return ("SELECT id FROM documents WHERE scope=?", (scope,))
+        return ("SELECT id, stored_path FROM documents WHERE scope=?", (scope,))
     return (
-        "SELECT id FROM documents WHERE scope=? AND created_at<?",
+        "SELECT id, stored_path FROM documents WHERE scope=? AND created_at<?",
         (scope, created_before),
     )
 
@@ -2495,35 +2511,33 @@ def _delete_scope_without_vec(
     thread_id: str,
     *,
     created_before: Optional[str] = None,
-) -> int:
+) -> list:
     """Delete a scope's text-bearing rows over a connection with no sqlite-vec.
 
-    Deletion must not depend on the optional native extension. Archives are only WRITTEN while vec0
+    Deletion must not depend on the optional native extension. Rows are only WRITTEN while vec0
     loads, but it can stop loading afterwards (a venv change, common on macOS), and a delete that
-    silently does nothing leaves a deleted conversation on disk ready to answer again once vec0
-    returns.
+    silently does nothing leaves a deleted chat's turns and uploads on disk, retrievable again once
+    vec0 returns.
 
     The chunks_vec rows are unreachable from here and left behind. They carry vectors, not text, and
     every read path resolves through ``chunks`` joined to ``documents``, both gone, so nothing can
     retrieve an orphan.
     """
     conn = None
-    removed = 0
+    removed = []
     try:
         conn = rag_db.get_metadata_connection()
-        documents = [
-            row["id"] for row in conn.execute(*_scope_select(scope, created_before)).fetchall()
-        ]
-        for document_id in documents:
+        documents = conn.execute(*_scope_select(scope, created_before)).fetchall()
+        for row in documents:
             conn.execute(
                 "DELETE FROM chunks_fts WHERE chunk_id IN "
                 "(SELECT id FROM chunks WHERE document_id=?)",
-                (document_id,),
+                (row["id"],),
             )
-            conn.execute("DELETE FROM chunks WHERE document_id=?", (document_id,))
-            conn.execute("DELETE FROM documents WHERE id=?", (document_id,))
-            removed += 1
+            conn.execute("DELETE FROM chunks WHERE document_id=?", (row["id"],))
+            conn.execute("DELETE FROM documents WHERE id=?", (row["id"],))
         conn.commit()
+        removed = [row["stored_path"] for row in documents]
     except Exception:
         logger.warning(
             "conversation_archive.delete_without_vec_failed thread_id=%s", thread_id, exc_info = True
@@ -2550,8 +2564,91 @@ def delete_for_thread(thread_id: str, *, created_before: Optional[str] = None) -
     if not thread_id:
         return 0
     scope = store.conversation_archive_scope(thread_id)
+    return len(_delete_scope(scope, thread_id, created_before = created_before))
+
+
+def delete_thread_documents(thread_id: str, *, created_before: Optional[str] = None) -> int:
+    """Drop a thread's uploaded documents and their stored files, cut as in `delete_for_thread`."""
+    if not thread_id:
+        return 0
+    from .ingestion import _remove_upload
+
+    scope = store.thread_scope(thread_id)
+    removed = _delete_scope(scope, thread_id, created_before = created_before)
+    for stored_path in removed:
+        _remove_upload(stored_path)
+    return len(removed)
+
+
+def copy_thread_documents(source_thread_id: str, thread_id: str) -> tuple[dict[str, str], bool]:
+    """Copy a thread's finished uploads into another thread. Returns the source-to-copy document id
+    map and whether an upload still being ingested was left behind. Failed uploads are not copied
+    and not reported: the documents bar never shows them.
+
+    Files are copied before the transaction so rag.db's write lock is never held across file I/O.
+    """
+    from .ingestion import _copy_upload, _remove_upload
+
+    scope = store.thread_scope(thread_id)
+    copied: list = []
+    conn = rag_db.get_connection()
+    try:
+        rows = conn.execute(
+            "SELECT * FROM documents WHERE scope=? ORDER BY created_at",
+            (store.thread_scope(source_thread_id),),
+        ).fetchall()
+        documents = [dict(row) for row in rows if row["status"] == "completed"]
+        for document in documents:
+            copied.append(_copy_upload(document["stored_path"]))
+        conn.execute("BEGIN IMMEDIATE")
+        sources = []
+        for document, stored_path in zip(documents, copied):
+            source = store.get_document(conn, document["id"])
+            if source is None or source["status"] != "completed":
+                raise RuntimeError("Source document changed while its file was being copied")
+            sources.append((source, stored_path))
+        document_ids = store.copy_documents(conn, sources, scope, thread_id = thread_id)
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        for stored_path in copied:
+            _remove_upload(stored_path)
+        raise
+    finally:
+        conn.close()
+    return document_ids, any(row["status"] in ("pending", "running") for row in rows)
+
+
+def thread_has_documents(thread_id: str) -> bool:
+    """Whether the thread has uploads that did not fail. Read over a metadata connection so a fork
+    can still report them when vec0 cannot load and nothing can be copied."""
+    if not rag_db.rag_db_path().is_file():
+        return False
+    conn = rag_db.get_metadata_connection()
+    try:
+        if not conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='documents'"
+        ).fetchone():
+            return False
+        return (
+            conn.execute(
+                "SELECT 1 FROM documents WHERE scope=? AND status != 'failed' LIMIT 1",
+                (store.thread_scope(thread_id),),
+            ).fetchone()
+            is not None
+        )
+    finally:
+        conn.close()
+
+
+def _delete_scope(
+    scope: str,
+    thread_id: str,
+    *,
+    created_before: Optional[str] = None,
+) -> list:
     conn = None
-    removed = 0
+    removed = []
     try:
         try:
             conn = rag_db.get_connection()
@@ -2560,7 +2657,7 @@ def delete_for_thread(thread_id: str, *, created_before: Optional[str] = None) -
             return _delete_scope_without_vec(scope, thread_id, created_before = created_before)
         for row in conn.execute(*_scope_select(scope, created_before)).fetchall():
             store.delete_document(conn, row["id"])
-            removed += 1
+            removed.append(row["stored_path"])
     except Exception:
         logger.warning("conversation_archive.delete_failed thread_id=%s", thread_id, exc_info = True)
     finally:

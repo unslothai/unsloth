@@ -78,6 +78,9 @@ let _modelConfigController: AbortController | null = null;
 
 // Has the user manually toggled trainOnCompletions since the last auto-set?
 let _trainOnCompletionsManuallySet = false;
+// Model whose completions value came from the user (toggle or config import), not
+// its defaults; CPT entry captures that value even while the defaults are pending.
+let _trainOnCompletionsExplicitModel: string | null = null;
 
 let _trainingMethodEditGeneration = 0;
 let _modelDefaultsEditGeneration = 0;
@@ -228,6 +231,7 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
                 requestedTargetModulesEditGeneration;
             if (shouldApplyTrainingDefaults) {
               _trainOnCompletionsManuallySet = false;
+              _trainOnCompletionsExplicitModel = null;
             }
 
             if (modelDetails.is_lora) {
@@ -322,12 +326,10 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
             const cptTargetOverrides = shouldApplyCptTargetDefaults
               ? { targetModules: cptDefaultsPatch.targetModules }
               : {};
-            // Only trainOnCompletions: CPT's forced adapter values are not the model's.
             // Targets are pinned to what cptDefaultsPatch resolved FROM, so the summary's
             // resolveCptTargetModules(baseline) reproduces the live set even when the model
             // config carries none and cptTargetModules falls back to live state.
             const cptBaselineOverride = {
-              trainOnCompletions: cptDefaultsPatch.trainOnCompletions,
               targetModules: [...cptTargetModules],
             };
             const modelDefaultsBaseline = {
@@ -383,9 +385,17 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
                     : {}),
                 }
               : {};
+            const cptCompletionProvenanceRefresh =
+              inCpt && modelDefaultsPatch.trainOnCompletions !== undefined
+                ? {
+                    trainOnCompletionsBeforeCpt:
+                      modelDefaultsPatch.trainOnCompletions,
+                  }
+                : {};
             const cptProvenanceRefresh = {
               ...cptTargetProvenanceRefresh,
               ...cptLoraProvenanceRefresh,
+              ...cptCompletionProvenanceRefresh,
             };
             const cptFallbackProvenanceRefresh = {
               ...(shouldApplyCptTargetDefaults
@@ -393,6 +403,16 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
                 : {}),
               ...(requestedSelectionOwnsLoraSnapshot
                 ? cptLoraProvenanceRefresh
+                : {}),
+              // Fill only: a value captured on entering CPT is the user's, not a default.
+              ...(requestedSelectionOwnsLoraSnapshot &&
+              !(
+                _trainOnCompletionsManuallySet &&
+                _trainOnCompletionsExplicitModel === modelName
+              ) &&
+              get().trainingMethodProvenance.trainOnCompletionsBeforeCpt ===
+                null
+                ? cptCompletionProvenanceRefresh
                 : {}),
             };
 
@@ -592,6 +612,12 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
               // Audio-capable vision model (e.g. gemma3n) + audio dataset → uncheck.
               if (isAudioModel && isVisionModel && isAudio) {
                 updates.trainOnCompletions = false;
+              }
+              if (updates.trainOnCompletions === false) {
+                updates.trainingMethodProvenance = {
+                  ...current.trainingMethodProvenance,
+                  trainOnCompletionsBeforeCpt: false,
+                };
               }
             }
             set(updates);
@@ -852,6 +878,7 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
           modelDefaultsAppliedFor?: string | null;
           advancedSettingsBaseline?: null;
           trainOnCompletionsDefaultPendingFor?: null;
+          trainingMethodProvenance?: TrainingConfigState["trainingMethodProvenance"];
         } = {
           selectedModel,
           modelDefaultsError: null,
@@ -878,6 +905,10 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
           patch.modelDefaultsAppliedFor = null;
           patch.advancedSettingsBaseline = null;
           patch.trainOnCompletionsDefaultPendingFor = null;
+          patch.trainingMethodProvenance = {
+            ...currentState.trainingMethodProvenance,
+            trainOnCompletionsBeforeCpt: null,
+          };
         }
         setUserEdit(patch);
 
@@ -1023,6 +1054,16 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
           _trainingMethodEditGeneration += 1;
           const state = get();
           const patch = buildTrainingMethodPatch(state, trainingMethod);
+          if (
+            state.trainingMethod !== "cpt" &&
+            trainingMethod === "cpt" &&
+            state.selectedModel !== null &&
+            _trainOnCompletionsExplicitModel === state.selectedModel &&
+            patch.trainingMethodProvenance
+          ) {
+            patch.trainingMethodProvenance.trainOnCompletionsBeforeCpt =
+              state.trainOnCompletions;
+          }
           setUserEdit({
             ...patch,
             ...(patch.trainOnCompletions !== undefined
@@ -1345,6 +1386,7 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
         setPacking: (packing) => setUserEdit({ packing }),
         setTrainOnCompletions: (trainOnCompletions) => {
           _trainOnCompletionsManuallySet = true;
+          _trainOnCompletionsExplicitModel = get().selectedModel;
           setUserEdit({
             trainOnCompletions,
             trainOnCompletionsDefaultPendingFor: null,
@@ -1377,6 +1419,7 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
         reset: () => {
           trainingDatasetCacheRejections.reset();
           _trainOnCompletionsManuallySet = false;
+          _trainOnCompletionsExplicitModel = null;
           _targetModulesEditGeneration += 1;
           for (const key of LORA_PARAM_KEYS) {
             _loraParamEditGenerations[key] += 1;
@@ -1402,20 +1445,36 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
           for (const key of LORA_PARAM_KEYS) {
             if (patch[key] !== undefined) _loraParamEditGenerations[key] += 1;
           }
-          setUserEdit((state) => ({
-            ...patch,
-            ...(patch.trainOnCompletions !== undefined
-              ? { trainOnCompletionsDefaultPendingFor: null }
-              : {}),
-            ...(patch.learningRate !== undefined
-              ? {
-                  trainingMethodProvenance: {
-                    ...state.trainingMethodProvenance,
-                    learningRateManuallySet: false,
-                  },
-                }
-              : {}),
-          }));
+          if (patch.trainOnCompletions !== undefined) {
+            _trainOnCompletionsExplicitModel = get().selectedModel;
+          }
+          setUserEdit((state) => {
+            const importsCompletionsInCpt =
+              state.trainingMethod === "cpt" &&
+              patch.trainOnCompletions !== undefined;
+            return {
+              ...patch,
+              ...(patch.trainOnCompletions !== undefined
+                ? { trainOnCompletionsDefaultPendingFor: null }
+                : {}),
+              ...(patch.learningRate !== undefined || importsCompletionsInCpt
+                ? {
+                    trainingMethodProvenance: {
+                      ...state.trainingMethodProvenance,
+                      ...(patch.learningRate !== undefined
+                        ? { learningRateManuallySet: false }
+                        : {}),
+                      ...(importsCompletionsInCpt
+                        ? {
+                            trainOnCompletionsBeforeCpt:
+                              patch.trainOnCompletions,
+                          }
+                        : {}),
+                    },
+                  }
+                : {}),
+            };
+          });
         },
       };
     },

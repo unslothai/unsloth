@@ -8,6 +8,8 @@ export interface ModelOption {
   id: string;
   name: string;
   description?: string;
+  /** Shown after `description` and never truncated, e.g. the quant "BF16". */
+  descriptionSuffix?: string;
   icon?: ReactNode;
   isGguf?: boolean;
   /** Fixed quant used by a specialized on-device runtime. Generic Hub GGUF rows discover their
@@ -30,6 +32,7 @@ export interface LoraModelOption extends ModelOption {
   /** This local GGUF is one directly loadable artifact, not a repo whose quant variants must be listed first. */
   isDirectGguf?: boolean;
   exportType?: "lora" | "merged" | "gguf";
+  sizeBytes?: number | null;
   /** Codec when the checkpoint fine-tunes an audio model, else null. */
   audioType?: string | null;
 }
@@ -50,11 +53,20 @@ export interface ModelSelectorChangeMeta {
   ggufFilename?: string;
   isDownloaded?: boolean;
   expectedBytes?: number;
+  /** Presentation for a companion-only managed download. The manager still
+   *  owns one atomic GGUF job, but names the bytes actually crossing the wire. */
+  downloadPresentation?: {
+    label: string;
+    filename: string;
+    expectedBytes: number;
+  };
   /** Native GGUF context, threaded so a staged pick can seed the slider. */
   contextLength?: number | null;
   /** Direct local .gguf file picked without a variant (custom folder / LM Unsloth). Marks it as a
    *  GGUF source for the deferred-load staging flow. */
   isGguf?: boolean;
+  /** Known model vision capability. Undefined means unknown, not text-only. */
+  isVision?: boolean;
   /** Staged metadata confirmed the separate DiffusionGemma runner. */
   isDiffusion?: boolean;
   config?: PerModelConfig;
@@ -66,6 +78,8 @@ export interface ModelSelectorChangeMeta {
   /** Hub pipeline tag for an uncurated pick, so a task page can tell which task the repo does when
    *  it is not in the page's catalog. */
   pipelineTag?: string | null;
+  /** Admitted only via an explicit family; detected picks must not inherit it. */
+  familyOverrideRequired?: boolean;
   /** Detected local audio architecture, used when a filesystem path has no Hub id. */
   audioType?: string | null;
   nativePathExpiresAtMs?: number | null;
@@ -88,8 +102,8 @@ export interface ModelPickTarget {
   displayName: string;
   ggufVariant?: string | null;
   isGguf: boolean;
-  /** Whether an OpenAI-compatible request can actually load this model. Not the same as isGguf:
-   *  local_model_resolver skips Ollama's scanner. Defaults to isGguf when unknown. */
+  /** Whether an OpenAI-compatible request may load this model; see apiAutoSwitchMayLoad.
+   *  Defaults to isGguf when unknown. */
   apiLoadable?: boolean;
   /** Identity the saved settings are keyed by, when that is not what loads: a repo cached outside
    *  the active HF cache loads by snapshot path while its settings key on the repo id. Probes
