@@ -154,25 +154,35 @@ def test_models_discovery_reports_selected_alias_and_native_capabilities(api):
     assert models["laya-multilingual"]["architecture"]["input_modalities"] == ["text"]
 
 
-@pytest.mark.parametrize("available,images,preference,expected", [
-    (False, False, "auto", "pytorch"),
-    (True, False, "auto", "llama.cpp"),
-    (True, True, "auto", "pytorch"),
-    (True, False, "pytorch", "pytorch"),
-    (False, False, "llama.cpp", None),
-])
+@pytest.mark.parametrize(
+    "available,images,preference,expected",
+    [
+        (False, False, "auto", "pytorch"),
+        (True, False, "auto", "llama.cpp"),
+        (True, True, "auto", "pytorch"),
+        (True, False, "pytorch", "pytorch"),
+        (False, False, "llama.cpp", None),
+    ],
+)
 def test_selection_uses_capabilities_only(monkeypatch, available, images, preference, expected):
     from core.systemone import native_worker, runtime
 
-    monkeypatch.setattr(native_worker, "native_availability", lambda: {
-        "available": available, "reason": None if available else "old binary",
-    })
+    monkeypatch.setattr(
+        native_worker,
+        "native_availability",
+        lambda: {
+            "available": available,
+            "reason": None if available else "old binary",
+        },
+    )
     checkpoint = catalog.CHECKPOINTS["clef-flash"]
     if expected is None:
-        with pytest.raises(runtime.Unavailable, match="old binary"):
-            runtime.select_checkpoint(checkpoint, images=images, preference=preference)
+        with pytest.raises(runtime.Unavailable, match = "old binary"):
+            runtime.select_checkpoint(checkpoint, images = images, preference = preference)
     else:
-        selected, reason = runtime.select_checkpoint(checkpoint, images=images, preference=preference)
+        selected, reason = runtime.select_checkpoint(
+            checkpoint, images = images, preference = preference
+        )
         assert runtime._clef().is_native(selected) == (expected == "llama.cpp")
         assert bool(reason) == (preference == "auto" and (not available or images))
 
@@ -182,7 +192,7 @@ def test_native_only_discovery_and_image_refusal(api, monkeypatch):
     monkeypatch.setattr(systemone_settings, "get_backend", lambda: "llama.cpp")
     models = {m["id"]: m for m in systemone.decision_model_objects()}
     assert models["clef"]["architecture"]["input_modalities"] == ["text"]
-    response = client.post("/v1/systemone", json=request(images=[png_url()]))
+    response = client.post("/v1/systemone", json = request(images = [png_url()]))
     assert response.status_code == 400 and not calls
 
 
@@ -193,5 +203,5 @@ def test_native_inspection_error_is_not_a_fallback(monkeypatch):
         raise RuntimeError("unexpected native error")
 
     monkeypatch.setattr(native_worker, "native_availability", fail)
-    with pytest.raises(RuntimeError, match="unexpected native error"):
-        runtime.select_checkpoint(catalog.CHECKPOINTS["clef-flash"], preference="auto")
+    with pytest.raises(RuntimeError, match = "unexpected native error"):
+        runtime.select_checkpoint(catalog.CHECKPOINTS["clef-flash"], preference = "auto")

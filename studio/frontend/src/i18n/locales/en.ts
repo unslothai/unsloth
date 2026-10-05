@@ -2615,7 +2615,7 @@ export const en = {
         backend: "Runtime",
         backendAuto: "Auto",
         backendDescription:
-          "Auto prefers compatible llama.cpp for text; uses PyTorch for images or missing native capabilities. Runtime errors are not retried on another backend.",
+          "Auto prefers compatible llama.cpp for text. Images or missing native capabilities use PyTorch. Runtime errors are not retried on another backend.",
         backendStatus: "Runtime: {backend}",
         mediaImages: "Images use PyTorch. Video and audio are not served.",
         mediaText: "Text only. Images, video and audio are not served.",

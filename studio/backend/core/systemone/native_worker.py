@@ -32,31 +32,43 @@ _POLL_S = 0.1
 NATIVE_MAX_CONTEXT_TOKENS = 2_048
 
 
-@lru_cache(maxsize=16)
-def _mapped_route(path: str, mtime_ns: int, size: int) -> bool:
+@lru_cache(maxsize = 16)
+def _mapped_contains(path: str, mtime_ns: int, size: int, marker: bytes) -> bool:
     try:
         with (
             open(path, "rb") as source,
-            mmap.mmap(source.fileno(), 0, access=mmap.ACCESS_READ) as data,
+            mmap.mmap(source.fileno(), 0, access = mmap.ACCESS_READ) as data,
         ):
-            return size > 0 and data.find(_ROUTE) >= 0
+            return size > 0 and data.find(marker) >= 0
     except OSError:
         return False
 
 
-def supports_systemone(binary: str | Path) -> bool:
-    """Whether this exact executable contains the native SystemOne route."""
+def _contains(path: Path, marker: bytes) -> bool:
     try:
-        path = Path(binary).resolve(strict=True)
+        path = path.resolve(strict = True)
         stat = path.stat()
     except OSError:
         return False
-    return _mapped_route(str(path), stat.st_mtime_ns, stat.st_size)
+    return stat.st_size > 0 and _mapped_contains(str(path), stat.st_mtime_ns, stat.st_size, marker)
+
+
+def supports_systemone(binary: str | Path) -> bool:
+    """Inspect the executable and, for shared builds, its linked server implementation."""
+    path = Path(binary).resolve()
+    if _contains(path, _ROUTE):
+        return True
+    for name in ("libllama-server-impl.so", "libllama-server-impl.dylib", "llama-server-impl.dll"):
+        if _contains(path, name.encode()):
+            return any(
+                _contains(directory / name, _ROUTE)
+                for directory in (path.parent, path.parent.parent / "lib")
+            )
+    return False
 
 
 def _resolve_binary() -> str | None:
     from core.inference.llama_cpp import LlamaCppBackend
-
     binary = LlamaCppBackend._find_llama_server_binary()
     return (LlamaCppBackend._exec_path_for_launch(binary) or binary) if binary else None
 
@@ -149,11 +161,13 @@ def _validate_result(
             ):
                 raise ValueError(f"invalid probabilities for {name}")
             if "probabilities" in answer and not math.isclose(
-                sum(values), 1, rel_tol=1e-4, abs_tol=1e-4
+                sum(values), 1, rel_tol = 1e-4, abs_tol = 1e-4
             ):
                 raise ValueError(f"probabilities for {name} do not sum to one")
     except (TypeError, ValueError) as exc:
-        raise ClefWorkerError(f"Native llama.cpp Clef returned invalid probabilities: {exc}") from None
+        raise ClefWorkerError(
+            f"Native llama.cpp Clef returned invalid probabilities: {exc}"
+        ) from None
     result = dict(data)
     result["model"] = checkpoint.name
     return result
@@ -217,7 +231,7 @@ class NativeWorker:
                 )
             device = devices[0]
         else:
-            env.update(CUDA_VISIBLE_DEVICES="", HIP_VISIBLE_DEVICES="-1")
+            env.update(CUDA_VISIBLE_DEVICES = "", HIP_VISIBLE_DEVICES = "-1")
             LlamaCppBackend._clear_device_placement_env(env)
         command = [
             binary,
@@ -242,15 +256,15 @@ class NativeWorker:
             *(["--device", device] if device else []),
         ]
         self._external_cancel, self._port, self._api_key = cancelled, port, key
-        self._client = httpx.Client(timeout=LOAD_WAIT_S, trust_env=False)
+        self._client = httpx.Client(timeout = LOAD_WAIT_S, trust_env = False)
         try:
             self._process = spawn_on_lifetime_thread(
                 lambda: subprocess.Popen(
                     command,
-                    stdin=subprocess.DEVNULL,
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                    env=env,
+                    stdin = subprocess.DEVNULL,
+                    stdout = subprocess.DEVNULL,
+                    stderr = subprocess.DEVNULL,
+                    env = env,
                     **windows_hidden_subprocess_kwargs(),
                     **child_popen_kwargs(),
                 )
@@ -278,16 +292,16 @@ class NativeWorker:
             try:
                 outcome["response"] = self._client.post(
                     f"http://127.0.0.1:{self._port}/v1/systemone",
-                    json={"model": checkpoint.name, "state": state, "questions": wire_questions},
-                    headers={"Authorization": f"Bearer {self._api_key}"},
-                    timeout=RUN_WAIT_S,
+                    json = {"model": checkpoint.name, "state": state, "questions": wire_questions},
+                    headers = {"Authorization": f"Bearer {self._api_key}"},
+                    timeout = RUN_WAIT_S,
                 )
             except BaseException as exc:
                 outcome["error"] = exc
             finally:
                 done.set()
 
-        threading.Thread(target=post, name="native-clef-request", daemon=True).start()
+        threading.Thread(target = post, name = "native-clef-request", daemon = True).start()
         while not done.wait(_POLL_S):
             if self._is_cancelled():
                 self.close()
@@ -326,20 +340,19 @@ class NativeWorker:
                     client.close()
                 if process is not None and process.poll() is None:
                     process.terminate()
-                    process.wait(timeout=max(0.0, graceful_timeout))
+                    process.wait(timeout = max(0.0, graceful_timeout))
             except (ProcessLookupError, subprocess.TimeoutExpired):
                 pass
             try:
                 if process is not None and process.poll() is None:
                     process.kill()
-                    process.wait(timeout=CANCEL_GRACE_S)
+                    process.wait(timeout = CANCEL_GRACE_S)
             except (ProcessLookupError, subprocess.TimeoutExpired):
                 pass
             if process is not None and process.poll() is None:
                 return False
             if process is not None:
                 from utils.process_lifetime import forget_pid
-
                 forget_pid(process.pid)
             self._process, self._port, self._api_key = None, None, None
             return True
@@ -354,13 +367,15 @@ class NativeWorker:
             try:
                 response = self._client.get(
                     f"http://127.0.0.1:{self._port}/health",
-                    headers={"Authorization": f"Bearer {self._api_key}"},
-                    timeout=2.0,
+                    headers = {"Authorization": f"Bearer {self._api_key}"},
+                    timeout = 2.0,
                 )
                 if response.status_code == 200:
                     return
                 if response.status_code not in (503,):
-                    raise ClefWorkerError(f"Native Clef health returned HTTP {response.status_code}.")
+                    raise ClefWorkerError(
+                        f"Native Clef health returned HTTP {response.status_code}."
+                    )
             except httpx.TransportError:
                 pass
             time.sleep(_POLL_S)

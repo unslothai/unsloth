@@ -1492,7 +1492,9 @@ def _systemone_response(request: Request) -> SystemOneSettingsResponse:
         loaded_device = runtime["device"],
         loaded_backend = runtime.get("backend"),
         **backend,
-        input_modalities = ["text", "image"] if decision_runtime.accepts_images(checkpoint) else ["text"],
+        input_modalities = ["text", "image"]
+        if decision_runtime.accepts_images(checkpoint)
+        else ["text"],
         loading_model = runtime["loading_model"],
         installing = runtime["installing"],
         error = error,
@@ -1506,7 +1508,9 @@ _SYSTEMONE_SETTINGS_LOCK = threading.Lock()
 def _systemone_values(payload: SystemOneSettingsPayload) -> dict[str, Any]:
     try:
         return systemone_settings.validate(
-            **payload.model_dump(include = {"enabled", "model", "device", "backend"}, exclude_none = True)
+            **payload.model_dump(
+                include = {"enabled", "model", "device", "backend"}, exclude_none = True
+            )
         )
     except ValueError as exc:
         raise log_and_http_error(
@@ -1634,7 +1638,9 @@ def resolve_systemone_download(
     if isinstance(checkpoint, catalog.Connection):
         return SystemOneDownloadPlan(repo = None, files = [], size_bytes = 0, cached = True, error = None)
     try:
-        return SystemOneDownloadPlan(**decision_runtime.download_plan(checkpoint, preference = backend))
+        return SystemOneDownloadPlan(
+            **decision_runtime.download_plan(checkpoint, preference = backend)
+        )
     except decision_runtime.Unavailable as exc:
         raise HTTPException(status_code = exc.status, detail = exc.message) from None
 

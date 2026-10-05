@@ -97,12 +97,24 @@ CHECKPOINTS = {
 NATIVE_CHECKPOINTS = {
     c.name: c
     for c in (
-        ClefCheckpoint("clef-flash", "ggml-org/Clef-Flash-GGUF", None,
-                       "Clef Flash · Q8 · native text decisions", 9_657_260_096,
-                       "4a7a08c09bc63baf043b62b5ba89dd67a0357d95", ("Clef-Flash-Q8_0.gguf",)),
-        ClefCheckpoint("clef", "ggml-org/Clef-GGUF", None,
-                       "Clef · Q8 · native text decisions", 28_732_215_264,
-                       "5f70656b6670c65eb85ad07a11efe211b5f211bd", ("Clef-Q8_0.gguf",)),
+        ClefCheckpoint(
+            "clef-flash",
+            "ggml-org/Clef-Flash-GGUF",
+            None,
+            "Clef Flash · Q8 · native text decisions",
+            9_657_260_096,
+            "4a7a08c09bc63baf043b62b5ba89dd67a0357d95",
+            ("Clef-Flash-Q8_0.gguf",),
+        ),
+        ClefCheckpoint(
+            "clef",
+            "ggml-org/Clef-GGUF",
+            None,
+            "Clef · Q8 · native text decisions",
+            28_732_215_264,
+            "5f70656b6670c65eb85ad07a11efe211b5f211bd",
+            ("Clef-Q8_0.gguf",),
+        ),
     )
 }
 

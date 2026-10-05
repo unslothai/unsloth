@@ -32,7 +32,6 @@ def _fake_worker(
     config = None,
 ):
     from utils.process_lifetime import bind_current_process_to_parent_lifetime
-
     bind_current_process_to_parent_lifetime()
     while True:
         command = cmd_queue.get()

@@ -129,7 +129,11 @@ def validate(
         if backend not in BACKENDS:
             raise ValueError("Backend must be auto, llama.cpp or pytorch.")
         values[BACKEND_KEY] = backend
-    serving = enabled if enabled is not None else (model is not None or backend is not None) and get_enabled()
+    serving = (
+        enabled
+        if enabled is not None
+        else (model is not None or backend is not None) and get_enabled()
+    )
     local = parse_connection(get_model() if model is None else model) is None
     if serving and local:
         from core.systemone.catalog import ClefCheckpoint, default_checkpoint
@@ -154,7 +158,9 @@ def validate(
             except PackageNotFoundError:
                 supported = False
             if not supported:
-                raise ValueError("Clef PyTorch needs Transformers 5.5.0 or newer. Update Studio before enabling it.")
+                raise ValueError(
+                    "Clef PyTorch needs Transformers 5.5.0 or newer. Update Studio before enabling it."
+                )
     return values
 
 

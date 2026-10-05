@@ -99,7 +99,9 @@ test("the download goes through the manager with the exact files and one scope",
     SECTION,
     /acceptedState === "running" \|\| acceptedState === "complete"/,
   );
-  assert.match(SECTION, /resolveSystemOneDownload\(model\)\.then/);
+  assert.match(SECTION, /resolveSystemOneDownload\(model, backend\)\.then/);
+  assert.match(SECTION, /\[enabled, model, backend, downloadDone\]/);
+  assert.match(SECTION, /resolveSystemOneDownload\(nextModel, nextBackend\)/);
   assert.match(SECTION, /await resyncSettingsAfterError/);
 });
 

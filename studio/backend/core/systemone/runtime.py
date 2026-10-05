@@ -21,7 +21,13 @@ def _clef():
     return clef_runtime
 
 
-def select_checkpoint(checkpoint, *, images = False, questions = None, preference = None):
+def select_checkpoint(
+    checkpoint,
+    *,
+    images = False,
+    questions = None,
+    preference = None,
+):
     from utils.systemone_settings import get_backend
     from .native_worker import native_availability
 
@@ -29,7 +35,8 @@ def select_checkpoint(checkpoint, *, images = False, questions = None, preferenc
     if preference == "pytorch":
         return checkpoint, None
     schema_gap = any(
-        q.get("instructions") == "" or (q.get("type") == "score" and len(q.get("criteria") or []) < 2)
+        q.get("instructions") == ""
+        or (q.get("type") == "score" and len(q.get("criteria") or []) < 2)
         for q in (questions or {}).values()
     )
     if images or schema_gap:
@@ -61,7 +68,6 @@ def backend_info(checkpoint):
 
 def accepts_images(checkpoint):
     from utils.systemone_settings import get_backend
-
     return isinstance(checkpoint, catalog.ClefCheckpoint) and get_backend() != "llama.cpp"
 
 
@@ -81,7 +87,9 @@ def decide(
         _enter()
         held = True
         if isinstance(checkpoint, catalog.ClefCheckpoint):
-            checkpoint, _fallback_reason = select_checkpoint(checkpoint, images = bool(images), questions = questions)
+            checkpoint, _fallback_reason = select_checkpoint(
+                checkpoint, images = bool(images), questions = questions
+            )
             laya_runtime.ensure_can_unload()
             if laya_runtime.status()["loaded_model"]:
                 laya_runtime.unload()
@@ -101,7 +109,10 @@ def decide(
                         1,
                     ) from None
             result = _clef().decide(checkpoint, state, questions, images)
-            return {**result, "_backend": "llama.cpp" if _clef().is_native(checkpoint) else "pytorch"}
+            return {
+                **result,
+                "_backend": "llama.cpp" if _clef().is_native(checkpoint) else "pytorch",
+            }
         _clef().ensure_can_unload()
         if _clef().status()["loaded_model"] or _clef().status()["loading_model"]:
             _clef().unload()

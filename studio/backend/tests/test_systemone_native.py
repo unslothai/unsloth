@@ -42,7 +42,7 @@ class _Process:
     def kill(self):
         self.killed, self.returncode = True, 0
 
-    def wait(self, timeout=None):
+    def wait(self, timeout = None):
         if self.returncode is None:
             raise subprocess.TimeoutExpired("llama-server", timeout)
         return self.returncode
@@ -97,16 +97,19 @@ def native(monkeypatch, tmp_path):
     monkeypatch.setattr(process_lifetime, "forget_pid", forgotten.append)
     monkeypatch.setattr(process_lifetime, "is_process_shutting_down", lambda: False)
     _Client.responses, _Client.calls = [], []
-    model = SimpleNamespace(name="clef-flash")
+    model = SimpleNamespace(name = "clef-flash")
     path = tmp_path / "clef-flash.gguf"
     path.write_bytes(b"gguf")
     return model, path, process, forgotten, commands
 
 
-def test_capability_probe_rejects_old_binary_and_accepts_route(tmp_path, monkeypatch):
+@pytest.mark.parametrize("shared", [False, True])
+def test_capability_probe_rejects_old_binary_and_accepts_route(tmp_path, monkeypatch, shared):
     old, current = tmp_path / "old", tmp_path / "current"
     old.write_bytes(b"no decisions here")
-    current.write_bytes(b"contains /v1/systemone route")
+    current.write_bytes(b"libllama-server-impl.so" if shared else b"contains /v1/systemone route")
+    if shared:
+        (tmp_path / "libllama-server-impl.so").write_bytes(b"contains /v1/systemone route")
 
     assert not native_worker.supports_systemone(old)
     assert native_worker.supports_systemone(current)
@@ -177,18 +180,18 @@ def test_errors_media_refusal_and_cancellation_cleanup(native, monkeypatch):
     _Client.responses = [_Response(401, {"error": {"message": "bad process key"}})]
     worker = native_worker.NativeWorker()
     worker.start(path, model, "gpu", threading.Event())
-    with pytest.raises(ClefWorkerError, match="HTTP 401: bad process key"):
+    with pytest.raises(ClefWorkerError, match = "HTTP 401: bad process key"):
         worker.decide(model, "state", {"q": {"type": "noul"}}, [])
     assert worker.device == "CUDA0" and worker.gpu_available is True
     worker.cancel()
     assert process.terminated and forgotten == [process.pid]
 
-    with pytest.raises(ClefWorkerInputError, match="does not support images"):
+    with pytest.raises(ClefWorkerInputError, match = "does not support images"):
         native_worker.NativeWorker().decide(model, "state", {"q": {"type": "noul"}}, [b"image"])
     assert not native_worker.supports_request({"q": {"instructions": ""}}, [])
     assert not native_worker.supports_request({"q": {"type": "score", "criteria": ["only"]}}, [])
     from core.inference.llama_cpp import LlamaCppBackend
 
     monkeypatch.setattr(LlamaCppBackend, "_enumerated_gpu_devices", staticmethod(lambda *_: []))
-    with pytest.raises(ClefWorkerError, match="no usable GPU"):
+    with pytest.raises(ClefWorkerError, match = "no usable GPU"):
         native_worker.NativeWorker().start(path, model, "gpu", threading.Event())

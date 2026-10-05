@@ -69,23 +69,40 @@ class ClefWorker:
             raise ClefWorkerCancelled("Clef model loading was cancelled.")
         cache_env = get_hf_cache_paths().child_env({})
         try:
-            with child_environment_for_spawn(cache_env), native_path_secret_removed_for_child_start():
+            with (
+                child_environment_for_spawn(cache_env),
+                native_path_secret_removed_for_child_start(),
+            ):
                 self._cmd_queue, self._resp_queue = _CTX.Queue(), _CTX.Queue()
                 self._cancel_event = _CTX.Event()
                 target = self._target or run_without_native_path_secret
-                args = () if self._target else ("core.systemone.clef_worker", "run_clef_worker", cache_env)
+                args = (
+                    ()
+                    if self._target
+                    else ("core.systemone.clef_worker", "run_clef_worker", cache_env)
+                )
                 self._process = _CTX.Process(
                     target = target,
                     args = args,
-                    kwargs = dict(cmd_queue = self._cmd_queue, resp_queue = self._resp_queue,
-                                  cancel_event = self._cancel_event, config = {}),
+                    kwargs = dict(
+                        cmd_queue = self._cmd_queue,
+                        resp_queue = self._resp_queue,
+                        cancel_event = self._cancel_event,
+                        config = {},
+                    ),
                     daemon = True,
                 )
                 # Linux's parent-death signal follows the spawning thread's lifetime.
                 spawn_on_lifetime_thread(self._process.start)
             adopt_pid(self._process.pid)
-            self._send(dict(type = "load", snapshot_path = str(snapshot_path),
-                            model = checkpoint.name, requested_device = requested_device))
+            self._send(
+                dict(
+                    type = "load",
+                    snapshot_path = str(snapshot_path),
+                    model = checkpoint.name,
+                    requested_device = requested_device,
+                )
+            )
             loaded = self._await("loaded", LOAD_WAIT_S, cancelled)
             self.device, self.gpu_available = loaded["device"], loaded["gpu_available"]
         except BaseException:
@@ -93,8 +110,15 @@ class ClefWorker:
             raise
 
     def decide(self, checkpoint, state, questions, images):
-        self._send(dict(type = "decide", model = checkpoint.name, state = state,
-                        questions = questions, images = images))
+        self._send(
+            dict(
+                type = "decide",
+                model = checkpoint.name,
+                state = state,
+                questions = questions,
+                images = images,
+            )
+        )
         result = self._await("result", RUN_WAIT_S).get("result")
         if not isinstance(result, dict):
             raise ClefWorkerError("The Clef worker returned an invalid response.")
@@ -105,7 +129,12 @@ class ClefWorker:
             raise ClefWorkerCancelled("The Clef worker was unloaded.")
         self._cmd_queue.put(command)
 
-    def _await(self, expected, timeout, cancelled = None):
+    def _await(
+        self,
+        expected,
+        timeout,
+        cancelled = None,
+    ):
         deadline = time.monotonic() + timeout
         while not self._closed:
             if cancelled is not None and cancelled.is_set():
@@ -127,8 +156,10 @@ class ClefWorker:
             except (EOFError, OSError, ValueError) as exc:
                 raise ClefWorkerError("Lost contact with the Clef worker.") from exc
             if response.get("type") == "error":
-                error = {"cancelled": ClefWorkerCancelled,
-                         "invalid_request_error": ClefWorkerInputError}.get(response.get("kind"), ClefWorkerError)
+                error = {
+                    "cancelled": ClefWorkerCancelled,
+                    "invalid_request_error": ClefWorkerInputError,
+                }.get(response.get("kind"), ClefWorkerError)
                 raise error(response.get("message") or "The Clef worker failed.")
             if response.get("type") == expected:
                 return response
@@ -143,7 +174,6 @@ class ClefWorker:
 
     def close(self, graceful_timeout = 0.0):
         from utils.process_lifetime import forget_pid
-
         with self._close_lock:
             self._closed = True
             self.cancel()
@@ -205,7 +235,12 @@ def _claim_repository_lease(checkpoint):
     return registry, checkpoint.source, owner
 
 
-def _retire(worker, lease, *, graceful_timeout = 0.0):
+def _retire(
+    worker,
+    lease,
+    *,
+    graceful_timeout = 0.0,
+):
     def release():
         if lease is not None:
             registry, repo, owner = lease
@@ -235,7 +270,12 @@ def _retire(worker, lease, *, graceful_timeout = 0.0):
 def _ensure_not_retiring():
     with _state_lock:
         if _retiring:
-            raise Unavailable(503, "model_loading", "The previous Clef worker is still stopping; retry shortly.", 1)
+            raise Unavailable(
+                503,
+                "model_loading",
+                "The previous Clef worker is still stopping; retry shortly.",
+                1,
+            )
 
 
 def _checkpoint_dir(checkpoint):
@@ -250,12 +290,21 @@ def _checkpoint_dir(checkpoint):
 
         if len(checkpoint.revision) != 40:
             raise FileNotFoundError("Clef checkpoint has no immutable revision.")
-        root = Path(snapshot_download(checkpoint.source, revision = checkpoint.revision,
-                    cache_dir = active_hf_hub_cache(), local_files_only = True,
-                    allow_patterns = list(files), token = False))
+        root = Path(
+            snapshot_download(
+                checkpoint.source,
+                revision = checkpoint.revision,
+                cache_dir = active_hf_hub_cache(),
+                local_files_only = True,
+                allow_patterns = list(files),
+                token = False,
+            )
+        )
     missing = [f for f in files if not (root / f).is_file()]
     if missing:
-        raise FileNotFoundError(f"Clef checkpoint is not completely cached ({', '.join(missing[:3])}). Download it from Settings > API before serving it.")
+        raise FileNotFoundError(
+            f"Clef checkpoint is not completely cached ({', '.join(missing[:3])}). Download it from Settings > API before serving it."
+        )
     return root / files[0] if is_native(checkpoint) else root
 
 
@@ -269,20 +318,32 @@ def is_cached(checkpoint):
 
 def download_plan(checkpoint):
     cached = is_cached(checkpoint)
-    return dict(repo = None if checkpoint.is_local else checkpoint.source,
-                files = [] if cached else list(checkpoint.files),
-                size_bytes = checkpoint.download_bytes, cached = cached,
-                error = "Local Clef checkpoint is incomplete." if checkpoint.is_local and not cached else None,
-                revision = checkpoint.revision or None)
+    return dict(
+        repo = None if checkpoint.is_local else checkpoint.source,
+        files = [] if cached else list(checkpoint.files),
+        size_bytes = checkpoint.download_bytes,
+        cached = cached,
+        error = "Local Clef checkpoint is incomplete."
+        if checkpoint.is_local and not cached
+        else None,
+        revision = checkpoint.revision or None,
+    )
 
 
 def loading_repo_ids():
     with _state_lock:
-        return (_loading.checkpoint.source,) if _loading and not _loading.checkpoint.is_local else ()
+        return (
+            (_loading.checkpoint.source,) if _loading and not _loading.checkpoint.is_local else ()
+        )
 
 
 def _current(load):
-    return _loading is load and _generation == load.generation and not load.cancel.is_set() and not _shutdown_requested
+    return (
+        _loading is load
+        and _generation == load.generation
+        and not load.cancel.is_set()
+        and not _shutdown_requested
+    )
 
 
 def _start_loading(checkpoint):
@@ -305,7 +366,9 @@ def _start_loading(checkpoint):
             return _loading
         load = _Load(checkpoint, _generation, threading.Event(), threading.Event())
         _loading = load
-        load.thread = threading.Thread(target = _load_worker, args = (load,), name = "clef-load", daemon = True)
+        load.thread = threading.Thread(
+            target = _load_worker, args = (load,), name = "clef-load", daemon = True
+        )
         try:
             load.thread.start()
         except BaseException:
@@ -373,7 +436,9 @@ def _worker_for(checkpoint):
         if _loaded == checkpoint and _worker is not None:
             return _worker
         if _failure and _failure[0] == checkpoint:
-            raise Unavailable(503, "model_unavailable", _failure[1], max(1, _failure[2] - time.monotonic()))
+            raise Unavailable(
+                503, "model_unavailable", _failure[1], max(1, _failure[2] - time.monotonic())
+            )
     raise Unavailable(503, "model_loading", f"{checkpoint.name} is reloading", 1)
 
 
@@ -408,7 +473,12 @@ def _idle_unload(worker, generation):
         _run_lock.release()
 
 
-def decide(checkpoint, state, questions, images = None):
+def decide(
+    checkpoint,
+    state,
+    questions,
+    images = None,
+):
     if not _admission.acquire(blocking = False):
         raise Unavailable(529, "overloaded", "System One is busy; retry shortly", 1)
     held = False
@@ -454,11 +524,21 @@ def shutdown_worker(worker, checkpoint, error):
 def ensure_can_unload():
     _ensure_not_retiring()
     if _run_lock.locked():
-        raise Unavailable(409, "model_loading", "Wait for the Clef decision to finish before unloading.")
+        raise Unavailable(
+            409, "model_loading", "Wait for the Clef decision to finish before unloading."
+        )
 
 
 def _invalidate(stopping):
-    global _worker, _loaded, _device_name, _loading, _lease, _failure, _generation, _shutdown_requested
+    global \
+        _worker, \
+        _loaded, \
+        _device_name, \
+        _loading, \
+        _lease, \
+        _failure, \
+        _generation, \
+        _shutdown_requested
     with _state_lock:
         _shutdown_requested |= stopping
         _cancel_idle_locked()
@@ -487,7 +567,9 @@ def _stop(stopping):
 def unload():
     ensure_can_unload()
     if not _run_lock.acquire(blocking = False):
-        raise Unavailable(409, "model_loading", "Wait for the Clef decision to finish before unloading.")
+        raise Unavailable(
+            409, "model_loading", "Wait for the Clef decision to finish before unloading."
+        )
     try:
         result = _stop(False)
         _ensure_not_retiring()
@@ -504,12 +586,15 @@ def status():
     with _state_lock:
         alive = _worker is not None and _worker.is_alive()
         failure = _failure if _failure and time.monotonic() < _failure[2] else None
-        return dict(loaded_model = _loaded.name if alive else None,
-                    device = _device_name if alive else None,
-                    backend = ("llama.cpp" if is_native(_loaded) else "pytorch") if alive else None,
-                    loading_model = _loading.checkpoint.name if _loading else None,
-                    installing = False, error = failure[1] if failure else None,
-                    error_model = failure[0].name if failure else None)
+        return dict(
+            loaded_model = _loaded.name if alive else None,
+            device = _device_name if alive else None,
+            backend = ("llama.cpp" if is_native(_loaded) else "pytorch") if alive else None,
+            loading_model = _loading.checkpoint.name if _loading else None,
+            installing = False,
+            error = failure[1] if failure else None,
+            error_model = failure[0].name if failure else None,
+        )
 
 
 atexit.register(shutdown)
