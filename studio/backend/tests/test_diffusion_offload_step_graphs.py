@@ -636,3 +636,42 @@ def test_releasing_an_offloaded_step_graph_frees_its_capture_stream_workspace(mo
     calls.clear()
     handle._release()
     assert calls == [2]  # a resident graph's reset keeps the compute stream's workspace
+
+
+def test_freeing_a_streamed_step_graph_hands_the_slot_ring_back(monkeypatch):
+    _cuda()
+    net, handle = _armed_streamed(monkeypatch)
+    pf = op.module_prefetcher(net)
+    _call(net, 0)
+    _call(net, 1)
+    assert pf.slot_raw
+    handle.free()
+    assert not pf.slot_raw and not pf.slot_of
+    ref = _net().cuda()
+    assert torch.equal(_call(net, 2), _call(ref, 2))
+
+
+def test_the_first_capture_keeps_its_pool_while_its_graph_lives(monkeypatch):
+    _cuda()
+    monkeypatch.setattr(cg, "_POOL_BOX", [None])
+    net = _net().cuda()
+    handle = cg.GraphedForward(net, logger = None).enable()
+    _call(net, 0)
+    _call(net, 1)
+    assert handle.stats["captures"] == 1 and cg._POOL_BOX[0] is not None
+    cg._drop_pool_if_unused()
+    assert cg._POOL_BOX[0] is not None
+    handle.free()
+
+
+def test_freeing_a_resident_graph_keeps_offload_hooks_added_after_it():
+    _cuda()
+    net = _net()
+    handle = cg.GraphedForward(net, logger = None).enable()
+    _streamed(net)
+    hooked = net.__dict__.get("forward")
+    assert hooked is not None and hooked is not handle
+    handle.free()
+    assert net.__dict__.get("forward") is hooked
+    ref = _net().cuda()
+    assert torch.equal(_call(net, 0), _call(ref, 0))

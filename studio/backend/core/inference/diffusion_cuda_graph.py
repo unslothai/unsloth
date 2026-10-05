@@ -282,7 +282,7 @@ def _drop_pool_if_unused() -> None:
             return
         for wrapper in tuple(_LIVE_WRAPPERS):
             for entry in tuple(wrapper.cache.values()):
-                if getattr(entry, "pool_token", pool) is pool:
+                if getattr(entry, "pool_token", pool) == pool:  # handles are fresh tuples per call
                     return
         _POOL_BOX[0] = None
     except Exception:  # noqa: BLE001
@@ -692,7 +692,14 @@ class GraphedForward:
             if outer.inner is self:
                 outer.inner = None
             return self
-        self.module.__dict__.pop("forward", None)
+        if self.module.__dict__.get("forward") is self:
+            self.module.__dict__.pop("forward", None)
+            return self
+        # Offload hooks installed after this wrapper wrap it: unwrap it inside their chain, keeping the hooks.
+        registry = getattr(self.module, "_diffusers_hook", None)
+        for ref in list(getattr(registry, "_fn_refs", None) or ()):
+            if getattr(ref, "forward", None) is self:
+                ref.forward = type(self.module).forward.__get__(self.module)
         return self
 
     def enable(self) -> "GraphedForward":
@@ -768,6 +775,8 @@ class GraphedForward:
                 pass
             self.fallback_handle = None
         self.uninstall()
+        if self.placement is not None:
+            self.placement.release_slots()
         self.enabled = False
         _LIVE_WRAPPERS.discard(self)
         return self
@@ -1469,6 +1478,18 @@ class OffloadPlacement:
             pf = self._prefetcher()
             if pf is not None and callable(getattr(pf, "materialize_slots", None)):
                 pf.materialize_slots()
+        except Exception:  # noqa: BLE001
+            pass
+
+    def release_slots(self) -> None:
+        """Hand the slot ring back once no graph of this placement can replay into it."""
+        if not self._slots:
+            return
+        self._slots = False
+        try:
+            pf = self._prefetcher()
+            if pf is not None and callable(getattr(pf, "drop_slots_after_forward", None)):
+                pf.drop_slots_after_forward()
         except Exception:  # noqa: BLE001
             pass
 
