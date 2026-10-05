@@ -625,3 +625,70 @@ def test_anthropic_does_not_forward_foreign_message_metadata(monkeypatch):
     )
     _collect(client, messages = messages)
     assert bodies[0]["messages"][1] == {"role": "assistant", "content": "Previous reply"}
+
+
+def test_whitespace_text_blocks_are_not_replayed(monkeypatch):
+    # Anthropic 400s "text content blocks must contain non-whitespace text" on a replayed blank block.
+    events = [
+        *_block(0, {"type": "text", "text": ""}, {"type": "text_delta", "text": "\n\n"}),
+        *_block(
+            1,
+            {"type": "tool_use", "id": "toolu_a", "name": "python", "input": {}},
+            {"type": "input_json_delta", "partial_json": '{"query":"one"}'},
+        ),
+        *_finish("tool_use"),
+    ]
+    bodies = []
+
+    def handler(request):
+        bodies.append(json.loads(request.content))
+        if len(bodies) == 1:
+            return _response(events)
+        return _response(
+            [
+                *_block(0, {"type": "text", "text": ""}, {"type": "text_delta", "text": "Done."}),
+                *_finish("end_turn"),
+            ]
+        )
+
+    monkeypatch.setattr(loop, "execute_tool", lambda name, arguments, **kwargs: "ok")
+    monkeypatch.setattr(loop, "build_rag_autoinject", lambda *a, **k: None)
+    client = _client(monkeypatch, handler)
+
+    async def run():
+        try:
+            return [
+                line
+                async for line in loop.stream_with_studio_tools(
+                    OAICompatTransport(
+                        client,
+                        model = "claude-sonnet-4-6",
+                        temperature = 0.7,
+                        top_p = 0.95,
+                        max_tokens = 4096,
+                        enable_prompt_caching = False,
+                    ),
+                    run = loop.ToolLoopRun(messages = [{"role": "user", "content": "Run it"}]),
+                    policy = loop.ToolLoopPolicy(
+                        tools = TOOLS,
+                        max_calls = 5,
+                        timeout = 30,
+                        permission_mode = "off",
+                        confirm_calls = False,
+                        bypass_permissions = False,
+                        rag_scope = None,
+                        auto_heal = False,
+                        nudge_tool_calls = False,
+                    ),
+                    cancel_event = threading.Event(),
+                )
+            ]
+        finally:
+            await client.close()
+
+    asyncio.run(run())
+    assert len(bodies) == 2
+    assistant = bodies[1]["messages"][1]
+    assert assistant["content"] == [
+        {"type": "tool_use", "id": "toolu_a", "name": "python", "input": {"query": "one"}}
+    ]

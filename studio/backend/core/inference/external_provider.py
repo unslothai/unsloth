@@ -2500,7 +2500,12 @@ class ExternalProviderClient:
                 # source:...}`, and `input_document` -> `{type:"document", source:...}` (an Unsloth extension
                 # mirroring Anthropic's document block, which supports PDFs as base64 or URL).
                 anthropic_parts: list[dict[str, Any]] = (
-                    list(native_content)
+                    [
+                        block
+                        for block in native_content
+                        if block.get("type") != "text"
+                        or _anthropic_text_is_sendable(block.get("text"))
+                    ]
                     if msg.get("role") == "assistant" and isinstance(native_content, list)
                     else []
                 )
