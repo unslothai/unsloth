@@ -1911,6 +1911,7 @@ export const ru = {
         cpu: "CPU",
         ram: "RAM",
         disk: "Диск",
+        modelsDisk: "Диск моделей",
         vram: "VRAM",
         cpuCores: "{logical} логич. / {physical} физич. ядер",
         currentLoad: "Текущая нагрузка",
@@ -2022,6 +2023,7 @@ export const ru = {
       storage: {
         title: "Хранилище",
         systemDisk: "Системный диск",
+        modelsDisk: "Диск моделей",
         diskUsage: "{used} использовано / {total}",
         diskFree: "{free} свободно",
         modelsFolder: "Папка моделей",
