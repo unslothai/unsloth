@@ -196,9 +196,41 @@ def _names_the_scene_asks_for() -> tuple[set[str], set[str]]:
     return buttons, items
 
 
+def _component_body(tsx: str, name: str) -> str | None:
+    """The source of a component defined in thread.tsx, `const X: FC = ...` or `function X(`."""
+    match = re.search(rf"^(?:const {name}\b[^\n]*=>\s*\{{|function {name}\()", tsx, re.M)
+    if not match:
+        return None
+    end = tsx.find("\n}", match.end())
+    return tsx[match.start() : end if end != -1 else len(tsx)]
+
+
+def _assistant_bar_source(tsx: str) -> str:
+    """AssistantActionBar and every thread.tsx component it renders, transitively.
+
+    The scene acts on the last ASSISTANT message, so a control only counts if the assistant bar
+    renders it: `More` and `Delete` also exist in the user message's menu and as reusable
+    components, and a whole-file search would still find them after the assistant bar dropped them.
+    """
+    seen: dict[str, str] = {}
+    queue = ["AssistantActionBar"]
+    while queue:
+        name = queue.pop()
+        if name in seen:
+            continue
+        body = _component_body(tsx, name)
+        if body is None:
+            continue
+        seen[name] = body
+        queue.extend(re.findall(r"<([A-Z][A-Za-z0-9]*)\b(?!\.)", body))
+    assert "AssistantActionBar" in seen, "could not find AssistantActionBar in thread.tsx"
+    return "\n".join(seen.values())
+
+
 def test_every_control_the_scene_asks_for_is_still_rendered():
-    """Bar buttons by their tooltip, menu items by their text, both read out of thread.tsx."""
-    tsx = THREAD_TSX.read_text(encoding = "utf-8")
+    """Bar buttons by their tooltip, menu items by their text, read out of what the assistant
+    message's action bar renders in thread.tsx."""
+    tsx = _assistant_bar_source(THREAD_TSX.read_text(encoding = "utf-8"))
     buttons, items = _names_the_scene_asks_for()
     assert (
         {"More", "Copy"} <= buttons and "Delete" in items
@@ -215,6 +247,6 @@ def test_every_control_the_scene_asks_for_is_still_rendered():
             rendered_items.add(lines[-1])
     missing = sorted(buttons - tooltips) + sorted(items - rendered_items)
     assert not missing, (
-        f"the studiobench scene asks for {missing}, which thread.tsx no longer renders as an "
-        "action-bar tooltip or a More-menu item, so that action would report NOT RUN"
+        f"the studiobench scene asks for {missing}, which the assistant action bar in thread.tsx "
+        "no longer renders as a tooltip or a More-menu item, so that action would report NOT RUN"
     )
