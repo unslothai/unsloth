@@ -88,7 +88,7 @@ Unsloth works on **Windows, Linux, WSL** and **macOS**. We support **Multi GPU s
 ### Train & Deploy
 * **Fine-tuning:** Train LLMs, diffusion, TTS, and embedding models 2× faster with 70% less VRAM with [no accuracy loss](https://unsloth.ai/blog#training)
 * **Complete support:** Supports [reinforcement learning](https://unsloth.ai/docs/get-started/reinforcement-learning-rl-guide), LoRA, QLoRA, full fine tuning, pretraining, RL, GRPO, DPO, and FP8.
-* **Export & Deploy:** [Export](https://unsloth.ai/docs/new/studio/export) or Deploy models with including [GGUF](https://unsloth.ai/docs/basics/inference-and-deployment/saving-to-gguf), NVFP4, FP8 and more formats.
+* **Export & Deploy:** [Export](https://unsloth.ai/docs/new/studio/export) or Deploy models including [GGUF](https://unsloth.ai/docs/basics/inference-and-deployment/saving-to-gguf), NVFP4, FP8 and more formats.
 * **Datasets:** Build datasets from PDFs, CSVs, DOCX files, and more with [Data Recipes](https://unsloth.ai/docs/new/studio/data-recipe).
   
 ## 🚀 Unsloth Start
@@ -410,6 +410,13 @@ curl -fsSL https://unsloth.ai/install.sh | sh
 $env:UNSLOTH_LLAMA_CPP_BACKEND="vulkan"   # or cpu, cuda, rocm, auto
 irm https://unsloth.ai/install.ps1 | iex
 ```
+
+#### audio.cpp audio engine:
+
+Setup also installs [audio.cpp](https://github.com/0xShug0/audio.cpp) (prebuilt by [unslothai/audio.cpp](https://github.com/unslothai/audio.cpp)), which runs the audio.cpp speech, music and speech-to-text models on the Audio page, in Voice settings and behind `/v1/audio/*`. It is optional and never blocks setup:
+- `UNSLOTH_SKIP_AUDIO_CPP_INSTALL=1` skips it.
+- `UNSLOTH_AUDIO_CPP_ACCELERATOR=cpu` (or `cuda`, `vulkan`, `metal`) picks the bundle instead of auto-detecting.
+- `AUDIOCPP_SERVER_PATH=/path/to/audiocpp_server` uses your own build.
 
 #### Uninstall
 

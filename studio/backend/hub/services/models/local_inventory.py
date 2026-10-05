@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import stat
 from pathlib import Path
 from typing import List, NamedTuple, Optional
 
@@ -254,14 +255,54 @@ def _safe_is_dir(path: Path) -> bool:
 
 def _hf_repo_dir_has_content(repo_dir: Path) -> bool:
     blobs_dir = repo_dir / "blobs"
-    if not blobs_dir.is_dir():
-        return False
     try:
-        for entry in blobs_dir.iterdir():
-            if entry.is_file() or entry.is_symlink():
-                return True
+        if blobs_dir.is_dir():
+            for entry in blobs_dir.iterdir():
+                if entry.is_file() or entry.is_symlink():
+                    return True
     except OSError:
+        pass
+    return _hf_snapshots_hold_files(repo_dir)
+
+
+def _hf_snapshots_hold_files(repo_dir: Path) -> bool:
+    """Whether the newest snapshot (the one ``_scan_hf_cache`` classifies) holds a real file.
+    Without symlinks huggingface_hub moves blobs into ``snapshots/<rev>/`` and leaves ``blobs/``
+    empty. Walked with ``scandir``, bounded by entries read (``rglob`` lists a whole directory
+    before yielding); unreadable entries are skipped."""
+    snapshot = hf_cache_scan.latest_snapshot_dir(repo_dir)
+    if snapshot is None:
         return False
+    walked = 0
+    pending = [snapshot]
+    while pending:
+        try:
+            entries = os.scandir(pending.pop())
+        except OSError:
+            continue
+        with entries:
+            listing = iter(entries)
+            while True:
+                try:
+                    entry = next(listing)
+                except StopIteration:
+                    break
+                except OSError:
+                    break
+                walked += 1
+                if walked > model_common._HF_CACHE_MODEL_FILE_PROBE_LIMIT:
+                    return False
+                try:
+                    if entry.is_dir(follow_symlinks = False):
+                        pending.append(Path(entry.path))
+                    elif (
+                        entry.is_file()
+                        and entry.name not in hf_cache_scan._CACHE_ENTRIES_TO_IGNORE
+                        and not is_appledouble_metadata(Path(entry.path))
+                    ):
+                        return True
+                except OSError:
+                    continue
     return False
 
 
@@ -600,6 +641,86 @@ def _inventory_physical_identity(raw_path: str) -> str:
     return gguf.local_path_physical_identity(raw_path)
 
 
+_IO_REPARSE_TAG_MOUNT_POINT = getattr(stat, "IO_REPARSE_TAG_MOUNT_POINT", 0xA0000003)
+
+
+def _is_link_component(path: Path) -> bool:
+    # is_symlink() is False for a Windows junction (mklink /J needs no admin), so read the reparse tag too.
+    try:
+        st = os.lstat(path)
+    except OSError:
+        return False
+    return stat.S_ISLNK(st.st_mode) or (
+        getattr(st, "st_reparse_tag", 0) == _IO_REPARSE_TAG_MOUNT_POINT
+    )
+
+
+def _local_model_path_is_symlink(raw_path: str) -> bool:
+    path = Path(raw_path)
+    return any(_is_link_component(p) for p in (path, *path.parents))
+
+
+def _prefer_local_inventory_row(candidate: LocalModelInfo, existing: LocalModelInfo) -> bool:
+    if candidate.partial != existing.partial:
+        return not candidate.partial
+    if (candidate.active_cache is True) != (existing.active_cache is True):
+        return candidate.active_cache is True
+    candidate_link = _local_model_path_is_symlink(candidate.path)
+    existing_link = _local_model_path_is_symlink(existing.path)
+    if candidate_link != existing_link:
+        return not candidate_link
+    return _prefer_complete_larger(
+        candidate.partial,
+        candidate.size_bytes,
+        existing.partial,
+        existing.size_bytes,
+    )
+
+
+def _custom_alias_key(model: LocalModelInfo) -> str:
+    # Resolve only the scan root: two registered roots reaching one folder are one alias, links below it are not.
+    root = model._scan_root
+    if not root:
+        return model.path
+    try:
+        return os.path.join(os.path.realpath(root), os.path.relpath(model.path, root))
+    except (OSError, ValueError):
+        return model.path
+
+
+def _dedupe_custom_local_models(custom_models: List[LocalModelInfo]) -> list[LocalModelInfo]:
+    """Distinct symlink aliases of one model stay separate rows so each keeps its own settings (#10605)."""
+    by_physical: dict[tuple[str, str], list[LocalModelInfo]] = {}
+    for model in custom_models:
+        physical = _inventory_physical_identity(model.path)
+        by_physical.setdefault((physical, model.model_format), []).append(model)
+
+    kept: list[LocalModelInfo] = []
+    for group in by_physical.values():
+        by_alias_path: dict[str, list[LocalModelInfo]] = {}
+        for model in group:
+            by_alias_path.setdefault(_custom_alias_key(model), []).append(model)
+        unique_rows: list[LocalModelInfo] = []
+        for alias_group in by_alias_path.values():
+            winner = alias_group[0]
+            for candidate in alias_group[1:]:
+                if _prefer_local_inventory_row(candidate, winner):
+                    winner = candidate
+            unique_rows.append(winner)
+
+        symlinks = [m for m in unique_rows if _local_model_path_is_symlink(m.path)]
+        non_symlinks = [m for m in unique_rows if not _local_model_path_is_symlink(m.path)]
+        if len(symlinks) >= 2 and not non_symlinks:
+            kept.extend(unique_rows)
+            continue
+        winner = unique_rows[0]
+        for candidate in unique_rows[1:]:
+            if _prefer_local_inventory_row(candidate, winner):
+                winner = candidate
+        kept.append(winner)
+    return kept
+
+
 def _coerce_scan_folder_path(raw_path: str) -> str:
     """Normalize a scan registration target; the registry stores directories, so a pasted weight-file path is reduced to its parent folder."""
     if not raw_path or not raw_path.strip():
@@ -784,7 +905,10 @@ async def _collect_models_from_default_sources(
             continue
         # Off the loop, like the scan above it: the probe opens directories, and on a stalled network mount scandir sits in the kernel with nothing to yield to.
         await asyncio.to_thread(note_scan_folder_scanned, row_path, found = bool(custom_models))
-        local_models.extend(_promote_to_custom_source(model) for model in custom_models)
+        for model in custom_models:
+            row = _promote_to_custom_source(model)
+            row._scan_root = str(folder_path)
+            local_models.append(row)
 
     return local_models
 
@@ -889,9 +1013,37 @@ async def _load_custom_folders() -> list[dict]:
         return []
 
 
+def _merge_custom_rows_listed_natively(
+    custom_models: List[LocalModelInfo], native_models: List[LocalModelInfo]
+) -> tuple[list[LocalModelInfo], list[LocalModelInfo]]:
+    """A custom folder overlapping the models dir or LM Studio re-lists their models (#9164)."""
+    native: dict[tuple[str, str], LocalModelInfo] = {}
+    for model in native_models:
+        if model.source in ("models_dir", "lmstudio"):
+            native.setdefault((_inventory_physical_identity(model.path), model.model_format), model)
+    if not native:
+        return list(native_models), list(custom_models)
+    replaced: set[int] = set()
+    kept_custom: list[LocalModelInfo] = []
+    for model in custom_models:
+        twin = native.get((_inventory_physical_identity(model.path), model.model_format))
+        # A symlink below the scan root is a deliberate alias with its own settings (#10605), so it stays.
+        if twin is None or _local_model_path_is_symlink(_custom_alias_key(model)):
+            kept_custom.append(model)
+        elif twin.source == "lmstudio" and model.capabilities.can_train:
+            # The train picker refuses LM Studio rows, so the trainable custom row wins.
+            replaced.add(id(twin))
+            kept_custom.append(model)
+    return [m for m in native_models if id(m) not in replaced], kept_custom
+
+
 def _dedupe_local_models(local_models: List[LocalModelInfo]) -> list[LocalModelInfo]:
     deduped: dict[str, LocalModelInfo] = {}
+    custom_models: list[LocalModelInfo] = []
     for model in local_models:
+        if model.source == "custom":
+            custom_models.append(model)
+            continue
         if model.source == "hf_cache" and model.model_id:
             key = "\x00".join(
                 (
@@ -900,13 +1052,6 @@ def _dedupe_local_models(local_models: List[LocalModelInfo]) -> list[LocalModelI
                     model.model_format,
                     model.format_variant or "",
                 )
-            )
-        elif model.source == "custom":
-            key = _local_inventory_id(
-                "custom",
-                model.model_format,
-                _inventory_physical_identity(model.path),
-                None,
             )
         else:
             row_key = model.inventory_id or model.id
@@ -928,11 +1073,11 @@ def _dedupe_local_models(local_models: List[LocalModelInfo]) -> list[LocalModelI
         if prefer_candidate:
             deduped[key] = model
 
-    deduped_values = list(deduped.values())
-    custom_values = [model for model in deduped_values if model.source == "custom"]
+    native_values, custom_values = _merge_custom_rows_listed_natively(
+        _dedupe_custom_local_models(custom_models), list(deduped.values())
+    )
     return sorted(
-        [model for model in deduped_values if model.source != "custom"]
-        + gguf.suppress_grouped_gguf_file_rows(custom_values),
+        native_values + gguf.suppress_grouped_gguf_file_rows(custom_values),
         key = lambda item: item.updated_at or 0,
         reverse = True,
     )
@@ -1023,11 +1168,13 @@ async def list_local_models_response(models_dir: str = "./models") -> LocalModel
             models = []
             for model in response.models:
                 task, audio_type = catalog_classification._local_model_classification(model)
+                workflows = catalog_classification.local_audio_workflows(model, audio_type)
                 models.append(
                     model.model_copy(
                         update = {
                             "task": task,
                             "audio_type": audio_type,
+                            **({"audio_workflows": workflows} if workflows else {}),
                         }
                     )
                 )

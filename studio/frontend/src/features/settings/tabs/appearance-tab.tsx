@@ -9,6 +9,7 @@ import {
   ActiveColorControl,
   ChatFontRow,
   ChatWidthSelect,
+  SentAttachmentsSelect,
   CodeFontRow,
   CodeFontSizeRow,
   ContrastSliderRow,
@@ -130,6 +131,14 @@ export function AppearanceTab() {
           description={t("settings.appearance.custom.chatWidth.description")}
         >
           <ChatWidthSelect />
+        </SettingsRow>
+        <SettingsRow
+          label={t("settings.appearance.custom.sentAttachments.label")}
+          description={t(
+            "settings.appearance.custom.sentAttachments.description",
+          )}
+        >
+          <SentAttachmentsSelect />
         </SettingsRow>
         <SettingsRow
           label={t("settings.appearance.custom.pointerCursors.label")}

@@ -11,6 +11,7 @@ rides the same orchestrator path, so a single scripted backend covers both.
 
 import asyncio
 import json
+import re
 from types import SimpleNamespace
 
 import pytest
@@ -18,6 +19,15 @@ import pytest
 from models.inference import ChatCompletionRequest, ChatMessage
 from routes.inference import openai_chat_completions
 from core.inference.api_monitor import ApiMonitor
+
+
+# #12382: with the date setting on and no system prompt, the chat's first message opens with
+# this note. It is the only rewrite of the user's text these assertions allow.
+_DATE_NOTE = re.compile(r"\A\[Current date: \d{4}-\d{2}-\d{2}\]\n\n")
+
+
+def _without_date_note(text):
+    return _DATE_NOTE.sub("", text, count = 1) if isinstance(text, str) else text
 
 
 LOOKUP_TOOL = {
@@ -82,6 +92,7 @@ class _ScriptedBackend:
         self._responder = responder
         self._stats = stats
         self.calls: list = []
+        self.batch_calls: list = []
         self.reset_count = 0
 
     def generate_chat_response(
@@ -103,6 +114,25 @@ class _ScriptedBackend:
             stats_holder["stats"] = _stats
         for snap in snapshots:
             yield snap
+
+    def generate_chat_batch(
+        self,
+        rows,
+        *,
+        stats_holder = None,
+        **kwargs,
+    ):
+        """Every choice's first reply in one command, as the real bridge does."""
+        self.batch_calls.append({"rows": rows, "shared": kwargs})
+        reported: list = []
+        for index, row in enumerate(rows):
+            holder: dict = {}
+            for snapshot in self.generate_chat_response(stats_holder = holder, **{**kwargs, **row}):
+                yield index, snapshot
+            reported.append(holder.get("stats"))
+            yield index, None
+        if stats_holder is not None:
+            stats_holder["stats"] = reported
 
     def reset_generation_state(self, caller_cancel_event = None):
         self.reset_count += 1
@@ -130,6 +160,7 @@ def _install(
     backend,
     *,
     supports_tools = True,
+    supports_reasoning = False,
 ):
     import routes.inference as inf
     from state.tool_policy import reset_tool_policy
@@ -142,7 +173,10 @@ def _install(
     monkeypatch.setattr(
         inf,
         "_detect_safetensors_features",
-        lambda *a, **k: {"supports_tools": supports_tools},
+        lambda *a, **k: {
+            "supports_tools": supports_tools,
+            "supports_reasoning": supports_reasoning,
+        },
     )
     return monitor
 
@@ -627,24 +661,6 @@ def test_what_this_backend_can_serve_reaches_it_rather_than_being_refused(monkey
     assert body["choices"][0]["message"]["content"] == "hi"
 
 
-def test_n_serves_one_full_generation_per_choice(monkeypatch):
-    """Each choice is its own sampling run, as on the llama-server path: the
-    backend is asked once per choice rather than one reply being copied, and the
-    prompt they share is not re-counted. Two runs may sample the same text; what
-    is guaranteed is that each was generated."""
-    turns = iter(["first", "second"])
-    backend = _ScriptedBackend(
-        lambda messages, tools: [next(turns)],
-        stats = {"usage": {"prompt_tokens": 7, "completion_tokens": 3}},
-    )
-    body = _json_body(_call(_request(n = 2), monkeypatch, backend, supports_tools = False))
-    assert [c["index"] for c in body["choices"]] == [0, 1]
-    assert [c["message"]["content"] for c in body["choices"]] == ["first", "second"]
-    assert len(backend.calls) == 2  # a generation per choice, not one reused
-    # The shared prompt is counted once; only generated tokens accumulate.
-    assert _totals(body) == {"prompt_tokens": 7, "completion_tokens": 6, "total_tokens": 13}
-
-
 def _totals(body):
     return {k: body["usage"][k] for k in ("prompt_tokens", "completion_tokens", "total_tokens")}
 
@@ -897,6 +913,65 @@ def test_tool_choice_none_does_not_advertise_tools(monkeypatch):
     backend = _ScriptedBackend(_fixed("plain answer"))
     payload = _request(tools = [LOOKUP_TOOL], tool_choice = "none", stream = False)
     body = _json_body(_call(payload, monkeypatch, backend))
+    assert body["choices"][0]["message"]["content"] == "plain answer"
+    assert backend.calls[0]["tools"] is None
+
+
+_CLIENT_TOOL_HISTORY = [
+    {"role": "user", "content": "look up cats"},
+    {
+        "role": "assistant",
+        "content": None,
+        "tool_calls": [
+            {
+                "id": "call_1",
+                "type": "function",
+                "function": {"name": "lookup", "arguments": '{"q": "cats"}'},
+            }
+        ],
+    },
+    {"role": "tool", "tool_call_id": "call_1", "content": "cats are mammals"},
+]
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        dict(tools = [LOOKUP_TOOL], tool_choice = "required"),
+        dict(tools = [LOOKUP_TOOL]),
+        dict(tools = [LOOKUP_TOOL], messages = _CLIENT_TOOL_HISTORY),
+        dict(tools = [LOOKUP_TOOL], enable_tools = True),
+    ],
+)
+@pytest.mark.parametrize("gptoss", [False, True])
+def test_client_tools_the_model_cannot_take_are_refused(monkeypatch, kwargs, gptoss):
+    backend = _ScriptedBackend(_fixed("prose instead of a call"))
+    if gptoss:
+        backend._is_gpt_oss_model = lambda: True
+    payload = _request(stream = False, **kwargs)
+    entry, error = _monitor_entry(payload, monkeypatch, backend, supports_tools = gptoss)
+
+    assert error is not None and error.status_code == 400
+    assert error.detail["error"]["code"] == "unsupported_parameter"
+    assert error.detail["error"]["param"] == "tools"
+    assert ("gpt-oss" in error.detail["error"]["message"]) is gptoss
+    assert backend.calls == []
+    assert entry["status"] == "error"
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        dict(tools = [LOOKUP_TOOL], tool_choice = "none"),
+        dict(tools = [LOOKUP_TOOL], tool_choice = "none", messages = _CLIENT_TOOL_HISTORY),
+        dict(messages = _CLIENT_TOOL_HISTORY),
+        dict(enable_tools = True),
+    ],
+)
+def test_requests_without_an_active_client_catalog_still_answer(monkeypatch, kwargs):
+    backend = _ScriptedBackend(_fixed("plain answer"))
+    payload = _request(stream = False, **kwargs)
+    body = _json_body(_call(payload, monkeypatch, backend, supports_tools = False))
     assert body["choices"][0]["message"]["content"] == "plain answer"
     assert backend.calls[0]["tools"] is None
 
@@ -1155,7 +1230,7 @@ def test_forced_tool_choice_narrows_templated_tools(monkeypatch):
 
 
 def test_multimodal_content_parts_flattened_for_local_template(monkeypatch):
-    # Remote image URLs leave image=None, so content arrives as a part LIST:
+    # An image part with no payload leaves image=None, so content arrives as a part LIST:
     # text parts are kept, the image part dropped.
     backend = _ScriptedBackend(_fixed(_CALL_XML))
     payload = _request(
@@ -1166,7 +1241,7 @@ def test_multimodal_content_parts_flattened_for_local_template(monkeypatch):
                     {"type": "text", "text": "what is this?"},
                     {
                         "type": "image_url",
-                        "image_url": {"url": "https://example.com/cat.png"},
+                        "image_url": {"url": "data:image/png;base64,"},
                     },
                 ],
             )
@@ -1177,7 +1252,7 @@ def test_multimodal_content_parts_flattened_for_local_template(monkeypatch):
     body = _json_body(_call(payload, monkeypatch, backend))
     templated = backend.calls[0]["messages"]
     assert all(isinstance(m.get("content"), str) for m in templated)
-    assert any(m["content"] == "what is this?" for m in templated)
+    assert any(_without_date_note(m["content"]) == "what is this?" for m in templated)
     assert body["choices"][0]["finish_reason"] == "tool_calls"
 
 
@@ -1367,6 +1442,98 @@ def test_legacy_image_field_keeps_the_client_tool_catalog(monkeypatch):
 
     assert backend.calls[0]["tools"] == [LOOKUP_TOOL]
     assert backend.calls[0]["image"] is not None
+
+
+def test_a_turn_asking_for_several_replies_sends_them_as_one_batch(monkeypatch):
+    """One command carries every choice, each with its own seed."""
+    from routes.inference import _choice_seed
+
+    backend = _ScriptedBackend(_fixed("hi"))
+    body = _json_body(_call(_request(stream = False, n = 3, seed = 11), monkeypatch, backend))
+
+    assert len(body["choices"]) == 3
+    assert len(backend.batch_calls) == 1, "the choices did not go out together"
+    call = backend.batch_calls[0]
+    effective = [row.get("seed", call["shared"].get("seed")) for row in call["rows"]]
+    assert effective == [11, _choice_seed(11, 1), _choice_seed(11, 2)], effective
+
+
+class _StoppedAfterFirstRowBackend(_ScriptedBackend):
+    """A backend that cannot batch: rows run apart and a Stop skips the rest."""
+
+    def generate_chat_batch(
+        self,
+        rows,
+        *,
+        stats_holder = None,
+        cancel_event = None,
+        **kwargs,
+    ):
+        self.batch_calls.append({"rows": rows, "shared": kwargs})
+        yield 0, "partial"
+        cancel_event.set()
+        yield 0, None
+        for row in range(1, len(rows)):
+            yield row, None
+        if stats_holder is not None:
+            stats_holder["stats"] = [{"completion_tokens": 1}] + [None] * (len(rows) - 1)
+
+
+def test_a_stop_during_the_first_choice_returns_no_empty_choices(monkeypatch):
+    backend = _StoppedAfterFirstRowBackend(_fixed("unused"))
+    body = _json_body(_call(_request(stream = False, n = 3), monkeypatch, backend))
+
+    assert len(backend.batch_calls) == 1
+    assert [c["message"]["content"] for c in body["choices"]] == ["partial"], body["choices"]
+
+
+_RF_SCHEMA = {"type": "object", "properties": {"city": {"type": "string"}}, "required": ["city"]}
+_RF_FORMAT = {"type": "json_schema", "json_schema": {"name": "c", "schema": _RF_SCHEMA}}
+_MARKUP_DOC = '{"city":"<think>Paris</think>"}'
+
+
+@pytest.mark.parametrize("chunked", [False, True], ids = ["whole", "streamed"])
+@pytest.mark.parametrize(
+    "prefix, prefilled, reasoning",
+    [
+        ("", False, ""),
+        ("<think>weighing</think>", False, "weighing"),
+        ("<think>weighing</think>", True, "weighing"),
+        ("", True, ""),
+    ],
+)
+def test_markers_inside_a_constrained_document_stay_in_it(chunked, prefix, prefilled, reasoning):
+    from routes.inference import _ResponsesReasoningExtractor
+
+    extractor = _ResponsesReasoningExtractor(
+        parse_think_markers = True, reasoning_prefilled = prefilled, single_block = True
+    )
+    text = prefix + _MARKUP_DOC
+    got_reasoning = got_content = ""
+    for piece in text if chunked else [text]:
+        delta_reasoning, delta_content = extractor.feed(piece)
+        got_reasoning += delta_reasoning
+        got_content += delta_content
+    delta_reasoning, delta_content = extractor.finish()
+
+    assert got_content + delta_content == _MARKUP_DOC
+    assert got_reasoning + delta_reasoning == reasoning
+    assert json.loads(_MARKUP_DOC)["city"] == "<think>Paris</think>"
+
+
+@pytest.mark.parametrize("reasoning", [False, True], ids = ["plain", "reasoning"])
+def test_the_contract_reaches_the_backend_and_its_reply_comes_back_whole(monkeypatch, reasoning):
+    pytest.importorskip("llguidance.mlx")
+    backend = _ScriptedBackend(_fixed(_MARKUP_DOC))
+    backend.models["sf-model"]["is_mlx"] = True
+    caps = {"supports_tools": False, "supports_reasoning": reasoning}
+    reply = _call(_request(response_format = _RF_FORMAT), monkeypatch, backend, **caps)
+    body = _json_body(reply)
+    assert backend.calls[0]["response_format"] == _RF_FORMAT
+    assert backend.calls[0]["reasoning_is_extracted"] is reasoning
+    message = body["choices"][0]["message"]
+    assert message["content"] == _MARKUP_DOC
+    assert not message.get("reasoning_content")
 
 
 class _VisionToolLoopBackend(_ToolLoopBackend):

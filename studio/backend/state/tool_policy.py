@@ -54,7 +54,7 @@ def require_tool_access(
     if not full_access_permitted():
         raise HTTPException(
             status_code = 400,
-            detail = "Full access is unavailable while more than one account exists.",
+            detail = "Full access is only available to the installation owner.",
         )
 
 
@@ -98,6 +98,11 @@ def get_tool_policy_default() -> Optional[bool]:
     if _force_disabled.get():
         return False
     return _tool_policy_default
+
+
+def conversation_recall_allowed() -> bool:
+    """Recall reads only this thread's archive: `--disable-tools` keeps it, `tools_force_disabled` does not."""
+    return not _force_disabled.get()
 
 
 @contextmanager

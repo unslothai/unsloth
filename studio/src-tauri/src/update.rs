@@ -69,6 +69,7 @@ fn configure_tauri_update_environment(cmd: &mut Command) {
     cmd.env_remove("UNSLOTH_STUDIO_HOME");
     cmd.env_remove("STUDIO_HOME");
     cmd.env("UNSLOTH_TAURI_UPDATE", "1");
+    cmd.env("UNSLOTH_PROGRESS_PERCENT_STEP", "5");
     cmd.env("SKIP_STUDIO_FRONTEND", "1");
     cmd.env(
         "UNSLOTH_DESKTOP_BACKEND_VERSION",
@@ -591,7 +592,11 @@ mod tests {
                 .get_envs()
                 .any(|(key, value)| key == OsStr::new(name) && value.is_none()));
         }
-        for (name, expected) in [("UNSLOTH_TAURI_UPDATE", "1"), ("SKIP_STUDIO_FRONTEND", "1")] {
+        for (name, expected) in [
+            ("UNSLOTH_TAURI_UPDATE", "1"),
+            ("UNSLOTH_PROGRESS_PERCENT_STEP", "5"),
+            ("SKIP_STUDIO_FRONTEND", "1"),
+        ] {
             assert!(cmd.get_envs().any(|(key, value)| {
                 key == OsStr::new(name) && value == Some(OsStr::new(expected))
             }));
