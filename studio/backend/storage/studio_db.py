@@ -139,6 +139,36 @@ def contains_sensitive_path_component(path: str) -> bool:
 
 _schema_lock = threading.Lock()
 _schema_ready: set[Path] = set()
+
+# SQLite 3.51.0-3.51.1 deadlocks when one thread's WAL close (unixIsSharingShmNode) races another
+# thread's open or close of the same file: they take the VFS and inode mutexes in opposite order
+# (fixed in 3.51.2, #10022). Gating only close() still deadlocks; opens must share the lock.
+# Reentrant: a GC finalizer can close a pooled connection inside a gated connect on this thread.
+_CONNECTION_GATE = threading.RLock()
+
+
+def _reset_connection_gate_after_fork() -> None:
+    global _CONNECTION_GATE
+    _CONNECTION_GATE = threading.RLock()
+
+
+if hasattr(os, "register_at_fork"):
+    os.register_at_fork(after_in_child = _reset_connection_gate_after_fork)
+
+
+class _StudioDbConnection(sqlite3.Connection):
+    # A connection dropped without close() is finalized natively and bypasses this gate.
+    def close(self) -> None:
+        with _CONNECTION_GATE:
+            super().close()
+
+
+def connect_studio_db(database: str | os.PathLike[str], **kwargs: Any) -> sqlite3.Connection:
+    """sqlite3.connect for studio.db, with opens and closes serialized process-wide."""
+    with _CONNECTION_GATE:
+        return sqlite3.connect(str(database), factory = _StudioDbConnection, **kwargs)
+
+
 _SQLITE_IN_CHUNK_SIZE = 900
 _PROJECT_WORKSPACE_SUBDIRS = ("sandbox",)
 _CHAT_ATTACHMENT_INVENTORY_VERSION = 5
@@ -1322,8 +1352,8 @@ def get_connection(
 ) -> sqlite3.Connection:
     db_path = studio_db_path()
     ensure_account_dir(db_path.parent)
-    conn = sqlite3.connect(
-        str(db_path), timeout = busy_timeout_seconds, check_same_thread = check_same_thread
+    conn = connect_studio_db(
+        db_path, timeout = busy_timeout_seconds, check_same_thread = check_same_thread
     )
     conn.row_factory = sqlite3.Row
     # foreign_keys is session-scoped; set per connection

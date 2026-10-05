@@ -204,6 +204,7 @@ from transformers import __version__ as transformers_version
 
 import types
 import functools
+import importlib.util
 import os
 import copy
 import gc
@@ -1015,7 +1016,9 @@ _compile_config.disable = True  # Must set manually
 # UNSLOTH_EAGER_DECODE=0 opts out), and UNSLOTH_COMPILE_DECODE=1 opts into CUDA graphs over the
 # static cache. Off by default: each new shape costs 35-130 s to compile (A100, 2B), so mixed
 # sessions came out ~3x slower overall even though a compiled step is ~5x faster.
-COMPILE_DECODE_MODELS = ("qwen3_5", "qwen3_5_moe")
+COMPILE_DECODE_MODELS = ("qwen3_5", "qwen3_5_moe", "gpt_oss")
+# gpt-oss decode only traces as one CUDA graph with unsloth_zoo's routed experts patch.
+_COMPILE_DECODE_NEEDS_ZOO = {"gpt_oss": "unsloth_zoo.temporary_patches.gpt_oss_routed"}
 _decode_compile_config = CompileConfig(
     fullgraph = False,
     dynamic = None,
@@ -1037,10 +1040,20 @@ def _is_decode_compile_model(model):
         getattr(config, "model_type", None),
         getattr(getattr(config, "text_config", None), "model_type", None),
     )
-    return any(
-        isinstance(mt, str) and mt.removesuffix("_text") in COMPILE_DECODE_MODELS
-        for mt in model_types
-    )
+    for mt in model_types:
+        if not isinstance(mt, str) or mt.removesuffix("_text") not in COMPILE_DECODE_MODELS:
+            continue
+        needs = _COMPILE_DECODE_NEEDS_ZOO.get(mt.removesuffix("_text"))
+        return needs is None or _zoo_module_available(needs)
+    return False
+
+
+@functools.lru_cache(maxsize = None)
+def _zoo_module_available(name):
+    try:
+        return importlib.util.find_spec(name) is not None
+    except (ImportError, ValueError):
+        return False
 
 
 def _eager_decodes(model):
@@ -2627,24 +2640,24 @@ class FastBaseModel:
         user_config = kwargs.pop("config", None)
         if auto_config is None and user_config is not None:
             auto_config = user_config
-        _block_swap_layers = kwargs.pop("block_swap_layers", 0)
-        if _block_swap_layers and load_layers_to_host is None:
-            _block_swap_layers = refuse_block_swap_load(
-                _block_swap_layers,
+        _offload_layers = legacy_offload_layers(kwargs, kwargs.pop("offload_layers", None))
+        if _offload_layers and load_layers_to_host is None:
+            _offload_layers = refuse_block_swap_load(
+                _offload_layers,
                 "needs a newer unsloth_zoo (`pip install --upgrade unsloth_zoo`); "
-                "get_peft_model(block_swap_layers = ...) still swaps once the model is on the card.",
+                "get_peft_model(offload_layers = ...) still swaps once the model is on the card.",
             )
-        if _block_swap_layers and (fast_inference or full_finetuning):
-            _block_swap_layers = refuse_block_swap_load(
-                _block_swap_layers,
+        if _offload_layers and (fast_inference or full_finetuning):
+            _offload_layers = refuse_block_swap_load(
+                _offload_layers,
                 "streams frozen LoRA base weights, so it cannot be combined with "
                 "fast_inference or full_finetuning.",
             )
-        if _block_swap_layers and (
+        if _offload_layers and (
             not torch.cuda.is_available() or is_integrated_unified_memory_gpu()
         ):
-            _block_swap_layers = refuse_block_swap_load(
-                _block_swap_layers,
+            _offload_layers = refuse_block_swap_load(
+                _offload_layers,
                 "needs a discrete CUDA or ROCm GPU; unified memory has no separate RAM to load into.",
             )
 
@@ -3092,14 +3105,14 @@ class FastBaseModel:
             raise RuntimeError(
                 "Unsloth: Can only load in 4bit or 8bit or 16bit, not a combination!"
             )
-        if _block_swap_layers and block_swap_load_device(device_map) is None:
-            _block_swap_layers = refuse_block_swap_load(
-                _block_swap_layers,
-                "needs every layer on one GPU; pass block_swap_layers to get_peft_model instead.",
+        if _offload_layers and block_swap_load_device(device_map) is None:
+            _offload_layers = refuse_block_swap_load(
+                _offload_layers,
+                "needs every layer on one GPU; pass offload_layers to get_peft_model instead.",
             )
         _embedding_needed = None
-        if _block_swap_layers == "auto":
-            _block_swap_layers, device_map, _embedding_needed = resolve_auto_block_swap(
+        if _offload_layers == "auto":
+            _offload_layers, device_map, _embedding_needed = resolve_auto_block_swap(
                 requested_device_map(device_map),
                 model_name,
                 max_seq_length = max_seq_length,
@@ -3136,7 +3149,7 @@ class FastBaseModel:
                 ),
             )
         _block_swap_device = block_swap_load_device(device_map)
-        if (_block_swap_layers or _embedding_needed) and _block_swap_device is not None:
+        if (_offload_layers or _embedding_needed) and _block_swap_device is not None:
             # A placement strategy would spill the host-bound weights to the CPU, which 4-bit loads refuse.
             device_map = {"": _block_swap_device}
         _block_swap_state = None
@@ -3328,7 +3341,7 @@ class FastBaseModel:
 
         raise_handler = RaiseUninitialized()
         try:
-            # get_peft_model(block_swap_layers = "auto") may move it later, unless the caller said no.
+            # get_peft_model(offload_layers = "auto") may move it later, unless the caller said no.
             _offload_embedding_mode = False if fast_inference else offload_embedding
             if offload_embedding and fast_inference:
                 if offload_embedding != OFFLOAD_EMBEDDING_AUTO:
@@ -3360,7 +3373,7 @@ class FastBaseModel:
                 ):
                     try:
                         with begin_block_swap_load(
-                            _block_swap_layers, device_map, embeddings = bool(_embedding_needed)
+                            _offload_layers, device_map, embeddings = bool(_embedding_needed)
                         ) as (_block_swap_state):
                             model = auto_model.from_pretrained(
                                 model_name,
@@ -3959,10 +3972,11 @@ class FastBaseModel:
         target_parameters = None,  # For MoE expert layers (nn.Parameter)
         ensure_weight_tying = None,  # None = auto (tie when we redirect a tied pair)
         finetune_audio_layers = False,  # placed last to preserve existing positional argument order
-        block_swap_layers = 0,
+        offload_layers = None,
         checkpoint_skip_layers = 0,
         **kwargs,
     ):
+        offload_layers = legacy_offload_layers(kwargs, offload_layers)
         if os.environ.get("UNSLOTH_ENABLE_FULL_FINETUNING", "0") == "1":
             print("Unsloth: Full finetuning is enabled, so .get_peft_model has no effect")
             # Full finetuning still compiles, so a stray pre-train forward can poison the cache; install the detector here too (idempotent).
@@ -4333,7 +4347,7 @@ class FastBaseModel:
             module.max_seq_length = max_seq_length
         offload_embedding_if_tight(model)
         install_block_swap(
-            model, block_swap_layers, use_gradient_checkpointing = use_gradient_checkpointing
+            model, offload_layers, use_gradient_checkpointing = use_gradient_checkpointing
         )
         skip_checkpointing(model, checkpoint_skip_layers)
         for _ in range(3):

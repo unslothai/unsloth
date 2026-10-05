@@ -180,6 +180,9 @@ for (const active of ["runtime", "pre-stream", "queue", "idle"]) {
       pendingFollowUpBehaviorRef,
       indexingActive: false,
       threadScopedSettingsPending: false,
+      threadIsRunning: false,
+      promptQueueThreadIds: ["own-chat"],
+      attachmentsAreAllPastedText: false,
       hasMaterializingImageAttachments: false,
       hasMaterializingAudioAttachments: false,
       hasMaterializingVideoAttachments: false,
@@ -214,11 +217,66 @@ for (const active of ["runtime", "pre-stream", "queue", "idle"]) {
     release(); // An old render cannot release a cancelled/consumed send twice.
     assert.deepEqual(
       calls,
-      active === "idle"
-        ? ["clear", "send"]
-        : [[active !== "queue", "steer"]],
+      active === "idle" ? ["clear", "send"] : [[active !== "queue", "steer"]],
     );
     assert.equal(pendingSendRef.current, false);
+  });
+}
+
+for (const active of ["runtime", "pre-stream", "queue"]) {
+  test(`a queued attachment stays parked through ${active} state and sends once (#9210)`, () => {
+    const calls: string[] = [];
+    const state = { active: true };
+    const pendingSendRef = { current: true };
+    const deps = {
+      pendingSend: true,
+      pendingSendRef,
+      pendingFollowUpBehaviorRef: { current: "queue" },
+      indexingActive: false,
+      threadScopedSettingsPending: false,
+      threadIsRunning: false,
+      promptQueueThreadIds: ["own-chat"],
+      attachmentsAreAllPastedText: false,
+      hasMaterializingImageAttachments: false,
+      hasMaterializingAudioAttachments: false,
+      hasMaterializingVideoAttachments: false,
+      aui: {
+        composer: () => ({
+          getState: () => ({ text: "", attachments: [{ id: "image-1" }] }),
+        }),
+        thread: () => ({
+          getState: () => ({
+            isRunning: state.active && active === "runtime",
+          }),
+        }),
+      },
+      setPendingSend: () => undefined,
+      dismissWaitToast: () => calls.push("dismiss"),
+      hasPreStreamRunReservation: () => state.active && active === "pre-stream",
+      preStreamThreadIds: ["own-chat"],
+      isResearchActive: false,
+      findPromptQueueEntry: () => state.active && active === "queue",
+      usePromptQueueUI: { getState: () => ({}) },
+      disableQueue: false,
+      canQueueCurrentPrompt: false,
+      queueComposerText: () => calls.push("queue-text"),
+      canQueuePastedTextPrompt: false,
+      queuePastedTextPrompt: () => calls.push("queue-paste"),
+      overlay: false,
+      hasAttachments: true,
+      hasPendingAudio: false,
+      clearStoredDraft: () => calls.push("clear"),
+      sendReservedComposer: () => calls.push("send"),
+      toast: { error: () => calls.push("error") },
+    };
+    const release = createCallback(releaseCallback, deps);
+    release();
+    assert.deepEqual(calls, []);
+    assert.equal(pendingSendRef.current, true);
+    state.active = false;
+    release();
+    release();
+    assert.deepEqual(calls, ["dismiss", "clear", "send"]);
   });
 }
 
