@@ -3105,25 +3105,18 @@ $script:NpmLocalFailureRe = 'npm (error|ERR!) code (EACCES|EPERM|EBUSY|ENOSPC|EN
 $script:NpmNetworkFailureRe = '40[13]|ENOTFOUND|ECONNREFUSED|ECONNRESET|ETIMEDOUT|EAI_AGAIN|ConnectionRefused|failed to resolve|registry\.npmjs\.org|getaddrinfo|tunneling socket|network|proxy|self.?signed|unable to (get|verify)'
 
 function Show-NpmLocalFailureHint {
-    # -Socket: the errno came from the HTTP request (FetchError), i.e. the OS refused
-    # node's connection (firewall / antivirus web shield, per program path), not a file.
+    # -Socket: errno from the HTTP request (FetchError), i.e. a per-program firewall /
+    # antivirus rule on node.exe, not a file.
     param([switch]$Socket)
     Write-StudioLine ""
     if ($Socket) {
         $nodePath = try { (Get-Command node -ErrorAction Stop).Source } catch { "node.exe" }
         step "frontend" "the OS refused node's connection to the npm registry" "Yellow"
-        substep "A firewall, antivirus web protection or VPN client is blocking this node.exe:"
-        substep "  $nodePath"
-        substep "Allow it in that tool, or install Node from another location (e.g. nvm-windows)."
+        substep "Allow $nodePath in your firewall/antivirus, or use another Node install."
         return
     }
-    step "frontend" "npm hit a local file error (permission, lock or disk), not a network block" "Yellow"
-    substep "Usual causes: antivirus locking a file in the npm cache, an unwritable npm cache,"
-    substep "a read-only install directory, or a full disk. Running as Administrator rarely helps."
-    substep "Things that usually clear it:"
-    substep "  npm cache clean --force"
-    substep "  Exclude the npm cache from your antivirus, then re-run the installer."
-    substep "  Or point npm at a writable cache: `$env:NPM_CONFIG_CACHE='C:\npm-cache'"
+    step "frontend" "npm hit a local file error (permission, lock or disk full)" "Yellow"
+    substep "Try: npm cache clean --force, or exclude the npm cache from your antivirus."
 }
 
 function Invoke-NpmMirrorRetry {
