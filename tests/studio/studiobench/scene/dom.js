@@ -315,23 +315,47 @@
     },
     // Open a More menu from its trigger and wait, bounded, for `name` in it. pointerdown/up, not
     // click(): the Radix trigger opens on pointerdown, so click() leaves the menu shut.
+    //
+    // NO DOCUMENT-WIDE LOOKUP PER PAINT. The menu is portaled to the end of document.body, so
+    // finding it is a whole-document query, and repeating it every paint inside the action's
+    // window is the harness cost MENU_JS avoids with the same MutationObserver. The portal is
+    // looked for only when body's children changed; once it is there, the item is looked for
+    // inside it, which is O(the menu).
     async openMenuAndFind(trigger, name, waitMs) {
       const pointer = { bubbles: true, cancelable: true, composed: true, button: 0,
                         pointerId: 1, pointerType: "mouse", isPrimary: true };
+      const budget = Math.max(0, Number(waitMs) || 0);
+      const nextPaint = () =>
+        window.__sbNextPaint ? window.__sbNextPaint() : new Promise((r) => setTimeout(r, 16));
+      let bodyChanged = true;
+      const watcher = new MutationObserver(() => { bodyChanged = true; });
+      watcher.observe(document.body, { childList: true, subtree: false });
+      let menu = null;
+      let item = null;
+      const look = () => {
+        if (!menu || !menu.isConnected) {
+          if (!bodyChanged) return;
+          bodyChanged = false;
+          menu = D.openMenu();
+        }
+        if (menu) item = byName(".aui-action-bar-more-item", name, menu);
+      };
       const started = performance.now();
-      trigger.dispatchEvent(new PointerEvent("pointerdown", { ...pointer, buttons: 1 }));
-      trigger.dispatchEvent(new PointerEvent("pointerup", { ...pointer, buttons: 0 }));
-      let item = D.menuItem(name);
-      while (!item && performance.now() - started < Math.max(0, Number(waitMs) || 0)) {
-        await (window.__sbNextPaint
-          ? window.__sbNextPaint()
-          : new Promise((r) => setTimeout(r, 16)));
-        item = D.menuItem(name);
+      try {
+        trigger.dispatchEvent(new PointerEvent("pointerdown", { ...pointer, buttons: 1 }));
+        trigger.dispatchEvent(new PointerEvent("pointerup", { ...pointer, buttons: 0 }));
+        look();
+        while (!item && performance.now() - started < budget) {
+          await nextPaint();
+          look();
+        }
+      } finally {
+        watcher.disconnect();
       }
       return {
         item,
-        opened: Boolean(D.openMenu()),
-        items: D.openMenuItemCount(),
+        opened: Boolean(menu),
+        items: menu ? qa(".aui-action-bar-more-item", menu).length : 0,
         openMs: Math.round((performance.now() - started) * 10) / 10,
       };
     },

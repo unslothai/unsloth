@@ -709,9 +709,20 @@ OWN_TURN_TEXT = "one more"
 
 #: Remove the throwaway turn: assistant first, then the user turn, because deleting the user
 #: message can take the reply with it and leave the count ambiguous. Reports rather than asserts.
+#: The cleanup reaches Delete through the reply's More menu (#12735), so it first waits for that
+#: menu to mount. A paint or two in practice; the bound matters only when the menu is slow or never
+#: comes. `stop_generation` passes what is left of its slot after the settle, clamped to these, so a
+#: slow menu cannot carry the turn into the next action's window. The floor is a few paints, so a
+#: slot already spent still tries once rather than leaving the turn in the thread.
+CLEANUP_MENU_MAX_MS = 1000
+CLEANUP_MENU_MIN_MS = 100
+#: What the slot still owes after the menu opens: the 200 ms settle and the delete itself.
+CLEANUP_AFTER_MENU_MS = 300
+
 STOP_CLEANUP_JS = """
-async (timeoutMs) => {
+async (opts) => {
   const D = window.__sb.dom;
+  const timeoutMs = opts.timeoutMs;
   // threadTotal, not messageCount. Identical on the shipped build; under a windowed mount the
   // window refills as the message leaves it, so a cleanup that worked reports after == before.
   const before = D.threadTotal();
@@ -722,7 +733,7 @@ async (timeoutMs) => {
     // Delete is the More menu's last item since #12735; see DELETE_JS.
     const trigger = D.actionButton("More");
     if (!trigger) return false;
-    const button = (await D.openMenuAndFind(trigger, "Delete", 1000)).item;
+    const button = (await D.openMenuAndFind(trigger, "Delete", opts.menuWaitMs)).item;
     if (!button) {
       document.dispatchEvent(new KeyboardEvent("keydown",
         { key: "Escape", bubbles: true, cancelable: true }));
@@ -821,7 +832,15 @@ def _reclaim_pending_turn(
         and isinstance(messages_after, int)
         and messages_after > messages_before
     )
-    removed = _ev(ctx, STOP_CLEANUP_JS, SETTLE_TIMEOUT_MS) if grew else None
+    removed = (
+        _ev(
+            ctx,
+            STOP_CLEANUP_JS,
+            {"timeoutMs": SETTLE_TIMEOUT_MS, "menuWaitMs": CLEANUP_MENU_MAX_MS},
+        )
+        if grew
+        else None
+    )
     if removed is not None:
         ctx.page.wait_for_timeout(200)
 
@@ -964,7 +983,15 @@ def stop_generation(ctx: ActionContext) -> ActionResult:
     # comparison all measure.
     removed = None
     if own_generation:
-        removed = _ev(ctx, STOP_CLEANUP_JS, SETTLE_TIMEOUT_MS)
+        menu_wait_ms = min(
+            CLEANUP_MENU_MAX_MS,
+            max(CLEANUP_MENU_MIN_MS, remaining_ms() - CLEANUP_AFTER_MENU_MS),
+        )
+        removed = _ev(
+            ctx,
+            STOP_CLEANUP_JS,
+            {"timeoutMs": SETTLE_TIMEOUT_MS, "menuWaitMs": menu_wait_ms},
+        )
         ctx.page.wait_for_timeout(200)
     return ActionResult(
         ran = True,

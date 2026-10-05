@@ -68,14 +68,27 @@ const node = (sel, attrs, kids) => {
   return self;
 };
 
-const state = { menuOpen: false, escapes: 0 };
+const state = { menuOpen: false, escapes: 0, menuLookups: 0 };
+// The portal mounting is a change to body's children, delivered to observers as the app's would be.
+const observers = [];
+class MutationObserver {
+  constructor(cb) { this.cb = cb; }
+  observe() { observers.push(this); }
+  disconnect() { const i = observers.indexOf(this); if (i >= 0) observers.splice(i, 1); }
+}
+const setMenu = (open) => {
+  state.menuOpen = open;
+  for (const o of observers.slice()) o.cb();
+};
+// The menu mounts this many paints after the trigger is pressed, as a portal does a commit later.
+let paintsUntilMenu = 0;
 const user = node(['[data-role]', '[data-role="user"]'], {});
 let messages = [user];
 
 // Radix: the trigger opens on pointerdown, an item selects on click.
 const more = node(["button"], {
   "aria-label": "More",
-  on: (ev) => { if (ev && ev.type === "pointerdown") state.menuOpen = true; },
+  on: (ev) => { if (ev && ev.type === "pointerdown") paintsUntilMenu = 3; },
 });
 const bar = node([".aui-assistant-action-bar-root"], {}, [more]);
 const assistant = node(['[data-role]', '[data-role="assistant"]'], {}, [bar]);
@@ -85,7 +98,7 @@ const items = menuNames.map((name) => node([".aui-action-bar-more-item"], {
   text: name,
   click: () => {
     if (name !== "Delete") return;
-    state.menuOpen = false;
+    setMenu(false);
     assistant.isConnected = false;
     messages = messages.filter((m) => m !== assistant);
   },
@@ -98,11 +111,14 @@ const document = {
   querySelectorAll: (s) => {
     if (s === "[data-role]") return messages;
     if (s === '[data-role="assistant"]') return messages.filter((m) => m === assistant);
-    if (s === ".aui-action-bar-more-content") return state.menuOpen ? [menu] : [];
+    if (s === ".aui-action-bar-more-content") {
+      state.menuLookups += 1;
+      return state.menuOpen ? [menu] : [];
+    }
     return [];
   },
   dispatchEvent: (ev) => {
-    if (ev && ev.key === "Escape") { state.menuOpen = false; state.escapes += 1; }
+    if (ev && ev.key === "Escape") { setMenu(false); state.escapes += 1; }
     return true;
   },
 };
@@ -111,10 +127,14 @@ class PointerEvent { constructor(type, init) { this.type = type; Object.assign(t
 class KeyboardEvent { constructor(type, init) { this.type = type; Object.assign(this, init || {}); } }
 
 const window = {};
-window.__sbNextPaint = () => new Promise((r) => setTimeout(r, 5));
+window.__sbNextPaint = () => new Promise((r) => setTimeout(() => {
+  if (paintsUntilMenu > 0 && --paintsUntilMenu === 0) setMenu(true);
+  r();
+}, 5));
 window.addEventListener = () => {};
 
-(new Function("window", "document", "PointerEvent", domSrc))(window, document, PointerEvent);
+(new Function("window", "document", "PointerEvent", "MutationObserver", domSrc))(
+  window, document, PointerEvent, MutationObserver);
 
 const run = (new Function(
   "window", "document", "PointerEvent", "KeyboardEvent", "performance",
@@ -124,6 +144,7 @@ const run = (new Function(
 run({ timeoutMs: 2000, waitForButtonMs: 300 }).then((out) => {
   out.menuOpenAfter = state.menuOpen;
   out.escapes = state.escapes;
+  out.menuLookups = state.menuLookups;
   console.log(JSON.stringify(out));
   process.exit(0);
 }, (err) => { console.error(String((err && err.stack) || err)); process.exit(1); });
@@ -154,6 +175,9 @@ def test_delete_opens_the_more_menu_and_selects_its_delete_item():
     assert out["ran"] is True, out
     assert out["ms"] is not None, "the reply never left the document after Delete was selected"
     assert (out["before"], out["after"]) == (2, 1), out
+    # The menu mounts three paints late. The document-wide lookup for it runs on the first look
+    # and when body's children change, not once per paint while waiting.
+    assert out["menuLookups"] <= 2, out
 
 
 def test_a_menu_without_delete_is_reported_and_closed():
