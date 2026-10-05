@@ -32,6 +32,7 @@ export interface LoraModelOption extends ModelOption {
   /** This local GGUF is one directly loadable artifact, not a repo whose quant variants must be listed first. */
   isDirectGguf?: boolean;
   exportType?: "lora" | "merged" | "gguf";
+  sizeBytes?: number | null;
   /** Codec when the checkpoint fine-tunes an audio model, else null. */
   audioType?: string | null;
 }
@@ -77,6 +78,8 @@ export interface ModelSelectorChangeMeta {
   /** Hub pipeline tag for an uncurated pick, so a task page can tell which task the repo does when
    *  it is not in the page's catalog. */
   pipelineTag?: string | null;
+  /** Admitted only via an explicit family; detected picks must not inherit it. */
+  familyOverrideRequired?: boolean;
   /** Detected local audio architecture, used when a filesystem path has no Hub id. */
   audioType?: string | null;
   nativePathExpiresAtMs?: number | null;

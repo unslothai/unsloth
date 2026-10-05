@@ -137,6 +137,7 @@ def _run(
     tool_choice = None,
     messages = None,
     supports_vision = False,
+    mcp_image = None,
     **policy_kwargs,
 ):
     policy_fields = {
@@ -164,6 +165,7 @@ def _run(
             ),
             policy = ToolLoopPolicy(**policy_fields),
             cancel_event = cancel_event,
+            mcp_image = mcp_image,
         )
         async for line in agen:
             out.append(line)
@@ -601,6 +603,40 @@ def test_auto_mode_prompts_only_for_high_risk_calls(executed, monkeypatch):
     assert [call["name"] for call in executed] == ["web_search"]
 
 
+def test_sharing_the_attached_image_asks_even_with_bypass(executed, monkeypatch):
+    from core.inference.mcp_image import McpImage
+
+    image = McpImage(mime = "image/png", data = b"IMG")
+    disclosure = {"server": "Trace", "tool": "lookup", "size_bytes": 3}
+    shared = {"disclosure": disclosure, "image": image.approved_for("r1")}
+    asked: list = []
+    monkeypatch.setattr(
+        loop_mod, "mcp_image_share", lambda name, args, image: shared if image else None
+    )
+    monkeypatch.setattr(
+        loop_mod, "begin_tool_decision", lambda session, approval: asked.append(approval) or 1
+    )
+    monkeypatch.setattr(
+        loop_mod, "wait_tool_decision", lambda slot, approval, cancel_event = None: "allow"
+    )
+    monkeypatch.setattr(loop_mod, "abort_tool_decision", lambda slot, approval: None)
+    call = {"index": 0, "id": "c1", "function": {"name": "web_search", "arguments": "{}"}}
+    turns = [
+        [_sse({"tool_calls": [call]}), _sse(finish = "tool_calls"), _DONE],
+        [_sse({"content": "ok"}), _sse(finish = "stop"), _DONE],
+    ]
+    lines = _run(FakeTransport(turns), mcp_image = image, bypass_permissions = True)
+
+    start = _events(lines, "tool_start")[0]
+    assert start["awaiting_confirmation"] is True and start["image_disclosure"] == disclosure
+    assert len(asked) == 1 and executed[0]["mcp_image"] == image.approved_for("r1")
+    # Without an image the same call keeps the ordinary path: no card, no image.
+    executed.clear()
+    lines = _run(FakeTransport(turns), bypass_permissions = True)
+    assert _events(lines, "tool_start")[0]["awaiting_confirmation"] is False
+    assert "mcp_image" not in executed[0]
+
+
 def test_full_access_disables_the_sandbox_at_execution(executed):
     transport = _shared_setup_1()
     _run(transport, tools = [PY], bypass_permissions = True)
@@ -613,6 +649,24 @@ def test_sandbox_stays_on_by_default(executed):
     _run(transport, tools = [PY])
 
     assert executed[0]["disable_sandbox"] is False
+    # Nobody approved it, so the executor keeps the jail even for a host path.
+    assert "host_access_approved" not in executed[0]
+
+
+@pytest.mark.parametrize("verdict", ["allow", "deny"])
+def test_only_an_approved_call_is_marked_approved(executed, monkeypatch, verdict):
+    monkeypatch.setattr(loop_mod, "begin_tool_decision", lambda session, approval: object())
+    monkeypatch.setattr(
+        loop_mod, "wait_tool_decision", lambda slot, approval, cancel_event = None: verdict
+    )
+    monkeypatch.setattr(loop_mod, "abort_tool_decision", lambda slot, approval: None)
+    monkeypatch.setattr(loop_mod, "new_approval_id", lambda: "ap1")
+    _run(_shared_setup_1(), tools = [PY], permission_mode = "auto", confirm_calls = True)
+
+    if verdict == "allow":
+        assert executed[0]["host_access_approved"] is True
+    else:
+        assert executed == []
 
 
 # ── Forced tool choice ────────────────────────────────────────────

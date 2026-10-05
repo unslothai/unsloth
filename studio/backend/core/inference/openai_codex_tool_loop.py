@@ -94,6 +94,7 @@ def stream_codex_with_studio_tools(
     run: CodexRunContext,
     policy: CodexToolPolicy,
     cancel_event: threading.Event,
+    mcp_image = None,
 ) -> AsyncIterator[str]:
     """Stream Codex, execute requested Unsloth tools, and continue until a final answer."""
     return stream_with_studio_tools(
@@ -123,4 +124,5 @@ def stream_codex_with_studio_tools(
             nudge_tool_calls = policy.nudge_tool_calls,
         ),
         cancel_event = cancel_event,
+        mcp_image = mcp_image,
     )

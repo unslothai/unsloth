@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import contextlib
 import dataclasses
+import json
 import re
 import sys
 import threading
@@ -45,6 +46,7 @@ from core.inference.diffusion_families import (
     family_prequant_repo,
     load_identity,
     mirror_repo,
+    pipeline_available_family_names,
     prefer_ungated_mirror,
     resolve_base_repo,
     resolve_local_gguf_child,
@@ -52,6 +54,16 @@ from core.inference.diffusion_families import (
     supported_family_names,
     upstream_is_gated,
 )
+
+
+@pytest.fixture(autouse = True)
+def _unmeasured_torchao(monkeypatch):
+    """Pin "no measured torchao" so the installed release does not decide the offload tiers."""
+    from core.inference import diffusion_memory
+
+    monkeypatch.setattr(diffusion_memory, "_installed_torchao_version", lambda: None)
+    # Studio's diffusers pin, so tests that opt into a measured torchao do not depend on the runner.
+    monkeypatch.setattr(diffusion_memory, "_installed_diffusers_version", lambda: (0, 40))
 
 
 # Pure family helpers
@@ -158,6 +170,34 @@ def test_supported_family_names():
     # Every listed name is a valid family_override (round-trips through detect_family).
     for name in names:
         assert detect_family("some/unknown-repo", override = name) is not None
+
+
+def test_pipeline_available_names_filter_the_selector_without_importing(monkeypatch):
+    # Status polls call this; importing pipeline classes there raced the loader's own import.
+    import importlib.util
+
+    import core.inference.diffusion_families as families
+
+    blocked = {"krea-2", "flux.2-klein"}
+    monkeypatch.setattr(families, "family_selectable", lambda fam: fam.name not in blocked)
+    assert set(supported_family_names()) - set(pipeline_available_family_names()) == blocked
+
+    def _strict(*_a, **_k):
+        raise AssertionError("the selector must stay import-free")
+
+    monkeypatch.undo()
+    monkeypatch.setattr(families, "assert_pipeline_class_available", _strict)
+    real_find_spec = importlib.util.find_spec
+    monkeypatch.delitem(sys.modules, "diffusers", raising = False)
+    monkeypatch.setattr(
+        importlib.util,
+        "find_spec",
+        lambda name, *a, **k: object() if name == "diffusers" else real_find_spec(name, *a, **k),
+    )
+    assert "flux.1" in pipeline_available_family_names()
+
+    monkeypatch.setitem(sys.modules, "diffusers", None)
+    assert pipeline_available_family_names() == ()
 
 
 def test_resolve_base_repo():
@@ -854,8 +894,8 @@ def fake_runtime(monkeypatch):
     torch.Generator = _FakeGenerator
     torch.cuda = types.SimpleNamespace(is_available = lambda: False)
     torch.backends = types.SimpleNamespace(mps = None)
-    # generate() wraps the pipe call in torch.inference_mode(); a no-op CM here.
     torch.inference_mode = lambda: contextlib.nullcontext()
+    torch.no_grad = lambda: contextlib.nullcontext()
 
     diffusers = types.ModuleType("diffusers")
     diffusers.GGUFQuantizationConfig = lambda compute_dtype = None: ("quant", compute_dtype)
@@ -902,6 +942,19 @@ def fake_runtime(monkeypatch):
 
 
 _LOAD_DEFAULTS = dict(gguf_filename = "model.gguf", base_repo = "base/repo", family_override = "z-image")
+
+
+def _write_pipeline(
+    root,
+    class_name = "TestPipeline",
+    **components,
+):
+    weight = components.pop("weight", "diffusion_pytorch_model.safetensors")
+    (root / "transformer").mkdir(parents = True, exist_ok = True)
+    manifest = {"_class_name": class_name, "transformer": ["diffusers", "Transformer2DModel"]}
+    (root / "model_index.json").write_text(json.dumps({**manifest, **components}))
+    (root / "transformer" / "config.json").write_text("{}")
+    (root / "transformer" / weight).write_bytes(b"x")
 
 
 def _load_into(backend, tmp_path, **overrides):
@@ -1028,7 +1081,9 @@ def test_load_generate_unload_gguf(fake_runtime, tmp_path):
     (tmp_path / "model.gguf").write_bytes(b"weights")
     backend = DiffusionBackend()
 
-    status = _load_into(backend, tmp_path, hf_token = "hf_secret")
+    status = _load_into(
+        backend, tmp_path, hf_token = "hf_secret", display_repo_id = "Org/pinned-z-image"
+    )
     assert status["loaded"] is True
     assert status["family"] == "z-image"
     assert status["base_repo"] == "base/repo"
@@ -1047,7 +1102,7 @@ def test_load_generate_unload_gguf(fake_runtime, tmp_path):
         prompt = "a sloth", negative_prompt = "blurry", width = 512, height = 512, steps = 4, guidance = 3.0
     )
     assert gen["seed"] == 4242  # random seed reported back
-    assert gen["repo_id"] == str(tmp_path)  # echoed so the route can record the model
+    assert gen["repo_id"] == "Org/pinned-z-image"  # stable picker identity for the recipe
     assert len(gen["images"]) == 1  # PIL images handed to the route for persistence
     # z-image guides via guidance_scale; the signature-gated negative_prompt and the step callback both land.
     call = backend._state.pipe.last_kwargs
@@ -1076,6 +1131,7 @@ def test_gguf_status_reports_selected_quant_instead_of_only_compute_dtype(fake_r
 
     assert status["dtype"] == "float32"  # compute dtype is a separate concern
     assert status["gguf_variant"] == "Q8_0"
+    assert status["gguf_filename"] == filename
     assert backend.unload()["gguf_variant"] is None
 
 
@@ -1287,6 +1343,46 @@ def test_deferred_speed_skips_while_adapter_attached(fake_runtime, tmp_path, mon
     # Gen 3's _apply_loras([]) cleared the adapter; gen 4 is genuinely LoRA-free, so engage.
     backend.generate(prompt = "four")
     assert len(engaged) == 1
+
+
+def test_deferred_speed_refreshes_the_cuda_graph_entry(fake_runtime, tmp_path, monkeypatch):
+    # The load records "speed tier does not capture" for the deferred tier; once the 3rd generation arms graphs the
+    # resolved entry must say so too, or the badge contradicts speed_optims.
+    from core.inference import diffusion as dmod
+
+    graphs_on = {"value": True}
+    monkeypatch.setattr(dmod, "compile_eligible", lambda *a, **k: True)
+    monkeypatch.setattr(
+        dmod,
+        "apply_speed_optims",
+        lambda pipe, target, **k: {
+            "compiled": k.get("speed_mode") == "default",
+            "cuda_graph": k.get("speed_mode") == "default" and graphs_on["value"],
+        },
+    )
+    monkeypatch.setattr(dmod.compile_cache, "begin", lambda **k: None)
+
+    (tmp_path / "model.safetensors").write_bytes(b"weights")
+    backend = DiffusionBackend()
+    _load_into(backend, tmp_path, gguf_filename = "model.safetensors", family_override = "qwen-image")
+    assert backend.status()["resolved"]["cuda_graph"]["value"] == "off"
+    for p in ("one", "two", "three"):
+        backend.generate(prompt = p)
+    status = backend.status()
+    assert "cuda_graph" in status["speed_optims"]
+    assert status["resolved"]["cuda_graph"]["value"] == "on"
+    assert "captured" in status["resolved"]["cuda_graph"]["reason"]
+
+    # Control: a deferred profile that arms no graphs keeps the entry off with the recorded reason.
+    backend.unload()
+    graphs_on["value"] = False
+    _load_into(backend, tmp_path, gguf_filename = "model.safetensors", family_override = "qwen-image")
+    for p in ("a", "b", "c"):
+        backend.generate(prompt = p)
+    status = backend.status()
+    assert "cuda_graph" not in status["speed_optims"]
+    assert status["resolved"]["cuda_graph"]["value"] == "off"
+    backend.unload()
 
 
 def test_deferred_speed_preserves_explicit_attention(fake_runtime, tmp_path, monkeypatch):
@@ -2072,6 +2168,20 @@ def test_load_pipeline_rejects_non_unsloth_repo(fake_runtime):
         backend.load_pipeline("randomorg/Z-Image-bnb-4bit", family_override = "z-image")
 
 
+def test_validate_refuses_a_pipeline_pick_of_a_hosted_prequant_repo(fake_runtime):
+    from core.inference.diffusion_families import _FAMILIES, prequant_only_repo_ids
+
+    backend = DiffusionBackend()
+    with pytest.raises(ValueError, match = "Qwen/Qwen-Image-2.1") as excinfo:
+        backend.validate_load_request("unsloth/Qwen-Image-2.1-FP8")
+    message = str(excinfo.value)
+    assert "transformer precision to fp8 or int8" in message
+    assert "text encoder precision to fp8" in message
+    ids = prequant_only_repo_ids()
+    assert "unsloth/qwen-image-2.1-fp8" in ids
+    assert not any(fam.base_repo.lower() in ids for fam in _FAMILIES)
+
+
 def test_load_sdxl_rejects_untrusted_repo(fake_runtime):
     """A random non-allowlisted, non-unsloth repo is still rejected for a full pipeline
     load even when it detects as SDXL -- the allowlist is exact-match only."""
@@ -2100,8 +2210,19 @@ def test_validate_gates_untrusted_base_repo(fake_runtime, tmp_path):
             model_kind = "gguf",
             base_repo = str(bad_base),
         )
-    # A local base_repo that IS a real pipeline dir passes the gate.
-    (tmp_path / "model_index.json").write_text("{}")
+    (tmp_path / "model_index.json").write_text("{")
+    with pytest.raises(ValueError, match = "valid model_index.json"):
+        backend.validate_load_request(
+            "unsloth/Qwen-Image-2512-GGUF",
+            gguf_filename = "x.gguf",
+            model_kind = "gguf",
+            base_repo = str(tmp_path),
+        )
+    # A base whose declared transformer is absent still serves companions for a GGUF load.
+    _write_pipeline(tmp_path, scheduler = ["diffusers", "FlowMatchEulerDiscreteScheduler"])
+    (tmp_path / "transformer" / "diffusion_pytorch_model.safetensors").unlink()
+    (tmp_path / "scheduler").mkdir()
+    (tmp_path / "scheduler" / "scheduler_config.json").write_text("{}")
     fam = backend.validate_load_request(
         "unsloth/Qwen-Image-2512-GGUF",
         gguf_filename = "x.gguf",
@@ -2109,6 +2230,55 @@ def test_validate_gates_untrusted_base_repo(fake_runtime, tmp_path):
         base_repo = str(tmp_path),
     )
     assert fam is not None
+    with pytest.raises(FileNotFoundError, match = "valid model_index.json"):
+        backend.validate_load_request(str(tmp_path), family_override = "qwen-image")
+
+
+def test_validate_accepts_config_only_local_base_for_whole_pipeline_single_file(
+    fake_runtime, tmp_path
+):
+    backend = DiffusionBackend()
+    (tmp_path / "model.safetensors").write_bytes(b"checkpoint")
+    base = tmp_path / "sdxl-config"
+    (base / "unet").mkdir(parents = True)
+    (base / "unet" / "config.json").write_text("{}")
+    manifest = {
+        "_class_name": "StableDiffusionXLPipeline",
+        "unet": ["diffusers", "UNet2DConditionModel"],
+    }
+    (base / "model_index.json").write_text(json.dumps(manifest))
+
+    fam = backend.validate_load_request(
+        str(tmp_path),
+        gguf_filename = "model.safetensors",
+        model_kind = "single_file",
+        base_repo = str(base),
+        family_override = "sdxl",
+    )
+    assert fam.single_file_is_pipeline is True
+    with pytest.raises(FileNotFoundError, match = "valid model_index.json"):
+        backend.validate_load_request(str(base), family_override = "sdxl")
+
+
+def test_validate_accepts_custom_local_components(fake_runtime, tmp_path):
+    manifest = {
+        "_class_name": "StableDiffusionXLPipeline",
+        "unet": ["local_extensions", "CustomModel"],
+        "scheduler": ["local_extensions", "CustomScheduler"],
+    }
+    (tmp_path / "model_index.json").write_text(json.dumps(manifest))
+    for name, asset in (
+        ("unet", "custom_weights.safetensors"),
+        ("scheduler", "custom_schedule.json"),
+    ):
+        (tmp_path / name).mkdir()
+        (tmp_path / name / asset).write_text("{}")
+
+    backend = DiffusionBackend()
+    assert backend.validate_load_request(str(tmp_path), family_override = "sdxl").name == "sdxl"
+    status = backend.load_pipeline(str(tmp_path), family_override = "sdxl", speed_mode = "off")
+    assert status["loaded"] is True
+    assert _FakePipeline.last["base"] == str(tmp_path)
 
 
 def test_resolve_local_single_file(tmp_path):
@@ -2480,7 +2650,7 @@ def test_generate_qwen_uses_true_cfg_scale(fake_runtime, tmp_path):
 
 def _load_ideogram(backend, tmp_path):
     # Ideogram 4 loads only as a full pipeline (the loader is stubbed), so a local dir is enough.
-    (tmp_path / "model_index.json").write_text("{}")
+    _write_pipeline(tmp_path, "Ideogram4Pipeline", weight = "pytorch_model.bin")
     backend.load_pipeline(str(tmp_path), family_override = "ideogram-4")
 
 
@@ -2524,7 +2694,7 @@ def test_generate_ideogram_custom_guidance_nulls_schedule(fake_runtime, tmp_path
 
 def _load_lumina(backend, tmp_path):
     # Lumina 2 loads through the GENERIC pipeline path, so a local pipeline dir is enough here.
-    (tmp_path / "model_index.json").write_text("{}")
+    _write_pipeline(tmp_path, "Lumina2Pipeline")
     backend.load_pipeline(str(tmp_path), family_override = "lumina-2")
 
 
@@ -3010,7 +3180,7 @@ def test_krea_component_load_honors_eject(fake_runtime, tmp_path, monkeypatch, p
     backend = DiffusionBackend()
     calls, ejectors, reclaimed = [], [], []
     live = weakref.WeakSet()
-    (tmp_path / "model_index.json").write_text("{}", encoding = "utf-8")
+    _write_pipeline(tmp_path)
 
     def record(name, value):
         calls.append(name)
@@ -3108,7 +3278,7 @@ def test_eager_encoder_cancellation_stops_pipeline_build(
     backend = DiffusionBackend()
     calls, ejectors, reclaimed = [], [], []
     live = weakref.WeakSet()
-    (tmp_path / "model_index.json").write_text("{}", encoding = "utf-8")
+    _write_pipeline(tmp_path)
     filename = "model.gguf" if kind == "gguf" else "model.safetensors"
     (tmp_path / filename).write_bytes(b"weights")
     sys.modules["diffusers"].HiDreamImagePipeline = _FakePipeline
@@ -3184,7 +3354,7 @@ def test_ideogram_component_load_honors_eject(fake_runtime, tmp_path, monkeypatc
     backend = DiffusionBackend()
     calls, ejectors, reclaimed = [], [], []
     live = weakref.WeakSet()
-    (tmp_path / "model_index.json").write_text("{}", encoding = "utf-8")
+    _write_pipeline(tmp_path, weight = "pytorch_model.bin")
 
     def component(name):
         calls.append(name)
@@ -3599,7 +3769,7 @@ def test_dense_quant_pulls_the_transformer_from_the_mirror(monkeypatch):
             return object()
 
     monkeypatch.setattr(
-        dmod, "select_transformer_quant_scheme", lambda target, mode, family = None: "fp8"
+        dmod, "select_transformer_quant_scheme", lambda target, mode, family = None, **_kw: "fp8"
     )
     monkeypatch.setattr(dmod, "resolve_prequant_source", lambda fam, scheme, **kw: None)
     monkeypatch.setattr(dmod, "quantize_transformer", lambda pipe, target, **kw: "fp8")
@@ -3656,10 +3826,10 @@ def test_plan_memory_sizes_the_mirrored_companion_cache(monkeypatch, tmp_path):
     monkeypatch.setattr(
         DiffusionBackend,
         "_companion_cache_bytes",
-        # Second arg is the staged snapshot dir, unused here: what this pins is that the
-        # MIRROR id is the one sized.
         staticmethod(
-            lambda base, staged = None: 8 * 1024 * 1024 if base == "unsloth/FLUX.1-dev" else 0
+            lambda base, staged = None, load_dtype = None: (
+                8 * 1024 * 1024 if base == "unsloth/FLUX.1-dev" else 0
+            )
         ),
     )
     seen: dict = {}
@@ -3688,19 +3858,24 @@ def test_plan_memory_sizes_the_mirrored_companion_cache(monkeypatch, tmp_path):
 
 
 def test_zimage_is_fp16_incompatible():
-    # Only Z-Image-class families carry the guard (their activations overflow fp16).
+    # Only families whose activations overflow fp16 carry the guard: Z-Image, and Qwen-Image (NaN latents, black).
     assert detect_family("unsloth/Z-Image-Turbo-GGUF").fp16_incompatible is True
     assert detect_family("unsloth/Z-Image-GGUF").fp16_incompatible is True
-    assert detect_family("unsloth/Qwen-Image-2512-GGUF").fp16_incompatible is False
+    assert detect_family("unsloth/Qwen-Image-2512-GGUF").fp16_incompatible is True
     assert detect_family("unsloth/FLUX.1-schnell-GGUF").fp16_incompatible is False
     assert detect_family("unsloth/FLUX.2-klein-4B-GGUF").fp16_incompatible is False
 
 
-def test_resolve_compute_dtype_promotes_fp16_for_zimage(fake_runtime):
+def test_resolve_compute_dtype_promotes_fp16_for_zimage(fake_runtime, monkeypatch):
+    from core.inference import diffusion_fp16_guard as guard
+
     torch = sys.modules["torch"]
     z = detect_family("unsloth/Z-Image-GGUF")
-    q = detect_family("unsloth/Qwen-Image-GGUF")
-    # Z-Image: fp16 promotes to fp32; bf16 / fp32 pass through unchanged.
+    q = detect_family("unsloth/FLUX.1-schnell-GGUF")
+    monkeypatch.setattr(guard, "_recipe_supported", lambda fam, recipe: True)
+    assert _resolve_diffusion_compute_dtype(z, torch.float16) is torch.float16
+    # Kill switch: fp16 promotes to fp32; bf16 / fp32 unchanged.
+    monkeypatch.setenv(guard.FP16_GUARD_ENV, "0")
     assert _resolve_diffusion_compute_dtype(z, torch.float16) is torch.float32
     assert _resolve_diffusion_compute_dtype(z, torch.bfloat16) is torch.bfloat16
     assert _resolve_diffusion_compute_dtype(z, torch.float32) is torch.float32
@@ -3710,12 +3885,22 @@ def test_resolve_compute_dtype_promotes_fp16_for_zimage(fake_runtime):
 
 
 def test_load_promotes_fp16_to_fp32_for_zimage_only(fake_runtime, monkeypatch, tmp_path):
+    from core.inference import diffusion_fp16_guard as guard
+
     torch = sys.modules["torch"]
-    # Pre-Ampere CUDA resolves to fp16, so the guard must promote Z-Image (and only Z-Image) to fp32 or it renders black.
+    # Pre-Ampere resolves fp16: Z-Image stays fp16 behind its guard; the kill switch promotes it to fp32.
     monkeypatch.setattr(torch.cuda, "is_available", lambda: True, raising = False)
     monkeypatch.setattr(torch.cuda, "get_device_capability", lambda: (7, 5), raising = False)
     (tmp_path / "m.gguf").write_bytes(b"x")
 
+    monkeypatch.setattr(guard, "_recipe_supported", lambda fam, recipe: True)
+    kept = DiffusionBackend().load_pipeline(
+        str(tmp_path), gguf_filename = "m.gguf", family_override = "z-image"
+    )
+    assert kept["dtype"] == "float16"
+    assert str(_FakeTransformer.last["torch_dtype"]) == "torch.float16"
+
+    monkeypatch.setenv(guard.FP16_GUARD_ENV, "0")
     z = DiffusionBackend().load_pipeline(
         str(tmp_path), gguf_filename = "m.gguf", family_override = "z-image"
     )
@@ -3723,8 +3908,11 @@ def test_load_promotes_fp16_to_fp32_for_zimage_only(fake_runtime, monkeypatch, t
     # The promoted dtype reaches the transformer build (and thus the quant config).
     assert str(_FakeTransformer.last["torch_dtype"]) == "torch.float32"
 
+    diffusers = sys.modules["diffusers"]
+    monkeypatch.setattr(diffusers, "FluxPipeline", _FakePipeline, raising = False)
+    monkeypatch.setattr(diffusers, "FluxTransformer2DModel", _FakeTransformer, raising = False)
     q = DiffusionBackend().load_pipeline(
-        str(tmp_path), gguf_filename = "m.gguf", family_override = "qwen-image"
+        str(tmp_path), gguf_filename = "m.gguf", family_override = "flux.1"
     )
     assert q["dtype"] == "float16"  # fp16-compatible family keeps fp16 on pre-Ampere
 
@@ -4183,7 +4371,7 @@ def _stub_dense_quant(monkeypatch, *, scheme = "fp8"):
     monkeypatch.setattr(dmod, "dense_transformer_supported", lambda target: True)
     # Resolve the scheme without the GPU smoke probe, and configure no pre-quant checkpoint so the dense materialise+quantise branch runs.
     monkeypatch.setattr(
-        dmod, "select_transformer_quant_scheme", lambda target, mode, family = None: scheme
+        dmod, "select_transformer_quant_scheme", lambda target, mode, family = None, **_kw: scheme
     )
     monkeypatch.setattr(dmod, "resolve_prequant_source", lambda fam, scheme, **kw: None)
 
@@ -4395,7 +4583,7 @@ def test_transformer_quant_prequant_path_engaged(fake_runtime, tmp_path, monkeyp
     _force_cuda_target(backend, monkeypatch)
     monkeypatch.setattr(dmod, "dense_transformer_supported", lambda target: True)
     monkeypatch.setattr(
-        dmod, "select_transformer_quant_scheme", lambda target, mode, family = None: "fp8"
+        dmod, "select_transformer_quant_scheme", lambda target, mode, family = None, **_kw: "fp8"
     )
     monkeypatch.setattr(dmod, "resolve_prequant_source", lambda fam, scheme, **kw: object())
     prequant_obj = object()
@@ -4636,7 +4824,7 @@ def _stub_declining_dense_quant(backend, monkeypatch):
     _force_cuda_target(backend, monkeypatch)
     monkeypatch.setattr(dmod, "dense_transformer_supported", lambda target: True)
     monkeypatch.setattr(
-        dmod, "select_transformer_quant_scheme", lambda target, mode, family = None: "fp8"
+        dmod, "select_transformer_quant_scheme", lambda target, mode, family = None, **_kw: "fp8"
     )
     monkeypatch.setattr(dmod, "resolve_prequant_source", lambda fam, scheme, **kw: None)
 
@@ -4981,7 +5169,7 @@ def test_dense_quant_skipped_when_dense_transformer_does_not_fit(
     monkeypatch.setattr(dmod, "dense_transformer_supported", lambda target: True)
     # A scheme resolves and there is no prequant, so the dense-fit re-check runs against a will-not-fit dense transformer.
     monkeypatch.setattr(
-        dmod, "select_transformer_quant_scheme", lambda target, mode, family = None: "fp8"
+        dmod, "select_transformer_quant_scheme", lambda target, mode, family = None, **_kw: "fp8"
     )
     monkeypatch.setattr(dmod, "resolve_prequant_source", lambda fam, scheme, **kw: None)
     monkeypatch.setattr(
@@ -5026,7 +5214,7 @@ def test_dense_quant_prequant_proceeds_but_forbids_dense_fallback(
     _force_cuda_target(backend, monkeypatch)
     monkeypatch.setattr(dmod, "dense_transformer_supported", lambda target: True)
     monkeypatch.setattr(
-        dmod, "select_transformer_quant_scheme", lambda target, mode, family = None: "fp8"
+        dmod, "select_transformer_quant_scheme", lambda target, mode, family = None, **_kw: "fp8"
     )
     # usable_ (not resolve_): the re-check only honours a source the loader would accept, so the fake presents a usable one.
     monkeypatch.setattr(dmod, "usable_prequant_source", lambda fam, scheme, **kw: "prequant/path")
@@ -5067,6 +5255,118 @@ def test_dense_quant_prequant_proceeds_but_forbids_dense_fallback(
     assert attempted == [False]  # ...fast path still attempted, dense fallback forbidden
 
 
+@pytest.mark.parametrize(
+    "unreachable,expected_mib,expected_fallback",
+    [
+        (("fp8",), 28_561, True),
+        ((), 22_930, False),
+    ],
+)
+def test_dense_quant_replan_sizes_an_unreachable_prequant_as_dense(
+    fake_runtime,
+    tmp_path,
+    monkeypatch,
+    allow_precision_fallback,
+    unreachable,
+    expected_mib,
+    expected_fallback,
+):
+    import dataclasses
+
+    from core.inference import diffusion as dmod
+
+    backend = DiffusionBackend()
+    _force_cuda_target(backend, monkeypatch)
+    monkeypatch.setattr(dmod, "dense_transformer_supported", lambda target: True)
+    monkeypatch.setattr(
+        dmod, "select_transformer_quant_scheme", lambda target, mode, family = None, **_kw: "fp8"
+    )
+
+    def _candidate(*, force_dense = False, **_kw):
+        if force_dense:
+            return types.SimpleNamespace(
+                transient_transformer_mib = 28_561, companions_mib = 1, prequant = False, scheme = "fp8"
+            )
+        return types.SimpleNamespace(
+            transient_transformer_mib = 22_930, companions_mib = 1, prequant = True, scheme = "fp8"
+        )
+
+    monkeypatch.setattr(dmod, "resolve_dense_quant_candidate", _candidate)
+    sized: list = []
+    orig_plan = DiffusionBackend._plan_memory
+
+    def spy_plan(
+        self,
+        *a,
+        transformer_resident_override_mib = None,
+        **k,
+    ):
+        real = orig_plan(
+            self, *a, transformer_resident_override_mib = transformer_resident_override_mib, **k
+        )
+        if transformer_resident_override_mib is None:
+            return dataclasses.replace(real, offload_policy = "model")
+        sized.append(transformer_resident_override_mib)
+        return dataclasses.replace(real, offload_policy = "none")
+
+    monkeypatch.setattr(DiffusionBackend, "_plan_memory", spy_plan)
+    attempted = []
+
+    def fake_dense_load(self, *a, **k):
+        attempted.append(k.get("allow_dense_fallback"))
+        raise RuntimeError("test: stop after reaching the fast path")
+
+    monkeypatch.setattr(DiffusionBackend, "_load_dense_quant_pipeline", fake_dense_load)
+    (tmp_path / "m.gguf").write_bytes(b"x")
+    _load_m(backend, tmp_path, transformer_quant = "fp8", _prequant_unreachable = unreachable)
+    assert sized == [expected_mib]
+    assert attempted == [expected_fallback]
+
+
+def test_dense_quant_unreachable_prequant_does_not_skip_the_dense_decline(
+    fake_runtime, tmp_path, monkeypatch, allow_precision_fallback
+):
+    from core.inference import diffusion as dmod
+
+    backend = DiffusionBackend()
+    _force_cuda_target(backend, monkeypatch)
+    monkeypatch.setattr(dmod, "dense_transformer_supported", lambda target: True)
+    monkeypatch.setattr(
+        dmod, "select_transformer_quant_scheme", lambda target, mode, family = None, **_kw: "fp8"
+    )
+    monkeypatch.setattr(dmod, "usable_prequant_source", lambda fam, scheme, **kw: "prequant/path")
+    monkeypatch.setattr(
+        DiffusionBackend,
+        "_dense_transformer_resident_bytes",
+        staticmethod(lambda base, staged_dir = None: 999 * 1024**3),
+    )
+    orig_plan = DiffusionBackend._plan_memory
+
+    def spy_plan(
+        self,
+        *a,
+        transformer_resident_override_mib = None,
+        **k,
+    ):
+        if transformer_resident_override_mib is not None and self is backend:
+            return types.SimpleNamespace(offload_policy = "model")
+        return orig_plan(self, *a, **k)
+
+    monkeypatch.setattr(DiffusionBackend, "_plan_memory", spy_plan)
+    attempted = []
+
+    def fake_dense_load(self, *a, **k):
+        attempted.append(k.get("allow_dense_fallback"))
+        return None, None
+
+    monkeypatch.setattr(DiffusionBackend, "_load_dense_quant_pipeline", fake_dense_load)
+    (tmp_path / "m.gguf").write_bytes(b"x")
+    status = _load_m(backend, tmp_path, transformer_quant = "fp8", _prequant_unreachable = ("fp8",))
+    assert attempted == []
+    assert status["transformer_quant"] is None
+    assert _FakeTransformer.last["path"]  # the GGUF build loaded
+
+
 def test_dense_quant_replan_retries_once_on_transient_free_undercount(
     fake_runtime, tmp_path, monkeypatch, allow_precision_fallback
 ):
@@ -5079,7 +5379,7 @@ def test_dense_quant_replan_retries_once_on_transient_free_undercount(
     _force_cuda_target(backend, monkeypatch)
     monkeypatch.setattr(dmod, "dense_transformer_supported", lambda target: True)
     monkeypatch.setattr(
-        dmod, "select_transformer_quant_scheme", lambda target, mode, family = None: "int8"
+        dmod, "select_transformer_quant_scheme", lambda target, mode, family = None, **_kw: "int8"
     )
     monkeypatch.setattr(
         dmod,
@@ -5143,7 +5443,7 @@ def test_dense_quant_replan_no_retry_when_capacity_truly_short(
     _force_cuda_target(backend, monkeypatch)
     monkeypatch.setattr(dmod, "dense_transformer_supported", lambda target: True)
     monkeypatch.setattr(
-        dmod, "select_transformer_quant_scheme", lambda target, mode, family = None: "int8"
+        dmod, "select_transformer_quant_scheme", lambda target, mode, family = None, **_kw: "int8"
     )
     monkeypatch.setattr(
         dmod,
@@ -5192,7 +5492,7 @@ def _decline_dense_quant(backend, monkeypatch, tmp_path):
     _force_cuda_target(backend, monkeypatch)
     monkeypatch.setattr(dmod, "dense_transformer_supported", lambda target: True)
     monkeypatch.setattr(
-        dmod, "select_transformer_quant_scheme", lambda target, mode, family = None: "int8"
+        dmod, "select_transformer_quant_scheme", lambda target, mode, family = None, **_kw: "int8"
     )
     monkeypatch.setattr(
         dmod,
@@ -5286,7 +5586,7 @@ def test_dense_quant_lora_bake_attaches_before_quantize(fake_runtime, monkeypatc
 
     backend = DiffusionBackend()
     monkeypatch.setattr(
-        dmod, "select_transformer_quant_scheme", lambda target, mode, family = None: "int8"
+        dmod, "select_transformer_quant_scheme", lambda target, mode, family = None, **_kw: "int8"
     )
     prequant_consulted = []
     monkeypatch.setattr(
@@ -5551,7 +5851,7 @@ def test_dense_quant_unusable_prequant_path_runs_dense_refit(
     _force_cuda_target(backend, monkeypatch)
     monkeypatch.setattr(dmod, "dense_transformer_supported", lambda target: True)
     monkeypatch.setattr(
-        dmod, "select_transformer_quant_scheme", lambda target, mode, family = None: "fp8"
+        dmod, "select_transformer_quant_scheme", lambda target, mode, family = None, **_kw: "fp8"
     )
     # The real usable_prequant_source refuses a non-allowlisted path (tested elsewhere); None pins that outcome here.
     monkeypatch.setattr(dmod, "usable_prequant_source", lambda fam, scheme, **kw: None)
@@ -5602,7 +5902,7 @@ def test_transformer_quant_unsupported_scheme_skips_dense_download(
     _force_cuda_target(backend, monkeypatch)
     monkeypatch.setattr(dmod, "dense_transformer_supported", lambda target: True)
     monkeypatch.setattr(
-        dmod, "select_transformer_quant_scheme", lambda target, mode, family = None: None
+        dmod, "select_transformer_quant_scheme", lambda target, mode, family = None, **_kw: None
     )
     monkeypatch.setattr(dmod, "resolve_prequant_source", lambda fam, scheme, **kw: None)
 
@@ -5771,7 +6071,7 @@ def _stub_hosted_prequant(monkeypatch, *, cached: bool):
 
     monkeypatch.setattr(dmod, "dense_transformer_supported", lambda target: True)
     monkeypatch.setattr(
-        dmod, "select_transformer_quant_scheme", lambda target, mode, family = None: "fp8"
+        dmod, "select_transformer_quant_scheme", lambda target, mode, family = None, **_kw: "fp8"
     )
     monkeypatch.setattr(dmod, "usable_prequant_source", lambda fam, scheme, **kw: _HOSTED_PREQUANT)
     monkeypatch.setattr(dmod, "prequant_checkpoint_cached", lambda source, **kw: cached)
@@ -5917,7 +6217,7 @@ def test_the_dense_builder_skips_the_prequant_only_for_a_real_bake(
 
     consulted: list = []
     monkeypatch.setattr(
-        dmod, "select_transformer_quant_scheme", lambda target, mode, family = None: "fp8"
+        dmod, "select_transformer_quant_scheme", lambda target, mode, family = None, **_kw: "fp8"
     )
     monkeypatch.setattr(
         dmod, "resolve_prequant_source", lambda *a, **k: consulted.append(1) or None
@@ -6420,6 +6720,60 @@ def test_status_reports_the_dense_build_when_it_replaced_the_gguf(
     assert backend.status()["transformer_quant"] == "fp8"
 
 
+def test_status_names_the_nvfp4_kernel_backend_that_actually_ran():
+    from types import SimpleNamespace
+
+    import core.inference.diffusion as dmod
+
+    class _FlashInferLinear:
+        a_gsf = 1.0
+
+    _FlashInferLinear.__name__ = "NVFP4FlashInferLinear"
+
+    def _state(quant, modules, **kw):
+        denoiser = SimpleNamespace(modules = lambda: iter(modules), **kw)
+        return SimpleNamespace(
+            transformer_quant = quant,
+            pipe = SimpleNamespace(transformer = denoiser),
+            family = SimpleNamespace(denoiser_attr = "transformer"),
+        )
+
+    assert dmod._transformer_quant_backend(_state("nvfp4", [_FlashInferLinear()])) == "flashinfer"
+    assert dmod._transformer_quant_backend(_state("nvfp4", [object()])) == "torchao"
+    assert (
+        dmod._transformer_quant_backend(
+            _state("nvfp4", [object()], _unsloth_nvfp4_backend = "flashinfer")
+        )
+        == "flashinfer"
+    )
+    for scheme in ("fp8", "int8", "mxfp8", None):
+        assert dmod._transformer_quant_backend(_state(scheme, [_FlashInferLinear()])) is None
+
+    def _boom():
+        raise RuntimeError("no")
+
+    hostile = SimpleNamespace(
+        transformer_quant = "nvfp4",
+        pipe = SimpleNamespace(transformer = SimpleNamespace(modules = _boom)),
+        family = SimpleNamespace(denoiser_attr = "transformer"),
+    )
+    assert dmod._transformer_quant_backend(hostile) is None
+
+
+def test_the_unloaded_status_declares_the_quant_backend_key():
+    status = DiffusionBackend().status()
+    assert "transformer_quant_backend" in status
+    assert status["transformer_quant_backend"] is None
+
+
+def test_diffusion_status_response_declares_the_quant_backend():
+    from models.inference import DiffusionStatusResponse
+
+    resp = DiffusionStatusResponse(loaded = True, transformer_quant_backend = "flashinfer")
+    assert resp.model_dump()["transformer_quant_backend"] == "flashinfer"
+    assert DiffusionStatusResponse(loaded = True).model_dump()["transformer_quant_backend"] is None
+
+
 def test_status_carries_no_gguf_variant_when_nothing_is_loaded():
     # The unloaded payload must declare every key the loaded one does, or the row keeps the
     # previous model's quant after an eject.
@@ -6442,6 +6796,7 @@ def test_diffusion_status_response_carries_resolved():
             "status": "applied",
             "reason": "blackwell",
             "artifact": None,
+            "replaced": None,
         }
     }
     # Absent by default (nothing resolved / native engine).
@@ -6464,7 +6819,7 @@ def test_diffusion_status_response_carries_requested_precision():
     }
     resp = DiffusionStatusResponse(loaded = True, resolved = rec)
     assert resp.model_dump()["resolved"] == {
-        "transformer_quant": {**rec["transformer_quant"], "artifact": None}
+        "transformer_quant": {**rec["transformer_quant"], "artifact": None, "replaced": None}
     }
 
 
@@ -7016,7 +7371,7 @@ def test_dense_fit_check_runs_for_a_base_the_live_cache_root_does_not_hold(
     _force_cuda_target(backend, monkeypatch)
     monkeypatch.setattr(dmod, "dense_transformer_supported", lambda target: True)
     monkeypatch.setattr(
-        dmod, "select_transformer_quant_scheme", lambda target, mode, family = None: "fp8"
+        dmod, "select_transformer_quant_scheme", lambda target, mode, family = None, **_kw: "fp8"
     )
     monkeypatch.setattr(dmod, "usable_prequant_source", lambda fam, scheme, **kw: None)
     dense_refit_ran = []
@@ -7059,7 +7414,7 @@ def test_the_dense_builder_reads_transformer_from_the_hub_id_not_the_staged_snap
     from core.inference import diffusion as dmod
 
     monkeypatch.setattr(
-        dmod, "select_transformer_quant_scheme", lambda target, mode, family = None: "fp8"
+        dmod, "select_transformer_quant_scheme", lambda target, mode, family = None, **_kw: "fp8"
     )
     monkeypatch.setattr(dmod, "resolve_prequant_source", lambda *a, **k: None)
     _no_cache(monkeypatch)
@@ -8458,7 +8813,7 @@ def test_qwen_edit_q6_auto_stays_gguf_but_explicit_quant_requests_dense_transfor
     backend = DiffusionBackend()
     _force_cuda_target(backend, monkeypatch)
     monkeypatch.setattr(
-        dmod, "select_transformer_quant_scheme", lambda target, mode, family = None: "int8"
+        dmod, "select_transformer_quant_scheme", lambda target, mode, family = None, **_kw: "int8"
     )
     monkeypatch.setattr(
         dmod,
@@ -9655,7 +10010,7 @@ def test_auto_retries_a_lower_scheme_that_has_a_prequant(monkeypatch):
 
     monkeypatch.setattr(
         "core.inference.diffusion_transformer_quant.auto_scheme_candidates",
-        lambda target, family = None: ("fp8", "mxfp8", "int8"),
+        lambda target, family = None, **_kw: ("fp8", "mxfp8", "int8"),
     )
     have = {"int8"}
     monkeypatch.setattr(
@@ -9801,7 +10156,7 @@ def test_the_offload_retry_runs_when_the_auto_winner_had_no_candidate_at_all(
     _force_cuda_target(backend, monkeypatch)
     monkeypatch.setattr(dmod, "dense_transformer_supported", lambda target: True)
     monkeypatch.setattr(
-        dmod, "select_transformer_quant_scheme", lambda target, mode, family = None: "fp8"
+        dmod, "select_transformer_quant_scheme", lambda target, mode, family = None, **_kw: "fp8"
     )
     monkeypatch.setattr(dmod, "_uncached_prequant_repo", lambda *a, **k: None)
     monkeypatch.setattr(
@@ -9877,7 +10232,7 @@ def test_the_resident_retry_runs_when_the_dense_shards_were_never_staged(
     _force_cuda_target(backend, monkeypatch)
     monkeypatch.setattr(dmod, "dense_transformer_supported", lambda target: True)
     monkeypatch.setattr(
-        dmod, "select_transformer_quant_scheme", lambda target, mode, family = None: "fp8"
+        dmod, "select_transformer_quant_scheme", lambda target, mode, family = None, **_kw: "fp8"
     )
     monkeypatch.setattr(dmod, "_uncached_prequant_repo", lambda *a, **k: None)
     # The winner has no usable checkpoint, and no shards were staged, so no dense build either.
@@ -9947,7 +10302,7 @@ def test_the_resident_retry_declines_a_rung_that_does_not_plan_resident(
     _force_cuda_target(backend, monkeypatch)
     monkeypatch.setattr(dmod, "dense_transformer_supported", lambda target: True)
     monkeypatch.setattr(
-        dmod, "select_transformer_quant_scheme", lambda target, mode, family = None: "fp8"
+        dmod, "select_transformer_quant_scheme", lambda target, mode, family = None, **_kw: "fp8"
     )
     monkeypatch.setattr(dmod, "_uncached_prequant_repo", lambda *a, **k: None)
     monkeypatch.setattr(dmod, "usable_prequant_source", lambda *a, **k: None)
@@ -10580,6 +10935,28 @@ def test_the_resident_size_table_never_shrinks_a_local_checkpoint(fake_runtime, 
     assert lowered.estimates["model_dense_mib"] < measured
 
 
+@pytest.mark.parametrize("configured", [True, False])
+def test_the_resident_size_table_trusts_only_a_configured_cache_snapshot(
+    fake_runtime, tmp_path, monkeypatch, configured
+):
+    # A configured-cache snapshot keeps its Hub provenance; a lookalike path elsewhere does not.
+    import torch
+
+    cache_root = tmp_path / "hub"
+    snapshot = cache_root / "models--Tongyi-MAI--Z-Image-Turbo" / "snapshots" / ("a" * 40)
+    snapshot.mkdir(parents = True)
+    known = [cache_root] if configured else [tmp_path / "other-hub"]
+    monkeypatch.setattr("utils.hf_cache_settings.known_hf_hub_caches", lambda: known)
+    sized = DiffusionBackend()._resident_sized_plan(
+        _plan_with_weights(40_000),
+        detect_family("Tongyi-MAI/Z-Image-Turbo"),
+        str(snapshot),
+        _mps_target(torch),
+        "pipeline",
+    )
+    assert (sized.estimates["model_dense_mib"] < 40_000) is configured
+
+
 def test_speed_off_is_not_reported_as_a_staging_failure(fake_runtime, tmp_path, monkeypatch):
     """An explicit Speed=off rewrites an auto request to "off" and the plan stages no
     transformer/ on purpose. Reading that expected absence as a decline told the caller their
@@ -11182,7 +11559,7 @@ def test_dense_quant_candidate_replan_prices_the_streamed_encoder_tier(
     _force_cuda_target(backend, monkeypatch)
     monkeypatch.setattr(dmod, "dense_transformer_supported", lambda target: True)
     monkeypatch.setattr(
-        dmod, "select_transformer_quant_scheme", lambda target, mode, family = None: "int8"
+        dmod, "select_transformer_quant_scheme", lambda target, mode, family = None, **_kw: "int8"
     )
     monkeypatch.setattr(
         dmod,
@@ -11452,7 +11829,7 @@ def test_unified_memory_declines_a_prequant_that_outweighs_the_gguf(
     _force_cuda_target(backend, monkeypatch)
     monkeypatch.setattr(dmod, "dense_transformer_supported", lambda target: True)
     monkeypatch.setattr(
-        dmod, "select_transformer_quant_scheme", lambda target, mode, family = None: "fp8"
+        dmod, "select_transformer_quant_scheme", lambda target, mode, family = None, **_kw: "fp8"
     )
     # A hosted pre-cast checkpoint IS available, which is what skips the dense-size check.
     monkeypatch.setattr(dmod, "usable_prequant_source", lambda *a, **kw: "unsloth/Z-Image-FP8")
@@ -11487,7 +11864,7 @@ def test_unified_memory_keeps_a_prequant_that_fits(fake_runtime, monkeypatch, tm
     _force_cuda_target(backend, monkeypatch)
     monkeypatch.setattr(dmod, "dense_transformer_supported", lambda target: True)
     monkeypatch.setattr(
-        dmod, "select_transformer_quant_scheme", lambda target, mode, family = None: "fp8"
+        dmod, "select_transformer_quant_scheme", lambda target, mode, family = None, **_kw: "fp8"
     )
     monkeypatch.setattr(dmod, "usable_prequant_source", lambda *a, **kw: "unsloth/Z-Image-FP8")
     monkeypatch.setattr(
@@ -11706,7 +12083,7 @@ def test_an_unsupported_host_is_not_told_its_shards_are_unstaged(
     # A scheme the device rules out (torchao stub, family deny list) is the same case.
     monkeypatch.setattr(dmod, "dense_transformer_supported", lambda target: True)
     monkeypatch.setattr(
-        dmod, "select_transformer_quant_scheme", lambda target, mode, family = None: None
+        dmod, "select_transformer_quant_scheme", lambda target, mode, family = None, **_kw: None
     )
     backend2 = DiffusionBackend()
     _force_cuda_target(backend2, monkeypatch)
@@ -11721,7 +12098,7 @@ def test_an_unsupported_host_is_not_told_its_shards_are_unstaged(
 
     # ... and a host that CAN run it still gets the accurate unstaged-shards decline.
     monkeypatch.setattr(
-        dmod, "select_transformer_quant_scheme", lambda target, mode, family = None: "fp8"
+        dmod, "select_transformer_quant_scheme", lambda target, mode, family = None, **_kw: "fp8"
     )
     _stub_hosted_prequant(monkeypatch, cached = False)
     monkeypatch.setattr(dmod, "usable_prequant_source", lambda fam, scheme, **kw: None)
@@ -11773,6 +12150,39 @@ def test_generation_in_flight_never_builds_a_backend(fake_runtime, monkeypatch):
     assert diffusion_mod.generation_in_flight() is False
 
 
+def test_the_download_plan_resolves_the_same_nvfp4_rung_the_load_does(monkeypatch):
+    from types import SimpleNamespace
+
+    import core.inference.diffusion as dmod
+    from core.inference import diffusion_nvfp4_ops as ops
+    from core.inference import diffusion_transformer_quant as tq
+
+    fam = detect_family("black-forest-labs/FLUX.1-schnell")
+    assert fam is not None and fam.name == "flux.1"
+    base = "black-forest-labs/FLUX.1-schnell"
+
+    monkeypatch.setattr(tq, "dense_transformer_supported", lambda target: True)
+    monkeypatch.setattr(tq, "_capability", lambda: (10, 0))
+    monkeypatch.setattr(tq, "_is_consumer_gpu", lambda device = None: False)
+    monkeypatch.setattr(
+        tq,
+        "_scheme_supported",
+        lambda scheme, device, unproven_ok = False: scheme not in ("int8", "fp8"),
+    )
+    monkeypatch.setattr(dmod, "prequant_checkpoint_cached", lambda source, **kw: False)
+    monkeypatch.setattr(ops, "select_nvfp4_backend", lambda device = None: "flashinfer")
+
+    target = SimpleNamespace(device = "cuda", dtype = None)
+    assert (
+        dmod._planned_quant_scheme(fam, target, "auto", base_repo = base, prequant_path = None)
+        == "nvfp4"
+    )
+    assert (
+        dmod._uncached_prequant_repo(fam, target, "auto", base_repo = base, prequant_path = None)
+        == "unsloth/FLUX.1-schnell-NVFP4"
+    )
+
+
 # Pipeline dense quantisation.
 
 
@@ -11811,7 +12221,7 @@ def _stub_pipeline_dense_quant(
     _force_cuda_target(backend, monkeypatch)
     monkeypatch.setattr(dmod, "dense_transformer_supported", lambda target: True)
     monkeypatch.setattr(
-        dmod, "select_transformer_quant_scheme", lambda target, mode, family = None: "fp8"
+        dmod, "select_transformer_quant_scheme", lambda target, mode, family = None, **kw: "fp8"
     )
     real_init = _FakePipe.__init__
 
@@ -11873,23 +12283,228 @@ def test_a_pipeline_pick_refuses_an_explicit_scheme_that_did_not_engage(
     assert "transformer_quant='fp8' could not be used" in str(excinfo.value)
 
 
-def test_a_pipeline_pick_does_not_quantise_under_offload(fake_runtime, tmp_path, monkeypatch):
-    """Offloaded pipelines stay dense because torchao tensors cannot move."""
-    backend = DiffusionBackend()
-    calls = _stub_pipeline_dense_quant(backend, monkeypatch)
+def _offload_plan(
+    offload_policy,
+    budget_mib = 1_000_000,
+    runtime_headroom_mib = 0,
+):
     real_plan = DiffusionBackend._plan_memory
 
-    def _offloading_plan(self, *args, **kwargs):
+    def _plan(self, *args, **kwargs):
         plan = real_plan(self, *args, **kwargs)
-        return dataclasses.replace(plan, offload_policy = "model")
+        return dataclasses.replace(
+            plan,
+            offload_policy = offload_policy,
+            estimates = {
+                **plan.estimates,
+                "safe_device_budget_mib": budget_mib,
+                "runtime_headroom_mib": runtime_headroom_mib,
+                "base_overhead_mib": 0,
+            },
+        )
 
-    monkeypatch.setattr(DiffusionBackend, "_plan_memory", _offloading_plan)
+    return _plan
+
+
+def test_a_pipeline_pick_quantises_under_whole_module_offload(fake_runtime, tmp_path, monkeypatch):
+    backend = DiffusionBackend()
+    calls = _stub_pipeline_dense_quant(backend, monkeypatch)
+    monkeypatch.setattr(DiffusionBackend, "_plan_memory", _offload_plan("model"))
+    status = backend.load_pipeline(
+        "Qwen/Qwen-Image-2512", model_kind = "pipeline", _base_local_dir = str(tmp_path)
+    )
+    assert calls != []
+    assert status["transformer_quant"] is not None
+    backend.unload()
+
+
+@pytest.mark.parametrize(
+    ("offload_policy", "expected"),
+    [("none", "inference_mode"), ("model", "no_grad"), ("group", "no_grad")],
+)
+def test_an_offloaded_quantised_transformer_renders_outside_inference_mode(
+    fake_runtime, tmp_path, monkeypatch, offload_policy, expected
+):
+    """torchao tensors cannot change device under inference_mode, so offloaded quant renders use no_grad."""
+    import torch
+
+    from core.inference import diffusion_memory
+
+    monkeypatch.setattr(diffusion_memory, "_installed_torchao_version", lambda: (0, 18))
+    monkeypatch.setattr(diffusion_memory, "_torchao_stream_pinnable", lambda plan, *_a: True)
+    backend = DiffusionBackend()
+    _stub_pipeline_dense_quant(backend, monkeypatch)
+    monkeypatch.setattr(DiffusionBackend, "_plan_memory", _offload_plan(offload_policy))
+    status = backend.load_pipeline(
+        "Qwen/Qwen-Image-2512", model_kind = "pipeline", _base_local_dir = str(tmp_path)
+    )
+    assert status["transformer_quant"] is not None
+    used = []
+
+    def _mode(name):
+        @contextlib.contextmanager
+        def _cm():
+            used.append(name)
+            yield
+
+        return _cm
+
+    monkeypatch.setattr(torch, "inference_mode", _mode("inference_mode"))
+    monkeypatch.setattr(torch, "no_grad", _mode("no_grad"))
+    backend.generate(prompt = "p", steps = 2)
+    assert used == [expected]
+    backend.unload()
+
+
+def test_the_offload_replan_prices_a_precast_text_encoder_once(fake_runtime, tmp_path, monkeypatch):
+    from core.inference import diffusion_te_prequant as te_prequant
+
+    real_plan = DiffusionBackend._plan_memory
+
+    class _Module:
+        def __init__(self, mib):
+            self._t = types.SimpleNamespace(numel = lambda: mib * 1024 * 1024, element_size = lambda: 1)
+
+        def parameters(self, recurse = True):
+            return [self._t]
+
+        def buffers(self, recurse = True):
+            return []
+
+    monkeypatch.setattr(
+        sys.modules["torch"], "nn", types.SimpleNamespace(Module = _Module), raising = False
+    )
+
+    def _replan_te(scale, held_mib = None):
+        monkeypatch.setattr(te_prequant, "te_prequant_budget_scale", lambda *a, **k: scale)
+        backend = DiffusionBackend()
+        _stub_pipeline_dense_quant(backend, monkeypatch)
+        if held_mib is not None:
+            # the pipe already holds the pre-cast encoder: the plan must not price it below the scaled table again
+            monkeypatch.setattr(
+                _FakePipe, "components", {"text_encoder": _Module(held_mib)}, raising = False
+            )
+        seen = []
+
+        def _plan(self, *args, **kwargs):
+            plan = real_plan(self, *args, **kwargs)
+            if kwargs.get("transformer_resident_override_mib") is not None:
+                seen.append(kwargs.get("text_encoder_override_mib"))
+            return dataclasses.replace(plan, offload_policy = "model")
+
+        monkeypatch.setattr(DiffusionBackend, "_plan_memory", _plan)
+        backend.load_pipeline(
+            "Qwen/Qwen-Image-2512", model_kind = "pipeline", _base_local_dir = str(tmp_path)
+        )
+        backend.unload()
+        assert seen, "the quant replan never ran"
+        return seen[-1]
+
+    table_te = _replan_te(1.0)
+    precast_te = _replan_te(0.65)
+    assert precast_te == int(table_te * 0.65)
+    assert _replan_te(0.65, held_mib = table_te // 2) == precast_te
+
+
+@pytest.mark.parametrize("offload_policy", ["group", "sequential"])
+def test_a_pipeline_pick_stays_dense_under_streamed_offload(
+    fake_runtime, tmp_path, monkeypatch, offload_policy
+):
+    backend = DiffusionBackend()
+    calls = _stub_pipeline_dense_quant(backend, monkeypatch)
+    monkeypatch.setattr(DiffusionBackend, "_plan_memory", _offload_plan(offload_policy))
     status = backend.load_pipeline(
         "Qwen/Qwen-Image-2512", model_kind = "pipeline", _base_local_dir = str(tmp_path)
     )
     assert calls == []
     assert status["transformer_quant"] is None
-    assert "offload" in status["resolved"]["transformer_quant"]["reason"]
+    assert (
+        "hooks torchao weights do not survive" in status["resolved"]["transformer_quant"]["reason"]
+    )
+    backend.unload()
+
+
+@pytest.mark.parametrize(
+    ("budget_mib", "runtime_headroom_mib", "companion_mib"),
+    [(1, 0, None), (1_000_000, 1_000_000, None), (1_000_000, 0, 2_000_000)],
+)
+def test_a_pipeline_pick_stays_dense_when_the_quantised_transformer_exceeds_the_budget(
+    fake_runtime, tmp_path, monkeypatch, budget_mib, runtime_headroom_mib, companion_mib
+):
+    """Quantised transformer (plus runtime headroom) and every text encoder must fit unstreamed."""
+    from core.inference import diffusion as dmod
+
+    backend = DiffusionBackend()
+    calls = _stub_pipeline_dense_quant(backend, monkeypatch)
+    monkeypatch.setattr(dmod, "largest_streamable_companion_mib", lambda pipe: companion_mib)
+    monkeypatch.setattr(
+        DiffusionBackend,
+        "_plan_memory",
+        _offload_plan("model", budget_mib = budget_mib, runtime_headroom_mib = runtime_headroom_mib),
+    )
+    status = backend.load_pipeline(
+        "Qwen/Qwen-Image-2512", model_kind = "pipeline", _base_local_dir = str(tmp_path)
+    )
+    assert calls == []
+    assert status["transformer_quant"] is None
+    assert "not known to fit" in status["resolved"]["transformer_quant"]["reason"]
+    backend.unload()
+
+
+@pytest.mark.parametrize("torchao_version", [(0, 17), (0, 18)])
+def test_a_pipeline_pick_quantises_under_streamed_group_offload_on_a_measured_torchao(
+    fake_runtime, tmp_path, monkeypatch, torchao_version
+):
+    from core.inference import diffusion_memory
+
+    monkeypatch.setattr(diffusion_memory, "_installed_torchao_version", lambda: torchao_version)
+    monkeypatch.setattr(diffusion_memory, "_torchao_stream_pinnable", lambda plan, *_a: True)
+    backend = DiffusionBackend()
+    calls = _stub_pipeline_dense_quant(backend, monkeypatch)
+    monkeypatch.setattr(DiffusionBackend, "_plan_memory", _offload_plan("group"))
+    status = backend.load_pipeline(
+        "Qwen/Qwen-Image-2512", model_kind = "pipeline", _base_local_dir = str(tmp_path)
+    )
+    assert len(calls) == 1
+    assert status["transformer_quant"] == "fp8"
+    backend.unload()
+
+
+@pytest.mark.parametrize(
+    ("budget_mib", "runtime_headroom_mib", "companion_mib"),
+    [(1, 0, None), (1_000_000, 1_000_000, None), (1_000_000, 0, 2_000_000)],
+)
+def test_a_quantised_transformer_too_big_to_onload_whole_streams_instead(
+    fake_runtime, tmp_path, monkeypatch, budget_mib, runtime_headroom_mib, companion_mib
+):
+    from core.inference import diffusion as dmod
+    from core.inference import diffusion_memory
+
+    monkeypatch.setattr(diffusion_memory, "_installed_torchao_version", lambda: (0, 18))
+    monkeypatch.setattr(diffusion_memory, "_torchao_stream_pinnable", lambda plan, *_a: True)
+    # diffusion.py binds its own reference; without this the host's real pin budget decides.
+    monkeypatch.setattr(dmod, "_torchao_stream_pinnable", lambda plan, *_a: True)
+    backend = DiffusionBackend()
+    calls = _stub_pipeline_dense_quant(backend, monkeypatch)
+    monkeypatch.setattr(dmod, "largest_streamable_companion_mib", lambda pipe: companion_mib)
+    placed: list = []
+
+    def _apply(pipe, plan, **_kwargs):
+        placed.append(plan.offload_policy)
+        return plan.offload_policy, plan.vae_tiling
+
+    monkeypatch.setattr(dmod, "apply_memory_plan", _apply)
+    monkeypatch.setattr(
+        DiffusionBackend,
+        "_plan_memory",
+        _offload_plan("model", budget_mib = budget_mib, runtime_headroom_mib = runtime_headroom_mib),
+    )
+    status = backend.load_pipeline(
+        "Qwen/Qwen-Image-2512", model_kind = "pipeline", _base_local_dir = str(tmp_path)
+    )
+    assert len(calls) == 1
+    assert status["transformer_quant"] == "fp8"
+    assert placed == ["streaming"] and status["offload_policy"] == "streaming"
     backend.unload()
 
 
@@ -12294,6 +12909,239 @@ def test_a_prequant_repo_missing_its_artifact_marks_the_plan_incomplete(monkeypa
         failures
     ), "a configured prequant that is not in its repo left the plan calling itself complete"
     assert "prequant artifact missing" in str(failures[0])
+
+
+def test_generate_runs_the_pipeline_through_the_render_thread(fake_runtime, tmp_path, monkeypatch):
+    from core.inference import diffusion as diff_mod
+
+    names = []
+
+    def run(name, fn):
+        names.append(name)
+        return fn()
+
+    monkeypatch.setattr(diff_mod.render_thread, "run", run)
+    backend = _loaded_backend(tmp_path)
+    assert len(backend.generate(prompt = "a sloth", steps = 2)["images"]) == 1
+    assert names == ["diffusion"]
+
+
+class _StopAfterInstallGate(Exception):
+    """Raised just past the FlashInfer pre-install hop."""
+
+
+def _hub_refusal(cls):
+    # response is optional in huggingface_hub 0.x but required in 1.x; a stub works on either.
+    return cls(
+        "401 Client Error. Repository Not Found for url: "
+        "https://huggingface.co/api/models/unsloth/Z-Image-Turbo-NVFP4",
+        response = types.SimpleNamespace(headers = {}, request = None),
+    )
+
+
+def _nvfp4_install_probe(
+    monkeypatch,
+    *,
+    listing = None,
+    refusal = None,
+    cached = False,
+):
+    """Record FlashInfer installs and Hub listings; ``refusal`` is raised instead of ``listing``."""
+    import core.inference.diffusion as diffusion_mod
+    import core.inference.diffusion_prequant as prequant_mod
+    from core.inference import diffusion_nvfp4_install as inst
+
+    installs: list = []
+    listed: list = []
+
+    def _ensure(device, **kwargs):
+        installs.append((device, kwargs.get("local_files_only")))
+        return True, "installed flashinfer for NVFP4"
+
+    class _Api:
+        def model_info(
+            self,
+            repo_id,
+            files_metadata = False,
+            token = None,
+        ):
+            listed.append(repo_id)
+            if refusal is not None:
+                raise refusal
+            return _FakeInfo(list(listing or []))
+
+    monkeypatch.setattr(inst, "ensure_flashinfer_for_nvfp4", _ensure)
+    monkeypatch.setattr("huggingface_hub.HfApi", lambda *a, **k: _Api())
+    monkeypatch.setattr(
+        prequant_mod, "restricted_prequant_load_supported", lambda scheme = None, filename = None: True
+    )
+    monkeypatch.setattr(diffusion_mod, "prequant_checkpoint_cached", lambda *a, **k: cached)
+    monkeypatch.setattr(
+        DiffusionBackend,
+        "_target_for_ordinal",
+        lambda self, fam, ordinal: types.SimpleNamespace(device = "cuda", dtype = None, ordinal = 0),
+    )
+    monkeypatch.setattr(diffusion_mod, "apply_diffusion_device_ordinal", lambda target: None)
+    monkeypatch.setattr(diffusion_mod, "select_attention_backend", lambda *a, **k: None)
+
+    def _stop(self):
+        raise _StopAfterInstallGate()
+
+    monkeypatch.setattr(DiffusionBackend, "_reserve_teardown_locked", _stop)
+    return installs, listed
+
+
+def _load_to_the_install_gate(
+    repo_id = "Tongyi-MAI/Z-Image-Turbo",
+    family = "z-image",
+    **overrides,
+):
+    kwargs = dict(
+        model_kind = "pipeline",
+        family_override = family,
+        transformer_quant = "nvfp4",
+        _fetch_base = repo_id,
+    )
+    kwargs.update(overrides)
+    with pytest.raises(_StopAfterInstallGate):
+        DiffusionBackend().load_pipeline(repo_id, **kwargs)
+
+
+@pytest.mark.parametrize("error", ["RepositoryNotFoundError", "GatedRepoError"])
+def test_an_nvfp4_checkpoint_the_hub_refuses_installs_no_flashinfer(
+    fake_runtime, monkeypatch, error
+):
+    # Private / gated repo: on-the-fly torchao build, FlashInfer unused.
+    import huggingface_hub.errors as hub_errors
+
+    installs, listed = _nvfp4_install_probe(
+        monkeypatch, refusal = _hub_refusal(getattr(hub_errors, error))
+    )
+    _load_to_the_install_gate()
+    assert installs == []
+    assert listed == ["unsloth/Z-Image-Turbo-NVFP4"]
+
+
+def test_an_nvfp4_repo_missing_the_checkpoint_installs_no_flashinfer(fake_runtime, monkeypatch):
+    installs, listed = _nvfp4_install_probe(monkeypatch, listing = [_FakeSibling("README.md", 10)])
+    _load_to_the_install_gate()
+    assert installs == []
+    assert listed == ["unsloth/Z-Image-Turbo-NVFP4"]
+
+
+def test_a_family_with_no_hosted_nvfp4_checkpoint_installs_no_flashinfer(fake_runtime, monkeypatch):
+    installs, listed = _nvfp4_install_probe(monkeypatch)
+    _load_to_the_install_gate("Qwen/Qwen-Image", family = "qwen-image")
+    assert installs == []
+    assert listed == [], "nothing hosted, so there is nothing to ask the Hub about"
+
+
+def test_a_gguf_nvfp4_load_whose_checkpoint_the_hub_refuses_installs_no_flashinfer(
+    fake_runtime, monkeypatch, tmp_path
+):
+    from huggingface_hub.errors import RepositoryNotFoundError
+
+    installs, listed = _nvfp4_install_probe(
+        monkeypatch, refusal = _hub_refusal(RepositoryNotFoundError)
+    )
+    (tmp_path / "model.gguf").write_bytes(b"weights")
+    with pytest.raises(_StopAfterInstallGate):
+        DiffusionBackend().load_pipeline(
+            str(tmp_path),
+            gguf_filename = "model.gguf",
+            base_repo = "Tongyi-MAI/Z-Image-Turbo",
+            family_override = "z-image",
+            transformer_quant = "nvfp4",
+            _fetch_base = "Tongyi-MAI/Z-Image-Turbo",
+        )
+    assert installs == []
+    assert listed == ["unsloth/Z-Image-Turbo-NVFP4"]
+
+
+def test_a_reachable_nvfp4_checkpoint_still_installs_flashinfer(fake_runtime, monkeypatch):
+    installs, listed = _nvfp4_install_probe(
+        monkeypatch, listing = [_FakeSibling("Z-Image-Turbo-NVFP4.safetensors", 6 * GB)]
+    )
+    _load_to_the_install_gate()
+    assert listed == ["unsloth/Z-Image-Turbo-NVFP4"]
+    assert installs == [("cuda", False)]
+
+
+def test_with_the_nvfp4_switch_off_a_reachable_checkpoint_installs_nothing(
+    fake_runtime, monkeypatch
+):
+    # conftest sets UNSLOTH_NVFP4_DIFFUSION=1; unset for the shipped default.
+    monkeypatch.delenv("UNSLOTH_NVFP4_DIFFUSION", raising = False)
+    installs, listed = _nvfp4_install_probe(
+        monkeypatch, listing = [_FakeSibling("Z-Image-Turbo-NVFP4.safetensors", 6 * GB)]
+    )
+    _load_to_the_install_gate(transformer_quant = None, _pipeline_prequant_planned = "nvfp4")
+    assert installs == []
+    assert listed == [], "no Hub request to a *-NVFP4 repo while the switch is off"
+    with pytest.raises(ValueError, match = "NVFP4 is disabled in this build"):
+        DiffusionBackend().load_pipeline(
+            "Tongyi-MAI/Z-Image-Turbo",
+            model_kind = "pipeline",
+            family_override = "z-image",
+            transformer_quant = "nvfp4",
+            _fetch_base = "Tongyi-MAI/Z-Image-Turbo",
+        )
+    assert installs == [] and listed == []
+
+
+def test_a_plan_that_settled_nvfp4_installs_without_asking_the_hub_again(fake_runtime, monkeypatch):
+    installs, listed = _nvfp4_install_probe(
+        monkeypatch, refusal = RuntimeError("no request expected")
+    )
+    _load_to_the_install_gate(transformer_quant = None, _pipeline_prequant_planned = "nvfp4")
+    assert listed == []
+    assert installs == [("cuda", False)]
+
+
+@pytest.mark.parametrize("reserved_gb, installs_expected", [(0, False), (60, True)])
+def test_a_settled_nvfp4_seed_the_live_memory_plan_would_drop_installs_no_flashinfer(
+    fake_runtime, monkeypatch, reserved_gb, installs_expected
+):
+    import core.inference.diffusion as diffusion_mod
+    from core.inference.diffusion_memory import DeviceMemory
+
+    installs, listed = _nvfp4_install_probe(
+        monkeypatch, refusal = RuntimeError("no request expected")
+    )
+    monkeypatch.setattr(
+        DiffusionBackend,
+        "_target_for_ordinal",
+        lambda self, fam, ordinal: types.SimpleNamespace(
+            device = "cuda", dtype = None, ordinal = 0, supports_model_cpu_offload = True
+        ),
+    )
+    monkeypatch.setattr(
+        diffusion_mod,
+        "snapshot_device_memory",
+        lambda target: DeviceMemory("cuda", "cuda", "discrete_vram", 2 * 1024, 80 * 1024),
+    )
+    sys.modules["torch"].cuda.memory_reserved = lambda: reserved_gb * 1024**3
+    _load_to_the_install_gate(transformer_quant = None, _pipeline_prequant_planned = "nvfp4")
+    assert listed == []
+    assert installs == ([("cuda", False)] if installs_expected else [])
+
+
+def test_an_nvfp4_lora_bake_installs_no_flashinfer(fake_runtime, monkeypatch):
+    installs, listed = _nvfp4_install_probe(
+        monkeypatch, listing = [_FakeSibling("Z-Image-Turbo-NVFP4.safetensors", 6 * GB)]
+    )
+    _load_to_the_install_gate(loras = [("some/lora", 1.0)])
+    assert installs == []
+
+
+@pytest.mark.parametrize("cached", [False, True])
+def test_an_offline_nvfp4_load_asks_only_the_cache(fake_runtime, monkeypatch, cached):
+    installs, listed = _nvfp4_install_probe(
+        monkeypatch, refusal = RuntimeError("an offline load made a Hub request"), cached = cached
+    )
+    _load_to_the_install_gate(local_files_only = True)
+    assert listed == []
+    assert installs == ([("cuda", True)] if cached else [])
 
 
 def test_plan_memory_prices_the_hosted_precast_text_encoder(monkeypatch, tmp_path):
@@ -12714,7 +13562,7 @@ def _stub_nvidia_offload_host(
 
     calls = _stub_pipeline_dense_quant(backend, monkeypatch, engages = engages)
     monkeypatch.setattr(
-        dmod, "select_transformer_quant_scheme", lambda target, mode, family = None: mode
+        dmod, "select_transformer_quant_scheme", lambda target, mode, family = None, **_: mode
     )
     monkeypatch.setattr(tq, "native_quant_host", lambda target: False)
     monkeypatch.setattr(tq, "native_offload_host", lambda target: True)
@@ -12774,6 +13622,52 @@ def test_the_act_kill_switch_keeps_nvidia_offload_native_but_weight_only(
     backend.unload()
 
 
+def test_an_explicit_fp8_under_group_offload_engages_on_a_measured_torchao(
+    fake_runtime, tmp_path, monkeypatch
+):
+    from core.inference import diffusion_memory
+
+    monkeypatch.setattr(diffusion_memory, "_installed_torchao_version", lambda: (0, 18))
+    monkeypatch.setattr(diffusion_memory, "_torchao_stream_pinnable", lambda plan, *_a: True)
+    backend = DiffusionBackend()
+    calls, reasons = _stub_nvidia_offload_host(backend, monkeypatch, engages = "fp8")
+    status = backend.load_pipeline(
+        "Qwen/Qwen-Image-2512",
+        model_kind = "pipeline",
+        transformer_quant = "fp8",
+        memory_mode = "balanced",
+        _base_local_dir = str(tmp_path),
+    )
+    assert len(calls) == 1 and "offload" not in calls[0] and reasons == []
+    assert status["transformer_quant"] == "fp8"
+    backend.unload()
+
+
+@pytest.mark.parametrize(
+    "memory",
+    [{"memory_mode": "balanced"}, {"memory_mode": "low_vram"}, {"cpu_offload": True}],
+)
+def test_an_explicit_int8_under_offload_stays_native_on_a_measured_torchao(
+    fake_runtime, tmp_path, monkeypatch, memory
+):
+    from core.inference import diffusion_memory
+
+    monkeypatch.setattr(diffusion_memory, "_installed_torchao_version", lambda: (0, 18))
+    monkeypatch.setattr(diffusion_memory, "_torchao_stream_pinnable", lambda plan, *_a: True)
+    backend = DiffusionBackend()
+    calls, reasons = _stub_nvidia_offload_host(backend, monkeypatch)
+    status = backend.load_pipeline(
+        "Qwen/Qwen-Image-2512",
+        model_kind = "pipeline",
+        transformer_quant = "int8",
+        _base_local_dir = str(tmp_path),
+        **memory,
+    )
+    assert len(calls) == 1 and calls[0]["offload"] is True
+    assert status["transformer_quant"] == "int8" and reasons == ["int8"]
+    backend.unload()
+
+
 @pytest.mark.parametrize("fallback", ["0", "1"])
 def test_an_explicit_fp8_under_offload_on_nvidia_is_still_declined(
     fake_runtime, tmp_path, monkeypatch, fallback
@@ -12788,12 +13682,15 @@ def test_an_explicit_fp8_under_offload_on_nvidia_is_still_declined(
         _base_local_dir = str(tmp_path),
     )
     if fallback == "0":
-        with pytest.raises(RuntimeError, match = "Module.to"):
+        with pytest.raises(RuntimeError, match = "hooks torchao weights do not survive"):
             backend.load_pipeline("Qwen/Qwen-Image-2512", **kwargs)
     else:
         status = backend.load_pipeline("Qwen/Qwen-Image-2512", **kwargs)
         assert status["transformer_quant"] is None
-        assert "Module.to()" in status["resolved"]["transformer_quant"]["reason"]
+        assert (
+            "hooks torchao weights do not survive"
+            in status["resolved"]["transformer_quant"]["reason"]
+        )
         backend.unload()
     assert calls == [] and reasons == []
 
@@ -13059,3 +13956,622 @@ def test_status_reports_cuda_graph_off_once_every_armed_step_ran_eager():
     st = backend.status()
     assert st["resolved"]["cuda_graph"]["value"] == "on"
     assert st["speed_optims"] == ["compiled", "cuda_graph"]
+
+
+def _resident_transformer(plan):
+    """``plan`` as the tier that keeps the denoiser resident and streams only the text encoders."""
+    return dataclasses.replace(
+        plan, offload_policy = "group", stream_text_encoders = True, stream_transformer = False
+    )
+
+
+def _record_placement(monkeypatch):
+    from core.inference import diffusion as dmod
+
+    placed: list = []
+
+    def _apply(pipe, plan, **kwargs):
+        placed.append(plan)
+        return plan.offload_policy, False
+
+    monkeypatch.setattr(dmod, "apply_memory_plan", _apply)
+    return placed
+
+
+def test_a_pipeline_quantises_where_only_the_encoders_stream(fake_runtime, tmp_path, monkeypatch):
+    """torchao weights fit once the encoders stream, so the transformer is converted and placed once."""
+    backend = DiffusionBackend()
+    calls = _stub_pipeline_dense_quant(backend, monkeypatch)
+    real_plan = DiffusionBackend._plan_memory
+
+    def _plan(self, *args, **kwargs):
+        plan = real_plan(self, *args, **kwargs)
+        if kwargs.get("transformer_resident_override_mib") is not None:
+            return _resident_transformer(plan)
+        return dataclasses.replace(plan, offload_policy = "group")
+
+    monkeypatch.setattr(DiffusionBackend, "_plan_memory", _plan)
+    placed = _record_placement(monkeypatch)
+    status = backend.load_pipeline(
+        "Qwen/Qwen-Image-2512",
+        model_kind = "pipeline",
+        transformer_quant = "fp8",
+        _base_local_dir = str(tmp_path),
+    )
+    assert len(calls) == 1
+    assert status["transformer_quant"] == "fp8"
+    assert status["offload_policy"] == "group"
+    assert placed and placed[-1].stream_transformer is False
+    backend.unload()
+
+
+def test_a_pipeline_quant_replan_prices_the_encoder_the_load_opens(
+    fake_runtime, tmp_path, monkeypatch
+):
+    """The in-place replan prices encoders like the other candidate replans, not the family table."""
+    backend = DiffusionBackend()
+    _stub_pipeline_dense_quant(backend, monkeypatch)
+    priced = {"companion_override_mib": 1234, "text_encoder_override_mib": 567}
+    monkeypatch.setattr(
+        DiffusionBackend,
+        "_candidate_companion_overrides",
+        staticmethod(lambda *args, **kwargs: dict(priced)),
+    )
+    real_plan = DiffusionBackend._plan_memory
+    seen = []
+
+    def _plan(self, *args, **kwargs):
+        plan = real_plan(self, *args, **kwargs)
+        if kwargs.get("transformer_resident_override_mib") is not None:
+            seen.append(kwargs)
+            return _resident_transformer(plan)
+        return dataclasses.replace(plan, offload_policy = "group")
+
+    monkeypatch.setattr(DiffusionBackend, "_plan_memory", _plan)
+    _record_placement(monkeypatch)
+    backend.load_pipeline(
+        "Qwen/Qwen-Image-2512",
+        model_kind = "pipeline",
+        transformer_quant = "fp8",
+        _base_local_dir = str(tmp_path),
+    )
+    assert seen
+    assert seen[-1]["companion_override_mib"] == 1234
+    assert seen[-1]["text_encoder_override_mib"] == 567
+    backend.unload()
+
+
+def test_a_pipeline_whose_quantised_plan_still_streams_the_transformer_stays_dense(
+    fake_runtime, tmp_path, monkeypatch
+):
+    backend = DiffusionBackend()
+    calls = _stub_pipeline_dense_quant(backend, monkeypatch)
+    real_plan = DiffusionBackend._plan_memory
+
+    def _plan(self, *args, **kwargs):
+        return dataclasses.replace(real_plan(self, *args, **kwargs), offload_policy = "group")
+
+    monkeypatch.setattr(DiffusionBackend, "_plan_memory", _plan)
+    _record_placement(monkeypatch)
+    with pytest.raises(RuntimeError) as excinfo:
+        backend.load_pipeline(
+            "Qwen/Qwen-Image-2512",
+            model_kind = "pipeline",
+            transformer_quant = "fp8",
+            _base_local_dir = str(tmp_path),
+        )
+    assert calls == []
+    assert "hooks torchao weights do not survive" in str(excinfo.value)
+
+
+def _gguf_candidate_backend(monkeypatch, tmp_path, *, initial_policy, candidate_plan):
+    """GGUF load planned as ``initial_policy`` whose candidate plans as ``candidate_plan(real_plan)``."""
+    from core.inference import diffusion as dmod
+
+    backend = _cuda_backend(tmp_path, monkeypatch)
+    monkeypatch.setattr(dmod, "dense_transformer_supported", lambda target: True)
+    monkeypatch.setattr(
+        dmod, "select_transformer_quant_scheme", lambda target, mode, family = None, **_: "int8"
+    )
+    monkeypatch.setattr(dmod, "usable_prequant_source", lambda fam, scheme, **kw: "prequant/path")
+    monkeypatch.setattr(
+        dmod,
+        "resolve_dense_quant_candidate",
+        lambda **kw: types.SimpleNamespace(
+            transient_transformer_mib = 7_000,
+            steady_transformer_mib = 7_000,
+            companions_mib = 18_000,
+            text_encoders_mib = 16_700,
+            prequant = True,
+        ),
+    )
+    orig_plan = DiffusionBackend._plan_memory
+
+    def spy_plan(
+        self,
+        *a,
+        transformer_resident_override_mib = None,
+        **k,
+    ):
+        real = orig_plan(
+            self, *a, transformer_resident_override_mib = transformer_resident_override_mib, **k
+        )
+        if transformer_resident_override_mib is None:
+            return dataclasses.replace(real, offload_policy = initial_policy)
+        return candidate_plan(real)
+
+    monkeypatch.setattr(DiffusionBackend, "_plan_memory", spy_plan)
+    attempted: list = []
+
+    def fake_dense_load(self, *a, **k):
+        attempted.append(k.get("allow_dense_fallback"))
+        raise RuntimeError("test: stop after reaching the fast path")
+
+    monkeypatch.setattr(DiffusionBackend, "_load_dense_quant_pipeline", fake_dense_load)
+    return backend, attempted
+
+
+def test_a_gguf_pick_builds_the_quant_where_only_the_encoders_stream(
+    fake_runtime, tmp_path, monkeypatch, allow_precision_fallback
+):
+    backend, attempted = _gguf_candidate_backend(
+        monkeypatch, tmp_path, initial_policy = "group", candidate_plan = _resident_transformer
+    )
+    _load_m(backend, tmp_path, transformer_quant = "int8")
+    assert attempted == [False]
+
+
+def test_a_gguf_pick_declines_the_quant_where_the_transformer_would_stream(
+    fake_runtime, tmp_path, monkeypatch, allow_precision_fallback
+):
+    backend, attempted = _gguf_candidate_backend(
+        monkeypatch,
+        tmp_path,
+        initial_policy = "group",
+        candidate_plan = lambda real: dataclasses.replace(real, offload_policy = "group"),
+    )
+    status = _load_m(backend, tmp_path, transformer_quant = "int8")
+    assert attempted == []
+    assert status["transformer_quant"] is None
+
+
+def test_a_resident_gguf_plan_sizes_the_prequant_that_replaces_it(
+    fake_runtime, tmp_path, monkeypatch, allow_precision_fallback
+):
+    """The INT8 artifact outgrows the GGUF, so it loads under its own plan rather than the GGUF's."""
+    sized: list = []
+
+    def _candidate(real):
+        plan = _resident_transformer(real)
+        sized.append(plan)
+        return plan
+
+    backend, attempted = _gguf_candidate_backend(
+        monkeypatch, tmp_path, initial_policy = "none", candidate_plan = _candidate
+    )
+    placed = _record_placement(monkeypatch)
+    monkeypatch.setattr(
+        DiffusionBackend,
+        "_load_dense_quant_pipeline",
+        lambda self, *a, **k: attempted.append(k.get("allow_dense_fallback")) or (None, None),
+    )
+    _load_m(backend, tmp_path, transformer_quant = "int8")
+    assert sized, "the prequant was never sized"
+    assert attempted == [False]
+    assert placed[-1].offload_policy in ("none", "group")
+
+
+def test_a_resident_gguf_plan_declines_a_prequant_that_would_stream(
+    fake_runtime, tmp_path, monkeypatch, allow_precision_fallback
+):
+    backend, attempted = _gguf_candidate_backend(
+        monkeypatch,
+        tmp_path,
+        initial_policy = "none",
+        candidate_plan = lambda real: dataclasses.replace(real, offload_policy = "group"),
+    )
+    status = _load_m(backend, tmp_path, transformer_quant = "int8")
+    assert attempted == []
+    assert status["transformer_quant"] is None
+    assert (
+        "torchao tensors cannot be offloaded" in (status["resolved"]["transformer_quant"]["reason"])
+    )
+
+
+def test_candidate_overrides_price_the_encoder_the_load_opens(monkeypatch):
+    candidate = types.SimpleNamespace(companions_mib = 18_000, text_encoders_mib = 16_000)
+    monkeypatch.setattr(
+        DiffusionBackend,
+        "_precast_scaled_companions_mib",
+        staticmethod(lambda cand, fam, base, target, teq: 2_000 + int(16_000 * 0.65)),
+    )
+    overrides = DiffusionBackend._candidate_companion_overrides(candidate, None, "b", None, "fp8")
+    assert overrides == {"companion_override_mib": 12_400, "text_encoder_override_mib": 10_400}
+    # No split: the encoder term stays unknown, so the planner keeps its previous tiers.
+    bare = types.SimpleNamespace(companions_mib = 18_000, text_encoders_mib = 0)
+    assert (
+        DiffusionBackend._candidate_companion_overrides(bare, None, "b", None, None)[
+            "text_encoder_override_mib"
+        ]
+        == 0
+    )
+
+
+_Q4 = "m-Q4_K_M.gguf"
+
+
+def _gguf_offload_swap_setup(
+    monkeypatch,
+    tmp_path,
+    *,
+    scheme = "int8",
+    policy = "model",
+):
+    """A CUDA GGUF pick whose plan and every quantised re-plan offload, with a cached hosted checkpoint."""
+    import dataclasses
+
+    from core.inference import diffusion as dmod
+
+    (tmp_path / _Q4).write_bytes(b"x")
+    (tmp_path / "m-Q8_0.gguf").write_bytes(b"x")
+    backend = DiffusionBackend()
+    _force_cuda_target(backend, monkeypatch)
+    monkeypatch.delenv("UNSLOTH_DIFFUSION_GGUF_OFFLOAD_PREQUANT", raising = False)
+    monkeypatch.setattr(dmod, "dense_transformer_supported", lambda target: True)
+    monkeypatch.setattr(
+        dmod, "select_transformer_quant_scheme", lambda target, mode, family = None, **_kw: scheme
+    )
+    monkeypatch.setattr(dmod, "_uncached_prequant_repo", lambda *a, **k: None)
+    monkeypatch.setattr(
+        DiffusionBackend, "_auto_prequant_retry_scheme", staticmethod(lambda *a, **k: None)
+    )
+    monkeypatch.setattr(
+        dmod,
+        "resolve_dense_quant_candidate",
+        lambda **kw: types.SimpleNamespace(
+            scheme = scheme, transient_transformer_mib = 7_000, companions_mib = 8_000, prequant = True
+        ),
+    )
+    source = types.SimpleNamespace(
+        kind = "repo", location = "unsloth/Z-FP8", filename = "Z-INT8.safetensors"
+    )
+    monkeypatch.setattr(dmod, "resolve_prequant_source", lambda *a, **k: source)
+    monkeypatch.setattr(dmod, "torchao_offload_plan", lambda plan, s, **k: plan)
+    orig_plan = DiffusionBackend._plan_memory
+
+    def spy_plan(self, *a, **k):
+        return dataclasses.replace(orig_plan(self, *a, **k), offload_policy = policy)
+
+    monkeypatch.setattr(DiffusionBackend, "_plan_memory", spy_plan)
+    calls: list = []
+
+    def fake_dense_load(self, *a, **k):
+        calls.append(k)
+        pipe = _FakePipe()
+        pipe.transformer = types.SimpleNamespace(_unsloth_prequant_path = "/hub/Z-INT8.safetensors")
+        return pipe, scheme
+
+    monkeypatch.setattr(DiffusionBackend, "_load_dense_quant_pipeline", fake_dense_load)
+    return backend, calls
+
+
+def _load_gguf(
+    backend,
+    tmp_path,
+    name = _Q4,
+    **kwargs,
+):
+    return backend.load_pipeline(
+        str(tmp_path), gguf_filename = name, family_override = "z-image", **kwargs
+    )
+
+
+def test_offloading_gguf_pick_loads_the_cached_int8_checkpoint(fake_runtime, tmp_path, monkeypatch):
+    backend, calls = _gguf_offload_swap_setup(monkeypatch, tmp_path)
+    status = _load_gguf(backend, tmp_path)
+    assert len(calls) == 1
+    assert calls[0]["allow_dense_fallback"] is False
+    assert calls[0]["seed_plan"].offload_policy == "model"
+    assert status["transformer_quant"] == "int8"
+    assert status["offload_policy"] == "model"
+    tq = status["resolved"]["transformer_quant"]
+    assert tq["value"] == "int8" and tq["source"] == "auto"
+    assert tq["artifact"] == "prequant:unsloth/Z-FP8/Z-INT8.safetensors"
+    assert tq["replaced"] == f"gguf:{_Q4}"
+    assert "Q4_K_M GGUF pick was replaced by unsloth/Z-FP8/Z-INT8.safetensors" in tq["reason"]
+
+
+def test_gguf_offload_swap_kill_switch_keeps_the_gguf(fake_runtime, tmp_path, monkeypatch):
+    backend, calls = _gguf_offload_swap_setup(monkeypatch, tmp_path)
+    monkeypatch.setenv("UNSLOTH_DIFFUSION_GGUF_OFFLOAD_PREQUANT", "0")
+    status = _load_gguf(backend, tmp_path)
+    assert calls == []
+    assert status["transformer_quant"] is None
+    assert _FakeTransformer.last["path"].endswith(_Q4)
+    assert "replaced" not in status["resolved"]["transformer_quant"]
+
+
+def test_gguf_offload_swap_keeps_a_q8_pick_on_auto(fake_runtime, tmp_path, monkeypatch):
+    backend, calls = _gguf_offload_swap_setup(monkeypatch, tmp_path)
+    status = _load_gguf(backend, tmp_path, name = "m-Q8_0.gguf")
+    assert calls == []
+    assert status["transformer_quant"] is None
+    reason = status["resolved"]["transformer_quant"]["reason"]
+    assert "Q8_0" in reason and "at least as accurate" in reason
+
+
+@pytest.mark.parametrize("request_", ["off", "none"])
+def test_gguf_offload_swap_never_overrides_precision_off(
+    fake_runtime, tmp_path, monkeypatch, request_
+):
+    backend, calls = _gguf_offload_swap_setup(monkeypatch, tmp_path)
+    status = _load_gguf(backend, tmp_path, transformer_quant = request_)
+    assert calls == []
+    assert status["transformer_quant"] is None
+    assert _FakeTransformer.last["path"].endswith(_Q4)
+
+
+def test_gguf_offload_swap_falls_back_to_the_gguf_when_the_build_fails(
+    fake_runtime, tmp_path, monkeypatch
+):
+    backend, _calls = _gguf_offload_swap_setup(monkeypatch, tmp_path)
+
+    def boom(self, *a, **k):
+        raise RuntimeError("checkpoint unreadable")
+
+    monkeypatch.setattr(DiffusionBackend, "_load_dense_quant_pipeline", boom)
+    status = _load_gguf(backend, tmp_path)
+    assert status["transformer_quant"] is None
+    assert _FakeTransformer.last["path"].endswith(_Q4)
+    assert "replaced" not in status["resolved"]["transformer_quant"]
+
+
+def test_gguf_offload_swap_on_mps_keeps_the_gguf(fake_runtime, tmp_path, monkeypatch):
+    from core.inference import diffusion as dmod
+
+    backend, calls = _gguf_offload_swap_setup(monkeypatch, tmp_path)
+    torch = sys.modules["torch"]
+    monkeypatch.setattr(
+        backend, "_target_for_ordinal", lambda fam, ordinal = None: _mps_target(torch)
+    )
+    # The real device gate, not the test's CUDA override.
+    from core.inference.diffusion_transformer_quant import dense_transformer_supported
+
+    monkeypatch.setattr(dmod, "dense_transformer_supported", dense_transformer_supported)
+    status = _load_gguf(backend, tmp_path)
+    assert calls == []
+    assert status["transformer_quant"] is None
+
+
+@pytest.mark.parametrize(
+    "policy, stream, env, placed_on_host",
+    [
+        ("streaming", True, None, True),
+        ("group", True, None, True),
+        ("model", True, None, True),
+        ("none", True, None, False),
+        ("group", False, None, False),  # denoiser stays resident: seed where it runs
+        ("streaming", True, "0", False),  # UNSLOTH_DIFFUSION_PREQUANT_SEED_ON_HOST=0
+    ],
+)
+def test_gguf_route_prequant_seed_lands_on_the_host_when_the_plan_offloads(
+    fake_runtime, monkeypatch, policy, stream, env, placed_on_host
+):
+    from core.inference import diffusion as dmod
+
+    if env is None:
+        monkeypatch.delenv("UNSLOTH_DIFFUSION_PREQUANT_SEED_ON_HOST", raising = False)
+    else:
+        monkeypatch.setenv("UNSLOTH_DIFFUSION_PREQUANT_SEED_ON_HOST", env)
+    monkeypatch.setattr(dmod, "_planned_quant_scheme", lambda *a, **k: "int8")
+    monkeypatch.setattr(
+        dmod,
+        "resolve_prequant_source",
+        lambda *a, **k: types.SimpleNamespace(kind = "repo", location = "o/r", filename = "f"),
+    )
+    loaded: dict = {}
+
+    def fake_load(*a, **k):
+        loaded.update(k)
+        return object()
+
+    monkeypatch.setattr(dmod, "load_prequantized_transformer", fake_load)
+    assembled: list = []
+    monkeypatch.setattr(
+        DiffusionBackend,
+        "_assemble_pipe",
+        staticmethod(
+            lambda pcls, base, tr, dtype, tok, device, *a, **k: assembled.append(device)
+            or _FakePipe()
+        ),
+    )
+    _pipe, scheme = DiffusionBackend()._load_dense_quant_pipeline(
+        object,
+        object,
+        "base/repo",
+        "cuda:0",
+        "bf16",
+        None,
+        types.SimpleNamespace(device = "cuda", dtype = "bf16"),
+        "int8",
+        fam = types.SimpleNamespace(name = "qwen-image-2.1"),
+        seed_plan = types.SimpleNamespace(offload_policy = policy, stream_transformer = stream),
+    )
+    assert scheme == "int8"
+    assert loaded["placement_device"] == ("cpu" if placed_on_host else None)
+    assert assembled == ["cpu" if placed_on_host else "cuda:0"]
+
+
+def test_diffusion_status_response_keeps_the_gguf_a_swap_replaced():
+    # Pydantic drops undeclared keys.
+    from models.inference import DiffusionStatusResponse
+
+    rec = {
+        "transformer_quant": {
+            "value": "int8",
+            "source": "auto",
+            "reason": "the Q4_K_M GGUF pick was replaced",
+            "artifact": "prequant:o/r/f.safetensors",
+            "replaced": "gguf:m-Q4_K_M.gguf",
+        }
+    }
+    dumped = DiffusionStatusResponse(loaded = True, resolved = rec).model_dump()["resolved"][
+        "transformer_quant"
+    ]
+    assert dumped["replaced"] == "gguf:m-Q4_K_M.gguf"
+    assert dumped["artifact"] == "prequant:o/r/f.safetensors"
+
+
+class _T5WordTokenizer:
+    def __call__(
+        self,
+        text,
+        add_special_tokens = True,
+        **_,
+    ):
+        return {"input_ids": [5] * len(text.split()) + ([1] if add_special_tokens else [])}
+
+
+class _FluxFakePipe(_FakePipe):
+    def __init__(self):
+        super().__init__()
+        self.tokenizer_2 = _T5WordTokenizer()
+
+    def __call__(
+        self,
+        *,
+        prompt = None,
+        max_sequence_length = 512,
+        **kwargs,
+    ):
+        return super().__call__(prompt = prompt, max_sequence_length = max_sequence_length, **kwargs)
+
+
+def test_generate_passes_flux1_t5_length_like_comfy(fake_runtime, tmp_path, monkeypatch):
+    diffusers = sys.modules["diffusers"]
+    monkeypatch.setattr(diffusers, "FluxPipeline", _FakePipeline, raising = False)
+    monkeypatch.setattr(diffusers, "FluxTransformer2DModel", _FakeTransformer, raising = False)
+    _no_cache(monkeypatch)
+    backend = _loaded_backend(tmp_path, family_override = "flux.1")
+    pipe = _FluxFakePipe()
+    object.__setattr__(backend._state, "pipe", pipe)
+    backend.generate(prompt = "a sloth on a branch", steps = 4, guidance = 0.0)
+    assert pipe.last_kwargs["max_sequence_length"] == 256
+    backend.generate(prompt = " ".join(["w"] * 320), steps = 4, guidance = 0.0)
+    assert pipe.last_kwargs["max_sequence_length"] == 512
+
+
+def test_generate_leaves_t5_length_alone_off_flux1(fake_runtime, tmp_path):
+    backend = _loaded_backend(tmp_path, family_override = "z-image")
+    pipe = _FluxFakePipe()
+    object.__setattr__(backend._state, "pipe", pipe)
+    backend.generate(prompt = "a sloth", steps = 4, guidance = 0.0)
+    assert pipe.last_kwargs["max_sequence_length"] == 512  # pipeline default, nothing passed
+
+
+def test_qwen_true_cfg_gets_an_empty_negative_like_comfy(fake_runtime, tmp_path, monkeypatch):
+    """A blank negative must not silently turn Qwen-Image true CFG off."""
+    diffusers = sys.modules["diffusers"]
+    monkeypatch.setattr(diffusers, "QwenImagePipeline", _FakePipeline, raising = False)
+    monkeypatch.setattr(diffusers, "QwenImageTransformer2DModel", _FakeTransformer, raising = False)
+    _no_cache(monkeypatch)
+    backend = _loaded_backend(tmp_path, family_override = "qwen-image")
+    backend.generate(prompt = "a sloth", steps = 4, guidance = 4.0)
+    call = backend._state.pipe.last_kwargs
+    assert call["true_cfg_scale"] == 4.0 and call["negative_prompt"] == ""
+    # An explicit negative is kept; guidance <= 1 never asks for CFG.
+    backend.generate(prompt = "a sloth", negative_prompt = "blurry", steps = 4, guidance = 4.0)
+    assert backend._state.pipe.last_kwargs["negative_prompt"] == "blurry"
+    backend.generate(prompt = "a sloth", steps = 4, guidance = 1.0)
+    assert backend._state.pipe.last_kwargs["negative_prompt"] is None
+
+
+def test_guidance_scale_families_get_no_injected_negative(fake_runtime, tmp_path):
+    backend = _loaded_backend(tmp_path)  # z-image: guidance_scale, its own CFG handling
+    backend.generate(prompt = "a sloth", steps = 4, guidance = 4.0)
+    assert backend._state.pipe.last_kwargs["negative_prompt"] is None
+
+
+class _IdeogramScheduleFakePipe(_FakePipe):
+    def __call__(
+        self,
+        *,
+        prompt = None,
+        mu = 0.0,
+        std = 1.5,
+        guidance_schedule = "card",
+        **kwargs,
+    ):
+        return super().__call__(
+            prompt = prompt, mu = mu, std = std, guidance_schedule = guidance_schedule, **kwargs
+        )
+
+
+def test_generate_ideogram_defaults_follow_comfy_template(fake_runtime, tmp_path):
+    """Ideogram 4 ComfyUI preset; other guidance stays constant, explicit 48 / 7 keeps the card taper."""
+    backend = DiffusionBackend()
+    _load_ideogram(backend, tmp_path)
+    pipe = _IdeogramScheduleFakePipe()
+    object.__setattr__(backend._state, "pipe", pipe)
+    backend.generate(prompt = "a sloth", width = 1024, height = 1024, steps = 20, guidance = 7.0)
+    call = pipe.last_kwargs
+    assert call["guidance_scale"] is None
+    assert call["guidance_schedule"] == [7.0] * 17 + [3.0] * 3
+    assert (call["mu"], call["std"]) == (0.0, 1.75)
+    backend.generate(prompt = "a sloth", width = 512, height = 512, steps = 20, guidance = 7.0)
+    assert pipe.last_kwargs["guidance_schedule"] == [7.0] * 14 + [3.0] * 6
+    backend.generate(prompt = "a sloth", width = 1024, height = 1024, steps = 20, guidance = 5.0)
+    call = pipe.last_kwargs
+    assert call["guidance_scale"] == 5.0 and call["guidance_schedule"] is None
+    assert (call["mu"], call["std"]) == (0.0, 1.75)
+    backend.generate(prompt = "a sloth", steps = 48, guidance = 7.0)
+    call = pipe.last_kwargs
+    assert call["guidance_schedule"] == "card" and (call["mu"], call["std"]) == (0.0, 1.5)
+
+
+def test_generate_ideogram_step_count_picks_its_comfy_preset(fake_runtime, tmp_path):
+    # 48 steps at another guidance keeps the Quality preset (std 1.5, the pipeline default), 12 is Turbo.
+    backend = DiffusionBackend()
+    _load_ideogram(backend, tmp_path)
+    pipe = _IdeogramScheduleFakePipe()
+    object.__setattr__(backend._state, "pipe", pipe)
+    backend.generate(prompt = "a sloth", steps = 48, guidance = 5.0)
+    call = pipe.last_kwargs
+    assert call["guidance_scale"] == 5.0 and (call["mu"], call["std"]) == (0.0, 1.5)
+    backend.generate(prompt = "a sloth", width = 1024, height = 1024, steps = 12, guidance = 7.0)
+    call = pipe.last_kwargs
+    assert (call["mu"], call["std"]) == (0.5, 1.75)
+    assert len(call["guidance_schedule"]) == 12 and call["guidance_schedule"][-1] == 3.0
+
+
+class _ShiftSchedulerConfig(dict):
+    pass
+
+
+class _ShiftFakeScheduler:
+    def __init__(self, **config):
+        self.config = _ShiftSchedulerConfig(config)
+
+    @classmethod
+    def from_config(cls, config, **overrides):
+        return cls(**{**config, **overrides})
+
+
+class _QwenShiftFakePipeline(_FakePipeline):
+    @classmethod
+    def from_pretrained(cls, base, **kwargs):
+        pipe = super().from_pretrained(base, **kwargs)
+        pipe.scheduler = _ShiftFakeScheduler(
+            shift = 1.0, use_dynamic_shifting = True, shift_terminal = 0.02
+        )
+        return pipe
+
+
+def test_qwen_load_samples_at_comfy_static_shift(fake_runtime, tmp_path, monkeypatch):
+    diffusers = sys.modules["diffusers"]
+    monkeypatch.setattr(diffusers, "QwenImagePipeline", _QwenShiftFakePipeline, raising = False)
+    monkeypatch.setattr(diffusers, "QwenImageTransformer2DModel", _FakeTransformer, raising = False)
+    _no_cache(monkeypatch)
+    backend = _loaded_backend(tmp_path, family_override = "qwen-image")
+    cfg = backend._state.pipe.scheduler.config
+    assert (cfg["shift"], cfg["use_dynamic_shifting"], cfg["shift_terminal"]) == (3.1, False, None)

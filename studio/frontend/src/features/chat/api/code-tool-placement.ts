@@ -33,7 +33,7 @@ export function selectCodeToolNames(input: CodeToolPlacementInput): CodeToolName
   if (input.providerHostsCodeExecution) return { local: [], hosted: [] };
   // edit_file is local-only: when the provider hosts execution the files live in its sandbox, so a
   // local editor would patch a copy nothing else sees.
-  return { local: ["python", "terminal", "edit_file"], hosted: [] };
+  return { local: ["python", "terminal", "edit_file", "view_image"], hosted: [] };
 }
 
 /** Whether the Code pill can do anything on this connection, so the composer can offer it and a

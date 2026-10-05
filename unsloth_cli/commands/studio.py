@@ -38,6 +38,7 @@ studio_app = typer.Typer(help = "Unsloth Studio commands.")
 def _enable_verbose_access_logs() -> None:
     os.environ["UNSLOTH_STUDIO_ACCESS_LOG_DEDUP_MS"] = "0"
     os.environ["UNSLOTH_STUDIO_ACCESS_LOG_POLL_DEDUP_MS"] = "0"
+    os.environ["LOG_LEVEL"] = "DEBUG"
 
 
 # Root order: UNSLOTH_STUDIO_HOME, STUDIO_HOME, UNSLOTH_HOME/studio, sys.prefix,
@@ -227,6 +228,8 @@ DESKTOP_SECRET_HASH_KEY = "desktop_secret_hash"
 DESKTOP_SECRET_CREATED_AT_KEY = "desktop_secret_created_at"
 PBKDF2_ITERATIONS = 100_000
 _START_API_KEY_MARKER_ENV = "_UNSLOTH_START_API_KEY_MARKER"
+# Marks run()'s re-exec'd child; a marked child still outside the venv must stop, not loop.
+_STUDIO_REEXEC_ENV = "_UNSLOTH_STUDIO_REEXEC"
 _CLOUDFLARE_INTENT_ENV = "_UNSLOTH_CLOUDFLARE_INTENT"
 
 
@@ -447,6 +450,31 @@ def _studio_venv_python() -> Optional[Path]:
     return p if p.is_file() else None
 
 
+def _resolved_or_self(path: Path) -> Path:
+    try:
+        return path.resolve()
+    except (OSError, RuntimeError, ValueError):  # RuntimeError: symlink loop, Python < 3.13
+        return path
+
+
+def _running_in_studio_venv(venv_dir: Path) -> bool:
+    """Compare resolved path components: console-script shebangs hold the resolved venv path,
+    so a string prefix check against a symlinked venv_dir never matched and looped forever."""
+    prefix = Path(sys.prefix)
+    for a, b in (
+        (prefix, venv_dir),
+        (_resolved_or_self(prefix), _resolved_or_self(venv_dir)),
+    ):
+        a_s = os.path.normcase(str(a))
+        b_s = os.path.normcase(str(b)).rstrip(os.sep + (os.altsep or ""))
+        if a_s == b_s or a_s.startswith(b_s + os.sep):
+            return True
+    try:
+        return os.path.samefile(prefix, venv_dir)
+    except (OSError, ValueError):
+        return False
+
+
 def _managed_cli_site_packages_layout(python: Path) -> bool:
     """On-disk hint that the venv still carries the CLI. Weaker than the import probe: an empty
     unsloth_cli/ or an orphaned dist-info passes here."""
@@ -584,7 +612,7 @@ def _clear_hsa_override_contradicting_install(venv_dir: Path) -> Optional[str]:
 def _clear_hsa_override_before_launch(silent: bool = False) -> Optional[str]:
     """Run the #7331 spoof clear for whichever entry point is about to launch. Idempotent."""
     _venv = STUDIO_HOME / "unsloth_studio"
-    _root = Path(sys.prefix) if sys.prefix.startswith(str(_venv)) else _venv
+    _root = Path(sys.prefix) if _running_in_studio_venv(_venv) else _venv
     _arch = _clear_hsa_override_contradicting_install(_root)
     # Published whether or not anything was cleared here: on a desktop launch the GUI
     # environment never carried the override, so the clear above is a no-op and the
@@ -1646,6 +1674,8 @@ def _load_model_via_http(
     llama_extra_args: Optional[List[str]] = None,
     timeout: int = 600,
     request_host: str = "127.0.0.1",
+    engine: str = "auto",
+    engine_precision: str = "auto",
 ) -> dict:
     import json
     import urllib.request
@@ -1671,6 +1701,9 @@ def _load_model_via_http(
         payload["spec_draft_n_max"] = spec_draft_n_max
     if llama_extra_args:
         payload["llama_extra_args"] = list(llama_extra_args)
+    if engine != "auto":
+        payload["engine"] = engine
+        payload["engine_precision"] = engine_precision
 
     data = json.dumps(payload).encode()
     url = f"http://{_url_host(request_host)}:{port}/api/inference/load"
@@ -1694,6 +1727,73 @@ def _load_model_via_http(
     except urllib.error.HTTPError as exc:
         body = exc.read().decode(errors = "replace")
         raise RuntimeError(f"Model load failed (HTTP {exc.code}): {body}") from exc
+
+
+def _ensure_engine_installed(engine: str, yes: bool, silent: bool) -> None:
+    """Install an optional serving engine on first use, only after the owner agrees."""
+    import time
+
+    from core.inference import engine_install
+
+    # status() answers "still checking" while the GPU probe runs; this caller can wait for it.
+    reason = engine_install.support_reason(engine)
+    if reason:
+        raise RuntimeError(reason)
+    row = engine_install.status(engine)
+    # A rollback the owner chose is loadable as is, as in Settings.
+    if row.get("current") or (row.get("installed") and row.get("restored")):
+        return
+    size = row.get("download_bytes")
+    action = "Update" if row.get("installed") else "Install"
+    question = f"{action} {engine} {row['version']}" + (
+        f" (about {size / 1024**3:.1f} GiB to download)" if size else ""
+    )
+    notice = _engine_install_notice(engine, row)
+    if not yes:
+        if not sys.stdin.isatty():
+            raise RuntimeError(
+                f"{engine} is not installed. Re-run with --yes to install it, or install it "
+                "from Settings > Inference engines."
+            )
+        if notice:
+            typer.echo(notice)
+        if not typer.confirm(f"{question}?", default = False):
+            raise RuntimeError(f"{engine} was not installed, so the model was not loaded.")
+    elif not silent:
+        if notice:
+            typer.echo(notice)
+        typer.echo(f"{question}: --yes given, installing.")
+    engine_install.start_install(engine)
+    last = None
+    while True:
+        job = engine_install.status(engine)["job"]
+        if job.get("state") != "running":
+            break
+        message = job.get("message") or job.get("phase")
+        if message != last and not silent:
+            typer.echo(f"  {engine}: {message}")
+            last = message
+        time.sleep(2)
+    if job.get("state") != "success":
+        raise RuntimeError(f"{engine} installation did not finish: {job.get('message')}")
+
+
+def _engine_install_notice(engine: str, row: dict) -> Optional[str]:
+    """The Windows consent text Settings shows before the same install (managedEngines.wsl*)."""
+    if row.get("host") != "wsl":
+        return None
+    wsl = row.get("wsl") or {}
+    if wsl.get("state") == "restart_required":
+        return "Restart Windows to finish turning on WSL2, then run this command again."
+    if wsl.get("state") == "ready" and wsl.get("distro"):
+        return f"On Windows, {engine} runs inside Studio's private WSL2 environment."
+    return (
+        f"On Windows, {engine} runs inside WSL2 (Windows Subsystem for Linux). Studio will turn "
+        "on WSL2 and set up its own private Ubuntu environment for engines; your existing Linux "
+        "distributions are not touched. Windows will show one administrator (UAC) prompt, and "
+        "may ask you to restart before the installation can finish. Nothing changes unless you "
+        "answer yes."
+    )
 
 
 def _format_context_length_line(load_result: dict) -> Optional[str]:
@@ -1906,7 +2006,7 @@ def studio_default(
 
     # Resolve the child launcher BEFORE the gate: a headless gate strips the seeded password, so aborting afterwards leaves no way to log in.
     studio_venv_dir = STUDIO_HOME / "unsloth_studio"
-    in_studio_venv = sys.prefix.startswith(str(studio_venv_dir))
+    in_studio_venv = _running_in_studio_venv(studio_venv_dir)
     # Before the env reaches a child: an override contradicting single-arch wheels fails every kernel launch, and install.sh's unset cannot reach here (#7331).
     _clear_hsa_override_before_launch(silent = silent)
     studio_python = run_py = None
@@ -2379,6 +2479,22 @@ def run(
             "decode speed, MoE usually don't."
         ),
     ),
+    engine: Literal["auto", "vllm", "sglang"] = typer.Option(
+        "auto",
+        "--engine",
+        rich_help_panel = _RUN_PANEL_MODEL,
+        help = (
+            "Serve a safetensors model with vLLM or SGLang instead of Studio's default "
+            "backend. Installed on first use after a confirmation (--yes skips it); "
+            "Linux NVIDIA, or Windows through WSL2."
+        ),
+    ),
+    engine_precision: Literal["auto", "bf16", "fp16", "int4", "int8", "fp8"] = typer.Option(
+        "auto",
+        "--engine-precision",
+        rich_help_panel = _RUN_PANEL_MODEL,
+        help = "Weight precision for --engine vllm/sglang (auto keeps the checkpoint's).",
+    ),
     start_api_key_marker: bool = typer.Option(
         False,
         "--start-api-key-marker",
@@ -2450,7 +2566,9 @@ def run(
     # Set before any re-exec. --log-verbose keeps llama-server's own -v passthrough working.
     if verbose:
         _enable_verbose_access_logs()
-        if not any(a in ("--verbose", "-v", "--log-verbose") for a in extra_llama_args):
+        if engine == "auto" and not any(
+            a in ("--verbose", "-v", "--log-verbose") for a in extra_llama_args
+        ):
             extra_llama_args.append("--log-verbose")
     if disable_dns_pinning:
         os.environ["UNSLOTH_STUDIO_DISABLE_DNS_PINNING"] = "1"
@@ -2493,6 +2611,13 @@ def run(
             raise typer.Exit(1)
         model = parsed_repo
         gguf_variant = gguf_variant or embedded_variant
+    if engine != "auto" and (gguf_variant or extra_llama_args):
+        typer.echo(
+            f"Error: --engine {engine} serves safetensors checkpoints; GGUF variants and "
+            "llama-server flags apply only to the default backend.",
+            err = True,
+        )
+        raise typer.Exit(2)
 
     _require_bind_host(host)
 
@@ -2528,7 +2653,16 @@ def run(
     )
 
     studio_venv_dir = STUDIO_HOME / "unsloth_studio"
-    in_studio_venv = sys.prefix.startswith(str(studio_venv_dir))
+    in_studio_venv = _running_in_studio_venv(studio_venv_dir)
+    reexeced = os.environ.pop(_STUDIO_REEXEC_ENV, None) == "1"
+    if reexeced and not in_studio_venv:
+        typer.echo(
+            f"Error: re-launched through {studio_venv_dir} but still running from "
+            f"{sys.prefix}, so not re-launching again. Check that UNSLOTH_STUDIO_HOME "
+            "points at the Studio install, or re-run: unsloth studio setup",
+            err = True,
+        )
+        raise typer.Exit(1)
     studio_bin = None
     resolved_frontend = frontend
     if not in_studio_venv:
@@ -2578,9 +2712,13 @@ def run(
 
     if not in_studio_venv:
         # Application Control blocks the generated unsloth.exe on some machines but not the signed python.exe beside it.
-        launch_head = (
-            _managed_cli_argv(studio_python) if sys.platform == "win32" else [str(studio_bin)]
-        )
+        if sys.platform == "win32":
+            launch_head = _managed_cli_argv(studio_python)
+        elif _resolved_or_self(studio_venv_dir) != studio_venv_dir:
+            # Older child CLIs loop via the console script's resolved shebang; python keeps the link.
+            launch_head = [str(studio_python), "-c", _WINDOWS_CLI_ENTRYPOINT]
+        else:
+            launch_head = [str(studio_bin)]
         args = [
             *launch_head,
             "studio",
@@ -2628,6 +2766,8 @@ def run(
             args.append("--no-cloudflare")
         args.append("--secure" if secure else "--no-secure")
         args.append("--tensor-parallel" if tensor_parallel else "--no-tensor-parallel")
+        if engine != "auto":
+            args.extend(["--engine", engine, "--engine-precision", engine_precision])
         if verbose:
             args.append("--verbose")
         if extra_llama_args:
@@ -2635,6 +2775,7 @@ def run(
 
         if start_api_key_marker:
             os.environ[_START_API_KEY_MARKER_ENV] = "1"
+        os.environ[_STUDIO_REEXEC_ENV] = "1"
         try:
             if sys.platform == "win32":
                 with _studio_runtime_launch_guard(inherited = runtime_gate_handoff) as gate_held:
@@ -2648,9 +2789,10 @@ def run(
                     rc = proc.wait()
                 raise typer.Exit(rc)
             else:
-                os.execvp(str(studio_bin), args)
+                os.execvp(args[0], args)
         finally:
             os.environ.pop(_START_API_KEY_MARKER_ENV, None)
+            os.environ.pop(_STUDIO_REEXEC_ENV, None)
 
     with _studio_deps.studio_backend_imports("unsloth studio"):
         run_mod = _load_run_module()
@@ -2697,6 +2839,12 @@ def run(
             typer.echo(f"UNSLOTH_START_PORT: {actual_port}")
             typer.echo(f"UNSLOTH_START_API_KEY: {api_key}")
 
+        if engine != "auto":
+            try:
+                _ensure_engine_installed(engine, yes, silent)
+            except RuntimeError as exc:
+                typer.echo(f"Error: {exc}", err = True)
+                raise typer.Exit(1)
         if not silent:
             typer.echo(f"Loading model: {model}...")
         try:
@@ -2713,6 +2861,8 @@ def run(
                 spec_draft_n_max = spec_draft_n_max,
                 llama_extra_args = extra_llama_args,
                 request_host = request_host,
+                engine = engine,
+                engine_precision = engine_precision,
             )
         except RuntimeError as exc:
             typer.echo(f"Error: {exc}", err = True)

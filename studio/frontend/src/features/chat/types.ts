@@ -59,6 +59,8 @@ export interface ThreadRecord {
   /** The name this thread's generated title numbers from, so the next fork of it is the next
    *  number. Cleared on rename, and null on anything the user named. */
   forkTitleBase?: string | null;
+  /** Last rename, move or (un)archive (server-set). */
+  modifiedAt?: number | null;
   /** this chat's own settings, applied when it is opened; absent means the global ones. */
   settings?:
     | import("./utils/thread-scoped-settings").ThreadScopedSettings

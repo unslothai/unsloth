@@ -86,6 +86,7 @@ from core.inference.tool_loop_controller import (
     awaiting_approval_status,
     canonical_arguments_text,
     mcp_display_parts,
+    provisional_tool_provenance,
     strip_result_for_model,
 )
 from core.inference.tool_stream_exec import (
@@ -95,7 +96,13 @@ from core.inference.tool_stream_exec import (
     search_images_kwargs,
     stream_tool_execution,
 )
-from core.inference.tools import build_rag_autoinject, execute_tool, is_high_risk_tool_call
+from core.inference.tools import (
+    build_rag_autoinject,
+    execute_tool,
+    is_high_risk_tool_call,
+    mcp_image_share,
+    never_needs_approval,
+)
 from state.tool_approvals import (
     DECISION_EXPIRED,
     TOOL_APPROVAL_EXPIRED_MESSAGE,
@@ -1086,6 +1093,36 @@ def _unrun_call_card(
     ]
 
 
+def _is_strict_prefix_of_declared(name: str, declared_names: set[str]) -> bool:
+    return any(other != name and other.startswith(name) for other in declared_names)
+
+
+def _mcp_provenance_by_id(
+    turn: "_Turn", declared_names: set[str], stamped: set[str]
+) -> dict[str, Any]:
+    """MCP provenance per call id once its whole name has streamed, once per id.
+
+    Declared catalog decides completeness (``mcp__srv__cre`` is well formed too); strict-prefix names wait for tool_start.
+    """
+    stamps: dict[str, Any] = {}
+    for call in turn.by_index.values():
+        call_id = call.get("id")
+        if not isinstance(call_id, str) or not call_id or call_id in stamped:
+            continue
+        function = call.get("function")
+        name = function.get("name") if isinstance(function, dict) else None
+        if not isinstance(name, str) or name not in declared_names:
+            continue
+        if _is_strict_prefix_of_declared(name, declared_names):
+            continue
+        # Mark before the lookup: mcp_display_parts hits SQLite and is falsy without a display_name.
+        stamped.add(call_id)
+        if not mcp_display_parts(name):
+            continue
+        stamps[call_id] = provisional_tool_provenance(name)
+    return stamps
+
+
 def _status_sse(text: str) -> str:
     """Tool badge text, in the shape the chat client already parses."""
     return _sse({"type": "tool_status", "content": text})
@@ -1115,18 +1152,22 @@ def _merge_usage(totals: dict[str, Any], usage: Any) -> None:
                 bucket[detail] = bucket.get(detail, 0) + count
 
 
-def _usage_chunk_line(model: str, totals: dict[str, Any]) -> str | None:
+def _usage_chunk_line(
+    model: str, totals: dict[str, Any], timings: dict[str, Any] | None
+) -> str | None:
     if not totals:
         return None
-    return _sse(
-        {
-            "id": "chatcmpl-external-tools",
-            "object": "chat.completion.chunk",
-            "model": model,
-            "choices": [],
-            "usage": totals,
-        }
-    )
+    chunk: dict[str, Any] = {
+        "id": "chatcmpl-external-tools",
+        "object": "chat.completion.chunk",
+        "model": model,
+        "choices": [],
+        "usage": totals,
+    }
+    if timings is not None:
+        # Report the last turn's timings; speeds cannot be summed.
+        chunk["timings"] = timings
+    return _sse(chunk)
 
 
 def _is_usage_only(payload: dict[str, Any]) -> bool:
@@ -1212,6 +1253,7 @@ async def stream_with_studio_tools(
     run: ToolLoopRun,
     policy: ToolLoopPolicy,
     cancel_event: threading.Event,
+    mcp_image = None,
 ) -> AsyncIterator[str]:
     """Stream a provider, execute requested Unsloth tools, continue to a final answer."""
     conversation = [dict(message) for message in run.messages]
@@ -1238,6 +1280,39 @@ async def stream_with_studio_tools(
     confirm_tool_calls = policy.confirm_calls
     rag_scope = policy.rag_scope
 
+    from core.inference.skill_mentions import load_mentioned_skills
+
+    skill_loads = load_mentioned_skills(
+        conversation,
+        # "none" / a zero budget withdraw read_skill, so they withdraw the preload too.
+        tools if tool_choice != "none" and (unlimited or remaining > 0) else [],
+        permission_mode = permission_mode,
+        bypass_permissions = bypass_permissions,
+        confirm_tool_calls = confirm_tool_calls,
+        session_id = session_id,
+        cancel_event = cancel_event,
+        continue_final_message = run.continue_final_message,
+    )
+    load_task = None
+    flush_approval = False
+    try:
+        while True:
+            load_task = asyncio.ensure_future(asyncio.to_thread(next, skill_loads, _STEP_DONE))
+            # Same handshake as a gated tool card: early separate keepalive, then heartbeats while Ask waits.
+            timeout = _TOOL_APPROVAL_FLUSH_DELAY_S if flush_approval else TOOL_HEARTBEAT_INTERVAL_S
+            done, _pending = await asyncio.wait({load_task}, timeout = timeout)
+            while not done:
+                yield _SSE_KEEPALIVE
+                done, _pending = await asyncio.wait({load_task}, timeout = TOOL_HEARTBEAT_INTERVAL_S)
+            event = load_task.result()
+            load_task = None
+            if event is _STEP_DONE:
+                break
+            flush_approval = event.get("status") == "awaiting_approval"
+            yield _sse(event)
+    finally:
+        await _drain_step_task(load_task, cancel_event)
+        skill_loads.close()
     # The promotion allowlist is the selected catalog, never None: an unrestricted parse re-opens markerless tool-call
     # promotion.
     heal_names = (
@@ -1262,6 +1337,7 @@ async def stream_with_studio_tools(
     executed_any = False
     model_name = run.model or "external"
     usage_totals: dict[str, Any] = {}
+    last_timings: dict[str, Any] | None = None
     # Dedup, one-shot tracking and the force-final-answer transition are the same ledger the local loops keep, so an
     # external model cannot spend the budget repeating one call and a terminal no-op still ends the loop.
     controller = ToolLoopController(
@@ -1293,6 +1369,10 @@ async def stream_with_studio_tools(
             break
         provider_turns += 1
         turn = _Turn(round = provider_turns)
+        # Clear stale timings even if this turn sends no usage chunk.
+        last_timings = None
+        # Per turn: ids restart each turn, so a later call_0 is a new card.
+        mcp_stamped_ids: set[str] = set()
         healer = StreamToolCallHealer(heal_names, tools) if heal_names else None
         # A healed text-form call never reaches the wire as a tool_calls key, so a headerless caller's stripper cannot
         # tell this turn ends in a call the loop is about to run rather than in an answer. Hold the turn-ending chunk
@@ -1347,14 +1427,15 @@ async def stream_with_studio_tools(
                     model_name = upstream_model
                 if "usage" in payload:
                     _merge_usage(usage_totals, payload.get("usage"))
+                    if isinstance(payload.get("timings"), dict):
+                        last_timings = payload["timings"]
                     if _is_usage_only(payload):
                         # Withheld: one summed chunk is sent once the loop ends, so a multi-turn answer does not
                         # report a burst of partial counts.
                         continue
-                    # Some providers hang usage off a chunk that also carries a choice, which cannot be withheld
-                    # wholesale without losing the content. Drop just the usage: it is already in the totals, and
-                    # leaving it here makes a client that sums chunks count this turn twice.
+                    # Preserve content, but emit usage and timings only in the final summary chunk.
                     payload.pop("usage", None)
+                    payload.pop("timings", None)
                     line = "data: " + json.dumps(payload, separators = (",", ":"))
                 choices = payload.get("choices")
                 choice = choices[0] if isinstance(choices, list) and choices else {}
@@ -1392,6 +1473,10 @@ async def stream_with_studio_tools(
                                 turn.text.append(value)
                                 yield _sse({"choices": [{"index": 0, "delta": {"content": value}}]})
                     turn.merge_structured(raw_calls)
+                    stamps = _mcp_provenance_by_id(turn, allowed_tool_names, mcp_stamped_ids)
+                    if stamps:
+                        payload["_mcp_provenance"] = stamps
+                        line = "data: " + json.dumps(payload, separators = (",", ":"))
 
                 if healer is None or healer.dormant or not isinstance(content, str) or not content:
                     plain = _delta_text(content)
@@ -1668,10 +1753,20 @@ async def stream_with_studio_tools(
             # Same id for a call the provider named; for one it did not, the card answers to the id the client minted
             card_id = decision.card_id
             needs_confirmation = (
-                confirm_tool_calls and not bypass_permissions and permission_mode != "off"
+                confirm_tool_calls
+                and not bypass_permissions
+                and permission_mode != "off"
+                and not never_needs_approval(name)
             )
             if needs_confirmation and permission_mode == "auto":
                 needs_confirmation = is_high_risk_tool_call(name, arguments)
+            # Sending the user's image always asks, whatever the permission mode.
+            image_share = (
+                await asyncio.to_thread(mcp_image_share, name, arguments, mcp_image)
+                if mcp_image is not None
+                else None
+            )
+            needs_confirmation = needs_confirmation or image_share is not None
             approval_id = new_approval_id() if needs_confirmation else ""
             decision_slot = (
                 begin_tool_decision(session_id, approval_id) if needs_confirmation else None
@@ -1680,6 +1775,8 @@ async def stream_with_studio_tools(
             start_event = decision.tool_start_event()
             start_event["approval_id"] = approval_id
             start_event["awaiting_confirmation"] = needs_confirmation
+            if image_share is not None:
+                start_event["image_disclosure"] = image_share["disclosure"]
             denied = False
             try:
                 # A gated call has not started, so it must not read as running.
@@ -1754,7 +1851,14 @@ async def stream_with_studio_tools(
                 reprompts = max_reprompts
                 continue
 
-            def _invoke(output_callback: Any, call = decision) -> str:
+            # Only a call the user answered: the executor lets it reach the host paths it names.
+            host_access_approved = verdict not in (None, "deny")
+
+            def _invoke(
+                output_callback: Any,
+                call = decision,
+                approved = host_access_approved,
+            ) -> str:
                 kwargs: dict[str, Any] = {
                     "cancel_event": cancel_event,
                     "timeout": None if tool_call_timeout >= 9999 else tool_call_timeout,
@@ -1768,6 +1872,8 @@ async def stream_with_studio_tools(
                 # leaves the replaced response in them.
                 if accepts_kwarg(execute_tool, "conversation_branch"):
                     kwargs["conversation_branch"] = request_branch
+                if approved and accepts_kwarg(execute_tool, "host_access_approved"):
+                    kwargs["host_access_approved"] = True
                 # And a budget, so the tool's clamp is not skipped. Unsloth cannot measure an external model's window,
                 # and a custom OpenAI-compatible endpoint can be a small local server, so a model-chosen 8 chunks is
                 # roughly 4K tokens replayed on every later call. Unmeasurable means one recall's worth. Explicitly
@@ -1786,6 +1892,8 @@ async def stream_with_studio_tools(
                 if accepts_output_callback(execute_tool):
                     kwargs["output_callback"] = output_callback
                 kwargs.update(search_images_kwargs(execute_tool, call.tool_name))
+                if image_share is not None:
+                    kwargs["mcp_image"] = image_share["image"]
                 return execute_tool(call.tool_name, call.arguments, **kwargs)
 
             # The same wrapper the local loops run tools through: live stdout for the card, and a heartbeat so a long
@@ -1929,6 +2037,6 @@ async def stream_with_studio_tools(
             # offered
             _append_user_turn(conversation, _BUDGET_EXHAUSTED_NUDGE)
 
-    usage_line = _usage_chunk_line(model_name, usage_totals)
+    usage_line = _usage_chunk_line(model_name, usage_totals, last_timings)
     if usage_line is not None:
         yield usage_line

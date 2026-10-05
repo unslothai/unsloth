@@ -433,6 +433,39 @@ _COMPLETED_NEUTRAL_PHRASE = (
 )
 _FILE_WRITING_TOOLS = frozenset({"edit_file"})
 
+# Bracketed = leaf receipt, bare = `_unsloth_compacted` receipt for unparseable arguments.
+_RECEIPT_PHRASES = "|".join(
+    re.escape(phrase).replace(r"\{where\}", rf"(?: to [^\n]{{1,{_RECEIPT_PATH_MAX_CHARS}}})?")
+    for phrase in (_REFUSED_PHRASE, _COMPLETED_PHRASE, _COMPLETED_NEUTRAL_PHRASE)
+)
+_RECEIPT_LEAF = re.compile(rf"<\d+ chars (?:{_RECEIPT_PHRASES})>|\d+ chars (?:{_RECEIPT_PHRASES})")
+
+
+def compaction_receipt_field(
+    value: Any,
+    where: str = "",
+    match_only: "frozenset[str]" = frozenset(),
+) -> Optional[str]:
+    """First field holding only a receipt, or None; `match_only` keys (e.g. `old_string`) may, to repair files."""
+    if isinstance(value, str):
+        return (where or "arguments") if _RECEIPT_LEAF.fullmatch(value.strip()) else None
+    if isinstance(value, dict):
+        items = (
+            (f"{where}.{key}" if where else str(key), item)
+            for key, item in value.items()
+            if key not in match_only
+        )
+    elif isinstance(value, list):
+        items = ((f"{where}[{index}]", item) for index, item in enumerate(value))
+    else:
+        return None
+    for inner, item in items:
+        found = compaction_receipt_field(item, inner, match_only)
+        if found is not None:
+            return found
+    return None
+
+
 # A reply opening like this reports a call that ran and did NOT do what was asked, so the file wording would describe
 # a write that never landed.
 _FAILED_REPLY_MARKERS = ("error", "failed", "not found", "no such file", "traceback")
