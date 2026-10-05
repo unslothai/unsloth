@@ -611,6 +611,9 @@ export async function hydrateThreadUsage(props: any): Promise<void> {
   // The loader is created per pane; a compare pane carries a pairId and never owns the bar.
   const modelType: string = props.modelType ?? "base";
   const pairId = props.pairId ?? undefined;
+  // The thread's stored messages, which the loader reads into `msgs` above the sliced block.
+  // The block prices them with `estimateContextUsage` when nothing saved is usable (#9475).
+  const msgs: any[] = props.messages ?? [];
   // Read once, as the loader does, just above the sliced block.
   const store = useChatRuntimeStore.getState();
 __RESTORE__
@@ -1462,6 +1465,112 @@ def test_history_hydration_keeps_saved_usage_it_restored(
     assert (
         usage.get("completionTokens") == expect_completion
     ), "the completion half of an exact total must survive hydration"
+
+
+# 400 characters of text is 100 tokens at the estimator's 4 characters a token.
+STORED_TURN = (
+    '[{ id: "u1", parentId: null, role: "user", createdAt: 1, '
+    'content: [{ type: "text", text: "x".repeat(400) }] }]'
+)
+
+
+@pytest.mark.parametrize(
+    ("saved", "expect_shown"),
+    [
+        # Nothing usable restored: the bar shows the text estimate until the recount answers.
+        ("null", {"totalTokens": 100, "completionTokens": 0, "estimated": True}),
+        (
+            '{ totalTokens: 900, promptTokens: 700, completionTokens: 200, modelId: "other" }',
+            {"totalTokens": 100, "completionTokens": 0, "estimated": True},
+        ),
+        # Exact totals for this model win over the estimate, and nothing is recounted.
+        (
+            "{ totalTokens: 900, promptTokens: 700, completionTokens: 200, "
+            'modelId: "unsloth/gguf-model" }',
+            {"totalTokens": 900, "completionTokens": 200, "estimated": None},
+        ),
+    ],
+    ids = ["nothing_saved", "saved_is_another_model", "saved_matches_the_model"],
+)
+def test_history_hydration_shows_an_estimate_until_the_recount_lands(saved, expect_shown):
+    """#9475: a reopened thread with no usable saved usage shows an estimate of its stored
+    messages at once, instead of an empty bar for as long as the recount takes. The estimate
+    is the loader's own `msgs`, so the harness has to hand them in: without that binding the
+    sliced block threw a ReferenceError and every history case here went red."""
+    out = _run(
+        textwrap.dedent(
+            f"""
+            // @ts-nocheck
+            import {{ hydrateThreadUsage, seed, snapshot, world }} from "./harness.ts";
+            {LOADED_MODEL}
+            seed({{
+              activeThreadId: "thread-a",
+              contextUsage: null,
+              contextUsageByThreadId: {{}},
+            }});
+            let release;
+            world.countGate = new Promise((resolve) => {{ release = resolve; }});
+            await hydrateThreadUsage({{
+              remoteId: "thread-a",
+              savedUsage: {saved},
+              messages: {STORED_TURN},
+            }});
+            const shown = snapshot().contextUsage;
+            release();
+            await new Promise((resolve) => setTimeout(resolve, 30));
+            console.log(JSON.stringify({{
+              shown,
+              counts: world.countedMessages.length,
+              settled: snapshot().contextUsage,
+            }}));
+            """
+        )
+    )
+    shown = out["shown"] or {}
+    assert {key: shown.get(key) for key in expect_shown} == expect_shown, (
+        "the bar must show the restored usage, or the estimate when none is usable, "
+        "before the recount answers"
+    )
+    if expect_shown["estimated"]:
+        assert out["counts"] == 1, "an estimate is a placeholder; the recount still has to run"
+        settled = out["settled"] or {}
+        assert settled.get("totalTokens") == 12 and not settled.get(
+            "estimated"
+        ), "the recount's exact count must replace the estimate"
+    else:
+        assert out["counts"] == 0
+
+
+def test_the_harness_binds_every_loader_local_the_history_restore_reads() -> None:
+    """The restore block is sliced out of the middle of the history adapter's `load()`, so any
+    local it reads from above the slice has to be declared by `hydrateThreadUsage` instead.
+    Imported helpers are followed in from the studio sources by `run_harness`; locals are not.
+    #9475 made the block read the loader's `msgs`, and the replay threw `msgs is not defined`
+    in every history-hydration case on main."""
+    provider = read(PROVIDER)
+    restore = _history_usage_restore()
+    start = provider.index(restore)
+    loader = provider.rindex("async load() {", 0, start)
+    above = provider[loader:start]
+    declared_above = set(re.findall(r"\b(?:const|let)\s+([A-Za-z_$][\w$]*)", above))
+    assert (
+        {"msgs", "savedUsage", "store"} <= declared_above
+    ), "could not read the loader's locals above the restore; this guard would check nothing"
+    # Code only: the comments in the block name words like "message" that are locals elsewhere.
+    code = re.sub(r"//[^\n]*", "", restore)
+    declared_in_slice = set(re.findall(r"\b(?:const|let)\s+([A-Za-z_$][\w$]*)", code))
+    read_from_above = sorted(
+        name
+        for name in declared_above - declared_in_slice
+        if re.search(rf"(?<![\w$.]){re.escape(name)}\b", code)
+    )
+    assert "msgs" in read_from_above, "the guard no longer sees the restore read `msgs`"
+    bound = set(re.findall(r"\b(?:const|let)\s+([A-Za-z_$][\w$]*)", HARNESS_HISTORY))
+    missing = [name for name in read_from_above if name not in bound]
+    assert not missing, (
+        f"the history restore reads the loader locals {missing}, which hydrateThreadUsage does "
+        "not declare: the replay would throw a ReferenceError. Bind them from `props`."
+    )
 
 
 def test_deep_research_recounts_before_the_model_decides():
