@@ -853,6 +853,8 @@ def _scan_nested_compat_rows(
                 continue
             seen.add(key)
             found.append(row)
+            if len(existing) + len(found) >= limit:
+                return found
     return found
 
 

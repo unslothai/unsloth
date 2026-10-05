@@ -191,3 +191,16 @@ def test_compat_nested_rows_skip_folders_with_nothing_to_load(tmp_path):
     app.mkdir(parents = True)
     (app / "config.json").write_text("{}", encoding = "utf-8")
     assert models_routes._scan_nested_compat_rows(tmp_path, [], limit = 200) == []
+
+
+def test_compat_nested_rows_keep_the_cap_with_a_nested_hf_cache(tmp_path):
+    from routes import models as models_routes
+
+    hub = tmp_path / "team" / "hub"
+    for i in range(5):
+        repo = hub / f"models--org--tiny{i}"
+        _gguf(repo / "snapshots" / "abc" / f"tiny{i}-Q4_K_M.gguf")
+        (repo / "refs").mkdir()
+        (repo / "refs" / "main").write_text("abc", encoding = "utf-8")
+    assert len(models_routes._scan_nested_compat_rows(tmp_path, [], limit = 5)) == 5
+    assert len(models_routes._scan_nested_compat_rows(tmp_path, [], limit = 3)) == 3
