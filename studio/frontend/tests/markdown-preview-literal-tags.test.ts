@@ -7,12 +7,12 @@ import * as React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import * as jsxRuntime from "react/jsx-runtime";
 import * as streamdown from "streamdown";
-import * as streamdownCode from "@streamdown/code";
 import * as streamdownMath from "@streamdown/math";
 import * as streamdownMermaid from "@streamdown/mermaid";
 import ts from "typescript";
 
 import type * as ComposerDraftPreviewModule from "../src/components/assistant-ui/composer-draft-preview.tsx";
+import { createCodePlugin } from "../src/components/assistant-ui/code-plugin.ts";
 import * as inertComponents from "../src/components/markdown/inert-components.ts";
 import type * as MarkdownPreviewModule from "../src/components/markdown/markdown-preview.tsx";
 import * as markdownDataImages from "../src/lib/markdown-data-images.ts";
@@ -34,7 +34,9 @@ const { MarkdownPreview } = loadWithStubs<typeof MarkdownPreviewModule>(
   new URL("../src/components/markdown/markdown-preview.tsx", import.meta.url),
   {
     ...shared,
-    "@streamdown/code": streamdownCode,
+    "@/components/assistant-ui/shared-code-plugin": {
+      codePlugin: createCodePlugin(),
+    },
     "@streamdown/math": streamdownMath,
     "@streamdown/mermaid": streamdownMermaid,
     "@/lib/markdown-plugins": markdownPlugins,

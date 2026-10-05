@@ -1629,7 +1629,10 @@ async def _recipes_redirect(rest: str = ""):
     return _RedirectResponse(url = target, status_code = 308)
 
 
-from utils.host_policy import cors_origins_for_mode  # noqa: E402
+from utils.host_policy import (
+    cors_origin_regex_for_mode,
+    cors_origins_for_mode,
+)  # noqa: E402
 
 
 class RemoteAccessCORSMiddleware(CORSMiddleware):
@@ -1656,11 +1659,16 @@ _cors_origins = cors_origins_for_mode(
     api_only = os.environ.get("UNSLOTH_API_ONLY") == "1",
     secure = os.environ.get("UNSLOTH_SECURE") == "1",
 )
+_cors_origin_regex = cors_origin_regex_for_mode(
+    api_only = os.environ.get("UNSLOTH_API_ONLY") == "1",
+    secure = os.environ.get("UNSLOTH_SECURE") == "1",
+)
 
 app.add_middleware(
     RemoteAccessCORSMiddleware,
     remote_access_state = app.state,
     allow_origins = _cors_origins,
+    allow_origin_regex = _cors_origin_regex,
     allow_credentials = True,
     allow_methods = ["*"],
     allow_headers = ["*"],
@@ -2564,6 +2572,10 @@ def get_system_info(
         logger.debug(f"Failed to get disk usage: {e}")
         disk = None
 
+    from utils.system_disk import cached_models_disk_usage
+
+    models_disk = cached_models_disk_usage()
+
     try:
         current_process = psutil.Process(os.getpid())
         process_used_mb = round(current_process.memory_info().rss / 1024**2)
@@ -2613,6 +2625,8 @@ def get_system_info(
             "free_gb": round(disk.free / 1e9, 2) if disk else 0,
             "percent_used": disk.percent if disk else 0,
         },
+        # Additive: null unless the HF cache sits on another volume (e.g. a symlinked drive).
+        "models_disk": models_disk,
         "gpu": gpu_info,
         "inference_gpu": inference_gpu_info,
         "ml_packages": ml_packages,

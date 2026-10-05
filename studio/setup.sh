@@ -743,6 +743,15 @@ _resolve_cuda_archs() {
 # above that: it must also cover MSVC and hipcc, older and far heavier CUDA
 # toolkits (ggml-org/llama.cpp#17844 climbs past 16 GiB), and the link step.
 # Erring high costs build time; erring low costs the machine.
+# The build dir is renamed into place, so CMake's build-tree RUNPATH dies at the mv (#12392):
+# $ORIGIN finds the sibling libllama*.so; USE_LINK_PATH keeps toolchain dirs (ROCm, CUDA, Nix).
+_llama_relocatable_rpath_args() {
+    case "$(uname -s 2>/dev/null)" in
+        Linux) printf '%s' '-DCMAKE_BUILD_WITH_INSTALL_RPATH=ON -DCMAKE_INSTALL_RPATH=$ORIGIN -DCMAKE_INSTALL_RPATH_USE_LINK_PATH=ON' ;;
+        *) printf '' ;;
+    esac
+}
+
 _LLAMA_BUILD_RESERVE_MB=2048
 _LLAMA_BUILD_MB_PER_JOB=2048
 
@@ -2253,6 +2262,12 @@ elif [ "$NODE_SOURCE" = bundled ]; then
         sed 's/^/   | /' "$_NODE_LOG" >&2; rm -f "$_NODE_LOG"
         substep "install Node >= 20.19 (with npm >= 11) yourself and re-run, or check your network"
         setup_fail 1 "Could not install an isolated Node runtime"
+    elif grep -Fq "keeping existing isolated Node" "$_NODE_LOG"; then
+        # Exit 0 also covers a failed update that kept a working Node; relay any repair lines.
+        if grep -Fq 'takeown /F' "$_NODE_LOG"; then
+            sed 's/^/   | /' "$_NODE_LOG" >&2
+        fi
+        step "node" "update not applied, existing isolated Node kept" "$C_WARN"
     fi
     grep -Fq "already matches" "$_NODE_LOG" && verbose_substep "isolated Node already up to date"
     rm -f "$_NODE_LOG"
@@ -5149,7 +5164,7 @@ else
 
         if [ "$BUILD_OK" = true ]; then
             # Set Release explicitly (llama.cpp only defaults to it on non-MSVC/Xcode).
-            CMAKE_ARGS="-DCMAKE_BUILD_TYPE=Release -DLLAMA_BUILD_TESTS=OFF -DLLAMA_BUILD_EXAMPLES=OFF -DLLAMA_BUILD_SERVER=ON -DGGML_NATIVE=ON"
+            CMAKE_ARGS="-DCMAKE_BUILD_TYPE=Release -DLLAMA_BUILD_TESTS=OFF -DLLAMA_BUILD_EXAMPLES=OFF -DLLAMA_BUILD_SERVER=ON -DGGML_NATIVE=ON $(_llama_relocatable_rpath_args)"
             _TRY_METAL_CPU_FALLBACK=false
             _HOST_SYSTEM="$(uname -s 2>/dev/null || true)"
             _HOST_MACHINE="$(uname -m 2>/dev/null || true)"
