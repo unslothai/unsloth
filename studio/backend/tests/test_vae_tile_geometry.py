@@ -262,7 +262,7 @@ def _vae_class(name: str):
 
 @functools.lru_cache(maxsize = None)
 def _fixture() -> dict:
-    return json.loads(FIXTURE.read_text())["families"]
+    return json.loads(FIXTURE.read_text(encoding = "utf-8"))["families"]
 
 
 def _family_configs() -> dict[str, tuple[str, dict]]:
