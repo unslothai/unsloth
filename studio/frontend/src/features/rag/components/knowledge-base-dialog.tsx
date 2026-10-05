@@ -303,7 +303,7 @@ export function KnowledgeBaseDialog({
                       type="button"
                       onClick={() => setView({ kind: "documents", kb })}
                       title="Open to add or remove documents"
-                      className="-my-1 -ml-2 flex min-w-0 flex-1 items-center gap-2 rounded-md px-2 py-1 text-left hover:bg-muted/60"
+                      className="-my-1 -ml-2 flex min-w-0 flex-1 items-center gap-2 rounded-md px-2 py-1 text-left transition-colors hover:bg-muted/60"
                     >
                       <span className="block min-w-0 flex-1">
                         <span className="block truncate font-medium">
@@ -315,7 +315,10 @@ export function KnowledgeBaseDialog({
                           {kb.description ? ` · ${kb.description}` : ""}
                         </span>
                       </span>
-                      <ChevronRightIcon className="size-4 shrink-0 text-muted-foreground" />
+                      <ChevronRightIcon
+                        strokeWidth={1.5}
+                        className="size-3.5 shrink-0 text-muted-foreground"
+                      />
                     </button>
                     <div className="flex items-center gap-1">
                       <Button
