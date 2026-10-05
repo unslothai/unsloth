@@ -305,6 +305,29 @@ def test_unknown_effort_fails_closed(monkeypatch, endpoint, style):
     )
 
 
+@pytest.mark.parametrize("style", STYLES)
+def test_explicit_off_wins_over_an_unsupported_stale_effort(monkeypatch, endpoint, style):
+    expected = {
+        "reasoning_effort": {"reasoning_effort": "none"},
+        "reasoning": {"reasoning": {"enabled": False}},
+        "thinking": {"thinking": {"type": "disabled"}},
+        "chat_template_kwargs.enable_thinking": {
+            "chat_template_kwargs": {"enable_thinking": False}
+        },
+    }[style]
+    assert (
+        _capture(
+            monkeypatch,
+            endpoint,
+            _config(style),
+            style + "-off-stale-effort",
+            enable_thinking = False,
+            reasoning_effort = "max",
+        )
+        == expected
+    )
+
+
 @pytest.fixture()
 def credential_db(db, tmp_path, monkeypatch):
     from auth import storage as auth_storage
