@@ -73,6 +73,11 @@ export const fr = {
       duplicate: "Dupliquer l'onglet",
       closeOthers: "Fermer les autres onglets",
     },
+    siteInfo: {
+      label: "Informations sur le site",
+      secure: "Connexion sécurisée",
+      insecure: "Connexion non sécurisée",
+    },
     tools: "Outils",
     recents: "Récents",
     website: "Site web",

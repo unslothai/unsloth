@@ -73,6 +73,11 @@ export const ko = {
       duplicate: "탭 복제",
       closeOthers: "다른 탭 닫기",
     },
+    siteInfo: {
+      label: "사이트 정보",
+      secure: "안전한 연결",
+      insecure: "안전하지 않은 연결",
+    },
     tools: "도구",
     recents: "최근 항목",
     website: "웹사이트",

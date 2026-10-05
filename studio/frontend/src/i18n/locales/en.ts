@@ -70,6 +70,11 @@ export const en = {
       duplicate: "Duplicate tab",
       closeOthers: "Close other tabs",
     },
+    siteInfo: {
+      label: "Site information",
+      secure: "Connection secure",
+      insecure: "Connection not secure",
+    },
     tools: "Tools",
     recents: "Recents",
     website: "Website",

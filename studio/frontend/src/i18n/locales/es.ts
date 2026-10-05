@@ -73,6 +73,11 @@ export const es = {
       duplicate: "Duplicar pestaña",
       closeOthers: "Cerrar otras pestañas",
     },
+    siteInfo: {
+      label: "Información del sitio",
+      secure: "Conexión segura",
+      insecure: "Conexión no segura",
+    },
     tools: "Herramientas",
     recents: "Recientes",
     website: "Sitio web",

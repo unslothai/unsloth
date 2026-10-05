@@ -74,6 +74,11 @@ export const ja = {
       duplicate: "タブを複製",
       closeOthers: "他のタブを閉じる",
     },
+    siteInfo: {
+      label: "サイト情報",
+      secure: "安全な接続",
+      insecure: "安全でない接続",
+    },
     tools: "ツール",
     recents: "最近",
     website: "ウェブサイト",

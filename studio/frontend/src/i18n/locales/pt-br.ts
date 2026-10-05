@@ -73,6 +73,11 @@ export const ptBR = {
       duplicate: "Duplicar aba",
       closeOthers: "Fechar outras abas",
     },
+    siteInfo: {
+      label: "Informações do site",
+      secure: "Conexão segura",
+      insecure: "Conexão não segura",
+    },
     tools: "Ferramentas",
     recents: "Recentes",
     website: "Site",

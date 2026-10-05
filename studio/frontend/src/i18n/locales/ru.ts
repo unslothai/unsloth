@@ -73,6 +73,11 @@ export const ru = {
       duplicate: "Дублировать вкладку",
       closeOthers: "Закрыть другие вкладки",
     },
+    siteInfo: {
+      label: "Сведения о сайте",
+      secure: "Защищённое соединение",
+      insecure: "Незащищённое соединение",
+    },
     tools: "Инструменты",
     recents: "Недавние",
     website: "Веб-сайт",

@@ -3,6 +3,7 @@
 
 import { ATTACHMENT_PAGE_SCALES } from "@/components/assistant-ui/attachment-viewer-meta";
 import { ScaleMenu } from "@/components/media-viewer";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import {
   ContextMenu,
   ContextMenuContent,
@@ -50,7 +51,14 @@ import { cn } from "@/lib/utils";
 import {
   Add01Icon,
   CancelSquareIcon,
+  LockIcon,
+  Search01Icon,
+  SecurityCheckIcon,
+  Settings02Icon,
+  SecurityWarningIcon,
+  SquareUnlock02Icon,
   Copy02Icon,
+  Delete02Icon,
   ReloadIcon,
   ArrowDown01Icon,
   ArrowLeft02Icon,
@@ -82,6 +90,7 @@ import { type ReactElement, type ReactNode, memo, useEffect, useRef, useState } 
 import { fileNameFromUrl, hostOf, resolveAddress } from "./address";
 import { type BrowserDownload, saveBrowserDownload } from "./downloads";
 import { ClearBrowsingDataDialog } from "./clear-data-dialog";
+import { SiteFavicon } from "./site-favicon";
 import { AnnotateLayer, WebAnnotateLayer } from "./annotate-layer";
 import { browserTabType, textFileKind } from "./file-kind";
 import { CONTEXT_MENU, MenuRow } from "./link-context-menu";
@@ -169,6 +178,13 @@ const PILL =
 
 const TOOLBAR_BUTTON =
   "size-8 text-foreground disabled:hover:text-foreground disabled:opacity-30";
+
+// The page toolbar as Firefox draws it: bare buttons with a rounded square on hover, and a filled
+// address bar with no border, a shade deeper while typing.
+const NAV_BUTTON =
+  "size-8 rounded-md text-foreground disabled:hover:text-foreground disabled:opacity-30";
+const URLBAR =
+  "bg-[color-mix(in_oklab,var(--foreground)_calc(6%*var(--contrast-wash-gain,1)),transparent)] focus-within:bg-[color-mix(in_oklab,var(--foreground)_calc(9%*var(--contrast-wash-gain,1)),transparent)]";
 
 type ButtonProps = {
   label: string;
@@ -513,7 +529,14 @@ function TabStrip({
 
 let handledFocusSequence = 0;
 
-function AddressBar({ tab }: { tab: BrowserTab | undefined }) {
+function AddressBar({
+  tab,
+  actions,
+}: {
+  tab: BrowserTab | undefined;
+  /** Page actions at the bar's end, as Firefox keeps its zoom and reader buttons there. */
+  actions?: ReactNode;
+}) {
   const t = useT();
   const engine = useBrowserPrefsStore((state) => state.searchEngine);
   const showFullUrl = useBrowserPrefsStore((state) => state.showFullUrl);
@@ -546,50 +569,171 @@ function AddressBar({ tab }: { tab: BrowserTab | undefined }) {
         inputRef.current?.blur();
       }}
     >
-      <div className="relative">
-        <input
-          ref={inputRef}
-          value={shown}
-          onChange={(event) => {
-            setEditing(true);
-            setValue(event.target.value);
-          }}
-          onFocus={(event) => {
-            setValue(address);
-            setEditing(true);
-            event.currentTarget.select();
-          }}
-          onBlur={() => setEditing(false)}
-          onKeyDown={(event) => {
-            if (event.key === "Escape") {
+      <div className={cn("flex h-9 items-center gap-1 rounded-lg pl-1 pr-1 transition-colors", URLBAR)}>
+        <SiteIdentity address={editing ? "" : address} />
+        <div className="relative min-w-0 flex-1">
+          <input
+            ref={inputRef}
+            value={shown}
+            onChange={(event) => {
+              setEditing(true);
+              setValue(event.target.value);
+            }}
+            onFocus={(event) => {
               setValue(address);
-              event.currentTarget.blur();
-            }
-          }}
-          placeholder={t("browser.addressPlaceholder")}
-          aria-label={t("browser.addressPlaceholder")}
-          spellCheck={false}
-          autoCapitalize="off"
-          autoCorrect="off"
-          className={cn(
-            PILL,
-            "h-9 w-full min-w-0 rounded-full px-4 text-ui-14 text-foreground outline-none transition-colors placeholder:text-muted-foreground focus:bg-[color-mix(in_oklab,var(--card),var(--foreground)_5%)] dark:focus:bg-[color-mix(in_oklab,var(--accent),var(--foreground)_6%)]",
-            // The input keeps the full URL, so focusing never changes its text or selection.
-            !editing && address && "text-transparent",
-          )}
-        />
-        {!editing && address ? (
-          <span
-            aria-hidden={true}
-            className="pointer-events-none absolute inset-0 flex items-center justify-center px-4 text-ui-14 text-foreground"
-          >
-            <span className="truncate">
-              {displayAddress(address, showFullUrl)}
+              setEditing(true);
+              event.currentTarget.select();
+            }}
+            onBlur={() => setEditing(false)}
+            onKeyDown={(event) => {
+              if (event.key === "Escape") {
+                setValue(address);
+                event.currentTarget.blur();
+              }
+            }}
+            placeholder={t("browser.addressPlaceholder")}
+            aria-label={t("browser.addressPlaceholder")}
+            spellCheck={false}
+            autoCapitalize="off"
+            autoCorrect="off"
+            className={cn(
+              "h-9 w-full min-w-0 bg-transparent px-1 text-ui-14 text-foreground outline-none placeholder:text-muted-foreground",
+              // The input keeps the full URL, so focusing never changes its text or selection.
+              !editing && address && "text-transparent",
+            )}
+          />
+          {!editing && address ? (
+            <span
+              aria-hidden={true}
+              className="pointer-events-none absolute inset-0 flex items-center px-1 text-ui-14 text-foreground"
+            >
+              <span className="truncate">{displayAddress(address, showFullUrl)}</span>
             </span>
-          </span>
-        ) : null}
+          ) : null}
+        </div>
+        {actions}
       </div>
     </form>
+  );
+}
+
+/** The button at the bar's start, as Firefox's: a shield that opens the site's panel, with whether
+ *  the connection is secure and the browser's data and settings. A magnifier while typing or on a
+ *  new tab, where there is no site. */
+function SiteIdentity({ address }: { address: string }) {
+  const t = useT();
+  const [clearOpen, setClearOpen] = useState(false);
+  const [open, setOpen] = useState(false);
+  let url: URL | null = null;
+  try {
+    url = address ? new URL(address) : null;
+  } catch {
+    url = null;
+  }
+  if (!url || !/^https?:$/.test(url.protocol)) {
+    return (
+      <span className="flex size-7 shrink-0 items-center justify-center text-muted-foreground">
+        <HugeiconsIcon icon={Search01Icon} strokeWidth={1.75} aria-hidden={true} className="size-4" />
+      </span>
+    );
+  }
+  const secure = url.protocol === "https:";
+  const label = t("browser.siteInfo.label");
+  const row =
+    "flex w-full cursor-pointer items-center gap-2.5 rounded-[11px] px-3 py-2 text-start text-sm transition-colors hover:bg-accent focus-visible:bg-accent focus-visible:outline-none";
+  return (
+    <>
+      <Popover open={open} onOpenChange={setOpen}>
+        <Tooltip>
+          <TooltipTrigger asChild={true}>
+            <PopoverTrigger asChild={true}>
+              <button
+                type="button"
+                aria-label={label}
+                className="flex size-7 shrink-0 cursor-pointer items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-[color-mix(in_oklab,var(--foreground)_calc(8%*var(--contrast-wash-gain,1)),transparent)] hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring aria-expanded:bg-[color-mix(in_oklab,var(--foreground)_calc(10%*var(--contrast-wash-gain,1)),transparent)] aria-expanded:text-foreground"
+              >
+                <HugeiconsIcon
+                  icon={secure ? SecurityCheckIcon : SecurityWarningIcon}
+                  strokeWidth={1.75}
+                  className="size-4.25"
+                />
+              </button>
+            </PopoverTrigger>
+          </TooltipTrigger>
+          <TooltipContent side="bottom" className="tooltip-compact">
+            {label}
+          </TooltipContent>
+        </Tooltip>
+        <PopoverContent align="start" sideOffset={8} className="w-80 gap-0 rounded-[14px] p-1.5">
+          <div className="flex min-w-0 items-center gap-2.5 px-3 py-2">
+            <SiteFavicon
+              url={url.href}
+              className="size-4 rounded-[3px]"
+              fallbackClassName="size-4 text-muted-foreground"
+            />
+            <span className="min-w-0 flex-1 truncate text-sm font-medium text-foreground">{url.host}</span>
+            <span className="flex shrink-0 items-center gap-1.5 text-ui-13 text-muted-foreground">
+              <HugeiconsIcon
+                icon={secure ? LockIcon : SquareUnlock02Icon}
+                strokeWidth={1.75}
+                className="size-4"
+              />
+              {t(secure ? "browser.siteInfo.secure" : "browser.siteInfo.insecure")}
+            </span>
+          </div>
+          <div className="mx-3 my-1 h-px bg-border" />
+          <button
+            type="button"
+            className={row}
+            onClick={() => {
+              setOpen(false);
+              setClearOpen(true);
+            }}
+          >
+            <HugeiconsIcon icon={Delete02Icon} strokeWidth={1.75} className="size-icon" />
+            {t("browser.menu.clearData")}
+          </button>
+          <button
+            type="button"
+            className={row}
+            onClick={() => {
+              setOpen(false);
+              useSettingsDialogStore.getState().openDialog("browser");
+            }}
+          >
+            <HugeiconsIcon icon={Settings02Icon} strokeWidth={1.75} className="size-icon" />
+            {t("browser.settings")}
+          </button>
+        </PopoverContent>
+      </Popover>
+      <ClearBrowsingDataDialog open={clearOpen} onOpenChange={setClearOpen} />
+    </>
+  );
+}
+
+/** The zoom level in the address bar while it is not 100%, as Firefox shows it; a click resets it. */
+function ZoomBadge({ tab }: { tab: BrowserTab | undefined }) {
+  const t = useT();
+  const locale = useLocale();
+  const zoom = tab?.zoom ?? 1;
+  if (!tab || Math.abs(zoom - 1) < 0.001) return null;
+  const label = t("browser.menu.zoomReset");
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild={true}>
+        <button
+          type="button"
+          aria-label={label}
+          onClick={() => useBrowserStore.getState().setZoom(tab.id, 1)}
+          className="h-6 shrink-0 cursor-pointer rounded-full bg-[color-mix(in_oklab,var(--foreground)_calc(8%*var(--contrast-wash-gain,1)),transparent)] px-2 text-ui-12 tabular-nums text-foreground transition-colors hover:bg-[color-mix(in_oklab,var(--foreground)_calc(12%*var(--contrast-wash-gain,1)),transparent)]"
+        >
+          {new Intl.NumberFormat(locale, { style: "percent", maximumFractionDigits: 0 }).format(zoom)}
+        </button>
+      </TooltipTrigger>
+      <TooltipContent side="bottom" className="tooltip-compact">
+        {label}
+      </TooltipContent>
+    </Tooltip>
   );
 }
 
@@ -618,27 +762,19 @@ function webAddress(tab: BrowserTab | undefined): string | null {
 
 function WebActions({ tab }: { tab: BrowserTab | undefined }) {
   const t = useT();
-  const webUrl = webAddress(tab);
   const download = tabDownload(tab);
   return (
-    <div className={cn(PILL, "flex h-9 shrink-0 items-center rounded-full px-0.5")}>
-      <IconButton
-        label={t("browser.openExternal")}
-        disabled={!webUrl}
-        onClick={() => webUrl && openExternalLink(webUrl)}
-        className={TOOLBAR_BUTTON}
-      >
-        <HugeiconsIcon icon={LinkSquare02Icon} strokeWidth={1.75} className="size-4.75" />
-      </IconButton>
+    <>
+      <AnnotatePageButton tab={tab} />
       <IconButton
         label={t("browser.download")}
         disabled={!download}
         onClick={() => download && void saveBrowserDownload(download)}
-        className={TOOLBAR_BUTTON}
+        className={NAV_BUTTON}
       >
-        <HugeiconsIcon icon={Download01Icon} strokeWidth={1.75} className="size-4.75" />
+        <HugeiconsIcon icon={Download01Icon} strokeWidth={1.75} className="size-4.5" />
       </IconButton>
-    </div>
+    </>
   );
 }
 
@@ -731,16 +867,9 @@ function PanelMenu({ tab }: { tab: BrowserTab | undefined }) {
               <button
                 type="button"
                 aria-label={t("browser.more")}
-                className={cn(
-                  PILL,
-                  "flex size-9 shrink-0 cursor-pointer items-center justify-center rounded-full text-foreground transition-colors hover:bg-card focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring dark:hover:bg-accent",
-                )}
+                className="flex size-8 shrink-0 cursor-pointer items-center justify-center rounded-md text-foreground transition-colors hover:bg-[color-mix(in_oklab,var(--foreground)_calc(6%*var(--contrast-wash-gain,1)),transparent)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring aria-expanded:bg-[color-mix(in_oklab,var(--foreground)_calc(8%*var(--contrast-wash-gain,1)),transparent)]"
               >
-                <HugeiconsIcon
-                  icon={MoreHorizontalIcon}
-                  strokeWidth={1.75}
-                  className="size-5"
-                />
+                <HugeiconsIcon icon={MoreHorizontalIcon} strokeWidth={1.75} className="size-5" />
               </button>
             </DropdownMenuTrigger>
           </TooltipTrigger>
@@ -770,6 +899,9 @@ function PanelMenu({ tab }: { tab: BrowserTab | undefined }) {
             }
           >
             {t("browser.copyLink")}
+          </DropdownMenuItem>
+          <DropdownMenuItem disabled={!webUrl} onSelect={() => webUrl && openExternalLink(webUrl)}>
+            {t("browser.openExternal")}
           </DropdownMenuItem>
           <DropdownMenuSeparator />
           <ZoomControl tab={tab} />
@@ -823,17 +955,12 @@ function AnnotatePageButton({ tab }: { tab: BrowserTab | undefined }) {
       disabled={!tab || !showsWebPage(tab)}
       onClick={() => tab && useBrowserStore.getState().setAnnotating(annotating ? null : tab.id)}
       className={cn(
-        PILL,
-        "size-9 text-foreground hover:bg-card disabled:opacity-40 disabled:hover:bg-card disabled:hover:text-foreground dark:hover:bg-accent",
+        NAV_BUTTON,
         annotating &&
-          "border-transparent bg-primary/12 text-primary hover:bg-primary/18 hover:text-primary dark:bg-primary/20 dark:hover:bg-primary/25",
+          "bg-primary/12 text-primary hover:bg-primary/18 hover:text-primary dark:bg-primary/20 dark:hover:bg-primary/25",
       )}
     >
-      <HugeiconsIcon
-        icon={CursorRectangleSelection02Icon}
-        strokeWidth={1.75}
-        className="size-4.5 translate-x-0.25 translate-y-0.25"
-      />
+      <HugeiconsIcon icon={CursorRectangleSelection02Icon} strokeWidth={1.75} className="size-4.5 translate-x-0.25 translate-y-0.25" />
     </IconButton>
   );
 }
@@ -861,27 +988,18 @@ function WebToolbar({ tab }: { tab: BrowserTab | undefined }) {
   };
   return (
     <>
-      <div className={cn(PILL, "flex h-9 shrink-0 items-center rounded-full px-0.5")}>
-        <IconButton
-          label={t("browser.back")}
-          disabled={!canGoBack}
-          onClick={back}
-          className={TOOLBAR_BUTTON}
-        >
+      <div className="flex shrink-0 items-center gap-0.5">
+        <IconButton label={t("browser.back")} disabled={!canGoBack} onClick={back} className={NAV_BUTTON}>
           <HugeiconsIcon icon={ArrowLeft02Icon} strokeWidth={1.75} className="size-4.75" />
         </IconButton>
         <IconButton
           label={t("browser.forward")}
           disabled={!canGoForward}
           onClick={forward}
-          className={TOOLBAR_BUTTON}
+          className={NAV_BUTTON}
         >
           <HugeiconsIcon icon={ArrowRight02Icon} strokeWidth={1.75} className="size-4.75" />
         </IconButton>
-        <span
-          aria-hidden={true}
-          className="mx-1 h-5 w-px shrink-0 bg-[color-mix(in_oklab,var(--foreground)_calc(15%*var(--contrast-wash-gain,1)),transparent)]"
-        />
         <IconButton
           label={t("browser.reload")}
           disabled={!tab || currentEntry(tab).kind !== "web"}
@@ -890,15 +1008,20 @@ function WebToolbar({ tab }: { tab: BrowserTab | undefined }) {
             if (native) nativeAction(tab.id, "reload");
             else reload(tab.id);
           }}
-          className={TOOLBAR_BUTTON}
+          className={NAV_BUTTON}
         >
           <RefreshGlyph strokeWidth={1.75} className="size-4.5" />
         </IconButton>
       </div>
-      <AnnotatePageButton tab={tab} />
-      <AddressBar key={tab?.id ?? "none"} tab={tab} />
-      <WebActions tab={tab} />
-      <PanelMenu tab={tab} />
+      <AddressBar
+        key={tab?.id ?? "none"}
+        tab={tab}
+        actions={<ZoomBadge tab={tab} />}
+      />
+      <div className="flex shrink-0 items-center gap-0.5">
+        <WebActions tab={tab} />
+        <PanelMenu tab={tab} />
+      </div>
     </>
   );
 }

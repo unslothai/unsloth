@@ -73,6 +73,11 @@ export const hi = {
       duplicate: "टैब डुप्लिकेट करें",
       closeOthers: "दूसरे टैब बंद करें",
     },
+    siteInfo: {
+      label: "साइट की जानकारी",
+      secure: "कनेक्शन सुरक्षित है",
+      insecure: "कनेक्शन सुरक्षित नहीं है",
+    },
     tools: "टूल",
     recents: "हाल ही के",
     website: "वेबसाइट",

@@ -73,6 +73,11 @@ export const zhCN = {
       duplicate: "复制标签页",
       closeOthers: "关闭其他标签页",
     },
+    siteInfo: {
+      label: "网站信息",
+      secure: "连接安全",
+      insecure: "连接不安全",
+    },
     tools: "工具",
     recents: "最近",
     website: "网站",

@@ -72,6 +72,11 @@ export const it = {
       duplicate: "Duplica scheda",
       closeOthers: "Chiudi le altre schede",
     },
+    siteInfo: {
+      label: "Informazioni sul sito",
+      secure: "Connessione sicura",
+      insecure: "Connessione non sicura",
+    },
     tools: "Strumenti",
     recents: "Recenti",
     website: "Sito web",

@@ -73,6 +73,11 @@ export const de = {
       duplicate: "Tab duplizieren",
       closeOthers: "Andere Tabs schließen",
     },
+    siteInfo: {
+      label: "Website-Informationen",
+      secure: "Verbindung sicher",
+      insecure: "Verbindung nicht sicher",
+    },
     tools: "Werkzeuge",
     recents: "Zuletzt verwendet",
     website: "Website",

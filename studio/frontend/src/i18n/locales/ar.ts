@@ -73,6 +73,11 @@ export const ar = {
       duplicate: "تكرار علامة التبويب",
       closeOthers: "إغلاق علامات التبويب الأخرى",
     },
+    siteInfo: {
+      label: "معلومات الموقع",
+      secure: "الاتصال آمن",
+      insecure: "الاتصال غير آمن",
+    },
     tools: "الأدوات",
     recents: "الأخيرة",
     website: "موقع ويب",
