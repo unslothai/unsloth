@@ -103,7 +103,11 @@ def main(argv = None) -> int:
     )
     from core.inference.prequant_safetensors import UNSLOTH_FORMAT_KEY, UNSLOTH_METADATA_KEY
 
-    src = Path(args.src) if args.src else _download_component(args.base, args.component, args.hf_token)
+    src = (
+        Path(args.src)
+        if args.src
+        else _download_component(args.base, args.component, args.hf_token)
+    )
     config = json.loads((src / "config.json").read_text(encoding = "utf-8"))
     index_path = src / "model.safetensors.index.json"
     if index_path.is_file():
