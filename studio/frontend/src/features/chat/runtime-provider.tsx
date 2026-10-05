@@ -186,6 +186,7 @@ import {
 } from "./utils/chat-attachment-events";
 import { chatHistoryClearBoundary } from "./utils/chat-history-clear-boundary";
 import { createParentResolver } from "./utils/message-order";
+import { estimateContextUsage } from "./utils/estimate-chat-tokens";
 import {
   awaitStoredChatThreadWrites,
   deleteStoredChatThreads,
@@ -252,7 +253,6 @@ import {
 } from "./utils/run-checkpoint-scheduler";
 import { isAssistantLocalThreadId } from "./utils/thread-ids";
 import { sanitizeThreadScopedSettings } from "./utils/thread-scoped-settings";
-import { estimateMessagesTokenCount } from "./utils/estimate-chat-tokens";
 import { VideoAttachmentAdapter } from "./video-attachment-adapter";
 
 const pendingHistoryAppendByMessageId = new Map<string, Promise<void>>();
@@ -2694,28 +2694,13 @@ function useStudioRuntimeAdapters(
         // The value, not a boolean: the writes below need the narrowing.
         const restoredUsage =
           savedUsage && withinLocalLimit && modelMatches ? savedUsage : null;
-        if (restoredUsage) {
+        const shownUsage = restoredUsage ?? estimateContextUsage(msgs);
+        if (shownUsage) {
           // Key by the thread this loader read, not whichever is active when the await resolves: a switch
           // inside it would file this thread's usage under the incoming one.
-          store.setThreadContextUsage(remoteId, restoredUsage);
+          store.setThreadContextUsage(remoteId, shownUsage);
           if (store.activeThreadId === remoteId) {
-            store.setContextUsage(restoredUsage);
-          }
-        } else {
-          const estimatedTokens = estimateMessagesTokenCount(msgs);
-          if (estimatedTokens != null && estimatedTokens > 0) {
-            const estimatedUsage = {
-              promptTokens: estimatedTokens,
-              completionTokens: 0,
-              totalTokens: estimatedTokens,
-              cachedTokens: 0,
-              cacheWriteTokens: 0,
-              estimated: true,
-            };
-            store.setThreadContextUsage(remoteId, estimatedUsage);
-            if (store.activeThreadId === remoteId) {
-              store.setContextUsage(estimatedUsage);
-            }
+            store.setContextUsage(shownUsage);
           }
         }
         // Only when nothing was restored: saved usage is the last completion's exact totals, and
@@ -3651,8 +3636,9 @@ function ThreadContextUsageRecount({
     ) {
       return;
     }
-    // Only into a blank bar: restored or completion-written usage is exact, this is an estimate.
-    if (useChatRuntimeStore.getState().contextUsage != null) return;
+    // Only into a blank or estimated bar: restored or completion-written usage is exact.
+    const shown = useChatRuntimeStore.getState().contextUsage;
+    if (shown != null && !shown.estimated) return;
     void refreshContextUsage({ threadId: activeThreadId });
   }, [
     activeThreadId,
