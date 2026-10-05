@@ -2826,6 +2826,15 @@ def hook_resident_denoiser(
     onload = torch.device(device)
     if onload.type != "cuda":
         return False
+    dit_mib = _module_host_mib(transformer)
+    # the load's _torchao_stream_pinnable rule: unpinned, the apply copies the whole transformer to pageable host RAM
+    if not _streamed_pin_plan(dit_mib, 0)[0]:
+        if logger is not None:
+            logger.info(
+                "diffusion.memory: the resident transformer keeps no offload hooks (%d MiB cannot be pinned)",
+                dit_mib,
+            )
+        return False
     torch_hooks = _module_forward_hook_ids(transformer)
     try:
         import inspect
@@ -2845,9 +2854,8 @@ def hook_resident_denoiser(
         for name in ("non_blocking", "record_stream"):
             if name in params:
                 gkwargs[name] = True
-        dit_mib = _module_host_mib(transformer)
         if "low_cpu_mem_usage" in params:
-            gkwargs["low_cpu_mem_usage"] = not _streamed_pin_plan(dit_mib, 0, logger)[0]
+            gkwargs["low_cpu_mem_usage"] = False
         pinned_mib = [0]
         apply_group_offloading(
             transformer, **_torchao_group_offload_kwargs(transformer, gkwargs, pinned_mib)

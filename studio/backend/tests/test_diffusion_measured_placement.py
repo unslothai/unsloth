@@ -577,6 +577,21 @@ def test_a_hookless_resident_transformer_takes_hooks_on_demand(monkeypatch):
         assert torch.equal(net(x), ref)
 
 
+def test_an_unpinnable_resident_transformer_keeps_no_hooks(monkeypatch):
+    """Without room to pin it the apply would copy the whole transformer to pageable host RAM and stream it without
+    a copy stream, which the load refuses for torchao too; the request is refused as before instead."""
+    torch, net, x, ref = _hookless_int8_transformer(monkeypatch)
+    monkeypatch.delenv("UNSLOTH_DIFFUSION_GROUP_OFFLOAD_PIN", raising = False)
+    monkeypatch.setattr(dm, "_pin_budget_mib", lambda: 0)
+    pipe = types.SimpleNamespace(transformer = net, components = {"transformer": net})
+    assert not dm.hook_resident_denoiser(pipe, "cuda")
+    assert not dm._offload_groups(net)
+    assert dm.resident_group_mib(pipe) == 0
+    assert all(p.device.type == "cuda" for p in net.parameters())
+    with torch.no_grad():
+        assert torch.equal(net(x), ref)
+
+
 @pytest.mark.parametrize("failure", ["raises", "swallowed"])
 def test_a_failed_hook_install_leaves_the_transformer_resident(monkeypatch, failure):
     """The apply moves the groups' weights to their host copies; a failure after it puts them back on the card,
