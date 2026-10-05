@@ -78,16 +78,25 @@ def test_the_4bit_refusal_uses_the_same_moe_test():
 
 def _gate(message, condition = ""):
     """The `if` raising `message` (test mentions `condition`) plus its enclosing `if` tests."""
+
     def walk(node, parents):
         for child in ast.iter_child_nodes(node):
-            if isinstance(child, ast.If) and condition in ast.unparse(child.test) and any(
-                isinstance(stmt, ast.Raise) and message in ast.unparse(stmt) for stmt in child.body
+            if (
+                isinstance(child, ast.If)
+                and condition in ast.unparse(child.test)
+                and any(
+                    isinstance(stmt, ast.Raise) and message in ast.unparse(stmt)
+                    for stmt in child.body
+                )
             ):
                 return child, parents
-            found = walk(child, parents + [ast.unparse(child.test)] if isinstance(child, ast.If) else parents)
+            found = walk(
+                child, parents + [ast.unparse(child.test)] if isinstance(child, ast.If) else parents
+            )
             if found:
                 return found
         return None
+
     found = walk(TREE, [])
     assert found, message
     return found
@@ -113,16 +122,34 @@ def test_the_zoo_gate_covers_text_only_moe_loads():
         (["qwen3_5_moe"], QWEN3_5_MOE),
     ):
         refused = _evaluate(
-            gate, fast_inference = True, model_types = model_types,
-            auto_config = config, _zoo_supports_moe_fast_inference = old_zoo,
+            gate,
+            fast_inference = True,
+            model_types = model_types,
+            auto_config = config,
+            _zoo_supports_moe_fast_inference = old_zoo,
         )
         assert refused, model_types
-    assert not _evaluate(gate, fast_inference = True, model_types = ["gemma4_text"], auto_config = GEMMA4_DENSE,
-                         _zoo_supports_moe_fast_inference = old_zoo)
-    assert not _evaluate(gate, fast_inference = True, model_types = ["gemma4"], auto_config = GEMMA4_MOE,
-                         _zoo_supports_moe_fast_inference = lambda: True)
-    assert not _evaluate(gate, fast_inference = False, model_types = ["gemma4"], auto_config = GEMMA4_MOE,
-                         _zoo_supports_moe_fast_inference = old_zoo)
+    assert not _evaluate(
+        gate,
+        fast_inference = True,
+        model_types = ["gemma4_text"],
+        auto_config = GEMMA4_DENSE,
+        _zoo_supports_moe_fast_inference = old_zoo,
+    )
+    assert not _evaluate(
+        gate,
+        fast_inference = True,
+        model_types = ["gemma4"],
+        auto_config = GEMMA4_MOE,
+        _zoo_supports_moe_fast_inference = lambda: True,
+    )
+    assert not _evaluate(
+        gate,
+        fast_inference = False,
+        model_types = ["gemma4"],
+        auto_config = GEMMA4_MOE,
+        _zoo_supports_moe_fast_inference = old_zoo,
+    )
 
 
 def test_prequantized_bnb_moe_checkpoints_are_refused_without_load_in_4bit():
@@ -131,11 +158,23 @@ def test_prequantized_bnb_moe_checkpoints_are_refused_without_load_in_4bit():
     def quant_type(method):
         return lambda config: method
 
-    def refused(load_in_4bit, model_name, method, config = GEMMA4_MOE, model_types = ("gemma4",)):
-        return bool(_evaluate(
-            gate, load_in_4bit = load_in_4bit, model_name = model_name, get_quant_type = quant_type(method),
-            model_config = config, model_types = list(model_types),
-        ))
+    def refused(
+        load_in_4bit,
+        model_name,
+        method,
+        config = GEMMA4_MOE,
+        model_types = ("gemma4",),
+    ):
+        return bool(
+            _evaluate(
+                gate,
+                load_in_4bit = load_in_4bit,
+                model_name = model_name,
+                get_quant_type = quant_type(method),
+                model_config = config,
+                model_types = list(model_types),
+            )
+        )
 
     assert refused(True, "google/gemma-4-26B-A4B-it", None)
     assert refused(False, "unsloth/gemma-4-26B-A4B-it-bnb-4bit", None)
