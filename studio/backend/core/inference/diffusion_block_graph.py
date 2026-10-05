@@ -20,6 +20,15 @@ from typing import Any, Callable, Optional
 from .diffusion_bg_compile import capture_suppressed as _bg_capture_suppressed
 from .diffusion_bg_compile import eager_forced as _bg_eager_forced
 
+
+def _step_recording() -> bool:
+    try:
+        from .diffusion_cuda_graph import step_recording
+    except Exception:  # noqa: BLE001
+        return False
+    return step_recording()
+
+
 BLOCK_GRAPHS_ENV = "UNSLOTH_DIFFUSION_BLOCK_GRAPHS"
 
 # Recordings kept per block (input layouts x weight placements); the least recently replayed goes first.
@@ -438,7 +447,8 @@ class BlockGraph:
         return self.compute(*args, **kwargs)
 
     def __call__(self, *args: Any, **kwargs: Any) -> Any:
-        if _bg_capture_suppressed():
+        if _bg_capture_suppressed() or _step_recording():
+            # a whole-step graph above records this block's kernels (diffusion_cuda_graph), not a nested replay
             return self.compute(*args, **kwargs)
         if not self.enabled or self.bypassed or self.poisoned or self.churned or _bg_eager_forced():
             return self._eager(args, kwargs)

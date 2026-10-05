@@ -678,9 +678,10 @@ def reclaimable_snapshot_device_memory(target: Any) -> DeviceMemory:
     lives outside it and is not counted here, which is correct: it is not device memory this
     generation can allocate into.
 
-    A captured CUDA graph's pool (``diffusion_cuda_graph``) is reserved but not allocated, so it is
-    credited here, yet ordinary allocations cannot reuse it while a graph holds it, so on a graphed
-    load the guard reads about one step of activations high.
+    A captured CUDA graph's pool (``diffusion_cuda_graph``) is mostly reserved but not allocated, yet ordinary
+    allocations cannot reuse it while a graph holds it (on a block-streamed denoiser it also holds the
+    prefetch window), so its unallocated bytes are not credited (its allocated part is already outside the
+    difference).
 
     Falls back to the plain snapshot on any failure or non-cuda device."""
     if getattr(target, "device", "cpu") != "cuda":
@@ -702,6 +703,12 @@ def reclaimable_snapshot_device_memory(target: Any) -> DeviceMemory:
             device = None
         reclaimable -= _block_graph_pool_bytes(device)
     except Exception:  # noqa: BLE001
+        pass
+    try:
+        # The whole-step graphs' shared pool: only its unallocated part sits inside the difference above.
+        from .diffusion_cuda_graph import live_pool_free_bytes
+        reclaimable -= live_pool_free_bytes()
+    except Exception:  # noqa: BLE001 -- no graph layer: nothing held
         pass
     if reclaimable <= 0:
         return snapshot
@@ -2665,6 +2672,8 @@ def _keep_groups_resident(
             left -= need
             kept += need
         state["streamed"] = _streamed_group_count(ordered)
+        if kept:
+            _bump_placement_epoch()
         if kept and onload.type == "cuda":
             torch.cuda.synchronize(onload)
         if logger is not None and kept:
@@ -2680,6 +2689,14 @@ def _keep_groups_resident(
         if logger is not None:
             logger.warning("diffusion.memory: partial residency skipped (%s)", exc)
         return 0
+
+
+def _bump_placement_epoch() -> None:
+    try:
+        from .diffusion_offload_prefetch import bump_placement_epoch
+        bump_placement_epoch()
+    except Exception:  # noqa: BLE001 - no graph layer to invalidate
+        pass
 
 
 def _streamed_group_count(groups: list) -> int:
@@ -2699,6 +2716,7 @@ def _release_group(group: Any) -> None:
             group.__dict__.pop(name, None)
     group._unsloth_resident = False
     group.offload_()
+    _bump_placement_epoch()
 
 
 def release_resident_groups(
@@ -3486,7 +3504,9 @@ class _GroupPinner:
                         if tensor.device.type == "cpu" and tensor.data_ptr() == src.data_ptr():
                             tensor.data = pinned
                         self.pinned += src.nbytes
+                # Done before the epoch: a capture check that sees the new epoch must also see this group ready.
                 self._done[id(group)].set()
+                _bump_placement_epoch()
         except Exception as exc:  # noqa: BLE001 - diffusers pins what is left on each onload
             failed = exc
         finally:
@@ -3494,6 +3514,8 @@ class _GroupPinner:
                 pool.shutdown(wait = True, cancel_futures = True)
             for event in self._done.values():
                 event.set()
+            if failed is not None:
+                _bump_placement_epoch()
         if self.logger is not None:
             try:
                 if failed is not None:
