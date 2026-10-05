@@ -7019,6 +7019,47 @@ def test_connect_vibe_no_launch_keeps_user_config(fake_studio, tmp_path):
     assert sorted(p.name for p in home.iterdir()) == ["config.toml"]
 
 
+@pytest.mark.skipif(os.name == "nt", reason = "symlink privilege")
+def test_vibe_session_sees_user_agents_and_cleanup_keeps_them(fake_studio, tmp_path, monkeypatch):
+    user_home = tmp_path / "user"
+    agents = user_home / ".vibe" / "agents"
+    agents.mkdir(parents = True)
+    (agents / "mine.toml").write_text('display_name = "mine"\n')
+    monkeypatch.setattr(start.Path, "home", lambda: user_home)
+    monkeypatch.delenv("VIBE_HOME", raising = False)
+    monkeypatch.setattr(start.shutil, "which", lambda _: "/usr/local/bin/vibe")
+    monkeypatch.setattr(start, "_managed_node_tools", lambda: None)
+    seen = {}
+
+    def run(
+        command,
+        env = None,
+        **kwargs,
+    ):
+        seen["profile"] = (Path(env["VIBE_HOME"]) / "agents" / "mine.toml").read_text()
+        return SimpleNamespace(returncode = 0)
+
+    monkeypatch.setattr(start.subprocess, "run", run)
+    result = CliRunner().invoke(start.start_app, ["vibe", "--agent", "mine"])
+    assert result.exit_code == 0, result.output
+    assert seen["profile"] == 'display_name = "mine"\n'
+    # The ephemeral session is removed; the user's profile is not.
+    assert (agents / "mine.toml").exists()
+
+
+def test_write_vibe_user_resources_honours_user_vibe_home(tmp_path, monkeypatch):
+    custom = tmp_path / "custom"
+    (custom / "skills").mkdir(parents = True)
+    monkeypatch.setenv("VIBE_HOME", str(custom))
+    session = tmp_path / "session"
+    session.mkdir()
+    start.write_vibe_user_resources(session)
+    assert (session / "skills").resolve() == (custom / "skills").resolve()
+    assert not (session / "agents").exists()
+    start.write_vibe_user_resources(custom)
+    assert not (custom / "skills").is_symlink()
+
+
 def test_vibe_launch_keeps_user_home(fake_studio, monkeypatch):
     monkeypatch.setattr(start.shutil, "which", lambda _: "/usr/local/bin/vibe")
     captured = _capture_launch(monkeypatch, ["vibe", "--temperature", "0.6", "-p", "hi"])

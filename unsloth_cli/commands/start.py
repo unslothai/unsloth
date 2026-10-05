@@ -136,6 +136,7 @@ _OPENCODE_OUTPUT_TOKEN_MAX_ENV = "OPENCODE_EXPERIMENTAL_OUTPUT_TOKEN_MAX"
 _VIBE_PROVIDER = "unsloth-studio"
 _VIBE_MODEL_ALIAS = "unsloth"
 _VIBE_ENV_KEY = "UNSLOTH_API_KEY"
+_VIBE_USER_RESOURCE_DIRS = ("agents", "prompts", "skills", "tools", "plugins")
 # Both installers put binaries in ~/.local/bin; Vibe's exits 1 and uv's leaves the shell PATH stale when it is missing.
 _VIBE_POSIX_INSTALL_HINT = (
     'curl -LsSf https://mistral.ai/vibe/install.sh | PATH="$HOME/.local/bin:$PATH" bash'
@@ -5104,6 +5105,20 @@ def _vibe_env(
     }
 
 
+def write_vibe_user_resources(home: Path) -> None:
+    """Link the user's Vibe agents, prompts, skills, tools and plugins into the session VIBE_HOME."""
+    configured = os.environ.get("VIBE_HOME", "").strip()
+    source = (
+        Path(os.path.abspath(os.path.expanduser(configured)))
+        if configured
+        else Path.home() / ".vibe"
+    )
+    if source.resolve(strict = False) == home.resolve(strict = False):
+        return
+    for name in _VIBE_USER_RESOURCE_DIRS:
+        _link_user_dir(source / name, home / name)
+
+
 def write_pi_config(
     base: str,
     key: str,
@@ -5157,7 +5172,7 @@ def _link_user_dir(source: Path, target: Path) -> bool:
         target.symlink_to(source, target_is_directory = True)
     except OSError:
         if not _create_directory_junction(source, target):
-            typer.echo(f"Warning: couldn't link {source} into the Pi session.", err = True)
+            typer.echo(f"Warning: couldn't link {source} into the agent session.", err = True)
             return False
     return True
 
@@ -6971,6 +6986,7 @@ def vibe(
     command = ["vibe", *_yolo_command_flags("vibe", yolo), *ctx.args]
     with _session_config("vibe", launch, persist = persist) as home:
         # VIBE_HOME keeps Vibe's sessions and config.toml out of the user's ~/.vibe.
+        write_vibe_user_resources(home)
         env = {
             _VIBE_ENV_KEY: key,
             "VIBE_HOME": str(home),
