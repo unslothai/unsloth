@@ -10,7 +10,12 @@ from PIL import Image
 from core.systemone import media
 
 
-def image_url(fmt = "PNG", *, size = (16, 16), color = "red"):
+def image_url(
+    fmt = "PNG",
+    *,
+    size = (16, 16),
+    color = "red",
+):
     buf = io.BytesIO()
     Image.new("RGB", size, color).save(buf, format = fmt)
     mime = {"PNG": "png", "JPEG": "jpeg", "WEBP": "webp"}[fmt]
@@ -25,7 +30,19 @@ def test_real_image_containers_are_validated(fmt):
         assert image.size == (16, 16) and image.format == fmt
 
 
-@pytest.mark.parametrize("url", ["https://example.com/img.png", "data:image/gif;base64,AAAA", "data:image/png,AAAA", "data:image/png;base64,%%%", "data:image/png;base64,AAAA", "data:image/png;base64,", None, 3])
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://example.com/img.png",
+        "data:image/gif;base64,AAAA",
+        "data:image/png,AAAA",
+        "data:image/png;base64,%%%",
+        "data:image/png;base64,AAAA",
+        "data:image/png;base64,",
+        None,
+        3,
+    ],
+)
 def test_remote_unsupported_and_malformed_images_are_refused(url):
     with pytest.raises(media.InvalidMedia):
         media.prepare("Inspect", [url], accepts_images = True)
@@ -33,27 +50,42 @@ def test_remote_unsupported_and_malformed_images_are_refused(url):
 
 def test_mime_mismatch():
     with pytest.raises(media.InvalidMedia, match = "MIME"):
-        media.prepare("Inspect", [image_url().replace("image/png", "image/jpeg")], accepts_images = True)
+        media.prepare(
+            "Inspect", [image_url().replace("image/png", "image/jpeg")], accepts_images = True
+        )
 
 
 def test_image_count_counts_top_level_and_state():
-    state = [{"role": "user", "content": [{"type": "image_url", "image_url": {"url": image_url()}}]}]
+    state = [
+        {"role": "user", "content": [{"type": "image_url", "image_url": {"url": image_url()}}]}
+    ]
     with pytest.raises(media.InvalidMedia, match = "At most 4"):
         media.prepare(state, [image_url()] * 4, accepts_images = True)
 
 
 def test_state_image_parts_are_extracted_and_text_is_preserved():
     part = {"type": "text", "text": "What color?"}
-    state = [{"role": "user", "content": [part, {"type": "image_url", "image_url": {"url": image_url()}}]}]
+    state = [
+        {
+            "role": "user",
+            "content": [part, {"type": "image_url", "image_url": {"url": image_url()}}],
+        }
+    ]
     cleaned, raw = media.prepare(state, None, accepts_images = True)
     assert cleaned == [{"role": "user", "content": [part]}] and len(raw) == 1
     assert len(state[0]["content"]) == 2
 
 
-@pytest.mark.parametrize("kind", ["input_audio", "audio_url", "video_url", "input_video", "input_image", ["text"]])
+@pytest.mark.parametrize(
+    "kind", ["input_audio", "audio_url", "video_url", "input_video", "input_image", ["text"]]
+)
 def test_unsupported_message_parts_are_never_rendered_as_plain_json(kind):
     with pytest.raises(media.InvalidMedia):
-        media.prepare([{"role": "user", "content": [{"type": kind, "data": "..."}]}], None, accepts_images = True)
+        media.prepare(
+            [{"role": "user", "content": [{"type": kind, "data": "..."}]}],
+            None,
+            accepts_images = True,
+        )
 
 
 def test_plain_structured_state_is_not_a_media_upload():
@@ -89,4 +121,15 @@ def test_pixel_limit_checked_before_decode(monkeypatch):
 
 def test_image_url_part_unknown_fields_are_refused():
     with pytest.raises(media.InvalidMedia, match = "only supports"):
-        media.prepare([{"role": "user", "content": [{"type": "image_url", "image_url": {"url": image_url(), "detail": "high"}}]}], None, accepts_images = True)
+        media.prepare(
+            [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "image_url", "image_url": {"url": image_url(), "detail": "high"}}
+                    ],
+                }
+            ],
+            None,
+            accepts_images = True,
+        )

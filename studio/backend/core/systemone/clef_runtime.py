@@ -1,29 +1,25 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Torch-free parent runtime for one owned Clef worker."""
+"""One owned Clef worker, shared by native llama.cpp and official PyTorch."""
 
 from __future__ import annotations
 
 import atexit
 import logging
 import multiprocessing as mp
-import queue as _queue
+import queue
 import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 from .catalog import ClefCheckpoint
 from .laya_runtime import Unavailable
 
-
 logger = logging.getLogger(__name__)
-
-# Safety bounds, not expected latency targets.
-LOAD_WAIT_S = 300.0
-RUN_WAIT_S = 300.0
+LOAD_WAIT_S = RUN_WAIT_S = 300.0
 CANCEL_GRACE_S = 5.0
 SHUTDOWN_WAIT_S = 10.0
 LOAD_CANCEL_WAIT_S = 12.0
@@ -31,46 +27,33 @@ IDLE_UNLOAD_S = 300.0
 FAILURE_BACKOFF_S = 60.0
 MAX_PENDING = 8
 _POLL_S = 0.1
-
-# Avoid inheriting server locks or CUDA state.
 _CTX = mp.get_context("spawn")
 
 
 class ClefWorkerError(RuntimeError):
-    """The owned Clef child could not start, answer, or stay alive."""
+    pass
 
 
 class ClefWorkerCancelled(ClefWorkerError):
-    """A load or decision was cancelled because its owner is retiring."""
+    pass
 
 
 class ClefWorkerInputError(ClefWorkerError):
-    """The child rejected one request before inference."""
+    pass
 
 
 class ClefWorker:
-    """Handle for one process this runtime spawned."""
+    """Torch-free handle for the official adapter's isolated process."""
 
-    def __init__(self, target: Callable[..., None] | None = None) -> None:
+    def __init__(self, target = None):
         self._target = target
-        self._process = None
-        self._cmd_queue = None
-        self._resp_queue = None
-        self._cancel_event = None
-        self._ready_event = None
+        self._process = self._cmd_queue = self._resp_queue = self._cancel_event = None
         self._closed = False
         self._close_lock = threading.Lock()
-        self.device: str | None = None
-        self.gpu_available: bool | None = None
+        self.device = None
+        self.gpu_available = None
 
-    def start(
-        self,
-        snapshot_path: Path,
-        checkpoint: ClefCheckpoint,
-        requested_device: str,
-        cancelled: threading.Event,
-    ) -> None:
-        """Spawn then load a local snapshot, reaping every failed start."""
+    def start(self, snapshot_path, checkpoint, requested_device, cancelled):
         from utils.hf_cache_settings import child_environment_for_spawn, get_hf_cache_paths
         from utils.native_path_leases import (
             native_path_secret_removed_for_child_start,
@@ -86,220 +69,103 @@ class ClefWorker:
             raise ClefWorkerCancelled("Clef model loading was cancelled.")
         cache_env = get_hf_cache_paths().child_env({})
         try:
-            with (
-                child_environment_for_spawn(cache_env),
-                native_path_secret_removed_for_child_start(),
-            ):
-                self._cmd_queue = _CTX.Queue()
-                self._resp_queue = _CTX.Queue()
+            with child_environment_for_spawn(cache_env), native_path_secret_removed_for_child_start():
+                self._cmd_queue, self._resp_queue = _CTX.Queue(), _CTX.Queue()
                 self._cancel_event = _CTX.Event()
-                self._ready_event = _CTX.Event()
-                if self._target is None:
-                    target = run_without_native_path_secret
-                    args = ("core.systemone.clef_worker", "run_clef_worker", cache_env)
-                else:
-                    target = self._target
-                    args = ()
-                process = _CTX.Process(
+                target = self._target or run_without_native_path_secret
+                args = () if self._target else ("core.systemone.clef_worker", "run_clef_worker", cache_env)
+                self._process = _CTX.Process(
                     target = target,
                     args = args,
-                    kwargs = {
-                        "cmd_queue": self._cmd_queue,
-                        "resp_queue": self._resp_queue,
-                        "cancel_event": self._cancel_event,
-                        "ready_event": self._ready_event,
-                        "config": {},
-                    },
+                    kwargs = dict(cmd_queue = self._cmd_queue, resp_queue = self._resp_queue,
+                                  cancel_event = self._cancel_event, config = {}),
                     daemon = True,
                 )
-                self._process = process
-                # Linux parent-death signals follow the spawning thread, not just its process.
-                spawn_on_lifetime_thread(process.start)
-        except Exception as exc:
-            self._process = None
-            self._close_queues()
-            raise ClefWorkerError(f"Could not start the Clef worker process: {exc}") from exc
-
-        # Only this retained process handle is ever signalled.
-        try:
-            adopt_pid(process.pid)
-        except Exception:
-            logger.debug(
-                "Could not register Clef worker %s for shutdown", process.pid, exc_info = True
-            )
-        if cancelled.is_set() or is_process_shutting_down():
-            self.cancel()
-            self.close(graceful_timeout = 0.0)
-            raise ClefWorkerCancelled("Clef model loading was cancelled.")
-
-        try:
-            self._send(
-                {
-                    "type": "load",
-                    "snapshot_path": str(snapshot_path),
-                    "model": checkpoint.name,
-                    "requested_device": requested_device,
-                }
-            )
-            response = self._await("loaded", LOAD_WAIT_S, cancelled, "load")
+                # Linux's parent-death signal follows the spawning thread's lifetime.
+                spawn_on_lifetime_thread(self._process.start)
+            adopt_pid(self._process.pid)
+            self._send(dict(type = "load", snapshot_path = str(snapshot_path),
+                            model = checkpoint.name, requested_device = requested_device))
+            loaded = self._await("loaded", LOAD_WAIT_S, cancelled)
+            self.device, self.gpu_available = loaded["device"], loaded["gpu_available"]
         except BaseException:
-            self.close(graceful_timeout = 0.0)
+            self.close()
             raise
-        self.device = str(response.get("device") or "cpu")
-        self.gpu_available = response.get("gpu_available") is True
 
-    def decide(
-        self,
-        checkpoint: ClefCheckpoint,
-        state: Any,
-        questions: dict[str, dict[str, Any]],
-        images: list[bytes],
-    ) -> dict[str, Any]:
-        if self._closed:
-            raise ClefWorkerCancelled("The Clef worker is unloading.")
-        if self._cancel_event is not None:
-            self._cancel_event.clear()
-        self._send(
-            {
-                "type": "decide",
-                "model": checkpoint.name,
-                "state": state,
-                "questions": questions,
-                "images": images,
-            }
-        )
-        response = self._await("result", RUN_WAIT_S, None, "decide")
-        result = response.get("result")
+    def decide(self, checkpoint, state, questions, images):
+        self._send(dict(type = "decide", model = checkpoint.name, state = state,
+                        questions = questions, images = images))
+        result = self._await("result", RUN_WAIT_S).get("result")
         if not isinstance(result, dict):
             raise ClefWorkerError("The Clef worker returned an invalid response.")
         return result
 
-    def cancel(self) -> None:
-        """Thread-safe signal; this never touches queues or an unowned process."""
-        event = self._cancel_event
-        if event is not None:
+    def _send(self, command):
+        if self._closed or self._cmd_queue is None:
+            raise ClefWorkerCancelled("The Clef worker was unloaded.")
+        self._cmd_queue.put(command)
+
+    def _await(self, expected, timeout, cancelled = None):
+        deadline = time.monotonic() + timeout
+        while not self._closed:
+            if cancelled is not None and cancelled.is_set():
+                raise ClefWorkerCancelled("Clef model loading was cancelled.")
+            if time.monotonic() >= deadline:
+                raise ClefWorkerError("The Clef worker operation timed out.")
+            channel = self._resp_queue
+            if channel is None:
+                raise ClefWorkerCancelled("The Clef worker was unloaded.")
             try:
-                event.set()
-            except (OSError, ValueError):
-                pass
+                response = channel.get(timeout = _POLL_S)
+            except queue.Empty:
+                if self._closed:
+                    raise ClefWorkerCancelled("The Clef worker was unloaded.")
+                if not self.is_alive():
+                    code = getattr(self._process, "exitcode", None)
+                    raise ClefWorkerError(f"The Clef worker stopped (exitcode={code}).")
+                continue
+            except (EOFError, OSError, ValueError) as exc:
+                raise ClefWorkerError("Lost contact with the Clef worker.") from exc
+            if response.get("type") == "error":
+                error = {"cancelled": ClefWorkerCancelled,
+                         "invalid_request_error": ClefWorkerInputError}.get(response.get("kind"), ClefWorkerError)
+                raise error(response.get("message") or "The Clef worker failed.")
+            if response.get("type") == expected:
+                return response
+        raise ClefWorkerCancelled("The Clef worker was unloaded.")
 
-    def is_alive(self) -> bool:
-        process = self._process
-        return process is not None and process.is_alive()
+    def cancel(self):
+        if self._cancel_event is not None:
+            self._cancel_event.set()
 
-    def close(self, graceful_timeout: float = SHUTDOWN_WAIT_S) -> bool:
-        """Stop only this instance's process and release its queues after it is dead."""
+    def is_alive(self):
+        return self._process is not None and self._process.is_alive()
+
+    def close(self, graceful_timeout = 0.0):
+        from utils.process_lifetime import forget_pid
+
         with self._close_lock:
             self._closed = True
             self.cancel()
             process = self._process
-            if process is not None:
-                try:
-                    if graceful_timeout > 0 and process.is_alive() and self._cmd_queue is not None:
-                        self._cmd_queue.put({"type": "shutdown"})
-                except (OSError, ValueError):
-                    pass
-                if graceful_timeout > 0:
-                    try:
-                        process.join(graceful_timeout)
-                    except Exception:
-                        pass
-                if process.is_alive():
-                    try:
-                        process.terminate()
+            if process is not None and process.pid is not None:
+                if graceful_timeout and self.is_alive():
+                    self._cmd_queue.put({"type": "shutdown"})
+                    process.join(graceful_timeout)
+                for stop in (process.terminate, process.kill):
+                    if self.is_alive():
+                        stop()
                         process.join(CANCEL_GRACE_S)
-                    except Exception:
-                        pass
-                if process.is_alive():
-                    try:
-                        process.kill()
-                        process.join(CANCEL_GRACE_S)
-                    except Exception:
-                        pass
-                if process.is_alive():
-                    # Retain the only safe handle for later shutdown.
-                    logger.error("Clef worker %s survived terminate and kill", process.pid)
+                if self.is_alive():
                     return False
-                try:
-                    from utils.process_lifetime import forget_pid
-                    forget_pid(process.pid)
-                except Exception:
-                    logger.debug("Could not forget Clef worker %s", process.pid, exc_info = True)
+                forget_pid(process.pid)
             self._process = None
-            self._close_queues()
+            for channel in (self._cmd_queue, self._resp_queue):
+                if channel is not None:
+                    channel.cancel_join_thread()
+                    channel.close()
+            self._cmd_queue = self._resp_queue = None
             return True
-
-    def _send(self, command: dict[str, Any]) -> None:
-        queue = self._cmd_queue
-        if queue is None or self._closed:
-            raise ClefWorkerCancelled("The Clef worker is not running.")
-        try:
-            queue.put(command)
-        except (OSError, ValueError) as exc:
-            raise ClefWorkerError(f"Could not reach the Clef worker: {exc}") from exc
-
-    def _await(
-        self, expected: str, timeout: float, cancelled: threading.Event | None, phase: str
-    ) -> dict[str, Any]:
-        deadline = time.monotonic() + timeout
-        cancel_deadline: float | None = None
-        while True:
-            if cancelled is not None and cancelled.is_set():
-                self.cancel()
-                if cancel_deadline is None:
-                    cancel_deadline = time.monotonic() + CANCEL_GRACE_S
-                elif time.monotonic() >= cancel_deadline:
-                    self.close(graceful_timeout = 0.0)
-                    raise ClefWorkerCancelled("Clef model loading was cancelled.")
-            response_queue = self._resp_queue
-            if response_queue is None:
-                raise ClefWorkerCancelled("The Clef worker was unloaded.")
-            try:
-                response = response_queue.get(timeout = _POLL_S)
-            except _queue.Empty:
-                if not self.is_alive():
-                    raise ClefWorkerError(self._crash_message(phase))
-                if time.monotonic() >= deadline:
-                    self.close(graceful_timeout = 0.0)
-                    raise ClefWorkerError(f"The Clef worker timed out while {phase}.")
-                continue
-            except (EOFError, OSError, ValueError) as exc:
-                raise ClefWorkerError(f"Lost contact with the Clef worker: {exc}") from exc
-            if not isinstance(response, dict):
-                continue
-            if response.get("type") == "error":
-                kind = response.get("kind")
-                message = str(response.get("message") or "The Clef worker failed.")
-                if kind == "cancelled":
-                    raise ClefWorkerCancelled(message)
-                if kind == "invalid_request_error":
-                    raise ClefWorkerInputError(message)
-                raise ClefWorkerError(message)
-            if response.get("type") == expected:
-                return response
-
-    def _crash_message(self, phase: str) -> str:
-        process = self._process
-        exitcode = getattr(process, "exitcode", None)
-        return f"The Clef worker stopped while {phase} (exitcode={exitcode})."
-
-    def _close_queues(self) -> None:
-        for queue in (self._cmd_queue, self._resp_queue):
-            try:
-                if queue is not None:
-                    queue.cancel_join_thread()
-                    queue.close()
-            except Exception:
-                pass
-        self._cmd_queue = None
-        self._resp_queue = None
-
-
-@dataclass
-class _RepositoryLease:
-    repo: str
-    registry: Any
-    owner: object
 
 
 @dataclass
@@ -308,44 +174,25 @@ class _Load:
     generation: int
     cancel: threading.Event
     done: threading.Event
-    worker: ClefWorker | None = None
+    worker: Any = None
     thread: threading.Thread | None = None
-    lease: _RepositoryLease | None = None
 
 
 _state_lock = threading.RLock()
 _run_lock = threading.Lock()
 _admission = threading.BoundedSemaphore(MAX_PENDING)
-_worker: ClefWorker | None = None
-_loaded: ClefCheckpoint | None = None
-_device_name: str | None = None
-_loading: _Load | None = None
-_lease: _RepositoryLease | None = None
-_failure: tuple[ClefCheckpoint, str, float] | None = None
+_worker = _loaded = _device_name = _loading = _lease = _failure = _idle_timer = None
 _generation = 0
-_idle_timer: threading.Timer | None = None
-_last_activity = 0.0
 _shutdown_requested = False
-_retiring: set[ClefWorker] = set()
-
-# Injectable spawned-protocol worker for tests.
-_WORKER_FACTORY: Callable[[], ClefWorker] = ClefWorker
+_retiring = set()
+_WORKER_FACTORY = None
 
 
-def _checkpoint_files(checkpoint: ClefCheckpoint) -> tuple[str, ...]:
-    files = tuple(checkpoint.files)
-    if not files:
-        raise FileNotFoundError(f"Clef checkpoint {checkpoint.name} has no approved file manifest.")
-    for name in files:
-        path = Path(name)
-        if path.is_absolute() or ".." in path.parts:
-            raise FileNotFoundError(
-                f"Clef checkpoint {checkpoint.name} has an invalid file manifest."
-            )
-    return files
+def is_native(checkpoint):
+    return len(checkpoint.files) == 1 and checkpoint.files[0].endswith(".gguf")
 
 
-def _claim_repository_lease(checkpoint: ClefCheckpoint) -> _RepositoryLease | None:
+def _claim_repository_lease(checkpoint):
     if checkpoint.is_local:
         return None
     from hub.utils.download_registry import get_models_registry
@@ -355,530 +202,314 @@ def _claim_repository_lease(checkpoint: ClefCheckpoint) -> _RepositoryLease | No
     if not claimed:
         action = "is being deleted" if state == "deleting" else f"is busy ({state})"
         raise ClefWorkerError(f"The Clef model cache {action}; retry shortly.")
-    return _RepositoryLease(checkpoint.source, registry, owner)
+    return registry, checkpoint.source, owner
 
 
-def _release_repository_lease(lease: _RepositoryLease | None) -> None:
-    if lease is None:
-        return
-    try:
-        if not lease.registry.release_repository_owner(lease.repo, lease.owner):
-            logger.warning("Clef cache lease was no longer owned for %s", lease.repo)
-    except Exception:
-        logger.warning("Could not release Clef cache lease for %s", lease.repo, exc_info = True)
-
-
-def _ensure_not_retiring() -> None:
-    with _state_lock:
-        if _retiring:
-            raise Unavailable(
-                503,
-                "model_loading",
-                "The previous Clef worker is still stopping; retry shortly.",
-                retry_after = 1,
-            )
-
-
-def _retire(
-    worker: ClefWorker | None,
-    lease: _RepositoryLease | None,
-    *,
-    graceful_timeout: float = 0.0,
-) -> None:
-    if worker is None:
-        _release_repository_lease(lease)
-        return
-    with _state_lock:
-        _retiring.add(worker)
-
-    def release() -> None:
-        _release_repository_lease(lease)
+def _retire(worker, lease, *, graceful_timeout = 0.0):
+    def release():
+        if lease is not None:
+            registry, repo, owner = lease
+            if not registry.release_repository_owner(repo, owner):
+                logger.warning("Clef cache lease was no longer owned for %s", repo)
         with _state_lock:
             _retiring.discard(worker)
 
+    if worker is None:
+        release()
+        return
+    with _state_lock:
+        _retiring.add(worker)
     if worker.close(graceful_timeout = graceful_timeout):
         release()
         return
 
-    def release_after_exit() -> None:
+    def after_exit():
         while worker.is_alive():
             time.sleep(_POLL_S)
-        worker.close(graceful_timeout = 0.0)
+        worker.close()
         release()
 
-    threading.Thread(target = release_after_exit, name = "clef-retire", daemon = True).start()
+    threading.Thread(target = after_exit, name = "clef-retire", daemon = True).start()
 
 
-def _watch_resident(worker: ClefWorker, lease: _RepositoryLease | None, generation: int) -> None:
-    while worker.is_alive():
-        time.sleep(1.0)
-    global _worker, _loaded, _device_name, _lease, _failure, _generation
+def _ensure_not_retiring():
     with _state_lock:
-        if _worker is not worker or _lease is not lease or _generation != generation:
-            return
-        checkpoint = _loaded
-        _cancel_idle_locked()
-        _worker = _lease = None
-        _loaded = _device_name = None
-        _generation += 1
-        if checkpoint is not None:
-            _failure = (
-                checkpoint,
-                "The Clef worker stopped unexpectedly.",
-                time.monotonic() + FAILURE_BACKOFF_S,
-            )
-    _retire(worker, lease)
+        if _retiring:
+            raise Unavailable(503, "model_loading", "The previous Clef worker is still stopping; retry shortly.", 1)
 
 
-def _checkpoint_dir(checkpoint: ClefCheckpoint) -> Path:
-    """Resolve one complete, immutable snapshot without ever downloading it."""
-    files = _checkpoint_files(checkpoint)
+def _checkpoint_dir(checkpoint):
+    files = checkpoint.files
+    if not files or any(Path(f).is_absolute() or ".." in Path(f).parts for f in files):
+        raise FileNotFoundError("Clef checkpoint has no valid approved file manifest.")
     if checkpoint.is_local:
         root = Path(checkpoint.source).expanduser()
     else:
-        if not checkpoint.revision:
-            raise FileNotFoundError(f"Clef checkpoint {checkpoint.name} has no pinned revision.")
         from huggingface_hub import snapshot_download
-
         from utils.hf_cache_settings import active_hf_hub_cache
 
-        root = Path(
-            snapshot_download(
-                checkpoint.source,
-                revision = checkpoint.revision,
-                cache_dir = active_hf_hub_cache(),
-                local_files_only = True,
-                allow_patterns = list(files),
-                token = False,
-            )
-        )
-    missing = [name for name in files if not (root / name).is_file()]
+        if len(checkpoint.revision) != 40:
+            raise FileNotFoundError("Clef checkpoint has no immutable revision.")
+        root = Path(snapshot_download(checkpoint.source, revision = checkpoint.revision,
+                    cache_dir = active_hf_hub_cache(), local_files_only = True,
+                    allow_patterns = list(files), token = False))
+    missing = [f for f in files if not (root / f).is_file()]
     if missing:
-        preview = ", ".join(missing[:3])
-        suffix = "..." if len(missing) > 3 else ""
-        raise FileNotFoundError(
-            f"Clef checkpoint {checkpoint.name} is not completely cached ({preview}{suffix}). "
-            "Download it from Settings > API before serving it."
-        )
-    return root
+        raise FileNotFoundError(f"Clef checkpoint is not completely cached ({', '.join(missing[:3])}). Download it from Settings > API before serving it.")
+    return root / files[0] if is_native(checkpoint) else root
 
 
-def is_cached(checkpoint: ClefCheckpoint) -> bool:
+def is_cached(checkpoint):
     try:
         _checkpoint_dir(checkpoint)
-    except Exception:
+        return True
+    except (OSError, ValueError):
         return False
-    return True
 
 
-def download_plan(checkpoint: ClefCheckpoint) -> dict[str, Any]:
-    """The explicit Settings downloader's pinned, network-free request plan."""
+def download_plan(checkpoint):
     cached = is_cached(checkpoint)
-    plan: dict[str, Any] = {
-        "repo": None if checkpoint.is_local else checkpoint.source,
-        "files": [] if cached else list(_checkpoint_files(checkpoint)),
-        "size_bytes": checkpoint.download_bytes,
-        "cached": cached,
-        "error": None,
-        "revision": checkpoint.revision or None,
-    }
-    if checkpoint.is_local and not cached:
-        plan["error"] = f"No complete Clef checkpoint at {checkpoint.source}"
-    return plan
+    return dict(repo = None if checkpoint.is_local else checkpoint.source,
+                files = [] if cached else list(checkpoint.files),
+                size_bytes = checkpoint.download_bytes, cached = cached,
+                error = "Local Clef checkpoint is incomplete." if checkpoint.is_local and not cached else None,
+                revision = checkpoint.revision or None)
 
 
-def loading_repo_ids() -> tuple[str, ...]:
+def loading_repo_ids():
     with _state_lock:
-        loading = _loading
-        if loading is not None and not loading.checkpoint.is_local:
-            return (loading.checkpoint.source,)
-    return ()
+        return (_loading.checkpoint.source,) if _loading and not _loading.checkpoint.is_local else ()
 
 
-def _requested_device() -> str:
-    # Read saved settings without probing torch/CUDA in the parent.
-    from utils.systemone_settings import get_device
-    return "gpu" if get_device() == "gpu" else "cpu"
+def _current(load):
+    return _loading is load and _generation == load.generation and not load.cancel.is_set() and not _shutdown_requested
 
 
-def _current(load: _Load) -> bool:
+def _start_loading(checkpoint):
+    global _loading
     with _state_lock:
-        return (
-            _loading is load
-            and _generation == load.generation
-            and not load.cancel.is_set()
-            and not _shutdown_requested
-        )
-
-
-def _start_loading(checkpoint: ClefCheckpoint) -> _Load | None:
-    """Start one nonblocking local-only load after retiring another Clef model."""
-    global _loaded, _worker, _device_name, _loading, _lease, _failure
-    with _state_lock:
-        switch = (
-            _loaded is not None
-            and _loaded != checkpoint
-            and _worker is not None
-            and _worker.is_alive()
-        )
+        switch = _worker is not None and (_loaded != checkpoint or not _worker.is_alive())
     if switch:
         unload()
-        return _start_loading(checkpoint)
-    old_worker = old_lease = None
-    load = None
-    error = None
-    already_loaded = False
     with _state_lock:
         _ensure_not_retiring()
         if _shutdown_requested:
             raise Unavailable(503, "model_unavailable", "The Clef runtime is shutting down.")
-        if _loaded == checkpoint and _worker is not None and _worker.is_alive():
-            already_loaded = True
-        elif _loaded is not None and (_worker is None or not _worker.is_alive()):
-            old_worker, old_lease = _worker, _lease
-            _worker = _lease = None
-            _loaded = _device_name = None
-        if (
-            not already_loaded
-            and _failure is not None
-            and _failure[0] == checkpoint
-            and time.monotonic() < _failure[2]
-        ):
-            error = (_failure[1], max(1.0, _failure[2] - time.monotonic()), "model_unavailable")
-        elif not already_loaded and _loading is not None:
-            if _loading.checkpoint == checkpoint:
-                load = _loading
-            else:
-                error = (f"{_loading.checkpoint.name} is loading", 5, "model_loading")
-        elif not already_loaded:
-            load = _Load(checkpoint, _generation, threading.Event(), threading.Event())
-            _loading = load
-            try:
-                load.thread = threading.Thread(
-                    target = _load_worker, args = (load,), name = "clef-systemone-load", daemon = True
-                )
-                load.thread.start()
-            except Exception as exc:
-                _loading = None
-                _failure = (
-                    checkpoint,
-                    f"Could not start {checkpoint.name}: {type(exc).__name__}: {exc}",
-                    time.monotonic() + FAILURE_BACKOFF_S,
-                )
-                load.done.set()
-                error = (_failure[1], FAILURE_BACKOFF_S, "model_unavailable")
-    _retire(old_worker, old_lease)
-    if error is not None:
-        raise Unavailable(503, error[2], error[0], retry_after = error[1])
-    return None if already_loaded else load
+        if _loaded == checkpoint and _worker is not None:
+            return None
+        if _failure and _failure[0] == checkpoint and time.monotonic() < _failure[2]:
+            raise Unavailable(503, "model_unavailable", _failure[1], _failure[2] - time.monotonic())
+        if _loading:
+            if _loading.checkpoint != checkpoint:
+                raise Unavailable(503, "model_loading", f"{_loading.checkpoint.name} is loading", 1)
+            return _loading
+        load = _Load(checkpoint, _generation, threading.Event(), threading.Event())
+        _loading = load
+        load.thread = threading.Thread(target = _load_worker, args = (load,), name = "clef-load", daemon = True)
+        try:
+            load.thread.start()
+        except BaseException:
+            _loading = None
+            raise
+        return load
 
 
-def _load_worker(load: _Load) -> None:
+def _load_worker(load):
     global _worker, _loaded, _device_name, _loading, _lease, _failure
-    worker = None
-    lease = None
+    worker = lease = None
     published = False
-    watch_generation = None
     try:
-        if not _current(load):
-            return
-        # Claim outside _state_lock: the registry calls loading_repo_ids().
         lease = _claim_repository_lease(load.checkpoint)
-        if not _current(load):
-            return
+        path = _checkpoint_dir(load.checkpoint)
         with _state_lock:
             if not _current(load):
                 return
-            load.lease = lease
-        snapshot = _checkpoint_dir(load.checkpoint)
-        if not _current(load):
-            return
-        worker = _WORKER_FACTORY()
+        from utils.systemone_settings import get_device
+
+        if _WORKER_FACTORY:
+            worker = _WORKER_FACTORY()
+        elif is_native(load.checkpoint):
+            from .native_worker import NativeWorker
+            worker = NativeWorker()
+        else:
+            worker = ClefWorker()
         with _state_lock:
-            if not _current(load):
-                return
             load.worker = worker
-        worker.start(snapshot, load.checkpoint, _requested_device(), load.cancel)
-        if not _current(load):
-            return
+            if not _current(load):
+                return
+        worker.start(path, load.checkpoint, get_device(), load.cancel)
         with _state_lock:
             if not _current(load):
                 return
-            _worker, _loaded, _device_name = worker, load.checkpoint, worker.device
-            _lease, load.lease, _failure, _loading = lease, None, None, None
-            watch_generation = _generation
-            published = True
+            _worker, _loaded, _device_name, _lease = worker, load.checkpoint, worker.device, lease
+            _failure = _loading = None
             _touch_locked(worker)
-        threading.Thread(
-            target = _watch_resident,
-            args = (worker, lease, watch_generation),
-            name = "clef-watch",
-            daemon = True,
-        ).start()
-        logger.info("Clef loaded %s on %s", load.checkpoint.name, worker.device)
+            published = True
     except ClefWorkerCancelled:
         pass
     except Exception as exc:
-        message = f"Could not load {load.checkpoint.name}: {type(exc).__name__}: {exc}"
-        logger.warning("Clef load failed: %s", message, exc_info = True)
+        logger.warning("Clef load failed: %s", exc)
         with _state_lock:
-            if _loading is load and not load.cancel.is_set() and not _shutdown_requested:
-                _failure = (load.checkpoint, message, time.monotonic() + FAILURE_BACKOFF_S)
-                _loading = None
+            if _current(load):
+                _failure = (load.checkpoint, str(exc), time.monotonic() + FAILURE_BACKOFF_S)
     finally:
         if not published:
             _retire(worker, lease)
         with _state_lock:
             if _loading is load:
                 _loading = None
-            load.lease = None
         load.done.set()
 
 
-def prepare(checkpoint: ClefCheckpoint) -> None:
-    """Nonblocking load registration for the Decisions GPU-arbiter handoff."""
+def prepare(checkpoint):
     _start_loading(checkpoint)
 
 
-def _worker_for(checkpoint: ClefCheckpoint) -> ClefWorker:
+def _worker_for(checkpoint):
     load = _start_loading(checkpoint)
-    if load is None:
-        with _state_lock:
-            if _loaded == checkpoint and _worker is not None and _worker.is_alive():
-                return _worker
-        return _worker_for(checkpoint)
-    if not load.done.wait(LOAD_WAIT_S):
-        raise Unavailable(
-            503,
-            "model_loading",
-            f"{checkpoint.name} is still loading",
-            retry_after = 5,
-        )
+    if load is not None and not load.done.wait(LOAD_WAIT_S):
+        raise Unavailable(503, "model_loading", f"{checkpoint.name} is still loading", 5)
     with _state_lock:
-        if _loaded == checkpoint and _worker is not None and _worker.is_alive():
+        if _loaded == checkpoint and _worker is not None:
             return _worker
-        failure = _failure if _failure and _failure[0] == checkpoint else None
-        if failure is not None and time.monotonic() < failure[2]:
-            raise Unavailable(
-                503,
-                "model_unavailable",
-                failure[1],
-                retry_after = max(1.0, failure[2] - time.monotonic()),
-            )
-    raise Unavailable(503, "model_loading", f"{checkpoint.name} is reloading", retry_after = 1)
+        if _failure and _failure[0] == checkpoint:
+            raise Unavailable(503, "model_unavailable", _failure[1], max(1, _failure[2] - time.monotonic()))
+    raise Unavailable(503, "model_loading", f"{checkpoint.name} is reloading", 1)
 
 
-def _cancel_idle_locked() -> None:
+def _cancel_idle_locked():
     global _idle_timer
-    timer, _idle_timer = _idle_timer, None
-    if timer is not None:
-        timer.cancel()
+    if _idle_timer is not None:
+        _idle_timer.cancel()
+        _idle_timer = None
 
 
-def _touch_locked(worker: ClefWorker) -> None:
-    global _idle_timer, _last_activity
+def _touch_locked(worker):
+    global _idle_timer
     _cancel_idle_locked()
-    _last_activity = time.monotonic()
-    timer = threading.Timer(IDLE_UNLOAD_S, _idle_unload, args = (worker, _generation))
-    timer.daemon = True
-    _idle_timer = timer
-    timer.start()
+    _idle_timer = threading.Timer(IDLE_UNLOAD_S, _idle_unload, args = (worker, _generation))
+    _idle_timer.daemon = True
+    _idle_timer.start()
 
 
-def _idle_unload(worker: ClefWorker, generation: int) -> None:
-    global _worker, _loaded, _device_name, _lease, _generation, _idle_timer
+def _idle_unload(worker, generation):
     with _state_lock:
-        if (
-            _shutdown_requested
-            or _worker is not worker
-            or _generation != generation
-            or time.monotonic() - _last_activity < IDLE_UNLOAD_S
-        ):
+        if _worker is not worker or _generation != generation:
             return
         if not _run_lock.acquire(blocking = False):
-            timer = threading.Timer(1.0, _idle_unload, args = (worker, generation))
-            timer.daemon = True
-            _idle_timer = timer
-            timer.start()
+            _touch_locked(worker)
             return
-        _cancel_idle_locked()
-        lease, _lease = _lease, None
-        _retiring.add(worker)
-        _worker = None
-        _loaded = _device_name = None
-        _generation += 1
     try:
-        _retire(worker, lease, graceful_timeout = SHUTDOWN_WAIT_S)
+        with _state_lock:
+            if _worker is not worker or _generation != generation:
+                return
+        _stop(False)
     finally:
         _run_lock.release()
 
 
-def decide(
-    checkpoint: ClefCheckpoint,
-    state: Any,
-    questions: dict[str, dict[str, Any]],
-    images: list[bytes] | None = None,
-) -> dict[str, Any]:
-    """Return a Clef SystemOne wire object through one bounded owned worker."""
+def decide(checkpoint, state, questions, images = None):
     if not _admission.acquire(blocking = False):
-        raise Unavailable(529, "overloaded", "System One is busy; retry shortly", retry_after = 1)
+        raise Unavailable(529, "overloaded", "System One is busy; retry shortly", 1)
+    held = False
     try:
-        return _decide(checkpoint, state, questions, list(images or ()))
-    finally:
-        _admission.release()
-
-
-def _decide(
-    checkpoint: ClefCheckpoint,
-    state: Any,
-    questions: dict[str, dict[str, Any]],
-    images: list[bytes],
-) -> dict[str, Any]:
-    worker = _worker_for(checkpoint)
-    if not _run_lock.acquire(timeout = RUN_WAIT_S):
-        raise Unavailable(529, "overloaded", "System One is busy; retry shortly", retry_after = 1)
-    try:
+        worker = _worker_for(checkpoint)
+        held = _run_lock.acquire(timeout = RUN_WAIT_S)
+        if not held:
+            raise Unavailable(529, "overloaded", "System One is busy; retry shortly", 1)
         with _state_lock:
-            if _worker is not worker or _loaded != checkpoint:
-                raise Unavailable(
-                    503, "model_loading", f"{checkpoint.name} is reloading", retry_after = 1
-                )
+            if _worker is not worker:
+                raise Unavailable(503, "model_loading", f"{checkpoint.name} is reloading", 1)
             _cancel_idle_locked()
         try:
-            result = worker.decide(checkpoint, state, questions, images)
+            return worker.decide(checkpoint, state, questions, list(images or ()))
         except ClefWorkerInputError as exc:
             raise Unavailable(422, "invalid_request_error", str(exc)) from None
         except ClefWorkerCancelled as exc:
-            raise Unavailable(503, "model_loading", str(exc), retry_after = 1) from None
+            raise Unavailable(503, "model_loading", str(exc), 1) from None
         except ClefWorkerError as exc:
-            _forget_failed_worker(worker, checkpoint, str(exc))
-            raise Unavailable(503, "model_unavailable", str(exc), retry_after = 1) from None
-        with _state_lock:
-            if _worker is not worker or _loaded != checkpoint:
-                raise Unavailable(
-                    503, "model_loading", f"{checkpoint.name} is reloading", retry_after = 1
-                )
-            _touch_locked(worker)
+            shutdown_worker(worker, checkpoint, str(exc))
+            raise Unavailable(503, "model_unavailable", str(exc), 1) from None
+        finally:
+            with _state_lock:
+                if _worker is worker:
+                    _touch_locked(worker)
+    finally:
+        if held:
+            _run_lock.release()
+        _admission.release()
+
+
+def shutdown_worker(worker, checkpoint, error):
+    global _worker, _loaded, _device_name, _lease, _failure
+    with _state_lock:
+        if _worker is not worker:
+            return
+        lease, _lease = _lease, None
+        _worker = _loaded = _device_name = None
+        _failure = (checkpoint, error, time.monotonic() + FAILURE_BACKOFF_S)
+    _retire(worker, lease)
+
+
+def ensure_can_unload():
+    _ensure_not_retiring()
+    if _run_lock.locked():
+        raise Unavailable(409, "model_loading", "Wait for the Clef decision to finish before unloading.")
+
+
+def _invalidate(stopping):
+    global _worker, _loaded, _device_name, _loading, _lease, _failure, _generation, _shutdown_requested
+    with _state_lock:
+        _shutdown_requested |= stopping
+        _cancel_idle_locked()
+        worker, load, lease = _worker, _loading, _lease
+        _worker = _loaded = _device_name = _loading = _lease = _failure = None
+        _generation += 1
+        if load:
+            load.cancel.set()
+        for candidate in (worker, load.worker if load else None):
+            if candidate is not None:
+                _retiring.add(candidate)
+                candidate.cancel()
+        return worker, load, lease
+
+
+def _stop(stopping):
+    worker, load, lease = _invalidate(stopping)
+    _retire(worker, lease)
+    if load:
+        if load.worker is not None:
+            load.worker.close()
+        load.done.wait(LOAD_CANCEL_WAIT_S)
+    return worker is not None
+
+
+def unload():
+    ensure_can_unload()
+    if not _run_lock.acquire(blocking = False):
+        raise Unavailable(409, "model_loading", "Wait for the Clef decision to finish before unloading.")
+    try:
+        result = _stop(False)
+        _ensure_not_retiring()
         return result
     finally:
         _run_lock.release()
 
 
-def _forget_failed_worker(worker: ClefWorker, checkpoint: ClefCheckpoint, message: str) -> None:
-    global _worker, _loaded, _device_name, _lease, _failure, _generation
+def shutdown():
+    return _stop(True)
+
+
+def status():
     with _state_lock:
-        if _worker is not worker:
-            return
-        _cancel_idle_locked()
-        lease, _lease = _lease, None
-        _retiring.add(worker)
-        _worker = None
-        _loaded = _device_name = None
-        _generation += 1
-        _failure = (
-            checkpoint,
-            f"Clef worker failed: {message}",
-            time.monotonic() + FAILURE_BACKOFF_S,
-        )
-    _retire(worker, lease)
-
-
-def ensure_can_unload() -> None:
-    """Only a running decision blocks retirement; loads are generation-cancellable."""
-    _ensure_not_retiring()
-    if not _run_lock.acquire(blocking = False):
-        raise Unavailable(
-            409,
-            "model_loading",
-            "Wait for the Clef decision to finish before unloading.",
-        )
-    _run_lock.release()
-
-
-def _invalidate(
-    *, stopping: bool
-) -> tuple[ClefWorker | None, _Load | None, _RepositoryLease | None, bool]:
-    global \
-        _worker, \
-        _loaded, \
-        _device_name, \
-        _loading, \
-        _lease, \
-        _failure, \
-        _generation, \
-        _shutdown_requested
-    with _state_lock:
-        if stopping:
-            _shutdown_requested = True
-        _cancel_idle_locked()
-        worker, loading, lease = _worker, _loading, _lease
-        was_loaded = worker is not None
-        for retiring in (worker, loading.worker if loading is not None else None):
-            if retiring is not None:
-                _retiring.add(retiring)
-        _worker = _lease = None
-        _loaded = _device_name = None
-        _loading = None
-        _failure = None
-        _generation += 1
-        if loading is not None:
-            loading.cancel.set()
-            loading_worker = loading.worker
-        else:
-            loading_worker = None
-    if worker is not None:
-        worker.cancel()
-    if loading_worker is not None and loading_worker is not worker:
-        loading_worker.cancel()
-    return worker, loading, lease, was_loaded
-
-
-def unload() -> bool:
-    """Cancel a load or retire an idle worker; never interrupt a decision."""
-    ensure_can_unload()
-    if not _run_lock.acquire(blocking = False):
-        raise Unavailable(
-            409, "model_loading", "Wait for the Clef decision to finish before unloading."
-        )
-    try:
-        worker, loading, lease, was_loaded = _invalidate(stopping = False)
-        _retire(worker, lease, graceful_timeout = SHUTDOWN_WAIT_S)
-        if loading is not None:
-            pending_worker = loading.worker
-            if pending_worker is not None and pending_worker is not worker:
-                pending_worker.close(graceful_timeout = 0.0)
-            loading.done.wait(LOAD_CANCEL_WAIT_S)
-        _ensure_not_retiring()
-        return was_loaded
-    finally:
-        _run_lock.release()
-
-
-def shutdown() -> bool:
-    """Force-retire every owned worker, including a running decision or load."""
-    worker, loading, lease, was_loaded = _invalidate(stopping = True)
-    _retire(worker, lease)
-    if loading is not None:
-        loading.done.wait(LOAD_CANCEL_WAIT_S)
-        pending_worker = loading.worker
-        if pending_worker is not None and pending_worker is not worker:
-            pending_worker.close(graceful_timeout = 0.0)
-    return was_loaded
-
-
-def status() -> dict[str, Any]:
-    with _state_lock:
+        alive = _worker is not None and _worker.is_alive()
         failure = _failure if _failure and time.monotonic() < _failure[2] else None
-        worker_alive = _worker is not None and _worker.is_alive()
-        return {
-            "loaded_model": _loaded.name if _loaded and worker_alive else None,
-            "device": _device_name if worker_alive else None,
-            "loading_model": _loading.checkpoint.name if _loading else None,
-            "installing": False,
-            "error": failure[1] if failure else None,
-            "error_model": failure[0].name if failure else None,
-        }
+        return dict(loaded_model = _loaded.name if alive else None,
+                    device = _device_name if alive else None,
+                    backend = ("llama.cpp" if is_native(_loaded) else "pytorch") if alive else None,
+                    loading_model = _loading.checkpoint.name if _loading else None,
+                    installing = False, error = failure[1] if failure else None,
+                    error_model = failure[0].name if failure else None)
 
 
-# Backstop for interpreter exits that bypass the application lifespan.
 atexit.register(shutdown)

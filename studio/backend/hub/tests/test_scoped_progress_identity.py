@@ -127,9 +127,7 @@ def test_pinned_scope_rejects_a_manifest_for_another_revision(scoped_progress):
         repo_id = "Org/Model",
         variant = "@diffusion",
         started_at = "",
-        expected_files = (
-            download_manifest.ExpectedFile(path = "new.gguf", size = 627, sha256 = "new"),
-        ),
+        expected_files = (download_manifest.ExpectedFile(path = "new.gguf", size = 627, sha256 = "new"),),
         commit_hash = "b" * 40,
         metadata_derived = True,
     )

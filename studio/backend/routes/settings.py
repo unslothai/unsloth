@@ -666,6 +666,11 @@ class SystemOneSettingsResponse(BaseModel):
     models: list[SystemOneModelOption]
     loaded_model: Optional[str] = None
     loaded_device: Optional[str] = None
+    backend: str = "auto"
+    effective_backend: Optional[str] = None
+    loaded_backend: Optional[str] = None
+    fallback_reason: Optional[str] = None
+    input_modalities: list[str] = ["text"]
     loading_model: Optional[str] = None
     installing: bool = False
     error: Optional[str] = None
@@ -676,6 +681,7 @@ class SystemOneSettingsPayload(BaseModel):
     enabled: Optional[bool] = None
     model: Optional[str] = None
     device: Optional[str] = None
+    backend: Optional[Literal["auto", "llama.cpp", "pytorch"]] = None
     expected_enabled: Optional[bool] = None
     expected_model: Optional[str] = None
 
@@ -1461,7 +1467,9 @@ def _systemone_response(request: Request) -> SystemOneSettingsResponse:
 
     enabled = systemone_settings.get_enabled()
     runtime = decision_runtime.status()
-    model = catalog.default_checkpoint().name
+    checkpoint = catalog.default_checkpoint()
+    model = checkpoint.name
+    backend = decision_runtime.backend_info(checkpoint)
     error = runtime["error"]
     if runtime["error_model"] not in (None, model):
         error = None
@@ -1482,6 +1490,9 @@ def _systemone_response(request: Request) -> SystemOneSettingsResponse:
         ],
         loaded_model = runtime["loaded_model"],
         loaded_device = runtime["device"],
+        loaded_backend = runtime.get("backend"),
+        **backend,
+        input_modalities = ["text", "image"] if decision_runtime.accepts_images(checkpoint) else ["text"],
         loading_model = runtime["loading_model"],
         installing = runtime["installing"],
         error = error,
@@ -1495,7 +1506,7 @@ _SYSTEMONE_SETTINGS_LOCK = threading.Lock()
 def _systemone_values(payload: SystemOneSettingsPayload) -> dict[str, Any]:
     try:
         return systemone_settings.validate(
-            **payload.model_dump(include = {"enabled", "model", "device"}, exclude_none = True)
+            **payload.model_dump(include = {"enabled", "model", "device", "backend"}, exclude_none = True)
         )
     except ValueError as exc:
         raise log_and_http_error(
@@ -1607,7 +1618,9 @@ async def list_systemone_connections(
     "/systemone/resolve", response_model = SystemOneDownloadPlan, response_model_exclude_unset = True
 )
 def resolve_systemone_download(
-    model: Optional[str] = None, current_subject: str = Depends(get_current_subject)
+    model: Optional[str] = None,
+    backend: Optional[Literal["auto", "llama.cpp", "pytorch"]] = None,
+    current_subject: str = Depends(get_current_subject),
 ) -> SystemOneDownloadPlan:
     from core.systemone import catalog, runtime as decision_runtime
 
@@ -1620,7 +1633,10 @@ def resolve_systemone_download(
         raise HTTPException(status_code = 400, detail = "Unknown Decision API model.")
     if isinstance(checkpoint, catalog.Connection):
         return SystemOneDownloadPlan(repo = None, files = [], size_bytes = 0, cached = True, error = None)
-    return SystemOneDownloadPlan(**decision_runtime.download_plan(checkpoint))
+    try:
+        return SystemOneDownloadPlan(**decision_runtime.download_plan(checkpoint, preference = backend))
+    except decision_runtime.Unavailable as exc:
+        raise HTTPException(status_code = exc.status, detail = exc.message) from None
 
 
 @_owner_settings_router.post("/systemone/unload", response_model = SystemOneSettingsResponse)

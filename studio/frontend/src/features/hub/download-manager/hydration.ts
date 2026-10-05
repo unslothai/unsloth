@@ -101,7 +101,9 @@ async function adoptActiveModelDownloads(): Promise<void> {
         variant,
         ...(inventoryKind ? { inventoryKind } : {}),
         ...(files ? { files } : {}),
-        ...(download.revision?.trim() ? { revision: download.revision.trim() } : {}),
+        ...(download.revision?.trim()
+          ? { revision: download.revision.trim() }
+          : {}),
         expectedBytes: 0,
       },
       safeGeneration(download.generation),

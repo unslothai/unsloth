@@ -847,12 +847,8 @@ def _download_scoped_snapshot(
     blob_hashes: frozenset[str] = frozenset()
     if revision is not None:
         existing = download_manifest.read_manifest("model", repo_id, scope)
-        if (
-            existing is not None
-            and (
-                not existing.metadata_derived
-                or existing.commit_hash != revision
-            )
+        if existing is not None and (
+            not existing.metadata_derived or existing.commit_hash != revision
         ):
             # State is keyed by scope, not revision. Do not let an old scope manifest
             # prove the pinned snapshot before this worker has attested the new one.

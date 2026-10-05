@@ -136,6 +136,7 @@ class TestMaxBodyMiddleware:
 
     def test_decisions_body_is_bounded_before_json_parsing(self, main_module):
         from core.systemone.media import MAX_BODY_BYTES
+
         for path in ("/v1/systemone", "/v1/systemone/"):
             assert main_module._get_request_body_max_bytes(path) == MAX_BODY_BYTES
             assert any(path.startswith(p) for p in main_module._BODY_PROTECTED_PREFIXES)
@@ -146,9 +147,11 @@ class TestMaxBodyMiddleware:
             protected_prefixes = ("/v1",),
             request_max_bytes_getter = main_module._get_request_body_max_bytes,
         )
+
         @app.post("/v1/systemone")
         async def accept(payload: dict):
             return {"accepted": True}
+
         c = TestClient(app)
         # Not even valid JSON: the size guard must run before the parser.
         response = c.post("/v1/systemone", content = b"x" * (MAX_BODY_BYTES + 1))

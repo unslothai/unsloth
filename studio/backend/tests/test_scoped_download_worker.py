@@ -92,7 +92,9 @@ def test_a_dangling_symlink_does_not_count_as_present(offline, capsys):
     assert "incomplete" in capsys.readouterr().err
 
 
-def test_pinned_scoped_download_uses_the_commit_for_metadata_manifest_and_snapshot(monkeypatch, tmp_path):
+def test_pinned_scoped_download_uses_the_commit_for_metadata_manifest_and_snapshot(
+    monkeypatch, tmp_path
+):
     revision = "a" * 40
     captured: dict = {}
     expected_files = [
@@ -100,7 +102,11 @@ def test_pinned_scoped_download_uses_the_commit_for_metadata_manifest_and_snapsh
         for rel in FILES
     ]
 
-    def _metadata(repo_id, _token, requested_revision = None):
+    def _metadata(
+        repo_id,
+        _token,
+        requested_revision = None,
+    ):
         captured["metadata"] = (repo_id, requested_revision)
         return SimpleNamespace(sha = revision, siblings = expected_files)
 
@@ -108,7 +114,9 @@ def test_pinned_scoped_download_uses_the_commit_for_metadata_manifest_and_snapsh
     monkeypatch.setattr(hf_download, "_protected_blob_hashes", lambda: frozenset())
     monkeypatch.setattr(hf_download, "_preflight_disk_space", lambda *a, **k: None)
     monkeypatch.setattr(hf_download, "_reuse_unchanged_files", lambda *a, **k: [])
-    monkeypatch.setattr(hf_download, "_verify_completed_download", lambda *a, **k: captured.update(verify = (a, k)))
+    monkeypatch.setattr(
+        hf_download, "_verify_completed_download", lambda *a, **k: captured.update(verify = (a, k))
+    )
 
     import hub.utils.download_registry as registry_mod
     import huggingface_hub
@@ -134,10 +142,7 @@ def test_pinned_scoped_download_uses_the_commit_for_metadata_manifest_and_snapsh
 
     assert captured["metadata"] == ("Org/Model", revision)
     assert captured["snapshot"]["revision"] == revision
-    assert captured["manifest"][1] == {
-        "commit_hash": revision,
-        "metadata_derived": True,
-    }
+    assert captured["manifest"][1] == {"commit_hash": revision, "metadata_derived": True}
     assert captured["verify"][1]["expected_commit"] == revision
 
 

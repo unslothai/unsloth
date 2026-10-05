@@ -5,6 +5,7 @@ import { authFetch } from "@/features/auth";
 import { readFastApiError } from "@/lib/format-fastapi-error";
 
 export type SystemOneDevice = "cpu" | "gpu";
+export type SystemOneBackend = "auto" | "llama.cpp" | "pytorch";
 
 export type SystemOneModel = {
   name: string;
@@ -23,6 +24,11 @@ export type SystemOneSettings = {
   models: SystemOneModel[];
   loadedModel: string | null;
   loadedDevice: string | null;
+  backend: SystemOneBackend;
+  effectiveBackend: string | null;
+  loadedBackend: string | null;
+  fallbackReason: string | null;
+  inputModalities: string[];
   loadingModel: string | null;
   installing: boolean;
   error: string | null;
@@ -49,6 +55,7 @@ export type SystemOneSettingsPatch = {
   enabled?: boolean;
   model?: string;
   device?: SystemOneDevice;
+  backend?: SystemOneBackend;
   expectedEnabled?: boolean;
   expectedModel?: string;
 };
@@ -79,6 +86,15 @@ type ApiSystemOneSettings = {
   loaded_model: string | null;
   // biome-ignore lint/style/useNamingConvention: API schema
   loaded_device: string | null;
+  backend: SystemOneBackend;
+  // biome-ignore lint/style/useNamingConvention: API schema
+  effective_backend: string | null;
+  // biome-ignore lint/style/useNamingConvention: API schema
+  loaded_backend: string | null;
+  // biome-ignore lint/style/useNamingConvention: API schema
+  fallback_reason: string | null;
+  // biome-ignore lint/style/useNamingConvention: API schema
+  input_modalities: string[];
   // biome-ignore lint/style/useNamingConvention: API schema
   loading_model: string | null;
   installing: boolean;
@@ -107,7 +123,8 @@ export function subscribeSystemOneSettings(
     listener((event as CustomEvent<SystemOneSettings>).detail);
   };
   window.addEventListener(SYSTEMONE_SETTINGS_EVENT, handleChange);
-  return () => window.removeEventListener(SYSTEMONE_SETTINGS_EVENT, handleChange);
+  return () =>
+    window.removeEventListener(SYSTEMONE_SETTINGS_EVENT, handleChange);
 }
 
 function publishSystemOneSettings(settings: SystemOneSettings) {
@@ -144,6 +161,11 @@ function fromApi(settings: ApiSystemOneSettings): SystemOneSettings {
     })),
     loadedModel: settings.loaded_model,
     loadedDevice: settings.loaded_device,
+    backend: settings.backend,
+    effectiveBackend: settings.effective_backend,
+    loadedBackend: settings.loaded_backend,
+    fallbackReason: settings.fallback_reason,
+    inputModalities: settings.input_modalities,
     loadingModel: settings.loading_model,
     installing: settings.installing,
     error: settings.error,
@@ -225,8 +247,12 @@ export async function loadSystemOneConnections(): Promise<
 
 export async function resolveSystemOneDownload(
   model?: string,
+  backend?: SystemOneBackend,
 ): Promise<SystemOneDownloadPlan> {
-  const query = model ? `?${new URLSearchParams({ model })}` : "";
+  const params = new URLSearchParams();
+  if (model) params.set("model", model);
+  if (backend) params.set("backend", backend);
+  const query = params.size ? `?${params}` : "";
   const res = await authFetch(`${SETTINGS_PATH}/resolve${query}`);
   if (!res.ok) {
     throw new Error(

@@ -1151,8 +1151,12 @@ export async function probeAndAdopt(
             variant: active.variant,
             expectedBytes: 0,
             // Carry the live job's file list and immutable revision so a later scoped start cannot adopt a different snapshot in this slot.
-            ...(active.files && active.files.length > 0 ? { files: [...active.files] } : {}),
-            ...(active.revision?.trim() ? { revision: active.revision.trim() } : {}),
+            ...(active.files && active.files.length > 0
+              ? { files: [...active.files] }
+              : {}),
+            ...(active.revision?.trim()
+              ? { revision: active.revision.trim() }
+              : {}),
           },
           active.generation,
           active.state,

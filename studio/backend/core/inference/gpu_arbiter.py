@@ -106,7 +106,12 @@ def _evict_decisions() -> None:
 
 # Patchable in tests via monkeypatch.setitem. Ownership is exclusive, so acquire_for's evict-the-current-owner
 # generalises to any number of owners.
-_EVICTORS = {CHAT: _evict_chat, DIFFUSION: _evict_diffusion, VIDEO: _evict_video, DECISIONS: _evict_decisions}
+_EVICTORS = {
+    CHAT: _evict_chat,
+    DIFFUSION: _evict_diffusion,
+    VIDEO: _evict_video,
+    DECISIONS: _evict_decisions,
+}
 
 
 class GpuOwnerBusyError(RuntimeError):

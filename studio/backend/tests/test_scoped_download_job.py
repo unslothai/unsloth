@@ -206,22 +206,16 @@ def test_a_different_pinned_revision_is_not_adopted(monkeypatch):
 
     key = dl._download_job_key(REPO, dl._scope_variant("diffusion"))
     try:
-        first = asyncio.run(
-            dl.download_model_response(_request(revision = PINNED_REVISION))
-        )
+        first = asyncio.run(dl.download_model_response(_request(revision = PINNED_REVISION)))
         assert first["accepted"] is True
 
         with pytest.raises(HTTPException) as other_revision:
-            asyncio.run(
-                dl.download_model_response(_request(revision = OTHER_REVISION))
-            )
+            asyncio.run(dl.download_model_response(_request(revision = OTHER_REVISION)))
         assert other_revision.value.status_code == 409
         assert "different revision" in other_revision.value.detail
 
         # Commit SHAs are case-insensitive, so the same immutable object still adopts.
-        same = asyncio.run(
-            dl.download_model_response(_request(revision = PINNED_REVISION.upper()))
-        )
+        same = asyncio.run(dl.download_model_response(_request(revision = PINNED_REVISION.upper())))
         assert same["accepted"] is True and same["attached"] is True
     finally:
         dl._registry.set_job(key, "complete")
@@ -292,9 +286,12 @@ def test_the_http_retry_keeps_the_scoped_file_list_on_the_record(monkeypatch):
     key = dl._download_job_key("black-forest-labs/FLUX.1-dev", dl._scope_variant("diffusion"))
     try:
         # The retry only exists for a job that started on XET.
-        assert asyncio.run(
-            dl.download_model_response(_request(use_xet = True, revision = PINNED_REVISION))
-        )["accepted"] is True
+        assert (
+            asyncio.run(
+                dl.download_model_response(_request(use_xet = True, revision = PINNED_REVISION))
+            )["accepted"]
+            is True
+        )
 
         retried = download_lifecycle._try_http_retry(
             dl._registry,
@@ -315,9 +312,7 @@ def test_the_http_retry_keeps_the_scoped_file_list_on_the_record(monkeypatch):
         assert metadata is not None and list(metadata.scoped_files) == FILES
         assert metadata.revision == PINNED_REVISION
         # And the retried job is still adoptable by the page that asked for those files.
-        again = asyncio.run(
-            dl.download_model_response(_request(revision = PINNED_REVISION))
-        )
+        again = asyncio.run(dl.download_model_response(_request(revision = PINNED_REVISION)))
         assert again["accepted"] is True and again["job_key"] == key
     finally:
         dl._registry.set_job(key, "complete")

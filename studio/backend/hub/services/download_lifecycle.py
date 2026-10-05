@@ -108,6 +108,7 @@ def _repo_siblings(
                 return cached[0]
     try:
         from huggingface_hub import HfApi
+
         info_kwargs = {
             "repo_type": repo_type,
             "files_metadata": True,

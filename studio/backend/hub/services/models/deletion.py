@@ -726,11 +726,17 @@ def _diffusion_blocks_delete(repo_id: str) -> Optional[str]:
 
 def _decisions_blocks_delete(repo_id: Optional[str] = None) -> Optional[str]:
     from core.systemone import catalog, runtime
+
     held = runtime.status()
     checkpoint = catalog.CHECKPOINTS.get(held.get("loaded_model"))
-    if checkpoint is not None and (repo_id is None or _loaded_id_matches_repo(checkpoint.source, repo_id)):
+    if checkpoint is not None and (
+        repo_id is None or _loaded_id_matches_repo(checkpoint.source, repo_id)
+    ):
         return "Unload the Decision API model before deleting its cache"
-    if any(repo_id is None or _loaded_id_matches_repo(source, repo_id) for source in runtime.loading_repo_ids()):
+    if any(
+        repo_id is None or _loaded_id_matches_repo(source, repo_id)
+        for source in runtime.loading_repo_ids()
+    ):
         return "A Decision API model is loading; wait or unload it before deleting its cache"
     return None
 
@@ -940,7 +946,11 @@ async def delete_cached_model_response(
             return "Unload the model before deleting"
         if _audio_cpp_blocks_delete(repo_id):
             return "Unload the audio model before deleting"
-        return _decisions_blocks_delete(repo_id) or _diffusion_blocks_delete(repo_id) or _video_blocks_delete(repo_id)
+        return (
+            _decisions_blocks_delete(repo_id)
+            or _diffusion_blocks_delete(repo_id)
+            or _video_blocks_delete(repo_id)
+        )
 
     try:
         blocks_detail = await asyncio.to_thread(_load_state_blocks_delete)

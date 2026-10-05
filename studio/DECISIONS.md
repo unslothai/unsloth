@@ -5,18 +5,21 @@ Enable **Settings → API → Decision API** and select the model. Laya multilin
 | Studio backend | Text / JSON | Images | Video | Audio |
 |---|---|---|---|---|
 | Laya (default) | Yes | Rejected | Rejected | Rejected |
-| Local Clef Flash / Clef | Yes | PNG, JPEG, WebP | Rejected | Rejected |
+| Clef Flash / Clef · PyTorch | Yes | PNG, JPEG, WebP | Rejected | Rejected |
+| Clef Flash / Clef · compatible llama.cpp | Yes | Rejected (no projector) | Rejected | Rejected |
 | Saved Decisions connection | Yes | Rejected by Studio | Rejected | Rejected |
 
 Clef's source model accepts video frame arrays, but Studio does **not** expose a video decoder/frame contract. Use a reviewed frame-extraction workflow to submit up to four still images, without claiming temporal video understanding. Audio has no supported model path.
 
-The current Studio llama.cpp bundle predates native Decisions support. Newer llama.cpp implements Clef text decisions, but its Clef vision converter is not implemented and official Clef GGUF repositories have no projector. Studio therefore uses the verified PyTorch joint-head path for text **and** images, in an owned worker that releases device memory on unload. It does not substitute a base-Qwen or chat GGUF model.
+**Runtime → Auto** prefers llama.cpp when the configured executable contains `/v1/systemone`; the current Unsloth bundle (`b11160-mix-a6922cc`) does not, so Auto explicitly reports its PyTorch selection. Compatible native builds use pinned Q8 GGUFs retaining the joint head. Native Clef has no vision projector: images, empty instructions and single-level scores use PyTorch in Auto, or are refused in forced llama.cpp mode. Choose **PyTorch** to preload one backend for text and images. Native startup, authentication and inference errors propagate; they never trigger a backend retry. Settings shows the selection/reason and resident runtime; HTTP responses identify the actual runtime in `x-unsloth-decision-backend`. Neither path uses base-Qwen chat generation.
 
 ## Resources and lifecycle
 
 Downloads are about 19 GB (Flash) and 55 GB (Clef). Allow roughly 20 / 56 GB GPU memory respectively, or 40 / 112 GB CPU RAM with the float32 CPU path plus input/allocator overhead. CPU execution can be very slow. CPU remains the default; GPU uses one selected device, not all devices. Unload the resident chat/image/video model before starting Clef on GPU; a Decisions request does not silently evict it.
 
-Weights must finish downloading before a Clef request loads them. Startup can return retryable `503 model_loading`; inspect Settings and retry after `Retry-After`. Failures appear in Settings. **Unload** releases the worker; idle workers unload after five minutes. Changing settings and Studio shutdown retire the owned worker. Inputs beyond the 16,384-token Clef context are rejected, never silently shortened.
+Native Q8 downloads are about 10 / 29 GB. In Auto, the image path additionally needs the PyTorch snapshot; select PyTorch in Settings to download it before submitting images.
+
+Weights must finish downloading before a Clef request loads them. Startup can return retryable `503 model_loading`; inspect Settings and retry after `Retry-After`. Failures appear in Settings. **Unload** releases the worker; idle workers unload after five minutes. Changing settings and Studio shutdown retire the owned worker. PyTorch accepts at most 16,384 tokens; the native server is configured for 2,048 and refuses overflow. Neither silently shortens inputs.
 
 ## HTTP: System One, not OpenAI Decisions preview
 

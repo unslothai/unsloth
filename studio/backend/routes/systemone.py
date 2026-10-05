@@ -153,7 +153,10 @@ async def system_one(
             "Keyless requests can only use the configured Decision API model; send an API key to pick another.",
         )
     result = await _decide(checkpoint, payload.state, payload.questions, payload.images)
-    return JSONResponse(result, headers = {"x-typesafe-request-id": str(uuid4())})
+    headers = {"x-typesafe-request-id": str(uuid4())}
+    if backend := result.pop("_backend", None):
+        headers["x-unsloth-decision-backend"] = backend
+    return JSONResponse(result, headers = headers)
 
 
 def _require_enabled() -> None:
@@ -173,7 +176,10 @@ async def _decide(
 ) -> dict:
     try:
         state, decoded_images = await asyncio.to_thread(
-            media.prepare, state, images, accepts_images = isinstance(checkpoint, catalog.ClefCheckpoint)
+            media.prepare,
+            state,
+            images,
+            accepts_images = decision_runtime.accepts_images(checkpoint),
         )
     except media.InvalidMedia as exc:
         raise _error(
@@ -320,7 +326,7 @@ def decision_model_objects() -> list[dict[str, Any]]:
             "owned_by": "unsloth",
             "architecture": {
                 "input_modalities": ["text", "image"]
-                if isinstance(catalog.resolve(name), catalog.ClefCheckpoint)
+                if decision_runtime.accepts_images(catalog.resolve(name))
                 else ["text"],
                 "output_modalities": ["decisions"],
             },
@@ -374,7 +380,9 @@ async def decide(state: JSONContent, questions: dict[str, QuestionIn]) -> dict[s
     try:
         await asyncio.to_thread(_require_enabled)
         checkpoint = await asyncio.to_thread(catalog.default_checkpoint)
-        return await _decide(checkpoint, state, questions)
+        result = await _decide(checkpoint, state, questions)
+        result.pop("_backend", None)
+        return result
     except HTTPException as exc:
         raise ToolError(exc.detail["message"]) from None
 

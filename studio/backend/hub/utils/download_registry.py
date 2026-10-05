@@ -1567,10 +1567,7 @@ class DownloadRegistry:
                     # A pin needs affirmative metadata: an active legacy record without it
                     # cannot prove which snapshot its scope is fetching.
                     return False, "revision_mismatch"
-                if (
-                    live is not None
-                    and normalize_revision(live.revision) != requested_revision
-                ):
+                if live is not None and normalize_revision(live.revision) != requested_revision:
                     return False, "revision_mismatch"
                 if (
                     scoped_files is not None

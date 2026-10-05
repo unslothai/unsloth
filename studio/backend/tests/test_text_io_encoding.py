@@ -886,7 +886,11 @@ def test_clef_path_shim_reads_utf8_under_a_non_utf8_locale(tmp_path):
     env = dict(os.environ, LC_ALL = "C", PYTHONUTF8 = "0", PYTHONCOERCECLOCALE = "0")
     env["PYTHONPATH"] = str(BACKEND_ROOT)
     run = subprocess.run(
-        [sys.executable, "-c", code, str(config)], env = env,
-        capture_output = True, text = True, encoding = "utf-8", timeout = 30,
+        [sys.executable, "-c", code, str(config)],
+        env = env,
+        capture_output = True,
+        text = True,
+        encoding = "utf-8",
+        timeout = 30,
     )
     assert run.returncode == 0, run.stderr[-3000:]

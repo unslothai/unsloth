@@ -352,9 +352,7 @@ def manifest_matches_download(
     if manifest is None or not files:
         return True
     revision = download_registry.normalize_revision(getattr(metadata, "revision", None))
-    if revision is not None and (
-        not manifest.metadata_derived or manifest.commit_hash != revision
-    ):
+    if revision is not None and (not manifest.metadata_derived or manifest.commit_hash != revision):
         return False
     if frozenset(file.path for file in manifest.expected_files) != files:
         return False

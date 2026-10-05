@@ -22,8 +22,12 @@ _VENDORED_CLEF = Path(__file__).resolve().parent.parent.parent / "vendor" / "cle
 
 
 class _UTF8Path(type(Path())):
-    def read_text(self, encoding=None, errors=None):
-        return super().read_text(encoding=encoding or "utf-8", errors=errors)
+    def read_text(
+        self,
+        encoding = None,
+        errors = None,
+    ):
+        return super().read_text(encoding = encoding or "utf-8", errors = errors)
 
 
 class ClefWorkerError(RuntimeError):
@@ -101,11 +105,11 @@ def _load(snapshot_path: str, requested_device: str, cancel_event):
     try:
         model, processor = clef.load_release_model(
             path,
-            device=device,
-            dtype=dtype,
-            local_files_only=True,
-            use_safetensors=True,
-            trust_remote_code=False,
+            device = device,
+            dtype = dtype,
+            local_files_only = True,
+            use_safetensors = True,
+            trust_remote_code = False,
         )
     except Exception as exc:
         raise ClefWorkerError(
@@ -126,7 +130,6 @@ def _decode_images(images: list[bytes]) -> list[Any]:
             raise ValueError(f"image {index + 1} is not encoded image data")
         try:
             from PIL import Image, ImageOps
-
             with Image.open(BytesIO(blob)) as image:
                 image.load()
                 upright = ImageOps.exif_transpose(image) or image
@@ -141,8 +144,8 @@ def encode_record_untruncated(clef, tokenizer, record: dict[str, Any], processor
     encoded = clef.encode_record(
         tokenizer,
         record,
-        max_length=_UNBOUNDED_ENCODE_LENGTH,
-        processor=processor,
+        max_length = _UNBOUNDED_ENCODE_LENGTH,
+        processor = processor,
     )
     length = len(encoded.input_ids)
     if length > MAX_CONTEXT_TOKENS:
@@ -216,7 +219,7 @@ def run_clef_worker(
     cmd_queue,
     resp_queue,
     cancel_event,
-    ready_event=None,
+    ready_event = None,
     config: dict[str, Any] | None = None,
 ) -> None:
     """Persistent spawn-child entrypoint for one local Clef checkpoint."""
@@ -230,7 +233,7 @@ def run_clef_worker(
     model = processor = clef = None
     while True:
         try:
-            command = cmd_queue.get(timeout=1.0)
+            command = cmd_queue.get(timeout = 1.0)
         except _queue.Empty:
             continue
         except (EOFError, OSError):

@@ -994,6 +994,7 @@ async def lifespan(app: FastAPI):
     await _close_llama_http()
 
     from core.systemone.runtime import shutdown as shutdown_decisions
+
     await asyncio.to_thread(shutdown_decisions)
 
     await run_lifespan_shutdown(

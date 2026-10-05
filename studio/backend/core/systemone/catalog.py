@@ -94,7 +94,19 @@ CHECKPOINTS = {
     )
 }
 
-# Names TypeSafe's and OpenJev's SDKs send by default, so an unmodified client reaches the configured model.
+NATIVE_CHECKPOINTS = {
+    c.name: c
+    for c in (
+        ClefCheckpoint("clef-flash", "ggml-org/Clef-Flash-GGUF", None,
+                       "Clef Flash · Q8 · native text decisions", 9_657_260_096,
+                       "4a7a08c09bc63baf043b62b5ba89dd67a0357d95", ("Clef-Flash-Q8_0.gguf",)),
+        ClefCheckpoint("clef", "ggml-org/Clef-GGUF", None,
+                       "Clef · Q8 · native text decisions", 28_732_215_264,
+                       "5f70656b6670c65eb85ad07a11efe211b5f211bd", ("Clef-Q8_0.gguf",)),
+    )
+}
+
+# SDK default aliases reach the installation's configured model.
 DEFAULT_ALIASES = frozenset({"default", "laya", "jev-latest", "jev-preview", "openjev-latest"})
 LOCAL_NAME = "laya-local"
 CONNECTION_PREFIX = "connection:"
@@ -148,7 +160,11 @@ def default_checkpoint() -> Checkpoint | Connection:
     if configured in CHECKPOINTS:
         return CHECKPOINTS[configured]
     if clef := next(
-        (c for c in CHECKPOINTS.values() if isinstance(c, ClefCheckpoint) and c.source == configured),
+        (
+            c
+            for c in CHECKPOINTS.values()
+            if isinstance(c, ClefCheckpoint) and c.source == configured
+        ),
         None,
     ):
         return clef

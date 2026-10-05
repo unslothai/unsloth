@@ -13,6 +13,7 @@ from typing import Optional, Sequence, TYPE_CHECKING
 from fastapi import HTTPException
 from loggers import get_logger
 
+from core.systemone import runtime as decision_runtime
 from hub.schemas.downloads import (
     ActiveDownloadsResponse,
     CancelDownloadRequest,
@@ -140,9 +141,11 @@ def _load_in_flight(repo_id: str) -> bool:
     except Exception:
         pass
     try:
-        from core.systemone.runtime import loading_repo_ids
         key = download_registry.normalize_repo_key(repo_id)
-        if any(download_registry.normalize_repo_key(r) == key for r in loading_repo_ids()):
+        if any(
+            download_registry.normalize_repo_key(r) == key
+            for r in decision_runtime.loading_repo_ids()
+        ):
             return True
     except Exception:
         pass
