@@ -5234,7 +5234,7 @@ export function AppSidebar() {
                         className="inline-flex size-[calc(30px*var(--ui-space-scale,1))] cursor-pointer items-center justify-center rounded-[10px] text-nav-icon-idle dark:text-nav-fg-muted transition-colors hover:bg-nav-surface-hover hover:text-black dark:hover:text-white focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                         aria-label={t("shell.aria.closeSidebar")}
                       >
-                        <HugeiconsIcon icon={LayoutAlignLeftIcon} strokeWidth={1.75} className="size-icon" />
+                        <HugeiconsIcon icon={PanelLeftIcon} strokeWidth={1.75} className="size-icon" />
                       </button>
                     </TooltipPrimitive.Trigger>
                     <TooltipContent
