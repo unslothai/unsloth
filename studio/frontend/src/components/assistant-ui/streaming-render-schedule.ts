@@ -1015,6 +1015,16 @@ function repairTail(
   return remend(prefix + tail, options).slice(prefix.length);
 }
 
+function repairTailKeepingLinks(
+  tail: string,
+  context: RetainedContext,
+  repaired = repairTail(tail, context),
+): string {
+  return hasIncompleteLinkRepair(tail, repaired)
+    ? repairTail(tail, context, LITERAL_LINK_REMEND)
+    : repaired;
+}
+
 // Where remend believes a fence is open. It toggles on any ``` run, wherever on the line that run
 // sits, and a backslash escapes the backtick after it, so this deliberately mirrors remend rather
 // than CommonMark: a mid-line ``` closes the fence for remend and must close it here too.
@@ -1484,12 +1494,11 @@ export class IncrementalMarkdownCache {
 
     this.updateTail(markdown);
 
-    let repaired =
-      this.repairOpenFence() ?? repairTail(this.tail, this.context);
-    const linkPending = hasIncompleteLinkRepair(this.tail, repaired);
-    if (linkPending) {
-      repaired = repairTail(this.tail, this.context, LITERAL_LINK_REMEND);
-    }
+    const repaired = repairTailKeepingLinks(
+      this.tail,
+      this.context,
+      this.repairOpenFence() ?? undefined,
+    );
 
     // globally scoped definitions must stay in the same rendered document as
     // their uses, so neither construct can retain an independently parsed prefix.
@@ -1505,10 +1514,6 @@ export class IncrementalMarkdownCache {
     ) {
       return this.renderFullDocument(markdown);
     }
-    if (linkPending) {
-      return this.render(repaired);
-    }
-
     const blocks = parseMarkdownIntoBlocks(repaired);
 
     const candidateCount = Math.max(0, blocks.length - ROLLBACK_BLOCKS);
@@ -1541,7 +1546,7 @@ export class IncrementalMarkdownCache {
       committedText,
     );
     const nextTail = this.tail.slice(commit.length);
-    const nextMarkdown = repairTail(nextTail, nextContext);
+    const nextMarkdown = repairTailKeepingLinks(nextTail, nextContext);
 
     // A repeating reply can leave the tail unchanged once a block is retained.
     // Streamdown would then see the Markdown it already holds and skip the
