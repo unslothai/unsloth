@@ -516,3 +516,95 @@ def test_detached_mcp_images_join_tool_result_only_on_followup(monkeypatch):
     }
     assert "Tool image" in result["content"][0]["text"]
     assert json.dumps(messages) == original
+
+
+@pytest.mark.parametrize(
+    "content", ["Rendered reply", None, [{"type": "text", "text": "Rendered reply"}], []]
+)
+@pytest.mark.parametrize("vision", [True, False])
+def test_client_continuation_replays_native_anthropic_state(monkeypatch, content, vision):
+    from models.inference import ChatMessage
+    from routes.inference import _build_external_messages
+
+    native = [
+        {"type": "thinking", "thinking": "Choose tools", "signature": "signed"},
+        {"type": "redacted_thinking", "data": "opaque"},
+        {
+            "type": "server_tool_use",
+            "id": "srv_1",
+            "name": "web_fetch",
+            "input": {"url": "https://example.com"},
+        },
+    ]
+    calls = [
+        {"id": "toolu_1", "type": "function", "function": {"name": "get_status", "arguments": "{}"}}
+    ]
+    messages = [
+        ChatMessage(role = "user", content = "Fetch the page and get status"),
+        ChatMessage(
+            role = "assistant",
+            content = content,
+            tool_calls = calls,
+            extra_content = {
+                "anthropic": {"content": native, "unrelated": "omit"},
+                "google": {"thought_signature": "foreign"},
+                "openai_codex": {"items": []},
+            },
+        ),
+        ChatMessage(role = "tool", tool_call_id = "toolu_1", content = "READY"),
+    ]
+    normalized = _build_external_messages(messages, vision, provider_type = "anthropic")
+    assert normalized[1]["extra_content"] == {"anthropic": {"content": native}}
+    bodies = []
+    client = _client(
+        monkeypatch,
+        lambda request: (
+            bodies.append(json.loads(request.content)) or _response(_finish("end_turn"))
+        ),
+    )
+    _collect(
+        client,
+        messages = normalized,
+        tools = [{"type": "function", "function": {"name": "get_status"}}],
+        enabled_tools = [],
+        tool_choice = "none",
+    )
+    assert bodies[0]["messages"][1]["content"] == native + [
+        {"type": "tool_use", "id": "toolu_1", "name": "get_status", "input": {}}
+    ]
+    assert bodies[0]["messages"][2]["content"] == [
+        {"type": "tool_result", "tool_use_id": "toolu_1", "content": "READY"}
+    ]
+    assert [tool["name"] for tool in bodies[0]["tools"]] == ["web_fetch"]
+    assert bodies[0]["tool_choice"] == {"type": "none"}
+
+
+def test_anthropic_does_not_forward_foreign_message_metadata(monkeypatch):
+    from models.inference import ChatMessage
+    from routes.inference import _build_external_messages
+
+    messages = _build_external_messages(
+        [
+            ChatMessage(role = "user", content = "Hello"),
+            ChatMessage(
+                role = "assistant",
+                content = "Previous reply",
+                extra_content = {
+                    "google": {"thought_signature": "foreign"},
+                    "openai_codex": {"items": []},
+                },
+            ),
+            ChatMessage(role = "user", content = "Continue"),
+        ],
+        True,
+        provider_type = "anthropic",
+    )
+    bodies = []
+    client = _client(
+        monkeypatch,
+        lambda request: (
+            bodies.append(json.loads(request.content)) or _response(_finish("end_turn"))
+        ),
+    )
+    _collect(client, messages = messages)
+    assert bodies[0]["messages"][1] == {"role": "assistant", "content": "Previous reply"}
