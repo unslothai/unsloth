@@ -292,9 +292,7 @@ def torch_dtype_map(decision: SmallHostDecision, compute_dtype: Any) -> Any:
 
 
 INT8_ACT_ENV = "UNSLOTH_DIFFUSION_SMALL_HOST_INT8_ACT"
-# Families whose fp32-promoted denoiser runs its int8 Linears as int8 x int8 (W8A8) on Turing. Measured on a T4
-# against the dequantised fp32 path: LPIPS inside the spread between that path and the bf16 one. qwen-image-edit
-# shares the DiT but was not measured, so it keeps the dequantised path.
+# Measured on a T4 (LPIPS inside the fp32-vs-bf16 spread); qwen-image-edit shares the DiT but is unmeasured.
 INT8_ACT_FAMILIES = frozenset({"qwen-image"})
 # torch._int_mm: rows M > 16, K and N multiples of 8.
 _INT8_ACT_MIN_ROWS = 17
@@ -320,11 +318,8 @@ def int8_act_counts() -> dict[str, int]:
 
 
 def int8_act_device_ok(device: Any) -> bool:
-    """Turing (sm_75) CUDA only, and ``torch._int_mm`` must return the exact integer product there.
-
-    sm_75 is the only arch that both has int8 tensor cores and promotes these families to float32 (no bf16): fp32
-    SIMT GEMMs are the bulk of the step. sm_80+ computes in bf16, where an eager W8A8 Linear is not faster than the
-    dequantised one. ROCm reports CUDA capabilities that mean something else."""
+    """sm_75 CUDA only (fp32-promoted, int8 tensor cores; on sm_80+ bf16 eager W8A8 does not win; ROCm capabilities
+    differ), and ``torch._int_mm`` must return the exact integer product there."""
     import torch
 
     try:
@@ -359,10 +354,7 @@ def _int8_linear_class():
     class Int8WeightLinear(torch.nn.Module):
         """Linear with int8 per-output-channel weights, dequantised to the input dtype for each forward.
 
-        With ``act_int8`` set (``INT8_ACT_FAMILIES`` on sm_75), a float32 call quantises its activation per row
-        (symmetric absmax, the same rule as the weight) and runs ``torch._int_mm`` on int8 tensor cores, with the
-        two scales applied to the int32 product in float32. Other dtypes, short inputs and unaligned shapes keep
-        the dequantised path."""
+        ``act_int8``: eligible float32 CUDA calls quantise activations per row and run ``torch._int_mm`` instead."""
 
         def __init__(self, qweight, scale, bias, in_features: int, out_features: int):
             super().__init__()
