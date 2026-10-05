@@ -245,7 +245,7 @@ def test_resident_ltx2_decodes_untiled_when_it_fits(monkeypatch):
 
 
 def test_video_load_installs_wide_tiles_on_every_tiling_load():
-    src = open(os.path.join(os.path.dirname(vt.__file__), "video.py")).read()
+    src = open(os.path.join(os.path.dirname(vt.__file__), "video.py"), encoding = "utf-8").read()
     tiling = src.index("pipe.vae.enable_tiling()")
     install = src.index("from .video_ltx2_vae_tiles import install")
     resident = src.index("from .video_vae_untiled import install_untiled_decode")
