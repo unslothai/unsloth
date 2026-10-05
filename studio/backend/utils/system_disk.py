@@ -34,8 +34,13 @@ def _locate(path: Path) -> tuple[Path, int]:
     for candidate in (path, *path.parents):
         try:
             return candidate, _device(candidate)
-        except (FileNotFoundError, NotADirectoryError):
+        except NotADirectoryError:
             continue
+        except FileNotFoundError:
+            # Windows reports an untraversable parent as FileNotFoundError too.
+            from utils.hf_cache_settings import _absence_is_real
+            if not _absence_is_real(candidate):
+                raise
     raise FileNotFoundError(path)
 
 
@@ -73,8 +78,17 @@ _readings: dict = {}  # cache path -> (monotonic time, reading)
 _probes: dict = {}  # cache path -> in-flight thread
 
 
-def _probe(key: Optional[Path]) -> None:
-    reading = models_disk_usage(key)
+def _cache_key() -> str:
+    try:
+        from utils.hf_cache_settings import configured_cache_key
+        return configured_cache_key()
+    except Exception:  # noqa: BLE001 - a settings read must not fail the system poll
+        return "default"
+
+
+def _probe(key: str) -> None:
+    # Resolving the configured path can block on the same dead mount, so it happens here.
+    reading = models_disk_usage()
     with _lock:
         _probes.pop(key, None)
         _readings[key] = (time.monotonic(), reading)
@@ -84,7 +98,7 @@ def cached_models_disk_usage() -> Optional[dict]:
     """models_disk_usage for the 3 s /api/system poll: statvfs on a hung NFS/SMB cache blocks, so
     the probe runs off the request thread, at most one per cache path, refreshed every _TTL_S.
     """
-    key = _hub_cache()
+    key = _cache_key()
     with _lock:
         at, reading = _readings.get(key, (None, None))
         if key in _probes or (at is not None and time.monotonic() - at < _TTL_S):

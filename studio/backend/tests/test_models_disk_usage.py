@@ -127,12 +127,12 @@ def fresh_cache(monkeypatch):
 def test_hung_cache_volume_never_blocks_the_poll(fresh_cache, monkeypatch):
     release, calls = threading.Event(), []
 
-    def hung(key):
-        calls.append(key)
+    def hung(cache = None):
+        calls.append(cache)
         release.wait(10)
         return {"total_gb": 1.0}
 
-    monkeypatch.setattr(system_disk, "_hub_cache", lambda: Path("/nfs/hub"))
+    monkeypatch.setattr(system_disk, "_cache_key", lambda: "studio:/nfs")
     monkeypatch.setattr(system_disk, "models_disk_usage", hung)
     for _ in range(5):
         start = time.monotonic()
@@ -147,34 +147,47 @@ def test_hung_cache_volume_never_blocks_the_poll(fresh_cache, monkeypatch):
     assert system_disk.cached_models_disk_usage() == {"total_gb": 1.0}
 
 
+def test_cache_path_is_resolved_off_the_request_thread(fresh_cache, monkeypatch):
+    def blocking_resolve():
+        raise AssertionError("resolved on the request thread")
+
+    monkeypatch.setattr(system_disk, "_hub_cache", blocking_resolve)
+    monkeypatch.setattr(system_disk, "_cache_key", lambda: "studio:/nfs")
+    monkeypatch.setattr(system_disk, "models_disk_usage", lambda cache = None: {"ok": True})
+    assert system_disk.cached_models_disk_usage() == {"ok": True}
+
+
 def test_changed_models_folder_is_reprobed(fresh_cache, monkeypatch):
-    folder = {"path": Path("/a/hub")}
-    monkeypatch.setattr(system_disk, "_hub_cache", lambda: folder["path"])
-    monkeypatch.setattr(system_disk, "models_disk_usage", lambda key: {"path": str(key)})
-    assert system_disk.cached_models_disk_usage() == {"path": "/a/hub"}
-    folder["path"] = Path("/b/hub")
-    assert system_disk.cached_models_disk_usage() == {"path": "/b/hub"}
+    folder = {"key": "a"}
+    monkeypatch.setattr(system_disk, "_cache_key", lambda: folder["key"])
+    monkeypatch.setattr(system_disk, "models_disk_usage", lambda cache = None: {"key": folder["key"]})
+    assert system_disk.cached_models_disk_usage() == {"key": "a"}
+    folder["key"] = "b"
+    assert system_disk.cached_models_disk_usage() == {"key": "b"}
 
 
 def test_switching_away_from_a_hung_folder_probes_the_new_one(fresh_cache, monkeypatch):
     release = threading.Event()
-    folder = {"path": Path("/nfs/hub")}
+    folder = {"key": "nfs"}
 
-    def probe(key):
-        if key == Path("/nfs/hub"):
+    def probe(cache = None):
+        key = folder["key"]
+        if key == "nfs":
             release.wait(10)
-        return {"path": str(key)}
+        return {"key": key}
 
-    monkeypatch.setattr(system_disk, "_hub_cache", lambda: folder["path"])
+    monkeypatch.setattr(system_disk, "_cache_key", lambda: folder["key"])
     monkeypatch.setattr(system_disk, "models_disk_usage", probe)
     assert system_disk.cached_models_disk_usage() is None
-    folder["path"] = Path("/local/hub")
-    assert system_disk.cached_models_disk_usage() == {"path": "/local/hub"}
+    folder["key"] = "local"
+    assert system_disk.cached_models_disk_usage() == {"key": "local"}
     # The slow probe landing late must not evict the active folder's reading.
     release.set()
     for _ in range(50):
         if not system_disk._probes:
             break
         time.sleep(0.05)
-    monkeypatch.setattr(system_disk, "models_disk_usage", lambda key: pytest.fail("re-probed"))
-    assert system_disk.cached_models_disk_usage() == {"path": "/local/hub"}
+    monkeypatch.setattr(
+        system_disk, "models_disk_usage", lambda cache = None: pytest.fail("re-probed")
+    )
+    assert system_disk.cached_models_disk_usage() == {"key": "local"}
