@@ -20473,7 +20473,6 @@ def _split_frontend_suffix(text: str, name: "str | None") -> "tuple[str, str]":
     return body, text[len(body) :]
 
 
-# Floor under the window-aware caps above, applied whether or not the request priced its window.
 MAX_TOOL_TEXT_CHARS = _env_int("UNSLOTH_TOOL_RESULT_HARD_CAP_CHARS", 256_000)
 _TOOL_TEXT_READERS = frozenset({"terminal", "python"})
 
@@ -20506,11 +20505,7 @@ def cap_tool_text(
     thread_id: "str | None" = None,
     readers: "frozenset[str]" = frozenset(),
 ) -> str:
-    """Unconditional floor for model-bound tool text (``UNSLOTH_TOOL_RESULT_HARD_CAP_CHARS``).
-
-    When the model has a tool that can read the chat's sandbox, the full text is spilled there and
-    the notice says how to search it.
-    """
+    """Unconditional floor (``UNSLOTH_TOOL_RESULT_HARD_CAP_CHARS``); spills when a reader tool exists."""
     limit = _hard_cap_chars()
     if len(text) <= limit:
         return text
