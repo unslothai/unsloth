@@ -3,7 +3,6 @@
 
 """Shared fixtures for the unsloth_cli tests."""
 
-import os
 import sys
 import types
 
@@ -31,6 +30,23 @@ def _plain_cli_output(monkeypatch):
     monkeypatch.delenv("UNSLOTH_DEBUG", raising = False)
 
 
+@pytest.fixture(autouse = True)
+def _no_cloudflared_download(monkeypatch, tmp_path):
+    # The --secure check calls ensure_cloudflared(), which downloads ~40 MB when none is
+    # found (#9586). It execs a fresh cloudflare_tunnel per call, so patching the module
+    # misses it; find_cloudflared() checks PATH first, so a stub there covers every copy.
+    import os
+
+    stub_dir = tmp_path / "fake-bin"
+    stub_dir.mkdir()
+    # Both names: shutil.which honours PATHEXT by os.name, which tests faking win32 keep.
+    for name in ("cloudflared", "cloudflared.exe"):
+        stub = stub_dir / name
+        stub.write_text("", encoding = "utf-8")
+        stub.chmod(0o755)
+    monkeypatch.setenv("PATH", str(stub_dir) + os.pathsep + os.environ.get("PATH", ""))
+
+
 @pytest.fixture
 def stub_tool_policy_state(monkeypatch):
     """Stub the backend's `state.tool_policy`, which run() imports in-venv.
@@ -47,18 +63,3 @@ def stub_tool_policy_state(monkeypatch):
     state_mod.tool_policy = tp_mod
     monkeypatch.setitem(sys.modules, "state", state_mod)
     monkeypatch.setitem(sys.modules, "state.tool_policy", tp_mod)
-
-
-@pytest.fixture(autouse = True)
-def _no_cloudflared_download(monkeypatch, tmp_path):
-    # The --secure check calls ensure_cloudflared(), which downloads ~40 MB when none is
-    # found (#9586). It execs a fresh cloudflare_tunnel per call, so patching the module
-    # misses it; find_cloudflared() checks PATH first, so a stub there covers every copy.
-    stub_dir = tmp_path / "fake-bin"
-    stub_dir.mkdir()
-    # Both names: shutil.which honours PATHEXT by os.name, which tests faking win32 keep.
-    for name in ("cloudflared", "cloudflared.exe"):
-        stub = stub_dir / name
-        stub.write_text("", encoding = "utf-8")
-        stub.chmod(0o755)
-    monkeypatch.setenv("PATH", str(stub_dir) + os.pathsep + os.environ.get("PATH", ""))
