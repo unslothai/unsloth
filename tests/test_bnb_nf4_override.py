@@ -25,6 +25,10 @@ if torch.cuda.is_available():
     from unsloth.kernels import utils as U
 
 DTYPES = [torch.bfloat16, torch.float16, torch.float32]
+# _eligible rejects HIP: tests of the override's own numerics or routing would assert it ran.
+needs_override = pytest.mark.skipif(
+    torch.version.hip is not None, reason = "the override never runs on ROCm"
+)
 
 
 @pytest.fixture(autouse = True)
@@ -89,6 +93,7 @@ def _count_fallback(monkeypatch):
     return calls, original
 
 
+@needs_override
 @pytest.mark.parametrize("dtype", DTYPES)
 @pytest.mark.parametrize("nested", [True, False])
 @pytest.mark.parametrize("bias", [False, True])
@@ -119,6 +124,7 @@ def test_train_forward_backward_bit_exact(dtype, nested, bias, monkeypatch):
     assert _bits(_call(lin, x, True), torch.nn.functional.linear(x, W, b))
 
 
+@needs_override
 @pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float16])
 def test_decode_gemv_accuracy(dtype):
     lin = _layer(2048, 1024, dtype)
@@ -208,6 +214,7 @@ def test_bias_with_grad_falls_back(monkeypatch):
     assert calls and lin.bias.grad is not None
 
 
+@needs_override
 @pytest.mark.skipif(not torch.cuda.is_available() or not O._TRACE, reason = "traced from torch 2.11")
 @pytest.mark.parametrize("dtype", DTYPES)
 def test_compiled_no_breaks_bit_exact(dtype):
@@ -297,6 +304,7 @@ def test_default_gate():
     assert not O._default_on([(8, 0), (6, 1)], False, False)
 
 
+@needs_override
 @pytest.mark.parametrize(
     "rows,pick,to_bnb",
     [
@@ -362,6 +370,18 @@ def test_linear_env_override(value, expect):
     assert "OK" in out.stdout, out.stderr[-2000:]
 
 
+@pytest.mark.skipif(torch.version.hip is None, reason = "ROCm only")
+def test_rocm_always_runs_bitsandbytes(monkeypatch):
+    lin = _layer(256, 128, torch.bfloat16)
+    x = torch.randn(2, 1025, 128, device = "cuda", dtype = torch.bfloat16, requires_grad = True)
+    ref = _call(lin, x, False)
+    calls, _ = _count_fallback(monkeypatch)
+    y = _call(lin, x, True)
+    y.sum().backward()
+    assert calls and _bits(y, ref)
+    assert not O._default_on([(11, 5)], True, True)
+
+
 def test_kill_switch():
     code = (
         "import os, unsloth, bitsandbytes as bnb\n"
@@ -416,6 +436,7 @@ def test_untraced_torch_defers_to_bitsandbytes_when_compiled(dtype, monkeypatch)
     assert n == 0 and calls and _bits(y, ref)
 
 
+@needs_override
 @pytest.mark.skipif(not torch.cuda.is_available() or not O._TRACE, reason = "traced from torch 2.11")
 def test_compiled_dynamic_decode_through_module_no_breaks():
     # zoo compiles with dynamic=True: the GEMV sees weight sizes as SymInts.
