@@ -403,6 +403,11 @@ def test_train_calibrate_save_and_serve(checkpoint, tmp_path, lora):
 
     calibrated = FastDecisionModel.calibrate(model, tokenizer, held)
     assert calibrated["fitted_types"] == [0, 1, 2] and 0 <= calibrated["accuracy"] <= 1
+    answers = FastDecisionModel.predict(model, tokenizer, "refund my card", QUESTIONS)
+    assert answers["team"]["answer"] in ("outage", "billing") and answers["urgent"]["answer"] in (
+        True,
+        False,
+    )
     assert model.decision_config["temperature"] != [1.2, 1.1, 1.3]
     assert "temperature_by_options" not in model.decision_config
 
@@ -749,6 +754,16 @@ def test_llm_trains_saves_and_loads_back(llm, tmp_path):
     assert {group["initial_lr"] for group in trainer.optimizer.param_groups} == {2e-3}
     tuned = FastDecisionModel.calibrate(model, tokenizer, held)
     assert tuned["accuracy"] > base["accuracy"] + 0.25
+    answers = FastDecisionModel.predict(
+        model, tokenizer, "the server is down again help now", QUESTIONS
+    )
+    assert answers["team"]["answer"] == "outage" and answers["urgent"]["answer"] is True
+    assert answers["mood"]["answer"] in (0, 1, 2) and set(answers["mood"]["probabilities"]) == {
+        "0",
+        "1",
+        "2",
+    }
+    assert math.isclose(sum(answers["team"]["probabilities"].values()), 1.0, rel_tol = 1e-5)
 
     model.save_pretrained(tmp_path / "out")
     out = tmp_path / "out"

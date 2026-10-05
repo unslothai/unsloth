@@ -1036,6 +1036,51 @@ class FastDecisionModel:
         )
 
     @staticmethod
+    def predict(model, tokenizer, state, questions: dict) -> dict:
+        common = _laya().common
+        config = model.decision_config
+        build_sequence = (
+            model.build_sequence
+            if isinstance(model, CausalDecisionModel)
+            else common.build_sequence
+        )
+        items, options = [], []
+        for name, question in questions.items():
+            internal = _internal(question)
+            ids, markers = build_sequence(
+                tokenizer, _parsed(state), internal, config["max_len"], config["head_max_len"]
+            )
+            keys = _option_keys(internal)
+            if len(markers) != len(keys):
+                raise DecisionDataError(
+                    f'"{name}" has more options than fit in {config["max_len"]} tokens'
+                )
+            options.append(keys)
+            items.append(
+                {
+                    "input_ids": ids,
+                    "markers": markers,
+                    "qtype": common.QTYPES[internal["t"]],
+                    "target": [0.0] * len(keys),
+                }
+            )
+        logits = _logits(model, items, tokenizer.pad_token_id)
+        temperatures = _served_temperatures(config, logits, items)
+        answers = {}
+        for name, keys, z, temperature in zip(questions, options, logits, temperatures):
+            p = torch.softmax(z / temperature, -1).tolist()
+            best, kind = keys[p.index(max(p))], questions[name]["type"]
+            answers[name] = {
+                "answer": int(best)
+                if kind == "score"
+                else best == "true"
+                if kind == "noul"
+                else best,
+                "probabilities": dict(zip(keys, p)),
+            }
+        return answers
+
+    @staticmethod
     def evaluate(model, tokenizer, items: list) -> dict:
         logits = _logits(model, items, tokenizer.pad_token_id)
         return _metrics(logits, items, _served_temperatures(model.decision_config, logits, items))
