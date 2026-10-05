@@ -182,12 +182,13 @@ def test_plain_lm_becomes_a_decision_model_that_trains_saves_and_reloads(base, t
                 for k, v in batch.items()
             }
         )
-    # Served probabilities: the saved head is bf16 and folded, which scales the logits by 1 / T.
+    # Served logits: the save folds 1 / T into the head and stores the head and the merged backbone
+    # in bf16, so the reloaded logits match ours / T up to bf16 rounding, which grows with their scale.
     ours, theirs = ours.float().cpu(), theirs.float().cpu()
     mask = ours > -1e3
-    served = torch.softmax((ours / head_temperature).masked_fill(~mask, -1e4), -1)
-    reloaded_served = torch.softmax(theirs.masked_fill(~mask, -1e4), -1)
-    assert torch.allclose(served, reloaded_served, atol = 0.02)
+    expected = ours[mask] / head_temperature
+    error = (theirs[mask] - expected).abs().max().item()
+    assert error <= 0.03 * expected.abs().max().item() + 0.05, (error, expected, theirs[mask])
     if base == TINY_QWEN3_5:
         # The base repo has no joint_schema_model.py; Unsloth ships Cloudflare's, so their loader works.
         import importlib.util
