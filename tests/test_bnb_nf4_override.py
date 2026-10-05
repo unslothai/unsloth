@@ -15,7 +15,9 @@ import sys
 import pytest
 import torch
 
-pytestmark = pytest.mark.skipif(not torch.cuda.is_available(), reason = "needs CUDA")
+from real_accelerator import has_real_cuda  # tests/_shared, on sys.path via tests/conftest.py
+
+pytestmark = pytest.mark.skipif(not has_real_cuda(), reason = "needs CUDA")
 
 if torch.cuda.is_available():
     import unsloth  # noqa: F401  (applies zoo's Linear4bit patch first, like the product)
@@ -215,7 +217,7 @@ def test_bias_with_grad_falls_back(monkeypatch):
 
 
 @needs_override
-@pytest.mark.skipif(not torch.cuda.is_available() or not O._TRACE, reason = "traced from torch 2.11")
+@pytest.mark.skipif(not has_real_cuda() or not O._TRACE, reason = "traced from torch 2.11")
 @pytest.mark.parametrize("dtype", DTYPES)
 def test_compiled_no_breaks_bit_exact(dtype):
     import torch._dynamo.utils as du
@@ -437,7 +439,7 @@ def test_untraced_torch_defers_to_bitsandbytes_when_compiled(dtype, monkeypatch)
 
 
 @needs_override
-@pytest.mark.skipif(not torch.cuda.is_available() or not O._TRACE, reason = "traced from torch 2.11")
+@pytest.mark.skipif(not has_real_cuda() or not O._TRACE, reason = "traced from torch 2.11")
 def test_compiled_dynamic_decode_through_module_no_breaks():
     # zoo compiles with dynamic=True: the GEMV sees weight sizes as SymInts.
     dtype = torch.bfloat16 if O._TRACE_BF16 else torch.float16
