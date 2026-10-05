@@ -57,6 +57,7 @@ import { useNativePathLeasesSupported } from "@/features/native-intents";
 import { useRagAvailabilityStore } from "@/features/rag";
 import { useIsMobileShell } from "@/hooks/use-mobile";
 import { useSidebarPin } from "@/hooks/use-sidebar-pin";
+import { useTypeToActivate } from "@/hooks/use-type-to-activate";
 import { type TranslationKey, useT } from "@/i18n";
 import { isTauri } from "@/lib/api-base";
 import { createNavigationNonce } from "@/lib/navigation-nonce";
@@ -444,6 +445,7 @@ function RootLayout() {
     : "pt-[calc(var(--studio-non-chat-content-top-inset,var(--studio-content-top-inset,0px))-var(--studio-non-chat-scroller-top,0px))] [--studio-titlebar-height:var(--studio-non-chat-content-top-inset,var(--studio-content-top-inset,0px))]";
 
   useTrainingUnloadGuard();
+  useTypeToActivate();
   // Global export driver: streams worker logs and tracks status from any route
   // so an export keeps running and stays visible while training / chatting.
   useExportRuntimeLifecycle();
