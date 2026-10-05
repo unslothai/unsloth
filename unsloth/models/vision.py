@@ -2934,15 +2934,17 @@ class FastBaseModel:
                     "Unsloth: Idefics3 fast_inference needs a newer unsloth_zoo. "
                     "Please run `pip install --upgrade unsloth_zoo`."
                 )
-            if any(arch in VLLM_MOE_ONLY_VLM for arch in model_types) and not _is_sparse_moe_config(
-                auto_config
-            ):
-                raise RuntimeError(
-                    f"Unsloth: fast_inference = True is only supported for the MoE {model_type_arch} "
-                    "checkpoints (such as gemma-4-26B-A4B), not the dense ones yet. "
-                    "Please set fast_inference = False."
-                )
         # Outside the VLM block: text_only = True has is_vlm_config False.
+        if (
+            fast_inference
+            and any(arch in VLLM_MOE_ONLY_VLM for arch in model_types)
+            and not _is_sparse_moe_config(auto_config)
+        ):
+            raise RuntimeError(
+                f"Unsloth: fast_inference = True is only supported for the MoE {model_type_arch} "
+                "checkpoints (such as gemma-4-26B-A4B), not the dense ones yet. "
+                "Please set fast_inference = False."
+            )
         if (
             fast_inference
             and any(arch in VLLM_ZOO_MOE_VLM for arch in model_types)
@@ -3668,6 +3670,7 @@ class FastBaseModel:
                 if (
                     (
                         load_in_4bit
+                        or load_in_8bit
                         or str(model_name).lower().endswith("-bnb-4bit")
                         or get_quant_type(model_config) == "bitsandbytes"
                     )
@@ -3675,11 +3678,11 @@ class FastBaseModel:
                     and _is_sparse_moe_config(model_config)
                 ):
                     raise NotImplementedError(
-                        f"Unsloth: fast_inference = True does not support bitsandbytes 4-bit weights (load_in_4bit = True "
+                        f"Unsloth: fast_inference = True does not support bitsandbytes weights (load_in_4bit / load_in_8bit = True "
                         "or a prequantized bnb-4bit checkpoint) for the sparse MoE "
                         f"model {model_type_arch}: vLLM's bitsandbytes MoE experts cannot be shared with the "
                         "training model, and vLLM does not serve LoRA on bitsandbytes MoE experts.\n"
-                        "Use load_in_4bit = False (16-bit LoRA), or fast_inference = False."
+                        "Load in 16-bit (load_in_4bit = False, load_in_8bit = False), or set fast_inference = False."
                     )
 
                 allowed_args = inspect.getfullargspec(load_vllm).args
