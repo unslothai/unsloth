@@ -1562,6 +1562,7 @@ export const en = {
         cpu: "CPU",
         ram: "RAM",
         disk: "Disk",
+        modelsDisk: "Models disk",
         vram: "VRAM",
         cpuCores: "{logical} logical / {physical} physical cores",
         currentLoad: "Current load",
@@ -1672,6 +1673,7 @@ export const en = {
       storage: {
         title: "Storage",
         systemDisk: "System disk",
+        modelsDisk: "Models disk",
         diskUsage: "{used} used / {total}",
         diskFree: "{free} free",
         modelsFolder: "Models folder",

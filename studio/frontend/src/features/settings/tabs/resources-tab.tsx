@@ -318,6 +318,10 @@ export function ResourcesTab() {
     const diskFree = systemInfo.disk?.free_gb ?? 0;
     const diskUsed = Math.max(0, diskTotal - diskFree);
     const diskPercent = diskTotal > 0 ? (diskUsed / diskTotal) * 100 : 0;
+    const modelsDisk = systemInfo.models_disk ?? null;
+    const modelsDiskUsed = modelsDisk
+      ? Math.max(0, modelsDisk.total_gb - modelsDisk.free_gb)
+      : 0;
     const display = gpuMemoryDisplay(displayedGpu);
     const usageDevices = display.usageDevices;
     const gpuMemoryTotals = gpuMemoryTotalsGb(usageDevices);
@@ -355,6 +359,8 @@ export function ResourcesTab() {
       diskFree,
       diskUsed,
       diskPercent,
+      modelsDisk,
+      modelsDiskUsed,
       vramTotal,
       vramDedicated: gpuMemoryTotals.dedicated,
       vramShared: gpuMemoryTotals.shared,
@@ -571,6 +577,22 @@ export function ResourcesTab() {
             }
             percent={hostUnread ? null : metrics.diskPercent}
           />
+          {metrics.modelsDisk && (
+            <MetricTile
+              label={t("settings.resources.liveMonitor.modelsDisk")}
+              value={hostReading(
+                `${formatGb(metrics.modelsDiskUsed)} / ${formatGb(metrics.modelsDisk.total_gb)}`,
+              )}
+              detail={
+                hostUnread
+                  ? hostUnreadDetail
+                  : t("settings.resources.liveMonitor.free", {
+                      value: formatGb(metrics.modelsDisk.free_gb),
+                    })
+              }
+              percent={hostUnread ? null : metrics.modelsDisk.percent_used}
+            />
+          )}
           <MetricTile
             label={t(
               memoryDisplay.sharedOnly
@@ -852,6 +874,18 @@ export function ResourcesTab() {
             free: formatGb(metrics.diskFree),
           })}
         />
+        {metrics.modelsDisk && (
+          <InfoRow
+            label={t("settings.resources.storage.modelsDisk")}
+            value={t("settings.resources.storage.diskUsage", {
+              used: formatGb(metrics.modelsDiskUsed),
+              total: formatGb(metrics.modelsDisk.total_gb),
+            })}
+            detail={t("settings.resources.storage.diskFree", {
+              free: formatGb(metrics.modelsDisk.free_gb),
+            })}
+          />
+        )}
         <SettingsRow
           label={t("settings.resources.storage.modelsFolder")}
           description={t("settings.resources.storage.modelsFolderDescription")}

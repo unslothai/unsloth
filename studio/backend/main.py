@@ -2553,6 +2553,10 @@ def get_system_info(
         logger.debug(f"Failed to get disk usage: {e}")
         disk = None
 
+    from utils.system_disk import models_disk_usage
+
+    models_disk = models_disk_usage()
+
     try:
         current_process = psutil.Process(os.getpid())
         process_used_mb = round(current_process.memory_info().rss / 1024**2)
@@ -2602,6 +2606,8 @@ def get_system_info(
             "free_gb": round(disk.free / 1e9, 2) if disk else 0,
             "percent_used": disk.percent if disk else 0,
         },
+        # Additive: null unless the HF cache sits on another volume (e.g. a symlinked drive).
+        "models_disk": models_disk,
         "gpu": gpu_info,
         "inference_gpu": inference_gpu_info,
         "ml_packages": ml_packages,
