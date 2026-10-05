@@ -1072,6 +1072,8 @@ def test_a_failed_save_leaves_the_previous_clef_checkpoint_loadable(
 @pytest.mark.skipif(not has_real_cuda(), reason = "Unsloth's float16 path for Qwen3.5 needs a GPU")
 @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
 def test_clef_trains_in_float16_and_bfloat16(clef_checkpoint, tmp_path, dtype):
+    if dtype == torch.bfloat16 and not torch.cuda.is_bf16_supported(including_emulation = False):
+        pytest.skip("this GPU has no bfloat16")
     model, processor = FastDecisionModel.from_pretrained(
         str(clef_checkpoint), max_seq_length = 512, dtype = dtype
     )
