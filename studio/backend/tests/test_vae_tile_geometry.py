@@ -64,10 +64,10 @@ class Floor:
 # "VAE class@ratio" -> the smaller geometry it is proven seam-free at. Only with a measurement: a tiled decode of a real
 # latent against the untiled decode, at that geometry, without lines.
 SMALLER_GEOMETRY_OK: dict[str, Floor] = {
-    # 32x VAE: 16 latents are 512 px. PR #12698 measured 16-latent tiles with >= 8-latent overlaps (3-latent margin,
-    # 2-latent ramp) at 1216x704x121 against the untiled decode: worst 64 px window 1.4 levels (stock 2-latent
-    # overlaps: 15.8), and the stock-size tile is what the tightest tier can afford.
-    "AutoencoderKLLTX2Video@32x": Floor(16, 8, 8, "PR #12698: 16-latent tiles, 8-latent overlaps measured seam-free"),
+    # 32x VAE: 16 latents are 512 px, the stock tile and what the tightest tier can afford. PR #12698's tiles (16
+    # latents, >= 8-latent overlaps, 3-latent margin, 2-latent ramp), seam bench at the tightest tier, every preset:
+    # worst 64 px window 1.88 levels (LTX-2) / 1.09 (LTX-2.3), PSNR >= 53 dB; the stock 2-latent overlaps: 2.3-7.7.
+    "AutoencoderKLLTX2Video@32x": Floor(16, 8, 8, "PR #12698's 16-latent tiles, 8-latent overlaps: seam bench clean"),
     # Wan2.1 VAE (Wan2.2-T2V-A14B), stock 32-latent tiles with 8-latent overlaps and 8-latent edge tiles: the seam
     # bench (two photos, every preset, tightest tier, 9-frame pan) stays within 1.93 levels of the untiled decode in
     # the worst 64 px window, PSNR >= 49.9 dB, no boundary step above 1.38x its surroundings.
