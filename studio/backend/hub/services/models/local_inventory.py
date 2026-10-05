@@ -175,6 +175,11 @@ def _is_plain_dir_entry(entry: os.DirEntry) -> bool:
     return tag != _IO_REPARSE_TAG_MOUNT_POINT
 
 
+def is_loadable_model_dir(path: Path) -> bool:
+    """A folder the scan lists as a loadable model. A config with no weights beside it is not one: its model may sit a level down."""
+    return _is_diffusers_pipeline_dir(path) or _has_immediate_model_weight(path)
+
+
 def nested_scan_roots(folder_path: Path) -> list[Path]:
     """Sub-directories of a recursive scan folder to scan like the folder itself (#6371).
 
@@ -210,7 +215,7 @@ def nested_scan_roots(folder_path: Path) -> list[Path]:
                     except OSError:
                         continue
                     child = Path(entry.path)
-                    if not _has_immediate_model_signal(child):
+                    if not is_loadable_model_dir(child):
                         children.append(child)
         except OSError:
             continue

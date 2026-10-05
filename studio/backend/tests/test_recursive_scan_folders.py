@@ -167,3 +167,27 @@ def test_add_endpoint_threads_the_flag(tmp_path):
     row = local_inventory.add_scan_folder_response(str(folder), True)
     assert row["recursive"] == 1
     assert os.path.samefile(row["path"], folder)
+
+
+def test_a_config_only_folder_does_not_hide_the_model_below_it(tmp_path):
+    from routes import models as models_routes
+
+    family = tmp_path / "family"
+    family.mkdir()
+    (family / "config.json").write_text("{}", encoding = "utf-8")
+    model = family / "variant" / "model"
+    model.mkdir(parents = True)
+    (model / "config.json").write_text("{}", encoding = "utf-8")
+    (model / "model.safetensors").write_bytes(b"\0" * 8)
+    assert str(model.resolve()) in _paths(_scan(tmp_path, recursive = True))
+    nested = models_routes._scan_nested_compat_rows(tmp_path, [], limit = 200)
+    assert str(model.resolve()) in _paths(nested)
+
+
+def test_compat_nested_rows_skip_folders_with_nothing_to_load(tmp_path):
+    from routes import models as models_routes
+
+    app = tmp_path / "tools" / "some-app"
+    app.mkdir(parents = True)
+    (app / "config.json").write_text("{}", encoding = "utf-8")
+    assert models_routes._scan_nested_compat_rows(tmp_path, [], limit = 200) == []

@@ -830,7 +830,7 @@ def _scan_nested_compat_rows(
     folder_path: Path, existing: List[LocalModelInfo], *, limit: int
 ) -> List[LocalModelInfo]:
     """Rows from a recursive scan folder's sub-folders that its own scan did not already list (#6371)."""
-    from hub.services.models.local_inventory import nested_scan_roots
+    from hub.services.models.local_inventory import is_loadable_model_dir, nested_scan_roots
 
     seen = {(m.path, m.model_format) for m in existing}
     found: List[LocalModelInfo] = []
@@ -843,6 +843,10 @@ def _scan_nested_compat_rows(
         )
         for row in rows:
             key = (row.path, row.model_format)
+            path = Path(row.path)
+            # This scanner also lists config-only folders; across a whole tree those are mostly other apps' configs.
+            if row.source != "hf_cache" and not (path.is_file() or is_loadable_model_dir(path)):
+                continue
             if key in seen or any(
                 p in (".studio_links", "ollama_links") for p in Path(row.path).parts
             ):
