@@ -176,7 +176,12 @@ function reuseConvertInputs(clip: AudioGalleryClip) {
           });
         },
         () => {
-          if (untouched() && kept) store.setSource({ ...kept, expiresAt: EXPIRED_AT });
+          // The re-upload can fail for a transient reason: the kept id is expired only on a 404.
+          if (!untouched() || !kept) return;
+          void audioInputAlive(kept.id).then((alive) => {
+            if (untouched())
+              store.setSource(alive ? kept : { ...kept, expiresAt: EXPIRED_AT });
+          });
         },
       );
   } else if (kept) {
