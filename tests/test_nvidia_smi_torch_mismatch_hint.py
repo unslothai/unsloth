@@ -107,7 +107,9 @@ def test_hint_diagnoses_and_links_rather_than_printing_a_command(helper, monkeyp
     message = str(excinfo.value)
     assert "https://github.com/unslothai/unsloth#-install" in message
     assert sys.executable in message
-    assert not re.search(r"pip install|cu\d{3}|--torch-backend|torch[<>=]", message)
+    assert not re.search(
+        r"pip install|--index-url|download\.pytorch\.org|--torch-backend|torch[<>=]", message
+    )
 
 
 def test_rocm_advice_passes_through_without_probing(helper, monkeypatch):

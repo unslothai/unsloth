@@ -201,13 +201,13 @@ def _reraise_device_type_error_with_gpu_hint(exception):
         raise exception
     try:
         import torch as _torch
-        torch_cuda = _torch.version.cuda or "cpu-only"
+        torch_build = _torch.__version__  # local tag names the build: +cpu, +cu128, +rocm6.4, +xpu
     except Exception:
-        torch_cuda = "unknown"
+        torch_build = "unknown"
     mask_note = "" if mask is None else f", CUDA_VISIBLE_DEVICES={mask!r}"
     raise NotImplementedError(
         f"Unsloth: nvidia-smi sees {gpu_name} but torch.cuda.is_available() is False "
-        f"(torch CUDA build {torch_cuda}{mask_note}). PyTorch likely does not match this "
+        f"(torch {torch_build}{mask_note}). PyTorch likely does not match this "
         f"machine; reinstall it for {sys.executable} per "
         f"https://github.com/unslothai/unsloth#-install"
     ) from exception
