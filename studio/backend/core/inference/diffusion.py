@@ -197,6 +197,7 @@ from .diffusion_attention import (
     _ensure_attention_backend_installed,
 )
 from . import diffusion_compile_cache as compile_cache
+from .diffusion_compile_config import family_filters_reductions
 from . import diffusion_cond_cache as cond_cache
 from . import diffusion_prompt_cache as prompt_cache
 from . import diffusion_gguf_compile as gguf_compile
@@ -215,7 +216,9 @@ from .diffusion_cache import (
     TC_AUTO,
     TC_STATIC,
     apply_step_cache,
+    auto_static_skip_plan,
     auto_step_cache_allowed,
+    skip_tier,
     cache_breaks_graph,
     effective_denoise_steps,
     effective_request_strength,
@@ -225,9 +228,11 @@ from .diffusion_cache import (
     step_cache_supported,
 )
 from .diffusion_step_skip import (
+    auto_static_settings,
     install_static_step_skip,
     mark_step_end,
     reset_static_step_skip,
+    static_skip_is_auto,
     static_skip_stats,
     static_skip_view,
     uninstall_static_step_skip,
@@ -1055,6 +1060,8 @@ class _LoadState:
     eager_patched: bool = False
     # Deferred speed auto: the load stays eager, generate() engages `default` at the 3rd generation
     speed_deferred: bool = False
+    # Auto static skip plan for that deferred `default` tier, installed when it engages.
+    deferred_static_plan: Optional[dict] = None
     # Successful generations on this load; drives the deferred engagement above.
     generation_count: int = 0
     # Pre-warmed torch.compile cache context when a compiled tier ran, else None.
@@ -6916,15 +6923,33 @@ class DiffusionBackend:
                         gguf_filename
                     )
                     default_steps: Optional[int] = None
+                    static_plan: Optional[dict] = None
                     if cache_auto:
                         default_steps, _ = default_generation_params(
                             gguf_filename, repo_id, base, fam.name
                         )
-                        cache_request = resolve_auto_step_cache(effective_speed, default_steps)
+                        static_plan = auto_static_skip_plan(
+                            (repo_id, base), skip_tier(speed_mode, effective_speed), default_steps
+                        )
+                        cache_request = resolve_auto_step_cache(
+                            effective_speed, default_steps, static_plan = static_plan
+                        )
+                    cache_engaged = None
                     if cache_request == TC_STATIC:
-                        # Explicit only: auto never resolves to static.
-                        cache_engaged = install_static_step_skip(pipe, logger = logger)
-                    else:
+                        cache_engaged = (
+                            install_static_step_skip(
+                                pipe,
+                                settings = auto_static_settings(static_plan, logger = logger),
+                                logger = logger,
+                            )
+                            if static_plan
+                            else install_static_step_skip(pipe, logger = logger)
+                        )
+                        if cache_engaged is None and static_plan:
+                            # Declined (second denoiser, no forward): auto falls back to what it picked before.
+                            static_plan = None
+                            cache_request = resolve_auto_step_cache(effective_speed, default_steps)
+                    if cache_request != TC_STATIC:
                         cache_engaged = apply_step_cache(
                             pipe,
                             mode = cache_request,
@@ -6936,15 +6961,37 @@ class DiffusionBackend:
                             length_changes_ok = not cache_auto,
                             logger = logger,
                         )
+                    # Speed unset on a dense load: `default` engages on the 3rd image, and the skip with it.
+                    deferred_static_plan = (
+                        auto_static_skip_plan((repo_id, base), SPEED_DEFAULT, default_steps)
+                        if cache_auto and speed_deferred and cache_engaged is None
+                        else None
+                    )
                     cache_graph_break = cache_breaks_graph(cache_engaged)
                     self._raise_if_load_cancelled(_load_token)
                     # Arm only where FBCache can engage: a live toggle drops fullgraph and retries every generation.
-                    cache_may_toggle = cache_auto_live and (
-                        cache_engaged is not None
-                        or (cache_request is None and step_cache_supported(pipe, logger = logger))
+                    cache_may_toggle = (
+                        cache_auto_live
+                        and cache_engaged != TC_STATIC
+                        and (
+                            cache_engaged is not None
+                            or (cache_request is None and step_cache_supported(pipe, logger = logger))
+                        )
                     )
                     if cache_auto:
-                        if not cache_auto_live:
+                        if cache_engaged == TC_STATIC:
+                            cache_reason = (
+                                f"auto: static step skip (every {static_plan['every']}) for this model "
+                                f"at {static_plan['min_steps']}+ steps; set "
+                                "UNSLOTH_DIFFUSION_AUTO_STEP_SKIP=0 to turn it off"
+                            )
+                        elif deferred_static_plan:
+                            cache_reason = (
+                                f"auto: static step skip (every {deferred_static_plan['every']}) engages "
+                                "with the compiled profile on the 3rd image; set "
+                                "UNSLOTH_DIFFUSION_AUTO_STEP_SKIP=0 to turn it off"
+                            )
+                        elif not cache_auto_live:
                             # Only name the max tier where it would help: SDXL / LTX-2 never cache on any tier.
                             cache_reason = (
                                 "auto: step caching engages on the max speed tier only"
@@ -7033,7 +7080,7 @@ class DiffusionBackend:
                                 "vae_decode": vae_decode_compile_allowed(pipe, effective_speed),
                             },
                             logger = logger,
-                            reduction_filter = bool(getattr(fam, "filter_reduction_configs", False)),
+                            reduction_filter = family_filters_reductions(fam),
                         )
 
                     self._raise_if_load_cancelled(_load_token)
@@ -7057,6 +7104,7 @@ class DiffusionBackend:
                         cache_engaged = cache_graph_break,
                         offload_active = plan.offload_policy != OFFLOAD_NONE,
                         denoiser_offloaded = not plan_keeps_transformer_resident(plan),
+                        stream_int8_gemm = True,
                         logger = logger,
                     )
                     if vae_fp16:
@@ -7387,6 +7435,7 @@ class DiffusionBackend:
                         cache_threshold = transformer_cache_threshold,
                         eager_patched = eager_patched,
                         speed_deferred = speed_deferred,
+                        deferred_static_plan = deferred_static_plan,
                         compile_cache_ctx = compile_ctx,
                         bg_compile = load_bg_compile,
                         hf_token = hf_token,
@@ -9044,6 +9093,42 @@ class DiffusionBackend:
                 pass
 
     def _engage_deferred_speed(self, state: _LoadState) -> None:
+        """The deferred `default` profile plus its auto static skip; a failed profile takes the skip back off."""
+        object.__setattr__(state, "speed_deferred", False)
+        plan = state.deferred_static_plan
+        object.__setattr__(state, "deferred_static_plan", None)
+        tc = (state.resolved or {}).get("transformer_cache")
+        tc_before = dict(tc) if isinstance(tc, dict) else None
+        installed = False
+        # Before compile, as at load: the skip is an outer forward on the transformer.
+        if plan and state.transformer_cache is None:
+            installed = (
+                install_static_step_skip(
+                    state.pipe, settings = auto_static_settings(plan, logger = logger), logger = logger
+                )
+                == TC_STATIC
+            )
+            if installed:
+                object.__setattr__(state, "transformer_cache", TC_STATIC)
+                if isinstance(tc, dict):
+                    tc["value"] = TC_STATIC
+                    tc["reason"] = (
+                        f"auto: static step skip (every {plan['every']}) for this model at "
+                        f"{plan['min_steps']}+ steps, engaged with the compiled profile; set "
+                        "UNSLOTH_DIFFUSION_AUTO_STEP_SKIP=0 to turn it off"
+                    )
+        try:
+            self._engage_deferred_profile(state)
+        except BaseException:
+            if installed:
+                uninstall_static_step_skip(state.pipe)
+                object.__setattr__(state, "transformer_cache", None)
+                if isinstance(tc, dict) and tc_before is not None:
+                    tc.clear()
+                    tc.update(tc_before)
+            raise
+
+    def _engage_deferred_profile(self, state: _LoadState) -> None:
         """Engage the deferred `default` speed profile at the start of the 3rd generation this
         session. The load left the pipe fully eager (bit-identical reference); by the 3rd image
         repeated use is established, so pay the one-time compile now: eager patches + attention
@@ -9093,7 +9178,7 @@ class DiffusionBackend:
                     "vae_decode": vae_decode_compile_allowed(state.pipe, SPEED_DEFAULT),
                 },
                 logger = logger,
-                reduction_filter = bool(getattr(state.family, "filter_reduction_configs", False)),
+                reduction_filter = family_filters_reductions(state.family),
             )
             object.__setattr__(state, "compile_cache_ctx", compile_ctx)
         speed_applied = apply_speed_optims(
@@ -9107,6 +9192,7 @@ class DiffusionBackend:
             offload_active = state.offload_policy != OFFLOAD_NONE,
             denoiser_offloaded = state.offload_policy != OFFLOAD_NONE
             and _denoiser_hooked(state.pipe),
+            stream_int8_gemm = True,
             logger = logger,
         )
         if denoisers_pinned_resident(state.pipe):
@@ -9766,9 +9852,14 @@ class DiffusionBackend:
                                 state.cuda_graphs, cache_breaks_graph(state.transformer_cache)
                             )
                         if static_skip:
+                            # Auto skip was measured on txt2img only; explicit "static" applies to every workflow.
+                            auto_only_txt2img = workflow != "txt2img" and static_skip_is_auto(
+                                state.pipe
+                            )
                             reset_static_step_skip(
                                 state.pipe,
                                 denoise_steps,
+                                compute_all = auto_only_txt2img,
                                 step_signal = "callback_on_step_end" in chunk_kwargs,
                                 keep_stats = static_chunks_run > 0,
                                 owner = current_account_id(),
