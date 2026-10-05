@@ -68,8 +68,8 @@ MODEL_OFFLOAD_REASON = (
 )
 
 
-# Call trees. Like diffusion_cuda_graph's, plus the per-layer prefix K/V caches some DiTs pass to each block
-# (Qwen-Image-2.1, FLUX.2): read-only on a cached step, so their two tensors become static buffers too.
+# Call trees. Like diffusion_cuda_graph's, plus the per-layer prefix K/V caches Qwen-Image-2.1 passes to each block:
+# read-only on a cached step, so their two tensors become static buffers too.
 
 
 def _kv_layer_cache(obj: Any) -> bool:
@@ -285,6 +285,7 @@ class _Shared:
     ) -> None:
         self.device_index = device_index
         self.logger = logger
+        self.root: Any = None  # the denoiser, for its NVFP4 per-step precision branch
         self.pool = None
         self.stream = None
         self.static_in: dict = {}
@@ -404,6 +405,7 @@ class BlockGraph:
         self.seen: "OrderedDict[tuple, tuple]" = OrderedDict()
         self.unreplayed_placements = 0
         self.churned = False
+        self.protect: Any = None  # None until resolved, then False or the NVFP4 step controller
         self.placements: set = set()
         self.refusals: dict = {}
         self.stats = {
@@ -479,6 +481,12 @@ class BlockGraph:
         if placement is None:
             self.stats["refused_host_weight"] += 1
             return self._eager(args, kwargs)
+        if self.protect is None:
+            self.protect = self._protect_controller()
+        if self.protect:
+            # One recording per precision branch: a W4A4 replay at a W4A16 step would skip the protection.
+            from .diffusion_cuda_graph import protect_graph_key
+            placement = (placement, protect_graph_key(self.protect))
         full = (key, placement)
         entry = self.cache.get(full)
         if entry is None:
@@ -491,6 +499,19 @@ class BlockGraph:
         else:
             self.cache.move_to_end(full)
         return self._replay(entry, live)
+
+    def _protect_controller(self) -> Any:
+        root = self.shared.root
+        try:
+            from .diffusion_cuda_graph import _protect_keyed
+
+            if root is None or not _protect_keyed(root):
+                return False
+            from .diffusion_nvfp4_protect import module_controller
+
+            return module_controller(root)
+        except Exception:  # noqa: BLE001 - keys as before
+            return False
 
     def _first_sighting(self, full: tuple, args: tuple, kwargs: dict) -> Any:
         placement = full[1]
@@ -850,6 +871,7 @@ def install_block_graphs(
         return None, "no repeated blocks to record"
     torch = _torch()
     shared = _Shared(_device_index(transformer, device), logger)
+    shared.root = transformer
     handle = BlockGraphSet(transformer, shared, logger)
     compile_below_offload_hooks(transformer, logger)
     refused: dict = {}
