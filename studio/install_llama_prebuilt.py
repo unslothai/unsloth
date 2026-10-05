@@ -4812,11 +4812,15 @@ def blocked_replace_hint(winerror: object) -> str:
 
 def log_acl_repair(path: Path) -> None:
     # Printed, never run: repairing permissions is the user's call (#9928).
-    log(
-        "rename still denied after retrying; if the permissions on this tree are broken, run in an elevated PowerShell:"
-    )
-    log(f'takeown /F "{path}" /R /D Y')
-    log(f'icacls "{path}" /reset /T')
+    if _is_link_or_junction(path):
+        # icacls follows a link without /L, so /T would reset the user's external tree.
+        log(f"rename still denied after retrying; {path} is a link, check its permissions")
+    else:
+        log(
+            "rename still denied after retrying; if the permissions on this tree are broken, run in an elevated PowerShell:"
+        )
+        log(f'takeown /F "{path}" /R /D Y')
+        log(f'icacls "{path}" /reset /T')
     log(
         "if access stays denied, Controlled folder access or antivirus may be blocking "
         "the path: allow or exclude it there"

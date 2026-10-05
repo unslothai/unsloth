@@ -1167,6 +1167,25 @@ def test_replace_with_busy_retry_prints_acl_repair_once_when_denial_persists(
     assert any("Controlled folder access" in line for line in logged)
 
 
+def test_replace_with_busy_retry_offers_no_recursive_repair_for_a_linked_tree(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    target = tmp_path / "external"
+    target.mkdir()
+    link = tmp_path / "linked"
+    try:
+        link.symlink_to(target, target_is_directory = True)
+    except OSError as exc:
+        pytest.skip(f"directory symlinks unavailable: {exc}")
+    _source, destination, logged = _run_denied_replace(tmp_path, monkeypatch, failures = 99)
+    # os.name is spoofed to "nt", so the real probe would look for Windows reparse attributes.
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "_is_link_or_junction", lambda p: p == link)
+    with pytest.raises(OSError):
+        replace_with_busy_retry(link, destination, attempts = 2)
+    assert not any("takeown" in line or "icacls" in line for line in logged)
+    assert any("is a link" in line for line in logged)
+
+
 def test_replace_with_busy_retry_skips_acl_repair_when_denial_clears(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
