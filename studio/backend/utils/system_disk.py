@@ -29,7 +29,8 @@ def _device(path: Path) -> int:
 def models_disk_usage(cache: Optional[Path] = None) -> Optional[dict]:
     """Usage of the HF hub cache's volume, or None when it is the system disk or unreadable.
 
-    realpath so a symlinked cache is measured on the mount holding the bytes, not the link's.
+    realpath first, so a cache path that does not exist yet behind a symlink climbs the target's
+    parents (the drive that will hold the bytes), not the link's.
     """
     cache = _hub_cache() if cache is None else cache
     if cache is None:

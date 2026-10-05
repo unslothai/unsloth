@@ -20,18 +20,25 @@ _Usage = namedtuple("_Usage", "total used free")
 
 @pytest.fixture
 def second_drive(tmp_path, monkeypatch):
-    """Everything under tmp_path/second is drive 2; the rest, `/` included, is drive 1."""
+    """Everything under tmp_path/second is drive 2; the rest, `/` included, is drive 1.
+
+    Matched on the literal path, so only a caller that resolved the symlink lands on drive 2."""
     second = (tmp_path / "second").resolve()
     (second / "hf" / "hub").mkdir(parents = True)
 
     def on_second(path):
-        return Path(path).resolve().is_relative_to(second)
+        return Path(path).is_relative_to(second)
 
     def fake_usage(path):
         assert on_second(path), f"measured {path}, not the models drive"
         return _Usage(2000 * GB, 500 * GB, 1500 * GB)
 
-    monkeypatch.setattr(system_disk, "_device", lambda p: 2 if on_second(p) else 1)
+    def fake_device(path):
+        if not Path(path).exists():
+            raise FileNotFoundError(path)
+        return 2 if on_second(path) else 1
+
+    monkeypatch.setattr(system_disk, "_device", fake_device)
     monkeypatch.setattr(system_disk.shutil, "disk_usage", fake_usage)
     return second
 
@@ -44,6 +51,12 @@ def test_symlinked_cache_reports_the_drive_holding_the_bytes(second_drive, tmp_p
         "free_gb": 1500.0,
         "percent_used": 25.0,
     }
+
+
+def test_cache_dir_missing_behind_a_symlink_still_finds_the_target_drive(second_drive, tmp_path):
+    link = tmp_path / "huggingface"
+    link.symlink_to(second_drive / "hf", target_is_directory = True)
+    assert system_disk.models_disk_usage(link / "not-created" / "hub")["total_gb"] == 2000.0
 
 
 def test_cache_on_the_system_disk_adds_nothing(second_drive, tmp_path):
