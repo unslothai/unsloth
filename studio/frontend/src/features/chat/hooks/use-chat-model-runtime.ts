@@ -762,7 +762,7 @@ async function syncInferenceStatusToStore(options?: {
         // with a checkpoint already selected (an API load). Null thread guard: no empty count.
         const hydrated = useChatRuntimeStore.getState();
         if (
-          hydrated.contextUsage == null &&
+          (hydrated.contextUsage == null || hydrated.contextUsage.estimated) &&
           hydrated.activeThreadId != null &&
           hydrated.loadedContextLength != null &&
           !isExternalModelId(checkpointId)

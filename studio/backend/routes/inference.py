@@ -11906,32 +11906,33 @@ def _effective_load_in_4bit(config: ModelConfig, requested: bool) -> bool:
     return load_in_4bit
 
 
+def _projector_survives_vision_off(mmproj_path: str) -> bool:
+    """Whether the Vision switch leaves *mmproj_path* loaded (audio-only projectors
+    stay). Unreadable reads as image-capable, hence suppressed, matching the loader."""
+    try:
+        from utils.models.gguf_metadata import mmproj_accepts_image
+        return not mmproj_accepts_image(str(mmproj_path))
+    except Exception as exc:
+        logger.debug(f"mmproj capability read failed: {exc}")
+        return False
+
+
 def _load_keeps_a_projector(config, *, disable_vision: bool) -> bool:
     """Whether the launch will actually open a projector for *config*.
 
-    The Vision switch turns IMAGES off, and llama_cpp.py keeps an audio-only
-    projector regardless because there is no image tower in it to drop. Only the
-    file's own metadata distinguishes the two, so this answers precisely when the
-    file is already on disk. A projector that is not (a remote repo, nothing
-    downloaded yet) reads as kept: the callers use this to decide whether the load
-    needs the GPU, and over-claiming is recoverable where under-claiming is not.
+    Answers precisely when the file is on disk. A projector that is not (a remote
+    repo, nothing downloaded yet) reads as kept: the callers use this to decide
+    whether the load needs the GPU, and over-claiming is recoverable where
+    under-claiming is not.
     """
     if not getattr(config, "is_vision", False):
         return False
     if not disable_vision:
         return True
-    mmproj = getattr(config, "gguf_mmproj_file", None)
-    if not mmproj:
-        return True
-    try:
-        from utils.models.gguf_metadata import mmproj_accepts_image
-
-        # Image-capable means the switch really does suppress it. Unreadable reads
-        # as image-capable upstream, which matches what the loader will do with it.
-        return not mmproj_accepts_image(str(mmproj))
-    except Exception as exc:
-        logger.debug(f"mmproj capability read failed: {exc}")
-        return False
+    mmproj = getattr(config, "gguf_mmproj_file", None) or getattr(
+        config, "gguf_local_mmproj_file", None
+    )
+    return True if not mmproj else _projector_survives_vision_off(str(mmproj))
 
 
 def _remote_gguf_companion_bytes(
@@ -11944,6 +11945,7 @@ def _remote_gguf_companion_bytes(
     include_dflash: bool = False,
     dspark_first: bool = False,
     weight_bytes: int = 0,
+    local_mmproj_bytes: int = 0,
 ) -> int:
     """Bytes of companion GGUFs the requested launch keeps resident. 0 on error.
 
@@ -11967,7 +11969,7 @@ def _remote_gguf_companion_bytes(
 
         # A refused token must not zero the companion bytes and slip past the training budget.
         info = call_hub_with_anonymous_retry(model_info, hf_token, repo, files_metadata = True)
-        total = 0
+        listed_mmproj_bytes = 0
         mtp_bytes = 0
         dspark_candidates: list[tuple[str, int]] = []
         dflash_sizes: dict[str, int] = {}
@@ -11987,7 +11989,7 @@ def _remote_gguf_companion_bytes(
             if include_mtp and is_root_mtp:
                 mtp_bytes += size
             elif include_mmproj and "mmproj" in base:
-                total += size
+                listed_mmproj_bytes += size
             if include_dspark and _is_dspark_drafter_path(name):
                 dspark_candidates.append((name, size))
             # Root level only, exactly as _download_dflash's picker is: a nested
@@ -12019,6 +12021,8 @@ def _remote_gguf_companion_bytes(
         # target too, so the guard stops charging for the oversized candidates the
         # fetch itself now refuses.
         dflash_bytes = dflash_budget_bytes(dflash_sizes, _gguf_extra_shards, weight_bytes)
+        # Alternatives, never both: the fetch uses the local one only when none is listed.
+        total = max(int(local_mmproj_bytes), listed_mmproj_bytes)
         if not dspark_first:
             return total + mtp_bytes + dspark_bytes + dflash_bytes
         if dspark_families:
@@ -12040,7 +12044,7 @@ def _remote_gguf_companion_bytes(
         return total + mtp_bytes
     except Exception as e:
         logger.warning(f"Could not size GGUF companions for {repo}: {e}")
-        return 0
+        return int(local_mmproj_bytes)
 
 
 # What an unreadable remote drafter costs the guard. Sized to the largest drafter
@@ -13092,17 +13096,9 @@ def _estimate_gguf_required_gb(
             _sized_attrs = []
         elif disable_vision:
             _dv_mmproj = _mmproj_override or getattr(config, "gguf_mmproj_file", None)
-            _dv_opens_projector = False
-            if _dv_mmproj:
-                try:
-                    from utils.models.gguf_metadata import mmproj_accepts_image
-
-                    # Kept for audio, so its bytes stay charged. An unreadable file
-                    # reads as image-capable upstream, hence suppressed and uncharged,
-                    # which matches what the loader will then do with it.
-                    _dv_opens_projector = not mmproj_accepts_image(str(_dv_mmproj))
-                except Exception as _dv_exc:
-                    logger.debug(f"mmproj capability read failed: {_dv_exc}")
+            _dv_opens_projector = bool(_dv_mmproj) and _projector_survives_vision_off(
+                str(_dv_mmproj)
+            )
             if not _dv_opens_projector:
                 _sized_attrs = []
         # A --mmproj in the extras last-wins at the child: the launch emits Studio's
@@ -13252,6 +13248,16 @@ def _estimate_gguf_required_gb(
             main_bytes = selected.size_bytes if selected is not None else None
             if main_bytes is None:
                 return None
+            _local_mmproj = getattr(config, "gguf_local_mmproj_file", None)
+            _local_mmproj_bytes = 0
+            # A --mmproj in the extras replaces it and is charged on its own.
+            if (
+                _local_mmproj
+                and _mmproj_override is None
+                and not extra_args_disable_mmproj(llama_extra_args)
+            ):
+                if not disable_vision or _projector_survives_vision_off(str(_local_mmproj)):
+                    _local_mmproj_bytes = LlamaCppBackend._get_gguf_size_bytes(str(_local_mmproj))
             companions = _remote_gguf_companion_bytes(
                 repo,
                 hf_token = hf_token,
@@ -13275,6 +13281,8 @@ def _estimate_gguf_required_gb(
                 # What the DFlash bound measures candidates against, so the guard stops
                 # charging for weights the fetch refuses as too big to be a drafter.
                 weight_bytes = int(main_bytes or 0),
+                # Hand-added (#9286): invisible to the listing, still resident.
+                local_mmproj_bytes = _local_mmproj_bytes,
                 # ... except where the listing settles it. Auto launches exactly
                 # one drafter, in a fixed order, so once the listing says which
                 # kinds the repo has, charging the losers is not caution, it is a
@@ -13656,7 +13664,10 @@ def _localized_estimate_config(config: ModelConfig, gguf_path: str) -> ModelConf
     search_root = _local_gguf_companion_search_root(gguf_path, gguf_path)
     try:
         if getattr(local, "is_vision", False) and not local.gguf_mmproj_file:
-            local.gguf_mmproj_file = detect_mmproj_file(gguf_path, search_root)
+            # A hand-added one may sit above the snapshot, past this search root (#9286).
+            local.gguf_mmproj_file = detect_mmproj_file(gguf_path, search_root) or getattr(
+                local, "gguf_local_mmproj_file", None
+            )
         if not local.gguf_mtp_file:
             local.gguf_mtp_file = detect_mtp_file(gguf_path, search_root)
         if not local.gguf_dspark_file:
@@ -19231,6 +19242,28 @@ def _requires_trust_remote_code_for_model(
         return False
 
 
+def _stored_trust_remote_code(
+    model_info,
+    inference_config,
+    trust_remote_code_used = False,
+) -> Optional[bool]:
+    """Network-free part of the resolution order; None = only ``auto_map`` can answer."""
+    stored = (model_info or {}).get("requires_trust_remote_code")
+    if stored is not None:
+        return bool(stored)
+    if trust_remote_code_used or bool((inference_config or {}).get("trust_remote_code", False)):
+        return True
+    return None
+
+
+def _auto_map_trust_remote_code(model_id, hf_token = None) -> bool:
+    """Raw ``auto_map`` check; can reach the Hub, so keep it off the event loop."""
+    try:
+        return bool(_requires_trust_remote_code_for_model(model_id, hf_token))
+    except Exception:
+        return False
+
+
 def _resolve_loaded_trust_remote_code(
     model_id,
     model_info,
@@ -19250,16 +19283,11 @@ def _resolve_loaded_trust_remote_code(
 
     Resolution order: a value stored on the model at load time (so a status refresh does
     not re-derive it) -> the trust_remote_code the load actually used -> the YAML default
-    -> the raw ``auto_map`` check (reads the loaded model's cached config; no network)."""
-    stored = (model_info or {}).get("requires_trust_remote_code")
-    if stored is not None:
-        return bool(stored)
-    if trust_remote_code_used or bool((inference_config or {}).get("trust_remote_code", False)):
-        return True
-    try:
-        return bool(_requires_trust_remote_code_for_model(model_id, hf_token))
-    except Exception:
-        return False
+    -> the raw ``auto_map`` check (reads the config from the cache, or the Hub on a miss)."""
+    known = _stored_trust_remote_code(model_info, inference_config, trust_remote_code_used)
+    if known is not None:
+        return known
+    return _auto_map_trust_remote_code(model_id, hf_token)
 
 
 def _requires_security_review_for_model(
@@ -21664,9 +21692,12 @@ async def _slot_status(current_subject: str):
         audio_type = None
         has_audio_input = False
         has_video_input = False
+        # Snapshot before the await below: a load landing mid-await must not mix two models.
+        _active = backend.active_model_name
+        _loaded = list(backend.models.keys())
         model_info = {}
-        if backend.active_model_name:
-            model_info = backend.models.get(backend.active_model_name, {})
+        if _active:
+            model_info = backend.models.get(_active, {})
             is_vision = model_info.get("is_vision", False)
             is_audio = model_info.get("is_audio", False)
             audio_type = model_info.get("audio_type")
@@ -21679,9 +21710,7 @@ async def _slot_status(current_subject: str):
 
         # Non-GGUF: classify from the loaded template.
         _sf_flags, _ = _sf_rendered_features(backend, model_info)
-        inference_config = (
-            load_inference_config(backend.active_model_name) if backend.active_model_name else None
-        )
+        inference_config = load_inference_config(_active) if _active else None
 
         # The backend and the attempt registry name the same load, so compare public ids
         # or a model loaded from a path is listed twice.
@@ -21691,19 +21720,31 @@ async def _slot_status(current_subject: str):
         ):
             _loading_models.append(_tracked_loading_id)
 
+        # Only the auto_map fallback can reach the Hub; skip the guard's probe otherwise.
+        _requires_trc = False
+        if _active:
+            _known = _stored_trust_remote_code(model_info, inference_config)
+            if _known is not None:
+                _requires_trc = _known
+            else:
+                _requires_trc = await asyncio.get_running_loop().run_in_executor(
+                    _STATUS_PROBE_EXECUTOR,
+                    functools.partial(
+                        _offline_guarded, [_active], _auto_map_trust_remote_code, _active
+                    ),
+                )
+
         return InferenceStatusResponse(
             engine = model_info.get("engine", "auto"),
             engine_parallelism = model_info.get("engine_parallelism", "tensor"),
             engine_precision = model_info.get("engine_precision", "auto"),
             gpu_ids = model_info.get("gpu_ids"),
             tensor_parallel = bool(model_info.get("tensor_parallel", False)),
-            active_model = backend.active_model_name,
-            model_identifier = backend.active_model_name,
+            active_model = _active,
+            model_identifier = _active,
             is_vision = is_vision,
             is_gguf = False,
-            is_local_model = bool(
-                backend.active_model_name and is_local_path(backend.active_model_name)
-            ),
+            is_local_model = bool(_active and is_local_path(_active)),
             is_audio = is_audio,
             audio_type = audio_type,
             has_audio_input = has_audio_input,
@@ -21732,11 +21773,9 @@ async def _slot_status(current_subject: str):
             chat_template_override = model_info.get("chat_template_override_requested"),
             chat_template_override_reason = model_info.get("chat_template_override_reason"),
             loading = _loading_models,
-            loaded = list(backend.models.keys()),
+            loaded = _loaded,
             inference = inference_config,
-            requires_trust_remote_code = _resolve_loaded_trust_remote_code(
-                backend.active_model_name, model_info, inference_config
-            ),
+            requires_trust_remote_code = _requires_trc,
             supports_reasoning = _sf_flags["supports_reasoning"],
             reasoning_style = _sf_flags["reasoning_style"],
             reasoning_effort_levels = _sf_flags.get("reasoning_effort_levels", []),
@@ -35027,6 +35066,54 @@ async def openai_list_models(
     return {"object": "list", "data": data}
 
 
+def _resident_gguf_quants() -> dict[str, str]:
+    """Lowercased public id -> loaded quant, per slot: outside a slot get_llama_cpp_backend() is the primary."""
+    resident: dict[str, str] = {}
+
+    def _probe():
+        backend = get_llama_cpp_backend()
+        quant = getattr(backend, "hf_variant", None)
+        public = _llama_public_model_id(backend) if backend.is_loaded else None
+        return (public, quant) if public and quant else None
+
+    for slot in (None, *model_slots.visible()):
+        found = model_slots.in_slot(slot, _probe)
+        if found:
+            resident.setdefault(found[0].lower(), found[1])
+    return resident
+
+
+def _pinned_quant_object(model_id: str, objects: list[dict]) -> Optional[dict]:
+    """``<listed id>:<on-disk quant>``, the same pin chat completions accept (#9340), else None."""
+    from core.inference.local_model_resolver import local_gguf_pinned_variant
+
+    base, sep, _ = model_id.rpartition(":")
+    if not sep or not base:
+        return None
+    listed = next(
+        (m for m in objects if isinstance(m.get("id"), str) and m["id"].lower() == base.lower()),
+        None,
+    )
+    if listed is None:
+        return None
+    variant = local_gguf_pinned_variant(f"{listed['id']}:{model_id[len(base) + 1:]}")
+    if not variant:
+        return None
+    pinned_id = f"{listed['id']}:{variant}"
+    if listed.get("loaded"):
+        # A cold index leaves "quant" off the loaded row until it can prove the pin.
+        resident = listed.get("quant") or _resident_gguf_quants().get(listed["id"].lower())
+        if str(resident or "").lower() == variant.lower():
+            return {**listed, "id": pinned_id, "quant": variant}
+    # The listed row's context fields describe the resident quant, not this one.
+    shared = {
+        k: listed[k]
+        for k in ("object", "created", "owned_by", "display_name", "task")
+        if k in listed
+    }
+    return {"id": pinned_id, **shared, "loaded": False, "quant": variant}
+
+
 @router.get("/models/{model_id:path}")
 async def openai_retrieve_model(model_id: str, current_subject: str = Depends(get_current_subject)):
     """
@@ -35076,6 +35163,9 @@ async def openai_retrieve_model(model_id: str, current_subject: str = Depends(ge
             for entry in _loaded:
                 if entry["id"] == clean:
                     return {**entry, "loaded": True}
+    pinned = await asyncio.to_thread(_pinned_quant_object, model_id, objects)
+    if pinned is not None:
+        return pinned
     raise HTTPException(
         status_code = 404,
         detail = openai_error_body(
@@ -45064,6 +45154,17 @@ async def load_diffusion_model_gated(
         raise HTTPException(status_code = 409, detail = str(exc))
 
 
+def _live_preview_kwarg(generate: Any, requested: Optional[bool]) -> dict:
+    """``live_preview`` for an engine whose generate() takes it (sd.cpp's does not), else nothing."""
+    try:
+        import inspect
+        if "live_preview" in inspect.signature(generate).parameters:
+            return {"live_preview": requested}
+    except (TypeError, ValueError):
+        pass
+    return {}
+
+
 # Count of finished generations still writing their PNG/gallery records; generate-progress reports active while above 0. Mutated only on the event loop, so no lock.
 _diffusion_persist_active = 0
 
@@ -45195,6 +45296,7 @@ async def generate_diffusion_image(
                         if request.controlnet
                         else None
                     ),
+                    **_live_preview_kwarg(backend.generate, request.live_preview),
                 )
             break
         except ImageActivationShortfallError as exc:

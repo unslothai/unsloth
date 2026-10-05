@@ -894,6 +894,12 @@ async def lifespan(app: FastAPI):
     from core.inference.key_exchange import init_key_pair
 
     init_key_pair()
+
+    # Stall thread-dump watchdog (#9712), only with UNSLOTH_STUDIO_STALL_WATCHDOG=1.
+    from utils.stall_watchdog import stand_down_for_the_warm, start_stall_watchdog
+
+    start_stall_watchdog(asyncio.get_running_loop(), suppress = stand_down_for_the_warm)
+
     _lifespan_log.info(
         "lifespan pre-auth setup completed in %.1fms",
         (_time.perf_counter() - _lifespan_started) * 1000,
@@ -955,6 +961,11 @@ async def lifespan(app: FastAPI):
 
     # Before any shutdown await: a warm finishing during one would still read the lifespan as current.
     _stop_post_warm_thread()
+
+    # Before teardown blocks the loop, or shutdown dumps as a stall.
+    from utils.stall_watchdog import stop_stall_watchdog
+
+    stop_stall_watchdog()
 
     # Retire the coordinated warm at shutdown entry too. run_lifespan_shutdown() repeats this after
     # cleanup, but its awaits would otherwise let startup imports continue for a stopped lifespan.
@@ -1629,7 +1640,10 @@ async def _recipes_redirect(rest: str = ""):
     return _RedirectResponse(url = target, status_code = 308)
 
 
-from utils.host_policy import cors_origins_for_mode  # noqa: E402
+from utils.host_policy import (
+    cors_origin_regex_for_mode,
+    cors_origins_for_mode,
+)  # noqa: E402
 
 
 class RemoteAccessCORSMiddleware(CORSMiddleware):
@@ -1656,11 +1670,16 @@ _cors_origins = cors_origins_for_mode(
     api_only = os.environ.get("UNSLOTH_API_ONLY") == "1",
     secure = os.environ.get("UNSLOTH_SECURE") == "1",
 )
+_cors_origin_regex = cors_origin_regex_for_mode(
+    api_only = os.environ.get("UNSLOTH_API_ONLY") == "1",
+    secure = os.environ.get("UNSLOTH_SECURE") == "1",
+)
 
 app.add_middleware(
     RemoteAccessCORSMiddleware,
     remote_access_state = app.state,
     allow_origins = _cors_origins,
+    allow_origin_regex = _cors_origin_regex,
     allow_credentials = True,
     allow_methods = ["*"],
     allow_headers = ["*"],
@@ -2564,6 +2583,10 @@ def get_system_info(
         logger.debug(f"Failed to get disk usage: {e}")
         disk = None
 
+    from utils.system_disk import cached_models_disk_usage
+
+    models_disk = cached_models_disk_usage()
+
     try:
         current_process = psutil.Process(os.getpid())
         process_used_mb = round(current_process.memory_info().rss / 1024**2)
@@ -2613,6 +2636,8 @@ def get_system_info(
             "free_gb": round(disk.free / 1e9, 2) if disk else 0,
             "percent_used": disk.percent if disk else 0,
         },
+        # Additive: null unless the HF cache sits on another volume (e.g. a symlinked drive).
+        "models_disk": models_disk,
         "gpu": gpu_info,
         "inference_gpu": inference_gpu_info,
         "ml_packages": ml_packages,

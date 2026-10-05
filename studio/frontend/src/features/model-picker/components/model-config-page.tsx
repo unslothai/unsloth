@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { InferenceEnginePicker } from "./inference-engines";
+import { useLlamaCppBackend } from "@/hooks/use-llama-backend";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { InfoHint } from "@/components/ui/info-hint";
@@ -147,7 +148,7 @@ import {
   DEFAULT_MAX_SEQ_LENGTH,
   DEFAULT_PER_MODEL_CONFIG,
   DRAFT_N_MAX_SPEC_TYPES,
-  KV_CACHE_DTYPES,
+  kvCacheDtypeOptions,
   LOAD_MODES,
   LOAD_MODE_DEFAULT,
   MAX_SEQ_LENGTH_MAX,
@@ -1349,6 +1350,7 @@ function GgufAdvancedSettings({
 }) {
   const batchAdviceId = useId();
   const ubatchAdviceId = useId();
+  const llamaBackend = useLlamaCppBackend();
   // llama-server aborts below 2 and below the slot count, so the loader raises the emitted value
   // to max(slots, 2). Surfaced so the number typed here is not silently different from the
   // one that runs. With Slots blank only the hard floor of 2 is asserted.
@@ -1395,7 +1397,7 @@ function GgufAdvancedSettings({
             <SelectItem value={KV_CACHE_DTYPE_DEFAULT}>
               {KV_CACHE_DTYPE_DEFAULT}
             </SelectItem>
-            {KV_CACHE_DTYPES.map((dtype) => (
+            {kvCacheDtypeOptions(llamaBackend, config.kvCacheDtype).map((dtype) => (
               <SelectItem key={dtype} value={dtype}>
                 {dtype}
               </SelectItem>
@@ -1511,7 +1513,10 @@ function GgufAdvancedSettings({
               <SelectItem value={KV_CACHE_DTYPE_DEFAULT}>
                 {KV_CACHE_DTYPE_DEFAULT}
               </SelectItem>
-              {KV_CACHE_DTYPES.map((dtype) => (
+              {kvCacheDtypeOptions(
+                llamaBackend,
+                config.specDraftCacheDtype,
+              ).map((dtype) => (
                 <SelectItem key={dtype} value={dtype}>
                   {dtype}
                 </SelectItem>

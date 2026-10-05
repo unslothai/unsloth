@@ -163,7 +163,7 @@ from .diffusion_memory import (
 from .diffusion_torchao_patches import install_torchao_int_mm_patch
 from .image_orientation import exif_upright
 from .mcp_images import flattened_rgb
-from .media_decode_phase import decode_phase
+from .media_decode_phase import decode_phase, denoise_phase
 from .diffusion_speed import (
     SPEED_DEFAULT,
     SPEED_EAGER,
@@ -191,6 +191,7 @@ from .diffusion_vae_fp16 import enable_fp16_vae_decode
 from .diffusion_vae_tiling import install as install_wide_vae_tiles
 from .diffusion_attention import (
     apply_attention_backend,
+    auto_attention_reason,
     normalize_attention_backend,
     sdpa_math_only,
     sdpa_subquadratic_confirmed,
@@ -275,6 +276,7 @@ from .diffusion_prequant import (
     prequant_checkpoint_cached,
     prequant_unreadable_reason,
     resolve_prequant_source,
+    scoped_local_files_only,
     usable_prequant_source,
 )
 from .diffusion_auto_policy import (
@@ -1171,8 +1173,10 @@ class _GenState:
     first_step_at: float = 0.0
     # Computed once per step (in the callback) so it's stable between polls.
     eta_seconds: Optional[float] = None
-    # "decode" once pipe() enters its decoder, which runs after the last step callback.
-    phase: str = "denoise"
+    # encode -> denoise (pipe() entered its loop) -> decode (pipe() entered its decoder).
+    phase: str = "encode"
+    preview: Optional[str] = None
+    preview_seq: int = 0
 
 
 def _estimate_eta(total_steps: int, step: int, first_step_at: float, now: float) -> Optional[float]:
@@ -1523,6 +1527,7 @@ def _uncached_prequant_repo(
     *,
     base_repo: Optional[str],
     prequant_path: Optional[str],
+    online: Optional[bool] = None,
 ) -> Optional[str]:
     """The hosted pre-quant repo an AUTO-derived quant would have to DOWNLOAD for this pick, or None
     when it costs no extra bytes (no hosted source, a local override, or already cached).
@@ -1540,7 +1545,7 @@ def _uncached_prequant_repo(
         )
         if source is None or source.kind != "repo":
             return None
-        if prequant_checkpoint_cached(source, cache_dir = hub_cache_dir()):
+        if prequant_checkpoint_cached(source, cache_dir = hub_cache_dir(), online = online):
             return None
         return source.location
     except Exception:  # noqa: BLE001 - a probe that cannot answer keeps the prequant shortcut
@@ -1904,6 +1909,11 @@ def _uninstall_fused_dit_patches() -> None:
         uninstall_qwen_real_rope()
         uninstall_zimage_fused()
         uninstall_flux2_rope()
+    except Exception:  # noqa: BLE001 - teardown is best effort
+        pass
+    try:
+        from .diffusion_rocm_fused import uninstall as uninstall_rocm_fused
+        uninstall_rocm_fused()
     except Exception:  # noqa: BLE001 - teardown is best effort
         pass
 
@@ -2627,7 +2637,11 @@ class DiffusionBackend:
             )
             if source is None or getattr(source, "kind", None) != "repo":
                 return True
-            if prequant_checkpoint_cached(source, cache_dir = hub_cache_dir()):
+            if prequant_checkpoint_cached(
+                source,
+                cache_dir = hub_cache_dir(),
+                online = False if kwargs.get("local_files_only") else None,
+            ):
                 return True
             if kwargs.get("local_files_only"):
                 return False
@@ -3114,6 +3128,7 @@ class DiffusionBackend:
         ).start()
         return self.status()
 
+    @scoped_local_files_only
     def _run_load(self, **kwargs: Any) -> None:
         token = kwargs.get("_load_token")
         # This load's own event: a later load replaces self._cancel_event rather than clearing it.
@@ -3891,9 +3906,19 @@ class DiffusionBackend:
         sizes = {s.rfilename: int(getattr(s, "size", 0) or 0) for s in (info.siblings or [])}
         # Every candidate, in the order the loader tries them: safetensors first, then the pickle
         # spellings. Reading only two of them would miss the artifact on a repo that hosts the third.
-        from .diffusion_prequant import candidate_filenames_of, restricted_prequant_load_supported
+        from .diffusion_prequant import (
+            candidate_filenames_of,
+            prefer_cached_pickle_twins,
+            restricted_prequant_load_supported,
+        )
 
-        for name in candidate_filenames_of(source):
+        # The resolver's order, so a cached .pt is priced and staged instead of its uncached twin.
+        ordered = prefer_cached_pickle_twins(
+            source.location,
+            candidate_filenames_of(source),
+            readable = lambda n: restricted_prequant_load_supported(scheme, n),
+        )
+        for name in ordered:
             if name and name in sizes and restricted_prequant_load_supported(scheme, name):
                 return (source.location, name, int(sizes[name]))
         # The repo answered and holds NEITHER name. Not "no prequant is used": this pick is configured to
@@ -3930,7 +3955,9 @@ class DiffusionBackend:
                 return False
             if getattr(source, "kind", None) != "repo":
                 return True
-            if prequant_checkpoint_cached(source, cache_dir = hub_cache_dir()):
+            if prequant_checkpoint_cached(
+                source, cache_dir = hub_cache_dir(), online = False if local_files_only else None
+            ):
                 return True
             if local_files_only:
                 return False
@@ -5082,6 +5109,7 @@ class DiffusionBackend:
                 TE_PREQUANT_BUDGET_SCALE,
                 TE_PREQUANT_COMPONENTS,
                 te_candidate_filenames,
+                te_candidate_is_readable,
                 te_prequant_sources_for_base,
             )
 
@@ -5107,19 +5135,45 @@ class DiffusionBackend:
                     except OSError:
                         size = 0
                 elif kind == "repo":
-                    names = te_candidate_filenames(source)
+                    from .diffusion_prequant import (
+                        first_cached_as_resolved,
+                        prefer_cached_pickle_twins,
+                    )
 
-                    def _sizes(d: Path, names = names) -> dict[str, int]:
-                        for name in names:
+                    repo = str(source.location)
+                    sized: dict[str, int] = {}
+
+                    def _size_of(name: str) -> int:
+                        def _sizes(d: Path) -> dict[str, int]:
                             f = d / name
                             if f.is_file():
                                 try:
                                     return {"precast": f.stat().st_size}
                                 except OSError:
                                     return {}
-                        return {}
+                            return {}
 
-                    size = DiffusionBackend._union_over_cached_revs(str(source.location), _sizes)
+                        if name not in sized:
+                            sized[name] = DiffusionBackend._union_over_cached_revs(repo, _sizes)
+                        return sized[name]
+
+                    # The file the load opens: a cached older encoder does not make an uncached one ahead free.
+                    names = [
+                        n for n in te_candidate_filenames(source) if te_candidate_is_readable(n)
+                    ]
+                    hit = first_cached_as_resolved(
+                        repo,
+                        prefer_cached_pickle_twins(
+                            repo,
+                            names,
+                            readable = te_candidate_is_readable,
+                            cache_dir = hub_cache_dir(),
+                            log = False,
+                        ),
+                        is_cached = lambda n: _size_of(n) > 0,
+                        cache_dir = hub_cache_dir(),
+                    )
+                    size = _size_of(hit) if hit else 0
                 if size > 0:
                     total += int(size)
                     continue
@@ -5185,6 +5239,7 @@ class DiffusionBackend:
     @_invalidates_gpu_memory("diffusion load")
     @_account_owned_load
     @_plans_at_requested_speed
+    @scoped_local_files_only
     def load_pipeline(
         self,
         repo_id: str,
@@ -5618,6 +5673,7 @@ class DiffusionBackend:
                         transformer_quant,
                         base_repo = base,
                         prequant_path = transformer_prequant_path,
+                        online = False if local_files_only else None,
                     )
                     if uncached_prequant is not None:
                         logger.info(
@@ -6909,7 +6965,11 @@ class DiffusionBackend:
                     attention_engaged = apply_attention_backend(
                         pipe,
                         select_attention_backend(
-                            target, attention_backend, speed_active = effective_speed != SPEED_OFF
+                            target,
+                            attention_backend,
+                            speed_active = effective_speed != SPEED_OFF,
+                            family = fam,
+                            speed_unset = speed_mode is None,
                         ),
                         logger = logger,
                         target = target,
@@ -7033,6 +7093,10 @@ class DiffusionBackend:
                     from .diffusion_flux2_rope import install_for_pipe as install_flux2_rope
 
                     install_flux2_rope(pipe, dtype, device, logger)
+                    # ROCm (auto) FLUX.1 / FLUX.2: one-kernel RoPE (bit-identical) and AdaLN modulation.
+                    from .diffusion_rocm_fused import install_for_pipe as install_rocm_fused
+
+                    install_rocm_fused(pipe, dtype, device, logger)
                     # fp16-only cards: a guarded family stays float16; patch its overflow sites.
                     from .diffusion_fp16_guard import family_fp16_guard, install_fp16_guard
 
@@ -7343,7 +7407,7 @@ class DiffusionBackend:
                             "attention_backend": (
                                 attention_backend,
                                 attention_engaged or "native",
-                                "cuDNN fused attention upgrade"
+                                auto_attention_reason(attention_engaged)
                                 if attention_engaged and attention_backend is None
                                 else "diffusers default"
                                 if attention_engaged is None
@@ -7492,6 +7556,7 @@ class DiffusionBackend:
                         if eager_patched:
                             uninstall_patches()
                             uninstall_arch_patches()
+                            _uninstall_fused_dit_patches()
                         state = pipe = transformer = None
                         pipe_kwargs.clear()
                         clear_gpu_cache()
@@ -8348,6 +8413,8 @@ class DiffusionBackend:
 
         from .diffusion_small_host import (
             cast_resident_,
+            int8_act_device_ok,
+            int8_act_family,
             mark,
             prepare_streamed_encoder_,
             quantize_int8_weight_,
@@ -8371,11 +8438,18 @@ class DiffusionBackend:
                 info["components"][name] = "converted"
             else:
                 # pageable: pinning rounds blocks to powers of two (11.3 GB of FLUX.1 int8 held 18 GB pinned)
+                act_int8 = int8_act_family(fam) and int8_act_device_ok(device)
                 stats = quantize_int8_weight_(
-                    module, compute_dtype = dtype, work_device = device, keep_device = "cpu"
+                    module,
+                    compute_dtype = dtype,
+                    work_device = device,
+                    keep_device = "cpu",
+                    act_int8 = act_int8,
                 )
                 info["components"][name] = (
-                    f"int8 weights ({stats['int8_bytes'] >> 20} MiB, {stats['linears']} linears)"
+                    f"int8 weights ({stats['int8_bytes'] >> 20} MiB, {stats['linears']} linears"
+                    + (", int8 activations" if act_int8 else "")
+                    + ")"
                 )
             if load_token is not None:
                 self._raise_if_load_cancelled(load_token)
@@ -9154,7 +9228,9 @@ class DiffusionBackend:
         # Re-run the load-time selection with the caller's ORIGINAL request: auto still upgrades to cuDNN here.
         attention_engaged = apply_attention_backend(
             state.pipe,
-            select_attention_backend(target, state.attention_request, speed_active = True),
+            select_attention_backend(
+                target, state.attention_request, speed_active = True, family = state.family
+            ),
             logger = logger,
             target = target,
         )
@@ -9222,9 +9298,7 @@ class DiffusionBackend:
         att = (state.resolved or {}).get("attention_backend")
         if isinstance(att, dict) and att.get("source") == "auto":
             att["value"] = attention_engaged or "native"
-            att["reason"] = (
-                "cuDNN fused attention upgrade" if attention_engaged else "diffusers default"
-            )
+            att["reason"] = auto_attention_reason(attention_engaged)
         # The load recorded "speed tier does not capture" for the deferred tier; the profile that just engaged may
         # have armed graphs, so re-derive the entry the same way the load does or the badge keeps saying "off".
         graph = (state.resolved or {}).get("cuda_graph")
@@ -9298,6 +9372,8 @@ class DiffusionBackend:
         # load_identity() of the caller's status() read; refuse rather than run a different load (#9448)
         expected_load: Optional[LoadIdentity] = None,
         allow_oversized: bool = False,
+        # None = on unless UNSLOTH_DIFFUSION_PREVIEW=0.
+        live_preview: Optional[bool] = None,
     ) -> dict[str, Any]:
         import torch
         from PIL import Image
@@ -9768,17 +9844,96 @@ class DiffusionBackend:
                 static_skip = state.transformer_cache == TC_STATIC
                 static_chunks_run = 0
 
-                def _on_step(pipe, step_index, timestep, callback_kwargs):
-                    if static_skip:
-                        mark_step_end(state.pipe)
+                def _publish_preview(
+                    url: str,
+                    seq: int,
+                    gen = gen,
+                ) -> None:
+                    gen.preview = url
+                    gen.preview_seq = seq
+
+                # Started inside the try below, whose exits finish() it: its worker thread polls until then.
+                previewer = None
+
+                def _start_previewer():
+                    if "callback_on_step_end" not in call_params:
+                        return None
+                    from .diffusion_preview import LatentPreviewer
+
+                    try:
+                        preview_w, preview_h = _compile_shape_dims(
+                            workflow, init_pil, width, height, fam
+                        )
+                    except Exception:  # noqa: BLE001 - no size, no preview
+                        preview_w = preview_h = None
+                    return LatentPreviewer.create(
+                        family = state.family.name,
+                        requested = live_preview,
+                        height = preview_h,
+                        width = preview_w,
+                        device = state.device,
+                        publish = _publish_preview,
+                        total_steps = steps,
+                    )
+
+                # Count steps the GPU FINISHED (per-step CUDA events, as the video path): under CUDA graphs the host
+                # enqueues all steps early, and a host count read N/N "decode" mid-denoise.
+                from .video import (
+                    _BOUNDARY_MARK_ATTEMPTS,
+                    _BOUNDARY_MARK_RETRY_SECONDS,
+                    _CompletedStepTicker,
+                    _completed_step_poller,
+                    _hold_off_cuda_graph_capture,
+                )
+
+                # Replaced per chunk: a finished chunk's boundary must not end the next one's denoise.
+                chunk_ticker = [_CompletedStepTicker(steps)]
+
+                def _report(done_in_chunk: int) -> None:
+                    if gen.phase not in ("encode", "denoise"):
+                        return
+                    done = steps_done[0] + max(0, min(int(done_in_chunk), steps))
+                    if done <= gen.step:
+                        return
+                    gen.phase = "denoise"
                     # Monotonic: a wall-clock adjustment (NTP) mid-denoise would skew the ETA.
                     now = time.monotonic()
-                    gen.step = steps_done[0] + step_index + 1
+                    gen.step = done
                     if gen.first_step_at == 0.0:
                         gen.first_step_at = now
                     gen.eta_seconds = _estimate_eta(
                         gen.total_steps, gen.step, gen.first_step_at, now
                     )
+
+                def _flip_to_decode(gen = gen) -> None:
+                    # The chunk's denoise is provably over: complete it even if a skipped event left the count short.
+                    _report(steps)
+                    gen.phase = "decode"
+                    gen.eta_seconds = None
+
+                def _pump() -> None:
+                    if gen.phase not in ("encode", "denoise"):
+                        return
+                    ticker = chunk_ticker[0]
+                    if ticker.boundary_marked and ticker.boundary_reached():
+                        _flip_to_decode()
+                        return
+                    _report(ticker.completed())
+
+                def _on_step(pipe, step_index, timestep, callback_kwargs):
+                    if static_skip:
+                        mark_step_end(state.pipe)
+                    if gen.phase == "encode":
+                        gen.phase = "denoise"
+                    if previewer is not None:
+                        previewer.on_step(
+                            callback_kwargs.get("latents"), getattr(pipe, "scheduler", None)
+                        )
+                    # Runs after scheduler.step, so this step's update is already enqueued.
+                    with _hold_off_cuda_graph_capture() as clear:
+                        if clear:
+                            chunk_ticker[0].record(step_index + 1)
+                            _report(chunk_ticker[0].completed())
                     if cancel.is_set():
                         pipe._interrupt = True
                     return callback_kwargs
@@ -9823,6 +9978,7 @@ class DiffusionBackend:
                 graphs_before = fresh_compile_count()
                 compile_cache.note_use(state.compile_cache_ctx)
                 try:
+                    previewer = _start_previewer()
                     pending = list(chunks)
                     while pending:
                         chunk = pending.pop(0)
@@ -9878,12 +10034,28 @@ class DiffusionBackend:
                             # diffusers resets FBCache only after a SUCCESSFUL __call__; a raised call leaves a stale residual.
                             self._reset_step_cache(state.pipe)
                         protect_ctx = protect_generation(pipe, denoise_steps, logger = logger)
-                        # Per chunk: a later chunk denoises again after an earlier one decoded.
-                        gen.phase = "denoise"
+                        # Per chunk: a later chunk encodes again after an earlier one decoded.
+                        gen.phase = "encode"
 
-                        def _enter_decode_phase(gen = gen) -> None:
-                            gen.phase = "decode"
-                            gen.eta_seconds = None
+                        def _enter_denoise_phase(gen = gen) -> None:
+                            if gen.phase == "encode":
+                                gen.phase = "denoise"
+
+                        chunk_ticker[0] = _CompletedStepTicker(steps)
+
+                        def _enter_decode_phase() -> None:
+                            """The decoder was entered: a HOST position, possibly far ahead of the GPU. Mark the
+                            boundary in the stream and let the poller flip once the GPU reaches it; with no event
+                            to wait on (CPU, MPS) there is no queue to be ahead of, so flip now."""
+                            marked = False
+                            for _ in range(_BOUNDARY_MARK_ATTEMPTS):
+                                with _hold_off_cuda_graph_capture() as clear:
+                                    if clear:
+                                        marked = chunk_ticker[0].mark_boundary()
+                                        break
+                                time.sleep(_BOUNDARY_MARK_RETRY_SECONDS)
+                            if not marked:
+                                _flip_to_decode()
 
                         try:
                             # torchao aten.to fails torch's aliasing check under inference_mode once offloaded.
@@ -9894,11 +10066,15 @@ class DiffusionBackend:
                                     else torch.inference_mode()
                                 ),
                                 protect_ctx,
+                                denoise_phase(pipe, _enter_denoise_phase),
                                 decode_phase(pipe, _enter_decode_phase),
+                                _completed_step_poller(_pump),
                             ):
                                 out = render_thread.run(
                                     "diffusion", lambda: pipe(**chunk_kwargs).images
                                 )
+                            if gen.phase in ("encode", "denoise"):
+                                _flip_to_decode()
                         except Exception as exc:  # noqa: BLE001 - reraised unless a splittable OOM
                             oom = is_oom_error(exc)
                             if oom:
@@ -9937,6 +10113,8 @@ class DiffusionBackend:
                         chunk_shapes.append(len(chunk))
                         steps_done[0] += steps
                 except BaseException:
+                    if previewer is not None:
+                        previewer.finish()
                     # A cancelled or failed render may already have generalised a graph that the next render reuses
                     # without compiling, so the success path below would never see the count grow: dirty it now.
                     try:
@@ -9948,6 +10126,8 @@ class DiffusionBackend:
                     except Exception:  # noqa: BLE001 - bookkeeping must not mask the render's own error
                         pass
                     raise
+                if previewer is not None:
+                    previewer.finish()
                 if static_skip:
                     logger.debug("diffusion.step_skip: %s", static_skip_stats(state.pipe))
                 # Keep progress ACTIVE through the post-denoise work: the route persists the image after this returns,
@@ -10086,6 +10266,8 @@ class DiffusionBackend:
             "fraction": gen.step / gen.total_steps,  # step is 1..total, never over 1.0
             "eta_seconds": gen.eta_seconds,
             "phase": gen.phase,
+            "preview": gen.preview,
+            "preview_seq": gen.preview_seq,
         }
 
     def cancel_generate(self, expected_account: Optional[str] = None) -> bool:
@@ -10239,6 +10421,8 @@ class DiffusionBackend:
 
             uninstall_patches()
             uninstall_arch_patches()
+            # Again: the deferred profile layers the eager patch over the fused AdaLN.
+            _uninstall_fused_dit_patches()
         # Deliberately NOT unload_lora_weights(): the whole pipe is dropped below, freeing any adapters with it. Drop
         # the workflow pipes so they do not pin the freed pipeline modules past unload.
         self._aux_pipes.clear()

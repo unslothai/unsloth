@@ -135,7 +135,6 @@ export const SETTINGS_SEARCH_INDEX: Record<SettingsTab, TranslationKey[]> = {
     "settings.chat.artifacts.allowNetworkAccess",
     "settings.chat.webSearch.images",
     "settings.chat.modelDisclaimer",
-    "settings.chat.inlineReadAloud",
     "settings.chat.inlineEditResponse",
     "settings.chat.groups.menu.title",
   ],

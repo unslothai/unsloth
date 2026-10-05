@@ -1103,7 +1103,9 @@ def validate_provider_base_url(base_url: str) -> str:
     return raw.rstrip("/")
 
 
-def list_available_providers(include_hidden: bool = False) -> list[dict[str, Any]]:
+def list_available_providers(
+    include_hidden: bool = False, include_oauth: bool = False
+) -> list[dict[str, Any]]:
     """Return registered providers (for the /registry endpoint).
 
     Hidden entries exist only for backend lookups and are surfaced by the UI via
@@ -1115,10 +1117,16 @@ def list_available_providers(include_hidden: bool = False) -> list[dict[str, Any
     ``include_hidden`` is how a client that does know says so. The self-hosted presets are exactly
     the ones that run Unsloth's tools, so their capability has to reach a frontend that asks for it,
     and asking is opt-in.
+
+    OAuth rows are opt-in too: a pre-OAuth bundle (v0.1.701-beta, bare request) renders them as an
+    API-key form the backend then rejects (#8722). Every bundle sending ``include_hidden`` already
+    renders OAuth, so either flag opts in.
     """
     result = []
     for provider_type, info in PROVIDER_REGISTRY.items():
         if (info.get("hidden") and not include_hidden) or info.get("managed"):
+            continue
+        if info.get("auth_kind") == "chatgpt_oauth" and not (include_hidden or include_oauth):
             continue
         result.append(
             {
