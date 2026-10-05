@@ -4361,7 +4361,7 @@ class UnslothTrainer:
             # Limit this to dense Llama text training; conditional model families
             # may genuinely have unused trainable parameters.
             if (
-                int(os.environ.get("WORLD_SIZE", "1")) > 1
+                world_size_from_env() > 1
                 and config_args.get("gradient_checkpointing")
                 and not self.is_audio
                 and not self.is_vlm

@@ -5083,7 +5083,7 @@ def _run_embedding_training(event_queue: Any, stop_queue: Any, config: dict) -> 
         from core.import_guards import ensure_real_packages
 
         ensure_real_packages("unsloth_zoo", "unsloth")
-        from unsloth import FastSentenceTransformer, is_bfloat16_supported
+        from unsloth import FastSentenceTransformer
         from sentence_transformers import (
             SentenceTransformerTrainer,
             SentenceTransformerTrainingArguments,
