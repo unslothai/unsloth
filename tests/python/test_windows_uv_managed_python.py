@@ -22,6 +22,9 @@ SOURCE = INSTALL_PS1.read_text(encoding = "utf-8")
 POWERSHELLS = [shell for shell in ("pwsh", "powershell") if shutil.which(shell)]
 HOST_MINOR = "{}.{}".format(*sys.version_info[:2])
 HOST_FULL = "{}.{}.{}".format(*sys.version_info[:3])
+RANGE = ">={0}.{1},<{0}.{2},!={3}".format(
+    sys.version_info[0], sys.version_info[1], sys.version_info[1] + 1, HOST_FULL
+)
 
 FAKE_UV = r"""
 Add-Content -LiteralPath $env:FAKE_UV_LOG -Value ($args -join ' ')
@@ -62,7 +65,6 @@ function Invoke-InstallCommand {{
     return [int]$LASTEXITCODE
 }}
 $PythonVersion = "{HOST_MINOR}"
-$PythonFallbackFullVersion = "{HOST_MINOR}.99"
 $PythonSkip = @({skip_list})
 $script:UvExe = $env:FAKE_UV_EXE
 {_function("Resolve-UvManagedPython")}
@@ -127,10 +129,12 @@ def test_nothing_found_falls_back(shell, tmp_path):
 @needs_pwsh
 @needs_supported_host
 @pytest.mark.parametrize("shell", POWERSHELLS)
-def test_a_skipped_patch_asks_uv_for_the_pinned_one(shell, tmp_path):
+def test_a_skipped_patch_is_excluded_from_the_request(shell, tmp_path):
     result, calls = _resolve(shell, tmp_path, find = sys.executable, skip = [HOST_FULL])
+    # The fake uv still answers with the skipped interpreter, so the post-check refuses it.
     assert result is None
-    assert f"python install --no-bin --no-registry {HOST_MINOR}.99" in calls
+    assert calls[0] == f"python install --no-bin --no-registry {RANGE}"
+    assert calls[1] == f"python find --system --managed-python {RANGE}"
 
 
 @needs_pwsh
@@ -140,7 +144,7 @@ def test_a_startup_banner_does_not_hide_a_skipped_patch(shell, tmp_path):
     site = tmp_path / "site"
     site.mkdir()
     (site / "sitecustomize.py").write_text("print('banner')\n", encoding = "utf-8")
-    result, calls = _resolve(
+    result, _ = _resolve(
         shell,
         tmp_path,
         find = sys.executable,
@@ -148,7 +152,6 @@ def test_a_startup_banner_does_not_hide_a_skipped_patch(shell, tmp_path):
         extra_env = {"PYTHONPATH": str(site)},
     )
     assert result is None
-    assert f"python install --no-bin --no-registry {HOST_MINOR}.99" in calls
 
 
 def test_non_arm64_defers_to_uv_and_keeps_the_system_install_as_fallback():

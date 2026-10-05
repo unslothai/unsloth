@@ -7612,35 +7612,34 @@ exit 0
     # the py launcher. --system: `find` otherwise answers with an active venv's python.
     # $null sends the caller to the system install.
     function Resolve-UvManagedPython {
-        $requests = @($PythonVersion)
-        if ($PythonFallbackFullVersion -like "$PythonVersion.*") { $requests += $PythonFallbackFullVersion }
-        foreach ($request in $requests) {
-            $installExit = Invoke-InstallCommand -NoMirror -Label "install uv-managed Python $request" {
-                & $script:UvExe python install --no-bin --no-registry $request
-            }
-            if ($installExit -ne 0) { return $null }
-            $exe = ""
-            try {
-                $exe = (& $script:UvExe python find --system --managed-python $request 2>$null | Select-Object -First 1)
-            } catch {}
-            $exe = "$exe".Trim()
-            if (-not $exe -or -not (Test-Path -LiteralPath $exe -PathType Leaf)) { return $null }
-            # -S: a sitecustomize banner would otherwise be read as the version.
-            $full = ""
-            try {
-                $full = (& $exe -S -c "import sys; print('{}.{}.{}'.format(*sys.version_info[:3]))" 2>$null | Select-Object -First 1)
-            } catch {}
-            $full = "$full".Trim()
-            if ($full -notmatch '^(3\.1[1-3])\.\d+$') { return $null }
-            $minor = $Matches[1]
-            # A store already holding a skipped patch answers the minor with it: ask for the pinned patch.
-            if ($PythonSkip -contains $full) {
-                substep "Python $full cannot import torch -- asking uv for another." "Yellow"
-                continue
-            }
-            return @{ Version = $minor; Path = $exe; Arch = "" }
+        # A range excluding $PythonSkip, as install.sh's _python_request: a bare "3.13" can
+        # resolve to 3.13.8, and a pinned patch may be newer than this uv knows or a cached one.
+        $request = $PythonVersion
+        $bad = @($PythonSkip | Where-Object { $_ -like "$PythonVersion.*" })
+        if ($bad.Count -gt 0 -and $PythonVersion -match '^(\d+)\.(\d+)$') {
+            $request = ">=$PythonVersion,<$($Matches[1]).$([int]$Matches[2] + 1)" + (($bad | ForEach-Object { ",!=$_" }) -join "")
         }
-        return $null
+        $installExit = Invoke-InstallCommand -NoMirror -Label "install uv-managed Python $request" {
+            & $script:UvExe python install --no-bin --no-registry $request
+        }
+        if ($installExit -ne 0) { return $null }
+        $exe = ""
+        try {
+            $exe = (& $script:UvExe python find --system --managed-python $request 2>$null | Select-Object -First 1)
+        } catch {}
+        $exe = "$exe".Trim()
+        if (-not $exe -or -not (Test-Path -LiteralPath $exe -PathType Leaf)) { return $null }
+        # -S: a sitecustomize banner would otherwise be read as the version.
+        $full = ""
+        try {
+            $full = (& $exe -S -c "import sys; print('{}.{}.{}'.format(*sys.version_info[:3]))" 2>$null | Select-Object -First 1)
+        } catch {}
+        $full = "$full".Trim()
+        if ($full -notmatch '^(3\.1[1-3])\.\d+$') { return $null }
+        $minor = $Matches[1]
+        # find answers through uv's per-minor link, which can still name a skipped patch.
+        if ($PythonSkip -contains $full) { return $null }
+        return @{ Version = $minor; Path = $exe; Arch = "" }
     }
 
     if ($PythonFromUv) {
