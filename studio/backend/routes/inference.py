@@ -6543,14 +6543,29 @@ def _local_managed_engine() -> bool:
     return info.get("engine") in ("vllm", "sglang")
 
 
+# llama-server flags in the user's pass-through args that choose the template it renders, or how.
+_TEMPLATE_EXTRA_FLAGS = frozenset(
+    ("--chat-template", "--chat-template-file", "--chat-template-kwargs", "--no-jinja")
+)
+
+
+def _local_extra_args_pick_the_template() -> bool:
+    try:
+        llama = get_llama_cpp_backend()
+        args = (getattr(llama, "extra_args", None) or []) if llama.is_loaded else []
+    except Exception:
+        return False
+    return any(str(arg).split("=", 1)[0] in _TEMPLATE_EXTRA_FLAGS for arg in args)
+
+
 def _local_template_system_turn(
     today: Any,
     image: bool = False,
     tools: bool = False,
     controls: tuple = (),
 ) -> tuple[bool, Optional[str]]:
-    if _local_managed_engine():
-        # vLLM/SGLang render a template Studio never sees, so nothing says a system turn is safe.
+    if _local_managed_engine() or _local_extra_args_pick_the_template():
+        # the server renders a template Studio never sees, so nothing says a system turn is safe.
         return False, None
     return template_system_turn(_local_chat_template(image, tools), today, tools, controls)
 

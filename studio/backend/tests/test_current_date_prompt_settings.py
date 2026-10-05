@@ -582,6 +582,24 @@ class TestDateStaysInTheSystemTurn:
         assert self.inference._local_template_system_turn(_DAY) == (False, None)
         assert self.inference._local_template_system_turn(_DAY, tools = True) == (False, None)
 
+    @pytest.mark.parametrize(
+        "extra_args",
+        [["--chat-template-file", "/srv/chat.jinja"], ["--chat-template=chatml"], ["--no-jinja"]],
+    )
+    def test_a_gguf_template_chosen_by_extra_args_gets_no_system_turn(
+        self, monkeypatch, extra_args
+    ):
+        from types import SimpleNamespace
+
+        monkeypatch.undo()
+        llama = SimpleNamespace(
+            is_loaded = True, chat_template = _CHATML, chat_template_override = None, extra_args = []
+        )
+        monkeypatch.setattr(self.inference, "get_llama_cpp_backend", lambda: llama)
+        assert self.inference._local_template_system_turn(_DAY) == (True, "")
+        llama.extra_args = extra_args
+        assert self.inference._local_template_system_turn(_DAY) == (False, None)
+
     def test_a_tool_request_probes_the_tool_use_template(self, monkeypatch):
         from types import SimpleNamespace
 
