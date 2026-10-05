@@ -1,29 +1,13 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Seam-free tiled decode and encode for the Qwen-Image-2.1 VAE.
+"""Seam-free tiled decode / encode for the Qwen-Image-2.1 VAE.
 
-diffusers gives AutoencoderKLQwenImage21 the Wan VAE's tile geometry in PIXELS (256 px tiles, 192 px stride),
-but this VAE compresses 16x, not 8x: a tile is 16 latents with a 4-latent (64 px) blend, and the last row /
-column is a 4-latent sliver. The decoder sees further than 4 latents past a tile edge, so every seam and the
-sliver at the right / bottom edge decode differently from their neighbours and the short linear blend leaves
-thin vertical / horizontal lines, one tile long. A 1024x1024 render is 6x6 such tiles, so every low-VRAM tier
-that tiles the decode (streaming / whole-model offload) shows them; resident loads decode untiled. The tiled
-encode (img2img and edit inputs on the same tiers) has the same geometry.
-
-Here a tile is at least 32 latents with at least a 16-latent overlap (ComfyUI's decode overlap). A decode
-uses larger tiles, down to one untiled decode, when three quarters of the free VRAM hold them: fewer tiles
-decode less overlap, so they are faster and leave fewer seams. Otherwise it uses 32x32, which the planner
-budgets. Tiles are spread evenly so the last one ends at the image edge at full size (no sliver). A
-tile gets no weight within 4 latents of an edge it shares with another tile and ramps to full weight over
-the next 8, normalised where more than two tiles meet (a stride under 16 latents, e.g. 1344 or 2400 px).
-A canvas that fits one tile is decoded / encoded untiled. The encode (edit inputs, the only encode this
-family runs) uses 64-latent tiles with 32-latent overlaps, blended in latent space: the encoder attends
-over the whole tile, so the stock 16-latent tiles shift the condition latent everywhere and derail the
-edit, not only at the seams. A 1024 px input is one tile, identical to the untiled encode; the guard
-charges edit inputs as condition pixels, which covers one encode tile at every reference resolution.
-Kill switch ``UNSLOTH_DIFFUSION_VAE_WIDE_TILES=0``: at load it skips the install (the fused batched tile
-decode, if any, installs as before); set later, each decode / encode takes the stock tiled path.
+diffusers gives AutoencoderKLQwenImage21 the Wan VAE's pixel tile geometry, but this VAE compresses 16x: tiles are 16
+latents with 4-latent blends and a sliver last tile, too little context, so tiled tiers draw thin seam lines. Here
+tiles are >= 32 latents (larger when free VRAM allows), overlap >= 16, edge-aligned, with a normalised blend that
+gives no weight near shared edges. Encode tiles are 64 latents: the encoder attends over the whole tile, so small
+tiles shift the condition latent everywhere. Kill switch ``UNSLOTH_DIFFUSION_VAE_WIDE_TILES=0``.
 """
 
 from __future__ import annotations
@@ -39,9 +23,7 @@ OVERLAP_LATENTS = 16
 # Blend: a tile gets no weight within MARGIN latents of an edge it shares, then ramps to full over RAMP latents.
 MARGIN_LATENTS = 4
 RAMP_LATENTS = 8
-# Encode: twice the decode tile (stable-diffusion.cpp's ratio), so a 1024 px condition image, Studio's default
-# reference resolution, encodes as one tile, bit-identical to the untiled encode. The encoder's middle block attends
-# over the whole tile, so smaller tiles shift the latent everywhere, not only at the seams.
+# Encode: a 1024 px reference image (Studio's default) is one tile, bit-identical to the untiled encode.
 ENCODE_TILE_LATENTS = 64
 ENCODE_OVERLAP_LATENTS = 32
 ENCODE_MARGIN_LATENTS = 8
@@ -59,9 +41,7 @@ def tile_starts(
     tile: int = TILE_LATENTS,
     overlap: int = OVERLAP_LATENTS,
 ) -> list[int]:
-    """Start offsets of the fewest full-size tiles covering ``length`` with every neighbour overlap >= ``overlap``.
-
-    The first tile starts at 0 and the last ends at ``length``; the rest are spread evenly between them."""
+    """Starts of the fewest full-size tiles covering ``length`` with overlaps >= ``overlap``, first at 0, last at the end."""
     length, tile, overlap = int(length), int(tile), int(overlap)
     if length <= tile:
         return [0]
@@ -83,15 +63,10 @@ def axis_weights(
     margin: int = MARGIN_LATENTS,
     ramp: int = RAMP_LATENTS,
 ) -> list:
-    """Per-tile blend weights (fp32, ``min(tile, length) * scale`` long) along one axis, summing to 1 at every pixel.
-
-    A tile's weight is 0 within ``margin`` latents of an edge it shares with another tile (where its decode lacks
-    context), rises linearly over the next ``ramp`` latents, and is 1 deeper in; image borders are not shared edges.
-    When three tiles overlap (a stride under 16 latents) the outer tile's edge region still gets no weight. With every
-    overlap >= 16 latents, each pixel lies >= 8 latents inside some tile, so a margin under 8 keeps the sum positive;
-    with margin 4 and ramp 8 a two-tile overlap of exactly 16 is a linear cross-fade over its middle 8 latents."""
+    """Per-tile fp32 blend weights along one axis, summing to 1 at every pixel: 0 within ``margin`` latents of a
+    shared edge, linear over the next ``ramp``. Overlaps >= 16 put every pixel >= 8 latents inside some tile, so a
+    margin under 8 keeps the sum positive."""
     size = min(tile, length) * scale
-    # pixel centres, in latents
     pos = (torch.arange(size, dtype = torch.float64, device = device) + 0.5) / scale
     total = torch.zeros(length * scale, dtype = torch.float64, device = device)
     weights = []
@@ -109,7 +84,7 @@ def axis_weights(
 
 
 def _decode_tile(vae: Any, z: Any) -> Any:
-    """The VAE's own untiled decode of one tile (fused / compiled module forwards still apply)."""
+    """The VAE's own untiled decode of one tile (fused / compiled forwards still apply)."""
     prev = vae.use_tiling
     vae.use_tiling = False
     try:
@@ -118,10 +93,8 @@ def _decode_tile(vae: Any, z: Any) -> Any:
         vae.use_tiling = prev
 
 
-# Unfused bf16 decode peak per latent of tile area (measured: 1,697 MiB for 32x32, 6,717 MiB for 64x64 untiled).
+# Unfused bf16 decode peak per latent of tile area (measured 1,697 MiB at 32x32, 6,717 MiB at 64x64).
 DECODE_MIB_PER_LATENT = 1.7
-# Share of the free VRAM (after the output accumulator) a decode tile may take; the per-area figure above is an
-# upper bound on the measured peaks, so this keeps at least a quarter of the free memory unused.
 FREE_FRACTION = 0.75
 MAX_TILE_ENV = "UNSLOTH_DIFFUSION_VAE_MAX_TILE"
 
@@ -135,8 +108,7 @@ def _axis_tiles(length: int, count: int) -> Optional[int]:
 
 
 def choose_tiles(height: int, width: int, max_area: Optional[int]) -> tuple[int, int]:
-    """Tile (height, width) in latents: the fewest decoded latents (overlaps counted) whose tile area fits
-    ``max_area``. A canvas that fits decodes untiled; with no room for more, 32x32 tiles as the planner budgets."""
+    """Tile (height, width) in latents decoding the fewest latents (overlaps counted) within ``max_area``; 32x32 floor."""
     floor = (min(TILE_LATENTS, height), min(TILE_LATENTS, width))
     if max_area is None or max_area <= floor[0] * floor[1]:
         return floor
@@ -166,7 +138,6 @@ def decode_tile_budget(vae: Any, z: Any) -> Optional[int]:
         free, _ = torch.cuda.mem_get_info(z.device)
         free += torch.cuda.memory_reserved(z.device) - torch.cuda.memory_allocated(z.device)
         ratio = int(vae.spatial_compression_ratio)
-        # fp32 accumulator
         out_bytes = 4 * 4 * z.shape[0] * z.shape[2] * z.shape[-2] * z.shape[-1] * ratio * ratio
         elem = next(vae.decoder.parameters()).element_size()
         mib = FREE_FRACTION * (free - out_bytes) / 2**20
@@ -181,8 +152,7 @@ def tiled_decode(
     return_dict: bool = True,
     max_area: Any = "auto",
 ) -> Any:
-    """Decode ``z`` (B, C, T, H, W) in evenly spread tiles with 16-latent overlaps: 32x32 latents at least, larger
-    (down to one untiled decode) when the free VRAM allows, since fewer tiles decode less overlap."""
+    """Decode ``z`` (B, C, T, H, W) in evenly spread tiles, 32x32 latents or larger when free VRAM allows."""
     import torch
     from diffusers.models.autoencoders.vae import DecoderOutput
 
@@ -233,9 +203,7 @@ def _encode_tile(vae: Any, x: Any) -> Any:
 
 
 def tiled_encode(vae: Any, x: Any) -> Any:
-    """Encode ``x`` (B, C, T, H, W pixels) to moments in evenly spread 64-latent tiles with 32-latent overlaps,
-    blended in latent space with the decode's normalised ramp (no weight within 8 latents of a shared edge, full
-    weight 16 latents further in). Stock ``tiled_encode`` uses 16-latent tiles, 4-latent blends and sliver tiles."""
+    """Encode ``x`` (B, C, T, H, W pixels) to moments in 64-latent tiles, blended in latent space."""
     import torch
 
     _, _, _, height_px, width_px = x.shape
@@ -284,10 +252,8 @@ def _wants_wide_tiles(vae: Any) -> bool:
 
 
 def install(vae: Any, logger: Any = None) -> bool:
-    """Route ``vae``'s tiled decode and encode through the wide, edge-aligned tiles. Idempotent; False when not covered.
-
-    The tiled encode (img2img, edits) gets 64-latent tiles. The VAE's tile attributes stay as diffusers set them;
-    ``_unsloth_decode_tile_side`` carries the real decode tile side for Studio's memory estimates."""
+    """Route ``vae``'s tiled decode / encode through the wide tiles. Idempotent; False when not covered.
+    ``_unsloth_decode_tile_side`` carries the real decode tile side for the memory estimates."""
     if not _wants_wide_tiles(vae) or wide_tiles_disabled():
         return False
     if getattr(vae, "_unsloth_wide_tiles", False):
