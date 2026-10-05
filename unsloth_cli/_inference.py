@@ -1009,8 +1009,7 @@ class HttpChatBackend:
 
         def cumulative():
             # Accumulate SSE deltas into the full-text-so-far convention the stream helpers expect.
-            # The server moves <think> reasoning into delta.reasoning_content; wrap it back in
-            # <think> tags so visible_text shows or hides it as it does for a local model.
+            # The server splits reasoning into delta.reasoning_content: re-wrap it in <think> for visible_text.
             text = ""
             thinking = False
             with resp:
