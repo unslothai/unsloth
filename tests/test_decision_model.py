@@ -863,6 +863,49 @@ def test_clef_backbone_runs_the_compiled_gated_delta_and_conv_kernels(clef_check
             assert chosen["causal_conv1d_fn"].startswith("causal_conv1d")
 
 
+def test_decision_loss_recipe_terms():
+    torch.manual_seed(0)
+    logits = torch.randn(5, 4)
+    mask = torch.tensor([[1, 1, 1, 0]] * 3 + [[1, 1, 0, 0]] * 2, dtype = torch.bool)
+    target = torch.zeros(5, 4)
+    target[torch.arange(5), torch.tensor([0, 2, 1, 1, 0])] = 1.0
+    ordinal = torch.tensor([True, True, False, False, False])
+    plain = decision._soft_cross_entropy(logits, target, mask)
+    assert torch.equal(decision._decision_loss(logits, target, mask, ordinal), plain)
+
+    log_p = torch.log_softmax(logits.masked_fill(~mask, -1e4), -1)
+    p = log_p.exp()
+    k = mask.sum(-1, keepdim = True).float()
+    smoothed = 0.9 * target + 0.1 * mask.float() / k
+    expected_ce = -(smoothed * log_p).sum(-1).mean()
+    expected_brier = ((p - target) ** 2 * mask).sum(-1).mean()
+    levels = torch.arange(4.0)
+    gold = target.argmax(-1).float()
+    distance = (p * (levels - gold[:, None]).abs()).sum(-1) / (k[:, 0] - 1)
+    expected_ordinal = distance[ordinal].mean()
+    got = decision._decision_loss(
+        logits,
+        target,
+        mask,
+        ordinal,
+        label_smoothing = 0.1,
+        brier_weight = 0.5,
+        ordinal_weight = 2.0,
+    )
+    torch.testing.assert_close(got, expected_ce + 0.5 * expected_brier + 2.0 * expected_ordinal)
+
+
+def test_record_accuracy_needs_every_question_of_a_row_right():
+    logits = [torch.tensor([2.0, 0.0]), torch.tensor([0.0, 2.0]), torch.tensor([2.0, 0.0])]
+    items = [
+        {"label": 0, "target": [1.0, 0.0], "row": 0, "qtype": 0},
+        {"label": 0, "target": [1.0, 0.0], "row": 0, "qtype": 0},
+        {"label": 0, "target": [1.0, 0.0], "row": 1, "qtype": 0},
+    ]
+    metrics = decision._metrics(logits, items, [1.0] * 3)
+    assert metrics["accuracy"] == pytest.approx(2 / 3) and metrics["record_accuracy"] == 0.5
+
+
 def _clef_head_inputs():
     from transformers import AutoTokenizer
 
@@ -916,6 +959,30 @@ def test_clef_temperature_is_not_folded_past_the_heads_scale_clamp():
     # Sharpening by 2 would need a scale of 180, past the clamp at 100.
     assert not decision._fold_temperature(state, 0.5)
     assert all(torch.equal(before[k], v) for k, v in state.items())
+
+
+def test_clef_collator_permutes_fields_but_keeps_targets_with_their_questions():
+    from transformers import AutoTokenizer
+
+    tokenizer = AutoTokenizer.from_pretrained(TINY_QWEN3_5)
+    model = types.SimpleNamespace(is_clef = True, decision_config = {"max_len": 2048})
+    items, report = FastDecisionModel.build_dataset(_clef_rows(4), tokenizer, model)
+    assert report["skipped"] == 0
+    fixed = decision.ClefDataCollator(tokenizer.pad_token_id)
+    shuffled = decision.ClefDataCollator(
+        tokenizer.pad_token_id, tokenizer = tokenizer, max_len = 2048, permute_fields = True, seed = 1
+    )
+    orders = set()
+    for _ in range(8):
+        batch = shuffled(items[:1])
+        record = batch["records"][0]
+        orders.add(tuple(q.question_id for q in record.questions))
+        by_name = dict(zip(items[0]["source"]["questions"], items[0]["targets"]))
+        for row, question in enumerate(record.questions):
+            assert batch["target"][row, : len(question.option_ids)].tolist() == by_name[question.question_id]
+            assert bool(batch["ordinal"][row]) == (question.question_type == 2)
+    assert len(orders) > 1
+    assert fixed(items[:1])["records"][0] == items[0]["record"]
 
 
 def test_a_failed_save_leaves_the_previous_laya_checkpoint_loadable(checkpoint, tmp_path, monkeypatch):

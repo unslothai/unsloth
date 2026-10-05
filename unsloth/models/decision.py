@@ -22,7 +22,6 @@ from pathlib import Path
 from typing import Callable, Optional
 
 import torch
-from accelerate.utils import DistributedType
 from transformers import Trainer, TrainingArguments
 from transformers.training_args import ParallelMode
 
@@ -38,6 +37,8 @@ HOLDOUT_MAX = 400
 MIN_CALIBRATION_ITEMS = 10
 HEAD_LEARNING_RATE = 1e-4
 QUESTION_TYPES = ("choice", "score", "noul")
+# DecisionTrainer defaults for Clef; every key is also a DecisionTrainer argument.
+CLEF_RECIPE = {}
 _FILES = ("rl_agent_config.json", "model.safetensors")
 _DIRS = ("encoder", "tokenizer")
 _CLEF_HEAD_FILES = ("joint_head.safetensors", "joint_head_config.json")
@@ -286,6 +287,37 @@ def _soft_cross_entropy(logits, target, mask):
     return -(target * torch.log_softmax(logits, -1)).sum(-1).mean()
 
 
+def _decision_loss(
+    logits,
+    target,
+    mask,
+    ordinal = None,
+    label_smoothing = 0.0,
+    brier_weight = 0.0,
+    ordinal_weight = 0.0,
+):
+    # Cloudflare's Clef recipe: label-smoothed cross entropy, a Brier term for calibration, and
+    # partial credit on score questions (expected distance from the gold level).
+    if not (label_smoothing or brier_weight or ordinal_weight):
+        return _soft_cross_entropy(logits, target, mask)
+    log_p = torch.log_softmax(logits.float().masked_fill(~mask, -1e4), -1)
+    smoothed = target
+    if label_smoothing:
+        uniform = mask.float() / mask.sum(-1, keepdim = True).clamp(min = 1)
+        smoothed = (1.0 - label_smoothing) * target + label_smoothing * uniform
+    loss = -(smoothed * log_p).sum(-1).mean()
+    p = log_p.exp()
+    if brier_weight:
+        loss = loss + brier_weight * ((p - target) ** 2 * mask).sum(-1).mean()
+    if ordinal_weight and ordinal is not None and ordinal.any():
+        levels = torch.arange(p.shape[-1], device = p.device, dtype = p.dtype)
+        distance = (levels[:, None] - levels[None, :]).abs()
+        span = (mask.sum(-1) - 1).clamp(min = 1).to(p.dtype)
+        expected = torch.einsum("ri,ij,rj->r", p, distance, target) / span
+        loss = loss + ordinal_weight * (expected * ordinal).sum() / ordinal.sum()
+    return loss
+
+
 class DecisionDataCollator:
     def __init__(self, pad_token_id: int):
         self.pad_token_id = pad_token_id
@@ -313,10 +345,49 @@ class DecisionDataCollator:
 
 class ClefDataCollator:
     # One row per record: every question of the record is scored jointly, as Clef serves them.
-    def __init__(self, pad_token_id: int):
+    # permute_fields re-encodes each training record with its fields shuffled, as Cloudflare's
+    # training data permutes field order; evaluation always keeps the dataset's order.
+    def __init__(
+        self,
+        pad_token_id: int,
+        tokenizer = None,
+        max_len = None,
+        permute_fields = False,
+        seed = 3407,
+    ):
         self.pad_token_id = pad_token_id
+        self.tokenizer, self.max_len = getattr(tokenizer, "tokenizer", tokenizer), max_len
+        self.permute_fields = permute_fields and tokenizer is not None
+        self.random = random.Random(seed)
+
+    def _permuted(self, item) -> dict:
+        from .clef import encode_record
+
+        order = list(range(len(item["targets"])))
+        self.random.shuffle(order)
+        names = list(item["source"]["questions"])
+        questions = {names[i]: item["source"]["questions"][names[i]] for i in order}
+        try:
+            record = encode_record(
+                self.tokenizer,
+                {"state": item["source"]["state"], "questions": questions},
+                max_length = self.max_len,
+            )
+        except ValueError:
+            return item
+        return {
+            **item,
+            "input_ids": list(record.input_ids),
+            "record": record,
+            "qtypes": [item["qtypes"][i] for i in order],
+            "targets": [item["targets"][i] for i in order],
+        }
 
     def __call__(self, items: list) -> dict:
+        from .clef import QUESTION_TYPES as CLEF_TYPES
+
+        if self.permute_fields:
+            items = [self._permuted(item) if "source" in item else item for item in items]
         rows, length = len(items), max(len(item["input_ids"]) for item in items)
         targets = [target for item in items for target in item["targets"]]
         options = max(len(target) for target in targets)
@@ -326,6 +397,10 @@ class ClefDataCollator:
             "records": [item["record"] for item in items],
             "marker_mask": torch.zeros((len(targets), options), dtype = torch.bool),
             "target": torch.zeros((len(targets), options), dtype = torch.float32),
+            "ordinal": torch.tensor(
+                [qtype == CLEF_TYPES["score"] for item in items for qtype in item["qtypes"]],
+                dtype = torch.bool,
+            ),
         }
         for i, item in enumerate(items):
             batch["input_ids"][i, : len(item["input_ids"])] = torch.tensor(item["input_ids"])
@@ -352,7 +427,8 @@ class ClefDecisionModel(torch.nn.Module):
             else self.encoder
         )
 
-    def forward(self, input_ids, attention_mask, records, **kwargs):
+    def forward(self, input_ids, attention_mask, records, head = None, **kwargs):
+        head = self.head if head is None else head
         backbone = self._backbone()
         text_model = backbone.model
         text_model = getattr(text_model, "language_model", text_model)
@@ -362,7 +438,7 @@ class ClefDecisionModel(torch.nn.Module):
             use_cache = False,
             return_dict = True,
         ).last_hidden_state
-        logits = self.head(
+        logits = head(
             hidden,
             input_ids,
             attention_mask,
@@ -448,6 +524,7 @@ def _clef_items(rows, tokenizer, max_len, validate, report, skip) -> list:
                 "targets": targets,
                 "labels": labels,
                 "row": index,
+                "source": {"state": state, "questions": kept},
             }
         )
     return items
@@ -779,9 +856,32 @@ class DecisionTrainer(Trainer):
         *,
         head_learning_rate: Optional[float] = None,
         tokenizer = None,
+        label_smoothing: Optional[float] = None,
+        brier_weight: Optional[float] = None,
+        ordinal_weight: Optional[float] = None,
+        kl_weight: float = 0.0,
+        permute_fields: Optional[bool] = None,
         **kwargs,
     ):
         args = copy.copy(args) if args is not None else TrainingArguments(output_dir = "tmp_trainer")
+        recipe = CLEF_RECIPE if getattr(model, "is_clef", False) else {}
+        if label_smoothing is None:
+            label_smoothing = args.label_smoothing_factor or recipe.get("label_smoothing", 0.0)
+        self.label_smoothing = float(label_smoothing)
+        self.brier_weight = float(recipe.get("brier_weight", 0.0) if brier_weight is None else brier_weight)
+        self.ordinal_weight = float(
+            recipe.get("ordinal_weight", 0.0) if ordinal_weight is None else ordinal_weight
+        )
+        self.kl_weight = float(kl_weight)
+        if permute_fields is None:
+            permute_fields = recipe.get("permute_fields", False)
+        # Opt in: a KL penalty to the starting model (adapters off, the head as loaded), against
+        # forgetting what the base model knew outside the fine-tuning data.
+        self._reference_head = None
+        if self.kl_weight:
+            if not getattr(model, "is_clef", False):
+                raise NotImplementedError("Unsloth: kl_weight needs a Clef decision model.")
+            self._reference_head = copy.deepcopy(model.head).requires_grad_(False)
         args.remove_unused_columns = False
         # The model trains on one GPU: no DataParallel, and the batch stays per_device_train_batch_size.
         if args.parallel_mode == ParallelMode.NOT_DISTRIBUTED:
@@ -810,20 +910,38 @@ class DecisionTrainer(Trainer):
                 )
             else:
                 pad_token_id = getattr(processing_class, "tokenizer", processing_class).pad_token_id
-            kwargs["data_collator"] = (ClefDataCollator if clef else DecisionDataCollator)(
-                pad_token_id
-            )
+            if clef:
+                kwargs["data_collator"] = ClefDataCollator(
+                    pad_token_id,
+                    tokenizer = kwargs["processing_class"] or getattr(model, "_saved_temp_tokenizer", None),
+                    max_len = model.decision_config["max_len"],
+                    permute_fields = permute_fields,
+                    seed = args.seed,
+                )
+            else:
+                kwargs["data_collator"] = DecisionDataCollator(pad_token_id)
         self.head_learning_rate = head_learning_rate
         super().__init__(model = model, args = args, **kwargs)
-        # Trainer already scales the loss for accumulation, so undo accelerate scaling it again.
-        backward = self.accelerator.backward
 
-        def _backward(loss, **backward_kwargs):
-            if self.accelerator.distributed_type != DistributedType.DEEPSPEED:
-                loss = loss * self.accelerator.gradient_accumulation_steps
-            return backward(loss, **backward_kwargs)
+    @contextlib.contextmanager
+    def _dataset_field_order(self):
+        collator = self.data_collator
+        permute = getattr(collator, "permute_fields", False)
+        if permute:
+            collator.permute_fields = False
+        try:
+            yield
+        finally:
+            if permute:
+                collator.permute_fields = True
 
-        self.accelerator.backward = _backward
+    def evaluate(self, *args, **kwargs):
+        with self._dataset_field_order():
+            return super().evaluate(*args, **kwargs)
+
+    def predict(self, *args, **kwargs):
+        with self._dataset_field_order():
+            return super().predict(*args, **kwargs)
 
     def _get_train_sampler(self, train_dataset = None):
         dataset = self.train_dataset if train_dataset is None else train_dataset
@@ -842,8 +960,26 @@ class DecisionTrainer(Trainer):
         num_items_in_batch = None,
     ):
         target = inputs.pop("target")
+        ordinal = inputs.pop("ordinal", None)
         logits, _ = model(**inputs)
-        loss = _soft_cross_entropy(logits, target, inputs["marker_mask"])
+        mask = inputs["marker_mask"]
+        loss = _decision_loss(
+            logits,
+            target,
+            mask,
+            ordinal,
+            self.label_smoothing,
+            self.brier_weight,
+            self.ordinal_weight,
+        )
+        if self._reference_head is not None:
+            unwrapped = self.accelerator.unwrap_model(model)
+            with torch.no_grad(), unwrapped.encoder.disable_adapter():
+                reference, _ = unwrapped(**inputs, head = self._reference_head)
+            log_ref = torch.log_softmax(reference.float().masked_fill(~mask, -1e4), -1)
+            log_p = torch.log_softmax(logits.float().masked_fill(~mask, -1e4), -1)
+            kl = (log_ref.exp() * (log_ref - log_p) * mask).sum(-1).mean()
+            loss = loss + self.kl_weight * kl
         return (loss, {"loss": loss, "logits": logits}) if return_outputs else loss
 
     def create_optimizer(self, model = None):
@@ -901,16 +1037,20 @@ def _logits(
 def _metrics(logits, items, temperatures) -> dict:
     import numpy as np
 
-    conf, correct, loss = [], [], []
+    conf, correct, loss, records = [], [], [], {}
     for z, item, temperature in zip(logits, items, temperatures):
         log_p = torch.log_softmax(z / temperature, -1)
         conf.append(float(log_p.exp().max()))
         correct.append(float(int(log_p.argmax()) == item["label"]))
         loss.append(float(-(torch.tensor(item["target"]) * log_p).sum()))
+        row = item.get("row", ("item", len(correct)))
+        records[row] = records.get(row, True) and bool(correct[-1])
     return {
         "accuracy": float(np.mean(correct)),
         "ece": _laya().common.ece_score(np.array(conf), np.array(correct)),
         "loss": float(np.mean(loss)),
+        # Every question of a row right, the record-level precision Cloudflare rewards.
+        "record_accuracy": float(np.mean(list(records.values()))),
     }
 
 
