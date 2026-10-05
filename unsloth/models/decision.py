@@ -90,32 +90,56 @@ def is_clef_checkpoint(folder) -> bool:
     return all((folder / name).is_file() for name in ("config.json", *_CLEF_HEAD_FILES))
 
 
+def _is_clef_repo(model_name, prefix, token, revision) -> Optional[bool]:
+    # Asked up front: Unsloth's download wrapper rejects a snapshot that lacks an exact file it was
+    # asked for, so a Laya pattern on a Clef repo (or the reverse) would fail as "incomplete".
+    from huggingface_hub import HfApi, constants
+
+    if constants.HF_HUB_OFFLINE:
+        return None
+    try:
+        files = HfApi(token = token).list_repo_files(model_name, revision = revision)
+    except Exception:
+        return None
+    return prefix + _CLEF_HEAD_FILES[1] in files
+
+
 def _checkpoint_folder(model_name, subfolder, token, revision, local_files_only) -> Path:
     root = Path(model_name).expanduser()
     if not root.is_dir():
+        from huggingface_hub import snapshot_download as cached_snapshot
+
         try:
             from unsloth_zoo.hf_xet_fallback import (
                 snapshot_download_with_xet_fallback as snapshot_download,
             )
         except ImportError:
-            from huggingface_hub import snapshot_download
+            snapshot_download = cached_snapshot
         prefix = f"{subfolder}/" if subfolder else ""
-        download = functools.partial(
-            snapshot_download,
-            model_name,
-            token = token,
-            revision = revision,
-            local_files_only = local_files_only,
-        )
+        laya = [prefix + name for name in _FILES] + [f"{prefix}{name}/*" for name in _DIRS]
+        clef = None if local_files_only else _is_clef_repo(model_name, prefix, token, revision)
+        if clef is None:
+            # Offline: the cache already holds one layout or the other.
+            root = Path(
+                cached_snapshot(
+                    model_name,
+                    token = token,
+                    revision = revision,
+                    local_files_only = True,
+                    allow_patterns = laya + [prefix + "*.json"],
+                )
+            )
+            clef = (root / prefix / _CLEF_HEAD_FILES[1]).is_file()
         # Laya repos hold several checkpoints in subfolders, so only the asked one is fetched.
         root = Path(
-            download(
-                allow_patterns = [prefix + name for name in (*_FILES, _CLEF_HEAD_FILES[1])]
-                + [f"{prefix}{name}/*" for name in _DIRS]
+            snapshot_download(
+                model_name,
+                token = token,
+                revision = revision,
+                local_files_only = local_files_only,
+                allow_patterns = [prefix + "*"] if clef else laya,
             )
         )
-        if (root / prefix / _CLEF_HEAD_FILES[1]).is_file():
-            root = Path(download(allow_patterns = [prefix + "*"]))
     folder = root / subfolder if subfolder else root
     if not is_decision_checkpoint(folder):
         raise ValueError(
