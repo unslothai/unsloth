@@ -1237,3 +1237,28 @@ def test_decision_forward_never_picks_cudnn_attention(checkpoint, tmp_path):
     trainer.compute_loss(model, batch)
     decision._logits(model, items, tokenizer.pad_token_id)
     assert cudnn and not any(cudnn)
+
+
+
+
+def test_logits_batch_similar_lengths_and_keep_the_callers_order(checkpoint):
+    model, tokenizer = FastDecisionModel.from_pretrained(
+        str(checkpoint), full_finetuning = True, use_gradient_checkpointing = False
+    )
+    items, _ = FastDecisionModel.build_dataset([_row(i) for i in range(4)], tokenizer, model)
+    assert len({len(item["input_ids"]) for item in items}) > 1
+    widths = []
+    forward = model.forward
+
+    def spy(*args, **kwargs):
+        widths.append(kwargs["input_ids"].shape[1])
+        return forward(*args, **kwargs)
+
+    model.forward = spy
+    batched = decision._logits(model, items, tokenizer.pad_token_id, batch_size = 3)
+    assert widths == sorted(widths)
+    model.forward = forward
+    for item, logits in zip(items, batched):
+        alone = decision._logits(model, [item], tokenizer.pad_token_id)[0]
+        assert logits.shape == (len(item["markers"]),)
+        torch.testing.assert_close(logits, alone, rtol = 2e-2, atol = 2e-2)

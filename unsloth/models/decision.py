@@ -1098,16 +1098,20 @@ def _logits(
     collate = DecisionDataCollator(pad_token_id)
     was_training = model.training
     model.eval()
-    out = []
+    # Similar lengths share a batch, so little is padded; logits go back in the callers' order.
+    order = sorted(range(len(items)), key = lambda i: len(items[i]["input_ids"]))
+    out = [None] * len(items)
     for start in range(0, len(items), batch_size):
-        chunk = items[start : start + batch_size]
+        indices = order[start : start + batch_size]
+        chunk = [items[i] for i in indices]
         batch = collate(chunk)
         batch.pop("target")
         autocast = torch.autocast(device.type, dtype = amp_dtype, enabled = amp_dtype is not None)
         with autocast, _no_cudnn_attention():
             logits, _ = model(**{k: v.to(device) for k, v in batch.items()})
         logits = logits.float().cpu()
-        out.extend(logits[row, : len(item["markers"])] for row, item in enumerate(chunk))
+        for row, i in enumerate(indices):
+            out[i] = logits[row, : len(items[i]["markers"])]
     model.train(was_training)
     return out
 
