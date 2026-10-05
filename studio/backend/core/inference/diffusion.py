@@ -163,7 +163,7 @@ from .diffusion_memory import (
 from .diffusion_torchao_patches import install_torchao_int_mm_patch
 from .image_orientation import exif_upright
 from .mcp_images import flattened_rgb
-from .media_decode_phase import decode_phase
+from .media_decode_phase import decode_phase, denoise_phase
 from .diffusion_speed import (
     SPEED_DEFAULT,
     SPEED_EAGER,
@@ -1173,8 +1173,10 @@ class _GenState:
     first_step_at: float = 0.0
     # Computed once per step (in the callback) so it's stable between polls.
     eta_seconds: Optional[float] = None
-    # "decode" once pipe() enters its decoder, which runs after the last step callback.
-    phase: str = "denoise"
+    # encode -> denoise (pipe() entered its loop) -> decode (pipe() entered its decoder).
+    phase: str = "encode"
+    preview: Optional[str] = None
+    preview_seq: int = 0
 
 
 def _estimate_eta(total_steps: int, step: int, first_step_at: float, now: float) -> Optional[float]:
@@ -9368,6 +9370,8 @@ class DiffusionBackend:
         # load_identity() of the caller's status() read; refuse rather than run a different load (#9448)
         expected_load: Optional[LoadIdentity] = None,
         allow_oversized: bool = False,
+        # None = on unless UNSLOTH_DIFFUSION_PREVIEW=0.
+        live_preview: Optional[bool] = None,
     ) -> dict[str, Any]:
         import torch
         from PIL import Image
@@ -9838,17 +9842,96 @@ class DiffusionBackend:
                 static_skip = state.transformer_cache == TC_STATIC
                 static_chunks_run = 0
 
-                def _on_step(pipe, step_index, timestep, callback_kwargs):
-                    if static_skip:
-                        mark_step_end(state.pipe)
+                def _publish_preview(
+                    url: str,
+                    seq: int,
+                    gen = gen,
+                ) -> None:
+                    gen.preview = url
+                    gen.preview_seq = seq
+
+                # Started inside the try below, whose exits finish() it: its worker thread polls until then.
+                previewer = None
+
+                def _start_previewer():
+                    if "callback_on_step_end" not in call_params:
+                        return None
+                    from .diffusion_preview import LatentPreviewer
+
+                    try:
+                        preview_w, preview_h = _compile_shape_dims(
+                            workflow, init_pil, width, height, fam
+                        )
+                    except Exception:  # noqa: BLE001 - no size, no preview
+                        preview_w = preview_h = None
+                    return LatentPreviewer.create(
+                        family = state.family.name,
+                        requested = live_preview,
+                        height = preview_h,
+                        width = preview_w,
+                        device = state.device,
+                        publish = _publish_preview,
+                        total_steps = steps,
+                    )
+
+                # Count steps the GPU FINISHED (per-step CUDA events, as the video path): under CUDA graphs the host
+                # enqueues all steps early, and a host count read N/N "decode" mid-denoise.
+                from .video import (
+                    _BOUNDARY_MARK_ATTEMPTS,
+                    _BOUNDARY_MARK_RETRY_SECONDS,
+                    _CompletedStepTicker,
+                    _completed_step_poller,
+                    _hold_off_cuda_graph_capture,
+                )
+
+                # Replaced per chunk: a finished chunk's boundary must not end the next one's denoise.
+                chunk_ticker = [_CompletedStepTicker(steps)]
+
+                def _report(done_in_chunk: int) -> None:
+                    if gen.phase not in ("encode", "denoise"):
+                        return
+                    done = steps_done[0] + max(0, min(int(done_in_chunk), steps))
+                    if done <= gen.step:
+                        return
+                    gen.phase = "denoise"
                     # Monotonic: a wall-clock adjustment (NTP) mid-denoise would skew the ETA.
                     now = time.monotonic()
-                    gen.step = steps_done[0] + step_index + 1
+                    gen.step = done
                     if gen.first_step_at == 0.0:
                         gen.first_step_at = now
                     gen.eta_seconds = _estimate_eta(
                         gen.total_steps, gen.step, gen.first_step_at, now
                     )
+
+                def _flip_to_decode(gen = gen) -> None:
+                    # The chunk's denoise is provably over: complete it even if a skipped event left the count short.
+                    _report(steps)
+                    gen.phase = "decode"
+                    gen.eta_seconds = None
+
+                def _pump() -> None:
+                    if gen.phase not in ("encode", "denoise"):
+                        return
+                    ticker = chunk_ticker[0]
+                    if ticker.boundary_marked and ticker.boundary_reached():
+                        _flip_to_decode()
+                        return
+                    _report(ticker.completed())
+
+                def _on_step(pipe, step_index, timestep, callback_kwargs):
+                    if static_skip:
+                        mark_step_end(state.pipe)
+                    if gen.phase == "encode":
+                        gen.phase = "denoise"
+                    if previewer is not None:
+                        previewer.on_step(
+                            callback_kwargs.get("latents"), getattr(pipe, "scheduler", None)
+                        )
+                    # Runs after scheduler.step, so this step's update is already enqueued.
+                    with _hold_off_cuda_graph_capture() as clear:
+                        if clear:
+                            chunk_ticker[0].record(step_index + 1)
+                            _report(chunk_ticker[0].completed())
                     if cancel.is_set():
                         pipe._interrupt = True
                     return callback_kwargs
@@ -9893,6 +9976,7 @@ class DiffusionBackend:
                 graphs_before = fresh_compile_count()
                 compile_cache.note_use(state.compile_cache_ctx)
                 try:
+                    previewer = _start_previewer()
                     pending = list(chunks)
                     while pending:
                         chunk = pending.pop(0)
@@ -9948,12 +10032,28 @@ class DiffusionBackend:
                             # diffusers resets FBCache only after a SUCCESSFUL __call__; a raised call leaves a stale residual.
                             self._reset_step_cache(state.pipe)
                         protect_ctx = protect_generation(pipe, denoise_steps, logger = logger)
-                        # Per chunk: a later chunk denoises again after an earlier one decoded.
-                        gen.phase = "denoise"
+                        # Per chunk: a later chunk encodes again after an earlier one decoded.
+                        gen.phase = "encode"
 
-                        def _enter_decode_phase(gen = gen) -> None:
-                            gen.phase = "decode"
-                            gen.eta_seconds = None
+                        def _enter_denoise_phase(gen = gen) -> None:
+                            if gen.phase == "encode":
+                                gen.phase = "denoise"
+
+                        chunk_ticker[0] = _CompletedStepTicker(steps)
+
+                        def _enter_decode_phase() -> None:
+                            """The decoder was entered: a HOST position, possibly far ahead of the GPU. Mark the
+                            boundary in the stream and let the poller flip once the GPU reaches it; with no event
+                            to wait on (CPU, MPS) there is no queue to be ahead of, so flip now."""
+                            marked = False
+                            for _ in range(_BOUNDARY_MARK_ATTEMPTS):
+                                with _hold_off_cuda_graph_capture() as clear:
+                                    if clear:
+                                        marked = chunk_ticker[0].mark_boundary()
+                                        break
+                                time.sleep(_BOUNDARY_MARK_RETRY_SECONDS)
+                            if not marked:
+                                _flip_to_decode()
 
                         try:
                             # torchao aten.to fails torch's aliasing check under inference_mode once offloaded.
@@ -9964,11 +10064,15 @@ class DiffusionBackend:
                                     else torch.inference_mode()
                                 ),
                                 protect_ctx,
+                                denoise_phase(pipe, _enter_denoise_phase),
                                 decode_phase(pipe, _enter_decode_phase),
+                                _completed_step_poller(_pump),
                             ):
                                 out = render_thread.run(
                                     "diffusion", lambda: pipe(**chunk_kwargs).images
                                 )
+                            if gen.phase in ("encode", "denoise"):
+                                _flip_to_decode()
                         except Exception as exc:  # noqa: BLE001 - reraised unless a splittable OOM
                             oom = is_oom_error(exc)
                             if oom:
@@ -10007,6 +10111,8 @@ class DiffusionBackend:
                         chunk_shapes.append(len(chunk))
                         steps_done[0] += steps
                 except BaseException:
+                    if previewer is not None:
+                        previewer.finish()
                     # A cancelled or failed render may already have generalised a graph that the next render reuses
                     # without compiling, so the success path below would never see the count grow: dirty it now.
                     try:
@@ -10018,6 +10124,8 @@ class DiffusionBackend:
                     except Exception:  # noqa: BLE001 - bookkeeping must not mask the render's own error
                         pass
                     raise
+                if previewer is not None:
+                    previewer.finish()
                 if static_skip:
                     logger.debug("diffusion.step_skip: %s", static_skip_stats(state.pipe))
                 # Keep progress ACTIVE through the post-denoise work: the route persists the image after this returns,
@@ -10156,6 +10264,8 @@ class DiffusionBackend:
             "fraction": gen.step / gen.total_steps,  # step is 1..total, never over 1.0
             "eta_seconds": gen.eta_seconds,
             "phase": gen.phase,
+            "preview": gen.preview,
+            "preview_seq": gen.preview_seq,
         }
 
     def cancel_generate(self, expected_account: Optional[str] = None) -> bool:
