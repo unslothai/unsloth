@@ -6991,6 +6991,8 @@ def test_vibe_env(tmp_path):
     ]
     assert env["VIBE_ACTIVE_MODEL"] == start._VIBE_MODEL_ALIAS
     assert env["VIBE_ENABLE_TELEMETRY"] == "false"
+    # An inherited allowed_models could otherwise fall back to a cloud model.
+    assert json.loads(env["VIBE_ALLOWED_MODELS"]) == []
 
 
 def test_vibe_env_carries_temperature_and_odd_model_ids():

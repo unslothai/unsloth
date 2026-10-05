@@ -5097,6 +5097,8 @@ def _vibe_env(
         "VIBE_PROVIDERS": json.dumps([provider]),
         "VIBE_MODELS": json.dumps([entry]),
         "VIBE_ACTIVE_MODEL": _VIBE_MODEL_ALIAS,
+        # A user or project allowed_models that excludes this model would fall back to a cloud one.
+        "VIBE_ALLOWED_MODELS": "[]",
         "VIBE_ENABLE_TELEMETRY": "false",
         "VIBE_ENABLE_UPDATE_CHECKS": "false",
         "VIBE_ENABLE_AUTO_UPDATE": "false",
