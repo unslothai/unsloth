@@ -2370,7 +2370,7 @@ def _stream_window_mib(pipe: Any) -> int:
         if largest <= 0:
             return -1
         return -(-largest * (prefetch_depth() + 1) // (1024 * 1024))
-    except Exception:  # noqa: BLE001 - unsizeable: callers keep the flat room
+    except Exception:  # noqa: BLE001
         return -1
 
 
@@ -2485,7 +2485,7 @@ def refine_plan_from_loaded_weights(
             elif (
                 dit_room < dit and dense_mib is None and (policy == OFFLOAD_STREAMING or stream_te)
             ):
-                # partial: the same fit as the whole tier plus the prefetch window; the encode keeps the flat room
+                # partial: the encode keeps the flat room (install_encode_release)
                 window = _stream_window_mib(pipe)
                 streamed_room = min(_streamed_dit_room_mib(memory, headroom, other, window), dit)
                 if streamed_room > dit_room:
