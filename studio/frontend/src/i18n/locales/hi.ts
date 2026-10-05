@@ -1908,6 +1908,7 @@ export const hi = {
         cpu: "CPU",
         ram: "RAM",
         disk: "डिस्क",
+        modelsDisk: "मॉडल डिस्क",
         vram: "VRAM",
         cpuCores: "{logical} लॉजिकल / {physical} फिजिकल कोर",
         currentLoad: "वर्तमान लोड",
@@ -2018,6 +2019,7 @@ export const hi = {
       storage: {
         title: "स्टोरेज",
         systemDisk: "सिस्टम डिस्क",
+        modelsDisk: "मॉडल डिस्क",
         diskUsage: "{used} उपयोग में / {total}",
         diskFree: "{free} खाली",
         modelsFolder: "मॉडल फ़ोल्डर",

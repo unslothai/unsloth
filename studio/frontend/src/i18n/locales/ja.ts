@@ -1885,6 +1885,7 @@ export const ja = {
         cpu: "CPU",
         ram: "RAM",
         disk: "ディスク",
+        modelsDisk: "モデルディスク",
         vram: "VRAM",
         cpuCores: "論理 {logical} / 物理 {physical} コア",
         currentLoad: "現在の負荷",
@@ -1996,6 +1997,7 @@ export const ja = {
       storage: {
         title: "ストレージ",
         systemDisk: "システムディスク",
+        modelsDisk: "モデルディスク",
         diskUsage: "{used} 使用中 / {total}",
         diskFree: "{free} 空き",
         modelsFolder: "モデルフォルダ",
