@@ -13,6 +13,14 @@ from hub.services.models import local_inventory
 from storage import studio_db
 
 
+@pytest.fixture(autouse = True)
+def _registrable_tmp(monkeypatch):
+    # macOS denies /private/var, where pytest keeps tmp_path.
+    from hub.storage import scan_folders
+    monkeypatch.setattr(studio_db, "_denied_path_prefixes", lambda: [])
+    monkeypatch.setattr(scan_folders, "_denied_path_prefixes", lambda: [])
+
+
 def _gguf(path: Path) -> Path:
     path.parent.mkdir(parents = True, exist_ok = True)
     path.write_bytes(b"GGUF" + b"\0" * 28)
