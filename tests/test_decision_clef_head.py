@@ -242,3 +242,21 @@ def test_compiled_head_has_no_graph_breaks_and_matches(monkeypatch):
     assert not counters["graph_break"]
     # Three batches of different shapes, one graph.
     assert counters["stats"]["unique_graphs"] == 1
+
+
+def test_autocast_matches_the_per_record_head(monkeypatch):
+    # Training runs the head under bf16 autocast: the chunked memory projection must run in bf16
+    # like the Linear it replaces, the norm and span means in fp32.
+    monkeypatch.setenv("UNSLOTH_CLEF_CHUNK", "16")
+    head, hidden, ids, mask, records, embedding = _inputs(3, torch.float32, torch.bfloat16)
+    embedding = embedding.to(torch.bfloat16)
+    grad_out = torch.randn(sum(len(r.questions) for r in records), _o(records))
+    with torch.autocast("cpu", dtype = torch.bfloat16):
+        ours = _run(head, head.forward, hidden, ids, mask, records, embedding, grad_out)
+        theirs = _run(
+            head, head.forward_per_record, hidden, ids, mask, records, embedding, grad_out
+        )
+    logits, _, grads = _max_error(ours, theirs)
+    scale = theirs[0][theirs[3]].abs().max().item()
+    assert logits <= 2e-2 * scale and grads < 5e-2
+    assert torch.equal(ours[0].argmax(-1), theirs[0].argmax(-1))

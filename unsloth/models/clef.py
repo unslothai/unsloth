@@ -5,6 +5,7 @@
 # Cloudflare's own joint_schema_model.py (Apache-2.0), vendored unmodified in unsloth/_vendor/clef;
 # this module only adds Unsloth's head forward on top of it.
 
+import contextlib
 import math
 import os
 import warnings
@@ -85,23 +86,37 @@ def _span_mask(starts, ends, begin, end, dtype):
     return inside.to(dtype)
 
 
-def _norm_pool_forward(hidden, weight, bias, memory_weight, starts, ends, eps, chunk):
+def _norm_pool_forward(hidden, weight, bias, memory_weight, starts, ends, eps, chunk, matmul_dtype):
+    # hidden_norm in fp32 one chunk of tokens at a time: only the [B, L, width] memory and the span
+    # means are kept, never the [B, L, hidden] fp32 copy. The memory projection runs in
+    # matmul_dtype, as autocast runs Cloudflare's head.
     batch, length, _ = hidden.shape
-    memory = hidden.new_empty((batch, length, memory_weight.shape[0]), dtype = weight.dtype)
+    memory = hidden.new_empty((batch, length, memory_weight.shape[0]), dtype = matmul_dtype)
     pooled = hidden.new_zeros((batch, starts.shape[1], hidden.shape[-1]), dtype = weight.dtype)
+    projection = memory_weight.to(matmul_dtype).t()
     for begin in range(0, length, chunk):
         end = min(length, begin + chunk)
         normalized = functional.layer_norm(
             hidden[:, begin:end].to(weight.dtype), weight.shape, weight, bias, eps
         )
-        memory[:, begin:end] = normalized @ memory_weight.t()
+        memory[:, begin:end] = normalized.to(matmul_dtype) @ projection
         pooled += _span_mask(starts, ends, begin, end, weight.dtype) @ normalized
     counts = (ends - starts).clamp(min = 1).unsqueeze(-1).to(weight.dtype)
     return memory, pooled / counts
 
 
 def _norm_pool_backward(
-    grad_memory, grad_pooled, hidden, weight, bias, memory_weight, starts, ends, eps, chunk
+    grad_memory,
+    grad_pooled,
+    hidden,
+    weight,
+    bias,
+    memory_weight,
+    starts,
+    ends,
+    eps,
+    chunk,
+    matmul_dtype,
 ):
     length = hidden.shape[1]
     counts = (ends - starts).clamp(min = 1).unsqueeze(-1).to(weight.dtype)
@@ -110,19 +125,22 @@ def _norm_pool_backward(
     grad_weight = torch.zeros_like(weight)
     grad_bias = torch.zeros_like(bias)
     grad_memory_weight = torch.zeros_like(memory_weight)
+    projection = memory_weight.to(matmul_dtype)
     for begin in range(0, length, chunk):
         end = min(length, begin + chunk)
         x = hidden[:, begin:end].to(weight.dtype)
         normalized, mean, rstd = torch.ops.aten.native_layer_norm(
             x, weight.shape, weight, bias, eps
         )
-        grad_chunk = grad_memory[:, begin:end].to(weight.dtype)
-        grad_normalized = grad_chunk @ memory_weight
+        grad_chunk = grad_memory[:, begin:end].to(matmul_dtype)
+        grad_normalized = (grad_chunk @ projection).to(weight.dtype)
         grad_normalized = (
             grad_normalized
             + _span_mask(starts, ends, begin, end, weight.dtype).transpose(1, 2) @ grad_pooled
         )
-        grad_memory_weight += grad_chunk.flatten(0, 1).t() @ normalized.flatten(0, 1)
+        grad_memory_weight += (
+            grad_chunk.flatten(0, 1).t() @ normalized.to(matmul_dtype).flatten(0, 1)
+        ).to(memory_weight.dtype)
         grad_x, grad_w, grad_b = torch.ops.aten.native_layer_norm_backward(
             grad_normalized, x, weight.shape, mean, rstd, weight, bias, [True, True, True]
         )
@@ -142,15 +160,18 @@ def _norm_pool_op(
     ends: torch.Tensor,
     eps: float,
     chunk: int,
+    matmul_dtype: torch.dtype,
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    return _norm_pool_forward(hidden, weight, bias, memory_weight, starts, ends, eps, chunk)
+    return _norm_pool_forward(
+        hidden, weight, bias, memory_weight, starts, ends, eps, chunk, matmul_dtype
+    )
 
 
 @_norm_pool_op.register_fake
-def _(hidden, weight, bias, memory_weight, starts, ends, eps, chunk):
+def _(hidden, weight, bias, memory_weight, starts, ends, eps, chunk, matmul_dtype):
     batch, length, size = hidden.shape
     return (
-        hidden.new_empty((batch, length, memory_weight.shape[0]), dtype = weight.dtype),
+        hidden.new_empty((batch, length, memory_weight.shape[0]), dtype = matmul_dtype),
         hidden.new_empty((batch, starts.shape[1], size), dtype = weight.dtype),
     )
 
@@ -167,14 +188,37 @@ def _norm_pool_backward_op(
     ends: torch.Tensor,
     eps: float,
     chunk: int,
+    matmul_dtype: torch.dtype,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
     return _norm_pool_backward(
-        grad_memory, grad_pooled, hidden, weight, bias, memory_weight, starts, ends, eps, chunk
+        grad_memory,
+        grad_pooled,
+        hidden,
+        weight,
+        bias,
+        memory_weight,
+        starts,
+        ends,
+        eps,
+        chunk,
+        matmul_dtype,
     )
 
 
 @_norm_pool_backward_op.register_fake
-def _(grad_memory, grad_pooled, hidden, weight, bias, memory_weight, starts, ends, eps, chunk):
+def _(
+    grad_memory,
+    grad_pooled,
+    hidden,
+    weight,
+    bias,
+    memory_weight,
+    starts,
+    ends,
+    eps,
+    chunk,
+    matmul_dtype,
+):
     return (
         torch.empty_like(hidden),
         torch.empty_like(weight),
@@ -184,9 +228,9 @@ def _(grad_memory, grad_pooled, hidden, weight, bias, memory_weight, starts, end
 
 
 def _norm_pool_setup(ctx, inputs, output):
-    hidden, weight, bias, memory_weight, starts, ends, eps, chunk = inputs
+    hidden, weight, bias, memory_weight, starts, ends, eps, chunk, matmul_dtype = inputs
     ctx.save_for_backward(hidden, weight, bias, memory_weight, starts, ends)
-    ctx.eps, ctx.chunk = eps, chunk
+    ctx.eps, ctx.chunk, ctx.matmul_dtype = eps, chunk, matmul_dtype
 
 
 def _norm_pool_grad(ctx, grad_memory, grad_pooled):
@@ -202,14 +246,19 @@ def _norm_pool_grad(ctx, grad_memory, grad_pooled):
         ends,
         ctx.eps,
         ctx.chunk,
+        ctx.matmul_dtype,
     )
-    return (*grads, None, None, None, None)
+    return (*grads, None, None, None, None, None)
 
 
 _norm_pool_op.register_autograd(_norm_pool_grad, setup_context = _norm_pool_setup)
 
 
 def norm_pool(hidden, norm, memory_projection, starts, ends, chunk):
+    # Custom ops skip autocast, so ask it which dtype Linear would run in.
+    matmul_dtype = norm.weight.dtype
+    if torch.is_autocast_enabled(hidden.device.type):
+        matmul_dtype = torch.get_autocast_dtype(hidden.device.type)
     return _norm_pool_op(
         hidden,
         norm.weight,
@@ -219,6 +268,7 @@ def norm_pool(hidden, norm, memory_projection, starts, ends, chunk):
         ends,
         norm.eps,
         chunk,
+        matmul_dtype,
     )
 
 
@@ -297,6 +347,35 @@ def _decode(layer, fields, memory, field_padding, padding):
     return layer(
         fields, memory, tgt_key_padding_mask = field_padding, memory_key_padding_mask = padding
     )
+
+
+def _pristine_checkpoint():
+    module = torch.utils.checkpoint
+    for candidate in (
+        getattr(module, "_unsloth_pristine_checkpoint", None),
+        module.checkpoint,
+        getattr(module, "_old_checkpoint", None),
+    ):
+        if getattr(candidate, "__module__", None) == "torch.utils.checkpoint":
+            return candidate
+    return None
+
+
+@contextlib.contextmanager
+def _torch_checkpoint(enabled):
+    # Unsloth swaps torch.utils.checkpoint.checkpoint for its offloaded one, which rejects
+    # use_reentrant = False and which dynamo does not recognise as activation checkpointing
+    # (it matches the module attribute by identity), so the head runs under torch's own.
+    module, pristine = torch.utils.checkpoint, _pristine_checkpoint() if enabled else None
+    current = module.checkpoint
+    if pristine is None or pristine is current:
+        yield
+        return
+    module.checkpoint = pristine
+    try:
+        yield
+    finally:
+        module.checkpoint = current
 
 
 def _maybe_checkpoint(function, checkpoint, *args):
@@ -416,16 +495,17 @@ class JointSchemaHead(ReferenceJointSchemaHead):
         chunk = int(os.environ.get("UNSLOTH_CLEF_CHUNK", "2048"))
         function = _compiled_logits(hidden_states.device) if training else None
         args = (self, hidden_states, output_embedding_weight, layout, checkpoint, chunk)
-        if function is not None:
-            try:
-                flat = function(*args)
-            except Exception as error:
-                if isinstance(error, torch.cuda.OutOfMemoryError):
-                    raise
-                _disable_compile(error)
+        with _torch_checkpoint(checkpoint):
+            if function is not None:
+                try:
+                    flat = function(*args)
+                except Exception as error:
+                    if isinstance(error, torch.cuda.OutOfMemoryError):
+                        raise
+                    _disable_compile(error)
+                    flat = batched_logits(*args)
+            else:
                 flat = batched_logits(*args)
-        else:
-            flat = batched_logits(*args)
         return ClefLogits(flat, records)
 
     def forward_per_record(
