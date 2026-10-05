@@ -11,7 +11,8 @@ _BACKEND_DIR = str(Path(__file__).resolve().parent.parent)
 if _BACKEND_DIR not in sys.path:
     sys.path.insert(0, _BACKEND_DIR)
 
-from core.inference.llama_cpp import _note_before_envelopes
+from core.inference import tools
+from core.inference.llama_cpp import _is_window_notice, _note_before_envelopes
 from core.inference.mcp_images import (
     SENTINEL,
     UNPARSED_IMAGES_TEXT,
@@ -33,6 +34,22 @@ FITTED = (
 )
 # The saved shape from #11358: the notice landed after the array.
 CORRUPTED = starved_result_message(TOOL, FITTED)
+
+
+def test_the_fitter_leaves_the_shape_the_starved_branch_fires_on(monkeypatch):
+    raw = "page text\n" + "x" * 50_000 + FITTED[FITTED.index("\n[1 image returned]") :]
+    monkeypatch.setattr(tools, "_loaded_context_tokens", lambda: 8192)
+    token = tools._REQUEST_RESULT_BUDGET.set(200)
+    try:
+        fitted = tools._fit_result_to_room(raw, TOOL)
+    finally:
+        tools._REQUEST_RESULT_BUDGET.reset(token)
+    assert _is_window_notice(fitted)
+    assert split_images(fitted)[1][0]["data"] == BASE64
+    assert split_images(starved_result_message(TOOL, fitted))[1] == []
+    noted = _note_before_envelopes(fitted, TOOL, lambda body: starved_result_message(TOOL, body))
+    assert split_images(noted)[1][0]["data"] == BASE64
+    assert BASE64[:40] not in strip_result_for_model(noted, TOOL)
 
 
 def test_appended_notice_is_what_broke_the_envelope():
