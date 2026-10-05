@@ -59,6 +59,9 @@ const pages = new Map<string, { url: string; title: string; favicon: string | nu
 // Where a closed view's page had got to, so it reopens there rather than at the entry's address.
 const resume = new Map<string, { entry: number; url: string }>();
 let newTabTimes: number[] = [];
+// The view on screen, as last shown; menus and dialogs over the page hide it.
+let shownView: string | null = null;
+const shownWaiters = new Set<() => void>();
 // Bumped when the panel unmounts, so a call still in flight leaves the closed views alone.
 let generation = 0;
 
@@ -315,8 +318,29 @@ function pruneViews(shown: string | null): void {
   }
 }
 
+function setShownView(tabId: string | null): void {
+  shownView = tabId;
+  for (const wake of [...shownWaiters]) wake();
+}
+
+/** Resolves true once `tabId`'s view is on screen (a menu over it has closed), false on timeout. */
+export function whenNativeViewShown(tabId: string, timeoutMs = 1500): Promise<boolean> {
+  if (shownView === tabId) return Promise.resolve(true);
+  return new Promise((resolve) => {
+    const finish = (shown: boolean) => {
+      shownWaiters.delete(wake);
+      clearTimeout(timer);
+      resolve(shown);
+    };
+    const wake = () => shownView === tabId && finish(true);
+    const timer = setTimeout(() => finish(false), timeoutMs);
+    shownWaiters.add(wake);
+  });
+}
+
 async function applyView(desired: Desired): Promise<void> {
   if (!desired) {
+    setShownView(null);
     await call("browser_view_show", { tabId: null });
     return;
   }
@@ -333,6 +357,7 @@ async function applyView(desired: Desired): Promise<void> {
   try {
     await call("browser_view_show", { tabId, url: resumed?.entry === entry ? resumed.url : url, bounds });
     if (stale()) return;
+    setShownView(tabId);
     // A new address for an existing view. Recorded once it went through, so Retry tries again.
     if (existed && loaded !== entry) {
       await call("browser_view_navigate", { tabId, url });
@@ -381,6 +406,7 @@ function apply(desired: Desired): void {
 let epoch = 0;
 onNativeViewsClosed(() => {
   for (const tabId of [...views.keys()]) keepReachedPage(tabId);
+  setShownView(null);
   views.clear();
   zooms.clear();
   icons.clear();
@@ -436,6 +462,7 @@ export function startNativeViews(): () => void {
     // Closed, not just hidden: a hidden page would keep running scripts and playing media.
     generation += 1;
     pending = null;
+    setShownView(null);
     for (const tabId of [...views.keys()]) closeView(tabId);
   };
 }

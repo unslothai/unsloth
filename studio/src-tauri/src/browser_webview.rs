@@ -118,6 +118,13 @@ pub struct ViewBounds {
     viewport_width: f64,
 }
 
+impl ViewBounds {
+    /// `(x, y, width, height, viewport_width)`, in the caller's CSS pixels.
+    pub(crate) fn parts(&self) -> (f64, f64, f64, f64, f64) {
+        (self.x, self.y, self.width, self.height, self.viewport_width)
+    }
+}
+
 pub(crate) fn navigation_allowed(url: &Url) -> bool {
     match url.scheme() {
         // Documents a page makes itself, with its origin or none.
@@ -361,7 +368,7 @@ fn tab_of(label: &str) -> Option<&str> {
     label.strip_prefix(LABEL_PREFIX)
 }
 
-fn require_main<R: Runtime>(caller: &Webview<R>) -> Result<(), String> {
+pub(crate) fn require_main<R: Runtime>(caller: &Webview<R>) -> Result<(), String> {
     if caller.label() == MAIN_WEBVIEW {
         Ok(())
     } else {
@@ -381,7 +388,7 @@ fn emit<R: Runtime>(app: &AppHandle<R>, event: BrowserEvent) {
     let _ = app.emit_to(MAIN_WEBVIEW, EVENT, event);
 }
 
-fn view<R: Runtime>(app: &AppHandle<R>, tab_id: &str) -> Result<Webview<R>, String> {
+pub(crate) fn view<R: Runtime>(app: &AppHandle<R>, tab_id: &str) -> Result<Webview<R>, String> {
     let label = label_for(tab_id)?;
     app.get_webview(&label).ok_or_else(|| "no such tab".into())
 }

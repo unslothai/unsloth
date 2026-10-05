@@ -2,6 +2,7 @@
 
 mod app_layout;
 mod app_menu;
+mod browser_capture;
 mod browser_proxy;
 mod browser_webview;
 mod commands;
@@ -2209,6 +2210,8 @@ fn main() {
             browser_webview::browser_view_find,
             browser_webview::browser_view_close,
             browser_webview::browser_view_clear_data,
+            browser_capture::browser_capture,
+            browser_capture::browser_view_print,
             set_training_active,
             set_renderer_activity,
             app_layout::has_initialized_app_window_layout,

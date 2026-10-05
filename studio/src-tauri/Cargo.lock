@@ -5695,6 +5695,7 @@ dependencies = [
  "arboard",
  "base64 0.23.1",
  "block2",
+ "cairo-rs",
  "dirs 6.0.0",
  "elevated-command",
  "fix-path-env",

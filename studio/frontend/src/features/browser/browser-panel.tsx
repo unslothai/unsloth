@@ -104,7 +104,7 @@ import {
   useState,
 } from "react";
 import { fileNameFromUrl, hostOf, resolveAddress } from "./address";
-import { OtherSurfaceError, canScreenshot, printFramePage, screenshotElement } from "./capture";
+import { OtherSurfaceError, canPrintFrames, canScreenshot, printPage, screenshotPage } from "./capture";
 import { type BrowserDownload, saveBrowserDownload } from "./downloads";
 import { BROWSER_FIND_TARGET, registerBrowserFind } from "./find";
 import { ClearBrowsingDataDialog } from "./clear-data-dialog";
@@ -1102,7 +1102,7 @@ function ZoomControl({ tab }: { tab: BrowserTab | undefined }) {
 async function takeScreenshot(tab: BrowserTab, page: HTMLElement, t: ReturnType<typeof useT>): Promise<void> {
   let blob: Blob | null;
   try {
-    blob = await screenshotElement(page);
+    blob = await screenshotPage(tab, page);
   } catch (error) {
     // Declining the browser's prompt is an answer, not a failure.
     if (error instanceof DOMException && error.name === "NotAllowedError") return;
@@ -1139,8 +1139,8 @@ function PanelMenu({ tab }: { tab: BrowserTab | undefined }) {
   // The star's editor opens as the menu closes; focus going back to the menu button would shut it.
   const keepFocus = useRef(false);
   const webPage = showsWebPage(tab);
-  // A framed page; a native view prints and captures outside Studio's reach.
-  const printable = webPage && !nativePage(tab);
+  // A native view prints through its engine; a framed page from a copy, where frames can print.
+  const printable = webPage && (nativePage(tab) || canPrintFrames());
   const triggerRef = useRef<HTMLButtonElement>(null);
   const store = useBrowserStore.getState();
   const mod =
@@ -1193,7 +1193,7 @@ function PanelMenu({ tab }: { tab: BrowserTab | undefined }) {
             disabled={!printable}
             onSelect={() =>
               tab &&
-              void printFramePage(tab.id).then(
+              void printPage(tab).then(
                 (printed) => printed || toast.error(t("browser.menu.printFailed")),
               )
             }
@@ -1231,9 +1231,11 @@ function PanelMenu({ tab }: { tab: BrowserTab | undefined }) {
           </DropdownMenuItem>
           {canScreenshot() ? (
             <DropdownMenuItem
-              disabled={!tab || nativePage(tab)}
+              disabled={!tab}
               onSelect={() => {
-                const page = triggerRef.current?.closest("section")?.querySelector<HTMLElement>("[data-browser-page]");
+                // The innermost page box: with the device toolbar, just the device's width.
+                const pages = triggerRef.current?.closest("section")?.querySelectorAll<HTMLElement>("[data-browser-page]");
+                const page = pages?.[pages.length - 1];
                 if (tab && page) void takeScreenshot(tab, page, t);
               }}
             >
