@@ -147,6 +147,35 @@ def test_cpt_csv_still_trains_the_text_column_not_the_id(trainer, tmp_path):
     assert list(dataset_info["dataset"]["text"]) == ["101</s>", "102</s>"]
 
 
+def test_cpt_csv_trains_the_body_column_and_keeps_the_warning(trainer, tmp_path):
+    path = tmp_path / "posts.csv"
+    path.write_text(
+        "title,body\nFirst post,The first post has a long body of text.\n"
+        "Second post,The second post has an even longer body of text.\n"
+    )
+
+    dataset_info, _ = trainer.load_and_format_dataset(None, local_datasets = [str(path)], is_cpt = True)
+
+    assert list(dataset_info["dataset"]["text"]) == [
+        "The first post has a long body of text.</s>",
+        "The second post has an even longer body of text.</s>",
+    ]
+    assert any("auto-selecting 'body'" in w for w in trainer.training_progress.warnings)
+
+
+def test_cpt_csv_with_an_id_column_trains_the_text_without_a_column_warning(trainer, tmp_path):
+    path = tmp_path / "docs.csv"
+    path.write_text("id,passage\n1,The first document.\n2,The second document.\n")
+
+    dataset_info, _ = trainer.load_and_format_dataset(None, local_datasets = [str(path)], is_cpt = True)
+
+    assert list(dataset_info["dataset"]["text"]) == [
+        "The first document.</s>",
+        "The second document.</s>",
+    ]
+    assert not any("auto-selecting" in w for w in trainer.training_progress.warnings)
+
+
 def test_csv_files_missing_a_column_still_load_together(trainer, tmp_path):
     wide = tmp_path / "a.csv"
     wide.write_text("instruction,input,output\nZip code?,Holtsville,00501\n")

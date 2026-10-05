@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from itertools import islice
 from typing import Literal, TYPE_CHECKING
 
 from .cells import typed_csv_columns
@@ -66,10 +67,20 @@ def _string_columns(dataset: Dataset) -> list[str]:
     return string_cols
 
 
-def _pick_text_column(dataset: Dataset, string_cols: list[str]) -> str:
+def _text_columns(dataset: Dataset, string_cols: list[str]) -> list[str]:
     # Every column of an uploaded CSV is text; skip one pandas would have typed, like an id.
     typed = typed_csv_columns(dataset)
-    return next((col for col in string_cols if col not in typed), string_cols[0])
+    return [col for col in string_cols if col not in typed] or string_cols
+
+
+def _pick_text_column(dataset: Dataset, text_cols: list[str]) -> str:
+    if len(text_cols) == 1:
+        return text_cols[0]
+    rows = list(islice(dataset.select_columns(text_cols), 100))
+    return max(
+        text_cols,
+        key = lambda col: sum(len(row[col].split()) for row in rows if isinstance(row[col], str)),
+    )
 
 
 def _split_scope(split_name: str | None) -> str:
@@ -147,13 +158,14 @@ def prepare_raw_text_dataset(
                 f"was found in {split_scope} (columns: {col_names})."
             )
 
-        renamed_col = _pick_text_column(dataset, string_cols)
-        if len(string_cols) > 1:
+        text_cols = _text_columns(dataset, string_cols)
+        renamed_col = _pick_text_column(dataset, text_cols)
+        if len(text_cols) > 1:
             notices.append(
                 RawTextNotice(
                     message = (
-                        f"{mode_title}: dataset has {len(string_cols)} string "
-                        f"columns ({string_cols}); auto-selecting '{renamed_col}' "
+                        f"{mode_title}: dataset has {len(text_cols)} string "
+                        f"columns ({text_cols}); auto-selecting '{renamed_col}' "
                         "as the training text. Rename the intended column to "
                         "'text' to override."
                     ),
