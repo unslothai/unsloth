@@ -289,8 +289,7 @@ export function loadedContextFields(resp: {
   };
 }
 
-// studio/backend/core/inference/llama_cpp.py _valid_cache_types minus iq4_nl, which has no CUDA/HIP
-// FlashAttention kernel and runs attention on the CPU (f16 is the UI default).
+// Matches studio/backend/core/inference/llama_cpp.py _valid_cache_types (f16 is the UI default).
 export const KV_CACHE_DTYPES = [
   "bf16",
   "q8_0",
@@ -298,8 +297,19 @@ export const KV_CACHE_DTYPES = [
   "q4_1",
   "q5_0",
   "q5_1",
+  "iq4_nl",
   "f32",
 ] as const;
+
+/** Menu entries for a llama.cpp backend. CUDA, ROCm and Metal have no iq4_nl FlashAttention kernel, so attention
+ *  runs on the CPU there; Vulkan and CPU builds run it. A selected value stays listed so the trigger can show it. */
+export function kvCacheDtypeOptions(
+  backend: string | null,
+  selected: string | null | undefined,
+): readonly string[] {
+  if (backend === "vulkan" || backend === "cpu") return KV_CACHE_DTYPES;
+  return KV_CACHE_DTYPES.filter((dtype) => dtype !== "iq4_nl" || dtype === selected);
+}
 
 export const MLX_KV_QUANTS = [
   "8",
