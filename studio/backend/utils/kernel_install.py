@@ -86,6 +86,8 @@ def _gpu_capability(run: Callable[..., subprocess.CompletedProcess]) -> tuple[in
             stdout = subprocess.PIPE,
             stderr = subprocess.DEVNULL,
             text = True,
+            encoding = "utf-8",
+            errors = "replace",
             timeout = 120,
         )
     except subprocess.TimeoutExpired:
