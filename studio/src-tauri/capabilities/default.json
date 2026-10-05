@@ -20,6 +20,7 @@
     "core:window:allow-minimize",
     "core:window:allow-unminimize",
     "core:window:allow-toggle-maximize",
+    "core:window:allow-unmaximize",
     "core:window:allow-close",
     "core:window:allow-set-theme",
     "core:webview:allow-set-webview-zoom",
