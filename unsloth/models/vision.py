@@ -752,8 +752,7 @@ def _install_offload_embedding_hooks(embed_tokens, output_embeddings, return_dev
         _unsloth_offload_pre_hook = disable(_unsloth_offload_pre_hook)
         _unsloth_offload_post_hook = disable(_unsloth_offload_post_hook)
 
-    # Compiled inference uses unsloth_zoo's opaque op (no graph break), only where it is exact:
-    # plain nn.Embedding or transformers' `* embed_scale` subclass; max_norm renormalises in place.
+    # Compiled inference uses unsloth_zoo's opaque op (no graph break) only where it is exact.
     op = None
     cls_forward = type(embed_tokens).forward
     scaled = False
@@ -770,7 +769,7 @@ def _install_offload_embedding_hooks(embed_tokens, output_embeddings, return_dev
     if (
         disable is not None
         and isinstance(embed_tokens, torch.nn.Embedding)
-        # torch's own nn.Embedding.forward, not one patched globally before install.
+        # Not patched globally before install.
         and getattr(base_forward, "__module__", None) == "torch.nn.modules.sparse"
         and getattr(base_forward, "__qualname__", None) == "Embedding.forward"
         and not hasattr(base_forward, "__wrapped__")
@@ -795,7 +794,7 @@ def _install_offload_embedding_hooks(embed_tokens, output_embeddings, return_dev
                 and not torch.is_grad_enabled()
                 and not weight.requires_grad
                 and module.max_norm is None
-                # Only our pre-hook: any other one expects ids already moved to the table's device.
+                # Other pre-hooks expect ids already on the table's device.
                 and len(module._forward_pre_hooks) == 1
                 and isinstance(input_ids, torch.Tensor)
                 and weight.device != input_ids.device
@@ -822,7 +821,6 @@ def _install_offload_embedding_hooks(embed_tokens, output_embeddings, return_dev
                 return op(
                     args[0], self.weight, self.padding_idx, self.embed_scale if scaled else None
                 )
-            # The class forward as it is now, in case it was patched after install.
             return type(self).forward(self, *args, **kwargs)
 
         import types
