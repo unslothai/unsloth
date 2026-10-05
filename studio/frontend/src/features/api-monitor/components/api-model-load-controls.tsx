@@ -161,7 +161,7 @@ function useLoadAfterDownload(
   };
   useRepoDownload({
     kind: DOWNLOAD_KIND.MODEL,
-    repoId: pending?.id ?? "__api_monitor_autoload_idle__",
+    repoId: pending?.id ?? "__hub_autoload_idle__",
     activeVariant: pending?.meta.ggufVariant ?? null,
     onComplete: (variant) => settle(variant, true),
     onError: (variant) => settle(variant, false),
