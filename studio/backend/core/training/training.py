@@ -300,6 +300,9 @@ def _build_training_worker_config(values: dict[str, Any]) -> dict[str, Any]:
         "lora_dropout": values.get("lora_dropout", 0.0),
         "target_modules": values.get("target_modules"),
         "gradient_checkpointing": values.get("gradient_checkpointing", "unsloth"),
+        "offload_layers": values.get("offload_layers") or 0,
+        "offload_vram_gb": values.get("offload_vram_gb"),
+        "prefetch_depth": values.get("prefetch_depth") or 2,
         "use_rslora": values.get("use_rslora", False),
         "use_loftq": values.get("use_loftq", False),
         "use_dora": values.get("use_dora", False),
@@ -692,6 +695,8 @@ class TrainingProgress:
     num_tokens: Optional[int] = None
     eval_loss: Optional[float] = None
     peak_memory_gb: Optional[float] = None
+    # BlockSwap.stats() from the last logged step, for the live offload panel.
+    offload: Optional[dict] = None
     output_dir: Optional[str] = None
     # The end-of-run record has no step loss, so the progress filter would drop it, and with it the only
     # elapsed time that includes the final evaluation, checkpoint save and best-model reload.
@@ -1094,6 +1099,7 @@ class _MLXTrainerAdapter:
                 num_tokens = event.get("num_tokens", self.training_progress.num_tokens),
                 eval_loss = event.get("eval_loss", self.training_progress.eval_loss),
                 peak_memory_gb = event.get("peak_memory_gb", self.training_progress.peak_memory_gb),
+                offload = event.get("offload") or self.training_progress.offload,
             )
             return
         if etype == "complete":

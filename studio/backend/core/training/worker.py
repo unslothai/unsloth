@@ -1712,6 +1712,22 @@ def _parse_mem_fraction_env(env_value: str | None) -> float | None:
     return override if 0.0 < override <= 1.0 else None
 
 
+def _training_vram_budget_fraction(
+    budget_gb: float | None,
+    denominator_bytes: int,
+    current: float = 1.0,
+) -> float | None:
+    """The memory fraction that holds this process to ``budget_gb``, never looser than ``current``
+    (the OOM guard's cap); None when there is no budget or no total to divide by."""
+    try:
+        budget = float(budget_gb)
+    except (TypeError, ValueError):
+        return None
+    if not (budget > 0) or denominator_bytes <= 0:
+        return None
+    return min(current, budget * 1024**3 / denominator_bytes)
+
+
 def _allocator_divides_by_props_total(torch_version: str | None) -> bool:
     """Whether ``set_per_process_memory_fraction`` scales ``props.total_memory``. c10's
     ``CUDACachingAllocator::setMemoryFraction`` caps at ``fraction * device_prop.totalGlobalMem``
@@ -4199,6 +4215,42 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
         )
         return
 
+    # Offload layers sizes "auto" to what the allocator may use, so a budget makes the run fit in it,
+    # and two runs on one card can each take their share.
+    # ── 2b. Training VRAM budget ──
+    _budget_gb = config.get("offload_vram_gb")
+    if _budget_gb:
+        try:
+            import torch as _torch_budget
+            if _torch_budget.cuda.is_available():
+                for _b_index in range(_torch_budget.cuda.device_count()):
+                    _b_props = _torch_budget.cuda.get_device_properties(_b_index)
+                    _b_denominator = int(getattr(_b_props, "total_memory", 0) or 0)
+                    if not _allocator_divides_by_props_total(
+                        getattr(_torch_budget, "__version__", "")
+                    ):
+                        _b_denominator = int(_torch_budget.cuda.mem_get_info(_b_index)[1])
+                    _get_fraction = getattr(
+                        _torch_budget.cuda, "get_per_process_memory_fraction", None
+                    )
+                    _b_current = _get_fraction(_b_index) if _get_fraction is not None else 1.0
+                    _b_fraction = _training_vram_budget_fraction(
+                        _budget_gb, _b_denominator, _b_current
+                    )
+                    if _b_fraction is None:
+                        continue
+                    _torch_budget.cuda.set_per_process_memory_fraction(_b_fraction, _b_index)
+                    logger.info(
+                        "Training VRAM budget: set_per_process_memory_fraction(%.4f, cuda:%d), "
+                        "%.1f GiB of %.1f GiB",
+                        _b_fraction,
+                        _b_index,
+                        _b_fraction * _b_denominator / 1024**3,
+                        _b_denominator / 1024**3,
+                    )
+        except Exception as _budget_err:
+            logger.warning("Could not apply the training VRAM budget: %s", _budget_err)
+
     # Embedding models use a different pipeline (FastSentenceTransformer + SentenceTransformerTrainer +
     # MultipleNegativesRankingLoss), so branch early.
     if config.get("is_embedding", False):
@@ -4459,6 +4511,8 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
                 actual_model_repo_id = config.get("actual_model_repo_id"),
                 model_revision = model_revision,
                 use_gradient_checkpointing = config.get("gradient_checkpointing", "unsloth"),
+                offload_layers = config.get("offload_layers", 0),
+                prefetch_depth = config.get("prefetch_depth", 2),
             )
             fallback_error = (
                 _model_cache_fallback_error(config, trainer.model_load_error)
@@ -4525,6 +4579,8 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
                         actual_model_repo_id = config.get("actual_model_repo_id"),
                         model_revision = model_revision,
                         use_gradient_checkpointing = config.get("gradient_checkpointing", "unsloth"),
+                        offload_layers = config.get("offload_layers", 0),
+                        prefetch_depth = config.get("prefetch_depth", 2),
                     )
         finally:
             _load_watchdog_stop.set()
@@ -4946,6 +5002,7 @@ def _create_trainer_progress_callback(event_queue: Any) -> Callable[[TrainingPro
                     "num_tokens": progress.num_tokens,
                     "eval_loss": progress.eval_loss,
                     "status_message": progress.status_message,
+                    "offload": getattr(progress, "offload", None),
                     "ts": time.time(),
                 }
             )

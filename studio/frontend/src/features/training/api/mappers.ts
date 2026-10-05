@@ -50,6 +50,31 @@ export function trainingLoadsIn4Bit(
   return (adapterMethod && isQloraMethod) || (isCpt && isFourBitModel);
 }
 
+/** Offload layers streams frozen LoRA base weights, so a full finetune always sends it off. */
+export function offloadPayload(
+  config: Pick<TrainingConfigState, "trainingMethod" | "offloadLayers" | "offloadVramGb" | "prefetchDepth">,
+): Pick<TrainingStartRequest, "offload_layers" | "offload_vram_gb" | "prefetch_depth"> {
+  const layers =
+    config.trainingMethod === "full"
+      ? 0
+      : config.offloadLayers === "auto"
+        ? "auto"
+        : Math.max(0, Math.floor(config.offloadLayers || 0));
+  const depth =
+    config.prefetchDepth === "auto"
+      ? "auto"
+      : Math.min(8, Math.max(1, Math.floor(config.prefetchDepth || 2)));
+  return {
+    offload_layers: layers,
+    // The budget only sizes "auto"; with a fixed count or off it would cap the run for nothing.
+    offload_vram_gb:
+      layers === "auto" && config.offloadVramGb && config.offloadVramGb > 0
+        ? config.offloadVramGb
+        : null,
+    prefetch_depth: depth,
+  };
+}
+
 export function buildTrainingStartPayload(
   config: TrainingConfigState,
   hfToken: string | null,
@@ -153,6 +178,7 @@ export function buildTrainingStartPayload(
     lora_dropout: config.loraDropout,
     target_modules: adapterMethod ? config.targetModules : [],
     gradient_checkpointing: config.gradientCheckpointing,
+    ...offloadPayload(config),
     use_rslora: adapterMethod && config.loraVariant === "rslora",
     use_loftq: adapterMethod && config.loraVariant === "loftq",
     use_dora: adapterMethod && config.loraVariant === "dora",

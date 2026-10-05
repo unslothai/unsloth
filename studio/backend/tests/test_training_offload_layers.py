@@ -1,0 +1,128 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+"""Offload layers in Unsloth Studio training: the request fields, the VRAM budget, the kwargs each
+load and LoRA path receives, and the live snapshot the training view polls."""
+
+from __future__ import annotations
+
+from types import SimpleNamespace
+
+import pytest
+from pydantic import ValidationError
+
+from core.training.training import _build_training_worker_config
+from core.training.worker import _training_vram_budget_fraction
+from models.training import TrainingStartRequest
+
+GIB = 1024**3
+
+
+def _request(**kwargs) -> TrainingStartRequest:
+    return TrainingStartRequest(
+        model_name = "unsloth/Qwen3-0.6B", training_type = "LoRA/QLoRA", format_type = "alpaca", **kwargs
+    )
+
+
+def test_offload_fields_default_to_off():
+    r = _request()
+    assert r.offload_layers == 0 and r.offload_vram_gb is None and r.prefetch_depth == 2
+
+
+@pytest.mark.parametrize("value", [0, 14, "auto"])
+def test_offload_layers_takes_a_count_or_auto(value):
+    assert _request(offload_layers = value).offload_layers == value
+
+
+@pytest.mark.parametrize("value", [-1, 2000, "max", 1.5])
+def test_offload_layers_refuses_what_core_cannot_use(value):
+    with pytest.raises(ValidationError):
+        _request(offload_layers = value)
+
+
+@pytest.mark.parametrize("value", [0, 9, "fast"])
+def test_prefetch_depth_refuses_out_of_range(value):
+    with pytest.raises(ValidationError):
+        _request(prefetch_depth = value)
+
+
+def test_vram_budget_must_be_positive():
+    assert _request(offload_vram_gb = 11.5).offload_vram_gb == 11.5
+    with pytest.raises(ValidationError):
+        _request(offload_vram_gb = 0)
+
+
+def test_worker_config_carries_the_offload_fields():
+    cfg = _build_training_worker_config(
+        {
+            "model_name": "org/model",
+            "offload_layers": "auto",
+            "offload_vram_gb": 12.0,
+            "prefetch_depth": "auto",
+        }
+    )
+    assert (cfg["offload_layers"], cfg["offload_vram_gb"], cfg["prefetch_depth"]) == (
+        "auto",
+        12.0,
+        "auto",
+    )
+    off = _build_training_worker_config({"model_name": "org/model"})
+    assert (off["offload_layers"], off["offload_vram_gb"], off["prefetch_depth"]) == (0, None, 2)
+
+
+def test_budget_fraction_holds_the_run_to_its_gib():
+    assert _training_vram_budget_fraction(8, 32 * GIB) == pytest.approx(0.25)
+    # Never looser than the OOM guard's cap.
+    assert _training_vram_budget_fraction(31, 32 * GIB, current = 0.8) == pytest.approx(0.8)
+    assert _training_vram_budget_fraction(64, 32 * GIB) == pytest.approx(1.0)
+    for budget in (None, 0, -2, "x", float("nan")):
+        assert _training_vram_budget_fraction(budget, 32 * GIB) is None
+    assert _training_vram_budget_fraction(8, 0) is None
+
+
+def _trainer(offload_layers = 0, prefetch_depth = 2, model = None):
+    from core.training.trainer import UnslothTrainer
+
+    t = UnslothTrainer.__new__(UnslothTrainer)
+    t._offload_layers, t._prefetch_depth, t.model = offload_layers, prefetch_depth, model
+    return t
+
+
+def test_load_and_lora_kwargs_follow_the_setting():
+    assert _trainer()._offload_load_kwargs() == {} and _trainer()._offload_peft_kwargs() == {}
+    t = _trainer("auto", "auto")
+    assert t._offload_load_kwargs() == {
+        "offload_layers": "auto",
+        "device_map_planner_kwargs": {"prefetch_depth": "auto"},
+    }
+    assert t._offload_peft_kwargs() == {"offload_layers": "auto", "prefetch_depth": "auto"}
+
+
+def test_every_offload_capable_load_path_passes_the_kwargs():
+    import inspect
+    from core.training import trainer
+
+    src = inspect.getsource(trainer.UnslothTrainer.load_model)
+    # Text, Orpheus (snac), audio VLM and vision; the codec / Whisper paths have no decoder stack to stream.
+    assert src.count("**self._offload_load_kwargs()") == 4
+    peft = inspect.getsource(trainer.UnslothTrainer.prepare_model_for_training)
+    assert peft.count("**self._offload_peft_kwargs()") == 3
+
+
+def test_snapshot_is_none_without_a_swapper():
+    assert _trainer(model = SimpleNamespace())._offload_snapshot() is None
+    assert _trainer(model = None)._offload_snapshot() is None
+    # An unsloth_zoo without stats() still trains, just without the panel.
+    swapper = SimpleNamespace(indices = [1])
+    assert _trainer(model = SimpleNamespace(_unsloth_block_swap = swapper))._offload_snapshot() is None
+
+
+def test_snapshot_keys_layers_as_strings(monkeypatch):
+    from core.training import trainer
+
+    monkeypatch.setattr(trainer.torch.cuda, "is_available", lambda: False)
+    swapper = SimpleNamespace(
+        stats = lambda: {"state": {14: "host", 15: "gpu"}, "swapped": [14, 15], "prefetch_depth": 2}
+    )
+    snap = _trainer(model = SimpleNamespace(_unsloth_block_swap = swapper))._offload_snapshot()
+    assert snap["state"] == {"14": "host", "15": "gpu"} and snap["prefetch_depth"] == 2

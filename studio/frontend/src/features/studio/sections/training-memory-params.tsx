@@ -27,6 +27,7 @@ import { HugeiconsIcon } from "@hugeicons/react";
 import type { ReactElement } from "react";
 import { useShallow } from "zustand/react/shallow";
 import { ParamsRow } from "./params-section-controls";
+import { OffloadLayersParams } from "./training-offload-params";
 
 const VISION_IMAGE_SIZE_PRESETS = [256, 384, 512, 768, 1024, 1536, 2048];
 
@@ -237,6 +238,8 @@ export function TrainingMemoryParams(): ReactElement {
           </SelectContent>
         </Select>
       </ParamsRow>
+      {/* Streams frozen LoRA base weights: nothing to stream in a full finetune, and MLX has its own path. */}
+      {!isMac && store.trainingMethod !== "full" && <OffloadLayersParams />}
       {showPacking && (
         <PackingOption
           isMac={isMac}

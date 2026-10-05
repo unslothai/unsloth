@@ -59,6 +59,10 @@ export interface TrainingMethodProvenance {
 /** Column-to-role mapping, e.g. { "problem": "user", "solution": "assistant", "context": "system" } */
 export type DatasetManualMapping = Record<string, string>;
 
+/** Decoder layers kept in host RAM during LoRA training: a count (0 = off) or "auto". */
+export type OffloadLayers = number | "auto";
+export type PrefetchDepth = number | "auto";
+
 export interface TrainingConfigState {
   userEditRevision: number;
   modelType: ModelType | null;
@@ -108,6 +112,9 @@ export interface TrainingConfigState {
   packing: boolean;
   trainOnCompletions: boolean;
   gradientCheckpointing: GradientCheckpointing;
+  offloadLayers: OffloadLayers;
+  offloadVramGb: number | null;
+  prefetchDepth: PrefetchDepth;
   randomSeed: number;
   enableWandb: boolean;
   wandbToken: string;
@@ -242,6 +249,9 @@ export interface TrainingConfigActions {
   setPacking: (value: boolean) => void;
   setTrainOnCompletions: (value: boolean) => void;
   setGradientCheckpointing: (value: GradientCheckpointing) => void;
+  setOffloadLayers: (value: OffloadLayers) => void;
+  setOffloadVramGb: (value: number | null) => void;
+  setPrefetchDepth: (value: PrefetchDepth) => void;
   setRandomSeed: (value: number) => void;
   setEnableWandb: (value: boolean) => void;
   setWandbToken: (value: string) => void;

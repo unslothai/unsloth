@@ -7,7 +7,7 @@ import math
 import re
 from pathlib import Path, PureWindowsPath
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
-from typing import Any, Optional, List, Dict, Literal, Union
+from typing import Annotated, Any, Optional, List, Dict, Literal, Union
 
 from hub.schemas.inventory import ModelFormat
 from utils.hf_dataset_options import (
@@ -571,6 +571,21 @@ class TrainingStartRequest(BaseModel):
     lora_dropout: float = Field(0.0, description = "LoRA dropout")
     target_modules: List[str] = Field(default_factory = list, description = "Target modules for LoRA")
     gradient_checkpointing: str = Field("", description = "Gradient checkpointing setting")
+    offload_layers: Union[Literal["auto"], Annotated[int, Field(ge = 0, le = 1024)]] = Field(
+        0,
+        description = "Decoder layers kept in host RAM and streamed to the GPU during training "
+        "(0 = off, 'auto' = as few as fit)",
+    )
+    offload_vram_gb: Optional[float] = Field(
+        None,
+        gt = 0,
+        le = 4096,
+        description = "VRAM this run may use, in GiB; offload_layers = 'auto' sizes to it",
+    )
+    prefetch_depth: Union[Literal["auto"], Annotated[int, Field(ge = 1, le = 8)]] = Field(
+        2,
+        description = "Offloaded layers fetched ahead of the one running ('auto' = measured)",
+    )
     use_rslora: bool = Field(False, description = "Use RSLoRA")
     use_loftq: bool = Field(False, description = "Use LoftQ")
     use_dora: bool = Field(False, description = "Use DoRA")

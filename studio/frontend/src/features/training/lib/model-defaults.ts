@@ -151,6 +151,12 @@ export function mapBackendModelConfigToTrainingPatch(
   const randomSeed = toNumber(training?.random_seed);
   if (randomSeed !== undefined) patch.randomSeed = randomSeed;
 
+  if (training?.offload_layers === "auto") patch.offloadLayers = "auto";
+  else {
+    const offloadLayers = toNumber(training?.offload_layers);
+    if (offloadLayers !== undefined) patch.offloadLayers = offloadLayers;
+  }
+
   // Only patch when the config carries the key; model-switch reset lives in setSelectedModel.
   if (Object.hasOwn(training ?? {}, "vision_image_size")) {
     const raw = training?.vision_image_size;

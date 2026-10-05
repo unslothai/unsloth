@@ -1323,6 +1323,17 @@ async def get_hardware_utilization(current_subject: str = Depends(get_current_su
         return await asyncio.to_thread(get_gpu_utilization)
 
 
+@router.get("/offload")
+async def get_offload_state(current_subject: str = Depends(get_current_subject)):
+    """Offload layers state from the last logged step: which decoder layers sit on the GPU or in
+    host RAM, prefetch depth, copy / stall / compute time, VRAM. ``{"active": false}`` when the run
+    does not offload. Polled by the live training view."""
+    offload = getattr(get_training_backend().training_progress, "offload", None)
+    if not offload:
+        return {"active": False}
+    return {"active": True, **offload}
+
+
 @router.get("/hardware/visible")
 async def get_visible_hardware_utilization(current_subject: str = Depends(get_current_subject)):
     from utils.hardware import get_visible_gpu_utilization, gpu_query
@@ -1786,6 +1797,9 @@ async def start_training(
             "gradient_checkpointing": request.gradient_checkpointing.strip()
             if request.gradient_checkpointing and request.gradient_checkpointing.strip()
             else "unsloth",
+            "offload_layers": request.offload_layers,
+            "offload_vram_gb": request.offload_vram_gb,
+            "prefetch_depth": request.prefetch_depth,
             "use_rslora": request.use_rslora,
             "use_loftq": request.use_loftq,
             "use_dora": request.use_dora,

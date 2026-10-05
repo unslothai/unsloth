@@ -25,6 +25,7 @@ export const MODEL_DEFAULT_STATE_KEYS = [
   "trainOnCompletions",
   "gradientCheckpointing",
   "randomSeed",
+  "offloadLayers",
   "visionImageSize",
   "enableWandb",
   "wandbProject",
