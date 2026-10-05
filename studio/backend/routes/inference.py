@@ -34974,8 +34974,10 @@ def _pinned_quant_object(model_id: str, objects: list[dict]) -> Optional[dict]:
     if not variant:
         return None
     pinned_id = f"{listed['id']}:{variant}"
-    if listed.get("loaded") and str(listed.get("quant", "")).lower() == variant.lower():
-        return {**listed, "id": pinned_id}
+    # A cold index leaves "quant" off the loaded row until it can prove the pin.
+    resident = listed.get("quant") or getattr(get_llama_cpp_backend(), "hf_variant", None)
+    if listed.get("loaded") and str(resident or "").lower() == variant.lower():
+        return {**listed, "id": pinned_id, "quant": variant}
     # The listed row's context fields describe the resident quant, not this one.
     shared = {
         k: listed[k] for k in ("object", "created", "owned_by", "display_name") if k in listed

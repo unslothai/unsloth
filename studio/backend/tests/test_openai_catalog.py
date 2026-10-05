@@ -600,6 +600,18 @@ def test_retrieve_pin_of_the_resident_quant_keeps_its_loaded_fields(monkeypatch)
     assert "context_length" not in other
 
 
+def test_retrieve_pin_of_the_resident_quant_on_a_cold_index(monkeypatch):
+    _pin_setup(monkeypatch, [_base_row(loaded = True, context_length = 4096)])
+    llama = _FakeLlama()
+    llama.hf_variant = "Q8_0"
+    monkeypatch.setattr(inf, "get_llama_cpp_backend", lambda: llama)
+
+    model = _retrieve("publisher/Qwen3:Q8_0")
+    assert model["loaded"] is True
+    assert model["quant"] == "Q8_0"
+    assert _retrieve("publisher/Qwen3:Q4_K_M")["loaded"] is False
+
+
 def test_retrieve_pin_404s_when_the_quant_or_model_is_not_listed(monkeypatch):
     import pytest
     from fastapi import HTTPException
