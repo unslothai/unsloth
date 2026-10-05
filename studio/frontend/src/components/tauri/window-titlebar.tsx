@@ -88,9 +88,17 @@ function CaptionGlyph({
     return () => window.removeEventListener("resize", update);
   }, []);
   const pixels = Math.round(10 * scale);
-  const stroke = (Math.max(1, Math.round(scale)) * 10) / pixels;
+  const strokePixels = Math.max(1, Math.round(scale));
+  const stroke = (strokePixels * 10) / pixels;
   const inset = stroke / 2;
   const edge = 10 - inset;
+  // minimize sits on whole device pixel rows, so its line stays one solid row
+  const middle =
+    ((Math.round((pixels - strokePixels) / 2) + strokePixels / 2) * 10) /
+    pixels;
+  const corner = Math.min(2, 2.5 - inset);
+  // round caps overshoot their endpoints, so the x ends pull in to keep its old size
+  const tip = inset * 1.5;
   return (
     <svg
       aria-hidden="true"
@@ -100,34 +108,38 @@ function CaptionGlyph({
       fill="none"
       stroke="currentColor"
       strokeWidth={stroke}
+      strokeLinecap="round"
+      strokeLinejoin="round"
       className="shrink-0"
     >
-      {kind === "minimize" && <path d="M0 5h10" />}
+      {kind === "minimize" && <path d={`M${inset} ${middle}H${edge}`} />}
       {kind === "maximize" && (
         <rect
           x={inset}
           y={inset}
           width={10 - stroke}
           height={10 - stroke}
-          rx="0.7"
+          rx="2"
         />
       )}
       {/* Windows puts the front window bottom-left. */}
       {kind === "restore" && (
         <>
-          <path d={`M2.5 2.5V${inset}H${edge}V7.5H7.5`} />
+          <path
+            d={`M2.5 2.5V${inset + corner}A${corner} ${corner} 0 0 1 ${2.5 + corner} ${inset}H${edge - corner}A${corner} ${corner} 0 0 1 ${edge} ${inset + corner}V${7.5 - corner}A${corner} ${corner} 0 0 1 ${edge - corner} 7.5H7.5`}
+          />
           <rect
             x={inset}
             y="2.5"
             width={7.5 - inset}
             height={7.5 - inset}
-            rx="0.7"
+            rx="2"
           />
         </>
       )}
       {kind === "close" && (
         <path
-          d={`M${inset} ${inset}L${edge} ${edge}M${edge} ${inset}L${inset} ${edge}`}
+          d={`M${tip} ${tip}L${10 - tip} ${10 - tip}M${10 - tip} ${tip}L${tip} ${10 - tip}`}
         />
       )}
     </svg>

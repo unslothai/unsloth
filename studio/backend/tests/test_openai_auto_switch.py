@@ -8497,7 +8497,7 @@ def test_async_scan_folder_routes_offload_storage_and_invalidation(monkeypatch):
     event_loop_thread = threading.get_ident()
     calls = []
 
-    def _add(path):
+    def _add(path, recursive = None):
         calls.append(("add", threading.get_ident()))
         return {"id": 7, "path": path, "created_at": "fake"}, True
 
@@ -8515,7 +8515,7 @@ def test_async_scan_folder_routes_offload_storage_and_invalidation(monkeypatch):
 
     async def _run():
         folder = await model_routes.add_scan_folder_endpoint(
-            SimpleNamespace(path = "/models/custom"), current_subject = "tester"
+            SimpleNamespace(path = "/models/custom", recursive = None), current_subject = "tester"
         )
         removed = await model_routes.remove_scan_folder_endpoint(7, current_subject = "tester")
         return folder, removed
@@ -9314,6 +9314,18 @@ def test_mlx_kv_quant_survives_the_whole_override_projection():
         kwargs = settings.model_override_load_kwargs({"mlx_kv_quant": "tq-4"}, is_gguf = is_gguf)
         assert kwargs["mlx_kv_quant"] == "tq-4"
         assert LoadRequest(model_path = "unsloth/A", **kwargs).mlx_kv_quant == "tq-4"
+
+
+def test_mlx_int8_prefill_is_stored_only_when_on_and_reaches_the_load(monkeypatch):
+    _mock_override_store(monkeypatch)
+    assert settings.normalize_model_override({"mlx_int8_prefill": False}) == {}
+    _put("org/m", mlx_int8_prefill = True)
+    stored = settings.get_model_overrides()["org/m"]
+    assert stored == {"mlx_int8_prefill": True}
+    kwargs = settings.model_override_load_kwargs(stored, is_gguf = False)
+    assert LoadRequest(model_path = "org/m", **kwargs).mlx_int8_prefill is True
+    _put("org/m", mlx_int8_prefill = False)
+    assert "org/m" not in settings.get_model_overrides()
 
 
 def _idle_backend(kw, monkeypatch, *, user_loaded):

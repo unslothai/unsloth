@@ -111,6 +111,8 @@ import { unslothDarkTheme, unslothLightTheme } from "./code-themes";
 import { stabilizeStreamingMarkdown } from "./streaming-markdown";
 import {
   IncrementalMarkdownCache,
+  LITERAL_LINK_REMEND,
+  hasIncompleteLinkRepair,
   markdownRenderKey,
   parseMarkdownIntoRenderableBlocks,
   withoutStreamdownAnimationPlugin,
@@ -1232,6 +1234,10 @@ function MarkdownTextRenderer({
   const incrementalRender = isStreaming
     ? incrementalCache.update(processedText)
     : null;
+  const pendingLinkRepair = useMemo(
+    () => !isStreaming && hasIncompleteLinkRepair(processedText),
+    [isStreaming, processedText],
+  );
   const renderKey = markdownRenderKey(processedText);
 
   const audioMatch = displayText.match(AUDIO_PLAYER_RE);
@@ -1249,6 +1255,7 @@ function MarkdownTextRenderer({
             key={`${messageId}:${incrementalCache.renderGeneration}:${renderKey}:${sandboxScopeKey}`}
             mode="streaming"
             parseIncompleteMarkdown={!incrementalRender}
+            remend={pendingLinkRepair ? LITERAL_LINK_REMEND : undefined}
             parseMarkdownIntoBlocksFn={
               incrementalRender?.parseMarkdownIntoBlocks ??
               parseMarkdownIntoRenderableBlocks

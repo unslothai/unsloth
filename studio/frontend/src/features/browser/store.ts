@@ -5,7 +5,7 @@ import { type DocumentAnnotations, useChatArtifactsStore } from "@/features/chat
 import { create } from "zustand";
 import { unwrapRedirect } from "./address";
 import type { BrowserPage } from "./api";
-import { PageCache } from "./page-cache";
+import { PageCache, cacheLimits, reportedDeviceMemory } from "./page-cache";
 
 export type BrowserEntry =
   | { kind: "newtab" }
@@ -110,7 +110,9 @@ export function setNativeWebHistory(native: boolean): void {
 const MAX_HISTORY = 50;
 
 // Loaded pages by history entry, so back and forward skip the fetch. Reload drops only its own entry.
-const pageCache = new PageCache<BrowserEntry>();
+// Fewer on a low-memory machine.
+const cacheLimit = cacheLimits(reportedDeviceMemory());
+const pageCache = new PageCache<BrowserEntry>(cacheLimit.maxPages, cacheLimit.maxTotalBytes);
 
 const entryIds = new WeakMap<BrowserEntry, number>();
 let nextEntryId = 0;

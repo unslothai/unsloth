@@ -22,6 +22,7 @@ import { useChatRuntimeStore } from "@/features/chat";
 import { resetToNewChat } from "@/features/library";
 import { useT } from "@/i18n";
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
+import { ForkIcon } from "@/lib/fork-icon";
 import { openExternalLink } from "@/lib/open-link";
 import { toast } from "@/lib/toast";
 import {
@@ -35,13 +36,13 @@ import {
   PencilEdit02Icon,
   PinIcon,
   PinOffIcon,
+  Refresh01Icon,
   VolumeHighIcon,
   VolumeMute02Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react";
 import { useNavigate } from "@tanstack/react-router";
-import { GitBranchIcon, RefreshCw } from "lucide-react";
-import type { ComponentType, ReactNode } from "react";
+import { type ComponentType, Fragment, type ReactNode } from "react";
 import { hostOf } from "./address";
 import { callNative, useNativeBrowser } from "./native-support";
 import { nativeAction, hasNativeView } from "./native-view";
@@ -53,7 +54,6 @@ const ICON = "size-icon";
 export interface TabMenuParts {
   Item: ComponentType<{
     children?: ReactNode;
-    disabled?: boolean;
     variant?: "default" | "destructive";
     onSelect?: (event: Event) => void;
   }>;
@@ -159,28 +159,23 @@ function Row({
   P,
   icon,
   children,
-  disabled,
   onSelect,
 }: {
   P: TabMenuParts;
   icon: IconSvgElement;
   children: ReactNode;
-  disabled?: boolean;
   onSelect: () => void;
 }) {
   return (
-    <P.Item disabled={disabled} onSelect={onSelect}>
+    <P.Item onSelect={onSelect}>
       <HugeiconsIcon icon={icon} strokeWidth={1.75} className={ICON} />
       <span>{children}</span>
     </P.Item>
   );
 }
 
-/**
- * The menu's rows. From the tab strip (`tab`, `strip`) it offers what acts on the strip too (New tab
- * to the right, closing others); from the sidebar (`pinned`) it acts on the pinned page's tab when
- * one is open, and opens the page for what needs one.
- */
+/** Menu rows. `strip` adds tab strip actions; `pinned` acts on the pinned page's open tab. Rows that
+ *  don't apply are omitted, not disabled. */
 export function TabMenuItems({
   P,
   tab,
@@ -201,110 +196,119 @@ export function TabMenuItems({
   const pinnedId = pinned?.id ?? tab?.pinnedId ?? null;
   const index = tab ? tabs.findIndex((other) => other.id === tab.id) : -1;
   const store = useBrowserStore.getState();
-  const web = tab ? currentEntry(tab).kind === "web" : false;
-  return (
-    <>
-      {pinnedId ? (
-        <Row P={P} icon={PinOffIcon} onSelect={() => unpinPage(pinnedId)}>
+  const kind = tab ? currentEntry(tab).kind : null;
+
+  // Empty groups drop out with their separators.
+  const groups: ReactNode[][] = [
+    [
+      pinnedId ? (
+        <Row key="unpin" P={P} icon={PinOffIcon} onSelect={() => unpinPage(pinnedId)}>
           {t("browser.tabMenu.unpin")}
         </Row>
-      ) : (
-        <Row
-          P={P}
-          icon={PinIcon}
-          disabled={!tab || !url}
-          onSelect={() => tab && pinTab(tab, tab.customTitle || tab.title || (url ? hostOf(url) : ""))}
-        >
+      ) : tab && url ? (
+        <Row key="pin" P={P} icon={PinIcon} onSelect={() => pinTab(tab, tab.customTitle || tab.title || hostOf(url))}>
           {t("browser.tabMenu.pin")}
         </Row>
-      )}
-      <P.Separator />
-      {strip && tab ? (
-        <Row P={P} icon={Add01Icon} onSelect={() => store.newTabAfter(tab.id)}>
+      ) : null,
+    ],
+    [
+      strip && tab ? (
+        <Row key="newTabRight" P={P} icon={Add01Icon} onSelect={() => store.newTabAfter(tab.id)}>
           {t("browser.tabMenu.newTabRight")}
         </Row>
-      ) : null}
-      <P.Item disabled={!tab} onSelect={() => tab && reloadTab(tab)}>
-        <RefreshCw strokeWidth={1.75} className={ICON} />
-        <span>{t("browser.reload")}</span>
-      </P.Item>
-      <Row
-        P={P}
-        icon={Copy01Icon}
-        disabled={!tab && !url}
-        onSelect={() => (tab ? store.duplicateTab(tab.id) : url && store.openUrl(url, { newTab: true }))}
-      >
-        {t("browser.tabMenu.duplicate")}
-      </Row>
-      <P.Sub>
-        <P.SubTrigger>
-          <GitBranchIcon strokeWidth={1.75} className={ICON} />
-          <span>{t("browser.tabMenu.fork")}</span>
-        </P.SubTrigger>
-        <P.SubContent className="unsloth-plus-menu sidebar-row-menu w-48">
-          <Row
-            P={P}
-            icon={BubbleChatAddIcon}
-            disabled={!url}
-            onSelect={() => url && forkToChat(navigate, { tab, url }, false)}
-          >
-            {t("browser.tabMenu.forkNewChat")}
-          </Row>
-          <Row
-            P={P}
-            icon={BubbleChatTemporaryIcon}
-            disabled={!url}
-            onSelect={() => url && forkToChat(navigate, { tab, url }, true)}
-          >
-            {t("browser.tabMenu.forkTemporaryChat")}
-          </Row>
-        </P.SubContent>
-      </P.Sub>
-      <Row
-        P={P}
-        icon={Link01Icon}
-        disabled={!url}
-        onSelect={() =>
-          url && void copyToClipboard(url).then((ok) => ok && toast.success(t("browser.linkCopied")))
-        }
-      >
-        {t("browser.tabMenu.copyUrl")}
-      </Row>
-      <Row P={P} icon={LinkSquare02Icon} disabled={!url} onSelect={() => url && openExternalLink(url)}>
-        {t("browser.tabMenu.openExternal")}
-      </Row>
-      <P.Separator />
-      <Row P={P} icon={PencilEdit02Icon} disabled={!tab && !pinned} onSelect={onRename}>
-        {t("browser.tabMenu.rename")}
-      </Row>
-      <Row
-        P={P}
-        icon={tab?.muted ? VolumeHighIcon : VolumeMute02Icon}
-        disabled={!tab || !web}
-        onSelect={() => tab && setTabMuted(tab, !tab.muted)}
-      >
-        {t(tab?.muted ? "browser.tabMenu.unmute" : "browser.tabMenu.mute")}
-      </Row>
-      <P.Separator />
-      <Row P={P} icon={Cancel01Icon} disabled={!tab} onSelect={() => tab && store.closeTab(tab.id)}>
-        {t("browser.tabMenu.close")}
-      </Row>
-      {strip && tab ? (
-        <>
-          <Row P={P} icon={Cancel01Icon} disabled={tabs.length < 2} onSelect={() => store.closeOtherTabs(tab.id)}>
-            {t("browser.tabMenu.closeOthers")}
-          </Row>
-          <Row
-            P={P}
-            icon={Cancel01Icon}
-            disabled={index < 0 || index >= tabs.length - 1}
-            onSelect={() => store.closeTabsToRight(tab.id)}
-          >
-            {t("browser.tabMenu.closeRight")}
-          </Row>
-        </>
-      ) : null}
+      ) : null,
+      tab && kind !== "newtab" ? (
+        <Row key="reload" P={P} icon={Refresh01Icon} onSelect={() => reloadTab(tab)}>
+          {t("browser.reload")}
+        </Row>
+      ) : null,
+      tab || url ? (
+        <Row
+          key="duplicate"
+          P={P}
+          icon={Copy01Icon}
+          onSelect={() => (tab ? store.duplicateTab(tab.id) : url && store.openUrl(url, { newTab: true }))}
+        >
+          {t("browser.tabMenu.duplicate")}
+        </Row>
+      ) : null,
+      url ? (
+        <P.Sub key="fork">
+          <P.SubTrigger>
+            <HugeiconsIcon icon={ForkIcon} strokeWidth={1.75} className={ICON} />
+            <span>{t("browser.tabMenu.fork")}</span>
+          </P.SubTrigger>
+          <P.SubContent className="unsloth-plus-menu sidebar-row-menu w-48">
+            <Row P={P} icon={BubbleChatAddIcon} onSelect={() => forkToChat(navigate, { tab, url }, false)}>
+              {t("browser.tabMenu.forkNewChat")}
+            </Row>
+            <Row P={P} icon={BubbleChatTemporaryIcon} onSelect={() => forkToChat(navigate, { tab, url }, true)}>
+              {t("browser.tabMenu.forkTemporaryChat")}
+            </Row>
+          </P.SubContent>
+        </P.Sub>
+      ) : null,
+      url ? (
+        <Row
+          key="copyUrl"
+          P={P}
+          icon={Link01Icon}
+          onSelect={() => void copyToClipboard(url).then((ok) => ok && toast.success(t("browser.linkCopied")))}
+        >
+          {t("browser.tabMenu.copyUrl")}
+        </Row>
+      ) : null,
+      url ? (
+        <Row key="openExternal" P={P} icon={LinkSquare02Icon} onSelect={() => openExternalLink(url)}>
+          {t("browser.tabMenu.openExternal")}
+        </Row>
+      ) : null,
+    ],
+    [
+      tab || pinned ? (
+        <Row key="rename" P={P} icon={PencilEdit02Icon} onSelect={onRename}>
+          {t("browser.tabMenu.rename")}
+        </Row>
+      ) : null,
+      tab && kind === "web" ? (
+        <Row
+          key="mute"
+          P={P}
+          icon={tab.muted ? VolumeHighIcon : VolumeMute02Icon}
+          onSelect={() => setTabMuted(tab, !tab.muted)}
+        >
+          {t(tab.muted ? "browser.tabMenu.unmute" : "browser.tabMenu.mute")}
+        </Row>
+      ) : null,
+    ],
+    [
+      tab ? (
+        <Row key="close" P={P} icon={Cancel01Icon} onSelect={() => store.closeTab(tab.id)}>
+          {t("browser.tabMenu.close")}
+        </Row>
+      ) : null,
+      strip && tab && tabs.length > 1 ? (
+        <Row key="closeOthers" P={P} icon={Cancel01Icon} onSelect={() => store.closeOtherTabs(tab.id)}>
+          {t("browser.tabMenu.closeOthers")}
+        </Row>
+      ) : null,
+      strip && tab && index >= 0 && index < tabs.length - 1 ? (
+        <Row key="closeRight" P={P} icon={Cancel01Icon} onSelect={() => store.closeTabsToRight(tab.id)}>
+          {t("browser.tabMenu.closeRight")}
+        </Row>
+      ) : null,
+    ],
+  ];
+  const shown = groups.map((group) => group.filter(Boolean)).filter((group) => group.length > 0);
+  return (
+    <>
+      {shown.map((group, at) => (
+        // biome-ignore lint/suspicious/noArrayIndexKey: fixed groups in a fixed order
+        <Fragment key={at}>
+          {at > 0 ? <P.Separator /> : null}
+          {group}
+        </Fragment>
+      ))}
     </>
   );
 }
-

@@ -4,7 +4,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { BrowserPage } from "../src/features/browser/api.ts";
-import { PageCache } from "../src/features/browser/page-cache.ts";
+import { PageCache, cacheLimits, reportedDeviceMemory } from "../src/features/browser/page-cache.ts";
 
 const MB = 1024 * 1024;
 const html = (bytes: number): BrowserPage => ({
@@ -49,4 +49,32 @@ test("the least recently used page goes first", () => {
   cache.set(c, html(2));
   assert.ok(cache.get(a));
   assert.equal(cache.get(b), undefined);
+});
+
+test("low-memory machines keep fewer pages; an unknown or bogus reading keeps the defaults", () => {
+  const today = { maxPages: 12, maxTotalBytes: 32 * MB };
+  assert.deepEqual(cacheLimits(0.5), { maxPages: 4, maxTotalBytes: 8 * MB });
+  assert.deepEqual(cacheLimits(2), { maxPages: 4, maxTotalBytes: 8 * MB });
+  assert.deepEqual(cacheLimits(3), { maxPages: 6, maxTotalBytes: 16 * MB });
+  assert.deepEqual(cacheLimits(4), { maxPages: 6, maxTotalBytes: 16 * MB });
+  assert.deepEqual(cacheLimits(8), today);
+  for (const value of [undefined, null, "2", Number.NaN, 0, -2, Number.POSITIVE_INFINITY]) {
+    assert.deepEqual(cacheLimits(value), today);
+  }
+});
+
+test("the memory reading survives a missing or throwing navigator", () => {
+  const original = Object.getOwnPropertyDescriptor(globalThis, "navigator");
+  const define = (value: PropertyDescriptor) => Object.defineProperty(globalThis, "navigator", { configurable: true, ...value });
+  try {
+    define({ value: { deviceMemory: 4 } });
+    assert.equal(reportedDeviceMemory(), 4);
+    define({ value: undefined });
+    assert.equal(reportedDeviceMemory(), undefined);
+    define({ get: () => ({ get deviceMemory() { throw new Error("blocked"); } }) });
+    assert.equal(reportedDeviceMemory(), undefined);
+  } finally {
+    if (original) Object.defineProperty(globalThis, "navigator", original);
+    else delete (globalThis as { navigator?: unknown }).navigator;
+  }
 });
