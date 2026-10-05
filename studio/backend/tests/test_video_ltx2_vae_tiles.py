@@ -1,11 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""LTX-2 / 2.3 VAE decode without tile seams: untiled when it fits, otherwise tiles sized to the free VRAM with wide
-overlaps (video_ltx2_vae_tiles), and the resident untiled-when-fits estimate for ltx-2 (video_vae_untiled).
-
-Stock LTX-2 tiles are 16 latents (512 px) with a 448 px stride, so neighbours blend over 2 latents and every tiled
-decode shows seam lines; Studio enables that tiling on every LTX load."""
+"""LTX-2 / 2.3 VAE decode without tile seams (video_ltx2_vae_tiles) and the ltx-2 untiled estimate."""
 
 from __future__ import annotations
 
@@ -96,7 +92,6 @@ def test_whole_latent_fits_decodes_untiled(free, monkeypatch):
     assert torch.equal(_decode(vae, z), untiled)
     assert vae._unsloth_last_decode_tile == (16, 24)
     assert vae._unsloth_wide_tiles_stats["untiled"] == 1
-    # UNSLOTH_VIDEO_VAE_UNTILED=0 keeps its meaning: never one untiled decode
     monkeypatch.setenv(U.UNTILED_ENV, "0")
     _decode(vae, z)
     assert vae._unsloth_last_decode_tile != (16, 24)
@@ -174,8 +169,7 @@ def test_oom_retries_in_stock_size_tiles(free, monkeypatch):
 
 @pytest.mark.parametrize("free_bytes, fp32_accum", [(0, False), (None, False), (1000 * GIB, True)])
 def test_fp32_accumulator_only_when_budgeted(free, monkeypatch, free_bytes, fp32_accum):
-    # Nothing fits (or free memory unknown): the fp32 accumulator was not priced in and would add a full-frame fp32
-    # buffer on top of stock-size tiles, above the stock tiled decode's peak.
+    # Unbudgeted plans must not add a full-frame fp32 buffer on top of stock-size tiles.
     vae = _ltx_vae().to(torch.bfloat16)
     z = torch.randn(1, 8, 1, 22, 38, dtype = torch.bfloat16)
     vae.enable_tiling()

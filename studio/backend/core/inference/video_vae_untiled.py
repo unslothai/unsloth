@@ -23,8 +23,7 @@ _OUTPUT_SCALE = {
     "wan2.2-ti2v-5b": (16, 4),
     "wan2.2-t2v-a14b": (8, 4),
 }
-# LTX-2 / 2.3 (32x): the decoder holds every frame, so the peak scales with output frames x latent pixels; measured
-# 0.102-0.105 MiB per (frame x latent pixel) bf16 over 512x512 .. 1216x704 and 25 .. 241 frames (B200), output included.
+# LTX-2 / 2.3 holds every frame: peak per output frame x latent pixel, 0.102-0.105 MiB measured bf16 (B200).
 _BYTES_PER_FRAME_LATENT_PIXEL = {
     "ltx-2": 0.11 * 2**20,
 }

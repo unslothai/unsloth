@@ -1,22 +1,11 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Seam-free tiled decode for the LTX-2 / LTX-2.3 video VAE, in tiles sized to the free VRAM.
+"""Seam-free LTX-2 / 2.3 VAE decode: the fewest, largest tiles that fit free VRAM (untiled when it fits).
 
-diffusers tiles AutoencoderKLLTX2Video in 512 px tiles (16 latents at 32x) with a 448 px stride, so neighbours share
-2 latents and a 64 px linear blend. The decoder sees further than 2 latents past a tile edge, so each tile decodes its
-border differently from its neighbour and the short blend leaves a visible line at every seam (worst 64 px window
-15.8 levels off the untiled decode at 1216x704x121, against an untiled floor of 0). Studio enables that tiling on every
-LTX load, so every tier showed the lines.
-
-Here a decode uses the fewest, largest tiles that fit the free VRAM (one untiled decode when the whole latent fits,
-which is also the fastest), every neighbour overlap is at least ``OVERLAP_LATENTS`` and the last tile ends at the
-frame edge. A tile gets no weight within ``MARGIN_LATENTS`` of an edge it shares and ramps to full weight over the next
-``RAMP_LATENTS``. The smallest tile is the stock 16 latents, so the tightest tier decodes in tiles no larger than
-before. Tiles always span every frame: Studio never decodes LTX framewise, so there are no temporal tile boundaries.
-
-Kill switch ``UNSLOTH_VIDEO_VAE_WIDE_TILES=0``: at load it skips the install; set later, each decode takes the stock
-tiled path. ``UNSLOTH_VIDEO_VAE_UNTILED=0`` keeps at least two tiles (never one untiled decode).
+Stock tiles (16 latents, 2-latent blend) are narrower than the decoder's receptive field, so every seam shows a line.
+Kill switch ``UNSLOTH_VIDEO_VAE_WIDE_TILES=0``; ``UNSLOTH_VIDEO_VAE_UNTILED=0`` keeps >= 2 tiles. Tiles span every
+frame: Studio never decodes LTX framewise.
 """
 
 from __future__ import annotations
@@ -27,19 +16,16 @@ from typing import Any, Optional
 
 WIDE_TILES_ENV = "UNSLOTH_VIDEO_VAE_WIDE_TILES"
 
-# Stock tile side (512 px at 32x): the smallest tile, so a tile never needs more than the stock tiled decode's.
+# Stock tile side: the smallest tile, so the tightest tier never needs more per tile than stock.
 MIN_TILE_LATENTS = 16
 OVERLAP_LATENTS = 8
 MARGIN_LATENTS = 3
 RAMP_LATENTS = 2
 
-# Decode peak per output frame and latent pixel (bf16, output included), measured on a B200 with the 2.3 VAE over
-# 512x512 .. 1216x704 and 25 .. 241 frames (the decoder holds every frame, so frames enter linearly): 0.102-0.105 MiB
-# stock, 0.0704-0.0716 MiB with the fused decoder passes (diffusion_vae_fused, NVIDIA speed tiers).
+# Decode peak MiB per output frame x latent pixel (bf16, B200, 2.3 VAE): measured 0.102-0.105 stock, ~0.071 fused.
 DECODE_MIB_PER_FRAME_LATENT = 0.11
 DECODE_MIB_PER_FRAME_LATENT_FUSED = 0.075
-# The coefficients already sit ~5% over the measured peaks, so a smaller margin than the untiled-when-fits gate (which
-# keeps its own); an OOM still falls back to the stock-size tiles.
+# Coefficients already sit ~5% over measured peaks; an OOM still retries in stock-size tiles.
 _MARGIN = 1.05
 _MARGIN_BYTES = 512 * 2**20
 
@@ -60,8 +46,7 @@ def tile_starts(
     tile: int,
     overlap: Optional[int] = None,
 ) -> list[int]:
-    """Start offsets of the fewest ``tile``-long tiles covering ``length`` with every neighbour overlap >= ``overlap``,
-    spread evenly, the first at 0 and the last ending at ``length``."""
+    """Evenly spread starts of the fewest tiles covering ``length`` with overlaps >= ``overlap``; last ends at length."""
     overlap = OVERLAP_LATENTS if overlap is None else overlap
     length, tile, overlap = int(length), int(tile), int(overlap)
     if length <= tile:
@@ -83,9 +68,7 @@ def axis_weights(
     margin: Optional[int] = None,
     ramp: Optional[int] = None,
 ) -> list:
-    """Per-tile fp32 blend weights (``min(tile, length) * scale`` long) along one axis, summing to 1 at every pixel.
-    0 within ``margin`` latents of a shared edge, linear over the next ``ramp``, 1 deeper in; frame borders are not
-    shared edges. With overlaps >= margin * 2 + ramp every pixel keeps a positive total."""
+    """Per-tile fp32 weights along one axis summing to 1: 0 within ``margin`` of a shared edge, then a linear ``ramp``."""
     margin = MARGIN_LATENTS if margin is None else margin
     ramp = RAMP_LATENTS if ramp is None else ramp
     size = min(tile, length) * scale
@@ -184,8 +167,7 @@ def _plan(
     z: Any,
     free: Optional[int] = None,
 ) -> tuple[tuple[int, int], bool]:
-    """``(tile, budgeted)``: ``budgeted`` is False when no tile fit (or free memory is unknown), so the fp32
-    accumulator was never priced in and the decode must not add it on top of the stock-size tiles."""
+    """``(tile, budgeted)``; not budgeted (nothing fit) means no room was priced in for the fp32 accumulator."""
     batch, _, latent_frames, height, width = (int(x) for x in z.shape)
     frames = output_frames(vae, latent_frames)
     ratio = int(vae.spatial_compression_ratio)
@@ -196,7 +178,6 @@ def _plan(
         return choose_tiles(height, width, lambda th, tw: False, allow_single), False
     itemsize = _itemsize(vae)
     fused = bool(getattr(vae, "_unsloth_vae_fused_installed", 0))
-    # fp32 accumulator of the blended output (multi-tile decodes only)
     accum = 4 * batch * 3 * frames * height * ratio * width * ratio
 
     def fits(th: int, tw: int) -> bool:
