@@ -581,7 +581,6 @@ def _base_row(**extra):
 
 
 def test_retrieve_resolves_an_on_disk_quant_pin(monkeypatch):
-    # #9340: chat completions accept "<id>:<quant>", so retrieval must not 404 it.
     _pin_setup(monkeypatch, [_base_row(loaded = False, quant = "Q8_0")])
 
     model = _retrieve("publisher/qwen3:q4_k_m")
