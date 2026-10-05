@@ -12,7 +12,7 @@ import time
 from typing import Any, Mapping, Optional
 
 from utils.reasoning_budget import validate_reasoning_budget_message
-from utils.account_context import OWNER, run_as
+from utils.account_context import OWNER, AccountContext, current_account, is_owner_context, run_as
 
 OPENAI_AUTO_SWITCH_SETTING_KEY = "openai_api_auto_switch_model"
 OPENAI_AUTO_DOWNLOAD_SETTING_KEY = "openai_api_auto_download_model"
@@ -62,9 +62,13 @@ def _apply_idle_floor(seconds: int) -> int:
     return 0 if seconds <= 0 else max(MIN_AUTO_UNLOAD_IDLE_SECONDS, seconds)
 
 
-def _cached_setting(key: str, default: Any) -> Any:
+def _cached_setting(
+    key: str,
+    default: Any,
+    account: AccountContext = OWNER,
+) -> Any:
     """Read an app setting, memoized for _CACHE_TTL_S to spare the hot path."""
-    cache_key = (OWNER.account_id, key)
+    cache_key = (account.account_id, key)
     now = time.monotonic()
     with _cache_lock:
         hit = _cache.get(cache_key)
@@ -72,7 +76,7 @@ def _cached_setting(key: str, default: Any) -> Any:
             return hit[1]
     try:
         from storage.studio_db import get_app_setting
-        stored = run_as(OWNER, get_app_setting, key, None)
+        stored = run_as(account, get_app_setting, key, None)
     except Exception:
         stored = None
     value = default if stored is None else stored
@@ -81,8 +85,8 @@ def _cached_setting(key: str, default: Any) -> Any:
     return value
 
 
-def _invalidate(key: str) -> None:
-    cache_key = (OWNER.account_id, key)
+def _invalidate(key: str, account: AccountContext = OWNER) -> None:
+    cache_key = (account.account_id, key)
     with _cache_lock:
         _cache.pop(cache_key, None)
 
@@ -438,12 +442,6 @@ def normalize_model_override(
     if payload.get("engine") in ("vllm", "sglang"):
         entry["engine"] = payload["engine"]
 
-    if payload.get("llama_cpp_config") is not None:
-        from core.inference.llama_custom_config import parse_config_source
-
-        # A broken custom configuration must not silently become a managed load.
-        entry["llama_cpp_config"] = parse_config_source(payload["llama_cpp_config"]).to_wire()
-
     extra_args = payload.get("llama_extra_args")
     if isinstance(extra_args, (list, tuple)) and extra_args:
         entry["llama_extra_args"] = [str(arg) for arg in extra_args]
@@ -525,6 +523,9 @@ def normalize_model_override(
     if _coerce_bool(payload.get("tensor_parallel")):
         entry["tensor_parallel"] = True
 
+    if _coerce_bool(payload.get("mlx_int8_prefill")):
+        entry["mlx_int8_prefill"] = True
+
     # Stored only when set. Like tensor_parallel: absent means the default, so an override that never touched the switch does not pin it off for a later load.
     if _coerce_bool(payload.get("disable_vision")):
         entry["disable_vision"] = True
@@ -604,16 +605,6 @@ def model_override_load_kwargs(override: dict[str, Any], *, is_gguf: bool) -> di
         if override.get("gpu_ids") is not None:
             kwargs["gpu_ids"] = override["gpu_ids"]
 
-    if is_gguf and override.get("llama_cpp_config") is not None:
-        from core.inference.llama_custom_config import parse_config_source
-
-        custom = parse_config_source(override["llama_cpp_config"])
-        kwargs["llama_cpp_config"] = custom.to_wire()
-        if custom.mode == "custom":
-            if override.get("disable_vision") is not None:
-                kwargs["disable_vision"] = override["disable_vision"]
-            return kwargs
-
     max_seq_length = resolve_fit_max_seq_length(override, is_gguf = is_gguf)
     if max_seq_length is not None:
         kwargs["max_seq_length"] = max_seq_length
@@ -640,6 +631,7 @@ def model_override_load_kwargs(override: dict[str, Any], *, is_gguf: bool) -> di
         ("tensor_parallel", "tensor_parallel"),
         ("disable_vision", "disable_vision"),
         ("chat_template_override", "chat_template_override"),
+        ("mlx_int8_prefill", "mlx_int8_prefill"),
     ):
         if override.get(source) is not None:
             kwargs[target] = override[source]
@@ -762,8 +754,8 @@ def _fold_posix_path_variant(value: str) -> str:
 
 
 def get_model_overrides() -> dict[str, dict]:
-    """Per-model launch configs keyed by model id (see normalize_model_override)."""
-    raw = _cached_setting(MODEL_OVERRIDES_SETTING_KEY, None)
+    """Per-model launch configs keyed by model id (see normalize_model_override), from the acting account's studio.db."""
+    raw = _cached_setting(MODEL_OVERRIDES_SETTING_KEY, None, current_account())
     if not isinstance(raw, dict):
         return {}
     # Rows saved before engine defaults were dropped (see normalize_model_override) read as
@@ -848,11 +840,13 @@ def resolve_override_for_load(
     alias_id: Optional[str] = None,
     variant: Optional[str] = None,
 ) -> tuple[Optional[str], dict]:
-    """``(key, override)`` the load would apply, or ``(None, {})``. Resolution belongs here rather than in a client: the folding rules are Python's (casefold is not toLowerCase), and an ambiguous fold deliberately matches nothing."""
+    """``(key, override)`` the load would apply, or ``(None, {})``. Resolution belongs here rather than in a client: the folding rules are Python's (casefold is not toLowerCase), and an ambiguous fold deliberately matches nothing. A managed account without its own row falls back to the owner's (same machine)."""
     for key in override_lookup_candidates(load_id, alias_id, variant):
         override = get_model_override(key)
         if override:
             return resolve_model_override_key(key) or key, override
+    if not is_owner_context():
+        return run_as(OWNER, resolve_override_for_load, load_id, alias_id, variant)
     return None, {}
 
 
@@ -949,5 +943,5 @@ def set_model_override(
             ("mlx_kv_quant", "mlx_kv_bits"),
         ),
     )
-    _invalidate(MODEL_OVERRIDES_SETTING_KEY)
+    _invalidate(MODEL_OVERRIDES_SETTING_KEY, current_account())
     return entry

@@ -90,6 +90,12 @@ export interface SystemInfoResponse {
     free_gb: number;
     percent_used: number;
   };
+  /** The models (HF cache) volume; null or absent when it is the system disk. */
+  models_disk?: {
+    total_gb: number;
+    free_gb: number;
+    percent_used: number;
+  } | null;
   gpu: SystemGpuInfo;
   /** Devices available to GGUF inference; differs when llama.cpp uses Vulkan. */
   inference_gpu?: SystemGpuInfo;

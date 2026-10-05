@@ -2,6 +2,9 @@
 
 mod app_layout;
 mod app_menu;
+mod browser_capture;
+mod browser_proxy;
+mod browser_webview;
 mod commands;
 #[cfg(target_os = "linux")]
 mod debian_update;
@@ -1328,11 +1331,13 @@ fn show_main_window(app: &tauri::AppHandle) {
     // Hidden login starts run as an accessory app (no Dock icon); restore the regular policy.
     #[cfg(target_os = "macos")]
     let _ = app.set_activation_policy(tauri::ActivationPolicy::Regular);
-    if let Some(window) = app.get_webview_window("main") {
+    // Not get_webview_window: that is None while browser views are children of the window.
+    if let Some(window) = app.get_window("main") {
         let _ = window.show();
         let _ = window.unminimize();
         let _ = window.set_focus();
     }
+    browser_webview::window_changed(app, None);
 }
 
 /// Coordinates the one visible quit confirmation and, on macOS, one AppKit termination request
@@ -1599,7 +1604,7 @@ where
                             // CTRL_BREAK budgets in series.
                             cfg!(target_os = "windows"),
                             || {
-                                app.get_webview_window("main")
+                                app.get_window("main")
                                     .map(|window| window.is_visible().map_err(|e| e.to_string()))
                             },
                         )
@@ -2195,8 +2200,20 @@ fn main() {
         .manage(desktop_updater::new_desktop_update_state())
         .manage(new_close_to_tray_state())
         .manage(native_file_dialogs::ChatImportRegistry::default())
+        .manage(browser_webview::new_browser_views())
         .invoke_handler(tauri::generate_handler![
             app_menu::set_app_menu_actions,
+            browser_webview::browser_view_supported,
+            browser_webview::browser_view_show,
+            browser_webview::browser_view_navigate,
+            browser_webview::browser_view_action,
+            browser_webview::browser_view_zoom,
+            browser_webview::browser_view_find,
+            browser_webview::browser_view_close,
+            browser_webview::browser_view_clear_data,
+            browser_webview::browser_view_mute,
+            browser_capture::browser_capture,
+            browser_capture::browser_view_print,
             set_training_active,
             set_renderer_activity,
             app_layout::has_initialized_app_window_layout,
@@ -2309,6 +2326,17 @@ fn main() {
             Ok(())
         })
         .on_window_event(|window, event| {
+            if window.label() == "main" {
+                match event {
+                    tauri::WindowEvent::Focused(focused) => {
+                        browser_webview::window_changed(window.app_handle(), Some(*focused))
+                    }
+                    tauri::WindowEvent::Resized(_) => {
+                        browser_webview::window_changed(window.app_handle(), None)
+                    }
+                    _ => {}
+                }
+            }
             // Record real drops here, in Rust, so the renderer can only register paths the
             // OS actually handed to the native intake commands.
             if let tauri::WindowEvent::DragDrop(tauri::DragDropEvent::Drop { paths, .. }) = event {
@@ -2324,6 +2352,7 @@ fn main() {
                     MainWindowCloseAction::Hide => {
                         // The tray's Open action and a second app launch restore the window.
                         let _ = window.hide();
+                        browser_webview::window_changed(window.app_handle(), None);
                     }
                     MainWindowCloseAction::Quit => request_quit(window.app_handle()),
                 }

@@ -8,6 +8,7 @@ from __future__ import annotations
 import atexit
 import collections
 import os
+import re
 import sys
 import tempfile
 import threading
@@ -20,9 +21,12 @@ __all__ = [
     "STDERR_MIRROR_KWARG",
     "WorkerStderrCapture",
     "decode_worker_stderr",
+    "first_crash_line",
+    "format_exit_code",
     "install_worker_stderr_mirror",
     "mark_log_record_continuations",
     "stderr_tail_from_bytes",
+    "unexpected_exit_message",
 ]
 
 # Marks a record's continuation lines: a recovered request's `exc_info` traceback is byte-identical to a dying process's.
@@ -121,6 +125,123 @@ def stderr_tail_from_bytes(
     return joined
 
 
+_CRASH_LINE_MARKERS = (
+    "llvm error",
+    "fatal exception",
+    "fatal python error",
+    "segmentation fault",
+    "out of memory",
+    "terminate called",
+    "cuda error",
+    "hip error",
+    "cudaerror",
+    # As orchestrator._DIAGNOSTIC_START_RE.
+    "bus error",
+    "illegal instruction",
+    "floating point exception",
+    "trace/breakpoint trap",
+    "stack smashing",
+    "double free",
+    "free():",
+    "malloc():",
+    "munmap_chunk",
+    "corrupted size",
+    "corrupted double-linked",
+    "bad_alloc",
+    "libc++abi",
+    "ggml_assert",
+)
+_STACK_LINE_PREFIXES = (
+    'File "',
+    "Thread 0x",
+    "Current thread 0x",
+    "Stack (most recent",
+    "Extension modules:",
+    "<no Python frame>",
+    "<truncated rest of calls>",
+    "Garbage-collecting",
+    "frame #",
+    "Exception raised from",
+    "#",
+    "0x",
+)
+_CRASH_LINE_LIMIT = 500
+_CRASH_TAIL_LINES = 12
+_ERROR_LINE = re.compile(r"error|exception|abort|fatal|fault", re.IGNORECASE)
+
+
+def format_exit_code(exitcode: "int | None") -> str:
+    """Hex for a Windows NTSTATUS. Small negatives stay decimal: those are Unix signals."""
+    if not isinstance(exitcode, int):
+        return "unknown"
+    if -64 <= exitcode < 0:
+        return str(exitcode)
+    unsigned = exitcode & 0xFFFFFFFF
+    if unsigned > 255:
+        return f"0x{unsigned:08X}"
+    return str(exitcode)
+
+
+def _is_crash_marker(line: str) -> bool:
+    lowered = line.lower()
+    return any(marker in lowered for marker in _CRASH_LINE_MARKERS)
+
+
+def first_crash_line(text: str) -> str:
+    """The reason in the terminal crash block, else empty (a SIGKILL leaves the exit code alone)."""
+    # Marked log records (a recovered `logger.exception`) are never the cause.
+    lines = [
+        line.strip()
+        for line in (text or "").splitlines()
+        if line.strip()
+        and not line.startswith((LOG_RECORD_START_MARK, LOG_RECORD_CONTINUATION_PREFIX))
+    ]
+    # Last few non-stack lines only: an earlier recovered "out of memory" is not the cause.
+    tail = []
+    for line in reversed(lines):
+        if line.startswith(_STACK_LINE_PREFIXES):
+            continue
+        tail.append(line)
+        if len(tail) == _CRASH_TAIL_LINES:
+            break
+    tail.reverse()
+    marked = [index for index, line in enumerate(tail) if _is_crash_marker(line)]
+    if marked:
+        # The first of the last run: "LLVM ERROR ..." precedes "Windows fatal exception ...".
+        index = marked[-1]
+        while index > 0 and _is_crash_marker(tail[index - 1]):
+            index -= 1
+        line = tail[index]
+        following = tail[index + 1] if index + 1 < len(tail) else ""
+        # C++ abort: "terminate called after throwing ..." then "what():  <reason>".
+        if line.lower().startswith("terminate called") and following.startswith("what():"):
+            line = following
+        return line[:_CRASH_LINE_LIMIT]
+    for line in reversed(tail):
+        if _ERROR_LINE.search(line):
+            return line[:_CRASH_LINE_LIMIT]
+    return ""
+
+
+def unexpected_exit_message(pid, exitcode, text: str) -> str:
+    pid_text = str(pid) if pid is not None else "unknown"
+    message = (
+        "Training process exited unexpectedly "
+        f"(pid={pid_text}, exitcode={format_exit_code(exitcode)})"
+    )
+    line = first_crash_line(text)
+    if line:
+        try:
+            from core.inference.orchestrator import _redact_worker_output
+        except Exception:
+            # Fail closed: the run error and /training/status are user-visible.
+            return message
+        line = _redact_worker_output(line)
+    if line:
+        return f"{message}: {line}"
+    return message
+
+
 # Exact paths, never a pattern: Studios share one temporary directory.
 _OPEN_SINKS: "set[str]" = set()
 _ATEXIT_REGISTERED = False
@@ -183,6 +304,27 @@ class WorkerStderrCapture:
         except OSError:
             return ""
         return stderr_tail_from_bytes(data, max_lines = max_lines, max_chars = max_chars)
+
+    def text(self, limit: int = 4 * MIRROR_FILE_CAP_BYTES) -> str:
+        """The whole sink (compaction lets it reach 2x the cap); past *limit*, its last *limit* bytes."""
+        try:
+            fd = os.open(self._path, os.O_RDONLY | _O_NOFOLLOW | _O_BINARY)
+        except OSError:
+            return ""
+        try:
+            handle = os.fdopen(fd, "rb")
+        except OSError:
+            os.close(fd)
+            return ""
+        try:
+            size = handle.seek(0, os.SEEK_END)
+            handle.seek(max(0, size - limit))
+            data = handle.read(limit)
+        except OSError:
+            return ""
+        finally:
+            handle.close()
+        return decode_worker_stderr(data)
 
     def close(self) -> None:
         """Tolerates a child still holding the sink open, which is the norm on Windows."""

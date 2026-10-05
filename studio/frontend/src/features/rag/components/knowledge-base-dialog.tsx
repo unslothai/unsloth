@@ -43,13 +43,10 @@ import {
   updateKnowledgeBase,
 } from "../api/rag-api";
 import { useRagAvailabilityStore } from "../api/rag-availability";
-import {
-  type KnowledgeBase,
-  RAG_UPLOAD_ACCEPT,
-  isLinkedFolderManaged,
-} from "../types/rag";
+import { type KnowledgeBase, isLinkedFolderManaged } from "../types/rag";
 import { DocumentStatusChip } from "./document-status-chip";
 import { LinkedFoldersManager } from "./linked-folders-manager";
+import { RAG_SOURCE_UPLOAD_ACCEPT } from "./source-drop-policy";
 import { useRagDocuments } from "./use-rag-documents";
 import { useSourceDrop } from "./use-source-drop";
 
@@ -376,7 +373,7 @@ function KnowledgeBaseDocuments({
           ref={fileInputRef}
           type="file"
           multiple={true}
-          accept={RAG_UPLOAD_ACCEPT}
+          accept={RAG_SOURCE_UPLOAD_ACCEPT}
           className="hidden"
           onChange={(e) => {
             if (e.target.files?.length) void upload(e.target.files);

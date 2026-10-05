@@ -19,8 +19,12 @@ import types
 
 import pytest
 import torch
+from real_accelerator import has_real_cuda
 
-pytestmark = pytest.mark.skipif(not torch.cuda.is_available(), reason = "needs CUDA")
+xpu_available = hasattr(torch, "xpu") and torch.xpu.is_available()
+dev = "cuda" if has_real_cuda() else "xpu" if xpu_available else "cpu"
+
+pytestmark = pytest.mark.skipif(not (has_real_cuda() or xpu_available), reason = "needs CUDA or XPU")
 ct_quant = pytest.importorskip("compressed_tensors.quantization")
 
 
@@ -63,8 +67,8 @@ def _ct_model(
     weight_type = "float",
 ):
     torch.manual_seed(0)
-    lin = torch.nn.Linear(i, o, bias = bias, device = "cuda", dtype = torch.bfloat16)
-    Wq, s, ref = _quantize(torch.randn(o, i, device = "cuda") * 0.02, strategy, block)
+    lin = torch.nn.Linear(i, o, bias = bias, device = dev, dtype = torch.bfloat16)
+    Wq, s, ref = _quantize(torch.randn(o, i, device = dev) * 0.02, strategy, block)
     lin.weight = torch.nn.Parameter(Wq, requires_grad = False)
     lin.weight_scale = torch.nn.Parameter(s, requires_grad = False)
     kwargs = dict(num_bits = 8, type = weight_type, strategy = strategy, symmetric = True, dynamic = False)
@@ -92,7 +96,7 @@ def _ct_model(
 def test_weight_dequant_transposed_row_scale(shape):
     from unsloth.kernels.fp8 import weight_dequant
 
-    Wq, s, ref = _quantize(torch.randn(*shape, device = "cuda") * 0.02, "channel")
+    Wq, s, ref = _quantize(torch.randn(*shape, device = dev) * 0.02, "channel")
     torch.testing.assert_close(weight_dequant(Wq, s, torch.float32), ref)
     torch.testing.assert_close(weight_dequant(Wq.t(), s, torch.float32), ref.t())
 
@@ -116,11 +120,11 @@ def test_fp8_modules_route_to_unsloth_kernels(strategy, shape, block, bias, monk
     assert _route_compressed_tensors_fp8_to_unsloth(model) == 1
     lin = model.lin
     assert lin.weight.dtype == torch.float8_e4m3fn
-    X = torch.randn(2, 5, shape[1], device = "cuda", dtype = torch.bfloat16, requires_grad = True)
+    X = torch.randn(2, 5, shape[1], device = dev, dtype = torch.bfloat16, requires_grad = True)
     y = lin(X)
     y_ref = X.float() @ ref.t() + (lin.bias.float() if bias else 0)
     (dX,) = torch.autograd.grad(y.float().sum(), X)
-    dX_ref = torch.ones(2, 5, shape[0], device = "cuda") @ ref
+    dX_ref = torch.ones(2, 5, shape[0], device = dev) @ ref
     assert float((y.float() - y_ref).norm() / y_ref.norm()) < 0.05
     assert float((dX.float() - dX_ref).norm() / dX_ref.norm()) < 0.01
 
@@ -185,9 +189,7 @@ def test_non_fp8_or_unsupported_modules_are_left_alone(monkeypatch):
     model.lin.weight = torch.nn.Parameter(model.lin.weight.to(torch.bfloat16), requires_grad = False)
     assert _route_compressed_tensors_fp8_to_unsloth(model) == 0
     model, _ = _ct_model(256, 256, "channel")
-    model.lin.weight_scale = torch.nn.Parameter(
-        torch.ones(3, 1, device = "cuda"), requires_grad = False
-    )
+    model.lin.weight_scale = torch.nn.Parameter(torch.ones(3, 1, device = dev), requires_grad = False)
     assert _route_compressed_tensors_fp8_to_unsloth(model) == 0
     model, _ = _ct_model(256, 256, "channel")
     monkeypatch.setenv("UNSLOTH_COMPRESSED_TENSORS_FP8_KERNELS", "0")
@@ -225,7 +227,7 @@ def test_single_token_fast_path_adds_the_bias_once(strategy, block, monkeypatch)
     lin = model.lin
     with torch.no_grad():
         lin.bias.fill_(1.0)
-        X = torch.randn(1, 1, 256, device = "cuda", dtype = torch.bfloat16)
+        X = torch.randn(1, 1, 256, device = dev, dtype = torch.bfloat16)
         y = fast_linear_forward(lin, X)
         y_ref = X.float() @ ref.t() + 1.0
     assert float((y.float() - y_ref).norm() / y_ref.norm()) < 0.05
@@ -241,6 +243,7 @@ def test_a_model_mixing_fp8_and_other_schemes_is_not_partly_routed():
     assert not hasattr(model.lin, "_unsloth_compressed_tensors_fp8")
 
 
+@pytest.mark.skipif(not has_real_cuda(), reason = "Decode GEMV needs a CUDA GPU")
 @pytest.mark.parametrize(
     "shape", [(2048, 2048), (256, 2048), (11008, 2048), (2048, 11008), (100, 300), (33, 7)]
 )
@@ -252,7 +255,7 @@ def test_decode_gemv_matches_the_dequantized_matmul(shape, rows):
         pytest.skip("triton cannot read float8_e4m3fn on this GPU")
     model, ref = _ct_model(*shape, "channel")
     W, s = model.lin.weight, model.lin.weight_scale
-    X = torch.randn(*rows, shape[1], device = "cuda", dtype = torch.bfloat16)
+    X = torch.randn(*rows, shape[1], device = dev, dtype = torch.bfloat16)
     with torch.no_grad():
         assert can_use_fp8_rowwise_gemv(X, W, s)
         y = fp8_rowwise_gemv(X, W, s)
@@ -263,17 +266,18 @@ def test_decode_gemv_matches_the_dequantized_matmul(shape, rows):
     assert torch.equal(y, y_again)
 
 
+@pytest.mark.skipif(not has_real_cuda(), reason = "Decode GEMV needs a CUDA GPU")
 def test_decode_gemv_refuses_what_it_cannot_compute():
     from unsloth.kernels.fp8 import can_use_fp8_rowwise_gemv
 
     model, _ = _ct_model(2048, 16384, "channel")
     W, s = model.lin.weight, model.lin.weight_scale
-    X = torch.randn(1, 16384, device = "cuda", dtype = torch.bfloat16)
+    X = torch.randn(1, 16384, device = dev, dtype = torch.bfloat16)
     with torch.no_grad():
         # 128x128 block grid here has 2048 == N elements.
-        assert not can_use_fp8_rowwise_gemv(X, W, torch.ones(16, 128, device = "cuda"))
+        assert not can_use_fp8_rowwise_gemv(X, W, torch.ones(16, 128, device = dev))
         assert not can_use_fp8_rowwise_gemv(
-            torch.randn(2, 16384, device = "cuda", dtype = torch.bfloat16), W, s
+            torch.randn(2, 16384, device = dev, dtype = torch.bfloat16), W, s
         )
         assert not can_use_fp8_rowwise_gemv(X.float(), W, s)
         assert not can_use_fp8_rowwise_gemv(X[:, :2048], W.t(), s)
@@ -282,7 +286,7 @@ def test_decode_gemv_refuses_what_it_cannot_compute():
 
 def _fp8_kernel_unsupported_here():
     from unsloth.kernels.fp8 import _fp8_kernel_unsupported
-    return _fp8_kernel_unsupported(torch.empty(1, device = "cuda", dtype = torch.float8_e4m3fn))
+    return _fp8_kernel_unsupported(torch.empty(1, device = dev, dtype = torch.float8_e4m3fn))
 
 
 def test_fp8_weights_off_the_gpu_keep_the_compressed_tensors_path():
@@ -300,13 +304,13 @@ def test_compiled_block_fp8_linear_passes_the_input_gradient():
 
     torch._dynamo.reset()
     torch.manual_seed(0)
-    W = (torch.randn(256, 256, device = "cuda") * 0.05).to(torch.float8_e4m3fn)
-    s = torch.rand(2, 2, device = "cuda") * 0.01 + 0.001
+    W = (torch.randn(256, 256, device = dev) * 0.05).to(torch.float8_e4m3fn)
+    s = torch.rand(2, 2, device = dev) * 0.01 + 0.001
     W.block_size = s.block_size = [128, 128]
     ref = W.float() * s.repeat_interleave(128, 0).repeat_interleave(128, 1)
-    X = torch.randn(2, 5, 256, device = "cuda", dtype = torch.bfloat16, requires_grad = True)
+    X = torch.randn(2, 5, 256, device = dev, dtype = torch.bfloat16, requires_grad = True)
     (dX,) = torch.autograd.grad(fp8_linear(X, W, s).float().sum(), X)
-    dX_ref = torch.ones(2, 5, 256, device = "cuda") @ ref
+    dX_ref = torch.ones(2, 5, 256, device = dev) @ ref
     assert float((dX.float() - dX_ref).norm() / dX_ref.norm()) < 0.01
 
 
@@ -315,9 +319,9 @@ def test_rowwise_dequant_fallback_follows_the_input_dtype(dtype, monkeypatch):
     from unsloth.kernels import fp8
 
     monkeypatch.setattr(fp8, "_has_fbgemm_rowwise", lambda: False)
-    W = (torch.randn(256, 512, device = "cuda") * 0.05).to(torch.float8_e4m3fn)
-    s = torch.rand(256, 1, device = "cuda") * 0.01 + 0.001
-    X = torch.randn(3, 512, device = "cuda", dtype = dtype, requires_grad = True)
+    W = (torch.randn(256, 512, device = dev) * 0.05).to(torch.float8_e4m3fn)
+    s = torch.rand(256, 1, device = dev) * 0.01 + 0.001
+    X = torch.randn(3, 512, device = dev, dtype = dtype, requires_grad = True)
     y = fp8.FbgemmFp8Linear_matmul.apply(X, W, s, None)
     (dX,) = torch.autograd.grad(y.float().sum(), X)
     ref = W.float() * s

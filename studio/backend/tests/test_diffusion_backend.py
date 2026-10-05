@@ -1214,7 +1214,9 @@ def test_dense_speed_auto_defers_compile_to_third_generation(fake_runtime, tmp_p
     monkeypatch.setattr(
         dmod,
         "select_attention_backend",
-        lambda target, requested, speed_active = False: ("_native_cudnn" if speed_active else None),
+        lambda target, requested, speed_active = False, family = None, speed_unset = False: (
+            "_native_cudnn" if speed_active else None
+        ),
     )
     monkeypatch.setattr(dmod.compile_cache, "begin", lambda **k: None)
 
@@ -1404,6 +1406,8 @@ def test_deferred_speed_preserves_explicit_attention(fake_runtime, tmp_path, mon
         target,
         requested,
         speed_active = False,
+        family = None,
+        speed_unset = False,
     ):
         if requested in (None, "", "auto"):
             return "_native_cudnn" if speed_active else None
@@ -3046,6 +3050,9 @@ def test_unload_cancels_pipeline_construction(
         if phase.startswith("dense"):
             mp.setattr(diff_mod, "dense_transformer_supported", lambda target: True)
             mp.setattr(diff_mod, "select_transformer_quant_scheme", lambda *a, **k: "int8")
+            # Z-Image declares its rotated INT8 artifact, so an auto GGUF pick (dense_fallback) would decline the
+            # uncached hosted pre-quant and never reach the dense attempt this phase parks in. Treat it as cached.
+            mp.setattr(diff_mod, "_uncached_prequant_repo", lambda *a, **k: None)
             mp.setattr(
                 backend,
                 "_dense_transformer_resident_bytes",

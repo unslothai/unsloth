@@ -345,6 +345,27 @@ def test_visible_void_hr_still_renders():
     assert "---" in out
 
 
+@pytest.mark.parametrize(
+    "html, expected",
+    [
+        (
+            "<ul>\n<li>\n<p>First item</p>\n</li>\n<li>\n<p>Second item</p>\n</li>\n</ul>",
+            "* First item\n\n* Second item",
+        ),
+        ("<ol><li><p>One</p></li><li><div>Two</div></li></ol>", "1. One\n\n2. Two"),
+        ("<ul><li><p>a</p><ul><li><p>b</p></li></ul></li></ul>", "* a\n\n  * b"),
+        ("<ul><li></li><p>outside</p></ul>", "*\n\noutside"),
+    ],
+)
+def test_block_opening_list_item_stays_on_marker_line(html, expected):
+    assert html_to_markdown(html) == expected
+
+
+def test_empty_header_does_not_consume_the_list_marker():
+    html = "<ul><li><header></header><p>text text text</p></li></ul>"
+    assert html_to_markdown(html, main_content = True) == "* text text text"
+
+
 # ── html_to_markdown: main-content scoping ───────────────────────
 
 

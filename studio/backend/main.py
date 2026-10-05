@@ -193,8 +193,10 @@ if _backend_dir not in sys.path:
 # OS trust store for TLS before anything opens a connection: behind a
 # TLS-inspecting proxy certifi alone rejects every Hub request.
 from utils.native_tls import activate_native_tls
+from utils.happy_eyeballs import activate_happy_eyeballs
 
 activate_native_tls()
+activate_happy_eyeballs()
 
 # `uvicorn main:app` bypasses run.py; seed thread caps here too.
 from utils.cpu_threads import configure_cpu_threads
@@ -271,7 +273,6 @@ _no_sentencepiece()
 del _no_sentencepiece
 
 import hashlib
-import ipaddress
 import mimetypes
 import re as _re
 import shutil
@@ -347,6 +348,7 @@ from routes import (
     video_openai_router,
     youtube_router,
 )
+import routes.browser as _browser_routes
 from routes.llama import router as llama_router
 from routes.engines import router as engines_router
 from routes.llama_compat import is_engine_probe_path, router as llama_compat_router
@@ -366,6 +368,7 @@ from hub.utils.download_registry import (
     terminate_active_downloads as terminate_hub_downloads,
 )
 from routes.settings import router as settings_router
+from routes.sandbox_capability import router as sandbox_capability_router
 from routes.systemone import MCP_PATH as DECISIONS_MCP_PATH, RequireStudioAuth, decisions_mcp
 from routes.systemone import router as systemone_router
 from routes.prompts import router as prompts_router
@@ -384,6 +387,7 @@ import utils.hardware.hardware as _hw_module
 
 from utils.torch_warmup import (
     DISABLE_ENV_VAR,
+    background_media_import,
     join_background_warm,
     prewarm_diffusers_if_image_models_exist,
     reset_background_warm,
@@ -655,18 +659,23 @@ def _post_warm_background_work(generation: Optional[int] = None) -> None:
     # _dense_quant_supported). Gated on torch being up rather than assumed, since
     # UNSLOTH_STUDIO_DISABLE_TORCH_WARM=1 exists precisely to keep the ML stack cold.
     if "torch" in sys.modules:
-        try:
-            _refresh_dense_quant_capability()
-        except Exception as _dq_exc:  # noqa: BLE001 -- a picker label must never break the warm
-            import structlog as _structlog
-            _structlog.get_logger(__name__).debug("dense quant capability skipped: %s", _dq_exc)
-        try:
-            _refresh_quantised_streaming_capability()
-        except Exception as _qs_exc:  # noqa: BLE001 -- a picker tier must never break the warm
-            import structlog as _structlog
-            _structlog.get_logger(__name__).debug(
-                "quantised streaming capability skipped: %s", _qs_exc
-            )
+        # Inside the media import window: skipped once a load claimed it; /api/system resolves both later.
+        with background_media_import() as _window_open:
+            if _window_open:
+                try:
+                    _refresh_dense_quant_capability()
+                except Exception as _dq_exc:  # noqa: BLE001 -- a picker label must never break the warm
+                    import structlog as _structlog
+                    _structlog.get_logger(__name__).debug(
+                        "dense quant capability skipped: %s", _dq_exc
+                    )
+                try:
+                    _refresh_quantised_streaming_capability()
+                except Exception as _qs_exc:  # noqa: BLE001 -- a picker tier must never break the warm
+                    import structlog as _structlog
+                    _structlog.get_logger(__name__).debug(
+                        "quantised streaming capability skipped: %s", _qs_exc
+                    )
 
     if _post_warm_retired(generation):
         return
@@ -777,6 +786,13 @@ async def lifespan(app: FastAPI):
     except Exception:  # noqa: BLE001
         pass
 
+    # Warm the OS sandbox probe so the "off" gate has an answer.
+    try:
+        from core.inference.os_sandbox import start_tool_isolation_warmup
+        start_tool_isolation_warmup()
+    except Exception:  # noqa: BLE001 -- the first tool call probes instead
+        _lifespan_log.warning("could not start the sandbox warm-up", exc_info = True)
+
     try:
         from hub.services.models.account_access import adopt_unnamed_public_proofs
         from utils.hub_settings import operator_hf_endpoint
@@ -864,6 +880,10 @@ async def lifespan(app: FastAPI):
     # Embeddings stay cold until ingestion or retrieval actually requests vectors.
     _start_helper_precache_if_enabled()
 
+    from core.inference.audio_inputs import start_sweeper as _start_audio_input_sweeper
+
+    _start_audio_input_sweeper()
+
     from core.research_runs import ResearchSupervisor
 
     app.state.research_supervisor = ResearchSupervisor(app)
@@ -883,6 +903,12 @@ async def lifespan(app: FastAPI):
     from core.inference.key_exchange import init_key_pair
 
     init_key_pair()
+
+    # Stall thread-dump watchdog (#9712), only with UNSLOTH_STUDIO_STALL_WATCHDOG=1.
+    from utils.stall_watchdog import stand_down_for_the_warm, start_stall_watchdog
+
+    start_stall_watchdog(asyncio.get_running_loop(), suppress = stand_down_for_the_warm)
+
     _lifespan_log.info(
         "lifespan pre-auth setup completed in %.1fms",
         (_time.perf_counter() - _lifespan_started) * 1000,
@@ -944,6 +970,11 @@ async def lifespan(app: FastAPI):
 
     # Before any shutdown await: a warm finishing during one would still read the lifespan as current.
     _stop_post_warm_thread()
+
+    # Before teardown blocks the loop, or shutdown dumps as a stall.
+    from utils.stall_watchdog import stop_stall_watchdog
+
+    stop_stall_watchdog()
 
     # Retire the coordinated warm at shutdown entry too. run_lifespan_shutdown() repeats this after
     # cleanup, but its awaits would otherwise let startup imports continue for a stopped lifespan.
@@ -1068,7 +1099,14 @@ from starlette.datastructures import MutableHeaders  # noqa: E402
 _CSP_SCRIPT_NONCE_HEADER = "x-internal-script-nonce"
 _ARTIFACT_PREVIEW_FRAME_PATH = "/api/inference/artifact-preview-frame"
 # Framed shells: their own CSP frame-ancestors governs embedding, so no X-Frame-Options DENY.
-_FRAME_SHELL_PATHS = frozenset({_ARTIFACT_PREVIEW_FRAME_PATH, "/api/inference/mcp-app-frame"})
+_FRAME_SHELL_PATHS = frozenset(
+    {
+        _ARTIFACT_PREVIEW_FRAME_PATH,
+        "/api/inference/mcp-app-frame",
+        _browser_routes.BROWSER_FRAME_PATH,
+        _browser_routes.BROWSER_PRINT_PATH,
+    }
+)
 _DOCS_FONT_CSS = "https://fonts.googleapis.com"
 _DOCS_FONT_FILES = "https://fonts.gstatic.com"
 _DOCS_PATHS = frozenset({"/docs", "/docs/oauth2-redirect", "/redoc"})
@@ -1314,6 +1352,7 @@ if _DOCS_ASSETS_DIR.is_dir():
 # Cap request bodies on protected POSTs; upload routes get explicit multipart headroom.
 import json as _json_for_413  # noqa: E402
 from utils.upload_limits import (  # noqa: E402
+    AUDIO_INPUT_MAX_BYTES,
     STT_AUDIO_JSON_MAX_BYTES,
     STT_AUDIO_RAW_MAX_BYTES,
     LIBRARY_UPLOAD_MAX_BYTES,
@@ -1339,6 +1378,7 @@ _BODY_PROTECTED_PREFIXES = (
     "/api/train",
     "/api/export",
     "/api/library",
+    "/api/browser",
     "/mcp",
 )
 _DATASET_UPLOAD_PASSTHROUGH_PREFIXES = (
@@ -1360,6 +1400,8 @@ _VIDEO_MULTIPART_UPLOAD_PATHS = (
     "/api/inference/videos",
 )
 _LIBRARY_UPLOAD_PATH = "/api/library/uploads"
+# Streamed to disk and capped by the route itself; buffering here would hold 200 MiB in memory.
+_AUDIO_INPUT_UPLOAD_PATH = "/api/inference/audio/inputs"
 _BODY_UPLOAD_PASSTHROUGH_PREFIXES = (
     *_DATASET_UPLOAD_PASSTHROUGH_PREFIXES,
     _DATA_RECIPE_UNSTRUCTURED_UPLOAD_PASSTHROUGH_PREFIX,
@@ -1367,6 +1409,7 @@ _BODY_UPLOAD_PASSTHROUGH_PREFIXES = (
 # Matched by EXACT path (multipart uploads only), so sibling JSON sub-routes keep the normal cap.
 _BODY_UPLOAD_PASSTHROUGH_EXACT_PATHS = (
     _DIFFUSION_DATASET_UPLOAD_PATH,
+    _AUDIO_INPUT_UPLOAD_PATH,
     *_STT_MULTIPART_UPLOAD_PATHS,
     *_VIDEO_MULTIPART_UPLOAD_PATHS,
     _LIBRARY_UPLOAD_PATH,
@@ -1390,6 +1433,8 @@ def _get_upload_passthrough_request_max_bytes(path: str) -> int:
         )
     if path.rstrip("/") == _LIBRARY_UPLOAD_PATH:
         return upload_request_limit_bytes(LIBRARY_UPLOAD_MAX_BYTES)
+    if path.rstrip("/") == _AUDIO_INPUT_UPLOAD_PATH:
+        return AUDIO_INPUT_MAX_BYTES
     # The trailing-slash variant reaches this middleware BEFORE the router's redirect_slashes
     # 307, so it must resolve to the same cap. JSON sub-routes keep extra path components.
     if (
@@ -1604,7 +1649,10 @@ async def _recipes_redirect(rest: str = ""):
     return _RedirectResponse(url = target, status_code = 308)
 
 
-from utils.host_policy import cors_origins_for_mode  # noqa: E402
+from utils.host_policy import (
+    cors_origin_regex_for_mode,
+    cors_origins_for_mode,
+)  # noqa: E402
 
 
 class RemoteAccessCORSMiddleware(CORSMiddleware):
@@ -1631,11 +1679,16 @@ _cors_origins = cors_origins_for_mode(
     api_only = os.environ.get("UNSLOTH_API_ONLY") == "1",
     secure = os.environ.get("UNSLOTH_SECURE") == "1",
 )
+_cors_origin_regex = cors_origin_regex_for_mode(
+    api_only = os.environ.get("UNSLOTH_API_ONLY") == "1",
+    secure = os.environ.get("UNSLOTH_SECURE") == "1",
+)
 
 app.add_middleware(
     RemoteAccessCORSMiddleware,
     remote_access_state = app.state,
     allow_origins = _cors_origins,
+    allow_origin_regex = _cors_origin_regex,
     allow_credentials = True,
     allow_methods = ["*"],
     allow_headers = ["*"],
@@ -1647,6 +1700,7 @@ app.add_middleware(
         "x-typesafe-request-id",
         "X-Unsloth-Monitor-ID",
         *_hub_endpoint_proxy.EXPOSED_HEADERS,
+        *_browser_routes.EXPOSED_HEADERS,
     ],
     # is_allowed_origin closes the moment the tunnel URL clears, but a preflight already cached by the browser
     # does not. Measured in WebKit: with Starlette's 600s default, a state-changing request still REACHED the
@@ -1698,6 +1752,7 @@ app.include_router(providers_router, prefix = "/api/providers", tags = ["provide
 app.include_router(openai_codex_auth_router, prefix = "/api/providers", tags = ["providers"])
 
 app.include_router(settings_router, prefix = "/api/settings", tags = ["settings"])
+app.include_router(sandbox_capability_router, prefix = "/api/sandbox", tags = ["sandbox"])
 app.include_router(mcp_servers_router, prefix = "/api/mcp/servers", tags = ["mcp"])
 app.include_router(skills_router, prefix = "/api/skills", tags = ["skills"])
 app.include_router(prompts_router, prefix = "/api/prompts", tags = ["prompts"])
@@ -1731,6 +1786,7 @@ for _prefix, _upstream, _pages in (
         tags = ["hub"],
     )
 app.include_router(youtube_router, prefix = "/api/youtube", tags = ["youtube"])
+app.include_router(_browser_routes.router, prefix = "/api/browser", tags = ["browser"])
 
 # Re-wrap /v1/* client errors into OpenAI/Anthropic envelopes; non-/v1 keeps {"detail": ...}.
 install_api_error_handlers(app)
@@ -2451,9 +2507,18 @@ def _probe_quantised_streaming(supported: Any) -> bool:
 
 def _quantised_streaming() -> bool:
     """The streaming bit for ``/api/system``. Resolved here only once a load has already loaded every
-    module it reads, since a cold warm (UNSLOTH_STUDIO_DISABLE_TORCH_WARM=1) never resolves it."""
+    module it reads, since a cold warm (UNSLOTH_STUDIO_DISABLE_TORCH_WARM=1) never resolves it.
+    Needs each module initialised (probing mid-load races the load), not core.inference.video (image loads skip it)."""
     if _quantised_streaming_capability is None and all(
-        name in sys.modules for name in ("torch", "diffusers", "torchao", "core.inference.video")
+        (module := sys.modules.get(name)) is not None
+        and not getattr(getattr(module, "__spec__", None), "_initializing", False)
+        for name in (
+            "torch",
+            "torchao",
+            "diffusers",
+            "diffusers.hooks",
+            "diffusers.hooks.group_offloading",
+        )
     ):
         try:
             return _refresh_quantised_streaming_capability()
@@ -2528,6 +2593,10 @@ def get_system_info(
         logger.debug(f"Failed to get disk usage: {e}")
         disk = None
 
+    from utils.system_disk import cached_models_disk_usage
+
+    models_disk = cached_models_disk_usage()
+
     try:
         current_process = psutil.Process(os.getpid())
         process_used_mb = round(current_process.memory_info().rss / 1024**2)
@@ -2577,6 +2646,8 @@ def get_system_info(
             "free_gb": round(disk.free / 1e9, 2) if disk else 0,
             "percent_used": disk.percent if disk else 0,
         },
+        # Additive: null unless the HF cache sits on another volume (e.g. a symlinked drive).
+        "models_disk": models_disk,
         "gpu": gpu_info,
         "inference_gpu": inference_gpu_info,
         "ml_packages": ml_packages,
@@ -2895,54 +2966,12 @@ def _origin_of(url: Optional[str]) -> Optional[tuple[str, str, int]]:
     return _canonical_origin(parsed.scheme, parsed.netloc)
 
 
-def _is_loopback_ip(host: Optional[str]) -> bool:
-    """Return whether ``host`` is a loopback IP, including IPv4-mapped IPv6."""
-    if not host or "%" in host:  # a scope id (::1%eth0) is never a plain loopback
-        return False
-    try:
-        ip = ipaddress.ip_address(host)
-    except (TypeError, ValueError):
-        return False
-    mapped = getattr(ip, "ipv4_mapped", None)
-    return ip.is_loopback or (mapped is not None and mapped.is_loopback)
-
-
-# A loopback peer carrying any of these is a proxy/tunnel relaying a remote client, so the peer is the
-# proxy, not the caller: cloudflared sets cf-connecting-ip, reverse proxies set the rest.
-_PROXIED_CLIENT_HEADERS = (
-    "cf-connecting-ip",
-    "forwarded",
-    "x-forwarded-for",
-    "x-forwarded-host",
-    "x-real-ip",
+# Shared with the routes that must only answer the person at this computer (Settings > Sandbox).
+from utils.client_ip import (  # noqa: E402
+    _PROXIED_CLIENT_HEADERS,
+    _is_loopback_ip,
+    is_direct_local_request as _is_local_bootstrap_request,
 )
-
-
-def _host_header_is_loopback(host_header: Optional[str]) -> bool:
-    """Loopback/localhost check on the raw Host header, read directly so a malformed or absent Host
-    cannot fall back to ``request.url.hostname``'s (loopback) ASGI server address."""
-    if not host_header:
-        return False
-    host = host_header.strip()
-    if host.startswith("["):  # [IPv6] or [IPv6]:port
-        end = host.find("]")
-        if end == -1 or (host[end + 1 :] and not host[end + 1 :].startswith(":")):
-            return False  # unclosed bracket or junk after ] (e.g. [::1]evil)
-        host = host[1:end]
-    elif host.count(":") == 1:  # host:port
-        host = host.split(":", 1)[0]
-    host = host.lower().rstrip(".")
-    return host == "localhost" or _is_loopback_ip(host)
-
-
-def _is_local_bootstrap_request(request: Request) -> bool:
-    """Allow bootstrap injection only through a direct loopback authority."""
-    client = request.client
-    if client is None or not _is_loopback_ip(client.host):
-        return False
-    if any(request.headers.get(h) is not None for h in _PROXIED_CLIENT_HEADERS):
-        return False
-    return _host_header_is_loopback(request.headers.get("host"))
 
 
 def _is_same_origin_request(request: Request) -> bool:
