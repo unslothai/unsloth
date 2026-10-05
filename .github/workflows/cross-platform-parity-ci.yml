@@ -490,7 +490,6 @@ jobs:
       - name: Uninstaller ownership gate tests
         shell: pwsh
         run: pwsh -NoProfile -File tests/studio/test_uninstall_legacy_layout_gate.ps1
-      # Junctions and drive-letter paths: Windows only.
       - name: Uninstaller uv cache note tests
         if: runner.os == 'Windows'
         shell: pwsh

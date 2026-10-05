@@ -70,7 +70,6 @@ try {
     $r = _UvLeftoverCaches @()
     Check "no roots" (-not $r.Saw -and $r.Leftovers.Count -eq 0)
 
-    # A linked root is only unlinked by the uninstaller, so a cache inside its target survives.
     $target = Join-Path $tmp "real"
     $link = Join-Path $tmp "linked"
     New-Item -ItemType Directory -Path (Join-Path $target "cache") -Force | Out-Null

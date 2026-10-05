@@ -541,7 +541,7 @@ Environment:
         return $false
     }
 
-    # install.ps1 records its uv cache in <root>\cache\uv-cache-dir; one outside every removed root is shared and stays.
+    # install.ps1 records its uv cache in <root>\cache\uv-cache-dir.
     function _RecordedUvCache {
         param([string]$Root)
         $marker = Join-Path $Root "cache\uv-cache-dir"
