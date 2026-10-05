@@ -33,6 +33,7 @@ ENCODE_OVERLAP_LATENTS = 32
 ENCODE_MARGIN_LATENTS = 8
 ENCODE_RAMP_LATENTS = 16
 
+
 def wide_tiles_disabled() -> bool:
     return (os.environ.get(WIDE_TILES_ENV) or "").strip().lower() in ("0", "off", "false", "no")
 
@@ -124,10 +125,16 @@ FREE_FRACTION = 0.75
 MAX_TILE_ENV = "UNSLOTH_DIFFUSION_VAE_MAX_TILE"
 
 
-def decode_mib_per_latent(ratio: int, fused: bool = False, cls: Optional[str] = None) -> float:
+def decode_mib_per_latent(
+    ratio: int,
+    fused: bool = False,
+    cls: Optional[str] = None,
+) -> float:
     """bf16 decode peak (MiB) per latent of tile area: measured for the VAE class ``cls``, else the worst measured VAE
     of its ``ratio``, else #12696's 16x figure scaled by the tile's pixel count."""
-    known = DECODE_MIB_PER_LATENT_BY_CLASS.get(cls or "") or DECODE_MIB_PER_LATENT_BY_RATIO.get(int(ratio))
+    known = DECODE_MIB_PER_LATENT_BY_CLASS.get(cls or "") or DECODE_MIB_PER_LATENT_BY_RATIO.get(
+        int(ratio)
+    )
     if known is not None:
         return known[1] if fused else known[0]
     return DECODE_MIB_PER_LATENT * (int(ratio) / DECODE_MIB_RATIO) ** 2
@@ -143,7 +150,9 @@ def _geometry(vae: Any) -> tuple[int, int, int]:
     return ratio, tile, overlap
 
 
-def _cached_axis_weights(vae: Any, starts: list[int], tile: int, length: int, ratio: int, torch: Any, device: Any):
+def _cached_axis_weights(
+    vae: Any, starts: list[int], tile: int, length: int, ratio: int, torch: Any, device: Any
+):
     """``axis_weights`` memoised per VAE: a repeat decode at one size rebuilds no weights (and syncs no device)."""
     cache = vae.__dict__.setdefault("_unsloth_wide_weights", {}) if hasattr(vae, "__dict__") else {}
     key = (tuple(starts), int(tile), int(length), int(ratio), str(device))
@@ -220,7 +229,10 @@ def choose_tiles(
             for tw in _large_stock_sides(width, tile, overlap):
                 if th * tw > max_area:
                     continue
-                key = (len(tile_starts(height, th, overlap)) * len(tile_starts(width, tw, overlap)), -th * tw)
+                key = (
+                    len(tile_starts(height, th, overlap)) * len(tile_starts(width, tw, overlap)),
+                    -th * tw,
+                )
                 if best_key is None or key < best_key:
                     best, best_key = (th, tw), key
         if best is not None:
@@ -241,7 +253,10 @@ def choose_tiles(
             if th is None or tw is None or th * tw > max_area:
                 continue
             cost = (
-                len(tile_starts(height, th, overlap)) * th * len(tile_starts(width, tw, overlap)) * tw,
+                len(tile_starts(height, th, overlap))
+                * th
+                * len(tile_starts(width, tw, overlap))
+                * tw,
                 th * tw,
             )
             if best_cost is None or cost < best_cost:
@@ -249,7 +264,11 @@ def choose_tiles(
     return best
 
 
-def _free_mib(vae: Any, z: Any, cached: bool = True) -> Optional[tuple[float, float]]:
+def _free_mib(
+    vae: Any,
+    z: Any,
+    cached: bool = True,
+) -> Optional[tuple[float, float]]:
     """(free VRAM after the fp32 output accumulator, in MiB; bytes per decoder parameter / 2) now; None off CUDA.
     ``cached`` counts the allocator's reserved but unused blocks as free too."""
     import torch
@@ -293,7 +312,9 @@ def decode_tile_budget(vae: Any, z: Any) -> Optional[int]:
         if free is None:
             return None
         mib, scale = free
-        per_latent = decode_mib_per_latent(_geometry(vae)[0], _fused(vae), type(vae).__name__) * scale
+        per_latent = (
+            decode_mib_per_latent(_geometry(vae)[0], _fused(vae), type(vae).__name__) * scale
+        )
         return max(0, int(FREE_FRACTION * mib / per_latent))
     except Exception:  # noqa: BLE001 - unknown budget: the 32-latent tiles the planner budgeted
         return None
@@ -322,7 +343,9 @@ def floor_shortfall(vae: Any, z: Any) -> Optional[str]:
         return None
     if need <= mib:
         return None
-    return f"a {tile}-latent floor tile needs about {need:.0f} MiB and {max(0.0, mib):.0f} MiB is free"
+    return (
+        f"a {tile}-latent floor tile needs about {need:.0f} MiB and {max(0.0, mib):.0f} MiB is free"
+    )
 
 
 def tiled_decode(
@@ -489,7 +512,9 @@ def _wants_wide_tiles(vae: Any) -> bool:
         return False
     config = getattr(vae, "config", None)
     # Patchified Wan VAEs blend in patch space; FLUX.2's patch_size is pipeline packing its decode never sees.
-    if getattr(config, "patch_size", None) is not None and hasattr(vae, "tile_sample_stride_height"):
+    if getattr(config, "patch_size", None) is not None and hasattr(
+        vae, "tile_sample_stride_height"
+    ):
         return False
     if stock_tiles(vae) is None:
         return False
@@ -512,8 +537,9 @@ def _wide_encode(vae: Any) -> bool:
 def _is_oom(exc: BaseException) -> bool:
     try:
         import torch
-
-        oom = getattr(torch, "OutOfMemoryError", None) or getattr(torch.cuda, "OutOfMemoryError", None)
+        oom = getattr(torch, "OutOfMemoryError", None) or getattr(
+            torch.cuda, "OutOfMemoryError", None
+        )
         if oom is not None and isinstance(exc, oom):
             return True
     except Exception:  # noqa: BLE001
@@ -524,7 +550,6 @@ def _is_oom(exc: BaseException) -> bool:
 def _release_cache(z: Any) -> None:
     try:
         import torch
-
         if getattr(z, "device", None) is not None and z.device.type == "cuda":
             torch.cuda.empty_cache()
     except Exception:  # noqa: BLE001
@@ -652,5 +677,7 @@ def uninstall(vae: Any) -> None:
     ):
         vae.__dict__.pop(name, None)
     if fast is not None and "tiled_decode" not in vae.__dict__:
-        vae.tiled_decode = fast  # the fused batched loop takes ``tiled_decode`` back, as without the wide tiles
+        vae.tiled_decode = (
+            fast  # the fused batched loop takes ``tiled_decode`` back, as without the wide tiles
+        )
     vae._unsloth_wide_tiles = False

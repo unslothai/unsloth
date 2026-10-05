@@ -263,7 +263,11 @@ def test_qwen_image_tiled_encode_is_closer_to_untiled():
 def test_kill_switch_keeps_every_stock_decode(monkeypatch, build, ratio, stock, floor):
     vae = build()
     side = max(floor[0] + 8, stock[0] + 8)
-    shape = (1, 4, side, side) if not hasattr(vae, "tile_sample_stride_height") else (1, 4, 1, side, side)
+    shape = (
+        (1, 4, side, side)
+        if not hasattr(vae, "tile_sample_stride_height")
+        else (1, 4, 1, side, side)
+    )
     if ratio == 32:
         shape = (1, 8, side, side)
     if ratio * side > 1300:
@@ -288,7 +292,9 @@ def test_keep_stock_list_skips_the_install(monkeypatch):
 
 
 def test_unreadable_geometry_keeps_the_stock_decode():
-    cls = type("SomeFutureVAE", (), {"_decode": lambda self: None, "tiled_decode": lambda self: None})
+    cls = type(
+        "SomeFutureVAE", (), {"_decode": lambda self: None, "tiled_decode": lambda self: None}
+    )
     vae = cls()
     vae.use_tiling, vae.spatial_compression_ratio = False, 16
     assert vt.stock_tiles(vae) is None
@@ -299,7 +305,11 @@ def test_unreadable_geometry_keeps_the_stock_decode():
 # 128, on the real diffusers VAE weights (B200, diffusers 0.41.0.dev0, temp calibration run); the worst side per VAE.
 _MEASURED_MIB_PER_LATENT = {
     "AutoencoderKLQwenImage": (8, 0.270, 0.179),  # Qwen-Image / Qwen-Image-Edit / Krea-2
-    "AutoencoderKLQwenImage21": (16, 1.650, 0.425),  # Qwen-Image-2.1 (the 8-latent fused side, 0.59, is never a tile)
+    "AutoencoderKLQwenImage21": (
+        16,
+        1.650,
+        0.425,
+    ),  # Qwen-Image-2.1 (the 8-latent fused side, 0.59, is never a tile)
     "AutoencoderKLHunyuanImage": (32, 1.255, 1.255),  # HunyuanImage-2.1, no fused path
     "AutoencoderKL": (8, 0.166, 0.086),  # FLUX.1 / Kontext / Z-Image / HiDream / Lumina 2 / SDXL
     "AutoencoderKLFlux2": (8, 0.166, 0.086),  # FLUX.2 / Ideogram 4
@@ -329,7 +339,9 @@ def test_calibrated_figures_other_ratios():
 
 
 @pytest.mark.parametrize("fused", [False, True])
-def test_budget_uses_the_fused_figure_only_where_the_fused_kernels_are_installed(monkeypatch, fused):
+def test_budget_uses_the_fused_figure_only_where_the_fused_kernels_are_installed(
+    monkeypatch, fused
+):
     vae = _hunyuan_image()
     qi = _qwen_image()
     monkeypatch.delenv(vt.MAX_TILE_ENV)
@@ -341,7 +353,9 @@ def test_budget_uses_the_fused_figure_only_where_the_fused_kernels_are_installed
     z = torch.zeros(1, 4, 1, 64, 64)
     want = int(vt.FREE_FRACTION * 1000 / (0.18 if fused else 0.27))
     assert vt.decode_tile_budget(qi, z) == want
-    assert vt.decode_tile_budget(vae, torch.zeros(1, 8, 64, 64)) == int(vt.FREE_FRACTION * 1000 / 1.3)
+    assert vt.decode_tile_budget(vae, torch.zeros(1, 8, 64, 64)) == int(
+        vt.FREE_FRACTION * 1000 / 1.3
+    )
     kl = _kl()
     assert vt.install(kl)
     if fused:
@@ -362,14 +376,22 @@ def test_only_large_stock_tile_vaes_size_past_the_floor_from_device_free_memory(
     monkeypatch.delenv(vt.MAX_TILE_ENV)
     seen = {}
 
-    def free(v, z, cached = True):
+    def free(
+        v,
+        z,
+        cached = True,
+    ):
         seen[type(v).__name__] = cached
         return 1000.0 if cached else 100.0, 1.0
 
     monkeypatch.setattr(vt, "_free_mib", free)
-    for build, z in ((_kl, torch.zeros(1, 4, 64, 64)), (lambda: _kl(cls = "AutoencoderKLFlux2"), torch.zeros(1, 4, 64, 64)),
-                     (_qwen_image, torch.zeros(1, 4, 1, 64, 64)), (_qwen_image_21, torch.zeros(1, 4, 1, 64, 64)),
-                     (_hunyuan_image, torch.zeros(1, 8, 64, 64))):
+    for build, z in (
+        (_kl, torch.zeros(1, 4, 64, 64)),
+        (lambda: _kl(cls = "AutoencoderKLFlux2"), torch.zeros(1, 4, 64, 64)),
+        (_qwen_image, torch.zeros(1, 4, 1, 64, 64)),
+        (_qwen_image_21, torch.zeros(1, 4, 1, 64, 64)),
+        (_hunyuan_image, torch.zeros(1, 8, 64, 64)),
+    ):
         vae = build()
         assert vt.install(vae)
         vt.decode_tile_budget(vae, z)
@@ -425,8 +447,12 @@ def test_qwen_family_layout_ignores_the_large_stock_rule():
     fewest-latents choice whatever stock tile is passed."""
     for length in (64, 100, 128, 166, 256):
         for area in (None, 1500, 4000, 10**6):
-            assert vt.choose_tiles(length, length, area) == vt.choose_tiles(length, length, area, 32, 16, 16)
-            assert vt.choose_tiles(length, length, area) == vt.choose_tiles(length, length, area, 32, 16, 32)
+            assert vt.choose_tiles(length, length, area) == vt.choose_tiles(
+                length, length, area, 32, 16, 16
+            )
+            assert vt.choose_tiles(length, length, area) == vt.choose_tiles(
+                length, length, area, 32, 16, 32
+            )
 
 
 @pytest.mark.parametrize("length", list(range(1, 400)))
@@ -465,7 +491,9 @@ def test_floor_that_cannot_fit_decodes_in_the_stock_tiles_and_says_why(monkeypat
     log = _Log()
     assert vt.install(vae, log)
     monkeypatch.delenv(vt.MAX_TILE_ENV)
-    monkeypatch.setattr(vt, "_free_mib", lambda v, zz, **k: (500.0, 1.0))  # 32x32 x 1.3 MiB = 1,331 MiB needed
+    monkeypatch.setattr(
+        vt, "_free_mib", lambda v, zz, **k: (500.0, 1.0)
+    )  # 32x32 x 1.3 MiB = 1,331 MiB needed
     assert "floor tile needs about 1331 MiB" in vt.floor_shortfall(vae, z)
     assert torch.equal(_decode_with(vae, z), stock)
     assert _decode_with(vae, z).shape == stock.shape
@@ -492,7 +520,11 @@ def test_no_stock_fallback_where_the_stock_tile_is_as_large(monkeypatch, build):
     vae._unsloth_vae_fused_installed = 3
     monkeypatch.delenv(vt.MAX_TILE_ENV)
     monkeypatch.setattr(vt, "_free_mib", lambda v, zz, **k: (1.0, 1.0))
-    z = torch.zeros(1, 4, 1, 200, 200) if hasattr(vae, "tile_sample_stride_height") else torch.zeros(1, 4, 200, 200)
+    z = (
+        torch.zeros(1, 4, 1, 200, 200)
+        if hasattr(vae, "tile_sample_stride_height")
+        else torch.zeros(1, 4, 200, 200)
+    )
     assert vt.floor_shortfall(vae, z) is None
 
 
@@ -522,7 +554,13 @@ def test_oom_retries_at_the_floor_then_in_the_stock_tiles(monkeypatch):
     real = vt.tiled_decode
     calls = []
 
-    def flaky(v, zz, return_dict = True, max_area = "auto", fail = ("auto",)):
+    def flaky(
+        v,
+        zz,
+        return_dict = True,
+        max_area = "auto",
+        fail = ("auto",),
+    ):
         calls.append(max_area)
         if max_area in fail:
             v._unsloth_last_decode_tile = (48, 48, 2304) if max_area == "auto" else (32, 32, 0)
@@ -537,7 +575,9 @@ def test_oom_retries_at_the_floor_then_in_the_stock_tiles(monkeypatch):
     assert torch.equal(_decode_with(vae, z), stock)
     assert calls == ["auto", 0]
     # an error that is not an OOM propagates
-    monkeypatch.setattr(vt, "tiled_decode", lambda *a, **k: (_ for _ in ()).throw(ValueError("bad")))
+    monkeypatch.setattr(
+        vt, "tiled_decode", lambda *a, **k: (_ for _ in ()).throw(ValueError("bad"))
+    )
     with pytest.raises(ValueError):
         _decode_with(vae, z)
 
@@ -556,7 +596,9 @@ def test_geometry_and_blend_weights_are_cached_per_vae(monkeypatch):
     second = _decode_with(vae, z)
     assert len(built) == 1 and torch.equal(first, second)
     vt.uninstall(vae)
-    assert "_unsloth_wide_weights" not in vae.__dict__ and "_unsloth_wide_geometry" not in vae.__dict__
+    assert (
+        "_unsloth_wide_weights" not in vae.__dict__ and "_unsloth_wide_geometry" not in vae.__dict__
+    )
 
 
 def _image_family_vae_classes():
@@ -597,7 +639,9 @@ def test_load_installs_for_every_image_family():
     """The load path installs unconditionally (the rule decides per VAE), not behind a family check."""
     from core.inference import diffusion
 
-    src = textwrap.dedent(inspect.getsource(inspect.unwrap(diffusion.DiffusionBackend.load_pipeline)))
+    src = textwrap.dedent(
+        inspect.getsource(inspect.unwrap(diffusion.DiffusionBackend.load_pipeline))
+    )
     calls = [
         node
         for node in ast.walk(ast.parse(src))
@@ -609,7 +653,9 @@ def test_load_installs_for_every_image_family():
     for node in ast.walk(ast.parse(src)):
         # not nested under an `if` on the family / VAE class
         if isinstance(node, ast.If) and any(c in ast.walk(node) for c in calls):
-            assert "fam" not in ast.unparse(node.test) and "vae" not in ast.unparse(node.test).lower()
+            assert (
+                "fam" not in ast.unparse(node.test) and "vae" not in ast.unparse(node.test).lower()
+            )
 
 
 def test_stock_fallback_keeps_the_fused_batched_loop_on_the_wan_family(monkeypatch):
