@@ -335,6 +335,13 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         base_repo = "black-forest-labs/FLUX.1-Kontext-dev",
         aliases = ("flux.1-kontext-dev", "flux1-kontext", "flux-kontext", "kontext"),
         edit = True,
+        # Native (sd.cpp) Kontext runs on the FLUX.1 assets: the same VAE and the same CLIP-L + T5-XXL pair, with the
+        # source image handed over as a reference image (sd.cpp docs/kontext.md). No vision encoder is involved.
+        sd_cpp_vae = ("black-forest-labs/FLUX.1-schnell", "ae.safetensors"),
+        sd_cpp_text_encoders = (
+            ("unsloth/flux-text-encoders", "clip_l.safetensors", "clip_l"),
+            ("unsloth/flux-text-encoders", "t5xxl_fp16.safetensors", "t5xxl"),
+        ),
     ),
     DiffusionFamily(
         # Qwen instruction editing: the 2511 checkpoint ships as QwenImageEditPlusPipeline. Specific aliases first so
@@ -358,6 +365,23 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         edit = True,
         # same DiT as qwen-image
         fp16_incompatible = True,
+        # Native (sd.cpp) editing uses Qwen-Image's own VAE and Qwen2.5-VL encoder, plus that encoder's vision
+        # projector: every edit checkpoint reads the source image through the VLM as well as through the VAE, and a
+        # GGUF encoder carries no vision weights of its own (sd.cpp docs/qwen_image_edit.md). 2511 needs no extra
+        # flag: sd.cpp turns its zero-timestep conditioning on from the ``__index_timestep_zero__`` tensor the GGUF
+        # carries.
+        sd_cpp_vae = ("unsloth/Qwen-Image-ComfyUI", "split_files/vae/qwen_image_vae.safetensors"),
+        sd_cpp_text_encoders = (
+            (
+                "unsloth/Qwen2.5-VL-7B-Instruct-GGUF",
+                "Qwen2.5-VL-7B-Instruct-Q4_K_M.gguf",
+                "qwen2vl",
+            ),
+            ("unsloth/Qwen2.5-VL-7B-Instruct-GGUF", "mmproj-F16.gguf", "llm_vision"),
+        ),
+        # The documented sd.cpp invocation for all three checkpoints, the same as qwen-image's.
+        sd_cpp_sampling_method = "euler",
+        sd_cpp_flow_shift = 3.0,
     ),
     DiffusionFamily(
         name = "qwen-image",
