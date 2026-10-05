@@ -123,6 +123,8 @@ impl Default for BrowserViews {
 struct PollGate {
     shown: bool,
     window_active: bool,
+    /// Bumped when the shown tab changes, so a switch between two shown tabs reads at once too.
+    switches: u64,
 }
 
 impl Default for PollGate {
@@ -131,6 +133,7 @@ impl Default for PollGate {
         Self {
             shown: false,
             window_active: true,
+            switches: 0,
         }
     }
 }
@@ -158,11 +161,15 @@ pub fn new_browser_views() -> BrowserViews {
 }
 
 fn set_shown(views: &BrowserViews, inner: &mut ViewsState, shown: Option<String>) {
+    if inner.shown == shown {
+        return;
+    }
     let visible = shown.is_some();
     inner.shown = shown;
-    views
-        .gate
-        .send_if_modified(|gate| std::mem::replace(&mut gate.shown, visible) != visible);
+    views.gate.send_modify(|gate| {
+        gate.shown = visible;
+        gate.switches = gate.switches.wrapping_add(1);
+    });
 }
 
 /// Re-read the main window's state after its focus, size or visibility changed.
@@ -1589,6 +1596,7 @@ mod tests {
             PollGate {
                 shown,
                 window_active,
+                switches: 0,
             }
         }
 
@@ -1648,6 +1656,28 @@ mod tests {
             set_shown(&views, &mut inner, None);
             assert!(!views.gate.borrow().polls());
             assert_eq!(inner.shown, None);
+        }
+
+        #[tokio::test(start_paused = true)]
+        async fn switching_between_shown_tabs_reads_at_once() {
+            let views = BrowserViews::default();
+            let mut inner = ViewsState::default();
+            set_shown(&views, &mut inner, Some("a".into()));
+            let count = Arc::new(AtomicUsize::new(0));
+            let counter = count.clone();
+            tokio::spawn(run_url_poll(views.gate.subscribe(), move || {
+                counter.fetch_add(1, Ordering::SeqCst);
+                async {}
+            }));
+            tokio::time::sleep(Duration::from_millis(1)).await;
+            assert_eq!(count.load(Ordering::SeqCst), 1);
+            set_shown(&views, &mut inner, Some("b".into()));
+            tokio::time::sleep(Duration::from_millis(1)).await;
+            assert_eq!(count.load(Ordering::SeqCst), 2);
+            // Showing the same tab again is not a switch.
+            set_shown(&views, &mut inner, Some("b".into()));
+            tokio::time::sleep(Duration::from_millis(1)).await;
+            assert_eq!(count.load(Ordering::SeqCst), 2);
         }
     }
 
