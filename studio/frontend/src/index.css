@@ -2395,14 +2395,25 @@ html[data-chat-font] .aui-root {
 	}
 	.aui-branch-chevron-btn {
 		/* A hit target of at least 24px (what #12173 guarantees every footer control) in the 20px slot, scaled, that
-		   the layout was tuned to. 24px is a floor in CSS pixels, so it is not multiplied by --ui-space-scale; the
-		   negative margin hands the difference back, so nothing moves and, with no fill, nothing shows. */
+		   the layout was tuned to. The floor follows the browser's Interface Scale, as browser zoom would, but not the
+		   UI font size. The extra width goes toward the count between the chevrons, never toward the action button
+		   on the outer side, which at small font sizes sits closer than the extra (see the first/last-child rules);
+		   negative margins hand it back and padding keeps the glyph where it was, so nothing moves on screen. */
 		--aui-chevron-slot: calc(20px * var(--ui-space-scale, 1));
-		--aui-chevron-hit: max(24px, var(--aui-chevron-slot));
+		--aui-chevron-hit: max(calc(24px * var(--ui-interface-scale, 1)), var(--aui-chevron-slot));
+		--aui-chevron-extra: calc(var(--aui-chevron-hit) - var(--aui-chevron-slot));
 		width: var(--aui-chevron-hit);
 		height: var(--aui-chevron-hit);
-		margin: calc((var(--aui-chevron-slot) - var(--aui-chevron-hit)) / 2);
+		margin-block: calc(var(--aui-chevron-extra) / -2);
 		@apply inline-flex shrink-0 cursor-pointer items-center justify-center rounded-full p-0 text-chat-icon-fg transition-colors hover:text-black active:text-black dark:hover:text-white dark:active:text-white focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-30 disabled:hover:text-chat-icon-fg dark:disabled:hover:text-chat-icon-fg;
+	}
+	.aui-branch-chevron-btn:first-child {
+		margin-inline-end: calc(var(--aui-chevron-extra) * -1);
+		padding-inline-end: var(--aui-chevron-extra);
+	}
+	.aui-branch-chevron-btn:last-child {
+		margin-inline-start: calc(var(--aui-chevron-extra) * -1);
+		padding-inline-start: var(--aui-chevron-extra);
 	}
 	.sidebar-row-action:hover .sidebar-row-action-glyph,
 	.sidebar-row-action[data-state="open"] .sidebar-row-action-glyph {
