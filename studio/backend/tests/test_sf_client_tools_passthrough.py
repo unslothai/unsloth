@@ -1536,6 +1536,69 @@ def test_the_contract_reaches_the_backend_and_its_reply_comes_back_whole(monkeyp
     assert not message.get("reasoning_content")
 
 
+class _FittedToolLoopBackend(_ToolLoopBackend):
+    def compact_chat_context(
+        self,
+        messages,
+        *,
+        system_prompt = "",
+        **_kwargs,
+    ):
+        return {"messages": messages, "system_prompt": system_prompt}
+
+
+@pytest.mark.parametrize(
+    "is_mlx, checkpointed, extra, offered",
+    [
+        (True, True, {}, ["search_conversation"]),
+        (False, True, {}, None),
+        (True, False, {}, None),
+        (True, True, {"context_policy": "rolling"}, None),
+        (True, True, {"context_overflow": None}, None),
+        (True, True, {"tool_choice": "none"}, None),
+        (True, True, {"max_tool_calls_per_message": 0}, None),
+        (True, True, {"n": 2}, None),
+        (True, True, {"permission_mode": "ask"}, None),
+        (True, True, {"response_format": _RF_FORMAT}, None),
+        (True, True, {"tools": [LOOKUP_TOOL]}, ["lookup"]),
+    ],
+)
+def test_a_compacted_mlx_thread_keeps_archive_search_with_tools_off(
+    monkeypatch, is_mlx, checkpointed, extra, offered
+):
+    import routes.inference as inf
+
+    monkeypatch.setattr(inf, "_thread_has_conversation_archive", lambda thread_id: True)
+    monkeypatch.setattr(
+        inf, "_thread_has_checkpoint", lambda thread_id, messages = None: checkpointed
+    )
+    backend = _FittedToolLoopBackend(_fixed("done"))
+    backend.models["sf-model"]["is_mlx"] = is_mlx
+    payload = _request(
+        **{
+            "stream": False,
+            "enable_tools": False,
+            "thread_id": "saved",
+            "context_overflow": "truncate_oldest",
+            "context_policy": "checkpoint",
+            **extra,
+        }
+    )
+    probed = []
+
+    def _features(*_args, **kwargs):
+        probed.append(bool(kwargs.get("tools")))
+        return {"supports_tools": True, "supports_reasoning": False}
+
+    _install(monkeypatch, backend)
+    monkeypatch.setattr(inf, "_detect_safetensors_features", _features)
+    asyncio.run(openai_chat_completions(payload, request = _Request(), current_subject = "u"))
+    tools = backend.calls[0]["tools"]
+    assert (tools and [tool["function"]["name"] for tool in tools]) == offered
+    # The template branch that is classified is the one the request renders.
+    assert set(probed) == {bool(offered)}
+
+
 class _VisionToolLoopBackend(_ToolLoopBackend):
     def __init__(self, responder, **kwargs):
         super().__init__(responder, **kwargs)

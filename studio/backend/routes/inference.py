@@ -32223,6 +32223,18 @@ async def produce_openai_chat_completions(
     _sf_mcp_allowed = (
         payload.tool_choice != "none" and bool(payload.mcp_enabled) and _sf_cli_policy is not False
     )
+    # A compacted thread opens the tool loop even with the user's tools off, as the GGUF
+    # branch does: after a reset search_conversation is the only way back to what was
+    # dropped, and _select_request_tools admits it alone. Client tools and guided decoding
+    # keep their own path, which on GGUF is the passthrough taken before this question.
+    _sf_recall_reopens_loop = (
+        _sf_fit_overflow is not None
+        and not (_sf_tools_on or _sf_mcp_allowed)
+        and not _tool_loop_unusable
+        and not _has_client_tool_contract
+        and not _response_format_constrains_decoding(payload)
+        and _checkpoint_recall_may_enable_tools(payload)
+    )
 
     # Named templates may expose native reasoning only in their ``tool_use``
     # branch. Use a truthy placeholder for Unsloth-managed tools, whose concrete
@@ -32230,7 +32242,7 @@ async def produce_openai_chat_completions(
     # A withdrawn catalogue renders plain here too, so the probe and the completion agree on
     # which branch the conversation is in.
     _sf_server_tool_intent = payload.tool_choice != "none" and bool(
-        _sf_tools_on or _explicit_studio_tool_loop_requested(payload)
+        _sf_tools_on or _sf_recall_reopens_loop or _explicit_studio_tool_loop_requested(payload)
     )
     # Detection only: this picks which branch of a named template is READ, never what is
     # rendered (the catalogue is withdrawn above and in _sf_tools_to_use), so it must not
@@ -32383,7 +32395,7 @@ async def produce_openai_chat_completions(
     # _sf_cli_policy / _sf_tools_on / _sf_mcp_allowed are resolved above, before
     # the response protocol is classified, so both use the same decision.
     _sf_use_tools = (
-        (_sf_tools_on or _sf_mcp_allowed)
+        (_sf_tools_on or _sf_mcp_allowed or _sf_recall_reopens_loop)
         and _sf_features.get("supports_tools", False)
         # An attachment used to withdraw the tools: the loop had no way to carry
         # a picture. It has one now, so only a model that cannot read images does.
