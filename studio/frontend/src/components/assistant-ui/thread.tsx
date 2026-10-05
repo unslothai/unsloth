@@ -25,6 +25,7 @@ import {
 import { ComposerDraftPreview } from "@/components/assistant-ui/composer-draft-preview";
 import { PromptQueueList } from "@/components/assistant-ui/lazy-prompt-queue-list";
 import { QueueResumeIcon } from "@/components/assistant-ui/queue-resume-icon";
+import { MessageRowBoundary } from "@/components/assistant-ui/message-row-boundary";
 import { ProgressiveMessages } from "@/components/assistant-ui/progressive-messages";
 import { MessageMenuTime } from "@/components/assistant-ui/message-menu-time";
 import { UserMessageActionBar, UserMessageFooter } from "@/components/assistant-ui/user-message-actions";
@@ -1811,6 +1812,13 @@ const ThreadMessage: FC = () => {
   );
 };
 
+// the boundary sits inside the shared element, so rows still get one identical element each.
+const ThreadMessageRow: FC = () => (
+  <MessageRowBoundary>
+    <ThreadMessage />
+  </MessageRowBoundary>
+);
+
 /**
  * Resolves the divider against the branch on screen, once for the thread.
  *
@@ -1913,7 +1921,7 @@ const ForkContinuationRule: FC = () => {
 // Hoisted, so ThreadPrimitive.Messages sees the same children function on every Thread render. An
 // inline arrow changes identity each time, invalidating the memo that keeps the message array from
 // being rebuilt, and the bail-out below it would never get to run.
-const renderThreadMessage = proplessSlot(ThreadMessage);
+const renderThreadMessage = proplessSlot(ThreadMessageRow);
 
 // Memoized: chat-page renders this inline in a store-subscribing component, so a parent render
 // would otherwise reconcile the whole message list.

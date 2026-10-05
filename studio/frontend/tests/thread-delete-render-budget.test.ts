@@ -44,7 +44,12 @@ test("the render prop is built once, at module scope", () => {
   // each time, leaving nothing for the bail-out to skip.
   assert.match(
     thread,
-    /^const renderThreadMessage = proplessSlot\(ThreadMessage\);$/m,
+    /^const renderThreadMessage = proplessSlot\(ThreadMessageRow\);$/m,
+  );
+  // the row's boundary lives inside that one shared element, so it costs no per-row props.
+  assert.match(
+    thread,
+    /const ThreadMessageRow: FC = \(\) => \(\s*<MessageRowBoundary>\s*<ThreadMessage \/>\s*<\/MessageRowBoundary>\s*\);/,
   );
 });
 
@@ -76,4 +81,33 @@ test("research-reply ownership is selected as an answer, not as the message list
     hook,
     /researchReplyOwners\(\s*\[\.\.\.thread\.messages\]/,
   );
+});
+
+test("a stale message row draws nothing for a frame, and any other error still goes up", async () => {
+  const { MessageRowBoundary } = await import(
+    "../src/components/assistant-ui/message-row-boundary.ts"
+  );
+  const frames: FrameRequestCallback[] = [];
+  globalThis.requestAnimationFrame = (callback) => frames.push(callback);
+  globalThis.cancelAnimationFrame = () => {};
+  const row = new MessageRowBoundary({ children: "row" });
+  row.setState = (update) => {
+    const next =
+      typeof update === "function" ? update(row.state, row.props) : update;
+    row.state = { ...row.state, ...next };
+  };
+  const stale = new Error("tapClientLookup: Index 1 out of bounds (length: 0)");
+  row.state = {
+    ...row.state,
+    ...MessageRowBoundary.getDerivedStateFromError(stale),
+  };
+  assert.equal(row.render(), null);
+  row.componentDidCatch(stale);
+  frames.shift()?.(0);
+  assert.equal(row.render(), "row");
+  row.state = {
+    ...row.state,
+    ...MessageRowBoundary.getDerivedStateFromError(new Error("boom")),
+  };
+  assert.throws(() => row.render(), /boom/);
 });
