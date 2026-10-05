@@ -7493,7 +7493,6 @@ class DiffusionBackend:
                         if eager_patched:
                             uninstall_patches()
                             uninstall_arch_patches()
-                            # A fused AdaLN forward the eager layer sat on is back on top now: restore it too.
                             _uninstall_fused_dit_patches()
                         state = pipe = transformer = None
                         pipe_kwargs.clear()
@@ -10242,7 +10241,7 @@ class DiffusionBackend:
 
             uninstall_patches()
             uninstall_arch_patches()
-            # The deferred profile layered the eager patch over the fused AdaLN: unwind that one now too.
+            # Again: the deferred profile layers the eager patch over the fused AdaLN.
             _uninstall_fused_dit_patches()
         # Deliberately NOT unload_lora_weights(): the whole pipe is dropped below, freeing any adapters with it. Drop
         # the workflow pipes so they do not pin the freed pipeline modules past unload.
