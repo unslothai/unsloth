@@ -1263,6 +1263,10 @@ def _validate_decision_request(request: TrainingStartRequest, via_api_key: bool 
         subfolder = request.model_subfolder,
     )
     if layout == "clef":
+        from core.systemone.catalog import clef_unsupported_reason
+
+        if (reason := clef_unsupported_reason()) is not None:
+            raise HTTPException(status_code = 400, detail = reason)
         request.decision_layout = "clef"
         if request.model_subfolder is not None:
             raise HTTPException(

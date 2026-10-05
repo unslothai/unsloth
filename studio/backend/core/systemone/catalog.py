@@ -81,6 +81,20 @@ CLEF_FINE_TUNE_PREFIX = "clef-ft:"
 FINE_TUNE_PREFIXES = (FINE_TUNE_PREFIX, CLEF_FINE_TUNE_PREFIX)
 
 
+CLEF_NEEDS_GPU = (
+    "Clef models need an NVIDIA or AMD GPU; this machine has none. Use a Laya model instead."
+)
+
+
+def clef_unsupported_reason() -> str | None:
+    # ROCm reports DeviceType.CUDA too. A failed probe answers None: detection only ever widens.
+    try:
+        from utils.hardware.hardware import DeviceType, get_device
+        return None if get_device() == DeviceType.CUDA else CLEF_NEEDS_GPU
+    except Exception:
+        return None
+
+
 def is_fine_tune_name(name: object) -> bool:
     return isinstance(name, str) and name.startswith(FINE_TUNE_PREFIXES)
 

@@ -636,7 +636,13 @@ def _misplaced() -> bool:
 
 
 def _clef_blocked_by_training(checkpoint: Checkpoint) -> None:
-    if checkpoint.layout != "clef" or not _training_active():
+    if checkpoint.layout != "clef":
+        return
+    from .catalog import clef_unsupported_reason
+
+    if (reason := clef_unsupported_reason()) is not None:
+        raise Unavailable(400, "api_usage_error", reason)
+    if not _training_active():
         return
     # Clef has no CPU fallback: it waits for the GPU instead of taking it from the run.
     if _loaded is not None and _loaded.layout == "clef":

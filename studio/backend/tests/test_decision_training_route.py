@@ -464,6 +464,22 @@ def test_decision_worker_uses_one_gpu_and_no_llm_kernel_installs(monkeypatch, tm
     assert received[-1]["type"] == "error"
 
 
+@pytest.fixture
+def device(monkeypatch):
+    from utils.hardware import hardware
+
+    def use(kind):
+        value = {
+            "cuda": hardware.DeviceType.CUDA,
+            "cpu": hardware.DeviceType.CPU,
+            "xpu": hardware.DeviceType.XPU,
+        }[kind]
+        monkeypatch.setattr(hardware, "get_device", lambda: value)
+
+    use("cuda")
+    return use
+
+
 def _clef_folder(folder: Path) -> Path:
     folder.mkdir(parents = True)
     for name in ("config.json", "joint_head.safetensors", "joint_head_config.json"):
@@ -471,7 +487,7 @@ def _clef_folder(folder: Path) -> Path:
     return folder
 
 
-def test_api_clef_runs_get_the_clef_recipe_and_keep_qlora(route, tmp_path):
+def test_api_clef_runs_get_the_clef_recipe_and_keep_qlora(route, device, tmp_path):
     config = _started_config(route, _request(model_name = str(_clef_folder(tmp_path / "clef"))))
 
     assert config["decision_layout"] == "clef"
@@ -485,7 +501,7 @@ def test_api_clef_runs_get_the_clef_recipe_and_keep_qlora(route, tmp_path):
     assert (laya["decision_layout"], laya["load_in_4bit"]) == ("laya", False)
 
 
-def test_a_caller_cannot_claim_a_layout_or_a_clef_subfolder(route, tmp_path):
+def test_a_caller_cannot_claim_a_layout_or_a_clef_subfolder(route, device, tmp_path):
     clef = _clef_folder(tmp_path / "clef")
     laya = _laya_folder(tmp_path / "laya")
     claimed = _request(model_name = str(laya), decision_layout = "clef")
@@ -497,7 +513,7 @@ def test_a_caller_cannot_claim_a_layout_or_a_clef_subfolder(route, tmp_path):
     assert "model_subfolder" in refused.value.detail
 
 
-def test_a_hub_clef_repo_is_a_decision_model(route):
+def test_a_hub_clef_repo_is_a_decision_model(route, device):
     from utils.models import model_config
 
     files = [
@@ -516,3 +532,16 @@ def test_a_hub_clef_repo_is_a_decision_model(route):
         assert request.decision_layout == "clef"
         route._reject_untrainable_model_request(request)
         assert model_config.decision_layout("Cloudflare/clef-flash") == "clef"
+
+
+@pytest.mark.parametrize("kind", ["cpu", "xpu"])
+def test_clef_training_is_refused_without_an_nvidia_or_amd_gpu(route, device, tmp_path, kind):
+    from core.systemone.catalog import CLEF_NEEDS_GPU
+
+    device(kind)
+    with pytest.raises(HTTPException) as refused:
+        route._validate_decision_request(_request(model_name = str(_clef_folder(tmp_path / "c"))))
+    assert (refused.value.status_code, refused.value.detail) == (400, CLEF_NEEDS_GPU)
+    laya = _request(model_name = str(_laya_folder(tmp_path / "laya")))
+    route._validate_decision_request(laya)
+    assert laya.decision_layout == "laya"

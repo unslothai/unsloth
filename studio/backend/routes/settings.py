@@ -655,6 +655,8 @@ class SystemOneModelOption(BaseModel):
     download_bytes: int
     kind: Literal["catalog", "fine_tune"] = "catalog"
     label: Optional[str] = None
+    available: bool = True
+    unavailable_reason: Optional[str] = None
 
 
 class SystemOneConnectionOption(BaseModel):
@@ -1463,12 +1465,19 @@ def update_helper_precache(
     return _helper_precache_response(enabled)
 
 
+def _clef_availability(checkpoint, reason: Optional[str]) -> dict:
+    if reason is None or getattr(checkpoint, "layout", "laya") != "clef":
+        return {}
+    return {"available": False, "unavailable_reason": reason}
+
+
 def _systemone_response(request: Request) -> SystemOneSettingsResponse:
     from pathlib import Path
 
     from core.systemone import catalog, laya_runtime
     from routes.systemone import MCP_PATH
 
+    clef_reason = catalog.clef_unsupported_reason()
     enabled = systemone_settings.get_enabled()
     runtime = laya_runtime.status()
     configured = catalog.default_checkpoint()
@@ -1496,7 +1505,10 @@ def _systemone_response(request: Request) -> SystemOneSettingsResponse:
         gpu_available = systemone_settings.gpu_available(),
         models = [
             SystemOneModelOption(
-                name = c.name, description = c.description, download_bytes = c.download_bytes
+                name = c.name,
+                description = c.description,
+                download_bytes = c.download_bytes,
+                **_clef_availability(c, clef_reason),
             )
             for c in catalog.CHECKPOINTS.values()
         ]
@@ -1507,6 +1519,7 @@ def _systemone_response(request: Request) -> SystemOneSettingsResponse:
                 download_bytes = 0,
                 kind = "fine_tune",
                 label = Path(c.source).name,
+                **_clef_availability(c, clef_reason),
             )
             for c in fine_tunes
         ],
