@@ -28817,7 +28817,17 @@ def _normalize_chat_reasoning_controls(payload) -> None:
         payload.preserve_thinking = nested["preserve_thinking"]
 
 
-def _fill_recommended_sampling_openai(payload, model_id) -> None:
+def _sampling_thinking_mode(llama_backend, payload) -> Optional[bool]:
+    if not getattr(llama_backend, "supports_reasoning", False):
+        return None
+    return _think_parsing_expected(llama_backend, payload)
+
+
+def _fill_recommended_sampling_openai(
+    payload,
+    model_id,
+    thinking = None,
+) -> None:
     """Apply per-model recommended sampling (and any operator UNSLOTH_SAMPLING_* pin) to a
     ChatCompletionRequest in place.
 
@@ -28832,7 +28842,7 @@ def _fill_recommended_sampling_openai(payload, model_id) -> None:
         f: (getattr(payload, f) if f in payload.model_fields_set else None)
         for f in SAMPLING_FIELD_NAMES
     }
-    effective = resolve_effective_sampling(model_id, explicit)
+    effective = resolve_effective_sampling(model_id, explicit, thinking = thinking)
     for field, value in effective.items():
         setattr(payload, field, value)
 
@@ -29844,7 +29854,11 @@ async def produce_openai_chat_completions(
         if using_gguf
         else getattr(backend, "active_model_name", None)
     ) or model_name
-    _fill_recommended_sampling_openai(payload, _reco_model_id)
+    _fill_recommended_sampling_openai(
+        payload,
+        _reco_model_id,
+        thinking = _sampling_thinking_mode(llama_backend, payload) if using_gguf else None,
+    )
 
     # ── Standard OpenAI function-calling pass-through (GGUF only) ────
     # When a client (opencode / Claude Code via OpenAI compat / Cursor /
@@ -37288,7 +37302,11 @@ async def _responses_stream(
 
     # Streaming /v1/responses builds the passthrough body directly (bypassing
     # openai_chat_completions), so apply recommended sampling here too.
-    _fill_recommended_sampling_openai(chat_req, getattr(llama_backend, "model_identifier", None))
+    _fill_recommended_sampling_openai(
+        chat_req,
+        getattr(llama_backend, "model_identifier", None),
+        thinking = _sampling_thinking_mode(llama_backend, chat_req),
+    )
     body = await _build_openai_passthrough_body_async(
         chat_req, backend_ctx = llama_backend.context_length, llama_backend = llama_backend
     )
@@ -40234,6 +40252,7 @@ async def anthropic_messages(
             "repetition_penalty": payload.repetition_penalty,
             "presence_penalty": payload.presence_penalty,
         },
+        thinking = _sampling_thinking_mode(llama_backend, payload),
     )
     temperature = _anthropic_sampling["temperature"]
     top_p = _anthropic_sampling["top_p"]
