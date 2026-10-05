@@ -19242,6 +19242,28 @@ def _requires_trust_remote_code_for_model(
         return False
 
 
+def _stored_trust_remote_code(
+    model_info,
+    inference_config,
+    trust_remote_code_used = False,
+) -> Optional[bool]:
+    """Network-free part of the resolution order; None = only ``auto_map`` can answer."""
+    stored = (model_info or {}).get("requires_trust_remote_code")
+    if stored is not None:
+        return bool(stored)
+    if trust_remote_code_used or bool((inference_config or {}).get("trust_remote_code", False)):
+        return True
+    return None
+
+
+def _auto_map_trust_remote_code(model_id, hf_token = None) -> bool:
+    """Raw ``auto_map`` check; can reach the Hub, so keep it off the event loop."""
+    try:
+        return bool(_requires_trust_remote_code_for_model(model_id, hf_token))
+    except Exception:
+        return False
+
+
 def _resolve_loaded_trust_remote_code(
     model_id,
     model_info,
@@ -19261,16 +19283,11 @@ def _resolve_loaded_trust_remote_code(
 
     Resolution order: a value stored on the model at load time (so a status refresh does
     not re-derive it) -> the trust_remote_code the load actually used -> the YAML default
-    -> the raw ``auto_map`` check (reads the loaded model's cached config; no network)."""
-    stored = (model_info or {}).get("requires_trust_remote_code")
-    if stored is not None:
-        return bool(stored)
-    if trust_remote_code_used or bool((inference_config or {}).get("trust_remote_code", False)):
-        return True
-    try:
-        return bool(_requires_trust_remote_code_for_model(model_id, hf_token))
-    except Exception:
-        return False
+    -> the raw ``auto_map`` check (reads the config from the cache, or the Hub on a miss)."""
+    known = _stored_trust_remote_code(model_info, inference_config, trust_remote_code_used)
+    if known is not None:
+        return known
+    return _auto_map_trust_remote_code(model_id, hf_token)
 
 
 def _requires_security_review_for_model(
@@ -21675,9 +21692,12 @@ async def _slot_status(current_subject: str):
         audio_type = None
         has_audio_input = False
         has_video_input = False
+        # Snapshot before the await below: a load landing mid-await must not mix two models.
+        _active = backend.active_model_name
+        _loaded = list(backend.models.keys())
         model_info = {}
-        if backend.active_model_name:
-            model_info = backend.models.get(backend.active_model_name, {})
+        if _active:
+            model_info = backend.models.get(_active, {})
             is_vision = model_info.get("is_vision", False)
             is_audio = model_info.get("is_audio", False)
             audio_type = model_info.get("audio_type")
@@ -21690,9 +21710,7 @@ async def _slot_status(current_subject: str):
 
         # Non-GGUF: classify from the loaded template.
         _sf_flags, _ = _sf_rendered_features(backend, model_info)
-        inference_config = (
-            load_inference_config(backend.active_model_name) if backend.active_model_name else None
-        )
+        inference_config = load_inference_config(_active) if _active else None
 
         # The backend and the attempt registry name the same load, so compare public ids
         # or a model loaded from a path is listed twice.
@@ -21702,19 +21720,31 @@ async def _slot_status(current_subject: str):
         ):
             _loading_models.append(_tracked_loading_id)
 
+        # Only the auto_map fallback can reach the Hub; skip the guard's probe otherwise.
+        _requires_trc = False
+        if _active:
+            _known = _stored_trust_remote_code(model_info, inference_config)
+            if _known is not None:
+                _requires_trc = _known
+            else:
+                _requires_trc = await asyncio.get_running_loop().run_in_executor(
+                    _STATUS_PROBE_EXECUTOR,
+                    functools.partial(
+                        _offline_guarded, [_active], _auto_map_trust_remote_code, _active
+                    ),
+                )
+
         return InferenceStatusResponse(
             engine = model_info.get("engine", "auto"),
             engine_parallelism = model_info.get("engine_parallelism", "tensor"),
             engine_precision = model_info.get("engine_precision", "auto"),
             gpu_ids = model_info.get("gpu_ids"),
             tensor_parallel = bool(model_info.get("tensor_parallel", False)),
-            active_model = backend.active_model_name,
-            model_identifier = backend.active_model_name,
+            active_model = _active,
+            model_identifier = _active,
             is_vision = is_vision,
             is_gguf = False,
-            is_local_model = bool(
-                backend.active_model_name and is_local_path(backend.active_model_name)
-            ),
+            is_local_model = bool(_active and is_local_path(_active)),
             is_audio = is_audio,
             audio_type = audio_type,
             has_audio_input = has_audio_input,
@@ -21743,11 +21773,9 @@ async def _slot_status(current_subject: str):
             chat_template_override = model_info.get("chat_template_override_requested"),
             chat_template_override_reason = model_info.get("chat_template_override_reason"),
             loading = _loading_models,
-            loaded = list(backend.models.keys()),
+            loaded = _loaded,
             inference = inference_config,
-            requires_trust_remote_code = _resolve_loaded_trust_remote_code(
-                backend.active_model_name, model_info, inference_config
-            ),
+            requires_trust_remote_code = _requires_trc,
             supports_reasoning = _sf_flags["supports_reasoning"],
             reasoning_style = _sf_flags["reasoning_style"],
             reasoning_effort_levels = _sf_flags.get("reasoning_effort_levels", []),
