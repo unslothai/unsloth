@@ -19,6 +19,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterator, Optional
 
+from core.inference.flm_files import (
+    FlmDownloadError,
+    FlmModelFiles,
+    download_files,
+    read_model_files,
+)
 from core.inference.lemonade_server import LemonadeServer, LemonadeUnavailable
 from utils.hardware.npu import detect_amd_npu
 from utils.native_path_leases import child_env_without_native_path_secret
@@ -77,6 +83,7 @@ class NpuModel:
     downloaded: bool
     labels: tuple[str, ...]
     max_context_length: Optional[int]
+    resume_percent: Optional[int] = None
 
     @property
     def vision(self) -> bool:
@@ -106,6 +113,7 @@ class NpuModel:
             "supports_reasoning": self.reasoning,
             "supports_tools": self.tools,
             "max_context_length": self.max_context_length,
+            "resume_percent": self.resume_percent,
         }
 
 
@@ -228,6 +236,11 @@ class LemonadeNpuBackend:
     def root(self) -> Path:
         return self._root if self._root is not None else _npu_root()
 
+    @property
+    def _flm_model_dir(self) -> Path:
+        """FastFlowLM's FLM_MODEL_PATH, where its models and Studio's downloads of them live."""
+        return self.root / "flm"
+
     def _installed_lemond(self) -> Optional[Path]:
         try:
             return _installer_module().installed_lemond(self.root)
@@ -317,7 +330,7 @@ class LemonadeNpuBackend:
             binary,
             cache_dir = self.root / "cache",
             config_dir = self.root / "config",
-            flm_model_dir = self.root / "flm",
+            flm_model_dir = self._flm_model_dir,
         )
 
     def _require_supported(self) -> None:
@@ -395,7 +408,7 @@ class LemonadeNpuBackend:
         if binary is None:
             return {"ready": False, "problems": ["FastFlowLM was not found after installing it."]}
         env = child_env_without_native_path_secret()
-        env["FLM_MODEL_PATH"] = str(self.root / "flm")
+        env["FLM_MODEL_PATH"] = str(self._flm_model_dir)
         env["FLM_DISABLE_UPDATE_CHECK"] = "1"
         if self._closing.is_set():
             return {"ready": False, "problems": ["Unsloth is shutting down."]}
@@ -469,6 +482,7 @@ class LemonadeNpuBackend:
         if _failed(response):
             raise NpuError(f"Listing NPU models failed: {_error_message(response)}")
         models: list[NpuModel] = []
+        flm_binary = self._flm_binary()
         for row in response.json().get("data") or []:
             if not isinstance(row, dict) or row.get("recipe") != "flm":
                 continue
@@ -476,17 +490,24 @@ class LemonadeNpuBackend:
             if "chat" not in labels or _EXCLUDED_LABELS.intersection(labels):
                 continue
             size = row.get("size")
+            checkpoint = str(row.get("checkpoint") or "")
+            downloaded = bool(row.get("downloaded"))
+            files = None if downloaded else self._model_files(checkpoint, flm_binary)
             models.append(
                 NpuModel(
                     id = str(row.get("id")),
-                    checkpoint = str(row.get("checkpoint") or ""),
+                    checkpoint = checkpoint,
                     size_gb = float(size) if isinstance(size, (int, float)) else None,
-                    downloaded = bool(row.get("downloaded")),
+                    downloaded = downloaded,
                     labels = labels,
                     max_context_length = _positive_int(row.get("max_context_window")),
+                    resume_percent = files.resume_percent() if files else None,
                 )
             )
         return sorted(models, key = lambda model: (not model.downloaded, model.id))
+
+    def _model_files(self, checkpoint: str, flm_binary: Optional[Path]) -> Optional[FlmModelFiles]:
+        return read_model_files(flm_binary, self._flm_model_dir, checkpoint)
 
     def _model(self, model_id: str) -> NpuModel:
         for model in self.catalog():
@@ -505,16 +526,38 @@ class LemonadeNpuBackend:
         return model
 
     def download(self, model_id: str) -> Iterator[dict[str, Any]]:
-        """Pull a model, yielding lemond's progress events, then a final ``complete`` one.
+        """Download a model, yielding progress events, then a final ``complete`` one.
+
+        Studio fetches the files itself when it can read FastFlowLM's file list, which lets an
+        interrupted download continue where it stopped; lemond's pull then only registers the
+        model. Otherwise lemond downloads it and its events are relayed.
 
         Raises unless lemond sent its ``complete`` event: a stream cut short leaves a partial model.
         """
         model = self._model(model_id)
         server = self._ensure_running()
+        files = (
+            None if model.downloaded else self._model_files(model.checkpoint, self._flm_binary())
+        )
+        if files is not None:
+            try:
+                yield from download_files(files)
+            except FlmDownloadError as exc:
+                raise NpuError(str(exc)) from exc
+        elif not model.downloaded:
+            logger.warning(
+                "FastFlowLM's file list is unreadable; lemond downloads %s, without resume",
+                model.id,
+            )
+            # FastFlowLM's next pull trusts a truncated file an interrupted one left; clear it first.
+            server.request("POST", "/v1/delete", json_body = {"model_name": model.id})
         event = "progress"
         completed = False
         with server.stream(
-            "POST", "/v1/pull", json_body = {"model_name": model.id, "stream": True}
+            "POST",
+            "/v1/pull",
+            # Not --force, which would hash every file FastFlowLM already has once more.
+            json_body = {"model_name": model.id, "stream": True, "do_not_upgrade": True},
         ) as response:
             if response.status_code != 200:
                 response.read()
@@ -539,7 +582,8 @@ class LemonadeNpuBackend:
                 if isinstance(data, dict) and data.get("status") == "error":
                     raise NpuError(f"Downloading {model.id} failed: {data.get('message') or data}")
                 completed = completed or event == "complete"
-                if isinstance(data, dict):
+                # lemond's per-file percent would move the bar backwards after Studio's download.
+                if isinstance(data, dict) and (files is None or event == "complete"):
                     yield {"event": event, **data}
                 event = "progress"
         if not completed:

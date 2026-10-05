@@ -1,6 +1,12 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { InferenceEnginePicker } from "./inference-engines";
+import { CustomLlamaConfigEditor } from "./custom-llama-config-editor";
+import {
+  MANAGED_LLAMA_CPP_CONFIG,
+  normalizeLlamaCppConfig,
+} from "../model-config/llama-cpp-config";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { InfoHint } from "@/components/ui/info-hint";
@@ -182,6 +188,8 @@ import {
   vramFractionToPercent,
   vramPercentToFraction,
 } from "../model-config/per-model-config";
+import { isAudioRuntimeGguf } from "../../audio/audio-cpp-catalog";
+import { isNpuModelId, NPU_DEFAULT_CONTEXT_LENGTH } from "../../npu";
 import {
   type RunConfigImport,
   SharedRunConfigControls,
@@ -338,6 +346,7 @@ function withoutUnsupportedDiffusionSettings(
     config.nBatch == null &&
     config.nUbatch == null &&
     (config.llamaExtraArgs == null || config.llamaExtraArgs.length === 0) &&
+    config.llamaCppConfig?.mode !== "custom" &&
     !hasUnsupportedGpuPick
   ) {
     return config;
@@ -358,6 +367,10 @@ function withoutUnsupportedDiffusionSettings(
     // them as though it had, so a box filled before classification flipped would leave the
     // model running without what it says.
     llamaExtraArgs: null,
+    // The diffusion runner has no llama-server; explicit managed, since omitted inherits the stored custom.
+    ...(config.llamaCppConfig?.mode === "custom"
+      ? { llamaCppConfig: MANAGED_LLAMA_CPP_CONFIG }
+      : {}),
     ...(hasUnsupportedGpuPick
       ? {
           selectedGpuIds: undefined,
@@ -443,6 +456,7 @@ function MaxSeqLengthSetting({
   pinned,
   fittedToMemory,
   windowUnknown,
+  hint,
 }: {
   value: number;
   max: number;
@@ -453,6 +467,7 @@ function MaxSeqLengthSetting({
   pinned?: boolean;
   fittedToMemory?: boolean;
   windowUnknown?: boolean;
+  hint?: string;
 }) {
   // MLX sizes itself when unpinned, so the control is the GGUF path's Context Length and
   // shows the length that will be served, not "Auto". A dash only while it is unknown.
@@ -463,13 +478,13 @@ function MaxSeqLengthSetting({
         <div className="flex min-w-0 items-center gap-1.5">
           <span className={LABEL_CLASS}>{label}</span>
           <InfoHint>
-            {isMlx
+            {hint ?? (isMlx
               ? "Tokens of context the model is sized for." +
                 (fittedToMemory
                   ? " Fitted to this machine's memory, which is less than the model's own " +
                     "window. Set a length to ask for a different one."
                   : "")
-              : "Maximum context window in tokens. Applies on load."}
+              : "Maximum context window in tokens. Applies on load.")}
           </InfoHint>
         </div>
         <NumericValueInput
@@ -1310,6 +1325,33 @@ function LoadModeRow({
   );
 }
 
+// Outside the managed lock: custom launches still honour disable_vision.
+function VisionRow({
+  config,
+  update,
+}: {
+  config: PerModelConfig;
+  update: (patch: Partial<PerModelConfig>) => void;
+}) {
+  return (
+    <div className={ROW_CLASS}>
+      <div className="flex min-w-0 items-center gap-1.5">
+        <span className={LABEL_CLASS}>Vision</span>
+        <InfoHint>
+          Loads the vision projector so the model can read images. Turning
+          it off frees that VRAM for more layers on the GPU. Text generation
+          is unaffected either way.
+        </InfoHint>
+      </div>
+      <Switch
+        className="panel-switch shrink-0"
+        checked={!config.disableVision}
+        onCheckedChange={(checked) => update({ disableVision: !checked })}
+      />
+    </div>
+  );
+}
+
 function GgufAdvancedSettings({
   config,
   update,
@@ -1325,6 +1367,7 @@ function GgufAdvancedSettings({
   moeLayersInputRef,
   onExtraArgsLoadableChange,
   draftKey,
+  hideVision = false,
 }: {
   config: PerModelConfig;
   update: (patch: Partial<PerModelConfig>) => void;
@@ -1341,6 +1384,7 @@ function GgufAdvancedSettings({
   /** Which stored entries the extra-arguments row reads, most specific first. */
   onExtraArgsLoadableChange: (loadable: boolean) => void;
   draftKey: string;
+  hideVision?: boolean;
 }) {
   const batchAdviceId = useId();
   const ubatchAdviceId = useId();
@@ -1632,21 +1676,7 @@ function GgufAdvancedSettings({
       {/* withoutUnsupportedDiffusionSettings forces disableVision back to false on a diffusion model
           and the runner never reads it, so the switch would flip back under the pointer. */}
       {!isDiffusion && (
-        <div className={ROW_CLASS}>
-          <div className="flex min-w-0 items-center gap-1.5">
-            <span className={LABEL_CLASS}>Vision</span>
-            <InfoHint>
-              Loads the vision projector so the model can read images. Turning
-              it off frees that VRAM for more layers on the GPU. Text generation
-              is unaffected either way.
-            </InfoHint>
-          </div>
-          <Switch
-            className="panel-switch shrink-0"
-            checked={!config.disableVision}
-            onCheckedChange={(checked) => update({ disableVision: !checked })}
-          />
-        </div>
+        hideVision ? null : <VisionRow config={config} update={update} />
       )}
 
       {!isDiffusion && (
@@ -2057,6 +2087,7 @@ export function ModelConfigPage({
   );
   // What settings are stored under, which is not always what loads; the probes keep target.id.
   const configId = target.configId ?? target.id;
+  const targetIsNpu = isNpuModelId(target.id);
   const gpuDevices = useGpuDevices();
   const resolveInitial = () => {
     const resolved = resolveInitialConfig(configId, target.ggufVariant);
@@ -2160,6 +2191,7 @@ export function ModelConfigPage({
   // refuse. Held by the panel rather than the row, since the row unmounts whenever Advanced
   // settings collapse while its tokens stay in the config.
   const [extraArgsLoadable, setExtraArgsLoadable] = useState(true);
+  const [customConfigLoadable, setCustomConfigLoadable] = useState(true);
   // True until the server-row read below settles: a load started before it lands sends none of the
   // row's settings, and with Remember unchecked it forgets the row it never read.
   const [extraArgsHydrating, setExtraArgsHydrating] = useState(
@@ -2236,7 +2268,7 @@ export function ModelConfigPage({
   );
   const modelMaxPosition = useModelMaxPositionEmbeddings(
     target.id,
-    !target.isGguf,
+    !target.isGguf && !targetIsNpu,
   );
   const hasLoadedDefaultTemplate =
     isActiveModel && loadedDefaultChatTemplate != null;
@@ -2315,6 +2347,10 @@ export function ModelConfigPage({
     stagedDims,
   );
   const resolvedIsDiffusion = classifiedIsDiffusion === true;
+  // Speech, music and ASR GGUFs the backend runs on its audio runtime: no llama-server launches,
+  // so none of its knobs apply. Their own options live under Advanced on the Audio page.
+  const audioRuntimeGguf =
+    target.isGguf && isAudioRuntimeGguf(target.id, target.meta.audioType);
 
   // The one field on this page whose stored value the local config may never have seen:
   // llama_extra_args can be set through the overrides API with no UI involved, so an empty box
@@ -2743,6 +2779,7 @@ export function ModelConfigPage({
     platform.deviceType,
     platform.chatOnlyReason,
   );
+  const pinsContextLength = targetIsMlx || targetIsNpu;
   const atBaseline = perModelConfigsEqual(config, baseline, {
     followGlobal: true,
   });
@@ -2759,8 +2796,11 @@ export function ModelConfigPage({
       DEFAULT_PER_MODEL_CONFIG,
     );
   const nativeMaxSeqLength =
-    floorMaxSeqLength(modelMaxPosition.maxPositionEmbeddings) ??
-    MAX_SEQ_LENGTH_MAX;
+    floorMaxSeqLength(
+      targetIsNpu
+        ? target.meta.contextLength
+        : modelMaxPosition.maxPositionEmbeddings,
+    ) ?? MAX_SEQ_LENGTH_MAX;
   // The pin, else the length a self-sizing backend would serve, so the control states a
   // context rather than declining to. Only an unread window falls back to the app default,
   // and Reset clears the pin to null so no fallback may rebuild one from a runtime value.
@@ -2815,7 +2855,11 @@ export function ModelConfigPage({
   // stands down, since its runner allocates on a different plan. The tri-state is read as a
   // tri-state, not through resolvedIsDiffusion: a GGUF still being classified may be
   // DiffusionGemma, and guessing paints a footprint from the wrong plan that never clears.
+  // A custom INI owns llama.cpp tuning: the managed rows lock and Studio cannot price it.
+  const customActive =
+    config.llamaCppConfig?.mode === "custom" && !resolvedIsDiffusion;
   const memoryEstimateRequest =
+    !customActive &&
     shouldRequestMemoryEstimate({
       isGguf: Boolean(target.isGguf),
       isAppleUnifiedMemory,
@@ -2876,9 +2920,14 @@ export function ModelConfigPage({
     mlxFittedWindow,
     mlxProspectiveWindow,
   );
+  const npuServedWindow = targetIsNpu
+    ? ((isActiveModel ? servedWindow(loadedContextLength) : null) ??
+      Math.min(NPU_DEFAULT_CONTEXT_LENGTH, nativeMaxSeqLength))
+    : null;
   const maxSeqLengthValue =
     servedWindow(savedContextPin(config)) ??
     mlxServedWindow ??
+    npuServedWindow ??
     clampMaxSeqLength(DEFAULT_MAX_SEQ_LENGTH, nativeMaxSeqLength);
   const maxSeqLengthMax = Math.min(
     MAX_SEQ_LENGTH_MAX,
@@ -3067,6 +3116,7 @@ export function ModelConfigPage({
       ? "Reload model"
       : "Load model";
 
+  const [engineReady, setEngineReady] = useState(true);
   const commitDraft = () => {
     // Same-click Load/Reload: a numeric draft the user just typed is flushed only by that input's
     // blur handler, which runs after this click closure captured the stale value, so commit
@@ -3089,7 +3139,7 @@ export function ModelConfigPage({
       pendingPatch.customContextLength = committedContext;
     }
     if (committedMaxSeqLength != null) {
-      Object.assign(pendingPatch, contextPinPatch(committedMaxSeqLength, targetIsMlx));
+      Object.assign(pendingPatch, contextPinPatch(committedMaxSeqLength, pinsContextLength));
     }
     if (committedGpuLayers != null) {
       pendingPatch.gpuLayers = committedGpuLayers;
@@ -3146,6 +3196,14 @@ export function ModelConfigPage({
   };
 
   const persistConfig = (next: PerModelConfig) => {
+    // Normalizing drops a blank or oversized custom config, saving managed over a good one.
+    if (
+      remember &&
+      next.llamaCppConfig !== undefined &&
+      normalizeLlamaCppConfig(next.llamaCppConfig) === undefined
+    ) {
+      return { saved: false, defaultConfig: false };
+    }
     // Judge what storage keeps: savePerModelConfig normalizes first, so the raw object over-reports.
     const normalized = normalizePerModelConfig(next);
     const evicted: { modelId: string; ggufVariant: string | null }[] = [];
@@ -3255,10 +3313,8 @@ export function ModelConfigPage({
     if (!saved) {
       toast.error("Couldn't save these settings, loading with them anyway.");
     }
-    // MLX pins in customContextLength as GGUF does, so unpinned sends nothing.
-    const effectiveLoadConfig = target.isGguf
-      ? effectiveRuntimeConfig
-      : targetIsMlx
+    const effectiveLoadConfig =
+      target.isGguf || pinsContextLength
         ? effectiveRuntimeConfig
         : { ...effectiveRuntimeConfig, maxSeqLength: effectiveMaxSeqLengthValue };
     // Same reason as the numeric commits above: the budget row flushes on unmount,
@@ -3343,8 +3399,22 @@ export function ModelConfigPage({
         remember={remember}
         hasSavedSettings={savedRemember}
       />
-      <div className="space-y-5">
-        {memoryEstimateRequest != null && (
+      <fieldset
+        disabled={customActive}
+        inert={customActive ? true : undefined}
+        className={`min-w-0 space-y-5 ${customActive ? "opacity-50" : ""}`}
+      >
+        {!target.isGguf && !targetIsMlx && !targetIsNpu && !classifiedIsDiffusion && !target.meta.isLora && !target.meta.audioType && (
+          <InferenceEnginePicker parallelism={config.engineParallelism ?? "tensor"} onParallelismChange={engineParallelism => update({ engineParallelism })} precision={config.enginePrecision ?? "auto"} onPrecisionChange={enginePrecision => update({ enginePrecision })} value={config.engine ?? "auto"} onChange={engine => update({ engine })} onReadyChange={setEngineReady} onUse={handleRun} gpuIds={config.selectedGpuIds} onGpuChange={ids => update({ selectedGpuIds: ids, selectedGpuIndexKind: "physical" })} />
+        )}
+        {audioRuntimeGguf ? (
+          <p className="text-ui-12 leading-snug text-muted-foreground">
+            This model runs on the audio runtime, so llama.cpp settings do not
+            apply. Its generation options are under Advanced on the Audio page
+            once it is loaded.
+          </p>
+        ) : null}
+        {memoryEstimateRequest != null && !audioRuntimeGguf && (
           <MemoryEstimateRow
             estimate={memoryEstimate.estimate}
             loading={memoryEstimate.loading}
@@ -3366,7 +3436,7 @@ export function ModelConfigPage({
             onExpandedChange={setMemoryBreakdownOpen}
           />
         )}
-        {target.isGguf && (
+        {target.isGguf && !audioRuntimeGguf && (
           <>
             <div className="space-y-2">
               <div className={ROW_CLASS}>
@@ -3467,6 +3537,7 @@ export function ModelConfigPage({
                 layerCount={stagedDims?.layerCount ?? null}
                 moeLayerCount={stagedDims?.moeLayerCount ?? null}
                 isDiffusion={resolvedIsDiffusion}
+                hideVision={customActive}
                 gpuDevices={gpuDevices}
                 gpuLayersInputRef={gpuLayersInputRef}
                 moeLayersInputRef={moeLayersInputRef}
@@ -3481,35 +3552,63 @@ export function ModelConfigPage({
             <MaxSeqLengthSetting
               value={maxSeqLengthValue}
               max={maxSeqLengthMax}
-              inputMax={MAX_SEQ_LENGTH_MAX}
+              inputMax={targetIsNpu ? maxSeqLengthMax : MAX_SEQ_LENGTH_MAX}
               inputRef={maxSeqLengthInputRef}
-              isMlx={targetIsMlx}
+              isMlx={pinsContextLength}
               pinned={savedContextPin(config) != null}
               fittedToMemory={
                 savedContextPin(config) == null && mlxFittedWindow != null
               }
               windowUnknown={
-                savedContextPin(config) == null && mlxServedWindow == null
+                savedContextPin(config) == null &&
+                mlxServedWindow == null &&
+                npuServedWindow == null
               }
-              onChange={(value) => update(contextPinPatch(value, targetIsMlx))}
+              hint={
+                targetIsNpu
+                  ? `Tokens of context FastFlowLM loads the model with. Unset, it loads ${NPU_DEFAULT_CONTEXT_LENGTH.toLocaleString()}, or the model's limit if that is lower.`
+                  : undefined
+              }
+              onChange={(value) =>
+                update(contextPinPatch(value, pinsContextLength))
+              }
             />
-            <AdvancedSettingsToggle
-              checked={showAdvanced}
-              onCheckedChange={toggleAdvanced}
-            />
-            {showAdvanced && (
-              <MlxAdvancedSettings
-                config={config}
-                update={update}
-                outcome={mlxKvQuantOutcome}
-                servedByMlx={servedByMlx}
-                onEditTemplate={() => setTemplateOpen(true)}
-                templateOutcome={chatTemplateOutcome}
-              />
+            {!targetIsNpu && (
+              <>
+                <AdvancedSettingsToggle
+                  checked={showAdvanced}
+                  onCheckedChange={toggleAdvanced}
+                />
+                {showAdvanced && (
+                  <MlxAdvancedSettings
+                    config={config}
+                    update={update}
+                    outcome={mlxKvQuantOutcome}
+                    servedByMlx={servedByMlx}
+                    onEditTemplate={() => setTemplateOpen(true)}
+                    templateOutcome={chatTemplateOutcome}
+                  />
+                )}
+              </>
             )}
           </>
         )}
-      </div>
+      </fieldset>
+
+      {target.isGguf &&
+        !resolvedIsDiffusion &&
+        !audioRuntimeGguf &&
+        (showAdvanced || customActive) && (
+          <div className="mt-5 space-y-5">
+            {customActive && <VisionRow config={config} update={update} />}
+            <CustomLlamaConfigEditor
+              value={config.llamaCppConfig}
+              onChange={(llamaCppConfig) => update({ llamaCppConfig })}
+              sourceKey={draftKey}
+              onLoadableChange={setCustomConfigLoadable}
+            />
+          </div>
+        )}
 
       {/* Stacked in both variants: a row that wraps on demand reflows when the same click that
           commits a draft mounts Save settings, moving Load out from under the cursor. */}
@@ -3540,10 +3639,13 @@ export function ModelConfigPage({
             className={FOOTER_BUTTON_CLASS}
             disabled={
               sharedVariantUnresolved ||
+              ((config.engine ?? "auto") !== "auto" && !engineReady) ||
               stagedMetadataPending ||
               budgetSettling ||
-              (!extraArgsLoadable && !sharedExtraArgsCleared) ||
-              sharedExtraArgsRefused ||
+              (customActive && !customConfigLoadable) ||
+              (!customActive &&
+                ((!extraArgsLoadable && !sharedExtraArgsCleared) ||
+                  sharedExtraArgsRefused)) ||
               extraArgsHydrating ||
               (isActiveModel &&
                 atBaseline &&
@@ -3569,7 +3671,8 @@ export function ModelConfigPage({
                 stagedMetadataPending ||
                 budgetSettling ||
                 (remember &&
-                  ((!extraArgsLoadable && !sharedExtraArgsCleared) ||
+                  ((customActive && !customConfigLoadable) ||
+                    (!extraArgsLoadable && !sharedExtraArgsCleared) ||
                     sharedExtraArgsRefused ||
                     extraArgsHydrating))
               }
@@ -3596,6 +3699,7 @@ export function ModelConfigPage({
                 // running process's arguments, so a reload after Reset kept the flags the box says are gone.
                 ...DEFAULT_PER_MODEL_CONFIG,
                 llamaExtraArgs: null,
+                llamaCppConfig: MANAGED_LLAMA_CPP_CONFIG,
               });
             }}
           >

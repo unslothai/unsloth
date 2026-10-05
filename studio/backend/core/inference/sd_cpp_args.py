@@ -552,6 +552,8 @@ def build_sd_cpp_server_command(
     cmd: list[str] = [binary, "--diffusion-model", files.diffusion_model]
     for flag, value in (
         ("--vae", files.vae),
+        # Without it a resident H3 vid_gen server renders a silent clip.
+        ("--audio-vae", files.audio_vae),
         ("--clip_l", files.clip_l),
         ("--clip_g", files.clip_g),
         ("--t5xxl", files.t5xxl),
@@ -650,6 +652,59 @@ def build_img_gen_request(
     # Base64 PNGs in model order; no init_image/strength/mask: this is reference conditioning, not img2img.
     if ref_images:
         req["ref_images"] = list(ref_images)
+    return req
+
+
+def h3_server_eligible(params: "SdCppVideoGenParams") -> bool:
+    """False for reference videos / audio: path-only sd-cli flags with no ``vid_gen`` JSON field."""
+    return not (params.ref_videos or params.ref_video_audios or params.ref_audios)
+
+
+def build_vid_gen_request(
+    params: "SdCppVideoGenParams",
+    *,
+    images_b64: Optional[dict[str, str]] = None,
+    ref_images_b64: Optional[list[str]] = None,
+    output_compression: int = 90,
+) -> dict:
+    """``POST /sdcpp/v1/vid_gen`` body equivalent to ``build_sd_cpp_video_command`` (same pixels for the same seed).
+
+    AVI: needs no WebM build, as the CUDA prebuilt's sd-cli writes. ``--rng cpu`` is a server context flag, passed at
+    spawn."""
+    if not (params.prompt or "").strip():
+        raise ValueError("prompt is required")
+    if params.width <= 0 or params.height <= 0 or params.num_frames <= 0:
+        raise ValueError("width, height, and num_frames must be positive")
+    if not h3_server_eligible(params):
+        raise ValueError("reference videos and audio are not accepted by the sd-server vid_gen API")
+    images = dict(images_b64 or {})
+    if (images.get("init_image") or images.get("end_image")) and ref_images_b64:
+        raise ValueError(
+            "MiniMax-H3 keyframes and references cannot be combined: they run against "
+            "different denoiser partitions."
+        )
+    sample_params: dict = {"guidance": {"txt_cfg": float(params.cfg_scale)}}
+    if params.steps is not None:
+        sample_params["sample_steps"] = int(params.steps)
+    if params.flow_shift is not None:
+        sample_params["flow_shift"] = float(params.flow_shift)
+    req: dict = {
+        "prompt": params.prompt,
+        "width": int(params.width),
+        "height": int(params.height),
+        "video_frames": int(params.num_frames),
+        "fps": int(params.fps),
+        "sample_params": sample_params,
+        "output_format": "avi",
+        "output_compression": int(output_compression),
+    }
+    if params.seed is not None:
+        req["seed"] = int(params.seed)
+    for key in ("init_image", "end_image"):
+        if images.get(key):
+            req[key] = images[key]
+    if ref_images_b64:
+        req["ref_images"] = list(ref_images_b64)
     return req
 
 
