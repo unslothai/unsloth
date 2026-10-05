@@ -2767,7 +2767,9 @@ def _fetch_swa_entry_from_hf(repo_id: str) -> Optional[object]:
             if hf_file_definitely_absent(repo_id, "config.json"):
                 return _SWA_CONFIRMED_MISS
             # Throwaway cache: a config-only repo in the user's cache lists as a phantom model (#10047).
-            with tempfile.TemporaryDirectory(prefix = "unsloth-swa-") as tmp:
+            with tempfile.TemporaryDirectory(
+                prefix = "unsloth-swa-", ignore_cleanup_errors = True
+            ) as tmp:
                 cfg_path = call_hub_with_anonymous_retry(
                     hf_hub_download,
                     None,
