@@ -4443,12 +4443,17 @@ class VideoBackend:
         cached: list[str] = []
         for src in sources:
             ordered = prefer_cached_pickle_twins(
-                src.location, list(candidate_filenames_of(src)), cache_dir = hub_cache_dir(), log = False
+                src.location,
+                list(candidate_filenames_of(src)),
+                cache_dir = hub_cache_dir(),
+                log = False,
             )
             hit = first_cached_as_resolved(
                 src.location,
                 ordered,
-                is_cached = lambda n, repo = src.location: DiffusionBackend._hub_file_is_cached(repo, n),
+                is_cached = lambda n, repo = src.location: DiffusionBackend._hub_file_is_cached(
+                    repo, n
+                ),
                 declared = getattr(src, "declared_filenames", ()) or (),
                 online = online,
                 cache_dir = hub_cache_dir(),

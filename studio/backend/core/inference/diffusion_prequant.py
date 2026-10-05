@@ -671,14 +671,15 @@ def hub_offline() -> bool:
     """huggingface_hub's own offline switch: when set, every resolve is a walk of the cache. Never raises."""
     try:
         from huggingface_hub import constants
-
         return bool(constants.HF_HUB_OFFLINE)
     except Exception:  # noqa: BLE001 - no hub library: nothing can be downloaded either
         return True
 
 
 def hub_name_known_absent(
-    repo_id: Optional[str], name: Optional[str], cache_dir: Optional[str] = None
+    repo_id: Optional[str],
+    name: Optional[str],
+    cache_dir: Optional[str] = None,
 ) -> bool:
     """True when a Hub cache root records ``name`` as ABSENT at the revision it last saw, i.e. the
     ``.no_exist`` marker huggingface_hub leaves behind when a download of that name got a 404.
@@ -1402,7 +1403,11 @@ def cached_checkpoint_path(
     def _hit(name: str) -> Optional[str]:
         if name not in hits:
             hits[name] = next(
-                (h for h in (_cached_in_root(source, root, name) for root in roots) if h is not None),
+                (
+                    h
+                    for h in (_cached_in_root(source, root, name) for root in roots)
+                    if h is not None
+                ),
                 None,
             )
         return hits[name]
@@ -1448,7 +1453,10 @@ def _cached_in_root(
 
 
 def prequant_checkpoint_cached(
-    source: Any, *, cache_dir: Optional[str] = None, online: Optional[bool] = None
+    source: Any,
+    *,
+    cache_dir: Optional[str] = None,
+    online: Optional[bool] = None,
 ) -> bool:
     """True when ``source`` resolves from the cache, i.e. enabling prequant costs no download."""
     return cached_checkpoint_path(source, cache_dir = cache_dir, online = online) is not None

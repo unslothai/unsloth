@@ -523,11 +523,14 @@ def test_te_pricing_does_not_call_a_cached_fp8_encoder_free(hub, monkeypatch, tm
     monkeypatch.setattr(diffusion, "family_bf16_components_gb", lambda fam, base: (10.0, 16.0))
     monkeypatch.setattr(pq, "hub_offline", lambda: False)
     fam = types.SimpleNamespace(name = "probe")
-    mib, components, exact = DiffusionBackend._precast_text_encoder_mib(fam, "base/Model", None, "int8")
+    mib, components, exact = DiffusionBackend._precast_text_encoder_mib(
+        fam, "base/Model", None, "int8"
+    )
     assert components == ("text_encoder",)
     assert exact is False
     # Once the ConvRot encoder is cached it is what loads, and the size is the file's own.
     (snap / "Model-text_encoder-INT8-ConvRot.safetensors").write_bytes(b"x" * (3 << 20))
-    mib, components, exact = DiffusionBackend._precast_text_encoder_mib(fam, "base/Model", None, "int8")
+    mib, components, exact = DiffusionBackend._precast_text_encoder_mib(
+        fam, "base/Model", None, "int8"
+    )
     assert exact is True and mib == 3
-

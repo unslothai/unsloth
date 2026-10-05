@@ -5142,7 +5142,9 @@ class DiffusionBackend:
 
                     # The file the load will OPEN, in the resolver's order: a cached older encoder does not
                     # make an uncached declared one ahead of it free, the load downloads that one first.
-                    names = [n for n in te_candidate_filenames(source) if te_candidate_is_readable(n)]
+                    names = [
+                        n for n in te_candidate_filenames(source) if te_candidate_is_readable(n)
+                    ]
                     hit = first_cached_as_resolved(
                         repo,
                         prefer_cached_pickle_twins(
