@@ -1541,6 +1541,40 @@ def test_history_hydration_shows_an_estimate_until_the_recount_lands(saved, expe
         assert out["counts"] == 0
 
 
+_SIMPLE_BINDING = re.compile(r"\b(?:const|let)\s+([A-Za-z_$][\w$]*)")
+_PATTERN_START = re.compile(r"\b(?:const|let)\s*([{\[])")
+
+
+def _declared_names(code: str) -> set[str]:
+    """Names `const` / `let` bind in `code`, destructured ones included.
+
+    `const { remoteId } = ...` binds `remoteId`, `{ a: b }` binds `b`, `{ a = 1 }` and `...rest`
+    bind `a` and `rest`. Nested patterns are flattened, which can only over-collect.
+    """
+    names = set(_SIMPLE_BINDING.findall(code))
+    for start in _PATTERN_START.finditer(code):
+        depth, end = 0, start.start(1)
+        for end in range(start.start(1), len(code)):
+            if code[end] in "{[":
+                depth += 1
+            elif code[end] in "}]":
+                depth -= 1
+            if depth == 0:
+                break
+        for part in re.split(r"[,{}\[\]]", code[start.start(1) : end + 1]):
+            part = part.split("=", 1)[0].strip().removeprefix("...")
+            if ":" in part:
+                part = part.split(":", 1)[1].strip()
+            if re.fullmatch(r"[A-Za-z_$][\w$]*", part):
+                names.add(part)
+    return names
+
+
+def test_declared_names_reads_destructuring():
+    code = "const { remoteId, threadId: tid, mode = 1, ...rest } = x; let [first, , third] = y; const a = 1;"
+    assert _declared_names(code) == {"remoteId", "tid", "mode", "rest", "first", "third", "a"}
+
+
 def test_the_harness_binds_every_loader_local_the_history_restore_reads() -> None:
     """The restore block is sliced out of the middle of the history adapter's `load()`, so any
     local it reads from above the slice has to be declared by `hydrateThreadUsage` instead.
@@ -1552,20 +1586,22 @@ def test_the_harness_binds_every_loader_local_the_history_restore_reads() -> Non
     start = provider.index(restore)
     loader = provider.rindex("async load() {", 0, start)
     above = provider[loader:start]
-    declared_above = set(re.findall(r"\b(?:const|let)\s+([A-Za-z_$][\w$]*)", above))
+    declared_above = _declared_names(above)
     assert (
         {"msgs", "savedUsage", "store"} <= declared_above
     ), "could not read the loader's locals above the restore; this guard would check nothing"
     # Code only: the comments in the block name words like "message" that are locals elsewhere.
     code = re.sub(r"//[^\n]*", "", restore)
-    declared_in_slice = set(re.findall(r"\b(?:const|let)\s+([A-Za-z_$][\w$]*)", code))
+    declared_in_slice = _declared_names(code)
     read_from_above = sorted(
         name
         for name in declared_above - declared_in_slice
         if re.search(rf"(?<![\w$.]){re.escape(name)}\b", code)
     )
-    assert "msgs" in read_from_above, "the guard no longer sees the restore read `msgs`"
-    bound = set(re.findall(r"\b(?:const|let)\s+([A-Za-z_$][\w$]*)", HARNESS_HISTORY))
+    assert {"msgs", "remoteId"} <= set(
+        read_from_above
+    ), "the guard no longer sees the restore read `msgs` and the destructured `remoteId`"
+    bound = _declared_names(HARNESS_HISTORY)
     missing = [name for name in read_from_above if name not in bound]
     assert not missing, (
         f"the history restore reads the loader locals {missing}, which hydrateThreadUsage does "
