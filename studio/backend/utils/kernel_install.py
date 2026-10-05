@@ -99,7 +99,7 @@ def install_kernel(
     distribution, check = KERNELS[name]
     url = resolve_wheel_url(name, env)
     torch_desc = f"torch {env.get('torch_version')}" if env else "this environment"
-    # A 404 is proof nothing is published; an unreachable check is not, and the installer fails fast on a bad URL.
+    # Only a 404 proves nothing is published; an unreachable check falls through to the install.
     if url is None or exists(url) is False:
         print(f"Unsloth: no prebuilt {name} for {torch_desc}; using the torch fallback.")
         return 0
@@ -109,7 +109,6 @@ def install_kernel(
     if _loads(check, run):
         print(f"Unsloth: {name} already installed and loads.")
         return 0
-    # uv, else pip, always --no-deps: the resident torch is never touched.
     attempts = install_wheel(
         url,
         python_executable = sys.executable,
