@@ -528,6 +528,7 @@ def test_download_progress_hides_the_cache_dir_it_measured(
 # Hub inventory routes that answer no host path. Anything else must take the caller class.
 _ROUTES_WITHOUT_HOST_PATHS = {
     "remove_scan_folder_endpoint": "status and id only",
+    "remove_model_library": "status only",
     "get_gguf_variants": "filenames and quant labels, no directory",
     "download_model": "job id and status",
     "cancel_download_model": "job id and status",

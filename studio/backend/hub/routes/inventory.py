@@ -164,14 +164,27 @@ def get_model_libraries(
 _OWNER_ONLY = [Depends(get_current_subject), Depends(policy.require_owner)]
 
 
+def _redacted_library_call(fn, *args, via_api_key: bool):
+    # Path validation errors echo the host path.
+    try:
+        payload = fn(*args)
+    except HTTPException as error:
+        raise HTTPException(
+            status_code = error.status_code,
+            detail = redact_inventory_error_detail(error.detail, via_api_key = via_api_key),
+            headers = error.headers,
+        ) from error
+    return redact_inventory_host_paths(payload, via_api_key = via_api_key)
+
+
 @router.post(
     "/libraries", response_model = ModelLibraryInfo, status_code = 201, dependencies = _OWNER_ONLY
 )
 def add_model_library(
     body: AddModelLibraryRequest, via_api_key: bool = Depends(authenticated_via_api_key)
 ):
-    return redact_inventory_host_paths(
-        libraries.add_library_response(body.path, body.label), via_api_key = via_api_key
+    return _redacted_library_call(
+        libraries.add_library_response, body.path, body.label, via_api_key = via_api_key
     )
 
 
@@ -192,15 +205,18 @@ def remove_model_library(library_id: int):
 def set_default_model_library(
     library_id: int, via_api_key: bool = Depends(authenticated_via_api_key)
 ):
-    return redact_inventory_host_paths(
-        libraries.set_default_library_response(library_id), via_api_key = via_api_key
+    return _redacted_library_call(
+        libraries.set_default_library_response, library_id, via_api_key = via_api_key
     )
 
 
 @router.post("/libraries/move", response_model = MoveModelResponse, dependencies = _OWNER_ONLY)
 def move_model(body: MoveModelRequest, via_api_key: bool = Depends(authenticated_via_api_key)):
-    return redact_inventory_host_paths(
-        libraries.move_model_response(body.repo_id, body.variant, body.target_library_id),
+    return _redacted_library_call(
+        libraries.move_model_response,
+        body.repo_id,
+        body.variant,
+        body.target_library_id,
         via_api_key = via_api_key,
     )
 
