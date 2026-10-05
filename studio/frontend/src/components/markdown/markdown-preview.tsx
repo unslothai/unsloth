@@ -7,7 +7,7 @@ import { openLink } from "@/lib/open-link";
 import { safeMarkdownUrl } from "@/lib/safe-markdown-url";
 import { scheduleIdleTask } from "@/lib/schedule-idle-task";
 import { cn } from "@/lib/utils";
-import { code } from "@streamdown/code";
+import { codePlugin } from "@/components/assistant-ui/shared-code-plugin";
 import { math } from "@streamdown/math";
 import { mermaid } from "@streamdown/mermaid";
 import {
@@ -70,7 +70,7 @@ function MarkdownPreviewImpl({
   const plugins = useMemo<MarkdownPlugins>(() => {
     const needs = markdownPluginNeeds(markdown);
     const next: MarkdownPlugins = {};
-    if (needs.code) next.code = code;
+    if (needs.code) next.code = codePlugin;
     if (needs.math) next.math = math;
     if (needs.mermaid) next.mermaid = mermaid;
     return next;

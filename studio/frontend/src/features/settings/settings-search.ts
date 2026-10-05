@@ -135,9 +135,23 @@ export const SETTINGS_SEARCH_INDEX: Record<SettingsTab, TranslationKey[]> = {
     "settings.chat.artifacts.allowNetworkAccess",
     "settings.chat.webSearch.images",
     "settings.chat.modelDisclaimer",
-    "settings.chat.inlineReadAloud",
     "settings.chat.inlineEditResponse",
     "settings.chat.groups.menu.title",
+  ],
+  browser: [
+    "browser.linksTitle",
+    "browser.openLinksSetting",
+    "browser.openFilesSetting",
+    "browser.addressBarTitle",
+    "browser.searchEngineSetting",
+    "browser.showFullUrlSetting",
+    "browser.bookmarksTitle",
+    "browser.bookmarksToolbarSetting",
+    "browser.bookmarks.showEditor",
+    "browser.browsingDataTitle",
+    "browser.historySetting",
+    "browser.downloadsSetting",
+    "browser.clearDataSetting",
   ],
   library: [
     "settings.library.storageSection",
@@ -250,6 +264,8 @@ export const SETTINGS_SEARCH_INDEX: Record<SettingsTab, TranslationKey[]> = {
     "settings.keyboardShortcuts.actions.switchToAudio.label",
     "settings.keyboardShortcuts.actions.switchToExport.label",
     "settings.keyboardShortcuts.actions.findInPage.label",
+    "settings.keyboardShortcuts.actions.newBrowserTab.label",
+    "settings.keyboardShortcuts.actions.toggleBrowserFullView.label",
     "settings.keyboardShortcuts.actions.toggleApiMonitor.label",
     "settings.keyboardShortcuts.actions.toggleSidebar.label",
     "settings.keyboardShortcuts.actions.openMcpServers.label",
@@ -276,6 +292,12 @@ export const SETTINGS_SEARCH_INDEX: Record<SettingsTab, TranslationKey[]> = {
     "settings.keyboardShortcuts.actions.searchChats.label",
     "settings.keyboardShortcuts.actions.renameChat.label",
     "settings.keyboardShortcuts.actions.openKeyboardShortcuts.label",
+  ],
+  // The Windows rows render only on Windows, so only the rows every platform shows are indexed.
+  sandbox: [
+    "settings.sandbox.toolsSection",
+    "settings.sandbox.python",
+    "settings.sandbox.terminal",
   ],
   debugging: [
     "settings.debugging.logSection",
@@ -353,6 +375,7 @@ export const SETTINGS_SEARCH_KEYWORDS: Partial<
 > = {
   "settings.resources.storage.modelsFolder":
     "settings.resources.storage.modelsFolderKeywords",
+  "settings.sandbox.toolsSection": "settings.sandbox.setupKeywords",
   // "purge", "prune" and the tool names are in none of the labels, so the row
   // the feature is named after was unreachable by search.
   "settings.resources.storage.caches.label":

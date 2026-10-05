@@ -72,6 +72,7 @@ const SETTINGS_ROWS: &[Row] = &[
     Row::Action("settings-appearance", "Appearance", ""),
     Row::Action("settings-resources", "System", ""),
     Row::Action("settings-chat", "Chat", ""),
+    Row::Action("settings-sandbox", "Sandbox", ""),
     Row::Action("settings-api-keys", "API", ""),
     Row::Action("settings-remote-lan", "Remote & LAN", ""),
     Row::Action("settings-connections", "Connections", ""),
@@ -81,6 +82,7 @@ const SETTINGS_ROWS: &[Row] = &[
     Row::Action("settings-library", "Library", ""),
     Row::Action("settings-data", "Data", ""),
     Row::Action("settings-keyboard-shortcuts", "Shortcuts", ""),
+    Row::Action("settings-browser", "Browser", ""),
     Row::Action("settings-debugging", "Logs", ""),
     Row::Action("settings-about", "About", ""),
 ];

@@ -526,6 +526,12 @@ def _gallery_items(kind: str) -> list[dict]:
                     sidecar = path.with_suffix(".json").stat().st_size
                 except OSError:
                     pass
+                # A conversion keeps the recording it converted as {id}.source.wav beside its clip.
+                if sidecar is not None and kind == "audio":
+                    try:
+                        sidecar += path.with_name(f"{path.stem}.source.wav").stat().st_size
+                    except OSError:
+                        pass
             items.append(
                 _item(
                     f"{kind}:{record['id']}",
@@ -1311,6 +1317,30 @@ def open_item(item_id: str) -> ItemFile:
             handle, safe_file_name(name), "files", safe_file_name(name, item_id = item_id)
         )
     raise ValueError("This item cannot be added to a project.")
+
+
+def project_item(item_id: str) -> ItemFile:
+    """What ``open_item`` gives a project copy, and also a chat attachment's image or clip, held in
+    its message rather than a file of its own: copied out to a temporary file first. LookupError
+    when the attachment is gone or holds no image or clip."""
+    kind, _, ref = item_id.partition(":")
+    if kind != "attachment":
+        return open_item(item_id)
+    from storage.studio_db import get_chat_attachment
+
+    mime_type, data = _attachment_media(ref)
+    message_id, attachment_id = _attachment_ref(ref)
+    record = get_chat_attachment(message_id, attachment_id) or {}
+    name = _named_for_type(str(record.get("name") or "Attachment"), mime_type)
+    handle = tempfile.TemporaryFile()
+    try:
+        handle.write(data)
+        handle.seek(0)
+    except BaseException:
+        handle.close()
+        raise
+    folder = "images" if mime_type.startswith("image/") else "videos"
+    return ItemFile(handle, safe_file_name(name), folder, safe_file_name(name, item_id = item_id))
 
 
 def local_path(item_id: str) -> Path:

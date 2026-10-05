@@ -678,9 +678,10 @@ def reclaimable_snapshot_device_memory(target: Any) -> DeviceMemory:
     lives outside it and is not counted here, which is correct: it is not device memory this
     generation can allocate into.
 
-    A captured CUDA graph's pool (``diffusion_cuda_graph``) is reserved but not allocated, so it is
-    credited here, yet ordinary allocations cannot reuse it while a graph holds it, so on a graphed
-    load the guard reads about one step of activations high.
+    A captured CUDA graph's pool (``diffusion_cuda_graph``) is mostly reserved but not allocated, yet ordinary
+    allocations cannot reuse it while a graph holds it (on a block-streamed denoiser it also holds the
+    prefetch window), so its unallocated bytes are not credited (its allocated part is already outside the
+    difference).
 
     Falls back to the plain snapshot on any failure or non-cuda device."""
     if getattr(target, "device", "cpu") != "cuda":
@@ -693,6 +694,22 @@ def reclaimable_snapshot_device_memory(target: Any) -> DeviceMemory:
         reclaimable = int(torch.cuda.memory_reserved()) - int(torch.cuda.memory_allocated())
     except Exception:  # noqa: BLE001 -- no allocator reading: the plain snapshot still stands
         return snapshot
+    try:
+        # Per-block graph pools are reserved, mostly unallocated between replays, and never reusable by anything else.
+        from .diffusion_block_graph import pool_bytes as _block_graph_pool_bytes
+        try:
+            device = torch.cuda.current_device()
+        except Exception:  # noqa: BLE001 - no current CUDA device: count every pool
+            device = None
+        reclaimable -= _block_graph_pool_bytes(device)
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        # The whole-step graphs' shared pool: only its unallocated part sits inside the difference above.
+        from .diffusion_cuda_graph import live_pool_free_bytes
+        reclaimable -= live_pool_free_bytes()
+    except Exception:  # noqa: BLE001 -- no graph layer: nothing held
+        pass
     if reclaimable <= 0:
         return snapshot
     free = int(snapshot.free_mib) + reclaimable // (1024 * 1024)
@@ -1046,7 +1063,8 @@ _MEASURED_IMAGE_ACTIVATION_MIB: dict[
     str, tuple[tuple[int, int, int, int, int], tuple[int, int, int, int, int]]
 ] = {
     # text encoder, denoise, untiled decode, tiled decode (all at 1024x1024), max(denoise, tiled decode) at 2048x2048
-    "qwen-image-2.1": ((1_849, 666, 7_648, 449, 2_479), (1_849, 2_489, 7_648, 449, 9_602)),
+    # Qwen-Image-2.1 tiled decode: one 512 px tile (diffusion_vae_tiling), unfused bf16, the worst case.
+    "qwen-image-2.1": ((1_849, 666, 7_648, 1_697, 2_479), (1_849, 2_489, 7_648, 1_697, 9_602)),
     "flux.1": ((288, 892, 2_666, 2_456, 2_674), (288, 892, 2_666, 2_456, 2_674)),
     "flux.2-klein": ((1_516, 1_160, 2_645, 2_456, 3_876), (1_516, 1_205, 2_677, 2_456, 3_924)),
     "z-image": ((744, 1_199, 2_666, 2_456, 4_327), (744, 1_271, 2_669, 2_456, 4_327)),
@@ -1072,13 +1090,37 @@ def _reserve_mib(memory_kind: str, base: int) -> int:
     return max(2048, int(base * 0.10))
 
 
+def _rocm_linux_apu_os_room_outside_pool(memory: DeviceMemory) -> bool:
+    """Linux ROCm APU whose host RAM outside the pool's free part already covers the unified OS reserve: the pool is
+    the amdgpu GTT cap, below physical RAM, so reserving 20% of it too reserves twice. Not Windows (HIP over-reports
+    free, #7072); unknown readings answer False."""
+    if (
+        memory.memory_kind != "unified_memory"
+        or not sys.platform.startswith("linux")
+        or memory.free_mib is None
+    ):
+        return False
+    torch = sys.modules.get("torch")
+    if torch is None or not _torch_is_rocm(torch):
+        return False
+    available = _available_system_memory_mib()
+    if available is None:
+        return False
+    os_reserve = _reserve_mib("unified_memory", memory.total_mib or memory.free_mib)
+    return int(available) - int(memory.free_mib) >= os_reserve
+
+
+def _budget_reserve_kind(memory: DeviceMemory) -> str:
+    return "discrete_vram" if _rocm_linux_apu_os_room_outside_pool(memory) else memory.memory_kind
+
+
 def _safe_device_budget_mib(memory: DeviceMemory) -> Optional[int]:
     """Free memory minus a headroom reserve (room for fragmentation + other tenants). None when
     free memory is unknown."""
     if memory.free_mib is None:
         return None
     base = memory.total_mib or memory.free_mib
-    return max(0, int(memory.free_mib) - _reserve_mib(memory.memory_kind, base))
+    return max(0, int(memory.free_mib) - _reserve_mib(_budget_reserve_kind(memory), base))
 
 
 def _fast_device_budget_mib(memory: DeviceMemory) -> Optional[int]:
@@ -1087,7 +1129,7 @@ def _fast_device_budget_mib(memory: DeviceMemory) -> Optional[int]:
     if memory.free_mib is None:
         return None
     base = memory.total_mib or memory.free_mib
-    reserve = max(2048, _reserve_mib(memory.memory_kind, base) // 2)
+    reserve = max(2048, _reserve_mib(_budget_reserve_kind(memory), base) // 2)
     return max(0, int(memory.free_mib) - reserve)
 
 
@@ -1542,14 +1584,21 @@ def plan_fits_total_capacity(plan: Any) -> bool:
     input (unknown sizes keep today's behaviour)."""
     try:
         required = plan.estimates.get("resident_required_mib")
-        memory = plan.device_memory
-        total = memory.total_mib
-        kind = memory.memory_kind
+        budget = total_capacity_budget_mib(plan.device_memory)
     except Exception:  # noqa: BLE001 - malformed plan: no retry
         return False
-    if required is None or total is None:
+    if required is None or budget is None:
         return False
-    return int(required) <= int((int(total) - _reserve_mib(kind, int(total))) * 0.85)
+    return int(required) <= budget
+
+
+def total_capacity_budget_mib(memory: DeviceMemory) -> Optional[int]:
+    """TOTAL capacity minus the same reserve the free budget takes, times the 0.85 resident margin. None when the
+    total is unknown. Shared with the dense prefetch gate so the two cannot disagree."""
+    total = memory.total_mib
+    if total is None:
+        return None
+    return int((int(total) - _reserve_mib(_budget_reserve_kind(memory), int(total))) * 0.85)
 
 
 # Opt-in escape hatch for the unified-memory refusal below: the shortfall check is an estimate, so an operator who
@@ -2192,7 +2241,8 @@ PARTIAL_RESIDENT_ENV = "UNSLOTH_DIFFUSION_PARTIAL_RESIDENT"
 
 # Worst measured CUDA MiB above the resident weights, one 1024x1024 image, encoder + every step + VAE decode, torchao
 # int8 / fp8 denoisers on the compiled tiers (Qwen-Image-2.1: encoder 1849 streamed, denoise 1442, decode 1730).
-_MEASURED_IMAGE_PEAK_MIB: dict[str, int] = {"qwen-image-2.1": 1849}
+# FLUX.1 / Z-Image: their worst phase is the untiled 16-channel VAE decode (_MEASURED_IMAGE_ACTIVATION_MIB).
+_MEASURED_IMAGE_PEAK_MIB: dict[str, int] = {"qwen-image-2.1": 1849, "flux.1": 2666, "z-image": 2666}
 _MEASURED_PEAK_SPEED_MODES = ("default", "max")
 _MEASURED_PEAK_MARGIN = 1.15
 _MEASURED_PEAK_ROUND_MIB = 256
@@ -2308,6 +2358,55 @@ def _resident_dit_fits(memory: Any, dit_mib: int, headroom_mib: int, other_mib: 
     ) <= int(free)
 
 
+STREAMED_RESIDENCY_ENV = "UNSLOTH_DIFFUSION_STREAMED_RESIDENCY"
+
+
+def _stream_window_mib(pipe: Any) -> int:
+    """Device MiB the block prefetcher holds in flight: ``depth + 1`` of the largest denoiser block, or -1."""
+    try:
+        import torch
+
+        from .diffusion_offload_prefetch import prefetch_depth
+
+        largest = 0
+        for name, module in (getattr(pipe, "components", {}) or {}).items():
+            if str(name) not in ("transformer", "transformer_2", "unconditional_transformer"):
+                continue
+            if not isinstance(module, torch.nn.Module):
+                continue
+            for child in module.children():
+                if not isinstance(child, (torch.nn.ModuleList, torch.nn.Sequential)):
+                    continue
+                for block in child:
+                    seen: set[int] = set()
+                    nbytes = 0
+                    for t in (*block.parameters(), *block.buffers()):
+                        if id(t) not in seen:
+                            seen.add(id(t))
+                            nbytes += sum(_storage_nbytes(t))
+                    largest = max(largest, nbytes * DEFAULT_GROUP_BLOCKS)
+        if largest <= 0:
+            return -1
+        return -(-largest * (prefetch_depth() + 1) // (1024 * 1024))
+    except Exception:  # noqa: BLE001
+        return -1
+
+
+def _streamed_dit_room_mib(memory: Any, headroom_mib: int, other_mib: int, window_mib: int) -> int:
+    """Partial room: the whole-resident fit plus the prefetch window, not the flat reserve AND base overhead."""
+    free = getattr(memory, "free_mib", None)
+    if free is None or window_mib < 0 or _env_off(STREAMED_RESIDENCY_ENV):
+        return 0
+    return max(
+        0,
+        int(free)
+        - _resident_dit_slack_mib(memory)
+        - int(other_mib)
+        - int(headroom_mib)
+        - int(window_mib),
+    )
+
+
 def _denoiser_compute_bytes(pipe: Any) -> Optional[int]:
     """Denoiser compute element size for the dense table: 2 (fp16), 4 (fp32); None for bf16 / unreadable."""
     try:
@@ -2385,7 +2484,7 @@ def refine_plan_from_loaded_weights(
         room = budget - floor
         if policy == OFFLOAD_GROUP and not stream_te:
             room -= encoders  # resident companions
-        whole_dit = False
+        whole_dit = wide_dit = False
         if not bool(getattr(plan, "stream_transformer", True)):
             room -= dit
             dit_room = 0
@@ -2401,10 +2500,20 @@ def refine_plan_from_loaded_weights(
                 # pin it whole; during the encode it drops back to the flat room (install_encode_release)
                 encode_room = int(dit_room)
                 dit_room, room, whole_dit = dit, dit, True
+            elif (
+                dit_room < dit and dense_mib is None and (policy == OFFLOAD_STREAMING or stream_te)
+            ):
+                # partial: the encode keeps the flat room (install_encode_release)
+                window = _stream_window_mib(pipe)
+                streamed_room = min(_streamed_dit_room_mib(memory, headroom, other, window), dit)
+                if streamed_room > dit_room:
+                    encode_room = int(dit_room)
+                    dit_room, room, wide_dit = streamed_room, streamed_room, True
+                    estimates["stream_window_mib"] = window
         te_room = max(0, room - dit_room) if stream_te and policy == OFFLOAD_GROUP else 0
         if dit_room <= 0 and te_room <= 0:
             return plan
-        if whole_dit:
+        if whole_dit or wide_dit:
             estimates["resident_dit_slack_mib"] = _resident_dit_slack_mib(memory)
             estimates["encode_resident_transformer_mib"] = encode_room
         new = replace(
@@ -2424,6 +2533,10 @@ def refine_plan_from_loaded_weights(
                     f" (whole transformer within free memory less a {_resident_dit_slack_mib(memory)} MiB slack;"
                     f" {encode_room} MiB of it while the encoders run)"
                     if whole_dit
+                    else f" (free memory less a {_resident_dit_slack_mib(memory)} MiB slack and a "
+                    f"{estimates.get('stream_window_mib')} MiB prefetch window; {encode_room} MiB of it while the "
+                    "encoders run)"
+                    if wide_dit
                     else ""
                 ),
             ),
@@ -2511,7 +2624,11 @@ def _keep_groups_resident(
         def _resident_onload(stream: Any) -> Callable[[], None]:
             # a prefetching predecessor skips its own copy-stream wait and relies on this onload_ to do it
             def onload_(*args: Any, **kwargs: Any) -> None:
-                if stream is not None and state["streamed"]:
+                # event-fenced prefetch: streamed groups wait on their own copy; a resident block may start the forward's fill
+                kick = state.get("kick")
+                if callable(kick):
+                    kick()
+                if stream is not None and state["streamed"] and not state.get("fenced"):
                     stream.synchronize()
 
             return disable(onload_) if callable(disable) else onload_
@@ -2555,6 +2672,8 @@ def _keep_groups_resident(
             left -= need
             kept += need
         state["streamed"] = _streamed_group_count(ordered)
+        if kept:
+            _bump_placement_epoch()
         if kept and onload.type == "cuda":
             torch.cuda.synchronize(onload)
         if logger is not None and kept:
@@ -2570,6 +2689,14 @@ def _keep_groups_resident(
         if logger is not None:
             logger.warning("diffusion.memory: partial residency skipped (%s)", exc)
         return 0
+
+
+def _bump_placement_epoch() -> None:
+    try:
+        from .diffusion_offload_prefetch import bump_placement_epoch
+        bump_placement_epoch()
+    except Exception:  # noqa: BLE001 - no graph layer to invalidate
+        pass
 
 
 def _streamed_group_count(groups: list) -> int:
@@ -2589,6 +2716,7 @@ def _release_group(group: Any) -> None:
             group.__dict__.pop(name, None)
     group._unsloth_resident = False
     group.offload_()
+    _bump_placement_epoch()
 
 
 def release_resident_groups(
@@ -2677,8 +2805,8 @@ def install_encode_release(
     plan: Any,
     logger: Any = None,
 ) -> int:
-    """While a text encoder runs, stream the whole-resident denoiser back to the flat room (the partial placement's
-    encode state); pin it back on return. Returns the number of encoders hooked."""
+    """While a text encoder runs, stream the whole-resident (or widened partial) denoiser back to the flat room (the
+    partial placement's encode state); pin it back on return. Returns the number of encoders hooked."""
     estimates = getattr(plan, "estimates", None) or {}
     encode_room = estimates.get("encode_resident_transformer_mib")
     whole = getattr(plan, "resident_transformer_mib", None)
@@ -3376,7 +3504,9 @@ class _GroupPinner:
                         if tensor.device.type == "cpu" and tensor.data_ptr() == src.data_ptr():
                             tensor.data = pinned
                         self.pinned += src.nbytes
+                # Done before the epoch: a capture check that sees the new epoch must also see this group ready.
                 self._done[id(group)].set()
+                _bump_placement_epoch()
         except Exception as exc:  # noqa: BLE001 - diffusers pins what is left on each onload
             failed = exc
         finally:
@@ -3384,6 +3514,8 @@ class _GroupPinner:
                 pool.shutdown(wait = True, cancel_futures = True)
             for event in self._done.values():
                 event.set()
+            if failed is not None:
+                _bump_placement_epoch()
         if self.logger is not None:
             try:
                 if failed is not None:
@@ -3910,6 +4042,8 @@ def _apply_group_offload(
             installed += 1
             if use_stream and not _pin_top_level_group(module, logger, pinned_mib):
                 _skip_top_level_copy_back(module, logger)
+            if use_stream and gkwargs.get("record_stream"):
+                install_group_prefetch(module, onload, logger)
         if resident_transformer_mib:
             room = int(resident_transformer_mib)
             for module in streamed.values():
@@ -4062,6 +4196,10 @@ def vae_tile_side(vae: Any) -> Optional[int]:
     """The pixel side a VAE tiles at, or None when it cannot tile at all."""
     if vae is None or not callable(getattr(vae, "enable_tiling", None)):
         return None
+    decode_side = getattr(vae, "_unsloth_decode_tile_side", None)
+    if isinstance(decode_side, int) and not isinstance(decode_side, bool) and decode_side > 0:
+        # diffusion_vae_tiling decodes in wider tiles than the attributes
+        return max(64, min(4096, decode_side))
     sides: list[int] = []
     for attr in ("tile_sample_min_size", "tile_sample_min_height", "tile_sample_min_width"):
         value = getattr(vae, attr, None)
@@ -4469,6 +4607,16 @@ def raise_on_image_activation_shortfall(
 STREAMING_PREFETCH_ENV = "UNSLOTH_DIFFUSION_STREAMING_PREFETCH"
 
 
+def install_group_prefetch(
+    module: Any,
+    device: Any,
+    logger: Any = None,
+) -> int:
+    """Event-fenced, deeper prefetch for a block-streamed module's offload groups (diffusion_offload_prefetch)."""
+    from .diffusion_offload_prefetch import install_group_prefetch as _install
+    return _install(module, device, logger)
+
+
 def _streaming_prefetch_enabled() -> bool:
     """Kill switch for the streaming tier's overlapped onload (pinned host copies + record_stream); default on."""
     return (os.environ.get(STREAMING_PREFETCH_ENV) or "").strip().lower() not in (
@@ -4575,6 +4723,8 @@ def _apply_streaming_offload(
                 and not _pin_top_level_group(module, logger, pinned_mib)
             ):
                 _skip_top_level_copy_back(module, logger)
+            if use_stream and prefetch and offload_type == "block_level":
+                install_group_prefetch(module, onload, logger)
             if offload_type == "leaf_level":
                 _pin_vision_embedding_device(module)
         if resident_transformer_mib:

@@ -234,6 +234,30 @@ def exercise_permission_mode_controls(page, shoot):
     pill = page.locator('button[aria-label="Permission level for tool calls"]:visible').first
     expect(pill).to_be_visible()
 
+    # Stub the sandbox capability so level checks do not depend on the runner's user namespaces.
+    sandbox_answer = {"ready": True}
+
+    def answer_sandbox_capability(route):
+        ready = sandbox_answer["ready"]
+        route.fulfill(
+            status = 200,
+            content_type = "application/json",
+            body = json.dumps(
+                {
+                    "python_os_isolated": ready,
+                    "terminal_os_isolated": ready,
+                    "backend": "bubblewrap",
+                    "platform": "linux",
+                    "reason": "" if ready else "bwrap: setting up uid map: Permission denied",
+                    "setup_action": None,
+                    "manual_command": "" if ready else "apt-get install -y bubblewrap",
+                    "can_run_setup": False,
+                }
+            ),
+        )
+
+    page.route("**/api/sandbox/capability*", answer_sandbox_capability)
+
     def expect_mode(label):
         expect(pill).to_have_attribute("data-pill-label", label)
         expect(pill).to_contain_text(label)
@@ -516,10 +540,40 @@ def exercise_permission_mode_controls(page, shoot):
     reload_and_wait_for_pill()
     expect_mode("Run automatically")
 
+    # Without a sandbox: Cancel keeps the previous level, "Use it anyway" applies it.
+    choose("Approve for me")
+    expect_mode("Approve for me")
+    # Landed on the install first, or the reload hydrates the previous "off" back.
+    expect_server_mode("auto")
+    sandbox_answer["ready"] = False
+    reload_and_wait_for_pill()
+    expect_mode("Approve for me")
+    choose("Run automatically")
+    setup = page.get_by_role("alertdialog")
+    expect(setup.get_by_role("heading", name = "No OS sandbox on this computer yet")).to_be_visible()
+    expect(setup).to_contain_text("apt-get install -y bubblewrap")
+    expect(setup.get_by_role("button", name = "Copy command")).to_be_visible()
+    if setup.get_by_role("button", name = "Install sandbox").count() != 0:
+        fail("setup dialog offered Install sandbox to a request the server did not allow")
+    setup.get_by_role("button", name = "Cancel").click()
+    expect(setup).to_be_hidden()
+    expect_mode("Approve for me")
+    choose("Run automatically")
+    expect(setup).to_be_visible()
+    setup.get_by_role("button", name = "Use it anyway (risky calls will ask)").click()
+    expect(setup).to_be_hidden()
+    expect_mode("Run automatically")
+    sandbox_answer["ready"] = True
+    reload_and_wait_for_pill()
+
     # Leave the full chat smoke in the fresh-install default.
     choose("Approve for me")
     expect_mode("Approve for me")
+    expect_server_mode("auto")
     shoot("04-permission-levels")
+    # The stub is for the level checks only. Left in place it intercepts this page for the rest of the run, which
+    # also turns off its HTTP cache, and the later sign-out step wedged on it on Windows.
+    page.unroute("**/api/sandbox/capability*", answer_sandbox_capability)
 
 
 def login_via_api(pw):

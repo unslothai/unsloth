@@ -343,9 +343,9 @@ async fn native_clipboard_paths() -> Result<Vec<PathBuf>, String> {
 
 #[tauri::command]
 pub async fn read_native_clipboard_files(
-    window: tauri::WebviewWindow,
+    webview: tauri::Webview,
 ) -> Result<Vec<NativeClipboardFile>, String> {
-    crate::native_intents::ensure_main_window(&window)?;
+    crate::native_intents::ensure_main_window(&webview)?;
     let paths = native_clipboard_paths().await?;
     tokio::task::spawn_blocking(move || read_clipboard_files(paths))
         .await
@@ -407,9 +407,9 @@ fn read_gtk_clipboard_png() -> Result<Vec<u8>, String> {
 #[cfg(target_os = "linux")]
 #[tauri::command]
 pub async fn read_native_clipboard_png(
-    window: tauri::WebviewWindow,
+    webview: tauri::Webview,
 ) -> Result<tauri::ipc::Response, String> {
-    crate::native_intents::ensure_main_window(&window)?;
+    crate::native_intents::ensure_main_window(&webview)?;
     let (tx, rx) = tokio::sync::oneshot::channel();
     glib::MainContext::default().invoke(move || {
         let _ = tx.send(read_gtk_clipboard_png());
@@ -423,9 +423,9 @@ pub async fn read_native_clipboard_png(
 #[cfg(not(target_os = "linux"))]
 #[tauri::command]
 pub async fn read_native_clipboard_png(
-    window: tauri::WebviewWindow,
+    webview: tauri::Webview,
 ) -> Result<tauri::ipc::Response, String> {
-    crate::native_intents::ensure_main_window(&window)?;
+    crate::native_intents::ensure_main_window(&webview)?;
     Err("Native PNG clipboard fallback is only available on Linux.".to_string())
 }
 

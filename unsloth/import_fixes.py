@@ -33,6 +33,7 @@ import sysconfig
 import threading
 import functools
 import inspect
+import types
 
 # We cannot do from unsloth_zoo.log import logger since FBGEMM might cause seg faults.
 UNSLOTH_ENABLE_LOGGING = os.environ.get("UNSLOTH_ENABLE_LOGGING", "0") in (
@@ -1695,6 +1696,159 @@ def fix_transformers5_image_processing_reexports():
         setattr(dynamic_module_utils, _GET_CLASS_PATCH_FLAG, True)
     except Exception as e:
         logger.info(f"Unsloth: Failed patching get_class_in_module ({e})")
+
+
+_UNTRUSTED_CONFIG_PATCH_FLAG = "_unsloth_patched_untrusted_config_fields"
+# to_dict never writes these, so a config.json carrying them was crafted (CVE-2026-4372).
+_INTERNAL_IMPLEMENTATION_KEYS = (
+    "_attn_implementation_internal",
+    "_experts_implementation_internal",
+)
+
+
+def _strip_untrusted_config_fields(config_dict, strip_internal, strip_lightglue):
+    if not isinstance(config_dict, dict):
+        return config_dict
+    cleaned = None
+    for key, value in config_dict.items():
+        drop = (strip_internal and key in _INTERNAL_IMPLEMENTATION_KEYS) or (
+            strip_lightglue
+            and key == "trust_remote_code"
+            and config_dict.get("model_type") == "lightglue"
+        )
+        new_value = _strip_untrusted_config_fields(value, strip_internal, strip_lightglue)
+        if drop or new_value is not value:
+            if cleaned is None:
+                cleaned = dict(config_dict)
+            if drop:
+                cleaned.pop(key, None)
+            else:
+                cleaned[key] = new_value
+    return config_dict if cleaned is None else cleaned
+
+
+def fix_transformers_untrusted_config_fields():
+    """Drop config.json fields that run repo code without trust_remote_code: a Hub kernel named by
+    `_attn_implementation_internal` (CVE-2026-4372, < 5.3.0) and LightGlue's nested `trust_remote_code`
+    (CVE-2026-5241, < 5.5.0). Keyword arguments apply after from_dict, so explicit ones still work."""
+    try:
+        import transformers
+
+        # PEP 440 order: Version() ranks 5.3.0rc1 above 5.3.0, which would skip the fix on an rc.
+        version = TrueVersion(transformers.__version__)
+        strip_internal = version < TrueVersion("5.3.0")
+        strip_lightglue = version < TrueVersion("5.5.0")
+        if not (strip_internal or strip_lightglue):
+            return
+        from transformers.configuration_utils import PretrainedConfig
+    except Exception as e:
+        logger.info(f"Unsloth: Skipping the untrusted config field fix ({e})")
+        return
+
+    def clean(cls, config_dict):
+        config_dict = _strip_untrusted_config_fields(config_dict, strip_internal, strip_lightglue)
+        # The class being built decides, not the model_type the file claims.
+        if (
+            strip_lightglue
+            and getattr(cls, "model_type", None) == "lightglue"
+            and isinstance(config_dict, dict)
+            and "trust_remote_code" in config_dict
+        ):
+            config_dict = {k: v for k, v in config_dict.items() if k != "trust_remote_code"}
+        return config_dict
+
+    def wrap_from_dict(original):
+        @functools.wraps(original)
+        def from_dict(cls, config_dict, *args, **kwargs):
+            return original(cls, clean(cls, config_dict), *args, **kwargs)
+
+        return from_dict
+
+    def wrap_json_reader(original):
+        # from_json_file builds cls(**dict) without from_dict, so its reader is cleaned too.
+        @functools.wraps(original)
+        def _dict_from_json_file(cls, *args, **kwargs):
+            return clean(cls, original(cls, *args, **kwargs))
+
+        return _dict_from_json_file
+
+    for name, wrap in (("from_dict", wrap_from_dict), ("_dict_from_json_file", wrap_json_reader)):
+        current = PretrainedConfig.__dict__.get(name)
+        if not isinstance(current, classmethod) or getattr(
+            current.__func__, _UNTRUSTED_CONFIG_PATCH_FLAG, False
+        ):
+            continue
+        wrapped = wrap(current.__func__)
+        setattr(wrapped, _UNTRUSTED_CONFIG_PATCH_FLAG, True)
+        try:
+            setattr(PretrainedConfig, name, classmethod(wrapped))
+        except Exception as e:
+            logger.info(f"Unsloth: Failed patching PretrainedConfig.{name} ({e})")
+
+
+_CHAT_TEMPLATE_NAME_PATCH_FLAG = "_unsloth_patched_chat_template_names"
+
+
+def _chat_template_name_escapes(template_name):
+    # Upstream's check (#46191), plus drive prefixes: Windows `C:evil` lands on another drive.
+    if os.path.splitdrive(template_name)[0]:
+        return True
+    base = os.path.abspath(os.path.join(os.sep, "unsloth_chat_templates"))
+    target = os.path.normpath(os.path.join(base, f"{template_name}.jinja"))
+    return os.path.dirname(target) != base
+
+
+def _check_chat_template_names(obj, kwargs):
+    chat_template = getattr(obj, "chat_template", None)
+    # Regardless of save_jinja_files: processor save_pretrained ignores it.
+    if not isinstance(chat_template, dict):
+        return
+    for template_name in chat_template:
+        if template_name != "default" and _chat_template_name_escapes(str(template_name)):
+            raise ValueError(f"Invalid chat template name: {template_name!r}")
+
+
+def fix_transformers_chat_template_path_traversal():
+    """CVE-2026-9856 (< 5.10.0): a repo-supplied chat template name like `../../x` is written outside
+    the save directory; raise upstream's ValueError before anything is written."""
+    try:
+        import transformers
+        if TrueVersion(transformers.__version__) >= TrueVersion("5.10.0"):
+            return
+    except Exception as e:
+        logger.info(f"Unsloth: Skipping the chat template name fix ({e})")
+        return
+    targets = []
+    try:
+        from transformers.tokenization_utils_base import PreTrainedTokenizerBase
+        targets.append(PreTrainedTokenizerBase)
+    except Exception:
+        pass
+    try:
+        from transformers.processing_utils import ProcessorMixin
+        targets.append(ProcessorMixin)
+    except Exception:
+        pass
+
+    def wrap(original):
+        @functools.wraps(original)
+        def checked(self, *args, **kwargs):
+            _check_chat_template_names(self, kwargs)
+            return original(self, *args, **kwargs)
+
+        setattr(checked, _CHAT_TEMPLATE_NAME_PATCH_FLAG, True)
+        return checked
+
+    # save_chat_templates is public too, and writes the same files.
+    for target in targets:
+        for name in ("save_pretrained", "save_chat_templates"):
+            original = target.__dict__.get(name)
+            if original is None or getattr(original, _CHAT_TEMPLATE_NAME_PATCH_FLAG, False):
+                continue
+            try:
+                setattr(target, name, wrap(original))
+            except Exception as e:
+                logger.info(f"Unsloth: Failed patching {target.__name__}.{name} ({e})")
 
 
 _SDPA_MASK_PATCH_FLAG = "_unsloth_patched_sdpa_mask"
@@ -4728,6 +4882,162 @@ def patch_unsafe_trainer_rng_load():
     _unsloth_safe_load_rng_state._unsloth_safe_rng_load = True
     Trainer._load_rng_state = _unsloth_safe_load_rng_state
     logger.info("Unsloth: Hardened Trainer._load_rng_state rng loading (CVE-2026-1839).")
+
+
+_PT2_UNSAFE_LOAD_ENV = "UNSLOTH_ALLOW_UNSAFE_PT2_LOAD"
+# torch.export's .pt2 readers: their weights_only=False loads unpickle archive bytes.
+_PT2_LOADER_MODULES = frozenset(
+    (
+        "torch._export.serde.serialize",
+        "torch.export.pt2_archive._package",
+    )
+)
+
+
+def _pt2_unsafe_load_allowed():
+    return os.environ.get(_PT2_UNSAFE_LOAD_ENV, "0").strip().lower() in ("1", "true", "yes", "on")
+
+
+def _pt2_unsafe_load_error(what):
+    import pickle
+    return pickle.UnpicklingError(
+        f"Unsloth: refused to {what} inside a torch.export .pt2 archive. Unpickling it can run "
+        f"arbitrary code (CVE-2026-4538). If you trust this file, set {_PT2_UNSAFE_LOAD_ENV}=1 "
+        "and load it again."
+    )
+
+
+def _pt2_loader_caller(frame):
+    # A few frames up: other torch.load wrappers (the rng guard, later patches) sit in between.
+    hops = 0
+    while frame is not None and hops < 8:
+        name = frame.f_globals.get("__name__", "")
+        if name in _PT2_LOADER_MODULES:
+            return name
+        frame = frame.f_back
+        hops += 1
+    return ""
+
+
+class _Pt2PickleModule(types.ModuleType):
+    """Stands in for `pickle` inside torch.export.pt2_archive._package: loads is refused."""
+
+    def __init__(self, real):
+        super().__init__(real.__name__)
+        self._unsloth_pt2_real_pickle = real
+
+    def __getattr__(self, name):
+        return getattr(self._unsloth_pt2_real_pickle, name)
+
+    def loads(self, *args, **kwargs):
+        if _pt2_unsafe_load_allowed():
+            return self._unsloth_pt2_real_pickle.loads(*args, **kwargs)
+        raise _pt2_unsafe_load_error("unpickle an opaque object")
+
+
+_PT2_PACKAGE_MODULE = "torch.export.pt2_archive._package"
+_PT2_FINDER_SENTINEL = "_unsloth_pt2_package_finder"
+
+
+def _install_pt2_pickle_proxy(package):
+    real_pickle = getattr(package, "pickle", None)
+    # Marker, not isinstance: a reloaded import_fixes defines a new _Pt2PickleModule class.
+    already = hasattr(real_pickle, "_unsloth_pt2_real_pickle")
+    if isinstance(real_pickle, types.ModuleType) and not already:
+        package.pickle = _Pt2PickleModule(real_pickle)
+        return True
+    return False
+
+
+class _Pt2PackageLoader(importlib.abc.Loader):
+    __slots__ = ("_loader",)
+
+    def __init__(self, loader):
+        self._loader = loader
+
+    def create_module(self, spec):
+        create_module = getattr(self._loader, "create_module", None)
+        return None if create_module is None else create_module(spec)
+
+    def exec_module(self, module):
+        self._loader.exec_module(module)
+        _install_pt2_pickle_proxy(module)
+
+    def __getattr__(self, name):
+        return getattr(self._loader, name)
+
+
+class _Pt2PackageFinder(importlib.abc.MetaPathFinder):
+    """Installs the pickle stand-in right after torch.export.pt2_archive._package first runs."""
+
+    def __init__(self):
+        setattr(self, _PT2_FINDER_SENTINEL, True)
+
+    def find_spec(
+        self,
+        fullname,
+        path = None,
+        target = None,
+    ):
+        if fullname != _PT2_PACKAGE_MODULE:
+            return None
+        for finder in sys.meta_path:
+            if finder is self or getattr(finder, _PT2_FINDER_SENTINEL, False):
+                continue
+            find_spec = getattr(finder, "find_spec", None)
+            try:
+                spec = find_spec(fullname, path, target) if find_spec is not None else None
+            except Exception:
+                spec = None
+            if spec is not None:
+                if spec.loader is not None and hasattr(spec.loader, "exec_module"):
+                    spec.loader = _Pt2PackageLoader(spec.loader)
+                return spec
+        return None
+
+
+def patch_torch_export_pt2_unsafe_load():
+    """CVE-2026-4538 (pytorch/pytorch#176791 never merged): torch.export.load unpickles .pt2
+    payloads with weights_only=False. Those loads become weights_only=True and the bare
+    pickle.loads for opaque constants is refused; tensors and ordinary exported programs still
+    load. UNSLOTH_ALLOW_UNSAFE_PT2_LOAD=1 restores torch's behaviour."""
+    try:
+        import torch
+    except Exception:
+        return
+    patched = False
+    load = torch.load
+    if not getattr(load, "_unsloth_pt2_guard", False):
+
+        @functools.wraps(load)
+        def _pt2_guarded_torch_load(*args, **kwargs):
+            if kwargs.get("weights_only") is not False or _pt2_unsafe_load_allowed():
+                return load(*args, **kwargs)
+            if _pt2_loader_caller(sys._getframe(1)) not in _PT2_LOADER_MODULES:
+                return load(*args, **kwargs)
+            kwargs["weights_only"] = True
+            try:
+                return load(*args, **kwargs)
+            except Exception as error:
+                raise _pt2_unsafe_load_error("unpickle a non-tensor payload") from error
+
+        _pt2_guarded_torch_load._unsloth_pt2_guard = True
+        # Carry the rng guard's markers so patch_unsafe_trainer_rng_load stays idempotent.
+        for attribute in ("_unsloth_rng_guard", "_unsloth_rng_flag"):
+            if hasattr(load, attribute):
+                setattr(_pt2_guarded_torch_load, attribute, getattr(load, attribute))
+        torch.load = _pt2_guarded_torch_load
+        patched = True
+
+    # Opaque constants bypass torch.load: patch _package now, or lazily so import stays cheap.
+    package = sys.modules.get(_PT2_PACKAGE_MODULE)
+    if package is not None:
+        patched = _install_pt2_pickle_proxy(package) or patched
+    elif not any(getattr(finder, _PT2_FINDER_SENTINEL, False) for finder in sys.meta_path):
+        sys.meta_path.insert(0, _Pt2PackageFinder())
+        patched = True
+    if patched:
+        logger.info("Unsloth: Hardened torch.export .pt2 loading (CVE-2026-4538).")
 
 
 def _is_custom_torch_build(raw_version_str):
@@ -10017,10 +10327,11 @@ def fix_peft_stale_torchao_import_error():
     return patched
 
 
-# Matches both spellings a torchao removal produces: the class name, and the module that used to
-# define it. Only these two, so a torchao that is BROKEN rather than newer still raises.
+# The spellings a torchao removal produces (class, its old module, the whole ``torchao.dtypes`` package on main).
+# Only these, so a BROKEN torchao still raises.
 _PEFT_TORCHAO_MISSING_TENSOR_SUBCLASS = re.compile(
-    r"linear_?activation_?quantized_?tensor|affine_?quantized_?tensor",
+    r"linear_?activation_?quantized_?tensor|affine_?quantized_?tensor"
+    r"|no module named '?torchao\.dtypes'?(?![.\w])",
     re.IGNORECASE | re.DOTALL,
 )
 

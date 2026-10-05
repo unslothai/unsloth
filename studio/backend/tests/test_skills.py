@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import codecs
 import json
 import os
 import sys
@@ -892,6 +893,19 @@ def test_indented_separator_inside_a_block_scalar_stays_in_the_frontmatter(isola
     assert record["description"] == "Use for reports.\n---\nAlso for summaries."
 
 
+def test_skill_manifest_saved_with_a_utf8_byte_order_mark_is_valid(isolated_skills):
+    home, _ = isolated_skills
+    root = _write_skill(home, "agents", "marked", body = "Follow the steps.")
+    manifest = root / "SKILL.md"
+    manifest.write_bytes(codecs.BOM_UTF8 + manifest.read_bytes())
+
+    record = next(item for item in skills.list_skills(home = home) if item["name"] == "marked")
+
+    assert record["valid"] is True
+    assert record["description"] == "Use this skill for testing."
+    assert skills.read_skill_manifest("marked", home = home)["instructions"] == "Follow the steps."
+
+
 def test_read_skill_tool_applies_defaults_for_null_arguments(isolated_skills, monkeypatch):
     from core.inference import tools as tools_module
 
@@ -1157,3 +1171,26 @@ def test_managed_account_edits_and_deletes_only_its_own_skills(managed_accounts)
     run_as(bob, skills.delete_skill, "bob-made")
     assert not (studio / "accounts" / _BOB_ID / "skills" / "bob-made").exists()
     assert owner_manifest.is_file()
+
+
+def test_explicit_manifest_loading_uses_current_account_discovery(managed_accounts):
+    from core.inference.skill_mentions import load_mentioned_skills
+    from core.inference.tools import READ_SKILL_TOOL
+    from utils.account_context import run_as
+
+    home, studio, alice, bob = managed_accounts
+    _write_skill(home, "agents", "owner-only", body = "OWNER_ONLY_INSTRUCTIONS")
+    _account_skill(studio, _ALICE_ID, "alice-only", "ALICE_ONLY_INSTRUCTIONS")
+
+    def load(prompt):
+        messages = [{"role": "user", "content": prompt}]
+        events = list(load_mentioned_skills(messages, [READ_SKILL_TOOL]))
+        return messages, events
+
+    alice_messages, alice_events = run_as(alice, load, "@alice-only @owner-only")
+    assert [e["name"] for e in alice_events if e["status"] == "loaded"] == ["alice-only"]
+    assert "OWNER_ONLY_INSTRUCTIONS" not in str(alice_messages)
+    bob_messages, bob_events = run_as(bob, load, "@alice-only @owner-only")
+    assert not any(e["status"] == "loaded" for e in bob_events)
+    assert "ALICE_ONLY_INSTRUCTIONS" not in str(bob_messages)
+    assert "OWNER_ONLY_INSTRUCTIONS" not in str(bob_messages)

@@ -54,7 +54,14 @@ HOST_PATH_HANDLE_FIELDS = frozenset(
 
 # Scrubbed, not blanked: the only account of WHY a run failed.
 HOST_PATH_TEXT_FIELDS = frozenset(
-    {"error_message", "error", "detail", "message", "transformer_quant_backend_reason"}
+    {
+        "error_message",
+        "error",
+        "detail",
+        "message",
+        "transformer_quant_backend_reason",
+        "sd_cpp_cudnn_reason",
+    }
 )
 
 # The same text, one per entry. A run's warnings quote the file they are about ("missing
