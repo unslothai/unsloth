@@ -18,6 +18,7 @@ import {
   type ModelOption,
   ModelSelector,
   type ModelSelectorChangeMeta,
+  currentRuntimePerModelConfig,
   resolveResidentInitialConfig,
 } from "@/features/model-picker";
 import { cn } from "@/lib/utils";
@@ -140,12 +141,15 @@ export function ApiModelLoadControls({
         );
         await selectModel({
           id: value,
+          loadId: meta?.loadId,
           source: meta?.source,
           isLora: meta?.isLora,
           ggufVariant: meta?.ggufVariant,
           isDownloaded: meta?.isDownloaded,
           expectedBytes: meta?.expectedBytes,
+          downloadPresentation: meta?.downloadPresentation,
           isGguf: meta?.isGguf,
+          isVision: meta?.isVision,
           isDiffusion: meta?.isDiffusion,
           config:
             meta?.config ??
@@ -153,6 +157,9 @@ export function ApiModelLoadControls({
           nativePathToken: meta?.nativePathToken,
           nativePathExpiresAtMs: meta?.nativePathExpiresAtMs,
           forceReload: meta?.forceReload,
+          previousConfig: currentRuntimePerModelConfig({
+            includeMaxSeqLength: true,
+          }),
         });
         refreshLastLoadLabel();
         onSettled();
@@ -183,6 +190,9 @@ export function ApiModelLoadControls({
             config: target.config ?? undefined,
             forceReload: true,
             isDownloaded: true,
+            previousConfig: currentRuntimePerModelConfig({
+              includeMaxSeqLength: true,
+            }),
           });
         },
       });
