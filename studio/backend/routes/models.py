@@ -826,6 +826,38 @@ def _compat_local_inventory_sources() -> _CompatLocalInventorySources:
     )
 
 
+def _scan_nested_compat_rows(
+    folder_path: Path, existing: List[LocalModelInfo], *, limit: int
+) -> List[LocalModelInfo]:
+    """Rows from a recursive scan folder's sub-folders that its own scan did not already list (#6371)."""
+    from hub.services.models.local_inventory import is_loadable_model_dir, nested_scan_roots
+
+    seen = {(m.path, m.model_format) for m in existing}
+    found: List[LocalModelInfo] = []
+    for root in nested_scan_roots(folder_path):
+        if len(existing) + len(found) >= limit:
+            break
+        # No shared variant index: it was built for the registered caches, so a nested one reads its own state.
+        rows = _scan_models_dir(root, limit = limit - len(existing) - len(found)) + _scan_hf_cache(
+            root, active_cache = False
+        )
+        for row in rows:
+            key = (row.path, row.model_format)
+            path = Path(row.path)
+            # This scanner also lists config-only folders; across a whole tree those are mostly other apps' configs.
+            if row.source != "hf_cache" and not (path.is_file() or is_loadable_model_dir(path)):
+                continue
+            if key in seen or any(
+                p in (".studio_links", "ollama_links") for p in Path(row.path).parts
+            ):
+                continue
+            seen.add(key)
+            found.append(row)
+            if len(existing) + len(found) >= limit:
+                return found
+    return found
+
+
 def collect_local_models(
     models_root: Path,
     *,
@@ -949,6 +981,10 @@ def collect_local_models(
                 )
                 if not any(p in (".studio_links", "ollama_links") for p in Path(m.path).parts)
             ]
+            if folder.get("recursive"):
+                _generic += _scan_nested_compat_rows(
+                    folder_path, _generic, limit = _MAX_MODELS_PER_FOLDER
+                )
             custom_models = []
             for model in _generic:
                 path = Path(model.path)
@@ -1137,7 +1173,9 @@ async def _shared_compat_local_inventory_scan(
             Path(_compat_inventory_path_identity(models_root)),
             scan_sources,
             tuple(
-                _compat_inventory_path_identity(folder.get("path", "")) for folder in custom_folders
+                _compat_inventory_path_identity(folder.get("path", ""))
+                + ("\x00r" if folder.get("recursive") else "")
+                for folder in custom_folders
             ),
             epoch,
         )
@@ -1271,7 +1309,9 @@ async def add_scan_folder_endpoint(
     from storage.studio_db import add_scan_folder_with_status
 
     try:
-        folder, inserted = await asyncio.to_thread(add_scan_folder_with_status, body.path)
+        folder, inserted = await asyncio.to_thread(
+            add_scan_folder_with_status, body.path, body.recursive
+        )
     except ValueError as e:
         logger.warning("Scan folder rejected: %s (path=%s)", e, body.path)
         rejection_message = str(e)

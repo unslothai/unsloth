@@ -2694,6 +2694,7 @@ export function SharedComposer({
       <textarea
         {...skillMentions.inputProps}
         ref={textareaRef}
+        data-type-to-activate="composer"
         value={text}
         onChange={(e) => {
           // ALWAYS mirror the DOM value into React state, even during IME composition: the controlled `value`
