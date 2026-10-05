@@ -1537,14 +1537,35 @@ def test_the_contract_reaches_the_backend_and_its_reply_comes_back_whole(monkeyp
 
 
 class _FittedToolLoopBackend(_ToolLoopBackend):
+    def __init__(self, responder, **kwargs):
+        super().__init__(responder, **kwargs)
+        self.fits: list = []
+
     def compact_chat_context(
         self,
         messages,
         *,
         system_prompt = "",
-        **_kwargs,
+        **kwargs,
     ):
+        self.fits.append(kwargs)
         return {"messages": messages, "system_prompt": system_prompt}
+
+
+def _serve(
+    monkeypatch,
+    *,
+    frames = True,
+    **fields,
+):
+    """Send to an installed backend; ``frames`` off drops the control-frame header."""
+    if not frames:
+        monkeypatch.setattr(_Request, "headers", {})
+    payload = _request(**fields)
+    response = asyncio.run(
+        openai_chat_completions(payload, request = _Request(), current_subject = "u")
+    )
+    return _collect_sse(response) if payload.stream else response
 
 
 @pytest.mark.parametrize(
@@ -1559,6 +1580,7 @@ class _FittedToolLoopBackend(_ToolLoopBackend):
         (True, True, {"max_tool_calls_per_message": 0}, None),
         (True, True, {"n": 2}, None),
         (True, True, {"permission_mode": "ask"}, None),
+        (True, True, {"stream": True, "frames": False, "permission_mode": "ask"}, None),
         (True, True, {"response_format": _RF_FORMAT}, None),
         (True, True, {"tools": [LOOKUP_TOOL]}, ["lookup"]),
     ],
@@ -1574,16 +1596,14 @@ def test_a_compacted_mlx_thread_keeps_archive_search_with_tools_off(
     )
     backend = _FittedToolLoopBackend(_fixed("done"))
     backend.models["sf-model"]["is_mlx"] = is_mlx
-    payload = _request(
-        **{
-            "stream": False,
-            "enable_tools": False,
-            "thread_id": "saved",
-            "context_overflow": "truncate_oldest",
-            "context_policy": "checkpoint",
-            **extra,
-        }
-    )
+    fields = {
+        "stream": False,
+        "enable_tools": False,
+        "thread_id": "saved",
+        "context_overflow": "truncate_oldest",
+        "context_policy": "checkpoint",
+        **extra,
+    }
     probed = []
 
     def _features(*_args, **kwargs):
@@ -1592,11 +1612,53 @@ def test_a_compacted_mlx_thread_keeps_archive_search_with_tools_off(
 
     _install(monkeypatch, backend)
     monkeypatch.setattr(inf, "_detect_safetensors_features", _features)
-    asyncio.run(openai_chat_completions(payload, request = _Request(), current_subject = "u"))
+    _serve(monkeypatch, **fields)
     tools = backend.calls[0]["tools"]
     assert (tools and [tool["function"]["name"] for tool in tools]) == offered
     # The template branch that is classified is the one the request renders.
-    assert set(probed) == {bool(offered)}
+    assert probed[0] is bool(offered)
+
+
+_TURNS = "{% for m in messages %}<|im_start|>{{ m.role }}\n{{ m.content }}<|im_end|>\n{% endfor %}"
+_WITH_TOOLS = "{% if tools %}<tool_call>{{ tools }}</tool_call>{% endif %}" + _TURNS
+# Named templates: only the branch a turn carrying tools renders decides, either way round.
+_TOOL_BRANCH = {"default": _TURNS, "tool_use": _WITH_TOOLS}
+_DEFAULT_BRANCH = {"default": _WITH_TOOLS, "tool_use": _TURNS}
+
+
+@pytest.mark.parametrize(
+    "extra, supports_tools, gpt_oss, reachable",
+    [
+        ({}, True, False, True),
+        ({}, False, False, False),
+        ({}, _TOOL_BRANCH, False, True),
+        ({}, _DEFAULT_BRANCH, False, False),
+        ({}, True, True, False),
+        ({"tool_choice": "none"}, True, False, False),
+        ({"stream": True, "permission_mode": "ask"}, True, False, True),
+        ({"stream": True, "frames": False}, True, False, True),
+        ({"stream": True, "frames": False, "permission_mode": "ask"}, True, False, False),
+        ({"response_format": _RF_FORMAT}, True, False, False),
+        ({"tools": [LOOKUP_TOOL]}, True, False, False),
+    ],
+)
+def test_a_plain_mlx_fit_may_reset_only_where_the_loop_can_reopen(
+    monkeypatch, extra, supports_tools, gpt_oss, reachable
+):
+    backend = _FittedToolLoopBackend(_fixed("done"))
+    backend.models["sf-model"]["is_mlx"] = True
+    backend._is_gpt_oss_model = lambda: gpt_oss
+    import routes.inference as inf
+
+    classify = inf._detect_safetensors_features
+    _install(monkeypatch, backend, supports_tools = supports_tools is True)
+    if isinstance(supports_tools, dict):
+        # The real classifier, so the branch it selects is the one under test.
+        backend.models["sf-model"]["chat_template_info"] = {"template": supports_tools}
+        monkeypatch.setattr(inf, "_detect_safetensors_features", classify)
+    base = {"stream": False, "enable_tools": False, "context_overflow": "truncate_oldest"}
+    _serve(monkeypatch, **{**base, **extra})
+    assert [fit["recall_reachable"] for fit in backend.fits] == [reachable]
 
 
 class _VisionToolLoopBackend(_ToolLoopBackend):

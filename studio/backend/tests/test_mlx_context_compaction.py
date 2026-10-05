@@ -113,7 +113,9 @@ def test_a_prompt_the_fit_must_not_touch_is_returned_unchanged(case):
     assert result["events"] == []
 
 
-def test_only_a_tool_loop_request_resets_and_only_an_offered_search_is_named(archive_calls):
+def test_a_request_resets_only_where_search_can_follow_and_names_only_an_offered_tool(
+    archive_calls, monkeypatch
+):
     def fit(messages = None, **kwargs):
         result = _fit(
             _backend(),
@@ -128,6 +130,14 @@ def test_only_a_tool_loop_request_resets_and_only_an_offered_search_is_named(arc
     truncation, system, archived = fit(tools = [SEARCH])
     assert not truncation.get("checkpoint") and "carried_forward" not in system
     assert archived["style"] == "inline"
+
+    # A plain request has no catalogue to miss the tool from: the route's answer alone decides.
+    with monkeypatch.context() as patch:
+        patch.setattr(llama_cpp, "_memory_tool_withheld", lambda thread_id, tools: True)
+        truncation, system, archived = fit(recall_reachable = True)
+        assert truncation["checkpoint_started"] is True and "carried_forward" in system
+        assert "search_conversation tool" not in system and archived["style"] == "inline"
+        assert not fit(tool_loop = True, tools = [WEB])[0].get("checkpoint")
 
     truncation, system, archived = fit(tool_loop = True, tools = [WEB])
     assert truncation["checkpoint_started"] is True and "carried_forward" in system
@@ -144,7 +154,7 @@ def test_only_a_tool_loop_request_resets_and_only_an_offered_search_is_named(arc
     # The loop's final answer carries no tools: no reset, and its reply never comes back,
     # so recall gets all the room the fit left.
     turns = [{"role": "user", "content": "x" * size} for size in (3200, 800, 8)]
-    truncation, _, archived = fit(messages = turns, tool_loop = True)
+    truncation, _, archived = fit(messages = turns, tool_loop = True, recall_reachable = True)
     after = truncation["prompt_tokens_after"]
     whole = retrieval_budget(1200, 200, after)
     assert not truncation.get("checkpoint") and archived["recall_budget_tokens"] == whole

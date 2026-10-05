@@ -2753,6 +2753,7 @@ class InferenceOrchestrator:
         preserve_thinking: Optional[bool] = None,
         continue_final_message: bool = False,
         tool_loop: bool = False,
+        recall_reachable: bool = False,
         anchor_ids = None,
         replay_boundary: bool = True,
         recall_done: bool = False,
@@ -2761,8 +2762,8 @@ class InferenceOrchestrator:
     ) -> dict:
         """Fit one MLX prompt into the served window under the policy GGUF uses.
 
-        Only a ``tool_loop`` turn that carries tools may reset the epoch: no other MLX turn
-        is offered ``search_conversation``. ``request_branch`` is the client's transcript and
+        A ``tool_loop`` turn carrying tools may reset the epoch; a plain turn only when a later
+        one can search (``recall_reachable``). ``request_branch`` is the client's transcript and
         ``live_branch`` that plus the loop's replies and tool results; both default to the prompt.
         Never raises: a failed fit returns the request unchanged.
         """
@@ -2838,8 +2839,9 @@ class InferenceOrchestrator:
 
             can_reset = _can_reset_epoch(
                 thread_id,
-                calls_tools,
-                tools_withheld = _memory_tool_withheld(thread_id, tools),
+                calls_tools if tool_loop else recall_reachable,
+                # A plain turn carries no catalogue to read; the route answered for it.
+                tools_withheld = tool_loop and _memory_tool_withheld(thread_id, tools),
             )
             sticky, sticky_is_checkpoint = (
                 _sticky_compaction_state(

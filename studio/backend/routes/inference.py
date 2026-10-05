@@ -32223,6 +32223,13 @@ async def produce_openai_chat_completions(
     _sf_mcp_allowed = (
         payload.tool_choice != "none" and bool(payload.mcp_enabled) and _sf_cli_policy is not False
     )
+    # Can a turn run search_conversation? A stream without control frames cannot approve the call.
+    _sf_recall_loop_usable = (
+        not _tool_loop_unusable
+        and not _has_client_tool_contract
+        and not _response_format_constrains_decoding(payload)
+        and (_ui_events or not _confirm_gate_would_prompt(payload, ("search_conversation",)))
+    )
     # A compacted thread opens the tool loop even with the user's tools off, as the GGUF
     # branch does: after a reset search_conversation is the only way back to what was
     # dropped, and _select_request_tools admits it alone. Client tools and guided decoding
@@ -32230,9 +32237,7 @@ async def produce_openai_chat_completions(
     _sf_recall_reopens_loop = (
         _sf_fit_overflow is not None
         and not (_sf_tools_on or _sf_mcp_allowed)
-        and not _tool_loop_unusable
-        and not _has_client_tool_contract
-        and not _response_format_constrains_decoding(payload)
+        and _sf_recall_loop_usable
         and _checkpoint_recall_may_enable_tools(payload)
     )
 
@@ -33289,6 +33294,15 @@ async def produce_openai_chat_completions(
                 **kw,
             )
 
+    # As on GGUF, a reset on the plain path relies on the loop reopening for the next turn.
+    # That turn classifies the tool branch, which a named template may render differently.
+    _sf_recall_reachable = (
+        _sf_fit_overflow is not None
+        and _sf_recall_loop_usable
+        and not _sf_is_gptoss
+        and bool(_sf_rendered_features(backend, _sf_model_info, ({},))[0].get("supports_tools"))
+    )
+
     def generate(messages_override = None, choice_index = 0):
         base_kwargs = (
             gen_kwargs
@@ -33319,6 +33333,7 @@ async def produce_openai_chat_completions(
                     reasoning_effort = base_kwargs.get("reasoning_effort"),
                     preserve_thinking = base_kwargs.get("preserve_thinking"),
                     continue_final_message = bool(base_kwargs.get("continue_final_message", False)),
+                    recall_reachable = _sf_recall_reachable,
                 )
                 generation_kwargs = {
                     **base_kwargs,
