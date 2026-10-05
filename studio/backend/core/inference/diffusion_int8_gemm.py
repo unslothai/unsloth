@@ -81,15 +81,12 @@ _ARCH_CONFIG = {
 _FALLBACK_CONFIG = (128, 128, 64, 8, 4, 4)
 
 # Per-shape tiles: (major, minor) -> ((N_lo, N_hi, K_lo, K_hi, tile), ...), first match wins, bounds inclusive,
-# M >= _SHAPE_MIN_M only (smaller M stays on the arch default). Measured per shape against the arch default, every
-# arm a CUDA graph, 21 interleaved rounds per shape on one card. A100 has none (no candidate beat its default outside
-# the A/A spread). L4 has none: 128x128x64 (GROUP_M 16) won 3-6% per GEMM in isolation but cost 7% s/step end to end on
-# Qwen-Image-2.1 (the power-capped card clocked ~10% lower for the whole step).
+# M >= _SHAPE_MIN_M only. No L4 rule on purpose: per-GEMM wins there cost s/step end to end (power-capped clocks).
 _SHAPE_TILES: dict = {
     (12, 0): (
-        # MiniMax-H3 fused QKV / FFN in (N 21504 / 28672, K 5376): GROUP_M 32, -1.9 / -2.8%
+        # MiniMax-H3 fused QKV / FFN in
         (16384, 32768, 4096, 6144, (128, 128, 64, 32, 4, 4)),
-        # deep K (H3 out / FFN down, Qwen-Image-2.1 MLP out, Z-Image w2): -0.4 to -1.7%
+        # deep K: H3 out / FFN down, Qwen-Image-2.1 MLP out, Z-Image w2
         (1, 8192, 7168, 16384, (256, 128, 128, 8, 8, 3)),
     ),
 }

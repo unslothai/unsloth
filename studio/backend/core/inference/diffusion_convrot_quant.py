@@ -43,9 +43,7 @@ _ROTQ_CONFIG = {
 _ROTQ_FALLBACK = (128, 32, 8, 3)
 _ROTQ_GROUPS = (256,)
 # Per-K tiles: (major, minor) -> ((K_lo, K_hi, tile), ...), first match wins, bounds inclusive; a tile whose BLOCK_M
-# cannot hold one whole row at that K is skipped. Measured per K, interleaved, exclusive card.
-# A 64-row tile beat the arch default by 10-30% wherever it holds most of a row's groups (G4 / L4 / A100, H3, Qwen-Image-2.1
-# and Z-Image K); at K 10240 (40 groups: one row in 64, 62% used) the default's three rows in 128 win.
+# cannot hold one whole row at that K is skipped. K 10240 stays on the default (a 64-row tile wastes 38% of it there).
 _ROTQ_NARROW = (64, 32, 4, 3)
 _ROTQ_K_TILES: dict = {
     cap: ((256, 8192, _ROTQ_NARROW), (11264, 16384, _ROTQ_NARROW))
