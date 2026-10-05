@@ -312,6 +312,33 @@ def test_video_denoiser_prefetch_fetches_the_cached_pickle(hub, monkeypatch):
     assert fetched == ["Model-INT8.pt"]
 
 
+def test_video_denoiser_prefetch_skips_an_unreadable_cached_pickle(hub, monkeypatch):
+    import threading
+
+    import utils.hf_xet_fallback as xet
+    from core.inference.video import VideoBackend
+
+    hub.cache("Model-INT8.pt")
+    monkeypatch.setattr(
+        pq,
+        "restricted_prequant_load_supported",
+        lambda scheme = None, filename = None: not str(filename).endswith(".pt"),
+    )
+    fetched = []
+
+    def _dl(repo, name, token, **kw):
+        fetched.append(name)
+        return hub.cached.get((repo, name)) or "/new/" + name
+
+    monkeypatch.setattr(xet, "hf_hub_download_with_xet_fallback", _dl)
+    backend = VideoBackend.__new__(VideoBackend)
+    VideoBackend._fetch_denoiser_prequant(
+        backend, [_dit()], None, cancel_event = threading.Event(), scheme = "int8"
+    )
+    # the loader cannot open the cached .pt, so the prefetch stages the safetensors it will open
+    assert fetched == ["Model-INT8.safetensors"]
+
+
 def test_video_te_prefetch_fetches_the_cached_pickle(hub, monkeypatch):
     import threading
 

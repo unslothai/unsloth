@@ -641,11 +641,11 @@ def prefer_cached_pickle_twins(
             key = (repo_id, twin)
             if log and key not in _logged_twin_choices:
                 _logged_twin_choices.add(key)
-                log = logger
-                if log is None:
+                sink = logger
+                if sink is None:
                     import logging
-                    log = logging.getLogger(__name__)
-                log.info(
+                    sink = logging.getLogger(__name__)
+                sink.info(
                     "diffusion.prequant_cached_pickle: %s: using the cached %s; the %s twin is not "
                     "downloaded (set %s=1 to fetch it instead)",
                     repo_id,

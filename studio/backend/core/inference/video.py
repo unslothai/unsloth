@@ -3122,6 +3122,7 @@ class VideoBackend:
                     kwargs.get("hf_token"),
                     cancel_event = cancel_event,
                     local_files_only = local_files_only,
+                    scheme = TQ_FP8,
                 )
             # The denoiser artifact too: the injection that would fetch it has no cancel event.
             if skip_transformer_weights:
@@ -3135,6 +3136,7 @@ class VideoBackend:
                     kwargs.get("hf_token"),
                     cancel_event = cancel_event,
                     local_files_only = local_files_only,
+                    scheme = h3_auto_denoiser or video_auto_denoiser or requested_denoiser,
                 )
             base_local = self._predownload_base(
                 base,
@@ -4263,12 +4265,14 @@ class VideoBackend:
         *,
         cancel_event: Optional[threading.Event] = None,
         local_files_only: bool = False,
+        scheme: Optional[str] = None,
     ) -> None:
         """Pre-fetch the hosted denoiser checkpoint(s) under the load's cancel event; best effort except cancellation."""
         cancel = cancel_event if cancel_event is not None else self._cancel_event
         from core.inference.diffusion_prequant import (
             candidate_filenames_of,
             prefer_cached_pickle_twins,
+            restricted_prequant_load_supported,
         )
         from utils.hf_xet_fallback import hf_hub_download_with_xet_fallback
 
@@ -4278,6 +4282,7 @@ class VideoBackend:
             names = prefer_cached_pickle_twins(
                 source.location,
                 list(dict.fromkeys(candidate_filenames_of(source))),
+                readable = lambda n: restricted_prequant_load_supported(scheme, n),
                 cache_dir = hub_cache_dir(),
             )
             for index, name in enumerate(names):
@@ -4400,6 +4405,7 @@ class VideoBackend:
         from core.inference.diffusion_prequant import (
             candidate_filenames_of,
             prefer_cached_pickle_twins,
+            restricted_prequant_load_supported,
         )
 
         by_name = {s.rfilename: int(s.size or 0) for s in (info.siblings or [])}
@@ -4407,7 +4413,10 @@ class VideoBackend:
         for src in sources:
             # Same order the prefetch and the loader walk: a cached .pt ahead of its uncached safetensors twin.
             wanted = prefer_cached_pickle_twins(
-                src.location, list(candidate_filenames_of(src)), cache_dir = hub_cache_dir()
+                src.location,
+                list(candidate_filenames_of(src)),
+                readable = lambda n: restricted_prequant_load_supported(transformer_quant, n),
+                cache_dir = hub_cache_dir(),
             )
             found = next((n for n in wanted if n in by_name), None)
             if found is None:
@@ -4438,6 +4447,7 @@ class VideoBackend:
             candidate_filenames_of,
             first_cached_as_resolved,
             prefer_cached_pickle_twins,
+            restricted_prequant_load_supported,
         )
 
         cached: list[str] = []
@@ -4445,6 +4455,7 @@ class VideoBackend:
             ordered = prefer_cached_pickle_twins(
                 src.location,
                 list(candidate_filenames_of(src)),
+                readable = lambda n: restricted_prequant_load_supported(transformer_quant, n),
                 cache_dir = hub_cache_dir(),
                 log = False,
             )
