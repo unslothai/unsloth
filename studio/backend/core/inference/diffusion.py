@@ -270,6 +270,11 @@ from .diffusion_denoiser_prequant import (
     pipeline_seed_supported,
     prequant_artifact_label,
 )
+from .diffusion_comfy_quant import (
+    comfy_int8_backend,
+    load_comfy_quant_transformer,
+    refuse_comfy_quant,
+)
 from .diffusion_prequant import (
     hosted_fast_accum_conflict,
     load_prequantized_transformer,
@@ -5448,6 +5453,11 @@ class DiffusionBackend:
                 # catches that. Say so here, naming the file and the repo, rather than letting the GGUF quantizer
                 # raise a bare shape mismatch.
                 assert_flux2_gguf_matches_base(fam, base, single_file_path)
+                # A ComfyUI-quantized file loads through its own path below; a format it cannot run is refused here,
+                # from the header, before planning or reading a weight, rather than loaded with its scales dropped.
+                comfy_scan = (
+                    refuse_comfy_quant(single_file_path) if kind == "single_file" else None
+                )
                 transformer_cls = getattr(diffusers, fam.transformer_class)
                 pipeline_cls = getattr(diffusers, fam.pipeline_class)
 
@@ -6590,6 +6600,11 @@ class DiffusionBackend:
                             }
                             if hf_token:
                                 sf_pipe_kwargs["token"] = hf_token
+                            if comfy_scan is not None:
+                                raise ValueError(
+                                    "A ComfyUI-quantized checkpoint holds only a denoiser; this family's single "
+                                    "file is a whole pipeline, so it cannot be loaded here."
+                                )
                             pipe = pipeline_cls.from_single_file(single_file_path, **sf_pipe_kwargs)
                         else:
                             # Transformer-only single file; VAE/text-encoder/scheduler come from the base repo.
@@ -6616,10 +6631,28 @@ class DiffusionBackend:
                                 # choke.
                                 _install_gguf_prefix_strip(transformer_cls, logger)
                                 _install_gguf_dim_restore(logger)
-                            # A safetensors single-file (fp8) carries its own dtype: no GGUF dequant config.
-                            transformer = transformer_cls.from_single_file(
-                                single_file_path, **sf_kwargs
-                            )
+                            if comfy_scan is not None:
+                                # int8 codes and scales go to the int8 runtime unchanged where it runs; the rest dequantize.
+                                transformer = load_comfy_quant_transformer(
+                                    transformer_cls,
+                                    single_file_path,
+                                    comfy_scan,
+                                    sf_kwargs,
+                                    int8_backend = comfy_int8_backend(
+                                        target,
+                                        fam.name,
+                                        base,
+                                        offload = not plan_keeps_transformer_resident(plan),
+                                    ),
+                                    family = fam.name,
+                                    target = target,
+                                    logger = logger,
+                                )
+                            else:
+                                # A safetensors single-file (fp8) carries its own dtype: no GGUF dequant config.
+                                transformer = transformer_cls.from_single_file(
+                                    single_file_path, **sf_kwargs
+                                )
                             self._raise_if_load_cancelled(_load_token)
 
                             if fam.name == KREA2_FAMILY_NAME:
