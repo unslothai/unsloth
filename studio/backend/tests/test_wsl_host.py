@@ -629,7 +629,9 @@ def test_wsl_build_tool_failure_is_reported():
 
 @_GUEST_RUNNER
 @pytest.mark.parametrize("cancel_source", ["event", "file"])
-def test_build_tool_cancellation_reaps_the_guest_process_group(tmp_path, monkeypatch, cancel_source):
+def test_build_tool_cancellation_reaps_the_guest_process_group(
+    tmp_path, monkeypatch, cancel_source
+):
     import threading
 
     monkeypatch.setattr(install, "engine_root", lambda: tmp_path)
@@ -649,8 +651,10 @@ def test_build_tool_cancellation_reaps_the_guest_process_group(tmp_path, monkeyp
         if argv[0] == "dpkg":
             return ""
         return install._run(
-            "vllm", [str(_runner(tmp_path)), sys.executable, "-u", "-c", code],
-            cancel, stdin_pipe = True,
+            "vllm",
+            [str(_runner(tmp_path)), sys.executable, "-u", "-c", code],
+            cancel,
+            stdin_pipe = True,
         )
 
     def provision():
@@ -663,7 +667,11 @@ def test_build_tool_cancellation_reaps_the_guest_process_group(tmp_path, monkeyp
     thread.start()
     try:
         deadline = time.monotonic() + 10
-        while not (pids.exists() and pids.read_text()) and thread.is_alive() and time.monotonic() < deadline:
+        while (
+            not (pids.exists() and pids.read_text())
+            and thread.is_alive()
+            and time.monotonic() < deadline
+        ):
             time.sleep(0.05)
         assert pids.exists() and pids.read_text(), errors
         apt_pid, child_pid = map(int, pids.read_text().split())
@@ -675,7 +683,13 @@ def test_build_tool_cancellation_reaps_the_guest_process_group(tmp_path, monkeyp
         assert not thread.is_alive()
         assert errors and "cancelled" in str(errors[0]).lower()
         assert _gone(apt_pid, 5) and _gone(child_pid, 5)
-        assert ["apt-get", "install", "-y", "--no-install-recommends", "build-essential"] not in calls
+        assert [
+            "apt-get",
+            "install",
+            "-y",
+            "--no-install-recommends",
+            "build-essential",
+        ] not in calls
     finally:
         cancel.set()
         thread.join(20)
@@ -691,7 +705,6 @@ def test_cancelled_preparation_does_not_start_a_guest_command(tmp_path, monkeypa
     with pytest.raises(RuntimeError, match = "cancelled"):
         install._run("vllm", command, threading.Event(), stdin_pipe = True)
     assert not started.exists()
-
 
 
 def test_preparation_pipe_close_failure_still_cleans_up(tmp_path, monkeypatch):

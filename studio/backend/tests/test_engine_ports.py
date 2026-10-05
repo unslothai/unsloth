@@ -12,7 +12,11 @@ from core.inference import managed_engine
 
 @pytest.mark.parametrize(
     "name,ports,expected",
-    [("vllm", [60000] * 100, 60000), ("sglang", [60000, 8123], 8123), ("sglang", [60000] * 100, None)],
+    [
+        ("vllm", [60000] * 100, 60000),
+        ("sglang", [60000, 8123], 8123),
+        ("sglang", [60000] * 100, None),
+    ],
 )
 def test_only_sglang_reserves_space_for_its_derived_port(monkeypatch, name, ports, expected):
     assigned = iter(ports)
@@ -41,7 +45,9 @@ def test_only_sglang_reserves_space_for_its_derived_port(monkeypatch, name, port
         raise RuntimeError("test reached engine launch")
 
     monkeypatch.setattr(engine, "_wsl_command", launch)
-    message = "test reached engine launch" if expected else "Could not allocate an inference server port"
+    message = (
+        "test reached engine launch" if expected else "Could not allocate an inference server port"
+    )
     with pytest.raises(RuntimeError, match = message):
         engine.start("model", 2048, [0], {})
     assert selected == ([] if expected is None else [expected])

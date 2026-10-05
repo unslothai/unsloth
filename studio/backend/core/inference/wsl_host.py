@@ -403,15 +403,19 @@ def ensure_build_tools(run_guest, progress = None) -> None:
     """Use the installer's cancellable runner for every prerequisite command."""
     # A successful shell reports absent tools explicitly. Transport/shell failures
     # propagate through run_guest rather than being mistaken for missing packages.
-    state = run_guest(
-        [
-            "sh",
-            "-c",
-            "if command -v cc >/dev/null && command -v c++ >/dev/null "
-            "&& command -v make >/dev/null && test -f /usr/include/stdio.h; "
-            "then echo UNSLOTH_BUILD_TOOLS_READY; else echo UNSLOTH_BUILD_TOOLS_MISSING; fi",
-        ]
-    ).strip().splitlines()
+    state = (
+        run_guest(
+            [
+                "sh",
+                "-c",
+                "if command -v cc >/dev/null && command -v c++ >/dev/null "
+                "&& command -v make >/dev/null && test -f /usr/include/stdio.h; "
+                "then echo UNSLOTH_BUILD_TOOLS_READY; else echo UNSLOTH_BUILD_TOOLS_MISSING; fi",
+            ]
+        )
+        .strip()
+        .splitlines()
+    )
     if state and state[-1] == "UNSLOTH_BUILD_TOOLS_READY":
         return
     if not state or state[-1] != "UNSLOTH_BUILD_TOOLS_MISSING":
