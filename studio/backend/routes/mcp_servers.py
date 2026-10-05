@@ -32,6 +32,7 @@ from core.inference.mcp_client import (
     is_stdio,
     join_stdio_command,
     list_tools_async,
+    oauth_client_kwargs,
     parse_server_headers,
     parse_stdio_command,
     probe_timeout,
@@ -176,6 +177,15 @@ def _image_mappings_active(row: dict) -> bool:
     )
 
 
+def _oauth_client(
+    client_id: str | None, client_secret: str | None
+) -> tuple[str | None, str | None]:
+    client_id = (client_id or "").strip() or None
+    if client_secret and not client_id:
+        raise HTTPException(status_code = 400, detail = "oauth_client_secret requires oauth_client_id")
+    return client_id, client_secret or None
+
+
 def _row_to_response(row: dict, *, include_headers: bool = True) -> McpServerResponse:
     return McpServerResponse(
         id = row["id"],
@@ -185,6 +195,8 @@ def _row_to_response(row: dict, *, include_headers: bool = True) -> McpServerRes
         headers = (parse_server_headers(row) or {}) if include_headers else {},
         is_enabled = bool(row["is_enabled"]),
         use_oauth = bool(row.get("use_oauth")),
+        oauth_client_id = row.get("oauth_client_id"),
+        has_oauth_client_secret = bool(row.get("oauth_client_secret")),
         image_input_mappings = image_input_mappings(row),
         image_mappings_active = _image_mappings_active(row),
         created_at = row["created_at"],
@@ -356,6 +368,11 @@ async def create_mcp_server(
     # OAuth is HTTP-only; force it off for stdio commands so a stale flag can't
     # push the probe onto the 305s OAuth timeout. Backend enforces this.
     use_oauth = payload.use_oauth and not is_stdio(url)
+    client_id, client_secret = (
+        _oauth_client(payload.oauth_client_id, payload.oauth_client_secret)
+        if use_oauth
+        else (None, None)
+    )
 
     server_id = uuid.uuid4().hex[:16]
     mcp_servers_db.create_server(
@@ -366,6 +383,8 @@ async def create_mcp_server(
         is_enabled = payload.is_enabled,
         use_oauth = use_oauth,
         image_input_mappings_json = _mappings_json(payload.image_input_mappings),
+        oauth_client_id = client_id,
+        oauth_client_secret = client_secret,
     )
     return _row_to_response(mcp_servers_db.get_server(server_id))
 
@@ -398,9 +417,15 @@ def _changes_from_payload(payload: McpServerUpdate) -> dict:
         changes["use_oauth"] = payload.use_oauth
     if "image_input_mappings" in sent:
         changes["image_input_mappings_json"] = _mappings_json(payload.image_input_mappings)
+    if "oauth_client_id" in sent:
+        changes["oauth_client_id"] = (payload.oauth_client_id or "").strip() or None
+    if "oauth_client_secret" in sent:
+        changes["oauth_client_secret"] = payload.oauth_client_secret or None
     # stdio is OAuth-less: drop a stale OAuth flag when switching to a command.
     if "url" in changes and is_stdio(changes["url"]):
         changes["use_oauth"] = False
+    if changes.get("use_oauth") is False:
+        changes["oauth_client_id"] = changes["oauth_client_secret"] = None
     return changes
 
 
@@ -424,6 +449,13 @@ async def update_mcp_server(
                 status_code = 400,
                 detail = "Use the managed integration setup to configure or enable this server.",
             )
+    client_id = changes.get("oauth_client_id", old.get("oauth_client_id"))
+    # A secret belongs to one client at one origin: a new client ID or URL drops it unless replaced.
+    if "oauth_client_secret" not in changes and (
+        client_id != old.get("oauth_client_id") or changes.get("url", old["url"]) != old["url"]
+    ):
+        changes["oauth_client_secret"] = None
+    _oauth_client(client_id, changes.get("oauth_client_secret", old.get("oauth_client_secret")))
     if not changes:
         raise HTTPException(status_code = 400, detail = "No fields to update")
     # Both directions, so an API key can neither repoint an http row at a command nor edit a stdio row's
@@ -439,9 +471,14 @@ async def update_mcp_server(
         and "headers_json" not in changes
     ):
         changes["headers_json"] = None
-    # Clear persisted OAuth tokens when the URL changes or OAuth is disabled
+    # Clear persisted OAuth tokens when the URL, the OAuth flag or the client changes
     if bool(old.get("use_oauth")) and (
-        ("url" in changes and changes["url"] != old["url"]) or changes.get("use_oauth") is False
+        ("url" in changes and changes["url"] != old["url"])
+        or changes.get("use_oauth") is False
+        or any(
+            changes.get(k, old.get(k)) != old.get(k)
+            for k in ("oauth_client_id", "oauth_client_secret")
+        )
     ):
         await clear_oauth_tokens_async(old["url"])
         # That await hands the loop to other requests.
@@ -533,6 +570,7 @@ async def refresh_mcp_server_tools(
             headers = parse_server_headers(server),
             timeout = probe_timeout(server["url"], use_oauth),
             use_oauth = use_oauth,
+            **oauth_client_kwargs(server),
         )
     except Exception as exc:  # noqa: BLE001 - surface transport+timeout errors to UI
         logger.error(
@@ -620,12 +658,22 @@ async def test_mcp_server(
         require_ui_session_for_local_commands(via_api_key)
     headers = _normalize_headers(payload.headers)
     use_oauth = payload.use_oauth and not is_stdio(url)
+    client_id, client_secret = _oauth_client(payload.oauth_client_id, payload.oauth_client_secret)
+    if use_oauth and payload.server_id and client_id and not client_secret:
+        stored = mcp_servers_db.get_server(payload.server_id) or {}
+        if stored.get("url") == url and stored.get("oauth_client_id") == client_id:
+            client_secret = stored.get("oauth_client_secret")
     try:
         tools = await list_tools_async(
             url = url,
             headers = headers,
             timeout = probe_timeout(url, use_oauth),
             use_oauth = use_oauth,
+            **oauth_client_kwargs(
+                {"oauth_client_id": client_id, "oauth_client_secret": client_secret}
+                if use_oauth
+                else {}
+            ),
         )
     except Exception as exc:  # noqa: BLE001
         logger.error(
@@ -681,6 +729,7 @@ async def _warm_tool_cache(server: dict) -> None:
                     headers = parse_server_headers(server),
                     timeout = probe_timeout(url, use_oauth),
                     use_oauth = use_oauth,
+                    **oauth_client_kwargs(server),
                 )
             except Exception:  # noqa: BLE001 - a probe failure reads as "nothing declared"
                 tools = None
@@ -700,6 +749,7 @@ def _ui_call_kwargs(server_id: str, server: dict, thread_id, session_id) -> dict
         "headers": parse_server_headers(server),
         "timeout": _UI_TIMEOUT,
         "use_oauth": bool(server.get("use_oauth")),
+        **oauth_client_kwargs(server),
         # execute_tool's key, so a widget reaches the chat's own stdio subprocess.
         "scope": mcp_session_scope(session_id, thread_id),
         "config_check": lambda: _row_still_matches(server_id, server),

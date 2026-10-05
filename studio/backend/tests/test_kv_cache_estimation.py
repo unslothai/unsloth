@@ -613,6 +613,117 @@ class TestDynamicSwaResolver:
         assert b._sliding_window_pattern is None
         assert not (tmp_path / "swa_cache.json").exists()
 
+    def test_remembered_miss_skips_hf_refetch(self, monkeypatch, tmp_path):
+        self._isolate_cache(monkeypatch, tmp_path)
+        calls = []
+        monkeypatch.setattr(
+            lc,
+            "_fetch_swa_entry_from_hf",
+            lambda repo_id: calls.append(repo_id) or lc._SWA_CONFIRMED_MISS,
+        )
+        monkeypatch.setattr(lc, "_resolve_swa_entry_from_transformers", lambda arch: None)
+        general = {"general.source.huggingface.repository": "vendor/does-not-exist"}
+        first = _backend_from_gguf("newmodel", _SWA_FIELDS, general = general)
+        assert first._sliding_window_pattern is None
+        assert calls == ["vendor/does-not-exist"]
+        with open(tmp_path / "swa_cache.json") as f:
+            assert json.load(f) == {"__missed_repos__": ["vendor/does-not-exist"]}
+        monkeypatch.setattr(lc, "_SWA_CACHE", None)
+        second = _backend_from_gguf("newmodel", _SWA_FIELDS, general = general)
+        assert second._sliding_window_pattern is None
+        assert calls == ["vendor/does-not-exist"]
+
+    def test_transient_hf_error_is_retried(self, monkeypatch, tmp_path):
+        self._isolate_cache(monkeypatch, tmp_path)
+        calls = []
+        monkeypatch.setattr(
+            lc, "_fetch_swa_entry_from_hf", lambda repo_id: calls.append(repo_id) or None
+        )
+        monkeypatch.setattr(lc, "_resolve_swa_entry_from_transformers", lambda arch: None)
+        general = {"general.source.huggingface.repository": "vendor/newmodel-base"}
+        first = _backend_from_gguf("newmodel", _SWA_FIELDS, general = general)
+        assert first._sliding_window_pattern is None
+        assert not (tmp_path / "swa_cache.json").exists()
+        monkeypatch.setattr(lc, "_SWA_CACHE", None)
+        monkeypatch.setattr(
+            lc, "_fetch_swa_entry_from_hf", lambda repo_id: calls.append(repo_id) or 4
+        )
+        second = _backend_from_gguf("newmodel", _SWA_FIELDS, general = general)
+        assert second._sliding_window_pattern == [(i + 1) % 4 != 0 for i in range(12)]
+        assert calls == ["vendor/newmodel-base", "vendor/newmodel-base"]
+
+    def test_repo_miss_does_not_block_another_candidate(self, monkeypatch, tmp_path):
+        self._isolate_cache(monkeypatch, tmp_path)
+        calls = []
+
+        def fake_fetch(repo_id):
+            calls.append(repo_id)
+            return 4 if repo_id == "vendor/newmodel-base" else lc._SWA_CONFIRMED_MISS
+
+        monkeypatch.setattr(lc, "_fetch_swa_entry_from_hf", fake_fetch)
+        monkeypatch.setattr(lc, "_resolve_swa_entry_from_transformers", lambda arch: None)
+        b = _backend_from_gguf(
+            "newmodel",
+            _SWA_FIELDS,
+            general = {
+                "general.source.huggingface.repository": "quanter/newmodel-GGUF",
+                "general.base_model.0.repo_url": "https://huggingface.co/vendor/newmodel-base",
+            },
+        )
+        assert b._sliding_window_pattern == [(i + 1) % 4 != 0 for i in range(12)]
+        assert calls == ["quanter/newmodel-GGUF", "vendor/newmodel-base"]
+
+    def test_casefold_duplicate_repos_are_fetched_once(self, monkeypatch, tmp_path):
+        self._isolate_cache(monkeypatch, tmp_path)
+        calls = []
+        monkeypatch.setattr(
+            lc, "_fetch_swa_entry_from_hf", lambda repo_id: calls.append(repo_id) or None
+        )
+        monkeypatch.setattr(lc, "_resolve_swa_entry_from_transformers", lambda arch: None)
+        b = _backend_from_gguf(
+            "newmodel",
+            _SWA_FIELDS,
+            general = {
+                "general.source.huggingface.repository": "DeepSeek-AI/Flash",
+                "general.organization": "deepseek-ai",
+                "general.basename": "Flash",
+            },
+        )
+        assert b._sliding_window_pattern is None
+        assert calls == ["DeepSeek-AI/Flash"]
+
+    def test_hf_fetch_leaves_no_repo_in_the_model_cache(self, monkeypatch, tmp_path):
+        import huggingface_hub
+        import utils.hf_probe
+
+        active = tmp_path / "hub"
+        active.mkdir()
+        monkeypatch.setattr("utils.hf_cache_settings.active_hf_hub_cache", lambda: str(active))
+        monkeypatch.setattr(utils.hf_probe, "hf_file_definitely_absent", lambda *a, **k: False)
+
+        def fake_download(repo_id, filename, *, cache_dir, **kwargs):
+            path = Path(cache_dir) / f"models--{repo_id.replace('/', '--')}" / filename
+            path.parent.mkdir(parents = True)
+            path.write_text(json.dumps({"sliding_window": 128}))
+            return str(path)
+
+        monkeypatch.setattr(huggingface_hub, "hf_hub_download", fake_download)
+        assert (
+            lc._fetch_swa_entry_from_hf("deepseek-ai/DeepSeek-V4-Flash") is lc._SWA_CONFIRMED_MISS
+        )
+        assert list(active.iterdir()) == []
+
+    def test_hf_fetch_reads_an_already_cached_config_offline(self, monkeypatch, tmp_path):
+        import huggingface_hub
+
+        cfg = tmp_path / "config.json"
+        cfg.write_text(json.dumps({"sliding_window_pattern": 6}))
+        monkeypatch.setattr(huggingface_hub, "try_to_load_from_cache", lambda *a, **k: str(cfg))
+        monkeypatch.setattr(
+            huggingface_hub, "hf_hub_download", lambda *a, **k: pytest.fail("network fetch")
+        )
+        assert lc._fetch_swa_entry_from_hf("org/model") == 6
+
 
 class TestTransformersIntrospection:
     """Tier 2.5: default-init the matching Config; on failure, parse via inspect."""

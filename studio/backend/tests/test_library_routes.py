@@ -1075,7 +1075,7 @@ def test_an_upload_is_copied_into_a_project_under_its_own_name(client, project, 
     assert add(note, "p1").json() == {"already": True}
     assert add(note, "missing").status_code == 404
     assert add("upload:0123456789abcdef0123456789abcdef", "p1").status_code == 404
-    assert add("attachment:m:a", "p1").status_code == 400
+    assert add("attachment:m:a", "p1").status_code == 404
     assert add("model:training:/tmp/run", "p1").status_code == 400
     source = _file(tmp_path / "x.txt", "x")
     for bad in ("a:b.txt", "CON.txt", "trailing.", "tab\there.txt"):
@@ -1084,6 +1084,38 @@ def test_an_upload_is_copied_into_a_project_under_its_own_name(client, project, 
     with open(source, "rb") as handle:
         result = gallery_projects.copy_into_project(handle, "p1", "files", "x-1.txt")
     assert Path(result["path"]).read_text() == "x"
+
+
+def test_a_chat_image_is_copied_out_of_its_message_into_a_project(client, project, monkeypatch):
+    import base64
+
+    import storage.studio_db as studio_db
+
+    png = b"\x89PNG\r\n\x1a\nfake"
+    attachments = {
+        ("m:1", "pic"): {
+            "id": "pic",
+            "type": "image",
+            "name": "Chat image",
+            "content": [
+                {
+                    "type": "image",
+                    "image": "data:image/png;base64," + base64.b64encode(png).decode(),
+                }
+            ],
+        },
+        ("m:1", "words"): {"id": "words", "type": "file", "name": "a.txt", "content": []},
+    }
+    monkeypatch.setattr(studio_db, "get_chat_attachment", lambda *ids: attachments.get(ids))
+    add = lambda item_id: _post(client, "items/project", id = item_id, projectId = "p1")  # noqa: E731
+    assert add("attachment:m%3A1:pic").json() == {"already": False}
+    [copied] = (project / "images").iterdir()
+    assert copied.name.startswith("Chat image-") and copied.suffix == ".png"
+    assert copied.read_bytes() == png
+    assert add("attachment:m%3A1:pic").json() == {"already": True}
+    # Only an image or clip has bytes of its own to copy.
+    assert add("attachment:m%3A1:words").status_code == 404
+    assert add("attachment:m%3A1:gone").status_code == 404
 
 
 @pytest.mark.parametrize(

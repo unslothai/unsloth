@@ -1,7 +1,7 @@
 {
   "identifier": "default",
   "description": "Default capabilities for Unsloth",
-  "windows": ["main"],
+  "webviews": ["main"],
   "permissions": [
     "core:default",
     "core:window:default",

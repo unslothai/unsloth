@@ -45,6 +45,7 @@ TABS = [
     "remote-lan",
     "agents",
     "keyboard-shortcuts",
+    "browser",
     "debugging",
     "sandbox",
     "about",

@@ -226,6 +226,7 @@ export {
   releasePreStreamRunForThreadIds,
   releasePreStreamRunReservation,
   reservePreStreamRun,
+  subscribePreStreamRunReservations,
 } from "./utils/pre-stream-run-reservation";
 export { claimThreadCreation } from "./utils/chat-thread-creation-claim";
 export { useChatProjectScope } from "./chat-project-scope";
@@ -389,6 +390,14 @@ export {
   pastedTextPreview,
   shouldAttachPastedText,
 } from "./utils/pasted-text";
+export {
+  type DocumentAnnotation,
+  type DocumentAnnotations,
+  annotationsOfFile,
+  createAnnotationsFile,
+  isAnnotationsContent,
+  parseAnnotationsContent,
+} from "./utils/document-annotations";
 export {
   deleteStoredChatThreads,
   ensureStoredChatThread,
