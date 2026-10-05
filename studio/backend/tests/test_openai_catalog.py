@@ -14,6 +14,7 @@ if str(_BACKEND) not in sys.path:
 
 import routes.inference as inf  # noqa: E402
 from core.inference import local_model_resolver as resolver  # noqa: E402
+import routes.models as models_mod
 
 
 class _Info:
@@ -202,11 +203,14 @@ def test_empty_and_errored_scans_are_cached(monkeypatch):
     # Cache validity is keyed on the timestamp, not list contents, so an empty
     # (fresh install / no local models) or errored scan is still cached for the
     # TTL instead of rescanning the filesystem on every /v1/models poll.
-    import routes.models as models_mod
     for outcome in ("empty", "error"):
         calls = {"n": 0}
 
-        def _scan(_root, _outcome = outcome):
+        def _scan(
+            _root,
+            _outcome = outcome,
+            **_kwargs,
+        ):
             calls["n"] += 1
             if _outcome == "error":
                 raise RuntimeError("scan blew up")
@@ -227,7 +231,6 @@ def test_catalog_ttl_starts_after_scan_completes(monkeypatch):
     # The cache timestamp must be taken AFTER the scan, not before it. A scan that
     # outlives the TTL would otherwise leave the cache born-expired, so the next
     # caller rescans instead of reusing the just-computed catalog.
-    import routes.models as models_mod
 
     clock = {"t": 1000.0}
     monkeypatch.setattr(inf.time, "monotonic", lambda: clock["t"])
@@ -235,7 +238,7 @@ def test_catalog_ttl_starts_after_scan_completes(monkeypatch):
 
     calls = {"n": 0}
 
-    def _slow_scan(_root):
+    def _slow_scan(_root, **_kwargs):
         calls["n"] += 1
         clock["t"] += inf._CATALOG_TTL_S + 10  # the scan itself outlives the TTL
         return [_Info("/m/A.gguf", "A")]
@@ -273,11 +276,9 @@ def test_cached_local_catalog_offloads_and_caches(monkeypatch):
     # cached, so a burst of /v1/models calls does not re-scan or block.
     calls = {"scan": 0, "threaded": 0}
 
-    def _fake_collect(_root):
+    def _fake_collect(_root, **_kwargs):
         calls["scan"] += 1
         return [_Info("/data/models/A.gguf", "A")]
-
-    import routes.models as models_mod
 
     monkeypatch.setattr(models_mod, "collect_local_models", _fake_collect)
 
@@ -490,3 +491,54 @@ def test_an_alias_for_the_resident_weights_is_not_listed_as_unloaded(monkeypatch
     monkeypatch.setattr(resolver, "local_servable_model", lambda info: (True, ("Q4_K_M",)))
     ids = {m["id"]: m for m in asyncio.run(inf._openai_catalog_objects())}
     assert ids["publisher/Qwen3"]["loaded"] is True
+
+
+def test_embeddings_monitor_row_names_the_loaded_model_not_the_client_alias(monkeypatch):
+    from types import SimpleNamespace
+
+    import httpx
+    from core.inference.api_monitor import ApiMonitor
+
+    class Request:
+        state = SimpleNamespace()
+        url = SimpleNamespace(path = "/v1/embeddings")
+        method = "POST"
+
+        async def json(self):
+            return {"input": "hello", "model": "UNSLOTH-bge-m3"}
+
+        async def is_disconnected(self):
+            return False
+
+    class Client:
+        async def aclose(self):
+            return None
+
+        async def post(self, *_args, **_kwargs):
+            return httpx.Response(200, json = {"data": [{"embedding": [0.1]}], "usage": {}})
+
+    llama = SimpleNamespace(
+        is_loaded = True,
+        is_embedding_gguf = True,
+        base_url = "http://llama.test",
+        context_length = 4096,
+        model_identifier = "/cache/models--org--bge-m3/snapshots/abc",
+        hf_variant = "q8_0",
+        _openai_advertised_id = "bge-m3",
+    )
+    monitor = ApiMonitor(max_entries = 3)
+    monkeypatch.setattr(inf, "api_monitor", monitor)
+    monkeypatch.setattr(inf, "_cancelable_nonstreaming_client", Client)
+    monkeypatch.setattr(inf, "get_llama_cpp_backend", lambda: llama)
+    monkeypatch.setattr(inf, "_should_validate_before_switch", lambda: False)
+    monkeypatch.setattr(inf, "_names_studio_embedder", lambda _model: None)
+
+    async def _passthrough(request, _subject, **_kwargs):
+        return await request.json()
+
+    monkeypatch.setattr(inf, "_auto_switch_from_request_body", _passthrough)
+
+    response = asyncio.run(inf.openai_embeddings(Request(), current_subject = "test"))
+    assert response.status_code == 200
+    [entry] = monitor.snapshot()
+    assert entry["model"] == "bge-m3:q8_0"

@@ -19,10 +19,22 @@ import { registerStoreStubResolver } from "./helpers/kit.ts";
 
 registerStoreStubResolver();
 
-const { fromApiOverride, resolveStoredExtraArgs, resolveStoredOverride } =
-  await import("../src/features/model-picker/api/model-overrides.ts");
+const {
+  fromApiOverride,
+  resolveStoredExtraArgs,
+  resolveStoredOverride,
+  toApiOverride,
+} = await import("../src/features/model-picker/api/model-overrides.ts");
 
 const ARGS = ["--numa", "distribute"];
+
+test("engine choices round trip and returning to Default clears a stale local choice", () => {
+  const config = fromApiOverride({ engine: "sglang" });
+  assert.equal(config.engine, "sglang");
+  assert.equal(toApiOverride(config).engine, "sglang");
+  assert.equal(toApiOverride({ ...config, engine: "auto" }).engine, "auto");
+  assert.equal(fromApiOverride({}, config).engine, "auto");
+});
 
 test("an exact key wins", () => {
   assert.deepEqual(
@@ -263,6 +275,36 @@ test("a server physical GPU pin replaces a local Vulkan pin", () => {
   assert.equal(config.selectedGpuIndexKind, "physical");
 });
 
+test("a server row states which index space its pin is in", () => {
+  // The row carries the namespace now, so a Vulkan ordinal saved on one host is read
+  // back as one rather than being relabelled a physical device id.
+  const vulkan = fromApiOverride({ gpu_ids: [1], gpu_index_kind: "vulkan" });
+  assert.deepEqual(vulkan.selectedGpuIds, [1]);
+  assert.equal(vulkan.selectedGpuIndexKind, "vulkan");
+  // Absent stays physical, or every row written before the field reads back unusable.
+  const legacy = fromApiOverride({ gpu_ids: [1] });
+  assert.equal(legacy.selectedGpuIndexKind, "physical");
+});
+
+test("a pin travels to the server with its index space", () => {
+  const physical = toApiOverride({
+    ...fromApiOverride({}),
+    selectedGpuIds: [1],
+    selectedGpuIndexKind: "physical",
+  });
+  // Byte-identical to what a physical pin sent before the field existed.
+  assert.deepEqual(physical.gpu_ids, [1]);
+  assert.equal("gpu_index_kind" in physical, false);
+
+  const vulkan = toApiOverride({
+    ...fromApiOverride({}),
+    selectedGpuIds: [1],
+    selectedGpuIndexKind: "vulkan",
+  });
+  assert.deepEqual(vulkan.gpu_ids, [1]);
+  assert.equal(vulkan.gpu_index_kind, "vulkan");
+});
+
 test("a row that carries less than the local config does not erase the rest", () => {
   // The mirror is best-effort: a PUT that never landed, a legacy config migrated
   // into this browser, a field the backend normalizer refused. Hydration adopting
@@ -292,3 +334,13 @@ test("a cleared extra-arguments box survives a row that carries no arguments", (
   const config = fromApiOverride({ kv_cache_dtype: "q8_0" }, local);
   assert.deepEqual(config.llamaExtraArgs, []);
 });
+
+for (const mode of ["tensor", "pipeline", "data"] as const) {
+  test(`${mode} mode and GPU order round-trip through server overrides`, () => {
+    const config = fromApiOverride({ engine: "vllm", engine_parallelism: mode, gpu_ids: [1, 0] });
+    assert.equal(config.engineParallelism, mode);
+    const saved = toApiOverride(config);
+    assert.equal(saved.engine_parallelism, mode);
+    assert.deepEqual(saved.gpu_ids, [1, 0]);
+  });
+}

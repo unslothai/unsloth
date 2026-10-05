@@ -22,13 +22,15 @@ export type ValidatorCodeLang =
   | "jsx"
   | "tsx"
   | "python"
+  | "json"
+  | "markdown"
   | "sql:sqlite"
   | "sql:postgres"
   | "sql:mysql"
   | "sql:tsql"
   | "sql:bigquery"
   | "sql:ansi";
-export type ValidatorType = "code" | "oxc";
+export type ValidatorType = "code" | "oxc" | "json" | "markdown";
 export type OxcValidationMode = "syntax" | "lint" | "syntax+lint";
 export type OxcCodeShape = "auto" | "module" | "snippet";
 
@@ -68,6 +70,8 @@ export type RecipeNodeData = {
     | "validator_python"
     | "validator_sql"
     | "validator_oxc"
+    | "validator_json"
+    | "validator_markdown"
     | "expression"
     | "seed"
     | "markdown_note"

@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Mirrors extract_video_id in studio/backend/core/youtube_transcript.py. The
-// backend re-parses the URL, so this only decides whether to offer the prompt.
+// Mirrors extract_video_id in core/youtube_transcript.py. The backend re-parses the URL, so this
+// only decides whether to offer the prompt.
 
 const VIDEO_ID = /^[A-Za-z0-9_-]{11}$/;
 // `www.` is stripped before the lookup, so only the bare forms are listed.

@@ -393,6 +393,7 @@ def _stub_unsloth_load_over_a_resident_gguf(route, monkeypatch, *, teardown):
             model_identifier = "org/OLD-GGUF",
             layer_preserves_tensor_intent = False,
             unload_model = teardown,
+            _wait_for_vram_settle = lambda **kwargs: None,
         ),
     )
     monkeypatch.setattr(

@@ -3,6 +3,7 @@
 import ast
 import importlib.util
 import inspect
+import os
 import sys
 import textwrap
 import types
@@ -12,8 +13,10 @@ import pytest
 
 
 def _load_worker_module():
+    worker_path = Path(__file__).resolve().parents[1] / "core" / "training" / "worker.py"
     stub_names = (
-        "structlog",
+        "core.training",
+        "core.training.dataset_bounds",
         "loggers",
         "utils",
         "utils.child_stdio",
@@ -22,22 +25,33 @@ def _load_worker_module():
         "utils.native_tls",
         "utils.training_runs",
         "utils.wheel_utils",
+        "utils.training_runs",
     )
     previous_modules = {name: sys.modules.get(name) for name in stub_names}
 
     try:
-        sys.modules["structlog"] = types.ModuleType("structlog")
+        core_training = types.ModuleType("core.training")
+        core_training.__path__ = [str(worker_path.parent)]
+        sys.modules["core.training"] = core_training
 
         loggers = types.ModuleType("loggers")
         loggers.get_logger = lambda *_args, **_kwargs: None
         sys.modules["loggers"] = loggers
 
         utils = types.ModuleType("utils")
-        utils.__path__ = []
+        # An empty __path__ shadows the real package and breaks the worker's own
+        # imports; only the stubs below replace it.
+        utils.__path__ = [str(Path(__file__).resolve().parents[1] / "utils")]
         sys.modules["utils"] = utils
 
         child_stdio = types.ModuleType("utils.child_stdio")
-        child_stdio.utf8_child_env = lambda env = None: dict(env or {})
+
+        def utf8_child_env(env = None):
+            child = dict(os.environ if env is None else env)
+            child["PYTHONIOENCODING"] = "utf-8"
+            return child
+
+        child_stdio.utf8_child_env = utf8_child_env
         sys.modules["utils.child_stdio"] = child_stdio
 
         hardware = types.ModuleType("utils.hardware")
@@ -70,7 +84,6 @@ def _load_worker_module():
             setattr(wheel_utils, name, lambda *_args, **_kwargs: None)
         sys.modules["utils.wheel_utils"] = wheel_utils
 
-        worker_path = Path(__file__).resolve().parents[1] / "core" / "training" / "worker.py"
         spec = importlib.util.spec_from_file_location("mlx_training_worker_under_test", worker_path)
         module = importlib.util.module_from_spec(spec)
         assert spec.loader is not None
@@ -92,9 +105,12 @@ _mlx_vlm_resized_image_layout = _worker._mlx_vlm_resized_image_layout
 _copy_mlx_vlm_image_processor = _worker._copy_mlx_vlm_image_processor
 _resize_mlx_vlm_image = _worker._resize_mlx_vlm_image
 _adapt_for_mlx_vlm = _worker._adapt_for_mlx_vlm
+_mlx_dora_peft_kwargs = _worker._mlx_dora_peft_kwargs
 
 
-def test_mlx_studio_optimizer_aliases_are_explicit():
+def test_mlx_studio_optimizer_aliases_are_explicit(monkeypatch):
+    # Pin the local fallback: a zoo with the MLX normalizer keeps adamw_8bit (real 8-bit AdamW).
+    monkeypatch.setitem(sys.modules, "unsloth_zoo.mlx.trainer", None)
     assert _normalize_mlx_studio_optimizer("adamw_8bit") == "adamw"
     assert _normalize_mlx_studio_optimizer("paged_adamw_8bit") == "adamw"
     assert _normalize_mlx_studio_optimizer("adafactor") == "adafactor"
@@ -108,6 +124,64 @@ def test_mlx_studio_rejects_unknown_optimizer():
 def test_mlx_studio_rejects_unknown_scheduler():
     with pytest.raises(ValueError, match = "Unsupported LR scheduler for MLX training"):
         _normalize_mlx_studio_scheduler("linear_typo")
+
+
+def test_mlx_dora_requires_the_named_use_dora_parameter():
+    # A **kwargs catch-all absorbs use_dora and trains plain LoRA, so accepting the
+    # keyword is not support.
+    def old_zoo(
+        model,
+        r = 16,
+        **kwargs,
+    ):
+        return model
+
+    def new_zoo(
+        model,
+        r = 16,
+        use_dora = False,
+        **kwargs,
+    ):
+        return model
+
+    def keyword_only_zoo(model, *, use_dora = False):
+        return model
+
+    def positional_only_zoo(
+        model,
+        use_dora = False,
+        /,
+        **kwargs,
+    ):
+        return model
+
+    def var_positional_zoo(model, *use_dora):
+        return model
+
+    def var_keyword_zoo(model, **use_dora):
+        return model
+
+    for usable in (new_zoo, keyword_only_zoo):
+        assert _mlx_dora_peft_kwargs({"use_dora": True}, usable) == {"use_dora": True}
+    with pytest.raises(NotImplementedError, match = "unsloth-zoo"):
+        _mlx_dora_peft_kwargs({"use_dora": True}, old_zoo)
+    for unusable in (positional_only_zoo, var_positional_zoo, var_keyword_zoo):
+        with pytest.raises(NotImplementedError, match = "unsloth-zoo"):
+            _mlx_dora_peft_kwargs({"use_dora": True}, unusable)
+    with pytest.raises(NotImplementedError, match = "unsloth-zoo"):
+        _mlx_dora_peft_kwargs({"use_dora": True}, object())
+    # An image-bearing dataset is not proof of a vision model; a text
+    # model can still train language-only DoRA.
+    assert _mlx_dora_peft_kwargs(
+        {
+            "use_dora": True,
+            "is_dataset_image": True,
+            "finetune_vision_layers": True,
+        },
+        new_zoo,
+    ) == {"use_dora": True}
+    assert _mlx_dora_peft_kwargs({}, old_zoo) == {}
+    assert _mlx_dora_peft_kwargs({"use_dora": False}, old_zoo) == {}
 
 
 def test_mlx_studio_keeps_hf_style_tokenizer_dual_purpose():
@@ -458,3 +532,84 @@ def test_odd_model_names_do_not_break_the_warning(model_name):
     events, applied = _run_masking(model_name = model_name, detect = _detect_fails)
 
     assert applied is False and len(_warnings(events)) == 1
+
+
+class _FakeRankTrainer:
+    def __init__(
+        self,
+        rank = 0,
+        world_size = 1,
+        save_error = None,
+    ):
+        self.distributed_world_size = world_size
+        self.is_main_process = rank == 0
+        self.stop_requested = False
+        self.saved = []
+        self._save_error = save_error
+
+    def save_model(self, path):
+        if self._save_error is not None:
+            raise self._save_error
+        self.saved.append(path)
+
+    def _distributed_any_flag(self, flag):
+        return bool(flag)
+
+    def _raise_distributed_failure(
+        self,
+        failed,
+        context,
+        exc = None,
+    ):
+        if failed:
+            raise RuntimeError(f"{context}: {exc}")
+
+
+def _finalize(
+    trainer,
+    stop = (False, True),
+    checkpoint_ok = True,
+):
+    events = []
+    _worker._finalize_mlx_training(
+        trainer,
+        lambda: stop,
+        "/out",
+        lambda: None,
+        lambda event_type, **payload: events.append((event_type, payload)),
+        lambda: checkpoint_ok,
+    )
+    return events
+
+
+def test_mlx_epoch_steps_divide_by_world_size_only_when_derived():
+    steps = _worker._resolve_mlx_training_steps
+    assert steps(0, 16, 2, 2, 3, 1) == 12
+    assert steps(0, 16, 2, 2, 3, 2) == 6
+    assert steps(7, 16, 2, 2, 3, 2) == 7
+
+
+@pytest.mark.parametrize("rank", [0, 1])
+def test_mlx_final_save_is_rank0_owned(rank):
+    trainer = _FakeRankTrainer(rank = rank, world_size = 2)
+    events = _finalize(trainer)
+    assert trainer.saved == (["/out"] if rank == 0 else [])
+    assert events[-1] == (
+        "complete",
+        {"output_dir": "/out" if rank == 0 else None, "status_message": "Training completed"},
+    )
+
+
+def test_mlx_rank0_save_failure_reaches_every_rank():
+    with pytest.raises(RuntimeError, match = "final model save"):
+        _finalize(_FakeRankTrainer(world_size = 2, save_error = OSError("disk full")))
+
+
+def test_mlx_single_process_finalization_keeps_prior_contract():
+    trainer = _FakeRankTrainer()
+    assert _finalize(trainer, stop = (True, False))[-1][1]["status_message"] == "Training cancelled"
+    assert trainer.saved == []
+
+    events = _finalize(trainer, stop = (True, True), checkpoint_ok = False)
+    assert trainer.saved == ["/out"]
+    assert events[-1][0] == "error" and events[-1][1]["resume_blocked"] is True
