@@ -1107,6 +1107,19 @@ def _zoo_supports_idefics3_fast_inference():
         return False
 
 
+# Allowlisted above, but only an unsloth_zoo that can rebuild their MoE blocks from vLLM serves them.
+VLLM_ZOO_MOE_VLM = ("qwen3_5_moe", "gemma4", "gemma4_text")
+
+
+def _zoo_supports_moe_fast_inference():
+    # Older unsloth_zoo releases leave every expert a 1-wide placeholder in the training model.
+    try:
+        from unsloth_zoo.empty_model import extract_moe_layers  # noqa: F401
+        return True
+    except Exception:
+        return False
+
+
 VLLM_NON_LORA_VLM = [
     "mllama",
 ]
@@ -2912,6 +2925,11 @@ class FastBaseModel:
             if "idefics3" in model_types and not _zoo_supports_idefics3_fast_inference():
                 raise RuntimeError(
                     "Unsloth: Idefics3 fast_inference needs a newer unsloth_zoo. "
+                    "Please run `pip install --upgrade unsloth_zoo`."
+                )
+            if any(arch in VLLM_ZOO_MOE_VLM for arch in model_types) and not _zoo_supports_moe_fast_inference():
+                raise RuntimeError(
+                    f"Unsloth: {model_type_arch} fast_inference needs a newer unsloth_zoo. "
                     "Please run `pip install --upgrade unsloth_zoo`."
                 )
 
