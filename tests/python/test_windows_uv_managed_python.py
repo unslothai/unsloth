@@ -168,7 +168,6 @@ def test_non_arm64_defers_to_uv_and_keeps_the_system_install_as_fallback():
     fallback = SOURCE.index(". $InstallSystemPython", resolve)
     venv = SOURCE.index("& $script:UvExe venv $VenvDir --python")
     assert detect < defer < system_block < immediate < uv_ready < resolve < fallback < venv
-    # The winget / python.org install only runs from the dot-sourced block.
     assert SOURCE.count(". $InstallSystemPython") == 2
     winget = SOURCE.index("& $script:WingetExe install -e --id $pythonPackageId")
     assert system_block < winget < immediate
