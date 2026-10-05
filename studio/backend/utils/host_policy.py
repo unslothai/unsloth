@@ -182,10 +182,8 @@ LOOPBACK_FALLBACK_HOST = "127.0.0.1"
 
 
 def is_loopback_host(host: str) -> bool:
-    try:
-        return ipaddress.ip_address(host.split("%", 1)[0]).is_loopback
-    except ValueError:
-        return host.lower() == "localhost"
+    literal = _normalized_ip(host.split("%", 1)[0])
+    return literal.is_loopback if literal is not None else host.lower() == "localhost"
 
 
 def scope_request_host(server) -> "str | None":

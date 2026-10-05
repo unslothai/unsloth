@@ -1287,13 +1287,25 @@ def test_mlx_worker_never_withholds_a_terminal_send_behind_tracking_teardown():
         if isinstance(n, ast.FunctionDef) and n.name == "_run_mlx_training"
     )
 
-    def _is_complete_send(node):
+    def _is_complete_send(node, sender = "_send"):
         return (
             isinstance(node, ast.Call)
-            and getattr(node.func, "id", "") == "_send"
+            and getattr(node.func, "id", "") == sender
             and node.args
             and isinstance(node.args[0], ast.Constant)
             and node.args[0].value == "complete"
+        )
+
+    finalize = next(
+        n
+        for n in ast.walk(tree)
+        if isinstance(n, ast.FunctionDef) and n.name == "_finalize_mlx_training"
+    )
+    assert any(_is_complete_send(c, "send") for c in ast.walk(finalize))
+
+    def _is_terminal(node):
+        return _is_complete_send(node) or (
+            isinstance(node, ast.Call) and getattr(node.func, "id", "") == "_finalize_mlx_training"
         )
 
     def _teardown_lines(nodes):
@@ -1308,7 +1320,7 @@ def test_mlx_worker_never_withholds_a_terminal_send_behind_tracking_teardown():
         n
         for n in ast.walk(fn)
         if isinstance(n, ast.Try)
-        and any(_is_complete_send(c) for stmt in n.body for c in ast.walk(stmt))
+        and any(_is_terminal(c) for stmt in n.body for c in ast.walk(stmt))
     ]
     assert len(saves) == 1, "expected one save/finalize try block with the terminal sends"
     everywhere = _teardown_lines([fn])

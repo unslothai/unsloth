@@ -27,10 +27,31 @@ def growth(
     factor: int = 4,
     repeats: int = 3,
     abort_over_s: float = None,
+    budget_s: float = None,
+    clock = None,
 ):
-    """How much more `factor` times the input costs. Returns (ratio, big_seconds, big_result).
+    """How much more `factor` times the input costs.
+
+    Returns (ratio, best_big_seconds, big_result, pairs_completed). `pairs_completed` is
+    less than `repeats` only when `abort_over_s` or `budget_s` cut the loop short, and a
+    caller that treats the ratio as a verdict has to look at it: one aborted pair whose
+    small leg was also slow can report a ratio under the bar from a sample that never
+    finished.
+
+    `abort_over_s` bounds ONE BIG LEG; `budget_s` bounds THE WHOLE CALL. They are not the
+    same guard and neither implies the other: `repeats` legs each just under `abort_over_s`
+    is `repeats` times the cost that one leg was allowed, which is how a sample sized from a
+    previous reading still overran the runner's per-test timeout. `budget_s` is measured
+    rather than predicted, and it is asked BEFORE each pair rather than after, reserving
+    room at the cost of the worst pair seen so far -- a bound tested only once a pair is
+    already home is not a bound on that pair.
 
     `build(n)` makes an input of size n and `run(text)` is the thing being measured.
+
+    `clock` is `time.perf_counter` unless given. It exists so this module's OWN tests can
+    state a timing shape exactly instead of sleeping for it: a test of a flakiness guard
+    that needs the scheduler to cooperate is the thing being fixed here, not a way to
+    check it. Nothing in the repo passes it outside those tests.
 
     The MEDIAN of `repeats` PAIRED ratios: each pair times the small input and then the big
     one back to back, and the ratio is formed inside the pair before anything is aggregated.
@@ -68,16 +89,30 @@ def growth(
     import statistics as _statistics
     import time as _time
 
+    read_clock = _time.perf_counter if clock is None else clock
+
     def once(text):
-        start = _time.perf_counter()
+        start = read_clock()
         result = run(text)
-        return _time.perf_counter() - start, result
+        return read_clock() - start, result
 
     small_text, big_text = build(units), build(units * factor)
     ratios, big, result = [], None, None
+    started, pair_costs = read_clock(), []
     for _ in range(repeats):
+        # Asked BEFORE the pair, not after it. A check that only fires once both legs are
+        # home cannot stop the pair that overran: three 59-second pairs under a 120-second
+        # bound run to 177, because each one is inside the bound at the moment it starts.
+        # So the loop reserves room for another pair at the cost of the WORST it has seen,
+        # which is the conservative reading -- contention only adds -- and the estimate
+        # comes from this sample rather than from a previous one.
+        if budget_s is not None and pair_costs:
+            if read_clock() - started + max(pair_costs) > budget_s:
+                break
+        pair_started = read_clock()
         small_elapsed, _ = once(small_text)
         big_elapsed, result = once(big_text)
+        pair_costs.append(read_clock() - pair_started)
         # The backstop below reads the BEST big time, not the worst. Contention only adds, so
         # the minimum is the closest this size got to its own cost, and the backstop should
         # fire on a path that is genuinely too slow rather than on a runner that stalled once.
@@ -90,7 +125,7 @@ def growth(
         if abort_over_s is not None and big_elapsed > abort_over_s:
             break
 
-    return _statistics.median(ratios), big, result
+    return _statistics.median(ratios), big, result, len(ratios)
 
 
 def assert_linear(
@@ -101,6 +136,9 @@ def assert_linear(
     *,
     factor: int = 4,
     tolerance: float = 6.0,
+    repeats_on_retry: int = 7,
+    total_budget_s: float = 240.0,
+    clock = None,
 ):
     """`run(build(n))` must cost ~`factor`x, not ~`factor ** 2`x, for `factor`x the input.
 
@@ -110,16 +148,116 @@ def assert_linear(
     being guarded against that leg is `factor ** 2`x slower again. A guard whose broken case
     takes a minute at the old size would then take a quarter of an hour, and the job's own
     timeout kills it before the ratio below can say why.
+
+    `total_budget_s` caps what this call may SPEND IN TOTAL, for the same reason the paragraph
+    above exists: a red run has to arrive as this function's message and not as the runner's
+    timeout, or nobody learns which shape was measured. Everything is inside it, first sample
+    included -- the first sample has no bound of its own beyond the 60s per big leg, so a
+    scheduler stall in one of its small legs can spend most of the runner's patience before
+    the re-measurement is even considered, and a retry budget counted fresh from that point
+    overruns whatever was left. 240s against the `--timeout=330` those CI invocations pass,
+    leaving margin for collection and the rest of the test body.
     """
+    import time as _time
+
     budget = 60.0
+    read_clock = _time.perf_counter if clock is None else clock
+    started = read_clock()
     # Passed down rather than checked here: on a path slow enough to trip it, every repeat
     # is another minute spent measuring something already known to be too slow.
-    ratio, big, result = growth(run, build, units, factor, abort_over_s = budget)
+    ratio, big, result, first_pairs = growth(
+        run,
+        build,
+        units,
+        factor,
+        abort_over_s = budget,
+        budget_s = total_budget_s,
+        clock = clock,
+    )
     # Backstop: a regression bad enough to make the ratio unmeasurable still has to fail, and
     # fail quickly, rather than run until the job's own timeout kills it with no explanation.
     assert big < budget, f"{label} path took {big:.1f}s on {units * factor} units"
-    assert ratio < tolerance, (
-        f"{label} path is not linear: {factor}x the input cost {ratio:.1f}x the time "
-        f"(linear is ~{factor}, quadratic is ~{factor ** 2})"
+    # The budget covers THIS sample too, and an early stop is not a verdict. Contention that
+    # lands in the SMALL legs is the case: their ratios stay under the tolerance, so nothing
+    # reaches the retry branch below where the budget used to be the only one enforced, and
+    # three pairs of a slow-but-linear-looking path ran past the runner's patience and passed.
+    assert first_pairs == 3, (
+        f"{label} path: the first sample stopped after {first_pairs} of 3 pairs, on the "
+        f"{total_budget_s:.0f}s this call is allowed, so its ratio is not a reading of anything"
     )
+    if ratio >= tolerance:
+        # RE-MEASURE rather than loosen. Pairing divides most contention out, but not all of
+        # it: the big leg runs `factor`x longer than the small one, so a scheduler stall that
+        # lands inside a run is `factor`x more likely to land in the big half, which biases a
+        # pair upward and never downward. Three pairs is few enough that two unlucky ones move
+        # the median, which is how this reported 7.2x on unslothai/unsloth#11152, a branch that
+        # touches none of this code.
+        #
+        # A second, larger sample is the honest answer, and it is not a second chance: a path
+        # that is genuinely quadratic measures ~`factor ** 2` in EVERY pair, so its second
+        # median comes back over the bar as surely as its first, while a contention spike does
+        # not survive being asked again on a bigger sample. The cost is paid only on the
+        # reading that would otherwise have failed, so a green run still takes three pairs.
+        #
+        # How many pairs it can AFFORD is a separate question from how many it wants. The
+        # per-leg backstop above bounds one leg, not the sample: a regression that holds each
+        # big leg just under 60s still costs ~7 * 60s here, and the four invocations in
+        # .github/workflows/studio-backend-ci.yml pass `--timeout=330`, so the worker would be
+        # killed mid-confirmation and report a bare timeout instead of the linearity failure
+        # this guard exists to name. Contention is the same size in every pair, so a shorter
+        # confirmation is a weaker vote but still a reading; the small leg is estimated from
+        # the ratio already measured, which is the only reading of it available here.
+        #
+        # The sizing below is an ESTIMATE and is deliberately not the guard. It is built from
+        # the first sample's BEST big leg and MEDIAN ratio, which are readings of different
+        # pairs, so a sample of 59s, 59s and 1s big legs offers a 1s pair cost and authorises
+        # all seven -- and if the confirmation's legs then come in at 40s it overruns anyway.
+        # The estimate exists to refuse a retry that obviously cannot fit and to keep a green
+        # run cheap; `budget_s` below is what actually stops the spending, because it is
+        # measured while the sample runs rather than predicted before it starts.
+        #
+        # What is left, not a fresh allowance. The first sample has no bound of its own past
+        # the 60s per big leg, so a scheduler stall in one of its small legs can spend most of
+        # the runner's patience before this point is reached, and a confirmation counted fresh
+        # from here overruns whatever remained.
+        remaining = total_budget_s - (read_clock() - started)
+        pair_cost = big * (1.0 + 1.0 / max(ratio, 1.0))
+        affordable = repeats_on_retry if pair_cost <= 0 else int(remaining // pair_cost)
+        # Below three pairs a median is not outvoting anything, so there is nothing worth
+        # spending the time on: the sample already taken is the verdict, and it says so.
+        assert affordable >= 3, (
+            f"{label} path is not linear: {factor}x the input cost {ratio:.1f}x the time over 3 "
+            f"pairs (linear is ~{factor}, quadratic is ~{factor ** 2}), and at {big:.1f}s per big "
+            f"leg a second sample does not fit in the {remaining:.0f}s left of {total_budget_s:.0f}s, "
+            "so this reading stands"
+        )
+        pairs_wanted = min(repeats_on_retry, affordable)
+        confirm, big_again, result, pairs = growth(
+            run,
+            build,
+            units,
+            factor,
+            repeats = pairs_wanted,
+            abort_over_s = budget,
+            budget_s = remaining,
+            clock = clock,
+        )
+        # The confirmation stands on its OWN reading, not on min(big, big_again). Taking the
+        # better of the two samples hid the case that matters: the retry aborts after one pair
+        # because its big leg blew the budget, and that same pair's small leg was slow enough
+        # to put the ratio under the bar, so a superlinear path passed on a sample that never
+        # finished. Both halves are now required of the confirmation itself.
+        assert (
+            big_again < budget
+        ), f"{label} path took {big_again:.1f}s on {units * factor} units while re-measuring"
+        assert pairs == pairs_wanted, (
+            f"{label} path: the confirmation stopped after {pairs} of {pairs_wanted} pairs, "
+            f"either on a big leg over {budget:.0f}s or on the {remaining:.0f}s the whole "
+            "sample is allowed, so its ratio is not a reading of anything"
+        )
+        assert confirm < tolerance, (
+            f"{label} path is not linear: {factor}x the input cost {confirm:.1f}x the time "
+            f"over {pairs_wanted} pairs, after {ratio:.1f}x over 3 "
+            f"(linear is ~{factor}, quadratic is ~{factor ** 2})"
+        )
     return result

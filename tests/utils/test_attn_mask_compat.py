@@ -13,7 +13,7 @@ from unittest import mock
 
 import pytest
 from real_accelerator import (
-    has_real_accelerator,
+    has_real_cuda,
 )  # tests/_shared, on sys.path via tests/conftest.py
 import torch
 
@@ -134,7 +134,7 @@ def test_prepare_4d_causal_attention_mask_for_sdpa_matches_transformers(
         assert torch.equal(actual, expected)
 
 
-@pytest.mark.skipif(not has_real_accelerator(), reason = "needs CUDA")
+@pytest.mark.skipif(not has_real_cuda(), reason = "needs CUDA")
 @pytest.mark.parametrize(
     "attention_mask,past_length",
     [

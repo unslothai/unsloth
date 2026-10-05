@@ -49,6 +49,9 @@ import types
 
 import pytest
 
+# A test that hides nvidia-smi to fake a CPU host must not find the real GPUs through NVML.
+os.environ.setdefault("UNSLOTH_NVIDIA_LIBRARY_PROBE", "0")
+
 
 @pytest.fixture(autouse = True)
 def _contain_installer_venv_root(tmp_path_factory, monkeypatch):
@@ -163,6 +166,12 @@ def _install_device_type_stub(name: str) -> None:
     stub.arch_lacks_bf16 = lambda arch: (
         str(arch or "").split(":", 1)[0].strip().lower().startswith("gfx10")
     )
+    # #11615: gfx101x (RDNA1) only; gfx103x (RDNA2) must not match.
+    stub.arch_lacks_buffer_ops = lambda arch: (
+        str(arch or "").split(":", 1)[0].strip().lower().startswith("gfx101")
+    )
+    stub.apply_gfx101x_triton_workaround = lambda *a, **k: False
+    stub.gfx101x_triton_workaround_applied = lambda: False
     stub.hip_visible_archs = lambda: []
     sys.modules[name] = stub
 

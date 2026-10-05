@@ -127,6 +127,9 @@ def _make_backend(
     b._kv_key_length_swa = None
     b._kv_value_length_swa = None
     b._draft_backend_cache = None
+    # The speculative compute buffers ride on this reserve too; test_compute_buffer
+    # prices them, and these cases pin the cache and rollback terms.
+    b._mtp_draft_compute_bytes = lambda *args, **kwargs: 0
     return b
 
 
