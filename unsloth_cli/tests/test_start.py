@@ -7042,6 +7042,45 @@ def test_vibe_launch_keeps_user_home(fake_studio, monkeypatch):
     assert _parse_toml(seen["config"])["models"][0]["temperature"] == 0.6
 
 
+@pytest.mark.skipif(shutil.which("vibe") is None, reason = "needs the mistral-vibe CLI")
+def test_vibe_real_cli_reaches_unsloth(monkeypatch, tmp_path):
+    requests = []
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def log_message(self, *args):
+            pass
+
+        def do_POST(self):
+            body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+            requests.append((self.headers.get("Authorization"), body))
+            chunk = {
+                "choices": [{"index": 0, "delta": {"content": "pong"}, "finish_reason": "stop"}]
+            }
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream")
+            self.end_headers()
+            self.wfile.write(f"data: {json.dumps(chunk)}\n\ndata: [DONE]\n\n".encode())
+
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    threading.Thread(target = server.serve_forever, daemon = True).start()
+    base = f"http://127.0.0.1:{server.server_address[1]}"
+    monkeypatch.setattr(start, "_connect", lambda *args, **kwargs: (base, "sk-unsloth-e2e", MODEL))
+    monkeypatch.chdir(tmp_path)
+    try:
+        result = CliRunner().invoke(
+            start.start_app,
+            ["vibe", "--yolo", "--temperature", "0.5", "--disabled-tools", "*", "-p", "Reply pong"],
+        )
+    finally:
+        server.shutdown()
+    assert result.exit_code == 0, result.output
+    assert requests, "vibe never called the Unsloth /v1 endpoint"
+    auth, body = requests[0]
+    assert auth == "Bearer sk-unsloth-e2e"
+    assert body["model"] == MODEL["id"]
+    assert body["temperature"] == 0.5
+
+
 def test_vibe_install_hint_per_os(monkeypatch):
     monkeypatch.setattr(start.os, "name", "nt")
     assert start._vibe_install_hint() == start._VIBE_WINDOWS_INSTALL_HINT

@@ -137,9 +137,13 @@ _OPENCODE_OUTPUT_TOKEN_MAX_ENV = "OPENCODE_EXPERIMENTAL_OUTPUT_TOKEN_MAX"
 _VIBE_PROVIDER = "unsloth-studio"
 _VIBE_MODEL_ALIAS = "unsloth"
 _VIBE_ENV_KEY = "UNSLOTH_API_KEY"
-_VIBE_POSIX_INSTALL_HINT = "curl -LsSf https://mistral.ai/vibe/install.sh | bash"
+# Both installers put binaries in ~/.local/bin; Vibe's exits 1 and uv's leaves the shell PATH stale when it is missing.
+_VIBE_POSIX_INSTALL_HINT = (
+    'curl -LsSf https://mistral.ai/vibe/install.sh | PATH="$HOME/.local/bin:$PATH" bash'
+)
 _VIBE_WINDOWS_INSTALL_HINT = (
-    "irm https://astral.sh/uv/install.ps1 | iex; uv tool install mistral-vibe"
+    "irm https://astral.sh/uv/install.ps1 | iex; "
+    '$env:Path = "$HOME\\.local\\bin;$env:Path"; uv tool install mistral-vibe'
 )
 _PROVIDER_HEADER = f"[model_providers.{_CODEX_PROFILE}]"
 _PASSTHROUGH = {"allow_extra_args": True, "ignore_unknown_options": True}
