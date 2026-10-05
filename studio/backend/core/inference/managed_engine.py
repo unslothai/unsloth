@@ -25,6 +25,7 @@ import httpx
 from utils.hardware.hardware import resolve_requested_gpu_ids
 
 from .engine_install import (
+    ENGINE_NAMES,
     driver_library_path,
     engine_lease,
     installed,
@@ -98,7 +99,7 @@ def validate_load(engine: str, request) -> list[int]:
         names = {"bf16": "BF16", "fp16": "FP16", "int8": "INT8", "fp8": "FP8", "int4": "4-bit"}
         offered = ", ".join(names[p] for p in loadable if p != "auto")
         raise ValueError(
-            f"{engine} on this GPU cannot load weights as {names.get(precision, precision)}. "
+            f"{ENGINE_NAMES[engine]} on this GPU cannot load weights as {names.get(precision, precision)}. "
             f"Choose {offered} or Model default."
         )
     if (
@@ -168,7 +169,7 @@ def validate_model(
         )
     if quant.get("quant_method") == "bitsandbytes" and not profile(engine)["bitsandbytes"]:
         raise ValueError(
-            f"{engine} on this GPU cannot load BitsAndBytes checkpoints. Choose an unquantized "
+            f"{ENGINE_NAMES[engine]} on this GPU cannot load BitsAndBytes checkpoints. Choose an unquantized "
             "or AWQ checkpoint."
         )
     if (

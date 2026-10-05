@@ -301,7 +301,7 @@ def test_amd_refuses_4_bit_before_unloading(rocm, monkeypatch):
     monkeypatch.setattr(managed_engine, "support_reason", lambda *a: None)
     monkeypatch.setattr(managed_engine, "resolve_requested_gpu_ids", lambda ids: [0])
     request = LoadRequest(model_path = "m", engine = "vllm", engine_precision = "int4")
-    with pytest.raises(ValueError, match = "cannot load weights as 4-bit"):
+    with pytest.raises(ValueError, match = "^vLLM on this GPU cannot load weights as 4-bit"):
         managed_engine.validate_load("vllm", request)
     for precision in ("auto", "bf16", "fp16", "int8", "fp8"):
         managed_engine.validate_load(
@@ -314,7 +314,7 @@ def test_amd_refuses_bitsandbytes_checkpoints_and_skips_nvidia_smi(rocm, monkeyp
     (tmp_path / "config.json").write_text(
         json.dumps({"quantization_config": {"quant_method": "bitsandbytes"}})
     )
-    with pytest.raises(ValueError, match = "cannot load BitsAndBytes checkpoints"):
+    with pytest.raises(ValueError, match = "^vLLM on this GPU cannot load BitsAndBytes checkpoints"):
         managed_engine.validate_model(config, engine = "vllm")
     (tmp_path / "config.json").write_text(json.dumps({"num_attention_heads": 8}))
 

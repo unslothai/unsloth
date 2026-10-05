@@ -35,6 +35,7 @@ from contextlib import contextmanager, nullcontext
 from pathlib import Path
 
 PRECISIONS = ("auto", "bf16", "fp16", "int4", "int8", "fp8")
+ENGINE_NAMES = {"vllm": "vLLM", "sglang": "SGLang"}
 PROFILES = {
     "vllm": {
         "module": "vllm",
@@ -777,8 +778,7 @@ def _rocm_reason(
     from . import wsl_host
 
     if "rocm" not in PROFILES[engine]:
-        name = {"vllm": "vLLM", "sglang": "SGLang"}[engine]
-        return f"{name} requires an NVIDIA GPU. Use vLLM on AMD GPUs."
+        return f"{ENGINE_NAMES[engine]} requires an NVIDIA GPU. Use vLLM on AMD GPUs."
     wanted = profile(engine)
     if wsl_host.active():
         # Studio installs ROCm inside its WSL distro and checks the GPU there; a card the Windows
