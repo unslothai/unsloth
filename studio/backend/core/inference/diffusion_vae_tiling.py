@@ -1,40 +1,15 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Seam-free tiled decode and encode for every image VAE whose stock tiles fall under a floor.
+"""Seam-free tiled VAE decode / encode for every image VAE whose stock tiles fall under a floor.
 
-Studio's low-VRAM tiers (whole-model / sequential offload, streaming, the per-call guard) turn on diffusers' tiled VAE
-decode with the stock tile geometry, which is too small for several VAEs:
-
-- Qwen-Image-2.1 (AutoencoderKLQwenImage21, 16x) gets the Wan VAE's pixel geometry (256 px tiles, 192 px stride): a
-  tile is 16 latents with a 4-latent (64 px) blend, and the last row / column is a 4-latent sliver. The decoder sees
-  further than 4 latents past a tile edge, so every seam and the sliver decode differently from their neighbours and
-  leave thin vertical / horizontal lines, one tile long.
-- HunyuanImage-2.1 (AutoencoderKLHunyuanImage, 32x) tiles at 384 px: 12-latent tiles with 3-latent blends, which
-  draws a visible grid and over-sharpened texture (21 to 23 dB against the untiled decode of the same latent).
-- Qwen-Image, Qwen-Image-Edit and Krea-2 (AutoencoderKLQwenImage, 8x) tile at 32 latents with 8-latent blends.
-- AutoencoderKL (FLUX.1, Kontext, Z-Image, HiDream, Lumina 2, SDXL) and AutoencoderKLFlux2 (FLUX.2, Ideogram 4) tile at
-  128 latents with 32-latent blends, which is fine, except that the last tile is whatever is left: an 8-latent sliver
-  on a 1600 px side.
-
-The rule is read off the VAE, not a class list: ``stock_tiles`` takes diffusers' tile and overlap (in latents) from
-the VAE's own tile attributes and ``compression_ratio`` its pixels per latent. Each tiled decode keeps the stock tiles
-(bit-identical to diffusers) when every stock tile is at least 32 latents and every overlap at least 16 (ComfyUI's
-decode overlap), and otherwise takes the wide tiles: at least 32 latents (or the stock tile, when larger) with at least
-a 16-latent (or the stock) overlap. ``KEEP_STOCK`` names VAEs that must keep the stock tiles, with the measured reason.
-
-A wide decode uses larger tiles, down to one untiled decode, when three quarters of the free VRAM hold them: fewer
-tiles decode less overlap, so they are faster and leave fewer seams. Otherwise it uses the floor tiles, which the
-planner budgets. Tiles are spread evenly so the last one ends at the image edge at full size (no sliver). A tile gets no
-weight within 4 latents of an edge it shares with another tile and ramps to full weight over the next 8, normalised
-where more than two tiles meet (a stride under 16 latents, e.g. 1344 or 2400 px on Qwen-Image-2.1). A canvas that fits
-one tile is decoded / encoded untiled. The Wan-family encode (edit and img2img inputs) uses 64-latent tiles with
-32-latent overlaps, blended in latent space: the encoder attends over the whole tile, so the stock tiles shift the
-condition latent everywhere and derail an edit, not only at the seams. On Qwen-Image-2.1 a 1024 px input is one tile,
-identical to the untiled encode; the guard charges edit inputs as condition pixels, which covers one encode tile at
-every reference resolution. AutoencoderKL-style VAEs keep their private 1024 px encode tiles.
-Kill switch ``UNSLOTH_DIFFUSION_VAE_WIDE_TILES=0``: at load it skips the install (the fused batched tile decode, if
-any, installs as before); set later, each decode / encode takes the stock tiled path.
+Low-VRAM tiers tile the VAE with diffusers' stock geometry, which draws seams where tiles are under 32 latents or
+blends under 16 (Qwen-Image-2.1 16x, HunyuanImage-2.1 32x, Qwen-Image 8x) or the last tile is a sliver (AutoencoderKL,
+FLUX.2 at e.g. 1600 px). The rule is read off the VAE (``stock_tiles``, ``compression_ratio``): stock tiles that meet
+the floor stay bit-identical to diffusers; otherwise tiles are >= 32 latents (larger when free VRAM allows), overlap
+>= 16, edge-aligned, with a normalised blend giving no weight near shared edges. Wan-family encode tiles are 64
+latents: the encoder attends over the whole tile, so small tiles shift the condition latent everywhere.
+Kill switch ``UNSLOTH_DIFFUSION_VAE_WIDE_TILES=0``.
 """
 
 from __future__ import annotations
@@ -118,12 +93,9 @@ def _decode_tile(vae: Any, z: Any) -> Any:
         vae.use_tiling = prev
 
 
-# Unfused bf16 decode peak per latent of tile area at 16x (measured on Qwen-Image-2.1: 1,697 MiB for 32x32, 6,717 MiB
-# for 64x64 untiled). Other ratios scale it by the tile's pixel count; it bounds every covered VAE's measured peak.
+# Unfused bf16 decode peak per latent of tile area at 16x (1,697 MiB at 32x32); other ratios scale by tile pixels.
 DECODE_MIB_PER_LATENT = 1.7
 DECODE_MIB_RATIO = 16
-# Share of the free VRAM (after the output accumulator) a decode tile may take; the per-area figure above is an
-# upper bound on the measured peaks, so this keeps at least a quarter of the free memory unused.
 FREE_FRACTION = 0.75
 MAX_TILE_ENV = "UNSLOTH_DIFFUSION_VAE_MAX_TILE"
 
@@ -148,9 +120,7 @@ def choose_tiles(
     tile: int = TILE_LATENTS,
     overlap: int = OVERLAP_LATENTS,
 ) -> tuple[int, int]:
-    """Tile (height, width) in latents: the fewest decoded latents (overlaps counted) whose tile area fits
-    ``max_area``. A canvas that fits decodes untiled; with no room for more, ``tile``-sided tiles (32x32 unless the
-    VAE's own tiles are larger) as the planner budgets."""
+    """Tile (height, width) in latents decoding the fewest latents (overlaps counted) within ``max_area``; ``tile`` floor."""
     floor = (min(tile, height), min(tile, width))
     if max_area is None or max_area <= floor[0] * floor[1]:
         return floor
@@ -209,9 +179,7 @@ def tiled_decode(
     return_dict: bool = True,
     max_area: Any = "auto",
 ) -> Any:
-    """Decode ``z`` ((B, C, T, H, W) or (B, C, H, W)) in evenly spread tiles with 16-latent overlaps: 32x32 latents at
-    least (or the VAE's own tile and overlap, when larger), larger (down to one untiled decode) when the free VRAM
-    allows, since fewer tiles decode less overlap."""
+    """Decode ``z`` (5-D or 4-D) in evenly spread floor-sized tiles, or larger when free VRAM allows."""
     import torch
     from diffusers.models.autoencoders.vae import DecoderOutput
 
@@ -299,8 +267,7 @@ def tiled_encode(vae: Any, x: Any) -> Any:
 
 
 def compression_ratio(vae: Any) -> int:
-    """Pixels per latent along a side: the VAE's own ``spatial_compression_ratio`` (an attribute on the Wan-family
-    VAEs, a config value on HunyuanImage), else its pixel / latent tile sides (AutoencoderKL, FLUX.2)."""
+    """Pixels per latent: ``spatial_compression_ratio`` (attribute or config), else pixel / latent tile sides."""
     if "spatial_compression_ratio" in getattr(vae, "__dict__", {}) or hasattr(
         type(vae), "spatial_compression_ratio"
     ):
@@ -316,10 +283,7 @@ def compression_ratio(vae: Any) -> int:
 
 
 def stock_tiles(vae: Any) -> Optional[tuple[int, int]]:
-    """The (tile, overlap) in latents that diffusers' own tiled decode / encode uses on ``vae``, read off the VAE's
-    tile attributes; None when they are not readable. Wan-family VAEs (Qwen-Image, Qwen-Image-2.1) carry pixel tiles
-    and strides, AutoencoderKL-style VAEs (FLUX.1, FLUX.2, SDXL, HunyuanImage) a latent tile and an overlap factor.
-    The overlap is the blend width: both stock loops cross-fade over all of it."""
+    """diffusers' stock (tile, overlap) in latents for ``vae``, or None when unreadable. The overlap is the blend width."""
     try:
         ratio = compression_ratio(vae)
         if hasattr(vae, "tile_sample_stride_height"):
@@ -342,11 +306,8 @@ def stock_tiles(vae: Any) -> Optional[tuple[int, int]]:
 
 
 def stock_layout_ok(stock: tuple[int, int], height: int, width: int) -> bool:
-    """Whether the stock tiles of ``stock`` (tile, overlap) on a ``height`` x ``width`` latent canvas meet the wide
-    tiles' floor: every tile at least 32 latents (no edge sliver) and every overlap / blend at least 16 latents.
-
-    diffusers starts a tile every ``tile - overlap`` latents until the canvas ends, so the last tile is whatever is
-    left (an 8-latent sliver on a 200-latent side of a 128 / 96 VAE). A canvas within one tile is not tiled."""
+    """Whether every stock tile is >= 32 latents and every overlap >= 16. diffusers starts a tile every ``tile -
+    overlap`` latents until the canvas ends, so the last tile can be a sliver (8 latents on a 200-latent side)."""
     tile, overlap = stock
     if tile < TILE_LATENTS or overlap < OVERLAP_LATENTS:
         return False
@@ -360,24 +321,20 @@ def stock_layout_ok(stock: tuple[int, int], height: int, width: int) -> bool:
 
 
 def floor_tiles(vae: Any) -> tuple[int, int]:
-    """(tile, overlap) in latents the wide path never goes under: 32 / 16, or the VAE's own when larger."""
+    """Wide-path minimum (tile, overlap): 32 / 16, or the stock values when larger."""
     stock = stock_tiles(vae) or (0, 0)
     return max(TILE_LATENTS, stock[0]), max(OVERLAP_LATENTS, stock[1])
 
 
-# VAEs that keep diffusers' tiles whatever their geometry, each with the measured reason. Empty: every image VAE
-# Studio tiles measured better (or identical) on the wide tiles.
+# Class name -> measured reason to keep diffusers' tiles. Empty: every covered VAE measured better or identical.
 KEEP_STOCK: dict[str, str] = {}
 
 
 def _wants_wide_tiles(vae: Any) -> bool:
-    """Covered when the stock tile geometry is readable off the VAE (so each call can be checked against the floor),
-    the Wan-family latents are not patchified, and the class is not in ``KEEP_STOCK``."""
     if vae is None or type(vae).__name__ in KEEP_STOCK:
         return False
     config = getattr(vae, "config", None)
-    # A patchified Wan-family VAE (patch_size set) blends its stock tiles in patch space; FLUX.2's patch_size is the
-    # pipeline's latent packing, which its decode never sees.
+    # Patchified Wan VAEs blend in patch space; FLUX.2's patch_size is pipeline packing its decode never sees.
     if getattr(config, "patch_size", None) is not None and hasattr(
         vae, "tile_sample_stride_height"
     ):
@@ -392,8 +349,7 @@ def _wants_wide_tiles(vae: Any) -> bool:
 
 
 def _wide_encode(vae: Any) -> bool:
-    """The tiled encode is replaced only where ``_encode`` routes through ``tiled_encode`` and gets moments back (the
-    Wan family); AutoencoderKL-style VAEs tile their encode in a private ``_tiled_encode`` with 1024 px tiles."""
+    """Wan family only: AutoencoderKL-style VAEs tile their encode in a private ``_tiled_encode``."""
     return (
         hasattr(vae, "tile_sample_stride_height")
         and callable(getattr(vae, "tiled_encode", None))
@@ -402,13 +358,8 @@ def _wide_encode(vae: Any) -> bool:
 
 
 def install(vae: Any, logger: Any = None) -> bool:
-    """Route ``vae``'s tiled decode and encode through the wide, edge-aligned tiles. Idempotent; False when not covered.
-
-    Each tiled decode keeps diffusers' own tiles when they already meet the floor (``stock_layout_ok``: FLUX.1 /
-    FLUX.2 / SDXL at most sizes), so it is bit-identical to the stock decode there, and takes the wide tiles when
-    they do not (an edge sliver, or tiles / blends under 32 / 16 latents). The tiled encode (img2img, edits) of the
-    Wan-family VAEs gets 64-latent tiles. The VAE's tile attributes stay as diffusers set them;
-    ``_unsloth_decode_tile_side`` carries the real decode tile side for Studio's memory estimates."""
+    """Route ``vae``'s tiled decode / encode through the wide tiles where stock falls under the floor. Idempotent;
+    False when not covered. ``_unsloth_decode_tile_side`` carries the real decode tile side for the memory estimates."""
     if not _wants_wide_tiles(vae) or wide_tiles_disabled():
         return False
     if getattr(vae, "_unsloth_wide_tiles", False):

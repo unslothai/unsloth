@@ -7153,9 +7153,7 @@ class DiffusionBackend:
                     apply_comfy_flow_shift(
                         pipe, comfy_flow_shift_for(fam, gguf_filename, repo_id, base), logger
                     )
-                    # Every speed mode and family: wherever diffusers' stock tiles fall under the floor (Qwen-Image,
-                    # Qwen-Image-2.1, HunyuanImage-2.1, an edge sliver on AutoencoderKL) they draw seams whenever a tier
-                    # tiles the decode. Before the speed optims, so the fused batched tile decode does not replace it.
+                    # Before the speed optims, so the fused batched tile decode does not replace it.
                     try:
                         install_wide_vae_tiles(getattr(pipe, "vae", None), logger)
                     except Exception as exc:  # noqa: BLE001 - keep the stock tiled decode
