@@ -7067,6 +7067,27 @@ def test_vibe_real_cli_reaches_unsloth(monkeypatch, tmp_path):
     assert body["temperature"] == 0.5
 
 
+@pytest.mark.parametrize(
+    ("argv", "status", "expected"),
+    [
+        ([], {"model_identifier": MODEL["id"], "inference": {"temperature": 1.0}}, 1.0),
+        (
+            ["--temperature", "0.3"],
+            {"model_identifier": MODEL["id"], "inference": {"temperature": 1.0}},
+            0.3,
+        ),
+        ([], {"model_identifier": "other/model", "inference": {"temperature": 1.0}}, None),
+        ([], {}, None),
+    ],
+)
+def test_vibe_sends_recommended_temperature(fake_studio, monkeypatch, argv, status, expected):
+    # Vibe always sends a temperature; without one in its model entry it sends 0.2.
+    monkeypatch.setattr(start, "_inference_status", lambda *args: status)
+    monkeypatch.setattr(start.shutil, "which", lambda _: "/usr/local/bin/vibe")
+    captured = _capture_launch(monkeypatch, ["vibe", *argv])
+    assert json.loads(captured["env"]["VIBE_MODELS"])[0].get("temperature") == expected
+
+
 def test_vibe_install_hint_per_os(monkeypatch):
     monkeypatch.setattr(start.os, "name", "nt")
     assert start._vibe_install_hint() == start._VIBE_WINDOWS_INSTALL_HINT

@@ -6974,5 +6974,17 @@ def vibe(
     command = ["vibe", *_yolo_command_flags("vibe", yolo), *ctx.args]
     # Like claude, Vibe keeps its own home (~/.vibe: instructions, hooks, trust, agents,
     # sessions); the env layer pins the Unsloth provider and model above its config files.
-    env = {_VIBE_ENV_KEY: key, **_vibe_env(base, entry, server_options.request_body())}
+    request_body = server_options.request_body()
+    if "temperature" not in request_body:
+        # Vibe always sends a temperature, which the server honours over the model's
+        # recommended one, so pass the recommendation along explicitly.
+        status = _inference_status(base, key)
+        recommended = (status.get("inference") or {}).get("temperature")
+        if recommended is not None and any(
+            _model_id_matches(entry["id"], status_id, allow_casefold = is_loopback_url(base))
+            for status_id in (status.get("active_model"), status.get("model_identifier"))
+            if status_id
+        ):
+            request_body = {**request_body, "temperature": recommended}
+    env = {_VIBE_ENV_KEY: key, **_vibe_env(base, entry, request_body)}
     _run(base, entry, env, command, launch = launch, install_hint = install_hint)
