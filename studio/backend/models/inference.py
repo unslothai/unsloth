@@ -1116,10 +1116,15 @@ class MlxDraftersRequest(BaseModel):
 class MlxDrafter(BaseModel):
     repo_id: str = Field(..., description = "Cached Hugging Face repo, usable as spec_draft_model")
     kind: str = Field(..., description = "'mtp', 'dflash', 'dspark' or 'eagle3'")
+    named: bool = Field(
+        True,
+        description = "Whether the repo is named for this model. False: it fits the model's "
+        "architecture only (another generation or a fine-tune), so Auto does not use it.",
+    )
 
 
 class MlxDraftersResponse(BaseModel):
-    """Cached drafters an MLX load of the target could name, in Auto's order of preference."""
+    """Cached drafters an MLX load of the target could name: those named for it first, in Auto's order."""
 
     drafters: list[MlxDrafter] = Field(default_factory = list)
 

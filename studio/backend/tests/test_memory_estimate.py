@@ -1026,7 +1026,7 @@ class TestEstimateMemoryRoute:
         monkeypatch.setattr(
             spec,
             "resolve_speculation",
-            lambda mode, *a, **k: spec.SpecResolution(mode, sources if mode else ()),
+            lambda mode, *a, **k: spec.SpecResolution(mode, sources if mode == "mtp" else ()),
         )
         monkeypatch.setattr(
             spec, "speculation_refusal", lambda kv_quant, **_: spec.KV_QUANT if kv_quant else None
@@ -1040,12 +1040,14 @@ class TestEstimateMemoryRoute:
             ),
         )
         monkeypatch.setattr(ri, "_mlx_estimate_ceiling", lambda model_dir: 32768)
-        monkeypatch.setattr(ri, "_mlx_estimate_fitted_context", lambda *a, **kw: 20480)
+        monkeypatch.setattr(
+            ri, "_mlx_estimate_fitted_context", lambda *a, **kw: 24576 if kw else 20480
+        )
         priced = []
         monkeypatch.setattr(
             mlx_memory,
             "mlx_memory_breakdown",
-            lambda model_dir, *, n_ctx, **kw: priced.append((n_ctx, kw.get("drafter")))
+            lambda d, *, n_ctx, **kw: priced.append((n_ctx, kw.get("drafter"), kw.get("vision")))
             or mlx_memory.MlxMemoryBreakdown(1, 0, 0, 1, 1, n_ctx = n_ctx),
         )
         assert _estimate(model_path = "org/model", speculative_type = "mtp").context_fitted == 12288
@@ -1053,12 +1055,16 @@ class TestEstimateMemoryRoute:
             _estimate(model_path = "org/model", speculative_type = "mtp", max_seq_length = pinned)
         _estimate(model_path = "org/model", speculative_type = "mtp", mlx_kv_quant = "8")
         _estimate(model_path = "org/model")
-        assert priced == [
+        _estimate(model_path = "o/m", speculative_type = "ngram", mlx_kv_quant = "auto", mlx_kv_bits = 8)
+        _estimate(model_path = "org/model", spec_draft_model = "org/d")  # named under Auto
+        assert [route for *_, route in priced] == [True, True, True, None, None, True, True]
+        assert [row[:2] for row in priced[:6]] == [
             (12288, ("/ok", False)),
             (4096, ("/ok", False)),
             (65536, None),
             (20480, None),
             (20480, None),
+            (24576, None),
         ]
 
     def test_a_drafter_attaches_where_its_priced_fit_holds_and_a_pin_fits_whole(self, monkeypatch):
@@ -5178,8 +5184,8 @@ def test_the_drafter_picker_lists_cached_drafters_of_a_cached_target(tmp_path, m
 
     (tmp_path / "config.json").write_text('{"vocab_size": 7}')
     found = [
-        ("o/T-DFlash", SimpleNamespace(kind = "dflash")),
-        ("o/T-MTP", SimpleNamespace(kind = "mtp")),
+        ("o/T-DFlash", SimpleNamespace(kind = "dflash"), True),
+        ("o/T-MTP", SimpleNamespace(kind = "mtp"), False),
     ]
     monkeypatch.setattr(
         mlx_speculative,
@@ -5190,8 +5196,8 @@ def test_the_drafter_picker_lists_cached_drafters_of_a_cached_target(tmp_path, m
         "utils.utils.hf_cache_snapshot_dir", lambda name: tmp_path if name == "o/T" else None
     )
     assert ri._mlx_cached_drafters("o/T") == [
-        {"repo_id": "o/T-DFlash", "kind": "dflash"},
-        {"repo_id": "o/T-MTP", "kind": "mtp"},
+        {"repo_id": "o/T-DFlash", "kind": "dflash", "named": True},
+        {"repo_id": "o/T-MTP", "kind": "mtp", "named": False},
     ]
     assert ri._mlx_cached_drafters("o/absent") == []
     monkeypatch.setattr(ri.account_access, "filter_model_rows", lambda rows: rows[1:])

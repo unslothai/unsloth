@@ -38,21 +38,26 @@ export const MLX_SPECULATIVE_TYPES = [
 export interface MlxDrafter {
   repo: string;
   kind: string;
+  /** False when the drafter only fits the model's architecture and is not named for it. */
+  named: boolean;
 }
 
-/** Drafters the Drafter picker offers in `mode`: every cached kind under Auto, else that kind, plus
- *  a saved choice that is not cached (or is a local folder) so it stays visible. */
+/** Drafters the Drafter picker offers in `mode`, as `[repo, label]`: every cached kind under Auto,
+ *  else that kind, plus a saved choice that is not cached (or is a local folder) so it stays visible. */
 export function mlxDrafterChoices(
   drafters: readonly MlxDrafter[],
   mode: string,
   selected: string | null,
-): string[] {
-  const repos = drafters
+): [string, string][] {
+  const choices = drafters
     .filter((drafter) => mode === "auto" || drafter.kind === mode)
-    .map((drafter) => drafter.repo);
-  return selected != null && !repos.includes(selected)
-    ? [selected, ...repos]
-    : repos;
+    .map((drafter): [string, string] => [
+      drafter.repo,
+      drafter.named ? drafter.repo : `${drafter.repo} (same architecture)`,
+    ]);
+  return selected != null && !choices.some(([repo]) => repo === selected)
+    ? [[selected, selected], ...choices]
+    : choices;
 }
 
 /** The mode an MLX load runs: every drafter kind also copies repeated text, so llama.cpp's `mtp+ngram` is `mtp`. */

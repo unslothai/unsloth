@@ -20,6 +20,6 @@ export async function fetchMlxDrafters(
   return Array.isArray(body.drafters)
     ? body.drafters
         .filter((d) => typeof d?.repo_id === "string" && typeof d?.kind === "string")
-        .map((d) => ({ repo: d.repo_id, kind: d.kind }))
+        .map((d) => ({ repo: d.repo_id, kind: d.kind, named: d.named !== false }))
     : [];
 }

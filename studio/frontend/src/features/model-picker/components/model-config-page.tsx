@@ -1315,8 +1315,9 @@ function MlxSpeculativeRows({
           <div className="flex min-w-0 items-center gap-1.5">
             <span className={LABEL_CLASS}>Drafter</span>
             <InfoHint>
-              A drafter for this model from the local Hugging Face cache. Auto
-              uses the model's own head or the first matching cached drafter.
+              A drafter from the local Hugging Face cache that fits this
+              model. Auto uses the model's own head or the first cached drafter
+              named for it.
             </InfoHint>
           </div>
           <Select
@@ -1341,9 +1342,9 @@ function MlxSpeculativeRows({
             <SelectContent className="menu-soft-surface ring-0 border-0 rounded-lg">
               <SelectItem value="auto">Auto</SelectItem>
               {mlxDrafterChoices(drafters, mode, config.specDraftModel ?? null).map(
-                (repo) => (
+                ([repo, label]) => (
                   <SelectItem key={repo} value={repo}>
-                    {repo}
+                    {label}
                   </SelectItem>
                 ),
               )}

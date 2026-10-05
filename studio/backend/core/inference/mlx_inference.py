@@ -4629,6 +4629,7 @@ class MLXInferenceBackend:
         speculative_type = None,
         spec_draft_n_max = None,
         spec_draft_model = None,
+        spec_drafters_allowed = None,
     ) -> bool:
         import mlx.core as mx
 
@@ -4839,6 +4840,7 @@ class MLXInferenceBackend:
                 spec_draft_model,
                 model_dir = model_dir,
                 target_name = model_name,
+                allowed = spec_drafters_allowed,
             )
 
             def _fits(source):

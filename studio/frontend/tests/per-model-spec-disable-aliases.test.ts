@@ -18,10 +18,11 @@ const { loadedConfigSignature } = await import(
 const { mlxDrafterChoices } = await import("../src/lib/speculative-modes.ts");
 
 test("the drafter picker offers the mode's cached drafters and keeps a saved one visible", () => {
-  const cached = [{ repo: "o/m-MTP", kind: "mtp" }, { repo: "o/m-DFlash", kind: "dflash" }];
-  assert.deepEqual(mlxDrafterChoices(cached, "auto", null), ["o/m-MTP", "o/m-DFlash"]);
-  assert.deepEqual(mlxDrafterChoices(cached, "dflash", "o/m-DFlash"), ["o/m-DFlash"]);
-  assert.deepEqual(mlxDrafterChoices(cached, "mtp", "/local/drafter"), ["/local/drafter", "o/m-MTP"]);
+  const cached = [{ repo: "o/m-MTP", kind: "mtp", named: true }, { repo: "o/n-DFlash", kind: "dflash", named: false }];
+  const pick = (mode: string, saved: string | null) => mlxDrafterChoices(cached, mode, saved);
+  assert.deepEqual(pick("auto", null).map(([repo]: [string, string]) => repo), ["o/m-MTP", "o/n-DFlash"]);
+  assert.deepEqual(pick("dflash", "o/n-DFlash"), [["o/n-DFlash", "o/n-DFlash (same architecture)"]]);
+  assert.deepEqual(pick("mtp", "/local/drafter")[0], ["/local/drafter", "/local/drafter"]);
 });
 
 const specOf = (value: string) =>

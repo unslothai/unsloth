@@ -110,16 +110,26 @@ def _reported(kind: str) -> str:
 _DRAFTER_WORDS = frozenset(
     {"dflash", "dflash2", "dspark", "eagle3", "speculator", "assistant", "mtp", "drafter"}
 )
-_WEIGHT_WORDS = re.compile(
-    r"^(mlx|bf16|fp16|fp8|mxfp4|nvfp4|qat|unquantized|q\d(_\d)?|\d+bit|dwq)$"
-)
+_WEIGHT_WORDS = re.compile(r"^(mlx|bf16|fp16|fp8|mxfp4|nvfp4|qat|unquantized|\d+bit|dwq)$")
+_GGUF_QUANT = re.compile(r"(?<![a-z0-9])q\d(_[a-z0-9]+)+(?![a-z0-9])")
+
+
+def _alnum(name: str) -> str:
+    return re.sub(r"[^a-z0-9]", "", os.path.basename(str(name).rstrip("/")).lower())
 
 
 def _stem(name: str) -> str:
-    """A repo or directory name without its organization, drafter and weight-format words, as alphanumerics."""
-    words = re.split(r"[-_]", os.path.basename(str(name).rstrip("/")).lower())
-    kept = [word for word in words if word not in _DRAFTER_WORDS and not _WEIGHT_WORDS.match(word)]
-    return re.sub(r"[^a-z0-9]", "", "".join(kept).replace("speculator.eagle3", ""))
+    """A drafter repo's name without its organization, drafter and weight-format words, as alphanumerics."""
+    base = _GGUF_QUANT.sub("", os.path.basename(str(name).rstrip("/")).lower())
+    words = re.split(r"[-_]", base.replace("speculator.eagle3", ""))
+    return _alnum(
+        "".join(w for w in words if w not in _DRAFTER_WORDS and not _WEIGHT_WORDS.match(w))
+    )
+
+
+def _text(config: dict) -> dict:
+    scope = config.get("text_config")
+    return scope if isinstance(scope, dict) else config
 
 
 def _vocab_size(config: dict) -> Optional[int]:
@@ -131,6 +141,47 @@ def _vocab_size(config: dict) -> Optional[int]:
         if isinstance(scope, dict) and isinstance(scope.get("vocab_size"), int):
             return scope["vocab_size"]
     return None
+
+
+def _fits(kind: str, config: dict, target: dict) -> bool:
+    """Whether a drafter's config is built for a target of this shape. A dimension either side does not state cannot refuse."""
+    text, own = _text(target), _text(config)
+    layers, flash = text.get("num_hidden_layers"), config.get("dflash_config") or {}
+    if kind == "eagle3":
+        wants = config.get("target_hidden_size") or (
+            config.get("transformer_layer_config") or {}
+        ).get("hidden_size")
+        taps = config.get("eagle_aux_hidden_state_layer_ids") or flash.get("target_layer_ids")
+    elif kind == "mtp":
+        wants = config.get("backbone_hidden_size") or own.get("hidden_size")
+        taps = None
+        if "backbone_hidden_size" not in config:
+            pairs = [
+                (own.get("num_hidden_layers"), layers),
+                (own.get("model_type"), text.get("model_type")),
+            ]
+            if any(a is not None and b is not None and a != b for a, b in pairs):
+                return False
+    else:
+        wants = config.get("target_hidden_size") or config.get("hidden_size")
+        taps = flash.get("target_layer_ids") or config.get("target_layer_ids")
+        stated = config.get("num_target_layers") or flash.get("num_target_layers")
+        if stated is not None and layers is not None and stated != layers:
+            return False
+    vocab = _vocab_size(target)
+    return not (
+        (wants is not None and text.get("hidden_size") not in (None, wants))
+        # Families number tapped layers from 0 or from 1; only an id past both is out of range.
+        or (taps and layers is not None and max(taps) > layers)
+        or (vocab is not None and _vocab_size(config) not in (None, vocab))
+    )
+
+
+def _has_weights(snapshot) -> bool:
+    try:
+        return any(name.endswith(".safetensors") for name in os.listdir(snapshot))
+    except OSError:
+        return False
 
 
 def _cached_repos():
@@ -148,32 +199,39 @@ def _cached_repos():
 
 
 def cached_drafters(target_name: str, target_config: dict) -> list:
-    """``(repo, source)`` for each cached companion drafter whose repo names ``target_name``'s model and whose vocabulary matches, in auto's order."""
+    """``(repo, source, named)`` for each cached drafter with weights whose config fits the target's shape.
+
+    ``named`` drafters carry the target's model name and come first, in auto's order; the rest fit
+    by shape alone (another generation or fine-tune of the same architecture) and follow.
+    """
     from utils.utils import hf_cache_snapshot_dir_for_repo
 
-    stem, vocab, found = _stem(target_name), _vocab_size(target_config), []
-    if not stem:
-        return found
+    target, found = _alnum(target_name), []
     for repo in _cached_repos():
-        if _stem(repo) != stem or repo.lower() == str(target_name).lower():
+        if repo.lower() == str(target_name).lower():
             continue
         snapshot = hf_cache_snapshot_dir_for_repo(repo)
         config = _read_config(snapshot) if snapshot is not None else {}
         kind = companion_kind(config)
-        if kind is None or (vocab is not None and _vocab_size(config) not in (None, vocab)):
+        if kind is None or not _fits(kind, config, target_config) or not _has_weights(snapshot):
             continue
-        found.append(
-            (
-                _COMPANION_ORDER.index(kind),
-                repo,
-                DrafterSource(_reported(kind), str(snapshot), False),
-            )
-        )
-    return [(repo, source) for _, repo, source in sorted(found)]
+        stem = _stem(repo)
+        named = bool(stem) and target.startswith(stem)
+        source = DrafterSource(_reported(kind), str(snapshot), False)
+        found.append((not named, _COMPANION_ORDER.index(kind), repo, source))
+    return [(repo, source, not unnamed) for unnamed, _, repo, source in sorted(found)]
 
 
-def discover_companions(target_name: str, target_config: dict) -> list:
-    return [source for _, source in cached_drafters(target_name, target_config)]
+def discover_companions(
+    target_name: str,
+    target_config: dict,
+    allowed = None,
+) -> list:
+    """The cached drafters auto attaches: those named for the target, within ``allowed`` repos when given."""
+    found = cached_drafters(target_name, target_config)
+    return [
+        source for repo, source, named in found if named and (allowed is None or repo in allowed)
+    ]
 
 
 def _named_companion(spec_draft_model: str) -> Optional[DrafterSource]:
@@ -197,7 +255,12 @@ def has_builtin_head(model_dir: Optional[str]) -> bool:
 
 
 def resolve_speculation(
-    speculative_type, spec_draft_model: Optional[str], *, model_dir: Optional[str], target_name: str
+    speculative_type,
+    spec_draft_model: Optional[str],
+    *,
+    model_dir: Optional[str],
+    target_name: str,
+    allowed = None,
 ) -> SpecResolution:
     """The drafters an MLX load tries: a named ``spec_draft_model``, then cached companions (any kind under auto) and the built-in head, in ``_COMPANION_ORDER``."""
     mode = mlx_spec_mode(speculative_type)
@@ -216,7 +279,9 @@ def resolve_speculation(
             reason = DRAFTER_INCOMPATIBLE
         else:
             sources.append(named)
-    companions = discover_companions(target_name, _read_config(model_dir) if model_dir else {})
+    companions = discover_companions(
+        target_name, _read_config(model_dir) if model_dir else {}, allowed
+    )
     companions = [
         source for source in companions if (auto or source.kind == kind) and source not in sources
     ]

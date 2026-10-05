@@ -27,6 +27,7 @@ def cache(tmp_path, monkeypatch):
             snapshots[repo] = tmp_path / repo.replace("/", "--")
             snapshots[repo].mkdir(parents = True, exist_ok = True)
             (snapshots[repo] / "config.json").write_text(json.dumps(config))
+            (snapshots[repo] / "model.safetensors").touch()
         monkeypatch.setattr(spec, "has_builtin_head", lambda model_dir: builtin)
         return lambda mode, named = None: spec.resolve_speculation(
             mode, named, model_dir = str(snapshots[_TARGET]), target_name = _TARGET
@@ -75,7 +76,7 @@ def test_auto_takes_every_cached_kind_in_preference_order(cache):
         _resolve("auto").reason or _resolve("off").speculative
     )
     assert [spec.speculates_on_route("auto", vision) for vision in (False, True)] == [False, True]
-    listed = [(repo, s.kind) for repo, s in spec.cached_drafters(_TARGET, {"vocab_size": 10})]
+    listed = [(repo, s.kind) for repo, s, _ in spec.cached_drafters(_TARGET, {"vocab_size": 10})]
     assert listed == [("a/Qwen3.5-4B-DFlash", "dflash"), ("b/Qwen3.5-4B-Eagle3", "eagle3")]
     mtp_head = {"h/Qwen3.5-4B-MTP-bf16": {"model_type": "qwen3_5_mtp"}}
     _resolve = cache({"g/Qwen3.5-4B-assistant": _ASSISTANT, **mtp_head}, True)
@@ -87,6 +88,39 @@ def test_auto_takes_every_cached_kind_in_preference_order(cache):
             (False, "eagle3"),
         ]
     assert _resolve("ngram-mod").speculative
+
+
+def test_cached_drafters_are_matched_by_shape_and_weights_then_marked_by_name(cache, tmp_path):
+    shaped = {**_DFLASH, "hidden_size": 8, "num_target_layers": 4}
+    narrow = {"target_hidden_size": 8, "transformer_layer_config": {"hidden_size": 2}}
+    cache(
+        {
+            "a/Qwen3.5-4B-DFlash": shaped,
+            "n/Other-DFlash": shaped,  # fits, but is not named for the target
+            "h/Qwen3.5-4B-DFlash": {**shaped, "hidden_size": 9},
+            "t/Qwen3.5-4B-DFlash": {**shaped, "num_target_layers": 5},
+            "l/Qwen3.5-4B-DFlash": {**shaped, "dflash_config": {"target_layer_ids": [1, 5]}},
+            "w/Qwen3.5-4B-DFlash": shaped,
+            "b/Qwen3.5-4B-assistant": {**_ASSISTANT, "backbone_hidden_size": 9},
+            "m/Qwen3.5-4B-MTP": {"model_type": "x_mtp", "text_config": {"num_hidden_layers": 5}},
+            "e/Qwen3.5-4B-Eagle3": {
+                **_EAGLE3,
+                **narrow,
+                "eagle_aux_hidden_state_layer_ids": [1, 4],
+            },
+        }
+    )
+    (tmp_path / "w--Qwen3.5-4B-DFlash" / "model.safetensors").unlink()
+    target = {"vocab_size": 10, "text_config": {"hidden_size": 8, "num_hidden_layers": 4}}
+    found = spec.cached_drafters("unsloth/Qwen3.5-4B-UD-MLX-4bit", target)
+    assert [(repo, named) for repo, _, named in found] == [
+        ("a/Qwen3.5-4B-DFlash", True),
+        ("e/Qwen3.5-4B-Eagle3", True),
+        ("n/Other-DFlash", False),
+    ]
+    assert len(spec.discover_companions("unsloth/Qwen3.5-4B-UD-MLX-4bit", target)) == 2
+    assert len(spec.discover_companions("unsloth/Qwen3.5-4B-UD-MLX-4bit", target, found[1])) == 1
+    assert spec._stem("g/gemma-4-31B-it-qat-q4_0-unquantized-assistant") == "gemma431bit"
 
 
 def test_a_drafter_passed_over_keeps_its_reason_on_the_one_that_attaches(monkeypatch):

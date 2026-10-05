@@ -2014,6 +2014,7 @@ class InferenceOrchestrator:
         speculative_type: Optional[str] = None,
         spec_draft_n_max: Optional[int] = None,
         spec_draft_model: Optional[str] = None,
+        spec_drafters_allowed: Optional[list] = None,
         chat_template_override: Optional[str] = None,
         load_cancel_event: Optional[threading.Event] = None,
         post_handoff_expected_free_gb: Optional[dict[int, float]] = None,
@@ -2090,6 +2091,7 @@ class InferenceOrchestrator:
                 "speculative_type": speculative_type,
                 "spec_draft_n_max": spec_draft_n_max,
                 "spec_draft_model": spec_draft_model,
+                "spec_drafters_allowed": spec_drafters_allowed,
                 "chat_template_override": chat_template_override,
                 # Read in the worker, which hides the accelerators before detection.
                 "audio_device": audio_device,

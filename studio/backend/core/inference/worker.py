@@ -744,6 +744,7 @@ def _handle_load(backend, config: dict, resp_queue: Any) -> None:
                 load_kwargs["speculative_type"] = config.get("speculative_type")
                 load_kwargs["spec_draft_n_max"] = config.get("spec_draft_n_max")
                 load_kwargs["spec_draft_model"] = config.get("spec_draft_model")
+                load_kwargs["spec_drafters_allowed"] = config.get("spec_drafters_allowed")
                 load_kwargs["chat_template_override"] = config.get("chat_template_override")
             success = backend.load_model(**load_kwargs)
         finally:

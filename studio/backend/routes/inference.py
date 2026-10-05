@@ -14928,7 +14928,7 @@ def _mlx_estimate_ceiling(model_dir: str) -> Optional[int]:
     return None if native is None else min(int(native), MAX_REQUESTABLE_CONTEXT)
 
 
-def _mlx_estimate_fitted_context(config, model_dir: str, load_in_4bit: bool, kv_bits):
+def _mlx_estimate_fitted_context(config, model_dir: str, load_in_4bit: bool, kv_bits, **route):
     """The window a load naming no Context Length would be fitted to."""
     from core.inference.mlx_inference import (
         mlx_fit_to_memory,
@@ -14946,33 +14946,34 @@ def _mlx_estimate_fitted_context(config, model_dir: str, load_in_4bit: bool, kv_
             not getattr(config, "is_vision", False) or mlx_vlm_snapshot_store_available()
         ),
         kv_bits = kv_bits,
+        **route,
     )
 
 
 def _mlx_estimate_drafter(request, model_identifier, model_dir, ceiling, load_in_4bit: bool):
-    """``((path, builtin), fitted context)`` of the drafter an MLX load of *request* would attach,
-    chosen as the load chooses it, else ``(None, None)``."""
+    """``((path, builtin), fitted context, speculates)`` of an MLX load of *request*: the drafter it
+    would attach, chosen as the load chooses it, and whether it speculates at all (so loads through mlx-vlm)."""
     from core.inference import mlx_speculative
     from core.inference.mlx_inference import mlx_drafter_fit, parse_mlx_kv_quant
     from core.inference.mlx_memory import _loads_as_vision, _snapshot_config
 
     mode = mlx_speculative.mlx_spec_mode(request.speculative_type)
     if not mlx_speculative.speculates_on_route(
-        mode, _loads_as_vision(_snapshot_config(model_dir) or {})
+        mode, _loads_as_vision(_snapshot_config(model_dir) or {}), request.spec_draft_model
     ):
-        return None, None
+        return None, None, False
     resolution = mlx_speculative.resolve_speculation(
         request.speculative_type,
         request.spec_draft_model,
         model_dir = model_dir,
         target_name = model_identifier,
+        allowed = _discoverable_drafters(model_identifier),
     )
     bits, turboquant = parse_mlx_kv_quant(request.mlx_kv_quant)
-    kv_quant = bits is not None or turboquant or request.mlx_kv_bits is not None
-    if not resolution.sources or mlx_speculative.speculation_refusal(
-        kv_quant = kv_quant, distributed = False, lora = False
-    ):
-        return None, None
+    legacy_bits = request.mlx_kv_quant is None and request.mlx_kv_bits is not None
+    kv_quant = bits is not None or turboquant or legacy_bits
+    if mlx_speculative.speculation_refusal(kv_quant = kv_quant, distributed = False, lora = False):
+        return None, None, False
     for source in resolution.sources:
         attaches, fitted = mlx_drafter_fit(
             model_dir,
@@ -14983,8 +14984,8 @@ def _mlx_estimate_drafter(request, model_identifier, model_dir, ceiling, load_in
             costless = mode == "auto",
         )
         if attaches:
-            return (source.path, source.builtin), fitted
-    return None, None
+            return (source.path, source.builtin), fitted, True
+    return None, None, True
 
 
 def _mlx_estimate_available() -> bool:
@@ -17891,6 +17892,13 @@ async def _require_drafter_access(request) -> None:
         await asyncio.to_thread(account_access.require_model_access, drafter.strip())
 
 
+def _discoverable_drafters(model_path: str) -> Optional[list]:
+    """The cached drafters a load may attach on its own: any for the owner, else those the account may see."""
+    if not account_access.managed_account():
+        return None
+    return [row["repo_id"] for row in _mlx_cached_drafters(model_path)]
+
+
 def _require_resolved_base_access(config) -> None:
     """Grants apply to the base in an adapter's config, so it cannot pull a foreign cached base."""
     base = getattr(config, "base_model", None)
@@ -19173,6 +19181,9 @@ async def _load_model_impl(
                 speculative_type = request.speculative_type,
                 spec_draft_n_max = request.spec_draft_n_max,
                 spec_draft_model = request.spec_draft_model,
+                spec_drafters_allowed = await asyncio.to_thread(
+                    _discoverable_drafters, request.model_path
+                ),
                 chat_template_override = request.chat_template_override,
                 load_cancel_event = load_cancel_event,
                 on_prior_worker_released = _release_chat_after_teardown,
@@ -19628,7 +19639,6 @@ async def validate_model(
     native_access_deferred = _defers_access_to_native_grant(request)
     if account_access.managed_account() and not native_access_deferred:
         await asyncio.to_thread(account_access.require_model_access, request.model_path)
-    await _require_drafter_access(request)
     request = await asyncio.to_thread(_as_ollama_manifest_request, request)
     from core.inference.llama_cpp import (
         LlamaServerNotFoundError,
@@ -20812,16 +20822,17 @@ async def estimate_memory(
             if mlx_kv_bits is not None and mlx_kv_quant_is_refused(model_dir, mlx_kv_bits):
                 mlx_kv_bits = None
             mlx_named_ctx = request.max_seq_length or 0
-            mlx_drafter, mlx_fitted_ctx = _mlx_estimate_drafter(
+            mlx_drafter, mlx_fitted_ctx, mlx_speculates = _mlx_estimate_drafter(
                 request,
                 model_identifier,
                 model_dir,
                 _mlx_estimate_ceiling(model_dir),
                 mlx_load_in_4bit,
             )
+            mlx_route = {"vision": True} if mlx_speculates else {}
             if not mlx_named_ctx and mlx_drafter is None:
                 mlx_fitted_ctx = _mlx_estimate_fitted_context(
-                    config, model_dir, mlx_load_in_4bit, mlx_kv_bits
+                    config, model_dir, mlx_load_in_4bit, mlx_kv_bits, **mlx_route
                 )
             mlx_priced_ctx = mlx_named_ctx or mlx_fitted_ctx or _mlx_estimate_ceiling(model_dir)
             if not mlx_priced_ctx:
@@ -20831,7 +20842,8 @@ async def estimate_memory(
                 n_ctx = mlx_priced_ctx,
                 kv_bits = mlx_kv_bits,
                 load_in_4bit = mlx_load_in_4bit,
-                **({} if mlx_drafter is None else {"vision": True, "drafter": mlx_drafter}),
+                **mlx_route,
+                **({} if mlx_drafter is None else {"drafter": mlx_drafter}),
             )
             if mlx_breakdown is None:
                 return EstimateMemoryResponse(available = False, reason = "unsizable")
@@ -20985,8 +20997,8 @@ def _mlx_cached_drafters(model_path: str) -> list:
     # The cache is shared between accounts: list only what this one may see.
     return account_access.filter_model_rows(
         [
-            {"repo_id": repo, "kind": source.kind}
-            for repo, source in mlx_speculative.cached_drafters(model_path, config)
+            {"repo_id": repo, "kind": source.kind, "named": named}
+            for repo, source, named in mlx_speculative.cached_drafters(model_path, config)
         ]
     )
 
