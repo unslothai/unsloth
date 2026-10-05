@@ -699,9 +699,11 @@ def test_block_swap_layers_still_works_as_the_old_name_of_offload_layers():
     exec(compile(ast.Module(body = [fn], type_ignores = []), UTILS, "exec"), ns)
     legacy = ns["legacy_offload_layers"]
     kwargs = {"block_swap_layers": "auto"}
-    assert legacy(kwargs, 0) == "auto" and kwargs == {}
-    assert legacy({"block_swap_layers": 4}, 2) == 2  # the new name wins
-    assert legacy({}, 3) == 3
+    assert legacy(kwargs, None) == "auto" and kwargs == {}
+    # The new name wins whenever it was given, an explicit 0 included.
+    assert legacy({"block_swap_layers": 4}, 2) == 2
+    assert legacy({"block_swap_layers": 4}, 0) == 0
+    assert legacy({}, None) == 0 and legacy({}, 3) == 3
     # Every entry point maps the old name before reading the new one.
     for path, count in (("llama.py", 2), ("vision.py", 2)):
         src = open(os.path.join(HERE, "unsloth", "models", path), encoding = "utf-8").read()

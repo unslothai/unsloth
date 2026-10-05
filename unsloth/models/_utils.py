@@ -6152,10 +6152,12 @@ def _new_block_swap(layers, n, *args, placement, **kwargs):
         return BlockSwap(layers, n, *args, **kwargs)
 
 
-def legacy_offload_layers(kwargs, offload_layers = 0):
-    """`offload_layers`, accepting its original name `block_swap_layers` from `kwargs`."""
+def legacy_offload_layers(kwargs, offload_layers = None):
+    """`offload_layers`, or its original name `block_swap_layers` from `kwargs` when it was not given (0 = off)."""
     legacy = kwargs.pop("block_swap_layers", None)
-    return legacy if legacy is not None and not offload_layers else offload_layers
+    if offload_layers is None:
+        return 0 if legacy is None else legacy
+    return offload_layers
 
 
 def refuse_block_swap_load(offload_layers, reason):

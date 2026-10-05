@@ -2734,7 +2734,7 @@ class FastLlamaModel:
         # Respect a user-provided config so it is the single config object used everywhere below; else
         # HF gets it again through **kwargs alongside our config= and fails with a duplicate kwarg.
         user_config = kwargs.pop("config", None)
-        offload_layers = legacy_offload_layers(kwargs, kwargs.pop("offload_layers", 0))
+        offload_layers = legacy_offload_layers(kwargs, kwargs.pop("offload_layers", None))
         offload_embedding = kwargs.pop("offload_embedding", False)
         if offload_embedding and fast_inference:
             if offload_embedding != OFFLOAD_EMBEDDING_AUTO:
@@ -3649,7 +3649,7 @@ class FastLlamaModel:
         qat_scheme = None,
         target_parameters = None,  # For MoE expert layers (nn.Parameter)
         ensure_weight_tying = None,  # None = auto (tie when we redirect a tied pair)
-        offload_layers = 0,
+        offload_layers = None,
         checkpoint_skip_layers = 0,
         **kwargs,
     ):

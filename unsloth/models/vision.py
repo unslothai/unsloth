@@ -2627,7 +2627,7 @@ class FastBaseModel:
         user_config = kwargs.pop("config", None)
         if auto_config is None and user_config is not None:
             auto_config = user_config
-        _offload_layers = legacy_offload_layers(kwargs, kwargs.pop("offload_layers", 0))
+        _offload_layers = legacy_offload_layers(kwargs, kwargs.pop("offload_layers", None))
         if _offload_layers and load_layers_to_host is None:
             _offload_layers = refuse_block_swap_load(
                 _offload_layers,
@@ -3959,7 +3959,7 @@ class FastBaseModel:
         target_parameters = None,  # For MoE expert layers (nn.Parameter)
         ensure_weight_tying = None,  # None = auto (tie when we redirect a tied pair)
         finetune_audio_layers = False,  # placed last to preserve existing positional argument order
-        offload_layers = 0,
+        offload_layers = None,
         checkpoint_skip_layers = 0,
         **kwargs,
     ):
