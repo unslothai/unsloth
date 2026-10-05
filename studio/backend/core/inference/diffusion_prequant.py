@@ -989,7 +989,7 @@ def _already_verified(marker: Optional[tuple]) -> bool:
     if marker is None:
         return False
     try:
-        return json.loads(marker[0].read_text()) == marker[1]
+        return json.loads(marker[0].read_text(encoding = "utf-8")) == marker[1]
     except Exception:  # noqa: BLE001 -- absent or unreadable marker: check in full
         return False
 
@@ -1003,7 +1003,7 @@ def _remember_verified(marker: Optional[tuple]) -> None:
     try:
         marker[0].parent.mkdir(parents = True, exist_ok = True)
         tmp = marker[0].with_suffix(".tmp")
-        tmp.write_text(json.dumps(marker[1], sort_keys = True))
+        tmp.write_text(json.dumps(marker[1], sort_keys = True), encoding = "utf-8")
         os.replace(tmp, marker[0])
     except Exception:  # noqa: BLE001 -- the next load just checks in full again
         pass
