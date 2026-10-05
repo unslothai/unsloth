@@ -813,7 +813,7 @@ export const ja = {
       prepSucceeded: "この PC は準備済みです。",
       prepDeclined: "管理者の確認が拒否されました。",
       prepFailed: "準備に失敗しました。",
-      runtimeMissing: "MXC ランタイムがインストールされていません。追加するには Unsloth インストーラーを再実行してください。",
+      runtimeMissing: "MXC ランタイムがインストールされていません。「ランタイムをインストール」を使うか、Unsloth インストーラーを再実行してください。",
       setupLabel: "OS サンドボックスの設定",
       setupCommandHint: "Unsloth を実行しているコンピューターでこれを実行してください:",
       macosBuiltIn: "Seatbelt は macOS に組み込まれているため、インストールは不要です。",

@@ -809,7 +809,7 @@ export const zhCN = {
       prepSucceeded: "此电脑已准备就绪。",
       prepDeclined: "管理员提示被拒绝。",
       prepFailed: "准备失败。",
-      runtimeMissing: "未安装 MXC 运行时。请重新运行 Unsloth 安装程序以添加它。",
+      runtimeMissing: "未安装 MXC 运行时。请使用“安装运行时”，或重新运行 Unsloth 安装程序。",
       setupLabel: "系统沙箱设置",
       setupCommandHint: "在运行 Unsloth 的电脑上执行以下命令：",
       macosBuiltIn: "Seatbelt 内置于 macOS，无需安装。",

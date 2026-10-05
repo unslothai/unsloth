@@ -814,7 +814,7 @@ export const hi = {
       prepSucceeded: "यह PC तैयार है।",
       prepDeclined: "व्यवस्थापक संकेत अस्वीकार कर दिया गया।",
       prepFailed: "तैयारी विफल रही।",
-      runtimeMissing: "MXC रनटाइम इंस्टॉल नहीं है। इसे जोड़ने के लिए Unsloth इंस्टॉलर फिर से चलाएँ।",
+      runtimeMissing: "MXC रनटाइम इंस्टॉल नहीं है। रनटाइम इंस्टॉल करें का उपयोग करें, या Unsloth इंस्टॉलर फिर से चलाएँ।",
       setupLabel: "OS सैंडबॉक्स सेटअप",
       setupCommandHint: "Unsloth चला रहे कंप्यूटर पर यह चलाएँ:",
       macosBuiltIn: "Seatbelt macOS में पहले से मौजूद है, इसलिए कुछ इंस्टॉल नहीं करना है।",

@@ -815,7 +815,7 @@ export const fr = {
       prepSucceeded: "Ce PC est préparé.",
       prepDeclined: "La demande administrateur a été refusée.",
       prepFailed: "La préparation a échoué.",
-      runtimeMissing: "Le runtime MXC n'est pas installé. Relancez le programme d'installation d'Unsloth pour l'ajouter.",
+      runtimeMissing: "Le runtime MXC n'est pas installé. Utilisez Installer le runtime, ou relancez le programme d'installation d'Unsloth.",
       setupLabel: "Configuration du bac à sable système",
       setupCommandHint: "Exécutez ceci sur l'ordinateur qui fait tourner Unsloth :",
       macosBuiltIn: "Seatbelt est intégré à macOS, il n'y a rien à installer.",

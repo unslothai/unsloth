@@ -813,7 +813,7 @@ export const ru = {
       prepSucceeded: "Этот ПК подготовлен.",
       prepDeclined: "Запрос администратора отклонён.",
       prepFailed: "Подготовка не удалась.",
-      runtimeMissing: "Среда MXC не установлена. Запустите установщик Unsloth повторно, чтобы добавить её.",
+      runtimeMissing: "Среда MXC не установлена. Нажмите «Установить среду» или запустите установщик Unsloth повторно.",
       setupLabel: "Настройка песочницы ОС",
       setupCommandHint: "Выполните это на компьютере, где запущен Unsloth:",
       macosBuiltIn: "Seatbelt встроен в macOS, устанавливать ничего не нужно.",

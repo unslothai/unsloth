@@ -811,7 +811,7 @@ export const ar = {
       prepSucceeded: "هذا الكمبيوتر مُجهّز.",
       prepDeclined: "تم رفض طلب المسؤول.",
       prepFailed: "فشل التجهيز.",
-      runtimeMissing: "بيئة تشغيل MXC غير مثبتة. أعد تشغيل مثبّت Unsloth لإضافتها.",
+      runtimeMissing: "بيئة تشغيل MXC غير مثبتة. استخدم تثبيت بيئة التشغيل، أو أعد تشغيل مثبّت Unsloth.",
       setupLabel: "إعداد وضع حماية نظام التشغيل",
       setupCommandHint: "شغّل هذا على الكمبيوتر الذي يشغّل Unsloth:",
       macosBuiltIn: "Seatbelt مدمج في macOS، فلا حاجة إلى تثبيت أي شيء.",

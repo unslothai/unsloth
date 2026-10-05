@@ -811,7 +811,7 @@ export const ko = {
       prepSucceeded: "이 PC가 준비되었습니다.",
       prepDeclined: "관리자 확인이 거부되었습니다.",
       prepFailed: "준비에 실패했습니다.",
-      runtimeMissing: "MXC 런타임이 설치되어 있지 않습니다. 추가하려면 Unsloth 설치 프로그램을 다시 실행하세요.",
+      runtimeMissing: "MXC 런타임이 설치되어 있지 않습니다. 런타임 설치를 사용하거나 Unsloth 설치 프로그램을 다시 실행하세요.",
       setupLabel: "OS 샌드박스 설정",
       setupCommandHint: "Unsloth가 실행 중인 컴퓨터에서 이 명령을 실행하세요:",
       macosBuiltIn: "Seatbelt는 macOS에 내장되어 있어 설치할 것이 없습니다.",

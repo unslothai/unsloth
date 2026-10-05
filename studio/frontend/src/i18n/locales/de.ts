@@ -815,7 +815,7 @@ export const de = {
       prepSucceeded: "Dieser PC ist vorbereitet.",
       prepDeclined: "Die Administratorabfrage wurde abgelehnt.",
       prepFailed: "Vorbereitung fehlgeschlagen.",
-      runtimeMissing: "Die MXC-Laufzeit ist nicht installiert. Führe das Unsloth-Installationsprogramm erneut aus, um sie hinzuzufügen.",
+      runtimeMissing: "Die MXC-Laufzeit ist nicht installiert. Verwende Laufzeit installieren oder führe das Unsloth-Installationsprogramm erneut aus.",
       setupLabel: "Einrichtung der OS-Sandbox",
       setupCommandHint: "Führe dies auf dem Computer aus, auf dem Unsloth läuft:",
       macosBuiltIn: "Seatbelt ist in macOS integriert, es muss nichts installiert werden.",

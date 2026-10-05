@@ -776,7 +776,7 @@ export const it = {
       prepSucceeded: "Questo PC è preparato.",
       prepDeclined: "La richiesta di amministratore è stata rifiutata.",
       prepFailed: "Preparazione non riuscita.",
-      runtimeMissing: "Il runtime MXC non è installato. Esegui di nuovo il programma di installazione di Unsloth per aggiungerlo.",
+      runtimeMissing: "Il runtime MXC non è installato. Usa Installa runtime oppure esegui di nuovo il programma di installazione di Unsloth.",
       setupLabel: "Configurazione della sandbox del sistema",
       setupCommandHint: "Esegui questo sul computer su cui gira Unsloth:",
       macosBuiltIn: "Seatbelt è integrato in macOS, quindi non c'è nulla da installare.",
