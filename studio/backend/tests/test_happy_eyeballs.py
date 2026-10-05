@@ -428,3 +428,14 @@ def test_the_config_probe_child_activates_it(monkeypatch):
         timeout = 60,
     )
     assert out.stdout.strip() == "happy_eyeballs_connection", out.stderr
+
+
+def test_a_fixed_source_port_walks_like_the_stdlib(monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        he, "_original_create_connection", lambda *a, **k: calls.append(a) or "sock"
+    )
+    monkeypatch.setattr(socket, "getaddrinfo", _resolver(443, aaaa = 2))
+
+    assert he.happy_eyeballs_connection(("hub.invalid", 443), 5, ("0.0.0.0", 40000)) == "sock"
+    assert calls, "a fixed source port was raced; the second bind would fail with EADDRINUSE"

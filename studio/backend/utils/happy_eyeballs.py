@@ -75,7 +75,8 @@ def happy_eyeballs_connection(
         resolved_timeout = timeout
 
     infos = socket.getaddrinfo(host, port, 0, socket.SOCK_STREAM)
-    if len(infos) <= 1:
+    # A fixed source port can only be bound by one socket at a time, so it cannot race.
+    if len(infos) <= 1 or (source_address and source_address[1]):
         if _HAS_EXCEPTION_GROUP:
             return _original_create_connection(  # novermin
                 address,
