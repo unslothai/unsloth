@@ -377,6 +377,7 @@ def load_prequant_text_encoder(
     config_subfolder: Optional[str] = None,
     config_overrides: Optional[dict] = None,
     local_files_only: bool = False,
+    trim_lm_head: bool = False,
 ) -> Optional[Any]:
     """Load the pre-cast text encoder described by ``source`` (on CPU, for pipeline
     assembly to place), with the layerwise upcast hooks already installed.
@@ -389,7 +390,9 @@ def load_prequant_text_encoder(
     the component name; "" means the repo root, for encoders assembled from a separate
     standalone repo like HiDream's Llama TE4). ``config_overrides`` sets config fields
     the pipeline's assembly normally passes to ``from_pretrained`` (forward-behaviour
-    flags only; the state dict is unaffected by them)."""
+    flags only; the state dict is unaffected by them).
+    ``trim_lm_head`` builds the encoder without its untied ``lm_head`` and never reads that tensor
+    (``diffusion_text_encoder_trim``)."""
     try:
         if source.kind == "path" and not _local_prequant_path_allowed(source.location):
             _warn(
@@ -411,6 +414,7 @@ def load_prequant_text_encoder(
             hf_token,
             cache_dir = cache_dir,
             local_files_only = local_files_only,
+            logger = logger,
         )
         if path is None:
             return None
@@ -424,14 +428,27 @@ def load_prequant_text_encoder(
         # A ``.safetensors`` artifact is read through the plain-tensor reader instead, which returns the same dict shape, so
         # ``_validate_checkpoint`` and everything after it are unchanged. Dispatch is on the extension the resolver
         # asked the Hub for, never on sniffing the bytes.
+        from .diffusion_text_encoder_trim import (
+            LM_HEAD_KEY,
+            class_trims_lm_head,
+            config_ties_lm_head,
+            trim_text_encoder,
+        )
+
+        te_class = None
+        skip = ()
         if is_safetensors_checkpoint(path):
-            ckpt = load_plain_prequant_safetensors(path)
+            if trim_lm_head:
+                te_class = _safetensors_te_class(path)
+            skip = (LM_HEAD_KEY,) if trim_lm_head and class_trims_lm_head(te_class) else ()
+            ckpt = load_plain_prequant_safetensors(path, skip_names = skip)
         else:
             ckpt = torch.load(path, weights_only = True, map_location = "cpu")
         if not _validate_checkpoint(ckpt, scheme, component, base, logger):
             return None
         state_dict = ckpt["state_dict"]
         te_class = (ckpt.get("metadata") or {}).get("te_class")
+        trim = trim_lm_head and class_trims_lm_head(te_class)
 
         import transformers
 
@@ -460,15 +477,26 @@ def load_prequant_text_encoder(
         remap_rope_parameters(getattr(config, "text_config", config))
         for key, value in (config_overrides or {}).items():
             setattr(config, key, value)
+        if trim and config_ties_lm_head(config):
+            # Tied: nothing to drop.
+            trim = False
+            if LM_HEAD_KEY in skip:
+                state_dict[LM_HEAD_KEY] = _read_safetensors_tensor(path, LM_HEAD_KEY)
+        if trim:
+            state_dict.pop(LM_HEAD_KEY, None)
         from accelerate import init_empty_weights
 
         with init_empty_weights():
             encoder = encoder_cls(config)
+        if trim:
+            trim_text_encoder(encoder)
         encoder.load_state_dict(state_dict, strict = True, assign = True)
         if _has_meta_tensors(encoder):
             # Non-persistent buffers (built in __init__, absent from the state dict) stay on meta. Rebuild on CPU so
             # they hold real values, then re-assign the cast weights.
             encoder = encoder_cls(config)
+            if trim:
+                trim_text_encoder(encoder)
             encoder.load_state_dict(state_dict, strict = True, assign = True)
         # assign=True swaps in SEPARATE tensors for tied weights (the saved dict carries a copy per key), untying e.g.
         # Qwen3's lm_head from embed_tokens and defeating _cast_fp8's tied-projection skip. Re-tie to the
@@ -524,6 +552,7 @@ def te_prequant_pipe_kwargs(
     status reporting truthful."""
     try:
         from .diffusion_precision import TE_QUANT_FP8
+        from .diffusion_text_encoder_trim import family_trims_lm_head
 
         sources = te_prequant_sources_for_base(
             fam,
@@ -544,6 +573,8 @@ def te_prequant_pipe_kwargs(
                 scheme = mode,
                 logger = logger,
                 local_files_only = local_files_only,
+                trim_lm_head = component == "text_encoder"
+                and family_trims_lm_head(getattr(fam, "name", None)),
             )
             if encoder is not None:
                 injected[component] = encoder
@@ -553,12 +584,36 @@ def te_prequant_pipe_kwargs(
         return {}
 
 
+def _safetensors_te_class(path: str) -> Optional[str]:
+    try:
+        import json
+
+        from safetensors import safe_open
+
+        from .prequant_safetensors import UNSLOTH_METADATA_KEY
+
+        with safe_open(path, framework = "pt", device = "cpu") as handle:
+            raw = handle.metadata() or {}
+        metadata = json.loads(raw.get(UNSLOTH_METADATA_KEY) or "{}")
+        value = metadata.get("te_class") if isinstance(metadata, dict) else None
+        return str(value) if value else None
+    except Exception:  # noqa: BLE001 - unreadable header: read every tensor, trim after
+        return None
+
+
+def _read_safetensors_tensor(path: str, name: str) -> Any:
+    from safetensors import safe_open
+    with safe_open(path, framework = "pt", device = "cpu") as handle:
+        return handle.get_tensor(name)
+
+
 def _resolve_checkpoint_path(
     source: TePrequantSource,
     hf_token: Optional[str],
     *,
     cache_dir: str,
     local_files_only: bool = False,
+    logger: Any = None,
 ) -> Optional[str]:
     """The local file path for ``source``, downloading from the Hub if needed; None if absent."""
     if source.kind == "path":
@@ -566,7 +621,6 @@ def _resolve_checkpoint_path(
         expanded = os.path.expanduser(source.location)
         return expanded if os.path.isfile(expanded) else None
     if source.kind == "repo":
-        from huggingface_hub import hf_hub_download
         from huggingface_hub.errors import EntryNotFoundError, LocalEntryNotFoundError
 
         # Which exception means "this NAME is absent" depends on the mode, and the two are not
@@ -583,15 +637,43 @@ def _resolve_checkpoint_path(
         )
         names = [n for n in te_candidate_filenames(source) if te_candidate_is_readable(n)]
         last: Optional[Exception] = None
-        for name in names:
+        from .diffusion_prequant import _first_mirrored
+
+        # The operator's mirror answers before the Hub is asked for any name (and so also offline).
+        mirrored = _first_mirrored(source.location, names, te_candidate_is_readable)
+        if mirrored is not None:
+            return mirrored
+        from .diffusion_prequant import prefer_cached_pickle_twins
+
+        names = prefer_cached_pickle_twins(
+            source.location,
+            names,
+            readable = te_candidate_is_readable,
+            cache_dir = cache_dir,
+            logger = logger,
+            roots = tuple(dict.fromkeys((cache_dir, None))),  # what _download_checkpoint_name reuses
+        )
+        from .diffusion_prequant import _download_checkpoint_name, explain_container_choice
+
+        for index, name in enumerate(names):
             try:
-                return hf_hub_download(
-                    repo_id = source.location,
-                    filename = name,
-                    token = hf_token,
-                    cache_dir = cache_dir,
+                path = _download_checkpoint_name(
+                    source,
+                    name,
+                    hf_token,
+                    cache_dir,
+                    propagate_missing = index < len(names) - 1,
                     local_files_only = local_files_only,
                 )
+                explain_container_choice(
+                    source.location,
+                    name,
+                    te_candidate_filenames(source),
+                    names,
+                    readable = te_candidate_is_readable,
+                    logger = logger,
+                )
+                return path
             except LocalEntryNotFoundError:
                 # Online this is the Hub being unreachable, not a missing name: re-raise as itself
                 # rather than blaming the next candidate for it.
@@ -678,7 +760,12 @@ def te_prequant_hub_files(
         # order, so the bytes counted here are the bytes that will actually be fetched. Matching
         # the primary name alone reported every .pt repo as having no pre-cast encoder at all the
         # moment safetensors became the preferred spelling.
-        for name in te_candidate_filenames(source):
+        from .diffusion_prequant import prefer_cached_pickle_twins
+
+        ordered = prefer_cached_pickle_twins(
+            source.location, te_candidate_filenames(source), readable = te_candidate_is_readable
+        )
+        for name in ordered:
             if name in sizes and te_candidate_is_readable(name):
                 found[component] = [(name, sizes[name])]
                 break

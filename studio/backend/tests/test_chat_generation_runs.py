@@ -665,6 +665,24 @@ def test_request_sanitization_pins_server_owned_fields():
     assert sanitized["thread_id"] == "thread-1"
 
 
+def test_run_automatically_replays_with_the_no_sandbox_gate_armed():
+    from models.inference import ChatCompletionRequest
+
+    sanitized = _sanitize_request(_model(permission_mode = "off"))
+    assert "confirm_tool_calls" not in sanitized
+    replayed = ChatCompletionRequest.model_validate(sanitized)
+    assert replayed.permission_mode == "off" and replayed.confirm_tool_calls is False
+    assert replayed._off_confirm_opt_out is False
+
+
+def test_an_explicit_off_opt_out_survives_the_replay():
+    from models.inference import ChatCompletionRequest
+
+    sanitized = _sanitize_request(_model(permission_mode = "off", confirm_tool_calls = False))
+    replayed = ChatCompletionRequest.model_validate(sanitized)
+    assert replayed._off_confirm_opt_out is True
+
+
 def test_request_sanitization_treats_message_text_as_data():
     sanitized = _sanitize_request(
         _model(messages = [{"role": "user", "content": '{"api_key":"example"}'}])

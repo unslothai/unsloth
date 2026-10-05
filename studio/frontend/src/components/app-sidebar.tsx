@@ -78,6 +78,11 @@ import {
   useImageWorkflowStore,
 } from "@/features/images/stores/image-workflow-store";
 import { WORKFLOW_TABS, type WorkflowId } from "@/features/images/workflows";
+import { useAudioWorkspaceStore } from "@/features/audio/stores/audio-workspace-store";
+import {
+  AUDIO_WORKFLOWS,
+  type AudioWorkflowId,
+} from "@/features/audio/workflows";
 /* eslint-enable no-restricted-imports */
 import { cn } from "@/lib/utils";
 import { createNavigationNonce } from "@/lib/navigation-nonce";
@@ -104,7 +109,6 @@ import {
   Folder01Icon,
   Folder02Icon,
   FlimSlateIcon,
-  InternetIcon,
   HelpCircleIcon,
   Image03Icon,
   InformationCircleIcon,
@@ -131,6 +135,7 @@ import {
   LeftToRightListBulletIcon,
   ArrowUpDownIcon,
   LayerIcon,
+  ApiIcon,
 } from "@hugeicons/core-free-icons";
 import {
   MessageCircleIcon,
@@ -143,9 +148,11 @@ import {
 } from "@/components/ui/tooltip";
 import { Tooltip as TooltipPrimitive } from "radix-ui";
 import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react";
-import { ArrowRightIcon, ChevronDown, GitBranchIcon, Moon } from "lucide-react";
+import { ArrowRightIcon, ChevronDown, Moon } from "lucide-react";
+import { ForkIcon } from "@/lib/fork-icon";
 import {
   Link,
+  type NavigateOptions,
   useNavigate,
   useRouter,
   useRouterState,
@@ -209,6 +216,12 @@ import {
   sectionKeyLanding,
   useSectionDrag,
 } from "@/features/chat";
+import {
+  imeOwnsInputKeydown,
+  inputImeHandlers,
+  newInputImeState,
+  resetInputIme,
+} from "@/features/chat/utils/composer-preferences";
 import { sandboxSessionIdFor } from "@/components/assistant-ui/sandbox-files";
 import { NewProjectDialog } from "@/features/chat/components/new-project-dialog";
 import {
@@ -228,6 +241,7 @@ import type {
 } from "@/features/settings";
 import { useEffectiveProfile, UserAvatar } from "@/features/profile";
 import { resolveNavRowState } from "@/components/nav-row-state";
+import { createNavigationCoalescer } from "@/components/sidebar-navigation";
 import { fetchDeviceType, usePlatformStore } from "@/config/env";
 import { videoNavHint } from "@/config/hardware-verdict";
 import {
@@ -258,6 +272,7 @@ import {
   useMemo,
   useRef,
   useState,
+  type ComponentProps,
   type ComponentType,
   type ReactNode,
 } from "react";
@@ -276,6 +291,8 @@ import {
 } from "@/features/chat";
 import { ShutdownDialog } from "@/components/shutdown-dialog";
 import { buildChatItemMarkdown } from "@/features/chat/prompt-storage/prompt-storage-dialog";
+import { useActiveChatMenuStore } from "@/features/chat/stores/active-chat-menu-store";
+import { PinnedPageRows, usePinnedPageCount } from "@/features/browser";
 import { translate, useT, type TranslationKey } from "@/i18n";
 
 const RECENT_SLOT_NUMBERS = [1, 2, 3, 4, 5, 6] as const;
@@ -698,14 +715,13 @@ const INVENTORY_SENSITIVE_REASONS = new Set([
   "detection_failed",
 ]);
 
-/** One workflow in the list under the Images row. */
 function WorkflowChoice({
   tab,
   active,
   enabled,
   onSelect,
 }: {
-  tab: (typeof WORKFLOW_TABS)[number];
+  tab: { icon: IconSvgElement; label: string };
   active: boolean;
   enabled: boolean;
   onSelect: () => void;
@@ -735,10 +751,21 @@ function WorkflowChoice({
   );
 }
 
-/** Expands the workflow list on rows that do not list it outright, i.e. off the Images page. */
-function ImagesNavDisclosure() {
-  const expanded = useImageWorkflowStore((s) => s.navExpanded);
-  const setExpanded = useImageWorkflowStore((s) => s.setNavExpanded);
+// Spelled out per media so Tailwind sees each group name.
+const IMAGES_DISCLOSURE_REVEAL =
+  "group-hover/images-item:opacity-100 group-hover/images-item:pointer-events-auto";
+const AUDIO_DISCLOSURE_REVEAL =
+  "group-hover/audio-item:opacity-100 group-hover/audio-item:pointer-events-auto";
+
+function MediaNavDisclosure({
+  expanded,
+  setExpanded,
+  revealClassName,
+}: {
+  expanded: boolean;
+  setExpanded: (expanded: boolean) => void;
+  revealClassName: string;
+}) {
   return (
     // Row action, so it gets the shared hover circle. Shown on row hover, kept while open.
     <button
@@ -750,7 +777,9 @@ function ImagesNavDisclosure() {
         setExpanded(!expanded);
       }}
       className={cn(
-        "sidebar-row-action group-hover/images-item:opacity-100 group-hover/images-item:pointer-events-auto focus-visible:opacity-100 focus-visible:pointer-events-auto",
+        "sidebar-row-action",
+        revealClassName,
+        "focus-visible:opacity-100 focus-visible:pointer-events-auto",
         expanded && "is-disclosure-open",
       )}
     >
@@ -763,6 +792,47 @@ function ImagesNavDisclosure() {
         />
       </span>
     </button>
+  );
+}
+
+function MediaWorkflowList<Id extends string>({
+  tabs,
+  current,
+  enabled,
+  listed,
+  onPick,
+}: {
+  tabs: ReadonlyArray<{ id: Id; icon: IconSvgElement; label: string }>;
+  current: Id | null;
+  enabled: (id: Id) => boolean;
+  listed: boolean;
+  onPick: (id: Id) => void;
+}) {
+  if (!listed) return null;
+  return (
+    <div className="mt-0.5 flex flex-col gap-px pl-5">
+      {tabs.map((tab) => (
+        <WorkflowChoice
+          key={tab.id}
+          tab={tab}
+          active={current === tab.id}
+          enabled={enabled(tab.id)}
+          onSelect={() => onPick(tab.id)}
+        />
+      ))}
+    </div>
+  );
+}
+
+function ImagesNavDisclosure() {
+  const expanded = useImageWorkflowStore((s) => s.navExpanded);
+  const setExpanded = useImageWorkflowStore((s) => s.setNavExpanded);
+  return (
+    <MediaNavDisclosure
+      expanded={expanded}
+      setExpanded={setExpanded}
+      revealClassName={IMAGES_DISCLOSURE_REVEAL}
+    />
   );
 }
 
@@ -783,22 +853,54 @@ function ImagesWorkflowList({
   const supported = useImageWorkflowStore((s) => s.supported);
   const pageMode = useImageWorkflowStore((s) => s.pageMode);
   const expanded = useImageWorkflowStore((s) => s.navExpanded);
-  if (collapsed) return null;
-  if (active ? pageMode === "train" : !expanded) return null;
   // Nothing here is current unless the page is actually showing a workflow.
   const current = active && pageMode === "create" ? workflow : null;
   return (
-    <div className="mt-0.5 flex flex-col gap-px pl-5">
-      {WORKFLOW_TABS.map((tab) => (
-        <WorkflowChoice
-          key={tab.id}
-          tab={tab}
-          active={current === tab.id}
-          enabled={isWorkflowEnabled(tab.id, supported)}
-          onSelect={() => onPick(tab.id)}
-        />
-      ))}
-    </div>
+    <MediaWorkflowList
+      tabs={WORKFLOW_TABS}
+      current={current}
+      enabled={(id) => isWorkflowEnabled(id, supported)}
+      listed={!collapsed && (active ? pageMode !== "train" : expanded)}
+      onPick={onPick}
+    />
+  );
+}
+
+function AudioNavDisclosure() {
+  const expanded = useAudioWorkspaceStore((s) => s.navExpanded);
+  const setExpanded = useAudioWorkspaceStore((s) => s.setNavExpanded);
+  return (
+    <MediaNavDisclosure
+      expanded={expanded}
+      setExpanded={setExpanded}
+      revealClassName={AUDIO_DISCLOSURE_REVEAL}
+    />
+  );
+}
+
+const audioWorkflowAlwaysEnabled = () => true;
+
+function AudioWorkflowList({
+  active,
+  collapsed,
+  onPick,
+}: {
+  active: boolean;
+  collapsed: boolean;
+  onPick: (id: AudioWorkflowId) => void;
+}) {
+  const workflow = useAudioWorkspaceStore((s) => s.workflow);
+  const requested = useAudioWorkspaceStore((s) => s.requestedWorkflow);
+  const expanded = useAudioWorkspaceStore((s) => s.navExpanded);
+  const current = active ? (requested ?? workflow) : null;
+  return (
+    <MediaWorkflowList
+      tabs={AUDIO_WORKFLOWS}
+      current={current}
+      enabled={audioWorkflowAlwaysEnabled}
+      listed={!collapsed && (active || expanded)}
+      onPick={onPick}
+    />
   );
 }
 
@@ -850,6 +952,64 @@ function MoreMenuItem({
   );
 }
 
+function AudioMoreSubmenu({
+  icon,
+  label,
+  active,
+  disabled,
+  tooltip,
+  badge,
+  spinner,
+  onIntent,
+  onPick,
+  contentProps,
+}: {
+  icon: typeof ZapIcon;
+  label: string;
+  active: boolean;
+  disabled?: boolean;
+  tooltip?: string;
+  badge?: string;
+  spinner?: boolean;
+  onIntent?: () => void;
+  onPick: (id: AudioWorkflowId) => void;
+  contentProps: ComponentProps<typeof DropdownMenuSubContent>;
+}) {
+  const workflow = useAudioWorkspaceStore((s) => s.workflow);
+  const requested = useAudioWorkspaceStore((s) => s.requestedWorkflow);
+  const current = active ? (requested ?? workflow) : null;
+  return (
+    <DropdownMenuSub>
+      <DropdownMenuSubTrigger
+        disabled={disabled}
+        title={tooltip}
+        onPointerEnter={disabled ? undefined : onIntent}
+        onFocus={disabled ? undefined : onIntent}
+        className={cn("gap-2.5", active && "bg-accent/60")}
+      >
+        <HugeiconsIcon icon={icon} strokeWidth={1.75} />
+        <span className="min-w-0 flex-1 truncate">{label}</span>
+        {badge && <NavBadge label={badge} />}
+        {spinner && (
+          <Spinner className="size-3.5 shrink-0 text-muted-foreground" />
+        )}
+      </DropdownMenuSubTrigger>
+      <DropdownMenuSubContent {...contentProps} className="w-44 p-1">
+        {AUDIO_WORKFLOWS.map((tab) => (
+          <DropdownMenuItem
+            key={tab.id}
+            onSelect={() => onPick(tab.id)}
+            className={cn(current === tab.id && "bg-accent/60")}
+          >
+            <HugeiconsIcon icon={tab.icon} strokeWidth={1.75} />
+            <span className="min-w-0 flex-1 truncate">{tab.label}</span>
+          </DropdownMenuItem>
+        ))}
+      </DropdownMenuSubContent>
+    </DropdownMenuSub>
+  );
+}
+
 export function AppSidebar() {
   const t = useT();
   const { isDark, toggleTheme, anchorRef } = useAnimatedThemeToggle();
@@ -893,6 +1053,21 @@ export function AppSidebar() {
   } = useSidebar();
   const navigate = useNavigate();
   const router = useRouter();
+  const [rowNavigation] = useState(() =>
+    createNavigationCoalescer<NavigateOptions>({
+      navigate: (options) => navigate(options),
+      currentHref: () => router.latestLocation.href,
+      hrefOf: (options) => router.buildLocation(options).href,
+      currentEntry: () => router.latestLocation.state.__TSR_key,
+      asReplace: (options) => ({ ...options, replace: true }),
+    }),
+  );
+  const navigateFromRow = rowNavigation.go;
+  useEffect(
+    () =>
+      router.subscribe("onResolved", () => rowNavigation.resolved()),
+    [router, rowNavigation],
+  );
   const imagesPageMode = useImageWorkflowStore((s) => s.pageMode);
 
   // `webUpdate` is non-null only when the installed (PyPI) version is behind the latest release.
@@ -1278,6 +1453,7 @@ export function AppSidebar() {
     [allChatItems, pinnedIdSet, sectionByChatId, organizeBy],
   );
   const [pinnedOpen, setPinnedOpen] = useState(true);
+  const pinnedPageCount = usePinnedPageCount();
   const [projectsOpen, setProjectsOpen] = useState(true);
   const [showAllProjects, setShowAllProjects] = useState(false);
   // Pinning a project moves its folder into the Pinned section, beside the pinned chats.
@@ -2530,7 +2706,7 @@ export function AppSidebar() {
       label: t("shell.navigation.projects"),
       active: pathname === "/projects" || pathname.startsWith("/projects/"),
       onClick: () => {
-        navigate({ to: "/projects" });
+        navigateFromRow({ to: "/projects" });
         closeMobileIfOpen();
       },
       onIntent: () => {
@@ -2565,7 +2741,7 @@ export function AppSidebar() {
       label: t("shell.navigation.library"),
       active: pathname === "/library",
       onClick: () => {
-        navigate({ to: "/library" });
+        navigateFromRow({ to: "/library" });
         closeMobileIfOpen();
       },
       onIntent: () => {
@@ -2577,7 +2753,7 @@ export function AppSidebar() {
       label: t("shell.navigation.hub"),
       active: pathname === "/hub" || pathname.startsWith("/hub/"),
       onClick: () => {
-        navigate({ to: "/hub" });
+        navigateFromRow({ to: "/hub" });
         closeMobileIfOpen();
       },
       onIntent: () => {
@@ -2590,7 +2766,7 @@ export function AppSidebar() {
       // No "New" pill: the row's trailing slot holds the workflow disclosure instead.
       active: pathname === "/images" || pathname.startsWith("/images/"),
       onClick: () => {
-        navigate({ to: "/images" });
+        navigateFromRow({ to: "/images" });
         closeMobileIfOpen();
       },
       onIntent: () => {
@@ -2608,7 +2784,7 @@ export function AppSidebar() {
       pendingTooltip: t("shell.navigation.trainChecking"),
       onClick: () => {
         if (chatOnlyMeasured) return;
-        navigate({ to: "/studio" });
+        navigateFromRow({ to: "/studio" });
         closeMobileIfOpen();
       },
       onIntent: () => {
@@ -2625,7 +2801,7 @@ export function AppSidebar() {
       pending: capabilitiesUnknown,
       pendingTooltip: t("shell.navigation.videoChecking"),
       onClick: () => {
-        navigate({ to: "/video" });
+        navigateFromRow({ to: "/video" });
         closeMobileIfOpen();
       },
       onIntent: () => {
@@ -2637,7 +2813,7 @@ export function AppSidebar() {
       label: t("shell.navigation.audio"),
       active: pathname === "/audio" || pathname.startsWith("/audio/"),
       onClick: () => {
-        navigate({ to: "/audio" });
+        navigateFromRow({ to: "/audio" });
         closeMobileIfOpen();
       },
       onIntent: () => {
@@ -2649,7 +2825,7 @@ export function AppSidebar() {
       label: t("shell.navigation.recipes"),
       active: isRecipesRoute,
       onClick: () => {
-        navigate({ to: "/data-recipes" });
+        navigateFromRow({ to: "/data-recipes" });
         closeMobileIfOpen();
       },
       onIntent: () => {
@@ -2667,7 +2843,7 @@ export function AppSidebar() {
       active: pathname === "/export" || pathname.startsWith("/export/"),
       spinner: exportInProgress,
       onClick: () => {
-        navigate({ to: "/export" });
+        navigateFromRow({ to: "/export" });
         closeMobileIfOpen();
       },
       onIntent: () => {
@@ -2681,11 +2857,11 @@ export function AppSidebar() {
     },
     // The monitor page, not the API keys dialog the profile menu opens.
     api: {
-      icon: InternetIcon,
+      icon: ApiIcon,
       label: t("shell.navigation.api"),
       active: pathname === "/api-monitor" || pathname.startsWith("/api-monitor/"),
       onClick: () => {
-        navigate({ to: "/api-monitor" });
+        navigateFromRow({ to: "/api-monitor" });
         closeMobileIfOpen();
       },
       onIntent: () => {
@@ -2710,6 +2886,13 @@ export function AppSidebar() {
   const imagesWorkflowsListed =
     sidebarRowsLabelled &&
     !(navRows.images.active && imagesPageMode === "train");
+  const audioWorkflowsListed = sidebarRowsLabelled;
+  // Sidebar and More-flyout picks only ask; the Audio page switches once it is free to.
+  const pickAudioWorkflow = (workflowId: AudioWorkflowId) => {
+    useAudioWorkspaceStore.getState().requestWorkflow(workflowId);
+    navigate({ to: "/audio" });
+    closeMobileIfOpen();
+  };
 
   const showSidebarBrand = true;
 
@@ -2868,6 +3051,7 @@ export function AppSidebar() {
   const [renameDraft, setRenameDraft] = useState("");
   // Skips the inline rename input's blur-commit when Enter/Escape already handled it.
   const skipRenameBlurRef = useRef(false);
+  const renameImeRef = useRef(newInputImeState());
   // Optimistic title while the debounced sidebar refresh catches up, so the old name doesn't flash.
   const [pendingRename, setPendingRename] = useState<{
     id: string;
@@ -2953,9 +3137,8 @@ export function AppSidebar() {
   function handleInlineRenameKeyDown(
     event: React.KeyboardEvent<HTMLInputElement>,
   ) {
-    // Enter confirms an IME candidate; Escape dismisses one. Neither should
-    // finish the rename. Check before preventDefault so the IME keeps its key.
-    if (event.nativeEvent.isComposing || event.keyCode === 229) return;
+    // IME Enter/Escape must not finish the rename; check before preventDefault.
+    if (imeOwnsInputKeydown(event, renameImeRef.current)) return;
     if (event.key === "Enter") {
       event.preventDefault();
       skipRenameBlurRef.current = true;
@@ -3263,7 +3446,7 @@ export function AppSidebar() {
     clearSelection();
     clearChatNotifications(item);
     noteViewed(item.id);
-    navigate({
+    navigateFromRow({
       to: "/chat",
       search:
         item.type === "single"
@@ -3409,6 +3592,69 @@ export function AppSidebar() {
     if (sidebarCovered()) return;
     withActiveChat((item) => void copyChatSessionId(item));
   });
+
+  // The chat header's menu acts on the open chat through the same handlers as its row's menu and
+  // the chords above. Every render, so the handlers it calls are never stale.
+  useEffect(() => {
+    const item = activeChatItem;
+    if (!item) {
+      useActiveChatMenuStore.setState({ menu: null });
+      return;
+    }
+    const threadIds = getSidebarItemThreadIds(item);
+    const pinned = pinnedIdSet.has(item.id);
+    const unread = threadIds.some((threadId) => unreadThreadIds.has(threadId));
+    const generating = threadIds.some((threadId) => Boolean(runningByThreadId[threadId]));
+    const project = item.projectId ? projects.find((entry) => entry.id === item.projectId) : undefined;
+    // A pinned row is drawn under Pinned, so it has no section to leave, as in the row's menu.
+    const sectionId = pinned ? null : (sectionByChatId[item.id] ?? null);
+    const section = sectionId ? customSections.find((entry) => entry.id === sectionId) : undefined;
+    useActiveChatMenuStore.setState({
+      menu: {
+        item,
+        pinned,
+        unread,
+        canFork: canForkChatRow(item) && !generating && !forkInFlight,
+        projects: recentProjects
+          .filter((entry) => entry.id !== item.projectId)
+          .slice(0, MOVE_TO_MAX)
+          .map(({ id, name }) => ({ id, name })),
+        sections: recentSections
+          .filter((entry) => entry.id !== sectionId)
+          .slice(0, MOVE_TO_MAX)
+          .map(({ id, name }) => ({ id, name })),
+        project: item.projectId
+          ? { id: item.projectId, name: project?.name ?? "" }
+          : null,
+        section: section ? { id: section.id, name: section.name } : null,
+        rename: () => openRenameChat(item, false),
+        togglePin: () => togglePinnedChat(item.id),
+        toggleUnread: () =>
+          unread
+            ? clearThreadsUnread(threadIds)
+            : markThreadsUnread(threadIds, rowIdByThreadId),
+        fork: () => void forkChatFromRow(item),
+        moveToProject: (projectId) =>
+          projectId === null
+            ? void moveChatToProject(item, null)
+            : void moveChatToProjectFromMenu(item, projectId),
+        newProject: () => {
+          setProjectCreateMoveTarget(item);
+          setCreatingProject(true);
+        },
+        moveToSection: (id) => fileSectionTarget({ chatIds: [item.id] }, id),
+        newSection: () => setSectionDialog({ mode: "create", chatIds: [item.id] }),
+        copyMarkdown: () => void copyChatItemAsMarkdown(item),
+        copySessionId: () => void copyChatSessionId(item),
+        archive: () => void handleArchiveThread(item),
+        remove: () =>
+          confirmDeleteChats
+            ? openDeleteDialog({ kind: "chat", item })
+            : void deleteChatWithCleanup(item, { deleteFiles: alwaysDeleteChatFiles }),
+      },
+    });
+  });
+  useEffect(() => () => useActiveChatMenuStore.setState({ menu: null }), []);
 
   // These four walk the list, so holding them steps through it, the way an
   // arrow key does. The rest are one-shot and ignore auto-repeat.
@@ -3737,7 +3983,8 @@ export function AppSidebar() {
   // them into decides where it goes.
   // Pinned: folders and chats in one list, in the order they were dropped into.
   function renderPinnedSection(): ReactNode {
-    if (isStudioRoute || showTrainingRecents || pinnedRows.length === 0) return null;
+    if (isStudioRoute || showTrainingRecents || (pinnedRows.length === 0 && pinnedPageCount === 0)) return null;
+    const firstPinnedRow = pinnedRows[0];
     return (
       <Collapsible open={pinnedOpen} onOpenChange={setPinnedOpen} asChild>
         {/* While open, the next section rides up over the tail strip below, so the strip adds
@@ -3754,11 +4001,9 @@ export function AppSidebar() {
               {
                 section: "pinned",
                 header: true,
-                row: {
-                  id: pinnedRows[0].id,
-                  kind: pinnedRows[0].kind,
-                  scope: PINNED_ORDER_SCOPE,
-                },
+                row: firstPinnedRow
+                  ? { id: firstPinnedRow.id, kind: firstPinnedRow.kind, scope: PINNED_ORDER_SCOPE }
+                  : undefined,
               },
               { closed: !pinnedOpen },
             )}
@@ -3797,6 +4042,8 @@ export function AppSidebar() {
                         sort: { value: pinnedSort, set: setPinnedSort },
                       }),
                 )}
+                {/* Pages pinned from a browser tab's menu, after the chats and folders. */}
+                <PinnedPageRows />
                 {/* The end of the list, as somewhere to aim. A folder last in Pinned runs its
                     block to the bottom of the section, so every pixel down there is inside it
                     and a chat meant to go after the folder was filed into it instead.
@@ -4344,7 +4591,7 @@ export function AppSidebar() {
               title="Copy this chat into a new one, from its last message"
               onSelect={() => void forkChatFromRow(item)}
             >
-              <GitBranchIcon strokeWidth={1.75} className="size-icon" />
+              <HugeiconsIcon icon={ForkIcon} strokeWidth={1.75} className="size-icon" />
               <span>Fork</span>
             </P.Item>
             {/* Projects and sections in one place: both are where the chat is kept. */}
@@ -4517,8 +4764,15 @@ export function AppSidebar() {
             value={renameDraft}
             onChange={(event) => setRenameDraft(event.target.value)}
             onKeyDown={handleInlineRenameKeyDown}
-            onBlur={handleInlineRenameBlur}
-            onFocus={(event) => event.currentTarget.select()}
+            {...inputImeHandlers(renameImeRef.current)}
+            onBlur={() => {
+              resetInputIme(renameImeRef.current);
+              handleInlineRenameBlur();
+            }}
+            onFocus={(event) => {
+              resetInputIme(renameImeRef.current);
+              event.currentTarget.select();
+            }}
             maxLength={120}
             aria-label={translate("shell.dialog.renameChat.placeholder")}
             className={cn(
@@ -5048,7 +5302,7 @@ export function AppSidebar() {
                         className="inline-flex size-[calc(30px*var(--ui-space-scale,1))] cursor-pointer items-center justify-center rounded-[10px] text-nav-icon-idle dark:text-nav-fg-muted transition-colors hover:bg-nav-surface-hover hover:text-black dark:hover:text-white focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                         aria-label={t("shell.aria.closeSidebar")}
                       >
-                        <HugeiconsIcon icon={LayoutAlignLeftIcon} strokeWidth={1.75} className="size-icon" />
+                        <HugeiconsIcon icon={PanelLeftIcon} strokeWidth={1.75} className="size-icon" />
                       </button>
                     </TooltipPrimitive.Trigger>
                     <TooltipContent
@@ -5063,7 +5317,8 @@ export function AppSidebar() {
               </div>
             </div>
             {!isMobile && (!usesDesktopTitlebar || usesNativeMacTitlebar) && (
-              <div className="relative z-10 hidden group-data-[collapsible=icon]:flex h-[calc(33px*var(--ui-space-scale,1))] items-center justify-center w-full">
+              // Level with the expanded header's 30px close button, so the toggle doesn't jump.
+              <div className="relative z-10 hidden group-data-[collapsible=icon]:flex h-[calc(33px*var(--ui-space-scale,1))] items-start justify-center w-full pt-[calc(1px*var(--ui-space-scale,1))]">
                 <Tooltip>
                   <TooltipPrimitive.Trigger asChild>
                     <button
@@ -5197,9 +5452,11 @@ export function AppSidebar() {
                     icon={row.icon}
                     label={row.label}
                     badge={row.badge}
-                    // While the workflows are listed, the current one carries the highlight, not the Images row.
                     active={
-                      id === "images" && imagesWorkflowsListed ? false : row.active
+                      (id === "images" && imagesWorkflowsListed) ||
+                      (id === "audio" && audioWorkflowsListed)
+                        ? false
+                        : row.active
                     }
                     disabled={rowState.disabled}
                     tooltip={rowState.tooltip}
@@ -5211,6 +5468,7 @@ export function AppSidebar() {
                     className={cn(
                       row.className,
                       id === "images" && "group/images-item",
+                      id === "audio" && "group/audio-item",
                     )}
                     // Off the Images page the list is folded, so the row offers a way to open it.
                     overlay={
@@ -5218,6 +5476,10 @@ export function AppSidebar() {
                       !row.active &&
                       sidebarRowsLabelled ? (
                         <ImagesNavDisclosure />
+                      ) : id === "audio" &&
+                        !row.active &&
+                        sidebarRowsLabelled ? (
+                        <AudioNavDisclosure />
                       ) : undefined
                     }
                   >
@@ -5233,6 +5495,12 @@ export function AppSidebar() {
                           navigate({ to: "/images" });
                           closeMobileIfOpen();
                         }}
+                      />
+                    ) : id === "audio" ? (
+                      <AudioWorkflowList
+                        active={row.active}
+                        collapsed={!sidebarRowsLabelled}
+                        onPick={pickAudioWorkflow}
                       />
                     ) : (
                       row.children
@@ -5324,6 +5592,27 @@ export function AppSidebar() {
                         const row = navRows[id];
                         // Same pending handling as the inline rows above.
                         const rowState = resolveNavRowState(row);
+                        if (id === "audio") {
+                          return (
+                            <AudioMoreSubmenu
+                              key={id}
+                              icon={row.icon}
+                              label={row.label}
+                              badge={row.badge}
+                              active={row.active}
+                              disabled={rowState.disabled}
+                              tooltip={rowState.tooltip}
+                              spinner={rowState.spinner}
+                              onIntent={row.onIntent}
+                              onPick={pickAudioWorkflow}
+                              contentProps={{
+                                ...sidebarSubmenuOffsets,
+                                // Portaled outside the flyout, so the flyout's hover grace has to cover it too.
+                                ...moreHover.content,
+                              }}
+                            />
+                          );
+                        }
                         return (
                           <MoreMenuItem
                             key={id}
@@ -5710,7 +5999,7 @@ export function AppSidebar() {
                         key={item.id}
                         onSelect={() => useSettingsDialogStore.getState().openDialog("api-keys")}
                       >
-                        <HugeiconsIcon icon={InternetIcon} strokeWidth={1.75} className="size-[calc(18px*var(--ui-space-scale,1))]" />
+                        <HugeiconsIcon icon={ApiIcon} strokeWidth={1.75} className="size-[calc(18px*var(--ui-space-scale,1))]" />
                         <span>{t("shell.navigation.api")}</span>
                       </DropdownMenuItem>
                     );
@@ -5964,7 +6253,7 @@ export function AppSidebar() {
     >
       <DialogContent
         className="corner-squircle dialog-soft-surface sm:max-w-md"
-        // Radix closes on Escape before the input sees it; keep IME candidate dismissal from closing.
+        // Radix handles Escape before the input; don't close on IME dismissal.
         onEscapeKeyDown={(event) => {
           if (event.isComposing || event.keyCode === 229) event.preventDefault();
         }}
@@ -5979,8 +6268,9 @@ export function AppSidebar() {
         <Input
           value={renameDraft}
           onChange={(event) => setRenameDraft(event.target.value)}
+          {...inputImeHandlers(renameImeRef.current)}
           onKeyDown={(event) => {
-            if (event.nativeEvent.isComposing || event.keyCode === 229) return;
+            if (imeOwnsInputKeydown(event, renameImeRef.current)) return;
             if (event.key === "Enter") {
               event.preventDefault();
               void commitRename();

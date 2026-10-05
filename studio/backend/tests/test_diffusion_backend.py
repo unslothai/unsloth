@@ -1214,7 +1214,9 @@ def test_dense_speed_auto_defers_compile_to_third_generation(fake_runtime, tmp_p
     monkeypatch.setattr(
         dmod,
         "select_attention_backend",
-        lambda target, requested, speed_active = False: ("_native_cudnn" if speed_active else None),
+        lambda target, requested, speed_active = False, family = None, speed_unset = False: (
+            "_native_cudnn" if speed_active else None
+        ),
     )
     monkeypatch.setattr(dmod.compile_cache, "begin", lambda **k: None)
 
@@ -1404,6 +1406,8 @@ def test_deferred_speed_preserves_explicit_attention(fake_runtime, tmp_path, mon
         target,
         requested,
         speed_active = False,
+        family = None,
+        speed_unset = False,
     ):
         if requested in (None, "", "auto"):
             return "_native_cudnn" if speed_active else None
@@ -3046,6 +3050,9 @@ def test_unload_cancels_pipeline_construction(
         if phase.startswith("dense"):
             mp.setattr(diff_mod, "dense_transformer_supported", lambda target: True)
             mp.setattr(diff_mod, "select_transformer_quant_scheme", lambda *a, **k: "int8")
+            # Z-Image declares its rotated INT8 artifact, so an auto GGUF pick (dense_fallback) would decline the
+            # uncached hosted pre-quant and never reach the dense attempt this phase parks in. Treat it as cached.
+            mp.setattr(diff_mod, "_uncached_prequant_repo", lambda *a, **k: None)
             mp.setattr(
                 backend,
                 "_dense_transformer_resident_bytes",
@@ -14422,10 +14429,7 @@ def test_diffusion_status_response_keeps_the_gguf_a_swap_replaced():
     assert dumped["artifact"] == "prequant:o/r/f.safetensors"
 
 
-# FLUX.1 T5 length (ComfyUI parity): real prompt length floored at 256, capped at 512.
 class _T5WordTokenizer:
-    """One id per whitespace word plus EOS, like T5TokenizerFast on plain words."""
-
     def __call__(
         self,
         text,
@@ -14461,7 +14465,7 @@ def test_generate_passes_flux1_t5_length_like_comfy(fake_runtime, tmp_path, monk
     backend.generate(prompt = "a sloth on a branch", steps = 4, guidance = 0.0)
     assert pipe.last_kwargs["max_sequence_length"] == 256
     backend.generate(prompt = " ".join(["w"] * 320), steps = 4, guidance = 0.0)
-    assert pipe.last_kwargs["max_sequence_length"] == 512  # past 256 tokens: the 512 bucket
+    assert pipe.last_kwargs["max_sequence_length"] == 512
 
 
 def test_generate_leaves_t5_length_alone_off_flux1(fake_runtime, tmp_path):
@@ -14473,8 +14477,7 @@ def test_generate_leaves_t5_length_alone_off_flux1(fake_runtime, tmp_path):
 
 
 def test_qwen_true_cfg_gets_an_empty_negative_like_comfy(fake_runtime, tmp_path, monkeypatch):
-    """diffusers runs Qwen-Image true CFG only when a negative is present; ComfyUI always encodes the
-    empty negative and applies CFG. A blank negative must not silently turn CFG off."""
+    """A blank negative must not silently turn Qwen-Image true CFG off."""
     diffusers = sys.modules["diffusers"]
     monkeypatch.setattr(diffusers, "QwenImagePipeline", _FakePipeline, raising = False)
     monkeypatch.setattr(diffusers, "QwenImageTransformer2DModel", _FakeTransformer, raising = False)
@@ -14512,8 +14515,7 @@ class _IdeogramScheduleFakePipe(_FakePipe):
 
 
 def test_generate_ideogram_defaults_follow_comfy_template(fake_runtime, tmp_path):
-    """ComfyUI's Ideogram 4 template: 20 steps, mu 0.0 / std 1.75, guidance 7 overridden to 3 where sigma <= 0.3
-    (the last 3 of 20 steps at 1024^2). Another guidance stays constant; an explicit 48 / 7 keeps the card taper."""
+    """Ideogram 4 ComfyUI preset; other guidance stays constant, explicit 48 / 7 keeps the card taper."""
     backend = DiffusionBackend()
     _load_ideogram(backend, tmp_path)
     pipe = _IdeogramScheduleFakePipe()
@@ -14532,6 +14534,21 @@ def test_generate_ideogram_defaults_follow_comfy_template(fake_runtime, tmp_path
     backend.generate(prompt = "a sloth", steps = 48, guidance = 7.0)
     call = pipe.last_kwargs
     assert call["guidance_schedule"] == "card" and (call["mu"], call["std"]) == (0.0, 1.5)
+
+
+def test_generate_ideogram_step_count_picks_its_comfy_preset(fake_runtime, tmp_path):
+    # 48 steps at another guidance keeps the Quality preset (std 1.5, the pipeline default), 12 is Turbo.
+    backend = DiffusionBackend()
+    _load_ideogram(backend, tmp_path)
+    pipe = _IdeogramScheduleFakePipe()
+    object.__setattr__(backend._state, "pipe", pipe)
+    backend.generate(prompt = "a sloth", steps = 48, guidance = 5.0)
+    call = pipe.last_kwargs
+    assert call["guidance_scale"] == 5.0 and (call["mu"], call["std"]) == (0.0, 1.5)
+    backend.generate(prompt = "a sloth", width = 1024, height = 1024, steps = 12, guidance = 7.0)
+    call = pipe.last_kwargs
+    assert (call["mu"], call["std"]) == (0.5, 1.75)
+    assert len(call["guidance_schedule"]) == 12 and call["guidance_schedule"][-1] == 3.0
 
 
 class _ShiftSchedulerConfig(dict):

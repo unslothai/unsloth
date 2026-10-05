@@ -7,7 +7,7 @@ use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use tauri::{AppHandle, Manager, State, WebviewWindow};
+use tauri::{AppHandle, Manager, State};
 use tauri_plugin_dialog::DialogExt;
 
 const MAX_TRAINING_CONFIG_BYTES: u64 = 1024 * 1024;
@@ -352,11 +352,11 @@ fn read_selected_training_config(
 
 #[tauri::command]
 pub async fn save_native_file(
-    window: WebviewWindow,
+    webview: tauri::Webview,
     app: AppHandle,
     request: tauri::ipc::Request<'_>,
 ) -> Result<Option<String>, String> {
-    crate::native_intents::ensure_main_window(&window)?;
+    crate::native_intents::ensure_main_window(&webview)?;
     let encoded_name = request
         .headers()
         .get(NATIVE_FILE_NAME_HEADER)
@@ -392,12 +392,12 @@ pub async fn save_native_file(
 /// the chooser first and writes the response chunk by chunk, leaving nothing resident.
 #[tauri::command]
 pub async fn save_native_file_from_url(
-    window: WebviewWindow,
+    webview: tauri::Webview,
     app: AppHandle,
     url: String,
     file_name: String,
 ) -> Result<Option<String>, String> {
-    crate::native_intents::ensure_main_window(&window)?;
+    crate::native_intents::ensure_main_window(&webview)?;
     require_loopback_url(&url)?;
     let file_name = default_file_name(&file_name);
     let (filter_name, extensions) = save_filter(&file_name);
@@ -721,14 +721,14 @@ fn display_path(path: &Path) -> String {
 /// from a generic failure.
 #[tauri::command]
 pub async fn download_logs_to_downloads(
-    window: WebviewWindow,
+    webview: tauri::Webview,
     state: State<'_, crate::process::BackendState>,
     diagnostics: State<'_, crate::diagnostics::DiagnosticsState>,
     url: String,
     filename: String,
     ui_token: Option<String>,
 ) -> Result<String, String> {
-    crate::native_intents::ensure_main_window(&window)?;
+    crate::native_intents::ensure_main_window(&webview)?;
     // Both guards run before anything is minted, so a URL this command will not fetch
     // never causes a token to exist.
     require_loopback_url(&url)?;
@@ -805,11 +805,11 @@ pub async fn read_native_chat_import_chunk(
 
 #[tauri::command]
 pub async fn pick_native_chat_import(
-    window: WebviewWindow,
+    webview: tauri::Webview,
     app: AppHandle,
     registry: State<'_, ChatImportRegistry>,
 ) -> Result<Option<NativeChatImport>, String> {
-    crate::native_intents::ensure_main_window(&window)?;
+    crate::native_intents::ensure_main_window(&webview)?;
     let (tx, rx) = tokio::sync::oneshot::channel();
     app.dialog()
         .file()
@@ -828,10 +828,10 @@ pub async fn pick_native_chat_import(
 
 #[tauri::command]
 pub async fn pick_native_training_config(
-    window: WebviewWindow,
+    webview: tauri::Webview,
     app: AppHandle,
 ) -> Result<Option<NativeImportedFile>, String> {
-    crate::native_intents::ensure_main_window(&window)?;
+    crate::native_intents::ensure_main_window(&webview)?;
     let (tx, rx) = tokio::sync::oneshot::channel();
     app.dialog()
         .file()

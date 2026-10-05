@@ -83,7 +83,7 @@ def persist_document(monkeypatch):
 def test_formats_finish_and_remain_searchable(
     rag_home, stub_embeddings, tmp_path, monkeypatch, persist_document, extension, transport
 ):
-    assert set(EXTENSIONS) == config.UPLOAD_EXTS
+    assert set(EXTENSIONS) == config.SUPPORTED_UPLOAD_EXTS
     source = write_document(tmp_path / f"report{extension}", large = True)
     stored, filename, content_hash = persist_document(source, transport)
     assert Path(stored).read_bytes() == source.read_bytes()

@@ -669,6 +669,7 @@ async def generate_video(
         reference_image_size = request.reference_image_size,
         flow_shift = request.flow_shift,
         audio_flow_shift = request.audio_flow_shift,
+        live_preview = request.live_preview,
     )
     # Authorize the exact resident token from generation_snapshot and pin it to the reservation,
     # so a load committing in the gap cannot render another account's weights here; on a mismatch,

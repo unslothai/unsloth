@@ -266,7 +266,7 @@ async def add_item_to_project(
     from core.inference.gallery_projects import ProjectNotFound, copy_into_project
 
     def _copy() -> dict:
-        with library.open_item(body.id) as item:
+        with library.project_item(body.id) as item:
             copied = copy_into_project(item.handle, body.projectId, item.folder, item.project_name)
         library.invalidate_listing()
         return copied
@@ -277,7 +277,7 @@ async def add_item_to_project(
         raise HTTPException(status_code = 404, detail = "Project not found")
     except LookupError:
         raise HTTPException(status_code = 404, detail = "Item not found")
-    except ValueError as exc:
+    except (ValueError, RuntimeError) as exc:
         raise HTTPException(status_code = 400, detail = str(exc))
     except OSError as exc:
         logger.warning("library.add_to_project_failed: %s", exc)

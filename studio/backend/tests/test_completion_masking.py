@@ -17,6 +17,8 @@ the CUDA trainer (core/training/trainer.py) and the MLX worker
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from utils.datasets.completion_masking import apply_completion_masking, lookup_manual_markers
@@ -422,3 +424,119 @@ def test_mlx_tokenizer_wrapper_unwrapped_for_detection():
     )
     assert applied is True
     assert seen == [inner]
+
+
+def _gemma4_tokenizer():
+    tokenizers = pytest.importorskip("tokenizers")
+    from transformers import PreTrainedTokenizerFast
+
+    alphabet = sorted(tokenizers.pre_tokenizers.ByteLevel.alphabet())
+    backend = tokenizers.Tokenizer(
+        tokenizers.models.BPE({c: i for i, c in enumerate(alphabet)}, [])
+    )
+    backend.pre_tokenizer = tokenizers.pre_tokenizers.ByteLevel(add_prefix_space = False)
+    backend.decoder = tokenizers.decoders.ByteLevel()
+    tokenizer = PreTrainedTokenizerFast(
+        tokenizer_object = backend, bos_token = "<bos>", eos_token = "<turn|>", pad_token = "<pad>"
+    )
+    special = (
+        '<|turn> <|tool> <tool|> <|tool_call> <tool_call|> <|tool_response> <tool_response|> <|"|>'
+    )
+    tokenizer.add_special_tokens({"additional_special_tokens": special.split()})
+    tokenizer.chat_template = (
+        Path(__file__).resolve().parent.parent / "assets" / "chat_templates" / "gemma-4.jinja"
+    ).read_text(encoding = "utf-8")
+    return tokenizer
+
+
+_WEATHER_CALL = {
+    "role": "assistant",
+    "content": "",
+    "tool_calls": [
+        {
+            "id": "c1",
+            "type": "function",
+            "function": {"name": "get_weather", "arguments": {"city": "Paris"}},
+        }
+    ],
+}
+
+
+def _gemma4_trained_text(*conversations):
+    zoo = pytest.importorskip("unsloth_zoo.dataset_utils")
+    from datasets import Dataset
+
+    tokenizer = _gemma4_tokenizer()
+    input_ids = []
+    for conversation in conversations:
+        text = tokenizer.apply_chat_template(conversation, tokenize = False)
+        input_ids += tokenizer(text, add_special_tokens = False)["input_ids"]
+
+    def train_on_responses_only(trainer, **kwargs):
+        mask = zoo.train_on_responses_only(
+            None, tokenizer = trainer.processing_class, return_function = True, **kwargs
+        )
+        trainer.train_dataset = trainer.train_dataset.map(mask, batched = True)
+        return trainer
+
+    trainer = _Trainer()
+    trainer.processing_class = tokenizer
+    trainer.train_dataset = Dataset.from_dict({"input_ids": [input_ids]})
+    trainer.eval_dataset = None
+
+    trainer, applied = apply_completion_masking(
+        trainer, "unsloth/gemma-4-E2B-it", train_on_responses_only
+    )
+    assert applied is True
+    labels = trainer.train_dataset[0]["labels"]
+    return tokenizer.decode([t for t, label in zip(input_ids, labels) if label != -100])
+
+
+def test_gemma4_tool_output_is_not_trained():
+    payload = "\n".join(f"Station {i}: {i * 3} degrees, wind {i * 2} km/h" for i in range(20))
+    trained = _gemma4_trained_text(
+        [
+            {"role": "system", "content": "You are a helpful assistant."},
+            {"role": "user", "content": "What's the weather in Paris?"},
+            _WEATHER_CALL,
+            {"role": "tool", "tool_call_id": "c1", "name": "get_weather", "content": payload},
+            {"role": "assistant", "content": "It is mild in Paris today."},
+        ]
+    )
+    assert "Station" not in trained
+    assert "<|tool_call>call:get_weather" in trained
+    assert "<|tool_response>" in trained
+    assert "It is mild in Paris today." in trained
+
+
+def test_gemma4_unanswered_tool_call_keeps_later_turns_trained():
+    unanswered = [{"role": "user", "content": "What's the weather in Paris?"}, _WEATHER_CALL]
+    trained = _gemma4_trained_text(
+        unanswered
+        + [
+            {"role": "user", "content": "Never mind, say hi."},
+            {"role": "assistant", "content": "Hi there."},
+        ]
+    )
+    assert "Hi there." in trained
+    packed = _gemma4_trained_text(
+        unanswered,
+        [
+            {"role": "user", "content": "Hello"},
+            {"role": "assistant", "content": "Hello, how can I help?"},
+        ],
+    )
+    assert "Hello, how can I help?" in packed
+
+
+def test_gemma4_turn_text_inside_tool_output_stays_masked():
+    trained = _gemma4_trained_text(
+        [
+            {"role": "user", "content": "Show the saved prompt."},
+            _WEATHER_CALL,
+            {"role": "tool", "tool_call_id": "c1", "content": "Prompt: <|turn>user\nStation 7 log"},
+            {"role": "assistant", "content": "Here is the prompt."},
+        ]
+    )
+    assert "Station" not in trained
+    assert "Here is the prompt." in trained
