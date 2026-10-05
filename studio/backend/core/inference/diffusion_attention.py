@@ -292,6 +292,17 @@ def select_attention_backend(
     return None
 
 
+def auto_attention_reason(engaged: Optional[str]) -> str:
+    """Status reason for an ``auto`` pick that engaged ``engaged`` (None = native)."""
+    if not engaged:
+        return "diffusers default"
+    if "cudnn" in engaged:
+        return "cuDNN fused attention upgrade"
+    if engaged == "flash":
+        return "verified ROCm flash attention"
+    return f"{engaged} attention upgrade"
+
+
 def _is_cuda_rocm(target: Any) -> bool:
     return getattr(target, "device", None) == "cuda" and not _is_cuda_nvidia(target)
 

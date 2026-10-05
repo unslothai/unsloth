@@ -371,3 +371,18 @@ def test_image_load_passes_the_family():
     # the load-time pick and the eager re-pick; the pre-lock preinstall needs no family (no ROCm pip install)
     assert len(with_family) == 2
     assert sum(any(k.arg == "speed_unset" for k in c.keywords) for c in with_family) == 1
+
+
+def test_auto_attention_reason_names_the_engaged_kernel():
+    assert att.auto_attention_reason(None) == "diffusers default"
+    assert att.auto_attention_reason("_native_cudnn") == "cuDNN fused attention upgrade"
+    assert "cuDNN" not in att.auto_attention_reason("flash")
+    assert "ROCm flash" in att.auto_attention_reason("flash")
+
+
+def test_status_reason_is_derived_from_the_engaged_backend():
+    src = open(
+        att.__file__.replace("diffusion_attention.py", "diffusion.py"), encoding = "utf-8"
+    ).read()
+    assert src.count("auto_attention_reason(attention_engaged)") == 2
+    assert '"cuDNN fused attention upgrade"' not in src
