@@ -76,6 +76,42 @@ def _clean_env(monkeypatch):
     yield
 
 
+def test_int_mm_finds_safe_int_mm_after_torchao_kernel_was_removed(monkeypatch):
+    """torchao main moved ``safe_int_mm`` out of ``torchao.kernel.intmm`` (and deleted ``torchao.kernel``):
+    the fused forwards must find it in its new home, not fail every int8 render with ModuleNotFoundError."""
+    import sys
+    import types
+
+    calls = []
+    new_home = types.ModuleType("torchao.quantization.quantize_.workflows.int8.kernels")
+    new_home.safe_int_mm = lambda a, b: calls.append((a, b)) or "out"
+    monkeypatch.setitem(sys.modules, "torchao.kernel", None)
+    monkeypatch.setitem(sys.modules, "torchao.kernel.intmm", None)
+    monkeypatch.setitem(sys.modules, new_home.__name__, new_home)
+    monkeypatch.setattr(fused, "_INTMM_MODULE", None, raising = False)
+    weight = types.SimpleNamespace(qdata = torch.ones(3, 2, dtype = torch.int8))
+    a = torch.ones(4, 2, dtype = torch.int8)
+    assert fused._int_mm(a, weight) == "out"
+    assert len(calls) == 1 and calls[0][0] is a and tuple(calls[0][1].shape) == (2, 3)
+
+
+def test_int_mm_prefers_the_released_home(monkeypatch):
+    """torchao <= 0.18 keeps ``torchao.kernel.intmm``: it wins over any other copy, so the capture-safe rebinding
+    Studio installs there is the one that runs."""
+    import sys
+    import types
+
+    old_home = types.ModuleType("torchao.kernel.intmm")
+    old_home.safe_int_mm = lambda a, b: "old"
+    new_home = types.ModuleType("torchao.quantization.quantize_.workflows.int8.kernels")
+    new_home.safe_int_mm = lambda a, b: "new"
+    monkeypatch.setitem(sys.modules, "torchao.kernel.intmm", old_home)
+    monkeypatch.setitem(sys.modules, new_home.__name__, new_home)
+    monkeypatch.setattr(fused, "_INTMM_MODULE", None, raising = False)
+    weight = types.SimpleNamespace(qdata = torch.ones(3, 2, dtype = torch.int8))
+    assert fused._int_mm(torch.ones(4, 2, dtype = torch.int8), weight) == "old"
+
+
 @pytest.mark.parametrize(
     "version, ok",
     [
