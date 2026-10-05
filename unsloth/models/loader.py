@@ -581,6 +581,27 @@ def _config_has_native_class(auto_class, config):
         return False
 
 
+def _compiled_auto_model(auto_model):
+    """The compiled replacement of a concrete `auto_model` class, else `auto_model` unchanged.
+
+    unsloth_compile_transformers swaps the class in its modeling module, which an Auto class
+    resolves at load time; a class the caller imported earlier (the Whisper notebook passes
+    WhisperForConditionalGeneration) still points at the stock one and skips every compiled forward.
+    """
+    if not isinstance(auto_model, type) or getattr(auto_model, "_model_mapping", None) is not None:
+        return auto_model
+    module = sys.modules.get(getattr(auto_model, "__module__", None) or "")
+    replacement = getattr(module, auto_model.__name__, None) if module is not None else None
+    if (
+        isinstance(replacement, type)
+        and replacement is not auto_model
+        and replacement.__name__ == auto_model.__name__
+        and callable(getattr(replacement, "from_pretrained", None))
+    ):
+        return replacement
+    return auto_model
+
+
 def _resolve_omni_auto_model(
     model_config,
     trust_remote_code = None,
@@ -2380,6 +2401,7 @@ class FastModel(FastBaseModel):
         for model_type in DISABLE_SDPA_MODEL_NAMES:
             if model_type in model_types_all:
                 supports_sdpa = False
+        auto_model = _compiled_auto_model(auto_model)
 
         # Keep the local checkpoint dir as tokenizer when self-sufficient; a VLM also needs local processor files, else fall back to the base repo so its cached processor loads.
         _ckpt_arch = getattr(model_config, "architectures", None) or []
