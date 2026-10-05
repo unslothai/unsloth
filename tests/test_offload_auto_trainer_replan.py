@@ -33,7 +33,9 @@ def _load(
     mod = ast.parse(SRC)
     nodes = {n.name: n for n in mod.body if isinstance(n, ast.FunctionDef) and n.name in NAMES}
     assert set(nodes) == set(NAMES), f"missing from _utils.py: {set(NAMES) - set(nodes)}"
-    state = types.SimpleNamespace(free = free, estimates = [], swaps = [], removed = [])
+    state = types.SimpleNamespace(
+        free = free, free_by = {}, homes = {}, estimates = [], swaps = [], removed = [], fail = 0
+    )
 
     def estimate(
         config,
@@ -61,10 +63,20 @@ def _load(
             depth,
             placement = "tail",
         ):
+            if state.fail:
+                state.fail -= 1
+                raise RuntimeError("pinned allocation failed")
             self.indices = list(range(n)) if isinstance(n, int) else list(n)
             self.depth = depth
             state.swaps.append(self)
             state.free += len(self.indices) * GIB
+
+        @property
+        def blocks(self):
+            return [
+                types.SimpleNamespace(home = state.homes.get(i, "cuda:0"), nbytes = lambda: GIB)
+                for i in self.indices
+            ]
 
         def host_bytes(self):
             return len(self.indices) * GIB
@@ -87,7 +99,7 @@ def _load(
             layers, n, depth, placement
         ),
         "estimate_training_reserve_bytes": estimate,
-        "usable_cuda_bytes": lambda device: state.free,
+        "usable_cuda_bytes": lambda device: state.free_by.get(device, state.free),
         "_AUTO_OFFLOAD_BATCH_SIZE": 2,
         "torch": types.SimpleNamespace(cuda = types.SimpleNamespace(is_available = lambda: cuda)),
     }
@@ -106,7 +118,7 @@ class _Model:
     max_seq_length = 2048
 
     def __init__(self, n = 8):
-        self.layers = _Layers(f"L{i}" for i in range(n))
+        self.layers = _Layers(types.SimpleNamespace(name = f"L{i}") for i in range(n))
 
     def parameters(self):
         return []
@@ -260,3 +272,40 @@ def test_trainer_init_wrapper_calls_the_safe_replan():
     assert "_replan_auto_offload_safely" in calls
     # After the original init, so the trainer's args and optimizer are known.
     assert calls.index("_replan_auto_offload_safely") > calls.index("_original_trainer_init")
+
+
+def test_a_short_second_card_still_rebuilds():
+    # device_map model: the swapped layers' first card has room, the second does not.
+    ns, state = _load(free = 1 * GIB)
+    model = _Model()
+    first = ns["install_block_swap"](model, "auto")
+    state.homes = {i: "cuda:1" for i in range(8)}
+    state.free = 3 * GIB
+    state.free_by = {"cuda:0": 100 * GIB}
+    swapper = ns["replan_auto_offload_for_trainer"](_trainer(model, batch_size = 6))
+    assert state.removed == [first] and swapper is not first
+
+
+def test_a_failed_rebuild_puts_the_old_plan_back(capsys):
+    ns, state = _load(free = 1 * GIB)
+    model = _Model()
+    first = ns["install_block_swap"](model, "auto")
+    old = list(first.indices)
+    state.free = 3 * GIB
+    state.fail = 1  # the replacement plan's allocation fails, the old plan's re-attach does not
+    assert ns["_replan_auto_offload_safely"](_trainer(model, batch_size = 6)) is None
+    assert model._unsloth_block_swap is not first and model._unsloth_block_swap.indices == old
+    assert "could not re-plan" in capsys.readouterr().out
+
+
+def test_newly_swapped_layers_recompute_in_backward():
+    # checkpoint_skip_layers = "max" marked every layer the attach-time plan left resident.
+    ns, state = _load(free = 1 * GIB)
+    model = _Model()
+    ns["install_block_swap"](model, "auto")
+    for layer in model.layers:
+        layer.__dict__["_unsloth_skip_checkpoint"] = True
+    state.free = 3 * GIB
+    swapper = ns["replan_auto_offload_for_trainer"](_trainer(model, batch_size = 6))
+    for i, layer in enumerate(model.layers):
+        assert layer.__dict__.get("_unsloth_skip_checkpoint", False) == (i not in swapper.indices)

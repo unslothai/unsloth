@@ -6518,19 +6518,24 @@ def replan_auto_offload_for_trainer(trainer):
     old = list(getattr(swapper, "indices", None) or ())
     layers = find_decoder_layers(model)
     if old:
-        # Swapped layers already left the card, so free memory counts them once.
-        free = usable_cuda_bytes(swapper.device)
-        if free >= reserve:
+        # Swapped layers already left the card, so free memory counts them once. A device_map
+        # model swaps on every card its layers live on: each must keep the reserve free.
+        restore = {}
+        for block in swapper.blocks:
+            home = getattr(block, "home", None) or swapper.device
+            restore[home] = restore.get(home, 0) + block.nbytes()
+        free = {device: usable_cuda_bytes(device) for device in restore}
+        short = max(reserve - f for f in free.values())
+        if short <= 0:
             return swapper
-        restore = swapper.host_bytes()
-        if restore > free:
-            per_layer = max(1, restore // len(old))
-            want = min(len(layers) - 1, len(old) + -(-(reserve - free) // per_layer))
+        if any(restore[device] > free[device] for device in restore):
+            per_layer = max(1, sum(restore.values()) // len(old))
+            want = min(len(layers) - 1, len(old) + -(-short // per_layer))
             print(
-                f"Unsloth: offload_layers = 'auto' kept {len(old)} layers for batch size "
-                f"{_AUTO_OFFLOAD_BATCH_SIZE}, but per_device_train_batch_size = {batch_size} at "
-                f"{seq_len} tokens needs {(reserve - free) / 2**30:.2f} GiB more, and re-planning "
-                f"would first restore {restore / 2**30:.2f} GiB. Pass "
+                f"Unsloth: offload_layers = 'auto' kept {len(old)} layers, but "
+                f"per_device_train_batch_size = {batch_size} at {seq_len} tokens needs "
+                f"{short / 2**30:.2f} GiB more, and re-planning would first restore "
+                f"{sum(restore.values()) / 2**30:.2f} GiB. Pass "
                 f"get_peft_model(offload_layers = {want}) or lower per_device_train_batch_size."
             )
             return swapper
@@ -6540,14 +6545,24 @@ def replan_auto_offload_for_trainer(trainer):
         swapper.remove()
         layers._unsloth_block_swap = None
         model._unsloth_block_swap = None
-    indices = _auto_block_swap_indices(
-        model, prefetch_depth, batch_size = batch_size, seq_len = seq_len
-    )
-    if len(indices) < len(old):
-        indices = old
-    if not indices:
-        return None
-    swapper = _attach_block_swap(model, indices, prefetch_depth)
+    try:
+        indices = _auto_block_swap_indices(
+            model, prefetch_depth, batch_size = batch_size, seq_len = seq_len
+        )
+        if len(indices) < len(old):
+            indices = old
+        if not indices:
+            return None
+        swapper = _attach_block_swap(model, indices, prefetch_depth)
+    except Exception:
+        # remove() already brought the old plan's layers back: put that plan back before failing.
+        if old:
+            _attach_block_swap(model, old, prefetch_depth)
+        raise
+    # checkpoint_skip_layers chose among the layers swapped at attach time; a swapped layer must
+    # recompute in backward, else its weights stay on the card and the slot pool grows.
+    for i in swapper.indices:
+        layers[i].__dict__.pop("_unsloth_skip_checkpoint", None)
     print(
         f"Unsloth: offload_layers = 'auto' re-planned for per_device_train_batch_size = "
         f"{batch_size}: {len(old)} -> {len(indices)} decoder layers in host RAM."
