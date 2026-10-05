@@ -73,9 +73,7 @@ def test_the_projects_override_wins_outright(tmp_path, monkeypatch):
 def test_the_studio_images_keep_project_folders_on_the_studio_volume(
     dockerfile, tmp_path, monkeypatch
 ):
-    text = (Path(__file__).resolve().parents[3] / "docker" / dockerfile).read_text(
-        encoding = "utf-8"
-    )
+    text = (Path(__file__).resolve().parents[3] / "docker" / dockerfile).read_text(encoding = "utf-8")
     block = text[text.index("ENV UNSLOTH_STUDIO_HOME=") :]
     image_env = dict(re.findall(r"(\w+)=(\S+)", block[: block.index("\n\n")]))
     for name in ("UNSLOTH_STUDIO_DOCUMENTS_HOME", "UNSLOTH_STUDIO_PROJECTS_HOME"):
