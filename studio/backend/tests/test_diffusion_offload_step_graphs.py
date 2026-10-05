@@ -740,3 +740,47 @@ def test_freeing_a_resident_graph_keeps_offload_hooks_added_after_it():
     assert net.__dict__.get("forward") is hooked
     ref = _net().cuda()
     assert torch.equal(_call(net, 0), _call(ref, 0))
+
+
+def _probe_handle():
+    handle = cg.GraphedForward.__new__(cg.GraphedForward)
+    handle.stats = {"eager_calls": 0, "speed_eager": 0}
+    handle._dropped, handle._slower, handle._judge, handle._warmed = set(), None, {}, {}
+    handle.max_graphs = 4
+    handle.plan = None
+    return handle
+
+
+def test_a_speed_probe_without_memory_for_its_copies_runs_the_callers_step(monkeypatch):
+    handle = _probe_handle()
+
+    def oom(live):
+        raise torch.cuda.OutOfMemoryError("CUDA out of memory")
+
+    monkeypatch.setattr(handle, "_statics", oom)
+    x = torch.ones(2)
+    assert torch.equal(handle._timed_eager(lambda t: t * 2, (x,), {}, "k"), x * 2)
+    assert "k" in handle._dropped
+
+
+def test_no_probe_step_is_timed_while_another_graph_records(monkeypatch):
+    handle = _probe_handle()
+    monkeypatch.setattr(handle, "_statics", lambda live: list(live))
+    monkeypatch.setattr(cg, "_CAPTURE_DEPTH", 1)
+    x = torch.ones(2)
+    for _ in range(3):
+        handle._timed_eager(lambda t: t + 1, (x,), {}, "k")
+    assert handle._judge["k"]["seen"] == 3 and handle._judge["k"]["eager"] == []
+
+
+def test_a_ring_drop_waits_while_another_graph_records(monkeypatch):
+    pf = op.GroupPrefetcher.__new__(op.GroupPrefetcher)
+    pf._drop_slots_at_end = False
+    dropped = []
+    monkeypatch.setattr(pf, "disable_slots", lambda: dropped.append(1), raising = False)
+    monkeypatch.setattr(cg, "_CAPTURE_DEPTH", 1)
+    pf._drop_ring()
+    assert dropped == [] and pf._drop_slots_at_end
+    monkeypatch.setattr(cg, "_CAPTURE_DEPTH", 0)
+    pf._drop_ring()
+    assert dropped == [1] and not pf._drop_slots_at_end

@@ -897,17 +897,31 @@ class GraphedForward:
         # storage offsets, so steps on the caller's views compile a variant the capture then compiles again.
         live: list = []
         spec = _flatten((args, kwargs), live)
-        args, kwargs = _rebuild(spec, self._statics(live))
+        try:
+            statics = self._statics(live)
+        except _torch().cuda.OutOfMemoryError:
+            # No room for the probe's copies: decline the key and run the caller's own step.
+            self._dropped.add(key)
+            self._slower = "no memory for the speed probe's input copies"
+            return call(*args, **kwargs)
+        args, kwargs = _rebuild(spec, statics)
         state = self._judge_state(key)
         state["seen"] += 1
         if state["seen"] == 1:
             self._warmed[key] = None
             return call(*args, **kwargs)
-        start, end = _timing_events()
-        start.record()
+        # Event records are prohibited while another thread records a graph: such a step goes untimed.
+        start = end = None
+        with hold_off_capture() as safe:
+            if safe:
+                start, end = _timing_events()
+                start.record()
         out = call(*args, **kwargs)
-        end.record()
-        state["eager"].append((start, end))
+        if start is not None:
+            with hold_off_capture() as safe:
+                if safe:
+                    end.record()
+                    state["eager"].append((start, end))
         return out
 
     def _judge_state(self, key: Any) -> dict:
