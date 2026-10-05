@@ -1661,7 +1661,6 @@ def _reconcile_folder(job_id: str) -> None:
                             _remove_snapshot(snapshot)
                             snapshot = None
                             renamed += 1
-                    # Metadata-only updates and renames consumed the snapshot; the rest need ingesting.
                     if snapshot is not None:
                         # reuse_identical needs a finished donor, so a copy waits for its in-flight twin.
                         while not rebuild and any(
@@ -1695,7 +1694,6 @@ def _reconcile_folder(job_id: str) -> None:
                     raise
                 except Exception:
                     failures.append(rel)
-                    # A failed file may be a rename or copy of a vanished path, so grant one pass.
                     withheld.update(missing - already_withheld)
                     logger.warning("linked-folder ingestion failed for %s", rel, exc_info = True)
                     _remove_snapshot(snapshot)
