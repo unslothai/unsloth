@@ -11,6 +11,7 @@ import os
 import re
 from pathlib import Path
 from playwright.sync_api import expect, sync_playwright
+from _en_catalog import en_string
 from _playwright_robust import start_vite, stop_process, wait_for_smoke_page
 
 PAGE = "/smoke-composer-settings.html"
@@ -18,9 +19,11 @@ ENTRY = "/smoke-composer-settings-main.tsx"
 
 
 def check_settings(page):
-    plain = page.get_by_role("switch", name = "Plain text composer", exact = True)
-    context = page.get_by_role("switch", name = "Show context window usage", exact = True)
-    select = page.get_by_role("combobox", name = "Send shortcut", exact = True)
+    plain = page.get_by_role("switch", name = en_string("composerSettings.plainText"), exact = True)
+    context = page.get_by_role("switch", name = en_string("composerSettings.showContext"), exact = True)
+    select = page.get_by_role(
+        "combobox", name = en_string("composerSettings.sendShortcut"), exact = True
+    )
     editor = page.get_by_role("textbox", name = "Message", exact = True)
     preview = page.get_by_role("region", name = "Formatted preview", exact = True)
     submitted = page.get_by_label("Submitted messages")
@@ -143,9 +146,9 @@ def main():
                 errors = []
                 page.on("pageerror", lambda error: errors.append(str(error)))
                 page.goto(base + PAGE)
-                page.get_by_role("switch", name = "Plain text composer", exact = True).wait_for(
-                    state = "visible", timeout = 60_000
-                )
+                page.get_by_role(
+                    "switch", name = en_string("composerSettings.plainText"), exact = True
+                ).wait_for(state = "visible", timeout = 60_000)
                 check_settings(page)
                 assert not errors, errors
             finally:

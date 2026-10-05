@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""``login_mode`` / ``installation_is_multi_user`` follow the ACTIVE count; ``installation_has_managed_accounts`` and the full-access gate follow whether any managed account exists at all."""
+"""``login_mode`` / ``installation_is_multi_user`` follow the ACTIVE count; ``installation_has_managed_accounts`` follows whether any managed account exists; full access follows the acting account."""
 
 import secrets
 
@@ -37,13 +37,13 @@ def test_owner_only(auth_db):
 
 def test_owner_plus_one_active_managed_account(auth_db):
     storage.issue_account_setup_code(username = "alice")
-    assert _state() == ("multi", True, True, False)
+    assert _state() == ("multi", True, True, True)
 
 
 def test_owner_plus_one_deactivated_managed_account(auth_db):
     account = storage.issue_account_setup_code(username = "alice")["account"]
     storage.set_account_active(account["account_id"], False)
-    assert _state() == ("single", False, True, False)
+    assert _state() == ("single", False, True, True)
 
 
 def test_an_unreadable_auth_database(auth_db, monkeypatch):
@@ -51,7 +51,7 @@ def test_an_unreadable_auth_database(auth_db, monkeypatch):
         raise OSError("auth.db unreadable")
 
     monkeypatch.setattr(storage, "account_counts", boom)
-    assert _state() == ("single", False, True, False)
+    assert _state() == ("single", False, True, True)
 
 
 def test_a_count_read_failure_keeps_a_bound_managed_account_isolated(auth_db, monkeypatch):
@@ -129,3 +129,27 @@ def test_deactivating_the_last_account_does_not_hand_its_download_to_the_owner(
     legacy = "legacy-org/model::"
     registry.claim(legacy, "http", repo_type = "model", repo_id = "legacy-org/model")
     assert run_as(OWNER, download_lifecycle.download_belongs_to_account, registry, legacy) is True
+
+
+@pytest.mark.parametrize("active", [True, False])
+def test_full_access_follows_the_account_role(auth_db, active):
+    from state.tool_policy import require_tool_access
+    from fastapi import HTTPException
+    from utils.account_context import OWNER, AccountContext, run_as
+
+    record = storage.issue_account_setup_code(username = "alice")["account"]
+    alice = AccountContext(record["account_id"], "alice")
+    storage.set_account_active(record["account_id"], active)
+    assert run_as(OWNER, policy.full_access_permitted) is True
+    assert run_as(alice, policy.full_access_permitted) is False
+    for flags in (
+        {"permission_mode": "full"},
+        {"bypass_permissions": True},
+        {"disable_sandbox": True},
+    ):
+        run_as(OWNER, require_tool_access, **flags)
+        with pytest.raises(HTTPException, match = "installation owner"):
+            run_as(alice, require_tool_access, **flags)
+
+    storage.delete_account(record["account_id"], lambda account: None)
+    assert run_as(alice, policy.full_access_permitted) is False

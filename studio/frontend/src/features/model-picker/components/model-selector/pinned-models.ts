@@ -7,6 +7,8 @@
 
 import { create } from "zustand";
 
+import { mirrorPins, onPinsRestored } from "./pins-mirror.ts";
+
 const KEY = "unsloth_pinned_models";
 
 // Entries are stored as strings: "repoId" pins a whole (non-GGUF) repo, "repoId::quant" pins
@@ -76,10 +78,11 @@ function readPinned(): string[] {
 }
 
 function writePinned(pinned: string[]): void {
+  mirrorPins("pinned", pinned);
   try {
     localStorage.setItem(KEY, JSON.stringify(pinned));
   } catch {
-    // Ignore unavailable storage; pins stay session-only.
+    // Ignore unavailable storage; the server copy still has them.
   }
 }
 
@@ -108,6 +111,8 @@ interface PinnedModelsState {
    *  with it, and a `repoId::quant` pin outlives the row that showed it: nothing lists it, so
    *  nothing can unpin it, and it reappears the day that quant is downloaded again. */
   unpinRepo: (repoId: string) => void;
+  /** Move a pin to a new key in the same slot, or drop it if the new key is already pinned. */
+  replacePinned: (fromKey: string, toKey: string) => void;
   /**
    * Move `fromKey` into `toKey`'s slot. Both keys must already be pinned;
    * anything else is a no-op. Outside a drag session the new order is
@@ -127,7 +132,7 @@ export const usePinnedModelsStore = create<PinnedModelsState>((set) => ({
   togglePinned: (repoId, quant) =>
     set((state) => {
       const key = pinKey(repoId, quant);
-      // Newest pin first, so "Pin to top" literally lands on top of the pinned group rather than under earlier pins.
+      // Newest pin first, so a new pin lands on top of the pinned group rather than under earlier pins.
       const next = state.pinned.includes(key)
         ? state.pinned.filter((id) => id !== key)
         : [key, ...state.pinned];
@@ -141,6 +146,15 @@ export const usePinnedModelsStore = create<PinnedModelsState>((set) => ({
         (key) => key !== pinKey(repoId) && !key.startsWith(prefix),
       );
       if (next.length === state.pinned.length) return state;
+      writePinned(next);
+      return { pinned: next };
+    }),
+  replacePinned: (fromKey, toKey) =>
+    set((state) => {
+      if (!state.pinned.includes(fromKey) || fromKey === toKey) return state;
+      const next = state.pinned.includes(toKey)
+        ? state.pinned.filter((key) => key !== fromKey)
+        : state.pinned.map((key) => (key === fromKey ? toKey : key));
       writePinned(next);
       return { pinned: next };
     }),
@@ -183,6 +197,10 @@ export const usePinnedModelsStore = create<PinnedModelsState>((set) => ({
       return { pinned: base };
     }),
 }));
+
+onPinsRestored("pinned", () =>
+  usePinnedModelsStore.setState({ pinned: readPinned() }),
+);
 
 if (typeof window !== "undefined") {
   window.addEventListener("storage", (event) => {
