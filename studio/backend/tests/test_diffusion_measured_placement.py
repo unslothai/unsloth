@@ -530,9 +530,8 @@ def _resident_hooked(torch, net):
     return net
 
 
-def test_a_hookless_resident_transformer_takes_hooks_on_demand(monkeypatch):
-    """The 16 GB tier keeps the int8 transformer resident without offload hooks; an oversized request (an edit's
-    reference) gives it hooks, every group resident, so release_resident_groups can stream part of it."""
+def _hookless_int8_transformer(monkeypatch):
+    """A resident int8 torchao transformer with no offload hooks (the 16 GB tier), its input and reference output."""
     torch, _ = _cuda_offload_model()
     pytest.importorskip("torchao")
     from torchao.quantization import Int8DynamicActivationInt8WeightConfig, quantize_
@@ -556,6 +555,13 @@ def test_a_hookless_resident_transformer_takes_hooks_on_demand(monkeypatch):
     x = torch.randn(64, 256, device = "cuda", dtype = torch.bfloat16)
     with torch.no_grad():
         ref = net(x)
+    return torch, net, x, ref
+
+
+def test_a_hookless_resident_transformer_takes_hooks_on_demand(monkeypatch):
+    """The 16 GB tier keeps the int8 transformer resident without offload hooks; an oversized request (an edit's
+    reference) gives it hooks, every group resident, so release_resident_groups can stream part of it."""
+    torch, net, x, ref = _hookless_int8_transformer(monkeypatch)
     pipe = types.SimpleNamespace(transformer = net, components = {"transformer": net})
     assert dm.resident_group_mib(pipe) == 0
     assert dm.hook_resident_denoiser(pipe, "cuda")
@@ -569,6 +575,26 @@ def test_a_hookless_resident_transformer_takes_hooks_on_demand(monkeypatch):
             assert torch.equal(net(x), ref)
         restore()
         assert torch.equal(net(x), ref)
+
+
+def test_a_failed_hook_install_leaves_the_transformer_resident(monkeypatch):
+    """The apply moves the groups' weights to their host copies; a failure after it puts them back on the card."""
+    torch, net, x, ref = _hookless_int8_transformer(monkeypatch)
+    from core.inference.diffusion_offload_prefetch import module_prefetcher
+
+    def _fail(*_a, **_k):
+        assert module_prefetcher(net) is not None  # fails after the prefetcher's install
+        raise RuntimeError("injected")
+
+    monkeypatch.setattr(dm, "_keep_groups_resident", _fail)
+    pipe = types.SimpleNamespace(transformer = net, components = {"transformer": net})
+    assert not dm.hook_resident_denoiser(pipe, "cuda")
+    assert not dm._offload_groups(net)
+    assert module_prefetcher(net) is None
+    assert not net._forward_pre_hooks and not net._forward_hooks
+    with torch.no_grad():
+        for _ in range(2):
+            assert torch.equal(net(x), ref)
 
 
 def test_generate_hooks_the_resident_transformer_only_when_the_release_falls_short():
