@@ -13,14 +13,13 @@ import { HugeiconsIcon } from "@hugeicons/react";
 import { IconActionButton } from "./icon-action-button";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Streamdown } from "streamdown";
-import { createCodePlugin } from "./code-plugin";
+import { codePlugin } from "./shared-code-plugin";
 
 const COPY_RESET_MS = 2000;
 const SHIKI_THEME = ["github-light", "github-dark"] as [
   "github-light",
   "github-dark",
 ];
-const codePlugin = createCodePlugin({ themes: SHIKI_THEME });
 /** Within this many px of the bottom counts as following the stream. */
 const PIN_SLACK_PX = 40;
 
