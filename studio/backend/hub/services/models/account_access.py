@@ -25,6 +25,7 @@ from huggingface_hub import HfApi, constants as hf_constants
 
 from auth import policy
 from core.inference.gpu_arbiter import GpuBusyForAnotherAccountError
+from storage.studio_db import connect_studio_db
 from utils.paths import storage_roots
 from utils.paths.storage_roots import project_workspaces_root, studio_db_path, workspace_root
 
@@ -678,7 +679,7 @@ def model_grants() -> set[str]:
     if not path.is_file():
         return set()
     try:
-        with closing(sqlite3.connect(str(path))) as conn:
+        with closing(connect_studio_db(path)) as conn:
             row = conn.execute(
                 "SELECT value_json FROM app_settings WHERE key = 'model_grants'"
             ).fetchone()
@@ -709,7 +710,7 @@ def record_model_grant(repo_id: str, repo_type: str = "model") -> None:
 
 
 def _write_grant(path: Path, key: str) -> None:
-    with closing(sqlite3.connect(str(path), timeout = 5.0)) as conn, conn:
+    with closing(connect_studio_db(path, timeout = 5.0)) as conn, conn:
         conn.execute(
             "CREATE TABLE IF NOT EXISTS app_settings (key TEXT NOT NULL PRIMARY KEY, value_json TEXT NOT NULL, updated_at TEXT NOT NULL)"
         )

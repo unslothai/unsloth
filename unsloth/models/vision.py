@@ -204,6 +204,7 @@ from transformers import __version__ as transformers_version
 
 import types
 import functools
+import importlib.util
 import os
 import copy
 import gc
@@ -1015,7 +1016,9 @@ _compile_config.disable = True  # Must set manually
 # UNSLOTH_EAGER_DECODE=0 opts out), and UNSLOTH_COMPILE_DECODE=1 opts into CUDA graphs over the
 # static cache. Off by default: each new shape costs 35-130 s to compile (A100, 2B), so mixed
 # sessions came out ~3x slower overall even though a compiled step is ~5x faster.
-COMPILE_DECODE_MODELS = ("qwen3_5", "qwen3_5_moe")
+COMPILE_DECODE_MODELS = ("qwen3_5", "qwen3_5_moe", "gpt_oss")
+# gpt-oss decode only traces as one CUDA graph with unsloth_zoo's routed experts patch.
+_COMPILE_DECODE_NEEDS_ZOO = {"gpt_oss": "unsloth_zoo.temporary_patches.gpt_oss_routed"}
 _decode_compile_config = CompileConfig(
     fullgraph = False,
     dynamic = None,
@@ -1037,10 +1040,20 @@ def _is_decode_compile_model(model):
         getattr(config, "model_type", None),
         getattr(getattr(config, "text_config", None), "model_type", None),
     )
-    return any(
-        isinstance(mt, str) and mt.removesuffix("_text") in COMPILE_DECODE_MODELS
-        for mt in model_types
-    )
+    for mt in model_types:
+        if not isinstance(mt, str) or mt.removesuffix("_text") not in COMPILE_DECODE_MODELS:
+            continue
+        needs = _COMPILE_DECODE_NEEDS_ZOO.get(mt.removesuffix("_text"))
+        return needs is None or _zoo_module_available(needs)
+    return False
+
+
+@functools.lru_cache(maxsize = None)
+def _zoo_module_available(name):
+    try:
+        return importlib.util.find_spec(name) is not None
+    except (ImportError, ValueError):
+        return False
 
 
 def _eager_decodes(model):
