@@ -1172,7 +1172,7 @@ class _GenState:
     eta_seconds: Optional[float] = None
     # "encode" until pipe() enters its denoise loop, "denoise" through it, "decode" once pipe() enters its decoder
     # (which runs after the last step callback).
-    phase: str = "denoise"
+    phase: str = "encode"
     # Live latent preview (diffusion_preview): a small JPEG data URL and a counter that moves with each new one.
     preview: Optional[str] = None
     preview_seq: int = 0
@@ -9833,7 +9833,8 @@ class DiffusionBackend:
                     )
 
                 def _flip_to_decode(gen = gen) -> None:
-                    _report(chunk_ticker[0].completed())
+                    # The chunk's denoise is provably over: complete it even if a skipped event left the count short.
+                    _report(steps)
                     gen.phase = "decode"
                     gen.eta_seconds = None
 

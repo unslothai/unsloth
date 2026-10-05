@@ -293,8 +293,8 @@ class LatentPreviewer:
         # allocated, pinned or otherwise, inside the denoise loop.
         side_h = (self.height // spec.down + 2) * spec.patch
         side_w = (self.width // spec.down + 2) * spec.patch
-        k = max(1, math.ceil(max(side_h, side_w) / max(1, self.max_side)))
-        cap = (side_h // k + 2) * (side_w // k + 2) * 3
+        # to_uint8 output never exceeds the input or max_side on either side, whatever divisor it picks.
+        cap = min(side_h, self.max_side) * min(side_w, self.max_side) * 3
         total = max(1, int(total_steps or 1))
         # Snapshot every ``stride`` steps (and the last one), one slot each: with the host far ahead of the
         # GPU every planned snapshot can be in flight at once, and none may overwrite another.

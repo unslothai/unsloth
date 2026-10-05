@@ -217,6 +217,47 @@ def test_cuda_preview_never_syncs_never_writes_and_publishes(monkeypatch):
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason = "needs CUDA")
+@pytest.mark.parametrize("side", [1024, 2048, 4096])
+def test_cuda_preview_slot_fits_the_picture_at_every_size(monkeypatch, side):
+    # At 2048 px a padded slot size once picked a coarser divisor than to_uint8, so every frame was dropped.
+    monkeypatch.delenv(DP.PREVIEW_ENV, raising = False)
+    got = []
+    done = threading.Event()
+
+    def publish(url, seq):
+        got.append(url)
+        done.set()
+
+    prev = DP.LatentPreviewer.create(
+        family = "flux.1",
+        requested = None,
+        height = side,
+        width = side,
+        device = "cuda",
+        publish = publish,
+        min_interval_s = 0.0,
+    )
+    assert prev is not None
+    lat = torch.randn(1, (side // 16) ** 2, 64, device = "cuda", dtype = torch.bfloat16)
+
+    class _Sched:
+        sigmas = torch.tensor([1.0, 0.5, 0.0], device = "cuda")
+        _step_index = 0
+
+    sched = _Sched()
+    for i in range(2):
+        sched._step_index = i + 1
+        prev.on_step(lat, sched)
+    assert prev.emitted == 1
+    assert done.wait(10.0)
+    prev.finish()
+    from PIL import Image
+
+    img = Image.open(io.BytesIO(base64.b64decode(got[-1].split(",", 1)[1])))
+    assert max(img.size) <= DP.MAX_SIDE and min(img.size) > 0
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason = "needs CUDA")
 def test_cuda_preview_leaves_the_latent_bit_identical(monkeypatch):
     monkeypatch.delenv(DP.PREVIEW_ENV, raising = False)
     prev = DP.LatentPreviewer.create(
