@@ -64,7 +64,7 @@ export function useAudioGallery({
     prompt: string;
     model: string;
     saved: boolean;
-    workflow: "speak" | "music" | "clone";
+    workflow: "speak" | "music" | "clone" | "edit" | "convert" | "separate";
   } | null>(null);
   const fallbackClipRef = useRef(fallbackClip);
   fallbackClipRef.current = fallbackClip;
@@ -425,7 +425,7 @@ export function useAudioGallery({
     [refreshGallery],
   );
 
-  const handleClearGallery = useCallback(async (workflow?: "speak" | "clone" | "music") => {
+  const handleClearGallery = useCallback(async (workflow?: "speak" | "clone" | "edit" | "convert" | "music" | "separate") => {
     try {
       await clearAudioGallery(workflow);
       if (workflow) {
@@ -554,7 +554,10 @@ export function useWorkflowHistory({
   loadMore,
   loadingMoreRef,
   selectClip,
-}: { workflow: "speak" | "clone" | "music"; enabled: boolean } & Pick<
+}: {
+  workflow: "speak" | "clone" | "edit" | "convert" | "music" | "separate";
+  enabled: boolean;
+} & Pick<
   AudioGallery,
   | "clips"
   | "hasMore"
@@ -566,7 +569,9 @@ export function useWorkflowHistory({
   | "selectClip"
 >) {
   const visibleClips = useMemo(
-    () => clips.filter((clip) => clipWorkflow(clip) === workflow),
+    () =>
+      // An edit's original is kept for its A/B compare, not listed.
+      clips.filter((clip) => clipWorkflow(clip) === workflow && clip.role !== "source"),
     [clips, workflow],
   );
   const selectedClip =
@@ -600,9 +605,11 @@ export function useWorkflowHistory({
   const loadMoreVisible = useCallback(async () => {
     if (visibleLoad.current) return;
     visibleLoad.current = true;
+    // Counted like visibleClips: hidden edit originals add no row.
     const countVisible = () =>
-      galleryCache.clips.filter((clip) => clipWorkflow(clip) === workflow)
-        .length;
+      galleryCache.clips.filter(
+        (clip) => clipWorkflow(clip) === workflow && clip.role !== "source",
+      ).length;
     const before = countVisible();
     try {
       await loadGalleryUntil({

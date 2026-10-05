@@ -126,7 +126,9 @@ def test_cpu_tensors_fall_through(fake_kernels, monkeypatch):
     x = torch.randn(1, 6, 2, 8)
     pos = torch.randn(6, 4, dtype = torch.float64)
     freqs = (pos.cos().repeat_interleave(2, -1).float(), pos.sin().repeat_interleave(2, -1).float())
-    assert torch.equal(fmod.apply_rotary_emb(x, freqs, sequence_dim = 1), stock_rope(x, freqs, sequence_dim = 1))
+    assert torch.equal(
+        fmod.apply_rotary_emb(x, freqs, sequence_dim = 1), stock_rope(x, freqs, sequence_dim = 1)
+    )
     torch.manual_seed(0)
     norm = nm.AdaLayerNormZero(16)
     xs, emb = torch.randn(2, 5, 16), torch.randn(2, 16)
@@ -136,23 +138,30 @@ def test_cpu_tensors_fall_through(fake_kernels, monkeypatch):
 
 
 def test_load_and_teardown_wiring():
-    src = (Path(__file__).resolve().parents[1] / "core" / "inference" / "diffusion.py").read_text(encoding = "utf-8")
+    src = (Path(__file__).resolve().parents[1] / "core" / "inference" / "diffusion.py").read_text(
+        encoding = "utf-8"
+    )
     tree = ast.parse(src)
     teardown = next(
-        n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name == "_uninstall_fused_dit_patches"
+        n
+        for n in ast.walk(tree)
+        if isinstance(n, ast.FunctionDef) and n.name == "_uninstall_fused_dit_patches"
     )
     assert "uninstall_rocm_fused()" in ast.unparse(teardown)
-    load = next(n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name == "load_pipeline")
+    load = next(
+        n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name == "load_pipeline"
+    )
     assert "install_rocm_fused(pipe, dtype, device, logger)" in ast.unparse(load)
 
 
 def test_stock_lines_still_present_in_diffusers():
     import inspect
-
     for name in rf._ADALN_CLASSES:
         src = inspect.getsource(_STOCK_FWD[name])
         assert all(line in src for line in rf._STOCK_LINES[name]), name
-    assert "apply_rotary_emb(query, image_rotary_emb, sequence_dim=1)" in Path(fmod.__file__).read_text("utf-8")
+    assert "apply_rotary_emb(query, image_rotary_emb, sequence_dim=1)" in Path(
+        fmod.__file__
+    ).read_text("utf-8")
 
 
 # ---------------------------------------------------------------------------------------------------------------- GPU
@@ -186,8 +195,14 @@ def _bf16_ulp(t):
 
 @needs_gpu
 @pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float16])
-@pytest.mark.parametrize("cls_name,D,S", [("AdaLayerNormZero", 3072, 4096), ("AdaLayerNormZeroSingle", 3072, 777),
-                                          ("AdaLayerNormContinuous", 256, 300)])
+@pytest.mark.parametrize(
+    "cls_name,D,S",
+    [
+        ("AdaLayerNormZero", 3072, 4096),
+        ("AdaLayerNormZeroSingle", 3072, 777),
+        ("AdaLayerNormContinuous", 256, 300),
+    ],
+)
 def test_adaln_matches_stock(monkeypatch, dtype, cls_name, D, S):
     monkeypatch.setenv(rf.FUSED_ADALN_ENV, "1")
     dev = "cuda"
@@ -204,8 +219,11 @@ def test_adaln_matches_stock(monkeypatch, dtype, cls_name, D, S):
     before = rf.COUNTS["adaln_fused"]
     with torch.no_grad():
         got = mod(x, emb) if cls_name == "AdaLayerNormContinuous" else mod(x, emb = emb)
-        want = (_STOCK_FWD[cls_name](mod, x, emb) if cls_name == "AdaLayerNormContinuous"
-                else _STOCK_FWD[cls_name](mod, x, emb = emb))
+        want = (
+            _STOCK_FWD[cls_name](mod, x, emb)
+            if cls_name == "AdaLayerNormContinuous"
+            else _STOCK_FWD[cls_name](mod, x, emb = emb)
+        )
     assert rf.COUNTS["adaln_fused"] == before + 1
     got0, want0 = (got, want) if torch.is_tensor(got) else (got[0], want[0])
     if not torch.is_tensor(got):  # gates / mlp modulation pass through untouched
@@ -215,9 +233,11 @@ def test_adaln_matches_stock(monkeypatch, dtype, cls_name, D, S):
     # normalised value by one ULP. Bound: that flip carried through the product, plus one rounding of product and sum.
     with torch.no_grad():
         e = mod.linear(mod.silu(emb))
-        scale = e.chunk(2, dim = 1)[0] if cls_name == "AdaLayerNormContinuous" else e.chunk(6 if cls_name ==
-                                                                                            "AdaLayerNormZero" else 3,
-                                                                                            dim = 1)[1]
+        scale = (
+            e.chunk(2, dim = 1)[0]
+            if cls_name == "AdaLayerNormContinuous"
+            else e.chunk(6 if cls_name == "AdaLayerNormZero" else 3, dim = 1)[1]
+        )
         n = mod.norm(x)
         m = (1 + scale)[:, None, :]
         p = n * m
@@ -234,10 +254,21 @@ def test_tiny_flux1_transformer_end_to_end(monkeypatch):
     monkeypatch.setenv(rf.FUSED_ADALN_ENV, "1")
     dev, dtype = "cuda", torch.bfloat16
     torch.manual_seed(0)
-    model = FluxTransformer2DModel(
-        patch_size = 1, in_channels = 16, num_layers = 2, num_single_layers = 2, attention_head_dim = 32,
-        num_attention_heads = 4, joint_attention_dim = 64, pooled_projection_dim = 32, axes_dims_rope = (8, 12, 12),
-    ).to(dev, dtype).eval()
+    model = (
+        FluxTransformer2DModel(
+            patch_size = 1,
+            in_channels = 16,
+            num_layers = 2,
+            num_single_layers = 2,
+            attention_head_dim = 32,
+            num_attention_heads = 4,
+            joint_attention_dim = 64,
+            pooled_projection_dim = 32,
+            axes_dims_rope = (8, 12, 12),
+        )
+        .to(dev, dtype)
+        .eval()
+    )
     B, img, txt = 1, 256, 32
     inputs = dict(
         hidden_states = torch.randn(B, img, 16, device = dev, dtype = dtype),

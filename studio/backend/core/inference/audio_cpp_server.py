@@ -28,7 +28,7 @@ import threading
 import time
 import uuid
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, BinaryIO, Optional
 
 from core.inference.audio_cpp_models import AudioCppModel
 from core.inference.audio_errors import sanitize_runtime_tail
@@ -50,6 +50,9 @@ INSTALL_RECORD = "UNSLOTH_AUDIO_CPP_PREBUILT_INFO.json"
 # Model load happens before the server answers, and a multi-GB music model can take a while from a cold disk.
 _SERVER_START_TIMEOUT_SECONDS = 600.0
 _PROBE_TIMEOUT_SECONDS = 2.0
+# A streamed answer is copied to its file in blocks this size; an error body is read up to the cap.
+_SINK_CHUNK_BYTES = 1 << 20
+_ERROR_BODY_BYTES = 64 * 1024
 # CUDA graph replay wedges these transducers mid-request (server spins, never answers); graphs off fixes it.
 _NO_CUDA_GRAPH_FAMILIES = frozenset({"nemotron_asr", "parakeet_tdt"})
 _GPU_HOST_THREADS = 8
@@ -537,8 +540,12 @@ class AudioCppServer:
         content_type: str = "application/json",
         timeout: float = 3600.0,
         cancel_event: Optional[threading.Event] = None,
+        sink: Optional[BinaryIO] = None,
     ) -> tuple[int, str, bytes]:
-        """One HTTP round trip. A set ``cancel_event`` closes the socket and raises."""
+        """One HTTP round trip; a set ``cancel_event`` closes the socket and raises.
+
+        With a ``sink`` a 2xx body is streamed into it and ``b""`` returned (separation answers are
+        hundreds of MB)."""
         if cancel_event is not None and cancel_event.is_set():
             raise AudioCppRequestCancelledError("Request cancelled.")
         connection = http.client.HTTPConnection("127.0.0.1", self.port, timeout = timeout)
@@ -549,7 +556,19 @@ class AudioCppServer:
             try:
                 connection.request(method, path, body = body, headers = {"Content-Type": content_type})
                 with connection.getresponse() as response:
-                    payload = response.read()
+                    if sink is None:
+                        payload = response.read()
+                    elif 200 <= response.status < 300:
+                        while True:
+                            if cancel_event is not None and cancel_event.is_set():
+                                raise AudioCppRequestCancelledError("Request cancelled.")
+                            block = response.read(_SINK_CHUNK_BYTES)
+                            if not block:
+                                break
+                            sink.write(block)
+                        payload = b""
+                    else:
+                        payload = response.read(_ERROR_BODY_BYTES)
                     outcome["result"] = (
                         response.status,
                         response.getheader("Content-Type") or "",
@@ -601,6 +620,16 @@ class AudioCppServer:
             raise AudioCppRequestError(status, _error_detail(data))
         return ctype, data
 
+    def post_json_to_file(self, path: str, payload: dict, dest: Path, **kwargs) -> str:
+        """POST ``payload`` and stream a 2xx body into ``dest``; return the content type."""
+        with open(dest, "wb") as sink:
+            status, ctype, data = self.request(
+                "POST", path, body = json.dumps(payload).encode("utf-8"), sink = sink, **kwargs
+            )
+        if not 200 <= status < 300:
+            raise AudioCppRequestError(status, _error_detail(data))
+        return ctype
+
     def post_multipart(
         self,
         path: str,
@@ -644,9 +673,16 @@ class AudioCppServer:
                 process.wait(timeout = 10)
             except subprocess.TimeoutExpired:
                 process.kill()
-                # A killed server can sit in GPU context teardown well past 10 s on a busy card;
-                # the music reload restarts it mid-session and must not fail on that.
-                process.wait(timeout = 120)
+                # A killed server can sit in GPU context teardown well past 10 s on a busy card (Seed-VC
+                # took ~54 s); the music reload restarts it mid-session and must not fail on that.
+                try:
+                    process.wait(timeout = 120)
+                except subprocess.TimeoutExpired:
+                    logger.warning(
+                        "audio.cpp: server pid %s still exiting after SIGKILL", process.pid
+                    )
+                    shutil.rmtree(self._config_dir, ignore_errors = True)
+                    return
         forget_pid(process.pid)
         shutil.rmtree(self._config_dir, ignore_errors = True)
 

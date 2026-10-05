@@ -7,7 +7,7 @@ import { useSidebarWidth } from "@/hooks/use-sidebar-width";
 import { isTauri } from "@/lib/api-base";
 import { cn } from "@/lib/utils";
 import { Z_LAYER } from "@/lib/z-layers";
-import { LayoutAlignLeftIcon } from "@hugeicons/core-free-icons";
+import { LayoutAlignLeftIcon, PanelLeftIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import type { Window as TauriWindow } from "@tauri-apps/api/window";
 import { ArrowLeft, ArrowRight } from "lucide-react";
@@ -208,8 +208,9 @@ export function DesktopTitlebarNavigation({
           }}
           className={buttonClass}
         >
+          {/* The open sidebar as a panel; closed, Studio's own glyph. */}
           <HugeiconsIcon
-            icon={LayoutAlignLeftIcon}
+            icon={expanded ? PanelLeftIcon : LayoutAlignLeftIcon}
             strokeWidth={1.75}
             className={iconClass}
           />

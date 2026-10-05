@@ -75,7 +75,11 @@ def _switch_on(env: str) -> bool:
     return mode == "on" or (mode == "auto" and _AUTO_ON.get(env, False) and _is_rocm())
 
 
-def wanted(env: str, dtype: Any, device: Any = "cuda") -> bool:
+def wanted(
+    env: str,
+    dtype: Any,
+    device: Any = "cuda",
+) -> bool:
     if not _switch_on(env):
         return False
     try:
@@ -94,18 +98,24 @@ def wanted(env: str, dtype: Any, device: Any = "cuda") -> bool:
 def _rope_kernel() -> Optional[Callable]:
     """The bit-identical interleaved RoPE kernel (dtype generic: float32 math, stores the input dtype)."""
     from .diffusion_flux2_rope import _kernel
-
     return _kernel()
 
 
-def _rope_eligible(x: Any, freqs_cis: Any, use_real: bool, use_real_unbind_dim: int, sequence_dim: int) -> bool:
+def _rope_eligible(
+    x: Any, freqs_cis: Any, use_real: bool, use_real_unbind_dim: int, sequence_dim: int
+) -> bool:
     import torch
 
     if not use_real or use_real_unbind_dim != -1 or sequence_dim != 1:
         return False
     if not isinstance(freqs_cis, (tuple, list)) or len(freqs_cis) != 2:
         return False
-    if not torch.is_tensor(x) or x.dtype not in (torch.bfloat16, torch.float16) or not x.is_cuda or x.dim() != 4:
+    if (
+        not torch.is_tensor(x)
+        or x.dtype not in (torch.bfloat16, torch.float16)
+        or not x.is_cuda
+        or x.dim() != 4
+    ):
         return False
     if x.requires_grad and torch.is_grad_enabled():
         return False
@@ -137,7 +147,9 @@ def _make_rope(module_name: str) -> Callable:
         # Checked first: Dynamo graph-breaks on Triton's import path, so a compiled block stays whole on stock.
         if not torch.compiler.is_compiling():
             launch = _rope_kernel()
-            if launch is not None and _rope_eligible(x, freqs_cis, use_real, use_real_unbind_dim, sequence_dim):
+            if launch is not None and _rope_eligible(
+                x, freqs_cis, use_real, use_real_unbind_dim, sequence_dim
+            ):
                 try:
                     out = launch(x, freqs_cis[0], freqs_cis[1])
                     COUNTS["rope_fused"] += 1
@@ -162,7 +174,11 @@ _ROPE_ORIGINAL: dict = {}
 _ROPE_FNS: dict = {m: _make_rope(m) for m in _MODULES}
 
 
-def install_rope(module_name: str, dtype: Any, device: Any = "cuda") -> bool:
+def install_rope(
+    module_name: str,
+    dtype: Any,
+    device: Any = "cuda",
+) -> bool:
     if module_name not in _ROPE_FNS or not wanted(FUSED_ROPE_ENV, dtype, device):
         uninstall_rope()
         return False
@@ -206,20 +222,7 @@ def _adaln_kernel() -> Optional[Callable]:
 
     @triton.jit
     def _adaln_fwd(
-        X,
-        SCALE,
-        SHIFT,
-        OUT,
-        S,
-        D,
-        sxb,
-        sxs,
-        scb,
-        shb,
-        sob,
-        sos,
-        eps,
-        BLOCK: tl.constexpr,
+        X, SCALE, SHIFT, OUT, S, D, sxb, sxs, scb, shb, sob, sos, eps, BLOCK: tl.constexpr
     ):
         row = tl.program_id(0)
         b = row // S
@@ -294,12 +297,22 @@ def _fused_modulate(norm: Any, x: Any, scale: Any, shift: Any) -> Optional[Any]:
     if torch.is_grad_enabled() and (x.requires_grad or scale.requires_grad or shift.requires_grad):
         return None
     B, S, D = x.shape
-    if x.dtype not in (torch.bfloat16, torch.float16) or D > _MAX_D or D != norm.normalized_shape[0] or x.numel() == 0:
+    if (
+        x.dtype not in (torch.bfloat16, torch.float16)
+        or D > _MAX_D
+        or D != norm.normalized_shape[0]
+        or x.numel() == 0
+    ):
         return None
     if x.stride(2) != 1 or x.numel() >= 2**31 - 1:
         return None
     for t in (scale, shift):
-        if not torch.is_tensor(t) or t.dtype is not x.dtype or t.device != x.device or tuple(t.shape) != (B, D):
+        if (
+            not torch.is_tensor(t)
+            or t.dtype is not x.dtype
+            or t.device != x.device
+            or tuple(t.shape) != (B, D)
+        ):
             return None
         if t.stride(1) != 1:
             return None
@@ -316,7 +329,14 @@ def _prev(cls: type) -> Callable:
     return _ADALN_PREV[cls]
 
 
-def _adaln_zero_forward(self, x, timestep = None, class_labels = None, hidden_dtype = None, emb = None):
+def _adaln_zero_forward(
+    self,
+    x,
+    timestep = None,
+    class_labels = None,
+    hidden_dtype = None,
+    emb = None,
+):
     cls = _CLASSES["AdaLayerNormZero"]
     if self.emb is not None or timestep is not None or class_labels is not None:
         COUNTS["adaln_stock"] += 1
@@ -332,7 +352,11 @@ def _adaln_zero_forward(self, x, timestep = None, class_labels = None, hidden_dt
     return out, gate_msa, shift_mlp, scale_mlp, gate_mlp
 
 
-def _adaln_zero_single_forward(self, x, emb = None):
+def _adaln_zero_single_forward(
+    self,
+    x,
+    emb = None,
+):
     e = self.linear(self.silu(emb))
     shift_msa, scale_msa, gate_msa = e.chunk(3, dim = 1)
     out = _fused_modulate(self.norm, x, scale_msa, shift_msa)
@@ -439,7 +463,12 @@ def uninstall_adaln() -> None:
 
 
 # ------------------------------------------------------------------------------------------------------------- lifecycle
-def install_for_pipe(pipe: Any, dtype: Any, device: Any = "cuda", logger: Any = None) -> dict:
+def install_for_pipe(
+    pipe: Any,
+    dtype: Any,
+    device: Any = "cuda",
+    logger: Any = None,
+) -> dict:
     """Install for a FLUX.1 / FLUX.2 denoiser, otherwise restore stock. Returns what engaged."""
     transformer = getattr(pipe, "transformer", None)
     module_name = type(transformer).__module__ if transformer is not None else ""
@@ -451,7 +480,11 @@ def install_for_pipe(pipe: Any, dtype: Any, device: Any = "cuda", logger: Any = 
     adaln = install_adaln(dtype, device)
     if logger is not None and (rope or adaln):
         try:
-            logger.info("diffusion.rocm_fused: fused RoPE %s, fused AdaLN on %d classes", "on" if rope else "off", adaln)
+            logger.info(
+                "diffusion.rocm_fused: fused RoPE %s, fused AdaLN on %d classes",
+                "on" if rope else "off",
+                adaln,
+            )
         except Exception:  # noqa: BLE001
             pass
     return {"rope": rope, "adaln": adaln}

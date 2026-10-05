@@ -259,6 +259,15 @@ def _save_input(account):
     return run_as(account, lambda: asyncio.run(audio_inputs.save_stream(chunks(), "me.wav"))[0])
 
 
+def _save_voice(account):
+    from core.inference import audio_inputs, audio_voices
+    record = _save_input(account)
+    return run_as(
+        account,
+        lambda: audio_voices.create(audio_inputs.input_path(record["id"]), {"name": "private"}),
+    )
+
+
 @pytest.mark.parametrize("account,other", [(ALICE, BOB), (BOB, ALICE)])
 def test_audio_inputs_voices_and_clips_do_not_resolve_another_accounts_ids(
     account, other, monkeypatch
@@ -304,6 +313,40 @@ def test_inputs_and_voices_live_in_the_accounts_audio_folder(tmp_path):
     assert run_as(BOB, audio_inputs.inputs_dir) == bob / "inputs"
     assert run_as(BOB, audio_voices.voices_dir) == bob / "voices"
     assert run_as(OWNER, audio_inputs.inputs_dir) == tmp_path / "audio" / "inputs"
+
+
+@pytest.mark.parametrize("role", ["source", "target"])
+@pytest.mark.parametrize("kind", ["input", "clip", "voice"])
+def test_a_conversion_does_not_resolve_another_accounts_audio(role, kind, monkeypatch):
+    async def fail(*_args, **_kwargs):
+        raise AssertionError("a foreign id must stop before generation")
+
+    monkeypatch.setattr(inference, "_generate_tts_wav", fail)
+    if kind == "input":
+        foreign = {"input_id": _save_input(ALICE)["id"]}
+    elif kind == "clip":
+        foreign = {"clip_id": run_as(ALICE, _save, "audio")["id"]}
+    else:
+        foreign = {"voice_id": _save_voice(ALICE)["id"]}
+    own = {"input_id": _save_input(BOB)["id"]}
+    inputs = {"source": own, "target": own, role: foreign}
+    app = FastAPI()
+
+    async def subject():
+        token = bind_account(BOB)
+        try:
+            yield BOB.username
+        finally:
+            reset_account(token)
+
+    app.dependency_overrides[get_current_subject] = subject
+    app.dependency_overrides[authenticated_via_api_key] = lambda: False
+    app.include_router(inference.router, prefix = "/api/inference")
+    with TestClient(app) as client:
+        response = client.post(
+            "/api/inference/audio/run", json = {"workflow": "convert", "inputs": inputs}
+        )
+    assert response.status_code == 404, response.text
 
 
 @pytest.mark.parametrize("account,other", [(ALICE, BOB), (BOB, ALICE)])
