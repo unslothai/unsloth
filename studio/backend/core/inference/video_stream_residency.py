@@ -61,7 +61,6 @@ def applies(
     device: Any,
     modular: bool = False,
 ) -> bool:
-    """Single-DiT Wan families streamed by group offloading on a CUDA device."""
     return (
         residency_enabled()
         and not modular
@@ -115,7 +114,6 @@ def room_mib(
     height: int,
     frames: int,
 ) -> int:
-    """MiB the resident groups may occupy for this request (never negative)."""
     from .diffusion_memory import DEFAULT_BASE_OVERHEAD_MIB, estimate_video_runtime_mib
 
     available = int(free_mib) + max(0, int(unused_cache_mib)) + max(0, int(resident_mib_now))
