@@ -104,6 +104,13 @@ def _wanted(path: str, subfolder: str | None) -> bool:
 
 
 def _checkpoint_dir(checkpoint: Checkpoint, *, local_only: bool = False) -> Path:
+    if checkpoint.layout == "llm":
+        from .llm_runtime import is_llm_decision_folder
+
+        root = Path(checkpoint.source).expanduser()
+        if not is_llm_decision_folder(root):
+            raise FileNotFoundError(f"No LLM decision model at {root}")
+        return root
     if checkpoint.name == LOCAL_NAME and not checkpoint.is_local:
         raise FileNotFoundError(
             f"UNSLOTH_SYSTEMONE_MODEL={checkpoint.source} is neither a known model nor a directory"
@@ -202,6 +209,8 @@ def is_cached(checkpoint: Checkpoint) -> bool:
         root = _checkpoint_dir(checkpoint, local_only = True)
     except Exception:
         return False
+    if checkpoint.layout == "llm":
+        return True
     folder = root / checkpoint.subfolder if checkpoint.subfolder else root
     return all((folder / name).is_file() for name in _WEIGHT_FILES)
 
@@ -211,7 +220,8 @@ def download_plan(checkpoint: Checkpoint) -> dict[str, Any]:
     plan = {"repo": None, "files": [], "size_bytes": 0, "cached": cached, "error": None}
     if checkpoint.name == LOCAL_NAME or checkpoint.is_local:
         if not cached:
-            plan["error"] = f"No complete Laya checkpoint at {checkpoint.source}"
+            kind = "LLM decision model" if checkpoint.layout == "llm" else "Laya checkpoint"
+            plan["error"] = f"No complete {kind} at {checkpoint.source}"
         return plan
     plan["repo"] = checkpoint.source
     plan["size_bytes"] = checkpoint.download_bytes
@@ -255,10 +265,17 @@ def _release_memory() -> None:
             logger.debug("Could not clear the Decision API device cache", exc_info = True)
 
 
+def _close(agent) -> None:
+    # An LLM agent is a worker process; ending it returns its GPU memory.
+    if agent is not None and hasattr(agent, "close"):
+        agent.close()
+
+
 def _evict() -> None:
     global _agent, _loaded, _device_name
     with _run_lock:
-        _agent = _loaded = _device_name = None
+        agent, _agent, _loaded, _device_name = _agent, None, None, None
+    _close(agent)
     _release_memory()
 
 
@@ -302,6 +319,10 @@ def _load_checkpoint(checkpoint: Checkpoint):
     from utils.systemone_settings import get_device as preferred_device
 
     root = _checkpoint_dir(checkpoint)
+    if checkpoint.layout == "llm":
+        from .llm_runtime import LLMDecisionAgent
+        _evict()
+        return LLMDecisionAgent(root), "cuda"
     _laya()
 
     # Evict only once the new checkpoint is on disk, so a long or failed download leaves the resident model serving.
@@ -578,9 +599,30 @@ def _misplaced() -> bool:
     return _device_name not in (None, "cpu") and _training_active()
 
 
+def _llm_blocked(checkpoint: Checkpoint) -> None:
+    if checkpoint.layout != "llm":
+        return
+    from .catalog import llm_unsupported_reason
+
+    if (reason := llm_unsupported_reason()) is not None:
+        raise Unavailable(400, "api_usage_error", reason)
+    if not _training_active():
+        return
+    # No CPU fallback for an LLM: it waits for the GPU instead of taking it from the run.
+    if _loaded is not None and _loaded.layout == "llm":
+        _evict()
+    raise Unavailable(
+        503,
+        "model_unavailable",
+        f"{checkpoint.name} needs the GPU, which a training run is using; it answers again when the run ends.",
+        retry_after = 30,
+    )
+
+
 def _ensure_loading(checkpoint: Checkpoint) -> threading.Thread | None:
     global _loader, _loading
     # Asked before _state_lock: the training backend takes its own lock.
+    _llm_blocked(checkpoint)
     misplaced = _misplaced()
     with _state_lock:
         if _loaded == checkpoint and _agent is not None and not misplaced:
@@ -1221,6 +1263,8 @@ def _decide(checkpoint: Checkpoint, state, questions: dict[str, dict[str, Any]])
             raise Unavailable(
                 503, "model_loading", f"{checkpoint.name} is reloading", retry_after = 5
             )
+        if checkpoint.layout == "llm":
+            return _decide_llm(checkpoint, agent, state, questions)
         laya_questions = {name: _to_laya(q) for name, q in questions.items()}
         try:
             result, truncated = _predict(agent, state, laya_questions)
@@ -1234,6 +1278,34 @@ def _decide(checkpoint: Checkpoint, state, questions: dict[str, dict[str, Any]])
         "usage": {"input_tokens": int(result["usage"]["input_tokens"]), "output_tokens": 0},
         "truncated": truncated,
     }
+
+
+def _decide_llm(checkpoint: Checkpoint, agent, state, questions) -> dict[str, Any]:
+    from .llm_runtime import LLMWorkerError
+    try:
+        result = agent.decide(state, {name: _to_laya(q) for name, q in questions.items()})
+    except ValueError as exc:
+        raise Unavailable(422, "invalid_request_error", str(exc)) from None
+    except LLMWorkerError as exc:
+        # A dead or hung worker is dropped, so the next request starts a fresh one.
+        threading.Thread(target = _evict_agent, args = (agent,), daemon = True).start()
+        raise Unavailable(503, "model_unavailable", str(exc), retry_after = 5) from None
+    return {
+        "model": checkpoint.name,
+        "answers": {name: _wire_answer(result["answers"][name]) for name in questions},
+        "usage": {"input_tokens": int(result["input_tokens"]), "output_tokens": 0},
+        "truncated": bool(result["truncated"]),
+    }
+
+
+def _evict_agent(agent) -> None:
+    global _agent, _loaded, _device_name
+    # Waits for _decide to release _run_lock.
+    with _run_lock:
+        if _agent is not agent:
+            return
+        _agent = _loaded = _device_name = None
+    _close(agent)
 
 
 def status() -> dict[str, Any]:
@@ -1261,8 +1333,9 @@ def unload() -> bool:
     global _agent, _loaded, _device_name, _failure
     ensure_can_unload()
     with _run_lock:
-        was_loaded = _agent is not None
+        agent, was_loaded = _agent, _agent is not None
         _agent = _loaded = _device_name = None
         _failure = None
+    _close(agent)
     _release_memory()
     return was_loaded

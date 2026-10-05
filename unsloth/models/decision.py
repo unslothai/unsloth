@@ -618,6 +618,40 @@ def _served_temperatures(config: dict, logits, items) -> list:
     ]
 
 
+def _probabilities(model, tokenizer, state, questions: dict) -> list:
+    # Per question: Laya's internal form, the option keys, their served probabilities and the input ids.
+    common = _laya().common
+    config = model.decision_config
+    build_sequence = (
+        model.build_sequence if isinstance(model, CausalDecisionModel) else common.build_sequence
+    )
+    internals, items = [], []
+    for name, question in questions.items():
+        internal = _internal(question)
+        ids, markers = build_sequence(
+            tokenizer, _parsed(state), internal, config["max_len"], config["head_max_len"]
+        )
+        if len(markers) != len(_option_keys(internal)):
+            raise DecisionDataError(
+                f'"{name}" has more options than fit in {config["max_len"]} tokens'
+            )
+        internals.append(internal)
+        items.append(
+            {
+                "input_ids": ids,
+                "markers": markers,
+                "qtype": common.QTYPES[internal["t"]],
+                "target": [0.0] * len(markers),
+            }
+        )
+    logits = _logits(model, items, tokenizer.pad_token_id)
+    temperatures = _served_temperatures(config, logits, items)
+    return [
+        (internal, _option_keys(internal), torch.softmax(z / t, -1).tolist(), item["input_ids"])
+        for internal, item, z, t in zip(internals, items, logits, temperatures)
+    ]
+
+
 def save_pretrained_merged(
     self,
     save_directory,
@@ -817,6 +851,8 @@ def _causal_from_pretrained(model_name, folder: Path, max_seq_length, full_finet
         "max_len": max_len,
         "head_max_len": min(max_len // 2, int(config.get("head_max_len", CAUSAL_HEAD_MAX_LEN))),
         "temperature": config.get("temperature", [1.0] * 3),
+        # How the LLM was last loaded, so a server loads it the same way.
+        "load_in_4bit": bool(kwargs.get("load_in_4bit")),
     }
     _mark_full_finetuning(model, full_finetuning)
     model._saved_temp_tokenizer = processor
@@ -1089,44 +1125,16 @@ class FastDecisionModel:
 
     @staticmethod
     def predict(model, tokenizer, state, questions: dict) -> dict:
-        common = _laya().common
-        config = model.decision_config
-        build_sequence = (
-            model.build_sequence
-            if isinstance(model, CausalDecisionModel)
-            else common.build_sequence
-        )
-        items, options = [], []
-        for name, question in questions.items():
-            internal = _internal(question)
-            ids, markers = build_sequence(
-                tokenizer, _parsed(state), internal, config["max_len"], config["head_max_len"]
-            )
-            keys = _option_keys(internal)
-            if len(markers) != len(keys):
-                raise DecisionDataError(
-                    f'"{name}" has more options than fit in {config["max_len"]} tokens'
-                )
-            options.append(keys)
-            items.append(
-                {
-                    "input_ids": ids,
-                    "markers": markers,
-                    "qtype": common.QTYPES[internal["t"]],
-                    "target": [0.0] * len(keys),
-                }
-            )
-        logits = _logits(model, items, tokenizer.pad_token_id)
-        temperatures = _served_temperatures(config, logits, items)
         answers = {}
-        for name, keys, z, temperature in zip(questions, options, logits, temperatures):
-            p = torch.softmax(z / temperature, -1).tolist()
-            best, kind = keys[p.index(max(p))], questions[name]["type"]
+        for name, (internal, keys, p, _) in zip(
+            questions, _probabilities(model, tokenizer, state, questions)
+        ):
+            best = keys[p.index(max(p))]
             answers[name] = {
                 "answer": int(best)
-                if kind == "score"
+                if internal["t"] == "score"
                 else best == "true"
-                if kind == "noul"
+                if internal["t"] == "noul"
                 else best,
                 "probabilities": dict(zip(keys, p)),
             }

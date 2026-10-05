@@ -279,3 +279,130 @@ def test_the_environment_can_pin_a_fine_tune_or_a_folder(home, client, monkeypat
     assert client.get("/api/settings/systemone").json()["model"] == catalog.LOCAL_NAME
     assert _post(client, catalog.LOCAL_NAME).json()["model"] == catalog.LOCAL_NAME
     assert _post(client, served).json()["model"] == served
+
+
+def _llm_fine_tune(outputs, folder):
+    path = outputs / folder
+    path.mkdir(parents = True)
+    (path / "decision_config.json").write_text('{"format": "causal"}', encoding = "utf-8")
+    (path / "decision_head.safetensors").write_bytes(b"")
+    return catalog.LLM_FINE_TUNE_PREFIX + folder
+
+
+@pytest.fixture
+def llm_worker(home, monkeypatch):
+    from core.systemone import llm_runtime
+
+    state = SimpleNamespace(agents = [], training = False, fail = False)
+
+    class Agent:
+        device = "cuda"
+
+        def __init__(self, folder):
+            self.folder, self.closed = folder, False
+            state.agents.append(self)
+
+        def decide(self, state_text, questions):
+            if state.fail:
+                raise llm_runtime.LLMWorkerError("The decision model worker exited (code -9)")
+            answers = {
+                name: {"type": "noul", "noul": 0.81, "confidence": 0.81} for name in questions
+            }
+            return {"answers": answers, "input_tokens": 42, "truncated": False}
+
+        def close(self):
+            self.closed = True
+
+    def load(checkpoint):
+        if checkpoint.layout == "llm":
+            return _REAL_LOAD(checkpoint)
+        # As the real Laya load: the resident model goes before the new one comes.
+        laya_runtime._evict()
+        return SimpleNamespace(), "cpu"
+
+    monkeypatch.setattr(laya_runtime, "_load_checkpoint", load)
+    monkeypatch.setattr(llm_runtime, "LLMDecisionAgent", Agent)
+    monkeypatch.setattr(catalog, "llm_unsupported_reason", lambda: None)
+    monkeypatch.setattr(laya_runtime, "_training_active", lambda: state.training)
+    return state
+
+
+def test_llm_decision_models_are_listed_and_served_by_their_worker(home, client, llm_worker):
+    laya = _fine_tune(home, "laya_run_1")
+    llm = _llm_fine_tune(home, "qwen_run_2")
+    assert _listed(client) == [laya, llm]
+    assert _put(client, enabled = True, model = llm).status_code == 200
+
+    response = _post(client)
+    assert response.status_code == 200, response.text
+    assert response.json() == {
+        "model": llm,
+        "answers": {"urgent": {"type": "noul", "noul": 0.81}},
+        "usage": {"input_tokens": 42, "output_tokens": 0},
+    }
+    assert [agent.folder for agent in llm_worker.agents] == [home / "qwen_run_2"]
+    assert laya_runtime.status()["device"] == "cuda"
+
+    # Switching to Laya ends the worker, so its GPU memory goes with it.
+    assert _post(client, laya).json()["model"] == laya
+    assert llm_worker.agents[0].closed
+
+
+def test_an_llm_decision_model_waits_for_training_and_restarts_a_dead_worker(
+    home, client, llm_worker
+):
+    llm = _llm_fine_tune(home, "qwen_run_1")
+    assert _put(client, enabled = True, model = llm).status_code == 200
+    assert _post(client).status_code == 200
+
+    llm_worker.training = True
+    busy = _post(client)
+    assert busy.status_code == 503 and "training run" in busy.json()["detail"]["message"]
+    assert llm_worker.agents[0].closed
+    llm_worker.training = False
+
+    assert _post(client).status_code == 200
+    llm_worker.fail = True
+    assert _post(client).status_code == 503
+    if laya_runtime._loader is not None:
+        laya_runtime._loader.join(5)
+    llm_worker.fail = False
+    assert _post(client).status_code == 200
+    assert len(llm_worker.agents) == 3 and llm_worker.agents[1].closed
+
+
+def test_the_environment_can_point_at_an_llm_decision_folder(home, client, llm_worker, monkeypatch):
+    _llm_fine_tune(home, "qwen_run_1")
+    assert _put(client, enabled = True).status_code == 200
+    monkeypatch.setenv("UNSLOTH_SYSTEMONE_MODEL", str(home / "qwen_run_1"))
+    assert client.get("/api/settings/systemone").json()["model"] == catalog.LOCAL_NAME
+    assert _post(client).json()["model"] == catalog.LOCAL_NAME
+    assert llm_worker.agents[0].folder == home / "qwen_run_1"
+
+
+def test_llm_decision_models_need_a_gpu(home, client, llm_worker, monkeypatch):
+    llm = _llm_fine_tune(home, "qwen_run_1")
+    monkeypatch.setattr(catalog, "llm_unsupported_reason", lambda: catalog.LLM_NEEDS_GPU)
+    assert _put(client, enabled = True, model = llm).status_code == 200
+    response = _post(client)
+    assert response.status_code == 400
+    assert response.json()["detail"]["message"] == catalog.LLM_NEEDS_GPU
+    assert llm_worker.agents == []
+
+
+def test_llm_answers_have_the_laya_shapes():
+    from core.systemone.llm_runtime import _answer
+
+    confidence = laya_runtime._laya().common.confidence_from_probs
+    choice = _answer(
+        {"t": "choice", "crit": {"a": "", "b": ""}}, ["a", "b"], [0.25, 0.75], confidence
+    )
+    assert (choice["choice"], choice["probabilities"]) == ("b", {"a": 0.25, "b": 0.75})
+    score = _answer(
+        {"t": "score", "crit": ["low", "mid", "high"]}, ["0", "1", "2"], [0.2, 0.3, 0.5], confidence
+    )
+    assert score["score"] == 1.3 and score["legend"] == {"0": "low", "1": "mid", "2": "high"}
+    noul = _answer({"t": "noul", "crit": None}, ["false", "true"], [0.1, 0.9], confidence)
+    assert noul == {"type": "noul", "noul": 0.9, "confidence": 0.9}
+    for answer in (choice, score, noul):
+        assert laya_runtime._wire_answer(answer)["type"] == answer["type"]

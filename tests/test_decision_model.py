@@ -779,7 +779,11 @@ def test_llm_trains_saves_and_loads_back(llm, tmp_path):
     )
 
     loaded, tokenizer = FastDecisionModel.from_pretrained(str(out))
-    assert loaded.decision_config == {k: v for k, v in saved.items() if k != "fine_tuned"}
+    # It records how this load quantized the LLM; everything else is what was saved.
+    assert {k: v for k, v in loaded.decision_config.items() if k != "load_in_4bit"} == {
+        k: v for k, v in saved.items() if k not in ("fine_tuned", "load_in_4bit")
+    }
+    assert saved["load_in_4bit"] is True and loaded.decision_config["load_in_4bit"] is False
     assert FastDecisionModel.evaluate(loaded, tokenizer, held) == FastDecisionModel.evaluate(
         model, tokenizer, held
     )

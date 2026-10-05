@@ -19,6 +19,8 @@ class Checkpoint:
     subfolder: str | None
     description: str
     download_bytes: int = 0
+    # "laya" (rl_agent_config.json + encoder) or "llm" (FastDecisionModel on an LLM, decision_config.json).
+    layout: str = "laya"
 
     @property
     def is_local(self) -> bool:
@@ -57,6 +59,27 @@ DEFAULT_ALIASES = frozenset({"default", "laya", "jev-latest", "jev-preview", "op
 LOCAL_NAME = "laya-local"
 CONNECTION_PREFIX = "connection:"
 FINE_TUNE_PREFIX = "laya-ft:"
+LLM_FINE_TUNE_PREFIX = "llm-ft:"
+FINE_TUNE_PREFIXES = (FINE_TUNE_PREFIX, LLM_FINE_TUNE_PREFIX)
+
+LLM_NEEDS_GPU = "LLM decision models need an NVIDIA or AMD GPU; this machine has none. Use a Laya model instead."
+
+
+def is_fine_tune_name(name: object) -> bool:
+    return isinstance(name, str) and name.startswith(FINE_TUNE_PREFIXES)
+
+
+def llm_unsupported_reason() -> str | None:
+    # ROCm reports DeviceType.CUDA too. A failed probe answers None: detection only ever widens.
+    try:
+        from utils.hardware import hardware
+
+        device = hardware.get_device()
+        if device is None:
+            return None
+        return None if device == hardware.DeviceType.CUDA else LLM_NEEDS_GPU
+    except Exception:
+        return None
 
 
 def _owner_outputs() -> Path:
@@ -67,6 +90,7 @@ def _owner_outputs() -> Path:
 
 def _fine_tune_in(root: Path, folder_name: str) -> Checkpoint | None:
     from .laya_runtime import is_cached
+    from .llm_runtime import is_llm_decision_folder
 
     # Dot folders include runs staged for deletion (.<name>.deleting-<id>).
     if not folder_name or folder_name.startswith("."):
@@ -78,16 +102,26 @@ def _fine_tune_in(root: Path, folder_name: str) -> Checkpoint | None:
     except (OSError, RuntimeError, ValueError):
         # A NUL byte or a symlink loop in a caller's name.
         return None
-    checkpoint = Checkpoint(
-        FINE_TUNE_PREFIX + folder_name, str(folder), None, "Laya fine-tuned in Studio."
-    )
+    if is_llm_decision_folder(folder):
+        checkpoint = Checkpoint(
+            LLM_FINE_TUNE_PREFIX + folder_name,
+            str(folder),
+            None,
+            "LLM decision model trained with Unsloth.",
+            layout = "llm",
+        )
+    else:
+        checkpoint = Checkpoint(
+            FINE_TUNE_PREFIX + folder_name, str(folder), None, "Laya fine-tuned in Studio."
+        )
     return checkpoint if is_cached(checkpoint) else None
 
 
 def fine_tune(name: str) -> Checkpoint | None:
-    if not name.startswith(FINE_TUNE_PREFIX):
+    # Either prefix finds the run; the answer carries the one for the folder's layout.
+    if not is_fine_tune_name(name):
         return None
-    folder_name = name[len(FINE_TUNE_PREFIX) :]
+    folder_name = name.partition(":")[2]
     if "/" in folder_name or "\\" in folder_name:
         return None
     return _fine_tune_in(_owner_outputs(), folder_name)
@@ -153,6 +187,10 @@ def default_checkpoint() -> Checkpoint | Connection:
         return connection
     if (checkpoint := fine_tune(configured)) is not None:
         return checkpoint
+    from .llm_runtime import is_llm_decision_folder
+
+    if is_llm_decision_folder(Path(configured).expanduser()):
+        return Checkpoint(LOCAL_NAME, configured, None, "Local LLM decision model.", layout = "llm")
     subfolder = os.environ.get("UNSLOTH_SYSTEMONE_SUBFOLDER", "").strip() or None
     return Checkpoint(LOCAL_NAME, configured, subfolder, "Local Laya checkpoint.")
 
