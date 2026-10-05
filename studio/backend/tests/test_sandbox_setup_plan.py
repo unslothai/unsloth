@@ -358,7 +358,7 @@ def test_windows_after_a_reboot_only_prepares(windows):
     plan = plan_mod.detect(False)
     assert plan.steps == (("python", "install_mxc_prebuilt.py", "--prepare-host"),)
     assert plan.needs_consent is False
-    assert "prepare-null-device" in plan.reason
+    assert plan.reason == "This PC needs its administrator step again after the restart."
 
 
 def test_windows_prepared_but_not_allowed_only_needs_consent(windows):

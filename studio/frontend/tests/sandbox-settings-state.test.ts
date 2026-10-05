@@ -15,6 +15,7 @@ import {
   jobResult,
   shouldPollJob,
   toolRowView,
+  toolRowsQuiet,
   windowsView,
 } from "../src/features/settings/tabs/sandbox-tab-state.ts";
 
@@ -251,4 +252,20 @@ test("a missing runtime offers the install unless this Windows cannot run MXC", 
       .unsupported,
     "build",
   );
+});
+
+test("the tool rows keep only their badge while a section below has the answer", () => {
+  assert.equal(toolRowsQuiet(true, null), true);
+  assert.equal(toolRowsQuiet(false, null), false);
+  const view = (overrides: Partial<WindowsSandboxStatus>) =>
+    windowsView(windows(overrides), null, false);
+  assert.equal(toolRowsQuiet(false, view({ runtimeInstalled: false })), true);
+  assert.equal(toolRowsQuiet(false, view({ allowDaclFallback: false })), true);
+  assert.equal(
+    toolRowsQuiet(false, view({ hostPrepMissing: ["prepare-null-device"] })),
+    true,
+  );
+  assert.equal(toolRowsQuiet(false, view({ runtimeUnsupported: "build" })), true);
+  // Prepared, yet a tool still fails: its own reason is the only clue left.
+  assert.equal(toolRowsQuiet(false, view({})), false);
 });

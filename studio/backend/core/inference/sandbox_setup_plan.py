@@ -446,9 +446,15 @@ def _windows_plan() -> SetupPlan:
     if not opted_in:
         parts.append("the Windows sandbox is not turned on yet")
     if installed and missing:
-        parts.append(f"host preparation is missing ({', '.join(missing)})")
+        # Plain words; the MXC step names mean nothing to a user. Only the null device step repeats per boot.
+        again = list(missing) == ["prepare-null-device"]
+        parts.append(
+            "this PC needs its administrator step again after the restart"
+            if again
+            else "this PC still needs its one-time administrator step"
+        )
     elif installed and missing is None:
-        parts.append("host preparation could not be confirmed")
+        parts.append("Unsloth could not tell whether this PC had its administrator step")
     return SetupPlan(
         platform = sys.platform,
         action = WINDOWS_SETUP,

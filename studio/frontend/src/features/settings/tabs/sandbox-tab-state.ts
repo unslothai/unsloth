@@ -111,6 +111,22 @@ export function windowsView(
   };
 }
 
+/** A section below already says why and what to do: the Python and Terminal rows keep only their badge. */
+export function toolRowsQuiet(
+  setupRowShown: boolean,
+  windows: WindowsView | null,
+): boolean {
+  if (setupRowShown) return true;
+  if (!windows) return false;
+  return (
+    windows.unsupported !== null ||
+    windows.prep === "runtimeMissing" ||
+    windows.prep === "off" ||
+    windows.prep === "needsPreparing" ||
+    windows.prep === "needsPreparingAgain"
+  );
+}
+
 export type JobResult = "succeeded" | "declined" | "failed" | null;
 
 export function jobResult(job: HostPrepJob | null): JobResult {

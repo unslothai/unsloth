@@ -40,6 +40,7 @@ import {
   setupRowView,
   shouldPollJob,
   toolRowView,
+  toolRowsQuiet,
   windowsView,
 } from "./sandbox-tab-state";
 
@@ -60,12 +61,15 @@ function ToolRow({
   tool,
   shell,
   quiet = false,
+  withRemediation = true,
 }: {
   label: string;
   tool: SandboxToolStatus;
   shell?: SandboxStatus["terminalShell"];
   /** The setup row below already says why and what to run; repeating it per tool is noise. */
   quiet?: boolean;
+  /** Off on Windows: the generic MXC remediation repeats what the Windows section offers. */
+  withRemediation?: boolean;
 }) {
   const t = useT();
   const view = toolRowView(tool, shell ?? null);
@@ -74,7 +78,7 @@ function ToolRow({
     view.runsInCmd ? (
       t("settings.sandbox.runsInCmd")
     ) : undefined
-  ) : view.remediation ? (
+  ) : withRemediation && view.remediation ? (
     <>
       <span className="block">{reason}</span>
       <span className="mt-1 block">{view.remediation}</span>
@@ -318,6 +322,7 @@ export function SandboxTab() {
   const setupRow = status
     ? setupRowView(status, setupJob, setupJob?.manualCommand ?? "")
     : null;
+  const quietTools = toolRowsQuiet(setupRow?.show ?? false, view);
   const setupResult = jobResult(setupJob);
   const setupOutput = jobOutputLines(setupJob);
   const setupNote =
@@ -355,13 +360,15 @@ export function SandboxTab() {
                 <ToolRow
                   label={t("settings.sandbox.python")}
                   tool={status.python}
-                  quiet={setupRow?.show ?? false}
+                  quiet={quietTools}
+                  withRemediation={!windows}
                 />
                 <ToolRow
                   label={t("settings.sandbox.terminal")}
                   tool={status.terminal}
                   shell={status.terminalShell}
-                  quiet={setupRow?.show ?? false}
+                  quiet={quietTools}
+                  withRemediation={!windows}
                 />
                 {setupRow?.show ? (
                   <SettingsRow
