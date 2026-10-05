@@ -1,13 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Load + Reload controls for the API monitor page (issue #11189).
-// Reuses the Chat model-loading stack instead of constructing a partial
-// LoadModelRequest: ModelSelector for picking + useChatModelRuntime.selectModel
-// for the load (context, quant variant, GPU placement, LoRA, trust approval,
-// KV cache, speculative decoding, active-generation confirm, in-flight guard).
-// Reload resolves its target from the durable last-local-load record, never
-// from the bounded/clearable monitor ring buffer alone.
+// Loads through the Chat runtime's selectModel, so the API board gets the same context, quant,
+// GPU placement, trust and running-chat guards as Chat.
 
 import { Button } from "@/components/ui/button";
 import {
@@ -60,9 +55,7 @@ export function ApiModelLoadControls({
   activeModel,
   onSettled,
 }: {
-  /** data.active_model from the monitor poll, for tooltips/disabled state. */
   activeModel: string | null | undefined;
-  /** Refresh the monitor snapshot after a load/unload settles. */
   onSettled: () => void;
 }): ReactElement {
   const { selectModel, refresh, ejectModel } = useChatModelRuntime();
@@ -94,9 +87,6 @@ export function ApiModelLoadControls({
       .catch(() => setLastLoadLabel(null));
   }, []);
 
-  // Populate the shared catalogs so the picker lists the same models as Chat.
-  // refresh() fills models/loras + re-pins the active checkpoint; it never
-  // clears an external-provider selection.
   useEffect(() => {
     refresh({ includeLoras: false });
     refreshLocalModels();
@@ -179,9 +169,6 @@ export function ApiModelLoadControls({
     try {
       await reloadLastModel({
         readLastLoad: () => readLastLocalModelLoad(),
-        readSelectedCheckpoint: () =>
-          useChatRuntimeStore.getState().params.checkpoint,
-        isExternalSelection: (id) => isExternalModelId(id),
         resolveConfig: (id, variant) => {
           const resolved = resolveResidentInitialConfig(id, variant);
           return resolved.remembered ? { config: resolved.config } : null;
@@ -191,7 +178,7 @@ export function ApiModelLoadControls({
             id: target.id,
             isGguf: target.kind === "gguf",
             ggufVariant: target.ggufVariant ?? undefined,
-            config: (target.config as never) ?? undefined,
+            config: target.config ?? undefined,
             forceReload: true,
             isDownloaded: true,
           });

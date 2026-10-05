@@ -11,57 +11,56 @@ import {
   type ReloadTarget,
 } from "../src/features/api-monitor/reload-last-model.ts";
 
-test("reload target uses the durable last local model, not the selected checkpoint", () => {
-  const resolved = resolveReloadTarget(
-    { id: "unsloth/qwen3", kind: "model", ggufVariant: null },
-    "external::openai:gpt-5",
-    (id) => id.startsWith("external::"),
-    (id, variant) => ({
-      config: { id, variant, maxSeqLength: 8192 },
-    }),
+test("reload target carries the remembered config", () => {
+  assert.deepEqual(
+    resolveReloadTarget(
+      { id: "unsloth/qwen3", kind: "model", ggufVariant: null },
+      (id, variant) => ({ config: { id, variant, maxSeqLength: 8192 } }),
+    ),
+    {
+      id: "unsloth/qwen3",
+      kind: "model",
+      ggufVariant: null,
+      config: { id: "unsloth/qwen3", variant: null, maxSeqLength: 8192 },
+    },
   );
-
-  assert.equal(resolved.ok, true);
-  if (!resolved.ok) return;
-  assert.deepEqual(resolved.target, {
-    id: "unsloth/qwen3",
-    kind: "model",
-    ggufVariant: null,
-    config: { id: "unsloth/qwen3", variant: null, maxSeqLength: 8192 },
-    forceReload: true,
-    externalPreserved: true,
-  });
 });
 
 test("reload target keeps a GGUF quant for cached repos", () => {
-  const resolved = resolveReloadTarget(
+  const target = resolveReloadTarget(
     { id: "unsloth/qwen3-GGUF", kind: "gguf", ggufVariant: "Q4_K_M" },
-    "",
-    () => false,
     (id, variant) => ({ config: { key: `${id}:${variant}` } }),
   );
+  assert.equal(target?.ggufVariant, "Q4_K_M");
+  assert.deepEqual(target?.config, { key: "unsloth/qwen3-GGUF:Q4_K_M" });
+});
 
-  assert.equal(resolved.ok, true);
-  if (!resolved.ok) return;
-  assert.equal(resolved.target.kind, "gguf");
-  assert.equal(resolved.target.ggufVariant, "Q4_K_M");
-  assert.deepEqual(resolved.target.config, {
-    key: "unsloth/qwen3-GGUF:Q4_K_M",
+test("reload target accepts a direct .gguf file without a quant", () => {
+  const target = resolveReloadTarget(
+    { id: "/models/qwen3-Q4_K_M.gguf", kind: "gguf", ggufVariant: null },
+    () => null,
+  );
+  assert.deepEqual(target, {
+    id: "/models/qwen3-Q4_K_M.gguf",
+    kind: "gguf",
+    ggufVariant: null,
+    config: null,
   });
 });
 
-test("reload rejects a quant-less cached GGUF repo", () => {
-  const resolved = resolveReloadTarget(
-    { id: "unsloth/qwen3-GGUF", kind: "gguf", ggufVariant: null },
-    "",
-    () => false,
-    () => null,
+test("reloadLastModel rejects missing history without loading", async () => {
+  const loaded: ReloadTarget[] = [];
+  await assert.rejects(
+    reloadLastModel({
+      readLastLoad: async () => null,
+      resolveConfig: () => null,
+      loadTarget: async (next) => {
+        loaded.push(next);
+      },
+    }),
+    { message: RELOAD_MISSING_HISTORY_MESSAGE },
   );
-
-  assert.deepEqual(resolved, {
-    ok: false,
-    reason: RELOAD_MISSING_HISTORY_MESSAGE,
-  });
+  assert.deepEqual(loaded, []);
 });
 
 test("reloadLastModel awaits durable history before loading", async () => {
@@ -72,15 +71,11 @@ test("reloadLastModel awaits durable history before loading", async () => {
       kind: "model",
       ggufVariant: null,
     }),
-    readSelectedCheckpoint: () => "",
-    isExternalSelection: () => false,
     resolveConfig: () => null,
     loadTarget: async (next) => {
       loaded.push(next);
     },
   });
-
   assert.equal(target.id, "unsloth/llama");
-  assert.equal(target.forceReload, true);
   assert.deepEqual(loaded, [target]);
 });
