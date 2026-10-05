@@ -3,6 +3,7 @@
 
 """Shared fixtures for the unsloth_cli tests."""
 
+import os
 import sys
 import types
 
@@ -50,34 +51,14 @@ def stub_tool_policy_state(monkeypatch):
 
 @pytest.fixture(autouse = True)
 def _no_cloudflared_download(monkeypatch, tmp_path):
-    """Stop a unit test fetching the 40 MB cloudflared binary (issue #9586, channel 3a).
-
-    The `--secure` path calls a helper that loads studio/backend/cloudflare_tunnel.py by
-    file path and asks `ensure_cloudflared()` whether a tunnel could start. That call
-    DOWNLOADS the binary when none is found: measured on Linux, eight tests across
-    test_studio_secure_flag.py and test_studio_cloudflare_flag.py each fetched 39,799,316
-    bytes into ~/.unsloth/studio/bin/cloudflared. The suite then depends on network
-    reachability and writes a large file outside anything it owns.
-
-    Satisfied through PATH rather than by patching the module. The helper does
-    `spec_from_file_location("studio.backend.cloudflare_tunnel", ...)` and execs a FRESH
-    module object on every call, so `monkeypatch.setattr` on an imported
-    `cloudflare_tunnel` reaches a different object entirely and the download still happens
-    -- measured. `find_cloudflared()` consults `shutil.which("cloudflared")` first and
-    returns early, so a stub on PATH satisfies every copy of the module, and the real
-    lookup, cache-path and platform-asset code still runs.
-
-    Both names: shutil.which keys off os.name for PATHEXT, which these tests do not
-    monkeypatch even where they do set sys.platform.
-    """
-    import os as _os
-
+    # The --secure check calls ensure_cloudflared(), which downloads ~40 MB when none is
+    # found (#9586). It execs a fresh cloudflare_tunnel per call, so patching the module
+    # misses it; find_cloudflared() checks PATH first, so a stub there covers every copy.
     stub_dir = tmp_path / "fake-bin"
     stub_dir.mkdir()
+    # Both names: shutil.which honours PATHEXT by os.name, which tests faking win32 keep.
     for name in ("cloudflared", "cloudflared.exe"):
         stub = stub_dir / name
-        # Contents are irrelevant: shutil.which checks existence and the executable
-        # bit, and nothing ever runs this file.
         stub.write_text("", encoding = "utf-8")
         stub.chmod(0o755)
-    monkeypatch.setenv("PATH", str(stub_dir) + _os.pathsep + _os.environ.get("PATH", ""))
+    monkeypatch.setenv("PATH", str(stub_dir) + os.pathsep + os.environ.get("PATH", ""))
