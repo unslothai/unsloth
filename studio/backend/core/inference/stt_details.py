@@ -231,8 +231,7 @@ def normalize(payload: dict, family: str, sent_rate: int) -> dict:
     turns = _turns(payload.get("speaker_turns"), rate)
     if not segments and turns:
         segments = _segments(payload.get("speaker_turns"), rate)
-    # Diarized answers can come grouped per speaker; the player's binary search and the
-    # paragraph merge both assume time order.
+    # Diarized answers can come grouped per speaker; the player assumes time order.
     _by_time = lambda span: (span["start"], span["end"])  # noqa: E731
     words.sort(key = _by_time)
     segments.sort(key = _by_time)

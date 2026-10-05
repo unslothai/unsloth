@@ -390,8 +390,7 @@ function useSourceSide(clip: AudioGalleryClip | null): {
     let url: string | null = null;
     let cancelled = false;
     setSide({});
-    // The saved copy is mono at the model's rate and cut at the cap: what the model heard, not
-    // the recording. Play the recording while it lives and fall back to the copy once it expired.
+    // The saved copy is the prepared (mono, resampled, capped) input: prefer the live recording.
     const original = sourceId
       ? sourceFileUrl({ kind, id: sourceId, name: "", durationS: null })
       : null;

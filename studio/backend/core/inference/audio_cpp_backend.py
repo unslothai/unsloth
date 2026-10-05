@@ -72,9 +72,8 @@ _inflight: dict[tuple[str, str, str], tuple[threading.Event, list]] = {}
 
 
 def _download_or_cancel(key, download, cancel_event) -> None:
-    """hf_hub_download has no cancel hook, so it runs on its own thread and the caller stops waiting
-    when the event fires. The thread finishes into the Hub cache, so the next request finds the file,
-    and a retry while it is still streaming joins that thread instead of starting a second transfer."""
+    """hf_hub_download has no cancel hook: it runs on its own thread and the caller stops waiting on
+    cancel. The thread still finishes into the Hub cache; a retry meanwhile joins it."""
     with _inflight_lock:
         flight = _inflight.get(key)
         if flight is None:
@@ -414,8 +413,7 @@ class AudioCppBackend:
             if cancel_event is None:
                 fetch()
             else:
-                # The cache root is part of the key: a retry after the Hub cache moved in Settings
-                # must not join a transfer still writing into the old one.
+                # Cache root in the key: a retry after the cache moved must not join the old transfer.
                 _download_or_cancel((cache_dir, model.repo_id, path), fetch, cancel_event)
         return True
 

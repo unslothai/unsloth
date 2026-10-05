@@ -154,8 +154,7 @@ function reuseConvertInputs(clip: AudioGalleryClip) {
       }
     : null;
   // An upload expires within a day; the clip kept what it converted, so upload that copy again.
-  // The card stays empty until the live id is known: placed first, the old id let Generate race
-  // the upload and 404 on it. The kept id goes in only when the upload fails, marked expired.
+  // Empty until the live id lands (the old id let Generate race the upload); expired on failure.
   reuseSeq += 1;
   if (!clip.source_clip_id && clip.source_saved && sourceId) {
     const seq = reuseSeq;
@@ -191,8 +190,7 @@ function reuseConvertInputs(clip: AudioGalleryClip) {
         ? { kind: "input" as const, id: clip.target_input_id }
         : null;
   if (target?.kind === "input") {
-    // An uploaded target has no kept copy to upload again, so ask whether it is still there
-    // before placing it: placed bare, an expired one reads as ready until the card's own 404.
+    // No kept copy to re-upload: check it still exists, else it reads as ready until a 404.
     const seq = reuseSeq;
     const named = { ...target, name: clip.reference_name ?? "Target voice", durationS: null };
     store.setTarget(null);

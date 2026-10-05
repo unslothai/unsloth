@@ -106,9 +106,8 @@ def check_instructions(
             "Make fewer changes, or use DotTTS Edit."
         )
     before, after = _collapse(original), _collapse(edited)
-    # The runtime gets the instructions and history gets ``edited``, so the two have to agree.
-    # Which occurrence of a repeated word an instruction means is the runtime's call, so the
-    # check is on words as a bag, which every page-built diff satisfies whatever the positions.
+    # Runtime gets the instructions, history gets ``edited``: they must agree as bags of words
+    # (which occurrence of a repeated word is meant is the runtime's call).
     words = Counter(before.split())
     for instruction in items:
         match = INSTRUCTION_RE.match(str(instruction))
@@ -125,8 +124,7 @@ def check_instructions(
             return MISMATCH
         if not all(_collapse(n) and _collapse(n) in after for n in news):
             return MISMATCH
-        # Against the running bag, not the transcript: a second "Delete 'one'." with one "one"
-        # left, or an anchor an earlier instruction removed, has nothing for the runtime to do.
+        # Running bag, not the transcript: a word an earlier instruction removed is gone.
         if not all(words[token] > 0 for o in olds for token in o.split()):
             return MISMATCH
         for phrase in removed:
@@ -178,9 +176,7 @@ def request_problem(
         if not delivery_instructions(edit.get("speed"), edit.get("pitch_steps")):
             return NO_DELIVERY
         return None
-    # The page holds Generate when every word is deleted or none is changed; a direct request
-    # gets the same answers. Before the per-style checks: a no-op marker such as
-    # <sub targ="x">x</sub>, or "Replace 'x' with 'x'.", passes both of them.
+    # Before the per-style checks: a no-op such as <sub targ="x">x</sub> passes them.
     if style in ("markup", "instructions", "sentence"):
         if not _collapse(text):
             return EMPTY_TARGET

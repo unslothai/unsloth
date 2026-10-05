@@ -23013,8 +23013,7 @@ async def _run_audio_convert(
                 audio_inputs.resolve_source, ref.model_dump(exclude_none = True)
             )
         except audio_inputs.AudioInputError as exc:
-            # Two uploads share one expiry message; naming the side lets the page mark only
-            # the card that expired instead of both.
+            # Names the side so the page marks only the card that expired.
             raise _audio_source_error(_convert_role_error(exc, role)) from None
     source, target = resolved["source"], resolved.get("target")
     max_seconds = {"source": CONVERT_SOURCE_MAX_SECONDS, "target": CONVERT_TARGET_MAX_SECONDS}

@@ -425,7 +425,6 @@ export function useConvertGeneration({
       if (!controller.signal.aborted) {
         updateGenerationPhase("finishing");
         // Only the expired-upload 404: a deleted clip or voice says otherwise and leaves uploads alone.
-        // The server names the side; the old shared message marks every upload.
         const expiredRole =
           error instanceof AudioApiError && error.status === 404
             ? error.message === CONVERT_EXPIRED_MESSAGE.source
