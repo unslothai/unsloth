@@ -2869,7 +2869,7 @@ class InferenceOrchestrator:
                 **_compaction_fit_kwargs(context_policy, compaction_headroom_ratio),
             )
             if not truncation:
-                return unchanged
+                return {**unchanged, "boundary_applied": True}
 
             recall = _archive_and_recall(
                 fitted,
@@ -2903,6 +2903,7 @@ class InferenceOrchestrator:
                 "events": [*recall["events"], {"type": "context_truncated", **truncation}],
                 "recalled": bool(recall["recalled"]),
                 "anchored": list(recall["anchored"]),
+                "boundary_applied": True,
             }
         except Exception as exc:
             logger.warning("Could not preflight the MLX context window: %s", exc)
@@ -3234,8 +3235,10 @@ class InferenceOrchestrator:
                 request_branch = _request_branch,
                 live_branch = live_branch,
             )
-            # The saved boundary describes the original transcript, so it applies once.
-            _sticky_boundary_applied = True
+            # The saved boundary describes the original transcript, so it applies once: in the
+            # first fit that runs, which a resumed reply's or a failed one is not.
+            if result.get("boundary_applied"):
+                _sticky_boundary_applied = True
             if result.get("recalled"):
                 _conversation_recall_done = True
                 for message in result.get("anchored") or ():

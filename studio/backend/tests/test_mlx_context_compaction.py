@@ -110,7 +110,7 @@ def test_a_prompt_the_fit_must_not_touch_is_returned_unchanged(case):
 
     assert result["messages"] == messages
     assert result["system_prompt"] == "you are helpful"
-    assert result["events"] == []
+    assert result["events"] == [] and "boundary_applied" not in result
 
 
 def test_a_request_resets_only_where_search_can_follow_and_names_only_an_offered_tool(
@@ -233,6 +233,34 @@ def test_the_tool_loop_refits_every_turn_and_keeps_the_question_past_a_reprompt(
     # The loop is the one MLX request that may reset, and it archives under its thread.
     assert bool(truncated[0].get("checkpoint_started")) is (policy == "checkpoint")
     assert last_fit["thread_id"] == "thread-1"
+
+
+# A result overflowing by less than one old turn, against a boundary two turns deep; or neither.
+@pytest.mark.parametrize("result_chars, saved", [(3300, 4), (8, 0)])
+def test_a_turn_that_is_not_fitted_leaves_the_saved_boundary_to_the_next(
+    monkeypatch, archive_calls, result_chars, saved
+):
+    asked = []
+
+    def _saved_boundary(*_args, **_kwargs):
+        asked.append(1)
+        return saved, False
+
+    monkeypatch.setattr(llama_cpp, "_sticky_compaction_state", _saved_boundary)
+    first, second = ({"role": "user", "content": letter * 400} for letter in "ab")
+    resumed = {"role": "assistant", "content": "Let me"}
+    _, prompts, _ = _run_loop(
+        monkeypatch,
+        [first, ANSWERED, second, ANSWERED, QUESTION, resumed],
+        [CALL % 1, CALL % 2, "done"],
+        result_chars,
+        continue_final_message = True,
+        context_policy = "rolling",
+    )
+
+    assert any(m is first for m in prompts[0])
+    assert any(m is second for m in prompts[1]) == (not saved)
+    assert len(asked) == 1
 
 
 # The cap's budget notice; then the no-op notice a repeated call earns, once, twice, and
