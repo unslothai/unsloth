@@ -4053,6 +4053,24 @@ def get_base_model_from_lora(lora_path: str) -> Optional[str]:
         return None
 
 
+def load_mlx_adapter_tokenizer(tokenizer, lora_path: str):
+    # FastMLXModel hands back the base repo's tokenizer, not the one trained and saved with the adapter.
+    if getattr(tokenizer, "chat_template", None) or not (
+        Path(lora_path) / "tokenizer_config.json"
+    ).is_file():
+        return tokenizer
+    try:
+        from mlx_lm.utils import load_tokenizer
+
+        adapter_tokenizer = load_tokenizer(
+            Path(lora_path), eos_token_ids = getattr(tokenizer, "eos_token_ids", None)
+        )
+    except Exception as e:
+        logger.warning(f"Could not load the tokenizer saved with the adapter at {lora_path}: {e}")
+        return tokenizer
+    return adapter_tokenizer if adapter_tokenizer.chat_template else tokenizer
+
+
 def get_base_model_from_lora_identifier(
     identifier: str, hf_token: Optional[str] = None
 ) -> Optional[str]:
