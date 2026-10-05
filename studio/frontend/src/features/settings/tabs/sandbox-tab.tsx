@@ -11,12 +11,15 @@ import { HugeiconsIcon } from "@hugeicons/react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   type HostPrepJob,
+  type RuntimeInstallJob,
   type SandboxSettingsUpdate,
   type SandboxStatus,
   type SandboxToolStatus,
   loadHostPreparation,
+  loadRuntimeInstall,
   loadSandboxStatus,
   startHostPreparation,
+  startRuntimeInstall,
   updateSandboxSettings,
 } from "../api/sandbox-isolation";
 import { isSettingsRouteAbsent } from "../api/settings-route-absent";
@@ -76,6 +79,7 @@ export function SandboxTab() {
   const t = useT();
   const [status, setStatus] = useState<SandboxStatus | null>(null);
   const [job, setJob] = useState<HostPrepJob | null>(null);
+  const [runtimeJob, setRuntimeJob] = useState<RuntimeInstallJob | null>(null);
   const [error, setError] = useState<string | null>(null);
   // Save and prepare failures sit with the Windows controls, e.g. the remote-browser refusal.
   const [actionError, setActionError] = useState<string | null>(null);
@@ -134,7 +138,40 @@ export function SandboxTab() {
         setJob((shown) => (isOlderJob(current, shown) ? shown : current));
       })
       .catch(() => undefined);
+    void loadRuntimeInstall(t("settings.sandbox.installRuntimeError"))
+      .then((current) => {
+        if (!mounted.current || current.state === "idle") return;
+        setRuntimeJob((shown) =>
+          isOlderJob(current, shown) ? shown : current,
+        );
+      })
+      .catch(() => undefined);
   }, [refresh, t]);
+
+  useEffect(() => {
+    if (!shouldPollJob(runtimeJob)) return;
+    const timer = window.setTimeout(() => {
+      void loadRuntimeInstall(t("settings.sandbox.installRuntimeError"))
+        .then((next) => {
+          if (!mounted.current) return;
+          setRuntimeJob(next);
+          if (!shouldPollJob(next)) {
+            setLoading(true);
+            void refresh(true);
+          }
+        })
+        .catch((pollError) => {
+          if (!mounted.current) return;
+          setActionError(
+            pollError instanceof Error
+              ? pollError.message
+              : t("settings.sandbox.installRuntimeError"),
+          );
+          setRuntimeJob(null);
+        });
+    }, HOST_PREP_POLL_MS);
+    return () => window.clearTimeout(timer);
+  }, [runtimeJob, refresh, t]);
 
   // Poll while the elevated helper runs; the status is re-read once it finishes.
   useEffect(() => {
@@ -210,8 +247,33 @@ export function SandboxTab() {
     }
   };
 
+  const installRuntime = async () => {
+    setActionError(null);
+    try {
+      const started = await startRuntimeInstall(
+        t("settings.sandbox.installRuntimeError"),
+      );
+      if (!mounted.current) return;
+      setRuntimeJob(started);
+      if (!shouldPollJob(started)) {
+        setLoading(true);
+        void refresh(true);
+      }
+    } catch (installError) {
+      if (!mounted.current) return;
+      setActionError(
+        installError instanceof Error
+          ? installError.message
+          : t("settings.sandbox.installRuntimeError"),
+      );
+    }
+  };
+
   const windows = status?.windows ?? null;
   const view = windows ? windowsView(windows, job, saving) : null;
+  const runtimeRunning = runtimeJob?.state === "running";
+  const runtimeFailed = jobResult(runtimeJob) === "failed";
+  const runtimeOutput = jobOutputLines(runtimeJob);
   const result = jobResult(job);
   const outputLines = jobOutputLines(job);
   const prepKey = view ? PREP_STATUS_KEYS[view.prep] : null;
@@ -283,10 +345,47 @@ export function SandboxTab() {
               title={t("settings.sandbox.windowsSection")}
               description={t("settings.sandbox.windowsDescription")}
             >
-              {view.runtimeMissing ? (
+              {view.unsupported ? (
                 <p className="py-3 text-sm text-muted-foreground">
-                  {t("settings.sandbox.runtimeMissing")}
+                  {view.unsupported === "arch"
+                    ? t("settings.sandbox.unsupportedArch")
+                    : t("settings.sandbox.unsupportedBuild")}
                 </p>
+              ) : view.runtimeMissing ? (
+                <div className="flex flex-col gap-2 py-3">
+                  <SettingsRow
+                    label={t("settings.sandbox.runtimeLabel")}
+                    description={t("settings.sandbox.runtimeMissing")}
+                  >
+                    {view.showInstallRuntime ? (
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        disabled={runtimeRunning}
+                        onClick={() => void installRuntime()}
+                      >
+                        {runtimeRunning ? <Spinner /> : null}
+                        {runtimeRunning
+                          ? t("settings.sandbox.installingRuntime")
+                          : t("settings.sandbox.installRuntime")}
+                      </Button>
+                    ) : null}
+                  </SettingsRow>
+                  {runtimeFailed ? (
+                    <p className="text-xs text-destructive">
+                      {runtimeJob?.note ||
+                        t("settings.sandbox.installRuntimeFailed")}
+                    </p>
+                  ) : null}
+                  {runtimeOutput.length > 0 ? (
+                    <pre className="whitespace-pre-wrap break-words font-mono text-ui-11 text-muted-foreground">
+                      {runtimeOutput.join("\n")}
+                    </pre>
+                  ) : null}
+                  {actionError ? (
+                    <p className="text-xs text-destructive">{actionError}</p>
+                  ) : null}
+                </div>
               ) : (
                 <>
                   <SettingsRow

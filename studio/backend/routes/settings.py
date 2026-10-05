@@ -4594,6 +4594,8 @@ class SandboxToolStatus(BaseModel):
 
 class SandboxWindowsStatus(BaseModel):
     runtime_installed: bool
+    # None: this Windows can run MXC; "arch" (not x64) or "build" (older than 26100) otherwise.
+    runtime_unsupported: Optional[Literal["arch", "build"]] = None
     allow_dacl_fallback: bool
     allow_dacl_fallback_saved: bool
     dacl_locked_by_environment: bool
@@ -4620,6 +4622,25 @@ class SandboxSettingsPayload(BaseModel):
 
     allow_dacl_fallback: Optional[StrictBool] = None
     persistent_read_grants: Optional[StrictBool] = None
+
+
+class SandboxSetupPayload(BaseModel):
+    model_config = ConfigDict(extra = "forbid")
+
+    operation: Literal["windows-runtime"]
+
+
+class SandboxSetupJob(BaseModel):
+    state: Literal["idle", "running", "succeeded", "declined", "failed"]
+    id: Optional[str] = None
+    operation: Optional[str] = None
+    started_at: Optional[float] = None
+    finished_at: Optional[float] = None
+    exit_code: Optional[int] = None
+    output_tail: list[str] = Field(default_factory = list)
+    steps: list[str] = Field(default_factory = list)
+    manual_command: str = ""
+    note: str = ""
 
 
 class SandboxPrepareJob(BaseModel):
@@ -4672,7 +4693,13 @@ def _sandbox_terminal_target() -> tuple[str, Optional[str]]:
 
 
 def _sandbox_windows_status() -> SandboxWindowsStatus:
-    from core.inference import mxc_adapter, mxc_policy, mxc_read_grants, mxc_runtime
+    from core.inference import (
+        mxc_adapter,
+        mxc_policy,
+        mxc_read_grants,
+        mxc_runtime,
+        sandbox_setup_plan,
+    )
     from utils import mxc_isolation_settings as saved
 
     try:
@@ -4686,6 +4713,7 @@ def _sandbox_windows_status() -> SandboxWindowsStatus:
         missing = None if steps is None else list(steps)
     return SandboxWindowsStatus(
         runtime_installed = installed,
+        runtime_unsupported = sandbox_setup_plan.windows_runtime_unsupported(),
         allow_dacl_fallback = mxc_policy.dacl_fallback_enabled(),
         allow_dacl_fallback_saved = saved.dacl_fallback_setting(),
         dacl_locked_by_environment = saved.locked_by_environment(mxc_policy.DACL_FALLBACK_ENV),
@@ -4859,12 +4887,58 @@ async def start_sandbox_prepare(
         await asyncio.to_thread(mxc_runtime.installation_identity)
     except Exception as exc:
         raise HTTPException(
-            status_code = 409, detail = "The MXC runtime is not installed; rerun Studio setup."
+            status_code = 409,
+            detail = "The MXC runtime is not installed; install it from Settings > Sandbox first.",
         ) from exc
     mxc_host_prep_job.add_finish_hook(_forget_sandbox_status)
     job = await asyncio.to_thread(mxc_host_prep_job.start)
     logger.info("settings.sandbox_prepare_started subject=%s job=%s", current_subject, job.id)
     return _sandbox_job_response(job)
+
+
+def _sandbox_setup_response(job) -> SandboxSetupJob:
+    if job is None:
+        return SandboxSetupJob(state = "idle")
+    return SandboxSetupJob(**job.as_dict())
+
+
+@_owner_settings_router.get("/sandbox/setup", response_model = SandboxSetupJob)
+def get_sandbox_setup(current_subject: str = Depends(get_current_subject)) -> SandboxSetupJob:
+    from core.inference import sandbox_setup_job
+    return _sandbox_setup_response(sandbox_setup_job.current())
+
+
+@_owner_settings_router.post("/sandbox/setup", response_model = SandboxSetupJob)
+async def start_sandbox_setup(
+    payload: SandboxSetupPayload,
+    current_subject: str = Depends(get_current_subject),
+    _ui_session: None = Depends(_require_ui_session),
+) -> SandboxSetupJob:
+    """Install the Windows MXC runtime, the same unelevated step setup.ps1 runs.
+
+    No administrator prompt is involved, so unlike Prepare this PC it also works from a remote browser.
+    """
+    import sys
+
+    from core.inference import sandbox_setup_job
+
+    if sys.platform != "win32":
+        raise HTTPException(
+            status_code = 409, detail = f"{payload.operation} does not apply to this computer."
+        )
+    sandbox_setup_job.add_finish_hook(_forget_sandbox_status)
+    try:
+        job = await asyncio.to_thread(sandbox_setup_job.start, payload.operation)
+    except sandbox_setup_job.SetupUnavailable as exc:
+        raise HTTPException(status_code = 409, detail = str(exc)) from exc
+    _forget_sandbox_status()
+    logger.info(
+        "settings.sandbox_setup_started subject=%s operation=%s job=%s",
+        current_subject,
+        payload.operation,
+        job.id,
+    )
+    return _sandbox_setup_response(job)
 
 
 router.include_router(_account_settings_router)

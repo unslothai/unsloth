@@ -8,6 +8,7 @@ import { SettingsRouteAbsentError } from "./settings-route-absent";
 
 const ROUTE = "/api/settings/sandbox";
 const PREPARE_ROUTE = "/api/settings/sandbox/prepare";
+const SETUP_ROUTE = "/api/settings/sandbox/setup";
 
 export type SandboxToolStatus = {
   backend: string;
@@ -19,8 +20,12 @@ export type SandboxToolStatus = {
 
 export type TerminalShell = "bash" | "cmd_isolated" | "cmd_fallback";
 
+// "arch": not x64 Windows; "build": older than Windows 11 build 26100. MXC cannot run on either.
+export type RuntimeUnsupported = "arch" | "build";
+
 export type WindowsSandboxStatus = {
   runtimeInstalled: boolean;
+  runtimeUnsupported: RuntimeUnsupported | null;
   allowDaclFallback: boolean;
   allowDaclFallbackSaved: boolean;
   daclLockedByEnvironment: boolean;
@@ -64,6 +69,8 @@ export type HostPrepJob = {
   steps: string[];
 };
 
+export type RuntimeInstallJob = HostPrepJob & { note: string };
+
 type ApiToolStatus = {
   backend?: string;
   available?: boolean;
@@ -76,6 +83,8 @@ type ApiToolStatus = {
 type ApiWindowsStatus = {
   // biome-ignore lint/style/useNamingConvention: API schema
   runtime_installed?: boolean;
+  // biome-ignore lint/style/useNamingConvention: API schema
+  runtime_unsupported?: string | null;
   // biome-ignore lint/style/useNamingConvention: API schema
   allow_dacl_fallback?: boolean;
   // biome-ignore lint/style/useNamingConvention: API schema
@@ -119,6 +128,7 @@ type ApiHostPrepJob = {
   // biome-ignore lint/style/useNamingConvention: API schema
   output_tail?: string[];
   steps?: string[];
+  note?: string | null;
 };
 
 function toolFromApi(tool: ApiToolStatus | undefined): SandboxToolStatus {
@@ -137,6 +147,11 @@ function windowsFromApi(
   if (!windows) return null;
   return {
     runtimeInstalled: windows.runtime_installed ?? false,
+    runtimeUnsupported:
+      windows.runtime_unsupported === "arch" ||
+      windows.runtime_unsupported === "build"
+        ? windows.runtime_unsupported
+        : null,
     allowDaclFallback: windows.allow_dacl_fallback ?? false,
     allowDaclFallbackSaved: windows.allow_dacl_fallback_saved ?? false,
     daclLockedByEnvironment: windows.dacl_locked_by_environment ?? false,
@@ -234,4 +249,28 @@ export async function loadHostPreparation(
   const res = await authFetch(PREPARE_ROUTE);
   await checked(res, PREPARE_ROUTE, fallbackMessage);
   return jobFromApi(await res.json());
+}
+
+export async function startRuntimeInstall(
+  fallbackMessage: string,
+): Promise<RuntimeInstallJob> {
+  const res = await authFetch(SETUP_ROUTE, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ operation: "windows-runtime" }),
+  });
+  await checked(res, SETUP_ROUTE, fallbackMessage);
+  return runtimeJobFromApi(await res.json());
+}
+
+export async function loadRuntimeInstall(
+  fallbackMessage: string,
+): Promise<RuntimeInstallJob> {
+  const res = await authFetch(SETUP_ROUTE);
+  await checked(res, SETUP_ROUTE, fallbackMessage);
+  return runtimeJobFromApi(await res.json());
+}
+
+export function runtimeJobFromApi(job: ApiHostPrepJob): RuntimeInstallJob {
+  return { ...jobFromApi(job), note: job.note ?? "" };
 }

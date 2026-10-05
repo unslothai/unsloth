@@ -17,6 +17,8 @@ type Api = {
   ) => Promise<Record<string, unknown>>;
   startHostPreparation: (fallback: string) => Promise<Record<string, unknown>>;
   loadHostPreparation: (fallback: string) => Promise<Record<string, unknown>>;
+  startRuntimeInstall: (fallback: string) => Promise<Record<string, unknown>>;
+  loadRuntimeInstall: (fallback: string) => Promise<Record<string, unknown>>;
 };
 
 type Call = { url: string; init?: RequestInit };
@@ -112,6 +114,7 @@ test("the status maps to camelCase and keeps the saved and effective values apar
     terminalShell: "cmd_isolated",
     windows: {
       runtimeInstalled: true,
+      runtimeUnsupported: null,
       allowDaclFallback: true,
       allowDaclFallbackSaved: false,
       daclLockedByEnvironment: true,
@@ -236,4 +239,58 @@ test("a job maps its fields and an idle answer carries no id", async () => {
   const idle = await api.loadHostPreparation("fallback");
   assert.equal(idle.state, "idle");
   assert.equal(idle.id, null);
+});
+
+test("the runtime install posts the one fixed operation and maps its note", async () => {
+  const { api, calls } = loadApi((call) =>
+    call.init?.method === "POST"
+      ? json({
+          id: "rt1",
+          operation: "windows-runtime",
+          state: "failed",
+          started_at: 5,
+          finished_at: 6,
+          exit_code: 3,
+          output_tail: ["busy"],
+          steps: [],
+          note: "in use",
+        })
+      : json({ state: "idle" }),
+  );
+  const started = await api.startRuntimeInstall("fallback");
+  assert.equal(calls[0].url, "/api/settings/sandbox/setup");
+  assert.equal(calls[0].init?.body, JSON.stringify({ operation: "windows-runtime" }));
+  assert.deepEqual(started, {
+    id: "rt1",
+    state: "failed",
+    startedAt: 5,
+    finishedAt: 6,
+    exitCode: 3,
+    outputTail: ["busy"],
+    steps: [],
+    note: "in use",
+  });
+  const idle = await api.loadRuntimeInstall("fallback");
+  assert.equal(idle.state, "idle");
+  assert.equal(idle.note, "");
+});
+
+test("an unsupported Windows is passed through, anything unknown is dropped", async () => {
+  for (const [value, expected] of [
+    ["arch", "arch"],
+    ["build", "build"],
+    ["later", null],
+  ] as const) {
+    const { api } = loadApi(() =>
+      json({
+        ...WINDOWS_STATUS,
+        windows: { ...WINDOWS_STATUS.windows, runtime_unsupported: value },
+      }),
+    );
+    const status = await api.loadSandboxStatus(false, "fallback");
+    assert.equal(
+      (status.windows as { runtimeUnsupported: unknown }).runtimeUnsupported,
+      expected,
+    );
+  }
 });

@@ -3,6 +3,7 @@
 
 import type {
   HostPrepJob,
+  RuntimeUnsupported,
   SandboxToolStatus,
   TerminalShell,
   WindowsSandboxStatus,
@@ -47,7 +48,10 @@ export type HostPrepStatus =
   | "unknown";
 
 export type WindowsView = {
+  // MXC cannot run on this Windows at all: one note instead of the controls.
+  unsupported: RuntimeUnsupported | null;
   runtimeMissing: boolean;
+  showInstallRuntime: boolean;
   optInChecked: boolean;
   optInDisabled: boolean;
   optInLocked: boolean;
@@ -80,8 +84,11 @@ export function windowsView(
   const prep = hostPrepStatus(windows);
   const running = job?.state === "running";
   const runtimeMissing = prep === "runtimeMissing";
+  const unsupported = windows.runtimeUnsupported;
   return {
+    unsupported,
     runtimeMissing,
+    showInstallRuntime: runtimeMissing && unsupported === null,
     optInChecked: windows.allowDaclFallback,
     optInDisabled:
       runtimeMissing || windows.daclLockedByEnvironment || saving || running,
