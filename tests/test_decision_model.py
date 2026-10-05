@@ -823,3 +823,32 @@ def test_clef_loads_scores_like_cloudflares_model_and_trains(clef_checkpoint, tm
     assert torch.allclose(trained, again, atol = 0.05)
     for row, z in enumerate(theirs):
         assert int(z.argmax()) == int(again[row, : len(z)].argmax())
+
+
+@pytest.mark.skipif(not has_real_cuda(), reason = "the fast kernels need a CUDA device")
+def test_clef_backbone_runs_the_compiled_gated_delta_and_conv_kernels(clef_checkpoint):
+    from transformers.utils.import_utils import is_causal_conv1d_available
+
+    model, _ = FastDecisionModel.from_pretrained(str(clef_checkpoint), max_seq_length = 512)
+    from transformers.utils.import_utils import is_flash_linear_attention_available
+
+    if not is_flash_linear_attention_available():
+        pytest.skip("flash-linear-attention is disabled on this GPU / Triton")
+    layers = [m for m in model.encoder.modules() if type(m).__name__.endswith("GatedDeltaNet")]
+    assert layers
+    for layer in layers:
+        forward = type(layer).forward
+        assert forward.__code__.co_filename.endswith("unsloth_compiled_module_qwen3_5.py")
+        chosen = {}
+        for name in ("torch_chunk_gated_delta_rule", "causal_conv1d_fn"):
+            fn = forward.__globals__[name]
+            # transformers freezes the kernel it picked in a closure, under hub-kernel wrappers.
+            while fn is not None:
+                cells = dict(zip(fn.__code__.co_freevars, fn.__closure__ or ()))
+                if "implementation" in cells:
+                    chosen[name] = cells["implementation"].cell_contents.__module__
+                    break
+                fn = getattr(fn, "__wrapped__", None)
+        assert chosen["torch_chunk_gated_delta_rule"].startswith("fla.")
+        if is_causal_conv1d_available():
+            assert chosen["causal_conv1d_fn"].startswith("causal_conv1d")
