@@ -4810,11 +4810,21 @@ def blocked_replace_hint(winerror: object) -> str:
     return "a scanner is likely still holding the install open"
 
 
+def _tree_has_link(root: Path) -> bool:
+    if _is_link_or_junction(root):
+        return True
+    for current_dir, dirnames, filenames in os.walk(root, followlinks = False):
+        current_path = type(root)(current_dir)
+        if any(_is_link_or_junction(current_path / name) for name in (*dirnames, *filenames)):
+            return True
+    return False
+
+
 def log_acl_repair(path: Path) -> None:
     # Printed, never run: repairing permissions is the user's call (#9928).
-    if _is_link_or_junction(path):
-        # icacls follows a link without /L, so /T would reset the user's external tree.
-        log(f"rename still denied after retrying; {path} is a link, check its permissions")
+    if _tree_has_link(path):
+        # takeown /R and icacls /T follow links, so the repair would reach outside the tree.
+        log(f"rename still denied after retrying; {path} contains a link, check its permissions")
     else:
         log(
             "rename still denied after retrying; if the permissions on this tree are broken, run in an elevated PowerShell:"

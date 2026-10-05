@@ -1183,7 +1183,23 @@ def test_replace_with_busy_retry_offers_no_recursive_repair_for_a_linked_tree(
     with pytest.raises(OSError):
         replace_with_busy_retry(link, destination, attempts = 2)
     assert not any("takeown" in line or "icacls" in line for line in logged)
-    assert any("is a link" in line for line in logged)
+    assert any("contains a link" in line for line in logged)
+
+
+def test_replace_with_busy_retry_offers_no_recursive_repair_over_a_nested_link(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    source, destination, logged = _run_denied_replace(tmp_path, monkeypatch, failures = 99)
+    try:
+        (source / "link-out").symlink_to(outside, target_is_directory = True)
+    except OSError as exc:
+        pytest.skip(f"directory symlinks unavailable: {exc}")
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "_is_link_or_junction", lambda p: p.is_symlink())
+    with pytest.raises(OSError):
+        replace_with_busy_retry(source, destination, attempts = 2)
+    assert not any("takeown" in line or "icacls" in line for line in logged)
 
 
 def test_replace_with_busy_retry_skips_acl_repair_when_denial_clears(
