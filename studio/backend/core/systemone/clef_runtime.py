@@ -21,7 +21,6 @@ from .laya_runtime import Unavailable
 logger = logging.getLogger(__name__)
 LOAD_WAIT_S = RUN_WAIT_S = 300.0
 CANCEL_GRACE_S = 5.0
-SHUTDOWN_WAIT_S = 10.0
 LOAD_CANCEL_WAIT_S = 12.0
 IDLE_UNLOAD_S = 300.0
 FAILURE_BACKOFF_S = 60.0
@@ -88,7 +87,6 @@ class ClefWorker:
                         cmd_queue = self._cmd_queue,
                         resp_queue = self._resp_queue,
                         cancel_event = self._cancel_event,
-                        config = {},
                     ),
                     daemon = True,
                 )

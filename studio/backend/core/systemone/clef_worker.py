@@ -213,22 +213,10 @@ def _error_response(phase: str, exc: BaseException) -> dict[str, Any]:
     }
 
 
-def run_clef_worker(
-    *,
-    cmd_queue,
-    resp_queue,
-    cancel_event,
-    ready_event = None,
-    config: dict[str, Any] | None = None,
-) -> None:
-    """Persistent spawn-child entrypoint for one local Clef checkpoint."""
+def run_clef_worker(*, cmd_queue, resp_queue, cancel_event) -> None:
     import os
 
     os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
-    # Signals startup even if a native import faults before Queue flushes.
-    if ready_event is not None:
-        ready_event.set()
-
     model = processor = clef = None
     while True:
         try:

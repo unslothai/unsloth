@@ -102,8 +102,7 @@ def decide(
             if get_device() == "gpu":
                 from core.inference.gpu_arbiter import DECISIONS, GpuOwnerBusyError, acquire_for
                 try:
-                    # Register before another consumer can evict this worker's startup.
-                    # Explicitly refuse to evict an existing chat/image/video model.
+                    # Atomically register startup without evicting another model.
                     acquire_for(DECISIONS, lambda: _clef().prepare(checkpoint), allow_evict = False)
                 except GpuOwnerBusyError:
                     raise Unavailable(
@@ -150,7 +149,7 @@ def unload() -> bool:
 
 
 def shutdown() -> None:
-    # Native teardown must retire a still-starting process too; Laya lives in this process.
+    # Also retire a still-starting child; Laya is in-process.
     _clef().shutdown()
 
 

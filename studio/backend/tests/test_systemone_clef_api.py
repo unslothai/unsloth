@@ -117,17 +117,10 @@ def test_malformed_or_unbounded_media_fails_before_runtime(api, images):
     assert not calls
 
 
-def test_images_are_rejected_for_text_only_saved_connections(api, monkeypatch):
+@pytest.mark.parametrize("model", ["connection:provider:clef", "laya-multilingual"])
+def test_images_are_rejected_for_text_only_models(api, monkeypatch, model):
     client, calls = api
-    monkeypatch.setattr(systemone_settings, "get_model", lambda: "connection:provider:clef")
-    response = client.post("/v1/systemone", json = request(images = [png_url()]))
-    assert response.status_code == 400 and "text-only" in response.text
-    assert not calls
-
-
-def test_laya_rejects_media_without_changing_its_default(api, monkeypatch):
-    client, calls = api
-    monkeypatch.setattr(systemone_settings, "get_model", lambda: "laya-multilingual")
+    monkeypatch.setattr(systemone_settings, "get_model", lambda: model)
     response = client.post("/v1/systemone", json = request(images = [png_url()]))
     assert response.status_code == 400 and "text-only" in response.text
     assert not calls

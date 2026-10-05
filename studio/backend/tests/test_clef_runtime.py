@@ -3,8 +3,6 @@
 
 """Focused owned-process lifecycle tests for Clef."""
 
-from __future__ import annotations
-
 import threading
 import time
 from types import SimpleNamespace
@@ -23,14 +21,7 @@ def _error(queue, phase, kind, message):
     queue.put({"type": "error", "phase": phase, "kind": kind, "message": message})
 
 
-def _fake_worker(
-    *,
-    cmd_queue,
-    resp_queue,
-    cancel_event,
-    ready_event = None,
-    config = None,
-):
+def _fake_worker(*, cmd_queue, resp_queue, cancel_event):
     from utils.process_lifetime import bind_current_process_to_parent_lifetime
     bind_current_process_to_parent_lifetime()
     while True:
@@ -71,14 +62,12 @@ class _Registry:
         granted = True,
         state = "owned",
     ):
-        self.granted, self.state, self.events, self.releases, self.owner, self.process = (
-            granted,
-            state,
-            [],
-            [],
-            None,
-            None,
-        )
+        self.granted = granted
+        self.state = state
+        self.events = []
+        self.releases = []
+        self.owner = None
+        self.process = None
 
     def claim_repository_owner(self, repo, owner):
         self.events.append("claim")
@@ -122,11 +111,9 @@ def test_worker_holds_cache_lease_until_unload_or_idle_retirement(monkeypatch, t
     )
     if idle:
         monkeypatch.setattr(clef_runtime, "IDLE_UNLOAD_S", 0.05)
-    checkpoint, state, questions = (
-        _checkpoint(),
-        {"text": "café", "none": None},
-        {"q": {"type": "noul"}},
-    )
+    checkpoint = _checkpoint()
+    state = {"text": "café", "none": None}
+    questions = {"q": {"type": "noul"}}
     clef_runtime.prepare(checkpoint)
     if not idle:
         load_thread = clef_runtime._loading.thread
@@ -138,7 +125,7 @@ def test_worker_holds_cache_lease_until_unload_or_idle_retirement(monkeypatch, t
         "state": state,
         "questions": questions,
     }
-    process, registry.process = clef_runtime._worker._process, clef_runtime._worker._process
+    process = registry.process = clef_runtime._worker._process
     assert registry.events[:2] == ["claim", "resolve"] and not registry.releases
     if idle:
         _wait(lambda: clef_runtime.status()["loaded_model"] is None)
@@ -222,13 +209,10 @@ def test_local_cache_is_pinned_and_over_context_is_refused(monkeypatch, tmp_path
     assert clef_runtime.is_cached(checkpoint)
     assert seen["revision"] == checkpoint.revision and seen["local_files_only"] is True
 
-    class Reference:
-        @staticmethod
-        def encode_record(*_args, **_kwargs):
-            return SimpleNamespace(input_ids = tuple(range(clef_worker.MAX_CONTEXT_TOKENS + 1)))
-
+    encoded = SimpleNamespace(input_ids = range(clef_worker.MAX_CONTEXT_TOKENS + 1))
+    reference = SimpleNamespace(encode_record = lambda *_args, **_kwargs: encoded)
     with pytest.raises(ValueError, match = "require 16385 tokens"):
-        clef_worker.encode_record_untruncated(Reference, "tokenizer", {"state": "x"}, "processor")
+        clef_worker.encode_record_untruncated(reference, "tokenizer", {"state": "x"}, "processor")
 
 
 def test_another_load_waits_until_the_retiring_process_exits(monkeypatch):
