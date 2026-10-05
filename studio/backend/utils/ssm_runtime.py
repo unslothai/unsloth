@@ -19,6 +19,12 @@ from typing import Any, Callable, Iterator, Optional
 from loggers import get_logger
 from utils.child_stdio import utf8_child_env
 from utils.wheel_utils import (
+    CAUSAL_CONV1D_PACKAGE_VERSION,
+    CAUSAL_CONV1D_RELEASE_BASE_URL,
+    CAUSAL_CONV1D_RELEASE_TAG,
+    MAMBA_SSM_PACKAGE_VERSION,
+    MAMBA_SSM_RELEASE_BASE_URL,
+    MAMBA_SSM_RELEASE_TAG,
     direct_wheel_url,
     install_wheel,
     probe_torch_wheel_env,
@@ -28,14 +34,6 @@ from utils.wheel_utils import (
 logger = get_logger(__name__)
 
 StatusCb = Optional[Callable[[str], None]]
-
-# Pinned wheels, kept in lockstep with core/training/worker.py by tests/test_ssm_runtime.py.
-CAUSAL_CONV1D_PACKAGE_VERSION = "1.6.1"
-CAUSAL_CONV1D_RELEASE_TAG = "v1.6.1.post4"
-CAUSAL_CONV1D_RELEASE_BASE_URL = "https://github.com/Dao-AILab/causal-conv1d/releases/download"
-MAMBA_SSM_PACKAGE_VERSION = "2.3.1"
-MAMBA_SSM_RELEASE_TAG = "v2.3.1"
-MAMBA_SSM_RELEASE_BASE_URL = "https://github.com/state-spaces/mamba/releases/download"
 
 # Lowercased-id substring matches, mirroring the training worker. mamba-ssm models are a subset of the causal-conv1d set.
 SSM_MODEL_SUBSTRINGS = (
