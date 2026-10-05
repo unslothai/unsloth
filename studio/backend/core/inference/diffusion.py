@@ -1421,7 +1421,11 @@ def _restore_gguf_trimmed_dims(model: Any, state_dict: Any) -> Any:
     return state_dict
 
 
-def _dequantize_gguf_outside_linears(model: Any, dtype: Any, logger: Any = None) -> int:
+def _dequantize_gguf_outside_linears(
+    model: Any,
+    dtype: Any,
+    logger: Any = None,
+) -> int:
     """Dequantise every GGUF-packed parameter that does not sit in one of the quantizer's linears.
 
     diffusers' GGUF quantizer swaps only ``nn.Linear`` layers for its dequantising ``GGUFLinear``; any other module
@@ -1432,7 +1436,11 @@ def _dequantize_gguf_outside_linears(model: Any, dtype: Any, logger: Any = None)
     few KB, so they are kept dense at the compute dtype. A model with none is untouched. Returns the count."""
     try:
         import torch
-        from diffusers.quantizers.gguf.utils import GGUFLinear, GGUFParameter, dequantize_gguf_tensor
+        from diffusers.quantizers.gguf.utils import (
+            GGUFLinear,
+            GGUFParameter,
+            dequantize_gguf_tensor,
+        )
     except Exception:  # noqa: BLE001 - no GGUF support, nothing packed to fix
         return 0
     named_modules = getattr(model, "named_modules", None)
@@ -1446,10 +1454,18 @@ def _dequantize_gguf_outside_linears(model: Any, dtype: Any, logger: Any = None)
             if not isinstance(param, GGUFParameter):
                 continue
             dense = dequantize_gguf_tensor(param).to(dtype)
-            setattr(module, name, torch.nn.Parameter(dense.as_subclass(torch.Tensor), requires_grad = False))
+            setattr(
+                module,
+                name,
+                torch.nn.Parameter(dense.as_subclass(torch.Tensor), requires_grad = False),
+            )
             fixed.append(f"{module_name}.{name}" if module_name else name)
     if fixed and logger is not None:
-        logger.info("diffusion.gguf: dequantised %d non-linear parameter(s): %s", len(fixed), ", ".join(fixed[:8]))
+        logger.info(
+            "diffusion.gguf: dequantised %d non-linear parameter(s): %s",
+            len(fixed),
+            ", ".join(fixed[:8]),
+        )
     return len(fixed)
 
 

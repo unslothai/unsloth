@@ -2370,7 +2370,10 @@ def test_resolve_base_repo_maps_a_mirrored_card_tag_back_to_the_vendor_id(monkey
 def test_detect_family_routes_layered_to_its_own_pipeline():
     # Qwen-Image-Layered needs a dedicated pipeline (additional_t_cond), so it resolves to its own family rather than
     # to qwen-image; a layered variant of a family without one is still rejected at load.
-    assert detect_family("unsloth/Qwen-Image-Layered-GGUF").pipeline_class == "QwenImageLayeredPipeline"
+    assert (
+        detect_family("unsloth/Qwen-Image-Layered-GGUF").pipeline_class
+        == "QwenImageLayeredPipeline"
+    )
     assert detect_family("unsloth/qwen_image_layered").name == "qwen-image-layered"
     assert detect_family("unsloth/FLUX.1-Layered") is None
 

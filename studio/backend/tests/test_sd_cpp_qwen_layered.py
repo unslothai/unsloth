@@ -78,7 +78,9 @@ def _state(*, mode = "oneshot", server = None):
 
 
 def test_layered_maps_to_its_own_vae_and_the_qwen_encoder():
-    fam = detect_family_for_pick("unsloth/Qwen-Image-Layered-GGUF", "qwen-image-layered-Q4_K_M.gguf")
+    fam = detect_family_for_pick(
+        "unsloth/Qwen-Image-Layered-GGUF", "qwen-image-layered-Q4_K_M.gguf"
+    )
     assert fam is LAYERED and family_sd_cpp_supported(fam)
     specs = SdCppDiffusionBackend(engine = _FakeEngine())._asset_specs(
         "unsloth/Qwen-Image-Layered-GGUF", "qwen-image-layered-Q4_K_M.gguf", fam
@@ -108,12 +110,15 @@ def test_both_builders_carry_the_layer_count_only_when_set():
 
 def test_sd_cli_output_paths_follow_its_naming():
     assert sd_cli_output_paths("/t/img_0.png", 1) == ["/t/img_0.png"]
-    assert sd_cli_output_paths("/t/img_0.png", 3) == ["/t/img_0_0.png", "/t/img_0_1.png", "/t/img_0_2.png"]
+    assert sd_cli_output_paths("/t/img_0.png", 3) == [
+        "/t/img_0_0.png",
+        "/t/img_0_1.png",
+        "/t/img_0_2.png",
+    ]
 
 
 def test_canvas_matches_the_diffusers_engine():
     from core.inference.diffusion import _layered_canvas
-
     for size in ((900, 600), (768, 768), (600, 1400), (1024, 1000)):
         assert bk._layered_canvas_size(LAYERED, size) == _layered_canvas(LAYERED, size), size
 
