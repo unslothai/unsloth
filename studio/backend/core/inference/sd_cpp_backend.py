@@ -70,6 +70,7 @@ from core.inference.sd_cpp_args import (
     device_backend_flags,
     is_ggml_unsupported_op_abort,
     offload_flags,
+    sd_cli_output_paths,
     without_device_backend_flags,
 )
 from core.inference.sd_cpp_engine import (
@@ -1809,6 +1810,34 @@ def _native_output_image(fam: Any, im: Any) -> Any:
     return im.convert("RGB")
 
 
+def _layer_count(fam: Any) -> int:
+    """The number of RGBA layers a layered family (Qwen-Image-Layered) splits its input into; 0 otherwise."""
+    return int(getattr(fam, "layer_count", 0) or 0)
+
+
+def _layered_canvas_size(fam: Any, size: tuple[int, int]) -> tuple[int, int]:
+    """The (width, height) a layered family decomposes at: its ``layer_resolution`` square's area at the input's
+    aspect ratio, each side rounded to 32. The same canvas the diffusers engine's ``_layered_canvas`` (the
+    pipeline's ``calculate_dimensions``) picks, kept here because this module never imports the torch engine."""
+    import math
+
+    iw, ih = size
+    area = float(getattr(fam, "layer_resolution", 640) or 640) ** 2
+    ratio = float(iw) / float(max(1, ih))
+    width = math.sqrt(area * ratio)
+    height = width / ratio
+    return max(32, int(round(width / 32)) * 32), max(32, int(round(height / 32)) * 32)
+
+
+def _keep_layers(items: list, layers: int) -> list:
+    """sd.cpp decodes layers + 1 images per layered generation, the first being its reconstruction of the input. The
+    diffusers pipeline drops that frame ("the origin input") and returns the layers alone, so do the same."""
+    if not layers:
+        return list(items)
+    per = layers + 1
+    return [item for i, item in enumerate(items) if i % per]
+
+
 def _family_reads_vision(fam: Any) -> bool:
     """Whether ``fam``'s native encoders include a vision projector (``llm_vision``)."""
     return any(kind == "llm_vision" for _r, _f, kind in getattr(fam, "sd_cpp_text_encoders", ()))
@@ -1852,7 +1881,13 @@ def _native_condition_images(
     )
 
     images = decode_condition_images(fam, init_image, reference_images, localized_edit)
-    if source_sized:
+    if source_sized and _layer_count(fam):
+        # A layered family decomposes at its own canvas, whatever the source's size: resize the source to it, as the
+        # layered pipeline does before encoding.
+        width, height = _layered_canvas_size(fam, images[0].size)
+        if images[0].size != (width, height):
+            images[0] = images[0].resize((width, height), Image.LANCZOS)
+    elif source_sized:
         multiple = int(getattr(fam, "dimension_multiple", 16) or 16)
         sw, sh = images[0].size
         # A source larger than the family renders is scaled down to fit (aspect kept) rather than refused.
@@ -3851,6 +3886,7 @@ class SdCppDiffusionBackend:
                             lora_resolved = lora_resolved,
                             cancel = cancel,
                             ref_pngs = ref_pngs,
+                            layers = _layer_count(state.family) or None,
                         )
                     else:
                         images, seeds = self._generate_oneshot(
@@ -3867,6 +3903,7 @@ class SdCppDiffusionBackend:
                             lora_resolved = lora_resolved,
                             cancel = cancel,
                             ref_pngs = ref_pngs,
+                            layers = _layer_count(state.family) or None,
                         )
                 except RuntimeError as exc:
                     # The mid-render hipBLAS death the video path records too; not a cancellation.
@@ -3958,6 +3995,7 @@ class SdCppDiffusionBackend:
         lora_resolved: list,
         cancel: threading.Event,
         ref_pngs: Optional[list[bytes]] = None,
+        layers: Optional[int] = None,
     ) -> tuple[list, list[int]]:
         """Generate via the resident sd-server (no model reload).
 
@@ -4030,6 +4068,7 @@ class SdCppDiffusionBackend:
                         "data:image/png;base64," + base64.b64encode(b).decode("ascii")
                         for b in ref_pngs or []
                     ],
+                    qwen_image_layers = layers,
                 )
                 try:
                     blobs = state.server.img_gen(
@@ -4054,16 +4093,23 @@ class SdCppDiffusionBackend:
                         cancel_event = cancel,
                         total_timeout = max(deadline - time.monotonic(), 1.0),
                     )
-                # All-or-nothing per chunk: fail rather than silently drop images from the batch.
-                if not cancel.is_set() and len(blobs) != count:
+                # All-or-nothing per chunk: fail rather than silently drop images from the batch. A layered
+                # generation decodes layers + 1 images.
+                expected = count * ((layers + 1) if layers else 1)
+                if not cancel.is_set() and len(blobs) != expected:
                     raise RuntimeError(
-                        f"sd-server returned {len(blobs)} of {count} requested images in the batch."
+                        f"sd-server returned {len(blobs)} of {expected} requested images in the batch."
                     )
+                kept = _keep_layers(blobs, layers or 0)
                 images.extend(
-                    _native_output_image(state.family, Image.open(io.BytesIO(b))) for b in blobs
+                    _native_output_image(state.family, Image.open(io.BytesIO(b))) for b in kept
                 )
-                # sd.cpp advances the seed per image within a job, so report chunk_seed+i.
-                seeds.extend((chunk_seed + i) & ((1 << 63) - 1) for i in range(len(blobs)))
+                # sd.cpp advances the seed per image within a job, so report chunk_seed+i; every layer of one
+                # decomposition carries its generation's seed.
+                per = len(kept) // count if count else 1
+                seeds.extend(
+                    (chunk_seed + i // max(1, per)) & ((1 << 63) - 1) for i in range(len(kept))
+                )
         finally:
             if lora_stage is not None:
                 shutil.rmtree(lora_stage, ignore_errors = True)
@@ -4145,6 +4191,7 @@ class SdCppDiffusionBackend:
         lora_resolved: list,
         cancel: threading.Event,
         ref_pngs: Optional[list[bytes]] = None,
+        layers: Optional[int] = None,
     ) -> tuple[list, list[int]]:
         """Fallback path: re-run one-shot sd-cli per image (reloads the model each time). LoRA on
         the one-shot path uses sd-cli's own mechanism: materialize the selected adapters into a
@@ -4203,6 +4250,7 @@ class SdCppDiffusionBackend:
                     lora_dir = lora_dir,
                     lora_apply_mode = "auto" if lora_dir else None,
                     ref_images = tuple(ref_paths),
+                    qwen_image_layers = layers,
                 )
                 # Each sd-cli run executes out of the managed tree, so hold installs off for its duration (and wait
                 # here if one is already extracting). getattr: an INJECTED engine is the unit-test seam / escape hatch
@@ -4240,9 +4288,11 @@ class SdCppDiffusionBackend:
                         on_log = self._on_log,
                         cancel_event = cancel,
                     )
-                with Image.open(out_path) as im:
-                    images.append(_native_output_image(state.family, im.copy()))
-                seeds.append(seed_i)
+                outputs = sd_cli_output_paths(out_path, (layers + 1) if layers else 1)
+                for path in _keep_layers(outputs, layers or 0):
+                    with Image.open(path) as im:
+                        images.append(_native_output_image(state.family, im.copy()))
+                    seeds.append(seed_i)
         return images, seeds
 
     def _on_log(self, line: str) -> None:

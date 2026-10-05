@@ -32,6 +32,7 @@ _TE_FLAGS_BY_FAMILY: dict[str, tuple[str, ...]] = {
     "flux.2-dev": ("--llm",),
     "qwen-image": ("--qwen2vl",),
     "qwen-image-edit": ("--qwen2vl",),
+    "qwen-image-layered": ("--qwen2vl",),
     # 2.1 conditions on Qwen3-VL, which sd-cli takes through --llm. --qwen2vl is an alias of --llm
     # that also turns on Qwen2-VL's vision path, so it is the wrong door even though both names
     # reach the same field.
@@ -94,6 +95,9 @@ class SdCppGenParams:
     ref_images: tuple[str, ...] = ()
     lora_dir: Optional[str] = None
     lora_apply_mode: Optional[str] = None
+    # Qwen-Image-Layered: the number of layers to split the reference image into. sd.cpp decodes this many plus one
+    # images per generation, the first being its reconstruction of the input. None = unset (sd.cpp's default 3).
+    qwen_image_layers: Optional[int] = None
 
 
 @dataclass(frozen = True)
@@ -351,6 +355,8 @@ def build_sd_cpp_command(
         cmd += ["--mask", params.mask]
     for ref in params.ref_images:
         cmd += ["--ref-image", ref]
+    if params.qwen_image_layers is not None:
+        cmd += ["--qwen-image-layers", str(int(params.qwen_image_layers))]
     # LoRA: the directory to scan; individual LoRAs are <lora:name:w> tags in prompt.
     if params.lora_dir:
         cmd += ["--lora-model-dir", params.lora_dir]
@@ -609,6 +615,7 @@ def build_img_gen_request(
     output_format: str = "png",
     lora: Optional[list[dict]] = None,
     ref_images: Optional[list[str]] = None,
+    qwen_image_layers: Optional[int] = None,
 ) -> dict:
     """Build the ``POST /sdcpp/v1/img_gen`` JSON body for one text-to-image request.
 
@@ -654,7 +661,22 @@ def build_img_gen_request(
     # Base64 PNGs in model order; no init_image/strength/mask: this is reference conditioning, not img2img.
     if ref_images:
         req["ref_images"] = list(ref_images)
+    # Qwen-Image-Layered's layer count, a top-level field of the request (examples/common/common.cpp ``load_if_exists``).
+    if qwen_image_layers is not None:
+        req["qwen_image_layers"] = int(qwen_image_layers)
     return req
+
+
+def sd_cli_output_paths(output_path: str, num_results: int) -> list[str]:
+    """The files one ``sd-cli`` image run writes for ``--output output_path``: the path itself for a
+    single result, else ``<stem>_<i><ext>`` from 0 (``examples/cli/main.cpp`` ``save_results``).
+    A layered generation is the multi-result case: layers + 1 images from one run."""
+    if num_results <= 1:
+        return [output_path]
+    stem, dot, ext = output_path.rpartition(".")
+    if not dot or "/" in ext or "\\" in ext:
+        stem, ext = output_path, "png"
+    return [f"{stem}_{i}.{ext}" for i in range(num_results)]
 
 
 def h3_server_eligible(params: "SdCppVideoGenParams") -> bool:
