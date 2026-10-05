@@ -3,40 +3,24 @@
 
 """Shared fixtures for the unsloth_cli tests."""
 
-# --- studio home isolation (issue #9586, channel 3) -----------------------------------
-# Redirect the HOME the studio root is inferred FROM, at module scope, before any test
-# module imports the production code.
-#
-# Module scope, not a fixture: unsloth_cli/commands/studio.py binds
-# `STUDIO_HOME, _STUDIO_HOME_IS_CUSTOM = _resolve_studio_home()` at import, and
-# studio/backend/auth/storage.py binds `DB_PATH = auth_db_path()` the same way. Measured,
-# an autouse fixture and pytest_configure both run AFTER those bindings and left auth.db
-# in the real ~/.unsloth/studio/auth/. This is the placement tests/conftest.py already
-# uses for its compile-cache block, for the same reason.
-#
-# HOME rather than UNSLOTH_STUDIO_HOME, which is the obvious lever and the wrong one:
-# _resolve_studio_home() returns whether the home was explicitly set, and
-# _fail_if_install_damaged() puts `UNSLOTH_STUDIO_HOME=... ` into the repair command it
-# prints when it was. Setting that variable to isolate the tests therefore changes the
-# output other tests in this root assert on -- measured, it breaks
-# test_a_no_torch_install_keeps_that_mode_in_the_reinstall. The variable is an input to
-# the behaviour under test, so it cannot also be the isolation mechanism.
-#
-# No teardown, deliberately: the path is redirected rather than cleaned up, so a
-# hard-killed worker cannot leave residue in the real home.
-import os as _os  # noqa: E402
-import tempfile as _tempfile  # noqa: E402
-
-_ISOLATED_HOME = _tempfile.mkdtemp(prefix = "unsloth-cli-tests-home-")
-# Both names: POSIX resolves ~ through HOME, Windows through USERPROFILE.
-_os.environ["HOME"] = _ISOLATED_HOME
-_os.environ["USERPROFILE"] = _ISOLATED_HOME
-# --------------------------------------------------------------------------------------
-
+import atexit
+import os
+import shutil
 import sys
+import tempfile
 import types
 
 import pytest
+
+# Keep the suite out of the real ~/.unsloth/studio (#9586). Module scope, not a fixture:
+# STUDIO_HOME and auth DB_PATH are bound at import. Redirect HOME rather than set
+# UNSLOTH_STUDIO_HOME, which flips _STUDIO_HOME_IS_CUSTOM and changes asserted output.
+_ISOLATED_HOME = tempfile.mkdtemp(prefix = "unsloth-cli-tests-home-")
+atexit.register(shutil.rmtree, _ISOLATED_HOME, ignore_errors = True)
+os.environ["HOME"] = _ISOLATED_HOME
+os.environ["USERPROFILE"] = _ISOLATED_HOME
+for _var in ("UNSLOTH_STUDIO_HOME", "STUDIO_HOME"):
+    os.environ.pop(_var, None)
 
 
 @pytest.fixture(autouse = True)
