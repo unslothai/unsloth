@@ -10,10 +10,10 @@ import {
   FlimSlateIcon,
   Folder01Icon,
   Image03Icon,
-  InternetIcon,
   LibrariesIcon,
   MoreHorizontalIcon,
   PencilEdit02Icon,
+  ApiIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { Reorder, useDragControls } from "motion/react";
@@ -44,7 +44,7 @@ const ITEM_META: Record<
   audio: { icon: AudioWave01Icon, labelKey: "shell.navigation.audio" },
   recipes: { icon: ChefHatIcon, labelKey: "shell.navigation.recipes" },
   export: { icon: Download01Icon, labelKey: "shell.navigation.export" },
-  api: { icon: InternetIcon, labelKey: "shell.navigation.api" },
+  api: { icon: ApiIcon, labelKey: "shell.navigation.api" },
 };
 
 function FixedRow({ icon, label }: { icon: IconSvgElement; label: string }) {

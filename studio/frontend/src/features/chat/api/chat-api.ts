@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { skillLoadCardEvent } from "./skill-load-event";
 import { authFetch, getAuthSessionEpoch } from "@/features/auth";
 import { prepareHfTokenForUse } from "@/features/hf-auth";
 // These helpers are deliberately API-layer-only, not part of their features' public barrels.
@@ -552,6 +553,7 @@ export interface CachedGgufRepo {
    *  Images picker can show only diffusion GGUFs. */
   task?: string | null;
   audio_type?: string | null;
+  audio_workflows?: string[] | null;
   /** True when some quant has a download manifest or cancel marker. Optional for older-backend compatibility. */
   has_variant_state?: boolean;
   partial?: boolean;
@@ -661,6 +663,7 @@ export interface LocalModelInfo {
   task?: string | null;
   /** Detected output-audio architecture or codec used by Audio runtime policy. */
   audio_type?: string | null;
+  audio_workflows?: string[] | null;
 }
 
 interface LocalModelListResponse {
@@ -699,6 +702,7 @@ export interface CachedModelRepo {
   task?: string | null;
   /** Detected output-audio architecture or codec used by Audio runtime policy. */
   audio_type?: string | null;
+  audio_workflows?: string[] | null;
   /** True when the snapshot is incomplete: such a repo must not count as downloaded, or a click
    *  re-downloads the full weights. */
   partial?: boolean;
@@ -1763,6 +1767,11 @@ export async function* streamChatCompletions(
           | { type?: string; content?: string; error?: { message?: string } };
         if ("error" in parsed && parsed.error) {
           throw new Error(parsed.error.message || "Stream error");
+        }
+        if ("type" in parsed && parsed.type === "skill_load") {
+          yield { _toolEvent: skillLoadCardEvent(parsed) } as unknown as OpenAIChatChunk;
+          separatorIndex = buffer.search(/\r?\n\r?\n/);
+          continue;
         }
         // Tool status events are custom SSE payloads, not OpenAI chunks
         if ("type" in parsed && parsed.type === "tool_status") {
