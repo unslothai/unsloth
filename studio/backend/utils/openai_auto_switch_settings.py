@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import math
 import os
 import re
 import threading
@@ -567,7 +568,34 @@ def normalize_model_override(
             if index_kind and index_kind != LEGACY_GPU_INDEX_KIND:
                 entry["gpu_index_kind"] = index_kind
 
+    tensor_split = normalize_tensor_split(payload.get("tensor_split"), gpu_ids)
+    if tensor_split is not None and entry.get("gpu_ids") == list(gpu_ids):
+        entry["tensor_split"] = tensor_split
+
     return entry
+
+
+def normalize_tensor_split(value: Any, gpu_ids: Any) -> Optional[list[float]]:
+    """Keep a finite positive ratio only with its unmodified ordered GPU IDs."""
+    if not isinstance(gpu_ids, (list, tuple)) or len(gpu_ids) < 2:
+        return None
+    if any(
+        isinstance(gid, bool) or not isinstance(gid, int) or not 0 <= gid <= MAX_GPU_ID
+        for gid in gpu_ids
+    ):
+        return None
+    if len(set(gpu_ids)) != len(gpu_ids):
+        return None
+    if not isinstance(value, (list, tuple)) or len(value) != len(gpu_ids):
+        return None
+    if any(isinstance(v, bool) or not isinstance(v, (int, float)) or v < 0 for v in value):
+        return None
+    try:
+        total = sum(value)
+        valid = all(math.isfinite(v) for v in value) and math.isfinite(total) and total > 0
+    except OverflowError:
+        return None
+    return list(value) if valid else None
 
 
 def stored_gpu_index_kind(override: Mapping[str, Any]) -> str:
@@ -656,6 +684,9 @@ def model_override_load_kwargs(override: dict[str, Any], *, is_gguf: bool) -> di
             kwargs["n_cpu_moe"] = override["n_cpu_moe"]
         if override.get("gpu_ids") is not None:
             kwargs["gpu_ids"] = override["gpu_ids"]
+            tensor_split = normalize_tensor_split(override.get("tensor_split"), override["gpu_ids"])
+            if tensor_split is not None:
+                kwargs["tensor_split"] = tensor_split
 
     if kwargs.get("llama_extra_args"):
         # One entry can hold a pass-through flag AND the field it shadows, and llama.cpp's last-wins parse would hand the load the stale flag, so the /load stripper (_resolve_inherited_extra_args) is imported, not mirrored. The settings page has no control for flags, so a save carries the stored ones over (routes/settings.py); the allow-list this module stays out of is validate_extra_args.
@@ -939,7 +970,7 @@ def set_model_override(
         fill_absent_fields = fill_absent_fields,
         coupled_fields = (
             # The pin and its index space are one value: filling the qualifier onto ids this browser did not write relabels them.
-            ("gpu_ids", "gpu_index_kind"),
+            ("gpu_ids", "gpu_index_kind", "tensor_split"),
             ("mlx_kv_quant", "mlx_kv_bits"),
         ),
     )

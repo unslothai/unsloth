@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { normalizeTensorSplit } from "@/hooks/gpu-tensor-split";
 import type { GpuIndexKind } from "@/hooks/use-gpu-info";
 import {
   cachedRepoConfigId,
@@ -61,7 +62,7 @@ export interface PerModelConfig {
   nCpuMoe?: number;
   selectedGpuIds?: number[] | null;
   selectedGpuIndexKind?: GpuIndexKind | null;
-  /** --tensor-split in picker order, never stored. `undefined` defers to the store, `null` = default. */
+  /** --tensor-split bound to selectedGpuIds in picker order. `undefined` defers to the store, `null` = default. */
   tensorSplit?: number[] | null;
 }
 
@@ -389,9 +390,10 @@ const LEGACY_MIGRATION_FLAG = "unsloth_model_configs_migrated";
 // would normalize the unknown field straight back out of the record.
 // v2 added nBatch/nUbatch, v3 llamaExtraArgs, v4 disableVision, v5 the llama-server tuning group
 // (loadMode / specDraftCacheDtype / ctxCheckpoints / cacheRam), v6 the reasoning budget pair,
-// v7 mlxKvQuant, v9 mlxInt8Prefill. v8 is skipped: nightly builds stamped it for the reverted custom
+// v7 mlxKvQuant, v9 mlxInt8Prefill, v10 the per-GPU split. v8 is skipped: nightly builds stamped it for the reverted custom
 // llama.cpp config (#12725), so a v8 client must not claim to understand an int8 prefill record.
-const STORAGE_SCHEMA_VERSION = 9;
+const STORAGE_SCHEMA_VERSION = 10;
+const PRE_TENSOR_SPLIT_SCHEMA_VERSION = 9;
 const PRE_MLX_INT8_PREFILL_SCHEMA_VERSION = 7;
 const PRE_MLX_KV_QUANT_SCHEMA_VERSION = 6;
 const PRE_REASONING_BUDGET_SCHEMA_VERSION = 5;
@@ -455,6 +457,7 @@ const STORED_CONFIG_FIELDS = new Set([
   "nCpuMoe",
   "selectedGpuIds",
   "selectedGpuIndexKind",
+  "tensorSplit",
 ]);
 
 /** Keep only a list of strings, preserving the three states above. Anything that is not an array is "not loaded"
@@ -1101,6 +1104,7 @@ function normalizeV1(partial: RawConfig): PerModelConfig {
         : null,
     llamaExtraArgs: normalizeLlamaExtraArgs(partial.llamaExtraArgs),
     ...normalizeGpuFields(partial),
+    tensorSplit: normalizeTensorSplit(partial.tensorSplit, partial.selectedGpuIds),
   };
 }
 
@@ -1128,8 +1132,11 @@ function normalize(raw: unknown): PerModelConfig {
  *  client reconstructs anyway, and stamping every record v4 would put the whole store out of reach.
  *  The tuning group and the reasoning pair follow the same rule. */
 function storedSchemaVersion(normalized: PerModelConfig): number {
-  if (normalized.mlxInt8Prefill) {
+  if (normalized.tensorSplit != null) {
     return STORAGE_SCHEMA_VERSION;
+  }
+  if (normalized.mlxInt8Prefill) {
+    return PRE_TENSOR_SPLIT_SCHEMA_VERSION;
   }
   if (normalized.mlxKvQuant != null) {
     return PRE_MLX_INT8_PREFILL_SCHEMA_VERSION;
@@ -1344,7 +1351,8 @@ function gpuFieldsAtDefault(config: PerModelConfig): boolean {
     (config.gpuMemoryMode ?? "auto") === "auto" &&
     (config.gpuLayers == null || config.gpuLayers < 0) &&
     (config.nCpuMoe == null || config.nCpuMoe === 0) &&
-    config.selectedGpuIds == null
+    config.selectedGpuIds == null &&
+    config.tensorSplit == null
   );
 }
 
