@@ -155,7 +155,7 @@ def test_a_system_bwrap_shadowed_on_path_is_named_not_reinstalled(linux, monkeyp
     assert plan_mod.shutil.which("bwrap") in plan.reason and "/usr/bin" in plan.reason
 
 
-@pytest.mark.skipif(os.name == "nt", reason = "POSIX ownership")
+@pytest.mark.skipif(os.name == "nt", reason = "the trust check reads POSIX uid and mode bits, which Windows does not have")
 def test_bwrap_state_follows_the_launchers_trust_check(monkeypatch, tmp_path):
     from core.inference import sandbox_linux
 
@@ -268,7 +268,7 @@ def test_elevated_steps_ignore_path_and_untrusted_folders(monkeypatch, tmp_path)
 @pytest.mark.skipif(not os.path.exists("/usr/bin/env"), reason = "needs a POSIX /usr/bin")
 def test_elevated_steps_pin_a_root_owned_system_binary():
     if os.stat("/usr/bin/env").st_uid != 0:
-        pytest.skip("this host's /usr/bin is not root-owned")
+        pytest.skip(reason = "the pin only accepts a root-owned binary and this host's /usr/bin/env is not owned by root")
     assert plan_mod.elevated_steps([("env", "true")]) == [
         [os.path.realpath("/usr/bin/env"), "true"]
     ]
@@ -289,7 +289,7 @@ def test_detection_is_cached_until_invalidated(linux):
     assert plan_mod.detect(False).steps == ()
 
 
-@pytest.mark.skipif(os.name == "nt", reason = "POSIX ownership")
+@pytest.mark.skipif(os.name == "nt", reason = "the trust check reads POSIX uid and mode bits, which Windows does not have")
 def test_untrusted_elevation_tools_are_ignored(monkeypatch, tmp_path):
     fake = tmp_path / "sudo"
     fake.write_text("#!/bin/sh\n")
