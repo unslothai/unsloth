@@ -132,7 +132,6 @@ _CRASH_LINE_MARKERS = (
     "segmentation fault",
     "out of memory",
 )
-# faulthandler dump lines: never the reason.
 _STACK_LINE_PREFIXES = (
     'File "',
     "Thread 0x",

@@ -665,7 +665,7 @@ class DiffusionTrainingService:
                 "stop_queue": self._stop_queue,
                 "config": config,
             }
-            # Test targets take only the three job kwargs. The real child installs the mirror.
+            # Test targets take only the three job kwargs.
             if self._target is _default_target:
                 self._open_worker_stderr_capture()
                 if self._stderr_capture is not None:
