@@ -3974,6 +3974,10 @@ from core.inference.studio_tool_loop import (
 from core.inference.chat_templates import resolve_effective_chat_template_override
 from routes.provider_credentials import provider_config_guard, resolve_provider_api_key_or_400
 from storage import providers_db
+from models.providers import (
+    normalize_provider_reasoning_config,
+    validate_provider_reasoning_contract,
+)
 from utils.utils import is_hf_authentication_error, safe_error_detail, log_and_http_error
 
 import io
@@ -27073,13 +27077,15 @@ async def _proxy_to_external_provider(
     provider_type = payload.provider_type
     base_url = payload.provider_base_url
     api_type = payload.provider_api_type
+    reasoning_config = normalize_provider_reasoning_config(payload.provider_reasoning_config)
     saved_provider_snapshot: Optional[dict] = None
 
     if managed is not None:
         provider_type = managed.provider_type
         base_url = managed.base_url
         api_type = "chat_completions"
-    elif payload.provider_id and not payload.encrypted_api_key:
+        reasoning_config = None
+    elif payload.provider_id:
         # Saved-provider SQLite reads must not block the event loop.
         config = await asyncio.to_thread(providers_db.get_provider, payload.provider_id)
         if config is None:
@@ -27098,6 +27104,7 @@ async def _proxy_to_external_provider(
         provider_type = config["provider_type"]
         base_url = config["base_url"]
         api_type = config.get("api_type", "chat_completions")
+        reasoning_config = normalize_provider_reasoning_config(config.get("reasoning_config"))
 
     if not provider_type:
         raise HTTPException(
@@ -27105,6 +27112,13 @@ async def _proxy_to_external_provider(
             detail = "Either provider_id or provider_type is required for external provider routing.",
         )
     _refuse_decision_connection(provider_type, api_type)
+    if provider_type == "custom":
+        try:
+            validate_provider_reasoning_contract(provider_type, api_type, reasoning_config)
+        except ValueError as exc:
+            raise HTTPException(status_code = 400, detail = str(exc)) from None
+    else:
+        reasoning_config = None
 
     # Unsloth's tools run on this host, so any provider whose wire format can
     # carry a tool schema out and a result back can use them. The capability is
@@ -27651,7 +27665,13 @@ async def _proxy_to_external_provider(
     elif saved_provider_snapshot is not None:
         async with provider_config_guard(payload.provider_id):
             current = await asyncio.to_thread(providers_db.get_provider, payload.provider_id)
-            routing_fields = ("provider_type", "base_url", "api_type", "is_enabled")
+            routing_fields = (
+                "provider_type",
+                "base_url",
+                "api_type",
+                "is_enabled",
+                "reasoning_config",
+            )
             if current is None or any(
                 current.get(field) != saved_provider_snapshot.get(field) for field in routing_fields
             ):
@@ -27662,7 +27682,7 @@ async def _proxy_to_external_provider(
             api_key = await asyncio.to_thread(
                 resolve_provider_api_key_or_400,
                 payload.provider_id,
-                None,
+                payload.encrypted_api_key,
                 allow_saved_key = (
                     not _request_has_api_key(request)
                     or _request_is_saved_credential_workflow(request)
@@ -27732,6 +27752,7 @@ async def _proxy_to_external_provider(
         base_url = base_url,
         api_key = api_key,
         api_type = api_type,
+        reasoning_config = reasoning_config,
         **({"managed_loopback": True} if managed is not None else {}),
     )
     _non_stream_custom_responses = (

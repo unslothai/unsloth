@@ -62,6 +62,7 @@ from models.providers import (
     ProviderTestRequest,
     ProviderTestResult,
     ProviderUpdate,
+    validate_provider_reasoning_contract,
 )
 from storage import credential_secrets, providers_db
 from hub.services.models import account_access
@@ -84,6 +85,7 @@ def _provider_response(row: dict) -> ProviderResponse:
         display_name = row["display_name"],
         base_url = row["base_url"],
         api_type = row.get("api_type", "chat_completions"),
+        reasoning_config = row.get("reasoning_config"),
         is_enabled = bool(row["is_enabled"]),
         has_api_key = credential_secrets.has_secret(
             credential_secrets.PROVIDER_API_KEY_KIND,
@@ -232,6 +234,13 @@ async def create_provider_config(
             f"Use GET /api/providers/registry to see available types.",
         )
 
+    try:
+        validate_provider_reasoning_contract(
+            payload.provider_type, payload.api_type, payload.reasoning_config
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code = 400, detail = str(exc)) from None
+
     _validate_max_output_tokens_contract(
         payload.provider_type,
         "max_output_tokens" in payload.model_fields_set,
@@ -270,6 +279,7 @@ async def create_provider_config(
             available_models = payload.available_models,
             max_output_tokens = payload.max_output_tokens,
             api_type = payload.api_type,
+            reasoning_config = payload.reasoning_config,
         )
         try:
             if api_key:
@@ -296,6 +306,19 @@ async def update_provider_config(
     existing = providers_db.get_provider(provider_id)
     if not existing:
         raise HTTPException(status_code = 404, detail = "Provider not found")
+
+    reasoning_config_requested = "reasoning_config" in payload.model_fields_set
+    effective_reasoning_config = (
+        payload.reasoning_config if reasoning_config_requested else existing.get("reasoning_config")
+    )
+    try:
+        validate_provider_reasoning_contract(
+            existing["provider_type"],
+            payload.api_type or existing.get("api_type", "chat_completions"),
+            effective_reasoning_config,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code = 400, detail = str(exc)) from None
 
     existing_info = get_provider_info(existing["provider_type"]) or {}
     max_output_tokens_requested = "max_output_tokens" in payload.model_fields_set
@@ -361,6 +384,7 @@ async def update_provider_config(
         "available_models",
         "max_output_tokens",
         "api_type",
+        "reasoning_config",
     }
     metadata_requested = bool(payload.model_fields_set & metadata_fields)
 
@@ -395,6 +419,12 @@ async def update_provider_config(
         )
         if max_output_tokens_requested:
             metadata_updates["max_output_tokens"] = payload.max_output_tokens
+        if reasoning_config_requested:
+            metadata_updates["reasoning_config"] = (
+                payload.reasoning_config.model_dump()
+                if payload.reasoning_config is not None
+                else None
+            )
 
     # The row snapshot this request found, keyed the way update_provider takes it.
     _restorable = dict(
@@ -405,6 +435,7 @@ async def update_provider_config(
         available_models = existing.get("available_models") or [],
         max_output_tokens = existing.get("max_output_tokens"),
         api_type = existing.get("api_type", "chat_completions"),
+        reasoning_config = existing.get("reasoning_config"),
     )
 
     def _current_matches(current: dict, field: str, written) -> bool:
@@ -431,9 +462,9 @@ async def update_provider_config(
         for field, written in metadata_updates.items():
             if field == "id":
                 continue
-            # None means "not sent" for every column but max_output_tokens, which is only present here when it was
-            # explicitly requested. update_provider left the unsent ones alone, so there is nothing to take back.
-            if written is None and field != "max_output_tokens":
+            # Nullable overrides are present only when explicitly requested; None clears them.
+            # Other None values mean "not sent", so there is nothing to take back.
+            if written is None and field not in {"max_output_tokens", "reasoning_config"}:
                 continue
             if not _current_matches(current, field, written):
                 continue

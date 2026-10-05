@@ -5968,6 +5968,7 @@ const ReasoningToggle: FC<{ side?: "top" | "bottom" }> = ({
             // Lets the resolver detect custom Gemini OAI-compat gateways.
             baseUrl: selectedExternalProvider?.baseUrl ?? null,
             apiType: selectedExternalProvider?.apiType,
+            reasoningConfig: selectedExternalProvider?.reasoningConfig,
           },
         )
       : null;
