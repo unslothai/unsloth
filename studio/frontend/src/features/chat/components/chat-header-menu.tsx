@@ -45,7 +45,7 @@ import {
   ViewOffSlashIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react";
-import { GitBranchIcon } from "lucide-react";
+import { ForkIcon } from "@/lib/fork-icon";
 import type { ReactNode } from "react";
 import {
   type ActiveChatMenu,
@@ -211,7 +211,7 @@ function ChatMenuItems({ menu }: { menu: ActiveChatMenu }) {
       </Item>
       <DropdownMenuSeparator className="mx-3" />
       <Item
-        glyph={<GitBranchIcon strokeWidth={1.75} className={ICON} />}
+        glyph={<HugeiconsIcon icon={ForkIcon} strokeWidth={1.75} className={ICON} />}
         onSelect={menu.fork}
         disabled={!menu.canFork}
         shortcut="forkChat"

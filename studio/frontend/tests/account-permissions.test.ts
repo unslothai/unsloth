@@ -9,7 +9,17 @@ import {
   type StubElement,
 } from "./helpers/module-stubs.ts";
 
-function permissionUi(owner: boolean, permissionMode: string, loginMode = "multi") {
+type Capability = {
+  pythonOsIsolated: boolean;
+  terminalOsIsolated: boolean;
+} | null;
+
+function permissionUi(
+  owner: boolean,
+  permissionMode: string,
+  loginMode = "multi",
+  capability: Capability = null,
+) {
   const accountSession = loadWithStubs<{
     useFullAccessAllowed: () => boolean;
   }>(new URL("../src/features/auth/account-session.ts", import.meta.url), {
@@ -24,6 +34,16 @@ function permissionUi(owner: boolean, permissionMode: string, loginMode = "multi
     },
   });
   const changes: string[] = [];
+  const capabilityStub = {
+    loadSandboxCapability: async () => capability,
+    loadSettledSandboxCapability: async () => capability,
+    // Nothing cached: every pick reads, so these cases see the settled answer.
+    cachedSandboxCapability: () => null,
+    onSandboxCapabilityChange: () => () => {},
+    sandboxReady: (value: NonNullable<Capability>) =>
+      value.pythonOsIsolated && value.terminalOsIsolated,
+    capabilityPending: () => false,
+  };
   const state = {
     permissionMode,
     setPermissionMode: (value: string) => {
@@ -33,7 +53,14 @@ function permissionUi(owner: boolean, permissionMode: string, loginMode = "multi
   const component = loadWithStubs<{
     PermissionModeMenuItems: (props: {
       onRequestFullAccess: () => void;
+      onRequestSandboxSetup: () => void;
     }) => StubElement;
+    PERMISSION_MODE_OPTIONS: readonly { value: string; label: string }[];
+    permissionModeOption: (mode: string) => { value: string; label: string };
+    pickSandboxedMode: (
+      setPermissionMode: (mode: string) => void,
+      onRequestSandboxSetup: () => void,
+    ) => Promise<void>;
     FullAccessConfirmDialog: (props: {
       open: boolean;
       onOpenChange: () => void;
@@ -58,6 +85,15 @@ function permissionUi(owner: boolean, permissionMode: string, loginMode = "multi
       },
       "@/i18n": { useT: () => (key: string) => key },
       "@/features/auth/account-session": accountSession,
+      "./api/sandbox-capability": capabilityStub,
+      "./sandbox-pick": loadWithStubs(
+        new URL("../src/features/chat/sandbox-pick.ts", import.meta.url),
+        { "./api/sandbox-capability": capabilityStub },
+      ),
+      "./sandbox-setup-dialog": {
+        SandboxSetupDialog: "SandboxSetupDialog",
+        useSandboxSetupDialogStore: () => () => {},
+      },
       "@/components/ui/alert-dialog": { AlertDialog: "AlertDialog" },
       "@/components/ui/button": { Button: "Button" },
       "@/components/ui/dropdown-menu": { DropdownMenuItem: "DropdownMenuItem" },
@@ -69,8 +105,10 @@ function permissionUi(owner: boolean, permissionMode: string, loginMode = "multi
       "@/lib/utils": { cn: () => "" },
       "@hugeicons/react": {},
       "./stores/chat-runtime-store": {
-        useChatRuntimeStore: (selector: (state: unknown) => unknown) =>
-          selector(state),
+        useChatRuntimeStore: Object.assign(
+          (selector: (state: unknown) => unknown) => selector(state),
+          { getState: () => state, subscribe: () => () => {} },
+        ),
       },
     },
   );
@@ -83,6 +121,7 @@ for (const loginMode of ["single", "multi"]) {
       const ui = permissionUi(owner, "full", loginMode);
       const menu = ui.component.PermissionModeMenuItems({
         onRequestFullAccess() {},
+        onRequestSandboxSetup() {},
       });
       const rows = menu.props.children as StubElement[];
       assert.equal(rows.length, owner ? 4 : 3);
@@ -103,7 +142,63 @@ test("multi-user policy leaves non-full preferences untouched", () => {
       onRequestFullAccess() {
         assert.fail("Full access must be unavailable");
       },
+      onRequestSandboxSetup() {},
     });
     assert.deepEqual(ui.changes, []);
   }
 });
+
+test("the stored values keep their order and their names", () => {
+  const ui = permissionUi(true, "auto");
+  assert.deepEqual(
+    ui.component.PERMISSION_MODE_OPTIONS.map((option) => [
+      option.value,
+      option.label,
+    ]),
+    [
+      ["ask", "Ask for approval"],
+      ["auto", "Approve for me"],
+      ["off", "Run automatically"],
+      ["full", "Full access"],
+    ],
+  );
+  assert.equal(ui.component.permissionModeOption("bogus").value, "auto");
+});
+
+for (const [name, capability, expected] of [
+  ["an older server that cannot say", null, "applied"],
+  [
+    "a working OS sandbox",
+    { pythonOsIsolated: true, terminalOsIsolated: true },
+    "applied",
+  ],
+  [
+    "a Terminal without OS isolation",
+    { pythonOsIsolated: true, terminalOsIsolated: false },
+    "setup",
+  ],
+  [
+    "no OS sandbox",
+    { pythonOsIsolated: false, terminalOsIsolated: false },
+    "setup",
+  ],
+] as const) {
+  test(`picking Run automatically with ${name} is ${expected}`, async () => {
+    const ui = permissionUi(true, "auto", "single", capability);
+    const applied: string[] = [];
+    let setupRequested = 0;
+    await ui.component.pickSandboxedMode(
+      (mode) => applied.push(mode),
+      () => {
+        setupRequested += 1;
+      },
+    );
+    if (expected === "applied") {
+      assert.deepEqual(applied, ["off"]);
+      assert.equal(setupRequested, 0);
+    } else {
+      assert.deepEqual(applied, []);
+      assert.equal(setupRequested, 1);
+    }
+  });
+}

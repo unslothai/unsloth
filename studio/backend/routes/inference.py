@@ -3732,6 +3732,8 @@ from models.inference import (
     ValidateModelResponse,
     EstimateMemoryRequest,
     EstimateMemoryResponse,
+    Int8PrefillAvailabilityRequest,
+    Int8PrefillAvailabilityResponse,
     TransformersUpgradeInfo,
     TransformersUpgradeCheckRequest,
     TransformersUpgradeCheckResponse,
@@ -5025,6 +5027,20 @@ def _permission_mode_confirm(payload) -> bool:
     if mode in ("off", "full"):
         return False
     return bool(getattr(payload, "stream", False))
+
+
+def _off_mode_sandbox_gate(payload, ui_events: bool) -> bool:
+    """Whether an "off" request arms the confirm gate: only on a stream that can show a prompt.
+
+    Elsewhere "off" stays unprompted, so no route guard or non-streaming client sees a change.
+    """
+    return (
+        getattr(payload, "permission_mode", None) == "off"
+        and not getattr(payload, "_off_confirm_opt_out", False)
+        and not getattr(payload, "bypass_permissions", False)
+        and bool(getattr(payload, "stream", False))
+        and bool(ui_events)
+    )
 
 
 def _catalog_names(tools) -> list[str]:
@@ -6455,10 +6471,10 @@ def _apply_compaction_nudge(
     archive to search and stays a no-op for chats that never compacted.
 
     `checkpoint_fitted` is the CALLER's answer to "does this request go through
-    `_fit_context`, which can reset the epoch", not the process-wide policy. Only the
-    llama.cpp path fits that way; reading the global policy instead told a safetensors
-    model that a carried_forward block had removed its history when no such block exists.
-    Defaults to False so a new call site claims the reset rather than inheriting it."""
+    `_fit_context`, which can reset the epoch", not the process-wide policy. GGUF and MLX
+    opt in at their exact-token preflight call sites; other safetensors and external-provider
+    paths do not. Defaults to False so a new call site claims the reset rather than
+    inheriting it."""
     tool_names = {(t.get("function") or {}).get("name") for t in (tools or [])}
     if "search_conversation" not in tool_names:
         return nudge
@@ -8236,6 +8252,9 @@ def _llama_runtime_fields(llama_backend: LlamaCppBackend) -> dict:
         mlx_kv_quant_eligibility = None,
         mlx_kv_quant_reason = None,
         mlx_kv_quant_note = None,
+        mlx_int8_prefill = None,
+        mlx_int8_prefill_requested = None,
+        mlx_int8_prefill_reason = None,
         mlx_context_budget = None,
         chat_template_override_reason = None,
         context_length_enforced = True,
@@ -16895,9 +16914,13 @@ def _mlx_runtime_settings_match(backend, request) -> bool:
     from core.inference.mlx_inference import encode_mlx_kv_quant, parse_mlx_kv_quant
 
     requested = encode_mlx_kv_quant(*parse_mlx_kv_quant(getattr(request, "mlx_kv_quant", None)))
-    return entry["mlx_kv_quant_requested"] == requested and (
-        entry.get("chat_template_override_requested") or None
-    ) == (request.chat_template_override or None)
+    return (
+        entry["mlx_kv_quant_requested"] == requested
+        and (entry.get("chat_template_override_requested") or None)
+        == (request.chat_template_override or None)
+        and bool(entry.get("mlx_int8_prefill_requested"))
+        == bool(getattr(request, "mlx_int8_prefill", False))
+    )
 
 
 def _inherit_resident_load_in_4bit(backend, request, model_identifier: str) -> None:
@@ -18184,6 +18207,9 @@ async def _load_model_impl(
                     mlx_kv_quant_eligibility = _model_info.get("mlx_kv_quant_eligibility"),
                     mlx_kv_quant_reason = _model_info.get("mlx_kv_quant_reason"),
                     mlx_kv_quant_note = _model_info.get("mlx_kv_quant_note"),
+                    mlx_int8_prefill = _model_info.get("mlx_int8_prefill"),
+                    mlx_int8_prefill_requested = _model_info.get("mlx_int8_prefill_requested"),
+                    mlx_int8_prefill_reason = _model_info.get("mlx_int8_prefill_reason"),
                     # Requested, as /status reports it: a null override would read
                     # as "using the default".
                     chat_template_override = _model_info.get("chat_template_override_requested"),
@@ -18904,6 +18930,7 @@ async def _load_model_impl(
                 ),
                 subject = current_subject,
                 mlx_kv_quant = request.mlx_kv_quant,
+                mlx_int8_prefill = request.mlx_int8_prefill,
                 chat_template_override = request.chat_template_override,
                 load_cancel_event = load_cancel_event,
                 on_prior_worker_released = _release_chat_after_teardown,
@@ -19065,6 +19092,9 @@ async def _load_model_impl(
             mlx_kv_quant_eligibility = _model_info.get("mlx_kv_quant_eligibility"),
             mlx_kv_quant_reason = _model_info.get("mlx_kv_quant_reason"),
             mlx_kv_quant_note = _model_info.get("mlx_kv_quant_note"),
+            mlx_int8_prefill = _model_info.get("mlx_int8_prefill"),
+            mlx_int8_prefill_requested = _model_info.get("mlx_int8_prefill_requested"),
+            mlx_int8_prefill_reason = _model_info.get("mlx_int8_prefill_reason"),
             # Requested, as /status reports it: a null override would read as
             # "using the default".
             chat_template_override = _model_info.get("chat_template_override_requested"),
@@ -19242,6 +19272,28 @@ def _requires_trust_remote_code_for_model(
         return False
 
 
+def _stored_trust_remote_code(
+    model_info,
+    inference_config,
+    trust_remote_code_used = False,
+) -> Optional[bool]:
+    """Network-free part of the resolution order; None = only ``auto_map`` can answer."""
+    stored = (model_info or {}).get("requires_trust_remote_code")
+    if stored is not None:
+        return bool(stored)
+    if trust_remote_code_used or bool((inference_config or {}).get("trust_remote_code", False)):
+        return True
+    return None
+
+
+def _auto_map_trust_remote_code(model_id, hf_token = None) -> bool:
+    """Raw ``auto_map`` check; can reach the Hub, so keep it off the event loop."""
+    try:
+        return bool(_requires_trust_remote_code_for_model(model_id, hf_token))
+    except Exception:
+        return False
+
+
 def _resolve_loaded_trust_remote_code(
     model_id,
     model_info,
@@ -19261,16 +19313,11 @@ def _resolve_loaded_trust_remote_code(
 
     Resolution order: a value stored on the model at load time (so a status refresh does
     not re-derive it) -> the trust_remote_code the load actually used -> the YAML default
-    -> the raw ``auto_map`` check (reads the loaded model's cached config; no network)."""
-    stored = (model_info or {}).get("requires_trust_remote_code")
-    if stored is not None:
-        return bool(stored)
-    if trust_remote_code_used or bool((inference_config or {}).get("trust_remote_code", False)):
-        return True
-    try:
-        return bool(_requires_trust_remote_code_for_model(model_id, hf_token))
-    except Exception:
-        return False
+    -> the raw ``auto_map`` check (reads the config from the cache, or the Hub on a miss)."""
+    known = _stored_trust_remote_code(model_info, inference_config, trust_remote_code_used)
+    if known is not None:
+        return known
+    return _auto_map_trust_remote_code(model_id, hf_token)
 
 
 def _requires_security_review_for_model(
@@ -20378,6 +20425,43 @@ def _cached_estimate_config(
         # stopped existing on exactly the models it was added for.
         _estimate_config_cache[key] = (time.monotonic(), config)
     return config
+
+
+@router.post("/int8-prefill-availability", response_model = Int8PrefillAvailabilityResponse)
+async def int8_prefill_availability(
+    request: Int8PrefillAvailabilityRequest, current_subject: str = Depends(get_current_subject)
+):
+    """Whether MLX int8 prefill would apply to this model, judged from its downloaded checkpoint
+    without loading it. The first answer on a new macOS or MLX version builds the kernels once."""
+    if account_access.managed_account():
+        await asyncio.to_thread(account_access.require_model_access, request.model_path)
+    if is_ollama_manifest_ref(request.model_path):
+        return Int8PrefillAvailabilityResponse(available = False, reason = "unsupported_model")
+
+    def _check() -> Int8PrefillAvailabilityResponse:
+        if not _mlx_estimate_available():
+            return Int8PrefillAvailabilityResponse(available = False, reason = "unsupported_model")
+        config = _cached_estimate_config(request.model_path, None, request.hf_token, False)
+        if config is _ESTIMATE_NOT_ON_DISK:
+            return Int8PrefillAvailabilityResponse(available = False, reason = "not_downloaded")
+        from core.inference.native_audio import is_native_audio_model
+
+        if (
+            config is None
+            or getattr(config, "is_gguf", False)
+            or getattr(config, "is_lora", False)
+            or is_native_audio_model(request.model_path)
+        ):
+            return Int8PrefillAvailabilityResponse(available = False, reason = "unsupported_model")
+        model_dir = _local_mlx_model_dir(config)
+        if not model_dir:
+            return Int8PrefillAvailabilityResponse(available = False, reason = "not_downloaded")
+        from core.inference.mlx_inference import mlx_int8_prefill_checkpoint_status
+
+        available, reason = mlx_int8_prefill_checkpoint_status(model_dir)
+        return Int8PrefillAvailabilityResponse(available = available, reason = reason or None)
+
+    return await asyncio.to_thread(_check)
 
 
 @router.post("/estimate-memory", response_model = EstimateMemoryResponse)
@@ -21675,9 +21759,12 @@ async def _slot_status(current_subject: str):
         audio_type = None
         has_audio_input = False
         has_video_input = False
+        # Snapshot before the await below: a load landing mid-await must not mix two models.
+        _active = backend.active_model_name
+        _loaded = list(backend.models.keys())
         model_info = {}
-        if backend.active_model_name:
-            model_info = backend.models.get(backend.active_model_name, {})
+        if _active:
+            model_info = backend.models.get(_active, {})
             is_vision = model_info.get("is_vision", False)
             is_audio = model_info.get("is_audio", False)
             audio_type = model_info.get("audio_type")
@@ -21690,9 +21777,7 @@ async def _slot_status(current_subject: str):
 
         # Non-GGUF: classify from the loaded template.
         _sf_flags, _ = _sf_rendered_features(backend, model_info)
-        inference_config = (
-            load_inference_config(backend.active_model_name) if backend.active_model_name else None
-        )
+        inference_config = load_inference_config(_active) if _active else None
 
         # The backend and the attempt registry name the same load, so compare public ids
         # or a model loaded from a path is listed twice.
@@ -21702,19 +21787,31 @@ async def _slot_status(current_subject: str):
         ):
             _loading_models.append(_tracked_loading_id)
 
+        # Only the auto_map fallback can reach the Hub; skip the guard's probe otherwise.
+        _requires_trc = False
+        if _active:
+            _known = _stored_trust_remote_code(model_info, inference_config)
+            if _known is not None:
+                _requires_trc = _known
+            else:
+                _requires_trc = await asyncio.get_running_loop().run_in_executor(
+                    _STATUS_PROBE_EXECUTOR,
+                    functools.partial(
+                        _offline_guarded, [_active], _auto_map_trust_remote_code, _active
+                    ),
+                )
+
         return InferenceStatusResponse(
             engine = model_info.get("engine", "auto"),
             engine_parallelism = model_info.get("engine_parallelism", "tensor"),
             engine_precision = model_info.get("engine_precision", "auto"),
             gpu_ids = model_info.get("gpu_ids"),
             tensor_parallel = bool(model_info.get("tensor_parallel", False)),
-            active_model = backend.active_model_name,
-            model_identifier = backend.active_model_name,
+            active_model = _active,
+            model_identifier = _active,
             is_vision = is_vision,
             is_gguf = False,
-            is_local_model = bool(
-                backend.active_model_name and is_local_path(backend.active_model_name)
-            ),
+            is_local_model = bool(_active and is_local_path(_active)),
             is_audio = is_audio,
             audio_type = audio_type,
             has_audio_input = has_audio_input,
@@ -21740,14 +21837,15 @@ async def _slot_status(current_subject: str):
             mlx_kv_quant_eligibility = model_info.get("mlx_kv_quant_eligibility"),
             mlx_kv_quant_reason = model_info.get("mlx_kv_quant_reason"),
             mlx_kv_quant_note = model_info.get("mlx_kv_quant_note"),
+            mlx_int8_prefill = model_info.get("mlx_int8_prefill"),
+            mlx_int8_prefill_requested = model_info.get("mlx_int8_prefill_requested"),
+            mlx_int8_prefill_reason = model_info.get("mlx_int8_prefill_reason"),
             chat_template_override = model_info.get("chat_template_override_requested"),
             chat_template_override_reason = model_info.get("chat_template_override_reason"),
             loading = _loading_models,
-            loaded = list(backend.models.keys()),
+            loaded = _loaded,
             inference = inference_config,
-            requires_trust_remote_code = _resolve_loaded_trust_remote_code(
-                backend.active_model_name, model_info, inference_config
-            ),
+            requires_trust_remote_code = _requires_trc,
             supports_reasoning = _sf_flags["supports_reasoning"],
             reasoning_style = _sf_flags["reasoning_style"],
             reasoning_effort_levels = _sf_flags.get("reasoning_effort_levels", []),
@@ -22369,6 +22467,19 @@ def _audio_source_error(exc) -> HTTPException:
     return HTTPException(status_code = exc.status, detail = exc.detail)
 
 
+CONVERT_EXPIRED_DETAIL = {
+    "source": "This recording expired. Add it again.",
+    "target": "This target voice expired. Add it again.",
+}
+
+
+def _convert_role_error(exc, role: str):
+    from core.inference.audio_inputs import AudioInputError
+    if exc.status == 404 and exc.detail == "This reference expired. Add it again.":
+        return AudioInputError(404, CONVERT_EXPIRED_DETAIL[role])
+    return exc
+
+
 def _audio_run_settings(body: AudioRunRequest, reference_text_used: bool) -> dict[str, Any]:
     """The run's recipe for history: scalar options only."""
     options = {
@@ -22853,14 +22964,16 @@ async def _run_audio_convert(
     if refs["source"] is None:
         raise HTTPException(status_code = 400, detail = "Add the recording to convert.")
     resolved: dict[str, Any] = {}
-    try:
-        for role, ref in refs.items():
-            if ref is not None:
-                resolved[role] = await asyncio.to_thread(
-                    audio_inputs.resolve_source, ref.model_dump(exclude_none = True)
-                )
-    except audio_inputs.AudioInputError as exc:
-        raise _audio_source_error(exc) from None
+    for role, ref in refs.items():
+        if ref is None:
+            continue
+        try:
+            resolved[role] = await asyncio.to_thread(
+                audio_inputs.resolve_source, ref.model_dump(exclude_none = True)
+            )
+        except audio_inputs.AudioInputError as exc:
+            # Names the side so the page marks only the card that expired.
+            raise _audio_source_error(_convert_role_error(exc, role)) from None
     source, target = resolved["source"], resolved.get("target")
     max_seconds = {"source": CONVERT_SOURCE_MAX_SECONDS, "target": CONVERT_TARGET_MAX_SECONDS}
     seen: dict[str, Any] = {}
@@ -24474,7 +24587,7 @@ async def _transcribe_audio_result(
         )
         load_options = {"on_phase": on_phase} if on_phase is not None else {}
         if source_path is not None and timestamps:
-            await asyncio.to_thread(sidecar.ensure_aligner, model, on_phase)
+            await asyncio.to_thread(sidecar.ensure_aligner, model, on_phase, cancel_event)
             # Started with its aligner now, or transcribe_path would restart it.
             load_options["timestamps"] = True
         await asyncio.to_thread(
@@ -26715,11 +26828,19 @@ def _build_external_messages(
 
     result = []
     for msg in messages:
-        reasoning = (
+        replay = (
             {"reasoning_content": msg.reasoning_content}
             if provider_type == "llama_cpp" and msg.role == "assistant" and msg.reasoning_content
             else {}
         )
+        if anthropic and msg.role == "assistant" and isinstance(msg.extra_content, dict):
+            native = msg.extra_content.get("anthropic")
+            if (
+                isinstance(native, dict)
+                and isinstance(native.get("content"), list)
+                and native["content"]
+            ):
+                replay["extra_content"] = {"anthropic": {"content": native["content"]}}
         # Drop role=tool messages whose matching server-builtin tool_call was
         # filtered above. An orphan tool_result with no matching tool_call is
         # rejected by OpenAI Responses and Anthropic.
@@ -26729,7 +26850,7 @@ def _build_external_messages(
             and msg.tool_call_id in dropped_server_builtin_tool_call_ids
         ):
             continue
-        if isinstance(msg.content, str) or (msg.content is None and reasoning):
+        if isinstance(msg.content, str) or (msg.content is None and replay):
             # Drop bare assistant messages with no content AND no tool_calls
             # (some providers reject empty assistant turns). Preserve assistant
             # turns whose only payload is tool_calls so multi-turn
@@ -26738,15 +26859,15 @@ def _build_external_messages(
                 msg.role == "assistant"
                 and not (msg.content or "").strip()
                 and not msg.tool_calls
-                and not reasoning
+                and not replay
             ):
                 continue
-            out: dict[str, Any] = {"role": msg.role, "content": msg.content or "", **reasoning}
+            out: dict[str, Any] = {"role": msg.role, "content": msg.content or "", **replay}
             if msg.role == "assistant" and msg.tool_calls:
                 _tcs = _filter_tool_calls(msg.tool_calls)
                 if _tcs:
                     out["tool_calls"] = _tcs
-                elif not (msg.content or "").strip() and not reasoning:
+                elif not (msg.content or "").strip() and not replay:
                     # Every tool_call was a dropped synthetic provider card;
                     # the turn would be an empty
                     # `{"role":"assistant","content":""}` that some providers
@@ -26821,17 +26942,17 @@ def _build_external_messages(
                         # `compaction` block; every other provider would 400 on
                         # the unknown part, so gate by provider_type.
                         parts.append({"type": "compaction", "content": part.content})
-                entry: dict[str, Any] = {"role": msg.role, "content": parts, **reasoning}
+                entry: dict[str, Any] = {"role": msg.role, "content": parts, **replay}
                 if msg.role == "assistant" and msg.tool_calls:
                     _tcs = _filter_tool_calls(msg.tool_calls)
                     if _tcs:
                         entry["tool_calls"] = _tcs
-                    elif not parts and not reasoning:
+                    elif not parts and not replay:
                         # All tool_calls were synthetic and dropped, and no
                         # content parts survived. Skip rather than forward an
                         # empty assistant turn that downstream providers reject.
                         continue
-                elif msg.role == "assistant" and not parts and not reasoning:
+                elif msg.role == "assistant" and not parts and not replay:
                     continue
                 if msg.role == "tool":
                     if msg.tool_call_id:
@@ -26858,14 +26979,14 @@ def _build_external_messages(
                         preserved.append(_rp)
                     elif p.type == "compaction" and anthropic:
                         preserved.append({"type": "compaction", "content": p.content})
-                if msg.role == "assistant" and not preserved and not reasoning:
+                if msg.role == "assistant" and not preserved and not replay:
                     continue
                 if len(preserved) == 1 and preserved[0]["type"] == "text":
                     # Single text part collapses to a string for providers that
                     # don't accept content arrays.
-                    entry = {"role": msg.role, "content": preserved[0]["text"], **reasoning}
+                    entry = {"role": msg.role, "content": preserved[0]["text"], **replay}
                 else:
-                    entry = {"role": msg.role, "content": preserved, **reasoning}
+                    entry = {"role": msg.role, "content": preserved, **replay}
                 if msg.role == "assistant" and msg.tool_calls:
                     _tcs = _filter_tool_calls(msg.tool_calls)
                     if _tcs:
@@ -26877,7 +26998,7 @@ def _build_external_messages(
                         _has_text = (
                             isinstance(_entry_content, str) and _entry_content.strip()
                         ) or (isinstance(_entry_content, list) and len(_entry_content) > 0)
-                        if not _has_text and not reasoning:
+                        if not _has_text and not replay:
                             continue
                 if msg.role == "tool":
                     if msg.tool_call_id:
@@ -27497,7 +27618,8 @@ async def _proxy_to_external_provider(
                     ),
                     timeout = payload.tool_call_timeout or 300,
                     permission_mode = payload.permission_mode or "auto",
-                    confirm_calls = _permission_mode_confirm(payload),
+                    confirm_calls = _permission_mode_confirm(payload)
+                    or _off_mode_sandbox_gate(payload, _ui_events),
                     bypass_permissions = bool(payload.bypass_permissions),
                     rag_scope = payload.rag_scope,
                     nudge_tool_calls = payload.nudge_tool_calls,
@@ -27919,7 +28041,8 @@ async def _proxy_to_external_provider(
                     ),
                     timeout = payload.tool_call_timeout or 300,
                     permission_mode = payload.permission_mode or "auto",
-                    confirm_calls = _permission_mode_confirm(payload),
+                    confirm_calls = _permission_mode_confirm(payload)
+                    or _off_mode_sandbox_gate(payload, _ui_events),
                     bypass_permissions = bool(payload.bypass_permissions),
                     rag_scope = payload.rag_scope,
                     auto_heal = payload.auto_heal_tool_calls,
@@ -30218,6 +30341,8 @@ async def produce_openai_chat_completions(
                         param = "confirm_tool_calls",
                     ),
                 )
+            # After the channel check, which "off" never trips.
+            _effective_confirm = _effective_confirm or _off_mode_sandbox_gate(payload, _ui_events)
             if _wants_multiple_choices(payload):
                 raise _reject_unsupported_n("GGUF tool chat completions")
             # main's tool turn: the date and the caller's prompt, not the template's chat default.
@@ -32021,6 +32146,8 @@ async def produce_openai_chat_completions(
 
     # Classify capability flags from the loaded template.
     _sf_model_info = backend.models.get(backend.active_model_name, {})
+    # Only MLX can count its own prompt, so only MLX is fitted before it generates.
+    _sf_fit_overflow = _rolling_context_policy(payload) if _sf_model_info.get("is_mlx") else None
     if _sf_model_info.get("engine") in ("vllm", "sglang"):
         if _managed_engine_unsupported_controls(payload):
             raise _reject(
@@ -32289,6 +32416,7 @@ async def produce_openai_chat_completions(
             tools_on = _sf_tools_on,
             mcp_allowed = _sf_mcp_allowed,
             supports_vision = bool(_sf_model_info.get("is_vision")),
+            checkpoint_fitted = _sf_fit_overflow is not None,
         )
         _reject_missing_forced_tool(payload.tool_choice, _sf_tools_to_use)
         # Mirror the GGUF path: refuse to enter the tool loop when nothing
@@ -32338,6 +32466,8 @@ async def produce_openai_chat_completions(
                     param = "confirm_tool_calls",
                 ),
             )
+        # After the channel check, which "off" never trips (see the GGUF branch).
+        _sf_effective_confirm = _sf_effective_confirm or _off_mode_sandbox_gate(payload, _ui_events)
         _sf_nudge = _build_tool_action_nudge(
             tools = _sf_tools_to_use,
             model_name = model_name,
@@ -32346,9 +32476,12 @@ async def produce_openai_chat_completions(
 
         # RAG nudge, mirroring the GGUF path.
         _sf_nudge = await _apply_rag_nudge(_sf_nudge, _sf_tools_to_use, rag_scope = payload.rag_scope)
-        # No `checkpoint_fitted`: this path never calls `fit_checkpoint_context`, so there
-        # is no reset and no carried_forward block to describe.
-        _sf_nudge = _apply_compaction_nudge(_sf_nudge, _sf_tools_to_use)
+        _sf_nudge = _apply_compaction_nudge(
+            _sf_nudge,
+            _sf_tools_to_use,
+            checkpoint_fitted = _sf_fit_overflow is not None,
+            payload = payload,
+        )
 
         _sf_system_prompt = _apply_current_date_prompt(
             _user_system_prompt,
@@ -32479,6 +32612,9 @@ async def produce_openai_chat_completions(
                 use_adapter = payload.use_adapter,
                 stats_holder = _sf_stats_holder,
                 reasoning_prefilled = _sf_reasoning_prefilled,
+                context_overflow = _sf_fit_overflow,
+                context_policy = _request_context_policy(payload),
+                compaction_headroom_ratio = _request_compaction_headroom_ratio(payload),
             )
 
         _sf_tool_sentinel = object()
@@ -32623,6 +32759,14 @@ async def produce_openai_chat_completions(
                             yield _OPENAI_PASSTHROUGH_SSE_KEEPALIVE
                         continue
 
+                    if event["type"] == "context_truncated":
+                        yield _context_truncated_sse_chunk(
+                            completion_id,
+                            model_name,
+                            {key: value for key, value in event.items() if key != "type"},
+                        )
+                        continue
+
                     # Diff cumulative cleaned text against last snapshot.
                     raw_cumulative = event.get("text", "")
                     clean_cumulative = _strip_tool_xml_for_display(
@@ -32733,8 +32877,10 @@ async def produce_openai_chat_completions(
 
         # Non-streaming JSON: drain the loop, build one ChatCompletion.
         try:
+            _sf_context_truncation = None
 
             def _drain_to_text():
+                nonlocal _sf_context_truncation
                 full_text = ""
                 # Only the resumed turn renders no generation prompt; later tool-loop turns
                 # prefill <think> again. The kept text is the LAST turn's, so track the
@@ -32767,6 +32913,10 @@ async def produce_openai_chat_completions(
                         _event_type == "status" and not event.get("text")
                     ):
                         continued = False
+                    elif _event_type == "context_truncated":
+                        _sf_context_truncation = _accumulate_context_truncation(
+                            _sf_context_truncation, event
+                        )
                 return full_text, prefilled
 
             content_text, _sf_drain_prefilled = await asyncio.to_thread(_drain_to_text)
@@ -32819,7 +32969,7 @@ async def produce_openai_chat_completions(
                     ),
                 ),
             )
-            return _model_json_response(response)
+            return _model_json_response_with_context_truncation(response, _sf_context_truncation)
         except asyncio.CancelledError:
             cancel_event.set()
             backend.reset_generation_state(cancel_event)
@@ -33107,17 +33257,11 @@ async def produce_openai_chat_completions(
 
     # Request-scoped usage/timings receptacle (filled at gen_done).
     stats_holder: dict = {}
+    _sf_context_truncation_holder: dict = {"value": None}
 
     if payload.use_adapter is not None:
 
-        def generate(messages_override = None, choice_index = 0):
-            kw = (
-                gen_kwargs
-                if messages_override is None
-                else {**gen_kwargs, "messages": messages_override}
-            )
-            if choice_index:
-                kw = {**kw, "seed": _choice_seed(payload.seed, choice_index)}
+        def _sf_raw_generate(kw):
             return backend.generate_with_adapter_control(
                 use_adapter = payload.use_adapter,
                 cancel_event = cancel_event,
@@ -33126,19 +33270,54 @@ async def produce_openai_chat_completions(
             )
     else:
 
-        def generate(messages_override = None, choice_index = 0):
-            kw = (
-                gen_kwargs
-                if messages_override is None
-                else {**gen_kwargs, "messages": messages_override}
-            )
-            if choice_index:
-                kw = {**kw, "seed": _choice_seed(payload.seed, choice_index)}
+        def _sf_raw_generate(kw):
             return backend.generate_chat_response(
                 cancel_event = cancel_event,
                 stats_holder = stats_holder,
                 **kw,
             )
+
+    def generate(messages_override = None, choice_index = 0):
+        base_kwargs = (
+            gen_kwargs
+            if messages_override is None
+            else {**gen_kwargs, "messages": messages_override}
+        )
+
+        if choice_index:
+            base_kwargs = {**base_kwargs, "seed": _choice_seed(payload.seed, choice_index)}
+
+        def _run():
+            generation_kwargs = base_kwargs
+            # The count cannot price pictures or video, so those prompts are left alone.
+            if _sf_fit_overflow and all(
+                base_kwargs.get(key) is None for key in ("image", "images", "video")
+            ):
+                fitted = backend.compact_chat_context(
+                    base_kwargs.get("messages") or [],
+                    system_prompt = base_kwargs.get("system_prompt") or "",
+                    tools = base_kwargs.get("tools"),
+                    context_overflow = _sf_fit_overflow,
+                    context_policy = _request_context_policy(payload),
+                    compaction_headroom_ratio = _request_compaction_headroom_ratio(payload),
+                    max_tokens = effective_max_tokens,
+                    thread_id = payload.thread_id,
+                    cancel_event = cancel_event,
+                    enable_thinking = base_kwargs.get("enable_thinking"),
+                    reasoning_effort = base_kwargs.get("reasoning_effort"),
+                    preserve_thinking = base_kwargs.get("preserve_thinking"),
+                    continue_final_message = bool(base_kwargs.get("continue_final_message", False)),
+                )
+                generation_kwargs = {
+                    **base_kwargs,
+                    "messages": fitted["messages"],
+                    "system_prompt": fitted["system_prompt"],
+                }
+                for event in fitted.get("events") or ():
+                    yield event
+            yield from _sf_raw_generate(generation_kwargs)
+
+        return _run()
 
     # ── Streaming response ────────────────────────────────────────
     if payload.stream:
@@ -33192,6 +33371,14 @@ async def produce_openai_chat_completions(
                     _next_task = None
                     if cumulative is _DONE:
                         break
+                    if isinstance(cumulative, dict):
+                        if cumulative.get("type") == "context_truncated":
+                            yield _context_truncated_sse_chunk(
+                                completion_id,
+                                model_name,
+                                {key: value for key, value in cumulative.items() if key != "type"},
+                            )
+                        continue
                     if isinstance(cumulative, GenStreamError):
                         backend.reset_generation_state(cancel_event)
                         _msg = _friendly_gen_stream_error(cumulative)
@@ -33410,6 +33597,13 @@ async def produce_openai_chat_completions(
             def _drain_generate(messages_override = None, choice_index = 0):
                 final = ""
                 for token in generate(messages_override, choice_index = choice_index):
+                    if isinstance(token, dict):
+                        if token.get("type") == "context_truncated":
+                            # Choices and retries refit one prompt: report a fit, not their sum.
+                            _sf_context_truncation_holder["value"] = _accumulate_context_truncation(
+                                None, token
+                            )
+                        continue
                     if isinstance(token, GenStreamError):
                         return token
                     final = token
@@ -33710,7 +33904,9 @@ async def produce_openai_chat_completions(
                     timings = _last_stats.get("timings") if len(_choices) <= 1 else None,
                 )
             api_monitor.finish(monitor_id)
-            return _model_json_response(response)
+            return _model_json_response_with_context_truncation(
+                response, _sf_context_truncation_holder["value"]
+            )
 
         except asyncio.CancelledError:
             cancel_event.set()
@@ -39227,6 +39423,7 @@ async def _mlx_count_chat_tokens(payload, request = None) -> Optional[JSONRespon
                 tools_on = _tools_on,
                 mcp_allowed = False,
                 supports_vision = bool(entry.get("is_vision")),
+                checkpoint_fitted = _rolling_context_policy(payload) is not None,
             )
         ) + _mcp_tools
         # Nothing surviving means the completion skips the tool loop, so follow it back
@@ -39327,9 +39524,13 @@ async def _mlx_count_chat_tokens(payload, request = None) -> Optional[JSONRespon
             _tools_to_use,
             rag_scope = payload.rag_scope,
         )
-        # The safetensors completion appends this too. No `checkpoint_fitted`: only the
-        # llama.cpp path fits that way, so neither this count nor its completion resets.
-        _nudge = _apply_compaction_nudge(_nudge, _tools_to_use)
+        # Match the MLX completion's preflight policy and rendered nudge.
+        _nudge = _apply_compaction_nudge(
+            _nudge,
+            _tools_to_use,
+            checkpoint_fitted = _rolling_context_policy(payload) is not None,
+            payload = payload,
+        )
         # The tool-loop completion reapplies the date with include_api_key, which is the
         # one case an API-key request still gets it. The plain call above withholds it,
         # so without this the count is short exactly that line for these completions.
@@ -45126,6 +45327,17 @@ async def load_diffusion_model_gated(
         raise HTTPException(status_code = 409, detail = str(exc))
 
 
+def _live_preview_kwarg(generate: Any, requested: Optional[bool]) -> dict:
+    """``live_preview`` for an engine whose generate() takes it (sd.cpp's does not), else nothing."""
+    try:
+        import inspect
+        if "live_preview" in inspect.signature(generate).parameters:
+            return {"live_preview": requested}
+    except (TypeError, ValueError):
+        pass
+    return {}
+
+
 # Count of finished generations still writing their PNG/gallery records; generate-progress reports active while above 0. Mutated only on the event loop, so no lock.
 _diffusion_persist_active = 0
 
@@ -45257,6 +45469,7 @@ async def generate_diffusion_image(
                         if request.controlnet
                         else None
                     ),
+                    **_live_preview_kwarg(backend.generate, request.live_preview),
                 )
             break
         except ImageActivationShortfallError as exc:

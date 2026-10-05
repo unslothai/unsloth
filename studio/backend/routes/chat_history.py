@@ -1230,7 +1230,7 @@ def _delete_project_rag_sources(project_id: str) -> None:
             return
         folder_sync.retire_scope(scope, owned)
         # The purge takes the whole scope, `owned` or not, so bounding retirement buys nothing
-        # unless the purge is skipped too.
+        # unless the purge is skipped too. A recreate racing this is unretired by upsert_chat_project.
         if rag_db.rag_available():
             folder_sync.delete_retired_scope(scope)
 

@@ -1337,6 +1337,7 @@ fn show_main_window(app: &tauri::AppHandle) {
         let _ = window.unminimize();
         let _ = window.set_focus();
     }
+    browser_webview::window_changed(app, None);
 }
 
 /// Coordinates the one visible quit confirmation and, on macOS, one AppKit termination request
@@ -2325,6 +2326,17 @@ fn main() {
             Ok(())
         })
         .on_window_event(|window, event| {
+            if window.label() == "main" {
+                match event {
+                    tauri::WindowEvent::Focused(focused) => {
+                        browser_webview::window_changed(window.app_handle(), Some(*focused))
+                    }
+                    tauri::WindowEvent::Resized(_) => {
+                        browser_webview::window_changed(window.app_handle(), None)
+                    }
+                    _ => {}
+                }
+            }
             // Record real drops here, in Rust, so the renderer can only register paths the
             // OS actually handed to the native intake commands.
             if let tauri::WindowEvent::DragDrop(tauri::DragDropEvent::Drop { paths, .. }) = event {
@@ -2340,6 +2352,7 @@ fn main() {
                     MainWindowCloseAction::Hide => {
                         // The tray's Open action and a second app launch restore the window.
                         let _ = window.hide();
+                        browser_webview::window_changed(window.app_handle(), None);
                     }
                     MainWindowCloseAction::Quit => request_quit(window.app_handle()),
                 }

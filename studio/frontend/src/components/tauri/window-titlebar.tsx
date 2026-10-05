@@ -97,6 +97,8 @@ function CaptionGlyph({
     ((Math.round((pixels - strokePixels) / 2) + strokePixels / 2) * 10) /
     pixels;
   const corner = Math.min(2, 2.5 - inset);
+  // round caps overshoot their endpoints, so the x ends pull in to keep its old size
+  const tip = inset * 1.5;
   return (
     <svg
       aria-hidden="true"
@@ -137,7 +139,7 @@ function CaptionGlyph({
       )}
       {kind === "close" && (
         <path
-          d={`M${inset} ${inset}L${edge} ${edge}M${edge} ${inset}L${inset} ${edge}`}
+          d={`M${tip} ${tip}L${10 - tip} ${10 - tip}M${10 - tip} ${tip}L${tip} ${10 - tip}`}
         />
       )}
     </svg>

@@ -523,6 +523,9 @@ def normalize_model_override(
     if _coerce_bool(payload.get("tensor_parallel")):
         entry["tensor_parallel"] = True
 
+    if _coerce_bool(payload.get("mlx_int8_prefill")):
+        entry["mlx_int8_prefill"] = True
+
     # Stored only when set. Like tensor_parallel: absent means the default, so an override that never touched the switch does not pin it off for a later load.
     if _coerce_bool(payload.get("disable_vision")):
         entry["disable_vision"] = True
@@ -628,6 +631,7 @@ def model_override_load_kwargs(override: dict[str, Any], *, is_gguf: bool) -> di
         ("tensor_parallel", "tensor_parallel"),
         ("disable_vision", "disable_vision"),
         ("chat_template_override", "chat_template_override"),
+        ("mlx_int8_prefill", "mlx_int8_prefill"),
     ):
         if override.get(source) is not None:
             kwargs[target] = override[source]

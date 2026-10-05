@@ -55,6 +55,36 @@ _MAX_NAMED_FAILURES = 3
 _MAX_WITHHELD_PATHS = 500
 _JOB_EVENT_KEEPALIVE_S = 4.0
 _SQLITE_INTEGER_MAX = (1 << 63) - 1
+# Dependency, VCS and cache trees would flood the index with third-party source.
+_IGNORE_SCAN_DIRS = frozenset(
+    {
+        ".git",
+        ".svn",
+        ".hg",
+        ".venv",
+        "venv",
+        "node_modules",
+        "bower_components",
+        "__pycache__",
+        ".pytest_cache",
+        ".mypy_cache",
+    }
+)
+_LOCKFILES = frozenset(
+    {"package-lock.json", "npm-shrinkwrap.json", "pnpm-lock.yaml", "pnpm-lock.yml"}
+)
+
+
+def _is_ignored_scan_dir(name: str, path: str) -> bool:
+    return name.lower() in _IGNORE_SCAN_DIRS or os.path.exists(os.path.join(path, "pyvenv.cfg"))
+
+
+def _is_ignored_scan_file(name: str) -> bool:
+    # .env and Terraform state hold plaintext secrets that retrieval would paste into prompts; lockfiles are noise.
+    lower = name.lower()
+    if lower == ".env" or lower.startswith(".env.") or lower.endswith(".env"):
+        return True
+    return lower.endswith((".lock", ".lockb", ".tfstate")) or lower in _LOCKFILES
 
 
 class _SyncStopped(Exception):
@@ -698,10 +728,9 @@ def retire_and_delete_kb(kb_id: str) -> bool:
 def delete_retired_scope(scope: str) -> bool:
     """Purge an ownerless scope and retain its tombstone permanently.
 
-    Scope identifiers are treated as non-reusable lifecycle IDs. Keeping the small
-    tombstone closes late cross-database upload/link races without a distributed transaction.
-    File removal happens before database rows are discarded, so any failure remains
-    retryable from durable metadata.
+    The tombstone closes late cross-database upload/link races while the scope is ownerless; only a
+    same-id project recreate clears it (``unretire_scope``). File removal happens before database rows
+    are discarded, so any failure remains retryable from durable metadata.
     """
     conn = rag_db.get_connection()
     try:
@@ -845,7 +874,7 @@ def reconcile_retired_scopes(project_exists) -> dict[str, list[str]]:
 
 
 def unretire_scope(scope: str) -> bool:
-    """Drop the tombstone of a scope whose owner exists again, so it can be used."""
+    """Drop the tombstone of a scope whose owner exists again, purged or not, so it can be used."""
     with _scope_lock(scope):
         conn = _retirement_connection()
         try:
@@ -1001,6 +1030,8 @@ def _scan(
                 if entry.is_symlink():
                     continue
                 if entry.is_dir(follow_symlinks = False):
+                    if _is_ignored_scan_dir(entry.name, full):
+                        continue
                     resolved = os.path.realpath(full)
                     if (
                         not _is_within(root, resolved)
@@ -1037,6 +1068,8 @@ def _scan(
                     )
                     continue
                 if not entry.is_file(follow_symlinks = False):
+                    continue
+                if _is_ignored_scan_file(entry.name):
                     continue
                 if os.path.splitext(entry.name)[1].lower() not in config.UPLOAD_EXTS:
                     continue

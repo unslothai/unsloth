@@ -21,6 +21,7 @@ import {
   useRef,
   useState,
 } from "react";
+import { annotateScript } from "./api";
 import { type AnnotateEvent, type AnnotateRect, MAX_MARKS } from "./frame-message";
 import { frameRect, onFrameAnnotate, sendFrameCommand } from "./page-frame";
 import { useBrowserStore } from "./store";
@@ -769,6 +770,8 @@ export function WebAnnotateLayer({
   const t = useT();
   const layerRef = useRef<HTMLDivElement | null>(null);
   const inputRef = useRef<HTMLInputElement | null>(null);
+  // The tab this layer annotates while mounted; a code fetch finishing after it left sends nothing.
+  const liveTab = useRef<string | null>(null);
   const [rects, setRects] = useState<ReadonlyMap<number, AnnotateRect | null>>(new Map());
   const [items, setItems] = useState<WebMark[]>([]);
   const [pending, setPending] = useState<WebPending | null>(null);
@@ -779,8 +782,16 @@ export function WebAnnotateLayer({
 
   const exit = () => setAnnotating(null);
   const forget = (id: number) => sendFrameCommand(tabId, { command: "annotateForget", id });
+  // The page gets the annotate code only now (each document once; repeats are ignored there).
   const start = () =>
-    sendFrameCommand(tabId, { command: "annotate", on: true, color: accentColor() });
+    void annotateScript().then(
+      (code) => {
+        if (liveTab.current !== tabId) return;
+        sendFrameCommand(tabId, { command: "annotateInstall", code });
+        sendFrameCommand(tabId, { command: "annotate", on: true, color: accentColor() });
+      },
+      () => liveTab.current === tabId && exit(),
+    );
 
   const committed = (): WebMark[] => {
     if (!pending) return items;
@@ -868,12 +879,16 @@ export function WebAnnotateLayer({
   };
   const handleRef = useRef(handle);
   handleRef.current = handle;
+  const startRef = useRef(start);
+  startRef.current = start;
 
   useEffect(() => {
     const stop = onFrameAnnotate(tabId, (event) => handleRef.current(event));
+    liveTab.current = tabId;
     // Now, for a page already loaded; a page still loading asks with "ready".
-    sendFrameCommand(tabId, { command: "annotate", on: true, color: accentColor() });
+    startRef.current();
     return () => {
+      liveTab.current = null;
       stop();
       sendFrameCommand(tabId, { command: "annotate", on: false });
     };

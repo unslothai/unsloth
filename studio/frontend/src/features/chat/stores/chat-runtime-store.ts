@@ -2238,6 +2238,8 @@ type ContextUsageSnapshot = {
   cachedTokens: number;
   // Anthropic-only; optional so pre-cache-stats persisted entries load.
   cacheWriteTokens?: number;
+  // a text-length guess from storage, replaced by any count
+  estimated?: boolean;
 };
 
 /** One live run behind `runningByThreadId[id]`, with the `local` flag it started with so the
@@ -2423,6 +2425,8 @@ type ChatRuntimeStore = {
   mlxKvQuantReason: string | null;
   chatTemplateOverrideReason: string | null;
   mlxKvQuantNote: string | null;
+  mlxInt8Prefill: boolean;
+  loadedMlxInt8PrefillRequested: boolean;
   loadedKvCacheDtype: string | null;
   speculativeType: string | null;
   loadedSpeculativeType: string | null;
@@ -4213,6 +4217,8 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   mlxKvQuantReason: null,
   chatTemplateOverrideReason: null,
   mlxKvQuantNote: null,
+  mlxInt8Prefill: false,
+  loadedMlxInt8PrefillRequested: false,
   loadedKvCacheDtype: null,
   speculativeType: readPersistedSpeculativeType(),
   loadedSpeculativeType: null,
@@ -5161,6 +5167,8 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       mlxKvQuantReason: null,
       chatTemplateOverrideReason: null,
       mlxKvQuantNote: null,
+      mlxInt8Prefill: false,
+      loadedMlxInt8PrefillRequested: false,
       loadedKvCacheDtype: null,
       speculativeType: readPersistedSpeculativeType(),
       loadedSpeculativeType: null,
