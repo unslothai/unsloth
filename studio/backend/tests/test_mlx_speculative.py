@@ -69,24 +69,20 @@ def test_an_explicit_kind_tries_the_named_drafter_then_the_head_then_cached_comp
 
 
 def test_auto_takes_every_cached_kind_in_preference_order(cache):
-    _resolve = cache(
-        {
-            "h/Qwen3.5-4B-MTP-bf16": {"model_type": "qwen3_5_mtp"},
-            "b/Qwen3.5-4B-Eagle3": _EAGLE3,
-            "a/Qwen3.5-4B-DFlash": _DFLASH,
-        }
-    )
-    assert [s.kind for s in _resolve("auto").sources] == ["dflash", "eagle3", "mtp"] and not (
+    _resolve = cache({"b/Qwen3.5-4B-Eagle3": _EAGLE3, "a/Qwen3.5-4B-DFlash": _DFLASH}, True)
+    assert [s.kind for s in _resolve("auto").sources] == ["mtp", "dflash", "eagle3"] and not (
         _resolve("auto").reason or _resolve("off").speculative
     )
     assert [spec.speculates_on_route("auto", vision) for vision in (False, True)] == [False, True]
-    _resolve = cache({"g/Qwen3.5-4B-assistant": _ASSISTANT}, True)
+    mtp_head = {"h/Qwen3.5-4B-MTP-bf16": {"model_type": "qwen3_5_mtp"}}
+    _resolve = cache({"g/Qwen3.5-4B-assistant": _ASSISTANT, **mtp_head}, True)
     for mode in (None, "bogus", "auto"):
-        assert [(s.builtin, s.kind) for s in _resolve(mode).sources] == [
+        assert [(s.builtin, s.kind) for s in _resolve(mode).sources] == [(True, "mtp")] + [
+            (False, "mtp")
+        ] * 2 + [
             (False, "dflash"),
             (False, "eagle3"),
-            (True, "mtp"),
-        ] + [(False, "mtp")] * 2
+        ]
     assert _resolve("ngram-mod").speculative
 
 

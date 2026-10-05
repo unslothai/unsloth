@@ -1222,8 +1222,8 @@ function MlxSpeculativeRows({
         <div className="flex min-w-0 items-center gap-1.5">
           <span className={LABEL_CLASS_WRAP}>Speculative Decoding</span>
           <InfoHint>
-            Faster generation. Auto uses the first cached drafter (DFlash2,
-            DSpark, DFlash, EAGLE-3, then an MTP head or assistant), tunes the
+            Faster generation. Auto uses the first cached drafter (an MTP head
+            or assistant, then DFlash2, DFlash, DSpark, EAGLE-3), tunes the
             draft length to this machine and drafts only while that is faster.
             Choose a kind to force it. Every drafter also copies repeated text;
             Ngram copies without one. Drafters are read from the local Hugging

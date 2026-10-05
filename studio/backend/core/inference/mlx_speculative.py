@@ -33,7 +33,7 @@ _LEGACY_MODES = {
     "disabled": "off",
 }
 # Auto's order among cached companions of one target.
-_COMPANION_ORDER = ("dflash2", "dspark", "dflash", "eagle3", "mtp")
+_COMPANION_ORDER = ("mtp", "dflash2", "dflash", "dspark", "eagle3")
 
 # spec_fallback_reason codes an MLX load reports.
 DRAFTER_NOT_FOUND = "drafter_not_found"
@@ -216,11 +216,8 @@ def resolve_speculation(
     companions = [
         source for source in companions if (auto or source.kind == kind) and source not in sources
     ]
-    heads = next(
-        (at for at, source in enumerate(companions) if source.kind == "mtp"), len(companions)
-    )
     if kind == "mtp" and has_builtin_head(model_dir):
-        companions.insert(heads, DrafterSource("mtp", str(model_dir), True))
+        companions.insert(0, DrafterSource("mtp", str(model_dir), True))
     sources += companions
     if not sources and auto:
         return SpecResolution(mode, reason = reason)
