@@ -784,3 +784,21 @@ def test_a_ring_drop_waits_while_another_graph_records(monkeypatch):
     monkeypatch.setattr(cg, "_CAPTURE_DEPTH", 0)
     pf._drop_ring()
     assert dropped == [1] and not pf._drop_slots_at_end
+
+
+def test_a_capture_collision_leaves_the_cuda_generators_alone(monkeypatch):
+    _cuda()
+    net = _net().cuda()
+    handle = cg.GraphedForward(net, logger = None).enable()
+    healed = []
+    monkeypatch.setattr(cg, "_heal_generators", lambda: healed.append(1))
+
+    def collided(*args, **kwargs):
+        raise RuntimeError("beginAllocateToPool: already recording to mempool_id")
+
+    monkeypatch.setattr(handle, "_capture", collided)
+    ref = _net().cuda()
+    for seed in (0, 1):
+        assert torch.equal(_call(net, seed), _call(ref, seed))
+    assert handle.poisoned and healed == []
+    handle.free()

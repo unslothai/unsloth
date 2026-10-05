@@ -828,7 +828,7 @@ class GraphedForward:
         for key, state in list(self._judge.items()):
             if state["verdict"] is not None or len(state["graph"]) < SPEED_SAMPLES:
                 continue
-            # Event queries are prohibited while another thread records a graph: judge on a later call instead.
+            # Event queries and the drop's syncs / frees are prohibited while another thread records: judge later.
             with hold_off_capture() as safe:
                 if not safe or not all(end.query() for _, end in state["graph"]):
                     continue
@@ -839,51 +839,53 @@ class GraphedForward:
                 except Exception:  # noqa: BLE001 - unreadable events: keep the graph
                     state["verdict"] = ""
                     continue
-            self.stats["eager_ms"] = round(eager, 3)
-            self.stats["replay_ms"] = round(graph, 3)
-            placement = getattr(self, "placement", None)
-            streams = placement is not None and placement.streams()
-            if streams:
-                kept = graph < eager * (1.0 - SPEED_GAIN)
-            else:
-                kept = graph <= eager * (1.0 + SPEED_MARGIN) or graph - eager < SPEED_MIN_MS
-            if kept:
-                state["verdict"] = ""
-                continue
-            if graph > eager:
-                reason = f"replay measured slower than the eager step on this device ({graph:.1f} vs {eager:.1f} ms)"
-            else:
-                reason = (
-                    f"replay measured within {SPEED_GAIN:.0%} of the eager step on this device ({graph:.1f} vs "
-                    f"{eager:.1f} ms), not worth the memory a streamed recording holds"
-                )
-            state["verdict"] = reason
-            ring = False
-            if streams:
-                # One placement, one verdict: its other keys stream the same copies, so none records again this load
-                # and the slot ring goes back to the allocator.
-                ring = bool(placement.decline(reason))
-                for other in list(self.cache):
-                    if other != key:
-                        self.cache.pop(other, None)
-                        self._dropped.add(other)
-            self._slower = reason
-            self._dropped.add(key)
-            if self.logger is not None:
-                self.logger.info(
-                    "diffusion.cuda_graph: %s drops a graph: %s", type(self.module).__name__, reason
-                )
-            if self.cache.pop(key, None) is not None:
-                try:
-                    _torch().cuda.current_stream().synchronize()  # no replay still running on what is freed
-                except Exception:  # noqa: BLE001
-                    pass
-                _drop_pool_if_unused()
-            if not self.cache:
-                self.capture_error = {"type": "Refused", "msg": reason}
-                if not ring:
-                    # (with a ring, its drop at the end of this forward flushes once: a mid-forward flush fragments the cache)
-                    self._release()
+                self.stats["eager_ms"] = round(eager, 3)
+                self.stats["replay_ms"] = round(graph, 3)
+                placement = getattr(self, "placement", None)
+                streams = placement is not None and placement.streams()
+                if streams:
+                    kept = graph < eager * (1.0 - SPEED_GAIN)
+                else:
+                    kept = graph <= eager * (1.0 + SPEED_MARGIN) or graph - eager < SPEED_MIN_MS
+                if kept:
+                    state["verdict"] = ""
+                    continue
+                if graph > eager:
+                    reason = f"replay measured slower than the eager step on this device ({graph:.1f} vs {eager:.1f} ms)"
+                else:
+                    reason = (
+                        f"replay measured within {SPEED_GAIN:.0%} of the eager step on this device ({graph:.1f} vs "
+                        f"{eager:.1f} ms), not worth the memory a streamed recording holds"
+                    )
+                state["verdict"] = reason
+                ring = False
+                if streams:
+                    # One placement, one verdict: its other keys stream the same copies, so none records again this load
+                    # and the slot ring goes back to the allocator.
+                    ring = bool(placement.decline(reason))
+                    for other in list(self.cache):
+                        if other != key:
+                            self.cache.pop(other, None)
+                            self._dropped.add(other)
+                self._slower = reason
+                self._dropped.add(key)
+                if self.logger is not None:
+                    self.logger.info(
+                        "diffusion.cuda_graph: %s drops a graph: %s",
+                        type(self.module).__name__,
+                        reason,
+                    )
+                if self.cache.pop(key, None) is not None:
+                    try:
+                        _torch().cuda.current_stream().synchronize()  # no replay still running on what is freed
+                    except Exception:  # noqa: BLE001
+                        pass
+                    _drop_pool_if_unused()
+                if not self.cache:
+                    self.capture_error = {"type": "Refused", "msg": reason}
+                    if not ring:
+                        # (with a ring, its drop at the end of this forward flushes once: a mid-forward flush fragments the cache)
+                        self._release()
 
     def _timed_eager(self, call: Any, args: tuple, kwargs: dict, key: Any) -> Any:
         """One of the caller's eager steps before ``key`` records (its eager reference).
@@ -1117,7 +1119,10 @@ class GraphedForward:
                 # torch.cuda.graph's __exit__ raises in capture_end before it leaves its capture stream, so the thread
                 # would run everything after (the eager retry, the rest of the process) on the capture stream.
                 _restore_stream(stream_before)
-                _heal_generators()  # before anything eager draws from the CUDA RNG
+                if "already recording" not in str(
+                    exc
+                ):  # a collision: the generators are the live capture's
+                    _heal_generators()  # before anything eager draws from the CUDA RNG
                 if self.placement is not None:
                     self.placement.recover()  # the eager retry must not wait on the dead capture's copies
                     self.placement.release_slots()  # nothing will replay into the ring for this load
@@ -1158,10 +1163,14 @@ class GraphedForward:
         timing = (
             state is not None and state["verdict"] is None and len(state["graph"]) < SPEED_SAMPLES
         )
+        start = None
         if timing:
-            # Through the input copies and output clones: the eager step pays neither.
-            start, end = _timing_events()
-            start.record()
+            # Through the input copies and output clones: the eager step pays neither. Not while another thread
+            # records, whose capture prohibits event records.
+            with hold_off_capture() as safe:
+                if safe:
+                    start, end = _timing_events()
+                    start.record()
         with _copy_mode(entry):
             for index, (dst, src) in enumerate(zip(entry.static, live)):
                 if last is not None and entry.sticky[index]:
@@ -1175,9 +1184,11 @@ class GraphedForward:
         entry.graph.replay()
         # Cloned: every replay writes the SAME buffers, which the pipeline holds across steps.
         outs = [t.clone() for t in entry.out_tensors]
-        if timing:
-            end.record()
-            state["graph"].append((start, end))
+        if start is not None:
+            with hold_off_capture() as safe:
+                if safe:
+                    end.record()
+                    state["graph"].append((start, end))
         self.stats["replays"] += 1
         skip = getattr(self.placement, "skip", None) if self.placement is not None else None
         if skip is not None and getattr(skip, "counting", False):
