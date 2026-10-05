@@ -6464,6 +6464,8 @@ def _sandbox_route_setup(tmp_path, monkeypatch):
     monkeypatch.setattr("utils.paths.storage_roots.cache_root", lambda: tmp_path / "cache")
     launched = []
     monkeypatch.setattr(subprocess, "Popen", lambda cmd, **kw: launched.append(cmd))
+    # Windows opens with os.startfile: recorded too, so a test never launches a real app.
+    monkeypatch.setattr(os, "startfile", lambda path: launched.append([path]), raising = False)
     return inference, sandbox, launched
 
 
