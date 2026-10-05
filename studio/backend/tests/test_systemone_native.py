@@ -161,9 +161,9 @@ def test_native_worker_sends_normalized_text_wire_format(native):
             "route": {
                 "type": "choice",
                 "criteria": {"a": "accept", "b": "decline"},
-                "instructions": "null",
+                "instructions": "route",
             },
-            "priority": {"type": "score", "instructions": "null", "criteria": ["low", "high"]},
+            "priority": {"type": "score", "instructions": "priority", "criteria": ["low", "high"]},
         },
     }
     assert request["headers"]["Authorization"].startswith("Bearer ")

@@ -120,10 +120,8 @@ def _wire_questions(questions: object, images: object) -> dict[str, dict[str, An
         if not isinstance(key, str):
             raise ClefWorkerInputError("questions must map string ids to objects")
         copied = dict(question)
-        # A missing/null value must have a token span; the reference renders None as this literal.
-        copied["instructions"] = (
-            "null" if copied.get("instructions") is None else copied["instructions"]
-        )
+        if copied.get("instructions") is None:
+            copied["instructions"] = key
         result[key] = copied
     return result
 
