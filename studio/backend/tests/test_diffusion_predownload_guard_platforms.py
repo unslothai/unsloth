@@ -468,6 +468,5 @@ def test_a_mirrored_pre_cast_encoder_is_never_staged_from_the_hub(monkeypatch, t
     plan = backend.download_plan("unsloth/FLUX.2-dev", model_kind = "pipeline", memory_verdict = False)
     staged = [e for e in plan["entries"] if e["repo_id"] == repo]
     assert bool(staged) is not mirrored
-    # Either way the pre-cast encoder replaces the dense one.
     base = [e for e in plan["entries"] if e["repo_id"] == "unsloth/FLUX.2-dev"]
     assert all(not f.startswith("text_encoder/") for e in base for f in e["files"])

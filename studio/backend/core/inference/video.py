@@ -4843,7 +4843,6 @@ class VideoBackend:
 
             for component, files in te_files.items():
                 location = te_sources[component].location
-                # Mirrored: the dense encoder is still dropped, but nothing is staged from the Hub.
                 files = te_prequant_unmirrored(location, files)
                 if files:
                     total += add(location, files)
