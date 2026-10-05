@@ -33,7 +33,9 @@ import { cn } from "@/lib/utils";
 import { Download01Icon, RefreshIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import {
+  type Dispatch,
   type ReactElement,
+  type SetStateAction,
   useCallback,
   useEffect,
   useMemo,
@@ -118,11 +120,13 @@ function localSelection(
 
 type PendingDownload = { id: string; meta: ModelSelectorChangeMeta };
 
-// Loads a staged pick once its managed download completes, as Chat does.
+// Starts a staged pick's managed download and loads it on completion, as Chat does. The listener
+// is bound before the start, and a newer pick cancels this one's start result.
 function useLoadAfterDownload(
   pending: PendingDownload | null,
-  setPending: (next: PendingDownload | null) => void,
+  setPending: Dispatch<SetStateAction<PendingDownload | null>>,
   load: (id: string, meta: ModelSelectorChangeMeta) => void,
+  onStartError: (message: string) => void,
 ): void {
   const settle = (variant: string | null, loadIt: boolean) => {
     if (!pending || (pending.meta.ggufVariant ?? null) !== (variant ?? null)) {
@@ -141,6 +145,21 @@ function useLoadAfterDownload(
     onError: (variant) => settle(variant, false),
     onCancelled: (variant) => settle(variant, false),
   });
+  useEffect(() => {
+    if (!pending) {
+      return;
+    }
+    let active = true;
+    startStagedDownload(pending.id, pending.meta).then((error) => {
+      if (active && error) {
+        onStartError(error);
+        setPending(null);
+      }
+    });
+    return () => {
+      active = false;
+    };
+  }, [pending, setPending, onStartError]);
 }
 
 function toModelOptions(
@@ -244,6 +263,16 @@ export function ApiModelLoadControls({
       }
       setActionError(null);
       setSelectorOpen(false);
+      if (meta && wantsDownloadManagerStaging({ id: value, ...meta })) {
+        // A repeat pick of the download already pending keeps it rather than starting another.
+        setPendingDownload((current) =>
+          current?.id === value &&
+          (current.meta.ggufVariant ?? null) === (meta.ggufVariant ?? null)
+            ? current
+            : { id: value, meta },
+        );
+        return;
+      }
       setPendingDownload(null);
       if (meta?.source === "external" || isExternalModelId(value)) {
         setActionError("External provider models are not served by the API.");
@@ -259,12 +288,6 @@ export function ApiModelLoadControls({
         onSettled();
         return;
       }
-      if (meta && wantsDownloadManagerStaging({ id: value, ...meta })) {
-        const error = await startStagedDownload(value, meta);
-        setActionError(error);
-        setPendingDownload(error ? null : { id: value, meta });
-        return;
-      }
       try {
         await selectModel(localSelection(value, meta));
         refreshLastLoadLabel();
@@ -276,9 +299,14 @@ export function ApiModelLoadControls({
     [selectModel, loadNpuModel, onSettled, refreshLastLoadLabel],
   );
 
-  useLoadAfterDownload(pendingDownload, setPendingDownload, (id, meta) => {
-    handlePick(id, meta);
-  });
+  useLoadAfterDownload(
+    pendingDownload,
+    setPendingDownload,
+    (id, meta) => {
+      handlePick(id, meta);
+    },
+    setActionError,
+  );
 
   const handleReload = useCallback(async () => {
     setReloading(true);
