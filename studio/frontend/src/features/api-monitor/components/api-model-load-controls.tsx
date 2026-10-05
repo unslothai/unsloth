@@ -17,6 +17,7 @@ import {
   DOWNLOAD_KIND,
   downloadManager,
   useDeviceInventorySources,
+  useRepoDownload,
 } from "@/features/hub";
 import {
   type LoraModelOption,
@@ -27,6 +28,7 @@ import {
   resolveResidentInitialConfig,
   splitQuantSuffix,
 } from "@/features/model-picker";
+import { isNpuModelId } from "@/features/npu";
 import { cn } from "@/lib/utils";
 import { Download01Icon, RefreshIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
@@ -52,7 +54,7 @@ function loadErrorMessage(err: unknown, fallback: string): string | null {
 }
 
 // An uncached Hub pick downloads through the manager first, so the resident model keeps serving
-// the API until the user loads the new one.
+// the API until the download completes and the pick loads.
 async function startStagedDownload(
   id: string,
   meta: ModelSelectorChangeMeta | undefined,
@@ -65,7 +67,7 @@ async function startStagedDownload(
     presentation: meta?.downloadPresentation,
     callerToast: {
       title: "Downloading model",
-      description: "Pick it again once the download finishes to load it.",
+      description: "It'll load once the download finishes.",
     },
   });
   if (outcome === "conflict") {
@@ -78,6 +80,67 @@ async function startStagedDownload(
     return "Failed to start the download.";
   }
   return null;
+}
+
+type SelectModelInput = Parameters<
+  ReturnType<typeof useChatModelRuntime>["selectModel"]
+>[0];
+
+function localSelection(
+  value: string,
+  meta: ModelSelectorChangeMeta | undefined,
+): SelectModelInput {
+  const remembered = resolveResidentInitialConfig(
+    value,
+    meta?.ggufVariant ?? null,
+  );
+  return {
+    id: value,
+    loadId: meta?.loadId,
+    source: meta?.source,
+    isLora: meta?.isLora,
+    ggufVariant: meta?.ggufVariant,
+    isDownloaded: meta?.isDownloaded,
+    expectedBytes: meta?.expectedBytes,
+    downloadPresentation: meta?.downloadPresentation,
+    isGguf: meta?.isGguf,
+    isVision: meta?.isVision,
+    isDiffusion: meta?.isDiffusion,
+    config:
+      meta?.config ?? (remembered.remembered ? remembered.config : undefined),
+    nativePathToken: meta?.nativePathToken,
+    nativePathExpiresAtMs: meta?.nativePathExpiresAtMs,
+    forceReload: meta?.forceReload,
+    previousConfig: currentRuntimePerModelConfig({ includeMaxSeqLength: true }),
+    throwOnError: true,
+  };
+}
+
+type PendingDownload = { id: string; meta: ModelSelectorChangeMeta };
+
+// Loads a staged pick once its managed download completes, as Chat does.
+function useLoadAfterDownload(
+  pending: PendingDownload | null,
+  setPending: (next: PendingDownload | null) => void,
+  load: (id: string, meta: ModelSelectorChangeMeta) => void,
+): void {
+  const settle = (variant: string | null, loadIt: boolean) => {
+    if (!pending || (pending.meta.ggufVariant ?? null) !== (variant ?? null)) {
+      return;
+    }
+    setPending(null);
+    if (loadIt) {
+      load(pending.id, { ...pending.meta, isDownloaded: true });
+    }
+  };
+  useRepoDownload({
+    kind: DOWNLOAD_KIND.MODEL,
+    repoId: pending?.id ?? "__api_monitor_autoload_idle__",
+    activeVariant: pending?.meta.ggufVariant ?? null,
+    onComplete: (variant) => settle(variant, true),
+    onError: (variant) => settle(variant, false),
+    onCancelled: (variant) => settle(variant, false),
+  });
 }
 
 function toModelOptions(
@@ -105,7 +168,8 @@ export function ApiModelLoadControls({
   onSettled: () => void;
   onUnloadActive: () => void;
 }): ReactElement {
-  const { selectModel, refresh, ejectModel } = useChatModelRuntime();
+  const { selectModel, loadNpuModel, refresh, ejectModel } =
+    useChatModelRuntime();
   const modelsFromStore = useChatRuntimeStore((s) => s.models);
   const lorasFromStore = useChatRuntimeStore((s) => s.loras);
   const modelLoading = useChatRuntimeStore((s) => s.modelLoading);
@@ -115,6 +179,8 @@ export function ApiModelLoadControls({
   const [selectorOpen, setSelectorOpen] = useState(false);
   const [reloading, setReloading] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
+  const [pendingDownload, setPendingDownload] =
+    useState<PendingDownload | null>(null);
   const [lastLoadLabel, setLastLoadLabel] = useState<string | null | undefined>(
     undefined,
   );
@@ -178,51 +244,41 @@ export function ApiModelLoadControls({
       }
       setActionError(null);
       setSelectorOpen(false);
+      setPendingDownload(null);
       if (meta?.source === "external" || isExternalModelId(value)) {
         setActionError("External provider models are not served by the API.");
         onSettled();
         return;
       }
-      if (wantsDownloadManagerStaging({ id: value, ...meta })) {
-        setActionError(await startStagedDownload(value, meta));
+      if (isNpuModelId(value)) {
+        await loadNpuModel(value, {
+          forceReload: meta?.forceReload,
+          config: meta?.config,
+        });
+        refreshLastLoadLabel();
+        onSettled();
+        return;
+      }
+      if (meta && wantsDownloadManagerStaging({ id: value, ...meta })) {
+        const error = await startStagedDownload(value, meta);
+        setActionError(error);
+        setPendingDownload(error ? null : { id: value, meta });
         return;
       }
       try {
-        const remembered = resolveResidentInitialConfig(
-          value,
-          meta?.ggufVariant ?? null,
-        );
-        await selectModel({
-          id: value,
-          loadId: meta?.loadId,
-          source: meta?.source,
-          isLora: meta?.isLora,
-          ggufVariant: meta?.ggufVariant,
-          isDownloaded: meta?.isDownloaded,
-          expectedBytes: meta?.expectedBytes,
-          downloadPresentation: meta?.downloadPresentation,
-          isGguf: meta?.isGguf,
-          isVision: meta?.isVision,
-          isDiffusion: meta?.isDiffusion,
-          config:
-            meta?.config ??
-            (remembered.remembered ? remembered.config : undefined),
-          nativePathToken: meta?.nativePathToken,
-          nativePathExpiresAtMs: meta?.nativePathExpiresAtMs,
-          forceReload: meta?.forceReload,
-          previousConfig: currentRuntimePerModelConfig({
-            includeMaxSeqLength: true,
-          }),
-          throwOnError: true,
-        });
+        await selectModel(localSelection(value, meta));
         refreshLastLoadLabel();
         onSettled();
       } catch (err: unknown) {
         setActionError(loadErrorMessage(err, "Failed to load model"));
       }
     },
-    [selectModel, onSettled, refreshLastLoadLabel],
+    [selectModel, loadNpuModel, onSettled, refreshLastLoadLabel],
   );
+
+  useLoadAfterDownload(pendingDownload, setPendingDownload, (id, meta) => {
+    handlePick(id, meta);
+  });
 
   const handleReload = useCallback(async () => {
     setReloading(true);
