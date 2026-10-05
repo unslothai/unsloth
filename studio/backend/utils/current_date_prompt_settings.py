@@ -118,8 +118,8 @@ _PROBE_SYSTEM = "UNSLOTH_DATE_PROBE_SYSTEM"
 _PROBE_USER = "UNSLOTH_DATE_PROBE_USER"
 # stand-ins for the tokenizer's control tokens, so a default that carries one can be told apart.
 _PROBE_SPECIAL_TOKENS = {
-    "bos_token": "UNSLOTH_DATE_PROBE_BOS",
-    "eos_token": "UNSLOTH_DATE_PROBE_EOS",
+    f"{name}_token": f"UNSLOTH_DATE_PROBE_{name.upper()}"
+    for name in ("bos", "eos", "pad", "unk", "sep", "cls", "mask")
 }
 # a catalog a tool request's branch can render, for probing the template it selects.
 PROBE_TOOLS = [

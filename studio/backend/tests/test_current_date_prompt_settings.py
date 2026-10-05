@@ -479,12 +479,13 @@ class TestTemplateSystemTurn:
         assert _turn(thinking_only) == (True, "")
         assert _turn(thinking_only, controls = (("enable_thinking", True),)) == (False, None)
 
-    def test_a_default_carrying_a_control_token_is_not_replayed(self):
-        with_bos = _QWEN25_LIKE.replace(
+    @pytest.mark.parametrize("token", ["bos_token", "eos_token", "pad_token", "sep_token"])
+    def test_a_default_carrying_a_control_token_is_not_replayed(self, token):
+        with_token = _QWEN25_LIKE.replace(
             "{% set sys = 'You are Qwen, a helpful assistant.' %}",
-            "{% set sys = bos_token + 'You are Qwen, a helpful assistant.' %}",
+            "{% set sys = " + token + " + 'You are Qwen, a helpful assistant.' %}",
         )
-        assert _turn(with_bos) == (True, None)
+        assert _turn(with_token) == (True, None)
 
     def test_a_default_the_template_rewrites_is_not_replayed(self):
         escaped = _QWEN25_LIKE.replace(

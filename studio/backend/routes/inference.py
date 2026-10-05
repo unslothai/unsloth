@@ -31885,12 +31885,33 @@ async def produce_openai_chat_completions(
         # Re-derive from payload.messages so tool_calls / role="tool" history
         # survives templating; fold system/developer into one leading system
         # message (templates reject "developer") and clear prompt to avoid a dup.
+        #
+        # tool_choice="none": keep history templating but advertise no tools
+        # (heal_gate is off, markup would relay as prose). A forced function
+        # narrows templating to that one schema. Both mirror the GGUF path,
+        # where llama-server honors tool_choice itself.
+        _sf_tc = payload.tool_choice
+        _sf_forced = None
+        if isinstance(_sf_tc, dict) and isinstance(_sf_tc.get("function"), dict):
+            _sf_forced = _sf_tc["function"].get("name")
+        if _sf_tc == "none":
+            _sf_client_catalog = None
+        elif isinstance(_sf_forced, str):
+            _sf_client_catalog = [
+                t
+                for t in payload.tools or []
+                if isinstance(t, dict)
+                and isinstance(t.get("function"), dict)
+                and t["function"].get("name") == _sf_forced
+            ] or None
+        else:
+            _sf_client_catalog = payload.tools
         _sf_client_system_prompt = _apply_current_date_prompt(
             _user_system_prompt,
             request,
             template_default = False,
             image = _sf_has_any_image or _video_clip is not None,
-            tools = True,
+            tools = bool(_sf_client_catalog),
             controls = _date_controls,
         )
         if served_images:
@@ -31951,26 +31972,7 @@ async def produce_openai_chat_completions(
                     gen_kwargs["messages"], _sf_image_ordinal
                 )
         gen_kwargs["system_prompt"] = ""
-        # tool_choice="none": keep history templating but advertise no tools
-        # (heal_gate is off, markup would relay as prose). A forced function
-        # narrows templating to that one schema. Both mirror the GGUF path,
-        # where llama-server honors tool_choice itself.
-        _sf_tc = payload.tool_choice
-        _sf_forced = None
-        if isinstance(_sf_tc, dict) and isinstance(_sf_tc.get("function"), dict):
-            _sf_forced = _sf_tc["function"].get("name")
-        if _sf_tc == "none":
-            gen_kwargs["tools"] = None
-        elif isinstance(_sf_forced, str):
-            gen_kwargs["tools"] = [
-                t
-                for t in payload.tools or []
-                if isinstance(t, dict)
-                and isinstance(t.get("function"), dict)
-                and t["function"].get("name") == _sf_forced
-            ] or None
-        else:
-            gen_kwargs["tools"] = payload.tools
+        gen_kwargs["tools"] = _sf_client_catalog
     elif _sf_renders_image and not sf_mcp_images:
         # The plain route too: later turns then share the prefix that holds the image.
         #
@@ -38027,7 +38029,7 @@ async def _mlx_count_chat_tokens(payload, request = None) -> Optional[JSONRespon
                 request,
                 template_default = False,
                 image = _renders_media,
-                tools = True,
+                tools = bool(_tools_to_use),
                 controls = _date_controls,
             )
         messages = _set_or_prepend_system_message(messages, _client_system_prompt)
