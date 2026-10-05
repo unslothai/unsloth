@@ -1,229 +1,253 @@
 # SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+"""MLX context fitting: the orchestrator preflight and the tool loop's per-turn refit."""
+
+from unittest.mock import Mock
+
+import pytest
+
+import core.inference.tools as tools_mod
+from core.inference import llama_cpp
+from core.inference.context_window import retrieval_budget
+from core.inference.orchestrator import InferenceOrchestrator
+
+INSTRUCTION = "Standing instruction for the rest of this task: always answer in a markdown table."
+SEARCH = {"type": "function", "function": {"name": "search_conversation"}}
+WEB = {"type": "function", "function": {"name": "web_search"}}
 
 
-def _word_count(messages, *_args, **_kwargs):
-    def text(content):
-        if isinstance(content, str):
-            return content
-        if isinstance(content, list):
-            return " ".join(
-                str(part.get("text") or "") for part in content if isinstance(part, dict)
-            )
-        return ""
-
-    return 2 * len(messages) + sum(
-        len(text(message.get("content")).split()) for message in messages
-    )
+def _count(messages, *_args, **_kwargs):
+    return sum(max(1, len(str(m.get("content", ""))) // 4) for m in messages), "mlx-test"
 
 
-def test_orchestrator_compacts_an_mlx_prompt_before_generation():
-    from core.inference.orchestrator import InferenceOrchestrator
-
+def _backend():
     backend = InferenceOrchestrator()
     backend.active_model_name = "mlx-test"
-    backend.models["mlx-test"] = {
-        "is_mlx": True,
-        "context_length": 34,
-    }
-    backend.count_chat_tokens = lambda *a, **kw: (_word_count(*a, **kw), "mlx-test")
-    messages = [
-        {"role": "user", "content": "What happened in the older part of this conversation?"},
-        {
-            "role": "assistant",
-            "content": "This older answer contains enough words to make the complete prompt exceed its budget.",
-        },
-        {"role": "user", "content": "Answer the newest question now."},
-    ]
+    backend.models["mlx-test"] = {"is_mlx": True, "context_length": 1200}
+    backend.count_chat_tokens = _count
+    return backend
 
-    result = backend.compact_chat_context(
-        messages,
-        system_prompt = "You are concise.",
-        context_overflow = "truncate_oldest",
-        max_tokens = 8,
+
+def _thread(latest = "continue"):
+    messages = [{"role": "user", "content": INSTRUCTION}, {"role": "assistant", "content": "OK."}]
+    for index in range(8):
+        messages.append({"role": "user", "content": f"Section {index}. " + "x" * 600})
+        messages.append({"role": "assistant", "content": f"Section {index} noted."})
+    return messages + [{"role": "user", "content": latest}]
+
+
+def _fit(backend, messages, **kwargs):
+    kwargs.setdefault("context_overflow", "truncate_oldest")
+    return backend.compact_chat_context(
+        messages, system_prompt = "you are helpful", max_tokens = 200, **kwargs
     )
 
+
+@pytest.fixture
+def archive_calls(monkeypatch):
+    """A saved thread with a healthy archive, so only the request's own gates decide."""
+    calls = []
+    idle = {"events": [], "counts": {}, "recalled": False, "anchored": []}
+
+    def _archive(conversation, _before, **kwargs):
+        calls.append({**kwargs, "branch_messages": list(kwargs["branch_messages"])})
+        return {"conversation": conversation, **idle}
+
+    def _can_reset(
+        thread_id,
+        supports_tools,
+        *,
+        tools_withheld = False,
+    ):
+        return bool(thread_id and supports_tools and not tools_withheld)
+
+    monkeypatch.setattr(llama_cpp, "_archive_and_recall", _archive)
+    monkeypatch.setattr(llama_cpp, "_can_reset_epoch", _can_reset)
+    monkeypatch.setattr(llama_cpp, "_archive_is_degraded", lambda: False)
+    return calls
+
+
+# A 4200-character question is over the prompt budget even alone: a rescued refusal.
+@pytest.mark.parametrize("question_chars, fits", [(8, True), (4200, False)])
+def test_an_overflowing_prompt_drops_its_oldest_turns_and_reports_the_boundary(
+    archive_calls, question_chars, fits
+):
+    messages = _thread("q" * question_chars)
+
+    result = _fit(_backend(), messages, thread_id = "thread-1")
+
+    [truncation] = result["events"]
+    assert truncation["type"] == "context_truncated"
+    assert truncation["fits"] is fits is (truncation["prompt_tokens_after"] <= 1000)
+    assert truncation["boundary_messages"] == truncation["dropped_messages"] > 0
+    # What a rescue evicts is archived, not recalled into a prompt that is already over.
+    assert archive_calls[-1]["recall_done"] is not fits
     assert result["system_prompt"] == ""
-    assert result["truncation"]["fits"] is True
-    assert result["truncation"]["dropped_messages"] >= 1
-    assert (
-        result["truncation"]["prompt_tokens_before"] > result["truncation"]["prompt_tokens_after"]
-    )
-    assert result["messages"][-1]["content"] == "Answer the newest question now."
-    assert result["events"][-1]["type"] == "context_truncated"
+    assert result["messages"][0] == {"role": "system", "content": "you are helpful"}
+    assert result["messages"][-1] is messages[-1]
 
 
-def test_mlx_media_prompt_stays_untouched():
-    from core.inference.orchestrator import InferenceOrchestrator
+@pytest.mark.parametrize(
+    "case", ["not_opted_in", "not_mlx", "media", "resumed_reply", "resumed_thought", "no_count"]
+)
+def test_a_prompt_the_fit_must_not_touch_is_returned_unchanged(case):
+    backend, messages, kwargs = _backend(), _thread(), {}
+    if case == "not_opted_in":
+        kwargs["context_overflow"] = "error"
+    elif case == "not_mlx":
+        backend.models["mlx-test"]["is_mlx"] = False
+    elif case == "media":
+        messages[-1] = {"role": "user", "content": [{"type": "image_url", "image_url": {}}]}
+    elif case.startswith("resumed"):
+        partial = {"content": "so far"} if case == "resumed_reply" else {"reasoning_content": "hm"}
+        messages.append({"role": "assistant", "content": "", **partial})
+        kwargs["continue_final_message"] = True
+    else:
+        backend.count_chat_tokens = Mock(side_effect = RuntimeError("generation in progress"))
 
-    backend = InferenceOrchestrator()
-    backend.active_model_name = "mlx-vlm-test"
-    backend.models["mlx-vlm-test"] = {"is_mlx": True, "context_length": 64}
-    messages = [
-        {
-            "role": "user",
-            "content": [
-                {"type": "input_image", "image_url": "data:image/png;base64,AA=="},
-                {"type": "text", "text": "describe"},
-            ],
-        }
-    ]
-
-    result = backend.compact_chat_context(
-        messages,
-        system_prompt = "system",
-        context_overflow = "truncate_oldest",
-        max_tokens = 8,
-    )
+    result = _fit(backend, messages, **kwargs)
 
     assert result["messages"] == messages
-    assert result["system_prompt"] == "system"
-    assert result["truncation"] is None
+    assert result["system_prompt"] == "you are helpful"
+    assert result["events"] == []
 
 
-def test_safetensors_loop_applies_the_fitter_before_generation():
-    from core.inference.safetensors_agentic import run_safetensors_tool_loop
-
-    seen = []
-
-    def fitter(conversation, active_tools):
-        assert active_tools[0]["function"]["name"] == "search"
-        return {
-            "messages": [
-                {"role": "system", "content": "compacted"},
-                conversation[-1],
-            ],
-            "events": [
-                {
-                    "type": "context_truncated",
-                    "fits": True,
-                    "dropped_messages": 2,
-                }
-            ],
-        }
-
-    def single_turn(conversation, *, active_tools = None):
-        seen.append((conversation, active_tools))
-        yield "final answer"
-
-    events = list(
-        run_safetensors_tool_loop(
-            single_turn = single_turn,
-            messages = [{"role": "user", "content": "hello"}],
-            tools = [{"type": "function", "function": {"name": "search"}}],
-            execute_tool = lambda *_args, **_kwargs: "unused",
-            max_tool_iterations = 1,
-            nudge_tool_calls = False,
-            context_fitter = fitter,
+def test_only_a_tool_loop_request_resets_and_only_an_offered_search_is_named(archive_calls):
+    def fit(messages = None, **kwargs):
+        result = _fit(
+            _backend(),
+            messages or _thread(),
+            context_policy = "checkpoint",
+            thread_id = "thread-1",
+            **kwargs,
         )
-    )
+        return result["events"][-1], result["messages"][0]["content"], archive_calls[-1]
 
-    assert events[0]["type"] == "context_truncated"
-    assert seen[0][0][0] == {"role": "system", "content": "compacted"}
-    assert any(event.get("type") == "content" for event in events)
+    # A client's own catalogue may reach a plain request; it is not Unsloth's search tool.
+    truncation, system, archived = fit(tools = [SEARCH])
+    assert not truncation.get("checkpoint") and "carried_forward" not in system
+    assert archived["style"] == "inline"
+
+    truncation, system, archived = fit(tool_loop = True, tools = [WEB])
+    assert truncation["checkpoint_started"] is True and "carried_forward" in system
+    assert "search_conversation tool" not in system
+    assert archived["style"] == "inline"
+
+    truncation, system, archived = fit(tool_loop = True, tools = [WEB, SEARCH])
+    assert "search_conversation tool" in system
+    assert archived["style"] == "tool"
+    halved = retrieval_budget(1200, 200, truncation["prompt_tokens_after"], reply_returns = True)
+    assert archived["recall_budget_tokens"] == halved
+    assert halved < retrieval_budget(1200, 200, truncation["prompt_tokens_after"])
+
+    # The loop's final answer carries no tools: no reset, and its reply never comes back,
+    # so recall gets all the room the fit left.
+    turns = [{"role": "user", "content": "x" * size} for size in (3200, 800, 8)]
+    truncation, _, archived = fit(messages = turns, tool_loop = True)
+    after = truncation["prompt_tokens_after"]
+    whole = retrieval_budget(1200, 200, after)
+    assert not truncation.get("checkpoint") and archived["recall_budget_tokens"] == whole
+    assert whole > retrieval_budget(1200, 200, after, reply_returns = True)
 
 
-def test_safetensors_loop_refits_after_each_tool_result_in_the_same_response():
-    """A long-running agent must not treat compaction as a one-shot turn event."""
-    from core.inference.safetensors_agentic import run_safetensors_tool_loop
+QUESTION = {"role": "user", "content": "What changed in release 4?"}
+ANSWERED = {"role": "assistant", "content": "OK."}
+CALL = '<tool_call>{"name":"web_search","arguments":{"query":"release %d"}}</tool_call>'
 
-    fits = []
-    turns = iter(
-        [
-            '<tool_call>{"name":"search","arguments":{"query":"next"}}</tool_call>',
-            "finished after the tool",
-        ]
-    )
 
-    def fitter(conversation, active_tools):
-        fits.append([dict(message) for message in conversation])
-        return {"messages": conversation, "events": []}
+def _run_loop(monkeypatch, messages, replies, result_chars, **kwargs):
+    backend, turns, prompts, branches = _backend(), iter(replies), [], []
 
-    def single_turn(_conversation, *, active_tools = None):
+    def _generate(**call):
+        prompts.append(list(call["messages"]))
         yield next(turns)
 
-    events = list(
-        run_safetensors_tool_loop(
-            single_turn = single_turn,
-            messages = [{"role": "user", "content": "keep working"}],
-            tools = [{"type": "function", "function": {"name": "search"}}],
-            execute_tool = lambda *_args, **_kwargs: "a large tool result",
-            max_tool_iterations = 2,
-            nudge_tool_calls = False,
-            context_fitter = fitter,
-        )
-    )
+    def _execute(*_args, conversation_branch, **_kwargs):
+        branches.append(list(conversation_branch))
+        return f"result {len(branches)} " + "r" * result_chars
 
-    assert len(fits) == 2, "the fitter must run again within the same response"
-    assert fits[0][-1] == {"role": "user", "content": "keep working"}
-    assert fits[1][-1]["role"] == "tool"
-    assert fits[1][-1]["content"] == "a large tool result"
-    assert any(event.get("type") == "content" for event in events)
-
-
-def test_preflight_uses_upstream_count_contract_and_request_policy(monkeypatch):
-    from core.inference.orchestrator import InferenceOrchestrator
-    from core.inference import llama_cpp
-
-    backend = InferenceOrchestrator()
-    backend.active_model_name = "mlx-test"
-    backend.models["mlx-test"] = {"is_mlx": True, "context_length": 128}
-    seen = {}
-    tools = [{"type": "function", "function": {"name": "search"}}]
-
-    def count(messages, system_prompt, **kwargs):
-        seen.update(kwargs)
-        assert system_prompt == ""
-        return 12, "mlx-test"
-
-    def fit(messages, **kwargs):
-        assert kwargs["count_tokens"](messages) == 12
-        assert kwargs["context_policy"] == "rolling"
-        assert kwargs["headroom_ratio"] == 0.1
-        return messages, None
-
-    backend.count_chat_tokens = count
-    monkeypatch.setattr(llama_cpp, "_fit_with_instruction_pins", fit)
-    result = backend.compact_chat_context(
-        [{"role": "user", "content": "hello"}],
-        tools = tools,
+    monkeypatch.setattr(backend, "generate_chat_response", _generate)
+    monkeypatch.setattr(tools_mod, "execute_tool", _execute)
+    events = backend.generate_chat_completion_with_tools(
+        messages = messages,
+        tools = [WEB],
+        max_tokens = 200,
+        nudge_tool_calls = True,
+        thread_id = "thread-1",
         context_overflow = "truncate_oldest",
-        context_policy = "rolling",
-        compaction_headroom_ratio = 0.1,
-        enable_thinking = True,
-        reasoning_effort = "high",
-        preserve_thinking = True,
+        **kwargs,
     )
-    assert result["system_prompt"] == ""
-    assert seen == dict(
-        tools = tools, enable_thinking = True, reasoning_effort = "high", preserve_thinking = True
+    truncated = [event for event in events if event.get("type") == "context_truncated"]
+    return truncated, prompts, branches
+
+
+@pytest.mark.parametrize("policy", ["checkpoint", "rolling"])
+# The client's history holds a tool result the first fit has to evict, or none: then its
+# small first turn is still there when the loop's own results start to crowd the window.
+@pytest.mark.parametrize("old_result_chars, fits", [(3900, 3), (0, 2)])
+def test_the_tool_loop_refits_every_turn_and_keeps_the_question_past_a_reprompt(
+    monkeypatch, archive_calls, policy, old_result_chars, fits
+):
+    old = {"role": "user", "content": "o" * 400}
+    old_exchange = [
+        {"role": "assistant", "content": "", "tool_calls": [{"id": "0"}]},
+        {"role": "tool", "content": "h" * old_result_chars},
+    ]
+    truncated, prompts, branches = _run_loop(
+        monkeypatch,
+        [old, *(old_exchange if old_result_chars else []), ANSWERED, QUESTION],
+        # An announced search is re-prompted with a user turn of the loop's own, as the cap is.
+        ["Let me search the web for that.", CALL % 1, CALL % 2, CALL % 3, "done"],
+        2400,
+        # Two results fill the window; after the third the loop appends its budget notice.
+        max_tool_iterations = 3,
+        context_policy = policy,
     )
 
+    final = prompts[-1]
+    assert final[-1]["role"] == "user" and final[-1] is not QUESTION
+    assert any(m is QUESTION for m in final) and not any(m is old for m in final)
+    # The newest result stays: the final answer is asked for without tools, so that fit never
+    # resets it away, and the re-prompt before it is not evicted with it in tow.
+    assert [m["content"][:8] for m in final if m.get("role") == "tool"] == ["result 3"]
+    # The third call can still search the first result, which a fit had already evicted,
+    # and the last fit archives against all three.
+    assert sum(m["content"].startswith("result") for m in branches[2] if m["role"] == "tool") == 2
+    last_fit = archive_calls[-1]
+    ran = [m for m in last_fit["branch_messages"] if m["role"] == "tool"][-3:]
+    assert [m["content"][:8] for m in ran] == ["result 1", "result 2", "result 3"]
+    # Recall searches for the branch's last user turn: the question, not the loop's notice.
+    assert [m for m in last_fit["branch_messages"] if m["role"] == "user"] == [old, QUESTION]
+    assert len(truncated) == fits and all(event["fits"] for event in truncated)
+    # The loop is the one MLX request that may reset, and it archives under its thread.
+    assert bool(truncated[0].get("checkpoint_started")) is (policy == "checkpoint")
+    assert last_fit["thread_id"] == "thread-1"
 
-def test_preflight_failure_and_continuation_preserve_original_request():
-    from core.inference.orchestrator import InferenceOrchestrator
 
-    backend = InferenceOrchestrator()
-    backend.active_model_name = "mlx-test"
-    backend.models["mlx-test"] = {"is_mlx": True, "context_length": 64}
-    calls = []
-
-    def unavailable(*args, **kwargs):
-        calls.append(True)
-        raise RuntimeError("worker busy")
-
-    backend.count_chat_tokens = unavailable
-    messages = [{"role": "user", "content": "hello"}]
-    result = backend.compact_chat_context(
-        messages, system_prompt = "system", context_overflow = "truncate_oldest"
+# The cap's budget notice; then the no-op notice a repeated call earns, once, twice, and
+# twice with the model's own words in between.
+@pytest.mark.parametrize(
+    "replies, chars, fits, dropped",
+    [
+        ([CALL % 1], 3900, False, 0),
+        ([CALL % 1] * 2, 3900, False, 0),
+        ([CALL % 1] * 3, 3550, True, 1),
+        ([CALL % 1] * 2 + ["I'll check that again. " + CALL % 1], 3550, True, 2),
+    ],
+)
+def test_the_only_tool_result_is_not_evicted_to_make_room_for_what_the_loop_says_next(
+    monkeypatch, archive_calls, replies, chars, fits, dropped
+):
+    [truncation], prompts, _ = _run_loop(
+        monkeypatch,
+        [QUESTION],
+        [*replies, "done"],
+        chars,
+        max_tool_iterations = 5 if len(replies) > 1 else 1,
     )
-    assert calls
-    assert result["messages"] == messages
-    assert result["system_prompt"] == "system"
-    assert result["events"] == []
-    calls.clear()
-    messages.append({"role": "assistant", "content": "unfinished"})
-    result = backend.compact_chat_context(
-        messages, context_overflow = "truncate_oldest", continue_final_message = True
-    )
-    assert not calls
-    assert result["messages"] == messages
+
+    # Dropping the result would fit, and leave nothing to answer from. Only what followed
+    # it may go; failing that, the prompt goes out over.
+    assert truncation["fits"] is fits and truncation["dropped_messages"] == dropped
+    assert [m["role"] for m in prompts[-1]].count("tool") == 1

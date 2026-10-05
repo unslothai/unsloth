@@ -31999,6 +31999,8 @@ async def produce_openai_chat_completions(
 
     # Classify capability flags from the loaded template.
     _sf_model_info = backend.models.get(backend.active_model_name, {})
+    # Only MLX can count its own prompt, so only MLX is fitted before it generates.
+    _sf_fit_overflow = _rolling_context_policy(payload) if _sf_model_info.get("is_mlx") else None
     if _sf_model_info.get("engine") in ("vllm", "sglang"):
         if _managed_engine_unsupported_controls(payload):
             raise _reject(
@@ -32257,6 +32259,7 @@ async def produce_openai_chat_completions(
         and not _sf_is_gptoss
         and _sf_tool_budget > 0
     )
+
     if _sf_use_tools:
         from core.inference.tools import set_mcp_listing_context_tokens
 
@@ -32266,9 +32269,7 @@ async def produce_openai_chat_completions(
             tools_on = _sf_tools_on,
             mcp_allowed = _sf_mcp_allowed,
             supports_vision = bool(_sf_model_info.get("is_vision")),
-            checkpoint_fitted = (
-                _sf_model_info.get("is_mlx") and _rolling_context_policy(payload) is not None
-            ),
+            checkpoint_fitted = _sf_fit_overflow is not None,
         )
         _reject_missing_forced_tool(payload.tool_choice, _sf_tools_to_use)
         # Mirror the GGUF path: refuse to enter the tool loop when nothing
@@ -32329,9 +32330,7 @@ async def produce_openai_chat_completions(
         _sf_nudge = _apply_compaction_nudge(
             _sf_nudge,
             _sf_tools_to_use,
-            checkpoint_fitted = (
-                _sf_model_info.get("is_mlx") and _rolling_context_policy(payload) is not None
-            ),
+            checkpoint_fitted = _sf_fit_overflow is not None,
             payload = payload,
         )
 
@@ -32464,10 +32463,9 @@ async def produce_openai_chat_completions(
                 use_adapter = payload.use_adapter,
                 stats_holder = _sf_stats_holder,
                 reasoning_prefilled = _sf_reasoning_prefilled,
-                context_overflow = _rolling_context_policy(payload),
+                context_overflow = _sf_fit_overflow,
                 context_policy = _request_context_policy(payload),
                 compaction_headroom_ratio = _request_compaction_headroom_ratio(payload),
-                supports_tools = bool(_sf_features.get("supports_tools", False)),
             )
 
         _sf_tool_sentinel = object()
@@ -33142,29 +33140,24 @@ async def produce_openai_chat_completions(
 
         def _run():
             generation_kwargs = base_kwargs
-            if _sf_model_info.get("is_mlx") and image is None and _video_clip is None:
+            # The count cannot price pictures or video, so those prompts are left alone.
+            if _sf_fit_overflow and all(
+                base_kwargs.get(key) is None for key in ("image", "images", "video")
+            ):
                 fitted = backend.compact_chat_context(
                     base_kwargs.get("messages") or [],
                     system_prompt = base_kwargs.get("system_prompt") or "",
                     tools = base_kwargs.get("tools"),
-                    context_overflow = _rolling_context_policy(payload),
+                    context_overflow = _sf_fit_overflow,
                     context_policy = _request_context_policy(payload),
                     compaction_headroom_ratio = _request_compaction_headroom_ratio(payload),
-                    max_tokens = effective_max_tokens or 2048,
+                    max_tokens = effective_max_tokens,
                     thread_id = payload.thread_id,
                     cancel_event = cancel_event,
                     enable_thinking = base_kwargs.get("enable_thinking"),
                     reasoning_effort = base_kwargs.get("reasoning_effort"),
                     preserve_thinking = base_kwargs.get("preserve_thinking"),
                     continue_final_message = bool(base_kwargs.get("continue_final_message", False)),
-                    # Client-owned tool contracts cannot be repaired by silently
-                    # adding search_conversation, so they keep the rolling window.
-                    supports_tools = bool(
-                        _sf_features.get("supports_tools", False)
-                        and not _tool_loop_unusable
-                        and not _sf_client_tools
-                    ),
-                    recall_style = "inline",
                 )
                 generation_kwargs = {
                     **base_kwargs,
@@ -33231,9 +33224,6 @@ async def produce_openai_chat_completions(
                         break
                     if isinstance(cumulative, dict):
                         if cumulative.get("type") == "context_truncated":
-                            _sf_context_truncation_holder["value"] = _accumulate_context_truncation(
-                                _sf_context_truncation_holder["value"], cumulative
-                            )
                             yield _context_truncated_sse_chunk(
                                 completion_id,
                                 model_name,
@@ -33460,8 +33450,9 @@ async def produce_openai_chat_completions(
                 for token in generate(messages_override, choice_index = choice_index):
                     if isinstance(token, dict):
                         if token.get("type") == "context_truncated":
+                            # Choices and retries refit one prompt: report a fit, not their sum.
                             _sf_context_truncation_holder["value"] = _accumulate_context_truncation(
-                                _sf_context_truncation_holder["value"], token
+                                None, token
                             )
                         continue
                     if isinstance(token, GenStreamError):

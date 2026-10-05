@@ -2747,24 +2747,23 @@ class InferenceOrchestrator:
         reasoning_effort: Optional[str] = None,
         preserve_thinking: Optional[bool] = None,
         continue_final_message: bool = False,
-        supports_tools: bool = False,
+        tool_loop: bool = False,
         anchor_ids = None,
-        sticky_dropped: Optional[int] = None,
+        replay_boundary: bool = True,
         recall_done: bool = False,
-        recall_style: Optional[str] = None,
-        boundary_branch_messages: Optional[list] = None,
-        archive_branch_messages: Optional[list] = None,
+        request_branch: Optional[list] = None,
+        live_branch: Optional[list] = None,
     ) -> dict:
-        """Apply Studio's checkpoint/rolling policy to one MLX prompt.
+        """Fit one MLX prompt into the served window under the policy GGUF uses.
 
-        Returns fitted messages plus the metadata/events the GGUF path emits.
-        Policy failures are deliberately non-fatal: generation receives the
-        untouched request and can report its normal context error.
+        Only a ``tool_loop`` turn that carries tools may reset the epoch: no other MLX turn
+        is offered ``search_conversation``. ``request_branch`` is the client's transcript and
+        ``live_branch`` that plus the loop's replies and tool results; both default to the prompt.
+        Never raises: a failed fit returns the request unchanged.
         """
         unchanged = {
             "messages": list(messages),
             "system_prompt": system_prompt,
-            "truncation": None,
             "events": [],
             "recalled": False,
             "anchored": [],
@@ -2784,17 +2783,21 @@ class InferenceOrchestrator:
         conversation.extend(messages)
 
         try:
-            from core.inference.context_window import messages_without_unpriced_media, prompt_budget
-            from core.inference.chat_template_helpers import trailing_assistant_text
+            from core.inference.chat_template_helpers import trailing_assistant_resume_kind
+            from core.inference.context_window import (
+                messages_without_unpriced_media,
+                retrieval_budget,
+            )
             from core.inference.llama_cpp import (
                 _archive_and_recall,
                 _boundary_metadata,
-                _compaction_fit_kwargs,
                 _can_reset_epoch,
+                _compaction_fit_kwargs,
                 _conversation_recall_reserve,
                 _fit_with_instruction_pins,
                 _keeps_compaction_boundary,
                 _memory_tool_withheld,
+                _records_boundary,
                 _sticky_compaction_state,
             )
 
@@ -2802,13 +2805,19 @@ class InferenceOrchestrator:
                 return unchanged
             if cancel_event is not None and cancel_event.is_set():
                 return unchanged
-
-            # The existing count API prices a new reply, not an assistant continuation.
-            if continue_final_message and trailing_assistant_text(conversation):
+            # The count prices a new reply, not a resumed reply or thought.
+            if continue_final_message and trailing_assistant_resume_kind(conversation):
                 return unchanged
 
-            request_branch = list(boundary_branch_messages or conversation)
-            before = conversation
+            request_branch = request_branch or conversation
+            # The loop asks for its final answer without tools. That turn cannot search, so
+            # it must not reset, and its reply never comes back into the prompt.
+            calls_tools = tool_loop and bool(tools)
+            recall_offered = tool_loop and any(
+                isinstance(tool, dict)
+                and (tool.get("function") or {}).get("name") == "search_conversation"
+                for tool in tools or ()
+            )
 
             def _count(fitted):
                 if cancel_event is not None and cancel_event.is_set():
@@ -2824,7 +2833,7 @@ class InferenceOrchestrator:
 
             can_reset = _can_reset_epoch(
                 thread_id,
-                supports_tools,
+                calls_tools,
                 tools_withheld = _memory_tool_withheld(thread_id, tools),
             )
             sticky, sticky_is_checkpoint = (
@@ -2835,71 +2844,61 @@ class InferenceOrchestrator:
                     can_reset = can_reset,
                     compaction_headroom_ratio = compaction_headroom_ratio,
                 )
-                if sticky_dropped is None
-                else (max(0, int(sticky_dropped)), False)
+                if replay_boundary
+                else (0, False)
             )
             fitted, truncation = _fit_with_instruction_pins(
-                before,
+                conversation,
                 context_length = context_length,
                 max_tokens = max_tokens,
                 count_tokens = _count,
                 anchor_ids = anchor_ids,
                 keeps_boundary = _keeps_compaction_boundary(thread_id),
                 can_reset = can_reset,
+                recall_offered = recall_offered,
                 reserve_tokens = _conversation_recall_reserve(thread_id),
                 sticky_dropped = sticky,
                 sticky_is_checkpoint = sticky_is_checkpoint,
                 **_compaction_fit_kwargs(context_policy, compaction_headroom_ratio),
             )
+            if not truncation:
+                return unchanged
 
-            events = []
-            recalled = False
-            anchored = []
-            if truncation and truncation.get("fits"):
-                enabled_names = {
-                    (tool.get("function") or {}).get("name")
-                    for tool in tools or []
-                    if isinstance(tool, dict) and isinstance(tool.get("function"), dict)
-                }
-                recalled_result = _archive_and_recall(
-                    fitted,
-                    before,
-                    branch_messages = archive_branch_messages or before,
-                    thread_id = thread_id,
-                    style = recall_style
-                    or ("tool" if "search_conversation" in enabled_names else "inline"),
-                    force_recall = bool(truncation.get("checkpoint_started", True)),
-                    recall_done = recall_done,
-                    recall_budget_tokens = max(
-                        0,
-                        prompt_budget(context_length, max_tokens)
-                        - int(truncation.get("prompt_tokens_after") or 0),
-                    ),
-                    count_tokens = _count,
-                )
-                fitted = recalled_result["conversation"]
-                truncation = {**truncation, **recalled_result["counts"]}
-                events.extend(recalled_result["events"])
-                recalled = bool(recalled_result["recalled"])
-                anchored = list(recalled_result["anchored"])
-
-            if truncation and truncation.get("fits"):
+            recall = _archive_and_recall(
+                fitted,
+                conversation,
+                branch_messages = live_branch or conversation,
+                thread_id = thread_id,
+                # A forged tool exchange is only safe when the request advertises the tool.
+                style = "tool" if recall_offered else "inline",
+                force_recall = bool(truncation.get("checkpoint_started", True)),
+                # A rescued refusal may evict messages; archive them without recall.
+                recall_done = recall_done or not truncation["fits"],
+                recall_budget_tokens = retrieval_budget(
+                    context_length,
+                    max_tokens,
+                    truncation.get("prompt_tokens_after") or 0,
+                    reply_returns = calls_tools,
+                ),
+                count_tokens = _count,
+            )
+            fitted = recall["conversation"]
+            truncation = {**truncation, **recall["counts"]}
+            if _records_boundary(truncation):
                 truncation = {
                     **truncation,
                     **_boundary_metadata(fitted, request_branch, compaction_headroom_ratio),
                 }
-            if truncation:
-                events.append({"type": "context_truncated", **truncation})
             return {
                 "messages": fitted,
                 "system_prompt": "",
-                "truncation": truncation,
-                "events": events,
-                "recalled": recalled,
-                "anchored": anchored,
+                # `fits` False too: it carries the does-not-fit diagnosis.
+                "events": [*recall["events"], {"type": "context_truncated", **truncation}],
+                "recalled": bool(recall["recalled"]),
+                "anchored": list(recall["anchored"]),
             }
         except Exception as exc:
-            logger.warning("Could not preflight the MLX context window: %s", exc, exc_info = True)
+            logger.warning("Could not preflight the MLX context window: %s", exc)
             return unchanged
 
     def generate_chat_response(
@@ -3073,7 +3072,6 @@ class InferenceOrchestrator:
         context_overflow: Optional[str] = None,
         context_policy: Optional[str] = None,
         compaction_headroom_ratio: Optional[float] = None,
-        supports_tools: bool = False,
         **_unused,
     ):
         """Run the safetensors agentic tool loop in the parent process, calling the worker for each
@@ -3182,12 +3180,33 @@ class InferenceOrchestrator:
         _mapped_tpl = mapped_chat_template(_model_info, self.active_model_name)
 
         _request_branch = list(initial)
+        _request_ids = {id(message) for message in initial}
         _sticky_boundary_applied = False
         _conversation_recall_done = False
+        # The loop appends user-role notices, after which the fit no longer protects the
+        # request's own question as the newest user turn.
         _rolling_anchor_ids: set[int] = set()
+        for message in reversed(initial):
+            if message.get("role") == "user":
+                _rolling_anchor_ids.add(id(message))
+                break
 
-        def _fit_iteration(conversation: list, active_tools: list) -> dict:
+        def _fit_iteration(conversation: list, active_tools: list, live_branch: list) -> dict:
             nonlocal _sticky_boundary_applied, _conversation_recall_done
+            if loop_images:
+                # The count cannot price pictures.
+                return {}
+            # Once a notice or a retry follows the loop's newest tool result, the fit no longer
+            # protects it either, though the reply is to be written from it. It is pinned with
+            # the user turn before it, which would otherwise be evicted with it in tow. For
+            # this fit only: pinned for good, a long loop's results would fill the window.
+            pinned = _rolling_anchor_ids
+            for index in range(len(conversation) - 1, -1, -1):
+                message = conversation[index]
+                if message.get("role") == "tool" and id(message) not in _request_ids | pinned:
+                    asked = [id(m) for m in conversation[:index] if m.get("role") == "user"]
+                    pinned = pinned | {id(message), *asked[-1:]}
+                    break
             result = self.compact_chat_context(
                 conversation,
                 tools = active_tools,
@@ -3201,15 +3220,15 @@ class InferenceOrchestrator:
                 reasoning_effort = reasoning_effort,
                 preserve_thinking = preserve_thinking,
                 continue_final_message = continue_final_message,
-                supports_tools = bool(supports_tools or tools),
-                anchor_ids = _rolling_anchor_ids,
-                sticky_dropped = 0 if _sticky_boundary_applied else None,
+                tool_loop = True,
+                anchor_ids = pinned,
+                replay_boundary = not _sticky_boundary_applied,
                 recall_done = _conversation_recall_done,
-                boundary_branch_messages = _request_branch,
-                archive_branch_messages = conversation,
+                request_branch = _request_branch,
+                live_branch = live_branch,
             )
-            if context_overflow == "truncate_oldest" and _model_info.get("is_mlx"):
-                _sticky_boundary_applied = True
+            # The saved boundary describes the original transcript, so it applies once.
+            _sticky_boundary_applied = True
             if result.get("recalled"):
                 _conversation_recall_done = True
                 for message in result.get("anchored") or ():

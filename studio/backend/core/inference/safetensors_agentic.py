@@ -640,7 +640,7 @@ def run_safetensors_tool_loop(
     generation_stats_holder: Optional[dict] = None,
     images_sink: Optional[list] = None,
     caller_image_indexes: "tuple[int, ...]" = (),
-    context_fitter: Optional[Callable[[list, list], dict]] = None,
+    context_fitter: Optional[Callable[[list, list, list], dict]] = None,
 ) -> Generator[dict, None, None]:
     """Drive an agentic tool loop on top of a cumulative-text generator.
 
@@ -669,11 +669,23 @@ def run_safetensors_tool_loop(
     # let the prompt carry a second full allowance. The route reserves the attachment's
     # slot by trimming replay to limit - 1 before interleaving it.
     caller_images = tuple(caller_image_indexes)
-    # The branch this request is on, before the loop appends anything. A GGUF-compacted
-    # thread keeps its archive across a switch to safetensors, so search_conversation is
-    # advertised here too and needs the same filtering: the stored rows are the whole
-    # DAG, and Retry leaves the replaced response in them.
-    request_branch = list(messages)
+    # The branch this request is on. A GGUF-compacted thread keeps its archive across a
+    # switch to safetensors, so search_conversation is advertised here too and needs the
+    # same filtering: the stored rows are the whole DAG, and Retry leaves the replaced
+    # response in them.
+    _live_branch = list(messages)
+    # ...and the replies and tool results the loop adds to it: a fit can evict this request's
+    # own earlier tool exchange into the archive, where the client's messages alone would
+    # refuse it. Not the loop's user turns: those are its own notices, and recall searches
+    # for the branch's last user turn, which has to stay the request.
+    _live_branch_ids = {id(message) for message in _live_branch}
+
+    def _extend_live_branch(current: list) -> list:
+        for message in current:
+            if id(message) not in _live_branch_ids and message.get("role") != "user":
+                _live_branch_ids.add(id(message))
+                _live_branch.append(message)
+        return _live_branch
 
     # Mirrors the GGUF loop: "full" and bypass_permissions are the same switch;
     # unset defaults to "auto", unknown falls back to the stricter "ask"; "off"
@@ -802,19 +814,14 @@ def run_safetensors_tool_loop(
         # Gate the markerless bare-JSON form on enabled names so an ordinary JSON answer isn't misread as a call.
         _enabled_tool_names = None if unrestricted_tools else set(_active_tool_names(active_tools))
 
-        # MLX keeps its tokenizer in the inference subprocess. The orchestrator
-        # supplies a request-scoped fitter that measures this exact iteration,
-        # archives any evicted turns, and returns the same metadata events as GGUF.
+        # Refit every iteration: tool results grow the prompt after the first turn. Given
+        # the prompt, this turn's tools and the live branch; returns `messages` and `events`.
         if context_fitter is not None:
-            try:
-                fit_result = context_fitter(conversation, active_tools)
-                conversation = list(fit_result.get("messages") or conversation)
-                for fit_event in fit_result.get("events") or ():
-                    yield fit_event
-            except Exception:
-                # A policy failure must never break a chat; the model's normal
-                # context error remains the final authority if the prompt is too large.
-                logger.warning("MLX context preflight failed; continuing unchanged", exc_info = True)
+            fit_result = context_fitter(
+                conversation, active_tools, _extend_live_branch(conversation)
+            )
+            conversation = list(fit_result.get("messages") or conversation)
+            yield from fit_result.get("events") or ()
 
         # This loop receives cumulative snapshots, so keep both whole-prefix scans
         # incremental: the stripper settles safe prefixes, the signal detector resumes
@@ -1618,7 +1625,7 @@ def run_safetensors_tool_loop(
                         disable_sandbox = bypass_permissions,
                     )
                     if _accepts_kwarg(execute_tool, "conversation_branch"):
-                        kwargs["conversation_branch"] = request_branch
+                        kwargs["conversation_branch"] = _extend_live_branch(conversation)
                     if _approved and _accepts_kwarg(execute_tool, "host_access_approved"):
                         kwargs["host_access_approved"] = True
                     # And the room the model has left, as the GGUF loop does: without a
