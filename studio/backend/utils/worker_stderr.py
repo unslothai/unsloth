@@ -131,6 +131,9 @@ _CRASH_LINE_MARKERS = (
     "fatal python error",
     "segmentation fault",
     "out of memory",
+    "terminate called",
+    "cuda error",
+    "hip error",
 )
 _STACK_LINE_PREFIXES = (
     'File "',
@@ -138,6 +141,10 @@ _STACK_LINE_PREFIXES = (
     "Current thread 0x",
     "Stack (most recent",
     "Extension modules:",
+    "frame #",
+    "Exception raised from",
+    "#",
+    "0x",
 )
 _CRASH_LINE_LIMIT = 500
 
@@ -159,9 +166,13 @@ def first_crash_line(text: str) -> str:
     lines = [line.strip() for line in (text or "").splitlines() if line.strip()]
     if not lines:
         return ""
-    for line in lines:
+    for index, line in enumerate(lines):
         lowered = line.lower()
         if any(marker in lowered for marker in _CRASH_LINE_MARKERS):
+            # C++ abort: "terminate called after throwing ..." then "what():  <reason>".
+            following = lines[index + 1] if index + 1 < len(lines) else ""
+            if lowered.startswith("terminate called") and following.startswith("what():"):
+                line = following
             return line[:_CRASH_LINE_LIMIT]
     for line in reversed(lines):
         if not line.startswith(_STACK_LINE_PREFIXES):

@@ -58,6 +58,19 @@ def test_linux_segfault_reports_the_reason_not_a_frame():
     )
 
 
+def test_cpp_abort_reports_what_not_a_frame():
+    text = (
+        "terminate called after throwing an instance of 'c10::Error'\n"
+        "  what():  CUDA error: an illegal memory access was encountered\n"
+        "Exception raised from c10_cuda_check_implementation (most recent call first):\n"
+        "frame #0: c10::Error::Error() + 0x57 (0x7f1 in libc10.so)\n"
+    )
+    assert first_crash_line(text) == "what():  CUDA error: an illegal memory access was encountered"
+    assert first_crash_line("terminate called without an active exception\n") == (
+        "terminate called without an active exception"
+    )
+
+
 def _die_after_a_long_stack(path: str) -> None:
     assert install_worker_stderr_mirror(path) is True
     sys.stderr.write("LLVM ERROR: Cannot select: intrinsic %llvm.amdgcn.fdot2.bf16.bf16\n")
