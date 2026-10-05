@@ -67,12 +67,15 @@ export interface KnowledgeBaseDialogProps {
   onOpenChange: (open: boolean) => void;
   /** Open straight to this knowledge base's documents instead of the list. */
   focus?: KnowledgeBaseFocus | null;
+  /** Where focus goes on close. Without a Radix trigger it would land on the body. */
+  onCloseAutoFocus?: (event: Event) => void;
 }
 
 export function KnowledgeBaseDialog({
   open,
   onOpenChange,
   focus = null,
+  onCloseAutoFocus,
 }: KnowledgeBaseDialogProps) {
   const [kbs, setKbs] = useState<KnowledgeBase[]>([]);
   const [loading, setLoading] = useState(false);
@@ -216,7 +219,7 @@ export function KnowledgeBaseDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-2xl">
+      <DialogContent className="max-w-2xl" onCloseAutoFocus={onCloseAutoFocus}>
         <DialogHeader>
           <DialogTitle>
             {view.kind === "documents" ? view.kb.name : "Knowledge bases"}
@@ -303,7 +306,7 @@ export function KnowledgeBaseDialog({
                       type="button"
                       onClick={() => setView({ kind: "documents", kb })}
                       title="Open to add or remove documents"
-                      className="-my-1 -ml-2 flex min-w-0 flex-1 items-center gap-2 rounded-md px-2 py-1 text-left transition-colors hover:bg-muted/60"
+                      className="-my-1 -ml-2 flex min-w-0 flex-1 items-center gap-2 rounded-md px-2 py-1 text-left transition-colors hover:bg-muted/60 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                     >
                       <span className="block min-w-0 flex-1">
                         <span className="block truncate font-medium">

@@ -36,7 +36,10 @@ function harness(
   const effects: Array<() => void> = [];
   const uploads: Scope[] = [];
   const errors: string[] = [];
-  const toastActions: Array<{ label: string; onClick: () => void }> = [];
+  const toasts: Array<{
+    title: string;
+    data: { duration?: number; action?: { label: string; onClick: () => void } };
+  }> = [];
   const adopted: string[] = [];
   const itemId = options.itemId ?? ID;
   const storedIds = new Set(options.storedIds ?? []);
@@ -75,7 +78,12 @@ function harness(
       nativePending = false;
       return [
         {
-          path: { token: "native-docx", sizeBytes: 20, modifiedMs: 1 },
+          path: {
+            token: "native-docx",
+            sizeBytes: 20,
+            modifiedMs: 1,
+            expiresAtMs: Date.now() + 900_000,
+          },
           displayLabel: "report.docx",
         },
       ];
@@ -145,19 +153,18 @@ function harness(
         useNativeIntentStore: nativeStore,
       },
       "@/lib/toast": {
-        toast: {
-          error: (
-            message: string,
-            data?: { action?: { label: string; onClick: () => void } },
-          ) => {
-            errors.push(message);
-            if (data?.action) toastActions.push(data.action);
-          },
-        },
+        toast: Object.assign(
+          (title: string, data: (typeof toasts)[number]["data"]) =>
+            toasts.push({ title, data }),
+          { error: (message: string) => errors.push(message) },
+        ),
       },
       "@/components/ui/dropdown-menu": {},
       "@/components/ui/alert-dialog": {},
-      "../api/rag-api": {},
+      "../api/rag-api": {
+        listKnowledgeBases: async () => [{ id: "kb-1", name: "Product docs" }],
+        subscribeKnowledgeBasesChanged: () => () => {},
+      },
       "../api/rag-availability": {
         useRagAvailabilityStore: (
           select: (s: { isUnavailable: () => boolean }) => unknown,
@@ -166,6 +173,7 @@ function harness(
       "../types/rag": { RAG_UPLOAD_ACCEPT: ".docx" },
       "./document-status-chip": {},
       "./knowledge-base-dialog": { KnowledgeBaseDialog: "KnowledgeBaseDialog" },
+      "./staged-source": { EXPIRY_GRACE_MS: 30_000 },
       "./use-rag-documents": {
         uploadItemFromIntent: (intent: {
           path: { token: string };
@@ -200,9 +208,7 @@ function harness(
     effects.splice(0).forEach((effect) => effect());
   }
   function pick() {
-    const input = (tree.props.children as StubElement[]).find(
-      (child) => child?.type === "input",
-    )!;
+    const input = findElement(tree, "input")!;
     const onChange = input.props.onChange as (event: unknown) => void;
     onChange({
       target: {
@@ -216,8 +222,11 @@ function harness(
     pick,
     uploads,
     errors,
-    toastActions,
+    toasts,
     adopted,
+    setRagSource(source: { type: "thread" } | { type: "kb"; kbId: string }) {
+      state.ragSource = source;
+    },
     get tree() {
       return tree;
     },
@@ -321,9 +330,22 @@ test("initialization tags a temporary chat before the persistence check", async 
   assert.equal(app.uploads[0]?.threadId, ID);
 });
 
-function kbDialog(tree: StubElement): StubElement {
-  const children = tree.props.children as StubElement[];
-  return children.find((child) => child?.type === "KnowledgeBaseDialog")!;
+function findElement(node: unknown, type: string): StubElement | undefined {
+  if (Array.isArray(node)) {
+    for (const child of node) {
+      const hit = findElement(child, type);
+      if (hit) return hit;
+    }
+    return undefined;
+  }
+  if (!node || typeof node !== "object" || !("props" in node)) return undefined;
+  const element = node as StubElement;
+  if (element.type === type) return element;
+  return findElement(element.props.children, type);
+}
+
+function kbDialog(tree: StubElement): StubElement | undefined {
+  return findElement(tree, "KnowledgeBaseDialog");
 }
 
 test("a native drop into a knowledge base chat offers to add the files to that knowledge base", async () => {
@@ -336,13 +358,18 @@ test("a native drop into a knowledge base chat offers to add the files to that k
   // Nothing goes to the thread: a thread upload would index somewhere this chat never reads.
   assert.deepEqual(app.uploads, []);
   assert.equal(app.initializeCalls, 0);
-  assert.deepEqual(app.errors, ["This chat retrieves from a knowledge base"]);
-  assert.equal(kbDialog(app.tree).props.open, false);
+  assert.deepEqual(app.errors, []);
+  assert.equal(kbDialog(app.tree)!.props.open, false);
 
-  assert.equal(app.toastActions.length, 1);
-  app.toastActions[0].onClick();
+  // Names the file and the knowledge base, and stays while the dropped paths are readable.
+  assert.equal(app.toasts.length, 1);
+  const [{ title, data }] = app.toasts;
+  assert.equal(title, 'Add "report.docx" to "Product docs"?');
+  assert.equal(data.action?.label, "Add");
+  assert.ok(data.duration! > 60_000, `duration ${data.duration}`);
+  data.action!.onClick();
   app.render();
-  const dialog = kbDialog(app.tree);
+  const dialog = kbDialog(app.tree)!;
   assert.equal(dialog.props.open, true);
   assert.deepEqual(dialog.props.focus, {
     kbId: "kb-1",
@@ -351,16 +378,64 @@ test("a native drop into a knowledge base chat offers to add the files to that k
 
   (dialog.props.onOpenChange as (open: boolean) => void)(false);
   app.render();
-  assert.equal(kbDialog(app.tree).props.open, false);
+  assert.equal(kbDialog(app.tree)!.props.open, false);
+});
+
+test("the drop's Add still opens its knowledge base after the chat's source moves", async () => {
+  const app = harness({ ragSource: { type: "kb", kbId: "kb-1" } });
+  app.render();
+  await flush();
+  app.render();
+  app.drop();
+  await flush();
+  app.setRagSource({ type: "thread" });
+  app.render();
+  app.toasts[0].data.action!.onClick();
+  app.render();
+  const dialog = kbDialog(app.tree)!;
+  assert.equal(dialog.props.open, true);
+  assert.deepEqual(dialog.props.focus, {
+    kbId: "kb-1",
+    uploads: [{ kind: "native", token: "native-docx", name: "report.docx" }],
+  });
+  assert.deepEqual(app.uploads, []);
 });
 
 test("the knowledge base chip opens that knowledge base without uploading anything", () => {
   const app = harness({ ragSource: { type: "kb", kbId: "kb-1" } });
   app.render();
-  const chip = (app.tree.props.children as StubElement[])[0];
+  const chip = (app.tree.props.children as StubElement[]).find(
+    (child) => typeof child?.type === "function",
+  )!;
   (chip.props.onOpen as () => void)();
   app.render();
-  const dialog = kbDialog(app.tree);
+  const dialog = kbDialog(app.tree)!;
   assert.equal(dialog.props.open, true);
   assert.deepEqual(dialog.props.focus, { kbId: "kb-1" });
+});
+
+test("an open dialog keeps its place when deleting the active knowledge base moves the source", () => {
+  // React keeps an instance only at the same type and position. Deleting the active KB
+  // inside the dialog switches the chat to its own files, and a dialog that moved in the
+  // tree would remount, replaying its animation and dropping its state.
+  const app = harness({ ragSource: { type: "kb", kbId: "kb-1" } });
+  app.render();
+  const chip = (app.tree.props.children as StubElement[]).find(
+    (child) => typeof child?.type === "function",
+  )!;
+  (chip.props.onOpen as () => void)();
+  app.render();
+  const place = (tree: StubElement) => ({
+    root: tree.type,
+    first: (tree.props.children as StubElement[])[0]?.type,
+  });
+  const before = place(app.tree);
+  app.setRagSource({ type: "thread" });
+  app.render();
+  assert.deepEqual(place(app.tree), before);
+  assert.deepEqual(before, {
+    root: Symbol.for("Fragment"),
+    first: "KnowledgeBaseDialog",
+  });
+  assert.equal(kbDialog(app.tree)!.props.open, true);
 });

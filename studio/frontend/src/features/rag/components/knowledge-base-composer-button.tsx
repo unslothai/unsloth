@@ -21,7 +21,10 @@ import {
 import { useRagToolDisabled } from "@/features/chat/hooks/use-rag-tool-disabled";
 import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
 
-import { listKnowledgeBases } from "../api/rag-api";
+import {
+  listKnowledgeBases,
+  subscribeKnowledgeBasesChanged,
+} from "../api/rag-api";
 import type { KnowledgeBase } from "../types/rag";
 import { KnowledgeBaseDialog } from "./knowledge-base-dialog";
 
@@ -54,9 +57,11 @@ export function KnowledgeBaseComposerButton({
     }
   }, []);
 
-  // Load on mount so newly created KBs show up.
+  // Load on mount, and again after any create, rename or delete, wherever it happened:
+  // the fallback below can only drop a deleted KB this list has seen go.
   useEffect(() => {
     void refresh();
+    return subscribeKnowledgeBasesChanged(() => void refresh());
   }, [refresh]);
 
   // If the selected KB was deleted, fall back to thread source so we never send a
@@ -182,10 +187,7 @@ export function KnowledgeBaseComposerButton({
       </DropdownMenu>
       <KnowledgeBaseDialog
         open={dialogOpen}
-        onOpenChange={(next) => {
-          setDialogOpen(next);
-          if (!next) void refresh();
-        }}
+        onOpenChange={setDialogOpen}
       />
     </>
   );
