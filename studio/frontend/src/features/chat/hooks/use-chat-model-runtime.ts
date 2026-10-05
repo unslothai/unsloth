@@ -3802,14 +3802,19 @@ export function useChatModelRuntime() {
     confirmed?: StopRunningChatsDecision,
   ): Promise<boolean> => {
     if (modelId && modelId !== params.checkpoint) {
+      const toastId = toast.loading("Unloading model");
       try {
-        if (!(await unloadKeptModel(modelId))) return false;
+        if (!(await unloadKeptModel(modelId))) {
+          toast.dismiss(toastId);
+          return false;
+        }
         await refresh();
-        toast.success("Model unloaded", { duration: 1200 });
+        toast.success("Model unloaded", { id: toastId, duration: 1200 });
         return true;
       } catch (err) {
         toast.error(
           err instanceof Error ? err.message : "Failed to unload model",
+          { id: toastId },
         );
         return false;
       }
@@ -3851,9 +3856,10 @@ export function useChatModelRuntime() {
         !confirmed && useChatRuntimeStore.getState().loadedModels.length > 1
           ? params.checkpoint
           : undefined;
-      // Shown before the /active-generations snapshot so the click is never silent (#10339).
+      // Before the running-chats check: open chat streams can hold every browser connection to
+      // Studio, queueing that request client-side for as long as they run (#10339).
       const toastId = toast.loading("Unloading model", {
-        description: "Releases VRAM and resets inference state.",
+        description: "Checking for running chats.",
       });
       const stopDecision =
         confirmed ??
@@ -3861,10 +3867,7 @@ export function useChatModelRuntime() {
           "Unloading the model",
           "unload",
           scope,
-        ).catch((err: unknown) => {
-          toast.dismiss(toastId);
-          throw err;
-        }));
+        ));
       if (!stopDecision.proceed) {
         toast.dismiss(toastId);
         return false;

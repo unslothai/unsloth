@@ -277,12 +277,9 @@ export interface ActiveGenerationsResponse {
  *  map is per-tab, empty after a reload and blind to a second tab, and /load 409s on these. */
 export async function getActiveGenerations(
   model?: string,
-  signal?: AbortSignal,
 ): Promise<ActiveGenerationsResponse> {
   const query = model ? `?model=${encodeURIComponent(model)}` : "";
-  const response = await authFetch(`/api/inference/active-generations${query}`, {
-    signal,
-  });
+  const response = await authFetch(`/api/inference/active-generations${query}`);
   return parseJsonOrThrow<ActiveGenerationsResponse>(response);
 }
 
