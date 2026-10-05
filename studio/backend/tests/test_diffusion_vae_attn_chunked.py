@@ -23,8 +23,6 @@ def _math():
 
 
 class _LargestTensor(TorchDispatchMode):
-    """Largest number of bytes any single op output takes."""
-
     def __init__(self):
         super().__init__()
         self.max_bytes = 0
@@ -201,15 +199,15 @@ def test_install_gates(monkeypatch, rocm):
     assert C.install(vae, rocm) == 0
     monkeypatch.delenv(C.VAE_ATTN_CHUNK_ENV)
     monkeypatch.setattr(torch.version, "hip", None, raising = False)
-    assert C.install(vae, rocm) == 0  # an NVIDIA / CPU torch is never patched
+    assert C.install(vae, rocm) == 0
     assert not any(getattr(m, C._PATCHED, False) for m in vae.modules())
     assert C.install(None, rocm) == 0
 
 
 def test_install_patches_encoder_and_decoder_once(rocm):
     vae = _tiny_vae("AutoencoderKL")
-    assert C.install(vae, rocm) == 2  # encoder + decoder mid-block
-    assert C.install(vae, rocm) == 0  # idempotent
+    assert C.install(vae, rocm) == 2
+    assert C.install(vae, rocm) == 0
     # a processor reset (fuse_qkv_projections) keeps the module-level patch
     for m in vae.modules():
         if type(m).__name__ == "Attention":
