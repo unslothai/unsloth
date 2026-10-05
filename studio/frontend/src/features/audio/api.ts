@@ -108,6 +108,22 @@ export interface AudioGalleryClip {
   /** The Audio workflow that made the clip. Older servers omit it; read it through clipWorkflow. */
   workflow?: string | null;
   reference_name?: string | null;
+  /** The history clip an edit changed or a conversion started from. */
+  source_clip_id?: string | null;
+  source_input_id?: string | null;
+  voice_id?: string | null;
+  /** Served at /audio/gallery/{id}/source/file. */
+  source_saved?: boolean;
+  source_name?: string | null;
+  target_builtin?: string | null;
+  target_clip_id?: string | null;
+  target_input_id?: string | null;
+  /** Clips one run made together share it (a separation's stems, music takes); null for one clip. */
+  group_id?: string | null;
+  /** A stem's name (vocals, drums, ...) or an edit's run part ("output" or "source"). */
+  role?: string | null;
+  /** The run's settings, e.g. a separation's stem list. */
+  settings?: Record<string, unknown> | null;
 }
 
 export interface AudioGalleryListResponse {
@@ -212,7 +228,7 @@ export async function deleteAudioClip(id: string): Promise<void> {
 }
 
 export async function clearAudioGallery(
-  workflow?: "speak" | "clone" | "music",
+  workflow?: "speak" | "clone" | "edit" | "convert" | "music" | "separate",
 ): Promise<number> {
   const query = workflow ? `?workflow=${workflow}` : "";
   const response = await authFetch(`/api/inference/audio/gallery${query}`, {
@@ -399,7 +415,13 @@ interface TranscribeInputResponse {
 
 export async function transcribeAudioInput(
   ref: AudioSourceRef,
-  body: { model: string; engine?: string; device?: string; language?: string },
+  body: {
+    model: string;
+    engine?: string;
+    device?: string;
+    language?: string;
+    purpose?: "reference" | "convert";
+  },
   signal?: AbortSignal,
 ): Promise<TranscribeInputResponse> {
   const response = await authFetch(transcribeUrl(ref), {
@@ -420,6 +442,8 @@ export interface AudioRunResponse {
     duration_s: number;
     workflow: string;
   }[];
+  /** One separation's stems share it; null for a single clip. */
+  group_id: string | null;
   model: string;
   audio: GeneratedAudio | null;
 }

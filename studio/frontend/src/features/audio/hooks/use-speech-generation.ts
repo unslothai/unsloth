@@ -5,6 +5,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { readLastPrompt, saveLastPrompt } from "@/lib/last-prompt";
 import { toast } from "@/lib/toast";
 import { generateAudio, runAudio } from "../api";
+import { TTS_MAX_TOKENS } from "../audio-workspace-constants";
 import {
   audioOptionLabel,
   audioOptionsForRequest,
@@ -35,7 +36,6 @@ import {
   isMusicGenerationModel,
   musicGenerationRequiresCuda,
 } from "../catalog";
-import { TTS_MAX_TOKENS } from "../audio-workspace-constants";
 import type { AudioHostState } from "./audio-host-state";
 import { galleryCache } from "./use-audio-gallery";
 import { useAudioCloneStore } from "../stores/audio-clone-store";
@@ -548,6 +548,7 @@ export function useSpeechGeneration({
     toolValues,
     handleToolValueChange,
     toolBlocker: toolRequest.error,
+    toolOptions: toolRequest.patch.options,
     claimedOptions,
     advancedOptionSpecs,
   };

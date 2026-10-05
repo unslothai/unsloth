@@ -412,6 +412,59 @@ def test_unguarded_sage_call_breaks_a_fullgraph_compile():
     torch._dynamo.reset()
 
 
+def _untraceable_fa4(
+    query,
+    key,
+    value,
+    attn_mask = None,
+    scale = None,
+    is_causal = False,
+    return_lse = False,
+    _parallel_config = None,
+):
+    torch._dynamo.graph_break()  # stands in for the CuTe DSL / tvm-ffi launch Dynamo cannot trace
+    return _native(query.float(), key.float(), value.float()).to(query.dtype)
+
+
+@pytest.mark.parametrize("head_dim", [64, 128])
+def test_fa4_call_compiles_fullgraph_through_the_guard(monkeypatch, head_dim):
+    backends = dispatch._AttentionBackendRegistry._backends
+    backends[dispatch.AttentionBackendName.FLASH_4_HUB] = _untraceable_fa4
+    assert att._install_fa4_dispatch_guard() is True
+    monkeypatch.setattr(att, "_fa4_reroute_reason", lambda *a: None)
+    guarded = backends[dispatch.AttentionBackendName.FLASH_4_HUB]
+    q, k, v = _qkv(head_dim = head_dim, dtype = torch.bfloat16)
+
+    def block(q, k, v):
+        return guarded(query = q * 1.0, key = k, value = v).sum(-1)
+
+    torch._dynamo.reset()
+    compiled = torch.compile(block, backend = "aot_eager", fullgraph = True)
+    torch.testing.assert_close(
+        compiled(q, k, v), _native(q.float(), k.float(), v.float()).to(q.dtype).sum(-1)
+    )
+    torch._dynamo.reset()
+
+
+def test_fa4_and_sage_ops_are_separate():
+    sage = att._sage_custom_op(_arch_reading_sage)
+    fa4 = att._sage_custom_op(_untraceable_fa4, att._FA4_OP_NAME)
+    assert fa4 is not None and fa4 is not sage
+    assert att._SAGE_OPS[att._FA4_OP_NAME]["fn"] is _untraceable_fa4
+    assert att._SAGE_OPS[att._SAGE_OP_NAME]["fn"] is _arch_reading_sage
+
+
+def test_unguarded_fa4_call_breaks_a_fullgraph_compile():
+    q, k, v = _qkv(head_dim = 64, dtype = torch.bfloat16)
+    torch._dynamo.reset()
+    compiled = torch.compile(
+        lambda q, k, v: _untraceable_fa4(q, k, v), backend = "aot_eager", fullgraph = True
+    )
+    with pytest.raises(Exception):
+        compiled(q, k, v)
+    torch._dynamo.reset()
+
+
 def test_engaged_backend_is_tagged_on_every_dit(monkeypatch):
     monkeypatch.setattr(att, "_run_sage_probe", lambda d, dt, hd = 128: "")
     t, t2 = _Transformer(128), _Transformer(128)

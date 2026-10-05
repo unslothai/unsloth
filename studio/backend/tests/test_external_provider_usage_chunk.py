@@ -712,6 +712,7 @@ def test_other_providers_do_not_get_the_continuation_flags(monkeypatch, provider
         ("vllm", True),
         ("openrouter", True),
         ("kimi", True),
+        ("llama_cpp", True),
         # Any user-supplied base_url: a strict endpoint 400s on an unknown field.
         ("custom", False),
         ("ollama", False),

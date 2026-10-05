@@ -4,6 +4,7 @@
 // Free of app imports so the node test runner can load it directly.
 
 import {
+  AUDIO_CPP_SEP_AUDIO_TYPE,
   audioCppModelFor,
   isCloneOnlyFamilyId,
   isSpeakAndCloneFamilyId,
@@ -29,6 +30,9 @@ export function audioRowMatchesWorkflow(
   if (row.audioWorkflows && row.audioWorkflows.length > 0) {
     return row.audioWorkflows.includes(workflow);
   }
+  if (row.audioType === AUDIO_CPP_SEP_AUDIO_TYPE) {
+    return workflow === "separate";
+  }
   // MiniMax Music 3 is tagged text-to-speech on the Hub.
   if (isMusicGenerationModel(row.id, row.audioType)) return workflow === "music";
   const byTask = audioWorkflowForTask(row.task);
@@ -52,6 +56,9 @@ export function audioRowMatchesWorkflow(
   }
   if (catalogTask === "asr") {
     return workflow === "transcribe";
+  }
+  if (workflow === "separate") {
+    return false;
   }
   if (byTask === "speak" || catalogTask === "tts" || row.audioType) {
     // Speech models clone only when the backend says so; an older row stays on Speak.
