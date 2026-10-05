@@ -871,19 +871,26 @@ def test_clef_backbone_runs_the_compiled_gated_delta_and_conv_kernels(clef_check
     for layer in layers:
         forward = type(layer).forward
         assert forward.__code__.co_filename.endswith("unsloth_compiled_module_qwen3_5.py")
-        chosen = {}
-        for name in ("torch_chunk_gated_delta_rule", "causal_conv1d_fn"):
-            fn = forward.__globals__[name]
-            # transformers freezes the kernel it picked in a closure, under hub-kernel wrappers.
-            while fn is not None:
-                cells = dict(zip(fn.__code__.co_freevars, fn.__closure__ or ()))
-                if "implementation" in cells:
-                    chosen[name] = cells["implementation"].cell_contents.__module__
-                    break
-                fn = getattr(fn, "__wrapped__", None)
-        assert chosen["torch_chunk_gated_delta_rule"].startswith("fla.")
+        delta = _chosen_kernel(
+            layer, forward, "torch_chunk_gated_delta_rule", "chunk_gated_delta_rule"
+        )
+        conv = _chosen_kernel(layer, forward, "causal_conv1d_fn", "causal_conv1d_fn")
+        assert delta is not None and ".fla." in "." + delta, delta
         if is_causal_conv1d_available():
-            assert chosen["causal_conv1d_fn"].startswith("causal_conv1d")
+            assert conv is not None and conv.startswith("causal_conv1d"), conv
+
+
+def _chosen_kernel(layer, forward, global_name, attr):
+    # transformers < 5.6 stores the picked kernel on the layer; later versions freeze it in a
+    # closure under the hub-kernel wrappers of the module-level function.
+    fn = vars(layer)[attr] if attr in vars(layer) else forward.__globals__.get(global_name)
+    top = fn
+    while fn is not None and hasattr(fn, "__code__"):
+        cells = dict(zip(fn.__code__.co_freevars, fn.__closure__ or ()))
+        if "implementation" in cells:
+            return cells["implementation"].cell_contents.__module__
+        fn = getattr(fn, "__wrapped__", None)
+    return getattr(top, "__module__", None)
 
 
 def test_decision_loss_recipe_terms():
