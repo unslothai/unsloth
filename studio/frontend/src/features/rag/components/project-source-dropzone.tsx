@@ -7,9 +7,10 @@ import {
   registerNativeAttachmentPath,
   useNativeDropTarget,
 } from "@/features/native-intents";
+import { FolderPlusIcon } from "@/lib/hugeicons-derived";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
-import { File02Icon, FolderAddIcon } from "@hugeicons/core-free-icons";
+import { FileEmpty02Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { XIcon } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -53,7 +54,7 @@ function formatSize(bytes: number): string {
 // Projects created with staged files, so the landing can open on Sources.
 const projectsWithPendingSources = new Set<string>();
 
-function markProjectSourcesPending(projectId: string): void {
+export function markProjectSourcesPending(projectId: string): void {
   projectsWithPendingSources.add(projectId);
 }
 
@@ -66,6 +67,23 @@ export function hasProjectSourcesPending(projectId: string): boolean {
 /** Drop the marker once the landing has committed. */
 export function consumeProjectSourcesPending(projectId: string): void {
   projectsWithPendingSources.delete(projectId);
+}
+
+// Landings mounted now, counted, so a caller can tell whether a marker would still be read.
+const mountedProjectLandings = new Map<string, number>();
+
+/** Call from the landing's mount effect; returns the cleanup. */
+export function noteProjectLandingMounted(projectId: string): () => void {
+  mountedProjectLandings.set(projectId, (mountedProjectLandings.get(projectId) ?? 0) + 1);
+  return () => {
+    const count = (mountedProjectLandings.get(projectId) ?? 1) - 1;
+    if (count > 0) mountedProjectLandings.set(projectId, count);
+    else mountedProjectLandings.delete(projectId);
+  };
+}
+
+export function isProjectLandingMounted(projectId: string): boolean {
+  return mountedProjectLandings.has(projectId);
 }
 
 /** Upload staged files to a new project. Indexing runs in the background; a
@@ -368,7 +386,7 @@ export function ProjectSourceDropzone({
             className="flex w-full cursor-pointer flex-col items-center justify-center gap-3 rounded-[22px] px-6 py-12 text-center transition-colors hover:bg-muted/40 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
           >
             <HugeiconsIcon
-              icon={FolderAddIcon}
+              icon={FolderPlusIcon}
               strokeWidth={1.75}
               className="size-6 text-muted-foreground"
             />
@@ -385,7 +403,7 @@ export function ProjectSourceDropzone({
                   className="flex items-center gap-2.5 rounded-[10px] px-2.5 py-2 hover:bg-muted/50"
                 >
                   <HugeiconsIcon
-                    icon={File02Icon}
+                    icon={FileEmpty02Icon}
                     strokeWidth={1.75}
                     className="size-4 shrink-0 text-muted-foreground"
                   />
@@ -421,7 +439,7 @@ export function ProjectSourceDropzone({
               className="flex items-center justify-center gap-2 rounded-[10px] py-2 text-ui-13 font-medium text-muted-foreground transition-colors hover:bg-muted/50 hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
             >
               <HugeiconsIcon
-                icon={FolderAddIcon}
+                icon={FolderPlusIcon}
                 strokeWidth={1.75}
                 className="size-4"
               />

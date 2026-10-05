@@ -20,6 +20,20 @@ export interface PreStreamRunReservationOptions {
 
 const reservations = new Map<symbol, PreStreamRunReservation>();
 const reservationByThreadId = new Map<string, symbol>();
+const listeners = new Set<() => void>();
+
+export function subscribePreStreamRunReservations(
+  listener: () => void,
+): () => void {
+  listeners.add(listener);
+  return () => {
+    listeners.delete(listener);
+  };
+}
+
+function notifyReservationsChanged(): void {
+  for (const listener of [...listeners]) listener();
+}
 
 export function preStreamRunThreadIdsForAdapter(
   unstableThreadId: string | null | undefined,
@@ -85,6 +99,7 @@ export function reservePreStreamRun(
   for (const threadId of ids) {
     reservationByThreadId.set(threadId, token);
   }
+  notifyReservationsChanged();
   return token;
 }
 
@@ -118,6 +133,7 @@ function cancelPreStreamReservation(token: symbol): boolean {
       reservationByThreadId.delete(id);
   }
   if (!reservation.claimed) reservations.delete(token);
+  notifyReservationsChanged();
   return true;
 }
 
@@ -180,6 +196,7 @@ export function adoptPreStreamRunReservation(
     reservation.threadIds.add(threadId);
     reservationByThreadId.set(threadId, token);
   }
+  notifyReservationsChanged();
   return true;
 }
 
@@ -194,6 +211,7 @@ export function releasePreStreamRunReservation(token: symbol): boolean {
       reservationByThreadId.delete(threadId);
     }
   }
+  notifyReservationsChanged();
   return true;
 }
 

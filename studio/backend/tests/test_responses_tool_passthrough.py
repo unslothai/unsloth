@@ -489,6 +489,33 @@ class TestBuildChatRequest:
             "json_schema": {"name": "Person", "schema": schema, "strict": True},
         }
 
+    def test_text_format_does_not_lock_out_callable_tools(self):
+        payload = ResponsesRequest(
+            input = "Weather in Paris?",
+            tools = [
+                {
+                    "type": "function",
+                    "name": "get_weather",
+                    "parameters": {"type": "object", "properties": {"city": {"type": "string"}}},
+                }
+            ],
+            text = {
+                "format": {
+                    "type": "json_schema",
+                    "name": "final_output",
+                    "schema": {"type": "object", "properties": {"temp_c": {"type": "number"}}},
+                    "strict": True,
+                }
+            },
+        )
+        messages = [ChatMessage(role = "user", content = "Weather in Paris?")]
+
+        chat_req = _build_chat_request(payload, messages, stream = True)
+        body = _build_openai_passthrough_body(chat_req, backend_ctx = 4096)
+
+        assert [tool["function"]["name"] for tool in body["tools"]] == ["get_weather"]
+        assert "response_format" not in body
+
     def test_text_format_json_object_becomes_response_format(self):
         payload = ResponsesRequest(input = "hi", text = {"format": {"type": "json_object"}})
         messages = [ChatMessage(role = "user", content = "hi")]
@@ -1705,6 +1732,37 @@ class TestResponsesNonStreamingAdapter:
         assert entry["prompt_tokens"] == 2
         assert entry["completion_tokens"] == 3
         assert request.state.skip_api_monitor is False
+
+    def test_monitor_records_client_disconnect_as_cancelled(self, monkeypatch):
+        import routes.inference as inf_mod
+
+        async def fake_chat_completions(
+            chat_req,
+            request,
+            current_subject = None,
+        ):
+            return JSONResponse(
+                content = {
+                    "model": "test-model",
+                    "choices": [{"message": {"content": "par"}, "finish_reason": "stop"}],
+                    "usage": {"prompt_tokens": 2, "completion_tokens": 1},
+                }
+            )
+
+        async def is_disconnected():
+            return True
+
+        monitor = ApiMonitor(max_entries = 3)
+        monkeypatch.setattr(inf_mod, "api_monitor", monitor)
+        monkeypatch.setattr(inf_mod, "openai_chat_completions", fake_chat_completions)
+        messages, request = _shared_setup_4()
+        request.is_disconnected = is_disconnected
+
+        asyncio.run(_responses_non_streaming(ResponsesRequest(input = "hi"), messages, request))
+
+        [entry] = monitor.snapshot()
+        assert entry["status"] == "cancelled"
+        assert monitor.active_count() == 0
 
     @staticmethod
     def _run_in_process_completion(

@@ -51,7 +51,12 @@ export interface VideoGenerationDefaults {
 export interface VideoStatus {
   loaded: boolean;
   repo_id: string | null;
+  /** Logical Hub identity when repo_id is an exact local snapshot. */
+  display_repo_id?: string | null;
   family: string | null;
+  supported_families?: string[];
+  /** Pipeline-capable families whose loader accepts a Modular Diffusers manifest on this host. */
+  modular_families?: string[];
   base_repo: string | null;
   device: string | null;
   dtype: string | null;
@@ -69,8 +74,16 @@ export interface VideoStatus {
   speed_optims: string[];
   attention_backend?: string | null;
   transformer_cache?: string | null;
+  transformer_cache_stats?: {
+    mode?: string;
+    every?: number;
+    planned_skips?: number;
+    stats?: { calls?: number; computed?: number; skipped?: number };
+  } | null;
   // Dense DiT precision actually engaged ("int8" | "fp8" | ...) or null for bf16.
   transformer_quant?: string | null;
+  transformer_quant_backend?: string | null;
+  transformer_quant_backend_reason?: string | null;
   // Text-encoder quant actually engaged ("fp8" | "fp8_dynamic" | "int8" | "nvfp4") or null for dense bf16.
   text_encoder_quant?: string | null;
   // Whether the loaded family produces a synchronized audio track.
@@ -113,6 +126,8 @@ export interface VideoLoadProgress {
 
 export interface VideoLoadRequest {
   model_path: string;
+  /** Logical Hub identity to publish while model_path remains the physical load target. */
+  display_repo_id?: string;
   // Required for the gguf / single_file kinds, omitted for a full pipeline loaded via
   // from_pretrained.
   gguf_filename?: string;
@@ -138,7 +153,7 @@ export interface VideoLoadRequest {
     | "sage"
     | "xformers"
     | "aiter";
-  transformer_cache?: "off" | "fbcache";
+  transformer_cache?: "off" | "fbcache" | "static";
   transformer_cache_threshold?: number;
   // Dense DiT precision on full-pipeline loads (omit for the hardware ladder; "none" pins bf16).
   // GGUF / single-file checkpoints carry their own.

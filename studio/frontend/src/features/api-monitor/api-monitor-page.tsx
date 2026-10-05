@@ -34,12 +34,12 @@ import { cn } from "@/lib/utils";
 import {
   Copy01Icon,
   Delete02Icon,
-  Globe02Icon,
   PauseIcon,
   PlayIcon,
   PowerSocket01Icon,
-  RefreshIcon,
+  Refresh01Icon,
   Settings02Icon,
+  ApiIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { type ReactElement, useEffect, useMemo, useRef, useState } from "react";
@@ -374,7 +374,7 @@ function PayloadBlock({
       <pre
         data-reload-snapshot-sensitive
         className={cn(
-          "max-h-72 overflow-auto whitespace-pre-wrap break-words rounded-lg bg-muted/50 p-3 text-ui-11 leading-[1.55]",
+          "max-h-72 overflow-auto whitespace-pre-wrap break-words scroll-rounded rounded-lg bg-muted/50 p-3 text-ui-11 leading-[1.55]",
           tone === "error" && "bg-red-500/5 text-red-700 dark:text-red-400",
         )}
       >
@@ -382,6 +382,20 @@ function PayloadBlock({
       </pre>
     </section>
   );
+}
+
+function requestStatusLabel(entry: ApiMonitorEntry): string {
+  if (entry.status !== "running") return entry.status;
+  if (entry.running_phase === "token_generation") return "Token generation";
+  if (entry.running_phase !== "prompt_processing") return "Running";
+  const progress = entry.prompt_progress;
+  if (progress?.percent != null) {
+    return `Prompt processing · ${Math.round(progress.percent)}%`;
+  }
+  if (progress?.processed != null) {
+    return `Prompt processing · ${formatCount(progress.processed)} tokens`;
+  }
+  return "Prompt processing";
 }
 
 function RequestDetail({
@@ -422,7 +436,7 @@ function RequestDetail({
               statusTextClass(entry.status),
             )}
           >
-            {entry.status}
+            {requestStatusLabel(entry)}
           </span>
           <span className="ml-auto shrink-0 font-mono text-ui-10 text-muted-foreground">
             {entry.id}
@@ -760,7 +774,7 @@ export function ApiMonitorPage(): ReactElement {
             className="h-9 gap-1.5 rounded-full"
           >
             <HugeiconsIcon
-              icon={RefreshIcon}
+              icon={Refresh01Icon}
               strokeWidth={1.75}
               className={cn("size-4", refreshing && "animate-spin")}
             />
@@ -811,7 +825,7 @@ export function ApiMonitorPage(): ReactElement {
         <div className="flex min-w-0 items-center gap-2.5">
           <span className="flex size-8 shrink-0 items-center justify-center rounded-lg border border-border/60 bg-muted/40">
             <HugeiconsIcon
-              icon={Globe02Icon}
+              icon={ApiIcon}
               strokeWidth={1.75}
               className="size-4"
             />

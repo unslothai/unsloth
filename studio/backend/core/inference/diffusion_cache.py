@@ -11,9 +11,8 @@ diffusers ships it natively (``transformer.enable_cache(FirstBlockCacheConfig(..
 Measured on Flux.1-dev (28 steps, 1024px, B200): ~1.4x on top of torch.compile (2.83 -> 2.03 s)
 at LPIPS ~0.08 -- deep inside the speed-for-quality bar.
 
-OFF by default: the win scales with step count, so a few-step distilled model (Z-Image-Turbo
-~8 steps) has almost no headroom and caching is for many-step models (Flux / Qwen-Image). It
-composes with torch.compile only at ``fullgraph=False`` (the cache's compiler-disabled decision
+Explicit ``fbcache`` works on every tier; unset / ``auto`` engages only on ``max`` with 20+ steps.
+It composes with torch.compile only at ``fullgraph=False`` (the cache's compiler-disabled decision
 is a graph break), which the speed layer switches to automatically. Best-effort: an incompatible
 model is caught and the load proceeds uncached. torch / diffusers imported lazily.
 """
@@ -25,7 +24,9 @@ from typing import Any, Optional
 TC_OFF = "off"
 TC_AUTO = "auto"
 TC_FBCACHE = "fbcache"
-TC_MODES = (TC_FBCACHE,)
+# Fixed-schedule step skip (diffusion_step_skip.py); explicit, or auto for the measured families below.
+TC_STATIC = "static"
+TC_MODES = (TC_FBCACHE, TC_STATIC)
 
 # FBCache residual thresholds: higher skips more steps (faster, lower quality). Quantised transformers shift the
 # residual distribution, so they need a higher threshold.
@@ -35,6 +36,120 @@ QUANT_FBCACHE_THRESHOLD = 0.12
 # Auto step-count bar: FBCache's win scales with step count, so auto engages only at 20+ steps ("dev" schedules
 # qualify, distilled turbo never does).
 FBCACHE_MIN_STEPS = 20
+
+# == diffusion_speed.SPEED_MAX, spelled out to keep this module import-free.
+AUTO_STEP_CACHE_TIER = "max"
+
+# == diffusion_speed.REDUCTION_FILTER_OPTION, spelled out to keep this module import-free.
+_REDUCTION_FILTER_OPTION = "test_configs.force_filter_reduction_configs"
+
+
+_TIER_DEFAULT = "default"
+_TIER_MAX = "max"
+
+# Per-model interval on each tier ("default" also covers max), measured vs the no-skip render (PR #12652): default
+# needs mean LPIPS <= 0.05, max <= 0.10. "steps" = the step count it was measured at: fewer steps compute every step.
+# Keyed by the UPSTREAM repo id so distilled / unmeasured siblings never match.
+AUTO_STATIC_SKIP: dict = {
+    "qwen/qwen-image-2.1": {"default": 3, "max": 3, "steps": 25},
+    "qwen/qwen-image": {"default": 2, "max": 3, "steps": 20},
+    "black-forest-labs/flux.1-krea-dev": {"default": 2, "max": 3, "steps": 28},
+    "black-forest-labs/flux.2-klein-base-4b": {"default": 2, "max": 3, "steps": 50},
+    "wan-ai/wan2.2-ti2v-5b-diffusers": {"default": 2, "max": 3, "steps": 50},
+    # every 2 is 0.29 LPIPS on a dense-texture prompt, so max only.
+    "black-forest-labs/flux.1-dev": {"max": 3, "steps": 28},
+    "hunyuanvideo-community/hunyuanimage-2.1-diffusers": {"max": 2, "steps": 50},
+    "hunyuanvideo-community/hunyuanvideo-1.5-diffusers-480p_t2v": {"max": 2, "steps": 50},
+    "minimaxai/minimax-h3": {"max": 2, "steps": 30},
+}
+
+# Load gate on the model's default steps (keeps distilled siblings out); explicit "static" keeps STATIC_MIN_STEPS (12).
+AUTO_STATIC_MIN_STEPS = 20
+
+# Kill switch: auto never picks static (explicit requests still honoured).
+ENV_AUTO_STEP_SKIP = "UNSLOTH_DIFFUSION_AUTO_STEP_SKIP"
+
+
+def auto_step_skip_disabled(env: Optional[dict] = None) -> bool:
+    import os
+    raw = (
+        str((os.environ if env is None else env).get(ENV_AUTO_STEP_SKIP, "") or "").strip().lower()
+    )
+    return raw in ("0", "false", "off", "no", "none")
+
+
+def auto_static_skip_entry(*identifiers: Optional[str]) -> Optional[dict]:
+    """The AUTO_STATIC_SKIP row for the first identifier (repo id, then resolved base) naming a listed checkpoint."""
+    from .diffusion_families import canonical_base
+
+    for identifier in identifiers:
+        if not identifier:
+            continue
+        entry = AUTO_STATIC_SKIP.get(canonical_base(str(identifier)).strip().lower())
+        if entry is not None:
+            return entry
+    return None
+
+
+def skip_tier(requested: Optional[str], effective: Optional[str]) -> Optional[str]:
+    """The tier the skip policy reads: an explicit off / eager stays lossless even when quant forces a compile."""
+    asked = str(requested or "").strip().lower()
+    return asked if asked in ("off", "eager") else effective
+
+
+def auto_static_skip_plan(
+    identifiers: Any,
+    speed_mode: Optional[str],
+    default_steps: Optional[int],
+    env: Optional[dict] = None,
+) -> Optional[dict]:
+    """Settings for an auto static skip (``{"every": n, "min_steps": m}``), or None when auto must not pick it.
+
+    ``speed_mode`` is the tier the user ASKED for (an eager downgrade forced by offload does not change what the
+    skip costs in quality); off / eager are the lossless tiers and never skip."""
+    if auto_step_skip_disabled(env):
+        return None
+    if isinstance(identifiers, str) or identifiers is None:
+        identifiers = (identifiers,)
+    entry = auto_static_skip_entry(*identifiers)
+    if not entry or speed_mode not in (_TIER_DEFAULT, _TIER_MAX):
+        return None
+    every = entry.get(_TIER_DEFAULT) if speed_mode == _TIER_DEFAULT else entry.get(_TIER_MAX)
+    try:
+        steps_ok = default_steps is not None and int(default_steps) >= AUTO_STATIC_MIN_STEPS
+    except (TypeError, ValueError):
+        steps_ok = False
+    if not every or not steps_ok:
+        return None
+    return {
+        "every": int(every),
+        "min_steps": max(AUTO_STATIC_MIN_STEPS, int(entry.get("steps") or 0)),
+    }
+
+
+def auto_step_cache_allowed(speed_mode: Optional[str]) -> bool:
+    """Takes the EFFECTIVE speed tier."""
+    return speed_mode == AUTO_STEP_CACHE_TIER
+
+
+def resolve_auto_step_cache(
+    speed_mode: Optional[str],
+    default_steps: int,
+    *,
+    static_plan: Optional[dict] = None,
+) -> Optional[str]:
+    """``static_plan`` (from auto_static_skip_plan) wins: a family measured for the fixed schedule takes it on every
+    tier the plan allows, FBCache stays the max-tier fallback for the rest."""
+    if static_plan:
+        return TC_STATIC
+    if auto_step_cache_allowed(speed_mode) and int(default_steps) >= FBCACHE_MIN_STEPS:
+        return TC_FBCACHE
+    return None
+
+
+def cache_breaks_graph(mode: Optional[str]) -> bool:
+    """Whether an engaged mode decides inside the forward (FBCache), costing fullgraph and the CUDA graph."""
+    return bool(mode) and mode != TC_STATIC
 
 
 def normalize_transformer_cache(value: Optional[str]) -> Optional[str]:
@@ -181,7 +296,11 @@ def _compile_hooked_block_inners(transformer: Any, logger: Any = None) -> int:
                 # default tier. Dynamo caches per code object, so re-arming after a toggle is ~free.
                 # Automatic dynamic when the speed layer chose it (max tier or torchao weights), as the blocks do.
                 dynamic = None if getattr(transformer, "_unsloth_auto_dynamic", False) else True
-                compiled = torch.compile(orig, fullgraph = False, dynamic = dynamic)
+                # Same reduction-config filter as the blocks (diffusion_speed.pin_reduction_configs).
+                block_kwargs = getattr(transformer, "_unsloth_regional_compile_kwargs", None) or {}
+                pinned = (block_kwargs.get("options") or {}).get(_REDUCTION_FILTER_OPTION)
+                extra = {"options": {_REDUCTION_FILTER_OPTION: True}} if pinned else {}
+                compiled = torch.compile(orig, fullgraph = False, dynamic = dynamic, **extra)
                 # Same runtime fallback as the block's own compile: a lowering failure on the first computed step
                 # restores the eager inner instead of failing the render.
                 guard = getattr(transformer, "_unsloth_compile_guard", None)
@@ -301,6 +420,47 @@ def _pipeline_opens_cache_context(pipe: Any) -> bool:
     return "cache_context(" in src
 
 
+def _transformer_blocks_registered(transformer: Any, logger: Any = None) -> bool:
+    """True when the registry cannot be read, so enable_cache stays the judge."""
+    try:
+        import torch
+        from diffusers.hooks._common import _ALL_TRANSFORMER_BLOCK_IDENTIFIERS
+        from diffusers.hooks._helpers import TransformerBlockRegistry
+    except Exception:  # noqa: BLE001 - no registry to ask
+        return True
+    named_children = getattr(transformer, "named_children", None)
+    if not callable(named_children):
+        return True
+    register_unregistered_transformer_blocks(logger)
+    blocks = [
+        getattr(block, "_orig_mod", block)
+        for name, child in named_children()
+        if name in _ALL_TRANSFORMER_BLOCK_IDENTIFIERS and isinstance(child, torch.nn.ModuleList)
+        for block in child
+    ]
+    # FBCache needs a head and a tail block.
+    if len(blocks) < 2:
+        return False
+    try:
+        for cls in {type(block) for block in blocks}:
+            TransformerBlockRegistry.get(cls)
+    except Exception:  # noqa: BLE001 - unregistered, or the registry itself failed to load
+        return False
+    return True
+
+
+def step_cache_supported(pipe: Any, *, logger: Any = None) -> bool:
+    """Mirrors apply_step_cache's refusals for an auto request, without engaging the cache."""
+    transformer = getattr(pipe, "transformer", None)
+    if transformer is None or not callable(getattr(transformer, "enable_cache", None)):
+        return False
+    if not _pipeline_opens_cache_context(pipe):
+        return False
+    if _reuses_prefix_kv(pipe, transformer):
+        return False
+    return _transformer_blocks_registered(transformer, logger)
+
+
 def install_fbcache_length_guard() -> bool:
     """Make First-Block-Cache recompute, instead of raise, when the block sequence length changes.
 
@@ -404,6 +564,9 @@ def apply_step_cache(
     mode = normalize_transformer_cache(mode)
     if mode is None or mode == TC_AUTO:
         # AUTO is resolved by the loader before this; treat a stray auto as off.
+        return None
+    if mode == TC_STATIC:
+        _warn(logger, mode, RuntimeError("static step skip is not supported on this backend"))
         return None
     transformer = getattr(pipe, "transformer", None)
     if transformer is None:

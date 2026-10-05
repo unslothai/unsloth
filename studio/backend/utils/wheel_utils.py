@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import http.client
 import json
 import logging
 import os
@@ -179,7 +180,7 @@ def direct_wheel_url(
     return f"{release_base_url}/{release_tag}/{filename}"
 
 
-# xformers/_C is linked against ONE exact (torch, CUDA) pair, and a mismatch is only a log warning, so the import "succeeds" with memory-efficient attention silently gone. PyPI publishes one win_amd64 flavour whose CUDA family churns across releases, which is why this resolves an exact download.pytorch.org URL instead of pinning a version. Keyed on the `torch` field of cpp_lib.json, not `cuda`, which is the NVCC toolkit version and does not separate flavours. Rows are exact, never interpolated: the extension ABI does not survive a torch minor bump, and an unlisted pair means "install nothing", the safe answer. cu118/cu121/cu124 are absent because they stop before the cp39-abi3 switch at 0.0.31, so one filename template cannot name them. The PyPI win wheel has been cu124 (0.0.29.post2), cu126 (0.0.30), cu128 (0.0.32), cu130 (0.0.33) and cu128 again (0.0.33.post1 onward); download.pytorch.org's cu126 0.0.34 also reports 1208, so only the `torch` field ("2.10.0+cu128") separates flavours. Every row was HEAD-verified live, e.g. cu130/xformers-0.0.34-cp39-abi3-win_amd64.whl reports {"torch": "2.10.0+cu130"}. Keying on the CUDA MINOR is stricter than the ABI needs (cu126 and cu128 both link libcudart.so.12; only a major bump changes it), but it names a real directory, so torch 2.10.0+cu129 on Linux resolves to nothing. torch 2.11+ maps to 0.0.35, compiled against 2.10.0 and compatible with any later version since xFormers moved to the stable API/ABI in 0.0.34. Keep in step with $script:XformersWheelVersions in install.ps1 and the matrix in tests/python/test_windows_xformers_wheel_match.py.
+# xformers/_C is linked against ONE exact (torch, CUDA) pair, and a mismatch its declared torch requirement allows is only a log warning, so the import "succeeds" with memory-efficient attention silently gone. PyPI publishes one win_amd64 flavour whose CUDA family churns across releases, which is why this resolves an exact download.pytorch.org URL instead of pinning a version. Keyed on the `torch` field of cpp_lib.json, not `cuda`, which is the NVCC toolkit version and does not separate flavours. Rows are exact, never interpolated: the extension ABI does not survive a torch minor bump, and an unlisted pair means "install nothing", the safe answer. cu118/cu121/cu124 are absent because they stop before the cp39-abi3 switch at 0.0.31, so one filename template cannot name them. The PyPI win wheel has been cu124 (0.0.29.post2), cu126 (0.0.30), cu128 (0.0.32), cu130 (0.0.33) and cu128 again (0.0.33.post1 onward); download.pytorch.org's cu126 0.0.34 also reports 1208, so only the `torch` field ("2.10.0+cu128") separates flavours. Every row was HEAD-verified live, e.g. cu130/xformers-0.0.34-cp39-abi3-win_amd64.whl reports {"torch": "2.10.0+cu130"}. Keying on the CUDA MINOR is stricter than the ABI needs (cu126 and cu128 both link libcudart.so.12; only a major bump changes it), but it names a real directory, so torch 2.10.0+cu129 on Linux resolves to nothing. torch 2.11+ maps to 0.0.35, compiled against 2.10.0 and compatible with any later version since xFormers moved to the stable API/ABI in 0.0.34. Keep in step with $script:XformersWheelVersions in install.ps1 and the matrix in tests/python/test_windows_xformers_wheel_match.py.
 # ── xFormers ──────────────────────────────────────────────────────────────────
 PYTORCH_WHEEL_INDEX_BASE_URL = "https://download.pytorch.org/whl"
 
@@ -291,6 +292,35 @@ def xformers_wheel_url(env: dict[str, str] | None) -> str | None:
     )
 
 
+def xformers_torch_requirement_unmet() -> tuple[str, str, str] | None:
+    """(xformers version, unmet torch specifier, torch version) from metadata, or None if unmet cannot be shown."""
+    try:
+        from importlib.metadata import requires, version
+
+        from packaging.requirements import Requirement
+        from packaging.version import Version
+
+        xformers_version = version("xformers")
+        torch_version = version("torch")
+        installed = Version(torch_version)
+        declared = requires("xformers") or []
+    except Exception:  # noqa: BLE001 -- either package absent, or no packaging
+        return None
+    for line in declared:
+        try:
+            requirement = Requirement(line)
+            if requirement.name.lower() != "torch":
+                continue
+            if requirement.marker is not None and not requirement.marker.evaluate({"extra": ""}):
+                continue
+        except Exception:  # noqa: BLE001 -- a line packaging cannot parse is not a verdict
+            continue
+        # Local tags are ignored as pip ignores them, so "torch==2.6.0" accepts 2.6.0+cu124.
+        if not requirement.specifier.contains(installed, prereleases = True):
+            return xformers_version, str(requirement.specifier), torch_version
+    return None
+
+
 def join_wheel_url(base: str, path: str) -> str:
     """``base`` + ``path``, with any ?query / #fragment kept at the end. UNSLOTH_PYTORCH_MIRROR is allowed to authenticate by query string (``https://mirror/whl?token=abc``), and appending after the query put the wheel path INSIDE the token value, leaving the request path at /whl and the token unusable. The tokenized private mirror this setting exists for was the one shape that could not resolve a wheel."""
     cut = min([i for i in (base.find("?"), base.find("#")) if i >= 0], default = -1)
@@ -391,13 +421,17 @@ def install_wheel(
     return attempts
 
 
-def url_exists(url: str) -> bool:
+def url_exists(url: str) -> bool | None:
+    """True if reachable, False on a 404, None when it cannot be checked: a refusal is no proof the wheel is unpublished."""
     try:
         request = urllib.request.Request(url, method = "HEAD")
         with urllib.request.urlopen(request, timeout = 10):
             return True
     except urllib.error.HTTPError as exc:
-        _logger.debug("url_exists(%s): HTTP %s", url, exc.code)
-    except (urllib.error.URLError, TimeoutError) as exc:
-        _logger.debug("url_exists(%s): %s", url, exc)
-    return False
+        if exc.code == 404:
+            return False
+        reason = f"HTTP {exc.code}"
+    except (OSError, http.client.HTTPException) as exc:
+        reason = str(exc)
+    _logger.warning("url_exists(%s): %s; could not check prebuilt wheel availability", url, reason)
+    return None

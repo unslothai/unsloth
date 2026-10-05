@@ -100,8 +100,13 @@ def _curve_modulation_forward(self: Any, temb: Any) -> tuple:
     whole block stack to float32 and the very first quantized matmul dies with
     "expected mat1 and mat2 to have the same dtype". The reference casts modulation to the hidden
     stream's dtype at the point of use for exactly this reason; ``adaln_out_dtype`` is the dtype the
-    offline builder recorded for that stream, so honour it here where the chunks are produced."""
+    offline builder recorded for that stream, so honour it here where the chunks are produced.
+
+    Cast while the modality axis is explicit: with ``temb``'s rows unbacked, torch 2.12-2.14 Inductor
+    indexes the bias of a single ``(rows, 18 * hidden) -> (3 * rows, 6 * hidden)`` view as ``row``, not
+    ``row % 3``, and reads past it from the second denoising step (illegal memory access)."""
     temb = self.linear(temb.to(self.linear.weight.dtype))
+    temb = temb.view(-1, MINIMAX_H3_MODALITY_NUM, 6 * self.hidden_size)
     out_dtype = getattr(self, "_unsloth_adaln_out_dtype", None)
     if out_dtype is not None:
         temb = temb.to(out_dtype)

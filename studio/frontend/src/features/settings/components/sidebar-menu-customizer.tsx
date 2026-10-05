@@ -6,7 +6,6 @@ import {
   CpuIcon,
   CursorInfo02Icon,
   DragDropVerticalIcon,
-  Globe02Icon,
   HelpCircleIcon,
   Logout05Icon,
   Moon02Icon,
@@ -14,6 +13,7 @@ import {
   PowerIcon,
   Settings02Icon,
   UserCircleIcon,
+  ApiIcon,
 } from "@hugeicons/core-free-icons";
 import { MessageCircleIcon } from "@/lib/hugeicons-derived";
 import { HugeiconsIcon } from "@hugeicons/react";
@@ -29,7 +29,7 @@ const ITEM_META: Record<
   SidebarMenuItemPref["id"],
   { icon: IconSvgElement; labelKey: TranslationKey }
 > = {
-  api: { icon: Globe02Icon, labelKey: "shell.navigation.api" },
+  api: { icon: ApiIcon, labelKey: "shell.navigation.api" },
   darkMode: { icon: Moon02Icon, labelKey: "settings.appearance.sidebarMenu.darkModeToggle" },
   guidedTour: { icon: CursorInfo02Icon, labelKey: "shell.navigation.guidedTour" },
   profile: { icon: UserCircleIcon, labelKey: "settings.tabs.profile" },

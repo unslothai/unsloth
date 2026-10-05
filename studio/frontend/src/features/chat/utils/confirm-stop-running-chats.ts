@@ -40,15 +40,19 @@ export function getLocalPromptQueueThreadIds(): string[] {
 export async function confirmStopRunningChatsIfNeeded(
   action = "Loading a different model",
   effect: StopRunningChatsEffect = "reload",
+  /** Only this model's chats, from the backend: a tab cannot tell which model a local run is on. */
+  model?: string,
 ): Promise<StopRunningChatsDecision> {
   // Local runs only: an external-provider chat is not stopped by the swap, so counting it would
   // block a safe load behind a dialog. The backend excludes them for the same reason.
   const { runningByThreadId, localRunByThreadId } =
     useChatRuntimeStore.getState();
-  let running = Object.entries(runningByThreadId)
-    .filter(([threadId, on]) => on && localRunByThreadId[threadId])
-    .map(([threadId]) => threadId);
-  const preStreamRuns = listLocalPreStreamRunReservations();
+  let running = model
+    ? []
+    : Object.entries(runningByThreadId)
+        .filter(([threadId, on]) => on && localRunByThreadId[threadId])
+        .map(([threadId]) => threadId);
+  const preStreamRuns = model ? [] : listLocalPreStreamRunReservations();
   const preStreamRunTokens = preStreamRuns.map(({ token }) => token);
   let unnamedPreStreamRuns = 0;
   const runningIds = new Set(running);
@@ -65,7 +69,7 @@ export async function confirmStopRunningChatsIfNeeded(
       unnamedPreStreamRuns += 1;
     }
   }
-  const promptQueueThreadIds = getLocalPromptQueueThreadIds();
+  let promptQueueThreadIds = model ? [] : getLocalPromptQueueThreadIds();
   const promptQueuesByThreadId = usePromptQueueUI.getState().byThreadId;
   const aliasesByQueuedRun = new Map<string, string[]>();
   for (const threadId of promptQueueThreadIds) {
@@ -94,13 +98,16 @@ export async function confirmStopRunningChatsIfNeeded(
   // reload and blind to a second tab, while force_cancel_active cancels every backend run. The
   // union stays local-only, since external-provider runs are never in it.
   try {
-    const active = await getActiveGenerations();
+    const active = await getActiveGenerations(model);
     const entries = active.active ?? [];
     const merged = new Set(running);
     for (const threadId of active.thread_ids ?? []) {
       merged.add(threadId);
     }
     running = [...merged];
+    if (model) {
+      promptQueueThreadIds = running;
+    }
     // Count conversations, not handles: one chat holds several at once while a tool continuation
     // registers its next leg before the previous unwinds, and active.count counts those
     // separately. A first turn started before its id was persisted has no id to merge, so add
