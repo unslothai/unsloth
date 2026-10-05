@@ -661,7 +661,6 @@ class GroupPrefetcher:
         self.capturing = False
         if self.stream is not None:
             import torch
-
             if torch.cuda.is_current_stream_capturing():
                 # fork the copy stream into the capture before anything is queued on it
                 self.capturing = True
@@ -694,7 +693,9 @@ class GroupPrefetcher:
         self.inflight_bytes = 0
         if getattr(self, "capturing", False):
             self.capturing = False
-            self._compute().wait_stream(self.stream)  # join the copy stream back before the capture ends
+            self._compute().wait_stream(
+                self.stream
+            )  # join the copy stream back before the capture ends
         if self.seen:
             self.order = list(self.seen)
         if getattr(self, "_drop_slots_at_end", False):
@@ -963,11 +964,12 @@ def capture_refusal(module: Any) -> Optional[str]:
         return "block streaming without the event-fenced prefetch (its stream waits are host synchronizations)"
     try:
         from .diffusion_memory import _offload_groups
-
         for group in _offload_groups(module):
             if getattr(group, "offload_to_disk_path", None):
                 return "a group streams from disk"
-            if getattr(group, "_unsloth_resident", False) or getattr(group, "_unsloth_pinned_top", False):
+            if getattr(group, "_unsloth_resident", False) or getattr(
+                group, "_unsloth_pinned_top", False
+            ):
                 continue
             if not pf.owns(group):
                 return "a streamed group is not driven by the prefetcher"

@@ -62,7 +62,12 @@ def _family_forced(family: Any) -> bool:
 
 
 def offload_graphs_enabled() -> bool:
-    return (os.environ.get(OFFLOAD_CUDA_GRAPH_ENV) or "").strip().lower() not in ("0", "off", "false", "no")
+    return (os.environ.get(OFFLOAD_CUDA_GRAPH_ENV) or "").strip().lower() not in (
+        "0",
+        "off",
+        "false",
+        "no",
+    )
 
 
 def cuda_graph_disabled() -> bool:
@@ -169,7 +174,9 @@ def _graph_without_flush(graph: Any, pool: Any = None):
     # torch.cuda.graph's own capture stream: pool blocks are matched by stream, so earlier captures' freed
     # temporaries are only reusable from the stream they were recorded on.
     stream = getattr(torch.cuda.graph, "default_capture_stream", None)
-    if stream is None or getattr(stream, "device", None) != torch.device("cuda", torch.cuda.current_device()):
+    if stream is None or getattr(stream, "device", None) != torch.device(
+        "cuda", torch.cuda.current_device()
+    ):
         stream = torch.cuda.Stream()
     with torch.cuda.stream(stream):
         graph.capture_begin(pool = pool, capture_error_mode = "global")
@@ -430,7 +437,12 @@ SPEED_CHECK_ENV = "UNSLOTH_DIFFUSION_OFFLOAD_GRAPH_SPEED_CHECK"
 
 
 def speed_check_enabled() -> bool:
-    return (os.environ.get(SPEED_CHECK_ENV) or "").strip().lower() not in ("0", "off", "false", "no")
+    return (os.environ.get(SPEED_CHECK_ENV) or "").strip().lower() not in (
+        "0",
+        "off",
+        "false",
+        "no",
+    )
 
 
 def _timing_events() -> tuple:
@@ -441,7 +453,9 @@ def _timing_events() -> tuple:
 def live_pool_bytes() -> int:
     """Bytes the shared graph pool holds while any graph lives (the status number)."""
     try:
-        return max([int(w.stats.get("pool_bytes", 0)) for w in tuple(_LIVE_WRAPPERS) if w.cache] or [0])
+        return max(
+            [int(w.stats.get("pool_bytes", 0)) for w in tuple(_LIVE_WRAPPERS) if w.cache] or [0]
+        )
     except Exception:  # noqa: BLE001
         return 0
 
@@ -711,7 +725,9 @@ class GraphedForward:
             "cap_hit": bool(self.cap_hit),
             "placement": None if self.placement is None else self.placement.mode,
             "stats": dict(self.stats),
-            "fallback": None if getattr(self, "fallback_handle", None) is None else self.fallback_handle.describe(),
+            "fallback": None
+            if getattr(self, "fallback_handle", None) is None
+            else self.fallback_handle.describe(),
             "capture_error": None
             if not error
             else {
@@ -770,7 +786,9 @@ class GraphedForward:
             self._slower = reason
             self._dropped.add(key)
             if self.logger is not None:
-                self.logger.info("diffusion.cuda_graph: %s drops a graph: %s", type(self.module).__name__, reason)
+                self.logger.info(
+                    "diffusion.cuda_graph: %s drops a graph: %s", type(self.module).__name__, reason
+                )
             if self.cache.pop(key, None) is not None:
                 try:
                     _torch().cuda.current_stream().synchronize()  # no replay still running on what is freed
@@ -891,10 +909,16 @@ class GraphedForward:
             if refusal is not None:
                 if self.logger is not None and getattr(self, "_refusal_logged", None) != refusal:
                     self._refusal_logged = refusal
-                    self.logger.info("diffusion.cuda_graph: %s runs eager: %s", type(self.module).__name__, refusal)
+                    self.logger.info(
+                        "diffusion.cuda_graph: %s runs eager: %s",
+                        type(self.module).__name__,
+                        refusal,
+                    )
                 self.capture_error = {"type": "Refused", "msg": refusal}
                 return self._eager(args, kwargs)
-            if (self.capture_error or {}).get("type") == "Refused" and (self.cache or not self._slower):
+            if (self.capture_error or {}).get("type") == "Refused" and (
+                self.cache or not self._slower
+            ):
                 self.capture_error = None
 
         call = self.orig
@@ -951,7 +975,9 @@ class GraphedForward:
                 if key in self._dropped:
                     return self._eager(eager_args, eager_kwargs)
                 state = self._judge.get(key)
-                if state is None or (state["verdict"] is None and len(state["eager"]) < SPEED_EAGER_SAMPLES):
+                if state is None or (
+                    state["verdict"] is None and len(state["eager"]) < SPEED_EAGER_SAMPLES
+                ):
                     # The eager reference for _judge_keys: the caller's own steps on the stock path (the
                     # prefetcher's event-fenced copies), timed on the stream with CUDA events, never waited on.
                     return self._timed_eager(call, args, kwargs, key)
@@ -1044,7 +1070,9 @@ class GraphedForward:
                     continue
                 dst.copy_(src)
         state = self._judge.get(key) if self.placement is not None else None
-        timing = state is not None and state["verdict"] is None and len(state["graph"]) < SPEED_SAMPLES
+        timing = (
+            state is not None and state["verdict"] is None and len(state["graph"]) < SPEED_SAMPLES
+        )
         if timing:
             start, end = _timing_events()
             start.record()
@@ -1076,13 +1104,21 @@ class GraphedForward:
             with torch.inference_mode(False):
                 static = [torch.empty_like(t) for t in live]
         # Writing into an inference tensor is only allowed inside inference mode.
-        copying = types.SimpleNamespace(inference_copy = self.plan is not None and any(t.is_inference() for t in static))
+        copying = types.SimpleNamespace(
+            inference_copy = self.plan is not None and any(t.is_inference() for t in static)
+        )
         with _copy_mode(copying):
             for dst, src in zip(static, live):
                 dst.copy_(src)
         return static
 
-    def _capture(self, args: tuple, kwargs: dict, call: Any = None, key: Any = None) -> _Entry:
+    def _capture(
+        self,
+        args: tuple,
+        kwargs: dict,
+        call: Any = None,
+        key: Any = None,
+    ) -> _Entry:
         torch = _torch()
         call = self.orig if call is None else call
         entry = _Entry()
@@ -1140,13 +1176,21 @@ class GraphedForward:
         # An offloaded module re-recording a key it recorded before, after its weights moved (a model-offload onload,
         # a release / restore): its kernels, workspaces and compiled variants all exist, so it records as a planned
         # re-capture does. A per-render re-record of a model-offloaded denoiser then costs one step's launches.
-        recapture = recapture or (self.placement is not None and key is not None and key in self._recorded)
+        recapture = recapture or (
+            self.placement is not None and key is not None and key in self._recorded
+        )
         if self.placement is not None:
             self.placement.before_capture()  # anything the recorded copies land in exists before the capture
-            self.valid_token = self.placement.token()  # the placement this capture records (the ring included)
+            self.valid_token = (
+                self.placement.token()
+            )  # the placement this capture records (the ring included)
         # A pass-through step skip under the hooks counts every call; the warm-ups and the recording are not steps.
         skip = getattr(self.placement, "skip", None) if self.placement is not None else None
-        skip_stats = dict(skip.stats) if skip is not None and isinstance(getattr(skip, "stats", None), dict) else None
+        skip_stats = (
+            dict(skip.stats)
+            if skip is not None and isinstance(getattr(skip, "stats", None), dict)
+            else None
+        )
         # Per-block graphs under the hooks run their compute while the whole step warms up and records.
         # An offloaded key that already ran its timed eager steps (``_timed_eager``, same shapes, capture-like inputs)
         # is warm: a side-stream warm-up would only cache a second set of activations beside the compute stream's
@@ -1304,7 +1348,9 @@ class OffloadPlacement:
             if safe is not None:
                 ref = _innermost_class_forward(module)
                 if ref is None:
-                    raise RuntimeError("the block-offload hook chain does not end in the class forward")
+                    raise RuntimeError(
+                        "the block-offload hook chain does not end in the class forward"
+                    )
                 self._inner, self._inner_stock = ref, ref.forward
                 self._inner_safe = safe.__get__(module)
 
@@ -1320,7 +1366,6 @@ class OffloadPlacement:
 
     def _prefetcher(self) -> Any:
         from .diffusion_offload_prefetch import module_prefetcher
-
         return module_prefetcher(self.module)
 
     def _enable_slots(self) -> None:
@@ -1346,10 +1391,11 @@ class OffloadPlacement:
             return True
         try:
             from .diffusion_memory import _offload_groups
-
             pf = self._prefetcher()
             for group in _offload_groups(self.module):
-                if getattr(group, "_unsloth_resident", False) or getattr(group, "_unsloth_pinned_top", False):
+                if getattr(group, "_unsloth_resident", False) or getattr(
+                    group, "_unsloth_pinned_top", False
+                ):
                     continue
                 if pf is None or pf.owns(group):
                     return True
@@ -1393,7 +1439,9 @@ class OffloadPlacement:
             return
         if getattr(self.module, "_old_forward", None) is handle:
             self.module._old_forward = self.prev
-        if self.module.__dict__.get("forward") is handle:  # hooks removed since (diffusers re-enables them per call)
+        if (
+            self.module.__dict__.get("forward") is handle
+        ):  # hooks removed since (diffusers re-enables them per call)
             self.module.__dict__.pop("forward", None)
 
     # -------------------------------------------------------------------------------------------------- record
@@ -1423,7 +1471,6 @@ class OffloadPlacement:
             return
         try:
             from .diffusion_offload_prefetch import module_prefetcher
-
             pf = module_prefetcher(self.module)
             if pf is not None:
                 pf.abandon()
@@ -1483,7 +1530,10 @@ class OffloadPlacement:
                 records = max(1, int(stats.get("captures", 0)))
                 replays = int(stats.get("replays", 0))
                 self._why = None
-                if moves >= self.MODEL_MAX_INVALIDATIONS and replays < self.MODEL_MIN_REPLAYS_PER_RECORD * records:
+                if (
+                    moves >= self.MODEL_MAX_INVALIDATIONS
+                    and replays < self.MODEL_MIN_REPLAYS_PER_RECORD * records
+                ):
                     self._why = (
                         f"model offload placed the weights at new addresses on {moves} onloads, {replays} replays "
                         f"over {records} recordings; each re-record costs a step"
@@ -1491,7 +1541,6 @@ class OffloadPlacement:
             return self._why
         if self._checked is not self._fp:
             from .diffusion_offload_prefetch import capture_refusal
-
             self._checked = self._fp
             self._why = capture_refusal(self.module)
         return self._why
@@ -1516,9 +1565,15 @@ def offload_placement(module: Any) -> tuple:
     compiled = getattr(module, "_compiled_call_impl", None) is not None
     if hf_hook is not None:
         if compiled:
-            return None, "whole-module compiled denoiser: the CPU-offload hook runs inside its compiled call"
+            return (
+                None,
+                "whole-module compiled denoiser: the CPU-offload hook runs inside its compiled call",
+            )
         if "CpuOffload" not in type(hf_hook).__name__:
-            return None, f"offload hook {type(hf_hook).__name__} moves the weights inside the forward"
+            return (
+                None,
+                f"offload hook {type(hf_hook).__name__} moves the weights inside the forward",
+            )
         why = _forward_refusal(module, "model")
         if why is not None:
             return None, why
@@ -1531,10 +1586,12 @@ def offload_placement(module: Any) -> tuple:
     if not any("offload" in str(key) for key in hooks):
         return None, None
     if compiled:
-        return None, "whole-module compiled denoiser: the offload hooks run inside its compiled call"
+        return (
+            None,
+            "whole-module compiled denoiser: the offload hooks run inside its compiled call",
+        )
     try:
         from diffusers.hooks import group_offloading as go
-
         name = getattr(go, "_GROUP_OFFLOADING", "group_offloading")
     except Exception:  # noqa: BLE001
         name = "group_offloading"
@@ -1566,7 +1623,6 @@ def _forward_refusal(module: Any, mode: str) -> Optional[str]:
     """Why ``module``'s own forward cannot record under ``mode`` offload, else None (see GraphedForward.__init__)."""
     try:
         from .diffusion_capture_safe import resolve as _capture_safe  # noqa: PLC0415
-
         safe, why = _capture_safe(type(module))
     except Exception:  # noqa: BLE001 - the stock forward is then what records
         return None
@@ -1590,7 +1646,6 @@ def _plain_rewrite(module: Any) -> Any:
     """``module``'s capture-safe class-forward rewrite when it is a plain one (not a planned step), else None."""
     try:
         from .diffusion_capture_safe import resolve as _capture_safe  # noqa: PLC0415
-
         safe, _ = _capture_safe(type(module))
     except Exception:  # noqa: BLE001
         return None
@@ -1645,7 +1700,9 @@ def arm_after_placement(
                 modes.append("resident")
             else:
                 handles.append(
-                    GraphedForward(module, max_graphs = max_graphs, logger = logger, placement = placement).enable()
+                    GraphedForward(
+                        module, max_graphs = max_graphs, logger = logger, placement = placement
+                    ).enable()
                 )
                 modes.append(placement.mode)
         except Exception as exc:  # noqa: BLE001 - that denoiser runs eager
@@ -1658,11 +1715,17 @@ def arm_after_placement(
     if refusals:
         reason = "; ".join(refusals)
     else:
-        labels = {"resident": "resident", "group": "block-streamed (copies recorded in the graph)", "model": "model offload"}
+        labels = {
+            "resident": "resident",
+            "group": "block-streamed (copies recorded in the graph)",
+            "model": "model offload",
+        }
         reason = "captured per input shape: " + ", ".join(sorted({labels.get(m, m) for m in modes}))
     if logger is not None:
         logger.info(
-            "diffusion.cuda_graph: armed on %d denoiser module(s) after placement (%s)", len(installed), reason
+            "diffusion.cuda_graph: armed on %d denoiser module(s) after placement (%s)",
+            len(installed),
+            reason,
         )
     return installed, reason
 
@@ -2081,7 +2144,9 @@ def arm_block_graphs(
     return tuple(armed)
 
 
-def _attach_block_fallback(pipe: Any, step: list, target: Any, hooked: bool, pinned: bool, logger: Any) -> None:
+def _attach_block_fallback(
+    pipe: Any, step: list, target: Any, hooked: bool, pinned: bool, logger: Any
+) -> None:
     try:
         from .diffusion_block_graph import (
             block_graphs_disabled,
@@ -2100,7 +2165,9 @@ def _attach_block_fallback(pipe: Any, step: list, target: Any, hooked: bool, pin
             continue
 
         def arm(module: Any = handle.module) -> Any:
-            armed, _why = install_block_graphs(module, device = getattr(target, "torch_device", None), logger = logger)
+            armed, _why = install_block_graphs(
+                module, device = getattr(target, "torch_device", None), logger = logger
+            )
             if armed is not None:
                 _set_reason(
                     pipe,

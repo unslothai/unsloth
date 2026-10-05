@@ -1184,7 +1184,9 @@ def test_reclaimable_snapshot_does_not_credit_a_live_cuda_graph_pool(monkeypatch
     _fake_torch_allocator(monkeypatch, reserved = 6 * 1024**3, allocated = 2 * 1024**3)
     monkeypatch.setattr(cg, "live_pool_free_bytes", lambda: 3 * 1024**3)
     assert dm.reclaimable_snapshot_device_memory(_target(device = "cuda")).free_mib == 2_000 + 1024
-    monkeypatch.setattr(cg, "live_pool_free_bytes", lambda: 5 * 1024**3)  # the pool is all of the cached bytes
+    monkeypatch.setattr(
+        cg, "live_pool_free_bytes", lambda: 5 * 1024**3
+    )  # the pool is all of the cached bytes
     assert dm.reclaimable_snapshot_device_memory(_target(device = "cuda")).free_mib == 2_000
 
 

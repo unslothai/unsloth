@@ -23,7 +23,9 @@ torch = pytest.importorskip("torch")
 diffusers = pytest.importorskip("diffusers")
 
 _CLS = getattr(diffusers, "HunyuanVideo15Transformer3DModel", None)
-pytestmark = pytest.mark.skipif(_CLS is None, reason = "diffusers has no HunyuanVideo15Transformer3DModel")
+pytestmark = pytest.mark.skipif(
+    _CLS is None, reason = "diffusers has no HunyuanVideo15Transformer3DModel"
+)
 
 _TEXT_DIM, _BYT5_DIM, _IMAGE_DIM = 32, 24, 16
 
@@ -58,13 +60,21 @@ def _tiny_model(device = "cpu"):
 # (mllm mask rows, byt5 mask rows): right-padded, interleaved, fully valid, byt5 fully padded.
 _MASKS = {
     "b1_right_padded": ([[1, 1, 1, 0, 0, 0, 0]], [[1, 1, 0, 0, 0]]),
-    "b2_interleaved": ([[1, 0, 1, 1, 0, 0, 1], [1, 1, 0, 0, 0, 0, 0]], [[0, 1, 0, 1, 1], [1, 1, 1, 0, 0]]),
+    "b2_interleaved": (
+        [[1, 0, 1, 1, 0, 0, 1], [1, 1, 0, 0, 0, 0, 0]],
+        [[0, 1, 0, 1, 1], [1, 1, 1, 0, 0]],
+    ),
     "b2_valid_and_empty_byt5": ([[1] * 7, [1, 1, 1, 1, 0, 0, 0]], [[1] * 5, [0] * 5]),
 }
 _IMAGES = ("t2v_zero", "t2v_empty", "i2v")
 
 
-def _inputs(masks, image, device = "cpu", seed = 1):
+def _inputs(
+    masks,
+    image,
+    device = "cpu",
+    seed = 1,
+):
     gen = torch.Generator().manual_seed(seed)
     m1 = torch.tensor(masks[0])
     m2 = torch.tensor(masks[1])
@@ -141,7 +151,14 @@ def _stock_merge(e1, m1, e2, m2, e3, m3):
     for t, tm, t2, tm2, im, imm in zip(e1, m1, e2, m2, e3, m3):
         states.append(
             torch.cat(
-                [im[imm], t2[tm2], t[tm], im[~imm], torch.zeros_like(t2[~tm2]), torch.zeros_like(t[~tm])],
+                [
+                    im[imm],
+                    t2[tm2],
+                    t[tm],
+                    im[~imm],
+                    torch.zeros_like(t2[~tm2]),
+                    torch.zeros_like(t[~tm]),
+                ],
                 dim = 0,
             )
         )
@@ -178,8 +195,10 @@ def test_hv15_merge_is_the_stock_permutation_bitwise(image_len, image_valid, dty
     want = _stock_merge(e1, m1, e2, m2, e3, m3)
     got = cs.hv15_merge_streams(e1, m1, e2, m2, e3, m3)
     assert got[0].dtype == want[0].dtype and got[1].dtype == torch.bool
-    assert torch.equal(want[0].view(torch.int16 if dtype == torch.bfloat16 else torch.int32),
-                       got[0].view(torch.int16 if dtype == torch.bfloat16 else torch.int32))
+    assert torch.equal(
+        want[0].view(torch.int16 if dtype == torch.bfloat16 else torch.int32),
+        got[0].view(torch.int16 if dtype == torch.bfloat16 else torch.int32),
+    )
     assert torch.equal(want[1], got[1])
 
 
@@ -203,7 +222,13 @@ def _aten_ops(fn):
             super().__init__()
             self.ops: set = set()
 
-        def __torch_dispatch__(self, func, types, args = (), kwargs = None):
+        def __torch_dispatch__(
+            self,
+            func,
+            types,
+            args = (),
+            kwargs = None,
+        ):
             self.ops.add(str(func))
             return func(*args, **(kwargs or {}))
 
@@ -222,12 +247,16 @@ def test_hv15_rewritten_forward_reads_nothing_on_the_host(fresh_cache, image):
         stock = _aten_ops(lambda: _CLS.forward(model, **kw))
         ours = _aten_ops(lambda: safe(model, **kw))
     assert any(op.startswith(_HOST_READS) for op in stock), sorted(stock)
-    assert not any(op.startswith(_HOST_READS) for op in ours), sorted(o for o in ours if o.startswith(_HOST_READS))
+    assert not any(op.startswith(_HOST_READS) for op in ours), sorted(
+        o for o in ours if o.startswith(_HOST_READS)
+    )
 
 
 def test_hv15_drifted_block_declines_with_the_reason(fresh_cache, monkeypatch):
     drifted = tuple(
-        "image[~image_mask],  # padded image" if line == "image[~image_mask],  # invalid image" else line
+        "image[~image_mask],  # padded image"
+        if line == "image[~image_mask],  # invalid image"
+        else line
         for line in cs._HV15_MERGE_BLOCK
     )
     monkeypatch.setattr(cs, "_HV15_MERGE_BLOCK", drifted)
@@ -246,7 +275,11 @@ def test_hv15_kill_switch_declines(fresh_cache, monkeypatch):
 _cuda = pytest.mark.skipif(not torch.cuda.is_available(), reason = "needs CUDA")
 
 
-def _capture(fn, kw, pool = None):
+def _capture(
+    fn,
+    kw,
+    pool = None,
+):
     static = {k: (v.clone() if torch.is_tensor(v) else v) for k, v in kw.items()}
     side = torch.cuda.Stream()
     side.wait_stream(torch.cuda.current_stream())

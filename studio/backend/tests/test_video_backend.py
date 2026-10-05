@@ -9603,8 +9603,12 @@ def test_cuda_graph_is_a_per_family_opt_in():
     # Each opt-in carries a capped-card measurement in its family comment.
     offloaded = sorted(f.name for f in _FAMILIES if f.offload_cuda_graph)
     assert offloaded == sorted(OFFLOAD_GRAPH_FAMILIES), offloaded
-    assert h3.offload_cuda_graph is False  # streamed H3 onloads with host waits; a graph cannot record them
-    assert "GPU-bound" in h3.cuda_graph_decline and "wait on the host" in h3.cuda_graph_decline  # the measured reasons
+    assert (
+        h3.offload_cuda_graph is False
+    )  # streamed H3 onloads with host waits; a graph cannot record them
+    assert (
+        "GPU-bound" in h3.cuda_graph_decline and "wait on the host" in h3.cuda_graph_decline
+    )  # the measured reasons
 
 
 OFFLOAD_GRAPH_FAMILIES = ("wan2.2-ti2v-5b", "hunyuanvideo-1.5")
@@ -9620,13 +9624,16 @@ def test_h3_modular_load_arms_a_deferred_graph_after_placement():
     calls = [
         node
         for node in ast.walk(ast.parse(src))
-        if isinstance(node, ast.Call) and getattr(node.func, "id", None) == "arm_graphs_after_placement"
+        if isinstance(node, ast.Call)
+        and getattr(node.func, "id", None) == "arm_graphs_after_placement"
     ]
     assert calls and isinstance(calls[0].args[0], ast.Name) and calls[0].args[0].id == "speed_view"
     speed = src.index("applied = apply_speed_optims(")
     arm = src.index("arm_graphs_after_placement(")
     status = src.index('"cuda_graph": (')
-    assert speed < arm < status  # after the deferring speed pass, before the resolved record reads the reason
+    assert (
+        speed < arm < status
+    )  # after the deferring speed pass, before the resolved record reads the reason
 
 
 def test_every_rebuilt_speed_target_carries_the_backend():

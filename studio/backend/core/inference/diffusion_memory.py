@@ -697,14 +697,12 @@ def reclaimable_snapshot_device_memory(target: Any) -> DeviceMemory:
     try:
         # Per-block graph pools are reserved, mostly unallocated between replays, and never reusable by anything else.
         from .diffusion_block_graph import pool_bytes as _block_graph_pool_bytes
-
         reclaimable -= _block_graph_pool_bytes()
     except Exception:  # noqa: BLE001 -- no block graphs: nothing held back
         pass
     try:
         # The whole-step graphs' shared pool: only its unallocated part sits inside the difference above.
         from .diffusion_cuda_graph import live_pool_free_bytes
-
         reclaimable -= live_pool_free_bytes()
     except Exception:  # noqa: BLE001 -- no graph layer: nothing held
         pass
@@ -2627,7 +2625,6 @@ def _keep_groups_resident(
 def _bump_placement_epoch() -> None:
     try:
         from .diffusion_offload_prefetch import bump_placement_epoch
-
         bump_placement_epoch()
     except Exception:  # noqa: BLE001 - no graph layer to invalidate
         pass

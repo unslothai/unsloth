@@ -214,10 +214,7 @@ _HV15_MERGE_CALL = (
 
 
 def hv15_image_stream(
-    image_embeds: Any,
-    encoder_hidden_states_3: Any,
-    encoder_attention_mask: Any,
-    batch_size: int,
+    image_embeds: Any, encoder_hidden_states_3: Any, encoder_attention_mask: Any, batch_size: int
 ) -> tuple[Any, Any]:
     """HunyuanVideo-1.5's ``if is_t2v`` branch as arithmetic; bit-identical to both stock arms.
 
@@ -256,14 +253,24 @@ def hv15_merge_streams(
     """
     import torch
 
-    states = torch.cat([encoder_hidden_states_3, encoder_hidden_states_2, encoder_hidden_states], dim = 1)
-    mask = torch.cat([encoder_attention_mask_3, encoder_attention_mask_2, encoder_attention_mask], dim = 1)
+    states = torch.cat(
+        [encoder_hidden_states_3, encoder_hidden_states_2, encoder_hidden_states], dim = 1
+    )
+    mask = torch.cat(
+        [encoder_attention_mask_3, encoder_attention_mask_2, encoder_attention_mask], dim = 1
+    )
     padded = ~mask
     zero_rows = torch.cat(
-        [torch.zeros_like(encoder_attention_mask_3), ~encoder_attention_mask_2, ~encoder_attention_mask],
+        [
+            torch.zeros_like(encoder_attention_mask_3),
+            ~encoder_attention_mask_2,
+            ~encoder_attention_mask,
+        ],
         dim = 1,
     )
-    states = torch.where(zero_rows.unsqueeze(-1), torch.zeros((), dtype = states.dtype, device = states.device), states)
+    states = torch.where(
+        zero_rows.unsqueeze(-1), torch.zeros((), dtype = states.dtype, device = states.device), states
+    )
     order = torch.argsort(padded.to(torch.uint8), dim = 1, stable = True)
     states = torch.gather(states, 1, order.unsqueeze(-1).expand(-1, -1, states.shape[-1]))
     mask = torch.gather(mask, 1, order)

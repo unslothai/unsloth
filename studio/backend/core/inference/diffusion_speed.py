@@ -627,7 +627,11 @@ def _onload_device(target: Any) -> Optional[str]:
     return str(device) if isinstance(device, str) and device.startswith("cuda") else "cuda"
 
 
-def arm_graphs_after_placement(pipe: Any, applied: dict, logger: Any = None) -> dict:
+def arm_graphs_after_placement(
+    pipe: Any,
+    applied: dict,
+    logger: Any = None,
+) -> dict:
     """Arm the denoiser graphs for the placement that actually happened: replaces a resident-planned graph a hook now
     wraps, and arms the one apply_speed_optims deferred for an offloaded denoiser (the copies are recorded in it)."""
     pending = bool(getattr(pipe, "_unsloth_cuda_graph_after_placement", False))

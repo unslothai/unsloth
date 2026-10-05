@@ -270,8 +270,12 @@ def test_trim_pre_hook_plans_once_per_input_tensors_and_matches_the_stock_trim()
     second = att._hunyuan_trim_pre_hook(dit, (), dict(base))[1]
     for key in base:
         assert torch.equal(first[key], second[key])
-    want_s, want_m, _ = att._trim_stream(base["encoder_hidden_states"], base["encoder_attention_mask"])
-    assert torch.equal(second["encoder_hidden_states"], want_s) and torch.equal(second["encoder_attention_mask"], want_m)
+    want_s, want_m, _ = att._trim_stream(
+        base["encoder_hidden_states"], base["encoder_attention_mask"]
+    )
+    assert torch.equal(second["encoder_hidden_states"], want_s) and torch.equal(
+        second["encoder_attention_mask"], want_m
+    )
     assert len(dit.__dict__[att._TRIM_MEMO_ATTR]) == 1
     # an edited mask (version bump) or a new tensor plans afresh
     base["encoder_attention_mask"][0, 2] = 1
@@ -322,7 +326,9 @@ def test_trim_pre_hook_trims_and_plans_once_for_inference_tensors():
         out = att._hunyuan_trim_pre_hook(dit, (), dict(base))[1]
         again = att._hunyuan_trim_pre_hook(dit, (), dict(base))[1]
     assert out["image_embeds"].shape == (1, 0, 3)
-    assert out["encoder_hidden_states"].shape == (1, 2, 2) and out["encoder_hidden_states_2"].shape == (1, 1, 1)
+    assert out["encoder_hidden_states"].shape == (1, 2, 2) and out[
+        "encoder_hidden_states_2"
+    ].shape == (1, 1, 1)
     assert all(getattr(b.attn, att._NULL_ATTN_FLAG) is True for b in dit.transformer_blocks)
     assert torch.equal(out["encoder_hidden_states"], again["encoder_hidden_states"])
     assert len(dit.__dict__[att._TRIM_MEMO_ATTR]) == 1

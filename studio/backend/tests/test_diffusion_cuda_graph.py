@@ -803,7 +803,9 @@ def test_graph_eligible_family_opt_in_on_the_video_backend(stub_torch, monkeypat
     # a family can opt in only for an offloaded denoiser
     offload_only = types.SimpleNamespace(offload_cuda_graph = True)
     assert _eligible(monkeypatch, family = offload_only, family_default = False)[0] is False
-    assert _eligible(monkeypatch, family = offload_only, family_default = False, offloaded = True)[0] is True
+    assert (
+        _eligible(monkeypatch, family = offload_only, family_default = False, offloaded = True)[0] is True
+    )
 
 
 def test_stats_and_describe_are_json_safe(stub_torch):

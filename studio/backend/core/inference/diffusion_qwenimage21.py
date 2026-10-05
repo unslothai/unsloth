@@ -386,7 +386,11 @@ def graph_plan(module: Any, args: tuple, kwargs: dict) -> Optional[tuple]:
 def _graph_plan(module: Any, args: tuple, kwargs: dict) -> Optional[tuple]:
     import torch
 
-    if args or kwargs.get("kv_cache_mode") != "cached" or kwargs.get("return_dict", True) is not False:
+    if (
+        args
+        or kwargs.get("kv_cache_mode") != "cached"
+        or kwargs.get("return_dict", True) is not False
+    ):
         return None
     kv_cache = kwargs.get("kv_cache")
     hidden_states = kwargs.get("hidden_states")
@@ -412,16 +416,18 @@ def _graph_plan(module: Any, args: tuple, kwargs: dict) -> Optional[tuple]:
         return None
     if kv_cache is None or not torch.is_tensor(hidden_states) or not torch.is_tensor(timestep):
         return None
-    if not torch.is_tensor(encoder_hidden_states) or not torch.is_tensor(img_mask) or img_shapes is None:
+    if (
+        not torch.is_tensor(encoder_hidden_states)
+        or not torch.is_tensor(img_mask)
+        or img_shapes is None
+    ):
         return None
     if torch.is_grad_enabled() or fast_step_disabled() or not module.config.causal_condition:
         return None
     if not getattr(vars(type(module)).get("forward"), "__unsloth_q21_fast_step__", False):
         return None
     mod = _module()
-    lay = _layout_for(
-        module, mod, img_mask, img_shapes, hidden_states.device, reuse_identity = True
-    )
+    lay = _layout_for(module, mod, img_mask, img_shapes, hidden_states.device, reuse_identity = True)
     _, text_dtype = _text_dtype(module, encoder_hidden_states)
     if text_dtype is None or not lay.tail_is_image:
         return None

@@ -2029,14 +2029,17 @@ def _trim_plan(module: Any, kwargs: dict) -> dict:
     # it is keyed on identity alone. It cannot be written outside inference mode, and the pipeline hands every step
     # the encoder's own outputs, which nothing edits in place.
     versions = tuple(
-        ("inference" if t.is_inference() else t._version) if torch.is_tensor(t) else None for t in srcs
+        ("inference" if t.is_inference() else t._version) if torch.is_tensor(t) else None
+        for t in srcs
     )
     memo = module.__dict__.setdefault(_TRIM_MEMO_ATTR, [])
     for held, held_versions, plan in memo:
         if held_versions == versions and all(a is b for a, b in zip(held, srcs)):
             return plan
     image = srcs[0]
-    plan = {"t2v": bool(image is not None and image.numel() > 0 and bool(torch.all(image == 0).item()))}
+    plan = {
+        "t2v": bool(image is not None and image.numel() > 0 and bool(torch.all(image == 0).item()))
+    }
     for name, mask in zip(names[1:], srcs[1:]):
         if mask is None or not torch.is_tensor(mask) or mask.dim() != 2:
             plan[name] = (None, True)

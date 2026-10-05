@@ -45,13 +45,22 @@ def _clean_env(monkeypatch):
 
 
 class _Net(torch.nn.Module):
-    def __init__(self, width = 512, blocks = 8):
+    def __init__(
+        self,
+        width = 512,
+        blocks = 8,
+    ):
         super().__init__()
         self.proj_in = torch.nn.Linear(64, width)
         self.blocks = torch.nn.ModuleList(torch.nn.Linear(width, width) for _ in range(blocks))
         self.proj_out = torch.nn.Linear(width, 64)
 
-    def forward(self, x, t, return_dict = True):
+    def forward(
+        self,
+        x,
+        t,
+        return_dict = True,
+    ):
         x = self.proj_in(x) * t
         for block in self.blocks:
             x = torch.nn.functional.gelu(block(x))
@@ -207,7 +216,9 @@ def test_model_offload_replays_under_the_hook_and_records_again_when_weights_mov
     net = _Net()
     other = torch.nn.Linear(4, 4)
     net, hook = cpu_offload_with_hook(net, execution_device = "cuda")
-    _other, other_hook = cpu_offload_with_hook(other, execution_device = "cuda", prev_module_hook = hook)
+    _other, other_hook = cpu_offload_with_hook(
+        other, execution_device = "cuda", prev_module_hook = hook
+    )
     pipe = _pipe(net)
     handles, reason = cg.arm_after_placement(pipe)
     assert len(handles) == 1 and handles[0].placement.mode == "model", reason
@@ -215,7 +226,9 @@ def test_model_offload_replays_under_the_hook_and_records_again_when_weights_mov
     assert handles[0].stats["captures"] == 1 and handles[0].stats["replays"] == 3
     hook.offload()  # what the next pipeline stage does: the weights go back to the host
     assert net.proj_in.weight.device.type == "cpu"
-    got += _run(net, seeds[3:])  # onloaded again by the hook; recorded again only if the addresses moved
+    got += _run(
+        net, seeds[3:]
+    )  # onloaded again by the hook; recorded again only if the addresses moved
     for a, b in zip(got, want):
         assert torch.equal(a, b)
     assert handles[0].stats["captures"] == 1 + handles[0].stats["invalidations"]
@@ -287,12 +300,19 @@ def test_model_offload_stops_recording_only_when_moves_outpace_replays():
 class _FailsInCapture(_Net):
     """A forward that makes a host-syncing call after its first blocks, but only while a graph records it."""
 
-    def forward(self, x, t, return_dict = True):
+    def forward(
+        self,
+        x,
+        t,
+        return_dict = True,
+    ):
         x = self.proj_in(x) * t
         for i, block in enumerate(self.blocks):
             x = torch.nn.functional.gelu(block(x))
             if i == 3 and torch.cuda.is_current_stream_capturing():
-                x = x + float(x.sum().item()) * 0  # host read: invalidates the capture with copies already queued
+                x = (
+                    x + float(x.sum().item()) * 0
+                )  # host read: invalidates the capture with copies already queued
         out = self.proj_out(x)
         return (out,) if not return_dict else {"sample": out}
 
@@ -307,12 +327,16 @@ def test_a_failed_streamed_capture_falls_back_eager_without_stale_copies():
     handles, reason = cg.arm_after_placement(_pipe(net))
     assert len(handles) == 1, reason
     stream = torch.cuda.current_stream()
-    got = _run(net, seeds)  # the first call's capture fails: it and every later call run eager, correctly
+    got = _run(
+        net, seeds
+    )  # the first call's capture fails: it and every later call run eager, correctly
     assert torch.cuda.current_stream() == stream  # not left on the failed capture's stream
     for a, b in zip(got, want):
         assert torch.equal(a, b)
     assert handles[0].poisoned and handles[0].stats["captures"] == 0
-    assert op.module_prefetcher(net).ready == {} or all(e is None for e in op.module_prefetcher(net).ready.values())
+    assert op.module_prefetcher(net).ready == {} or all(
+        e is None for e in op.module_prefetcher(net).ready.values()
+    )
     assert net.blocks[-1].weight.device.type == "cpu"
     cg.uninstall_all(handles)
 
@@ -320,7 +344,12 @@ def test_a_failed_streamed_capture_falls_back_eager_without_stale_copies():
 class _SyncsOnStock(_Net):
     """Stock forward reads a value on the host (as HunyuanImage-2.1's text merge does); its rewrite does not."""
 
-    def forward(self, x, t, return_dict = True):
+    def forward(
+        self,
+        x,
+        t,
+        return_dict = True,
+    ):
         x = self.proj_in(x) * t
         gate = x.new_tensor(1.0) if bool((x.abs().sum() >= 0).item()) else x.new_tensor(0.0)
         for block in self.blocks:
@@ -329,10 +358,17 @@ class _SyncsOnStock(_Net):
         return (out,) if not return_dict else {"sample": out}
 
 
-def _capture_safe_forward(self, x, t, return_dict = True):
+def _capture_safe_forward(
+    self,
+    x,
+    t,
+    return_dict = True,
+):
     x = self.proj_in(x) * t
     total = x.abs().sum()
-    gate = torch.where(total >= 0, torch.ones_like(total), torch.zeros_like(total))  # on the device: no host read
+    gate = torch.where(
+        total >= 0, torch.ones_like(total), torch.zeros_like(total)
+    )  # on the device: no host read
     for block in self.blocks:
         x = torch.nn.functional.gelu(block(x))
     out = self.proj_out(x) * gate
@@ -345,7 +381,11 @@ def test_a_capture_safe_rewrite_records_under_block_offload(monkeypatch):
     _cuda()
     import core.inference.diffusion_capture_safe as cs
 
-    monkeypatch.setattr(cs, "resolve", lambda cls: (_capture_safe_forward, None) if cls is _SyncsOnStock else (None, None))
+    monkeypatch.setattr(
+        cs,
+        "resolve",
+        lambda cls: (_capture_safe_forward, None) if cls is _SyncsOnStock else (None, None),
+    )
     seeds = [0, 1, 2, 3]
     torch.manual_seed(0)
     want = _run(_streamed(_SyncsOnStock()), seeds)
@@ -367,7 +407,9 @@ def test_a_capture_safe_rewrite_records_under_block_offload(monkeypatch):
     assert not handles[0].poisoned, handles[0].capture_error
     assert handles[0].stats["captures"] == 1 and handles[0].stats["replays"] == 4
     cg.uninstall_all(handles)
-    assert inner.forward.__func__ is _SyncsOnStock.forward  # the stock forward is back with the hook chain
+    assert (
+        inner.forward.__func__ is _SyncsOnStock.forward
+    )  # the stock forward is back with the hook chain
 
 
 class _Branchy(_Net):
@@ -375,7 +417,12 @@ class _Branchy(_Net):
 
     flag = False
 
-    def forward(self, x, t, return_dict = True):
+    def forward(
+        self,
+        x,
+        t,
+        return_dict = True,
+    ):
         x = self.proj_in(x) * t
         if self.flag:
             x = x * 2
@@ -460,10 +507,15 @@ def test_a_failed_capture_takes_the_allocator_off_its_pool(monkeypatch):
         other = _streamed(_Net())
         again, _ = cg.arm_after_placement(_pipe(other))
         _run(other, [0, 1])
-        assert again[0].stats["captures"] == 1 and again[0].stats["replays"] == 2  # later captures still record
+        assert (
+            again[0].stats["captures"] == 1 and again[0].stats["replays"] == 2
+        )  # later captures still record
         cg.uninstall_all(again)
     finally:
-        end = getattr(torch._C, "_cuda_endAllocateToPool", None) or torch._C._cuda_endAllocateCurrentStreamToPool
+        end = (
+            getattr(torch._C, "_cuda_endAllocateToPool", None)
+            or torch._C._cuda_endAllocateCurrentStreamToPool
+        )
         for pool in stuck:  # never leave the process broken for the tests after this one
             try:
                 end(torch.cuda.current_device(), pool)
@@ -486,7 +538,11 @@ def test_model_offload_fingerprint_follows_replaced_buffers():
 
 
 class _Ev:
-    def __init__(self, ms, done = True):
+    def __init__(
+        self,
+        ms,
+        done = True,
+    ):
         self.ms, self.done = ms, done
 
     def query(self):
@@ -496,7 +552,12 @@ class _Ev:
         return end.ms - self.ms
 
 
-def _judged(eager_ms, graph_ms, done = True, others = ()):
+def _judged(
+    eager_ms,
+    graph_ms,
+    done = True,
+    others = (),
+):
     """A handle with key "k" timed (and ``others`` already kept), judged once; returns (handle, k's verdict)."""
     import os
 
@@ -523,18 +584,27 @@ def test_an_offloaded_replay_slower_than_eager_drops_the_graphs():
     stream's own copies); a key's first replays are timed against its own eager steps and its graph goes when slower."""
     handle, why = _judged([550.0, 552.0], [655.0, 657.0, 654.0])
     assert why and "slower" in why and handle.cache == {} and handle._dropped == {"k"}
-    assert handle.capture_error == {"type": "Refused", "msg": why}  # no graph left: the status names it
+    assert handle.capture_error == {
+        "type": "Refused",
+        "msg": why,
+    }  # no graph left: the status names it
     handle._judge_keys()
     assert handle._judge["k"]["verdict"] == why  # the verdict holds for the load
     handle.placement, handle.poisoned = None, False
-    assert cg.stats([handle])["eager_ms"] == 550.0 and cg.stats([handle])["replay_ms"] == 654.0  # in the status
-    handle, why = _judged([550.0, 552.0], [560.0, 700.0, 710.0])  # one clean replay: a stall is not the verdict
+    assert (
+        cg.stats([handle])["eager_ms"] == 550.0 and cg.stats([handle])["replay_ms"] == 654.0
+    )  # in the status
+    handle, why = _judged(
+        [550.0, 552.0], [560.0, 700.0, 710.0]
+    )  # one clean replay: a stall is not the verdict
     assert why == "" and handle.cache
     handle, why = _judged([550.0, 552.0], [540.0, 541.0, 539.0])
     assert why == "" and handle.cache and not handle._dropped
     handle, why = _judged([550.0], [560.0, 561.0, 559.0])  # inside the margin: kept
     assert why == "" and handle.cache
-    handle, why = _judged([550.0], [655.0, 657.0, 654.0], done = False)  # not finished yet: never waits on them
+    handle, why = _judged(
+        [550.0], [655.0, 657.0, 654.0], done = False
+    )  # not finished yet: never waits on them
     assert why is None and handle._slower is None and handle.cache
     handle, why = _judged([550.0], [655.0, 657.0])  # too few replays yet
     assert why is None and handle._slower is None
@@ -554,8 +624,12 @@ def test_the_eager_reference_is_the_callers_own_steps_not_the_recorded_warm_ups(
     reference is the caller's eager steps on the stock prefetch path, timed before the first capture."""
     _cuda()
     monkeypatch.delenv(cg.SPEED_CHECK_ENV, raising = False)
-    monkeypatch.setattr(cg, "SPEED_MARGIN", 1e9)  # this checks where the reference comes from, not a tiny net's speed
-    monkeypatch.setattr(cg, "SPEED_GAIN", -1e9)  # nor whether a streamed key gains enough to keep its memory
+    monkeypatch.setattr(
+        cg, "SPEED_MARGIN", 1e9
+    )  # this checks where the reference comes from, not a tiny net's speed
+    monkeypatch.setattr(
+        cg, "SPEED_GAIN", -1e9
+    )  # nor whether a streamed key gains enough to keep its memory
     seeds = list(range(8))
     want = _eager_reference(None, seeds)
     torch.manual_seed(0)
@@ -564,16 +638,24 @@ def test_the_eager_reference_is_the_callers_own_steps_not_the_recorded_warm_ups(
     handle = handles[0]
     recorded_steps = []
     recorder = handle.placement.recorder
-    monkeypatch.setattr(handle.placement, "recorder", lambda call: recorded_steps.append(1) or recorder(call))
-    got = _run(net, seeds[:3])  # one untimed (may compile), then SPEED_EAGER_SAMPLES timed, all eager
-    assert handle.stats["captures"] == 0 and handle.stats["eager_calls"] == 1 + cg.SPEED_EAGER_SAMPLES
+    monkeypatch.setattr(
+        handle.placement, "recorder", lambda call: recorded_steps.append(1) or recorder(call)
+    )
+    got = _run(
+        net, seeds[:3]
+    )  # one untimed (may compile), then SPEED_EAGER_SAMPLES timed, all eager
+    assert (
+        handle.stats["captures"] == 0 and handle.stats["eager_calls"] == 1 + cg.SPEED_EAGER_SAMPLES
+    )
     (state,) = handle._judge.values()
     assert len(state["eager"]) == cg.SPEED_EAGER_SAMPLES
     eager_events = list(state["eager"])
     got += _run(net, seeds[3:])  # records, then replays
     assert handle.stats["captures"] == 1 and handle.stats["replays"] == len(seeds) - 3
     assert state["eager"] == eager_events  # the recorder's warm-ups added nothing
-    assert handle.stats["eager_ms"] > 0 and handle.stats["replay_ms"] > 0 and state["verdict"] == ""  # judged, kept
+    assert (
+        handle.stats["eager_ms"] > 0 and handle.stats["replay_ms"] > 0 and state["verdict"] == ""
+    )  # judged, kept
     assert recorded_steps  # and the capture did go through the recorder
     for a, b in zip(got, want):
         assert torch.equal(a, b)
@@ -586,17 +668,23 @@ def test_the_timed_eager_steps_run_on_capture_like_copies(monkeypatch):
     _cuda()
     monkeypatch.delenv(cg.SPEED_CHECK_ENV, raising = False)
     monkeypatch.setattr(cg, "SPEED_MARGIN", 1e9)
-    monkeypatch.setattr(cg, "SPEED_GAIN", -1e9)  # nor whether a streamed key gains enough to keep its memory
+    monkeypatch.setattr(
+        cg, "SPEED_GAIN", -1e9
+    )  # nor whether a streamed key gains enough to keep its memory
     torch.manual_seed(0)
     net = _streamed(_Net())
     handles, _ = cg.arm_after_placement(_pipe(net))
     offsets = []
-    hook = net.proj_in.register_forward_pre_hook(lambda _m, a: offsets.append(a[0].storage_offset()))
+    hook = net.proj_in.register_forward_pre_hook(
+        lambda _m, a: offsets.append(a[0].storage_offset())
+    )
     try:
         with torch.no_grad():
             for seed in range(3):
                 x, t = _inputs(seed)
-                padded = torch.cat([torch.zeros(1, 64, device = "cuda"), x])[1:]  # a view at offset 64, like a slice
+                padded = torch.cat([torch.zeros(1, 64, device = "cuda"), x])[
+                    1:
+                ]  # a view at offset 64, like a slice
                 assert padded.storage_offset() == 64
                 want = _eager_reference(None, [seed])[0]
                 assert torch.equal(net(padded, t, return_dict = False)[0], want)
@@ -611,7 +699,9 @@ def test_every_key_times_its_own_eager_reference_before_it_records(monkeypatch):
     _cuda()
     monkeypatch.delenv(cg.SPEED_CHECK_ENV, raising = False)
     monkeypatch.setattr(cg, "SPEED_MARGIN", 1e9)
-    monkeypatch.setattr(cg, "SPEED_GAIN", -1e9)  # nor whether a streamed key gains enough to keep its memory
+    monkeypatch.setattr(
+        cg, "SPEED_GAIN", -1e9
+    )  # nor whether a streamed key gains enough to keep its memory
     torch.manual_seed(0)
     net = _streamed(_Net())
     handles, _ = cg.arm_after_placement(_pipe(net))
@@ -623,8 +713,12 @@ def test_every_key_times_its_own_eager_reference_before_it_records(monkeypatch):
                 t = torch.rand(1, device = "cuda")
                 net(x, t, return_dict = False)
         torch.cuda.synchronize()
-        assert handle.stats["captures"] == 2 and handle.stats["speed_eager"] == 2 * (1 + cg.SPEED_EAGER_SAMPLES)
-        assert len(handle._judge) == 2 and all(len(s["eager"]) == cg.SPEED_EAGER_SAMPLES for s in handle._judge.values())
+        assert handle.stats["captures"] == 2 and handle.stats["speed_eager"] == 2 * (
+            1 + cg.SPEED_EAGER_SAMPLES
+        )
+        assert len(handle._judge) == 2 and all(
+            len(s["eager"]) == cg.SPEED_EAGER_SAMPLES for s in handle._judge.values()
+        )
     finally:
         cg.uninstall_all(handles)
 
@@ -643,11 +737,23 @@ def test_status_names_graphs_dropped_after_replaying():
     """A graph dropped mid-load (slower than eager) must not leave the status saying the step replays."""
     handle, why = _judged([550.0, 552.0], [655.0, 657.0, 654.0])
     handle.stats.update(captures = 1, replays = 5, eager_calls = 40)
-    handle.capture_error, handle.poisoned, handle.placement = {"type": "Refused", "msg": why}, False, None
-    resolved = {"cuda_graph": {"value": "on", "status": "applied", "reason": "captured per input shape"}}
+    handle.capture_error, handle.poisoned, handle.placement = (
+        {"type": "Refused", "msg": why},
+        False,
+        None,
+    )
+    resolved = {
+        "cuda_graph": {"value": "on", "status": "applied", "reason": "captured per input shape"}
+    }
     live, optims = cg.live_status(resolved, ["cuda_graph", "int8"], [handle])
-    assert live["cuda_graph"]["value"] == "off" and "dropped" in live["cuda_graph"]["reason"] and why in live["cuda_graph"]["reason"]
+    assert (
+        live["cuda_graph"]["value"] == "off"
+        and "dropped" in live["cuda_graph"]["reason"]
+        and why in live["cuda_graph"]["reason"]
+    )
     assert optims == ["int8"] and resolved["cuda_graph"]["value"] == "on"
-    handle.cache = {"k": object()}  # a live graph again (refusal lifted, recorded anew): status stays as recorded
+    handle.cache = {
+        "k": object()
+    }  # a live graph again (refusal lifted, recorded anew): status stays as recorded
     handle.capture_error = None
     assert cg.live_status(resolved, ["cuda_graph"], [handle])[0]["cuda_graph"]["value"] == "on"

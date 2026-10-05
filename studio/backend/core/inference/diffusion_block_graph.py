@@ -37,6 +37,7 @@ def _step_recording() -> bool:
         return False
     return step_recording()
 
+
 BLOCK_GRAPHS_ENV = "UNSLOTH_DIFFUSION_BLOCK_GRAPHS"
 
 # Recordings kept per block (input layouts x weight placements); the least recently replayed goes first.

@@ -56,7 +56,12 @@ def _call_kwargs(inp, hs, timestep, kv, mode):
     )
 
 
-def _render(m, inp, steps = 5, call = None):
+def _render(
+    m,
+    inp,
+    steps = 5,
+    call = None,
+):
     """The pipeline's loop: step 0 prefills the cache, later steps decode from it."""
     call = call or m
     outs = []
@@ -118,7 +123,10 @@ def test_what_the_plan_leaves_eager(monkeypatch):
         assert q.graph_plan(m, (), {**cached, "return_dict": True}) is None
         # A LoRA scale rides in attention_kwargs through the forward's decorator.
         assert q.graph_plan(m, (), {**cached, "attention_kwargs": {"scale": 0.5}}) is None
-        assert q.graph_plan(m, (hs,), {k: v for k, v in cached.items() if k != "hidden_states"}) is None
+        assert (
+            q.graph_plan(m, (hs,), {k: v for k, v in cached.items() if k != "hidden_states"})
+            is None
+        )
         assert q.graph_plan(m, (), {**cached, "unknown": 1}) is None
         # An empty cache (no prefill yet) is not plannable, and never raises.
         empty = qmod.QwenImage21KVCache(len(m.transformer_blocks))
@@ -169,7 +177,9 @@ def test_graph_eligible_accepts_qwen_image_21_once_the_fast_step_is_installed(mo
         )
 
     ok, why = eligible()
-    assert ok is False and why.startswith("QwenImage21Transformer2DModel forward is not capture-safe")
+    assert ok is False and why.startswith(
+        "QwenImage21Transformer2DModel forward is not capture-safe"
+    )
     assert q.install()
     assert eligible() == (True, "eligible")
 
@@ -418,7 +428,9 @@ def test_block_streamed_decode_steps_replay_bit_identically(case):
             for i in range(3):
                 t = torch.full((hs.shape[0],), 1.0 - i / 5, device = "cuda")
                 if i:
-                    torch.cuda.set_sync_debug_mode("error")  # a replay of the streamed step never waits on the host
+                    torch.cuda.set_sync_debug_mode(
+                        "error"
+                    )  # a replay of the streamed step never waits on the host
                 try:
                     m(**_call_kwargs(inp, hs, t, kv, "extract" if i == 0 else "cached"))
                 finally:
@@ -452,6 +464,8 @@ def test_offload_placement_names_a_forward_that_cannot_record_under_the_hooks(mo
 
     monkeypatch.setattr(cs, "resolve", lambda cls: (rewrite, None))
     assert "capture-safe forward" in cg._forward_refusal(m, "group")
-    assert cg._forward_refusal(m, "model") is None  # model offload calls the slot with the weights already onloaded
+    assert (
+        cg._forward_refusal(m, "model") is None
+    )  # model offload calls the slot with the weights already onloaded
     monkeypatch.setattr(cs, "resolve", lambda cls: (None, "X forward is not capture-safe (why)"))
     assert cg._forward_refusal(m, "model") == "X forward is not capture-safe (why)"

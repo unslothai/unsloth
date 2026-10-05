@@ -57,13 +57,22 @@ class Block(torch.nn.Module):
 class Net(torch.nn.Module):
     _repeated_blocks = ["Block"]
 
-    def __init__(self, width = 256, blocks = 8):
+    def __init__(
+        self,
+        width = 256,
+        blocks = 8,
+    ):
         super().__init__()
         self.proj_in = torch.nn.Linear(16, width)
         self.blocks = torch.nn.ModuleList(Block(width) for _ in range(blocks))
         self.proj_out = torch.nn.Linear(width, 16)
 
-    def forward(self, x, t, return_dict = True):
+    def forward(
+        self,
+        x,
+        t,
+        return_dict = True,
+    ):
         x = self.proj_in(x) * t
         for block in self.blocks:
             x = block(x)
@@ -95,7 +104,11 @@ def test_a_block_graph_runs_its_compute_while_a_whole_step_records():
     assert graph.stats["eager_calls"] == 0 and not graph.seen and not graph.cache
 
 
-def _step_handle(net, mode = "group", plan = None):
+def _step_handle(
+    net,
+    mode = "group",
+    plan = None,
+):
     handle = cg.GraphedForward.__new__(cg.GraphedForward)
     handle.module = net
     handle.placement = types.SimpleNamespace(mode = mode) if mode else None
@@ -124,7 +137,9 @@ def test_an_armed_step_graph_stays_primary_with_per_block_graphs_as_its_fallback
     pipe = _pipe(net)
     step = _step_handle(net)
     pipe._unsloth_cuda_graphs = (step,)
-    pipe._unsloth_cuda_graph_reason = "captured per input shape: block-streamed (copies recorded in the graph)"
+    pipe._unsloth_cuda_graph_reason = (
+        "captured per input shape: block-streamed (copies recorded in the graph)"
+    )
     handles, applied = _arm(pipe, monkeypatch, hooked = True, pinned = True)
     assert handles == (step,) and applied["cuda_graph"]
     assert pipe._unsloth_cuda_graph_mode == "step" and callable(step.fallback)
@@ -183,7 +198,11 @@ class _Ev:
 
 
 class _Placement:
-    def __init__(self, streams, ring = False):
+    def __init__(
+        self,
+        streams,
+        ring = False,
+    ):
         self._streams = streams
         self.ring = ring
         self.declined = None
@@ -197,7 +216,12 @@ class _Placement:
         return self.ring
 
 
-def _judged(placement, eager_ms, graph_ms, others = ()):
+def _judged(
+    placement,
+    eager_ms,
+    graph_ms,
+    others = (),
+):
     handle = cg.GraphedForward.__new__(cg.GraphedForward)
     handle.stats, handle.logger, handle._slower, handle.capture_error = {}, None, None, None
     handle.placement = placement
@@ -247,7 +271,13 @@ def test_a_declined_placement_refuses_every_later_call():
 
 
 def test_both_graph_pools_are_kept_out_of_the_reclaimable_memory(monkeypatch):
-    monkeypatch.setattr(dm, "snapshot_device_memory", lambda target: dm.DeviceMemory("cuda", "cuda", "discrete_vram", free_mib = 1000, total_mib = 8000))
+    monkeypatch.setattr(
+        dm,
+        "snapshot_device_memory",
+        lambda target: dm.DeviceMemory(
+            "cuda", "cuda", "discrete_vram", free_mib = 1000, total_mib = 8000
+        ),
+    )
     monkeypatch.setattr(torch.cuda, "memory_reserved", lambda *a: 900 << 20)
     monkeypatch.setattr(torch.cuda, "memory_allocated", lambda *a: 100 << 20)
     monkeypatch.setattr(bg, "pool_bytes", lambda: 300 << 20)
@@ -281,7 +311,11 @@ def _inputs(seed, rows = 8):
     return torch.randn(rows, 16, generator = g).cuda(), torch.rand(1, generator = g).cuda()
 
 
-def _call(net, seed, rows = 8):
+def _call(
+    net,
+    seed,
+    rows = 8,
+):
     x, t = _inputs(seed, rows)
     with torch.no_grad():
         out = net(x, t, return_dict = False)[0].clone()
@@ -364,7 +398,9 @@ def test_a_declined_streamed_placement_hands_the_ring_back_and_runs_eager(monkey
     handle.cache.clear()
     for seed in (2, 3):
         assert torch.equal(_call(net, seed), _call(ref, seed))
-    assert not pf.slot_raw and not pf.slot_of  # dropped at the end of the first forward after the verdict
+    assert (
+        not pf.slot_raw and not pf.slot_of
+    )  # dropped at the end of the first forward after the verdict
     assert handle.stats["captures"] == 1 and handle.capture_error["type"] == "Refused"
 
 
@@ -410,7 +446,9 @@ def test_a_failed_pinned_step_graph_hands_its_calls_to_per_block_graphs(monkeypa
     assert blocks.stats["captures"] == 8 and blocks.stats["replays"] == 16
     step.free()
     assert step.fallback_handle is None
-    assert not any(isinstance(r.forward, bg.BlockGraph) for b in net.blocks for r in b._diffusers_hook._fn_refs)
+    assert not any(
+        isinstance(r.forward, bg.BlockGraph) for b in net.blocks for r in b._diffusers_hook._fn_refs
+    )
 
 
 def test_per_block_graphs_under_a_recording_step_record_nothing(monkeypatch):
@@ -431,7 +469,9 @@ def test_per_block_graphs_under_a_recording_step_record_nothing(monkeypatch):
     handles[0].free()
 
 
-def test_a_compiled_streamed_step_records_with_no_graph_break_and_a_new_shape_adds_none(monkeypatch):
+def test_a_compiled_streamed_step_records_with_no_graph_break_and_a_new_shape_adds_none(
+    monkeypatch,
+):
     _cuda()
     import torch._dynamo.utils as du
 
@@ -448,8 +488,12 @@ def test_a_compiled_streamed_step_records_with_no_graph_break_and_a_new_shape_ad
     assert len(handles) == 1, reason
     breaks = sum(du.counters["graph_break"].values())
     for rows in (8, 8, 8, 24, 24, 24):
-        torch.testing.assert_close(_call(net, rows, rows), _call(ref, rows, rows), rtol = 1e-4, atol = 1e-4)
-    assert sum(du.counters["graph_break"].values()) == breaks  # the hooks stay outside every compiled region
+        torch.testing.assert_close(
+            _call(net, rows, rows), _call(ref, rows, rows), rtol = 1e-4, atol = 1e-4
+        )
+    assert (
+        sum(du.counters["graph_break"].values()) == breaks
+    )  # the hooks stay outside every compiled region
     s = handles[0].stats
     assert s["captures"] == 2 and s["replays"] == 6 and s["fallbacks"] == 0
     first = _call(net, 5, 24)
@@ -468,7 +512,12 @@ def test_a_static_step_skip_under_the_hooks_is_replayed_past_only_while_it_plans
     _streamed(net, resident_mib = 64)
     cg.arm_after_placement(pipe)
     step = cg.arm_block_graphs(
-        pipe, {"cuda_graph": True}, target = _target(), family = types.SimpleNamespace(), hooked = True, pinned = True
+        pipe,
+        {"cuda_graph": True},
+        target = _target(),
+        family = types.SimpleNamespace(),
+        hooked = True,
+        pinned = True,
     )[0]
     skip = step.placement.skip
     assert isinstance(skip, sk.StaticStepSkip)
@@ -477,7 +526,9 @@ def test_a_static_step_skip_under_the_hooks_is_replayed_past_only_while_it_plans
     for seed in range(3):
         assert torch.equal(_call(net, seed), _call(ref, seed))
     assert step.stats["captures"] == 1 and step.stats["replays"] == 3
-    assert skip.stats["calls"] == 3 and skip.stats["computed"] == 3  # the replays are counted as computed steps
+    assert (
+        skip.stats["calls"] == 3 and skip.stats["computed"] == 3
+    )  # the replays are counted as computed steps
     # a render that plans skips: every call goes through the skip layer, the per-block graphs take the compute
     skip.reset(16)
     assert not all(skip.plan)
@@ -487,7 +538,10 @@ def test_a_static_step_skip_under_the_hooks_is_replayed_past_only_while_it_plans
         skip.step_end()
     assert step.stats["replays"] == replays and step.stats["skip_eager"] == 16
     assert skip.stats["skipped"] > 0
-    assert isinstance(step.fallback_handle, bg.BlockGraphSet) and step.fallback_handle.stats["replays"] > 0
+    assert (
+        isinstance(step.fallback_handle, bg.BlockGraphSet)
+        and step.fallback_handle.stats["replays"] > 0
+    )
     step.free()
     sk.uninstall_static_step_skip(pipe)
 
@@ -570,7 +624,9 @@ def test_a_failed_block_recording_takes_the_allocator_off_its_pool():
 
 def test_releasing_an_offloaded_step_graph_frees_its_capture_stream_workspace(monkeypatch):
     calls = []
-    monkeypatch.setattr(torch._C, "_cuda_clearCublasWorkspaces", lambda: calls.append(1), raising = False)
+    monkeypatch.setattr(
+        torch._C, "_cuda_clearCublasWorkspaces", lambda: calls.append(1), raising = False
+    )
     monkeypatch.setattr(torch.cuda, "empty_cache", lambda: calls.append(2))
     handle = cg.GraphedForward.__new__(cg.GraphedForward)
     handle.placement = _Placement(streams = True)
