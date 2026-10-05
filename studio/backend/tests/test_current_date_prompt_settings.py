@@ -439,6 +439,14 @@ class TestTemplateSystemTurn:
     def test_a_template_with_its_own_default_returns_it(self):
         assert _turn(_QWEN25_LIKE) == (True, "You are Qwen, a helpful assistant.")
 
+    def test_a_template_with_generation_blocks_keeps_its_default(self):
+        template = _QWEN25_LIKE.replace(
+            "{{ m['content'] }}",
+            "{% if m['role'] == 'assistant' %}{% generation %}{{ m['content'] }}"
+            "{% endgeneration %}{% else %}{{ m['content'] }}{% endif %}",
+        )
+        assert _turn(template) == (True, "You are Qwen, a helpful assistant.")
+
     @pytest.mark.parametrize("template", [_CHATML, _GEMMA_LIKE, None, "", "{% if %}"])
     def test_templates_without_a_default_return_nothing(self, template):
         assert _turn(template) == (True, "")
@@ -471,6 +479,19 @@ class TestTemplateSystemTurn:
         assert _turn(tools_only) == (True, "")
         assert _turn(tools_only, True) == (False, None)
 
+    def test_absent_tools_and_documents_are_passed_as_none_like_transformers(self):
+        template = (
+            "{% if messages[0]['role'] == 'system' %}{% set sys = messages[0]['content'] %}"
+            "{% set rest = messages[1:] %}{% else %}"
+            "{% if tools is none and documents is none %}"
+            "{% set sys = 'You are a helpful function-calling assistant.' %}"
+            "{% else %}{% set sys = '' %}{% endif %}{% set rest = messages %}{% endif %}"
+            "<system>{{ sys }}</system>"
+            "{% for m in rest %}<{{ m['role'] }}>{{ m['content'] }}</{{ m['role'] }}>"
+            "{% endfor %}"
+        )
+        assert _turn(template) == (True, "You are a helpful function-calling assistant.")
+
     def test_a_template_is_probed_with_the_reasoning_controls(self):
         thinking_only = (
             "{% if enable_thinking and messages[0]['role'] == 'system' %}"
@@ -494,6 +515,35 @@ class TestTemplateSystemTurn:
         assert _turn(escaped) == (True, None)
         plain = _QWEN25_LIKE.replace("{{ sys }}", "{{ sys | tojson }}")
         assert _turn(plain) == (True, "You are Qwen, a helpful assistant.")
+
+    def test_a_structurally_different_system_branch_is_not_treated_as_default_free(self):
+        structural = (
+            "{% if messages[0]['role'] == 'system' %}"
+            "{% set sys = 'Think deeply.\\n\\n' + messages[0]['content'] %}"
+            "{% set rest = messages[1:] %}{% else %}"
+            "{% set sys = 'You are helpful. Think deeply.' %}{% set rest = messages %}"
+            "{% endif %}[SYSTEM]{{ sys }}[/SYSTEM]"
+            "{% for m in rest %}{{ m['role'] }}:{{ m['content'] }}{% endfor %}"
+        )
+        assert _turn(structural) == (True, None)
+
+    def test_default_words_inside_a_different_system_branch_are_not_treated_as_absent(self):
+        structural = (
+            "{% if messages[0]['role'] == 'system' %}"
+            "{% set sys = 'Always follow policy. ' + messages[0]['content'] %}"
+            "{% set rest = messages[1:] %}{% else %}"
+            "{% set sys = 'A policy.' %}{% set rest = messages %}{% endif %}"
+            "<system>{{ sys }}</system>"
+            "{% for m in rest %}<{{ m['role'] }}>{{ m['content'] }}</{{ m['role'] }}>"
+            "{% endfor %}"
+        )
+        assert _turn(structural) == (True, None)
+
+    def test_transformers_tojson_does_not_html_escape_a_default(self):
+        html = _QWEN25_LIKE.replace(
+            "You are Qwen, a helpful assistant.", "Use <assistant> & answer questions."
+        ).replace("{{ sys }}", "{{ sys | tojson }}")
+        assert _turn(html) == (True, "Use <assistant> & answer questions.")
 
 
 class TestDateStaysInTheSystemTurn:

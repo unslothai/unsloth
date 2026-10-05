@@ -2631,6 +2631,79 @@ class TestChatCompletionRequestToolFields:
             assert "confirm_tool_calls requires stream=true" in entry["error"]
         assert monitor.active_count() == 0
 
+    def test_safetensors_client_tools_keep_the_template_default_after_the_date(self, monkeypatch):
+        import routes.inference as inference_route
+
+        from core.inference import chat_template_helpers
+
+        captured = {}
+
+        class _NoGGUFBackend:
+            is_loaded = False
+            supports_tools = False
+
+        class _InferenceBackend:
+            active_model_name = "test-model"
+            models = {
+                "test-model": {
+                    "is_vision": False,
+                    "chat_template_info": {"template": "tool-template"},
+                    "context_length": 4096,
+                }
+            }
+
+            def generate_chat_response(self, **kwargs):
+                captured.update(kwargs)
+                yield "ok"
+
+            def reset_generation_state(self, cancel_event = None):
+                pass
+
+        monkeypatch.setattr(
+            inference_route,
+            "_detect_safetensors_features",
+            lambda *a, **k: {"supports_tools": True},
+        )
+        monkeypatch.setattr(
+            inference_route,
+            "_local_template_system_turn",
+            lambda _today, image = False, tools = False, controls = (): (
+                True,
+                "You are Qwen." if tools else "",
+            ),
+        )
+        monkeypatch.setattr(
+            inference_route,
+            "current_date_prompt_line",
+            lambda **_kwargs: "The current date is 2026-10-04.",
+        )
+        monkeypatch.setattr(
+            chat_template_helpers,
+            "renderable_tool_catalog_for_targets",
+            lambda tools, *_args, **_kwargs: tools,
+        )
+        monkeypatch.setattr(inference_route, "api_monitor", ApiMonitor(max_entries = 3))
+        client = self._v1_client(monkeypatch, _NoGGUFBackend(), _InferenceBackend())
+        resp = client.post(
+            "/v1/chat/completions",
+            json = {
+                "messages": [{"role": "user", "content": "use client tool"}],
+                "enable_tools": False,
+                "tools": _lookup_tools(),
+            },
+        )
+
+        assert resp.status_code == 200, resp.text
+        assert captured["system_prompt"] == ""
+        assert captured["messages"][:2] == [
+            {
+                "role": "system",
+                "content": "The current date is 2026-10-04.\n\nYou are Qwen.",
+            },
+            {"role": "user", "content": "use client tool"},
+        ]
+        assert captured["tools"] == _lookup_tools()
+
     def test_multiturn_tool_loop_messages(self):
         req = ChatCompletionRequest(
             messages = [

@@ -4753,6 +4753,15 @@ _TOOL_TEMPLATE = (
     "{% if m.tool_calls %}<tool_call>{{ m.tool_calls[0].function.name }}</tool_call>{% endif %}"
     "{% endfor %}"
 )
+_DEFAULT_TOOL_TEMPLATE = (
+    "{% if messages[0]['role'] == 'system' %}{% set system = messages[0]['content'] %}"
+    "{% set rest = messages[1:] %}{% else %}{% set system = 'You are Qwen.' %}"
+    "{% set rest = messages %}{% endif %}{{ system }}"
+    "{% if tools %}{% for tool in tools %}{{ tool.function.name }}{% endfor %}{% endif %}"
+    "{% for message in rest %}{{ message['content'] }}"
+    "{% if message.tool_calls %}<tool_call>{{ message.tool_calls[0].function.name }}"
+    "</tool_call>{% endif %}{% endfor %}"
+)
 _NAMED_TOOL_TEMPLATE = {"default": _PLAIN_TEMPLATE, "tool_use": _TOOL_TEMPLATE}
 
 
@@ -5494,6 +5503,45 @@ def test_an_mlx_count_prices_the_current_date_the_completion_prepends(monkeypatc
         backend.system == line
     ), f"the count dropped the date the completion adds: {backend.system!r}"
     assert backend.messages == [{"role": "user", "content": "hi"}]
+
+
+def test_an_mlx_client_tool_count_keeps_the_template_default_after_the_date(monkeypatch):
+    from starlette.datastructures import Headers
+
+    from routes import inference as route
+
+    monkeypatch.setattr(
+        route,
+        "_local_template_system_turn",
+        lambda _today, image = False, tools = False, controls = (): (
+            True,
+            "You are Qwen." if tools else "",
+        ),
+    )
+    interactive = SimpleNamespace(headers = Headers({}), query_params = {}, cookies = {})
+    backend = _RenderRecordingBackend()
+    _count_hi(
+        monkeypatch,
+        backend,
+        template = _DEFAULT_TOOL_TEMPLATE,
+        request = interactive,
+        enable_tools = False,
+        tools = [
+            {
+                "type": "function",
+                "function": {
+                    "name": "lookup",
+                    "description": "Look up a value.",
+                    "parameters": {"type": "object", "properties": {}},
+                },
+            }
+        ],
+    )
+    from routes.inference import current_date_prompt_line
+
+    line = current_date_prompt_line(request = interactive)
+    assert backend.system == ""
+    assert backend.messages[0] == {"role": "system", "content": f"{line}\n\nYou are Qwen."}
 
 
 def test_an_mlx_count_prices_the_archive_tool_and_its_compaction_nudge(monkeypatch):

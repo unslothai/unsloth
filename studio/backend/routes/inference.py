@@ -33162,7 +33162,6 @@ async def produce_openai_chat_completions(
         _sf_client_system_prompt = _apply_current_date_prompt(
             _user_system_prompt,
             request,
-            template_default = False,
             image = _sf_has_any_image or _video_clip is not None,
             tools = bool(_sf_client_catalog),
             controls = _date_controls,
@@ -39280,7 +39279,6 @@ async def _mlx_count_chat_tokens(payload, request = None) -> Optional[JSONRespon
             _client_system_prompt = _apply_current_date_prompt(
                 _user_system_prompt,
                 request,
-                template_default = False,
                 image = _renders_media,
                 tools = bool(_tools_to_use),
                 controls = _date_controls,

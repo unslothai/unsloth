@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from datetime import date, datetime, timedelta, timezone
 from functools import lru_cache
+import json
 import re
 from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -142,22 +143,60 @@ def _render_probe(
     controls: dict | None = None,
 ) -> str:
     from jinja2.exceptions import TemplateError
+    from jinja2.ext import Extension
     from jinja2.sandbox import ImmutableSandboxedEnvironment
 
     def raise_exception(message):
         raise TemplateError(message)
 
-    env = ImmutableSandboxedEnvironment(trim_blocks = True, lstrip_blocks = True)
+    def tojson(
+        value,
+        ensure_ascii = False,
+        indent = None,
+        separators = None,
+        sort_keys = False,
+    ):
+        # Transformers replaces Jinja's HTML-safe filter, so templates render ordinary JSON rather
+        # than escaping <, >, &, and apostrophes. The probe must compare the same bytes.
+        return json.dumps(
+            value,
+            ensure_ascii = ensure_ascii,
+            indent = indent,
+            separators = separators,
+            sort_keys = sort_keys,
+        )
+
+    class _GenerationTag(Extension):
+        tags = {"generation"}
+
+        def parse(self, parser):
+            next(parser.stream)
+            return parser.parse_statements(["name:endgeneration"], drop_needle = True)
+
+    # Match the syntax accepted by transformers' chat-template renderer. The generation block only
+    # marks assistant-token spans there, so it is a transparent wrapper for this text-only probe.
+    env = ImmutableSandboxedEnvironment(
+        trim_blocks = True,
+        lstrip_blocks = True,
+        extensions = [_GenerationTag, "jinja2.ext.loopcontrols"],
+    )
+    env.filters["tojson"] = tojson
     env.globals["raise_exception"] = raise_exception
     # the user's day, so a default that dates itself (or works out yesterday) is dated for them.
     env.globals["strftime_now"] = today.strftime
     return env.from_string(chat_template).render(
         messages = messages,
+        tools = tools,
+        documents = None,
         add_generation_prompt = False,
         **_PROBE_SPECIAL_TOKENS,
-        **({"tools": tools} if tools else {}),
         **(controls or {}),
     )
+
+
+def _is_whitespace_normalized_substring(value: str, container: str) -> bool:
+    """Whether ``value`` remains intact after ignoring formatting whitespace."""
+    return " ".join(value.split()) in " ".join(container.split())
 
 
 @lru_cache(maxsize = 16)
@@ -198,12 +237,13 @@ def template_system_turn(
         if with_system.count(_PROBE_SYSTEM) != 1:
             continue
         head, tail = with_system.split(_PROBE_SYSTEM)
-        if (
-            len(bare) <= len(head) + len(tail)
-            or not bare.startswith(head)
-            or not bare.endswith(tail)
-        ):
+        without_system = head + tail
+        if _is_whitespace_normalized_substring(bare, without_system):
             return True, ""
+        if len(bare) <= len(without_system) or not bare.startswith(head) or not bare.endswith(tail):
+            # The explicit-system branch changes more than inserting the supplied text. Treat its
+            # native default as non-replayable instead of silently replacing it with the date.
+            return True, None
         default = bare[len(head) : len(bare) - len(tail)]
         try:
             replayed = render(default)
