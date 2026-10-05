@@ -613,6 +613,7 @@ export async function hydrateThreadUsage(props: any): Promise<void> {
   const pairId = props.pairId ?? undefined;
   // Read once, as the loader does, just above the sliced block.
   const store = useChatRuntimeStore.getState();
+  const msgs = await listStoredChatMessages(remoteId);
 __RESTORE__
 }
 """

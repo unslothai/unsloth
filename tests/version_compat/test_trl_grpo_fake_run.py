@@ -54,7 +54,20 @@ def _stub_module(name: str, attrs: dict | None = None) -> None:
     sys.modules[name] = m
 
 
-_stub_module("torchcodec")
+@pytest.fixture(scope = "module", autouse = True)
+def _torchcodec_stub():
+    """Expose the CPU-only placeholder only while these import tests execute.
+
+    Keeping it out of module collection lets sibling tests import datasets,
+    which probes ``torchcodec.decoders`` while constructing Dataset fixtures.
+    """
+    _stub_module("torchcodec")
+    try:
+        yield
+    finally:
+        module = sys.modules.get("torchcodec")
+        if getattr(getattr(module, "__spec__", None), "origin", None) == "<test stub>":
+            del sys.modules["torchcodec"]
 
 
 def _trl_version():

@@ -185,7 +185,7 @@ def test_research_presentation_is_integrated() -> None:
     assert "<ResearchMessage />" in thread
     assert "if (researchRunId) return null" in thread
     assert "!researchRunId &&" in thread
-    assert "if (researchRunId || ownsResearchMessage)" in thread
+    assert "hidden: Boolean(researchRunId || ownsResearchMessage)" in thread
     assert "ResearchMessageRunIdContext = createContext<string | null>(null)" in thread
     assert "researchReplyOwnsRun(boundResearchAssistantMessageId, messageId)" in thread
     assert "<ResearchMessageRunIdContext.Provider value={researchRunId}>" in thread

@@ -34,7 +34,7 @@ _spoof.apply()
 # Stub optional deps absent on a CPU-only runner (mirrors test_unsloth_zoo_imports.py).
 def _stub_module(name: str, attrs: dict | None = None) -> None:
     """Stub a missing optional dep, with __spec__ set so find_spec() doesn't
-    raise `ValueError: __spec__ is None` for torch/transformers/torchcodec callers."""
+    raise `ValueError: __spec__ is None` for callers that probe availability."""
     if name in sys.modules:
         return
     m = types.ModuleType(name)
@@ -58,7 +58,18 @@ _stub_module(
         )(),
     },
 )
-_stub_module("torchcodec")
+
+
+@pytest.fixture(scope = "module", autouse = True)
+def _torchcodec_stub():
+    """Limit the placeholder to this module's tests, not pytest collection."""
+    _stub_module("torchcodec")
+    try:
+        yield
+    finally:
+        module = sys.modules.get("torchcodec")
+        if getattr(getattr(module, "__spec__", None), "origin", None) == "<test stub>":
+            del sys.modules["torchcodec"]
 
 
 @pytest.fixture(autouse = True)
