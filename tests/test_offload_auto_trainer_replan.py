@@ -13,6 +13,7 @@ NAMES = (
     "_auto_block_swap_indices",
     "install_block_swap",
     "_attach_block_swap",
+    "_layer_devices",
     "_replan_auto_offload_safely",
     "_trainer_offload_replan_skip",
     "replan_auto_offload_for_trainer",
@@ -34,7 +35,16 @@ def _load(
     nodes = {n.name: n for n in mod.body if isinstance(n, ast.FunctionDef) and n.name in NAMES}
     assert set(nodes) == set(NAMES), f"missing from _utils.py: {set(NAMES) - set(nodes)}"
     state = types.SimpleNamespace(
-        free = free, free_by = {}, homes = {}, estimates = [], swaps = [], removed = [], fail = 0
+        free = free,
+        free_by = {},
+        homes = {},
+        estimates = [],
+        swaps = [],
+        removed = [],
+        fail = 0,
+        layer_devices = {"cuda:0"},
+        resident = False,
+        idle_slot_bytes = 0,
     )
 
     def estimate(
@@ -74,9 +84,16 @@ def _load(
         @property
         def blocks(self):
             return [
-                types.SimpleNamespace(home = state.homes.get(i, "cuda:0"), nbytes = lambda: GIB)
+                types.SimpleNamespace(
+                    home = state.homes.get(i, "cuda:0"), nbytes = lambda: GIB, resident = state.resident
+                )
                 for i in self.indices
             ]
+
+        @property
+        def free(self):
+            buf = types.SimpleNamespace(numel = lambda: state.idle_slot_bytes, element_size = lambda: 1)
+            return {"sig": [({"cuda:0": buf}, None)]} if state.idle_slot_bytes else {}
 
         def host_bytes(self):
             return len(self.indices) * GIB
@@ -105,6 +122,7 @@ def _load(
     }
     for name in NAMES:
         exec(ast.get_source_segment(SRC, nodes[name]), ns)
+    ns["_layer_devices"] = lambda layers: set(state.layer_devices)
     exec("_REPLAN_FAILED_PRINTED = False", ns)
     return ns, state
 
@@ -280,6 +298,7 @@ def test_a_short_second_card_still_rebuilds():
     model = _Model()
     first = ns["install_block_swap"](model, "auto")
     state.homes = {i: "cuda:1" for i in range(8)}
+    state.layer_devices = {"cuda:0", "cuda:1"}
     state.free = 3 * GIB
     state.free_by = {"cuda:0": 100 * GIB}
     swapper = ns["replan_auto_offload_for_trainer"](_trainer(model, batch_size = 6))
@@ -309,3 +328,39 @@ def test_newly_swapped_layers_recompute_in_backward():
     swapper = ns["replan_auto_offload_for_trainer"](_trainer(model, batch_size = 6))
     for i, layer in enumerate(model.layers):
         assert layer.__dict__.get("_unsloth_skip_checkpoint", False) == (i not in swapper.indices)
+
+
+def test_a_card_without_swapped_layers_is_checked():
+    # Attach-time plan swapped only on cuda:0; the bigger batch leaves cuda:1 short.
+    ns, state = _load(free = 1 * GIB)
+    model = _Model()
+    first = ns["install_block_swap"](model, "auto")
+    state.layer_devices = {"cuda:0", "cuda:1"}
+    state.free = 3 * GIB
+    state.free_by = {"cuda:0": 100 * GIB}
+    swapper = ns["replan_auto_offload_for_trainer"](_trainer(model, batch_size = 6))
+    assert state.removed == [first] and swapper is not first
+
+
+def test_resident_blocks_and_idle_slots_need_no_restore():
+    ns, state = _load(free = 0)
+    model = _Model()
+    first = ns["install_block_swap"](model, "auto")
+    assert len(first.indices) == 2
+    # Both blocks sit in slots already and an idle slot is freed first: nothing new to restore.
+    state.resident = True
+    state.idle_slot_bytes = GIB
+    state.free = GIB // 2
+    swapper = ns["replan_auto_offload_for_trainer"](_trainer(model, batch_size = 4))
+    assert state.removed == [first] and swapper is not first
+
+
+def test_a_rebuild_keeps_the_old_plans_layers_swapped():
+    ns, state = _load(free = 0, pick = [3, 7])
+    model = _Model()
+    first = ns["install_block_swap"](model, "auto")
+    assert first.indices == [3, 7]
+    state.free = 3 * GIB
+    ns["auto_swap_indices"] = lambda layers, reserve, depth: ([1, 4, 7], 0)
+    swapper = ns["replan_auto_offload_for_trainer"](_trainer(model, batch_size = 6))
+    assert len(swapper.indices) == 3 and {3, 7} <= set(swapper.indices)

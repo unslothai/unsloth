@@ -6452,6 +6452,15 @@ def install_block_swap(
     return _attach_block_swap(model, offload_layers, prefetch_depth)
 
 
+def _layer_devices(layers):
+    devices = set()
+    for layer in layers:
+        p = next(layer.parameters(), None)
+        if p is not None and p.device.type == "cuda":
+            devices.add(p.device)
+    return devices
+
+
 def _attach_block_swap(model, offload_layers, prefetch_depth):
     layers = find_decoder_layers(model)
     # Spaced evenly, each copy hides behind several layers of compute instead of one.
@@ -6519,23 +6528,29 @@ def replan_auto_offload_for_trainer(trainer):
     layers = find_decoder_layers(model)
     if old:
         # Swapped layers already left the card, so free memory counts them once. A device_map
-        # model swaps on every card its layers live on: each must keep the reserve free.
-        restore = {}
-        for block in swapper.blocks:
-            home = getattr(block, "home", None) or swapper.device
-            restore[home] = restore.get(home, 0) + block.nbytes()
-        free = {device: usable_cuda_bytes(device) for device in restore}
+        # model needs the reserve free on every card holding a decoder layer.
+        free = {device: usable_cuda_bytes(device) for device in _layer_devices(layers)}
         short = max(reserve - f for f in free.values())
         if short <= 0:
             return swapper
-        if any(restore[device] > free[device] for device in restore):
-            per_layer = max(1, sum(restore.values()) // len(old))
+        # remove() copies back only the non-resident blocks, after dropping the idle slots.
+        restore = {}
+        for block in swapper.blocks:
+            if not getattr(block, "resident", False):
+                home = getattr(block, "home", None) or swapper.device
+                restore[home] = restore.get(home, 0) + block.nbytes()
+        for slots in getattr(swapper, "free", {}).values():
+            for bufs, _ in slots:
+                for device, buf in bufs.items():
+                    restore[device] = restore.get(device, 0) - buf.numel() * buf.element_size()
+        if any(need > free.get(device, 0) for device, need in restore.items()):
+            per_layer = max(1, swapper.host_bytes() // len(old))
             want = min(len(layers) - 1, len(old) + -(-short // per_layer))
             print(
                 f"Unsloth: offload_layers = 'auto' kept {len(old)} layers, but "
                 f"per_device_train_batch_size = {batch_size} at {seq_len} tokens needs "
                 f"{short / 2**30:.2f} GiB more, and re-planning would first restore "
-                f"{sum(restore.values()) / 2**30:.2f} GiB. Pass "
+                f"{max(restore.values()) / 2**30:.2f} GiB. Pass "
                 f"get_peft_model(offload_layers = {want}) or lower per_device_train_batch_size."
             )
             return swapper
@@ -6551,6 +6566,10 @@ def replan_auto_offload_for_trainer(trainer):
         )
         if len(indices) < len(old):
             indices = old
+        elif old:
+            # Keep the old plan's layers swapped: checkpoint_skip_layers chose among the others.
+            extra = [i for i in indices if i not in old]
+            indices = sorted(old + extra[: len(indices) - len(old)])
         if not indices:
             return None
         swapper = _attach_block_swap(model, indices, prefetch_depth)
