@@ -175,7 +175,7 @@ def set_default_model_library(library_id: int) -> None:
         finally:
             conn.close()
         if row is None:
-            raise ValueError("Library not found")
+            raise LookupError("Library not found")
         from utils.hf_cache_settings import set_hf_cache_home
 
         set_hf_cache_home(row["path"])

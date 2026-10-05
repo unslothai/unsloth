@@ -4,6 +4,7 @@
 """Model library registration, default derivation, download targeting and the
 move-between-libraries path."""
 
+import errno
 import os
 import platform
 import shutil
@@ -303,13 +304,14 @@ def test_move_failure_keeps_source_intact_and_cleans_partial(monkeypatch, tmp_pa
         hub_cache = a_hub,
     )
 
-    def _failing_cross_volume_move(src, dst):
-        Path(dst).mkdir(parents = True, exist_ok = True)
-        (Path(dst) / "blobs").mkdir(parents = True, exist_ok = True)
+    _force_cross_volume(monkeypatch)
+
+    def _failing_copytree(src, dst, **kwargs):
+        (Path(dst) / "blobs").mkdir(parents = True)
         (Path(dst) / "blobs" / "zz").write_bytes(b"half-copy")
         raise OSError("cross-volume copy failed mid-way")
 
-    monkeypatch.setattr(shutil, "move", _failing_cross_volume_move)
+    monkeypatch.setattr(shutil, "copytree", _failing_copytree)
     dest = b_hub / hf_cache_state.repo_cache_dir_name("model", repo_id)
 
     with pytest.raises(HTTPException) as exc:
@@ -319,6 +321,37 @@ def test_move_failure_keeps_source_intact_and_cleans_partial(monkeypatch, tmp_pa
     assert (repo_dir / "blobs" / "aa").read_bytes() == b"payload"
     assert download_manifest.read_manifest("model", repo_id, None, hub_cache = a_hub) is not None
     assert not dest.exists()
+    assert not dest.with_name(dest.name + ".moving").exists()
+
+
+def _force_cross_volume(monkeypatch):
+    real_rename = os.rename
+
+    def _rename(src, dst):
+        if not str(src).endswith(".moving"):
+            raise OSError(errno.EXDEV, "Invalid cross-device link")
+        return real_rename(src, dst)
+
+    monkeypatch.setattr(libraries.os, "rename", _rename)
+
+
+def test_cross_volume_move_keeps_copy_when_source_delete_fails(monkeypatch, tmp_path):
+    """A complete copy survives a failed source delete; it must never be removed as partial."""
+    a = _register_library(tmp_path, "libA")
+    b = _register_library(tmp_path, "libB")
+    repo_id = "Unsloth/Locked"
+    _write_repo(Path(a["path"]) / "hub", repo_id)
+    _force_cross_volume(monkeypatch)
+
+    def _locked(path, *args, **kwargs):
+        raise PermissionError("file in use")
+
+    monkeypatch.setattr(libraries.shutil, "rmtree", _locked)
+    result = libraries.move_model_response(repo_id, None, str(b["id"]))
+
+    dest = Path(b["path"]) / "hub" / hf_cache_state.repo_cache_dir_name("model", repo_id)
+    assert result["already_in_library"] is False
+    assert (dest / "blobs" / "aa").read_bytes() == b"payload"
 
 
 def test_non_default_library_scopes_env_and_manifest_state(tmp_path):
@@ -379,3 +412,25 @@ def test_add_and_remove_library_service_mapping(tmp_path):
     assert exc.value.status_code == 400
 
     assert libraries.remove_library_response(999999) == {"ok": False}
+
+
+def test_library_mutations_are_owner_only():
+    from auth import policy
+    from auth.authentication import get_current_subject
+    from hub.routes.inventory import router
+
+    gated = {
+        ("POST", "/libraries"),
+        ("DELETE", "/libraries/{library_id}"),
+        ("POST", "/libraries/{library_id}/default"),
+        ("POST", "/libraries/move"),
+    }
+    seen = set()
+    for route in router.routes:
+        for method in getattr(route, "methods", ()):
+            if (method, route.path) not in gated:
+                continue
+            calls = [d.call for d in route.dependant.dependencies if d.call is not None]
+            assert calls.index(get_current_subject) < calls.index(policy.require_owner)
+            seen.add((method, route.path))
+    assert seen == gated

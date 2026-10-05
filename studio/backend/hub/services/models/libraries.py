@@ -14,6 +14,7 @@ no-op."""
 
 from __future__ import annotations
 
+import errno
 import os
 import shutil
 from pathlib import Path
@@ -135,8 +136,12 @@ def remove_library_response(library_id: int) -> dict:
 def set_default_library_response(library_id: int) -> dict:
     try:
         set_default_model_library(library_id)
-    except ValueError as exc:
+    except LookupError as exc:
         raise HTTPException(status_code = 404, detail = str(exc))
+    except RuntimeError as exc:
+        raise HTTPException(status_code = 409, detail = str(exc))
+    except ValueError as exc:
+        raise HTTPException(status_code = 400, detail = str(exc))
     from utils.hf_cache_settings import get_hf_cache_paths
     return {"ok": True, "path": str(get_hf_cache_paths().cache_home)}
 
@@ -158,6 +163,28 @@ def library_cache_paths(library_id: Optional[str]):
             home = Path(row["path"])
             return HuggingFaceCachePaths(home, home / "hub", home / "xet", "studio")
     raise HTTPException(status_code = 404, detail = "Library not found")
+
+
+def _relocate_repo_dir(source: Path, dest: Path) -> None:
+    """Rename in place, or copy then delete across volumes. ``shutil.move`` is not used: a failed
+    source delete after a complete copy would leave the caller removing the only full copy."""
+    try:
+        os.rename(source, dest)
+        return
+    except OSError as exc:
+        if exc.errno != errno.EXDEV:
+            raise
+    staging = dest.with_name(dest.name + ".moving")
+    try:
+        shutil.copytree(source, staging, symlinks = True)
+        os.rename(staging, dest)
+    except BaseException:
+        _remove_failed_move(staging)
+        raise
+    try:
+        shutil.rmtree(source)
+    except OSError as exc:
+        logger.warning("Moved %s to %s but could not remove the source: %s", source, dest, exc)
 
 
 def _remove_failed_move(dest: Path) -> None:
@@ -265,9 +292,8 @@ def move_model_response(repo_id: str, variant: Optional[str], target_library_id:
             )
             continue
         try:
-            shutil.move(str(source), str(dest))
+            _relocate_repo_dir(source, dest)
         except OSError as exc:
-            _remove_failed_move(dest)
             logger.error("Failed to move model %s to %s: %s", repo_id, target_hub, exc)
             raise HTTPException(
                 status_code = 500,

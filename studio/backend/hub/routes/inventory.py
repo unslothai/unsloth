@@ -9,6 +9,7 @@ from typing import Optional
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Query
 
+from auth import policy
 from auth.authentication import (
     allow_ambient_hf_token,
     authenticated_via_api_key,
@@ -152,30 +153,56 @@ def get_models_folder(
 
 
 @router.get("/libraries", response_model = ModelLibrariesResponse)
-def get_model_libraries(current_subject: str = Depends(get_current_subject)):
-    return libraries.list_libraries_response()
-
-
-@router.post("/libraries", response_model = ModelLibraryInfo, status_code = 201)
-def add_model_library(
-    body: AddModelLibraryRequest, current_subject: str = Depends(get_current_subject)
+def get_model_libraries(
+    current_subject: str = Depends(get_current_subject),
+    via_api_key: bool = Depends(authenticated_via_api_key),
 ):
-    return libraries.add_library_response(body.path, body.label)
+    return redact_inventory_host_paths(libraries.list_libraries_response(), via_api_key = via_api_key)
 
 
-@router.delete("/libraries/{library_id}", response_model = RemoveModelLibraryResponse)
-def remove_model_library(library_id: int, current_subject: str = Depends(get_current_subject)):
+# Libraries name install-wide drives and promoting one rewrites the HF cache setting, which is owner-only.
+_OWNER_ONLY = [Depends(get_current_subject), Depends(policy.require_owner)]
+
+
+@router.post(
+    "/libraries", response_model = ModelLibraryInfo, status_code = 201, dependencies = _OWNER_ONLY
+)
+def add_model_library(
+    body: AddModelLibraryRequest, via_api_key: bool = Depends(authenticated_via_api_key)
+):
+    return redact_inventory_host_paths(
+        libraries.add_library_response(body.path, body.label), via_api_key = via_api_key
+    )
+
+
+@router.delete(
+    "/libraries/{library_id}",
+    response_model = RemoveModelLibraryResponse,
+    dependencies = _OWNER_ONLY,
+)
+def remove_model_library(library_id: int):
     return libraries.remove_library_response(library_id)
 
 
-@router.post("/libraries/{library_id}/default", response_model = SetDefaultLibraryResponse)
-def set_default_model_library(library_id: int, current_subject: str = Depends(get_current_subject)):
-    return libraries.set_default_library_response(library_id)
+@router.post(
+    "/libraries/{library_id}/default",
+    response_model = SetDefaultLibraryResponse,
+    dependencies = _OWNER_ONLY,
+)
+def set_default_model_library(
+    library_id: int, via_api_key: bool = Depends(authenticated_via_api_key)
+):
+    return redact_inventory_host_paths(
+        libraries.set_default_library_response(library_id), via_api_key = via_api_key
+    )
 
 
-@router.post("/libraries/move", response_model = MoveModelResponse)
-def move_model(body: MoveModelRequest, current_subject: str = Depends(get_current_subject)):
-    return libraries.move_model_response(body.repo_id, body.variant, body.target_library_id)
+@router.post("/libraries/move", response_model = MoveModelResponse, dependencies = _OWNER_ONLY)
+def move_model(body: MoveModelRequest, via_api_key: bool = Depends(authenticated_via_api_key)):
+    return redact_inventory_host_paths(
+        libraries.move_model_response(body.repo_id, body.variant, body.target_library_id),
+        via_api_key = via_api_key,
+    )
 
 
 @router.get("/gguf-variants", response_model = GgufVariantsResponse)
