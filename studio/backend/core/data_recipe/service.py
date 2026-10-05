@@ -6,6 +6,7 @@ from __future__ import annotations
 from core.training.account_jobs import account_path, managed_account, validate_recipe_access
 import base64
 import io
+import math
 import os
 from pathlib import Path
 from typing import Any
@@ -143,6 +144,34 @@ def _apply_data_designer_image_context_patch() -> None:
     ImageContext._auto_resolve_context_value = _patched_auto_resolve
     setattr(ImageContext, "_unsloth_image_context_patch_applied", True)
     _IMAGE_CONTEXT_PATCHED = True
+
+
+def _blank_missing_prompt_value(value: Any) -> Any:
+    if value is None or (isinstance(value, float) and math.isnan(value)):
+        return ""
+    return value
+
+
+def _apply_data_designer_prompt_blank_patch() -> None:
+    try:
+        from data_designer.engine.column_generators.utils.prompt_renderer import (  # pyright: ignore[reportMissingImports]
+            RecordBasedPromptRenderer,
+        )
+    except ImportError:
+        return
+
+    if getattr(RecordBasedPromptRenderer, "_unsloth_prompt_blank_patch_applied", False):
+        return
+
+    original_prepare = RecordBasedPromptRenderer.prepare_jinja2_multi_template_renderer
+
+    def _patched_prepare(self: Any, template_name: str, *args: Any, **kwargs: Any) -> None:
+        original_prepare(self, template_name, *args, **kwargs)
+        render = self._render_func_registry[template_name]
+        render.func.__self__.finalize = _blank_missing_prompt_value
+
+    RecordBasedPromptRenderer.prepare_jinja2_multi_template_renderer = _patched_prepare
+    setattr(RecordBasedPromptRenderer, "_unsloth_prompt_blank_patch_applied", True)
 
 
 def _require_public_provider_endpoint(endpoint: str) -> None:
@@ -415,6 +444,7 @@ def create_data_designer(recipe: dict[str, Any], *, artifact_path: str | None = 
     validate_recipe_access(recipe)
     account_path(artifact_path)
     _apply_data_designer_image_context_patch()
+    _apply_data_designer_prompt_blank_patch()
     from data_designer.interface.data_designer import DataDesigner  # pyright: ignore[reportMissingImports]
 
     if artifact_path is None:
