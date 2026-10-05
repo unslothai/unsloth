@@ -93,6 +93,7 @@ __all__ = [
     "skip_checkpointing",
     "refuse_block_swap_load",
     "legacy_offload_layers",
+    "prefetch_depth_arg",
     "block_swap_load_device",
     "begin_block_swap_load",
     "finish_block_swap_load",
@@ -6143,6 +6144,9 @@ def _check_block_swap(model_or_config):
 
 
 def _new_block_swap(layers, n, *args, placement, **kwargs):
+    if args and args[0] == "auto" and not hasattr(BlockSwap, "stats"):
+        # unsloth_zoo before prefetch_depth = "auto" takes a count only.
+        args = (2,) + args[1:]
     try:
         return BlockSwap(layers, n, *args, placement = placement, **kwargs)
     except TypeError as e:
@@ -6156,8 +6160,22 @@ def legacy_offload_layers(kwargs, offload_layers = None):
     """`offload_layers`, or its original name `block_swap_layers` from `kwargs` when it was not given (0 = off)."""
     legacy = kwargs.pop("block_swap_layers", None)
     if offload_layers is None:
-        return 0 if legacy is None else legacy
+        offload_layers = 0 if legacy is None else legacy
+    if offload_layers != "auto" and (
+        isinstance(offload_layers, bool) or not isinstance(offload_layers, int) or offload_layers < 0
+    ):
+        raise ValueError(
+            f"Unsloth: offload_layers must be a layer count (0 = off) or 'auto', not {offload_layers!r}."
+        )
     return offload_layers
+
+
+def prefetch_depth_arg(kwargs):
+    """get_peft_model(prefetch_depth = k | "auto"): layers fetched ahead of the one running (default 2)."""
+    depth = kwargs.pop("prefetch_depth", 2)
+    if depth != "auto" and (isinstance(depth, bool) or not isinstance(depth, int) or depth < 1):
+        raise ValueError(f"Unsloth: prefetch_depth must be 1 or more, or 'auto', not {depth!r}.")
+    return depth
 
 
 def refuse_block_swap_load(offload_layers, reason):
@@ -6207,7 +6225,8 @@ def begin_block_swap_load(
 
 def planned_prefetch_depth(device_map_planner_kwargs):
     # The depth "auto" sized the slot pool with; the swapper must allocate the same pool.
-    return int((device_map_planner_kwargs or {}).get("prefetch_depth", 2))
+    depth = (device_map_planner_kwargs or {}).get("prefetch_depth", 2)
+    return depth if depth == "auto" else int(depth)
 
 
 def finish_block_swap_load(
@@ -6426,7 +6445,10 @@ def install_block_swap(
             return None
         if BlockSwap is None:
             _check_block_swap(model)
-        offload_layers = _auto_block_swap_indices(model, prefetch_depth)
+        # An adaptive pool starts at one slot ahead and only grows into room it finds free.
+        offload_layers = _auto_block_swap_indices(
+            model, 1 if prefetch_depth == "auto" else prefetch_depth
+        )
         if not offload_layers:
             return None
     _check_block_swap(model)

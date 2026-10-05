@@ -3654,6 +3654,7 @@ class FastLlamaModel:
         **kwargs,
     ):
         offload_layers = legacy_offload_layers(kwargs, offload_layers)
+        prefetch_depth = prefetch_depth_arg(kwargs)
         # The flag reflects the LAST load, not this model.
         _text_seq2seq = _is_text_seq2seq_config(getattr(model, "config", None))
         if os.environ.get("UNSLOTH_USE_NEW_MODEL", "0") == "1" or _text_seq2seq:
@@ -3691,6 +3692,7 @@ class FastLlamaModel:
                 ensure_weight_tying = ensure_weight_tying,
                 offload_layers = offload_layers,
                 checkpoint_skip_layers = checkpoint_skip_layers,
+                prefetch_depth = prefetch_depth,
                 **kwargs,
             )
         if os.environ.get("UNSLOTH_ENABLE_FULL_FINETUNING", "0") == "1":
@@ -3818,7 +3820,10 @@ class FastLlamaModel:
                 model._unsloth_gradient_checkpointing = use_gradient_checkpointing
                 model = _exclude_rope_inv_freq_from_ddp(model)
                 install_block_swap(
-                    model, offload_layers, use_gradient_checkpointing = use_gradient_checkpointing
+                    model,
+                    offload_layers,
+                    prefetch_depth = prefetch_depth,
+                    use_gradient_checkpointing = use_gradient_checkpointing,
                 )
                 skip_checkpointing(model, checkpoint_skip_layers)
                 return model
@@ -4126,7 +4131,10 @@ class FastLlamaModel:
         model = FastLlamaModel.patch_peft_model(model, use_gradient_checkpointing)
         offload_embedding_if_tight(model)
         install_block_swap(
-            model, offload_layers, use_gradient_checkpointing = use_gradient_checkpointing
+            model,
+            offload_layers,
+            prefetch_depth = prefetch_depth,
+            use_gradient_checkpointing = use_gradient_checkpointing,
         )
         skip_checkpointing(model, checkpoint_skip_layers)
 

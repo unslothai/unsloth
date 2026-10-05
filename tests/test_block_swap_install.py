@@ -708,3 +708,54 @@ def test_block_swap_layers_still_works_as_the_old_name_of_offload_layers():
     for path, count in (("llama.py", 2), ("vision.py", 2)):
         src = open(os.path.join(HERE, "unsloth", "models", path), encoding = "utf-8").read()
         assert src.count("legacy_offload_layers(kwargs, ") == count, path
+
+
+def _fns(*names):
+    mod = ast.parse(open(UTILS, encoding = "utf-8").read())
+    ns = {}
+    body = [n for n in mod.body if isinstance(n, ast.FunctionDef) and n.name in names]
+    exec(compile(ast.Module(body = body, type_ignores = []), UTILS, "exec"), ns)
+    return ns
+
+
+@pytest.mark.parametrize("bad", [-1, 1.5, "8", "max", True, [1, 2]])
+def test_offload_layers_refuses_values_it_cannot_use(bad):
+    with pytest.raises(ValueError, match = "offload_layers must be"):
+        _fns("legacy_offload_layers")["legacy_offload_layers"]({}, bad)
+
+
+def test_prefetch_depth_is_a_get_peft_model_option():
+    arg = _fns("prefetch_depth_arg")["prefetch_depth_arg"]
+    kwargs = {"prefetch_depth": "auto", "r": 16}
+    assert arg(kwargs) == "auto" and kwargs == {"r": 16}
+    assert arg({}) == 2 and arg({"prefetch_depth": 3}) == 3
+    for bad in (0, -1, 1.5, "fast", True):
+        with pytest.raises(ValueError, match = "prefetch_depth must be"):
+            arg({"prefetch_depth": bad})
+    # Read before the new-model route returns, and handed to every install.
+    for path, installs in (("llama.py", 2), ("vision.py", 1)):
+        src = open(os.path.join(HERE, "unsloth", "models", path), encoding = "utf-8").read()
+        assert src.count("prefetch_depth = prefetch_depth_arg(kwargs)") == 1, path
+        assert src.count("prefetch_depth = prefetch_depth,\n") >= installs, path
+
+
+def test_auto_prefetch_depth_plans_one_slot_ahead_and_reaches_the_swapper():
+    assert _fns("planned_prefetch_depth")["planned_prefetch_depth"]({"prefetch_depth": "auto"}) == "auto"
+    ns, calls = _load(auto_pick = ([5, 7], 0))
+    ns["BlockSwap"].stats = lambda self: {}  # a zoo with adaptive depth
+    planned = []
+    ns["auto_swap_indices"] = lambda layers, reserve, depth: planned.append(depth) or ([5, 7], 0)
+    model = types.SimpleNamespace(
+        layers = _Layers(list(range(8))),
+        config = types.SimpleNamespace(),
+        parameters = lambda: [],
+        max_seq_length = 128,
+    )
+    ns["install_block_swap"](model, "auto", prefetch_depth = "auto")
+    assert planned == [1] and calls[-1][2] == "auto"
+
+
+def test_old_zoo_without_auto_depth_gets_the_default_depth():
+    ns, calls = _load()
+    ns["_new_block_swap"](_Layers([0, 1, 2]), 2, "auto", placement = "spread")
+    assert calls[-1][2] == 2

@@ -733,6 +733,9 @@ def resolve_auto_block_swap(
         max_memory[d] = free if cap is None else min(free, cap)
 
     options = {k: planner_kwargs[k] for k in _BLOCK_SWAP_PLANNER_KEYS if k in planner_kwargs}
+    if options.get("prefetch_depth") == "auto":
+        # The adaptive pool starts one slot ahead and grows only into free room.
+        options["prefetch_depth"] = 1
     try:
         planner_parameters = inspect.signature(plan_block_swap).parameters
     except (TypeError, ValueError):
