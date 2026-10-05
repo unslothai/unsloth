@@ -33,6 +33,65 @@ UV = {
     "sha256": "23bf5552d220e0842b65c862097b2ebaeba0064b74eda5e565e77fd25969d8c8",
     "size": 19831732,
 }
+# AMD GPUs: ROCm's userspace from AMD's apt repository, plus the DXG bridge AMD publishes as a
+# .deb, through which the HSA runtime reaches the Windows driver over /dev/dxg.
+ROCM_APT_KEY = {
+    "url": "https://repo.radeon.com/rocm/rocm.gpg.key",
+    "sha256": "2de99e2354646a90d9903e2a669fc4e36b02c1bbff7075c481e12d7edab2c88b",
+    "size": 3126,
+}
+ROCDXG = {
+    "url": "https://github.com/ROCm/librocdxg/releases/download/v1.2.2/rocdxg-roct_1.2.2_amd64.deb",
+    "sha256": "28ded1254811192ebace1f76c0227580184af7b27ab2475fb9728295a702d541",
+    "size": 185130,
+}
+# amd-smi built for WSL: vLLM finds its ROCm platform through amd-smi, whose Linux build reports
+# "driver not loaded" without /dev/kfd.
+ROCDXG_SMI = {
+    "url": "https://github.com/ROCm/librocdxg/releases/download/v1.2.2/rocdxg-amd-smi-lib_1.2.2_amd64.deb",
+    "sha256": "f9b601457ea513a223c7dd2cc281fb0aef1d11f21f38ce6108dc76e665ad6cc5",
+    "size": 548282,
+}
+ROCM_RELEASE = "7.2.1"
+# apt-get's own estimate on the pinned rootfs: 5356 MB of ROCm, 81 MB of amd-smi's dependencies.
+ROCM_APT_BYTES = 5_437_000_000
+# Runs as root in the distro: $1 is the apt key, $2 and $3 the rocdxg packages. Idempotent.
+ROCM_SETUP = """#!/bin/sh
+set -eu
+export DEBIAN_FRONTEND=noninteractive
+if [ ! -e /dev/dxg ]; then
+  echo "WSL cannot see the AMD GPU. Update the AMD Adrenalin driver, restart Windows, then click Install again." >&2
+  exit 3
+fi
+case "$(cat /opt/rocm/.info/version 2>/dev/null)" in
+  {release}|{release}-*) installed=1 ;;
+  *) installed=0 ;;
+esac
+if [ "$installed" = 0 ] || [ ! -e /opt/rocm/lib/librocdxg.so.1 ] || [ ! -e /opt/rocm-wsl/lib/libamd_smi.so ]; then
+  install -d -m 755 /etc/apt/keyrings
+  cp "$1" /etc/apt/keyrings/rocm.asc
+  echo "deb [arch=amd64 signed-by=/etc/apt/keyrings/rocm.asc] https://repo.radeon.com/rocm/apt/{release} noble main" > /etc/apt/sources.list.d/rocm.list
+  printf 'Package: *\\nPin: release o=repo.radeon.com\\nPin-Priority: 600\\n' > /etc/apt/preferences.d/rocm-pin-600
+  apt-get update
+  # rocm-libs is what PyTorch links (rocBLAS, MIOpen, RCCL, ...); vLLM's PyTorch also links
+  # OpenMPI and the ROCm profiler libraries, and Triton compiles its HIP driver with gcc.
+  apt-get install -y rocm-libs rocminfo hip-runtime-amd rocprofiler-sdk hsa-amd-aqlprofile libopenmpi3t64 gcc
+  apt-get install -y "$2" "$3"
+  ldconfig
+fi
+HSA_ENABLE_DXG_DETECTION=1 /opt/rocm/bin/rocminfo | grep -E "Name:[[:space:]]+gfx[1-9]" || {
+  echo "ROCm cannot reach the AMD GPU through WSL. Update the AMD Adrenalin driver, restart Windows, then click Install again." >&2
+  exit 3
+}
+""".replace("{release}", ROCM_RELEASE)
+# ROCm's HSA runtime loads the DXG bridge only when asked; amd-smi is found by its soname. The
+# profiler SDK vLLM's PyTorch links aborts HIP start-up without KFD's sysfs topology, which WSL
+# lacks, so it is never registered.
+ROCM_ENVIRONMENT = {
+    "HSA_ENABLE_DXG_DETECTION": "1",
+    "LD_LIBRARY_PATH": "/opt/rocm-wsl/lib",
+    "ROCPROFILER_REGISTER_ENABLED": "0",
+}
 _PREPARE_LOCK = threading.Lock()
 MIN_BUILD = 19044  # Windows 10 21H2: first build with CUDA in WSL2.
 GUEST_ROOT = "/opt/unsloth"
@@ -315,7 +374,9 @@ def guest_command(
         if item.split("/")[0] not in secrets and item.split("/")[0].upper() not in withhold
     ]
     windows_env["WSLENV"] = ":".join([*shared, *(f"{key}/u" for key in secrets)])
-    command = [exe, "-d", distro_name(), "-u", "root", "--cd", "/root", "--", "/usr/bin/env"]
+    # --exec, not --: after -- wsl.exe hands the rest of the line to the distro's shell, which
+    # re-expands it ("$0" in put() is the shell's own path there, and JSON arguments break).
+    command = [exe, "-d", distro_name(), "-u", "root", "--cd", "/root", "--exec", "/usr/bin/env"]
     command += [f"{key}={value}" for key, value in (env or {}).items()]
     return command + list(argv), windows_env
 
@@ -398,7 +459,24 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
-def ensure_distro(progress = None, cancel = None) -> None:
+# {platform: (what the Windows driver exposes in the distro, the error when it is absent)}
+_GPU_PASSTHROUGH = {
+    "cuda": (
+        "/usr/lib/wsl/lib/libcuda.so",
+        "WSL cannot see the NVIDIA GPU. Update the NVIDIA Windows driver, then click Install again.",
+    ),
+    "rocm": (
+        "/dev/dxg",
+        "WSL cannot see the AMD GPU. Update the AMD Adrenalin driver, restart Windows, then click Install again.",
+    ),
+}
+
+
+def ensure_distro(
+    progress = None,
+    cancel = None,
+    platform = "cuda",
+) -> None:
     """Idempotent: import the private distro, configure it, and install uv inside it."""
     from utils.paths.storage_roots import studio_root
 
@@ -424,13 +502,12 @@ def ensure_distro(progress = None, cancel = None) -> None:
             )
         put("/etc/wsl.conf", WSL_CONF)
         run(["--terminate", distro_name()], timeout = 120)
-        # The GPU paravirtualization library comes from the Windows driver, not the distro.
+        # The GPU paravirtualization comes from the Windows driver, not the distro.
+        device, missing = _GPU_PASSTHROUGH[platform]
         try:
-            guest(["test", "-e", "/usr/lib/wsl/lib/libcuda.so"])
+            guest(["test", "-e", device])
         except RuntimeError:
-            raise RuntimeError(
-                "WSL cannot see the NVIDIA GPU. Update the NVIDIA Windows driver, then click Install again."
-            ) from None
+            raise RuntimeError(missing) from None
         owner = json.dumps({"studio_home": str(studio_root()), "distro": distro_name()})
         guest(["mkdir", "-p", f"{GUEST_ROOT}/bin"])
         put(f"{GUEST_ROOT}/owner.json", owner)
@@ -452,14 +529,18 @@ def ensure_distro(progress = None, cancel = None) -> None:
     write_state(state = "ready", distro = distro_name())
 
 
-def prepare(progress = None, cancel = None) -> None:
+def prepare(
+    progress = None,
+    cancel = None,
+    platform = "cuda",
+) -> None:
     """Everything before the engine's own packages. Raises ``Waiting`` for a user step."""
     # vLLM and SGLang installs share one download, one elevation prompt and one distro import.
     with _PREPARE_LOCK:
-        _prepare(progress, cancel)
+        _prepare(progress, cancel, platform)
 
 
-def _prepare(progress, cancel) -> None:
+def _prepare(progress, cancel, platform) -> None:
     state = wsl_state()
     if state.startswith("blocked"):
         raise RuntimeError(state.partition(": ")[2])
@@ -469,7 +550,7 @@ def _prepare(progress, cancel) -> None:
         if progress:
             progress("Approve the Windows prompt to install WSL")
         enable_wsl()
-    ensure_distro(progress, cancel)
+    ensure_distro(progress, cancel, platform)
 
 
 def _uuid_table(output: str) -> dict[int, str]:
@@ -537,7 +618,7 @@ def unregister() -> None:
     if code and distro_name() in registered_distros():
         raise RuntimeError("Could not remove the WSL environment. " + output.strip()[-500:])
     shutil.rmtree(host_dir() / "distro", ignore_errors = True)
-    write_state(state = "removed")
+    write_state(state = "removed", rocm = None)
 
 
 def registered_distros() -> set[str]:
@@ -555,4 +636,4 @@ def _nvidia_smi() -> str:
 def summary() -> dict:
     """Status-poll view from the state file only: no wsl.exe call, so polling never boots WSL."""
     state = read_state()
-    return {"state": state.get("state"), "distro": state.get("distro")}
+    return {"state": state.get("state"), "distro": state.get("distro"), "rocm": state.get("rocm")}

@@ -1182,11 +1182,15 @@ def test_memory_reserve_grows_with_the_card(monkeypatch):
 
 def test_engine_start_reserves_a_share_of_the_card():
     import inspect
+    import re
     from core.inference import managed_engine
 
     # The local and the WSL launch both keep the share free.
     source = inspect.getsource(managed_engine)
-    assert source.count("memory_reserve_mib(self.engine, options), RESERVE_SHARE") == 2
+    assert (
+        len(re.findall(r"memory_reserve_mib\(self\.engine, options\),\s*RESERVE_SHARE", source))
+        == 2
+    )
 
 
 @_LOCAL_ENGINE_HOST

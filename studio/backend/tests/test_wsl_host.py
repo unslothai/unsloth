@@ -94,7 +94,11 @@ def test_restart_leaves_a_waiting_job_not_an_interrupted_one(wsl, monkeypatch):
     monkeypatch.setattr(install, "support_reason", lambda *a, **k: None)
     monkeypatch.setattr(install, "_record_manifest", lambda engine: None)
 
-    def prepare(progress = None, cancel = None):
+    def prepare(
+        progress = None,
+        cancel = None,
+        platform = "cuda",
+    ):
         raise wsl_host.Waiting(
             "Restart Windows to finish installing WSL, then click Install again."
         )
@@ -117,7 +121,7 @@ def test_secrets_cross_through_wslenv_not_argv(wsl, monkeypatch):
         ["python", "-V"], env = {"CUDA_VISIBLE_DEVICES": "GPU-1"}, secrets = {"HF_TOKEN": "hf_secret"}
     )
     assert "hf_secret" not in " ".join(command)
-    assert command[1:8] == ["-d", "Unsloth-Engines-test", "-u", "root", "--cd", "/root", "--"]
+    assert command[1:8] == ["-d", "Unsloth-Engines-test", "-u", "root", "--cd", "/root", "--exec"]
     assert "CUDA_VISIBLE_DEVICES=GPU-1" in command
     assert env["HF_TOKEN"] == "hf_secret"
     assert env["WSLENV"] == "USERPROFILE/p:HF_TOKEN/u"
@@ -172,7 +176,11 @@ def test_concurrent_installs_prepare_the_distro_one_at_a_time(monkeypatch):
 
     inside, peak = [0], [0]
 
-    def ensure_distro(progress = None, cancel = None):
+    def ensure_distro(
+        progress = None,
+        cancel = None,
+        platform = "cuda",
+    ):
         inside[0] += 1
         peak[0] = max(peak[0], inside[0])
         time.sleep(0.3)
@@ -336,7 +344,7 @@ def test_wsl_launch_command(wsl, monkeypatch):
         8123,
     )
     joined = " ".join(command)
-    assert command[command.index("--") + 2].endswith("/bin/run-engine")
+    assert command[command.index("--exec") + 2].endswith("/bin/run-engine")
     assert "CUDA_VISIBLE_DEVICES=0,2" in command and "CUDA_DEVICE_ORDER=PCI_BUS_ID" in command
     assert "VLLM_USE_DEEP_GEMM=0" in command and "CUDA_HOME=/env/cuda" in command
     assert f"HF_HOME={wsl_host.GUEST_ROOT}/hf" in command
@@ -559,3 +567,242 @@ def test_host_gpu_probes_hide_their_console_window(monkeypatch):
     except Exception:
         pass
     assert seen == [0x08000000] * 2
+
+
+@pytest.fixture
+def amd(wsl, monkeypatch):
+    """A Windows host whose Studio PyTorch is a ROCm build."""
+    monkeypatch.setattr(install, "gpu_platform", lambda: "rocm")
+
+    def no_nvidia(*_a, **_k):
+        raise AssertionError("nvidia-smi is not an AMD tool")
+
+    monkeypatch.setattr(install, "_driver_rows", no_nvidia)
+    monkeypatch.setattr(wsl_host, "guest_gpu_indices", no_nvidia)
+    return wsl
+
+
+def test_amd_on_windows_installs_rocm_inside_wsl(amd, monkeypatch):
+    from utils.hardware import hardware
+
+    monkeypatch.setattr(wsl_host, "native_machine", lambda: "x86_64")
+    monkeypatch.setattr(wsl_host, "windows_build", lambda: 26200)
+    inventory = {"devices": [{"vendor": "amd", "name": "AMD Radeon(TM) 8060S Graphics"}]}
+    monkeypatch.setattr(hardware, "get_physical_gpu_inventory", lambda block = True: inventory)
+    # The driver may not name the architecture; the install checks it inside WSL.
+    assert install.support_reason("vllm") is None
+    inventory["devices"][0]["gfx"] = "gfx1151"
+    assert install.support_reason("vllm") is None
+    # A card the Windows driver already names is refused before the ROCm download.
+    inventory["devices"][0]["gfx"] = "gfx1030"
+    assert install.support_reason("vllm", wait = False).endswith("(found gfx1030).")
+    assert (
+        install.support_reason("sglang") == "SGLang requires an NVIDIA GPU. Use vLLM on AMD GPUs."
+    )
+    assert install.profile("vllm")["lock"] == "vllm-linux-rocm723"
+
+
+@pytest.mark.parametrize(("agents", "supported"), [("gfx1151", True), ("gfx1030", False)])
+def test_amd_wsl_install_sets_up_rocm_before_the_engine(
+    amd, monkeypatch, tmp_path, agents, supported
+):
+    import threading
+
+    monkeypatch.setattr(install, "_record_manifest", lambda engine: None)
+    prepared, commands = [], []
+    monkeypatch.setattr(
+        wsl_host, "prepare", lambda progress, cancel, platform: prepared.append(platform)
+    )
+    monkeypatch.setattr(wsl_host, "download", lambda spec, name, *a: tmp_path / name)
+    monkeypatch.setattr(wsl_host, "to_guest_path", lambda path: "/mnt/c/" + Path(path).name)
+    monkeypatch.setattr(wsl_host, "put", lambda path, text, mode = "644": None)
+
+    def guest(
+        argv,
+        env = None,
+        timeout = 600,
+        input = None,
+    ):
+        if argv == ["/opt/rocm/bin/rocminfo"]:
+            assert env == wsl_host.ROCM_ENVIRONMENT
+            return f"  Name:                    {agents}\n  Name:   amdgcn-amd-amdhsa--{agents}\n"
+        if argv[-2].endswith("finalize.py"):
+            return json.dumps({"cuda_environment": {}, "deep_gemm_unloadable": False})
+        return ""
+
+    monkeypatch.setattr(wsl_host, "guest", guest)
+    monkeypatch.setattr(
+        install, "_run", lambda engine, argv, cancel, env = None: commands.append(argv)
+    )
+    if supported:
+        install._install_wsl("vllm", threading.Event())
+    else:
+        with pytest.raises(RuntimeError, match = r"Ryzen AI Max or AI 300 GPU \(found gfx1030\)"):
+            install._install_wsl("vllm", threading.Event())
+    assert prepared == ["rocm"]
+    setup = next(i for i, c in enumerate(commands) if c[-4].endswith("/bin/setup-rocm"))
+    assert commands[setup][-3:] == [
+        "/mnt/c/rocm.gpg.key",
+        "/mnt/c/rocdxg-roct_1.2.2_amd64.deb",
+        "/mnt/c/rocdxg-amd-smi-lib_1.2.2_amd64.deb",
+    ]
+    if not supported:
+        assert not any("venv" in c for c in commands)
+        return
+    venv = next(i for i, c in enumerate(commands) if "venv" in c)
+    assert setup < venv and commands[venv][-5:-1] == [
+        "--python",
+        "3.12",
+        "--python-preference",
+        "only-managed",
+    ]
+    sync = next(c for c in commands if "sync" in c)
+    assert sync[sync.index("--extra-index-url") + 1] == install.profile("vllm")["index"]
+    info = json.loads((install.engine_root() / "vllm" / "active.json").read_text())
+    assert info["platform"] == "rocm" and info["host"] == "wsl"
+    # Recorded, so the next install no longer prices the ROCm download.
+    assert wsl_host.summary()["rocm"] == wsl_host.ROCM_RELEASE
+
+
+def test_amd_wsl_price_includes_rocm_until_it_is_set_up(amd, monkeypatch):
+    monkeypatch.setattr(install, "_studio_packages", lambda: {})
+    sizes = install._compat_file("vllm")["sizes"]
+    engine = sum(size or 0 for size in sizes.values())
+    rocm = wsl_host.ROCM_APT_BYTES + sum(
+        spec["size"] for spec in (wsl_host.ROCM_APT_KEY, wsl_host.ROCDXG, wsl_host.ROCDXG_SMI)
+    )
+    distro = {"state": "ready", "distro": "Unsloth-Engines-test"}
+    monkeypatch.setattr(wsl_host, "summary", lambda: {**distro, "rocm": None})
+    assert install.download_bytes("vllm") == engine + rocm
+    monkeypatch.setattr(wsl_host, "summary", lambda: {**distro, "rocm": wsl_host.ROCM_RELEASE})
+    assert install.download_bytes("vllm") == engine
+
+
+def test_amd_wsl_launch_uses_one_hip_device_and_the_dxg_bridge(amd, monkeypatch):
+    from utils import vram_budget_settings
+
+    monkeypatch.setattr(wsl_host, "to_guest_path", lambda path: "/mnt/c/" + Path(path).name)
+    monkeypatch.setattr(vram_budget_settings, "get_vram_budget_fraction", lambda: 0.97)
+    measured = []
+
+    def rows(info, env, gpu_ids):
+        # The selected GPUs reach the capacity check, which reads them from Windows.
+        assert gpu_ids == [0]
+        measured.append(env)
+        return [(65536.0, 60000.0)]
+
+    monkeypatch.setattr(managed_engine, "_engine_memory_rows", rows)
+    guest = Path(wsl_host.GUEST_ROOT) / "engines" / "vllm" / "env-rocm" / "bin"
+    guest.mkdir(parents = True)
+    (guest / "python").write_text("", encoding = "utf-8")
+    (guest / "python").chmod(0o755)
+    engine = managed_engine.ManagedEngine("vllm")
+    engine.context = 2048
+    info = {"path": str(guest.parent), "host": "wsl", "platform": "rocm", "profile_digest": "d"}
+    command, _ = engine._wsl_command(info, {}, [0], None, False, "unsloth/Qwen3-0.6B", None, 8123)
+    assert "CUDA_VISIBLE_DEVICES=0" in command and "HIP_VISIBLE_DEVICES=0" in command
+    assert (
+        "HSA_ENABLE_DXG_DETECTION=1" in command and "LD_LIBRARY_PATH=/opt/rocm-wsl/lib" in command
+    )
+    assert measured and measured[0]["HSA_ENABLE_DXG_DETECTION"] == "1"
+    assert command[command.index("--gpu-memory-utilization") + 1] == "0.855"
+
+
+def test_amd_on_windows_loads_on_one_gpu(amd, monkeypatch):
+    from models.inference import LoadRequest
+
+    info = {"path": "/env", "version": "0.30.0", "profile_digest": install.profile_digest("vllm")}
+    monkeypatch.setattr(managed_engine, "installed", lambda _: info)
+    monkeypatch.setattr(managed_engine, "support_reason", lambda *a: None)
+    monkeypatch.setattr(managed_engine, "resolve_requested_gpu_ids", lambda ids: list(ids or [0]))
+    request = LoadRequest(model_path = "m", engine = "vllm", gpu_ids = [0, 1])
+    with pytest.raises(ValueError, match = "one AMD GPU"):
+        managed_engine.validate_load("vllm", request)
+    assert managed_engine.validate_load("vllm", request.model_copy(update = {"gpu_ids": [0]})) == [0]
+
+
+def test_an_amd_distro_checks_for_the_dxg_device(wsl, monkeypatch, tmp_path):
+    monkeypatch.setattr(wsl_host, "host_dir", lambda: tmp_path / "host")
+    monkeypatch.setattr(wsl_host, "distro_ready", lambda: False)
+    monkeypatch.setattr(wsl_host, "download", lambda *a, **k: tmp_path / "rootfs.tar.gz")
+    monkeypatch.setattr(wsl_host, "put", lambda *a, **k: None)
+    probed = []
+
+    def guest(argv, **kwargs):
+        probed.append(argv)
+        raise RuntimeError("missing")
+
+    monkeypatch.setattr(wsl_host, "guest", guest)
+    with pytest.raises(RuntimeError, match = "AMD Adrenalin driver"):
+        wsl_host.ensure_distro(platform = "rocm")
+    assert probed == [["test", "-e", "/dev/dxg"]]
+    with pytest.raises(RuntimeError, match = "NVIDIA Windows driver"):
+        wsl_host.ensure_distro()
+    assert probed[-1] == ["test", "-e", "/usr/lib/wsl/lib/libcuda.so"]
+
+
+def test_rocm_setup_script_is_idempotent_and_pinned():
+    script = wsl_host.ROCM_SETUP
+    assert "https://repo.radeon.com/rocm/apt/7.2.1 noble main" in script
+    assert "signed-by=/etc/apt/keyrings/rocm.asc" in script
+    for package in ("rocm-libs", "rocprofiler-sdk", "hsa-amd-aqlprofile", "libopenmpi3t64", "gcc"):
+        assert package in script
+    assert "7.2.1|7.2.1-*) installed=1" in script and 'apt-get install -y "$2" "$3"' in script
+    assert "{release}" not in script
+
+
+def test_amd_wsl_budget_stays_inside_what_the_host_can_back(monkeypatch):
+    # DXG reported 102 GiB on a 128 GB Strix Halo; an 84.5 GiB KV cache sized from that hung.
+    def guest(
+        argv,
+        env = None,
+        timeout = 600,
+        input = None,
+    ):
+        if argv == ["cat", "/proc/meminfo"]:
+            return "MemTotal:       65400496 kB\nMemAvailable:   62914560 kB\n"
+        assert argv[-1] == managed_engine._DEVICE_MEMORY
+        # wsl.exe returns stderr with stdout, and torch can warn after the measurement.
+        return json.dumps([[102 * 2**30, 102 * 2**30]]) + "\nUserWarning: amdsmi\n"
+
+    monkeypatch.setattr(wsl_host, "guest", guest)
+    info = {"path": "/env", "host": "wsl"}
+    # Windows' figure first: dedicated memory, plus 80% of the host's available RAM on an APU.
+    monkeypatch.setattr(managed_engine, "_wsl_amd_usable_mib", lambda ids: [80 * 1024.0])
+    assert managed_engine._engine_memory_rows(info, {}, [0]) == [(102 * 1024, 80 * 1024.0)]
+    # Windows cannot say: the VM's available memory is the bound.
+    monkeypatch.setattr(managed_engine, "_wsl_amd_usable_mib", lambda ids: None)
+    assert managed_engine._engine_memory_rows(info, {}, [0]) == [(102 * 1024, 61440.0)]
+    # Neither figure: the load is refused.
+    monkeypatch.setattr(wsl_host, "guest", lambda argv, **k: "" if argv[0] == "cat" else "[[1, 2]]")
+    with pytest.raises(ValueError, match = "memory of the WSL environment"):
+        managed_engine._engine_memory_rows(info, {}, [0])
+
+
+def test_amd_wsl_capacity_follows_the_windows_adapter(monkeypatch):
+    import types
+    from utils.hardware import hardware
+
+    props = types.SimpleNamespace(name = "AMD Radeon(TM) 8060S Graphics", gcnArchName = "gfx1151")
+    torch = types.SimpleNamespace(
+        cuda = types.SimpleNamespace(device_count = lambda: 1, get_device_properties = lambda i: props)
+    )
+    monkeypatch.setitem(sys.modules, "torch", torch)
+    monkeypatch.setattr(hardware, "_torch_ordinal_physical_ids", lambda count: [0])
+    monkeypatch.setattr(hardware, "_props_gfx_arch", lambda p: p.gcnArchName)
+    record = {"name": props.name, "gfx": "gfx1151", "dedicated_memory_bytes": 512 * 2**20}
+    monkeypatch.setattr(hardware, "_windows_amd_adapter_records_or_none", lambda: {1: record})
+    import psutil
+
+    monkeypatch.setattr(
+        psutil, "virtual_memory", lambda: types.SimpleNamespace(available = 100 * 2**30)
+    )
+    # An APU adds 80% of the RAM Windows has available to its dedicated memory.
+    monkeypatch.setattr(hardware, "_rocm_props_are_positively_unified", lambda p: True)
+    assert managed_engine._wsl_amd_usable_mib([0]) == [512 + 0.8 * 100 * 1024]
+    # A discrete card keeps its dedicated memory only.
+    monkeypatch.setattr(hardware, "_rocm_props_are_positively_unified", lambda p: False)
+    assert managed_engine._wsl_amd_usable_mib([0]) == [512.0]
+    # No registry record that names this GPU: Windows cannot say.
+    monkeypatch.setattr(hardware, "_windows_amd_adapter_records_or_none", lambda: None)
+    assert managed_engine._wsl_amd_usable_mib([0]) is None

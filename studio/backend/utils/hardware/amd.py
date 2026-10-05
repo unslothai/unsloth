@@ -621,6 +621,41 @@ def amd_kfd_gpu_node_count() -> Optional[int]:
     return count
 
 
+def amd_kfd_gpu_gfx_targets(
+    nodes: str = "/sys/class/kfd/kfd/topology/nodes",
+) -> Optional[list[str]]:
+    """The gfx target of each AMD GPU agent KFD enumerates, in HIP device order, or ``None``
+    when the topology cannot be read. HIP numbers GPU agents by KFD node id, so position N is
+    physical device N. ``gfx_target_version`` is written by amdkfd itself, so it is immune to
+    HSA_OVERRIDE_GFX_VERSION; it encodes major * 10000 + minor * 100 + stepping, the stepping
+    in hex (110501 is gfx1151, 90010 is gfx90a), as install_python_stack._kfd_gfx_targets reads
+    it. Unlike that one, an unreadable node fails the whole answer, since it would shift ordinals."""
+    try:
+        entries = sorted((int(e), e) for e in os.listdir(nodes) if e.isdigit())
+    except OSError:
+        return None
+    targets = []
+    for _node, entry in entries:
+        try:
+            with open(os.path.join(nodes, entry, "properties"), encoding = "utf-8") as fh:
+                properties = fh.read()
+        except (OSError, UnicodeDecodeError):
+            # A skipped GPU would shift every later ordinal onto the wrong target.
+            return None
+        simd = re.search(r"\bsimd_count\s+(\d+)\b", properties)
+        if not re.search(r"\bvendor_id\s+4098\b", properties) or (
+            simd is not None and int(simd.group(1)) == 0
+        ):
+            continue
+        version = re.search(r"\bgfx_target_version\s+(\d+)\b", properties)
+        raw = int(version.group(1)) if version else 0
+        major, minor, step = raw // 10000, (raw // 100) % 100, raw % 100
+        targets.append(
+            f"gfx{major}{minor}{step:x}" if raw > 0 and minor <= 9 and step <= 15 else ""
+        )
+    return targets
+
+
 def _amd_render_node_exists() -> bool:
     """Whether any AMD render node is present at all.
 

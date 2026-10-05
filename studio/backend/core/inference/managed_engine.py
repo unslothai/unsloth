@@ -8,6 +8,7 @@ from __future__ import annotations
 import json
 import hashlib
 import os
+import re
 import secrets
 import socket
 import subprocess
@@ -61,6 +62,10 @@ def validate_load(engine: str, request) -> list[int]:
     gpu_ids = resolve_requested_gpu_ids(gpu_ids) if gpu_ids else resolve_requested_gpu_ids(None)[:1]
     if not gpu_ids:
         raise ValueError("Studio has no GPU it can assign to this engine.")
+    from . import wsl_host
+
+    if len(gpu_ids) > 1 and wsl_host.active() and profile(engine)["platform"] == "rocm":
+        raise ValueError(f"On Windows, {engine} runs on one AMD GPU. Select a single GPU.")
     for gpu_id in gpu_ids:
         reason = support_reason(engine, gpu_id)
         if reason:
@@ -88,6 +93,14 @@ def validate_load(engine: str, request) -> list[int]:
 
     # Refused here, before the resident model is unloaded, not when the engine command is built.
     precision = getattr(request, "engine_precision", "auto")
+    loadable = profile(engine)["precisions"]
+    if precision not in loadable:
+        names = {"bf16": "BF16", "fp16": "FP16", "int8": "INT8", "fp8": "FP8", "int4": "4-bit"}
+        offered = ", ".join(names[p] for p in loadable if p != "auto")
+        raise ValueError(
+            f"{engine} on this GPU cannot load weights as {names.get(precision, precision)}. "
+            f"Choose {offered} or Model default."
+        )
     if (
         engine == "sglang"
         and precision in ("int8", "int4")
@@ -153,6 +166,11 @@ def validate_model(
         raise ValueError(
             "This checkpoint is already quantized. Choose Model default to use its stored precision."
         )
+    if quant.get("quant_method") == "bitsandbytes" and not profile(engine)["bitsandbytes"]:
+        raise ValueError(
+            f"{engine} on this GPU cannot load BitsAndBytes checkpoints. Choose an unquantized "
+            "or AWQ checkpoint."
+        )
     if (
         quant.get("quant_method") == "bitsandbytes"
         and len(gpu_ids or [0]) > 1
@@ -186,7 +204,7 @@ def validate_model(
         or (engine == "vllm" and precision == "int4" and parallelism != "pipeline")
         else "auto",
     }
-    if precision == "fp8":
+    if precision == "fp8" and profile(engine)["platform"] == "cuda":
         # Eager TorchAO FP8 on Ampere: Triton cannot compile its casts, SGLang online FP8 is invalid.
         from utils.hardware.nvidia import _nvidia_smi_executable
         result = subprocess.run(
@@ -240,6 +258,136 @@ def _deep_gemm_unloadable(environment: str) -> bool:
                 vendored.glob("_C.abi3*.so")
             )
     return False
+
+
+# The engine's own torch on its selected devices: on ROCm this is the view vLLM budgets
+# against, and no vendor CLI is required (amd-smi is optional, and absent in WSL).
+_DEVICE_MEMORY = (
+    "import json, torch; print(json.dumps("
+    "[torch.cuda.mem_get_info(i) for i in range(torch.cuda.device_count())]))"
+)
+
+
+def _memory_line(output: str) -> list:
+    """The probe's JSON out of everything the engine's imports print: wsl.exe returns stderr with
+    stdout, and torch can warn there after the measurement."""
+    for line in reversed(output.splitlines()):
+        if line.startswith("[["):
+            return json.loads(line)
+    raise ValueError("The GPU memory probe printed no measurement")
+
+
+def _wsl_amd_usable_mib(gpu_ids) -> list[float] | None:
+    """MiB each selected AMD GPU can allocate through WSL, or None when Windows cannot say.
+
+    Through DXG the pool HIP reports is the dedicated memory plus a share of the host's RAM, and an
+    allocation past what the host can back stalls instead of failing: on a 128 GB gfx1151 whose WSL
+    torch reported 102 GiB, touching 80 GiB took 13 s and 88 GiB never returned, and vLLM sized at
+    84.5 GiB hung after warmup. So a discrete card keeps its dedicated memory, and an APU adds 80%
+    of the host RAM Windows reports available now."""
+    try:
+        import psutil
+        import torch
+        from utils.hardware.hardware import (
+            _normalize_adapter_name,
+            _props_gfx_arch,
+            _rocm_props_are_positively_unified,
+            _torch_ordinal_physical_ids,
+            _windows_amd_adapter_records_or_none,
+        )
+
+        records = list((_windows_amd_adapter_records_or_none() or {}).values())
+        count = torch.cuda.device_count()
+        physical = _torch_ordinal_physical_ids(count) or list(range(count))
+        available = psutil.virtual_memory().available
+        caps = []
+        for gpu_id in gpu_ids:
+            props = torch.cuda.get_device_properties(physical.index(gpu_id))
+            matches = [
+                record
+                for record in records
+                if record.get("gfx") == _props_gfx_arch(props)
+                or _normalize_adapter_name(record["name"]) == _normalize_adapter_name(props.name)
+            ]
+            if len(matches) != 1 or "dedicated_memory_bytes" not in matches[0]:
+                return None
+            usable = matches[0]["dedicated_memory_bytes"]
+            if _rocm_props_are_positively_unified(props):
+                usable += 0.8 * available
+            caps.append(usable / 2**20)
+        return caps
+    except Exception:
+        return None
+
+
+def _engine_memory_rows(
+    info: dict, child_env: dict, gpu_ids: list[int]
+) -> list[tuple[float, float]]:
+    """(total, free) MiB of each device the engine will see, in its order."""
+    from . import wsl_host
+
+    command = [info["path"] + "/bin/python", "-I", "-c", _DEVICE_MEMORY]
+    if info.get("host") == "wsl":
+        output = wsl_host.guest(command, env = child_env, timeout = 180)
+    else:
+        output = subprocess.run(
+            command,
+            env = child_env,
+            capture_output = True,
+            **windows_hidden_subprocess_kwargs(),
+            text = True,
+            encoding = "utf-8",
+            errors = "replace",
+            timeout = 180,
+            check = True,
+        ).stdout
+    rows = [(total / 2**20, free / 2**20) for free, total in _memory_line(output)]
+    if info.get("host") == "wsl":
+        caps = _wsl_amd_usable_mib(list(gpu_ids))
+        if caps is None or len(caps) != len(rows):
+            # Windows did not say; the VM's own free memory is the smaller, safe bound.
+            meminfo = wsl_host.guest(["cat", "/proc/meminfo"], timeout = 60)
+            match = re.search(r"^MemAvailable:\s+(\d+) kB", meminfo, re.M)
+            if not match:
+                raise ValueError("Could not read the memory of the WSL environment")
+            caps = [int(match.group(1)) / 1024] * len(rows)
+        rows = [(total, min(free, cap)) for (total, free), cap in zip(rows, caps)]
+    return rows
+
+
+def _rocm_visibility(env: dict, gpu_ids) -> dict:
+    """The child's device mask on ROCm. vLLM refuses a HIP_VISIBLE_DEVICES that differs from
+    CUDA_VISIBLE_DEVICES, and HIP numbers devices after an inherited ROCR_VISIBLE_DEVICES, so the
+    physical ids become ordinals into that list, or the ROCr mask goes when they cannot."""
+    from utils.hardware.hardware import _rocr_relative_visibility
+
+    physical = ",".join(str(i) for i in gpu_ids)
+    mask = _rocr_relative_visibility(physical)
+    if mask is None:
+        env.pop("ROCR_VISIBLE_DEVICES", None)
+        mask = physical
+    return {"HIP_VISIBLE_DEVICES": mask, "CUDA_VISIBLE_DEVICES": mask}
+
+
+# SGLang raises when its derived gRPC port (HTTP + 10000) exceeds 65535.
+_PORT_LIMIT = 55535
+
+
+def _free_port() -> int:
+    """A free local port no higher than _PORT_LIMIT. Windows hands out ephemeral ports in sequence
+    from 49152, so once its counter passes the limit the OS never offers a low enough one; free
+    ports below it are then tried at random."""
+    for attempt in range(100):
+        with socket.socket() as sock:
+            candidate = 0 if attempt == 0 else 20000 + secrets.randbelow(_PORT_LIMIT - 20000 + 1)
+            try:
+                sock.bind(("127.0.0.1", candidate))
+            except OSError:
+                continue
+            port = sock.getsockname()[1]
+        if port <= _PORT_LIMIT:
+            return port
+    raise RuntimeError("Could not allocate an inference server port.")
 
 
 # Engine silence, not total startup time: an uncached Hub model downloads inside the engine.
@@ -321,15 +469,7 @@ class ManagedEngine:
                 info = installed(self.engine)
                 if info is None:
                     raise RuntimeError("The selected engine is no longer installed.")
-                # SGLang raises when its derived gRPC port (HTTP + 10000) exceeds 65535.
-                for _ in range(100):
-                    with socket.socket() as sock:
-                        sock.bind(("127.0.0.1", 0))
-                        port = sock.getsockname()[1]
-                    if port <= 55535:
-                        break
-                else:
-                    raise RuntimeError("Could not allocate an inference server port.")
+                port = _free_port()
                 self.base_url = f"http://127.0.0.1:{port}"
                 self.model, self.context = model, context or 4096
                 stdin = None
@@ -362,6 +502,9 @@ class ManagedEngine:
                         ]
                     )
                     child_env["CUDA_VISIBLE_DEVICES"] = ",".join(str(i) for i in (gpu_ids or [0]))
+                    rocm = info.get("platform") == "rocm"
+                    if rocm:
+                        child_env.update(_rocm_visibility(child_env, gpu_ids or [0]))
                     child_env["PYTHONNOUSERSITE"] = "1"
                     from .engine_install import engine_root
 
@@ -380,8 +523,14 @@ class ManagedEngine:
 
                     child_env.pop("CUDA_PATH", None)
                     child_env.update(cuda_environment(info))
+                    measure = (
+                        (lambda ids: _engine_memory_rows(info, child_env, ids)) if rocm else None
+                    )
                     memory_fraction = gpu_memory_fraction(
-                        gpu_ids or [0], memory_reserve_mib(self.engine, options), RESERVE_SHARE
+                        gpu_ids or [0],
+                        memory_reserve_mib(self.engine, options),
+                        RESERVE_SHARE,
+                        measure,
                     )
                     child_env.update(self.adapter.environment(len(gpu_ids or [0])))
                     child_env.update(self.adapter.key_environment(self.key))
@@ -455,8 +604,10 @@ class ManagedEngine:
                     except httpx.HTTPError:
                         pass
                     self._cancel.wait(0.25)
+                # The last output says where it stalled, as a failed start's does.
                 raise RuntimeError(
-                    "Engine startup timed out. Try a smaller model or context length."
+                    "Engine startup timed out. Try a smaller model or context length.\n"
+                    + "\n".join(list(self._tail)[-20:])
                 )
         except Exception:
             self.stop()
@@ -486,13 +637,20 @@ class ManagedEngine:
         environment = info["path"]
         wsl_host.guest(["test", "-x", environment + "/bin/python"], timeout = 300)
         cache = f"{guest_root}/cache/{self.engine}/{self._cache_key(info, model, gpu_ids, options)}"
+        rocm = info.get("platform") == "rocm"
+        # NVIDIA GPUs are matched by UUID; the one AMD GPU a WSL engine may use is the same ordinal.
+        devices = ",".join(
+            str(i)
+            for i in (
+                list(gpu_ids or [0]) if rocm else wsl_host.guest_gpu_indices(list(gpu_ids or [0]))
+            )
+        )
         guest_env = {
             "PATH": environment
             + "/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/lib/wsl/lib",
             "CUDA_DEVICE_ORDER": "PCI_BUS_ID",
-            "CUDA_VISIBLE_DEVICES": ",".join(
-                str(i) for i in wsl_host.guest_gpu_indices(list(gpu_ids or [0]))
-            ),
+            "CUDA_VISIBLE_DEVICES": devices,
+            **({"HIP_VISIBLE_DEVICES": devices, **wsl_host.ROCM_ENVIRONMENT} if rocm else {}),
             "PYTHONNOUSERSITE": "1",
             # Weights download inside the distro's own disk; /mnt/c reads are far slower.
             "HF_HOME": f"{guest_root}/hf",
@@ -511,6 +669,7 @@ class ManagedEngine:
         if self.engine == "vllm" and info.get("deep_gemm_unloadable"):
             guest_env["VLLM_USE_DEEP_GEMM"] = "0"
         target = wsl_host.to_guest_path(model_path) if model_path else model
+        measure = (lambda ids: _engine_memory_rows(info, guest_env, ids)) if rocm else None
         command = self.adapter.command(
             environment + "/bin/python",
             target,
@@ -518,7 +677,7 @@ class ManagedEngine:
             self.key,
             self.context,
             gpu_memory_fraction(
-                gpu_ids or [0], memory_reserve_mib(self.engine, options), RESERVE_SHARE
+                gpu_ids or [0], memory_reserve_mib(self.engine, options), RESERVE_SHARE, measure
             ),
             len(gpu_ids or [0]),
             **(

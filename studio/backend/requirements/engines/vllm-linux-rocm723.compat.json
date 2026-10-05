@@ -1,0 +1,782 @@
+{
+ "lock_sha256": "6d85f7ded51a9040fd55741a3d353374de3a2e5a5fc49a37d63d2731887fe2af",
+ "requires": {
+  "accelerate": [
+   ">=0.21.0"
+  ],
+  "agent-detector": [
+   ">=1.1.0"
+  ],
+  "aiohappyeyeballs": [
+   ">=2.5.0"
+  ],
+  "aiohttp": [
+   "!=4.0.0a0,!=4.0.0a1"
+  ],
+  "aiosignal": [
+   ">=1.4.0"
+  ],
+  "annotated-doc": [
+   ">=0.0.2"
+  ],
+  "annotated-types": [
+   ">=0.6.0"
+  ],
+  "anyio": [
+   "<5,>=4.0.0",
+   "<5,>=4.1.0",
+   "<5,>=4.10.0",
+   ">=3.0.0",
+   ">=4.10",
+   ">=4.7.0",
+   ">=4.9"
+  ],
+  "apache-tvm-ffi": [
+   ">=0.1.10",
+   ">=0.1.10,~=0.1.0"
+  ],
+  "attrs": [
+   ">=17.3.0",
+   ">=22.2.0"
+  ],
+  "azure-core": [
+   ">=1.31.0",
+   ">=1.37.0"
+  ],
+  "boto3": [
+   ">=1.26.0"
+  ],
+  "botocore": [
+   "<1.44.0,>=1.43.108",
+   "<2.0a.0,>=1.37.4"
+  ],
+  "certifi": [
+   ">=2023.5.7"
+  ],
+  "cffi": [
+   ">=2.0.0"
+  ],
+  "charset-normalizer": [
+   "<4,>=2"
+  ],
+  "click": [
+   "<9.0.0,>=8.4.2",
+   ">=7.0",
+   ">=8.1.7"
+  ],
+  "cloudpickle": [
+   ">=3.0"
+  ],
+  "cryptography": [
+   "<51,>=2.5",
+   ">=2.1.4",
+   ">=2.5",
+   ">=3.4.0",
+   ">=38.0.3"
+  ],
+  "datasets": [
+   ">=2.0.0"
+  ],
+  "detect-installer": [
+   ">=0.1.0"
+  ],
+  "dill": [
+   "<0.4.2,>=0.3.0",
+   ">=0.4.1"
+  ],
+  "dnspython": [
+   ">=2.0.0"
+  ],
+  "docstring-parser": [
+   "<1,>=0.15"
+  ],
+  "email-validator": [
+   ">=2.0.0"
+  ],
+  "fastar": [
+   ">=0.10.0"
+  ],
+  "filelock": [
+   ">=3.10.0"
+  ],
+  "frozenlist": [
+   ">=1.1.0",
+   ">=1.1.1"
+  ],
+  "fsspec": [
+   "<=2026.6.0,>=2023.1.0",
+   ">=2021.05.0",
+   ">=2023.5.0"
+  ],
+  "google-api-core": [
+   "<3.0.0,>=2.27.0",
+   "<3.0.0,>=2.28.0"
+  ],
+  "google-auth": [
+   "!=2.24.0,!=2.25.0,<3.0.0,>=2.14.1",
+   "<3.0.0,>=2.14.1",
+   "<3.0.0,>=2.26.1"
+  ],
+  "google-cloud-core": [
+   "<3.0.0,>=2.4.2"
+  ],
+  "google-crc32c": [
+   "<2.0.0,>=1.0.0",
+   "<2.0.0,>=1.6.0"
+  ],
+  "google-resumable-media": [
+   "<3.0.0,>=2.7.2"
+  ],
+  "googleapis-common-protos": [
+   "<2.0.0,>=1.69.2",
+   "~=1.52",
+   "~=1.57"
+  ],
+  "grpcio": [
+   "<2.0.0,>=1.63.2",
+   ">=1.78.0"
+  ],
+  "h11": [
+   ">=0.16",
+   ">=0.8"
+  ],
+  "hf-xet": [
+   "<2.0.0,>=1.6.0"
+  ],
+  "hiredis": [
+   ">=2.2.0"
+  ],
+  "httpcore": [
+   "==1.*"
+  ],
+  "httpcore2": [
+   "==2.13.1"
+  ],
+  "httptools": [
+   ">=0.8.0"
+  ],
+  "httpx": [
+   "<1,>=0.23.0",
+   "<1.0.0",
+   ">=0.27.0"
+  ],
+  "httpx2": [
+   "<3,>=2.0.0",
+   "<3,>=2.12.0",
+   ">=2.10.0"
+  ],
+  "huggingface-hub": [
+   "<2.0,>=0.16.4",
+   "<2.0,>=0.25.0",
+   "<2.0,>=1.5.0",
+   ">=0.21.0",
+   ">=0.25.0",
+   ">=0.7.0"
+  ],
+  "idna": [
+   "<4,>=2.5",
+   ">=2.0",
+   ">=2.0.0",
+   ">=2.8",
+   ">=3.18"
+  ],
+  "iniconfig": [
+   ">=1.0.1"
+  ],
+  "interegular": [
+   ">=0.3.2"
+  ],
+  "isodate": [
+   ">=0.6.1"
+  ],
+  "jiter": [
+   "<1,>=0.16.0",
+   "<1,>=0.4.0"
+  ],
+  "jmespath": [
+   "<2.0.0,>=0.7.1"
+  ],
+  "jsonschema": [
+   ">=4.20.0",
+   ">=4.21.1"
+  ],
+  "jsonschema-specifications": [
+   ">=2023.03.6"
+  ],
+  "libnacl": [
+   ">=2.1.0"
+  ],
+  "llvmlite": [
+   "<0.48,>=0.47.0dev0"
+  ],
+  "markdown-it-py": [
+   ">=2.2.0"
+  ],
+  "markupsafe": [
+   ">=2.0"
+  ],
+  "mcp-types": [
+   "==2.3.0"
+  ],
+  "mdurl": [
+   "~=0.1"
+  ],
+  "ml-dtypes": [
+   ">=0.5.0",
+   ">=0.5.4"
+  ],
+  "mpmath": [
+   "<1.4,>=1.1.0"
+  ],
+  "msal": [
+   "<2,>=1.29",
+   ">=1.39.0"
+  ],
+  "msal-extensions": [
+   ">=1.2.0"
+  ],
+  "multidict": [
+   "<7.0,>=4.5",
+   ">=4.0"
+  ],
+  "multiprocess": [
+   "<0.70.20"
+  ],
+  "narwhals": [
+   ">=1.15.1"
+  ],
+  "numpy": [
+   "<2.4,>=1.25",
+   "<2.5,>=1.22",
+   "<2.8,>=2.0.0",
+   ">=1.17",
+   ">=1.19.5",
+   ">=1.22",
+   ">=1.23.2",
+   ">=1.23.5",
+   ">=1.26.0",
+   ">=1.26.4",
+   ">=2",
+   ">=2.0",
+   ">=2.0.0"
+  ],
+  "onnx": [
+   "<=1.22.0,>=1.21.0",
+   ">=1.16",
+   ">=1.17"
+  ],
+  "onnx-ir": [
+   "<2,>=0.1.16"
+  ],
+  "onnxslim": [
+   ">=0.1.84"
+  ],
+  "opentelemetry-api": [
+   "<2.0.0,>=1.44.0",
+   "==1.45.0",
+   ">=1.28.0",
+   "~=1.15"
+  ],
+  "opentelemetry-exporter-http-transport": [
+   "==0.66b0"
+  ],
+  "opentelemetry-exporter-otlp-common": [
+   "==0.66b0"
+  ],
+  "opentelemetry-exporter-otlp-proto-common": [
+   "==1.45.0"
+  ],
+  "opentelemetry-exporter-otlp-proto-grpc": [
+   "==1.45.0"
+  ],
+  "opentelemetry-exporter-otlp-proto-http": [
+   "==1.45.0"
+  ],
+  "opentelemetry-proto": [
+   "==1.45.0"
+  ],
+  "opentelemetry-sdk": [
+   "<2,>=1.38.0",
+   "~=1.45.0"
+  ],
+  "opentelemetry-semantic-conventions": [
+   "==0.66b0",
+   ">=0.59b0"
+  ],
+  "packaging": [
+   ">=20",
+   ">=20.0",
+   ">=20.9",
+   ">=22",
+   ">=26.2"
+  ],
+  "pillow": [
+   ">=10.3.0"
+  ],
+  "pluggy": [
+   "<2,>=1.5"
+  ],
+  "prometheus-client": [
+   "<1.0.0,>=0.8.0"
+  ],
+  "propcache": [
+   ">=0.2.0",
+   ">=0.2.1"
+  ],
+  "proto-plus": [
+   "<2.0.0,>=1.26.1"
+  ],
+  "protobuf": [
+   "<7.0.0,>=6.31.1",
+   "<8.0,>=5.0",
+   "<8.0.0,>=6.33.5",
+   ">=3.19.5",
+   ">=4.25.1"
+  ],
+  "psutil": [
+   ">=5.9.4"
+  ],
+  "pyarrow": [
+   ">=21.0.0"
+  ],
+  "pyasn1": [
+   "<0.7.0,>=0.6.1"
+  ],
+  "pyasn1-modules": [
+   ">=0.2.1"
+  ],
+  "pycountry": [
+   ">=23"
+  ],
+  "pydantic": [
+   "!=2.0.*,!=2.1.*,!=2.2.*,!=2.3.*,<3,>=1.10.13",
+   "<3,>=1.10.0",
+   "<3.0,>=2.7",
+   ">=1.10.8",
+   ">=2.0",
+   ">=2.11.7",
+   ">=2.12.0",
+   ">=2.5.2",
+   ">=2.7.0",
+   ">=2.7.4",
+   ">=2.9.0"
+  ],
+  "pydantic-core": [
+   "==2.46.5"
+  ],
+  "pydantic-extra-types": [
+   ">=2.10.5"
+  ],
+  "pygments": [
+   "<3.0.0,>=2.13.0",
+   ">=2.7.2"
+  ],
+  "pyjwt": [
+   "<3,>=1.0.0",
+   ">=2.10.1"
+  ],
+  "pytest": [
+   "<10,>=8.4"
+  ],
+  "python-dateutil": [
+   "<3.0.0,>=2.1",
+   ">=2.8.2"
+  ],
+  "python-dotenv": [
+   ">=0.13",
+   ">=0.21.0"
+  ],
+  "python-multipart": [
+   ">=0.0.9"
+  ],
+  "pyyaml": [
+   ">=5.1"
+  ],
+  "redis": [
+   ">=4.5.5"
+  ],
+  "referencing": [
+   ">=0.28.4",
+   ">=0.31.0"
+  ],
+  "regex": [
+   ">=2025.10.22"
+  ],
+  "requests": [
+   "<3,>=2.0.0",
+   "<3.0.0,>=2.22.0",
+   "<3.0.0,>=2.33.0",
+   ">=2.0.0",
+   ">=2.19.0",
+   ">=2.21.0",
+   ">=2.32.2"
+  ],
+  "rich": [
+   ">=13.7.1",
+   ">=13.8.0"
+  ],
+  "rich-toolkit": [
+   ">=0.14.8",
+   ">=0.20.5"
+  ],
+  "rignore": [
+   ">=0.5.1"
+  ],
+  "rpds-py": [
+   ">=0.25.0",
+   ">=0.7.0"
+  ],
+  "s3transfer": [
+   "<0.20.0,>=0.19.0"
+  ],
+  "safetensors": [
+   ">=0.4.3"
+  ],
+  "semantic-version": [
+   "<3,>=2.8.2"
+  ],
+  "sentry-sdk": [
+   ">=2.20.0"
+  ],
+  "setuptools": [
+   ">=62.4"
+  ],
+  "shellingham": [
+   ">=1.3.0"
+  ],
+  "six": [
+   ">=1.5"
+  ],
+  "sniffio": [
+   "<2,>=1"
+  ],
+  "sse-starlette": [
+   ">=3.0.0"
+  ],
+  "starlette": [
+   "<2.0.0,>=1.0.0",
+   ">=0.27",
+   ">=0.46.0",
+   ">=0.49.1"
+  ],
+  "supervisor": [
+   ">=4.2.0"
+  ],
+  "sympy": [
+   ">=1.13",
+   ">=1.13.1"
+  ],
+  "tiktoken": [
+   ">=0.7.0"
+  ],
+  "tokenizers": [
+   "<=0.23.0,>=0.22.0"
+  ],
+  "torch": [
+   "<3.0.0,>=2.0.0",
+   ">=1.10.0",
+   ">=1.13.0",
+   ">=1.9.0",
+   ">=2.0.0",
+   ">=2.10.0"
+  ],
+  "tqdm": [
+   ">=4.42.1",
+   ">=4.60",
+   ">=4.62.1",
+   ">=4.62.3",
+   ">=4.66.3"
+  ],
+  "transformers": [
+   ">=4.38.0",
+   ">=4.45.0"
+  ],
+  "truststore": [
+   ">=0.10"
+  ],
+  "typer": [
+   ">=0.16.0",
+   ">=0.26.1",
+   ">=0.9.0"
+  ],
+  "typing-extensions": [
+   "<5,>=4.14",
+   ">=4.0.0",
+   ">=4.1.0",
+   ">=4.10",
+   ">=4.10.0",
+   ">=4.11.0",
+   ">=4.12",
+   ">=4.12.2",
+   ">=4.13.0",
+   ">=4.14.1",
+   ">=4.15.0",
+   ">=4.16.0",
+   ">=4.2",
+   ">=4.4",
+   ">=4.4.0",
+   ">=4.5",
+   ">=4.5.0",
+   ">=4.6.0",
+   ">=4.8.0",
+   ">=4.9.0",
+   "~=4.12"
+  ],
+  "typing-inspection": [
+   ">=0.4.0",
+   ">=0.4.1",
+   ">=0.4.2"
+  ],
+  "urllib3": [
+   "!=2.2.0,<3,>=1.25.4",
+   "<3,>=1.26",
+   ">=1.26",
+   ">=1.26.11"
+  ],
+  "uvicorn": [
+   ">=0.15.0",
+   ">=0.17.6",
+   ">=0.31.1"
+  ],
+  "uvloop": [
+   ">=0.15.1"
+  ],
+  "vcs-versioning": [
+   "<3,>=2.5.0.dev0"
+  ],
+  "watchfiles": [
+   ">=0.20"
+  ],
+  "websockets": [
+   ">=13.0"
+  ],
+  "yarl": [
+   "<2.0,>=1.17.0"
+  ],
+  "z3-solver": [
+   "<4.15.5,>=4.13.0"
+  ]
+ },
+ "sizes": {
+  "accelerate": 394295,
+  "agent-detector": 9352,
+  "aiohappyeyeballs": 15038,
+  "aiohttp": 1792122,
+  "aiosignal": 7490,
+  "amd-aiter": 765598095,
+  "amd-quark": 1513500,
+  "amdsmi": 1101727,
+  "annotated-doc": 5302,
+  "annotated-types": 13427,
+  "anthropic": 1681654,
+  "anyio": 132079,
+  "apache-tvm-ffi": 2571084,
+  "astor": 27488,
+  "attrs": 67548,
+  "azure-core": 220920,
+  "azure-identity": 195958,
+  "azure-storage-blob": 455738,
+  "blake3": 382390,
+  "boto3": 140045,
+  "botocore": 16008194,
+  "cachetools": 16918,
+  "cbor2": 463316,
+  "certifi": 136983,
+  "cffi": 221822,
+  "charset-normalizer": 257601,
+  "click": 125251,
+  "cloudpickle": 22228,
+  "colorama": 25335,
+  "compressed-tensors": 211714,
+  "conch-triton-kernels": 96090,
+  "cryptography": 4752576,
+  "datasets": 559079,
+  "depyf": 39381,
+  "detect-installer": 5371,
+  "dill": 120019,
+  "dnspython": 331094,
+  "docstring-parser": 22484,
+  "einops": 65638,
+  "email-validator": 35604,
+  "evaluate": 84069,
+  "fastapi": 117481,
+  "fastapi-cli": 14670,
+  "fastapi-cloud-cli": 108653,
+  "fastar": 808091,
+  "fastsafetensors": 2096153,
+  "filelock": 111732,
+  "flash-attn": 125066389,
+  "flydsl": 76252969,
+  "frozenlist": 242411,
+  "fsspec": 203949,
+  "google-api-core": 214233,
+  "google-auth": 263519,
+  "google-cloud-core": 31048,
+  "google-cloud-storage": 343457,
+  "google-crc32c": 36347,
+  "google-resumable-media": 81515,
+  "googleapis-common-protos": 307737,
+  "grpcio": 6690766,
+  "grpcio-reflection": 22800,
+  "h11": 37515,
+  "hf-xet": 4464663,
+  "hiredis": 313508,
+  "httpcore": 78784,
+  "httpcore2": 83423,
+  "httptools": 523851,
+  "httpx": 73517,
+  "httpx2": 95597,
+  "huggingface-hub": 846435,
+  "humanize": 137209,
+  "idna": 69583,
+  "ijson": 149848,
+  "iniconfig": 7484,
+  "interegular": 23635,
+  "isodate": 22320,
+  "jinja2": 134899,
+  "jiter": 345025,
+  "jmespath": 20419,
+  "joblib": 306115,
+  "jsonschema": 90630,
+  "jsonschema-specifications": 18437,
+  "lark": 111036,
+  "libnacl": 21870,
+  "llguidance": 3074809,
+  "llvmlite": 56275178,
+  "lm-format-enforcer": 45418,
+  "loguru": 61595,
+  "markdown-it-py": 91687,
+  "markupsafe": 22985,
+  "mcp": 368664,
+  "mcp-types": 69108,
+  "mdurl": 9979,
+  "mistral-common": 6580267,
+  "ml-dtypes": 409890,
+  "model-hosting-container-standards": 125666,
+  "mooncake-transfer-engine-rocm": 33367295,
+  "mpmath": 536198,
+  "msal": 131629,
+  "msal-extensions": 20583,
+  "msgpack": 472998,
+  "msgspec": 230377,
+  "multidict": 336881,
+  "multiprocess": 150281,
+  "narwhals": 483037,
+  "networkx": 2142205,
+  "ninja": 183365,
+  "numba": 3801411,
+  "numpy": 16606086,
+  "onnx": 19106514,
+  "onnx-ir": 185849,
+  "onnxscript": 754215,
+  "onnxslim": 244468,
+  "openai": 2127166,
+  "openai-harmony": 2953260,
+  "opencv-python-headless": 61204038,
+  "opentelemetry-api": 60020,
+  "opentelemetry-exporter-http-transport": 12156,
+  "opentelemetry-exporter-otlp": 6728,
+  "opentelemetry-exporter-otlp-common": 12387,
+  "opentelemetry-exporter-otlp-proto-common": 15394,
+  "opentelemetry-exporter-otlp-proto-grpc": 19492,
+  "opentelemetry-exporter-otlp-proto-http": 22260,
+  "opentelemetry-proto": 72486,
+  "opentelemetry-sdk": 140132,
+  "opentelemetry-semantic-conventions": 206277,
+  "opentelemetry-semantic-conventions-ai": 11250,
+  "outlines-core": 2341426,
+  "packaging": 129956,
+  "pandas": 10788193,
+  "partial-json-parser": 10877,
+  "peft": 835427,
+  "pillow": 6940830,
+  "plotly": 9692368,
+  "pluggy": 20538,
+  "prometheus-client": 64494,
+  "prometheus-fastapi-instrumentator": 19649,
+  "propcache": 250424,
+  "proto-plus": 50786,
+  "protobuf": 323436,
+  "psutil": 155560,
+  "py-cpuinfo": 22335,
+  "pyarrow": 50102437,
+  "pyasn1": 84410,
+  "pyasn1-modules": 181259,
+  "pybase64": 94689,
+  "pybind11": 319402,
+  "pycountry": 8044600,
+  "pycparser": 48172,
+  "pydantic": 472589,
+  "pydantic-core": 2066284,
+  "pydantic-extra-types": 79526,
+  "pydantic-settings": 69413,
+  "pygments": 1250147,
+  "pyjwt": 33860,
+  "pytest": 386536,
+  "pytest-asyncio": 16930,
+  "python-dateutil": 229892,
+  "python-dotenv": 23266,
+  "python-json-logger": 14988,
+  "python-multipart": 30042,
+  "pyyaml": 807870,
+  "pyzmq": 872258,
+  "redis": 560618,
+  "referencing": 26766,
+  "regex": 807783,
+  "requests": 73075,
+  "rich": 310654,
+  "rich-toolkit": 39370,
+  "rignore": 927835,
+  "rpds-py": 371261,
+  "runai-model-streamer": 608334,
+  "runai-model-streamer-azure": 5569045,
+  "runai-model-streamer-gcs": 4420357,
+  "runai-model-streamer-s3": 5919883,
+  "s3transfer": 90216,
+  "safetensors": 516040,
+  "scipy": 35344199,
+  "semantic-version": 15552,
+  "sentencepiece": 1397736,
+  "sentry-sdk": 534254,
+  "setproctitle": 32929,
+  "setuptools": 1256281,
+  "setuptools-rust": 30536,
+  "setuptools-scm": 33366,
+  "shellingham": 9755,
+  "six": 11050,
+  "sniffio": 10235,
+  "sse-starlette": 17407,
+  "starlette": 78980,
+  "supervisor": 320736,
+  "sympy": 6299353,
+  "tensorizer": 98175,
+  "tiktoken": 1204197,
+  "tilelang": 49768455,
+  "timm": 2668917,
+  "tokenizers": 3274982,
+  "torch": 1351207024,
+  "torch-c-dlpack-ext": 897846,
+  "torchao": 3206172,
+  "torchaudio": 1381485,
+  "torchvision": 993784,
+  "tqdm": 80199,
+  "transformers": 11150587,
+  "triton": 365002258,
+  "truststore": 18660,
+  "typer": 123130,
+  "typing-extensions": 45571,
+  "typing-inspection": 14750,
+  "urllib3": 135717,
+  "uvicorn": 87427,
+  "uvloop": 4532597,
+  "vcs-versioning": 122897,
+  "vllm": 297155731,
+  "watchfiles": 458353,
+  "websockets": 225299,
+  "xgrammar": 1265122,
+  "xxhash": 261812,
+  "yarl": 117050,
+  "z3-solver": 29268352,
+  "zstandard": 5546993
+ }
+}
