@@ -157,11 +157,177 @@ def _gemma_rms_layernorm_forward(
     tl.store(Y + col_offsets, output, mask = mask)
 
 
+@triton.jit
+def _fold_lanes(x, ROWS: tl.constexpr, WARPS: tl.constexpr, HALF: tl.constexpr):
+    # [ROWS, WARPS, 2 * HALF] -> [ROWS, WARPS, HALF]: lane l + lane l ^ HALF, one add per pair.
+    return tl.sum(tl.reshape(x, (ROWS, WARPS, 2, HALF)), axis = 2)
+
+
+@triton.jit
+def _row_dot_in_row_kernel_order(a, b, ROWS: tl.constexpr, WARPS: tl.constexpr):
+    """
+    tl.sum(a * b, axis = 1) over [ROWS, 32 * WARPS] tiles, rounded exactly like
+    tl.sum(a * b, axis = 0) in the one-row kernels (4 warps, one element per lane and WARPS of
+    them holding data, so 64 <= BLOCK_SIZE <= 128). There lane l < 16 fuses its product into the first shuffle,
+    fma(a_l, b_l, a_(l + 16) * b_(l + 16)), lanes then add by xor 8, 4, 2, 1 and warps by xor 2, 1.
+    Every step here is one explicit fma or one add of two values, so the result does not depend
+    on how this kernel lays out its tile.
+    """
+    a = tl.permute(tl.reshape(a, (ROWS, WARPS, 2, 16)), (0, 1, 3, 2))
+    b = tl.permute(tl.reshape(b, (ROWS, WARPS, 2, 16)), (0, 1, 3, 2))
+    a_lo, a_hi = tl.split(a)
+    b_lo, b_hi = tl.split(b)
+    acc = tl.fma(a_lo, b_lo, a_hi * b_hi)
+    acc = _fold_lanes(acc, ROWS, WARPS, 8)
+    acc = _fold_lanes(acc, ROWS, WARPS, 4)
+    acc = _fold_lanes(acc, ROWS, WARPS, 2)
+    acc = _fold_lanes(acc, ROWS, WARPS, 1)
+    acc = tl.reshape(acc, (ROWS, WARPS))
+    if WARPS == 4:
+        acc = tl.sum(tl.reshape(acc, (ROWS, 2, 2)), axis = 1)
+    return tl.sum(acc, axis = 1)
+
+
+@triton.jit
+def _rms_layernorm_forward_rows(
+    Y,
+    Y_row_stride: tl.constexpr,
+    X,
+    X_row_stride: tl.constexpr,
+    W,
+    r,
+    n_rows,
+    n_cols: tl.constexpr,
+    eps: tl.constexpr,
+    GEMMA: tl.constexpr,
+    BLOCK_SIZE: tl.constexpr,
+    ROWS: tl.constexpr,
+    WARPS: tl.constexpr,
+):
+    # ROWS rows per program for narrow rows (q/k head_dim norms); same math as the one-row kernels.
+    rows = tl.program_id(0).to(tl.int64) * ROWS + tl.arange(0, ROWS)
+    col_offsets = tl.arange(0, BLOCK_SIZE)
+    row_mask = rows < n_rows
+    col_mask = col_offsets < n_cols
+    mask = row_mask[:, None] & col_mask[None, :]
+
+    X_rows = tl.load(
+        X + rows[:, None] * X_row_stride + col_offsets[None, :], mask = mask, other = 0
+    ).to(tl.float32)
+    if GEMMA:
+        W_row = tl.load(W + col_offsets, mask = col_mask, other = 0).to(tl.float32)
+    else:
+        W_row = tl.load(W + col_offsets, mask = col_mask, other = 0)
+
+    row_var = (
+        _row_dot_in_row_kernel_order(X_rows, X_rows, ROWS, WARPS) / n_cols
+    )
+    eps_f32 = tl.full((), eps, tl.float32)
+    inv_var = tl.math.rsqrt(row_var + eps_f32)
+    tl.store(r + rows, inv_var, mask = row_mask)
+    normed = X_rows * inv_var[:, None]
+    if GEMMA:
+        output = normed * (W_row[None, :] + 1.0)
+    else:
+        normed = normed.to(W_row.dtype)  # Exact copy from HF
+        output = normed * W_row[None, :]
+    tl.store(Y + rows[:, None] * Y_row_stride + col_offsets[None, :], output, mask = mask)
+
+
+@triton.jit
+def _rms_layernorm_backward_rows(
+    dY,
+    dY_row_stride: tl.constexpr,
+    dX,
+    dX_row_stride: tl.constexpr,
+    X,
+    X_row_stride: tl.constexpr,
+    W,
+    r,
+    n_rows,
+    n_cols: tl.constexpr,
+    eps: tl.constexpr,
+    GEMMA: tl.constexpr,
+    BLOCK_SIZE: tl.constexpr,
+    ROWS: tl.constexpr,
+    WARPS: tl.constexpr,
+):
+    rows = tl.program_id(0).to(tl.int64) * ROWS + tl.arange(0, ROWS)
+    col_offsets = tl.arange(0, BLOCK_SIZE)
+    row_mask = rows < n_rows
+    col_mask = col_offsets < n_cols
+    mask = row_mask[:, None] & col_mask[None, :]
+
+    dY_rows = tl.load(
+        dY + rows[:, None] * dY_row_stride + col_offsets[None, :], mask = mask, other = 0
+    ).to(tl.float32)
+    X_rows = tl.load(
+        X + rows[:, None] * X_row_stride + col_offsets[None, :], mask = mask, other = 0
+    ).to(tl.float32)
+    W_row = tl.load(W + col_offsets, mask = col_mask, other = 0).to(tl.float32)
+
+    inv_var = tl.load(r + rows, mask = row_mask, other = 0).to(tl.float32)
+    normed = X_rows * inv_var[:, None]
+
+    if GEMMA:
+        dY_W = dY_rows * (W_row[None, :] + 1.0)
+    else:
+        dY_W = dY_rows * W_row[None, :]
+
+    rowsum_dY_normed = _row_dot_in_row_kernel_order(dY_W, normed, ROWS, WARPS)
+    # The one-row kernels contract n_cols * dY_W - normed * rowsum into this fma.
+    output = (inv_var / n_cols)[:, None] * tl.fma(
+        dY_W, n_cols * 1.0, -(normed * rowsum_dY_normed[:, None])
+    )
+    if GEMMA:
+        tl.store(dX + rows[:, None] * dX_row_stride + col_offsets[None, :], output, mask = mask)
+    else:
+        tl.store(dY + rows[:, None] * dY_row_stride + col_offsets[None, :], output, mask = mask)
+
+
+# Narrow rows (Qwen3's per-head q/k norms) run ROWS rows per program. Off on ROCm: 64-lane
+# wavefronts reduce in a different order there. UNSLOTH_RMSNORM_MULTIROW=0 turns it off.
+_MULTIROW = os.environ.get("UNSLOTH_RMSNORM_MULTIROW", "1") != "0" and not torch.version.hip
+_MULTIROW_ELEMENTS = 4096
+_MULTIROW_NUM_WARPS = 4
+
+
+def _multirow_settings(n_cols):
+    # None keeps the one-row kernels; else (BLOCK_SIZE, ROWS, WARPS, num_warps). The row sum
+    # replays the one-row kernel's order for one element per lane, 64 <= BLOCK_SIZE <= 128.
+    if not _MULTIROW:
+        return None
+    BLOCK_SIZE, num_warps = calculate_settings(n_cols)
+    if num_warps != 4 or not (64 <= BLOCK_SIZE <= 128):
+        return None
+    return BLOCK_SIZE, _MULTIROW_ELEMENTS // BLOCK_SIZE, BLOCK_SIZE // 32, _MULTIROW_NUM_WARPS
+
+
 def _rms_forward(X, W, eps, gemma, wrap):
     n_rows, n_cols = X.shape
-    BLOCK_SIZE, num_warps = calculate_settings(n_cols)
     Y = torch.empty((n_rows, n_cols), dtype = X.dtype, device = X.device)
     r = torch.empty(n_rows, dtype = torch.float32, device = X.device)
+    multirow = _multirow_settings(n_cols)
+    if multirow is not None:
+        BLOCK_SIZE, ROWS, WARPS, num_warps = multirow
+        wrap(_rms_layernorm_forward_rows)[((n_rows + ROWS - 1) // ROWS,)](
+            Y,
+            Y.stride(0),
+            X,
+            X.stride(0),
+            W,
+            r,
+            n_rows,
+            n_cols,
+            eps,
+            GEMMA = gemma,
+            BLOCK_SIZE = BLOCK_SIZE,
+            ROWS = ROWS,
+            WARPS = WARPS,
+            num_warps = num_warps,
+        )
+        return Y, r
+    BLOCK_SIZE, num_warps = calculate_settings(n_cols)
     fx = _gemma_rms_layernorm_forward if gemma else _rms_layernorm_forward
     wrap(fx)[(n_rows,)](
         Y,
@@ -183,6 +349,28 @@ def _rms_forward(X, W, eps, gemma, wrap):
 def _rms_backward(dY, dX, X, W, r, eps, gemma, wrap):
     # Non-Gemma writes dX over dY (the kernel ignores dX); Gemma writes into dX.
     n_rows, n_cols = dY.shape
+    multirow = _multirow_settings(n_cols)
+    if multirow is not None:
+        BLOCK_SIZE, ROWS, WARPS, num_warps = multirow
+        wrap(_rms_layernorm_backward_rows)[((n_rows + ROWS - 1) // ROWS,)](
+            dY,
+            dY.stride(0),
+            dX,
+            dX.stride(0),
+            X,
+            X.stride(0),
+            W,
+            r,
+            n_rows,
+            n_cols,
+            eps,
+            GEMMA = gemma,
+            BLOCK_SIZE = BLOCK_SIZE,
+            ROWS = ROWS,
+            WARPS = WARPS,
+            num_warps = num_warps,
+        )
+        return
     BLOCK_SIZE, num_warps = calculate_settings(n_cols)
     wrap(_rms_layernorm_backward)[(n_rows,)](
         dY,
