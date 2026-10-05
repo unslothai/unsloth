@@ -5106,7 +5106,7 @@ def _vibe_env(
 
 
 def write_vibe_user_resources(home: Path) -> None:
-    """Link the user's Vibe agents, prompts, skills, tools and plugins into the session VIBE_HOME."""
+    """Expose the user's Vibe agents, prompts, skills, tools, plugins and folder trust in the session VIBE_HOME."""
     configured = os.environ.get("VIBE_HOME", "").strip()
     source = (
         Path(os.path.abspath(os.path.expanduser(configured)))
@@ -5117,6 +5117,15 @@ def write_vibe_user_resources(home: Path) -> None:
         return
     for name in _VIBE_USER_RESOURCE_DIRS:
         _link_user_dir(source / name, home / name)
+    # Remembered folder trust: without it -p silently skips a trusted repo's .vibe config.
+    trust, target = source / "trusted_folders.toml", home / "trusted_folders.toml"
+    if target.is_symlink():
+        target.unlink()
+    if trust.is_file() and not target.exists():
+        try:
+            target.symlink_to(trust)
+        except OSError:
+            shutil.copy2(trust, target)
 
 
 def write_pi_config(

@@ -7060,6 +7060,23 @@ def test_write_vibe_user_resources_honours_user_vibe_home(tmp_path, monkeypatch)
     assert not (custom / "skills").is_symlink()
 
 
+def test_write_vibe_user_resources_shares_folder_trust(tmp_path, monkeypatch):
+    user = tmp_path / "user"
+    user.mkdir()
+    (user / "trusted_folders.toml").write_text('trusted = ["/repo"]\nuntrusted = []\n')
+    monkeypatch.setenv("VIBE_HOME", str(user))
+    session = tmp_path / "session"
+    session.mkdir()
+    start.write_vibe_user_resources(session)
+    assert (session / "trusted_folders.toml").read_text() == 'trusted = ["/repo"]\nuntrusted = []\n'
+    # A persisted session's own trust file is never replaced.
+    other = tmp_path / "other"
+    other.mkdir()
+    (other / "trusted_folders.toml").write_text("trusted = []\n")
+    start.write_vibe_user_resources(other)
+    assert (other / "trusted_folders.toml").read_text() == "trusted = []\n"
+
+
 def test_vibe_launch_keeps_user_home(fake_studio, monkeypatch):
     monkeypatch.setattr(start.shutil, "which", lambda _: "/usr/local/bin/vibe")
     captured = _capture_launch(monkeypatch, ["vibe", "--temperature", "0.6", "-p", "hi"])
