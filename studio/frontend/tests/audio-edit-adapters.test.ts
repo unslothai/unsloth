@@ -207,8 +207,6 @@ test("segments carry the inserted and deleted labels for screen readers", () => 
 });
 
 test("DotTTS says so before its markup would outgrow the backend cap", () => {
-  // 400 words with every other one changed builds about 8.4k chars of markup, past the 8000 the
-  // backend accepts, so the page used to let Generate through to a raw 422.
   const words = Array.from({ length: 400 }, (_, i) => `word${i}`);
   const original = words.join(" ");
   const edited = words.map((w, i) => (i % 2 ? `${w}x` : w)).join(" ");

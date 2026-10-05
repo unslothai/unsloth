@@ -60,7 +60,6 @@ def _stems(ids):
 
 
 def test_stem_ids_differing_only_by_case_get_their_own_files(tmp_path):
-    # Windows and macOS would have decoded both into one Vocals.wav, the later over the earlier.
     path, out = _answer(tmp_path, {"named_audio_outputs": _stems(["Vocals", "vocals", "VOCALS"])})
     outputs = extract_named_outputs(path, out)
     assert [o["id"] for o in outputs] == ["Vocals", "vocals_2", "VOCALS_3"]

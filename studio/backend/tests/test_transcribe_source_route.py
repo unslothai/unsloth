@@ -165,7 +165,6 @@ def test_qwen3_timestamps_are_asked_of_the_sidecar(stub):
     assert stub.paths[0][2] is True
     # The aligner is fetched first and the server starts with it: one load, not two.
     assert stub.events == [("aligner", QWEN3), ("load", True)]
-    # This preflight is the call that downloads the aligner, so Stop has to reach it.
     assert stub.aligner_cancel is not None
     assert complete["timestamps"] is False and "segments" not in complete
 

@@ -136,7 +136,6 @@ const HUB_TASKS_BY_MODE = {
 } as const;
 
 let reuseSeq = 0;
-// A kept input restored after its re-upload failed is known stale: say so, don't wait for a 404.
 const EXPIRED_AT = new Date(0).toISOString();
 
 const RECOMMENDED_MUSIC_MODELS = ["ACE-Step1.5-GGUF", "Stable-Audio-3-Small-Music-GGUF"];

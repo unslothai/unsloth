@@ -480,8 +480,6 @@ test("reference transcription sends no language hint", () => {
 });
 
 test("a run whose clips carry no output role still selects its first clip, except an edit", () => {
-  // Music variations, music edits and stems carry their own roles; only Edit returns a source
-  // clip that must never be shown as the result.
   const clone = readSrc("features/audio/hooks/use-clone-generation.ts");
   const body = clone.slice(clone.indexOf("export async function showRunResult("));
   assert.match(

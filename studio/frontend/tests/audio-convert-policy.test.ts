@@ -349,14 +349,11 @@ test("Use again re-uploads a conversion's kept source instead of its expiring up
     page,
     /\/source\/file`,\s*\)\s*\.then\(\(blob\) => uploadAudioInput\(blob, name\)\)/,
   );
-  // The old id is not placed first: Generate could race the upload and 404 on it.
   assert.match(page, /store\.setSource\(null\);\s*void fetchAudioBlob\(/);
-  // A failed re-upload restores the kept id as expired, so the blocker shows at once, not after a 404.
   assert.match(
     page,
     /if \(!untouched\(\) \|\| !kept\) return;\s*void audioInputAlive\(kept\.id\)\.then\(\(alive\) => \{\s*if \(untouched\(\)\)\s*store\.setSource\(alive \? kept : \{ \.\.\.kept, expiresAt: EXPIRED_AT \}\);/,
   );
-  // An uploaded target has no kept copy: it is placed after a liveness probe, expired on a 404.
   assert.match(
     page,
     /if \(target\?\.kind === "input"\) \{[\s\S]{0,400}?store\.setTarget\(null\);/,
@@ -370,7 +367,6 @@ test("Use again re-uploads a conversion's kept source instead of its expiring up
     api,
     /export async function audioInputAlive\(inputId: string\)[\s\S]{0,300}?headers: \{ Range: "bytes=0-0" \} \}[\s\S]{0,160}?return response\.status !== 404;/,
   );
-  // HEAD on a FastAPI GET route is a 405, which the !== 404 check would read as alive.
   assert.doesNotMatch(api, /method: "HEAD"/);
 });
 
@@ -395,13 +391,10 @@ test("a fresh Convert clip focuses its player, not the Source tab", () => {
 
 test("an expired upload marks only its own side, the result opens on Converted, and Source plays the recording", () => {
   const hook = readSrc("features/audio/hooks/use-convert-generation.ts");
-  // The server names the side that expired; the shared message (an older server) marks both.
   assert.match(hook, /error\.message === CONVERT_EXPIRED_MESSAGE\.source\s*\?\s*"source"/);
   assert.match(hook, /error\.message === CONVERT_EXPIRED_MESSAGE\.target\s*\?\s*"target"/);
   assert.match(hook, /error\.message === REFERENCE_EXPIRED_MESSAGE\s*\?\s*"both"/);
-  // compareSide is persisted, so a user last on Source would open every new result on the input.
   assert.match(hook, /setCompareSide\("converted"\);\s*await showRunResult\(/);
   const page = readSrc("features/audio/pages/convert-page.tsx");
-  // The saved copy is the model's mono, resampled, cut input: a fallback, not the A side.
   assert.match(page, /fetchAudioBlob\(original\)\.catch\([\s\S]*return fetchAudioBlob\(savedUrl\)/);
 });

@@ -248,7 +248,6 @@ def test_stop_during_the_aligner_download_cancels_it(fake, side, source, hub, mo
 
     import inspect
 
-    # The real download checks the same event between files.
     assert "cancel_event.is_set()" in inspect.getsource(backend_cls._download_missing)
     real_resolve = audio_cpp_backend._resolve_companion
 
@@ -271,7 +270,6 @@ def test_stop_during_the_aligner_download_cancels_it(fake, side, source, hub, mo
         token,
         cancel_event = None,
     ):
-        # Stop lands while the first file streams: the real loop reads the event between files.
         seen.append(cancel_event)
         cancel_event.set()
         raise AudioCppRequestCancelledError("Request cancelled.")
@@ -338,7 +336,6 @@ def test_stop_mid_file_returns_before_the_download_finishes(monkeypatch):
     threading.Timer(0.3, cancel.set).start()
     with pytest.raises(AudioCppRequestCancelledError):
         backend_cls._download_missing(SimpleNamespace(repo_id = "org/aligner"), None, cancel)
-    # Stop returned while the file was still streaming, not after it finished.
     assert entered.is_set() and not release.is_set()
     release.set()
 
@@ -367,7 +364,6 @@ def test_a_retry_joins_the_download_that_stop_left_running(monkeypatch):
     threading.Timer(0.3, stopped.set).start()
     with pytest.raises(AudioCppRequestCancelledError):
         backend_cls._download_missing(model, None, stopped)
-    # The retry waits on the same transfer and gets its result once the file lands.
     outcome = []
     retry = threading.Thread(
         target = lambda: outcome.append(backend_cls._download_missing(model, None, threading.Event()))
