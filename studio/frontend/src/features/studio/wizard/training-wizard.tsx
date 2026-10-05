@@ -80,7 +80,7 @@ function SectionBox({
                 <HugeiconsIcon
                   icon={icon}
                   strokeWidth={1.5}
-                  className="size-[18px]"
+                  className="size-[calc(18px*var(--ui-space-scale,1))]"
                 />
               </span>
             )}
@@ -131,7 +131,7 @@ function ParamModeToggle({
         options={options}
         ariaLabel={t("studio.params.mode.ariaLabel")}
         size="compact"
-        className="@md/train-card:w-[180px]"
+        className="@md/train-card:w-[calc(180px*var(--ui-space-scale,1))]"
       />
     </Tabs>
   );
@@ -173,7 +173,7 @@ function TrainingMethodSelect() {
         aria-label={`${t("studio.wizard.methodLabel")}: ${activeLabel}`}
         className={cn(
           PICKER_TRIGGER_CLASS,
-          "w-full min-w-[148px] justify-between",
+          "w-full min-w-[calc(148px*var(--ui-space-scale,1))] justify-between",
         )}
         data-tour="studio-method"
       >
@@ -227,7 +227,7 @@ function TrainingMethodSelect() {
               <TooltipContent
                 side="right"
                 sideOffset={10}
-                className="max-w-[220px] text-ui-11p5 leading-snug"
+                className="max-w-[calc(220px*var(--ui-space-scale,1))] text-ui-11p5 leading-snug"
               >
                 {unsupportedOnMlx
                   ? t("studio.params.notSupportedAppleSilicon")

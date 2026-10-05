@@ -11,6 +11,7 @@ import {
   createMcpStdioSnapshot,
   resolveMcpStdioUrl,
 } from "../src/features/chat/mcp-server-form.ts";
+import { normalizeMcpUrl } from "../src/features/chat/mcp-server-url.ts";
 import {
   readAfterPendingMcpServerMutations,
   readMcpServerMutationSnapshot,
@@ -26,6 +27,7 @@ const CHAT_MCP_SERVERS_DIALOG = readSrc(
   "features/chat/chat-mcp-servers-dialog.tsx",
 );
 const MCP_COMPOSER_BUTTON = readSrc("features/chat/mcp-composer-button.tsx");
+const SYSTEMONE_API = readSrc("features/settings/api/systemone.ts");
 
 function deferred<T>() {
   let resolve!: (value: T | PromiseLike<T>) => void;
@@ -287,7 +289,7 @@ test("dialog actions and reconciliation stop when the dialog closes", () => {
   );
   assert.match(
     CHAT_MCP_SERVERS_DIALOG,
-    /<Button size="sm" onClick=\{startCreate\} disabled=\{importing \|\| blenderBusy\}>/,
+    /<Button size="sm" onClick=\{startCreate\} disabled=\{importing\}>/,
   );
 });
 
@@ -323,12 +325,12 @@ test("dialog closure is blocked while a CRUD mutation is in flight", () => {
 
   assert.match(
     closeHandler,
-    /if \(!next && \(blenderBusy \|\| \(saving && !codecPending\) \|\| busyIdsRef\.current\.size > 0\)\)[\s\S]*return;[\s\S]*if \(!next\) \{[\s\S]*formGenerationRef\.current \+= 1;/,
+    /if \(!next && \(\(saving && !codecPending\) \|\| busyIdsRef\.current\.size > 0\)\)[\s\S]*return;[\s\S]*if \(!next\) \{[\s\S]*formGenerationRef\.current \+= 1;/,
     "the in-flight mutation guard must run before close invalidates the form generation",
   );
   assert.match(
     CHAT_MCP_SERVERS_DIALOG,
-    /<DialogContent[\s\S]*?showCloseButton=\{!blenderBusy && !\(saving && !codecPending\) && busyIds\.size === 0\}[\s\S]*?>/,
+    /<DialogContent[\s\S]*?showCloseButton=\{!\(saving && !codecPending\) && busyIds\.size === 0\}[\s\S]*?>/,
     "the built-in close control must disappear during the same mutation window",
   );
   assert.match(
@@ -746,6 +748,7 @@ test("every list consumer uses the shared pending-mutation read barrier", () => 
     "api/mcp-servers-api.ts",
     "chat-mcp-servers-dialog.tsx",
     "mcp-composer-button.tsx",
+    "runtime-provider.tsx",
   ]);
 
   assert.equal(
@@ -808,4 +811,73 @@ test("every list consumer uses the shared pending-mutation read barrier", () => 
   assert.doesNotMatch(MCP_COMPOSER_BUTTON, /waitForPendingMcpServerMutations/);
   assert.doesNotMatch(CHAT_MCP_SERVERS_DIALOG, /await refresh\(\)/);
   assert.doesNotMatch(MCP_COMPOSER_BUTTON, /await refresh\(\)/);
+});
+
+test("the Decisions preset matches a row saved under another port", () => {
+  for (const url of [
+    "http://127.0.0.1:8888/mcp/decisions",
+    "http://127.0.0.1:8889/mcp/decisions",
+    "http://localhost:8888/mcp/decisions",
+    "http://[::1]:8888/mcp/decisions",
+    "http://[0:0:0:0:0:0:0:1]:8888/mcp/decisions",
+    "http://[::1%25lo0]:8888/mcp/decisions",
+    "http://[::ffff:127.0.0.1]:8888/mcp/decisions",
+    "http://[::1]:8888/mcp/decisions/?scope=chat",
+    "HTTP://LOCALHOST:8888/mcp/decisions",
+    "http://user@127.0.0.1:8888/mcp/decisions",
+    "http://user:pass@[::1]:8888/mcp/decisions",
+    "http://127.0.0.1:/mcp/decisions",
+    "http://127.0.0.1:99999/mcp/decisions",
+    "http://127.0.0.1:abc/mcp/decisions",
+    "http://127.0.0.1\n:8888/mcp/decisions",
+  ]) {
+    assert.equal(normalizeMcpUrl(url), "studio:decisions", url);
+  }
+  for (const url of [
+    "https://127.0.0.1:8888/mcp/decisions",
+    "http://example.com/mcp/decisions",
+    "http://128.0.0.1:8888/mcp/decisions",
+    "http://127.0.0.01:8888/mcp/decisions",
+    "http://[::2]:8888/mcp/decisions",
+    "http://127.0.0.1:8888/MCP/DECISIONS",
+    "http://127.0.0.1:8888/mcp",
+    "http://127.0.0.1:8888/mcp/decisions/extra",
+    "http://127.0.0.1:8888/mcp/x/../decisions",
+    "http://127.0.0.1:8888/mcp/./decisions",
+  ]) {
+    assert.notEqual(normalizeMcpUrl(url), "studio:decisions", url);
+  }
+});
+
+test("the Decisions row stays hidden while the Decision API is off", () => {
+  assert.match(
+    MCP_COMPOSER_BUTTON,
+    /const customServers = servers\.filter\([\s\S]*normalizeMcpUrl\(s\.url\) !== "studio:decisions"/,
+  );
+  assert.match(
+    MCP_COMPOSER_BUTTON,
+    /const enabledCount = servers\.filter\([\s\S]*decisionsUrl !== null \|\| normalizeMcpUrl\(s\.url\) !== "studio:decisions"/,
+  );
+});
+
+test("an older Decision API settings response cannot replace a newer one", () => {
+  const refresh = MCP_COMPOSER_BUTTON.match(
+    /const refresh = useCallback\(([\s\S]*?)\n    \},\n    \[\],\n  \);/,
+  )?.[1];
+  assert.ok(refresh);
+  const settingsRequest = refresh.match(
+    /loadSystemOneSettings\(\)\.then\(([\s\S]*?)\n      \);/,
+  )?.[1];
+  assert.ok(settingsRequest);
+  assert.equal(
+    settingsRequest.match(
+      /decisionsRefreshGenerationRef\.current !== decisionsGeneration/g,
+    )?.length,
+    2,
+  );
+  assert.match(MCP_COMPOSER_BUTTON, /subscribeSystemOneSettings\(\(settings\) =>/);
+  assert.match(
+    SYSTEMONE_API,
+    /new CustomEvent\(SYSTEMONE_SETTINGS_EVENT, \{ detail: settings \}\)/,
+  );
 });

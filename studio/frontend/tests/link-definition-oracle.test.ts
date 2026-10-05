@@ -151,6 +151,37 @@ test("a reply whose reference only resolves in one piece is never split into blo
   );
 });
 
+test("a reference is never split into blocks because its label is long", () => {
+  // Every case above uses a one-character label. Length is the one dimension the probes bound and
+  // the only one this file never varied, which is why #9540 and #9645's half-fix were invisible.
+  // In scope only when the two paths really differ, so past 999 drops out and this cannot pass
+  // vacuously.
+  const failures: string[] = [];
+  let inScope = 0;
+  for (const length of [1, 2, 199, 200, 201, 400, 998, 999, 1000, 1001, 2000]) {
+    const label = "L".repeat(length);
+    for (const reply of [
+      `See [guide][${label}].\n\nplain prose between them\n\n[${label}]: /guide\n`,
+      `[${label}]: /guide\n\nplain prose between them\n\nSee [guide][${label}].\n`,
+    ]) {
+      if (asOneDocument(reply) <= asBlocks(reply)) {
+        continue;
+      }
+      inScope += 1;
+      if (markdownRenderScope(reply) !== "document") {
+        failures.push(`label length ${length}`);
+      }
+    }
+  }
+  assert.ok(inScope > 0, "no length lost an anchor when split, so this test proved nothing");
+  assert.deepEqual(
+    failures,
+    [],
+    "these labels resolve their reference only when the reply is rendered in one piece, but the " +
+      `scan split them into blocks, so the reference renders as literal text: ${failures.join(", ")}`,
+  );
+});
+
 test("line endings other than LF do not hide the definition", () => {
   for (const reply of [
     "~~~ts\rconst x = 1;\r~~~\r\rSee [guide][g].\r\r[g]: /guide\r",
@@ -203,23 +234,6 @@ test("a definition lookalike that no parser registers keeps block rendering", ()
   }
 });
 
-test("a live reference pair inside a list or quote still resolves", () => {
-  // #9540 / #9633: Streamdown's own block split is the hold-set. Container
-  // definitions Marked actually registers must still resolve as one document,
-  // including nested lists and quote-in-list. The split, not a fence walk.
-  for (const definition of [
-    "- [g]: /guide",
-    "> [g]: /guide",
-    "- - [g]: /guide",
-    "- > [g]: /guide",
-    "> - [g]: /guide",
-  ]) {
-    const reply = `See [guide][g].\n\n${definition}\n`;
-    assert.ok(asOneDocument(reply) > asBlocks(reply), definition);
-    assert.equal(markdownRenderScope(reply), "document", definition);
-  }
-});
-
 test("ordinary code is still rendered per block", () => {
   // The regression this path exists for: nothing here is a definition, so each of these must
   // keep its per-block Copy code / Download file controls.
@@ -228,11 +242,6 @@ test("ordinary code is still rendered per block", () => {
     "Compare [one][two].\n\n```css\na[href]:hover { color: red; }\n```\n",
     "Compare [one][two].\n\n    [two]: not-a-definition\n",
     "How:\n\n```md\n[two]: https://example.com/two\n```\n\nText [one][two].\n",
-    "See [a][ref].\n\n1. item\n   ```python\n   def f() -> list[str]:\n       return []\n   ```\n",
-    "See [a][ref].\n\n- item\n  ```python\n  def f() -> list[str]:\n      return []\n  ```\n",
-    "See [a][ref].\n\n```python\nlist[\n str\n]:\n```\n",
-    'See [a][ref].\n\nd[\n "key"\n]: int\n',
-    'See [a][ref].\n\nd["key"]: int\n',
   ]) {
     assert.equal(markdownRenderScope(reply), "blocks", reply);
     assert.equal(

@@ -39,6 +39,14 @@ import pytest
 REPO_ROOT = Path(__file__).resolve().parents[2]
 TESTS_ROOT = REPO_ROOT / "tests"
 
+# Both test trees, because the race is a property of the interpreter's startup cache and
+# not of which directory the test lives in. studio/backend/tests runs under xdist in the
+# same job and reaches tests/_shared through its own conftest, so a direct spawn there is
+# the identical defect; it was invisible while this guard scanned tests/ alone, and
+# studio/backend/tests/test_setup_llama_cpp_backend.py duly died with SIGABRT in the
+# Backend-CI "rest" shard while every allowlisted file in tests/ stayed green.
+_SCAN_ROOTS = (TESTS_ROOT, REPO_ROOT / "studio" / "backend" / "tests")
+
 # The runner itself calls subprocess.run on a pwsh argv -- that is the whole point of it.
 _RUNNER = TESTS_ROOT / "_shared" / "unsloth_pwsh_runner.py"
 
@@ -50,10 +58,11 @@ _SPAWNERS = frozenset({"run", "Popen", "call", "check_call", "check_output"})
 _PWSH_EXECUTABLES = frozenset({"pwsh", "powershell", "powershell_ise"})
 
 # Files allowed to spawn PowerShell without the shared runner, each with the reason the
-# startup-cache race does not reach them. Keep this keyed on the path relative to
-# tests/, and keep the reason specific enough to re-check.
+# startup-cache race does not reach them. Keyed on the path relative to the REPO ROOT,
+# because two test trees are scanned and a bare filename would not say which. Keep the
+# reason specific enough to re-check.
 _ALLOWED_DIRECT_PWSH_CALLS = {
-    "test_windows_amd_gpu_scan_fallback.py": (
+    "tests/test_windows_amd_gpu_scan_fallback.py": (
         "hands the child a hermetic env whose HOME is the per-test tmp_path, so "
         "XDG_CACHE_HOME resolves inside tmp_path and the startup cache is already "
         "private per test -- this is the one pwsh-heavy file with zero failures in "
@@ -63,15 +72,19 @@ _ALLOWED_DIRECT_PWSH_CALLS = {
 
 
 def _scanned_files() -> list[Path]:
-    """Every Python file under tests/ except the runner.
+    """Every Python file under each scanned tree except the runner.
 
-    All of tests/, not just test_*.py: a conftest or a tests/_shared helper that spawns
+    All of each tree, not just test_*.py: a conftest or a tests/_shared helper that spawns
     pwsh puts every file that imports it back in the race, and would be invisible to a
-    scan keyed on the filename.
+    scan keyed on the filename. Each root is asserted non-empty separately, so a tree that
+    moves takes this guard red rather than quietly dropping out of it.
     """
-    files = sorted(p for p in TESTS_ROOT.rglob("*.py") if p != _RUNNER)
-    assert files, f"no Python files under {TESTS_ROOT} -- did the directory move?"
-    return files
+    files: list[Path] = []
+    for root in _SCAN_ROOTS:
+        found = sorted(p for p in root.rglob("*.py") if p != _RUNNER)
+        assert found, f"no Python files under {root} -- did the directory move?"
+        files.extend(found)
+    return sorted(files)
 
 
 def _is_pwsh_executable(text: str) -> bool:
@@ -236,12 +249,12 @@ def direct_pwsh_calls(path: Path) -> list[tuple[int, str]]:
 
 
 def scan_tests() -> dict[str, list[tuple[int, str]]]:
-    """{path relative to tests/: [(lineno, callee), ...]} over the whole suite."""
+    """{path relative to the repo root: [(lineno, callee), ...]} over every scanned tree."""
     offenders = {}
     for path in _scanned_files():
         calls = direct_pwsh_calls(path)
         if calls:
-            offenders[path.relative_to(TESTS_ROOT).as_posix()] = calls
+            offenders[path.relative_to(REPO_ROOT).as_posix()] = calls
     return offenders
 
 
@@ -262,7 +275,7 @@ class TestEveryPwshCallUsesTheSharedRunner:
             "and can die at startup with `Stack overflow.` or "
             "`System.IO.FileLoadException: The given assembly name was invalid`:\n"
             + "\n".join(
-                f"  tests/{rel}:{lineno}: {callee}(...)"
+                f"  {rel}:{lineno}: {callee}(...)"
                 for rel, calls in sorted(offenders.items())
                 for lineno, callee in calls
             )
@@ -271,11 +284,27 @@ class TestEveryPwshCallUsesTheSharedRunner:
             "add it to _ALLOWED_DIRECT_PWSH_CALLS with the reason."
         )
 
+    def test_the_scan_reaches_the_backend_test_tree(self):
+        """The scope this guard silently lacked, pinned so it cannot be lost again.
+
+        studio/backend/tests/test_setup_llama_cpp_backend.py spawned pwsh directly and
+        this guard never saw it, because the scan was rooted at tests/ alone; the bill
+        came in as SIGABRT in the Backend-CI "rest" shard instead. Checking that the root
+        is listed is not enough on its own -- a root contributing no files would pass
+        that -- so this checks a file from under it is really in the scanned set.
+        """
+        backend = REPO_ROOT / "studio" / "backend" / "tests"
+        assert backend in _SCAN_ROOTS, "the backend test tree dropped off the scan roots"
+        scanned = _scanned_files()
+        assert any(
+            p.is_relative_to(backend) for p in scanned
+        ), f"no file under {backend} was scanned"
+
     @pytest.mark.parametrize("rel", sorted(_ALLOWED_DIRECT_PWSH_CALLS))
     def test_every_allowlist_entry_is_still_needed(self, rel):
         """An allowlist that outlives its call sites is a claim nobody rechecks. This
         fails once the file stops spawning PowerShell directly, or moves away."""
-        path = TESTS_ROOT / rel
+        path = REPO_ROOT / rel
         assert path.is_file(), f"allowlisted {rel} does not exist; drop the entry"
         assert direct_pwsh_calls(path), (
             f"{rel} no longer spawns PowerShell directly, so its "

@@ -13,6 +13,11 @@ import os, importlib.util, platform, sys
 
 os.environ["UNSLOTH_IS_PRESENT"] = "1"
 
+# Opt into ROCm AOTriton kernels PyTorch still gates as experimental; it keeps its own hardware
+# checks and reads this lazily at the SDPA probe, so no torch import here. `setdefault` preserves
+# an explicit override, including "0".
+os.environ.setdefault("TORCH_ROCM_AOTRITON_ENABLE_EXPERIMENTAL", "1")
+
 # Before transformers, which reads sentencepiece availability during its own import. On Windows
 # the extension is never imported at all: a code integrity policy can refuse it by reputation,
 # and any probe to find out whether this machine will is itself the refusal the user sees. See
@@ -148,6 +153,18 @@ def _is_mlx_available():
 _IS_MLX = _is_mlx_available()
 
 if _IS_MLX:
+    # Same reason again, and first because it is what turns the bare AttributeError into a
+    # diagnosis: this branch imports transformers below, so an Apple Silicon host carrying the
+    # old-torch/new-transformers pair hits #8933 here exactly as a CUDA host does, and
+    # _gpu_init.py, the only other installation site, is never reached on this path. The
+    # triton shim check is deliberately NOT mirrored: it is a CUDA/ROCm/XPU driver shim and
+    # there is no triton on this platform to inspect.
+    try:
+        from .import_fixes import patch_torch_missing_attribute_error as _patch_torch_attr
+        _patch_torch_attr()
+        del _patch_torch_attr
+    except Exception:
+        pass
     # _gpu_init does this on the GPU path and the MLX path never reaches it, so torchao 0.18 + torch <
     # 2.10 dies on `ScalingType`.
     try:
@@ -164,11 +181,62 @@ if _IS_MLX:
     except Exception:
         pass
     try:
+        from .import_fixes import fix_transformers_validate_rope_ignore_keys as _fix_validate_rope
+        _fix_validate_rope()
+        del _fix_validate_rope
+    except Exception:
+        pass
+    try:
+        from .import_fixes import fix_transformers_is_torch_fx_available as _fix_torch_fx
+        _fix_torch_fx()
+        del _fix_torch_fx
+    except Exception:
+        pass
+    try:
         # Same reason: this branch imports transformers itself further down, so a --no-deps floor miss would
         # surface here with the same wrong remedy.
         from .import_fixes import check_transformers_dependency_versions as _check_tf_deps
         _check_tf_deps()
         del _check_tf_deps
+    except Exception:
+        pass
+    try:
+        # Same reason: remote code reaches transformers' get_class_in_module on this platform
+        # too, and the wrap is what restores the image helpers transformers 5 stopped
+        # re-exporting. Costs nothing until a checkpoint's own modeling file is loaded.
+        from .import_fixes import (
+            fix_transformers5_image_processing_reexports as _fix_image_reexports,
+        )
+        _fix_image_reexports()
+        del _fix_image_reexports
+    except Exception:
+        pass
+    try:
+        # Same reason: 4.x remote configs are built here too, and their validators read plain RoPE
+        # as rope_scaling None. is_torch_fx_available is left to unsloth_zoo.mlx.loader.
+        from .import_fixes import (
+            fix_transformers_remote_rope_scaling_none as _fix_remote_rope_scaling,
+        )
+        _fix_remote_rope_scaling()
+        del _fix_remote_rope_scaling
+    except Exception:
+        pass
+    try:
+        from .import_fixes import fix_transformers5_legacy_config_types as _fix_legacy_types
+        _fix_legacy_types()
+        del _fix_legacy_types
+    except Exception:
+        pass
+    try:
+        # Same reason: MLX loads hub configs and saves tokenizers through transformers too.
+        from .import_fixes import (
+            fix_transformers_untrusted_config_fields as _fix_untrusted_config,
+            fix_transformers_chat_template_path_traversal as _fix_template_names,
+        )
+
+        _fix_untrusted_config()
+        _fix_template_names()
+        del _fix_untrusted_config, _fix_template_names
     except Exception:
         pass
     try:
@@ -600,9 +668,9 @@ if _IS_MLX:
         strategy = strategy.rsplit(".", 1)[-1]
         return strategy in ("no", "none", "false")
 
+    # Mirrors zoo's _normalize_mlx_optimizer_name; adamw_8bit is a real MLX optimizer, never collapse it.
     _MLX_ADAMW_OPTIMIZER_ALIASES = frozenset(
         (
-            "adamw_8bit",
             "paged_adamw_8bit",
             "adamw_bnb_8bit",
             "paged_adamw_32bit",
@@ -634,8 +702,7 @@ if _IS_MLX:
         try:
             return _normalize_mlx_optimizer_name(value)
         except ValueError:
-            # Older unsloth-zoo lacks the CUDA/TRL optimizer aliases, so map the common adamw_* names and keep
-            # notebook defaults (optim="adamw_8bit") working.
+            # Older unsloth-zoo lacks the CUDA/TRL optimizer aliases, so map the common adamw_* names.
             opt = str(getattr(value, "value", value) or "adamw").strip().lower()
             opt = opt.rsplit(".", 1)[-1].replace("-", "_")
             if opt in _MLX_ADAMW_OPTIMIZER_ALIASES:
