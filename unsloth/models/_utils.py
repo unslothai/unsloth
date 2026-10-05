@@ -654,6 +654,50 @@ def _flex_call_needs_backward(query, key, value):
         return False
 
 
+# unsloth_zoo drops the causal mask of an unpadded, unpacked, cache-free batch (patch_transformers_masks).
+# Under flex that None goes to SDPA is_causal (flash at head_dim 256, no compile), so flex compiles
+# only once a padded or packed batch arrives. UNSLOTH_FLEX_MASKLESS_SDPA=0 keeps flex for every batch.
+_FLEX_MASKLESS_SDPA_ENABLED = os.environ.get("UNSLOTH_FLEX_MASKLESS_SDPA", "1") != "0"
+FLEX_MASKLESS_SDPA_STATS = {"sdpa": 0, "flex": 0}
+
+
+def _maskless_causal_sdpa_forward(module, query, key, value, args, kwargs):
+    """SDPA is_causal output for a flex call whose mask unsloth_zoo dropped, else None."""
+    attention_mask = args[0] if len(args) > 0 else kwargs.get("attention_mask", None)
+    if attention_mask is not None:
+        return None
+    # flex positional order: attention_mask, scaling, softcap, s_aux.
+    if any(arg is not None for arg in args[2:]):
+        return None
+    if kwargs.get("softcap", None) is not None or kwargs.get("s_aux", None) is not None:
+        return None
+    if kwargs.get("position_bias", None) is not None:
+        return None
+    if getattr(module, "is_causal", True) is not True:
+        return None
+    if not (hasattr(query, "dim") and query.dim() == 4 and key.dim() == 4):
+        return None
+    if query.shape[2] < 2 or query.shape[2] != key.shape[2]:
+        return None
+    try:
+        from transformers.modeling_utils import ALL_ATTENTION_FUNCTIONS
+        sdpa_forward = ALL_ATTENTION_FUNCTIONS["sdpa"]
+    except Exception:
+        return None
+    scaling = args[1] if len(args) > 1 else kwargs.get("scaling", None)
+    FLEX_MASKLESS_SDPA_STATS["sdpa"] += 1
+    return sdpa_forward(
+        module,
+        query,
+        key,
+        value,
+        None,
+        dropout = kwargs.get("dropout", 0.0),
+        scaling = scaling,
+        is_causal = True,
+    )
+
+
 def _wrap_flex_attention_forward(flex_attention_forward):
     """Add kernel_options to a registered `flex_attention` function: block sizes above head_dim
     256, and the main flex kernel for calls that need a backward."""
@@ -662,6 +706,11 @@ def _wrap_flex_attention_forward(flex_attention_forward):
 
     @functools.wraps(flex_attention_forward)
     def unsloth_flex_attention_forward(module, query, key, value, *args, **kwargs):
+        if _FLEX_MASKLESS_SDPA_ENABLED:
+            output = _maskless_causal_sdpa_forward(module, query, key, value, args, kwargs)
+            if output is not None:
+                return output
+            FLEX_MASKLESS_SDPA_STATS["flex"] += 1
         try:
             # Some vision callers reuse the interface with a non-4D query.
             kernel_options = (
@@ -687,6 +736,7 @@ def _wrap_flex_attention_forward(flex_attention_forward):
         return flex_attention_forward(module, query, key, value, *args, **kwargs)
 
     unsloth_flex_attention_forward._unsloth_flex_kernel_options = True
+    unsloth_flex_attention_forward._unsloth_maskless_causal_sdpa = _FLEX_MASKLESS_SDPA_ENABLED
     unsloth_flex_attention_forward._unsloth_original_forward = flex_attention_forward
     return unsloth_flex_attention_forward
 
