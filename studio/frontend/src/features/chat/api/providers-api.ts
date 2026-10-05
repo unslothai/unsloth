@@ -195,8 +195,6 @@ export async function listProviderRegistry(): Promise<ProviderRegistryEntry[]> {
   // include_hidden asks for the backend-only entries (the self-hosted presets), which carry the
   // studio-tools capability the composer gates on. An older backend ignores the parameter and
   // returns the visible entries, so the capability reads as unknown and the pills stay closed.
-  // include_oauth declares that this bundle can render OAuth connection flows;
-  // without it, newer backends keep OAuth-only providers away from legacy UI.
   const response = await authFetch(
     "/api/providers/registry?include_hidden=true&include_oauth=true",
   );

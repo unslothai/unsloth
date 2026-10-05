@@ -1118,15 +1118,15 @@ def list_available_providers(
     the ones that run Unsloth's tools, so their capability has to reach a frontend that asks for it,
     and asking is opt-in.
 
-    OAuth providers are also opt-in because a legacy frontend renders every
-    visible registry row as an API-key form. An OAuth-aware frontend sends
-    ``include_oauth=true`` and handles the returned ``auth_kind`` contract.
+    OAuth rows are opt-in too: a pre-OAuth bundle (v0.1.701-beta, bare request) renders them as an
+    API-key form the backend then rejects (#8722). Every bundle sending ``include_hidden`` already
+    renders OAuth, so either flag opts in.
     """
     result = []
     for provider_type, info in PROVIDER_REGISTRY.items():
         if (info.get("hidden") and not include_hidden) or info.get("managed"):
             continue
-        if info.get("auth_kind") == "chatgpt_oauth" and not include_oauth:
+        if info.get("auth_kind") == "chatgpt_oauth" and not (include_hidden or include_oauth):
             continue
         result.append(
             {

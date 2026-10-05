@@ -136,22 +136,21 @@ def test_visible_rows_are_identical_with_and_without_include_hidden():
 
 
 def test_registry_default_hides_oauth_providers_from_legacy_clients():
-    """An old bundle must not render an OAuth provider as an API-key form."""
+    """v0.1.701-beta sends a bare request and renders every row as an API-key form (#8722)."""
     types = {entry["provider_type"] for entry in list_available_providers()}
     assert "openai_codex" not in types
 
 
-def test_include_hidden_does_not_imply_oauth_client_support():
-    """Hidden-preset support and OAuth UI support are separate capabilities."""
-    types = {entry["provider_type"] for entry in list_available_providers(include_hidden = True)}
-    assert "openai_codex" not in types
-
-
-@pytest.mark.parametrize("include_hidden", [False, True])
-def test_oauth_aware_clients_can_request_oauth_providers(include_hidden):
+@pytest.mark.parametrize(
+    "include_hidden, include_oauth", [(True, False), (False, True), (True, True)]
+)
+def test_oauth_aware_clients_get_oauth_providers(include_hidden, include_oauth):
+    """Released bundles v0.1.702-beta+ render OAuth but only send include_hidden."""
     entries = {
         entry["provider_type"]: entry
-        for entry in list_available_providers(include_hidden = include_hidden, include_oauth = True)
+        for entry in list_available_providers(
+            include_hidden = include_hidden, include_oauth = include_oauth
+        )
     }
     assert entries["openai_codex"]["auth_kind"] == "chatgpt_oauth"
 
@@ -163,7 +162,11 @@ def test_registry_capabilities_preserve_api_key_rows_and_exclude_managed_provide
 ):
     rows = list_available_providers(include_hidden = include_hidden, include_oauth = include_oauth)
     api_key_rows = [row for row in rows if row["auth_kind"] == "api_key"]
-    assert api_key_rows == list_available_providers(include_hidden = include_hidden)
+    assert api_key_rows == [
+        row
+        for row in list_available_providers(include_hidden = include_hidden)
+        if row["auth_kind"] == "api_key"
+    ]
     assert all(not PROVIDER_REGISTRY[row["provider_type"]].get("managed") for row in rows)
 
 
@@ -171,7 +174,7 @@ def test_registry_capabilities_preserve_api_key_rows_and_exclude_managed_provide
     "query, expects_oauth, expects_hidden",
     [
         ("", False, False),
-        ("?include_hidden=true", False, True),
+        ("?include_hidden=true", True, True),
         ("?include_oauth=false", False, False),
         ("?include_oauth=true", True, False),
         ("?include_hidden=true&include_oauth=true", True, True),

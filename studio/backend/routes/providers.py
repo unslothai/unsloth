@@ -198,10 +198,7 @@ async def list_registry(
     needs. It is opt-in so that a browser still running a pre-capability bundle,
     which does not know to filter on ``hidden``, keeps seeing exactly the list
     it saw before and cannot render them as duplicate dropdown options.
-
-    ``include_oauth=true`` declares that the client can render OAuth connection
-    flows. Without it, OAuth-only providers stay hidden from legacy bundles that
-    would incorrectly render an API-key form.
+    OAuth rows need ``include_hidden`` or ``include_oauth``.
     """
     return list_available_providers(include_hidden = include_hidden, include_oauth = include_oauth)
 
