@@ -3641,6 +3641,24 @@ class FastBaseModel:
                         load_in_16bit,
                     )
 
+                _moe_text_config = getattr(model_config, "text_config", model_config)
+                if (
+                    load_in_4bit
+                    and any(arch in VLLM_ZOO_MOE_VLM for arch in model_types)
+                    and (
+                        getattr(_moe_text_config, "num_experts", None)
+                        or getattr(_moe_text_config, "enable_moe_block", False)
+                    )
+                ):
+                    # vLLM packs bitsandbytes experts into a blob the training model cannot alias, and
+                    # does not serve LoRA on bitsandbytes MoE experts, so fail before loading 4-bit weights.
+                    raise NotImplementedError(
+                        f"Unsloth: fast_inference = True does not support load_in_4bit = True for the sparse MoE "
+                        f"model {model_type_arch}: vLLM's bitsandbytes MoE experts cannot be shared with the "
+                        "training model, and vLLM does not serve LoRA on bitsandbytes MoE experts.\n"
+                        "Use load_in_4bit = False (16-bit LoRA), or fast_inference = False."
+                    )
+
                 allowed_args = inspect.getfullargspec(load_vllm).args
                 load_vllm_kwargs = dict(
                     model_name = model_name,
