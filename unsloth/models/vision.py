@@ -1085,11 +1085,8 @@ VLLM_SUPPORTED_VLM = [
     # reaches this gate even for the text-only checkpoints.
     "qwen3_5",
     "idefics3",
-    # The MoE checkpoints report qwen3_5_moe, which the exact-membership gate below does
-    # not reach via "qwen3_5".
+    # Exact-membership gate: "qwen3_5" does not match qwen3_5_moe.
     "qwen3_5_moe",
-    # Gemma-4 ships as Gemma4ForConditionalGeneration with a vision_config, so the MoE
-    # text checkpoints reach this gate too.
     "gemma4",
     "gemma4_text",
 ]
@@ -1107,11 +1104,10 @@ def _zoo_supports_idefics3_fast_inference():
         return False
 
 
-# Allowlisted above, but only an unsloth_zoo that can rebuild their MoE blocks from vLLM serves them.
+# Need an unsloth_zoo that rebuilds MoE blocks from vLLM.
 VLLM_ZOO_MOE_VLM = ("qwen3_5_moe", "gemma4", "gemma4_text")
-# Model types whose dense checkpoints share the MoE model type but are not served yet: dense
-# Gemma-4 (E2B / E4B / 31B) aborts the process inside vLLM's audio-encoder profiling run, and in
-# 4-bit reaches a bitsandbytes loader vLLM >= 0.28 moved out of tree. Only the MoE checkpoints pass.
+# Dense Gemma-4 shares the model type but aborts in vLLM's audio-encoder profiling, and in
+# 4-bit hits a bnb loader vLLM >= 0.28 moved out of tree. Only MoE checkpoints pass.
 VLLM_MOE_ONLY_VLM = ("gemma4", "gemma4_text")
 
 
@@ -2946,7 +2942,7 @@ class FastBaseModel:
                     "checkpoints (such as gemma-4-26B-A4B), not the dense ones yet. "
                     "Please set fast_inference = False."
                 )
-        # Outside the VLM block: text_only = True loads the same MoE decoder with is_vlm_config False.
+        # Outside the VLM block: text_only = True has is_vlm_config False.
         if (
             fast_inference
             and any(arch in VLLM_ZOO_MOE_VLM for arch in model_types)
@@ -3668,8 +3664,7 @@ class FastBaseModel:
 
                 from unsloth_zoo.utils import get_quant_type
 
-                # Same test load_vllm uses to pick its bitsandbytes loader, so a prequantized
-                # checkpoint loaded with load_in_4bit = False is refused here too.
+                # Mirrors load_vllm's bnb loader test, so prequantized bnb-4bit is refused too.
                 if (
                     (
                         load_in_4bit
@@ -3679,8 +3674,6 @@ class FastBaseModel:
                     and any(arch in VLLM_ZOO_MOE_VLM for arch in model_types)
                     and _is_sparse_moe_config(model_config)
                 ):
-                    # vLLM packs bitsandbytes experts into a blob the training model cannot alias, and
-                    # does not serve LoRA on bitsandbytes MoE experts, so fail before loading 4-bit weights.
                     raise NotImplementedError(
                         f"Unsloth: fast_inference = True does not support bitsandbytes 4-bit weights (load_in_4bit = True "
                         "or a prequantized bnb-4bit checkpoint) for the sparse MoE "

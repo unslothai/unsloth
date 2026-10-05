@@ -30,8 +30,6 @@ def _is_sparse_moe_config():
     raise AssertionError("_is_sparse_moe_config not found")
 
 
-# Shaped like the real config.json files: model_type gemma4 / qwen3_5_moe at the top, the
-# expert count on text_config.
 GEMMA4_MOE = SimpleNamespace(text_config = SimpleNamespace(num_experts = 128, enable_moe_block = True))
 GEMMA4_DENSE = SimpleNamespace(
     text_config = SimpleNamespace(num_experts = None, enable_moe_block = False)
@@ -56,7 +54,6 @@ def test_sparse_moe_is_read_off_the_text_config():
 
 
 def test_a_config_without_text_config_is_read_directly():
-    # The text-only decoder path hands over the text config itself.
     is_moe = _is_sparse_moe_config()
     assert is_moe(SimpleNamespace(num_experts = 128)) is True
     assert is_moe(SimpleNamespace(enable_moe_block = True)) is True
@@ -64,10 +61,7 @@ def test_a_config_without_text_config_is_read_directly():
 
 
 def test_dense_gemma4_is_refused_at_the_gate():
-    """Dense Gemma-4 shares the gemma4 model type, so the allowlist alone would admit it. It is
-    not served yet: vLLM aborts the whole process profiling its audio encoder (`Cannot call
-    numel() on tensor with symbolic sizes/strides`), and in 4-bit it reaches a bitsandbytes
-    loader vLLM >= 0.28 moved out of tree. Pin that the gate refuses it before loading."""
+    """Dense Gemma-4 shares the gemma4 model type, so the allowlist alone would admit it."""
     assert set(_module_constant("VLLM_MOE_ONLY_VLM")) == {"gemma4", "gemma4_text"}
     gate, parents = _gate("not the dense ones yet")
     assert any("fast_inference" in test for test in parents)
@@ -83,8 +77,7 @@ def test_the_4bit_refusal_uses_the_same_moe_test():
 
 
 def _gate(message, condition = ""):
-    """The `if` whose body raises `message` and whose test mentions `condition`, and the
-    tests of the `if` blocks enclosing it."""
+    """The `if` raising `message` (test mentions `condition`) plus its enclosing `if` tests."""
     def walk(node, parents):
         for child in ast.iter_child_nodes(node):
             if isinstance(child, ast.If) and condition in ast.unparse(child.test) and any(
@@ -114,7 +107,6 @@ def test_the_zoo_gate_covers_text_only_moe_loads():
     gate, parents = _gate("needs a newer unsloth_zoo", "_zoo_supports_moe_fast_inference")
     assert not any("is_vlm_config" in test for test in parents)
     old_zoo = lambda: False
-    # text_only hands over the text config itself.
     for model_types, config in (
         (["qwen3_5_moe"], QWEN3_5_MOE.text_config),
         (["gemma4_text", "gemma4"], GEMMA4_MOE.text_config),
@@ -125,7 +117,6 @@ def test_the_zoo_gate_covers_text_only_moe_loads():
             auto_config = config, _zoo_supports_moe_fast_inference = old_zoo,
         )
         assert refused, model_types
-    # Dense checkpoints and a new enough unsloth_zoo pass.
     assert not _evaluate(gate, fast_inference = True, model_types = ["gemma4_text"], auto_config = GEMMA4_DENSE,
                          _zoo_supports_moe_fast_inference = old_zoo)
     assert not _evaluate(gate, fast_inference = True, model_types = ["gemma4"], auto_config = GEMMA4_MOE,
@@ -150,7 +141,6 @@ def test_prequantized_bnb_moe_checkpoints_are_refused_without_load_in_4bit():
     assert refused(False, "unsloth/gemma-4-26B-A4B-it-bnb-4bit", None)
     assert refused(False, "someone/gemma-4-26b-moe-4bit", "bitsandbytes")
     assert refused(False, "Qwen/Qwen3.6-35B-A3B", "bitsandbytes", QWEN3_5_MOE, ("qwen3_5_moe",))
-    # 16-bit, FP8 and dense checkpoints are not refused here.
     assert not refused(False, "google/gemma-4-26B-A4B-it", None)
     assert not refused(False, "Qwen/Qwen3.6-35B-A3B-FP8", "fp8", QWEN3_5_MOE, ("qwen3_5_moe",))
     assert not refused(False, "unsloth/gemma-4-E2B-it-bnb-4bit", "bitsandbytes", GEMMA4_DENSE)
