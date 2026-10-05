@@ -304,5 +304,41 @@ def test_versioned_only_vulkan_soname_is_probed(tmp_path):
     assert gpus == [(0, 23 * 1024, 24 * 1024)], gpus
 
 
+def test_windows_probe_sets_the_error_mode_before_loading_ggml(tmp_path, monkeypatch, capsys):
+    """SEM_FAILCRITICALERRORS is OR-ed into the inherited mode before either ggml DLL loads, so a
+    missing vulkan-1.dll export fails the CDLL call instead of popping a modal loader dialog."""
+    from core.inference import _vulkan_probe as probe
+
+    for name in ("ggml-base.dll", "ggml-vulkan.dll"):
+        (tmp_path / name).write_bytes(b"stub")
+    error_mode = {"value": 0x8000}
+
+    class _Kernel32:
+        def GetErrorMode(self):
+            return error_mode["value"]
+
+        def SetErrorMode(self, value):
+            previous, error_mode["value"] = error_mode["value"], value
+            return previous
+
+    loads = []
+
+    def fake_cdll(path, mode = 0):
+        loads.append((Path(path).name, error_mode["value"]))
+        if Path(path).name == "ggml-vulkan.dll":
+            raise OSError(127, "The specified procedure could not be found")
+        return object()
+
+    monkeypatch.setattr(probe.sys, "argv", ["_vulkan_probe.py", str(tmp_path)])
+    monkeypatch.setattr(probe.os, "add_dll_directory", lambda _path: None, raising = False)
+    monkeypatch.setattr(probe.ctypes, "WinDLL", lambda _name: _Kernel32(), raising = False)
+    monkeypatch.setattr(probe.ctypes, "CDLL", fake_cdll)
+    monkeypatch.setattr(probe.sys, "platform", "win32")
+
+    assert probe.main() == 1
+    assert loads == [("ggml-base.dll", 0x8001), ("ggml-vulkan.dll", 0x8001)]
+    assert "ggml-vulkan load failed" in capsys.readouterr().err
+
+
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-v"]))
