@@ -192,7 +192,6 @@ function oauthPayload(form: FormState, stdio: boolean) {
   return {
     useOauth: true,
     oauthClientId: form.oauthClientId.trim() || null,
-    // Blank keeps the stored secret.
     ...(form.oauthClientSecret
       ? { oauthClientSecret: form.oauthClientSecret }
       : {}),

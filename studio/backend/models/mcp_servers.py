@@ -46,7 +46,6 @@ class McpServerResponse(BaseModel):
     is_enabled: bool = True
     use_oauth: bool = False
     oauth_client_id: Optional[str] = None
-    # The secret itself is never returned.
     has_oauth_client_secret: bool = False
     image_input_mappings: list[McpImageInputMapping] = Field(default_factory = list)
     # False when no mapping matches a cached tool schema any more; true while the tools are unknown.
