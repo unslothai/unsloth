@@ -114,10 +114,10 @@ assert_eq "precedes uv bootstrap" "yes" \
 # Match the call that creates the venv, not the label it carries: the literal
 # 'run_install_cmd "create venv" uv venv' stopped existing when #8479 moved venv
 # creation behind _run_uv_venv, and a label this file cannot find reads as "the cache
-# is set too late" rather than "the grep is stale". Comment lines are dropped so the
-# prose above the helper does not answer first.
+# is set too late" rather than "the grep is stale". Comment lines and case globs are
+# dropped so the prose above the helper, or a pattern matching the call, does not answer first.
 _venv_line=$(grep -nE '(^|[^[:alnum:]_"`])uv venv([[:space:]]|$)' "$INSTALL_SH" \
-    | grep -vE '^[0-9]+:[[:space:]]*#' | head -1 | cut -d: -f1)
+    | grep -vE '^[0-9]+:[[:space:]]*#' | grep -v '\*" uv venv "\*' | head -1 | cut -d: -f1)
 assert_eq "found the venv creation call" "yes" "$([ -n "$_venv_line" ] && echo yes || echo no)"
 assert_eq "precedes venv creation" "yes" \
     "$([ -n "$_set_line" ] && [ -n "$_venv_line" ] && [ "$_set_line" -lt "$_venv_line" ] && echo yes || echo no)"

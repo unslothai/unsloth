@@ -733,6 +733,24 @@ def test_status_reports_the_install_and_the_options(monkeypatch, tmp_path):
     assert "sycl" not in by_backend
 
 
+def test_status_skips_the_resolver_when_update_checks_disabled(monkeypatch, tmp_path):
+    _install(monkeypatch, tmp_path)
+    monkeypatch.setenv("UNSLOTH_DISABLE_UPDATE_CHECK", "1")
+
+    def _no_resolve(*args, **kwargs):
+        raise AssertionError("resolved backends despite UNSLOTH_DISABLE_UPDATE_CHECK=1")
+
+    monkeypatch.setattr(upd, "_resolve_backends_for_host", _no_resolve)
+    monkeypatch.setattr(upd, "latest_release_assets", _no_resolve)
+
+    status = upd.get_backend_status(force_refresh = True)
+
+    assert status["supported"] is False
+    assert status["reason"] == "update_checks_disabled"
+    assert status["backend"] == "cuda"
+    assert status["options"] == []
+
+
 def test_status_reports_when_auto_now_resolves_to_another_backend(monkeypatch, tmp_path):
     _install(monkeypatch, tmp_path, backend = "cpu", backend_request = "auto")
 

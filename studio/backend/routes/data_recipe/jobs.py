@@ -5,7 +5,13 @@
 
 from __future__ import annotations
 
-from utils.account_context import current_account
+from utils.account_context import (
+    OWNER,
+    AccountContext,
+    bind_account,
+    current_account,
+    reset_account,
+)
 from core.training.account_jobs import account_event_stream
 import copy
 import hashlib
@@ -31,6 +37,7 @@ from auth.authentication import (
 from auth.storage import CredentialRotated
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from pydantic import ValidationError
+from starlette.concurrency import run_in_threadpool
 
 from core.data_recipe.export import (
     ExportFormat,
@@ -53,6 +60,8 @@ from models.data_recipe import (
     PublishDatasetResponse,
     RecipePayload,
 )
+from utils.client_ip import client_ip
+from utils.hf_endpoint import client_reachable_endpoint, get_hf_endpoint
 from utils.host_policy import dial_host, self_request_host
 from utils.utils import safe_error_detail, safe_curated_detail, log_and_http_error
 
@@ -67,30 +76,67 @@ _DOWNLOAD_LINK_SECRET = secrets.token_bytes(32)
 
 
 def _download_link_payload(
-    *, job_id: str, export_format: str, artifact_path: str | None, filename: str | None
+    *,
+    job_id: str,
+    export_format: str,
+    artifact_path: str | None,
+    filename: str | None,
+    account_id: str,
 ) -> str:
-    # Every parameter the export reads, or the holder could swap artifact_path for another run's.
-    parts = [job_id, export_format, artifact_path or "", filename or ""]
-    return "\x1f".join(parts)
+    # Every parameter the export reads, or the holder could swap artifact_path for another run's,
+    # plus the account whose roots it will be read from: recipe roots are derived from the account
+    # ContextVar, so the tenant is part of the object this capability names.
+    # Length-prefixed, because a bare separator join is not injective: artifact_path "a" with
+    # filename "b\x1fc" and artifact_path "a\x1fb" with filename "c" share one payload, so one
+    # signature would authorize both.
+    parts = [account_id, job_id, export_format, artifact_path or "", filename or ""]
+    return "\x1f".join(f"{len(part)}:{part}" for part in parts)
 
 
 def _sign_download_link(**parts: Any) -> str:
+    account = current_account()
+    account_id = "" if account.is_owner else account.account_id
     expires_at = int(time.time()) + _DOWNLOAD_LINK_TTL
-    payload = f"{_download_link_payload(**parts)}\x1f{expires_at}"
+    payload = f"{_download_link_payload(account_id = account_id, **parts)}\x1f{expires_at}"
     signature = hmac.new(_DOWNLOAD_LINK_SECRET, payload.encode(), hashlib.sha256).hexdigest()
-    return f"{expires_at}.{signature}"
+    return f"{expires_at}.{account_id}.{signature}"
 
 
-def _download_link_authorizes(token: str, **parts: Any) -> bool:
+def _download_link_account(token: str, **parts: Any) -> AccountContext | None:
+    """The account this link was minted for, or None once it is invalid or deactivated.
+
+    Same shape as the signed RAG document link: expiry, account id, signature, with an empty
+    account id meaning the owner.
+    """
     try:
-        expires_at, signature = token.rsplit(".", 1)
-        if int(expires_at) < int(time.time()):
-            return False
+        expires_at, account_id, signature = token.split(".", 2)
     except ValueError:
-        return False
-    payload = f"{_download_link_payload(**parts)}\x1f{expires_at}"
+        return None
+    if "." in signature:
+        return None
+    # Compare as bytes: compare_digest on two str raises TypeError for a non-ASCII signature, which
+    # a %-encoded query value can carry, and that is a 500 where an invalid token owes a 401. The
+    # preview share link guards the same way.
+    try:
+        provided = signature.encode("ascii")
+    except UnicodeEncodeError:
+        return None
+    payload = f"{_download_link_payload(account_id = account_id, **parts)}\x1f{expires_at}"
     expected = hmac.new(_DOWNLOAD_LINK_SECRET, payload.encode(), hashlib.sha256).hexdigest()
-    return hmac.compare_digest(signature, expected)
+    if not hmac.compare_digest(provided, expected.encode("ascii")):
+        return None
+    try:
+        if int(expires_at) < int(time.time()):
+            return None
+    except ValueError:
+        return None
+    if not account_id:
+        return OWNER
+    from auth.storage import get_account_by_id
+
+    # None once the account is deactivated or deleted: the link dies with it.
+    account = get_account_by_id(account_id)
+    return None if account is None or account.is_owner else account
 
 
 async def _authorize_dataset_download(
@@ -100,18 +146,35 @@ async def _authorize_dataset_download(
     artifact_path: str | None = Query(default = None),
     filename: str | None = Query(default = None),
     token: str | None = Query(default = None),
-) -> None:
+):
     """A signed link for exactly this export, or the ordinary Authorization header for an API
     client. The session bearer is deliberately not read from the query."""
-    if token and _download_link_authorizes(
-        token,
-        job_id = job_id,
-        export_format = export_format,
-        artifact_path = artifact_path,
-        filename = filename,
-    ):
+    # In a threadpool: get_account_by_id is synchronous SQLite under a 5s busy timeout, and this
+    # dependency is async, so on the loop a contended auth database would stall every other request.
+    # The sibling RAG link gets this for free by being a sync def, which FastAPI offloads itself.
+    account = (
+        await run_in_threadpool(
+            _download_link_account,
+            token,
+            job_id = job_id,
+            export_format = export_format,
+            artifact_path = artifact_path,
+            filename = filename,
+        )
+        if token
+        else None
+    )
+    if account is not None:
+        # This route has no auth dependency behind the link, so without this bind every read
+        # resolves under the owner's recipe root rather than the minter's.
+        marker = bind_account(account)
+        try:
+            yield
+        finally:
+            reset_account(marker)
         return
     await subject_for_header_or_query_token(request, None)
+    yield
 
 
 download_router = APIRouter(dependencies = [Depends(_authorize_dataset_download)])
@@ -212,6 +275,11 @@ def _single_used_local_model_selection(
             f"Select the same local model and GGUF variant for: {aliases}."
         )
     return next(iter(selections))
+
+
+def _local_chat_serves_gguf() -> bool:
+    from routes.inference import get_llama_cpp_backend
+    return bool(get_llama_cpp_backend().is_loaded)
 
 
 def _loaded_local_model_identity() -> tuple[bool, str, str]:
@@ -427,9 +495,10 @@ def _inject_local_providers(
             extra_body["chat_template_kwargs"] = tpl_kwargs
             params["extra_body"] = extra_body
 
-    # Forward each llm-structured column's output_format as a response_format so
-    # llama-server uses grammar-constrained sampling instead of broken JSON.
-    _inject_local_structured_response_format(recipe, local_names)
+    # Only llama.cpp carries a grammar engine; /v1 refuses response_format on every other local
+    # backend, so those fall back to the prompt-level JSON llm-judge columns already rely on.
+    if _local_chat_serves_gguf():
+        _inject_local_structured_response_format(recipe, local_names)
 
     return internal_key_id
 
@@ -443,6 +512,26 @@ def _normalize_run_name(value: Any) -> str | None:
     if not trimmed:
         return None
     return trimmed[:120]
+
+
+def _resolve_seed_endpoint(recipe: dict[str, Any]) -> None:
+    """Fill in the HF endpoint for a backend-executed seed fetch, in place.
+
+    Data Designer fetches the seed in this process, so the endpoint must be the
+    one THIS machine can reach. A client that sends none (the normal case) gets
+    HF_ENDPOINT resolved here, which matters for a remote browser: /api/health
+    reports the public default to it for a loopback mirror, and shipping that
+    back would bypass the mirror on the deployments that need it most. An
+    endpoint the user typed into the seed node is left alone.
+    """
+    seed_config = recipe.get("seed_config")
+    if not isinstance(seed_config, dict):
+        return
+    source = seed_config.get("source")
+    if not isinstance(source, dict) or source.get("seed_type") != "hf":
+        return
+    if not str(source.get("endpoint") or "").strip():
+        source["endpoint"] = get_hf_endpoint()
 
 
 @router.post("/jobs", response_class = JSONResponse, response_model = JobCreateResponse)
@@ -482,6 +571,8 @@ def create_job(
                 event = "data_recipe.jobs.run_config_invalid",
                 log = logger,
             ) from exc
+
+    _resolve_seed_endpoint(recipe)
 
     try:
         internal_api_key_id = _inject_local_providers(recipe, request, credential[1])
@@ -808,6 +899,7 @@ def download_job_dataset(
     response_model = PublishDatasetResponse,
 )
 def publish_job_dataset(
+    request: Request,
     job_id: str,
     payload: PublishDatasetRequest,
     allow_ambient: bool = Depends(allow_ambient_hf_token),
@@ -856,6 +948,9 @@ def publish_job_dataset(
             description = description,
             hf_token = hf_token or None,
             private = payload.private,
+            # client_ip, not the socket peer: through the managed tunnel the peer
+            # is the local cloudflared process, not the visitor.
+            link_endpoint = client_reachable_endpoint(client_ip(request)),
         )
     except RecipeDatasetPublishError as exc:
         raise log_and_http_error(

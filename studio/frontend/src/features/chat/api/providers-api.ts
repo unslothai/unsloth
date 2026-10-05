@@ -4,6 +4,7 @@
 import forge from "node-forge";
 import { authFetch } from "@/features/auth/api";
 import { formatFastApiDetail } from "@/lib/format-fastapi-error";
+import type { ModelCatalogSnapshotEntry } from "../model-catalog-snapshot";
 
 
 export type ProviderAuthKind = "api_key" | "chatgpt_oauth";
@@ -34,7 +35,11 @@ export interface ProviderRegistryEntry {
   model_ids_editable?: boolean;
 }
 
+export type ProviderApiType = "chat_completions" | "responses";
+export type ConnectionApiType = ProviderApiType | "systemone";
+
 export interface ProviderConfig {
+  api_type?: ConnectionApiType;
   id: string;
   provider_type: string;
   display_name: string;
@@ -59,6 +64,28 @@ export interface ProviderModelInfo {
   owned_by?: string | null;
   /** Only the ChatGPT plan catalog reports this; the registry describes the rest. */
   vision?: boolean | null;
+  /** Only Ollama's /api/tags reports these; absent is not the same as none. */
+  capabilities?: string[] | null;
+}
+
+export interface ProviderModelReasoningInfo {
+  supported_efforts?: string[] | null;
+  mandatory?: boolean | null;
+  default_effort?: string | null;
+  default_enabled?: boolean | null;
+}
+
+export interface ProviderModelCapabilityInfo {
+  id: string;
+  input_modalities?: string[] | null;
+  reasoning?: ProviderModelReasoningInfo | null;
+  max_output_tokens?: number | null;
+  supported_parameters?: string[] | null;
+}
+
+export interface ModelCatalogResponse {
+  fetched_at: number;
+  providers: Record<string, Record<string, ModelCatalogSnapshotEntry>>;
 }
 
 export interface ProviderTestResult {
@@ -168,7 +195,9 @@ export async function listProviderRegistry(): Promise<ProviderRegistryEntry[]> {
   // include_hidden asks for the backend-only entries (the self-hosted presets), which carry the
   // studio-tools capability the composer gates on. An older backend ignores the parameter and
   // returns the visible entries, so the capability reads as unknown and the pills stay closed.
-  const response = await authFetch("/api/providers/registry?include_hidden=true");
+  const response = await authFetch(
+    "/api/providers/registry?include_hidden=true&include_oauth=true",
+  );
   return parseJsonOrThrow<ProviderRegistryEntry[]>(response);
 }
 
@@ -181,6 +210,7 @@ export async function createProviderConfig(payload: {
   providerType: string;
   displayName: string;
   baseUrl?: string | null;
+  apiType?: ConnectionApiType;
   models?: string[];
   availableModels?: string[];
   maxOutputTokens?: number | null;
@@ -194,6 +224,7 @@ export async function createProviderConfig(payload: {
         provider_type: payload.providerType,
         display_name: payload.displayName,
         base_url: payload.baseUrl ?? null,
+        ...(payload.apiType === undefined ? {} : { api_type: payload.apiType }),
         models: payload.models ?? [],
         available_models: payload.availableModels ?? [],
         ...(payload.maxOutputTokens === undefined
@@ -226,6 +257,7 @@ export async function updateProviderConfig(
   payload: {
     displayName?: string;
     baseUrl?: string | null;
+    apiType?: ConnectionApiType;
     isEnabled?: boolean;
     models?: string[];
     availableModels?: string[];
@@ -241,6 +273,7 @@ export async function updateProviderConfig(
       body: JSON.stringify({
         ...(payload.displayName === undefined ? {} : { display_name: payload.displayName }),
         ...(payload.baseUrl === undefined ? {} : { base_url: payload.baseUrl }),
+        ...(payload.apiType === undefined ? {} : { api_type: payload.apiType }),
         ...(payload.isEnabled === undefined ? {} : { is_enabled: payload.isEnabled }),
         ...(payload.models === undefined ? {} : { models: payload.models }),
         ...(payload.availableModels === undefined
@@ -299,6 +332,7 @@ export async function testProviderConnection(payload: {
   providerId?: string | null;
   apiKey: string;
   baseUrl?: string | null;
+  apiType?: ConnectionApiType;
   modelId?: string | null;
 }): Promise<ProviderTestResult> {
   return withApiKeyEncryptionRetry(payload.apiKey, async (encryptedApiKey) => {
@@ -311,6 +345,7 @@ export async function testProviderConnection(payload: {
         provider_id: payload.providerId ?? null,
         encrypted_api_key: encryptedApiKey,
         base_url: payload.baseUrl ?? null,
+        ...(payload.apiType === undefined ? {} : { api_type: payload.apiType }),
         model_id: payload.modelId ?? null,
       }),
     });
@@ -324,6 +359,7 @@ export async function listProviderModels(payload: {
   providerId?: string | null;
   apiKey: string;
   baseUrl?: string | null;
+  apiType?: ConnectionApiType;
 }): Promise<ProviderModelInfo[]> {
   return withApiKeyEncryptionRetry(payload.apiKey, async (encryptedApiKey) => {
     const response = await authFetch("/api/providers/models", {
@@ -335,9 +371,38 @@ export async function listProviderModels(payload: {
         provider_id: payload.providerId ?? null,
         encrypted_api_key: encryptedApiKey,
         base_url: payload.baseUrl ?? null,
+        ...(payload.apiType === undefined ? {} : { api_type: payload.apiType }),
       }),
     });
     return parseJsonOrThrow<ProviderModelInfo[]>(response);
+  });
+}
+
+export async function fetchModelCatalog(): Promise<ModelCatalogResponse> {
+  const response = await authFetch("/api/providers/model-catalog");
+  return parseJsonOrThrow<ModelCatalogResponse>(response);
+}
+
+export async function listProviderModelCapabilities(payload: {
+  providerType: string;
+  providerId?: string | null;
+  apiKey: string;
+  baseUrl?: string | null;
+  apiType?: ProviderApiType;
+}): Promise<ProviderModelCapabilityInfo[]> {
+  return withApiKeyEncryptionRetry(payload.apiKey, async (encryptedApiKey) => {
+    const response = await authFetch("/api/providers/model-capabilities", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        provider_type: payload.providerType,
+        provider_id: payload.providerId ?? null,
+        encrypted_api_key: encryptedApiKey,
+        base_url: payload.baseUrl ?? null,
+        ...(payload.apiType === undefined ? {} : { api_type: payload.apiType }),
+      }),
+    });
+    return parseJsonOrThrow<ProviderModelCapabilityInfo[]>(response);
   });
 }
 

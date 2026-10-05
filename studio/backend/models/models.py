@@ -41,6 +41,13 @@ class ModelCheckpoints(BaseModel):
         False,
         description = "Whether the model uses BNB quantization (e.g. bnb-4bit)",
     )
+    adapter_features: Optional[Dict[str, Optional[bool]]] = Field(
+        None,
+        description = "Compact adapter capabilities parsed from the adapter "
+        "config (dora / full_state / moe_target_parameters / non_uniform); "
+        "None for non-adapter runs. A None VALUE means unverified (e.g. "
+        "full_state without a weight-header probe).",
+    )
 
 
 class CheckpointListResponse(BaseModel):
@@ -123,6 +130,7 @@ class LoRAInfo(BaseModel):
     export_type: Optional[str] = Field(
         None, description = "'lora', 'merged', or 'gguf' (for exports)"
     )
+    size_bytes: Optional[int] = Field(None, description = "Bytes the model takes on disk")
     audio_type: Optional[str] = Field(
         None,
         description = (
@@ -131,6 +139,13 @@ class LoRAInfo(BaseModel):
             "The Audio page needs this to offer a trained checkpoint: a scan row "
             "carries no modality otherwise, so an audio adapter reads as a text one."
         ),
+    )
+    adapter_features: Optional[Dict[str, Optional[bool]]] = Field(
+        None,
+        description = "Compact adapter capabilities parsed from the adapter "
+        "config (dora / full_state / moe_target_parameters / non_uniform); "
+        "None when no adapter config was found. A None VALUE means "
+        "unverified.",
     )
 
 
@@ -153,15 +168,32 @@ class GgufVariantDetail(BaseModel):
 
     filename: str = Field(..., description = "GGUF filename (e.g., 'gemma-3-4b-it-Q4_K_M.gguf')")
     quant: str = Field(..., description = "Quantization label or internal GGUF variant key")
-    # Mirrors hub.schemas.inventory.GgufVariantDetail. The route builds THIS model, so a field that exists only
-    # on the hub twin is dropped by pydantic without a word and a qualified row falls back to rendering its whole
-    # relative path.
+    cache_path: Optional[str] = Field(
+        None, description = "Owning cache repository for this complete variant"
+    )
+    # Mirrors hub.schemas.inventory.GgufVariantDetail; see display_label below. FastAPI
+    # serializes through THIS model, so an undeclared redacted reference is dropped.
+    cache_ref: Optional[str] = Field(
+        None, description = "Opaque stand-in for cache_path, stable for the server's life"
+    )
+    context_length: Optional[int] = Field(
+        None, description = "Native context limit from this variant's cached source"
+    )
+    # Mirrors hub.schemas.inventory.GgufVariantDetail. The route builds THIS model, so a field that
+    # exists only on the hub twin is dropped by pydantic without a word and a qualified row falls back
+    # to rendering its whole relative path.
     display_label: Optional[str] = Field(
         None, description = "Optional user-facing label when quant is an internal key"
     )
     size_bytes: int = Field(0, description = "File size in bytes")
     download_size_bytes: int = Field(0, description = "Total bytes needed to download this variant")
-    shard_count: int = Field(0, description = "Part count for a complete canonical split GGUF")
+    # Mirrors hub.schemas.inventory.GgufVariantDetail; see display_label above.
+    pending_drafter_filename: Optional[str] = Field(
+        None, description = "Missing separate drafter when the main GGUF is already cached"
+    )
+    pending_drafter_size_bytes: int = Field(
+        0, description = "Remote size of pending_drafter_filename"
+    )
     downloaded: bool = Field(
         False, description = "Whether this variant is already in the local HF cache"
     )
@@ -201,6 +233,10 @@ class GgufVariantsResponse(BaseModel):
     resolved_locally: bool = Field(
         False,
         description = "Whether this answer came from resolving repo_id as a local path",
+    )
+    dependencies_resolved: bool = Field(
+        False,
+        description = "Whether Hub metadata was available to resolve the variant's required companion files",
     )
     loadable_variants: Optional[List[str]] = Field(
         None,
@@ -284,6 +320,10 @@ class AddScanFolderRequest(BaseModel):
     """Request body for adding a custom scan folder."""
 
     path: str = Field(..., description = "Absolute or relative directory path to scan for models")
+    recursive: Optional[bool] = Field(
+        None,
+        description = "Also scan sub-folders. Omitted keeps the stored setting of an already registered folder.",
+    )
 
 
 class ScanFolderInfo(BaseModel):
@@ -292,6 +332,7 @@ class ScanFolderInfo(BaseModel):
     id: int = Field(..., description = "Database row ID")
     path: str = Field(..., description = "Normalized absolute path")
     created_at: str = Field(..., description = "ISO 8601 creation timestamp")
+    recursive: bool = Field(False, description = "Sub-folders are scanned too")
     status: str = Field(
         default = "ok",
         description = "Last scan result: ok, permission_denied, missing, or unreadable",

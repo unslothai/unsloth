@@ -39,7 +39,9 @@ def isolated(monkeypatch, tmp_path):
     monkeypatch.setattr(jobs, "_services", [])
     monkeypatch.setattr(jobs, "_retired", set())
     monkeypatch.setattr(
-        download_lifecycle, "resolve_requested_use_xet", lambda mode, use_xet: (False, "HTTP")
+        download_lifecycle,
+        "resolve_requested_use_xet",
+        lambda mode, use_xet, **_kw: (False, "HTTP"),
     )
     from core import research_runs
     from core.rag import folder_sync, ingestion
