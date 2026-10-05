@@ -561,7 +561,9 @@ if _TRACEABLE:
     def _rms_layernorm_op(
         X: torch.Tensor, W: torch.Tensor, eps: float, gemma: bool
     ) -> Tuple[torch.Tensor, torch.Tensor]:
-        return _rms_forward(X, W, eps, gemma, _traced_kernel)
+        # Called eagerly (outside a compiled graph) the launch needs X's device made current.
+        with torch_gpu_device(X.device):
+            return _rms_forward(X, W, eps, gemma, _traced_kernel)
 
     @torch.library.triton_op("unsloth::rms_layernorm_backward", mutates_args = ())
     def _rms_layernorm_backward_op(
@@ -569,7 +571,8 @@ if _TRACEABLE:
     ) -> torch.Tensor:
         dX = torch.empty_like(dY)
         # Non-Gemma rewrites its dY argument, so it gets a copy.
-        _rms_backward(dY if gemma else dX.copy_(dY), dX, X, W, r, eps, gemma, _traced_kernel)
+        with torch_gpu_device(dY.device):
+            _rms_backward(dY if gemma else dX.copy_(dY), dX, X, W, r, eps, gemma, _traced_kernel)
         return dX
 
     def _rms_setup_context(ctx, inputs, output):

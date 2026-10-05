@@ -255,3 +255,30 @@ def test_multirow_self_check_runs_once(multirow):
         _assert_bits(one_row, _run(X, W, dY, False))
     assert len(calls) == 1 and rms_layernorm._MULTIROW
     assert len(launches) == 1 + 3  # the check's own launch, then every call
+
+
+@pytest.mark.skipif(torch.cuda.device_count() < 2, reason = "needs two GPUs")
+@pytest.mark.parametrize("path", ["eager", "compiled", "op"])
+def test_multirow_launches_on_the_tensors_device(multirow, path):
+    """With cuda:0 current, cuda:1 inputs give the one-row bytes (launches use the tensor's device)."""
+    if path != "eager" and not getattr(torch.library, "triton_op", None):
+        pytest.skip("needs torch.library.triton_op")
+    dtype = torch.bfloat16 if BF16_OK else torch.float16
+    g = torch.Generator(device = "cuda:1").manual_seed(0)
+    X = torch.randn(1184, 128, device = "cuda:1", generator = g).to(dtype)
+    W = torch.randn(128, device = "cuda:1", generator = g).to(dtype)
+    multirow.setattr(rms_layernorm, "_MULTIROW", False)
+    with torch.cuda.device(1):
+        ref, _ = rms_layernorm._rms_forward(X, W, 1e-6, False, _eager)
+    multirow.setattr(rms_layernorm, "_MULTIROW", True)
+    norm = torch.nn.Module()
+    norm.weight, norm.variance_epsilon = torch.nn.Parameter(W), 1e-6
+    with torch.cuda.device(0):
+        if path == "op":
+            got, _ = torch.ops.unsloth.rms_layernorm(X, W, 1e-6, False)
+        else:
+            fn = lambda n, x: fast_rms_layernorm(n, x)
+            got = (torch.compile(fn, fullgraph = True) if path == "compiled" else fn)(norm, X).detach()
+            torch._dynamo.reset()
+    assert torch.equal(_bits(ref), _bits(got))
+    assert any(rms_layernorm._MULTIROW_CHECKED.values()) and rms_layernorm._MULTIROW
