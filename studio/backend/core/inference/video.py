@@ -4454,7 +4454,6 @@ class VideoBackend:
                 is_cached = lambda n, repo = src.location: DiffusionBackend._hub_file_is_cached(
                     repo, n
                 ),
-                declared = getattr(src, "declared_filenames", ()) or (),
                 online = online,
                 cache_dir = hub_cache_dir(),
             )

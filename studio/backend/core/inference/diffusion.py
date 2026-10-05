@@ -5141,7 +5141,7 @@ class DiffusionBackend:
                         return sized[name]
 
                     # The file the load will OPEN, in the resolver's order: a cached older encoder does not
-                    # make an uncached declared one ahead of it free, the load downloads that one first.
+                    # make an uncached one ahead of it free, the load downloads that one first.
                     names = [
                         n for n in te_candidate_filenames(source) if te_candidate_is_readable(n)
                     ]
@@ -5155,7 +5155,6 @@ class DiffusionBackend:
                             log = False,
                         ),
                         is_cached = lambda n: _size_of(n) > 0,
-                        declared = getattr(source, "declared_filenames", ()) or (),
                         cache_dir = hub_cache_dir(),
                     )
                     size = _size_of(hit) if hit else 0

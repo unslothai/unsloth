@@ -435,17 +435,24 @@ def test_offline_the_cached_int8_is_what_loads(hub):
     assert _resolve(src, local_files_only = True) == hub.cached[(REPO, "Model-INT8.pt")]
 
 
-def test_a_stale_404_marker_does_not_clear_a_declared_name(hub):
-    """The marker belongs to the revision the cache last saw. A ConvRot file published since then
-    is exactly the case that matters, so a declared name is never cleared by one."""
+def test_an_unpublished_convrot_stops_blocking_once_the_resolver_saw_its_404(hub):
+    """The code names a ConvRot build the repo does not host yet (merged before the upload). The
+    first load asks, gets a 404, and opens the cached INT8 .pt; from then on the probe agrees with
+    the resolver instead of planning a download that never happens on every load."""
     hub.cache("Model-INT8.pt")
-    hub.absent.add((REPO, "Model-INT8-ConvRot.safetensors"))
-    assert pq.cached_checkpoint_path(_convrot_dit(), online = True) is None
+    src = _convrot_dit()
+    # never asked: online, it may be hosted, so a download is planned
+    assert pq.cached_checkpoint_path(src, online = True) is None
+    hub.hosted = set(PLAIN)
+    got = _resolve(src)
+    assert got == hub.cached[(REPO, "Model-INT8.pt")]
+    assert hub.fetched == ["Model-INT8-ConvRot.safetensors", "Model-INT8.pt"]
+    assert pq.cached_checkpoint_path(src, online = True) == got
+    assert pq.prequant_checkpoint_cached(src, online = True) is True
 
 
 def test_a_derived_name_is_cleared_by_the_resolvers_own_404(hub):
-    """A derived name is a guess. Once the resolver has asked and the Hub said 404, the cached
-    name behind it is what loads, and the probe agrees with the resolver."""
+    """Same rule for a name derived from the repo id rather than declared by the family."""
     hub.cache("Model-INT8.pt")
     src = _convrot_dit(declared = False)
     assert pq.cached_checkpoint_path(src, online = True) is None
@@ -492,25 +499,24 @@ def test_video_cached_repo_probe_follows_the_same_rule(hub, monkeypatch):
 
 
 def test_te_pricing_does_not_call_a_cached_fp8_encoder_free(hub, monkeypatch, tmp_path):
-    """The text-encoder size estimate: a cached FP8 encoder is not what loads when the family
-    declares an uncached INT8-ConvRot encoder ahead of it, so the size is not exact."""
+    """The text-encoder size estimate: a cached FP8 encoder is not what loads when an uncached
+    INT8-ConvRot encoder is ahead of it and no 404 for it is recorded, so the size is not exact."""
     import core.inference.diffusion as diffusion
     from core.inference.diffusion import DiffusionBackend
 
     snap = tmp_path / "snap"
     snap.mkdir()
     (snap / "Model-text_encoder-FP8.pt").write_bytes(b"x" * 4096)
-    declared = ("Model-text_encoder-INT8-ConvRot.safetensors",)
+    convrot = ("Model-text_encoder-INT8-ConvRot.safetensors",)
 
     def _sources(*a, **k):
-        names = declared + ("Model-text_encoder-FP8.safetensors", "Model-text_encoder-FP8.pt")
+        names = convrot + ("Model-text_encoder-FP8.safetensors", "Model-text_encoder-FP8.pt")
         return {
             "text_encoder": tpq.TePrequantSource(
                 kind = "repo",
                 location = REPO,
                 filename = names[0],
                 fallback_filenames = names[1:],
-                declared_filenames = declared,
             )
         }
 
@@ -528,6 +534,13 @@ def test_te_pricing_does_not_call_a_cached_fp8_encoder_free(hub, monkeypatch, tm
     )
     assert components == ("text_encoder",)
     assert exact is False
+    # Not hosted yet: once the resolver's 404 for it is recorded, the cached fp8 file is what loads.
+    hub.absent.add((REPO, convrot[0]))
+    mib, components, exact = DiffusionBackend._precast_text_encoder_mib(
+        fam, "base/Model", None, "int8"
+    )
+    assert exact is True and mib == 1
+    hub.absent.clear()
     # Once the ConvRot encoder is cached it is what loads, and the size is the file's own.
     (snap / "Model-text_encoder-INT8-ConvRot.safetensors").write_bytes(b"x" * (3 << 20))
     mib, components, exact = DiffusionBackend._precast_text_encoder_mib(

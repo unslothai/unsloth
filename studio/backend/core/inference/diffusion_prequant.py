@@ -706,7 +706,6 @@ def first_cached_as_resolved(
     names: Sequence[str],
     *,
     is_cached: Any,
-    declared: Sequence[str] = (),
     online: Optional[bool] = None,
     cache_dir: Optional[str] = None,
 ) -> Optional[str]:
@@ -718,22 +717,23 @@ def first_cached_as_resolved(
     other artifact ahead of it is absent from the Hub. Taking the first cached name regardless is
     how an existing INT8 ``.pt`` read as "nothing to download" while the chain led with an uncached
     INT8-ConvRot that the load then fetched, several GB the planner and the disk gate never saw.
-    Each uncached name ahead of the hit is judged on its own:
+    So each uncached name ahead of the hit has to be ruled out:
 
     - a container twin of the hit (same stem) never blocks: ``prefer_cached_pickle_twins`` already
       put the cached container first, so the resolver opens it without asking for the twin;
-    - a DECLARED name blocks: the family says the repo hosts it. Its ``.no_exist`` marker is not
-      trusted, because the marker belongs to the revision the cache last saw and a file published
-      since then (a ConvRot build added to a repo that already hosts the plain one) is exactly the
-      case this exists for;
-    - a DERIVED name, a guess from the repo id, blocks unless the cache records it as absent, which
-      the resolver's own 404 on it leaves behind.
+    - any other name blocks unless the cache records it as ABSENT, the ``.no_exist`` marker the
+      resolver's own 404 on it leaves behind. Before any load has asked, it may well be hosted.
+
+    A marker describes the revision the cache last saw, so the one load after a file is published
+    into a repo the cache already knew can still be planned as free; the resolver fetches the right
+    file regardless, and the cache knows the new revision from then on. Trusting markers is what
+    keeps an artifact the code names but the repo does not host yet (a ConvRot build ahead of its
+    upload) from making every load plan a download that never happens.
 
     ``online=None`` reads huggingface_hub's offline switch. Never raises."""
     try:
         if online is None:
             online = not hub_offline()
-        declared_set = set(declared or ())
         ahead: list = []
         for name in names:
             if not name:
@@ -746,9 +746,7 @@ def first_cached_as_resolved(
                 for other in ahead:
                     if _container_stem(other) == stem:
                         continue
-                    if other in declared_set or not hub_name_known_absent(
-                        repo_id, other, cache_dir
-                    ):
+                    if not hub_name_known_absent(repo_id, other, cache_dir):
                         return None
             return name
     except Exception:  # noqa: BLE001 - a planning aid: unanswerable reads as not cached
@@ -1369,8 +1367,8 @@ def cached_checkpoint_path(
     because the container is what decides it.
 
     The answer is the file the LOAD would open, which online is not simply the first cached name:
-    ``first_cached_as_resolved`` says when an uncached artifact ahead of it (a declared INT8-ConvRot
-    in front of a cached INT8 ``.pt``) would be downloaded first, and then this is None. A cached
+    ``first_cached_as_resolved`` says when an uncached artifact ahead of it (an INT8-ConvRot in front
+    of a cached INT8 ``.pt``) would be downloaded first, and then this is None. A cached
     ``.pt`` whose safetensors twin is not cached still counts, as the resolver opens it.
     ``online=False`` asks the plain question instead, is ANY readable name cached, which is what an
     offline load opens and what a caller looking for evidence of a file wants.
@@ -1419,7 +1417,6 @@ def cached_checkpoint_path(
         location,
         ordered,
         is_cached = lambda n: _hit(n) is not None,
-        declared = getattr(source, "declared_filenames", ()) or (),
         online = online,
         cache_dir = cache_dir,
     )
