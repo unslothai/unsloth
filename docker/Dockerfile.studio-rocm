@@ -85,6 +85,7 @@ ARG UNSLOTH_NOTEBOOKS_REF=main
 # $UNSLOTH_STUDIO_HOME/cache/uv, which would fill a volume on the home with wheels.
 ENV UNSLOTH_STUDIO_HOME=/opt/unsloth-studio \
     UNSLOTH_STUDIO_APP=/opt/unsloth-studio-app \
+    UNSLOTH_STUDIO_PROJECTS_HOME=/opt/unsloth-studio/projects \
     UV_CACHE_DIR=/opt/unsloth-studio-app/uv-cache \
     JUPYTER_PORT=8888 \
     UNSLOTH_STUDIO_PORT=8000 \

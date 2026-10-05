@@ -63,6 +63,7 @@ USER root
 # which would fill a volume on the home with wheels; cache/ there stays runtime data.
 ENV UNSLOTH_STUDIO_HOME=/opt/unsloth-studio \
     UNSLOTH_STUDIO_APP=/opt/unsloth-studio-app \
+    UNSLOTH_STUDIO_PROJECTS_HOME=/opt/unsloth-studio/projects \
     UV_CACHE_DIR=/opt/unsloth-studio-app/uv-cache \
     UNSLOTH_IMAGE_ALLOW_CPU=1 \
     JUPYTER_PORT=8888 \

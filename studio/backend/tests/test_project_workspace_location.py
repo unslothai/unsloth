@@ -10,6 +10,7 @@ Known Folder Move has repointed Documents at the synced copy.
 """
 
 import os
+import re
 from pathlib import Path
 
 import pytest
@@ -66,6 +67,24 @@ def test_the_projects_override_wins_outright(tmp_path, monkeypatch):
     monkeypatch.setenv("UNSLOTH_STUDIO_DOCUMENTS_HOME", str(tmp_path / "documents"))
     monkeypatch.setenv("UNSLOTH_STUDIO_PROJECTS_HOME", str(tmp_path / "projects"))
     assert project_workspaces_root() == tmp_path / "projects"
+
+
+@pytest.mark.parametrize("dockerfile", ["Dockerfile.studio", "Dockerfile.studio-rocm"])
+def test_the_studio_images_keep_project_folders_on_the_studio_volume(
+    dockerfile, tmp_path, monkeypatch
+):
+    text = (Path(__file__).resolve().parents[3] / "docker" / dockerfile).read_text(
+        encoding = "utf-8"
+    )
+    block = text[text.index("ENV UNSLOTH_STUDIO_HOME=") :]
+    image_env = dict(re.findall(r"(\w+)=(\S+)", block[: block.index("\n\n")]))
+    for name in ("UNSLOTH_STUDIO_DOCUMENTS_HOME", "UNSLOTH_STUDIO_PROJECTS_HOME"):
+        monkeypatch.delenv(name, raising = False)
+    for name, value in image_env.items():
+        monkeypatch.setenv(name, value)
+    monkeypatch.setenv("HOME", str(tmp_path / "root"))
+
+    assert project_workspaces_root().is_relative_to(image_env["UNSLOTH_STUDIO_HOME"])
 
 
 def _probe_payload():
