@@ -7,11 +7,11 @@ const path = (d: string, key: string) =>
   ["path", { d, stroke: "currentColor", strokeLinecap: "round", strokeLinejoin: "round", key }] as const;
 
 // Fork actions' glyph: Hugeicons split (MIT), turned 90° clockwise so it branches to the right,
-// at 1.1x so its open shape matches the other icons' weight.
+// at 1.05x to match the other icons' weight and nudged left, as most of its ink is on the right.
 export const ForkIcon = [
-  path("M15.85 21.9H17.94C19.8068 21.9 20.7402 21.9 21.3201 21.3201C21.9 20.7402 21.9 19.8068 21.9 17.94V15.85M20.8 20.8L14.75 14.75", "0"),
+  path("M14.525 21.45H16.52C18.302 21.45 19.1929 21.45 19.7464 20.8964C20.3 20.3429 20.3 19.452 20.3 17.67V15.675M19.25 20.4L13.475 14.625", "0"),
   path(
-    "M15.85 2.1H17.94C19.8068 2.1 20.7402 2.1 21.3201 2.6799C21.9 3.2599 21.9 4.1932 21.9 6.06V8.15M20.8 3.2L14.5774 9.4225C13.3057 10.6943 12.6699 11.3301 11.8613 11.665C11.0527 12 10.1534 12 8.3549 12H2.1",
+    "M14.525 2.55H16.52C18.302 2.55 19.1929 2.55 19.7464 3.1036C20.3 3.6571 20.3 4.5481 20.3 6.33V8.325M19.25 3.6L13.3103 9.5397C12.0963 10.7537 11.4894 11.3605 10.7176 11.6803C9.9457 12 9.0874 12 7.3706 12H1.4",
     "1",
   ),
 ] as unknown as IconSvgElement;

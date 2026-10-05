@@ -320,7 +320,13 @@ import { MicIcon } from "@/lib/mic-icon";
 import { downloadFile, isDownloadCancelled } from "@/lib/native-files";
 import { toast } from "@/lib/toast";
 import { Tick02Icon } from "@/lib/tick-icon";
-import { BranchNextIcon, BranchPrevIcon, ContinueArrowIcon, ReadAloudIcon } from "@/lib/action-bar-icons";
+import {
+  BranchNextIcon,
+  BranchPrevIcon,
+  ContinueArrowIcon,
+  EditResponseIcon,
+  ReadAloudIcon,
+} from "@/lib/action-bar-icons";
 import { ForkIcon } from "@/lib/fork-icon";
 import { cn } from "@/lib/utils";
 import {
@@ -8472,7 +8478,7 @@ const EditAssistantMessageButton: FC = () => {
       onClick={() => setEditingId(messageId)}
     >
       <HugeiconsIcon
-        icon={Edit03Icon}
+        icon={EditResponseIcon}
         strokeWidth={1.75}
         className="size-icon"
       />
@@ -8530,7 +8536,7 @@ const EditAssistantMessageMenuItem: FC = () => {
       onSelect={() => setEditingId(messageId)}
       className="aui-action-bar-more-item flex cursor-pointer select-none items-center gap-2 rounded-[12px] px-3 py-2 text-sm outline-none hover:bg-accent hover:text-accent-foreground focus:bg-accent focus:text-accent-foreground data-[disabled]:pointer-events-none data-[disabled]:opacity-50"
     >
-      <HugeiconsIcon icon={Edit03Icon} strokeWidth={1.75} className="size-icon" />
+      <HugeiconsIcon icon={EditResponseIcon} strokeWidth={1.75} className="size-icon" />
       Edit response
     </ActionBarMorePrimitive.Item>
   );
@@ -8592,6 +8598,8 @@ const AssistantActionBar: FC = () => {
       >
         <CopyButton />
         {inlineEdit && <EditAssistantMessageButton />}
+        <ForkCountBadge />
+        <ForkMessageButton />
         {ttsEnabled && (
           <MessagePrimitive.If speaking={false}>
             <ActionBarPrimitive.Speak asChild={true}>
@@ -8614,8 +8622,6 @@ const AssistantActionBar: FC = () => {
             </TooltipIconButton>
           </ActionBarPrimitive.StopSpeaking>
         </MessagePrimitive.If>
-        <ForkCountBadge />
-        <ForkMessageButton />
         {!researchRunId && !researchActive && (
           <ActionBarPrimitive.Reload asChild={true}>
             <TooltipIconButton tooltip="Refresh">

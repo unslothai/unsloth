@@ -198,10 +198,10 @@ test("Continue response leads the More menu and yields to the Resume bar", () =>
     thread,
     /<ContinueResponseMenuItem \/>\n\s*\{!inlineEdit && <EditAssistantMessageMenuItem \/>\}/,
   );
-  // Bar order: Edit, Read aloud (or Stop reading), Fork, Refresh.
+  // Bar order: Edit, Fork, Read aloud (or Stop reading), Refresh.
   assert.match(
     thread,
-    /\{inlineEdit && <EditAssistantMessageButton \/>\}\n\s*\{ttsEnabled && \(\n\s*<MessagePrimitive\.If speaking=\{false\}>\n\s*<ActionBarPrimitive\.Speak[\s\S]*?<\/ActionBarPrimitive\.StopSpeaking>\n\s*<\/MessagePrimitive\.If>\n\s*<ForkCountBadge \/>\n\s*<ForkMessageButton \/>\n\s*\{!researchRunId && !researchActive && \(\n\s*<ActionBarPrimitive\.Reload/,
+    /\{inlineEdit && <EditAssistantMessageButton \/>\}\n\s*<ForkCountBadge \/>\n\s*<ForkMessageButton \/>\n\s*\{ttsEnabled && \(\n\s*<MessagePrimitive\.If speaking=\{false\}>\n\s*<ActionBarPrimitive\.Speak[\s\S]*?<\/ActionBarPrimitive\.StopSpeaking>\n\s*<\/MessagePrimitive\.If>\n\s*\{!researchRunId && !researchActive && \(\n\s*<ActionBarPrimitive\.Reload/,
   );
   // Delete is the More menu's last item, not a bar button.
   assert.match(thread, /<DeleteMessageMenuItem \/>\n\s*<\/div>\n\s*<\/ActionBarMorePrimitive\.Content>/);
