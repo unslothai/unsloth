@@ -718,3 +718,32 @@ def test_only_the_owner_can_start_decision_training():
     finally:
         reset_account(token)
     assert refused.value.status_code == 403
+
+
+def test_eval_files_that_are_training_files_are_never_the_held_out_set(tmp_path):
+    train = _dataset(tmp_path, [_row(i) for i in range(30)])
+    for eval_files in ([train], [str(tmp_path)], [str(tmp_path / "." / "decisions.jsonl")]):
+        rows, eval_rows, warnings = _load(
+            local_datasets = [train], local_eval_datasets = eval_files, eval_steps = 0.1
+        )
+        assert len(rows) == 30 and eval_rows is None, eval_files
+        assert warnings == [
+            "The evaluation files include training files, so part of the training data is "
+            "held out for evaluation instead."
+        ]
+
+
+@needs_worker
+def test_cancel_during_calibration_saves_nothing(base, studio_home):
+    from utils.paths import outputs_root
+
+    rows = [_row(i) for i in range(120)]
+    events = _train(
+        _config(base, _dataset(studio_home, rows)),
+        False,
+        when = lambda event: event.get("message") == "Calibrating confidence...",
+    )
+
+    complete = _of(events, "complete")[-1]
+    assert (complete["output_dir"], complete["status_message"]) == (None, "Training cancelled")
+    assert not outputs_root().exists() or not any(outputs_root().iterdir())

@@ -82,14 +82,20 @@ def _from_arrow(rows, warn: Callable[[str], None]) -> list[dict]:
     ]
 
 
-def _read_local_rows(paths: list[str], load_dataset, warn: Callable[[str], None]) -> list[dict]:
-    from utils.datasets.cells import csv_as_text_kwargs
+def _local_files(paths: list[str]) -> list[Path]:
     from utils.paths import dataset_files_in_dir, datasets_root
 
     files: list[Path] = []
     for entry in paths:
         path = Path(entry if os.path.isabs(entry) else os.path.join(str(datasets_root()), entry))
         files.extend(dataset_files_in_dir(path) if path.is_dir() else [path])
+    return files
+
+
+def _read_local_rows(paths: list[str], load_dataset, warn: Callable[[str], None]) -> list[dict]:
+    from utils.datasets.cells import csv_as_text_kwargs
+
+    files = _local_files(paths)
     if not files:
         raise ValueError("No local dataset files found")
     rows: list[dict] = []
@@ -171,7 +177,19 @@ def _load_rows(
             )
     else:
         raise ValueError("No dataset specified for decision training.")
-    if evaluate and config.get("local_eval_datasets"):
+    if (
+        evaluate
+        and config.get("local_eval_datasets")
+        and config.get("local_datasets")
+        and {p.resolve() for p in _local_files(config["local_eval_datasets"])}
+        & {p.resolve() for p in _local_files(config["local_datasets"])}
+    ):
+        # Scoring or calibrating on training rows would report the fit, not held-out accuracy.
+        warn(
+            "The evaluation files include training files, so part of the training data is "
+            "held out for evaluation instead."
+        )
+    elif evaluate and config.get("local_eval_datasets"):
         eval_rows = _eval_sample(
             _read_local_rows(config["local_eval_datasets"], load_dataset, warn), seed
         )
@@ -453,6 +471,9 @@ def _run(event_queue: Any, stop_queue: Any, config: dict, output_dir: str) -> No
         status("Calibrating confidence...")
         tuned_metrics = FastDecisionModel.calibrate(model, tokenizer, eval_items)
         logger.info("Fine-tuned held-out metrics: %s", tuned_metrics)
+    # A cancel during calibration still saves nothing; a stop with save keeps the model.
+    if stop["requested"] and not stop["save"]:
+        raise _Stopped("Training cancelled")
 
     status("Saving model...")
     peak_gb = torch.cuda.max_memory_allocated() / 1e9 if torch.cuda.is_available() else None
