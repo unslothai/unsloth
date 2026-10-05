@@ -308,3 +308,21 @@ def test_peft_mica_variant_and_init(tag: str):
     assert tuners_src is not None and has_def(
         tuners_src, "_freeze_non_trainable_peft_weights", "func"
     ), f"{tag}: _freeze_non_trainable_peft_weights missing"
+
+
+# 12. unsloth/models/lora_init.py replaces LoraLayer.pissa_init(self, adapter_name, init_lora_weights) and
+#     mica_init(self, adapter_name) during get_peft_model and calls layer.py's `transpose`.
+def test_peft_lora_init_hooks(tag: str):
+    src = fetch_text("huggingface/peft", tag, "src/peft/tuners/lora/layer.py")
+    if src is None:
+        pytest.skip(f"{tag}: layer.py missing")
+    assert re.search(
+        r"def pissa_init\(self, adapter_name, init_lora_weights\)", src
+    ), f"{tag}: pissa_init signature moved"
+    assert re.search(
+        r"^from peft\.utils\.other import transpose$", src, re.M
+    ), f"{tag}: transpose import moved"
+    if has_def(src, "mica_init", "func"):
+        assert re.search(
+            r"def mica_init\(self, adapter_name\)", src
+        ), f"{tag}: mica_init signature moved"

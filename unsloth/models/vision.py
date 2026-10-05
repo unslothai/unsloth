@@ -4078,7 +4078,10 @@ class FastBaseModel:
 
             _LoraModel._create_and_replace = _patched_car
 
-        model = _get_peft_model(model, lora_config)
+        from .lora_init import fast_lora_init
+
+        with fast_lora_init():
+            model = _get_peft_model(model, lora_config)
 
         # PEFT may have wrapped an endpoint this load repaired; the hook stays on base_layer and the adapter branch reads the caller's tensor.
         try:

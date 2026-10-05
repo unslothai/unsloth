@@ -3961,7 +3961,10 @@ class FastLlamaModel:
                 gc.collect()
                 clean_gpu_cache()
 
-        model = _get_peft_model(model, lora_config)
+        from .lora_init import fast_lora_init
+
+        with fast_lora_init():
+            model = _get_peft_model(model, lora_config)
 
         try:
             from .vision import _lift_endpoint_hooks_onto_adapters
