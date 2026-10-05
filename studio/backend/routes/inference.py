@@ -6469,10 +6469,10 @@ def _apply_compaction_nudge(
     archive to search and stays a no-op for chats that never compacted.
 
     `checkpoint_fitted` is the CALLER's answer to "does this request go through
-    `_fit_context`, which can reset the epoch", not the process-wide policy. Only the
-    llama.cpp path fits that way; reading the global policy instead told a safetensors
-    model that a carried_forward block had removed its history when no such block exists.
-    Defaults to False so a new call site claims the reset rather than inheriting it."""
+    `_fit_context`, which can reset the epoch", not the process-wide policy. GGUF and MLX
+    opt in at their exact-token preflight call sites; other safetensors and external-provider
+    paths do not. Defaults to False so a new call site claims the reset rather than
+    inheriting it."""
     tool_names = {(t.get("function") or {}).get("name") for t in (tools or [])}
     if "search_conversation" not in tool_names:
         return nudge
@@ -32067,6 +32067,8 @@ async def produce_openai_chat_completions(
 
     # Classify capability flags from the loaded template.
     _sf_model_info = backend.models.get(backend.active_model_name, {})
+    # Only MLX can count its own prompt, so only MLX is fitted before it generates.
+    _sf_fit_overflow = _rolling_context_policy(payload) if _sf_model_info.get("is_mlx") else None
     if _sf_model_info.get("engine") in ("vllm", "sglang"):
         if _managed_engine_unsupported_controls(payload):
             raise _reject(
@@ -32335,6 +32337,7 @@ async def produce_openai_chat_completions(
             tools_on = _sf_tools_on,
             mcp_allowed = _sf_mcp_allowed,
             supports_vision = bool(_sf_model_info.get("is_vision")),
+            checkpoint_fitted = _sf_fit_overflow is not None,
         )
         _reject_missing_forced_tool(payload.tool_choice, _sf_tools_to_use)
         # Mirror the GGUF path: refuse to enter the tool loop when nothing
@@ -32394,9 +32397,12 @@ async def produce_openai_chat_completions(
 
         # RAG nudge, mirroring the GGUF path.
         _sf_nudge = await _apply_rag_nudge(_sf_nudge, _sf_tools_to_use, rag_scope = payload.rag_scope)
-        # No `checkpoint_fitted`: this path never calls `fit_checkpoint_context`, so there
-        # is no reset and no carried_forward block to describe.
-        _sf_nudge = _apply_compaction_nudge(_sf_nudge, _sf_tools_to_use)
+        _sf_nudge = _apply_compaction_nudge(
+            _sf_nudge,
+            _sf_tools_to_use,
+            checkpoint_fitted = _sf_fit_overflow is not None,
+            payload = payload,
+        )
 
         _sf_system_prompt = _apply_current_date_prompt(
             _user_system_prompt,
@@ -32527,6 +32533,9 @@ async def produce_openai_chat_completions(
                 use_adapter = payload.use_adapter,
                 stats_holder = _sf_stats_holder,
                 reasoning_prefilled = _sf_reasoning_prefilled,
+                context_overflow = _sf_fit_overflow,
+                context_policy = _request_context_policy(payload),
+                compaction_headroom_ratio = _request_compaction_headroom_ratio(payload),
             )
 
         _sf_tool_sentinel = object()
@@ -32671,6 +32680,14 @@ async def produce_openai_chat_completions(
                             yield _OPENAI_PASSTHROUGH_SSE_KEEPALIVE
                         continue
 
+                    if event["type"] == "context_truncated":
+                        yield _context_truncated_sse_chunk(
+                            completion_id,
+                            model_name,
+                            {key: value for key, value in event.items() if key != "type"},
+                        )
+                        continue
+
                     # Diff cumulative cleaned text against last snapshot.
                     raw_cumulative = event.get("text", "")
                     clean_cumulative = _strip_tool_xml_for_display(
@@ -32781,8 +32798,10 @@ async def produce_openai_chat_completions(
 
         # Non-streaming JSON: drain the loop, build one ChatCompletion.
         try:
+            _sf_context_truncation = None
 
             def _drain_to_text():
+                nonlocal _sf_context_truncation
                 full_text = ""
                 # Only the resumed turn renders no generation prompt; later tool-loop turns
                 # prefill <think> again. The kept text is the LAST turn's, so track the
@@ -32815,6 +32834,10 @@ async def produce_openai_chat_completions(
                         _event_type == "status" and not event.get("text")
                     ):
                         continued = False
+                    elif _event_type == "context_truncated":
+                        _sf_context_truncation = _accumulate_context_truncation(
+                            _sf_context_truncation, event
+                        )
                 return full_text, prefilled
 
             content_text, _sf_drain_prefilled = await asyncio.to_thread(_drain_to_text)
@@ -32867,7 +32890,7 @@ async def produce_openai_chat_completions(
                     ),
                 ),
             )
-            return _model_json_response(response)
+            return _model_json_response_with_context_truncation(response, _sf_context_truncation)
         except asyncio.CancelledError:
             cancel_event.set()
             backend.reset_generation_state(cancel_event)
@@ -33155,17 +33178,11 @@ async def produce_openai_chat_completions(
 
     # Request-scoped usage/timings receptacle (filled at gen_done).
     stats_holder: dict = {}
+    _sf_context_truncation_holder: dict = {"value": None}
 
     if payload.use_adapter is not None:
 
-        def generate(messages_override = None, choice_index = 0):
-            kw = (
-                gen_kwargs
-                if messages_override is None
-                else {**gen_kwargs, "messages": messages_override}
-            )
-            if choice_index:
-                kw = {**kw, "seed": _choice_seed(payload.seed, choice_index)}
+        def _sf_raw_generate(kw):
             return backend.generate_with_adapter_control(
                 use_adapter = payload.use_adapter,
                 cancel_event = cancel_event,
@@ -33174,19 +33191,54 @@ async def produce_openai_chat_completions(
             )
     else:
 
-        def generate(messages_override = None, choice_index = 0):
-            kw = (
-                gen_kwargs
-                if messages_override is None
-                else {**gen_kwargs, "messages": messages_override}
-            )
-            if choice_index:
-                kw = {**kw, "seed": _choice_seed(payload.seed, choice_index)}
+        def _sf_raw_generate(kw):
             return backend.generate_chat_response(
                 cancel_event = cancel_event,
                 stats_holder = stats_holder,
                 **kw,
             )
+
+    def generate(messages_override = None, choice_index = 0):
+        base_kwargs = (
+            gen_kwargs
+            if messages_override is None
+            else {**gen_kwargs, "messages": messages_override}
+        )
+
+        if choice_index:
+            base_kwargs = {**base_kwargs, "seed": _choice_seed(payload.seed, choice_index)}
+
+        def _run():
+            generation_kwargs = base_kwargs
+            # The count cannot price pictures or video, so those prompts are left alone.
+            if _sf_fit_overflow and all(
+                base_kwargs.get(key) is None for key in ("image", "images", "video")
+            ):
+                fitted = backend.compact_chat_context(
+                    base_kwargs.get("messages") or [],
+                    system_prompt = base_kwargs.get("system_prompt") or "",
+                    tools = base_kwargs.get("tools"),
+                    context_overflow = _sf_fit_overflow,
+                    context_policy = _request_context_policy(payload),
+                    compaction_headroom_ratio = _request_compaction_headroom_ratio(payload),
+                    max_tokens = effective_max_tokens,
+                    thread_id = payload.thread_id,
+                    cancel_event = cancel_event,
+                    enable_thinking = base_kwargs.get("enable_thinking"),
+                    reasoning_effort = base_kwargs.get("reasoning_effort"),
+                    preserve_thinking = base_kwargs.get("preserve_thinking"),
+                    continue_final_message = bool(base_kwargs.get("continue_final_message", False)),
+                )
+                generation_kwargs = {
+                    **base_kwargs,
+                    "messages": fitted["messages"],
+                    "system_prompt": fitted["system_prompt"],
+                }
+                for event in fitted.get("events") or ():
+                    yield event
+            yield from _sf_raw_generate(generation_kwargs)
+
+        return _run()
 
     # ── Streaming response ────────────────────────────────────────
     if payload.stream:
@@ -33240,6 +33292,14 @@ async def produce_openai_chat_completions(
                     _next_task = None
                     if cumulative is _DONE:
                         break
+                    if isinstance(cumulative, dict):
+                        if cumulative.get("type") == "context_truncated":
+                            yield _context_truncated_sse_chunk(
+                                completion_id,
+                                model_name,
+                                {key: value for key, value in cumulative.items() if key != "type"},
+                            )
+                        continue
                     if isinstance(cumulative, GenStreamError):
                         backend.reset_generation_state(cancel_event)
                         _msg = _friendly_gen_stream_error(cumulative)
@@ -33458,6 +33518,13 @@ async def produce_openai_chat_completions(
             def _drain_generate(messages_override = None, choice_index = 0):
                 final = ""
                 for token in generate(messages_override, choice_index = choice_index):
+                    if isinstance(token, dict):
+                        if token.get("type") == "context_truncated":
+                            # Choices and retries refit one prompt: report a fit, not their sum.
+                            _sf_context_truncation_holder["value"] = _accumulate_context_truncation(
+                                None, token
+                            )
+                        continue
                     if isinstance(token, GenStreamError):
                         return token
                     final = token
@@ -33758,7 +33825,9 @@ async def produce_openai_chat_completions(
                     timings = _last_stats.get("timings") if len(_choices) <= 1 else None,
                 )
             api_monitor.finish(monitor_id)
-            return _model_json_response(response)
+            return _model_json_response_with_context_truncation(
+                response, _sf_context_truncation_holder["value"]
+            )
 
         except asyncio.CancelledError:
             cancel_event.set()
@@ -39275,6 +39344,7 @@ async def _mlx_count_chat_tokens(payload, request = None) -> Optional[JSONRespon
                 tools_on = _tools_on,
                 mcp_allowed = False,
                 supports_vision = bool(entry.get("is_vision")),
+                checkpoint_fitted = _rolling_context_policy(payload) is not None,
             )
         ) + _mcp_tools
         # Nothing surviving means the completion skips the tool loop, so follow it back
@@ -39375,9 +39445,13 @@ async def _mlx_count_chat_tokens(payload, request = None) -> Optional[JSONRespon
             _tools_to_use,
             rag_scope = payload.rag_scope,
         )
-        # The safetensors completion appends this too. No `checkpoint_fitted`: only the
-        # llama.cpp path fits that way, so neither this count nor its completion resets.
-        _nudge = _apply_compaction_nudge(_nudge, _tools_to_use)
+        # Match the MLX completion's preflight policy and rendered nudge.
+        _nudge = _apply_compaction_nudge(
+            _nudge,
+            _tools_to_use,
+            checkpoint_fitted = _rolling_context_policy(payload) is not None,
+            payload = payload,
+        )
         # The tool-loop completion reapplies the date with include_api_key, which is the
         # one case an API-key request still gets it. The plain call above withholds it,
         # so without this the count is short exactly that line for these completions.
