@@ -53,11 +53,16 @@ signal-hook = "0.4"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = { version = "0.6", features = ["exception"] }
+block2 = "0.6"
 
-objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std", "NSAppearance", "NSButton", "NSControl", "NSResponder", "NSStatusBarButton", "NSStatusItem", "NSView"] }
-objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "NSArray", "NSDictionary", "NSKeyValueObserving", "NSObject", "NSProcessInfo", "NSString"] }
+objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std", "NSAppearance", "NSBitmapImageRep", "NSButton", "NSControl", "NSImage", "NSImageRep", "NSResponder", "NSStatusBarButton", "NSStatusItem", "NSView"] }
+objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "NSArray", "NSData", "NSDictionary", "NSError", "NSKeyValueObserving", "NSObject", "NSProcessInfo", "NSString"] }
+# browser pane screenshots (takeSnapshotWithConfiguration).
+objc2-web-kit = { version = "0.3.2", default-features = false, features = ["std", "block2", "objc2-app-kit", "WKSnapshotConfiguration", "WKWebView"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
+# encodes browser pane screenshots as PNG.
+cairo-rs = { version = "0.18", features = ["png"] }
 gdk = "0.18"
 gdk-pixbuf = "0.18"
 glib = "0.18"

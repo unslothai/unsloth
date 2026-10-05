@@ -2,6 +2,7 @@
 
 mod app_layout;
 mod app_menu;
+mod browser_agent;
 mod browser_webview;
 mod browser_platform;
 #[cfg(target_os = "linux")]
@@ -2296,6 +2297,7 @@ fn main() {
             browser_webview::desktop_browser_action,
             browser_webview::desktop_browser_snapshot,
             browser_webview::desktop_browser_clear_data,
+            browser_agent::desktop_browser_agent,
         ];
             handler(invoke)
         })

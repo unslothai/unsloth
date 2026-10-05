@@ -57,18 +57,38 @@ pub struct BrowserSnapshot {
     pub actual_bounds: Option<BrowserRect>,
     pub popup_url: Option<String>,
     pub error: Option<String>,
+    // counts popups so an agent click can tell a new one from a repeated URL.
+    #[serde(skip)]
+    pub popups: u64,
+    // engines queue evaluated scripts without replying until the first commit.
+    #[serde(skip)]
+    pub committed: bool,
 }
 #[derive(Clone)]
 struct Session {
     snapshot: BrowserSnapshot,
     revision: u64,
 }
-#[derive(Default)]
 pub struct BrowserState {
     // Serialize creation/close/native actions without ever blocking GTK's thread.
-    operations: tokio::sync::Mutex<()>,
+    pub(crate) operations: tokio::sync::Mutex<()>,
     session: Mutex<Option<Session>>,
     exiting: AtomicBool,
+    // one agent request at a time, so marks and clicks never interleave.
+    pub(crate) agent: tokio::sync::Mutex<()>,
+    // random per run, so pages cannot pre-claim the runtime's global.
+    pub(crate) agent_name: String,
+}
+impl Default for BrowserState {
+    fn default() -> Self {
+        Self {
+            operations: Default::default(),
+            session: Default::default(),
+            exiting: Default::default(),
+            agent: Default::default(),
+            agent_name: crate::browser_agent::runtime_name(),
+        }
+    }
 }
 
 /// Window-state 2.x enumerates WebviewWindows, excluding windows with a child.
@@ -103,7 +123,7 @@ fn label(session_id: &str) -> Result<String, String> {
     Ok(format!("desktop-browser-{session_id}"))
 }
 
-fn is_private_host(host: &str) -> bool {
+pub(crate) fn is_private_host(host: &str) -> bool {
     let host = host.trim_matches(['[', ']']).to_ascii_lowercase();
     if host == "localhost" || host.ends_with(".localhost") || host.ends_with(".local") {
         return true;
@@ -159,7 +179,7 @@ fn validate_url(raw: &str, test_origin: Option<&str>) -> Result<tauri::Url, Stri
     }
     Ok(url)
 }
-fn website(raw: &str) -> Result<tauri::Url, String> {
+pub(crate) fn website(raw: &str) -> Result<tauri::Url, String> {
     #[cfg(debug_assertions)]
     let fixture = std::env::var("UNSLOTH_BROWSER_TEST_ORIGIN").ok();
     #[cfg(not(debug_assertions))]
@@ -174,7 +194,10 @@ fn update(app: &tauri::AppHandle, id: &str, f: impl FnOnce(&mut BrowserSnapshot)
         }
     };
 }
-fn current(app: &tauri::AppHandle, id: &str) -> Result<(Webview, BrowserSnapshot), String> {
+pub(crate) fn current(
+    app: &tauri::AppHandle,
+    id: &str,
+) -> Result<(Webview, BrowserSnapshot), String> {
     let state = app.state::<BrowserState>();
     let snapshot = state
         .session
@@ -337,6 +360,7 @@ pub async fn desktop_browser_open(
         WebviewUrl::External("about:blank".parse().unwrap()),
     )
     .data_directory(profile)
+    .initialization_script_for_all_frames(crate::browser_agent::init_script(&state.agent_name))
     .on_navigation(move |url| {
         // WebKit calls this for subframes too. Inline documents are ordinary
         // browser content (and required by Turnstile), not Studio origins.
@@ -362,12 +386,14 @@ pub async fn desktop_browser_open(
         update(&load_app, &load_id, |s| {
             s.url = payload.url().to_string();
             s.loading = payload.event() == tauri::webview::PageLoadEvent::Started;
+            s.committed = true;
         });
     })
     .on_new_window(move |url, _| {
         if website(url.as_str()).is_ok() {
             update(&popup_app, &popup_id, |s| {
-                s.popup_url = Some(url.to_string())
+                s.popup_url = Some(url.to_string());
+                s.popups += 1;
             });
         }
         tauri::webview::NewWindowResponse::Deny
