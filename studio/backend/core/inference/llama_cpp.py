@@ -24408,21 +24408,6 @@ class LlamaCppBackend:
                             cancel_event = download_cancel_event,
                             near_path = model_path,
                         )
-                    elif (
-                        not is_vision
-                        and not mmproj_path
-                        and model_path
-                        and not extra_args_disable_mmproj(extra_args)
-                    ):
-                        # The listing publishes none and the config had no cached weight to
-                        # pair a hand-added projector against (#9286); now there is one.
-                        from utils.models.model_config import _hf_cached_local_mmproj
-                        mmproj_path = _hf_cached_local_mmproj(model_path)
-                        if mmproj_path:
-                            logger.info(
-                                "Using hand-added mmproj from the HF cache: %s", mmproj_path
-                            )
-                            is_vision = True
                     # Auto-download the separate MTP drafter (e.g. Gemma) when
                     # the requested spec mode can use it. The size gate stays out
                     # of it: a separate drafter speeds up even sub-3B (Gemma E2B),
