@@ -291,7 +291,8 @@ export function loadedContextFields(resp: {
   };
 }
 
-// Matches studio/backend/core/inference/llama_cpp.py _valid_cache_types (f16 is the UI default).
+// studio/backend/core/inference/llama_cpp.py _valid_cache_types minus iq4_nl, which has no CUDA/HIP
+// FlashAttention kernel and runs attention on the CPU (f16 is the UI default).
 export const KV_CACHE_DTYPES = [
   "bf16",
   "q8_0",
@@ -299,7 +300,6 @@ export const KV_CACHE_DTYPES = [
   "q4_1",
   "q5_0",
   "q5_1",
-  "iq4_nl",
   "f32",
 ] as const;
 
