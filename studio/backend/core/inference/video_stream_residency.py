@@ -154,7 +154,7 @@ def measured_room_mib(
 
 
 def _measured_extra_mib(module: Any, work: int) -> Optional[int]:
-    """The recorded peak of the smallest completed request at least as large as ``work``; None when none covers it."""
+    """The largest recorded peak among completed requests at least as large as ``work``; None when none covers it."""
     peaks = getattr(module, "_unsloth_video_peaks", None) or {}
     covering = [extra for w, extra in peaks.items() if w >= work]
     return max(covering) if covering else None

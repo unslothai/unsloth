@@ -19,6 +19,7 @@ import core.inference.video_stream_residency as vr
 def _env(monkeypatch):
     monkeypatch.delenv(vr.VIDEO_DIT_RESIDENT_ENV, raising = False)
     monkeypatch.delenv(vr.VIDEO_DIT_RESIDENT_BLOCKS_ENV, raising = False)
+    monkeypatch.delenv(vr.VIDEO_DIT_RESIDENT_MEASURED_ENV, raising = False)
     monkeypatch.delenv(dm.PARTIAL_RESIDENT_ENV, raising = False)
 
 
@@ -129,7 +130,7 @@ def test_fit_failure_streams_everything_and_never_raises(monkeypatch):
 def _streamed_net():
     torch = pytest.importorskip("torch")
     if not torch.cuda.is_available():
-        pytest.skip("CUDA-only: diffusers group offloading with a copy stream")
+        pytest.skip(reason = "CUDA-only: diffusers group offloading with a copy stream")
     pytest.importorskip("diffusers.hooks")
     from diffusers.hooks import apply_group_offloading
 
