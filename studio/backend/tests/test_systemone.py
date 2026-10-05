@@ -933,6 +933,40 @@ def test_decision_api_cannot_be_enabled_where_laya_is_not_installed(client, monk
     assert client.put("/api/settings/systemone", json = {"enabled": False}).status_code == 200
 
 
+@pytest.mark.parametrize(
+    "backend, available, expected",
+    [
+        ("auto", True, {"clef", "clef-flash"}),
+        ("llama.cpp", True, {"clef", "clef-flash"}),
+        ("pytorch", True, set()),
+        ("auto", False, set()),
+        ("llama.cpp", False, set()),
+    ],
+)
+def test_native_models_remain_discoverable_without_torch(monkeypatch, backend, available, expected):
+    from core.systemone import native_worker
+
+    monkeypatch.setattr(systemone_settings, "get_backend", lambda: backend)
+    monkeypatch.setattr(systemone_settings, "runtime_unavailable_reason", lambda: "PyTorch absent")
+    monkeypatch.setattr(
+        native_worker,
+        "native_availability",
+        lambda: {
+            "available": available,
+            "reason": None if available else "old native runtime",
+        },
+    )
+    models = {model["id"]: model for model in systemone.decision_model_objects()}
+    assert models.keys() == {"default", *expected}
+    assert all(model["architecture"]["input_modalities"] == ["text"] for model in models.values())
+    if expected:
+        for name in expected:
+            assert (
+                systemone_settings.validate(enabled = True, model = name)[systemone_settings.MODEL_KEY]
+                == name
+            )
+
+
 def test_runtime_reason_names_what_the_install_lacks(monkeypatch):
     import importlib.util
 

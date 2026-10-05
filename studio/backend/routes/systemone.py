@@ -319,6 +319,15 @@ async def refresh_listed_decision_models() -> None:
 def decision_model_objects() -> list[dict[str, Any]]:
     if not systemone_settings.get_enabled():
         return []
+    names = list(catalog.CHECKPOINTS)
+    if systemone_settings.runtime_unavailable_reason():
+        names = [
+            name
+            for name in names
+            if isinstance(catalog.CHECKPOINTS[name], catalog.ClefCheckpoint)
+            and decision_runtime.backend_info(catalog.CHECKPOINTS[name])["effective_backend"]
+            == "llama.cpp"
+        ]
     return [
         {
             "id": name,
@@ -331,10 +340,7 @@ def decision_model_objects() -> list[dict[str, Any]]:
                 "output_modalities": ["decisions"],
             },
         }
-        for name in (
-            "default",
-            *(() if systemone_settings.runtime_unavailable_reason() else catalog.CHECKPOINTS),
-        )
+        for name in ("default", *names)
     ]
 
 

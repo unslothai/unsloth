@@ -67,8 +67,12 @@ def backend_info(checkpoint):
 
 
 def accepts_images(checkpoint):
-    from utils.systemone_settings import get_backend
-    return isinstance(checkpoint, catalog.ClefCheckpoint) and get_backend() != "llama.cpp"
+    from utils.systemone_settings import get_backend, runtime_unavailable_reason
+    return (
+        isinstance(checkpoint, catalog.ClefCheckpoint)
+        and get_backend() != "llama.cpp"
+        and runtime_unavailable_reason() is None
+    )
 
 
 def _enter() -> None:
