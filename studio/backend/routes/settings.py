@@ -684,6 +684,7 @@ class SystemOneSettingsPayload(BaseModel):
     backend: Optional[Literal["auto", "llama.cpp", "pytorch"]] = None
     expected_enabled: Optional[bool] = None
     expected_model: Optional[str] = None
+    expected_backend: Optional[Literal["auto", "llama.cpp", "pytorch"]] = None
 
 
 class SystemOneDownloadPlan(BaseModel):
@@ -1525,11 +1526,18 @@ def _systemone_values(payload: SystemOneSettingsPayload) -> dict[str, Any]:
 def _check_systemone_expectations(payload: SystemOneSettingsPayload) -> None:
     from core.systemone import catalog
     changed = (
-        payload.expected_enabled is not None
-        and systemone_settings.get_enabled() != payload.expected_enabled
-    ) or (
-        payload.expected_model is not None
-        and catalog.default_checkpoint().name != payload.expected_model
+        (
+            payload.expected_enabled is not None
+            and systemone_settings.get_enabled() != payload.expected_enabled
+        )
+        or (
+            payload.expected_model is not None
+            and catalog.default_checkpoint().name != payload.expected_model
+        )
+        or (
+            payload.expected_backend is not None
+            and systemone_settings.get_backend() != payload.expected_backend
+        )
     )
     if changed:
         raise HTTPException(status_code = 409, detail = "Decision API settings changed. Try again.")

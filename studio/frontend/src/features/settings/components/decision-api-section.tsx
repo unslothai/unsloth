@@ -253,6 +253,7 @@ export function DecisionApiSection(): ReactElement | null {
               ...patch,
               expectedEnabled: settings.enabled,
               expectedModel: settings.model,
+              expectedBackend: settings.backend,
             }
           : patch;
       let resolvedPlan: typeof planState = null;

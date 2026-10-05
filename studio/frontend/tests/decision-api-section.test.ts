@@ -56,12 +56,12 @@ test("a download waits for confirmation before changing the setting", () => {
     SECTION.indexOf("const acceptDownload = async"),
   );
   assert.doesNotMatch(apply, /startDownload\(/);
-  assert.ok(
-    apply.indexOf("resolveSystemOneDownload(nextModel)") <
-      apply.indexOf("updateSystemOneSettings(settingsPatch)"),
-  );
+  const resolve = apply.indexOf("resolveSystemOneDownload(nextModel, nextBackend)");
+  assert.ok(resolve >= 0);
+  assert.ok(resolve < apply.indexOf("updateSystemOneSettings(settingsPatch)"));
   assert.match(apply, /expectedEnabled: settings\.enabled/);
   assert.match(apply, /expectedModel: settings\.model/);
+  assert.match(apply, /expectedBackend: settings\.backend/);
   assert.match(
     apply,
     /setConfirm\(\{\s*plan: nextPlan,\s*patch: settingsPatch,\s*model: nextModel,?\s*\}\);\s*return;/,
@@ -143,6 +143,7 @@ test("the client talks to the settings routes and maps the schema", () => {
   assert.match(API, /`\$\{SETTINGS_PATH\}\/resolve\$\{query\}`/);
   assert.match(API, /expected_enabled: expectedEnabled/);
   assert.match(API, /expected_model: expectedModel/);
+  assert.match(API, /expected_backend: expectedBackend/);
   for (const [camel, snake] of [
     ["enabledLocked", "enabled_locked"],
     ["gpuAvailable", "gpu_available"],

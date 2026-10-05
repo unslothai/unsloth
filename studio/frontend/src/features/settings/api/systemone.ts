@@ -58,6 +58,7 @@ export type SystemOneSettingsPatch = {
   backend?: SystemOneBackend;
   expectedEnabled?: boolean;
   expectedModel?: string;
+  expectedBackend?: SystemOneBackend;
 };
 
 type ApiSystemOneConnection = {
@@ -135,13 +136,14 @@ function publishSystemOneSettings(settings: SystemOneSettings) {
 }
 
 function toApiPatch(patch: SystemOneSettingsPatch) {
-  const { expectedEnabled, expectedModel, ...settings } = patch;
+  const { expectedEnabled, expectedModel, expectedBackend, ...settings } = patch;
   return {
     ...settings,
     ...(expectedEnabled !== undefined && {
       expected_enabled: expectedEnabled,
     }),
     ...(expectedModel !== undefined && { expected_model: expectedModel }),
+    ...(expectedBackend !== undefined && { expected_backend: expectedBackend }),
   };
 }
 

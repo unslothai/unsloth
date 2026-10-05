@@ -453,6 +453,32 @@ def test_settings_validation_checks_the_snapshot_without_saving(client):
     assert updated.json()["model"] == "laya-english"
 
 
+@pytest.mark.parametrize(
+    "method, path, status",
+    [
+        ("post", "/api/settings/systemone/validate", 204),
+        ("put", "/api/settings/systemone", 200),
+    ],
+)
+def test_backend_download_consent_refuses_a_stale_snapshot(client, method, path, status):
+    assert client.put("/api/settings/systemone", json = {"backend": "pytorch"}).status_code == 200
+    payload = {
+        "model": "clef-flash",
+        "expected_enabled": True,
+        "expected_model": "laya-multilingual",
+        "expected_backend": "pytorch",
+    }
+    assert client.post("/api/settings/systemone/validate", json = payload).status_code == 204
+    assert client.put("/api/settings/systemone", json = {"backend": "auto"}).status_code == 200
+    response = getattr(client, method)(path, json = payload)
+    assert response.status_code == 409, response.text
+    assert response.json()["detail"] == "Decision API settings changed. Try again."
+    current = client.get("/api/settings/systemone").json()
+    assert (current["model"], current["backend"]) == ("laya-multilingual", "auto")
+    payload["expected_backend"] = "auto"
+    assert getattr(client, method)(path, json = payload).status_code == status
+
+
 def test_env_model_is_locked(client, monkeypatch, tmp_path):
     monkeypatch.setenv("UNSLOTH_SYSTEMONE_MODEL", "laya-english")
     settings = client.get("/api/settings/systemone").json()
