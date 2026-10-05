@@ -565,6 +565,27 @@ Environment:
         return $normCache.StartsWith($normRoot + '\', [StringComparison]::OrdinalIgnoreCase)
     }
 
+    # Saw: any root recorded a cache. Leftovers: recorded caches outside every root this run deletes.
+    function _UvLeftoverCaches {
+        param([string[]]$Roots)
+        $saw = $false
+        $leftovers = @()
+        foreach ($r in $Roots) {
+            $rec = _RecordedUvCache $r
+            if ($null -eq $rec) { continue }
+            $saw = $true
+            $under = $false
+            foreach ($root in $Roots) {
+                # A junctioned/symlinked root is only unlinked, so its target (and any cache in it) stays.
+                $item = Get-Item -LiteralPath $root -Force -ErrorAction SilentlyContinue
+                if ($item -and $item.LinkType) { continue }
+                if (_UvCacheUnderRoot $rec $root) { $under = $true; break }
+            }
+            if (-not $under -and $leftovers -notcontains $rec) { $leftovers += $rec }
+        }
+        return @{ Saw = $saw; Leftovers = $leftovers }
+    }
+
     # Hard deny list: never recursively delete a drive root, USERPROFILE, its parent or a system dir.
     function _IsUnsafeRoot {
         param([string]$Path)
@@ -1020,21 +1041,7 @@ Environment:
         if ((_IsStudioRoot $r) -and -not (_IsUnsafeRoot $r)) { $ownedRoots += $r }
     }
 
-    $uvSawMarker = $false
-    $uvLeftovers = @()
-    foreach ($r in $ownedRoots) {
-        $rec = _RecordedUvCache $r
-        if ($null -eq $rec) { continue }
-        $uvSawMarker = $true
-        $under = $false
-        foreach ($root in $ownedRoots) {
-            # A junctioned/symlinked root is only unlinked, so its target (and any cache in it) stays.
-            $item = Get-Item -LiteralPath $root -Force -ErrorAction SilentlyContinue
-            if ($item -and $item.LinkType) { continue }
-            if (_UvCacheUnderRoot $rec $root) { $under = $true; break }
-        }
-        if (-not $under -and $uvLeftovers -notcontains $rec) { $uvLeftovers += $rec }
-    }
+    $uvCaches = _UvLeftoverCaches $ownedRoots
 
     # ── Stop running servers ──
     _Step "Stopping any running Unsloth Studio servers..."
@@ -1464,14 +1471,14 @@ Environment:
     Write-Host "      http://localhost:<port> origin you used to remove them."
     Write-Host "Note: Hugging Face model cache at %USERPROFILE%\.cache\huggingface was left in place."
     Write-Host "Remove it manually with 'Remove-Item -Recurse -Force `"$env:USERPROFILE\.cache\huggingface\hub`"' if desired."
-    if ($uvLeftovers.Count -gt 0) {
-        foreach ($p in $uvLeftovers) {
+    if ($uvCaches.Leftovers.Count -gt 0) {
+        foreach ($p in $uvCaches.Leftovers) {
             Write-Host "Note: the uv package cache at $p was left in place (it may be shared with other tools)."
             # --cache-dir: a bare `uv cache clean` cleans whichever cache uv resolves now.
             $q = "'" + $p.Replace("'", "''") + "'"
             Write-Host "      Free it with: uv cache clean --cache-dir $q"
         }
-    } elseif (-not $uvSawMarker) {
+    } elseif (-not $uvCaches.Saw) {
         Write-Host 'Note: if install reused a shared uv cache (`uv cache dir`), it was left in place.'
         Write-Host "      Free it with 'uv cache clean'."
     }
