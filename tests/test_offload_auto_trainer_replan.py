@@ -363,4 +363,5 @@ def test_a_rebuild_keeps_the_old_plans_layers_swapped():
     state.free = 3 * GIB
     ns["auto_swap_indices"] = lambda layers, reserve, depth: ([1, 4, 7], 0)
     swapper = ns["replan_auto_offload_for_trainer"](_trainer(model, batch_size = 6))
-    assert len(swapper.indices) == 3 and {3, 7} <= set(swapper.indices)
+    # The union keeps the old layers and every layer the planner picked for the shortfall.
+    assert swapper.indices == [1, 3, 4, 7]

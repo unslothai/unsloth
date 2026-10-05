@@ -6564,12 +6564,9 @@ def replan_auto_offload_for_trainer(trainer):
         indices = _auto_block_swap_indices(
             model, prefetch_depth, batch_size = batch_size, seq_len = seq_len
         )
-        if len(indices) < len(old):
-            indices = old
-        elif old:
-            # Keep the old plan's layers swapped: checkpoint_skip_layers chose among the others.
-            extra = [i for i in indices if i not in old]
-            indices = sorted(old + extra[: len(indices) - len(old)])
+        # Union: the old plan's layers stay swapped (checkpoint_skip_layers chose among the others)
+        # and every layer the planner picked for a card's shortfall is kept.
+        indices = sorted(set(old) | set(indices))
         if not indices:
             return None
         swapper = _attach_block_swap(model, indices, prefetch_depth)
