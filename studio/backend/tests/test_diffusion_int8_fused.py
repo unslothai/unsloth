@@ -1006,6 +1006,42 @@ def test_kill_switch_makes_int8_linear_the_module(monkeypatch):
 
 
 @needs_cuda
+def test_int8_linear_leaves_offload_hooks_and_off_device_weights_to_the_module(monkeypatch):
+    from accelerate.hooks import ModelHook, add_hook_to_module
+
+    class Reached(Exception):
+        pass
+
+    def reached(*a, **k):
+        raise Reached
+
+    monkeypatch.setattr(fused, "_LINEAR_OFF", False)
+    monkeypatch.setattr(fused, "_plain_int8_weight", lambda w: True)
+    monkeypatch.setattr(fused, "_fast_act_quant", reached)
+    x = torch.randn(32, 64, device = "cuda", dtype = torch.bfloat16)
+    lin = torch.nn.Linear(64, 32).cuda().to(torch.bfloat16)
+    with pytest.raises(Reached):  # the control: a bare Linear is run by int8_linear itself
+        fused.int8_linear(lin, x)
+
+    calls = []
+
+    class Onload(ModelHook):
+        def pre_forward(self, module, *args, **kwargs):
+            calls.append(module.weight.device.type)
+            module.to("cuda")
+            return args, kwargs
+
+    # a hook runs even when the weight already sits on the input's device
+    hooked = torch.nn.Linear(64, 32).cuda().to(torch.bfloat16)
+    add_hook_to_module(hooked, Onload())
+    assert torch.equal(fused.int8_linear(hooked, x), hooked(x)) and calls == ["cuda", "cuda"]
+    # no hook and the weight elsewhere: module(x) (torch's own device error), never the int8 path
+    off_device = torch.nn.Linear(64, 32).to(torch.bfloat16)
+    with pytest.raises(RuntimeError):
+        fused.int8_linear(off_device, x)
+
+
+@needs_cuda
 def test_act_quant_kernel_only_runs_on_a_device_that_passed_its_probe(monkeypatch):
     calls = []
     monkeypatch.setattr(fused, "_ACTQ_HANDLE", lambda x: calls.append(x) or (x, x[:, 0]))

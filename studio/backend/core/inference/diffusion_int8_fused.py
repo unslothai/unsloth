@@ -1258,10 +1258,12 @@ def int8_linear(module: Any, x: Any) -> Any:
     from .diffusion_convrot import is_rotated_linear
 
     rotated = is_rotated_linear(module)
+    # an instance-level forward is an offload hook (accelerate / diffusers) or another wrapper: only it may run
     if (
         _LINEAR_OFF
         or not (type(module) is nn.Linear or rotated)
         or _I8_GEMM_MARK in module.__dict__
+        or "forward" in module.__dict__
     ):
         return module(x)
     weight = module.weight
@@ -1273,6 +1275,7 @@ def int8_linear(module: Any, x: Any) -> Any:
         or x.dtype != torch.bfloat16
         or not _plain_int8_weight(weight)
         or getattr(weight, "act_pre_scale", None) is not None
+        or weight.device != x.device
     ):
         return module(x)
     if rotated:
