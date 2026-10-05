@@ -11,6 +11,7 @@ from pathlib import Path
 
 import pytest
 
+from core.inference import diffusion_eager_patches as ep
 from core.inference import diffusion_rocm_fused as rf
 
 torch = pytest.importorskip("torch")
@@ -18,6 +19,8 @@ fmod = pytest.importorskip("diffusers.models.transformers.transformer_flux")
 from diffusers.models import normalization as nm  # noqa: E402
 from diffusers.models.embeddings import apply_rotary_emb as stock_rope  # noqa: E402
 
+# Another test file in the same session may leave Studio's eager AdaLN patch live on the classes: start from stock.
+ep.uninstall_patches()
 _STOCK_FWD = {name: getattr(nm, name).forward for name in rf._ADALN_CLASSES}
 
 needs_gpu = pytest.mark.skipif(
@@ -36,6 +39,7 @@ def _restore(monkeypatch):
     monkeypatch.delenv(rf.FUSED_ROPE_ENV, raising = False)
     monkeypatch.delenv(rf.FUSED_ADALN_ENV, raising = False)
     rf.uninstall()
+    ep.uninstall_patches()
     yield
     rf.uninstall()
     assert fmod.apply_rotary_emb is stock_rope
