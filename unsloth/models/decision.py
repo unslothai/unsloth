@@ -219,6 +219,39 @@ def _gradient_checkpointing(model, use_gradient_checkpointing) -> None:
         model.encoder.gradient_checkpointing_disable()
 
 
+def _lean_lora_forward(self, x, *args, **kwargs):
+    adapter = self._unsloth_adapter
+    if (
+        self.disable_adapters
+        or self.merged
+        or args
+        or kwargs
+        or (not torch.is_autocast_enabled(x.device.type) and x.dtype != self.lora_A[adapter].weight.dtype)
+    ):
+        return self._unsloth_peft_forward(x, *args, **kwargs)
+    # PEFT's maths without its per-call checks, its round trip of x through the fp32 adapter
+    # dtype, and the multiply when scaling is 1.
+    lora = self.lora_B[adapter](self.lora_A[adapter](x))
+    scaling = self.scaling[adapter]
+    return self.base_layer(x) + (lora if scaling == 1 else lora * scaling)
+
+
+def _lean_lora(encoder) -> None:
+    # Plain LoRA (one adapter, no dropout, DoRA or other variant) skips PEFT's per-call checks and casts.
+    from peft.tuners.lora.layer import Linear
+
+    for module in encoder.modules():
+        if type(module) is not Linear or len(module.lora_A) != 1 or module.lora_variant:
+            continue
+        adapter = next(iter(module.lora_A))
+        if not isinstance(module.lora_dropout[adapter], torch.nn.Identity):
+            continue
+        # Bound methods, so the deepcopy that merges for saving rebinds them to the copy.
+        module._unsloth_adapter = adapter
+        module._unsloth_peft_forward = module.forward
+        module.forward = types.MethodType(_lean_lora_forward, module)
+
+
 def _parsed(value):
     if isinstance(value, str) and value.strip()[:1] in ("{", "["):
         try:
@@ -1444,6 +1477,7 @@ class FastDecisionModel:
                 **kwargs,
             ),
         )
+        _lean_lora(model.encoder)
         _gradient_checkpointing(model, use_gradient_checkpointing)
         return model
 

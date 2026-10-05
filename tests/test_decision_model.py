@@ -1239,8 +1239,6 @@ def test_decision_forward_never_picks_cudnn_attention(checkpoint, tmp_path):
     assert cudnn and not any(cudnn)
 
 
-
-
 def test_logits_batch_similar_lengths_and_keep_the_callers_order(checkpoint):
     model, tokenizer = FastDecisionModel.from_pretrained(
         str(checkpoint), full_finetuning = True, use_gradient_checkpointing = False
@@ -1262,3 +1260,33 @@ def test_logits_batch_similar_lengths_and_keep_the_callers_order(checkpoint):
         alone = decision._logits(model, [item], tokenizer.pad_token_id)[0]
         assert logits.shape == (len(item["markers"]),)
         torch.testing.assert_close(logits, alone, rtol = 2e-2, atol = 2e-2)
+
+
+@pytest.mark.parametrize("scaling", [1, 2])
+def test_lean_lora_forward_matches_peft(checkpoint, scaling):
+    model, _ = FastDecisionModel.from_pretrained(
+        str(checkpoint), dtype = torch.float32, use_gradient_checkpointing = False
+    )
+    model = FastDecisionModel.get_peft_model(model, r = 4, lora_alpha = 4 * scaling)
+    layers = [m for m in model.encoder.modules() if hasattr(m, "_unsloth_peft_forward")]
+    assert layers and all(m.forward.__func__ is decision._lean_lora_forward for m in layers)
+    layer = layers[0]
+    torch.manual_seed(0)
+    with torch.no_grad():
+        layer.lora_B["default"].weight.normal_()
+    device = layer.lora_A["default"].weight.device
+    autocast = [False] + ([True] if device.type == "cuda" else [])
+    for enabled in autocast:
+        x = torch.randn(2, 5, layer.in_features, device = device, requires_grad = True)
+        outputs = []
+        for forward in (layer.forward, layer._unsloth_peft_forward):
+            with torch.autocast(device.type, dtype = torch.bfloat16, enabled = enabled):
+                out = forward(x)
+            grads = torch.autograd.grad(out.float().square().sum(), [x, layer.lora_A["default"].weight])
+            outputs.append((out, *grads))
+        for lean, peft in zip(*outputs):
+            assert lean.dtype == peft.dtype and torch.equal(lean, peft)
+    # Disabled or merged adapters take PEFT's own path.
+    with model.encoder.disable_adapter():
+        x = torch.randn(2, 5, layer.in_features, device = device)
+        torch.testing.assert_close(layer(x), layer.base_layer(x))
