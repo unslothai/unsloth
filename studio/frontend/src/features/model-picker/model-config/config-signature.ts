@@ -48,6 +48,10 @@ export function loadedConfigSignature(
     return "none";
   }
   return [
+    config.engine ?? "auto",
+    config.enginePrecision ?? "auto",
+    config.engineParallelism ?? "tensor",
+    JSON.stringify(config.llamaCppConfig) ?? "",
     config.customContextLength ?? "",
     config.maxSeqLength ?? "",
     config.kvCacheDtype ?? "",
@@ -68,6 +72,9 @@ export function loadedConfigSignature(
     config.chatTemplateOverride == null
       ? ""
       : `${config.chatTemplateOverride.length}:${hashString(config.chatTemplateOverride)}`,
+    config.llamaExtraArgs == null
+      ? ""
+      : `${config.llamaExtraArgs.length}:${hashString(config.llamaExtraArgs.join("\u0000"))}`,
     gpuFieldsSignature(config),
   ].join("|");
 }

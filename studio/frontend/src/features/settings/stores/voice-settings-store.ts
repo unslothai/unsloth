@@ -8,6 +8,7 @@ import {
   DEFAULT_STT_MODEL,
   type DefaultSttModel,
   STT_MODELS,
+  STT_MODEL_LANGUAGES,
   STT_MODEL_REPOS,
   type SttModel,
   migrateVoiceSettings,
@@ -58,24 +59,24 @@ export function getSttModelRepo(model: SttModel): string {
   return STT_MODEL_REPOS[model as DefaultSttModel] ?? normalizeSttModel(model);
 }
 
-// All curated models are multilingual. Custom `.en` checkpoints are treated as
-// English-only so a later language change falls back safely.
-export const ENGLISH_ONLY_STT_MODELS: ReadonlySet<SttModel> = new Set([]);
+// Curated models are multilingual except the ones STT_MODEL_LANGUAGES limits.
+// Custom `.en` checkpoints are treated as English-only so a later language
+// change falls back safely.
 
 /** Whether a model can honor the selected dictation language. */
 export function isSttModelLanguageCompatible(
   model: SttModel,
   language: string,
 ): boolean {
-  const isEnglishOnly =
-    ENGLISH_ONLY_STT_MODELS.has(model) ||
-    getSttModelRepo(model).toLowerCase().endsWith(".en");
-  if (!isEnglishOnly) {
+  const allowed =
+    STT_MODEL_LANGUAGES.get(model) ??
+    (getSttModelRepo(model).toLowerCase().endsWith(".en") ? ["en"] : null);
+  if (!allowed) {
     return true;
   }
   const normalized = language.trim().replaceAll("_", "-").toLowerCase();
-  // Auto sends no forced language, which English-only checkpoints accept.
-  return normalized === "auto" || normalized.split("-", 1)[0] === "en";
+  // Auto sends no forced language, which every checkpoint accepts.
+  return normalized === "auto" || allowed.includes(normalized.split("-", 1)[0]);
 }
 
 export type DictationEngine = "browser" | "model" | "custom";
@@ -94,8 +95,8 @@ export type TtsEngine = "system" | "studio" | "custom";
 
 /**
  * Whether a model id is curated. Whisper ids run GGML through whisper.cpp,
- * mtmd ids run through llama.cpp, and custom repos are safetensors on
- * Transformers.
+ * mtmd ids run through llama.cpp, audiocpp ids run through audio.cpp, and
+ * custom repos are safetensors on Transformers.
  */
 export function isCuratedSttModel(model: SttModel): boolean {
   return (STT_MODELS as readonly string[]).includes(model.trim());

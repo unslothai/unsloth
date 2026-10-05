@@ -21,6 +21,7 @@ import { fetchDeviceType } from "@/config/env";
 import { getTauriAuthFailure, tauriAutoAuth } from "@/features/auth";
 import { resyncInferenceStatusAfterServerModelChange } from "@/features/chat";
 import { DeepLinkHandler } from "@/features/deep-links";
+import { receiveSharedRunConfigUrls } from "@/features/model-picker";
 import {
   DownloadManagerPanel,
   dismissStartToasts,
@@ -61,6 +62,7 @@ import {
   type CSSProperties,
   type ReactNode,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -465,10 +467,12 @@ function TauriUpdateLayer({
   isExternalServer,
   children,
   appContent,
+  onUpdateScreenChange,
 }: {
   isExternalServer: boolean;
   children?: ReactNode;
   appContent: ReactNode;
+  onUpdateScreenChange: (shown: boolean) => void;
 }) {
   const update = useTauriUpdate(isExternalServer);
   const isUpdating =
@@ -488,6 +492,12 @@ function TauriUpdateLayer({
       resyncInferenceStatusAfterServerModelChange,
     );
   }, [isUpdating]);
+
+  // Sync the parent titlebar before paint to avoid flashing sidebar chrome.
+  useLayoutEffect(() => {
+    onUpdateScreenChange(isUpdating);
+    return () => onUpdateScreenChange(false);
+  }, [isUpdating, onUpdateScreenChange]);
 
   const content = isUpdating ? (
     <UpdateScreen
@@ -682,6 +692,7 @@ function TauriWrapper({ children }: { children: ReactNode }) {
   const [desktopAuthRetry, setDesktopAuthRetry] = useState(0);
   const [nativeMacControlsHidden, setNativeMacControlsHidden] = useState(false);
   const [appShellReady, setAppShellReady] = useState(false);
+  const [updateScreenShown, setUpdateScreenShown] = useState(false);
   const canMountApp = status === "running" && desktopAuthReady;
   // Same as showApp below: until the shell is ready the app sits hidden behind the startup screen.
   useEffect(() => {
@@ -920,6 +931,7 @@ function TauriWrapper({ children }: { children: ReactNode }) {
           <AppReadinessBoundary onReady={setAppShellReady} revealed={showApp}>
             <TauriUpdateLayer
               isExternalServer={isExternalServer}
+              onUpdateScreenChange={setUpdateScreenShown}
               appContent={
                 <>
                   {showApp && <NativeIntentDrain />}
@@ -1017,7 +1029,9 @@ function TauriWrapper({ children }: { children: ReactNode }) {
     );
   }
 
-  const showSidebarSurface = showApp && !hidesTitlebarSidebar;
+  // Use the startup screen's bare titlebar during updates.
+  const showSidebarSurface =
+    showApp && !hidesTitlebarSidebar && !updateScreenShown;
 
   return (
     <div
@@ -1088,7 +1102,7 @@ export function AppProvider({ children }: AppProviderProps) {
     <MotionConfig reducedMotion={REDUCED_MOTION_MAP[reduceMotion]}>
       <TooltipProvider>
         <AppearanceCustomizationEffect />
-        <DeepLinkHandler />
+        <DeepLinkHandler onOpenUrls={receiveSharedRunConfigUrls} />
         <TauriWrapper>{children}</TauriWrapper>
         <SttDownloadPrompt />
         <Toaster

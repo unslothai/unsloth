@@ -1047,6 +1047,9 @@ class TestLoadHubDownloadExclusion:
         backend = LlamaCppBackend.__new__(LlamaCppBackend)
         backend.__init__()
         supplied = {
+            "engine",
+            "engine_parallelism",
+            "engine_precision",
             "requires_trust_remote_code",
             "speculative_type",
             "requested_parallel_slots",
@@ -1070,6 +1073,20 @@ class TestLoadHubDownloadExclusion:
             # Read from requested_extra_args, which is what the load was invoked
             # with rather than the rewritten launch list.
             "requested_llama_extra_args",
+            # Constant None: llama-server never serves an audio GGUF.
+            "audio_family",
+            "audio_options",
+            # None for the response validator to derive from is_audio and audio_type.
+            "audio_workflows",
+            "audio_reference_text",
+            "audio_required_inputs",
+            # Constant None: nor converts one.
+            "audio_options_by_workflow",
+            "audio_workflow_tasks",
+            "audio_server_task",
+            "audio_convert",
+            "audio_convert_route",
+            "audio_music",
         }
         unresolved = sorted(
             name
@@ -1079,6 +1096,7 @@ class TestLoadHubDownloadExclusion:
         assert unresolved == []
 
         fields = route._llama_runtime_fields(backend)
+        assert fields["engine"] == "auto"
         assert fields["is_mlx"] is False
         assert fields["mlx_kv_quant_requested"] is None
 
