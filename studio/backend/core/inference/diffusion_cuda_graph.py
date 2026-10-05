@@ -209,6 +209,112 @@ def _drop_pool_if_unused() -> None:
         pass
 
 
+# A capture that fails before ``capture_end`` gets past ``cudaStreamEndCapture`` leaves both caching allocators
+# recording to its pool. Python can take only the device one off it (``_abandon_capture_pool``): from torch 2.11 the
+# pinned host allocator keeps the pool in its ``captures_underway_`` for the life of the process, with an allocation
+# filter that holds a raw pointer to the failed CUDAGraph. So a failed graph is never freed (the filter must not read
+# freed memory) and its pool is never recorded into again (the host allocator refuses: "already recording").
+MAX_FAILED_CAPTURES = 16
+_FAILED_GRAPHS: list = []
+_FAILED_LOCK = threading.Lock()
+
+
+def captures_exhausted() -> bool:
+    """True once MAX_FAILED_CAPTURES recordings failed in this process; every later capture then runs eager."""
+    return len(_FAILED_GRAPHS) >= MAX_FAILED_CAPTURES
+
+
+def refuse_if_exhausted(logger: Any = None) -> None:
+    """Raise (the caller's failed-capture path then runs eager) once the failure budget is spent; log that once."""
+    global _EXHAUSTED_LOGGED
+    if not captures_exhausted():
+        return
+    with _FAILED_LOCK:
+        first = not _EXHAUSTED_LOGGED
+        _EXHAUSTED_LOGGED = True
+    if first and logger is not None:
+        logger.warning(
+            "diffusion.cuda_graph: %d graph captures failed in this process; no further captures are attempted",
+            len(_FAILED_GRAPHS),
+        )
+    raise RuntimeError(
+        f"{len(_FAILED_GRAPHS)} graph captures failed in this process; capture is off"
+    )
+
+
+_EXHAUSTED_LOGGED = False
+
+
+def _abandon_capture_pool(pool: Any) -> bool:
+    """After a capture that raised: take the device allocator off the capture's pool if ``capture_end`` never did.
+
+    ``CUDAGraph::capture_end`` checks ``cudaStreamEndCapture`` before ``endAllocateToPool``, so an invalidated capture
+    leaves the pool in the allocator's ``captures_underway``: on torch 2.6 every later ``empty_cache`` then trips
+    ``INTERNAL ASSERT captures_underway.empty()``; later torch skips the global release instead, so ``empty_cache``
+    frees nothing. That failed graph never releases the reference its ``capture_begin`` took (its reset releases only
+    once ``capture_end`` got past the pool), so it is released here, and ONLY when this call ended the recording: had
+    ``capture_end`` got that far the graph owns the reference and releases it itself. True when this call ended it."""
+    torch = _torch()
+    end = getattr(torch._C, "_cuda_endAllocateToPool", None) or getattr(
+        torch._C, "_cuda_endAllocateCurrentStreamToPool", None
+    )
+    if end is None or pool is None:
+        return False
+    try:
+        device = torch.cuda.current_device()
+        end(device, pool)
+    except Exception:  # noqa: BLE001 - capture_end already took it off, or capture_begin never put it on
+        return False
+    try:
+        torch._C._cuda_releasePool(device, pool)
+    except Exception:  # noqa: BLE001
+        pass
+    return True
+
+
+def _heal_generators() -> None:
+    """Take every CUDA default generator out of graph-capture mode after a FAILED capture.
+
+    ``CUDAGraph.capture_end`` ends the generators' capture only after ``cudaStreamEndCapture`` succeeds. When the
+    capture was invalidated (a host sync inside it, a kernel that may not be recorded) it raises first, and every later
+    eager draw from the generator (``torch.randn(device = "cuda")``, a pipeline's noise) fails with "Offset increment
+    outside graph capture encountered unexpectedly" for the rest of the process. A clone of the state keeps the seed
+    and the eager offset, so the eager sequence continues as if the capture had never run."""
+    try:
+        torch = _torch()
+        for gen in getattr(torch.cuda, "default_generators", ()) or ():
+            clone = getattr(gen, "clone_state", None)
+            restore = getattr(gen, "graphsafe_set_state", None)
+            if callable(clone) and callable(restore):
+                restore(clone())
+    except Exception:  # noqa: BLE001 - nothing to heal on a torch without graph-safe generator states
+        pass
+
+
+def retire_failed_capture(
+    graph: Any,
+    pool: Any,
+    exc: Optional[BaseException] = None,
+) -> None:
+    """Clean up after a capture into ``pool`` that raised. The caller must stop handing ``pool`` to captures.
+
+    "already recording" comes from ``capture_begin`` finding the pool in another capture: that recording is not ours
+    to end. A graph whose recording did end (the forward raised, instantiate failed) is reset, which releases its pool
+    reference and graph, and kept as an empty husk like the rest."""
+    begun_elsewhere = exc is not None and "already recording" in str(exc)
+    ended_here = False if begun_elsewhere else _abandon_capture_pool(pool)
+    _heal_generators()
+    if not ended_here and not begun_elsewhere:
+        try:
+            graph.reset()
+        except Exception:  # noqa: BLE001
+            pass
+    with _FAILED_LOCK:
+        _FAILED_GRAPHS.append(graph)
+    if pool is not None and _POOL_BOX[0] == pool:
+        _POOL_BOX[0] = None
+
+
 def _nvfp4_flashinfer_linears(module: Any) -> list:
     try:
         from .diffusion_nvfp4_linear import is_nvfp4_flashinfer_linear
@@ -590,10 +696,18 @@ class GraphedForward:
         torch.cuda.current_stream().wait_stream(side)
         torch.cuda.synchronize()
 
+        refuse_if_exhausted(self.logger)
         graph = torch.cuda.CUDAGraph()
-        # ``pool = None`` is identical to omitting the argument, so both captures take one path.
-        with _capturing(), torch.cuda.graph(graph, pool = _POOL_BOX[0]):
-            out = self.orig(*static_args, **static_kwargs)
+        # An explicit pool id, never None: a capture that fails must hand its pool back (retire_failed_capture).
+        pool = _POOL_BOX[0]
+        if pool is None and callable(getattr(torch.cuda, "graph_pool_handle", None)):
+            pool = torch.cuda.graph_pool_handle()
+        try:
+            with _capturing(), torch.cuda.graph(graph, pool = pool):
+                out = self.orig(*static_args, **static_kwargs)
+        except BaseException as exc:
+            retire_failed_capture(graph, pool, exc)
+            raise
         if _POOL_BOX[0] is None:
             try:
                 _POOL_BOX[0] = graph.pool()

@@ -504,7 +504,7 @@ class BlockGraph:
         return out
 
     def _record(self, full: tuple, live: list) -> Optional[_Entry]:
-        from .diffusion_cuda_graph import _capturing
+        from .diffusion_cuda_graph import _capturing, refuse_if_exhausted, retire_failed_capture
 
         torch = _torch()
         key = full[0]
@@ -526,23 +526,32 @@ class BlockGraph:
             current = torch.cuda.current_stream()
             stream = self.shared.capture_stream()
             stream.wait_stream(current)
+            refuse_if_exhausted(self.shared.logger)
             graph = torch.cuda.CUDAGraph()
+            pool = self.shared.graph_pool()
             with torch.cuda.stream(stream):
                 before = torch.cuda.memory_reserved()
                 with _capturing():
-                    graph.capture_begin(
-                        pool = self.shared.graph_pool(), capture_error_mode = "thread_local"
-                    )
                     try:
-                        out = self.compute(*static_args, **static_kwargs)
-                        flat: list = []
-                        spec = _flatten(out, flat)
-                        if spec != out_spec or len(flat) != len(entry.static_out):
-                            raise RuntimeError("block output layout changed between calls")
-                        for dst, src in zip(entry.static_out, flat):
-                            dst.copy_(src)
-                    finally:
-                        graph.capture_end()
+                        # Inside the try: a capture_begin that raised after the allocators took the pool is
+                        # abandoned like any other failed recording.
+                        graph.capture_begin(pool = pool, capture_error_mode = "thread_local")
+                        try:
+                            out = self.compute(*static_args, **static_kwargs)
+                            flat: list = []
+                            spec = _flatten(out, flat)
+                            if spec != out_spec or len(flat) != len(entry.static_out):
+                                raise RuntimeError("block output layout changed between calls")
+                            for dst, src in zip(entry.static_out, flat):
+                                dst.copy_(src)
+                        finally:
+                            graph.capture_end()
+                    except BaseException as exc:
+                        # Later blocks record into a fresh pool; this one stays with the graphs already in it.
+                        retire_failed_capture(graph, pool, exc)
+                        if self.shared.pool == pool:
+                            self.shared.pool = None
+                        raise
                 del out, flat
             current.wait_stream(stream)
             self.shared.pool_bytes += max(0, torch.cuda.memory_reserved() - before)
