@@ -118,8 +118,8 @@ def capability_snapshot(
     else:
         remediation = (
             "Install the pinned Microsoft WXC runtime and enable BaseContainer/PSEC. On Windows "
-            "builds without it, turn on Settings > Sandbox > Allow OS isolation on this Windows "
-            f"version (or set {mxc_policy.DACL_FALLBACK_ENV}=1) to use the AppContainer "
+            "builds without it, turn on Settings > Sandbox > Turn on the Windows sandbox (or "
+            f"set {mxc_policy.DACL_FALLBACK_ENV}=1) to use the AppContainer "
             "tier: it adds temporary permission entries to the granted host folders, removed "
             "on exit, and needs a one-time administrator host preparation plus one per reboot. "
             "Studio's own Python runtime folders get a permanent read-only entry instead, so "
