@@ -216,3 +216,17 @@ def activate_happy_eyeballs() -> bool:
         return False
     _activated = True
     return True
+
+
+def inline_activation_source() -> str:
+    """Activation as source, for a ``python -c`` child that cannot import backend modules."""
+    return (
+        "try:\n"
+        "    import importlib.util as _he_util\n"
+        f"    _he_spec = _he_util.spec_from_file_location('_studio_happy_eyeballs', {os.path.abspath(__file__)!r})\n"
+        "    _he_mod = _he_util.module_from_spec(_he_spec)\n"
+        "    _he_spec.loader.exec_module(_he_mod)\n"
+        "    _he_mod.activate_happy_eyeballs()\n"
+        "except Exception:\n"
+        "    pass\n"
+    )

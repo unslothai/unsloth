@@ -411,3 +411,19 @@ def test_every_network_entry_point_activates_it():
             "activate_happy_eyeballs()" in src
         ), f"{rel} activates native TLS but not happy eyeballs"
         ast.parse(src)
+
+
+def test_the_config_probe_child_activates_it(monkeypatch):
+    import subprocess
+
+    from utils.transformers_version import _PROBE_CONFIG_SCRIPT
+
+    monkeypatch.delenv(he._ENV, raising = False)
+    head = _PROBE_CONFIG_SCRIPT.partition("target_dir, model_name")[0]
+    out = subprocess.run(
+        [sys.executable, "-c", head + "import socket\nprint(socket.create_connection.__name__)\n"],
+        capture_output = True,
+        text = True,
+        timeout = 60,
+    )
+    assert out.stdout.strip() == "happy_eyeballs_connection", out.stderr
