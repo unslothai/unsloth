@@ -773,6 +773,18 @@ _FLUX_DEFAULT_GUIDANCE_CASES = [
 ]
 
 
+def _edit_source(fam_name):
+    """Kontext is edit-only on both engines: it renders from a source image, never from text alone."""
+    if detect_family(fam_name).edit:
+        import base64
+        import io
+
+        buf = io.BytesIO()
+        Image.new("RGB", (512, 512), (10, 20, 30)).save(buf, format = "PNG")
+        return {"init_image": base64.b64encode(buf.getvalue()).decode()}
+    return {}
+
+
 @pytest.mark.parametrize("repo_id,fam_name,cfg,distilled", _FLUX_DEFAULT_GUIDANCE_CASES)
 def test_flux_oneshot_argv_sends_explicit_cfg(repo_id, fam_name, cfg, distilled):
     from core.inference.diffusion_families import default_generation_params
@@ -781,7 +793,7 @@ def test_flux_oneshot_argv_sends_explicit_cfg(repo_id, fam_name, cfg, distilled)
     steps, guidance = default_generation_params(repo_id)
     eng = _FakeEngine()
     b = _loaded_backend(fam_name, engine = eng)
-    b.generate(prompt = "a fox", steps = steps, guidance = guidance, seed = 1)
+    b.generate(prompt = "a fox", steps = steps, guidance = guidance, seed = 1, **_edit_source(fam_name))
     files, params, out, _kw = eng.calls[-1]
     argv = build_sd_cpp_command("/bin/sd-cli", files, params, output_path = str(out))
     assert float(argv[argv.index("--cfg-scale") + 1]) == cfg
@@ -801,7 +813,7 @@ def test_flux_server_request_sends_txt_cfg(repo_id, fam_name, cfg, distilled):
     b = _loaded_backend(fam_name)
     server = _FakeServer("/bin/sd-server")
     b._state = dataclasses.replace(b._state, mode = "server", server = server)
-    b.generate(prompt = "a fox", steps = steps, guidance = guidance, seed = 1)
+    b.generate(prompt = "a fox", steps = steps, guidance = guidance, seed = 1, **_edit_source(fam_name))
     g = server.payloads[-1]["sample_params"]["guidance"]
     assert g["txt_cfg"] == cfg
     assert g.get("distilled_guidance") == distilled
