@@ -60,6 +60,32 @@ def _interleave(infos: list) -> list:
     return ordered
 
 
+def _walk(infos, timeout, source_address, all_errors):
+    """The stdlib's sequential loop over already-resolved addresses: no second lookup."""
+    if not infos:
+        raise OSError("getaddrinfo returns an empty list")
+    exceptions = []
+    for af, socktype, proto, _canon, sa in infos:
+        sock = None
+        try:
+            sock = socket.socket(af, socktype, proto)
+            if timeout is not socket._GLOBAL_DEFAULT_TIMEOUT:
+                sock.settimeout(timeout)
+            if source_address:
+                sock.bind(source_address)
+            sock.connect(sa)
+            return sock
+        except OSError as exc:
+            if not all_errors:
+                exceptions.clear()
+            exceptions.append(exc)
+            if sock is not None:
+                sock.close()
+    if all_errors and _HAS_EXCEPTION_GROUP:
+        raise ExceptionGroup("create_connection failed", exceptions)  # novermin
+    raise exceptions[0]
+
+
 def happy_eyeballs_connection(
     address,
     timeout = socket._GLOBAL_DEFAULT_TIMEOUT,
@@ -77,14 +103,7 @@ def happy_eyeballs_connection(
     infos = socket.getaddrinfo(host, port, 0, socket.SOCK_STREAM)
     # A fixed source port can only be bound by one socket at a time, so it cannot race.
     if len(infos) <= 1 or (source_address and source_address[1]):
-        if _HAS_EXCEPTION_GROUP:
-            return _original_create_connection(  # novermin
-                address,
-                timeout,
-                source_address,
-                all_errors = all_errors,
-            )
-        return _original_create_connection(address, timeout, source_address)
+        return _walk(infos, timeout, source_address, all_errors)
 
     ordered = _interleave(infos)
     delay = attempt_delay()

@@ -193,24 +193,20 @@ def test_a_reachable_address_late_in_the_list_is_still_dialled(monkeypatch):
     assert sock.peer == good, "the race returned a black hole instead of the winner"
 
 
-def test_a_single_address_keeps_stdlib_semantics(listener, monkeypatch):
-    calls = []
-    real = he._original_create_connection
+def test_a_single_address_resolves_once_and_keeps_the_callers_timeout(listener, monkeypatch):
+    lookups = []
 
-    def _spy(*args, **kwargs):
-        calls.append(args)
-        return real(*args, **kwargs)
+    def _one(*a, **k):
+        lookups.append(a[0])
+        return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("127.0.0.1", listener))]
 
-    monkeypatch.setattr(he, "_original_create_connection", _spy)
-    monkeypatch.setattr(
-        socket,
-        "getaddrinfo",
-        lambda *a, **k: [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("127.0.0.1", listener))],
-    )
-
+    monkeypatch.setattr(socket, "getaddrinfo", _one)
     sock = he.happy_eyeballs_connection(("one.invalid", listener), 5)
-    sock.close()
-    assert calls, "a single-address host did not delegate to the stdlib"
+    try:
+        assert sock.gettimeout() == 5
+    finally:
+        sock.close()
+    assert lookups == ["one.invalid"], "the host was resolved more than once"
 
 
 def test_a_refused_port_still_raises_immediately(monkeypatch):
@@ -432,10 +428,21 @@ def test_the_config_probe_child_activates_it(monkeypatch):
 
 def test_a_fixed_source_port_walks_like_the_stdlib(monkeypatch):
     calls = []
-    monkeypatch.setattr(
-        he, "_original_create_connection", lambda *a, **k: calls.append(a) or "sock"
-    )
+    monkeypatch.setattr(he, "_walk", lambda *a, **k: calls.append(a) or "sock")
     monkeypatch.setattr(socket, "getaddrinfo", _resolver(443, aaaa = 2))
 
     assert he.happy_eyeballs_connection(("hub.invalid", 443), 5, ("0.0.0.0", 40000)) == "sock"
     assert calls, "a fixed source port was raced; the second bind would fail with EADDRINUSE"
+
+
+def test_the_sequential_walk_raises_what_the_stdlib_raises(monkeypatch):
+    monkeypatch.setattr(
+        socket,
+        "getaddrinfo",
+        lambda *a, **k: [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("127.0.0.1", 1))],
+    )
+    with pytest.raises(ConnectionRefusedError):
+        he.happy_eyeballs_connection(("refused.invalid", 1), 5)
+    if sys.version_info >= (3, 11):
+        with pytest.raises(ExceptionGroup):  # noqa: F821
+            he.happy_eyeballs_connection(("refused.invalid", 1), 5, all_errors = True)
