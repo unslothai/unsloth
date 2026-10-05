@@ -14029,9 +14029,9 @@ def execute_tool(
             args = arguments,
             timeout = effective_timeout,
             use_oauth = use_oauth,
-            **oauth_client_kwargs(server),
             cancel_event = cancel_event,
             scope = mcp_scope,
+            **oauth_client_kwargs(server),
             config_check = _config_current,
             ui_resource_uri = tool_ui_resource_uri(mcp_tool_definition(server_id, tool_name)),
         )

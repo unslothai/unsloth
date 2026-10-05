@@ -13,10 +13,6 @@ _schema_lock = threading.Lock()
 _schema_ready: set[Path] = set()
 
 
-# Derived by `_server_result`, not a column.
-HAS_OAUTH_CLIENT_SECRET_KEY = "has_oauth_client_secret"
-
-
 def _ensure_schema(conn: sqlite3.Connection) -> None:
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute(
@@ -28,8 +24,6 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
             headers_json TEXT,
             is_enabled INTEGER NOT NULL DEFAULT 1,
             use_oauth INTEGER NOT NULL DEFAULT 0,
-            oauth_client_id TEXT,
-            oauth_client_secret TEXT,
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL
         )
@@ -39,11 +33,13 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
     cols = {r["name"] for r in conn.execute("PRAGMA table_info(mcp_servers)").fetchall()}
     if "use_oauth" not in cols:
         conn.execute("ALTER TABLE mcp_servers ADD COLUMN use_oauth INTEGER NOT NULL DEFAULT 0")
-    if "oauth_client_id" not in cols:
-        conn.execute("ALTER TABLE mcp_servers ADD COLUMN oauth_client_id TEXT")
-    if "oauth_client_secret" not in cols:
-        conn.execute("ALTER TABLE mcp_servers ADD COLUMN oauth_client_secret TEXT")
-    for column in ("builtin_id", "builtin_config_json", "image_input_mappings_json"):
+    for column in (
+        "builtin_id",
+        "builtin_config_json",
+        "image_input_mappings_json",
+        "oauth_client_id",
+        "oauth_client_secret",
+    ):
         if column not in cols:
             conn.execute(f"ALTER TABLE mcp_servers ADD COLUMN {column} TEXT")
     conn.execute(
@@ -97,9 +93,8 @@ def create_server(
             """
             INSERT INTO mcp_servers
                 (id, display_name, url, headers_json,
-                 is_enabled, use_oauth, oauth_client_id, oauth_client_secret,
-                 created_at, updated_at, builtin_id, builtin_config_json,
-                 image_input_mappings_json)
+                 is_enabled, use_oauth, created_at, updated_at, builtin_id, builtin_config_json,
+                 image_input_mappings_json, oauth_client_id, oauth_client_secret)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
@@ -109,13 +104,13 @@ def create_server(
                 headers_json,
                 int(is_enabled),
                 int(use_oauth),
-                oauth_client_id,
-                oauth_client_secret,
                 now,
                 now,
                 builtin_id,
                 builtin_config_json,
                 image_input_mappings_json,
+                oauth_client_id,
+                oauth_client_secret,
             ),
         )
         conn.commit()
@@ -160,29 +155,20 @@ def delete_server(id: str) -> bool:
         conn.close()
 
 
-def get_server(id: str, *, include_secret: bool = True) -> Optional[dict]:
+def get_server(id: str) -> Optional[dict]:
     conn = get_connection()
     try:
         row = conn.execute("SELECT * FROM mcp_servers WHERE id = ?", (id,)).fetchone()
-        return _server_result(row, include_secret = include_secret) if row else None
+        return _effective_row(dict(row)) if row else None
     finally:
         conn.close()
 
 
-def _server_result(row, *, include_secret: bool) -> dict:
-    # Presence gets its own field so a masked row never carries a stand-in value usable as a secret.
-    result = _effective_row(dict(row))
-    result[HAS_OAUTH_CLIENT_SECRET_KEY] = bool(result.get("oauth_client_secret"))
-    if not include_secret:
-        result["oauth_client_secret"] = None
-    return result
-
-
-def list_servers(*, include_secrets: bool = True) -> list[dict]:
+def list_servers() -> list[dict]:
     conn = get_connection()
     try:
         rows = conn.execute("SELECT * FROM mcp_servers ORDER BY created_at").fetchall()
-        return [_server_result(row, include_secret = include_secrets) for row in rows]
+        return [_effective_row(dict(row)) for row in rows]
     finally:
         conn.close()
 

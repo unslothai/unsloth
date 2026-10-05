@@ -403,8 +403,8 @@ def _oauth(
     auth = OAuth(
         mcp_url = url,
         token_storage = _oauth_store(),
-        client_id = oauth_client_id or None,
-        client_secret = oauth_client_secret or None,
+        client_id = oauth_client_id,
+        client_secret = oauth_client_secret,
     )
     _strip_client_id_under_basic_auth(auth)
     return auth
@@ -588,8 +588,7 @@ def _client(
     url: str,
     headers: Optional[dict],
     use_oauth: bool = False,
-    oauth_client_id: Optional[str] = None,
-    oauth_client_secret: Optional[str] = None,
+    **oauth,
 ):
     validate_mcp_address(url)
     from fastmcp import Client
@@ -623,11 +622,7 @@ def _client(
     from fastmcp.client.transports import SSETransport, StreamableHttpTransport
     from fastmcp.mcp_config import infer_transport_type_from_url
 
-    auth = (
-        _oauth(url, **oauth_client_kwargs_from(oauth_client_id, oauth_client_secret))
-        if use_oauth
-        else None
-    )
+    auth = _oauth(url, **oauth) if use_oauth else None
 
     transport_cls = (
         SSETransport if infer_transport_type_from_url(url) == "sse" else StreamableHttpTransport
@@ -640,17 +635,14 @@ def _client(
     return Client(transport_cls(url = url, headers = headers or None, auth = auth, **kwargs))
 
 
-def oauth_client_kwargs_from(client_id: Optional[str], client_secret: Optional[str]) -> dict:
-    # Empty when unconfigured so callers (and test doubles) without these kwargs keep working.
-    if not client_id and not client_secret:
+def oauth_client_kwargs(row: dict) -> dict:
+    # Empty unless configured, so test doubles of _client without these kwargs keep working.
+    if not row.get("oauth_client_id"):
         return {}
-    return {"oauth_client_id": client_id, "oauth_client_secret": client_secret}
-
-
-def oauth_client_kwargs(server: dict) -> dict:
-    return oauth_client_kwargs_from(
-        server.get("oauth_client_id"), server.get("oauth_client_secret")
-    )
+    return {
+        "oauth_client_id": row["oauth_client_id"],
+        "oauth_client_secret": row.get("oauth_client_secret"),
+    }
 
 
 _SESSION_IDLE_TTL = 300.0
@@ -1492,16 +1484,10 @@ async def list_tools_async(
     headers: Optional[dict] = None,
     timeout: float = 5.0,
     use_oauth: bool = False,
-    oauth_client_id: Optional[str] = None,
-    oauth_client_secret: Optional[str] = None,
+    **oauth,
 ) -> list[dict]:
     async def _fetch() -> list[dict]:
-        async with _client(
-            url,
-            headers,
-            use_oauth,
-            **oauth_client_kwargs_from(oauth_client_id, oauth_client_secret),
-        ) as client:
+        async with _client(url, headers, use_oauth, **oauth) as client:
             tools = await client.list_tools()
         return [t.model_dump(exclude_none = True) for t in tools]
 
@@ -1545,14 +1531,7 @@ def serialize_mcp_server_mutation(handler):
 # headers, oauth) or whether it's used at all (is_enabled). A rename does not. The update route's eviction and
 # get_enabled_mcp_tools' mid-probe guard both key off this so they can't drift.
 TOOL_CACHE_INVALIDATING_FIELDS = frozenset(
-    {
-        "url",
-        "headers_json",
-        "use_oauth",
-        "oauth_client_id",
-        "oauth_client_secret",
-        "is_enabled",
-    }
+    {"url", "headers_json", "use_oauth", "oauth_client_id", "oauth_client_secret", "is_enabled"}
 )
 
 
@@ -2159,8 +2138,7 @@ def call_tool_sync(
     scope: Optional[str] = None,
     config_check = None,
     ui_resource_uri: Optional[str] = None,
-    oauth_client_id: Optional[str] = None,
-    oauth_client_secret: Optional[str] = None,
+    **oauth,
 ) -> str:
     """Call one MCP tool and return its flattened text/image result. Never raises: every failure comes
     back as an "Error: ..." string for the model.
@@ -2180,12 +2158,7 @@ def call_tool_sync(
     """
 
     async def _one_shot() -> Any:
-        async with _client(
-            url,
-            headers,
-            use_oauth,
-            **oauth_client_kwargs_from(oauth_client_id, oauth_client_secret),
-        ) as client:
+        async with _client(url, headers, use_oauth, **oauth) as client:
             # Connecting (OAuth included) can outlast an edit or delete of the server row.
             if config_check is not None and not config_check():
                 raise RuntimeError("MCP server was updated or removed while connecting")
@@ -2265,8 +2238,7 @@ def _ui_request_sync(
     cancel_event = None,
     scope = None,
     config_check = None,
-    oauth_client_id = None,
-    oauth_client_secret = None,
+    **oauth,
 ) -> Any:
     """``dispatch(client)`` on the transport call_tool_sync would pick for this scope."""
 
@@ -2274,12 +2246,7 @@ def _ui_request_sync(
         # As the session branch: an edit during discovery must not reach the old endpoint.
         if config_check is not None and not config_check():
             raise RuntimeError("MCP server was updated or removed during the call")
-        async with _client(
-            url,
-            headers,
-            use_oauth,
-            **oauth_client_kwargs_from(oauth_client_id, oauth_client_secret),
-        ) as client:
+        async with _client(url, headers, use_oauth, **oauth) as client:
             return await dispatch(client)
 
     session_args = (url, headers, label, {}, timeout, cancel_event, scope, config_check, use_oauth)
