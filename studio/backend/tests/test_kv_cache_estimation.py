@@ -692,6 +692,38 @@ class TestDynamicSwaResolver:
         assert b._sliding_window_pattern is None
         assert calls == ["DeepSeek-AI/Flash"]
 
+    def test_hf_fetch_leaves_no_repo_in_the_model_cache(self, monkeypatch, tmp_path):
+        import huggingface_hub
+        import utils.hf_probe
+
+        active = tmp_path / "hub"
+        active.mkdir()
+        monkeypatch.setattr("utils.hf_cache_settings.active_hf_hub_cache", lambda: str(active))
+        monkeypatch.setattr(utils.hf_probe, "hf_file_definitely_absent", lambda *a, **k: False)
+
+        def fake_download(repo_id, filename, *, cache_dir, **kwargs):
+            path = Path(cache_dir) / f"models--{repo_id.replace('/', '--')}" / filename
+            path.parent.mkdir(parents = True)
+            path.write_text(json.dumps({"sliding_window": 128}))
+            return str(path)
+
+        monkeypatch.setattr(huggingface_hub, "hf_hub_download", fake_download)
+        assert (
+            lc._fetch_swa_entry_from_hf("deepseek-ai/DeepSeek-V4-Flash") is lc._SWA_CONFIRMED_MISS
+        )
+        assert list(active.iterdir()) == []
+
+    def test_hf_fetch_reads_an_already_cached_config_offline(self, monkeypatch, tmp_path):
+        import huggingface_hub
+
+        cfg = tmp_path / "config.json"
+        cfg.write_text(json.dumps({"sliding_window_pattern": 6}))
+        monkeypatch.setattr(huggingface_hub, "try_to_load_from_cache", lambda *a, **k: str(cfg))
+        monkeypatch.setattr(
+            huggingface_hub, "hf_hub_download", lambda *a, **k: pytest.fail("network fetch")
+        )
+        assert lc._fetch_swa_entry_from_hf("org/model") == 6
+
 
 class TestTransformersIntrospection:
     """Tier 2.5: default-init the matching Config; on failure, parse via inspect."""

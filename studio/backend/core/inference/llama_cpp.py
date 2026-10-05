@@ -2754,23 +2754,30 @@ def _remember_swa_repo_miss(cache: dict, repo_id: str) -> None:
 
 def _fetch_swa_entry_from_hf(repo_id: str) -> Optional[object]:
     try:
-        from huggingface_hub import hf_hub_download
+        from huggingface_hub import hf_hub_download, try_to_load_from_cache
         from utils.hf_cache_settings import active_hf_hub_cache
         from utils.hf_probe import hf_file_definitely_absent
 
-        # Only a confirmed 404 is a miss; timeouts, 429 and gated stay None so a later load retries.
-        if hf_file_definitely_absent(repo_id, "config.json"):
-            return _SWA_CONFIRMED_MISS
-        cfg_path = call_hub_with_anonymous_retry(
-            hf_hub_download,
-            None,
-            repo_id,
-            "config.json",
-            repo_type = "model",
-            cache_dir = active_hf_hub_cache(),
-        )
-        with open(cfg_path, encoding = "utf-8-sig") as f:
-            cfg = json.load(f)
+        cached = try_to_load_from_cache(repo_id, "config.json", cache_dir = active_hf_hub_cache())
+        if isinstance(cached, str):
+            with open(cached, encoding = "utf-8-sig") as f:
+                cfg = json.load(f)
+        else:
+            # Only a confirmed 404 is a miss; timeouts, 429 and gated stay None so a later load retries.
+            if hf_file_definitely_absent(repo_id, "config.json"):
+                return _SWA_CONFIRMED_MISS
+            # Throwaway cache: a config-only repo in the user's cache lists as a phantom model (#10047).
+            with tempfile.TemporaryDirectory(prefix = "unsloth-swa-") as tmp:
+                cfg_path = call_hub_with_anonymous_retry(
+                    hf_hub_download,
+                    None,
+                    repo_id,
+                    "config.json",
+                    repo_type = "model",
+                    cache_dir = tmp,
+                )
+                with open(cfg_path, encoding = "utf-8-sig") as f:
+                    cfg = json.load(f)
     except Exception:
         return None
 
