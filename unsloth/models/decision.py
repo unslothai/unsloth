@@ -21,7 +21,6 @@ from pathlib import Path
 from typing import Callable, Optional
 
 import torch
-from accelerate.utils import DistributedType
 from transformers import Trainer, TrainingArguments
 from transformers.training_args import ParallelMode
 
@@ -681,15 +680,6 @@ class DecisionTrainer(Trainer):
             )
         self.head_learning_rate = head_learning_rate
         super().__init__(model = model, args = args, **kwargs)
-        # Trainer already scales the loss for accumulation, so undo accelerate scaling it again.
-        backward = self.accelerator.backward
-
-        def _backward(loss, **backward_kwargs):
-            if self.accelerator.distributed_type != DistributedType.DEEPSPEED:
-                loss = loss * self.accelerator.gradient_accumulation_steps
-            return backward(loss, **backward_kwargs)
-
-        self.accelerator.backward = _backward
 
     def _get_train_sampler(self, train_dataset = None):
         dataset = self.train_dataset if train_dataset is None else train_dataset
