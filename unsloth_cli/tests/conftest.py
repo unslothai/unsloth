@@ -51,22 +51,8 @@ def stub_tool_policy_state(monkeypatch):
 
 @pytest.fixture(autouse = True)
 def _contain_tempdir(monkeypatch, tmp_path):
-    """Point tempfile at a per-test directory (issue #9586, channel 4).
-
-    `_start_studio_server()` opens
-    `Path(tempfile.gettempdir()) / f"unsloth-start-server-{os.getpid()}.log"`, so a test
-    that drives it for real leaves that file in the shared tempdir. The name carries the
-    pid, so it accumulates rather than collides -- measured, a full `unsloth_cli/tests`
-    run under `-n 4` left one per worker and nothing else.
-
-    A fixture is early enough here, unlike the studio-home case in the same conftest:
-    gettempdir() is called inside the function rather than bound at import.
-
-    `tempfile.tempdir` is the documented override and beats TMPDIR/TEMP/TMP, which
-    gettempdir() consults only once and then caches. Redirecting rather than cleaning up
-    is deliberate: pytest owns tmp_path, so a hard-killed worker cannot leave residue in
-    the shared tempdir the way a `finally` unlink could.
-    """
+    # _start_studio_server opens unsloth-start-server-<pid>.log in gettempdir() (#9586).
+    # tempfile.tempdir, not TMPDIR: gettempdir() caches its first environment lookup.
     private = tmp_path / "tempdir"
     private.mkdir()
     monkeypatch.setattr(tempfile, "tempdir", str(private))
