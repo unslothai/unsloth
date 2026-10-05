@@ -230,15 +230,23 @@ def test_a_failed_compile_falls_back_to_eager(monkeypatch):
 def test_compiled_head_has_no_graph_breaks_and_matches(monkeypatch):
     from torch._dynamo.utils import counters
 
-    torch._dynamo.reset()
-    counters.clear()
-    compiled = torch.compile(clef.batched_logits, fullgraph = True, dynamic = True)
-    for seed in (0, 1, 2):
-        head, hidden, ids, mask, records, embedding = _inputs(seed, torch.float32)
-        layout = clef.build_layout(records, hidden.device)
-        eager = clef.batched_logits(head, hidden, embedding, layout, True, 16)
-        got = compiled(head, hidden, embedding, layout, True, 16)
-        torch.testing.assert_close(got, eager, rtol = 1e-5, atol = 1e-5)
+    cases = []
+    # As the head's forward does: once Unsloth has patched torch's checkpoint (any model load in
+    # this process), compiling needs torch's own one back.
+    with clef._torch_checkpoint(True):
+        for seed in (0, 1, 2):
+            head, hidden, ids, mask, records, embedding = _inputs(seed, torch.float32)
+            layout = clef.build_layout(records, hidden.device)
+            eager = clef.batched_logits(head, hidden, embedding, layout, True, 16)
+            cases.append((head, hidden, embedding, layout, eager))
+        # Eager references first: after a model load Unsloth's patched layer_norm compiles itself
+        # when called eagerly, which would add its own graphs to the count.
+        torch._dynamo.reset()
+        counters.clear()
+        compiled = torch.compile(clef.batched_logits, fullgraph = True, dynamic = True)
+        for head, hidden, embedding, layout, eager in cases:
+            got = compiled(head, hidden, embedding, layout, True, 16)
+            torch.testing.assert_close(got, eager, rtol = 1e-5, atol = 1e-5)
     assert not counters["graph_break"]
     # Three batches of different shapes, one graph.
     assert counters["stats"]["unique_graphs"] == 1

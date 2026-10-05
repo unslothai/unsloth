@@ -97,9 +97,11 @@ def _norm_pool_forward(hidden, weight, bias, memory_weight, starts, ends, eps, c
     projection = memory_weight.to(matmul_dtype).t()
     for begin in range(0, length, chunk):
         end = min(length, begin + chunk)
-        normalized = functional.layer_norm(
+        # aten directly, as the backward does: Unsloth patches F.layer_norm into a function that
+        # compiles itself, which would add a graph inside this opaque op.
+        normalized = torch.ops.aten.native_layer_norm(
             hidden[:, begin:end].to(weight.dtype), weight.shape, weight, bias, eps
-        )
+        )[0]
         memory[:, begin:end] = normalized.to(matmul_dtype) @ projection
         pooled += _span_mask(starts, ends, begin, end, weight.dtype) @ normalized
     counts = (ends - starts).clamp(min = 1).unsqueeze(-1).to(weight.dtype)
