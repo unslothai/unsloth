@@ -6,6 +6,7 @@ __all__ = [
     "DecisionTrainer",
 ]
 
+import contextlib
 import copy
 import functools
 import importlib.util
@@ -36,6 +37,8 @@ HOLDOUT_MAX = 400
 MIN_CALIBRATION_ITEMS = 10
 HEAD_LEARNING_RATE = 1e-4
 QUESTION_TYPES = ("choice", "score", "noul")
+# DecisionTrainer defaults for Clef; every key is also a DecisionTrainer argument.
+CLEF_RECIPE = {}
 _FILES = ("rl_agent_config.json", "model.safetensors")
 _DIRS = ("encoder", "tokenizer")
 _CLEF_HEAD_FILES = ("joint_head.safetensors", "joint_head_config.json")
@@ -89,32 +92,56 @@ def is_clef_checkpoint(folder) -> bool:
     return all((folder / name).is_file() for name in ("config.json", *_CLEF_HEAD_FILES))
 
 
+def _is_clef_repo(model_name, prefix, token, revision) -> Optional[bool]:
+    # Asked up front: Unsloth's download wrapper rejects a snapshot that lacks an exact file it was
+    # asked for, so a Laya pattern on a Clef repo (or the reverse) would fail as "incomplete".
+    from huggingface_hub import HfApi, constants
+
+    if constants.HF_HUB_OFFLINE:
+        return None
+    try:
+        files = HfApi(token = token).list_repo_files(model_name, revision = revision)
+    except Exception:
+        return None
+    return prefix + _CLEF_HEAD_FILES[1] in files
+
+
 def _checkpoint_folder(model_name, subfolder, token, revision, local_files_only) -> Path:
     root = Path(model_name).expanduser()
     if not root.is_dir():
+        from huggingface_hub import snapshot_download as cached_snapshot
+
         try:
             from unsloth_zoo.hf_xet_fallback import (
                 snapshot_download_with_xet_fallback as snapshot_download,
             )
         except ImportError:
-            from huggingface_hub import snapshot_download
+            snapshot_download = cached_snapshot
         prefix = f"{subfolder}/" if subfolder else ""
-        download = functools.partial(
-            snapshot_download,
-            model_name,
-            token = token,
-            revision = revision,
-            local_files_only = local_files_only,
-        )
+        laya = [prefix + name for name in _FILES] + [f"{prefix}{name}/*" for name in _DIRS]
+        clef = None if local_files_only else _is_clef_repo(model_name, prefix, token, revision)
+        if clef is None:
+            # Offline: the cache already holds one layout or the other.
+            root = Path(
+                cached_snapshot(
+                    model_name,
+                    token = token,
+                    revision = revision,
+                    local_files_only = True,
+                    allow_patterns = laya + [prefix + "*.json"],
+                )
+            )
+            clef = (root / prefix / _CLEF_HEAD_FILES[1]).is_file()
         # Laya repos hold several checkpoints in subfolders, so only the asked one is fetched.
         root = Path(
-            download(
-                allow_patterns = [prefix + name for name in (*_FILES, _CLEF_HEAD_FILES[1])]
-                + [f"{prefix}{name}/*" for name in _DIRS]
+            snapshot_download(
+                model_name,
+                token = token,
+                revision = revision,
+                local_files_only = local_files_only,
+                allow_patterns = [prefix + "*"] if clef else laya,
             )
         )
-        if (root / prefix / _CLEF_HEAD_FILES[1]).is_file():
-            root = Path(download(allow_patterns = [prefix + "*"]))
     folder = root / subfolder if subfolder else root
     if not is_decision_checkpoint(folder):
         raise ValueError(
@@ -255,23 +282,39 @@ def _target_for(kind: str, keys: list, gold) -> tuple:
     raise DecisionDataError("gold has no usable label or probabilities")
 
 
-def _soft_cross_entropy(
+def _soft_cross_entropy(logits, target, mask):
+    logits = logits.float().masked_fill(~mask, -1e4)
+    return -(target * torch.log_softmax(logits, -1)).sum(-1).mean()
+
+
+def _decision_loss(
     logits,
     target,
     mask,
+    ordinal = None,
     label_smoothing = 0.0,
     brier_weight = 0.0,
+    ordinal_weight = 0.0,
 ):
-    logits = logits.float().masked_fill(~mask, -1e4)
-    log_p = torch.log_softmax(logits, -1)
+    # Cloudflare's Clef recipe: label-smoothed cross entropy, a Brier term for calibration, and
+    # partial credit on score questions (expected distance from the gold level).
+    if not (label_smoothing or brier_weight or ordinal_weight):
+        return _soft_cross_entropy(logits, target, mask)
+    log_p = torch.log_softmax(logits.float().masked_fill(~mask, -1e4), -1)
     smoothed = target
     if label_smoothing:
         uniform = mask.float() / mask.sum(-1, keepdim = True).clamp(min = 1)
         smoothed = (1.0 - label_smoothing) * target + label_smoothing * uniform
     loss = -(smoothed * log_p).sum(-1).mean()
+    p = log_p.exp()
     if brier_weight:
-        # Cloudflare trains Clef with label smoothed cross entropy plus a Brier term for calibration.
-        loss = loss + brier_weight * ((log_p.exp() - target) ** 2 * mask).sum(-1).mean()
+        loss = loss + brier_weight * ((p - target) ** 2 * mask).sum(-1).mean()
+    if ordinal_weight and ordinal is not None and ordinal.any():
+        levels = torch.arange(p.shape[-1], device = p.device, dtype = p.dtype)
+        distance = (levels[:, None] - levels[None, :]).abs()
+        span = (mask.sum(-1) - 1).clamp(min = 1).to(p.dtype)
+        expected = torch.einsum("ri,ij,rj->r", p, distance, target) / span
+        loss = loss + ordinal_weight * (expected * ordinal).sum() / ordinal.sum()
     return loss
 
 
@@ -302,10 +345,49 @@ class DecisionDataCollator:
 
 class ClefDataCollator:
     # One row per record: every question of the record is scored jointly, as Clef serves them.
-    def __init__(self, pad_token_id: int):
+    # permute_fields re-encodes each training record with its fields shuffled, as Cloudflare's
+    # training data permutes field order; evaluation always keeps the dataset's order.
+    def __init__(
+        self,
+        pad_token_id: int,
+        tokenizer = None,
+        max_len = None,
+        permute_fields = False,
+        seed = 3407,
+    ):
         self.pad_token_id = pad_token_id
+        self.tokenizer, self.max_len = getattr(tokenizer, "tokenizer", tokenizer), max_len
+        self.permute_fields = permute_fields and tokenizer is not None
+        self.random = random.Random(seed)
+
+    def _permuted(self, item) -> dict:
+        from .clef import encode_record
+
+        order = list(range(len(item["targets"])))
+        self.random.shuffle(order)
+        names = list(item["source"]["questions"])
+        questions = {names[i]: item["source"]["questions"][names[i]] for i in order}
+        try:
+            record = encode_record(
+                self.tokenizer,
+                {"state": item["source"]["state"], "questions": questions},
+                max_length = self.max_len,
+            )
+        except ValueError:
+            return item
+        return {
+            **item,
+            "input_ids": list(record.input_ids),
+            "record": record,
+            "qtypes": [item["qtypes"][i] for i in order],
+            "targets": [item["targets"][i] for i in order],
+        }
 
     def __call__(self, items: list) -> dict:
+        from .clef import QUESTION_TYPES as CLEF_TYPES
+
+        if self.permute_fields:
+            items = [self._permuted(item) if "source" in item else item for item in items]
         rows, length = len(items), max(len(item["input_ids"]) for item in items)
         targets = [target for item in items for target in item["targets"]]
         options = max(len(target) for target in targets)
@@ -315,6 +397,10 @@ class ClefDataCollator:
             "records": [item["record"] for item in items],
             "marker_mask": torch.zeros((len(targets), options), dtype = torch.bool),
             "target": torch.zeros((len(targets), options), dtype = torch.float32),
+            "ordinal": torch.tensor(
+                [qtype == CLEF_TYPES["score"] for item in items for qtype in item["qtypes"]],
+                dtype = torch.bool,
+            ),
         }
         for i, item in enumerate(items):
             batch["input_ids"][i, : len(item["input_ids"])] = torch.tensor(item["input_ids"])
@@ -341,7 +427,15 @@ class ClefDecisionModel(torch.nn.Module):
             else self.encoder
         )
 
-    def forward(self, input_ids, attention_mask, records, **kwargs):
+    def forward(
+        self,
+        input_ids,
+        attention_mask,
+        records,
+        head = None,
+        **kwargs,
+    ):
+        head = self.head if head is None else head
         backbone = self._backbone()
         text_model = backbone.model
         text_model = getattr(text_model, "language_model", text_model)
@@ -351,7 +445,7 @@ class ClefDecisionModel(torch.nn.Module):
             use_cache = False,
             return_dict = True,
         ).last_hidden_state
-        logits = self.head(
+        logits = head(
             hidden,
             input_ids,
             attention_mask,
@@ -437,6 +531,7 @@ def _clef_items(rows, tokenizer, max_len, validate, report, skip) -> list:
                 "targets": targets,
                 "labels": labels,
                 "row": index,
+                "source": {"state": state, "questions": kept},
             }
         )
     return items
@@ -453,10 +548,11 @@ def _clef_logits(
     from .clef import QUESTION_TYPES as CLEF_TYPES
 
     device = next(model.parameters()).device
-    # Never fp16 autocast: the gated delta net overflows in pure fp16, so off bf16 GPUs the
-    # backbone runs in the dtype Unsloth loaded it with.
+    # Never fp16 autocast: the gated delta net overflows in pure fp16, so a model on Unsloth's
+    # float32 path runs as Unsloth loaded it.
     amp_dtype = _amp_dtype(device)
-    amp_dtype = amp_dtype if amp_dtype == torch.bfloat16 else None
+    if amp_dtype != torch.bfloat16 or _clef_forced_float32(model):
+        amp_dtype = None
     collate = ClefDataCollator(pad_token_id)
     # Clef numbers question types noul, choice, score; Laya's metrics use choice, score, noul.
     laya_type = {CLEF_TYPES[kind]: QUESTION_TYPES.index(kind) for kind in QUESTION_TYPES}
@@ -492,6 +588,35 @@ def _decision_logits(model, tokenizer, items: list) -> tuple:
     return _logits(model, items, pad_token_id), items
 
 
+# Kept in 16-bit like unsloth/Qwen3.8-27B-unsloth-bnb-4bit: Clef's backbone is a merged
+# fine-tune, not stock Qwen, so it is quantized on load with the same dynamic list.
+CLEF_4BIT_SKIP_MODULES = (
+    "model.visual",
+    r".*\.visual\..*",
+    "in_proj_a",
+    "in_proj_b",
+    "in_proj_qkv",
+)
+
+
+def _clef_bnb_config(dtype):
+    from transformers import BitsAndBytesConfig
+    from unsloth_zoo.peft_utils import SKIP_QUANTIZATION_MODULES
+
+    float16 = dtype == torch.float16 or not is_bfloat16_supported()
+    return BitsAndBytesConfig(
+        load_in_4bit = True,
+        bnb_4bit_use_double_quant = True,
+        bnb_4bit_quant_type = "nf4",
+        bnb_4bit_compute_dtype = torch.float16 if float16 else torch.bfloat16,
+        llm_int8_skip_modules = list(SKIP_QUANTIZATION_MODULES) + list(CLEF_4BIT_SKIP_MODULES),
+    )
+
+
+def _clef_forced_float32(model) -> bool:
+    return bool(getattr(model, "_unsloth_forced_float32", False))
+
+
 def _load_clef(
     folder,
     max_seq_length,
@@ -507,13 +632,13 @@ def _load_clef(
     from .clef import JointSchemaHead
 
     max_len = int(max_seq_length or CLEF_MAX_LEN)
-    if dtype == torch.float16:
-        # Qwen3.5's gated delta net NaNs in pure fp16; Unsloth picks the dtype and keeps it in fp32 autocast.
-        print("Unsloth: Clef ignores dtype = torch.float16 and lets Unsloth pick the dtype.")
-        dtype = None
     fast = _device().type != "cpu"
     if fast:
         from .loader import FastModel
+        if load_in_4bit and kwargs.get("quantization_config") is None:
+            kwargs["quantization_config"] = _clef_bnb_config(dtype)
+        # A float16 request (or a GPU without bfloat16) puts Qwen3.5 on Unsloth's float32 path,
+        # which stores bfloat16 weights: the gated delta net NaNs in pure float16.
         backbone, processor = FastModel.from_pretrained(
             str(folder),
             max_seq_length = max_len,
@@ -546,6 +671,7 @@ def _load_clef(
         config.update(json.loads(saved.read_text(encoding = "utf-8")), max_len = max_len)
     model.decision_config = config
     _mark_full_finetuning(model, full_finetuning)
+    model._unsloth_forced_float32 = bool(getattr(backbone, "_unsloth_forced_float32", False))
     model._unsloth_fast_backbone = fast
     model._saved_temp_tokenizer = processor
     model._unsloth_source_folder = str(folder)
@@ -587,25 +713,63 @@ def _clef_peft_model(model, target_modules, use_gradient_checkpointing, random_s
     return model
 
 
-def _fold_temperature(state: dict, temperature: float):
-    # logits / T = prior / T + gate * (joint_scale / T * cosine + residual / T), exactly, as long
-    # as both exp(scale) stay under the head's clamp at log(100).
-    limit, shift = math.log(100.0), math.log(temperature)
-    folded = dict(state)
+def _commit_staged(
+    staging: Path,
+    output: Path,
+    marker: str,
+    stale = (),
+) -> None:
+    # Old files stay until the new ones are complete; the marker that makes a folder a
+    # checkpoint moves in last, so a failed save leaves the previous checkpoint loadable.
+    import shutil
+
+    staged = sorted(staging.iterdir(), key = lambda path: path.name == marker)
+    names = {path.name for path in staged}
+    for path in staged:
+        target = output / path.name
+        if path.is_dir() and target.is_dir():
+            old = output / f".{path.name}.unsloth-old"
+            shutil.rmtree(old, ignore_errors = True)
+            os.replace(target, old)
+            os.replace(path, target)
+            shutil.rmtree(old, ignore_errors = True)
+        else:
+            os.replace(path, target)
+    for path in output.iterdir():
+        if path.name not in names and any(path.match(pattern) for pattern in stale):
+            path.unlink()
+
+
+@contextlib.contextmanager
+def _staging(output: Path):
+    import shutil
+
+    output.mkdir(parents = True, exist_ok = True)
+    staging = Path(tempfile.mkdtemp(prefix = ".unsloth-save-", dir = output))
+    try:
+        yield staging
+    finally:
+        shutil.rmtree(staging, ignore_errors = True)
+
+
+def _fold_temperature(state: dict, temperature: float) -> bool:
+    # logits / T == prior / T + gate * (joint_scale / T * cosine + residual / T): exact while the
+    # rescaled log-scales stay under the head's clamp(max = log 100).
+    cap = math.log(100.0)
+    scales = {}
     for name in ("prior_logit_scale", "joint_logit_scale"):
-        scale = state[name].float().clamp(max = limit) - shift
-        if scale > limit:
-            return None
-        folded[name] = scale.to(state[name].dtype)
-    last = max(
-        int(k.split(".")[1])
-        for k in state
-        if k.startswith("residual_scorer.") and k.endswith(".weight")
-    )
+        value = min(float(state[name]), cap) - math.log(temperature)
+        if value > cap:
+            return False
+        scales[name] = value
+    for name, value in scales.items():
+        state[name] = torch.tensor(value, dtype = state[name].dtype)
+    last = max(int(key.split(".")[1]) for key in state if key.startswith("residual_scorer."))
     for kind in ("weight", "bias"):
-        key = f"residual_scorer.{last}.{kind}"
-        folded[key] = (state[key].float() / temperature).to(state[key].dtype)
-    return folded
+        state[f"residual_scorer.{last}.{kind}"] = (
+            state[f"residual_scorer.{last}.{kind}"] / temperature
+        )
+    return True
 
 
 def _save_clef(self, save_directory, tokenizer) -> None:
@@ -614,55 +778,66 @@ def _save_clef(self, save_directory, tokenizer) -> None:
     from safetensors.torch import save_file
 
     output = Path(save_directory)
-    output.mkdir(parents = True, exist_ok = True)
-    for name in _CLEF_HEAD_FILES:
-        (output / name).unlink(missing_ok = True)
-    encoder = self.encoder
-    if hasattr(encoder, "save_pretrained_merged"):
-        # Unsloth's merge dequantizes a 4-bit base and writes the processor files too.
-        encoder.save_pretrained_merged(str(output), tokenizer, save_method = "merged_16bit")
-    else:
-        if hasattr(encoder, "merge_and_unload"):
-            encoder = copy.deepcopy(encoder).merge_and_unload()
-        encoder.save_pretrained(str(output))
-        tokenizer.save_pretrained(str(output))
-    source = Path(getattr(self, "_unsloth_source_folder", "") or output)
-    for name in _CLEF_EXTRA_FILES:
-        if (source / name).is_file() and not (output / name).exists():
-            shutil.copyfile(source / name, output / name)
     config = {**self.decision_config, "fine_tuned": True}
-    state = self.head.state_dict()
-    temperature = config.pop("global_temperature", None)
-    folded = _fold_temperature(state, temperature) if temperature else None
-    if folded is not None:
-        # Cloudflare's loader reads only the head, so the calibration lives in its weights;
-        # the per type temperatures stay relative to the folded logits.
-        state, config["folded_temperature"] = folded, temperature
-        config["temperature"] = [t / temperature for t in config.get("temperature", [1.0] * 3)]
-        if config.get("temperature_by_options"):
-            config["temperature_by_options"] = {
-                k: v / temperature for k, v in config["temperature_by_options"].items()
-            }
-    elif temperature:
-        # Folding would push a logit scale past the head's clamp, so only Unsloth applies it.
-        config["global_temperature"] = temperature
+    state = {k: v.detach().to("cpu", torch.float32) for k, v in self.head.state_dict().items()}
+    # Folded in, so Cloudflare's loader serves calibrated confidences too; the per-type
+    # temperatures Unsloth applies are already relative to it.
+    temperature = config.pop("head_temperature", None)
+    if temperature and temperature != 1.0:
+        if _fold_temperature(state, temperature):
+            config["folded_temperature"] = config.get("folded_temperature", 1.0) * temperature
+        else:
+            config["head_temperature"] = temperature
     weights = {}
     for name, value in state.items():
-        value = value.detach().to("cpu", torch.bfloat16).contiguous()
+        value = value.to(torch.bfloat16).contiguous()
         if not torch.isfinite(value).all():
             raise ValueError(
                 f"Unsloth: head weight {name} is not finite, so the model cannot be saved."
             )
         weights[name] = value
-    (output / "unsloth_decision_config.json").write_text(
-        json.dumps(config, indent = 2), encoding = "utf-8"
-    )
-    (output / _CLEF_HEAD_FILES[1]).write_text(
-        json.dumps(self.head.config, indent = 2), encoding = "utf-8"
-    )
-    # Written last: the head marks a complete Clef checkpoint.
-    save_file(weights, str(output / "joint_head.safetensors.tmp"))
-    os.replace(output / "joint_head.safetensors.tmp", output / _CLEF_HEAD_FILES[0])
+    source = Path(getattr(self, "_unsloth_source_folder", "") or output)
+    with _staging(output) as staging:
+        encoder = self.encoder
+        if hasattr(encoder, "save_pretrained_merged"):
+            # Unsloth's merge dequantizes a 4-bit base and writes the processor files too.
+            encoder.save_pretrained_merged(str(staging), tokenizer, save_method = "merged_16bit")
+        else:
+            if hasattr(encoder, "merge_and_unload"):
+                encoder = copy.deepcopy(encoder).merge_and_unload()
+            encoder.save_pretrained(str(staging))
+            tokenizer.save_pretrained(str(staging))
+        for name in _CLEF_EXTRA_FILES:
+            if (source / name).is_file() and not (staging / name).exists():
+                shutil.copyfile(source / name, staging / name)
+        (staging / "unsloth_decision_config.json").write_text(
+            json.dumps(config, indent = 2), encoding = "utf-8"
+        )
+        (staging / _CLEF_HEAD_FILES[1]).write_text(
+            json.dumps(self.head.config, indent = 2), encoding = "utf-8"
+        )
+        save_file(weights, str(staging / _CLEF_HEAD_FILES[0]))
+        _commit_staged(
+            staging,
+            output,
+            _CLEF_HEAD_FILES[0],
+            stale = ("model*.safetensors", "model.safetensors.index.json"),
+        )
+
+
+def _clef_mixed_precision(model, args) -> None:
+    # Unsloth's rule for Qwen3.5 (rl.py): on its float32 path a model never autocasts, since
+    # float16 NaNs the gated delta net; otherwise its bfloat16 weights pair with bf16 only.
+    if _clef_forced_float32(model):
+        if args.fp16 or args.bf16:
+            print("Unsloth: Clef trains in float32 here, since Qwen3.5 cannot train in float16.")
+        args.fp16 = args.bf16 = False
+    elif args.fp16:
+        print("Unsloth: Clef is in bfloat16, so fp16 = True is switched to bf16 = True.")
+        args.fp16, args.bf16 = False, True
+    # transformers 5 reads the accelerator's precision from here (4.x from fp16 / bf16).
+    if hasattr(args, "mixed_precision"):
+        args.mixed_precision = "bf16" if args.bf16 else "no"
 
 
 class _LengthGroupedBatches(torch.utils.data.Sampler):
@@ -697,12 +872,35 @@ class DecisionTrainer(Trainer):
         args = None,
         *,
         head_learning_rate: Optional[float] = None,
-        label_smoothing: float = 0.0,
-        brier_weight: float = 0.0,
         tokenizer = None,
+        label_smoothing: Optional[float] = None,
+        brier_weight: Optional[float] = None,
+        ordinal_weight: Optional[float] = None,
+        kl_weight: float = 0.0,
+        permute_fields: Optional[bool] = None,
         **kwargs,
     ):
         args = copy.copy(args) if args is not None else TrainingArguments(output_dir = "tmp_trainer")
+        recipe = CLEF_RECIPE if getattr(model, "is_clef", False) else {}
+        if label_smoothing is None:
+            label_smoothing = args.label_smoothing_factor or recipe.get("label_smoothing", 0.0)
+        self.label_smoothing = float(label_smoothing)
+        self.brier_weight = float(
+            recipe.get("brier_weight", 0.0) if brier_weight is None else brier_weight
+        )
+        self.ordinal_weight = float(
+            recipe.get("ordinal_weight", 0.0) if ordinal_weight is None else ordinal_weight
+        )
+        self.kl_weight = float(kl_weight)
+        if permute_fields is None:
+            permute_fields = recipe.get("permute_fields", False)
+        # Opt in: a KL penalty to the starting model (adapters off, the head as loaded), against
+        # forgetting what the base model knew outside the fine-tuning data.
+        self._reference_head = None
+        if self.kl_weight:
+            if not getattr(model, "is_clef", False):
+                raise NotImplementedError("Unsloth: kl_weight needs a Clef decision model.")
+            self._reference_head = copy.deepcopy(model.head).requires_grad_(False)
         args.remove_unused_columns = False
         # The model trains on one GPU: no DataParallel, and the batch stays per_device_train_batch_size.
         if args.parallel_mode == ParallelMode.NOT_DISTRIBUTED:
@@ -710,6 +908,8 @@ class DecisionTrainer(Trainer):
         if args.label_names is None:
             args.label_names = ["target"]
         clef = getattr(model, "is_clef", False)
+        if clef:
+            _clef_mixed_precision(model, args)
         if args.gradient_checkpointing:
             # Trainer would call model.gradient_checkpointing_enable, which only the encoder has.
             # Clef's backbone already got Unsloth's checkpointing when it loaded.
@@ -729,12 +929,39 @@ class DecisionTrainer(Trainer):
                 )
             else:
                 pad_token_id = getattr(processing_class, "tokenizer", processing_class).pad_token_id
-            kwargs["data_collator"] = (ClefDataCollator if clef else DecisionDataCollator)(
-                pad_token_id
-            )
+            if clef:
+                kwargs["data_collator"] = ClefDataCollator(
+                    pad_token_id,
+                    tokenizer = kwargs["processing_class"]
+                    or getattr(model, "_saved_temp_tokenizer", None),
+                    max_len = model.decision_config["max_len"],
+                    permute_fields = permute_fields,
+                    seed = args.seed,
+                )
+            else:
+                kwargs["data_collator"] = DecisionDataCollator(pad_token_id)
         self.head_learning_rate = head_learning_rate
-        self.label_smoothing, self.brier_weight = label_smoothing, brier_weight
         super().__init__(model = model, args = args, **kwargs)
+
+    @contextlib.contextmanager
+    def _dataset_field_order(self):
+        collator = self.data_collator
+        permute = getattr(collator, "permute_fields", False)
+        if permute:
+            collator.permute_fields = False
+        try:
+            yield
+        finally:
+            if permute:
+                collator.permute_fields = True
+
+    def evaluate(self, *args, **kwargs):
+        with self._dataset_field_order():
+            return super().evaluate(*args, **kwargs)
+
+    def predict(self, *args, **kwargs):
+        with self._dataset_field_order():
+            return super().predict(*args, **kwargs)
 
     def _get_train_sampler(self, train_dataset = None):
         dataset = self.train_dataset if train_dataset is None else train_dataset
@@ -753,10 +980,26 @@ class DecisionTrainer(Trainer):
         num_items_in_batch = None,
     ):
         target = inputs.pop("target")
+        ordinal = inputs.pop("ordinal", None)
         logits, _ = model(**inputs)
-        loss = _soft_cross_entropy(
-            logits, target, inputs["marker_mask"], self.label_smoothing, self.brier_weight
+        mask = inputs["marker_mask"]
+        loss = _decision_loss(
+            logits,
+            target,
+            mask,
+            ordinal,
+            self.label_smoothing,
+            self.brier_weight,
+            self.ordinal_weight,
         )
+        if self._reference_head is not None:
+            unwrapped = self.accelerator.unwrap_model(model)
+            with torch.no_grad(), unwrapped.encoder.disable_adapter():
+                reference, _ = unwrapped(**inputs, head = self._reference_head)
+            log_ref = torch.log_softmax(reference.float().masked_fill(~mask, -1e4), -1)
+            log_p = torch.log_softmax(logits.float().masked_fill(~mask, -1e4), -1)
+            kl = (log_ref.exp() * (log_ref - log_p) * mask).sum(-1).mean()
+            loss = loss + self.kl_weight * kl
         return (loss, {"loss": loss, "logits": logits}) if return_outputs else loss
 
     def create_optimizer(self, model = None):
@@ -814,16 +1057,20 @@ def _logits(
 def _metrics(logits, items, temperatures) -> dict:
     import numpy as np
 
-    conf, correct, loss = [], [], []
+    conf, correct, loss, records = [], [], [], {}
     for z, item, temperature in zip(logits, items, temperatures):
         log_p = torch.log_softmax(z / temperature, -1)
         conf.append(float(log_p.exp().max()))
         correct.append(float(int(log_p.argmax()) == item["label"]))
         loss.append(float(-(torch.tensor(item["target"]) * log_p).sum()))
+        row = item.get("row", ("item", len(correct)))
+        records[row] = records.get(row, True) and bool(correct[-1])
     return {
         "accuracy": float(np.mean(correct)),
         "ece": _laya().common.ece_score(np.array(conf), np.array(correct)),
         "loss": float(np.mean(loss)),
+        # Every question of a row right, the record-level precision Cloudflare rewards.
+        "record_accuracy": float(np.mean(list(records.values()))),
     }
 
 
@@ -867,10 +1114,53 @@ def _served_temperatures(config: dict, logits, items) -> list:
         key: common.clamp_temperature(value)
         for key, value in (config.get("temperature_by_options") or {}).items()
     }
+    # A Clef temperature not yet folded into the head (_save_clef folds it on save).
+    head = config.get("head_temperature", 1.0)
     return [
-        buckets.get(common.temp_bucket(item["qtype"], len(z)), per_type[item["qtype"]])
+        head * buckets.get(common.temp_bucket(item["qtype"], len(z)), per_type[item["qtype"]])
         for z, item in zip(logits, items)
     ]
+
+
+HEAD_TEMPERATURE_RANGE = (0.05, 20.0)
+
+
+def _calibrate_clef(config: dict, logits, items) -> dict:
+    # Calibrated against being right (the gold label), not the soft gold distribution: Clef's
+    # confidence is read as the chance the answer is correct, and soft gold targets left a tuned
+    # model underconfident (confidence 0.61 at accuracy 0.78 on typed-decisions).
+    common = _laya().common
+    hard = [
+        {**item, "target": [float(j == item["label"]) for j in range(len(z))]}
+        for z, item in zip(logits, items)
+    ]
+
+    def fit(indices) -> tuple:
+        chosen = list(indices)
+        head = _fit_temperature([logits[i] for i in chosen], [hard[i] for i in chosen])
+        head = min(max(head, HEAD_TEMPERATURE_RANGE[0]), HEAD_TEMPERATURE_RANGE[1])
+        scaled = [z / head for z in logits]
+        relative, fitted = _fit_temperatures(scaled, hard, chosen, [1.0] * 3)
+        return head, relative, fitted
+
+    everything = range(len(items))
+    if len(items) < MIN_CALIBRATION_ITEMS:
+        return {
+            **_metrics(logits, items, _served_temperatures(config, logits, items)),
+            "fitted_types": [],
+        }
+    head, relative, fitted = fit(everything)
+    half = {row: i % 2 for i, row in enumerate(sorted({item["row"] for item in items}))}
+    per_item = [1.0] * len(items)
+    for side in (0, 1):
+        side_head, side_relative, _ = fit(i for i in everything if half[items[i]["row"]] != side)
+        for i in everything:
+            if half[items[i]["row"]] == side:
+                per_item[i] = side_head * common.clamp_temperature(side_relative[items[i]["qtype"]])
+    config["head_temperature"] = head
+    config["temperature"] = relative
+    config.pop("temperature_by_options", None)
+    return {**_metrics(logits, items, per_item), "fitted_types": sorted(fitted)}
 
 
 def save_pretrained_merged(
@@ -911,18 +1201,17 @@ def save_pretrained_merged(
     del encoder, state
     config = json.dumps({**self.decision_config, "fine_tuned": True}, indent = 2)
 
-    output = Path(save_directory)
-    output.mkdir(parents = True, exist_ok = True)
-    (output / "rl_agent_config.json").unlink(missing_ok = True)
-    save_file(weights, str(output / "model.safetensors"))
-    (output / "encoder").mkdir(exist_ok = True)
-    (output / "encoder" / "config.json").write_text(self._unsloth_encoder_config, encoding = "utf-8")
-    tokenizer.save_pretrained(str(output / "tokenizer"))
-    _laya().agent._fix_tokenizer_config(str(output))
-    # Written last: a folder with rl_agent_config.json is a complete checkpoint.
-    partial = output / "rl_agent_config.json.tmp"
-    partial.write_text(config, encoding = "utf-8")
-    os.replace(partial, output / "rl_agent_config.json")
+    with _staging(Path(save_directory)) as staging:
+        save_file(weights, str(staging / "model.safetensors"))
+        (staging / "encoder").mkdir()
+        (staging / "encoder" / "config.json").write_text(
+            self._unsloth_encoder_config, encoding = "utf-8"
+        )
+        tokenizer.save_pretrained(str(staging / "tokenizer"))
+        _laya().agent._fix_tokenizer_config(str(staging))
+        (staging / "rl_agent_config.json").write_text(config, encoding = "utf-8")
+        # A folder with rl_agent_config.json is a complete checkpoint, so it moves in last.
+        _commit_staged(staging, Path(save_directory), "rl_agent_config.json")
 
 
 def push_to_hub_merged(
@@ -1212,6 +1501,9 @@ class FastDecisionModel:
         config = model.decision_config
         fallback = [common.clamp_temperature(t) for t in config.get("temperature", [1.0] * 3)]
         logits, items = _decision_logits(model, tokenizer, items)
+        clef = getattr(model, "is_clef", False)
+        if clef:
+            return _calibrate_clef(config, logits, items)
         everything = range(len(items))
         temperature, fitted = _fit_temperatures(logits, items, everything, fallback)
         # Reported numbers score each half of the rows with temperatures fitted on the other half.
@@ -1224,9 +1516,6 @@ class FastDecisionModel:
                 if half[items[i]["row"]] == side:
                     per_item[i] = side_temperature[items[i]["qtype"]]
         config["temperature"] = temperature
-        if getattr(model, "is_clef", False):
-            # The released head has one set of logit scales, so one temperature for every type.
-            config["global_temperature"] = common.clamp_temperature(_fit_temperature(logits, items))
         buckets = {
             key: value
             for key, value in (config.pop("temperature_by_options", None) or {}).items()

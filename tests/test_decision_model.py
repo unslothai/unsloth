@@ -437,7 +437,9 @@ def test_train_calibrate_save_and_serve(checkpoint, tmp_path, lora):
 
 
 def test_toy_task_beats_the_base_model(checkpoint, tmp_path, monkeypatch):
-    # CPU: the head's dropout draws from the device RNG, and 45 held-out decisions swing 0.67-0.84 by stream.
+    # On CPU everywhere: the toy task plateaus near loss 0.45 and leaves it by step ~70 on CPU but
+    # only after ~100 steps on a GPU (same curve otherwise, any precision), so 80 steps is a threshold
+    # tuned to CPU arithmetic, not a GPU defect.
     monkeypatch.setattr(decision, "_device", lambda: torch.device("cpu"))
     model, tokenizer = FastDecisionModel.from_pretrained(
         str(checkpoint), use_gradient_checkpointing = False
@@ -822,15 +824,21 @@ def test_clef_loads_scores_like_cloudflares_model_and_trains(clef_checkpoint, tm
     assert min(losses[-5:]) < losses[0] and after["loss"] < before["loss"]
     calibration = FastDecisionModel.calibrate(model, processor, holdout)
     assert "accuracy" in calibration
+    # Fitted to the gold labels, so the calibrated confidence tracks being right.
+    head_temperature = model.decision_config["head_temperature"]
+    assert (
+        decision.HEAD_TEMPERATURE_RANGE[0] <= head_temperature <= decision.HEAD_TEMPERATURE_RANGE[1]
+    )
 
     model.save_pretrained_merged(str(tmp_path / "out"))
     assert (tmp_path / "out" / "joint_schema_model.py").is_file()
     reloaded, _ = FastDecisionModel.from_pretrained(str(tmp_path / "out"), max_seq_length = 512)
-    # The global temperature now lives in the head, so the per type ones are relative to it.
-    folded = reloaded.decision_config.get("folded_temperature") or 1.0
-    assert reloaded.decision_config["temperature"] == pytest.approx(
-        [t / folded for t in model.decision_config["temperature"]]
-    )
+    # The calibrated temperature over all questions is folded into the saved head; the per-type
+    # temperatures are relative to it, so the reload serves the same probabilities.
+    folded = reloaded.decision_config["folded_temperature"]
+    assert folded == pytest.approx(model.decision_config["head_temperature"])
+    assert "head_temperature" not in reloaded.decision_config
+    assert reloaded.decision_config["temperature"] == model.decision_config["temperature"]
     released, _ = reference.load_release_model(
         str(tmp_path / "out"), device = device, dtype = torch.float32
     )
@@ -840,7 +848,7 @@ def test_clef_loads_scores_like_cloudflares_model_and_trains(clef_checkpoint, tm
         theirs = released(batch)[0]
     # Saved in bf16, so the reload rounds the trained weights.
     valid = trained > -1e3
-    assert torch.allclose(trained[valid] / folded, again[valid], atol = 0.05 / folded)
+    assert torch.allclose(trained[valid], again[valid] * folded, atol = 0.05)
     for row, z in enumerate(theirs):
         assert int(z.argmax()) == int(again[row, : len(z)].argmax())
 
@@ -874,75 +882,253 @@ def test_clef_backbone_runs_the_compiled_gated_delta_and_conv_kernels(clef_check
             assert chosen["causal_conv1d_fn"].startswith("causal_conv1d")
 
 
-def test_clef_temperature_folds_into_the_head_exactly():
-    from unsloth.models.clef import EncodedQuestion, EncodedRecord, JointSchemaHead
-
+def test_decision_loss_recipe_terms():
     torch.manual_seed(0)
-    head = JointSchemaHead(**CLEF_HEAD).double()
+    logits = torch.randn(5, 4)
+    mask = torch.tensor([[1, 1, 1, 0]] * 3 + [[1, 1, 0, 0]] * 2, dtype = torch.bool)
+    target = torch.zeros(5, 4)
+    target[torch.arange(5), torch.tensor([0, 2, 1, 1, 0])] = 1.0
+    ordinal = torch.tensor([True, True, False, False, False])
+    plain = decision._soft_cross_entropy(logits, target, mask)
+    assert torch.equal(decision._decision_loss(logits, target, mask, ordinal), plain)
+
+    log_p = torch.log_softmax(logits.masked_fill(~mask, -1e4), -1)
+    p = log_p.exp()
+    k = mask.sum(-1, keepdim = True).float()
+    smoothed = 0.9 * target + 0.1 * mask.float() / k
+    expected_ce = -(smoothed * log_p).sum(-1).mean()
+    expected_brier = ((p - target) ** 2 * mask).sum(-1).mean()
+    levels = torch.arange(4.0)
+    gold = target.argmax(-1).float()
+    distance = (p * (levels - gold[:, None]).abs()).sum(-1) / (k[:, 0] - 1)
+    expected_ordinal = distance[ordinal].mean()
+    got = decision._decision_loss(
+        logits,
+        target,
+        mask,
+        ordinal,
+        label_smoothing = 0.1,
+        brier_weight = 0.5,
+        ordinal_weight = 2.0,
+    )
+    torch.testing.assert_close(got, expected_ce + 0.5 * expected_brier + 2.0 * expected_ordinal)
+
+
+def test_record_accuracy_needs_every_question_of_a_row_right():
+    logits = [torch.tensor([2.0, 0.0]), torch.tensor([0.0, 2.0]), torch.tensor([2.0, 0.0])]
+    items = [
+        {"label": 0, "target": [1.0, 0.0], "row": 0, "qtype": 0},
+        {"label": 0, "target": [1.0, 0.0], "row": 0, "qtype": 0},
+        {"label": 0, "target": [1.0, 0.0], "row": 1, "qtype": 0},
+    ]
+    metrics = decision._metrics(logits, items, [1.0] * 3)
+    assert metrics["accuracy"] == pytest.approx(2 / 3) and metrics["record_accuracy"] == 0.5
+
+
+def _clef_head_inputs():
+    from transformers import AutoTokenizer
+
+    from unsloth.models.clef import JointSchemaHead, encode_record
+
+    tokenizer = AutoTokenizer.from_pretrained(TINY_QWEN3_5)
+    encoded = [
+        encode_record(tokenizer, {"state": "state " * (i + 1), "questions": QUESTIONS})
+        for i in range(2)
+    ]
+    batch = decision.ClefDataCollator(tokenizer.pad_token_id)(
+        [
+            {"input_ids": list(r.input_ids), "record": r, "targets": [[1.0]], "qtypes": [0]}
+            for r in encoded
+        ]
+    )
+    torch.manual_seed(0)
+    head = JointSchemaHead(**CLEF_HEAD)
     with torch.no_grad():
         for param in head.parameters():
             param.add_(torch.randn_like(param) * 0.1)
-    record = EncodedRecord(
-        input_ids = tuple(range(12)),
-        questions = (
-            EncodedQuestion("a", 1, (0, 3), ((3, 5), (5, 7), (7, 9)), ("x", "y", "z")),
-            EncodedQuestion("b", 0, (1, 4), ((9, 10), (10, 12)), ("true", "false")),
-        ),
-        record_id = "r",
+    hidden = torch.randn(*batch["input_ids"].shape, CLEF_HEAD["hidden_size"])
+    lexical = torch.randn(int(batch["input_ids"].max()) + 1, CLEF_HEAD["hidden_size"])
+
+    def run(module):
+        with torch.no_grad():
+            return [
+                z
+                for record in module(
+                    hidden, batch["input_ids"], batch["attention_mask"], batch["records"], lexical
+                )
+                for z in record
+            ]
+
+    return head, run
+
+
+@pytest.mark.parametrize("temperature", [1.7, 0.6])
+def test_clef_temperature_folds_into_the_head_exactly(temperature):
+    head, run = _clef_head_inputs()
+    state = {k: v.detach().clone() for k, v in head.state_dict().items()}
+    assert decision._fold_temperature(state, temperature)
+    folded = copy.deepcopy(head)
+    folded.load_state_dict(state)
+    for original, scaled in zip(run(head), run(folded)):
+        torch.testing.assert_close(scaled, original / temperature, rtol = 1e-5, atol = 1e-6)
+
+
+def test_clef_temperature_is_not_folded_past_the_heads_scale_clamp():
+    head, _ = _clef_head_inputs()
+    state = {k: v.detach().clone() for k, v in head.state_dict().items()}
+    state["joint_logit_scale"] = torch.tensor(math.log(90.0))
+    before = {k: v.clone() for k, v in state.items()}
+    # Sharpening by 2 would need a scale of 180, past the clamp at 100.
+    assert not decision._fold_temperature(state, 0.5)
+    assert all(torch.equal(before[k], v) for k, v in state.items())
+
+
+def test_clef_collator_permutes_fields_but_keeps_targets_with_their_questions():
+    from transformers import AutoTokenizer
+
+    tokenizer = AutoTokenizer.from_pretrained(TINY_QWEN3_5)
+    model = types.SimpleNamespace(is_clef = True, decision_config = {"max_len": 2048})
+    items, report = FastDecisionModel.build_dataset(_clef_rows(4), tokenizer, model)
+    assert report["skipped"] == 0
+    fixed = decision.ClefDataCollator(tokenizer.pad_token_id)
+    shuffled = decision.ClefDataCollator(
+        tokenizer.pad_token_id, tokenizer = tokenizer, max_len = 2048, permute_fields = True, seed = 1
     )
-    hidden = torch.randn(1, 12, CLEF_HEAD["hidden_size"], dtype = torch.float64)
-    ids, mask = torch.arange(12)[None], torch.ones(1, 12, dtype = torch.long)
-    embeddings = torch.randn(32, CLEF_HEAD["hidden_size"], dtype = torch.float64)
-    before = head(hidden, ids, mask, [record], embeddings)[0]
-    for temperature in (0.6, 1.7):
-        folded = JointSchemaHead(**CLEF_HEAD).double()
-        folded.load_state_dict(decision._fold_temperature(head.state_dict(), temperature))
-        after = folded(hidden, ids, mask, [record], embeddings)[0]
-        for z, z_folded in zip(before, after):
-            torch.testing.assert_close(z_folded, z / temperature)
-    # Past the clamp the scale cannot carry the temperature, so nothing is folded.
+    orders = set()
+    for _ in range(8):
+        batch = shuffled(items[:1])
+        record = batch["records"][0]
+        orders.add(tuple(q.question_id for q in record.questions))
+        by_name = dict(zip(items[0]["source"]["questions"], items[0]["targets"]))
+        for row, question in enumerate(record.questions):
+            assert (
+                batch["target"][row, : len(question.option_ids)].tolist()
+                == by_name[question.question_id]
+            )
+            assert bool(batch["ordinal"][row]) == (question.question_type == 2)
+    assert len(orders) > 1
+    assert fixed(items[:1])["records"][0] == items[0]["record"]
+
+
+def test_a_failed_save_leaves_the_previous_laya_checkpoint_loadable(
+    checkpoint, tmp_path, monkeypatch
+):
+    model, tokenizer = FastDecisionModel.from_pretrained(
+        str(checkpoint), use_gradient_checkpointing = False
+    )
+    out = tmp_path / "out"
+    model.save_pretrained_merged(out)
+    before = sorted(p.name for p in out.iterdir())
+    original = (out / "model.safetensors").read_bytes()
     with torch.no_grad():
-        head.prior_logit_scale.fill_(math.log(100.0))
-    assert decision._fold_temperature(head.state_dict(), 0.5) is None
+        for param in model.head.parameters():
+            param.add_(1.0)
+
+    def broken(*args, **kwargs):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(type(tokenizer), "save_pretrained", broken)
+    with pytest.raises(OSError):
+        model.save_pretrained_merged(out)
+    assert sorted(p.name for p in out.iterdir()) == before
+    assert (out / "model.safetensors").read_bytes() == original
+    assert decision.is_decision_checkpoint(out)
+    FastDecisionModel.from_pretrained(str(out), use_gradient_checkpointing = False)
 
 
-def test_clef_saves_its_calibration_where_cloudflares_loader_reads_it(clef_checkpoint, tmp_path):
-    reference, _ = _clef_reference()
+def test_a_failed_save_leaves_the_previous_clef_checkpoint_loadable(
+    clef_checkpoint, tmp_path, monkeypatch
+):
+    import safetensors.torch
+
     model, processor = FastDecisionModel.from_pretrained(str(clef_checkpoint), max_seq_length = 512)
-    items, _ = FastDecisionModel.build_dataset(_clef_rows(32), processor, model)
-    FastDecisionModel.calibrate(model, processor, items)
-    temperature = model.decision_config["global_temperature"]
-    per_type = list(model.decision_config["temperature"])
-    model.save_pretrained_merged(str(tmp_path / "out"))
-    saved = json.loads((tmp_path / "out" / "unsloth_decision_config.json").read_text())
-    assert saved["folded_temperature"] == temperature and "global_temperature" not in saved
-    assert saved["temperature"] == pytest.approx([t / temperature for t in per_type])
-    device = next(model.parameters()).device
-    released, _ = reference.load_release_model(
-        str(tmp_path / "out"), device = device, dtype = torch.float32
-    )
-    encoded = reference.encode_record(
-        processor.tokenizer, {"state": "help now", "questions": QUESTIONS}
-    )
-    batch = reference.collate_records([encoded], processor.tokenizer.pad_token_id, device)
+    out = tmp_path / "out"
+    model.save_pretrained_merged(str(out))
+    head = (out / "joint_head.safetensors").read_bytes()
+    before = sorted(p.name for p in out.iterdir())
     with torch.no_grad():
-        ours, _ = model(batch["input_ids"], batch["attention_mask"], batch["records"])
-        model.head.to(torch.bfloat16).float()
-        theirs = released(batch)[0]
-    for row, z in enumerate(theirs):
-        assert torch.allclose(z.float(), ours[row, : len(z)].float() / temperature, atol = 0.05)
+        for param in model.head.parameters():
+            param.add_(1.0)
+    # The backbone shards save, then the head write fails.
+    original = safetensors.torch.save_file
+
+    def failing_head(tensors, path, *args, **kwargs):
+        if str(path).endswith("joint_head.safetensors"):
+            raise OSError("disk full")
+        return original(tensors, path, *args, **kwargs)
+
+    monkeypatch.setattr(safetensors.torch, "save_file", failing_head)
+    with pytest.raises(OSError):
+        model.save_pretrained_merged(str(out))
+    assert sorted(p.name for p in out.iterdir()) == before
+    assert (out / "joint_head.safetensors").read_bytes() == head
+    FastDecisionModel.from_pretrained(str(out), max_seq_length = 512)
 
 
-def test_label_smoothing_and_brier_terms():
-    logits = torch.tensor([[2.0, 0.0, -1.0], [1.0, -1.0, 5.0]])
-    mask = torch.tensor([[True, True, True], [True, True, False]])
-    target = torch.tensor([[1.0, 0.0, 0.0], [0.0, 1.0, 0.0]])
-    plain = decision._soft_cross_entropy(logits, target, mask)
-    assert torch.equal(plain, decision._soft_cross_entropy(logits, target, mask, 0.0, 0.0))
-    log_p = torch.log_softmax(logits.masked_fill(~mask, -1e4), -1)
-    smoothed = torch.tensor([[0.9 + 0.1 / 3, 0.1 / 3, 0.1 / 3], [0.05, 0.95, 0.0]])
-    brier = ((log_p.exp() - target) ** 2 * mask).sum(-1).mean()
-    expected = -(smoothed * log_p).sum(-1).mean() + 0.5 * brier
-    torch.testing.assert_close(
-        decision._soft_cross_entropy(logits, target, mask, 0.1, 0.5), expected
+@pytest.mark.skipif(not has_real_cuda(), reason = "Unsloth's float16 path for Qwen3.5 needs a GPU")
+@pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
+def test_clef_trains_in_float16_and_bfloat16(clef_checkpoint, tmp_path, dtype):
+    model, processor = FastDecisionModel.from_pretrained(
+        str(clef_checkpoint), max_seq_length = 512, dtype = dtype
+    )
+    # float16 puts Qwen3.5 on Unsloth's float32 path (bfloat16 weights, no autocast), as on a T4.
+    assert decision._clef_forced_float32(model) == (dtype == torch.float16)
+    model = FastDecisionModel.get_peft_model(model, r = 8, lora_alpha = 8)
+    items, _ = FastDecisionModel.build_dataset(_clef_rows(32), processor, model)
+    grads = []
+
+    class Grads(TrainerCallback):
+        def on_log(
+            self,
+            args,
+            state,
+            control,
+            logs = None,
+            **kwargs,
+        ):
+            if logs and "loss" in logs:
+                grads.append((logs["loss"], logs.get("grad_norm")))
+
+    trainer = DecisionTrainer(
+        model = model,
+        tokenizer = processor,
+        train_dataset = items,
+        args = _args(
+            tmp_path,
+            max_steps = 6,
+            logging_steps = 1,
+            fp16 = dtype == torch.float16,
+            bf16 = dtype == torch.bfloat16,
+        ),
+        callbacks = [Grads()],
+    )
+    assert trainer.args.fp16 is False and trainer.args.bf16 == (dtype == torch.bfloat16)
+    trainer.train()
+    assert grads and all(math.isfinite(loss) and math.isfinite(g) and g > 0 for loss, g in grads)
+    assert math.isfinite(FastDecisionModel.evaluate(model, processor, items)["loss"])
+
+
+def test_clef_calibration_fits_being_right_and_serves_through_the_head_temperature():
+    # Underconfident logits: right 80% of the time with a soft gold that says 60%.
+    generator = torch.Generator().manual_seed(0)
+    logits, items = [], []
+    for i in range(400):
+        label = int(torch.randint(0, 3, (1,), generator = generator))
+        right = bool(torch.rand(1, generator = generator) < 0.8)
+        top = label if right else (label + 1) % 3
+        z = torch.zeros(3)
+        z[top] = 0.6
+        target = [0.2, 0.2, 0.2]
+        target[label] = 0.6
+        logits.append(z)
+        items.append({"label": label, "target": target, "qtype": i % 3, "row": i // 2})
+    config = {"temperature": [1.0] * 3}
+    plain = decision._metrics(logits, items, [1.0] * len(items))
+    calibrated = decision._calibrate_clef(config, logits, items)
+    assert calibrated["ece"] < plain["ece"] / 2 and calibrated["accuracy"] == plain["accuracy"]
+    assert config["head_temperature"] < 1.0
+    served = decision._served_temperatures(config, logits, items)
+    assert served[0] == pytest.approx(
+        config["head_temperature"]
+        * decision._laya().common.clamp_temperature(config["temperature"][0])
     )
