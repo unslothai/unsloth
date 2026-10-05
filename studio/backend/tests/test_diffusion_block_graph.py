@@ -579,15 +579,22 @@ def test_the_top_level_group_keeps_fresh_copies():
 # --- memory guard ----------------------------------------------------------------------------------------------
 
 
+def test_pool_bytes_count_only_the_target_card(monkeypatch):
+    here, there = bg._Shared(0), bg._Shared(1)
+    here.pool_bytes, there.pool_bytes = 100, 900
+    monkeypatch.setattr(bg, "_LIVE", {here, there})
+    assert bg.pool_bytes(0) == 100 and bg.pool_bytes() == 1000
+
+
 def test_block_graph_pools_are_not_credited_as_reclaimable(monkeypatch):
     target = types.SimpleNamespace(device = "cuda", backend = "cuda")
     snap = dm.DeviceMemory("cuda", "cuda", "dedicated", 1000, 8000)
     monkeypatch.setattr(dm, "snapshot_device_memory", lambda t: snap)
     monkeypatch.setattr(torch.cuda, "memory_reserved", lambda *a, **k: 600 << 20)
     monkeypatch.setattr(torch.cuda, "memory_allocated", lambda *a, **k: 100 << 20)
-    monkeypatch.setattr(bg, "pool_bytes", lambda: 0)
+    monkeypatch.setattr(bg, "pool_bytes", lambda device = None: 0)
     assert dm.reclaimable_snapshot_device_memory(target).free_mib == 1500
-    monkeypatch.setattr(bg, "pool_bytes", lambda: 300 << 20)
+    monkeypatch.setattr(bg, "pool_bytes", lambda device = None: 300 << 20)
     assert dm.reclaimable_snapshot_device_memory(target).free_mib == 1200
 
 
