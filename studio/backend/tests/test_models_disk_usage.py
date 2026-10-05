@@ -5,6 +5,8 @@
 
 import os
 import sys
+import threading
+import time
 from collections import namedtuple
 from pathlib import Path
 
@@ -35,8 +37,7 @@ def second_drive(tmp_path, monkeypatch):
         return _Usage(100 * GB, 60 * GB, 40 * GB)
 
     def fake_device(path):
-        if not Path(path).exists():
-            raise FileNotFoundError(path)
+        os.stat(path)  # real errors: missing, permission denied
         return 2 if on_second(path) else 1
 
     monkeypatch.setattr(system_disk, "_device", fake_device)
@@ -100,3 +101,57 @@ def test_unreadable_cache_is_omitted(monkeypatch):
 def test_active_cache_on_root_volume_is_none_on_a_single_disk_host(tmp_path, monkeypatch):
     monkeypatch.setattr(system_disk, "_hub_cache", lambda: Path(os.path.abspath(os.sep)) / "x")
     assert system_disk.models_disk_usage() is None
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32" or os.geteuid() == 0, reason = "needs POSIX permission bits"
+)
+def test_unreadable_cache_under_a_readable_volume_is_not_its_parent(second_drive):
+    # Python 3.14's Path.exists is False for EACCES too; climbing on it reported the parent volume.
+    locked = second_drive / "locked"
+    (locked / "hub").mkdir(parents = True)
+    locked.chmod(0)
+    try:
+        assert system_disk.models_disk_usage(locked / "hub") is None
+    finally:
+        locked.chmod(0o755)
+
+
+@pytest.fixture
+def fresh_cache(monkeypatch):
+    monkeypatch.setattr(
+        system_disk, "_state", {"key": None, "at": 0.0, "reading": None, "probe": None}
+    )
+    monkeypatch.setattr(system_disk, "_FIRST_WAIT_S", 0.2)
+
+
+def test_hung_cache_volume_never_blocks_the_poll(fresh_cache, monkeypatch):
+    release, calls = threading.Event(), []
+
+    def hung(key):
+        calls.append(key)
+        release.wait(10)
+        return {"total_gb": 1.0}
+
+    monkeypatch.setattr(system_disk, "_hub_cache", lambda: Path("/nfs/hub"))
+    monkeypatch.setattr(system_disk, "models_disk_usage", hung)
+    for _ in range(5):
+        start = time.monotonic()
+        assert system_disk.cached_models_disk_usage() is None
+        assert time.monotonic() - start < 1.0
+    assert len(calls) == 1, "one probe in flight, not one per poll"
+    release.set()
+    for _ in range(50):
+        if system_disk._state["probe"] is None:
+            break
+        time.sleep(0.05)
+    assert system_disk.cached_models_disk_usage() == {"total_gb": 1.0}
+
+
+def test_changed_models_folder_is_reprobed(fresh_cache, monkeypatch):
+    folder = {"path": Path("/a/hub")}
+    monkeypatch.setattr(system_disk, "_hub_cache", lambda: folder["path"])
+    monkeypatch.setattr(system_disk, "models_disk_usage", lambda key: {"path": str(key)})
+    assert system_disk.cached_models_disk_usage() == {"path": "/a/hub"}
+    folder["path"] = Path("/b/hub")
+    assert system_disk.cached_models_disk_usage() == {"path": "/b/hub"}

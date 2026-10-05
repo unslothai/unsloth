@@ -5,11 +5,15 @@
 
 import os
 import shutil
+import threading
+import time
 from pathlib import Path
 from typing import Optional
 
 
 _SAME_POOL_SLACK = 1 << 30
+_TTL_S = 30.0
+_FIRST_WAIT_S = 0.5
 
 
 def _hub_cache() -> Optional[Path]:
@@ -20,13 +24,19 @@ def _hub_cache() -> Optional[Path]:
         return None
 
 
-def _nearest_existing(path: Path) -> Path:
-    # A fresh install has no cache dir yet; its volume is its nearest existing parent.
-    return next((p for p in (path, *path.parents) if p.exists()), path)
-
-
 def _device(path: Path) -> int:
     return os.stat(path).st_dev
+
+
+def _locate(path: Path) -> tuple[Path, int]:
+    """(nearest existing ancestor, its device). Climbs only past MISSING paths: a fresh install
+    has no cache dir yet, but an unreadable one must not report its parent's volume."""
+    for candidate in (path, *path.parents):
+        try:
+            return candidate, _device(candidate)
+        except (FileNotFoundError, NotADirectoryError):
+            continue
+    raise FileNotFoundError(path)
 
 
 def models_disk_usage(cache: Optional[Path] = None) -> Optional[dict]:
@@ -38,9 +48,9 @@ def models_disk_usage(cache: Optional[Path] = None) -> Optional[dict]:
     if cache is None:
         return None
     try:
-        target = _nearest_existing(Path(os.path.realpath(cache)))
+        target, device = _locate(Path(os.path.realpath(cache)))
         root = Path(os.path.abspath(os.sep))
-        if _device(target) == _device(root):
+        if device == _device(root):
             return None
         usage = shutil.disk_usage(target)
         system = shutil.disk_usage(root)
@@ -56,3 +66,30 @@ def models_disk_usage(cache: Optional[Path] = None) -> Optional[dict]:
         "free_gb": round(usage.free / 1e9, 2),
         "percent_used": round(usage.used / seen * 100, 1) if seen else 0,
     }
+
+
+_lock = threading.Lock()
+_state = {"key": None, "at": 0.0, "reading": None, "probe": None}
+
+
+def _probe(key: Optional[Path]) -> None:
+    reading = models_disk_usage(key)
+    with _lock:
+        _state.update(key = key, at = time.monotonic(), reading = reading, probe = None)
+
+
+def cached_models_disk_usage() -> Optional[dict]:
+    """models_disk_usage for the 3 s /api/system poll: statvfs on a hung NFS/SMB cache blocks, so
+    the probe runs off the request thread, at most one at a time, refreshed every _TTL_S."""
+    key = _hub_cache()
+    with _lock:
+        fresh = _state["key"] == key and time.monotonic() - _state["at"] < _TTL_S
+        probe = _state["probe"]
+        if fresh or probe is not None:
+            return _state["reading"] if _state["key"] == key else None
+        probe = threading.Thread(target = _probe, args = (key,), daemon = True)
+        _state["probe"] = probe
+    probe.start()
+    probe.join(_FIRST_WAIT_S)
+    with _lock:
+        return _state["reading"] if _state["key"] == key else None

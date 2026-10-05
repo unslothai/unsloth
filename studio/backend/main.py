@@ -2553,9 +2553,9 @@ def get_system_info(
         logger.debug(f"Failed to get disk usage: {e}")
         disk = None
 
-    from utils.system_disk import models_disk_usage
+    from utils.system_disk import cached_models_disk_usage
 
-    models_disk = models_disk_usage()
+    models_disk = cached_models_disk_usage()
 
     try:
         current_process = psutil.Process(os.getpid())
