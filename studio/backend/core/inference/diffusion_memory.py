@@ -2224,7 +2224,8 @@ PARTIAL_RESIDENT_ENV = "UNSLOTH_DIFFUSION_PARTIAL_RESIDENT"
 
 # Worst measured CUDA MiB above the resident weights, one 1024x1024 image, encoder + every step + VAE decode, torchao
 # int8 / fp8 denoisers on the compiled tiers (Qwen-Image-2.1: encoder 1849 streamed, denoise 1442, decode 1730).
-_MEASURED_IMAGE_PEAK_MIB: dict[str, int] = {"qwen-image-2.1": 1849}
+# FLUX.1 / Z-Image: their worst phase is the untiled 16-channel VAE decode (_MEASURED_IMAGE_ACTIVATION_MIB).
+_MEASURED_IMAGE_PEAK_MIB: dict[str, int] = {"qwen-image-2.1": 1849, "flux.1": 2666, "z-image": 2666}
 _MEASURED_PEAK_SPEED_MODES = ("default", "max")
 _MEASURED_PEAK_MARGIN = 1.15
 _MEASURED_PEAK_ROUND_MIB = 256
@@ -2340,6 +2341,55 @@ def _resident_dit_fits(memory: Any, dit_mib: int, headroom_mib: int, other_mib: 
     ) <= int(free)
 
 
+STREAMED_RESIDENCY_ENV = "UNSLOTH_DIFFUSION_STREAMED_RESIDENCY"
+
+
+def _stream_window_mib(pipe: Any) -> int:
+    """Device MiB the block prefetcher holds in flight: ``depth + 1`` of the largest denoiser block, or -1."""
+    try:
+        import torch
+
+        from .diffusion_offload_prefetch import prefetch_depth
+
+        largest = 0
+        for name, module in (getattr(pipe, "components", {}) or {}).items():
+            if str(name) not in ("transformer", "transformer_2", "unconditional_transformer"):
+                continue
+            if not isinstance(module, torch.nn.Module):
+                continue
+            for child in module.children():
+                if not isinstance(child, (torch.nn.ModuleList, torch.nn.Sequential)):
+                    continue
+                for block in child:
+                    seen: set[int] = set()
+                    nbytes = 0
+                    for t in (*block.parameters(), *block.buffers()):
+                        if id(t) not in seen:
+                            seen.add(id(t))
+                            nbytes += sum(_storage_nbytes(t))
+                    largest = max(largest, nbytes * DEFAULT_GROUP_BLOCKS)
+        if largest <= 0:
+            return -1
+        return -(-largest * (prefetch_depth() + 1) // (1024 * 1024))
+    except Exception:  # noqa: BLE001
+        return -1
+
+
+def _streamed_dit_room_mib(memory: Any, headroom_mib: int, other_mib: int, window_mib: int) -> int:
+    """Partial room: the whole-resident fit plus the prefetch window, not the flat reserve AND base overhead."""
+    free = getattr(memory, "free_mib", None)
+    if free is None or window_mib < 0 or _env_off(STREAMED_RESIDENCY_ENV):
+        return 0
+    return max(
+        0,
+        int(free)
+        - _resident_dit_slack_mib(memory)
+        - int(other_mib)
+        - int(headroom_mib)
+        - int(window_mib),
+    )
+
+
 def _denoiser_compute_bytes(pipe: Any) -> Optional[int]:
     """Denoiser compute element size for the dense table: 2 (fp16), 4 (fp32); None for bf16 / unreadable."""
     try:
@@ -2417,7 +2467,7 @@ def refine_plan_from_loaded_weights(
         room = budget - floor
         if policy == OFFLOAD_GROUP and not stream_te:
             room -= encoders  # resident companions
-        whole_dit = False
+        whole_dit = wide_dit = False
         if not bool(getattr(plan, "stream_transformer", True)):
             room -= dit
             dit_room = 0
@@ -2433,10 +2483,20 @@ def refine_plan_from_loaded_weights(
                 # pin it whole; during the encode it drops back to the flat room (install_encode_release)
                 encode_room = int(dit_room)
                 dit_room, room, whole_dit = dit, dit, True
+            elif (
+                dit_room < dit and dense_mib is None and (policy == OFFLOAD_STREAMING or stream_te)
+            ):
+                # partial: the encode keeps the flat room (install_encode_release)
+                window = _stream_window_mib(pipe)
+                streamed_room = min(_streamed_dit_room_mib(memory, headroom, other, window), dit)
+                if streamed_room > dit_room:
+                    encode_room = int(dit_room)
+                    dit_room, room, wide_dit = streamed_room, streamed_room, True
+                    estimates["stream_window_mib"] = window
         te_room = max(0, room - dit_room) if stream_te and policy == OFFLOAD_GROUP else 0
         if dit_room <= 0 and te_room <= 0:
             return plan
-        if whole_dit:
+        if whole_dit or wide_dit:
             estimates["resident_dit_slack_mib"] = _resident_dit_slack_mib(memory)
             estimates["encode_resident_transformer_mib"] = encode_room
         new = replace(
@@ -2456,6 +2516,10 @@ def refine_plan_from_loaded_weights(
                     f" (whole transformer within free memory less a {_resident_dit_slack_mib(memory)} MiB slack;"
                     f" {encode_room} MiB of it while the encoders run)"
                     if whole_dit
+                    else f" (free memory less a {_resident_dit_slack_mib(memory)} MiB slack and a "
+                    f"{estimates.get('stream_window_mib')} MiB prefetch window; {encode_room} MiB of it while the "
+                    "encoders run)"
+                    if wide_dit
                     else ""
                 ),
             ),
@@ -2713,8 +2777,8 @@ def install_encode_release(
     plan: Any,
     logger: Any = None,
 ) -> int:
-    """While a text encoder runs, stream the whole-resident denoiser back to the flat room (the partial placement's
-    encode state); pin it back on return. Returns the number of encoders hooked."""
+    """While a text encoder runs, stream the whole-resident (or widened partial) denoiser back to the flat room (the
+    partial placement's encode state); pin it back on return. Returns the number of encoders hooked."""
     estimates = getattr(plan, "estimates", None) or {}
     encode_room = estimates.get("encode_resident_transformer_mib")
     whole = getattr(plan, "resident_transformer_mib", None)
