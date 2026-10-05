@@ -325,12 +325,12 @@ class ToolCallCompletion:
         if not self.executed:
             return {"role": "user", "content": self.result}
 
-        content = strip_result_for_model(self.result, self.decision.tool_name)
-        from core.inference.tools import cap_tool_text  # noqa: PLC0415 -- cycle at import time
+        from core.inference.tools import cap_tool_text  # noqa: PLC0415 -- import cycle
 
+        # Capped before the nudge so an oversized error result still carries it.
+        content = cap_tool_text(strip_result_for_model(self.result, self.decision.tool_name))
         if self.is_error:
             content = content + TOOL_ERROR_NUDGE
-        content = cap_tool_text(content)
         message: dict[str, Any] = {
             "role": "tool",
             "name": self.decision.tool_name,

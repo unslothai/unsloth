@@ -20481,17 +20481,12 @@ _TOOL_TEXT_TRUNCATION_NOTICE = (
 
 
 def cap_tool_text(text: str) -> str:
-    """Cap model-bound tool text at ``MAX_TOOL_TEXT_CHARS``, appending the truncation notice.
-
-    Idempotent, and mirrored by ``capToolText`` in the frontend. The card result and the
-    frontend-only envelopes are never passed through here.
-    """
+    """Unconditional floor for model-bound tool text, priced window or not; mirrors ``capToolText``."""
     if len(text) <= MAX_TOOL_TEXT_CHARS:
         return text
     if text.endswith(_TOOL_TEXT_TRUNCATION_NOTICE):
         return text
-    head, _on_boundary = _head_whole_lines(text, MAX_TOOL_TEXT_CHARS)
-    return head + _TOOL_TEXT_TRUNCATION_NOTICE
+    return _head_whole_lines(text, MAX_TOOL_TEXT_CHARS)[0] + _TOOL_TEXT_TRUNCATION_NOTICE
 
 
 def _head_whole_lines(text: str, limit: int) -> "tuple[str, bool]":
