@@ -3,25 +3,34 @@
 
 "use client";
 
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { Document, Page, pdfjs } from "react-pdf";
 import {
   ChevronLeftIcon,
   ChevronRightIcon,
-  FileTextIcon,
   ZoomInIcon,
   ZoomOutIcon,
 } from "lucide-react";
 import { Spinner } from "@/components/ui/spinner";
+import { usePdfWorker } from "@/components/file-viewer/use-pdf-worker";
 
 import {
   Sheet,
+  SheetCloseButton,
   SheetContent,
   SheetHeader,
   SheetTitle,
 } from "@/components/ui/sheet";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
+import { FileGlyph } from "@/lib/file-icon";
 import { getDocumentFileUrl, getPreviewTarget } from "../api/rag-api";
 import type { PdfRegion, PreviewTarget } from "../types/rag";
 import { useDocumentPreviewStore } from "./preview-store";
@@ -78,6 +87,11 @@ function PdfPreview({
   const [error, setError] = useState<string | null>(null);
   const [grabbing, setGrabbing] = useState(false);
   const [scrollable, setScrollable] = useState(false);
+  const pdfWorker = usePdfWorker(error === null);
+  const options = useMemo(
+    () => (pdfWorker ? { worker: pdfWorker.worker } : null),
+    [pdfWorker],
+  );
   const panRef = useRef<{
     x: number;
     y: number;
@@ -113,11 +127,13 @@ function PdfPreview({
   }, []);
 
   const onLoad = useCallback(
-    ({ numPages: n }: { numPages: number }) => {
+    (doc: { numPages: number; destroy(): Promise<void> }) => {
+      const n = doc.numPages;
+      pdfWorker?.loaded.add(doc);
       setNumPages(n);
       setPage((p) => Math.min(Math.max(p, 1), n));
     },
-    [],
+    [pdfWorker],
   );
 
   const zoomBy = useCallback(
@@ -203,33 +219,36 @@ function PdfPreview({
               : "",
         )}
       >
-        <Document
-          file={fileUrl}
-          onLoadSuccess={onLoad}
-          onLoadError={(e) => setError(e.message)}
-          loading={
-            <div className="flex items-center gap-2 p-6 text-sm text-muted-foreground">
-              <Spinner className="size-3.5" /> Loading PDF…
-            </div>
-          }
-        >
-          {width > 0 && (
-            // min-w-fit lets the zoomed row grow past the panel so the page stays
-            // centered and reachable on both sides.
-            <div className="flex min-w-fit justify-center">
-              <div className="relative w-fit shadow-sm">
-                <Page
-                  pageNumber={page}
-                  width={(width - 8) * scale}
-                  renderTextLayer={false}
-                  renderAnnotationLayer={false}
-                  onRenderSuccess={recheckScrollable}
-                />
-                <RegionOverlay regions={pageRegions} />
+        {options && (
+          <Document
+            file={fileUrl}
+            options={options}
+            onLoadSuccess={onLoad}
+            onLoadError={(e) => setError(e.message)}
+            loading={
+              <div className="flex items-center gap-2 p-6 text-sm text-muted-foreground">
+                <Spinner className="size-3.5" /> Loading PDF…
               </div>
-            </div>
-          )}
-        </Document>
+            }
+          >
+            {width > 0 && (
+              // min-w-fit lets the zoomed row grow past the panel so the page stays
+              // centered and reachable on both sides.
+              <div className="flex min-w-fit justify-center">
+                <div className="relative w-fit shadow-sm">
+                  <Page
+                    pageNumber={page}
+                    width={(width - 8) * scale}
+                    renderTextLayer={false}
+                    renderAnnotationLayer={false}
+                    onRenderSuccess={recheckScrollable}
+                  />
+                  <RegionOverlay regions={pageRegions} />
+                </div>
+              </div>
+            )}
+          </Document>
+        )}
       </div>
       <div className="grid grid-cols-[1fr_auto_1fr] items-center border-t px-3 py-2 text-xs">
         <div className="flex items-center gap-0.5 justify-self-start">
@@ -412,6 +431,7 @@ export function DocumentPreviewSheet() {
           "flex w-full flex-col gap-0 p-0",
           resizing && "select-none",
         )}
+        showCloseButton={false}
       >
         {/* Drag the left edge to widen the preview; double-click to reset. */}
         <div
@@ -429,16 +449,18 @@ export function DocumentPreviewSheet() {
           )}
         />
         <SheetHeader className="gap-1 border-b p-4">
-          {/* pr-10 reserves room for the absolute close button. */}
-          <SheetTitle className="flex items-center gap-2 pr-10 text-sm">
-            <FileTextIcon className="size-4 shrink-0" />
-            <span className="min-w-0 truncate">{headerName}</span>
-            {headerPage != null && (
-              <span className="shrink-0 text-muted-foreground">
-                · page {headerPage}
-              </span>
-            )}
-          </SheetTitle>
+          <div className="relative">
+            <SheetTitle className="flex items-center gap-2 pr-10 text-sm">
+              <FileGlyph className="size-4 shrink-0" />
+              <span className="min-w-0 truncate">{headerName}</span>
+              {headerPage != null && (
+                <span className="shrink-0 text-muted-foreground">
+                  · page {headerPage}
+                </span>
+              )}
+            </SheetTitle>
+            <SheetCloseButton className="absolute top-1/2 right-0 -translate-y-1/2" />
+          </div>
         </SheetHeader>
 
         <div className="min-h-0 flex-1">

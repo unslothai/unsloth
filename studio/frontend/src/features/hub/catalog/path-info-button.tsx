@@ -6,65 +6,12 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
-import { usePlatformStore } from "@/config/env";
-import { revealCachedModel } from "@/features/chat";
-import { toast } from "@/lib/toast";
-import { cn } from "@/lib/utils";
-import { Copy01Icon, Folder01Icon } from "@hugeicons/core-free-icons";
 import { Tick02Icon } from "@/lib/tick-icon";
+import { cn } from "@/lib/utils";
+import { Copy01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import type { MouseEvent } from "react";
 import { useCopyFeedback } from "../hooks/use-copy-feedback";
-
-/** Reveal a cached repo (or one GGUF variant's file) in the OS file manager.
- *  Resolved server-side from the HF cache, so only managed repos qualify. */
-export function RevealPathButton({
-  repoId,
-  variant,
-  className,
-}: {
-  repoId: string;
-  variant?: string | null;
-  className?: string;
-}) {
-  const deviceType = usePlatformStore((s) => s.deviceType);
-  const revealLabel =
-    deviceType === "mac" ? "Reveal in Finder" : "Reveal in Folder";
-
-  return (
-    <Tooltip>
-      <TooltipTrigger asChild={true}>
-        <button
-          type="button"
-          aria-label={revealLabel}
-          onClick={(e) => {
-            e.stopPropagation();
-            revealCachedModel(repoId, variant ?? undefined).catch((err) => {
-              toast.error(
-                err instanceof Error
-                  ? err.message
-                  : "Failed to open file manager",
-              );
-            });
-          }}
-          className={cn(
-            "inline-flex size-7 shrink-0 cursor-pointer items-center justify-center rounded-full text-muted-foreground opacity-0 transition-[opacity,background-color,color] duration-150 hover:bg-muted hover:text-foreground focus-visible:opacity-100 group-hover/dl:opacity-100",
-            className,
-          )}
-        >
-          <HugeiconsIcon
-            icon={Folder01Icon}
-            strokeWidth={1.75}
-            className="size-4"
-          />
-        </button>
-      </TooltipTrigger>
-      <TooltipContent side="bottom" className="tooltip-compact">
-        {revealLabel}
-      </TooltipContent>
-    </Tooltip>
-  );
-}
 
 /** Copies the on-disk path straight to the clipboard, no dialog. */
 export function PathInfoButton({

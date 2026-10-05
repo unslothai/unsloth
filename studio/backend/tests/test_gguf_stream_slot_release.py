@@ -23,6 +23,8 @@ from fastapi import FastAPI
 from auth.authentication import get_current_subject
 from core.inference import llama_admission
 import routes.inference as inference_route
+from .llama_backend_double import FakeLlamaCppBackend
+from .asgi_stream_helpers import wait_for_frame
 
 
 @pytest.fixture(autouse = True)
@@ -161,16 +163,11 @@ def test_stopping_the_disconnect_watcher_cannot_hang():
     asyncio.run(_drive())
 
 
-class _OneSlotGgufBackend:
+class _OneSlotGgufBackend(FakeLlamaCppBackend):
     """A loaded 1-parallel GGUF backend, the shape CI runs."""
 
-    is_loaded = True
-    model_identifier = "test/model.gguf"
     base_url = "http://llama.test"
     effective_parallel_slots = 1
-    _is_audio = False
-    is_vision = False
-    supports_tools = False
 
     def generate_chat_completion(self, **kwargs):
         yield "hi"
@@ -245,7 +242,7 @@ def test_real_stream_frees_the_slot_at_done_with_a_wedged_teardown(monkeypatch):
 
         task = asyncio.create_task(app(scope, receive, send))
         try:
-            await asyncio.wait_for(sent_body.wait(), timeout = 20.0)
+            await wait_for_frame(sent_body, task, what = "the [DONE] frame")
             for _ in range(200):
                 if _active_slots() == 0:
                     break

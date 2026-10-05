@@ -10,15 +10,20 @@ import { parseUnslothDeepLink } from "./parse-deep-link";
 
 const acceptIntent = createDeepLinkIntentGate(2_000);
 
+// Via Rust so a hidden login start also gets its Dock icon restored.
 async function restoreMainWindow(): Promise<void> {
-  const { getCurrentWindow } = await import("@tauri-apps/api/window");
-  const window = getCurrentWindow();
-  await window.show();
-  await window.unminimize();
-  await window.setFocus();
+  const { invoke } = await import("@tauri-apps/api/core");
+  await invoke("reveal_main_window");
 }
 
-export function DeepLinkHandler() {
+export function DeepLinkHandler({
+  onOpenUrls,
+}: {
+  onOpenUrls?: (
+    urls: string[],
+    source: "startup" | "event",
+  ) => boolean | "ignored";
+}) {
   const navigate = useNavigate();
 
   useEffect(() => {
@@ -28,8 +33,20 @@ export function DeepLinkHandler() {
     let receivedLiveIntent = false;
     let unlisten: (() => void) | undefined;
 
-    const handleUrls = (urls: string[]): boolean => {
+    const handleUrls = (
+      urls: string[],
+      source: "startup" | "event",
+    ): boolean => {
       if (disposed) return false;
+      const sharedIntent = onOpenUrls?.(urls, source);
+      if (sharedIntent === "ignored") {
+        return true;
+      }
+      if (sharedIntent) {
+        acceptIntent.clear();
+        void restoreMainWindow().catch(() => undefined);
+        return true;
+      }
 
       let hasValidIntent = false;
       let intent: ReturnType<typeof parseUnslothDeepLink> = null;
@@ -68,7 +85,9 @@ export function DeepLinkHandler() {
       if (disposed) return;
 
       const cleanup = await onOpenUrl((urls) => {
-        if (handleUrls(urls)) receivedLiveIntent = true;
+        if (handleUrls(urls, "event")) {
+          receivedLiveIntent = true;
+        }
       });
       if (disposed) {
         cleanup();
@@ -77,7 +96,9 @@ export function DeepLinkHandler() {
       unlisten = cleanup;
 
       const currentUrls = await getCurrent();
-      if (currentUrls && !receivedLiveIntent) handleUrls(currentUrls);
+      if (currentUrls && !receivedLiveIntent) {
+        handleUrls(currentUrls, "startup");
+      }
     }
 
     void subscribe().catch(() => undefined);
@@ -86,7 +107,7 @@ export function DeepLinkHandler() {
       disposed = true;
       unlisten?.();
     };
-  }, [navigate]);
+  }, [navigate, onOpenUrls]);
 
   return null;
 }

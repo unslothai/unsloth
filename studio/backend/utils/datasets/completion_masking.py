@@ -3,12 +3,14 @@
 
 """Completion-only masking policy shared by the CUDA and MLX training paths.
 
-Decides how train_on_responses_only is applied for a model: chat template
-auto-detection first, manual TEMPLATE_TO_RESPONSES_MAPPER markers as the
-fallback. gpt-oss included: its quantized checkpoints ship a different
-chat template, so only detection from the actual template is reliable.
+Decides how train_on_responses_only is applied for a model: explicit dataset
+markers when requested, otherwise chat template auto-detection with manual
+TEMPLATE_TO_RESPONSES_MAPPER markers as the fallback. gpt-oss included: its
+quantized checkpoints ship a different chat template, so only detection from
+the actual template is reliable.
 """
 
+from .iterable import is_streaming_dataset
 from .model_mappings import (
     MODEL_TO_TEMPLATE_MAPPER,
     TEMPLATE_TO_RESPONSES_MAPPER,
@@ -27,6 +29,36 @@ def lookup_manual_markers(model_name):
     return template, None, None
 
 
+def _mask_tool_responses(trainer, start_id, end_id, turn_id):
+    def mask(batch):
+        all_labels = []
+        for input_ids, labels in zip(batch["input_ids"], batch["labels"]):
+            if start_id in input_ids:
+                input_ids, labels = list(input_ids), list(labels)
+                starts = [i for i, token in enumerate(input_ids) if token == start_id]
+                for start, limit in zip(starts, starts[1:] + [len(input_ids)]):
+                    span = input_ids[start + 1 : limit]
+                    # An unanswered tool call has no closing marker; its span ends at the next turn.
+                    if end_id in span:
+                        stop = span.index(end_id) + 1
+                    else:
+                        stop = span.index(turn_id) if turn_id in span else len(span)
+                    labels[start + 1 : start + 1 + stop] = [-100] * stop
+            all_labels.append(labels)
+        return {"labels": all_labels}
+
+    for name in ("train_dataset", "eval_dataset"):
+        dataset = getattr(trainer, name, None)
+        columns = (
+            next(iter(dataset), {})
+            if is_streaming_dataset(dataset)
+            else getattr(dataset, "column_names", None)
+        )
+        if "labels" in (columns or ()):
+            setattr(trainer, name, dataset.map(mask, batched = True))
+    return trainer
+
+
 def apply_completion_masking(
     trainer,
     model_name,
@@ -34,9 +66,10 @@ def apply_completion_masking(
     num_proc = None,
     notify = None,
     detect_fn = None,
+    dataset_template = None,
 ):
-    """Apply completion-only masking with auto-detection first and the manual
-    template table as fallback.
+    """Apply completion-only masking with an explicit dataset template or
+    auto-detection followed by the manual model-template fallback.
 
     Args:
         trainer: The platform trainer (SFTTrainer or MLXTrainer).
@@ -49,6 +82,8 @@ def apply_completion_masking(
         detect_fn: Marker detector (tokenizer/processor) -> (instruction_part,
             response_part). Defaults to unsloth_zoo's get_chat_template_parts,
             which raises loudly when the template cannot be parsed. Test seam.
+        dataset_template: Explicit template-table key for already-rendered
+            dataset text. Bypasses tokenizer marker detection when provided.
 
     Returns:
         (trainer, applied): the possibly wrapped trainer and whether masking
@@ -66,28 +101,64 @@ def apply_completion_masking(
     if num_proc is not None:
         kwargs["num_proc"] = num_proc
 
+    processor = getattr(trainer, "processing_class", None) or getattr(trainer, "tokenizer", None)
+    if type(processor).__name__ == "TokenizerWrapper":
+        wrapped = getattr(processor, "_tokenizer", None)
+        if wrapped is not None:
+            processor = wrapped
+    inner = getattr(processor, "tokenizer", processor)
+
+    # Gemma 4 puts tool results inside the model turn; MLX labels its batches inside train_fn, out of reach here.
+    vocab = inner.get_added_vocab() if hasattr(inner, "get_added_vocab") else {}
+    tool_response = (vocab.get("<|tool_response>"), vocab.get("<tool_response|>"))
+    if None not in tool_response and type(trainer).__name__ != "MLXTrainer":
+        mask_responses = train_fn
+
+        def train_fn(trainer, **kwargs):
+            return _mask_tool_responses(
+                mask_responses(trainer, **kwargs), *tool_response, vocab.get("<|turn>")
+            )
+
+    if dataset_template is not None:
+        markers = TEMPLATE_TO_RESPONSES_MAPPER.get(dataset_template)
+        if not markers:
+            raise ValueError(f"Unknown completion masking template: {dataset_template}")
+        has_preset_markers = hasattr(inner, "_unsloth_input_part") and hasattr(
+            inner, "_unsloth_output_part"
+        )
+        if has_preset_markers:
+            previous_instruction = inner._unsloth_input_part
+            previous_response = inner._unsloth_output_part
+            inner._unsloth_input_part = markers["instruction"]
+            inner._unsloth_output_part = markers["response"]
+            try:
+                trainer = train_fn(trainer, **kwargs)
+            finally:
+                inner._unsloth_input_part = previous_instruction
+                inner._unsloth_output_part = previous_response
+        else:
+            trainer = train_fn(
+                trainer,
+                instruction_part = markers["instruction"],
+                response_part = markers["response"],
+                **kwargs,
+            )
+        notify(
+            "info",
+            f"Train on responses only configured with dataset template markers ({dataset_template})",
+        )
+        return trainer, True
+
     template, instruction_part, response_part = lookup_manual_markers(model_name)
 
-    # gpt-oss goes auto-first: quantized/BF16 checkpoints ship a channel-less
-    # template, so the manual markers match nothing (zero tokens trained). Auto
-    # derives markers from whichever template ships, and per the harmony format
-    # only the final terminator carries stop supervision. Renamed checkpoints
-    # miss the exact-name table, so give the fallback the gpt-oss markers.
+    # gpt-oss goes auto-first: quantized/BF16 checkpoints ship a channel-less template, so the manual markers match
+    # nothing and zero tokens are trained.
     if is_gpt_oss_model_name(model_name) and not (instruction_part and response_part):
         markers = TEMPLATE_TO_RESPONSES_MAPPER.get("gpt-oss")
         if markers:
             template = "gpt-oss"
             instruction_part = markers["instruction"]
             response_part = markers["response"]
-    processor = getattr(trainer, "processing_class", None) or getattr(trainer, "tokenizer", None)
-    # mlx-lm TokenizerWrapper hides underscore attrs, so preset _unsloth_*
-    # markers are invisible through it. Unwrap to the real tokenizer (as
-    # zoo's MLX resolver does) before the preset check and detection.
-    if type(processor).__name__ == "TokenizerWrapper":
-        wrapped = getattr(processor, "_tokenizer", None)
-        if wrapped is not None:
-            processor = wrapped
-    inner = getattr(processor, "tokenizer", processor)
     if hasattr(inner, "_unsloth_input_part") and hasattr(inner, "_unsloth_output_part"):
         # Markers preset on the tokenizer; zoo reuses them on a bare call.
         trainer = train_fn(trainer, **kwargs)

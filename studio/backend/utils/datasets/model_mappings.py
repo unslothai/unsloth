@@ -527,9 +527,8 @@ TEMPLATE_TO_RESPONSES_MAPPER = {
         "instruction": "<|im_start|>user<|im_sep|>",
         "response": "<|im_start|>assistant<|im_sep|>",
     },
-    # No surrounding spaces: in Mistral v0.3 they fold into neighbouring text
-    # tokens ("[INST]"/"[/INST]" are single special tokens), so padded strings
-    # never match and everything masks. Same for Llama-2's SentencePiece.
+    # No surrounding spaces: "[INST]"/"[/INST]" are single special tokens in Mistral v0.3, so a
+    # padded string never matches and everything masks. Same for Llama-2's SentencePiece.
     "mistral": {
         "instruction": "[INST]",
         "response": "[/INST]",
@@ -545,10 +544,7 @@ TEMPLATE_TO_RESPONSES_MAPPER = {
         "instruction": "<|im_start|>user\n",
         "response": "<|im_start|>assistant\n",
     },
-    # Leading newline required: Zephyr's role tags are plain text, and
-    # SentencePiece tokenizes "<|assistant|>" differently at text start than
-    # after "</s>\n". Without the "\n" anchor the markers never match real
-    # turns, so every assistant token masks.
+    # Leading newline required: Zephyr's role tags are plain text
     "zephyr": {
         "instruction": "\n<|user|>\n",
         "response": "\n<|assistant|>\n",
@@ -585,8 +581,8 @@ TEMPLATE_TO_RESPONSES_MAPPER = {
         "instruction": "<|im_start|>user\n",
         "response": "<|im_start|>assistant\n",
     },
-    # No trailing space: SentencePiece folds it into the next content token
-    # ("▁Hello"), so the padded marker never matches and masks everything.
+    # No trailing space: SentencePiece folds it into the next content token ("_Hello"), so the
+    # padded marker never matches and masks everything.
     "starling": {
         "instruction": "GPT4 Correct User:",
         "response": "GPT4 Correct Assistant:",
@@ -595,9 +591,9 @@ TEMPLATE_TO_RESPONSES_MAPPER = {
         "instruction": "<|im_start|>user\n",
         "response": "<|im_start|>assistant\n",
     },
-    # "[gMASK]<sop>" appears once at text start, so a marker holding it matches
-    # no later user turn; "<think>" is scaffolding GLM-4.x renders as a lone
-    # "</think>" on non-final turns, so "<|assistant|><think>" never matches.
+    # "[gMASK]<sop>" appears once at text start.
+    # "<think>" is scaffolding GLM-4.x renders as a lone "</think>" on non-final turns, so "<|assistant|><think>" never
+    # matches.
     "glm": {
         "instruction": "<|user|>",
         "response": "<|assistant|>",

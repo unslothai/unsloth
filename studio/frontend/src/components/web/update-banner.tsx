@@ -12,9 +12,8 @@ import { Download } from "lucide-react";
 import { AnimatePresence, motion } from "motion/react";
 import { type ReactElement, useEffect, useRef, useState } from "react";
 
-// macOS, Linux and WSL update via the POSIX installer; only native Windows
-// (PowerShell) needs the irm one-liner. Any non-windows device_type (incl. wsl)
-// resolves to the curl command below.
+// macOS, Linux and WSL update via the POSIX installer; only native Windows (PowerShell) needs the
+// irm one-liner. Any non-windows device_type (incl. wsl) resolves to the curl command below.
 const STUDIO_INSTALL_UNIX_CMD = "curl -fsSL https://unsloth.ai/install.sh | sh";
 const STUDIO_INSTALL_WINDOWS_CMD = "irm https://unsloth.ai/install.ps1 | iex";
 const RELEASE_NOTES_URL = "https://unsloth.ai/docs/new/changelog";
@@ -84,12 +83,31 @@ export function WebUpdateBanner({
           className={cn(
             // Wider than the other overlays: notes preview plus three buttons.
             positioned
-              ? "fixed bottom-4 right-4 z-[9999] w-[calc(100vw-2rem)] max-w-[448px]"
-              : "pointer-events-auto flex min-h-0 w-[calc(100vw-2rem)] max-w-[448px] flex-col",
+              ? "fixed bottom-4 right-4 z-[9999] w-[calc(100vw-2rem)] max-w-[calc(448px*var(--ui-space-scale,1))]"
+              : cn(
+                  "pointer-events-auto flex w-[calc(100vw-2rem)] max-w-[calc(448px*var(--ui-space-scale,1))] shrink-0 flex-col",
+                  // Only rendered notes may shrink in the capped rail. Without
+                  // them, shrink-0 keeps the compact card at its natural height.
+                  // How far it may shrink is the surface's own content floor
+                  // below, not a written-out number: a constant calibrated at
+                  // one type size stops covering the card the moment anything
+                  // inside it scales, and the buttons are what gets cut.
+                  "has-[[data-slot=update-release-notes]]:shrink",
+                ),
           )}
           data-testid="web-update-banner"
         >
-          <div className="relative flex max-h-[calc(100dvh_-_2rem)] flex-col overflow-hidden rounded-[24px] bg-white px-5 pb-4 pt-5 shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] dark:bg-card dark:shadow-[0_8px_28px_-6px_rgba(0,0,0,0.28)]">
+          {/* Paint the full floor even when the notes content is short.
+              No min-h-0 and no overflow-hidden here on purpose: both of them
+              set this box's automatic minimum size to zero, which is what made
+              the card need a hand-written floor at all. Left alone it floors
+              itself at header + notes + actions, and the notes panel carries
+              its own min-h-0 and clipping, so it stays the one part that
+              yields. That is the floor the constant was approximating, except
+              it is measured rather than guessed and it holds at every type
+              size. */}
+          <div className="relative flex max-h-[calc(100dvh_-_2rem)] grow flex-col rounded-[24px] bg-white px-5 pb-4 pt-5 shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] dark:bg-card dark:shadow-[0_8px_28px_-6px_var(--background)]">
+
             <button
               type="button"
               onClick={dismiss}
@@ -113,7 +131,7 @@ export function WebUpdateBanner({
               </svg>
             </button>
 
-            <div className="flex min-w-0 items-start gap-4 pr-6">
+            <div className="flex min-w-0 shrink-0 items-start gap-4 pr-6">
               <Download
                 aria-hidden="true"
                 className="mt-1 size-5 shrink-0 text-foreground"
@@ -136,11 +154,11 @@ export function WebUpdateBanner({
               version={status.latestVersion}
               open={notesOpen}
               releaseNotesUrl={RELEASE_NOTES_URL}
-              className="min-h-0 flex-1"
             />
 
-            {/* one row at one type size; wraps only on narrow viewports */}
-            <div className="mt-4 flex flex-wrap items-center justify-between gap-y-2">
+            {/* one row at one type size; wraps only on narrow viewports, and
+                never compresses on a short one */}
+            <div className="mt-4 flex shrink-0 flex-wrap items-center justify-between gap-y-2">
               <Button
                 size="sm"
                 variant="ghost"

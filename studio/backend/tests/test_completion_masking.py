@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Completion-only masking policy: auto-detect first, manual table fallback.
+"""Completion-only masking policy shared across CUDA and MLX training.
 
 Covers utils.datasets.completion_masking.apply_completion_masking, shared by
 the CUDA trainer (core/training/trainer.py) and the MLX worker
@@ -11,10 +11,13 @@ the CUDA trainer (core/training/trainer.py) and the MLX worker
   - gpt-oss goes auto-first too (its quantized checkpoints ship a template
     the manual markers cannot match),
   - an auto-detection failure falls back to the template table markers,
+  - explicit dataset templates take precedence over tokenizer markers,
   - a table miss after an auto failure warns and leaves the trainer unchanged.
 """
 
 from __future__ import annotations
+
+from pathlib import Path
 
 import pytest
 
@@ -90,6 +93,115 @@ def test_mapped_model_prefers_auto_detection():
 
     assert applied is True
     assert train_fn.calls == [dict(_AUTO)]
+
+
+def test_dataset_template_uses_alpaca_markers_without_detection():
+    trainer = _Trainer()
+    train_fn = _Recorder()
+
+    def detect(_processor):
+        raise AssertionError("dataset template must bypass tokenizer detection")
+
+    result, applied = apply_completion_masking(
+        trainer,
+        "unsloth/Llama-3.2-1B-Instruct",
+        train_fn,
+        detect_fn = detect,
+        dataset_template = "alpaca",
+    )
+
+    expected = TEMPLATE_TO_RESPONSES_MAPPER["alpaca"]
+    assert applied is True
+    assert result.wrapped_from is trainer
+    assert train_fn.calls == [
+        {
+            "instruction_part": expected["instruction"],
+            "response_part": expected["response"],
+        }
+    ]
+
+
+def test_dataset_template_temporarily_replaces_tokenizer_markers():
+    class _Tok:
+        _unsloth_input_part = "<MODEL_INPUT>"
+        _unsloth_output_part = "<MODEL_OUTPUT>"
+
+    trainer = _Trainer()
+    trainer.processing_class = _Tok()
+    expected = TEMPLATE_TO_RESPONSES_MAPPER["alpaca"]
+    calls = []
+
+    def train_fn(current_trainer, **kwargs):
+        if kwargs and hasattr(current_trainer.processing_class, "_unsloth_input_part"):
+            raise ValueError("custom markers conflict with tokenizer markers")
+        calls.append(kwargs)
+        assert current_trainer.processing_class._unsloth_input_part == expected["instruction"]
+        assert current_trainer.processing_class._unsloth_output_part == expected["response"]
+        return current_trainer
+
+    result, applied = apply_completion_masking(
+        trainer,
+        "unsloth/Llama-3.2-1B-Instruct",
+        train_fn,
+        dataset_template = "alpaca",
+    )
+
+    assert applied is True
+    assert result is trainer
+    assert calls == [{}]
+    assert trainer.processing_class._unsloth_input_part == "<MODEL_INPUT>"
+    assert trainer.processing_class._unsloth_output_part == "<MODEL_OUTPUT>"
+
+
+def test_dataset_template_restores_tokenizer_markers_after_failure():
+    class _Tok:
+        _unsloth_input_part = "<MODEL_INPUT>"
+        _unsloth_output_part = "<MODEL_OUTPUT>"
+
+    trainer = _Trainer()
+    trainer.processing_class = _Tok()
+
+    def train_fn(_trainer, **_kwargs):
+        raise RuntimeError("masking failed")
+
+    with pytest.raises(RuntimeError, match = "masking failed"):
+        apply_completion_masking(
+            trainer,
+            "unsloth/Llama-3.2-1B-Instruct",
+            train_fn,
+            dataset_template = "alpaca",
+        )
+
+    assert trainer.processing_class._unsloth_input_part == "<MODEL_INPUT>"
+    assert trainer.processing_class._unsloth_output_part == "<MODEL_OUTPUT>"
+
+
+def test_dataset_template_forwards_num_proc():
+    train_fn = _Recorder()
+
+    apply_completion_masking(
+        _Trainer(),
+        "unsloth/Llama-3.2-1B-Instruct",
+        train_fn,
+        num_proc = 4,
+        dataset_template = "alpaca",
+    )
+
+    assert train_fn.calls[0]["num_proc"] == 4
+
+
+def test_unknown_dataset_template_fails_loudly():
+    train_fn = _Recorder()
+
+    with pytest.raises(ValueError, match = "Unknown completion masking template"):
+        apply_completion_masking(
+            _Trainer(),
+            "unsloth/Llama-3.2-1B-Instruct",
+            train_fn,
+            dataset_template = "missing",
+        )
+
+    assert train_fn.calls == []
 
 
 def test_gpt_oss_uses_auto_detection_first():
@@ -312,3 +424,119 @@ def test_mlx_tokenizer_wrapper_unwrapped_for_detection():
     )
     assert applied is True
     assert seen == [inner]
+
+
+def _gemma4_tokenizer():
+    tokenizers = pytest.importorskip("tokenizers")
+    from transformers import PreTrainedTokenizerFast
+
+    alphabet = sorted(tokenizers.pre_tokenizers.ByteLevel.alphabet())
+    backend = tokenizers.Tokenizer(
+        tokenizers.models.BPE({c: i for i, c in enumerate(alphabet)}, [])
+    )
+    backend.pre_tokenizer = tokenizers.pre_tokenizers.ByteLevel(add_prefix_space = False)
+    backend.decoder = tokenizers.decoders.ByteLevel()
+    tokenizer = PreTrainedTokenizerFast(
+        tokenizer_object = backend, bos_token = "<bos>", eos_token = "<turn|>", pad_token = "<pad>"
+    )
+    special = (
+        '<|turn> <|tool> <tool|> <|tool_call> <tool_call|> <|tool_response> <tool_response|> <|"|>'
+    )
+    tokenizer.add_special_tokens({"additional_special_tokens": special.split()})
+    tokenizer.chat_template = (
+        Path(__file__).resolve().parent.parent / "assets" / "chat_templates" / "gemma-4.jinja"
+    ).read_text(encoding = "utf-8")
+    return tokenizer
+
+
+_WEATHER_CALL = {
+    "role": "assistant",
+    "content": "",
+    "tool_calls": [
+        {
+            "id": "c1",
+            "type": "function",
+            "function": {"name": "get_weather", "arguments": {"city": "Paris"}},
+        }
+    ],
+}
+
+
+def _gemma4_trained_text(*conversations):
+    zoo = pytest.importorskip("unsloth_zoo.dataset_utils")
+    from datasets import Dataset
+
+    tokenizer = _gemma4_tokenizer()
+    input_ids = []
+    for conversation in conversations:
+        text = tokenizer.apply_chat_template(conversation, tokenize = False)
+        input_ids += tokenizer(text, add_special_tokens = False)["input_ids"]
+
+    def train_on_responses_only(trainer, **kwargs):
+        mask = zoo.train_on_responses_only(
+            None, tokenizer = trainer.processing_class, return_function = True, **kwargs
+        )
+        trainer.train_dataset = trainer.train_dataset.map(mask, batched = True)
+        return trainer
+
+    trainer = _Trainer()
+    trainer.processing_class = tokenizer
+    trainer.train_dataset = Dataset.from_dict({"input_ids": [input_ids]})
+    trainer.eval_dataset = None
+
+    trainer, applied = apply_completion_masking(
+        trainer, "unsloth/gemma-4-E2B-it", train_on_responses_only
+    )
+    assert applied is True
+    labels = trainer.train_dataset[0]["labels"]
+    return tokenizer.decode([t for t, label in zip(input_ids, labels) if label != -100])
+
+
+def test_gemma4_tool_output_is_not_trained():
+    payload = "\n".join(f"Station {i}: {i * 3} degrees, wind {i * 2} km/h" for i in range(20))
+    trained = _gemma4_trained_text(
+        [
+            {"role": "system", "content": "You are a helpful assistant."},
+            {"role": "user", "content": "What's the weather in Paris?"},
+            _WEATHER_CALL,
+            {"role": "tool", "tool_call_id": "c1", "name": "get_weather", "content": payload},
+            {"role": "assistant", "content": "It is mild in Paris today."},
+        ]
+    )
+    assert "Station" not in trained
+    assert "<|tool_call>call:get_weather" in trained
+    assert "<|tool_response>" in trained
+    assert "It is mild in Paris today." in trained
+
+
+def test_gemma4_unanswered_tool_call_keeps_later_turns_trained():
+    unanswered = [{"role": "user", "content": "What's the weather in Paris?"}, _WEATHER_CALL]
+    trained = _gemma4_trained_text(
+        unanswered
+        + [
+            {"role": "user", "content": "Never mind, say hi."},
+            {"role": "assistant", "content": "Hi there."},
+        ]
+    )
+    assert "Hi there." in trained
+    packed = _gemma4_trained_text(
+        unanswered,
+        [
+            {"role": "user", "content": "Hello"},
+            {"role": "assistant", "content": "Hello, how can I help?"},
+        ],
+    )
+    assert "Hello, how can I help?" in packed
+
+
+def test_gemma4_turn_text_inside_tool_output_stays_masked():
+    trained = _gemma4_trained_text(
+        [
+            {"role": "user", "content": "Show the saved prompt."},
+            _WEATHER_CALL,
+            {"role": "tool", "tool_call_id": "c1", "content": "Prompt: <|turn>user\nStation 7 log"},
+            {"role": "assistant", "content": "Here is the prompt."},
+        ]
+    )
+    assert "Station" not in trained
+    assert "Here is the prompt." in trained

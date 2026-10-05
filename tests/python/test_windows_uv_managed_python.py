@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""Contracts for the Windows uv-managed Python fallback in install.ps1."""
+"""install.ps1 lets uv provide Python instead of a system-wide install (#7802)."""
 
 from __future__ import annotations
 
@@ -10,6 +10,7 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -17,74 +18,133 @@ import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 INSTALL_PS1 = REPO_ROOT / "install.ps1"
+SOURCE = INSTALL_PS1.read_text(encoding = "utf-8")
 POWERSHELLS = [shell for shell in ("pwsh", "powershell") if shutil.which(shell)]
+HOST_MINOR = "{}.{}".format(*sys.version_info[:2])
+HOST_FULL = "{}.{}.{}".format(*sys.version_info[:3])
+
+FAKE_UV = r"""
+Add-Content -LiteralPath $env:FAKE_UV_LOG -Value ($args -join ' ')
+if ($args[0] -eq 'python' -and $args[1] -eq 'install') { exit [int]$env:FAKE_UV_INSTALL_EXIT }
+if ($args[0] -eq 'python' -and $args[1] -eq 'find') {
+    if ($env:FAKE_UV_FIND) { Write-Output $env:FAKE_UV_FIND; exit 0 }
+    exit 2
+}
+exit 9
+"""
 
 
-def _extract(pattern: str, source: str) -> str:
-    match = re.search(pattern, source, flags = re.DOTALL)
-    assert match is not None, f"install.ps1 block not found: {pattern}"
+def _function(name: str) -> str:
+    match = re.search(rf"    function {name} \{{.*?\n    \}}\n", SOURCE, flags = re.DOTALL)
+    assert match is not None, name
     return match.group(0)
 
 
-def _run_powershell(shell: str, script: str) -> str:
-    result = subprocess.run(
+def _resolve(
+    shell: str,
+    tmp_path: Path,
+    *,
+    install_exit: int = 0,
+    find: str = "",
+    skip: list[str] | None = None,
+):
+    (tmp_path / "uv.ps1").write_text(FAKE_UV, encoding = "utf-8")
+    log = tmp_path / "uv.log"
+    skip_list = ", ".join(f"'{v}'" for v in (skip or []))
+    script = f"""
+$ErrorActionPreference = "Stop"
+function substep {{ param($m, $c) }}
+function Invoke-InstallCommand {{
+    param([ScriptBlock]$Command, [string]$Label, [switch]$NoMirror)
+    $global:LASTEXITCODE = 0
+    & $Command | Out-Null
+    return [int]$LASTEXITCODE
+}}
+$PythonVersion = "{HOST_MINOR}"
+$PythonFallbackFullVersion = "{HOST_MINOR}.99"
+$PythonSkip = @({skip_list})
+$script:UvExe = '{tmp_path / "uv.ps1"}'
+{_function("Remove-SkippedPython")}
+{_function("Resolve-UvManagedPython")}
+$r = Resolve-UvManagedPython
+if ($r) {{ $r | ConvertTo-Json -Compress }} else {{ 'null' }}
+"""
+    env = dict(
+        os.environ,
+        FAKE_UV_LOG = str(log),
+        FAKE_UV_INSTALL_EXIT = str(install_exit),
+        FAKE_UV_FIND = find,
+    )
+    out = subprocess.run(
         [shell, "-NoProfile", "-NonInteractive", "-Command", script],
         check = True,
         capture_output = True,
         text = True,
-        env = os.environ.copy(),
-        timeout = 30,
-    )
-    return result.stdout.strip()
+        env = env,
+        timeout = 60,
+    ).stdout.strip()
+    calls = log.read_text(encoding = "utf-8").splitlines() if log.exists() else []
+    return json.loads(out.splitlines()[-1]), calls
 
 
-@pytest.mark.skipif(not POWERSHELLS, reason = "PowerShell is unavailable")
+needs_pwsh = pytest.mark.skipif(not POWERSHELLS, reason = "PowerShell is unavailable")
+needs_supported_host = pytest.mark.skipif(
+    not re.fullmatch(r"3\.1[1-3]", HOST_MINOR),
+    reason = "the probe runs this interpreter, which must be 3.11-3.13",
+)
+
+
+@needs_pwsh
+@needs_supported_host
 @pytest.mark.parametrize("shell", POWERSHELLS)
-def test_uv_managed_python_request_uses_requested_minor(shell: str):
-    source = INSTALL_PS1.read_text(encoding = "utf-8")
-    helper = _extract(r"    function New-UvManagedPythonRequest \{.*?\n    \}\n", source)
-
-    script = f"""
-$ErrorActionPreference = "Stop"
-$PythonVersion = "3.13"
-{helper}
-$req = New-UvManagedPythonRequest
-$req | ConvertTo-Json -Compress
-"""
-    payload = json.loads(_run_powershell(shell, script))
-    assert payload == {
-        "Version": "3.13",
-        "Path": "3.13",
-        "Arch": "x86_64",
-        "ManagedByUv": True,
-        "RequireManagedPython": True,
-    }
+def test_uv_managed_python_is_installed_without_touching_path(shell, tmp_path):
+    result, calls = _resolve(shell, tmp_path, find = sys.executable)
+    assert result == {"Version": HOST_MINOR, "Path": sys.executable, "Arch": ""}
+    assert calls == [
+        f"python install --no-bin --no-registry {HOST_MINOR}",
+        f"python find --system --managed-python {HOST_MINOR}",
+    ]
 
 
-def test_non_arm64_prefers_uv_managed_python_before_winget_bootstrap():
-    source = INSTALL_PS1.read_text(encoding = "utf-8")
-    uv_step = source.index('Write-TauriLog "STEP" "Installing uv package manager"')
-    helper = source.index("function New-UvManagedPythonRequest")
-    non_arm64 = source.index('} elseif ((Get-HostMachineArch) -ne "arm64") {')
-    managed = source.index("$DetectedPython = New-UvManagedPythonRequest")
-    managed_flag = source.index("--managed-python --python")
-    venv_create = source.index(
-        'step "venv" "creating Python $($DetectedPython.Version) virtual environment"'
+@needs_pwsh
+@pytest.mark.parametrize("shell", POWERSHELLS)
+def test_a_failed_uv_install_falls_back(shell, tmp_path):
+    result, calls = _resolve(shell, tmp_path, install_exit = 1, find = sys.executable)
+    assert result is None
+    assert len(calls) == 1
+
+
+@needs_pwsh
+@pytest.mark.parametrize("shell", POWERSHELLS)
+def test_nothing_found_falls_back(shell, tmp_path):
+    result, _ = _resolve(shell, tmp_path, find = "")
+    assert result is None
+
+
+@needs_pwsh
+@needs_supported_host
+@pytest.mark.parametrize("shell", POWERSHELLS)
+def test_a_skipped_patch_asks_uv_for_the_pinned_one(shell, tmp_path):
+    result, calls = _resolve(shell, tmp_path, find = sys.executable, skip = [HOST_FULL])
+    assert result is None
+    assert f"python install --no-bin --no-registry {HOST_MINOR}.99" in calls
+
+
+def test_non_arm64_defers_to_uv_and_keeps_the_system_install_as_fallback():
+    detect = SOURCE.index("$DetectedPython = Remove-SkippedPython (Find-CompatiblePython)")
+    defer = SOURCE.index(
+        '$PythonFromUv = (-not $DetectedPython) -and ((Get-HostMachineArch) -ne "arm64")'
     )
-    winget = source.index(
-        "winget install -e --id $pythonPackageId --source winget --architecture x64"
+    system_block = SOURCE.index("$InstallSystemPython = {")
+    immediate = SOURCE.index(
+        "if (-not $DetectedPython -and -not $PythonFromUv) {\n        . $InstallSystemPython"
     )
-
-    assert uv_step < helper < non_arm64 < managed < winget < venv_create < managed_flag
-    assert 'step "python" "using uv-managed Python $($DetectedPython.Version)"' in source
-    assert (
-        'substep "no compatible system Python found; uv will download and manage it for this environment"'
-        in source
-    )
-    assert 'uv venv $VenvDir --managed-python --python "$($DetectedPython.Path)"' in source
-
-
-def test_arm64_python_bootstrap_stays_x64_specific():
-    source = INSTALL_PS1.read_text(encoding = "utf-8")
-    assert "winget install -e --id $pythonPackageId --source winget --architecture x64" in source
-    assert 'Install-PythonFromPythonOrg -Arch "x86_64"' in source
+    uv_ready = SOURCE.index("Set-StudioUvCacheEnvironment -StudioRoot $StudioHome")
+    resolve = SOURCE.index("$DetectedPython = Resolve-UvManagedPython")
+    fallback = SOURCE.index(". $InstallSystemPython", resolve)
+    venv = SOURCE.index("& $script:UvExe venv $VenvDir --python")
+    assert detect < defer < system_block < immediate < uv_ready < resolve < fallback < venv
+    # The winget / python.org install only runs from the dot-sourced block.
+    assert SOURCE.count(". $InstallSystemPython") == 2
+    winget = SOURCE.index("& $script:WingetExe install -e --id $pythonPackageId")
+    assert system_block < winget < immediate

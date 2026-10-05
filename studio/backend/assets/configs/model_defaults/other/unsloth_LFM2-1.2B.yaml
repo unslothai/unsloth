@@ -1,6 +1,6 @@
 # Model defaults for unsloth/LFM2-1.2B
 # Based on Liquid_LFM2_(1.2B)-Conversational.ipynb
-# Also applies to: unsloth/LFM2-1.2B
+# Also applies to: unsloth/LFM2-1.2B, LiquidAI/LFM2-1.2B, unsloth/LFM2-1.2B-unsloth-bnb-4bit
 # added inference parameters from unsloth notebook
 
 training:
