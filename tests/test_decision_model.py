@@ -436,6 +436,37 @@ def test_train_calibrate_save_and_serve(checkpoint, tmp_path, lora):
     assert all(torch.equal(weights[k], v.detach().cpu().half()) for k, v in expected.items())
 
 
+def test_long_runs_compile_the_encoder_layers_and_leave_them_eager(
+    checkpoint, tmp_path, monkeypatch
+):
+    from unsloth.models import _decision_fast
+
+    model, tokenizer = FastDecisionModel.from_pretrained(
+        str(checkpoint), use_gradient_checkpointing = False
+    )
+    model = FastDecisionModel.get_peft_model(model, r = 4, lora_alpha = 8)
+    items, _ = FastDecisionModel.build_dataset([_row(i) for i in range(8)], tokenizer, model)
+    compiled = []
+    monkeypatch.setattr(torch.nn.Module, "compile", lambda self, **kw: compiled.append((self, kw)))
+    layers = _decision_fast._encoder_layers(model)
+    assert len(layers) == 2
+    trainer = DecisionTrainer(model = model, args = _args(tmp_path, max_steps = 1), train_dataset = items)
+    # Short runs and CPUs stay eager; UNSLOTH_DECISION_COMPILE=1 forces it, =0 refuses it.
+    monkeypatch.delenv("UNSLOTH_DECISION_COMPILE", raising = False)
+    trainer.train()
+    assert not compiled
+    assert _decision_fast._wants_compile(model, 10**6) == next(model.parameters()).is_cuda
+    monkeypatch.setattr(_decision_fast, "_on_gpu", lambda model: True)
+    assert _decision_fast._wants_compile(model, _decision_fast.COMPILE_MIN_FORWARDS)
+    assert not _decision_fast._wants_compile(model, _decision_fast.COMPILE_MIN_FORWARDS - 1)
+    monkeypatch.setenv("UNSLOTH_DECISION_COMPILE", "1")
+    trainer.train()
+    assert [m for m, _ in compiled] == layers and all(kw == {"dynamic": True} for _, kw in compiled)
+    assert all(layer._compiled_call_impl is None for layer in layers)
+    monkeypatch.setenv("UNSLOTH_DECISION_COMPILE", "0")
+    assert not _decision_fast._wants_compile(model, 10**6)
+
+
 def test_toy_task_beats_the_base_model(checkpoint, tmp_path, monkeypatch):
     # On CPU everywhere: the toy task plateaus near loss 0.45 and leaves it by step ~70 on CPU but
     # only after ~100 steps on a GPU (same curve otherwise, any precision), so 80 steps is a threshold

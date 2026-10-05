@@ -31,6 +31,7 @@ from ._utils import (
     is_bfloat16_supported,
 )
 from .loader_utils import is_distributed
+from ._decision_fast import compiled_encoder
 
 TRAIN_MAX_LEN, TRAIN_HEAD_MAX_LEN = 1024, 256
 HOLDOUT_MAX = 400
@@ -1001,6 +1002,14 @@ class DecisionTrainer(Trainer):
     def predict(self, *args, **kwargs):
         with self._dataset_field_order():
             return super().predict(*args, **kwargs)
+
+    def train(self, *args, **kwargs):
+        forwards = self.args.max_steps * self.args.gradient_accumulation_steps
+        if forwards <= 0 and self.train_dataset is not None:
+            batches = math.ceil(len(self.train_dataset) / self.args.train_batch_size)
+            forwards = int(batches * self.args.num_train_epochs)
+        with compiled_encoder(self.model, forwards):
+            return super().train(*args, **kwargs)
 
     def _get_train_sampler(self, train_dataset = None):
         dataset = self.train_dataset if train_dataset is None else train_dataset
