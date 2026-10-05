@@ -1,21 +1,10 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Invariant: a stalled event loop gets its thread stacks dumped while still stalled.
+"""A stalled event loop gets its thread stacks dumped while still stalled (#9712).
 
-#9712: the backend stops serving every route for 10-33s and recovers before anyone
-can attach py-spy. The watchdog exists so the next occurrence writes its own
-diagnosis. Two stall shapes, two capture paths, both exercised here for real:
-
-- Loop stuck, GIL free: the watchdog thread still runs, counts consecutive slow
-  no-op probes, and dumps from Python.
-- GIL held: no Python thread runs, the watchdog included. The dead man's switch it
-  re-arms every beat has to fire from faulthandler's C thread mid-stall. The test
-  holds the GIL genuinely (a busy loop under a long sys.setswitchinterval) rather
-  than mocking the freeze, because the C thread firing without the GIL is the one
-  property the whole design rests on.
-
-CPU-only, no network, no GPU, no weights. Slowest test holds the GIL ~1.2s.
+The GIL-held cases hold the GIL for real (busy loop under a long switch interval), since
+faulthandler's C thread firing without the GIL is what the design rests on. CPU-only.
 """
 
 from __future__ import annotations
@@ -46,8 +35,7 @@ def loop_in_thread():
     yield loop
     loop.call_soon_threadsafe(loop.stop)
     thread.join(timeout = 5)
-    # Drain whatever probes the watchdog left queued, or closing the loop leaves
-    # never-awaited no-op coroutines behind as warnings.
+    # Drain queued probes, else never-awaited coroutine warnings.
     loop.run_until_complete(asyncio.sleep(0.1))
     loop.close()
 
@@ -77,7 +65,6 @@ def test_a_blocked_loop_dumps_after_consecutive_slow_probes(loop_in_thread, tmp_
             beat_interval_s = 0.05,
             probe_slow_s = 0.05,
             slow_probes_before_dump = 3,
-            # Out of the way: this test is about the Python-side path.
             dead_man_timeout_s = 30.0,
             dump_cooldown_s = 0.0,
         )
@@ -106,8 +93,6 @@ def test_a_gil_holding_stall_is_dumped_mid_stall(loop_in_thread, tmp_path):
 
     def holds_the_gil():
         old = sys.getswitchinterval()
-        # A pure-Python busy loop only releases the GIL at switch-interval
-        # boundaries; pushing the interval past the hold keeps it for the duration.
         sys.setswitchinterval(10.0)
         try:
             deadline = time.monotonic() + 1.2
@@ -129,7 +114,6 @@ def test_a_gil_holding_stall_is_dumped_mid_stall(loop_in_thread, tmp_path):
         )
         watchdog.start()
         try:
-            # Let it arm at least once before the freeze.
             assert _wait_for(lambda: watchdog._dead_man_armed, timeout_s = 5.0)
             loop_in_thread.call_soon_threadsafe(holds_the_gil)
             assert released.wait(timeout = 30.0)
@@ -182,7 +166,6 @@ def test_repeated_gil_stalls_dump_once_per_cooldown(loop_in_thread, tmp_path):
             assert _wait_for(lambda: watchdog._dead_man_armed, timeout_s = 5.0)
             hold_gil_for(0.8)
             assert _wait_for(lambda: "Timeout" in dump_path.read_text(errors = "replace"))
-            # Let the recovery beat land and start the cooldown before stalling again.
             assert _wait_for(lambda: watchdog._last_dump is not None, timeout_s = 5.0)
             hold_gil_for(0.8)
             time.sleep(0.3)
@@ -266,8 +249,7 @@ def test_stands_down_until_the_warm_is_over(monkeypatch):
     assert sw.stand_down_for_the_warm() is True
     status(started = True, finished = True, alive = False)
     assert sw.stand_down_for_the_warm() is False
-    # A warm that died mid-stage is not coming back; staying down would blind the
-    # watchdog for the rest of the session.
+    # A warm that died mid-stage is not coming back.
     status(started = True, finished = False, alive = False)
     assert sw.stand_down_for_the_warm() is False
 

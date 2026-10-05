@@ -1,52 +1,13 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Dump every thread's stack while the event loop is stalled, from inside the process.
+"""Dump every thread's stack from inside the backend while its event loop is stalled (#9712).
 
-#9712: the backend stops answering every route for 10-33s on macOS CI, then recovers.
-The stalls are too rare to sit next to with py-spy (once in 1711 runs) and over before
-anyone could attach, so the dump has to come from the stalled process itself, taken
-while the stall is still in progress.
-
-A stall has two shapes, and they need different capture mechanisms:
-
-- The event loop is stuck but the GIL is free (a blocking call that slipped onto the
-  loop, a syscall that will not return). Python threads still run, so a watchdog
-  thread can time a no-op scheduled onto the loop and dump from Python after enough
-  consecutive slow probes.
-- Something is holding the GIL. No Python thread runs at all, the watchdog included,
-  so counting slow probes observes nothing until the stall is already over. For this
-  shape the watchdog re-arms ``faulthandler.dump_traceback_later`` on every beat: a
-  dead man's switch. faulthandler's timeout thread is C code that dumps without
-  acquiring the GIL, so when the beats stop, it fires mid-stall and writes the frame
-  every thread is actually in -- including the one sitting on the GIL.
-
-Diagnostic tooling, so it is off unless UNSLOTH_STUDIO_STALL_WATCHDOG=1: a normal
-desktop run carries neither the extra thread nor the faulthandler timer. The mac
-smoke workflow sets the env for every phase, which is where #9712's stalls were
-observed.
-
-Dumps go to the stderr file descriptor: the CI workflow redirects it to the
-``logs/*.log`` it uploads, and the desktop launcher captures the child's pipe. A
-direct terminal launch shows dumps on the console but its on-disk session log
-misses them -- faulthandler writes at C level, underneath run.py's tee -- which is
-the price of staying visible to the two consumers that diagnose #9712. The
-structlog markers the watchdog emits around a stall do go through the tee.
-
-The dead man's switch cannot be disarmed once something has the GIL, so it must
-never be armed while the coordinated warm could still start: the warm's
-``import torch`` holds the GIL for tens of seconds on a healthy process, and a beat
-that armed just before it grabbed the GIL would dump over the one stall with a
-known frame. The watchdog therefore stands down from its first beat until the warm
-is over (see ``stand_down_for_the_warm``), the same window the launcher's health
-watchdog holds its startup grace open for.
-
-faulthandler's delayed-dump timer is process-global and this module assumes it is
-its only user; nothing else in the backend arms it.
-
-Not a replacement for the launcher-side health watchdog in commands.rs: that one
-decides whether to kill the process from outside. This one only ever writes
-diagnostics, from inside.
+Two capture paths. Loop stuck with the GIL free: the watchdog thread counts consecutive slow
+no-op probes and dumps from Python. GIL held: no Python thread runs, so each beat re-arms
+``faulthandler.dump_traceback_later`` as a dead man's switch; its C timer thread dumps without
+the GIL. Off unless UNSLOTH_STUDIO_STALL_WATCHDOG=1. Dumps go to the stderr fd (below run.py's
+tee). Assumes it is the only user of faulthandler's process-global delayed-dump timer.
 """
 
 from __future__ import annotations
@@ -66,30 +27,18 @@ logger = structlog.get_logger(__name__)
 ENABLE_ENV_VAR = "UNSLOTH_STUDIO_STALL_WATCHDOG"
 
 BEAT_INTERVAL_S = 2.5
-# Passing runs of the mac smoke report worst-case route latency around 50ms, with
-# outliers to ~3.4s on a saturated instance. 1s flags a probe as slow without
-# counting those single-probe outliers as a stall on their own.
+# Healthy mac smoke runs: ~50ms worst latency, single-probe outliers to ~3.4s.
 PROBE_SLOW_S = 1.0
-# Three slow beats in a row is 6-8.5s of continuously unresponsive loop depending
-# on where in a beat the stall lands: past any healthy run, and early enough to
-# dump before the shortest stall on record (10.03s) recovers.
+# 3 slow beats = 6-8.5s unresponsive: dumps before the shortest recorded stall (10.03s) ends.
 SLOW_PROBES_BEFORE_DUMP = 3
-# The dead man's switch fires this long after the last re-arm, so 5.5-8s into a
-# GIL-held stall. Sized for the same 10s floor as the slow-probe path.
 DEAD_MAN_TIMEOUT_S = 8.0
-# One dump per stall is the useful number; a host that stalls chronically should
-# not fill its log with them. Applies to both capture paths.
+# Shared by both capture paths.
 DUMP_COOLDOWN_S = 600.0
 
 
 def stand_down_for_the_warm() -> bool:
-    """True from process start until the coordinated warm is over.
-
-    Suppressing only while the warm is *running* leaves a window between the
-    watchdog's first beat and start_background_warm(), and a switch armed in that
-    window cannot be disarmed once the warm has the GIL. When the warm is switched
-    off entirely, no warm is coming and the watchdog engages immediately.
-    """
+    """True from process start until the warm is over: a switch armed before the warm's
+    GIL-holding ``import torch`` cannot be disarmed and would dump a known stall."""
     from utils.torch_warmup import DISABLE_ENV_VAR as _WARM_DISABLED
     from utils.torch_warmup import warm_status
 
@@ -152,16 +101,11 @@ class StallWatchdog:
         if thread is not None:
             thread.join(timeout = 2.0)
 
-    # -- the beat ---------------------------------------------------------------
-
     def _run(self) -> None:
         last_beat = time.monotonic()
         while not self._stop_event.is_set():
             beat_started = time.monotonic()
-            # The watchdog going quiet is itself the signal in the GIL-held shape:
-            # the switch fired while this thread could not run. Say so on recovery,
-            # with the one number the raw dump cannot carry, and start the cooldown
-            # so back-to-back stalls do not each leave a dump.
+            # Beat gap past the switch timeout: the switch fired; start the cooldown.
             gap = beat_started - last_beat
             if self._dead_man_armed and gap > self._dead_man_timeout_s:
                 self._last_dump = beat_started
@@ -174,8 +118,6 @@ class StallWatchdog:
             last_beat = beat_started
 
             if self._suppress_now():
-                # Shorter waits while standing down: a full beat's sleep after the
-                # warm finishes is a window where a stall goes entirely uncaptured.
                 self._stop_event.wait(min(self._beat_interval_s, 0.5))
                 continue
 
@@ -201,14 +143,12 @@ class StallWatchdog:
         try:
             future = asyncio.run_coroutine_threadsafe(_noop(), self._loop)
         except RuntimeError:
-            # Loop closed; shutdown is racing us. The stop() call will land shortly.
             self._stop_event.wait(self._beat_interval_s)
             return
         try:
             future.result(timeout = self._probe_slow_s)
         except FutureTimeoutError:
-            # Left to finish on its own once the loop recovers: cancelling a task
-            # that never started leaves a never-awaited coroutine warning behind.
+            # Not cancelled: that leaves a never-awaited coroutine warning.
             self._slow_streak += 1
             if self._stall_started is None:
                 self._stall_started = beat_started
@@ -216,7 +156,6 @@ class StallWatchdog:
                 self._dump_from_python()
             return
         except Exception:
-            # A failed no-op means the loop answered; that is all the probe asks.
             pass
         if self._slow_streak:
             stalled_for = time.monotonic() - (self._stall_started or beat_started)
@@ -227,8 +166,6 @@ class StallWatchdog:
             )
         self._slow_streak = 0
         self._stall_started = None
-
-    # -- dumps ------------------------------------------------------------------
 
     def _in_cooldown(self) -> bool:
         return (
@@ -250,7 +187,6 @@ class StallWatchdog:
             self._dead_man_armed = True
         except Exception as exc:
             self._dead_man_armed = False
-            # Once: a dump target with no usable file descriptor never grows one.
             if not self._arm_failure_logged:
                 self._arm_failure_logged = True
                 logger.warning(
@@ -269,9 +205,7 @@ class StallWatchdog:
             return
         now = time.monotonic()
         self._last_dump = now
-        # The switch armed earlier this beat is still live and would fire a second
-        # dump if a GIL freeze followed inside the cooldown; the cooldown owns both
-        # paths, so take it down now rather than at the next beat.
+        # Else this beat's switch could fire a second dump inside the cooldown.
         self._cancel_dead_man()
         stalled_for = now - (self._stall_started or now)
         try:
