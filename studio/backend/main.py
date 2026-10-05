@@ -2931,6 +2931,7 @@ def _origin_of(url: Optional[str]) -> Optional[tuple[str, str, int]]:
 # Shared with the routes that must only answer the person at this computer (Settings > Sandbox).
 from utils.client_ip import (  # noqa: E402
     _PROXIED_CLIENT_HEADERS,
+    _is_loopback_ip,
     is_direct_local_request as _is_local_bootstrap_request,
 )
 
