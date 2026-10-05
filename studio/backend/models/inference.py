@@ -2709,16 +2709,18 @@ class ChatCompletionRequest(BaseModel):
             "limited to client-tool or response_format passthrough and retries after "
             "keeping the first and recent turns. 'truncate_oldest' provides a rolling "
             "window for plain and Unsloth-tool chats by dropping complete oldest turns. "
-            "Both truncation policies preserve system messages and tool-call groups."
+            "Both truncation policies preserve system messages and tool-call groups. "
+            "MLX models honor 'truncate_oldest' only."
         ),
     )
     context_policy: Optional[Literal["checkpoint", "rolling"]] = Field(
         None,
         description = (
-            "[x-unsloth] How a local GGUF chat compacts once context_overflow is "
+            "[x-unsloth] How a local GGUF or MLX chat compacts once context_overflow is "
             "truncate_oldest. 'checkpoint' resets to the latest turn plus standing "
             "instructions (Unsloth default). 'rolling' drops oldest complete turns. "
-            "Unset uses UNSLOTH_CONTEXT_POLICY."
+            "Unset uses UNSLOTH_CONTEXT_POLICY. On MLX only Unsloth-tool chats start a "
+            "reset."
         ),
     )
     compaction_headroom_ratio: Optional[float] = Field(

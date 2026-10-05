@@ -59,6 +59,13 @@ def _stems(ids):
     return [{"id": i, "audio": _b64(_wav()), "sample_rate": RATE, "channels": 2} for i in ids]
 
 
+def test_stem_ids_differing_only_by_case_get_their_own_files(tmp_path):
+    path, out = _answer(tmp_path, {"named_audio_outputs": _stems(["Vocals", "vocals", "VOCALS"])})
+    outputs = extract_named_outputs(path, out)
+    assert [o["id"] for o in outputs] == ["Vocals", "vocals_2", "VOCALS_3"]
+    assert len({o["path"].lower() for o in outputs}) == 3
+
+
 @pytest.mark.parametrize(
     "ids",
     [
