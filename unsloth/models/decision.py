@@ -919,6 +919,11 @@ class DecisionTrainer(Trainer):
         permute_fields: Optional[bool] = None,
         **kwargs,
     ):
+        # Laya never loads through FastLanguageModel / FastModel, which apply this patch: without it
+        # transformers 5.0 - 5.5 divides accumulated gradients by gradient_accumulation_steps twice.
+        from ._utils import patch_gradient_accumulation_fix
+
+        patch_gradient_accumulation_fix(Trainer)
         args = copy.copy(args) if args is not None else TrainingArguments(output_dir = "tmp_trainer")
         recipe = CLEF_RECIPE if getattr(model, "is_clef", False) else {}
         if label_smoothing is None:
