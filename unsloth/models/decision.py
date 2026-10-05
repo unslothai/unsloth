@@ -194,6 +194,13 @@ def _amp_dtype(device):
     return torch.bfloat16 if device.type == "xpu" else None
 
 
+def _no_cudnn_attention():
+    # cuDNN SDPA rebuilds its bf16 plan for every new sequence length, about 100x slower steps on a B200.
+    from torch.nn.attention import SDPBackend, sdpa_kernel
+
+    return sdpa_kernel([SDPBackend.FLASH_ATTENTION, SDPBackend.EFFICIENT_ATTENTION, SDPBackend.MATH])
+
+
 def _gradient_checkpointing(model, use_gradient_checkpointing) -> None:
     device = next(model.parameters()).device
     # Unsloth's offloaded checkpointing needs an accelerator, and its re-entrant backward breaks DDP (#3713).
@@ -1030,7 +1037,8 @@ class DecisionTrainer(Trainer):
     ):
         target = inputs.pop("target")
         ordinal = inputs.pop("ordinal", None)
-        logits, _ = model(**inputs)
+        with _no_cudnn_attention():
+            logits, _ = model(**inputs)
         mask = inputs["marker_mask"]
         loss = _decision_loss(
             logits,
@@ -1043,7 +1051,7 @@ class DecisionTrainer(Trainer):
         )
         if self._reference_head is not None:
             unwrapped = self.accelerator.unwrap_model(model)
-            with torch.no_grad(), unwrapped.encoder.disable_adapter():
+            with torch.no_grad(), unwrapped.encoder.disable_adapter(), _no_cudnn_attention():
                 reference, _ = unwrapped(**inputs, head = self._reference_head)
             log_ref = torch.log_softmax(reference.float().masked_fill(~mask, -1e4), -1)
             log_p = torch.log_softmax(logits.float().masked_fill(~mask, -1e4), -1)
@@ -1095,7 +1103,8 @@ def _logits(
         chunk = items[start : start + batch_size]
         batch = collate(chunk)
         batch.pop("target")
-        with torch.autocast(device.type, dtype = amp_dtype, enabled = amp_dtype is not None):
+        autocast = torch.autocast(device.type, dtype = amp_dtype, enabled = amp_dtype is not None)
+        with autocast, _no_cudnn_attention():
             logits, _ = model(**{k: v.to(device) for k, v in batch.items()})
         logits = logits.float().cpu()
         out.extend(logits[row, : len(item["markers"])] for row, item in enumerate(chunk))

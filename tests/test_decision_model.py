@@ -1214,3 +1214,26 @@ def test_clef_save_keeps_the_source_tokenizer_files_byte_identical(clef_checkpoi
             assert (out / name).read_bytes() == (clef_checkpoint / name).read_bytes(), name
     # Without it transformers warns of an "incorrect regex pattern" when loading the tokenizer.
     assert "transformers_version" in json.loads((out / "config.json").read_text())
+
+
+def test_decision_forward_never_picks_cudnn_attention(checkpoint, tmp_path):
+    model, tokenizer = FastDecisionModel.from_pretrained(
+        str(checkpoint), full_finetuning = True, use_gradient_checkpointing = False
+    )
+    items, _ = FastDecisionModel.build_dataset([_row(i) for i in range(4)], tokenizer, model)
+    cudnn = []
+    forward = model.forward
+
+    def spy(*args, **kwargs):
+        cudnn.append(torch.backends.cuda.cudnn_sdp_enabled())
+        return forward(*args, **kwargs)
+
+    model.forward = spy
+    trainer = DecisionTrainer(
+        model = model, args = _args(tmp_path), train_dataset = items, processing_class = tokenizer
+    )
+    device = next(model.parameters()).device
+    batch = {k: v.to(device) for k, v in DecisionDataCollator(tokenizer.pad_token_id)(items).items()}
+    trainer.compute_loss(model, batch)
+    decision._logits(model, items, tokenizer.pad_token_id)
+    assert cudnn and not any(cudnn)
