@@ -499,7 +499,9 @@ _PICKLE_SUFFIXES = (".pt", ".pth")
 _logged_twin_choices: set = set()
 
 
-def _hub_name_cached(repo_id: Optional[str], name: Optional[str], root: Optional[str]) -> Optional[str]:
+def _hub_name_cached(
+    repo_id: Optional[str], name: Optional[str], root: Optional[str]
+) -> Optional[str]:
     """``repo_id/name``'s path in ONE Hub cache root (None = huggingface_hub's own), else None. Never raises."""
     if not repo_id or not name:
         return None
@@ -523,7 +525,6 @@ def _twin_cache_roots(cache_dir: Optional[str]) -> tuple:
     live = None
     try:
         from utils.hf_cache_settings import active_hf_hub_cache
-
         live = active_hf_hub_cache()
     except Exception:  # noqa: BLE001 - outside the Studio backend there is no live setting
         live = None
@@ -642,7 +643,6 @@ def prefer_cached_pickle_twins(
                 log = logger
                 if log is None:
                     import logging
-
                     log = logging.getLogger(__name__)
                 log.info(
                     "diffusion.prequant_cached_pickle: %s: using the cached %s; the %s twin is not "

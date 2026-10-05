@@ -26,7 +26,12 @@ KILL_SWITCH = "UNSLOTH_PREQUANT_PREFER_SAFETENSORS"
 class FakeHub:
     """A Hub cache keyed by (repo, name) plus a Hub listing; records every download."""
 
-    def __init__(self, tmp_path, cached = (), hosted = None):
+    def __init__(
+        self,
+        tmp_path,
+        cached = (),
+        hosted = None,
+    ):
         self.tmp = tmp_path
         self.cached: dict = {}
         self.hosted = set(hosted) if hosted is not None else None
@@ -34,17 +39,33 @@ class FakeHub:
         for name in cached:
             self.cache(name)
 
-    def cache(self, name, repo = REPO):
+    def cache(
+        self,
+        name,
+        repo = REPO,
+    ):
         path = self.tmp / "cache" / repo.replace("/", "--") / name
         path.parent.mkdir(parents = True, exist_ok = True)
         path.write_bytes(b"x")
         self.cached[(repo, name)] = str(path)
 
-    def try_to_load_from_cache(self, repo_id, filename, cache_dir = None, **_):
+    def try_to_load_from_cache(
+        self,
+        repo_id,
+        filename,
+        cache_dir = None,
+        **_,
+    ):
         return self.cached.get((repo_id, filename))
 
     def hf_hub_download(
-        self, repo_id, filename, token = None, cache_dir = None, local_files_only = False, **_
+        self,
+        repo_id,
+        filename,
+        token = None,
+        cache_dir = None,
+        local_files_only = False,
+        **_,
     ):
         self.downloads.append((filename, bool(local_files_only)))
         hit = self.cached.get((repo_id, filename))
@@ -230,9 +251,15 @@ class _Api:
     def __init__(self, names):
         self.names = names
 
-    def model_info(self, repo_id, files_metadata = False):
+    def model_info(
+        self,
+        repo_id,
+        files_metadata = False,
+    ):
         return types.SimpleNamespace(
-            siblings = [types.SimpleNamespace(rfilename = n, size = 100 + i) for i, n in enumerate(self.names)]
+            siblings = [
+                types.SimpleNamespace(rfilename = n, size = 100 + i) for i, n in enumerate(self.names)
+            ]
         )
 
 
@@ -275,9 +302,7 @@ def test_video_denoiser_prefetch_fetches_the_cached_pickle(hub, monkeypatch):
     backend = VideoBackend.__new__(VideoBackend)
     import threading
 
-    VideoBackend._fetch_denoiser_prequant(
-        backend, [_dit()], None, cancel_event = threading.Event()
-    )
+    VideoBackend._fetch_denoiser_prequant(backend, [_dit()], None, cancel_event = threading.Event())
     assert fetched == ["Model-INT8.pt"]
 
 
@@ -313,8 +338,12 @@ def test_new_user_never_requests_the_pickle_when_the_twin_is_hosted(hub, monkeyp
     from core.inference.diffusion import DiffusionBackend
     from core.inference.video import VideoBackend
 
-    hub.hosted = {"Model-INT8.safetensors", "Model-INT8.pt", "Model-text_encoder-FP8.safetensors",
-                  "Model-text_encoder-FP8.pt"}
+    hub.hosted = {
+        "Model-INT8.safetensors",
+        "Model-INT8.pt",
+        "Model-text_encoder-FP8.safetensors",
+        "Model-text_encoder-FP8.pt",
+    }
     assert _resolve(_dit()) == hub.cached[(REPO, "Model-INT8.safetensors")]
     tpq._resolve_checkpoint_path(_te(), None, cache_dir = "/live")
     assert hub.fetched == ["Model-INT8.safetensors", "Model-text_encoder-FP8.safetensors"]
