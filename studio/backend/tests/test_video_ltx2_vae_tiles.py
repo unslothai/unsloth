@@ -281,7 +281,6 @@ def test_video_load_installs_wide_tiles_on_every_tiling_load():
 
 
 def test_blend_weights_never_put_float64_on_the_device(monkeypatch):
-    # MPS cannot allocate float64; the weights are built on CPU and moved as float32.
     made = []
     for name in ("arange", "zeros", "ones"):
         real = getattr(torch, name)
