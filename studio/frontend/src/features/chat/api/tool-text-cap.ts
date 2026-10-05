@@ -13,7 +13,13 @@ export function capToolText(text: string): string {
   if (text.endsWith(TOOL_TEXT_TRUNCATION_NOTICE)) {
     return text;
   }
-  const head = text.slice(0, MAX_TOOL_TEXT_CHARS);
+  // Never end on a lone high surrogate: the backend cannot UTF-8 encode it.
+  const last = text.charCodeAt(MAX_TOOL_TEXT_CHARS - 1);
+  const end =
+    last >= 0xd800 && last <= 0xdbff
+      ? MAX_TOOL_TEXT_CHARS - 1
+      : MAX_TOOL_TEXT_CHARS;
+  const head = text.slice(0, end);
   const cut = head.lastIndexOf("\n");
   const onBoundary = cut > 0 && cut >= Math.floor(MAX_TOOL_TEXT_CHARS / 2);
   return (onBoundary ? head.slice(0, cut) : head) + TOOL_TEXT_TRUNCATION_NOTICE;

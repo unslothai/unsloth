@@ -44,3 +44,10 @@ test("capping is idempotent", () => {
   const once = capToolText(big);
   assert.equal(capToolText(once), once);
 });
+
+test("a cut never splits a surrogate pair", () => {
+  const big = "a".repeat(MAX_TOOL_TEXT_CHARS - 1) + "\u{1F600}".repeat(10);
+  const body = capToolText(big).slice(0, -NOTICE.length);
+  assert.equal(body, "a".repeat(MAX_TOOL_TEXT_CHARS - 1));
+  assert.ok(encodeURIComponent(body));
+});
