@@ -48,7 +48,9 @@ def _inputs(n_rows, n_cols, dtype, kind, seed = 0):
         X = X + 30.0
     X, dY = X.to(dtype), dY.to(dtype)
     if kind == "zero_rows":
+        # All-zero rows with zero upstream grads: dX must keep the one-row kernel's signed zeros.
         X[::3] = 0
+        dY[::3, ::2] = 0
     W = torch.randn(n_cols, device = "cuda", generator = g).to(dtype)
     return X, W, dY
 

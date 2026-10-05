@@ -275,10 +275,9 @@ def _rms_layernorm_backward_rows(
         dY_W = dY_rows * W_row[None, :]
 
     rowsum_dY_normed = _row_dot_in_row_kernel_order(dY_W, normed, ROWS, WARPS)
-    # The one-row kernels contract n_cols * dY_W - normed * rowsum into this fma.
-    output = (inv_var / n_cols)[:, None] * tl.fma(
-        dY_W, n_cols * 1.0, -(normed * rowsum_dY_normed[:, None])
-    )
+    # Spelled as in the one-row kernel so LLVM contracts it the same way (an explicit
+    # fma(dY_W, n_cols, -(normed * rowsum)) turns -0 into +0 on sm75).
+    output = (inv_var / n_cols)[:, None] * (n_cols * dY_W - normed * rowsum_dY_normed[:, None])
     if GEMMA:
         tl.store(dX + rows[:, None] * dX_row_stride + col_offsets[None, :], output, mask = mask)
     else:
@@ -286,8 +285,20 @@ def _rms_layernorm_backward_rows(
 
 
 # Narrow rows (Qwen3's per-head q/k norms) run ROWS rows per program. Off on ROCm: 64-lane
-# wavefronts reduce in a different order there. UNSLOTH_RMSNORM_MULTIROW=0 turns it off.
-_MULTIROW = os.environ.get("UNSLOTH_RMSNORM_MULTIROW", "1") != "0" and not torch.version.hip
+# wavefronts reduce in a different order there. Off before Triton 3.6: the backward was slower
+# than one row per program on Triton 3.2. UNSLOTH_RMSNORM_MULTIROW=0 turns it off.
+def _triton_at_least(major, minor):
+    try:
+        return tuple(int(v) for v in triton.__version__.split(".")[:2]) >= (major, minor)
+    except Exception:
+        return False
+
+
+_MULTIROW = (
+    os.environ.get("UNSLOTH_RMSNORM_MULTIROW", "1") != "0"
+    and not torch.version.hip
+    and _triton_at_least(3, 6)
+)
 _MULTIROW_ELEMENTS = 4096
 _MULTIROW_NUM_WARPS = 4
 
