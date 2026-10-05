@@ -1022,6 +1022,14 @@ class DecisionTrainer(Trainer):
                 kwargs["data_collator"] = DecisionDataCollator(pad_token_id)
         self.head_learning_rate = head_learning_rate
         super().__init__(model = model, args = args, **kwargs)
+        backward = self.accelerator.backward
+
+        def _backward(loss, **backward_kwargs):
+            # Checkpointed layers rerun their forward here, so they need the forward's attention.
+            with _no_cudnn_attention():
+                return backward(loss, **backward_kwargs)
+
+        self.accelerator.backward = _backward
 
     @contextlib.contextmanager
     def _dataset_field_order(self):

@@ -1239,6 +1239,30 @@ def test_decision_forward_never_picks_cudnn_attention(checkpoint, tmp_path):
     assert cudnn and not any(cudnn)
 
 
+def test_checkpointed_recompute_never_picks_cudnn_attention(checkpoint, tmp_path):
+    # The recompute runs in backward: cuDNN there saved other tensors than the forward (CheckpointError).
+    model, tokenizer = FastDecisionModel.from_pretrained(
+        str(checkpoint), full_finetuning = True, use_gradient_checkpointing = True
+    )
+    items, _ = FastDecisionModel.build_dataset([_row(i) for i in range(4)], tokenizer, model)
+    layer = model.encoder.layers[0]
+    cudnn = []
+    forward = layer.forward
+
+    def spy(*args, **kwargs):
+        cudnn.append(torch.backends.cuda.cudnn_sdp_enabled())
+        return forward(*args, **kwargs)
+
+    layer.forward = spy
+    trainer = DecisionTrainer(
+        model = model, args = _args(tmp_path), train_dataset = items, processing_class = tokenizer
+    )
+    device = next(model.parameters()).device
+    batch = {k: v.to(device) for k, v in DecisionDataCollator(tokenizer.pad_token_id)(items).items()}
+    trainer.accelerator.backward(trainer.compute_loss(model, batch))
+    assert len(cudnn) == 2 and not any(cudnn)
+
+
 def test_logits_batch_similar_lengths_and_keep_the_callers_order(checkpoint):
     model, tokenizer = FastDecisionModel.from_pretrained(
         str(checkpoint), full_finetuning = True, use_gradient_checkpointing = False
