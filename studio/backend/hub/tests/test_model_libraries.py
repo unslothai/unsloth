@@ -1,8 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Model library registration, default derivation, download targeting and the
-move-between-libraries path."""
+"""Model library registration, default derivation, download targeting and moves."""
 
 import errno
 import os
@@ -23,8 +22,7 @@ from utils import hf_cache_settings
 
 @pytest.fixture(autouse = True)
 def _env_free_cache(monkeypatch):
-    """Keep the active cache home under the test's control: never inherit a
-    real ``HF_HOME`` from the host machine."""
+    # Never inherit the host's real HF_HOME.
     monkeypatch.setattr(hf_cache_settings, "_environment_paths", lambda: None)
     yield
 
@@ -224,7 +222,6 @@ def test_move_missing_model_raises_404(tmp_path):
 
 
 def test_move_refused_while_download_active(monkeypatch, tmp_path):
-    """An active download for the repo still 409s the move, before any scan."""
     a = _register_library(tmp_path, "libA")
     b = _register_library(tmp_path, "libB")
     repo_id = "Unsloth/StillDownloading"
@@ -240,7 +237,6 @@ def test_move_refused_while_download_active(monkeypatch, tmp_path):
 
 
 def test_move_refused_while_load_in_flight(monkeypatch, tmp_path):
-    """A loader staging the repo still 409s the move."""
     a = _register_library(tmp_path, "libA")
     b = _register_library(tmp_path, "libB")
     repo_id = "Unsloth/StillLoading"
@@ -255,7 +251,6 @@ def test_move_refused_while_load_in_flight(monkeypatch, tmp_path):
 
 
 def test_move_rejects_variant_scoped_requests(tmp_path):
-    """Variant-scoped moves are rejected; moving is whole-repo only."""
     a = _register_library(tmp_path, "libA")
     b = _register_library(tmp_path, "libB")
     repo_id = "Unsloth/Variant"
@@ -289,7 +284,6 @@ def test_move_skips_xet_tree_of_source_library(tmp_path):
 
 
 def test_move_failure_keeps_source_intact_and_cleans_partial(monkeypatch, tmp_path):
-    """A failed move 500s, keeps the intact source, and removes the partial copy."""
     a = _register_library(tmp_path, "libA")
     b = _register_library(tmp_path, "libB")
     a_hub = Path(a["path"]) / "hub"
@@ -355,7 +349,6 @@ def test_cross_volume_move_keeps_copy_when_source_delete_fails(monkeypatch, tmp_
 
 
 def test_non_default_library_scopes_env_and_manifest_state(tmp_path):
-    """Library targeting resolves and writes to that library's own cache scope."""
     default = hf_cache_settings.get_hf_cache_paths()
     row = _register_library(tmp_path, "libD")
     selected = libraries.library_cache_paths(str(row["id"]))
@@ -390,7 +383,6 @@ def test_non_default_library_scopes_env_and_manifest_state(tmp_path):
 
 
 def test_known_hf_cache_homes_logs_library_probe_failure(monkeypatch, tmp_path):
-    """A dead library volume is logged, not silently skipped."""
     recorded = []
     monkeypatch.setattr(
         hf_cache_settings,

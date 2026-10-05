@@ -1,18 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Persistence for user-registered model library locations.
+"""User-registered model libraries: extra cache homes (``hub/`` + ``xet/``) beside the active HF cache.
 
-A model library is a *cache home* directory holding ``hub/`` and ``xet/`` subtrees
-exactly like the active Hugging Face cache. The default library is always the active
-HF cache (:mod:`utils.hf_cache_settings`), so this table stores only the additional
-libraries the user registered; ``is_default`` is derived against the active cache
-home and never persisted.
-
-Libraries are owner-scoped on purpose: they name physical drives the machine owns,
-and the HF cache setting plus every download worker resolve against the owner's
-scope. Every public call here therefore runs under :func:`run_as(OWNER, ...)`.
-"""
+``is_default`` is derived from the active cache home, never stored. Owner-scoped like the HF cache setting."""
 
 from __future__ import annotations
 
@@ -42,8 +33,6 @@ _CACHE_WORDINGS = (
 
 
 def _library_wording(message: str) -> str:
-    """Relabel :func:`utils.hf_cache_settings._validate_cache_home` errors so they
-    read as library guidance rather than cache-settings guidance."""
     for cache_phrase, library_phrase in _CACHE_WORDINGS:
         message = message.replace(cache_phrase, library_phrase)
     return message
@@ -57,9 +46,6 @@ def _row_by_id(conn, library_id: int) -> Optional[sqlite3.Row]:
 
 
 def list_model_libraries() -> list[dict]:
-    """Every registered library row, newest first. ``is_default`` is derived by
-    the caller; the active HF cache home is never materialised as a row."""
-
     def _impl() -> list[dict]:
         conn = get_connection()
         try:
@@ -74,20 +60,12 @@ def list_model_libraries() -> list[dict]:
 
 
 def model_library_homes() -> list[Path]:
-    """Cache homes of every registered library, for scan unification.
-
-    Deliberately not resolved here: callers canonicalise against their own notion
-    of the filesystem, and a dead volume must not raise while enumerating scans.
-    """
+    # Unresolved on purpose: a dead library volume must not raise while scans enumerate homes.
     return [Path(row["path"]) for row in list_model_libraries()]
 
 
 def add_model_library(path_value: str, label: Optional[str] = None) -> dict:
-    """Register a new library location, validating it like a HF cache home.
-
-    Raises ``ValueError`` when the path cannot be used; returns the existing row
-    when the same location is already registered.
-    """
+    """Raises ``ValueError`` for an unusable path; an already registered path returns its row."""
 
     def _impl() -> dict:
         value = (path_value or "").strip()
@@ -137,8 +115,6 @@ def add_model_library(path_value: str, label: Optional[str] = None) -> dict:
 
 
 def remove_model_library(library_id: int) -> bool:
-    """Unregister a library. Unregistering the default library's location is refused."""
-
     def _impl() -> bool:
         conn = get_connection()
         try:
@@ -164,10 +140,6 @@ def remove_model_library(library_id: int) -> bool:
 
 
 def set_default_model_library(library_id: int) -> None:
-    """Make the registered library the default by pointing the active HF cache at
-    its home. Uses the same validation, history and invalidation as the settings
-    route's cache change."""
-
     def _impl() -> None:
         conn = get_connection()
         try:

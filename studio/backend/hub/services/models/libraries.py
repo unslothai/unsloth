@@ -1,16 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""HTTP response builders for model libraries: listing, registering, default
-selection and moving a cached model between libraries without re-downloading.
+"""Model libraries: list, register, set default, and move a cached repo between libraries.
 
-Moves are whole-repo only: a variant-scoped move is rejected with a 400. On a
-move the repo's hub/ dir relocates while the source library's shared,
-content-addressed xet/ store stays behind (the response carries an explanatory
-note). When the same repo is cached under more than one library, the first copy
-found outside the target moves in; further duplicates are skipped (they share
-the target dir name) and a copy already in the target short-circuits to a
-no-op."""
+Moves relocate only the repo's hub/ dir; the shared content-addressed xet/ store stays put."""
 
 from __future__ import annotations
 
@@ -147,8 +140,7 @@ def set_default_library_response(library_id: int) -> dict:
 
 
 def library_cache_paths(library_id: Optional[str]):
-    """Resolve ``library_id`` ('default', empty or a row id) to cache paths for
-    download targeting. Raises HTTPException 404 for an unknown id."""
+    """``library_id`` is 'default', empty or a row id; unknown ids 404."""
     from utils.hf_cache_settings import HuggingFaceCachePaths, get_hf_cache_paths
 
     choice = (library_id or "").strip() or "default"
@@ -166,8 +158,7 @@ def library_cache_paths(library_id: Optional[str]):
 
 
 def _relocate_repo_dir(source: Path, dest: Path) -> None:
-    """Rename in place, or copy then delete across volumes. ``shutil.move`` is not used: a failed
-    source delete after a complete copy would leave the caller removing the only full copy."""
+    """Not ``shutil.move``: its failed source delete after a full copy looks like a failed copy."""
     try:
         os.rename(source, dest)
         return
@@ -188,8 +179,6 @@ def _relocate_repo_dir(source: Path, dest: Path) -> None:
 
 
 def _remove_failed_move(dest: Path) -> None:
-    """Best-effort removal of a half-copied destination after a failed move;
-    the source is still intact there."""
     try:
         if dest.is_dir() and not dest.is_symlink():
             shutil.rmtree(dest)
@@ -198,8 +187,6 @@ def _remove_failed_move(dest: Path) -> None:
 
 
 def _xet_skip_note(source_home: Path) -> Optional[str]:
-    """Note for the response when the library's shared, content-addressed xet/
-    store stays behind."""
     try:
         xet = source_home / "xet"
         has_data = xet.is_dir() and any(xet.iterdir())

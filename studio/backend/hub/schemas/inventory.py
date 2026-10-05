@@ -465,10 +465,6 @@ class ModelsFolderResponse(BaseModel):
 
 
 class ModelLibraryInfo(BaseModel):
-    """One model library: a cache-home folder that holds ``hub/`` and ``xet/``
-    model subtrees. The active HF cache is always present as the default library
-    (``id`` is null for it); rows list additional libraries the user registered."""
-
     id: Optional[int] = Field(
         None,
         description = "Database row ID; null for the derived default library.",
@@ -490,8 +486,6 @@ class ModelLibrariesResponse(BaseModel):
 
 
 class AddModelLibraryRequest(BaseModel):
-    """Request body for registering a new model library location."""
-
     path: str = Field(
         ...,
         description = "Absolute cache-home directory for the new library.",
@@ -513,9 +507,6 @@ class SetDefaultLibraryResponse(BaseModel):
 
 
 class MoveModelRequest(BaseModel):
-    """Move a cached repo into another library. The model is relocated on disk,
-    not re-downloaded."""
-
     repo_id: str = Field(..., description = "HuggingFace repo id of the cached model.")
     variant: Optional[str] = Field(
         None,
