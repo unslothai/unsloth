@@ -201,3 +201,44 @@ def fast_lora_init():
         for name, original in swapped:
             setattr(LoraLayer, name, original)
         _ORIGINAL.clear()
+
+
+# Data-driven inits calibrate with forward hooks (EVA, CorDA) or backward passes (LoRA-GA). Dynamo does not
+# guard on hooks added after compilation (skip_nnmodule_hook_guards), so a module compiled by an earlier
+# forward silently skips them: CorDA then divides by a zero sample count.
+_CALIBRATION_FUNCTIONS = (
+    ("peft.tuners.lora.corda", "preprocess_corda"),
+    ("peft.tuners.lora.eva", "initialize_lora_eva_weights"),
+    ("peft.tuners.lora.loraga", "preprocess_loraga"),
+)
+
+
+def patch_peft_calibration_eager():
+    import functools
+    import importlib
+    import sys
+
+    if not hasattr(torch.compiler, "set_stance"):
+        return
+    for module_name, name in _CALIBRATION_FUNCTIONS:
+        try:
+            module = importlib.import_module(module_name)
+        except Exception:
+            continue
+        original = getattr(module, name, None)
+        if original is None or getattr(original, "_unsloth_eager", False):
+            continue
+
+        @functools.wraps(original)
+        def eager(
+            *args,
+            __original = original,
+            **kwargs,
+        ):
+            with torch.compiler.set_stance("force_eager"):
+                return __original(*args, **kwargs)
+
+        eager._unsloth_eager = True
+        for loaded in list(sys.modules.values()):
+            if loaded is not None and getattr(loaded, name, None) is original:
+                setattr(loaded, name, eager)
