@@ -1,5 +1,10 @@
 [build-system]
-requires = ["setuptools==82.0.1", "setuptools-scm==9.2.2"]
+requires = [
+    # setuptools 83+ needs Python 3.10, and we still support 3.9 source installs.
+    "setuptools==84.0.0; python_version >= '3.10'",
+    "setuptools==82.0.1; python_version < '3.10'",
+    "setuptools-scm==9.2.2",
+]
 build-backend = "setuptools.build_meta"
 
 [project]
