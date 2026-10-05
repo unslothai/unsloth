@@ -119,9 +119,8 @@ def test_unreadable_cache_under_a_readable_volume_is_not_its_parent(second_drive
 
 @pytest.fixture
 def fresh_cache(monkeypatch):
-    monkeypatch.setattr(
-        system_disk, "_state", {"key": None, "at": 0.0, "reading": None, "probes": {}}
-    )
+    monkeypatch.setattr(system_disk, "_readings", {})
+    monkeypatch.setattr(system_disk, "_probes", {})
     monkeypatch.setattr(system_disk, "_FIRST_WAIT_S", 0.2)
 
 
@@ -142,7 +141,7 @@ def test_hung_cache_volume_never_blocks_the_poll(fresh_cache, monkeypatch):
     assert len(calls) == 1, "one probe in flight, not one per poll"
     release.set()
     for _ in range(50):
-        if not system_disk._state["probes"]:
+        if not system_disk._probes:
             break
         time.sleep(0.05)
     assert system_disk.cached_models_disk_usage() == {"total_gb": 1.0}
@@ -171,4 +170,11 @@ def test_switching_away_from_a_hung_folder_probes_the_new_one(fresh_cache, monke
     assert system_disk.cached_models_disk_usage() is None
     folder["path"] = Path("/local/hub")
     assert system_disk.cached_models_disk_usage() == {"path": "/local/hub"}
+    # The slow probe landing late must not evict the active folder's reading.
     release.set()
+    for _ in range(50):
+        if not system_disk._probes:
+            break
+        time.sleep(0.05)
+    monkeypatch.setattr(system_disk, "models_disk_usage", lambda key: pytest.fail("re-probed"))
+    assert system_disk.cached_models_disk_usage() == {"path": "/local/hub"}
