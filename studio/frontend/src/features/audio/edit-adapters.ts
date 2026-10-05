@@ -31,6 +31,10 @@ export const DOTS_BAD_CHARACTERS =
   "Remove quotes and angle brackets from the changed words for DotTTS Edit.";
 export const DOTS_ANGLE_BRACKETS =
   "Remove angle brackets from the transcript for DotTTS Edit.";
+/** Mirrors `AudioRunEdit.markup` (max_length = 8000) so the cap is a hint here, not a 422. */
+export const DOTS_MARKUP_MAX_CHARS = 8000;
+export const DOTS_MARKUP_TOO_LONG =
+  "Make fewer changes at once for DotTTS Edit, or shorten the transcript.";
 export const DELIVERY_NEEDS_FIRERED = "Delivery changes need FireRedAudio.";
 
 export type EditMode = "words" | "delivery";
@@ -169,6 +173,8 @@ export const EDIT_ADAPTERS: Readonly<Record<string, EditAdapter>> = {
         return DOTS_BAD_CHARACTERS;
       if (/[<>]/.test(original) || /[<>]/.test(edited))
         return DOTS_ANGLE_BRACKETS;
+      if ((markupFor(original, edited)?.length ?? 0) > DOTS_MARKUP_MAX_CHARS)
+        return DOTS_MARKUP_TOO_LONG;
       return null;
     },
     buildEdit: ({ transcript, edited }) => {

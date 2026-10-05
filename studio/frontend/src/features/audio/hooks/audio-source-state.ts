@@ -60,6 +60,11 @@ export const INITIAL_AUDIO_SOURCE_STATE: AudioSourceState = {
   preview: EMPTY_PREVIEW,
 };
 
+/** Mirrors `CONVERT_EXPIRED_DETAIL` on the server: which Convert side's upload expired. */
+export const CONVERT_EXPIRED_MESSAGE = {
+  source: "This recording expired. Add it again.",
+  target: "This target voice expired. Add it again.",
+} as const;
 export const REFERENCE_EXPIRED_MESSAGE =
   "This reference expired. Add it again.";
 

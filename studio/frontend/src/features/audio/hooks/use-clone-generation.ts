@@ -61,7 +61,10 @@ export async function showRunResult({
   "refreshGallery" | "selectClip" | "setFallbackClip" | "setSelectedId"
 >): Promise<void> {
   // An edit whose output was not saved returns only its source clip: play the inline audio.
-  const clip = response.clips.find((item) => item.role === "output");
+  // Other runs name their clips by role (variation, edit, a stem): the first one is the result.
+  const clip =
+    response.clips.find((item) => item.role === "output") ??
+    (workflow === "edit" ? undefined : response.clips[0]);
   const refreshed = await refreshGallery();
   if (clip) {
     const listed = persistedClipForGeneration(clip.id, refreshed);

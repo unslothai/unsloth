@@ -131,6 +131,19 @@ export function isSpeakAndCloneFamilyId(id: string | null | undefined): boolean 
   return SPEAK_AND_CLONE_FAMILY_HINT.test(id ?? "");
 }
 
+// Families that clone and convert (chatterbox, vevo2) and the convert-only ones (rvc, seed_vc,
+// meanvc2), by repo name the way the backend's family_from_names reads it.
+const CLONE_AND_CONVERT_FAMILY_HINT = /vevo[-_]?2|chatterbox(?![-_]?turbo)/i;
+const CONVERT_ONLY_FAMILY_HINT = /rvc|seed[-_]?vc|meanvc[-_]?2/i;
+
+export function isCloneAndConvertFamilyId(id: string | null | undefined): boolean {
+  return CLONE_AND_CONVERT_FAMILY_HINT.test(id ?? "");
+}
+
+export function isConvertOnlyFamilyId(id: string | null | undefined): boolean {
+  return CONVERT_ONLY_FAMILY_HINT.test(id ?? "");
+}
+
 /** Legacy Settings > Voice keys; the backend still maps each to its folder id (and variant). */
 export interface AudioCppDictationModel {
   key: string;
