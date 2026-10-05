@@ -181,11 +181,8 @@ def is_loadable_model_dir(path: Path) -> bool:
 
 
 def nested_scan_roots(folder_path: Path) -> list[Path]:
-    """Sub-directories of a recursive scan folder to scan like the folder itself (#6371).
-
-    Never descends into a directory the parent's scan already lists as a model, an HF cache repo, a hidden
-    directory, a symlink or a Windows junction, so each model is reached once and the walk stays inside
-    *folder_path*. Depth, directory and entry caps bound it on huge trees."""
+    """Sub-folders of a recursive scan folder to scan like the folder itself (#6371). Skips listed models, HF cache
+    repos, hidden folders, symlinks and junctions, so each model is reached once and the walk stays inside."""
     # Same test _scan_models_dir uses to list the folder as one model; loose GGUFs beside sub-folders are not.
     if _is_model_directory_for_scan(folder_path, entry_limit = _MAX_CUSTOM_FOLDER_ENTRIES):
         return []
