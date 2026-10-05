@@ -3856,8 +3856,7 @@ export function useChatModelRuntime() {
         !confirmed && useChatRuntimeStore.getState().loadedModels.length > 1
           ? params.checkpoint
           : undefined;
-      // Before the running-chats check: open chat streams can hold every browser connection to
-      // Studio, queueing that request client-side for as long as they run (#10339).
+      // Before the running-chats check, which open chat streams can queue in the browser (#10339).
       const toastId = toast.loading("Unloading model", {
         description: "Checking for running chats.",
       });
