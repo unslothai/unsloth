@@ -467,11 +467,38 @@ def test_long_runs_compile_the_encoder_layers_and_leave_them_eager(
     assert not _decision_fast._wants_compile(model, 10**6)
 
 
+def test_a_failing_compile_trains_eagerly(checkpoint, tmp_path, monkeypatch):
+    from unsloth.models import _decision_fast as fast
+
+    model, tokenizer = FastDecisionModel.from_pretrained(
+        str(checkpoint), use_gradient_checkpointing = False
+    )
+    model = FastDecisionModel.get_peft_model(model, r = 4, lora_alpha = 8)
+    items, _ = FastDecisionModel.build_dataset([_row(i) for i in range(8)], tokenizer, model)
+
+    def broken(*args, **kwargs):
+        raise RuntimeError("inductor cannot serve this platform")
+
+    def compile(self, **kwargs):
+        self._compiled_call_impl = broken
+
+    monkeypatch.setattr(torch.nn.Module, "compile", compile)
+    monkeypatch.setenv("UNSLOTH_DECISION_COMPILE", "1")
+    trainer = DecisionTrainer(model = model, args = _args(tmp_path, max_steps = 2), train_dataset = items)
+    trainer.train()
+    assert trainer.state.global_step == 2
+    assert model._unsloth_decision_compiled is False
+    assert all(layer._compiled_call_impl is None for layer in fast._encoder_layers(model))
+    assert all(p.grad is None or torch.isfinite(p.grad).all() for p in model.parameters())
+
+
 def test_toy_task_beats_the_base_model(checkpoint, tmp_path, monkeypatch):
     # On CPU everywhere: the toy task plateaus near loss 0.45 and leaves it by step ~70 on CPU but
     # only after ~100 steps on a GPU (same curve otherwise, any precision), so 80 steps is a threshold
     # tuned to CPU arithmetic, not a GPU defect.
     monkeypatch.setattr(decision, "_device", lambda: torch.device("cpu"))
+    # Eager too: a compiled encoder draws the same accuracy from a different 45-decision RNG stream.
+    monkeypatch.setenv("UNSLOTH_DECISION_COMPILE", "0")
     model, tokenizer = FastDecisionModel.from_pretrained(
         str(checkpoint), use_gradient_checkpointing = False
     )

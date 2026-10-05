@@ -1008,7 +1008,8 @@ class DecisionTrainer(Trainer):
         if forwards <= 0 and self.train_dataset is not None:
             batches = math.ceil(len(self.train_dataset) / self.args.train_batch_size)
             forwards = int(batches * self.args.num_train_epochs)
-        with compiled_encoder(self.model, forwards):
+        amp_dtype = torch.bfloat16 if self.args.bf16 else torch.float16 if self.args.fp16 else None
+        with compiled_encoder(self.model, forwards, amp_dtype):
             return super().train(*args, **kwargs)
 
     def _get_train_sampler(self, train_dataset = None):
