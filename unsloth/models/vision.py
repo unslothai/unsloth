@@ -716,6 +716,80 @@ def _install_offload_embedding_hooks(embed_tokens, output_embeddings, return_dev
     if disable is not None:
         _unsloth_offload_pre_hook = disable(_unsloth_offload_pre_hook)
         _unsloth_offload_post_hook = disable(_unsloth_offload_post_hook)
+
+    # Compiled inference (CUDA graphed decode) instead looks the rows up through unsloth_zoo's opaque
+    # op, so the step stays one graph. Only for lookups whose result the op reproduces exactly: a
+    # plain nn.Embedding or the transformers `* embed_scale` subclass, no max_norm (it renormalises
+    # the table in place) or sparse, nothing else already overriding forward.
+    op = None
+    cls_forward = type(embed_tokens).forward
+    scaled = False
+    if cls_forward is not torch.nn.Embedding.forward and isinstance(embed_tokens, torch.nn.Embedding):
+        try:
+            import inspect
+
+            # Matched on source: Unsloth's float32 Gemma patches replace this forward with another.
+            scaled = isinstance(getattr(embed_tokens, "embed_scale", None), torch.Tensor) and "".join(
+                inspect.getsource(cls_forward).split()
+            ).endswith("returnsuper().forward(input_ids)*self.embed_scale.to(self.weight.dtype)")
+        except Exception:
+            scaled = False
+    if (
+        disable is not None
+        and isinstance(embed_tokens, torch.nn.Embedding)
+        and (cls_forward is torch.nn.Embedding.forward or scaled)
+        and embed_tokens.max_norm is None
+        and not embed_tokens.sparse
+        and "forward" not in embed_tokens.__dict__
+    ):
+        try:
+            from unsloth_zoo.offloaded_embedding import offloaded_embedding as op
+        except Exception:
+            op = None
+
+    if op is not None:
+        slow_pre_hook, slow_post_hook = _unsloth_offload_pre_hook, _unsloth_offload_post_hook
+
+        def _use_op(module, input_ids):
+            # Inference only: the op has no backward and would skip this module's forward hooks
+            # (enable_input_require_grads), which checkpointed adapters need even with a frozen
+            # table. Every grad-enabled call keeps the module path and its hooks.
+            weight = module.weight
+            return (
+                torch.compiler.is_compiling()
+                and not torch.is_grad_enabled()
+                and not weight.requires_grad
+                and isinstance(input_ids, torch.Tensor)
+                and weight.device != input_ids.device
+                and type(module).forward is cls_forward
+            )
+
+        def _unsloth_offload_pre_hook(module, args):
+            if len(args) == 1 and _use_op(module, args[0]):
+                return args
+            return slow_pre_hook(module, args)
+
+        def _unsloth_offload_post_hook(module, args, output):
+            if (
+                torch.compiler.is_compiling()
+                and not torch.is_grad_enabled()
+                and isinstance(output, torch.Tensor)
+                and output.device == _decoder_device()
+            ):
+                return output
+            return slow_post_hook(module, args, output)
+
+        def _unsloth_offload_forward(self, input_ids, *args, **kwargs):
+            if not args and not kwargs and _use_op(self, input_ids):
+                # The scale multiplies on the host inside the op, exactly as the module does.
+                return op(input_ids, self.weight, self.padding_idx, self.embed_scale if scaled else None)
+            return cls_forward(self, input_ids, *args, **kwargs)
+
+        import types
+
+        embed_tokens.forward = types.MethodType(_unsloth_offload_forward, embed_tokens)
+        embed_tokens._unsloth_offload_op_forward = True
+
     embed_tokens.register_forward_pre_hook(_unsloth_offload_pre_hook, prepend = True)
     embed_tokens.register_forward_hook(_unsloth_offload_post_hook, prepend = True)
     embed_tokens._unsloth_offload_hooks_installed = True
