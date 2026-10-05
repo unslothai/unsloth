@@ -8,6 +8,7 @@ from __future__ import annotations
 import atexit
 import collections
 import os
+import re
 import sys
 import tempfile
 import threading
@@ -147,6 +148,7 @@ _STACK_LINE_PREFIXES = (
     "0x",
 )
 _CRASH_LINE_LIMIT = 500
+_ERROR_LINE = re.compile(r"error|exception|abort|fatal|fault", re.IGNORECASE)
 
 
 def format_exit_code(exitcode: "int | None") -> str:
@@ -162,7 +164,7 @@ def format_exit_code(exitcode: "int | None") -> str:
 
 
 def first_crash_line(text: str) -> str:
-    """The first marker line, else the last non-stack line, else empty."""
+    """The first marker line, else the last error-looking non-stack line, else empty."""
     lines = [line.strip() for line in (text or "").splitlines() if line.strip()]
     if not lines:
         return ""
@@ -174,8 +176,9 @@ def first_crash_line(text: str) -> str:
             if lowered.startswith("terminate called") and following.startswith("what():"):
                 line = following
             return line[:_CRASH_LINE_LIMIT]
+    # Routine output (offline notices, progress) is never the reason: a SIGKILL leaves the exit code alone.
     for line in reversed(lines):
-        if not line.startswith(_STACK_LINE_PREFIXES):
+        if not line.startswith(_STACK_LINE_PREFIXES) and _ERROR_LINE.search(line):
             return line[:_CRASH_LINE_LIMIT]
     return ""
 

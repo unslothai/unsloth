@@ -71,6 +71,15 @@ def test_cpp_abort_reports_what_not_a_frame():
     )
 
 
+def test_a_killed_worker_does_not_blame_routine_output():
+    text = "Hugging Face endpoint unreachable; HF_HUB_OFFLINE=1 set for this worker.\n 40%|####  | 4/10\n"
+    assert first_crash_line(text) == ""
+    assert unexpected_exit_message(7, -9, text) == (
+        "Training process exited unexpectedly (pid=7, exitcode=-9)"
+    )
+    assert first_crash_line("loading\nRuntimeError: boom\n") == "RuntimeError: boom"
+
+
 def _die_after_a_long_stack(path: str) -> None:
     assert install_worker_stderr_mirror(path) is True
     sys.stderr.write("LLVM ERROR: Cannot select: intrinsic %llvm.amdgcn.fdot2.bf16.bf16\n")
