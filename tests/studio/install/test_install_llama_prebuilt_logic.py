@@ -1244,6 +1244,15 @@ def test_replace_with_busy_retry_offers_a_root_repair_when_the_root_cannot_be_re
     assert not any("contains a link" in line for line in logged)
 
 
+def test_replace_with_busy_retry_can_withhold_the_acl_repair(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    source, destination, logged = _run_denied_replace(tmp_path, monkeypatch, failures = 99)
+    with pytest.raises(OSError):
+        replace_with_busy_retry(source, destination, attempts = 2, acl_repair = False)
+    assert not any("takeown" in line or "icacls" in line for line in logged)
+
+
 def test_replace_with_busy_retry_skips_acl_repair_when_denial_clears(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):

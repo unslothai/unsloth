@@ -4856,6 +4856,7 @@ def replace_with_busy_retry(
     dst: Path,
     *,
     attempts: int = 8,
+    acl_repair: bool = True,
 ) -> None:
     """``os.replace``, retried against transient Windows sharing violations.
 
@@ -4878,7 +4879,7 @@ def replace_with_busy_retry(
             winerror = getattr(exc, "winerror", None)
             transient = os.name == "nt" and winerror in (5, 32, 145)
             if not transient or attempt == attempts - 1:
-                if transient and winerror == 5:
+                if acl_repair and transient and winerror == 5:
                     # src, not dst: the aside-move's dst does not exist yet.
                     log_acl_repair(src)
                 raise
@@ -5278,7 +5279,8 @@ def activate_install_tree(staging_dir: Path, install_dir: Path, host: HostInfo) 
                 log(f"restoring rollback path {rollback_dir} -> {install_dir}")
                 restore_attempted = True
                 try:
-                    replace_with_busy_retry(rollback_dir, install_dir)
+                    # A copy fallback follows, so ACL advice here could name a tree it then removes.
+                    replace_with_busy_retry(rollback_dir, install_dir, acl_repair = False)
                 except OSError as restore_exc:
                     # The rename is the one-step restore; when it cannot run,
                     # the rollback tree is the sole remaining llama.cpp, so a
