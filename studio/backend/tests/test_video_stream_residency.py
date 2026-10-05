@@ -78,7 +78,7 @@ def test_skipped_without_a_floor_or_a_denoiser():
 
 def test_video_request_path_fits_the_residency_before_the_vram_check():
     """The generate preflight re-fits the resident set, gated by applies(), before it reads free memory."""
-    src = (Path(__file__).resolve().parents[1] / "core" / "inference" / "video.py").read_text()
+    src = (Path(__file__).resolve().parents[1] / "core" / "inference" / "video.py").read_text(encoding = "utf-8")
     tree = ast.parse(src)
     calls = [
         n
@@ -262,7 +262,7 @@ def test_only_a_completed_request_is_recorded(monkeypatch):
 
 
 def test_video_request_path_records_the_peak_after_export():
-    src = (Path(__file__).resolve().parents[1] / "core" / "inference" / "video.py").read_text()
+    src = (Path(__file__).resolve().parents[1] / "core" / "inference" / "video.py").read_text(encoding = "utf-8")
     record = src.index("video_stream_residency.record_request_peak(")
     assert src.index("mp4_bytes = self._encode_mp4(") < record < src.index('"mp4_bytes": mp4_bytes')
 
