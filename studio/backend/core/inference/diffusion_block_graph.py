@@ -257,7 +257,7 @@ _UNSEEN = object()
 
 
 class _Entry:
-    __slots__ = ("graph", "static_in", "static_out", "out_spec", "replays")
+    __slots__ = ("graph", "static_in", "static_out", "out_spec", "replays", "slots")
 
 
 import weakref
@@ -289,6 +289,7 @@ class _Shared:
         self.stream = None
         self.static_in: dict = {}
         self.static_out: dict = {}
+        self.static_refs: dict = {}  # slot -> recordings reading its buffers
         self.warmed: set = set()
         self.pool_bytes = 0  # reserved-memory growth measured across recordings
         self.static_bytes = 0
@@ -327,9 +328,26 @@ class _Shared:
             self.static_bytes += sum(_nbytes(b) for b in buffers)
         return buffers
 
+    def hold(self, slots: tuple) -> None:
+        for slot in slots:
+            self.static_refs[slot] = self.static_refs.get(slot, 0) + 1
+
+    def drop(self, slots: tuple) -> None:
+        """Free the static buffers of ``slots`` no recording reads any more (an evicted layout)."""
+        for slot in slots:
+            left = self.static_refs.get(slot, 0) - 1
+            if left > 0:
+                self.static_refs[slot] = left
+                continue
+            self.static_refs.pop(slot, None)
+            buffers = self.static_in.pop(slot, None) or self.static_out.pop(slot, None) or ()
+            self.static_bytes = max(0, self.static_bytes - sum(_nbytes(b) for b in buffers))
+            self.warmed.discard(slot)
+
     def release(self) -> None:
         self.static_in.clear()
         self.static_out.clear()
+        self.static_refs.clear()
         self.warmed.clear()
         self.pool = None
         self.pool_bytes = 0
@@ -418,7 +436,7 @@ class BlockGraph:
     def reset(self) -> "BlockGraph":
         """Drop every recording (the weights changed: a LoRA load or scale, an unload) and re-read which tensors the
         block owns, since an adapter adds parameters the placement key must cover."""
-        self.cache.clear()
+        self._forget_all()
         try:
             self.weights = _WeightView(self.block)
         except Exception:  # noqa: BLE001 - keep the old view; a stale one only misses new tensors
@@ -502,9 +520,10 @@ class BlockGraph:
         slot = (self.cls, key)
         out_spec, metas = self.seen.pop(full)
         entry = _Entry()
+        out_slot = (self.cls, key, "out", tuple(metas))
         try:
             entry.static_in = self.shared.statics_for(slot, live)
-            entry.static_out = self.shared.outputs_for((self.cls, key, "out", tuple(metas)), metas)
+            entry.static_out = self.shared.outputs_for(out_slot, metas)
             for dst, src in zip(entry.static_in, live):
                 dst.copy_(src)
             static_args, static_kwargs = _unwalk(key, iter(entry.static_in))
@@ -549,6 +568,8 @@ class BlockGraph:
         except Exception as exc:  # noqa: BLE001 - a block that cannot record runs its compute for the load's life
             self._poison(exc)
             return None
+        entry.slots = (slot, out_slot)
+        self.shared.hold(entry.slots)
         entry.graph = graph
         entry.out_spec = out_spec
         entry.replays = 0
@@ -557,9 +578,19 @@ class BlockGraph:
         self.cache[full] = entry
         self.stats["captures"] += 1
         while len(self.cache) > self.max_graphs:
-            self.cache.popitem(last = False)
+            _, evicted = self.cache.popitem(last = False)
+            self._forget(evicted)
             self.stats["evictions"] += 1
         return entry
+
+    def _forget(self, entry: _Entry) -> None:
+        entry.graph = None
+        self.shared.drop(getattr(entry, "slots", ()))
+
+    def _forget_all(self) -> None:
+        for entry in self.cache.values():
+            self._forget(entry)
+        self.cache.clear()
 
     def _replay(self, entry: _Entry, live: list) -> Any:
         for dst, src in zip(entry.static_in, live):
@@ -579,7 +610,7 @@ class BlockGraph:
             "traceback": traceback.format_exc()[-6000:],
         }
         self.poisoned = True
-        self.cache.clear()
+        self._forget_all()
         self.stats["fallbacks"] += 1
         logger = self.shared.logger
         if logger is not None:
@@ -928,6 +959,10 @@ def install_block_graphs(
 COMPILE_BELOW_HOOKS_ENV = "UNSLOTH_DIFFUSION_COMPILE_BELOW_HOOKS"
 
 
+def compile_below_hooks_enabled() -> bool:
+    return (os.environ.get(COMPILE_BELOW_HOOKS_ENV) or "").strip().lower() not in _OFF
+
+
 def compile_below_offload_hooks(transformer: Any, logger: Any = None) -> int:
     """Compile each offload-hooked repeated block's own ``forward`` instead of ``_call_impl`` (as MiniMax-H3's streamed
     denoiser does), so the group-offload hooks stay eager Python outside the compiled region.
@@ -936,7 +971,7 @@ def compile_below_offload_hooks(transformer: Any, logger: Any = None) -> int:
     guards: the 12 GB tier's release and re-pin around each prompt encode then recompiles the blocks on the next
     prompt. Below the hooks the block compiles whole, and a CUDA graph can record exactly that compute.
     ``UNSLOTH_DIFFUSION_COMPILE_BELOW_HOOKS=0`` keeps the old placement. Idempotent; returns the blocks moved."""
-    if (os.environ.get(COMPILE_BELOW_HOOKS_ENV) or "").strip().lower() in _OFF:
+    if not compile_below_hooks_enabled():
         return 0
     kwargs = getattr(transformer, "_unsloth_regional_compile_kwargs", None)
     if not isinstance(kwargs, dict):
@@ -964,6 +999,11 @@ def compile_below_offload_hooks(transformer: Any, logger: Any = None) -> int:
         if guard is not None and callable(getattr(guard, "wrap", None)):
             fn = guard.wrap(fn, original, transformer)
             guard.restores.append(lambda ref = target, f = original: setattr(ref, "forward", f))
+        from . import diffusion_block_restride
+
+        if diffusion_block_restride.is_wrapped(compiled):
+            # FLUX.1's block 0 keeps the slice layout of the others, so all of them share one compiled graph.
+            fn = diffusion_block_restride.wrap(fn)
         target.forward = fn
         block._compiled_call_impl = None
         block._unsloth_below_hook_ref = (
