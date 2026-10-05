@@ -784,15 +784,19 @@ def _rocm_reason(
         return f"{ENGINE_NAMES[engine]} requires an NVIDIA GPU. Use vLLM on AMD GPUs."
     wanted = profile(engine)
     if wsl_host.active():
-        # Studio installs ROCm inside its WSL distro and checks the GPU there; a card the Windows
-        # driver already names refuses before that download.
-        from utils.hardware.hardware import get_physical_gpu_inventory
-
-        known = [
-            device["gfx"]
-            for device in get_physical_gpu_inventory(block = wait).get("devices") or []
-            if device.get("vendor") == "amd" and device.get("gfx")
-        ]
+        # Studio installs ROCm inside its WSL distro and checks the GPU there; a card Studio's torch
+        # or the Windows driver already names refuses before that download. The engine launches
+        # on the selected ordinal, so that GPU's own target decides when torch names it.
+        arches = _rocm_gpu_arches() if gpu_id is not None else {}
+        if gpu_id in arches:
+            known = [arches[gpu_id]]
+        else:
+            from utils.hardware.hardware import get_physical_gpu_inventory
+            known = [
+                device["gfx"]
+                for device in get_physical_gpu_inventory(block = wait).get("devices") or []
+                if device.get("vendor") == "amd" and device.get("gfx")
+            ]
         if known and not any(target in wanted["gfx"] for target in known):
             return _unsupported_amd_gpu(known)
         return None

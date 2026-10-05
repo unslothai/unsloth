@@ -596,6 +596,14 @@ def test_amd_on_windows_installs_rocm_inside_wsl(amd, monkeypatch):
     # A card the Windows driver already names is refused before the ROCm download.
     inventory["devices"][0]["gfx"] = "gfx1030"
     assert install.support_reason("vllm", wait = False).endswith("(found gfx1030).")
+    # With a supported and an unsupported card, the selected GPU's own target decides.
+    inventory["devices"].append(
+        {"vendor": "amd", "name": "AMD Radeon RX 7900 XTX", "gfx": "gfx1100"}
+    )
+    monkeypatch.setattr(install, "_rocm_gpu_arches", lambda: {0: "gfx1030", 1: "gfx1100"})
+    assert install.support_reason("vllm", wait = False) is None
+    assert install.support_reason("vllm", 1) is None
+    assert install.support_reason("vllm", 0).endswith("(found gfx1030).")
     assert (
         install.support_reason("sglang") == "SGLang requires an NVIDIA GPU. Use vLLM on AMD GPUs."
     )
