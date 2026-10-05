@@ -30,6 +30,23 @@ def test_progress_and_saved_result(monkeypatch):
     asyncio.run(scenario())
 
 
+def test_phases_are_never_throttled(monkeypatch):
+    monkeypatch.setattr(transcript_stream.transcript_gallery, "save", lambda result, title: {})
+
+    async def transcribe(progress):
+        # 50 ms apart: a text update this close to the last one would be throttled away.
+        for phase in ("loading", "transcribing"):
+            progress({"text": "", "phase": phase})
+            await asyncio.sleep(0.05)
+        return {"text": "done", "model": "moss"}
+
+    async def collect(stream):
+        return [json.loads(line) async for line in stream]
+
+    events = asyncio.run(collect(transcript_stream.stream_transcript(transcribe, "clip")))
+    assert [e["phase"] for e in events if "phase" in e] == ["loading", "transcribing"]
+
+
 def test_save_failure_returns_complete_text(monkeypatch):
     async def transcribe(progress):
         return {"text": "keep this", "model": "tiny"}

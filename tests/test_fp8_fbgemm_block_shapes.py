@@ -16,10 +16,11 @@ import pytest
 import torch
 
 cuda_available = torch.cuda.is_available()
+xpu_available = hasattr(torch, "xpu") and torch.xpu.is_available()
+dev = "cuda" if cuda_available else "xpu" if xpu_available else "cpu"
 
-
-# Only the kernel battery needs fbgemm; the fallback tests below never reach it.
-pytestmark = pytest.mark.skipif(not cuda_available, reason = "needs CUDA")
+# Only the kernel battery needs fbgemm (CUDA-only); the fallback tests below never reach it.
+pytestmark = pytest.mark.skipif(not (cuda_available or xpu_available), reason = "needs CUDA or XPU")
 
 
 def skip_without_fbgemm():
@@ -119,10 +120,10 @@ def test_output_tile_grid_battery_matches_reference():
         (100, 136, 272),
         (64, 8, 16),
     ]:
-        W = torch.randn(N, K, device = "cuda", dtype = torch.bfloat16)
+        W = torch.randn(N, K, device = dev, dtype = torch.bfloat16)
         Wq, scale = _block_quantize_weight(W, block)
         scale.block_size = block
-        X = torch.randn(M, K, device = "cuda", dtype = torch.bfloat16)
+        X = torch.randn(M, K, device = dev, dtype = torch.bfloat16)
 
         out = FP8_fbgemm_block_linear.apply(X, Wq, scale)
         ref = _reference(X, Wq, scale, block)
@@ -136,10 +137,10 @@ def test_odd_k_uses_dequant_fallback():
     torch.manual_seed(0)
     block = [128, 128]
     N, K = 320, 130  # K % 16 != 0 used to crash inside the CUTLASS kernel
-    W = torch.randn(N, K, device = "cuda", dtype = torch.bfloat16)
+    W = torch.randn(N, K, device = dev, dtype = torch.bfloat16)
     Wq, scale = _block_quantize_weight(W, block)
     scale.block_size = block
-    X = torch.randn(4, K, device = "cuda", dtype = torch.bfloat16, requires_grad = True)
+    X = torch.randn(4, K, device = dev, dtype = torch.bfloat16, requires_grad = True)
 
     out = FP8_fbgemm_block_linear.apply(X, Wq, scale)
     assert torch.isfinite(out).all()
@@ -156,10 +157,10 @@ def test_odd_n_uses_dequant_fallback():
     torch.manual_seed(0)
     block = [128, 128]
     N, K = 250, 256  # N % 8 != 0 used to crash inside the CUTLASS kernel
-    W = torch.randn(N, K, device = "cuda", dtype = torch.bfloat16)
+    W = torch.randn(N, K, device = dev, dtype = torch.bfloat16)
     Wq, scale = _block_quantize_weight(W, block)
     scale.block_size = block
-    X = torch.randn(4, K, device = "cuda", dtype = torch.bfloat16, requires_grad = True)
+    X = torch.randn(4, K, device = dev, dtype = torch.bfloat16, requires_grad = True)
 
     out = FP8_fbgemm_block_linear.apply(X, Wq, scale)
     ref = _reference(X.detach(), Wq, scale, block)
@@ -174,10 +175,10 @@ def test_non_square_block_uses_dequant_fallback():
     torch.manual_seed(0)
     block = [128, 64]  # kernel only implements 128x128x128, used to crash
     N, K = 256, 256
-    W = torch.randn(N, K, device = "cuda", dtype = torch.bfloat16)
+    W = torch.randn(N, K, device = dev, dtype = torch.bfloat16)
     Wq, scale = _block_quantize_weight(W, block)
     scale.block_size = block
-    X = torch.randn(64, K, device = "cuda", dtype = torch.bfloat16, requires_grad = True)
+    X = torch.randn(64, K, device = dev, dtype = torch.bfloat16, requires_grad = True)
 
     out = FP8_fbgemm_block_linear.apply(X, Wq, scale)
     ref = _reference(X.detach(), Wq, scale, block)
@@ -197,9 +198,9 @@ def test_inputs_the_kernel_rejects_use_dequant_fallback(kind):
     block = [128, 128]
     # strided_3d needs a shape the kernel rejects too, else it stays on the fast path
     N, K = (250, 130) if kind == "strided_3d" else (256, 256)
-    W = torch.randn(N, K, device = "cuda", dtype = torch.bfloat16)
+    W = torch.randn(N, K, device = dev, dtype = torch.bfloat16)
     Wq, scale = _block_quantize_weight(W, block)
-    X = torch.randn(8, K, device = "cuda", dtype = torch.bfloat16)
+    X = torch.randn(8, K, device = dev, dtype = torch.bfloat16)
 
     if kind.startswith("per_tensor"):
         scale = scale.amax().clone()
@@ -210,7 +211,7 @@ def test_inputs_the_kernel_rejects_use_dequant_fallback(kind):
         if kind == "bf16_scale":
             scale = scale.to(torch.bfloat16)
         else:
-            X = torch.randn(2, 4, K * 2, device = "cuda", dtype = torch.bfloat16)[..., ::2]
+            X = torch.randn(2, 4, K * 2, device = dev, dtype = torch.bfloat16)[..., ::2]
         scale.block_size = block
         ref = _reference(X, Wq, scale, block)
 
@@ -229,13 +230,13 @@ def test_transposed_weight_swaps_block_axes(block, N, K):
     from unsloth.kernels.fp8 import FP8_fbgemm_block_linear
 
     torch.manual_seed(0)
-    W = torch.randn(N, K, device = "cuda", dtype = torch.bfloat16)
+    W = torch.randn(N, K, device = dev, dtype = torch.bfloat16)
     Wq, scale = _block_quantize_weight(W, block)
     scale.block_size = block
     Wt = Wq.t()
     Wt.block_size = block
 
-    dY = torch.randn(8, N, device = "cuda", dtype = torch.bfloat16)
+    dY = torch.randn(8, N, device = dev, dtype = torch.bfloat16)
     out = FP8_fbgemm_block_linear.apply(dY, Wt, scale)
     ref = (dY.float() @ _dequant(Wq, scale, block)).to(dY.dtype)
     assert out.shape == (8, K)
