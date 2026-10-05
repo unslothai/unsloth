@@ -418,6 +418,7 @@ class BlockGraph:
             "evictions": 0,
             "refused_float": 0,
             "refused_object": 0,
+            "refused_host_input": 0,
             "refused_kv_write": 0,
             "refused_host_weight": 0,
             "refused_grad": 0,
@@ -480,6 +481,10 @@ class BlockGraph:
         placement = self.weights.placement(self.shared.device_index)
         if placement is None:
             self.stats["refused_host_weight"] += 1
+            return self._eager(args, kwargs)
+        if any(t.device.type != "cuda" for t in live):
+            # A capture never records a host read, so a replay would keep the recorded value.
+            self.stats["refused_host_input"] += 1
             return self._eager(args, kwargs)
         if self.protect is None:
             self.protect = self._protect_controller()
