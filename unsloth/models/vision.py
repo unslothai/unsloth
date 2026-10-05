@@ -1109,6 +1109,18 @@ def _zoo_supports_idefics3_fast_inference():
 
 # Allowlisted above, but only an unsloth_zoo that can rebuild their MoE blocks from vLLM serves them.
 VLLM_ZOO_MOE_VLM = ("qwen3_5_moe", "gemma4", "gemma4_text")
+# Model types whose dense checkpoints share the MoE model type but are not served yet: dense
+# Gemma-4 (E2B / E4B / 31B) aborts the process inside vLLM's audio-encoder profiling run, and in
+# 4-bit reaches a bitsandbytes loader vLLM >= 0.28 moved out of tree. Only the MoE checkpoints pass.
+VLLM_MOE_ONLY_VLM = ("gemma4", "gemma4_text")
+
+
+def _is_sparse_moe_config(config):
+    text_config = getattr(config, "text_config", None) or config
+    return bool(
+        getattr(text_config, "num_experts", None)
+        or getattr(text_config, "enable_moe_block", False)
+    )
 
 
 def _zoo_supports_moe_fast_inference():
@@ -2927,6 +2939,12 @@ class FastBaseModel:
                     "Unsloth: Idefics3 fast_inference needs a newer unsloth_zoo. "
                     "Please run `pip install --upgrade unsloth_zoo`."
                 )
+            if any(arch in VLLM_MOE_ONLY_VLM for arch in model_types) and not _is_sparse_moe_config(auto_config):
+                raise RuntimeError(
+                    f"Unsloth: fast_inference = True is only supported for the MoE {model_type_arch} "
+                    "checkpoints (such as gemma-4-26B-A4B), not the dense ones yet. "
+                    "Please set fast_inference = False."
+                )
             if any(arch in VLLM_ZOO_MOE_VLM for arch in model_types) and not _zoo_supports_moe_fast_inference():
                 raise RuntimeError(
                     f"Unsloth: {model_type_arch} fast_inference needs a newer unsloth_zoo. "
@@ -3641,14 +3659,10 @@ class FastBaseModel:
                         load_in_16bit,
                     )
 
-                _moe_text_config = getattr(model_config, "text_config", model_config)
                 if (
                     load_in_4bit
                     and any(arch in VLLM_ZOO_MOE_VLM for arch in model_types)
-                    and (
-                        getattr(_moe_text_config, "num_experts", None)
-                        or getattr(_moe_text_config, "enable_moe_block", False)
-                    )
+                    and _is_sparse_moe_config(model_config)
                 ):
                     # vLLM packs bitsandbytes experts into a blob the training model cannot alias, and
                     # does not serve LoRA on bitsandbytes MoE experts, so fail before loading 4-bit weights.
