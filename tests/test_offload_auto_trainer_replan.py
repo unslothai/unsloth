@@ -124,6 +124,7 @@ def _load(
         exec(ast.get_source_segment(SRC, nodes[name]), ns)
     ns["_layer_devices"] = lambda layers: set(state.layer_devices)
     exec("_REPLAN_FAILED_PRINTED = False", ns)
+    exec('_PAIRED_FORWARD_TRAINERS = ("DPOTrainer", "ORPOTrainer", "CPOTrainer")', ns)
     return ns, state
 
 
@@ -365,3 +366,23 @@ def test_a_rebuild_keeps_the_old_plans_layers_swapped():
     swapper = ns["replan_auto_offload_for_trainer"](_trainer(model, batch_size = 6))
     # The union keeps the old layers and every layer the planner picked for the shortfall.
     assert swapper.indices == [1, 3, 4, 7]
+
+
+def test_preference_trainers_plan_for_both_rows_of_a_pair():
+    ns, state = _load(free = 100 * GIB)
+    model = _Model()
+    model._unsloth_offload_layers_auto = 2
+
+    # Unsloth's generated trainer copies TRL's source, so TRL's DPOTrainer is not in the MRO.
+    class _UnslothDPOTrainer:
+        pass
+
+    class UnslothDPOTrainer(_UnslothDPOTrainer):
+        pass
+
+    trainer = UnslothDPOTrainer()
+    trainer.__dict__.update(vars(_trainer(model, batch_size = 3)))
+    ns["replan_auto_offload_for_trainer"](trainer)
+    assert state.estimates[-1][1] == 6
+    ns["replan_auto_offload_for_trainer"](_trainer(model, batch_size = 3))
+    assert state.estimates[-1][1] == 3

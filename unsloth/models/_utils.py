@@ -6472,6 +6472,7 @@ def _attach_block_swap(model, offload_layers, prefetch_depth):
 
 
 _REPLAN_FAILED_PRINTED = False
+_PAIRED_FORWARD_TRAINERS = ("DPOTrainer", "ORPOTrainer", "CPOTrainer")
 
 
 def _replan_auto_offload_safely(trainer):
@@ -6522,7 +6523,11 @@ def replan_auto_offload_for_trainer(trainer):
         or getattr(args, "max_seq_length", None)
         or getattr(model, "max_seq_length", None)
     )
-    reserve, seq_len = _training_reserve_bytes(model, seq_len, batch_size = batch_size)
+    # DPO / ORPO / CPO run chosen and rejected rows of each pair in one forward. Unsloth's copies
+    # (_UnslothDPOTrainer) do not inherit TRL's class, so match the name suffix.
+    pairs = any(c.__name__.endswith(_PAIRED_FORWARD_TRAINERS) for c in type(trainer).__mro__)
+    rows = batch_size * (2 if pairs else 1)
+    reserve, seq_len = _training_reserve_bytes(model, seq_len, batch_size = rows)
     swapper = getattr(model, "_unsloth_block_swap", None)
     old = list(getattr(swapper, "indices", None) or ())
     layers = find_decoder_layers(model)
@@ -6561,9 +6566,7 @@ def replan_auto_offload_for_trainer(trainer):
         layers._unsloth_block_swap = None
         model._unsloth_block_swap = None
     try:
-        indices = _auto_block_swap_indices(
-            model, prefetch_depth, batch_size = batch_size, seq_len = seq_len
-        )
+        indices = _auto_block_swap_indices(model, prefetch_depth, batch_size = rows, seq_len = seq_len)
         # Union: the old plan's layers stay swapped (checkpoint_skip_layers chose among the others)
         # and every layer the planner picked for a card's shortfall is kept.
         indices = sorted(set(old) | set(indices))
