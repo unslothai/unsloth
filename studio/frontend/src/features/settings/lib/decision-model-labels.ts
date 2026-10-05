@@ -13,5 +13,7 @@ export const DECISION_MODEL_LABELS: Record<string, TranslationKey> = {
 
 /** Cloudflare Clef models are named by themselves; the Laya labels read as "Laya <label>". */
 export function isClefDecisionModel(name: string | null | undefined): boolean {
-  return name === "clef" || name === "clef-flash" || !!name?.startsWith("clef-ft:");
+  return (
+    name === "clef" || name === "clef-flash" || !!name?.startsWith("clef-ft:")
+  );
 }

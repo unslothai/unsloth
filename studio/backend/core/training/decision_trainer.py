@@ -459,7 +459,9 @@ def _run(event_queue: Any, stop_queue: Any, config: dict, output_dir: str) -> No
     model.decision_config["training"] = {
         "base": model_name,
         "subfolder": subfolder,
-        "method": "lora" if use_lora else "full",
+        "method": ("qlora" if clef and config.get("load_in_4bit") else "lora")
+        if use_lora
+        else "full",
         "objective": "soft_cross_entropy",
         "dataset": [Path(path).name for path in config.get("local_datasets") or []]
         or config.get("hf_dataset")

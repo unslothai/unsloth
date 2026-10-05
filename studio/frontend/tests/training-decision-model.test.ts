@@ -673,7 +673,10 @@ test("a Clef run keeps QLoRA, sends 4-bit and the recipe's context, and has no c
   useTrainingConfigStore.getState().reset();
   useTrainingConfigStore.setState({ trainingMethod: "qlora" });
   await selectClef();
-  useTrainingConfigStore.setState({ ...HF_DECISION_DATASET, loraVariant: "dora" });
+  useTrainingConfigStore.setState({
+    ...HF_DECISION_DATASET,
+    loraVariant: "dora",
+  });
 
   const state = useTrainingConfigStore.getState();
   assert.equal(state.modelType, "decision");
@@ -691,7 +694,10 @@ test("a Clef run keeps QLoRA, sends 4-bit and the recipe's context, and has no c
   assert.equal(payload.lora_r, CLEF_YAML.lora.lora_r);
 
   useTrainingConfigStore.getState().setTrainingMethod("lora");
-  const lora = buildTrainingStartPayload(useTrainingConfigStore.getState(), null);
+  const lora = buildTrainingStartPayload(
+    useTrainingConfigStore.getState(),
+    null,
+  );
   assert.equal(lora.load_in_4bit, false);
 });
 
