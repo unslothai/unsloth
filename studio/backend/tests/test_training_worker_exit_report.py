@@ -90,6 +90,14 @@ def test_a_recovered_warning_is_not_the_cause():
     )
 
 
+def test_the_reason_is_redacted():
+    text = "LLVM ERROR: cannot open /home/alice/secret_project/kernel.so token hf_abcdefghijklmnopqrstuvwxyz0123\n"
+    message = unexpected_exit_message(1, -6, text)
+    assert "LLVM ERROR" in message
+    assert "/home/alice" not in message
+    assert "hf_abcdefghijklmnopqrstuvwxyz0123" not in message
+
+
 def _die_after_a_long_stack(path: str) -> None:
     assert install_worker_stderr_mirror(path) is True
     sys.stderr.write("LLVM ERROR: Cannot select: intrinsic %llvm.amdgcn.fdot2.bf16.bf16\n")

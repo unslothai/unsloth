@@ -207,6 +207,13 @@ def unexpected_exit_message(pid, exitcode, text: str) -> str:
     )
     line = first_crash_line(text)
     if line:
+        try:
+            from core.inference.orchestrator import _redact_worker_output
+        except Exception:
+            # Fail closed: the run error and /training/status are user-visible.
+            return message
+        line = _redact_worker_output(line)
+    if line:
         return f"{message}: {line}"
     return message
 
