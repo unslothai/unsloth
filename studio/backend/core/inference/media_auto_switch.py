@@ -236,6 +236,7 @@ async def _start_load(
         await load_diffusion_model_gated(
             DiffusionLoadRequest(
                 model_path = pick.model_path,
+                display_repo_id = pick.model_id,
                 gguf_filename = pick.gguf_filename,
                 model_kind = pick.model_kind,
                 hf_token = hf_token,
@@ -249,6 +250,7 @@ async def _start_load(
         await load_video_model_gated(
             VideoLoadRequest(
                 model_path = pick.model_path,
+                display_repo_id = pick.model_id,
                 gguf_filename = pick.gguf_filename,
                 model_kind = pick.model_kind,
                 h3_task = partition,
@@ -307,6 +309,7 @@ async def _gated_start_load(
     the switch out, and holding them would block new chat and video requests for as long as the
     re-plan and the load registration take.
     """
+    from fastapi import HTTPException
     from core.inference.media_keepwarm import admission_gate
     from core.inference.llama_keepwarm import inference_lifecycle_gate
 
@@ -351,7 +354,17 @@ async def _gated_start_load(
             setup = asyncio.ensure_future(_start_load(owner, pick, current_subject, hf_token))
             setup.add_done_callback(_consume_detached_error)
             with contextlib.suppress(asyncio.TimeoutError):
-                await asyncio.wait_for(asyncio.shield(setup), _SETUP_GRACE_S)
+                try:
+                    await asyncio.wait_for(asyncio.shield(setup), _SETUP_GRACE_S)
+                except HTTPException as exc:
+                    # The final arbiter check also covers a generation registered while load preparation was off the loop.
+                    if isinstance(exc.detail, dict) and exc.detail.get("error") == "gpu_busy":
+                        raise busy(
+                            kind,
+                            openai_errors,
+                            retry_after = int(exc.detail["retry_after"]),
+                        ) from exc
+                    raise
             return False
     finally:
         for held in reversed(locks):

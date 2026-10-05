@@ -143,9 +143,9 @@ def test_research_presave_keeps_the_follow_up_parent() -> None:
         "const createdRun = await createResearchRun({", 1
     )[0]
 
-    assert "const userMessageIndex = messages.indexOf(userMessage);" in presave
+    assert "const userMessageIndex = rawMessages.indexOf(userMessage);" in presave
     assert "const userMessageParentId =" in presave
-    assert "userMessageIndex > 0 ? messages[userMessageIndex - 1]!.id : null" in presave
+    assert "userMessageIndex > 0 ? rawMessages[userMessageIndex - 1]!.id : null" in presave
     # A stored null is an edited root; `??` would reparent it under the predecessor.
     assert "storedUserMessage && storedUserMessage.parentId !== undefined" in presave
     assert "? storedUserMessage.parentId" in presave
@@ -253,8 +253,8 @@ def test_research_presentation_is_integrated() -> None:
     assert "MutationObserver" in activity
     assert "[overflow-anchor:none]" in activity
     assert 'behavior: "smooth"' not in activity
-    assert "collapsible={showArtifactPanel}" in page
-    assert "!artifactLayoutActive &&" in page
+    assert "collapsible={showArtifactPanel || showBrowserPanel}" in page
+    assert "(!artifactLayoutActive || browserFullView) &&" in page
     assert '? "30%"' in page
     assert '? "58%"' in page
     assert "key={openResearchRunId}" in page

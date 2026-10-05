@@ -45,6 +45,7 @@ _TRANSCRIBE_TIMEOUT_SECONDS = 600.0
 _CANCEL_GRACE_SECONDS = 10.0
 _SHUTDOWN_TIMEOUT_SECONDS = 10.0
 _POLL_SECONDS = 0.1
+_TIMESTAMPS_PER_SECOND = 50
 
 # Errors the child may report that the parent must re-raise as themselves; any other failure crosses as a RuntimeError
 # carrying the child's message.
@@ -136,20 +137,62 @@ def transcribe_window(
 
     segment = np.frombuffer(pcm, dtype = np.float32)
     kwargs = dict(generate_kwargs)
+    return_timestamps = bool(kwargs.get("return_timestamps"))
+    if return_timestamps:
+        kwargs["force_unique_generate_call"] = True
     if cancel_event is not None:
         from transformers import StoppingCriteriaList
         kwargs["stopping_criteria"] = StoppingCriteriaList([_CancelCriteria(cancel_event)])
     from core.inference.stt_sidecar import _TARGET_SAMPLE_RATE
 
-    inputs = processor(segment, sampling_rate = _TARGET_SAMPLE_RATE, return_tensors = "pt")
+    inputs = processor(
+        segment,
+        sampling_rate = _TARGET_SAMPLE_RATE,
+        return_tensors = "pt",
+        return_attention_mask = return_timestamps,
+    )
     features = inputs.input_features.to(model.device)
     target_dtype = getattr(model, "dtype", None)
     if target_dtype is not None:
         features = features.to(target_dtype)
+    if return_timestamps:
+        kwargs["attention_mask"] = inputs.attention_mask.to(model.device)
     with torch.no_grad():
         generated = model.generate(features, **kwargs)
+    consumed = len(segment)
+    if return_timestamps:
+        raw_tokens = [int(token) for token in generated[0]]
+        indices, end = _complete_segment_indices(raw_tokens, model.generation_config)
+        if end:
+            consumed = end * _TARGET_SAMPLE_RATE // _TIMESTAMPS_PER_SECOND
+        generated = [[raw_tokens[index] for index in indices]]
     text = processor.batch_decode(generated, skip_special_tokens = True)
-    return text[0] if text else ""
+    return (text[0] if text else ""), consumed
+
+
+def _complete_segment_indices(tokens: list, generation_config) -> tuple:
+    # whisper's long-form seek decodes a segment cut off by the window again from the next window
+    timestamp_begin = generation_config.no_timestamps_token_id + 1
+    indexed_tokens = [
+        (index, token)
+        for index, token in enumerate(tokens)
+        if token < generation_config.eos_token_id or token >= timestamp_begin
+    ]
+    is_timestamp = [token >= timestamp_begin for _, token in indexed_tokens]
+    pairs = [i for i in range(1, len(indexed_tokens)) if is_timestamp[i - 1] and is_timestamp[i]]
+    if not pairs or is_timestamp[-2:] == [False, True]:
+        return [index for index, _ in indexed_tokens], 0
+    return (
+        [index for index, _ in indexed_tokens[: pairs[-1]]],
+        indexed_tokens[pairs[-1] - 1][1] - timestamp_begin,
+    )
+
+
+def _supports_segment_timestamps(generation_config) -> bool:
+    return all(
+        isinstance(getattr(generation_config, field, None), int)
+        for field in ("no_timestamps_token_id", "eos_token_id")
+    )
 
 
 def _error_response(exc: BaseException) -> dict:
@@ -238,6 +281,7 @@ def run_stt_worker(
                 engine = (model, processor)
                 generation_config = getattr(model, "generation_config", None)
                 is_multilingual = getattr(generation_config, "is_multilingual", None)
+                supports_timestamps = _supports_segment_timestamps(generation_config)
                 _send(
                     resp_queue,
                     {
@@ -246,13 +290,14 @@ def run_stt_worker(
                         "is_multilingual": (
                             is_multilingual if isinstance(is_multilingual, bool) else None
                         ),
+                        "supports_timestamps": supports_timestamps,
                     },
                 )
             elif kind == "transcribe":
                 if engine is None:
                     raise SttWorkerError("The dictation worker has no model loaded.")
                 cancellable = bool(command.get("cancellable"))
-                text = transcribe_window(
+                text, consumed = transcribe_window(
                     engine[0],
                     engine[1],
                     command["audio"],
@@ -262,7 +307,7 @@ def run_stt_worker(
                 if cancellable and cancel_event.is_set():
                     from core.inference.stt_sidecar import SttTranscriptionCancelledError
                     raise SttTranscriptionCancelledError("Transcription cancelled.")
-                _send(resp_queue, {"type": "text", "text": text})
+                _send(resp_queue, {"type": "text", "text": text, "consumed": consumed})
             elif kind == "shutdown":
                 _send(resp_queue, {"type": "shutdown_ack"})
                 return
@@ -337,7 +382,9 @@ class WhisperWorker:
         # cancel_pending_loads only reaches the chat /load attempts, so without this a
         # quit during an STT load starts a worker the step-7 sweep has already passed.
         if is_process_shutting_down():
-            raise SttWorkerSpawnError("Studio is shutting down; not starting the dictation worker.")
+            raise SttWorkerSpawnError(
+                "Unsloth is shutting down; not starting the dictation worker."
+            )
         cache_env = get_hf_cache_paths().child_env({})
         try:
             with (
@@ -390,7 +437,9 @@ class WhisperWorker:
                 pass
             self._process = None
             self._close_queues()
-            raise SttWorkerSpawnError("Studio is shutting down; not starting the dictation worker.")
+            raise SttWorkerSpawnError(
+                "Unsloth is shutting down; not starting the dictation worker."
+            )
         logger.info(
             "STT worker started (pid=%s) for %s on %s", _spawned_proc.pid, snapshot_path, device
         )
@@ -414,14 +463,17 @@ class WhisperWorker:
                 ) from exc
             raise
         self.device = response.get("device") or device
-        self.generation_config = SimpleNamespace(is_multilingual = response.get("is_multilingual"))
+        self.generation_config = SimpleNamespace(
+            is_multilingual = response.get("is_multilingual"),
+            supports_timestamps = response.get("supports_timestamps") is True,
+        )
 
     def transcribe_window(
         self,
         pcm: bytes,
         generate_kwargs: dict,
         cancel_event: Optional[threading.Event] = None,
-    ) -> str:
+    ) -> tuple[str, int]:
         if self._cancel_event is not None:
             self._cancel_event.clear()
         self._send(
@@ -434,7 +486,7 @@ class WhisperWorker:
         )
         response = self._await("text", _TRANSCRIBE_TIMEOUT_SECONDS, cancel_event, "transcribe")
         text = response.get("text")
-        return text if isinstance(text, str) else ""
+        return (text if isinstance(text, str) else ""), response["consumed"]
 
     def is_alive(self) -> bool:
         process = self._process
@@ -653,7 +705,8 @@ class InProcessWhisperEngine:
         generation_config = getattr(model, "generation_config", None)
         is_multilingual = getattr(generation_config, "is_multilingual", None)
         self.generation_config = SimpleNamespace(
-            is_multilingual = is_multilingual if isinstance(is_multilingual, bool) else None
+            is_multilingual = is_multilingual if isinstance(is_multilingual, bool) else None,
+            supports_timestamps = _supports_segment_timestamps(generation_config),
         )
         logger.info("STT model loaded in process on the CPU from %s", snapshot_path)
 
@@ -662,16 +715,16 @@ class InProcessWhisperEngine:
         pcm: bytes,
         generate_kwargs: dict,
         cancel_event: Optional[threading.Event] = None,
-    ) -> str:
+    ) -> tuple[str, int]:
         if self._model is None:
             raise SttWorkerError("The dictation worker has no model loaded.")
-        text = transcribe_window(
+        result = transcribe_window(
             self._model, self._processor, pcm, dict(generate_kwargs), cancel_event
         )
         if cancel_event is not None and cancel_event.is_set():
             from core.inference.stt_sidecar import SttTranscriptionCancelledError
             raise SttTranscriptionCancelledError("Transcription cancelled.")
-        return text
+        return result
 
     def is_alive(self) -> bool:
         return self._model is not None

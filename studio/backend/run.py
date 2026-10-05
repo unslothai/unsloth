@@ -112,13 +112,15 @@ except ValueError as exc:
 
 # Windows ROCm ships no distributed backend, so torchao and the CUDA-only xformers both die on import,
 # taking diffusers/transformers with them. A stub only seeds a name nothing has imported yet, so both must
-# precede the first import below.
+# precede the first import below. An xformers built for a newer torch fails the same import anywhere.
 from core._torchao_stub import (
+    hide_xformers_built_for_another_torch,
     install_torchao_windows_rocm_stub,
     install_xformers_windows_rocm_stub,
 )
 
 install_xformers_windows_rocm_stub()
+hide_xformers_built_for_another_torch()
 install_torchao_windows_rocm_stub()
 
 # Anaconda/conda-forge Python: seed platform._sys_version_cache before imports that trigger attrs ->
@@ -346,11 +348,15 @@ def _print_localhost_ipv6_mismatch_warning(local_url: str, port: int) -> None:
     )
 
 
-def _verify_global_reachability(display_host: str, port: int) -> None:
+def _verify_global_reachability(
+    display_host: str,
+    port: int,
+    wsl_nat: bool = False,
+) -> None:
     """Probe check-host.net to confirm display_host:port is reachable from the public internet. Synchronous so
     output lands between the banner URLs and the stop hint. Bounded at ~15s; failures swallowed (verifier
     failing is not Unsloth failing). Only meaningful for a wildcard bind, and skipped entirely by
-    UNSLOTH_STUDIO_DISABLE_PUBLIC_CHECK."""
+    UNSLOTH_STUDIO_DISABLE_PUBLIC_CHECK. ``wsl_nat`` skips the LAN note (the WSL hint replaces it)."""
     global _public_reachable
     # Reset to "unknown" each run; set True/False only when the probe decides.
     _public_reachable = None
@@ -379,6 +385,8 @@ def _verify_global_reachability(display_host: str, port: int) -> None:
         addr = ipaddress.ip_address(display_host)
         if addr.is_loopback or addr.is_private or addr.is_link_local:
             _public_reachable = False
+            if wsl_nat:
+                return
             print(
                 f"{dim}  Note: {display_host} is a private/LAN address -- "
                 f"reachable on this network only, not from the public internet."
@@ -534,6 +542,30 @@ def _network_share_host_for_bind(host: str) -> str:
     return host
 
 
+def _is_wsl_nat() -> bool:
+    from lan_access import _wsl_networking_mode
+
+    # "unknown" = WSL too old for wslinfo, which is NAT; "none" has no network at all.
+    if _wsl_networking_mode() not in ("nat", "unknown"):
+        return False
+    # Lazy import (every wildcard bind gets here); Docker Desktop containers also read "unknown".
+    from utils.paths.file_manager import _in_container
+
+    return not _in_container()
+
+
+def _print_wsl_windows_hint(port: int) -> None:
+    """WSL2 NAT: Windows reaches a wildcard bind via localhost forwarding (#11187)."""
+    dim = "\033[38;5;245m" if _stdout_color_ok() else ""
+    reset = "\033[0m" if dim else ""
+    print(
+        f"{dim}  WSL2: open http://localhost:{port} in a Windows browser. Other devices on your "
+        f"network can't reach WSL's NAT address; set networkingMode=mirrored in "
+        f"%UserProfile%\\.wslconfig for LAN access.{reset}",
+        flush = True,
+    )
+
+
 def _loopback_bind_host_for(host: str) -> str:
     return wildcard_loopback_host(host) or "127.0.0.1"
 
@@ -626,7 +658,10 @@ def _emit_startup_output(
     if localhost_mismatch_url:
         _print_localhost_ipv6_mismatch_warning(localhost_mismatch_url, port)
     elif wildcard_bind:
-        _verify_global_reachability(display_host, port)
+        wsl_nat = _is_wsl_nat()
+        if wsl_nat:
+            _print_wsl_windows_hint(port)
+        _verify_global_reachability(display_host, port, wsl_nat = wsl_nat)
         _print_cloudflare_line(loopback_host = _loopback_bind_host_for(host))
     _emit_tool_policy_notice(lan_addresses[0] if lan_addresses else host, False, enable_tools)
     print_studio_stop_hint()
@@ -1241,10 +1276,18 @@ try:
     _STUDIO_ROOT_RESOLVED = _studio_root().resolve()
 except (OSError, ValueError):
     _STUDIO_ROOT_RESOLVED = _studio_root()
-if _STUDIO_ROOT_RESOLVED != _LEGACY_STUDIO_ROOT:
+from utils.paths.storage_roots import unsloth_home as _unsloth_home
+
+_MASTER_ROOT = _unsloth_home()
+# A master root pointed at the legacy path still owns runtimes beside it, so the equality alone
+# would skip the export and leave unsloth_zoo on ~/.unsloth/llama.cpp.
+if _STUDIO_ROOT_RESOLVED != _LEGACY_STUDIO_ROOT or _MASTER_ROOT is not None:
     if not os.environ.get("UNSLOTH_STUDIO_HOME"):
         os.environ["UNSLOTH_STUDIO_HOME"] = str(_STUDIO_ROOT_RESOLVED)
-    _MANAGED_LLAMA_CPP_PATH = _STUDIO_ROOT_RESOLVED / "llama.cpp"
+    # The runtimes sit at the master root, beside studio/; deriving from the Studio root would
+    # pin a path one level too deep for every worker.
+    _MANAGED_ROOT = _MASTER_ROOT or _STUDIO_ROOT_RESOLVED
+    _MANAGED_LLAMA_CPP_PATH = _MANAGED_ROOT / "llama.cpp"
     if not os.environ.get("UNSLOTH_LLAMA_CPP_PATH"):
         os.environ["UNSLOTH_LLAMA_CPP_PATH"] = str(_MANAGED_LLAMA_CPP_PATH)
     # The CLI and generated launchers can export this path before run.py starts.
@@ -1439,6 +1482,23 @@ def _graceful_shutdown(server = None):
     except Exception as e:
         logger.warning("Error stopping the LAN listener: %s", e)
 
+    try:
+        from core.training.training import _training_backend
+        if _training_backend is not None:
+            _training_backend.stop_for_shutdown()
+    except Exception as e:
+        logger.warning("Error stopping the training run for shutdown: %s", e)
+
+    try:
+        # sys.modules: an install that never trained a diffusion LoRA does not import it here.
+        _diffusion = sys.modules.get("core.training.diffusion_training_service")
+        if _diffusion is not None and _diffusion._service is not None:
+            from core.training.training import _SHUTDOWN_STOP_TIMEOUT_S
+            if not _diffusion._service.stop_for_shutdown(_SHUTDOWN_STOP_TIMEOUT_S):
+                logger.warning("Shutdown: diffusion training did not finish saving in time")
+    except Exception as e:
+        logger.warning("Error stopping the diffusion training run for shutdown: %s", e)
+
     if server is not None:
         server.should_exit = True
 
@@ -1464,6 +1524,7 @@ def _graceful_shutdown(server = None):
         logger.warning("Error shutting down training subprocess: %s", e)
 
     try:
+        from core.inference.model_slots import unload_extra_models
         from routes.inference import _llama_cpp_backend, cancel_pending_loads
 
         # Before the kill: a load still in the lifecycle gate or in preflight is not yet
@@ -1479,8 +1540,18 @@ def _graceful_shutdown(server = None):
             # teardown = True: an app-level stop, not the retry ladder reaping a child it
             # is about to replace. Only the former may end an in-flight health wait.
             _llama_cpp_backend._kill_process(teardown = True)
+        unload_extra_models()
     except Exception as e:
         logger.warning("Error shutting down llama-server: %s", e)
+
+    try:
+        from core.inference.npu_backend import peek_npu_backend
+        _npu = peek_npu_backend()
+        if _npu is not None:
+            # Unload first: lemond then stops FastFlowLM itself, before the tree kill.
+            _npu.shutdown()
+    except Exception as e:
+        logger.warning("Error shutting down the NPU runtime: %s", e)
 
     try:
         from cloudflare_tunnel import close_studio_tunnel_lifecycle
@@ -2091,13 +2162,17 @@ def _terminal_password_gate(
             return False, False
         # The public page will not auto-fill the bootstrap credential and the seeded file may already be gone,
         # so point recovery at a terminal-attached run / reset-password instead of reading it from disk.
+        # The ABSOLUTE form here: this line is stderr on the host, where naming the install is the point and
+        # a bare `unsloth` may not be on PATH. The 401 body deliberately carries only the PATH form.
+        from routes.auth import _reset_password_command
+
         print(
             "  WARNING: the default admin password is still active while "
             "Unsloth is about to be published on a public Cloudflare URL, and "
             "no terminal is attached to change it here. The public page will "
             "NOT auto-fill the bootstrap credential. Set a new password by "
             "running `unsloth studio` locally with a terminal attached, or "
-            "`unsloth studio reset-password`. Unsloth shuts down after the "
+            f"`{_reset_password_command()}`. Unsloth shuts down after the "
             "bootstrap deadline (UNSLOTH_STUDIO_BOOTSTRAP_TIMEOUT, default 1h) "
             "unless the password is changed.",
             file = sys.stderr,
@@ -2124,36 +2199,22 @@ def _terminal_password_gate(
         apply_change = _apply_change,
         out = sys.stderr,
         exposure = _exposure_phrase(tunnel_will_start = tunnel_will_start, host = host),
-        # Ctrl+C aborts a tunnel launch and only a tunnel launch; on a raw bind it
-        # declines the prompt and the launch continues, so the banner must not
-        # promise an abort that will not happen.
-        refusal_aborts = tunnel_will_start,
         # A raw bind must never block a launch that used to start. A detached pty
         # (`tmux new -d`, `docker run -dt`) passes every isatty and process-group
         # test yet nobody will ever type, so an undeadlined read waits forever and
-        # the socket never binds; no answer is handled below as a refusal and
-        # proceeds on the bootstrap deadline. The tunnel waits forever instead,
-        # failing closed.
+        # the socket never binds; only that unattended first-key timeout proceeds
+        # on the bootstrap deadline. Ctrl+C / EOF is an explicit refusal and
+        # always fails closed. The tunnel waits forever instead.
         first_key_timeout = None if tunnel_will_start else _UNATTENDED_PROMPT_SECONDS,
     )
-    if changed:
+    if changed is True:
         return True, True
-    if tunnel_will_start:
-        # Refusing to secure a launch about to publish a public URL aborts it,
-        # exactly as before.
+    if changed is False or tunnel_will_start:
+        # Ctrl+C / EOF is an explicit refusal for any reachable UI launch.
         return False, False
-    # A raw bind is different: it worked before the prompt existed, and aborting
-    # would turn Ctrl+C into "no Studio". docker/studio_run.sh execs
-    # `unsloth studio -H 0.0.0.0` and only supplies a password when the
-    # initial-password file is non-empty, so `docker run -it` on a fresh volume
-    # meets this prompt and aborting would stop a container that starts today.
-    # Warn and proceed at the protection level this launch already had.
-    #
     # Which is sometimes NO protection: UNSLOTH_STUDIO_BOOTSTRAP_TIMEOUT=0 never
     # arms the deadline, so say what will actually happen rather than promise a
-    # shutdown -- that is the one sentence an operator acts on. Still proceed: the
-    # operator disabled the deadline and cancelled the prompt deliberately, and
-    # refusing to start would break the case above.
+    # shutdown -- that is the one sentence an operator acts on.
     deadline_arms = should_arm_bootstrap_timeout(
         host = host,
         secure = secure,
@@ -2175,10 +2236,12 @@ def _terminal_password_gate(
             "(UNSLOTH_STUDIO_BOOTSTRAP_TIMEOUT=0), so nothing will stop it "
             "serving that credential."
         )
+    from routes.auth import _reset_password_command
+
     print(
         "  WARNING: continuing with the auto-generated admin password on a bind "
         f"that is reachable from the network. {tail} Change it by logging in, or "
-        "with `unsloth studio reset-password`.",
+        f"with `{_reset_password_command()}`.",
         file = sys.stderr,
         flush = True,
     )
@@ -2293,6 +2356,27 @@ def _drops_its_marker_on_failure(start):
     return started
 
 
+def _repair_pinned_diffusers(silent: bool) -> None:
+    """Repair before importing the app; exit if packages may still be half replaced at timeout."""
+    echo = (lambda _line: None) if silent else (lambda line: print(line, flush = True))
+    try:
+        from utils.diffusers_repair import (
+            InstallInterrupted,
+            PeerInstallInProgress,
+            repair_diffusers_before_imports,
+        )
+    except Exception as exc:  # noqa: BLE001 -- a self-heal must never block startup
+        echo(f"  - diffusers self-heal skipped: {exc}")
+        return
+    try:
+        repair_diffusers_before_imports(echo)
+    except (PeerInstallInProgress, InstallInterrupted) as exc:
+        print(f"Error: {exc}", file = sys.stderr, flush = True)
+        sys.exit(1)
+    except Exception as exc:  # noqa: BLE001 -- a self-heal must never block startup
+        echo(f"  - diffusers self-heal skipped: {exc}")
+
+
 @_drops_its_marker_on_failure
 def run_server(
     host: str = "127.0.0.1",
@@ -2375,7 +2459,17 @@ def run_server(
         env = os.getenv("ENVIRONMENT_TYPE", "production"),
     )
 
-    logger.info("run_server startup begin api_only=%s host=%s port=%s", api_only, host, port)
+    logger.info(
+        "run_server startup begin api_only=%s host=%s port=%s log_level=%s studio_home=%s "
+        "python=%s pid=%s",
+        api_only,
+        host,
+        port,
+        os.getenv("LOG_LEVEL", "INFO"),
+        _studio_root(),
+        sys.version.split()[0],
+        os.getpid(),
+    )
     cloudflare_intent = _consume_cloudflare_intent(cloudflare, secure)
 
     # Reap every child if the parent dies abnormally (terminal close, Task Manager kill, SIGKILL); must
@@ -2434,6 +2528,10 @@ def run_server(
             "Loading Unsloth Studio, please wait... (this can take a few minutes)",
             flush = True,
         )
+
+    _repair_pinned_diffusers(silent)
+
+    if not silent:
         print("  - loading PyTorch, Unsloth and Transformers...", flush = True)
 
     import_started = time.perf_counter()
@@ -2669,6 +2767,11 @@ def run_server(
     # gate and socket bind (direct `python run.py`; the CLI applies it in its own parent).
     _apply_supplied_password(password)
 
+    # Per launch, not per process: an embedded host may call run_server() again with different
+    # flags, and UNSLOTH_API_ONLY above is never cleared once set.
+    app.state.api_only = api_only
+    app.state.suppress_bootstrap_injection = False
+
     # Never publish with the seeded default password active: prompt first (or warn / fail closed headless; see
     # _terminal_password_gate). Runs BEFORE the socket binds so a pre-gate listener cannot hand out the
     # injected credential.
@@ -2681,9 +2784,15 @@ def run_server(
         is_colab = _IS_COLAB,
     )
     if not _pw_proceed:
+        # A raw bind passed neither flag, so naming them is a no-op for it.
         print(
-            "Not starting Unsloth; set a new admin password first, or launch "
-            "without --secure/--cloudflare.",
+            "Not starting Unsloth; set a new admin password first, or pass one "
+            "non-interactively with --password / UNSLOTH_STUDIO_PASSWORD. "
+            + (
+                "Launch without --secure/--cloudflare to stay off the public internet."
+                if _launch_tunnel_managed
+                else "Launch with -H 127.0.0.1 to keep Unsloth off the network."
+            ),
             file = sys.stderr,
             flush = True,
         )
@@ -2702,6 +2811,9 @@ def run_server(
     # Run server in a daemon thread with explicit new_event_loop() + run_until_complete() (not asyncio.run) so
     # nest_asyncio's patches do not interfere when Colab/IPython already runs a loop on the main thread.
     def _run():
+        from utils.proactor_self_pipe import install_proactor_self_pipe_guard
+
+        install_proactor_self_pipe_guard()
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
         # settings > LAN access adds its listener to this loop from a request thread

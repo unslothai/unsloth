@@ -3,7 +3,7 @@
 
 import {
   Download01Icon,
-  File02Icon,
+  FileEmpty02Icon,
   FolderOpenIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
@@ -13,7 +13,9 @@ import { toast } from "sonner";
 import { authFetch, getAuthToken } from "@/features/auth";
 import { apiUrl, isTauri } from "@/lib/api-base";
 import { downloadUrlStreaming, isDownloadCancelled } from "@/lib/native-files";
+import { cn } from "@/lib/utils";
 
+import { FileContextMenu, loadSandboxFile } from "./link-context-menu";
 import { sandboxFilePath, type SandboxFile } from "./sandbox-files";
 import { revealSandbox } from "./sandbox-reveal";
 
@@ -63,20 +65,29 @@ function SandboxFileRow({
   }, [file.name, sessionId]);
 
   return (
-    <button
-      type="button"
-      onClick={save}
-      disabled={busy}
-      title={`Save ${file.name}`}
-      className="flex items-center gap-2 rounded border border-border px-2 py-1 text-xs text-foreground hover:bg-muted disabled:opacity-60"
+    <FileContextMenu
+      file={{
+        name: file.name.slice(file.name.lastIndexOf("/") + 1),
+        load: () => loadSandboxFile(sessionId, file.name),
+        open: () => void save(),
+        sandbox: { sessionId, file: file.name },
+      }}
     >
-      <HugeiconsIcon icon={File02Icon} className="size-3.5 shrink-0" />
-      <span className="truncate font-mono">{file.name}</span>
-      {file.size !== null && (
-        <span className="text-muted-foreground">{formatSize(file.size)}</span>
-      )}
-      <HugeiconsIcon icon={Download01Icon} className="size-3.5 shrink-0" />
-    </button>
+      <button
+        type="button"
+        onClick={save}
+        disabled={busy}
+        title={`Save ${file.name}`}
+        className="flex items-center gap-2 rounded border border-border px-2 py-1 text-xs text-foreground hover:bg-muted disabled:opacity-60"
+      >
+        <HugeiconsIcon icon={FileEmpty02Icon} className="size-3.5 shrink-0" />
+        <span className="truncate font-mono">{file.name}</span>
+        {file.size !== null && (
+          <span className="text-muted-foreground">{formatSize(file.size)}</span>
+        )}
+        <HugeiconsIcon icon={Download01Icon} className="size-3.5 shrink-0" />
+      </button>
+    </FileContextMenu>
   );
 }
 
@@ -128,13 +139,15 @@ function SandboxFolderLabel({
 export function SandboxFiles({
   sessionId,
   files,
+  className,
 }: {
   sessionId: string;
   files: SandboxFile[];
+  className?: string;
 }) {
   if (!sessionId || files.length === 0) return null;
   return (
-    <div className="mt-2 border-t border-dashed pt-2">
+    <div className={cn("mt-2 border-t border-dashed pt-2", className)}>
       <SandboxFolderLabel
         sessionId={sessionId}
         label={files.length === 1 ? "file created" : "files created"}

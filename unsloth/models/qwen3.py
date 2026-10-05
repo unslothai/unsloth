@@ -27,6 +27,8 @@ from .llama import (
     LlamaRotaryEmbedding,
     LlamaLinearScalingRotaryEmbedding,
     _LlamaModel_fast_forward_inference,
+    original_apply_qkv,
+    original_apply_o,
 )
 
 try:
@@ -91,7 +93,7 @@ def Qwen3Attention_fast_forward(
     head_dim = self.head_dim
     assert n_kv_heads * n_groups == n_heads
 
-    Q, K, V = self.apply_qkv(self, hidden_states)
+    Q, K, V = getattr(self, "apply_qkv", original_apply_qkv)(self, hidden_states)
     Q = Q.view(bsz, q_len, n_heads, head_dim)
     K = K.view(bsz, q_len, n_kv_heads, head_dim)
     V = V.view(bsz, q_len, n_kv_heads, head_dim).transpose(1, 2)
@@ -157,7 +159,7 @@ def Qwen3Attention_fast_forward(
     A = run_attention(config = attention_config, context = context, Q = Q, K = K, V = V)
 
     attn_output = A.reshape(bsz, q_len, n_heads * head_dim)
-    attn_output = self.apply_o(self, attn_output)
+    attn_output = getattr(self, "apply_o", original_apply_o)(self, attn_output)
     attn_weights = None
     return attn_output, attn_weights, past_key_value
 

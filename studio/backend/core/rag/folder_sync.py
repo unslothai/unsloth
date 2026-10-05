@@ -1,10 +1,17 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Durable, sequential reconciliation for linked local RAG folders."""
+"""Durable, bounded-pipeline reconciliation for linked local RAG folders."""
 
 from __future__ import annotations
 
+from core.training.account_jobs import (
+    account_is_retired,
+    account_key,
+    account_path,
+    job_accounts,
+)
+from utils.account_context import account_thread, current_account, run_as
 import hashlib
 import json
 import logging
@@ -14,12 +21,14 @@ import stat
 import threading
 import time
 import uuid
-from contextlib import closing
 import weakref
+from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
+from contextlib import closing
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 
-from storage import rag_db
+from core.rag import account_db as rag_db
 from utils.paths import ensure_dir, rag_uploads_root
 
 from . import config, ingestion, job_leases, store
@@ -34,6 +43,8 @@ _thread_stop: threading.Event | None = None
 _thread_lock = threading.Lock()
 _worker_lock = threading.Lock()
 _worker_state = threading.local()
+# Scheduling cursor of the single worker; see _next_account_job.
+_last_job_account: str | None = None
 _folder_locks: weakref.WeakValueDictionary[str, threading.RLock] = weakref.WeakValueDictionary()
 _scope_locks: weakref.WeakValueDictionary[str, threading.RLock] = weakref.WeakValueDictionary()
 _named_locks_lock = threading.Lock()
@@ -58,14 +69,30 @@ class _FolderChanged(RuntimeError):
     pass
 
 
+@dataclass
+class _IngestionResult:
+    document_id: str | None = None
+    ingestion_job: str | None = None
+    error: Exception | None = None
+
+
+@dataclass
+class _PendingIngestion:
+    relative_path: str
+    snapshot: str
+    metadata: dict
+    content_hash: str
+    future: Future["_IngestionResult"]
+
+
 def _folder_lock(folder_id: str) -> threading.RLock:
     with _named_locks_lock:
-        return _folder_locks.setdefault(folder_id, threading.RLock())
+        return _folder_locks.setdefault(account_key(folder_id), threading.RLock())
 
 
 def _scope_lock(scope: str) -> threading.RLock:
     with _named_locks_lock:
-        return _scope_locks.setdefault(scope, threading.RLock())
+        return _scope_locks.setdefault(account_key(scope), threading.RLock())
 
 
 def _now() -> str:
@@ -121,6 +148,7 @@ def _is_within(root: str, path: str) -> bool:
 
 def validate_folder_path(path: str) -> str:
     """Apply the existing model scan-folder policy without persisting there."""
+    account_path(path)
     if not path or not path.strip() or "\x00" in path:
         raise ValueError("Path cannot be empty")
     expanded = os.path.abspath(os.path.expanduser(path))
@@ -1107,6 +1135,8 @@ def _copy_exact(source, target, size: int) -> None:
 
 
 def _check_running() -> None:
+    if account_is_retired():
+        raise _SyncStopped
     stop_event = getattr(_worker_state, "stop_event", _stop)
     if stop_event.is_set():
         raise _SyncStopped
@@ -1342,6 +1372,62 @@ def _failure_summary(failures: list[str]) -> str | None:
     return f"{len(failures)} file(s) could not be indexed ({named})"
 
 
+def _ingest_folder_document(
+    job_id: str,
+    stop_event: threading.Event,
+    folder: dict,
+    relative_path: str,
+    snapshot: str,
+    content_hash: str,
+    embedding_model: str,
+    rebuild: bool,
+) -> _IngestionResult:
+    """Ingest one file in a pool thread; the coordinator owns all folder state."""
+    # Thread-local, so copy the coordinator's lease and stop state for _check_running.
+    _worker_state.job_id = job_id
+    _worker_state.stop_event = stop_event
+    document_id = None
+    ingestion_job = None
+    try:
+        _check_running()
+        document_id, ingestion_job = ingestion.start_ingestion(
+            folder["scope"],
+            folder["scope_id"] if folder["scope_type"] == "knowledge_base" else None,
+            None,
+            relative_path,
+            snapshot,
+            project_id = folder["scope_id"] if folder["scope_type"] == "project" else None,
+            model_name = embedding_model,
+            content_hash = content_hash,
+            dedupe = False,
+            linked_folder_id = folder["id"],
+            linked_relative_path = relative_path,
+            background = False,
+            reuse_identical = not rebuild,
+        )
+        result = ingestion.get_job_status(ingestion_job)
+        if result is None:
+            raise RuntimeError("Ingestion job disappeared")
+        if result["status"] != "completed":
+            raise RuntimeError(result.get("error") or "Ingestion failed")
+        _check_running()
+        return _IngestionResult(document_id, ingestion_job)
+    except Exception as exc:  # noqa: BLE001 - the coordinator classifies it
+        return _IngestionResult(document_id, ingestion_job, exc)
+
+
+def _cleanup_pending_ingestion(pending: _PendingIngestion, result: _IngestionResult) -> None:
+    """Remove an uninstalled document, or its snapshot if admission never completed."""
+    if result.document_id is not None:
+        _discard_document(result.document_id)
+    else:
+        _remove_snapshot(pending.snapshot)
+
+
+def _folder_ingest_workers() -> int:
+    return max(1, min(4, config.FOLDER_INGEST_WORKERS))
+
+
 def _reconcile_folder(job_id: str) -> None:
     """Run one complete reconciliation; called serially by the coordinator."""
     _check_running()
@@ -1425,111 +1511,201 @@ def _reconcile_folder(job_id: str) -> None:
     added = changed_count = 0
     failures: list[str] = []
     withheld: set[str] = set()
-    for index, rel in enumerate(work):
-        snapshot = None
-        document_id = None
-        ingestion_job = None
-        try:
-            _check_running()
-            metadata = current[rel]
-            snapshot = _snapshot(folder["path"], metadata)
-            content_hash = _hash_file(snapshot)
-            _check_running()
-            if not rebuild and rel in changed and content_hash == known[rel].get("content_hash"):
-                _check_root_identity(folder["path"], scanned_identity)
-                _update_mapping_metadata(folder["id"], rel, metadata, content_hash)
-                _remove_snapshot(snapshot)
-                snapshot = None
-                _set_job(job_id, progress = (index + 1) / max(total, 1))
-                continue
-            if not rebuild and rel in new:
-                rename_key = (content_hash, os.path.splitext(rel)[1].lower())
-                rename_candidates = missing_by_content.get(rename_key)
-                if rename_candidates:
-                    old_rel = rename_candidates.pop(0)
-                    missing.discard(old_rel)
-                    _check_root_identity(folder["path"], scanned_identity)
-                    _rename_mapping(folder["id"], old_rel, rel)
-                    _update_mapping_metadata(folder["id"], rel, metadata, content_hash)
-                    _remove_snapshot(snapshot)
-                    snapshot = None
-                    renamed += 1
-                    _set_job(
-                        job_id,
-                        renamed = renamed,
-                        progress = (index + 1) / max(total, 1),
-                    )
-                    continue
-            document_id, ingestion_job = ingestion.start_ingestion(
-                folder["scope"],
-                folder["scope_id"] if folder["scope_type"] == "knowledge_base" else None,
-                None,
-                rel,
-                snapshot,
-                project_id = folder["scope_id"] if folder["scope_type"] == "project" else None,
-                dedupe = False,
-                linked_folder_id = folder["id"],
-                linked_relative_path = rel,
-                model_name = embedding_model,
-                background = False,
-                content_hash = content_hash,
-            )
-            result = ingestion.get_job_status(ingestion_job)
-            if result is None:
-                raise RuntimeError("Ingestion job disappeared")
-            if result["status"] != "completed":
-                raise RuntimeError(result.get("error") or "Ingestion failed")
-            _check_running()
-            _check_root_identity(folder["path"], scanned_identity)
-            _install_mapping(
-                folder,
-                rel,
-                metadata,
-                document_id,
-                content_hash,
-            )
-            if rel in new:
-                added += 1
-            else:
-                changed_count += 1
-        except (_SyncStopped, _LeaseLost):
-            if document_id:
-                _discard_document(document_id)
-            else:
-                _remove_snapshot(snapshot)
-            raise
-        except _FolderChanged:
-            if document_id:
-                _discard_document(document_id)
-            else:
-                _remove_snapshot(snapshot)
-            raise
-        except Exception:
-            failures.append(rel)
-            # a failed file may be a rename or copy of a vanished path, so grant one pass
-            withheld.update(missing - already_withheld)
-            logger.warning("linked-folder ingestion failed for %s", rel, exc_info = True)
-            if document_id:
-                _discard_document(document_id)
-            else:
-                _remove_snapshot(snapshot)
-        finally:
-            if ingestion_job:
-                try:
-                    ingestion.delete_terminal_job(ingestion_job)
-                except Exception:
-                    logger.warning(
-                        "failed to prune linked-folder ingestion job %s",
-                        ingestion_job,
-                        exc_info = True,
-                    )
+    processed = 0
+    stop_event = getattr(_worker_state, "stop_event", _stop)
+    account = current_account()
+    workers = _folder_ingest_workers()
+    in_flight: dict[Future["_IngestionResult"], _PendingIngestion] = {}
+
+    def update_progress() -> None:
         _set_job(
             job_id,
             added = added,
             changed = changed_count,
             failed = len(failures),
-            progress = (index + 1) / max(total, 1),
+            renamed = renamed,
+            progress = processed / max(total, 1),
         )
+
+    def prune_ingestion_job(result: _IngestionResult) -> None:
+        if result.ingestion_job is None:
+            return
+        try:
+            ingestion.delete_terminal_job(result.ingestion_job)
+        except Exception:
+            logger.warning(
+                "failed to prune linked-folder ingestion job %s",
+                result.ingestion_job,
+                exc_info = True,
+            )
+
+    def finish_pending(pending: _PendingIngestion) -> None:
+        nonlocal added, changed_count, processed
+        result = _IngestionResult()
+        try:
+            try:
+                result = pending.future.result()
+            except Exception as exc:  # noqa: BLE001
+                result = _IngestionResult(error = exc)
+
+            if result.error is not None:
+                if isinstance(result.error, (_SyncStopped, _LeaseLost, _FolderChanged)):
+                    _cleanup_pending_ingestion(pending, result)
+                    raise result.error
+                failures.append(pending.relative_path)
+                # A failed file may be a rename or copy of a vanished path, so grant one pass.
+                withheld.update(missing - already_withheld)
+                logger.warning(
+                    "linked-folder ingestion failed for %s",
+                    pending.relative_path,
+                    exc_info = (type(result.error), result.error, result.error.__traceback__),
+                )
+                _cleanup_pending_ingestion(pending, result)
+            else:
+                try:
+                    _check_running()
+                    _check_root_identity(folder["path"], scanned_identity)
+                    _install_mapping(
+                        folder,
+                        pending.relative_path,
+                        pending.metadata,
+                        result.document_id,
+                        pending.content_hash,
+                    )
+                except (_SyncStopped, _LeaseLost, _FolderChanged):
+                    _cleanup_pending_ingestion(pending, result)
+                    raise
+                except Exception as exc:  # noqa: BLE001
+                    failures.append(pending.relative_path)
+                    withheld.update(missing - already_withheld)
+                    logger.warning(
+                        "linked-folder ingestion failed for %s",
+                        pending.relative_path,
+                        exc_info = (type(exc), exc, exc.__traceback__),
+                    )
+                    _cleanup_pending_ingestion(pending, result)
+                else:
+                    if pending.relative_path in new:
+                        added += 1
+                    else:
+                        changed_count += 1
+        finally:
+            prune_ingestion_job(result)
+        processed += 1
+        update_progress()
+
+    def drain_one() -> None:
+        if not in_flight:
+            return
+        completed, _ = wait(tuple(in_flight), return_when = FIRST_COMPLETED)
+        for future in completed:
+            pending = in_flight.pop(future)
+            finish_pending(pending)
+
+    def abort_in_flight() -> None:
+        pending_items = list(in_flight.items())
+        for future, _ in pending_items:
+            future.cancel()
+        for future, pending in pending_items:
+            in_flight.pop(future, None)
+            if future.cancelled():
+                result = _IngestionResult()
+            else:
+                try:
+                    result = future.result()
+                except Exception as exc:  # noqa: BLE001
+                    result = _IngestionResult(error = exc)
+            try:
+                _cleanup_pending_ingestion(pending, result)
+            except Exception:
+                logger.warning(
+                    "failed to clean up aborted linked-folder ingestion for %s",
+                    pending.relative_path,
+                    exc_info = True,
+                )
+            prune_ingestion_job(result)
+
+    with ThreadPoolExecutor(
+        max_workers = workers,
+        thread_name_prefix = "rag-folder-ingest",
+    ) as executor:
+        try:
+            for rel in work:
+                if len(in_flight) >= workers:
+                    drain_one()
+                snapshot = None
+                try:
+                    _check_running()
+                    metadata = current[rel]
+                    snapshot = _snapshot(folder["path"], metadata)
+                    content_hash = _hash_file(snapshot)
+                    _check_running()
+                    if (
+                        not rebuild
+                        and rel in changed
+                        and content_hash == known[rel].get("content_hash")
+                    ):
+                        _check_root_identity(folder["path"], scanned_identity)
+                        _update_mapping_metadata(folder["id"], rel, metadata, content_hash)
+                        _remove_snapshot(snapshot)
+                        snapshot = None
+                    elif not rebuild and rel in new:
+                        rename_key = (content_hash, os.path.splitext(rel)[1].lower())
+                        rename_candidates = missing_by_content.get(rename_key)
+                        if rename_candidates:
+                            old_rel = rename_candidates.pop(0)
+                            missing.discard(old_rel)
+                            _check_root_identity(folder["path"], scanned_identity)
+                            _rename_mapping(folder["id"], old_rel, rel)
+                            _update_mapping_metadata(folder["id"], rel, metadata, content_hash)
+                            _remove_snapshot(snapshot)
+                            snapshot = None
+                            renamed += 1
+                    if snapshot is not None:
+                        # reuse_identical needs a finished donor, so a copy waits for its in-flight twin.
+                        while not rebuild and any(
+                            p.content_hash == content_hash for p in in_flight.values()
+                        ):
+                            drain_one()
+                        # Pool threads start as the owner account; rebind to this job's.
+                        future = executor.submit(
+                            run_as,
+                            account,
+                            _ingest_folder_document,
+                            job_id,
+                            stop_event,
+                            folder,
+                            rel,
+                            snapshot,
+                            content_hash,
+                            embedding_model,
+                            rebuild,
+                        )
+                        in_flight[future] = _PendingIngestion(
+                            relative_path = rel,
+                            snapshot = snapshot,
+                            metadata = metadata,
+                            content_hash = content_hash,
+                            future = future,
+                        )
+                        snapshot = None
+                except (_SyncStopped, _LeaseLost, _FolderChanged):
+                    _remove_snapshot(snapshot)
+                    raise
+                except Exception:
+                    failures.append(rel)
+                    withheld.update(missing - already_withheld)
+                    logger.warning("linked-folder ingestion failed for %s", rel, exc_info = True)
+                    _remove_snapshot(snapshot)
+                if any(pending.relative_path == rel for pending in in_flight.values()):
+                    continue
+                processed += 1
+                update_progress()
+            while in_flight:
+                drain_one()
+        except Exception:
+            abort_in_flight()
+            raise
 
     deleted = 0
     for rel in sorted(missing - withheld):
@@ -1648,13 +1824,16 @@ def reconcile_folder(job_id: str) -> None:
     except _LeaseLost:
         lease_lost = True
     except _SyncStopped:
-        _pause_job(job_id)
+        # A retired account's database is closed; its rows moved with the roots.
+        if not account_is_retired():
+            _pause_job(job_id)
     except Exception as exc:
         logger.exception("linked-folder job %s failed unexpectedly", job_id)
-        _fail_job(job_id, exc)
+        if not account_is_retired():
+            _fail_job(job_id, exc)
     finally:
         try:
-            if not lease_lost:
+            if not lease_lost and not account_is_retired():
                 _queue_successor(job_id)
         finally:
             del _worker_state.job_id
@@ -1742,17 +1921,28 @@ def _worker(stop_event: threading.Event | None = None, project_exists = None) ->
             _worker_state.stop_event = stop_event
             while not stop_event.is_set():
                 try:
-                    _recover_startup_state()
-                    if project_exists is not None:
-                        reconcile_retired_scopes(project_exists)
-                    _enqueue_periodic()
-                    break
+                    accounts = job_accounts()
                 except Exception:
                     logger.warning("linked-folder worker initialization failed", exc_info = True)
                     stop_event.wait(1.0)
+                    continue
+                initialized = 0
+                for account in accounts:
+                    try:
+                        run_as(account, _initialize_account_sync, project_exists, recover = True)
+                        initialized += 1
+                    except Exception:
+                        # One bad account database must not keep the worker out of the loop.
+                        logger.warning(
+                            "linked-folder worker initialization failed for one account",
+                            exc_info = True,
+                        )
+                if initialized or not accounts:
+                    break
+                stop_event.wait(1.0)
             while not stop_event.is_set():
                 try:
-                    job = _next_job()
+                    job = _next_account_job()
                 except Exception:
                     # Writer-lock contention must not retire the only worker; the initialization and periodic paths
                     # retry.
@@ -1760,22 +1950,37 @@ def _worker(stop_event: threading.Event | None = None, project_exists = None) ->
                     stop_event.wait(1.0)
                     continue
                 if job:
-                    job_id, folder_id = job
+                    account, job_id, folder_id = job
                     try:
-                        reconcile_folder(job_id)
+                        run_as(account, reconcile_folder, job_id)
                     except Exception as exc:
                         logger.exception("linked-folder job %s failed unexpectedly", job_id)
-                        _fail_job(job_id, exc)
+                        try:
+                            run_as(account, _fail_job, job_id, exc)
+                        except Exception:
+                            # One account's bookkeeping must never stop the shared worker.
+                            logger.warning(
+                                "could not record the failure of linked-folder job %s",
+                                job_id,
+                                exc_info = True,
+                            )
                     continue
                 _wake.wait(max(1.0, config.FOLDER_SYNC_INTERVAL_S))
                 _wake.clear()
                 if not stop_event.is_set():
                     try:
-                        if project_exists is not None:
-                            reconcile_retired_scopes(project_exists)
-                        _enqueue_periodic()
+                        accounts = job_accounts()
                     except Exception:
                         logger.warning("linked-folder periodic scheduling failed", exc_info = True)
+                        accounts = []
+                    for account in accounts:
+                        try:
+                            run_as(account, _initialize_account_sync, project_exists)
+                        except Exception:
+                            logger.warning(
+                                "linked-folder periodic scheduling failed for one account",
+                                exc_info = True,
+                            )
     finally:
         _worker_state.stop_event = None
         with _thread_lock:
@@ -1863,7 +2068,7 @@ def start_auto_sync(
             stop_event = threading.Event()
             _stop.clear()
             _thread_stop = stop_event
-            _thread = threading.Thread(
+            _thread = account_thread(
                 target = _worker,
                 args = (stop_event, project_exists),
                 daemon = True,
@@ -1890,3 +2095,40 @@ def stop_auto_sync(timeout: float = 2.0) -> None:
         stop_event.set()
     if thread is not None:
         thread.join(timeout = timeout)
+
+
+def _initialize_account_sync(project_exists, *, recover: bool = False) -> None:
+    if recover:
+        _recover_startup_state()
+    if project_exists is not None:
+        reconcile_retired_scopes(project_exists)
+    _enqueue_periodic()
+
+
+def _next_account_job():
+    # Round robin from the account after the last claim: one folder is reconciled at a time,
+    # so always restarting at the first account starves everyone behind a backlog.
+    global _last_job_account
+    accounts = job_accounts()
+    start = 0
+    for index, account in enumerate(accounts):
+        if account.account_id == _last_job_account:
+            start = index + 1
+            break
+    for offset in range(len(accounts)):
+        account = accounts[(start + offset) % len(accounts)]
+        try:
+            job = run_as(account, _next_job)
+        except Exception:
+            # The order is stable, so one corrupt database would shadow the accounts behind it.
+            logger.warning("linked-folder queue selection failed for one account", exc_info = True)
+            continue
+        if job:
+            _last_job_account = account.account_id
+            return (account, *job)
+    return None
+
+
+def retire_account_sync() -> None:
+    """Wake the supervisor; retirement checks stop only the retired account."""
+    _wake.set()

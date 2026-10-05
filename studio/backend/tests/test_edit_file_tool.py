@@ -7,6 +7,7 @@ Pinned here: a miss or an ambiguous match fails loudly and writes nothing, and
 the file's encoding, line endings and mode survive an edit.
 """
 
+import json
 import os
 import stat
 import sys
@@ -885,3 +886,125 @@ class TestEmptyPatternSafety:
         )
 
         assert "empty 'old_string'" in error
+
+
+class TestReplayedReceipt:
+    """Prevent copied compaction receipts from overwriting file content (#11839)."""
+
+    @staticmethod
+    def _replayed(path: str, old: str, new: str) -> dict:
+        from core.inference.context_window import compact_completed_tool_arguments
+
+        arguments = {"path": path, "edits": [{"old_string": old, "new_string": new}]}
+        messages = [
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "c1",
+                        "type": "function",
+                        "function": {"name": "edit_file", "arguments": json.dumps(arguments)},
+                    }
+                ],
+            },
+            {"role": "tool", "tool_call_id": "c1", "content": f"Edited {path} (1 replacement)"},
+        ]
+        fitted, compacted = compact_completed_tool_arguments(messages)
+        assert compacted == 1
+        return json.loads(fitted[0]["tool_calls"][0]["function"]["arguments"])
+
+    def test_a_replayed_call_sent_back_writes_nothing(self, workdir):
+        target = workdir / "PortalManager.java"
+        original = "class A {\n    private static final int PARTNER_TRIES = 8;\n}\n"
+        target.write_text(original)
+        replayed = self._replayed(
+            "PortalManager.java", "    private static final int PARTNER_TRIES = 8;", "x" * 1100
+        )
+        assert "chars of arguments you sent" in replayed["edits"][0]["new_string"]
+
+        result = execute_tool("edit_file", replayed, session_id = "t")
+
+        assert result.startswith("Error:")
+        assert "edits[0].new_string" in result
+        assert target.read_text() == original
+
+    def test_one_receipt_in_a_batch_of_real_edits_stops_the_whole_batch(self, workdir):
+        target = workdir / "a.py"
+        target.write_text("a = 1\nb = 2\n")
+
+        result = _edit(
+            path = "a.py",
+            edits = [
+                {"old_string": "a = 1", "new_string": "a = 10"},
+                {
+                    "old_string": "b = 2",
+                    "new_string": "<410 chars of arguments you sent, elided to save room; "
+                    "the call already ran. Not tool output>",
+                },
+            ],
+        )
+
+        assert result.startswith("Error:")
+        assert "edits[1].new_string" in result
+        assert target.read_text() == "a = 1\nb = 2\n"
+
+    def test_text_that_only_quotes_a_receipt_is_still_written(self, workdir):
+        target = workdir / "t.py"
+        target.write_text("RECEIPT = None\n")
+        quoted = (
+            'RECEIPT = "<12 chars of arguments you sent, elided to save room; '
+            'the call already ran. Not tool output>"'
+        )
+
+        result = _edit(path = "t.py", old_string = "RECEIPT = None", new_string = quoted)
+
+        assert "1 replacement" in result
+        assert target.read_text() == quoted + "\n"
+
+    def test_a_file_the_receipt_already_damaged_can_be_repaired(self, workdir):
+        receipt = (
+            "<1081 chars of arguments you sent, already written to PortalManager.java; "
+            "elided to save room. Not tool output; the file on disk holds it.>"
+        )
+        target = workdir / "PortalManager.java"
+        target.write_text(f"class A {{\n{receipt}\n}}\n")
+
+        result = _edit(
+            path = "PortalManager.java",
+            old_string = receipt,
+            new_string = "    private static final int PARTNER_TRIES = 32;",
+        )
+
+        assert "1 replacement" in result
+        assert (
+            target.read_text() == "class A {\n    private static final int PARTNER_TRIES = 32;\n}\n"
+        )
+
+    def test_a_receipt_copied_into_old_string_still_writes_nothing(self, workdir):
+        target = workdir / "a.py"
+        target.write_text("a = 1\n")
+
+        result = _edit(
+            path = "a.py",
+            old_string = "<410 chars of arguments you sent, elided to save room; "
+            "the call already ran. Not tool output>",
+            new_string = "a = 2",
+        )
+
+        assert "was not found" in result
+        assert target.read_text() == "a = 1\n"
+
+    def test_other_tools_refuse_it_before_running(self, workdir):
+        result = execute_tool(
+            "python",
+            {
+                "code": "<1500 chars of arguments you sent, elided to save room; "
+                "the call already ran. Not tool output>"
+            },
+            session_id = "t",
+        )
+
+        assert result.startswith("Error:")
+        assert "'code'" in result
+        assert "nothing ran" in result
