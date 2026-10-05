@@ -894,6 +894,12 @@ async def lifespan(app: FastAPI):
     from core.inference.key_exchange import init_key_pair
 
     init_key_pair()
+
+    # Stall thread-dump watchdog (#9712), only with UNSLOTH_STUDIO_STALL_WATCHDOG=1.
+    from utils.stall_watchdog import stand_down_for_the_warm, start_stall_watchdog
+
+    start_stall_watchdog(asyncio.get_running_loop(), suppress = stand_down_for_the_warm)
+
     _lifespan_log.info(
         "lifespan pre-auth setup completed in %.1fms",
         (_time.perf_counter() - _lifespan_started) * 1000,
@@ -955,6 +961,11 @@ async def lifespan(app: FastAPI):
 
     # Before any shutdown await: a warm finishing during one would still read the lifespan as current.
     _stop_post_warm_thread()
+
+    # Before teardown blocks the loop, or shutdown dumps as a stall.
+    from utils.stall_watchdog import stop_stall_watchdog
+
+    stop_stall_watchdog()
 
     # Retire the coordinated warm at shutdown entry too. run_lifespan_shutdown() repeats this after
     # cleanup, but its awaits would otherwise let startup imports continue for a stopped lifespan.
