@@ -75,7 +75,7 @@ async function getAppWindow(): Promise<TauriWindow> {
   return getCurrentWindow();
 }
 
-/** Windows' 10-DIP caption glyph in a rounded 1.5px stroke; the box snaps to device pixels. */
+/** Windows' 10-DIP caption glyph, snapped to device pixels to stay crisp at fractional scales. */
 function CaptionGlyph({
   kind,
 }: {
@@ -88,6 +88,15 @@ function CaptionGlyph({
     return () => window.removeEventListener("resize", update);
   }, []);
   const pixels = Math.round(10 * scale);
+  const strokePixels = Math.max(1, Math.round(scale));
+  const stroke = (strokePixels * 10) / pixels;
+  const inset = stroke / 2;
+  const edge = 10 - inset;
+  // minimize sits on whole device pixel rows, so its line stays one solid row
+  const middle =
+    ((Math.round((pixels - strokePixels) / 2) + strokePixels / 2) * 10) /
+    pixels;
+  const corner = Math.min(2, 2.5 - inset);
   return (
     <svg
       aria-hidden="true"
@@ -96,24 +105,41 @@ function CaptionGlyph({
       viewBox="0 0 10 10"
       fill="none"
       stroke="currentColor"
-      strokeWidth={1.5}
+      strokeWidth={stroke}
       strokeLinecap="round"
       strokeLinejoin="round"
       className="shrink-0"
     >
-      {/* 5.25, not 5: the 1.5px stroke then fills whole pixel rows at 100%, 150% and 200%. */}
-      {kind === "minimize" && <path d="M0.75 5.25h8.5" />}
+      {kind === "minimize" && <path d={`M${inset} ${middle}H${edge}`} />}
       {kind === "maximize" && (
-        <rect x="0.75" y="0.75" width="8.5" height="8.5" rx="2" />
+        <rect
+          x={inset}
+          y={inset}
+          width={10 - stroke}
+          height={10 - stroke}
+          rx="2"
+        />
       )}
       {/* Windows puts the front window bottom-left. */}
       {kind === "restore" && (
         <>
-          <path d="M2.5 2.5a1.75 1.75 0 0 1 1.75-1.75h3.25a1.75 1.75 0 0 1 1.75 1.75v3.25a1.75 1.75 0 0 1-1.75 1.75" />
-          <rect x="0.75" y="2.5" width="6.75" height="6.75" rx="2" />
+          <path
+            d={`M2.5 2.5V${inset + corner}A${corner} ${corner} 0 0 1 ${2.5 + corner} ${inset}H${edge - corner}A${corner} ${corner} 0 0 1 ${edge} ${inset + corner}V${7.5 - corner}A${corner} ${corner} 0 0 1 ${edge - corner} 7.5H7.5`}
+          />
+          <rect
+            x={inset}
+            y="2.5"
+            width={7.5 - inset}
+            height={7.5 - inset}
+            rx="2"
+          />
         </>
       )}
-      {kind === "close" && <path d="M0.75 0.75l8.5 8.5m0-8.5l-8.5 8.5" />}
+      {kind === "close" && (
+        <path
+          d={`M${inset} ${inset}L${edge} ${edge}M${edge} ${inset}L${inset} ${edge}`}
+        />
+      )}
     </svg>
   );
 }
