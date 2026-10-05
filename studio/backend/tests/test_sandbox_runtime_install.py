@@ -103,6 +103,12 @@ def test_the_plan_is_the_setup_ps1_install_call(x64_windows):
     assert plan.manual_command.startswith("& '")
 
 
+def test_every_powershell_single_quote_stays_inside_the_pasted_path():
+    path = "C:\\Users\\O’Neil‘s ‚x‛ 'y'\\python.exe"
+    line = plan_mod.powershell_command([(path, "--flag")])
+    assert line == "& 'C:\\Users\\O’’Neil‘‘s ‚‚x‛‛ ''y''\\python.exe' '--flag'"
+
+
 def test_no_plan_when_installed_or_unsupported(x64_windows, monkeypatch):
     monkeypatch.setattr(plan_mod, "windows_runtime_installed", lambda: True)
     assert plan_mod.windows_runtime_plan().action is None
