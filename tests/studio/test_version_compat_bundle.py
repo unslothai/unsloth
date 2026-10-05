@@ -43,9 +43,9 @@ SUITE_DIRS = ("tests/version_compat", "tests/vllm_compat")
 # whole file quietly asserting nothing.
 BUNDLE_JOB = "pinned-symbol-matrix"
 
-# Cron-only, and it sweeps tests/version_compat/ with nothing installed but pytest.
+# Cron-only; sweeps tests/version_compat/ with only pytest installed.
 SWEEP_JOB = "daily-fresh-fetch"
-# What that job never installs. A None entry in sys.modules makes `import` raise and find_spec answer None, as there.
+# A None entry in sys.modules makes `import` raise and find_spec return None, as in that job.
 NOT_IN_THE_SWEEP = ("torch", "numpy", "transformers", "trl", "peft", "accelerate", "unsloth_zoo")
 
 # Suites with no pull_request home today.
@@ -150,11 +150,9 @@ def test_the_bundle_does_not_duplicate_the_install_bearing_jobs() -> None:
 
 
 def test_the_daily_sweep_skips_what_it_cannot_import() -> None:
-    """A suite that needs torch must skip in the sweep, the way the rest of the directory does, not fail.
+    """A suite that needs torch must skip in the sweep, not fail (#12069 broke it daily on `import unsloth`).
 
-    The two suites #12069 added were wired into grpo-fake-run and passed there, while the sweep failed 43 of their
-    tests every day on `import unsloth`. So run what the sweep runs, with its stack hidden. The bundle's suites are
-    left out: they install nothing by construction, already run on every pull request, and fetch from the network.
+    Bundle suites are left out: they install nothing, already run per pull request, and fetch from the network.
     """
     sweep = _named_paths(_jobs()[SWEEP_JOB])
     bundle = _named_paths(_jobs()[BUNDLE_JOB])
@@ -165,7 +163,6 @@ def test_the_daily_sweep_skips_what_it_cannot_import() -> None:
     proc = subprocess.run(
         [sys.executable, "-c", hide, "-q", "-p", "no:cacheprovider", *suites],
         cwd = REPO,
-        # The job's own `PYTHONPATH=.`, which is how the suites find unsloth without installing it.
         env = {**os.environ, "PYTHONPATH": str(REPO)},
         capture_output = True,
         text = True,
