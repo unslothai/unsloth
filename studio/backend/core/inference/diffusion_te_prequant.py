@@ -646,7 +646,6 @@ def _resolve_checkpoint_path(
             return mirrored
         from .diffusion_prequant import prefer_cached_pickle_twins
 
-        # An existing user's cached pickle answers before its uncached safetensors twin is fetched.
         names = prefer_cached_pickle_twins(
             source.location,
             names,

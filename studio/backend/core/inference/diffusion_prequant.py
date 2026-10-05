@@ -542,12 +542,8 @@ def explain_container_choice(
     readable: Any = None,
     logger: Any = None,
 ) -> Optional[str]:
-    """Log, once per file, WHY a pickle was resolved when the chain also names its safetensors twin.
-
-    The policy is: new users get the safetensors container, existing users keep a cached ``.pt``.
-    So a ``.pt`` is only ever resolved for one of three reasons, and the log says which: it was the
-    cached twin (``prefer_cached_pickle_twins`` already said so), the repo does not host the
-    safetensors twin yet, or this install cannot read safetensors. Returns the reason. Never raises."""
+    """Log once per file why a ``.pt`` was resolved although the chain names its safetensors twin
+    (cached twin, twin not hosted yet, or safetensors unreadable here). Returns the reason. Never raises."""
     try:
         if not repo_id or not chosen or not chosen.lower().endswith(_PICKLE_SUFFIXES):
             return None
@@ -593,18 +589,12 @@ def prefer_cached_pickle_twins(
     logger: Any = None,
     log: bool = True,
 ) -> list:
-    """``names`` with a CACHED pickle twin moved ahead of its UNCACHED safetensors sibling.
+    """``names`` with a cached, readable ``<stem>.pt``/``.pth`` moved ahead of its uncached
+    ``<stem>.safetensors`` twin, so an existing user does not re-download the same weights.
 
-    The chain prefers safetensors, which is right for a new user and wrong for one who already holds
-    the multi-GB ``.pt`` of the very same weights: once a repo publishes the safetensors twin, walking
-    the chain in order would download it again. So a ``<stem>.safetensors`` that is in no local cache
-    root yields its slot to ``<stem>.pt`` / ``<stem>.pth`` when that twin is in ``names``, is readable on
-    this install, and IS cached. Twins only: a different artifact (another scheme, a rotated build, a
-    different stem) never jumps the queue, however cached it is. A cached safetensors keeps its place,
-    and the twin stays in the chain behind it, so nothing becomes unreachable: a twin that the Hub has
-    since removed 404s and the safetensors name is tried next. ``PREFER_SAFETENSORS_ENV`` turns this
-    off. ``log=False`` is for planners, which ask the same question without loading anything. Pure
-    cache lookups, never raises."""
+    Same stem only: a different artifact never jumps the queue. The safetensors name stays right
+    behind, so a twin since removed from the Hub 404s onto it. ``PREFER_SAFETENSORS_ENV`` disables.
+    Pure cache lookups, never raises."""
     import os
 
     out = [n for n in names if n]
@@ -659,7 +649,7 @@ def prefer_cached_pickle_twins(
 
 
 def _container_stem(name: str) -> str:
-    """``name`` without its checkpoint container suffix, so ``X.safetensors`` and ``X.pt`` compare equal."""
+    """``name`` without its container suffix."""
     lower = name.lower()
     for suffix in (".safetensors", *_PICKLE_SUFFIXES):
         if lower.endswith(suffix):
@@ -668,7 +658,7 @@ def _container_stem(name: str) -> str:
 
 
 def hub_offline() -> bool:
-    """huggingface_hub's own offline switch: when set, every resolve is a walk of the cache. Never raises."""
+    """huggingface_hub's offline switch. Never raises."""
     try:
         from huggingface_hub import constants
         return bool(constants.HF_HUB_OFFLINE)
@@ -681,9 +671,7 @@ def hub_name_known_absent(
     name: Optional[str],
     cache_dir: Optional[str] = None,
 ) -> bool:
-    """True when a Hub cache root records ``name`` as ABSENT at the revision it last saw, i.e. the
-    ``.no_exist`` marker huggingface_hub leaves behind when a download of that name got a 404.
-    Never raises."""
+    """True when a Hub cache root holds a ``.no_exist`` marker (a recorded 404) for ``name``. Never raises."""
     if not repo_id or not name:
         return False
     try:
@@ -695,7 +683,7 @@ def hub_name_known_absent(
             hit = try_to_load_from_cache(repo_id, name, cache_dir = root)
         except Exception:  # noqa: BLE001 - a malformed cache entry says nothing
             continue
-        # a str is a cached path and None is "never asked"; the remaining sentinel is the marker
+        # str = cached path, None = never asked, anything else = the .no_exist sentinel
         if hit is not None and not isinstance(hit, str):
             return True
     return False
@@ -709,27 +697,10 @@ def first_cached_as_resolved(
     online: Optional[bool] = None,
     cache_dir: Optional[str] = None,
 ) -> Optional[str]:
-    """The first cached name in ``names`` (already in the resolver's order) that a load would really
-    open without downloading anything else first, or None.
-
-    Offline the resolver walks the chain to the first cached name, so that is the answer. Online it
-    downloads the first name the Hub HOLDS, so a cached name further down only loads when every
-    other artifact ahead of it is absent from the Hub. Taking the first cached name regardless is
-    how an existing INT8 ``.pt`` read as "nothing to download" while the chain led with an uncached
-    INT8-ConvRot that the load then fetched, several GB the planner and the disk gate never saw.
-    So each uncached name ahead of the hit has to be ruled out:
-
-    - a container twin of the hit (same stem) never blocks: ``prefer_cached_pickle_twins`` already
-      put the cached container first, so the resolver opens it without asking for the twin;
-    - any other name blocks unless the cache records it as ABSENT, the ``.no_exist`` marker the
-      resolver's own 404 on it leaves behind. Before any load has asked, it may well be hosted.
-
-    A marker describes the revision the cache last saw, so the one load after a file is published
-    into a repo the cache already knew can still be planned as free; the resolver fetches the right
-    file regardless, and the cache knows the new revision from then on. Trusting markers is what
-    keeps an artifact the code names but the repo does not host yet (a ConvRot build ahead of its
-    upload) from making every load plan a download that never happens.
-
+    """The first cached name in ``names`` (resolver order) the load opens without downloading anything
+    first, else None. Offline that is the first cached name. Online an uncached name ahead of it blocks
+    (the resolver would fetch it) unless it is the hit's container twin or the cache recorded its 404;
+    otherwise a cached INT8 ``.pt`` reads as free while the load fetches an uncached INT8-ConvRot.
     ``online=None`` reads huggingface_hub's offline switch. Never raises."""
     try:
         if online is None:
@@ -1366,12 +1337,8 @@ def cached_checkpoint_path(
     cache hit was about and finds the other name uncached. Asked per NAME rather than per scheme,
     because the container is what decides it.
 
-    The answer is the file the LOAD would open, which online is not simply the first cached name:
-    ``first_cached_as_resolved`` says when an uncached artifact ahead of it (an INT8-ConvRot in front
-    of a cached INT8 ``.pt``) would be downloaded first, and then this is None. A cached
-    ``.pt`` whose safetensors twin is not cached still counts, as the resolver opens it.
-    ``online=False`` asks the plain question instead, is ANY readable name cached, which is what an
-    offline load opens and what a caller looking for evidence of a file wants.
+    Online the answer is the file the load opens (``first_cached_as_resolved``); ``online=False`` asks
+    whether ANY readable name is cached.
 
     ``names`` narrows the chain further, to a caller's own subset.
 
@@ -1813,7 +1780,6 @@ def _resolve_checkpoint_path(
         )
         if mirrored is not None:
             return mirrored
-        # An existing user's cached pickle answers before its uncached safetensors twin is fetched.
         names = prefer_cached_pickle_twins(
             source.location,
             names,

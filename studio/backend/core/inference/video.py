@@ -4411,7 +4411,6 @@ class VideoBackend:
         by_name = {s.rfilename: int(s.size or 0) for s in (info.siblings or [])}
         files: list[tuple[str, int]] = []
         for src in sources:
-            # Same order the prefetch and the loader walk: a cached .pt ahead of its uncached safetensors twin.
             wanted = prefer_cached_pickle_twins(
                 src.location,
                 list(candidate_filenames_of(src)),
@@ -4434,9 +4433,7 @@ class VideoBackend:
     ) -> Optional[str]:
         """The hosted pre-quantized denoiser repo when its checkpoint is ALREADY cached, else None.
 
-        Offline twin of ``_denoiser_prequant_hub_files``. Offline (``online=False``) any cached name is what the load
-        opens; online a cached name only counts when no other artifact ahead of it would be downloaded first, see
-        ``first_cached_as_resolved``."""
+        Offline twin of ``_denoiser_prequant_hub_files``; online semantics per ``first_cached_as_resolved``."""
         sources = VideoBackend._denoiser_prequant_source_list(fam, transformer_quant, base, h3_task)
         # A local override is on disk by definition; only a hosted checkpoint has a cache to probe
         if not sources or any(getattr(src, "kind", None) != "repo" for src in sources):

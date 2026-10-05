@@ -3896,8 +3896,7 @@ class DiffusionBackend:
             restricted_prequant_load_supported,
         )
 
-        # The resolver's own reordering, so a cached .pt is what gets priced and staged rather than its
-        # uncached safetensors twin.
+        # The resolver's order, so a cached .pt is priced and staged instead of its uncached twin.
         ordered = prefer_cached_pickle_twins(
             source.location,
             candidate_filenames_of(source),
@@ -5140,8 +5139,7 @@ class DiffusionBackend:
                             sized[name] = DiffusionBackend._union_over_cached_revs(repo, _sizes)
                         return sized[name]
 
-                    # The file the load will OPEN, in the resolver's order: a cached older encoder does not
-                    # make an uncached one ahead of it free, the load downloads that one first.
+                    # The file the load opens: a cached older encoder does not make an uncached one ahead free.
                     names = [
                         n for n in te_candidate_filenames(source) if te_candidate_is_readable(n)
                     ]
