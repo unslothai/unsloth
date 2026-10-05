@@ -36603,6 +36603,8 @@ class LlamaCppBackend:
         tool_controller = ToolLoopController(
             tools = controller_tools,
             auto_heal_tool_calls = auto_heal_tool_calls,
+            session_id = session_id,
+            thread_id = thread_id,
         )
 
         def _tool_succeeded(tool_name: str) -> bool:
