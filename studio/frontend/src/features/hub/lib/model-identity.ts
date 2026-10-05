@@ -108,6 +108,16 @@ function hfCacheRepoId(path: string): string | null {
 }
 
 /**
+* Whether *identifier* is an HF cache snapshot dir, so its public id names the repo rather
+* than the revision inside it. Mirrors ``hf_cache_repo_id`` in core/inference/model_ids.py.
+*/
+export function isHfCacheSnapshotPath(
+  identifier: string | null | undefined,
+): boolean {
+  return identifier != null && hfCacheRepoId(identifier) !== null;
+}
+
+/**
 * The clean id the backend reports for a model loaded by path. Mirrors ``public_model_id`` in
 * core/inference/model_ids.py, which is what ``/api/inference/status`` puts in ``active_model``:
 * an HF cache snapshot becomes its repo id, any other local GGUF its filename stem.
@@ -183,10 +193,11 @@ export function residentModelIdMatches(
   });
 }
 
-// Ollama's blobs reach the picker through a symlink dir that local_model_resolver.py refuses
-// to index, so mirroring their settings would advertise a load that cannot happen.
 const OLLAMA_LINK_SEGMENTS = new Set([".studio_links", "ollama_links"]);
+const OLLAMA_MANIFEST_REF_PREFIX = "ollama-manifest:";
 
+/** A `.gguf` link an earlier load materialized. The resolver refuses to index one, so mirroring
+ *  settings onto it would advertise a load that cannot happen; a reference it does index. */
 export function isOllamaLinkPath(modelId: string | null | undefined): boolean {
   if (!modelId) {
     return false;
@@ -195,6 +206,14 @@ export function isOllamaLinkPath(modelId: string | null | undefined): boolean {
     .replace(BACKSLASHES_RE, "/")
     .split("/")
     .some((segment) => OLLAMA_LINK_SEGMENTS.has(segment));
+}
+
+/** Either spelling of an Ollama model: the inventory's reference, or a materialized link. */
+export function isOllamaModelId(modelId: string | null | undefined): boolean {
+  return (
+    Boolean(modelId?.startsWith(OLLAMA_MANIFEST_REF_PREFIX)) ||
+    isOllamaLinkPath(modelId)
+  );
 }
 
 // A dropped or file-picked GGUF is the API's second unreachable identity: /status withholds the

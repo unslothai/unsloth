@@ -15,25 +15,21 @@
 // aria-hidden span, mouse-only by design).
 
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import test from "node:test";
-import { fileURLToPath } from "node:url";
+
+import { readText } from "./helpers/kit.ts";
 
 const PAGES = [
   ["Images", "../src/features/images/images-page.tsx"],
   ["Video", "../src/features/video/video-page.tsx"],
 ] as const;
 
-function read(path: string): string {
-  return readFileSync(fileURLToPath(new URL(path, import.meta.url)), "utf8");
-}
-
-const DOWNLOAD_PANEL = read(
+const DOWNLOAD_PANEL = readText(
   "../src/features/hub/download-manager/download-manager-panel.tsx",
 );
 
 for (const [page, path] of PAGES) {
-  const SOURCE = read(path);
+  const SOURCE = readText(path);
 
   test(`the ${page} load toast offers a Cancel action`, () => {
     assert.match(
@@ -174,7 +170,6 @@ for (const [page, path] of PAGES) {
     );
   });
 
-
   test(`the ${page} cancel fences the pending start request`, () => {
     // Cancel is reachable the instant `busy` turns "loading", which is before the start request
     // has even been sent. Its unload can therefore reach the backend BEFORE begin_load registers
@@ -245,7 +240,11 @@ for (const [page, path] of PAGES) {
   test(`the ${page} cancel counter is bumped by every teardown`, () => {
     const drop = SOURCE.slice(
       SOURCE.indexOf("const dropResidentState = useCallback("),
-      SOURCE.indexOf("}, [dismissLoadToast, pickGuard]);"),
+      // Anchored from the opening, so the deps can grow without silently widening this slice.
+      SOURCE.indexOf(
+        "}, [dismissLoadToast,",
+        SOURCE.indexOf("const dropResidentState = useCallback("),
+      ),
     );
     assert.match(
       drop,
@@ -337,16 +336,19 @@ test("the download manager keeps its own, differently named cancel", () => {
   assert.match(DOWNLOAD_PANEL, /"Cancel download"/);
 });
 
-
 test("cancelling a deploy does not leave the adapter queued", () => {
   // handleDeployAdapter parks the trained adapter in pendingDeploy and loads its base. That ref
   // is applied to whatever LoRA-capable model becomes resident NEXT, so a cancelled deploy would
   // silently mix a discarded adapter into an unrelated model's generations. Clearing it belongs
   // in dropResidentState, which every cancel and every eject already runs.
-  const SOURCE = read("../src/features/images/images-page.tsx");
+  const SOURCE = readText("../src/features/images/images-page.tsx");
   const drop = SOURCE.slice(
     SOURCE.indexOf("const dropResidentState = useCallback("),
-    SOURCE.indexOf("}, [dismissLoadToast, pickGuard]);"),
+    // Anchored from the opening, so the deps can grow without silently widening this slice.
+    SOURCE.indexOf(
+      "}, [dismissLoadToast,",
+      SOURCE.indexOf("const dropResidentState = useCallback("),
+    ),
   );
   assert.match(drop, /pendingDeploy\.current = null;/);
 });

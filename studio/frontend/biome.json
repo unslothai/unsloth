@@ -38,6 +38,16 @@
   },
   "overrides": [
     {
+      "include": ["scripts/**"],
+      "linter": {
+        "rules": {
+          "correctness": { "noNodejsModules": "off" },
+          "suspicious": { "noConsole": "off", "noConsoleLog": "off" },
+          "performance": { "useTopLevelRegex": "off" }
+        }
+      }
+    },
+    {
       "include": ["vite.config.ts", "eslint.config.js"],
       "linter": {
         "rules": {

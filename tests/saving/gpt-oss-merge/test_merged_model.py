@@ -1,5 +1,4 @@
-# tests/saving scripts run their whole body at import, so plain pytest
-# collection would download checkpoints and train. Skip unless opted in.
+# tests/saving scripts run their whole body at import, so plain pytest collection would download checkpoints and train.
 import sys as _sys
 from pathlib import Path as _Path
 
@@ -11,7 +10,6 @@ _require_opt_in(
     "GPU + Hub saving script; its body runs at import.",
 )
 
-# inference_on_merged.py
 from unsloth import FastLanguageModel
 from transformers import TextStreamer
 import torch
@@ -42,7 +40,6 @@ merged_model, merged_tokenizer = FastLanguageModel.from_pretrained(
 )
 print("✅ Merged model loaded successfully.")
 
-# --- Run Inference ---
 print("\n🚀 Running inference...")
 messages = [
     {"role": "user", "content": "Solve x^5 + 3x^4 - 10 = 3."},
@@ -58,7 +55,6 @@ inputs = merged_tokenizer.apply_chat_template(
 _ = merged_model.generate(**inputs, max_new_tokens = 512, streamer = TextStreamer(merged_tokenizer))
 print("\n✅ Inference complete.")
 
-# --- Final Cleanup ---
 print("\n🧹 Cleaning up merged model directory and cache...")
 del merged_model, merged_tokenizer
 torch.cuda.empty_cache()

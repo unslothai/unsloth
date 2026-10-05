@@ -5,6 +5,7 @@ import { spawnSync } from "node:child_process";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
+import { performance } from "node:perf_hooks";
 import { fileURLToPath } from "node:url";
 import { parseSync } from "oxc-parser";
 
@@ -20,6 +21,10 @@ const CODE_SHAPES = new Set(["auto", "module", "snippet"]);
 const SNIPPET_PREFIX = "(() => {\n";
 const SNIPPET_SUFFIX = "\n})();\nexport {};\n";
 const OXLINT_SUPPRESSED_RULES = ["no-unused-vars", "no-new-array"];
+// The caller kills only this wrapper, so a wedged oxlint has to die here or it is orphaned.
+const OXLINT_DEFAULT_BUDGET_MS = 30_000;
+const OXLINT_BUDGET_MARGIN_MS = 2_000;
+const OXLINT_MIN_TIMEOUT_MS = 1_000;
 const TOOL_DIR = dirname(fileURLToPath(import.meta.url));
 
 function mapLang(value) {
@@ -45,6 +50,11 @@ function mapMode(value) {
     return normalized;
   }
   return "syntax";
+}
+
+function mapBudgetMs(value) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : OXLINT_DEFAULT_BUDGET_MS;
 }
 
 function mapCodeShape(value) {
@@ -374,7 +384,7 @@ function fallbackLintResults(entries, message) {
   );
 }
 
-function runLintBatch(entries) {
+function runLintBatch(entries, budgetMs) {
   if (entries.length === 0) {
     return new Map();
   }
@@ -395,9 +405,16 @@ function runLintBatch(entries) {
       "json",
       tempDir,
     ];
+    const timeoutMs = Math.floor(budgetMs - OXLINT_BUDGET_MARGIN_MS - performance.now());
+    if (timeoutMs < OXLINT_MIN_TIMEOUT_MS) {
+      return fallbackLintResults(entries, "oxlint skipped: validation budget exhausted");
+    }
     const exec = spawnSync(oxlintBin, oxlintArgs, {
       encoding: "utf8",
       cwd: TOOL_DIR,
+      timeout: timeoutMs,
+      // SIGTERM is ignorable, and spawnSync then waits out the child regardless.
+      killSignal: "SIGKILL",
     });
     if (exec.error) {
       return fallbackLintResults(
@@ -496,7 +513,7 @@ function readStdin() {
   });
 }
 
-function runValidation({ codes, lang, mode, codeShape }) {
+function runValidation({ codes, lang, mode, codeShape, oxlintBudgetMs }) {
   if (mode === "syntax") {
     return codes.map((code, index) =>
       validateSyntaxOne({ code, lang, index, codeShape }).result,
@@ -507,7 +524,7 @@ function runValidation({ codes, lang, mode, codeShape }) {
     const entries = codes.map((code, index) =>
       resolveLintEntry({ code, lang, index, codeShape }),
     );
-    const lintMap = runLintBatch(entries);
+    const lintMap = runLintBatch(entries, oxlintBudgetMs);
     return entries.map(
       (entry) =>
         lintMap.get(entry.index) ??
@@ -525,7 +542,7 @@ function runValidation({ codes, lang, mode, codeShape }) {
   const lintTargets = syntaxRuns
     .filter((run) => run.result.is_valid === true)
     .map((run) => run.lintEntry);
-  const lintMap = runLintBatch(lintTargets);
+  const lintMap = runLintBatch(lintTargets, oxlintBudgetMs);
 
   return syntaxRuns.map((run) => {
     if (run.result.is_valid !== true) {
@@ -566,7 +583,8 @@ async function main() {
   const mode = mapMode(payload?.mode);
   const codeShape = mapCodeShape(payload?.code_shape);
   const codes = Array.isArray(payload?.codes) ? payload.codes : [];
-  const out = runValidation({ codes, lang, mode, codeShape });
+  const oxlintBudgetMs = mapBudgetMs(payload?.timeout_ms);
+  const out = runValidation({ codes, lang, mode, codeShape, oxlintBudgetMs });
   process.stdout.write(JSON.stringify(out));
 }
 

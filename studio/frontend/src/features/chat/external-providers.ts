@@ -2,9 +2,12 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import type {
+  ConnectionApiType,
+  ProviderApiType,
   ProviderAuthKind,
   ProviderAuthStatus,
 } from "./api/providers-api";
+import { modelCatalogSupportsVision } from "./model-catalog.ts";
 
 export interface ExternalProviderConfig {
   id: string;
@@ -14,10 +17,18 @@ export interface ExternalProviderConfig {
   name: string;
   /** Provider base URL (default from registry or backend-saved override). */
   baseUrl: string;
+  apiType?: ProviderApiType;
+  decisionsOnly?: boolean;
   /** Model ids user enabled from `/api/providers/models`. */
   models: string[];
   /** Cached available model ids from the provider's /models response. */
   availableModels?: string[];
+  /** The provider type as the BACKEND stores it, which is not always `providerType` above:
+   *  `resolveUiProviderTypeFromConfig` shows a row saved as `openai` with a custom name or base
+   *  URL as "custom". Absent means unknown, not custom. */
+  backendProviderType?: string;
+  /** Optional Max Tokens cap for this connection, replacing the undocumented-model fallback. */
+  maxOutputTokens?: number;
 
   /** Whether the backend has an installation-saved key. */
   hasApiKey?: boolean;
@@ -27,31 +38,28 @@ export interface ExternalProviderConfig {
   authStatus?: ProviderAuthStatus;
   /** Whether to ask supported hosted providers to use prompt caching. */
   enablePromptCaching?: boolean;
-  /**
-   * Anthropic prompt-cache TTL bucket. Only meaningful when `enablePromptCaching`
-   * is true and the provider supports the choice (Anthropic today). Maps to
-   * backend `prompt_cache_ttl`, which sets `cache_control.ttl` on the cache
-   * marker. Omitted = inherit Anthropic's default 5-minute pool.
-   */
+  /** Anthropic prompt-cache TTL bucket. Only meaningful when `enablePromptCaching` is true and
+   *  the provider supports the choice. Maps to backend `prompt_cache_ttl`, which sets
+   *  `cache_control.ttl`. Omitted = inherit Anthropic's default 5-minute pool. */
   promptCacheTtl?: "5m" | "1h";
   /** User-pinned: the loaded vLLM model supports `enable_thinking`. */
   isReasoningModel?: boolean;
-  /**
-   * Default idle-timeout (minutes) for new OpenAI shell containers. Pre-fills the
-   * "Create container" dialog and is the TTL the auto-create-per-thread path POSTs
-   * to /v1/containers. OpenAI's hard default is 20. Only for OpenAI cloud.
-   */
+  /** llama.cpp only, this browser only: reload models on connect and reconnect. */
+  autoReloadModels?: boolean;
+  /** Default idle-timeout (minutes) for new OpenAI shell containers. Pre-fills the create dialog
+   *  and is the TTL the auto-create-per-thread path POSTs. OpenAI's hard default is 20. */
   openaiContainerTtlMinutes?: number;
   createdAt: number;
   updatedAt: number;
 }
 
-// Gemini supports prompt caching, but the wire flow needs a separate POST to
-// /v1beta/cachedContents before generateContent can reference the cache; the
-// enable_prompt_caching boolean alone isn't enough. Until that two-step flow
-// ships, keep the picker off so the toggle doesn't silently no-op for Gemini.
-// See https://ai.google.dev/gemini-api/docs/caching.
-const PROMPT_CACHING_PROVIDER_TYPES = new Set(["openai", "anthropic"]);
+// Providers whose caching setting is kept and sent; `promptCachingAppliesToModel` decides where
+// the switch shows. Gemini supports prompt caching, but the wire flow needs a separate POST to
+// /v1beta/cachedContents before generateContent can reference the cache. Until that two-step
+// flow ships, keep it out so the toggle does not silently no-op for Gemini. See
+// https://ai.google.dev/gemini-api/docs/caching.
+// The enable_prompt_caching boolean alone is not enough.
+const PROMPT_CACHING_PROVIDER_TYPES = new Set(["openai", "anthropic", "openrouter"]);
 
 export function supportsProviderPromptCaching(
   providerType: string | null | undefined,
@@ -59,12 +67,10 @@ export function supportsProviderPromptCaching(
   return providerType != null && PROMPT_CACHING_PROVIDER_TYPES.has(providerType);
 }
 
-/**
- * Whether the provider lets the user choose between a short and long prompt-cache
- * pool. Anthropic exposes 5m and 1h ephemeral pools via `cache_control.ttl`;
- * OpenAI's automatic cache has no equivalent knob, so it stays off the picker.
- */
-const PROMPT_CACHE_TTL_PROVIDER_TYPES = new Set(["anthropic"]);
+/** Whether the provider lets the user choose between a short and long prompt-cache pool.
+ *  Anthropic exposes 5m and 1h ephemeral pools via `cache_control.ttl` (OpenRouter forwards it
+ *  for Claude models); OpenAI's automatic cache has no equivalent knob. */
+const PROMPT_CACHE_TTL_PROVIDER_TYPES = new Set(["anthropic", "openrouter"]);
 
 export function supportsProviderPromptCacheTtl(
   providerType: string | null | undefined,
@@ -74,14 +80,42 @@ export function supportsProviderPromptCacheTtl(
   );
 }
 
+// OpenRouter acts on the cache settings only for Claude; its other models cache automatically.
+function cacheSettingsApplyToModel(
+  providerType: string | null | undefined,
+  modelId: string | null | undefined,
+): boolean {
+  return providerType !== "openrouter" || /^~?anthropic\//i.test(modelId ?? "");
+}
+
+export function promptCachingAppliesToModel(
+  providerType: string | null | undefined,
+  modelId: string | null | undefined,
+): boolean {
+  return (
+    supportsProviderPromptCaching(providerType) &&
+    cacheSettingsApplyToModel(providerType, modelId)
+  );
+}
+
+export function promptCacheTtlAppliesToModel(
+  providerType: string | null | undefined,
+  modelId: string | null | undefined,
+): boolean {
+  return (
+    supportsProviderPromptCacheTtl(providerType) &&
+    cacheSettingsApplyToModel(providerType, modelId)
+  );
+}
+
 const PROMPT_CACHE_TTL_VALUES = new Set<"5m" | "1h">(["5m", "1h"]);
 
 export function isPromptCacheTtl(value: unknown): value is "5m" | "1h" {
   return typeof value === "string" && PROMPT_CACHE_TTL_VALUES.has(value as "5m" | "1h");
 }
 
-// Provider types exposing the connection-level "reasoning model" toggle.
-// vLLM's OpenAI-compat endpoint doesn't advertise this per model.
+// Provider types exposing the connection-level "reasoning model" toggle. vLLM's OpenAI-compat
+// endpoint does not advertise this per model; Ollama's /api/tags does.
 const REASONING_TOGGLE_PROVIDER_TYPES = new Set(["vllm"]);
 
 export function supportsProviderReasoningToggle(
@@ -90,6 +124,26 @@ export function supportsProviderReasoningToggle(
   return (
     providerType != null && REASONING_TOGGLE_PROVIDER_TYPES.has(providerType)
   );
+}
+
+const DECISION_PROVIDER_TYPES = new Set(["typesafe", "liquid"]);
+
+export function isDecisionConnection(
+  provider: Pick<ExternalProviderConfig, "providerType" | "decisionsOnly">,
+): boolean {
+  return (
+    provider.decisionsOnly === true ||
+    DECISION_PROVIDER_TYPES.has(provider.providerType)
+  );
+}
+
+export function connectionApiFields(
+  apiType: ConnectionApiType | undefined,
+): Pick<ExternalProviderConfig, "apiType" | "decisionsOnly"> {
+  return {
+    apiType: apiType === "responses" ? "responses" : "chat_completions",
+    decisionsOnly: apiType === "systemone",
+  };
 }
 
 // Known text-only providers on their main chat endpoint.
@@ -117,9 +171,15 @@ export function providerTypeSupportsVision(
 }
 
 
+export type ProviderModelCapability = {
+  vision?: boolean;
+  studio_tools?: boolean;
+  thinking?: boolean;
+};
+
 const REGISTRY_MODEL_CAPABILITIES = new Map<
   string,
-  Record<string, { vision?: boolean; studio_tools?: boolean }>
+  Record<string, ProviderModelCapability>
 >();
 
 const REGISTRY_MODEL_CAPABILITIES_KEY =
@@ -133,10 +193,7 @@ function hydrateProviderModelCapabilities(): void {
   try {
     const parsed = JSON.parse(
       localStorage.getItem(REGISTRY_MODEL_CAPABILITIES_KEY) ?? "{}",
-    ) as Record<
-      string,
-      Record<string, { vision?: boolean; studio_tools?: boolean }>
-    >;
+    ) as Record<string, Record<string, ProviderModelCapability>>;
     for (const [providerType, capabilities] of Object.entries(parsed)) {
       if (capabilities && typeof capabilities === "object") {
         REGISTRY_MODEL_CAPABILITIES.set(providerType, capabilities);
@@ -159,9 +216,16 @@ function persistProviderModelCapabilities(): void {
   }
 }
 
+export function getProviderModelCapabilities(
+  providerType: string,
+): Record<string, ProviderModelCapability> | undefined {
+  hydrateProviderModelCapabilities();
+  return REGISTRY_MODEL_CAPABILITIES.get(providerType);
+}
+
 export function setProviderModelCapabilities(
   providerType: string,
-  capabilities: Record<string, { vision?: boolean; studio_tools?: boolean }> | undefined,
+  capabilities: Record<string, ProviderModelCapability> | undefined,
 ): void {
   hydrateProviderModelCapabilities();
   if (capabilities) REGISTRY_MODEL_CAPABILITIES.set(providerType, capabilities);
@@ -169,6 +233,29 @@ export function setProviderModelCapabilities(
   persistProviderModelCapabilities();
 }
 
+/** Drop persisted capabilities for provider types the registry no longer lists. This
+ *  localStorage map outlives the backend that wrote it, and a per-entry write can only
+ *  correct entries the registry still returns. A hidden or rolled-back provider is simply
+ *  absent from the response, so without this its last-known `studio_tools: true` latches
+ *  forever. The registry response is the whole truth, so an empty one legitimately means
+ *  "none", and clearing is the safe direction: an unknown capability reads as null. */
+export function pruneProviderModelCapabilities(knownProviderTypes: Iterable<string>): void {
+  hydrateProviderModelCapabilities();
+  const known = new Set(knownProviderTypes);
+  let removed = false;
+  for (const providerType of [...REGISTRY_MODEL_CAPABILITIES.keys()]) {
+    if (!known.has(providerType)) {
+      REGISTRY_MODEL_CAPABILITIES.delete(providerType);
+      removed = true;
+    }
+  }
+  if (removed) persistProviderModelCapabilities();
+}
+
+
+// The backend registry marks these supports_vision: false and strips image parts before the request, so a catalog
+// that lists image input must not open the composer to an attachment the model never receives.
+const IMAGE_STRIPPING_PROVIDER_TYPES = new Set<string>(["deepseek"]);
 
 export function providerModelSupportsVision(
   providerType: string | null | undefined,
@@ -180,23 +267,141 @@ export function providerModelSupportsVision(
     const capability = REGISTRY_MODEL_CAPABILITIES.get(providerType)?.[modelId];
     if (typeof capability?.vision === "boolean") return capability.vision;
   }
+  if (providerType != null && IMAGE_STRIPPING_PROVIDER_TYPES.has(providerType)) return false;
+  const catalogVision = modelCatalogSupportsVision(providerType, modelId);
+  if (catalogVision != null) return catalogVision;
   return providerTypeSupportsVision(providerType);
 }
 
+
+// Mirrors _MIXED_CATALOG_PROVIDER_TYPES in studio/backend/routes/inference.py: vision for
+// the family, unknown for a given model, so an MCP picture is not sent to one the
+// registry says nothing about.
+const MIXED_CATALOG_PROVIDER_TYPES = new Set(["huggingface", "openrouter", "qwen"]);
+
+/** Whether the backend's external tool loop will hand this model an MCP picture -- the
+ *  same rule as its _external_takes_mcp_images, so envelopes the backend would strip
+ *  anyway are not re-uploaded on every turn. Stricter than providerModelSupportsVision:
+ *  a model-level answer wins, a mixed catalog with none is a no, unknown elsewhere is a yes. */
+export function providerModelTakesMcpImages(
+  providerType: string | null | undefined,
+  modelId: string | null | undefined,
+): boolean {
+  if (providerTypeSupportsVision(providerType) === false) return false;
+  hydrateProviderModelCapabilities();
+  if (providerType && modelId) {
+    const capability = REGISTRY_MODEL_CAPABILITIES.get(providerType)?.[modelId];
+    if (typeof capability?.vision === "boolean") return capability.vision;
+  }
+  if (providerType && MIXED_CATALOG_PROVIDER_TYPES.has(providerType)) return false;
+  return true;
+}
+
+/** Provider-level capability key. Self-hosted model ids are user-supplied, so there is no
+ *  per-model entry: the registry declares the capability once for the whole provider type. */
+export const PROVIDER_CAPABILITY_WILDCARD = "*";
 
 export function providerModelSupportsStudioTools(
   providerType: string | null | undefined,
   modelId: string | null | undefined,
 ): boolean | null {
+  if (!providerType) return null;
+  hydrateProviderModelCapabilities();
+  const capabilities = REGISTRY_MODEL_CAPABILITIES.get(providerType);
+  if (modelId) {
+    const value = capabilities?.[modelId]?.studio_tools;
+    if (typeof value === "boolean") return value;
+  }
+  const providerDefault = capabilities?.[PROVIDER_CAPABILITY_WILDCARD]?.studio_tools;
+  return typeof providerDefault === "boolean" ? providerDefault : null;
+}
+
+/** No wildcard fallback: one Ollama host serves thinking and non-thinking models. `null` = never
+ *  described (hand-typed id, older Ollama), which is not a yes. */
+export function providerModelSupportsThinking(
+  providerType: string | null | undefined,
+  modelId: string | null | undefined,
+): boolean | null {
   if (!providerType || !modelId) return null;
   hydrateProviderModelCapabilities();
-  const value = REGISTRY_MODEL_CAPABILITIES.get(providerType)?.[modelId]?.studio_tools;
+  const value =
+    REGISTRY_MODEL_CAPABILITIES.get(providerType)?.[modelId]?.thinking;
   return typeof value === "boolean" ? value : null;
+}
+
+/** Rows with a capability list overwrite `thinking` (a re-pulled tag can lose it); rows without
+ *  one are left alone. */
+export function learnCatalogModelCapabilities(
+  providerType: string,
+  models: readonly { id: string; capabilities?: string[] | null }[],
+): void {
+  if (!providerType) return;
+  const stored = getProviderModelCapabilities(providerType) ?? {};
+  const merged: Record<string, ProviderModelCapability> = { ...stored };
+  let learned = false;
+  for (const model of models) {
+    const names = model.capabilities;
+    const modelId = model.id?.trim();
+    if (!modelId || !Array.isArray(names)) continue;
+    merged[modelId] = {
+      ...stored[modelId],
+      thinking: names.includes("thinking"),
+    };
+    learned = true;
+  }
+  if (learned) setProviderModelCapabilities(providerType, merged);
+}
+
+/** Whether the connection behind an `external::` model id runs Unsloth tools. Resolves the
+ *  provider type from the saved connection, so callers holding only a checkpoint id can ask
+ *  the capability question without risking an import cycle. */
+export function externalModelSupportsStudioTools(
+  checkpoint: string | null | undefined,
+): boolean {
+  const selection = parseExternalModelId(checkpoint);
+  if (!selection) return false;
+  const provider = loadExternalProviders().find(
+    (candidate) => candidate.id === selection.providerId,
+  );
+  if (!provider) return false;
+  return (
+    providerModelSupportsStudioTools(provider.providerType, selection.modelId) === true
+  );
 }
 
 export const CUSTOM_BACKEND_PROVIDER_TYPE = "openai";
 export const LEGACY_CUSTOM_PROVIDER_TYPE = "custom";
 export const CUSTOM_PROVIDER_DISPLAY_NAME = "Custom";
+const OPENAI_CODEX_PROVIDER_TYPE = "openai_codex";
+export const PROVIDER_MAX_OUTPUT_TOKENS_MIN = 64;
+
+export function normalizeProviderMaxOutputTokens(
+  value: unknown,
+): number | undefined {
+  if (
+    typeof value !== "number" ||
+    !Number.isSafeInteger(value) ||
+    value < PROVIDER_MAX_OUTPUT_TOKENS_MIN
+  ) {
+    return undefined;
+  }
+  return value;
+}
+
+/** Whether a connection may carry a per-connection Max Tokens limit. Every type may, except
+ *  ChatGPT subscriptions, whose routing, model list and output cap are fixed. Both types are
+ *  checked: the stored one is what the server validates against, the UI one is all the dialog
+ *  has for a connection with no server row yet. */
+export function supportsProviderMaxOutputTokens(
+  uiProviderType: string | null | undefined,
+  backendProviderType: string | null | undefined,
+): boolean {
+  if (!uiProviderType) return false;
+  return (
+    uiProviderType !== OPENAI_CODEX_PROVIDER_TYPE &&
+    backendProviderType !== OPENAI_CODEX_PROVIDER_TYPE
+  );
+}
 
 export const CUSTOM_PROVIDER_PRESETS = [
   {
@@ -273,8 +478,8 @@ export function supportsRemoteModelCatalog(
   );
 }
 
-/** Presets that hide the API-key field. Ollama is not skipped: Ollama cloud
- * requires a key; local servers leave the optional field empty. */
+/** Presets that hide the API-key field. Ollama is not skipped: Ollama cloud requires a key;
+ *  local servers leave the optional field empty. */
 export function customPresetSkipsApiKeyField(
   providerType: string | null | undefined,
 ): boolean {
@@ -332,14 +537,13 @@ export function toExternalBackendProviderType(
   providerType: string | null | undefined,
 ): string | undefined {
   if (!providerType) return undefined;
-  // vLLM's /v1/responses applies the loaded model's chat template, which 400s on
-  // strict-alternation templates (e.g. Gemma 3). Pass the type through so the
-  // backend routes vLLM to /v1/chat/completions instead of the Responses path.
+  // vLLM's /v1/responses applies the loaded model's chat template, which 400s on strict-alternation
+  // templates. Pass the type through so the backend routes vLLM to /v1/chat/completions instead.
   if (providerType === "vllm") return "vllm";
   if (providerType === "ollama") return "ollama";
   if (providerType === "llama_cpp") return "llama_cpp";
-  // Generic custom servers are OpenAI-compatible, but should still use the
-  // chat-completions backend path instead of OpenAI's Responses API route.
+  // Generic custom servers are OpenAI-compatible, but should still use the chat-completions
+  // backend path instead of OpenAI's Responses API route.
   if (providerType === LEGACY_CUSTOM_PROVIDER_TYPE) {
     return LEGACY_CUSTOM_PROVIDER_TYPE;
   }
@@ -408,12 +612,20 @@ function normalizeProvider(raw: ExternalProviderConfig): ExternalProviderConfig 
     providerType,
     name: raw.name.trim(),
     baseUrl: raw.baseUrl.trim(),
+    apiType: raw.apiType === "responses" ? "responses" : "chat_completions",
     models: raw.models
       .map((model) => model.trim())
       .filter((model) => model.length > 0),
     availableModels: (raw.availableModels ?? [])
       .map((model) => model.trim())
       .filter((model) => model.length > 0),
+    // Junk from a hand-edited entry becomes undefined, i.e. unknown.
+    backendProviderType:
+      typeof raw.backendProviderType === "string" &&
+      raw.backendProviderType.trim().length > 0
+        ? raw.backendProviderType.trim()
+        : undefined,
+    maxOutputTokens: normalizeProviderMaxOutputTokens(raw.maxOutputTokens),
     enablePromptCaching: supportsProviderPromptCaching(providerType)
       ? raw.enablePromptCaching !== false
       : undefined,
@@ -425,6 +637,8 @@ function normalizeProvider(raw: ExternalProviderConfig): ExternalProviderConfig 
     isReasoningModel: supportsProviderReasoningToggle(providerType)
       ? raw.isReasoningModel === true
       : undefined,
+    autoReloadModels:
+      providerType === "llama_cpp" ? raw.autoReloadModels === true : undefined,
     openaiContainerTtlMinutes:
       providerType === "openai" &&
       typeof raw.openaiContainerTtlMinutes === "number" &&
@@ -547,8 +761,7 @@ export function saveExternalProviders(
   if (!canUseStorage()) return;
   try {
     localStorage.setItem(EXTERNAL_PROVIDERS_KEY, JSON.stringify(providers));
-    // Legacy keys are migration input. Preserve unmatched entries until the
-    // backend confirms the exact key was stored.
+    // Legacy keys are migration input. Preserve unmatched entries until the backend confirms the exact key was stored.
   } catch {
     // ignore
   }

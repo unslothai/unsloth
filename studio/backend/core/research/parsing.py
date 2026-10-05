@@ -21,6 +21,9 @@ from core.research.redaction import _sanitize_public_query
 _STREAMED_TITLE = re.compile(r'"title"\s*:\s*"((?:[^"\\]|\\.)*)"')
 # One more than the plan-step cap, since the plan's own title matches too.
 _MAX_PREVIEW_LABELS = 31
+# Allow a list-item or block-quote container marker before the fence, else the open is missed and a
+# marker quoted inside is taken for the real boundary.
+_MARKDOWN_FENCE = re.compile(r"^ {0,3}(?:(?:[-*+]|\d{1,9}[.)])[ \t]+|>[ \t]?)*(`{3,}|~{3,})")
 
 
 def _validate_agent_action(
@@ -123,8 +126,7 @@ def _normalize_synthesis_audit(
                 item.get("documentCitations"),
                 allowed_document_citations,
             )
-            # A claim is supported only when the audit maps it to web or document evidence
-            # gathered in this run.
+            # A claim is supported only when the audit maps it to web or document evidence gathered in this run.
             if claim and (urls or document_citations):
                 supported_claims.append(
                     {
@@ -273,3 +275,39 @@ def _recover_report_from_reasoning(reasoning: str) -> str:
         return ""
     report = text[marker.start() :].strip()
     return report if len(report) >= 500 else ""
+
+
+def _report_after_boundary(text: str, boundary: str) -> str | None:
+    lines = text.splitlines(keepends = True)
+    fence_char: str | None = None
+    fence_length = 0
+    boundary_line: int | None = None
+    for index, line in enumerate(lines):
+        content = line.rstrip("\r\n")
+        fence = _MARKDOWN_FENCE.match(content)
+        if fence_char is not None:
+            if fence is not None:
+                token = fence.group(1)
+                remainder = content[fence.end() :]
+                if token[0] == fence_char and len(token) >= fence_length and not remainder.strip():
+                    fence_char = None
+                    fence_length = 0
+            continue
+        if fence is not None:
+            token = fence.group(1)
+            if token[0] == "`" and "`" in content[fence.end() :]:
+                continue
+            fence_char = token[0]
+            fence_length = len(token)
+            continue
+        # CommonMark measures indentation in columns with a four-column tab stop, so one tab opens an
+        # indented code block just as four spaces do.
+        prefix = content[: len(content) - len(content.lstrip(" \t"))]
+        indentation = len(prefix.expandtabs(4))
+        # splitlines breaks on whitespace forms rstrip("\r\n") leaves behind, so strip every one rather than
+        # let a stray one hide the boundary.
+        if indentation <= 3 and content[len(prefix) :].strip().strip("`").strip() == boundary:
+            boundary_line = index
+    if boundary_line is None:
+        return None
+    return "".join(lines[boundary_line + 1 :]).strip()

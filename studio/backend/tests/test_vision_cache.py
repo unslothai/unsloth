@@ -13,12 +13,23 @@ pattern used by ``detect_audio_type()``. These tests verify:
 * Exceptions that fall back to False are cached.
 """
 
+import struct
 import sys
 import types as _types
 from pathlib import Path
 from unittest.mock import patch, MagicMock
 
 import pytest
+
+
+def _shared_setup_1(monkeypatch):
+    import utils.models.model_config as mc
+
+    mc._audio_detection_cache.clear()
+    monkeypatch.setattr(mc, "is_local_path", lambda *_a, **_k: False)
+    monkeypatch.setattr(mc, "resolve_cached_repo_id_case", lambda n, *_a, **_k: n)
+    return mc
+
 
 # sys.path + logger stub — same pattern as the rest of the test suite
 _BACKEND_DIR = str(Path(__file__).resolve().parent.parent)
@@ -141,10 +152,17 @@ class TestVisionCacheSubprocessPath:
 # --- Local GGUF capability path ---
 
 
+def _projector_declaring(path: Path, key: str) -> Path:
+    """A minimal GGUF carrying one ``clip.has_*_encoder`` bool, no tensors."""
+    kv = struct.pack("<Q", len(key)) + key.encode() + struct.pack("<I", 7) + struct.pack("<?", True)
+    path.write_bytes(struct.pack("<IIQQ", 0x46554747, 3, 0, 1) + kv)
+    return path
+
+
 class TestLocalGgufVisionDetection:
-    """``detect_mmproj_file`` skips a zero-byte projector as an interrupted download, so every
-    projector fixture here is written non-empty; the byte content itself is never read (there is
-    no GGUF header, so pairing falls back to the filename)."""
+    """Every projector fixture is non-empty, since ``detect_mmproj_file`` skips a zero-byte one
+    as an interrupted download; those built by ``_projector_declaring`` also carry a header,
+    because the capability they assert is read from it."""
 
     @patch(
         "utils.models.model_config._is_vision_model_subprocess",
@@ -230,6 +248,88 @@ class TestLocalGgufVisionDetection:
         assert config.is_vision is True
         assert config.gguf_mmproj_file == str(mmproj.resolve())
         mock_subprocess.assert_not_called()
+
+    def test_an_audio_only_projector_is_not_a_vision_model(self, tmp_path):
+        """ultravox / Voxtral / Qwen3-ASR ship a projector for audio input; offering images
+        for it is a capability the model does not have."""
+        model = tmp_path / "Voxtral-Mini-3B-2507-Q4_K_M.gguf"
+        model.write_bytes(b"\0" * 32)
+        _projector_declaring(tmp_path / "mmproj-F16.gguf", "clip.has_audio_encoder")
+
+        assert is_vision_model(str(model)) is False
+
+    def test_a_projector_declaring_vision_is_still_a_vision_model(self, tmp_path):
+        model = tmp_path / "Qwen3-VL-8B-Instruct-Q4_K_M.gguf"
+        model.write_bytes(b"\0" * 32)
+        _projector_declaring(tmp_path / "mmproj-F16.gguf", "clip.has_vision_encoder")
+
+        assert is_vision_model(str(model)) is True
+
+    @patch(
+        "utils.models.model_config._is_vision_model_subprocess",
+        side_effect = AssertionError("GGUF must not use Transformers vision detection"),
+    )
+    def test_named_quant_in_a_subdir_reads_the_snapshot_projector(self, mock_subprocess, tmp_path):
+        """A repo whose quants all live under a per-quant subdir has no weight file at the
+        snapshot root, which is the only place the root-level detector looks (#8772)."""
+        variant_dir = tmp_path / "UD-Q4_K_XL"
+        variant_dir.mkdir()
+        (variant_dir / "Qwen3-VL-235B-UD-Q4_K_XL-00001-of-00002.gguf").write_bytes(b"\0" * 32)
+        (variant_dir / "Qwen3-VL-235B-UD-Q4_K_XL-00002-of-00002.gguf").write_bytes(b"\0" * 32)
+        (tmp_path / "mmproj-F32.gguf").write_bytes(b"\0" * 32)
+
+        assert is_vision_model(str(tmp_path), gguf_variant = "UD-Q4_K_XL") is True
+        mock_subprocess.assert_not_called()
+
+    @patch(
+        "utils.models.model_config._is_vision_model_subprocess",
+        side_effect = AssertionError("GGUF must not use Transformers vision detection"),
+    )
+    def test_named_quant_in_a_subdir_without_a_projector_is_text_only(
+        self, mock_subprocess, tmp_path
+    ):
+        variant_dir = tmp_path / "UD-Q4_K_XL"
+        variant_dir.mkdir()
+        (variant_dir / "Qwen3-235B-UD-Q4_K_XL.gguf").write_bytes(b"\0" * 32)
+
+        assert is_vision_model(str(tmp_path), gguf_variant = "UD-Q4_K_XL") is False
+        mock_subprocess.assert_not_called()
+
+    @pytest.mark.parametrize(
+        "variant, expected",
+        [("Q4_K_M", True), ("Q8_0", False)],
+    )
+    def test_each_quant_answers_what_a_load_of_that_quant_would_see(
+        self, tmp_path, variant, expected
+    ):
+        """One quant keeps the projector beside it and the other does not, so a probe that
+        reads any quant of the directory answers one of them wrongly."""
+        variant_dir = tmp_path / "Q4_K_M"
+        variant_dir.mkdir()
+        (variant_dir / "Qwen3-VL-8B-Instruct-Q4_K_M.gguf").write_bytes(b"\0" * 32)
+        (variant_dir / "mmproj-F16.gguf").write_bytes(b"\0" * 32)
+        (tmp_path / "Qwen3-VL-8B-Instruct-Q8_0.gguf").write_bytes(b"\0" * 32)
+
+        config = ModelConfig.from_identifier(str(tmp_path), gguf_variant = variant)
+
+        assert config is not None
+        assert config.is_vision is expected
+        assert is_vision_model(str(tmp_path), gguf_variant = variant) is expected
+
+    @patch("utils.models.model_config._is_vision_model_uncached", return_value = False)
+    def test_a_quant_that_is_not_on_disk_is_not_answered_by_another_one(
+        self, mock_uncached, tmp_path
+    ):
+        """A load of an absent quant resolves no GGUF at all, so neither may the probe: the
+        projector beside the quant that IS on disk says nothing about the one asked for."""
+        (tmp_path / "Qwen3-VL-8B-Instruct-Q8_0.gguf").write_bytes(b"\0" * 32)
+        (tmp_path / "mmproj-F16.gguf").write_bytes(b"\0" * 32)
+
+        config = ModelConfig.from_identifier(str(tmp_path), gguf_variant = "UD-Q4_K_XL")
+
+        assert config is not None
+        assert config.is_gguf is False
+        assert is_vision_model(str(tmp_path), gguf_variant = "UD-Q4_K_XL") is False
 
 
 # --- Exception handling: cache the False fallback ---
@@ -775,11 +875,7 @@ class TestAudioDetectionCacheTokenAware:
     def test_transient_none_is_not_cached_but_definitive_none_is(self, monkeypatch):
         """A transient probe failure (definitive=False) must retry; a clean
         'not audio' read (definitive=True) caches so we don't re-probe."""
-        import utils.models.model_config as mc
-
-        mc._audio_detection_cache.clear()
-        monkeypatch.setattr(mc, "is_local_path", lambda *_a, **_k: False)
-        monkeypatch.setattr(mc, "resolve_cached_repo_id_case", lambda n, *_a, **_k: n)
+        mc = _shared_setup_1(monkeypatch)
 
         transient_calls = []
 
@@ -817,11 +913,7 @@ class TestAudioDetectionCacheTokenAware:
     def test_local_only_negative_does_not_poison_online(self, monkeypatch):
         """An offline negative must not be reused by a later online probe (else an audio
         model is routed through the text loader until restart)."""
-        import utils.models.model_config as mc
-
-        mc._audio_detection_cache.clear()
-        monkeypatch.setattr(mc, "is_local_path", lambda *_a, **_k: False)
-        monkeypatch.setattr(mc, "resolve_cached_repo_id_case", lambda n, *_a, **_k: n)
+        mc = _shared_setup_1(monkeypatch)
         # Pin env-offline off so the key tracks the kwarg.
         monkeypatch.setattr(mc, "_env_offline", lambda: False)
 
@@ -851,11 +943,7 @@ class TestAudioDetectionCacheTokenAware:
     def test_env_offline_negative_does_not_poison_online(self, monkeypatch):
         """An env-offline probe (default local_files_only=False) must cache under the
         effective-offline key, so clearing the env var later doesn't leak a stale negative."""
-        import utils.models.model_config as mc
-
-        mc._audio_detection_cache.clear()
-        monkeypatch.setattr(mc, "is_local_path", lambda *_a, **_k: False)
-        monkeypatch.setattr(mc, "resolve_cached_repo_id_case", lambda n, *_a, **_k: n)
+        mc = _shared_setup_1(monkeypatch)
 
         env_offline = {"v": True}
         monkeypatch.setattr(mc, "_env_offline", lambda: env_offline["v"])
@@ -981,3 +1069,235 @@ class TestEnvOfflineParsing:
         for val in ("", "0", "false", "no", "off", "2", "onn"):
             monkeypatch.setenv("HF_HUB_OFFLINE", val)
             assert mc._env_offline() is False, f"HF_HUB_OFFLINE={val!r} should not be offline"
+
+
+# --- The current cached snapshot answers the vision probe without fetching config.json ---
+
+
+def _hub_cached_repo(
+    tmp_path,
+    repo_id,
+    files,
+    sha = "abc123",
+):
+    """A repo laid out the way the HF hub cache lays one out."""
+    repo_dir = tmp_path / ("models--" + repo_id.replace("/", "--"))
+    snapshot = repo_dir / "snapshots" / sha
+    snapshot.mkdir(parents = True)
+    for name, text in files.items():
+        (snapshot / name).write_text(text, encoding = "utf-8")
+    return repo_dir, snapshot
+
+
+def _probe_against_cache(
+    monkeypatch,
+    repo_dir,
+    *,
+    sha = "abc123",
+    listed = ("config.json",),
+    remote_config = None,
+    **kwargs,
+):
+    """Drive the vision probe against a cached snapshot, recording any Hub read it makes.
+
+    ``listed`` is what the repo document says the repo holds; None stands for no document.
+    """
+    import huggingface_hub
+    import utils.hf_probe as hf_probe
+    import utils.models.model_config as mc
+
+    reads: list = []
+    monkeypatch.setattr(mc, "is_local_path", lambda *_a, **_k: False)
+    monkeypatch.setattr(mc, "get_cache_path", lambda *_a, **_k: repo_dir)
+
+    def _info(
+        model_name,
+        hf_token = None,
+        **kw,
+    ):
+        if listed is None:
+            raise ConnectionError("no repo document")
+        return _types.SimpleNamespace(
+            sha = sha,
+            siblings = [_types.SimpleNamespace(rfilename = name) for name in listed],
+        )
+
+    monkeypatch.setattr(mc, "_hub_model_info", _info)
+
+    def _absent(model_name, filename, **kw):
+        reads.append(("absent", filename))
+        return remote_config is None
+
+    def _download(**kw):
+        reads.append(("download", kw.get("filename")))
+        path = repo_dir / "remote-config.json"
+        path.write_text(_json.dumps(remote_config), encoding = "utf-8")
+        return str(path)
+
+    monkeypatch.setattr(hf_probe, "hf_file_definitely_absent", _absent)
+    monkeypatch.setattr(huggingface_hub, "hf_hub_download", _download)
+
+    return mc._raw_config_has_vision_config("acme/vlm", **kwargs), reads
+
+
+@pytest.mark.parametrize(
+    "cached, expected",
+    [({"vision_config": {"hidden_size": 8}}, True), ({"model_type": "llama"}, False)],
+)
+def test_the_current_snapshot_answers_without_fetching_the_file(
+    tmp_path, monkeypatch, cached, expected
+):
+    """The snapshot decides the answer -- it is read, not merely counted.
+
+    The repo document is still read, since it names the current commit. What the snapshot
+    saves is fetching config.json itself.
+    """
+    repo_dir, _ = _hub_cached_repo(tmp_path, "acme/vlm", {"config.json": _json.dumps(cached)})
+
+    answer, reads = _probe_against_cache(monkeypatch, repo_dir)
+
+    assert answer is expected
+    assert reads == []
+
+
+@pytest.mark.parametrize(
+    "case, files, kwargs",
+    [
+        # A repo re-downloaded at a new commit keeps the old snapshot beside the new one.
+        ("stale snapshot", {"config.json": '{"model_type": "llama"}'}, {"sha": "new"}),
+        # The repo has the file; this snapshot simply never downloaded it.
+        ("file not downloaded", {"modules.json": "[]"}, {}),
+        # Offline, or on any failed read, there is nothing to judge the snapshot against.
+        ("no repo document", {"config.json": '{"model_type": "llama"}'}, {"listed": None}),
+        # The cached snapshot is whichever was downloaded, not the revision asked for.
+        ("pinned revision", {"config.json": '{"model_type": "llama"}'}, {"revision": "commit-a"}),
+        # Reading the cache authorizes nothing, so a caller who forced anonymity keeps it.
+        ("anonymous", {"config.json": '{"model_type": "llama"}'}, {"hf_token": False}),
+    ],
+)
+def test_the_hub_still_answers_when_the_snapshot_may_not(
+    tmp_path, monkeypatch, case, files, kwargs
+):
+    repo_dir, _ = _hub_cached_repo(tmp_path, "acme/vlm", files)
+
+    answer, reads = _probe_against_cache(
+        monkeypatch, repo_dir, remote_config = {"vision_config": {"hidden_size": 8}}, **kwargs
+    )
+
+    assert answer is True, case
+    assert reads == [("absent", "config.json"), ("download", "config.json")], case
+
+
+def test_local_files_only_reads_no_repo_document(tmp_path, monkeypatch):
+    """The caller asked for no network; resolving the current commit would be one."""
+    import utils.models.model_config as mc
+
+    repo_dir, _ = _hub_cached_repo(
+        tmp_path, "acme/vlm", {"config.json": _json.dumps({"model_type": "llama"})}
+    )
+    reads: list = []
+
+    def _info(
+        model_name,
+        hf_token = None,
+        **kw,
+    ):
+        reads.append(model_name)
+        raise AssertionError("the repo document must not be read")
+
+    monkeypatch.setattr(mc, "is_local_path", lambda *_a, **_k: False)
+    monkeypatch.setattr(mc, "get_cache_path", lambda *_a, **_k: repo_dir)
+    monkeypatch.setattr(mc, "_hub_model_info", _info)
+
+    import huggingface_hub
+
+    downloads: list = []
+
+    def _download(**kw):
+        downloads.append(kw.get("local_files_only"))
+        return str(repo_dir / "snapshots" / "abc123" / "config.json")
+
+    monkeypatch.setattr(huggingface_hub, "hf_hub_download", _download)
+
+    assert mc._raw_config_has_vision_config("acme/vlm", local_files_only = True) is False
+    assert reads == []
+    # The download reads the same cache, without a network call of its own.
+    assert downloads == [True]
+
+
+def test_nothing_cached_costs_no_repo_document(tmp_path, monkeypatch):
+    """The document is only worth a round trip when there is a snapshot to judge with it."""
+    import utils.models.model_config as mc
+
+    empty = tmp_path / "models--acme--vlm"
+    empty.mkdir()
+    monkeypatch.setattr(mc, "is_local_path", lambda *_a, **_k: False)
+    monkeypatch.setattr(mc, "get_cache_path", lambda *_a, **_k: empty)
+
+    reads: list = []
+
+    def _info(
+        model_name,
+        hf_token = None,
+        **kw,
+    ):
+        reads.append(model_name)
+        raise AssertionError("the repo document must not be read")
+
+    monkeypatch.setattr(mc, "_hub_model_info", _info)
+
+    assert mc._current_cached_snapshot("acme/vlm") is None
+    assert reads == []
+
+
+def test_the_current_snapshot_is_the_one_the_repo_document_names(tmp_path, monkeypatch):
+    """The helper both probes rest on, exercised rather than stubbed."""
+    import utils.models.model_config as mc
+
+    repo_dir, snapshot = _hub_cached_repo(tmp_path, "acme/vlm", {"config.json": "{}"}, sha = "aaa")
+    (repo_dir / "snapshots" / "bbb").mkdir()
+    monkeypatch.setattr(mc, "is_local_path", lambda *_a, **_k: False)
+    monkeypatch.setattr(mc, "get_cache_path", lambda *_a, **_k: repo_dir)
+
+    def _info(
+        model_name,
+        hf_token = None,
+        **kw,
+    ):
+        return _types.SimpleNamespace(
+            sha = "aaa", siblings = [_types.SimpleNamespace(rfilename = "config.json")]
+        )
+
+    monkeypatch.setattr(mc, "_hub_model_info", _info)
+
+    assert mc._current_cached_snapshot("acme/vlm") == (snapshot, {"config.json"})
+    # Never authorizes, so a caller who forced anonymity is not served the cache.
+    assert mc._current_cached_snapshot("acme/vlm", False) is None
+
+
+def test_a_repo_that_publishes_no_config_is_settled_by_the_document(tmp_path, monkeypatch):
+    """The document names the repo's files, so it already says config.json is not among
+    them. Probing the Hub for it spends a round trip to be told the same, and that is what
+    made a cached GGUF-only repo cost this caller two reads where main costs it one."""
+    repo_dir, _ = _hub_cached_repo(tmp_path, "acme/vlm", {"model-Q4_K_M.gguf": "x"})
+
+    result, reads = _probe_against_cache(monkeypatch, repo_dir, listed = ("model-Q4_K_M.gguf",))
+
+    assert result is None
+    assert reads == []
+
+
+def test_a_config_the_repo_has_but_the_cache_lacks_still_asks(tmp_path, monkeypatch):
+    """Only a document that omits the file settles it. One that lists a file the snapshot
+    does not hold says the opposite: fetch it."""
+    repo_dir, _ = _hub_cached_repo(tmp_path, "acme/vlm", {"model-Q4_K_M.gguf": "x"})
+
+    result, reads = _probe_against_cache(
+        monkeypatch,
+        repo_dir,
+        listed = ("model-Q4_K_M.gguf", "config.json"),
+        remote_config = {"vision_config": {"hidden_size": 8}},
+    )
+
+    assert result is True
+    assert reads == [("absent", "config.json"), ("download", "config.json")]

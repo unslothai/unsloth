@@ -34,11 +34,10 @@ export function formatRelativeTime(
   }
   const short = getFormatter(locale, "short");
   const formatted = short.format(value, unit);
-  // Some CLDR short patterns drop the past/future marker. Arabic months in the
-  // "few" plural category (3-10) render "5 months ago" as "خلال 5 أشهر" ("in
-  // 5 months"), which is byte-identical to the future form. Where the two
-  // directions are indistinguishable the long style still carries the marker,
-  // so use it rather than report the wrong tense.
+  // Some CLDR short patterns drop the past/future marker. Arabic months in the "few" plural
+  // category (3-10) render "5 months ago" as "خلال 5 أشهر" ("in 5 months"), which is byte-identical
+  // to the future form. Where the two directions are indistinguishable the long style still carries
+  // the marker, so use it rather than report the wrong tense.
   if (value !== 0 && formatted === short.format(-value, unit)) {
     return getFormatter(locale, "long").format(value, unit);
   }

@@ -1,16 +1,24 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod app_layout;
+mod app_menu;
 mod commands;
+#[cfg(target_os = "linux")]
+mod debian_update;
 mod desktop_auth;
 mod desktop_backend_owner;
 mod desktop_update_policy;
 mod desktop_updater;
 mod diagnostics;
 mod install;
+mod install_watchdog;
 #[cfg(target_os = "linux")]
 mod linux_webkit;
 mod loopback_http;
+#[cfg(target_os = "macos")]
+mod macos_event_guard;
+#[cfg(target_os = "macos")]
+mod macos_tray;
 mod native_backend_lease;
 mod native_clipboard;
 mod native_file_dialogs;
@@ -19,7 +27,9 @@ mod native_path_policy;
 mod preflight;
 mod process;
 mod process_identity;
+mod staged_update;
 mod update;
+mod webview_permissions;
 mod windows_job;
 mod x11_threads;
 
@@ -32,19 +42,37 @@ use std::ffi::OsStr;
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Mutex, MutexGuard, OnceLock};
-use tauri::menu::{MenuBuilder, MenuItemBuilder};
+use tauri::menu::{MenuBuilder, MenuItem, MenuItemBuilder};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{Emitter, Manager};
 use tauri_plugin_window_state::{AppHandleExt, StateFlags};
 
-/// Serializes the exit paths that reap the backend: `request_quit` (tray "Quit" and,
-/// outside macOS, the close button), the Unix signal listener, and `RunEvent::Exit`.
+/// Serializes the exit paths that reap the backend: `request_quit` (tray "Quit" and a
+/// Windows/Linux close button when close-to-tray is disabled), the Unix signal listener, and
+/// `RunEvent::Exit`.
 /// Exactly one runs cleanup; the others block, so the process never exits mid-reap.
 static TERMINATION_CLEANUP: Mutex<bool> = Mutex::new(false);
 
 const IN_APP_RELAUNCH_MARKER_FILE: &str = "in-app-relaunch-v1";
+
+const CLOSE_TO_TRAY_PREFERENCE_FILE: &str = "close-to-tray-v1";
+
+/// The user's answer to "Run Unsloth at login", kept beside the OS entry rather than derived
+/// from it. The Windows entry is one HKCU Run value that outside things delete without asking:
+/// the NSIS uninstaller drops it on any non-update run (installer.nsi), and an antivirus
+/// quarantine or a registry cleaner takes it the same way. Reading the setting back off the
+/// registry alone, as this file used to, turns every one of those into a silent, permanent
+/// "off" that the user only discovers the next morning.
+const LAUNCH_AT_LOGIN_PREFERENCE_FILE: &str = "launch-at-login-v1";
+
+struct CloseToTrayState(AtomicBool);
+
+fn new_close_to_tray_state() -> CloseToTrayState {
+    // Closing keeps its historical quit behavior until the user explicitly opts in.
+    CloseToTrayState(AtomicBool::new(false))
+}
 
 /// Resolved once, at setup, where the marker is consumed, so no later caller can flip the answer.
 static LAUNCHED_HIDDEN: OnceLock<bool> = OnceLock::new();
@@ -134,16 +162,200 @@ fn reveal_main_window(app: tauri::AppHandle) {
     show_main_window(&app);
 }
 
+fn close_to_tray_preference_path(config_dir: &Path) -> PathBuf {
+    config_dir.join(CLOSE_TO_TRAY_PREFERENCE_FILE)
+}
+
+fn read_close_to_tray_preference(config_dir: &Path) -> bool {
+    let path = close_to_tray_preference_path(config_dir);
+    match fs::read_to_string(&path) {
+        Ok(value) => match value.trim().parse::<bool>() {
+            Ok(enabled) => enabled,
+            Err(error) => {
+                warn!(
+                    "Ignoring invalid close-to-tray preference {}: {error}",
+                    path.display()
+                );
+                false
+            }
+        },
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
+        Err(error) => {
+            warn!(
+                "Could not read close-to-tray preference {}: {error}",
+                path.display()
+            );
+            false
+        }
+    }
+}
+
+fn write_close_to_tray_preference(config_dir: &Path, enabled: bool) -> Result<(), String> {
+    fs::create_dir_all(config_dir).map_err(|error| {
+        format!(
+            "Failed to create app configuration directory {}: {error}",
+            config_dir.display()
+        )
+    })?;
+    let path = close_to_tray_preference_path(config_dir);
+    fs::write(&path, format!("{enabled}\n")).map_err(|error| {
+        format!(
+            "Failed to save close-to-tray preference {}: {error}",
+            path.display()
+        )
+    })
+}
+
+fn launch_at_login_preference_path(config_dir: &Path) -> PathBuf {
+    config_dir.join(LAUNCH_AT_LOGIN_PREFERENCE_FILE)
+}
+
+/// The stored answer, or None when this install has never been told one.
+///
+/// None is not false: an install that predates this file, or one whose preference could not be
+/// read, has no record to restore from, and inventing one would enable autostart for someone who
+/// never asked. Only an explicit `true` ever puts an entry back.
+fn read_launch_at_login_preference(config_dir: &Path) -> Option<bool> {
+    let path = launch_at_login_preference_path(config_dir);
+    match fs::read_to_string(&path) {
+        Ok(value) => match value.trim().parse::<bool>() {
+            Ok(enabled) => Some(enabled),
+            Err(error) => {
+                warn!(
+                    "Ignoring invalid launch-at-login preference {}: {error}",
+                    path.display()
+                );
+                None
+            }
+        },
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+        Err(error) => {
+            warn!(
+                "Could not read launch-at-login preference {}: {error}",
+                path.display()
+            );
+            None
+        }
+    }
+}
+
+fn write_launch_at_login_preference(config_dir: &Path, enabled: bool) -> Result<(), String> {
+    fs::create_dir_all(config_dir).map_err(|error| {
+        format!(
+            "Failed to create app configuration directory {}: {error}",
+            config_dir.display()
+        )
+    })?;
+    let path = launch_at_login_preference_path(config_dir);
+    fs::write(&path, format!("{enabled}\n")).map_err(|error| {
+        format!(
+            "Failed to save launch-at-login preference {}: {error}",
+            path.display()
+        )
+    })
+}
+
+/// Record the answer without letting a failed write fail the toggle: the OS entry is the thing
+/// the user asked for and it is already written. Losing the record only costs the restore.
+fn store_launch_at_login_preference(app: &tauri::AppHandle, enabled: bool) {
+    match app.path().app_config_dir() {
+        Ok(dir) => {
+            if let Err(error) = write_launch_at_login_preference(&dir, enabled) {
+                warn!("Could not record the launch-at-login preference: {error}");
+            }
+        }
+        Err(error) => warn!("Could not determine app configuration directory: {error}"),
+    }
+}
+
+fn stored_launch_at_login_preference(app: &tauri::AppHandle) -> Option<bool> {
+    app.path()
+        .app_config_dir()
+        .ok()
+        .and_then(|dir| read_launch_at_login_preference(&dir))
+}
+
+fn initialize_close_to_tray(app: &tauri::AppHandle) {
+    let enabled = app
+        .path()
+        .app_config_dir()
+        .map(|dir| read_close_to_tray_preference(&dir))
+        .unwrap_or_else(|error| {
+            warn!("Could not determine app configuration directory: {error}");
+            false
+        });
+    app.state::<CloseToTrayState>()
+        .0
+        .store(enabled, Ordering::SeqCst);
+}
+
 #[tauri::command]
-fn get_launch_at_login(app: tauri::AppHandle) -> Result<bool, String> {
-    use tauri_plugin_autostart::ManagerExt;
+fn get_close_to_tray(state: tauri::State<'_, CloseToTrayState>) -> Option<bool> {
+    cfg!(any(target_os = "windows", target_os = "linux")).then(|| state.0.load(Ordering::SeqCst))
+}
+
+#[tauri::command]
+fn set_close_to_tray(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, CloseToTrayState>,
+    enabled: bool,
+) -> Result<bool, String> {
+    if !cfg!(any(target_os = "windows", target_os = "linux")) {
+        return Err("Close to system tray is only configurable on Windows and Linux".to_string());
+    }
+    let config_dir = app
+        .path()
+        .app_config_dir()
+        .map_err(|error| format!("Could not determine app configuration directory: {error}"))?;
+    write_close_to_tray_preference(&config_dir, enabled)?;
+    state.0.store(enabled, Ordering::SeqCst);
+    Ok(enabled)
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum MainWindowCloseAction {
+    Hide,
+    Quit,
+}
+
+fn main_window_close_action(close_to_tray: bool) -> MainWindowCloseAction {
+    if cfg!(target_os = "macos")
+        || (cfg!(any(target_os = "windows", target_os = "linux")) && close_to_tray)
+    {
+        MainWindowCloseAction::Hide
+    } else {
+        MainWindowCloseAction::Quit
+    }
+}
+
+/// The autostart state as the OS records it.
+///
+/// On Windows this reads the two keys itself rather than calling `is_enabled`, which folds them
+/// together through the trailing-bytes rule above and so reports a re-enabled entry as off.
+fn autostart_enabled(app: &tauri::AppHandle) -> Result<bool, String> {
     // is_enabled only checks the entry file exists, so a DE-disabled entry would read as on.
-    if cfg!(target_os = "linux") && linux_autostart_disabled(&app) {
+    if cfg!(target_os = "linux") && linux_autostart_disabled(app) {
         return Ok(false);
     }
-    app.autolaunch()
-        .is_enabled()
-        .map_err(|error| error.to_string())
+    #[cfg(windows)]
+    {
+        // A Run key we cannot open reads as present and disabled, which is off here and
+        // restores nothing below: an unreadable key is not evidence either way.
+        let (present, disabled) = windows_autostart_entry_state(app);
+        Ok(present && !disabled)
+    }
+    #[cfg(not(windows))]
+    {
+        use tauri_plugin_autostart::ManagerExt;
+        app.autolaunch()
+            .is_enabled()
+            .map_err(|error| error.to_string())
+    }
+}
+
+#[tauri::command]
+fn get_launch_at_login(app: tauri::AppHandle) -> Result<bool, String> {
+    autostart_enabled(&app)
 }
 
 #[tauri::command]
@@ -159,7 +371,10 @@ fn set_launch_at_login(app: tauri::AppHandle, enabled: bool) -> Result<bool, Str
     if enabled {
         harden_autostart_entry(&app);
     }
-    autolaunch.is_enabled().map_err(|error| error.to_string())
+    // After the OS write, so a failed one leaves no record to restore from, and on both arms:
+    // a stored `false` is what stops the restore from arguing with someone turning this off.
+    store_launch_at_login_preference(&app, enabled);
+    autostart_enabled(&app)
 }
 
 fn harden_autostart_entry(app: &tauri::AppHandle) {
@@ -204,6 +419,95 @@ fn quote_windows_run_value(app: &tauri::AppHandle) {
     };
     if let Some(quoted) = quoted_windows_run_command(&value) {
         let _ = run.set_value(name, &quoted);
+    }
+}
+
+/// Whether Windows itself holds the entry disabled, from the StartupApproved bytes.
+///
+/// Task Manager's Startup tab and Settings > Apps > Startup disable an entry by writing a
+/// timestamp into the last eight bytes here; they never delete the Run value. The state lives in
+/// the FIRST byte though: 02 for enabled, 03 for disabled, and 06 for enabled again after the
+/// user switched it back on. Only 02 leaves the trailing bytes zero, so reading them, as
+/// auto-launch does, calls every re-enabled entry disabled and never recovers.
+///
+/// An absent or truncated value is not a state Windows recorded, and it starts such an entry.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn startup_approved_disabled(bytes: &[u8]) -> bool {
+    match bytes.first() {
+        Some(0x02) | Some(0x06) | None => false,
+        Some(_) => true,
+    }
+}
+
+/// Restore a *deleted* entry, never a disabled one.
+///
+/// The distinction is the whole safety argument. Turning autostart off in Task Manager is a
+/// decision, and re-enabling it on the next launch would be the app overruling the user once a
+/// day. Deletion is not a decision anybody makes: no Windows UI removes the Run value, so an
+/// absent one against a stored `true` is something that happened *to* the install.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn should_restore_autostart_entry(
+    stored: Option<bool>,
+    entry_present: bool,
+    disabled: bool,
+) -> bool {
+    stored == Some(true) && !entry_present && !disabled
+}
+
+/// (Run value present, disabled by Windows). Unreadable registry reads as "present and disabled",
+/// the pair that restores nothing: a key we cannot read is not evidence anything was removed.
+#[cfg(windows)]
+fn windows_autostart_entry_state(app: &tauri::AppHandle) -> (bool, bool) {
+    use winreg::enums::{HKEY_CURRENT_USER, KEY_QUERY_VALUE};
+    use winreg::RegKey;
+
+    let hkcu = RegKey::predef(HKEY_CURRENT_USER);
+    let name = &app.package_info().name;
+    let Ok(run) = hkcu.open_subkey_with_flags(
+        r"Software\Microsoft\Windows\CurrentVersion\Run",
+        KEY_QUERY_VALUE,
+    ) else {
+        return (true, true);
+    };
+    let present = run.get_value::<String, _>(name).is_ok();
+    let disabled = hkcu
+        .open_subkey_with_flags(
+            r"Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\Run",
+            KEY_QUERY_VALUE,
+        )
+        .ok()
+        .and_then(|approved| approved.get_raw_value(name).ok())
+        // No override recorded is the state a never-touched entry is in.
+        .is_some_and(|value| startup_approved_disabled(&value.bytes));
+    (present, disabled)
+}
+
+/// Whether an autostart entry the OS reports as off should be written back.
+///
+/// Windows only, and deliberately so. Removing a login item is a first-class gesture on the other
+/// two: macOS System Settings > Login Items deletes the LaunchAgent, and GNOME's startup UI
+/// deletes the .desktop file, so a restore there would resurrect something the user just removed.
+/// Windows has no such gesture, which is why its entry going missing is a bug and not a choice.
+fn restore_missing_autostart_entry(app: &tauri::AppHandle) -> bool {
+    #[cfg(windows)]
+    {
+        let (present, disabled) = windows_autostart_entry_state(app);
+        let restore = should_restore_autostart_entry(
+            stored_launch_at_login_preference(app),
+            present,
+            disabled,
+        );
+        if restore {
+            info!(
+                "The \"Run Unsloth at login\" entry is gone but was last set to on; restoring it."
+            );
+        }
+        restore
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = app;
+        false
     }
 }
 
@@ -365,11 +669,16 @@ fn reconcile_autostart_entry(app: &tauri::AppHandle) {
     if cfg!(target_os = "linux") && linux_autostart_disabled(app) {
         return;
     }
-    let autolaunch = app.autolaunch();
-    if !autolaunch.is_enabled().unwrap_or(false) {
+    if autostart_enabled(app).unwrap_or(false) {
+        // Adopt an entry made before this install kept a record, so the first thing that
+        // deletes it can be undone rather than being the one loss that teaches us to care.
+        if stored_launch_at_login_preference(app).is_none() {
+            store_launch_at_login_preference(app, true);
+        }
+    } else if !restore_missing_autostart_entry(app) {
         return;
     }
-    if autolaunch.enable().is_ok() {
+    if app.autolaunch().enable().is_ok() {
         harden_autostart_entry(app);
     }
 }
@@ -481,8 +790,9 @@ fn setup_logging() {
             let log_path = log_dir.join("tauri.log");
             let rotated_path = log_dir.join("tauri.log.1");
             let max_log_bytes = 5 * 1024 * 1024;
-            if let Ok(file) = RotatingLogFile::open(log_path, rotated_path, max_log_bytes) {
+            if let Ok(file) = RotatingLogFile::open(log_path.clone(), rotated_path, max_log_bytes) {
                 loggers.push(WriteLogger::new(LevelFilter::Info, Config::default(), file));
+                let _ = PANIC_LOG_PATH.set(log_path);
             }
         }
     }
@@ -492,12 +802,77 @@ fn setup_logging() {
     }
 }
 
+static PANIC_LOG_PATH: OnceLock<PathBuf> = OnceLock::new();
+
+/// Own file handle, not `log`: a panic raised inside the logger's lock would deadlock.
+fn log_panics() {
+    static PANICS: AtomicU64 = AtomicU64::new(0);
+    let default_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        if let Some(path) = PANIC_LOG_PATH.get() {
+            // Symbolizing is slow, so only the first few panics get a backtrace.
+            let backtrace = if PANICS.fetch_add(1, Ordering::Relaxed) < 4 {
+                format!("\n{}", std::backtrace::Backtrace::force_capture())
+            } else {
+                String::new()
+            };
+            let now = time::OffsetDateTime::now_utc();
+            let thread = std::thread::current();
+            if let Ok(mut file) = fs::OpenOptions::new().append(true).open(path) {
+                let _ = writeln!(
+                    file,
+                    "{:02}:{:02}:{:02} [ERROR] thread '{}' {info}{backtrace}",
+                    now.hour(),
+                    now.minute(),
+                    now.second(),
+                    thread.name().unwrap_or("<unnamed>"),
+                );
+            }
+        }
+        default_hook(info);
+    }));
+}
+
 #[cfg(any(target_os = "windows", target_os = "linux"))]
 fn setup_custom_titlebar(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     let window = app.get_webview_window("main").ok_or_else(|| {
         std::io::Error::new(std::io::ErrorKind::NotFound, "main window not found")
     })?;
     window.set_decorations(false)?;
+    Ok(())
+}
+
+// WebKitGTK ships two defaults that together break voice dictation on Linux:
+// `enable-media-stream` is off, and the stock `permission-request` handler
+// denies every request it never saw a listener override, including
+// microphone/camera grabs. Neither is fixable from outside the embedding
+// application, so opt in here and auto-allow only user-media requests --
+// every other permission kind (notifications, geolocation, ...) keeps the
+// default deny.
+#[cfg(target_os = "linux")]
+fn setup_linux_media_permissions(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
+    use webkit2gtk::{
+        glib::Cast, PermissionRequestExt, SettingsExt, UserMediaPermissionRequest, WebViewExt,
+    };
+
+    let window = app.get_webview_window("main").ok_or_else(|| {
+        std::io::Error::new(std::io::ErrorKind::NotFound, "main window not found")
+    })?;
+    window.with_webview(|webview| {
+        let webview = webview.inner();
+        if let Some(settings) = webview.settings() {
+            settings.set_enable_media_stream(true);
+        }
+        webview.connect_permission_request(|_webview, request| {
+            match request.downcast_ref::<UserMediaPermissionRequest>() {
+                Some(request) => {
+                    request.allow();
+                    true
+                }
+                None => false,
+            }
+        });
+    })?;
     Ok(())
 }
 
@@ -650,13 +1025,29 @@ fn confirm_quit_during_training(app: &tauri::AppHandle) -> bool {
         .blocking_show()
 }
 
-/// Renderer-only activity, mirrored here for the same reason: Hub downloads, which the
-/// backend runs but only the frontend tracks, and the Tauri shell self-update, which
-/// `update::is_update_running` stops covering once `downloadAndInstall` takes over.
+fn confirm_update_during_training(app: &tauri::AppHandle) -> bool {
+    use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
+
+    app.dialog()
+        .message(
+            "Training is starting or still running. Updating now stops the \
+             run and loses progress since the last checkpoint.",
+        )
+        .kind(MessageDialogKind::Warning)
+        .title("Training in progress")
+        .buttons(MessageDialogButtons::OkCancelCustom(
+            "Update anyway".to_string(),
+            "Keep training".to_string(),
+        ))
+        .blocking_show()
+}
+
+/// renderer-owned downloads, shell updates and unsaved transcripts must also protect native quit.
 #[derive(Default)]
 pub struct RendererActivity {
     pub downloads: bool,
     pub shell_update: bool,
+    pub unsaved_transcript: bool,
 }
 
 pub type RendererActivityState = std::sync::Arc<std::sync::Mutex<RendererActivity>>;
@@ -671,6 +1062,7 @@ fn apply_renderer_activity(state: &RendererActivityState, kind: &str, active: bo
         match kind {
             "downloads" => activity.downloads = active,
             "shell_update" => activity.shell_update = active,
+            "unsaved_transcript" => activity.unsaved_transcript = active,
             // An unknown kind is a renderer/Rust mismatch, never a reason to flip a flag.
             _ => {}
         }
@@ -691,8 +1083,26 @@ fn current_renderer_activity(app: &tauri::AppHandle) -> RendererActivity {
         .map(|activity| RendererActivity {
             downloads: activity.downloads,
             shell_update: activity.shell_update,
+            unsaved_transcript: activity.unsaved_transcript,
         })
         .unwrap_or_default()
+}
+
+fn confirm_quit_with_unsaved_transcript(app: &tauri::AppHandle) -> bool {
+    use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
+
+    if !current_renderer_activity(app).unsaved_transcript {
+        return true;
+    }
+    app.dialog()
+        .message("A transcript could not be saved. Download a copy before quitting to keep it.")
+        .kind(MessageDialogKind::Warning)
+        .title("Unsaved transcript")
+        .buttons(MessageDialogButtons::OkCancelCustom(
+            "Quit anyway".to_string(),
+            "Keep open".to_string(),
+        ))
+        .blocking_show()
 }
 
 /// Ask before quitting mid shell update (true to proceed). request_quit only, as below.
@@ -809,6 +1219,7 @@ fn quit_requires_confirmation(app: &tauri::AppHandle) -> bool {
     install_is_active(app)
         || update_active
         || renderer.shell_update
+        || renderer.unsaved_transcript
         || training_is_active(app)
         || renderer.downloads
 }
@@ -1176,13 +1587,14 @@ where
                             && confirm_quit_during_update(&app)
                             && confirm_quit_during_shell_update(&app)
                             && confirm_quit_during_training(&app)
+                            && confirm_quit_with_unsaved_transcript(&app)
                             && confirm_quit_during_downloads(&app)
                     },
                     || {
                         quit_raises_the_overlay(
-                            // Windows only. macOS never reaches here from the close button,
-                            // which hides to the tray, and on Linux the button already quit
-                            // without an overlay: the freeze this covers was reported on
+                            // Windows only. macOS and an enabled Windows/Linux close-to-tray
+                            // preference bypass request_quit; Linux quits and tray quits do not use
+                            // the overlay. The freeze this covers was reported on
                             // Windows, where stop_backend spends its liveness, shutdown and
                             // CTRL_BREAK budgets in series.
                             cfg!(target_os = "windows"),
@@ -1250,10 +1662,13 @@ fn setup_quit_menu(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
         .accelerator("CmdOrCtrl+Q")
         .build(app)?;
     app_menu.append(&quit)?;
+    app_menu::setup_app_menus(app, &menu)?;
     app.set_menu(menu)?;
     app.on_menu_event(|app, event| {
         if event.id() == APP_QUIT_MENU_ID {
             request_quit(app);
+        } else {
+            app_menu::handle_menu_event(app, event.id().as_ref());
         }
     });
     Ok(())
@@ -1345,6 +1760,26 @@ fn setup_terminate_interception(app: &tauri::App) {
     }
 }
 
+struct TrayServerToggle(MenuItem<tauri::Wry>);
+
+fn tray_toggle_label(status: &str) -> (&'static str, bool) {
+    match status {
+        "running" => ("Stop Server", true),
+        "stopped" | "error" => ("Start Server", true),
+        "starting" => ("Starting\u{2026}", false),
+        _ => ("Start Server", false),
+    }
+}
+
+#[tauri::command]
+fn set_tray_server_status(app: tauri::AppHandle, status: String) {
+    if let Some(toggle) = app.try_state::<TrayServerToggle>() {
+        let (text, enabled) = tray_toggle_label(&status);
+        let _ = toggle.0.set_text(text);
+        let _ = toggle.0.set_enabled(enabled);
+    }
+}
+
 fn setup_tray(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     let open = MenuItemBuilder::with_id("open", "Open Unsloth").build(app)?;
     let toggle = MenuItemBuilder::with_id("toggle", "Start/Stop Server").build(app)?;
@@ -1352,11 +1787,21 @@ fn setup_tray(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     let menu = MenuBuilder::new(app)
         .items(&[&open, &toggle, &quit])
         .build()?;
+    app.manage(TrayServerToggle(toggle));
 
-    TrayIconBuilder::new()
+    // macOS renders tray images at 18 points. Embed the 36 px scale for crisp Retina output;
+    // template mode lets AppKit choose the correct monochrome color for the current menu bar.
+    #[cfg(target_os = "macos")]
+    let tray_icon = tauri::include_image!("./icons/tray-icon@2x.png");
+    // Supplied tray exports are monochrome; retain the existing Windows/Linux color pixels.
+    #[cfg(not(target_os = "macos"))]
+    let tray_icon = tauri::include_image!("./icons/tray-icon-color.png");
+
+    let tray = TrayIconBuilder::new()
         .menu(&menu)
         .tooltip("Unsloth")
-        .icon(app.default_window_icon().unwrap().clone())
+        .icon(tray_icon)
+        .icon_as_template(cfg!(target_os = "macos"))
         .on_menu_event(move |app, event| match event.id().as_ref() {
             "open" => show_main_window(app),
             "toggle" => {
@@ -1376,6 +1821,14 @@ fn setup_tray(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
             }
         })
         .build(app)?;
+
+    #[cfg(target_os = "macos")]
+    if let Err(error) = macos_tray::install_appearance_observer(&tray) {
+        // The template icon remains visible and adaptive if native observation is unavailable.
+        warn!("Could not install the macOS tray appearance observer: {error}");
+    }
+    #[cfg(not(target_os = "macos"))]
+    drop(tray);
 
     Ok(())
 }
@@ -1463,31 +1916,253 @@ fn webview_cache_plugin<R: tauri::Runtime>() -> tauri::plugin::TauriPlugin<R> {
         .build()
 }
 
+/// Mirror endpoints for the webview CSP: this process, plus any backend it adopts.
+fn configured_hf_endpoints() -> Vec<String> {
+    let mut raw: Vec<String> = ["HF_ENDPOINT", "HF_DATASETS_SERVER"]
+        .into_iter()
+        .filter_map(|key| std::env::var(key).ok())
+        .collect();
+    // An adopted backend may have been started from a shell that set HF_ENDPOINT
+    // while this process was not; /api/health sends the frontend to that mirror.
+    raw.extend(desktop_backend_owner::recorded_hf_endpoints());
+    csp_sources_from(raw)
+}
+
+fn csp_sources_from(raw: Vec<String>) -> Vec<String> {
+    let mut sources: Vec<String> = Vec::new();
+    for value in raw {
+        let value = value.trim().to_string();
+        if value.is_empty() {
+            continue;
+        }
+        let with_scheme =
+            if value.contains("://") { value } else { format!("https://{value}") };
+        let trimmed = with_scheme.trim_end_matches('/');
+        let normalised = match split_scheme(trimmed) {
+            Some((scheme, rest)) => format!("{scheme}://{rest}"),
+            None => trimmed.to_string(),
+        };
+        if !is_usable_csp_source(&normalised) {
+            continue;
+        }
+        let source = csp_origin_of(&normalised);
+        if !sources.contains(&source) {
+            sources.push(source);
+        }
+    }
+    sources
+}
+
+/// Split "scheme://rest", scheme lowercased (RFC 3986 3.1).
+fn split_scheme(endpoint: &str) -> Option<(String, &str)> {
+    endpoint
+        .split_once("://")
+        .map(|(scheme, rest)| (scheme.to_ascii_lowercase(), rest))
+}
+
+/// Mirrors `utils/hf_endpoint.py::is_loopback_host`.
+fn is_loopback_host(authority: &str) -> bool {
+    let host = match authority.rsplit_once(':') {
+        Some((h, port)) if !authority.ends_with(']') && port.chars().all(|c| c.is_ascii_digit()) => h,
+        _ => authority,
+    };
+    let host = host.trim_start_matches('[').trim_end_matches(']').to_ascii_lowercase();
+    if host == "localhost" || host.ends_with(".localhost") {
+        return true;
+    }
+    // Parsed, not string-matched: 0:0:0:0:0:0:0:1 is ::1, and 127.x.y.z all count.
+    matches!(host.parse::<std::net::IpAddr>(), Ok(ip) if ip.is_loopback())
+}
+
+/// Compress an IPv6 literal: a host-source is matched as a string (CSP3 6.7.2.5)
+/// and the browser sends the compressed form.
+fn canonical_authority(authority: &str) -> String {
+    let (host, port) = match authority.strip_prefix('[') {
+        Some(rest) => match rest.split_once(']') {
+            Some((host, tail)) => (host, tail),
+            None => return authority.to_string(),
+        },
+        None => return authority.to_string(),
+    };
+    match host.parse::<std::net::Ipv6Addr>() {
+        Ok(ip) => format!("[{ip}]{port}"),
+        Err(_) => authority.to_string(),
+    }
+}
+
+/// Reduce to scheme://host[:port]: a host-source with a path is matched EXACTLY
+/// unless the path ends in a solidus (CSP3 6.7.2.7).
+fn csp_origin_of(endpoint: &str) -> String {
+    match split_scheme(endpoint) {
+        Some((scheme, rest)) => {
+            let authority = rest.split(['/', '?', '#']).next().unwrap_or_default();
+            format!("{scheme}://{}", canonical_authority(authority))
+        }
+        None => endpoint.to_string(),
+    }
+}
+
+/// Mirrors `utils/hf_endpoint.py::_sanitize`, so the webview policy and
+/// /api/health never disagree about what counts as configured.
+fn is_usable_csp_source(endpoint: &str) -> bool {
+    let (scheme, authority) = match split_scheme(endpoint) {
+        Some((scheme, rest)) if scheme == "http" || scheme == "https" => (scheme, rest),
+        _ => return false,
+    };
+    if endpoint
+        .chars()
+        .any(|c| c.is_whitespace() || c.is_control() || matches!(c, ';' | ',' | '\'' | '"' | '\\'))
+    {
+        return false;
+    }
+    // No IDNA encoder here, and latin-1 CSP headers on the backend.
+    if !endpoint.is_ascii() {
+        return false;
+    }
+    let host = authority
+        .split(['/', '?', '#'])
+        .next()
+        .unwrap_or_default();
+    if host.is_empty() || host.contains('@') || authority.contains('?') || authority.contains('#') {
+        return false;
+    }
+    if host.contains('*') {
+        return false;
+    }
+    // Hub calls carry the user's token: http off-box puts it on the wire.
+    if scheme == "http" && !is_loopback_host(host) {
+        return false;
+    }
+    // "javascript:alert(1)" arrives as "https://javascript:alert(1)".
+    match host.rsplit_once(':') {
+        Some((_, port)) if !host.ends_with(']') => {
+            !port.is_empty() && port.chars().all(|c| c.is_ascii_digit())
+        }
+        _ => true,
+    }
+}
+
+/// Append to `connect-src`, skipping sources already listed. Matched on the
+/// directive's first token, so a hostname containing it cannot match.
+fn append_connect_sources(policy: &mut String, sources: &[String]) -> bool {
+    append_sources_to(policy, "connect-src", sources)
+}
+
+/// The same, for any directive. img-src and media-src carry a bare `https:`,
+/// which does not cover a plain-HTTP loopback mirror.
+fn append_sources_to(policy: &mut String, directive_name: &str, sources: &[String]) -> bool {
+    let mut appended = false;
+    let rebuilt: Vec<String> = policy
+        .split(';')
+        .map(|directive| directive.trim())
+        .filter(|directive| !directive.is_empty())
+        .map(|directive| {
+            let is_target = directive
+                .split_whitespace()
+                .next()
+                .is_some_and(|name| name.eq_ignore_ascii_case(directive_name));
+            if !is_target || appended {
+                return directive.to_string();
+            }
+            let existing: Vec<&str> = directive.split_whitespace().collect();
+            let mut tokens = existing.clone();
+            for source in sources {
+                if !existing.iter().any(|token| *token == source.as_str()) {
+                    tokens.push(source);
+                }
+            }
+            appended = true;
+            tokens.join(" ")
+        })
+        .collect();
+    if appended {
+        *policy = rebuilt.join("; ");
+    }
+    appended
+}
+
+/// tauri.conf.json's static CSP allows only the official Hub hosts. Tauri builds
+/// the header from the Context config on every asset request, so appending here
+/// covers the statically declared window too.
+fn extend_csp_with_hf_endpoints<R: tauri::Runtime>(context: &mut tauri::Context<R>) {
+    let endpoints = configured_hf_endpoints();
+    if endpoints.is_empty() {
+        return;
+    }
+    if let Some(tauri::utils::config::Csp::Policy(policy)) =
+        context.config_mut().app.security.csp.as_mut()
+    {
+        append_connect_sources(policy, &endpoints);
+        let assets: Vec<String> = endpoints
+            .iter()
+            .filter(|e| e.starts_with("http://"))
+            .cloned()
+            .collect();
+        if !assets.is_empty() {
+            append_sources_to(policy, "img-src", &assets);
+            append_sources_to(policy, "media-src", &assets);
+        }
+    }
+}
+
 fn main() {
+    #[cfg(target_os = "linux")]
+    if let Some(result) = debian_update::run_installer() {
+        match result {
+            Ok(()) => std::process::exit(0),
+            Err(error) => {
+                eprintln!("{error}");
+                std::process::exit(1);
+            }
+        }
+    }
+
     // Must precede any Xlib call: GTK3 never calls XInitThreads and this
     // process drives X from several threads. See x11_threads for the crash.
     x11_threads::init_x11_threads();
 
-    // WebKitGTK's hardware dmabuf path can violate Wayland explicit-sync
-    // protocol on current NVIDIA/Mesa stacks. Select a compatible fallback
-    // before any GTK/WebKit object can be initialized.
+    // WebKitGTK's hardware dmabuf path breaks on the proprietary NVIDIA driver on
+    // either display server, and on an AppImage that cannot load GLES. Select a
+    // compatible fallback before any GTK/WebKit object can be initialized.
     #[cfg(target_os = "linux")]
-    let webkit_rendering_workaround = linux_webkit::configure_wayland_renderer();
+    let webkit_rendering_workaround = linux_webkit::configure_renderer();
     // Fix PATH for GUI apps (macOS .app bundles, Linux AppImage, Windows)
     // GUI apps don't inherit shell dotfile PATH — this spawns the user's
     // login shell to source .zshrc/.bashrc/.profile and sets PATH properly.
     let _ = fix_path_env::fix();
 
     setup_logging();
+    log_panics();
     info!("Unsloth desktop app starting");
+    #[cfg(target_os = "macos")]
+    macos_event_guard::install();
 
     #[cfg(target_os = "linux")]
-    if let Some(variable) = webkit_rendering_workaround {
-        info!("Wayland detected; set {variable}=1 for WebKitGTK compatibility");
+    if let Some((variables, reason)) = webkit_rendering_workaround {
+        let applied = variables
+            .iter()
+            .map(|variable| format!("{variable}=1"))
+            .collect::<Vec<_>>()
+            .join(" ");
+        info!("{reason}; set {applied} for WebKitGTK compatibility");
     }
     windows_job::initialize();
 
-    let context = tauri::generate_context!();
+    let mut context = tauri::generate_context!();
+    extend_csp_with_hf_endpoints(&mut context);
+    // Restore while hidden, else the 760x560 setup size overwrites the saved layout.
+    let restore_initial_layout = dirs::config_dir().is_some_and(|dir| {
+        app_layout::should_restore_initial_window_state(
+            &dir.join(&context.config().identifier),
+            tauri_plugin_window_state::DEFAULT_FILENAME,
+        )
+    });
+    info!("Native saved app layout restore enabled: {restore_initial_layout}");
+    let mut window_state = tauri_plugin_window_state::Builder::new()
+        .with_state_flags(StateFlags::SIZE | StateFlags::POSITION | StateFlags::MAXIMIZED);
+    if !restore_initial_layout {
+        window_state = window_state.skip_initial_state("main");
+    }
 
     tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
@@ -1505,12 +2180,10 @@ fn main() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_clipboard_manager::init())
-        .plugin(
-            tauri_plugin_window_state::Builder::new()
-                .with_state_flags(StateFlags::SIZE | StateFlags::POSITION | StateFlags::MAXIMIZED)
-                .skip_initial_state("main")
-                .build(),
-        )
+        .plugin(window_state.build())
+        .manage(app_layout::NativeLayoutRestored(
+            std::sync::atomic::AtomicBool::new(restore_initial_layout),
+        ))
         .manage(diagnostics::new_diagnostics_state())
         .manage(install::new_install_state())
         .manage(new_training_activity_state())
@@ -1519,12 +2192,17 @@ fn main() {
         .manage(new_backend_state())
         .manage(process::new_shutdown_flag())
         .manage(update::new_update_state())
+        .manage(desktop_updater::new_desktop_update_state())
+        .manage(new_close_to_tray_state())
+        .manage(native_file_dialogs::ChatImportRegistry::default())
         .invoke_handler(tauri::generate_handler![
+            app_menu::set_app_menu_actions,
             set_training_active,
             set_renderer_activity,
             app_layout::has_initialized_app_window_layout,
             app_layout::mark_app_window_layout_initialized,
             app_layout::reset_app_window_layout_initialized,
+            app_layout::take_native_layout_restored,
             commands::check_install_status,
             commands::desktop_preflight,
             commands::start_install,
@@ -1532,17 +2210,24 @@ fn main() {
             commands::start_managed_server,
             commands::stop_server,
             commands::check_health,
+            commands::check_backend_present,
+            commands::check_backend_is_gone,
             commands::get_server_logs,
             commands::open_logs_dir,
             commands::open_models_dir,
+            commands::confirm_backend_update,
             commands::start_backend_update,
             commands::start_managed_repair,
+            commands::native_path_leases_usable,
             commands::cancel_pending_elevation,
             commands::install_system_packages,
             desktop_auth::desktop_auth,
             desktop_update_policy::check_desktop_manual_update,
             desktop_update_policy::desktop_update_policy,
             desktop_updater::check_desktop_update,
+            desktop_updater::download_desktop_update,
+            desktop_updater::install_desktop_update,
+            desktop_updater::desktop_update_bundle_status,
             desktop_updater::desktop_update_cleanup_armed,
             desktop_updater::resume_desktop_update_cleanup,
             diagnostics::collect_support_diagnostics,
@@ -1550,7 +2235,9 @@ fn main() {
             native_clipboard::read_native_clipboard_png,
             native_file_dialogs::save_native_file,
             native_file_dialogs::save_native_file_from_url,
+            native_file_dialogs::download_logs_to_downloads,
             native_file_dialogs::pick_native_chat_import,
+            native_file_dialogs::read_native_chat_import_chunk,
             native_file_dialogs::pick_native_training_config,
             native_intents::drain_native_intents,
             native_intents::register_native_model_path,
@@ -1564,13 +2251,17 @@ fn main() {
             native_intents::register_artifact_path,
             native_intents::reveal_path_token,
             native_intents::open_path_token,
+            webview_permissions::reset_microphone_permission,
             has_saved_window_state,
             was_launched_hidden,
             mark_in_app_relaunch,
             clear_in_app_relaunch,
             reveal_main_window,
+            get_close_to_tray,
+            set_close_to_tray,
             get_launch_at_login,
             set_launch_at_login,
+            set_tray_server_status,
         ])
         .setup(|app| {
             // Resolve here, before any window path can ask: this consumes the relaunch marker.
@@ -1581,7 +2272,15 @@ fn main() {
             if launched_hidden {
                 app.set_activation_policy(tauri::ActivationPolicy::Accessory);
             }
+
+            initialize_close_to_tray(app.handle());
             reconcile_autostart_entry(app.handle());
+            if let Err(error) = process::with_studio_runtime_launch_guard(|| {
+                staged_update::reconcile_legacy_at_launch(&diagnostics::studio_dir());
+                Ok(())
+            }) {
+                warn!("Legacy staged update cleanup deferred: {error}");
+            }
             // Recover legacy desktop installs before the first preflight.
             if let Err(error) = desktop_backend_owner::ensure_installed_studio_root_id() {
                 warn!("Desktop backend ownership id unavailable: {error}");
@@ -1595,6 +2294,8 @@ fn main() {
             }
             #[cfg(any(target_os = "windows", target_os = "linux"))]
             setup_custom_titlebar(app)?;
+            #[cfg(target_os = "linux")]
+            setup_linux_media_permissions(app)?;
             #[cfg(all(windows, not(debug_assertions)))]
             setup_windows_browser_guards(app)?;
             #[cfg(target_os = "macos")]
@@ -1618,13 +2319,13 @@ fn main() {
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                 // Never close directly: the only window, so closing exits before the reap.
                 api.prevent_close();
-                if cfg!(target_os = "macos") {
-                    // Closing a window leaves the app in the Dock; Reopen restores it.
-                    let _ = window.hide();
-                } else {
-                    // Elsewhere the close button means quit, not hiding what the user
-                    // believes they just closed.
-                    request_quit(window.app_handle());
+                let close_to_tray = window.state::<CloseToTrayState>().0.load(Ordering::SeqCst);
+                match main_window_close_action(close_to_tray) {
+                    MainWindowCloseAction::Hide => {
+                        // The tray's Open action and a second app launch restore the window.
+                        let _ = window.hide();
+                    }
+                    MainWindowCloseAction::Quit => request_quit(window.app_handle()),
                 }
             }
         })
@@ -1644,6 +2345,9 @@ fn main() {
                 // roughly 18s on Windows, where those first two graceful waits are
                 // `#[cfg(unix)]` and go straight to the force kill, but the backend spends
                 // its liveness, shutdown and CTRL_BREAK budgets in series instead.
+                #[cfg(target_os = "macos")]
+                macos_tray::remove_appearance_observer();
+
                 cleanup_child_processes(app);
             }
             _ => {}
@@ -1678,6 +2382,160 @@ mod tests {
         file.flush().unwrap();
         assert_eq!(fs::read_to_string(&rotated_path).unwrap(), "bbbbcccccccccc");
         assert_eq!(fs::read_to_string(&log_path).unwrap(), "dddd");
+    }
+
+    #[test]
+    fn connect_sources_appended_after_existing_directive() {
+        let mut policy = "default-src 'self'; connect-src 'self' https://huggingface.co; img-src 'self' data:".to_string();
+        assert!(append_connect_sources(
+            &mut policy,
+            &["https://hf-mirror.com".to_string(), "https://ds.example.com".to_string()],
+        ));
+        assert_eq!(
+            policy,
+            "default-src 'self'; connect-src 'self' https://huggingface.co https://hf-mirror.com https://ds.example.com; img-src 'self' data:",
+        );
+    }
+
+    #[test]
+    fn already_listed_sources_are_not_duplicated() {
+        let mut policy = "connect-src 'self' https://huggingface.co".to_string();
+        assert!(append_connect_sources(&mut policy, &["https://huggingface.co".to_string()]));
+        assert_eq!(policy, "connect-src 'self' https://huggingface.co");
+    }
+
+    #[test]
+    fn policy_without_connect_src_is_left_untouched() {
+        let mut policy = "default-src 'self'; img-src 'self' data:".to_string();
+        assert!(!append_connect_sources(&mut policy, &["https://hf-mirror.com".to_string()]));
+        assert_eq!(policy, "default-src 'self'; img-src 'self' data:");
+    }
+
+    #[test]
+    fn hostname_containing_directive_name_cannot_match() {
+        let mut policy = "connect-src 'self'; img-src connect-src.evil.com".to_string();
+        assert!(append_connect_sources(&mut policy, &["https://hf-mirror.com".to_string()]));
+        assert_eq!(policy, "connect-src 'self' https://hf-mirror.com; img-src connect-src.evil.com");
+    }
+
+    #[test]
+    fn a_path_prefixed_mirror_is_reduced_to_its_origin() {
+        assert_eq!(csp_origin_of("https://hub.internal/hf"), "https://hub.internal");
+        assert_eq!(
+            csp_origin_of("https://hub.internal:8443/hf/v2"),
+            "https://hub.internal:8443"
+        );
+        assert_eq!(csp_origin_of("https://hf-mirror.com"), "https://hf-mirror.com");
+        assert_eq!(csp_origin_of("http://localhost:8080"), "http://localhost:8080");
+    }
+
+    #[test]
+    fn a_plain_https_origin_is_a_usable_csp_source() {
+        assert!(is_usable_csp_source("https://hf-mirror.com"));
+        assert!(is_usable_csp_source("http://localhost:8080"));
+        assert!(is_usable_csp_source("https://hub.internal:8443/hf"));
+    }
+
+    #[test]
+    fn an_endpoint_that_could_forge_a_directive_is_rejected() {
+        for hostile in [
+            "https://hf-mirror.com; script-src *",
+            "https://hf-mirror.com *",
+            "https://hf-mirror.com\nscript-src *",
+            "https://hf-mirror.com\r\nscript-src *",
+            "https://hf-mirror.com\tfoo",
+            "https://hf-mirror.com,https://evil.com",
+            "https://hf-mirror.com'",
+        ] {
+            assert!(!is_usable_csp_source(hostile), "should reject {hostile:?}");
+        }
+    }
+
+    #[test]
+    fn a_non_http_or_hostless_endpoint_is_rejected() {
+        for bad in [
+            "javascript:alert(1)",
+            "file:///etc/passwd",
+            "data:text/html,x",
+            "ftp://hf-mirror.com",
+            "https://",
+            "https://user:pass@hf-mirror.com",
+            "https://hf-mirror.com?x=1",
+            "https://hf-mirror.com#f",
+            "https://javascript:alert(1)",
+            "https://hf-mirror.com:",
+            "https://hf-mirror.com:80x",
+            "https://*",
+            "https://*.evil.com",
+        ] {
+            assert!(!is_usable_csp_source(bad), "should reject {bad:?}");
+        }
+    }
+
+    #[test]
+    fn plain_http_is_loopback_only() {
+        assert!(is_usable_csp_source("http://127.0.0.1:9700"));
+        assert!(is_usable_csp_source("http://localhost:8080"));
+        assert!(is_usable_csp_source("http://127.1.2.3"));
+        assert!(!is_usable_csp_source("http://192.168.1.10:8080"));
+        assert!(!is_usable_csp_source("http://hf-mirror.com"));
+        assert!(!is_usable_csp_source("http://10.0.0.5:8080"));
+        assert!(is_usable_csp_source("https://192.168.1.10:8080"));
+        assert!(is_usable_csp_source("https://hf-mirror.com"));
+    }
+
+    #[test]
+    fn csp_sources_are_normalised_and_deduplicated() {
+        let sources = csp_sources_from(vec![
+            "https://hf-mirror.com".to_string(),
+            "HTTPS://hf-mirror.com/".to_string(),
+            "hf-mirror.com".to_string(),
+            "  ".to_string(),
+            "http://192.168.1.10".to_string(),
+            "https://ds.internal/hf".to_string(),
+        ]);
+        assert_eq!(sources, vec!["https://hf-mirror.com", "https://ds.internal"]);
+    }
+
+    #[test]
+    fn a_unicode_host_is_refused_and_its_punycode_form_is_not() {
+        assert!(!is_usable_csp_source("https://例子.测试"));
+        assert!(is_usable_csp_source("https://xn--fsqu00a.xn--0zwm56d"));
+    }
+
+    #[test]
+    fn every_ipv6_loopback_spelling_is_recognised_and_compressed() {
+        assert!(is_usable_csp_source("http://[0:0:0:0:0:0:0:1]:9700"));
+        assert!(is_usable_csp_source("http://[::1]:9700"));
+        assert!(is_usable_csp_source("http://127.9.9.9"));
+        assert!(!is_usable_csp_source("http://[2001:db8::1]:9700"));
+        assert_eq!(
+            csp_origin_of("http://[0:0:0:0:0:0:0:1]:9700"),
+            "http://[::1]:9700"
+        );
+        assert_eq!(csp_origin_of("http://[0:0:0:0:0:0:0:1]"), "http://[::1]");
+    }
+
+    #[test]
+    fn the_scheme_is_matched_case_insensitively() {
+        assert!(is_usable_csp_source("HTTPS://hf-mirror.com"));
+        assert!(is_usable_csp_source("Https://hf-mirror.com"));
+        assert!(is_usable_csp_source("HTTP://127.0.0.1:9700"));
+        assert!(!is_usable_csp_source("HTTP://hf-mirror.com"));
+        assert_eq!(csp_origin_of("HTTPS://hf-mirror.com/hf"), "https://hf-mirror.com");
+    }
+
+    #[test]
+    fn a_loopback_http_mirror_reaches_the_asset_directives_too() {
+        let mut policy = "connect-src 'self'; img-src 'self' data: https:; \
+media-src 'self' https:"
+            .to_string();
+        let assets = ["http://127.0.0.1:9700".to_string()];
+        assert!(append_sources_to(&mut policy, "img-src", &assets));
+        assert!(append_sources_to(&mut policy, "media-src", &assets));
+        assert!(policy.contains("img-src 'self' data: https: http://127.0.0.1:9700"));
+        assert!(policy.contains("media-src 'self' https: http://127.0.0.1:9700"));
+        assert!(policy.contains("connect-src 'self';"));
     }
 
     #[test]
@@ -1728,12 +2586,122 @@ mod tests {
         assert!(!in_app_relaunch_marker_path(dir.path()).exists());
     }
 
+    #[test]
+    fn close_to_tray_preference_defaults_off_and_round_trips() {
+        let dir = tempfile::tempdir().unwrap();
+
+        assert!(!read_close_to_tray_preference(dir.path()));
+        write_close_to_tray_preference(dir.path(), false).unwrap();
+        assert!(!read_close_to_tray_preference(dir.path()));
+        write_close_to_tray_preference(dir.path(), true).unwrap();
+        assert!(read_close_to_tray_preference(dir.path()));
+    }
+
+    #[test]
+    fn invalid_close_to_tray_preference_falls_back_to_disabled() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(close_to_tray_preference_path(dir.path()), b"maybe\n").unwrap();
+
+        assert!(!read_close_to_tray_preference(dir.path()));
+    }
+
+    #[test]
+    fn launch_at_login_preference_round_trips_and_starts_with_no_record() {
+        let dir = tempfile::tempdir().unwrap();
+
+        // Not Some(false): an install that has never been told cannot be restored to anything.
+        assert_eq!(read_launch_at_login_preference(dir.path()), None);
+        write_launch_at_login_preference(dir.path(), true).unwrap();
+        assert_eq!(read_launch_at_login_preference(dir.path()), Some(true));
+        write_launch_at_login_preference(dir.path(), false).unwrap();
+        assert_eq!(read_launch_at_login_preference(dir.path()), Some(false));
+    }
+
+    #[test]
+    fn an_unreadable_launch_at_login_preference_restores_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(launch_at_login_preference_path(dir.path()), b"maybe\n").unwrap();
+
+        assert_eq!(read_launch_at_login_preference(dir.path()), None);
+        assert!(!should_restore_autostart_entry(None, false, false));
+    }
+
+    #[test]
+    fn only_a_deleted_entry_with_a_stored_yes_is_restored() {
+        // The bug this exists for: the value is gone and the user had asked for it.
+        assert!(should_restore_autostart_entry(Some(true), false, false));
+
+        // Turned off in Task Manager. The value survives, so re-enabling would overrule them.
+        assert!(!should_restore_autostart_entry(Some(true), true, true));
+        // Deleted *and* disabled: still their decision, so it stays gone.
+        assert!(!should_restore_autostart_entry(Some(true), false, true));
+        // Nothing to restore: never asked for, or turned off on purpose.
+        assert!(!should_restore_autostart_entry(None, false, false));
+        assert!(!should_restore_autostart_entry(Some(false), false, false));
+        // Already there. reconcile_autostart_entry repoints it; this decides nothing.
+        assert!(!should_restore_autostart_entry(Some(true), true, false));
+    }
+
+    /// The state is the first byte, not the trailing timestamp.
+    #[test]
+    fn startup_approved_bytes_are_read_from_the_state_byte() {
+        // What auto-launch's own enable() writes: a 0x02 lead and eight zero bytes after it.
+        assert!(!startup_approved_disabled(&[
+            0x02, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
+        ]));
+        // Disabled in Task Manager: 0x03, and the last eight bytes hold the timestamp.
+        assert!(startup_approved_disabled(&[
+            0x03, 0, 0, 0, 0x1e, 0x38, 0x9f, 0x4c, 0x7d, 0x2a, 0xdb, 0x01
+        ]));
+        // Switched back on: 0x06, and the timestamp stays. Reading the trailing bytes calls
+        // this disabled, which is how a user who toggled the entry twice lost the setting.
+        assert!(!startup_approved_disabled(&[
+            0x06, 0, 0, 0, 0x1e, 0x38, 0x9f, 0x4c, 0x7d, 0x2a, 0xdb, 0x01
+        ]));
+        // No state byte at all is no state Windows recorded, and it starts such an entry.
+        assert!(!startup_approved_disabled(&[0x02, 0, 0, 0]));
+        assert!(!startup_approved_disabled(&[]));
+    }
+
+    /// A re-enabled entry is present and on, so it is adopted and never restored over.
+    #[test]
+    fn a_re_enabled_entry_is_not_treated_as_deleted() {
+        let re_enabled = [
+            0x06, 0, 0, 0, 0x1e, 0x38, 0x9f, 0x4c, 0x7d, 0x2a, 0xdb, 0x01,
+        ];
+        let disabled = startup_approved_disabled(&re_enabled);
+
+        assert!(!disabled);
+        assert!(!should_restore_autostart_entry(Some(true), true, disabled));
+    }
+
+    #[test]
+    fn enabled_close_to_tray_hides_the_main_window_on_supported_desktops() {
+        let expected = if cfg!(any(
+            target_os = "windows",
+            target_os = "linux",
+            target_os = "macos"
+        )) {
+            MainWindowCloseAction::Hide
+        } else {
+            MainWindowCloseAction::Quit
+        };
+        assert_eq!(main_window_close_action(true), expected);
+
+        let disabled_expected = if cfg!(target_os = "macos") {
+            MainWindowCloseAction::Hide
+        } else {
+            MainWindowCloseAction::Quit
+        };
+        assert_eq!(main_window_close_action(false), disabled_expected);
+    }
+
     #[cfg(target_os = "linux")]
     const BID: &str = "ai.unsloth.studio";
 
-    // Only XDG_DATA_HOME is swapped, and nothing else in the crate reads it, so the
-    // tests running beside these stay clear. HOME is left alone for the same reason:
-    // `dirs::home_dir` is all over this crate.
+    // Only XDG_DATA_HOME is swapped, and it is read elsewhere now (a relocated CLI
+    // child pins it), so the swap holds the crate-wide env lock and readers take it
+    // too. HOME is left alone: `dirs::home_dir` is all over this crate.
     #[cfg(target_os = "linux")]
     fn with_xdg_data_home<T>(value: &str, f: impl FnOnce() -> T) -> T {
         // The crate-wide lock, not one of this module's own: the path policy
@@ -1982,9 +2950,8 @@ mod tests {
         assert_eq!(
             events.into_inner(),
             ["reap"],
-            "macOS closes to the tray and Linux quit without an overlay before this \
-             existed, so neither may see the event at all, and neither may a tray quit \
-             with no window on screen"
+            "window-close and tray paths can bypass the overlay entirely, and a tray quit with no \
+             window on screen must not emit it"
         );
     }
 
@@ -2245,27 +3212,38 @@ mod tests {
         assert!(hardened.ends_with("\nTryExec=/plain/app"));
     }
 
-    fn renderer_activity(state: &RendererActivityState) -> (bool, bool) {
+    // One element per field of RendererActivity: a narrower tuple is how a kind ships
+    // untested while a test named "each kind" still passes.
+    fn renderer_activity(state: &RendererActivityState) -> (bool, bool, bool) {
         let activity = state
             .lock()
             .expect("the activity mutex must not be poisoned");
-        (activity.downloads, activity.shell_update)
+        (
+            activity.downloads,
+            activity.shell_update,
+            activity.unsaved_transcript,
+        )
     }
 
     #[test]
     fn renderer_activity_starts_clear_and_round_trips_each_kind() {
         let state = new_renderer_activity_state();
-        assert_eq!(renderer_activity(&state), (false, false));
+        assert_eq!(renderer_activity(&state), (false, false, false));
 
         apply_renderer_activity(&state, "downloads", true);
-        assert_eq!(renderer_activity(&state), (true, false));
+        assert_eq!(renderer_activity(&state), (true, false, false));
         apply_renderer_activity(&state, "downloads", false);
-        assert_eq!(renderer_activity(&state), (false, false));
+        assert_eq!(renderer_activity(&state), (false, false, false));
 
         apply_renderer_activity(&state, "shell_update", true);
-        assert_eq!(renderer_activity(&state), (false, true));
+        assert_eq!(renderer_activity(&state), (false, true, false));
         apply_renderer_activity(&state, "shell_update", false);
-        assert_eq!(renderer_activity(&state), (false, false));
+        assert_eq!(renderer_activity(&state), (false, false, false));
+
+        apply_renderer_activity(&state, "unsaved_transcript", true);
+        assert_eq!(renderer_activity(&state), (false, false, true));
+        apply_renderer_activity(&state, "unsaved_transcript", false);
+        assert_eq!(renderer_activity(&state), (false, false, false));
     }
 
     #[test]
@@ -2274,11 +3252,16 @@ mod tests {
 
         apply_renderer_activity(&state, "downloads", true);
         apply_renderer_activity(&state, "shell_update", true);
-        assert_eq!(renderer_activity(&state), (true, true));
+        apply_renderer_activity(&state, "unsaved_transcript", true);
+        assert_eq!(renderer_activity(&state), (true, true, true));
 
         // Downloads finishing must not clear an update that is still installing.
         apply_renderer_activity(&state, "downloads", false);
-        assert_eq!(renderer_activity(&state), (false, true));
+        assert_eq!(renderer_activity(&state), (false, true, true));
+
+        // Nor must a saved transcript clear either of the other two.
+        apply_renderer_activity(&state, "unsaved_transcript", false);
+        assert_eq!(renderer_activity(&state), (false, true, false));
     }
 
     #[test]
@@ -2290,6 +3273,53 @@ mod tests {
         apply_renderer_activity(&state, "training", true);
         apply_renderer_activity(&state, "", false);
         apply_renderer_activity(&state, "Downloads", true);
-        assert_eq!(renderer_activity(&state), (false, true));
+        apply_renderer_activity(&state, "unsaved-transcript", true);
+        assert_eq!(renderer_activity(&state), (false, true, false));
+    }
+
+    /// The three states the tray-toggle-server listener in use-tauri-backend.ts acts
+    /// on, plus the one the tray reports progress for.
+    #[test]
+    fn the_tray_toggle_names_the_action_a_click_would_take() {
+        assert_eq!(tray_toggle_label("running"), ("Stop Server", true));
+        assert_eq!(tray_toggle_label("stopped"), ("Start Server", true));
+        assert_eq!(tray_toggle_label("error"), ("Start Server", true));
+        assert_eq!(tray_toggle_label("starting"), ("Starting\u{2026}", false));
+    }
+
+    /// Every remaining BackendStatus: the listener acts on none of them, so the item is
+    /// greyed rather than offering a click that would be a silent no-op. Keep this list in
+    /// step with the union in use-tauri-backend.ts.
+    #[test]
+    fn a_status_the_tray_cannot_act_on_greys_the_toggle() {
+        for status in [
+            "checking",
+            "not-installed",
+            "installing",
+            "install-error",
+            "needs-elevation",
+            "repairing",
+            "repair-error",
+        ] {
+            assert_eq!(
+                tray_toggle_label(status),
+                ("Start Server", false),
+                "{status} offered a click the renderer would drop"
+            );
+        }
+    }
+
+    /// The status is whatever string the webview sent, so a mismatched bundle can pass
+    /// something that is not a status at all. Match the whole string: a prefix or a case
+    /// fold would let "run" read as an offer to stop a server that is not running.
+    #[test]
+    fn an_unrecognised_status_greys_the_toggle_rather_than_guessing() {
+        for status in ["", " ", "Running", "RUNNING", "running ", "run", "{}"] {
+            assert_eq!(
+                tray_toggle_label(status),
+                ("Start Server", false),
+                "{status:?} was read as a known status"
+            );
+        }
     }
 }

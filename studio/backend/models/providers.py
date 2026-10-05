@@ -7,8 +7,9 @@ from typing import Literal, Optional
 
 from pydantic import BaseModel, Field
 
+ProviderApiType = Literal["chat_completions", "responses", "systemone"]
 
-# ── Registry (static provider info) ───────────────────────────────
+MAX_JSON_SAFE_INTEGER = 9_007_199_254_740_991
 
 
 class ProviderRegistryEntry(BaseModel):
@@ -31,6 +32,14 @@ class ProviderRegistryEntry(BaseModel):
     supports_tool_calling: bool = Field(
         False, description = "Whether this provider supports tool/function calling"
     )
+    supports_studio_tools: bool = Field(
+        False,
+        description = "Whether Unsloth runs its own tool loop (search/code/MCP/RAG) against this provider",
+    )
+    hidden: bool = Field(
+        False,
+        description = "Backend-only entry; the UI surfaces it via a custom preset, not the dropdown",
+    )
 
     auth_kind: Literal["api_key", "chatgpt_oauth"] = "api_key"
     base_url_editable: bool = True
@@ -41,11 +50,10 @@ class ProviderRegistryEntry(BaseModel):
     )
 
 
-# ── Provider config CRUD ──────────────────────────────────────────
-
-
 class ProviderCreate(BaseModel):
     """Request to create a saved provider configuration."""
+
+    api_type: ProviderApiType = "chat_completions"
 
     provider_type: str = Field(..., description = "Provider type from the registry")
     display_name: str = Field(..., description = "User-chosen label (e.g. 'My OpenAI Key')")
@@ -61,6 +69,13 @@ class ProviderCreate(BaseModel):
         default_factory = list,
         description = "Discovered catalog model IDs last fetched for this connection",
     )
+    max_output_tokens: Optional[int] = Field(
+        None,
+        strict = True,
+        ge = 64,
+        le = MAX_JSON_SAFE_INTEGER,
+        description = "Optional maximum Max Tokens cap for this connection",
+    )
 
     encrypted_api_key: Optional[str] = Field(
         None,
@@ -71,6 +86,8 @@ class ProviderCreate(BaseModel):
 class ProviderUpdate(BaseModel):
     """Request to update a saved provider configuration."""
 
+    api_type: Optional[ProviderApiType] = None
+
     display_name: Optional[str] = Field(None, description = "New display name")
     base_url: Optional[str] = Field(None, description = "New base URL")
     is_enabled: Optional[bool] = Field(None, description = "Enable or disable this provider")
@@ -78,6 +95,13 @@ class ProviderUpdate(BaseModel):
     available_models: Optional[list[str]] = Field(
         None,
         description = "Discovered catalog model IDs last fetched for this connection",
+    )
+    max_output_tokens: Optional[int] = Field(
+        None,
+        strict = True,
+        ge = 64,
+        le = MAX_JSON_SAFE_INTEGER,
+        description = "Optional maximum Max Tokens cap for this connection",
     )
 
     encrypted_api_key: Optional[str] = Field(
@@ -103,6 +127,8 @@ class ProviderCredentialMigration(BaseModel):
 class ProviderResponse(BaseModel):
     """A saved provider configuration (returned by list/get endpoints)."""
 
+    api_type: ProviderApiType = "chat_completions"
+
     id: str = Field(..., description = "Unique provider config ID")
     provider_type: str = Field(..., description = "Provider type (e.g. 'openai')")
     display_name: str = Field(..., description = "User-chosen label")
@@ -121,11 +147,12 @@ class ProviderResponse(BaseModel):
         default_factory = list,
         description = "Discovered catalog model IDs last fetched for this connection",
     )
+    max_output_tokens: Optional[int] = Field(
+        None,
+        description = "Configured maximum Max Tokens cap for this connection",
+    )
     created_at: str = Field(..., description = "ISO 8601 creation timestamp")
     updated_at: str = Field(..., description = "ISO 8601 last-update timestamp")
-
-
-# ── Model listing ─────────────────────────────────────────────────
 
 
 class ProviderModelInfo(BaseModel):
@@ -135,10 +162,36 @@ class ProviderModelInfo(BaseModel):
     display_name: str = Field("", description = "Human-readable model name")
     context_length: Optional[int] = Field(None, description = "Maximum context length in tokens")
     owned_by: Optional[str] = Field(None, description = "Model owner/organization")
+    capabilities: Optional[list[str]] = Field(
+        None,
+        description = "Per-model capability names (Ollama /api/tags: thinking, tools, vision, ...)",
+    )
+
+
+class ProviderModelReasoningInfo(BaseModel):
+    supported_efforts: Optional[list[str]] = None
+    mandatory: bool = False
+    default_effort: Optional[str] = None
+    default_enabled: Optional[bool] = None
+
+
+class ProviderModelCapabilityInfo(BaseModel):
+    id: str
+    input_modalities: Optional[list[str]] = None
+    reasoning: Optional[ProviderModelReasoningInfo] = None
+    max_output_tokens: Optional[int] = None
+    supported_parameters: Optional[list[str]] = None
+
+
+class ModelCatalogResponse(BaseModel):
+    fetched_at: float
+    providers: dict[str, dict[str, dict]]
 
 
 class ProviderModelsRequest(BaseModel):
     """Request to list models from an external provider."""
+
+    api_type: ProviderApiType = "chat_completions"
 
     provider_id: Optional[str] = Field(
         None, description = "Saved provider config whose stored key may be used"
@@ -154,11 +207,10 @@ class ProviderModelsRequest(BaseModel):
     )
 
 
-# ── Connection testing ────────────────────────────────────────────
-
-
 class ProviderTestRequest(BaseModel):
     """Request to test connectivity to an external provider."""
+
+    api_type: ProviderApiType = "chat_completions"
 
     provider_id: Optional[str] = Field(
         None, description = "Saved provider config whose stored key may be used"
