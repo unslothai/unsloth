@@ -301,6 +301,16 @@ export const KV_CACHE_DTYPES = [
   "f32",
 ] as const;
 
+/** Menu entries for a llama.cpp backend. CUDA, ROCm and Metal have no iq4_nl FlashAttention kernel, so attention
+ *  runs on the CPU there; Vulkan and CPU builds run it. A selected value stays listed so the trigger can show it. */
+export function kvCacheDtypeOptions(
+  backend: string | null,
+  selected: string | null | undefined,
+): readonly string[] {
+  if (backend === "vulkan" || backend === "cpu") return KV_CACHE_DTYPES;
+  return KV_CACHE_DTYPES.filter((dtype) => dtype !== "iq4_nl" || dtype === selected);
+}
+
 export const MLX_KV_QUANTS = [
   "8",
   "6",

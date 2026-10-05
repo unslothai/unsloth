@@ -1339,6 +1339,8 @@ async def stream_with_studio_tools(
     controller = ToolLoopController(
         tools = tools,
         auto_heal_tool_calls = policy.auto_heal is not False,
+        session_id = session_id,
+        thread_id = thread_id,
     )
     tool_hint = ", ".join(sorted(allowed_tool_names))
     reprompts = 0

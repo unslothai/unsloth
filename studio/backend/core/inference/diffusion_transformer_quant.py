@@ -221,18 +221,48 @@ _INT8_FAMILY_CONVROT: dict[str, tuple[int, tuple[str, ...]]] = {
             "img_mlp.out",
         ),
     ),
+    # exactly the Linears the hosted INT8 checkpoint quantizes (all input axes 256-divisible)
+    "z-image": (
+        256,
+        (
+            "attention.to_q",
+            "attention.to_k",
+            "attention.to_v",
+            "attention.to_out.0",
+            "feed_forward.w1",
+            "feed_forward.w2",
+            "feed_forward.w3",
+            "cap_embedder.1",
+        ),
+    ),
 }
 
 
 _INT8_FAMILY_CONVROT_FILENAME: dict[str, str] = {
     "qwen-image-2.1": "Qwen-Image-2.1-INT8-ConvRot.safetensors",
+    "z-image": "Z-Image-Turbo-INT8-ConvRot.safetensors",
 }
+# Only this repo gets the rotated name prepended: a same-named file elsewhere is not this build.
+_INT8_FAMILY_CONVROT_REPO: dict[str, str] = {
+    "qwen-image-2.1": "unsloth/Qwen-Image-2.1-FP8",
+    "z-image": "unsloth/Z-Image-Turbo-FP8",
+}
+
+# Families whose int8 runs ConvRot unless the env turns it off; the rest stay opt-in (``=1``).
+_INT8_FAMILY_CONVROT_DEFAULT_ON: frozenset[str] = frozenset({"z-image"})
 
 INT8_CONVROT_ENV = "UNSLOTH_DIFFUSION_INT8_CONVROT"
 
 
-def int8_convrot_enabled() -> bool:
-    return (_os.environ.get(INT8_CONVROT_ENV) or "").strip().lower() in ("1", "on", "true", "yes")
+def int8_convrot_enabled(family: Optional[str] = None) -> bool:
+    """``UNSLOTH_DIFFUSION_INT8_CONVROT``: ``1`` turns ConvRot on for every family with a table entry, ``0`` turns it
+    off everywhere (the kill switch); unset follows the family default."""
+    raw = (_os.environ.get(INT8_CONVROT_ENV) or "").strip().lower()
+    if raw in ("1", "on", "true", "yes"):
+        return True
+    if raw in ("0", "off", "false", "no"):
+        return False
+    return str(family or "").strip().lower() in _INT8_FAMILY_CONVROT_DEFAULT_ON
 
 
 def convrot_spec_for_scheme(
@@ -248,6 +278,13 @@ def convrot_prequant_filename(scheme: str, family: Optional[str] = None) -> Opti
     if scheme != TQ_INT8:
         return None
     return _INT8_FAMILY_CONVROT_FILENAME.get(str(family or "").strip().lower())
+
+
+def convrot_prequant_repo(scheme: str, family: Optional[str] = None) -> Optional[str]:
+    """The repo the family's rotated int8 artifact is published to, or None."""
+    if scheme != TQ_INT8:
+        return None
+    return _INT8_FAMILY_CONVROT_REPO.get(str(family or "").strip().lower())
 
 
 def convrot_fqns(
@@ -272,7 +309,7 @@ def apply_runtime_convrot(
 ) -> tuple[str, ...]:
     """Rotate BEFORE quantize_; a later failure leaves an exact dense model, so fallback stays correct."""
     group, suffixes = convrot_spec_for_scheme(scheme, family)
-    if not group or not int8_convrot_enabled():
+    if not group or not int8_convrot_enabled(family):
         return ()
     from .diffusion_convrot import CONVROT_ATTR, CONVROT_KIND, rotate_linears_, warm_rotation_cache
 

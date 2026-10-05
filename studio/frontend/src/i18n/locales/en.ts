@@ -1869,6 +1869,7 @@ export const en = {
         cpu: "CPU",
         ram: "RAM",
         disk: "Disk",
+        modelsDisk: "Models disk",
         vram: "VRAM",
         cpuCores: "{logical} logical / {physical} physical cores",
         currentLoad: "Current load",
@@ -1979,6 +1980,7 @@ export const en = {
       storage: {
         title: "Storage",
         systemDisk: "System disk",
+        modelsDisk: "Models disk",
         diskUsage: "{used} used / {total}",
         diskFree: "{free} free",
         modelsFolder: "Models folder",
@@ -2242,9 +2244,6 @@ export const en = {
       showResponseModel: "Response model",
       showResponseModelDescription:
         "Show model details in assistant responses.",
-      inlineReadAloud: "Read aloud on responses",
-      inlineReadAloudDescription:
-        "Keep Read aloud on every response, instead of in the More menu.",
       inlineEditResponse: "Edit response on responses",
       inlineEditResponseDescription:
         "Keep Edit response on every response, instead of in the More menu.",

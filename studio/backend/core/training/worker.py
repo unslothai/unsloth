@@ -3643,6 +3643,10 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
         service_name = "unsloth-studio-training-worker",
         env = os.getenv("ENVIRONMENT_TYPE", "production"),
     )
+    # As the inference worker: a recovered traceback reaching fd 2 must not read as the crash.
+    from utils.worker_stderr import mark_log_record_continuations
+
+    mark_log_record_continuations()
 
     apply_gpu_ids(config.get("resolved_gpu_ids"), backend = config.get("device_backend"))
 

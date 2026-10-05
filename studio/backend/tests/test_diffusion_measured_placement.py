@@ -396,13 +396,13 @@ def _family_names():
     "budget,total", [(21432, 24576), (13638, 16376), (9550, 12288), (5450, 8188)]
 )
 def test_only_measured_family_moves(q21_pipe, speed, budget, total):
-    """Every other supported family keeps its flat plan byte for byte, on every speed tier and budget."""
+    """Every unmeasured family keeps its flat plan byte for byte, on every speed tier and budget."""
     names = _family_names()
     assert "qwen-image-2.1" in names and len(names) > 5
     plan = _flat_plan(budget, total)
     for family in names:
         new = _refine(q21_pipe, plan, family = family, speed = speed)
-        if family == "qwen-image-2.1" and speed in ("default", "max"):
+        if family in ("qwen-image-2.1", "flux.1", "z-image") and speed in ("default", "max"):
             continue
         assert new is plan, family
 

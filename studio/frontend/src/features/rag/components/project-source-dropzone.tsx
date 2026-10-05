@@ -20,8 +20,10 @@ import {
   noteProjectWork,
   uploadProjectDocument,
 } from "../api/rag-api";
-import { RAG_UPLOAD_ACCEPT } from "../types/rag";
-import { partitionSupported } from "./source-drop-policy";
+import {
+  RAG_SOURCE_UPLOAD_ACCEPT,
+  partitionSupported,
+} from "./source-drop-policy";
 import {
   addStagedSources,
   EXPIRY_GRACE_MS,
@@ -251,7 +253,7 @@ export function ProjectSourceDropzone({
           unsupported.length === 1
             ? `Can't add ${unsupported[0]}`
             : `Can't add ${unsupported.length} files`,
-          { description: `Supported types: ${RAG_UPLOAD_ACCEPT}` },
+          { description: "Supported types: documents and source code files" },
         );
       }
       // Name, size and mtime can in principle match for two different files, so
@@ -369,7 +371,7 @@ export function ProjectSourceDropzone({
           ref={inputRef}
           type="file"
           multiple={true}
-          accept={RAG_UPLOAD_ACCEPT}
+          accept={RAG_SOURCE_UPLOAD_ACCEPT}
           className="hidden"
           onChange={(e) => {
             const files = Array.from(e.target.files ?? []);

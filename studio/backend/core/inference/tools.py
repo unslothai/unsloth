@@ -20510,6 +20510,65 @@ def _split_frontend_suffix(text: str, name: "str | None") -> "tuple[str, str]":
     return body, text[len(body) :]
 
 
+MAX_TOOL_TEXT_CHARS = _env_int("UNSLOTH_TOOL_RESULT_HARD_CAP_CHARS", 256_000)
+_TOOL_TEXT_READERS = frozenset({"terminal", "python"})
+
+
+def _hard_cap_chars() -> int:
+    """Never below the window-aware cap plus its notice, so output `_truncate` already cut (and
+    spilled) passes through with its own spill reference intact."""
+    return max(MAX_TOOL_TEXT_CHARS, _MAX_OUTPUT_CHARS + 4_000)
+
+
+def _tool_text_notice_head() -> str:
+    return f"\n\n... (tool result truncated to {_hard_cap_chars():,} chars for the model;"
+
+
+def _tool_text_search_hint(path: str, readers: "frozenset[str]") -> str:
+    ways = []
+    if "terminal" in readers and _posix_tools_available():
+        ways += [f"grep -n 'pattern' {path}", f"sed -n '1,200p' {path}"]
+    elif "terminal" in readers:
+        ways.append(f'findstr /n "pattern" {path.replace("/", chr(92))}')
+    if "python" in readers:
+        ways.append(f"open({path!r}) in python")
+    return "Search it instead of re-running the call, e.g. " + ", or ".join(ways)
+
+
+def cap_tool_text(
+    text: str,
+    *,
+    session_id: "str | None" = None,
+    thread_id: "str | None" = None,
+    readers: "frozenset[str]" = frozenset(),
+) -> str:
+    """Unconditional floor (``UNSLOTH_TOOL_RESULT_HARD_CAP_CHARS``); spills when a reader tool exists."""
+    limit = _hard_cap_chars()
+    if len(text) <= limit:
+        return text
+    head = _head_whole_lines(text, limit)[0]
+    readers = readers & _TOOL_TEXT_READERS
+    if readers and session_id and _spill_scope(session_id, thread_id) is not None:
+        try:
+            workdir = _get_workdir(session_id)
+        except Exception:  # noqa: BLE001 -- no sandbox means the plain notice
+            logger.debug("tool text spill: no workdir", exc_info = True)
+            workdir = None
+        from .tool_loop_controller import redact_studio_credentials  # noqa: PLC0415
+
+        # Masked like the card and the model copy: the model reads this file.
+        spill, complete = _spill_full_output(
+            redact_studio_credentials(text), workdir, _spill_scope(session_id, thread_id)
+        )
+        if spill is not None:
+            return (
+                head
+                + f"{_tool_text_notice_head()} {_spill_phrase(spill, complete)} in the working "
+                f"directory. {_tool_text_search_hint(spill, readers)}.)"
+            )
+    return head + f"{_tool_text_notice_head()} the full output is not retained in model context.)"
+
+
 def _head_whole_lines(text: str, limit: int) -> "tuple[str, bool]":
     """``text`` cut to at most ``limit`` characters, and whether it ended on a line break.
 

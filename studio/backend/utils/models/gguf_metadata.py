@@ -914,9 +914,15 @@ def mmproj_accepts_image(path: str) -> bool:
 
 
 def is_mmproj_by_metadata(meta: Optional[Dict[str, str]]) -> Optional[bool]:
-    """True/False from ``general.type``; None means fall back to filename."""
+    """True/False from ``general.type``; None means fall back to filename.
+
+    ``general.architecture == "clip"`` is llama.cpp's projector arch and wins: older
+    converters wrote ``general.type`` values like ``clip-vision`` (#9286).
+    """
     if not meta:
         return None
+    if (meta.get("general.architecture") or "").lower() == "clip":
+        return True
     t = meta.get("general.type")
     if t is None:
         return None
