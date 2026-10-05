@@ -417,6 +417,41 @@ def test_an_unreachable_hub_still_takes_the_cached_fp8_file(tmp_path, monkeypatc
         tpq._resolve_checkpoint_path(src, None, cache_dir = str(tmp_path))
 
 
+def test_an_unreachable_hub_takes_the_fp8_file_from_the_other_cache_root(tmp_path, monkeypatch):
+    """Outage with the fp8 file cached only under the default root (a moved cache setting)."""
+    from huggingface_hub.errors import LocalEntryNotFoundError
+
+    monkeypatch.setattr(ps, "_torchao_helpers", lambda: None)
+    monkeypatch.delenv(tpq.TE_PREQUANT_MIRROR_ENV, raising = False)
+    fp8 = tmp_path / "other" / FP8_NAME
+    fp8.parent.mkdir()
+    fp8.write_bytes(b"x")
+    import core.inference.diffusion_prequant as dpq
+
+    monkeypatch.setattr(
+        dpq,
+        "_cached_in_root",
+        lambda _src, root, name = None: str(fp8) if root is None and name == FP8_NAME else None,
+    )
+
+    def fake_download(
+        repo_id,
+        filename,
+        cache_dir = None,
+        local_files_only = False,
+        **_k,
+    ):
+        if filename == FP8_NAME and local_files_only and cache_dir is None:
+            return str(fp8)
+        raise LocalEntryNotFoundError("connection error")
+
+    import huggingface_hub
+
+    monkeypatch.setattr(huggingface_hub, "hf_hub_download", fake_download)
+    src = tpq.resolve_te_prequant_source(get_family("qwen-image-2.1"), "text_encoder", "int8")
+    assert tpq._resolve_checkpoint_path(src, None, cache_dir = str(tmp_path / "live")) == str(fp8)
+
+
 def test_an_int8_file_that_will_not_build_falls_back_to_the_fp8_names(monkeypatch):
     calls: list = []
     sentinel = object()
