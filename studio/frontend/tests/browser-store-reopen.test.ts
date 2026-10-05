@@ -44,7 +44,7 @@ test("reopening a rewritten file shows its new bytes; an unchanged one keeps its
 test("a large file differing only in its last byte is told apart across compare slices", async () => {
   const store = useBrowserStore.getState();
   const bytes = new Uint8Array(2.5 * 1024 * 1024 + 3).fill(7);
-  const open = (data: Uint8Array) => store.openFile({ blob: new Blob([data]), name: "big.bin", key: "sandbox/big.bin" });
+  const open = (data: Uint8Array<ArrayBuffer>) => store.openFile({ blob: new Blob([data]), name: "big.bin", key: "sandbox/big.bin" });
   const shown = () => {
     const tab = useBrowserStore.getState().tabs.find((candidate) => candidate.openKey === "file:sandbox/big.bin");
     const entry = tab && currentEntry(tab);
