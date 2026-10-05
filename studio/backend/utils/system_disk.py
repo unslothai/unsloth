@@ -69,26 +69,26 @@ def models_disk_usage(cache: Optional[Path] = None) -> Optional[dict]:
 
 
 _lock = threading.Lock()
-_state = {"key": None, "at": 0.0, "reading": None, "probe": None}
+_state = {"key": None, "at": 0.0, "reading": None, "probes": {}}
 
 
 def _probe(key: Optional[Path]) -> None:
     reading = models_disk_usage(key)
     with _lock:
-        _state.update(key = key, at = time.monotonic(), reading = reading, probe = None)
+        _state["probes"].pop(key, None)
+        _state.update(key = key, at = time.monotonic(), reading = reading)
 
 
 def cached_models_disk_usage() -> Optional[dict]:
     """models_disk_usage for the 3 s /api/system poll: statvfs on a hung NFS/SMB cache blocks, so
-    the probe runs off the request thread, at most one at a time, refreshed every _TTL_S."""
+    the probe runs off the request thread, at most one per cache path, refreshed every _TTL_S."""
     key = _hub_cache()
     with _lock:
         fresh = _state["key"] == key and time.monotonic() - _state["at"] < _TTL_S
-        probe = _state["probe"]
-        if fresh or probe is not None:
+        if fresh or key in _state["probes"]:
             return _state["reading"] if _state["key"] == key else None
         probe = threading.Thread(target = _probe, args = (key,), daemon = True)
-        _state["probe"] = probe
+        _state["probes"][key] = probe
     probe.start()
     probe.join(_FIRST_WAIT_S)
     with _lock:

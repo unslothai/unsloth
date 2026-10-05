@@ -120,7 +120,7 @@ def test_unreadable_cache_under_a_readable_volume_is_not_its_parent(second_drive
 @pytest.fixture
 def fresh_cache(monkeypatch):
     monkeypatch.setattr(
-        system_disk, "_state", {"key": None, "at": 0.0, "reading": None, "probe": None}
+        system_disk, "_state", {"key": None, "at": 0.0, "reading": None, "probes": {}}
     )
     monkeypatch.setattr(system_disk, "_FIRST_WAIT_S", 0.2)
 
@@ -142,7 +142,7 @@ def test_hung_cache_volume_never_blocks_the_poll(fresh_cache, monkeypatch):
     assert len(calls) == 1, "one probe in flight, not one per poll"
     release.set()
     for _ in range(50):
-        if system_disk._state["probe"] is None:
+        if not system_disk._state["probes"]:
             break
         time.sleep(0.05)
     assert system_disk.cached_models_disk_usage() == {"total_gb": 1.0}
@@ -155,3 +155,20 @@ def test_changed_models_folder_is_reprobed(fresh_cache, monkeypatch):
     assert system_disk.cached_models_disk_usage() == {"path": "/a/hub"}
     folder["path"] = Path("/b/hub")
     assert system_disk.cached_models_disk_usage() == {"path": "/b/hub"}
+
+
+def test_switching_away_from_a_hung_folder_probes_the_new_one(fresh_cache, monkeypatch):
+    release = threading.Event()
+    folder = {"path": Path("/nfs/hub")}
+
+    def probe(key):
+        if key == Path("/nfs/hub"):
+            release.wait(10)
+        return {"path": str(key)}
+
+    monkeypatch.setattr(system_disk, "_hub_cache", lambda: folder["path"])
+    monkeypatch.setattr(system_disk, "models_disk_usage", probe)
+    assert system_disk.cached_models_disk_usage() is None
+    folder["path"] = Path("/local/hub")
+    assert system_disk.cached_models_disk_usage() == {"path": "/local/hub"}
+    release.set()

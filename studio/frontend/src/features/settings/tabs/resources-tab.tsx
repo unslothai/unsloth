@@ -322,6 +322,10 @@ export function ResourcesTab() {
     const modelsDiskUsed = modelsDisk
       ? Math.max(0, modelsDisk.total_gb - modelsDisk.free_gb)
       : 0;
+    const modelsDiskPercent =
+      modelsDisk && modelsDisk.total_gb > 0
+        ? (modelsDiskUsed / modelsDisk.total_gb) * 100
+        : 0;
     const display = gpuMemoryDisplay(displayedGpu);
     const usageDevices = display.usageDevices;
     const gpuMemoryTotals = gpuMemoryTotalsGb(usageDevices);
@@ -361,6 +365,7 @@ export function ResourcesTab() {
       diskPercent,
       modelsDisk,
       modelsDiskUsed,
+      modelsDiskPercent,
       vramTotal,
       vramDedicated: gpuMemoryTotals.dedicated,
       vramShared: gpuMemoryTotals.shared,
@@ -590,7 +595,7 @@ export function ResourcesTab() {
                       value: formatGb(metrics.modelsDisk.free_gb),
                     })
               }
-              percent={hostUnread ? null : metrics.modelsDisk.percent_used}
+              percent={hostUnread ? null : metrics.modelsDiskPercent}
             />
           )}
           <MetricTile
