@@ -4,6 +4,7 @@
 import {
   normalizeProviderMaxOutputTokens,
   providerModelSupportsStudioTools,
+  providerModelSupportsThinking,
 } from "./external-providers";
 import {
   type ModelCatalogEntry,
@@ -614,6 +615,17 @@ export function isGeminiCustomOpenAICompatBase(
   }
 }
 
+/** Native Gemini rejects oversized input before generation: Infinity attributes length stops
+ *  to Max Tokens. Other providers and custom gateways have unknown windows. */
+export function externalStopWindow(
+  providerType: string | null | undefined,
+  baseUrl: string | null | undefined,
+): number | null {
+  return providerType === "gemini" && !isGeminiCustomOpenAICompatBase(baseUrl)
+    ? Number.POSITIVE_INFINITY
+    : null;
+}
+
 /** Whether this Gemini image model supports googleSearch. Documented on the Gemini 3 image
  *  family; older ids reject it with "Search as tool is not enabled for this model". */
 function geminiImageModelAllowsGoogleSearch(modelId: string): boolean {
@@ -1159,15 +1171,30 @@ export function effectiveExternalReasoningProviderType(
     : normalizedProvider;
 }
 
-// vLLM has no per-model reasoning signal on OpenAI-compat, so pin via user toggle.
-function resolveConnectionLevelReasoning(
+// Thinking off sends "none". https://docs.ollama.com/api/openai-compatibility
+const OLLAMA_EFFORT_LEVELS = ["low", "medium", "high", "max"] as const;
+
+// vLLM has no per-model reasoning signal on OpenAI-compat, so pin via user toggle. Ollama errors a
+// thinking request at a model without the /api/tags "thinking" capability, so gate on it (#9649).
+function resolveProviderReasoning(
   normalizedProvider: string,
+  modelId: string,
   options: ExternalReasoningResolveOptions | undefined,
 ): ExternalReasoningCapabilities | null {
   if (normalizedProvider === "vllm" && options?.isReasoningProvider) {
     return withEnableThinkingStyle({
       supportsReasoning: true,
       supportsReasoningOff: true,
+    });
+  }
+  if (
+    normalizedProvider === "ollama" &&
+    providerModelSupportsThinking(normalizedProvider, modelId) === true
+  ) {
+    return withReasoningEffortStyle({
+      supportsReasoning: true,
+      supportsReasoningOff: true,
+      reasoningEffortLevels: OLLAMA_EFFORT_LEVELS,
     });
   }
   return null;
@@ -1272,17 +1299,20 @@ export function getExternalReasoningCapabilities(
   modelId: string | null | undefined,
   options?: ExternalReasoningResolveOptions,
 ): ExternalReasoningCapabilities {
-  const normalizedModel = modelId?.trim().toLowerCase() ?? "";
+  // The capability map is keyed by the catalog's id, so look it up before case-folding.
+  const catalogModel = modelId?.trim() ?? "";
+  const normalizedModel = catalogModel.toLowerCase();
   const normalizedProvider = effectiveExternalReasoningProviderType(
     providerType,
     options?.apiType,
   );
-  const connectionLevel = resolveConnectionLevelReasoning(
+  const providerLevel = resolveProviderReasoning(
     normalizedProvider,
+    catalogModel,
     options,
   );
-  if (connectionLevel) {
-    return connectionLevel;
+  if (providerLevel) {
+    return providerLevel;
   }
   if (!normalizedModel) {
     return withEnableThinkingStyle();

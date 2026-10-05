@@ -1544,6 +1544,9 @@ test("the bar stays out of a backgrounded scope, and off the document origin", a
   // 22.25/28.25rem is exactly the previous short-counter width: fixed input + 12rem chrome.
   assert.match(surface[1], /(?:^|\s)w-\[calc\(22\.25rem\*var\(--ui-space-scale,1\)\)\](?:\s|$)/);
   assert.match(surface[1], /(?:^|\s)sm:w-\[calc\(28\.25rem\*var\(--ui-space-scale,1\)\)\](?:\s|$)/);
+  // With the chat/browser scope buttons it widens by their room (5.5rem), so the field keeps its width.
+  assert.match(surface[1], /(?:^|\s)data-scoped:w-\[calc\(27\.75rem\*var\(--ui-space-scale,1\)\)\](?:\s|$)/);
+  assert.match(surface[1], /(?:^|\s)sm:data-scoped:w-\[calc\(33\.75rem\*var\(--ui-space-scale,1\)\)\](?:\s|$)/);
   // Either form: the field's classes are the point, not whether they go
   // through cn().
   const input = /<input[\s\S]*?className=\{?(?:cn\()?\s*"([^"]*)"/.exec(

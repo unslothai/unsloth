@@ -39,9 +39,17 @@ const cacheType = nullable(
   (value) => value === "f16" || choice(value, KV_CACHE_DTYPES),
 );
 
+// Engine choices stay local: the recipient may not have vLLM or SGLang installed.
 export type SharedConfigKey = Exclude<
   keyof PerModelConfig,
-  "chatTemplateOverride" | "tensorSplit" | "maxSeqLength" | "mlxKvQuant"
+  | "chatTemplateOverride"
+  | "tensorSplit"
+  | "maxSeqLength"
+  | "mlxKvQuant"
+  | "mlxInt8Prefill"
+  | "engine"
+  | "enginePrecision"
+  | "engineParallelism"
 >;
 type Field = { label: string; valid: Validator; error?: string };
 

@@ -12,7 +12,7 @@
 from .loader_utils import DEFAULT_DEVICE_MAP
 from .llama import *
 import os
-from ._utils import __version__
+from ._utils import __version__, config_return_dict
 from unsloth_zoo.utils import _get_dtype
 from unsloth_zoo.hf_utils import dtype_from_config
 from ..utils.packing import (
@@ -262,7 +262,7 @@ def MistralForCausalLM_fast_forward(
         if output_hidden_states is not None
         else self.config.output_hidden_states
     )
-    return_dict = return_dict if return_dict is not None else self.config.use_return_dict
+    return_dict = return_dict if return_dict is not None else config_return_dict(self.config)
 
     self.model._has_no_labels = labels is None
 

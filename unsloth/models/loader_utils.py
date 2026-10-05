@@ -643,6 +643,126 @@ def resolve_unsloth_device_map(
     return plan.device_map
 
 
+_BLOCK_SWAP_PLANNER_KEYS = (
+    "batch_size",
+    "lora_rank",
+    "reserve_bytes",
+    "prefetch_depth",
+    "rows_per_chunk",
+    "retained_rows",
+    "headroom_bytes",
+    "safety_bytes",
+    "free_space_policy",
+    "no_split_module_classes",
+)
+
+
+def resolve_auto_block_swap(
+    device_map,
+    model_name,
+    *,
+    max_seq_length,
+    offload_embedding = False,
+    planner_kwargs = None,
+    skip_reason = None,
+    placement = "tail",
+    **config_kwargs,
+):
+    """`from_pretrained(offload_layers = "auto")`: `(layers, device_map, embedding)`, the trailing
+    decoder layers to build in host RAM so the rest plus a training step's reserve fits, the map to load
+    the rest with, and whether to move the input embedding to host RAM first (one GPU, when
+    `offload_embedding` allows; None when nothing was planned). 0, the map unchanged and no move when
+    everything fits, so nothing slows down. `device_map = "unsloth"` / `"unsloth_balanced"` sizes every
+    card through the multi-GPU planner; anything else sizes the one card the load uses."""
+
+    def _none(reason):
+        print(f"Unsloth: offload_layers = 'auto' loads every layer onto the GPU: {reason}.")
+        return 0, device_map, None
+
+    if skip_reason is not None:
+        return _none(skip_reason)
+    if DEVICE_TYPE_TORCH != "cuda" or not torch.cuda.is_available():
+        return _none("block swap needs a CUDA or ROCm GPU")
+    if is_distributed():
+        return _none("each rank of a distributed launch owns its own device")
+    try:
+        from unsloth_zoo.device_map_planner import plan_block_swap
+    except ImportError:
+        return _none("this unsloth_zoo cannot plan block swap")
+
+    planner_kwargs = dict(planner_kwargs or {})
+    requested_memory = planner_kwargs.pop("max_memory", None)
+    devices = []
+    if isinstance(device_map, str) and device_map in _PLANNED_DEVICE_MAPS:
+        devices = (
+            [d for d in requested_memory if isinstance(d, int) and not isinstance(d, bool)]
+            if requested_memory
+            else list(range(torch.cuda.device_count()))
+        )
+    multi = len(devices) > 1
+    if multi:
+        target = None
+    elif devices:
+        target = devices[0]
+    else:
+        if isinstance(device_map, dict) and set(device_map) == {""}:
+            target = torch.device(device_map[""])
+            if target.type != "cuda":
+                return _none(f"the load places the model on {target}")
+            target = target.index if target.index is not None else torch.cuda.current_device()
+        elif device_map is None or (
+            isinstance(device_map, str)
+            and (device_map in TRANSFORMERS_PLACEMENT_STRATEGIES or device_map.startswith("cuda"))
+        ):
+            target = (
+                torch.device(device_map).index
+                if isinstance(device_map, str) and device_map.startswith("cuda:")
+                else torch.cuda.current_device()
+            )
+        else:
+            return _none(
+                "it sizes one GPU or the `device_map = 'unsloth'` planner, not an explicit map"
+            )
+        devices = [target]
+    from ._utils import usable_cuda_bytes
+
+    max_memory = {}
+    for d in devices:
+        free = usable_cuda_bytes(d)
+        cap = _as_bytes((requested_memory or {}).get(d)) if requested_memory else None
+        max_memory[d] = free if cap is None else min(free, cap)
+
+    options = {k: planner_kwargs[k] for k in _BLOCK_SWAP_PLANNER_KEYS if k in planner_kwargs}
+    try:
+        planner_parameters = inspect.signature(plan_block_swap).parameters
+    except (TypeError, ValueError):
+        planner_parameters = {}
+    if offload_embedding and not multi and "offload_embedding" in planner_parameters:
+        options["offload_embedding"] = True
+    if placement != "tail" and not multi:
+        if "placement" not in planner_parameters:
+            return _none("this unsloth_zoo plans only trailing layers")
+        options["placement"] = placement
+    plan = plan_block_swap(
+        model_name,
+        max_memory = max_memory,
+        seq_len = max_seq_length,
+        **options,
+        **config_kwargs,
+    )
+    print(
+        "Unsloth: "
+        + plan.describe().splitlines()[0].replace("block swap:", "offload_layers = 'auto':")
+    )
+    embedding = bool(getattr(plan, "offload_embedding", False))
+    if not plan.layers:
+        return 0, device_map, embedding
+    if multi and plan.device_plan is not None:
+        print(plan.device_plan.describe())
+        return plan.layers, plan.device_plan.device_map, embedding
+    return plan.layers, {"": target}, embedding
+
+
 def __get_model_name(
     model_name,
     load_in_4bit = True,

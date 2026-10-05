@@ -440,8 +440,10 @@ def _precision(device, fp16_checkpoint: bool):
     if device.type == "cuda":
         if fp16_checkpoint:
             return torch.float16, torch.float16
-        if torch.version.hip:
-            bf16 = torch.cuda.is_bf16_supported()
+        from core.inference.rocm_bf16 import is_rocm_torch, rocm_bf16_supported
+
+        if is_rocm_torch(torch):
+            bf16 = rocm_bf16_supported(torch, device.index)
         else:
             # By capability: pre-Ampere NVIDIA reports is_bf16_supported() through slow emulation.
             bf16 = torch.cuda.get_device_capability(device)[0] >= 8
@@ -539,7 +541,7 @@ def _load(checkpoint: Checkpoint) -> None:
         agent, device = _load_checkpoint(checkpoint)
     except Exception as exc:
         message = f"Could not load {checkpoint.name}: {type(exc).__name__}: {exc}"
-        logger.warning("System One load failed: %s", message)
+        logger.warning("System One load failed: %s", message, exc_info = True)
         with _state_lock:
             _failure = (checkpoint, message, time.monotonic() + FAILURE_BACKOFF_S)
             _loading = None

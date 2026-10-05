@@ -222,11 +222,41 @@ def soft_fail(m):
     info(f"WARN (strict-off): {m}")
 
 
+# Slots the shared AlertDialog parts render (studio/frontend/src/components/ui/alert-dialog.tsx).
+FULL_ACCESS_TITLE = '[data-slot="alert-dialog-title"]'
+FULL_ACCESS_CANCEL = '[data-slot="alert-dialog-cancel"]'
+FULL_ACCESS_CONFIRM = '[data-slot="alert-dialog-action"]'
+
+
 def exercise_permission_mode_controls(page, shoot):
     """Exercise labels, migration, persistence, confirmation, and focus."""
     step("permission levels: labels, persistence, confirmation, and focus")
     pill = page.locator('button[aria-label="Permission level for tool calls"]:visible').first
     expect(pill).to_be_visible()
+
+    # Stub the sandbox capability so level checks do not depend on the runner's user namespaces.
+    sandbox_answer = {"ready": True}
+
+    def answer_sandbox_capability(route):
+        ready = sandbox_answer["ready"]
+        route.fulfill(
+            status = 200,
+            content_type = "application/json",
+            body = json.dumps(
+                {
+                    "python_os_isolated": ready,
+                    "terminal_os_isolated": ready,
+                    "backend": "bubblewrap",
+                    "platform": "linux",
+                    "reason": "" if ready else "bwrap: setting up uid map: Permission denied",
+                    "setup_action": None,
+                    "manual_command": "" if ready else "apt-get install -y bubblewrap",
+                    "can_run_setup": False,
+                }
+            ),
+        )
+
+    page.route("**/api/sandbox/capability*", answer_sandbox_capability)
 
     def expect_mode(label):
         expect(pill).to_have_attribute("data-pill-label", label)
@@ -476,21 +506,26 @@ def exercise_permission_mode_controls(page, shoot):
     if stored != "off":
         fail(f"Run automatically persisted {stored!r}, expected 'off'")
 
-    # Full access requires explicit consent and never overwrites persistence.
+    # Full access requires explicit consent and never overwrites persistence. The dialog is found by
+    # its alert-dialog slots, not its wording: #12630 rewrote the copy ("Enable Full access?" became
+    # "Turn on Full access?", "I understand" became "Turn on") and the step failed on main with the
+    # consent flow intact. What it still pins is the substance: the title names the mode and the body
+    # warns that the sandbox goes away.
     choose("Full access")
     dialog = page.get_by_role("alertdialog")
     expect(dialog).to_be_visible()
-    expect(dialog.get_by_role("heading", name = "Enable Full access?")).to_be_visible()
-    expect(dialog).to_contain_text("the code sandbox")
-    dialog.get_by_role("button", name = "Cancel").click()
+    expect(dialog.locator(FULL_ACCESS_TITLE)).to_contain_text("Full access")
+    expect(dialog).to_contain_text("sandbox")
+    dialog.locator(FULL_ACCESS_CANCEL).click()
     expect(dialog).to_be_hidden()
     expect_mode("Run automatically")
 
     choose("Full access")
     expect(dialog).to_be_visible()
-    dialog.get_by_role("button", name = "I understand").click()
+    dialog.locator(FULL_ACCESS_CONFIRM).click()
+    # expect_mode reads the pill's data-pill-label. #12630 dropped the pill's danger styling for Full
+    # access on purpose, so there is no data-variant left to check.
     expect_mode("Full access")
-    expect(pill).to_have_attribute("data-variant", "danger")
     active_icon = pill.locator(".composer-pill-glyph > :first-child")
     pill.hover()
     # Read the opacity once the hover transition has finished, not at a fixed delay into it.
@@ -505,10 +540,40 @@ def exercise_permission_mode_controls(page, shoot):
     reload_and_wait_for_pill()
     expect_mode("Run automatically")
 
+    # Without a sandbox: Cancel keeps the previous level, "Use it anyway" applies it.
+    choose("Approve for me")
+    expect_mode("Approve for me")
+    # Landed on the install first, or the reload hydrates the previous "off" back.
+    expect_server_mode("auto")
+    sandbox_answer["ready"] = False
+    reload_and_wait_for_pill()
+    expect_mode("Approve for me")
+    choose("Run automatically")
+    setup = page.get_by_role("alertdialog")
+    expect(setup.get_by_role("heading", name = "No OS sandbox on this computer yet")).to_be_visible()
+    expect(setup).to_contain_text("apt-get install -y bubblewrap")
+    expect(setup.get_by_role("button", name = "Copy command")).to_be_visible()
+    if setup.get_by_role("button", name = "Install sandbox").count() != 0:
+        fail("setup dialog offered Install sandbox to a request the server did not allow")
+    setup.get_by_role("button", name = "Cancel").click()
+    expect(setup).to_be_hidden()
+    expect_mode("Approve for me")
+    choose("Run automatically")
+    expect(setup).to_be_visible()
+    setup.get_by_role("button", name = "Use it anyway (risky calls will ask)").click()
+    expect(setup).to_be_hidden()
+    expect_mode("Run automatically")
+    sandbox_answer["ready"] = True
+    reload_and_wait_for_pill()
+
     # Leave the full chat smoke in the fresh-install default.
     choose("Approve for me")
     expect_mode("Approve for me")
+    expect_server_mode("auto")
     shoot("04-permission-levels")
+    # The stub is for the level checks only. Left in place it intercepts this page for the rest of the run, which
+    # also turns off its HTTP cache, and the later sign-out step wedged on it on Windows.
+    page.unroute("**/api/sandbox/capability*", answer_sandbox_capability)
 
 
 def login_via_api(pw):

@@ -139,6 +139,36 @@ def contains_sensitive_path_component(path: str) -> bool:
 
 _schema_lock = threading.Lock()
 _schema_ready: set[Path] = set()
+
+# SQLite 3.51.0-3.51.1 deadlocks when one thread's WAL close (unixIsSharingShmNode) races another
+# thread's open or close of the same file: they take the VFS and inode mutexes in opposite order
+# (fixed in 3.51.2, #10022). Gating only close() still deadlocks; opens must share the lock.
+# Reentrant: a GC finalizer can close a pooled connection inside a gated connect on this thread.
+_CONNECTION_GATE = threading.RLock()
+
+
+def _reset_connection_gate_after_fork() -> None:
+    global _CONNECTION_GATE
+    _CONNECTION_GATE = threading.RLock()
+
+
+if hasattr(os, "register_at_fork"):
+    os.register_at_fork(after_in_child = _reset_connection_gate_after_fork)
+
+
+class _StudioDbConnection(sqlite3.Connection):
+    # A connection dropped without close() is finalized natively and bypasses this gate.
+    def close(self) -> None:
+        with _CONNECTION_GATE:
+            super().close()
+
+
+def connect_studio_db(database: str | os.PathLike[str], **kwargs: Any) -> sqlite3.Connection:
+    """sqlite3.connect for studio.db, with opens and closes serialized process-wide."""
+    with _CONNECTION_GATE:
+        return sqlite3.connect(str(database), factory = _StudioDbConnection, **kwargs)
+
+
 _SQLITE_IN_CHUNK_SIZE = 900
 _PROJECT_WORKSPACE_SUBDIRS = ("sandbox",)
 _CHAT_ATTACHMENT_INVENTORY_VERSION = 5
@@ -420,10 +450,15 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         CREATE TABLE IF NOT EXISTS scan_folders (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             path TEXT NOT NULL UNIQUE {collation},
-            created_at TEXT NOT NULL
+            created_at TEXT NOT NULL,
+            recursive INTEGER NOT NULL DEFAULT 0
         )
         """
     )
+    if "recursive" not in {
+        row[1] for row in conn.execute("PRAGMA table_info(scan_folders)").fetchall()
+    }:
+        conn.execute("ALTER TABLE scan_folders ADD COLUMN recursive INTEGER NOT NULL DEFAULT 0")
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS chat_projects (
@@ -1322,8 +1357,8 @@ def get_connection(
 ) -> sqlite3.Connection:
     db_path = studio_db_path()
     ensure_account_dir(db_path.parent)
-    conn = sqlite3.connect(
-        str(db_path), timeout = busy_timeout_seconds, check_same_thread = check_same_thread
+    conn = connect_studio_db(
+        db_path, timeout = busy_timeout_seconds, check_same_thread = check_same_thread
     )
     conn.row_factory = sqlite3.Row
     # foreign_keys is session-scoped; set per connection
@@ -1923,14 +1958,14 @@ def list_scan_folders() -> list[dict]:
     conn = get_connection()
     try:
         rows = conn.execute(
-            "SELECT id, path, created_at FROM scan_folders ORDER BY created_at"
+            "SELECT id, path, created_at, recursive FROM scan_folders ORDER BY created_at"
         ).fetchall()
-        return [dict(row) for row in rows]
+        return [{**dict(row), "recursive": bool(row["recursive"])} for row in rows]
     finally:
         conn.close()
 
 
-def add_scan_folder_with_status(path: str) -> tuple[dict, bool]:
+def add_scan_folder_with_status(path: str, recursive: bool | None = None) -> tuple[dict, bool]:
     if not path or not path.strip():
         raise ValueError("Path cannot be empty")
     normalized = os.path.realpath(os.path.expanduser(path.strip()))
@@ -1973,21 +2008,29 @@ def add_scan_folder_with_status(path: str) -> tuple[dict, bool]:
         # Windows: case-insensitive lookup so C:\Models and c:\models dedup.
         if is_win:
             existing = conn.execute(
-                "SELECT id, path, created_at FROM scan_folders WHERE path = ? COLLATE NOCASE",
+                "SELECT id, path, created_at, recursive FROM scan_folders WHERE path = ? COLLATE NOCASE",
                 (normalized,),
             ).fetchone()
         else:
             existing = conn.execute(
-                "SELECT id, path, created_at FROM scan_folders WHERE path = ?",
+                "SELECT id, path, created_at, recursive FROM scan_folders WHERE path = ?",
                 (normalized,),
             ).fetchone()
         if existing is not None:
-            return dict(existing), False
+            # None keeps the stored flag, so a re-add from export registration never resets it.
+            if recursive is None or bool(existing["recursive"]) == recursive:
+                return dict(existing), False
+            conn.execute(
+                "UPDATE scan_folders SET recursive = ? WHERE id = ?",
+                (int(recursive), existing["id"]),
+            )
+            conn.commit()
+            return {**dict(existing), "recursive": int(recursive)}, True
         inserted = False
         try:
             conn.execute(
-                "INSERT INTO scan_folders (path, created_at) VALUES (?, ?)",
-                (normalized, now),
+                "INSERT INTO scan_folders (path, created_at, recursive) VALUES (?, ?, ?)",
+                (normalized, now, int(bool(recursive))),
             )
             conn.commit()
             inserted = True
@@ -1995,9 +2038,9 @@ def add_scan_folder_with_status(path: str) -> tuple[dict, bool]:
             pass  # duplicate; fall through to SELECT
         # Same collation as the pre-check to catch concurrent writes (Windows).
         fallback_sql = (
-            "SELECT id, path, created_at FROM scan_folders WHERE path = ? COLLATE NOCASE"
+            "SELECT id, path, created_at, recursive FROM scan_folders WHERE path = ? COLLATE NOCASE"
             if is_win
-            else "SELECT id, path, created_at FROM scan_folders WHERE path = ?"
+            else "SELECT id, path, created_at, recursive FROM scan_folders WHERE path = ?"
         )
         row = conn.execute(fallback_sql, (normalized,)).fetchone()
         if row is None:
@@ -2007,8 +2050,8 @@ def add_scan_folder_with_status(path: str) -> tuple[dict, bool]:
         conn.close()
 
 
-def add_scan_folder(path: str) -> dict:
-    row, _ = add_scan_folder_with_status(path)
+def add_scan_folder(path: str, recursive: bool | None = None) -> dict:
+    row, _ = add_scan_folder_with_status(path, recursive)
     return row
 
 
@@ -2813,6 +2856,32 @@ def count_chat_threads() -> int:
         conn.close()
 
 
+def _unretire_project_rag_scope(project_id: str) -> None:
+    """Give a recreated project id back its RAG scope (#10567).
+
+    Runs after the Studio row commits and under the scope lock the delete route purges in, so a
+    purged tombstone left by a racing delete is cleared instead of disabling RAG for good. The
+    owner is re-read under the lock: a delete that won it must keep its tombstone.
+    """
+    from utils.paths import rag_db_path
+    try:
+        if not rag_db_path().exists():
+            return
+        from core.rag import folder_sync, store as rag_store
+
+        scope = rag_store.project_scope(project_id)
+        with folder_sync.scope_lock(scope):
+            if get_chat_project(project_id) is None:
+                return
+            folder_sync.unretire_scope(scope)
+    except Exception:
+        logger.warning(
+            "could not clear RAG retirement for project %s after the Studio row committed",
+            project_id,
+            exc_info = True,
+        )
+
+
 def upsert_chat_project(project: dict) -> dict:
     existing = get_chat_project(project["id"])
     root_path = existing.get("rootPath") if existing else None
@@ -2845,9 +2914,11 @@ def upsert_chat_project(project: dict) -> dict:
             ),
         )
         conn.commit()
-        return get_chat_project(project["id"]) or project
+        saved = get_chat_project(project["id"]) or project
     finally:
         conn.close()
+    _unretire_project_rag_scope(project["id"])
+    return saved
 
 
 def update_chat_project(id: str, patch: dict) -> Optional[dict]:

@@ -1,12 +1,13 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { withLiteralUnknownTags } from "@/lib/markdown-data-images";
 import { markdownPluginNeeds } from "@/lib/markdown-plugins";
 import { openLink } from "@/lib/open-link";
 import { safeMarkdownUrl } from "@/lib/safe-markdown-url";
 import { scheduleIdleTask } from "@/lib/schedule-idle-task";
 import { cn } from "@/lib/utils";
-import { code } from "@streamdown/code";
+import { codePlugin } from "@/components/assistant-ui/shared-code-plugin";
 import { math } from "@streamdown/math";
 import { mermaid } from "@streamdown/mermaid";
 import {
@@ -24,6 +25,7 @@ import "katex/dist/katex.min.css";
 type MarkdownPlugins = NonNullable<
   ComponentProps<typeof Streamdown>["plugins"]
 >;
+const REHYPE_PLUGINS = withLiteralUnknownTags();
 const MARKDOWN_COMPONENTS = {
   a: ({ href, children, ...props }: ComponentProps<"a">) => (
     <a
@@ -68,7 +70,7 @@ function MarkdownPreviewImpl({
   const plugins = useMemo<MarkdownPlugins>(() => {
     const needs = markdownPluginNeeds(markdown);
     const next: MarkdownPlugins = {};
-    if (needs.code) next.code = code;
+    if (needs.code) next.code = codePlugin;
     if (needs.math) next.math = math;
     if (needs.mermaid) next.mermaid = mermaid;
     return next;
@@ -100,6 +102,7 @@ function MarkdownPreviewImpl({
         <Streamdown
           mode="static"
           plugins={plugins}
+          rehypePlugins={REHYPE_PLUGINS}
           components={inert ? INERT_MARKDOWN_COMPONENTS : MARKDOWN_COMPONENTS}
           urlTransform={safeMarkdownUrl}
           controls={false}

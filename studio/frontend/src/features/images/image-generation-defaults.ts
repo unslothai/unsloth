@@ -11,35 +11,38 @@ const MODEL_DEFAULTS: Array<{
   steps: number;
   guidance: number;
 }> = [
-  { match: "z-image-turbo", steps: 9, guidance: 0 },
+  { match: "z-image-turbo", steps: 8, guidance: 0 },
   // Krea 2 Raw is the undistilled base, so it must precede the distilled Krea key below.
   { match: "krea-2-raw", steps: 52, guidance: 3.5 },
   { match: "krea-2", steps: 8, guidance: 0 },
   { match: "flux.1-schnell", steps: 4, guidance: 0 },
   // Kontext and the Krea dev finetune must precede generic FLUX.1.
-  { match: "kontext", steps: 28, guidance: 2.5 },
-  { match: "flux.1-krea", steps: 28, guidance: 4.5 },
-  { match: "flux.1", steps: 28, guidance: 3.5 },
+  { match: "kontext", steps: 20, guidance: 2.5 },
+  { match: "flux.1-krea", steps: 20, guidance: 3.5 },
+  { match: "flux.1", steps: 20, guidance: 3.5 },
   // Klein base is undistilled. The generic key below covers both distilled sizes.
-  { match: "flux.2-klein-base", steps: 50, guidance: 4 },
+  { match: "flux.2-klein-base", steps: 20, guidance: 5 },
   { match: "flux.2-klein", steps: 4, guidance: 1 },
-  { match: "flux.2-dev", steps: 28, guidance: 4 },
+  { match: "flux.2-dev", steps: 20, guidance: 4 },
   // Qwen-Image-2.1 and its aliases, before the generic key.
-  { match: "qwen-image-2.1", steps: 40, guidance: 1 },
-  { match: "qwen-image-21", steps: 40, guidance: 1 },
-  { match: "qwen_image_21", steps: 40, guidance: 1 },
-  { match: "qwenimage21", steps: 40, guidance: 1 },
+  { match: "qwen-image-2.1", steps: 25, guidance: 1 },
+  { match: "qwen-image-21", steps: 25, guidance: 1 },
+  { match: "qwen_image_21", steps: 25, guidance: 1 },
+  { match: "qwenimage21", steps: 25, guidance: 1 },
+  { match: "qwen-image-edit-2509", steps: 20, guidance: 4 },
+  { match: "qwen-image-edit", steps: 40, guidance: 4 },
+  { match: "qwen-image-2512", steps: 50, guidance: 4 },
   { match: "qwen-image", steps: 20, guidance: 4 },
-  { match: "z-image", steps: 20, guidance: 4 },
-  { match: "ideogram", steps: 48, guidance: 7 },
+  { match: "z-image", steps: 25, guidance: 3 },
+  { match: "ideogram", steps: 20, guidance: 7 },
   { match: "lumina", steps: 50, guidance: 4 },
   { match: "hunyuanimage", steps: 50, guidance: 3.25 },
   { match: "hidream-i1-dev", steps: 28, guidance: 0 },
   { match: "hidream-i1-fast", steps: 16, guidance: 0 },
   { match: "hidream", steps: 50, guidance: 5 },
   { match: "sdxl-turbo", steps: 3, guidance: 0 },
-  { match: "stable-diffusion-xl", steps: 30, guidance: 7 },
-  { match: "sdxl", steps: 30, guidance: 7 },
+  { match: "stable-diffusion-xl", steps: 25, guidance: 7 },
+  { match: "sdxl", steps: 25, guidance: 7 },
 ];
 
 export function defaultsFor(repoId: string): {

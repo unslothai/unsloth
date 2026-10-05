@@ -373,12 +373,15 @@ def test_linux_runtime_identity_includes_the_verified_bwrap(monkeypatch):
 
 
 def test_an_expired_verdict_is_re_probed(monkeypatch):
-    """Set before the first probe: the expiry is stamped when the verdict is stored."""
+    """Set before the first probe: the expiry is stamped when the verdict is stored. With no stale
+    grace the re-probe is in the foreground (test_permission_mode_degrade covers the grace)."""
     monkeypatch.setattr(sandbox_probe, "_CACHE_TTL_SECONDS", 0.0)
+    monkeypatch.setattr(sandbox_probe, "_STALE_GRACE_SECONDS", 0.0)
     backend = _Backend("confining", _confining)
     sandbox_probe.probe(backend)
     sandbox_probe.probe(backend)
     assert backend.calls == 2
+    assert not sandbox_probe._refreshing
 
 
 def test_the_cache_cannot_grow_without_bound():
@@ -406,7 +409,12 @@ def test_this_host_reports_unavailable_with_something_actionable():
         != 0
     )
     if blocked and os.path.exists("/proc/sys/kernel/apparmor_restrict_unprivileged_userns"):
-        assert "apparmor_restrict_unprivileged_userns" in capability.remediation
+        if shutil.which("bwrap") is None:
+            # Not installed yet: the one copy-paste installs it and loads Ubuntu's profile.
+            if "apt-get" in (os_sandbox.bwrap_install_command() or ""):
+                assert os_sandbox._BWRAP_APPARMOR_FIX in capability.remediation
+        else:
+            assert "apparmor_restrict_unprivileged_userns" in capability.remediation
 
 
 def test_the_abstract_socket_control_is_paired_like_every_other(monkeypatch):

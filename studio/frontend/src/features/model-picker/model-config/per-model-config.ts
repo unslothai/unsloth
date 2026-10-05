@@ -19,10 +19,15 @@ import {
 } from "@/lib/speculative-modes";
 
 export interface PerModelConfig {
+  engineParallelism?: "tensor" | "pipeline" | "data";
+  enginePrecision?: "auto" | "bf16" | "fp16" | "int4" | "int8" | "fp8";
+  engine?: "auto" | "vllm" | "sglang";
   customContextLength: number | null;
   maxSeqLength: number | null;
   kvCacheDtype: string | null;
   mlxKvQuant?: MlxKvQuant | null;
+  /** MLX only: run quantized projections with int8 activations, where the model supports it. */
+  mlxInt8Prefill?: boolean;
   speculativeType: string | null;
   specDraftNMax: number | null;
   /** KV cache dtype for the DRAFT context, sized and quantized independently of kvCacheDtype.
@@ -61,10 +66,14 @@ export interface PerModelConfig {
 }
 
 export const DEFAULT_PER_MODEL_CONFIG: PerModelConfig = {
+  engine: "auto",
+  enginePrecision: "auto",
+  engineParallelism: "tensor",
   customContextLength: null,
   maxSeqLength: null,
   kvCacheDtype: null,
   mlxKvQuant: null,
+  mlxInt8Prefill: false,
   speculativeType: null,
   specDraftNMax: null,
   specDraftCacheDtype: null,
@@ -152,7 +161,9 @@ export function residentIsServedByMlx(
   chatOnlyReason: string | null | undefined,
   loadedIsMlx: boolean | null | undefined,
 ): boolean {
-  return isServedByMlx(isGguf, deviceType, chatOnlyReason) && loadedIsMlx !== false;
+  return (
+    isServedByMlx(isGguf, deviceType, chatOnlyReason) && loadedIsMlx !== false
+  );
 }
 
 export function presetLoadSettingNames(
@@ -187,6 +198,20 @@ export function isServedByLlamaCpp(x: {
     x.activeGgufVariant != null ||
     x.activeNativePathToken != null ||
     String(x.checkpoint ?? "").toLowerCase().endsWith(".gguf")
+  );
+}
+
+/** Whether the backend can resume a reply stopped mid-thought: llama-server or reported MLX. */
+export function resumesThought(x: {
+  loadedIsGguf?: boolean | null;
+  loadedIsMlx?: boolean | null;
+  activeGgufVariant?: string | null;
+  activeNativePathToken?: string | null;
+  checkpoint?: string | null;
+}): boolean {
+  return (
+    isServedByLlamaCpp(x) ||
+    (!isExternalModelId(x.checkpoint) && x.loadedIsMlx === true)
   );
 }
 
@@ -279,6 +304,16 @@ export const KV_CACHE_DTYPES = [
   "f32",
 ] as const;
 
+/** Menu entries for a llama.cpp backend. CUDA, ROCm and Metal have no iq4_nl FlashAttention kernel, so attention
+ *  runs on the CPU there; Vulkan and CPU builds run it. A selected value stays listed so the trigger can show it. */
+export function kvCacheDtypeOptions(
+  backend: string | null,
+  selected: string | null | undefined,
+): readonly string[] {
+  if (backend === "vulkan" || backend === "cpu") return KV_CACHE_DTYPES;
+  return KV_CACHE_DTYPES.filter((dtype) => dtype !== "iq4_nl" || dtype === selected);
+}
+
 export const MLX_KV_QUANTS = [
   "8",
   "6",
@@ -354,8 +389,10 @@ const LEGACY_MIGRATION_FLAG = "unsloth_model_configs_migrated";
 // would normalize the unknown field straight back out of the record.
 // v2 added nBatch/nUbatch, v3 llamaExtraArgs, v4 disableVision, v5 the llama-server tuning group
 // (loadMode / specDraftCacheDtype / ctxCheckpoints / cacheRam), v6 the reasoning budget pair,
-// v7 mlxKvQuant
-const STORAGE_SCHEMA_VERSION = 7;
+// v7 mlxKvQuant, v9 mlxInt8Prefill. v8 is skipped: nightly builds stamped it for the reverted custom
+// llama.cpp config (#12725), so a v8 client must not claim to understand an int8 prefill record.
+const STORAGE_SCHEMA_VERSION = 9;
+const PRE_MLX_INT8_PREFILL_SCHEMA_VERSION = 7;
 const PRE_MLX_KV_QUANT_SCHEMA_VERSION = 6;
 const PRE_REASONING_BUDGET_SCHEMA_VERSION = 5;
 const PRE_SERVER_TUNING_SCHEMA_VERSION = 4;
@@ -397,6 +434,7 @@ const STORED_CONFIG_FIELDS = new Set([
   "maxSeqLength",
   "kvCacheDtype",
   "mlxKvQuant",
+  "mlxInt8Prefill",
   "speculativeType",
   "specDraftNMax",
   "specDraftCacheDtype",
@@ -570,7 +608,10 @@ export function savedContextPin(config: {
   customContextLength?: number | null;
   maxSeqLength?: number | null;
 }): number | null {
-  return config.customContextLength ?? normalizeMaxSeqLength(config.maxSeqLength ?? null);
+  return (
+    config.customContextLength ??
+    normalizeMaxSeqLength(config.maxSeqLength ?? null)
+  );
 }
 
 /** The patch that pins a context for a non-GGUF target, on the backend serving it. An edit leaves a pin in
@@ -985,6 +1026,17 @@ function normalizeV1(partial: RawConfig): PerModelConfig {
       ? partial.specDraftCacheDtype
       : null;
   return {
+    engineParallelism: partial.engineParallelism === "pipeline" || partial.engineParallelism === "data"
+      ? partial.engineParallelism : "tensor",
+    enginePrecision: ["bf16", "fp16", "int4", "int8", "fp8"].includes(
+      partial.enginePrecision ?? "",
+    )
+      ? partial.enginePrecision
+      : "auto",
+    engine:
+      partial.engine === "vllm" || partial.engine === "sglang"
+        ? partial.engine
+        : "auto",
     customContextLength:
       typeof partial.customContextLength === "number" &&
       Number.isFinite(partial.customContextLength) &&
@@ -993,6 +1045,7 @@ function normalizeV1(partial: RawConfig): PerModelConfig {
         : null,
     maxSeqLength: normalizeMaxSeqLength(partial.maxSeqLength),
     mlxKvQuant: normalizeMlxKvQuant(partial.mlxKvQuant, partial.mlxKvBits),
+    mlxInt8Prefill: partial.mlxInt8Prefill === true,
     kvCacheDtype:
       typeof partial.kvCacheDtype === "string" &&
       VALID_KV_CACHE_DTYPES.has(partial.kvCacheDtype)
@@ -1075,8 +1128,11 @@ function normalize(raw: unknown): PerModelConfig {
  *  client reconstructs anyway, and stamping every record v4 would put the whole store out of reach.
  *  The tuning group and the reasoning pair follow the same rule. */
 function storedSchemaVersion(normalized: PerModelConfig): number {
-  if (normalized.mlxKvQuant != null) {
+  if (normalized.mlxInt8Prefill) {
     return STORAGE_SCHEMA_VERSION;
+  }
+  if (normalized.mlxKvQuant != null) {
+    return PRE_MLX_INT8_PREFILL_SCHEMA_VERSION;
   }
   const hasReasoningBudget =
     normalized.reasoningBudget !== -1 || normalized.reasoningBudgetMessage !== "";
@@ -1246,10 +1302,14 @@ export function resolveOnlyRememberedGgufVariant(
 
 export function isDefaultConfig(config: PerModelConfig): boolean {
   return (
+    (config.engine ?? "auto") === "auto" &&
+    (config.enginePrecision ?? "auto") === "auto" &&
+    (config.engineParallelism ?? "tensor") === "tensor" &&
     config.customContextLength == null &&
     config.maxSeqLength == null &&
     (config.kvCacheDtype ?? null) === DEFAULT_PER_MODEL_CONFIG.kvCacheDtype &&
     (config.mlxKvQuant ?? null) === DEFAULT_PER_MODEL_CONFIG.mlxKvQuant &&
+    !config.mlxInt8Prefill &&
     config.speculativeType === DEFAULT_PER_MODEL_CONFIG.speculativeType &&
     config.specDraftNMax == null &&
     config.nParallel == null &&

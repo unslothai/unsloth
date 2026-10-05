@@ -500,6 +500,16 @@ def main():
         browser = playwright.chromium.launch(args = ["--no-sandbox", "--disable-dev-shm-usage"])
         context = browser.new_context(viewport = {"width": 1280, "height": 900})
         context.add_init_script(CHAT_TRAFFIC_JS)
+        # "Run automatically" only switches straight away when the OS sandbox works; answer
+        # for the host so this test does not depend on the runner's user namespaces.
+        context.route(
+            "**/api/sandbox/capability*",
+            lambda route: route.fulfill(
+                status = 200,
+                content_type = "application/json",
+                body = json.dumps({"python_os_isolated": True, "terminal_os_isolated": True}),
+            ),
+        )
         page = context.new_page()
         page.set_default_timeout(TIMEOUT_MS)
         page_errors = []

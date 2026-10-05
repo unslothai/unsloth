@@ -826,6 +826,38 @@ def _compat_local_inventory_sources() -> _CompatLocalInventorySources:
     )
 
 
+def _scan_nested_compat_rows(
+    folder_path: Path, existing: List[LocalModelInfo], *, limit: int
+) -> List[LocalModelInfo]:
+    """Rows from a recursive scan folder's sub-folders that its own scan did not already list (#6371)."""
+    from hub.services.models.local_inventory import is_loadable_model_dir, nested_scan_roots
+
+    seen = {(m.path, m.model_format) for m in existing}
+    found: List[LocalModelInfo] = []
+    for root in nested_scan_roots(folder_path):
+        if len(existing) + len(found) >= limit:
+            break
+        # No shared variant index: it was built for the registered caches, so a nested one reads its own state.
+        rows = _scan_models_dir(root, limit = limit - len(existing) - len(found)) + _scan_hf_cache(
+            root, active_cache = False
+        )
+        for row in rows:
+            key = (row.path, row.model_format)
+            path = Path(row.path)
+            # This scanner also lists config-only folders; across a whole tree those are mostly other apps' configs.
+            if row.source != "hf_cache" and not (path.is_file() or is_loadable_model_dir(path)):
+                continue
+            if key in seen or any(
+                p in (".studio_links", "ollama_links") for p in Path(row.path).parts
+            ):
+                continue
+            seen.add(key)
+            found.append(row)
+            if len(existing) + len(found) >= limit:
+                return found
+    return found
+
+
 def collect_local_models(
     models_root: Path,
     *,
@@ -949,6 +981,10 @@ def collect_local_models(
                 )
                 if not any(p in (".studio_links", "ollama_links") for p in Path(m.path).parts)
             ]
+            if folder.get("recursive"):
+                _generic += _scan_nested_compat_rows(
+                    folder_path, _generic, limit = _MAX_MODELS_PER_FOLDER
+                )
             custom_models = []
             for model in _generic:
                 path = Path(model.path)
@@ -1091,11 +1127,13 @@ async def _shared_compat_local_inventory_scan(
             task, audio_type = _catalog_classification._local_model_classification_for_task(
                 model, _local_model_task(model)
             )
+            workflows = _catalog_classification.local_audio_workflows(model, audio_type)
             classified.append(
                 model.model_copy(
                     update = {
                         "task": task,
                         "audio_type": audio_type,
+                        **({"audio_workflows": workflows} if workflows else {}),
                     }
                 )
             )
@@ -1135,7 +1173,9 @@ async def _shared_compat_local_inventory_scan(
             Path(_compat_inventory_path_identity(models_root)),
             scan_sources,
             tuple(
-                _compat_inventory_path_identity(folder.get("path", "")) for folder in custom_folders
+                _compat_inventory_path_identity(folder.get("path", ""))
+                + ("\x00r" if folder.get("recursive") else "")
+                for folder in custom_folders
             ),
             epoch,
         )
@@ -1269,7 +1309,9 @@ async def add_scan_folder_endpoint(
     from storage.studio_db import add_scan_folder_with_status
 
     try:
-        folder, inserted = await asyncio.to_thread(add_scan_folder_with_status, body.path)
+        folder, inserted = await asyncio.to_thread(
+            add_scan_folder_with_status, body.path, body.recursive
+        )
     except ValueError as e:
         logger.warning("Scan folder rejected: %s (path=%s)", e, body.path)
         rejection_message = str(e)
@@ -2015,39 +2057,34 @@ async def list_models(current_subject: str = Depends(get_current_subject)):
                 if await asyncio.to_thread(account_access.model_visible, m)
             ]
 
-        loaded_models = []
-        hide_resident = account_access.resident_hidden(
-            "chat", getattr(inference_backend, "active_model_name", None)
-        )
-        for model_name, model_data in inference_backend.models.items():
-            if hide_resident:
-                continue
-            _is_vision = model_data.get("is_vision", False)
-            _audio_type = model_data.get("audio_type")
-            model_info = ModelDetails(
-                id = model_name,
-                name = display_model_name(model_name),
-                is_vision = _is_vision,
-                is_lora = model_data.get("is_lora", False),
-                is_mlx = model_data.get("is_mlx", False),
-                is_audio = model_data.get("is_audio", False),
-                audio_type = _audio_type,
-                has_audio_input = model_data.get("has_audio_input", False),
-                model_type = derive_model_type(_is_vision, _audio_type),
-            )
-            loaded_models.append(model_info)
-
-        # Active GGUF model (llama-server), labelled from the display id /api/inference/status publishes; the
-        # id stays raw for agents-tab's path filter.
+        from core.inference import model_slots
         from routes.inference import _llama_status_model_ids, get_llama_cpp_backend
 
-        llama_backend = get_llama_cpp_backend()
-        hide_resident = hide_resident or account_access.resident_hidden(
-            "chat", getattr(llama_backend, "model_identifier", None)
-        )
-        if not hide_resident and llama_backend.is_loaded and llama_backend.model_identifier:
+        def _orchestrator_models(orchestrator) -> list[ModelDetails]:
+            entries = []
+            for model_name, model_data in orchestrator.models.items():
+                _is_vision = model_data.get("is_vision", False)
+                _audio_type = model_data.get("audio_type")
+                entries.append(
+                    ModelDetails(
+                        id = model_name,
+                        name = display_model_name(model_name),
+                        is_vision = _is_vision,
+                        is_lora = model_data.get("is_lora", False),
+                        is_mlx = model_data.get("is_mlx", False),
+                        is_audio = model_data.get("is_audio", False),
+                        audio_type = _audio_type,
+                        has_audio_input = model_data.get("has_audio_input", False),
+                        model_type = derive_model_type(_is_vision, _audio_type),
+                    )
+                )
+            return entries
+
+        def _gguf_model(llama_backend) -> list[ModelDetails]:
+            if not (llama_backend.is_loaded and llama_backend.model_identifier):
+                return []
             display_id, _reported_identifier = _llama_status_model_ids(llama_backend)
-            loaded_models.append(
+            return [
                 ModelDetails(
                     id = llama_backend.model_identifier,
                     name = display_model_name(display_id or llama_backend.model_identifier),
@@ -2056,7 +2093,25 @@ async def list_models(current_subject: str = Depends(get_current_subject)):
                     is_audio = getattr(llama_backend, "_is_audio", False),
                     audio_type = getattr(llama_backend, "_audio_type", None),
                 )
-            )
+            ]
+
+        loaded_models = []
+        hide_resident = account_access.resident_hidden(
+            "chat", getattr(inference_backend, "active_model_name", None)
+        )
+        if not hide_resident:
+            loaded_models += _orchestrator_models(inference_backend)
+
+        llama_backend = get_llama_cpp_backend()
+        hide_resident = hide_resident or account_access.resident_hidden(
+            "chat", getattr(llama_backend, "model_identifier", None)
+        )
+        if not hide_resident:
+            loaded_models += _gguf_model(llama_backend)
+
+        for slot in model_slots.visible():
+            loaded_models += _orchestrator_models(slot.orchestrator)
+            loaded_models += model_slots.in_slot(slot, lambda: _gguf_model(slot.llama))
 
         all_models = []
         seen_ids = set()
@@ -2260,9 +2315,12 @@ async def get_model_config(
     """Get configuration for a specific model (wraps load_model_defaults)."""
     # An API-key caller is shown a filesystem-backed row under an opaque `ref:` handle and hands
     # it back here, where it would otherwise read as a Hugging Face id.
+    from core.inference.npu_backend import is_npu_model_path
     from models.inference import resolve_inventory_handle
 
     model_name = resolve_inventory_handle(model_name)
+    if is_npu_model_path(model_name):
+        return ModelDetails(id = model_name, model_name = model_name, model_type = "text")
     if local_path:
         local_path = resolve_inventory_handle(local_path)
     if local_path:
@@ -2752,21 +2810,29 @@ async def discard_remote_code_download(
 
     try:
         from hub.services.models.deletion import _loaded_id_matches_repo
+        from core.inference import model_slots
         from routes.inference import get_llama_cpp_backend
 
-        llama_backend = get_llama_cpp_backend()
-        if llama_backend.is_loaded and llama_backend.model_identifier:
-            if _loaded_id_matches_repo(llama_backend.model_identifier, model_name):
-                return {"deleted": False, "reason": "loaded"}
+        for llama_backend in (
+            get_llama_cpp_backend(),
+            *(slot.llama for slot in model_slots.resident()),
+        ):
+            if llama_backend.is_loaded and llama_backend.model_identifier:
+                if _loaded_id_matches_repo(llama_backend.model_identifier, model_name):
+                    return {"deleted": False, "reason": "loaded"}
     except Exception:
         pass
     try:
         # Peek, not construct: no orchestrator means no active model, and building one hits get_device().
         from core.inference.orchestrator import peek_inference_backend
-        inference_backend = peek_inference_backend()
-        if inference_backend is not None and inference_backend.active_model_name:
-            if _loaded_id_matches_repo(inference_backend.active_model_name, model_name):
-                return {"deleted": False, "reason": "loaded"}
+        from core.inference import model_slots
+        for inference_backend in (
+            peek_inference_backend(),
+            *(slot.orchestrator for slot in model_slots.resident()),
+        ):
+            if inference_backend is not None and inference_backend.active_model_name:
+                if _loaded_id_matches_repo(inference_backend.active_model_name, model_name):
+                    return {"deleted": False, "reason": "loaded"}
     except Exception:
         pass
 
@@ -3295,60 +3361,46 @@ async def delete_finetuned_model(
             ) from e
 
     try:
+        from core.inference import model_slots
         from routes.inference import get_llama_cpp_backend
 
-        llama_backend = get_llama_cpp_backend()
-        if (
-            llama_backend.is_active
-            and not llama_backend.is_loaded
-            and llama_backend.model_identifier
-            and _loaded_model_matches_deleted_path(
-                llama_backend.model_identifier,
-                target_path,
-            )
-            and (
-                not gguf_variant
-                or not llama_backend.hf_variant
-                # Alias-aware: the delete below accepts a bare quant for a qualified key, so a
-                # literal comparison here would wave through the very spelling it then deletes.
-                or _variant_names_same_checkpoint(llama_backend.hf_variant, gguf_variant)
-            )
-        ):
+        kept = model_slots.resident()
+        filling = model_slots.filling_model()
+        if filling and _loaded_model_matches_deleted_path(filling, target_path):
             raise HTTPException(
                 status_code = 409,
                 detail = "Cannot delete a model while it is loading",
             )
-        if (
-            llama_backend.is_loaded
-            and llama_backend.model_identifier
-            and _loaded_model_matches_deleted_path(
-                llama_backend.model_identifier,
-                target_path,
-            )
-            and (
-                not gguf_variant
-                or not llama_backend.hf_variant
-                or _variant_names_same_checkpoint(llama_backend.hf_variant, gguf_variant)
-            )
-        ):
-            raise HTTPException(
-                status_code = 400,
-                detail = "Unload the model before deleting",
-            )
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.warning("Could not check llama.cpp loaded model before delete: %s", e)
-        raise HTTPException(
-            status_code = 503,
-            detail = "Could not verify model load status before deleting",
-        ) from e
-
-    try:
+        for llama_backend in (get_llama_cpp_backend(), *(slot.llama for slot in kept)):
+            if (
+                (llama_backend.is_active or llama_backend.is_loaded)
+                and llama_backend.model_identifier
+                and _loaded_model_matches_deleted_path(
+                    llama_backend.model_identifier,
+                    target_path,
+                )
+                and (
+                    not gguf_variant
+                    or not llama_backend.hf_variant
+                    # Alias-aware: a literal compare would pass the bare-quant spelling the delete accepts.
+                    or _variant_names_same_checkpoint(llama_backend.hf_variant, gguf_variant)
+                )
+            ):
+                if llama_backend.is_loaded:
+                    raise HTTPException(
+                        status_code = 400,
+                        detail = "Unload the model before deleting",
+                    )
+                raise HTTPException(
+                    status_code = 409,
+                    detail = "Cannot delete a model while it is loading",
+                )
         # Peek: building an orchestrator to learn there is none reaches get_device() (a torch import).
         from core.inference.orchestrator import peek_inference_backend
-        inference_backend = peek_inference_backend()
-        if inference_backend is not None:
+
+        for inference_backend in (peek_inference_backend(), *(slot.orchestrator for slot in kept)):
+            if inference_backend is None:
+                continue
             loading_models = getattr(inference_backend, "loading_models", set())
             if any(
                 _loading_model_matches_deleted_path(loading_model, target_path)
@@ -3358,19 +3410,18 @@ async def delete_finetuned_model(
                     status_code = 409,
                     detail = "Cannot delete a model while it is loading",
                 )
-            if inference_backend.active_model_name:
-                if _loaded_model_matches_deleted_path(
-                    inference_backend.active_model_name,
-                    target_path,
-                ):
-                    raise HTTPException(
-                        status_code = 400,
-                        detail = "Unload the model before deleting",
-                    )
+            if inference_backend.active_model_name and _loaded_model_matches_deleted_path(
+                inference_backend.active_model_name,
+                target_path,
+            ):
+                raise HTTPException(
+                    status_code = 400,
+                    detail = "Unload the model before deleting",
+                )
     except HTTPException:
         raise
     except Exception as e:
-        logger.warning("Could not check inference backend loaded model before delete: %s", e)
+        logger.warning("Could not check the loaded models before delete: %s", e)
         raise HTTPException(
             status_code = 503,
             detail = "Could not verify model load status before deleting",
@@ -4553,7 +4604,9 @@ async def get_gguf_variants(
     repo_id = resolve_host_path_reference(repo_id) or repo_id
     local_path = resolve_host_path_reference(local_path) or local_path
     if account_access.managed_account():
-        await asyncio.to_thread(account_access.require_model_access, repo_id)
+        await asyncio.to_thread(
+            account_access.require_model_access, repo_id, **({"offline": True} if offline else {})
+        )
     try:
         hf_token = _resolve_hub_token(hf_token_header, hf_token)
         from hub.services.models import gguf_variants as hub_gguf_variants

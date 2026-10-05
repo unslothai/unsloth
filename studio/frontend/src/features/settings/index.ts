@@ -3,6 +3,11 @@
 
 export { SettingsDialogMount } from "./settings-dialog-mount";
 export {
+  type JobResult,
+  jobOutputLines,
+  jobResult,
+} from "./tabs/sandbox-tab-state";
+export {
   type DownloadTransportMode,
   type DownloadTransportSettings,
   loadDownloadTransportSettings,
@@ -11,7 +16,9 @@ export {
 } from "./api/download-transport";
 export { loadEmbeddingModelSettings } from "./api/embedding-model";
 export { updateHubSource } from "./api/hub-settings";
+export { loadMultiModelEnabled } from "./api/multi-model";
 export { loadOpenAIAutoSwitchSettings } from "./api/openai-auto-switch";
+export { listOpenAIModels } from "./api/openai-models";
 export {
   loadSystemOneSettings,
   subscribeSystemOneSettings,

@@ -45,12 +45,16 @@ export interface ListLorasResponse {
 }
 
 export interface LoadModelRequest {
+  engine_parallelism?: "tensor" | "pipeline" | "data";
+  engine_precision?: "auto" | "bf16" | "fp16" | "int4" | "int8" | "fp8";
+  engine?: "auto" | "vllm" | "sglang";
   model_path: string;
   /** Opaque client attempt ID used to cancel only this in-flight load. */
   load_request_id?: string | null;
 
   /** Start a fresh runtime even when the active settings already match. */
   force_reload?: boolean;
+  alongside?: boolean;
   /** Stop any chats still generating instead of getting a 409: a load replaces the single
    *  llama-server they all decode on. Set only after the user confirms. */
   force_cancel_active?: boolean;
@@ -68,6 +72,7 @@ export interface LoadModelRequest {
   chat_template_override?: string | null;
   cache_type_kv?: string | null;
   mlx_kv_quant?: string | null;
+  mlx_int8_prefill?: boolean;
   /** Speculative decoding mode for GGUF models: "auto" (platform-aware DSpark/DFlash when the model
    *  ships that sidecar, else MTP on MTP GGUFs, ngram-mod for sub-3B), "mtp", "dspark",
    *  "dflash", "ngram", "mtp+ngram", "off". The legacy spellings are still accepted. */
@@ -192,7 +197,7 @@ export interface GgufVariantsResponse {
   variants: GgufVariantDetail[];
   has_vision: boolean;
   default_variant: string | null;
-  /** True only when Hub metadata resolved every required companion. */
+  /** True when Hub metadata or a complete cached download plan proves companion readiness. */
   dependencies_resolved?: boolean;
   /** Native max context from GGUF metadata; present once a variant is downloaded. */
   context_length?: number | null;
@@ -218,7 +223,11 @@ export function isMultimodalResponse(
 }
 
 export interface LoadModelResponse {
+  engine_parallelism?: "tensor" | "pipeline" | "data";
+  engine_precision?: "auto" | "bf16" | "fp16" | "int4" | "int8" | "fp8";
+  engine?: "auto" | "vllm" | "sglang";
   is_mlx?: boolean;
+  evicted?: string[];
   is_npu?: boolean;
   status: string;
   model: string;
@@ -238,6 +247,7 @@ export interface LoadModelResponse {
   diffusion_requested_ngl?: number | null;
   is_audio?: boolean;
   audio_type?: string | null;
+  audio_workflows?: string[] | null;
   has_audio_input?: boolean;
   has_video_input?: boolean;
   inference?: {
@@ -271,6 +281,9 @@ export interface LoadModelResponse {
   mlx_kv_quant_reason?: string | null;
   chat_template_override_reason?: string | null;
   mlx_kv_quant_note?: string | null;
+  mlx_int8_prefill?: boolean | null;
+  mlx_int8_prefill_requested?: boolean | null;
+  mlx_int8_prefill_reason?: string | null;
   chat_template?: string | null;
   /** Canonical UI-facing mode the load request resolved to. See LoadModelRequest. */
   speculative_type?: string | null;
@@ -337,6 +350,9 @@ export interface UnloadModelRequest {
 }
 
 export interface InferenceStatusResponse {
+  engine_parallelism?: "tensor" | "pipeline" | "data";
+  engine_precision?: "auto" | "bf16" | "fp16" | "int4" | "int8" | "fp8";
+  engine?: "auto" | "vllm" | "sglang";
   is_mlx?: boolean;
   is_npu?: boolean;
   active_model: string | null;
@@ -352,10 +368,32 @@ export interface InferenceStatusResponse {
   memory_warning?: string | null;
   is_audio?: boolean;
   audio_type?: string | null;
+  /** GGUF audio runtime family of the loaded speech or music model ("kokoro_tts", "yue2"). */
+  audio_family?: string | null;
+  /** The loaded GGUF audio model's generation options, as its spec declares them. Unknown-shaped
+   *  on purpose: the Audio page validates it with parseAudioOptions. */
+  audio_options?: unknown;
+  /** Audio page workflows the loaded model can run ("speak", "clone", "music", "transcribe"); empty when it is not an audio model. */
+  audio_workflows?: string[] | null;
+  audio_reference_text?: "required" | "optional" | "unused" | null;
+  audio_options_by_workflow?: Record<string, unknown> | null;
+  /** e.g. {"clone": "clon", "convert": "vc", "convert:singing": "svc"}; a task other than audio_server_task reloads. */
+  audio_workflow_tasks?: Record<string, string> | null;
+  audio_server_task?: string | null;
+  audio_convert_route?: string | null;
+  audio_convert?: AudioConvertCaps | null;
+  /** e.g. Maya1: "instruct" (its voice description). */
+  audio_required_inputs?: string[] | null;
+  /** Unknown-shaped on purpose: validated by parseMusicCapabilities. */
+  audio_music?: unknown;
   has_audio_input?: boolean;
   has_video_input?: boolean;
   loading: string[];
   loaded: string[];
+  /** The models answering requests; `loaded` also names one only held behind the active model. */
+  serving?: string[];
+  /** Per `serving` entry, the id to select, load and unload it by: a local model's path. */
+  serving_checkpoints?: string[];
   inference?: {
     temperature?: number;
     top_p?: number;
@@ -388,6 +426,9 @@ export interface InferenceStatusResponse {
   mlx_kv_quant_reason?: string | null;
   chat_template_override_reason?: string | null;
   mlx_kv_quant_note?: string | null;
+  mlx_int8_prefill?: boolean | null;
+  mlx_int8_prefill_requested?: boolean | null;
+  mlx_int8_prefill_reason?: string | null;
   chat_template_override?: string | null;
   /** Canonical UI-facing mode currently active. See LoadModelRequest. */
   speculative_type?: string | null;
@@ -783,4 +824,16 @@ export interface OpenAIChatChunk {
     // must fit inside. Not re-derived here: the formula lives in the fit.
     prompt_target?: number;
   };
+}
+
+export interface AudioConvertCaps {
+  modes: ("speech" | "singing")[];
+  target: "audio" | "builtin";
+  builtin_voices: { id: string; label: string }[];
+  pitch: Partial<
+    Record<"speech" | "singing", { auto: boolean; shift_with_auto?: boolean }>
+  >;
+  style: boolean;
+  route_reloads: boolean;
+  source_max_seconds: number;
 }

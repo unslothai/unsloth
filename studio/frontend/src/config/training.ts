@@ -53,6 +53,13 @@ export function getCptUiTargetModules(): readonly string[] {
   return CPT_UI_TARGET_MODULES;
 }
 
+/** all-linear is a chip outside CPT too: model defaults (Qwen3-VL, Qwen3.5, LFM2, ...) ship it. */
+const UI_TARGET_MODULES = ["all-linear", ...TARGET_MODULES] as const;
+
+export function getUiTargetModules(isCpt: boolean): readonly string[] {
+  return isCpt ? CPT_UI_TARGET_MODULES : UI_TARGET_MODULES;
+}
+
 export function isCptTargetModuleActive(
   targetModules: readonly string[],
   module: string,

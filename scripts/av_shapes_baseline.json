@@ -1337,7 +1337,8 @@
       "reason": "`unsloth start` runs the agent vendor's own documented installer on request, after telling the user; the text is the vendor's command.",
       "digests": {
         "4b8d7b4895eacb82": 1,
-        "c709a3f82ed292ba": 1
+        "c709a3f82ed292ba": 1,
+        "dad9884ace4523c9": 1
       }
     },
     {

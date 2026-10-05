@@ -888,12 +888,16 @@ def _build_index() -> dict[str, _LocalGgufEntry]:
         for folder in list_scan_folders():
             try:
                 fp = Path(folder["path"])
-                custom_found += dedupe_custom_gguf_rows(
+                rows = (
                     _scan_models_dir(fp, limit = 200)
                     + [row for hub in scan_folder_hf_caches(fp) for row in _scan_hf_once(hub)]
                     + _scan_lmstudio_dir(fp)
                     + _scan_ollama_dir(fp, limit = 200, materialize_links = False)
                 )
+                if folder.get("recursive"):
+                    from routes.models import _scan_nested_compat_rows
+                    rows += _scan_nested_compat_rows(fp, rows, limit = 200)
+                custom_found += dedupe_custom_gguf_rows(rows)
             except Exception as exc:
                 logger.debug("auto-switch: scan folder %r failed: %s", folder, exc)
         found += suppress_grouped_gguf_file_rows(custom_found)
@@ -1328,6 +1332,31 @@ def _resolve_from_index(
         return _result(entry, entry.variants[0] if entry.variants else None)
     except Exception:
         return None
+
+
+def local_gguf_pinned_variant(requested: str) -> Optional[str]:
+    """The on-disk quant ``repo:VARIANT`` pins, by current label or legacy alias, else None.
+
+    Unlike :func:`resolve_local_gguf`, a suffix naming no quant (``:latest``) never falls back to the
+    repo's preferred one.
+    """
+    base, sep, wanted = requested.rpartition(":")
+    if not sep:
+        return None
+    try:
+        entry = _index().get(base.strip().lower())
+    except Exception:
+        return None
+    if entry is None:
+        return None
+    wanted = wanted.strip().lower()
+    for variant in entry.variants:
+        if variant.lower() == wanted:
+            return variant
+    for legacy, current in entry.aliases:
+        if legacy == wanted:
+            return current
+    return None
 
 
 def local_target_is_gguf(load_path: Optional[str], loader_id: Optional[str] = None) -> bool:
