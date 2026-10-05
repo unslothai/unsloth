@@ -191,6 +191,7 @@ function harness(rows: Array<typeof KB> = [KB]) {
 
   const dialog = new Host();
   let documents: Host | null = null;
+  let documentsMounts = 0;
   let tree: StubElement;
   let props: Record<string, unknown> = {};
 
@@ -211,11 +212,16 @@ function harness(rows: Array<typeof KB> = [KB]) {
     return find(element.props.children, match);
   }
 
+  // Radix renders DialogContent only while the dialog is open, so a closed dialog has no
+  // documents view mounted, whatever its view state says.
   const documentsView = () =>
-    find(
-      tree,
-      (e) => typeof e.type === "function" && e.type.name === "KnowledgeBaseDocuments",
-    );
+    props.open
+      ? find(
+          tree,
+          (e) =>
+            typeof e.type === "function" && e.type.name === "KnowledgeBaseDocuments",
+        )
+      : undefined;
 
   // One render pass: the dialog, then its documents view if it shows one. A view that
   // just appeared mounts the way StrictMode mounts it.
@@ -231,6 +237,7 @@ function harness(rows: Array<typeof KB> = [KB]) {
       return;
     }
     const mounting = documents === null;
+    if (mounting) documentsMounts += 1;
     documents ??= new Host();
     current = documents;
     documents.begin();
@@ -264,6 +271,9 @@ function harness(rows: Array<typeof KB> = [KB]) {
     },
     get documentsView() {
       return documentsView();
+    },
+    get documentsMounts() {
+      return documentsMounts;
     },
     openRow() {
       const row = find(tree, (e) => e.props.title === "Open to add or remove documents");
@@ -303,8 +313,12 @@ test("reopening the dialog on the same knowledge base without files uploads noth
   const app = harness();
   await app.open({ kbId: KB.id, uploads: [ITEM] });
   await app.close();
+  assert.equal(app.documentsView, undefined);
   await app.open({ kbId: KB.id });
   assert.equal(app.title, KB.name);
+  // Closing unmounted the view, so this is a fresh mount. The host lets that mount's timer
+  // fire before the open effect's reset renders, which is stricter than React's ordering.
+  assert.equal(app.documentsMounts, 2);
   assert.deepEqual(app.uploads, [[ITEM]]);
 });
 

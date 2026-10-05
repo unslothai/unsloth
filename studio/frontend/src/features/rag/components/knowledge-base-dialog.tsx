@@ -147,6 +147,16 @@ export function KnowledgeBaseDialog({
     setView({ kind: "list" });
   }
 
+  // Handed-over files are a one-time handoff. The view outlives a close and a reopen
+  // renders it once before resetting, so the files leave it as soon as they start.
+  const takeUploads = useCallback(() => {
+    setView((current) =>
+      current.kind === "documents" && current.uploads
+        ? { kind: "documents", kb: current.kb }
+        : current,
+    );
+  }, []);
+
   async function submitForm() {
     // The button is disabled for this, but the form is also reachable by keyboard and
     // the verdict can land while it is open. A 503 toast is not an explanation.
@@ -222,6 +232,7 @@ export function KnowledgeBaseDialog({
           <KnowledgeBaseDocuments
             kb={view.kb}
             uploads={view.uploads}
+            onUploadsStarted={takeUploads}
             onBack={backToList}
           />
         ) : showForm ? (
@@ -372,11 +383,14 @@ export function KnowledgeBaseDialog({
 function KnowledgeBaseDocuments({
   kb,
   uploads,
+  onUploadsStarted,
   onBack,
 }: {
   kb: KnowledgeBase;
   /** Files handed over to upload here once, e.g. a drop the chat could not take. */
   uploads?: RagUploadItem[];
+  /** Called as they start, so the caller stops handing them over. */
+  onUploadsStarted: () => void;
   onBack: () => void;
 }) {
   const lister = useCallback(() => listKnowledgeBaseDocuments(kb.id), [kb.id]);
@@ -395,18 +409,17 @@ function KnowledgeBaseDocuments({
       : undefined,
   });
 
-  // `upload` changes identity every render, so the ref, which survives StrictMode's remount,
-  // is what keeps a batch from going twice. Deferred a tick so it starts on the mount that
-  // stays: the hook's unmount cleanup would abort an upload started on StrictMode's first one.
-  const startedUploadsRef = useRef<RagUploadItem[] | null>(null);
+  // Deferred a tick so it starts on the mount that stays: the hook's unmount cleanup would
+  // abort an upload started on StrictMode's first one. `upload` changes identity every
+  // render, which only resets the timer; taking the files off the view is what stops a rerun.
   useEffect(() => {
-    if (!uploads?.length || startedUploadsRef.current === uploads) return;
+    if (!uploads?.length) return;
     const timer = window.setTimeout(() => {
-      startedUploadsRef.current = uploads;
+      onUploadsStarted();
       void upload(uploads);
     }, 0);
     return () => window.clearTimeout(timer);
-  }, [uploads, upload]);
+  }, [uploads, onUploadsStarted, upload]);
 
   return (
     <div
