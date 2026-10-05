@@ -7,6 +7,7 @@ import {
   AUDIO_CPP_MUSIC_AUDIO_TYPE,
   AUDIO_CPP_MUSIC_MAX_SECONDS,
   AUDIO_CPP_MUSIC_MIN_SECONDS,
+  AUDIO_CPP_SEP_AUDIO_TYPE,
   AUDIO_CPP_TTS_AUDIO_TYPE,
   type AudioCppRuntimeStatus,
   audioCppDisplayName,
@@ -68,6 +69,7 @@ export type AudioBusy =
 
 export type AudioGenerationPhase =
   | "preparing"
+  | "switching"
   | "generating"
   | "stopping"
   | "finishing"
@@ -83,6 +85,7 @@ export type AudioGenerationPresentation = {
  *  browser-visible numeric progress, so these labels never imply a fraction or ETA. */
 export function audioGenerationPresentation(
   phase: AudioGenerationPhase,
+  detail?: string | null,
 ): AudioGenerationPresentation | null {
   switch (phase) {
     case "preparing":
@@ -90,6 +93,12 @@ export function audioGenerationPresentation(
         status: "Preparing audio…",
         actionLabel: "Preparing…",
         canStop: false,
+      };
+    case "switching":
+      return {
+        status: detail || "Switching model…",
+        actionLabel: "Stop",
+        canStop: true,
       };
     case "generating":
       return {
@@ -130,6 +139,7 @@ const TTS_AUDIO_TYPES = new Set([
   "minimax_music3",
   AUDIO_CPP_TTS_AUDIO_TYPE,
   AUDIO_CPP_MUSIC_AUDIO_TYPE,
+  AUDIO_CPP_SEP_AUDIO_TYPE,
 ]);
 // The GGUF runtime's speech and music load from a GGUF too, so a status may call them one.
 const GGUF_TTS_AUDIO_TYPES = new Set([
@@ -138,6 +148,7 @@ const GGUF_TTS_AUDIO_TYPES = new Set([
   "dac",
   AUDIO_CPP_TTS_AUDIO_TYPE,
   AUDIO_CPP_MUSIC_AUDIO_TYPE,
+  AUDIO_CPP_SEP_AUDIO_TYPE,
 ]);
 const NATIVE_TTS_AUDIO_TYPES = new Set([
   "higgs_tts2",
@@ -147,6 +158,7 @@ const NATIVE_TTS_AUDIO_TYPES = new Set([
   "minimax_music3",
   AUDIO_CPP_TTS_AUDIO_TYPE,
   AUDIO_CPP_MUSIC_AUDIO_TYPE,
+  AUDIO_CPP_SEP_AUDIO_TYPE,
 ]);
 export const MOSS_TTS_FRAMES_PER_SECOND = 12.5;
 export const MOSS_TTS_DEFAULT_SECONDS = 15;
@@ -450,6 +462,35 @@ export function expectedGgufDownloadBytes(variant: AutoGgufVariant): number {
     : variant.size_bytes;
 }
 
+/** The first `wanted` gallery rows fetched in pages of at most `maxPage`, merged into one page. */
+export async function fetchGalleryWindow<
+  C extends { id: string },
+  P extends { audio: C[]; has_more: boolean },
+  K,
+>(
+  fetchPage: (limit: number, cursor: K | null) => Promise<P>,
+  cursorOf: (page: P) => K | null,
+  wanted: number,
+  maxPage: number,
+  cancelled: () => boolean = () => false,
+): Promise<P> {
+  let page = await fetchPage(Math.min(wanted, maxPage), null);
+  const audio = [...page.audio];
+  const seen = new Set(audio.map((clip) => clip.id));
+  while (audio.length < wanted && page.has_more && !cancelled()) {
+    const cursor = cursorOf(page);
+    if (cursor === null) break;
+    page = await fetchPage(Math.min(maxPage, wanted - audio.length), cursor);
+    if (page.audio.length === 0) break;
+    for (const clip of page.audio) {
+      if (seen.has(clip.id)) continue;
+      seen.add(clip.id);
+      audio.push(clip);
+    }
+  }
+  return { ...page, audio };
+}
+
 /** Fold a freshly fetched first page into the list already on screen. The page is authoritative
  *  for the newest `page.length` clips and any scrollback below it is kept; replacing outright
  *  collapsed a paginated History on every delete and reselected a different clip.
@@ -613,12 +654,26 @@ export function reconcileSttSelection({
   return preservePending ? selectedRepo : null;
 }
 
-/** Permission prompts cannot be aborted, so freshness is checked immediately after
- *  getUserMedia resolves and stale streams are stopped before recording. */
-export function micStreamRequestIsCurrent(
-  requestGeneration: number,
-  currentGeneration: number,
-  active: boolean,
-): boolean {
-  return active && requestGeneration === currentGeneration;
+/**
+ * The line said above Generate when the run will load or switch the model first, so the wait is
+ * expected: "Loads Kokoro for Speak, about 5 s". Null when nothing will load.
+ */
+export function modelLoadNote({
+  model,
+  page,
+  seconds,
+}: {
+  model: string | null;
+  page: string;
+  seconds?: number | null;
+}): string | null {
+  if (!model) return null;
+  const about =
+    seconds !== null &&
+    seconds !== undefined &&
+    Number.isFinite(seconds) &&
+    seconds > 0
+      ? `, about ${Math.max(1, Math.round(seconds))} s`
+      : "";
+  return `Loads ${model} for ${page}${about}`;
 }
