@@ -25,6 +25,16 @@ IMAGE_TURN_TEXT = "Images returned by the tool call above:"
 # they were taken from, and "above" would name whatever turn happens to precede it.
 DETACHED_IMAGE_TURN_TEXT = "Images returned by earlier tool calls in this conversation:"
 
+
+def returns_model_images(name: Any) -> bool:
+    """whether a tool's image envelope is trusted as model input: MCP tools, browser screenshots."""
+    if not isinstance(name, str):
+        return False
+    from core.inference.browser_tools import BROWSER_IMAGE_TOOLS
+
+    return name.startswith(MCP_TOOL_PREFIX) or name in BROWSER_IMAGE_TOOLS
+
+
 MAX_MODEL_IMAGES = 4
 MAX_TOTAL_MODEL_IMAGES = 8
 # Safetensors and MLX require one image per message, including promoted tool
@@ -251,7 +261,7 @@ def eligible_replay_images(
         if not isinstance(content, str):
             return None
         name = messages[position].get("name") or call_names.get(position)
-        if isinstance(name, str) and name and not name.startswith(MCP_TOOL_PREFIX):
+        if isinstance(name, str) and name and not returns_model_images(name):
             return None
         _text, images = split_images(content)
         return images or None
@@ -1170,7 +1180,7 @@ def _promote(
             # IMAGE input: a named non-MCP tool that happens to end in a valid
             # envelope is not one an MCP server served.
             name = message.get("name") or call_names.get(position)
-            if isinstance(name, str) and name and not name.startswith(MCP_TOOL_PREFIX):
+            if isinstance(name, str) and name and not returns_model_images(name):
                 # A non-MCP result sitting between the images and their turn makes
                 # "the tool call above" name web_search or read_file.
                 if pending:

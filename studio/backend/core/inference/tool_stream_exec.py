@@ -26,6 +26,7 @@ import inspect
 import queue
 import threading
 import time
+from dataclasses import dataclass
 from typing import Any, Callable, Generator
 
 from loggers import get_logger
@@ -71,6 +72,23 @@ def _hold_back_partial_secret(text: str) -> int:
 
 
 logger = get_logger(__name__)
+
+
+@dataclass(frozen = True)
+class CurrentToolCall:
+    """the running call; emit sends client_request as a tool_output event, which routes forward."""
+
+    tool_name: str
+    tool_call_id: str
+    emit: Callable[[dict], None]
+
+
+current_tool_call: "contextvars.ContextVar[CurrentToolCall | None]" = contextvars.ContextVar(
+    "current_tool_call", default = None
+)
+
+# queued beside output chunks so the consumer wakes for a client request at once.
+_CONTROL_WAKE = object()
 
 
 def accepts_kwarg(func: Callable[..., str], name: str) -> bool:
@@ -152,7 +170,7 @@ def _drain_queue(q: "queue.Queue", sentinel: object, max_chars: int | None) -> t
         if item is sentinel:
             hit_sentinel = True
             break
-        if dropping:
+        if item is _CONTROL_WAKE or dropping:
             continue
         if max_chars is not None and total + len(item) > max_chars:
             # Keep one char past the budget as the overflow signal; drop the rest.
@@ -188,6 +206,7 @@ def stream_tool_execution(
     abort the next tool.
     """
     output_queue: queue.Queue[Any] = queue.Queue()
+    control_queue: queue.Queue[dict] = queue.Queue()
     done_sentinel = object()
     outcome: dict[str, Any] = {}
 
@@ -210,7 +229,12 @@ def stream_tool_execution(
             accepted_output_chars += len(accepted)
         output_queue.put(accepted)
 
+    def _on_client_request(request: dict) -> None:
+        control_queue.put(request)
+        output_queue.put(_CONTROL_WAKE)
+
     def _run() -> None:
+        current_tool_call.set(CurrentToolCall(tool_name, tool_call_id, _on_client_request))
         try:
             outcome["result"] = invoke(_on_output)
         except BaseException as exc:  # noqa: BLE001 - re-raised on the caller side
@@ -243,6 +267,25 @@ def stream_tool_execution(
         if hit_sentinel:
             finished = True
         return text
+
+    def _client_requests() -> "list[dict]":
+        events = []
+        while True:
+            try:
+                request = control_queue.get_nowait()
+            except queue.Empty:
+                return events
+            events.append(
+                {
+                    "type": "tool_output",
+                    "tool_name": tool_name,
+                    "tool_call_id": tool_call_id,
+                    "text": "",
+                    "client_request": request,
+                }
+            )
+            # WebKit holds the request until the next bytes, so a keepalive avoids a ten second wait
+            events.append({"type": "heartbeat"})
 
     def _drain_and_drop() -> None:
         """Discard the current and every queued chunk without concatenating.
@@ -278,6 +321,7 @@ def stream_tool_execution(
     abnormal_exit = False
     try:
         while not finished:
+            yield from _client_requests()
             try:
                 item = output_queue.get(timeout = poll_interval_s)
             except queue.Empty:
@@ -294,6 +338,8 @@ def stream_tool_execution(
 
             if item is done_sentinel:
                 break
+            if item is _CONTROL_WAKE:
+                continue
 
             if stream_capped:
                 # Past the cap: drop this chunk and every queued sibling (see _drain_and_drop). Pace with one time.sleep
@@ -329,6 +375,7 @@ def stream_tool_execution(
                         "tool_call_id": tool_call_id,
                         "text": emit,
                     }
+        yield from _client_requests()
         # Deferred text that turns out to be ordinary: emit it, or the output is truncated.
         if carry:
             emit, carry = _masked("", final = True)

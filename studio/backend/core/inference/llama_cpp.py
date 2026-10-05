@@ -485,6 +485,7 @@ from core.inference.mcp_images import (
     append_image_turn as append_mcp_image_turn,
     mentions_images as mcp_images_mentioned_in,
 )
+from core.inference.browser_tools import supersede_browser_snapshots
 from core.inference.tool_loop_controller import (
     _WORKSPACE_TOOLS,
     ToolLoopController,
@@ -35951,7 +35952,11 @@ class LlamaCppBackend:
         if not self.is_loaded:
             raise RuntimeError("llama-server is not loaded")
 
+        # stub first: the records below track messages by identity, and a later stub swaps the dicts
+        messages = list(messages)
+        supersede_browser_snapshots(messages)
         conversation = list(messages)
+        _request_message_ids = frozenset(id(message) for message in messages)
         _rolling_anchor_ids: set[int] = set()
         # The loop refits on every iteration; recall must fire once per request, or each
         # pass stacks another block of recalled turns onto the prompt.
@@ -38967,6 +38972,7 @@ class LlamaCppBackend:
                     _forced_choice_resolved = True
                     yield completion.tool_end_event()
                     conversation.append(completion.tool_message())
+                    supersede_browser_snapshots(conversation, frozen = _request_message_ids)
                     # Parsed only for a result that carries them and a model that will
                     # be shown them; the marker test first, so a text result never asks.
                     _completion_images = (

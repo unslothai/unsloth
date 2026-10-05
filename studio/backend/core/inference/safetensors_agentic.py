@@ -61,6 +61,7 @@ from core.inference.mcp_images import (
     png_payloads_per_result,
     trim_image_turns,
 )
+from core.inference.browser_tools import supersede_browser_snapshots
 from core.inference.tool_loop_controller import (
     _WORKSPACE_TOOLS,
     ToolLoopController,
@@ -641,6 +642,7 @@ def run_safetensors_tool_loop(
     * ``{"type": "tool_end", "tool_name", "tool_call_id", "result"}``
     """
     conversation = list(messages)
+    supersede_browser_snapshots(conversation)
     # Where the caller's own attachment sits in the seeded sink. The cap is about what
     # the loop RE-SENDS, so that entry is never the one it drops -- but it is not the
     # whole seed: a resumed chat seeds replayed pictures too, and exempting those would
@@ -1687,6 +1689,7 @@ def run_safetensors_tool_loop(
             _turn_executed_real_tool = True
             yield completion.tool_end_event()
             conversation.append(completion.tool_message())
+            supersede_browser_snapshots(conversation)
             # Parsed only when there is a sink for them.
             _completion_images = completion.mcp_images() if images_sink is not None else []
             if _completion_images:

@@ -20,7 +20,9 @@ from dataclasses import dataclass, field
 from typing import Any, Collection, Literal, Mapping, Sequence
 from urllib.parse import urlparse
 
+from core.inference.browser_tools import is_browser_tool
 from core.inference.llama_tool_schema import unrelaxed
+from core.inference.mcp_images import returns_model_images
 from core.inference.mcp_images import split_images as split_mcp_images
 
 # Stamped by mcp_client on every tool it registers; the provenance the envelope
@@ -338,13 +340,13 @@ class ToolCallCompletion:
         return message
 
     def mcp_images(self) -> list[dict]:
-        """Images this call returned, and only for a call an MCP server served.
+        """Images this call returned, and only for a call an MCP server or the browser served.
 
         The envelope is a plain suffix, so any tool whose output happens to end in
         one -- terminal output, a fetched page -- would otherwise have its bytes
         decoded and attached as model image input.
         """
-        if not self.executed or not self.decision.tool_name.startswith(MCP_TOOL_PREFIX):
+        if not self.executed or not returns_model_images(self.decision.tool_name):
             return []
         return split_mcp_images(self.result)[1]
 
@@ -816,6 +818,9 @@ def status_for_tool(tool_name: str, arguments: Mapping[str, Any]) -> str:
         path = str(arguments.get("path") or "").strip()
         name = path.replace("\\", "/").rstrip("/").rpartition("/")[2]
         return f"Editing: {name}" if name else "Editing file..."
+    if is_browser_tool(tool_name):
+        from core.inference.browser_tools import browser_status_text
+        return browser_status_text(tool_name, arguments)
     mcp = mcp_display_parts(tool_name)
     if mcp:
         return f"Calling: {mcp[0]} · {mcp[1]}"
@@ -1266,7 +1271,8 @@ class ToolLoopController:
             for key in stale:
                 self._duplicate_noop_counts.pop(key, None)
             self._workspace_novel_at[decision.key] = self._workspace_novel
-        if not failed:
+        # the page changes between browser calls, so a repeat is new information, not a duplicate
+        if not failed and not is_browser_tool(decision.tool_name):
             self._successful_keys.add(decision.key)
             if decision.tool_name in self._one_shot_tools:
                 self._completed_one_shot_tools.add(decision.tool_name)

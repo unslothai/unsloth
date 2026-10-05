@@ -2173,7 +2173,7 @@ def _openai_llama_admission_messages_for_estimate(
                 _non_mcp = _names_a_non_mcp_tool(message_dict) or (
                     isinstance(_correlated, str)
                     and bool(_correlated)
-                    and not _correlated.startswith("mcp__")
+                    and not returns_model_images(_correlated)
                 )
                 if vision and not _non_mcp:
                     # Only entries that could become a picture: _flatten_result
@@ -3677,6 +3677,7 @@ from models.inference import (
     ChatCompletion,
     ToolApprovalStatusRequest,
     ToolConfirmRequest,
+    ClientToolRequest,
     ChatMessage,
     ChunkChoice,
     ChoiceDelta,
@@ -3881,6 +3882,7 @@ from core.inference.mcp_images import (
     promote_history as promote_mcp_history_images,
     promote_history_local as promote_mcp_history_images_local,
     split_images as split_mcp_images,
+    returns_model_images,
 )
 from core.inference.tool_call_parser import (
     _strip_function_xml_calls,
@@ -5854,8 +5856,12 @@ def _build_tool_action_nudge(
     has_artifact = "render_html" in tool_names
     has_research = "deep_research" in tool_names
     has_skills = bool({"read_skill", "create_skill"} & tool_names)
+    from core.inference.browser_tools import BROWSER_TOOL_TIP, BROWSER_TOOL_NAMES
+
+    # stated on every path, including full access: how the tools work is not general advice
+    browser_tip = BROWSER_TOOL_TIP if BROWSER_TOOL_NAMES & tool_names else ""
     if not (has_web or has_code or has_artifact or has_research or has_skills):
-        return ""
+        return browser_tip
     model_size_b = _extract_model_size_b(model_name)
     # Small models get the shorter web tip and the smaller skill catalog.
     compact = model_size_b is not None and model_size_b < 9
@@ -5866,6 +5872,7 @@ def _build_tool_action_nudge(
             tips.append(_full_access_tip(code_tools))
         if has_skills:
             tips.append(skill_tip)
+        tips.append(browser_tip)
         return " ".join(tip for tip in tips if tip)
     if not (has_web or has_code or has_artifact):
         tips = []
@@ -5873,6 +5880,7 @@ def _build_tool_action_nudge(
             tips.append(_TOOL_RESEARCH_TIP)
         if has_skills:
             tips.append(skill_tip)
+        tips.append(browser_tip)
         return " ".join(tip for tip in tips if tip)
 
     compact_web_tip = compact
@@ -5891,6 +5899,8 @@ def _build_tool_action_nudge(
         tool_tip_parts.append(_TOOL_RESEARCH_TIP)
     if has_skills:
         tool_tip_parts.append(skill_tip)
+    if browser_tip:
+        tool_tip_parts.append(browser_tip)
     # the date rides on the system prompt instead, so a tool-less chat is not left date-blind.
     return _TOOL_BASE_NUDGE + " " + " ".join(tool_tip_parts)
 
@@ -6265,6 +6275,10 @@ async def _select_request_tools(
             # guessed tool name. Read-only and always-safe, so it prompts for nothing.
             tools = [t for t in tools if t["function"]["name"] == "search_conversation"]
     tools = _tools_for_search_images(tools)
+    if tools_on:
+        # not in ALL_TOOLS, since only the desktop app can run them; it names them in enabled_tools
+        from core.inference.browser_tools import browser_tools_for
+        tools = tools + browser_tools_for(payload.enabled_tools)
     # Built-ins only, so this runs before the MCP append: an MCP tool's
     # description is the server's to write, and Full access says nothing about
     # how that server runs.
@@ -9325,7 +9339,7 @@ def _names_a_non_mcp_tool(message) -> bool:
     the envelope only ever came from an MCP server.
     """
     name = message.get("name") if isinstance(message, dict) else getattr(message, "name", None)
-    return isinstance(name, str) and bool(name) and not name.startswith("mcp__")
+    return isinstance(name, str) and bool(name) and not returns_model_images(name)
 
 
 # Mirrors NON_VISION_PROVIDER_TYPES in studio/frontend/src/features/chat/
@@ -9436,7 +9450,7 @@ def _request_has_promotable_mcp_images(payload, *, exact: bool = True) -> bool:
         if not isinstance(content, str) or not present(content):
             continue
         name = getattr(message, "name", None) or names.get(index)
-        if isinstance(name, str) and name and not name.startswith("mcp__"):
+        if isinstance(name, str) and name and not returns_model_images(name):
             continue
         return True
     return False
@@ -20008,6 +20022,27 @@ async def confirm_tool_call(
     return {"resolved": True}
 
 
+@studio_router.post("/client-tool")
+async def client_tool(
+    request: ClientToolRequest, current_subject: str = Depends(get_current_subject)
+):
+    """claim, then answer, a tool call the client runs (see state.client_tool_requests)."""
+    from state.client_tool_requests import claim_client_tool, resolve_client_tool
+
+    if request.phase == "claim":
+        matched = claim_client_tool(request.request_id, session_id = request.session_id)
+    else:
+        matched = resolve_client_tool(
+            request.request_id,
+            request.result or "",
+            [image.model_dump() for image in request.images or []],
+            session_id = request.session_id,
+        )
+    if not matched:
+        raise HTTPException(status_code = 404, detail = "No pending client tool call")
+    return {"ok": True}
+
+
 @studio_router.post("/tool-approval-status")
 async def tool_approval_status(
     request: ToolApprovalStatusRequest, current_subject: str = Depends(get_current_subject)
@@ -28049,6 +28084,8 @@ async def produce_openai_chat_completions(
                 # A call parked on the approval prompt is not decoding, so it gives its slot back;
                 # otherwise unanswered prompts hold every slot.
                 _parked = False
+                # parked for a browser call the client runs, which may wait on its user.
+                _client_parked = False
 
                 _reclaim_task = None
                 _reclaim_stop = asyncio.Event()
@@ -28226,11 +28263,16 @@ async def produce_openai_chat_completions(
                             _tool_decode_finished = True
                             break
 
+                        # a browser call parks like an approval, and its heartbeats do not unpark it
+                        if event["type"] == "tool_output" and event.get("client_request"):
+                            await _park_admission(True)
+                            _client_parked = True
                         # Anything after the gated tool_start means the user answered.
-                        if not (
+                        elif not (
                             event["type"] == "tool_start" and event.get("awaiting_confirmation")
-                        ):
+                        ) and not (_client_parked and event["type"] == "heartbeat"):
                             await _park_admission(False)
+                            _client_parked = False
 
                         if event["type"] == "heartbeat":
                             # Tool-wrapper heartbeat while a server-side tool blocks; keeps SSE alive.

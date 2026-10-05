@@ -7092,7 +7092,9 @@ _ALWAYS_SAFE_TOOLS = frozenset(
 
 def never_needs_approval(name: str) -> bool:
     """search_conversation only reads this chat's own compacted turns (#11671)."""
-    return name == "search_conversation"
+    # the client approves browser tools, naming the element and site; two prompts would stack
+    from .browser_tools import is_browser_tool
+    return name == "search_conversation" or is_browser_tool(name)
 
 
 def is_always_safe_tool(name: str) -> bool:
@@ -13810,6 +13812,20 @@ def execute_tool(
             "out in full."
         )
     effective_timeout = _EXEC_TIMEOUT if timeout is _TIMEOUT_UNSET else timeout
+    if name.startswith("browser_"):
+        from .browser_tools import is_browser_tool, run_browser_tool
+        if is_browser_tool(name):
+            budget = _browser_page_budget()
+            result = run_browser_tool(
+                name,
+                arguments,
+                session_id = session_id,
+                cancel_event = cancel_event,
+                # link-heavy pages measure 2.35-2.85 characters a token; the client re-fits denser text to max_tokens
+                max_chars = budget * 2 if budget is not None else None,
+                max_tokens = budget,
+            )
+            return _fit_result_to_room(result, name)
     if name == "create_skill":
         from .skills import SkillError, create_skill
 
@@ -20299,6 +20315,18 @@ def _truncate(
         # paging that cannot happen.
         return head + common + ".)" + hint
     return head + common + f" -- continue with:\n  {resume})" + hint
+
+
+def _browser_page_budget() -> int | None:
+    """the tokens _truncate lets a browser result keep, so the client sizes it and no cut lands."""
+    room = _request_result_room()
+    if room is None:
+        return None
+    ctx = _window_context_tokens()
+    if not _can_measure_tokens(ctx or 0, "x"):
+        room = int(room * _UNMEASURED_ROOM_MARGIN)
+    share = int(ctx * _PAGE_CONTEXT_SHARE) if ctx else room
+    return max(0, min(room, share))
 
 
 def _fit_result_to_room(text, name = None):

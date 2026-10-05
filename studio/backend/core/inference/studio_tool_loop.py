@@ -81,6 +81,7 @@ def _append_mcp_images_owned(
     )
 
 
+from core.inference.browser_tools import supersede_browser_snapshots
 from core.inference.tool_loop_controller import (
     ToolLoopController,
     awaiting_approval_status,
@@ -1253,6 +1254,7 @@ async def stream_with_studio_tools(
 ) -> AsyncIterator[str]:
     """Stream a provider, execute requested Unsloth tools, continue to a final answer."""
     conversation = [dict(message) for message in run.messages]
+    supersede_browser_snapshots(conversation)
     # The image parts this run appends, so its cap never counts a caller's own
     # attachments. Run-scoped, not turn-scoped: the cap is across the whole loop,
     # and seeded with what promotion already put in the conversation.
@@ -1965,6 +1967,7 @@ async def stream_with_studio_tools(
                 continue_final_message = run.continue_final_message,
             )
         conversation.extend(tool_messages)
+        supersede_browser_snapshots(conversation)
         # Deferred to after the results so a no-op never splits a call from them, and merged into a trailing user turn
         # so the roles keep alternating.
         _append_user_turn(

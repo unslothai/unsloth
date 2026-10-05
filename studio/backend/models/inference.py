@@ -3045,6 +3045,21 @@ class ToolConfirmRequest(BaseModel):
     decision: Literal["allow", "deny"] = "deny"
 
 
+class ClientToolImage(BaseModel):
+    data: str
+    mimeType: str
+
+
+class ClientToolRequest(BaseModel):
+    """a client-run tool: claim says the client can run it, result delivers the answer."""
+
+    session_id: Optional[str] = None
+    request_id: Optional[str] = None
+    phase: Literal["claim", "result"] = "result"
+    result: Optional[str] = None
+    images: Optional[list[ClientToolImage]] = None
+
+
 class ToolApprovalStatusRequest(BaseModel):
     """Ask whether one approval is still waiting. Takes the id rather than listing them, so a
     caller can only ask about an approval it already holds and cannot enumerate anyone else's."""
