@@ -17,8 +17,10 @@ import {
   listLocalModels,
 } from "@/features/chat";
 import { cn } from "@/lib/utils";
+import { RefreshGlyph } from "@/lib/refresh-icon";
 import { Link } from "@tanstack/react-router";
-import { ChevronDownIcon, ChevronRightIcon, RefreshCwIcon } from "lucide-react";
+import { ChevronDownIcon, ChevronRightIcon } from "lucide-react";
+import { ggufVariantDisplayLabel } from "@/features/hub";
 import {
   type ComponentPropsWithoutRef,
   type ReactElement,
@@ -74,6 +76,10 @@ function sourceLabel(model: LocalModelInfo): string {
       return "HF cache";
     case "lmstudio":
       return "LM Studio";
+    case "ollama":
+      return "Ollama";
+    case "hermes":
+      return "Hermes";
     case "custom":
       return "Custom folder";
     default:
@@ -190,7 +196,7 @@ function LocalGgufVariantList({
 
   return (
     <div className="ml-6 mt-1 rounded-lg bg-muted/25 p-1.5">
-      <div className="mb-1 px-2 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
+      <div className="mb-1 px-2 text-ui-10 font-medium uppercase tracking-wide text-muted-foreground">
         Quantization
       </div>
       <div className="space-y-0.5">
@@ -207,15 +213,18 @@ function LocalGgufVariantList({
               )}
             >
               <span className="min-w-0 flex-1 truncate font-mono">
-                {variant.quant}
+                {/* The key is the selection identity and can be path-qualified
+                    ("distilled/ltx-2.3-22b-distilled-Q6_K"); the label is what it reads as.
+                    onSelect and the recommended check still key on variant.quant. */}
+                {ggufVariantDisplayLabel(variant)}
               </span>
               {variant.quant === defaultVariant ? (
-                <Badge variant="secondary" className="h-4 px-1.5 text-[10px]">
+                <Badge variant="secondary" className="h-4 px-1.5 text-ui-10">
                   recommended
                 </Badge>
               ) : null}
               {variant.downloaded ? (
-                <Badge variant="outline" className="h-4 px-1.5 text-[10px]">
+                <Badge variant="outline" className="h-4 px-1.5 text-ui-10">
                   ready
                 </Badge>
               ) : null}
@@ -276,7 +285,7 @@ const SelectorTrigger = forwardRef<HTMLButtonElement, SelectorTriggerProps>(
             {selected.label || "Choose a local model"}
           </span>
           {compact ? null : (
-            <span className="mt-0.5 flex min-w-0 items-center gap-1.5 text-[11px] text-muted-foreground">
+            <span className="mt-0.5 flex min-w-0 items-center gap-1.5 text-ui-11 text-muted-foreground">
               <span className="truncate">
                 {selected.label
                   ? selected.source
@@ -292,7 +301,7 @@ const SelectorTrigger = forwardRef<HTMLButtonElement, SelectorTriggerProps>(
         {compact && ggufVariant ? (
           <Badge
             variant="secondary"
-            className="h-4 px-1.5 font-mono text-[10px]"
+            className="h-4 px-1.5 font-mono text-ui-10"
           >
             {ggufVariant}
           </Badge>
@@ -347,7 +356,7 @@ function LocalModelRow({
           <span className="block truncate font-medium">
             {getModelLabel(model)}
           </span>
-          <span className="mt-0.5 block truncate text-[11px] text-muted-foreground">
+          <span className="mt-0.5 block truncate text-ui-11 text-muted-foreground">
             {model.id}
           </span>
         </span>
@@ -356,11 +365,11 @@ function LocalModelRow({
             <Spinner className="size-3 text-muted-foreground" />
           ) : null}
           {expandable || directGguf ? (
-            <Badge variant="secondary" className="h-4 px-1.5 text-[10px]">
+            <Badge variant="secondary" className="h-4 px-1.5 text-ui-10">
               GGUF
             </Badge>
           ) : null}
-          <Badge variant="outline" className="h-4 px-1.5 text-[10px]">
+          <Badge variant="outline" className="h-4 px-1.5 text-ui-10">
             {sourceLabel(model)}
           </Badge>
         </span>
@@ -577,7 +586,8 @@ export function LocalRecipeModelSelector({
   );
 
   return (
-    <Popover open={open} onOpenChange={handleOpenChange}>
+    // modal keeps the list wheel-scrollable inside dialog scroll locks
+    <Popover open={open} onOpenChange={handleOpenChange} modal={true}>
       <PopoverTrigger asChild={true}>
         <SelectorTrigger
           value={value}
@@ -615,7 +625,7 @@ export function LocalRecipeModelSelector({
                 onClick={requestModelRefresh}
                 aria-label="Refresh local models"
               >
-                <RefreshCwIcon className="size-3.5" />
+                <RefreshGlyph className="size-3.5" />
               </Button>
             </div>
           </div>

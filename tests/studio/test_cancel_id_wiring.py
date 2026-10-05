@@ -13,10 +13,14 @@ from pathlib import Path
 
 
 WORKSPACE = Path(__file__).resolve().parents[2]
-MODELS_SRC = (WORKSPACE / "studio/backend/models/inference.py").read_text()
-ROUTES_SRC = (WORKSPACE / "studio/backend/routes/inference.py").read_text()
-ADAPTER_SRC = (WORKSPACE / "studio/frontend/src/features/chat/api/chat-adapter.ts").read_text()
-API_TYPES_SRC = (WORKSPACE / "studio/frontend/src/features/chat/types/api.ts").read_text()
+MODELS_SRC = (WORKSPACE / "studio/backend/models/inference.py").read_text(encoding = "utf-8")
+ROUTES_SRC = (WORKSPACE / "studio/backend/routes/inference.py").read_text(encoding = "utf-8")
+ADAPTER_SRC = (WORKSPACE / "studio/frontend/src/features/chat/api/chat-adapter.ts").read_text(
+    encoding = "utf-8"
+)
+API_TYPES_SRC = (WORKSPACE / "studio/frontend/src/features/chat/types/api.ts").read_text(
+    encoding = "utf-8"
+)
 
 
 def _find_class(tree: ast.AST, name: str) -> ast.ClassDef | None:
@@ -41,9 +45,9 @@ def test_chat_completion_request_has_cancel_id_field():
 
 
 def test_cancel_route_matches_cancel_id_exclusively_when_present():
-    # A stale POST with cancel_id AND session_id must not cancel a later run via
-    # session_id; the handler must early-return through an exclusive-cancel_id path
-    # (atomic helper, or a keys list with ONLY cancel_id).
+    # A stale POST with cancel_id AND session_id must not cancel a later run via session_id;
+    # the handler must early-return through an exclusive-cancel_id path (atomic helper, or a keys list with ONLY
+    # cancel_id).
     for node in ast.walk(ast.parse(ROUTES_SRC)):
         if isinstance(node, ast.AsyncFunctionDef) and node.name == "cancel_inference":
             break
@@ -125,8 +129,7 @@ def test_chat_adapter_sends_cancel_id_in_abort_cancel_post():
 
 
 def test_abort_cancel_post_uses_plain_fetch_with_manual_auth_header():
-    # authFetch redirects to login on 401, kicking the user out mid-stop if the
-    # token expired. Use plain fetch + manual Authorization for a best-effort cancel.
+    # authFetch redirects to login on 401, kicking the user out mid-stop if the token expired.
     start = ADAPTER_SRC.find("const onAbortCancel")
     assert start >= 0, "onAbortCancel handler missing"
     rest = ADAPTER_SRC[start:]

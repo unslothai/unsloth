@@ -97,7 +97,7 @@ export type RecipeExecutionRecord = {
   // biome-ignore lint/style/useNamingConvention: backend schema
   log_lines: string[];
   dataset: Record<string, unknown>[];
-  datasetTotal: number;
+  datasetTotal: number | null;
   datasetPage: number;
   datasetPageSize: number;
   analysis: RecipeExecutionAnalysis | null;

@@ -51,7 +51,7 @@ export function S3ConfigForm() {
         <p className="text-xs font-medium text-foreground">
           {t("studio.dataset.s3.title")}
         </p>
-        <p className="text-[10px] text-muted-foreground/80">
+        <p className="text-ui-10 text-muted-foreground/80">
           {t("studio.dataset.s3.description")}
         </p>
       </div>
@@ -115,6 +115,7 @@ export function S3ConfigForm() {
             </Label>
             <Input
               id="s3-access-key"
+              data-reload-snapshot-sensitive
               value={config.accessKeyId ?? ""}
               onChange={(e) => update({ accessKeyId: e.target.value })}
               placeholder={t("studio.dataset.s3.accessKeyIdPlaceholder")}

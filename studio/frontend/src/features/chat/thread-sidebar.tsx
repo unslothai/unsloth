@@ -1,7 +1,12 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { useState } from "react";
+import { useRef, useState } from "react";
+import {
+  imeOwnsInputKeydown,
+  inputImeHandlers,
+  newInputImeState,
+} from "@/features/chat/utils/composer-preferences";
 import {
   SidebarContent,
   SidebarFooter,
@@ -42,9 +47,11 @@ import {
   PencilEdit02Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
+import { isDownloadCancelled } from "@/lib/native-files";
 import { toast } from "sonner";
 import { useChatRuntimeStore } from "./stores/chat-runtime-store";
 import type { ChatView } from "./types";
+import { CONVERSATION_MARKDOWN_LABEL } from "./utils/conversation-markdown";
 import {
   deleteChatItem,
   renameChatItem,
@@ -53,10 +60,13 @@ import {
 import type { SidebarItem } from "./hooks/use-chat-sidebar-items";
 import {
   exportConversationRawJsonl,
+  exportConversationMessagesJsonl,
   exportConversationCsv,
   exportConversationShareGPT,
+  exportConversationMarkdown,
   exportBulkConversationsMerged,
   exportBulkConversationsSeparate,
+  COMBINED_EXPORT_FORMATS_LIST,
   EXPORT_FORMATS_LIST,
   type ConvExportFormat,
 } from "./prompt-storage/prompt-storage-dialog";
@@ -65,9 +75,11 @@ import {
 } from "./utils/chat-history-storage";
 
 const EXPORT_FORMATS = [
-  { label: "Raw JSONL", fn: exportConversationRawJsonl },
+  { label: "Training JSONL", fn: exportConversationRawJsonl },
+  { label: "Message JSONL", fn: exportConversationMessagesJsonl },
   { label: "CSV", fn: exportConversationCsv },
   { label: "ShareGPT JSONL", fn: exportConversationShareGPT },
+  { label: CONVERSATION_MARKDOWN_LABEL, fn: exportConversationMarkdown },
 ] as const;
 
 async function getThreadIdsForItem(item: SidebarItem): Promise<string[]> {
@@ -100,6 +112,7 @@ export function ThreadSidebar({
 
   const [renamingItem, setRenamingItem] = useState<SidebarItem | null>(null);
   const [renameDraft, setRenameDraft] = useState("");
+  const renameImeRef = useRef(newInputImeState());
 
   function viewForItem(item: SidebarItem): ChatView {
     return item.type === "single"
@@ -133,9 +146,13 @@ export function ThreadSidebar({
   ) {
     try {
       const ids = await getThreadIdsForItem(item);
-      await Promise.all(ids.map((id) => fn(id)));
-    } catch {
-      toast.error("Export failed.");
+      for (const id of ids) {
+        await fn(id);
+      }
+    } catch (error) {
+      if (!isDownloadCancelled(error)) {
+        toast.error("Export failed.");
+      }
     }
   }
 
@@ -162,8 +179,10 @@ export function ThreadSidebar({
       } else {
         await exportBulkConversationsSeparate(ids, fmt, basename);
       }
-    } catch {
-      toast.error("Export failed.");
+    } catch (error) {
+      if (!isDownloadCancelled(error)) {
+        toast.error("Export failed.");
+      }
     }
   }
 
@@ -184,7 +203,7 @@ export function ThreadSidebar({
               </SidebarMenuItem>
               {showCompare ? (
                 <SidebarMenuItem>
-                  <SidebarMenuButton data-tour="chat-compare" onClick={onNewCompare}>
+                  <SidebarMenuButton onClick={onNewCompare}>
                     <HugeiconsIcon icon={ColumnInsertIcon} />
                     <span>Compare</span>
                   </SidebarMenuButton>
@@ -214,7 +233,7 @@ export function ThreadSidebar({
                     Export Recents
                   </DropdownMenuSubTrigger>
                   <DropdownMenuSubContent avoidCollisions={false} className="w-52">
-                    {EXPORT_FORMATS_LIST.map(({ fmt, label }) => (
+                    {COMBINED_EXPORT_FORMATS_LIST.map(({ fmt, label }) => (
                       <DropdownMenuItem key={`r-m-${fmt}`} onSelect={() => void handleBulkExport("recents", fmt, true)}>
                         {label} — combined
                       </DropdownMenuItem>
@@ -233,7 +252,7 @@ export function ThreadSidebar({
                     Export Recents + Projects
                   </DropdownMenuSubTrigger>
                   <DropdownMenuSubContent avoidCollisions={false} className="w-52">
-                    {EXPORT_FORMATS_LIST.map(({ fmt, label }) => (
+                    {COMBINED_EXPORT_FORMATS_LIST.map(({ fmt, label }) => (
                       <DropdownMenuItem key={`a-m-${fmt}`} onSelect={() => void handleBulkExport("all", fmt, true)}>
                         {label} — combined
                       </DropdownMenuItem>
@@ -259,7 +278,7 @@ export function ThreadSidebar({
                   >
                     {item.isFork ? (
                       <span
-                        className="mr-1 rounded-sm bg-primary/10 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-primary"
+                        className="mr-1 rounded-sm bg-primary/10 px-1.5 py-0.5 text-ui-10 font-semibold uppercase tracking-wide text-primary"
                         title="Forked from another chat"
                       >
                         fork
@@ -339,14 +358,21 @@ export function ThreadSidebar({
 
       {/* Rename dialog */}
       <Dialog open={renamingItem !== null} onOpenChange={(open) => { if (!open) setRenamingItem(null); }}>
-        <DialogContent className="corner-squircle dialog-soft-surface sm:max-w-sm">
+        <DialogContent
+          className="corner-squircle dialog-soft-surface sm:max-w-sm"
+          onEscapeKeyDown={(e) => { if (e.isComposing || e.keyCode === 229) e.preventDefault(); }}
+        >
           <DialogHeader>
             <DialogTitle>Rename chat</DialogTitle>
           </DialogHeader>
           <Input
             value={renameDraft}
             onChange={(e) => setRenameDraft(e.target.value)}
-            onKeyDown={(e) => { if (e.key === "Enter") void commitRename(); }}
+            {...inputImeHandlers(renameImeRef.current)}
+            onKeyDown={(e) => {
+              if (imeOwnsInputKeydown(e, renameImeRef.current)) return;
+              if (e.key === "Enter") void commitRename();
+            }}
             autoFocus
           />
           <DialogFooter>
