@@ -538,8 +538,7 @@ def _swap_stays_denied(
     runs: bool,
     real_swap: bool = False,
 ) -> Path:
-    # An install on disk, a download that succeeds, and a swap whose rename stayed denied
-    # after the retries. real_swap runs the real _swap_into_place against a refused rename.
+    # real_swap runs the real _swap_into_place against a refused rename.
     install_dir = tmp_path / "node"
     install_dir.mkdir()
     M.write_metadata(install_dir, version = recorded, asset = "old", sha256 = "old")
@@ -555,8 +554,7 @@ def _swap_stays_denied(
 
     def reported_acl_denial(_extracted, _install_dir):
         exc = _oserror(5)
-        # A literal line, not _access_denied_recovery_lines: the parity cases below must also run
-        # against a module that predates it.
+        # Literal, so the parity cases also run against a module without the helper.
         exc._unsloth_acl_recovery_lines = [f'  takeown /F "{install_dir}" /R /D Y']
         raise exc
 
@@ -569,8 +567,7 @@ def _swap_stays_denied(
     real_os = M.os
 
     class _WindowsRenames:
-        # The module's own `os` only: setting the real os.name makes Path() build a WindowsPath,
-        # which main() does to resolve --install-dir, and that cannot be instantiated on Linux.
+        # Module-local only: a real os.name = "nt" makes Path() a WindowsPath, unusable on Linux.
         name = "nt"
 
         def __getattr__(self, attr):
@@ -579,7 +576,6 @@ def _swap_stays_denied(
         @staticmethod
         def replace(src, dst):
             if Path(src).is_dir():
-                # What Windows raises for ERROR_ACCESS_DENIED: PermissionError, errno 13, both paths.
                 exc = PermissionError(13, "Access is denied", str(src), None, str(dst))
                 exc.winerror = 5
                 raise exc
@@ -593,8 +589,6 @@ def _swap_stays_denied(
 def test_install_prebuilt_keeps_existing_when_a_reported_denial_blocks_the_swap(
     tmp_path: Path, monkeypatch, capsys
 ):
-    # A denial outlasting the retries must not fail setup over a Node that still runs: exit 0,
-    # on the line setup.ps1 and setup.sh match to relay the repair lines (#9928).
     install_dir = _swap_stays_denied(tmp_path, monkeypatch, recorded = "24.9.0", runs = True)
 
     rc = M.install_prebuilt(install_dir, channel = "pinned", min_major = 24, force = False)
@@ -617,7 +611,6 @@ def test_install_prebuilt_keeps_existing_when_a_reported_denial_blocks_the_swap(
 def test_install_prebuilt_reraises_a_reported_denial_it_cannot_keep_existing_through(
     tmp_path: Path, monkeypatch, runs, force, recorded_is_pinned
 ):
-    # Parity guard: a reported denial takes the same keep-existing check as any other failure.
     recorded = M.pinned_default_version(M.load_pins()) if recorded_is_pinned else "24.9.0"
     install_dir = _swap_stays_denied(tmp_path, monkeypatch, recorded = recorded, runs = runs)
 
@@ -630,8 +623,7 @@ def test_install_prebuilt_reraises_a_reported_denial_it_cannot_keep_existing_thr
 def test_a_denial_that_cannot_keep_node_leaves_the_repair_to_setup(
     tmp_path: Path, monkeypatch, capsys
 ):
-    # Exit 4 hands the denial to setup.ps1, which prints takeown/icacls for the refused path itself
-    # (#10533). Printing ours on this path as well gave the user two sets of repair commands.
+    # Exit 4: setup.ps1 prints its own repair (#10533); ours too would show two sets.
     install_dir = _swap_stays_denied(
         tmp_path, monkeypatch, recorded = "24.9.0", runs = False, real_swap = True
     )
@@ -646,8 +638,6 @@ def test_a_denial_that_cannot_keep_node_leaves_the_repair_to_setup(
 
 
 def test_a_kept_node_prints_the_repair_setup_relays(tmp_path: Path, monkeypatch, capsys):
-    # Exit 0 is the one path where nothing after the installer names a repair, so the lines print here,
-    # where setup.ps1 and setup.sh match `takeown /F` to relay them (#9928).
     install_dir = _swap_stays_denied(
         tmp_path, monkeypatch, recorded = "24.9.0", runs = True, real_swap = True
     )
@@ -1028,12 +1018,7 @@ def test_replace_gives_up_and_reports_the_real_error(monkeypatch, tmp_path):
 
 
 def test_replace_names_acl_recovery_when_access_denied_persists(monkeypatch, tmp_path, capsys):
-    """A WinError 5 that outlasts the budget names the ACL recovery (#9928).
-
-    _swap_into_place also moves an EXISTING install aside with this helper, and there
-    a 5 is as likely to be a corrupt ACL as a scanner -- which retrying cannot clear.
-    Swept with install_llama_prebuilt.py, which had the same message.
-    """
+    """A WinError 5 that outlasts the budget names the ACL recovery (#9928)."""
     source = tmp_path / "node"
     source.mkdir()
     monkeypatch.setattr(M.os, "name", "nt")
@@ -1051,13 +1036,11 @@ def test_replace_names_acl_recovery_when_access_denied_persists(monkeypatch, tmp
     assert any("elevated PowerShell" in line for line in recovery), recovery
     assert any(str(source) in line for line in recovery), recovery
     assert not any("takeown" in line and "icacls" in line for line in recovery), recovery
-    # Printed only by a caller that keeps the existing Node.
     assert "takeown" not in "".join(capsys.readouterr())
 
 
 def test_a_denied_marker_write_offers_no_repair_for_its_temp_file(monkeypatch, tmp_path, capsys):
-    # atomic_replace_from_tempfile shares the retry, but its source is a temp file about to be
-    # removed: repair lines naming it belong to _swap_into_place.
+    # The source is a temp file about to be removed: nothing to repair.
     monkeypatch.setattr(M.os, "name", "nt")
     monkeypatch.setattr(M.time, "sleep", lambda _s: None)
     monkeypatch.setattr(M.os, "replace", lambda s, d: (_ for _ in ()).throw(_oserror(5)))

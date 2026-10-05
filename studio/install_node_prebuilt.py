@@ -1015,19 +1015,14 @@ def existing_install_usable(install_dir: Path, host: HostInfo) -> bool:
     return npm_major is not None and npm_major >= NPM_MIN_MAJOR
 
 
-# ERROR_ACCESS_DENIED. Kept in the retry set -- a scanner does raise it right after
-# extraction -- but it is also what unreadable ACLs look like, and waiting never clears
-# those (#9928). Duplicated from install_llama_prebuilt.py rather than shared: this
-# module imports nothing but the stdlib on purpose, and mirrors that one by shape.
+# Retried (scanners raise it right after extraction), but unreadable ACLs raise it too (#9928).
 _ERROR_ACCESS_DENIED = 5
 
 
 def _access_denied_recovery_lines(paths: tuple[tuple[Path, bool], ...]) -> list[str]:
-    """What to print when a rename keeps failing with ``ERROR_ACCESS_DENIED``.
+    """Repair commands for a rename still failing with ``ERROR_ACCESS_DENIED``.
 
-    Mirrors the guidance ``install.ps1`` / ``studio/setup.ps1`` already emit for an
-    unreadable install tree. The two commands go on their own lines: joined, takeown
-    swallows the rest as arguments.
+    One command per line: joined, takeown swallows the rest as arguments.
     """
     lines = [
         "if this was not a scanner, the ACLs on one of these rename paths may be "
@@ -1035,8 +1030,7 @@ def _access_denied_recovery_lines(paths: tuple[tuple[Path, bool], ...]) -> list[
         "from an elevated PowerShell, restore access for each affected path, "
         "then run the install again:",
     ]
-    # A destination parent needs only its own ACL repaired; resetting it recursively
-    # would also rewrite unrelated sibling installs.
+    # Non-recursive for the parent: /R would rewrite sibling installs.
     for path, recursive in dict.fromkeys(paths):
         takeown_flags = " /R /D Y" if recursive else ""
         icacls_flags = " /T /C" if recursive else ""
@@ -1064,14 +1058,9 @@ def _replace_with_retry(
     second or two, so a bounded backoff turns the failure into a pause; other errors
     raise immediately rather than stalling on a real problem.
 
-    WinError 5 keeps that budget but is reported differently. ``_swap_into_place`` also
-    calls this to move an EXISTING install aside, and there a 5 is equally the signature
-    of a tree whose ACLs are unreadable -- a permission fault the retries cannot clear,
-    which naming a scanner sends the user away from (#9928). Only a caller that passes
-    ``access_denied_paths`` gets the repair lines: atomic_replace_from_tempfile renames a
-    temp file that is about to be removed, and there is nothing there to repair. They ride
-    on the error and print only if an existing Node is kept: otherwise main() exits 4 and
-    setup.ps1 prints its own repair for the refused path (#10533).
+    An exhausted WinError 5 may be an ACL fault, not a scanner (#9928): with
+    ``access_denied_paths`` the repair lines ride on the error, printed only if an existing
+    Node is kept (otherwise main() exits 4 and setup.ps1 prints its own, #10533).
     """
     delay = 0.25
     for attempt in range(attempts):
@@ -1252,7 +1241,6 @@ def install_prebuilt(install_dir: Path, *, channel: str, min_major: int, force: 
             if not force and not pin_mismatch and existing_install_usable(install_dir, host):
                 recovery = getattr(exc, "_unsloth_acl_recovery_lines", None)
                 if recovery:
-                    # The rename failed, not the download; setup relays these lines.
                     for line in recovery:
                         log(line)
                     log(

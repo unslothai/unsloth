@@ -1,11 +1,8 @@
 #!/bin/bash
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
-# install_node_prebuilt.py exits 0 when a failed update keeps a Node that still runs, and
-# logs "keeping existing isolated Node". setup.sh must report that rather than a fresh
-# install, and relay the takeown/icacls lines a denied rename printed (#9928), which it
-# otherwise shows only on a non-zero exit. Runs the real exit-handling block, extracted by
-# content anchors, against a stand-in installer.
+# setup.sh's Node exit handling (extracted from the real script) must report a kept Node
+# and relay its takeown/icacls lines on exit 0 (#9928).
 set -uo pipefail
 
 HERE="$(CDPATH= cd -P -- "$(dirname "$0")" && pwd -P)"

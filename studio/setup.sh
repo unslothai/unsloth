@@ -2254,8 +2254,7 @@ elif [ "$NODE_SOURCE" = bundled ]; then
         substep "install Node >= 20.19 (with npm >= 11) yourself and re-run, or check your network"
         setup_fail 1 "Could not install an isolated Node runtime"
     elif grep -Fq "keeping existing isolated Node" "$_NODE_LOG"; then
-        # Exit 0 can also mean the installer kept a Node that still runs after a failed update.
-        # A denied rename's takeown/icacls lines reach the user only from here.
+        # Exit 0 also covers a failed update that kept a working Node; relay any repair lines.
         if grep -Fq 'takeown /F' "$_NODE_LOG"; then
             sed 's/^/   | /' "$_NODE_LOG" >&2
         fi

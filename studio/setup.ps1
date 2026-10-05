@@ -5723,8 +5723,7 @@ if ($NeedNodeForSetup) {
             Write-StudioLine "        Install Node >= 20.19 (with npm >= 11) from https://nodejs.org/ and re-run, or check your network." -ForegroundColor Yellow
             Exit-SetupFailure "Could not install an isolated Node runtime"
         } elseif ($nodeOut -match "keeping existing isolated Node") {
-            # Exit 0 can also mean the installer kept a Node that still runs after a failed update.
-            # A denied rename's takeown/icacls lines reach the user only from here.
+            # Exit 0 also covers a failed update that kept a working Node; relay any repair lines.
             if ($nodeOut -match 'takeown /F') {
                 Write-StudioLine $nodeOut -ForegroundColor DarkGray
             }
@@ -9774,8 +9773,7 @@ if ($LocalLlamaCppSrc) {
             # A locked/in-use tree can silently survive removal (SilentlyContinue
             # masks it). Don't then junction/copy over a half-present dir; mirror the
             # prebuilt path's blocked-install handling and stop with a clear message.
-            # Denied counts as surviving: unreadable is not gone -- which is also why
-            # neither line may name a process as the cause (#9928).
+            # Denied counts as surviving (unreadable is not gone), so name no single cause (#9928).
             if ((Get-PathState -Path $LlamaCppDir) -ne "Absent") {
                 step "llama.cpp" "install blocked; existing install could not be replaced" "Yellow"
                 substep "Close Unsloth or other llama.cpp users, or repair the ACLs on $LlamaCppDir, then retry" "Yellow"
@@ -9948,9 +9946,7 @@ if ($LocalLlamaCppLinked) {
                 substep $installedRelease
             }
         } elseif ($prebuiltExit -eq 3) {
-            # Windows reports an in-use file and an unreadable ACL alike as WinError 5, so
-            # exit 3 cannot name one cause. Refer to repair lines only when the installer
-            # output actually carries them.
+            # WinError 5 is both an in-use file and an unreadable ACL: name ACLs only if repair lines were printed.
             step "llama.cpp" "install blocked; existing install could not be replaced" "Yellow"
             Write-LlamaFailureLog -Output $prebuiltOutput
             if (Test-Path -LiteralPath $LlamaCppDir) {

@@ -1,29 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 <#
-    Pester v5 unit tests for the "install blocked" reporting in studio/setup.ps1:
-    llama.cpp's exit 3, and a Node the installer kept because it could not be
-    replaced.
-
-    install_llama_prebuilt.py exits 3 when the existing install could not be
-    moved aside. On Windows that is WinError 5, which the OS raises both for a
-    file another process holds open and for a tree whose ACLs are unreadable --
-    is_busy_lock_error (studio/prebuilt_core.py) classifies 5 as busy for that
-    reason. Both setup.ps1 sites asserted the process cause anyway (#9928), and
-    the prebuilt site now names ACL repair only when the installer output carries
-    takeown lines.
-
-    Two sites, because the local-directory link path says in its own comment
-    that it mirrors the prebuilt path, and that "Denied counts as surviving:
-    unreadable is not gone" -- so it reaches the same message by the same route.
-
-    install_node_prebuilt.py keeps a Node that still runs when a denied rename
-    outlasts its retries, and exits 0. setup.ps1 prints the installer output only
-    on a non-zero exit, so the exit-0 arm is the one place those repair lines can
-    reach the user.
-
-    Source scan rather than execution: setup.ps1 is a top-level installer and
-    these branches only run after a genuinely blocked install.
+    Source scan of setup.ps1's "install blocked" reporting (#9928): llama.cpp exit 3
+    must not name a process (WinError 5 is also an unreadable ACL), and a Node kept
+    on exit 0 must relay the installer's repair lines.
 #>
 
 BeforeAll {
