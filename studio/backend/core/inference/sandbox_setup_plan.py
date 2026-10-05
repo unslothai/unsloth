@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass
 import os
+import re
 import shlex
 import shutil
 import subprocess
@@ -389,7 +390,8 @@ def powershell_command(steps) -> str:
     """What to paste into PowerShell (5.1 has no `&&`): one call-operator line per step."""
 
     def quote(arg: str) -> str:
-        return "'" + str(arg).replace("'", "''") + "'"
+        # PowerShell also ends a single-quoted string at a curly quote (about_Quoting_Rules).
+        return "'" + re.sub("(['‘’‚‛])", r"\1\1", str(arg)) + "'"
 
     return "\n".join("& " + " ".join(quote(arg) for arg in step) for step in steps)
 

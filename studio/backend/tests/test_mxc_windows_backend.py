@@ -640,12 +640,9 @@ def test_policy_mutation_is_refused_before_wxc_dispatch(monkeypatch):
         mxc_adapter.spawn(request)
 
 
-@pytest.mark.parametrize(
-    "dacl, grants, held", [(True, True, True), (True, False, False), (False, True, False)]
-)
-def test_a_launch_holds_the_read_grants_until_its_last_cleanup(
-    monkeypatch, tmp_path, dacl, grants, held
-):
+# Held with a switch off too: a deferred revocation or a switch turned on mid-build leaves entries it reads.
+@pytest.mark.parametrize("dacl, grants", [(True, True), (True, False), (False, True)])
+def test_a_launch_holds_the_read_grants_until_its_last_cleanup(monkeypatch, tmp_path, dacl, grants):
     from core.inference import sandbox_windows_mxc
 
     released = []
@@ -669,7 +666,7 @@ def test_a_launch_holds_the_read_grants_until_its_last_cleanup(
     prepared = sandbox_windows_mxc.prepare(_plan(tmp_path), capability)
     prepared.cleanup_callbacks.append(lambda: released.append("workload"))
     prepared.cleanup()
-    assert released == (["hold", "build", "workload", "grants"] if held else ["build", "workload"])
+    assert released == ["hold", "build", "workload", "grants"]
 
 
 def test_a_launch_that_fails_to_build_gives_its_grant_lease_back(monkeypatch, tmp_path):

@@ -540,13 +540,22 @@ def hold() -> WorkloadLease | None:
 
 
 def hold_if_needed() -> WorkloadLease | None:
-    """A lease for a DACL-tier launch or probe while the persistent grants are on, else None."""
+    """A lease for every MXC launch or probe, so no revocation runs under it.
+
+    Taken while a switch is off too: a revocation deferred for a running workload leaves the entries
+    in place (wxc-exec then skips its own grant), and a switch turned on before the request is built
+    installs them. Only a launch that needs the grants refuses when the lease cannot be recorded.
+    """
     from . import mxc_policy
 
     refresh_saved_switches()
-    if not (mxc_policy.dacl_fallback_enabled() and enabled()):
+    needed = mxc_policy.dacl_fallback_enabled() and enabled()
+    try:
+        return hold()
+    except ReadGrantError:
+        if needed:
+            raise
         return None
-    return hold()
 
 
 def refresh_saved_switches() -> None:

@@ -364,13 +364,42 @@ def test_a_lease_that_cannot_be_recorded_refuses_instead_of_running_unguarded(ho
 
 
 @pytest.mark.parametrize("dacl, grants", [(False, True), (True, False)])
-def test_no_lease_is_needed_while_either_switch_is_off(host, monkeypatch, dacl, grants):
+def test_a_lease_that_cannot_be_recorded_only_blocks_a_launch_that_needs_the_grants(
+    host, monkeypatch, dacl, grants
+):
     from core.inference import mxc_policy
 
+    def refuse():
+        raise mxc_read_grants.ReadGrantError("could not record")
+
+    monkeypatch.setattr(mxc_read_grants, "hold", refuse)
     monkeypatch.setattr(mxc_policy, "dacl_fallback_enabled", lambda: dacl)
     monkeypatch.setattr(mxc_read_grants, "enabled", lambda: grants)
-    monkeypatch.setattr(mxc_read_grants, "hold", lambda: pytest.fail("no lease needed"))
     assert mxc_read_grants.hold_if_needed() is None
+    monkeypatch.setattr(mxc_policy, "dacl_fallback_enabled", lambda: True)
+    monkeypatch.setattr(mxc_read_grants, "enabled", lambda: True)
+    with pytest.raises(mxc_read_grants.ReadGrantError):
+        mxc_read_grants.hold_if_needed()
+
+
+def test_a_launch_during_a_deferred_revocation_keeps_the_grants_until_it_exits(host, monkeypatch):
+    from core.inference import mxc_policy
+
+    switch = {"on": True}
+    monkeypatch.setattr(mxc_policy, "dacl_fallback_enabled", lambda: True)
+    monkeypatch.setattr(mxc_read_grants, "enabled", lambda: switch["on"])
+    monkeypatch.setattr(mxc_read_grants, "_lease_is_live", lambda path: path.exists())
+    venv = _runtime(host)
+    first = mxc_read_grants.hold_if_needed()
+    mxc_read_grants.ensure([venv])
+    switch["on"] = False  # the owner turns the grants off while the first call runs
+    assert mxc_read_grants.revoke_recorded() == ()
+    second = mxc_read_grants.hold_if_needed()  # starts while the entries are still in place
+    assert second is not None
+    first.release()
+    assert ("revoke", os.path.normcase(venv)) not in host.calls
+    second.release()
+    assert host.calls[-1] == ("revoke", os.path.normcase(venv))
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason = "Windows refuses to delete a file held open")
