@@ -151,6 +151,9 @@ function sanitizePersistedJob(
     value.scopedFiles.every((f) => typeof f === "string")
       ? { scopedFiles: value.scopedFiles as string[] }
       : {}),
+    ...(typeof value.revision === "string" && value.revision.trim()
+      ? { revision: value.revision.trim() }
+      : {}),
     ...(typeof value.checkpoint === "boolean"
       ? { checkpoint: value.checkpoint }
       : {}),
@@ -214,6 +217,7 @@ function toPersistedJob(
       ? { serverAttempt: job.serverAttempt }
       : {}),
     ...(job.scopedFiles !== undefined ? { scopedFiles: job.scopedFiles } : {}),
+    ...(job.revision !== undefined ? { revision: job.revision } : {}),
     ...(job.checkpoint !== undefined ? { checkpoint: job.checkpoint } : {}),
     ...(job.inventoryKind !== undefined
       ? { inventoryKind: job.inventoryKind }

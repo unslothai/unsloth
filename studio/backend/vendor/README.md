@@ -92,3 +92,17 @@ Replace `laya/` with the new wheel's `laya/` directory, copy its licence to `LIC
 `version`, `wheel`, `wheel_sha256` and the per-file hashes in `laya_manifest.json`. Then check every
 laya internal `laya_runtime.py` reaches into, and run `SYSTEMONE_TEST_LAYA=<snapshot> pytest
 tests/test_systemone.py`, which compares the fast path against `laya.Agent.predict`.
+
+## Cloudflare Clef (Apache-2.0)
+
+`clef/joint_schema_model.py` is byte-identical in both audited releases:
+
+- [Clef Flash](https://huggingface.co/Cloudflare/clef-flash/tree/17f0b0ad64efb65d273590632833508766b2aae6)
+- [Clef](https://huggingface.co/Cloudflare/clef/tree/2f3de3dd85f379784083b0814d997ab627200f0c)
+
+`clef_manifest.json` pins the source and `clef/LICENSE`, copied from Flash's
+Apache-2.0 release (neither release ships a NOTICE). `core/systemone/clef_worker.py`
+checks the source hash before loading it by file path in the owned child process.
+It supplies a UTF-8 Path shim without modifying the source; no snapshot Python or
+`trust_remote_code` is executed. Update the manifest and both model revision records
+together, then repeat the source audit and real joint-head text/image validation.

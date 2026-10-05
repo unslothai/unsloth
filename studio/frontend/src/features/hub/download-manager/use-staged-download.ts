@@ -26,6 +26,8 @@ export interface StagedDownloadEntry {
   bytes: number;
   ggufFilename?: string | null;
   checkpoint?: boolean;
+  /** Immutable commit SHA for a scoped file download. */
+  revision?: string | null;
   /** A GGUF quant fetched as the standard variant download, as Chat does: the backend's variant
    *  plan brings its companion files, and the row reads "<repo> · <quant>". `files` is unused. */
   ggufVariant?: string | null;
@@ -34,7 +36,7 @@ export interface StagedDownloadEntry {
 function entryKey(entry: StagedDownloadEntry): string {
   return entry.ggufVariant
     ? `${entry.repoId}|${entry.ggufVariant}`
-    : `${entry.repoId}|${[...entry.files].sort().join(",")}`;
+    : `${entry.repoId}|${entry.revision ?? ""}|${[...entry.files].sort().join(",")}`;
 }
 
 /** Runs a multi-repo download plan through the shared download manager, then calls `onReady` once every entry is on disk. Staging here rather than inside the load is what puts image and video downloads in the same panel, with the same progress, cancel, resume, disk preflight and manifest verification. */
@@ -131,6 +133,7 @@ export function useStagedDownload({
               inventoryKind: scopedDownloadInventoryKind(current.files),
               expectedBytes: current.bytes,
               scopeId,
+              ...(current.revision ? { revision: current.revision } : {}),
               files: current.files,
               checkpoint: current.checkpoint,
               skipXetNotice: laterEntry,

@@ -26,7 +26,7 @@ _MANIFESTS = {
     for path in sorted(_VENDOR.glob("*_manifest.json"))
 }
 _MANIFEST = _MANIFESTS["truststore"]
-_PACKAGES = {"truststore", "laya"}
+_PACKAGES = {"truststore", "laya", "clef"}
 
 # Everything the vendor directory is allowed to hold, beyond the packages themselves.
 _SIDECARS = {

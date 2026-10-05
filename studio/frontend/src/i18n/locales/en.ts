@@ -2610,6 +2610,8 @@ export const en = {
       decisionApi: {
         title: "Decision API",
         description: "Answer yes/no, multiple choice and score questions about text with a model on this machine or a decision model from Connections. Works with the TypeSafe SDK.",
+        descriptionClef:
+          "Answer yes/no, multiple choice and score questions about text and images with Clef on this machine. Works with the TypeSafe SDK.",
         enable: "Serve requests",
         enableDescription: "Serves /v1/systemone. Turning it on downloads the model.",
         enableRemoteDescription: "Serves /v1/systemone.",
@@ -2622,6 +2624,8 @@ export const en = {
         recommended: "Recommended",
         device: "Run on",
         deviceDescription: "GPU answers faster, but keeps its memory reserved until restart.",
+        clefDeviceDescription:
+          "GPU answers faster. Clef releases its memory on unload or after five idle minutes. Unload any resident chat, image or video model first.",
         deviceCpu: "CPU",
         deviceGpu: "GPU",
         checking: "Checking…",
@@ -2633,6 +2637,7 @@ export const en = {
         loadedOn: "Loaded on {device}",
         download: "Download",
         downloadConfirmTitle: "Download Laya {model}?",
+        downloadClefTitle: "Download {model}?",
         downloadConfirmBody:
           "The Decision API needs this model to answer requests. About {size}, fetched once into your Hugging Face cache.",
         unload: "Unload",

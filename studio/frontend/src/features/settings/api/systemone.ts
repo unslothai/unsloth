@@ -38,6 +38,7 @@ export type SystemOneConnection = {
 
 export type SystemOneDownloadPlan = {
   repo: string | null;
+  revision?: string | null;
   files: string[];
   sizeBytes: number;
   cached: boolean;
@@ -88,6 +89,7 @@ type ApiSystemOneSettings = {
 
 type ApiSystemOneDownloadPlan = {
   repo: string | null;
+  revision?: string | null;
   files: string[];
   // biome-ignore lint/style/useNamingConvention: API schema
   size_bytes: number;
@@ -234,6 +236,7 @@ export async function resolveSystemOneDownload(
   const plan = (await res.json()) as ApiSystemOneDownloadPlan;
   return {
     repo: plan.repo,
+    revision: plan.revision ?? null,
     files: plan.files,
     sizeBytes: plan.size_bytes,
     cached: plan.cached,

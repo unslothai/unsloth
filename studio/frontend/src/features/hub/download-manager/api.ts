@@ -70,6 +70,8 @@ export interface DownloadStartResult {
 export interface ActiveModelDownload {
   repo_id?: string;
   variant: string | null;
+  /** Immutable commit SHA for a scoped download; absent on older backends. */
+  revision?: string | null;
   transport?: TransportMode | null;
   // Set only on a Xet run that fell back to HTTP: stopping it still leaves a
   // restart-only partial, so this and not `transport` decides the stop control.
@@ -224,6 +226,8 @@ export async function startModelDownload(payload: {
   use_xet?: boolean;
   // A partial-by-design download of `files` only (see DownloadRequest.scopeId).
   scope_id?: string | null;
+  // Immutable commit SHA for a scoped download. Omitted keeps the default revision behavior.
+  revision?: string | null;
   files?: string[];
   transport_mode?: "auto" | "xet" | "http";
 }): Promise<DownloadStartResult & { job_key: string }> {

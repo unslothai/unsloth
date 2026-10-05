@@ -682,6 +682,7 @@ class SystemOneSettingsPayload(BaseModel):
 
 class SystemOneDownloadPlan(BaseModel):
     repo: Optional[str] = None
+    revision: Optional[str] = None
     files: list[str]
     size_bytes: int
     cached: bool
@@ -1455,11 +1456,11 @@ def update_helper_precache(
 
 
 def _systemone_response(request: Request) -> SystemOneSettingsResponse:
-    from core.systemone import catalog, laya_runtime
+    from core.systemone import catalog, runtime as decision_runtime
     from routes.systemone import MCP_PATH
 
     enabled = systemone_settings.get_enabled()
-    runtime = laya_runtime.status()
+    runtime = decision_runtime.status()
     model = catalog.default_checkpoint().name
     error = runtime["error"]
     if runtime["error_model"] not in (None, model):
@@ -1546,15 +1547,15 @@ async def update_systemone_settings(
 def _save_systemone_settings(
     payload: SystemOneSettingsPayload, request: Request
 ) -> SystemOneSettingsResponse:
-    from core.systemone import laya_runtime
+    from core.systemone import runtime as decision_runtime
     with _SYSTEMONE_SETTINGS_LOCK:
         _check_systemone_expectations(payload)
         values = _systemone_values(payload)
         if values:
             # The resident model was built from the old settings; drop it so the next request uses the new ones.
             try:
-                laya_runtime.unload()
-            except laya_runtime.Unavailable as exc:
+                decision_runtime.unload()
+            except decision_runtime.Unavailable as exc:
                 raise HTTPException(status_code = 409, detail = exc.message) from None
             systemone_settings.save(values)
     return _systemone_response(request)
@@ -1569,14 +1570,14 @@ async def validate_systemone_settings(
 
 
 def _validate_systemone_settings(payload: SystemOneSettingsPayload) -> None:
-    from core.systemone import laya_runtime
+    from core.systemone import runtime as decision_runtime
     with _SYSTEMONE_SETTINGS_LOCK:
         _check_systemone_expectations(payload)
         values = _systemone_values(payload)
         if values:
             try:
-                laya_runtime.ensure_can_unload()
-            except laya_runtime.Unavailable as exc:
+                decision_runtime.ensure_can_unload()
+            except decision_runtime.Unavailable as exc:
                 raise HTTPException(status_code = 409, detail = exc.message) from None
 
 
@@ -1602,11 +1603,13 @@ async def list_systemone_connections(
     ]
 
 
-@_owner_settings_router.get("/systemone/resolve", response_model = SystemOneDownloadPlan)
+@_owner_settings_router.get(
+    "/systemone/resolve", response_model = SystemOneDownloadPlan, response_model_exclude_unset = True
+)
 def resolve_systemone_download(
     model: Optional[str] = None, current_subject: str = Depends(get_current_subject)
 ) -> SystemOneDownloadPlan:
-    from core.systemone import catalog, laya_runtime
+    from core.systemone import catalog, runtime as decision_runtime
 
     checkpoint = (
         catalog.default_checkpoint()
@@ -1616,18 +1619,18 @@ def resolve_systemone_download(
     if checkpoint is None:
         raise HTTPException(status_code = 400, detail = "Unknown Decision API model.")
     if isinstance(checkpoint, catalog.Connection):
-        return SystemOneDownloadPlan(files = [], size_bytes = 0, cached = True)
-    return SystemOneDownloadPlan(**laya_runtime.download_plan(checkpoint))
+        return SystemOneDownloadPlan(repo = None, files = [], size_bytes = 0, cached = True, error = None)
+    return SystemOneDownloadPlan(**decision_runtime.download_plan(checkpoint))
 
 
 @_owner_settings_router.post("/systemone/unload", response_model = SystemOneSettingsResponse)
 def unload_systemone_model(
     request: Request, current_subject: str = Depends(get_current_subject)
 ) -> SystemOneSettingsResponse:
-    from core.systemone import laya_runtime
+    from core.systemone import runtime as decision_runtime
     try:
-        laya_runtime.unload()
-    except laya_runtime.Unavailable as exc:
+        decision_runtime.unload()
+    except decision_runtime.Unavailable as exc:
         raise HTTPException(status_code = 409, detail = exc.message) from None
     return _systemone_response(request)
 

@@ -24,7 +24,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from auth.authentication import get_current_subject, security
 from core.inference.external_provider import ExternalProviderClient
 from core.inference.providers import answers_decisions_only, validate_provider_base_url
-from core.systemone import catalog, laya_runtime
+from core.systemone import catalog, media, runtime as decision_runtime
 from routes.provider_credentials import provider_config_guard, resolve_provider_api_key_or_400
 from storage import providers_db
 from utils import systemone_settings
@@ -60,6 +60,7 @@ class SystemOneRequest(BaseModel):
     state: JSONContent
     model: str
     questions: dict[str, QuestionIn] = Field(min_length = 1)
+    images: Optional[list[str]] = None
 
 
 def _error(
@@ -151,7 +152,7 @@ async def system_one(
             "permission_error",
             "Keyless requests can only use the configured Decision API model; send an API key to pick another.",
         )
-    result = await _decide(checkpoint, payload.state, payload.questions)
+    result = await _decide(checkpoint, payload.state, payload.questions, payload.images)
     return JSONResponse(result, headers = {"x-typesafe-request-id": str(uuid4())})
 
 
@@ -168,7 +169,18 @@ async def _decide(
     checkpoint: catalog.Checkpoint | catalog.Connection,
     state: JSONContent,
     questions: dict[str, QuestionIn],
+    images: list[str] | None = None,
 ) -> dict:
+    try:
+        state, decoded_images = await asyncio.to_thread(
+            media.prepare, state, images, accepts_images = isinstance(checkpoint, catalog.ClefCheckpoint)
+        )
+    except media.InvalidMedia as exc:
+        raise _error(
+            400 if exc.unsupported else 422,
+            "api_usage_error" if exc.unsupported else "invalid_request_error",
+            str(exc),
+        ) from None
     if not questions:
         raise _error(422, "invalid_request_error", "At least one question is required")
     state_chars = (
@@ -191,14 +203,15 @@ async def _decide(
         )
     try:
         result = await run_in_threadpool(
-            laya_runtime.decide,
+            decision_runtime.decide,
             checkpoint,
             state,
             {name: q.model_dump() for name, q in questions.items()},
+            decoded_images,
         )
-    except laya_runtime.Unavailable as exc:
+    except decision_runtime.Unavailable as exc:
         raise _error(exc.status, exc.error_type, exc.message, exc.retry_after) from None
-    if result.pop("truncated"):
+    if result.pop("truncated", False):
         raise _error(
             422,
             "invalid_request_error",
@@ -305,7 +318,12 @@ def decision_model_objects() -> list[dict[str, Any]]:
             "id": name,
             "object": "model",
             "owned_by": "unsloth",
-            "architecture": {"input_modalities": ["text"], "output_modalities": ["decisions"]},
+            "architecture": {
+                "input_modalities": ["text", "image"]
+                if isinstance(catalog.resolve(name), catalog.ClefCheckpoint)
+                else ["text"],
+                "output_modalities": ["decisions"],
+            },
         }
         for name in (
             "default",

@@ -38,7 +38,6 @@ import { cn } from "@/lib/utils";
 import { TaskDone01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { type ReactElement, useEffect, useRef, useState } from "react";
-import { useSettingsDialogStore } from "../stores/settings-dialog-store";
 import {
   type SystemOneConnection,
   type SystemOneDevice,
@@ -51,6 +50,7 @@ import {
   updateSystemOneSettings,
   validateSystemOneSettings,
 } from "../api/systemone";
+import { useSettingsDialogStore } from "../stores/settings-dialog-store";
 import { SettingsRow } from "./settings-row";
 
 const DOWNLOAD_SCOPE = "systemone";
@@ -65,6 +65,15 @@ const ENV_DISABLE = "UNSLOTH_SYSTEMONE_DISABLE";
 const ENV_MODEL = "UNSLOTH_SYSTEMONE_MODEL";
 const ENV_DEVICE = "UNSLOTH_SYSTEMONE_DEVICE";
 
+function isClefModel(name: string | undefined): boolean {
+  return [
+    "clef",
+    "clef-flash",
+    "Cloudflare/clef",
+    "Cloudflare/clef-flash",
+  ].includes(name ?? "");
+}
+
 function deviceLabel(device: string | null): string {
   return device && device !== "cpu" ? "GPU" : "CPU";
 }
@@ -76,9 +85,9 @@ function errorMessage(error: unknown): string | null {
 export function DecisionApiSection(): ReactElement | null {
   const t = useT();
   const [settings, setSettings] = useState<SystemOneSettings | null>(null);
-  const [connections, setConnections] = useState<
-    SystemOneConnection[] | null
-  >(null);
+  const [connections, setConnections] = useState<SystemOneConnection[] | null>(
+    null,
+  );
   const [planState, setPlanState] = useState<{
     model: string;
     plan: SystemOneDownloadPlan;
@@ -120,7 +129,10 @@ export function DecisionApiSection(): ReactElement | null {
   useEffect(() => {
     if (scrollTarget !== "api-keys-decision-api" || !settings) return;
     const frame = window.requestAnimationFrame(() => {
-      sectionRef.current?.scrollIntoView({ block: "start", behavior: "smooth" });
+      sectionRef.current?.scrollIntoView({
+        block: "start",
+        behavior: "smooth",
+      });
       useSettingsDialogStore
         .getState()
         .consumeScrollTarget("api-keys-decision-api");
@@ -162,6 +174,8 @@ export function DecisionApiSection(): ReactElement | null {
   const modelLabel = (name: string) => {
     const option = connections?.find((c) => c.name === name);
     if (option) return `${option.provider} · ${option.model}`;
+    if (name === "clef-flash") return "Clef Flash · 9B";
+    if (name === "clef") return "Clef · 27B";
     return MODEL_LABELS[name] ? t(MODEL_LABELS[name]) : name;
   };
 
@@ -188,6 +202,7 @@ export function DecisionApiSection(): ReactElement | null {
       const outcome = await downloadManager.requestStart({
         kind: DOWNLOAD_KIND.MODEL,
         repoId: next.repo,
+        revision: next.revision ?? undefined,
         variant: scopedVariant(DOWNLOAD_SCOPE),
         scopeId: DOWNLOAD_SCOPE,
         files: next.files,
@@ -298,6 +313,7 @@ export function DecisionApiSection(): ReactElement | null {
     }
   };
 
+  const isClef = isClefModel(settings?.model);
   const header = (
     <>
       <div className="flex items-start gap-3 bg-muted/30 p-4">
@@ -312,7 +328,11 @@ export function DecisionApiSection(): ReactElement | null {
             {t("settings.apiKeys.decisionApi.title")}
           </h2>
           <p className="text-xs text-muted-foreground leading-relaxed">
-            {t("settings.apiKeys.decisionApi.description")}
+            {t(
+              isClef
+                ? "settings.apiKeys.decisionApi.descriptionClef"
+                : "settings.apiKeys.decisionApi.description",
+            )}
           </p>
         </div>
       </div>
@@ -381,14 +401,14 @@ export function DecisionApiSection(): ReactElement | null {
   } else if (!plan.cached && plan.error) {
     tone = "error";
     status = plan.error;
-  } else if (!plan.cached) {
+  } else if (plan.cached) {
+    tone = "ready";
+    status = t("settings.apiKeys.decisionApi.downloaded");
+  } else {
     status = t("settings.apiKeys.decisionApi.notDownloaded", {
       size: formatBytes(sizeBytes),
     });
     action = "download";
-  } else {
-    tone = "ready";
-    status = t("settings.apiKeys.decisionApi.downloaded");
   }
 
   return (
@@ -495,7 +515,9 @@ export function DecisionApiSection(): ReactElement | null {
                   title={isRemote ? modelLabel(settings.model) : undefined}
                 >
                   <SelectValue className="min-w-0">
-                    <span className="truncate">{modelLabel(settings.model)}</span>
+                    <span className="truncate">
+                      {modelLabel(settings.model)}
+                    </span>
                   </SelectValue>
                 </SelectTrigger>
                 <SelectContent>
@@ -539,6 +561,12 @@ export function DecisionApiSection(): ReactElement | null {
           </div>
         </SettingsRow>
 
+        {current ? (
+          <p className="pb-3 text-xs text-muted-foreground leading-relaxed">
+            {current.description}
+          </p>
+        ) : null}
+
         {isRemote ? null : (
           <SettingsRow
             label={t("settings.apiKeys.decisionApi.device")}
@@ -547,7 +575,11 @@ export function DecisionApiSection(): ReactElement | null {
                 ? t("settings.apiKeys.decisionApi.lockedByEnv", {
                     name: ENV_DEVICE,
                   })
-                : t("settings.apiKeys.decisionApi.deviceDescription")
+                : t(
+                    isClef
+                      ? "settings.apiKeys.decisionApi.clefDeviceDescription"
+                      : "settings.apiKeys.decisionApi.deviceDescription",
+                  )
             }
           >
             <Select
@@ -605,9 +637,12 @@ export function DecisionApiSection(): ReactElement | null {
               <HugeiconsIcon icon={TaskDone01Icon} strokeWidth={1.75} />
             </AlertDialogMedia>
             <AlertDialogTitle>
-              {t("settings.apiKeys.decisionApi.downloadConfirmTitle", {
-                model: modelLabel(confirm?.model ?? settings.model),
-              })}
+              {t(
+                isClefModel(confirm?.model)
+                  ? "settings.apiKeys.decisionApi.downloadClefTitle"
+                  : "settings.apiKeys.decisionApi.downloadConfirmTitle",
+                { model: modelLabel(confirm?.model ?? settings.model) },
+              )}
             </AlertDialogTitle>
             <AlertDialogDescription>
               {t("settings.apiKeys.decisionApi.downloadConfirmBody", {

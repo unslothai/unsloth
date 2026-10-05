@@ -39,7 +39,10 @@ _SKIPPED_DIRS = ("node_modules", "build", "tests", "__pycache__")
 # Vendored packages kept byte-identical to their wheel and pinned by per-file hashes
 # (vendor/README.md), mapped to the loader that gives their modules a UTF-8 `open`. They are
 # fixed there, not in place; test_vendored_laya_reads_utf8_config_under_a_non_utf8_locale checks it.
-_UTF8_BY_LOADER = {"vendor/laya": "core/systemone/laya_runtime.py"}
+_UTF8_BY_LOADER = {
+    "vendor/laya": "core/systemone/laya_runtime.py",
+    "vendor/clef": "core/systemone/clef_worker.py",
+}
 
 # Path.open()'s signature is what tells it apart from other libraries' open(),
 # e.g. fitz.open(stream=...) and av.open(..., metadata_errors=...).
@@ -871,3 +874,19 @@ def test_vendored_laya_reads_utf8_config_under_a_non_utf8_locale(tmp_path):
     repaired = json.loads(config.read_text(encoding = "utf-8"))
     assert repaired["tokenizer_class"] == "PreTrainedTokenizerFast"
     assert repaired["extra_special_tokens"] == {"extra_0": "ä", "extra_1": "世"}
+
+
+def test_clef_path_shim_reads_utf8_under_a_non_utf8_locale(tmp_path):
+    config = tmp_path / "joint_head_config.json"
+    config.write_text('{"label": "ä 世"}', encoding = "utf-8")
+    code = (
+        "import json, sys; from core.systemone.clef_worker import _UTF8Path; "
+        "assert json.loads(_UTF8Path(sys.argv[1]).read_text())['label'] == '\\u00e4 \\u4e16'"
+    )
+    env = dict(os.environ, LC_ALL = "C", PYTHONUTF8 = "0", PYTHONCOERCECLOCALE = "0")
+    env["PYTHONPATH"] = str(BACKEND_ROOT)
+    run = subprocess.run(
+        [sys.executable, "-c", code, str(config)], env = env,
+        capture_output = True, text = True, encoding = "utf-8", timeout = 30,
+    )
+    assert run.returncode == 0, run.stderr[-3000:]

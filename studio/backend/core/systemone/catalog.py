@@ -25,6 +25,30 @@ class Checkpoint:
         return Path(self.source).expanduser().is_dir()
 
 
+@dataclass(frozen = True)
+class ClefCheckpoint(Checkpoint):
+    """Audited joint-schema model, including its vision backbone and separate head."""
+
+    revision: str = ""
+    files: tuple[str, ...] = ()
+
+
+def _clef_files(shards: int) -> tuple[str, ...]:
+    return (
+        "config.json",
+        "generation_config.json",
+        "joint_head_config.json",
+        "joint_head.safetensors",
+        "model.safetensors.index.json",
+        "processor_config.json",
+        "tokenizer.json",
+        "tokenizer_config.json",
+        "chat_template.jinja",
+        "LICENSE",
+        *(f"model-{i:05d}-of-{shards:05d}.safetensors" for i in range(1, shards + 1)),
+    )
+
+
 CHECKPOINTS = {
     c.name: c
     for c in (
@@ -48,6 +72,24 @@ CHECKPOINTS = {
             "typed-decisions",
             "Laya English fine-tuned on four typed-decision workflows, 1024-token context.",
             846_195_716,
+        ),
+        ClefCheckpoint(
+            "clef-flash",
+            "Cloudflare/clef-flash",
+            None,
+            "Clef Flash · 9B · text and images. About 20 GB GPU memory or 40 GB CPU RAM (slow). Video and audio are not served.",
+            19_083_200_000,
+            "17f0b0ad64efb65d273590632833508766b2aae6",
+            _clef_files(4),
+        ),
+        ClefCheckpoint(
+            "clef",
+            "Cloudflare/clef",
+            None,
+            "Clef · 27B · text and images. About 56 GB GPU memory or 112 GB CPU RAM (slow). Video and audio are not served.",
+            54_989_600_000,
+            "2f3de3dd85f379784083b0814d997ab627200f0c",
+            _clef_files(12),
         ),
     )
 }
@@ -105,6 +147,11 @@ def default_checkpoint() -> Checkpoint | Connection:
     configured = get_model()
     if configured in CHECKPOINTS:
         return CHECKPOINTS[configured]
+    if clef := next(
+        (c for c in CHECKPOINTS.values() if isinstance(c, ClefCheckpoint) and c.source == configured),
+        None,
+    ):
+        return clef
     if connection := parse_connection(configured):
         return connection
     subfolder = os.environ.get("UNSLOTH_SYSTEMONE_SUBFOLDER", "").strip() or None
@@ -118,4 +165,7 @@ def resolve(model: str) -> Checkpoint | Connection | None:
     if name == LOCAL_NAME or name.startswith(CONNECTION_PREFIX):
         checkpoint = default_checkpoint()
         return checkpoint if checkpoint.name == name else None
-    return CHECKPOINTS.get(name)
+    return CHECKPOINTS.get(name) or next(
+        (c for c in CHECKPOINTS.values() if isinstance(c, ClefCheckpoint) and c.source == name),
+        None,
+    )

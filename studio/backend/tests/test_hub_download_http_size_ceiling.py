@@ -632,7 +632,12 @@ def test_filling_the_cache_evicts_one_entry_not_all_of_them(monkeypatch):
         dl._repo_siblings("model", f"org/r{i}", None)
 
     assert len(dl._REPO_SIBLINGS) == dl._REPO_SIBLINGS_MAX
-    assert ("model", "org/r0", dl.hf_cache_scan.token_fingerprint(None)) not in dl._REPO_SIBLINGS
+    assert (
+        "model",
+        "org/r0",
+        dl.hf_cache_scan.token_fingerprint(None),
+        "",
+    ) not in dl._REPO_SIBLINGS
 
 
 def test_the_http_rung_stays_closed_when_the_refresh_fails(monkeypatch, tmp_path):

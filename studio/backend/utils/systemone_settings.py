@@ -121,6 +121,18 @@ def validate(
     local = parse_connection(get_model() if model is None else model) is None
     if serving and local and (reason := runtime_unavailable_reason()):
         raise ValueError(reason)
+    if serving and local:
+        from core.systemone.catalog import ClefCheckpoint, default_checkpoint
+        checkpoint = default_checkpoint() if model is None else CHECKPOINTS.get(model)
+        if isinstance(checkpoint, ClefCheckpoint):
+            from importlib.metadata import PackageNotFoundError, version
+            from packaging.version import Version
+            try:
+                supported = Version(version("transformers")) >= Version("5.5.0")
+            except PackageNotFoundError:
+                supported = False
+            if not supported:
+                raise ValueError("Clef needs Transformers 5.5.0 or newer. Update Studio before enabling it.")
     return values
 
 
