@@ -304,7 +304,8 @@ def retire_failed_capture(
     reference and graph, and kept as an empty husk like the rest."""
     begun_elsewhere = exc is not None and "already recording" in str(exc)
     ended_here = False if begun_elsewhere else _abandon_capture_pool(pool)
-    _heal_generators()
+    if not begun_elsewhere:  # the generators then belong to the other thread's live capture
+        _heal_generators()
     if not ended_here and not begun_elsewhere:
         try:
             graph.reset()
