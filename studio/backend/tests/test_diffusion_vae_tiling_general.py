@@ -226,9 +226,9 @@ def test_kl_vae_takes_the_wide_tiles_for_an_edge_sliver():
     assert vt.stock_layout_ok(vt.stock_tiles(vae), 100, 100) is False
     stock_err, wide_err = _line_error(stock, untiled), _line_error(wide, untiled)
     assert wide_err < stock_err / 3, (stock_err, wide_err)
-    # two 58-latent tiles per side with the stock 16-latent overlap (116 decoded latents), not two 64s (128) or the
-    # stock 64 + 48 + 4 (116, plus a sliver tile)
-    assert vae._unsloth_last_decode_tile[:2] == (58, 58)
+    # two 60-latent tiles per side (120 decoded latents, as many as the stock 64 + 52 + 4, in 2 calls instead of 3),
+    # not two 64s with a 28-latent overlap (128)
+    assert vae._unsloth_last_decode_tile[:2] == (60, 60)
 
 
 def test_kl_encode_is_untouched_and_qwen_image_encode_is_wide():
@@ -362,26 +362,37 @@ def _stock_decoded(length, tile, overlap):
 
 
 @pytest.mark.parametrize("length", list(range(129, 420)))
-def test_large_floor_tiles_never_decode_more_than_stock(length):
-    """FLUX.1 / SDXL / FLUX.2 sliver sizes: before, the floor kept 128-latent tiles and spread them (two 128s with a
-    56-latent overlap on a 200-latent side, 7% more decode than stock and 9% slower). Now the fewest tiles of the
-    smallest side >= 32 that still overlap by 32 (two 116s): never more decoded latents than stock, never a sliver,
-    and never a larger tile than the 128-latent one the planner budgets."""
+@pytest.mark.parametrize("max_area", [None, 23_200, 10**6])
+def test_large_floor_tiles_never_decode_more_than_stock(length, max_area):
+    """FLUX.1 / SDXL / FLUX.2 sliver sizes. Before, the floor kept 128-latent tiles and spread them (two 128s with a
+    56-latent overlap on a 200-latent side: 7% more decode than stock, 9% slower). Now, per side, no more decoded
+    latents than the stock loop (up to rounding where only the smallest covering side exists), fewer decoder calls,
+    no sliver, every overlap >= 32, and the widest tile that allows (two 120s on a 200-latent side)."""
     if vt.stock_layout_ok((128, 32), length, length):
         return  # no sliver: these sizes decode through the stock tiles
-    th, tw = vt.choose_tiles(length, length, None, 128, 32)
-    # within the floor tile's area (what the planner budgets), every side >= 32 latents
-    assert th * tw <= 128 * 128 and min(th, tw) >= vt.TILE_LATENTS
+    th, tw = vt.choose_tiles(length, length, max_area, 128, 32, 128)
+    assert th * tw <= max(max_area or 0, 128 * 128) and min(th, tw) >= vt.TILE_LATENTS
     stock_calls = len(range(0, length, 96))
+    span = _stock_decoded(length, 128, 32)
     for side in (th, tw):
         starts = vt.tile_starts(length, side, 32)
         assert starts[0] == 0 and starts[-1] + side == length or starts == [0]
         assert all(b + 32 <= a + side for a, b in zip(starts, starts[1:]))
-        # fewer decoder calls than stock (no sliver tile) and, up to rounding to equal tiles, no more latents
         assert len(starts) < stock_calls
-        assert len(starts) * side <= _stock_decoded(length, 128, 32) + len(starts) - 1
+        assert len(starts) * side <= span + len(starts) - 1
     if length == 200:
-        assert (th, tw) == (116, 116) and vt.tile_starts(200, 116, 32) == [0, 84]
+        assert (th, tw) == {None: (120, 120), 23_200: (116, 200), 10**6: (200, 200)}[max_area]
+        if max_area is None:
+            assert vt.tile_starts(200, 120, 32) == [0, 80]
+
+
+def test_qwen_family_layout_ignores_the_large_stock_rule():
+    """Only a VAE whose stock tile is the floor tile takes the stock-work rule; the 32-latent floor VAEs keep #12696's
+    fewest-latents choice whatever stock tile is passed."""
+    for length in (64, 100, 128, 166, 256):
+        for area in (None, 1500, 4000, 10**6):
+            assert vt.choose_tiles(length, length, area) == vt.choose_tiles(length, length, area, 32, 16, 16)
+            assert vt.choose_tiles(length, length, area) == vt.choose_tiles(length, length, area, 32, 16, 32)
 
 
 @pytest.mark.parametrize("length", list(range(1, 400)))

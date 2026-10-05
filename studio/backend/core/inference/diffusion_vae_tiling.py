@@ -193,21 +193,63 @@ def _axis_tiles(
     return side if side < length else None
 
 
+def _stock_span(length: int, tile: int, overlap: int) -> int:
+    """Latents diffusers' stock loop decodes along one side: a tile every ``tile - overlap``, the last cut short."""
+    if length <= tile:
+        return length
+    return sum(min(tile, length - s) for s in range(0, length, tile - overlap))
+
+
+def _large_stock_sides(length: int, tile: int, overlap: int) -> list[int]:
+    """Candidate sides along one axis for a VAE whose stock tile is the floor tile (AutoencoderKL, FLUX.2): for each
+    tile count, the smallest side that covers ``length`` and the widest that still decodes no more latents than the
+    stock loop (more context per tile: closer to untiled, same work)."""
+    if length <= tile:
+        return [length]
+    span = _stock_span(length, tile, overlap)
+    out = {length}
+    for n in range(2, len(tile_starts(length, tile, overlap)) + 1):
+        low = _axis_tiles(length, n, TILE_LATENTS, overlap)
+        if low is None:
+            continue
+        out.add(low)
+        for side in range(min(span // n, length - 1), low, -1):
+            if len(tile_starts(length, side, overlap)) * side <= span:
+                out.add(side)
+                break
+    return sorted(out)
+
+
 def choose_tiles(
     height: int,
     width: int,
     max_area: Optional[int],
     tile: int = TILE_LATENTS,
     overlap: int = OVERLAP_LATENTS,
+    stock_tile: int = 0,
 ) -> tuple[int, int]:
-    """Tile (height, width) in latents: the fewest decoded latents (overlaps counted) whose tile area fits
-    ``max_area``. A canvas that fits decodes untiled. With no room for more, the floor tile area (32x32 unless the
-    VAE's own tiles are larger) as the planner budgets; a side may then shrink to 32 latents when that covers the
-    canvas in fewer latents (two 116-latent tiles for a 200-latent side of a 128-latent VAE, not two 128s with a
-    56-latent overlap), so the floor never decodes more than it must."""
+    """Tile (height, width) in latents whose area fits ``max_area``. With no room for more, the floor tile area (32x32
+    unless the VAE's own tiles are larger) as the planner budgets. A canvas that fits decodes untiled.
+
+    Where the stock tiles are smaller than the floor (Qwen-Image, Qwen-Image-2.1, HunyuanImage): the fewest decoded
+    latents, overlaps counted. Where the stock tile is the floor tile (``stock_tile >= tile``: AutoencoderKL, FLUX.2,
+    which take this path only for an edge sliver): the fewest decoder calls, then the largest tile, among layouts that
+    decode no more latents per side than the stock loop, so the wide tiles are never slower than stock and keep as
+    much context per tile as that allows (two 120-latent tiles on a 1600 px side, not the stock 128 + 104 + 8)."""
     floor = (min(tile, height), min(tile, width))
     if max_area is None or max_area <= floor[0] * floor[1]:
         max_area = floor[0] * floor[1]
+    if stock_tile >= tile > TILE_LATENTS:
+        best, best_key = None, None
+        for th in _large_stock_sides(height, tile, overlap):
+            for tw in _large_stock_sides(width, tile, overlap):
+                if th * tw > max_area:
+                    continue
+                key = (len(tile_starts(height, th, overlap)) * len(tile_starts(width, tw, overlap)), -th * tw)
+                if best_key is None or key < best_key:
+                    best, best_key = (th, tw), key
+        if best is not None:
+            return best
     side_min = min(tile, TILE_LATENTS)
     best, best_cost = floor, None
     # never more tiles per side than the floor tile needs; fewer tiles may be narrower than the floor tile
@@ -315,7 +357,8 @@ def tiled_decode(
     ratio, tile, overlap = _geometry(vae)
     if max_area == "auto":
         max_area = decode_tile_budget(vae, z)
-    th, tw = choose_tiles(height, width, max_area, tile, overlap)
+    stock_tile = vae.__dict__.get("_unsloth_wide_stock_tile") or (stock_tiles(vae) or (0, 0))[0]
+    th, tw = choose_tiles(height, width, max_area, tile, overlap, stock_tile)
     vae._unsloth_last_decode_tile = (th, tw, max_area)
     hs = tile_starts(height, th, overlap)
     ws = tile_starts(width, tw, overlap)
