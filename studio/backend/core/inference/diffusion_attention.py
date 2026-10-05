@@ -24,6 +24,7 @@ Attention is bandwidth-bound, so a better kernel is a real win orthogonal to wei
   sage   - SageAttention 2 (INT8 QK); quantized, small quality cost. A pip SageAttention 2 when installed, else the
            kernels-community build from the Hugging Face kernels hub (``sage_hub``, Ampere / Ada / Hopper).
   xformers / aiter - memory-efficient (NVIDIA) / AITER (AMD ROCm).
+  flash on ROCm - only when the DAO-AILab ROCm build imports and passes an on-card check; ``auto`` stays native.
 
 Best-effort: an unavailable backend falls back to the diffusers default. torch/diffusers lazy.
 """
@@ -264,8 +265,10 @@ def select_attention_backend(
             if getattr(target, "device", None) == "cuda" and not _is_cuda_nvidia(target):
                 return backend
             return None
-        # cuDNN / flash* / sage are CUDA+NVIDIA-only; elsewhere the first generation crashes.
+        # cuDNN / flash* / sage are CUDA+NVIDIA-only (elsewhere the first generation crashes), except verified ROCm FA2.
         if not _is_cuda_nvidia(target):
+            if backend == "flash" and _is_cuda_rocm(target) and _rocm_flash_attn_runs(target):
+                return backend
             return None
         # An arch-gated kernel (flash3/flash4) on a card that can't run it sets fine then crashes.
         if not _backend_arch_supported(backend):
@@ -276,7 +279,98 @@ def select_attention_backend(
         return backend
     if speed_active and _is_cuda_nvidia(target) and _cudnn_attention_supported():
         return "_native_cudnn"
+    if speed_active and ROCM_AUTO_FLASH and _is_cuda_rocm(target) and _rocm_flash_attn_runs(target):
+        return "flash"
     return None
+
+
+def _is_cuda_rocm(target: Any) -> bool:
+    return getattr(target, "device", None) == "cuda" and not _is_cuda_nvidia(target)
+
+
+# ``auto`` -> verified ROCm flash under a speed profile. Off: gfx1151 gains over AOTriton SDPA were too small/narrow.
+ROCM_AUTO_FLASH = False
+
+# Max abs error of the probe's flash_attn output against an fp32 reference (bf16 eps is ~4e-3).
+_ROCM_FLASH_PROBE_TOL = 2e-2
+# (device, dtype) -> whether flash_attn ran and matched. Only answers are cached; an unaskable probe is retried.
+_ROCM_FLASH_PROBE_CACHE: dict[tuple[str, str], bool] = {}
+_ROCM_FLASH_MISSING_LOGGED: list[bool] = []
+
+_ROCM_FLASH_HINT = (
+    "the PyPI flash-attn wheel is the NVIDIA CUDA build; on ROCm install the DAO-AILab flash-attention ROCm build "
+    "(github.com/Dao-AILab/flash-attention, CK backend, or FLASH_ATTENTION_TRITON_AMD_ENABLE=TRUE for Triton) "
+    "or use attention_backend=aiter"
+)
+
+
+def _module_logger() -> Any:
+    try:
+        from loggers import get_logger
+        return get_logger(__name__)
+    except Exception:  # noqa: BLE001
+        import logging
+        return logging.getLogger(__name__)
+
+
+def _run_rocm_flash_probe(device: str, dtype: Any) -> bool:
+    """Tiny ``flash_attn_func`` on ``device`` vs an fp32 reference; False when it raises or disagrees."""
+    import torch
+    from flash_attn import flash_attn_func
+
+    if dtype not in (torch.float16, torch.bfloat16):
+        # diffusers' flash backend is half precision only, and the CK build raises on fp32 at the first call
+        if dtype is not None:
+            return False
+        dtype = torch.bfloat16
+    gen = torch.Generator().manual_seed(0)
+    q, k, v = (torch.randn((1, 128, 2, 64), generator = gen).to(device, dtype) for _ in range(3))
+    try:
+        out = flash_attn_func(q, k, v)
+        torch.cuda.synchronize(device)
+    except torch.cuda.OutOfMemoryError:
+        raise
+    except Exception:  # noqa: BLE001 - no kernel for this arch is the answer
+        return False
+    qf, kf, vf = (t.float().transpose(1, 2) for t in (q, k, v))
+    ref = torch.softmax(qf @ kf.transpose(-1, -2) * qf.shape[-1] ** -0.5, dim = -1) @ vf
+    err = (out.float() - ref.transpose(1, 2)).abs().max()
+    return bool(torch.isfinite(err).item() and err.item() <= _ROCM_FLASH_PROBE_TOL)
+
+
+def _rocm_flash_attn_runs(target: Any) -> bool:
+    """True only when flash_attn imports and its kernel ran and matched on this ROCm card at this dtype."""
+    device = _indexed_cuda_device(
+        str(getattr(target, "torch_device", None) or getattr(target, "device", None) or "")
+    )
+    dtype = getattr(target, "dtype", None)
+    key = (device, str(dtype))
+    cached = _ROCM_FLASH_PROBE_CACHE.get(key)
+    if cached is not None:
+        return cached
+    try:
+        import flash_attn  # noqa: F401
+    except Exception as exc:  # noqa: BLE001
+        if not _ROCM_FLASH_MISSING_LOGGED:
+            _ROCM_FLASH_MISSING_LOGGED.append(True)
+            _module_logger().warning(
+                "diffusion.attention: flash requested on ROCm but flash_attn is not importable (%s); %s. "
+                "Using the default backend",
+                exc,
+                _ROCM_FLASH_HINT,
+            )
+        return False
+    try:
+        ok = _run_rocm_flash_probe(device, dtype)
+    except Exception:  # noqa: BLE001 - OOM / device trouble: no answer, keep native this time
+        return False
+    if not ok:
+        _module_logger().warning(
+            "diffusion.attention: flash_attn did not run or did not match SDPA on %s (%s); using the default backend",
+            device,
+            dtype,
+        )
+    return _ROCM_FLASH_PROBE_CACHE.setdefault(key, ok)
 
 
 def _cudnn_attention_supported() -> bool:
@@ -479,7 +573,7 @@ _SAGE_OP_LOCK = threading.Lock()
 
 
 def _sage_custom_op(sage_fn: Any, op_name: str = _SAGE_OP_NAME) -> Optional[Any]:
-    """An opaque ``torch.library`` op around diffusers' sage function (NHD), or None."""
+    """An opaque ``torch.library`` op around a diffusers attention function (NHD), or None. Used for Sage and FA4."""
     with _SAGE_OP_LOCK:
         slot = _SAGE_OPS.setdefault(op_name, {})
         if "op" in slot:
@@ -618,9 +712,16 @@ def _note_fa4_reroute(reason: str) -> None:
     _note_reroute("FlashAttention 4", reason, _FA4_ROUTED, _FA4_ROUTED_LOGGED)
 
 
+# The hub FA4 launch (CuTe DSL, tvm-ffi) breaks a fullgraph compile 5 times per Flux block: keep it opaque, like Sage.
+_FA4_OP_NAME = "unsloth_studio::flash_4_hub_attention_nhd"
+
+
 def _install_fa4_dispatch_guard() -> bool:
     return _install_dispatch_guard(
-        "flash_4_hub", lambda *a: _fa4_reroute_reason(*a), _note_fa4_reroute
+        "flash_4_hub",
+        lambda *a: _fa4_reroute_reason(*a),
+        _note_fa4_reroute,
+        lambda fn: _sage_custom_op(fn, _FA4_OP_NAME),
     )
 
 
@@ -1368,6 +1469,18 @@ def _ensure_backend_package(backend: str, logger: Any = None) -> Optional[str]:
             return None
     except Exception:  # noqa: BLE001 - a broken install probes as missing; try the install
         pass
+    # PyPI flash-attn is the CUDA build: never pip it onto a ROCm torch. Policy, so no _INSTALL_ATTEMPTED record.
+    if backend == "flash" and _torch_is_rocm():
+        reason = "flash-attn on PyPI is the NVIDIA CUDA build"
+        if logger is not None:
+            logger.warning(
+                "diffusion.attention: not installing %s for backend=%s on ROCm: %s; %s. Using the default backend",
+                package,
+                backend,
+                reason,
+                _ROCM_FLASH_HINT,
+            )
+        return reason
     # XFormers ships a compiled extension tied to one exact (torch, CUDA) pair, so the name `xformers` is not a safe
     # thing to hand pip: PyPI serves only the CUDA-12.8 build and --no-deps below stops pip from ever reading its
     # `Requires-Dist: torch==X`. Resolve the matching wheel URL instead, and REFUSE when there is none -- like the
@@ -1448,6 +1561,16 @@ def _ensure_backend_package(backend: str, logger: Any = None) -> Optional[str]:
                     _redacted_for_log(str(exc)),
                 )
     return None
+
+
+def _torch_is_rocm() -> bool:
+    try:
+        import torch
+
+        from core._torchao_stub import _module_is_rocm
+        return _module_is_rocm(torch)
+    except Exception:  # noqa: BLE001
+        return False
 
 
 def _attention_dits(pipe: Any) -> list:
@@ -1611,6 +1734,14 @@ def apply_attention_backend(
                 if too_old and logger is not None:
                     logger.info("diffusion.attention: ignoring %s", too_old)
                 backend = _sage_hub_backend(pipe, target, logger)
+        # Re-verify at the dtype the pipeline runs in: selection may have seen the pre-promotion (fp16) dtype.
+        if (
+            backend == "flash"
+            and target is not None
+            and _is_cuda_rocm(target)
+            and not _rocm_flash_attn_runs(target)
+        ):
+            backend = None
         if (
             backend == "_native_cudnn"
             and target is not None

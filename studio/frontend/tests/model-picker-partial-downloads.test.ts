@@ -427,7 +427,7 @@ test("the partial repo delete says it removes the repo, because it does", () => 
 });
 
 test("a partial pick carries no load identity", () => {
-  // The Chat-to-Audio route has no isDownloaded field: audio-page.tsx infers it from the
+  // The Chat-to-Audio route has no isDownloaded field: the Audio handoff infers it from the
   // forwarded loadId. A loadId names a revision already on disk, so sending one for a torn
   // snapshot told that page the weights were there and skipped the download.
   assert.equal(
@@ -446,7 +446,7 @@ test("a partial pick carries no load identity", () => {
     "the variant select still drops it the same way",
   );
   // What made the omission load bearing, in the page that reads it.
-  const audio = read("../src/features/audio/audio-page.tsx");
+  const audio = read("../src/features/audio/hooks/use-audio-handoff.ts");
   assert.match(
     audio,
     /isDownloaded: routeSearch\.loadId\n?\s*\? true/,
