@@ -3,21 +3,10 @@
 
 """Fused RoPE and AdaLN modulation Triton kernels for the FLUX DiT on ROCm (bf16 / fp16).
 
-Stock diffusers runs both as chains of small elementwise kernels: ``apply_rotary_emb`` (FLUX.1 and FLUX.2) upcasts q / k
-to float32, builds the rotated copy with ``stack`` and does two products and an add; ``AdaLayerNormZero`` /
-``AdaLayerNormZeroSingle`` / ``AdaLayerNormContinuous`` run ``layer_norm``, ``1 + scale``, a product and an add. On a
-bandwidth-bound APU (gfx1151) each pass re-reads the activation. Here each is one kernel:
-
-* RoPE: the kernel in ``diffusion_flux2_rope`` (float32 math, FMA contraction off, one rounding), bit-identical to stock.
-* AdaLN: LayerNorm statistics in float32, then the stock rounding chain (normalised value, ``1 + scale``, product and
-  sum each rounded to the activation dtype), so the only difference to stock is the order of the row reduction (a
-  1-ULP flip on a small fraction of elements, checked in the tests).
-
-Scope: diffusers ``transformer_flux`` / ``transformer_flux2`` loads, inference only (no grad), never while compiling
-(a compiled block keeps the stock code). Every call that does not match the kernel's preconditions runs the forward
-that was live at install. Switches: ``UNSLOTH_DIFFUSION_FUSED_ROPE=auto|0|1`` (``auto`` = ROCm only, so NVIDIA is
-untouched unless forced on) and ``UNSLOTH_DIFFUSION_FUSED_ADALN=auto|0|1`` (``auto`` = off everywhere: on gfx1151 it
-bought no speed and is not bit-identical, so it is opt-in).
+RoPE reuses ``diffusion_flux2_rope``'s kernel (bit-identical to stock). AdaLN keeps stock's rounding chain; only the
+row-reduction order differs. Inference only, never while compiling; any ineligible call runs the forward live at
+install. ``UNSLOTH_DIFFUSION_FUSED_ROPE=auto|0|1`` (auto = ROCm only), ``UNSLOTH_DIFFUSION_FUSED_ADALN=auto|0|1``
+(auto = off: no gfx1151 speedup and not bit-identical).
 """
 
 from __future__ import annotations
@@ -39,11 +28,8 @@ _ADALN_CLASSES = ("AdaLayerNormZero", "AdaLayerNormZeroSingle", "AdaLayerNormCon
 _MAX_D = 16384
 
 _LOCK = threading.Lock()
-# module name -> stock apply_rotary_emb
 _ROPE_STOCK: dict = {}
-# class -> forward that was live at install
 _ADALN_PREV: dict = {}
-# engagement evidence for tests and the A/B harness
 COUNTS = {"rope_fused": 0, "rope_stock": 0, "adaln_fused": 0, "adaln_stock": 0}
 
 
@@ -64,9 +50,7 @@ def _is_rocm() -> bool:
     return bool(getattr(torch.version, "hip", None))
 
 
-# What "auto" turns on, per switch. Measured on gfx1151 (FLUX.2-klein-4B, 1024^2, 4 steps): fused RoPE alone takes the
-# render from 8.76 to 8.09 s, pixel-identical to stock; adding fused AdaLN changes nothing in speed (8.07 s) and moves
-# pixels (PSNR 34-45 dB vs stock, LPIPS 0.004), so AdaLN is opt-in only.
+# gfx1151 klein 1024^2: RoPE 8.76 -> 8.09 s pixel-identical; AdaLN adds no speed and moves pixels (LPIPS 0.004).
 _AUTO_ON = {FUSED_ROPE_ENV: True, FUSED_ADALN_ENV: False}
 
 
@@ -96,7 +80,6 @@ def wanted(
 # ----------------------------------------------------------------------------------------------------------------- RoPE
 @functools.lru_cache(maxsize = 1)
 def _rope_kernel() -> Optional[Callable]:
-    """The bit-identical interleaved RoPE kernel (dtype generic: float32 math, stores the input dtype)."""
     from .diffusion_flux2_rope import _kernel
     return _kernel()
 
@@ -169,7 +152,7 @@ def _make_rope(module_name: str) -> Callable:
     return _fused_apply_rotary_emb
 
 
-# module name -> stock, survives uninstall so a forward that looked up the patch just before teardown still works
+# Survives uninstall so a forward that looked up the patch just before teardown still reaches stock.
 _ROPE_ORIGINAL: dict = {}
 _ROPE_FNS: dict = {m: _make_rope(m) for m in _MODULES}
 
@@ -213,7 +196,6 @@ def uninstall_rope() -> None:
 # ----------------------------------------------------------------------------------------------------------------- AdaLN
 @functools.lru_cache(maxsize = 1)
 def _adaln_kernel() -> Optional[Callable]:
-    """None when Triton is unavailable."""
     try:
         import triton
         import triton.language as tl
@@ -443,8 +425,7 @@ def install_adaln(dtype: Any, device: Any = "cuda") -> int:
     with _LOCK:
         for name, cls in classes.items():
             live = cls.forward
-            # The stock body must still be what the fused forward reimplements. When Studio's eager addcmul patch is
-            # live, it was fingerprinted against the same stock body at its own install, so it stands in.
+            # Studio's eager addcmul patch was fingerprinted against the same stock body at its own install.
             ours = (getattr(live, "__module__", "") or "").endswith("diffusion_eager_patches")
             if not ours and not _stock_body_ok(cls, name):
                 continue
@@ -469,7 +450,7 @@ def install_for_pipe(
     device: Any = "cuda",
     logger: Any = None,
 ) -> dict:
-    """Install for a FLUX.1 / FLUX.2 denoiser, otherwise restore stock. Returns what engaged."""
+    """Install for a FLUX.1 / FLUX.2 denoiser, otherwise restore stock."""
     transformer = getattr(pipe, "transformer", None)
     module_name = type(transformer).__module__ if transformer is not None else ""
     if module_name not in _MODULES:
