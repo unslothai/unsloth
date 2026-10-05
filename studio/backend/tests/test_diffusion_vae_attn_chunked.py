@@ -90,6 +90,29 @@ def test_mode_bounds_the_score_tile(rocm):
     torch.testing.assert_close(out, ref, atol = 1e-5, rtol = 1e-5)
 
 
+def test_mode_chunks_keyword_calls(rocm):
+    q = torch.randn(1, 1, 512, 32)
+    with _math():
+        ref = F.scaled_dot_product_attention(q, q, q, scale = 0.2)
+        mode = C.chunked_attention_mode(512 * 512 * 4 // 8)
+        with mode:
+            # the call shape of diffusers' native dispatch_attention_fn
+            out = F.scaled_dot_product_attention(
+                query = q,
+                key = q,
+                value = q,
+                attn_mask = None,
+                dropout_p = 0.0,
+                is_causal = False,
+                scale = 0.2,
+                enable_gqa = False,
+            )
+            mixed = F.scaled_dot_product_attention(q, key = q, value = q, scale = 0.2)
+    assert mode.chunked == 2
+    torch.testing.assert_close(out, ref, atol = 1e-5, rtol = 1e-5)
+    torch.testing.assert_close(mixed, ref, atol = 1e-5, rtol = 1e-5)
+
+
 def test_mode_leaves_fused_small_masked_and_causal_calls_alone(monkeypatch):
     calls = []
     real = C.chunked_sdpa

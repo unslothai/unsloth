@@ -98,10 +98,16 @@ def chunked_sdpa(
 
 def _plain_call(args: tuple, kwargs: dict) -> Optional[tuple]:
     """(q, k, v, scale) for an unmasked, dropout-free, non-causal, non-GQA call; else None."""
-    if len(args) < 3 or len(args) > 4:
+    if len(args) > 4:
         return None
-    q, k, v = args[:3]
     extra = dict(kwargs)
+    # diffusers' dispatch_attention_fn passes query= / key= / value= by keyword
+    qkv = list(args[:3])
+    for name in ("query", "key", "value")[len(qkv) :]:
+        if name not in extra:
+            return None
+        qkv.append(extra.pop(name))
+    q, k, v = qkv
     if len(args) == 4:
         extra["attn_mask"] = args[3]
     scale = extra.pop("scale", None)
