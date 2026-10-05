@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
+import copy
 import json
 import math
 import sys
@@ -647,3 +648,178 @@ def test_rope_parameters_build_the_trained_rope_on_every_transformers(tmp_path):
     outputs = [model.eval()(input_ids = ids).last_hidden_state for model in (saved, both, default)]
     torch.testing.assert_close(outputs[0], outputs[1])
     assert not torch.allclose(outputs[0], outputs[2], atol = 1e-2)
+
+
+TINY_QWEN3_5 = "trl-internal-testing/tiny-Qwen3_5ForConditionalGeneration"
+CLEF_HEAD = {
+    "hidden_size": 16,
+    "width": 32,
+    "routing_layers": 1,
+    "layers": 1,
+    "heads": 4,
+    "feedforward": 64,
+}
+
+
+def _clef_reference():
+    from huggingface_hub import hf_hub_download
+
+    try:
+        path = hf_hub_download("Cloudflare/clef-flash", "joint_schema_model.py")
+    except Exception as exc:
+        pytest.skip(f"Clef reference code unavailable: {exc}")
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("clef_reference", path)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module, path
+
+
+@pytest.fixture
+def clef_checkpoint(tmp_path):
+    import shutil
+
+    from safetensors.torch import save_file
+    from transformers import AutoProcessor, Qwen3_5ForConditionalGeneration
+
+    from unsloth.models.clef import JointSchemaHead
+
+    reference, path = _clef_reference()
+    folder = tmp_path / "clef"
+    torch.manual_seed(0)
+    Qwen3_5ForConditionalGeneration.from_pretrained(
+        TINY_QWEN3_5, dtype = torch.bfloat16
+    ).save_pretrained(str(folder))
+    AutoProcessor.from_pretrained(TINY_QWEN3_5).save_pretrained(str(folder))
+    head = JointSchemaHead(**CLEF_HEAD)
+    with torch.no_grad():
+        for param in head.parameters():
+            param.add_(torch.randn_like(param) * 0.1)
+    save_file(
+        {k: v.to(torch.bfloat16).contiguous() for k, v in head.state_dict().items()},
+        str(folder / "joint_head.safetensors"),
+    )
+    (folder / "joint_head_config.json").write_text(json.dumps(CLEF_HEAD))
+    shutil.copyfile(path, folder / "joint_schema_model.py")
+    return folder
+
+
+def _clef_rows(n):
+    rows = [_row(i) for i in range(n)]
+    for row in rows:
+        row["questions"] = {
+            **QUESTIONS,
+            "tags": {"type": "choice", "criteria": ["billing", "outage", "other"]},
+        }
+        row["gold"]["tags"] = row["gold"]["team"]["label"]
+    return rows
+
+
+def test_clef_encoding_is_token_identical_to_cloudflares():
+    from transformers import AutoTokenizer
+
+    from unsloth.models.clef import encode_record
+
+    reference, _ = _clef_reference()
+    tokenizer = AutoTokenizer.from_pretrained(TINY_QWEN3_5)
+    for record in (
+        {"state": {"invoice": {"total": 1250.0, "vendor": "Acmé"}}, "questions": QUESTIONS},
+        {"state": "plain text", "questions": {"x": {"type": "noul", "criteria": {"true": "yes"}}}},
+        {
+            "state": "s" * 500,
+            "questions": {"lvl": {"type": "score", "instructions": "", "criteria": [1, "b"]}},
+        },
+    ):
+        for max_length in (100, 400, 16384):
+            if max_length == 100:
+                with pytest.raises(ValueError):
+                    reference.encode_record(tokenizer, record, max_length = max_length)
+                with pytest.raises(ValueError):
+                    encode_record(tokenizer, record, max_length = max_length)
+                continue
+            ours = encode_record(tokenizer, record, max_length = max_length)
+            theirs = reference.encode_record(tokenizer, record, max_length = max_length)
+            assert ours.input_ids == theirs.input_ids
+            assert [
+                (q.question_id, q.question_type, q.question_span, q.option_spans, q.option_ids)
+                for q in ours.questions
+            ] == [
+                (q.question_id, q.question_type, q.question_span, q.option_spans, q.option_ids)
+                for q in theirs.questions
+            ]
+
+
+def test_clef_loads_scores_like_cloudflares_model_and_trains(clef_checkpoint, tmp_path):
+    reference, _ = _clef_reference()
+    model, processor = FastDecisionModel.from_pretrained(str(clef_checkpoint), max_seq_length = 512)
+    assert getattr(model, "is_clef", False) and model.head.hidden_norm.weight.dtype == torch.float32
+    device = next(model.parameters()).device
+    backbone_dtype = next(model.encoder.parameters()).dtype
+    released, _ = reference.load_release_model(
+        str(clef_checkpoint), device = device, dtype = backbone_dtype
+    )
+    record = {"state": "the server is down again", "questions": QUESTIONS}
+    encoded = reference.encode_record(processor.tokenizer, record)
+    batch = reference.collate_records([encoded], processor.tokenizer.pad_token_id, device)
+    with torch.no_grad():
+        theirs = [z.float() for z in released(batch)[0]]
+        ours, _ = model(batch["input_ids"], batch["attention_mask"], batch["records"])
+        fp32_head = model.head
+        model.head = copy.deepcopy(fp32_head).to(backbone_dtype)
+        ours_same_dtype, _ = model(batch["input_ids"], batch["attention_mask"], batch["records"])
+        model.head = fp32_head
+    for row, z in enumerate(theirs):
+        assert torch.allclose(ours_same_dtype[row, : len(z)].float(), z, atol = 2e-2, rtol = 2e-2)
+        assert torch.allclose(ours[row, : len(z)].float(), z, atol = 0.1)
+
+    items, report = FastDecisionModel.build_dataset(_clef_rows(64), processor, model)
+    assert report["skipped"] == 0 and len(items) == 64 and len(items[0]["targets"]) == 4
+    train, holdout = FastDecisionModel.split_holdout(items, fraction = 0.25)
+    assert sum(len(i["labels"]) for i in holdout) <= 64
+    before = FastDecisionModel.evaluate(model, processor, holdout)
+    model = FastDecisionModel.get_peft_model(model, r = 8, lora_alpha = 8)
+    losses = []
+
+    class Losses(TrainerCallback):
+        def on_log(
+            self,
+            args,
+            state,
+            control,
+            logs = None,
+            **kwargs,
+        ):
+            if logs and "loss" in logs:
+                losses.append(logs["loss"])
+
+    trainer = DecisionTrainer(
+        model = model,
+        tokenizer = processor,
+        train_dataset = train,
+        args = _args(tmp_path, max_steps = 30, learning_rate = 5e-3, logging_steps = 1),
+        head_learning_rate = 5e-3,
+        callbacks = [Losses()],
+    )
+    trainer.train()
+    after = FastDecisionModel.evaluate(model, processor, holdout)
+    assert min(losses[-5:]) < losses[0] and after["loss"] < before["loss"]
+    calibration = FastDecisionModel.calibrate(model, processor, holdout)
+    assert "accuracy" in calibration
+
+    model.save_pretrained_merged(str(tmp_path / "out"))
+    assert (tmp_path / "out" / "joint_schema_model.py").is_file()
+    reloaded, _ = FastDecisionModel.from_pretrained(str(tmp_path / "out"), max_seq_length = 512)
+    assert reloaded.decision_config["temperature"] == model.decision_config["temperature"]
+    released, _ = reference.load_release_model(
+        str(tmp_path / "out"), device = device, dtype = torch.float32
+    )
+    with torch.no_grad():
+        trained, _ = model(batch["input_ids"], batch["attention_mask"], batch["records"])
+        again, _ = reloaded(batch["input_ids"], batch["attention_mask"], batch["records"])
+        theirs = released(batch)[0]
+    # Saved in bf16, so the reload rounds the trained weights.
+    assert torch.allclose(trained, again, atol = 0.05)
+    for row, z in enumerate(theirs):
+        assert int(z.argmax()) == int(again[row, : len(z)].argmax())

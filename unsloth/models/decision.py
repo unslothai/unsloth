@@ -39,6 +39,10 @@ HEAD_LEARNING_RATE = 1e-4
 QUESTION_TYPES = ("choice", "score", "noul")
 _FILES = ("rl_agent_config.json", "model.safetensors")
 _DIRS = ("encoder", "tokenizer")
+_CLEF_HEAD_FILES = ("joint_head.safetensors", "joint_head_config.json")
+# Copied next to a saved Clef fine-tune so Cloudflare's own loader and chat template keep working.
+_CLEF_EXTRA_FILES = ("joint_schema_model.py", "chat_template.jinja", "LICENSE")
+CLEF_MAX_LEN = 4096
 # laya 0.3.5 ships inside Unsloth for Studio's Decision API (studio/backend/vendor/README.md).
 _VENDORED_LAYA = (
     Path(__file__).resolve().parents[2] / "studio" / "backend" / "vendor" / "laya" / "__init__.py"
@@ -74,9 +78,16 @@ def _laya():
 
 def is_decision_checkpoint(folder) -> bool:
     folder = Path(folder)
-    return all((folder / name).is_file() for name in _FILES) and all(
-        (folder / name).is_dir() for name in _DIRS
+    return is_clef_checkpoint(folder) or (
+        all((folder / name).is_file() for name in _FILES)
+        and all((folder / name).is_dir() for name in _DIRS)
     )
+
+
+def is_clef_checkpoint(folder) -> bool:
+    # Cloudflare's Clef layout: a Qwen3.5 backbone plus a joint schema head.
+    folder = Path(folder)
+    return all((folder / name).is_file() for name in ("config.json", *_CLEF_HEAD_FILES))
 
 
 def _checkpoint_folder(model_name, subfolder, token, revision, local_files_only) -> Path:
@@ -89,21 +100,28 @@ def _checkpoint_folder(model_name, subfolder, token, revision, local_files_only)
         except ImportError:
             from huggingface_hub import snapshot_download
         prefix = f"{subfolder}/" if subfolder else ""
+        download = functools.partial(
+            snapshot_download,
+            model_name,
+            token = token,
+            revision = revision,
+            local_files_only = local_files_only,
+        )
+        # Laya repos hold several checkpoints in subfolders, so only the asked one is fetched.
         root = Path(
-            snapshot_download(
-                model_name,
-                token = token,
-                revision = revision,
-                local_files_only = local_files_only,
-                allow_patterns = [prefix + name for name in _FILES]
-                + [f"{prefix}{name}/*" for name in _DIRS],
+            download(
+                allow_patterns = [prefix + name for name in (*_FILES, _CLEF_HEAD_FILES[1])]
+                + [f"{prefix}{name}/*" for name in _DIRS]
             )
         )
+        if (root / prefix / _CLEF_HEAD_FILES[1]).is_file():
+            root = Path(download(allow_patterns = [prefix + "*"]))
     folder = root / subfolder if subfolder else root
     if not is_decision_checkpoint(folder):
         raise ValueError(
             f"Unsloth: {folder} is not a decision model checkpoint "
-            "(rl_agent_config.json, model.safetensors, encoder/ and tokenizer/)."
+            "(rl_agent_config.json, model.safetensors, encoder/ and tokenizer/, "
+            "or a Clef backbone with joint_head.safetensors and joint_head_config.json)."
         )
     return folder
 
@@ -207,7 +225,10 @@ def _label(kind: str, label):
 
 
 def _target(internal: dict, gold) -> tuple:
-    kind, keys = internal["t"], _option_keys(internal)
+    return _target_for(internal["t"], _option_keys(internal), gold)
+
+
+def _target_for(kind: str, keys: list, gold) -> tuple:
     if not isinstance(gold, dict):
         gold = {"label": gold}
     label = _label(kind, gold.get("label"))
@@ -265,6 +286,327 @@ class DecisionDataCollator:
         return batch
 
 
+class ClefDataCollator:
+    # One row per record: every question of the record is scored jointly, as Clef serves them.
+    def __init__(self, pad_token_id: int):
+        self.pad_token_id = pad_token_id
+
+    def __call__(self, items: list) -> dict:
+        rows, length = len(items), max(len(item["input_ids"]) for item in items)
+        targets = [target for item in items for target in item["targets"]]
+        options = max(len(target) for target in targets)
+        batch = {
+            "input_ids": torch.full((rows, length), self.pad_token_id, dtype = torch.long),
+            "attention_mask": torch.zeros((rows, length), dtype = torch.long),
+            "records": [item["record"] for item in items],
+            "marker_mask": torch.zeros((len(targets), options), dtype = torch.bool),
+            "target": torch.zeros((len(targets), options), dtype = torch.float32),
+        }
+        for i, item in enumerate(items):
+            batch["input_ids"][i, : len(item["input_ids"])] = torch.tensor(item["input_ids"])
+            batch["attention_mask"][i, : len(item["input_ids"])] = 1
+        for i, target in enumerate(targets):
+            batch["marker_mask"][i, : len(target)] = True
+            batch["target"][i, : len(target)] = torch.tensor(target)
+        return batch
+
+
+class ClefDecisionModel(torch.nn.Module):
+    # `encoder` is the Qwen3.5 backbone, named like Laya's so the trainer treats both alike.
+    is_clef = True
+
+    def __init__(self, encoder, head):
+        super().__init__()
+        self.encoder = encoder
+        self.head = head
+
+    def _backbone(self):
+        return (
+            self.encoder.get_base_model()
+            if hasattr(self.encoder, "get_base_model")
+            else self.encoder
+        )
+
+    def forward(self, input_ids, attention_mask, records, **kwargs):
+        backbone = self._backbone()
+        text_model = backbone.model
+        text_model = getattr(text_model, "language_model", text_model)
+        hidden = text_model(
+            input_ids = input_ids,
+            attention_mask = attention_mask,
+            use_cache = False,
+            return_dict = True,
+        ).last_hidden_state
+        logits = self.head(
+            hidden,
+            input_ids,
+            attention_mask,
+            records,
+            backbone.get_output_embeddings().weight.detach(),
+        )
+        flat = [question for record in logits for question in record]
+        padded = torch.full(
+            (len(flat), max(len(z) for z in flat)), -1e4, dtype = flat[0].dtype, device = flat[0].device
+        )
+        for i, z in enumerate(flat):
+            padded[i, : len(z)] = z
+        return padded, None
+
+
+def _clef_question(question) -> dict:
+    if not isinstance(question, dict) or question.get("type") not in QUESTION_TYPES:
+        raise DecisionDataError("is not a valid question")
+    kind, criteria = question["type"], question.get("criteria")
+    if kind == "choice":
+        if isinstance(criteria, list) and criteria and all(isinstance(c, str) for c in criteria):
+            criteria = dict.fromkeys(criteria)
+        if not (isinstance(criteria, dict) and criteria):
+            raise DecisionDataError("needs criteria naming its options")
+        if len({str(key) for key in criteria}) != len(criteria):
+            raise DecisionDataError("has repeated options")
+    if kind == "score" and not (isinstance(criteria, list) and criteria):
+        raise DecisionDataError("needs a list of criteria levels")
+    if kind == "noul" and criteria is not None:
+        if not isinstance(criteria, dict) or set(criteria) - {"true", "false"}:
+            raise DecisionDataError('criteria may only have "true" and "false"')
+    clef_question = {"type": kind, "instructions": question.get("instructions")}
+    if criteria is not None:
+        clef_question["criteria"] = criteria
+    return clef_question
+
+
+def _clef_items(rows, tokenizer, max_len, validate, report, skip) -> list:
+    from .clef import QUESTION_TYPES as CLEF_TYPES, encode_record, question_options
+
+    tokenizer = getattr(tokenizer, "tokenizer", tokenizer)
+    items = []
+    for index, row in enumerate(rows):
+        row = row if isinstance(row, dict) else {}
+        state = _parsed(row.get("state"))
+        questions = _parsed(row.get("questions"))
+        gold = _parsed(row["gold"] if row.get("gold") is not None else row.get("answers"))
+        if state is None or not isinstance(questions, dict) or not isinstance(gold, dict):
+            report["total"] += 1
+            skip(index, "needs state, questions and gold")
+            continue
+        kept, targets, labels = {}, [], []
+        for name, question in questions.items():
+            report["total"] += 1
+            if name not in gold:
+                skip(index, "has no gold", name)
+                continue
+            try:
+                if validate is not None:
+                    validate(name, question)
+                clef_question = _clef_question(question)
+                keys = [key for key, _ in question_options(clef_question)]
+                target, label = _target_for(clef_question["type"], keys, _parsed(gold[name]))
+            except (TypeError, ValueError, KeyError) as exc:
+                skip(index, str(exc) or "is not a valid question", name)
+                continue
+            kept[str(name)], targets, labels = clef_question, targets + [target], labels + [label]
+        if not kept:
+            continue
+        try:
+            record = encode_record(
+                tokenizer, {"state": state, "questions": kept}, max_length = max_len
+            )
+        except (TypeError, ValueError) as exc:
+            for name in kept:
+                skip(index, f"does not fit: {exc}", name)
+            continue
+        items.append(
+            {
+                "input_ids": list(record.input_ids),
+                "record": record,
+                "qtypes": [CLEF_TYPES[q["type"]] for q in kept.values()],
+                "targets": targets,
+                "labels": labels,
+                "row": index,
+            }
+        )
+    return items
+
+
+@torch.no_grad()
+def _clef_logits(
+    model,
+    items: list,
+    pad_token_id: int,
+    batch_size: int = 4,
+) -> tuple:
+    # Per question logits plus one Laya-shaped item per question for the shared metrics.
+    from .clef import QUESTION_TYPES as CLEF_TYPES
+
+    device = next(model.parameters()).device
+    amp_dtype = _amp_dtype(device)
+    collate = ClefDataCollator(pad_token_id)
+    # Clef numbers question types noul, choice, score; Laya's metrics use choice, score, noul.
+    laya_type = {CLEF_TYPES[kind]: QUESTION_TYPES.index(kind) for kind in QUESTION_TYPES}
+    was_training = model.training
+    model.eval()
+    logits, questions = [], []
+    for start in range(0, len(items), batch_size):
+        chunk = items[start : start + batch_size]
+        batch = collate(chunk)
+        batch.pop("target")
+        inputs = {k: v.to(device) if torch.is_tensor(v) else v for k, v in batch.items()}
+        with torch.autocast(device.type, dtype = amp_dtype, enabled = amp_dtype is not None):
+            z, _ = model(**inputs)
+        z = z.float().cpu()
+        flat = [
+            (target, label, qtype, item["row"])
+            for item in chunk
+            for target, label, qtype in zip(item["targets"], item["labels"], item["qtypes"])
+        ]
+        for row, (target, label, qtype, record_row) in enumerate(flat):
+            logits.append(z[row, : len(target)])
+            questions.append(
+                {"target": target, "label": label, "qtype": laya_type[qtype], "row": record_row}
+            )
+    model.train(was_training)
+    return logits, questions
+
+
+def _decision_logits(model, tokenizer, items: list) -> tuple:
+    pad_token_id = getattr(tokenizer, "tokenizer", tokenizer).pad_token_id
+    if getattr(model, "is_clef", False):
+        return _clef_logits(model, items, pad_token_id)
+    return _logits(model, items, pad_token_id), items
+
+
+def _load_clef(
+    folder,
+    max_seq_length,
+    dtype,
+    load_in_4bit,
+    full_finetuning,
+    token,
+    use_gradient_checkpointing,
+    kwargs,
+):
+    from safetensors.torch import load_file
+
+    from .clef import JointSchemaHead
+
+    max_len = int(max_seq_length or CLEF_MAX_LEN)
+    fast = _device().type != "cpu"
+    if fast:
+        from .loader import FastModel
+        backbone, processor = FastModel.from_pretrained(
+            str(folder),
+            max_seq_length = max_len,
+            dtype = dtype,
+            load_in_4bit = load_in_4bit,
+            full_finetuning = full_finetuning,
+            token = token,
+            use_gradient_checkpointing = use_gradient_checkpointing,
+            **kwargs,
+        )
+    else:
+        from transformers import AutoModelForImageTextToText, AutoProcessor
+
+        backbone = AutoModelForImageTextToText.from_pretrained(
+            str(folder), dtype = dtype or torch.float32
+        )
+        processor = AutoProcessor.from_pretrained(str(folder))
+        if not full_finetuning:
+            backbone.requires_grad_(False)
+    backbone.config.use_cache = False
+    head_config = json.loads((folder / _CLEF_HEAD_FILES[1]).read_text(encoding = "utf-8"))
+    head = JointSchemaHead(**head_config)
+    head.load_state_dict(load_file(str(folder / _CLEF_HEAD_FILES[0])), strict = True)
+    device = next(backbone.parameters()).device
+    # The head trains in fp32 over the 16-bit backbone, as the Laya head does.
+    model = ClefDecisionModel(backbone, head.to(device = device, dtype = torch.float32))
+    config = {"layout": "clef", "max_len": max_len, "temperature": [1.0] * 3}
+    saved = folder / "unsloth_decision_config.json"
+    if saved.is_file():
+        config.update(json.loads(saved.read_text(encoding = "utf-8")), max_len = max_len)
+    model.decision_config = config
+    _mark_full_finetuning(model, full_finetuning)
+    model._unsloth_fast_backbone = fast
+    model._saved_temp_tokenizer = processor
+    model._unsloth_source_folder = str(folder)
+    model.save_pretrained_merged = types.MethodType(save_pretrained_merged, model)
+    model.push_to_hub_merged = types.MethodType(push_to_hub_merged, model)
+    return model, processor
+
+
+def _clef_peft_model(model, target_modules, use_gradient_checkpointing, random_state, **kwargs):
+    # LoRA on the language model only; the vision tower and the lm_head the head reads stay frozen.
+    if target_modules == "all-linear":
+        target_modules = None
+    backbone = model.encoder
+    if getattr(model, "_unsloth_fast_backbone", False):
+        from .loader import FastModel
+        model.encoder = FastModel.get_peft_model(
+            backbone,
+            target_modules = target_modules,
+            finetune_vision_layers = False,
+            finetune_language_layers = True,
+            use_gradient_checkpointing = use_gradient_checkpointing,
+            random_state = random_state,
+            **kwargs,
+        )
+    else:
+        from peft import LoraConfig, get_peft_model
+        from transformers import set_seed
+
+        set_seed(random_state)
+        kwargs.pop("max_seq_length", None)
+        model.encoder = get_peft_model(
+            backbone,
+            LoraConfig(
+                target_modules = target_modules
+                or r"model\.language_model\.layers\.\d+\..*\.(q_proj|k_proj|v_proj|o_proj|in_proj_qkv|in_proj_z|out_proj|gate_proj|up_proj|down_proj)",
+                **kwargs,
+            ),
+        )
+    return model
+
+
+def _save_clef(self, save_directory, tokenizer) -> None:
+    import shutil
+
+    from safetensors.torch import save_file
+
+    output = Path(save_directory)
+    output.mkdir(parents = True, exist_ok = True)
+    for name in _CLEF_HEAD_FILES:
+        (output / name).unlink(missing_ok = True)
+    encoder = self.encoder
+    if hasattr(encoder, "save_pretrained_merged"):
+        # Unsloth's merge dequantizes a 4-bit base and writes the processor files too.
+        encoder.save_pretrained_merged(str(output), tokenizer, save_method = "merged_16bit")
+    else:
+        if hasattr(encoder, "merge_and_unload"):
+            encoder = copy.deepcopy(encoder).merge_and_unload()
+        encoder.save_pretrained(str(output))
+        tokenizer.save_pretrained(str(output))
+    source = Path(getattr(self, "_unsloth_source_folder", "") or output)
+    for name in _CLEF_EXTRA_FILES:
+        if (source / name).is_file() and not (output / name).exists():
+            shutil.copyfile(source / name, output / name)
+    weights = {}
+    for name, value in self.head.state_dict().items():
+        value = value.detach().to("cpu", torch.bfloat16).contiguous()
+        if not torch.isfinite(value).all():
+            raise ValueError(
+                f"Unsloth: head weight {name} is not finite, so the model cannot be saved."
+            )
+        weights[name] = value
+    (output / "unsloth_decision_config.json").write_text(
+        json.dumps({**self.decision_config, "fine_tuned": True}, indent = 2), encoding = "utf-8"
+    )
+    (output / _CLEF_HEAD_FILES[1]).write_text(
+        json.dumps(self.head.config, indent = 2), encoding = "utf-8"
+    )
+    # Written last: the head marks a complete Clef checkpoint.
+    save_file(weights, str(output / "joint_head.safetensors.tmp"))
+    os.replace(output / "joint_head.safetensors.tmp", output / _CLEF_HEAD_FILES[0])
+
+
 class _LengthGroupedBatches(torch.utils.data.Sampler):
     # Similar-length micro-batches, shuffled so a step mixes lengths; longest first to show OOM.
     def __init__(self, lengths: list, batch_size: int, seed: int):
@@ -307,19 +649,28 @@ class DecisionTrainer(Trainer):
             args._n_gpu = 1
         if args.label_names is None:
             args.label_names = ["target"]
+        clef = getattr(model, "is_clef", False)
         if args.gradient_checkpointing:
             # Trainer would call model.gradient_checkpointing_enable, which only the encoder has.
+            # Clef's backbone already got Unsloth's checkpointing when it loaded.
             args.gradient_checkpointing = False
-            if not model.encoder.is_gradient_checkpointing:
+            if not clef and not model.encoder.is_gradient_checkpointing:
                 _gradient_checkpointing(model, True)
         if kwargs.get("processing_class") is None:
             kwargs["processing_class"] = tokenizer
         if kwargs.get("data_collator") is None:
             processing_class = kwargs["processing_class"]
-            kwargs["data_collator"] = DecisionDataCollator(
-                model.encoder.config.pad_token_id
-                if processing_class is None
-                else processing_class.pad_token_id
+            if processing_class is None:
+                pad_token_id = getattr(model, "_saved_temp_tokenizer", None)
+                pad_token_id = (
+                    getattr(pad_token_id, "tokenizer", pad_token_id).pad_token_id
+                    if clef
+                    else model.encoder.config.pad_token_id
+                )
+            else:
+                pad_token_id = getattr(processing_class, "tokenizer", processing_class).pad_token_id
+            kwargs["data_collator"] = (ClefDataCollator if clef else DecisionDataCollator)(
+                pad_token_id
             )
         self.head_learning_rate = head_learning_rate
         super().__init__(model = model, args = args, **kwargs)
@@ -482,6 +833,8 @@ def save_pretrained_merged(
             f"Unsloth: decision models are saved merged in 16-bit, not as {save_method!r}."
         )
     tokenizer = self._saved_temp_tokenizer if tokenizer is None else tokenizer
+    if getattr(self, "is_clef", False):
+        return _save_clef(self, save_directory, tokenizer)
     encoder = self.encoder
     if hasattr(encoder, "merge_and_unload"):
         # Merged on a CPU copy: the model keeps its adapters and the GPU never holds a second encoder.
@@ -555,14 +908,27 @@ class FastDecisionModel:
         random_state: int = 3407,
         **kwargs,
     ):
-        if load_in_4bit or load_in_8bit:
-            raise NotImplementedError(
-                "Unsloth: decision models train in 16-bit, so load_in_4bit and load_in_8bit are not supported."
-            )
+        if load_in_8bit:
+            raise NotImplementedError("Unsloth: decision models do not support load_in_8bit.")
         from safetensors.torch import load_file
         from transformers import AutoModel, AutoTokenizer
 
         folder = _checkpoint_folder(model_name, subfolder, token, revision, local_files_only)
+        if load_in_4bit and not is_clef_checkpoint(folder):
+            raise NotImplementedError(
+                "Unsloth: Laya decision models train in 16-bit, so load_in_4bit is not supported."
+            )
+        if is_clef_checkpoint(folder):
+            return _load_clef(
+                folder,
+                max_seq_length,
+                dtype,
+                load_in_4bit,
+                full_finetuning,
+                token,
+                use_gradient_checkpointing,
+                kwargs,
+            )
         config = json.loads((folder / "rl_agent_config.json").read_text(encoding = "utf-8"))
         # The base model's training record does not describe the fine-tune.
         config.pop("training", None)
@@ -630,6 +996,20 @@ class FastDecisionModel:
             return model
         if hasattr(model.encoder, "peft_config"):
             raise RuntimeError("Unsloth: You already added LoRA adapters to your model!")
+        if getattr(model, "is_clef", False):
+            return _clef_peft_model(
+                model,
+                r = r,
+                target_modules = target_modules,
+                lora_alpha = lora_alpha,
+                lora_dropout = lora_dropout,
+                bias = bias,
+                use_gradient_checkpointing = use_gradient_checkpointing,
+                random_state = random_state,
+                use_rslora = use_rslora,
+                modules_to_save = modules_to_save,
+                **kwargs,
+            )
         from peft import LoraConfig, get_peft_model
         from transformers import set_seed
 
@@ -663,6 +1043,8 @@ class FastDecisionModel:
     @staticmethod
     def for_training(model, use_gradient_checkpointing = True):
         model.train()
+        if getattr(model, "is_clef", False):
+            return model
         if not use_gradient_checkpointing:
             model.encoder.gradient_checkpointing_disable()
         elif not model.encoder.is_gradient_checkpointing:
@@ -676,7 +1058,6 @@ class FastDecisionModel:
         model,
         validate: Optional[Callable[[str, dict], None]] = None,
     ) -> tuple:
-        common = _laya().common
         max_len = int(model.decision_config.get("max_len", 512))
         head_max_len = int(model.decision_config.get("head_max_len", 192))
         items, report, skips = [], {"total": 0, "skipped": 0, "reason": None}, {}
@@ -690,6 +1071,11 @@ class FastDecisionModel:
             where = f"row {index + 1}" if name is None else f'row {index + 1}: "{name}"'
             skips.setdefault(reason, [0, f"{where} {reason}"])[0] += 1
 
+        if getattr(model, "is_clef", False):
+            items = _clef_items(rows, tokenizer, max_len, validate, report, skip)
+            rows = ()
+        else:
+            common = _laya().common
         for index, row in enumerate(rows):
             row = row if isinstance(row, dict) else {}
             state = _parsed(row.get("state"))
@@ -743,8 +1129,11 @@ class FastDecisionModel:
         fraction: float = 0.1,
         max_items: int = HOLDOUT_MAX,
     ):
-        target = min(max_items, int(len(items) * fraction))
-        sizes = Counter(item["row"] for item in items)
+        # Counted in decisions: a Clef item holds every question of its row.
+        sizes = Counter()
+        for item in items:
+            sizes[item["row"]] += len(item.get("labels", (None,)))
+        target = min(max_items, int(sum(sizes.values()) * fraction))
         rows = sorted(sizes)
         random.Random(seed).shuffle(rows)
         held, count = set(), 0
@@ -760,7 +1149,7 @@ class FastDecisionModel:
 
     @staticmethod
     def evaluate(model, tokenizer, items: list) -> dict:
-        logits = _logits(model, items, tokenizer.pad_token_id)
+        logits, items = _decision_logits(model, tokenizer, items)
         return _metrics(logits, items, _served_temperatures(model.decision_config, logits, items))
 
     @staticmethod
@@ -768,7 +1157,7 @@ class FastDecisionModel:
         common = _laya().common
         config = model.decision_config
         fallback = [common.clamp_temperature(t) for t in config.get("temperature", [1.0] * 3)]
-        logits = _logits(model, items, tokenizer.pad_token_id)
+        logits, items = _decision_logits(model, tokenizer, items)
         everything = range(len(items))
         temperature, fitted = _fit_temperatures(logits, items, everything, fallback)
         # Reported numbers score each half of the rows with temperatures fitted on the other half.
