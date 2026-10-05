@@ -20473,17 +20473,17 @@ def _split_frontend_suffix(text: str, name: "str | None") -> "tuple[str, str]":
     return body, text[len(body) :]
 
 
-MAX_TOOL_TEXT_CHARS = 256_000
-# Shared prefix of every cap notice; mirrored by `tool-text-cap.ts`, which keys idempotency on it.
-_TOOL_TEXT_TRUNCATION_MARKER = "\n\n... (tool result truncated to 256,000 chars for the model;"
-_TOOL_TEXT_TRUNCATION_NOTICE = (
-    _TOOL_TEXT_TRUNCATION_MARKER + " the full output is not retained in model context.)"
-)
+# Floor under the window-aware caps above, applied whether or not the request priced its window.
+MAX_TOOL_TEXT_CHARS = _env_int("UNSLOTH_TOOL_RESULT_HARD_CAP_CHARS", 256_000)
 _TOOL_TEXT_READERS = frozenset({"terminal", "python"})
 
 
+def _tool_text_notice_head() -> str:
+    return f"\n\n... (tool result truncated to {MAX_TOOL_TEXT_CHARS:,} chars for the model;"
+
+
 def _tool_text_is_capped(text: str) -> bool:
-    return text.rfind(_TOOL_TEXT_TRUNCATION_MARKER, max(0, len(text) - 2_000)) != -1
+    return text.rfind(_tool_text_notice_head(), max(0, len(text) - 2_000)) != -1
 
 
 def _tool_text_search_hint(path: str, readers: "frozenset[str]") -> str:
@@ -20491,7 +20491,7 @@ def _tool_text_search_hint(path: str, readers: "frozenset[str]") -> str:
     if "terminal" in readers and _posix_tools_available():
         ways += [f"grep -n 'pattern' {path}", f"sed -n '1,200p' {path}"]
     elif "terminal" in readers:
-        ways.append(f'findstr /n "pattern" {path}')
+        ways.append(f'findstr /n "pattern" {path.replace("/", chr(92))}')
     if "python" in readers:
         ways.append(f"open({path!r}) in python")
     return "Search it instead of re-running the call, e.g. " + ", or ".join(ways)
@@ -20504,7 +20504,7 @@ def cap_tool_text(
     thread_id: "str | None" = None,
     readers: "frozenset[str]" = frozenset(),
 ) -> str:
-    """Unconditional floor for model-bound tool text, priced window or not; mirrors ``capToolText``.
+    """Unconditional floor for model-bound tool text (``UNSLOTH_TOOL_RESULT_HARD_CAP_CHARS``).
 
     When the model has a tool that can read the chat's sandbox, the full text is spilled there and
     the notice says how to search it.
@@ -20519,14 +20519,19 @@ def cap_tool_text(
         except Exception:  # noqa: BLE001 -- no sandbox means the plain notice
             logger.debug("tool text spill: no workdir", exc_info = True)
             workdir = None
-        spill, complete = _spill_full_output(text, workdir, _spill_scope(session_id, thread_id))
+        from .tool_loop_controller import redact_studio_credentials  # noqa: PLC0415
+
+        # Masked like the card and the model copy: the model reads this file.
+        spill, complete = _spill_full_output(
+            redact_studio_credentials(text), workdir, _spill_scope(session_id, thread_id)
+        )
         if spill is not None:
             return (
                 head
-                + f"{_TOOL_TEXT_TRUNCATION_MARKER} {_spill_phrase(spill, complete)} in the working "
+                + f"{_tool_text_notice_head()} {_spill_phrase(spill, complete)} in the working "
                 f"directory. {_tool_text_search_hint(spill, readers)}.)"
             )
-    return head + _TOOL_TEXT_TRUNCATION_NOTICE
+    return head + f"{_tool_text_notice_head()} the full output is not retained in model context.)"
 
 
 def _head_whole_lines(text: str, limit: int) -> "tuple[str, bool]":

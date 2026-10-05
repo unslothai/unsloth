@@ -95,7 +95,6 @@ import {
   isImageToolName,
   splitMcpImages,
 } from "./mcp-images";
-import { capToolText } from "./tool-text-cap";
 import {
   answerTextFromParts,
   extractSearchImages,
@@ -1139,10 +1138,7 @@ function serializeToolResultPart(
   let content: string;
   if (typeof result === "string") {
     // Backend ChatMessage rejects role="tool" with empty content; a sentinel JSON round-trips it.
-    content =
-      result.length > 0
-        ? capToolText(result)
-        : JSON.stringify({ result: "" });
+    content = result.length > 0 ? result : JSON.stringify({ result: "" });
   } else if (
     isMcpUiToolResult(result, tc.toolName ?? "") ||
     // The wrapper the live parser builds -- {text, images} and nothing else -- from an
@@ -1161,10 +1157,7 @@ function serializeToolResultPart(
     const replayText = isSearchImagesToolResult(result)
       ? stripSearchImageTokens(result.text)
       : result.text;
-    content =
-      replayText.length > 0
-        ? capToolText(replayText)
-        : JSON.stringify({ result: "" });
+    content = replayText.length > 0 ? replayText : JSON.stringify({ result: "" });
     // Gated on the image-producing tool name, not on shape alone: a client tool
     // is free to answer {text, images:[{data, mimeType}]}, and appending the
     // envelope would hand its bytes to the model as image input.
@@ -1176,9 +1169,9 @@ function serializeToolResultPart(
     }
   } else {
     try {
-      content = capToolText(JSON.stringify(result));
+      content = JSON.stringify(result);
     } catch {
-      content = capToolText(String(result));
+      content = String(result);
     }
   }
 

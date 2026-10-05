@@ -40,12 +40,14 @@ from core.inference.tool_call_parser import TOOL_ERROR_NUDGE, parse_tool_calls_f
 from core.inference.tools import (
     ALL_TOOLS,
     MAX_TOOL_TEXT_CHARS,
-    _TOOL_TEXT_TRUNCATION_MARKER,
-    _TOOL_TEXT_TRUNCATION_NOTICE,
     _mcp_specs_for_server,
+    _tool_text_notice_head,
     cap_tool_text,
     execute_tool,
 )
+
+
+_NOTICE = _tool_text_notice_head() + " the full output is not retained in model context.)"
 
 
 def test_append_deferred_nudges_merges_deduped_into_one_message():
@@ -803,20 +805,20 @@ def test_cap_tool_text_cuts_oversized_text_at_a_nearby_line_break_and_appends_no
     big = line * (MAX_TOOL_TEXT_CHARS // len(line) + 100)
     out = cap_tool_text(big)
 
-    assert out.endswith(_TOOL_TEXT_TRUNCATION_NOTICE)
-    body = out[: -len(_TOOL_TEXT_TRUNCATION_NOTICE)]
+    assert out.endswith(_NOTICE)
+    body = out[: -len(_NOTICE)]
     assert big.startswith(body)
     assert len(body) < MAX_TOOL_TEXT_CHARS
     assert big[len(body)] == "\n"
-    assert len(out) <= MAX_TOOL_TEXT_CHARS + len(_TOOL_TEXT_TRUNCATION_NOTICE)
+    assert len(out) <= MAX_TOOL_TEXT_CHARS + len(_NOTICE)
 
 
 def test_cap_tool_text_cuts_a_single_line_mid_line_when_no_break_is_near():
     big = "y" * (MAX_TOOL_TEXT_CHARS + 500)
     out = cap_tool_text(big)
 
-    assert out.endswith(_TOOL_TEXT_TRUNCATION_NOTICE)
-    body = out[: -len(_TOOL_TEXT_TRUNCATION_NOTICE)]
+    assert out.endswith(_NOTICE)
+    body = out[: -len(_NOTICE)]
     assert body == big[:MAX_TOOL_TEXT_CHARS]
 
 
@@ -835,8 +837,8 @@ def test_an_oversized_result_is_capped_for_the_card_and_the_model_alike():
 
     content = completion.tool_message()["content"]
     assert completion.tool_end_payload()["result"] == content
-    assert content.endswith(_TOOL_TEXT_TRUNCATION_NOTICE)
-    body = content[: -len(_TOOL_TEXT_TRUNCATION_NOTICE)]
+    assert content.endswith(_NOTICE)
+    body = content[: -len(_NOTICE)]
     assert len(body) <= MAX_TOOL_TEXT_CHARS
     assert huge.startswith(body)
     assert huge[len(body)] == "\n"
@@ -850,7 +852,7 @@ def test_the_cap_keeps_the_card_envelope_whole_and_off_the_model():
         controller.prepare_call(_call("web_search", {"url": "https://example.com/a"})), huge
     )
 
-    capped = "z" * MAX_TOOL_TEXT_CHARS + _TOOL_TEXT_TRUNCATION_NOTICE
+    capped = "z" * MAX_TOOL_TEXT_CHARS + _NOTICE
     assert completion.tool_end_payload()["result"] == capped + envelope
     assert completion.tool_message()["content"] == capped
 
@@ -885,7 +887,7 @@ def test_an_oversized_result_is_spilled_and_the_model_is_told_how_to_search_it(_
     huge = "".join(f"row {i}\n" for i in range(60_000))
     content = _spilled(["mcp__docs__dump", "terminal"], huge).tool_message()["content"]
 
-    notice = content[content.index(_TOOL_TEXT_TRUNCATION_MARKER) :]
+    notice = content[content.index(_tool_text_notice_head()) :]
     path = notice.split("saved to ")[1].split(" ")[0]
     assert (_sandbox / path).read_text() == huge
     assert f"grep -n 'pattern' {path}" in notice
@@ -901,9 +903,19 @@ def test_the_hint_names_only_the_reader_the_model_has(_sandbox):
     assert "grep" not in content
 
 
+def test_a_cmd_only_windows_host_gets_findstr_with_a_backslash_path(_sandbox, monkeypatch):
+    import core.inference.tools as tools
+
+    monkeypatch.setattr(tools, "_posix_tools_available", lambda: False)
+    huge = "q" * (MAX_TOOL_TEXT_CHARS + 1)
+    content = _spilled(["mcp__docs__dump", "terminal"], huge).tool_message()["content"]
+    assert 'findstr /n "pattern" .unsloth_tool_output\\' in content
+    assert "grep" not in content
+
+
 def test_no_reader_tool_or_a_shared_sandbox_gets_the_plain_notice(_sandbox):
     huge = "q" * (MAX_TOOL_TEXT_CHARS + 1)
-    plain = "q" * MAX_TOOL_TEXT_CHARS + _TOOL_TEXT_TRUNCATION_NOTICE
+    plain = "q" * MAX_TOOL_TEXT_CHARS + _NOTICE
     assert _spilled(["mcp__docs__dump"], huge).tool_message()["content"] == plain
     assert (
         _spilled(["mcp__docs__dump", "terminal"], huge, session_id = None).tool_message()["content"]
@@ -932,3 +944,29 @@ def test_model_message_keeps_the_error_nudge_on_an_oversized_error_result():
 
     assert completion.is_error
     assert completion.tool_message()["content"] == cap_tool_text(huge) + TOOL_ERROR_NUDGE
+
+
+def test_the_hard_cap_is_tunable(monkeypatch):
+    import core.inference.tools as tools
+
+    monkeypatch.setenv("UNSLOTH_TOOL_RESULT_HARD_CAP_CHARS", "1000")
+    assert tools._env_int("UNSLOTH_TOOL_RESULT_HARD_CAP_CHARS", 256_000) == 1000
+    monkeypatch.setattr(tools, "MAX_TOOL_TEXT_CHARS", 1000)
+    completion = _spilled(["mcp__docs__dump"], "w" * 5000)
+    content = completion.tool_message()["content"]
+    assert content == "w" * 1000 + _tool_text_notice_head() + (
+        " the full output is not retained in model context.)"
+    )
+    assert "truncated to 1,000 chars" in content
+    assert cap_tool_text(content) is content
+
+
+def test_the_spill_masks_studio_credentials_like_the_model_copy(_sandbox):
+    key = "sk-unsloth-" + "ab12" * 8
+    huge = f"token {key}\n" + "r\n" * (MAX_TOOL_TEXT_CHARS // 2 + 10)
+    content = _spilled(["mcp__docs__dump", "terminal"], huge).tool_message()["content"]
+
+    path = content.split("saved to ")[1].split(" ")[0]
+    spilled = (_sandbox / path).read_text()
+    assert key not in spilled and key not in content
+    assert spilled.startswith("token [redacted]")
