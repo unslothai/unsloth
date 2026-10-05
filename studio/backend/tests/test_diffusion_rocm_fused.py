@@ -11,10 +11,11 @@ from pathlib import Path
 
 import pytest
 
-from core.inference import diffusion_eager_patches as ep
-from core.inference import diffusion_rocm_fused as rf
-
 torch = pytest.importorskip("torch")
+
+from core.inference import diffusion_eager_patches as ep  # noqa: E402
+from core.inference import diffusion_rocm_fused as rf  # noqa: E402
+
 fmod = pytest.importorskip("diffusers.models.transformers.transformer_flux")
 from diffusers.models import normalization as nm  # noqa: E402
 from diffusers.models.embeddings import apply_rotary_emb as stock_rope  # noqa: E402
@@ -152,6 +153,8 @@ def test_load_and_teardown_wiring():
         if isinstance(n, ast.FunctionDef) and n.name == "_uninstall_fused_dit_patches"
     )
     assert "uninstall_rocm_fused()" in ast.unparse(teardown)
+    # Both unload paths unwind the fused AdaLN again after the eager layer (deferred profile installs it on top).
+    assert src.count("_uninstall_fused_dit_patches()") >= 4
     load = next(
         n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name == "load_pipeline"
     )
@@ -294,3 +297,40 @@ def test_tiny_flux1_transformer_end_to_end(monkeypatch):
     rf.uninstall()
     rel = (got.float() - want.float()).norm() / want.float().norm()
     assert rel < 1e-2, float(rel)
+
+
+def test_teardown_survives_a_later_eager_layer(fake_kernels, monkeypatch):
+    # Deferred speed profile: fused AdaLN at load, Studio's eager patch layered on top at the 3rd image, then unload
+    # in the order diffusion.py uses (fused teardown first, eager after).
+    monkeypatch.setenv(rf.FUSED_ADALN_ENV, "1")
+    try:
+        assert rf.install_adaln(torch.bfloat16, "cuda") == len(rf._ADALN_CLASSES)
+        ep.install_compile_safe_patches()
+        assert nm.AdaLayerNormZero.forward is not rf._FORWARDS["AdaLayerNormZero"]
+        rf.uninstall()
+        ep.uninstall_patches()
+        rf.uninstall()
+        assert {n: getattr(nm, n).forward for n in rf._ADALN_CLASSES} == _STOCK_FWD
+        torch.manual_seed(0)
+        norm = nm.AdaLayerNormZero(16)
+        xs, emb = torch.randn(2, 5, 16), torch.randn(2, 16)
+        got = norm(xs, emb = emb)
+        want = _STOCK_FWD["AdaLayerNormZero"](norm, xs, emb = emb)
+        assert all(torch.equal(a, b) for a, b in zip(got, want))
+    finally:
+        ep.uninstall_patches()
+        rf.uninstall()
+        for n, fwd in _STOCK_FWD.items():
+            getattr(nm, n).forward = fwd
+
+
+def test_stock_branch_never_loses_its_previous_forward(fake_kernels, monkeypatch):
+    monkeypatch.setenv(rf.FUSED_ADALN_ENV, "1")
+    rf.install_adaln(torch.bfloat16, "cuda")
+    cls = nm.AdaLayerNormZero
+    rf._ADALN_PREV.clear()
+    try:
+        assert rf._prev(cls) is _STOCK_FWD["AdaLayerNormZero"]
+    finally:
+        for n, fwd in _STOCK_FWD.items():
+            getattr(nm, n).forward = fwd

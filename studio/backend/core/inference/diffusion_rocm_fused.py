@@ -30,6 +30,8 @@ _MAX_D = 16384
 _LOCK = threading.Lock()
 _ROPE_STOCK: dict = {}
 _ADALN_PREV: dict = {}
+# Survives uninstall: a fused forward a later layer restores after our teardown still reaches a real forward.
+_ADALN_ORIGINAL: dict = {}
 COUNTS = {"rope_fused": 0, "rope_stock": 0, "adaln_fused": 0, "adaln_stock": 0}
 
 
@@ -308,7 +310,8 @@ def _fused_modulate(norm: Any, x: Any, scale: Any, shift: Any) -> Optional[Any]:
 
 
 def _prev(cls: type) -> Callable:
-    return _ADALN_PREV[cls]
+    prev = _ADALN_PREV.get(cls)
+    return prev if prev is not None else _ADALN_ORIGINAL[cls]
 
 
 def _adaln_zero_forward(
@@ -430,6 +433,7 @@ def install_adaln(dtype: Any, device: Any = "cuda") -> int:
             if not ours and not _stock_body_ok(cls, name):
                 continue
             _ADALN_PREV[cls] = live
+            _ADALN_ORIGINAL.setdefault(cls, live)
             cls.forward = _FORWARDS[name]
     return len(_ADALN_PREV)
 
@@ -437,10 +441,11 @@ def install_adaln(dtype: Any, device: Any = "cuda") -> int:
 def uninstall_adaln() -> None:
     with _LOCK:
         for cls, prev in list(_ADALN_PREV.items()):
-            # Restore only what is still ours; a later patch layered on top keeps its own stash.
+            # A later layer (the deferred eager patch) still on top keeps the entry: once that layer restores our
+            # forward, the next uninstall puts ``prev`` back.
             if cls.__dict__.get("forward") in _FORWARDS.values():
                 cls.forward = prev
-        _ADALN_PREV.clear()
+                del _ADALN_PREV[cls]
 
 
 # ------------------------------------------------------------------------------------------------------------- lifecycle
@@ -477,4 +482,6 @@ def uninstall() -> None:
 
 
 def is_installed() -> bool:
-    return bool(_ROPE_STOCK) or bool(_ADALN_PREV)
+    return bool(_ROPE_STOCK) or any(
+        cls.__dict__.get("forward") in _FORWARDS.values() for cls in _ADALN_PREV
+    )
