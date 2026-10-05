@@ -464,3 +464,29 @@ test("leaving the chat dismisses a drop's offer, whose Add could no longer open 
   app.unmount();
   assert.deepEqual(app.dismissed, [0]);
 });
+
+test("a second drop folds into the outstanding offer instead of competing with it", async () => {
+  const app = harness({ ragSource: { type: "kb", kbId: "kb-1" } });
+  app.render();
+  await flush();
+  app.render();
+  app.drop();
+  await flush();
+  app.drop();
+  await flush();
+  // One offer at a time: two would each own a batch, and an Add on one could replace
+  // the other's handoff after both had left the native-intent store.
+  assert.equal(app.toasts.length, 2);
+  assert.deepEqual(app.dismissed, [0]);
+  assert.equal(app.toasts[1].title, 'Add 2 files to "Product docs"?');
+  app.toasts[1].data.action!.onClick();
+  app.render();
+  assert.equal(kbDialog(app.tree)!.props.focus.uploads.length, 2);
+
+  // Acted on, so a later drop starts a fresh offer and leaving dismisses only that one.
+  app.drop();
+  await flush();
+  assert.equal(app.toasts[2].title, 'Add "report.docx" to "Product docs"?');
+  app.unmount();
+  assert.deepEqual(app.dismissed, [0, 2]);
+});
