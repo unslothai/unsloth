@@ -3766,14 +3766,19 @@ export function useChatModelRuntime() {
     confirmed?: StopRunningChatsDecision,
   ): Promise<boolean> => {
     if (modelId && modelId !== params.checkpoint) {
+      const toastId = toast.loading("Unloading model");
       try {
-        if (!(await unloadKeptModel(modelId))) return false;
+        if (!(await unloadKeptModel(modelId))) {
+          toast.dismiss(toastId);
+          return false;
+        }
         await refresh();
-        toast.success("Model unloaded", { duration: 1200 });
+        toast.success("Model unloaded", { id: toastId, duration: 1200 });
         return true;
       } catch (err) {
         toast.error(
           err instanceof Error ? err.message : "Failed to unload model",
+          { id: toastId },
         );
         return false;
       }
@@ -3784,6 +3789,10 @@ export function useChatModelRuntime() {
     const bailIfLoading = (): boolean => {
       const runtime = useChatRuntimeStore.getState();
       if (!runtime.modelLoading && !runtime.loadingModelPick) return false;
+      if (chatModelLifecycleGate.currentPhase() === "unloading") {
+        toast.info("Wait for the model to finish unloading.");
+        return true;
+      }
       toast.info("A model is loading", {
         description: "Wait for it to finish or cancel it first.",
       });
@@ -3805,6 +3814,10 @@ export function useChatModelRuntime() {
       if (lifecycleLease === null) {
         return false;
       }
+      // Before the running-chats check, which open chat streams can queue in the browser (#10339).
+      const toastId = toast.loading("Unloading model", {
+        description: "Checking for running chats.",
+      });
       // Ejecting tears down llama-server, so every chat stops. Same prompt, but it leaves no model
       // loaded, so it must not be worded as a reload. With several loaded only this one's chats stop.
       const scope =
@@ -3818,7 +3831,10 @@ export function useChatModelRuntime() {
           "unload",
           scope,
         ));
-      if (!stopDecision.proceed) return false;
+      if (!stopDecision.proceed) {
+        toast.dismiss(toastId);
+        return false;
+      }
 
       async function performUnload(): Promise<void> {
         stopQueuedRuns(stopDecision, Boolean(scope));
@@ -3835,6 +3851,7 @@ export function useChatModelRuntime() {
 
       const unloadPromise = performUnload();
       toast.promise(unloadPromise, {
+        id: toastId,
         loading: "Unloading model",
         success: { message: "Model unloaded", duration: 1200 },
         error: (err) =>
