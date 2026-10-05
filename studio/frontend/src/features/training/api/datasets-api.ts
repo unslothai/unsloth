@@ -132,8 +132,6 @@ async function uploadTrainingDatasetForm(
   return res.json();
 }
 
-// ── AI Assist ──
-
 type AiAssistMappingArgs = {
   columns: string[];
   samples: Record<string, unknown>[];

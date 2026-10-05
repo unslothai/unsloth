@@ -3,6 +3,7 @@
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import { openLink } from "@/lib/open-link";
 import { useEffect, useRef, useState } from "react";
 import {
@@ -168,7 +169,7 @@ export function OpenAICodexConnect({
 
   const visibleError = error || (flow?.status === "error" ? flow.message || "Authorization failed." : "");
   return (
-    <section className="space-y-3 rounded-[8px] border border-border/70 bg-background/45 p-4">
+    <section className="space-y-3 rounded-lg border border-border/70 bg-background/45 p-4">
       <div>
         <p className="text-sm font-medium">ChatGPT subscription</p>
         <p className="text-xs text-muted-foreground">
@@ -189,7 +190,7 @@ export function OpenAICodexConnect({
             type="button"
             size="sm"
             variant="outline"
-            onClick={() => void navigator.clipboard.writeText(flow.user_code || "")}
+            onClick={() => void copyToClipboard(flow.user_code || "")}
           >
             Copy code
           </Button>

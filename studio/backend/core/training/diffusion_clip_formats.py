@@ -17,8 +17,7 @@ not count is a dataset that uploads fine and then trains on nothing.
 
 from __future__ import annotations
 
-# Containers the video decode path (PyAV) opens. Lowercase, with the leading dot, so a
-# ``Path.suffix.lower()`` can be tested against the set directly.
+# Lowercase, with the leading dot, so a Path.suffix.lower() can be tested against the set directly.
 CLIP_EXTS = frozenset({".mp4", ".mov", ".mkv", ".webm", ".m4v", ".avi"})
 
 __all__ = ["CLIP_EXTS"]

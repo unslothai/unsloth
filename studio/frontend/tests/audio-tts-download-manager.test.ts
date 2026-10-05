@@ -2,23 +2,22 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import test from "node:test";
 
-const source = readFileSync(
-  new URL("../src/features/audio/audio-page.tsx", import.meta.url),
-  "utf8",
-);
+import { readAudioWorkspaceSource } from "./helpers/audio-workspace.ts";
 
-test("uncached remote TTS GGUFs stage the exact file through the shared manager", () => {
+const source = readAudioWorkspaceSource();
+
+test("uncached remote TTS GGUFs stage the picked quant through the shared manager", () => {
   assert.match(source, /useStagedDownload\(\{\s*scopeId: "audio"/);
   assert.match(
     source,
     /meta\.source === "hub"[\s\S]*meta\.isDownloaded === false[\s\S]*ggufFilename/,
   );
+  // A named quant is the standard variant download, as in Chat; a bare file stays scoped.
   assert.match(
     source,
-    /stageTtsDownload\(\[\s*\{[\s\S]*repoId,[\s\S]*files: \[ggufFilename\],[\s\S]*bytes: meta\.expectedBytes \?\? 0/,
+    /stageTtsDownload\(\[\s*meta\.ggufVariant\s*\?\s*\{[\s\S]*repoId,[\s\S]*ggufVariant: meta\.ggufVariant,[\s\S]*\}\s*:\s*\{[\s\S]*files: \[ggufFilename\],[\s\S]*bytes: meta\.expectedBytes \?\? 0/,
   );
   assert.match(
     source,
@@ -28,7 +27,7 @@ test("uncached remote TTS GGUFs stage the exact file through the shared manager"
 
 test("remote code approval precedes native model staging and survives completion", () => {
   const start = source.indexOf("const loadOrStageTtsModel");
-  const end = source.indexOf("const ensureSttLoaded", start);
+  const end = source.indexOf("// A hidden page may let the shared download continue", start);
   const stagedFlow = source.slice(start, end);
   assert.ok(start >= 0 && end > start);
   assert.ok(
@@ -81,7 +80,7 @@ test("a preflight that loses to generation queues its load until generation ends
   );
   assert.match(
     source,
-    /generateAbort\.current = null;\s*busyRef\.current = null;\s*setBusy\(null\);\s*if \(activeRef\.current\) replayQueuedTtsPick\(\)/,
+    /generateAbort\.current = null;\s*updateGenerationPhase\(null\);\s*busyRef\.current = null;\s*setBusy\(null\);\s*if \(activeRef\.current && modeRef\.current === "speak"\)\s*replayQueuedTtsPick\(\)/,
   );
 });
 
@@ -111,9 +110,15 @@ test("managed completion loads the exact GGUF only when Audio is active and idle
 });
 
 test("switching to Transcribe invalidates a pending staged TTS auto-load", () => {
+  const invalidateStart = source.indexOf("const invalidatePendingTtsSelection");
+  const transitionStart = source.indexOf("const transitionMode", invalidateStart);
+  const invalidateSelection = source.slice(invalidateStart, transitionStart);
+  assert.match(invalidateSelection, /ttsPickGeneration\.current \+= 1;/);
+  assert.match(invalidateSelection, /pendingRoutedTtsPick\.current = null;/);
+  assert.match(invalidateSelection, /invalidatePendingStagedTts\(\);/);
   assert.match(
     source,
-    /if \(nextMode === "transcribe"\) invalidatePendingStagedTts\(\)/,
+    /if \(nextMode === "transcribe"\) invalidatePendingTtsSelection\(\)/,
   );
   assert.match(
     source,
@@ -121,7 +126,7 @@ test("switching to Transcribe invalidates a pending staged TTS auto-load", () =>
   );
   assert.match(
     source,
-    /if \(nextMode === mode\)[\s\S]*return true;[\s\S]*if \(!canTransitionAudioMode\(busyRef\.current\)\)[\s\S]*return false;[\s\S]*if \(nextMode === "transcribe"\) invalidatePendingStagedTts\(\)/,
+    /if \(nextMode === mode\)[\s\S]*return true;[\s\S]*if \(\s*!canTransitionAudioMode\(busyRef\.current, generationPhaseRef\.current\)\s*\)[\s\S]*return false;[\s\S]*if \(nextMode === "transcribe"\) invalidatePendingTtsSelection\(\)/,
     "a rejected mode switch must not discard the still-owned staged load",
   );
 });

@@ -36,27 +36,17 @@ REPO = Path(__file__).resolve().parents[2]
 WORKFLOW = REPO / ".github" / "workflows" / "version-compat-ci.yml"
 SUITE_DIRS = ("tests/version_compat", "tests/vllm_compat")
 
-# The bundled job. Named, not detected: if it is ever renamed, that should be a
-# deliberate edit here rather than this whole file quietly asserting nothing.
+# The bundled job. Named, not detected: if it is ever renamed, that should be a deliberate edit here rather than this
+# whole file quietly asserting nothing.
 BUNDLE_JOB = "pinned-symbol-matrix"
 
-# Suites with no pull_request home today. This is a RECORDED GAP, not an approval, and
-# both entries pre-date the bundling change that added this file -- they were found by
-# this test on its first run, which is the point of deriving coverage from the filesystem
-# rather than from a list someone maintains.
-#
-# Neither can join the bundle, because the bundle installs nothing but pytest:
-#
-#   test_import_leaves_torch_globals_alone.py  runs `import torch` inside a subprocess
-#       probe (_PROBE at module scope), so it needs a real torch.
-#   test_trl_vllm_generation_lora_patch.py     needs an installed TRL. It belongs with
-#       grpo-fake-run, which already installs that stack, but is not in that job's pytest
-#       list either. It was not added here because it could not be verified to pass in
-#       that environment first, and wiring an unverified suite into a heavy job would put
-#       an unrelated red on the change that noticed the gap.
-#
-# Both are swept by the cron-only `daily-fresh-fetch` job, so they are checked daily
-# rather than never. Anything added here needs the same kind of reason written down.
+# Suites with no pull_request home today.
+# This is a RECORDED GAP, not an approval, and both entries pre-date the bundling change that added this file.
+# Neither can join the bundle, because the bundle installs nothing but pytest: test_import_leaves_torch_globals_alone.py
+# runs `import torch` inside a subprocess probe (_PROBE at module scope), so it needs a real torch.
+# test_trl_vllm_generation_lora_patch.py needs an installed TRL.
+# Both are swept by the cron-only `daily-fresh-fetch` job, so they are checked daily rather than never. Anything
+# added here needs the same kind of reason written down.
 CRON_ONLY = {
     "tests/version_compat/test_import_leaves_torch_globals_alone.py",
     "tests/version_compat/test_trl_vllm_generation_lora_patch.py",
@@ -189,3 +179,22 @@ def test_the_install_bearing_jobs_were_not_folded_in() -> None:
             f"sibling's pins, so it cannot have been merged into anything -- check it was "
             f"not folded into {BUNDLE_JOB}, which has no torch at all."
         )
+
+
+def test_every_test_file_a_job_runs_triggers_the_workflow() -> None:
+    """A file only this workflow executes must be in its pull_request paths, or a PR that only
+    edits (or weakens) that file never runs it. The modules.json trust gate is the case that
+    prompted this: the CPU repo-test shards skip it, so this workflow is its only runner."""
+    from fnmatch import fnmatch
+
+    doc = _doc()
+    # PyYAML reads the bare `on:` key as the boolean True.
+    triggers = doc.get("on", doc.get(True)) or {}
+    patterns = (triggers.get("pull_request") or {}).get("paths") or []
+    assert patterns, "version-compat-ci.yml lost its pull_request paths filter"
+    named = set()
+    for job in _jobs().values():
+        named |= {p for p in _named_paths(job) if not p.endswith("/") and (REPO / p).is_file()}
+    assert named, "no test file found in any run step"
+    missing = sorted(p for p in named if not any(fnmatch(p, pattern) for pattern in patterns))
+    assert not missing, f"run by version-compat-ci.yml but not in its pull_request paths: {missing}"

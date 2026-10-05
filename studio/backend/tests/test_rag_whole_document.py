@@ -8,9 +8,37 @@ No embedder is needed - the whole-doc path does no query embedding."""
 
 import json
 
+import pytest
+
 from core.rag import store, tool
 from core.rag.chunking import Chunk
 from core.inference import tools as inf_tools
+
+
+def _shared_setup_1(fake_search, monkeypatch):
+    monkeypatch.setattr(tool, "search_for_autoinject", fake_search)
+    injected = _injected_text(
+        inf_tools.build_rag_autoinject(
+            _convo(),
+            {
+                "thread_id": "t1",
+                "project_id": "p1",
+                "autoinject": False,
+                "context_length": 8192,
+                "response_headroom": 1024,
+            },
+        )
+    )
+    return injected
+
+
+def _shared_setup_2(monkeypatch):
+    monkeypatch.setattr(
+        tool,
+        "search_for_autoinject",
+        lambda **kw: (_ for _ in ()).throw(AssertionError("retrieval should not run")),
+    )
+
 
 # A vector per chunk just to satisfy add_chunks (the whole-doc path never reads
 # vectors); dimension is arbitrary but must be consistent within a connection.
@@ -225,11 +253,7 @@ def test_build_rag_autoinject_whole_doc_runs_when_autoinject_false(rag_conn, mon
     # Large-model Auto sets autoinject=False, but whole-doc is a separate thread-doc
     # context mode and should still inject a fitting attachment.
     _add_doc(rag_conn, store.thread_scope("t1"), "d1", "doc.pdf", "h1", ["entire file body"])
-    monkeypatch.setattr(
-        tool,
-        "search_for_autoinject",
-        lambda **kw: (_ for _ in ()).throw(AssertionError("retrieval should not run")),
-    )
+    _shared_setup_2(monkeypatch)
     result = inf_tools.build_rag_autoinject(_convo(), {"thread_id": "t1", "autoinject": False})
     assert result is not None
     assert "entire file body" in _injected_text(result)
@@ -238,11 +262,7 @@ def test_build_rag_autoinject_whole_doc_runs_when_autoinject_false(rag_conn, mon
 def test_build_rag_autoinject_explicit_off_disables_whole_doc(rag_conn, monkeypatch):
     # The UI Off switch sends both autoinject=False and whole_doc=False.
     _add_doc(rag_conn, store.thread_scope("t1"), "d1", "doc.pdf", "h1", ["small body"])
-    monkeypatch.setattr(
-        tool,
-        "search_for_autoinject",
-        lambda **kw: (_ for _ in ()).throw(AssertionError("retrieval should not run")),
-    )
+    _shared_setup_2(monkeypatch)
     assert (
         inf_tools.build_rag_autoinject(
             _convo(), {"thread_id": "t1", "autoinject": False, "whole_doc": False}
@@ -283,6 +303,7 @@ def test_build_rag_autoinject_large_model_auto_falls_back_over_budget(rag_conn, 
 
 def test_build_rag_autoinject_fallback_is_thread_first_and_budgeted(rag_conn, monkeypatch):
     monkeypatch.setattr(tool, "whole_document_context", lambda **kw: None)
+    monkeypatch.setattr(inf_tools, "_thread_document_ids", lambda thread_id: None)
     calls = []
 
     def fake_search(**kw):
@@ -416,6 +437,188 @@ def test_build_rag_autoinject_enabled_path_stays_unbudgeted(rag_conn, monkeypatc
     assert calls[0]["min_dense_score"] == inf_tools._autoinject_floor()
 
 
+def test_build_rag_autoinject_on_still_grounds_over_budget_doc_below_floor(rag_conn, monkeypatch):
+    from core.rag import embeddings
+
+    _add_doc(
+        rag_conn,
+        store.thread_scope("t1"),
+        "d1",
+        "big.pdf",
+        "h1",
+        ["OVER_BUDGET_PASSAGE"],
+        tokens = [50_000],
+    )
+    monkeypatch.setattr(
+        embeddings,
+        "encode",
+        lambda texts, *, model_name = None, normalize = True: [[1.0, 0.0, 0.0, 0.0] for _ in texts],
+    )
+    monkeypatch.setattr(embeddings, "dim", lambda model_name = None: len(_VEC))
+
+    result = inf_tools.build_rag_autoinject(
+        _convo("Summarize this document"),
+        {"thread_id": "t1", "autoinject": True, "autoinject_min_score": 0.7},
+    )
+    assert result is not None
+    assert "OVER_BUDGET_PASSAGE" in _injected_text(result)
+
+
+@pytest.mark.parametrize("autoinject", [True, False])
+def test_build_rag_autoinject_lexical_mode_still_grounds_generic_request(
+    rag_conn, monkeypatch, autoinject
+):
+    from core.rag import embeddings
+
+    _add_doc(
+        rag_conn,
+        store.thread_scope("t1"),
+        "d1",
+        "big.pdf",
+        "h1",
+        ["OVER_BUDGET_PASSAGE"],
+        tokens = [50_000],
+    )
+    monkeypatch.setattr(
+        embeddings,
+        "encode",
+        lambda texts, *, model_name = None, normalize = True: [[1.0, 0.0, 0.0, 0.0] for _ in texts],
+    )
+    monkeypatch.setattr(embeddings, "dim", lambda model_name = None: len(_VEC))
+
+    result = inf_tools.build_rag_autoinject(
+        _convo("Summarize this document"),
+        {
+            "thread_id": "t1",
+            "autoinject": autoinject,
+            "autoinject_min_score": 0.7,
+            "mode": "lexical",
+        },
+    )
+    assert result is not None
+    assert "OVER_BUDGET_PASSAGE" in _injected_text(result)
+
+
+def test_build_rag_autoinject_on_grounds_attachment_beside_project_hits(rag_conn, monkeypatch):
+    from core.rag import embeddings
+
+    _add_doc(
+        rag_conn,
+        store.thread_scope("t1"),
+        "d1",
+        "big.pdf",
+        "h1",
+        ["OVER_BUDGET_PASSAGE"],
+        tokens = [50_000],
+    )
+    pscope = store.project_scope("p1")
+    store.create_document(
+        rag_conn, scope = pscope, filename = "notes.md", sha256 = "h2", document_id = "d2"
+    )
+    store.add_chunks(rag_conn, pscope, "d2", [_chunk("PROJECT_PASSAGE")], [[1.0, 0.0, 0.0, 0.0]])
+    store.set_document_status(rag_conn, "d2", "completed", num_chunks = 1)
+    monkeypatch.setattr(
+        embeddings,
+        "encode",
+        lambda texts, *, model_name = None, normalize = True: [[1.0, 0.0, 0.0, 0.0] for _ in texts],
+    )
+    monkeypatch.setattr(embeddings, "dim", lambda model_name = None: len(_VEC))
+
+    result = inf_tools.build_rag_autoinject(
+        _convo("Summarize this document"),
+        {"thread_id": "t1", "project_id": "p1", "autoinject": True, "autoinject_min_score": 0.7},
+    )
+    injected = _injected_text(result)
+    assert injected.index("OVER_BUDGET_PASSAGE") < injected.index("PROJECT_PASSAGE")
+
+
+def test_build_rag_autoinject_on_attachment_beside_project_keeps_lean_top_k(rag_conn, monkeypatch):
+    monkeypatch.setattr(inf_tools, "_thread_document_ids", lambda thread_id: None)
+
+    def fake_search(**kw):
+        if kw.get("min_dense_score") is None:
+            name, doc = "thread", "d1"
+        else:
+            name, doc = "project", "d2"
+        sources = [
+            {"citationId": i, "documentId": doc, "filename": f"{name}.txt", "text": f"{name}-{i}"}
+            for i in range(1, kw["top_k"] + 1)
+        ]
+        return tool.render_sources(sources), sources
+
+    monkeypatch.setattr(tool, "search_for_autoinject", fake_search)
+    result = inf_tools.build_rag_autoinject(
+        _convo("Summarize this document"),
+        {"thread_id": "t1", "project_id": "p1", "autoinject": True},
+    )
+    injected = _injected_text(result)
+    assert injected.count("<chunk id=") == inf_tools._autoinject_top_k()
+    assert "thread-1" in injected and "project-1" in injected
+    assert injected.index("thread-1") < injected.index("project-1")
+
+
+@pytest.mark.parametrize("autoinject", [True, False])
+def test_build_rag_autoinject_skips_thread_fallback_without_attachment(
+    rag_conn, monkeypatch, autoinject
+):
+    calls = []
+    monkeypatch.setattr(tool, "search_for_autoinject", lambda **kw: calls.append(kw))
+    result = inf_tools.build_rag_autoinject(
+        _convo("Say hello in three words."), {"thread_id": "t1", "autoinject": autoinject}
+    )
+    assert result is None
+    assert not [c for c in calls if c.get("min_dense_score") is None]
+
+
+def test_build_rag_autoinject_on_skips_thread_search_when_attachment_already_hit(
+    rag_conn, monkeypatch
+):
+    monkeypatch.setattr(inf_tools, "_thread_document_ids", lambda thread_id: {"d1"})
+    calls = []
+
+    def fake_search(**kw):
+        calls.append(kw)
+        sources = [
+            {"citationId": 1, "documentId": "d1", "filename": "big.pdf", "text": "thread hit"}
+        ]
+        return tool.render_sources(sources), sources
+
+    monkeypatch.setattr(tool, "search_for_autoinject", fake_search)
+    result = inf_tools.build_rag_autoinject(
+        _convo("Summarize this document"),
+        {"thread_id": "t1", "project_id": "p1", "autoinject": True},
+    )
+    assert "thread hit" in _injected_text(result)
+    assert len(calls) == 1
+
+
+@pytest.mark.parametrize("project_id", ["p1", None])
+def test_build_rag_autoinject_on_zero_top_k_still_grounds_attachment(
+    rag_conn, monkeypatch, project_id
+):
+    monkeypatch.setattr(inf_tools, "_thread_document_ids", lambda thread_id: {"d1"})
+
+    def fake_search(**kw):
+        if kw.get("min_dense_score") is not None and not kw.get("scope_project_id"):
+            return None
+        name, doc = ("thread", "d1") if kw.get("min_dense_score") is None else ("project", "d2")
+        # Zero is falsy to the search, which then returns its configured default count.
+        sources = [
+            {"citationId": i, "documentId": doc, "filename": f"{name}.txt", "text": f"{name}-{i}"}
+            for i in range(1, (kw["top_k"] or 10) + 1)
+        ]
+        return tool.render_sources(sources), sources
+
+    monkeypatch.setattr(tool, "search_for_autoinject", fake_search)
+    result = inf_tools.build_rag_autoinject(
+        _convo("Summarize this document"),
+        {"thread_id": "t1", "project_id": project_id, "autoinject": True, "default_top_k": 0},
+    )
+    injected = _injected_text(result)
+    assert "thread-1" in injected
+    assert injected.count("<chunk id=") == inf_tools._autoinject_top_k()
+
+
 def test_build_rag_autoinject_off_does_not_inject_project_alone(rag_conn, monkeypatch):
     # The fallback exists to rescue the thread attachment. With auto-injection
     # off and nothing found in the thread, project context is not a substitute:
@@ -480,22 +683,53 @@ def test_build_rag_autoinject_keeps_the_project_hits_that_fit(rag_conn, monkeypa
             sources = [{"citationId": 0, "filename": "thread.txt", "text": "T" * 8000}]
         return tool.render_sources(sources), sources
 
-    monkeypatch.setattr(tool, "search_for_autoinject", fake_search)
-    injected = _injected_text(
-        inf_tools.build_rag_autoinject(
-            _convo(),
-            {
-                "thread_id": "t1",
-                "project_id": "p1",
-                "autoinject": False,
-                "context_length": 8192,
-                "response_headroom": 1024,
-            },
-        )
-    )
+    injected = _shared_setup_1(fake_search, monkeypatch)
     assert "T" * 8000 in injected
     # Some project passages survive beside the thread result, but not all four.
     assert 1 <= injected.count("P" * 2000) < 4
+
+
+def test_build_rag_autoinject_whole_doc_merge_is_priced_in_tokens(rag_conn, monkeypatch):
+    # The merged block was admitted on the flat len(text) // 4; a CJK character is
+    # about one token, not four.
+    _add_doc(rag_conn, store.thread_scope("t1"), "d1", "doc.pdf", "h1", ["THREAD_DOC"])
+
+    def fake_search(**kw):
+        sources = [
+            {"citationId": 0, "filename": "project.txt", "text": "漢" * 2000} for _ in range(4)
+        ]
+        return tool.render_sources(sources), sources
+
+    injected = _shared_setup_1(fake_search, monkeypatch)
+
+    assert "THREAD_DOC" in injected
+    # Trimmed to what fits beside the document, not admitted or discarded whole.
+    assert 1 <= injected.count("漢" * 2000) < 4
+
+
+def test_build_rag_autoinject_whole_doc_merge_never_truncates_the_document(rag_conn, monkeypatch):
+    # Trimming the merge touches only the project tail: an overlarge combination gives
+    # the document back whole, never a prefix of it.
+    body = ["SECTION%02d " % i + "word " * 398 for i in range(8)]
+    _add_doc(
+        rag_conn,
+        store.thread_scope("t1"),
+        "d1",
+        "report.pdf",
+        "h1",
+        body,
+        tokens = [500] * len(body),
+    )
+
+    def fake_search(**kw):
+        sources = [{"citationId": 0, "filename": "notes.txt", "text": "PROJECT_HIT " + "x" * 500}]
+        return tool.render_sources(sources), sources
+
+    injected = _shared_setup_1(fake_search, monkeypatch)
+
+    assert [i for i in range(len(body)) if "SECTION%02d" % i in injected] == list(range(len(body)))
+    # The companion is what does not fit, so the companion is what goes.
+    assert "PROJECT_HIT" not in injected
 
 
 def test_build_rag_autoinject_budget_charges_multibyte_text_more(rag_conn, monkeypatch):
@@ -577,11 +811,7 @@ def test_build_rag_autoinject_server_kill_switch_blocks_whole_doc(rag_conn, monk
 
     monkeypatch.setattr(config, "THREAD_WHOLE_DOC", False)
     _add_doc(rag_conn, store.thread_scope("t1"), "d1", "doc.pdf", "h1", ["small body"])
-    monkeypatch.setattr(
-        tool,
-        "search_for_autoinject",
-        lambda **kw: (_ for _ in ()).throw(AssertionError("retrieval should not run")),
-    )
+    _shared_setup_2(monkeypatch)
     assert (
         inf_tools.build_rag_autoinject(_convo(), {"thread_id": "t1", "autoinject": False}) is None
     )

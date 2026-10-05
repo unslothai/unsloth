@@ -2,30 +2,23 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import test from "node:test";
 
-const source = readFileSync(
-  new URL("../src/features/audio/audio-page.tsx", import.meta.url),
-  "utf8",
-);
-const adapterSource = readFileSync(
-  new URL(
-    "../src/features/chat/adapters/studio-model-dictation-adapter.ts",
-    import.meta.url,
-  ),
-  "utf8",
-);
+import { readSrc } from "./helpers/kit.ts";
+import { readAudioWorkspaceSource } from "./helpers/audio-workspace.ts";
+
+const source = readAudioWorkspaceSource();
+const adapterSource = readSrc("features/chat/adapters/studio-model-dictation-adapter.ts");
 
 test("Audio exposes the shared picker eject action only while idle", () => {
   assert.match(
     source,
-    /onEject=\{busy === null && selectorValue \? handleEject : undefined\}/,
+    /onEject=\{\s*busy === null && selectorValue && !showLastPageModel\s*\? handleEject\s*: undefined\s*\}/,
   );
-  assert.match(source, /if \(busy !== null \|\| isRecording\)/);
+  assert.match(source, /const handleEject = useCallback\(\(\) => \{\s*if \(busy !== null\) \{/);
   assert.match(
     source,
-    /loaded=\{mode === "transcribe" \? sttReady : undefined\}/,
+    /loaded=\{\s*mode === "transcribe"\s*\? sttReady\s*: showLastPageModel\s*\? false\s*: undefined\s*\}/,
   );
 });
 
@@ -67,7 +60,7 @@ test("a Speak load asks the same question and forces from the answer", () => {
   // The slot is claimed before the await, so a routed pick arriving mid-dialog queues.
   assert.match(
     source,
-    /if \(ttsLoadInFlight\.current \|\| busyRef\.current === "generating"\) \{\s*pendingRoutedTtsPick\.current = \{\s*repoId,\s*ggufFilename,\s*loadId,\s*audioType,\s*remoteCodeApproval,\s*\};\s*return;\s*\}[\s\S]{0,400}?ttsLoadInFlight\.current = true;/,
+    /if \(ttsLoadInFlight\.current \|\| busyRef\.current === "generating"\) \{\s*pendingRoutedTtsPick\.current = \{\s*repoId,\s*ggufFilename,\s*loadId,\s*audioType,\s*remoteCodeApproval,\s*isGguf,\s*\};\s*return;\s*\}[\s\S]{0,400}?ttsLoadInFlight\.current = true;/,
   );
   // Declining releases the slot and drops the queued pick, which would else re-ask.
   assert.match(
@@ -124,7 +117,7 @@ test("a load confirmed after Audio is hidden is deferred, not sent", () => {
   // nothing to abort. Sending anyway let a hidden page replace the visible page's model.
   assert.match(
     source,
-    /if \(!activeRef\.current\) \{\s*releaseLifecycle\(\);\s*ttsLoadInFlight\.current = false;\s*pendingRoutedTtsPick\.current = \{\s*repoId,\s*ggufFilename,\s*loadId,\s*audioType,\s*remoteCodeApproval,\s*\};\s*return;\s*\}/,
+    /if \(!activeRef\.current\) \{\s*releaseLifecycle\(\);\s*ttsLoadInFlight\.current = false;\s*pendingRoutedTtsPick\.current = \{\s*repoId,\s*ggufFilename,\s*loadId,\s*audioType,\s*remoteCodeApproval,\s*isGguf,\s*\};\s*return;\s*\}/,
   );
   // The activation effect replays exactly that queue, so the pick is not lost.
   assert.match(
@@ -136,7 +129,7 @@ test("a load confirmed after Audio is hidden is deferred, not sent", () => {
 test("Transcribe eject only unloads a sidecar owned by the current selection", () => {
   assert.match(
     source,
-    /const handleEject[\s\S]*stopAndDiscardRecording\(\);[\s\S]*if \(mode === "transcribe"\)/,
+    /const handleEject[\s\S]*?if \(mode === "transcribe"\)/,
   );
   // One release path, shared with the Generate-mode transition, so both stay owned.
   // The selection is forgotten only after the unload lands, so a 500 leaves Eject usable.
@@ -183,15 +176,17 @@ test("leaving Transcribe releases the sidecar it loaded", () => {
 
 test("selected and fallback clip actions remain named and downloadable", () => {
   assert.match(source, /aria-label="Download audio clip"/);
-  assert.match(source, /aria-label="Delete audio clip"/);
+  // Delete sits in the clip card's menu, the same one each history row uses.
+  assert.match(
+    source,
+    /onDelete=\{\(\) => void handleDeleteClip\(clip\.id\)\}/,
+  );
+  assert.match(source, /menu=\{clipMenu\(selectedClip, "row"\)\}/);
   assert.match(
     source,
     /const handleDownloadFallbackClip[\s\S]*anchor\.download = "generated-audio\.wav"/,
   );
-  assert.match(
-    source,
-    /onClick=\{handleDownloadFallbackClip\}[\s\S]*Download WAV/,
-  );
+  assert.match(source, /onDownload=\{handleDownloadFallbackClip\}/);
 });
 
 test("a dictation model this page did not load survives a mode switch", () => {
@@ -201,7 +196,7 @@ test("a dictation model this page did not load survives a mode switch", () => {
   // Eject unloaded a model this page never loaded. Model only, not model plus engine: a
   // "gguf" pick without whisper-server is served by the Transformers fallback and reports
   // residency under that engine, so requiring the requested engine leaked the sidecar.
-  assert.match(source, /claim !== null && claim === sttLoadedModel;/);
+  assert.match(source, /claim !== null &&\s*claim === sttLoadedModel;/);
   // Ownership is claimed after a successful load, not before it: claiming up front left the
   // flag set when a download was cancelled while the backend kept the previous resident
   // model, so leaving Transcribe unloaded another surface's model.
@@ -211,7 +206,7 @@ test("a dictation model this page did not load survives a mode switch", () => {
   );
   assert.match(
     source,
-    /await loadSttModel\(sidecarKey, engine, controller\.signal\);\s*sttLoadedByThisPage\.current = sidecarKey;/,
+    /await loadSttModel\(\s*sidecarKey,\s*engine,\s*controller\.signal,\s*undefined,\s*ggufVariant,\s*\);\s*sttLoadedByThisPage\.current = sidecarKey;/,
   );
 });
 

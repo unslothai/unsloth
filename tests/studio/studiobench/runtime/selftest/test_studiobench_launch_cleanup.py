@@ -59,8 +59,8 @@ def launched(monkeypatch, tmp_path):
     }
 
     # `raising = False` so this fixture also builds against a lifecycle without the constant, which
-    # is what makes the test below fail on the unfixed code for the reason it is about rather than
-    # on the way in.
+    # makes the test below fail on the unfixed code for the reason it is about rather than on the way
+    # in.
     monkeypatch.setattr(lifecycle, "PID_DISCOVERY_TIMEOUT_S", 0.0, raising = False)
     # Stubbed for the same reason and, for every test but the two about it, so that whatever this
     # machine happens to have on :5399 cannot decide the answer.
@@ -70,8 +70,7 @@ def launched(monkeypatch, tmp_path):
     monkeypatch.setattr(lifecycle, "_find_unsloth_bin", lambda install: "/bin/true")
     monkeypatch.setattr(lifecycle, "_read_bootstrap_password", lambda *a, **k: "secret")
     monkeypatch.setattr(lifecycle, "wait_for_healthz", lambda *a, **k: state["healthy"])
-    # Recorded rather than dropped: a launch refused before the spawn has to be shown not to have
-    # spawned anything.
+    # Recorded rather than dropped: a launch refused before the spawn has to be shown not to have spawned anything.
     monkeypatch.setattr(subprocess, "Popen", lambda *a, **k: state["spawned"].append(a))
 
     def fake_run(cmd, *a, **k):
@@ -200,9 +199,8 @@ def test_the_probe_itself_gives_both_answers_against_a_real_socket():
         port = listener.getsockname()[1]
         assert lifecycle.port_is_busy(port) is True
 
-    # Closed, so the same port is now the negative case. A port the kernel has just released can
-    # linger in TIME_WAIT for a connect, which is why the assertion below is on a port that was
-    # never bound at all rather than on this one.
+    # Closed, so the same port is now the negative case. A port the kernel has just released can linger
+    # in TIME_WAIT for a connect, which is why the assertion below is on a port never bound at all.
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
         probe.bind(("127.0.0.1", 0))
         free_port = probe.getsockname()[1]

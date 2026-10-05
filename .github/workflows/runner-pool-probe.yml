@@ -1,0 +1,75 @@
+name: Runner pool probe
+
+# Does the runner label change how long a job waits? Identical no-op cells dispatched in
+# the same second from one matrix, so the label is the only variable. Re-run it after any
+# relabelling, to check the advantage did not just move with the crowd.
+on:
+  pull_request:
+    paths:
+      - .github/workflows/runner-pool-probe.yml
+
+# Latest-only, like every other pull-request workflow here. This one fans out to ten
+# runners, so a second push to the same pull request was leaving a full ten-runner matrix
+# measuring a commit nobody will merge.
+#
+# What that costs is SLOTS, not minutes. This repository is public, so standard
+# GitHub-hosted runners bill nothing and the account's included-minutes meter reads zero;
+# every label in the matrix below is a standard runner. The scarce resource is concurrency,
+# and four of these ten cells are macOS against a cap of five concurrent macOS jobs
+# ACCOUNT-WIDE, across every repository -- the cap tests/studio/test_macos_slots_per_commit.py
+# exists to protect, and the reason macOS queue waits here are measured in hours rather
+# than minutes.
+#
+# What cancelling saves is SMALL, and that is worth stating rather than inflating. A cell
+# that reaches a runner holds it for about five seconds, because the whole job is one echo:
+# measured over the 16 macOS cells of the last four successful dispatches, median 4s and
+# longest 6s. `timeout-minutes: 10` below is the cutoff for a cell that HANGS and nothing
+# else; reading it as what a superseded matrix holds overstates the normal case by two
+# orders of magnitude. A queued cell holds no slot at all, so a superseded matrix that is
+# still waiting costs nothing until it is dispatched, and what it then takes from the job
+# behind it is those few seconds, four times over.
+#
+# The reason to cancel anyway is that the saving is free and the pool is genuinely
+# contended. Those same 16 cells waited a median of 15 minutes to reach a runner and one
+# waited just over 3 hours; the superseded dispatch that prompted this waited 5 minutes
+# 9 seconds before the newer push cleared it. Those are the probe's OWN waits, evidence
+# that macOS capacity is scarce, and deliberately not offered as delay it imposed on
+# anyone else: the two were conflated here once already.
+#
+# Superseding does not weaken the measurement. The probe compares labels WITHIN one
+# dispatch -- the ten cells ENTER the queue in the same second, which is what makes their
+# waits comparable, and that is the only comparison it makes -- so a cancelled older
+# matrix takes a whole self-contained measurement with it rather than half of the current
+# one. They leave it at whatever times their labels can be served, which is the result.
+# Two dispatches were never comparable to each other anyway: the queue they sampled is
+# not the same queue.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    name: probe (${{ matrix.label }})
+    runs-on: ${{ matrix.label }}
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        label:
+          - ubuntu-latest
+          - ubuntu-24.04
+          - ubuntu-22.04
+          - ubuntu-24.04-arm
+          - windows-latest
+          - windows-2022
+          - macos-latest
+          - macos-15
+          - macos-26
+          - macos-15-intel
+    steps:
+      - name: Report
+        shell: bash
+        run: echo "label=${{ matrix.label }} runner=$RUNNER_NAME arch=$(uname -m)"

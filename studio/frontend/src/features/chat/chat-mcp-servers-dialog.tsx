@@ -7,7 +7,7 @@ import {
   PlusSignIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { RefreshCwIcon, UploadIcon } from "lucide-react";
+import { UploadIcon } from "lucide-react";
 import {
   type ChangeEvent,
   useCallback,
@@ -41,6 +41,7 @@ import { Spinner } from "@/components/ui/spinner";
 import { Switch } from "@/components/ui/switch";
 import { subscribeToMcpServerMutationSettlements } from "./api/mcp-server-mutation-tracker";
 import {
+  type McpImageInputMapping,
   type McpServerConfig,
   createMcpServer,
   decodeMcpStdioCommand,
@@ -57,6 +58,9 @@ import {
   createMcpStdioSnapshot,
   resolveMcpStdioUrl,
 } from "./mcp-server-form";
+import { McpImageMappings } from "./mcp-image-mappings";
+import { RefreshGlyph } from "@/lib/refresh-icon";
+
 type HeaderRow = { id: string; key: string; value: string };
 type ArgumentRow = { id: string; value: string };
 type FormTransport = "unknown" | "http" | "stdio";
@@ -70,7 +74,18 @@ type FormState = {
   headers: HeaderRow[];
   credentialTransport: Exclude<FormTransport, "unknown"> | null;
   useOauth: boolean;
+  imageInputMappings: McpImageInputMapping[];
 };
+
+// What image-field discovery reads: it probes the SAVED server, so it waits for these to be saved.
+function connectionKey(form: FormState): string {
+  return JSON.stringify([
+    form.url,
+    form.arguments.map((row) => row.value),
+    form.headers.map((row) => [row.key, row.value]),
+    form.useOauth,
+  ]);
+}
 
 const EMPTY_FORM: FormState = {
   displayName: "",
@@ -81,6 +96,7 @@ const EMPTY_FORM: FormState = {
   headers: [],
   credentialTransport: null,
   useOauth: false,
+  imageInputMappings: [],
 };
 
 function newRowId(): string {
@@ -115,8 +131,8 @@ function headersToObject(
   return Object.keys(out).length > 0 ? out : undefined;
 }
 
-// A non-HTTP address is a local stdio command. Case-insensitive to match the
-// backend's is_stdio(), so all layers split http-vs-command identically.
+// A non-HTTP address is a local stdio command. Case-insensitive to match the backend's is_stdio(),
+// so all layers split http-vs-command identically.
 function isHttpAddress(value: string): boolean {
   const trimmed = value.trim().toLowerCase();
   return trimmed.startsWith("http://") || trimmed.startsWith("https://");
@@ -178,8 +194,8 @@ function isValidAddress(value: string): boolean {
       return false;
     }
   }
-  // The backend owns stdio parsing and validation. In particular, the browser
-  // must not split an executable or duplicate platform-specific quoting rules.
+  // The backend owns stdio parsing and validation. In particular, the browser must not split an
+  // executable or duplicate platform-specific quoting rules.
   return true;
 }
 
@@ -208,7 +224,7 @@ function ArgumentsEditor({
           onClick={add}
           disabled={disabled}
         >
-          <HugeiconsIcon icon={PlusSignIcon} size={14} />
+          <HugeiconsIcon icon={PlusSignIcon} className="size-3.5" />
           Add argument
         </Button>
       </div>
@@ -236,7 +252,7 @@ function ArgumentsEditor({
                 disabled={disabled}
                 aria-label={`Remove argument ${index + 1}`}
               >
-                <HugeiconsIcon icon={Delete02Icon} size={14} />
+                <HugeiconsIcon icon={Delete02Icon} className="size-3.5" />
               </Button>
             </div>
           ))}
@@ -290,7 +306,7 @@ function HeadersEditor({
           onClick={add}
           disabled={disabled}
         >
-          <HugeiconsIcon icon={PlusSignIcon} size={14} />
+          <HugeiconsIcon icon={PlusSignIcon} className="size-3.5" />
           {copy.add}
         </Button>
       </div>
@@ -330,7 +346,7 @@ function HeadersEditor({
                 disabled={disabled}
                 aria-label={copy.remove}
               >
-                <HugeiconsIcon icon={Delete02Icon} size={14} />
+                <HugeiconsIcon icon={Delete02Icon} className="size-3.5" />
               </Button>
             </div>
           ))}
@@ -358,6 +374,7 @@ export function ChatMcpServersDialog({
   const [loading, setLoading] = useState(false);
   const [view, setView] = useState<View>({ kind: "list" });
   const [form, setForm] = useState<FormState>(EMPTY_FORM);
+  const [savedConnection, setSavedConnection] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [testing, setTesting] = useState(false);
   const [codecPending, setCodecPending] = useState(false);
@@ -503,18 +520,21 @@ export function ChatMcpServersDialog({
       headers: headersFromObject(server.headers ?? {}),
       credentialTransport: isHttpAddress(server.url) ? "http" : "stdio",
       useOauth: server.use_oauth ?? false,
+      imageInputMappings: server.image_input_mappings ?? [],
     };
 
     if (isHttpAddress(server.url)) {
       setCodecPending(false);
       setDecodingCommand(false);
       setForm(baseForm);
+      setSavedConnection(connectionKey(baseForm));
       return;
     }
 
     setCodecPending(true);
     setDecodingCommand(true);
     setForm(baseForm);
+    setSavedConnection(null);
     try {
       const decoded = await decodeMcpStdioCommand(server.url);
       if (
@@ -523,7 +543,7 @@ export function ChatMcpServersDialog({
       ) {
         return;
       }
-      setForm({
+      const decodedForm: FormState = {
         ...baseForm,
         url: decoded.command,
         arguments: argumentsFromStrings(decoded.arguments ?? []),
@@ -533,7 +553,9 @@ export function ChatMcpServersDialog({
           decoded.arguments ?? [],
         ),
         useOauth: false,
-      });
+      };
+      setForm(decodedForm);
+      setSavedConnection(connectionKey(decodedForm));
     } catch (err) {
       if (
         formGenerationRef.current !== generation ||
@@ -696,6 +718,7 @@ export function ChatMcpServersDialog({
           url,
           headers: headers ?? null,
           useOauth: stdio ? false : form.useOauth,
+          imageInputMappings: form.imageInputMappings,
         });
         if (formGenerationRef.current !== generation) return;
         toast.success("MCP server updated");
@@ -880,7 +903,7 @@ export function ChatMcpServersDialog({
   return (
     <Dialog open={open} onOpenChange={handleOpenChange}>
       <DialogContent
-        className="max-w-2xl"
+        className="max-w-2xl max-h-[85dvh] overflow-y-auto"
         showCloseButton={!(saving && !codecPending) && busyIds.size === 0}
         aria-busy={decodingCommand}
       >
@@ -915,7 +938,7 @@ export function ChatMcpServersDialog({
                   disabled={importing || formPending}
                   title="Import servers from a mcpServers JSON config (Claude Desktop, Cursor, VS Code…)"
                 >
-                  {importing ? <Spinner /> : <UploadIcon size={14} />}
+                  {importing ? <Spinner /> : <UploadIcon className="size-3.5" />}
                   Import config
                 </Button>
               </div>
@@ -1044,6 +1067,20 @@ export function ChatMcpServersDialog({
               </div>
             )}
 
+            <McpImageMappings
+              key={view.kind === "edit" ? view.id : "new"}
+              serverId={view.kind === "edit" ? view.id : undefined}
+              value={form.imageInputMappings}
+              onChange={(imageInputMappings) =>
+                setForm((prev) => ({ ...prev, imageInputMappings }))
+              }
+              disabled={formPending}
+              connectionUnsaved={
+                savedConnection === null ||
+                connectionKey(form) !== savedConnection
+              }
+            />
+
             {form.transport !== "unknown" && (
               <HeadersEditor
                 rows={form.headers}
@@ -1103,11 +1140,11 @@ export function ChatMcpServersDialog({
                 disabled={importing}
                 title="Import servers from a mcpServers JSON config (Claude Desktop, Cursor, VS Code…)"
               >
-                {importing ? <Spinner /> : <UploadIcon size={14} />}
+                {importing ? <Spinner /> : <UploadIcon className="size-3.5" />}
                 Import config
               </Button>
               <Button size="sm" onClick={startCreate} disabled={importing}>
-                <HugeiconsIcon icon={PlusSignIcon} size={14} />
+                <HugeiconsIcon icon={PlusSignIcon} className="size-3.5" />
                 Add server
               </Button>
             </div>
@@ -1115,13 +1152,13 @@ export function ChatMcpServersDialog({
               <div className="flex justify-center py-6">
                 <Spinner />
               </div>
-            ) : servers.length === 0 ? (
+            ) : servers.filter((server) => !server.builtin_id).length === 0 ? (
               <div className="rounded-md border border-dashed py-6 text-center text-sm text-muted-foreground">
-                No MCP servers configured yet.
+                No custom MCP servers configured yet.
               </div>
             ) : (
               <ul className="flex flex-col divide-y rounded-md border">
-                {servers.map((server) => (
+                {servers.filter((server) => !server.builtin_id).map((server) => (
                   <li
                     key={server.id}
                     className="flex items-center justify-between gap-3 px-3 py-2"
@@ -1153,7 +1190,7 @@ export function ChatMcpServersDialog({
                         {refreshingIds.has(server.id) ? (
                           <Spinner />
                         ) : (
-                          <RefreshCwIcon size={14} />
+                          <RefreshGlyph className="size-3.5" />
                         )}
                       </Button>
                       <Button
@@ -1164,7 +1201,7 @@ export function ChatMcpServersDialog({
                         aria-label="Edit server"
                         disabled={importing || busyIds.has(server.id)}
                       >
-                        <HugeiconsIcon icon={Edit03Icon} size={14} />
+                        <HugeiconsIcon icon={Edit03Icon} className="size-3.5" />
                       </Button>
                       <Button
                         type="button"
@@ -1174,7 +1211,7 @@ export function ChatMcpServersDialog({
                         aria-label="Delete server"
                         disabled={importing || busyIds.has(server.id)}
                       >
-                        <HugeiconsIcon icon={Delete02Icon} size={14} />
+                        <HugeiconsIcon icon={Delete02Icon} className="size-3.5" />
                       </Button>
                     </div>
                   </li>

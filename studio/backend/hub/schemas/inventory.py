@@ -6,12 +6,24 @@
 Kept independent from upstream models/models.py so the Hub module can ship
 without modifying any upstream schema."""
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, PrivateAttr, model_validator
 from typing import List, Literal, Optional
+
+from core.inference.audio_workflows import inventory_audio_workflows
 
 
 ModelFormat = Literal["gguf", "safetensors", "adapter", "checkpoint", "unknown"]
 ModelRuntime = Literal["llama_cpp", "transformers", "adapter", "unknown"]
+LocalArtifactKind = Literal[
+    "diffusers_pipeline",
+    "diffusers_modular_pipeline",
+    "diffusers_dual_pipeline",
+    "transformers_model",
+    "single_file_checkpoint",
+    "gguf",
+    "adapter",
+    "unknown",
+]
 
 
 class GgufVariantDetail(BaseModel):
@@ -19,11 +31,31 @@ class GgufVariantDetail(BaseModel):
 
     filename: str = Field(..., description = "GGUF filename (e.g., 'gemma-3-4b-it-Q4_K_M.gguf')")
     quant: str = Field(..., description = "Quantization label or internal GGUF variant key")
+    cache_path: Optional[str] = Field(
+        None, description = "Owning cache repository for this complete variant"
+    )
+    # Declared so the host-path boundary's redacted stand-in survives response-model
+    # serialization: without it an API-key caller loses both the path and the reference
+    # that would pin a later delete to this copy.
+    cache_ref: Optional[str] = Field(
+        None, description = "Opaque stand-in for cache_path, stable for the server's life"
+    )
     display_label: Optional[str] = Field(
         None, description = "Optional user-facing label when quant is an internal key"
     )
     size_bytes: int = Field(0, description = "File size in bytes")
     download_size_bytes: int = Field(0, description = "Total bytes needed to download this variant")
+    pending_drafter_filename: Optional[str] = Field(
+        None,
+        description = (
+            "The sole missing MTP/DSpark/DFlash companion when the main GGUF and any "
+            "vision projector are already cached. Lets the download UI name the artifact "
+            "it is actually transferring instead of presenting it as the whole model."
+        ),
+    )
+    pending_drafter_size_bytes: int = Field(
+        0, description = "Remote size of pending_drafter_filename"
+    )
     download_remaining_bytes: Optional[int] = Field(
         None,
         description = (
@@ -96,6 +128,10 @@ class GgufVariantsResponse(BaseModel):
         False,
         description = "Whether this answer came from resolving repo_id as a local path",
     )
+    dependencies_resolved: bool = Field(
+        False,
+        description = "Whether Hub metadata was available to resolve the variant's required companion files",
+    )
     loadable_variants: Optional[List[str]] = Field(
         None,
         description = (
@@ -122,6 +158,8 @@ class LocalModelCapabilities(BaseModel):
 class LocalModelInfo(BaseModel):
     """Discovered local model candidate."""
 
+    _scan_root: Optional[str] = PrivateAttr(None)
+
     id: str = Field(..., description = "Identifier to use for loading/training")
     inventory_id: Optional[str] = Field(
         None, description = "Stable semantic inventory row identifier"
@@ -133,6 +171,10 @@ class LocalModelInfo(BaseModel):
     path: str = Field(..., description = "Local path where model data was discovered")
     size_bytes: int = Field(0, description = "Observed model artifact size in bytes")
     model_format: ModelFormat = Field("unknown", description = "Model file format")
+    artifact_kind: LocalArtifactKind = Field(
+        "unknown",
+        description = "Structural contract, e.g. a Diffusers pipeline root vs a Transformers dir",
+    )
     runtime: ModelRuntime = Field("unknown", description = "Expected runtime backend")
     format_variant: Optional[str] = Field(
         None, description = "Format variant label, for example a GGUF quant"
@@ -141,7 +183,7 @@ class LocalModelInfo(BaseModel):
         default_factory = LocalModelCapabilities,
         description = "Declared capabilities for this inventory row",
     )
-    source: Literal["models_dir", "hf_cache", "lmstudio", "ollama", "custom"] = Field(
+    source: Literal["models_dir", "hf_cache", "lmstudio", "ollama", "hermes", "custom"] = Field(
         ...,
         description = "Discovery source",
     )
@@ -164,6 +206,10 @@ class LocalModelInfo(BaseModel):
     audio_type: Optional[str] = Field(
         None,
         description = "Detected output-audio architecture or codec used by Audio runtime policy",
+    )
+    audio_workflows: Optional[List[str]] = Field(
+        None,
+        description = "Audio page workflows (speak, clone, music, transcribe) this row serves; null when not audio",
     )
     base_model: Optional[str] = Field(
         None,
@@ -200,6 +246,20 @@ class LocalModelInfo(BaseModel):
         False,
         description = "Whether THIS partial can be continued byte for byte.",
     )
+    # Mirrors CachedModelRepo.companion_prefetch: the Hub merges both listings.
+    companion_prefetch: bool = Field(
+        False,
+        description = (
+            "Pipeline repo holding only what a GGUF load borrowed (VAE, text encoder): partial "
+            "for loading, not an unfinished download."
+        ),
+    )
+
+    @model_validator(mode = "after")
+    def derive_audio_workflows(self):
+        if self.audio_workflows is None:
+            self.audio_workflows = inventory_audio_workflows(self.task, self.audio_type)
+        return self
 
 
 class LocalModelListResponse(BaseModel):
@@ -218,6 +278,10 @@ class LocalModelListResponse(BaseModel):
         default_factory = list,
         description = "Ollama model directories that were scanned",
     )
+    hermes_dirs: List[str] = Field(
+        default_factory = list,
+        description = "Hermes model directories that were scanned",
+    )
     models: List[LocalModelInfo] = Field(
         default_factory = list,
         description = "Discovered local/cached models",
@@ -230,6 +294,8 @@ class CachedRepoBase(BaseModel):
     repo_id: str
     size_bytes: int = 0
     cache_path: Optional[str] = None
+    # Opaque stand-in for ``cache_path``, stable for the server's life and not reversible.
+    cache_ref: Optional[str] = None
     last_modified: Optional[float] = None
     partial: bool = False
     partial_transport: Optional[str] = None
@@ -237,13 +303,22 @@ class CachedRepoBase(BaseModel):
     inventory_id: Optional[str] = None
     load_id: Optional[str] = None
     model_format: ModelFormat = "unknown"
+    artifact_kind: LocalArtifactKind = "unknown"
     runtime: ModelRuntime = "unknown"
     format_variant: Optional[str] = None
     capabilities: LocalModelCapabilities = Field(default_factory = LocalModelCapabilities)
-    # Inferred pipeline task ("text-to-image" / "text-to-video" / a chat task / None). The task-scoped pickers filter On
-    # Device rows on it and the chat picker routes a diffusion pick by it, so a row without one is dropped from those lists.
+    # The task-scoped pickers filter On Device rows on the inferred task and the chat picker routes a
+    # diffusion pick by it, so a row without one is dropped from those lists.
     task: Optional[str] = None
     audio_type: Optional[str] = None
+    # Audio page workflows the row serves, from the task first: audio.cpp music rows carry no audio_type.
+    audio_workflows: Optional[List[str]] = None
+
+    @model_validator(mode = "after")
+    def derive_audio_workflows(self):
+        if self.audio_workflows is None:
+            self.audio_workflows = inventory_audio_workflows(self.task, self.audio_type)
+        return self
 
 
 class CachedGgufRepo(CachedRepoBase):
@@ -269,17 +344,17 @@ class CachedModelRepo(CachedRepoBase):
     pipeline_tag: Optional[str] = None
     library_name: Optional[str] = None
     tags: Optional[List[str]] = None
-    # True for a diffusion-tagged repo with NO top-level model_index.json: a single-file checkpoint needing from_single_file
-    # + a filename. Pickers must not offer it as a pipeline load unless the catalog carries a curated artifact for it.
+    # True for a diffusion-tagged repo with NO top-level model_index.json: a single-file checkpoint
+    # needing from_single_file plus a filename. Pickers must not offer it as a pipeline load unless
+    # the catalog carries a curated artifact.
     single_file: bool = False
-    # True for an sd.cpp companion mirror: a VAE / text-encoder repo with no denoiser, so it is
-    # never a pick on ANY page. It still gets a row, because these run to tens of GB and the row
-    # is how they are seen and deleted; the pickers filter on this instead.
+    # An sd.cpp companion mirror is never a pick on any page, but still gets a row, because these run to
+    # tens of GB and the row is how they are seen and deleted.
     companion: bool = False
-    # True when the SELECTED revision is a diffusers pipeline. An unrecognised one carries no
-    # task and no root config for can_chat, so this flag is all that keeps it out of a chat
-    # picker. Declared because response_model drops undeclared keys, which left the CLI
-    # (reading the dict in-process) and the frontend disagreeing about the same row.
+    companion_prefetch: bool = False
+    # An unrecognised pipeline carries no task and no root config for can_chat, so this flag is all
+    # that keeps it out of a chat picker. Declared because response_model drops undeclared keys, which
+    # left the CLI and the frontend disagreeing about the same row.
     diffusers: bool = False
 
 
@@ -343,6 +418,12 @@ class CompanionAssetInfo(BaseModel):
 class DeleteImpactResponse(BaseModel):
     """What a pending delete would actually do, so the confirm dialog can say it."""
 
+    cache_path: Optional[str] = Field(
+        None, description = "Cache repository folder targeted by this delete"
+    )
+    # Opaque stand-in for ``cache_path``, filled in by the host-path boundary for API-key callers.
+    cache_ref: Optional[str] = None
+
     repo_id: str
     variant: Optional[str] = None
     reclaimed_bytes: int = Field(0, description = "Bytes this delete frees, from the cache scan")
@@ -364,6 +445,8 @@ class OrphanCompanionInfo(BaseModel):
     repo_id: str
     size_bytes: int = 0
     cache_path: Optional[str] = None
+    # Opaque stand-in for ``cache_path``, stable for the server's life and not reversible.
+    cache_ref: Optional[str] = None
 
 
 class OrphanCompanionsResponse(BaseModel):
