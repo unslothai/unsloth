@@ -75,7 +75,13 @@ async def stream_transcript(transcribe, title: str):
             elif not done:
                 yield json.dumps({"type": "heartbeat"}) + "\n"
         # Updates published before the run finished still go out ahead of its result, in order.
-        if pending.done():
+        # Stop the reader first: left running, it would take the next update off the deque while
+        # this generator is suspended on a yield below, and that update would never be sent.
+        if not pending.done():
+            pending.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await pending
+        if not pending.cancelled():
             yield json.dumps(pending.result()) + "\n"
         while updates:
             yield json.dumps(updates.popleft()) + "\n"
