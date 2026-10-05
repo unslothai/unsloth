@@ -212,9 +212,8 @@ def _launch(
     plan = False,
 ):
     nested = code2 is not None
-    # Traced with dynamic=True (zoo's compiled LoRA forwards), the weight's sizes arrive as SymInts:
-    # they are per-weight constants that pick constexprs and the grid, so specialize them here
-    # (an unhashable SymInt in the cached config made Dynamo skip the whole frame).
+    # Under dynamic=True the weight sizes arrive as SymInts; specialize them (an unhashable SymInt
+    # in the cached config made Dynamo skip the frame).
     N, K, blocksize, blocksize2 = int(N), int(K), int(blocksize), int(blocksize2)
     use_words, grid, block_n, block_k, num_warps = _gemv_config(
         N, K, blocksize, _capability(X.device.index), _word_aligned(W), _FORCE_KERNEL
