@@ -33,6 +33,7 @@ import {
 import {
   RELOAD_MISSING_HISTORY_MESSAGE,
   reloadLastModel,
+  splitActiveModel,
 } from "../reload-last-model";
 
 function toModelOptions(
@@ -54,12 +55,13 @@ function toModelOptions(
 export function ApiModelLoadControls({
   activeModel,
   onSettled,
+  onUnloadActive,
 }: {
   activeModel: string | null | undefined;
   onSettled: () => void;
+  onUnloadActive: () => void;
 }): ReactElement {
   const { selectModel, refresh, ejectModel } = useChatModelRuntime();
-  const activeGgufVariant = useChatRuntimeStore((s) => s.activeGgufVariant);
   const modelsFromStore = useChatRuntimeStore((s) => s.models);
   const lorasFromStore = useChatRuntimeStore((s) => s.loras);
   const modelLoading = useChatRuntimeStore((s) => s.modelLoading);
@@ -203,7 +205,9 @@ export function ApiModelLoadControls({
         ? `Reload ${lastLoadLabel}`
         : RELOAD_MISSING_HISTORY_MESSAGE;
 
-  const effectiveModel = activeModel ?? "";
+  // Chat's selection can lag an API auto-switch, so label and eject follow the monitor.
+  const { id: effectiveModel, ggufVariant: activeGgufVariant } =
+    splitActiveModel(activeModel);
   const isLoaded = Boolean(activeModel);
 
   return (
@@ -217,8 +221,12 @@ export function ApiModelLoadControls({
         onValueChange={(value, meta) => {
           handlePick(value, meta);
         }}
-        onEject={() => {
-          ejectModel().then(() => onSettled());
+        onEject={(modelId) => {
+          if (modelId) {
+            ejectModel(modelId).then(() => onSettled());
+          } else {
+            onUnloadActive();
+          }
         }}
         onFoldersChange={() => {
           refreshLocalModels();

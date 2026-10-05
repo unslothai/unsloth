@@ -8,6 +8,7 @@ import {
   RELOAD_MISSING_HISTORY_MESSAGE,
   reloadLastModel,
   resolveReloadTarget,
+  splitActiveModel,
   type ReloadTarget,
 } from "../src/features/api-monitor/reload-last-model.ts";
 
@@ -78,4 +79,16 @@ test("reloadLastModel awaits durable history before loading", async () => {
   });
   assert.equal(target.id, "unsloth/llama");
   assert.deepEqual(loaded, [target]);
+});
+
+test("splitActiveModel separates the monitor's quant suffix", () => {
+  assert.deepEqual(splitActiveModel("unsloth/Qwen3-0.6B-GGUF:Q4_K_M"), {
+    id: "unsloth/Qwen3-0.6B-GGUF",
+    ggufVariant: "Q4_K_M",
+  });
+  assert.deepEqual(splitActiveModel("unsloth/Llama-3.2-1B-Instruct"), {
+    id: "unsloth/Llama-3.2-1B-Instruct",
+    ggufVariant: null,
+  });
+  assert.deepEqual(splitActiveModel(null), { id: "", ggufVariant: null });
 });

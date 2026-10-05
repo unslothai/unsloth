@@ -56,3 +56,19 @@ export async function reloadLastModel<C>(
   await deps.loadTarget(target);
   return target;
 }
+
+// The monitor reports a llama.cpp model as "<id>:<quant>".
+export function splitActiveModel(activeModel: string | null | undefined): {
+  id: string;
+  ggufVariant: string | null;
+} {
+  if (!activeModel) {
+    return { id: "", ggufVariant: null };
+  }
+  const sep = activeModel.lastIndexOf(":");
+  const variant = activeModel.slice(sep + 1);
+  if (sep <= 0 || !variant || variant.includes("/")) {
+    return { id: activeModel, ggufVariant: null };
+  }
+  return { id: activeModel.slice(0, sep), ggufVariant: variant };
+}
