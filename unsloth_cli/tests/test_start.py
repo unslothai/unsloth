@@ -6962,7 +6962,7 @@ def test_connect_dsh_no_launch(fake_studio, tmp_path):
     assert not (home / "settings.yaml").exists()
 
 
-# ── Vibe (Mistral, OpenAI-compatible /v1, key via env, ~/.vibe relocated via VIBE_HOME) ──
+# ── Vibe (Mistral, OpenAI-compatible /v1, settings and key via VIBE_* env) ──
 
 
 def _vibe_settings(env: dict) -> tuple:
@@ -7003,86 +7003,24 @@ def test_vibe_env_carries_temperature_and_odd_model_ids():
     assert set(models[0]) == {"name", "provider", "alias"}
 
 
-def test_connect_vibe_no_launch_keeps_user_config(fake_studio, tmp_path):
-    home = tmp_path / "agents" / "vibe"
-    home.mkdir(parents = True)
-    # Vibe persists /config edits here; a stable --no-launch home must keep them.
-    user_config = 'vim_keybindings = true\ndefault_agent = "plan"\n'
-    (home / "config.toml").write_text(user_config)
+def test_connect_vibe_no_launch_uses_env_only(fake_studio, tmp_path):
     result = CliRunner().invoke(start.start_app, ["vibe", "--no-launch", "--yolo"])
     assert result.exit_code == 0, result.output
     _assert_env_set(result.output, "UNSLOTH_API_KEY", "sk-unsloth-feedfacefeedface")
-    _assert_env_set(result.output, "VIBE_HOME", str(home))
     _assert_env_set(result.output, "VIBE_ACTIVE_MODEL", start._VIBE_MODEL_ALIAS)
+    assert "VIBE_HOME" not in result.output
     assert _launch_command(result.output) == ["vibe", "--auto-approve"]
-    assert (home / "config.toml").read_text() == user_config
-    assert sorted(p.name for p in home.iterdir()) == ["config.toml"]
-
-
-@pytest.mark.skipif(os.name == "nt", reason = "symlink privilege")
-def test_vibe_session_sees_user_agents_and_cleanup_keeps_them(fake_studio, tmp_path, monkeypatch):
-    user_home = tmp_path / "user"
-    agents = user_home / ".vibe" / "agents"
-    agents.mkdir(parents = True)
-    (agents / "mine.toml").write_text('display_name = "mine"\n')
-    monkeypatch.setattr(start.Path, "home", lambda: user_home)
-    monkeypatch.delenv("VIBE_HOME", raising = False)
-    monkeypatch.setattr(start.shutil, "which", lambda _: "/usr/local/bin/vibe")
-    monkeypatch.setattr(start, "_managed_node_tools", lambda: None)
-    seen = {}
-
-    def run(
-        command,
-        env = None,
-        **kwargs,
-    ):
-        seen["profile"] = (Path(env["VIBE_HOME"]) / "agents" / "mine.toml").read_text()
-        return SimpleNamespace(returncode = 0)
-
-    monkeypatch.setattr(start.subprocess, "run", run)
-    result = CliRunner().invoke(start.start_app, ["vibe", "--agent", "mine"])
-    assert result.exit_code == 0, result.output
-    assert seen["profile"] == 'display_name = "mine"\n'
-    # The ephemeral session is removed; the user's profile is not.
-    assert (agents / "mine.toml").exists()
-
-
-def test_write_vibe_user_resources_honours_user_vibe_home(tmp_path, monkeypatch):
-    custom = tmp_path / "custom"
-    (custom / "skills").mkdir(parents = True)
-    monkeypatch.setenv("VIBE_HOME", str(custom))
-    session = tmp_path / "session"
-    session.mkdir()
-    start.write_vibe_user_resources(session)
-    assert (session / "skills").resolve() == (custom / "skills").resolve()
-    assert not (session / "agents").exists()
-    start.write_vibe_user_resources(custom)
-    assert not (custom / "skills").is_symlink()
-
-
-def test_write_vibe_user_resources_shares_folder_trust(tmp_path, monkeypatch):
-    user = tmp_path / "user"
-    user.mkdir()
-    (user / "trusted_folders.toml").write_text('trusted = ["/repo"]\nuntrusted = []\n')
-    monkeypatch.setenv("VIBE_HOME", str(user))
-    session = tmp_path / "session"
-    session.mkdir()
-    start.write_vibe_user_resources(session)
-    assert (session / "trusted_folders.toml").read_text() == 'trusted = ["/repo"]\nuntrusted = []\n'
-    # A persisted session's own trust file is never replaced.
-    other = tmp_path / "other"
-    other.mkdir()
-    (other / "trusted_folders.toml").write_text("trusted = []\n")
-    start.write_vibe_user_resources(other)
-    assert (other / "trusted_folders.toml").read_text() == "trusted = []\n"
+    # Vibe's own home (instructions, hooks, trust, agents) is used as is; nothing is written.
+    assert not (tmp_path / "agents" / "vibe").exists()
 
 
 def test_vibe_launch_keeps_user_home(fake_studio, monkeypatch):
     monkeypatch.setattr(start.shutil, "which", lambda _: "/usr/local/bin/vibe")
     captured = _capture_launch(monkeypatch, ["vibe", "--temperature", "0.6", "-p", "hi"])
     assert captured["command"][-3:] == ["/usr/local/bin/vibe", "-p", "hi"]
-    # Vibe's tools run git/ssh/gh, which need the user's real HOME.
+    # Vibe's tools run git/ssh/gh, which need the user's real HOME; ~/.vibe stays its home.
     assert captured["env"].get("HOME") == os.environ.get("HOME")
+    assert "VIBE_HOME" not in captured["env"]
     assert _vibe_settings(captured["env"])[1][0]["temperature"] == 0.6
 
 
@@ -7109,6 +7047,8 @@ def test_vibe_real_cli_reaches_unsloth(monkeypatch, tmp_path):
     threading.Thread(target = server.serve_forever, daemon = True).start()
     base = f"http://127.0.0.1:{server.server_address[1]}"
     monkeypatch.setattr(start, "_connect", lambda *args, **kwargs: (base, "sk-unsloth-e2e", MODEL))
+    # Keep the real CLI's own state off the runner's ~/.vibe.
+    monkeypatch.setenv("VIBE_HOME", str(tmp_path / "vibe"))
     monkeypatch.chdir(tmp_path)
     try:
         result = CliRunner().invoke(
@@ -8297,7 +8237,6 @@ _RESUME_ENV_VAR = {
     "hermes": "HERMES_HOME",
     "pi": "HOME",
     "dsh": "DSH_HOME",
-    "vibe": "VIBE_HOME",
 }
 
 

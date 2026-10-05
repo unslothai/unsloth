@@ -136,7 +136,6 @@ _OPENCODE_OUTPUT_TOKEN_MAX_ENV = "OPENCODE_EXPERIMENTAL_OUTPUT_TOKEN_MAX"
 _VIBE_PROVIDER = "unsloth-studio"
 _VIBE_MODEL_ALIAS = "unsloth"
 _VIBE_ENV_KEY = "UNSLOTH_API_KEY"
-_VIBE_USER_RESOURCE_DIRS = ("agents", "prompts", "skills", "tools", "plugins")
 # Both installers put binaries in ~/.local/bin; Vibe's exits 1 and uv's leaves the shell PATH stale when it is missing.
 _VIBE_POSIX_INSTALL_HINT = (
     'curl -LsSf https://mistral.ai/vibe/install.sh | PATH="$HOME/.local/bin:$PATH" bash'
@@ -5077,7 +5076,7 @@ def _vibe_env(
     request_body: Optional[dict] = None,
 ) -> dict:
     """Vibe settings as VIBE_* env vars: that layer outranks user and project config.toml, so
-    nothing is written where Vibe persists the user's own /config edits."""
+    nothing is written to the user's Vibe config."""
     entry = {"name": model["id"], "provider": _VIBE_PROVIDER, "alias": _VIBE_MODEL_ALIAS}
     # Vibe sends its own temperature (0.2 by default) with every request.
     temperature = (request_body or {}).get("temperature")
@@ -5103,29 +5102,6 @@ def _vibe_env(
         "VIBE_ENABLE_AUTO_UPDATE": "false",
         "VIBE_ENABLE_NOTIFICATIONS": "false",
     }
-
-
-def write_vibe_user_resources(home: Path) -> None:
-    """Expose the user's Vibe agents, prompts, skills, tools, plugins and folder trust in the session VIBE_HOME."""
-    configured = os.environ.get("VIBE_HOME", "").strip()
-    source = (
-        Path(os.path.abspath(os.path.expanduser(configured)))
-        if configured
-        else Path.home() / ".vibe"
-    )
-    if source.resolve(strict = False) == home.resolve(strict = False):
-        return
-    for name in _VIBE_USER_RESOURCE_DIRS:
-        _link_user_dir(source / name, home / name)
-    # Remembered folder trust: without it -p silently skips a trusted repo's .vibe config.
-    trust, target = source / "trusted_folders.toml", home / "trusted_folders.toml"
-    if target.is_symlink():
-        target.unlink()
-    if trust.is_file() and not target.exists():
-        try:
-            target.symlink_to(trust)
-        except OSError:
-            shutil.copy2(trust, target)
 
 
 def write_pi_config(
@@ -5181,7 +5157,7 @@ def _link_user_dir(source: Path, target: Path) -> bool:
         target.symlink_to(source, target_is_directory = True)
     except OSError:
         if not _create_directory_junction(source, target):
-            typer.echo(f"Warning: couldn't link {source} into the agent session.", err = True)
+            typer.echo(f"Warning: couldn't link {source} into the Pi session.", err = True)
             return False
     return True
 
@@ -6993,12 +6969,7 @@ def vibe(
         server_options = server_options,
     )
     command = ["vibe", *_yolo_command_flags("vibe", yolo), *ctx.args]
-    with _session_config("vibe", launch, persist = persist) as home:
-        # VIBE_HOME keeps Vibe's sessions and config.toml out of the user's ~/.vibe.
-        write_vibe_user_resources(home)
-        env = {
-            _VIBE_ENV_KEY: key,
-            "VIBE_HOME": str(home),
-            **_vibe_env(base, entry, server_options.request_body()),
-        }
-        _run(base, entry, env, command, launch = launch, install_hint = install_hint)
+    # Like claude, Vibe keeps its own home (~/.vibe: instructions, hooks, trust, agents,
+    # sessions); the env layer pins the Unsloth provider and model above its config files.
+    env = {_VIBE_ENV_KEY: key, **_vibe_env(base, entry, server_options.request_body())}
+    _run(base, entry, env, command, launch = launch, install_hint = install_hint)

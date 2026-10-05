@@ -366,7 +366,6 @@ crosscheck_contract() {
     vibe)
       grep -q 'UNSLOTH_API_KEY' "$raw" \
         || guide_fail "Vibe env key is no longer UNSLOTH_API_KEY (start.py _VIBE_ENV_KEY)"
-      [ -n "$(raw_env VIBE_HOME)" ] || guide_fail "VIBE_HOME missing from connect output (start.py vibe())"
       # Provider and model ride in the env layer (start.py _vibe_env), not a config file.
       cfg="$(raw_env VIBE_PROVIDERS)"
       [ -n "$cfg" ] || guide_fail "VIBE_PROVIDERS missing from connect output (start.py _vibe_env)"
