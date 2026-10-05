@@ -526,6 +526,12 @@ def _gallery_items(kind: str) -> list[dict]:
                     sidecar = path.with_suffix(".json").stat().st_size
                 except OSError:
                     pass
+                # A conversion keeps the recording it converted as {id}.source.wav beside its clip.
+                if sidecar is not None and kind == "audio":
+                    try:
+                        sidecar += path.with_name(f"{path.stem}.source.wav").stat().st_size
+                    except OSError:
+                        pass
             items.append(
                 _item(
                     f"{kind}:{record['id']}",
