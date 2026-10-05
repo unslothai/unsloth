@@ -693,6 +693,8 @@ def _is_scaled_word_embedding_forward(cls, forward):
         or getattr(super(owner, cls), "forward", None) is not torch.nn.Embedding.forward
     ):
         return False
+    if hasattr(forward, "__wrapped__"):
+        return False
     fn = ast.parse(textwrap.dedent(inspect.getsource(forward))).body[0]
     body = [
         n
@@ -704,6 +706,7 @@ def _is_scaled_word_embedding_forward(cls, forward):
     ).body
     return (
         isinstance(fn, ast.FunctionDef)
+        and not fn.decorator_list
         and [a.arg for a in fn.args.args] == ["self", "input_ids"]
         and not (fn.args.vararg or fn.args.kwarg or fn.args.kwonlyargs or fn.args.defaults)
         and len(body) == 1
@@ -786,6 +789,7 @@ def _install_offload_embedding_hooks(embed_tokens, output_embeddings, return_dev
                 torch.compiler.is_compiling()
                 and not torch.is_grad_enabled()
                 and not weight.requires_grad
+                and module.max_norm is None
                 and isinstance(input_ids, torch.Tensor)
                 and weight.device != input_ids.device
                 and type(module).forward is cls_forward

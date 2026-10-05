@@ -15,7 +15,7 @@
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 """Compiled-inference path of _install_offload_embedding_hooks: exact op under compile, module elsewhere."""
 
-import ast, os
+import ast, functools, os
 import pytest
 import torch
 import torch.nn as nn
@@ -141,6 +141,47 @@ def test_scaled_forward_must_match_exactly(emb):
     emb = emb().to(torch.bfloat16).requires_grad_(False)
     install(emb, _head("cpu"), torch.device("cpu"))
     assert not getattr(emb, "_unsloth_offload_op_forward", False)
+
+
+def _doubling(f):
+    @functools.wraps(f)
+    def wrapper(self, input_ids):
+        return f(self, input_ids) * 2
+
+    return wrapper
+
+
+class DecoratedScaledEmbedding(nn.Embedding):
+    def __init__(self, *args, **kw):
+        super().__init__(*args, **kw)
+        self.register_buffer("embed_scale", torch.tensor(2.0), persistent = False)
+
+    @_doubling
+    def forward(self, input_ids: torch.Tensor):
+        return super().forward(input_ids) * self.embed_scale.to(self.weight.dtype)
+
+
+def test_decorated_scaled_forward_is_declined():
+    emb = DecoratedScaledEmbedding(V, H, padding_idx = 0)
+    emb = emb.to(torch.bfloat16).requires_grad_(False)
+    install(emb, _head("cpu"), torch.device("cpu"))
+    assert not getattr(emb, "_unsloth_offload_op_forward", False)
+
+
+@needs_cuda
+def test_max_norm_set_after_install_keeps_module():
+    ref = _make()
+    emb = _make()
+    head = _head("cuda")
+    install(emb, head, torch.device("cuda"))
+    assert getattr(emb, "_unsloth_offload_op_forward", False)
+    emb.max_norm = ref.max_norm = 0.5
+    ids = torch.randint(0, V, (4, 9), device = "cuda")
+    torch._dynamo.reset()
+    with torch.no_grad():
+        out = torch.compile(lambda i: emb(i), backend = "aot_eager")(ids)
+        expected = ref(ids.cpu())
+    assert torch.equal(out.cpu(), expected)
 
 
 def test_input_keyword_still_works():
