@@ -439,7 +439,10 @@ def _clef_logits(
     from .clef import QUESTION_TYPES as CLEF_TYPES
 
     device = next(model.parameters()).device
+    # Never fp16 autocast: the gated delta net overflows in pure fp16, so off bf16 GPUs the
+    # backbone runs in the dtype Unsloth loaded it with.
     amp_dtype = _amp_dtype(device)
+    amp_dtype = amp_dtype if amp_dtype == torch.bfloat16 else None
     collate = ClefDataCollator(pad_token_id)
     # Clef numbers question types noul, choice, score; Laya's metrics use choice, score, noul.
     laya_type = {CLEF_TYPES[kind]: QUESTION_TYPES.index(kind) for kind in QUESTION_TYPES}
@@ -490,6 +493,10 @@ def _load_clef(
     from .clef import JointSchemaHead
 
     max_len = int(max_seq_length or CLEF_MAX_LEN)
+    if dtype == torch.float16:
+        # Qwen3.5's gated delta net NaNs in pure fp16; Unsloth picks the dtype and keeps it in fp32 autocast.
+        print("Unsloth: Clef ignores dtype = torch.float16 and lets Unsloth pick the dtype.")
+        dtype = None
     fast = _device().type != "cpu"
     if fast:
         from .loader import FastModel
