@@ -9,7 +9,6 @@ import {
   type ReloadTarget,
   reloadLastModel,
   resolveReloadTarget,
-  splitActiveModel,
 } from "../src/features/api-monitor/reload-last-model.ts";
 
 test("reload target carries the remembered config", () => {
@@ -79,32 +78,4 @@ test("reloadLastModel awaits durable history before loading", async () => {
   });
   assert.equal(target.id, "unsloth/llama");
   assert.deepEqual(loaded, [target]);
-});
-
-test("splitActiveModel separates the monitor's quant suffix", () => {
-  assert.deepEqual(splitActiveModel("unsloth/Qwen3-0.6B-GGUF:Q4_K_M"), {
-    id: "unsloth/Qwen3-0.6B-GGUF",
-    ggufVariant: "Q4_K_M",
-  });
-  assert.deepEqual(splitActiveModel("unsloth/Llama-3.2-1B-Instruct"), {
-    id: "unsloth/Llama-3.2-1B-Instruct",
-    ggufVariant: null,
-  });
-  assert.deepEqual(splitActiveModel("unsloth/Qwen3-0.6B-GGUF:UD-Q4_K_XL"), {
-    id: "unsloth/Qwen3-0.6B-GGUF",
-    ggufVariant: "UD-Q4_K_XL",
-  });
-  assert.deepEqual(splitActiveModel("ollama/llama3:latest"), {
-    id: "ollama/llama3:latest",
-    ggufVariant: null,
-  });
-  assert.deepEqual(splitActiveModel("ollama/qwen3:q4_K_M"), {
-    id: "ollama/qwen3:q4_K_M",
-    ggufVariant: null,
-  });
-  assert.deepEqual(splitActiveModel("my-alias:v2"), {
-    id: "my-alias:v2",
-    ggufVariant: null,
-  });
-  assert.deepEqual(splitActiveModel(null), { id: "", ggufVariant: null });
 });

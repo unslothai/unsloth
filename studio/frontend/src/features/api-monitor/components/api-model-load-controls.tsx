@@ -20,6 +20,7 @@ import {
   type ModelSelectorChangeMeta,
   currentRuntimePerModelConfig,
   resolveResidentInitialConfig,
+  splitQuantSuffix,
 } from "@/features/model-picker";
 import { cn } from "@/lib/utils";
 import { Download01Icon, RefreshIcon } from "@hugeicons/core-free-icons";
@@ -34,7 +35,6 @@ import {
 import {
   RELOAD_MISSING_HISTORY_MESSAGE,
   reloadLastModel,
-  splitActiveModel,
 } from "../reload-last-model";
 
 // A pick superseded by a newer one rejects too; the newer pick owns the outcome.
@@ -105,11 +105,17 @@ export function ApiModelLoadControls({
     refreshLastLoadLabel();
   }, [refresh, refreshLocalModels, refreshLastLoadLabel]);
 
+  // An API auto-switch changes the resident model behind Chat's store; this page's own loads
+  // reconcile themselves.
   useEffect(() => {
-    if (activeModel !== undefined) {
-      refreshLastLoadLabel();
+    if (activeModel === undefined) {
+      return;
     }
-  }, [activeModel, refreshLastLoadLabel]);
+    refreshLastLoadLabel();
+    if (!useChatRuntimeStore.getState().modelLoading) {
+      refresh({ includeLoras: false });
+    }
+  }, [activeModel, refresh, refreshLastLoadLabel]);
 
   const models = useMemo(
     () => toModelOptions(modelsFromStore),
@@ -222,9 +228,13 @@ export function ApiModelLoadControls({
         ? `Reload ${lastLoadLabel}`
         : RELOAD_MISSING_HISTORY_MESSAGE;
 
-  // Chat's selection can lag an API auto-switch, so label and eject follow the monitor.
-  const { id: effectiveModel, ggufVariant: activeGgufVariant } =
-    splitActiveModel(activeModel);
+  // The monitor reports a llama.cpp model as "<id>:<quant>"; Ollama ids carry their own ":<tag>".
+  const quantSplit =
+    activeModel && !activeModel.startsWith("ollama/")
+      ? splitQuantSuffix(activeModel)
+      : null;
+  const effectiveModel = quantSplit?.[0] ?? activeModel ?? "";
+  const activeGgufVariant = quantSplit?.[1] ?? null;
   const isLoaded = Boolean(activeModel);
 
   return (
