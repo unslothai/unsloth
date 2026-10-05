@@ -15,25 +15,49 @@ _FLOATS = (torch.float32, torch.float16, torch.bfloat16)
 
 
 @contextlib.contextmanager
-def _tf32():
+def _tf32(enabled):
     flags = torch.backends.cuda.matmul
     old = flags.allow_tf32
-    flags.allow_tf32 = True
+    flags.allow_tf32 = enabled
     try:
         yield
     finally:
         flags.allow_tf32 = old
 
 
+_EPS32 = torch.finfo(torch.float32).eps / 2  # unit roundoff u
+
+
 def _cholqr_(Y, shift = True):
-    # Y <- Y R^-1 in place, R = chol(Y^T Y) in fp64; the shift keeps rank-deficient sketches factorizable.
-    G = Y.mT.double() @ Y.double()
-    if shift:
-        G.diagonal().add_(G.diagonal().sum() * 1e-14 + 1e-30)
-    R, info = torch.linalg.cholesky_ex(G, upper = True)
-    if not shift and info.item() != 0:
-        return False
-    torch.linalg.solve_triangular(R.to(Y.dtype), Y, upper = True, left = False, out = Y)
+    """Y <- Y R^-1 in place, all fp32 (shifted CholeskyQR, Fukaya et al. 2020). Returns False only when an
+    unshifted pass breaks down; shifted passes cannot fail.
+
+    Columns are scaled to unit norm first (Gram diagonal = 1, no overflow). The shift is Rump-Ogita's
+    breakdown bound 2.2 (n + 1) u tr(G) plus a sqrt(m) u n allowance for the Gram's rounding error; if
+    Cholesky still reports a non-positive pivot the shift grows 100x, and Householder QR is the last resort.
+    """
+    m, n = Y.shape
+    tiny = torch.finfo(torch.float32).tiny
+    # max-abs first: vector_norm squares entries and overflows fp32 above ~1e19.
+    Y.div_(Y.abs().amax(0).clamp_min_(tiny))
+    Y.div_(torch.linalg.vector_norm(Y, dim = 0).clamp_min_(tiny))
+    with _tf32(False):
+        G = Y.mT @ Y
+    if not shift:
+        R, info = torch.linalg.cholesky_ex(G, upper = True)
+        if info.item() != 0:
+            return False
+    else:
+        s = (2.2 * (n + 1) * n + 11.0 * (m**0.5 * n + n * (n + 1))) * _EPS32
+        for _ in range(3):
+            R, info = torch.linalg.cholesky_ex(G + s * torch.eye(n, device = G.device), upper = True)
+            if info.item() == 0:
+                break
+            s *= 100.0
+        else:
+            Y.copy_(torch.linalg.qr(Y).Q)
+            return True
+    torch.linalg.solve_triangular(R, Y, upper = True, left = False, out = Y)
     return True
 
 
@@ -47,44 +71,57 @@ def randomized_svd(
 ):
     """Truncated W ~= U diag(S) Vh by randomized subspace iteration (Halko et al. 2011, Alg. 4.4 + 5.1).
 
-    Returns fp32 U[:, :rank], S[:rank], Vh[:rank]. Oversampling defaults to max(rank, 10): LLM spectra decay
-    slowly, so a wider sketch buys more accuracy per ms than iterations. CholeskyQR replaces cuSOLVER QR
-    (geqrf + ormqr was no faster: ormqr applies the full m x m Q).
+    fp32 throughout. Oversampling defaults to max(rank, 10): LLM spectra decay slowly, so a wider sketch
+    buys more accuracy per ms than iterations. Shifted CholeskyQR replaces cuSOLVER QR in the iterations
+    (geqrf + ormqr was no faster: ormqr applies the full m x m Q); the final basis is shifted CholeskyQR3.
     """
     m, n = W.shape
     A = W if m >= n else W.mT
-    if A.dtype != torch.float32:
-        A = A.float()
+    A = A.float()
     M, N = A.shape
     rank = min(rank, N)
     q = min(rank + (max(rank, 10) if n_oversamples is None else n_oversamples), N)
     Z = torch.randn(N, q, device = A.device, dtype = A.dtype, generator = generator)
 
     def _power(k):
+        # Orthonormalize both half steps: skipping one squares the sketch's dynamic range, and real
+        # weights reach cond(Y) ~ 2e3 at r = 128, where fp32 no longer resolves the squared range.
         for _ in range(k):
             _cholqr_(Y)
             torch.matmul(A.mT, Y, out = Z)
             _cholqr_(Z)
             torch.matmul(A, Z, out = Y)
 
-    with _tf32() if (n_iter > 1 and A.is_cuda) else contextlib.nullcontext():
+    with _tf32(A.is_cuda and n_iter > 1):
         Y = torch.matmul(A, Z)
         _power(n_iter - 1)
     # Last iteration in fp32 removes the TF32 error when sigma_1 / sigma_rank is large.
     _power(min(n_iter, 1))
+    # Shifted CholeskyQR3: the shifted pass bounds cond(Y) by ~u^-1/2, two unshifted passes restore
+    # orthogonality; an unshifted breakdown falls back to Householder QR.
     _cholqr_(Y)
-    if not _cholqr_(Y, shift = False):
+    if not (_cholqr_(Y, shift = False) and _cholqr_(Y, shift = False)):
         Y = torch.linalg.qr(Y).Q
-    torch.matmul(A.mT, Y, out = Z)
+    with _tf32(False):
+        torch.matmul(A.mT, Y, out = Z)  # Z = (Q^T A)^T, N x q
     del A
-    Zd = Z.double()
+    # Z = Q2 R2 (Householder, backward stable), then the SVD of the q x q R2 from the eigenpairs of
+    # [[0, R2], [R2^T, 0]] (eigenvalues +-sigma, so nothing is squared): faster and ~60x more accurate
+    # than cuSOLVER's fp32 SVD at q = 256.
+    Q2, R2 = torch.linalg.qr(Z)
     del Z
-    evals, E = torch.linalg.eigh(Zd.mT @ Zd)
-    E = E[:, -rank:].flip(1)
-    S = evals[-rank:].flip(0).clamp_min_(0).sqrt_()
-    V = (Zd @ E).div_(S.clamp_min(torch.finfo(torch.float64).tiny))
-    U = Y @ E.float()
-    S, V = S.float(), V.float()
+    J = R2.new_zeros(2 * q, 2 * q)
+    J[:q, q:] = R2
+    J[q:, :q] = R2.mT
+    L, X = torch.linalg.eigh(J)
+    X = X[:, -rank:].flip(1)
+    S = L[-rank:].flip(0).clamp_min_(0)
+    tiny = torch.finfo(torch.float32).tiny
+    Ur = X[:q].div_(torch.linalg.vector_norm(X[:q], dim = 0).clamp_min_(tiny))
+    Vr = X[q:].div_(torch.linalg.vector_norm(X[q:], dim = 0).clamp_min_(tiny))
+    # A^T ~= Z Y^T = Q2 Ur S Vr^T Y^T, so A ~= (Y Vr) S (Q2 Ur)^T.
+    V = Q2 @ Ur
+    U = Y @ Vr
     if m < n:
         return V, S, U.mT
     return U, S, V.mT
@@ -130,7 +167,12 @@ def _pissa_init(self, adapter_name, init_lora_weights):
     weight = self.get_base_layer().weight
     dtype = weight.dtype
     r = self.r[adapter_name]
-    if dtype not in _FLOATS or r > min(weight.shape) or weight.device.type == "meta":
+    if (
+        dtype not in _FLOATS
+        or r > min(weight.shape)
+        or weight.device.type == "meta"
+        or not torch.isfinite(weight).all()
+    ):
         return _ORIGINAL["pissa_init"](self, adapter_name, init_lora_weights)
     if init_lora_weights == "pissa":
         n_iter = 6
@@ -141,6 +183,8 @@ def _pissa_init(self, adapter_name, init_lora_weights):
         n_iter = int(parts[-1])
     W = transpose(weight.to(torch.float32), self.fan_in_fan_out)
     U, S, Vh = randomized_svd(W, r, n_iter = n_iter)
+    if not (torch.isfinite(U).all() and torch.isfinite(S).all() and torch.isfinite(Vh).all()):
+        return _ORIGINAL["pissa_init"](self, adapter_name, init_lora_weights)
     scaling = self.scaling[adapter_name]
     S.div_(scaling).sqrt_()
     lora_A = Vh.mul_(S.unsqueeze(1)).contiguous()

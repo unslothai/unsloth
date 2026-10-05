@@ -49,13 +49,42 @@ def test_randomized_svd_near_optimal(shape, rank):
     assert U.dtype == torch.float32 and U.shape == (shape[0], rank) and Vh.shape == (rank, shape[1])
 
 
-def test_randomized_svd_rank_deficient_and_zero():
-    W = torch.zeros(40, 30, device = DEVICE)
-    U, S, Vh = lora_init.randomized_svd(W, 4)
-    assert torch.isfinite(U).all() and torch.isfinite(Vh).all() and (S == 0).all()
-    W = torch.randn(40, 2, device = DEVICE) @ torch.randn(2, 30, device = DEVICE)
-    U, S, Vh = lora_init.randomized_svd(W, 4)
-    assert torch.isfinite(U).all() and torch.allclose((U * S) @ Vh, W, atol = 1e-4)
+def _adversarial():
+    g = torch.Generator().manual_seed(1)
+    return {
+        "zero": torch.zeros(64, 40),
+        "rank1": torch.randn(64, 1, generator = g) @ torch.randn(1, 40, generator = g),
+        "duplicate_columns": torch.randn(64, 4, generator = g).repeat(1, 10),
+        # Column norms above ~1e19 overflow a plain fp32 vector_norm.
+        "column_scales": torch.randn(64, 40, generator = g) * torch.logspace(-20, 20, 40),
+        "row_scales": torch.randn(64, 40, generator = g) * torch.logspace(-20, 20, 64)[:, None],
+        "one_huge_entry": torch.randn(64, 40, generator = g).index_put_(
+            (torch.tensor([3]), torch.tensor([7])), torch.tensor(1e30)
+        ),
+    }
+
+
+@pytest.mark.parametrize("name", list(_adversarial()))
+@pytest.mark.parametrize("rank", [4, 16])
+def test_randomized_svd_adversarial_finite_and_near_optimal(name, rank):
+    W = _adversarial()[name]
+    U, S, Vh = lora_init.randomized_svd(W.to(DEVICE), rank)
+    assert torch.isfinite(U).all() and torch.isfinite(S).all() and torch.isfinite(Vh).all()
+    Wd = W.double()
+    S0 = torch.linalg.svdvals(Wd)
+    err = (Wd - (U.double().cpu() * S.double().cpu()) @ Vh.double().cpu()).norm()
+    best = (S0[rank:] ** 2).sum().sqrt()
+    assert err <= best + 1e-4 * Wd.norm() + 1e-30
+    assert (S.double().cpu() - S0[:rank]).abs().max() <= 1e-4 * S0[0] + 1e-30
+
+
+def test_randomized_svd_is_fp32_only(monkeypatch):
+    # Nothing may run in float64: consumer GPUs run it at 1/64 rate.
+    calls = []
+    original = torch.Tensor.double
+    monkeypatch.setattr(torch.Tensor, "double", lambda self: calls.append(1) or original(self))
+    U, S, Vh = lora_init.randomized_svd(_weight(96, 48).float().to(DEVICE), 8)
+    assert not calls and U.dtype == S.dtype == Vh.dtype == torch.float32
 
 
 @pytest.mark.parametrize("shape", [(96, 48), (48, 96), (64, 64)])
