@@ -717,10 +717,8 @@ def _install_offload_embedding_hooks(embed_tokens, output_embeddings, return_dev
         _unsloth_offload_pre_hook = disable(_unsloth_offload_pre_hook)
         _unsloth_offload_post_hook = disable(_unsloth_offload_post_hook)
 
-    # Compiled inference (CUDA graphed decode) instead looks the rows up through unsloth_zoo's opaque
-    # op, so the step stays one graph. Only for lookups whose result the op reproduces exactly: a
-    # plain nn.Embedding or the transformers `* embed_scale` subclass, no max_norm (it renormalises
-    # the table in place) or sparse, nothing else already overriding forward.
+    # Compiled inference uses unsloth_zoo's opaque op (no graph break), only where it is exact:
+    # plain nn.Embedding or transformers' `* embed_scale` subclass; max_norm renormalises in place.
     op = None
     cls_forward = type(embed_tokens).forward
     scaled = False
@@ -728,7 +726,7 @@ def _install_offload_embedding_hooks(embed_tokens, output_embeddings, return_dev
         try:
             import inspect
 
-            # Matched on source: Unsloth's float32 Gemma patches replace this forward with another.
+            # Matched on source: Unsloth's float32 Gemma patch is a different forward.
             scaled = isinstance(getattr(embed_tokens, "embed_scale", None), torch.Tensor) and "".join(
                 inspect.getsource(cls_forward).split()
             ).endswith("returnsuper().forward(input_ids)*self.embed_scale.to(self.weight.dtype)")
@@ -751,9 +749,7 @@ def _install_offload_embedding_hooks(embed_tokens, output_embeddings, return_dev
         slow_pre_hook, slow_post_hook = _unsloth_offload_pre_hook, _unsloth_offload_post_hook
 
         def _use_op(module, input_ids):
-            # Inference only: the op has no backward and would skip this module's forward hooks
-            # (enable_input_require_grads), which checkpointed adapters need even with a frozen
-            # table. Every grad-enabled call keeps the module path and its hooks.
+            # No grad only: the op skips forward hooks (enable_input_require_grads) checkpointing needs.
             weight = module.weight
             return (
                 torch.compiler.is_compiling()
@@ -781,7 +777,6 @@ def _install_offload_embedding_hooks(embed_tokens, output_embeddings, return_dev
 
         def _unsloth_offload_forward(self, input_ids, *args, **kwargs):
             if not args and not kwargs and _use_op(self, input_ids):
-                # The scale multiplies on the host inside the op, exactly as the module does.
                 return op(input_ids, self.weight, self.padding_idx, self.embed_scale if scaled else None)
             return cls_forward(self, input_ids, *args, **kwargs)
 

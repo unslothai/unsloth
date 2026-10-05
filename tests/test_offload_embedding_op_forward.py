@@ -13,11 +13,7 @@
 #
 # You should have received a copy of the GNU Affero General Public License
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
-"""Tests the compiled-inference path of _install_offload_embedding_hooks in vision.py: under
-torch.compile with grad disabled, an offloaded plain or `* embed_scale` embedding looks its rows up
-through unsloth_zoo's opaque op (no graph break, CUDA graph safe) and returns exactly what the
-module returns. Every grad-enabled call, and every embedding the op cannot reproduce, keeps the
-module and its forward hooks."""
+"""Compiled-inference path of _install_offload_embedding_hooks: exact op under compile, module elsewhere."""
 
 import ast, os
 import pytest
@@ -60,7 +56,7 @@ class ScaledWordEmbedding(nn.Embedding):
 
 
 class Float32ScaledWordEmbedding(ScaledWordEmbedding):
-    # Like Unsloth's float32 Gemma patch: a different product, so the op must not stand in for it.
+    # Like Unsloth's float32 Gemma patch: a different product.
     def forward(self, input_ids: torch.Tensor):
         return nn.functional.embedding(input_ids, self.weight, self.padding_idx).float() * self.embed_scale
 
@@ -169,8 +165,7 @@ def test_cuda_graph_decode_loop(kind):
 
 @needs_cuda
 def test_grad_enabled_keeps_module_and_hooks():
-    # A frozen table under grad (LoRA training): enable_input_require_grads' hook must still fire,
-    # so a reentrant checkpoint downstream sees inputs that require grad.
+    # Frozen table under grad: enable_input_require_grads' hook must still fire.
     emb = _make()
     head = _head("cuda").requires_grad_(True)
     install(emb, head, torch.device("cuda"))
