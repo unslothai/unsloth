@@ -23,8 +23,6 @@ LOG_DIR = REPO_ROOT / "tests" / "logs"
 LOG_DIR.mkdir(parents = True, exist_ok = True)
 LOG_PATH = LOG_DIR / "none_detect_results.log"
 
-# Helpers
-
 
 class Tee:
     """Write to both stdout and a file simultaneously."""
@@ -91,11 +89,7 @@ def assert_exact_recall(stats: dict, expected_bad: set, label: str):
     return all_caught
 
 
-# 1. Synthetic datasets
-
 # Minimal mock for hand-crafted rows pyarrow can't represent (e.g. messages=None / "not a list").
-
-
 class _MockDataset:
     """Behaves like an HF Dataset for iteration, len(), and index access."""
 
@@ -404,21 +398,21 @@ def test_synthetic():
 
     results = {}
 
-    # ChatML — 10 clean rows (0-9), 8 bad rows (10-17)
+    # ChatML - 10 clean rows (0-9), 8 bad rows (10-17)
     ds_chatml = make_chatml_dataset()
     stats = run_scan(ds_chatml, "Synthetic ChatML (messages/role/content)")
     assert_bad_rows(stats, 8, "ChatML bad rows")
     assert_exact_recall(stats, set(range(10, 18)), "ChatML exact recall")
     results["chatml"] = stats
 
-    # ShareGPT — 5 clean rows (0-4), 5 bad rows (5-9)
+    # ShareGPT - 5 clean rows (0-4), 5 bad rows (5-9)
     ds_sgpt = make_sharegpt_dataset()
     stats = run_scan(ds_sgpt, "Synthetic ShareGPT (conversations/from/value)")
     assert_bad_rows(stats, 3, "ShareGPT bad rows")
     assert_exact_recall(stats, set(range(5, 10)), "ShareGPT exact recall")
     results["sharegpt"] = stats
 
-    # Alpaca — 5 clean rows (0-4), 5 bad rows (5-9)
+    # Alpaca - 5 clean rows (0-4), 5 bad rows (5-9)
     ds_alpaca = make_alpaca_dataset()
     stats = run_scan(ds_alpaca, "Synthetic Alpaca (instruction/output)")
     assert_bad_rows(stats, 4, "Alpaca bad rows")
@@ -426,9 +420,6 @@ def test_synthetic():
     results["alpaca"] = stats
 
     return results
-
-
-# 2. HuggingFace: peteromallet/dataclaw-peteromallet
 
 
 def _brute_force_bad_rows(ds, fmt: str) -> set:
@@ -524,9 +515,6 @@ def test_dataclaw():
         return None
 
 
-# 3. HuggingFace: peteromallet/my-personal-codex-data
-
-
 def test_codex_data():
     section("3. HuggingFace — peteromallet/my-personal-codex-data")
     try:
@@ -556,9 +544,6 @@ def test_codex_data():
         print(f"  [ERROR] Could not load codex dataset: {exc}")
         traceback.print_exc()
         return None
-
-
-# Main
 
 
 def main():
@@ -591,7 +576,6 @@ def main():
         all_results["dataclaw"] = test_dataclaw()
         all_results["codex_data"] = test_codex_data()
 
-        # Summary table
         section("SUMMARY")
         rows = [
             ("Dataset", "Format", "Total rows", "Bad rows", "Bad turns"),
@@ -625,14 +609,12 @@ def main():
         for row in rows[1:]:
             print(fmt_str.format(*row))
 
-        # Write machine-readable JSON summary alongside the log
         json_path = LOG_DIR / "none_detect_results.json"
         summary = {}
         for key, val in all_results.items():
             if val is None:
                 summary[key] = None
             elif isinstance(val, dict):
-                # Flatten synthetic sub-keys
                 if key == "synthetic":
                     for subkey, subval in val.items():
                         summary[f"synthetic_{subkey}"] = (

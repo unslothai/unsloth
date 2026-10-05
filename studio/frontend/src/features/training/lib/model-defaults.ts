@@ -38,10 +38,9 @@ function toStringArray(value: unknown): string[] | undefined {
   return result.length > 0 ? result : undefined;
 }
 
-// The spellings studio/backend/core/training/trainer.py accepts, so a file means
-// the same thing to the picker as it does to the trainer. A quoted "false" read
-// as "leave it at the default" is how a config asking for no checkpointing ended
-// up training with Unsloth GC.
+// The spellings studio/backend/core/training/trainer.py accepts, so a file means the same thing to
+// the picker as it does to the trainer. A quoted "false" read as "leave it at the default" is how a
+// config asking for no checkpointing ended up training with Unsloth GC.
 const GRADIENT_CHECKPOINTING_ALIASES = new Map<
   string,
   TrainingConfigState["gradientCheckpointing"]
@@ -123,11 +122,22 @@ export function mapBackendModelConfigToTrainingPatch(
   const gradAccum = toNumber(training?.gradient_accumulation_steps);
   if (gradAccum !== undefined) patch.gradientAccumulation = gradAccum;
 
-  const warmupSteps = toNumber(training?.warmup_steps);
-  if (warmupSteps !== undefined) patch.warmupSteps = warmupSteps;
-
   const maxSteps = toNumber(training?.max_steps);
   if (maxSteps !== undefined) patch.maxSteps = maxSteps;
+
+  const warmupSteps = toNumber(training?.warmup_steps);
+  if (warmupSteps !== undefined) {
+    patch.warmupSteps = warmupSteps;
+  } else {
+    // Ten shipped model_defaults express warmup as a ratio and set no warmup_steps, default.yaml
+    // among them, so reading only warmup_steps left every one of them on the generic UI default.
+    // Materialize with ceil, the way TrainingArguments.get_warmup_steps does, so a small ratio such
+    // as an imported 0.03 over 10 steps asks for warmup and gets it instead of zero.
+    const warmupRatio = toNumber(training?.warmup_ratio);
+    if (warmupRatio !== undefined && maxSteps !== undefined && maxSteps > 0) {
+      patch.warmupSteps = Math.ceil(warmupRatio * maxSteps);
+    }
+  }
 
   const saveSteps = toNumber(training?.save_steps);
   if (saveSteps !== undefined) patch.saveSteps = saveSteps;

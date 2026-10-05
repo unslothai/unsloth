@@ -26,6 +26,7 @@ def _is_under_outputs(path: Path) -> bool:
         resolved.relative_to(root)
         return True
     except (OSError, RuntimeError, ValueError):
+        # Unrecognized state-file formats are not usable resume state.
         return False
 
 
@@ -88,10 +89,19 @@ def _valid_state_file(path: Path, require_tensor: bool = True) -> bool:
                     and info.file_size > 0
                     for info in infos
                 )
-        # Unrecognized state-file formats are not usable resume state.
         return False
     except (OSError, ValueError, zipfile.BadZipFile):
         return False
+
+
+def session_eta_seconds(
+    elapsed_seconds: Optional[float], step: int, start_step: int, total_steps: int
+) -> Optional[float]:
+    steps_done = step - start_step
+    steps_remaining = total_steps - step
+    if elapsed_seconds is None or steps_done <= 0 or steps_remaining <= 0:
+        return None
+    return (elapsed_seconds / steps_done) * steps_remaining
 
 
 def _checkpoint_state(path: Path) -> Optional[int]:
@@ -287,7 +297,8 @@ def can_resume_run(run: dict, *, resource_cache: Optional[dict[str, bool]] = Non
 
     status = run.get("status")
     if status == "error":
-        # A save-time crash can report final_step == total_steps with no artifacts; checkpoint state alone decides resumability.
+        # A save-time crash can report final_step == total_steps with no artifacts; checkpoint state alone
+        # decides resumability.
         resume_state_available = has_resume_state(run.get("output_dir"))
     else:
         final_step = run.get("final_step")

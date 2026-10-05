@@ -1,4 +1,5 @@
 use crate::diagnostics::{self, AttemptLog, DiagnosticsState};
+use crate::install_watchdog::{self, ProgressWatch, WatchState};
 use log::{error, info, warn};
 use process_wrap::std::*;
 use std::collections::{HashMap, VecDeque};
@@ -39,6 +40,34 @@ fn generic_failure_message(code: i32) -> String {
         "Installation failed with exit code {}. Open the installer logs for details.",
         code
     )
+}
+
+/// Open rather than check existence: security software can block reads without removing the file.
+fn unavailable_script_message(script: &Path) -> Option<String> {
+    let err = std::fs::File::open(script).err()?;
+    let name = script
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_else(|| script.display().to_string());
+    warn!("[install] cannot open {}: {err}", script.display());
+    Some(format!(
+        "Installation failed: {name}, which Unsloth needs to finish setting up, is missing or \
+         cannot be read. Security software may have quarantined or blocked it. Restore it from \
+         quarantine or reinstall Unsloth, then try again."
+    ))
+}
+
+/// Recheck for quarantine during launch, but prefer AMSI and structured installer errors.
+fn failure_message(context: &InstallFailureContext, code: i32, script: &Path) -> String {
+    if context.security_block.is_none()
+        && context.explicit_error.is_none()
+        && context.default_error.is_none()
+    {
+        if let Some(message) = unavailable_script_message(script) {
+            return message;
+        }
+    }
+    context.message(code)
 }
 
 /// PowerShell hands the whole top-level script block to AMSI while compiling it, so a security
@@ -537,6 +566,7 @@ fn spawn_script(
     script: &Path,
     args: &[String],
     state: &InstallState,
+    extra_env: &[(&str, &str)],
 ) -> Result<
     (
         Option<std::process::ChildStdout>,
@@ -579,8 +609,19 @@ fn spawn_script(
 
     // Tauri only does default-root installs; install.sh / install.ps1 reject
     // these under --tauri. Scrub so an inherited value can't trip the guard.
-    cmd.env_remove("UNSLOTH_STUDIO_HOME");
-    cmd.env_remove("STUDIO_HOME");
+    // Applied by hand here, the one managed spawn outside
+    // apply_managed_cli_context: the Python setup.sh starts reads whatever is
+    // exported, even though setup.sh assigns UNSLOTH_HOME itself.
+    for name in crate::process::MANAGED_CHILD_SCRUBBED_ENV {
+        cmd.env_remove(name);
+    }
+    cmd.env(
+        "UNSLOTH_DESKTOP_BACKEND_VERSION",
+        crate::preflight::expected_backend_version(),
+    );
+    for (name, value) in extra_env {
+        cmd.env(name, value);
+    }
 
     // We decode this child as UTF-8 below, so its Python descendants must emit
     // UTF-8 or the log fills with U+FFFD. The .ps1 entry points set these too;
@@ -626,6 +667,7 @@ fn spawn_script(
 fn stream_output(
     app: &AppHandle,
     state: &InstallState,
+    watch: &WatchState,
     event_mode: InstallEventMode,
     diagnostics: DiagnosticsState,
     attempt: AttemptLog,
@@ -641,6 +683,7 @@ fn stream_output(
     if let Some(out) = stdout {
         let app_clone = app.clone();
         let state_clone = Arc::clone(state);
+        let watch_clone = Arc::clone(watch);
         let diagnostics_clone = diagnostics.clone();
         let attempt_clone = attempt.clone();
         let failure_context_clone = Arc::clone(&failure_context);
@@ -654,6 +697,12 @@ fn stream_output(
                     Ok(_) => {
                         let text = String::from_utf8_lossy(trim_line_endings(&buf)).into_owned();
                         diagnostics::append_phase_line(&attempt_clone.handle, "stdout", &text);
+                        // Not forwarded: a line per large dependency is noise. install.sh
+                        // sends them on stderr and install.ps1 on stdout, so both filter.
+                        if install_watchdog::note_progress(&watch_clone, &text) {
+                            info!("[install][stdout] {}", text);
+                            continue;
+                        }
                         let is_failure_control = failure_context_clone
                             .lock()
                             .map(|mut context| context.observe_stdout(&text))
@@ -717,6 +766,7 @@ fn stream_output(
     if let Some(err) = stderr {
         let app_clone = app.clone();
         let attempt_clone = attempt.clone();
+        let watch_clone = Arc::clone(watch);
         let failure_context_clone = Arc::clone(&failure_context);
         threads.push(std::thread::spawn(move || {
             let mut reader = std::io::BufReader::new(err);
@@ -728,6 +778,10 @@ fn stream_output(
                     Ok(_) => {
                         let text = String::from_utf8_lossy(trim_line_endings(&buf)).into_owned();
                         diagnostics::append_phase_line(&attempt_clone.handle, "stderr", &text);
+                        if install_watchdog::note_progress(&watch_clone, &text) {
+                            info!("[install][stderr] {}", text);
+                            continue;
+                        }
                         let is_failure_control = failure_context_clone
                             .lock()
                             .map(|mut context| context.observe_stderr(&text))
@@ -754,35 +808,42 @@ fn stream_output(
 // ── Wait & Finalize ──
 
 /// Waits for the install process to exit. Returns (exit_status, was_intentional_stop).
-/// Times out after 2 hours to prevent infinite loops if the child hangs.
-fn wait_for_exit(state: &InstallState) -> Result<(ExitStatus, bool), String> {
-    const MAX_WAIT_ITERATIONS: u32 = 72_000; // 2h at 100ms intervals
-    for _ in 0..MAX_WAIT_ITERATIONS {
-        let mut install = state.lock().map_err(|e| e.to_string())?;
-        let intentional = install.intentional_stop;
-
-        match install.child.as_mut() {
-            Some(child) => match child.try_wait() {
-                Ok(Some(status)) => {
-                    install.child = None;
-                    return Ok((status, intentional));
-                }
-                Ok(None) => {}
-                Err(e) => {
-                    install.child = None;
-                    return Err(format!("Error waiting for installer: {}", e));
-                }
-            },
-            None if intentional => return Err("Installation stopped.".to_string()),
-            None => return Err("Installer process disappeared unexpectedly.".to_string()),
-        }
-
-        drop(install);
-        std::thread::sleep(std::time::Duration::from_millis(100));
-    }
-    // Timed out — kill and report
-    let _ = stop_install(state);
-    Err("Installation timed out after 2 hours".to_string())
+/// The deadline is a backstop, not a patience limit; see install_watchdog.
+fn wait_for_exit(
+    state: &InstallState,
+    watch: &WatchState,
+    app: &AppHandle,
+    event_mode: InstallEventMode,
+) -> Result<(ExitStatus, bool), String> {
+    install_watchdog::wait_with_watchdog(
+        watch,
+        || {
+            let mut install = state.lock().map_err(|e| e.to_string())?;
+            let intentional = install.intentional_stop;
+            match install.child.as_mut() {
+                Some(child) => match child.try_wait() {
+                    Ok(Some(status)) => {
+                        install.child = None;
+                        Ok(Some((status, intentional)))
+                    }
+                    Ok(None) => Ok(None),
+                    Err(e) => {
+                        install.child = None;
+                        Err(format!("Error waiting for installer: {}", e))
+                    }
+                },
+                None if intentional => Err("Installation stopped.".to_string()),
+                None => Err("Installer process disappeared unexpectedly.".to_string()),
+            }
+        },
+        |line| {
+            info!("[install] {}", line);
+            let _ = app.emit(event_mode.progress_event(), line);
+        },
+        || {
+            let _ = stop_install(state);
+        },
+    )
 }
 
 // ── Public API ──
@@ -795,14 +856,18 @@ pub fn run_install(
     state: InstallState,
     diagnostics: DiagnosticsState,
 ) -> Result<(), String> {
-    run_install_with_event_mode(app, state, diagnostics, InstallEventMode::Full, None)
+    run_install_with_event_mode(app, state, diagnostics, InstallEventMode::Full, None, false)
 }
 
+/// `upgrade_torch` is Settings' manual "Repair installation": the user asked for a reinstall,
+/// so the installer may move to the newest supported PyTorch instead of keeping the resident one.
+/// The startup auto-repair passes false and keeps it.
 pub(crate) fn run_install_for_repair(
     app: AppHandle,
     state: InstallState,
     diagnostics: DiagnosticsState,
     repair_group_id: String,
+    upgrade_torch: bool,
 ) -> Result<(), String> {
     run_install_with_event_mode(
         app,
@@ -810,7 +875,18 @@ pub(crate) fn run_install_for_repair(
         diagnostics,
         InstallEventMode::Repair,
         Some(repair_group_id),
+        upgrade_torch,
     )
+}
+
+/// Extra environment for the installer child. UNSLOTH_TORCH_UPGRADE=1 is install.sh's and
+/// install.ps1's opt-out from keeping an existing install's torch release.
+fn installer_env(upgrade_torch: bool) -> Vec<(&'static str, &'static str)> {
+    if upgrade_torch {
+        vec![("UNSLOTH_TORCH_UPGRADE", "1")]
+    } else {
+        Vec::new()
+    }
 }
 
 fn run_install_with_event_mode(
@@ -819,6 +895,7 @@ fn run_install_with_event_mode(
     diagnostics: DiagnosticsState,
     event_mode: InstallEventMode,
     repair_group_id: Option<String>,
+    upgrade_torch: bool,
 ) -> Result<(), String> {
     let attempt = match repair_group_id.as_deref() {
         Some(group_id) => diagnostics::begin_repair_child(&diagnostics, group_id, "install"),
@@ -849,13 +926,22 @@ fn run_install_with_event_mode(
         "meta",
         &format!("Using script: {}", script.display()),
     );
+    if let Some(msg) = unavailable_script_message(&script) {
+        diagnostics::finish_attempt(&diagnostics, &attempt, None, false, Some(msg.clone()));
+        clear_current_attempt(&state);
+        if event_mode.emit_terminal_events() {
+            emit_failed(&app, &msg);
+        }
+        return Err(msg);
+    }
     emit_mode_progress(
         &app,
         event_mode,
         &format!("Using script: {}", script.display()),
     );
 
-    let (stdout, stderr) = match spawn_script(&script, &args, &state) {
+    let extra_env = installer_env(upgrade_torch);
+    let (stdout, stderr) = match spawn_script(&script, &args, &state, &extra_env) {
         Ok(handles) => handles,
         Err(msg) => {
             diagnostics::finish_attempt(
@@ -869,9 +955,11 @@ fn run_install_with_event_mode(
             return Err(msg);
         }
     };
+    let watch: WatchState = Arc::new(Mutex::new(ProgressWatch::new(std::time::Instant::now())));
     let (threads, failure_context) = stream_output(
         &app,
         &state,
+        &watch,
         event_mode,
         diagnostics.clone(),
         attempt.clone(),
@@ -880,7 +968,7 @@ fn run_install_with_event_mode(
     );
 
     // Wait for exit, join reader threads
-    let result = wait_for_exit(&state);
+    let result = wait_for_exit(&state, &watch, &app, event_mode);
     for handle in threads {
         let _ = handle.join();
     }
@@ -922,7 +1010,7 @@ fn run_install_with_event_mode(
             } else {
                 let msg = failure_context
                     .lock()
-                    .map(|context| context.message(code))
+                    .map(|context| failure_message(&context, code, &script))
                     .unwrap_or_else(|_| generic_failure_message(code));
                 diagnostics::finish_attempt(
                     &diagnostics,
@@ -1462,6 +1550,12 @@ mod tests {
     }
 
     #[test]
+    fn only_a_manual_repair_asks_the_installer_for_a_newer_torch() {
+        assert_eq!(installer_env(true), vec![("UNSLOTH_TORCH_UPGRADE", "1")]);
+        assert!(installer_env(false).is_empty());
+    }
+
+    #[test]
     fn repair_install_mode_uses_repair_elevation_event() {
         assert_eq!(
             InstallEventMode::Full.needs_elevation_event(),
@@ -1502,6 +1596,106 @@ mod tests {
         assert!(message.contains("only diagnostic logs may have been written"), "{message}");
         // We cannot know a verdict is wrong, so the text must not assert it.
         assert!(!message.contains("This is a false positive"), "{message}");
+    }
+
+    // PowerShell 5.1 prints its logo even with -NoLogo when the script is missing.
+    // Model stdout arriving last, hiding the stderr error.
+    fn observe_missing_script_output(context: &mut InstallFailureContext) {
+        context.observe_stderr(concat!(
+            r"The argument 'C:\Users\Owner\AppData\Local\Unsloth\install.ps1' ",
+            "to the -File parameter does not exist. Provide the path to an existing '.ps1' file as ",
+            "an argument to the -File parameter.",
+        ));
+        context.observe_stdout("Windows PowerShell");
+        context.observe_stdout("Copyright (C) Microsoft Corporation. All rights reserved.");
+    }
+
+    #[test]
+    fn a_quarantined_script_is_reported_instead_of_the_powershell_logo() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let script = dir.path().join("install.ps1");
+        let mut context = InstallFailureContext::default();
+        observe_missing_script_output(&mut context);
+        assert!(context.message(1).contains("Copyright (C) Microsoft"));
+
+        let message = failure_message(&context, 1, &script);
+        assert!(message.contains("install.ps1, which Unsloth needs"), "{message}");
+        assert!(message.contains("quarantined"), "{message}");
+        assert!(!message.contains("Copyright"), "{message}");
+        assert_eq!(Some(message), unavailable_script_message(&script));
+    }
+
+    #[test]
+    fn a_script_that_is_still_there_keeps_the_captured_failure() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let script = dir.path().join("install.ps1");
+        std::fs::write(&script, "exit 1\r\n").expect("write script");
+        assert_eq!(unavailable_script_message(&script), None);
+
+        let mut context = InstallFailureContext::default();
+        context.observe_stdout("[TAURI:ERROR] Python could not be installed");
+        assert_eq!(
+            failure_message(&context, 1, &script),
+            "Installation failed: Python could not be installed"
+        );
+    }
+
+    #[test]
+    fn a_removed_script_does_not_hide_a_structured_failure() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let script = dir.path().join("install.ps1");
+        assert!(unavailable_script_message(&script).is_some());
+
+        let mut context = InstallFailureContext::default();
+        context.observe_stdout("[TAURI:STEP] Installing Python");
+        context.observe_stdout("[TAURI:ERROR] Python could not be installed");
+        assert_eq!(
+            failure_message(&context, 1, &script),
+            "Installation failed: Python could not be installed"
+        );
+    }
+
+    #[test]
+    fn an_amsi_block_keeps_its_guidance_when_the_script_is_then_removed() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let script = dir.path().join("install.ps1");
+        let mut context = InstallFailureContext::default();
+        for line in AMSI_BLOCK_STDERR {
+            context.observe_stderr(line);
+        }
+        let message = failure_message(&context, 1, &script);
+        assert_eq!(message, context.message(1));
+        assert!(message.contains(AMSI_MALWARE_GUIDANCE_PRE_START), "{message}");
+    }
+
+    // Exercise the real interpreter with the app's launch arguments.
+    #[cfg(windows)]
+    #[test]
+    fn powershell_given_a_missing_script_is_reported_as_missing() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let script = std::fs::canonicalize(dir.path())
+            .expect("canonicalize")
+            .join("install.ps1");
+        let output = Command::new(powershell_exe())
+            .args(powershell_launch_args(&script))
+            .output()
+            .expect("spawn powershell");
+        assert!(!output.status.success());
+
+        let mut context = InstallFailureContext::default();
+        for line in String::from_utf8_lossy(&output.stderr).lines() {
+            context.observe_stderr(line);
+        }
+        for line in String::from_utf8_lossy(&output.stdout).lines() {
+            context.observe_stdout(line);
+        }
+        let message = failure_message(&context, output.status.code().unwrap_or(-1), &script);
+        assert!(
+            message.contains("install.ps1, which Unsloth needs"),
+            "{message}\nstdout: {}\nstderr: {}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
     }
 
     #[test]
@@ -1821,6 +2015,12 @@ mod tests {
         context.observe_stdout(
             "whisper.cpp    prebuilt install failed; browser and Transformers dictation remain available",
         );
+        context.observe_stderr(
+            "error: staged audiocpp_server --help exited 127; this host cannot run the bundle, keeping the existing install:",
+        );
+        context.observe_stdout(
+            "audio.cpp      prebuilt install failed; audio.cpp models are unavailable; retry setup or inspect verbose output; other audio engines remain available",
+        );
         for index in 0..10 {
             context.observe_stdout(&format!("setup footer line {index}"));
         }
@@ -1836,6 +2036,7 @@ mod tests {
         let mut context = InstallFailureContext::default();
         context.observe_stdout("long paths failed to enable");
         context.observe_stderr("Triton install failed; torch.compile may not work");
+        context.observe_stdout("audio.cpp      install busy; keeping existing runtime");
         assert!(context.observe_stdout("[TAURI:ERROR_DEFAULT] studio setup failed (exit code 3)"));
         assert_eq!(
             context.message(3),

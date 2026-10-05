@@ -1,21 +1,20 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Memory coordination between inference and training.
-
-Uses live free VRAM to keep resident chat and STT models when they fit. STT is
-evicted before chat when training needs memory.
+"""Memory coordination between inference and training. Uses live free VRAM to keep resident chat and STT
+models when they fit. STT is evicted before chat when training needs memory.
 """
 
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
+from hub.utils.hf_tokens import HfTokenArg, normalize_token
 from loggers import get_logger
 
 logger = get_logger(__name__)
 
-# keep iff usable_gb >= required_gb * SAFETY_MARGIN + KEEP_FLOOR_GB. Conservative:
-# the probe sees only the chat model's current footprint, so reserve headroom for
-# estimate error + KV-cache growth (KEEP_FLOOR_GB ~= 2 GB load buffer + 2 GB chat).
+# keep iff usable_gb >= required_gb * SAFETY_MARGIN + KEEP_FLOOR_GB. Conservative: the probe sees only the chat
+# model's current footprint, so reserve headroom for estimate error + KV-cache growth (KEEP_FLOOR_GB ~= 2 GB load
+# buffer + 2 GB chat).
 SAFETY_MARGIN = 1.15
 KEEP_FLOOR_GB = 4.0
 
@@ -40,10 +39,13 @@ def summarize_resident_chat() -> Dict[str, Any]:
     hf_name: Optional[str] = None
     gguf_name: Optional[str] = None
     loading: bool = False
+    managed: bool = False
 
     try:
         from core.inference import get_inference_backend
+
         inf = get_inference_backend()
+        managed = getattr(inf, "_managed_engine", None) is not None
         # active_model_name is set only on success; a mid-load model sits in
         # loading_models while already holding VRAM -> both count as resident.
         if inf.active_model_name or inf.loading_models:
@@ -62,16 +64,45 @@ def summarize_resident_chat() -> Dict[str, Any]:
         # A confirmed CPU-only server (_gpu_offload_active is False) holds no VRAM.
         if llama.is_active and getattr(llama, "_gpu_offload_active", None) is not False:
             gguf_name = llama.model_identifier or "gguf"
-            if not getattr(llama, "is_loaded", False):  # still loading -> size unknown
+            if not getattr(llama, "is_loaded", False):
                 loading = True
     except Exception as e:
         logger.warning("Could not inspect GGUF backend: %s", e)
+
+    try:
+        from core.inference import model_slots
+
+        filling_slot = model_slots.loading
+        # A stuck slot's server would not stop, so it may still hold VRAM whatever it reports.
+        stuck = list(model_slots.stuck)
+        for slot in [*model_slots.slots, *stuck]:
+            pending = next(iter(getattr(slot.orchestrator, "loading_models", ()) or ()), None)
+            filling = filling_slot is not None and filling_slot[0] is slot
+            name = (
+                (slot in stuck and (slot.llama.model_identifier or "gguf"))
+                or slot.orchestrator.active_model_name
+                or pending
+                or (
+                    slot.llama.is_active
+                    and getattr(slot.llama, "_gpu_offload_active", None) is not False
+                    and (slot.llama.model_identifier or "gguf")
+                )
+                or (filling and filling_slot[1])
+            )
+            if name:
+                gguf_name = gguf_name or name
+                # Only a still-loading slot is unsizable; a loaded one is in the free VRAM can_keep reads.
+                if pending or filling or (slot.llama.is_active and not slot.llama.is_loaded):
+                    loading = True
+    except Exception as e:
+        logger.warning("Could not inspect models loaded alongside: %s", e)
 
     return {
         "hf": hf_name,
         "gguf": gguf_name,
         "loading": loading,
-        "any": bool(hf_name or gguf_name),
+        "any": bool(hf_name or gguf_name or managed),
+        **({"managed_engine": True} if managed else {}),
     }
 
 
@@ -85,11 +116,9 @@ def summarize_resident_stt() -> Dict[str, Any]:
         model = sidecar.loaded_model
         device = sidecar.device
         loading = sidecar.is_loading()
-        # whisper.cpp holds GPU memory via its subprocess, and both engines can be
-        # live at once (engine switch or direct /audio/stt/load). Always fold the
-        # GGUF sidecar in: a resident Transformers model must not mask a GGUF
-        # server still binding its backend, or admission lets training launch into
-        # that startup and OOM.
+        # whisper.cpp holds GPU memory via its subprocess. Both engines can be live at once (engine switch or direct
+        # /audio/stt/load), so always fold the GGUF sidecar in: a resident Transformers model must not mask a GGUF
+        # server still binding its backend, or admission lets training launch into that startup and OOM.
         ggml = get_ggml_stt_sidecar()
         if not model:
             model = ggml.loaded_model
@@ -99,9 +128,6 @@ def summarize_resident_stt() -> Dict[str, Any]:
         logger.warning("Could not inspect STT sidecar: %s", e)
         return {"model": None, "device": None, "loading": False, "any": False}
 
-    # Same reasoning for mtmd: its llama-server holds VRAM too, so admission has
-    # to see it. Its own boundary, so an mtmd import failure cannot discard what
-    # the other two engines just reported.
     try:
         from core.inference.stt_mtmd_sidecar import get_mtmd_stt_sidecar
 
@@ -112,6 +138,17 @@ def summarize_resident_stt() -> Dict[str, Any]:
         loading = loading or mtmd.is_loading()
     except Exception as e:
         logger.warning("Could not inspect mtmd STT sidecar: %s", e)
+
+    try:
+        from core.inference.stt_audiocpp_sidecar import get_audio_cpp_stt_sidecar
+
+        audiocpp = get_audio_cpp_stt_sidecar()
+        if not model:
+            model = audiocpp.loaded_model
+            device = device or audiocpp.device
+        loading = loading or audiocpp.is_loading()
+    except Exception as e:
+        logger.warning("Could not inspect audio.cpp STT sidecar: %s", e)
 
     return {
         "model": model,
@@ -124,7 +161,7 @@ def summarize_resident_stt() -> Dict[str, Any]:
 def can_keep_chat_during_training(
     *,
     model_name: str,
-    hf_token: Optional[str],
+    hf_token: HfTokenArg,
     training_type: str,
     load_in_4bit: bool,
     batch_size: int,
@@ -135,11 +172,9 @@ def can_keep_chat_during_training(
     optimizer: str,
     gpu_ids: Optional[List[int]],
 ) -> Tuple[bool, Dict[str, Any]]:
-    """Decide if a resident chat model can coexist with training given free VRAM.
-
-    Reuses training's own estimator/selector so the decision matches later
-    placement. Default-deny: anything we can't size returns False (unload).
-    """
+    """Decide if a resident chat model can coexist with training given free VRAM. Reuses training's own
+    estimator/selector so the decision matches later placement. Default-deny: anything we can't size
+    returns False (unload)."""
     try:
         from utils.hardware import (
             DeviceType,
@@ -155,10 +190,9 @@ def can_keep_chat_during_training(
 
         # Full finetuning runs in 16-bit, so ignore the 4-bit request or we under-count.
         effective_4bit = False if training_type == "Full Finetuning" else load_in_4bit
-        hf_token_arg = hf_token or None
 
         est_kwargs = dict(
-            hf_token = hf_token_arg,
+            hf_token = normalize_token(hf_token),
             training_type = training_type,
             load_in_4bit = effective_4bit,
             batch_size = batch_size,
@@ -170,7 +204,6 @@ def can_keep_chat_during_training(
         )
 
         if gpu_ids:
-            # Explicit GPUs: the selector does no VRAM math, so size it here.
             try:
                 resolved = resolve_requested_gpu_ids(gpu_ids)
             except ValueError:
@@ -191,8 +224,8 @@ def can_keep_chat_during_training(
             )
             aggregate_fits = usable_gb >= required_gb * SAFETY_MARGIN + KEEP_FLOOR_GB
 
-            # Activations don't shard: enforce a per-GPU floor so an uneven split
-            # (e.g. free [45, 10]) can't be kept into an OOM the aggregate misses.
+            # Activations don't shard: enforce a per-GPU floor so an uneven split (free [45, 10]) cannot be
+            # kept into an OOM the aggregate misses.
             per_gpu_fits = True
             min_free_gb = min(free_vals) if free_vals else 0.0
             if len(resolved) > 1:
@@ -244,17 +277,15 @@ def can_load_chat_during_training(
     vulkan_free_vram_gb: Optional[Dict[int, float]] = None,
     required_override_gb: Optional[float] = None,
     single_device_gpu: Optional[str] = None,
+    post_handoff_free_gpu_vram_gb: Optional[Dict[int, float]] = None,
 ) -> Tuple[bool, Dict[str, Any]]:
-    """Decide if a NEW chat model can load without OOMing active training (inverse
-    of can_keep_chat_during_training: training is already resident, so size the
-    chat model against the free VRAM that remains). Sizes/places it the same way
-    the loader will: HF auto reuses auto_select_gpu_ids; HF explicit requires an
-    even-share per-GPU floor for device_map="balanced"; GGUF sizes from
-    required_override_gb over the visible pool. ``single_device_gpu`` is the
-    exact physical device token selected by a single-device runner.
-    `load_in_4bit` must be effective (LoRA can flip 4-bit -> 16-bit). CPU/MLX
-    allows the load; default-deny on any CUDA/XPU case it can't size, so a load
-    never OOMs training."""
+    """Decide if a NEW chat model can load without OOMing active training (inverse of
+    can_keep_chat_during_training: training is already resident, so size the chat model against the free VRAM
+    that remains). Sizes/places it the same way the loader will: HF auto reuses auto_select_gpu_ids; HF explicit
+    requires an even-share per-GPU floor for device_map="balanced"; GGUF sizes from required_override_gb over
+    the visible pool. ``single_device_gpu`` is the exact physical device token selected by a single-device
+    runner. `load_in_4bit` must be effective (LoRA can flip 4-bit -> 16-bit). CPU/MLX allows the load;
+    default-deny on any CUDA/XPU case it can't size, so a load never OOMs training."""
     try:
         from utils.hardware import (
             DeviceType,
@@ -270,14 +301,41 @@ def can_load_chat_during_training(
 
         est_kwargs = dict(
             hf_token = hf_token or None,
-            training_type = None,  # inference sizing of the chat model itself
+            training_type = None,
             load_in_4bit = load_in_4bit,
             max_seq_length = max_seq_length or 2048,
         )
 
+        # A native-audio switch's post-handoff snapshot already combines live free memory with the
+        # outgoing Studio backend, so do not re-read and add those values here.
+        if not requested_gpu_ids and not is_gguf and post_handoff_free_gpu_vram_gb is not None:
+            required_gb = required_override_gb
+            if required_gb is None:
+                required_gb, _meta = estimate_required_model_memory_gb(model_name, **est_kwargs)
+            free_vals = [
+                max(float(effective), 0.0) for effective in post_handoff_free_gpu_vram_gb.values()
+            ]
+            usable_gb = max(free_vals) if free_vals else None
+            needed_gb = (
+                round(required_gb * SAFETY_MARGIN + KEEP_FLOOR_GB, 3)
+                if required_gb is not None
+                else None
+            )
+            fits = required_gb is not None and usable_gb is not None and usable_gb >= needed_gb
+            return fits, {
+                "mode": "native_post_handoff",
+                "required_gb": required_gb,
+                "usable_gb": usable_gb,
+                "needed_gb": needed_gb,
+            }
+
         # HF auto: reuse the loader's selector; fits iff its pick clears the margin.
         if not requested_gpu_ids and not is_gguf:
-            _selected, meta = auto_select_gpu_ids(model_name, **est_kwargs)
+            _selected, meta = auto_select_gpu_ids(
+                model_name,
+                required_override_gb = required_override_gb,
+                **est_kwargs,
+            )
             mode = meta.get("selection_mode")
             required_gb = meta.get("required_gb")
             usable_gb = meta.get("usable_gb")
@@ -325,20 +383,17 @@ def can_load_chat_during_training(
         elif single_device_gpu is not None:
             token = str(single_device_gpu).strip()
             if not token:
-                # Empty token = a CPU-only single-device runner (e.g. a CPU
-                # diffusion GGUF): it uses no GPU VRAM, so it never threatens
-                # active training and can always load.
+                # Empty token = a CPU-only single-device runner, for example a CPU diffusion GGUF: it uses no GPU VRAM, so it
+                # never threatens active training and can always load.
                 return True, {"mode": "single_device", "reason": "cpu_only"}
             try:
                 selected_gpu = int(token)
                 if selected_gpu < 0:
                     raise ValueError
             except (TypeError, ValueError):
-                # A non-numeric device token (e.g. a CUDA UUID / MIG handle)
-                # can't be mapped to a free-VRAM index, but the runner still
-                # drives ONE device. Size against the worst-case visible device
-                # (min free), never the aggregate pool, so a single-device load
-                # is never OK'd on capacity it can't use and OOMs training.
+                # A non-numeric device token (CUDA UUID / MIG handle) has no free-VRAM index, but the runner still drives
+                # ONE device: size against the worst-case visible device, never the aggregate pool, or a single-device load
+                # is OK'd on capacity it cannot use.
                 free_vals = [min(free_by_index.values())] if free_by_index else []
             else:
                 free_vals = [free_by_index.get(selected_gpu, 0.0)]
@@ -362,9 +417,8 @@ def can_load_chat_during_training(
         needed_gb = required_gb * SAFETY_MARGIN + KEEP_FLOOR_GB
         aggregate_fits = usable_gb >= needed_gb
 
-        # Explicit HF placement uses balanced sharding across a known number of
-        # GPUs. GGUF pins are candidate pools: llama.cpp may narrow an uneven
-        # pool to the smallest fitting subset, so only their aggregate matters.
+        # Explicit HF placement uses balanced sharding across a known number of GPUs. GGUF pins are candidate pools:
+        # llama.cpp may narrow an uneven pool to the smallest fitting subset, so only their aggregate matters.
         min_free_gb = min(free_vals)
         per_gpu_fits = True
         per_gpu_needed_gb = None
@@ -389,28 +443,54 @@ def can_load_chat_during_training(
         return False, {"reason": "probe_error", "error": str(e)}
 
 
+class ManagedEngineStillRunning(RuntimeError):
+    """A managed engine that did not stop still holds its GPUs, so training must not spawn.
+    ``blocks_training`` lets the core trainer honour it without importing routes."""
+
+    blocks_training = True
+
+
 def free_chat_models_for_training(reason: str) -> List[str]:
     """Unload every resident chat model (HF/MLX orchestrator + GGUF server) to free
     VRAM for training. Each backend isolated. Returns labels of what was freed."""
     freed: List[str] = []
+    managed_stop_failed = False
 
     try:
         from core.inference import get_inference_backend
         inf = get_inference_backend()
-        if inf.active_model_name or inf.loading_models:
+        # No CPU exemption here, unlike the GGUF branch and the STT sidecars: it would key off a marker the
+        # orchestrator writes rather than the worker that masked, and a marker that disagreed is an OOM mid-training.
+        # Freeing a model that held no VRAM only costs a reload.
+        if (
+            inf.active_model_name
+            or inf.loading_models
+            or getattr(inf, "_managed_engine", None) is not None
+        ):
             name = inf.active_model_name or next(iter(inf.loading_models), None)
             logger.info(
                 "Unloading inference model '%s' to free GPU memory for training (%s)",
                 name,
                 reason,
             )
-            inf._shutdown_subprocess()
+            managed = getattr(inf, "_managed_engine", None) is not None
+            managed_stop_failed = managed
+            stopped = inf._shutdown_subprocess()
+            if managed and stopped is False:
+                managed_stop_failed = True
+                raise RuntimeError("The inference engine did not stop.")
+            managed_stop_failed = False
             inf.active_model_name = None
             inf.models.clear()
             inf.loading_models.clear()
             freed.append(f"hf:{name}")
     except Exception as e:
         logger.warning("Could not unload inference model: %s", e)
+
+    if managed_stop_failed:
+        raise ManagedEngineStillRunning(
+            "The inference engine could not be stopped. Retry before starting training."
+        )
 
     try:
         from routes.inference import get_llama_cpp_backend
@@ -428,16 +508,55 @@ def free_chat_models_for_training(reason: str) -> List[str]:
     except Exception as e:
         logger.warning("Could not unload GGUF chat model: %s", e)
 
+    freed += free_kept_models_for_training(reason)
     return freed
 
 
-def free_stt_model_for_training(reason: str) -> List[str]:
-    """Unload the dictation model(s) before training. Never raises.
+def free_kept_models_for_training(reason: str) -> List[str]:
+    from core.inference import model_slots
 
-    The Transformers and GGUF sidecars are freed under independent exception
-    boundaries so a failure unloading one backend never skips freeing the other
-    (both can hold accelerator memory at once after an engine switch).
+    kept = [
+        slot.orchestrator.active_model_name or slot.llama.model_identifier or "gguf"
+        for slot in [*model_slots.slots, *model_slots.stuck]
+    ]
+    if kept:
+        logger.info("Unloading %d model(s) kept alongside for training (%s)", len(kept), reason)
+        try:
+            model_slots.unload_extra_models(strict = True)
+        except RuntimeError as exc:
+            raise ManagedEngineStillRunning(
+                "A model kept alongside could not be stopped. Retry before starting training."
+            ) from exc
+    return [f"kept:{name}" for name in kept]
+
+
+def _stt_sidecar_holds_no_vram(sidecar) -> bool:
+    """True only when the resident dictation model is provably in CPU RAM. Conservative on purpose: anything
+    unreadable answers False and the sidecar is freed as before. Skipping one that does hold VRAM would starve
+    the run this is making room for, which is far worse than a needless reload.
     """
+    try:
+        device = getattr(sidecar, "device", None)
+        if isinstance(device, str) and device.strip().lower() == "cpu":
+            return True
+        # whisper.cpp and llama.cpp report a runtime name rather than a device, so read the flag each sets when it
+        # started without the GPU. Prefer the fact over the wish: mtmd's _gpu_disabled is what the live server was
+        # started with, while _forced_cpu is the standing preference, recorded even on the branch that does NOT restart
+        # a server with a request in flight, so reading it reports a server still at -ngl 99 as holding no VRAM.
+        gpu_disabled = getattr(sidecar, "_gpu_disabled", None)
+        if gpu_disabled is not None:
+            return gpu_disabled is True
+        # whisper.cpp sets _forced_cpu only alongside a spawned --no-gpu and clears it
+        # on release, so there it is the fact.
+        return getattr(sidecar, "_forced_cpu", False) is True
+    except Exception:  # noqa: BLE001 - a probe must never fail the release it precedes
+        return False
+
+
+def free_stt_model_for_training(reason: str) -> List[str]:
+    """Unload the dictation model(s) before training. Never raises. The Transformers and GGUF sidecars
+    are freed under independent exception boundaries so a failure unloading one backend never skips
+    freeing the other (both can hold accelerator memory at once after an engine switch)."""
     freed: List[str] = []
     try:
         from core.inference.stt_sidecar import get_stt_sidecar
@@ -454,58 +573,97 @@ def free_stt_model_for_training(reason: str) -> List[str]:
             freed.append("stt:loading")
         else:
             model = sidecar.loaded_model
-            if model:
+            if model and _stt_sidecar_holds_no_vram(sidecar):
+                logger.info(
+                    "Keeping CPU-placed STT model '%s' through training (%s)", model, reason
+                )
+            elif model:
                 logger.info("Unloading STT model '%s' for training (%s)", model, reason)
                 sidecar.unload()
                 freed.append(f"stt:{model}")
     except Exception as e:
         logger.warning("Could not unload Transformers STT model: %s", e)
 
-    # Check the GGUF sidecar even after a cancelled/failed Transformers unload;
-    # both engines can hold memory at once (engine switch or direct load).
+    # Check the GGUF sidecar even after a cancelled or failed Transformers unload; both engines can hold memory at once.
     try:
         from core.inference.stt_ggml_sidecar import get_ggml_stt_sidecar
         ggml = get_ggml_stt_sidecar()
         if ggml.is_loading() and ggml.cancel_pending_load():
             logger.info("Cancelling GGUF STT model load for training (%s)", reason)
-            # whisper-server may still be binding its backend; wait for the
-            # cancelled startup to be killed and reaped before training claims
-            # the memory (loaded_model stays unset until it is ready).
+            # whisper-server may still be binding its backend; wait for the cancelled startup to be killed and
+            # reaped before training claims the memory (loaded_model stays unset until it is ready).
             ggml.wait_for_load_to_settle()
             if ggml.loaded_model:
                 ggml.unload()
             freed.append("stt:gguf-loading")
         else:
             ggml_model = ggml.loaded_model
-            if ggml_model:
+            if ggml_model and _stt_sidecar_holds_no_vram(ggml):
+                logger.info(
+                    "Keeping CPU-placed GGUF STT model '%s' through training (%s)",
+                    ggml_model,
+                    reason,
+                )
+            elif ggml_model:
                 logger.info("Unloading GGUF STT model '%s' for training (%s)", ggml_model, reason)
                 ggml.unload()
                 freed.append(f"stt:{ggml_model}")
     except Exception as e:
         logger.warning("Could not unload GGUF STT model: %s", e)
 
-    # The mtmd sidecar serves Qwen3-ASR through llama-server at -ngl 99, so it
-    # holds VRAM exactly like the other two and has to be freed as well.
     try:
         from core.inference.stt_mtmd_sidecar import get_mtmd_stt_sidecar
         mtmd = get_mtmd_stt_sidecar()
         if mtmd.is_loading() and mtmd.cancel_pending_load():
             logger.info("Cancelling mtmd STT model load for training (%s)", reason)
-            # llama-server only becomes reachable through unload() once it is
-            # ready, so a startup has to be cancelled and reaped instead. Wait
-            # for that before training claims the memory it is allocating.
+            # llama-server only becomes reachable through unload() once it is ready, so a startup has to be
+            # cancelled and reaped instead. Wait for that before training claims the memory it is allocating.
             mtmd.wait_for_load_to_settle()
             if mtmd.loaded_model:
                 mtmd.unload()
             freed.append("stt:mtmd-loading")
         else:
             mtmd_model = mtmd.loaded_model
-            if mtmd_model:
+            if mtmd_model and _stt_sidecar_holds_no_vram(mtmd):
+                logger.info(
+                    "Keeping CPU-placed mtmd STT model '%s' through training (%s)",
+                    mtmd_model,
+                    reason,
+                )
+            elif mtmd_model:
                 logger.info("Unloading mtmd STT model '%s' for training (%s)", mtmd_model, reason)
                 mtmd.unload()
                 freed.append(f"stt:{mtmd_model}")
     except Exception as e:
         logger.warning("Could not unload mtmd STT model: %s", e)
+
+    try:
+        from core.inference.stt_audiocpp_sidecar import get_audio_cpp_stt_sidecar
+        audiocpp = get_audio_cpp_stt_sidecar()
+        if audiocpp.is_loading() and audiocpp.cancel_pending_load():
+            logger.info("Cancelling audio.cpp STT model load for training (%s)", reason)
+            # audiocpp_server loads the model before it answers, so the cancelled startup is killed and reaped
+            # under the sidecar lock; wait for that before training claims the memory.
+            audiocpp.wait_for_load_to_settle()
+            if audiocpp.loaded_model:
+                audiocpp.unload()
+            freed.append("stt:audiocpp-loading")
+        else:
+            audiocpp_model = audiocpp.loaded_model
+            if audiocpp_model and _stt_sidecar_holds_no_vram(audiocpp):
+                logger.info(
+                    "Keeping CPU-placed audio.cpp STT model '%s' through training (%s)",
+                    audiocpp_model,
+                    reason,
+                )
+            elif audiocpp_model:
+                logger.info(
+                    "Unloading audio.cpp STT model '%s' for training (%s)", audiocpp_model, reason
+                )
+                audiocpp.unload()
+                freed.append(f"stt:{audiocpp_model}")
+    except Exception as e:
+        logger.warning("Could not unload audio.cpp STT model: %s", e)
 
     return freed
 
@@ -519,9 +677,14 @@ def coordinate_models_for_training(
     if not resident_chat["any"] and not resident_stt["any"]:
         return []
 
-    if resident_chat.get("loading"):
-        freed = free_stt_model_for_training(reason = "chat model still loading")
-        freed += free_chat_models_for_training(reason = "chat model still loading")
+    if resident_chat.get("loading") or resident_chat.get("managed_engine"):
+        reason = (
+            "managed inference engine reserves GPU memory"
+            if resident_chat.get("managed_engine")
+            else "chat model still loading"
+        )
+        freed = free_stt_model_for_training(reason = reason)
+        freed += free_chat_models_for_training(reason = reason)
         return freed
 
     freed: List[str] = []
@@ -553,6 +716,16 @@ def coordinate_models_for_training(
         keep, _info = can_keep()
         if keep:
             logger.info("Keeping chat model loaded after freeing STT: %s", resident_chat)
+            return freed
+
+    from core.inference import model_slots
+
+    # Models kept alongside go before the one in use.
+    if model_slots.slots or model_slots.stuck:
+        freed += free_kept_models_for_training(reason = "insufficient training memory")
+        keep, _info = can_keep()
+        if keep:
+            logger.info("Keeping the active chat model loaded after freeing the others")
             return freed
 
     freed += free_chat_models_for_training(

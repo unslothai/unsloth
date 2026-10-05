@@ -4,10 +4,10 @@
 """One place that knows which dictation models are resident, and loads them.
 
 The sidecars still own their processes: whisper.cpp serves GGML through
-whisper-server, llama.cpp serves mtmd models, and Transformers loads in
-process. What lives here is the lifecycle above them, so the orchestrator has a
-single view of dictation the way it has one of chat, and Voice settings and
-Model Hub cannot report different things about the same model.
+whisper-server, llama.cpp serves mtmd models, and Transformers loads in a spawn
+child of its own. What lives here is the lifecycle above them, so the
+orchestrator has a single view of dictation the way it has one of chat, and
+Voice settings and Model Hub cannot report different things about the same model.
 """
 
 from __future__ import annotations
@@ -16,12 +16,13 @@ import threading
 from typing import Any, Optional, Sequence
 
 from loggers import get_logger
+from utils.gpu_memory_events import invalidates_gpu_memory as _invalidates_gpu_memory
 
 logger = get_logger(__name__)
 
-# Every engine a dictation model can be resident on. Order is the order an
-# unload sweeps them, which matters only for logging.
-STT_ENGINES = ("transformers", "gguf", "mtmd")
+# Every engine a dictation model can be resident on. Order is the order an unload sweeps them, which matters only for
+# logging.
+STT_ENGINES = ("transformers", "gguf", "mtmd", "audiocpp")
 
 # Serialises load-then-release so two loads on different engines cannot leave both resident.
 _load_lock = threading.Lock()
@@ -35,17 +36,27 @@ def sidecar_for(engine: str) -> Any:
     if engine == "gguf":
         from core.inference.stt_ggml_sidecar import get_ggml_stt_sidecar
         return get_ggml_stt_sidecar()
+    if engine == "audiocpp":
+        from core.inference.stt_audiocpp_sidecar import get_audio_cpp_stt_sidecar
+        return get_audio_cpp_stt_sidecar()
     from core.inference.stt_sidecar import get_stt_sidecar
 
     return get_stt_sidecar()
 
 
+@_invalidates_gpu_memory("stt load")
 def load(
     model: Optional[str],
     engine: str,
     request_cancel_event: Optional[threading.Event] = None,
+    device: Optional[str] = None,
+    **options,
 ) -> None:
     """Make ``model`` resident on ``engine``, then release every idle other engine.
+
+    ``device`` is the user's audio device preference (``auto``/``cpu``/``gpu``);
+    every engine honours it, on CPU by holding the weights in system RAM instead
+    of the accelerator.
 
     Dictation is one user-visible choice, so engines are alternatives, not slots:
     holding two at once doubles VRAM for the whole keep-alive window. An engine serving
@@ -55,16 +66,19 @@ def load(
     """
     others = [name for name in STT_ENGINES if name != engine]
     with _load_lock:
-        # Release the other engines BEFORE allocating, but only once the checkpoint is known
-        # to be on disk. Holding two engines across the load is what makes a switch OOM on a
-        # device that fits either alone; releasing blind would let a 409 for a model that was
-        # never downloaded cost the user the engine they were already using. When the answer
-        # is not certain, keep the old order and accept the peak.
+        # Release the other engines BEFORE allocating, but only once the checkpoint is known to be on disk. Holding
+        # two engines across the load is what makes a switch OOM on a device that fits either alone; releasing blind
+        # would let a 409 for a model that was never downloaded cost the user the engine they were already using. When
+        # the answer is not certain, keep the old order and accept the peak.
         if _model_is_downloaded(engine, model):
             unload(others, wait = False)
-            sidecar_for(engine).load(model, request_cancel_event = request_cancel_event)
+            sidecar_for(engine).load(
+                model, request_cancel_event = request_cancel_event, device = device, **options
+            )
         else:
-            sidecar_for(engine).load(model, request_cancel_event = request_cancel_event)
+            sidecar_for(engine).load(
+                model, request_cancel_event = request_cancel_event, device = device, **options
+            )
             unload(others, wait = False)
 
 
@@ -81,6 +95,13 @@ def _model_is_downloaded(engine: str, model: str) -> bool:
         if engine == "gguf":
             from core.inference import stt_ggml_sidecar
             return stt_ggml_sidecar._cached_model_path(model) is not None
+        if engine == "audiocpp":
+            from core.inference import stt_audiocpp_sidecar
+
+            # A missing runtime refuses the load just as surely as missing weights.
+            return stt_audiocpp_sidecar.is_available() and stt_audiocpp_sidecar.is_model_downloaded(
+                model
+            )
         from core.inference import stt_sidecar
 
         return (
@@ -91,6 +112,7 @@ def _model_is_downloaded(engine: str, model: str) -> bool:
         return False
 
 
+@_invalidates_gpu_memory("stt unload")
 def unload(
     engines: Optional[Sequence[str]] = None,
     *,

@@ -6,12 +6,13 @@ import { ReadMore, type TourStep } from "@/features/tour";
 export const studioParamsStep: TourStep = {
   id: "params",
   target: "studio-params",
-  title: "Dial hyperparams",
+  title: "Parameters",
   body: (
     <>
-      Start boring, then iterate. We usually recommend starting with 1-3 epochs
-      (higher can overfit fast). If you’re unsure, change 1 knob at a time, and
-      watch train vs eval loss.{" "}
+      Simple covers epochs, learning rate, batch size and context length.
+      Advanced opens LoRA rank, schedulers, eval and checkpointing. Defaults
+      come from the model you picked, so change one knob at a time. 1 to 3
+      epochs is a good start.{" "}
       <ReadMore href="https://unsloth.ai/docs/basics/lora-hyperparameters-guide" />
     </>
   ),
