@@ -111,9 +111,7 @@ def _rebuild(spec: tuple, tensors: list) -> Any:
 
 
 def _walk(obj: Any, live: list) -> tuple:
-    """Hashable key of a call tree, appending its tensors to ``live`` in order: shape, stride, dtype, device and
-    inference mode per tensor (a replay reads the exact buffers it recorded, and the compiled block guards on
-    inference mode); scalars by value; a K/V layer cache by its tensors. ``_unwalk`` rebuilds the tree from it."""
+    """Hashable key of a call tree, appending its tensors to ``live`` (compiled blocks guard on inference mode)."""
     torch = _torch()
     if torch.is_tensor(obj):
         live.append(obj)
@@ -138,7 +136,6 @@ def _walk(obj: Any, live: list) -> tuple:
 
 
 def _unwalk(key: tuple, tensors: Any) -> Any:
-    """The call tree of ``key`` over ``tensors`` (an iterator, consumed in ``_walk`` order)."""
     kind = key[0]
     if kind == "t":
         return next(tensors)
@@ -160,8 +157,6 @@ def graph_key(obj: Any) -> tuple:
 
 
 def _refusal(key: tuple, kwargs: dict) -> Optional[str]:
-    """Why a call with this key cannot be recorded, else None."""
-
     def walk(k: tuple) -> Optional[str]:
         kind = k[0]
         if kind == "o":
@@ -209,10 +204,8 @@ def _is_wrapper_subclass(t: Any) -> bool:
 
 
 class _WeightView:
-    """The block's parameters and buffers, read back as device addresses. Parameter objects are stable across
-    offload (only their data moves), so the list is built once; wrapper subclasses (torchao) are read through every
-    level of inner tensors down to the plain ones holding the data (torchao 0.17's int8 nests two wrappers, and a
-    wrapper's own ``data_ptr`` is 0)."""
+    """The block's weights as device addresses, through every level of torchao inner tensors (a wrapper's own
+    ``data_ptr`` is 0; torchao 0.17's int8 nests two)."""
 
     __slots__ = ("tensors",)
 
@@ -226,8 +219,7 @@ class _WeightView:
         self.tensors = tensors
 
     def placement(self, device_index: Optional[int]) -> Optional[tuple]:
-        """The data pointers of every plain tensor under the weights, or None when one is not on CUDA device
-        ``device_index``."""
+        """Data pointers of every plain tensor under the weights, or None when one is off ``device_index``."""
         ptrs: list = []
         for t in self.tensors:
             for p in _leaves(t):
@@ -278,8 +270,7 @@ def pool_bytes(device: Optional[int] = None) -> int:
 
 
 class _Shared:
-    """State every block of one denoiser shares: the graph pool, the capture stream, the static buffers per
-    (block class, input layout), and which layouts have warmed up on the capture stream."""
+    """Pool, capture stream and static buffers per (block class, layout), shared by one denoiser's blocks."""
 
     def __init__(
         self,
@@ -295,7 +286,7 @@ class _Shared:
         self.static_out: dict = {}
         self.static_refs: dict = {}  # slot -> recordings reading its buffers
         self.warmed: set = set()
-        self.pool_bytes = 0  # reserved-memory growth measured across recordings
+        self.pool_bytes = 0
         self.static_bytes = 0
         _LIVE.add(self)
 
@@ -312,7 +303,6 @@ class _Shared:
         return self.pool
 
     def statics_for(self, slot: tuple, live: list) -> list:
-        """Static buffers like ``live``, made once per slot (same inference mode, shape, stride, dtype)."""
         buffers = self.static_in.get(slot)
         if buffers is None:
             buffers = [_static_like(t) for t in live]
@@ -434,7 +424,6 @@ class BlockGraph:
         except Exception:  # noqa: BLE001
             pass
 
-    # The handle interface diffusion_cuda_graph's helpers drive (reset on LoRA / OOM, bypass under a step cache).
     def set_bypass(self, on: bool) -> "BlockGraph":
         self.bypassed = bool(on)
         return self
@@ -445,7 +434,7 @@ class BlockGraph:
         self._forget_all()
         try:
             self.weights = _WeightView(self.block)
-        except Exception:  # noqa: BLE001 - keep the old view; a stale one only misses new tensors
+        except Exception:  # noqa: BLE001
             pass
         self.seen.clear()
         self.unreplayed_placements = 0
@@ -475,7 +464,7 @@ class BlockGraph:
                 why = _refusal(key, kwargs)
                 if len(self.refusals) < 64:
                     self.refusals[key] = why
-        except Exception:  # noqa: BLE001 - an unhashable tree is simply not recordable
+        except Exception:  # noqa: BLE001
             why = "object"
             key = None
         if why:
@@ -518,7 +507,7 @@ class BlockGraph:
             from .diffusion_nvfp4_protect import module_controller
 
             return module_controller(root)
-        except Exception:  # noqa: BLE001 - keys as before
+        except Exception:  # noqa: BLE001
             return False
 
     def _first_sighting(self, full: tuple, args: tuple, kwargs: dict) -> Any:
@@ -572,8 +561,7 @@ class BlockGraph:
                 before = torch.cuda.memory_reserved()
                 with _capturing():
                     try:
-                        # Inside the try: a capture_begin that raised after the allocators took the pool is
-                        # abandoned like any other failed recording.
+                        # Inside the try: a capture_begin that raised after taking the pool is abandoned too.
                         graph.capture_begin(pool = pool, capture_error_mode = "thread_local")
                         try:
                             out = self.compute(*static_args, **static_kwargs)
@@ -913,9 +901,7 @@ def install_block_graphs(
                 if target is None:
                     refused["a stacked hook chain"] = refused.get("a stacked hook chain", 0) + 1
                     continue
-                compute = (
-                    target.forward
-                )  # the compiled forward when compile_below_offload_hooks moved it there
+                compute = target.forward
                 graph = BlockGraph(block, compute, shared)
                 target.forward = graph
 
@@ -949,7 +935,7 @@ def install_block_graphs(
                             m.__dict__.pop("forward", None)
                         else:
                             m.__dict__["forward"] = s
-        except Exception as exc:  # noqa: BLE001 - this block stays as it was
+        except Exception as exc:  # noqa: BLE001
             refused[f"install failed ({type(exc).__name__})"] = (
                 refused.get(f"install failed ({type(exc).__name__})", 0) + 1
             )
@@ -994,13 +980,10 @@ def compile_below_hooks_enabled() -> bool:
 
 
 def compile_below_offload_hooks(transformer: Any, logger: Any = None) -> int:
-    """Compile each offload-hooked repeated block's own ``forward`` instead of ``_call_impl`` (as MiniMax-H3's streamed
-    denoiser does), so the group-offload hooks stay eager Python outside the compiled region.
+    """Compile each offload-hooked block's own ``forward`` so the hooks stay eager outside the compiled region.
 
-    Traced through, the hooks graph-break the block (two to six breaks a load) and put residency state into the
-    guards: the 12 GB tier's release and re-pin around each prompt encode then recompiles the blocks on the next
-    prompt. Below the hooks the block compiles whole, and a CUDA graph can record exactly that compute.
-    ``UNSLOTH_DIFFUSION_COMPILE_BELOW_HOOKS=0`` keeps the old placement. Idempotent; returns the blocks moved."""
+    Traced through, the hooks graph-break the block and put residency state into the guards, so every release /
+    re-pin recompiles. Idempotent; returns the blocks moved."""
     if not compile_below_hooks_enabled():
         return 0
     kwargs = getattr(transformer, "_unsloth_regional_compile_kwargs", None)
@@ -1036,9 +1019,7 @@ def compile_below_offload_hooks(transformer: Any, logger: Any = None) -> int:
             fn = diffusion_block_restride.wrap(fn)
         target.forward = fn
         block._compiled_call_impl = None
-        block._unsloth_below_hook_ref = (
-            target  # where the block graph layer finds the compute it records
-        )
+        block._unsloth_below_hook_ref = target
         moved += 1
     if moved and logger is not None:
         logger.info(
@@ -1050,7 +1031,6 @@ def compile_below_offload_hooks(transformer: Any, logger: Any = None) -> int:
 
 
 def compile_pipe_below_offload_hooks(pipe: Any, logger: Any = None) -> int:
-    """``compile_below_offload_hooks`` for every denoiser DiT of ``pipe``; a failure leaves that DiT as it was."""
     try:
         from .diffusion_speed import _denoiser_dits
     except Exception:  # noqa: BLE001
@@ -1059,7 +1039,7 @@ def compile_pipe_below_offload_hooks(pipe: Any, logger: Any = None) -> int:
     for transformer in _denoiser_dits(pipe):
         try:
             moved += compile_below_offload_hooks(transformer, logger)
-        except Exception as exc:  # noqa: BLE001 - the traced-hook compile still works
+        except Exception as exc:  # noqa: BLE001
             if logger is not None:
                 logger.warning("diffusion.speed: compile below offload hooks failed (%s)", exc)
     return moved

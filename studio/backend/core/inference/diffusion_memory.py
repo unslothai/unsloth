@@ -698,7 +698,7 @@ def reclaimable_snapshot_device_memory(target: Any) -> DeviceMemory:
         # Per-block graph pools are reserved, mostly unallocated between replays, and never reusable by anything else.
         from .diffusion_block_graph import pool_bytes as _block_graph_pool_bytes
         reclaimable -= _block_graph_pool_bytes(torch.cuda.current_device())
-    except Exception:  # noqa: BLE001 -- no block graphs: nothing held back
+    except Exception:  # noqa: BLE001
         pass
     try:
         # The whole-step graphs' shared pool: only its unallocated part sits inside the difference above.
