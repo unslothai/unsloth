@@ -1188,6 +1188,20 @@ if sys.platform == "win32":
     del _add_rocm_dll_dirs_worker
 
 
+def _decision_has_llm_backbone(model_load_target: str, hf_token: str | None) -> bool:
+    # Clef ships joint_head_config.json next to its Qwen3.5 backbone; Laya never does.
+    marker = "joint_head_config.json"
+    try:
+        if (Path(model_load_target) / marker).is_file():
+            return True
+        from huggingface_hub import HfApi
+
+        siblings = HfApi(token = hf_token).model_info(model_load_target).siblings or ()
+        return any(getattr(s, "rfilename", None) == marker for s in siblings)
+    except Exception:
+        return False
+
+
 def _model_wants_causal_conv1d(model_name: str) -> bool:
     name = model_name.lower()
     return any(key in name for key in _CAUSAL_CONV1D_MODEL_SUBSTRINGS)
@@ -3785,9 +3799,13 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
     #    lazy_load it without calling is_causal_conv1d_available.
     # 2) mamba-ssm + flash-attn keep their substring / size gates.
     # 3) FLA gated-delta kernels: vendored by unsloth_zoo, nothing to install.
-    # Laya decision models are encoders: none of these apply, and they ignore max_seq_length.
-    # Clef is a Qwen3.5 backbone, so it takes the same fast paths as a Qwen3.5 chat run.
-    if not config.get("is_decision") or config.get("decision_layout") == "clef":
+    # Laya decision models are ModernBERT encoders: none of these apply.
+    # Clef decision models are Qwen3.5 backbones and need the same gated-delta / conv kernels.
+    if (
+        not config.get("is_decision")
+        or config.get("decision_layout") == "clef"
+        or _decision_has_llm_backbone(model_load_target, _worker_hf_token(config))
+    ):
         try:
             from utils.ssm_runtime import resolved_model_wants_causal_conv1d
 
