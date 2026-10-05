@@ -175,6 +175,12 @@ def test_capability_offers_setup_to_the_local_owner(host, linux):
     assert body["manual_command"] == "sudo apt-get install -y bubblewrap"
 
 
+def test_capability_reason_is_the_short_setup_reason_when_a_command_is_shown(host, linux):
+    body = _capability_client(OWNER).get("/api/sandbox/capability").json()
+    assert body["reason"] == "bubblewrap (bwrap) is not installed."
+    assert "setup_reason" not in body
+
+
 @pytest.mark.parametrize("who", ["other_account", "remote_owner"])
 def test_capability_gives_everyone_else_only_the_command(host, linux, monkeypatch, who):
     calls, _saved, _plan = host

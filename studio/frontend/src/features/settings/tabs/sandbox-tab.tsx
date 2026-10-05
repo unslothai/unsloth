@@ -60,15 +60,18 @@ function ToolRow({
   label,
   tool,
   shell,
+  quiet = false,
 }: {
   label: string;
   tool: SandboxToolStatus;
   shell?: SandboxStatus["terminalShell"];
+  /** The setup row below already says why and what to run; repeating it per tool is noise. */
+  quiet?: boolean;
 }) {
   const t = useT();
   const view = toolRowView(tool, shell ?? null);
   const reason = view.reason || t("settings.sandbox.noReason");
-  const description = view.isolated ? (
+  const description = quiet && !view.isolated ? undefined : view.isolated ? (
     view.runsInCmd ? (
       t("settings.sandbox.runsInCmd")
     ) : undefined
@@ -348,11 +351,13 @@ export function SandboxTab() {
                 <ToolRow
                   label={t("settings.sandbox.python")}
                   tool={status.python}
+                  quiet={setupRow?.show ?? false}
                 />
                 <ToolRow
                   label={t("settings.sandbox.terminal")}
                   tool={status.terminal}
                   shell={status.terminalShell}
+                  quiet={setupRow?.show ?? false}
                 />
                 {setupRow?.show ? (
                   <SettingsRow
@@ -370,7 +375,7 @@ export function SandboxTab() {
                           ) : null}
                         </>
                       ) : (
-                        setupRow.reason || undefined
+                        setupRow.reason || status.python.reason || undefined
                       )
                     }
                   >
@@ -393,7 +398,7 @@ export function SandboxTab() {
                       ) : null}
                       {setupResult === "succeeded" ? (
                         <span className={`${NOTE_CLASS} text-muted-foreground`}>
-                          {t("settings.sandbox.prepSucceeded")}
+                          {t("settings.sandbox.setupSucceeded")}
                         </span>
                       ) : null}
                       {setupResult === "declined" ? (

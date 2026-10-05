@@ -35,7 +35,7 @@ def _setup_fields_for(request: Request, isolated: bool) -> dict:
         fields = sandbox_setup_plan.setup_fields_for(request, available = isolated)
     except Exception:  # noqa: BLE001 - the capability stays useful without the setup hint
         return {}
-    fields.pop("reason", None)
+    fields["setup_reason"] = fields.pop("reason", None) or ""
     return fields
 
 
@@ -83,4 +83,8 @@ async def sandbox_capability(
     capability = _capability()
     isolated = capability["python_os_isolated"] and capability["terminal_os_isolated"]
     setup = await asyncio.to_thread(_setup_fields_for, request, isolated)
+    # The dialog shows the command on its own; the probe reason would repeat it inside a sentence.
+    short_reason = setup.pop("setup_reason", "")
+    if short_reason and setup.get("manual_command"):
+        capability["reason"] = short_reason
     return SandboxCapabilityResponse(**capability, **setup)

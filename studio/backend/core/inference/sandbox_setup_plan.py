@@ -104,7 +104,7 @@ def detect(available: bool | None = None, *, force: bool = False) -> SetupPlan:
     elif sys.platform == "darwin":
         plan = SetupPlan(
             platform = sys.platform,
-            reason = "Seatbelt is built into macOS, so there is nothing to install; the live check did not pass.",
+            reason = "The macOS sandbox (Seatbelt) did not pass its live check.",
         )
     elif sys.platform.startswith("linux"):
         plan = _linux_plan()
@@ -315,12 +315,17 @@ def _linux_plan() -> SetupPlan:
         steps.extend(_apparmor_steps())
     if not steps:
         return SetupPlan(platform = sys.platform, reason = reason)
+    # The steps carry the command, so the row only needs to say what is wrong.
     return SetupPlan(
         platform = sys.platform,
         action = LINUX_INSTALL,
         steps = tuple(steps),
         manual_command = manual_command(steps),
-        reason = reason,
+        reason = (
+            "bubblewrap is not installed."
+            if bwrap_missing
+            else "Ubuntu's AppArmor setting stops bubblewrap from starting a sandbox."
+        ),
     )
 
 
@@ -418,7 +423,7 @@ def _windows_plan() -> SetupPlan:
     if not installed:
         parts.append("the MXC runtime is not installed")
     if not opted_in:
-        parts.append("OS isolation on this Windows version is not allowed yet")
+        parts.append("the Windows sandbox is not turned on yet")
     if installed and missing:
         parts.append(f"host preparation is missing ({', '.join(missing)})")
     elif installed and missing is None:
