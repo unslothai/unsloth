@@ -633,8 +633,6 @@ def test_to_jsonable_maps_non_finite_numbers_to_none():
 
 
 def test_job_dataset_route_returns_a_missing_number_as_null(monkeypatch):
-    """A seed row without a numeric column comes out of pandas as NaN. Starlette will not encode
-    NaN, so the page 500'd and the preview table showed nothing."""
     pd = pytest.importorskip("pandas")
     from fastapi import FastAPI
     from fastapi.testclient import TestClient

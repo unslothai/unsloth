@@ -114,8 +114,7 @@ def to_jsonable(value: Any) -> Any:
             if not isinstance(value, float):
                 return value
 
-    # pandas hands a missing number over as NaN, and neither NaN nor +/-inf is JSON: Starlette
-    # refuses to encode them, so one blank numeric cell would 500 the whole dataset page.
+    # pandas' missing number is NaN; Starlette refuses NaN/inf, so one blank cell 500'd the page.
     if isinstance(value, float):
         return value if math.isfinite(value) else None
 
