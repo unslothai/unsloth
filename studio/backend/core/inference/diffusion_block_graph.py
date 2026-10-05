@@ -265,11 +265,14 @@ import weakref
 _LIVE: "weakref.WeakSet" = weakref.WeakSet()
 
 
-def pool_bytes() -> int:
-    """Device bytes held in every live block-graph pool: reserved by the allocator yet never free for other work, so
-    the memory guard must not credit them back as reclaimable."""
+def pool_bytes(device: Optional[int] = None) -> int:
+    """Device bytes held in every live block-graph pool (on CUDA ``device`` when given): reserved by the allocator yet
+    never free for other work, so the memory guard must not credit them back as reclaimable."""
     total = 0
     for shared in tuple(_LIVE):
+        index = getattr(shared, "device_index", None)
+        if device is not None and index is not None and index != device:
+            continue
         total += int(getattr(shared, "pool_bytes", 0) or 0)
     return total
 

@@ -110,3 +110,16 @@ def test_captures_stop_once_the_failure_budget_is_spent(monkeypatch):
     assert graph.stats["captures"] == 0 and graph.poisoned
     assert "failed" in graph.capture_error["msg"]
     assert torch.equal(out, good(x))
+
+
+def test_a_collision_with_another_recording_does_not_spend_the_failure_budget(monkeypatch):
+    monkeypatch.setattr(cg, "_FAILED_GRAPHS", [])
+    monkeypatch.setattr(cg, "_COLLIDED_GRAPHS", [], raising = False)
+    healed = []
+    monkeypatch.setattr(cg, "_heal_generators", lambda: healed.append(1))
+    for _ in range(cg.MAX_FAILED_CAPTURES + 1):
+        cg.retire_failed_capture(
+            object(), None, RuntimeError("beginAllocateToPool: already recording to mempool_id")
+        )
+    assert not cg.captures_exhausted()
+    assert healed == []  # the generators belong to the other thread's live capture

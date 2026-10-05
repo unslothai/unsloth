@@ -296,6 +296,7 @@ def _drop_pool_if_unused() -> None:
 # freed memory) and its pool is never recorded into again (the host allocator refuses: "already recording").
 MAX_FAILED_CAPTURES = 16
 _FAILED_GRAPHS: list = []
+_COLLIDED_GRAPHS: list = []
 _FAILED_LOCK = threading.Lock()
 
 
@@ -337,14 +338,16 @@ def retire_failed_capture(
     reference and graph, and kept as an empty husk like the rest."""
     begun_elsewhere = exc is not None and "already recording" in str(exc)
     ended_here = False if begun_elsewhere else _abandon_capture_pool(pool)
-    _heal_generators()
+    if not begun_elsewhere:  # the generators then belong to the other thread's live capture
+        _heal_generators()
     if not ended_here and not begun_elsewhere:
         try:
             graph.reset()
         except Exception:  # noqa: BLE001
             pass
     with _FAILED_LOCK:
-        _FAILED_GRAPHS.append(graph)
+        # A collision with another recording left nothing behind: kept alive, but not a failure the budget counts.
+        (_COLLIDED_GRAPHS if begun_elsewhere else _FAILED_GRAPHS).append(graph)
     if pool is not None and _POOL_BOX[0] == pool:
         _POOL_BOX[0] = None
 
