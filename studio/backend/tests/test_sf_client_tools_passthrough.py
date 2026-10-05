@@ -1661,6 +1661,65 @@ def test_a_plain_mlx_fit_may_reset_only_where_the_loop_can_reopen(
     assert [fit["recall_reachable"] for fit in backend.fits] == [reachable]
 
 
+class _TrimmingBackend(_FittedToolLoopBackend):
+    """Fits by keeping only the newest message."""
+
+    def compact_chat_context(self, messages, **kwargs):
+        self.fits.append(kwargs)
+        event = {"type": "context_truncated", "dropped_messages": len(messages) - 1, "fits": True}
+        return {"messages": messages[-1:], "system_prompt": "fitted", "events": [event]}
+
+
+def _texts(messages):
+    return [message["content"] for message in messages]
+
+
+def _overflowing(**kwargs):
+    turns = [("user", "old"), ("assistant", "ok"), ("user", "new")]
+    return _request(
+        messages = [ChatMessage(role = role, content = text) for role, text in turns],
+        stream = False,
+        context_overflow = "truncate_oldest",
+        **kwargs,
+    )
+
+
+@pytest.mark.parametrize("slots", [4, 1], ids = ["batched", "one_by_one"])
+def test_every_choice_of_an_mlx_request_starts_from_one_fit(monkeypatch, slots):
+    from routes.inference import _choice_seed
+
+    backend = _TrimmingBackend(_fixed("done"))
+    backend.models["sf-model"]["is_mlx"] = True
+    backend.effective_parallel_slots = slots
+    body = _json_body(_call(_overflowing(n = 3, seed = 11), monkeypatch, backend))
+
+    assert len(backend.fits) == 1
+    assert len(backend.batch_calls) == (slots > 1)
+    sent = [(_texts(c["messages"]), c["system_prompt"], c["seed"]) for c in backend.calls]
+    seeds = (11, _choice_seed(11, 1), _choice_seed(11, 2))
+    assert sent == [(["new"], "fitted", seed) for seed in seeds]
+    assert body["context_truncated"]["dropped_messages"] == 2
+
+
+def test_an_mlx_prompt_carrying_a_picture_is_sent_unfitted(monkeypatch):
+    backend = _TrimmingBackend(_fixed("done"))
+    backend.models["sf-model"].update(is_mlx = True, is_vision = True)
+    _call(_overflowing(image_base64 = _PNG_1x1), monkeypatch, backend)
+
+    assert backend.fits == [] and len(backend.calls[0]["messages"]) == 3
+
+
+def test_a_nudge_retry_extends_the_fitted_prompt_and_is_not_refitted(monkeypatch):
+    backend = _TrimmingBackend(_fixed('<tool_call>{"name": "lookup"'))
+    backend.models["sf-model"]["is_mlx"] = True
+    payload = _overflowing(tools = [LOOKUP_TOOL], nudge_tool_calls = True)
+    _call(payload, monkeypatch, backend)
+
+    first, retry = (_texts(call["messages"]) for call in backend.calls)
+    assert len(backend.fits) == 1 and first == ["new"]
+    assert retry[:1] == first and len(retry) > 1
+
+
 class _VisionToolLoopBackend(_ToolLoopBackend):
     def __init__(self, responder, **kwargs):
         super().__init__(responder, **kwargs)

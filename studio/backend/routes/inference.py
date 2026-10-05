@@ -33303,45 +33303,53 @@ async def produce_openai_chat_completions(
         and bool(_sf_rendered_features(backend, _sf_model_info, ({},))[0].get("supports_tools"))
     )
 
+    _sf_fit_cache: dict = {}
+
+    def _sf_fit_request():
+        # On the generation thread, once: every choice and retry starts from this prompt.
+        if "kwargs" in _sf_fit_cache:
+            return _sf_fit_cache["kwargs"], ()
+        fitted_kwargs, events = gen_kwargs, ()
+        # The count cannot price pictures or video, so those prompts are left alone.
+        if _sf_fit_overflow and all(
+            gen_kwargs.get(key) is None for key in ("image", "images", "video")
+        ):
+            fitted = backend.compact_chat_context(
+                gen_kwargs.get("messages") or [],
+                system_prompt = gen_kwargs.get("system_prompt") or "",
+                tools = gen_kwargs.get("tools"),
+                context_overflow = _sf_fit_overflow,
+                context_policy = _request_context_policy(payload),
+                compaction_headroom_ratio = _request_compaction_headroom_ratio(payload),
+                max_tokens = effective_max_tokens,
+                thread_id = payload.thread_id,
+                cancel_event = cancel_event,
+                enable_thinking = gen_kwargs.get("enable_thinking"),
+                reasoning_effort = gen_kwargs.get("reasoning_effort"),
+                preserve_thinking = gen_kwargs.get("preserve_thinking"),
+                continue_final_message = bool(gen_kwargs.get("continue_final_message", False)),
+                recall_reachable = _sf_recall_reachable,
+            )
+            fitted_kwargs = {
+                **gen_kwargs,
+                "messages": fitted["messages"],
+                "system_prompt": fitted["system_prompt"],
+            }
+            events = fitted.get("events") or ()
+        _sf_fit_cache["kwargs"] = fitted_kwargs
+        return fitted_kwargs, events
+
     def generate(messages_override = None, choice_index = 0):
-        base_kwargs = (
-            gen_kwargs
-            if messages_override is None
-            else {**gen_kwargs, "messages": messages_override}
-        )
-
-        if choice_index:
-            base_kwargs = {**base_kwargs, "seed": _choice_seed(payload.seed, choice_index)}
-
         def _run():
-            generation_kwargs = base_kwargs
-            # The count cannot price pictures or video, so those prompts are left alone.
-            if _sf_fit_overflow and all(
-                base_kwargs.get(key) is None for key in ("image", "images", "video")
-            ):
-                fitted = backend.compact_chat_context(
-                    base_kwargs.get("messages") or [],
-                    system_prompt = base_kwargs.get("system_prompt") or "",
-                    tools = base_kwargs.get("tools"),
-                    context_overflow = _sf_fit_overflow,
-                    context_policy = _request_context_policy(payload),
-                    compaction_headroom_ratio = _request_compaction_headroom_ratio(payload),
-                    max_tokens = effective_max_tokens,
-                    thread_id = payload.thread_id,
-                    cancel_event = cancel_event,
-                    enable_thinking = base_kwargs.get("enable_thinking"),
-                    reasoning_effort = base_kwargs.get("reasoning_effort"),
-                    preserve_thinking = base_kwargs.get("preserve_thinking"),
-                    continue_final_message = bool(base_kwargs.get("continue_final_message", False)),
-                    recall_reachable = _sf_recall_reachable,
-                )
+            generation_kwargs, events = _sf_fit_request()
+            yield from events
+            if messages_override is not None:
+                generation_kwargs = {**generation_kwargs, "messages": messages_override}
+            if choice_index:
                 generation_kwargs = {
-                    **base_kwargs,
-                    "messages": fitted["messages"],
-                    "system_prompt": fitted["system_prompt"],
+                    **generation_kwargs,
+                    "seed": _choice_seed(payload.seed, choice_index),
                 }
-                for event in fitted.get("events") or ():
-                    yield event
             yield from _sf_raw_generate(generation_kwargs)
 
         return _run()
@@ -33621,15 +33629,17 @@ async def produce_openai_chat_completions(
             _prompt_details = None
             _last_stats = None
 
+            def _note_fit(event):
+                if event.get("type") == "context_truncated":
+                    _sf_context_truncation_holder["value"] = _accumulate_context_truncation(
+                        None, event
+                    )
+
             def _drain_generate(messages_override = None, choice_index = 0):
                 final = ""
                 for token in generate(messages_override, choice_index = choice_index):
                     if isinstance(token, dict):
-                        if token.get("type") == "context_truncated":
-                            # Choices and retries refit one prompt: report a fit, not their sum.
-                            _sf_context_truncation_holder["value"] = _accumulate_context_truncation(
-                                None, token
-                            )
+                        _note_fit(token)
                         continue
                     if isinstance(token, GenStreamError):
                         return token
@@ -33649,11 +33659,14 @@ async def produce_openai_chat_completions(
                 _finished = set()
 
                 def _drain_batch():
+                    fitted_kwargs, fit_events = _sf_fit_request()
+                    for event in fit_events:
+                        _note_fit(event)
                     for event in backend.generate_chat_batch(
                         rows = rows,
                         cancel_event = cancel_event,
                         stats_holder = batch_stats,
-                        **gen_kwargs,
+                        **fitted_kwargs,
                     ):
                         if isinstance(event, GenStreamError):
                             return event
@@ -33773,7 +33786,8 @@ async def produce_openai_chat_completions(
                             try:
                                 # Mark the owning turn before the correction is appended,
                                 # or the reverse scan attaches the picture to it (#10092).
-                                _nudge_base = gen_kwargs["messages"]
+                                # The fitted prompt: the retry extends it and is not refitted.
+                                _nudge_base = _sf_fit_request()[0]["messages"]
                                 if _sf_renders_image or _video_clip is not None:
                                     from core.inference.chat_template_helpers import (
                                         messages_with_attached_image as _nudge_attach,
