@@ -118,7 +118,11 @@ import {
   releasePreStreamRunReservation,
 } from "../utils/pre-stream-run-reservation";
 import { readThreadCreationClaim } from "../utils/chat-thread-creation-claim";
-import { ggufCompactionRequestFields } from "../utils/auto-compaction";
+import {
+  apiCompactionRequestFields,
+  ggufCompactionRequestFields,
+} from "../utils/auto-compaction";
+import { resolveModelCatalogEntry } from "../model-catalog";
 import {
   lengthIncompleteReason,
   lengthStopCause,
@@ -269,6 +273,7 @@ import type {
   OpenAIChatMessage,
   OpenAIMessageContent,
   OpenAIReasoningContentPart,
+  ProviderCompactionContentPart,
 } from "../types/api";
 import { modelReadsSamplingSeed, type ChatModelRow } from "../types/runtime";
 import { loadFallbackNotice } from "../utils/mmproj-fallback";
@@ -1271,6 +1276,43 @@ function setAssistantOpenAIResponsesReasoning(
       ? (message.extra_content as Record<string, unknown>)
       : {};
   message.extra_content = { ...extra, openai_responses_reasoning: reasoning };
+}
+
+function providerCompactionPart(
+  value: unknown,
+): ProviderCompactionContentPart | null {
+  if (!value || typeof value !== "object") return null;
+  const { content, encrypted_content } = value as Record<string, unknown>;
+  if (typeof content === "string" && content) {
+    return { type: "compaction", content };
+  }
+  if (typeof encrypted_content === "string" && encrypted_content) {
+    return { type: "compaction", encrypted_content };
+  }
+  return null;
+}
+
+/** The provider drops what came before its compaction, so it leads the turn that produced it. */
+function withProviderCompaction(
+  message: RunMessage,
+  serialized: SerializedMessage[],
+): SerializedMessage[] {
+  const compaction = providerCompactionPart(
+    (message as { metadata?: { custom?: Record<string, unknown> } }).metadata
+      ?.custom?.providerCompaction,
+  );
+  const assistant = serialized.find((m) => m.role === "assistant");
+  if (!compaction || !assistant) return serialized;
+  const content = assistant.content;
+  assistant.content = [
+    compaction,
+    ...(typeof content === "string"
+      ? content
+        ? [{ type: "text" as const, text: content }]
+        : []
+      : (content ?? [])),
+  ];
+  return serialized;
 }
 
 function attachAssistantThoughtSignature(
@@ -5048,7 +5090,12 @@ export function createOpenAIStreamAdapter(
       // toOpenAIMessages emits assistant tool_calls plus role="tool" follow-ups; the backend Gemini
       // translator rebuilds the functionCall/functionResponse parts.
       let outboundMessages = renderedMessages
-        .flatMap((message) => toOpenAIMessages(message, replayReasoning))
+        .flatMap((message) => {
+          const serialized = toOpenAIMessages(message, replayReasoning);
+          return isExternalRequest
+            ? withProviderCompaction(message, serialized)
+            : serialized;
+        })
         .filter((message): message is NonNullable<typeof message> =>
           Boolean(message),
         );
@@ -5593,6 +5640,7 @@ export function createOpenAIStreamAdapter(
       };
       let codexRoundToolCallIds: string[] = [];
       let contextTruncation: OpenAIChatChunk["context_truncated"];
+      let providerCompaction: ProviderCompactionContentPart | undefined;
 
       const liveAssistantContent = () =>
         buildAssistantContent(mergeContinuation(cumulativeText));
@@ -5606,6 +5654,7 @@ export function createOpenAIStreamAdapter(
         openaiCodexReasoning: codexReasoningLedger,
         openaiResponsesReasoning: openAIResponsesReasoningLedger,
         contextTruncation,
+        providerCompaction,
         // A legacy (browser-tool / attachment / incognito) run that ends because you closed the tab has no
         // server-side run to resume from, so its last streamed yield is what persists. Mark it an interruption
         // — partial kept + Resume — instead of a silent blank/ambiguous state. Durable runs keep "cancelled":
@@ -6541,6 +6590,13 @@ export function createOpenAIStreamAdapter(
                 },
                 { forceRefreshPublicKey },
               )),
+              ...apiCompactionRequestFields({
+                autoCompactEnabled: runtime.autoCompactEnabled,
+                contextLength: resolveModelCatalogEntry(
+                  externalProvider.providerType,
+                  externalModelId,
+                )?.contextLength,
+              }),
               // On every external request: OpenRouter's cache routing, and the prompt date unless Claude caches.
               ...(resolvedThreadId ? { thread_id: resolvedThreadId } : {}),
               ...(openaiCodeExecContainerId
@@ -6932,8 +6988,11 @@ export function createOpenAIStreamAdapter(
                       ? "It got long, so older turns were removed from the model's " +
                         "context. They are saved and searchable, and relevant parts are " +
                         "brought back automatically."
-                      : "The full conversation is still visible and saved. " +
-                        "Unsloth removed complete older turns from this request so the chat can continue.",
+                      : contextTruncation?.summarized
+                        ? "The full conversation is still visible and saved. " +
+                          "The provider summarized older turns so the chat can continue."
+                        : "The full conversation is still visible and saved. " +
+                          "Unsloth removed complete older turns from this request so the chat can continue.",
                     duration: 8000,
                   });
                 }
@@ -7004,6 +7063,11 @@ export function createOpenAIStreamAdapter(
                       [field]: newContainerId,
                     }).catch(() => {});
                   }
+                  continue;
+                }
+                if (toolEvent.type === "compaction_block") {
+                  providerCompaction =
+                    providerCompactionPart(toolEvent) ?? providerCompaction;
                   continue;
                 }
                 if (toolEvent.type === "document_citations") {
@@ -8327,6 +8391,7 @@ export function createOpenAIStreamAdapter(
               openaiCodexReasoning: codexReasoningLedger,
               openaiResponsesReasoning: openAIResponsesReasoningLedger,
               contextTruncation,
+              providerCompaction,
               incomplete: finalIncompleteReason
                 ? { reason: finalIncompleteReason }
                 : undefined,
@@ -8496,6 +8561,7 @@ export function createOpenAIStreamAdapter(
               custom: {
                 ...reasoningDurationTracker.metadata(),
                 contextTruncation,
+                providerCompaction,
                 // Unfinished too, so it also offers Continue -- unless the provider already
                 // said why the model stopped.
                 incomplete: {

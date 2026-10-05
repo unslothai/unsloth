@@ -618,11 +618,18 @@ export type OpenAIImageGenerationCallContentPart = {
   response_id?: string;
 };
 
+export type ProviderCompactionContentPart = {
+  type: "compaction";
+  content?: string;
+  encrypted_content?: string;
+};
+
 export type OpenAIMessageContentPart =
   | { type: "text"; text: string }
   | { type: "image_url"; image_url: { url: string } }
   | OpenAIReasoningContentPart
-  | OpenAIImageGenerationCallContentPart;
+  | OpenAIImageGenerationCallContentPart
+  | ProviderCompactionContentPart;
 
 export type OpenAIMessageContent = string | OpenAIMessageContentPart[];
 
@@ -810,6 +817,8 @@ export interface OpenAIChatChunk {
     boundary_messages?: number;
     // True when this fit started a new checkpoint, including within the current tool loop.
     checkpoint_started?: boolean;
+    // True when the provider summarized the earlier turns rather than Unsloth dropping them.
+    summarized?: boolean;
     // The text the boundary landed ON, so the count can be re-derived by position: a count is only
     // valid against the transcript it was counted on, and deleting an already evicted prompt
     // shortens that transcript.

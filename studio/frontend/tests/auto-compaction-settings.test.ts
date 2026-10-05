@@ -3,7 +3,10 @@
 
 import assert from "node:assert/strict";
 import test from "node:test";
-import { ggufCompactionRequestFields } from "../src/features/chat/utils/auto-compaction.ts";
+import {
+  apiCompactionRequestFields,
+  ggufCompactionRequestFields,
+} from "../src/features/chat/utils/auto-compaction.ts";
 
 import { readSrc } from "./helpers/kit.ts";
 
@@ -135,5 +138,67 @@ test("MLX chats opt in on the backend's own report and honor disabling auto comp
   assert.match(
     adapter,
     /isMlxForCompaction =\s*!isExternalModelId\(params\.checkpoint\) && runtime\.loadedIsMlx === true/,
+  );
+});
+
+test("an API model compacts a quarter short of its published window and sends that window", () => {
+  assert.deepEqual(
+    apiCompactionRequestFields({ autoCompactEnabled: true, contextLength: 200_000 }),
+    {
+      context_overflow: "truncate_oldest",
+      compaction_threshold: 150_000,
+      context_window: 200_000,
+    },
+  );
+});
+
+test("a window past the request ceiling still sends a threshold the server accepts", () => {
+  assert.deepEqual(
+    apiCompactionRequestFields({ autoCompactEnabled: true, contextLength: 10_000_000 }),
+    {
+      context_overflow: "truncate_oldest",
+      compaction_threshold: 2_000_000,
+      context_window: 10_000_000,
+    },
+  );
+});
+
+test("an API model sends nothing with auto-compact off or no published window", () => {
+  assert.deepEqual(
+    apiCompactionRequestFields({ autoCompactEnabled: false, contextLength: 200_000 }),
+    {},
+  );
+  assert.deepEqual(
+    apiCompactionRequestFields({ autoCompactEnabled: true, contextLength: null }),
+    {},
+  );
+});
+
+test("the external request carries the window the model catalog publishes", async () => {
+  const { registerBundlerResolver, installLocalStorageFake } = await import(
+    "./helpers/kit.ts"
+  );
+  registerBundlerResolver();
+  installLocalStorageFake();
+  const { resolveModelCatalogEntry } = await import(
+    "../src/features/chat/model-catalog.ts"
+  );
+  const window = resolveModelCatalogEntry("anthropic", "claude-haiku-4-5")?.contextLength;
+  assert.equal(window, 200_000);
+
+  const adapter = readSrc("features/chat/api/chat-adapter.ts");
+  assert.match(
+    adapter,
+    /apiCompactionRequestFields\(\{\s*autoCompactEnabled: runtime\.autoCompactEnabled,\s*contextLength: resolveModelCatalogEntry\(\s*externalProvider\.providerType,\s*externalModelId,\s*\)\?\.contextLength,/,
+  );
+});
+
+test("a provider compaction is kept on the turn and replayed only to API models", () => {
+  const adapter = readSrc("features/chat/api/chat-adapter.ts");
+  assert.match(adapter, /toolEvent\.type === "compaction_block"/);
+  assert.match(adapter, /providerCompaction,\n/);
+  assert.match(
+    adapter,
+    /isExternalRequest\s*\?\s*withProviderCompaction\(message, serialized\)\s*:\s*serialized/,
   );
 });

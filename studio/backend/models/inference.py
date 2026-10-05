@@ -2242,18 +2242,23 @@ class ImageGenerationCallContentPart(BaseModel):
 
 
 class CompactionContentPart(BaseModel):
-    """Anthropic server-side compaction state, round-tripped on the next turn.
+    """Server-side compaction state, round-tripped on the next turn.
 
-    Anthropic returns a ``compaction`` block on the assistant message; the next
-    request must forward it back so Anthropic reuses the compaction state instead
-    of re-summarising. See ``external_provider._stream_anthropic`` and
-    https://platform.claude.com/docs/en/build-with-claude/compaction
+    Anthropic returns a ``compaction`` block and OpenAI Responses a ``compaction``
+    output item; the next request must forward it back so the provider reuses the
+    compaction state instead of re-summarising. See
+    https://platform.claude.com/docs/en/build-with-claude/compaction and
+    https://developers.openai.com/api/docs/guides/compaction
     """
 
     type: Literal["compaction"]
-    content: str = Field(
-        ...,
+    content: Optional[str] = Field(
+        None,
         description = "Anthropic-produced summary of the compacted-away conversation prefix.",
+    )
+    encrypted_content: Optional[str] = Field(
+        None,
+        description = "OpenAI Responses compaction item, opaque.",
     )
 
 
@@ -2752,7 +2757,8 @@ class ChatCompletionRequest(BaseModel):
             "keeping the first and recent turns. 'truncate_oldest' provides a rolling "
             "window for plain and Unsloth-tool chats by dropping complete oldest turns. "
             "Both truncation policies preserve system messages and tool-call groups. "
-            "MLX models honor 'truncate_oldest' only."
+            "MLX models honor 'truncate_oldest' only, as do external providers "
+            "given a compaction_threshold."
         ),
     )
     context_policy: Optional[Literal["checkpoint", "rolling"]] = Field(
@@ -2917,14 +2923,23 @@ class ChatCompletionRequest(BaseModel):
             "  - OpenAI cloud (api.openai.com) and Azure OpenAI Foundry "
             "(*.openai.azure.com, *.services.ai.azure.com): attaches "
             "`context_management:[{type:'compaction', compact_threshold:N}]` "
-            "to /v1/responses. Effective floor is around 200k (OpenAI's "
-            "canonical example); values below it surface "
-            "`compact_threshold is not enabled` 400s upstream.\n"
-            "Schema floor stays at ge=1 (any positive int) so the field is a "
-            "silent no-op on non-cloud OpenAI-compatible bases (ollama / "
-            "llama.cpp / vLLM) and every non-compaction-capable provider "
-            "rather than returning 422 at request validation time. Per-"
-            "provider floors are enforced in the corresponding stream helpers."
+            "to /v1/responses. A deployment that answers `compact_threshold "
+            "is not enabled` is retried without it.\n"
+            "Both cap the trigger at 200k.\n"
+            "Every other provider and model ignores it unless context_overflow "
+            "is truncate_oldest, in which case Unsloth drops the oldest turns "
+            "so the prompt and the reply fit within it before forwarding. "
+            "Per-provider floors are enforced in the corresponding stream helpers."
+        ),
+    )
+    context_window: Optional[int] = Field(
+        None,
+        ge = 1,
+        description = (
+            "[x-unsloth] The external model's context window, in tokens. When "
+            "Unsloth drops the oldest turns for a compaction_threshold, the prompt "
+            "also leaves room for max_tokens within it, and max_tokens is lowered "
+            "if it would leave the prompt less than half of the window."
         ),
     )
     openai_code_exec_container_id: Optional[str] = Field(

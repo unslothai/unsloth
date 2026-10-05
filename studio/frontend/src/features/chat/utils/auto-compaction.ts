@@ -26,3 +26,28 @@ export function ggufCompactionRequestFields(options: {
   // No context_policy: the server applies UNSLOTH_CONTEXT_POLICY.
   return { context_overflow: "truncate_oldest" };
 }
+
+// The server's default ROLLING_COMPACTION_HEADROOM_RATIO.
+const API_COMPACTION_HEADROOM = 0.25;
+// The request schema's ceiling on compaction_threshold.
+const API_COMPACTION_THRESHOLD_MAX = 2_000_000;
+
+export function apiCompactionRequestFields(options: {
+  autoCompactEnabled: boolean;
+  contextLength: number | null | undefined;
+}): {
+  context_overflow?: "truncate_oldest";
+  compaction_threshold?: number;
+  context_window?: number;
+} {
+  const { autoCompactEnabled, contextLength } = options;
+  if (!autoCompactEnabled || !contextLength || contextLength <= 0) return {};
+  return {
+    context_overflow: "truncate_oldest",
+    compaction_threshold: Math.min(
+      API_COMPACTION_THRESHOLD_MAX,
+      Math.floor(contextLength * (1 - API_COMPACTION_HEADROOM)),
+    ),
+    context_window: contextLength,
+  };
+}
