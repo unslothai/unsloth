@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// eslint-disable-next-line no-restricted-imports -- The picker barrel imports chat; this payload helper is import-free.
-import { llamaCppConfigPayload } from "@/features/model-picker/model-config/llama-cpp-config";
 import {
   CACHE_MISS_DOWNLOAD_DESCRIPTION,
   EMPTY_CACHE_MISS_WATCH,
@@ -107,10 +105,7 @@ import {
 import {
   GPU_LAYERS_AUTO,
   isLocalModelPath,
-  loadedLlamaCppConfigFields,
-  managedGpuMemoryFields,
-  managedKvCacheFields,
-  managedSpeculativeSettings,
+  loadedGpuMemoryFields,
   noteLoadedModelReasoningMode,
   persistGpuMemoryModeOnLoad,
   pinHoldsLiveEffort,
@@ -763,12 +758,10 @@ async function syncInferenceStatusToStore(options?: {
         // status so attach gates survive a refresh.
         syncModelCapabilities(checkpointId, statusRes);
 
-        // Against an already-resident model, history can load before this first status
-        // has a checkpoint, so its own recount never runs. The thread guard stops a null
-        // thread publishing an empty count.
+        // History can load before this status sets a window, so its own recount never runs, even
+        // with a checkpoint already selected (an API load). Null thread guard: no empty count.
         const hydrated = useChatRuntimeStore.getState();
         if (
-          !selectedCheckpoint &&
           hydrated.contextUsage == null &&
           hydrated.activeThreadId != null &&
           hydrated.loadedContextLength != null &&
@@ -2250,12 +2243,6 @@ export function useChatModelRuntime() {
           // them", and the route preserves the stored flags when the field is omitted, so a fallback
           // would clear flags the user set elsewhere.
           const loadLlamaExtraArgs = pendingLoadConfig?.llamaExtraArgs;
-          const loadLlamaCppConfig =
-            pendingLoadConfig?.llamaCppConfig ??
-            (currentCheckpoint === modelId &&
-            previousVariant === (ggufVariant ?? null)
-              ? stateBeforeUnload.llamaCppConfig
-              : undefined);
           let loadNBatch =
             pendingLoadConfig?.nBatch ?? stateBeforeUnload.nBatch;
           let loadNUbatch =
@@ -2385,9 +2372,6 @@ export function useChatModelRuntime() {
                     // The same list the load below sends: a --ctx-size or cache override changes the memory this
                     // preflight estimates, so omitting it approves a different command and /load then refuses
                     // the target with the real arguments.
-                    ...llamaCppConfigPayload(loadLlamaCppConfig, {
-                      isDiffusion: targetIsDiffusion,
-                    }),
                     ...(!targetIsDiffusion && loadLlamaExtraArgs !== undefined
                       ? { llama_extra_args: loadLlamaExtraArgs ?? [] }
                       : {}),
@@ -2486,11 +2470,10 @@ export function useChatModelRuntime() {
               // unload first and free VRAM early.
               // A reload of one of several stays in its own slot: /load replaces it there.
               if (!forceCancelActive && !touchesOnlySelected) {
-                if (loadLlamaCppConfig?.mode !== "custom") {
-                  await unloadModel({ model_path: currentCheckpoint });
-                  // Custom mode leaves replacement to /load, which preflights before evicting.
-                  loadRun.residentModelUnloaded = true;
-                }
+                await unloadModel({ model_path: currentCheckpoint });
+                // Only a real /unload removes the resident model. The forced path leaves
+                // it to /load, so cancellation must not treat it as gone.
+                loadRun.residentModelUnloaded = true;
               }
               // Set either way: /load can still leave no model resident, and an unneeded rollback hits
               // already_loaded before the gate.
@@ -2662,11 +2645,6 @@ export function useChatModelRuntime() {
                 isGguf && !targetIsDiffusion ? loadReasoningBudgetMessage : "",
               // Sent only once known, and [] is the explicit "launch with none": the flags are llama-server's,
               // so neither a transformers load nor a diffusion GGUF carries them.
-              ...(isGguf
-                ? llamaCppConfigPayload(loadLlamaCppConfig, {
-                    isDiffusion: targetIsDiffusion,
-                  })
-                : {}),
               ...(isGguf && !targetIsDiffusion && loadLlamaExtraArgs !== undefined
                 ? { llama_extra_args: loadLlamaExtraArgs ?? [] }
                 : {}),
@@ -2778,7 +2756,11 @@ export function useChatModelRuntime() {
                 }
               }
             }
+            const loadedKv = loadResponse.cache_type_kv ?? null;
             const loadedTp = loadResponse.tensor_parallel ?? false;
+            const loadedSpec = normalizeSpeculativeType(
+              loadResponse.speculative_type,
+            );
             const committedSlots =
               ((loadResponse.is_gguf ?? false) && !(loadResponse.is_diffusion ?? false)) ||
               (loadResponse.is_mlx ?? false)
@@ -2864,7 +2846,8 @@ export function useChatModelRuntime() {
                     codeToolsEnabled: stateBeforeUnload.codeToolsEnabled,
                   }
                 : resolveToolsEnabledOnLoad(supportsTools)),
-              ...managedKvCacheFields(loadResponse),
+              kvCacheDtype: loadedKv,
+              loadedKvCacheDtype: loadedKv,
               ...mlxRuntimeStateFrom(loadResponse),
               tensorParallel: loadedTp,
               loadedTensorParallel: loadedTp,
@@ -2876,8 +2859,11 @@ export function useChatModelRuntime() {
               // Set alongside loadedIsMultimodal so the composer can say WHY images are unavailable.
               loadedVisionDisabledByUser:
                 loadResponse.vision_disabled_by_user ?? false,
-              ...managedGpuMemoryFields(loadResponse),
-              ...managedSpeculativeSettings(loadResponse),
+              ...loadedGpuMemoryFields(loadResponse),
+              speculativeType: loadedSpec,
+              loadedSpeculativeType: loadedSpec,
+              specDraftNMax: loadResponse.spec_draft_n_max ?? null,
+              loadedSpecDraftNMax: loadResponse.spec_draft_n_max ?? null,
               // Keep the click-time value: the echo is the resolved count, and adopting it would pin a blank
               // "server default" control.
               nParallel: committedSlots,
@@ -2919,7 +2905,6 @@ export function useChatModelRuntime() {
               // process's list, so the last thing we knew still holds unless this was a different model. An
               // explicit empty list is recorded as empty, not null, since omitting the field is what makes /load
               // inherit. The server's echo comes first, as the only account of what the launch carried.
-              ...loadedLlamaCppConfigFields(loadResponse, loadLlamaCppConfig),
               loadedLlamaExtraArgs:
                 loadResponse.requested_llama_extra_args !== undefined
                   ? (loadResponse.requested_llama_extra_args ?? [])
@@ -3068,9 +3053,6 @@ export function useChatModelRuntime() {
                   }),
                   // Explicit, unlike the batch pair above: the failed switch left the TARGET resident, so an
                   // omitted field here inherits across models, which the route refuses.
-                  ...llamaCppConfigPayload(
-                    rollbackState.loadedLlamaCppConfig ?? undefined,
-                  ),
                   ...(rollbackState.loadedLlamaExtraArgs != null
                     ? { llama_extra_args: rollbackState.loadedLlamaExtraArgs }
                     : {}),
@@ -3097,12 +3079,6 @@ export function useChatModelRuntime() {
                   rollbackResponse.speculative_type,
                 );
                 useChatRuntimeStore.setState({
-                  llamaCppConfig:
-                    rollbackState.loadedLlamaCppConfig ?? undefined,
-                  loadedLlamaCppConfig: rollbackState.loadedLlamaCppConfig,
-                  llamaCppConfigSummary:
-                    rollbackResponse.llama_cpp_config_summary ??
-                    rollbackState.llamaCppConfigSummary,
                   activeModelIsLocal: rollbackResponse.is_local_model ?? false,
                   activeLoadId: previousActiveLoadId ?? null,
                   activeNativePathToken: previousActiveNativePathToken ?? null,
@@ -3149,29 +3125,17 @@ export function useChatModelRuntime() {
                     rollbackState.loadedCtxCheckpoints ?? null,
                   cacheRam: previousServerTuning.cacheRam ?? null,
                   loadedCacheRam: rollbackState.loadedCacheRam ?? null,
-                  // A custom echo carries the INI's tuning, not the managed baselines (as managedKvCacheFields).
-                  ...(rollbackResponse.requested_llama_cpp_config?.mode ===
-                  "custom"
-                    ? {
-                        loadedSpeculativeType:
-                          rollbackState.loadedSpeculativeType,
-                        loadedSpecDraftNMax: rollbackState.loadedSpecDraftNMax,
-                        loadedKvCacheDtype: rollbackState.loadedKvCacheDtype,
-                      }
-                    : {
-                        loadedSpeculativeType: rollbackSpeculativeType,
-                        loadedSpecDraftNMax:
-                          rollbackResponse.spec_draft_n_max ?? null,
-                        loadedKvCacheDtype:
-                          rollbackResponse.cache_type_kv ?? null,
-                      }),
+                  loadedSpeculativeType: rollbackSpeculativeType,
+                  loadedSpecDraftNMax:
+                    rollbackResponse.spec_draft_n_max ?? null,
+                  loadedKvCacheDtype: rollbackResponse.cache_type_kv ?? null,
                   ...mlxRuntimeStateFrom(rollbackResponse),
                   // After the spread, which seeds the control from the echo; the control keeps its intent, like
                   // nParallel above.
                   mlxKvQuant: previousMlxKvQuant,
                   loadedChatTemplateOverride:
                     rollbackState.loadedChatTemplateOverride,
-                  ...managedGpuMemoryFields(rollbackResponse),
+                  ...loadedGpuMemoryFields(rollbackResponse),
                   tensorParallel: rollbackResponse.tensor_parallel ?? false,
                   loadedTensorParallel:
                     rollbackResponse.tensor_parallel ?? false,

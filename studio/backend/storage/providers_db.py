@@ -24,6 +24,7 @@ from urllib.parse import urlparse
 
 logger = logging.getLogger(__name__)
 
+from storage.studio_db import connect_studio_db
 from utils.paths import studio_db_path, ensure_dir
 
 _schema_lock = threading.Lock()
@@ -144,7 +145,7 @@ def reset_schema_state_for_tests() -> None:
 def get_connection() -> sqlite3.Connection:
     db_path = studio_db_path()
     ensure_dir(db_path.parent)
-    conn = sqlite3.connect(str(db_path))
+    conn = connect_studio_db(db_path)
     conn.row_factory = sqlite3.Row
     if db_path not in _schema_ready:
         with _schema_lock:
