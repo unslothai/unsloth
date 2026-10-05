@@ -64,6 +64,19 @@ def _write_safetensors(path: Path, tensors: dict, metadata: dict) -> None:
             fh.write(tensors[name].contiguous().view(torch.uint8).numpy().tobytes())
 
 
+def _download_component(base: str, component: str, token) -> Path:
+    """The component folder of ``base``, data files only: the build reads JSON and safetensors (safe_open), never
+    anything executable, so nothing else is fetched."""
+    from huggingface_hub import snapshot_download
+
+    root = snapshot_download(
+        base,
+        allow_patterns = [f"{component}/*.json", f"{component}/*.safetensors"],
+        token = token,
+    )
+    return Path(root) / component
+
+
 def main(argv = None) -> int:
     p = argparse.ArgumentParser()
     p.add_argument("--base", required = True, help = "diffusers base repo carrying text_encoder/")
@@ -90,22 +103,11 @@ def main(argv = None) -> int:
     )
     from core.inference.prequant_safetensors import UNSLOTH_FORMAT_KEY, UNSLOTH_METADATA_KEY
 
-    if args.src:
-        src = Path(args.src)
-    else:
-        from huggingface_hub import snapshot_download
-        src = (
-            Path(
-                snapshot_download(
-                    args.base, allow_patterns = [f"{args.component}/*"], token = args.hf_token
-                )
-            )
-            / args.component
-        )
-    config = json.loads((src / "config.json").read_text())
+    src = Path(args.src) if args.src else _download_component(args.base, args.component, args.hf_token)
+    config = json.loads((src / "config.json").read_text(encoding = "utf-8"))
     index_path = src / "model.safetensors.index.json"
     if index_path.is_file():
-        weight_map = json.loads(index_path.read_text())["weight_map"]
+        weight_map = json.loads(index_path.read_text(encoding = "utf-8"))["weight_map"]
     else:
         with safe_open(str(src / "model.safetensors"), framework = "pt") as handle:
             weight_map = {name: "model.safetensors" for name in handle.keys()}
