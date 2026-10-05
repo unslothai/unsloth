@@ -1,0 +1,144 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+"""`unsloth install-kernels xformers causal_conv1d`: prebuilt kernel wheels matched to the resident torch.
+
+Wheel-only by design: no wheel for this torch / CUDA / Python means nothing is installed and the
+model keeps its torch fallback, never a source build. Installs use --no-deps so torch is never touched.
+"""
+
+from __future__ import annotations
+
+import argparse
+import subprocess
+import sys
+from typing import Callable
+
+from utils.wheel_utils import (
+    CAUSAL_CONV1D_PACKAGE_VERSION,
+    CAUSAL_CONV1D_RELEASE_BASE_URL,
+    CAUSAL_CONV1D_RELEASE_TAG,
+    MAMBA_SSM_PACKAGE_VERSION,
+    MAMBA_SSM_RELEASE_BASE_URL,
+    MAMBA_SSM_RELEASE_TAG,
+    direct_wheel_url,
+    probe_torch_wheel_env,
+    url_exists,
+    xformers_wheel_url,
+)
+
+# name -> (pip distribution, import check that loads the compiled extension)
+KERNELS = {
+    "xformers": (
+        "xformers",
+        "from xformers._cpp_lib import _register_extensions; _register_extensions()",
+    ),
+    "causal_conv1d": ("causal-conv1d", "import causal_conv1d"),
+    "mamba_ssm": ("mamba-ssm", "import mamba_ssm"),
+}
+
+_RELEASES = {
+    "causal_conv1d": (
+        CAUSAL_CONV1D_PACKAGE_VERSION,
+        CAUSAL_CONV1D_RELEASE_TAG,
+        CAUSAL_CONV1D_RELEASE_BASE_URL,
+    ),
+    "mamba_ssm": (MAMBA_SSM_PACKAGE_VERSION, MAMBA_SSM_RELEASE_TAG, MAMBA_SSM_RELEASE_BASE_URL),
+}
+
+
+def resolve_wheel_url(name: str, env: dict[str, str] | None) -> str | None:
+    if env is None:
+        return None
+    if name == "xformers":
+        return xformers_wheel_url(env)
+    # causal-conv1d and mamba-ssm publish Linux wheels only.
+    if not str(env.get("platform_tag") or "").startswith("linux"):
+        return None
+    package_version, release_tag, release_base_url = _RELEASES[name]
+    return direct_wheel_url(
+        filename_prefix = name,
+        package_version = package_version,
+        release_tag = release_tag,
+        release_base_url = release_base_url,
+        env = env,
+    )
+
+
+def _loads(check: str, run: Callable[..., subprocess.CompletedProcess]) -> bool:
+    result = run(
+        [sys.executable, "-c", check], stdout = subprocess.DEVNULL, stderr = subprocess.DEVNULL
+    )
+    return result.returncode == 0
+
+
+def _pip(
+    args: list[str], run: Callable[..., subprocess.CompletedProcess]
+) -> subprocess.CompletedProcess:
+    return run(
+        [sys.executable, "-m", "pip", *args],
+        stdout = subprocess.PIPE,
+        stderr = subprocess.STDOUT,
+        text = True,
+        encoding = "utf-8",
+        errors = "replace",
+    )
+
+
+def install_kernel(
+    name: str,
+    env: dict[str, str] | None,
+    *,
+    dry_run: bool = False,
+    run: Callable[..., subprocess.CompletedProcess] = subprocess.run,
+    exists: Callable[[str], bool | None] = url_exists,
+) -> int:
+    distribution, check = KERNELS[name]
+    url = resolve_wheel_url(name, env)
+    torch_desc = f"torch {env.get('torch_version')}" if env else "this environment"
+    # A 404 is proof nothing is published; an unreachable check is not, and pip fails fast on a bad URL.
+    if url is None or exists(url) is False:
+        print(f"Unsloth: no prebuilt {name} for {torch_desc}; using the torch fallback.")
+        return 0
+    if dry_run:
+        print(url)
+        return 0
+    if _loads(check, run):
+        print(f"Unsloth: {name} already installed and loads.")
+        return 0
+    result = _pip(["install", "--no-deps", "--force-reinstall", url], run)
+    if result.returncode != 0:
+        print(
+            f"Unsloth: installing {name} from {url} failed; using the torch fallback.\n{result.stdout[-2000:]}"
+        )
+        return 1
+    if not _loads(check, run):
+        # A wheel that imports but whose extension cannot load would be picked up and crash later.
+        _pip(["uninstall", "-y", distribution], run)
+        print(
+            f"Unsloth: {name} from {url} does not load with {torch_desc}; removed it, using the torch fallback."
+        )
+        return 1
+    print(f"Unsloth: installed {name} ({url.rsplit('/', 1)[-1]}).")
+    return 0
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(
+        prog = "unsloth install-kernels",
+        description = "Install prebuilt kernel wheels matching the installed torch. Never builds from source or changes torch.",
+    )
+    parser.add_argument("kernels", nargs = "+", choices = sorted(KERNELS))
+    parser.add_argument(
+        "--dry-run", action = "store_true", help = "print the resolved wheel URL and install nothing"
+    )
+    args = parser.parse_args(argv)
+    env = probe_torch_wheel_env(timeout = 120, include_windows = True)
+    status = 0
+    for name in dict.fromkeys(args.kernels):
+        status = max(status, install_kernel(name, env, dry_run = args.dry_run))
+    return status
+
+
+if __name__ == "__main__":
+    sys.exit(main())

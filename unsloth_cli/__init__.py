@@ -53,6 +53,11 @@ def _reconfigure_entry_point_streams():
 if _is_entry_point:
     _reconfigure_entry_point_streams()
 
+# Before typer and the command imports: notebooks run this right after `pip install --no-deps unsloth`.
+if (_is_entry_point or _entry_base == "-m") and _sys.argv[1:2] == ["install-kernels"]:
+    from unsloth_cli._install_kernels import main as _install_kernels_main
+    _sys.exit(_install_kernels_main(_sys.argv[2:]))
+
 from unsloth_cli._system_dir_guard import check_working_directory as _check_working_directory
 
 # Running from System32 or a subdir breaks commands; move out before the command imports, since
@@ -242,3 +247,18 @@ if not _windows_studio_mutation_entry:
         },
         help = "Alias for `unsloth studio run`.",
     )(studio_run)
+
+
+@app.command(
+    "install-kernels",
+    context_settings = {
+        "allow_extra_args": True,
+        "ignore_unknown_options": True,
+        "help_option_names": [],
+    },
+    help = "Install prebuilt xformers / causal_conv1d / mamba_ssm wheels matching the installed torch.",
+)
+def install_kernels(ctx: typer.Context):
+    # Listed for `unsloth --help`; the console script dispatches before typer is imported.
+    from unsloth_cli._install_kernels import main as _install_kernels_main
+    raise typer.Exit(code = _install_kernels_main(ctx.args))

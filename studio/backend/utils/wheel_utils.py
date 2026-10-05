@@ -23,6 +23,13 @@ from utils.subprocess_compat import windows_hidden_subprocess_kwargs
 _logger = logging.getLogger(__name__)
 
 FLASH_ATTN_RELEASE_BASE_URL = "https://github.com/Dao-AILab/flash-attention/releases/download"
+# Pinned wheels, kept in lockstep with core/training/worker.py by tests/test_ssm_runtime.py.
+CAUSAL_CONV1D_PACKAGE_VERSION = "1.6.1"
+CAUSAL_CONV1D_RELEASE_TAG = "v1.6.1.post4"
+CAUSAL_CONV1D_RELEASE_BASE_URL = "https://github.com/Dao-AILab/causal-conv1d/releases/download"
+MAMBA_SSM_PACKAGE_VERSION = "2.3.1"
+MAMBA_SSM_RELEASE_TAG = "v2.3.1"
+MAMBA_SSM_RELEASE_BASE_URL = "https://github.com/state-spaces/mamba/releases/download"
 
 
 # No arch gate, deliberately: has_blackwell_gpu() skipped flash-attn before sm_100+ wheels existed (#5420) and became the bug once they did (#6961), denying B200 hosts a working wheel. An arch gate encodes a snapshot of what upstream ships and goes stale silently both ways; the post-install import check catches a wheel that will not load whatever the cause.
