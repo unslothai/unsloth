@@ -42,6 +42,7 @@ export type {
   ApiMonitorEntry,
   BackendModelDetails,
   GgufVariantDetail,
+  GgufVariantsResponse,
   InferenceStatusResponse,
 } from "./types/api";
 export {
@@ -89,7 +90,7 @@ export {
   useToolPaneScope,
 } from "./tool-output-scope";
 export { useToolAwaitingApproval } from "./tool-approval";
-export { PermissionModeDropdown } from "./permission-mode-select";
+export { PermissionModeDropdown, useActivePermissionMode } from "./permission-mode-select";
 export { useChatSearchStore } from "./stores/chat-search-store";
 export type { ChatNavigationState } from "./stores/chat-navigation-store";
 export {
@@ -217,6 +218,7 @@ export {
   releasePreStreamRunForThreadIds,
   releasePreStreamRunReservation,
   reservePreStreamRun,
+  subscribePreStreamRunReservations,
 } from "./utils/pre-stream-run-reservation";
 export { claimThreadCreation } from "./utils/chat-thread-creation-claim";
 export { useChatProjectScope } from "./chat-project-scope";

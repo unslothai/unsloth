@@ -35,6 +35,7 @@ import { InterfaceZoom, zoomInterfaceFromMenu } from "@/features/interface-zoom"
 import { bootstrapPersistedCredentials } from "@/features/credentials/bootstrap";
 import { SharedRunConfigLinkHandler } from "@/features/model-picker";
 import { backfillModelOverrides } from "@/features/model-picker/api/migrate-model-overrides";
+import { hydratePins } from "@/features/model-picker/components/model-selector/pins-mirror";
 import { usePersonalizationSync } from "@/features/profile";
 import { RemoteCodeConsentDialog } from "@/features/security";
 import {
@@ -50,6 +51,7 @@ import {
 import { useLowDiskNotice } from "@/features/settings/hooks/use-low-disk-notice";
 import { useTrainingUnloadGuard } from "@/features/training";
 import { TransformersUpgradeDialog } from "@/features/transformers-upgrade";
+import { LlmCompressorConsentDialog } from "@/features/export/components/llm-compressor-consent-dialog";
 import { useNativePathLeasesSupported } from "@/features/native-intents";
 import { useRagAvailabilityStore } from "@/features/rag";
 import { useIsMobileShell } from "@/hooks/use-mobile";
@@ -467,12 +469,13 @@ function RootLayout() {
   }, [documentTitle]);
 
   // Settings predating the server override map live only here, so an API load would use
-  // app defaults. Backfill once, after auth.
+  // app defaults. Backfill once, after auth; pins are restored from the account's server copy.
   useEffect(() => {
     if (isAuthFlowRoute) {
       return;
     }
     void backfillModelOverrides();
+    void hydratePins();
   }, [isAuthFlowRoute]);
 
   useEffect(() => {
@@ -677,6 +680,7 @@ function RootLayout() {
       <HfTokenWarningDialog />
       <RemoteCodeConsentDialog />
       <TransformersUpgradeDialog />
+      <LlmCompressorConsentDialog />
       {/* At the root, not under /chat: a swap can start from the Hub too. */}
       <StopRunningChatsDialog />
       {!hideNavbar && <CommandPalette />}

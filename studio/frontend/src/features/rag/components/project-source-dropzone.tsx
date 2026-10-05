@@ -7,9 +7,10 @@ import {
   registerNativeAttachmentPath,
   useNativeDropTarget,
 } from "@/features/native-intents";
+import { FolderPlusIcon } from "@/lib/hugeicons-derived";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
-import { FileEmpty02Icon, FolderAddIcon } from "@hugeicons/core-free-icons";
+import { FileEmpty02Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { XIcon } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -385,7 +386,7 @@ export function ProjectSourceDropzone({
             className="flex w-full cursor-pointer flex-col items-center justify-center gap-3 rounded-[22px] px-6 py-12 text-center transition-colors hover:bg-muted/40 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
           >
             <HugeiconsIcon
-              icon={FolderAddIcon}
+              icon={FolderPlusIcon}
               strokeWidth={1.75}
               className="size-6 text-muted-foreground"
             />
@@ -438,7 +439,7 @@ export function ProjectSourceDropzone({
               className="flex items-center justify-center gap-2 rounded-[10px] py-2 text-ui-13 font-medium text-muted-foreground transition-colors hover:bg-muted/50 hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
             >
               <HugeiconsIcon
-                icon={FolderAddIcon}
+                icon={FolderPlusIcon}
                 strokeWidth={1.75}
                 className="size-4"
               />

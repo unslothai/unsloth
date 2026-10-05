@@ -53,16 +53,21 @@ class _FakeProcessor:
         self.seen_audio = None
         self.seen_rate = None
         self.features = _FakeTensor()
+        self.attention_mask = _FakeTensor()
 
     def __call__(
         self,
         audio,
         sampling_rate = None,
         return_tensors = None,
+        return_attention_mask = False,
     ):
         self.seen_audio = audio
         self.seen_rate = sampling_rate
-        return SimpleNamespace(input_features = self.features)
+        result = SimpleNamespace(input_features = self.features)
+        if return_attention_mask:
+            result.attention_mask = self.attention_mask
+        return result
 
     def batch_decode(self, _generated, **_kwargs):
         return ["hello"]
@@ -235,11 +240,11 @@ def test_child_feeds_decoded_pcm_and_matches_the_model_dtype(monkeypatch):
     _calls, model, processor = _install_fake_transformers(monkeypatch)
     pcm = np.arange(4, dtype = np.float32).tobytes()
 
-    text = worker_module.transcribe_window(
+    result = worker_module.transcribe_window(
         model, processor, pcm, {"task": "transcribe", "num_beams": 5}
     )
 
-    assert text == "hello"
+    assert result == ("hello", 4)
     assert processor.seen_rate == 16000
     assert np.array_equal(processor.seen_audio, np.arange(4, dtype = np.float32))
     # to(device) then to(dtype): features must match the weights they meet.
@@ -261,6 +266,60 @@ def test_child_only_installs_stopping_criteria_for_a_cancellable_request(monkeyp
 
     worker_module.transcribe_window(model, processor, pcm, {})
     assert "stopping_criteria" not in model.generate_kwargs
+
+
+_TIMESTAMP_BEGIN = 50364
+_EOS = 50257
+
+
+class _TimestampedModel(_FakeModel):
+    def __init__(self, tokens) -> None:
+        super().__init__()
+        self.generation_config = SimpleNamespace(
+            is_multilingual = True, no_timestamps_token_id = _TIMESTAMP_BEGIN - 1, eos_token_id = _EOS
+        )
+        self.tokens = tokens
+
+    def generate(self, _features, **kwargs):
+        self.generate_kwargs = kwargs
+        return [self.tokens]
+
+
+class _RecordingProcessor(_FakeProcessor):
+    def batch_decode(self, generated, **_kwargs):
+        self.decoded = [list(row) for row in generated]
+        return ["decoded"]
+
+
+def _at(seconds):
+    return _TIMESTAMP_BEGIN + round(seconds * 50)
+
+
+@pytest.mark.parametrize(
+    "tail, kept, consumed",
+    [
+        pytest.param([_at(28.4), _at(28.4), 33], [_at(28.4)], 454400, id = "cut-mid-sentence"),
+        pytest.param([33, _at(29.0)], [33, _at(29.0)], 480000, id = "last-segment-closed"),
+    ],
+)
+def test_child_resumes_a_long_clip_after_its_last_complete_segment(
+    monkeypatch, tail, kept, consumed
+):
+    head = [_at(0), 11, _at(5.0), _at(5.0), 22]
+    model = _TimestampedModel([50258, 50259, 50359] + head + tail + [_EOS])
+    processor = _RecordingProcessor()
+    _install_fake_transformers(monkeypatch, model = model, processor = processor)
+    pcm = np.zeros(480000, dtype = np.float32).tobytes()
+
+    result = worker_module.transcribe_window(
+        model, processor, pcm, {"num_beams": 5, "return_timestamps": True}
+    )
+
+    assert result == ("decoded", consumed)
+    assert processor.decoded == [head + kept]
+    assert model.generate_kwargs["force_unique_generate_call"] is True
+    assert model.generate_kwargs["attention_mask"] is processor.attention_mask
+    assert processor.attention_mask.moved_to == ["cuda"]
 
 
 # ---------------------------------------------------------------------------
@@ -327,12 +386,17 @@ def test_child_reports_the_loaded_model_then_transcribes_then_exits(monkeypatch)
             {"type": "shutdown"},
         ],
         load = lambda *_args, **_kwargs: (model, _FakeProcessor()),
-        transcribe = lambda *_args, **_kwargs: "hello",
+        transcribe = lambda *_args, **_kwargs: ("hello", 16000),
     )
 
     assert responses == [
-        {"type": "loaded", "device": "cuda", "is_multilingual": False},
-        {"type": "text", "text": "hello"},
+        {
+            "type": "loaded",
+            "device": "cuda",
+            "is_multilingual": False,
+            "supports_timestamps": False,
+        },
+        {"type": "text", "text": "hello", "consumed": 16000},
         {"type": "shutdown_ack"},
     ]
 
@@ -387,7 +451,7 @@ def test_child_reports_a_cancelled_generation_rather_than_partial_text(monkeypat
         cancel_event = None,
     ):
         cancel_event.set()  # what StoppingCriteria does to a running generate
-        return "half a sen"
+        return "half a sen", 0
 
     responses, _cancel = _run_child(
         monkeypatch,
@@ -455,11 +519,11 @@ def test_an_unknown_failure_arrives_as_a_worker_error_carrying_its_message():
 
 def test_handle_sends_one_window_and_returns_its_text():
     handle = _wired_worker()
-    handle._resp_queue.put({"type": "text", "text": "hello"})
+    handle._resp_queue.put({"type": "text", "text": "hello", "consumed": 1})
 
-    text = handle.transcribe_window(b"\x00\x00\x00\x00", {"num_beams": 1})
+    result = handle.transcribe_window(b"\x00\x00\x00\x00", {"num_beams": 1})
 
-    assert text == "hello"
+    assert result == ("hello", 1)
     command = handle._cmd_queue.get_nowait()
     assert command["type"] == "transcribe"
     assert command["generate_kwargs"] == {"num_beams": 1}
@@ -753,7 +817,7 @@ def test_dictation_still_loads_and_transcribes_when_no_child_can_be_started(monk
     assert isinstance(engine, worker_module.InProcessWhisperEngine)
     assert engine.device == "cpu"
     assert engine.is_alive() is True
-    assert engine.transcribe_window(np.zeros(4, dtype = np.float32).tobytes(), {}) == "hello"
+    assert engine.transcribe_window(np.zeros(4, dtype = np.float32).tobytes(), {}) == ("hello", 4)
 
 
 def test_a_spawn_failure_on_an_accelerator_leaves_the_cpu_retry_to_the_sidecar(monkeypatch):
@@ -1001,6 +1065,7 @@ def test_the_in_process_fallback_reports_the_checkpoint_language_support(monkeyp
 
     # The sidecar reads this to drop the kwargs an English-only model rejects.
     assert engine.generation_config.is_multilingual is False
+    assert engine.generation_config.supports_timestamps is False
     engine.close()
     assert engine.is_alive() is False
 

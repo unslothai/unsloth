@@ -869,13 +869,15 @@ def test_a_caller_supplied_config_declines_planning():
     raise AssertionError("vision.py plans without vetoing a caller-supplied config")
 
 
-def test_the_optimized_path_says_so_when_it_drops_an_offload_request():
-    """`FastLanguageModel` accepts `offload_embedding`, but the optimized architectures
-    take a path that has never had the parameter, so the request went nowhere in silence.
-    The `"auto"` default stays quiet, since off is a decision it is entitled to make."""
-    source = open(os.path.join(MODELS, "loader.py"), encoding = "utf-8").read()
-    assert "does not support it" in source
-    assert "offload_embedding != OFFLOAD_EMBEDDING_AUTO" in source
+def test_the_optimized_path_honours_offload_embedding():
+    """`FastLanguageModel` accepts `offload_embedding`, and the optimized architectures used to
+    drop it in silence. Now the loader forwards it and FastLlamaModel applies the same offload as
+    FastModel, through the shared helper."""
+    loader = open(os.path.join(MODELS, "loader.py"), encoding = "utf-8").read()
+    assert "does not support it" not in loader
+    llama = open(os.path.join(MODELS, "llama.py"), encoding = "utf-8").read()
+    assert 'kwargs.pop("offload_embedding", False)' in llama
+    assert "offload_input_embedding(model)" in llama
 
 
 def test_the_auto_mode_is_recognised_by_value_everywhere():
