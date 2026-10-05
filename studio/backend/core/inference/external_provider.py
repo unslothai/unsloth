@@ -2851,7 +2851,15 @@ class ExternalProviderClient:
             # A pending server call still needs its declaration on the result-only continuation. Disallow new calls.
             body["tool_choice"] = {"type": "none"}
 
-        if tools and not _anthropic_tool_choice_disabled:
+        # Anthropic 400s a history holding tool blocks without `tools`, so a withdrawn catalog stays declared.
+        history_has_tool_blocks = any(
+            isinstance(message["content"], list)
+            and any(
+                block.get("type") in ("tool_use", "tool_result") for block in message["content"]
+            )
+            for message in filtered
+        )
+        if tools and (not _anthropic_tool_choice_disabled or history_has_tool_blocks):
             client_tools = []
             for tool in tools:
                 if tool.get("type") != "function":
@@ -2870,7 +2878,9 @@ class ExternalProviderClient:
                 client_tools.append(entry)
             if client_tools:
                 body["tools"] = client_tools
-                if _anthropic_tool_choice_forced_function:
+                if _anthropic_tool_choice_disabled:
+                    body["tool_choice"] = {"type": "none"}
+                elif _anthropic_tool_choice_forced_function:
                     body["tool_choice"] = {"type": "tool", "name": tool_choice["function"]["name"]}
                 elif tool_choice == "required":
                     body["tool_choice"] = {"type": "any"}

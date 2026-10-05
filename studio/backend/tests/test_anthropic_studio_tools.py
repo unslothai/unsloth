@@ -266,10 +266,12 @@ def test_loop_executes_fragmented_calls_and_replays_signed_and_hosted_blocks(
     assert any("Finished." in line for line in lines)
     assert not any('"error"' in line for line in lines)
     assert len(bodies[1]["messages"]) == 3
+    if max_calls == 2:
+        # The spent budget withdraws the catalog, but Anthropic still needs it declared beside the tool blocks.
+        assert {"python", "web_search"} <= {tool["name"] for tool in bodies[1]["tools"]}
+        assert bodies[1]["tool_choice"] == {"type": "none"}
     if pending_fetch:
         assert any(tool["name"] == "web_fetch" for tool in bodies[1]["tools"])
-        if max_calls == 2:
-            assert bodies[1]["tool_choice"] == {"type": "none"}
     if len(bodies) == 3:
         noop_assistant, noop_results = bodies[-1]["messages"][-2:]
         assert noop_assistant["role"] == "assistant"
@@ -592,7 +594,7 @@ def test_client_continuation_replays_native_anthropic_state(monkeypatch, content
     assert bodies[0]["messages"][2]["content"] == [
         {"type": "tool_result", "tool_use_id": "toolu_1", "content": "READY"}
     ]
-    assert [tool["name"] for tool in bodies[0]["tools"]] == ["web_fetch"]
+    assert [tool["name"] for tool in bodies[0]["tools"]] == ["get_status", "web_fetch"]
     assert bodies[0]["tool_choice"] == {"type": "none"}
 
 

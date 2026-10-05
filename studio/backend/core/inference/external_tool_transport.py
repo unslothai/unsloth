@@ -65,6 +65,7 @@ class OAICompatTransport:
         # Anthropic can leave a hosted call pending beside a client call; its continuation accepts only tool results.
         self.tool_result_only_continuation = client.provider_type == "anthropic"
         self._initial_message_count: int | None = None
+        self._last_tools: list[dict[str, Any]] | None = None
         self.preserves_reasoning = (
             client.provider_type == "llama_cpp" and request_kwargs.get("preserve_thinking") is True
         )
@@ -77,6 +78,11 @@ class OAICompatTransport:
         tool_choice: Any,
         cancel_event: threading.Event,
     ) -> AsyncIterator[str]:
+        if tools:
+            self._last_tools = tools
+        elif self.tool_result_only_continuation and self._last_tools:
+            # A withdrawn catalog still has to be declared beside the tool blocks; "none" blocks new calls.
+            tools, tool_choice = self._last_tools, "none"
         if self._initial_message_count is not None and self.tool_result_only_continuation:
             # Promoted MCP images join the tool result: a new user turn would end a pending server-tool turn.
             normalized = list(messages[: self._initial_message_count])
