@@ -59,8 +59,15 @@ import time
 import urllib.parse
 import urllib.request
 
+from core.inference.mcp_image import (
+    ATTACHED_IMAGE,
+    image_input_mappings,
+    image_mapping,
+    public_tool,
+)
 from core.inference.mcp_client import (
     MCP_TOOL_PREFIX,
+    MCP_IMAGES_SENTINEL,
     TOOL_CACHE_INVALIDATING_FIELDS,
     cache_tools,
     call_tool_sync,
@@ -70,9 +77,12 @@ from core.inference.mcp_client import (
     is_stdio,
     list_tools_async,
     parse_server_headers,
+    parse_stdio_command,
     probe_timeout,
     record_probe_failure,
     stdio_mcp_enabled,
+    tool_ui_resource_uri,
+    tool_visible_to,
 )
 from storage import mcp_servers_db
 from utils.account_context import account_thread, current_account_id, is_owner_context
@@ -2088,7 +2098,7 @@ def _find_blocked_commands(command: str, posix: "bool | None" = None) -> set[str
 # child's PYTHONPATH in _build_safe_env.
 _SANDBOX_SITE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "sandbox_site")
 
-# "Auto-approve" (permission_mode="auto") safety detection. Auto mode pauses only calls classified here as
+# "Approve for me" (permission_mode="auto") safety detection. Auto mode pauses only calls classified here as
 # potentially unsafe. The sandbox and hard blocks still apply at run time; this gate only decides prompting, and fails
 # closed: anything not provably read-only asks.
 
@@ -2657,6 +2667,7 @@ _AUTO_UNSAFE_PY_MODULES = frozenset(
         "subprocess",
         "shutil",
         "socket",
+        "_socket",
         "ctypes",
         "multiprocessing",
         "pty",
@@ -7076,6 +7087,7 @@ _ALWAYS_SAFE_TOOLS = frozenset(
         "read_skill",
         "deep_research",
         "mcp_tool_schema",
+        "view_image",
     }
 )
 
@@ -7115,7 +7127,7 @@ def _web_search_fetches_url(name: str, arguments: dict) -> bool:
 def is_potentially_unsafe_tool_call(name: str, arguments: dict) -> bool:
     """Whether a tool call must still pause for approval in auto mode.
 
-    Used by permission_mode="auto" ("Auto-approve"): read-only calls
+    Used by permission_mode="auto" ("Approve for me"): read-only calls
     auto-run, anything that can mutate state, execute arbitrary code, or is
     simply unrecognized asks first. Unknown tools fail closed.
     """
@@ -7163,7 +7175,7 @@ def is_potentially_unsafe_tool_call(name: str, arguments: dict) -> bool:
 
 
 # Terminal commands that are high risk regardless of their arguments, so auto
-# ("Auto-approve") pauses them while ordinary dev commands (pip install, mkdir,
+# ("Approve for me") pauses them while ordinary dev commands (pip install, mkdir,
 # cp, make, git, ...) run. The hard-block command set, rlimits, secret-env
 # stripping and the per-session scratch workdir stay on beneath this prompt.
 _HIGH_RISK_COMMANDS = frozenset(
@@ -9235,7 +9247,7 @@ def _python_is_high_risk(code: str) -> bool:
 
 
 def is_high_risk_tool_call(name: str, arguments: dict) -> bool:
-    """Whether a tool call is sensitive enough to pause for approval in auto (Auto-approve) mode.
+    """Whether a tool call is sensitive enough to pause for approval in auto (Approve for me) mode.
 
     Unlike is_potentially_unsafe_tool_call (which prompts on anything not read-only), this prompts
     only on genuinely sensitive actions - credential access, privilege escalation,
@@ -9477,9 +9489,9 @@ def _build_safe_env(workdir: str, shell: "str | None" = None) -> dict[str, str]:
     Whitelist-built from scratch (parent env NOT inherited): only
     PATH/HOME/TMPDIR/LANG/TERM/PYTHONIOENCODING/PYTHONPATH (+VIRTUAL_ENV or Windows SystemRoot and a
     minimal PATHEXT) reach the child; all credential vars (HF_TOKEN, AWS_*, etc.) are absent. HOME
-    points at the sandbox workdir so SDKs can't read the operator's cached creds, and the temp vars
-    at _sandbox_temp_dir just inside it. PYTHONPATH carries only the sandbox sitecustomize shim
-    directory.
+    (and on Windows HOMEDRIVE/HOMEPATH) points at the sandbox workdir so SDKs can't read the
+    operator's cached creds, and the temp vars at _sandbox_temp_dir just inside it. PYTHONPATH
+    carries only the sandbox sitecustomize shim directory.
 
     PATH starts with the Unsloth interpreter / venv and OS system dirs so ``python``/``pip`` stay
     pinned. On Windows only, Git-for-Windows install dirs from the host PATH are appended so bare
@@ -9551,6 +9563,8 @@ def _build_safe_env(workdir: str, shell: "str | None" = None) -> dict[str, str]:
         # and writes outside the workdir.
         env["TEMP"] = temp_dir
         env["TMP"] = temp_dir
+        # Path.home() ignores HOME on Windows; a workdir USERPROFILE would instead send pip's cache to .\pip in the cwd.
+        env["HOMEDRIVE"], env["HOMEPATH"] = os.path.splitdrive(workdir)
         # Restrict PATHEXT so cwd .BAT/.CMD cannot hijack bare names (#7317).
         pathext = ".EXE;.COM"
         if git_ext and git_ext not in (".EXE", ".COM"):
@@ -9861,7 +9875,7 @@ def _requested_execution_mode(tool_execution_mode: str, disable_sandbox: bool) -
         raise os_sandbox.SandboxUnavailableError(
             "TOOL_EXECUTION_MODE_INVALID: full access is not requestable through "
             "tool_execution_mode",
-            remediation = "Bypass permissions (disable_sandbox) turns the sandbox off.",
+            remediation = "Full access is granted with disable_sandbox (Bypass Permissions).",
         )
     return tool_execution_mode
 
@@ -10169,8 +10183,8 @@ def _terminal_profile(disable_sandbox: bool = False) -> str:
     Git Bash cannot start inside MXC (microsoft/mxc#1061), so when bash fails the MXC probe and
     cmd.exe qualifies instead, Auto runs the Terminal isolated on cmd rather than unsandboxed on bash.
     Any bash failure counts, not only the MSYS verdict: on a freshly prepared host bash fails without
-    that signature while cmd passes. Only the DACL tier probes at all, and only a failed bash probes
-    cmd. Full access and UNSLOTH_MXC_TERMINAL_CMD=0 keep the host shell.
+    that signature while cmd passes. Only a failed bash probes cmd. Full access and
+    UNSLOTH_MXC_TERMINAL_CMD=0 keep the host shell.
     """
     if sys.platform != "win32":
         return "bash"
@@ -10179,12 +10193,8 @@ def _terminal_profile(disable_sandbox: bool = False) -> str:
     if disable_sandbox or os.environ.get("UNSLOTH_MXC_TERMINAL_CMD") == "0":
         return host_default
     try:
-        from . import mxc_policy
-
         if bash:
-            # Measured only on MXC's DACL tier; BaseContainer hosts keep bash until it is.
-            if not mxc_policy.dacl_fallback_enabled():
-                return "bash"
+            # Either MXC tier: BaseContainer hosts hit the same MSYS failure as the DACL tier.
             verdict = os_sandbox.capability_snapshot(
                 execution_kind = "terminal", selected_executable = bash
             )
@@ -12634,6 +12644,41 @@ WEB_SEARCH_TOOL = {
 }
 
 
+# Local models often emit q/search_query instead of query, or uri/href instead of url.
+_WEB_SEARCH_QUERY_ALIASES = ("query", "q", "search_query", "search", "text")
+_WEB_SEARCH_URL_ALIASES = ("url", "uri", "href", "link")
+
+
+def _first_nonempty_arg(arguments: dict, keys: tuple[str, ...]) -> str:
+    for key in keys:
+        value = arguments.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return ""
+
+
+def _resolve_web_search_args(arguments) -> tuple[str, str]:
+    args = arguments if isinstance(arguments, dict) else {}
+    return (
+        _first_nonempty_arg(args, _WEB_SEARCH_QUERY_ALIASES),
+        _first_nonempty_arg(args, _WEB_SEARCH_URL_ALIASES),
+    )
+
+
+def canonicalize_web_search_arguments(arguments) -> dict:
+    # URL mode returns before _web_search reads query or image_queries, so they are dropped from the key.
+    args = dict(arguments) if isinstance(arguments, dict) else {}
+    query, url = _resolve_web_search_args(args)
+    if url:
+        return {"url": url}
+    canonical: dict = {}
+    if query:
+        canonical["query"] = query
+    if "image_queries" in args:
+        canonical["image_queries"] = args["image_queries"]
+    return canonical
+
+
 def web_search_tool_with_images() -> dict:
     # web_search plus image_queries, offered while the Search images setting is on.
     tool = copy.deepcopy(WEB_SEARCH_TOOL)
@@ -13155,11 +13200,15 @@ CREATE_SKILL_TOOL = {
 }
 
 
+from .view_image import VIEW_IMAGE_TOOL
+
+
 ALL_TOOLS = [
     WEB_SEARCH_TOOL,
     PYTHON_TOOL,
     TERMINAL_TOOL,
     EDIT_FILE_TOOL,
+    VIEW_IMAGE_TOOL,
     RENDER_HTML_TOOL,
     SEARCH_KNOWLEDGE_BASE_TOOL,
     SEARCH_CONVERSATION_TOOL,
@@ -13331,9 +13380,52 @@ def _mcp_tool_schema_text(display: str, tool: dict) -> str:
 
 def _mcp_cached_tool(server: dict, tool_name: str) -> dict | None:
     for tool in get_cached_tools(server["id"]) or []:
-        if tool.get("name") == tool_name and _mcp_tool_model_visible(tool):
-            return tool
+        if tool.get("name") == tool_name and tool_visible_to(tool, "model"):
+            return public_tool(server, tool)
     return None
+
+
+def _mcp_image_recipient(server: dict, mapping: dict) -> str:
+    identity = [
+        server["id"],
+        server["url"],
+        server.get("headers_json"),
+        server.get("use_oauth"),
+        mapping,
+    ]
+    return hashlib.sha256(json.dumps(identity, sort_keys = True).encode()).hexdigest()
+
+
+def _mcp_image_destination(url: str) -> str:
+    # Host or program name only: credentials can sit in URL userinfo or in stdio arguments.
+    if is_stdio(url):
+        try:
+            return f"local command {os.path.basename(parse_stdio_command(url)[0])}"
+        except (ValueError, IndexError):
+            return "local command"
+    parts = urllib.parse.urlsplit(url)
+    host = parts.hostname or "unknown host"
+    return f"{host}:{parts.port}" if parts.port else host
+
+
+def mcp_image_share(name, arguments, mcp_image) -> dict | None:
+    """Approval-card details plus the image bound to this server when the call would send it, else None."""
+    if mcp_image is None or not isinstance(arguments, dict):
+        return None
+    server, tool, tool_name = _mcp_resolve_tool(name)
+    mapping = image_mapping(server, tool) if server else None
+    if mapping is None or arguments.get(mapping["field"]) != ATTACHED_IMAGE:
+        return None
+    # The fingerprint covers the server's headers, so it stays on the server: only "disclosure" is streamed.
+    return {
+        "disclosure": {
+            "server": server.get("display_name") or server["id"],
+            "tool": tool_name,
+            "size_bytes": len(mcp_image.data),
+            "destination": _mcp_image_destination(server["url"]),
+        },
+        "image": mcp_image.approved_for(_mcp_image_recipient(server, mapping)),
+    }
 
 
 def _mcp_resolve_tool(name) -> "tuple[dict | None, dict | None, str]":
@@ -13343,6 +13435,15 @@ def _mcp_resolve_tool(name) -> "tuple[dict | None, dict | None, str]":
     tool_name = _mcp_raw_tool_name(name)
     server = mcp_servers_db.get_server_for_tool(server_key)
     return server, _mcp_cached_tool(server, tool_name) if server else None, tool_name
+
+
+def mcp_catalog_takes_image(names) -> bool:
+    """Whether any of these catalog tools has a field mapped to the attached image."""
+    for name in names:
+        server, tool, _ = _mcp_resolve_tool(name)
+        if server and image_mapping(server, tool):
+            return True
+    return False
 
 
 def mcp_tool_input_schema(name) -> dict | None:
@@ -13455,24 +13556,6 @@ def _mcp_listing_compacted(name: str) -> bool:
     return name in _MCP_COMPACTED_WINDOWS.get(key, frozenset())
 
 
-def _mcp_tool_model_visible(tool: dict) -> bool:
-    """False for MCP Apps tools marked app-only (_meta.ui.visibility without "model"): those exist
-    for a server-rendered widget to call, not the LLM."""
-    # model_dump() gives "meta", the wire "_meta"; unrelated keys in one must not mask the other.
-    for key in ("meta", "_meta"):
-        meta = tool.get(key)
-        if not isinstance(meta, dict):
-            continue
-        ui = meta.get("ui")
-        visibility = ui.get("visibility") if isinstance(ui, dict) else None
-        if visibility is None:
-            # Tolerated, not spec: only flat "ui/resourceUri" is deprecated.
-            visibility = meta.get("ui/visibility")
-        if isinstance(visibility, (list, tuple)):
-            return "model" in visibility
-    return True
-
-
 def _mcp_tool_names(server: dict, mcp_tools: list[dict]) -> dict[str, str]:
     """Composed function name -> raw MCP name, for the tools this server ships to a model.
 
@@ -13482,7 +13565,7 @@ def _mcp_tool_names(server: dict, mcp_tools: list[dict]) -> dict[str, str]:
     server_key = "blender" if server.get("builtin_id") == "blender" else server["id"]
     prefix = f"{MCP_TOOL_PREFIX}{server_key}__"
     raw_names = [
-        tool["name"] for tool in mcp_tools if tool.get("name") and _mcp_tool_model_visible(tool)
+        tool["name"] for tool in mcp_tools if tool.get("name") and tool_visible_to(tool, "model")
     ]
     names: dict[str, str] = {}
     for raw_name in raw_names:
@@ -13521,7 +13604,7 @@ def _mcp_specs_for_server(server: dict, mcp_tools: list[dict]) -> list[dict]:
         if not raw_name:
             logger.warning("Skipping MCP tool on '%s': empty name.", display)
             continue
-        if not _mcp_tool_model_visible(tool):
+        if not tool_visible_to(tool, "model"):
             logger.debug("Skipping app-only MCP tool '%s' on '%s'.", raw_name, display)
             continue
         name = names_by_raw.get(raw_name)
@@ -13600,6 +13683,7 @@ def cached_mcp_tools() -> tuple[list[dict], bool]:
             if not in_failure_cooloff(server["id"]):
                 complete = False
             continue
+        payload = [public_tool(server, tool) for tool in payload]
         listed.append((server, payload, _mcp_specs_for_server(server, payload)))
     return _mcp_listing(listed), complete
 
@@ -13658,8 +13742,25 @@ async def get_enabled_mcp_tools() -> list[dict]:
         payload = get_cached_tools(server["id"])
         if payload is None:
             continue
+        payload = [public_tool(server, tool) for tool in payload]
         listed.append((server, payload, _mcp_specs_for_server(server, payload)))
     return _mcp_listing(listed)
+
+
+def mcp_tool_definition(server_id: str, tool_name: str) -> "dict | None":
+    """Cache only: callers must not spawn a stdio subprocess or block on a probe."""
+    tools = get_cached_tools(server_id) or ()
+    return next((t for t in tools if isinstance(t, dict) and t.get("name") == tool_name), None)
+
+
+def mcp_session_scope(session_id: "str | None", thread_id: "str | None") -> "str | None":
+    """Persist a stateful stdio session only per conversation (thread_id). session_id is the project-wide sandbox
+    id, so scoping by it alone leaks browser/DB/REPL state across conversations; fall back to one-shot. Tag +
+    percent-quote the parts so ids can't collide or ":" merge conversations."""
+    if not thread_id:
+        return None
+    quote = urllib.parse.quote
+    return f"s={quote(session_id or '', safe = '')}:t={quote(thread_id, safe = '')}"
 
 
 _TIMEOUT_UNSET = object()
@@ -13704,6 +13805,7 @@ def execute_tool(
     *,
     tool_execution_mode: str = "auto",
     host_access_approved: bool = False,
+    mcp_image = None,
 ) -> str:
     """Execute a tool by name with the given arguments; returns a string.
 
@@ -13874,19 +13976,46 @@ def execute_tool(
                     _mcp_tool_schema_text(display, tool),
                     0,
                 )
-        # Persist a stateful stdio session only per conversation (thread_id). session_id is the project-wide sandbox
-        # id, so scoping by it alone leaks browser/DB/REPL state across conversations; fall back to one-shot. Tag +
-        # percent-quote the parts so ids can't collide or ":" merge conversations.
-        if thread_id:
-            mcp_scope = "s={}:t={}".format(
-                urllib.parse.quote(session_id or "", safe = ""),
-                urllib.parse.quote(thread_id, safe = ""),
-            )
-        else:
-            mcp_scope = None
+        mcp_scope = mcp_session_scope(session_id, thread_id)
         headers = parse_server_headers(server)
         url = server["url"]
         use_oauth = bool(server.get("use_oauth"))
+        mapping = (
+            image_mapping(server, tool or _mcp_cached_tool(server, tool_name))
+            if image_input_mappings(server) and isinstance(arguments, dict)
+            else None
+        )
+        carries_image = bool(mapping) and arguments.get(mapping["field"]) == ATTACHED_IMAGE
+        if mcp_image is not None and not carries_image:
+            # Approved for a mapping that has since gone (edited server, dropped tool cache): never forward the call.
+            return (
+                "Error: the MCP server changed after the image was approved. Call the tool again."
+            )
+        if carries_image:
+            # Only a tool loop that just got the user's approval for this call passes mcp_image.
+            if mcp_image is None:
+                return "Error: no approved image to send. Ask the user to attach one and approve sharing it."
+            # Re-read the row: an edit while the approval card was open must not redirect the image.
+            fresh = mcp_servers_db.get_server(server_id)
+            fresh_mapping = (
+                image_mapping(fresh, tool or _mcp_cached_tool(fresh, tool_name)) if fresh else None
+            )
+            if not (
+                fresh_mapping
+                and fresh.get("is_enabled")
+                and mcp_image.recipient
+                == _mcp_image_recipient(server, mapping)
+                == _mcp_image_recipient(fresh, fresh_mapping)
+            ):
+                return "Error: the MCP server changed after the image was approved. Call the tool again."
+            arguments = {**arguments, mapping["field"]: mcp_image.encoded(mapping["encoding"])}
+
+        def _image_still_approved(row: dict) -> bool:
+            # Checked again at dispatch: a call can wait behind a stdio session lock after the re-read above.
+            if not carries_image:
+                return True
+            current = image_mapping(row, tool or _mcp_cached_tool(row, tool_name))
+            return bool(current) and _mcp_image_recipient(row, current) == mcp_image.recipient
 
         def _config_current() -> bool:
             # Re-read before an MCP session is cached: this call may have read the row just before an update/delete
@@ -13900,6 +14029,7 @@ def execute_tool(
                 and row.get("url") == url
                 and parse_server_headers(row) == headers
                 and bool(row.get("use_oauth")) == use_oauth
+                and _image_still_approved(row)
             )
 
         result = call_tool_sync(
@@ -13912,7 +14042,17 @@ def execute_tool(
             cancel_event = cancel_event,
             scope = mcp_scope,
             config_check = _config_current,
+            ui_resource_uri = tool_ui_resource_uri(mcp_tool_definition(server_id, tool_name)),
         )
+        if mcp_image is not None and isinstance(result, str):
+            # Returned images may be resized copies of the user's; none of them reach the model on this call.
+            result, returned_images, _ = result.partition(MCP_IMAGES_SENTINEL)
+            if returned_images:
+                result = (
+                    result.rstrip("\n")
+                    + "\n[Images the tool returned were withheld from the model.]"
+                )
+            result = mcp_image.redact(result)
         if tool is not None and isinstance(result, str) and result.startswith("Error:"):
             return _mcp_schema_page(
                 result.rstrip() + "\n\n", _mcp_tool_schema_text(display, tool), 0
@@ -13923,15 +14063,19 @@ def execute_tool(
             return "Error: deep_research needs a question to investigate."
         return DEEP_RESEARCH_STARTED
     if name == "web_search":
+        query, url = _resolve_web_search_args(arguments)
+        image_queries = arguments.get("image_queries") if isinstance(arguments, dict) else None
+        if not query and not url and not _clean_image_queries(image_queries):
+            return "No query provided."
         return _fit_result_to_room(
             _web_search(
-                arguments.get("query", ""),
-                url = arguments.get("url"),
+                query,
+                url = url or None,
                 timeout = effective_timeout,
                 cancel_event = cancel_event,
                 website_policy = website_policy,
                 include_images = search_images,
-                image_queries = arguments.get("image_queries"),
+                image_queries = image_queries,
             ),
             name,
         )
@@ -13962,8 +14106,13 @@ def execute_tool(
                 tool_execution_mode = tool_execution_mode,
                 host_access_approved = host_access_approved,
             )
-    # Same in-flight guard as the two above: it writes into the session workdir, so a chat deleted mid-call must not
-    # unlink it underneath.
+    if name == "view_image":
+        from .view_image import view_image
+        with _session_in_flight(session_id):
+            return _fit_result_to_room(
+                view_image(arguments.get("path"), _get_workdir(session_id), cancel_event), name
+            )
+    # Keep the workdir alive if the chat is deleted during an edit.
     if name == "edit_file":
         with _session_in_flight(session_id):
             return _fit_result_to_room(
@@ -14571,6 +14720,22 @@ def rag_autoinject_reaches_retrieval(
     return bool(enabled), whole_doc_requested
 
 
+def _thread_document_ids(thread_id) -> set | None:
+    """Ids of the thread's indexed attachments; None when the store cannot say."""
+    try:
+        from core.rag import store
+        from storage import rag_db
+
+        conn = rag_db.get_connection()
+        try:
+            docs = store.list_documents(conn, store.thread_scope(thread_id))
+        finally:
+            conn.close()
+    except Exception:  # noqa: BLE001
+        return None
+    return {d["id"] for d in docs if d.get("status") == "completed" and d.get("num_chunks")}
+
+
 def build_rag_autoinject(conversation: list[dict], rag_scope: dict | None) -> dict | None:
     """Pre-retrieve the latest user turn; if a hit clears the cosine floor return ``{"events": [...],
     "messages": [...]}`` to splice into the loop, else ``None``. Toggle via ``rag_scope.autoinject``
@@ -14600,7 +14765,8 @@ def build_rag_autoinject(conversation: list[dict], rag_scope: dict | None) -> di
     # Cap at the lean top_k, but honor a lower user setting.
     lean_k = _autoinject_top_k()
     sidebar_k = _opt_int(rag_scope.get("default_top_k"))
-    top_k = min(sidebar_k, lean_k) if sidebar_k is not None else lean_k
+    # Zero or below is no limit to the search, which then returns its own default count.
+    top_k = min(sidebar_k, lean_k) if sidebar_k is not None and sidebar_k > 0 else lean_k
     budget: int | None = None
     # The window the budget was sized against, so `_text_token_cost` only trusts a GGUF actually serving this same
     # window.
@@ -14674,19 +14840,34 @@ def build_rag_autoinject(conversation: list[dict], rag_scope: dict | None) -> di
         found = search_for_autoinject(query = query, top_k = top_k, **scope)
         return _trim(found[0], found[1], max_tokens) if found else None
 
+    thread_docs = _thread_document_ids(thread_id) if whole_doc_requested and text is None else set()
+
+    def retrieve_thread_unfloored(*, max_tokens = None):
+        # Lexical-only finds nothing for a generic request ("summarize this") whose words are not in the file, so
+        # this mandatory grounding retries with the dense leg. Chats with no attachment skip the query embedding.
+        if thread_docs is not None and not thread_docs:
+            return None
+        scope_kwargs = _scope_retrieval_kwargs(rag_scope)
+        found = retrieve(
+            max_tokens = max_tokens, scope_thread_id = thread_id, min_dense_score = None, **scope_kwargs
+        )
+        if not found and scope_kwargs["mode"] == "lexical":
+            found = retrieve(
+                max_tokens = max_tokens,
+                scope_thread_id = thread_id,
+                min_dense_score = None,
+                mode = "hybrid",
+            )
+        return found
+
     # An oversized thread attachment is mandatory grounding: with auto-injection off, search it alone, without the
     # optional-auto relevance floor, then add project context if the combination still fits. The budget binds on that
     # path only: with auto-injection on this stays the single combined unbudgeted search, so a small context cannot
-    # silently switch RAG off.
+    # silently switch RAG off, and the thread is searched again without the floor when none of it cleared.
     if text is None and (enabled or whole_doc_requested):
         try:
             if whole_doc_requested and not enabled:
-                found = retrieve(
-                    max_tokens = budget,
-                    scope_thread_id = thread_id,
-                    min_dense_score = None,
-                    **_scope_retrieval_kwargs(rag_scope),
-                )
+                found = retrieve_thread_unfloored(max_tokens = budget)
                 project_id = rag_scope.get("project_id")
                 if found and project_id:
                     # Isolated like the whole-document companion above: an unavailable project index must not send the
@@ -14713,6 +14894,28 @@ def build_rag_autoinject(conversation: list[dict], rag_scope: dict | None) -> di
                     min_dense_score = floor,
                     **_scope_retrieval_kwargs(rag_scope),
                 )
+                # Project hits clearing the floor must not crowd out the attachment: without one of its passages,
+                # it goes first.
+                grounded = (
+                    bool(found)
+                    and thread_docs is not None
+                    and any(s.get("documentId") in thread_docs for s in found[1])
+                )
+                if (
+                    whole_doc_requested
+                    and (not found or rag_scope.get("project_id"))
+                    and not grounded
+                ):
+                    thread_found = retrieve_thread_unfloored()
+                    if thread_found and found:
+                        cited = thread_docs or {s.get("documentId") for s in thread_found[1]}
+                        if not any(s.get("documentId") in cited for s in found[1]):
+                            # Still the lean top_k in total, so the unbudgeted path never doubles the injection.
+                            n_proj = min(len(found[1]), top_k // 2)
+                            merged = thread_found[1][: top_k - n_proj] + found[1][:n_proj]
+                            found = (render_sources(merged), merged)
+                    elif thread_found:
+                        found = thread_found
         except Exception as exc:  # noqa: BLE001
             logger.warning("RAG auto-inject retrieval failed: %s", exc)
             return None
@@ -16942,6 +17145,8 @@ def _web_search_images_suffix(client, query, wanted, cancel_event, website_polic
 _NETWORK_ROOT_NAMES = frozenset(
     {
         "socket",
+        # The C module behind `socket`: same primitives, so it screens the same.
+        "_socket",
         "urllib",
         "urllib3",
         "http",
@@ -17351,6 +17556,9 @@ def _check_signal_escape_patterns(code: str):
         "socket.socket",
         "socket.create_connection",
         "socket.getaddrinfo",
+        "_socket.socket",
+        "_socket.SocketType",
+        "_socket.getaddrinfo",
         "urllib.request.urlopen",
         "urllib.request.urlretrieve",
         "urllib3.",
@@ -17378,6 +17586,7 @@ def _check_signal_escape_patterns(code: str):
     _NETWORK_MODULES = frozenset(
         {
             "socket",
+            "_socket",
             "urllib.request",
             "urllib3",
             "urllib3.connection",
@@ -17408,6 +17617,7 @@ def _check_signal_escape_patterns(code: str):
         {
             "socket.create_connection",
             "socket.getaddrinfo",
+            "_socket.getaddrinfo",
             "urllib.request.urlopen",
             "urllib.request.urlretrieve",
             "http.client.HTTPConnection",
@@ -17419,7 +17629,7 @@ def _check_signal_escape_patterns(code: str):
             ),
         }
     )
-    _HOST_ARG_ROOTS = ("socket.", "http.client.")
+    _HOST_ARG_ROOTS = ("socket.", "_socket.", "http.client.")
     _NETWORK_DESTINATION_ARG = {
         fq: (
             0,
@@ -17464,7 +17674,13 @@ def _check_signal_escape_patterns(code: str):
         "urllib3.poolmanager.proxy_from_url",
         "urllib3.contrib.socks.SOCKSProxyManager",
     )
-    _SOCKET_CLIENTS = ("socket.socket", "paramiko.SSHClient", "paramiko.client.SSHClient")
+    # SocketType is an alias of the socket class in both modules.
+    _SOCKET_TYPES = ("socket.socket", "socket.SocketType", "_socket.socket", "_socket.SocketType")
+    _SOCKET_CLIENTS = (
+        *_SOCKET_TYPES,
+        "paramiko.SSHClient",
+        "paramiko.client.SSHClient",
+    )
     _OPENER_CLIENTS = ("urllib.request.build_opener", "urllib.request.OpenerDirector")
     _CLIENT_CLASSES = frozenset(
         (*_VERB_CLIENTS, *_POOL_CLIENTS, *_SOCKET_CLIENTS, *_OPENER_CLIENTS)
@@ -17541,13 +17757,17 @@ def _check_signal_escape_patterns(code: str):
                 for conn in ("HTTPConnection", "HTTPSConnection")
             },
             "urllib3.util.connection.create_connection": (0, ("address",), "host"),
-            **{f"socket.socket.{m}": (0, ("address",), "host") for m in ("connect", "connect_ex")},
+            **{
+                f"{sock}.{m}": (0, ("address",), "host")
+                for sock in _SOCKET_TYPES
+                for m in ("connect", "connect_ex")
+            },
             **{f"{opener}.open": (0, ("fullurl",), "url") for opener in _OPENER_CLIENTS},
             "urllib.request.ProxyHandler": (None, (), "proxy"),
             # A datagram names its address per send. `sendto(data, flags, address)` puts the int
             # flags at index 1, which reads as unreadable and fails closed.
-            "socket.socket.sendto": (1, (), "host"),
-            "socket.socket.sendmsg": (3, (), "host"),
+            **{f"{sock}.sendto": (1, (), "host") for sock in _SOCKET_TYPES},
+            **{f"{sock}.sendmsg": (3, (), "host") for sock in _SOCKET_TYPES},
             **{
                 f"{client}.connect": (0, ("hostname", "host"), "host")
                 for client in ("paramiko.SSHClient", "paramiko.client.SSHClient")

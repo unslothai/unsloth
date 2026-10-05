@@ -141,6 +141,19 @@ let cached: { at: number; value: SandboxCapability | null } | null = null;
 let inFlight: Promise<SandboxCapability | null> | null = null;
 // Only the latest request writes the cache: an older one finishing last must not replace it.
 let latestRequest = 0;
+const changeListeners = new Set<() => void>();
+
+/** Called after a new answer is cached or the cache is dropped (a setup finished). */
+export function onSandboxCapabilityChange(listener: () => void): () => void {
+  changeListeners.add(listener);
+  return () => {
+    changeListeners.delete(listener);
+  };
+}
+
+function notifyCapabilityChange(): void {
+  for (const listener of [...changeListeners]) listener();
+}
 
 export function loadSandboxCapability({
   force = false,
@@ -159,7 +172,10 @@ export function loadSandboxCapability({
     })
     .catch(() => null)
     .then((value) => {
-      if (id === latestRequest) cached = { at: Date.now(), value };
+      if (id === latestRequest) {
+        cached = { at: Date.now(), value };
+        notifyCapabilityChange();
+      }
       return value;
     })
     .finally(() => {
@@ -196,6 +212,7 @@ export function forgetSandboxCapability(): void {
   cached = null;
   inFlight = null;
   latestRequest++;
+  notifyCapabilityChange();
 }
 
 async function checkedSetup(

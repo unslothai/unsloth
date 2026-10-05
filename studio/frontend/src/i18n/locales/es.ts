@@ -2,37 +2,15 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import type { DeepPartialMessageTree } from "../types";
-import type { en } from "./en";
+import { en } from "./en.ts";
 
 export const es = {
-  permissionModes: {
-    menuLabel: "¿Cómo se deben aprobar las llamadas a herramientas?",
-    triggerLabel: "Nivel de permisos para las llamadas a herramientas",
-    ask: {
-      label: "Preguntar siempre",
-      description: "Preguntar antes de cada llamada a herramientas",
-    },
-    auto: {
-      label: "Aprobar automáticamente",
-      description: "Ejecutar las llamadas habituales y preguntar antes de las arriesgadas, como acceder a credenciales, usar sudo, borrar archivos o enviar datos fuera",
-    },
-    off: {
-      label: "Acceso total en el sandbox",
-      description: "No preguntar nunca mientras Python y Terminal se ejecuten en el sandbox del sistema. Sin él, las llamadas arriesgadas siguen preguntando",
-      sandboxUnavailable: "Sandbox del sistema no disponible",
-    },
-    full: {
-      label: "Omitir permisos",
-      description: "Sin solicitudes de aprobación y sin sandbox",
-    },
-    bypassTitle: "¿Activar Omitir permisos?",
-    bypassWarning: "Omitir permisos permite que las llamadas a herramientas se ejecuten sin solicitudes de aprobación ni sandbox. Pueden modificar o borrar archivos, ejecutar comandos y hacer solicitudes de red. Actívalo solo si confías en la tarea actual.",
-    bypassConfirm: "Entiendo",
-    cancel: "Cancelar",
-  },
+  // English fallback until this experimental feature is translated.
+  managedEngines: en.managedEngines,
   sandboxSetup: {
+    unavailable: "Sandbox del sistema no disponible",
     title: "Todavía no hay sandbox del sistema en este equipo",
-    description: "Acceso total en el sandbox nunca pregunta mientras Python y Terminal se ejecutan en el sandbox del sistema. Hasta que funcione uno aquí, las llamadas arriesgadas siguen preguntando.",
+    description: "Ejecutar automáticamente mantiene Python y Terminal en el sandbox del sistema. Hasta que funcione aquí, sus llamadas arriesgadas preguntan primero.",
     checking: "Comprobando el sandbox de este equipo…",
     install: "Instalar sandbox",
     windowsSetup: "Configurar el sandbox de Windows",
@@ -46,7 +24,7 @@ export const es = {
     cancel: "Cancelar",
     close: "Cerrar",
     running: "Configurando. Aprueba la solicitud de contraseña o de administrador en el equipo donde se ejecuta Unsloth…",
-    succeeded: "El sandbox del sistema está listo. Acceso total en el sandbox está activado.",
+    succeeded: "El sandbox del sistema está listo. Ejecutar automáticamente está activado.",
     stillUnavailable: "La configuración terminó, pero el sandbox del sistema todavía no supera su comprobación.",
     declined: "Se rechazó la solicitud de contraseña o de administrador.",
     failed: "La configuración falló.",
@@ -269,6 +247,45 @@ export const es = {
       actions: "Acciones",
       chat: "Chat",
       searchChats: "Buscar chats...",
+    },
+    search: {
+      placeholder: "Buscar",
+      tabs: {
+        all: "Todo",
+        chats: "Chats",
+        projects: "Proyectos",
+        files: "Archivos",
+        models: "Modelos",
+      },
+      recents: "Recientes",
+      actions: "Acciones",
+      newChat: "Nuevo chat",
+      newTemporaryChat: "Nuevo chat temporal",
+      fineTune: "Ajustar un modelo",
+      generateImage: "Generar una imagen",
+      generateVideo: "Generar un vídeo",
+      untitledChat: "Chat sin título",
+      compare: "Comparar",
+      loading: "Cargando...",
+      empty: {
+        all: "Aún no hay nada que buscar.",
+        chats: "Aún no hay chats.",
+        projects: "Aún no hay proyectos.",
+        files: "Aún no hay archivos en tu Biblioteca.",
+        models: "Aún no hay modelos descargados.",
+      },
+      noMatches: "Sin resultados.",
+      when: {
+        today: "Hoy",
+        pastWeek: "Última semana",
+        pastMonth: "Último mes",
+        older: "Más antiguo",
+      },
+      footer: {
+        close: "Cerrar",
+        changeType: "Cambiar tipo",
+        open: "Abrir",
+      },
     },
     notFound: {
       title: "Página no encontrada",
@@ -1324,10 +1341,22 @@ export const es = {
       },
       permissions: {
         sectionTitle: "Permisos",
-        bypassLabel: "Permisos de herramientas",
-        modeKeywords: "Preguntar siempre Aprobar automáticamente Acceso total en el sandbox Omitir permisos permission approval sandbox yolo",
-        bypassDescription:
-          "Cómo aprueba Unsloth las llamadas a herramientas del chat (terminal, python, web, MCP) antes de ejecutarlas. El modo «Omitir permisos» desactiva las aprobaciones y el sandbox de código.",
+        names: {
+          ask: "Pedir aprobación",
+          auto: "Aprobar por mí",
+          off: "Ejecutar automáticamente",
+          full: "Acceso total",
+        },
+        details: {
+          ask:
+            "Pide aprobación antes de cada llamada a herramientas, incluido el código de terminal y Python, las búsquedas web, la edición de archivos y las herramientas MCP. Las herramientas que ejecuta un proveedor externo no se detienen. Ideal si quieres revisar cada paso.",
+          auto:
+            "Ejecuta por sí solo las llamadas habituales y solo pregunta cuando una acción parece arriesgada, como leer credenciales, elevar privilegios o ejecutar comandos destructivos.",
+          off:
+            "Ejecuta todas las llamadas a herramientas sin preguntar. El código de Python y terminal sigue ejecutándose en el sandbox, que limita a qué archivos de tu equipo puede acceder. Si este equipo no tiene un sandbox del sistema que funcione, las llamadas arriesgadas de Python y terminal preguntan primero.",
+          full:
+            "Ejecuta todas las llamadas a herramientas sin preguntar y desactiva el sandbox de código, así el código de Python y terminal puede leer y cambiar cualquier archivo al que tenga acceso tu cuenta. Ideal para tareas de confianza que necesitan trabajar fuera del sandbox.",
+        },
       },
     },
     profile: {
@@ -1450,20 +1479,13 @@ export const es = {
           wide: "Amplio",
           full: "Ancho completo",
         },
-        composerAttachments: {
-          label: "Adjuntos en el cuadro de texto",
-          description:
-            "Tarjetas grandes que agrandan el cuadro de texto o una fila compacta de miniaturas.",
-          cards: "Tarjetas grandes",
-          compact: "Miniaturas compactas",
-        },
         sentAttachments: {
           label: "Adjuntos en los mensajes enviados",
           description:
-            "Una lista con el tipo de cada archivo o pequeñas etiquetas. Automático cambia a etiquetas con más de seis archivos.",
+            "Estándar muestra cada archivo con su tipo y Compacto cabe más en cada línea. Automático cambia a compacto con más de seis archivos.",
           auto: "Automático",
-          list: "Lista",
-          chips: "Etiquetas",
+          list: "Estándar",
+          chips: "Compacto",
         },
         reset: "Restablecer",
         resetAll: "Restablecer la personalización",
@@ -1687,6 +1709,9 @@ export const es = {
         noRamReserve: "No reservar RAM del sistema para el modelo",
         noRamReserveDescription: "Reduce la RAM ocupada por los pesos del modelo.",
         noRamReserveHint: "Omite la carga mapeada en memoria en las compilaciones de Windows compatibles cuando el modelo está totalmente descargado en la GPU, de modo que sus páginas no quedan residentes. En caso contrario conserva la carga mapeada en memoria. Los búferes de CPU necesarios pueden seguir usando RAM. Elimina --no-mmap y --mlock.",
+        multiModel: "Mantener varios modelos cargados",
+        multiModelDescription: "Al cargar un modelo, los demás permanecen en memoria.",
+        multiModelHint: "Cada modelo cargado responde a las solicitudes que lo nombran. Con varias GPU, un modelo nuevo va a una GPU que ningún otro modelo usa cuando hay espacio. Si no cabe junto a los demás, primero se descargan los modelos que no se están usando y después reemplaza al modelo activo. El entrenamiento descarga los modelos adicionales antes que el activo.",
         mlockVetoed: "--mlock permanece desactivado: fijar el modelo reservaría RAM para todo él. La descarga automática por inactividad sigue desactivada.",
         mlockNotApplicable: "Totalmente en la GPU: nada que bloquear en la RAM del sistema. La descarga automática por inactividad sigue desactivada.",
         memlockCapped: "Este sistema limita la memoria bloqueada a {limit}. Un modelo mayor no quedará fijado por completo; aumenta el límite con ulimit -l.",
@@ -1929,9 +1954,6 @@ export const es = {
         "El texto pegado de {count} caracteres o más se convierte en un adjunto .txt. El texto más corto queda en el cuadro de mensaje.",
       pastedTextOffDescription:
         "Todo el texto pegado queda en el cuadro de mensaje, sin importar su longitud.",
-      projectsSection: "Mostrar la sección Proyectos",
-      projectsSectionDescription:
-        "Agrupa los chats de proyecto bajo un encabezado Proyectos. Desactívalo para listarlos en Recientes.",
       title: "Chat",
       description: "Personaliza cómo funciona el chat en este dispositivo.",
       modelSelection: {
@@ -1968,6 +1990,11 @@ export const es = {
       autoScrollManual: "Manual",
       autoScrollKeywords:
         "desplazamiento desplazar automático seguir abajo saltar transmisión generar vista bloquear scroll autoscroll follow",
+      scrollToBottomButton: "Botón para ir al final",
+      scrollToBottomButtonDescription:
+        "Muestra un botón para volver al último mensaje después de desplazarte hacia arriba.",
+      scrollToBottomButtonKeywords:
+        "desplazar final abajo saltar último flecha botón ocultar scroll bottom button",
       showResponseModel: "Mostrar el modelo de respuesta",
       showResponseModelDescription:
         "Muestra los metadatos del modelo en las respuestas del asistente.",
@@ -2345,11 +2372,13 @@ export const es = {
       revoking: "Revocando...",
       decisionApi: {
         title: "API de decisiones",
-        description: "Responde preguntas de sí/no, de opción múltiple y de puntuación sobre texto con un modelo Laya local. Funciona con el SDK de TypeSafe.",
+        description: "Responde preguntas de sí/no, de opción múltiple y de puntuación sobre texto con un modelo en este equipo o un modelo de decisiones de Conexiones. Funciona con el SDK de TypeSafe.",
         enable: "Atender solicitudes",
         enableDescription: "Atiende /v1/systemone. Al activarlo se descarga el modelo.",
+        enableRemoteDescription: "Atiende /v1/systemone.",
         lockedByEnv: "Definido por {name}.",
         model: "Modelo",
+        thisMachine: "Este equipo",
         modelMultilingual: "Multilingüe",
         modelEnglish: "Inglés",
         modelTypedDecisions: "Decisiones tipadas",
@@ -2374,6 +2403,10 @@ export const es = {
         downloadFailed: "No se pudo iniciar la descarga.",
         saveFailed: "No se pudo guardar el ajuste de la API de decisiones.",
         loadError: "No se pudieron cargar los ajustes de la API de decisiones.",
+        sendsTo: "Las solicitudes se envían a {provider}.",
+        connectionMissing: "Esta conexión ya no existe o no tiene modelos de decisiones. Elige otro modelo.",
+        addConnection: "Para usar un modelo de decisiones alojado, añade TypeSafe, Liquid AI u OpenRouter en Conexiones.",
+        openConnections: "Abrir Conexiones",
       },
       usageNoModel:
         "Carga o descarga un modelo para ver ejemplos ejecutables. Este servidor todavía no tiene ningún modelo que indicar.",
@@ -2533,6 +2566,7 @@ export const es = {
       context: "Contexto",
       lr: "LR",
       hardware: "Hardware",
+      vram: "VRAM",
       noGpu: "No se detectó ninguna GPU",
       hfToken: "Token de HF",
       saved: "Guardado",
@@ -3269,6 +3303,7 @@ export const es = {
     discardDescription: "Los cambios en {name} que no se hayan guardado se perderán.",
     discard: "Descartar",
     mentions: "Habilidades",
+    manage: "Gestionar habilidades",
   },
   library: {
     tabs: {

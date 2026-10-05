@@ -222,6 +222,12 @@ def soft_fail(m):
     info(f"WARN (strict-off): {m}")
 
 
+# Slots the shared AlertDialog parts render (studio/frontend/src/components/ui/alert-dialog.tsx).
+FULL_ACCESS_TITLE = '[data-slot="alert-dialog-title"]'
+FULL_ACCESS_CANCEL = '[data-slot="alert-dialog-cancel"]'
+FULL_ACCESS_CONFIRM = '[data-slot="alert-dialog-action"]'
+
+
 def exercise_permission_mode_controls(page, shoot):
     """Exercise labels, migration, persistence, confirmation, and focus."""
     step("permission levels: labels, persistence, confirmation, and focus")
@@ -344,9 +350,41 @@ def exercise_permission_mode_controls(page, shoot):
     # went out as Cache-Control: no-store (#12148): its own 30s timeout never fired, and the step sat
     # there until the 180s watchdog killed the job (Chat UI Tests (chat) on main at 1dddc1437). The
     # pill is the one thing the next assertion needs, and waiting for it is bounded.
+    #
+    # One more reload, only when the app never booted. Seen once on the Windows msedge permissions lane
+    # (#12438's run 36881445186): after the reload the server served /chat and the three boot scripts and
+    # then no /api request at all, the page stayed on "Loading...", and the pill never mounted. That is
+    # the app shell failing to start, not this step's assertion, so it gets one retry with the evidence
+    # logged; a page that booted and still lacks the pill fails at once, and so does a second boot failure.
+    def _boot_state():
+        try:
+            return page.evaluate(
+                """() => ({
+                    url: location.href,
+                    readyState: document.readyState,
+                    composer: !!document.querySelector('textarea[aria-label="Message input"]'),
+                    root: (document.getElementById("root")?.innerText || "").trim().slice(0, 80),
+                })"""
+            )
+        except Exception as exc:
+            return {"evaluate_failed": repr(exc)}
+
     def reload_and_wait_for_pill():
         page.reload(wait_until = "load")
+        try:
+            expect(pill).to_be_visible(timeout = 30_000)
+            return
+        except AssertionError:
+            state = _boot_state()
+            shoot("04-permission-pill-missing")
+            info(f"WARN permission pill missing 30s after reload; page state {state}")
+            if state.get("composer") or state.get("evaluate_failed"):
+                raise
+        page.reload(wait_until = "load")
         expect(pill).to_be_visible(timeout = 30_000)
+        info(
+            "WARN the app did not boot on the first reload and did on the second; see the state above"
+        )
 
     # choose() only drives THIS tab.
     # The mirror to /api/chat/settings is a 400ms trailing-edge debounce (SETTINGS_DEBOUNCE_MS, chat-runtime-store.ts)
@@ -392,13 +430,14 @@ def exercise_permission_mode_controls(page, shoot):
     set_legacy_confirm(None)
     reload_and_wait_for_pill()
 
-    expect_mode("Auto-approve")
+    # Fresh profiles default to Approve for me.
+    expect_mode("Approve for me")
     menu = open_menu()
     for label in (
-        "Ask every time",
-        "Auto-approve",
-        "Full access in sandbox",
-        "Bypass permissions",
+        "Ask for approval",
+        "Approve for me",
+        "Run automatically",
+        "Full access",
     ):
         expect(menu.get_by_role("menuitem").filter(has_text = label).first).to_be_visible()
     if menu.get_by_text("Off", exact = True).count() != 0:
@@ -408,8 +447,8 @@ def exercise_permission_mode_controls(page, shoot):
     page.keyboard.press("Escape")
     expect(pill).to_be_focused()
 
-    choose("Auto-approve")
-    expect_mode("Auto-approve")
+    choose("Approve for me")
+    expect_mode("Approve for me")
     expect(page.get_by_role("alertdialog")).to_have_count(0)
 
     compact_width = 390
@@ -435,9 +474,9 @@ def exercise_permission_mode_controls(page, shoot):
     # stored level wins over the local derivation, so without it the second reload would assert against the level the
     # first one seeded and read as a migration bug.
     migration_cases = (
-        ("true", "Ask every time"),
-        ("false", "Full access in sandbox"),
-        (None, "Auto-approve"),
+        ("true", "Ask for approval"),
+        ("false", "Run automatically"),
+        (None, "Approve for me"),
     )
     try:
         for legacy_value, expected_label in migration_cases:
@@ -449,61 +488,67 @@ def exercise_permission_mode_controls(page, shoot):
 
     # The other half of that contract: with a level stored for the install, a browser holding only the legacy key gets
     # the installation's level back rather than its own derivation.
-    choose("Ask every time")
-    expect_mode("Ask every time")
+    choose("Ask for approval")
+    expect_mode("Ask for approval")
     expect_server_mode("ask")
     set_legacy_confirm("false")
     reload_and_wait_for_pill()
-    expect_mode("Ask every time")
+    expect_mode("Ask for approval")
     cached = page.evaluate("() => localStorage.getItem('unsloth_chat_permission_mode')")
     if cached != "ask":
         fail(f"hydration left the local cache at {cached!r}, expected 'ask'")
 
-    choose("Full access in sandbox")
-    expect_mode("Full access in sandbox")
+    choose("Run automatically")
+    expect_mode("Run automatically")
     expect(page.locator('button[data-pill-label="Search"]:visible').first).to_be_visible()
     expect(page.locator('button[data-pill-label="Code"]:visible').first).to_be_visible()
     stored = page.evaluate("() => localStorage.getItem('unsloth_chat_permission_mode')")
     if stored != "off":
-        fail(f"Full access in sandbox persisted {stored!r}, expected 'off'")
+        fail(f"Run automatically persisted {stored!r}, expected 'off'")
 
-    choose("Bypass permissions")
+    # Full access requires explicit consent and never overwrites persistence. The dialog is found by
+    # its alert-dialog slots, not its wording: #12630 rewrote the copy ("Enable Full access?" became
+    # "Turn on Full access?", "I understand" became "Turn on") and the step failed on main with the
+    # consent flow intact. What it still pins is the substance: the title names the mode and the body
+    # warns that the sandbox goes away.
+    choose("Full access")
     dialog = page.get_by_role("alertdialog")
     expect(dialog).to_be_visible()
-    expect(dialog.get_by_role("heading", name = "Turn on Bypass permissions?")).to_be_visible()
-    expect(dialog).to_contain_text("the sandbox")
-    dialog.get_by_role("button", name = "Cancel").click()
+    expect(dialog.locator(FULL_ACCESS_TITLE)).to_contain_text("Full access")
+    expect(dialog).to_contain_text("sandbox")
+    dialog.locator(FULL_ACCESS_CANCEL).click()
     expect(dialog).to_be_hidden()
-    expect_mode("Full access in sandbox")
+    expect_mode("Run automatically")
 
-    choose("Bypass permissions")
+    choose("Full access")
     expect(dialog).to_be_visible()
-    dialog.get_by_role("button", name = "I understand").click()
-    expect_mode("Bypass permissions")
-    expect(pill).to_have_attribute("data-variant", "danger")
+    dialog.locator(FULL_ACCESS_CONFIRM).click()
+    # expect_mode reads the pill's data-pill-label. #12630 dropped the pill's danger styling for Full
+    # access on purpose, so there is no data-variant left to check.
+    expect_mode("Full access")
     active_icon = pill.locator(".composer-pill-glyph > :first-child")
     pill.hover()
     # Read the opacity once the hover transition has finished, not at a fixed delay into it.
     wait_for_settled(active_icon)
     icon_opacity = float(active_icon.evaluate("el => getComputedStyle(el).opacity"))
     if icon_opacity < 0.5:
-        fail(f"Bypass permissions icon disappeared on hover (opacity={icon_opacity})")
+        fail(f"Full access icon disappeared on hover (opacity={icon_opacity})")
     stored = page.evaluate("() => localStorage.getItem('unsloth_chat_permission_mode')")
     if stored != "off":
-        fail(f"Bypass permissions overwrote persisted mode with {stored!r}")
+        fail(f"Full access overwrote persisted mode with {stored!r}")
 
     reload_and_wait_for_pill()
-    expect_mode("Full access in sandbox")
+    expect_mode("Run automatically")
 
     # Without a sandbox: Cancel keeps the previous level, "Use it anyway" applies it.
-    choose("Auto-approve")
-    expect_mode("Auto-approve")
+    choose("Approve for me")
+    expect_mode("Approve for me")
     # Landed on the install first, or the reload hydrates the previous "off" back.
     expect_server_mode("auto")
     sandbox_answer["ready"] = False
     reload_and_wait_for_pill()
-    expect_mode("Auto-approve")
-    choose("Full access in sandbox")
+    expect_mode("Approve for me")
+    choose("Run automatically")
     setup = page.get_by_role("alertdialog")
     expect(setup.get_by_role("heading", name = "No OS sandbox on this computer yet")).to_be_visible()
     expect(setup).to_contain_text("apt-get install -y bubblewrap")
@@ -512,18 +557,18 @@ def exercise_permission_mode_controls(page, shoot):
         fail("setup dialog offered Install sandbox to a request the server did not allow")
     setup.get_by_role("button", name = "Cancel").click()
     expect(setup).to_be_hidden()
-    expect_mode("Auto-approve")
-    choose("Full access in sandbox")
+    expect_mode("Approve for me")
+    choose("Run automatically")
     expect(setup).to_be_visible()
     setup.get_by_role("button", name = "Use it anyway (risky calls will ask)").click()
     expect(setup).to_be_hidden()
-    expect_mode("Full access in sandbox")
+    expect_mode("Run automatically")
     sandbox_answer["ready"] = True
     reload_and_wait_for_pill()
 
     # Leave the full chat smoke in the fresh-install default.
-    choose("Auto-approve")
-    expect_mode("Auto-approve")
+    choose("Approve for me")
+    expect_mode("Approve for me")
     expect_server_mode("auto")
     shoot("04-permission-levels")
     # The stub is for the level checks only. Left in place it intercepts this page for the rest of the run, which
@@ -2514,32 +2559,44 @@ with sync_playwright() as p:
     step("persisted monitor: reset the browser session and open a fresh page")
     # Start fresh after the CLI rotation invalidates this browser session.
     # Stay in the SAME context: it keeps the init script and costs nothing to reuse.
+    #
+    # Nothing here runs script in the OLD page. It is CPU-throttled and its auth was
+    # just revoked, so the app can be busy retrying, and page.evaluate waits for its
+    # event loop with no timeout of its own: this step wedged for its whole budget on
+    # Windows and on the Kaggle T4 runner with no line printed. Closing a page and
+    # clearing cookies are browser-side calls, and the storage writes go through the
+    # fresh page parked on a same-origin JSON endpoint where no app code runs. Each call
+    # announces itself first, so a wedge that remains names the call it sits in.
+    info("closing the stale page")
+    try:
+        page.close()
+    except Exception as exc:
+        info(f"WARN closing the stale page failed: {exc!r}")
+    info("clearing stale session cookies")
     try:
         ctx.clear_cookies()
     except Exception as exc:
         info(f"WARN clearing stale session cookies failed: {exc!r}")
-    robust_evaluate(
-        page,
-        """() => localStorage.setItem(
-            "unsloth_monitor_overlay",
-            JSON.stringify({ state: { isOpen: true, isMinimized: false }, version: 0 })
-        )""",
-    )
-    try:
-        page.evaluate(
-            "['unsloth_auth_token', 'unsloth_auth_refresh_token']"
-            ".forEach((key) => localStorage.removeItem(key))"
-        )
-    except Exception as exc:
-        info(f"WARN clearing stale auth tokens failed: {exc!r}")
+    info("opening the fresh page")
     _fresh_page = new_throttled_page(ctx)
     _fresh_page.on("pageerror", lambda e: page_errors.append(str(e)))
     _fresh_page.on("console", _on_console)
-    try:
-        page.close()
-    except Exception:
-        pass
     page = _fresh_page
+    info("parking the fresh page on /api/health to write localStorage")
+    page.goto(f"{BASE}/api/health", wait_until = "domcontentloaded", timeout = 30_000)
+    info("writing the monitor overlay and clearing the auth tokens")
+    robust_evaluate(
+        page,
+        """() => {
+            localStorage.setItem(
+                "unsloth_monitor_overlay",
+                JSON.stringify({ state: { isOpen: true, isMinimized: false }, version: 0 })
+            );
+            ["unsloth_auth_token", "unsloth_auth_refresh_token"].forEach(
+                (key) => localStorage.removeItem(key)
+            );
+        }""",
+    )
     login_system_request_count = len(system_requests)
 
     step("persisted monitor stays dormant on /login and resumes after auth", NO_STEP_CEILING)

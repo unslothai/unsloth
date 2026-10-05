@@ -245,7 +245,7 @@ const pickModule = loadWithStubs<PickModule>(
   },
 );
 
-test("re-picking Full access in sandbox without a sandbox is the way back to setup", () => {
+test("re-picking Run automatically without a sandbox is the way back to setup", () => {
   assert.equal(pickModule.samePickIsIgnored("off", "off", true), false);
   assert.equal(pickModule.samePickIsIgnored("off", "off", false), true);
   assert.equal(pickModule.samePickIsIgnored("auto", "auto", true), true);

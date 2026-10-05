@@ -4383,6 +4383,7 @@ class TestGgufVisionMessages:
             "role": "tool",
             "content": "[1 image returned]",
             "name": "mcp__fs__read_media_file",
+            "tool_call_id": "call_0",
         }
 
     def test_a_replayed_envelope_alone_does_not_demand_a_vision_model(self):
@@ -4859,8 +4860,10 @@ class TestGgufVisionToolRouting:
             yield {"type": "content", "text": "done"}
 
         class ApiRequest(self._Request):
-            headers = {"authorization": "Bearer sk-unsloth-test"}
             state = SimpleNamespace(skip_api_monitor = True)
+
+            def __init__(self):
+                self.headers = {"authorization": "Bearer sk-unsloth-test"}
 
         monkeypatch.setattr(
             inf_mod,
@@ -6455,7 +6458,12 @@ class TestGgufVisionToolRouting:
         assert monitor.active_count() == 0
         assert get_llama_admission_queue("http://llama.disconnect.test").snapshot().active == 0
 
-    def _drive_standard_gguf(self, monkeypatch, date_line: str) -> list[dict]:
+    def _drive_standard_gguf(
+        self,
+        monkeypatch,
+        date_line: str,
+        messages = None,
+    ) -> list[dict]:
         """Run one non-tool GGUF completion with the current-date setting pinned."""
         import routes.inference as inf_mod
 
@@ -6484,7 +6492,8 @@ class TestGgufVisionToolRouting:
 
         payload = ChatCompletionRequest(
             model = "default",
-            messages = [
+            messages = messages
+            or [
                 {"role": "system", "content": "original system"},
                 {"role": "developer", "content": "developer rules"},
                 {"role": "user", "content": "hi"},
@@ -6510,6 +6519,22 @@ class TestGgufVisionToolRouting:
                 "content": "The current date is 2026-08-15.\n\noriginal system\n\ndeveloper rules",
             },
             {"role": "user", "content": "hi"},
+        ]
+
+    def test_standard_gguf_without_a_system_prompt_keeps_the_template_default(self, monkeypatch):
+        sent = self._drive_standard_gguf(
+            monkeypatch,
+            "The current date is 2026-08-15.",
+            messages = [
+                {"role": "user", "content": "first"},
+                {"role": "assistant", "content": "ok"},
+                {"role": "user", "content": "second"},
+            ],
+        )
+        assert sent == [
+            {"role": "user", "content": "[Current date: 2026-08-15]\n\nfirst"},
+            {"role": "assistant", "content": "ok"},
+            {"role": "user", "content": "second"},
         ]
 
     @pytest.mark.parametrize(
@@ -7477,7 +7502,8 @@ class TestApiMonitorProviderAndCompletionStreams:
             body = b"".join([chunk async for chunk in response.body_iterator])
 
             assert upstream_bodies[0]["return_progress"] is True
-            assert (b": keep-alive" in body) is not client_progress
+            assert (b": prefill-progress" in body) is not client_progress
+            assert (b": keep-alive" in body) is False
             assert upstream_bodies[0]["stream_options"]["include_usage"] is True
             assert b'"usage"' not in body
             assert (b"prompt_progress" in body) is client_progress
@@ -10823,6 +10849,58 @@ def test_a_lenient_schema_reaches_llama_server_where_it_reads_one():
         model = "m", messages = [{"role": "user", "content": "hi"}], response_format = lenient
     )
     assert _build_openai_passthrough_body(request)["response_format"] == wrapped
+
+
+_WEATHER_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "get_weather",
+        "parameters": {
+            "type": "object",
+            "properties": {"city": {"type": "string"}},
+            "required": ["city"],
+        },
+    },
+}
+_WEATHER_FORMAT = {
+    "type": "json_schema",
+    "json_schema": {
+        "name": "final_output",
+        "strict": True,
+        "schema": {
+            "type": "object",
+            "properties": {"city": {"type": "string"}, "temp_c": {"type": "number"}},
+            "required": ["city", "temp_c"],
+            "additionalProperties": False,
+        },
+    },
+}
+
+
+def _weather_body(**fields):
+    request = ChatCompletionRequest(
+        model = "m", messages = [{"role": "user", "content": "Weather in Paris?"}], **fields
+    )
+    return _build_openai_passthrough_body(request)
+
+
+@pytest.mark.parametrize("response_format", [_WEATHER_FORMAT, {"type": "json_object"}])
+@pytest.mark.parametrize(
+    "tool_choice",
+    [None, "auto", "required", {"type": "function", "function": {"name": "get_weather"}}],
+)
+def test_a_response_format_does_not_lock_out_callable_tools(tool_choice, response_format):
+    body = _weather_body(
+        tools = [_WEATHER_TOOL], tool_choice = tool_choice, response_format = response_format
+    )
+    assert [tool["function"]["name"] for tool in body["tools"]] == ["get_weather"]
+    assert "response_format" not in body
+
+
+def test_a_response_format_still_applies_when_tools_cannot_be_called():
+    body = _weather_body(tools = [_WEATHER_TOOL], tool_choice = "none", response_format = _WEATHER_FORMAT)
+    assert body["response_format"] == _WEATHER_FORMAT
+    assert _weather_body(response_format = _WEATHER_FORMAT)["response_format"] == _WEATHER_FORMAT
 
 
 class TestPassthroughImageNormalization:

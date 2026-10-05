@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-""" "off" (Full access in sandbox) asks before a risky python/terminal call without OS isolation."""
+""" "off" (Run automatically) asks before a risky python/terminal call without OS isolation."""
 
 import itertools
 import sys

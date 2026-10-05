@@ -3,6 +3,7 @@
 
 import { isExternalModelId, useChatRuntimeStore } from "@/features/chat";
 import { usePlatformStore } from "@/config/env";
+import { isNpuModelId } from "@/features/npu";
 import { useMemo } from "react";
 import {
   type PerModelConfig,
@@ -19,6 +20,9 @@ export interface ActiveModelConfigState {
 export function useActiveModelConfig(): ActiveModelConfigState {
   const checkpoint = useChatRuntimeStore((s) => s.params.checkpoint) || null;
   const maxSeqLength = useChatRuntimeStore((s) => s.params.maxSeqLength);
+  const engine = useChatRuntimeStore((s) => s.params.engine ?? "auto");
+  const engineParallelism = useChatRuntimeStore((s) => s.params.engineParallelism ?? "tensor");
+  const enginePrecision = useChatRuntimeStore((s) => s.params.enginePrecision ?? "auto");
   const activeGgufVariant = useChatRuntimeStore((s) => s.activeGgufVariant);
   const loadedIsGguf = useChatRuntimeStore((s) => s.loadedIsGguf);
   const loadedIsMlx = useChatRuntimeStore((s) => s.loadedIsMlx);
@@ -51,10 +55,14 @@ export function useActiveModelConfig(): ActiveModelConfigState {
   const loadMode = useChatRuntimeStore((s) => s.loadMode);
   const ctxCheckpoints = useChatRuntimeStore((s) => s.ctxCheckpoints);
   const cacheRam = useChatRuntimeStore((s) => s.cacheRam);
+  const llamaCppConfig = useChatRuntimeStore((s) => s.loadedLlamaCppConfig);
   const tensorParallel = useChatRuntimeStore((s) => s.tensorParallel);
   const disableVision = useChatRuntimeStore((s) => s.disableVision);
   const chatTemplateOverride = useChatRuntimeStore(
     (s) => s.chatTemplateOverride,
+  );
+  const loadedLlamaExtraArgs = useChatRuntimeStore(
+    (s) => s.loadedLlamaExtraArgs,
   );
   const gpuMemoryMode = useChatRuntimeStore((s) => s.gpuMemoryMode);
   const gpuLayers = useChatRuntimeStore((s) => s.gpuLayers);
@@ -88,11 +96,15 @@ export function useActiveModelConfig(): ActiveModelConfigState {
       return null;
     }
     const base: PerModelConfig = {
+      engine,
+      enginePrecision,
+      engineParallelism,
+      llamaCppConfig: isGguf ? llamaCppConfig ?? undefined : undefined,
       customContextLength: customContextLength ?? null,
       // A self-sizing backend carries no pin here, exactly as the GGUF path does: this
       // is the runtime's resolved length, and reading it back as the user's choice would
       // pin every reload to whatever the first load happened to get.
-      maxSeqLength: isGguf || isMlx ? null : maxSeqLength,
+      maxSeqLength: isGguf || isMlx || isNpuModelId(checkpoint) ? null : maxSeqLength,
       kvCacheDtype: kvCacheDtype ?? null,
       mlxKvQuant: effectiveMlxKvQuant,
       speculativeType: speculativeType ?? "auto",
@@ -111,7 +123,9 @@ export function useActiveModelConfig(): ActiveModelConfigState {
       chatTemplateOverride: chatTemplateOverride ?? null,
     };
     if (!isGguf) {
-      return base;
+      return engine === "vllm" || engine === "sglang"
+        ? { ...base, selectedGpuIds, selectedGpuIndexKind }
+        : base;
     }
     return {
       ...base,
@@ -121,12 +135,19 @@ export function useActiveModelConfig(): ActiveModelConfigState {
       selectedGpuIds,
       selectedGpuIndexKind,
       tensorSplit: splitRatio,
+      // Absent until the runtime reports a list: undefined is what lets the editor hydrate the stored row.
+      ...(loadedLlamaExtraArgs != null
+        ? { llamaExtraArgs: [...loadedLlamaExtraArgs] }
+        : {}),
     };
   }, [
     checkpoint,
     isGguf,
     isMlx,
     maxSeqLength,
+    engine,
+    enginePrecision,
+    engineParallelism,
     customContextLength,
     kvCacheDtype,
     effectiveMlxKvQuant,
@@ -141,9 +162,11 @@ export function useActiveModelConfig(): ActiveModelConfigState {
     loadMode,
     ctxCheckpoints,
     cacheRam,
+    llamaCppConfig,
     tensorParallel,
     disableVision,
     chatTemplateOverride,
+    loadedLlamaExtraArgs,
     gpuMemoryMode,
     gpuLayers,
     nCpuMoe,

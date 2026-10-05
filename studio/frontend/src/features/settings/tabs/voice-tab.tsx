@@ -27,10 +27,12 @@ import {
   fetchSttStatus,
   generateCustomTtsAudio,
   generateStudioTtsAudio,
+  isDecisionConnection,
   loadSttModel,
   releaseTtsAudioUrl,
   startSttDownload,
   sttEngineFor,
+  sttEngineStatusFor,
   unloadSttModel,
   useExternalProvidersStore,
   validateSttModel,
@@ -66,6 +68,7 @@ import {
 } from "../lib/stt-download-mirror";
 import { useSettingsDialogStore } from "../stores/settings-dialog-store";
 import {
+  AUDIO_CPP_STT_MODELS,
   MTMD_STT_MODELS,
   RECOMMENDED_STT_MODELS,
   STT_MODELS,
@@ -106,9 +109,12 @@ const DICTATION_LANGUAGES: { value: string; label: string }[] = [
 const TTS_PREVIEW_TEXT =
   "Hello from Unsloth! This is a preview of the selected voice.";
 
-/** Source repository shown under a model row. Curated models download from
- * the Unsloth GGUF repos, mirrored by the backend (stt_ggml_sidecar.py). */
+/** Source repository shown under a model row. Curated Whisper models download
+ * from the Unsloth GGUF repos, mirrored by the backend (stt_ggml_sidecar.py).
+ * A package of the shared GGUF repo is already named after its folder, so its
+ * row shows the name alone. */
 function sttModelSource(model: SttModel): string {
+  if (AUDIO_CPP_STT_MODELS.has(model)) return sttModelName(model);
   return isCuratedSttModel(model) && !MTMD_STT_MODELS.has(model)
     ? `unslothai/whisper-${model}-GGUF`
     : getSttModelRepo(model);
@@ -180,7 +186,8 @@ function SttModelPicker({
     if (!isSttModelId(model) || validating) {
       return;
     }
-    if (!isCuratedSttModel(model)) {
+    // The validator checks Transformers Whisper checkpoints; a GGUF audio runtime repo is checked when it loads.
+    if (!isCuratedSttModel(model) && sttEngineFor(model) !== "audiocpp") {
       setValidating(true);
       try {
         await validateSttModel(model, hfApiToken(hfToken));
@@ -436,7 +443,12 @@ export function VoiceTab() {
   const setTtsProviderVoice = useVoiceSettingsStore(
     (s) => s.setTtsProviderVoice,
   );
-  const ttsConnections = useExternalProvidersStore((s) => s.providers);
+  const connections = useExternalProvidersStore((s) => s.providers);
+  const ttsConnections = useMemo(
+    () =>
+      connections.filter((connection) => !isDecisionConnection(connection)),
+    [connections],
+  );
   const hasSelectedTtsConnection = ttsConnections.some(
     (connection) => connection.id === ttsProviderId,
   );
@@ -446,7 +458,7 @@ export function VoiceTab() {
   const setTtsPitch = useVoiceSettingsStore((s) => s.setTtsPitch);
   const ttsVolume = useVoiceSettingsStore((s) => s.ttsVolume);
   const setTtsVolume = useVoiceSettingsStore((s) => s.setTtsVolume);
-  const sttConnections = useExternalProvidersStore((s) => s.providers);
+  const sttConnections = ttsConnections;
   const connectionsEnabled = useExternalProvidersStore(
     (s) => s.connectionsEnabled,
   );
@@ -513,8 +525,6 @@ export function VoiceTab() {
   const isCustomEngine = dictationEngine === "custom";
   // The model decides the backend: curated ids run GGML through whisper.cpp,
   // custom repos run through Transformers.
-  const isMtmdModel = MTMD_STT_MODELS.has(sttModel);
-  const isGgufModel = isCuratedSttModel(sttModel) && !isMtmdModel;
   // Progress of the selected engine's model download, from /stt/status.
   const [sttDownload, setSttDownload] = useState<SttDownloadStatus | null>(
     null,
@@ -563,12 +573,8 @@ export function VoiceTab() {
         // A curated model prefers the GGUF (whisper.cpp) engine, but without whisper-server the
         // backend serves it through Transformers instead of failing. Fall back to the Transformers
         // status here too, or the model shows as unavailable and download is blocked even though it
-        // works. mtmd models run nowhere else, so they never fall back.
-        const engineStatus = isMtmdModel
-          ? status.mtmd
-          : isGgufModel && status.gguf?.available
-            ? status.gguf
-            : status.transformers;
+        // works. mtmd and audio.cpp models run nowhere else, so they never fall back.
+        const engineStatus = sttEngineStatusFor(status, sttModel);
         if (!engineStatus?.available) {
           setSttPhase("unavailable");
           return;
@@ -641,8 +647,6 @@ export function VoiceTab() {
     };
   }, [
     isLocalEngine,
-    isGgufModel,
-    isMtmdModel,
     sttModel,
     sttRepoId,
     modelSttSupported,
@@ -659,9 +663,11 @@ export function VoiceTab() {
       case "on-demand":
         return t("settings.voice.dictation.sttOnDemand");
       case "ready":
-        // whisper.cpp and llama.cpp report a runtime name, not a device; show a
-        // plain "Loaded" rather than surfacing it.
-        return sttDevice && !STT_RUNTIME_NAMES.has(sttDevice)
+        // whisper.cpp, llama.cpp and audio.cpp report a runtime name, not a
+        // device; show a plain "Loaded" rather than surfacing it.
+        return sttDevice &&
+          !STT_RUNTIME_NAMES.has(sttDevice) &&
+          !sttDevice.startsWith("audio.cpp")
           ? t("settings.voice.dictation.sttReady", {
               device: sttDevice.toUpperCase(),
             })

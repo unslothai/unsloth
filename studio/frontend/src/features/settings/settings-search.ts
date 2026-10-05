@@ -23,8 +23,6 @@ export const SETTINGS_SEARCH_INDEX: Record<SettingsTab, TranslationKey[]> = {
     "settings.general.huggingFaceToken",
     "settings.appearance.language.title",
     "settings.appearance.language.label",
-    "settings.general.permissions.sectionTitle",
-    "settings.general.permissions.bypassLabel",
     "settings.general.notifications.sectionTitle",
     "settings.general.notifications.showLlamaUpdates",
     "settings.general.notifications.showWhisperUpdates",
@@ -74,7 +72,6 @@ export const SETTINGS_SEARCH_INDEX: Record<SettingsTab, TranslationKey[]> = {
     "settings.appearance.custom.headingFont.label",
     "settings.appearance.custom.chatFont.label",
     "settings.appearance.custom.chatWidth.label",
-    "settings.appearance.custom.composerAttachments.label",
     "settings.appearance.custom.sentAttachments.label",
     "settings.appearance.custom.codeFont.label",
     "settings.appearance.custom.contrast.label",
@@ -128,6 +125,7 @@ export const SETTINGS_SEARCH_INDEX: Record<SettingsTab, TranslationKey[]> = {
     "settings.chat.rememberParamsPerModel",
     "settings.chat.autoCompact",
     "settings.chat.autoScroll",
+    "settings.chat.scrollToBottomButton",
     "settings.profile.greetingSloth",
     "settings.chat.thinking.visibility",
     "settings.chat.tools.visibility",
@@ -139,7 +137,6 @@ export const SETTINGS_SEARCH_INDEX: Record<SettingsTab, TranslationKey[]> = {
     "settings.chat.modelDisclaimer",
     "settings.chat.inlineReadAloud",
     "settings.chat.inlineEditResponse",
-    "settings.chat.projectsSection",
     "settings.chat.groups.menu.title",
   ],
   library: [
@@ -362,9 +359,6 @@ export const SETTINGS_SEARCH_KEYWORDS: Partial<
 > = {
   "settings.resources.storage.modelsFolder":
     "settings.resources.storage.modelsFolderKeywords",
-  // Mode names live in the dropdown, not the row label.
-  "settings.general.permissions.bypassLabel":
-    "settings.general.permissions.modeKeywords",
   "settings.sandbox.toolsSection": "settings.sandbox.setupKeywords",
   // "purge", "prune" and the tool names are in none of the labels, so the row
   // the feature is named after was unreachable by search.
@@ -384,4 +378,5 @@ export const SETTINGS_SEARCH_KEYWORDS: Partial<
   "settings.chat.tools.visibility": "settings.chat.visibilityKeywords",
   "settings.chat.tools.foldIntoThinking": "settings.chat.visibilityKeywords",
   "settings.chat.autoScroll": "settings.chat.autoScrollKeywords",
+  "settings.chat.scrollToBottomButton": "settings.chat.scrollToBottomButtonKeywords",
 };

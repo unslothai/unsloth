@@ -500,7 +500,7 @@ def main():
         browser = playwright.chromium.launch(args = ["--no-sandbox", "--disable-dev-shm-usage"])
         context = browser.new_context(viewport = {"width": 1280, "height": 900})
         context.add_init_script(CHAT_TRAFFIC_JS)
-        # "Full access in sandbox" only switches straight away when the OS sandbox works; answer
+        # "Run automatically" only switches straight away when the OS sandbox works; answer
         # for the host so this test does not depend on the runner's user namespaces.
         context.route(
             "**/api/sandbox/capability*",
@@ -539,7 +539,7 @@ def main():
         step("pin the installation default every later step compares against")
         # The install is shared, not fresh: earlier UI tests run on the same Unsloth home and
         # leave a permission level behind, so the default is set here rather than assumed.
-        choose_permission(page, "Auto-approve")
+        choose_permission(page, "Approve for me")
         print(
             f"[thread-settings]   defaults now {read_globals(page)!r}",
             flush = True,
@@ -555,13 +555,13 @@ def main():
 
         step("a chat with no snapshot of its own opens on those defaults")
         open_thread(page, thread_a)
-        expect_pills(page, "A on first open", False, False, "Auto-approve")
+        expect_pills(page, "A on first open", False, False, "Approve for me")
         defaults = read_globals(page)
 
-        step("set Chat A to Search on, Ask every time")
+        step("set Chat A to Search on, Ask for approval")
         pill(page, "Search").click()
-        choose_permission(page, "Ask every time")
-        expect_pills(page, "A after editing", True, False, "Ask every time")
+        choose_permission(page, "Ask for approval")
+        expect_pills(page, "A after editing", True, False, "Ask for approval")
         shoot(page, "01-chat-a-edited")
         wait_for_stored_settings(page, token, thread_a, "toolsEnabled", True)
 
@@ -575,43 +575,43 @@ def main():
 
         step("Chat B opens on the defaults, not on Chat A's modes")
         open_thread(page, thread_b)
-        expect_pills(page, "B on first open", False, False, "Auto-approve")
+        expect_pills(page, "B on first open", False, False, "Approve for me")
 
-        step("set Chat B to Code on, Full access in sandbox")
+        step("set Chat B to Code on, Run automatically")
         pill(page, "Code").click()
-        choose_permission(page, "Full access in sandbox")
-        expect_pills(page, "B after editing", False, True, "Full access in sandbox")
+        choose_permission(page, "Run automatically")
+        expect_pills(page, "B after editing", False, True, "Run automatically")
         shoot(page, "02-chat-b-edited")
         wait_for_stored_settings(page, token, thread_b, "codeToolsEnabled", True)
 
         step("switching back to Chat A restores Chat A's own modes")
         open_thread(page, thread_a)
-        expect_pills(page, "A after switching back", True, False, "Ask every time")
+        expect_pills(page, "A after switching back", True, False, "Ask for approval")
 
         step("and they survive a full reload")
         page.reload(wait_until = "domcontentloaded")
         settle(page)
-        expect_pills(page, "A after reload", True, False, "Ask every time")
+        expect_pills(page, "A after reload", True, False, "Ask for approval")
         shoot(page, "03-chat-a-after-reload")
 
         step("switching back to Chat B restores Chat B's own modes")
         open_thread(page, thread_b)
-        expect_pills(page, "B after switching back", False, True, "Full access in sandbox")
+        expect_pills(page, "B after switching back", False, True, "Run automatically")
 
         step("and a sidebar switch, with no reload, does the same")
         # The reload-free path is the one users take, and the only one where the store still holds the outgoing chat's
         # values when the incoming snapshot is applied.
         open_thread_in_page(page, "Chat A")
-        expect_pills(page, "A after an in-page switch", True, False, "Ask every time")
+        expect_pills(page, "A after an in-page switch", True, False, "Ask for approval")
         open_thread_in_page(page, "Chat B")
-        expect_pills(page, "B after an in-page switch", False, True, "Full access in sandbox")
+        expect_pills(page, "B after an in-page switch", False, True, "Run automatically")
         shoot(page, "03-in-page-switch")
 
         step("leaving a chat for a new one restores the installation defaults in place")
         # No reload here either, so the defaults have to come from the captured copy rather than from the store being
         # rebuilt out of localStorage.
         new_chat_in_page(page)
-        expect_pills(page, "new chat after an in-page switch", False, False, "Auto-approve")
+        expect_pills(page, "new chat after an in-page switch", False, False, "Approve for me")
 
         step("a new chat still starts from the installation defaults")
         page.goto(
@@ -620,7 +620,7 @@ def main():
             timeout = 60_000,
         )
         settle(page)
-        expect_pills(page, "new chat", False, False, "Auto-approve")
+        expect_pills(page, "new chat", False, False, "Approve for me")
         shoot(page, "04-new-chat")
         if read_globals(page) != defaults:
             fail("the installation defaults changed at some point during the run")
@@ -634,7 +634,7 @@ def main():
             fail(f"a new-chat edit did not reach the defaults: {moved!r}")
         thread_c = seed_thread(page, token, "Chat C")
         open_thread(page, thread_c)
-        expect_pills(page, "C on first open", True, False, "Auto-approve")
+        expect_pills(page, "C on first open", True, False, "Approve for me")
 
         step("the pinned snapshots reached the backend")
         stored = {

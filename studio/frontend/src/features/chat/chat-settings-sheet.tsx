@@ -87,8 +87,8 @@ import {
   type ExternalProviderConfig,
   getExternalProviderApiKey,
   parseExternalModelId,
-  supportsProviderPromptCacheTtl,
-  supportsProviderPromptCaching,
+  promptCacheTtlAppliesToModel,
+  promptCachingAppliesToModel,
 } from "./external-providers";
 import {
   BUILTIN_PRESETS,
@@ -820,18 +820,24 @@ export function ChatSettingsPanel({
   const systemPromptEditorDirty =
     systemPromptDraft !== currentSystemPrompt ||
     systemVariablesDraft !== currentSystemVariables;
-  const showPromptCacheTtlControl = Boolean(
-    activeExternalProvider &&
-      supportsProviderPromptCacheTtl(activeExternalProvider.providerType),
-  );
-  const showPromptCachingControl =
-    activeExternalProvider != null &&
-    supportsProviderPromptCaching(activeExternalProvider.providerType);
-  const promptCachingEnabled =
-    activeExternalProvider?.enablePromptCaching !== false;
   const externalSelection = currentCheckpoint
     ? parseExternalModelId(currentCheckpoint)
     : null;
+  const showPromptCacheTtlControl = Boolean(
+    activeExternalProvider &&
+      promptCacheTtlAppliesToModel(
+        activeExternalProvider.providerType,
+        externalSelection?.modelId,
+      ),
+  );
+  const showPromptCachingControl =
+    activeExternalProvider != null &&
+    promptCachingAppliesToModel(
+      activeExternalProvider.providerType,
+      externalSelection?.modelId,
+    );
+  const promptCachingEnabled =
+    activeExternalProvider?.enablePromptCaching !== false;
   // The OpenRouter cap comes from the live catalog, which can land after this panel renders.
   useSyncExternalStore(subscribeModelCatalog, modelCatalogVersion);
   const maxTokensMax = isExternalModel
@@ -1867,9 +1873,7 @@ export function ChatSettingsPanel({
       data-slot="chat-settings-panel"
       className={cn(
         "relative z-50 shrink-0 bg-panel-surface text-panel-surface-fg font-heading",
-        open
-          ? "w-(--chat-settings-width) border-l border-sidebar-border"
-          : "w-0 overflow-hidden",
+        open ? "w-(--chat-settings-width)" : "w-0 overflow-hidden",
       )}
       style={
         {
@@ -1903,7 +1907,14 @@ export function ChatSettingsPanel({
         dataSlot="chat-settings-resize-handle"
       />
       ) : null}
-      <div className="h-full w-full overflow-hidden">{settingsContent}</div>
+      <div
+        className={cn(
+          "h-full w-full overflow-hidden",
+          open && "border-l border-panel-edge",
+        )}
+      >
+        {settingsContent}
+      </div>
     </aside>
   );
 }
@@ -2027,16 +2038,16 @@ function ConfirmToolCallsToggle() {
           </span>
           <InfoHint>
             When on, every local Unsloth tool call pauses for your approval
-            before it runs (the "Ask every time" level). When off, tool calls
-            run without prompts (the "Full access in sandbox" level); on a
-            computer without a working OS sandbox, risky Python and Terminal
-            calls still ask.
+            before it runs (the "Ask for approval" level). When off, tool calls
+            run without prompts inside the sandbox (the "Run automatically"
+            level); on a computer without a working OS sandbox, risky Python
+            and Terminal calls still ask.
             Provider-hosted tools are not gated here.
           </InfoHint>
         </div>
         {permissionMode === "full" ? (
           <span className="text-ui-11 text-muted-foreground">
-            Overridden by Bypass permissions
+            Overridden by Full access
           </span>
         ) : null}
       </div>
@@ -2047,7 +2058,7 @@ function ConfirmToolCallsToggle() {
           if (checked) {
             setConfirmToolCalls(true);
           } else {
-            // Same path as picking "Full access in sandbox": offer the setup when there is no
+            // Same path as picking "Run automatically": offer the setup when there is no
             // working OS sandbox instead of switching silently.
             void pickSandboxedMode(setPermissionMode, () =>
               setSandboxSetupOpen(true),
@@ -2070,14 +2081,14 @@ function BypassPermissionsToggle() {
           Tool permissions
         </span>
         <InfoHint>
-          Choose how Unsloth approves tool calls before they run. Bypass
-          permissions disables confirmations and the code sandbox.
+          Choose how Unsloth approves tool calls before they run. Full access
+          disables confirmations and the code sandbox.
         </InfoHint>
       </div>
       {/* Full width, styled like the panel selects/preset input. */}
       <PermissionModeDropdown triggerClassName="h-9 w-full justify-between rounded-full border-0 bg-[var(--panel-input-surface)] px-3.5 text-ui-13 font-medium text-nav-fg shadow-none hover:bg-[var(--panel-input-surface)]" />
       {permissionMode === "full" ? (
-        <span className="text-ui-11 text-bypass">
+        <span className="text-ui-11 text-muted-foreground">
           Tool calls run with no confirmation and no sandbox.
         </span>
       ) : null}

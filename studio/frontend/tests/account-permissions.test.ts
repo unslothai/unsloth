@@ -15,14 +15,29 @@ type Capability = {
 } | null;
 
 function permissionUi(
-  loginMode: string,
+  owner: boolean,
   permissionMode: string,
+  loginMode = "multi",
   capability: Capability = null,
 ) {
+  const accountSession = loadWithStubs<{
+    useFullAccessAllowed: () => boolean;
+  }>(new URL("../src/features/auth/account-session.ts", import.meta.url), {
+    react: { useSyncExternalStore: (_subscribe: unknown, snapshot: () => boolean) => snapshot() },
+    "./login-client": {
+      getFullAccessAllowed: () => loginMode !== "multi",
+    },
+    "./session": {
+      getAuthToken: () => `e30.${Buffer.from(JSON.stringify({
+        sub: owner ? "unsloth" : "alice", role: owner ? "owner" : "user",
+      })).toString("base64url")}.sig`,
+    },
+  });
   const changes: string[] = [];
   const capabilityStub = {
     loadSandboxCapability: async () => capability,
     loadSettledSandboxCapability: async () => capability,
+    onSandboxCapabilityChange: () => () => {},
     sandboxReady: (value: NonNullable<Capability>) =>
       value.pythonOsIsolated && value.terminalOsIsolated,
     capabilityPending: () => false,
@@ -38,8 +53,8 @@ function permissionUi(
       onRequestFullAccess: () => void;
       onRequestSandboxSetup: () => void;
     }) => StubElement;
-    PERMISSION_MODE_OPTIONS: readonly { value: string; labelKey: string }[];
-    permissionModeOption: (mode: string) => { value: string; labelKey: string };
+    PERMISSION_MODE_OPTIONS: readonly { value: string; label: string }[];
+    permissionModeOption: (mode: string) => { value: string; label: string };
     pickSandboxedMode: (
       setPermissionMode: (mode: string) => void,
       onRequestSandboxSetup: () => void,
@@ -58,14 +73,16 @@ function permissionUi(
       },
       "lucide-react": {
         ChevronDown: "ChevronDown",
-        CircleAlert: "CircleAlert",
         Hand: "Hand",
         ShieldCheck: "ShieldCheck",
       },
-      "@/features/auth/account-session": {
-        useFullAccessAllowed: () => loginMode !== "multi",
+      "radix-ui": { DropdownMenu: { Item: "DropdownMenuPrimitive.Item" } },
+      "@/features/settings": {
+        useSettingsDialogStore: (selector: (state: unknown) => unknown) =>
+          selector({ openDialog: () => {} }),
       },
       "@/i18n": { useT: () => (key: string) => key },
+      "@/features/auth/account-session": accountSession,
       "./api/sandbox-capability": capabilityStub,
       "./sandbox-pick": loadWithStubs(
         new URL("../src/features/chat/sandbox-pick.ts", import.meta.url),
@@ -80,6 +97,8 @@ function permissionUi(
       "@/components/ui/dropdown-menu": { DropdownMenuItem: "DropdownMenuItem" },
       "@/lib/chevron-icons": {},
       "@/lib/sparkles-icon": { SparklesGlyph: "SparklesGlyph" },
+      "@/lib/shield-alert-icon": { ShieldAlertGlyph: "ShieldAlertGlyph" },
+      "@hugeicons/core-free-icons": {},
       "@/lib/tick-icon": {},
       "@/lib/utils": { cn: () => "" },
       "@hugeicons/react": {},
@@ -94,27 +113,29 @@ function permissionUi(
   return { component, changes };
 }
 
-for (const mode of ["single", "multi"]) {
-  test(`${mode} permission menu enforces installation full-access policy`, () => {
-    const ui = permissionUi(mode, "full");
-    const menu = ui.component.PermissionModeMenuItems({
-      onRequestFullAccess() {},
-      onRequestSandboxSetup() {},
+for (const loginMode of ["single", "multi"]) {
+  for (const owner of [true, false]) {
+    test(`${loginMode} permission menu allows full access only for the owner (${owner})`, () => {
+      const ui = permissionUi(owner, "full", loginMode);
+      const menu = ui.component.PermissionModeMenuItems({
+        onRequestFullAccess() {},
+        onRequestSandboxSetup() {},
+      });
+      const rows = menu.props.children as StubElement[];
+      assert.equal(rows.length, owner ? 4 : 3);
+      assert.deepEqual(ui.changes, owner ? [] : ["auto"]);
+      const dialog = ui.component.FullAccessConfirmDialog({
+        open: true,
+        onOpenChange() {},
+      });
+      assert.equal(dialog === null, !owner);
     });
-    const rows = menu.props.children as StubElement[];
-    assert.equal(rows.length, mode === "multi" ? 3 : 4);
-    assert.deepEqual(ui.changes, mode === "multi" ? ["auto"] : []);
-    const dialog = ui.component.FullAccessConfirmDialog({
-      open: true,
-      onOpenChange() {},
-    });
-    assert.equal(dialog === null, mode === "multi");
-  });
+  }
 }
 
 test("multi-user policy leaves non-full preferences untouched", () => {
   for (const mode of ["ask", "auto", "off"]) {
-    const ui = permissionUi("multi", mode);
+    const ui = permissionUi(false, mode);
     ui.component.PermissionModeMenuItems({
       onRequestFullAccess() {
         assert.fail("Full access must be unavailable");
@@ -125,18 +146,18 @@ test("multi-user policy leaves non-full preferences untouched", () => {
   }
 });
 
-test("the stored values keep their order and get the new names", () => {
-  const ui = permissionUi("single", "auto");
+test("the stored values keep their order and their names", () => {
+  const ui = permissionUi(true, "auto");
   assert.deepEqual(
     ui.component.PERMISSION_MODE_OPTIONS.map((option) => [
       option.value,
-      option.labelKey,
+      option.label,
     ]),
     [
-      ["ask", "permissionModes.ask.label"],
-      ["auto", "permissionModes.auto.label"],
-      ["off", "permissionModes.off.label"],
-      ["full", "permissionModes.full.label"],
+      ["ask", "Ask for approval"],
+      ["auto", "Approve for me"],
+      ["off", "Run automatically"],
+      ["full", "Full access"],
     ],
   );
   assert.equal(ui.component.permissionModeOption("bogus").value, "auto");
@@ -160,8 +181,8 @@ for (const [name, capability, expected] of [
     "setup",
   ],
 ] as const) {
-  test(`picking Full access in sandbox with ${name} is ${expected}`, async () => {
-    const ui = permissionUi("single", "auto", capability);
+  test(`picking Run automatically with ${name} is ${expected}`, async () => {
+    const ui = permissionUi(true, "auto", "single", capability);
     const applied: string[] = [];
     let setupRequested = 0;
     await ui.component.pickSandboxedMode(

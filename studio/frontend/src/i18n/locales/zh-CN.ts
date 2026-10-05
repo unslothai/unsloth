@@ -2,37 +2,15 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import type { DeepPartialMessageTree } from "../types";
-import type { en } from "./en";
+import { en } from "./en.ts";
 
 export const zhCN = {
-  permissionModes: {
-    menuLabel: "工具调用应如何审批？",
-    triggerLabel: "工具调用的权限级别",
-    ask: {
-      label: "每次询问",
-      description: "每次调用工具前都询问",
-    },
-    auto: {
-      label: "自动批准",
-      description: "直接运行常规工具调用，在访问凭据、sudo、删除文件或向外发送数据等高风险操作前询问",
-    },
-    off: {
-      label: "沙箱内完全访问",
-      description: "Python 和终端在系统沙箱中运行时从不询问。没有沙箱时，高风险调用仍会询问",
-      sandboxUnavailable: "系统沙箱不可用",
-    },
-    full: {
-      label: "绕过权限",
-      description: "没有审批提示，也没有沙箱",
-    },
-    bypassTitle: "要开启绕过权限吗？",
-    bypassWarning: "绕过权限会让工具调用在没有审批提示和沙箱的情况下运行。它们可以修改或删除文件、运行命令并发起网络请求。仅在你信任当前任务时开启。",
-    bypassConfirm: "我明白",
-    cancel: "取消",
-  },
+  // English fallback until this experimental feature is translated.
+  managedEngines: en.managedEngines,
   sandboxSetup: {
+    unavailable: "系统沙箱不可用",
     title: "这台电脑还没有系统沙箱",
-    description: "沙箱内完全访问在 Python 和终端于系统沙箱中运行时从不询问。在这里有可用的沙箱之前，高风险调用仍会询问。",
+    description: "自动运行会让 Python 和终端在系统沙箱中运行。在这里可用之前，它们的高风险调用会先询问。",
     checking: "正在检查这台电脑上的沙箱…",
     install: "安装沙箱",
     windowsSetup: "设置 Windows 沙箱",
@@ -46,7 +24,7 @@ export const zhCN = {
     cancel: "取消",
     close: "关闭",
     running: "正在设置。请在运行 Unsloth 的电脑上批准密码或管理员提示…",
-    succeeded: "系统沙箱已就绪。沙箱内完全访问已开启。",
+    succeeded: "系统沙箱已就绪。自动运行已开启。",
     stillUnavailable: "设置已完成，但系统沙箱仍未通过检查。",
     declined: "密码或管理员提示被拒绝。",
     failed: "设置失败。",
@@ -265,6 +243,45 @@ export const zhCN = {
       actions: "操作",
       chat: "聊天",
       searchChats: "搜索聊天...",
+    },
+    search: {
+      placeholder: "搜索",
+      tabs: {
+        all: "全部",
+        chats: "聊天",
+        projects: "项目",
+        files: "文件",
+        models: "模型",
+      },
+      recents: "最近",
+      actions: "操作",
+      newChat: "新聊天",
+      newTemporaryChat: "新建临时聊天",
+      fineTune: "微调模型",
+      generateImage: "生成图像",
+      generateVideo: "生成视频",
+      untitledChat: "未命名聊天",
+      compare: "对比",
+      loading: "加载中...",
+      empty: {
+        all: "暂无可搜索的内容。",
+        chats: "暂无聊天。",
+        projects: "暂无项目。",
+        files: "你的资料库中暂无文件。",
+        models: "暂无已下载的模型。",
+      },
+      noMatches: "无结果。",
+      when: {
+        today: "今天",
+        pastWeek: "过去一周",
+        pastMonth: "过去一个月",
+        older: "更早",
+      },
+      footer: {
+        close: "关闭",
+        changeType: "切换类型",
+        open: "打开",
+      },
     },
     notFound: {
       title: "页面未找到",
@@ -1281,10 +1298,22 @@ export const zhCN = {
       },
       permissions: {
         sectionTitle: "权限",
-        bypassLabel: "工具权限",
-        modeKeywords: "每次询问 自动批准 沙箱内完全访问 绕过权限 permission approval sandbox yolo",
-        bypassDescription:
-          "设置 Unsloth 执行聊天中的工具调用（终端、python、网页、MCP）前的审批方式。“绕过权限”会关闭审批和代码沙箱。",
+        names: {
+          ask: "请求批准",
+          auto: "替我批准",
+          off: "自动运行",
+          full: "完全访问",
+        },
+        details: {
+          ask:
+            "每次调用工具前都会询问，包括终端和 Python 代码、网页搜索、编辑文件以及 MCP 工具。由外部提供商运行的工具不会暂停。适合需要逐步检查的场景。",
+          auto:
+            "常规工具调用会自动执行，只有在操作看起来有风险时才会询问，例如读取凭据、提升权限或执行破坏性命令。",
+          off:
+            "所有工具调用都不再询问。Python 和终端代码仍在沙箱中运行，沙箱会限制它们能访问你电脑上的哪些文件。如果这台电脑没有可用的系统沙箱，高风险的 Python 和终端调用会先询问。",
+          full:
+            "所有工具调用都不再询问，并关闭代码沙箱，Python 和终端代码可以读取和修改你的账户能访问的任何文件。适合需要在沙箱外工作的可信任务。",
+        },
       },
     },
     profile: {
@@ -1412,20 +1441,13 @@ export const zhCN = {
           wide: "宽",
           full: "全宽",
         },
-        composerAttachments: {
-          label: "输入框中的附件",
-          description:
-            "使用会撑大输入框的大卡片，或紧凑的一行小图块。",
-          cards: "大卡片",
-          compact: "紧凑图块",
-        },
         sentAttachments: {
           label: "已发送消息中的附件",
           description:
-            "显示各文件类型的列表，或小标签。超过六个文件时，“自动”会切换为小标签。",
+            "标准会显示每个文件及其类型，紧凑会在每行显示更多文件。超过六个文件时，“自动”会切换为紧凑。",
           auto: "自动",
-          list: "列表",
-          chips: "小标签",
+          list: "标准",
+          chips: "紧凑",
         },
         reset: "重置",
         resetAll: "重置自定义",
@@ -1634,6 +1656,9 @@ export const zhCN = {
         noRamReserve: "不为模型预留系统内存",
         noRamReserveDescription: "减少模型权重占用的内存。",
         noRamReserveHint: "当模型完全卸载到 GPU 时，在受支持的 Windows 版本上跳过内存映射加载，使其页面不再常驻；否则保持内存映射加载。必要的 CPU 缓冲区仍可能占用内存。移除 --no-mmap 和 --mlock。",
+        multiModel: "保持多个模型加载",
+        multiModelDescription: "加载模型时，其他模型仍保留在内存中。",
+        multiModelHint: "每个已加载的模型都会响应指定它的请求。在多 GPU 机器上，如果有空间，新模型会放到没有其他模型使用的 GPU 上。如果无法与其他模型同时容纳，会先卸载未在使用的模型，然后替换当前模型。训练会先卸载额外的模型，再卸载当前模型。",
         mlockVetoed: "--mlock 保持关闭：锁定模型会为其全部内容预留内存。空闲自动卸载仍处于禁用状态。",
         mlockNotApplicable: "已完全位于 GPU 上：系统内存中没有需要锁定的内容。空闲自动卸载保持关闭。",
         memlockCapped: "本系统将锁定内存限制为 {limit}。更大的模型无法被完全锁定；请使用 ulimit -l 提高上限。",
@@ -1861,9 +1886,6 @@ export const zhCN = {
         "粘贴的文本达到 {count} 个字符时会转为 .txt 附件，较短的文本则保留在消息输入框中。",
       pastedTextOffDescription:
         "无论长度如何，粘贴的文本都会保留在消息输入框中。",
-      projectsSection: "显示项目分区",
-      projectsSectionDescription:
-        "将项目对话归到「项目」标题下。关闭后改为显示在「最近」中。",
       title: "聊天",
       description: "自定义此设备上的聊天行为。",
       modelSelection: {
@@ -1900,6 +1922,11 @@ export const zhCN = {
       autoScrollManual: "手动",
       autoScrollKeywords:
         "滚动 自动滚动 跟随 底部 跳转 流式 生成 锁定 scroll autoscroll follow",
+      scrollToBottomButton: "滚动到底部按钮",
+      scrollToBottomButtonDescription:
+        "向上滚动后显示一个按钮，用于跳回最新消息。",
+      scrollToBottomButtonKeywords:
+        "滚动 底部 跳转 最新 箭头 按钮 隐藏 scroll bottom button",
       showResponseModel: "显示回复模型",
       showResponseModelDescription: "在助手回复中显示模型元数据。",
       inlineReadAloud: "在回复上显示朗读",
@@ -2260,11 +2287,13 @@ export const zhCN = {
       revoking: "撤销中...",
       decisionApi: {
         title: "决策 API",
-        description: "使用本地 Laya 模型回答关于文本的是/否、选择和评分问题。可配合 TypeSafe SDK 使用。",
+        description: "使用本机模型或连接中的决策模型回答关于文本的是/否、选择和评分问题。可配合 TypeSafe SDK 使用。",
         enable: "处理请求",
         enableDescription: "提供 /v1/systemone。开启后会下载模型。",
+        enableRemoteDescription: "提供 /v1/systemone。",
         lockedByEnv: "由 {name} 设置。",
         model: "模型",
+        thisMachine: "本机",
         modelMultilingual: "多语言",
         modelEnglish: "英语",
         modelTypedDecisions: "类型化决策",
@@ -2289,6 +2318,10 @@ export const zhCN = {
         downloadFailed: "无法开始下载。",
         saveFailed: "无法保存决策 API 设置。",
         loadError: "无法加载决策 API 设置。",
+        sendsTo: "请求将发送到 {provider}。",
+        connectionMissing: "此连接已不存在或没有决策模型。请选择其他模型。",
+        addConnection: "要使用托管的决策模型，请在连接中添加 TypeSafe、Liquid AI 或 OpenRouter。",
+        openConnections: "打开连接",
       },
       usageNoModel:
         "加载或下载一个模型后即可看到可运行的示例。此服务器目前还没有可指定的模型。",
@@ -2437,6 +2470,7 @@ export const zhCN = {
       context: "上下文",
       lr: "LR",
       hardware: "硬件",
+      vram: "VRAM",
       noGpu: "未检测到 GPU",
       hfToken: "HF token",
       saved: "已保存",
@@ -3111,6 +3145,7 @@ export const zhCN = {
     discardDescription: "对 {name} 未保存的修改将会丢失。",
     discard: "放弃",
     mentions: "技能",
+    manage: "管理技能",
   },
   library: {
     tabs: {

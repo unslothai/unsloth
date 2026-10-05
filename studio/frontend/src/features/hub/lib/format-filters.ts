@@ -9,7 +9,7 @@ export type FormatFilterModelFormat =
   | "mlx"
   | "unknown";
 
-export type FormatFilterValue = "all" | "gguf" | "checkpoint" | "mlx";
+export type FormatFilterValue = "all" | "gguf" | "checkpoint" | "mlx" | "npu";
 
 export function matchesFormat(
   modelFormat: boolean | FormatFilterModelFormat | null | undefined,
@@ -24,6 +24,8 @@ export function matchesFormat(
       : modelFormat;
   if (formatFilter === "gguf") return normalized === "gguf";
   if (formatFilter === "mlx") return normalized === "mlx";
+  // NPU models come from Lemonade's catalog, never from a Hub repo or the disk scan.
+  if (formatFilter === "npu") return false;
   return normalized === "safetensors" || normalized === "checkpoint";
 }
 

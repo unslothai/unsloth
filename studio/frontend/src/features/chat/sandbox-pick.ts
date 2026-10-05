@@ -11,7 +11,7 @@ import type { PermissionMode } from "./stores/chat-runtime-store";
 
 let sandboxedPicks = 0;
 
-/** Re-picking "Full access in sandbox" without a working sandbox reopens the setup dialog. */
+/** Re-picking "Run automatically" without a working sandbox reopens the setup dialog. */
 export function samePickIsIgnored(
   value: PermissionMode,
   current: PermissionMode,

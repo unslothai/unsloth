@@ -71,6 +71,8 @@ function SandboxSetupContent({
   const [stillUnavailable, setStillUnavailable] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
   const mounted = useRef(true);
+  // A level picked while the setup ran wins over turning Run automatically on at the end.
+  const modeAtOpen = useRef(useChatRuntimeStore.getState().permissionMode);
 
   useEffect(() => {
     mounted.current = true;
@@ -114,7 +116,9 @@ function SandboxSetupContent({
         if (!mounted.current) return;
         if (next) setCapability(next);
         if (next && sandboxReady(next)) {
-          setPermissionMode("off");
+          if (useChatRuntimeStore.getState().permissionMode === modeAtOpen.current) {
+            setPermissionMode("off");
+          }
           toast.success(t("sandboxSetup.succeeded"));
           onOpenChange(false);
         } else {

@@ -343,10 +343,32 @@ with sync_playwright() as p:
         clicked_at = time.monotonic()
         btn.click()
         quiet = [0]
+        # What the wait can see change. A request whose finish event never reaches the driver
+        # leaves `inflight` non-empty for good; on PR #12333's run the clicked flow sent /validate
+        # and a settings PUT, the server answered both within a second, and this still sat out
+        # the full 180 s, which pushed the script past its 720 s cap.
+        progress = [None, time.monotonic()]
+
+        def _pending_loads():
+            return [req for req in _commits["loads"] if req not in _commits["loads_ended"]]
 
         def settled():
             if _commits["started"] == started:
                 return "nothing sent" if time.monotonic() - clicked_at > 10 else None
+            seen = (_commits["started"], len(_commits["inflight"]), len(_commits["loads_ended"]))
+            if seen != progress[0]:
+                progress[:] = [seen, time.monotonic()]
+            # 30 s with nothing tracked starting or ending, while only settings writes are open,
+            # is a lost event rather than work in progress. Any open /load, /validate or /unload
+            # keeps the full timeout: the frontend awaits /unload before /load, and a large GGUF
+            # teardown can take minutes.
+            if (
+                _commits["inflight"]
+                and all("/api/settings/" in req.url for req in _commits["inflight"])
+                and not _pending_loads()
+                and time.monotonic() - progress[1] > 30
+            ):
+                return "stalled"
             if _commits["inflight"]:
                 quiet[0] = 0
                 return None
@@ -372,8 +394,19 @@ with sync_playwright() as p:
                 info(f"WARN {what}: the click sent no load or settings request within 10s")
             elif outcome == "stopped before load":
                 info(f"WARN {what}: the load flow ended without sending /api/inference/load")
+            elif outcome == "stalled":
+                info(
+                    f"WARN {what}: nothing changed for 30s with only settings writes open; still counted in "
+                    f"flight: {sorted(f'{req.method} {req.url}' for req in _commits['inflight'])}"
+                )
+                # Those events are not coming; carrying them would stall every later wait too.
+                _commits["inflight"].clear()
         except TimeoutError as exc:
-            info(f"WARN {exc}")
+            info(
+                f"WARN {exc}; in flight: "
+                f"{sorted(f'{req.method} {req.url}' for req in _commits['inflight'])}, "
+                f"/load not ended: {[req.url for req in _pending_loads()]}"
+            )
 
     def shoot(name: str) -> None:
         _n[0] += 1

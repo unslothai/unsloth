@@ -2,34 +2,51 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 export const en = {
-  permissionModes: {
-    menuLabel: "How should tool calls be approved?",
-    triggerLabel: "Permission level for tool calls",
-    ask: {
-      label: "Ask every time",
-      description: "Ask before every tool call",
-    },
-    auto: {
-      label: "Auto-approve",
-      description: "Run routine tool calls, ask before risky ones like credential access, sudo, deleting files, or sending data out",
-    },
-    off: {
-      label: "Full access in sandbox",
-      description: "Never ask while Python and Terminal run in the OS sandbox. Without one, risky calls still ask",
-      sandboxUnavailable: "OS sandbox not available",
-    },
-    full: {
-      label: "Bypass permissions",
-      description: "No approval prompts and no sandbox",
-    },
-    bypassTitle: "Turn on Bypass permissions?",
-    bypassWarning: "Bypass permissions lets tool calls run without approval prompts or the sandbox. They can modify or delete files, run commands, and make network requests. Turn it on only when you trust the current task.",
-    bypassConfirm: "I understand",
-    cancel: "Cancel",
+  managedEngines: {
+    gpu: "GPUs",
+    gpuHelp: "Choose which GPUs to use.",
+    parallelism: "Multi-GPU mode",
+    tensor: "Tensor parallel",
+    pipeline: "Pipeline parallel",
+    data: "Replicas (data parallel)",
+    pipelineHelp: "Split model layers across GPUs. Each GPU must fit its layers and cache.",
+    dataHelp: "Spread requests across GPUs. Dense models must fit on each GPU; MoE models may share experts.",
+    tensorParallel: "Split layer computations across {count} GPUs.",
+    inUse: "Unload the model before repairing, restoring or removing its engine.",
+    title: "Inference engines",
+    description: "Optional engines for supported local text and vision models. Select an installed engine in the model's run settings. Experimental.",
+    picker: "Inference engine",
+    precision: "Precision",
+    precisionAuto: "Model default",
+    precisionHelp: "Model default preserves stored precision. Other options convert unquantized weights when loading.",
+    default: "Default",
+    installRequired: "install required",
+    ownerRequired: "Ask the Studio owner to install this engine.",
+    cancelInstall: "Cancel installation",
+    installed: "Installed {version}",
+    repair: "Repair",
+    update: "Update engine",
+    install: "Install engine",
+    installing: "Installing engine. See Downloads for progress.",
+    remove: "Remove engine",
+    rollback: "Restore previous installation",
+    installTitle: "Install {engine}",
+    installAndLoad: "Install and load",
+    confirm: "Install {engine} {version}? This optional download can use several gigabytes. Exact additional download and disk usage are unavailable. Compatible cached packages and model files are reused.",
+    confirmSized: "Install {engine} {version}? This optional download is about {size}. Packages Studio already has, including PyTorch when the versions match, are reused rather than downloaded again.",
+    wslSetup: "On Windows, {engine} runs inside WSL2 (Windows Subsystem for Linux). Studio will turn on WSL2 and set up its own private Ubuntu environment for engines; your existing Linux distributions are not touched. Windows will show one administrator (UAC) prompt, and may ask you to restart before the installation can finish. Nothing changes until you click Install.",
+    wslReady: "On Windows, {engine} runs inside Studio's private WSL2 environment.",
+    wslRestart: "Restart Windows to finish turning on WSL2, then click Install again.",
+    background: "Installation runs in the background. Removing the engine keeps your downloaded models.",
+    failed: "Engine installation failed. Retry or use the default engine.",
+    details: "Technical details",
+    cancelled: "Installation cancelled. You can retry.",
+    scope: "Text and image chat on NVIDIA GPUs. First load may take longer.",
   },
   sandboxSetup: {
+    unavailable: "OS sandbox not available",
     title: "No OS sandbox on this computer yet",
-    description: "Full access in sandbox never asks while Python and Terminal run in the OS sandbox. Until one works here, risky calls still ask.",
+    description: "Run automatically keeps Python and Terminal in the OS sandbox. Until it works here, their risky calls ask first.",
     checking: "Checking the sandbox on this computer…",
     install: "Install sandbox",
     windowsSetup: "Set up Windows sandbox",
@@ -43,7 +60,7 @@ export const en = {
     cancel: "Cancel",
     close: "Close",
     running: "Setting up. Approve the password or administrator prompt on the computer running Unsloth…",
-    succeeded: "The OS sandbox is ready. Full access in sandbox is on.",
+    succeeded: "The OS sandbox is ready. Run automatically is on.",
     stillUnavailable: "Setup finished, but the OS sandbox still does not pass its check.",
     declined: "The password or administrator prompt was declined.",
     failed: "Setup failed.",
@@ -272,6 +289,45 @@ export const en = {
       actions: "Actions",
       chat: "Chat",
       searchChats: "Search chats...",
+    },
+    search: {
+      placeholder: "Search",
+      tabs: {
+        all: "All",
+        chats: "Chats",
+        projects: "Projects",
+        files: "Files",
+        models: "Models",
+      },
+      recents: "Recents",
+      actions: "Actions",
+      newChat: "New chat",
+      newTemporaryChat: "New temporary chat",
+      fineTune: "Fine-tune a model",
+      generateImage: "Generate an image",
+      generateVideo: "Generate a video",
+      untitledChat: "Untitled chat",
+      compare: "Compare",
+      loading: "Loading…",
+      empty: {
+        all: "Nothing to search yet.",
+        chats: "No chats yet.",
+        projects: "No projects yet.",
+        files: "No files in your Library yet.",
+        models: "No downloaded models yet.",
+      },
+      noMatches: "No results.",
+      when: {
+        today: "Today",
+        pastWeek: "Past week",
+        pastMonth: "Past month",
+        older: "Older",
+      },
+      footer: {
+        close: "Close",
+        changeType: "Change type",
+        open: "Open",
+      },
     },
     notFound: {
       title: "Page not found",
@@ -801,7 +857,7 @@ export const en = {
       prepSucceeded: "This PC is prepared.",
       prepDeclined: "The administrator prompt was declined.",
       prepFailed: "Preparation failed.",
-      runtimeMissing: "The MXC runtime is not installed. Rerun the Unsloth installer to add it.",
+      runtimeMissing: "The MXC runtime is not installed. Use Install runtime, or rerun the Unsloth installer.",
       setupLabel: "OS sandbox setup",
       setupCommandHint: "Run this on the computer running Unsloth:",
       macosBuiltIn: "Seatbelt is built into macOS, so there is nothing to install.",
@@ -1172,10 +1228,22 @@ export const en = {
       },
       permissions: {
         sectionTitle: "Permissions",
-        bypassLabel: "Tool permissions",
-        modeKeywords: "Ask every time Auto-approve Full access in sandbox Bypass permissions permission approval sandbox yolo",
-        bypassDescription:
-          "How Unsloth approves chat tool calls (terminal, python, web, MCP) before they run. Bypass permissions disables approvals and the code sandbox.",
+        names: {
+          ask: "Ask for approval",
+          auto: "Approve for me",
+          off: "Run automatically",
+          full: "Full access",
+        },
+        details: {
+          ask:
+            "Asks before every tool call, including terminal and Python code, web searches, file edits and MCP tools. Tools run by an external provider are not paused. Best when you want to review each step.",
+          auto:
+            "Runs routine tool calls on its own and only asks when an action looks risky, such as reading credentials, escalating privileges or running destructive commands.",
+          off:
+            "Runs every tool call without asking. Python and terminal code still run in the sandbox, which limits which files they can reach on your computer. If this computer has no working OS sandbox, risky Python and terminal calls ask first.",
+          full:
+            "Runs every tool call without asking and turns off the code sandbox, so Python and terminal code can read and change any file your account can access. Best for trusted tasks that need to work outside the sandbox.",
+        },
       },
       notifications: {
         sectionTitle: "Notifications",
@@ -1295,7 +1363,7 @@ export const en = {
         action: "Repair install",
         confirmTitle: "Repair this installation?",
         confirmDescription:
-          "Stops the server and reruns the installer, which reinstalls PyTorch for this machine's GPU. Chats and settings are kept. This can take several minutes.",
+          "Stops the server and reruns the installer, which reinstalls PyTorch for this machine's GPU at the newest supported release. Chats and settings are kept. This can take several minutes.",
         confirmAction: "Repair now",
       },
       resetPreferences: {
@@ -1430,20 +1498,13 @@ export const en = {
           wide: "Wide",
           full: "Full width",
         },
-        composerAttachments: {
-          label: "Attachments in the composer",
-          description:
-            "Large cards that grow the message box, or a compact row of tiles.",
-          cards: "Large cards",
-          compact: "Compact tiles",
-        },
         sentAttachments: {
           label: "Attachments in sent messages",
           description:
-            "A list with each file's type, or small chips. Auto switches to chips past six files.",
+            "Standard shows each file with its type, compact fits more on each line. Auto switches to compact past six files.",
           auto: "Auto",
-          list: "List",
-          chips: "Chips",
+          list: "Standard",
+          chips: "Compact",
         },
         reset: "Reset",
         resetAll: "Reset customization",
@@ -1664,6 +1725,9 @@ export const en = {
         noRamReserve: "Don't reserve system RAM for the model",
         noRamReserveDescription: "Reduce host RAM held for model weights.",
         noRamReserveHint: "Skips memory-mapped loading on supported Windows builds when the model is fully offloaded to the GPU, so its pages are not held resident. Otherwise keeps memory-mapped loading. Required CPU buffers can still use RAM. Drops --no-mmap and --mlock.",
+        multiModel: "Keep multiple models loaded",
+        multiModelDescription: "Loading a model keeps the others in memory.",
+        multiModelHint: "Each loaded model answers the requests that name it. With several GPUs, a new model goes to a GPU no other model uses when one has room. When it does not fit beside the others, the models not in use are unloaded first, then it replaces the active model. Training unloads the extra models before the active one.",
         mlockVetoed: "--mlock stays off: pinning the model in place would reserve RAM for all of it. Idle auto-unload is still disabled.",
         mlockNotApplicable: "Fully on the GPU: nothing in system RAM to lock. Idle auto-unload stays off.",
         memlockCapped: "This system caps locked memory at {limit}. A larger model will not be fully pinned; raise the limit with ulimit -l.",
@@ -1897,9 +1961,6 @@ export const en = {
       pastedTextShortDescription:
         "Pastes of {count} characters or more become .txt attachments.",
       pastedTextOffDescription: "Pasted text always stays in the message box.",
-      projectsSection: "Projects section",
-      projectsSectionDescription:
-        "Group project chats under Projects. When off, show them in Recents.",
       title: "Chat",
       description: "Customize how chat behaves on this device.",
       modelSelection: {
@@ -1935,6 +1996,11 @@ export const en = {
       autoScrollManual: "Manual",
       autoScrollKeywords:
         "scroll autoscroll auto-scroll follow stick bottom jump streaming generating viewport lock hold auto manual",
+      scrollToBottomButton: "Scroll to bottom button",
+      scrollToBottomButtonDescription:
+        "Show a button to jump back to the latest message after you scroll up.",
+      scrollToBottomButtonKeywords:
+        "scroll bottom jump latest newest arrow down button floating hide show",
       showResponseModel: "Response model",
       showResponseModelDescription:
         "Show model details in assistant responses.",
@@ -2033,7 +2099,7 @@ export const en = {
       exportingAction: "Exporting...",
       exportConversations: "Export Recents and Projects",
       exportConversationsDescription:
-        "Download Recents or Recents plus project chats as Training JSONL, CSV, or ShareGPT JSONL, combined or per chat. Message JSONL is available per chat.",
+        "Download Recents or Recents plus project chats as Training JSONL, CSV, ShareGPT JSONL, or Markdown, combined or per chat. Message JSONL is available per chat.",
       exportConversationsAction: "Export",
       exportScopeRecents: "Recents",
       exportScopeAll: "Recents + Projects",
@@ -2041,7 +2107,7 @@ export const en = {
       exportPerChatSuffix: "(per chat)",
       importChats: "Import chats",
       importChatsDescription:
-        "Import JSON, JSONL, NDJSON, or CSV files into Recents.",
+        "Import JSON, JSONL, NDJSON, CSV, or Markdown files into Recents.",
       importChatsAction: "Import",
       importNoConversations: "No conversations found in file.",
       importedOneChat: "Imported 1 conversation to Recents.",
@@ -2305,11 +2371,13 @@ export const en = {
       revoking: "Revoking...",
       decisionApi: {
         title: "Decision API",
-        description: "Answer yes/no, multiple choice and score questions about text with a local Laya model. Works with the TypeSafe SDK.",
+        description: "Answer yes/no, multiple choice and score questions about text with a model on this machine or a decision model from Connections. Works with the TypeSafe SDK.",
         enable: "Serve requests",
         enableDescription: "Serves /v1/systemone. Turning it on downloads the model.",
+        enableRemoteDescription: "Serves /v1/systemone.",
         lockedByEnv: "Set by {name}.",
         model: "Model",
+        thisMachine: "This machine",
         modelMultilingual: "Multilingual",
         modelEnglish: "English",
         modelTypedDecisions: "Typed decisions",
@@ -2334,6 +2402,10 @@ export const en = {
         downloadFailed: "Couldn't start the download.",
         saveFailed: "Couldn't save the Decision API setting.",
         loadError: "Couldn't load Decision API settings.",
+        sendsTo: "Requests are sent to {provider}.",
+        connectionMissing: "This connection is gone or has no decision models. Pick another model.",
+        addConnection: "To use a hosted decision model, add TypeSafe, Liquid AI or OpenRouter in Connections.",
+        openConnections: "Open Connections",
       },
     },
     about: {
@@ -2486,6 +2558,7 @@ export const en = {
       context: "Context",
       lr: "LR",
       hardware: "Hardware",
+      vram: "VRAM",
       noGpu: "No GPU detected",
       hfToken: "HF token",
       saved: "Saved",
@@ -3188,6 +3261,7 @@ export const en = {
     discardDescription: "Edits to {name} that are not saved will be lost.",
     discard: "Discard",
     mentions: "Skills",
+    manage: "Manage skills",
   },
   // The Library page, its file viewer, and the menus and toasts that act on its files.
   library: {
