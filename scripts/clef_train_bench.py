@@ -101,7 +101,10 @@ def rows(tokenizer, count):
 
 
 def head_parity(model, batch, amp):
-    # Same hidden states into the batched and the per-record head, fp32 head weights.
+    # Same hidden states into the batched and the per-record head. Each is scored against the
+    # per-record head with autocast off (fp32 head, the oracle): under bf16 autocast both heads
+    # round their matmuls, so the batched head passes when its error is at most 1.5x the
+    # per-record head's plus one bf16 rounding step (kernel_verify_workflow step 2).
     backbone = model._backbone()
     text_model = getattr(backbone.model, "language_model", backbone.model)
     with torch.no_grad():
@@ -110,12 +113,12 @@ def head_parity(model, batch, amp):
         ).last_hidden_state
     embedding = backbone.get_output_embeddings().weight.detach()
     head = model.head
-    results = []
-    for forward in (head.forward, head.forward_per_record):
-        os.environ["UNSLOTH_CLEF_FAST"] = "1"
+    os.environ["UNSLOTH_CLEF_FAST"] = "1"
+
+    def run(forward, autocast):
         head.zero_grad()
         h = hidden.detach().clone().requires_grad_(True)
-        with torch.autocast("cuda", dtype = amp or torch.float32, enabled = amp is not None):
+        with torch.autocast("cuda", dtype = amp or torch.float32, enabled = autocast):
             out = forward(
                 h, batch["input_ids"], batch["attention_mask"], batch["records"], embedding
             )
@@ -131,31 +134,38 @@ def head_parity(model, batch, amp):
             for n, p in head.named_parameters()
             if p.grad is not None
         }
-        results.append((padded.detach(), h.grad.detach().float(), grads))
+        return padded.detach(), h.grad.detach().float(), grads
+
+    oracle = run(head.forward_per_record, False)
+    ours = run(head.forward, amp is not None)
+    reference = run(head.forward_per_record, amp is not None)
     os.environ["UNSLOTH_CLEF_FAST"] = "1" if args.fast == "on" else "0"
-    (ours, ours_h, ours_g), (ref, ref_h, ref_g) = results
-    valid = ref > -1e3
-    logit_error = (ours - ref)[valid].abs().max().item()
-    scale = max(1.0, ref[valid].abs().max().item())
-    # bf16 autocast rounds both heads' matmuls, in a different order: 1e-2 relative, else fp32.
-    tolerance = 1e-2 if amp is not None else 1e-4
-    hidden_error = ((ours_h - ref_h).abs().max() / ref_h.abs().max().clamp_min(1e-30)).item()
-    grad_error = max(
-        ((ours_g[n] - ref_g[n]).abs().max() / ref_g[n].abs().max().clamp_min(1e-30)).item()
-        for n in ref_g
-    )
     head.zero_grad()
+    valid = oracle[0] > -1e3
+
+    def errors(got):
+        return {
+            "logits_max_abs": (got[0] - oracle[0])[valid].abs().max().item(),
+            "hidden_grad_rel_l2": ((got[1] - oracle[1]).norm() / oracle[1].norm()).item(),
+            "param_grad_rel_l2": max(
+                ((got[2][n] - oracle[2][n]).norm() / oracle[2][n].norm().clamp_min(1e-30)).item()
+                for n in oracle[2]
+            ),
+        }
+
+    ours_error, reference_error = errors(ours), errors(reference)
+    step = 2**-8 if amp is not None else 2**-20
+    scale = oracle[0][valid].abs().max().item()
+    allowed = {
+        "logits_max_abs": 1.5 * reference_error["logits_max_abs"] + step * scale,
+        "hidden_grad_rel_l2": 1.5 * reference_error["hidden_grad_rel_l2"] + step,
+        "param_grad_rel_l2": 1.5 * reference_error["param_grad_rel_l2"] + step,
+    }
     return {
-        "logits_max_abs": logit_error,
-        "hidden_grad_max_rel": hidden_error,
-        "param_grad_max_rel": grad_error,
-        "argmax_equal": bool(torch.equal(ours.argmax(-1), ref.argmax(-1))),
-        "tolerance": tolerance,
-        "verdict": "PASS"
-        if logit_error < tolerance * scale
-        and grad_error < 5 * tolerance
-        and hidden_error < 5 * tolerance
-        else "FAIL",
+        "batched_vs_oracle": ours_error,
+        "per_record_vs_oracle": reference_error,
+        "argmax_equal": bool(torch.equal(ours[0].argmax(-1), reference[0].argmax(-1))),
+        "verdict": "PASS" if all(ours_error[k] <= allowed[k] for k in allowed) else "FAIL",
     }
 
 
