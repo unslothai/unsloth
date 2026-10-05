@@ -116,11 +116,23 @@ class _Runner:
         return SimpleNamespace(returncode = 0, stdout = "")
 
     @property
-    def pip_calls(self):
-        return [c[3:] for c in self.calls if c[1:3] == ["-m", "pip"]]
+    def installer_calls(self):
+        return [c for c in self.calls if c[1] != "-c"]
 
 
 _COLAB = _env("2.11.0+cu130", "13.0")
+_COLAB_XFORMERS = f"{_PT}/cu130/xformers-0.0.35-py39-none-manylinux_2_28_x86_64.whl"
+
+
+@pytest.fixture
+def uv(monkeypatch):
+    def use(available, outside_venv = False):
+        monkeypatch.setattr(
+            kernel_install.shutil, "which", lambda name: "/usr/bin/uv" if available else None
+        )
+        monkeypatch.setattr(kernel_install, "_outside_venv", lambda: outside_venv)
+
+    return use
 
 
 def test_no_published_wheel_installs_nothing(capsys):
@@ -133,26 +145,56 @@ def test_no_published_wheel_installs_nothing(capsys):
     assert "using the torch fallback" in capsys.readouterr().out
 
 
-def test_installs_the_matched_wheel_without_deps():
+def test_pip_reinstalls_the_matched_wheel_without_deps(uv):
+    uv(False)
     run = _Runner([False, True])
     assert kernel_install.install_kernel("xformers", _COLAB, run = run, exists = lambda url: True) == 0
-    url = f"{_PT}/cu130/xformers-0.0.35-py39-none-manylinux_2_28_x86_64.whl"
-    assert run.pip_calls == [["install", "--no-deps", "--force-reinstall", url]]
+    assert run.installer_calls == [
+        [sys.executable, "-m", "pip", "install", "--no-deps", "--force-reinstall", _COLAB_XFORMERS]
+    ]
+
+
+def test_uv_reinstalls_into_the_system_interpreter_on_colab(uv):
+    # The check failed, so the installed copy is broken: reinstall even at the same version.
+    uv(True, outside_venv = True)
+    run = _Runner([False, True])
+    assert kernel_install.install_kernel("xformers", _COLAB, run = run, exists = lambda url: True) == 0
+    assert run.installer_calls == [
+        [
+            "uv",
+            "pip",
+            "install",
+            "--system",
+            "--python",
+            sys.executable,
+            "--no-deps",
+            "--reinstall",
+            _COLAB_XFORMERS,
+        ]
+    ]
 
 
 def test_working_install_is_left_alone():
     run = _Runner([True])
     assert kernel_install.install_kernel("xformers", _COLAB, run = run, exists = lambda url: True) == 0
-    assert run.pip_calls == []
+    assert run.installer_calls == []
 
 
-def test_wheel_that_does_not_load_is_removed():
+@pytest.mark.parametrize(
+    "has_uv, uninstall",
+    [
+        (False, [sys.executable, "-m", "pip", "uninstall", "-y", "causal-conv1d"]),
+        (True, ["uv", "pip", "uninstall", "--python", sys.executable, "causal-conv1d"]),
+    ],
+)
+def test_wheel_that_does_not_load_is_removed(uv, has_uv, uninstall):
+    uv(has_uv)
     run = _Runner([False, False])
     assert (
         kernel_install.install_kernel("causal_conv1d", _COLAB, run = run, exists = lambda url: True)
         == 1
     )
-    assert run.pip_calls[-1] == ["uninstall", "-y", "causal-conv1d"]
+    assert run.installer_calls[-1] == uninstall
 
 
 def test_dry_run_prints_url_only(capsys):

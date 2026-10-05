@@ -10,6 +10,7 @@ model keeps its torch fallback, never a source build. Installs use --no-deps so 
 from __future__ import annotations
 
 import argparse
+import shutil
 import subprocess
 import sys
 from typing import Callable
@@ -22,6 +23,7 @@ from utils.wheel_utils import (
     MAMBA_SSM_RELEASE_BASE_URL,
     MAMBA_SSM_RELEASE_TAG,
     direct_wheel_url,
+    install_wheel,
     probe_torch_wheel_env,
     url_exists,
     xformers_wheel_url,
@@ -72,17 +74,18 @@ def _loads(check: str, run: Callable[..., subprocess.CompletedProcess]) -> bool:
     return result.returncode == 0
 
 
-def _pip(
-    args: list[str], run: Callable[..., subprocess.CompletedProcess]
-) -> subprocess.CompletedProcess:
-    return run(
-        [sys.executable, "-m", "pip", *args],
-        stdout = subprocess.PIPE,
-        stderr = subprocess.STDOUT,
-        text = True,
-        encoding = "utf-8",
-        errors = "replace",
-    )
+def _outside_venv() -> bool:
+    # Colab and other system interpreters: uv refuses them without --system.
+    return sys.prefix == sys.base_prefix
+
+
+def _uninstall(distribution: str, run: Callable[..., subprocess.CompletedProcess]) -> None:
+    if shutil.which("uv"):
+        system = ["--system"] if _outside_venv() else []
+        cmd = ["uv", "pip", "uninstall", *system, "--python", sys.executable, distribution]
+    else:
+        cmd = [sys.executable, "-m", "pip", "uninstall", "-y", distribution]
+    run(cmd, stdout = subprocess.DEVNULL, stderr = subprocess.DEVNULL)
 
 
 def install_kernel(
@@ -96,7 +99,7 @@ def install_kernel(
     distribution, check = KERNELS[name]
     url = resolve_wheel_url(name, env)
     torch_desc = f"torch {env.get('torch_version')}" if env else "this environment"
-    # A 404 is proof nothing is published; an unreachable check is not, and pip fails fast on a bad URL.
+    # A 404 is proof nothing is published; an unreachable check is not, and the installer fails fast on a bad URL.
     if url is None or exists(url) is False:
         print(f"Unsloth: no prebuilt {name} for {torch_desc}; using the torch fallback.")
         return 0
@@ -106,7 +109,16 @@ def install_kernel(
     if _loads(check, run):
         print(f"Unsloth: {name} already installed and loads.")
         return 0
-    result = _pip(["install", "--no-deps", "--force-reinstall", url], run)
+    # uv, else pip, always --no-deps: the resident torch is never touched.
+    attempts = install_wheel(
+        url,
+        python_executable = sys.executable,
+        use_uv = True,
+        uv_needs_system = _outside_venv(),
+        reinstall = True,
+        run = run,
+    )
+    result = attempts[-1][1]
     if result.returncode != 0:
         print(
             f"Unsloth: installing {name} from {url} failed; using the torch fallback.\n{result.stdout[-2000:]}"
@@ -114,7 +126,7 @@ def install_kernel(
         return 1
     if not _loads(check, run):
         # A wheel that imports but whose extension cannot load would be picked up and crash later.
-        _pip(["uninstall", "-y", distribution], run)
+        _uninstall(distribution, run)
         print(
             f"Unsloth: {name} from {url} does not load with {torch_desc}; removed it, using the torch fallback."
         )

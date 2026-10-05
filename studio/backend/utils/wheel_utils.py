@@ -391,6 +391,7 @@ def install_wheel(
     python_executable: str,
     use_uv: bool,
     uv_needs_system: bool = False,
+    reinstall: bool = False,
     run: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run,
 ) -> list[tuple[str, subprocess.CompletedProcess[str]]]:
     attempts: list[tuple[str, subprocess.CompletedProcess[str]]] = []
@@ -399,7 +400,11 @@ def install_wheel(
         uv_cmd = ["uv", "pip", "install"]
         if uv_needs_system:
             uv_cmd.append("--system")
-        uv_cmd.extend(["--python", python_executable, "--no-deps", wheel_url])
+        uv_cmd.extend(["--python", python_executable, "--no-deps"])
+        # Without it an installed same-version build (another CUDA, or a broken copy) is kept.
+        if reinstall:
+            uv_cmd.append("--reinstall")
+        uv_cmd.append(wheel_url)
         result = run(
             uv_cmd,
             stdout = subprocess.PIPE,
@@ -413,7 +418,10 @@ def install_wheel(
         if result.returncode == 0:
             return attempts
 
-    pip_cmd = [python_executable, "-m", "pip", "install", "--no-deps", wheel_url]
+    pip_cmd = [python_executable, "-m", "pip", "install", "--no-deps"]
+    if reinstall:
+        pip_cmd.append("--force-reinstall")
+    pip_cmd.append(wheel_url)
     result = run(
         pip_cmd,
         stdout = subprocess.PIPE,
