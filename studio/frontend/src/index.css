@@ -2568,8 +2568,8 @@ html[data-chat-font] .aui-root {
 		--input: color-mix(in oklab, var(--input-base), var(--contrast-target) var(--contrast-control-mix));
 	}
 
-	/* Settings columns on Images and Video: content dissolves at whichever edge it runs
-	   past, rather than being cut off. Same masks as the model picker list. */
+	/* Settings columns on Images, Video and Run settings: content dissolves at whichever
+	   edge it runs past, rather than being cut off. Same masks as the model picker list. */
 	.panel-scroll-fade.is-scrolled {
 		-webkit-mask-image: linear-gradient(to bottom, transparent 0, #000 16px);
 		mask-image: linear-gradient(to bottom, transparent 0, #000 16px);

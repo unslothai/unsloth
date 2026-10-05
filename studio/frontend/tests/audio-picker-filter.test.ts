@@ -18,10 +18,19 @@ const { audioCppModelSpeaks } = await import(
   "../src/features/audio/audio-cpp-catalog.ts"
 );
 
-type Workflow = "speak" | "clone" | "music" | "transcribe";
-const WORKFLOWS: Workflow[] = ["speak", "clone", "music", "transcribe"];
+type Workflow = "speak" | "clone" | "edit" | "convert" | "music" | "transcribe";
+const WORKFLOWS: Workflow[] = [
+  "speak",
+  "clone",
+  "edit",
+  "convert",
+  "music",
+  "transcribe",
+];
 
-function workflowsFor(row: Parameters<typeof audioRowMatchesWorkflow>[0]) {
+type Row = Parameters<typeof audioRowMatchesWorkflow>[0];
+
+function workflowsFor(row: Row) {
   return WORKFLOWS.filter((workflow) => audioRowMatchesWorkflow(row, workflow));
 }
 
@@ -74,6 +83,40 @@ test("a clone-only speech model lists only on Clone", () => {
       task: "text-to-speech",
     }),
     ["speak", "clone"],
+  );
+});
+
+test("voice conversion models list on Convert only; Chatterbox and Vevo2 on Clone and Convert", () => {
+  for (const [name, workflows] of [
+    ["RVC-GGUF", ["convert"]],
+    ["SeedVC-MLX-GGUF", ["convert"]],
+    ["MeanVC2-GGUF", ["convert"]],
+    ["Chatterbox-GGUF", ["clone", "convert"]],
+    ["Vevo2-GGUF", ["clone", "edit", "convert"]],
+  ] as const) {
+    const id = `audio-cpp/audio.cpp-gguf/${name}`;
+    assert.deepEqual(
+      workflowsFor({ id, task: "text-to-speech", audioType: "audiocpp_tts" }),
+      workflows,
+      name,
+    );
+    assert.equal(audioCppModelSpeaks(id), false, name);
+  }
+  assert.deepEqual(
+    workflowsFor({
+      id: "audio-cpp/audio.cpp-gguf/RVC-GGUF",
+      task: "text-to-speech",
+      audioWorkflows: ["convert"],
+    }),
+    ["convert"],
+  );
+  assert.deepEqual(
+    workflowsFor({
+      id: "audio-cpp/audio.cpp-gguf/Kokoro-82M-GGUF",
+      task: "text-to-speech",
+      audioType: "audiocpp_tts",
+    }),
+    ["speak"],
   );
 });
 
@@ -168,6 +211,25 @@ test("an undefined rowFilter leaves the picker rows untouched", () => {
     "features/model-picker/components/model-selector.tsx",
   );
   assert.match(selector, /rowFilter=\{rowFilter\}/);
+});
+
+test("a speech editing model lists on Edit beside its other pages", () => {
+  const rows: [string, Partial<Row>, Workflow[]][] = [
+    [
+      "DotTTS-Edit-GGUF",
+      { audioWorkflows: ["speak", "edit"] },
+      ["speak", "edit"],
+    ],
+    // DotTTS's other packages do not edit.
+    ["DotTTS-MF-GGUF", { audioWorkflows: ["speak"] }, ["speak"]],
+    // Without the backend's list, the catalog seed decides.
+    ["Vevo2-GGUF", { audioType: "audiocpp_tts" }, ["clone", "edit", "convert"]],
+  ];
+  for (const [folder, row, workflows] of rows) {
+    const id = `audio-cpp/audio.cpp-gguf/${folder}`;
+    const got = workflowsFor({ id, task: "text-to-speech", ...row });
+    assert.deepEqual(got, workflows, folder);
+  }
 });
 
 test("typed Hub search results are scoped to the page too", () => {

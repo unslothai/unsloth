@@ -842,3 +842,19 @@ test("a run that loads a model first says so before it starts", () => {
   assert.equal(modelLoadNote({ model: "Kokoro", page: "Speak", seconds: 0.2 }), "Loads Kokoro for Speak, about 1 s");
   assert.equal(modelLoadNote({ model: null, page: "Speak", seconds: 5 }), null);
 });
+
+test("paging for a visible row skips hidden edit originals, like the list does", () => {
+  const gallery = readSrc("features/audio/hooks/use-audio-gallery.tsx");
+  assert.match(
+    gallery,
+    /const countVisible = \(\) =>\s*galleryCache\.clips\.filter\(\s*\(clip\) => clipWorkflow\(clip\) === workflow && clip\.role !== "source",\s*\)\.length;/,
+  );
+});
+
+test("trained speech checkpoints are offered only on Speak and Music", () => {
+  const host = readSrc("features/audio/audio-page.tsx");
+  assert.match(
+    host,
+    /ttsWorkflow !== "speak" && ttsWorkflow !== "music"\s*\?\s*\[\]\s*:\s*trainedTtsModels\.filter\(/,
+  );
+});

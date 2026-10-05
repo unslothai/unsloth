@@ -668,7 +668,7 @@ def resolve_auto_block_swap(
     placement = "tail",
     **config_kwargs,
 ):
-    """`from_pretrained(block_swap_layers = "auto")`: `(layers, device_map, embedding)`, the trailing
+    """`from_pretrained(offload_layers = "auto")`: `(layers, device_map, embedding)`, the trailing
     decoder layers to build in host RAM so the rest plus a training step's reserve fits, the map to load
     the rest with, and whether to move the input embedding to host RAM first (one GPU, when
     `offload_embedding` allows; None when nothing was planned). 0, the map unchanged and no move when
@@ -676,7 +676,7 @@ def resolve_auto_block_swap(
     card through the multi-GPU planner; anything else sizes the one card the load uses."""
 
     def _none(reason):
-        print(f"Unsloth: block_swap_layers = 'auto' loads every layer onto the GPU: {reason}.")
+        print(f"Unsloth: offload_layers = 'auto' loads every layer onto the GPU: {reason}.")
         return 0, device_map, None
 
     if skip_reason is not None:
@@ -752,7 +752,7 @@ def resolve_auto_block_swap(
     )
     print(
         "Unsloth: "
-        + plan.describe().splitlines()[0].replace("block swap:", "block_swap_layers = 'auto':")
+        + plan.describe().splitlines()[0].replace("block swap:", "offload_layers = 'auto':")
     )
     embedding = bool(getattr(plan, "offload_embedding", False))
     if not plan.layers:

@@ -8,15 +8,25 @@ export const AUDIO_CPP_REPO = "audio-cpp/audio.cpp-gguf";
 
 export const AUDIO_CPP_TTS_AUDIO_TYPE = "audiocpp_tts";
 export const AUDIO_CPP_MUSIC_AUDIO_TYPE = "audiocpp_music";
+/** Source separation (HTDemucs, RoFormers). Mirrors AUDIO_CPP_SEP_AUDIO_TYPE in audio_cpp_models.py. */
+export const AUDIO_CPP_SEP_AUDIO_TYPE = "audiocpp_sep";
 export const AUDIO_CPP_AUDIO_TYPES: ReadonlySet<string> = new Set([
   AUDIO_CPP_TTS_AUDIO_TYPE,
   AUDIO_CPP_MUSIC_AUDIO_TYPE,
+  AUDIO_CPP_SEP_AUDIO_TYPE,
 ]);
 
-export type AudioCppTask = "tts" | "music" | "asr";
+export type AudioCppTask = "tts" | "music" | "asr" | "sep";
 
 /** Mirrors AudioWorkflowId; spelled out to keep this file import-free. */
-export type AudioCppWorkflow = "speak" | "clone" | "music" | "transcribe";
+export type AudioCppWorkflow =
+  | "speak"
+  | "clone"
+  | "edit"
+  | "convert"
+  | "music"
+  | "separate"
+  | "transcribe";
 
 export interface AudioCppModel {
   /** Hub repo id, or `${AUDIO_CPP_REPO}/<folder>` for a package in the shared repo. */
@@ -27,6 +37,7 @@ export interface AudioCppModel {
   languages?: readonly string[];
   /** Phonemizes with eSpeak-ng, which upstream runtime bundles lack (backend needs_espeak). */
   needsEspeak?: boolean;
+  stems?: readonly string[];
 }
 
 /** The `audio_cpp_runtime` block of /api/inference/audio/stt/status. */
@@ -53,17 +64,47 @@ export const AUDIO_CPP_MODELS: readonly AudioCppModel[] = [
   { id: folder("Chatterbox-Turbo-GGUF"), task: "tts" },
   { id: folder("VoxCPM2-GGUF"), task: "tts", workflows: ["speak", "clone"] },
   { id: folder("Qwen3-TTS-12Hz-0.6B-Base-GGUF"), task: "tts", workflows: ["clone"] },
-  { id: folder("Chatterbox-GGUF"), task: "tts", workflows: ["clone"] },
+  { id: folder("Chatterbox-GGUF"), task: "tts", workflows: ["clone", "convert"] },
   { id: folder("IndexTTS2-GGUF"), task: "tts", workflows: ["clone"] },
   { id: folder("CosyVoice3-GGUF"), task: "tts", workflows: ["clone"] },
   { id: folder("Qwen3-TTS-12Hz-1.7B-CustomVoice-GGUF"), task: "tts" },
   { id: folder("Qwen3-TTS-12Hz-1.7B-VoiceDesign-GGUF"), task: "tts" },
+  { id: folder("DotTTS-Edit-GGUF"), task: "tts", workflows: ["speak", "edit"] },
+  { id: folder("Vevo2-GGUF"), task: "tts", workflows: ["clone", "edit", "convert"] },
+  { id: folder("FireRedAudio-GGUF"), task: "tts", workflows: ["clone", "edit"] },
+  { id: folder("SeedVC-MLX-GGUF"), task: "tts", workflows: ["convert"] },
+  { id: folder("RVC-GGUF"), task: "tts", workflows: ["convert"] },
+  { id: folder("MeanVC2-GGUF"), task: "tts", workflows: ["convert"] },
   { id: "audio-cpp/MiniMax-Music3-GGUF", task: "music" },
   { id: "audio-cpp/Yue2-3B-GGUF", task: "music" },
   { id: folder("ACE-Step1.5-GGUF"), task: "music" },
   { id: folder("Stable-Audio-3-Small-Music-GGUF"), task: "music" },
   { id: folder("Stable-Audio-3-Small-SFX-GGUF"), task: "music" },
   { id: folder("ControlFoley-GGUF"), task: "music" },
+  {
+    id: folder("HTDemucs-GGUF"),
+    task: "sep",
+    workflows: ["separate"],
+    stems: ["vocals", "drums", "bass", "other"],
+  },
+  {
+    id: folder("BS-RoFormer-ep368-GGUF"),
+    task: "sep",
+    workflows: ["separate"],
+    stems: ["vocals", "instrumental"],
+  },
+  {
+    id: folder("HTDemucs-6stems-GGUF"),
+    task: "sep",
+    workflows: ["separate"],
+    stems: ["vocals", "drums", "bass", "guitar", "piano", "other"],
+  },
+  {
+    id: folder("Mel-Band-RoFormer-GGUF"),
+    task: "sep",
+    workflows: ["separate"],
+    stems: ["vocals", "instrumental"],
+  },
   { id: folder("Qwen3-ASR-0.6B-GGUF"), task: "asr" },
   { id: folder("Qwen3-ASR-1.7B-GGUF"), task: "asr" },
   { id: folder("Parakeet-TDT-0.6B-v3-GGUF"), task: "asr" },
@@ -185,6 +226,7 @@ const TASK_WORKFLOW: Record<AudioCppTask, AudioCppWorkflow> = {
   tts: "speak",
   music: "music",
   asr: "transcribe",
+  sep: "separate",
 };
 
 export function audioCppWorkflowsFor(

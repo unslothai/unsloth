@@ -109,7 +109,6 @@ import {
   Folder01Icon,
   Folder02Icon,
   FlimSlateIcon,
-  InternetIcon,
   HelpCircleIcon,
   Image03Icon,
   InformationCircleIcon,
@@ -136,6 +135,7 @@ import {
   LeftToRightListBulletIcon,
   ArrowUpDownIcon,
   LayerIcon,
+  ApiIcon,
 } from "@hugeicons/core-free-icons";
 import {
   MessageCircleIcon,
@@ -2853,7 +2853,7 @@ export function AppSidebar() {
     },
     // The monitor page, not the API keys dialog the profile menu opens.
     api: {
-      icon: InternetIcon,
+      icon: ApiIcon,
       label: t("shell.navigation.api"),
       active: pathname === "/api-monitor" || pathname.startsWith("/api-monitor/"),
       onClick: () => {
@@ -5234,7 +5234,7 @@ export function AppSidebar() {
                         className="inline-flex size-[calc(30px*var(--ui-space-scale,1))] cursor-pointer items-center justify-center rounded-[10px] text-nav-icon-idle dark:text-nav-fg-muted transition-colors hover:bg-nav-surface-hover hover:text-black dark:hover:text-white focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                         aria-label={t("shell.aria.closeSidebar")}
                       >
-                        <HugeiconsIcon icon={LayoutAlignLeftIcon} strokeWidth={1.75} className="size-icon" />
+                        <HugeiconsIcon icon={PanelLeftIcon} strokeWidth={1.75} className="size-icon" />
                       </button>
                     </TooltipPrimitive.Trigger>
                     <TooltipContent
@@ -5249,7 +5249,8 @@ export function AppSidebar() {
               </div>
             </div>
             {!isMobile && (!usesDesktopTitlebar || usesNativeMacTitlebar) && (
-              <div className="relative z-10 hidden group-data-[collapsible=icon]:flex h-[calc(33px*var(--ui-space-scale,1))] items-center justify-center w-full">
+              // Level with the expanded header's 30px close button, so the toggle doesn't jump.
+              <div className="relative z-10 hidden group-data-[collapsible=icon]:flex h-[calc(33px*var(--ui-space-scale,1))] items-start justify-center w-full pt-[calc(1px*var(--ui-space-scale,1))]">
                 <Tooltip>
                   <TooltipPrimitive.Trigger asChild>
                     <button
@@ -5930,7 +5931,7 @@ export function AppSidebar() {
                         key={item.id}
                         onSelect={() => useSettingsDialogStore.getState().openDialog("api-keys")}
                       >
-                        <HugeiconsIcon icon={InternetIcon} strokeWidth={1.75} className="size-[calc(18px*var(--ui-space-scale,1))]" />
+                        <HugeiconsIcon icon={ApiIcon} strokeWidth={1.75} className="size-[calc(18px*var(--ui-space-scale,1))]" />
                         <span>{t("shell.navigation.api")}</span>
                       </DropdownMenuItem>
                     );

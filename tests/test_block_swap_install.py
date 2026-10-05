@@ -190,7 +190,7 @@ def test_trim_refuses_what_install_refuses():
 
 
 def _refusals(fn, needle):
-    """Lines of `if <needle ...>: block_swap_layers = refuse_block_swap_load(...)` in `fn`."""
+    """Lines of `if <needle ...>: offload_layers = refuse_block_swap_load(...)` in `fn`."""
     return [
         n.lineno
         for n in ast.walk(fn)
@@ -210,13 +210,13 @@ def _peft_signature_and_calls(path):
 
 
 @pytest.mark.parametrize("path", ["llama.py", "vision.py"])
-def test_block_swap_layers_is_last_so_positional_callers_keep_their_slots(path):
+def test_offload_layers_is_last_so_positional_callers_keep_their_slots(path):
     fn = _peft_signature_and_calls(path)
-    assert [a.arg for a in fn.args.args[-2:]] == ["block_swap_layers", "checkpoint_skip_layers"]
+    assert [a.arg for a in fn.args.args[-2:]] == ["offload_layers", "checkpoint_skip_layers"]
     assert fn.args.kwarg is not None
 
 
-def test_new_model_route_forwards_block_swap_layers():
+def test_new_model_route_forwards_offload_layers():
     fn = _peft_signature_and_calls("llama.py")
     forwarded = [
         call
@@ -228,7 +228,7 @@ def test_new_model_route_forwards_block_swap_layers():
     ]
     assert forwarded, "llama get_peft_model no longer delegates to FastBaseModel"
     for call in forwarded:
-        assert {"block_swap_layers", "checkpoint_skip_layers"} <= {k.arg for k in call.keywords}
+        assert {"offload_layers", "checkpoint_skip_layers"} <= {k.arg for k in call.keywords}
 
 
 @pytest.mark.parametrize("path", ["llama.py", "gemma.py", "gemma2.py"])
@@ -676,7 +676,7 @@ def test_load_time_swappers_allocate_the_planned_prefetch_depth():
     assert built == [1] and ns["planned_prefetch_depth"](None) == 2
     # Both load paths hand the planner's depth to the swapper they build.
     for path, call in (
-        ("llama.py", "attach_block_swap_layers"),
+        ("llama.py", "attach_offload_layers"),
         ("vision.py", "finish_block_swap_load"),
     ):
         src = open(os.path.join(HERE, "unsloth", "models", path), encoding = "utf-8").read()
@@ -688,3 +688,23 @@ def test_load_time_swappers_allocate_the_planned_prefetch_depth():
         assert "planned_prefetch_depth(device_map_planner_kwargs)" in ast.get_source_segment(
             src, node
         )
+
+
+def test_block_swap_layers_still_works_as_the_old_name_of_offload_layers():
+    mod = ast.parse(open(UTILS, encoding = "utf-8").read())
+    fn = next(
+        n for n in mod.body if isinstance(n, ast.FunctionDef) and n.name == "legacy_offload_layers"
+    )
+    ns = {}
+    exec(compile(ast.Module(body = [fn], type_ignores = []), UTILS, "exec"), ns)
+    legacy = ns["legacy_offload_layers"]
+    kwargs = {"block_swap_layers": "auto"}
+    assert legacy(kwargs, None) == "auto" and kwargs == {}
+    # The new name wins whenever it was given, an explicit 0 included.
+    assert legacy({"block_swap_layers": 4}, 2) == 2
+    assert legacy({"block_swap_layers": 4}, 0) == 0
+    assert legacy({}, None) == 0 and legacy({}, 3) == 3
+    # Every entry point maps the old name before reading the new one.
+    for path, count in (("llama.py", 2), ("vision.py", 2)):
+        src = open(os.path.join(HERE, "unsloth", "models", path), encoding = "utf-8").read()
+        assert src.count("legacy_offload_layers(kwargs, ") == count, path
