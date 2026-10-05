@@ -2248,6 +2248,8 @@ export const ja = {
         modelMultilingual: "多言語",
         modelEnglish: "英語",
         modelTypedDecisions: "型付き判定",
+        modelClefFlash: "Clef-flash",
+        modelClef: "Clef",
         recommended: "推奨",
         device: "実行先",
         deviceDescription: "GPU の方が高速ですが、再起動するまでメモリを確保し続けます。",
@@ -2263,6 +2265,7 @@ export const ja = {
         loadedOn: "{device} に読み込み済み",
         download: "ダウンロード",
         downloadConfirmTitle: "Laya {model} をダウンロードしますか？",
+        downloadConfirmTitleModel: "{model} をダウンロードしますか？",
         downloadConfirmBody:
           "Decision API がリクエストに応答するにはこのモデルが必要です。約 {size}、Hugging Face キャッシュに一度だけダウンロードされます。",
         unload: "アンロード",

@@ -42,6 +42,7 @@ const NON_PERSISTED_STATE_KEYS: ReadonlySet<keyof TrainingConfigState> =
     "trainOnCompletionsDefaultPendingFor",
     "maxPositionEmbeddings",
     "decisionCheckpoints",
+    "decisionLayout",
     "s3Config",
     "wandbToken",
   ]);

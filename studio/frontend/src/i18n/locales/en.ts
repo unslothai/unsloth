@@ -2312,6 +2312,8 @@ export const en = {
         modelMultilingual: "Multilingual",
         modelEnglish: "English",
         modelTypedDecisions: "Typed decisions",
+        modelClefFlash: "Clef-flash",
+        modelClef: "Clef",
         recommended: "Recommended",
         device: "Run on",
         deviceDescription: "GPU answers faster, but keeps its memory reserved until restart.",
@@ -2327,6 +2329,7 @@ export const en = {
         loadedOn: "Loaded on {device}",
         download: "Download",
         downloadConfirmTitle: "Download Laya {model}?",
+        downloadConfirmTitleModel: "Download {model}?",
         downloadConfirmBody:
           "The Decision API needs this model to answer requests. About {size}, fetched once into your Hugging Face cache.",
         unload: "Unload",

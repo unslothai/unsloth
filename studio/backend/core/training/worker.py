@@ -3585,7 +3585,13 @@ def _download_decision_checkpoint(event_queue: Any, config: dict) -> None:
     )
     try:
         laya_runtime._checkpoint_dir(
-            Checkpoint("base", model_name, config.get("model_subfolder") or None, "")
+            Checkpoint(
+                "base",
+                model_name,
+                config.get("model_subfolder") or None,
+                "",
+                layout = config.get("decision_layout") or "laya",
+            )
         )
     except Exception as exc:
         # The trainer's own load reports it.
@@ -3779,8 +3785,9 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
     #    lazy_load it without calling is_causal_conv1d_available.
     # 2) mamba-ssm + flash-attn keep their substring / size gates.
     # 3) FLA gated-delta kernels: vendored by unsloth_zoo, nothing to install.
-    # Decision models are encoders: none of these apply, and they ignore max_seq_length.
-    if not config.get("is_decision"):
+    # Laya decision models are encoders: none of these apply, and they ignore max_seq_length.
+    # Clef is a Qwen3.5 backbone, so it takes the same fast paths as a Qwen3.5 chat run.
+    if not config.get("is_decision") or config.get("decision_layout") == "clef":
         try:
             from utils.ssm_runtime import resolved_model_wants_causal_conv1d
 

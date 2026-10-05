@@ -283,6 +283,7 @@ def _run(event_queue: Any, stop_queue: Any, config: dict, output_dir: str) -> No
 
     model_name = config["model_name"]
     subfolder = config.get("model_subfolder") or None
+    clef = config.get("decision_layout") == "clef"
     hf_token = _worker_hf_token(config)
     if hf_token:
         os.environ["HF_TOKEN"] = hf_token
@@ -292,18 +293,30 @@ def _run(event_queue: Any, stop_queue: Any, config: dict, output_dir: str) -> No
 
     status("Loading decision model...")
     try:
-        root = laya_runtime._checkpoint_dir(Checkpoint("base", model_name, subfolder, ""))
+        root = laya_runtime._checkpoint_dir(
+            Checkpoint("base", model_name, subfolder, "", layout = "clef" if clef else "laya")
+        )
     except LocalEntryNotFoundError as exc:
         send("error", error = f"Could not download {model_name}: {exc}", stack = "")
         return
     except FileNotFoundError as exc:
-        send("error", error = f"Not a Laya decision checkpoint: {exc}", stack = "")
+        kind = "Clef" if clef else "Laya"
+        send("error", error = f"Not a {kind} decision checkpoint: {exc}", stack = "")
         return
     model, tokenizer = FastDecisionModel.from_pretrained(
         str(root),
         subfolder = subfolder,
         full_finetuning = not use_lora,
         use_gradient_checkpointing = gradient_checkpointing,
+        # Clef trains through Unsloth's Qwen3.5 loader, in 4-bit for QLoRA; Laya is always 16-bit.
+        **(
+            {
+                "load_in_4bit": use_lora and bool(config.get("load_in_4bit")),
+                "max_seq_length": config.get("max_seq_length") or None,
+            }
+            if clef
+            else {}
+        ),
     )
     if use_lora:
         model = FastDecisionModel.get_peft_model(
@@ -357,7 +370,8 @@ def _run(event_queue: Any, stop_queue: Any, config: dict, output_dir: str) -> No
     arguments = {
         "output_dir": output_dir,
         "per_device_train_batch_size": batch_size,
-        "per_device_eval_batch_size": 16,
+        # A Clef record is every question of a row over a 9B-27B backbone, so it evaluates at the train batch.
+        "per_device_eval_batch_size": batch_size if clef else 16,
         "gradient_accumulation_steps": accumulation,
         "learning_rate": float(config["learning_rate"]),
         "weight_decay": config["weight_decay"],

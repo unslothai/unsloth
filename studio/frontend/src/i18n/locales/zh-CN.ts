@@ -2228,6 +2228,8 @@ export const zhCN = {
         modelMultilingual: "多语言",
         modelEnglish: "英语",
         modelTypedDecisions: "类型化决策",
+        modelClefFlash: "Clef-flash",
+        modelClef: "Clef",
         recommended: "推荐",
         device: "运行于",
         deviceDescription: "GPU 响应更快，但在重启前会一直占用显存。",
@@ -2243,6 +2245,7 @@ export const zhCN = {
         loadedOn: "已加载到 {device}",
         download: "下载",
         downloadConfirmTitle: "下载 Laya {model}？",
+        downloadConfirmTitleModel: "下载 {model}？",
         downloadConfirmBody:
           "决策 API 需要此模型来响应请求。约 {size}，只需下载一次到你的 Hugging Face 缓存。",
         unload: "卸载",

@@ -1477,7 +1477,7 @@ def _systemone_response(request: Request) -> SystemOneSettingsResponse:
         fine_tunes = catalog.fine_tunes()
     else:
         # Other accounts see only the configured model, never the owner's other output folders.
-        fine_tunes = [configured] if configured.name.startswith(catalog.FINE_TUNE_PREFIX) else []
+        fine_tunes = [configured] if catalog.is_fine_tune_name(configured.name) else []
         if runtime["loaded_model"] != model:
             runtime["loaded_model"] = runtime["device"] = None
         if runtime["loading_model"] != model:

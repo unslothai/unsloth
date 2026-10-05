@@ -2294,6 +2294,8 @@ export const ptBR = {
         modelMultilingual: "Multilíngue",
         modelEnglish: "Inglês",
         modelTypedDecisions: "Decisões tipadas",
+        modelClefFlash: "Clef-flash",
+        modelClef: "Clef",
         recommended: "Recomendado",
         device: "Executar em",
         deviceDescription: "A GPU responde mais rápido, mas mantém a memória reservada até reiniciar.",
@@ -2309,6 +2311,7 @@ export const ptBR = {
         loadedOn: "Carregado em {device}",
         download: "Baixar",
         downloadConfirmTitle: "Baixar Laya {model}?",
+        downloadConfirmTitleModel: "Baixar {model}?",
         downloadConfirmBody:
           "A API de decisão precisa deste modelo para responder às solicitações. Cerca de {size}, baixado uma única vez no seu cache do Hugging Face.",
         unload: "Descarregar",

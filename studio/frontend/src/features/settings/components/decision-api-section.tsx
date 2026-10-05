@@ -51,7 +51,10 @@ import {
   updateSystemOneSettings,
   validateSystemOneSettings,
 } from "../api/systemone";
-import { DECISION_MODEL_LABELS } from "../lib/decision-model-labels";
+import {
+  DECISION_MODEL_LABELS,
+  isClefDecisionModel,
+} from "../lib/decision-model-labels";
 import { SettingsRow } from "./settings-row";
 
 const DOWNLOAD_SCOPE = "systemone";
@@ -609,9 +612,12 @@ export function DecisionApiSection(): ReactElement | null {
               <HugeiconsIcon icon={TaskDone01Icon} strokeWidth={1.75} />
             </AlertDialogMedia>
             <AlertDialogTitle>
-              {t("settings.apiKeys.decisionApi.downloadConfirmTitle", {
-                model: modelLabel(confirm?.model ?? settings.model),
-              })}
+              {t(
+                isClefDecisionModel(confirm?.model ?? settings.model)
+                  ? "settings.apiKeys.decisionApi.downloadConfirmTitleModel"
+                  : "settings.apiKeys.decisionApi.downloadConfirmTitle",
+                { model: modelLabel(confirm?.model ?? settings.model) },
+              )}
             </AlertDialogTitle>
             <AlertDialogDescription>
               {t("settings.apiKeys.decisionApi.downloadConfirmBody", {

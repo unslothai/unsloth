@@ -2278,6 +2278,8 @@ export const ar = {
         modelMultilingual: "متعدد اللغات",
         modelEnglish: "إنجليزي",
         modelTypedDecisions: "قرارات مُصنَّفة",
+        modelClefFlash: "Clef-flash",
+        modelClef: "Clef",
         recommended: "موصى به",
         device: "التشغيل على",
         deviceDescription: "وحدة GPU أسرع في الإجابة، لكنها تحتفظ بذاكرتها محجوزة حتى إعادة التشغيل.",
@@ -2293,6 +2295,7 @@ export const ar = {
         loadedOn: "مُحمَّل على {device}",
         download: "تنزيل",
         downloadConfirmTitle: "هل تريد تنزيل Laya {model}؟",
+        downloadConfirmTitleModel: "هل تريد تنزيل {model}؟",
         downloadConfirmBody:
           "تحتاج واجهة API للقرارات إلى هذا النموذج للرد على الطلبات. حجمه نحو {size}، ويُنزَّل مرة واحدة إلى ذاكرة Hugging Face المؤقتة.",
         unload: "إلغاء التحميل",

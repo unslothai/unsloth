@@ -91,7 +91,10 @@ class ModelDetails(BaseModel):
     is_embedding: bool = Field(
         False, description = "Whether model is an embedding/sentence-transformer model"
     )
-    is_decision: bool = Field(False, description = "Whether model is a Laya decision model")
+    is_decision: bool = Field(False, description = "Whether model is a decision model")
+    decision_layout: Optional[Literal["laya", "clef"]] = Field(
+        None, description = "Checkpoint layout of a decision model: Laya or Cloudflare Clef"
+    )
     decision_checkpoints: Optional[List[Dict[str, Any]]] = Field(
         None, description = "Checkpoints a decision model repo offers for training"
     )

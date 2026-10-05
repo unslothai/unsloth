@@ -2284,6 +2284,8 @@ export const hi = {
         modelMultilingual: "बहुभाषी",
         modelEnglish: "अंग्रेज़ी",
         modelTypedDecisions: "टाइप्ड निर्णय",
+        modelClefFlash: "Clef-flash",
+        modelClef: "Clef",
         recommended: "सुझाया गया",
         device: "यहाँ चलाएँ",
         deviceDescription: "GPU तेज़ जवाब देता है, लेकिन रीस्टार्ट होने तक अपनी मेमोरी आरक्षित रखता है।",
@@ -2299,6 +2301,7 @@ export const hi = {
         loadedOn: "{device} पर लोड हुआ",
         download: "डाउनलोड करें",
         downloadConfirmTitle: "Laya {model} डाउनलोड करें?",
+        downloadConfirmTitleModel: "{model} डाउनलोड करें?",
         downloadConfirmBody:
           "Decision API को अनुरोधों का जवाब देने के लिए इस मॉडल की ज़रूरत है। लगभग {size}, आपके Hugging Face कैश में एक बार डाउनलोड होता है।",
         unload: "अनलोड करें",

@@ -81,6 +81,7 @@ export interface ModelConfigResponse {
   is_embedding?: boolean;
   is_decision?: boolean;
   decision_checkpoints?: DecisionCheckpoint[] | null;
+  decision_layout?: "laya" | "clef" | null;
   is_audio: boolean;
   // False when the repo's tokenizer_config.json was unreadable (gated, offline,
   // upstream error), so is_audio false means unknown rather than "not audio".

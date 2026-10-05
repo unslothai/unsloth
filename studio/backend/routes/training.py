@@ -1049,7 +1049,13 @@ def _reject_untrainable_model_request(
 
             # Laya caches only the files a checkpoint loads, which the snapshot lookup above misses.
             if laya_runtime.is_cached(
-                Checkpoint("base", request.model_name, request.model_subfolder, "")
+                Checkpoint(
+                    "base",
+                    request.model_name,
+                    request.model_subfolder,
+                    "",
+                    layout = request.decision_layout or "laya",
+                )
             ):
                 refuse_unauthorized_cache(lambda: True)
                 return _ModelPreflightResult(model_name, model_local_path, None)
@@ -1115,7 +1121,7 @@ def _reject_untrainable_model_request(
                     raise _training_start_error(
                         400,
                         "training_remote_model_not_decision",
-                        f"{request.model_name} is not a Laya decision model.",
+                        f"{request.model_name} is not a decision model (Laya or Clef).",
                     )
                 return _ModelPreflightResult(model_name, model_local_path, cached_model_pin)
             if remote_format == "gguf":
@@ -1135,8 +1141,9 @@ def _reject_untrainable_model_request(
             raise _training_start_error(
                 400,
                 "training_local_model_not_decision",
-                "The selected model is not a Laya decision checkpoint: it needs "
-                "rl_agent_config.json, model.safetensors, encoder/ and tokenizer/.",
+                "The selected model is not a decision checkpoint: Laya needs "
+                "rl_agent_config.json, model.safetensors, encoder/ and tokenizer/, and Clef "
+                "needs config.json, joint_head.safetensors and joint_head_config.json.",
             )
         return _ModelPreflightResult(model_name, model_local_path, None)
     has_trainable_weights = _has_trainable_local_weights(path, request.model_name)
@@ -1212,11 +1219,13 @@ _CHECKPOINT_SUBFOLDER = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
 _DECISION_FULL_FINETUNING_LR = "2.5e-5"
 
 
-def _validate_decision_request(request: TrainingStartRequest) -> None:
+def _validate_decision_request(request: TrainingStartRequest, via_api_key: bool = False) -> None:
+    request.decision_layout = None
     if not request.is_decision:
         return
-    from core.systemone.catalog import CHECKPOINTS, LAYA_REPO
+    from core.systemone.catalog import CHECKPOINTS, CLEF_DEFAULTS_REPO, LAYA_REPO
     from utils.account_context import is_owner_context
+    from utils.models.model_config import decision_layout
 
     if not is_owner_context():
         raise HTTPException(
@@ -1247,6 +1256,34 @@ def _validate_decision_request(request: TrainingStartRequest) -> None:
             detail = "dataset_streaming is not supported for decision model training.",
         )
     unset = TrainingStartRequest.model_fields.keys() - request.model_fields_set
+    # Unknown (offline, no access) stays Laya: the preflight then names what is missing.
+    layout = decision_layout(
+        request.model_name,
+        hf_token_arg(request.hf_token, allow_ambient_token = via_api_key is not True),
+        subfolder = request.model_subfolder,
+    )
+    if layout == "clef":
+        request.decision_layout = "clef"
+        if request.model_subfolder is not None:
+            raise HTTPException(
+                status_code = 400,
+                detail = "Clef repos hold one checkpoint, so model_subfolder must be left out.",
+            )
+        if request.use_dora or request.use_loftq:
+            raise HTTPException(
+                status_code = 400,
+                detail = "Decision models train with plain LoRA, so DoRA and LoftQ are not "
+                "available for them.",
+            )
+        defaults = load_model_defaults(request.model_name)
+        if defaults == load_model_defaults("default"):
+            defaults = load_model_defaults(CLEF_DEFAULTS_REPO)
+        for section in ("training", "lora", "logging"):
+            for key, value in (defaults.get(section) or {}).items():
+                if key in unset:
+                    setattr(request, key, value)
+        return
+    request.decision_layout = "laya"
     if (
         request.training_type == "LoRA/QLoRA"
         and request.load_in_4bit
@@ -1560,7 +1597,7 @@ async def start_training(
     Initiates training in the background and returns immediately. Use /status
     to check progress.
     """
-    _validate_decision_request(request)
+    await asyncio.to_thread(_validate_decision_request, request, via_api_key)
     if managed_account():
         from utils.paths import tensorboard_root
 
@@ -1926,6 +1963,7 @@ async def start_training(
             "is_embedding": request.is_embedding,
             "is_decision": request.is_decision,
             "model_subfolder": request.model_subfolder,
+            "decision_layout": request.decision_layout,
             "enable_wandb": request.enable_wandb,
             "wandb_token": request.wandb_token or "",
             "wandb_project": request.wandb_project or "",

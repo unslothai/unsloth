@@ -111,9 +111,13 @@ def validate(
         if model_locked():
             raise ValueError(f"The Decision API model is set by {ENV_MODEL}.")
         connection = parse_connection(model)
+        tuned = None if model in CHECKPOINTS else fine_tune(model)
+        if tuned is not None:
+            # Stored under the prefix for the folder's layout, whichever one the caller used.
+            model = tuned.name
         if (
             model not in CHECKPOINTS
-            and fine_tune(model) is None
+            and tuned is None
             and not (
                 connection
                 and any(

@@ -140,6 +140,7 @@ function leaveDecisionWithoutDefaults(
     ...buildTrainingMethodPatch(generic, method),
     modelSubfolder: null,
     decisionCheckpoints: null,
+    decisionLayout: null,
     settingsBeforeDecision: null,
   };
 }
@@ -296,11 +297,16 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
               const method = get().trainingMethod;
               const methodWasEdited =
                 _trainingMethodEditGeneration !== trainingMethodEditGeneration;
+              // Clef has a Qwen3.5 backbone, so it takes QLoRA like a chat model; Laya is 16-bit only.
+              const isClef = modelDetails.decision_layout === "clef";
               const keepMethod =
                 method === "lora" ||
+                (isClef && method === "qlora") ||
                 (method === "full" && (!recipeChanged || methodWasEdited));
               set({
-                ...(keepMethod ? {} : buildTrainingMethodPatch(get(), "lora")),
+                ...(keepMethod
+                  ? {}
+                  : buildTrainingMethodPatch(get(), isClef ? "qlora" : "lora")),
                 settingsBeforeDecision: settingsBeforeDecision ?? {
                   trainingMethod: method,
                   datasetStreaming: get().datasetStreaming,
@@ -587,6 +593,9 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
               modelType: inferredModelType,
               modelSubfolder,
               decisionCheckpoints,
+              decisionLayout: isDecision
+                ? (modelDetails.decision_layout ?? "laya")
+                : null,
               isVisionModel: modelDetails.is_vision,
               isEmbeddingModel: isEmbedding,
               isAudioModel: isAudio,

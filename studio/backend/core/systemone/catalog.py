@@ -10,6 +10,8 @@ from dataclasses import dataclass
 from pathlib import Path
 
 LAYA_REPO = "convaiinnovations/laya"
+# Recipe for Clef folders that have no model defaults of their own (local copies, fine-tunes).
+CLEF_DEFAULTS_REPO = "Cloudflare/clef-flash"
 
 
 @dataclass(frozen = True)
@@ -19,6 +21,8 @@ class Checkpoint:
     subfolder: str | None
     description: str
     download_bytes: int = 0
+    # "laya" (rl_agent_config.json + encoder) or "clef" (Qwen3.5 backbone + joint schema head).
+    layout: str = "laya"
 
     @property
     def is_local(self) -> bool:
@@ -49,6 +53,22 @@ CHECKPOINTS = {
             "Laya English fine-tuned on four typed-decision workflows, 1024-token context.",
             846_195_716,
         ),
+        Checkpoint(
+            "clef-flash",
+            "Cloudflare/clef-flash",
+            None,
+            "Cloudflare Clef-flash on Qwen3.5 9B: fast multimodal decisions, needs a GPU.",
+            19_063_259_136,
+            "clef",
+        ),
+        Checkpoint(
+            "clef",
+            "Cloudflare/clef",
+            None,
+            "Cloudflare Clef on Qwen3.8 27B: the most accurate decisions, needs a large GPU.",
+            54_976_000_000,
+            "clef",
+        ),
     )
 }
 
@@ -57,6 +77,12 @@ DEFAULT_ALIASES = frozenset({"default", "laya", "jev-latest", "jev-preview", "op
 LOCAL_NAME = "laya-local"
 CONNECTION_PREFIX = "connection:"
 FINE_TUNE_PREFIX = "laya-ft:"
+CLEF_FINE_TUNE_PREFIX = "clef-ft:"
+FINE_TUNE_PREFIXES = (FINE_TUNE_PREFIX, CLEF_FINE_TUNE_PREFIX)
+
+
+def is_fine_tune_name(name: object) -> bool:
+    return isinstance(name, str) and name.startswith(FINE_TUNE_PREFIXES)
 
 
 def _owner_outputs() -> Path:
@@ -66,6 +92,8 @@ def _owner_outputs() -> Path:
 
 
 def _fine_tune_in(root: Path, folder_name: str) -> Checkpoint | None:
+    from utils.models.model_config import CLEF_MARKERS
+
     from .laya_runtime import is_cached
 
     # Dot folders include runs staged for deletion (.<name>.deleting-<id>).
@@ -78,16 +106,26 @@ def _fine_tune_in(root: Path, folder_name: str) -> Checkpoint | None:
     except (OSError, RuntimeError, ValueError):
         # A NUL byte or a symlink loop in a caller's name.
         return None
-    checkpoint = Checkpoint(
-        FINE_TUNE_PREFIX + folder_name, str(folder), None, "Laya fine-tuned in Studio."
-    )
+    if all((folder / name).is_file() for name in CLEF_MARKERS):
+        checkpoint = Checkpoint(
+            CLEF_FINE_TUNE_PREFIX + folder_name,
+            str(folder),
+            None,
+            "Clef fine-tuned in Studio.",
+            layout = "clef",
+        )
+    else:
+        checkpoint = Checkpoint(
+            FINE_TUNE_PREFIX + folder_name, str(folder), None, "Laya fine-tuned in Studio."
+        )
     return checkpoint if is_cached(checkpoint) else None
 
 
 def fine_tune(name: str) -> Checkpoint | None:
-    if not name.startswith(FINE_TUNE_PREFIX):
+    # Either prefix finds the run; the answer carries the one for the folder's layout.
+    if not is_fine_tune_name(name):
         return None
-    folder_name = name[len(FINE_TUNE_PREFIX) :]
+    folder_name = name.partition(":")[2]
     if "/" in folder_name or "\\" in folder_name:
         return None
     return _fine_tune_in(_owner_outputs(), folder_name)

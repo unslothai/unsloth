@@ -260,6 +260,7 @@ try:
         _is_imatrix_path,
         _is_mtp_drafter,
         is_audio_input_type,
+        decision_layout,
         is_decision_model,
     )
     from core.inference import get_inference_backend
@@ -293,6 +294,7 @@ except ImportError:
         _is_imatrix_path,
         _is_mtp_drafter,
         is_audio_input_type,
+        decision_layout,
         is_decision_model,
     )
     from core.inference import get_inference_backend
@@ -2355,11 +2357,18 @@ async def get_model_config(
                 local_files_only = probe_local_only,
             )
             is_embedding = is_embedding_model(inspection_target, hf_token = hf_token)
-            is_decision = is_decision_model(
+            layout = decision_layout(
                 model_name, hf_token = hf_token, local_files_only = probe_local_only
             )
+            is_decision = layout is not None
             decision_checkpoints = None
-            if is_decision:
+            if layout == "clef":
+                from core.systemone.catalog import CLEF_DEFAULTS_REPO
+
+                # Local Clef folders and Studio fine-tunes start from Clef-flash's recipe.
+                if config_dict == load_model_defaults("default"):
+                    config_dict = load_model_defaults(CLEF_DEFAULTS_REPO)
+            elif is_decision:
                 from core.systemone.catalog import CHECKPOINTS, LAYA_REPO
                 config_dict = load_model_defaults(LAYA_REPO)
                 decision_checkpoints = [
@@ -2415,6 +2424,7 @@ async def get_model_config(
                 is_vision = is_vision,
                 is_embedding = is_embedding,
                 is_decision = is_decision,
+                decision_layout = layout,
                 decision_checkpoints = decision_checkpoints,
                 is_lora = is_lora,
                 is_audio = audio_type is not None,

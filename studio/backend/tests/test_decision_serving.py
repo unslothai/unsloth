@@ -279,3 +279,71 @@ def test_the_environment_can_pin_a_fine_tune_or_a_folder(home, client, monkeypat
     assert client.get("/api/settings/systemone").json()["model"] == catalog.LOCAL_NAME
     assert _post(client, catalog.LOCAL_NAME).json()["model"] == catalog.LOCAL_NAME
     assert _post(client, served).json()["model"] == served
+
+
+def _clef_fine_tune(outputs, folder):
+    path = outputs / folder
+    path.mkdir(parents = True)
+    for name in ("config.json", "joint_head.safetensors", "joint_head_config.json"):
+        (path / name).write_text("{}", encoding = "utf-8")
+    (path / "model.safetensors").write_bytes(b"")
+    return catalog.CLEF_FINE_TUNE_PREFIX + folder
+
+
+@pytest.fixture
+def clef(home, monkeypatch):
+    from core.systemone import clef_runtime
+
+    state = SimpleNamespace(training = False, agents = [])
+
+    class Agent:
+        device = "cuda"
+
+        def __init__(self, folder):
+            self.folder, self.closed = folder, False
+            state.agents.append(self)
+
+        def decide(self, state_, questions):
+            answers = {name: {"type": "noul", "noul": 0.25} for name in questions}
+            return {"answers": answers, "input_tokens": 7, "truncated": False}
+
+        def close(self):
+            self.closed = True
+
+    monkeypatch.setattr(clef_runtime, "ClefAgent", Agent)
+    monkeypatch.setattr(laya_runtime, "_load_checkpoint", _REAL_LOAD)
+    monkeypatch.setattr(laya_runtime, "_training_active", lambda: state.training)
+    return state
+
+
+def test_a_clef_fine_tune_serves_through_its_worker(home, client, clef):
+    served = _clef_fine_tune(home, "clef_served_1")
+    assert _listed(client) == [served]
+    # The trainer's "Use in Decision API" names every run laya-ft:; the layout picks the prefix.
+    assert _put(client, enabled = True, model = "laya-ft:clef_served_1").status_code == 200
+    assert client.get("/api/settings/systemone").json()["model"] == served
+
+    answer = _post(client).json()
+    assert answer["model"] == served
+    assert answer["answers"]["urgent"] == {"type": "noul", "noul": 0.25}
+    assert answer["usage"] == {"input_tokens": 7, "output_tokens": 0}
+    assert client.get("/api/settings/systemone").json()["loaded_device"] == "cuda"
+
+    # Clef has no CPU fallback: during training it waits, and its worker is ended.
+    clef.training = True
+    busy = _post(client)
+    assert busy.status_code == 503
+    assert "training run" in busy.json()["detail"]["message"]
+    assert clef.agents[0].closed
+    clef.training = False
+    assert _post(client).status_code == 200
+    assert len(clef.agents) == 2
+    laya_runtime.unload()
+    assert clef.agents[1].closed
+
+
+def test_the_catalog_offers_the_stock_clef_models():
+    for name, repo in (("clef", "Cloudflare/clef"), ("clef-flash", "Cloudflare/clef-flash")):
+        checkpoint = catalog.CHECKPOINTS[name]
+        assert (checkpoint.source, checkpoint.layout, checkpoint.subfolder) == (repo, "clef", None)
+    assert all(c.layout == "laya" for n, c in catalog.CHECKPOINTS.items() if n.startswith("laya"))

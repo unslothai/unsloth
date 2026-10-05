@@ -462,3 +462,57 @@ def test_decision_worker_uses_one_gpu_and_no_llm_kernel_installs(monkeypatch, tm
     assert "Importing Unsloth..." in statuses
     assert not any("flash-attn" in status for status in statuses)
     assert received[-1]["type"] == "error"
+
+
+def _clef_folder(folder: Path) -> Path:
+    folder.mkdir(parents = True)
+    for name in ("config.json", "joint_head.safetensors", "joint_head_config.json"):
+        (folder / name).write_text("{}", encoding = "utf-8")
+    return folder
+
+
+def test_api_clef_runs_get_the_clef_recipe_and_keep_qlora(route, tmp_path):
+    config = _started_config(route, _request(model_name = str(_clef_folder(tmp_path / "clef"))))
+
+    assert config["decision_layout"] == "clef"
+    assert config["load_in_4bit"] is True
+    assert float(config["learning_rate"]) == 2e-4
+    assert (config["batch_size"], config["gradient_accumulation_steps"]) == (4, 2)
+    assert (config["lora_r"], config["lora_alpha"]) == (16, 16)
+    assert config["max_seq_length"] == 4096
+
+    laya = _started_config(route, _request(model_name = str(_laya_folder(tmp_path / "laya"))))
+    assert (laya["decision_layout"], laya["load_in_4bit"]) == ("laya", False)
+
+
+def test_a_caller_cannot_claim_a_layout_or_a_clef_subfolder(route, tmp_path):
+    clef = _clef_folder(tmp_path / "clef")
+    laya = _laya_folder(tmp_path / "laya")
+    claimed = _request(model_name = str(laya), decision_layout = "clef")
+    route._validate_decision_request(claimed)
+    assert claimed.decision_layout == "laya"
+
+    with pytest.raises(HTTPException) as refused:
+        route._validate_decision_request(_request(model_name = str(clef), model_subfolder = "v2"))
+    assert "model_subfolder" in refused.value.detail
+
+
+def test_a_hub_clef_repo_is_a_decision_model(route):
+    from utils.models import model_config
+
+    files = [
+        "config.json",
+        "joint_head.safetensors",
+        "joint_head_config.json",
+        "model-00001-of-00004.safetensors",
+    ]
+    info = SimpleNamespace(siblings = [SimpleNamespace(rfilename = name) for name in files])
+    request = _request(model_name = "Cloudflare/clef-flash")
+    with (
+        patch.object(route, "_remote_untrainable_model_format", return_value = None),
+        patch.object(model_config, "_hub_model_info", return_value = info),
+    ):
+        route._validate_decision_request(request)
+        assert request.decision_layout == "clef"
+        route._reject_untrainable_model_request(request)
+        assert model_config.decision_layout("Cloudflare/clef-flash") == "clef"

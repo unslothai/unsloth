@@ -2271,6 +2271,8 @@ export const ko = {
         modelMultilingual: "다국어",
         modelEnglish: "영어",
         modelTypedDecisions: "유형별 판단",
+        modelClefFlash: "Clef-flash",
+        modelClef: "Clef",
         recommended: "추천",
         device: "실행 위치",
         deviceDescription: "GPU가 더 빠르지만 다시 시작할 때까지 메모리를 계속 차지합니다.",
@@ -2286,6 +2288,7 @@ export const ko = {
         loadedOn: "{device}에 로드됨",
         download: "다운로드",
         downloadConfirmTitle: "Laya {model}을(를) 다운로드할까요?",
+        downloadConfirmTitleModel: "{model}을(를) 다운로드할까요?",
         downloadConfirmBody:
           "Decision API가 요청에 응답하려면 이 모델이 필요합니다. 약 {size}이며 Hugging Face 캐시에 한 번만 다운로드됩니다.",
         unload: "언로드",

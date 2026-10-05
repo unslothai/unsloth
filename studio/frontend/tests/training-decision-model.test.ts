@@ -634,3 +634,76 @@ test("the run summary does not count settings the decision trainer ignores", asy
     6,
   );
 });
+
+const CLEF = "Cloudflare/clef-flash";
+
+const CLEF_YAML = yaml.load(
+  readFileSync(
+    new URL(
+      "../../backend/assets/configs/model_defaults/decision/Cloudflare_clef-flash.yaml",
+      import.meta.url,
+    ),
+    "utf8",
+  ),
+) as {
+  training: Record<string, number>;
+  lora: Record<string, number>;
+};
+
+async function selectClef(): Promise<void> {
+  setAuthFetchHandler((input) =>
+    Response.json(
+      input.startsWith("/api/models/config/")
+        ? {
+            ...LAYA_CONFIG,
+            id: CLEF,
+            config: CLEF_YAML,
+            decision_checkpoints: null,
+            decision_layout: "clef",
+            model_size_bytes: 19_000_000_000,
+          }
+        : {},
+    ),
+  );
+  useTrainingConfigStore.getState().selectTrainingModel(CLEF, "text");
+  await waitForModelDefaults(CLEF);
+}
+
+test("a Clef run keeps QLoRA, sends 4-bit and the recipe's context, and has no checkpoint picker", async () => {
+  useTrainingConfigStore.getState().reset();
+  useTrainingConfigStore.setState({ trainingMethod: "qlora" });
+  await selectClef();
+  useTrainingConfigStore.setState({ ...HF_DECISION_DATASET, loraVariant: "dora" });
+
+  const state = useTrainingConfigStore.getState();
+  assert.equal(state.modelType, "decision");
+  assert.equal(state.decisionLayout, "clef");
+  assert.equal(state.trainingMethod, "qlora");
+  assert.equal(state.decisionCheckpoints, null);
+  assert.equal(state.modelSubfolder, null);
+  const payload = buildTrainingStartPayload(state, null);
+  assert.equal(payload.is_decision, true);
+  assert.equal(payload.training_type, "LoRA/QLoRA");
+  assert.equal(payload.load_in_4bit, true);
+  assert.equal(payload.use_dora, false);
+  assert.equal(payload.model_subfolder, null);
+  assert.equal(payload.max_seq_length, CLEF_YAML.training.max_seq_length);
+  assert.equal(payload.lora_r, CLEF_YAML.lora.lora_r);
+
+  useTrainingConfigStore.getState().setTrainingMethod("lora");
+  const lora = buildTrainingStartPayload(useTrainingConfigStore.getState(), null);
+  assert.equal(lora.load_in_4bit, false);
+});
+
+test("a fresh Clef pick from full fine-tuning starts as QLoRA, a Laya pick as LoRA", async () => {
+  useTrainingConfigStore.getState().reset();
+  useTrainingConfigStore.setState({ trainingMethod: "full" });
+  await selectClef();
+  assert.equal(useTrainingConfigStore.getState().trainingMethod, "qlora");
+
+  useTrainingConfigStore.getState().reset();
+  useTrainingConfigStore.setState({ trainingMethod: "qlora" });
+  await selectLaya();
+  assert.equal(useTrainingConfigStore.getState().trainingMethod, "lora");
+  assert.equal(useTrainingConfigStore.getState().decisionLayout, "laya");
+});

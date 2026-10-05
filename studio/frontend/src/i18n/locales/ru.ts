@@ -2290,6 +2290,8 @@ export const ru = {
         modelMultilingual: "Многоязычная",
         modelEnglish: "Английская",
         modelTypedDecisions: "Типизированные решения",
+        modelClefFlash: "Clef-flash",
+        modelClef: "Clef",
         recommended: "Рекомендуется",
         device: "Запускать на",
         deviceDescription: "GPU отвечает быстрее, но держит память зарезервированной до перезапуска.",
@@ -2305,6 +2307,7 @@ export const ru = {
         loadedOn: "Загружена на {device}",
         download: "Скачать",
         downloadConfirmTitle: "Скачать Laya {model}?",
+        downloadConfirmTitleModel: "Скачать {model}?",
         downloadConfirmBody:
           "API решений нужна эта модель, чтобы отвечать на запросы. Около {size}, загружается один раз в кэш Hugging Face.",
         unload: "Выгрузить",

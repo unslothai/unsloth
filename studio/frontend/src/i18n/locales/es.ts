@@ -2313,6 +2313,8 @@ export const es = {
         modelMultilingual: "Multilingüe",
         modelEnglish: "Inglés",
         modelTypedDecisions: "Decisiones tipadas",
+        modelClefFlash: "Clef-flash",
+        modelClef: "Clef",
         recommended: "Recomendado",
         device: "Ejecutar en",
         deviceDescription: "La GPU responde más rápido, pero mantiene su memoria reservada hasta reiniciar.",
@@ -2328,6 +2330,7 @@ export const es = {
         loadedOn: "Cargado en {device}",
         download: "Descargar",
         downloadConfirmTitle: "¿Descargar Laya {model}?",
+        downloadConfirmTitleModel: "¿Descargar {model}?",
         downloadConfirmBody:
           "La API de decisiones necesita este modelo para responder solicitudes. Unos {size}, se descarga una vez en tu caché de Hugging Face.",
         unload: "Descargar de memoria",

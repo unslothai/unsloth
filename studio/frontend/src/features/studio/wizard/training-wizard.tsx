@@ -166,6 +166,9 @@ function TrainingMethodSelect() {
   const trainingMethod = useTrainingConfigStore((s) => s.trainingMethod);
   const setTrainingMethod = useTrainingConfigStore((s) => s.setTrainingMethod);
   const isDecision = useTrainingConfigStore((s) => s.modelType === "decision");
+  const isClef = useTrainingConfigStore(
+    (s) => s.modelType === "decision" && s.decisionLayout === "clef",
+  );
   const deviceType = usePlatformStore((state) => state.deviceType);
   const activeMeta = TRAINING_METHOD_META[trainingMethod];
   const activeLabel = activeMeta ? t(activeMeta.labelKey) : trainingMethod;
@@ -203,7 +206,11 @@ function TrainingMethodSelect() {
         className="rounded-[14px] ring-0"
       >
         {TRAINING_METHOD_ORDER.filter(
-          (method) => !isDecision || method === "lora" || method === "full",
+          (method) =>
+            !isDecision ||
+            method === "lora" ||
+            method === "full" ||
+            (isClef && method === "qlora"),
         ).map((method) => {
           const meta = TRAINING_METHOD_META[method];
           const unsupportedOnMlx = !isTrainingMethodSupportedOnDevice(

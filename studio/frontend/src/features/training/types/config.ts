@@ -68,6 +68,8 @@ export interface TrainingConfigState {
   modelFormat: ModelInventoryFormat | null;
   modelSubfolder: string | null;
   decisionCheckpoints: DecisionCheckpoint[] | null;
+  /** "clef" for Cloudflare Clef (Qwen3.5 backbone, QLoRA allowed), "laya" otherwise. */
+  decisionLayout: "laya" | "clef" | null;
   settingsBeforeDecision: {
     trainingMethod: TrainingMethod;
     datasetStreaming: boolean;
