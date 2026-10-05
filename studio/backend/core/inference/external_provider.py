@@ -2439,8 +2439,7 @@ class ExternalProviderClient:
             extra = msg.get("extra_content") or {}
             native_content = (extra.get("anthropic") or {}).get("content")
             if msg.get("role") == "assistant" and isinstance(native_content, list):
-                # The loop's display text contains <think> markup and rendered hosted results. Replay the signed
-                # blocks instead, then append only the client calls retained by the execution controller below.
+                # Replay the signed native blocks, not the loop's <think>-marked display text; kept calls follow.
                 content = []
             # OpenAI role="tool" with list content -> Anthropic native tool_result block on a user message.
             # Translating only in the string-content branch below would forward the list-content form as an invalid
@@ -3056,8 +3055,7 @@ class ExternalProviderClient:
                 lines_gen = response.aiter_lines().__aiter__()
                 thinking_open = False
                 client_tool_indices: dict[int, int] = {}
-                # The shared loop accepts finish-less streams from other providers. Release Anthropic calls only
-                # after message_stop, so an error or disconnected stream cannot execute an unfinished call.
+                # Held until message_stop so an errored or cut-off stream never executes a partial call.
                 client_tool_chunks: list[str] = []
                 replay_blocks: dict[int, dict[str, Any]] = {}
                 replay_inputs: dict[int, str] = {}

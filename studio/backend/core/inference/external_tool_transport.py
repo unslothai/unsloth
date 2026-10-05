@@ -78,8 +78,7 @@ class OAICompatTransport:
         cancel_event: threading.Event,
     ) -> AsyncIterator[str]:
         if self._initial_message_count is not None and self.tool_result_only_continuation:
-            # The loop promotes MCP images into a detached user turn. Anthropic needs those inside a tool result
-            # while a server tool waits for the client call, rather than a new user turn that ends the pending turn.
+            # Promoted MCP images join the tool result: a new user turn would end a pending server-tool turn.
             normalized = list(messages[: self._initial_message_count])
             for message in messages[self._initial_message_count :]:
                 if (
