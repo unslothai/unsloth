@@ -2628,7 +2628,6 @@ class DiffusionBackend:
             )
             if source is None or getattr(source, "kind", None) != "repo":
                 return True
-            # local_files_only opens the first cached name, like an offline load
             if prequant_checkpoint_cached(
                 source,
                 cache_dir = hub_cache_dir(),
