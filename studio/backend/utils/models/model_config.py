@@ -515,6 +515,12 @@ MODEL_NAME_MAPPING = {
         "Qwen/Qwen3-VL-8B-Instruct",
         "unsloth/Qwen3-VL-8B-Instruct-bnb-4bit",
     ],
+    "unsloth_Qwen3.5.yaml": [
+        f"{org}/Qwen3.5-{size}{suffix}"
+        for size in ("0.8B", "2B", "4B", "9B", "27B", "35B-A3B")
+        for org in ("unsloth", "Qwen")
+        for suffix in (("",) if size == "27B" else ("", "-Base"))
+    ],
     "sesame_csm-1b.yaml": [
         "sesame/csm-1b",
         "unsloth/csm-1b",
