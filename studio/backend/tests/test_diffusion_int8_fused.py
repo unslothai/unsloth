@@ -946,6 +946,7 @@ def test_int8_linear_equals_the_module_without_the_zero_point_pass(
     rotated, bias, fast_quant, monkeypatch
 ):
     monkeypatch.setattr(fused, "_ACTQ_HANDLE", fused._act_quant_op() if fast_quant else None)
+    monkeypatch.setattr(fused, "_ACTQ_DEVICES", frozenset({torch.cuda.current_device()}))
     from torchao.quantization import Int8DynamicActivationInt8WeightConfig, quantize_
 
     from core.inference.diffusion_convrot import rotate_linears_, warm_rotation_cache
@@ -973,9 +974,48 @@ def test_int8_linear_equals_the_module_without_the_zero_point_pass(
 
 def test_kill_switch_also_drops_the_act_quant_kernel(monkeypatch):
     monkeypatch.setattr(fused, "_ACTQ_HANDLE", object())
+    monkeypatch.setattr(fused, "_ACTQ_DEVICES", frozenset({0}))
     monkeypatch.setenv(fused.INT8_FUSED_ENV, "0")
     assert fused.install(torch.nn.Linear(8, 8)) == 0
-    assert fused._ACTQ_HANDLE is None
+    assert fused._ACTQ_HANDLE is None and not fused._ACTQ_DEVICES
+
+
+@needs_cuda
+def test_kill_switch_makes_int8_linear_the_module(monkeypatch):
+    class Reached(Exception):
+        pass
+
+    def reached(*a, **k):
+        raise Reached
+
+    # a Linear int8_linear would otherwise run itself
+    monkeypatch.setattr(fused, "_plain_int8_weight", lambda w: True)
+    monkeypatch.setattr(fused, "_fast_act_quant", reached)
+    lin = torch.nn.Linear(64, 32).cuda().to(torch.bfloat16)
+    x = torch.randn(32, 64, device = "cuda", dtype = torch.bfloat16)
+    monkeypatch.delenv(fused.INT8_FUSED_ENV, raising = False)
+    fused.install(None)
+    with pytest.raises(Reached):
+        fused.int8_linear(lin, x)
+    monkeypatch.setenv(fused.INT8_FUSED_ENV, "0")
+    fused.install(None)
+    assert torch.equal(fused.int8_linear(lin, x), lin(x))
+    monkeypatch.delenv(fused.INT8_FUSED_ENV)
+    fused.install(None)
+    assert fused._LINEAR_OFF is False
+
+
+@needs_cuda
+def test_act_quant_kernel_only_runs_on_a_device_that_passed_its_probe(monkeypatch):
+    calls = []
+    monkeypatch.setattr(fused, "_ACTQ_HANDLE", lambda x: calls.append(x) or (x, x[:, 0]))
+    monkeypatch.setattr(fused, "_act_quant", lambda x, w: ("stock", None))
+    x = torch.zeros(32, 256, device = "cuda", dtype = torch.bfloat16)
+    monkeypatch.setattr(fused, "_ACTQ_DEVICES", frozenset({x.device.index + 1}))
+    assert fused._fast_act_quant(x, None) == ("stock", None) and not calls
+    monkeypatch.setattr(fused, "_ACTQ_DEVICES", frozenset({x.device.index}))
+    fused._fast_act_quant(x, None)
+    assert len(calls) == 1
 
 
 def test_int8_linear_leaves_an_installed_int8_gemm_forward_alone(monkeypatch):

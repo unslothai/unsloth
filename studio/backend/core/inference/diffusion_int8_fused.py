@@ -49,6 +49,10 @@ _LOCK = threading.Lock()
 _OP_HANDLE: Any = None
 # set once the act quant kernel matched torchao bit for bit on a device; None = torchao's quant
 _ACTQ_HANDLE: Any = None
+# device indices whose own probe passed; the kernel never runs on a device that failed or was never probed
+_ACTQ_DEVICES: frozenset = frozenset()
+# UNSLOTH_DIFFUSION_INT8_FUSED=0 at the last install: int8_linear is then module(x)
+_LINEAR_OFF = False
 # torchao's safe_int_mm home, resolved at install (outside any trace) for the same reason.
 _INTMM_MODULE: Any = None
 # Marker on each patched module (no global registry: it would pin an unloaded transformer).
@@ -832,6 +836,7 @@ def _fast_act_quant(x2d: Any, weight: Any) -> tuple:
     if (
         _ACTQ_HANDLE is not None
         and x2d.is_cuda
+        and x2d.device.index in _ACTQ_DEVICES
         and x2d.dtype == torch.bfloat16
         and x2d.dim() == 2
         and x2d.shape[0] > 0
@@ -1253,7 +1258,11 @@ def int8_linear(module: Any, x: Any) -> Any:
     from .diffusion_convrot import is_rotated_linear
 
     rotated = is_rotated_linear(module)
-    if not (type(module) is nn.Linear or rotated) or _I8_GEMM_MARK in module.__dict__:
+    if (
+        _LINEAR_OFF
+        or not (type(module) is nn.Linear or rotated)
+        or _I8_GEMM_MARK in module.__dict__
+    ):
         return module(x)
     weight = module.weight
     lead = x.shape[:-1]
@@ -1506,12 +1515,14 @@ def install(
     offload_active: bool = False,
 ) -> int:
     """Idempotent; returns the (candidate) count. Must run before the first compiled forward, which traces ``forward``."""
-    global _ACTQ_HANDLE
+    global _ACTQ_HANDLE, _ACTQ_DEVICES, _LINEAR_OFF
     if int8_fused_disabled():
-        _ACTQ_HANDLE = (
-            None  # process-global: a previous load's probe must not outlive the kill switch
-        )
+        # process-global: a previous load's probe must not outlive the kill switch
+        _ACTQ_HANDLE = None
+        _ACTQ_DEVICES = frozenset()
+        _LINEAR_OFF = True
         return 0
+    _LINEAR_OFF = False
     if transformer is None or offload_active:
         return 0
     if resident_cuda_device(transformer) is not None:
@@ -1562,7 +1573,7 @@ def _has_eligible(transformer: Any) -> bool:
 
 
 def _finalize(transformer: Any, logger: Any = None) -> int:
-    global _OP_HANDLE, _ACTQ_HANDLE, _INTMM_MODULE
+    global _OP_HANDLE, _ACTQ_HANDLE, _ACTQ_DEVICES, _INTMM_MODULE
     dev = resident_cuda_device(transformer)
     if dev is None:
         return 0
@@ -1587,6 +1598,9 @@ def _finalize(transformer: Any, logger: Any = None) -> int:
         _OP_HANDLE = _op()
         if actq is not None:
             _ACTQ_HANDLE = actq
+            _ACTQ_DEVICES = _ACTQ_DEVICES | {index}
+        else:
+            _ACTQ_DEVICES = _ACTQ_DEVICES - {index}
         for _name, module in transformer.named_modules():
             if _MARK in module.__dict__:
                 count += 1
