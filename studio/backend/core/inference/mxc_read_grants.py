@@ -228,8 +228,7 @@ def _read_execute_covered(aces: list[tuple[int, int]]) -> bool:
         if flags & _CONTAINER_INHERIT:
             directories |= mask
     return all(
-        (mask & READ_EXECUTE_MASK) == READ_EXECUTE_MASK
-        for mask in (folder, files, directories)
+        (mask & READ_EXECUTE_MASK) == READ_EXECUTE_MASK for mask in (folder, files, directories)
     )
 
 
@@ -382,6 +381,7 @@ def _pending_grant_has_no_explicit_aces(root: str, identity: dict) -> bool:
         return covers and not explicit and _identity(root) == identity
     except OSError:
         return False
+
 
 def _revoke_recorded_root(record: dict, key: str) -> str:
     """Take back one recorded grant: "revoked", "dropped" (nothing of Studio's left there), or "failed"."""

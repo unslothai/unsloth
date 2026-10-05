@@ -676,9 +676,16 @@ def test_real_dacl_split_folder_and_child_grants(tmp_path):
     folder = tmp_path / "split-runtime"
     folder.mkdir()
     subprocess.run(
-        ["icacls", str(folder), "/grant", "*S-1-15-2-1:(RX)",
-         "*S-1-15-2-1:(OI)(CI)(IO)(GR,GE)", "/Q"],
-        check = True, capture_output = True,
+        [
+            "icacls",
+            str(folder),
+            "/grant",
+            "*S-1-15-2-1:(RX)",
+            "*S-1-15-2-1:(OI)(CI)(IO)(GR,GE)",
+            "/Q",
+        ],
+        check = True,
+        capture_output = True,
     )
     assert mxc_read_grants._package_aces(str(folder)) == (True, True)
     child = folder / "child"
@@ -690,9 +697,14 @@ def test_failed_grant_with_only_inherited_access_recovers_without_acl_edits(host
     root = _runtime(host)
     key = os.path.normcase(root)
     host.granted.add(key)
-    mxc_read_grants._save_record({key: {
-        "state": "pending", "identity": mxc_read_grants._identity(root),
-    }})
+    mxc_read_grants._save_record(
+        {
+            key: {
+                "state": "pending",
+                "identity": mxc_read_grants._identity(root),
+            }
+        }
+    )
     assert mxc_read_grants.ensure([root]) == (root,)
     assert _record() == {}
     assert host.calls == []
@@ -702,9 +714,14 @@ def test_opt_out_drops_proven_empty_pending_grant_without_revoking_windows_acces
     root = _runtime(host)
     key = os.path.normcase(root)
     host.granted.add(key)
-    mxc_read_grants._save_record({key: {
-        "state": "pending", "identity": mxc_read_grants._identity(root),
-    }})
+    mxc_read_grants._save_record(
+        {
+            key: {
+                "state": "pending",
+                "identity": mxc_read_grants._identity(root),
+            }
+        }
+    )
     mxc_read_grants.revoke_recorded()
     assert _record() == {}
     assert key in host.granted
@@ -722,10 +739,12 @@ def test_pending_recovery_retains_uncertain_or_partial_grants(host, monkeypatch,
     if obstacle == "explicit_child":
         host.explicit.add(child)
     elif obstacle == "unreadable_child":
+
         def aces(path):
             if os.path.normcase(path) == child:
                 raise OSError("cannot inspect child ACL")
             return host.aces(path)
+
         monkeypatch.setattr(mxc_read_grants, "_package_aces", aces)
     else:
         monkeypatch.setattr(mxc_read_grants, "_identity", lambda _path: {"fileId": -1})
