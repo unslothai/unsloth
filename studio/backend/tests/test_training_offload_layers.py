@@ -133,7 +133,8 @@ def test_offload_route_reports_inactive_until_a_step_carries_stats(monkeypatch):
     from routes import training as route
 
     progress = SimpleNamespace(offload = None)
-    monkeypatch.setattr(route, "get_training_backend", lambda: SimpleNamespace(training_progress = progress))
+    backend = SimpleNamespace(trainer = SimpleNamespace(get_training_progress = lambda: progress))
+    monkeypatch.setattr(route, "get_training_backend", lambda: backend)
     assert asyncio.run(route.get_offload_state(current_subject = "u")) == {"active": False}
     progress.offload = {"swapped": [3], "prefetch_depth": 2}
     assert asyncio.run(route.get_offload_state(current_subject = "u")) == {
@@ -143,14 +144,21 @@ def test_offload_route_reports_inactive_until_a_step_carries_stats(monkeypatch):
     }
 
 
-def test_progress_events_keep_the_last_offload_snapshot():
+def test_worker_progress_events_carry_the_snapshot():
     import inspect
-    from core.training import training, worker
+    from core.training import worker
 
     assert '"offload": getattr(progress, "offload", None)' in inspect.getsource(
         worker._create_trainer_progress_callback
     )
-    # A step without stats (eval, status) must not blank the panel.
-    assert 'offload = event.get("offload") or self.training_progress.offload' in inspect.getsource(
-        training
-    )
+
+
+def test_backend_keeps_the_last_offload_snapshot():
+    from core.training.training import TrainingBackend
+
+    backend = TrainingBackend()
+    snap = {"swapped": [14, 15], "prefetch_depth": 2}
+    backend._handle_event({"type": "progress", "step": 1, "loss": 1.0, "offload": snap})
+    # A later step without stats must not blank the panel.
+    backend._handle_event({"type": "progress", "step": 2, "loss": 0.9})
+    assert backend._progress.offload == snap

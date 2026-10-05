@@ -1328,7 +1328,8 @@ async def get_offload_state(current_subject: str = Depends(get_current_subject))
     """Offload layers state from the last logged step: which decoder layers sit on the GPU or in
     host RAM, prefetch depth, copy / stall / compute time, VRAM. ``{"active": false}`` when the run
     does not offload. Polled by the live training view."""
-    offload = getattr(get_training_backend().training_progress, "offload", None)
+    progress = get_training_backend().trainer.get_training_progress()
+    offload = getattr(progress, "offload", None)
     if not offload:
         return {"active": False}
     return {"active": True, **offload}

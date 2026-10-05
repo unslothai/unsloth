@@ -1099,7 +1099,6 @@ class _MLXTrainerAdapter:
                 num_tokens = event.get("num_tokens", self.training_progress.num_tokens),
                 eval_loss = event.get("eval_loss", self.training_progress.eval_loss),
                 peak_memory_gb = event.get("peak_memory_gb", self.training_progress.peak_memory_gb),
-                offload = event.get("offload") or self.training_progress.offload,
             )
             return
         if etype == "complete":
@@ -3137,6 +3136,9 @@ class TrainingBackend:
                         self._progress.peak_memory_gb = float(_peak)
                     except (TypeError, ValueError):
                         pass
+                # A step without stats (eval, status) keeps the last snapshot, so the panel does not blank.
+                if event.get("offload"):
+                    self._progress.offload = event["offload"]
                 self._progress.is_training = True
                 status = event.get("status_message", "")
                 if status:
