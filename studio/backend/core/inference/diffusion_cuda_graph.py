@@ -137,8 +137,7 @@ def hold_off_capture():
         _CAPTURE_LOCK.release()
 
 
-# Raised while a whole-step graph warms up or records (GraphedForward._capture): the per-block graphs below the offload
-# hooks (diffusion_block_graph) then run their compute, so the step records kernels rather than nested replays.
+# Raised while a whole step warms up or records: per-block graphs then run their compute, not nested replays.
 _STEP_RECORDING = [0]
 
 
@@ -171,8 +170,7 @@ def _graph_without_flush(graph: Any, pool: Any = None):
     global capture mode, same pool."""
     torch = _torch()
     torch.cuda.synchronize()
-    # torch.cuda.graph's own capture stream: pool blocks are matched by stream, so earlier captures' freed
-    # temporaries are only reusable from the stream they were recorded on.
+    # torch.cuda.graph's own capture stream: pool blocks are reused only from the stream that recorded them.
     stream = getattr(torch.cuda.graph, "default_capture_stream", None)
     if stream is None or getattr(stream, "device", None) != torch.device(
         "cuda", torch.cuda.current_device()
@@ -411,7 +409,7 @@ def _pool_bytes(graph: Any) -> int:
             if tuple(seg.get("segment_pool_id") or ()) == pool:
                 total += int(seg.get("total_size", 0))
         return total
-    except Exception:  # noqa: BLE001 - a status number only
+    except Exception:  # noqa: BLE001
         return 0
 
 
@@ -481,18 +479,15 @@ def _heal_generators() -> None:
         pass
 
 
-# Under an offload placement every graph key is judged on its own (GraphedForward._judge_keys): its first SPEED_SAMPLES
-# replays against its own eager steps before it records.
+# Offloaded: each key's first SPEED_SAMPLES replays are judged against its own eager steps (_judge_keys).
 SPEED_SAMPLES = 3
-# The caller's eager steps timed before a key's capture; one more runs first, untimed (it may still compile or
-# autotune, and it is a new shape's warm-up). Not the capture's warm-ups: those run under the recorder, whose copies
-# follow the captured schedule, so on a machine where that schedule is the slow part they measure the replay.
+# Eager steps timed before a key's capture (after one untimed warm-up); never the capture's own warm-ups, whose
+# copies follow the recorded schedule and so measure the replay.
 SPEED_EAGER_SAMPLES = 2
 # A key's replay this much slower than its eager step (and by at least SPEED_MIN_MS) drops that key's graph.
 SPEED_MARGIN = 0.03
 SPEED_MIN_MS = 2.0
-# Under a placement that streams weights, the recording costs memory (a slot ring, a pool) the eager step does not
-# hold, so a key is kept only when its replay is at least this much faster than its eager step.
+# Streamed: the recording holds a ring and a pool the eager step does not, so it must be at least this much faster.
 SPEED_GAIN = 0.01
 SPEED_CHECK_ENV = "UNSLOTH_DIFFUSION_OFFLOAD_GRAPH_SPEED_CHECK"
 
@@ -537,16 +532,14 @@ def live_pool_free_bytes() -> int:
     try:
         free = 0
         cuda = _torch().cuda
-        device = (
-            cuda.current_device()
-        )  # the snapshot spans every card; the caller's numbers are this one's
+        device = cuda.current_device()  # the snapshot spans every card
         for seg in cuda.memory_snapshot():
             if seg.get("device", device) != device:
                 continue
             if tuple(seg.get("segment_pool_id") or ()) in pools:
                 free += int(seg.get("total_size", 0)) - int(seg.get("allocated_size", 0))
         return max(0, free)
-    except Exception:  # noqa: BLE001 - fall back to the whole pool: over-counting only makes the guard stricter
+    except Exception:  # noqa: BLE001 - over-counting only makes the guard stricter
         return live_pool_bytes()
 
 
@@ -597,8 +590,7 @@ class GraphedForward:
         placement: Optional["OffloadPlacement"] = None,
     ) -> None:
         self.module = module
-        # How the module's weights reach the GPU (None = resident): which slot the replay sits in, what records the
-        # capture, and what says a recorded graph's addresses still hold (see OffloadPlacement).
+        # How the weights reach the GPU (None = resident); see OffloadPlacement.
         self.placement = placement
         # The CLASS forward: the eager callable, whatever is already in the instance slot. A class
         # whose stock forward syncs the host gets its capture-safe rewrite (bit-identical) instead.
@@ -656,10 +648,9 @@ class GraphedForward:
         # Offloaded only, per graph key: {"seen": eager calls, "eager": [(start, end)], "graph": [(start, end)],
         # "verdict": None until judged, then "" (kept) or the reason it was dropped}.
         self._judge: dict = {}
-        self._dropped: set = set()  # keys whose replay measured slower: they run eager for the load
-        self._slower: Optional[str] = None  # the last drop's reason, for the status
-        # Per-block graphs (diffusion_block_graph) for the calls this whole-step graph leaves eager: a zero-arg callable
-        # arming them (set by arm_block_graphs where per-block is the default), and the handle it returned.
+        self._dropped: set = set()  # keys that run eager for the load
+        self._slower: Optional[str] = None
+        # Per-block fallback for the calls this graph leaves eager: its arming callable and the handle it returned.
         self.fallback: Any = None
         self.fallback_handle: Any = None
         self.protect_keyed: Optional[bool] = None
@@ -751,7 +742,7 @@ class GraphedForward:
     def reset(self) -> "GraphedForward":
         """Drop every captured graph (weights changed under us: LoRA load, unload, adapter switch)."""
         self.cache.clear()
-        self._recorded.clear()  # new code paths may come with the new weights: warm up again
+        self._recorded.clear()
         if getattr(self, "fallback_handle", None) is not None:
             try:
                 self.fallback_handle.reset()
@@ -836,7 +827,7 @@ class GraphedForward:
                     # Best of each, so a stall on a shared card in either window cannot tip the verdict alone.
                     eager = min(start.elapsed_time(end) for start, end in state["eager"])
                     graph = min(start.elapsed_time(end) for start, end in state["graph"])
-                except Exception:  # noqa: BLE001 - unreadable events: keep the graph
+                except Exception:  # noqa: BLE001
                     state["verdict"] = ""
                     continue
                 self.stats["eager_ms"] = round(eager, 3)
@@ -860,8 +851,7 @@ class GraphedForward:
                 state["verdict"] = reason
                 ring = False
                 if streams:
-                    # One placement, one verdict: its other keys stream the same copies, so none records again this load
-                    # and the slot ring goes back to the allocator.
+                    # One placement, one verdict: its other keys stream the same copies.
                     ring = bool(placement.decline(reason))
                     for other in list(self.cache):
                         if other != key:
@@ -947,7 +937,7 @@ class GraphedForward:
         fallback, self.fallback = self.fallback, None
         try:
             self.fallback_handle = fallback()
-        except Exception as exc:  # noqa: BLE001 - the eager step stands
+        except Exception as exc:  # noqa: BLE001
             _warn(self.logger, "per-block fallback", exc)
             self.fallback_handle = None
         if self.fallback_handle is not None and self.logger is not None:
@@ -986,7 +976,7 @@ class GraphedForward:
                     # cudaMallocs again. The dropped pool's blocks stay with the allocator.
                     self.cache.clear()
                     _drop_pool_if_unused()  # the next capture must not record into a pool no graph holds
-                self._warmed.clear()  # a planned key re-warms with a real step on the new placement
+                self._warmed.clear()
                 self.valid_token = token
             refusal = self.placement.refusal(self.stats)
             if self._judge and speed_check_enabled():
@@ -1074,12 +1064,10 @@ class GraphedForward:
                 if state is None or (
                     state["verdict"] is None and len(state["eager"]) < SPEED_EAGER_SAMPLES
                 ):
-                    # The eager reference for _judge_keys: the caller's own steps on the stock path (the
-                    # prefetcher's event-fenced copies), timed on the stream with CUDA events, never waited on.
+                    # The eager reference for _judge_keys, timed with CUDA events and never waited on.
                     return self._timed_eager(call, args, kwargs, key)
             if self.plan is not None and self.stats["captures"] and key not in self._warmed:
-                # A new prompt length after the first capture: this step runs for real, which warms the new shape
-                # (compile, autotune, cuDNN plans) in place of a discarded warm-up step; the next one records.
+                # A new prompt length: this real step is the new shape's warm-up; the next one records.
                 self._warmed[key] = None
                 while len(self._warmed) > 4 * self.max_graphs:
                     self._warmed.pop(next(iter(self._warmed)))
@@ -1092,8 +1080,7 @@ class GraphedForward:
                 warm_args, warm_kwargs = _rebuild(spec, self._statics(live))
                 return call(*warm_args, **warm_kwargs)
             if len(self.cache) >= self.max_graphs and self.plan is not None:
-                # A planned call keys on the prompt length (the prefix K/V), so a new key is every new prompt
-                # length rather than a rare event: replace the least recently replayed graph.
+                # A planned call keys on the prompt length, so evict the least recently replayed graph.
                 self.cache.pop(next(iter(self.cache)))
                 self.stats["evictions"] += 1
                 # The last graph on the shared pool takes the pool with it; never hand its id to the next capture.
@@ -1153,7 +1140,6 @@ class GraphedForward:
                 )
 
         elif self.plan is not None:
-            # Most recently replayed last: the eviction above takes the first.
             self.cache[key] = self.cache.pop(key)
 
         live: list = []
@@ -1279,13 +1265,9 @@ class GraphedForward:
         # Under an offload placement the capture also records the copy-stream onloads (OffloadPlacement.record).
         record = call if self.placement is None else self.placement.recorder(call)
         # Side stream: a workspace first created DURING capture is only valid while recording.
-        # A planned module re-captures on every new prompt length. Its first capture runs exactly like any other;
-        # later ones were warmed by a real step of the same key (``__call__``), so they record without a warm-up
-        # and skip the device and pinned-host cache flushes in ``torch.cuda.graph``.
+        # A planned module's later captures were warmed by a real step (``__call__``): no warm-up, no cache flushes.
         recapture = self.plan is not None and self.stats["captures"] > 0
-        # An offloaded module re-recording a key it recorded before, after its weights moved (a model-offload onload,
-        # a release / restore): its kernels, workspaces and compiled variants all exist, so it records as a planned
-        # re-capture does. A per-render re-record of a model-offloaded denoiser then costs one step's launches.
+        # An offloaded key re-recorded after its weights moved is already warm: it records like a planned re-capture.
         recapture = recapture or (
             self.placement is not None and key is not None and key in self._recorded
         )
@@ -1302,9 +1284,8 @@ class GraphedForward:
             else None
         )
         # Per-block graphs under the hooks run their compute while the whole step warms up and records.
-        # An offloaded key that already ran its timed eager steps (``_timed_eager``, same shapes, capture-like inputs)
-        # is warm: a side-stream warm-up would only cache a second set of activations beside the compute stream's
-        # (the cold render's peak), so it records straight away, after the flush ``torch.cuda.graph`` does.
+        # A key warmed by its timed eager steps records straight away: a side-stream warm-up would cache a second set
+        # of activations (the cold render's peak).
         warm = (
             self.placement is not None
             and key is not None
@@ -1395,7 +1376,7 @@ def _leaf_ptrs(t: Any, out: list) -> None:
             pass
     try:
         out.append((str(t.device), int(t.data_ptr())))
-    except Exception:  # noqa: BLE001 - an unreadable tensor counts as changed
+    except Exception:  # noqa: BLE001
         out.append(("?", id(t)))
 
 
@@ -1437,7 +1418,7 @@ class OffloadPlacement:
         self._tensors: Optional[list] = None
         # Set when a key's replay did not pay on a streaming placement: nothing records again for this load.
         self._declined: Optional[str] = None
-        self._slots = False  # this placement turned the prefetcher's slot ring on
+        self._slots = False
         if mode == "group":
             self.prev = module.__dict__.get("forward")
         else:
@@ -1463,7 +1444,6 @@ class OffloadPlacement:
                 self._inner, self._inner_stock = ref, ref.forward
                 self._inner_safe = safe.__get__(module)
 
-    # -------------------------------------------------------------------------------------------------- slots
     def install(self, handle: Any) -> None:
         if self.mode == "group":
             if self._inner is not None:
@@ -1490,7 +1470,7 @@ class OffloadPlacement:
             if pf is not None and callable(getattr(pf, "enable_slots", None)):
                 pf.enable_slots()
                 self._slots = bool(getattr(pf, "slot_of", None))
-        except Exception:  # noqa: BLE001 - the copies then land in the graph pool, as without a ring
+        except Exception:  # noqa: BLE001
             self._slots = False
 
     def streams(self) -> bool:
@@ -1565,7 +1545,6 @@ class OffloadPlacement:
         ):  # hooks removed since (diffusers re-enables them per call)
             self.module.__dict__.pop("forward", None)
 
-    # -------------------------------------------------------------------------------------------------- record
     def recorder(self, call: Any) -> Any:
         """What a capture records for ``call``: under block offload the prefetcher's copies join the capture."""
         if self.mode != "group":
@@ -1595,10 +1574,9 @@ class OffloadPlacement:
             pf = module_prefetcher(self.module)
             if pf is not None:
                 pf.abandon()
-        except Exception:  # noqa: BLE001 - best effort; the eager retry reports anything left
+        except Exception:  # noqa: BLE001
             pass
 
-    # -------------------------------------------------------------------------------------------------- validity
     def _fingerprint(self) -> tuple:
         out: list = []
         if self.mode == "group":
@@ -1643,8 +1621,7 @@ class OffloadPlacement:
         if getattr(self, "_declined", None) is not None:
             return self._declined
         if self.mode == "model":
-            # Judged once per placement, when the weights land: did the recordings so far earn their keep?
-            # (Equality: the fingerprint is rebuilt on every call.)
+            # Judged once per placement, when the weights land (the fingerprint is rebuilt every call).
             if self._checked != self._fp:
                 self._checked = self._fp
                 moves = int(stats.get("invalidations", 0))
@@ -1826,7 +1803,7 @@ def arm_after_placement(
                     ).enable()
                 )
                 modes.append(placement.mode)
-        except Exception as exc:  # noqa: BLE001 - that denoiser runs eager
+        except Exception as exc:  # noqa: BLE001
             refusals.append(f"{type(module).__name__}: {exc}")
     installed = tuple(handles)
     try:
@@ -2082,8 +2059,7 @@ def never_engaged(handles: Any) -> Optional[str]:
     if refused and not s["captures"] and not s["replays"]:
         return f"armed, but every denoiser call so far ran eager: {refused[0]}"
     if refused and not s["graphs"]:
-        # Recorded and replayed, then dropped for the load (an offloaded replay measured slower than eager, or model
-        # offload moving the weights faster than the replays pay back): the steps run eager from here on.
+        # Recorded, then dropped for the load: the steps run eager from here on.
         return f"captured, then dropped: {refused[0]}; denoiser steps now run eager"
     if all(getattr(h, "poisoned", False) for h in handles):
         error = s["capture_error"] or {}
@@ -2180,9 +2156,7 @@ def arm_block_graphs(
     prior = str(getattr(pipe, "_unsloth_cuda_graph_reason", None) or "")
     step = [h for h in whole if h.placement is not None or h.plan is not None]
     if whole and len(step) == len(whole):
-        # The whole step records (an offloaded one with its copies, or Qwen-Image-2.1's planned step): it stays the
-        # primary layer. Where per-block graphs would be the default, they arm for the calls it leaves eager (a key its
-        # speed check dropped, a failed capture).
+        # The whole step stays primary; where per-block graphs are the default they arm for the calls it leaves eager.
         pipe._unsloth_cuda_graph_mode = "step"
         why = _block_basics(target, family, cache_engaged, speed_mode, family_default)
         if why is None:
