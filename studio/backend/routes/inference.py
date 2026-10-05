@@ -26828,11 +26828,19 @@ def _build_external_messages(
 
     result = []
     for msg in messages:
-        reasoning = (
+        replay = (
             {"reasoning_content": msg.reasoning_content}
             if provider_type == "llama_cpp" and msg.role == "assistant" and msg.reasoning_content
             else {}
         )
+        if anthropic and msg.role == "assistant" and isinstance(msg.extra_content, dict):
+            native = msg.extra_content.get("anthropic")
+            if (
+                isinstance(native, dict)
+                and isinstance(native.get("content"), list)
+                and native["content"]
+            ):
+                replay["extra_content"] = {"anthropic": {"content": native["content"]}}
         # Drop role=tool messages whose matching server-builtin tool_call was
         # filtered above. An orphan tool_result with no matching tool_call is
         # rejected by OpenAI Responses and Anthropic.
@@ -26842,7 +26850,7 @@ def _build_external_messages(
             and msg.tool_call_id in dropped_server_builtin_tool_call_ids
         ):
             continue
-        if isinstance(msg.content, str) or (msg.content is None and reasoning):
+        if isinstance(msg.content, str) or (msg.content is None and replay):
             # Drop bare assistant messages with no content AND no tool_calls
             # (some providers reject empty assistant turns). Preserve assistant
             # turns whose only payload is tool_calls so multi-turn
@@ -26851,15 +26859,15 @@ def _build_external_messages(
                 msg.role == "assistant"
                 and not (msg.content or "").strip()
                 and not msg.tool_calls
-                and not reasoning
+                and not replay
             ):
                 continue
-            out: dict[str, Any] = {"role": msg.role, "content": msg.content or "", **reasoning}
+            out: dict[str, Any] = {"role": msg.role, "content": msg.content or "", **replay}
             if msg.role == "assistant" and msg.tool_calls:
                 _tcs = _filter_tool_calls(msg.tool_calls)
                 if _tcs:
                     out["tool_calls"] = _tcs
-                elif not (msg.content or "").strip() and not reasoning:
+                elif not (msg.content or "").strip() and not replay:
                     # Every tool_call was a dropped synthetic provider card;
                     # the turn would be an empty
                     # `{"role":"assistant","content":""}` that some providers
@@ -26934,17 +26942,17 @@ def _build_external_messages(
                         # `compaction` block; every other provider would 400 on
                         # the unknown part, so gate by provider_type.
                         parts.append({"type": "compaction", "content": part.content})
-                entry: dict[str, Any] = {"role": msg.role, "content": parts, **reasoning}
+                entry: dict[str, Any] = {"role": msg.role, "content": parts, **replay}
                 if msg.role == "assistant" and msg.tool_calls:
                     _tcs = _filter_tool_calls(msg.tool_calls)
                     if _tcs:
                         entry["tool_calls"] = _tcs
-                    elif not parts and not reasoning:
+                    elif not parts and not replay:
                         # All tool_calls were synthetic and dropped, and no
                         # content parts survived. Skip rather than forward an
                         # empty assistant turn that downstream providers reject.
                         continue
-                elif msg.role == "assistant" and not parts and not reasoning:
+                elif msg.role == "assistant" and not parts and not replay:
                     continue
                 if msg.role == "tool":
                     if msg.tool_call_id:
@@ -26971,14 +26979,14 @@ def _build_external_messages(
                         preserved.append(_rp)
                     elif p.type == "compaction" and anthropic:
                         preserved.append({"type": "compaction", "content": p.content})
-                if msg.role == "assistant" and not preserved and not reasoning:
+                if msg.role == "assistant" and not preserved and not replay:
                     continue
                 if len(preserved) == 1 and preserved[0]["type"] == "text":
                     # Single text part collapses to a string for providers that
                     # don't accept content arrays.
-                    entry = {"role": msg.role, "content": preserved[0]["text"], **reasoning}
+                    entry = {"role": msg.role, "content": preserved[0]["text"], **replay}
                 else:
-                    entry = {"role": msg.role, "content": preserved, **reasoning}
+                    entry = {"role": msg.role, "content": preserved, **replay}
                 if msg.role == "assistant" and msg.tool_calls:
                     _tcs = _filter_tool_calls(msg.tool_calls)
                     if _tcs:
@@ -26990,7 +26998,7 @@ def _build_external_messages(
                         _has_text = (
                             isinstance(_entry_content, str) and _entry_content.strip()
                         ) or (isinstance(_entry_content, list) and len(_entry_content) > 0)
-                        if not _has_text and not reasoning:
+                        if not _has_text and not replay:
                             continue
                 if msg.role == "tool":
                     if msg.tool_call_id:

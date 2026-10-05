@@ -239,13 +239,11 @@ def test_registry_entry_schema_tolerates_a_pre_change_payload():
 # ── capability allowlist ─────────────────────────────────────────────
 
 
-def test_anthropic_is_not_studio_tools_capable():
-    """``_stream_anthropic`` never forwards caller function-tool schemas.
-
-    Advertising the capability would hand the loop a catalog the model never
-    sees, so every turn would look like a model that declined to call a tool.
-    """
-    assert provider_runs_local_tools("anthropic") is False
+def test_anthropic_is_studio_tools_capable():
+    assert provider_runs_local_tools("anthropic") is True
+    entry = next(row for row in list_available_providers() if row["provider_type"] == "anthropic")
+    assert entry["supports_studio_tools"] is True
+    assert entry["supports_tool_calling"] is True
 
 
 def test_openai_codex_keeps_the_capability_it_already_had():
