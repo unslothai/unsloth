@@ -2330,8 +2330,7 @@ def _is_window_notice(result: str) -> bool:
 
 
 def _note_before_envelopes(result: str, tool_name: str, add_note) -> str:
-    """Notes go before the frontend envelopes: text after the __MCP_IMAGES__ array stops it
-    parsing, and the strip then ships its base64 to the model as text (#11358)."""
+    """Text after the __MCP_IMAGES__ array breaks its parse and ships the base64 as text (#11358)."""
     if not isinstance(result, str):
         return add_note(result)
     from core.inference.tools import _split_frontend_suffix

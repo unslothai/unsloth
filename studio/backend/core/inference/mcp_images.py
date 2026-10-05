@@ -142,8 +142,7 @@ UNPARSED_IMAGES_TEXT = "[image data could not be parsed and was omitted]"
 
 
 def drop_unparsed_envelope(result: str, tool_name: "str | None" = None) -> str:
-    """Cut an image tool's result at an envelope split_images rejected. Text appended after the
-    array (#11358) breaks the parse, and failing open replayed megabytes of base64 as text."""
+    """Cut at an envelope that no longer parses rather than replay its base64 as text (#11358)."""
     if not (tool_name and is_image_tool(tool_name)):
         return result
     # An array opener, so prose quoting the marker is left alone.
