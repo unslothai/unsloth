@@ -1,3 +1,19 @@
+# Unsloth Zoo - Utilities for Unsloth
+# Copyright 2023-present Daniel Han-Chen, Michael Han-Chen & the Unsloth team. All rights reserved.
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU Affero General Public License as published
+# by the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU Affero General Public License for more details.
+#
+# You should have received a copy of the GNU Affero General Public License
+# along with this program.  If not, see <https://www.gnu.org/licenses/>.
+
 """A user who already holds a hosted ``.pt`` checkpoint must not download its ``.safetensors`` twin.
 
 The candidate chain prefers safetensors, so once a repo publishes the twin every path that walks
@@ -297,3 +313,64 @@ def test_video_te_prefetch_fetches_the_cached_pickle(hub, monkeypatch):
         backend, {"text_encoder": _te()}, None, cancel_event = threading.Event()
     )
     assert got == ("text_encoder",) and fetched == ["Model-text_encoder-FP8.pt"]
+
+
+# ---- policy: new users only ever get the safetensors container ----
+
+
+def test_new_user_never_requests_the_pickle_when_the_twin_is_hosted(hub, monkeypatch):
+    """Both containers on the Hub, nothing cached: only the .safetensors is fetched, on every path."""
+    import threading
+
+    import utils.hf_xet_fallback as xet
+    from core.inference.diffusion import DiffusionBackend
+    from core.inference.video import VideoBackend
+
+    hub.hosted = {"Model-INT8.safetensors", "Model-INT8.pt", "Model-text_encoder-FP8.safetensors",
+                  "Model-text_encoder-FP8.pt"}
+    assert _resolve(_dit()) == hub.cached[(REPO, "Model-INT8.safetensors")]
+    tpq._resolve_checkpoint_path(_te(), None, cache_dir = "/live")
+    assert hub.fetched == ["Model-INT8.safetensors", "Model-text_encoder-FP8.safetensors"]
+    hub.cached.clear()
+
+    api = _Api(sorted(hub.hosted))
+    monkeypatch.setattr(huggingface_hub, "HfApi", lambda token = None: api)
+    assert DiffusionBackend._prequant_source_hub_entry(_dit(), None, scheme = "int8")[1] == (
+        "Model-INT8.safetensors"
+    )
+    assert tpq.te_prequant_hub_files({"text_encoder": _te()}, api, None)["text_encoder"][0][0] == (
+        "Model-text_encoder-FP8.safetensors"
+    )
+    fetched = []
+    monkeypatch.setattr(
+        xet, "hf_hub_download_with_xet_fallback", lambda repo, name, tok, **kw: fetched.append(name)
+    )
+    backend = VideoBackend.__new__(VideoBackend)
+    VideoBackend._fetch_denoiser_prequant(backend, [_dit()], None, cancel_event = threading.Event())
+    VideoBackend._fetch_te_prequant(
+        backend, {"text_encoder": _te()}, None, cancel_event = threading.Event()
+    )
+    assert fetched == ["Model-INT8.safetensors", "Model-text_encoder-FP8.safetensors"]
+    assert not any(n.endswith(".pt") for n in hub.fetched + fetched)
+
+
+def test_pickle_only_repo_downloads_the_pickle_and_says_why(hub, caplog):
+    hub.hosted = {"Model-INT8.pt"}
+    caplog.set_level("INFO")
+    assert _resolve(_dit()) == hub.cached[(REPO, "Model-INT8.pt")]
+    assert hub.fetched == ["Model-INT8.safetensors", "Model-INT8.pt"]
+    assert "does not host the .safetensors twin yet" in caplog.text
+
+
+def test_install_without_safetensors_support_downloads_the_pickle_and_says_why(
+    hub, monkeypatch, caplog
+):
+    monkeypatch.setattr(
+        pq,
+        "restricted_prequant_load_supported",
+        lambda scheme = None, filename = None: not str(filename).endswith(".safetensors"),
+    )
+    caplog.set_level("INFO")
+    assert _resolve(_dit()) == hub.cached[(REPO, "Model-INT8.pt")]
+    assert hub.fetched == ["Model-INT8.pt"]
+    assert "cannot read the .safetensors container" in caplog.text
