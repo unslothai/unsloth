@@ -6,8 +6,10 @@
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import json
 import math
+import threading
 import time
 from typing import Any, Optional, Union
 from uuid import uuid4
@@ -38,6 +40,7 @@ MAX_QUESTION_CHARS = 20_000
 _TYPES = ("noul", "choice", "score")
 MCP_PATH = "/mcp/decisions"
 LISTED_MODELS_TTL = 300.0
+_media_admission = threading.BoundedSemaphore(2)
 
 router = APIRouter()
 
@@ -168,6 +171,29 @@ def _require_enabled() -> None:
         )
 
 
+async def _prepare_media(checkpoint, state, images):
+    if not _media_admission.acquire(blocking = False):
+        raise _error(529, "overloaded", "Decision API media validation is busy; retry shortly", 1)
+
+    def prepare():
+        try:
+            return media.prepare(
+                state, images, accepts_images = decision_runtime.accepts_images(checkpoint)
+            )
+        finally:
+            _media_admission.release()
+
+    try:
+        context = contextvars.copy_context()
+        work = asyncio.get_running_loop().run_in_executor(None, context.run, prepare)
+    except BaseException:
+        _media_admission.release()
+        raise
+    # Cancellation must not free a slot while its queued/running decoder still owns it.
+    work.add_done_callback(lambda done: None if done.cancelled() else done.exception())
+    return await asyncio.shield(work)
+
+
 async def _decide(
     checkpoint: catalog.Checkpoint | catalog.Connection,
     state: JSONContent,
@@ -175,12 +201,7 @@ async def _decide(
     images: list[str] | None = None,
 ) -> dict:
     try:
-        state, decoded_images = await asyncio.to_thread(
-            media.prepare,
-            state,
-            images,
-            accepts_images = decision_runtime.accepts_images(checkpoint),
-        )
+        state, decoded_images = await _prepare_media(checkpoint, state, images)
     except media.InvalidMedia as exc:
         raise _error(
             400 if exc.unsupported else 422,
