@@ -26977,13 +26977,9 @@ class LlamaCppBackend:
                         )
 
                     kv_cache_bytes = _kv_bytes(effective_ctx)
-                    # Manual placement owns the verdict: the same condition the launch
-                    # branch below will apply MUST be decided before the decision line
-                    # is logged, or the log reports --fit on for a launch that carries
-                    # --fit off (see #10821). gpu_layers is a function argument, so
-                    # this is knowable exactly here.
-                    _manual_placement = gpu_memory_mode == "manual" and gpu_layers >= 0
-                    if _manual_placement:
+                    # The Manual launch branch below emits --fit off; decide it before the
+                    # decision line so the log matches the argv (#10821).
+                    if gpu_memory_mode == "manual" and gpu_layers >= 0:
                         use_fit = False
                     # Everything the spill planner needs, snapshotted as plain ints
                     # where it is already evaluated.
@@ -27077,12 +27073,10 @@ class LlamaCppBackend:
                         f"est. KV cache: {kv_cache_bytes / (1024**3):.1f} GB, "
                         f"{_mtp_note}"
                         f"context: {effective_ctx}, "
-                        # --fit flag state, not "does it fit": off means this subset provably fits,
-                        # or the user owns placement. An empty probe with "(manual placement)"
-                        # is a deliberately discarded list, not a failed enumeration: the
-                        # separate warning next door is the one that catches a genuinely
-                        # empty probe.
-                        f"GPUs free: {gpus}{'' if gpus else (' (manual placement)' if _manual_placement else '')}, "
+                        # --fit flag state, not "does it fit": off means this subset provably fits.
+                        # Manual modes empty gpus on purpose; say so, not a failed probe.
+                        f"GPUs free: {gpus}"
+                        f"{' (manual mode)' if not gpus and gpu_memory_mode == 'manual' else ''}, "
                         f"selected: {gpu_indices}, --fit: {'on' if use_fit else 'off'}"
                     )
                     _on = list(gpu_indices or [idx for idx, _ in gpus])
@@ -27717,9 +27711,6 @@ class LlamaCppBackend:
                 if gpu_memory_mode == "manual" and gpu_layers >= 0:
                     # Pin the user's layer count and disable auto-fit. --fit off
                     # also means _ctx_integrity_flags must not add --fit-ctx.
-                    # use_fit was turned off before the decision log above; set it
-                    # again here so the placement try/except's --fit-on fallback
-                    # can never override Manual between the two.
                     use_fit = False
                     cmd.extend(["--gpu-layers", str(gpu_layers), "--fit", "off"])
                     # Keep the first n_cpu_moe MoE layers' experts on CPU.
