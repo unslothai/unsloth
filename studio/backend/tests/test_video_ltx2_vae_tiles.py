@@ -151,17 +151,49 @@ def test_oom_retries_in_stock_size_tiles(free, monkeypatch):
     calls = []
     real = vt._decode_tiles
 
-    def flaky(vae_, z_, temb, causal, th, tw):
-        calls.append((th, tw))
+    def flaky(
+        vae_,
+        z_,
+        temb,
+        causal,
+        th,
+        tw,
+        fp32_accum = True,
+    ):
+        calls.append((th, tw, fp32_accum))
         if len(calls) == 1:
             raise torch.cuda.OutOfMemoryError("fake")
-        return real(vae_, z_, temb, causal, th, tw)
+        return real(vae_, z_, temb, causal, th, tw, fp32_accum)
 
     monkeypatch.setattr(vt, "_decode_tiles", flaky)
     monkeypatch.setattr(torch.cuda, "empty_cache", lambda: None)
     out = _decode(vae, z)
-    assert calls == [(22, 38), (16, 16)] and out.shape[-2:] == (704, 1216)
+    assert calls == [(22, 38, True), (16, 16, False)] and out.shape[-2:] == (704, 1216)
     assert vae._unsloth_wide_tiles_stats["oom_fallback"] == 1
+
+
+@pytest.mark.parametrize("free_bytes, fp32_accum", [(0, False), (None, False), (1000 * GIB, True)])
+def test_fp32_accumulator_only_when_budgeted(free, monkeypatch, free_bytes, fp32_accum):
+    # Nothing fits (or free memory unknown): the fp32 accumulator was not priced in and would add a full-frame fp32
+    # buffer on top of stock-size tiles, above the stock tiled decode's peak.
+    vae = _ltx_vae().to(torch.bfloat16)
+    z = torch.randn(1, 8, 1, 22, 38, dtype = torch.bfloat16)
+    vae.enable_tiling()
+    assert vt.install(vae)
+    free["bytes"] = free_bytes
+    monkeypatch.setenv(U.UNTILED_ENV, "0")  # keep >= 2 tiles so the accumulator is used
+    seen = []
+    zeros = torch.zeros
+
+    def spy(*args, **kwargs):
+        seen.append(kwargs.get("dtype"))
+        return zeros(*args, **kwargs)
+
+    monkeypatch.setattr(torch, "zeros", spy)
+    out = _decode(vae, z)
+    assert out.dtype == torch.bfloat16 and torch.isfinite(out.float()).all()
+    assert (torch.float32 if fp32_accum else torch.bfloat16) in seen
+    assert (torch.bfloat16 if fp32_accum else torch.float32) not in seen
 
 
 def test_install_is_scoped_idempotent_and_reversible(monkeypatch):

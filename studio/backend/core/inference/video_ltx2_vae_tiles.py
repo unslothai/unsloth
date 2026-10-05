@@ -176,6 +176,16 @@ def plan_tiles(
     free: Optional[int] = None,
 ) -> tuple[int, int]:
     """The decode tile for ``z`` (B, C, T, H, W) given ``free`` bytes (read from the device when None)."""
+    return _plan(vae, z, free)[0]
+
+
+def _plan(
+    vae: Any,
+    z: Any,
+    free: Optional[int] = None,
+) -> tuple[tuple[int, int], bool]:
+    """``(tile, budgeted)``: ``budgeted`` is False when no tile fit (or free memory is unknown), so the fp32
+    accumulator was never priced in and the decode must not add it on top of the stock-size tiles."""
     batch, _, latent_frames, height, width = (int(x) for x in z.shape)
     frames = output_frames(vae, latent_frames)
     ratio = int(vae.spatial_compression_ratio)
@@ -183,7 +193,7 @@ def plan_tiles(
         free = _free_bytes(getattr(z, "device", None))
     allow_single = _untiled_allowed()
     if free is None:
-        return choose_tiles(height, width, lambda th, tw: False, allow_single)
+        return choose_tiles(height, width, lambda th, tw: False, allow_single), False
     itemsize = _itemsize(vae)
     fused = bool(getattr(vae, "_unsloth_vae_fused_installed", 0))
     # fp32 accumulator of the blended output (multi-tile decodes only)
@@ -193,10 +203,19 @@ def plan_tiles(
         need = tile_bytes(frames, th, tw, batch, itemsize, fused) * _MARGIN + _MARGIN_BYTES
         return need + (0 if (th == height and tw == width) else accum) <= free
 
-    return choose_tiles(height, width, fits, allow_single)
+    tile = choose_tiles(height, width, fits, allow_single)
+    return tile, fits(*tile)
 
 
-def _decode_tiles(vae: Any, z: Any, temb: Any, causal: Any, th: int, tw: int) -> Any:
+def _decode_tiles(
+    vae: Any,
+    z: Any,
+    temb: Any,
+    causal: Any,
+    th: int,
+    tw: int,
+    fp32_accum: bool = True,
+) -> Any:
     import torch
 
     _, _, _, height, width = z.shape
@@ -212,14 +231,15 @@ def _decode_tiles(vae: Any, z: Any, temb: Any, causal: Any, th: int, tw: int) ->
             tile = vae.decoder(z[:, :, :, y : y + th, x : x + tw], temb, causal = causal)
             if out is None:
                 dtype = tile.dtype
+                # Unbudgeted (nothing fit): accumulate in the tile dtype, else the fp32 buffer exceeds stock's peak.
                 out = torch.zeros(
                     (*tile.shape[:3], height * ratio, width * ratio),
-                    dtype = torch.float32,
+                    dtype = torch.float32 if fp32_accum else dtype,
                     device = tile.device,
                 )
             w = wy[i].view(-1, 1) * wx[j].view(1, -1)
             out[..., y * ratio : (y + th) * ratio, x * ratio : (x + tw) * ratio].addcmul_(
-                tile.float(), w
+                tile.float() if fp32_accum else tile, w
             )
             del tile
     dec = out.to(dtype)
@@ -239,7 +259,7 @@ def tiled_decode(
 
     from .diffusion_batched import is_oom_error
 
-    th, tw = plan_tiles(vae, z)
+    (th, tw), budgeted = _plan(vae, z)
     floor = (min(MIN_TILE_LATENTS, int(z.shape[-2])), min(MIN_TILE_LATENTS, int(z.shape[-1])))
     stats = vae.__dict__.setdefault(
         "_unsloth_wide_tiles_stats", {"untiled": 0, "tiled": 0, "oom_fallback": 0}
@@ -247,7 +267,7 @@ def tiled_decode(
     vae._unsloth_last_decode_tile = (th, tw)
     failed = False
     try:
-        dec = _decode_tiles(vae, z, temb, causal, th, tw)
+        dec = _decode_tiles(vae, z, temb, causal, th, tw, budgeted)
     except Exception as exc:  # noqa: BLE001
         if (th, tw) == floor or not is_oom_error(exc):
             raise
@@ -260,7 +280,7 @@ def tiled_decode(
         torch.cuda.empty_cache()
         th, tw = floor
         vae._unsloth_last_decode_tile = floor
-        dec = _decode_tiles(vae, z, temb, causal, th, tw)
+        dec = _decode_tiles(vae, z, temb, causal, th, tw, False)
     stats["untiled" if (th, tw) == tuple(int(x) for x in z.shape[-2:]) else "tiled"] += 1
     if not return_dict:
         return (dec,)
