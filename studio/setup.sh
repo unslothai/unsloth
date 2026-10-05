@@ -594,7 +594,7 @@ _suggest_npm_local_failure() {
     substep "an unwritable npm cache, a read-only install directory, or a full disk." >&2
     substep "Things that usually clear it:" >&2
     substep "  npm cache clean --force" >&2
-    substep "  Or point npm at a writable cache: NPM_CONFIG_CACHE=\"\$HOME/.npm-cache\"" >&2
+    substep "  Or point npm at a writable cache: export NPM_CONFIG_CACHE=\"\$HOME/.npm-cache\"" >&2
     return 0
 }
 
@@ -605,8 +605,11 @@ _suggest_npm_local_failure() {
 _suggest_npm_registry() {
     local _log="${1:-}"
     # Before the UNSLOTH_NPM_REGISTRY opt-out: a mirror does not unlock a cache.
-    if [ -n "$_log" ] && [ -s "$_log" ] && grep -Eq "$_NPM_LOCAL_FAILURE_RE" "$_log"; then
-        if grep -q 'FetchError' "$_log"; then _suggest_npm_local_failure socket; else _suggest_npm_local_failure; fi
+    local _plain=""
+    # Strip ANSI colour (npm color=always) so the code-line match still sees "npm error code".
+    if [ -n "$_log" ] && [ -s "$_log" ]; then _plain="$(sed "s/$(printf '\033')\[[0-9;]*m//g" "$_log")"; fi
+    if [ -n "$_plain" ] && grep -Eq "$_NPM_LOCAL_FAILURE_RE" <<<"$_plain"; then
+        if grep -q 'FetchError' <<<"$_plain"; then _suggest_npm_local_failure socket; else _suggest_npm_local_failure; fi
         return 0
     fi
     [ -n "${UNSLOTH_NPM_REGISTRY:-}" ] && return 0

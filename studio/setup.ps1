@@ -3143,6 +3143,7 @@ function Show-NpmRegistryHint {
     # Empty output (verbose runs stream npm) keeps the unconditional registry hint.
     param([string]$FailureOutput = "")
     if ($FailureOutput) {
+        $FailureOutput = $FailureOutput -replace "$([char]27)\[[0-9;]*m", ''
         if ($FailureOutput -cmatch $script:NpmLocalFailureRe) { Show-NpmLocalFailureHint -Socket:($FailureOutput -cmatch 'FetchError'); return }
         if ($FailureOutput -inotmatch $script:NpmNetworkFailureRe) { return }
     }

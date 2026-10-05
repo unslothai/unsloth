@@ -7,7 +7,7 @@
 # "registry.npmjs.org looks blocked". #8725's EACCES came from the HTTP socket
 # (FetchError), so it gets the "OS refused node's connection" variant.
 
-set -u
+set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 SETUP_SH="$SCRIPT_DIR/../../studio/setup.sh"
@@ -39,6 +39,10 @@ npm error The operation was rejected by your operating system."
 _EPERM_LOG="npm ERR! code EPERM
 npm ERR! syscall rename
 npm ERR! Error: EPERM: operation not permitted, rename 'C:\\npm-cache\\_cacache\\tmp\\x'"
+
+_ESC=$(printf '\033')
+_COLOR_EPERM_LOG="${_ESC}[31mnpm${_ESC}[39m ${_ESC}[31merror${_ESC}[39m ${_ESC}[90mcode${_ESC}[39m EPERM
+${_ESC}[31mnpm${_ESC}[39m ${_ESC}[31merror${_ESC}[39m syscall rename"
 
 _NETWORK_LOG="npm error code ENOTFOUND
 npm error network request to https://registry.npmjs.org/oxlint failed, reason: getaddrinfo ENOTFOUND registry.npmjs.org"
@@ -76,6 +80,7 @@ check() {
 
 check "#8725 socket EACCES gets the connection hint" "$_EACCES_LOG" socket
 check "EPERM on a cache file gets the file hint" "$_EPERM_LOG" file
+check "colored (color=always) EPERM log gets the file hint" "$_COLOR_EPERM_LOG" file
 check "ENOTFOUND log gets the registry hint" "$_NETWORK_LOG" registry
 check "network failure with EPERM cleanup warnings gets the registry hint" "$_NETWORK_CLEANUP_LOG" registry
 check "403 log gets the registry hint" "$_PROXY_LOG" registry

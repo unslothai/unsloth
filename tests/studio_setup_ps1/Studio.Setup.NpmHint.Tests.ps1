@@ -88,6 +88,12 @@ Describe 'Show-NpmRegistryHint' {
         $out | Should -Not -Match 'looks blocked \(corporate firewall/proxy\?\)'
     }
 
+    It 'strips ANSI colour before matching the code line' {
+        $e = [char]27
+        $colored = "${e}[31mnpm${e}[39m ${e}[31merror${e}[39m ${e}[90mcode${e}[39m EPERM`n${e}[31mnpm${e}[39m ${e}[31merror${e}[39m syscall rename"
+        Invoke-CapturingHint -FailureOutput $colored | Should -Match 'local file error'
+    }
+
     It 'points at the registry for a network failure' {
         $out = Invoke-CapturingHint -FailureOutput $script:NetworkOutput
         $out | Should -Match 'looks blocked \(corporate firewall/proxy\?\)'
