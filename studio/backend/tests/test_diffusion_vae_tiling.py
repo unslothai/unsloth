@@ -36,9 +36,7 @@ def test_tile_starts_are_full_edge_aligned_tiles_with_wide_overlaps(length):
     assert len(starts) == math.ceil((length - overlap) / (tile - overlap))
 
 
-# Every size Studio's Images page offers for Qwen-Image-2.1 (32 px grid, 256 to 2752 px): the 1:1 / 3:2 / 4:3 / 16:9 /
-# 21:9 ratios at the default 1024 width and flipped, the official 2K presets, the smallest side, a 512 px side that
-# fits one tile, and custom sizes off the presets.
+# Every size the Images page offers for Qwen-Image-2.1, plus custom off-preset sizes.
 UI_SIZES = [
     (1024, 1024),
     (1024, 672),
@@ -81,7 +79,6 @@ def test_axis_weights_partition_unity_and_skip_shared_edges(length):
         total[s * scale : s * scale + w.numel()] += w
         covered[s * scale : s * scale + w.numel()] = True
         edge = vt.MARGIN_LATENTS * scale
-        # no weight where the tile's decode lacks context, even with three tiles overlapping
         if s > 0:
             assert float(w[:edge].abs().max()) == 0.0
         if s + tile < length:
@@ -186,7 +183,6 @@ def test_install_is_idempotent_and_uninstall_restores():
     before = (vae.tile_sample_min_height, vae.tile_sample_stride_height, dm.vae_tile_side(vae))
     assert vt.install(vae) and vt.install(vae)
     assert "tiled_decode" in vae.__dict__ and "tiled_encode" in vae.__dict__
-    # the tile attributes are untouched; the memory estimates see the real decode tile
     assert (vae.tile_sample_min_height, vae.tile_sample_stride_height) == before[:2]
     assert dm.vae_tile_side(vae) == vt.TILE_LATENTS * 16
     vt.uninstall(vae)
@@ -306,7 +302,6 @@ def _line_error_latent(x, ref):
 def test_tiled_encode_has_no_seam_lines(height, width):
     vae = _diffusers_vae()
     g = torch.Generator().manual_seed(4)
-    # a smooth image (low frequencies), so encode differences come from the tiles, not from noise
     x = torch.nn.functional.interpolate(
         torch.rand(1, 3, 8, 8, generator = g) * 2 - 1, size = (height, width), mode = "bicubic"
     )
@@ -398,7 +393,7 @@ def test_budget_sized_tiles_keep_the_invariants_and_never_decode_more(width, hei
 def test_budget_comes_from_free_vram_and_the_env_caps_it(monkeypatch):
     vae = _diffusers_vae()
     z = torch.zeros(1, 4, 1, 64, 64)
-    assert vt.decode_tile_budget(vae, z) == vt.TILE_LATENTS**2  # the autouse env pin
+    assert vt.decode_tile_budget(vae, z) == vt.TILE_LATENTS**2
     monkeypatch.delenv(vt.MAX_TILE_ENV)
     assert vt.decode_tile_budget(vae, z) is None  # CPU: no budget, 32x32 tiles
     assert vt.choose_tiles(64, 64, None) == (32, 32)
