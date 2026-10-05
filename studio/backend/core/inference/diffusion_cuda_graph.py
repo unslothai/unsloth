@@ -2064,7 +2064,6 @@ def live_status(resolved: Any, speed_optims: Any, handles: Any) -> tuple:
     return resolved, optims
 
 
-# ---------------------------------------------------------------------------------------------------------------
 # Per-block graphs (diffusion_block_graph) for the loads the whole-forward recording cannot hold.
 
 WHOLE_REASON = "denoiser step captured per input shape, replayed bit-identically"
