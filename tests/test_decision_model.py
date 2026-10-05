@@ -694,6 +694,13 @@ def clef_checkpoint(tmp_path):
 
     from unsloth.models.clef import JointSchemaHead
 
+    if not has_real_cuda():
+        try:
+            import causal_conv1d  # noqa: F401
+        except ImportError:
+            pass
+        else:
+            pytest.skip("transformers calls causal_conv1d's CUDA-only kernel on CPU tensors")
     reference, path = _clef_reference()
     folder = tmp_path / "clef"
     torch.manual_seed(0)
@@ -819,7 +826,11 @@ def test_clef_loads_scores_like_cloudflares_model_and_trains(clef_checkpoint, tm
     model.save_pretrained_merged(str(tmp_path / "out"))
     assert (tmp_path / "out" / "joint_schema_model.py").is_file()
     reloaded, _ = FastDecisionModel.from_pretrained(str(tmp_path / "out"), max_seq_length = 512)
-    assert reloaded.decision_config["temperature"] == model.decision_config["temperature"]
+    # The global temperature now lives in the head, so the per type ones are relative to it.
+    folded = reloaded.decision_config.get("folded_temperature") or 1.0
+    assert reloaded.decision_config["temperature"] == pytest.approx(
+        [t / folded for t in model.decision_config["temperature"]]
+    )
     released, _ = reference.load_release_model(
         str(tmp_path / "out"), device = device, dtype = torch.float32
     )
@@ -828,7 +839,8 @@ def test_clef_loads_scores_like_cloudflares_model_and_trains(clef_checkpoint, tm
         again, _ = reloaded(batch["input_ids"], batch["attention_mask"], batch["records"])
         theirs = released(batch)[0]
     # Saved in bf16, so the reload rounds the trained weights.
-    assert torch.allclose(trained, again, atol = 0.05)
+    valid = trained > -1e3
+    assert torch.allclose(trained[valid] / folded, again[valid], atol = 0.05 / folded)
     for row, z in enumerate(theirs):
         assert int(z.argmax()) == int(again[row, : len(z)].argmax())
 
