@@ -441,6 +441,41 @@ class DecisionTrainer(Trainer):
 
         self.accelerator.backward = _backward
 
+    def _save(
+        self,
+        output_dir = None,
+        state_dict = None,
+    ):
+        if not isinstance(self.model, CausalDecisionModel):
+            return super()._save(output_dir, state_dict)
+        # The adapters, or the LLM's weights, plus the head: not one state dict holding the 4-bit LLM.
+        output = Path(self.args.output_dir if output_dir is None else output_dir)
+        output.mkdir(parents = True, exist_ok = True)
+        if hasattr(self.model.encoder, "peft_config"):
+            self.model.encoder.save_pretrained(str(output))
+        else:
+            from safetensors.torch import save_model
+            save_model(self.model.encoder, str(output / "model.safetensors"))
+        _save_causal_head(self.model, output)
+        if self.processing_class is not None:
+            self.processing_class.save_pretrained(str(output))
+        torch.save(self.args, str(output / "training_args.bin"))
+
+    def _load_from_checkpoint(
+        self,
+        resume_from_checkpoint,
+        model = None,
+    ):
+        model = self.model if model is None else model
+        if not isinstance(model, CausalDecisionModel):
+            return super()._load_from_checkpoint(resume_from_checkpoint, model)
+        _load_causal_checkpoint(model, Path(resume_from_checkpoint))
+
+    def _load_best_model(self):
+        if not isinstance(self.model, CausalDecisionModel):
+            return super()._load_best_model()
+        _load_causal_checkpoint(self.model, Path(self.state.best_model_checkpoint))
+
     def _get_train_sampler(self, train_dataset = None):
         dataset = self.train_dataset if train_dataset is None else train_dataset
         # With one micro-batch per step, length grouping would make each step one question type.
@@ -654,8 +689,6 @@ def _save_causal(
     save_method = "lora",
     **kwargs,
 ) -> None:
-    from safetensors.torch import save_file
-
     output = Path(save_directory)
     output.mkdir(parents = True, exist_ok = True)
     (output / _CAUSAL_CONFIG).unlink(missing_ok = True)
@@ -668,16 +701,41 @@ def _save_causal(
         self.encoder.save_pretrained_merged(
             str(output), tokenizer, save_method = save_method, **kwargs
         )
+    _save_causal_head(self, output)
+
+
+def _save_causal_head(model, output: Path) -> None:
+    from safetensors.torch import save_file
+
     head = {
         name: value.detach().to("cpu", torch.float32).contiguous()
-        for name, value in self.state_dict().items()
+        for name, value in model.state_dict().items()
         if not name.startswith("encoder.")
     }
     save_file(head, str(output / _CAUSAL_HEAD))
     # Written last: a folder with decision_config.json is a complete decision model.
     partial = output / f"{_CAUSAL_CONFIG}.tmp"
-    partial.write_text(json.dumps({**self.decision_config, "fine_tuned": True}, indent = 2))
+    partial.write_text(json.dumps({**model.decision_config, "fine_tuned": True}, indent = 2))
     os.replace(partial, output / _CAUSAL_CONFIG)
+
+
+def _load_causal_head(model, folder: Path) -> None:
+    from safetensors.torch import load_file
+    missing, unexpected = model.load_state_dict(load_file(str(folder / _CAUSAL_HEAD)), strict = False)
+    if unexpected or any(not name.startswith("encoder.") for name in missing):
+        raise ValueError(f"Unsloth: {folder / _CAUSAL_HEAD} does not match the decision head.")
+
+
+def _load_causal_checkpoint(model, folder: Path) -> None:
+    from safetensors.torch import load_file, load_model
+    if hasattr(model.encoder, "peft_config"):
+        from peft import set_peft_model_state_dict
+        set_peft_model_state_dict(
+            model.encoder, load_file(str(folder / "adapter_model.safetensors"))
+        )
+    else:
+        load_model(model.encoder, str(folder / "model.safetensors"))
+    _load_causal_head(model, folder)
 
 
 def save_pretrained_causal(
@@ -721,8 +779,6 @@ def _causal_peft(model, **kwargs):
 
 
 def _causal_from_pretrained(model_name, folder: Path, max_seq_length, full_finetuning, **kwargs):
-    from safetensors.torch import load_file
-
     saved = (folder / _CAUSAL_CONFIG).is_file()
     config = json.loads((folder / _CAUSAL_CONFIG).read_text()) if saved else {}
     config.pop("fine_tuned", None)
@@ -747,11 +803,7 @@ def _causal_from_pretrained(model_name, folder: Path, max_seq_length, full_finet
         int(config.get("head_layers", 2)),
     )
     if saved:
-        missing, unexpected = model.load_state_dict(
-            load_file(str(folder / _CAUSAL_HEAD)), strict = False
-        )
-        if unexpected or any(not name.startswith("encoder.") for name in missing):
-            raise ValueError(f"Unsloth: {folder / _CAUSAL_HEAD} does not match the decision head.")
+        _load_causal_head(model, folder)
     device = next(backbone.parameters()).device
     for name, module in model.named_children():
         if name != "encoder":

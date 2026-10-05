@@ -659,6 +659,8 @@ def llm(tmp_path, monkeypatch):
             max_position_embeddings = 512,
             pad_token_id = 0,
             eos_token_id = 1,
+            # Qwen3.5 shares its embeddings with the LM head.
+            tie_word_embeddings = True,
         )
     ).save_pretrained(str(folder))
     calls = []
@@ -781,3 +783,26 @@ def test_llm_trains_saves_and_loads_back(llm, tmp_path):
     assert FastDecisionModel.evaluate(loaded, tokenizer, held) == FastDecisionModel.evaluate(
         model, tokenizer, held
     )
+
+
+@pytest.mark.parametrize("lora", [True, False])
+def test_llm_checkpoints_hold_the_adapters_and_head_and_resume(llm, tmp_path, lora):
+    folder, _ = llm
+    model, tokenizer = FastDecisionModel.from_pretrained(str(folder), full_finetuning = not lora)
+    model = FastDecisionModel.get_peft_model(model, r = 4, lora_alpha = 4)
+    items, _ = FastDecisionModel.build_dataset([_row(i) for i in range(40)], tokenizer, model)
+    args = _args(tmp_path, max_steps = 4, save_strategy = "steps", save_steps = 2)
+    DecisionTrainer(model = model, args = args, train_dataset = items, processing_class = tokenizer).train()
+    checkpoint = tmp_path / "run" / "checkpoint-4"
+    weights = "adapter_model.safetensors" if lora else "model.safetensors"
+    assert (checkpoint / weights).is_file() and (checkpoint / "decision_head.safetensors").is_file()
+    trained = {n: p.detach().clone() for n, p in model.named_parameters() if p.requires_grad}
+
+    fresh, _ = FastDecisionModel.from_pretrained(str(folder), full_finetuning = not lora)
+    fresh = FastDecisionModel.get_peft_model(fresh, r = 4, lora_alpha = 4)
+    trainer = DecisionTrainer(
+        model = fresh, args = args, train_dataset = items, processing_class = tokenizer
+    )
+    trainer._load_from_checkpoint(str(checkpoint))
+    resumed = dict(fresh.named_parameters())
+    assert all(torch.equal(resumed[n], p) for n, p in trained.items())
