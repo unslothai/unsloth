@@ -577,14 +577,27 @@ def test_a_hookless_resident_transformer_takes_hooks_on_demand(monkeypatch):
         assert torch.equal(net(x), ref)
 
 
-def test_a_failed_hook_install_leaves_the_transformer_resident(monkeypatch):
-    """The apply moves the groups' weights to their host copies; a failure after it puts them back on the card."""
+@pytest.mark.parametrize("failure", ["raises", "swallowed"])
+def test_a_failed_hook_install_leaves_the_transformer_resident(monkeypatch, failure):
+    """The apply moves the groups' weights to their host copies; a failure after it puts them back on the card,
+    whether the residency step raises or (as _keep_groups_resident does) reports it as 0 MiB kept."""
     torch, net, x, ref = _hookless_int8_transformer(monkeypatch)
     from core.inference.diffusion_offload_prefetch import module_prefetcher
 
-    def _fail(*_a, **_k):
+    keep = dm._keep_groups_resident
+
+    def _fail(*args, **kwargs):
         assert module_prefetcher(net) is not None  # fails after the prefetcher's install
-        raise RuntimeError("injected")
+        if failure == "raises":
+            raise RuntimeError("injected")
+
+        def _boom(*_a, **_k):
+            raise RuntimeError("injected")
+
+        with monkeypatch.context() as m:
+            m.setattr(dm, "_storage_nbytes", _boom)
+            assert keep(*args, **kwargs) == 0  # the real helper swallows it
+        return 0
 
     monkeypatch.setattr(dm, "_keep_groups_resident", _fail)
     pipe = types.SimpleNamespace(transformer = net, components = {"transformer": net})

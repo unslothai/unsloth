@@ -2857,6 +2857,9 @@ def hook_resident_denoiser(
         if gkwargs.get("record_stream"):
             install_group_prefetch(transformer, onload, logger)
         kept = _keep_groups_resident(transformer, dit_mib + 1, onload, logger)
+        # the helper reports its own failure as 0 MiB kept: anything still streamed is a failed install
+        if not all(getattr(g, "_unsloth_resident", False) for g in _offload_groups(transformer)):
+            raise RuntimeError("not every offload group stayed resident")
     except Exception as exc:  # noqa: BLE001 - the guard still refuses what cannot fit
         # the apply already moved the weights to their host copies: back to the card, as before the call
         _remove_group_offload_hooks(transformer)
