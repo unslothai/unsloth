@@ -462,6 +462,19 @@ def test_the_stub_accepts_every_call_zoo_makes_to_an_inference_helper(mlx_infere
             pass
 
 
+def _without_docstring(body):
+    """The body minus a leading docstring only: any other bare expression (a call, a log line) is
+    behaviour, and dropping it would let the copy miss it."""
+    first = body[0] if body else None
+    if (
+        isinstance(first, ast.Expr)
+        and isinstance(first.value, ast.Constant)
+        and isinstance(first.value.value, str)
+    ):
+        return body[1:]
+    return body
+
+
 def test_each_plain_helper_stub_matches_zoos_body():
     """A plain helper is not neutral, so the stub copies zoo's body; it must stay a copy."""
     import importlib.util
@@ -480,7 +493,7 @@ def test_each_plain_helper_stub_matches_zoos_body():
             continue
         ours = ast.parse(textwrap.dedent(inspect.getsource(helper))).body[0]
         ours_body, zoo_body = (
-            [ast.dump(n) for n in f.body if not isinstance(n, ast.Expr)] for f in (ours, zoo[name])
+            [ast.dump(n) for n in _without_docstring(f.body)] for f in (ours, zoo[name])
         )
         assert ours_body == zoo_body, f"{name} no longer matches unsloth_zoo.mlx.inference"
 
