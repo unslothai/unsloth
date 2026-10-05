@@ -2946,14 +2946,17 @@ class FastBaseModel:
                     "checkpoints (such as gemma-4-26B-A4B), not the dense ones yet. "
                     "Please set fast_inference = False."
                 )
-            if (
-                any(arch in VLLM_ZOO_MOE_VLM for arch in model_types)
-                and not _zoo_supports_moe_fast_inference()
-            ):
-                raise RuntimeError(
-                    f"Unsloth: {model_type_arch} fast_inference needs a newer unsloth_zoo. "
-                    "Please run `pip install --upgrade unsloth_zoo`."
-                )
+        # Outside the VLM block: text_only = True loads the same MoE decoder with is_vlm_config False.
+        if (
+            fast_inference
+            and any(arch in VLLM_ZOO_MOE_VLM for arch in model_types)
+            and _is_sparse_moe_config(auto_config)
+            and not _zoo_supports_moe_fast_inference()
+        ):
+            raise RuntimeError(
+                f"Unsloth: {model_type_arch} fast_inference needs a newer unsloth_zoo. "
+                "Please run `pip install --upgrade unsloth_zoo`."
+            )
 
         if any(arch in VLLM_NON_LORA_VLM for arch in model_types):
             # mllama is still only in vllm v0, and vLLM V0 does not support LoRA on multimodal models. TODO: revisit once vLLM V1 supports Llama 3.2 (mllama).
@@ -3663,15 +3666,24 @@ class FastBaseModel:
                         load_in_16bit,
                     )
 
+                from unsloth_zoo.utils import get_quant_type
+
+                # Same test load_vllm uses to pick its bitsandbytes loader, so a prequantized
+                # checkpoint loaded with load_in_4bit = False is refused here too.
                 if (
-                    load_in_4bit
+                    (
+                        load_in_4bit
+                        or str(model_name).lower().endswith("-bnb-4bit")
+                        or get_quant_type(model_config) == "bitsandbytes"
+                    )
                     and any(arch in VLLM_ZOO_MOE_VLM for arch in model_types)
                     and _is_sparse_moe_config(model_config)
                 ):
                     # vLLM packs bitsandbytes experts into a blob the training model cannot alias, and
                     # does not serve LoRA on bitsandbytes MoE experts, so fail before loading 4-bit weights.
                     raise NotImplementedError(
-                        f"Unsloth: fast_inference = True does not support load_in_4bit = True for the sparse MoE "
+                        f"Unsloth: fast_inference = True does not support bitsandbytes 4-bit weights (load_in_4bit = True "
+                        "or a prequantized bnb-4bit checkpoint) for the sparse MoE "
                         f"model {model_type_arch}: vLLM's bitsandbytes MoE experts cannot be shared with the "
                         "training model, and vLLM does not serve LoRA on bitsandbytes MoE experts.\n"
                         "Use load_in_4bit = False (16-bit LoRA), or fast_inference = False."

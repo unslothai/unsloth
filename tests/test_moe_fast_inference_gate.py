@@ -69,13 +69,88 @@ def test_dense_gemma4_is_refused_at_the_gate():
     numel() on tensor with symbolic sizes/strides`), and in 4-bit it reaches a bitsandbytes
     loader vLLM >= 0.28 moved out of tree. Pin that the gate refuses it before loading."""
     assert set(_module_constant("VLLM_MOE_ONLY_VLM")) == {"gemma4", "gemma4_text"}
-    source = VISION_PATH.read_text(encoding = "utf-8")
-    gate = "if any(arch in VLLM_MOE_ONLY_VLM for arch in model_types) and not _is_sparse_moe_config(auto_config):"
-    assert gate in source
-    allowlist = source.index("if not any(arch in VLLM_SUPPORTED_VLM for arch in model_types):")
-    assert allowlist < source.index(gate) < source.index("llm = load_vllm(**load_vllm_kwargs)")
+    gate, parents = _gate("not the dense ones yet")
+    assert any("fast_inference" in test for test in parents)
+    only_moe = {"VLLM_MOE_ONLY_VLM": _module_constant("VLLM_MOE_ONLY_VLM")}
+    assert _evaluate(gate, model_types = ["gemma4"], auto_config = GEMMA4_DENSE, **only_moe)
+    assert not _evaluate(gate, model_types = ["gemma4"], auto_config = GEMMA4_MOE, **only_moe)
+    assert not _evaluate(gate, model_types = ["qwen3_5"], auto_config = QWEN3_5_DENSE, **only_moe)
 
 
 def test_the_4bit_refusal_uses_the_same_moe_test():
     source = VISION_PATH.read_text(encoding = "utf-8")
     assert "and _is_sparse_moe_config(model_config)" in source
+
+
+def _gate(message, condition = ""):
+    """The `if` whose body raises `message` and whose test mentions `condition`, and the
+    tests of the `if` blocks enclosing it."""
+    def walk(node, parents):
+        for child in ast.iter_child_nodes(node):
+            if isinstance(child, ast.If) and condition in ast.unparse(child.test) and any(
+                isinstance(stmt, ast.Raise) and message in ast.unparse(stmt) for stmt in child.body
+            ):
+                return child, parents
+            found = walk(child, parents + [ast.unparse(child.test)] if isinstance(child, ast.If) else parents)
+            if found:
+                return found
+        return None
+    found = walk(TREE, [])
+    assert found, message
+    return found
+
+
+def _evaluate(node, **names):
+    namespace = {
+        "VLLM_ZOO_MOE_VLM": _module_constant("VLLM_ZOO_MOE_VLM"),
+        "_is_sparse_moe_config": _is_sparse_moe_config(),
+        **names,
+    }
+    return eval(compile(ast.Expression(node.test), str(VISION_PATH), "eval"), namespace)
+
+
+def test_the_zoo_gate_covers_text_only_moe_loads():
+    """text_only = True sets is_vlm_config False, so the zoo gate must not sit under it."""
+    gate, parents = _gate("needs a newer unsloth_zoo", "_zoo_supports_moe_fast_inference")
+    assert not any("is_vlm_config" in test for test in parents)
+    old_zoo = lambda: False
+    # text_only hands over the text config itself.
+    for model_types, config in (
+        (["qwen3_5_moe"], QWEN3_5_MOE.text_config),
+        (["gemma4_text", "gemma4"], GEMMA4_MOE.text_config),
+        (["qwen3_5_moe"], QWEN3_5_MOE),
+    ):
+        refused = _evaluate(
+            gate, fast_inference = True, model_types = model_types,
+            auto_config = config, _zoo_supports_moe_fast_inference = old_zoo,
+        )
+        assert refused, model_types
+    # Dense checkpoints and a new enough unsloth_zoo pass.
+    assert not _evaluate(gate, fast_inference = True, model_types = ["gemma4_text"], auto_config = GEMMA4_DENSE,
+                         _zoo_supports_moe_fast_inference = old_zoo)
+    assert not _evaluate(gate, fast_inference = True, model_types = ["gemma4"], auto_config = GEMMA4_MOE,
+                         _zoo_supports_moe_fast_inference = lambda: True)
+    assert not _evaluate(gate, fast_inference = False, model_types = ["gemma4"], auto_config = GEMMA4_MOE,
+                         _zoo_supports_moe_fast_inference = old_zoo)
+
+
+def test_prequantized_bnb_moe_checkpoints_are_refused_without_load_in_4bit():
+    gate, _ = _gate("bitsandbytes 4-bit weights")
+
+    def quant_type(method):
+        return lambda config: method
+
+    def refused(load_in_4bit, model_name, method, config = GEMMA4_MOE, model_types = ("gemma4",)):
+        return bool(_evaluate(
+            gate, load_in_4bit = load_in_4bit, model_name = model_name, get_quant_type = quant_type(method),
+            model_config = config, model_types = list(model_types),
+        ))
+
+    assert refused(True, "google/gemma-4-26B-A4B-it", None)
+    assert refused(False, "unsloth/gemma-4-26B-A4B-it-bnb-4bit", None)
+    assert refused(False, "someone/gemma-4-26b-moe-4bit", "bitsandbytes")
+    assert refused(False, "Qwen/Qwen3.6-35B-A3B", "bitsandbytes", QWEN3_5_MOE, ("qwen3_5_moe",))
+    # 16-bit, FP8 and dense checkpoints are not refused here.
+    assert not refused(False, "google/gemma-4-26B-A4B-it", None)
+    assert not refused(False, "Qwen/Qwen3.6-35B-A3B-FP8", "fp8", QWEN3_5_MOE, ("qwen3_5_moe",))
+    assert not refused(False, "unsloth/gemma-4-E2B-it-bnb-4bit", "bitsandbytes", GEMMA4_DENSE)
