@@ -147,8 +147,8 @@ def _cached_repos():
                 yield entry[len("models--") :].replace("--", "/")
 
 
-def discover_companions(target_name: str, target_config: dict) -> list:
-    """Cached companion drafters whose repo names ``target_name``'s model and whose vocabulary matches, in auto's order."""
+def cached_drafters(target_name: str, target_config: dict) -> list:
+    """``(repo, source)`` for each cached companion drafter whose repo names ``target_name``'s model and whose vocabulary matches, in auto's order."""
     from utils.utils import hf_cache_snapshot_dir_for_repo
 
     stem, vocab, found = _stem(target_name), _vocab_size(target_config), []
@@ -169,7 +169,11 @@ def discover_companions(target_name: str, target_config: dict) -> list:
                 DrafterSource(_reported(kind), str(snapshot), False),
             )
         )
-    return [source for _, _, source in sorted(found)]
+    return [(repo, source) for _, repo, source in sorted(found)]
+
+
+def discover_companions(target_name: str, target_config: dict) -> list:
+    return [source for _, source in cached_drafters(target_name, target_config)]
 
 
 def _named_companion(spec_draft_model: str) -> Optional[DrafterSource]:
@@ -226,9 +230,13 @@ def resolve_speculation(
     return SpecResolution(mode, tuple(sources), copies = True, reason = reason)
 
 
-def speculates_on_route(mode: str, vision: bool) -> bool:
-    """Whether a load in ``mode`` looks for a drafter: auto only where mlx-vlm serves it anyway."""
-    return mode != "off" and (mode != "auto" or vision)
+def speculates_on_route(
+    mode: str,
+    vision: bool,
+    named = None,
+) -> bool:
+    """Whether a load in ``mode`` looks for a drafter: auto only where mlx-vlm serves it anyway, or for a drafter the request names."""
+    return mode != "off" and (mode != "auto" or vision or bool(named))
 
 
 _MAX_DEPTH = (
@@ -257,7 +265,11 @@ def speculation_refusal(*, kv_quant: bool, distributed: bool, lora: bool) -> Opt
 
 
 def _draft(drafter, copies: bool, draft_n_max: Optional[int]):
-    from unsloth_zoo.mlx.speculative import DraftController, install_speculative_seam, SpeculativeDraft
+    from unsloth_zoo.mlx.speculative import (
+        DraftController,
+        install_speculative_seam,
+        SpeculativeDraft,
+    )
 
     depth = 0 if drafter is None else int(getattr(drafter, "max_depth", _MAX_DEPTH))
     copy, exact = _MAX_COPY, False

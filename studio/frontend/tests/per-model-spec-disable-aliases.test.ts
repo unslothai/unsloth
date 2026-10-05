@@ -15,6 +15,15 @@ const { loadedConfigSignature } = await import(
   "../src/features/model-picker/model-config/config-signature.ts"
 );
 
+const { mlxDrafterChoices } = await import("../src/lib/speculative-modes.ts");
+
+test("the drafter picker offers the mode's cached drafters and keeps a saved one visible", () => {
+  const cached = [{ repo: "o/m-MTP", kind: "mtp" }, { repo: "o/m-DFlash", kind: "dflash" }];
+  assert.deepEqual(mlxDrafterChoices(cached, "auto", null), ["o/m-MTP", "o/m-DFlash"]);
+  assert.deepEqual(mlxDrafterChoices(cached, "dflash", "o/m-DFlash"), ["o/m-DFlash"]);
+  assert.deepEqual(mlxDrafterChoices(cached, "mtp", "/local/drafter"), ["/local/drafter", "o/m-MTP"]);
+});
+
 const specOf = (value: string) =>
   normalizePerModelConfig({ speculativeType: value }).speculativeType;
 

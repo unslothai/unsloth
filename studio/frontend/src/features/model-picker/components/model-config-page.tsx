@@ -70,6 +70,8 @@ import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import {
   DRAFTER_MODEL_SPEC_TYPES,
   MLX_SPECULATIVE_TYPES,
+  type MlxDrafter,
+  mlxDrafterChoices,
   mlxSpeculativeMode,
   resolveSpeculativeType,
 } from "@/lib/speculative-modes";
@@ -100,6 +102,7 @@ import {
   subscribeLlamaFlagCatalog,
 } from "../api/llama-flags";
 import { type MemoryEstimate } from "../api/memory-estimate";
+import { fetchMlxDrafters } from "../api/mlx-drafters";
 import {
   resolveEstimateContext,
   resolveMlxEstimateContext,
@@ -1207,11 +1210,22 @@ function MlxSpeculativeRows({
   config,
   update,
   speculativeFallback,
+  modelPath,
 }: {
   config: PerModelConfig;
   update: (patch: Partial<PerModelConfig>) => void;
   speculativeFallback: string;
+  modelPath: string;
 }) {
+  const [drafters, setDrafters] = useState<MlxDrafter[]>([]);
+  useEffect(() => {
+    const controller = new AbortController();
+    setDrafters([]);
+    fetchMlxDrafters(modelPath, controller.signal)
+      .then((found) => !controller.signal.aborted && setDrafters(found))
+      .catch(() => {});
+    return () => controller.abort();
+  }, [modelPath]);
   const mode = mlxSpeculativeMode(
     config.speculativeType ??
       resolveSpeculativeType(null, speculativeFallback, true),
@@ -1301,33 +1315,40 @@ function MlxSpeculativeRows({
           <div className="flex min-w-0 items-center gap-1.5">
             <span className={LABEL_CLASS}>Drafter</span>
             <InfoHint>
-              A drafter repo already in the Hugging Face cache, or a local
-              folder. Leave blank to use the model's own head or a matching
-              cached drafter.
+              A drafter for this model from the local Hugging Face cache. Auto
+              uses the model's own head or the first matching cached drafter.
             </InfoHint>
           </div>
-          <input
-            type="text"
-            value={config.specDraftModel ?? ""}
-            placeholder="auto"
-            spellCheck={false}
-            onChange={(event) => {
-              const raw = event.target.value;
+          <Select
+            value={config.specDraftModel ?? "auto"}
+            onValueChange={(v) =>
               update(
                 pinSpeculativeMode(config, mode, {
-                  specDraftModel: raw === "" ? null : raw,
+                  specDraftModel: v === "auto" ? null : v,
                 }),
-              );
-            }}
-            onBlur={(event) => {
-              const trimmed = event.target.value.trim();
-              if (trimmed !== event.target.value) {
-                update({ specDraftModel: trimmed === "" ? null : trimmed });
-              }
-            }}
-            aria-label="Speculative decoding drafter"
-            className={TEXT_INPUT_CLASS}
-          />
+              )
+            }
+          >
+            <SelectTrigger
+              animateRadius={false}
+              icon={ChevronDownStandardIcon}
+              iconClassName="size-3.5"
+              aria-label="Speculative decoding drafter"
+              className={SELECT_TRIGGER_CLASS}
+            >
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent className="menu-soft-surface ring-0 border-0 rounded-lg">
+              <SelectItem value="auto">Auto</SelectItem>
+              {mlxDrafterChoices(drafters, mode, config.specDraftModel ?? null).map(
+                (repo) => (
+                  <SelectItem key={repo} value={repo}>
+                    {repo}
+                  </SelectItem>
+                ),
+              )}
+            </SelectContent>
+          </Select>
         </div>
       )}
     </>
@@ -1342,6 +1363,7 @@ function MlxAdvancedSettings({
   int8PrefillAvailable,
   onInt8PrefillChange,
   speculativeFallback,
+  modelPath,
   onEditTemplate,
   templateOutcome,
 }: {
@@ -1354,6 +1376,7 @@ function MlxAdvancedSettings({
   int8PrefillAvailable: boolean;
   onInt8PrefillChange: (checked: boolean) => void;
   speculativeFallback: string;
+  modelPath: string;
   onEditTemplate: () => void;
   /** Why the loaded model could not take the override it was given. */
   templateOutcome: string | null;
@@ -1428,6 +1451,7 @@ function MlxAdvancedSettings({
           config={config}
           update={update}
           speculativeFallback={speculativeFallback}
+          modelPath={modelPath}
         />
       )}
       {servedByMlx && (
@@ -3778,6 +3802,7 @@ export function ModelConfigPage({
                         : update({ mlxInt8Prefill: false })
                     }
                     speculativeFallback={speculativeFallback}
+                    modelPath={target.id}
                     onEditTemplate={() => setTemplateOpen(true)}
                     templateOutcome={chatTemplateOutcome}
                   />

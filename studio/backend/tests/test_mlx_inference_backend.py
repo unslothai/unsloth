@@ -3333,6 +3333,28 @@ def test_an_explicit_speculative_mode_loads_through_mlx_vlm_and_attaches_what_fi
     attempts.clear()
     backend.load_model(config)
     assert attempts == [True] and backend.models["org/text"]["speculative_type"] == "auto"
+    failing.clear()
+    fit = lambda *a, **kw: fits.append(kw.get("vision")) or (None, None)
+    monkeypatch.setattr(mlx_inference, "_fitted_context", fit)
+    monkeypatch.setattr(mlx_inference, "mlx_drafter_fit", lambda *a, **k: (False, None))
+    backend.load_model(config, max_seq_length = 0, speculative_type = "ngram")
+    assert fits[-1] is True  # copies alone still load through mlx-vlm, so the fit prices that route
+    backend.load_model(config, max_seq_length = 0, spec_draft_model = "org/d")
+    assert fits[-2:] == [True, True]  # a named drafter enters the speculative route under Auto
+    # ... and is a request, so a load that cannot honour it says why.
+    failing.append(True)
+    backend.load_model(config, spec_draft_model = "org/d")
+    monkeypatch.setattr(
+        mlx_speculative, "speculation_refusal", lambda **_k: mlx_speculative.KV_QUANT
+    )
+    reasons = [
+        entry["spec_fallback_reason"]
+        for entry in (
+            dict(backend.models["org/text"]),
+            backend.load_model(config, spec_draft_model = "org/d") and backend.models["org/text"],
+        )
+    ]
+    assert reasons == [mlx_speculative.RUNTIME_ERROR, mlx_speculative.KV_QUANT]
 
 
 def test_a_text_model_mlx_vlm_cannot_load_is_served_without_turboquant(monkeypatch):
@@ -5369,6 +5391,7 @@ def _drive_vlm_generation(
 
 
 def test_a_speculative_load_drafts_eligible_single_replies(monkeypatch):
+    pytest.importorskip("mlx_lm")
     import sys
     import types
 
@@ -5417,6 +5440,12 @@ def test_a_speculative_load_drafts_eligible_single_replies(monkeypatch):
     mlx_inference._VisionBatchSession(backend, width = 2)
     list(backend.generate_chat_batch([{}, {}]))
     assert opened == [draft, mlx_inference._VisionBatchSession]
+    del backend._generate_session_batch
+    steps, cancel = [], threading.Event()
+    step = lambda waiting: steps.append(waiting) or setattr(session, "rows_in_flight", 0) or ()
+    session = SimpleNamespace(admit = lambda *a: None, rows_in_flight = 1, step = step, close = list)
+    list(backend._generate_session_batch([{}], lambda *a, **k: session, cancel_event = cancel))
+    assert steps == [cancel.is_set]  # a cancelled reply ends its speculative step early
 
 
 def _stub_prepare_inputs(monkeypatch, per_medium = 520):
@@ -6028,6 +6057,7 @@ def test_what_the_fit_is_asked_and_when_it_is_asked_at_all(monkeypatch, tmp_path
             "dir": str(tmp_path),
         }
     ]
+    assert fit(vision = True) and priced[0]["vision"] is True
     # The width the cache will take is the width the fit is priced at.
     for answer, bits in ((("full", "", True), 4), (("partial", "w", True), 4)):
         verdict["answer"] = answer

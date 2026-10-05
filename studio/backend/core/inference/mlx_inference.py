@@ -4657,7 +4657,9 @@ class MLXInferenceBackend:
         )
         spec_mode = mlx_speculative.mlx_spec_mode(speculative_type)
         spec_reason = None
-        speculates = mlx_speculative.speculates_on_route(spec_mode, bool(is_vision))
+        speculates = mlx_speculative.speculates_on_route(
+            spec_mode, bool(is_vision), spec_draft_model
+        )
         if speculates:
             spec_reason = mlx_speculative.speculation_refusal(
                 kv_quant = kv_bits is not None or self._turboquant,
@@ -4665,7 +4667,9 @@ class MLXInferenceBackend:
                 lora = is_lora,
             )
             speculates = spec_reason is None
-            if spec_mode == "auto":  # not a request, so no refusal to report
+            if (
+                spec_mode == "auto" and not spec_draft_model
+            ):  # not a request, so no refusal to report
                 spec_reason = None
         self._speculative_draft = None
         # mlx-lm cannot batch a quantized cache; mlx-vlm, which also ships text architectures, can.
@@ -4786,7 +4790,11 @@ class MLXInferenceBackend:
             mx.clear_cache()
             if speculates:
                 speculates = False
-                spec_reason = None if spec_mode == "auto" else mlx_speculative.RUNTIME_ERROR
+                spec_reason = (
+                    None
+                    if spec_mode == "auto" and not spec_draft_model
+                    else mlx_speculative.RUNTIME_ERROR
+                )
             elif self._turboquant:
                 self._turboquant_refusal = MLX_TURBOQUANT_TEXT_LOAD
             use_vlm = False

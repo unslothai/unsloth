@@ -5171,3 +5171,28 @@ def test_the_total_never_falls_as_the_context_grows(repo, kv_bits, whole_prompt)
     steps = range(mm.MLX_KV_BLOCK, 262_145, mm.MLX_KV_BLOCK)
     totals = [mm._priced_at(sizing, n).total_bytes for n in steps]
     assert totals == sorted(totals)
+
+
+def test_the_drafter_picker_lists_cached_drafters_of_a_cached_target(tmp_path, monkeypatch):
+    from core.inference import mlx_speculative
+
+    (tmp_path / "config.json").write_text('{"vocab_size": 7}')
+    found = [
+        ("o/T-DFlash", SimpleNamespace(kind = "dflash")),
+        ("o/T-MTP", SimpleNamespace(kind = "mtp")),
+    ]
+    monkeypatch.setattr(
+        mlx_speculative,
+        "cached_drafters",
+        lambda name, config: found if (name, config) == ("o/T", {"vocab_size": 7}) else [],
+    )
+    monkeypatch.setattr(
+        "utils.utils.hf_cache_snapshot_dir", lambda name: tmp_path if name == "o/T" else None
+    )
+    assert ri._mlx_cached_drafters("o/T") == [
+        {"repo_id": "o/T-DFlash", "kind": "dflash"},
+        {"repo_id": "o/T-MTP", "kind": "mtp"},
+    ]
+    assert ri._mlx_cached_drafters("o/absent") == []
+    monkeypatch.setattr(ri.account_access, "filter_model_rows", lambda rows: rows[1:])
+    assert [row["repo_id"] for row in ri._mlx_cached_drafters("o/T")] == ["o/T-MTP"]

@@ -3740,6 +3740,8 @@ from models.inference import (
     EstimateMemoryResponse,
     Int8PrefillAvailabilityRequest,
     Int8PrefillAvailabilityResponse,
+    MlxDraftersRequest,
+    MlxDraftersResponse,
     TransformersUpgradeInfo,
     TransformersUpgradeCheckRequest,
     TransformersUpgradeCheckResponse,
@@ -20970,6 +20972,35 @@ async def estimate_memory(
     # Header walks and file stats are blocking; keep them off the event loop so a
     # slider drag cannot stall streaming chats.
     return await asyncio.to_thread(_estimate)
+
+
+def _mlx_cached_drafters(model_path: str) -> list:
+    from core.inference import mlx_speculative
+    from utils.utils import hf_cache_snapshot_dir
+
+    model_dir = model_path if os.path.isdir(model_path) else hf_cache_snapshot_dir(model_path)
+    if model_dir is None:
+        return []
+    config = mlx_speculative._read_config(model_dir)
+    # The cache is shared between accounts: list only what this one may see.
+    return account_access.filter_model_rows(
+        [
+            {"repo_id": repo, "kind": source.kind}
+            for repo, source in mlx_speculative.cached_drafters(model_path, config)
+        ]
+    )
+
+
+@router.post("/mlx-drafters", response_model = MlxDraftersResponse)
+async def mlx_drafters(
+    request: MlxDraftersRequest, current_subject: str = Depends(get_current_subject)
+):
+    """Cached drafters an MLX load of this model could name. Reads only local config files."""
+    if account_access.managed_account():
+        await asyncio.to_thread(account_access.require_model_access, request.model_path)
+    return MlxDraftersResponse(
+        drafters = await asyncio.to_thread(_mlx_cached_drafters, request.model_path)
+    )
 
 
 @router.post("/unload", response_model = UnloadResponse)

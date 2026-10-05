@@ -75,6 +75,8 @@ def test_auto_takes_every_cached_kind_in_preference_order(cache):
         _resolve("auto").reason or _resolve("off").speculative
     )
     assert [spec.speculates_on_route("auto", vision) for vision in (False, True)] == [False, True]
+    listed = [(repo, s.kind) for repo, s in spec.cached_drafters(_TARGET, {"vocab_size": 10})]
+    assert listed == [("a/Qwen3.5-4B-DFlash", "dflash"), ("b/Qwen3.5-4B-Eagle3", "eagle3")]
     mtp_head = {"h/Qwen3.5-4B-MTP-bf16": {"model_type": "qwen3_5_mtp"}}
     _resolve = cache({"g/Qwen3.5-4B-assistant": _ASSISTANT, **mtp_head}, True)
     for mode in (None, "bogus", "auto"):

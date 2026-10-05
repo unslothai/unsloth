@@ -1107,6 +1107,23 @@ class Int8PrefillAvailabilityResponse(BaseModel):
     )
 
 
+class MlxDraftersRequest(BaseModel):
+    model_path: str = Field(..., description = "Model identifier or local path of the target")
+
+    _resolve_the_handle = field_validator("model_path")(resolve_inventory_handle)
+
+
+class MlxDrafter(BaseModel):
+    repo_id: str = Field(..., description = "Cached Hugging Face repo, usable as spec_draft_model")
+    kind: str = Field(..., description = "'mtp', 'dflash', 'dspark' or 'eagle3'")
+
+
+class MlxDraftersResponse(BaseModel):
+    """Cached drafters an MLX load of the target could name, in Auto's order of preference."""
+
+    drafters: list[MlxDrafter] = Field(default_factory = list)
+
+
 class EstimateMemoryResponse(BaseModel):
     """Itemized memory an inference load would occupy, or why it could not be sized."""
 
