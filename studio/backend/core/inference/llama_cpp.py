@@ -2522,7 +2522,7 @@ _BOOTSTRAP_SWA_DEFAULTS: dict[str, int] = {
 }
 
 # Process-wide cache backed by JSON on disk. Values are int period or
-# list[bool] mask. Lazy-loaded.
+# list[bool] mask; `__missed_repos__` lists casefolded repos with no SWA field. Lazy-loaded.
 _SWA_CACHE: Optional[dict] = None
 _SWA_CACHE_LOCK = threading.Lock()
 
@@ -2704,25 +2704,56 @@ def _swa_entry_from_layer_types(lt) -> Optional[object]:
     return None
 
 
+_SWA_CONFIRMED_MISS = False
+_SWA_MISSED_REPOS_KEY = "__missed_repos__"
+
+
+def _swa_missed_repos(cache: dict) -> set:
+    missed = cache.get(_SWA_MISSED_REPOS_KEY)
+    if not isinstance(missed, list):
+        return set()
+    return {item.casefold() for item in missed if isinstance(item, str)}
+
+
+def _remember_swa_repo_miss(cache: dict, repo_id: str) -> None:
+    folded = repo_id.casefold()
+    with _SWA_CACHE_LOCK:
+        missed = _swa_missed_repos(cache)
+        if folded in missed:
+            return
+        missed.add(folded)
+        cache[_SWA_MISSED_REPOS_KEY] = sorted(missed)
+    _save_swa_cache(cache)
+
+
 def _fetch_swa_entry_from_hf(repo_id: str) -> Optional[object]:
     try:
-        from huggingface_hub import hf_hub_download
+        from huggingface_hub import hf_hub_download, try_to_load_from_cache
         from utils.hf_cache_settings import active_hf_hub_cache
         from utils.hf_probe import hf_file_definitely_absent
 
-        # Avoid caching the expected 404 for GGUF repos without config.json.
-        if hf_file_definitely_absent(repo_id, "config.json"):
-            return None
-        cfg_path = call_hub_with_anonymous_retry(
-            hf_hub_download,
-            None,
-            repo_id,
-            "config.json",
-            repo_type = "model",
-            cache_dir = active_hf_hub_cache(),
-        )
-        with open(cfg_path, encoding = "utf-8-sig") as f:
-            cfg = json.load(f)
+        cached = try_to_load_from_cache(repo_id, "config.json", cache_dir = active_hf_hub_cache())
+        if isinstance(cached, str):
+            with open(cached, encoding = "utf-8-sig") as f:
+                cfg = json.load(f)
+        else:
+            # Only a confirmed 404 is a miss; timeouts, 429 and gated stay None so a later load retries.
+            if hf_file_definitely_absent(repo_id, "config.json"):
+                return _SWA_CONFIRMED_MISS
+            # Throwaway cache: a config-only repo in the user's cache lists as a phantom model (#10047).
+            with tempfile.TemporaryDirectory(
+                prefix = "unsloth-swa-", ignore_cleanup_errors = True
+            ) as tmp:
+                cfg_path = call_hub_with_anonymous_retry(
+                    hf_hub_download,
+                    None,
+                    repo_id,
+                    "config.json",
+                    repo_type = "model",
+                    cache_dir = tmp,
+                )
+                with open(cfg_path, encoding = "utf-8-sig") as f:
+                    cfg = json.load(f)
     except Exception:
         return None
 
@@ -2730,7 +2761,8 @@ def _fetch_swa_entry_from_hf(repo_id: str) -> Optional[object]:
     period = src.get("sliding_window_pattern")
     if isinstance(period, int) and period > 0:
         return period
-    return _swa_entry_from_layer_types(src.get("layer_types"))
+    entry = _swa_entry_from_layer_types(src.get("layer_types"))
+    return entry if entry is not None else _SWA_CONFIRMED_MISS
 
 
 def _arch_aliases(arch: str) -> tuple:
@@ -2842,12 +2874,21 @@ def _resolve_swa_pattern(
         _persist(entry)
         return _entry_to_mask(entry)
 
-    # Tier 3: live HF fetch (result persistently cached)
+    # Tier 3: live HF fetch. Misses are keyed per repo, not arch: a new GGUF may name a new source.
     if allow_network:
+        seen = set()
+        missed = _swa_missed_repos(cache)
         for repo_id in source_repo_candidates:
             if not repo_id:
                 continue
+            folded = repo_id.casefold()
+            if folded in seen or folded in missed:
+                continue
+            seen.add(folded)
             entry = _fetch_swa_entry_from_hf(repo_id)
+            if entry is _SWA_CONFIRMED_MISS:
+                _remember_swa_repo_miss(cache, folded)
+                continue
             if entry is not None:
                 _persist(entry)
                 return _entry_to_mask(entry)
