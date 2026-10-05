@@ -157,6 +157,21 @@ def test_placement_reads_every_level_of_torchao_weights(version):
     assert all(x.data_ptr() != 0 for x in leaves)
 
 
+def test_a_host_tensor_input_is_never_recorded():
+    _cuda()
+    net = _net(blocks = 1).cuda()
+    handle, _ = bg.install_block_graphs(net, device = "cuda", slots = False)
+    graph = handle.graphs[0]
+    width = graph.block.lin.in_features
+    x = torch.randn(4, width, device = "cuda")
+    with torch.inference_mode():
+        for i in range(4):
+            temb = torch.tensor(float(i))  # a 0-dim host scalar a CUDA op reads at launch
+            assert torch.equal(graph(x, temb = temb), graph.compute(x, temb = temb))
+    assert graph.stats["refused_host_input"] == 4 and graph.stats["captures"] == 0
+    handle.free()
+
+
 def test_weight_placement_is_none_while_a_weight_is_on_the_host():
     view = bg._WeightView(Block())
     assert view.placement(None) is None
