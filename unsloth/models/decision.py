@@ -816,7 +816,9 @@ def _save_clef(self, save_directory, tokenizer) -> None:
             config["head_temperature"] = temperature
     weights = {}
     for name, value in state.items():
-        value = value.to(torch.bfloat16).contiguous()
+        # The logit scales stay float32: a folded temperature moves them, and bfloat16's 8 bit
+        # mantissa would turn that into a few percent on every logit.
+        value = value.to(torch.float32 if value.dim() == 0 else torch.bfloat16).contiguous()
         if not torch.isfinite(value).all():
             raise ValueError(
                 f"Unsloth: head weight {name} is not finite, so the model cannot be saved."
@@ -1106,7 +1108,11 @@ def _metrics(logits, items, temperatures) -> dict:
     }
 
 
-def _fit_temperature(logits, items) -> float:
+def _fit_temperature(
+    logits,
+    items,
+    line_search = None,
+) -> float:
     options = max(len(z) for z in logits)
     z = torch.full((len(logits), options), -1e4)
     target = torch.zeros((len(logits), options))
@@ -1114,7 +1120,8 @@ def _fit_temperature(logits, items) -> float:
         z[i, : len(row)] = row
         target[i, : len(row)] = torch.tensor(item["target"])
     log_t = torch.zeros(1, requires_grad = True)
-    optimizer = torch.optim.LBFGS([log_t], lr = 0.1, max_iter = 100)
+    # Clef's hard-label fit passes "strong_wolfe": plain LBFGS can overshoot on peaked targets.
+    optimizer = torch.optim.LBFGS([log_t], lr = 0.1, max_iter = 100, line_search_fn = line_search)
 
     def closure():
         optimizer.zero_grad()
@@ -1169,7 +1176,9 @@ def _calibrate_clef(config: dict, logits, items) -> dict:
 
     def fit(indices) -> tuple:
         chosen = list(indices)
-        head = _fit_temperature([logits[i] for i in chosen], [hard[i] for i in chosen])
+        head = _fit_temperature(
+            [logits[i] for i in chosen], [hard[i] for i in chosen], line_search = "strong_wolfe"
+        )
         head = min(max(head, HEAD_TEMPERATURE_RANGE[0]), HEAD_TEMPERATURE_RANGE[1])
         scaled = [z / head for z in logits]
         relative, fitted = _fit_temperatures(scaled, hard, chosen, [1.0] * 3)
