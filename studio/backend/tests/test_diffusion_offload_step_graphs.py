@@ -345,7 +345,7 @@ def test_both_graph_pools_are_kept_out_of_the_reclaimable_memory(monkeypatch):
     )
     monkeypatch.setattr(torch.cuda, "memory_reserved", lambda *a: 900 << 20)
     monkeypatch.setattr(torch.cuda, "memory_allocated", lambda *a: 100 << 20)
-    monkeypatch.setattr(bg, "pool_bytes", lambda: 300 << 20)
+    monkeypatch.setattr(bg, "pool_bytes", lambda device = None: 300 << 20)
     monkeypatch.setattr(cg, "live_pool_free_bytes", lambda: 200 << 20)
     mem = dm.reclaimable_snapshot_device_memory(types.SimpleNamespace(device = "cuda"))
     assert mem.free_mib == 1000 + 800 - 300 - 200
