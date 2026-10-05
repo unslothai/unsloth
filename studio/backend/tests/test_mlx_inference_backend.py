@@ -24,18 +24,53 @@ def native_vlm_generation_context():
     return mlx_inference._vlm_generation_context
 
 
+FUSIONS = (
+    "moe_gate_up",
+    "decode_conv_silu",
+    "residual_norm",
+    "moe_router",
+    "moe_routed_experts",
+    "residual_norm_handoff",
+)
+
+
 @pytest.fixture(autouse = True)
 def mlx_inference_patches(monkeypatch, native_vlm_generation_context):
     from core.inference import mlx_inference
 
     monkeypatch.setattr(mlx_inference, "_vlm_generation_context", contextlib.nullcontext)
     module = types.ModuleType("unsloth_zoo.mlx.inference")
-    module.fused_moe_gate_up = contextlib.nullcontext
-    module.fused_decode_conv_silu = contextlib.nullcontext
-    module.fused_residual_norm = contextlib.nullcontext
-    module.fused_moe_router = contextlib.nullcontext
+    for name in FUSIONS:
+        setattr(module, f"fused_{name}", _neutral_scope)
+    module.__getattr__ = _neutral_zoo_helper
     monkeypatch.setitem(sys.modules, "unsloth_zoo.mlx.inference", module)
     return module
+
+
+def _neutral_scope(
+    model = None,
+    *_args,
+    **_kwargs,
+):
+    """A scope that does nothing and yields the model, whatever else zoo passes.
+
+    contextlib.nullcontext takes one argument, so it stood in only while every helper took just the
+    model. unsloth_zoo #1546 calls nax_quantized_linear(model, int8_prefill), and the stub raised
+    TypeError inside generation_mode on every macOS vision batch test.
+    """
+    return contextlib.nullcontext(model)
+
+
+def _neutral_zoo_helper(name):
+    """Every other public helper zoo's generate.py enters around a model is neutral too.
+
+    unsloth_zoo #1541 added nax_quantized_linear to that import list, and a stub holding only the
+    fused_* names failed every real-model test on macOS with an ImportError. fused_* stay explicit,
+    so a test that deletes one still sees it missing.
+    """
+    if name.startswith("_") or name.startswith("fused_"):
+        raise AttributeError(name)
+    return _neutral_scope
 
 
 @pytest.fixture
@@ -48,9 +83,7 @@ def mlx_decode(mlx_inference_patches):
     return mlx_inference_patches
 
 
-@pytest.mark.parametrize(
-    "feature", ["moe_gate_up", "decode_conv_silu", "residual_norm", "moe_router"]
-)
+@pytest.mark.parametrize("feature", FUSIONS)
 @pytest.mark.parametrize(
     "error",
     [
@@ -86,9 +119,7 @@ def test_mlx_fusion_import_never_fails_the_request(monkeypatch, error, feature):
         assert active is model
 
 
-@pytest.mark.parametrize(
-    "feature", ["moe_gate_up", "decode_conv_silu", "residual_norm", "moe_router"]
-)
+@pytest.mark.parametrize("feature", FUSIONS)
 def test_mlx_fusion_that_cannot_be_entered_keeps_native(
     monkeypatch, mlx_inference_patches, feature
 ):
@@ -108,9 +139,7 @@ def test_mlx_fusion_that_cannot_be_entered_keeps_native(
         assert active is model
 
 
-@pytest.mark.parametrize(
-    "feature", ["moe_gate_up", "decode_conv_silu", "residual_norm", "moe_router"]
-)
+@pytest.mark.parametrize("feature", FUSIONS)
 @pytest.mark.parametrize(
     "message",
     [
@@ -139,9 +168,7 @@ def test_mlx_dead_gpu_queue_is_not_reported_as_a_working_fallback(
     assert mlx_inference._MLX_FUSION_UNAVAILABLE == set()
 
 
-@pytest.mark.parametrize(
-    "feature", ["moe_gate_up", "decode_conv_silu", "residual_norm", "moe_router"]
-)
+@pytest.mark.parametrize("feature", FUSIONS)
 def test_mlx_packing_that_runs_out_of_memory_still_keeps_native(
     monkeypatch, mlx_inference_patches, feature
 ):
@@ -219,7 +246,7 @@ def test_mlx_fusion_that_refuses_everywhere_still_generates(monkeypatch, mlx_moe
 
         return refuse
 
-    for name in ("moe_gate_up", "decode_conv_silu", "residual_norm", "moe_router"):
+    for name in FUSIONS:
         monkeypatch.setattr(mlx_moe, f"fused_{name}", _refusing(name))
     monkeypatch.setattr(mlx_inference, "_MLX_FUSION_UNAVAILABLE", set())
     config = SimpleNamespace(identifier = "fake/text", is_vision = False, is_lora = False)
@@ -229,9 +256,7 @@ def test_mlx_fusion_that_refuses_everywhere_still_generates(monkeypatch, mlx_moe
     stream = backend.generate_chat_response(messages = [{"role": "user", "content": "p"}])
     assert next(stream) == "7"
     stream.close()
-    assert Counter(refused) == Counter(
-        moe_gate_up = 2, decode_conv_silu = 1, residual_norm = 1, moe_router = 1
-    )
+    assert Counter(refused) == Counter({**dict.fromkeys(FUSIONS, 1), "moe_gate_up": 2})
 
 
 def _all_fusions_refuse(monkeypatch, patches):
@@ -248,7 +273,7 @@ def _all_fusions_refuse(monkeypatch, patches):
 
         return refuse
 
-    for name in ("moe_gate_up", "decode_conv_silu", "residual_norm", "moe_router"):
+    for name in FUSIONS:
         monkeypatch.setattr(patches, f"fused_{name}", _refusing(name))
     monkeypatch.setattr(mlx_inference, "_MLX_FUSION_UNAVAILABLE", set())
     return refused
@@ -292,9 +317,7 @@ def test_mlx_vlm_generation_survives_every_fusion_refusing(monkeypatch, mlx_infe
         None,
     )
     assert list(backend._generate_vlm(*args)) == ["ok"]
-    assert Counter(refused) == Counter(
-        moe_gate_up = 1, decode_conv_silu = 1, residual_norm = 1, moe_router = 1
-    )
+    assert Counter(refused) == Counter(dict.fromkeys(FUSIONS, 1))
 
 
 def test_mlx_audio_input_generation_survives_every_fusion_refusing(
@@ -330,14 +353,94 @@ def test_mlx_audio_input_generation_survives_every_fusion_refusing(
             max_new_tokens = 64,
         )
     ) == ["H", "e", "l"]
-    assert Counter(refused) == Counter(
-        moe_gate_up = 1, decode_conv_silu = 1, residual_norm = 1, moe_router = 1
-    )
+    assert Counter(refused) == Counter(dict.fromkeys(FUSIONS, 1))
+
+
+def _zoo_inference_imports():
+    """Names zoo's own modules import from unsloth_zoo.mlx.inference, read from source without importing zoo."""
+    import importlib.util
+
+    spec = importlib.util.find_spec("unsloth_zoo")
+    if spec is None or not spec.submodule_search_locations:
+        pytest.skip("unsloth_zoo source is not available")
+    root = Path(next(iter(spec.submodule_search_locations))) / "mlx"
+    names = set()
+    for path in sorted(root.glob("*.py")):
+        for node in ast.walk(ast.parse(path.read_text(encoding = "utf-8"))):
+            if isinstance(node, ast.ImportFrom) and (
+                (node.level == 1 and node.module == "inference")
+                or node.module == "unsloth_zoo.mlx.inference"
+            ):
+                names.update(alias.name for alias in node.names)
+    if not names:
+        pytest.skip("this unsloth_zoo imports nothing from mlx.inference")
+    return names
+
+
+def test_the_stub_answers_every_helper_zoo_imports_from_inference(mlx_inference_patches):
+    import importlib
+
+    stub = importlib.import_module("unsloth_zoo.mlx.inference")
+    assert stub is mlx_inference_patches
+    missing = sorted(name for name in _zoo_inference_imports() if not hasattr(stub, name))
+    assert not missing, f"zoo imports {missing} from mlx.inference and the stub cannot answer them"
+
+
+def test_an_unknown_zoo_helper_is_neutral_but_a_deleted_fusion_stays_missing(
+    monkeypatch, mlx_inference_patches
+):
+    from unsloth_zoo.mlx.inference import nax_quantized_linear  # noqa: F401
+
+    model = object()
+    with mlx_inference_patches.some_future_helper(model) as active:
+        assert active is model
+    monkeypatch.delattr(mlx_inference_patches, "fused_moe_router")
+    with pytest.raises(ImportError):
+        from unsloth_zoo.mlx.inference import fused_moe_router  # noqa: F401
+    assert not hasattr(mlx_inference_patches, "_private")
 
 
 @pytest.mark.parametrize(
-    "feature", ["moe_gate_up", "decode_conv_silu", "residual_norm", "moe_router"]
+    "args, kwargs",
+    [((), {}), ((object(),), {}), ((object(), True), {}), ((object(),), {"int8_prefill": False})],
 )
+def test_every_stub_scope_takes_any_arguments_and_yields_the_model(
+    mlx_inference_patches, args, kwargs
+):
+    for name in [*(f"fused_{f}" for f in FUSIONS), "nax_quantized_linear", "some_future_helper"]:
+        with getattr(mlx_inference_patches, name)(*args, **kwargs) as active:
+            assert active is (args[0] if args else None), name
+
+
+def test_the_stub_accepts_every_call_zoo_makes_to_an_inference_helper(mlx_inference_patches):
+    """Read zoo's calls to the helpers it imports from mlx.inference and replay each one's shape
+    against the stub, so a new argument fails here on Linux, not only in the macOS job."""
+    import importlib.util
+
+    spec = importlib.util.find_spec("unsloth_zoo")
+    if spec is None or not spec.submodule_search_locations:
+        pytest.skip("unsloth_zoo source is not available")
+    imported = _zoo_inference_imports()
+    root = Path(next(iter(spec.submodule_search_locations))) / "mlx"
+    calls = []
+    for path in sorted(root.glob("*.py")):
+        for node in ast.walk(ast.parse(path.read_text(encoding = "utf-8"))):
+            if (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Name)
+                and node.func.id in imported
+            ):
+                calls.append((path.name, node))
+    if not calls:
+        pytest.skip("this unsloth_zoo calls no mlx.inference helper by name")
+    for filename, call in calls:
+        args = [object() for _ in call.args]
+        kwargs = {kw.arg: object() for kw in call.keywords if kw.arg}
+        with getattr(mlx_inference_patches, call.func.id)(*args, **kwargs):
+            pass
+
+
+@pytest.mark.parametrize("feature", FUSIONS)
 def test_mlx_missing_inference_export_keeps_native(monkeypatch, mlx_inference_patches, feature):
     from core.inference import mlx_inference
 
@@ -1038,9 +1141,7 @@ def test_vlm_iterator_restores_each_callers_stream_and_closes_on_generation_stre
     assert closed == [generation]
 
 
-@pytest.mark.parametrize(
-    "feature", ["moe_gate_up", "decode_conv_silu", "residual_norm", "moe_router"]
-)
+@pytest.mark.parametrize("feature", FUSIONS)
 def test_mlx_vlm_reemits_think_prefill_inside_adapter_context(
     monkeypatch, mlx_moe, mlx_decode, feature
 ):
@@ -1300,9 +1401,7 @@ def test_mlx_vlm_model_config_prefers_config_with_model_type():
     )
 
 
-@pytest.mark.parametrize(
-    "feature", ["moe_gate_up", "decode_conv_silu", "residual_norm", "moe_router"]
-)
+@pytest.mark.parametrize("feature", FUSIONS)
 def test_mlx_generate_text_forwards_kwargs_into_template_helper(
     monkeypatch, mlx_moe, mlx_decode, feature
 ):
@@ -2895,9 +2994,7 @@ def test_mlx_audio_input_normalizes_split_native_reasoning_channels(monkeypatch)
     ) == ["<think>"]
 
 
-@pytest.mark.parametrize(
-    "feature", ["moe_gate_up", "decode_conv_silu", "residual_norm", "moe_router"]
-)
+@pytest.mark.parametrize("feature", FUSIONS)
 def test_mlx_audio_input_honors_adapter_selection(monkeypatch, mlx_moe, mlx_decode, feature):
     """Base-vs-LoRA compare sends audio_base64 and use_adapter in one body.
 

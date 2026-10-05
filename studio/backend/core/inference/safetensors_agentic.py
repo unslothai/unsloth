@@ -62,6 +62,7 @@ from core.inference.mcp_images import (
     trim_image_turns,
 )
 from core.inference.tool_loop_controller import (
+    _WORKSPACE_READ_TOOLS,
     _WORKSPACE_TOOLS,
     ToolLoopController,
     append_deferred_nudges,
@@ -73,7 +74,7 @@ from core.inference.tool_loop_controller import (
 )
 from core.inference.chat_template_helpers import (
     append_assistant_turn,
-    trailing_assistant_text,
+    trailing_assistant_resume_kind,
 )
 from core.inference.passthrough_healing import nudge_enabled
 from state.tool_approvals import (
@@ -355,6 +356,26 @@ def _strip_tool_markup_final(
 def _status_for_tool(tool_name: str, arguments: dict) -> str:
     """Return a human-readable status line matching the GGUF path."""
     return status_for_tool(tool_name, arguments)
+
+
+def _append_raw_turn(conversation: list, assistant_msg: dict, *, continue_final_message: bool):
+    """``append_assistant_turn`` for raw-text turns: a resumed thought is replayed whole after the
+    re-emitted ``<think>``; text without that opener drops it."""
+    if not (
+        continue_final_message
+        and trailing_assistant_resume_kind(conversation) == "reasoning_content"
+        and isinstance(assistant_msg.get("content"), str)
+    ):
+        append_assistant_turn(
+            conversation, assistant_msg, continue_final_message = continue_final_message
+        )
+        return
+    thought = conversation[-1]["reasoning_content"]
+    merged = {**conversation[-1], **assistant_msg}
+    merged.pop("reasoning_content", None)
+    if merged["content"].startswith("<think>"):
+        merged["content"] = f"<think>{thought}{merged['content'][len('<think>'):]}"
+    conversation[-1] = merged
 
 
 def _reprompt_intent_text(
@@ -665,6 +686,21 @@ def run_safetensors_tool_loop(
         permission_mode, bypass_permissions
     )
     stream_tool_execution = account_tool_stream(stream_tool_execution)
+    from core.inference.skill_mentions import load_mentioned_skills
+
+    yield from load_mentioned_skills(
+        conversation,
+        tools if max_tool_iterations > 0 else [],
+        permission_mode = permission_mode,
+        bypass_permissions = bypass_permissions,
+        confirm_tool_calls = confirm_tool_calls,
+        session_id = session_id,
+        cancel_event = cancel_event,
+        context_length = context_length,
+        continue_final_message = continue_final_message,
+        # The downstream tokenizer owns fitting; only system context is guaranteed.
+        dedup_tool_context = False,
+    )
 
     # Forced first-pass RAG (mirrors the GGUF loop) so doc Qs don't lose to
     # web_search. Skip only when a retrieval call would actually prompt (ask
@@ -677,7 +713,7 @@ def run_safetensors_tool_loop(
     # plus its result, moving the boundary so the model opens a fresh answer.
     _skip_autoinject = (
         confirm_tool_calls and not bypass_permissions and permission_mode not in ("auto", "off")
-    ) or bool(continue_final_message and trailing_assistant_text(conversation))
+    ) or bool(continue_final_message and trailing_assistant_resume_kind(conversation) is not None)
     _auto = None if _skip_autoinject else build_rag_autoinject(conversation, rag_scope)
     if _auto:
         for _ev in _auto["events"]:
@@ -1241,7 +1277,7 @@ def run_safetensors_tool_loop(
                     )
                     # Merges into a resumed partial: the nudge that follows is a user
                     # turn, so a second assistant turn breaks alternation.
-                    append_assistant_turn(
+                    _append_raw_turn(
                         conversation,
                         {"role": "assistant", "content": intent_text},
                         continue_final_message = continue_final_message,
@@ -1361,7 +1397,7 @@ def run_safetensors_tool_loop(
                     if _key in seen_keys:
                         if novel_kept <= novel_at_last_keep.get(_key, 0):
                             continue
-                    else:
+                    elif _fn.get("name") not in _WORKSPACE_READ_TOOLS:
                         novel_kept += 1
                     novel_at_last_keep[_key] = novel_kept
                     last_workspace_key = _key
@@ -1414,7 +1450,7 @@ def run_safetensors_tool_loop(
 
             if not decision.should_execute:
                 if content_text and not assistant_appended:
-                    append_assistant_turn(
+                    _append_raw_turn(
                         conversation,
                         assistant_msg,
                         continue_final_message = continue_final_message,
@@ -1444,7 +1480,7 @@ def run_safetensors_tool_loop(
                 assistant_msg["tool_calls"] = [decision.as_assistant_tool_call()]
                 # Merges into a resumed partial, so a continued turn that calls a tool
                 # stays one assistant message.
-                append_assistant_turn(
+                _append_raw_turn(
                     conversation,
                     assistant_msg,
                     continue_final_message = continue_final_message,

@@ -307,13 +307,15 @@ _WINDOWS_ROCM_TORCH_PKG_SPECS: dict[str, tuple[str, str, str]] = {
     "gfx1103": _ROCM_TORCH_PKG_SPECS["rocm7.2"],
 }
 # Windows RDNA arches install from AMD's multi-arch index (#11815, #11614): one URL, card picked by the
-# torch[device-gfxNNNN] extra, pinned to the newest tag inside <2.12.0 so nothing is kept (#11814).
-# The family map stays for family-layout mirrors and the stale / mismatch classifiers. Linux unchanged.
+# torch[device-gfxNNNN] extra, pinned to one exact tag inside <2.12.0 so nothing is kept (#11814).
+# Not rocm7.14.1: its Windows wheels pair an AOTriton 0.12 runtime with 0.13 kernels, so fused SDPA fails
+# (ROCm/TheRock#7992). The family map stays for family-layout mirrors and the classifiers. Linux unchanged.
 _ROCM_WINDOWS_MULTIARCH_INDEX_BASE = (
     os.environ.get("UNSLOTH_ROCM_WINDOWS_MULTIARCH_MIRROR")
     or "https://repo.amd.com/rocm/whl-multi-arch"
 )
-_ROCM_MULTIARCH_TAG = "rocm7.14.1"
+_ROCM_MULTIARCH_TAG = "rocm7.14.0"
+_ROCM_MULTIARCH_BROKEN_TAGS = frozenset({"rocm7.14.1"})
 _ROCM_MULTIARCH_TORCH_VERSION = "2.11.0"
 _ROCM_MULTIARCH_TORCHVISION_VERSION = "0.26.0"
 _ROCM_MULTIARCH_TORCHAUDIO_VERSION = "2.11.0"
@@ -512,6 +514,133 @@ _TORCH_FLAVOR_REPAIR_PKG_SPEC: tuple[str, str, str] = (
     "torchvision>=0.19,<0.27.0",
     "torchaudio>=2.4,<2.12.0",
 )
+
+# The install.sh _cu130_torch213_route: a repair keeps a resident 2.9-2.14 release.
+_CU130_PRESERVE_TORCH_CEILING_MINOR = 15
+_CU130_FIRST_TORCH_MINOR = 9  # download.pytorch.org/whl/cu130 starts at torch 2.9.0
+
+
+def _is_cu130_torch213_route(index_url: str | None) -> bool:
+    return (
+        bool(index_url)
+        and _torch_index_leaf(index_url) == "cu130"
+        and sys.platform.startswith("linux")
+        and platform.machine().lower() in ("x86_64", "amd64")
+        and sys.version_info[:2] == (3, 13)
+    )
+
+
+def _resident_torch_release() -> str | None:
+    """The installed torch's plain X.Y.Z release from its metadata, never importing it."""
+    try:
+        from importlib.metadata import version as _dist_version
+        release = _dist_version("torch").split("+", 1)[0]
+    except Exception:
+        return None
+    return release if re.fullmatch(r"2\.\d+\.\d+", release) else None
+
+
+def _cuda_repair_torch_specs(
+    index_url: str | None, default: tuple[str, str, str]
+) -> tuple[str, str, str]:
+    """``default``, except that the cu130 torch 2.13 route keeps a resident release it serves.
+
+    Never installs 2.13 itself: whether a release admits it is install.sh's PyPI decision."""
+    if not _is_cu130_torch213_route(index_url):
+        return default
+    release = _resident_torch_release()
+    if release is not None:
+        minor = int(release.split(".")[1])
+        if _CU130_FIRST_TORCH_MINOR <= minor < _CU130_PRESERVE_TORCH_CEILING_MINOR:
+            # torchaudio 2.11 is the last release (stable ABI), so newer minors pair with it.
+            audio_minor = min(minor, 11)
+            return (
+                f"torch=={release}",
+                f"torchvision==0.{minor + 15}.*",
+                f"torchaudio==2.{audio_minor}.*",
+            )
+    return default
+
+
+def _resident_torch_trio_pins() -> list[str]:
+    """``name==version`` for the installed torch, torchvision and torchaudio (local tag kept)."""
+    from importlib.metadata import PackageNotFoundError, version as _dist_version
+
+    pins = []
+    for name in ("torch", "torchvision", "torchaudio"):
+        try:
+            pins.append(f"{name}=={_dist_version(name)}")
+        except PackageNotFoundError:
+            pass
+    return pins
+
+
+_OVERRIDE_INCLUDE = re.compile(r"^(\s*(?:-r|-c|--requirement|--constraint)(?:\s+|=))(\S+)(.*)$")
+_TORCH_TRIO_LINE = re.compile(r"^\s*torch(vision|audio)?([\s<>=!~;@\[]|$)", re.IGNORECASE)
+# True while _FreezeNewTorchForCoreUpdate's UV_OVERRIDE is the only thing keeping the trio.
+_TORCH_FREEZE_ACTIVE = False
+
+
+class _FreezeNewTorchForCoreUpdate:
+    """Pin the resident torch trio via UV_OVERRIDE while unsloth / unsloth-zoo re-resolve.
+
+    A released unsloth declares a torch ceiling (2026.9.11: <2.13.0), and a with-deps upgrade
+    honours it: on a torch 2.13 install `studio update` swapped torch for PyPI's 2.12.1 and lost
+    the matching prebuilt kernels. install.sh freezes the trio the same way for every with-deps
+    unsloth install (_build_unsloth_torch_overrides). Scoped to Linux with torch >= 2.13, the
+    releases past that ceiling, so every other install resolves exactly as before.
+    """
+
+    def __enter__(self):
+        self._path = None
+        self._previous = os.environ.get("UV_OVERRIDE")
+        release = _resident_torch_release()
+        if not (
+            sys.platform.startswith("linux")
+            and release is not None
+            and int(release.split(".")[1]) >= 13
+        ):
+            return self
+        pins = _resident_torch_trio_pins()
+        if not pins:
+            return self
+        # uv applies every override for a package, so an inherited torch line would conflict:
+        # fold the inherited files in without their trio entries, as install.sh does.
+        lines = list(pins)
+        for inherited in (self._previous or "").split():
+            try:
+                text = Path(inherited).read_text(encoding = "utf-8")
+            except OSError:
+                continue
+            base = Path(inherited).parent
+            for line in text.splitlines():
+                if _TORCH_TRIO_LINE.match(line):
+                    continue
+                # A relative -r / -c resolves against its own file, which is no longer this one.
+                include = _OVERRIDE_INCLUDE.match(line)
+                if include and "://" not in include[2] and not os.path.isabs(include[2]):
+                    line = f"{include[1]}{(base / include[2]).resolve()}{include[3]}"
+                lines.append(line)
+        fd, name = tempfile.mkstemp(prefix = "unsloth-torch-overrides-", suffix = ".txt")
+        with os.fdopen(fd, "w", encoding = "utf-8") as handle:
+            handle.write("\n".join(lines) + "\n")
+        self._path = Path(name)
+        os.environ["UV_OVERRIDE"] = _uv_safe_path(self._path)
+        global _TORCH_FREEZE_ACTIVE
+        _TORCH_FREEZE_ACTIVE = True
+        return self
+
+    def __exit__(self, *exc):
+        global _TORCH_FREEZE_ACTIVE
+        _TORCH_FREEZE_ACTIVE = False
+        if self._path is not None:
+            if self._previous is None:
+                os.environ.pop("UV_OVERRIDE", None)
+            else:
+                os.environ["UV_OVERRIDE"] = self._previous
+            self._path.unlink(missing_ok = True)
+        return False
+
 
 # torchao's cpp is built for ONE torch release AND CUDA major. Either mismatch costs the
 # kernels, never the import: torchao/__init__.py has caught the dlopen failure since 0.12 and
@@ -4352,7 +4481,9 @@ def _ensure_cuda_torch(*, probe_only: bool = False) -> "bool | None":
         index_url = _detect_cuda_torch_index_url()
         if index_url is None:
             return False
-        _torch_pkg, _vision_pkg, _audio_pkg = _CUDA_TORCH_PKG_SPEC
+        _torch_pkg, _vision_pkg, _audio_pkg = _cuda_repair_torch_specs(
+            index_url, _CUDA_TORCH_PKG_SPEC
+        )
         _safe_print(
             f"   torch cannot import but an explicit CUDA index is pinned -- reinstalling "
             f"CUDA torch from {_strip_index_url_credentials(index_url)}"
@@ -4439,7 +4570,7 @@ def _ensure_cuda_torch(*, probe_only: bool = False) -> "bool | None":
     index_url = _detect_cuda_torch_index_url()
     if index_url is None:
         return False
-    _torch_pkg, _vision_pkg, _audio_pkg = _CUDA_TORCH_PKG_SPEC
+    _torch_pkg, _vision_pkg, _audio_pkg = _cuda_repair_torch_specs(index_url, _CUDA_TORCH_PKG_SPEC)
     _safe_print(
         f"   {_why} -- reinstalling CUDA torch from {_strip_index_url_credentials(index_url)}\n"
         f"   (set UNSLOTH_TORCH_BACKEND=rocm or cpu to keep a deliberate "
@@ -5584,7 +5715,9 @@ def _ensure_expected_torch_flavor(expected: "str | None" = None) -> bool:
         return _warn_wrong_flavor(expected, installed)
     # XPU floor is 2.6, not 2.4: unsloth/models/_utils.py raises at import below it.
     _torch_pkg, _vision_pkg, _audio_pkg = (
-        _XPU_TORCH_PKG_SPEC if expected == "xpu" else _TORCH_FLAVOR_REPAIR_PKG_SPEC
+        _XPU_TORCH_PKG_SPEC
+        if expected == "xpu"
+        else _cuda_repair_torch_specs(index_url, _TORCH_FLAVOR_REPAIR_PKG_SPEC)
     )
     # Keyed on the INTERPRETER, not the machine: an emulated x64 venv installs win_amd64 wheels.
     _trio = [_torch_pkg, _vision_pkg, _audio_pkg]
@@ -5953,6 +6086,17 @@ def _ensure_rocm_torch() -> "bool | None":
             _safe_print(
                 f"   installed ROCm torch has no {gfx_arch} device pack -- reinstalling from "
                 "AMD's multi-arch index"
+            )
+            _torch_already_rocm = False
+        if (
+            _torch_already_rocm
+            and _win_rocm_pin is None
+            and _windows_routes_multiarch(gfx_arch)
+            and (_version or "").lower().rpartition("+")[2] in _ROCM_MULTIARCH_BROKEN_TAGS
+        ):
+            _safe_print(
+                f"   installed ROCm torch {_version} cannot run fused attention -- reinstalling "
+                f"{_ROCM_MULTIARCH_TORCH_VERSION}+{_ROCM_MULTIARCH_TAG}"
             )
             _torch_already_rocm = False
         # A multi-arch route is judged by its packs alone: a migrated venv keeps the orphaned family runtime.
@@ -9882,10 +10026,27 @@ def _pip_install_once(
                 )
                 _safe_print(_red("   Install uv and re-run, or re-run install.ps1."))
                 _report_failed_command(label, result)
+            if _TORCH_FREEZE_ACTIVE:
+                _step("error", f"{label} failed and pip cannot stand in for it", _red)
+                _safe_print(
+                    _red(
+                        "   torch is held on its installed release through UV_OVERRIDE, which pip "
+                        "ignores: a pip fallback would downgrade it to the released cap."
+                    )
+                )
+                _report_failed_command(label, result)
             _safe_print(_red(f"   uv failed, falling back to pip..."))
             if result.stdout:
                 _safe_print(_redact_install_output(result.stdout))
 
+        elif _TORCH_FREEZE_ACTIVE:
+            _step("error", f"{label} needs uv to keep the installed torch", _red)
+            _safe_print(
+                _red(
+                    "   Install uv and re-run, or set UNSLOTH_TORCH_UPGRADE=1 and re-run install.sh."
+                )
+            )
+            sys.exit(1)
         elif _woa_overrides_are_load_bearing():
             _step("error", f"{label} needs uv on the Windows on ARM stack", _red)
             _safe_print(
@@ -11881,16 +12042,17 @@ def install_python_stack() -> int:
         # Local dev install: update the released core packages, then overlay the
         # checkout as an editable install (--no-deps so torch is not re-resolved).
         _progress("base packages")
-        pip_install(
-            "Updating core packages",
-            "--no-cache-dir",
-            "--upgrade-package",
-            "unsloth",
-            "--upgrade-package",
-            "unsloth-zoo",
-            "unsloth",
-            "unsloth-zoo",
-        )
+        with _FreezeNewTorchForCoreUpdate():
+            pip_install(
+                "Updating core packages",
+                "--no-cache-dir",
+                "--upgrade-package",
+                "unsloth",
+                "--upgrade-package",
+                "unsloth-zoo",
+                "unsloth",
+                "unsloth-zoo",
+            )
         _overlay_local_core_packages(local_repo)
     elif package_name != "unsloth":
         # Custom package name (for testing): install directly.
@@ -11908,16 +12070,17 @@ def install_python_stack() -> int:
             if (desktop_min_ver and package_name == "unsloth")
             else package_name
         )
-        pip_install(
-            "Updating core packages",
-            "--no-cache-dir",
-            "--upgrade-package",
-            "unsloth",
-            "--upgrade-package",
-            "unsloth-zoo",
-            unsloth_spec,
-            "unsloth-zoo",
-        )
+        with _FreezeNewTorchForCoreUpdate():
+            pip_install(
+                "Updating core packages",
+                "--no-cache-dir",
+                "--upgrade-package",
+                "unsloth",
+                "--upgrade-package",
+                "unsloth-zoo",
+                unsloth_spec,
+                "unsloth-zoo",
+            )
 
     # The package just installed may ship a newer copy of this file. Raised rather than rerun
     # here, so the pass lock is released first; the rerun repeats the cheap steps above.

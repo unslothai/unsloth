@@ -1574,6 +1574,7 @@ export function ImagesPage({
   const [thumbById, setThumbById] = useState<Record<string, string>>(() =>
     galleryCache.thumbById.toRecord(),
   );
+  const [srcErrors, setSrcErrors] = useState<Record<string, boolean>>({});
   // Guards a "load more" so a fast scroll cannot fire several at once.
   const loadingMore = useRef(false);
   // Observer root for loading thumbnails near the visible strip.
@@ -1905,6 +1906,12 @@ export function ImagesPage({
   const ensureSrc = useCallback(async (image: GalleryImage) => {
     if (galleryCache.srcById.has(image.id) || galleryCache.inflight.has(image.id)) return;
     galleryCache.inflight.add(image.id);
+    setSrcErrors((prev) => {
+      if (!prev[image.id]) return prev;
+      const next = { ...prev };
+      delete next[image.id];
+      return next;
+    });
     try {
       const { url, bytes } = await fetchGalleryObjectUrl(image.url);
       if (galleryCache.deleted.has(image.id)) {
@@ -1927,7 +1934,9 @@ export function ImagesPage({
         return next;
       });
     } catch {
-      // Leave it without a src; the tile shows a placeholder.
+      if (!galleryCache.deleted.has(image.id)) {
+        setSrcErrors((prev) => ({ ...prev, [image.id]: true }));
+      }
     } finally {
       galleryCache.inflight.delete(image.id);
     }
@@ -2077,6 +2086,12 @@ export function ImagesPage({
       galleryCache.srcById.delete(id); // revokes the URL with the entry
       galleryCache.thumbById.delete(id);
       galleryCache.deleted.add(id);
+      setSrcErrors((prev) => {
+        if (!prev[id]) return prev;
+        const next = { ...prev };
+        delete next[id];
+        return next;
+      });
       setSrcById((prev) => {
         const next = { ...prev };
         delete next[id];
@@ -4612,7 +4627,7 @@ export function ImagesPage({
       />
       <AdvancedSelect
         label="Attention"
-        hint="Attention kernel. Auto upgrades to cuDNN fused attention on NVIDIA when a speed profile is active. sage is INT8 attention: fast (10-40%) but can black-frame some families (Qwen, Wan), so it never engages automatically."
+        hint="Attention kernel. Auto upgrades to cuDNN fused attention on NVIDIA when a speed profile is active. sage is INT8 attention (SageAttention 2; without a local install Studio fetches the Hugging Face kernels-hub build, which runs on Ampere, Ada and Hopper GPUs, and any other GPU keeps the default): fast (10-40%) but can black-frame some families (Qwen, Wan), so it never engages automatically."
         badge={<ResolvedBadge status={status} controlKey="attention_backend" />}
         value={attentionBackend}
         onValueChange={(v) => setAttentionBackend(v as typeof attentionBackend)}
@@ -4657,7 +4672,7 @@ export function ImagesPage({
       )}
       <AdvancedSelect
         label="Step cache"
-        hint="First-Block-Cache reuses the transformer tail across steps for many-step models (~1.4x, small quality cost). Auto turns it on only on the Max speed tier at 20+ steps, re-checked per image. Static skip extrapolates every other middle step on a fixed schedule (12+ steps) and keeps the CUDA graph; never picked by Auto."
+        hint="Static skip extrapolates middle steps on a fixed schedule (12+ steps) and keeps the compile and CUDA graph. Auto uses it for text-to-image, at or above the step count it was measured at, on the models where it stayed close to the full render: Qwen-Image, Qwen-Image-2.1, FLUX.1 Krea dev, FLUX.2 klein base 4B on every speed tier but Off/Eager, and FLUX.1 dev and HunyuanImage 2.1 on Max only. First-Block-Cache reuses the transformer tail across steps (~1.4x, larger quality cost); Auto turns it on for other many-step models on Max only. UNSLOTH_DIFFUSION_AUTO_STEP_SKIP=0 stops Auto from picking Static skip."
         badge={<ResolvedBadge status={status} controlKey="transformer_cache" />}
         value={transformerCache}
         onValueChange={(v) => setTransformerCache(v as typeof transformerCache)}
@@ -5631,24 +5646,45 @@ export function ImagesPage({
                   />
                 </div>
               </>
-            ) : selected && selectedThumb ? (
-              // Match the original's display size while loading; actions require the original.
-              // Leave the box unpainted because object-contain can leave empty space.
-              <>
-                <img
-                  src={selectedThumb}
-                  alt={selected.prompt}
-                  style={{ maxWidth: selected.width, maxHeight: selected.height }}
-                  className="size-full object-contain"
-                />
-                <Spinner className="absolute size-8 text-muted-foreground" />
-              </>
             ) : selected ? (
-              // The selected record's blob is still loading; spin in place.
-              <div className="flex flex-col items-center gap-3 text-muted-foreground">
-                <Spinner className="size-8" />
-                <p className="text-sm">Loading…</p>
-              </div>
+              <>
+                {selectedThumb && (
+                  <img
+                    src={selectedThumb}
+                    alt={selected.prompt}
+                    style={{ maxWidth: selected.width, maxHeight: selected.height }}
+                    className="size-full object-contain"
+                  />
+                )}
+                <div className="absolute bottom-4 right-4 flex items-center gap-0.5 rounded-xl bg-background/80 p-1 shadow-lg ring-1 ring-border backdrop-blur [&_[data-slot=button]]:border-0 [&_[data-slot=button]:focus-visible]:bg-muted">
+                  {srcErrors[selected.id] ? (
+                    <>
+                      <span role="alert" className="sr-only">Full-resolution download failed.</span>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="gap-1.5"
+                        title="Full-resolution download failed. Retry downloading."
+                        onClick={() => void ensureSrc(selected)}
+                      >
+                        <HugeiconsIcon icon={Refresh01Icon} className="size-4" />
+                        Retry download
+                      </Button>
+                    </>
+                  ) : (
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      className="gap-1.5"
+                      disabled
+                      title="Loading full-resolution image…"
+                    >
+                      <Spinner className="size-4" label="Loading full-resolution image" />
+                      Loading image…
+                    </Button>
+                  )}
+                </div>
+              </>
             ) : busy === "generating" ? null : (
               <div className="flex flex-col items-center gap-3 text-muted-foreground">
                 {/* Same icon as the Images nav item. */}
