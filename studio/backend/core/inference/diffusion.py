@@ -188,6 +188,7 @@ from .diffusion_speed import (
     vae_decode_compile_allowed,
 )
 from .diffusion_vae_fp16 import enable_fp16_vae_decode
+from .diffusion_vae_tiling import install as install_wide_vae_tiles
 from .diffusion_attention import (
     apply_attention_backend,
     normalize_attention_backend,
@@ -7088,6 +7089,11 @@ class DiffusionBackend:
                     apply_comfy_flow_shift(
                         pipe, comfy_flow_shift_for(fam, gguf_filename, repo_id, base), logger
                     )
+                    # Before the speed optims, so the fused batched tile decode does not replace it.
+                    try:
+                        install_wide_vae_tiles(getattr(pipe, "vae", None), logger)
+                    except Exception as exc:  # noqa: BLE001 - keep the stock tiled decode
+                        logger.warning("diffusion.vae_tiling: not installed: %s", exc)
                     # Before the speed optims so their decode compile lands inside the non-finite check; `off` keeps fp32.
                     vae_fp16 = str(
                         speed_mode or ""
