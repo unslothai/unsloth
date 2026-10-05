@@ -21,7 +21,11 @@ from typing import Any, Collection, Literal, Mapping, Sequence
 from urllib.parse import urlparse
 
 from core.inference.llama_tool_schema import unrelaxed
-from core.inference.mcp_images import is_image_tool, split_images as split_mcp_images
+from core.inference.mcp_images import (
+    drop_unparsed_envelope,
+    is_image_tool,
+    split_images as split_mcp_images,
+)
 
 # Stamped by mcp_client on every tool it registers; the provenance the envelope
 # is trusted on.
@@ -1023,7 +1027,8 @@ def strip_result_for_model(
     # Always, whoever produced it: these bytes run to megabytes and the model must
     # never be shown them as text. Provenance decides whether they become IMAGE
     # input, which is a separate question answered in mcp_images._promote.
-    result = split_mcp_images(result)[0]
+    text, images = split_mcp_images(result)
+    result = text if images else drop_unparsed_envelope(result, tool_name)
     # After the image strip, which leaves the UI envelope as the tail.
     if tool_name is None or tool_name.startswith(_MCP_TOOL_PREFIX):
         result = _strip_mcp_ui_suffix(result)

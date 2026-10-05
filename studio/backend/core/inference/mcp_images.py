@@ -138,6 +138,28 @@ def mentions_images(result: str) -> bool:
     return ("\n" + SENTINEL) in result
 
 
+UNPARSED_IMAGES_TEXT = "[image data could not be parsed and was omitted]"
+
+
+def drop_unparsed_envelope(result: str, tool_name: "str | None" = None) -> str:
+    """Cut an image tool's result at an envelope split_images rejected. Text appended after the
+    array (#11358) breaks the parse, and failing open replayed megabytes of base64 as text."""
+    if not (tool_name and is_image_tool(tool_name)):
+        return result
+    # An array opener, so prose quoting the marker is left alone.
+    index = result.find("\n" + SENTINEL + "[{")
+    if index == -1:
+        return result
+    logger.warning(
+        "Tool %r result has an unparseable %s envelope; %d chars withheld from the model.",
+        tool_name,
+        SENTINEL,
+        len(result) - index,
+    )
+    head = result[:index].rstrip()
+    return f"{head}\n{UNPARSED_IMAGES_TEXT}" if head else UNPARSED_IMAGES_TEXT
+
+
 def _decoded_urls(
     images: Sequence[dict],
     limit: int = MAX_MODEL_IMAGES,
@@ -1177,6 +1199,10 @@ def _promote(
             # IMAGE input: a named non-MCP tool that happens to end in a valid
             # envelope is not one an MCP server served.
             name = message.get("name") or call_names.get(position)
+            if not images:
+                text = drop_unparsed_envelope(content, name)
+                if text != content:
+                    message = {**message, "content": text}
             if isinstance(name, str) and name and not is_image_tool(name):
                 # A non-MCP result sitting between the images and their turn makes
                 # "the tool call above" name web_search or read_file.
