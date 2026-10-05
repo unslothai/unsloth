@@ -448,5 +448,11 @@ def url_exists(url: str) -> bool | None:
         reason = f"HTTP {exc.code}"
     except (OSError, http.client.HTTPException) as exc:
         reason = str(exc)
-    _logger.warning("url_exists(%s): %s; could not check prebuilt wheel availability", url, reason)
+    shown = redact_url_credentials(url)
+    if shown != url:
+        # The error text can echo the userinfo (urllib reads `user:token@host` as a port).
+        reason = reason if reason.startswith("HTTP ") else "unreachable"
+    _logger.warning(
+        "url_exists(%s): %s; could not check prebuilt wheel availability", shown, reason
+    )
     return None

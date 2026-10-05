@@ -63,6 +63,10 @@ if (_is_entry_point or (_entry_base == "-m" and _runs_unsloth_cli)) and _sys.arg
     "install-kernels"
 ]:
     from unsloth_cli._install_kernels import main as _install_kernels_main
+    from unsloth_cli._ssl_keylog import drop_unwritable_ssl_keylog_file
+
+    # The availability probe and the installers open HTTPS clients.
+    drop_unwritable_ssl_keylog_file()
     _sys.exit(_install_kernels_main(_sys.argv[2:]))
 
 from unsloth_cli._system_dir_guard import check_working_directory as _check_working_directory

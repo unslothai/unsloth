@@ -279,3 +279,30 @@ def test_failed_uninstall_is_not_reported_as_removed(uv, capsys):
     )
     out = capsys.readouterr().out
     assert "removed it" not in out and "pip uninstall causal-conv1d" in out
+
+
+def test_unreachable_probe_does_not_log_mirror_credentials(caplog):
+    from utils.wheel_utils import url_exists
+
+    with caplog.at_level("WARNING"):
+        assert url_exists("https://user:secret@mirror.invalid/whl/x.whl") is None
+    assert "mirror.invalid/whl/x.whl" in caplog.text
+    assert "secret" not in caplog.text
+
+
+def test_console_entry_drops_an_unwritable_ssl_keylog_file(tmp_path):
+    env = dict(
+        os.environ,
+        PYTHONPATH = str(_REPO),
+        SSLKEYLOGFILE = str(tmp_path / "missing" / "keys.log"),
+    )
+    result = subprocess.run(
+        [sys.executable, "-m", "unsloth_cli", "install-kernels", "--help"],
+        cwd = tmp_path,
+        env = env,
+        capture_output = True,
+        text = True,
+        timeout = 120,
+    )
+    assert result.returncode == 0, result.stderr
+    assert "ignoring SSLKEYLOGFILE" in result.stdout + result.stderr
