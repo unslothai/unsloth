@@ -3,38 +3,14 @@
 
 """Live latent previews for the image and video denoise loops.
 
-Every few denoise steps the current latent is projected to a small RGB picture with a fixed per-family
-linear map (``diffusion_preview_factors``, least-squares fitted against each family's real VAE decode),
-and the picture rides the generate-progress poll as a JPEG data URL. The projection is a handful of
-tiny kernels on the device the latent already lives on, so it costs nothing next to a denoise step.
+Each snapshot projects the latent to a small RGB picture with a fitted per-family linear map
+(``diffusion_preview_factors``), copies it into a pinned slot with ``non_blocking=True`` plus a CUDA
+event, and a worker thread JPEG-encodes it once ``Event.query()`` says it landed. The denoise thread
+never syncs or reads host memory the GPU is writing, every CUDA call sits inside the CUDA-graph capture
+hold-off, and the latent is only read, so the final image is identical with previews on or off.
 
-The denoise loop never waits on it:
-
-* The uint8 picture is copied into a pinned host slot with ``non_blocking=True`` and a CUDA event is
-  recorded behind the copy. A small worker thread polls that event with ``Event.query()`` (never blocks)
-  and only reads the slot once the event has completed; it then JPEG-encodes it with PIL and publishes
-  it. The denoise thread itself never queries, waits or reads host memory the GPU is writing.
-* Every CUDA call here (projection, copy, event record, event query) runs inside the CUDA-graph capture
-  hold-off, the same guard the video step ticker uses, and is skipped (a lost preview frame, nothing
-  else) when a capture is recording in any thread. Pinned slots are allocated before the loop starts.
-* The latent is only read. No in-place op touches it, no RNG is drawn and nothing runs inside the
-  compiled denoiser, so the final image is the same with previews on or off.
-
-When the scheduler exposes its sigmas, the preview shows the denoised (x0) estimate instead of the
-noisy latent. For an Euler step ``x_i = x_{i-1} + (s_i - s_{i-1}) * v`` the previous step's prediction
-is ``x0 = x_{i-1} - s_{i-1} * v``; the projection is affine, so the same combination of two projected
-pictures gives the projection of x0 (the coefficients sum to 1, so the bias carries through). That
-needs the previous step's projection, so the projection runs on every step (a few microseconds of
-GPU work).
-
-Scheduling has to survive host run-ahead: with the denoiser replayed from a CUDA graph the Python loop
-enqueues every step long before the GPU runs them, so a host clock says nothing about when a step
-happens. Snapshots are therefore planned by STEP (at most ``MAX_SNAPSHOTS`` per render, evenly spaced),
-each into its own pre-allocated pinned slot, and the rate limit is applied where real time is visible:
-the worker publishes only the newest snapshot the GPU has finished, at most every ``MIN_INTERVAL_S``,
-and recycles the older ones unencoded.
-
-Kill switch: ``UNSLOTH_DIFFUSION_PREVIEW=0``. A request can also turn it off (``live_preview=False``).
+Snapshots are planned by STEP, not host time: under CUDA graphs the host enqueues every step long
+before the GPU runs it. Kill switch: ``UNSLOTH_DIFFUSION_PREVIEW=0``.
 """
 
 from __future__ import annotations
@@ -54,27 +30,16 @@ from typing import Any, Callable, Optional
 logger = logging.getLogger(__name__)
 
 PREVIEW_ENV = "UNSLOTH_DIFFUSION_PREVIEW"
-# Longest side of a preview picture, in pixels. A 1024 px Flux render projects to 128 px; anything
-# larger is box-averaged down on the device before the copy.
 MAX_SIDE = 256
-# At most this many published previews per second (worker side, in GPU-completion time).
 MIN_INTERVAL_S = 0.25
-# At most this many device snapshots per render, spread evenly over the steps.
 MAX_SNAPSHOTS = 24
 JPEG_QUALITY = 80
 
 
 @dataclass(frozen = True)
 class LatentRGB:
-    """A fitted latent -> RGB map for one latent layout.
-
-    layout:  "tokens" for packed (B, N, D) sequence latents (Flux, Qwen-Image, LTX-2), "bchw" for
-             (B, C, H, W) image latents, "bcthw" for (B, C, T, H, W) video latents.
-    down:    output pixels per latent grid cell along each side (VAE scale x patch size).
-    patch:   RGB pixels per grid cell side the matrix produces (2 for 2x2 packed tokens, else 1).
-    weight:  D rows of 3 * patch * patch outputs, ordered (dy, dx, rgb).
-    bias:    3 * patch * patch, same order. Output is RGB in [0, 1].
-    """
+    """layout: "tokens" (B, N, D) | "bchw" | "bcthw"; down: output px per grid cell; patch: RGB px per
+    cell side (2 for 2x2 packed tokens); weight: D rows of 3*patch*patch outputs ordered (dy, dx, rgb)."""
 
     layout: str
     down: int
@@ -92,7 +57,6 @@ def env_enabled() -> bool:
 
 
 def preview_wanted(requested: Optional[bool]) -> bool:
-    """Whether this generation should stream previews: the env kill switch wins, then the request."""
     if not env_enabled():
         return False
     return True if requested is None else bool(requested)
@@ -100,8 +64,7 @@ def preview_wanted(requested: Optional[bool]) -> bool:
 
 @functools.lru_cache(maxsize = 64)
 def factors_for(family: Optional[str]) -> Optional[LatentRGB]:
-    """The fitted map for a family name (or alias), None when the family has none. Cached, so a
-    family always gets the same object (and its device copy is uploaded once per process)."""
+    """Cached so a family keeps one object, and its device copy is uploaded once per process."""
     if not family:
         return None
     from .diffusion_preview_factors import FACTORS, FAMILY_FACTORS
@@ -120,11 +83,8 @@ def factors_for(family: Optional[str]) -> Optional[LatentRGB]:
 
 
 def latent_grid(latents: Any, spec: LatentRGB, height: int, width: int) -> Any:
-    """The first image (or first video frame) of ``latents`` as a (gh, gw, D) view, or None.
-
-    Pure indexing and reshapes of the existing storage: no copy, no device sync. Packed tokens carry no
-    spatial shape, so their grid comes from the render size and must tile the sequence exactly (one
-    image, or whole video frames); unpacked latents carry their own."""
+    """First image / frame as a (gh, gw, D) view, or None. Packed tokens take their grid from the render
+    size, which must tile the sequence exactly."""
     if spec.layout == "tokens":
         gh, gw = int(height) // spec.down, int(width) // spec.down
         if latents.ndim != 3 or latents.shape[-1] != spec.channels or gh <= 0 or gw <= 0:
@@ -132,7 +92,7 @@ def latent_grid(latents: Any, spec: LatentRGB, height: int, width: int) -> Any:
         n = int(latents.shape[1])
         if n < gh * gw or n % (gh * gw):
             return None
-        # Token order is frame-major then row-major (diffusers _pack_latents), so frame 0 leads.
+        # Frame-major then row-major (diffusers _pack_latents).
         return latents[0, : gh * gw].reshape(gh, gw, spec.channels)
     if spec.layout == "bchw":
         if latents.ndim != 4 or latents.shape[1] != spec.channels:
@@ -146,7 +106,6 @@ def latent_grid(latents: Any, spec: LatentRGB, height: int, width: int) -> Any:
 
 
 def project(grid: Any, weight: Any, bias: Any, patch: int) -> Any:
-    """(gh, gw, D) latent grid -> (gh * patch, gw * patch, 3) float32 RGB, unclamped."""
     gh, gw, d = grid.shape
     rgb = grid.reshape(gh * gw, d).float() @ weight + bias
     if patch == 1:
@@ -156,16 +115,12 @@ def project(grid: Any, weight: Any, bias: Any, patch: int) -> Any:
 
 
 def smooth_patch_grid(rgb: Any) -> Any:
-    """[1, 2, 1] x [1, 2, 1] / 16 blur of an (h, w, 3) picture, edges replicated.
-
-    A packed-token map predicts each 2x2 patch's four pixels with four separate rows, and their small
-    gain / bias mismatches print a period-2 grid over the upscaled preview. That pattern sits exactly
-    at the Nyquist frequency, where this kernel's response is zero, so it removes the grid and only
-    mildly softens everything else."""
+    """[1, 2, 1]^2 / 16 blur: zero response at Nyquist, so it removes the period-2 grid that per-pixel
+    row mismatches of a 2x2 packed-token map print, and barely softens the rest."""
     import torch
     import torch.nn.functional as F
 
-    chw = rgb.permute(2, 0, 1).unsqueeze(1)  # (3, 1, h, w): depthwise as a batch of 3
+    chw = rgb.permute(2, 0, 1).unsqueeze(1)
     # Built on the device from scalars: a host tensor would be a pageable copy, which synchronises.
     kernel = torch.full((1, 1, 3, 3), 1.0 / 16.0, device = rgb.device, dtype = rgb.dtype)
     kernel[..., 1, :] *= 2.0
@@ -175,7 +130,6 @@ def smooth_patch_grid(rgb: Any) -> Any:
 
 
 def to_uint8(rgb: Any, max_side: int = MAX_SIDE) -> Any:
-    """Box-average down to ``max_side`` and quantise; (h, w, 3) uint8, contiguous, same device."""
     import torch
     import torch.nn.functional as F
 
@@ -193,8 +147,7 @@ _DEVICE_MAPS_LOCK = threading.Lock()
 
 
 def _device_map(spec: LatentRGB, device: Any) -> tuple:
-    """The map's weight and bias on ``device``, cached per process. Uploaded from pinned memory with
-    ``non_blocking=True``: a pageable host-to-device copy would synchronise the host."""
+    """Uploaded from pinned memory: a pageable host-to-device copy would synchronise."""
     import torch
 
     key = (id(spec.weight), str(device))
@@ -210,12 +163,8 @@ def _device_map(spec: LatentRGB, device: Any) -> tuple:
 
 
 def x0_estimate(prev: Any, cur: Any, pair: Optional[tuple]) -> Any:
-    """The previous step's denoised prediction from two consecutive (projected) latents.
-
-    Euler: ``cur = prev + (s_cur - s_prev) * v`` and ``x0 = prev - s_prev * v``, so
-    ``x0 = prev * (1 + c) - cur * c`` with ``c = s_prev / (s_cur - s_prev)``. The weights sum to 1, so an
-    affine projection commutes with it. ``pair`` holds host floats or 0-dim device tensors (never read
-    back to the host); without it, or for a zero-length step, ``cur`` is returned unchanged."""
+    """Euler x0 of the previous step: ``prev * (1 + c) - cur * c``, ``c = s_prev / (s_cur - s_prev)``.
+    Weights sum to 1, so it commutes with the affine map. ``pair`` may be 0-dim device tensors (never read back)."""
     if prev is None or pair is None:
         return cur
     s_prev, s_cur = pair
@@ -235,7 +184,6 @@ def x0_estimate(prev: Any, cur: Any, pair: Optional[tuple]) -> Any:
 
 
 def _hold_off():
-    """The CUDA-graph capture hold-off, or an always-clear stand-in when the graph layer is absent."""
     try:
         from .diffusion_cuda_graph import hold_off_capture
         return hold_off_capture()
@@ -244,9 +192,7 @@ def _hold_off():
 
 
 def _sigma_pair(scheduler: Any) -> Optional[tuple]:
-    """(sigma of the previous latent, sigma of the current one) for the step that just ran, as host floats
-    or 0-dim device tensors. None when the scheduler does not expose them. Never syncs: a device-resident
-    sigmas tensor is indexed, not read."""
+    """(s_prev, s_cur) for the step that just ran; a device sigmas tensor is indexed, never read."""
     sigmas = getattr(scheduler, "sigmas", None)
     idx = getattr(scheduler, "_step_index", None)
     if sigmas is None or not isinstance(idx, int) or idx < 1:
@@ -262,8 +208,7 @@ def _sigma_pair(scheduler: Any) -> Optional[tuple]:
 
 
 class LatentPreviewer:
-    """Per-generation preview state. ``on_step`` is called from the denoise thread after each scheduler
-    step with the current latent; it never raises and never blocks on the device."""
+    """``on_step`` runs on the denoise thread after each scheduler step; it never raises or blocks."""
 
     def __init__(
         self,
@@ -289,15 +234,13 @@ class LatentPreviewer:
         self._clock = clock
         self._publish = publish
         self._weight, self._bias = _device_map(spec, self.device)
-        # Sized from the render size (plus a margin for pipelines that round it up) so nothing is
-        # allocated, pinned or otherwise, inside the denoise loop.
+        # Pre-sized (with a margin for pipelines that round the size up): nothing is allocated in the loop.
         side_h = (self.height // spec.down + 2) * spec.patch
         side_w = (self.width // spec.down + 2) * spec.patch
         # to_uint8 output never exceeds the input or max_side on either side, whatever divisor it picks.
         cap = min(side_h, self.max_side) * min(side_w, self.max_side) * 3
         total = max(1, int(total_steps or 1))
-        # Snapshot every ``stride`` steps (and the last one), one slot each: with the host far ahead of the
-        # GPU every planned snapshot can be in flight at once, and none may overwrite another.
+        # One slot per planned snapshot: with the host far ahead every one can be in flight at once.
         self.stride = max(1, math.ceil(total / max(1, int(max_snapshots))))
         n_slots = total // self.stride + 2
         pinned = torch.empty(n_slots * cap, dtype = torch.uint8, pin_memory = True)
@@ -326,7 +269,6 @@ class LatentPreviewer:
         self._worker = threading.Thread(target = self._run, name = "diffusion-preview", daemon = True)
         self._worker.start()
 
-    # -------------------------------------------------------------------------------------- creation
     @classmethod
     def create(
         cls,
@@ -339,7 +281,6 @@ class LatentPreviewer:
         publish: Callable[[str, int], None],
         **kwargs: Any,
     ) -> Optional["LatentPreviewer"]:
-        """A previewer for this render, or None (off, no fitted map, not CUDA, or no shape)."""
         if not preview_wanted(requested):
             return None
         spec = factors_for(family)
@@ -350,7 +291,7 @@ class LatentPreviewer:
 
             dev = torch.device(device)
             if dev.type != "cuda" or not torch.cuda.is_available():
-                # MPS / CPU have no async pinned copy with an event to poll; a preview there would block.
+                # No event to poll off CUDA, so a preview would block.
                 return None
             with _hold_off() as clear:
                 if not clear:
@@ -360,7 +301,6 @@ class LatentPreviewer:
             logger.debug("diffusion.preview: disabled for this render (%s)", exc)
             return None
 
-    # -------------------------------------------------------------------------------------- denoise thread
     def on_step(
         self,
         latents: Any,
@@ -394,11 +334,9 @@ class LatentPreviewer:
                 prev, prev_index = self._prev, self._prev_index
                 self._prev, self._prev_index = cur, index
                 if not isinstance(index, int) or prev_index != index - 1:
-                    # Only the latent of the step just before is a valid partner (a new chunk restarts at 1).
                     prev = None
                 if prev is None and not final and _sigma_pair(scheduler) is not None:
-                    # The first step of a chunk has no partner yet, so its picture would be the raw noisy
-                    # latent; wait one step for the denoised estimate instead of opening on colour noise.
+                    # No partner yet: skip rather than open on the raw noisy latent.
                     return
                 self._steps_seen += 1
                 if not final and (self._steps_seen - 1) % self.stride:
@@ -429,7 +367,6 @@ class LatentPreviewer:
         return None
 
     def _harvest(self) -> list:
-        """Slots whose copy the GPU has finished. ``Event.query`` only, inside the capture hold-off."""
         ready = []
         with _hold_off() as clear:
             if not clear:
@@ -445,19 +382,15 @@ class LatentPreviewer:
         return ready
 
     def finish(self, timeout: float = 1.0) -> None:
-        """End of the denoise: one last pass for copies that have landed, then stop the worker. Never
-        blocks on the device; a copy still in flight is dropped (the real image is moments away)."""
+        """One last pass for landed copies, then stop the worker; an in-flight copy is dropped."""
         self._prev = None
         self._stop.set()
         self._wake.set()
         if self._worker is not threading.current_thread():
             self._worker.join(timeout = timeout)
 
-    # -------------------------------------------------------------------------------------- worker thread
     def _run(self, poll_s: float = 0.05) -> None:
-        """Poll the copy events at 20 Hz; publish the newest finished snapshot at most every
-        ``min_interval_s`` and recycle older finished ones unencoded. The only CUDA call made off the
-        denoise thread is the non-blocking ``Event.query``; the encode reads pinned host memory."""
+        """Publish the newest landed snapshot at most every ``min_interval_s``; drop older ones unencoded."""
         while True:
             stopping = self._stop.is_set()
             try:
@@ -470,7 +403,7 @@ class LatentPreviewer:
                         self._encode(newest)
                         self._last_publish = self._clock()
                     else:
-                        self._release(newest, back_to = "copying")  # finished; re-checked next poll
+                        self._release(newest, back_to = "copying")
             except Exception as exc:  # noqa: BLE001 - a preview must never fail a render
                 logger.debug("diffusion.preview: harvest failed (%s)", exc)
             if stopping:
@@ -516,8 +449,7 @@ def encode_jpeg(
 
 @contextlib.contextmanager
 def scheduler_step_preview(pipe: Any, previewer: Optional[LatentPreviewer]):
-    """Feed ``previewer`` from ``pipe.scheduler.step`` for pipelines with no step callback
-    (HunyuanVideo-1.5). The original method is restored on every exit."""
+    """Feed ``previewer`` from ``scheduler.step`` for pipelines without a step callback (HunyuanVideo-1.5)."""
     scheduler = getattr(pipe, "scheduler", None)
     original = getattr(scheduler, "step", None)
     if previewer is None or scheduler is None or not callable(original):

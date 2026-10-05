@@ -1170,10 +1170,8 @@ class _GenState:
     first_step_at: float = 0.0
     # Computed once per step (in the callback) so it's stable between polls.
     eta_seconds: Optional[float] = None
-    # "encode" until pipe() enters its denoise loop, "denoise" through it, "decode" once pipe() enters its decoder
-    # (which runs after the last step callback).
+    # encode -> denoise (pipe() entered its loop) -> decode (pipe() entered its decoder).
     phase: str = "encode"
-    # Live latent preview (diffusion_preview): a small JPEG data URL and a counter that moves with each new one.
     preview: Optional[str] = None
     preview_seq: int = 0
 
@@ -9294,7 +9292,7 @@ class DiffusionBackend:
         # load_identity() of the caller's status() read; refuse rather than run a different load (#9448)
         expected_load: Optional[LoadIdentity] = None,
         allow_oversized: bool = False,
-        # Live latent previews on the progress poll; None = the default (on unless UNSLOTH_DIFFUSION_PREVIEW=0).
+        # None = on unless UNSLOTH_DIFFUSION_PREVIEW=0.
         live_preview: Optional[bool] = None,
     ) -> dict[str, Any]:
         import torch
@@ -9783,7 +9781,6 @@ class DiffusionBackend:
                     from .diffusion_preview import LatentPreviewer
 
                     try:
-                        # The size the forward runs at (img2img / edit take it from the input image).
                         preview_w, preview_h = _compile_shape_dims(
                             workflow, init_pil, width, height, fam
                         )
@@ -9799,10 +9796,8 @@ class DiffusionBackend:
                         total_steps = steps,
                     )
 
-                # Report the steps the GPU has FINISHED, not the ones the host has enqueued: with the denoiser
-                # replayed from a CUDA graph the loop enqueues every step long before the GPU runs them, so a
-                # host count ran the bar to N/N and flipped it to "decode" while the GPU was still denoising.
-                # Same machinery as the video path (per-step CUDA events polled with query(), never a sync).
+                # Count steps the GPU FINISHED (per-step CUDA events, as the video path): under CUDA graphs the host
+                # enqueues all steps early, and a host count read N/N "decode" mid-denoise.
                 from .video import (
                     _BOUNDARY_MARK_ATTEMPTS,
                     _BOUNDARY_MARK_RETRY_SECONDS,
@@ -9811,12 +9806,10 @@ class DiffusionBackend:
                     _hold_off_cuda_graph_capture,
                 )
 
-                # One ticker per chunk (replaced before each pipe() call): a finished chunk's boundary must not
-                # end the next chunk's denoise.
+                # Replaced per chunk: a finished chunk's boundary must not end the next one's denoise.
                 chunk_ticker = [_CompletedStepTicker(steps)]
 
                 def _report(done_in_chunk: int) -> None:
-                    """Publish completed steps. Monotonic, and silent once the chunk has left its denoise."""
                     if gen.phase not in ("encode", "denoise"):
                         return
                     done = steps_done[0] + max(0, min(int(done_in_chunk), steps))
@@ -9839,8 +9832,6 @@ class DiffusionBackend:
                     gen.eta_seconds = None
 
                 def _pump() -> None:
-                    """One poll (inside the capture hold-off): advance from the GPU, and enter the decode only
-                    once the GPU has reached the marked end of the denoise."""
                     if gen.phase not in ("encode", "denoise"):
                         return
                     ticker = chunk_ticker[0]
@@ -9855,11 +9846,10 @@ class DiffusionBackend:
                     if gen.phase == "encode":
                         gen.phase = "denoise"
                     if previewer is not None:
-                        # Reads the latent only; never raises, never waits on the device.
                         previewer.on_step(
                             callback_kwargs.get("latents"), getattr(pipe, "scheduler", None)
                         )
-                    # diffusers calls this after scheduler.step, so the step's latent update is already enqueued.
+                    # Runs after scheduler.step, so this step's update is already enqueued.
                     with _hold_off_cuda_graph_capture() as clear:
                         if clear:
                             chunk_ticker[0].record(step_index + 1)
@@ -9964,7 +9954,7 @@ class DiffusionBackend:
                             # diffusers resets FBCache only after a SUCCESSFUL __call__; a raised call leaves a stale residual.
                             self._reset_step_cache(state.pipe)
                         protect_ctx = protect_generation(pipe, denoise_steps, logger = logger)
-                        # Per chunk: a later chunk encodes and denoises again after an earlier one decoded.
+                        # Per chunk: a later chunk encodes again after an earlier one decoded.
                         gen.phase = "encode"
 
                         def _enter_denoise_phase(gen = gen) -> None:
@@ -10003,8 +9993,6 @@ class DiffusionBackend:
                                 out = render_thread.run(
                                     "diffusion", lambda: pipe(**chunk_kwargs).images
                                 )
-                            # pipe() returned decoded images, so the GPU is past the denoise whatever the
-                            # poller last saw.
                             if gen.phase in ("encode", "denoise"):
                                 _flip_to_decode()
                         except Exception as exc:  # noqa: BLE001 - reraised unless a splittable OOM

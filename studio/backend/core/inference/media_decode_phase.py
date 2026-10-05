@@ -63,14 +63,8 @@ def decode_phase(
 
 @contextlib.contextmanager
 def denoise_phase(pipe: Any, on_denoise: Any):
-    """Call ``on_denoise`` (at most once, must not raise) when the denoise loop is entered.
-
-    Every diffusers pipeline opens ``self.progress_bar(total=...)`` right before its loop, after the
-    prompt encode and the latent setup, so wrapping that one method splits "encoding the prompt" from
-    "denoising" without touching the model. Like ``decode_phase`` this is a HOST position. The wrapper
-    is removed on every exit; a pipe without ``progress_bar`` is left alone (the caller's first step
-    callback still moves the phase on).
-    """
+    """Call ``on_denoise`` once when the loop is entered: every diffusers pipeline opens
+    ``self.progress_bar`` right after the prompt encode and latent setup. A HOST position."""
     original = getattr(pipe, "progress_bar", None)
     if not callable(original):
         yield

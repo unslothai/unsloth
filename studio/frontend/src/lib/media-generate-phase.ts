@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-/** The fields of an image or video generate-progress poll the phase label reads. */
 export interface MediaGeneratePhaseProgress {
   // encode | denoise | decode | export (video); absent or null (sd.cpp) reads as denoise.
   phase?: string | null;
@@ -10,9 +9,7 @@ export interface MediaGeneratePhaseProgress {
   eta_seconds?: number | null;
 }
 
-/** The text shown beside the generation spinner, the same on the Images and Video pages.
- *  ``hasAudio`` only changes the decode wording (video families that decode a soundtrack too);
- *  ``formatEta`` renders the remaining seconds (the pages pass the hub formatter). */
+/** Spinner label shared by the Images and Video pages. */
 export function generatePhaseLabel(
   p: MediaGeneratePhaseProgress,
   opts: { hasAudio?: boolean; formatEta?: (seconds: number) => string } = {},
@@ -25,12 +22,10 @@ export function generatePhaseLabel(
   if (p.step <= 0 || p.total <= 0) return base;
   const fmt = opts.formatEta ?? ((seconds: number) => `${Math.max(0, Math.round(seconds))}s`);
   const eta = p.eta_seconds != null ? fmt(p.eta_seconds) : "";
-  // " \u2022 " is ModelLoadDescription's primary / secondary split: the step and ETA get their own
-  // line, since one line in the 18rem card truncated the ETA away.
+  // " \u2022 " = ModelLoadDescription's line split: on one line the 18rem card truncated the ETA.
   return `${base} \u2022 Step ${p.step}/${p.total}${eta ? ` · ~${eta}` : ""}`;
 }
 
-/** Whether two polls would render the same card and preview, so the poll can skip a re-render. */
 export function sameGenerateProgress(
   a: { step: number; eta_seconds?: number | null; phase?: string | null; preview_seq?: number },
   b: { step: number; eta_seconds?: number | null; phase?: string | null; preview_seq?: number },

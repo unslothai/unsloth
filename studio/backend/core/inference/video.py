@@ -8294,7 +8294,7 @@ class VideoBackend:
         audio_flow_shift: Optional[float] = None,
         cancel_event: Optional[threading.Event] = None,
         _resolved_inputs: Optional[_VideoResolvedInputs] = None,
-        # Live latent previews on the progress poll; None = the default (on unless UNSLOTH_DIFFUSION_PREVIEW=0).
+        # None = on unless UNSLOTH_DIFFUSION_PREVIEW=0.
         live_preview: Optional[bool] = None,
     ) -> dict[str, Any]:
         # begin_generate passes its already-registered event; a direct call makes its own.
@@ -8654,7 +8654,6 @@ class VideoBackend:
                         setter(float(value))
 
                 started = time.monotonic()
-                # "encode" until the pipeline enters its denoise loop (denoise_phase below, or the first step).
                 self._gen = {
                     "active": True,
                     "phase": "encode",
@@ -8667,7 +8666,7 @@ class VideoBackend:
                 job_gen = self._gen
 
                 def _publish_preview(url: str, seq: int) -> None:
-                    # Only into THIS job's record: a late frame must not land on a successor's.
+                    # A late frame must not land on a successor job's record.
                     if self._gen is job_gen:
                         job_gen.update(preview = url, preview_seq = seq)
 
@@ -8711,7 +8710,6 @@ class VideoBackend:
                     pipeline's is not, and Studio runs image and video renders side by side. A tick
                     skipped here costs that step its marker and nothing else: the step number travels
                     with the event, so the later ones do not shift, and the poller keeps reporting."""
-                    # The host is inside the denoise loop, whatever the GPU has finished: the encode is over.
                     _enter_denoise()
                     with _hold_off_cuda_graph_capture() as clear:
                         if not clear:
@@ -8776,7 +8774,6 @@ class VideoBackend:
                         return callback_kwargs
                     _tick(step_index + 1)
                     if previewer is not None:
-                        # Reads the latent only; never raises, never waits on the device.
                         previewer.on_step(
                             callback_kwargs.get("latents"), getattr(p, "scheduler", None)
                         )
@@ -8810,7 +8807,6 @@ class VideoBackend:
                             stack.enter_context(
                                 _scheduler_step_progress(pipe, _on_scheduler_step_cancel, _tick)
                             )
-                            # Same seam for the live preview: the stepped latent is scheduler.step's output.
                             stack.enter_context(scheduler_step_preview(pipe, previewer))
                         stack.enter_context(_denoise_phase(pipe, _enter_denoise))
                         # Family-agnostic: no video family has a callback between its denoise loop and its decode, so
