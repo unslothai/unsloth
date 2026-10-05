@@ -1,30 +1,11 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2023-present Daniel Han-Chen & the Unsloth team. All rights reserved.
 
-"""bitsandbytes NF4 ``Linear4bit.forward`` on Unsloth's NF4 kernels.
-
-The generic path (FastModel, and zoo's compiled PEFT LoRA forwards) calls ``self.base_layer(x)``,
-which lands in ``bnb.matmul_4bit``. This replaces that forward for NF4 weights with the Triton
-dequantize from ``kernels/nf4.py`` (bit-exact to bitsandbytes' dequantize) followed by ``F.linear``,
-and a single decode row uses ``fast_gemv``. The backward recomputes the dequantized weight for
-``dX`` exactly as bitsandbytes does (the base weight is frozen), so dX is bit for bit bitsandbytes'.
-The forward equals bitsandbytes' wherever bitsandbytes itself dequantizes and runs F.linear (every
-batch before 0.50). From 0.50 bitsandbytes picks, per GPU and shape, a fused 4-bit GEMM for 2..1536
-rows (faster than dequantize + cuBLAS there): the override asks that same heuristic and leaves
-those calls to bitsandbytes, taking only the shapes where bitsandbytes dequantizes + F.linear (bit
-for bit equal, faster dequantize) and the single decode row (GEMV). fp32 below 8 rows and every
-case it does not cover run the forward that was installed before it.
-
-Compiled: traced from torch 2.11 (bf16 only when every GPU is sm80+). Below that, compiled code
-keeps bitsandbytes' forward when it traces (bitsandbytes >= 0.46), else runs this as one opaque
-call, which is fewer graph breaks than 0.45.5's ctypes calls.
-
-Default: on for every CUDA GPU (sm75+) before bitsandbytes 0.50. From 0.50 only when every GPU is
-sm100 or sm120: on A100 and T4, batched decode (2-8 rows, left to bitsandbytes) still measured 2-3%
-slower end to end with the override installed, although one decode row was 6-8% faster.
-UNSLOTH_BNB_NF4_LINEAR=1 forces it on, =0 off;
-UNSLOTH_BNB_TRITON=0 turns off every Unsloth NF4 kernel and leaves bitsandbytes' forward untouched.
-"""
+"""bitsandbytes NF4 ``Linear4bit.forward`` on Unsloth's NF4 kernels: Triton dequantize + F.linear
+(bit-exact to bitsandbytes' dequantize) and ``fast_gemv`` for one decode row; dX recomputes the
+weight as bitsandbytes does. From bitsandbytes 0.50, shapes its fused 4-bit GEMM takes stay with it.
+Default on before bitsandbytes 0.50, and from 0.50 only on sm100 / sm120 (A100 / T4 batched decode
+measured 2-3% slower). UNSLOTH_BNB_NF4_LINEAR=1/0 forces it; UNSLOTH_BNB_TRITON=0 disables it."""
 
 import os
 
@@ -44,8 +25,7 @@ _FALLBACK = {}
 try:
     from unsloth_zoo.utils import Version
 
-    # Inductor before 2.11 miscompiles the traced backward of these autograd Functions, and on 2.7
-    # a Params4bit reaching a custom op breaks the graph anyway: run opaque (eager) there.
+    # Before 2.11 Inductor miscompiles the traced backward of these Functions: run opaque.
     _TRACE = Version(torch.__version__) >= Version("2.11.0") and hasattr(torch.library, "triton_op")
 except Exception:
     _TRACE = False
@@ -71,7 +51,6 @@ def _apply(function, *args):
 
 
 class _NF4Linear(torch.autograd.Function):
-    # x @ dequant(W).T + bias with a frozen NF4 weight; nothing but x gets a gradient.
     @staticmethod
     def forward(ctx, x, weight, quant_state, bias):
         ctx.unsloth_nf4 = (weight, quant_state)
@@ -90,7 +69,6 @@ def _linear(x, weight, quant_state, bias):
         return _apply(_NF4Linear, x, weight, quant_state, bias)
     K = x.shape[-1]
     if x.numel() == K and quant_state.dtype is not torch.float32:
-        # One row (decode): the fused GEMV, which never materializes the weight.
         N = quant_state.shape[0]
         out = _U.fast_gemv(x.reshape(1, 1, K), weight, quant_state)
         if bias is not None:
@@ -100,8 +78,7 @@ def _linear(x, weight, quant_state, bias):
 
 
 def _bnb_ops_traceable():
-    # bitsandbytes >= 0.46 runs every 4-bit call through registered torch.library ops with fake
-    # kernels, which Dynamo traces without a break; 0.45.5 calls its ctypes kernels directly.
+    # bitsandbytes >= 0.46 uses registered torch.library ops (traceable); 0.45.5 calls ctypes.
     try:
         return hasattr(torch.ops.bitsandbytes, "dequantize_4bit")
     except Exception:
@@ -109,8 +86,7 @@ def _bnb_ops_traceable():
 
 
 _BNB_OPS = False
-# bitsandbytes >= 0.50: torch.ops.bitsandbytes.gemm_4bit picks a fused 4-bit GEMM up to this many
-# rows (backends/cuda/ops.py _gemm_4bit_custom_max_m) and dequantizes + F.linear past it.
+# bitsandbytes >= 0.50 fused 4-bit GEMM row cap (backends/cuda/ops.py _gemm_4bit_custom_max_m).
 _BNB_FUSED = False
 _BNB_FUSED_MAX_ROWS = 1536
 _BNB_PICK = None
@@ -124,8 +100,7 @@ def _bnb_has_fused_gemm():
 
 
 def _bnb_fused_heuristic():
-    # bitsandbytes' own fused-vs-dequantize choice for gemm_4bit (backends/cuda/ops.py, 0.50):
-    # (device_index, dtype, M, N, K) -> bool, and the row cap past which it always dequantizes.
+    # bitsandbytes' own fused-vs-dequantize choice for gemm_4bit (backends/cuda/ops.py, 0.50).
     try:
         from bitsandbytes.backends.cuda import ops
 
@@ -152,7 +127,9 @@ def _wanted():
     if _LINEAR == "1":
         return True
     try:
-        caps = [tuple(torch.cuda.get_device_capability(i)) for i in range(torch.cuda.device_count())]
+        caps = [
+            tuple(torch.cuda.get_device_capability(i)) for i in range(torch.cuda.device_count())
+        ]
     except Exception:
         return False
     return _default_on(caps, _bnb_has_fused_gemm(), torch.version.hip is not None)
@@ -188,14 +165,16 @@ def _eligible(self, x, weight, quant_state):
     if quant_state.nested and (state2 is None or state2.blocksize != 256):
         # bitsandbytes raises for any other nested blocksize; keep its behaviour.
         return False
-    # Dequantizing straight to the compute dtype equals bitsandbytes' dequantize-then-cast only
-    # when both are the same dtype (a forced float32 compute on a bf16 / fp16 state falls back).
+    # Dequantizing straight to the compute dtype equals bitsandbytes' only when the dtypes match.
     if self.compute_dtype is not dtype:
         return False
     bias = self.bias
     if bias is not None and bias.requires_grad and torch.is_grad_enabled():
         return False
-    if torch.is_autocast_enabled(x.device.type) and torch.get_autocast_dtype(x.device.type) is not dtype:
+    if (
+        torch.is_autocast_enabled(x.device.type)
+        and torch.get_autocast_dtype(x.device.type) is not dtype
+    ):
         return False
     return True
 
@@ -229,14 +208,18 @@ def _bnb_fused_takes(self, x, quant_state):
 def _forward(self, x):
     weight = self.weight
     quant_state = getattr(weight, "quant_state", None)
-    if _BNB_FUSED and quant_state is not None and type(quant_state) is not list and _bnb_fused_takes(self, x, quant_state):
+    if (
+        _BNB_FUSED
+        and quant_state is not None
+        and type(quant_state) is not list
+        and _bnb_fused_takes(self, x, quant_state)
+    ):
         return _FALLBACK["forward"](self, x)
     if not self.compute_type_is_set or not _eligible(self, x, weight, quant_state):
         return _FALLBACK["forward"](self, x)
     dtype = quant_state.dtype
     if dtype is torch.float32 and x.numel() < 8 * x.shape[-1]:
-        # bitsandbytes >= 0.50 runs fp32 below 8 rows on its own kernel, more accurate than a
-        # cuBLAS fp32 GEMM there; fp32 4-bit compute is rare, so keep its result exactly.
+        # bitsandbytes >= 0.50 runs fp32 below 8 rows on its own, more accurate kernel.
         return _FALLBACK["forward"](self, x)
     if dtype is torch.bfloat16 and not _TRACE_BF16 and torch.compiler.is_compiling():
         # sm75 cannot re-emit bf16 user Triton: keep bitsandbytes' (traceable) forward.
@@ -256,14 +239,11 @@ _forward_opaque = torch._dynamo.disable(_forward)
 
 def _nf4_forward(self, x: torch.Tensor):
     if _BNB_FUSED and not torch.compiler.is_compiling():
-        # Eager fast path for calls bitsandbytes keeps (its fused GEMM): one cached lookup.
         picks = self.__dict__.get(_PICKS)
         if picks is not None and picks.get(x.numel()) is True:
             return _FALLBACK["forward"](self, x)
     if not _TRACE and torch.compiler.is_compiling():
-        # Before torch 2.11 the kernels stay out of Inductor. bitsandbytes >= 0.46 traces without
-        # a break, so compiled code keeps it; 0.45.5 breaks on its ctypes calls several times per
-        # layer, so one opaque call is fewer.
+        # Before torch 2.11: keep traceable bitsandbytes (>= 0.46), else one opaque call.
         if _BNB_OPS:
             return _FALLBACK["forward"](self, x)
         return _forward_opaque(self, x)
@@ -280,7 +260,6 @@ def install_bnb_nf4_override():
         return False
     try:
         import bitsandbytes as bnb
-
         Linear4bit = bnb.nn.Linear4bit
         if not _U._USE_NF4_KERNELS or not _wanted():
             return False
