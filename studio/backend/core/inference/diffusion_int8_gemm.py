@@ -45,16 +45,6 @@ import types
 from functools import lru_cache
 from typing import Any, Optional
 
-from .diffusion_convrot_quant import (  # noqa: F401 - re-exported: the fused rotation + act quant lives there
-    INT8_ROTQUANT_ENV,
-    rotquant_call_count,
-    rotquant_config,
-    rotquant_device_config,
-    rotquant_enabled,
-    rotquant_reference,
-    rotquant_supported,
-)
-
 INT8_GEMM_ENV = "UNSLOTH_DIFFUSION_INT8_GEMM"
 INT8_GEMM_CONVROT_ENV = "UNSLOTH_DIFFUSION_INT8_GEMM_CONVROT"
 INT8_GEMM_STREAMED_ENV = "UNSLOTH_DIFFUSION_INT8_GEMM_STREAMED"
