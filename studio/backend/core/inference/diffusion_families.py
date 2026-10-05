@@ -430,16 +430,13 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
             ("fp8", "Qwen-Image-2.1-FP8.safetensors"),
             ("int8", "Qwen-Image-2.1-INT8.safetensors"),
         ),
-        # Qwen3-VL 8B, pre-cast. Independent of the DiT scheme, as on every other family. The int8 ConvRot encoder is
-        # hosted beside it (diffusion_te_prequant.TE_INT8_CONVROT_FILES) and falls back to this one.
+        # Qwen3-VL 8B pre-cast fp8, the int8 ConvRot encoder's fallback (diffusion_te_prequant.TE_INT8_CONVROT_FILES).
         te_prequant_repos = (("fp8", "text_encoder", "unsloth/Qwen-Image-2.1-FP8"),),
         # The encoder is the BIG component here, not the denoiser: Qwen3-VL-8B is 16.33 GiB dense against 6.76 GiB for
         # the INT8 transformer, so a quantised denoiser alone still costs ~26 GB and the hosted pre-cast encoder is
         # what makes the family fit a 24 GB card. Measured on this family at 1024/40 steps: 23.74 -> 16.16 GiB resident
         # and 11.6 -> 1.5 s to load the encoder, with per-image render time unchanged.
-        # int8 ConvRot weight-only, the encoder ComfyUI's Qwen-Image-2.1 template loads on every tier: LPIPS 0.023 mean
-        # / 0.073 max against the bf16 encoder on 16 prompts, where fp8 is 0.057 / 0.287 and misspells rendered text.
-        # Same file size and encode time as fp8; until the int8 file is published the load takes the fp8 one.
+        # int8 ConvRot weight-only, as ComfyUI's Qwen-Image-2.1 template (fp8 misspells rendered text).
         te_quant_auto = "int8",
         cfg_kwarg = "true_cfg_scale",
         # 2.1 is UNIFIED: one pipeline, and QwenImage21Pipeline.__call__ takes ``image`` as condition

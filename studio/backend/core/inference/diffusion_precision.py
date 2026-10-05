@@ -263,8 +263,7 @@ def quantize_text_encoders(
     mode = normalize_te_quant(mode)
     if mode is None:
         return TEQuantOutcome(None)
-    # Encoders loaded from a hosted artifact carry the scheme the file held. An int8 ConvRot one is already quantized
-    # (plain int8 tensors, so offload is fine) and must never be re-cast: report it and leave it alone.
+    # A hosted int8 ConvRot encoder is already quantized (plain tensors, offload-safe): report it, never re-cast it.
     present = [a for a in _TEXT_ENCODER_ATTRS if getattr(pipe, a, None) is not None]
     hosted_int8 = [a for a in present if _hosted_te_scheme(getattr(pipe, a)) == TE_QUANT_INT8]
     if mode == TE_QUANT_INT8 and hosted_int8 and len(hosted_int8) == len(present):
