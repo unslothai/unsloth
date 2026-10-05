@@ -6,8 +6,10 @@
 Kept independent from upstream models/models.py so the Hub module can ship
 without modifying any upstream schema."""
 
-from pydantic import BaseModel, Field, PrivateAttr
+from pydantic import BaseModel, Field, PrivateAttr, model_validator
 from typing import List, Literal, Optional
+
+from core.inference.audio_workflows import inventory_audio_workflows
 
 
 ModelFormat = Literal["gguf", "safetensors", "adapter", "checkpoint", "unknown"]
@@ -205,6 +207,10 @@ class LocalModelInfo(BaseModel):
         None,
         description = "Detected output-audio architecture or codec used by Audio runtime policy",
     )
+    audio_workflows: Optional[List[str]] = Field(
+        None,
+        description = "Audio page workflows (speak, clone, music, transcribe) this row serves; null when not audio",
+    )
     base_model: Optional[str] = Field(
         None,
         description = "Base model from adapter_config.json when this is an adapter",
@@ -248,6 +254,12 @@ class LocalModelInfo(BaseModel):
             "for loading, not an unfinished download."
         ),
     )
+
+    @model_validator(mode = "after")
+    def derive_audio_workflows(self):
+        if self.audio_workflows is None:
+            self.audio_workflows = inventory_audio_workflows(self.task, self.audio_type)
+        return self
 
 
 class LocalModelListResponse(BaseModel):
@@ -299,6 +311,14 @@ class CachedRepoBase(BaseModel):
     # diffusion pick by it, so a row without one is dropped from those lists.
     task: Optional[str] = None
     audio_type: Optional[str] = None
+    # Audio page workflows the row serves, from the task first: audio.cpp music rows carry no audio_type.
+    audio_workflows: Optional[List[str]] = None
+
+    @model_validator(mode = "after")
+    def derive_audio_workflows(self):
+        if self.audio_workflows is None:
+            self.audio_workflows = inventory_audio_workflows(self.task, self.audio_type)
+        return self
 
 
 class CachedGgufRepo(CachedRepoBase):
@@ -356,6 +376,10 @@ class AddScanFolderRequest(BaseModel):
         ...,
         description = "Absolute or relative folder path, or a model weight file path",
     )
+    recursive: Optional[bool] = Field(
+        None,
+        description = "Also scan sub-folders. Omitted keeps the stored setting of an already registered folder.",
+    )
 
 
 class ScanFolderInfo(BaseModel):
@@ -364,6 +388,7 @@ class ScanFolderInfo(BaseModel):
     id: int = Field(..., description = "Database row ID")
     path: str = Field(..., description = "Normalized absolute path")
     created_at: str = Field(..., description = "ISO 8601 creation timestamp")
+    recursive: bool = Field(False, description = "Sub-folders are scanned too")
     status: str = Field(
         default = "ok",
         description = "Last scan result: ok, permission_denied, missing, or unreadable",

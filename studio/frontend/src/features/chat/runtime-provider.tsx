@@ -186,6 +186,7 @@ import {
 } from "./utils/chat-attachment-events";
 import { chatHistoryClearBoundary } from "./utils/chat-history-clear-boundary";
 import { createParentResolver } from "./utils/message-order";
+import { estimateContextUsage } from "./utils/estimate-chat-tokens";
 import {
   awaitStoredChatThreadWrites,
   deleteStoredChatThreads,
@@ -224,6 +225,10 @@ import {
   attachmentsSample,
   isPastedTextFile,
 } from "./utils/pasted-text";
+import {
+  annotationsContentText,
+  annotationsOfFile,
+} from "./utils/document-annotations";
 import {
   adoptPreStreamRunReservation,
   claimPreStreamRunReservation,
@@ -672,7 +677,8 @@ class TextAttachmentAdapter implements AttachmentAdapter {
   }
 
   async send(attachment: PendingAttachment): Promise<CompleteAttachment> {
-    const text = await readTextAttachmentOnce(attachment.file);
+    const annotations = annotationsOfFile(attachment.file);
+    const text = annotations ? "" : await readTextAttachmentOnce(attachment.file);
     return {
       id: attachment.id,
       type: "document",
@@ -682,12 +688,15 @@ class TextAttachmentAdapter implements AttachmentAdapter {
         {
           type: "text",
           // A pasted file gets its own tag and size, the markers that outlive the File once the message is stored.
-          text: attachmentContentText(
-            attachment.name,
-            text,
-            isPastedTextFile(attachment.file),
-            attachment.file.size,
-          ),
+          // Annotations carry their own tag, which the chip reads back once the File is gone.
+          text: annotations
+            ? annotationsContentText(annotations)
+            : attachmentContentText(
+                attachment.name,
+                text,
+                isPastedTextFile(attachment.file),
+                attachment.file.size,
+              ),
         },
       ],
       status: { type: "complete" },
@@ -2685,12 +2694,13 @@ function useStudioRuntimeAdapters(
         // The value, not a boolean: the writes below need the narrowing.
         const restoredUsage =
           savedUsage && withinLocalLimit && modelMatches ? savedUsage : null;
-        if (restoredUsage) {
+        const shownUsage = restoredUsage ?? estimateContextUsage(msgs);
+        if (shownUsage) {
           // Key by the thread this loader read, not whichever is active when the await resolves: a switch
           // inside it would file this thread's usage under the incoming one.
-          store.setThreadContextUsage(remoteId, restoredUsage);
+          store.setThreadContextUsage(remoteId, shownUsage);
           if (store.activeThreadId === remoteId) {
-            store.setContextUsage(restoredUsage);
+            store.setContextUsage(shownUsage);
           }
         }
         // Only when nothing was restored: saved usage is the last completion's exact totals, and
@@ -3626,8 +3636,9 @@ function ThreadContextUsageRecount({
     ) {
       return;
     }
-    // Only into a blank bar: restored or completion-written usage is exact, this is an estimate.
-    if (useChatRuntimeStore.getState().contextUsage != null) return;
+    // Only into a blank or estimated bar: restored or completion-written usage is exact.
+    const shown = useChatRuntimeStore.getState().contextUsage;
+    if (shown != null && !shown.estimated) return;
     void refreshContextUsage({ threadId: activeThreadId });
   }, [
     activeThreadId,
