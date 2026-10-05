@@ -462,6 +462,8 @@ class ClefDecisionModel(torch.nn.Module):
             records,
             backbone.get_output_embeddings().weight.detach(),
         )
+        if hasattr(logits, "flat_padded"):
+            return logits.flat_padded, None
         flat = [question for record in logits for question in record]
         padded = torch.full(
             (len(flat), max(len(z) for z in flat)), -1e4, dtype = flat[0].dtype, device = flat[0].device
