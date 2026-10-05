@@ -737,7 +737,7 @@ export const InventoryRow = memo(function InventoryRow({
             ? undefined
             : {
                 pinned: rowPinned,
-                pinLabel: "Pin to top",
+                pinLabel: "Pin",
                 unpinLabel: "Unpin",
                 onToggle: () => togglePinned(deletableRepoId),
               }

@@ -15,6 +15,7 @@ const {
   clampReasoningEffortToLevels,
   getExternalMaxOutputTokens,
   getExternalReasoningCapabilities,
+  getProviderCapabilities,
   providerHostsCodeExecution,
   providerSupportsBuiltinCodeExecution,
   providerSupportsBuiltinImageGeneration,
@@ -301,7 +302,7 @@ test("GPT-6 Sol and Luna subscription models use local Code tools", () => {
       codeToolsEnabled: true,
       hostedCodeExecutionForThisTurn: providerSupportsBuiltinCodeExecution("openai_codex", model),
       providerHostsCodeExecution: providerHostsCodeExecution("openai_codex"),
-    }), { local: ["python", "terminal", "edit_file"], hosted: [] });
+    }), { local: ["python", "terminal", "edit_file", "view_image"], hosted: [] });
   }
 });
 
@@ -331,7 +332,7 @@ test("ChatGPT subscription models expose Unsloth-owned search and local code too
         hostedCodeExecutionForThisTurn,
         providerHostsCodeExecution: sandbox,
       }),
-      { local: ["python", "terminal", "edit_file"], hosted: [] },
+      { local: ["python", "terminal", "edit_file", "view_image"], hosted: [] },
       model,
     );
     assert.equal(
@@ -460,6 +461,37 @@ test("earlier Claude 4 and 3.7 Sonnet keep a Thinking control the backend can se
   assert.deepEqual(
     [...getExternalReasoningCapabilities("anthropic", "claude-sonnet-4-6-20260219").reasoningEffortLevels],
     ["none", "low", "medium", "high", "max"],
+  );
+});
+
+test("the Claude sampling panel offers only what the backend sends Anthropic", () => {
+  for (const id of [
+    "claude-sonnet-4-6",
+    "claude-haiku-4-5-20251001",
+    "claude-3-5-sonnet-20241022",
+    "claude-opus-4-20250514",
+  ]) {
+    const caps = getProviderCapabilities("anthropic", undefined, id);
+    assert.equal(caps?.topP, false, id);
+    assert.equal(caps?.temperature, true, id);
+    assert.equal(caps?.topK, true, id);
+  }
+  for (const id of [
+    "claude-opus-4-7",
+    "claude-opus-4-8",
+    "claude-sonnet-5",
+    "claude-fable-5",
+    "claude-mythos-preview",
+    " Claude-Opus-4.7-20260414 ",
+  ]) {
+    const caps = getProviderCapabilities("anthropic", undefined, id);
+    assert.equal(caps?.temperature, false, id);
+    assert.equal(caps?.topP, false, id);
+    assert.equal(caps?.topK, false, id);
+  }
+  assert.equal(
+    getProviderCapabilities("custom", "chat_completions", "claude-opus-4-7")?.temperature,
+    true,
   );
 });
 

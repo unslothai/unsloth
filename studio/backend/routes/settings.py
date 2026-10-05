@@ -11,10 +11,10 @@ import re
 import threading
 import time
 from contextvars import ContextVar
-from typing import Any, Literal, Optional, get_args
+from typing import Annotated, Any, Literal, Optional, get_args
 from urllib.parse import unquote, urlsplit
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Request
+from fastapi import APIRouter, BackgroundTasks, Depends, Header, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from starlette.background import BackgroundTask
 from pydantic import (
@@ -23,6 +23,7 @@ from pydantic import (
     Field,
     StrictBool,
     StrictInt,
+    StringConstraints,
     ValidationError,
     field_validator,
     model_validator,
@@ -93,6 +94,11 @@ from utils.hub_settings import (
 from picker.schemas import MAX_CHAT_TEMPLATE_BYTES, chat_template_byte_length
 from utils.reasoning_budget import validate_reasoning_budget_message
 from utils.coding_agents import CODING_AGENTS, detect_installed_coding_agents
+from utils.multi_model_settings import (
+    DEFAULT_MULTI_MODEL_ENABLED,
+    get_multi_model_enabled,
+    set_multi_model_enabled,
+)
 from utils.model_memory_settings import (
     DEFAULT_KEEP_RESIDENT,
     DEFAULT_NO_RAM_RESERVE,
@@ -544,6 +550,15 @@ def delete_custom_generation_preset(
     return {"deleted": True}
 
 
+class MultiModelPayload(BaseModel):
+    enabled: StrictBool
+
+
+class MultiModelResponse(BaseModel):
+    enabled: bool
+    default_enabled: bool = DEFAULT_MULTI_MODEL_ENABLED
+
+
 class UploadLimitPayload(BaseModel):
     max_upload_size_mb: int = Field(..., ge = MIN_UPLOAD_LIMIT_MB, le = MAX_UPLOAD_LIMIT_MB)
 
@@ -633,6 +648,13 @@ class SystemOneModelOption(BaseModel):
     download_bytes: int
 
 
+class SystemOneConnectionOption(BaseModel):
+    name: str
+    provider_id: str
+    provider: str
+    model: str
+
+
 class SystemOneSettingsResponse(BaseModel):
     enabled: bool
     enabled_locked: bool
@@ -647,6 +669,7 @@ class SystemOneSettingsResponse(BaseModel):
     loading_model: Optional[str] = None
     installing: bool = False
     error: Optional[str] = None
+    mcp_url: str
 
 
 class SystemOneSettingsPayload(BaseModel):
@@ -755,6 +778,9 @@ class ModelMemoryResponse(BaseModel):
     # Whether --mlock is passed on the next load. False when no_ram_reserve
     # vetoes it; the UI surfaces that rather than failing silently.
     mlock_active: bool
+    # False when the running llama.cpp child has no host copy to lock (full offload to a discrete GPU),
+    # so a keep-resident user is told why no lock is taken. True with nothing loaded.
+    mlock_applicable: bool = True
     reload_required: bool
     # Soft RLIMIT_MEMLOCK when finite. mlock cannot exceed it, so the UI warns that residency will not
     # fully pin a larger model. None means unlimited (macOS) or not applicable (Windows).
@@ -917,6 +943,9 @@ class ModelOverridePayload(BaseModel):
     """
 
     model_id: str = Field(..., min_length = 1, max_length = MAX_MODEL_OVERRIDE_KEY_LEN)
+    engine_parallelism: Optional[Literal["tensor", "pipeline", "data"]] = None
+    engine_precision: Optional[Literal["auto", "bf16", "fp16", "int4", "int8", "fp8"]] = None
+    engine: Optional[Literal["auto", "vllm", "sglang"]] = None
     # None leaves the stored value alone (the UI has no control for flags); [] clears them.
     llama_extra_args: Optional[list[str]] = None
     # ge=1: the setter drops a falsy value, so reject 0 here instead of discarding it silently.
@@ -1168,6 +1197,13 @@ def _model_memory_mlock_active(want_mlock: bool) -> bool:
     return bool(state and state[0])
 
 
+def _model_memory_mlock_applicable() -> bool:
+    state, _policy_active, applicable, _direct_io, _dio_applicable, _dio_managed, _pending = (
+        _active_launch_placement()
+    )
+    return state is _NO_LAUNCH or bool(applicable)
+
+
 def _model_memory_response() -> ModelMemoryResponse:
     keep_resident, no_ram_reserve = get_model_memory_settings()
     mlock_active = _model_memory_mlock_active(should_mlock())
@@ -1175,6 +1211,7 @@ def _model_memory_response() -> ModelMemoryResponse:
         keep_resident = keep_resident,
         no_ram_reserve = no_ram_reserve,
         mlock_active = mlock_active,
+        mlock_applicable = _model_memory_mlock_applicable(),
         reload_required = _model_memory_reload_required(),
         memlock_limit_bytes = memlock_limit_bytes() if mlock_active else None,
     )
@@ -1329,6 +1366,48 @@ def update_llama_cpp_path(
     return _llama_cpp_path_response()
 
 
+@_shared_settings_router.get("/multi-model", response_model = MultiModelResponse)
+def get_multi_model(current_subject: str = Depends(get_current_subject)) -> MultiModelResponse:
+    return MultiModelResponse(enabled = get_multi_model_enabled())
+
+
+@_owner_settings_router.put("/multi-model", response_model = MultiModelResponse)
+def update_multi_model(
+    payload: MultiModelPayload,
+    background_tasks: BackgroundTasks,
+    current_subject: str = Depends(get_current_subject),
+) -> MultiModelResponse:
+    """Keep the loaded models when another loads. Takes effect on the next load."""
+    try:
+        enabled = set_multi_model_enabled(payload.enabled)
+    except Exception as exc:
+        raise log_and_http_error(
+            exc,
+            500,
+            safe_error_detail(exc, fallback = "Could not save the multiple models setting."),
+            event = "settings.update_multi_model_failed",
+            log = logger,
+        ) from exc
+    logger.info("settings.multi_model_updated subject=%s enabled=%s", current_subject, enabled)
+    if not enabled:
+        # Back to one model: the idle kept ones go after the reply (a teardown can take minutes),
+        # a busy one once it is ejected. One that fails to unload stays tracked as stuck.
+        background_tasks.add_task(_unload_idle_models)
+    return MultiModelResponse(enabled = enabled)
+
+
+def _unload_idle_models() -> None:
+    from core.inference import model_slots
+    from routes.inference import release_chat_after_kept_models
+
+    try:
+        model_slots.unload_idle()
+    except Exception:
+        logger.warning("settings.multi_model_unload_idle_failed", exc_info = True)
+    # The primary's own unload kept CHAT while these were loaded.
+    release_chat_after_kept_models()
+
+
 @_shared_settings_router.get("/upload-limit", response_model = UploadLimitResponse)
 def get_upload_limit(current_subject: str = Depends(get_current_subject)) -> UploadLimitResponse:
     return _upload_limit_response(get_upload_limit_mb())
@@ -1375,8 +1454,9 @@ def update_helper_precache(
     return _helper_precache_response(enabled)
 
 
-def _systemone_response() -> SystemOneSettingsResponse:
+def _systemone_response(request: Request) -> SystemOneSettingsResponse:
     from core.systemone import catalog, laya_runtime
+    from routes.systemone import MCP_PATH
 
     enabled = systemone_settings.get_enabled()
     runtime = laya_runtime.status()
@@ -1384,6 +1464,7 @@ def _systemone_response() -> SystemOneSettingsResponse:
     error = runtime["error"]
     if runtime["error_model"] not in (None, model):
         error = None
+    port = getattr(request.app.state, "server_port", None) or request.scope["server"][1]
     return SystemOneSettingsResponse(
         enabled = enabled,
         enabled_locked = systemone_settings.enabled_locked(),
@@ -1403,6 +1484,7 @@ def _systemone_response() -> SystemOneSettingsResponse:
         loading_model = runtime["loading_model"],
         installing = runtime["installing"],
         error = error,
+        mcp_url = f"http://127.0.0.1:{port}{MCP_PATH}/",
     )
 
 
@@ -1439,14 +1521,30 @@ def _check_systemone_expectations(payload: SystemOneSettingsPayload) -> None:
 
 @_shared_settings_router.get("/systemone", response_model = SystemOneSettingsResponse)
 def get_systemone_settings(
-    current_subject: str = Depends(get_current_subject),
+    request: Request, current_subject: str = Depends(get_current_subject)
 ) -> SystemOneSettingsResponse:
-    return _systemone_response()
+    return _systemone_response(request)
+
+
+async def _refresh_decision_models(payload: SystemOneSettingsPayload) -> None:
+    from core.systemone import catalog
+    from routes.systemone import refresh_listed_decision_models
+    if catalog.parse_connection(payload.model):
+        await refresh_listed_decision_models()
 
 
 @_owner_settings_router.put("/systemone", response_model = SystemOneSettingsResponse)
-def update_systemone_settings(
-    payload: SystemOneSettingsPayload, current_subject: str = Depends(get_current_subject)
+async def update_systemone_settings(
+    payload: SystemOneSettingsPayload,
+    request: Request,
+    current_subject: str = Depends(get_current_subject),
+) -> SystemOneSettingsResponse:
+    await _refresh_decision_models(payload)
+    return await asyncio.to_thread(_save_systemone_settings, payload, request)
+
+
+def _save_systemone_settings(
+    payload: SystemOneSettingsPayload, request: Request
 ) -> SystemOneSettingsResponse:
     from core.systemone import laya_runtime
     with _SYSTEMONE_SETTINGS_LOCK:
@@ -1459,13 +1557,18 @@ def update_systemone_settings(
             except laya_runtime.Unavailable as exc:
                 raise HTTPException(status_code = 409, detail = exc.message) from None
             systemone_settings.save(values)
-    return _systemone_response()
+    return _systemone_response(request)
 
 
 @_owner_settings_router.post("/systemone/validate", status_code = 204)
-def validate_systemone_settings(
+async def validate_systemone_settings(
     payload: SystemOneSettingsPayload, current_subject: str = Depends(get_current_subject)
 ) -> None:
+    await _refresh_decision_models(payload)
+    await asyncio.to_thread(_validate_systemone_settings, payload)
+
+
+def _validate_systemone_settings(payload: SystemOneSettingsPayload) -> None:
     from core.systemone import laya_runtime
     with _SYSTEMONE_SETTINGS_LOCK:
         _check_systemone_expectations(payload)
@@ -1477,28 +1580,56 @@ def validate_systemone_settings(
                 raise HTTPException(status_code = 409, detail = exc.message) from None
 
 
+@_owner_settings_router.get(
+    "/systemone/connections", response_model = list[SystemOneConnectionOption]
+)
+async def list_systemone_connections(
+    current_subject: str = Depends(get_current_subject),
+) -> list[SystemOneConnectionOption]:
+    from core.systemone import catalog
+    from routes.systemone import refresh_listed_decision_models
+
+    await refresh_listed_decision_models()
+    return [
+        SystemOneConnectionOption(
+            name = catalog.Connection(row["id"], model).name,
+            provider_id = row["id"],
+            provider = row["display_name"],
+            model = model,
+        )
+        for row, models in await asyncio.to_thread(catalog.decision_connections)
+        for model in models
+    ]
+
+
 @_owner_settings_router.get("/systemone/resolve", response_model = SystemOneDownloadPlan)
 def resolve_systemone_download(
     model: Optional[str] = None, current_subject: str = Depends(get_current_subject)
 ) -> SystemOneDownloadPlan:
     from core.systemone import catalog, laya_runtime
 
-    checkpoint = catalog.default_checkpoint() if model is None else catalog.resolve(model)
+    checkpoint = (
+        catalog.default_checkpoint()
+        if model is None
+        else catalog.parse_connection(model) or catalog.resolve(model)
+    )
     if checkpoint is None:
         raise HTTPException(status_code = 400, detail = "Unknown Decision API model.")
+    if isinstance(checkpoint, catalog.Connection):
+        return SystemOneDownloadPlan(files = [], size_bytes = 0, cached = True)
     return SystemOneDownloadPlan(**laya_runtime.download_plan(checkpoint))
 
 
 @_owner_settings_router.post("/systemone/unload", response_model = SystemOneSettingsResponse)
 def unload_systemone_model(
-    current_subject: str = Depends(get_current_subject),
+    request: Request, current_subject: str = Depends(get_current_subject)
 ) -> SystemOneSettingsResponse:
     from core.systemone import laya_runtime
     try:
         laya_runtime.unload()
     except laya_runtime.Unavailable as exc:
         raise HTTPException(status_code = 409, detail = exc.message) from None
-    return _systemone_response()
+    return _systemone_response(request)
 
 
 @_shared_settings_router.get("/download-transport", response_model = DownloadTransportResponse)
@@ -1814,6 +1945,65 @@ class DiffusionAcceleratorFallbackResponse(BaseModel):
     diverting: bool = False
 
 
+PINNED_MODELS_SETTING_KEY = "model_picker_pinned"
+PINNED_CONNECTED_MODELS_SETTING_KEY = "model_picker_pinned_connected"
+MAX_PINNED_MODELS = 512
+# Room for a "::quant" suffix or an "external::<connection>::" prefix on top of a model id.
+_MAX_PIN_KEY_LEN = MAX_MODEL_OVERRIDE_KEY_LEN + 512
+_PinKey = Annotated[str, StringConstraints(min_length = 1, max_length = _MAX_PIN_KEY_LEN)]
+
+
+class PinnedModelsPayload(BaseModel):
+    """Either list may be omitted; only what is sent is replaced."""
+
+    model_config = ConfigDict(extra = "forbid")
+
+    pinned: Optional[list[_PinKey]] = Field(default = None, max_length = MAX_PINNED_MODELS)
+    connected: Optional[list[_PinKey]] = Field(default = None, max_length = MAX_PINNED_MODELS)
+
+
+class PinnedModelsResponse(BaseModel):
+    # None = never stored, so the browser seeds it.
+    pinned: Optional[list[str]] = None
+    connected: Optional[list[str]] = None
+
+
+def _pinned_models_response() -> PinnedModelsResponse:
+    from storage.studio_db import get_app_settings
+
+    stored = get_app_settings([PINNED_MODELS_SETTING_KEY, PINNED_CONNECTED_MODELS_SETTING_KEY])
+
+    def _ids(value: Any) -> Optional[list[str]]:
+        return [v for v in value if isinstance(v, str)] if isinstance(value, list) else None
+
+    return PinnedModelsResponse(
+        pinned = _ids(stored.get(PINNED_MODELS_SETTING_KEY)),
+        connected = _ids(stored.get(PINNED_CONNECTED_MODELS_SETTING_KEY)),
+    )
+
+
+@_account_settings_router.get("/pinned-models", response_model = PinnedModelsResponse)
+def get_pinned_models(current_subject: str = Depends(get_current_subject)) -> PinnedModelsResponse:
+    """Per-account picker pins: an account switch clears the browser copy."""
+    return _pinned_models_response()
+
+
+@_account_settings_router.put("/pinned-models", response_model = PinnedModelsResponse)
+def update_pinned_models(
+    payload: PinnedModelsPayload, current_subject: str = Depends(get_current_subject)
+) -> PinnedModelsResponse:
+    from storage.studio_db import upsert_app_settings
+
+    updates: dict[str, Any] = {}
+    if payload.pinned is not None:
+        updates[PINNED_MODELS_SETTING_KEY] = list(dict.fromkeys(payload.pinned))
+    if payload.connected is not None:
+        updates[PINNED_CONNECTED_MODELS_SETTING_KEY] = list(dict.fromkeys(payload.connected))
+    if updates:
+        upsert_app_settings(updates, read_back = False)
+    return _pinned_models_response()
+
+
 def _diffusion_accelerator_fallback_response() -> DiffusionAcceleratorFallbackResponse:
     from core.inference.sd_cpp_backend import accelerator_runtime_failure_state
     return DiffusionAcceleratorFallbackResponse(**accelerator_runtime_failure_state())
@@ -1949,7 +2139,9 @@ def update_openai_auto_switch(
     )
 
 
-@_owner_settings_router.get("/openai-auto-switch/overrides", response_model = ModelOverridesResponse)
+@_account_settings_router.get(
+    "/openai-auto-switch/overrides", response_model = ModelOverridesResponse
+)
 def get_openai_auto_switch_overrides(
     model_id: Optional[str] = None,
     alias_id: Optional[str] = None,
@@ -2123,7 +2315,9 @@ def _serialized_override_write(func):
     return wrapper
 
 
-@_owner_settings_router.put("/openai-auto-switch/overrides", response_model = ModelOverridesResponse)
+@_account_settings_router.put(
+    "/openai-auto-switch/overrides", response_model = ModelOverridesResponse
+)
 @_serialized_override_write
 def update_openai_auto_switch_override(
     payload: ModelOverridePayload, current_subject: str = Depends(get_current_subject)
@@ -2339,6 +2533,15 @@ def update_openai_auto_switch_override(
                 target_id,
                 llama_extra_args = extra_args,
                 keep_empty_extra_args = keep_empty,
+                engine_parallelism = payload.engine_parallelism
+                if payload.engine_parallelism is not None or is_removal
+                else get_model_override(target_id).get("engine_parallelism"),
+                engine_precision = payload.engine_precision
+                if payload.engine_precision is not None or is_removal
+                else get_model_override(target_id).get("engine_precision"),
+                engine = payload.engine
+                if payload.engine is not None or is_removal
+                else get_model_override(target_id).get("engine"),
                 max_seq_length = max_seq_length,
                 custom_context_length = custom_context_length,
                 kv_cache_dtype = payload.kv_cache_dtype,
@@ -3993,7 +4196,6 @@ class PersonalizationCustomization(BaseModel):
     uiFontSize: Optional[int] = Field(None, ge = 12, le = 20)
     codeFontSize: Optional[int] = Field(None, ge = 10, le = 20)
     chatWidth: Literal["standard", "wide", "full"] = "standard"
-    composerAttachments: Literal["cards", "compact"] = "cards"
     sentAttachments: Literal["auto", "list", "chips"] = "auto"
     contrast: int = Field(50, ge = 0, le = 100)
     pointerCursors: bool = False
@@ -4105,7 +4307,6 @@ class PersonalizationResponse(PersonalizationPayload):
     # overrides instead of treating a server-filled default as an explicit value.
     customizationSaved: bool = False
     chatWidthSaved: bool = False
-    composerAttachmentsSaved: bool = False
     sentAttachmentsSaved: bool = False
     paletteSaved: bool = False
     greetingSlothSaved: bool = False
@@ -4123,9 +4324,6 @@ def get_personalization_settings(
     profile = stored.get("profile") if isinstance(stored, dict) else None
     response.customizationSaved = isinstance(appearance, dict) and "customization" in appearance
     response.chatWidthSaved = isinstance(customization, dict) and "chatWidth" in customization
-    response.composerAttachmentsSaved = (
-        isinstance(customization, dict) and "composerAttachments" in customization
-    )
     response.sentAttachmentsSaved = (
         isinstance(customization, dict) and "sentAttachments" in customization
     )

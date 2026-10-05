@@ -8,6 +8,11 @@ import {
 } from "@/features/model-picker/components/model-selector/model-catalog";
 import type { ModelOption } from "@/features/model-picker/components/model-selector/types";
 import {
+  AUDIO_CPP_AUDIO_TYPES,
+  AUDIO_CPP_MODELS,
+  AUDIO_CPP_MUSIC_AUDIO_TYPE,
+} from "./audio-cpp-catalog";
+import {
   type AudioSttEngine,
   isKnownSttArtifactRepoId,
   sttEngineForRepoId,
@@ -24,12 +29,22 @@ export {
 
 export type AudioTask = "tts" | "stt";
 
+// Recommended GGUF speech and music load into the main slot like the native PyTorch models, but
+// through the GGUF audio runtime, so they need no remote code and run on every backend it builds for.
+const AUDIO_CPP_GENERATION_IDS = AUDIO_CPP_MODELS.filter(
+  (model) => model.task !== "asr",
+).map((model) => model.id.toLowerCase());
+const AUDIO_CPP_MUSIC_IDS = AUDIO_CPP_MODELS.filter(
+  (model) => model.task === "music",
+).map((model) => model.id.toLowerCase());
+
 const NATIVE_TTS_REPOS = new Set([
   "bosonai/higgs-tts-2-3b-base",
   "openmoss-team/moss-tts-local-transformer-v1.5",
   "openmoss-team/moss-tts-nano-100m",
   "multimodalart/higgs-audio-v3-tts-4b-transformers",
   "minimaxai/minimax-music3",
+  ...AUDIO_CPP_GENERATION_IDS,
 ]);
 
 const REMOTE_CODE_TTS_REPOS = new Set([
@@ -38,13 +53,19 @@ const REMOTE_CODE_TTS_REPOS = new Set([
   "multimodalart/higgs-audio-v3-tts-4b-transformers",
 ]);
 
-const MUSIC_GENERATION_REPOS = new Set(["minimaxai/minimax-music3"]);
+/** Music models that only run on NVIDIA CUDA. */
+const CUDA_MUSIC_GENERATION_REPOS = new Set(["minimaxai/minimax-music3"]);
+const MUSIC_GENERATION_REPOS = new Set([
+  ...CUDA_MUSIC_GENERATION_REPOS,
+  ...AUDIO_CPP_MUSIC_IDS,
+]);
 const NATIVE_TTS_AUDIO_TYPES = new Set([
   "higgs_tts2",
   "moss_tts_local",
   "moss_tts_nano",
   "higgs_tts3",
   "minimax_music3",
+  ...AUDIO_CPP_AUDIO_TYPES,
 ]);
 const REMOTE_CODE_TTS_AUDIO_TYPES = new Set([
   "moss_tts_local",
@@ -81,7 +102,19 @@ export function isMusicGenerationModel(
 ): boolean {
   return Boolean(
     audioType === "minimax_music3" ||
+      audioType === AUDIO_CPP_MUSIC_AUDIO_TYPE ||
       (repoId && MUSIC_GENERATION_REPOS.has(normalizedRepoId(repoId))),
+  );
+}
+
+/** The MiniMax Music 3 pipeline needs a CUDA GPU; GGUF music runs wherever the audio runtime does. */
+export function musicGenerationRequiresCuda(
+  repoId?: string | null,
+  audioType?: string | null,
+): boolean {
+  return Boolean(
+    audioType === "minimax_music3" ||
+      (repoId && CUDA_MUSIC_GENERATION_REPOS.has(normalizedRepoId(repoId))),
   );
 }
 
@@ -102,7 +135,7 @@ export function macTtsCatalogChoiceIsRunnable(repoId: string): boolean {
   if (!group || group.task !== "tts") return false;
   return (
     group.artifacts.some((artifact) => artifact.format === "gguf") ||
-    (usesNativeAudioRuntime(repoId) && !isMusicGenerationModel(repoId))
+    (usesNativeAudioRuntime(repoId) && !musicGenerationRequiresCuda(repoId))
   );
 }
 
@@ -114,10 +147,25 @@ export function audioModelsForTask(task: AudioTask): ModelOption[] {
   return AUDIO_MODEL_OPTIONS.filter(matches);
 }
 
+const CAPABILITY_LABEL: Record<
+  AudioTask | "music" | "clone" | "edit" | "convert" | "separate",
+  string
+> = {
+  music: "Music generation",
+  separate: "Source separation",
+  clone: "Voice cloning",
+  edit: "Speech editing",
+  convert: "Voice conversion",
+  tts: "Text-to-speech",
+  stt: "Speech-to-text",
+};
+
 export function audioCapabilityLine(
-  task: AudioTask,
+  task: AudioTask | "music" | "clone" | "edit" | "convert" | "separate",
   detail?: string | null,
 ): string {
-  const base = task === "tts" ? "Text-to-speech" : "Speech-to-text";
-  return detail ? `${base} · ${detail}` : base;
+  const base = CAPABILITY_LABEL[task];
+  // GGUF audio models report one runtime-wide type; the internal name means nothing to a user.
+  const shown = detail && AUDIO_CPP_AUDIO_TYPES.has(detail) ? "GGUF" : detail;
+  return shown ? `${base} · ${shown}` : base;
 }

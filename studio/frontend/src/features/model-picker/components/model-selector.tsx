@@ -15,7 +15,7 @@ import type { CapabilityKey } from "@/features/hub";
 import type { HfTaskFilter } from "@/features/hub/hooks/use-hub-model-search";
 // eslint-disable-next-line no-restricted-imports -- The settings barrel imports this feature back.
 import { useSettingsDialogStore } from "@/features/settings/stores/settings-dialog-store";
-import { useNpuStatus } from "@/features/npu";
+import { isNpuModelId, NPU_MODEL_PREFIX, useNpuStatus } from "@/features/npu";
 import { useT } from "@/i18n";
 import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import { cn } from "@/lib/utils";
@@ -61,7 +61,11 @@ import {
   artifactForRepoId,
   type CatalogGroup,
 } from "./model-selector/model-catalog";
-import { HubModelPicker, hasDownloadedModels } from "./model-selector/pickers";
+import {
+  HubModelPicker,
+  hasDownloadedModels,
+  type ModelPickerRowFilter,
+} from "./model-selector/pickers";
 import { PillTabs } from "./model-selector/pill-tabs";
 import { loraOptionLabel } from "./model-selector/row-meta";
 import { isFineTunedSource } from "./model-selector/source-tabs";
@@ -83,6 +87,7 @@ export type {
   ModelSelectorChangeMeta,
 } from "./model-selector/types";
 export type { ExternalConnectionRef } from "./model-selector/missing-external-model";
+export type { ModelPickerRowFilter } from "./model-selector/pickers";
 
 interface ModelSelectorProps {
   models: ModelOption[];
@@ -112,7 +117,9 @@ interface ModelSelectorProps {
   onValueChange?: (value: string, meta: ModelSelectorChangeMeta) => void;
   /** Optional task-specific resolver for companion assets a GGUF row alone cannot describe. */
   resolveDownloadFootprint?: ModelDownloadFootprintResolver;
-  onEject?: () => void;
+  onEject?: (modelId?: string) => void;
+  onEjectAll?: () => void;
+  loadedCount?: number;
   onFoldersChange?: () => void;
   onModelsChange?: (deletedModel?: DeletedModelRef) => void;
   deleteDisabled?: boolean;
@@ -135,12 +142,18 @@ interface ModelSelectorProps {
   /** Also list community (non-unsloth) models for `task`. Opt-in: only pages whose runtime loads
    *  arbitrary publishers. */
   communityModelPolicy?: CommunityModelPolicy;
+  /** The one opaque on-device artifact kind this task runtime may load. */
+  opaqueKind?: "diffusers_pipeline" | "diffusers_modular_pipeline";
+  rowFilter?: ModelPickerRowFilter;
   /** Hub filter the Search Hub button opens with. Also shows Search Hub on curated task pickers. */
   hubCapability?: CapabilityKey;
   /** Trigger text when nothing is loaded. Defaults to "Select model"; task pages name what they
    *  pick so it reads as separate from the chat model. */
   placeholder?: string;
 }
+
+// Space before the description or suffix, drawn inside its box so it truncates away with the text.
+const GAP_BEFORE = "before:inline-block before:w-2 before:content-['']";
 
 function ModelSelectorTrigger({
   currentModel,
@@ -152,9 +165,11 @@ function ModelSelectorTrigger({
   triggerLabelClassName,
   dataTour,
   onEject,
+  loadedCount = 0,
   // Task pages name what they pick ("Select image model"), so the choice reads as separate from the chat model.
   placeholder = "Select model",
 }: {
+  loadedCount?: number;
   currentModel?: ModelOption;
   isLoaded: boolean;
   showCloudIndicator?: boolean;
@@ -166,6 +181,11 @@ function ModelSelectorTrigger({
   onEject?: () => void;
   placeholder?: string;
 }) {
+  const severalLoaded = loadedCount > 1;
+  const triggerTitle = severalLoaded
+    ? `${loadedCount} models loaded`
+    : (currentModel?.name ?? placeholder);
+  const subtitle = severalLoaded ? currentModel?.name : currentModel?.description;
   return (
     <PopoverTrigger asChild={true}>
       <button
@@ -227,8 +247,8 @@ function ModelSelectorTrigger({
         ) : null}
         {/* No vertical offset, so the caps line up with the project switcher. */}
         <span className="flex min-w-0 flex-1 items-baseline">
-          {/* Name and quant stay whole; only the description truncates. The suffix sits outside this
-              group, so even an over-long name leaves room for it. */}
+          {/* The name gives way last: the suffix (format and quant), then the description, shrink
+              away first. Their far larger shrink factor makes that order effectively strict. */}
           <span className="flex min-w-0 items-baseline">
             <span
               className={cn(
@@ -236,7 +256,7 @@ function ModelSelectorTrigger({
                 triggerLabelClassName,
               )}
             >
-              <span className="min-w-0 truncate">{currentModel?.name ?? placeholder}</span>
+              <span className="min-w-0 truncate">{triggerTitle}</span>
               {showCloudIndicator ? (
                 <HugeiconsIcon
                   icon={CloudIcon}
@@ -245,25 +265,25 @@ function ModelSelectorTrigger({
                 />
               ) : null}
             </span>
-            {currentModel?.description && (
+            {subtitle && (
               <span
                 className={cn(
-                  "min-w-0 truncate text-xs leading-tight text-muted-foreground",
-                  showCloudIndicator ? "" : "ml-2",
+                  "min-w-0 shrink-[1000] truncate text-xs leading-tight text-muted-foreground",
+                  !showCloudIndicator && GAP_BEFORE,
                 )}
               >
-                {currentModel.description}
+                {subtitle}
               </span>
             )}
           </span>
           {currentModel?.descriptionSuffix && (
             <span
               className={cn(
-                "shrink-0 whitespace-nowrap text-xs leading-none text-muted-foreground",
-                !currentModel.description && !showCloudIndicator && "ml-2",
+                "min-w-0 shrink-[1000000] truncate whitespace-nowrap text-xs leading-tight text-muted-foreground",
+                !subtitle && !showCloudIndicator && GAP_BEFORE,
               )}
             >
-              {currentModel.description ? " - " : ""}
+              {subtitle ? " - " : ""}
               {currentModel.descriptionSuffix}
             </span>
           )}
@@ -343,6 +363,7 @@ function ModelSelectorContent({
   onSelect,
   resolveDownloadFootprint,
   onEject,
+  onEjectAll,
   onFoldersChange,
   onBrowseHub,
   onConfigureConnection,
@@ -353,6 +374,8 @@ function ModelSelectorContent({
   task,
   catalog,
   communityModelPolicy,
+  opaqueKind,
+  rowFilter,
 }: {
   open: boolean;
   models: ModelOption[];
@@ -371,7 +394,8 @@ function ModelSelectorContent({
   onConfigRequestAdopted?: (requestId: string) => void;
   onSelect: (id: string, meta: ModelSelectorChangeMeta) => void;
   resolveDownloadFootprint?: ModelDownloadFootprintResolver;
-  onEject?: () => void;
+  onEject?: (modelId?: string) => void;
+  onEjectAll?: () => void;
   onFoldersChange?: () => void;
   onBrowseHub?: () => void;
   onConfigureConnection?: (providerId: string) => void;
@@ -382,6 +406,8 @@ function ModelSelectorContent({
   task?: HfTaskFilter;
   catalog?: CatalogGroup[];
   communityModelPolicy?: CommunityModelPolicy;
+  opaqueKind?: "diffusers_pipeline" | "diffusers_modular_pipeline";
+  rowFilter?: ModelPickerRowFilter;
 }) {
   const t = useT();
   const hasSelection = Boolean(value);
@@ -495,7 +521,11 @@ function ModelSelectorContent({
   }
 
   const openConfigPage = (id: string, meta: ModelSelectorChangeMeta) => {
-    setConfigTarget(modelConfigTarget(id, meta));
+    // Match the row label by omitting the routing prefix.
+    const displayName = isNpuModelId(id)
+      ? id.slice(NPU_MODEL_PREFIX.length)
+      : undefined;
+    setConfigTarget(modelConfigTarget(id, meta, displayName));
   };
   const requestedConfigTarget = useMemo(
     () =>
@@ -649,9 +679,12 @@ function ModelSelectorContent({
               onConfigure={openConfigPage}
               deleteDisabled={deleteDisabled}
               onEject={hasSelection && onEject ? onEject : undefined}
+              onEjectAll={onEjectAll}
               task={task}
               catalog={catalog}
               communityModelPolicy={communityModelPolicy}
+              opaqueKind={opaqueKind}
+              rowFilter={rowFilter}
               npu={npu}
               section={effectiveHubSection}
               sectionToggle={
@@ -697,6 +730,7 @@ export function ModelSelector({
   onValueChange,
   resolveDownloadFootprint,
   onEject,
+  onEjectAll,
   onFoldersChange,
   onModelsChange,
   deleteDisabled,
@@ -713,9 +747,12 @@ export function ModelSelector({
   task,
   catalog,
   communityModelPolicy = "none",
+  opaqueKind,
+  rowFilter,
   hubCapability,
   placeholder,
   loaded,
+  loadedCount,
 }: ModelSelectorProps) {
   const [uncontrolledOpen, setUncontrolledOpen] = useState(false);
   const open = controlledOpen ?? uncontrolledOpen;
@@ -836,8 +873,13 @@ export function ModelSelector({
     setOpen(false);
   }
 
-  function handleEject() {
-    onEject?.();
+  function handleEject(modelId?: string) {
+    onEject?.(modelId);
+    if (!modelId) setOpen(false);
+  }
+
+  function handleEjectAll() {
+    onEjectAll?.();
     setOpen(false);
   }
 
@@ -867,7 +909,8 @@ export function ModelSelector({
         className={className}
         triggerLabelClassName={triggerLabelClassName}
         dataTour={triggerDataTour}
-        onEject={onEject ? handleEject : undefined}
+        onEject={onEject ? () => handleEject() : undefined}
+        loadedCount={loadedCount}
         placeholder={placeholder}
       />
       <ModelSelectorContent
@@ -889,6 +932,7 @@ export function ModelSelector({
         onSelect={handleSelect}
         resolveDownloadFootprint={resolveDownloadFootprint}
         onEject={onEject ? handleEject : undefined}
+        onEjectAll={onEjectAll ? handleEjectAll : undefined}
         onFoldersChange={onFoldersChange}
         // Curated task pickers show it only with a Hub filter; community-enabled ones always do.
         onBrowseHub={
@@ -904,6 +948,8 @@ export function ModelSelector({
         task={task}
         catalog={catalog}
         communityModelPolicy={communityModelPolicy}
+        opaqueKind={opaqueKind}
+        rowFilter={rowFilter}
       />
     </Popover>
   );

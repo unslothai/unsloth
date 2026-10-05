@@ -53,6 +53,10 @@ class TestMetadataHostDenylist:
                 id = "alibaba_ecs_literal_blocked",
             ),
             pytest.param(
+                'import _socket; s=_socket.socket(); s.connect(("169.254.169.254", 80))',
+                id = "c_socket_imds_literal_blocked",
+            ),
+            pytest.param(
                 'import urllib.request; urllib.request.urlopen("http://[fd00:ec2::254]/")',
                 id = "ipv6_imds_literal_blocked",
             ),
@@ -130,6 +134,23 @@ class TestUntrustedHostBlock:
             pytest.param(
                 'import socket; s=socket.socket(); s.connect(("evil.example", 80))',
                 id = "socket_connect_random_host_blocked",
+            ),
+            # `_socket` is the C module behind `socket`: same primitives, same verdict.
+            pytest.param(
+                'import _socket; s=_socket.socket(); s.connect(("evil.example", 80))',
+                id = "c_socket_connect_random_host_blocked",
+            ),
+            pytest.param(
+                'from _socket import socket; s=socket(); s.connect(("evil.example", 80))',
+                id = "c_socket_from_import_connect_blocked",
+            ),
+            pytest.param(
+                'import _socket; _socket.SocketType().connect_ex(("evil.example", 80))',
+                id = "c_socket_sockettype_alias_blocked",
+            ),
+            pytest.param(
+                'import _socket as s; s.getaddrinfo("evil.example", 80)',
+                id = "c_socket_getaddrinfo_alias_blocked",
             ),
         ],
     )
@@ -1301,6 +1322,7 @@ class TestNetworkTargetResolution:
             "import asyncssh\nopts = asyncssh.SSHClientConnectionOptions(proxy_command='nc 203.0.113.5 22')\n"
             "asyncssh.connect('pypi.org', options=opts)",
             "import aiohttp\naiohttp.ClientSession('https://pypi.org').get('//' + host)",
+            "import _socket\nh = '.'.join(['10', '0', '0', '1'])\n_socket.socket().connect((h, 80))",
         ],
     )
     def test_unreadable_destination_refused(self, code):
@@ -2480,6 +2502,8 @@ class TestSandboxEnvIsolation:
             "NoDefaultCurrentDirectoryInExePath",  # Windows only; no cwd-first lookup
             "TEMP",  # Windows only; native programs honour these, not TMPDIR
             "TMP",
+            "HOMEDRIVE",  # Windows only; Path.home() at the workdir, never inherited
+            "HOMEPATH",
         }
         extras = set(env.keys()) - allowed
         assert not extras, f"sandbox env added unexpected keys: {extras}"
