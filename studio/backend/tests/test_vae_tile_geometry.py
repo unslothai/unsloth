@@ -84,7 +84,9 @@ def ltx_floor() -> Floor:
     mod = _module("video_ltx2_vae_tiles")
     tile = int(getattr(mod, "MIN_TILE_LATENTS", 16))
     overlap = int(getattr(mod, "OVERLAP_LATENTS", 8))
-    return Floor(tile, overlap, overlap, "LTX-2 wide tiles (video_ltx2_vae_tiles); seam bench clean")
+    return Floor(
+        tile, overlap, overlap, "LTX-2 wide tiles (video_ltx2_vae_tiles); seam bench clean"
+    )
 
 
 def keep_stock() -> dict[str, str]:
@@ -99,20 +101,30 @@ SMALLER_GEOMETRY_OK: dict[str, Floor] = {
     # latents, >= 8-latent overlaps, 3-latent margin, 2-latent ramp), seam bench at the tightest tier, every preset:
     # worst 64 px window 1.88 levels (LTX-2) / 1.09 (LTX-2.3), PSNR >= 53 dB; the stock 2-latent overlaps: 2.3-7.7.
     # (read from video_ltx2_vae_tiles when present: ltx_floor)
-    "AutoencoderKLLTX2Video@32x": Floor(16, 8, 8, "PR #12698's 16-latent tiles, 8-latent overlaps: seam bench clean"),
+    "AutoencoderKLLTX2Video@32x": Floor(
+        16, 8, 8, "PR #12698's 16-latent tiles, 8-latent overlaps: seam bench clean"
+    ),
     # Wan2.1 VAE (Wan2.2-T2V-A14B), stock 32-latent tiles with 8-latent overlaps and 8-latent edge tiles: the seam
     # bench (two photos, every preset, tightest tier, 9-frame pan) stays within 1.93 levels of the untiled decode in
     # the worst 64 px window, PSNR >= 49.9 dB, no boundary step above 1.38x its surroundings.
-    "AutoencoderKLWan@8x": Floor(32, 8, 8, "seam bench: worst 64 px window 1.93 levels, PSNR >= 49.9 dB"),
+    "AutoencoderKLWan@8x": Floor(
+        32, 8, 8, "seam bench: worst 64 px window 1.93 levels, PSNR >= 49.9 dB"
+    ),
     # MiniMax-H3: a transformer decoder that works at its 256 px tile. Its untiled decode is not a reference (PSNR
     # 20 dB against the input photo, the tiled decode 30 dB), Studio always decodes it tiled, and diffusers spreads
     # the 16-latent tiles evenly with >= 4-latent overlaps and no sliver. A smaller tile or a sliver still fails.
-    "AutoencoderKLMiniMaxH3@16x": Floor(16, 4, 16, "decoder works at its 256 px tile; untiled is out of distribution"),
+    "AutoencoderKLMiniMaxH3@16x": Floor(
+        16, 4, 16, "decoder works at its 256 px tile; untiled is out of distribution"
+    ),
     # 16x video VAEs at their stock 16-latent tiles / 4-latent overlaps / 4-latent edge tiles. Video seam audit (real
     # 33-frame clip, every preset, stock tiles vs untiled): HunyuanVideo-1.5 PSNR 50.6-52.5 dB, Wan2.2-TI2V-5B 49.3 dB,
     # the boundary score on |tiled - untiled| 1.7-2.4 (no line); seam bench worst 64 px window 2.9-3.6 levels.
-    "AutoencoderKLHunyuanVideo15@16x": Floor(16, 4, 4, "video seam audit: PSNR >= 50.6 dB, no line at the boundaries"),
-    "AutoencoderKLWan@16x": Floor(16, 4, 8, "video seam audit: PSNR 49.3 dB, no line at the boundaries"),
+    "AutoencoderKLHunyuanVideo15@16x": Floor(
+        16, 4, 4, "video seam audit: PSNR >= 50.6 dB, no line at the boundaries"
+    ),
+    "AutoencoderKLWan@16x": Floor(
+        16, 4, 8, "video seam audit: PSNR 49.3 dB, no line at the boundaries"
+    ),
 }
 
 # family -> a geometry below the floor that is a measured seam bug, or not yet proven seam-free. Strict xfail: the
@@ -136,7 +148,13 @@ class _TileRecorder(TorchFunctionMode):
         self.axes = (set(), set())
         self.paused = False
 
-    def __torch_function__(self, func, types, args = (), kwargs = None):
+    def __torch_function__(
+        self,
+        func,
+        types,
+        args = (),
+        kwargs = None,
+    ):
         kwargs = kwargs or {}
         if not self.paused and func is torch.Tensor.__getitem__ and len(args) > 1:
             self._record(args[0], args[1])
@@ -182,14 +200,19 @@ class _ShapeOnly(torch.nn.Module):
         for rec in _ACTIVE:
             rec.paused = True
         try:
-            return tuple(self.inner(*map(meta, args), **{k: meta(v) for k, v in kwargs.items()}).shape)
+            return tuple(
+                self.inner(*map(meta, args), **{k: meta(v) for k, v in kwargs.items()}).shape
+            )
         finally:
             for rec in _ACTIVE:
                 rec.paused = False
 
     def forward(self, *args, **kwargs):
         x = next(a for a in args if torch.is_tensor(a))
-        key = (tuple(self._sig(a, False) for a in args), tuple(sorted((k, self._sig(v, False)) for k, v in kwargs.items())))
+        key = (
+            tuple(self._sig(a, False) for a in args),
+            tuple(sorted((k, self._sig(v, False)) for k, v in kwargs.items())),
+        )
         seen = self._seen.setdefault(key, [])
         hw = tuple(x.shape[-2:])
         known = [out for inp, out in seen if inp == hw]
@@ -254,7 +277,10 @@ def _family_configs() -> dict[str, tuple[str, dict]]:
             out[f.name] = ("video", fixture[f.name]["config"])
     from core.inference import video_ltx2
 
-    out[LTX23] = ("video", {"_class_name": "AutoencoderKLLTX2Video", **video_ltx2._VIDEO_VAE_CONFIG})
+    out[LTX23] = (
+        "video",
+        {"_class_name": "AutoencoderKLLTX2Video", **video_ltx2._VIDEO_VAE_CONFIG},
+    )
     return out
 
 
@@ -274,7 +300,9 @@ def build_vae(config: dict, overrides: bool = True):
     cfg = {k: v for k, v in config.items() if not k.startswith("_")}
     cls = _vae_class(config["_class_name"])
     if cls is None:
-        pytest.fail(f"{config['_class_name']} is in neither diffusers {diffusers.__version__} nor Studio")
+        pytest.fail(
+            f"{config['_class_name']} is in neither diffusers {diffusers.__version__} nor Studio"
+        )
     with torch.device("meta"):
         vae = cls.from_config(cfg)
     vae.enable_tiling()
@@ -323,12 +351,14 @@ def _ratio(vae) -> int:
 
 def _is_5d(vae) -> bool:
     import inspect
-
     try:
         src = inspect.getsource(type(vae)._encode)
     except (OSError, TypeError, AttributeError):
         return False
-    return re.search(r"num_frame|frames|shape\[2\]|(?:\w+\s*,\s*){4}\w+\s*=\s*\w+\.shape", src) is not None
+    return (
+        re.search(r"num_frame|frames|shape\[2\]|(?:\w+\s*,\s*){4}\w+\s*=\s*\w+\.shape", src)
+        is not None
+    )
 
 
 def check_axis(tiles: list[tuple[int, int]], floor: Floor) -> list[str]:
@@ -353,7 +383,9 @@ _PROBED: dict = {}
 
 def _tile_key(vae, applied, video: bool) -> tuple:
     """What decides the tile grid: the class, its tile attributes and the overrides installed on it."""
-    attrs = sorted((k, repr(v)) for k, v in vars(vae).items() if k.startswith(("tile_", "use_framewise")))
+    attrs = sorted(
+        (k, repr(v)) for k, v in vars(vae).items() if k.startswith(("tile_", "use_framewise"))
+    )
     return type(vae).__name__, _ratio(vae), tuple(attrs), tuple(applied), video
 
 
