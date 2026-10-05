@@ -8,7 +8,7 @@ import {
 import { Tick02Icon } from "@/lib/tick-icon";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { FileDatabaseIcon } from "@hugeicons/core-free-icons";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 import {
   DropdownMenu,
@@ -46,14 +46,18 @@ export function KnowledgeBaseComposerButton({
   const [menuOpen, setMenuOpen] = useState(false);
   const [dialogOpen, setDialogOpen] = useState(false);
 
+  // Refreshes overlap (mount, menu open, every mutation), and an older answer landing
+  // last would restore a deleted KB and keep its stale kb_id selected.
+  const latestRefreshRef = useRef(0);
   const refresh = useCallback(async () => {
+    const request = ++latestRefreshRef.current;
     try {
       const rows = await listKnowledgeBases();
-      setKbs(rows);
+      if (request === latestRefreshRef.current) setKbs(rows);
     } catch {
       // Keep prior state on failure.
     } finally {
-      setKbsLoaded(true);
+      if (request === latestRefreshRef.current) setKbsLoaded(true);
     }
   }, []);
 
