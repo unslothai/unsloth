@@ -328,14 +328,15 @@ def test_top_pin_kill_switch_keeps_diffusers_top_group(monkeypatch):
 
 
 def test_capped_pinned_host_prefetches_one_ahead(monkeypatch):
-    """Windows / WSL2 pin each in-flight group on the fly under a ~1 GiB cap: one ahead, as diffusers holds."""
+    """Windows / WSL2 pin each in-flight group on the fly under a ~1 GiB cap: one ahead, as diffusers holds. Their
+    streamed blocks have unpinned host copies, which elsewhere keep diffusers' onload."""
     _cuda()
     import core.inference.diffusion_memory as dm
     from core.inference.diffusion_offload_prefetch import module_prefetcher
 
     monkeypatch.setattr(dm, "_pinned_memory_capped", lambda: True)
     net = _DiT().eval()
-    assert _h3_streamed(net, monkeypatch) == 1 + len(net.transformer_blocks)
+    assert _h3_streamed(net, monkeypatch, unpinned = True) == 1 + len(net.transformer_blocks)
     assert module_prefetcher(net).depth == 1
 
 
