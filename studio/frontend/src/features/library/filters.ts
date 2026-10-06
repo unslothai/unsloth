@@ -7,7 +7,6 @@ import { type LibraryTypeFilter, TYPE_FILTER_KINDS, fileKind } from "./file-kind
 export interface LibraryFilters {
   sources: Set<LibrarySource>;
   types: Set<LibraryTypeFilter>;
-  /** Audio page workflows (speak, music, separate, ...). */
   workflows: Set<string>;
 }
 

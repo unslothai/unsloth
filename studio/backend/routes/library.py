@@ -102,7 +102,6 @@ def _items_for_caller(items: list[dict], via_api_key: bool) -> list[dict]:
         # A fine-tune of a local model names that folder; a Hub repo id is kept.
         if isinstance(base, str) and os.path.isabs(base):
             item["model"] = {**item["model"], "baseModel": cache_reference(base)}
-        # So does a clip made with a local model.
         made_with = (item.get("audio") or {}).get("model")
         if isinstance(made_with, str) and os.path.isabs(made_with):
             item["audio"] = {**item["audio"], "model": cache_reference(made_with)}

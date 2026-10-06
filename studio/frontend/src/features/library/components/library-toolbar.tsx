@@ -344,7 +344,6 @@ export function LibraryToolbar({
   filters: LibraryFilters;
   onFiltersChange: (next: LibraryFilters) => void;
   filterMode: "none" | "source" | "all";
-  /** Audio page workflows to filter by, on the Audio tab. */
   workflows?: readonly LibraryAudioWorkflow[];
   view: LibraryView;
   onViewChange: (view: LibraryView) => void;

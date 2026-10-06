@@ -33,7 +33,6 @@ export interface LibraryItem {
   openedAt: number | null;
   /** Set for fine-tuned models, which are directories: opened in chat, never downloaded. */
   model: LibraryModel | null;
-  /** Set for clips from the Audio page's history. */
   audio?: LibraryAudio | null;
   archived?: boolean;
 }
@@ -42,7 +41,6 @@ export interface LibraryAudio {
   workflow: string;
   /** A stem id for Separate; "output", "variation" or "edit" otherwise. */
   role: string | null;
-  /** Shared by the clips of one run: a separation's stems, a music run's variations. */
   groupId: string | null;
   durationS: number | null;
   model: string;
@@ -75,7 +73,7 @@ export interface LibrarySnapshot {
   items: LibraryItem[];
   folders: LibraryFolder[];
   disk?: LibraryDisk | null;
-  /** Bytes a source keeps that no item lists, by source (audio: voices, recordings, transcripts). */
+  /** Bytes no item lists, by source (audio: voices, recordings, transcripts). */
   unlistedBytes?: Record<string, number>;
 }
 

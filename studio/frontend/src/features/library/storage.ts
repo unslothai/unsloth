@@ -108,7 +108,6 @@ export function useLibraryStorage(): LibraryStorage {
       total.count += 1;
       totals.set(category, total);
     }
-    // Bytes no item lists (the Audio page's saved voices, recordings and transcripts) still use the disk.
     for (const [source, bytes] of Object.entries(snapshot.unlisted)) {
       if (!onDisk || onDisk.has(source)) diskBytes += bytes;
       if (!includedBySettings(`${source}:`, settings)) {

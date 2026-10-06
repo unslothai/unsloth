@@ -41,7 +41,6 @@ export function KindIcon({ item, className }: { item: LibraryItem; className?: s
   const kind = fileKind(item);
   return (
     <HugeiconsIcon
-      // A clip from the Audio page shows the workflow that made it, as the Audio page does.
       icon={audioWorkflow(item)?.icon ?? KIND_ICONS[kind]}
       strokeWidth={1.5}
       className={cn(KIND_ICON_CLASS[kind], className, kind === "model" && "scale-95")}
@@ -136,7 +135,6 @@ function CardFrame({
   className?: string;
   label: string;
   glass?: boolean;
-  /** A button of its own over the card, kept out of the card's button. */
   control?: ReactNode;
 }) {
   const t = useT();
@@ -248,8 +246,7 @@ export function ItemCard({ item }: { item: LibraryItem }) {
           <div className="flex flex-col items-center before:flex-5 after:flex-7">
             <KindIcon item={item} className={cardIconClass(item)} />
           </div>
-          {/* One line: the date wraps onto a hidden second line when it does not fit beside a
-              clip's length and stem, rather than cutting either short. */}
+          {/* One line: a date that does not fit wraps onto a hidden second line. */}
           <p
             className={cn(
               "flex h-[1lh] flex-wrap overflow-hidden pr-6 text-ui-12 tabular-nums text-muted-foreground",

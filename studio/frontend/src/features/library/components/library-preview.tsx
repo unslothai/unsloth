@@ -244,7 +244,6 @@ function NoPreview({
   );
 }
 
-/** The other clips of a separation or music run, one step away. */
 function RunStrip({
   item,
   run,
@@ -508,7 +507,6 @@ export function LibraryPreview({
   onToggleFavorite: (item: LibraryItem) => void;
   onDelete: (item: LibraryItem) => void;
   onSaved: () => void;
-  /** The clips made in the same run as an audio item, itself included. */
   run?: LibraryItem[];
   onOpenItem: (id: string) => void;
   onDownloadRun: (items: LibraryItem[]) => void;

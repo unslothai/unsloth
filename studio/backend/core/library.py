@@ -479,15 +479,12 @@ _AUDIO_EXTENSION_RE = re.compile(r"\.(?:wav|mp3|flac|ogg|opus|m4a|aac|webm)$", r
 
 
 def _audio_name(record: dict) -> str:
-    """A run's clips share one prompt, so a stem, variation or edit is named for what it is:
-    ``song - Vocals.wav`` rather than four copies of ``song.mp3.wav``."""
-    # Spoken text usually ends a sentence: "Hello there.wav", not "Hello there..wav".
+    """``song - Vocals.wav``, ``prompt (2).wav``: a run's clips share one prompt."""
     prompt = str(record.get("prompt") or "").rstrip(" .")
     role = record.get("role")
     settings = record.get("settings") if isinstance(record.get("settings"), dict) else {}
     variation = settings.get("variation")
     if record.get("workflow") == "separate" and isinstance(role, str) and role:
-        # Separate names its stems after the track, file extension and all.
         prompt = _AUDIO_EXTENSION_RE.sub("", prompt.strip())
         stem = _NAME_BREAK_RE.sub(" ", role.replace("_", " ").replace("-", " ")).strip()
         suffix = f" - {stem[:1].upper()}{stem[1:]}" if stem else ""
@@ -562,8 +559,7 @@ def _gallery_items(kind: str) -> list[dict]:
         # sized; and only when there are some, so an unreadable folder still lists nothing.
         root = gallery.module.gallery_dir() if records else None
         for record in records:
-            # An Edit keeps the recording it changed as a hidden clip, which the Audio page never
-            # lists either; deleting it here would break the Edit's Original.
+            # An Edit's hidden Original: deleting it here would break that Edit.
             if kind == "audio" and record.get("role") == "source":
                 continue
             path = _listed_file(gallery, root, record["id"])
@@ -618,8 +614,7 @@ def _audio_items() -> list[dict]:
 
 
 def unlisted_bytes(items: list[dict]) -> dict[str, int]:
-    """Bytes a source keeps that no item lists, so storage still counts them: for audio, the Audio
-    page's saved voices, recordings and transcripts, and the Edit originals it hides."""
+    """Bytes no item lists (voices, recordings, transcripts, hidden Edit originals), per source."""
     from core.inference import transcript_gallery
 
     try:

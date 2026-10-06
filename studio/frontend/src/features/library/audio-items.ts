@@ -10,7 +10,6 @@ import type { LibraryItem } from "./api";
 
 export type LibraryAudioWorkflow = (typeof AUDIO_WORKFLOWS)[number];
 
-/** The Audio page workflow that made a clip, or null for any other audio file. */
 export function audioWorkflow(item: LibraryItem): LibraryAudioWorkflow | null {
   const id = item.audio?.workflow;
   return AUDIO_WORKFLOWS.find((workflow) => workflow.id === id) ?? null;
@@ -18,7 +17,6 @@ export function audioWorkflow(item: LibraryItem): LibraryAudioWorkflow | null {
 
 const MUSIC_MODES: Record<string, string> = { sfx: "Sound effect", edit: "Edit" };
 
-/** What tells a clip apart from the rest of its run: its stem, or the kind of music and its take. */
 export function audioDetail(item: LibraryItem): string | null {
   const audio = item.audio;
   if (!audio) return null;
@@ -28,7 +26,6 @@ export function audioDetail(item: LibraryItem): string | null {
   return audio.variation ? `${kind} ${audio.variation}` : kind;
 }
 
-/** A clip's length and what it is ("0:42", "Vocals"), for card and list captions. */
 export function audioSummary(item: LibraryItem): string[] {
   const audio = item.audio;
   if (!audio) return [];
@@ -38,7 +35,7 @@ export function audioSummary(item: LibraryItem): string[] {
   );
 }
 
-/** The clips made with this one, in the order the Audio page shows them; empty outside a run. */
+/** A run's clips in Audio page order; empty outside a run. */
 export function runSiblings(items: readonly LibraryItem[], item: LibraryItem): LibraryItem[] {
   const groupId = item.audio?.groupId;
   if (!groupId) return [];
@@ -51,7 +48,6 @@ export function runSiblings(items: readonly LibraryItem[], item: LibraryItem): L
   return run.sort((a, b) => rank(a) - rank(b));
 }
 
-/** The workflows among these items, in Audio page order, for the Library's Workflow filter. */
 export function audioWorkflowOptions(items: readonly LibraryItem[]): LibraryAudioWorkflow[] {
   const present = new Set(items.map((item) => item.audio?.workflow));
   return AUDIO_WORKFLOWS.filter((workflow) => present.has(workflow.id));

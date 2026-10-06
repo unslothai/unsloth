@@ -59,7 +59,6 @@ export function useLibraryOrigin(): (item: LibraryItem) => LibraryOrigin | null 
       };
     }
     if (kind === "audio") {
-      // Straight to the page that made it, not through Speak first.
       const workflow = item.audio?.workflow;
       return {
         label: "library.preview.viewInAudio",

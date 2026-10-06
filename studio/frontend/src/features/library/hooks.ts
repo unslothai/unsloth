@@ -110,8 +110,7 @@ export function useLibraryDocument(
 /** decodePeaks' own cap: past it the decode is skipped, so the bytes are not worth fetching. */
 const MAX_PEAKS_BYTES = 60 * 1024 * 1024;
 
-/** A clip's waveform for the preview player; null while it decodes and for any clip that will not
- *  (too large, or a format the browser cannot decode), which draws flat bars instead. */
+/** Waveform peaks; null while decoding or when the clip cannot decode (flat bars). */
 export function useLibraryAudioPeaks(item: LibraryItem, enabled: boolean): number[] | null {
   const key = itemVersion(item);
   const [state, setState] = useState<{ key: string; peaks: number[] | null } | null>(null);

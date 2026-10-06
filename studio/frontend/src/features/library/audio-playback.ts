@@ -24,8 +24,7 @@ export function stopLibraryAudio(): void {
   if (playingId !== null) setPlaying(null);
 }
 
-/** Stops the clip when its card is no longer shown (deleted, filtered out), since that card is
- *  its only control. */
+/** A hidden card is the clip's only control, so its clip stops. */
 export function stopLibraryAudioUnlessShown(shown: ReadonlySet<string>): void {
   if (playingId !== null && !shown.has(playingId)) stopLibraryAudio();
 }

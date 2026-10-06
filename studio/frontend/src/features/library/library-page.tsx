@@ -221,7 +221,6 @@ function LibraryView({ search }: { search: LibrarySearch }) {
   const view = useLibraryViewStore((s) => s.view);
   const setView = useLibraryViewStore((s) => s.setView);
   const openSettings = useSettingsDialogStore((s) => s.openDialog);
-  // A card's clip stops with the view that played it.
   useEffect(() => stopLibraryAudio, []);
 
   const [query, setQuery] = useState("");

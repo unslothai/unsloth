@@ -543,9 +543,7 @@ def delete(audio_id: str) -> bool:
 
 
 def delete_group(group_id: str) -> int:
-    """Delete the active clips of one run (a separation's stems, a music run's variations);
-    return the count removed. Archived clips of the run are spared, as clear() spares them:
-    a stem restored from the archive leaves its siblings there."""
+    """Delete one run's active clips; archived ones are spared, as in clear()."""
     if not group_id:
         return 0
     try:

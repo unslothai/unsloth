@@ -209,7 +209,6 @@ export async function chatWithModel(
       isTtsAudioType(audioType, exportType === "gguf") &&
       trainedTtsCheckpointIsLoadable(audioType, exportType)
     ) {
-      // Loaded on its page the way the Audio page's picker loads an on-device model.
       void navigate({
         to: "/audio",
         search: {
