@@ -52,10 +52,13 @@ def _warm_up(model, amp_dtype) -> None:
     params = [p for p in model.parameters() if p.requires_grad]
     grads = [p.grad for p in params]
     training = model.training
-    devices = [device.index or 0] if device.type == "cuda" else []
+    accelerator = device.type != "cpu"
+    devices = [device.index or 0] if accelerator else []
     try:
         model.train()
-        with torch.random.fork_rng(devices = devices):
+        with torch.random.fork_rng(
+            devices = devices, device_type = device.type if accelerator else "cuda"
+        ):
             ids = torch.randint(5, min(vocab, 1000), (2, 64), device = device)
             mask = torch.ones_like(ids)
             mask[1, 48:] = 0

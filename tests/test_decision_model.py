@@ -588,6 +588,31 @@ def test_the_compile_warm_up_leaves_the_rng_where_it_was(checkpoint, monkeypatch
         assert torch.equal(torch.get_rng_state(), before)
 
 
+def test_the_compile_warm_up_forks_the_rng_of_the_models_own_accelerator(monkeypatch):
+    from unsloth.models import _decision_fast as fast
+
+    forked = []
+
+    class Forked(Exception):
+        pass
+
+    def fork_rng(**kwargs):
+        forked.append(kwargs)
+        raise Forked
+
+    model = types.SimpleNamespace(
+        training = True,
+        parameters = lambda: iter([torch.empty(1, device = "meta")]),
+        train = lambda mode = True: None,
+        encoder = types.SimpleNamespace(config = types.SimpleNamespace(vocab_size = 100)),
+    )
+    monkeypatch.setattr(torch.random, "fork_rng", fork_rng)
+    with pytest.raises(Forked):
+        fast._warm_up(model, None)
+    # An XPU / MPS model forks its own RNG, not CUDA's (meta stands in for any accelerator).
+    assert forked == [{"devices": [0], "device_type": "meta"}]
+
+
 def test_toy_task_beats_the_base_model(checkpoint, tmp_path, monkeypatch):
     # On CPU everywhere: the toy task plateaus near loss 0.45 and leaves it by step ~70 on CPU but
     # only after ~100 steps on a GPU (same curve otherwise, any precision), so 80 steps is a threshold
