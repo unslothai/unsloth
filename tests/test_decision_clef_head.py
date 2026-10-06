@@ -9,6 +9,7 @@ import random
 from pathlib import Path
 
 import pytest
+from real_accelerator import has_real_cuda
 
 torch = pytest.importorskip("torch")
 
@@ -227,6 +228,9 @@ def test_a_failed_compile_falls_back_to_eager(monkeypatch):
     assert clef.os.environ["UNSLOTH_CLEF_COMPILE"] == "0"
 
 
+@pytest.mark.skipif(
+    not has_real_cuda(), reason = "Inductor CPU codegen for the head takes over 5 minutes"
+)
 def test_compiled_head_has_no_graph_breaks_and_matches(monkeypatch):
     from torch._dynamo.utils import counters
 
