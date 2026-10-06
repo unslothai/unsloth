@@ -244,11 +244,120 @@ test("music and clone-only models never speak, and an unknown repo uses the fami
 });
 
 test("a page's model is used only where it can run the example", () => {
-  assert.ok(S.audioApiModelFits(cpp("HTDemucs-GGUF"), "separate"));
+  const listed = [
+    tts(cpp("Kokoro-82M-GGUF")),
+    tts("unsloth/orpheus-3b-0.1-ft"),
+  ];
+  // Separation models are never listed, so the catalog decides.
+  assert.ok(S.audioApiModelFits(listed, cpp("HTDemucs-GGUF"), "separate"));
   // A separator left loaded while the Speak page is open.
-  assert.ok(!S.audioApiModelFits(cpp("HTDemucs-GGUF"), "speak"));
-  assert.ok(!S.audioApiModelFits(cpp("Kokoro-82M-GGUF"), "clone"));
-  assert.ok(S.audioApiModelFits("unsloth/orpheus-3b-0.1-ft", "speak"));
+  assert.ok(!S.audioApiModelFits(listed, cpp("HTDemucs-GGUF"), "speak"));
+  assert.ok(!S.audioApiModelFits(listed, cpp("Kokoro-82M-GGUF"), "clone"));
+  assert.ok(S.audioApiModelFits(listed, "unsloth/orpheus-3b-0.1-ft", "speak"));
+  // The resident model the page hands over can be a chat model: /v1/models must list it.
+  assert.ok(!S.audioApiModelFits(listed, "unsloth/Qwen3-8B-GGUF", "speak"));
+  // Before the listing answers, only a catalog model that runs the workflow counts.
+  assert.ok(S.audioApiModelFits(null, cpp("Kokoro-82M-GGUF"), "speak"));
+  assert.ok(!S.audioApiModelFits(null, "unsloth/Qwen3-8B-GGUF", "speak"));
+});
+
+test("the Convert and Music bodies follow what the model accepts", () => {
+  const input = {
+    base: BASE,
+    apiKey: KEY,
+    lang: "python",
+    os: "unix",
+  } as const;
+  // RVC converts only to its built-in voices and refuses a target recording.
+  const rvc = S.buildAudioApiSnippet("convert", {
+    ...input,
+    model: cpp("RVC-GGUF"),
+  });
+  assert.ok(!rvc.includes("voice.wav") && !rvc.includes('"target"'));
+  assert.ok(rvc.includes('"voice": "default"'));
+  const seed = S.buildAudioApiSnippet("convert", {
+    ...input,
+    model: cpp("SeedVC-MLX-GGUF"),
+  });
+  assert.ok(seed.includes('"target"') && seed.includes("voice.wav"));
+  // SFX-only music models make no songs.
+  for (const name of ["Stable-Audio-3-Small-SFX-GGUF", "ControlFoley-GGUF"]) {
+    const sfx = S.buildAudioApiSnippet("music", { ...input, model: cpp(name) });
+    assert.ok(sfx.includes('"mode": "sfx"') && !sfx.includes("lyrics"), name);
+  }
+  const song = S.buildAudioApiSnippet("music", {
+    ...input,
+    model: cpp("Stable-Audio-3-Small-Music-GGUF"),
+  });
+  assert.ok(song.includes('"mode": "song"'));
+});
+
+test("the JavaScript run examples wait past fetch's 5 minute limit", () => {
+  const input = {
+    base: BASE,
+    apiKey: KEY,
+    lang: "javascript",
+    os: "unix",
+  } as const;
+  for (const example of ["separate", "convert", "music", "edit"] as const) {
+    const code = S.buildAudioApiSnippet(example, {
+      ...input,
+      model: S.AUDIO_API_PLACEHOLDER_MODELS[example],
+    });
+    assert.ok(
+      code.includes("setGlobalDispatcher(new Agent({ headersTimeout: 0"),
+      example,
+    );
+  }
+  const speak = S.buildAudioApiSnippet("speak", {
+    ...input,
+    model: cpp("Kokoro-82M-GGUF"),
+  });
+  assert.ok(!speak.includes("undici"));
+});
+
+test("the key is the revealed one, else the placeholder this server admits", () => {
+  const local = {
+    base: "http://127.0.0.1:8888",
+    tunnel: false,
+    exposure: null,
+  };
+  assert.equal(
+    S.audioApiKey("sk-unsloth-real", { ...local, scope: "full" }),
+    "sk-unsloth-real",
+  );
+  // Keyless "everything else" admits the audio routes on loopback.
+  assert.equal(S.audioApiKey(null, { ...local, scope: "full" }), "not-needed");
+  // The inference scope does not cover them, and a tunnel never accepts the dummy.
+  assert.equal(
+    S.audioApiKey(null, { ...local, scope: "inference" }),
+    "sk-unsloth-YOUR_KEY",
+  );
+  assert.equal(
+    S.audioApiKey(null, { ...local, scope: "off" }),
+    "sk-unsloth-YOUR_KEY",
+  );
+  assert.equal(
+    S.audioApiKey(null, { ...local, tunnel: true, scope: "full" }),
+    "sk-unsloth-YOUR_KEY",
+  );
+  assert.equal(
+    S.audioApiKey(null, {
+      base: "http://192.168.1.20:8888",
+      tunnel: false,
+      exposure: null,
+      scope: "full",
+    }),
+    "sk-unsloth-YOUR_KEY",
+  );
+});
+
+test("picking a language keeps the chat card's variant of it", () => {
+  assert.equal(S.audioLangToStore("pythonTools", "python"), null);
+  assert.equal(S.audioLangToStore("javascriptAdvanced", "javascript"), null);
+  assert.equal(S.audioLangToStore("pythonTools", "curl"), "curl");
+  assert.equal(S.audioLangToStore(null, "python"), "python");
+  assert.equal(S.langFromStored("curlTools"), "curl");
 });
 
 test("each Audio page opens the example for its workflow", () => {

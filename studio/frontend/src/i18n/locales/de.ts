@@ -2695,7 +2695,7 @@ export const de = {
       revoking: "Wird widerrufen...",
       audioApi: {
         title: "Audio-API",
-        description: "Sprache, Stimmklonen, Transkription und die Workflows der Audio-Seite. Diese Aufrufe brauchen einen API-Schlüssel.",
+        description: "Sprache, Stimmklonen, Transkription und die Workflows der Audio-Seite.",
         speak: "Sprechen",
         clone: "Klonen",
         transcribe: "Transkribieren",

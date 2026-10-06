@@ -2653,7 +2653,7 @@ export const it = {
       revoking: "Revoca in corso...",
       audioApi: {
         title: "API audio",
-        description: "Sintesi vocale, clonazione della voce, trascrizione e i flussi della pagina Audio. Queste chiamate richiedono una chiave API.",
+        description: "Sintesi vocale, clonazione della voce, trascrizione e i flussi della pagina Audio.",
         speak: "Parla",
         clone: "Clona",
         transcribe: "Trascrivi",

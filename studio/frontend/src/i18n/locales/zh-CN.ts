@@ -2601,7 +2601,7 @@ export const zhCN = {
       revoking: "撤销中...",
       audioApi: {
         title: "音频 API",
-        description: "语音合成、声音克隆、转写以及音频页面的工作流。这些调用需要 API 密钥。",
+        description: "语音合成、声音克隆、转写以及音频页面的工作流。",
         speak: "朗读",
         clone: "克隆",
         transcribe: "转写",

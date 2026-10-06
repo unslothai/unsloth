@@ -2684,8 +2684,7 @@ export const en = {
       revoking: "Revoking...",
       audioApi: {
         title: "Audio API",
-        description:
-          "Speech, voice cloning, transcription and the Audio page workflows. These calls need an API key.",
+        description: "Speech, voice cloning, transcription and the Audio page workflows.",
         speak: "Speak",
         clone: "Clone",
         transcribe: "Transcribe",

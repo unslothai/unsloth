@@ -10,6 +10,10 @@ import { cn } from "@/lib/utils";
 import { Copy01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
+import type {
+  KeylessApiAccessExposure,
+  KeylessApiAccessScope,
+} from "../api/keyless-api-access";
 import { loadOpenAIAutoSwitchSettings } from "../api/openai-auto-switch";
 import {
   type AudioApiModel,
@@ -27,8 +31,11 @@ import {
   type AudioApiTab,
   type AudioRunWorkflow,
   audioApiExampleFor,
+  audioApiKey,
   audioApiModelFits,
+  audioLangToStore,
   buildAudioApiSnippet,
+  langFromStored,
   pickAudioApiModel,
 } from "./audio-api-snippets";
 import { HighlightedCode } from "./usage-examples";
@@ -52,16 +59,6 @@ const RUN_LABEL: Record<AudioRunWorkflow, TranslationKey> = {
   music: "settings.apiKeys.audioApi.music",
   edit: "settings.apiKeys.audioApi.edit",
 };
-
-// Audio routes are key-only: keyless access never admits them, so there is no dummy key here.
-const KEY_PLACEHOLDER = "sk-unsloth-YOUR_KEY";
-
-// The chat examples store a variant ("pythonTools"); its language carries over.
-function langFromStored(stored: string | null): AudioApiLang {
-  if (stored?.startsWith("python")) return "python";
-  if (stored?.startsWith("javascript")) return "javascript";
-  return "curl";
-}
 
 function Pill({
   active,
@@ -92,9 +89,13 @@ function Pill({
 export function AudioApiExamples({
   apiKey,
   useTunnel,
+  keylessScope = "off",
+  keylessExposure = null,
 }: {
   apiKey?: string | null;
   useTunnel: boolean;
+  keylessScope?: KeylessApiAccessScope;
+  keylessExposure?: KeylessApiAccessExposure | null;
 }) {
   const t = useT();
   const deviceType = usePlatformStore((s) => s.deviceType);
@@ -194,10 +195,16 @@ export function AudioApiExamples({
   const origin = typeof window !== "undefined" ? window.location.origin : "";
   const base =
     useTunnel && cloudflareUrl ? cloudflareUrl : (serverUrl ?? origin);
+  const key = audioApiKey(apiKey, {
+    base,
+    tunnel: useTunnel && !!cloudflareUrl,
+    scope: keylessScope,
+    exposure: keylessExposure,
+  });
   const example: AudioApiExample = tab === "workflows" ? run : tab;
   const picked =
     pageModel?.example === example &&
-    audioApiModelFits(pageModel.model, example)
+    audioApiModelFits(models, pageModel.model, example)
       ? pageModel.model
       : models
         ? pickAudioApiModel(models, example)
@@ -207,12 +214,12 @@ export function AudioApiExamples({
     () =>
       buildAudioApiSnippet(example, {
         base,
-        apiKey: apiKey || KEY_PLACEHOLDER,
+        apiKey: key,
         model,
         lang,
         os,
       }),
-    [apiKey, base, example, lang, model, os],
+    [base, example, key, lang, model, os],
   );
   // Separation models are not in /v1/models, so an unpicked one says nothing about the disk.
   const placeholder = models !== null && !picked && example !== "separate";
@@ -266,7 +273,11 @@ export function AudioApiExamples({
                 active={lang === item.id}
                 onClick={() => {
                   setLang(item.id);
-                  setStoredLang(item.id);
+                  const stored = audioLangToStore(
+                    useSettingsPanelPrefsStore.getState().apiExampleLang,
+                    item.id,
+                  );
+                  if (stored) setStoredLang(stored);
                 }}
               >
                 {item.label}

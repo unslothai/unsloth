@@ -212,7 +212,12 @@ export function ApiKeysTab() {
         keylessExposure={keyless.exposure}
       />
 
-      <AudioApiExamples apiKey={revealed} useTunnel={useTunnel} />
+      <AudioApiExamples
+        apiKey={revealed}
+        useTunnel={useTunnel}
+        keylessScope={keyless.scope}
+        keylessExposure={keyless.exposure}
+      />
 
       {isOwner ? <DecisionApiSection /> : null}
 

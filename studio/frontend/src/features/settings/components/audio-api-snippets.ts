@@ -16,8 +16,13 @@ import {
   isSpeakAndCloneFamilyId,
 } from "../../audio/audio-cpp-catalog";
 import { EDIT_ADAPTERS } from "../../audio/edit-adapters";
+import type {
+  KeylessApiAccessExposure,
+  KeylessApiAccessScope,
+} from "../api/keyless-api-access";
 import type { AudioApiModel } from "../api/openai-model-catalog";
 import { psSingle, shSingle } from "./agent-command";
+import { keylessBaseEligible } from "./keyless-example-eligibility";
 
 export type AudioApiTab = "speak" | "clone" | "transcribe" | "workflows";
 export type AudioRunWorkflow = "separate" | "convert" | "music" | "edit";
@@ -40,6 +45,44 @@ export const AUDIO_RUN_WORKFLOWS: readonly AudioRunWorkflow[] = [
   "music",
   "edit",
 ];
+
+const KEY_PLACEHOLDER = "sk-unsloth-YOUR_KEY";
+// The OpenAI SDKs require some api_key; the keyless dummy the chat examples use.
+const KEYLESS_KEY_PLACEHOLDER = "not-needed";
+
+/** The key the examples print: the revealed one, else whichever placeholder the server admits. */
+export function audioApiKey(
+  apiKey: string | null | undefined,
+  server: {
+    base: string;
+    tunnel: boolean;
+    scope: KeylessApiAccessScope;
+    exposure: KeylessApiAccessExposure | null;
+  },
+): string {
+  if (apiKey) return apiKey;
+  // Keyless access admits the audio routes only at its "everything else" scope.
+  const keyless =
+    !server.tunnel &&
+    server.scope === "full" &&
+    keylessBaseEligible(server.base, server.scope, server.exposure);
+  return keyless ? KEYLESS_KEY_PLACEHOLDER : KEY_PLACEHOLDER;
+}
+
+// The chat examples store a variant ("pythonTools"); its language carries over.
+export function langFromStored(stored: string | null): AudioApiLang {
+  if (stored?.startsWith("python")) return "python";
+  if (stored?.startsWith("javascript")) return "javascript";
+  return "curl";
+}
+
+/** What to store when a language is picked here: nothing when the chat card's variant already has it. */
+export function audioLangToStore(
+  stored: string | null,
+  lang: AudioApiLang,
+): string | null {
+  return stored && langFromStored(stored) === lang ? null : lang;
+}
 
 /** Where an Audio page's "Use via API" lands. */
 export function audioApiExampleFor(workflow: AudioCppWorkflow): {
@@ -66,13 +109,22 @@ export const AUDIO_API_PLACEHOLDER_MODELS: Record<AudioApiExample, string> = {
   edit: folder("DotTTS-Edit-GGUF"),
 };
 
-/** False for a catalog model that cannot run the example, such as a separator left loaded. */
+/**
+ * Whether an Audio page's model can run the example. The page can hand over whatever is
+ * resident, a chat model included, so once /v1/models answers it must list the model; until
+ * then only a catalog model that runs the workflow counts. Separation models are not listed.
+ */
 export function audioApiModelFits(
+  models: readonly AudioApiModel[] | null,
   id: string,
   example: AudioApiExample,
 ): boolean {
-  const known = audioCppModelFor(id);
-  return !known || audioCppWorkflowsFor(known).includes(example);
+  if (models === null || example === "separate") {
+    const known = audioCppModelFor(id);
+    return !!known && audioCppWorkflowsFor(known).includes(example);
+  }
+  const listed = models.find((model) => model.id === id);
+  return !!listed && canRun(listed, example);
 }
 
 // /v1/models gives a task, not workflows, so the audio.cpp catalog says what each model does.
@@ -203,6 +255,12 @@ function render(value: Json, style: Style, indent = ""): string {
 
 const j = (value: string) => JSON.stringify(value);
 
+// Mirrors the rvc family in audio_cpp_models.py: it converts only to its built-in voices
+// and refuses a target recording.
+const BUILTIN_VOICE_CONVERTER = /(^|[-_ /.])rvc([-_ /.]|$)/i;
+// Mirrors the music specs there: Stable Audio's SFX build and ControlFoley make no songs.
+const SFX_ONLY_MUSIC = /(^|[-_ /.])sfx([-_ /.]|$)|controlfoley/i;
+
 function editFamily(model: string): string {
   if (/firered/i.test(model)) return "firered_audio";
   if (/vevo[-_]?2/i.test(model)) return "vevo2";
@@ -226,6 +284,17 @@ function runPlan(workflow: AudioRunWorkflow, model: string): RunPlan {
         },
       };
     case "convert":
+      if (BUILTIN_VOICE_CONVERTER.test(model)) {
+        return {
+          uploads: [{ name: "source", file: "speech.wav" }],
+          body: {
+            workflow,
+            model,
+            inputs: { source: { input_id: { upload: "source" } } },
+            convert: { voice: "default" },
+          },
+        };
+      }
       return {
         uploads: [
           { name: "source", file: "speech.wav" },
@@ -241,6 +310,17 @@ function runPlan(workflow: AudioRunWorkflow, model: string): RunPlan {
         },
       };
     case "music":
+      if (SFX_ONLY_MUSIC.test(model)) {
+        return {
+          uploads: [],
+          body: {
+            workflow,
+            model,
+            mode: "sfx",
+            text: "Rain on a tin roof with distant thunder",
+          },
+        };
+      }
       return {
         uploads: [],
         body: {
@@ -320,10 +400,22 @@ interface ClientNeeds {
   /** Studio routes the SDK has no method for: uploads, saved voices, workflow runs. */
   studio: boolean;
   upload: boolean;
+  /** A workflow run answers only when it finishes, which can take longer than 5 minutes. */
+  longRuns: boolean;
 }
 
-const SDK_ONLY: ClientNeeds = { sdk: true, studio: false, upload: false };
-const SDK_AND_UPLOADS: ClientNeeds = { sdk: true, studio: true, upload: true };
+const SDK_ONLY: ClientNeeds = {
+  sdk: true,
+  studio: false,
+  upload: false,
+  longRuns: false,
+};
+const SDK_AND_UPLOADS: ClientNeeds = {
+  sdk: true,
+  studio: true,
+  upload: true,
+  longRuns: false,
+};
 
 function pythonClient(
   base: string,
@@ -368,12 +460,18 @@ def upload(file):
 function javascriptClient(
   base: string,
   apiKey: string,
-  { sdk, studio, upload }: ClientNeeds,
+  { sdk, studio, upload, longRuns }: ClientNeeds,
 ): string {
   let out = `import fs from "node:fs";
-${sdk ? 'import OpenAI from "openai";\n' : ""}
+${sdk ? 'import OpenAI from "openai";\n' : ""}${longRuns ? 'import { Agent, setGlobalDispatcher } from "undici";\n' : ""}
 const BASE = ${j(base)};
 const KEY = ${j(apiKey)};`;
+  if (longRuns) {
+    out += `
+
+// fetch stops waiting for a response after 5 minutes; a long run takes longer than that.
+setGlobalDispatcher(new Agent({ headersTimeout: 0, bodyTimeout: 0 }));`;
+  }
   if (sdk) {
     out += `
 
@@ -625,7 +723,12 @@ function runSnippet(
 ): string {
   const { uploads, body } = runPlan(workflow, model);
   const refs = uploads.map((item) => item.name);
-  const needs = { sdk: false, studio: true, upload: uploads.length > 0 };
+  const needs = {
+    sdk: false,
+    studio: true,
+    upload: uploads.length > 0,
+    longRuns: true,
+  };
   const save =
     workflow === "separate"
       ? "Saves each stem as <clip id>.wav."

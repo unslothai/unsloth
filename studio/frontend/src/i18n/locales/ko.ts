@@ -2644,7 +2644,7 @@ export const ko = {
       revoking: "폐기 중...",
       audioApi: {
         title: "오디오 API",
-        description: "음성 합성, 음성 복제, 받아쓰기, 오디오 페이지 워크플로. 이 호출에는 API 키가 필요합니다.",
+        description: "음성 합성, 음성 복제, 받아쓰기, 오디오 페이지 워크플로.",
         speak: "말하기",
         clone: "복제",
         transcribe: "받아쓰기",

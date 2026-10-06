@@ -2686,7 +2686,7 @@ export const es = {
       revoking: "Revocando...",
       audioApi: {
         title: "API de audio",
-        description: "Voz, clonación de voz, transcripción y los flujos de la página Audio. Estas llamadas necesitan una clave de API.",
+        description: "Voz, clonación de voz, transcripción y los flujos de la página Audio.",
         speak: "Hablar",
         clone: "Clonar",
         transcribe: "Transcribir",

@@ -2667,7 +2667,7 @@ export const ptBR = {
       revoking: "Revogando...",
       audioApi: {
         title: "API de áudio",
-        description: "Fala, clonagem de voz, transcrição e os fluxos da página Áudio. Essas chamadas precisam de uma chave de API.",
+        description: "Fala, clonagem de voz, transcrição e os fluxos da página Áudio.",
         speak: "Falar",
         clone: "Clonar",
         transcribe: "Transcrever",

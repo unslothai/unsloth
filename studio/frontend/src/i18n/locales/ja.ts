@@ -2621,7 +2621,7 @@ export const ja = {
       revoking: "失効中...",
       audioApi: {
         title: "オーディオ API",
-        description: "音声合成、ボイスクローン、文字起こし、オーディオページのワークフロー。これらの呼び出しには API キーが必要です。",
+        description: "音声合成、ボイスクローン、文字起こし、オーディオページのワークフロー。",
         speak: "読み上げ",
         clone: "クローン",
         transcribe: "文字起こし",
