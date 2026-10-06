@@ -172,6 +172,26 @@ test("the Audio row stays lit while hovered, like Images", () => {
   );
 });
 
+test("a nav row's New pill sits beside its label, clear of the trailing disclosure", () => {
+  const item = block(
+    SIDEBAR,
+    "function NavItem(",
+    "const WORKFLOW_UNAVAILABLE",
+  );
+  // No ml-auto: a trailing pill would sit under the overlay's chevron.
+  assert.match(
+    item,
+    /<NavBadge\s+label=\{badge\}\s+className="group-data-\[collapsible=icon\]:hidden"/,
+  );
+  assert.match(item, /\{overlay\}/);
+  const more = block(
+    SIDEBAR,
+    "{overflowNavIds.map((id) => {",
+    "<DropdownMenuSeparator",
+  );
+  assert.equal(more.match(/badge=\{row\.badge\}/g)?.length, 2);
+});
+
 test("Audio is still unpinned by default", () => {
   const store = readSrc("features/settings/stores/appearance-custom-store.ts");
   assert.match(

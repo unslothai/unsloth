@@ -662,7 +662,7 @@ function NavItem({
           {badge && (
             <NavBadge
               label={badge}
-              className="ml-auto group-data-[collapsible=icon]:hidden"
+              className="group-data-[collapsible=icon]:hidden"
             />
           )}
           {spinner && (
@@ -2819,6 +2819,7 @@ export function AppSidebar() {
     audio: {
       icon: AudioWave01Icon,
       label: t("shell.navigation.audio"),
+      badge: t("shell.navigation.newBadge"),
       active: pathname === "/audio" || pathname.startsWith("/audio/"),
       onClick: () => {
         navigateFromRow({ to: "/audio" });
