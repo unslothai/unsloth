@@ -639,9 +639,7 @@ def _anthropic_code_execution_version(model: str) -> str:
 _ANTHROPIC_CODE_EXECUTION_BETA = "code-execution-2025-08-25"
 
 
-# Anthropic server-side context compaction (beta compact-2026-01-12), supported on Claude 5, Opus 4.6/4.7/4.8, Sonnet
-# 4.6 and Mythos Preview. Same beta header for all; the dated `compact_20260112` type lives in body
-# `context_management.edits`. Models outside the prefix list are silently ignored so we do not 400 upstream.
+# Anthropic compaction uses compact-2026-01-12 and ignores unsupported models to avoid 400s.
 _ANTHROPIC_COMPACTION_PREFIXES = _ANTHROPIC_5_PREFIXES + (
     "claude-opus-4-7",
     "claude-opus-4-6",
@@ -650,15 +648,13 @@ _ANTHROPIC_COMPACTION_PREFIXES = _ANTHROPIC_5_PREFIXES + (
 )
 _ANTHROPIC_COMPACTION_BETA = "compact-2026-01-12"
 _ANTHROPIC_COMPACTION_TYPE = "compact_20260112"
-# The threshold must be >= 50K tokens; lower 400s. Clamp on the way out so a UI slider cannot underflow.
+# thresholds below 50K tokens return an upstream 400.
 _ANTHROPIC_COMPACTION_MIN = 50_000
-# Server-side compaction past this is slow and costly on 1M-window models; Anthropic's own default is 150K.
+# compaction above this is slow and costly on 1M-token windows; Anthropic defaults to 150K.
 _SERVER_COMPACTION_MAX = 200_000
 
 
-# Anthropic fast-mode beta, Opus 5 / Opus 4.8 only: Opus 4.7 400s on `speed`; Opus 4.6 accepts it but runs at standard
-# speed and reports `usage.speed: "standard"`, so exposing the toggle there promises a speed-up that never happens.
-# Sonnet 5 never had it. Mutually exclusive with the Priority service tier.
+# Anthropic fast mode is limited to Opus 5/4.8; Opus 4.7 rejects speed, 4.6 reports standard, and Priority conflicts.
 _ANTHROPIC_FAST_MODE_BETA = "fast-mode-2026-02-01"
 _ANTHROPIC_FAST_MODE_PREFIXES = (
     "claude-opus-5",
@@ -681,23 +677,16 @@ def compacts_server_side(
 
 
 def _anthropic_supports_fast_mode(model: str) -> bool:
-    # Require a family boundary ("" or "-") after the prefix so IDs like "claude-opus-4-70" / "claude-opus-4-7b" do
-    # not match.
+    # require a family boundary so IDs such as claude-opus-4-70 do not match.
     return any(model == p or model.startswith(f"{p}-") for p in _ANTHROPIC_FAST_MODE_PREFIXES)
 
 
-# Cap on ``cited_text`` forwarded in document_citations tool_events; bounds SSE bytes on multi-KB cited spans (the
-# frontend trims to 240 chars anyway).
+# cap cited_text to bound SSE size; the frontend trims it to 240 characters.
 _CITED_TEXT_MAX_LEN = 512
 
 
 def _anthropic_citation_key(citation: dict[str, Any]) -> tuple:
-    """Stable dedup key for an Anthropic ``citations_delta.citation``. Anchor fields vary per type
-    (char_location, page_location, content_block_location, search_result_location); both start
-    AND exclusive end indices are in the key so same-start / different-end pairs stay distinct.
-    search_result_location keys on ``search_result_index`` + ``source`` instead of document_index
-    so distinct results with the same source do not collapse. Unknown shapes fall back to a
-    stringified copy (more entries, never collisions)."""
+    """build a stable Anthropic citation key that preserves range ends and distinct search results."""
     ctype = citation.get("type")
     doc = citation.get("document_index")
     title = citation.get("document_title") or ""
@@ -2431,12 +2420,9 @@ class ExternalProviderClient:
         fast_mode: Optional[bool] = None,
         tools: Optional[list[dict[str, Any]]] = None,
     ) -> AsyncGenerator[str, None]:
-        """Call the Anthropic Messages API and translate its SSE to OpenAI format:
-        content_block_delta -> chunk with delta.content, message_delta -> chunk with
-        finish_reason, message_stop -> data: [DONE], all others skipped."""
+        """call Anthropic Messages and translate its SSE into OpenAI stream events."""
         import json as _json
 
-        # Extract system prompt; translate image_url parts to Anthropic format
         system: Optional[str] = None
         filtered: list[dict[str, Any]] = []
         compaction_replayed = False
@@ -2454,7 +2440,7 @@ class ExternalProviderClient:
             extra = msg.get("extra_content") or {}
             native_content = (extra.get("anthropic") or {}).get("content")
             if msg.get("role") == "assistant" and isinstance(native_content, list):
-                # Replay the signed native blocks, not the loop's <think>-marked display text; kept calls follow.
+                # replay signed native blocks because display text has synthetic <think> markers.
                 content = []
             # OpenAI role="tool" with list content -> Anthropic native tool_result block on a user message.
             # Translating only in the string-content branch below would forward the list-content form as an invalid
@@ -2510,9 +2496,7 @@ class ExternalProviderClient:
                     filtered.append({"role": "user", "content": [result_block]})
                 continue
             if isinstance(content, list):
-                # Translate OpenAI multimodal parts -> Anthropic native shapes: `image_url` -> `{type:"image",
-                # source:...}`, and `input_document` -> `{type:"document", source:...}` (an Unsloth extension
-                # mirroring Anthropic's document block, which supports PDFs as base64 or URL).
+                # preserve Unsloth input_document support when translating to Anthropic blocks.
                 anthropic_parts: list[dict[str, Any]] = (
                     [
                         block
@@ -2535,8 +2519,7 @@ class ExternalProviderClient:
                     if part.get("type") == "text" and _anthropic_text_is_sendable(part.get("text")):
                         anthropic_parts.append({"type": "text", "text": part["text"]})
                     elif part.get("type") == "compaction":
-                        # Round-trip a prior turn's compaction block back onto this assistant message so Anthropic
-                        # skips re-compaction.
+                        # replay compaction here to avoid compacting history twice.
                         summary = part.get("content") or ""
                         if (
                             isinstance(summary, str)
@@ -2548,7 +2531,6 @@ class ExternalProviderClient:
                     elif part.get("type") == "image_url":
                         url = part.get("image_url", {}).get("url", "")
                         if url.startswith("data:"):
-                            # data:image/png;base64,<DATA> -> split header and data
                             header, _, b64data = url.partition(",")
                             media_type = header.split(";")[0].replace("data:", "") or "image/jpeg"
                             anthropic_parts.append(
@@ -2981,13 +2963,11 @@ class ExternalProviderClient:
                 }
             )
             body["tools"] = anthropic_tools
-            # Reuse the thread's prior container so filesystem state persists. Stale ids 4xx and clear via
-            # container_invalidated.
+            # reuse the prior container for filesystem state; stale IDs emit container_invalidated.
             if anthropic_code_exec_container_id:
                 body["container"] = anthropic_code_exec_container_id
 
-        # Server-side compaction (beta `compact-2026-01-12`). Clamps below-min thresholds to 50K so the request does
-        # not 400.
+        # clamp Anthropic compaction thresholds to the supported range to avoid upstream 400s.
         compaction_active = (
             compaction_threshold is not None
             and compaction_threshold > 0
@@ -3010,8 +2990,7 @@ class ExternalProviderClient:
                 ]
             }
 
-        # fast_mode is Opus 5 / 4.8 only; silently drop elsewhere. Incompatible with the Priority service_tier (the
-        # frontend gate prevents both at once; the backend lets Anthropic 400 if combined).
+        # fast mode is limited to Opus 5/4.8 and conflicts with the Priority service tier.
         fast_mode_active = bool(fast_mode) and _anthropic_supports_fast_mode(model)
         if fast_mode_active:
             body["speed"] = "fast"
@@ -3049,7 +3028,7 @@ class ExternalProviderClient:
         logger.info("Proxying Anthropic Messages API to %s (model=%s)", url, model)
 
         request_headers = self._auth_headers()
-        # Merge new beta flags onto whatever the registry contributed.
+        # preserve registry beta flags when adding request-specific flags.
         existing_beta = request_headers.get("anthropic-beta", "").strip()
         beta_parts = (
             [p.strip() for p in existing_beta.split(",") if p.strip()] if existing_beta else []
@@ -3474,16 +3453,12 @@ class ExternalProviderClient:
                                     if text:
                                         current_compaction["content"] += text
                                 else:
-                                    # First text after a thinking block closes the <think> tag opened above. Anthropic
-                                    # emits a content_block_stop between blocks, but closing on the text_delta
-                                    # transition is more forgiving if events arrive out of order.
+                                    # close thinking on text_delta to tolerate out-of-order events.
                                     if thinking_open:
                                         yield _content_chunk("</think>")
                                         thinking_open = False
                                     if text:
                                         yield _content_chunk(text)
-                                    # web_search citations: web_search_tool_result. User-doc citations:
-                                    # citations_delta below.
                             elif (
                                 delta_type == "compaction_delta" and current_compaction is not None
                             ):
@@ -3491,8 +3466,6 @@ class ExternalProviderClient:
                                 if isinstance(summary, str):
                                     current_compaction["content"] += summary
                             elif delta_type == "citations_delta":
-                                # One citation per event; collapse onto a numbered footnote list and inject [N]
-                                # inline.
                                 cit = delta.get("citation")
                                 if isinstance(cit, dict):
                                     key = _anthropic_citation_key(cit)
@@ -5542,12 +5515,10 @@ class ExternalProviderClient:
                     if not content and not msg.get("tool_calls"):
                         continue
 
-            # Responses uses item-shape history: each assistant call is a `function_call` item and each role="tool"
-            # follow-up a `function_call_output` keyed by call_id (the Chat Completions shape 400s).
+            # Responses requires function_call items paired with function_call_output by call_id.
             if role == "tool":
                 _call_id = msg.get("tool_call_id") or ""
-                # If the matching assistant `function_call` was a server-side builtin we already dropped, drop the
-                # follow-up too to avoid an orphan `function_call_output`.
+                # drop outputs for omitted builtins to avoid orphan function_call_output items.
                 if _call_id and _call_id in skipped_server_builtin_call_ids:
                     continue
                 if isinstance(content, list):
@@ -5843,9 +5814,7 @@ class ExternalProviderClient:
                     }
                 }
 
-        # Opt into 24h prompt-cache retention (free, vs the default ~5-10 min). Gated on the cloud host because ollama
-        # / llama.cpp / "custom" presets reach this path and 400 on the unknown field, and on the model because most
-        # cloud families reject the value itself.
+        # 24h retention requires an OpenAI cloud model that accepts prompt_cache_retention.
         if (
             is_openai_cloud
             and enable_prompt_caching is not False
@@ -5853,7 +5822,7 @@ class ExternalProviderClient:
         ):
             body["prompt_cache_retention"] = "24h"
 
-        # Server-side context compaction (OpenAI cloud only).
+        # server-side context compaction is available only on OpenAI cloud.
         if is_openai_cloud and compaction_threshold is not None and compaction_threshold > 0:
             body["context_management"] = [
                 {
@@ -5862,7 +5831,7 @@ class ExternalProviderClient:
                 }
             ]
 
-        # Map enabled_tools onto Responses-API server tools (cloud only; local OAI-compat backends 400 on these).
+        # only OpenAI cloud accepts Responses API server tools.
         code_execution_enabled_openai = bool(
             enabled_tools and "code_execution" in enabled_tools and is_openai_cloud
         )
@@ -5873,7 +5842,7 @@ class ExternalProviderClient:
         def _openai_image_generation_tool() -> dict[str, Any]:
             tool: dict[str, Any] = {"type": "image_generation"}
             if image_generation_has_reference:
-                # Force edit mode so the prior call id is used as context.
+                # force edit mode so the prior call ID remains available as context.
                 tool["action"] = "edit"
             return tool
 
@@ -6658,11 +6627,9 @@ class ExternalProviderClient:
                                             }
                                         )
                                 elif item.get("type") == "web_search_call":
-                                    # done carries the action; emit tool_start + tool_end here. Citations are
-                                    # aggregated and the last call's result is overwritten at response.completed.
+                                    # response.completed replaces this result with citations.
                                     item_id = item.get("id", "") or (f"ws_{len(web_search_calls)}")
-                                    # Overlay, do not replace: a partial done event would drop what the added event
-                                    # carried.
+                                    # merge partial done events so fields from added events survive.
                                     arguments = {
                                         **web_search_calls.get(item_id, {}),
                                         **_extract_web_search_action(item),

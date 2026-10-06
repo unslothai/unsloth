@@ -11,8 +11,7 @@ import {
 import { readSrc } from "./helpers/kit.ts";
 
 test("auto-compact on sends truncate_oldest and no policy of its own", () => {
-  // No context_policy: the server applies UNSLOTH_CONTEXT_POLICY. Studio used to offer that
-  // choice as a setting and no longer does, so this is the only shape an enabled request takes.
+  // the server applies UNSLOTH_CONTEXT_POLICY because Studio no longer exposes context_policy.
   assert.deepEqual(
     ggufCompactionRequestFields({ isGguf: true, autoCompactEnabled: true }),
     { context_overflow: "truncate_oldest" },
@@ -132,7 +131,7 @@ test("MLX chats opt in on the backend's own report and honor disabling auto comp
     ggufCompactionRequestFields({ ...options, autoCompactEnabled: false }),
     { context_overflow: "error" },
   );
-  // loadedIsMlx, not a catalog row, as isGguf goes through isServedByLlamaCpp.
+  // loadedIsMlx is authoritative because isGguf already uses isServedByLlamaCpp.
   const adapter = readSrc("features/chat/api/chat-adapter.ts");
   assert.match(adapter, /isMlx: isMlxForCompaction/);
   assert.match(

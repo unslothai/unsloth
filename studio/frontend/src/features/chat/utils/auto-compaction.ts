@@ -19,17 +19,16 @@ export function ggufCompactionRequestFields(options: {
 } {
   if (!options.isGguf && !options.isMlx) return {};
   if (!options.autoCompactEnabled) {
-    // An omitted field falls back to UNSLOTH_CONTEXT_OVERFLOW, which may still compact. "error" is an
-    // explicit refusal of that fallback.
+    // explicit error avoids the UNSLOTH_CONTEXT_OVERFLOW fallback, which may compact
     return { context_overflow: "error" };
   }
-  // No context_policy: the server applies UNSLOTH_CONTEXT_POLICY.
+  // omit context_policy so the server applies UNSLOTH_CONTEXT_POLICY
   return { context_overflow: "truncate_oldest" };
 }
 
 // Share of the window left free when compaction starts.
 const API_COMPACTION_HEADROOM = 0.25;
-// The request schema's ceiling on compaction_threshold.
+// request schema ceiling for compaction_threshold
 const API_COMPACTION_THRESHOLD_MAX = 2_000_000;
 
 export function apiCompactionRequestFields(options: {

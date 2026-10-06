@@ -26698,11 +26698,7 @@ def _build_external_messages(
       replay the required reasoning item.
     - `image_generation_call`: Responses image reference. Forwarded for OpenAI
       and custom Responses so follow-up image edits can reference prior images.
-    - `compaction`: synthetic part that round-trips server-side compaction
-      state. Forwarded ONLY to Anthropic (its summary) and to OpenAI and
-      custom Responses (its encrypted item); stripped elsewhere so the unknown
-      part doesn't reach generic /chat/completions and 400 (DeepSeek, Mistral,
-      Gemini, Kimi, OpenRouter).
+    - `compaction`: forwarded only to Anthropic, OpenAI, and custom Responses.
     """
     document_provider = provider_type in _INPUT_DOCUMENT_PROVIDERS or (
         provider_type == "custom" and api_type == "responses"
@@ -26711,11 +26707,7 @@ def _build_external_messages(
     responses_native_parts = provider_type == "openai" or (
         provider_type == "custom" and api_type == "responses"
     )
-    # `extra_content` carries the assistant's text-part `thoughtSignature`
-    # round-trip on Gemini's native streamGenerateContent endpoint. Custom
-    # Gemini OpenAI-compat gateways (LiteLLM etc.) route through
-    # /chat/completions where the field is unknown and can be rejected -- gate
-    # strictly on the Google-hosted Gemini base.
+    # emit `extra_content` only to endpoints that understand Gemini `thoughtSignature` metadata.
     _native_gemini = False
     if provider_type == "gemini" and base_url:
         try:
@@ -26811,8 +26803,7 @@ def _build_external_messages(
         return cleaned
 
     def _openai_responses_part(item: Any) -> Optional[dict[str, Any]]:
-        """Rebuild a forwarded OpenAI Responses assistant part (`reasoning` or
-        `image_generation_call` or `compaction`); returns None for any other part type."""
+        """rebuild replayable OpenAI Responses assistant parts."""
         if item.type == "reasoning":
             reasoning: dict[str, Any] = {
                 "type": "reasoning",
@@ -27190,7 +27181,7 @@ async def _stop_on_cancel(agen, cancel_event: threading.Event):
     finally:
         for task in (step, waiter):
             if task is not None and not task.done():
-                # Cancelling the pending read closes the upstream response inside ``agen``.
+                # cancelling the pending read closes the upstream response inside ``agen``.
                 task.cancel()
                 await asyncio.gather(task, return_exceptions = True)
         try:
@@ -27228,7 +27219,7 @@ def _fit_external_context(
     window = payload.context_window
     prompt_tokens = _count(messages)
     if window and max_tokens:
-        # Providers count the whole max_tokens against the window, so the prompt gets what is left, at least half.
+        # reserve the full reply cap while leaving at least half the window for the prompt.
         margin = window // 32
         if prompt_tokens + max_tokens + margin > window:
             room = max(window - max_tokens, window // 2) - margin
@@ -28055,8 +28046,7 @@ async def _proxy_to_external_provider(
     cancel_keys = tuple(key for key in (payload.cancel_id, payload.session_id) if key)
 
     async def _watch_disconnect() -> None:
-        # A tool loop can sit for minutes inside execute_tool with no SSE line
-        # arriving, so poll rather than waiting for the next yield to notice.
+        # tool execution may emit no SSE lines for minutes, so poll for disconnects.
         while not cancel_event.is_set():
             if await request.is_disconnected():
                 cancel_event.set()
@@ -28073,9 +28063,7 @@ async def _proxy_to_external_provider(
                 else payload.temperature
             ),
             top_p = _top_p_explicit,
-            # Honor max_completion_tokens when max_tokens is absent, so a
-            # provider-routed request capped only by the newer field still gets
-            # a limit instead of falling back to the provider default.
+            # honor max_completion_tokens when max_tokens is absent to avoid provider defaults.
             max_tokens = _external_max_tokens,
             presence_penalty = payload.presence_penalty,
             top_k = _top_k_explicit,
@@ -28214,7 +28202,7 @@ async def _proxy_to_external_provider(
             provider_compaction_reported = False
             async for line in gen:
                 if _is_openai_sse_done(line) and _managed_cut_short():
-                    # Before [DONE] reaches the monitor, which would record the reply completed.
+                    # intercept [DONE] before the monitor records a cut-short reply as complete.
                     yield _fail_cut_short()
                     stream_failed = True
                 if managed is not None:
@@ -28222,8 +28210,7 @@ async def _proxy_to_external_provider(
                 monitor_event = _monitor_openai_sse_line(monitor_id, line)
                 if monitor_event is None:
                     try:
-                        # Only stamp a real delta stream: a stream:false response is one
-                        # full line, so end-to-end latency, not TTFT.
+                        # stamp TTFT only for delta streams; stream:false reports total latency.
                         _monitor_openai_chunk(
                             monitor_id, json.loads(line), streaming = bool(payload.stream)
                         )
@@ -28245,7 +28232,7 @@ async def _proxy_to_external_provider(
                         yield _OPENAI_PASSTHROUGH_SSE_KEEPALIVE
                     continue
                 if not _ui_events and run_studio_tool_loop:
-                    # Only inside the loop: on a plain proxy the calls are the caller's own.
+                    # strip calls only in the loop because plain-proxy calls belong to the caller.
                     line = _tool_call_stripper.strip(line)
                     if line is None:
                         if _drop_keepalive.due():
@@ -28263,16 +28250,12 @@ async def _proxy_to_external_provider(
                         model,
                         _provider_compaction_truncation(chat_messages),
                     )
-                # Parsed from the line itself, not from monitor_event: with the
-                # monitor disabled the helper returns None for every line, and
-                # trusting it would append a second [DONE] after the provider's.
+                # inspect the line directly because a disabled monitor would duplicate [DONE].
                 if _is_openai_sse_done(line):
                     sent_done = True
             if _non_stream_custom_responses:
                 return
-            # The loop can end without opening the turn a withheld call promised, and the
-            # reason removed with that call was this stream's last one. Before [DONE], where
-            # the GGUF passthrough places its own synthetic finish.
+            # emit withheld terminal state before [DONE] if the loop did not open the promised turn.
             _owed = _tool_call_stripper.owed_terminal_chunk()
             if _owed is not None and not stream_failed:
                 managed_finish.see(_owed)

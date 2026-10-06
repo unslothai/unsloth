@@ -2242,14 +2242,7 @@ class ImageGenerationCallContentPart(BaseModel):
 
 
 class CompactionContentPart(BaseModel):
-    """Server-side compaction state, round-tripped on the next turn.
-
-    Anthropic returns a ``compaction`` block and OpenAI Responses a ``compaction``
-    output item; the next request must forward it back so the provider reuses the
-    compaction state instead of re-summarising. See
-    https://platform.claude.com/docs/en/build-with-claude/compaction and
-    https://developers.openai.com/api/docs/guides/compaction
-    """
+    """round-trip Anthropic summaries and opaque OpenAI Responses compaction state."""
 
     type: Literal["compaction"]
     content: Optional[str] = Field(

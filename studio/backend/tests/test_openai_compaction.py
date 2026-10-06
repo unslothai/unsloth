@@ -91,8 +91,7 @@ def test_cloud_openai_sets_compaction_block(monkeypatch):
 
 
 def test_cloud_openai_below_default_threshold_passes_through(monkeypatch):
-    # Unsloth doesn't clamp the OpenAI side -- the API accepts whatever the
-    # caller sends, so a small probe like 60k still goes through.
+    # OpenAI accepts thresholds below the default without clamping.
     captured = _capture(
         monkeypatch,
         base_url = "https://api.openai.com/v1",
@@ -110,18 +109,10 @@ def test_cloud_openai_threshold_capped_at_200k(monkeypatch):
     ]
 
 
-# ── non-cloud bases drop the field ──────────────────────────────────
-
-
 def test_non_cloud_base_silently_drops_compaction(monkeypatch):
-    # ollama / llama.cpp / "custom" presets collapse to provider="openai"
-    # but lack context_management. Sending the field would 400 them, so it
-    # must NOT appear on the wire.
+    # OpenAI-compatible local providers reject context_management.
     captured = _capture_at_threshold(monkeypatch, base_url = "http://127.0.0.1:11434/v1")
     assert "context_management" not in captured["body"]
-
-
-# ── Azure OpenAI Foundry is treated as cloud ────────────────────────
 
 
 def test_azure_openai_base_url_carries_compaction_block(monkeypatch):
@@ -211,11 +202,7 @@ def test_chat_completion_request_accepts_any_positive_compaction_threshold():
             }
         )
 
-    # Any positive int passes schema validation, including values that
-    # are no-ops on the OpenAI cloud path. Intentional -- the OpenAI
-    # helper drops the field on non-cloud bases and forwards as-is on
-    # cloud bases; if it's below the model's effective floor, the upstream
-    # API surfaces the error.
+    # positive thresholds stay schema-valid because providers enforce support and minimums.
     for v in (1, 5_000, 9_999, 10_000, 200_000):
         req = ChatCompletionRequest.model_validate(
             {
