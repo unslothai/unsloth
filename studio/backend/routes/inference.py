@@ -21302,10 +21302,11 @@ async def voice_slot_status(current_subject: str = Depends(get_current_subject))
     # chat status does (a local voice's identifier is its absolute path).
     if voice_backend.is_active and account_access.resident_hidden("chat"):
         return account_access.hidden_resident_response()
-    loaded = voice_backend.is_loaded and _voice_server_alive(voice_backend)
+    alive = _voice_server_alive(voice_backend)
+    loaded = voice_backend.is_loaded and alive
     return {
         "loaded": loaded,
-        "loading": voice_backend.is_active and not loaded,
+        "loading": voice_backend.is_active and alive and not loaded,
         "model": voice_backend.model_identifier if loaded else None,
         "audio_type": getattr(voice_backend, "_audio_type", None) if loaded else None,
     }
@@ -22273,6 +22274,7 @@ async def _generate_tts_wav(
     _voice_slot_serves = bool(
         requested_model == _RELOAD_ONLY_MODEL
         and _voice_backend.is_loaded
+        and _voice_server_alive(_voice_backend)
         and getattr(_voice_backend, "_is_audio", False)
         and not account_access.resident_hidden("chat")
     )
@@ -22864,10 +22866,14 @@ async def openai_audio_speech_stream(
     # and the chat routes answer for it.
     if account_access.resident_hidden("chat"):
         raise HTTPException(status_code = 404, detail = "Model not found")
+    voice_slot = get_voice_llama_backend()
+    # A dead voice server is skipped so the client's reload path runs; the chat slot respawns its own.
     loaded = [
         candidate
-        for candidate in (get_voice_llama_backend(), get_llama_cpp_backend())
-        if candidate.is_loaded and getattr(candidate, "_audio_type", None) == "snac"
+        for candidate in (voice_slot, get_llama_cpp_backend())
+        if candidate.is_loaded
+        and getattr(candidate, "_audio_type", None) == "snac"
+        and (candidate is not voice_slot or _voice_server_alive(candidate))
     ]
     # An exact path wins before the public id: two local GGUFs can share a basename.
     backend = next(

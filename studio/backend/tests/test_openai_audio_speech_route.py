@@ -257,7 +257,12 @@ def test_a_loaded_voice_slot_serves_only_the_resident_model_form(monkeypatch, na
     def _picked_voice(_backend):
         raise RuntimeError("reached the voice slot")
 
-    voice_backend = SimpleNamespace(is_loaded = True, _is_audio = True, _audio_type = "snac")
+    voice_backend = SimpleNamespace(
+        is_loaded = True,
+        _is_audio = True,
+        _audio_type = "snac",
+        _process = SimpleNamespace(poll = lambda: None),
+    )
     monkeypatch.setattr(routes_module, "get_voice_llama_backend", lambda: voice_backend)
     monkeypatch.setattr(routes_module, "_maybe_auto_switch_model", _switch)
     monkeypatch.setattr(routes_module, "_llama_public_model_id", _picked_voice)
@@ -287,7 +292,11 @@ def test_the_voice_slot_budgets_speech_against_its_own_context(monkeypatch):
         raise RuntimeError("reached the voice slot")
 
     voice_backend = SimpleNamespace(
-        is_loaded = True, _is_audio = True, _audio_type = "snac", context_length = 512
+        is_loaded = True,
+        _is_audio = True,
+        _audio_type = "snac",
+        context_length = 512,
+        _process = SimpleNamespace(poll = lambda: None),
     )
     monkeypatch.setattr(routes_module, "get_voice_llama_backend", lambda: voice_backend)
     monkeypatch.setattr(routes_module, "_llama_public_model_id", _picked_voice)
@@ -316,6 +325,7 @@ def test_streaming_speech_fits_the_voice_servers_context(monkeypatch, prompt_tok
 
     voice_backend = SimpleNamespace(
         is_loaded = True,
+        _process = SimpleNamespace(poll = lambda: None),
         _audio_type = "snac",
         context_length = 512,
         _orpheus_voice_prefix_ok = lambda: True,
@@ -354,6 +364,7 @@ def test_streaming_speech_honours_the_requested_model(monkeypatch):
 
         return SimpleNamespace(
             is_loaded = True,
+            _process = SimpleNamespace(poll = lambda: None),
             _audio_type = "snac",
             context_length = None,
             model_identifier = f"/models/{public_id.split('/')[-1]}/model.gguf",
@@ -1485,13 +1496,19 @@ def test_a_voice_server_that_exited_is_not_reported_or_reused_as_loaded(monkeypa
     monkeypatch.setattr(routes_module, "get_voice_llama_backend", lambda: voice)
     monkeypatch.setattr(routes_module.account_access, "resident_hidden", lambda *a, **k: False)
     status = asyncio.run(routes_module.voice_slot_status("s"))
-    assert status["loaded"] is False and status["model"] is None
+    assert status["loaded"] is False and status["loading"] is False and status["model"] is None
 
     source = inspect.getsource(routes_module.voice_load_model)
     fast_path = source[
         source.index("voice_backend.is_loaded") : source.index('"status": "already_loaded"')
     ]
     assert "_voice_server_alive(voice_backend)" in fast_path
+    # Neither speech route serves from it, so the client's 400-then-reload path runs.
+    tts = inspect.getsource(routes_module._generate_tts_wav)
+    serves = tts[tts.index("_voice_slot_serves = bool(") :][:400]
+    assert "_voice_server_alive(_voice_backend)" in serves
+    stream = inspect.getsource(routes_module.openai_audio_speech_stream)
+    assert "_voice_server_alive(candidate)" in stream[stream.index("loaded = [") :][:500]
 
 
 def test_voice_loads_run_one_at_a_time():
@@ -1570,6 +1587,7 @@ def test_a_streaming_clip_counts_as_a_generation_while_it_plays(monkeypatch):
 
     voice_backend = SimpleNamespace(
         is_loaded = True,
+        _process = SimpleNamespace(poll = lambda: None),
         _audio_type = "snac",
         context_length = None,
         _orpheus_voice_prefix_ok = lambda: True,
@@ -1706,6 +1724,7 @@ def test_a_forced_swap_cancels_a_streaming_clip(monkeypatch):
 
     voice_backend = SimpleNamespace(
         is_loaded = True,
+        _process = SimpleNamespace(poll = lambda: None),
         _audio_type = "snac",
         context_length = None,
         _orpheus_voice_prefix_ok = lambda: True,
