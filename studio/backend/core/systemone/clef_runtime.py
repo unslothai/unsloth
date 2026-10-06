@@ -113,9 +113,19 @@ def _decide(model, tokenizer, state, questions: dict[str, dict[str, Any]]) -> di
     return {
         "answers": answers,
         "input_tokens": len(encoded.input_ids),
-        # encode_record cuts the state to fit, which only ever fills the budget exactly.
-        "truncated": len(encoded.input_ids) >= MAX_LENGTH,
+        "truncated": _truncated(tokenizer, state, questions, encoded),
     }
+
+
+def _truncated(tokenizer, state, questions, encoded) -> bool:
+    # A cut state fills the budget exactly, but so does one that fits exactly: one more token of
+    # room tells them apart, and is only spent on prompts at the limit.
+    if len(encoded.input_ids) < MAX_LENGTH:
+        return False
+    from unsloth.models.clef import encode_record
+
+    record = {"state": state, "questions": questions}
+    return len(encode_record(tokenizer, record, max_length = MAX_LENGTH + 1).input_ids) > MAX_LENGTH
 
 
 def run_clef_worker(conn, folder: str) -> None:

@@ -507,3 +507,21 @@ def test_a_clef_worker_that_died_after_loading_is_a_worker_error():
 
     with pytest.raises(clef_runtime.ClefWorkerError, match = "exited"):
         _clef_agent(Conn()).decide("state", {})
+
+
+def test_a_clef_prompt_that_fits_exactly_is_not_truncated(monkeypatch):
+    from core.systemone import clef_runtime
+    from unsloth.models import clef
+
+    def encode(tokenizer, record, max_length):
+        # The state needs `natural` tokens; anything over max_length is cut to fit.
+        return SimpleNamespace(input_ids = [0] * min(record["state"], max_length))
+
+    monkeypatch.setattr(clef, "encode_record", encode)
+    size = clef_runtime.MAX_LENGTH
+
+    def truncated(natural):
+        encoded = encode(None, {"state": natural}, size)
+        return clef_runtime._truncated(None, natural, {}, encoded)
+
+    assert (truncated(size - 1), truncated(size), truncated(size + 1)) == (False, False, True)
