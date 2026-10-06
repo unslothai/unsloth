@@ -1424,8 +1424,7 @@ export const de = {
         buttonDescription: "Bei Assistentenantworten anzeigen",
         engineLabel: "TTS-Engine",
         engineSystemDescription: "Auf dem Gerät integrierte Stimmen",
-        engineStudioDescription:
-          "Verwendet das geladene Audiomodell (z. B. Orpheus)",
+        engineStudioDescription: "Verwendet das in Audio geladene Sprachmodell",
         engineSystem: "Systemstimmen",
         engineStudio: "TTS-Modell laden",
         engineCustom: "Eigener Endpunkt",
@@ -1440,10 +1439,14 @@ export const de = {
           "Vom Endpunkt erwarteter Stimmenname; Standard ist alloy",
         modelLabel: "TTS-Modell",
         modelDescription:
-          "Laden Sie ein Audiomodell über die Modellauswahl (z. B. Orpheus TTS)",
+          "Laden Sie ein Sprachmodell in Audio. Es ersetzt das Chat-Modell.",
         openAudioAction: "Audio öffnen",
         voiceLabel: "Stimme",
         voiceDescription: "Beste Stimmen auf diesem Gerät",
+        studioVoiceDescription:
+          "In Audio gespeicherte Stimmen erfordern ein Klonmodell",
+        studioVoiceDefault: "Eigene Stimme des Modells",
+        studioVoiceSaved: "Gespeicherte Stimme",
         speedLabel: "Geschwindigkeit",
         pitchLabel: "Tonhöhe",
         volumeLabel: "Lautstärke",

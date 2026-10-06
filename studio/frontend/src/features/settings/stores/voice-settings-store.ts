@@ -165,6 +165,10 @@ export interface VoiceSettingsState {
   ttsProviderVoice: string;
   setTtsProviderVoice: (value: string) => void;
 
+  /** Saved Audio voice id the "studio" engine speaks in; "" for the model's own voice. */
+  ttsStudioVoiceId: string;
+  setTtsStudioVoiceId: (value: string) => void;
+
   /** speechSynthesis voiceURI, or "default" for the system voice. */
   ttsVoiceURI: string;
   setTtsVoiceURI: (value: string) => void;
@@ -342,6 +346,9 @@ export const useVoiceSettingsStore = create<VoiceSettingsState>()(
       ttsProviderVoice: "",
       setTtsProviderVoice: (ttsProviderVoice) => set({ ttsProviderVoice }),
 
+      ttsStudioVoiceId: "",
+      setTtsStudioVoiceId: (ttsStudioVoiceId) => set({ ttsStudioVoiceId }),
+
       ttsVoiceURI: "default",
       setTtsVoiceURI: (ttsVoiceURI) => set({ ttsVoiceURI }),
 
@@ -401,6 +408,7 @@ export const useVoiceSettingsStore = create<VoiceSettingsState>()(
           ttsProviderId: asString(saved?.ttsProviderId, ""),
           ttsProviderModel: asString(saved?.ttsProviderModel, ""),
           ttsProviderVoice: asString(saved?.ttsProviderVoice, ""),
+          ttsStudioVoiceId: asString(saved?.ttsStudioVoiceId, ""),
           ttsVoiceURI: asString(saved?.ttsVoiceURI, "default"),
           ttsRate: clampNumber(saved?.ttsRate, 0.5, 2, 1),
           ttsPitch: clampNumber(saved?.ttsPitch, 0, 2, 1),

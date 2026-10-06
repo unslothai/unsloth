@@ -1417,8 +1417,7 @@ export const ru = {
         buttonDescription: "Показывать в ответах ассистента",
         engineLabel: "Движок TTS",
         engineSystemDescription: "Встроенные голоса устройства",
-        engineStudioDescription:
-          "Использует загруженную аудиомодель (например, Orpheus)",
+        engineStudioDescription: "Использует модель речи, загруженную в Аудио",
         engineSystem: "Системные голоса",
         engineStudio: "Загрузить модель TTS",
         engineCustom: "Пользовательский эндпоинт",
@@ -1433,10 +1432,14 @@ export const ru = {
           "Имя голоса, которое ожидает эндпоинт; по умолчанию alloy",
         modelLabel: "Модель TTS",
         modelDescription:
-          "Загрузите аудиомодель из списка моделей (например, Orpheus TTS)",
+          "Загрузите модель речи в Аудио. Она заменит модель чата.",
         openAudioAction: "Открыть Аудио",
         voiceLabel: "Голос",
         voiceDescription: "Лучшие голоса на этом устройстве",
+        studioVoiceDescription:
+          "Для голосов, сохранённых в Аудио, нужна модель клонирования",
+        studioVoiceDefault: "Собственный голос модели",
+        studioVoiceSaved: "Сохранённый голос",
         speedLabel: "Скорость",
         pitchLabel: "Высота тона",
         volumeLabel: "Громкость",
