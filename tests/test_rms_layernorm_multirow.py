@@ -293,7 +293,7 @@ def test_multirow_self_check_runs_once(multirow):
     for _ in range(3):
         _assert_bits(one_row, _run(X, W, dY, False))
     assert len(calls) == 1 and rms_layernorm._MULTIROW
-    assert len(launches) == 1 + 3  # the check's own launch, then every call
+    assert len(launches) == 1 + 3
 
 
 @pytest.mark.skipif(not has_real_cuda() or torch.cuda.device_count() < 2, reason = "needs two GPUs")

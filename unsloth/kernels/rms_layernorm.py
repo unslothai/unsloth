@@ -266,8 +266,7 @@ def _rms_layernorm_backward_rows(
         dY_W = dY_rows * W_row[None, :]
 
     rowsum_dY_normed = _row_dot_in_row_kernel_order(dY_W, normed, ROWS, WARPS)
-    # Spelled as in the one-row kernel so LLVM contracts it the same way (an explicit
-    # fma(dY_W, n_cols, -(normed * rowsum)) turns -0 into +0 on sm75).
+    # Spelled as in the one-row kernel: an explicit fma here turns -0 into +0 on sm75.
     output = (inv_var / n_cols)[:, None] * (n_cols * dY_W - normed * rowsum_dY_normed[:, None])
     if GEMMA:
         tl.store(dX + rows[:, None] * dX_row_stride + col_offsets[None, :], output, mask = mask)
@@ -329,7 +328,6 @@ def _bits(t):
 
 
 def _multirow_self_check(device, dtype, W_dtype, n_cols, eps, gemma, multirow):
-    # Runs eagerly even when called from a trace: real tensors, nothing recorded in the graph.
     from torch.utils._python_dispatch import _disable_current_modes
     with _disable_current_modes(), torch.no_grad(), torch_gpu_device(device):
         g = torch.Generator(device = device).manual_seed(3407)
@@ -354,7 +352,7 @@ def _multirow_checked(X, W, eps, gemma):
     multirow = _multirow_settings(n_cols)
     if multirow is None:
         return None
-    key = (X.device, X.dtype, W.dtype, int(n_cols), float(eps), gemma)  # eps is a constexpr
+    key = (X.device, X.dtype, W.dtype, int(n_cols), float(eps), gemma)
     verdict = _MULTIROW_CHECKED.get(key)
     if verdict is None:
         if X.device.type == "cuda" and torch.cuda.is_current_stream_capturing():
