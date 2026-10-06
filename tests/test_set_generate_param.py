@@ -95,6 +95,15 @@ def test_a_raw_kwarg_next_to_a_config_still_wins_and_moves_onto_it():
     assert generation_config.compile_config == "mine"
 
 
+def test_an_explicit_none_next_to_a_config_still_wins():
+    # GenerationConfig.update writes None too, so cache_implementation=None used to disable the cache.
+    generation_config = SimpleNamespace(cache_implementation = "static")
+    kwargs = {"generation_config": generation_config, "cache_implementation": None}
+    set_generate_param(kwargs, "cache_implementation", "static")
+    assert "cache_implementation" not in kwargs
+    assert generation_config.cache_implementation is None
+
+
 def test_a_forced_value_beats_a_raw_kwarg_next_to_a_config():
     generation_config = SimpleNamespace(cache_implementation = "static")
     kwargs = {"generation_config": generation_config, "cache_implementation": "static"}

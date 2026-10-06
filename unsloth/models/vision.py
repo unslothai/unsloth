@@ -710,9 +710,10 @@ def _set_generate_param(
     if caller_generation_config is not None:
         # Never leave the raw kwarg behind. It used to win the merge, so carry the
         # caller's value onto the config unless this call forces its own.
-        caller_value = kwargs.pop(name, None)
-        if caller_value is not None and not force:
-            value, overwrite = caller_value, True
+        if name in kwargs:
+            caller_value = kwargs.pop(name)
+            if not force:
+                value, overwrite = caller_value, True
         if overwrite or getattr(caller_generation_config, name, None) is None:
             setattr(caller_generation_config, name, value)
     else:
