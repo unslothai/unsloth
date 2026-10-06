@@ -525,21 +525,16 @@ def _decode_rows(
     return segments
 
 
-# Classes with no diffusers single-file converter -> module whose ``comfy_layout(path)`` gives their key map.
-_ORIGINAL_LAYOUTS = {
-    "HunyuanVideo15Transformer3DModel": "video_hv15_comfy",
-    "MiniMaxH3Transformer3DModel": "video_minimax_h3_comfy",
-}
-
-
 def original_layout(transformer_cls: Any, path: str) -> Optional[dict]:
-    """The key map / prepare / dtype hooks for a class with no diffusers converter, or None."""
-    module = _ORIGINAL_LAYOUTS.get(getattr(transformer_cls, "__name__", ""))
-    if module is None:
+    """The key map / prepare / dtype hooks for a class with no diffusers single-file converter, or None."""
+    name = getattr(transformer_cls, "__name__", "")
+    if name == "HunyuanVideo15Transformer3DModel":
+        from .video_hv15_comfy import comfy_layout
+    elif name == "MiniMaxH3Transformer3DModel":
+        from .video_minimax_h3_comfy import comfy_layout
+    else:
         return None
-    import importlib
-
-    return importlib.import_module(f"{__package__}.{module}").comfy_layout(path)
+    return comfy_layout(path)
 
 
 def _apply_key_map(state: dict, kept: list, key_map: Any) -> dict:
@@ -792,7 +787,7 @@ def load_comfy_quant_transformer(
 
     ``keep_key(key)`` limits the read to the DiT's keys of a file that bundles other components;
     ``pre_convert(state)`` renames keys (never values) before the family converter runs. A family with no
-    diffusers single-file converter passes ``key_map(key, shape)`` (or registers it in ``_ORIGINAL_LAYOUTS``):
+    diffusers single-file converter passes ``key_map(key, shape)`` (or registers it in ``original_layout``):
     ``[(diffusers key, rows)]`` per file key, ``rows`` None (the whole tensor) or ``[(first row, n rows), ...]``;
     ``prepare_model(model)`` reshapes the freshly built model before the weights load, and ``keep_dtype(key)``
     names a dtype a file tensor keeps instead of the compute dtype. Raises ``ValueError`` for a checkpoint it
