@@ -769,6 +769,8 @@ enum StagedState {
     },
     /// A keep is moving it; neither keep nor discard may start.
     Claimed,
+    /// Its account was signed out while it downloaded: deleted when it finishes, never offered.
+    Abandoned,
 }
 
 struct Staged {
@@ -791,6 +793,7 @@ fn keep_staged(views: &Mutex<ViewsState>, id: &str) -> Result<String, String> {
             StagedState::Ready { marked } => marked,
             StagedState::Downloading => return Err("The download hasn't finished".into()),
             StagedState::Claimed => return Err("The download is already being kept".into()),
+            StagedState::Abandoned => return Err("No such download".into()),
         };
         if marked == Some(false) {
             return Err(UNMARKED_KEEP.into());
@@ -858,6 +861,7 @@ fn discard_staged(views: &Mutex<ViewsState>, id: &str) -> Result<(), String> {
             None => return Err("No such download".into()),
             Some(StagedState::Downloading) => return Err("The download hasn't finished".into()),
             Some(StagedState::Claimed) => return Err("The download is being kept".into()),
+            Some(StagedState::Abandoned) => return Err("No such download".into()),
             Some(StagedState::Ready { .. }) => {}
         }
         inner.staged.remove(id).map(|entry| entry.path)
@@ -1318,6 +1322,17 @@ fn create_view<R: Runtime>(
                     if let Some((id, _)) = &staged {
                         let state = app.state::<BrowserViews>();
                         let mut inner = state.inner.lock().unwrap();
+                        let abandoned = inner
+                            .staged
+                            .get(id)
+                            .is_some_and(|entry| matches!(entry.state, StagedState::Abandoned));
+                        if abandoned {
+                            if let Some(entry) = inner.staged.remove(id) {
+                                drop(inner);
+                                let _ = std::fs::remove_file(entry.path);
+                            }
+                            return true;
+                        }
                         if success {
                             if let Some(entry) = inner.staged.get_mut(id) {
                                 entry.state = StagedState::Ready { marked };
@@ -1742,6 +1757,24 @@ pub fn browser_download_discard<R: Runtime>(
     discard_staged(&state.inner, &id)
 }
 
+/// An account change: staged downloads of the old account are never offered to the next one.
+/// Finished ones are returned for deletion; those still downloading are deleted as they finish.
+fn abandon_staged(inner: &mut ViewsState) -> Vec<PathBuf> {
+    let mut files = Vec::new();
+    inner.staged.retain(|_, entry| match entry.state {
+        StagedState::Ready { .. } => {
+            files.push(entry.path.clone());
+            false
+        }
+        StagedState::Downloading => {
+            entry.state = StagedState::Abandoned;
+            true
+        }
+        StagedState::Claimed | StagedState::Abandoned => true,
+    });
+    files
+}
+
 #[tauri::command]
 pub async fn browser_view_clear_data<R: Runtime>(
     webview: Webview<R>,
@@ -1753,10 +1786,14 @@ pub async fn browser_view_clear_data<R: Runtime>(
     // An account switch closes the pages first, so none can write the old account's data back.
     let closing = close_views.unwrap_or(false);
     if closing {
-        {
+        let abandoned = {
             let mut inner = state.inner.lock().unwrap();
             inner.urls.clear();
             set_shown(&state, &mut inner, None);
+            abandon_staged(&mut inner)
+        };
+        for file in abandoned {
+            let _ = std::fs::remove_file(file);
         }
         for page in browser_views(&app) {
             let _ = page.close();
@@ -2387,6 +2424,27 @@ mod tests {
             assert!(keep_staged(&views, &claimed).is_err());
             assert!(discard_staged(&views, &claimed).is_err());
             assert!(staged.exists());
+        }
+
+        #[test]
+        fn an_account_change_abandons_staged_downloads() {
+            let dir = tempfile::tempdir().unwrap();
+            let ready_file = dir.path().join("Unconfirmed 6.download");
+            let busy_file = dir.path().join("Unconfirmed 7.download");
+            let views = Mutex::new(ViewsState::default());
+            let ready_id = stage(&views, &ready_file, "a.exe", ready(Some(true)));
+            let busy_id = stage(&views, &busy_file, "b.exe", StagedState::Downloading);
+            let files = abandon_staged(&mut views.lock().unwrap());
+            assert_eq!(files, vec![ready_file]);
+            let inner = views.lock().unwrap();
+            assert!(!inner.staged.contains_key(&ready_id));
+            assert!(matches!(
+                inner.staged.get(&busy_id).map(|entry| &entry.state),
+                Some(StagedState::Abandoned)
+            ));
+            drop(inner);
+            assert!(keep_staged(&views, &busy_id).is_err());
+            assert!(discard_staged(&views, &busy_id).is_err());
         }
 
         #[test]
