@@ -66,9 +66,13 @@ test("the menu heading carries a Sandbox chip that opens the level picker, Learn
   assert.match(label, /className="sandbox-level-chip\b/);
   // Click to open: hover must not open the picker.
   assert.match(label, /onPointerMove=\{\(event\) => event\.preventDefault\(\)\}/);
+  // Controlled: stays open until a click outside the picker, the chip, or ArrowLeft.
+  assert.match(label, /<DropdownMenuPrimitive\.Sub\s+open=\{open\}/);
+  assert.match(label, /addEventListener\("pointerdown", onPointerDown, true\)/);
+  assert.match(label, /if \(!next \|\| !chip \|\| !menu\) return;/);
   assert.match(label, /icon=\{ChevronRightStandardIcon\}/);
   assert.doesNotMatch(label, /<Switch\b|CheckboxItem/);
-  assert.match(label, /<DropdownMenuSubContent[^>]*className="unsloth-plus-menu\b/);
+  assert.match(label, /<DropdownMenuSubContent[\s\S]*?className="unsloth-plus-menu\b/);
   assert.match(label, /settings\.sandbox\.levelLowShort/);
   assert.match(label, /settings\.sandbox\.levelHighShort/);
   // Learn more sits in the picker's heading row, not under the levels.

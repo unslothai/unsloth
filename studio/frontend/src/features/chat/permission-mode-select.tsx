@@ -166,18 +166,37 @@ function SandboxLevelMenuPicker({ onOsSandboxMissing }: { onOsSandboxMissing?: (
   const chipRef = useRef<HTMLDivElement | null>(null);
   // Measured on open: puts the picker a small gap right of the menu, tops aligned.
   const [offsets, setOffsets] = useState({ side: SANDBOX_PICKER_GAP, align: 0 });
+  const pickerRef = useRef<HTMLDivElement | null>(null);
+  // Ours, not Radix's: it closes a submenu once the pointer or focus leaves it.
+  const [open, setOpen] = useState(false);
+
+  // Stays open until a click outside the picker. The chip toggles it itself.
+  useEffect(() => {
+    if (!open) return;
+    const onPointerDown = (event: PointerEvent) => {
+      const target = event.target as Node;
+      if (pickerRef.current?.contains(target) || chipRef.current?.contains(target)) return;
+      setOpen(false);
+    };
+    document.addEventListener("pointerdown", onPointerDown, true);
+    return () => document.removeEventListener("pointerdown", onPointerDown, true);
+  }, [open]);
+
   return (
     <DropdownMenuPrimitive.Sub
-      onOpenChange={(open) => {
+      open={open}
+      onOpenChange={(next) => {
         const chip = chipRef.current;
         const menu = chip?.closest<HTMLElement>('[role="menu"]');
-        if (!open || !chip || !menu) return;
+        // Close requests are ignored; see the effect above.
+        if (!next || !chip || !menu) return;
         const chipBox = chip.getBoundingClientRect();
         const menuBox = menu.getBoundingClientRect();
         setOffsets({
           side: menuBox.right - chipBox.right + SANDBOX_PICKER_GAP,
           align: menuBox.top - chipBox.top,
         });
+        setOpen(true);
       }}
     >
       <DropdownMenuPrimitive.SubTrigger
@@ -185,6 +204,11 @@ function SandboxLevelMenuPicker({ onOsSandboxMissing }: { onOsSandboxMissing?: (
         aria-describedby={descriptionId}
         // Opens on click or arrow key, not hover.
         onPointerMove={(event) => event.preventDefault()}
+        onClick={(event) => {
+          if (!open) return;
+          event.preventDefault();
+          setOpen(false);
+        }}
         // Negative margins cancel the hover pill's padding so nothing shifts.
         className="sandbox-level-chip -my-1 -mr-1.5 flex shrink-0 cursor-pointer items-center gap-1 rounded-full border-0 py-1 pr-1.5 pl-2.5 text-ui-12 font-medium outline-none transition-colors"
       >
@@ -192,7 +216,6 @@ function SandboxLevelMenuPicker({ onOsSandboxMissing }: { onOsSandboxMissing?: (
         <span className={active === "off" ? "text-muted-foreground" : "text-primary"}>
           {t(activeOption.labelKey)}
         </span>
-
         <HugeiconsIcon
           icon={ChevronRightStandardIcon}
           strokeWidth={1.75}
@@ -203,11 +226,14 @@ function SandboxLevelMenuPicker({ onOsSandboxMissing }: { onOsSandboxMissing?: (
         </span>
       </DropdownMenuPrimitive.SubTrigger>
       <DropdownMenuSubContent
+        ref={pickerRef}
         sideOffset={offsets.side}
         alignOffset={offsets.align}
+        onKeyDown={(event) => {
+          if (event.key === "ArrowLeft") setOpen(false);
+        }}
         className="unsloth-plus-menu w-[calc(312px*var(--ui-space-scale,1))]"
       >
-
         <DropdownMenuLabel className="flex items-start justify-between gap-3">
           <span className="min-w-0">{t("settings.sandbox.levelPickerTitle")}</span>
           <DropdownMenuPrimitive.Item
