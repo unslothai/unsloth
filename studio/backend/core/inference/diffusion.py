@@ -260,6 +260,10 @@ from .diffusion_precision import (
 from .diffusion_te_prequant import te_prequant_pipe_kwargs
 from .diffusion_fast_load import start_load_prefetch, stop_prefetch, te_precast_components
 from .diffusion_flow_shift import apply_comfy_flow_shift
+from .diffusion_single_file_converters import (
+    CONVERTERS as _ORIGINAL_LAYOUT_CONVERTERS,
+    load_original_layout_transformer,
+)
 from .diffusion_text_length import (
     IDEOGRAM4_COMFY_GUIDANCE,
     ideogram4_comfy_guidance_schedule,
@@ -1364,8 +1368,10 @@ def _qwen_image_21_checkpoint_to_diffusers(checkpoint = None, **kwargs):
 # currently only compatible with ..."), and on a CUDA, ROCm or XPU host that is every GGUF load of the
 # family, because a GPU backend routes GGUFs to diffusers. The native engine is no way round it
 # there: the pinned sd.cpp prebuilt carries no Windows GPU build at all.
+# Krea 2 and HunyuanImage 2.1 (their ComfyUI ``diffusion_models`` files) convert in diffusion_single_file_converters.
 _UNREGISTERED_SINGLE_FILE_CLASSES: dict = {
     "QwenImage21Transformer2DModel": _qwen_image_21_checkpoint_to_diffusers,
+    **_ORIGINAL_LAYOUT_CONVERTERS,
 }
 
 
@@ -6762,10 +6768,16 @@ class DiffusionBackend:
                                 )
                                 comfy_compile = comfy_torchao_quantized(transformer)
                             else:
-                                # A safetensors single-file (fp8) carries its own dtype: no GGUF dequant config.
-                                transformer = transformer_cls.from_single_file(
-                                    single_file_path, **sf_kwargs
-                                )
+                                if kind != "gguf" and not hasattr(transformer_cls, "from_single_file"):
+                                    # Krea 2: diffusers gives the class no single-file loader at all.
+                                    transformer = load_original_layout_transformer(
+                                        transformer_cls, single_file_path, sf_kwargs, logger
+                                    )
+                                else:
+                                    # A safetensors single-file (fp8) carries its own dtype: no GGUF dequant config.
+                                    transformer = transformer_cls.from_single_file(
+                                        single_file_path, **sf_kwargs
+                                    )
                                 if kind == "gguf":
                                     _dequantize_gguf_outside_linears(transformer, dtype, logger)
                             self._raise_if_load_cancelled(_load_token)
@@ -6803,6 +6815,13 @@ class DiffusionBackend:
                                 }
                                 if hf_token:
                                     pipe_kwargs["token"] = hf_token
+                                if fam.name == "hunyuanimage-2.1" and getattr(
+                                    getattr(transformer, "config", None), "guidance_embeds", False
+                                ):
+                                    # A guidance-distilled HunyuanImage file on the base repo: its distilled guidance
+                                    # replaces the base's CFG guiders, which would otherwise double every step.
+                                    pipe_kwargs["guider"] = None
+                                    pipe_kwargs["ocr_guider"] = None
                                 if fam.name == HIDREAM_FAMILY_NAME:
                                     pipe_kwargs.update(
                                         hidream_te4_kwargs(

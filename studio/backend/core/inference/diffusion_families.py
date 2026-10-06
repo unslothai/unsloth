@@ -701,6 +701,14 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         cfg_kwarg = "distilled_guidance_scale",
         aliases = ("hunyuanimage-2.1-diffusers", "hunyuanimage2.1"),
         fp16_incompatible = True,
+        # The guidance-distilled MeanFlow DiT (ComfyUI's hunyuanimage2.1_distilled_* files) has two more embedders
+        # than the base config, and its scheduler ships at shift 4, not 5. The catch-all row names the base, so a
+        # distilled file reads as a different transformer than the base repo's.
+        transformer_config_variants = (
+            ("distilled", (("guidance_embeds", True), ("use_meanflow", True))),
+            ("hunyuanimage", ()),
+        ),
+        comfy_flow_shift_variants = (("distilled", 4.0),),
     ),
     DiffusionFamily(
         name = "hidream-i1",
