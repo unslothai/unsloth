@@ -17,7 +17,7 @@ import asyncio
 import contextlib
 import threading
 
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from typing import Any
 
 from core.inference.external_provider import ExternalProviderClient
@@ -56,12 +56,17 @@ class OAICompatTransport:
         *,
         model: str,
         continue_final_message: bool | None = None,
+        fit_messages: Callable[[list[dict[str, Any]]], tuple[list[dict[str, Any]], int | None]]
+        | None = None,
         **request_kwargs: Any,
     ) -> None:
         self._client = client
         self._model = model
         self._continue_final_message = continue_final_message
         self._request_kwargs = request_kwargs
+        # The loop grows the prompt after the route fitted it (retrieved passages, tool results), so every round is
+        # fitted again.
+        self._fit_messages = fit_messages
         # Anthropic can leave a hosted call pending beside a client call; its continuation accepts only tool results.
         self.tool_result_only_continuation = client.provider_type == "anthropic"
         self._initial_message_count: int | None = None
@@ -112,17 +117,26 @@ class OAICompatTransport:
         continue_final_message = bool(self._continue_final_message) and bool(
             messages and isinstance(messages[-1], dict) and messages[-1].get("role") == "assistant"
         )
-        return self._cancellable(
-            self._client.stream_chat_completion(
-                messages = messages,
-                model = self._model,
-                tools = tools,
-                tool_choice = tool_choice,
-                continue_final_message = continue_final_message,
-                **self._request_kwargs,
-            ),
-            cancel_event,
+        request = dict(
+            model = self._model,
+            tools = tools,
+            tool_choice = tool_choice,
+            continue_final_message = continue_final_message,
+            **self._request_kwargs,
         )
+        if self._fit_messages is not None:
+            return self._cancellable(self._fitted(messages, request), cancel_event)
+        return self._cancellable(
+            self._client.stream_chat_completion(messages = messages, **request), cancel_event
+        )
+
+    async def _fitted(
+        self, messages: list[dict[str, Any]], request: dict[str, Any]
+    ) -> AsyncIterator[str]:
+        messages, max_tokens = await asyncio.to_thread(self._fit_messages, messages)
+        request["max_tokens"] = max_tokens
+        async for line in self._client.stream_chat_completion(messages = messages, **request):
+            yield line
 
     @staticmethod
     async def _cancellable(

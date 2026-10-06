@@ -27,7 +27,7 @@ export function ggufCompactionRequestFields(options: {
   return { context_overflow: "truncate_oldest" };
 }
 
-// The server's default ROLLING_COMPACTION_HEADROOM_RATIO.
+// Share of the window left free when compaction starts.
 const API_COMPACTION_HEADROOM = 0.25;
 // The request schema's ceiling on compaction_threshold.
 const API_COMPACTION_THRESHOLD_MAX = 2_000_000;

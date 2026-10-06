@@ -238,3 +238,41 @@ def test_a_window_without_auto_compact_changes_nothing():
     assert sent["max_tokens"] == 16_000
     assert len(sent["messages"]) == len(chat)
     assert _truncations(chunks) == []
+
+
+def test_a_short_chat_keeps_a_reply_cap_past_half_the_window():
+    short = _long_chat(turns = 1)
+    chunks, sent = _proxy(
+        "openrouter",
+        short,
+        max_tokens = 12_000,
+        context_overflow = "truncate_oldest",
+        compaction_threshold = 12_288,
+        context_window = 16_384,
+    )
+    assert sent["max_tokens"] == 12_000
+    assert len(sent["messages"]) == len(short)
+    assert _truncations(chunks) == []
+
+
+def test_a_tool_round_does_not_replay_the_saved_transcript_boundary(monkeypatch):
+    from core.inference import llama_cpp
+
+    monkeypatch.setattr(
+        llama_cpp,
+        "_sticky_compaction_state",
+        lambda thread_id, *a, **k: (20 if thread_id else 0, False),
+    )
+    monkeypatch.setattr(llama_cpp, "_keeps_compaction_boundary", lambda thread_id: False)
+    payload = ChatCompletionRequest(
+        provider_type = "openrouter",
+        messages = _long_chat(),
+        thread_id = "saved-thread",
+        max_tokens = 256,
+        context_overflow = "truncate_oldest",
+        compaction_threshold = 6_000,
+    )
+    saved, _, _ = ri._fit_external_context(_long_chat(), payload)
+    working, _, _ = ri._fit_external_context(_long_chat(), payload, saved_transcript = False)
+    assert len(_long_chat()) - len(saved) == 20
+    assert len(saved) < len(working) < len(_long_chat())

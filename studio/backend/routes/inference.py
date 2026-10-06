@@ -27200,7 +27200,10 @@ async def _stop_on_cancel(agen, cancel_event: threading.Event):
 
 
 def _fit_external_context(
-    messages: list[dict], payload
+    messages: list[dict],
+    payload,
+    *,
+    saved_transcript: bool = True,
 ) -> tuple[list[dict], Optional[dict], Optional[int]]:
     from core.inference.context_window import (
         estimate_message_tokens_without_unpriced_media,
@@ -27223,20 +27226,24 @@ def _fit_external_context(
     context_length = payload.compaction_threshold
     max_tokens = _effective_max_tokens(payload)
     window = payload.context_window
+    prompt_tokens = _count(messages)
     if window and max_tokens:
         # Providers count the whole max_tokens against the window, so the prompt gets what is left, at least half.
         margin = window // 32
-        room = max(window - max_tokens, window // 2) - margin
-        max_tokens = min(max_tokens, window - room - margin)
-        # The largest context whose prompt_budget stays within room.
-        context_length = min(context_length, room + max_tokens, room * 4 // 3)
-    if _count(messages) <= prompt_budget(context_length, max_tokens):
+        if prompt_tokens + max_tokens + margin > window:
+            room = max(window - max_tokens, window // 2) - margin
+            max_tokens = min(max_tokens, window - room - margin)
+            # The largest context whose prompt_budget stays within room.
+            context_length = min(context_length, room + max_tokens, room * 4 // 3)
+    if prompt_tokens <= prompt_budget(context_length, max_tokens):
         return messages, None, max_tokens
     policy = _request_context_policy(payload)
     ratio = _request_compaction_headroom_ratio(payload)
+    # The saved boundary counts messages of the saved transcript, which a tool loop's working copy is not.
+    thread_id = payload.thread_id if saved_transcript else None
     # No archive to search here, so a checkpoint reset may not start and the fit stays rolling.
     sticky, sticky_is_checkpoint = _sticky_compaction_state(
-        payload.thread_id,
+        thread_id,
         messages,
         context_policy = policy,
         can_reset = False,
@@ -27247,7 +27254,7 @@ def _fit_external_context(
         context_length = context_length,
         max_tokens = max_tokens,
         count_tokens = _count,
-        keeps_boundary = _keeps_compaction_boundary(payload.thread_id),
+        keeps_boundary = _keeps_compaction_boundary(thread_id),
         recall_offered = False,
         sticky_dropped = sticky,
         sticky_is_checkpoint = sticky_is_checkpoint,
@@ -28027,14 +28034,19 @@ async def _proxy_to_external_provider(
     _provider_compacts = compacts_server_side(provider_type, base_url, api_type, model)
     _external_truncation = None
     _external_max_tokens = _effective_max_tokens(payload)
-    if (
+    _fits_locally = bool(
         payload.compaction_threshold
         and not _provider_compacts
         and _rolling_context_policy(payload) is not None
-    ):
+    )
+    if _fits_locally:
         chat_messages, _external_truncation, _external_max_tokens = await asyncio.to_thread(
             _fit_external_context, chat_messages, payload
         )
+
+    def _refit_loop_request(messages: list[dict]) -> tuple[list[dict], Optional[int]]:
+        fitted, _, max_tokens = _fit_external_context(messages, payload, saved_transcript = False)
+        return fitted, max_tokens
 
     cancel_event = threading.Event()
     cancel_keys = tuple(key for key in (payload.cancel_id, payload.session_id) if key)
@@ -28112,6 +28124,7 @@ async def _proxy_to_external_provider(
                     client,
                     model = model,
                     continue_final_message = _continue_final_message(payload),
+                    fit_messages = _refit_loop_request if _fits_locally else None,
                     enabled_tools = loop_hosted_tools or None,
                     stream = True,
                     **_provider_kwargs,
