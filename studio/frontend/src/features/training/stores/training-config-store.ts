@@ -15,7 +15,11 @@ import type { ModelType, TrainingMethod } from "@/types/training";
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
 import { DatasetFormatError, checkDatasetFormat } from "../api/datasets-api";
-import { checkVisionModel, getModelConfig } from "../api/models-api";
+import {
+  checkVisionModel,
+  decisionLayoutHasLlmBackbone,
+  getModelConfig,
+} from "../api/models-api";
 import type { BackendModelConfig, DecisionCheckpoint } from "../api/models-api";
 import { cacheReferenceMatchesSelection } from "../lib/cache-reference";
 import {
@@ -249,6 +253,7 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
           requestState.selectedModel === modelName
             ? requestState.modelLocalPath
             : null;
+        const requestedAsDecision = requestState.trainAsDecision;
         const canApplyTrainingDefaults = () =>
           applyTrainingDefaults &&
           _modelDefaultsEditGeneration === requestedModelDefaultsEditGeneration;
@@ -276,11 +281,14 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
           {
             preferLocalCache,
             localPath: preferLocalCache ? requestedLocalPath : null,
+            asDecision: requestedAsDecision,
           },
         )
           .then((modelDetails) => {
             if (controller.signal.aborted) return;
             if (!requestMatchesSelection()) return;
+            // Answered for the other side of the decision switch.
+            if (get().trainAsDecision !== requestedAsDecision) return;
 
             const isDecision = modelDetails.model_type === "decision";
             const settingsBeforeDecision = get().settingsBeforeDecision;
@@ -297,16 +305,21 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
               const method = get().trainingMethod;
               const methodWasEdited =
                 _trainingMethodEditGeneration !== trainingMethodEditGeneration;
-              // Clef has a Qwen3.5 backbone, so it takes QLoRA like a chat model; Laya is 16-bit only.
-              const isClef = modelDetails.decision_layout === "clef";
+              // Clef and LLM decision models have an LLM backbone, so they take QLoRA; Laya is 16-bit only.
+              const takesQlora = decisionLayoutHasLlmBackbone(
+                modelDetails.decision_layout,
+              );
               const keepMethod =
                 method === "lora" ||
-                (isClef && method === "qlora") ||
+                (takesQlora && method === "qlora") ||
                 (method === "full" && (!recipeChanged || methodWasEdited));
               set({
                 ...(keepMethod
                   ? {}
-                  : buildTrainingMethodPatch(get(), isClef ? "qlora" : "lora")),
+                  : buildTrainingMethodPatch(
+                      get(),
+                      takesQlora ? "qlora" : "lora",
+                    )),
                 settingsBeforeDecision: settingsBeforeDecision ?? {
                   trainingMethod: method,
                   datasetStreaming: get().datasetStreaming,
@@ -355,6 +368,7 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
                     }
                   : {}),
                 modelType: null,
+                decisionLayout: null,
                 modelFormat: "adapter",
                 isVisionModel: false,
                 isEmbeddingModel: false,
@@ -596,6 +610,10 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
               decisionLayout: isDecision
                 ? (modelDetails.decision_layout ?? "laya")
                 : null,
+              // Asked for a decision model the backend cannot make one of (audio, embeddings).
+              ...(requestedAsDecision && !isDecision
+                ? { trainAsDecision: false }
+                : {}),
               isVisionModel: modelDetails.is_vision,
               isEmbeddingModel: isEmbedding,
               isAudioModel: isAudio,
@@ -1211,6 +1229,13 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
           });
         },
         setModelSubfolder: (modelSubfolder) => setUserEdit({ modelSubfolder }),
+        setTrainAsDecision: (trainAsDecision) => {
+          if (get().trainAsDecision === trainAsDecision) return;
+          set({ trainAsDecision });
+          const { selectedModel } = get();
+          // Reloading the model's defaults switches the whole recipe, as picking a Laya model does.
+          if (selectedModel) void loadAndApplyModelDefaults(selectedModel);
+        },
         setProjectName: (projectName) => setUserEdit({ projectName }),
         setTrainingMethod: (trainingMethod) => {
           _trainingMethodEditGeneration += 1;

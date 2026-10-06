@@ -61,6 +61,7 @@ export const initialTrainingConfigState: TrainingConfigState = {
   modelFormat: null,
   modelSubfolder: null,
   decisionCheckpoints: null,
+  trainAsDecision: false,
   decisionLayout: null,
   settingsBeforeDecision: null,
   projectName: "",
