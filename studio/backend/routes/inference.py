@@ -3963,9 +3963,11 @@ from core.inference.providers import (
 from core.inference.external_provider import (
     ExternalProviderClient,
     _is_openai_family_cloud,
+    compacts_server_side,
 )
 from core.inference.external_tool_transport import OAICompatTransport
 from core.inference.sse_control_frames import (
+    _sse_payload,
     is_ui_control_sse_line,
     ServerToolCallStripper,
 )
@@ -26829,10 +26831,7 @@ def _build_external_messages(
       replay the required reasoning item.
     - `image_generation_call`: Responses image reference. Forwarded for OpenAI
       and custom Responses so follow-up image edits can reference prior images.
-    - `compaction`: Anthropic-only synthetic part (round-trips server-side
-      compaction state). Forwarded ONLY when provider_type=="anthropic";
-      stripped elsewhere so the unknown part doesn't reach generic
-      /chat/completions and 400 (DeepSeek, Mistral, Gemini, Kimi, OpenRouter).
+    - `compaction`: forwarded only to Anthropic, OpenAI, and custom Responses.
     """
     document_provider = provider_type in _INPUT_DOCUMENT_PROVIDERS or (
         provider_type == "custom" and api_type == "responses"
@@ -26841,11 +26840,7 @@ def _build_external_messages(
     responses_native_parts = provider_type == "openai" or (
         provider_type == "custom" and api_type == "responses"
     )
-    # `extra_content` carries the assistant's text-part `thoughtSignature`
-    # round-trip on Gemini's native streamGenerateContent endpoint. Custom
-    # Gemini OpenAI-compat gateways (LiteLLM etc.) route through
-    # /chat/completions where the field is unknown and can be rejected -- gate
-    # strictly on the Google-hosted Gemini base.
+    # emit `extra_content` only to endpoints that understand Gemini `thoughtSignature` metadata.
     _native_gemini = False
     if provider_type == "gemini" and base_url:
         try:
@@ -26941,8 +26936,7 @@ def _build_external_messages(
         return cleaned
 
     def _openai_responses_part(item: Any) -> Optional[dict[str, Any]]:
-        """Rebuild a forwarded OpenAI Responses assistant part (`reasoning` or
-        `image_generation_call`); returns None for any other part type."""
+        """rebuild replayable OpenAI Responses assistant parts."""
         if item.type == "reasoning":
             reasoning: dict[str, Any] = {
                 "type": "reasoning",
@@ -26957,6 +26951,8 @@ def _build_external_messages(
             if getattr(item, "response_id", None):
                 image_ref["response_id"] = item.response_id
             return image_ref
+        if item.type == "compaction" and item.encrypted_content:
+            return {"type": "compaction", "encrypted_content": item.encrypted_content}
         return None
 
     result = []
@@ -27074,7 +27070,10 @@ def _build_external_messages(
                         # Anthropic stream helper forwards this as a native
                         # `compaction` block; every other provider would 400 on
                         # the unknown part, so gate by provider_type.
-                        parts.append({"type": "compaction", "content": part.content})
+                        compaction = {"type": "compaction", "content": part.content}
+                        if part.content and part.encrypted_content:
+                            compaction["encrypted_content"] = part.encrypted_content
+                        parts.append(compaction)
                 entry: dict[str, Any] = {"role": msg.role, "content": parts, **replay}
                 if msg.role == "assistant" and msg.tool_calls:
                     _tcs = _filter_tool_calls(msg.tool_calls)
@@ -27111,7 +27110,10 @@ def _build_external_messages(
                     ):
                         preserved.append(_rp)
                     elif p.type == "compaction" and anthropic:
-                        preserved.append({"type": "compaction", "content": p.content})
+                        compaction = {"type": "compaction", "content": p.content}
+                        if p.content and p.encrypted_content:
+                            compaction["encrypted_content"] = p.encrypted_content
+                        preserved.append(compaction)
                 if msg.role == "assistant" and not preserved and not replay:
                     continue
                 if len(preserved) == 1 and preserved[0]["type"] == "text":
@@ -27318,13 +27320,118 @@ async def _stop_on_cancel(agen, cancel_event: threading.Event):
     finally:
         for task in (step, waiter):
             if task is not None and not task.done():
-                # Cancelling the pending read closes the upstream response inside ``agen``.
+                # cancelling the pending read closes the upstream response inside ``agen``.
                 task.cancel()
                 await asyncio.gather(task, return_exceptions = True)
         try:
             await agen.aclose()
         except RuntimeError:
             pass
+
+
+def _fit_external_context(
+    messages: list[dict],
+    payload,
+    *,
+    tools: Optional[list[dict]] = None,
+) -> tuple[list[dict], Optional[dict], Optional[int]]:
+    from core.inference.context_window import (
+        estimate_message_tokens_without_unpriced_media,
+        estimate_messages_tokens_conservative,
+        messages_without_unpriced_media,
+        prompt_budget,
+    )
+    from core.inference.llama_cpp import (
+        _boundary_metadata,
+        _compaction_fit_kwargs,
+        _fit_with_instruction_pins,
+        _keeps_compaction_boundary,
+        _records_boundary,
+        _sticky_compaction_state,
+    )
+
+    tool_tokens = _openai_llama_admission_injected_tool_tokens(tools)
+
+    def _count(fitted):
+        estimate_messages, image_parts = _openai_llama_admission_messages_for_estimate(fitted)
+        media_tokens = _openai_llama_admission_media_tokens(
+            payload,
+            message_image_parts = image_parts,
+            message_video_clips = _conversation_video_clips(fitted),
+        )
+        return (
+            estimate_messages_tokens_conservative(
+                messages_without_unpriced_media(estimate_messages)
+            )
+            + media_tokens
+            + tool_tokens
+        )
+
+    context_length = payload.compaction_threshold
+    max_tokens = _effective_max_tokens(payload)
+    window = payload.context_window
+    prompt_tokens = _count(messages)
+    if window and max_tokens:
+        # reserve the full reply cap while leaving at least half the window for the prompt.
+        margin = window // 32
+        if prompt_tokens + max_tokens + margin > window:
+            room = max(window - max_tokens, window // 2) - margin
+            max_tokens = min(max_tokens, window - room - margin)
+            # The largest context whose prompt_budget stays within room.
+            context_length = min(context_length, room + max_tokens, room * 4 // 3)
+    if prompt_tokens <= prompt_budget(context_length, max_tokens):
+        return messages, None, max_tokens
+    policy = _request_context_policy(payload)
+    ratio = _request_compaction_headroom_ratio(payload)
+    thread_id = payload.thread_id
+    # No archive to search here, so a checkpoint reset may not start and the fit stays rolling.
+    sticky, sticky_is_checkpoint = _sticky_compaction_state(
+        thread_id,
+        messages,
+        context_policy = policy,
+        can_reset = False,
+        compaction_headroom_ratio = ratio,
+    )
+    fitted, truncation = _fit_with_instruction_pins(
+        messages,
+        context_length = context_length,
+        max_tokens = max_tokens,
+        count_tokens = _count,
+        keeps_boundary = _keeps_compaction_boundary(thread_id),
+        recall_offered = False,
+        sticky_dropped = sticky,
+        sticky_is_checkpoint = sticky_is_checkpoint,
+        estimate_message = estimate_message_tokens_without_unpriced_media,
+        **_compaction_fit_kwargs(policy, ratio),
+    )
+    if truncation and _records_boundary(truncation):
+        truncation = {**truncation, **_boundary_metadata(fitted, messages, ratio)}
+    return fitted, truncation, max_tokens
+
+
+def _is_compaction_block_sse(line: str) -> bool:
+    if '"compaction_block"' not in line:
+        return False
+    event = (_sse_payload(line) or {}).get("_toolEvent")
+    return isinstance(event, dict) and event.get("type") == "compaction_block"
+
+
+def _provider_compaction_truncation(messages: list[dict]) -> dict:
+    latest_user = max(
+        (index for index, message in enumerate(messages) if message.get("role") == "user"),
+        default = 0,
+    )
+    summarized = sum(
+        1
+        for message in messages[:latest_user]
+        if message.get("role") not in ("system", "developer")
+    )
+    return {
+        "dropped_messages": summarized,
+        "boundary_messages": summarized,
+        "fits": True,
+        "summarized": True,
+    }
 
 
 async def _proxy_to_external_provider(
@@ -28060,6 +28167,7 @@ async def _proxy_to_external_provider(
             mcp_allowed = bool(payload.mcp_enabled),
         )
     run_studio_tool_loop = bool(external_studio_tools)
+    _external_fit_tools = external_studio_tools if run_studio_tool_loop else payload.tools
     _refuse_unused_mcp_image(_mcp_image, _catalog_names(external_studio_tools))
     if run_studio_tool_loop:
         # Only once the catalog is known: mcp_enabled with no MCP tools enabled leaves this
@@ -28086,13 +28194,55 @@ async def _proxy_to_external_provider(
     )
     if _external_nudge:
         chat_messages = _append_to_system_message(chat_messages, _external_nudge)
+    _provider_compacts = compacts_server_side(provider_type, base_url, api_type, model)
+    _external_truncation = None
+    _external_max_tokens = _effective_max_tokens(payload)
+    _external_context_fitter = None
+    _compaction_fallback = None
+    if payload.compaction_threshold and _rolling_context_policy(payload) is not None:
+
+        async def _external_context_fitter(messages):
+            nonlocal _external_truncation
+            fitted, truncation, fallback_max_tokens = await asyncio.to_thread(
+                _fit_external_context,
+                messages,
+                payload,
+                tools = _external_fit_tools,
+            )
+            if truncation and truncation.get("dropped_messages"):
+                _external_truncation = truncation
+            truncation_line = None
+            if (
+                truncation
+                and truncation.get("dropped_messages")
+                and not _non_stream_custom_responses
+            ):
+                truncation_line = _context_truncated_sse_chunk(
+                    f"chatcmpl-{uuid.uuid4().hex}", model, truncation
+                ).rstrip("\n")
+            return fitted, fallback_max_tokens, truncation_line
+
+        if _provider_compacts and (provider_type == "openai" or api_type == "responses"):
+            _compaction_fallback = _external_context_fitter
+
+    if (
+        payload.compaction_threshold
+        and not _provider_compacts
+        and not run_studio_tool_loop
+        and _rolling_context_policy(payload) is not None
+    ):
+        chat_messages, _external_truncation, _external_max_tokens = await asyncio.to_thread(
+            _fit_external_context,
+            chat_messages,
+            payload,
+            tools = _external_fit_tools,
+        )
 
     cancel_event = threading.Event()
     cancel_keys = tuple(key for key in (payload.cancel_id, payload.session_id) if key)
 
     async def _watch_disconnect() -> None:
-        # A tool loop can sit for minutes inside execute_tool with no SSE line
-        # arriving, so poll rather than waiting for the next yield to notice.
+        # tool execution may emit no SSE lines for minutes, so poll for disconnects.
         while not cancel_event.is_set():
             if await request.is_disconnected():
                 cancel_event.set()
@@ -28109,10 +28259,8 @@ async def _proxy_to_external_provider(
                 else payload.temperature
             ),
             top_p = _top_p_explicit,
-            # Honor max_completion_tokens when max_tokens is absent, so a
-            # provider-routed request capped only by the newer field still gets
-            # a limit instead of falling back to the provider default.
-            max_tokens = _effective_max_tokens(payload),
+            # honor max_completion_tokens when max_tokens is absent to avoid provider defaults.
+            max_tokens = _external_max_tokens,
             presence_penalty = payload.presence_penalty,
             top_k = _top_k_explicit,
             min_p = _min_p_explicit,
@@ -28125,6 +28273,7 @@ async def _proxy_to_external_provider(
             anthropic_code_exec_container_id = payload.anthropic_code_exec_container_id,
             prompt_cache_ttl = payload.prompt_cache_ttl,
             compaction_threshold = payload.compaction_threshold,
+            compaction_fallback = _compaction_fallback,
             fast_mode = payload.fast_mode,
             response_format = _extract_response_format(payload),
             thread_id = payload.thread_id,
@@ -28163,6 +28312,7 @@ async def _proxy_to_external_provider(
                     client,
                     model = model,
                     continue_final_message = _continue_final_message(payload),
+                    message_fitter = (_external_context_fitter if not _provider_compacts else None),
                     enabled_tools = loop_hosted_tools or None,
                     stream = True,
                     **_provider_kwargs,
@@ -28238,9 +28388,18 @@ async def _proxy_to_external_provider(
         try:
             sent_done = False
             stream_failed = False
+            if (
+                _external_truncation
+                and _external_truncation.get("dropped_messages")
+                and not _non_stream_custom_responses
+            ):
+                yield _context_truncated_sse_chunk(
+                    f"chatcmpl-{uuid.uuid4().hex}", model, _external_truncation
+                )
+            provider_compaction_reported = False
             async for line in gen:
                 if _is_openai_sse_done(line) and _managed_cut_short():
-                    # Before [DONE] reaches the monitor, which would record the reply completed.
+                    # intercept [DONE] before the monitor records a cut-short reply as complete.
                     yield _fail_cut_short()
                     stream_failed = True
                 if managed is not None:
@@ -28248,8 +28407,7 @@ async def _proxy_to_external_provider(
                 monitor_event = _monitor_openai_sse_line(monitor_id, line)
                 if monitor_event is None:
                     try:
-                        # Only stamp a real delta stream: a stream:false response is one
-                        # full line, so end-to-end latency, not TTFT.
+                        # stamp TTFT only for delta streams; stream:false reports total latency.
                         _monitor_openai_chunk(
                             monitor_id, json.loads(line), streaming = bool(payload.stream)
                         )
@@ -28271,23 +28429,30 @@ async def _proxy_to_external_provider(
                         yield _OPENAI_PASSTHROUGH_SSE_KEEPALIVE
                     continue
                 if not _ui_events and run_studio_tool_loop:
-                    # Only inside the loop: on a plain proxy the calls are the caller's own.
+                    # strip calls only in the loop because plain-proxy calls belong to the caller.
                     line = _tool_call_stripper.strip(line)
                     if line is None:
                         if _drop_keepalive.due():
                             yield _OPENAI_PASSTHROUGH_SSE_KEEPALIVE
                         continue
                 yield f"{line}\n\n"
-                # Parsed from the line itself, not from monitor_event: with the
-                # monitor disabled the helper returns None for every line, and
-                # trusting it would append a second [DONE] after the provider's.
+                if (
+                    _provider_compacts
+                    and not provider_compaction_reported
+                    and _is_compaction_block_sse(line)
+                ):
+                    provider_compaction_reported = True
+                    yield _context_truncated_sse_chunk(
+                        f"chatcmpl-{uuid.uuid4().hex}",
+                        model,
+                        _provider_compaction_truncation(chat_messages),
+                    )
+                # inspect the line directly because a disabled monitor would duplicate [DONE].
                 if _is_openai_sse_done(line):
                     sent_done = True
             if _non_stream_custom_responses:
                 return
-            # The loop can end without opening the turn a withheld call promised, and the
-            # reason removed with that call was this stream's last one. Before [DONE], where
-            # the GGUF passthrough places its own synthetic finish.
+            # emit withheld terminal state before [DONE] if the loop did not open the promised turn.
             _owed = _tool_call_stripper.owed_terminal_chunk()
             if _owed is not None and not stream_failed:
                 managed_finish.see(_owed)
@@ -28391,6 +28556,13 @@ async def _proxy_to_external_provider(
         error_message = (
             _monitor_openai_error_message(content) if isinstance(content, dict) else None
         )
+        if (
+            not error_message
+            and isinstance(content, dict)
+            and _external_truncation
+            and _external_truncation.get("dropped_messages")
+        ):
+            content["context_truncated"] = _external_truncation
         retry_after_header = None
         if error_message:
             api_monitor.fail(monitor_id, error_message)

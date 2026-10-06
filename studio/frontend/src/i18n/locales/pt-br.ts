@@ -2250,7 +2250,7 @@ export const ptBR = {
         "Altere esta configuração para cada chat pelo menu de anexos.",
       rememberParamsPerModelHint:
         "Quando desativado, todos os modelos usam as mesmas configurações.",
-      autoCompactHint: "Apenas chats GGUF e MLX locais. Os turnos removidos são indexados para que o modelo possa buscá-los de volta, e uma reinicialização cita palavra por palavra as instruções permanentes que couberem, priorizando as mais antigas e as mais recentes em vez das intermediárias. Arquivar exige um chat salvo e o índice vetorial; sem eles, os turnos antigos são descartados. Usa o tamanho de contexto definido, não a VRAM disponível.",
+      autoCompactHint: "Chats GGUF e MLX locais: Os turnos removidos são indexados para que o modelo possa buscá-los de volta, e uma reinicialização cita palavra por palavra as instruções permanentes que couberem, priorizando as mais antigas e as mais recentes em vez das intermediárias. Arquivar exige um chat salvo e o índice vetorial; sem eles, os turnos antigos são descartados. Usa o tamanho de contexto definido, não a VRAM disponível. Modelos de API: o provedor resume os turnos antigos quando oferece suporte; caso contrário, os mais antigos são descartados quando o chat se aproxima da janela de contexto publicada do modelo.",
       pastedTextShortDescription:
         "Texto colado com {count} caracteres ou mais vira um anexo .txt. Textos menores ficam na caixa de mensagem.",
       pastedTextOffDescription:

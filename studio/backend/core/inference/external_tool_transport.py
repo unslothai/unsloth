@@ -17,7 +17,7 @@ import asyncio
 import contextlib
 import threading
 
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable, Callable
 from typing import Any
 
 from core.inference.external_provider import ExternalProviderClient
@@ -56,11 +56,17 @@ class OAICompatTransport:
         *,
         model: str,
         continue_final_message: bool | None = None,
+        message_fitter: Callable[
+            [list[dict[str, Any]]],
+            Awaitable[tuple[list[dict[str, Any]], int | None, str | None]],
+        ]
+        | None = None,
         **request_kwargs: Any,
     ) -> None:
         self._client = client
         self._model = model
         self._continue_final_message = continue_final_message
+        self._message_fitter = message_fitter
         self._request_kwargs = request_kwargs
         # Anthropic can leave a hosted call pending beside a client call; its continuation accepts only tool results.
         self.tool_result_only_continuation = client.provider_type == "anthropic"
@@ -104,25 +110,45 @@ class OAICompatTransport:
             messages = normalized
         elif self._initial_message_count is None:
             self._initial_message_count = len(messages)
+        return self._cancellable(
+            self._stream_provider(messages, tools, tool_choice),
+            cancel_event,
+        )
+
+    async def _stream_provider(
+        self, messages: list[dict[str, Any]], tools: list[dict[str, Any]] | None, tool_choice: Any
+    ) -> AsyncIterator[str]:
+        request_kwargs = dict(self._request_kwargs)
+        if self._message_fitter is not None:
+            messages, max_tokens, truncation_line = await self._message_fitter(messages)
+            request_kwargs["max_tokens"] = max_tokens
+            if truncation_line:
+                yield truncation_line
+
         # "Resume the trailing assistant turn", so it is only ever true of the first request. Once a tool runs the
         # conversation ends with a role="tool" result (or a role="user" no-op note), and vLLM / llama.cpp would splice
         # the generation prompt off the end of *that* message: the model continues the tool output instead of answering
-        # it, or the chat template raises and the server 400s. Re-read the tail every turn rather than replaying the
-        # flag the transport was constructed with.
+        # it, or the chat template raises and the server 400s. Re-read the fitted tail every turn rather than replaying
+        # the flag the transport was constructed with.
         continue_final_message = bool(self._continue_final_message) and bool(
             messages and isinstance(messages[-1], dict) and messages[-1].get("role") == "assistant"
         )
-        return self._cancellable(
-            self._client.stream_chat_completion(
-                messages = messages,
-                model = self._model,
-                tools = tools,
-                tool_choice = tool_choice,
-                continue_final_message = continue_final_message,
-                **self._request_kwargs,
-            ),
-            cancel_event,
+        upstream = self._client.stream_chat_completion(
+            messages = messages,
+            model = self._model,
+            tools = tools,
+            tool_choice = tool_choice,
+            continue_final_message = continue_final_message,
+            **request_kwargs,
         )
+        try:
+            async for line in upstream:
+                yield line
+        finally:
+            aclose = getattr(upstream, "aclose", None)
+            if aclose is not None:
+                with contextlib.suppress(RuntimeError, GeneratorExit, StopAsyncIteration):
+                    await aclose()
 
     @staticmethod
     async def _cancellable(
