@@ -538,7 +538,12 @@ def test_qwen_image_21_int8_resolves_the_rotated_artifact_first_unless_killed(
     monkeypatch, env, rotated_first
 ):
     from core.inference.diffusion_families import detect_family
-    from core.inference.diffusion_prequant import candidate_filenames_of, resolve_prequant_source
+    from core.inference.diffusion_prequant import (
+        candidate_filenames_of,
+        comfy_prequant_filename,
+        is_comfy_prequant_filename,
+        resolve_prequant_source,
+    )
 
     if env is None:
         monkeypatch.delenv(tq.INT8_CONVROT_ENV)
@@ -548,7 +553,10 @@ def test_qwen_image_21_int8_resolves_the_rotated_artifact_first_unless_killed(
         fam = detect_family(repo)
         assert fam is not None and fam.name == "qwen-image-2.1"
         src = resolve_prequant_source(fam, "int8")
-        names = candidate_filenames_of(src)
+        # ComfyUI-format twins ride ahead of each int8 artifact (same codes); the order is about Studio's own names
+        everything = candidate_filenames_of(src)
+        names = tuple(n for n in everything if not is_comfy_prequant_filename(n))
+        assert everything[0] == comfy_prequant_filename(names[0])
         assert src.location == "unsloth/Qwen-Image-2.1-FP8"
         # the plain build stays in the chain behind it, so older builds and an offline cache keep loading it
         assert "Qwen-Image-2.1-INT8.safetensors" in names
@@ -600,7 +608,8 @@ def test_qwen_image_21_offline_default_still_loads_the_cached_plain_artifact(mon
     monkeypatch.setattr("huggingface_hub.hf_hub_download", _dl)
     source = pq.resolve_prequant_source(detect_family("Qwen/Qwen-Image-2.1"), "int8")
     assert pq._resolve_checkpoint_path(source, None, None) == str(plain)
-    assert asked == ["Qwen-Image-2.1-INT8-ConvRot.safetensors"]
+    # one Hub probe (the head of the chain, the rotated build's ComfyUI twin), then the offline cache walk
+    assert asked == ["Qwen-Image-2.1-INT8-ConvRot-ComfyUI.safetensors"]
 
 
 def test_qwen_image_21_rotated_set_is_exactly_the_int8_quantized_set(monkeypatch):
