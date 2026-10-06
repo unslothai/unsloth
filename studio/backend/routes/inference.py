@@ -45672,6 +45672,30 @@ async def _refuse_disabled_nvfp4_checkpoint(request: Any) -> None:
         raise HTTPException(status_code = 400, detail = str(exc))
 
 
+def _component_file_kwargs(request: DiffusionLoadRequest) -> dict:
+    """Supplied text-encoder / VAE files for the diffusers engine; empty when none, so the native engine and older
+    callers see the same keyword set as before."""
+    files = getattr(request, "text_encoder_file", None)
+    files = [files] if isinstance(files, str) else list(files or ())
+    out: dict = {}
+    if files:
+        out["text_encoder_files"] = files
+    vae_file = getattr(request, "vae_file", None)
+    if vae_file:
+        out["vae_file"] = vae_file
+    return out
+
+
+def _refuse_native_component_files(request: DiffusionLoadRequest) -> None:
+    """The native sd.cpp engine takes its encoders from the base repo; refuse rather than ignore supplied files."""
+    if _component_file_kwargs(request):
+        raise HTTPException(
+            status_code = 400,
+            detail = "Separate text-encoder / VAE files load on the diffusers engine (a CUDA / ROCm GPU); "
+            "this host routes the pick to the native engine. Omit text_encoder_file / vae_file.",
+        )
+
+
 @studio_router.post("/images/download-plan", response_model = DiffusionDownloadPlanResponse)
 async def diffusion_download_plan(
     request: DiffusionLoadRequest, current_subject: str = Depends(get_current_subject)
@@ -45719,6 +45743,7 @@ async def diffusion_download_plan(
             family_override = request.family_override,
             model_kind = kind,
             base_repo = request.base_repo,
+            **_component_file_kwargs(request),
         )
         planner = backend
         # BEFORE the plan is handed back and staged. The load route refuses a precision this
@@ -45747,6 +45772,7 @@ async def diffusion_download_plan(
             fam is not None
             and predict_engine(fam, model_kind = kind, gpu_ordinal = gpu_ordinal) == ENGINE_SD_CPP
         ):
+            _refuse_native_component_files(request)
             from core.inference.sd_cpp_backend import get_sd_cpp_backend
             planner = get_sd_cpp_backend()
         if fam is not None and not training:
@@ -45795,6 +45821,8 @@ async def diffusion_download_plan(
             # this the plan stages a file the load refuses and replaces with dense shards.
             transformer_quant_fast_accum = request.transformer_quant_fast_accum,
             loras = request.loras,
+            # Supplied encoder / VAE files: their base components drop out of the plan.
+            **_component_file_kwargs(request),
             # Only the verdict, not the probe: the panel stages exactly what this reports.
             # Clearing the probe drops the hosted DiT prequant, so a GGUF pick naming an explicit
             # transformer_quant reports ~21 GB short, stages that, says done, and the load pulls
@@ -45960,6 +45988,7 @@ async def load_diffusion_model_gated(
             family_override = request.family_override,
             model_kind = kind,
             base_repo = request.base_repo,
+            **_component_file_kwargs(request),
         )
         # Off-torch native shares no VRAM with training or chat; re-settled after selection (diffusers lands on torch's card).
         off_torch = await asyncio.to_thread(off_torch_sd_cpp_device)
@@ -46026,6 +46055,7 @@ async def load_diffusion_model_gated(
                 base_repo = request.base_repo,
             )
         elif fam is not None and pending_name == ENGINE_SD_CPP:
+            _refuse_native_component_files(request)
             # The native engine accepts both knobs for interface parity and ignores them. It was
             # excluded from the gate above so as not to refuse loads that work today, but the
             # loads it "works" for are precisely the silent mismatch this whole change exists to
@@ -46088,6 +46118,7 @@ async def load_diffusion_model_gated(
         activated = active_engine_name()
         if fam is not None and activated != pending_name:
             if activated == ENGINE_SD_CPP:
+                _refuse_native_component_files(request)
                 _assert_native_precision_unset(
                     transformer_quant = request.transformer_quant,
                     text_encoder_quant = request.text_encoder_quant,
@@ -46145,6 +46176,7 @@ async def load_diffusion_model_gated(
                 # The winner this route already ranked and preflighted, so the load cannot pick a
                 # different card from free VRAM that has moved since.
                 gpu_ordinal = gpu_ordinal,
+                **_component_file_kwargs(request),
             )
 
         def _begin_load():

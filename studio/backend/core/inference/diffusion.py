@@ -257,7 +257,7 @@ from .diffusion_precision import (
     te_quant_unsupported_reason,
     torchao_quantize_importable,
 )
-from .diffusion_te_prequant import te_prequant_pipe_kwargs
+from .diffusion_te_prequant import supplied_component_pipe_kwargs, te_prequant_pipe_kwargs
 from .diffusion_fast_load import start_load_prefetch, stop_prefetch, te_precast_components
 from .diffusion_flow_shift import apply_comfy_flow_shift
 from .diffusion_text_length import (
@@ -1052,6 +1052,82 @@ def _te_quant_reason(
     return reason
 
 
+def _with_supplied_components(load: Callable[..., dict]) -> Callable[..., dict]:
+    """``load_pipeline`` with any supplied text-encoder / VAE files (``text_encoder_files`` / ``vae_file``, or the
+    assignment ``_run_load`` already made as ``_component_overrides``) in place of the base repo's. The assignment
+    rides a context variable the assembly, the memory plan and the status read for the length of this load."""
+
+    @functools.wraps(load)
+    def wrapper(self: Any, repo_id: str, **kwargs: Any) -> dict:
+        from .diffusion_comfy_components import (
+            reset_active_component_overrides,
+            set_active_component_overrides,
+        )
+
+        text_encoder_files = kwargs.pop("text_encoder_files", None)
+        vae_file = kwargs.pop("vae_file", None)
+        overrides = kwargs.pop("_component_overrides", None)
+        if overrides is None and (text_encoder_files or vae_file):
+            # A direct call (no _run_load staging): validate and assign here.
+            fam = self.validate_load_request(
+                repo_id,
+                gguf_filename = kwargs.get("gguf_filename"),
+                family_override = kwargs.get("family_override"),
+                model_kind = kwargs.get("model_kind"),
+                text_encoder_files = text_encoder_files,
+                vae_file = vae_file,
+            )
+            hf_token = (kwargs.get("hf_token") or "").strip() or None
+            base = _resolve_base_repo(repo_id, kwargs.get("base_repo"), fam, hf_token)
+            overrides = self._plan_component_overrides(
+                fam,
+                repo_id,
+                base,
+                text_encoder_files,
+                vae_file,
+                hf_token,
+                local_files_only = bool(kwargs.get("local_files_only")),
+                base_local_dir = kwargs.get("_base_local_dir"),
+            )
+        if overrides is not None and overrides.text_encoder_components:
+            kwargs["text_encoder_quant"] = _te_quant_for_supplied_encoders(
+                kwargs.get("text_encoder_quant")
+            )
+        token = set_active_component_overrides(overrides)
+        try:
+            return load(self, repo_id, **kwargs)
+        finally:
+            reset_active_component_overrides(token)
+
+    return wrapper
+
+
+def _te_quant_for_supplied_encoders(requested: Optional[str]) -> Optional[str]:
+    """A supplied encoder file IS the precision the user picked, so an unset / auto request never re-casts it (a
+    family's automatic scheme would otherwise fetch a hosted encoder the file replaces). Explicit schemes stand."""
+    if requested is None or str(requested).strip().lower() in ("", "auto"):
+        return "none"
+    return requested
+
+
+def _hub_file_size(repo_id: str, filename: str, hf_token: Optional[str]) -> int:
+    try:
+        from huggingface_hub import HfApi
+
+        for info in HfApi().get_paths_info(repo_id, [filename], token = hf_token):
+            return int(getattr(info, "size", 0) or 0)
+    except Exception:  # noqa: BLE001 - a size is a progress-bar hint, never a refusal
+        pass
+    return 0
+
+
+def _active_component_summary() -> Optional[dict]:
+    from .diffusion_comfy_components import active_component_overrides
+
+    overrides = active_component_overrides()
+    return overrides.summary() if overrides is not None and overrides.files else None
+
+
 @dataclass(frozen = True)
 class _LoadState:
     """Everything about the currently-loaded pipeline, swapped as one unit."""
@@ -1108,6 +1184,8 @@ class _LoadState:
     resolved: Optional[dict] = None
     # The single-file checkpoint basename this load committed (None for a pipeline). Part of the build identity.
     gguf_filename: Optional[str] = None
+    # Supplied text-encoder / VAE files, {component: basename}; None when every companion came from the base repo.
+    component_files: Optional[dict] = None
     # The torch ordinal this pipeline's weights were placed on, or None for an automatic pick. Committed WITH the
     # pipeline, so a load in flight never moves the resident model's card.
     gpu_ordinal: Optional[int] = None
@@ -2926,6 +3004,83 @@ class DiffusionBackend:
             return None
         return snapshot_root
 
+    @staticmethod
+    def _validate_component_files(
+        fam: DiffusionFamily,
+        kind: str,
+        repo_id: str,
+        text_encoder_files: Optional[Sequence[str]],
+        vae_file: Optional[str],
+    ) -> None:
+        """Separate text-encoder / VAE files ride beside a single-file or GGUF denoiser only: a full pipeline and a
+        whole-pipeline single file (SDXL) already carry theirs. Header-only, so a bad pick is a 400 before eviction."""
+        from .diffusion_comfy_components import validate_component_specs
+
+        if kind not in ("gguf", "single_file") or fam.single_file_is_pipeline or fam.pipeline_only:
+            raise ValueError(
+                "text_encoder_file / vae_file load beside a single-file or GGUF transformer; a full pipeline "
+                "(or a whole-pipeline single file) already carries its own text encoders and VAE."
+            )
+        if vae_file and fam.name == KREA2_FAMILY_NAME:
+            raise ValueError(f"a separate VAE file is not supported for '{fam.name}' yet; omit vae_file.")
+        validate_component_specs(
+            list(text_encoder_files or ()),
+            vae_file,
+            model_path = repo_id,
+            trusted_repo = _is_trusted_diffusion_repo,
+        )
+
+    def _plan_component_overrides(
+        self,
+        fam: DiffusionFamily,
+        repo_id: str,
+        base: str,
+        text_encoder_files: Optional[Sequence[str]],
+        vae_file: Optional[str],
+        hf_token: Optional[str],
+        *,
+        local_files_only: bool = False,
+        base_local_dir: Optional[str] = None,
+        cancel_event: Optional[threading.Event] = None,
+        download: bool = True,
+    ) -> Any:
+        """Assign the supplied files to the base pipeline's components (reads ``model_index.json``), resolving a Hub
+        file to its local copy when ``download``. None when no file was supplied."""
+        if not text_encoder_files and not vae_file:
+            return None
+        from .diffusion_comfy_components import plan_component_overrides, read_model_index
+
+        index = read_model_index(
+            prefer_ungated_mirror(base, hf_token),
+            base_local_dir = base_local_dir or (base if _is_local_path(base) else None),
+            hf_token = hf_token,
+            local_files_only = local_files_only,
+            cache_dir = hub_cache_dir(),
+        )
+
+        def _resolve_hub(ref: Any) -> str:
+            from utils.hf_xet_fallback import hf_hub_download_with_xet_fallback
+
+            return hf_hub_download_with_xet_fallback(
+                ref.repo_id,
+                ref.filename,
+                hf_token,
+                cancel_event = cancel_event if cancel_event is not None else self._cancel_event,
+                reuse_other_cache_root = True,
+                local_files_only = local_files_only,
+            )
+
+        return plan_component_overrides(
+            text_encoder_files = list(text_encoder_files or ()),
+            vae_file = vae_file,
+            model_path = repo_id,
+            model_index = index,
+            family = fam.name,
+            trusted_repo = _is_trusted_diffusion_repo,
+            hf_token = hf_token,
+            resolve_hub = _resolve_hub if download else None,
+        )
+
     def validate_load_request(
         self,
         repo_id: str,
@@ -2934,6 +3089,8 @@ class DiffusionBackend:
         family_override: Optional[str] = None,
         model_kind: Optional[str] = None,
         base_repo: Optional[str] = None,
+        text_encoder_files: Optional[Sequence[str]] = None,
+        vae_file: Optional[str] = None,
     ) -> DiffusionFamily:
         """Cheap, network-free validation shared by the route (before it evicts the chat model) and
         the load paths, so an unloadable pick fails BEFORE the GPU handoff. Resolves the load
@@ -3052,6 +3209,8 @@ class DiffusionBackend:
                     f"'{repo_id}' is a single-file GGUF repo; load it with model_kind 'gguf' "
                     f"and a .gguf filename, not as a full pipeline."
                 )
+        if text_encoder_files or vae_file:
+            self._validate_component_files(fam, kind, repo_id, text_encoder_files, vae_file)
         return fam
 
     def preflight_base_access(
@@ -3119,6 +3278,8 @@ class DiffusionBackend:
         gpu_ids: Optional[list[int]] = None,
         # The ordinal the ROUTE already ranked, so the preflight and the load agree on one card.
         gpu_ordinal: Optional[int] = None,
+        text_encoder_files: Optional[Sequence[str]] = None,
+        vae_file: Optional[str] = None,
         _load_token: Optional[int] = None,
     ) -> dict[str, Any]:
         """Validate, then run the (slow) load on a daemon thread. Returns at once."""
@@ -3143,6 +3304,8 @@ class DiffusionBackend:
             gguf_filename = gguf_filename,
             family_override = family_override,
             model_kind = model_kind,
+            text_encoder_files = text_encoder_files,
+            vae_file = vae_file,
         )
         # Refuse an EXPLICIT precision this host can never honor BEFORE the load starts, so the route answers 409 with
         # the reason instead of evicting the resident model, downloading several GB and only then failing. The
@@ -3202,6 +3365,8 @@ class DiffusionBackend:
                 model_kind = model_kind,
                 loras = loras,
                 gpu_ordinal = gpu_ordinal,
+                text_encoder_files = list(text_encoder_files or ()) or None,
+                vae_file = vae_file,
                 _load_token = token,
                 _cancel_event = cancel_event,
             ),
@@ -3239,6 +3404,24 @@ class DiffusionBackend:
                     kwargs["repo_id"], kwargs.get("base_repo"), fam, kwargs.get("hf_token")
                 )
             kwargs["base_repo"] = base
+            # Supplied text-encoder / VAE files replace those base components: assigned (and a Hub file fetched)
+            # before the plan, so their shards are never staged.
+            component_overrides = self._plan_component_overrides(
+                fam,
+                kwargs["repo_id"],
+                base,
+                kwargs.get("text_encoder_files"),
+                kwargs.get("vae_file"),
+                kwargs.get("hf_token"),
+                local_files_only = local_files_only,
+                cancel_event = cancel_event,
+            )
+            kwargs["_component_overrides"] = component_overrides
+            replaced = tuple(component_overrides.components) if component_overrides else ()
+            if component_overrides is not None and component_overrides.text_encoder_components:
+                kwargs["text_encoder_quant"] = _te_quant_for_supplied_encoders(
+                    kwargs.get("text_encoder_quant")
+                )
             # The pre-cast encoder replaces these weights, so skip their dense shards. Same resolver as the injection,
             # and the same tri-state: a family whose UNSET request resolves to a hosted scheme must not stage the dense
             # encoder the load is about to not open. kwargs keep the RAW request, which stays the single source of
@@ -3246,14 +3429,18 @@ class DiffusionBackend:
             te_quant_planned, _ = resolve_te_quant_request(
                 kwargs.get("text_encoder_quant"), getattr(fam, "te_quant_auto", None)
             )
-            te_prequant_files = self._te_prequant_plan_files(
-                fam,
-                te_quant_planned,
-                kwargs.get("hf_token"),
-                kwargs.get("gpu_ordinal"),
-                local_files_only = local_files_only,
-                base_repo = base,
-            )
+            te_prequant_files = {
+                c: v
+                for c, v in self._te_prequant_plan_files(
+                    fam,
+                    te_quant_planned,
+                    kwargs.get("hf_token"),
+                    kwargs.get("gpu_ordinal"),
+                    local_files_only = local_files_only,
+                    base_repo = base,
+                ).items()
+                if c not in replaced
+            }
             pipeline_planned = self._pipeline_planned_denoiser_scheme(
                 fam,
                 base = base,
@@ -3315,7 +3502,7 @@ class DiffusionBackend:
                     if kind == "gguf"
                     else False
                 ),
-                skip_te_components = tuple(te_prequant_files),
+                skip_te_components = tuple(te_prequant_files) + replaced,
                 skip_transformer_weights = skip_transformer_weights,
                 skipped_files_out = skipped_transformer_files,
                 local_files_only = local_files_only,
@@ -4307,6 +4494,29 @@ class DiffusionBackend:
         incompatible = flux2_pick_mismatch(
             fam, repo_id, gguf_filename, base, hf_token
         ) or speech_pick_refusal(repo_id, gguf_filename, hf_token)
+        # Supplied text-encoder / VAE files: their base components are not staged; a Hub-hosted file is (header
+        # read from the Hub, nothing downloaded here).
+        component_overrides = None
+        if (load_kwargs.get("text_encoder_files") or load_kwargs.get("vae_file")) and fam is not None:
+            self._validate_component_files(
+                fam,
+                kind,
+                repo_id,
+                load_kwargs.get("text_encoder_files"),
+                load_kwargs.get("vae_file"),
+            )
+            component_overrides = self._plan_component_overrides(
+                fam,
+                repo_id,
+                base,
+                load_kwargs.get("text_encoder_files"),
+                load_kwargs.get("vae_file"),
+                hf_token,
+                download = False,
+            )
+        replaced = tuple(component_overrides.components) if component_overrides else ()
+        if component_overrides is not None and component_overrides.text_encoder_components:
+            text_encoder_quant = _te_quant_for_supplied_encoders(text_encoder_quant)
         # Only a checkpoint that really resolves on the Hub earns the right to drop dense shards
         # Resolved through the same tri-state the loader uses, so the size the picker SHOWS is the size the load will
         # actually move on a family whose unset request takes a hosted encoder.
@@ -4314,13 +4524,17 @@ class DiffusionBackend:
             text_encoder_quant, getattr(fam, "te_quant_auto", None)
         )
         te_files = (
-            self._te_prequant_plan_files(
-                fam,
-                te_quant_planned,
-                hf_token,
-                load_kwargs.get("gpu_ordinal"),
-                base_repo = base,
-            )
+            {
+                c: v
+                for c, v in self._te_prequant_plan_files(
+                    fam,
+                    te_quant_planned,
+                    hf_token,
+                    load_kwargs.get("gpu_ordinal"),
+                    base_repo = base,
+                ).items()
+                if c not in replaced
+            }
             if allow_device_probe
             else {}
         )
@@ -4403,7 +4617,7 @@ class DiffusionBackend:
             resident_file_sizes_out = resident_file_sizes,
             revisions_out = revisions,
             fetch_repos_out = fetch_repos,
-            skip_te_components = tuple(te_files),
+            skip_te_components = tuple(te_files) + replaced,
             skip_transformer_weights = skip_transformer_weights,
             failures_out = plan_failures,
         )
@@ -4579,6 +4793,12 @@ class DiffusionBackend:
             # Staged, not just counted: leaving it out means a multi-GB inline pull under the load lock.
             prequant_repo, prequant_file, prequant_size = dit_prequant
             add_missing_entry(prequant_repo, [prequant_file], {prequant_file: prequant_size})
+        for ref in (component_overrides.files.values() if component_overrides else ()):
+            if not ref.is_hub:
+                continue
+            ref_size = _hub_file_size(ref.repo_id, ref.filename, hf_token)
+            required_total += ref_size
+            add_missing_entry(ref.repo_id, [ref.filename], {ref.filename: ref_size})
         if incompatible is None and allow_device_probe and memory_verdict:
             incompatible = self.declared_footprint_shortfall(
                 fam,
@@ -5139,6 +5359,42 @@ class DiffusionBackend:
         return sum(merged.values())
 
     @staticmethod
+    def _supplied_component_mib(
+        base: str, staged_dir: Optional[str], load_dtype: Any
+    ) -> Optional[tuple[int, int, int, int]]:
+        """``(scanned MiB, scanned text-encoder MiB, supplied MiB, supplied text-encoder MiB)`` for this load's
+        supplied text-encoder / VAE files, or None when there are none. The scanned terms are what the base-repo
+        walk already counted for the replaced components."""
+        from .diffusion_comfy_components import active_component_overrides, scanned_component_bytes
+
+        overrides = active_component_overrides()
+        if overrides is None or not overrides.paths:
+            return None
+        replaced = set(overrides.paths)
+        replaced_te = {c for c in replaced if c.startswith("text_encoder")}
+
+        def _scan(components: set) -> int:
+            return DiffusionBackend._union_over_cached_revs(
+                base,
+                lambda d: scanned_component_bytes(
+                    DiffusionBackend._local_dir_weight_sizes(
+                        d, exclude_transformer = True, load_dtype = load_dtype
+                    ),
+                    components,
+                ),
+                staged_dir,
+            )
+
+        mib = 1024 * 1024
+        resident = overrides.resident_mib(_float_load_itemsize(load_dtype) or 2)
+        return (
+            _scan(replaced) // mib,
+            (_scan(replaced_te) // mib) if replaced_te else 0,
+            int(sum(resident.values())),
+            int(sum(v for c, v in resident.items() if c in replaced_te)),
+        )
+
+    @staticmethod
     def _companion_cache_bytes(
         base: str,
         staged_dir: Optional[str] = None,
@@ -5335,6 +5591,7 @@ class DiffusionBackend:
     @_account_owned_load
     @_plans_at_requested_speed
     @scoped_local_files_only
+    @_with_supplied_components
     def load_pipeline(
         self,
         repo_id: str,
@@ -7689,6 +7946,7 @@ class DiffusionBackend:
                         hf_token = hf_token,
                         resolved = resolved,
                         gguf_filename = gguf_filename,
+                        component_files = _active_component_summary(),
                         variant_hint = _image_variant_hint(
                             fam.name,
                             Path(single_file_path).name if single_file_path else None,
@@ -8148,6 +8406,15 @@ class DiffusionBackend:
                 )
             )
         check_cancelled()
+        pipe_kwargs.update(
+            supplied_component_pipe_kwargs(
+                base_local_dir or base,
+                dtype = dtype,
+                hf_token = hf_token,
+                local_files_only = local_files_only,
+                family = getattr(fam, "name", None),
+            )
+        )
         pipe = pipeline_cls.from_pretrained(base_local_dir or base, **pipe_kwargs)
         check_cancelled()
         pipe.to(device)
@@ -8766,6 +9033,7 @@ class DiffusionBackend:
         if _float_load_itemsize(load_dtype) is None:
             load_dtype = None
         companions_from_cache = False
+        supplied_te = False
         if kind == "pipeline" and transformer_resident_override_mib is not None:
             # Re-planning an assembled pipeline against its dense-quant candidate. The family estimate already
             # splits transformer from companions; the cache scan below would price the bf16 transformer this
@@ -8914,10 +9182,20 @@ class DiffusionBackend:
                 )
                 text_encoder_mib = int(text_encoder // (1024 * 1024)) if text_encoder else None
                 companions_from_cache = True
+                # Supplied text-encoder / VAE files replace those components: drop whatever the base-repo scan saw
+                # for them (a cache from an earlier load) and price the files instead.
+                supplied = self._supplied_component_mib(fetch_base or base, base_local_dir, load_dtype)
+                if supplied is not None:
+                    scanned_mib, scanned_te_mib, supplied_mib, supplied_te_mib = supplied
+                    companion_mib = max(0, int(companion_mib or 0) - scanned_mib) + supplied_mib
+                    text_encoder_mib = (
+                        max(0, int(text_encoder_mib or 0) - scanned_te_mib) + supplied_te_mib
+                    ) or None
+                    supplied_te = supplied_te_mib > 0
             model_dense_mib = None
             if transformer_resident is not None:
                 model_dense_mib = transformer_resident + (companion_mib or 0)
-        if companions_from_cache and text_encoder_quant is not None:
+        if companions_from_cache and text_encoder_quant is not None and not supplied_te:
             precast = self._precast_text_encoder_mib(
                 fam, base, target, text_encoder_quant, base_local_dir
             )
@@ -10729,6 +11007,7 @@ class DiffusionBackend:
             "dtype": state.dtype,
             "model_kind": state.kind,
             "gguf_filename": state.gguf_filename,
+            "component_files": state.component_files,
             "gguf_variant": (
                 extract_quant_token(state.gguf_filename)
                 if state.kind == "gguf" and state.gguf_filename

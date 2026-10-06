@@ -3,6 +3,7 @@
 
 import { generationFailureLogsAction } from "@/features/settings/lib/view-logs-action";
 import { readImageModel, rememberImageModel, matchesRememberedModel, type RememberedImageModel } from "./image-model-recall";
+import { componentFileFields, splitComponentFileList } from "./component-files";
 import {
   type ReactNode,
   type SetStateAction,
@@ -787,6 +788,55 @@ function ResolvedBadge({
   );
 }
 
+const COMPONENT_FILES_HINT =
+  "Optional. Use separate ComfyUI text encoder / VAE .safetensors files instead of downloading the base model's. Absolute path, or relative to the model folder (e.g. ../text_encoders/clip_l.safetensors). Only for single-file or GGUF transformers.";
+
+/** A free-text Advanced load setting, laid out like AdvancedSelect (label row, control below). */
+function AdvancedTextField({
+  label,
+  hint,
+  placeholder,
+  value,
+  onValueChange,
+  multiline = false,
+}: {
+  label: string;
+  hint?: ReactNode;
+  placeholder?: string;
+  value: string;
+  onValueChange: (v: string) => void;
+  multiline?: boolean;
+}) {
+  return (
+    <div className="flex flex-col gap-1">
+      <span className="flex shrink-0 items-center gap-1 whitespace-nowrap text-xs font-medium text-muted-foreground">
+        {label}
+        {hint && <InfoHint>{hint}</InfoHint>}
+      </span>
+      {multiline ? (
+        <Textarea
+          aria-label={label}
+          rows={2}
+          spellCheck={false}
+          placeholder={placeholder}
+          value={value}
+          onChange={(e) => onValueChange(e.target.value)}
+          className="min-h-0 resize-y font-mono text-xs"
+        />
+      ) : (
+        <Input
+          aria-label={label}
+          spellCheck={false}
+          placeholder={placeholder}
+          value={value}
+          onChange={(e) => onValueChange(e.target.value)}
+          className="h-8 font-mono text-xs"
+        />
+      )}
+    </div>
+  );
+}
+
 function AdvancedSelect({
   label,
   hint,
@@ -1270,6 +1320,14 @@ function LoadedBuildSummary({ status }: { status: DiffusionStatus | null }) {
         }
         badge={<ResolvedBadge status={status} controlKey="text_encoder_quant" />}
       />
+      {status.component_files && Object.keys(status.component_files).length > 0 ? (
+        <BuildRow
+          label="Text encoder / VAE files"
+          value={Object.entries(status.component_files)
+            .map(([component, file]) => `${component}: ${file}`)
+            .join(", ")}
+        />
+      ) : null}
       <BuildRow
         label="Memory"
         value={
@@ -1336,6 +1394,8 @@ type LoadAdvanced = Pick<
   | "family_override"
   | "loras"
   | "gpu_ids"
+  | "text_encoder_file"
+  | "vae_file"
 >;
 
 function openImageLabel(t: ReturnType<typeof useT>, prompt: string): string {
@@ -1527,6 +1587,9 @@ export function ImagesPage({
     setTextEncoderQuant((v) => nvfp4SelectionFallback(v, nvfp4DiffusionKnown, nvfp4Diffusion));
   }, [nvfp4Diffusion, nvfp4DiffusionKnown, transformerQuant, textEncoderQuant]);
   const [memoryMode, setMemoryMode] = useState<"auto" | "fast" | "balanced" | "low_vram">("auto");
+  // Separate ComfyUI-style text encoder / VAE files for a single-file or GGUF transformer, as typed.
+  const [textEncoderFiles, setTextEncoderFiles] = useState("");
+  const [vaeFile, setVaeFile] = useState("");
   // "auto", or the physical index to pin this load to; offered only on a multi-card CUDA/ROCm
   // host. Persisted, unlike the selects around it: status carries the device a pipeline is on
   // but not which card, so a refresh would reset it to Auto. A stale id is dropped on send.
@@ -2847,6 +2910,11 @@ export function ImagesPage({
           gpuChoices.some((d) => String(d.index) === selectedGpu)
             ? [Number(selectedGpu)]
             : undefined,
+        text_encoder_file: (() => {
+          const files = splitComponentFileList(textEncoderFiles);
+          return files.length > 0 ? files : undefined;
+        })(),
+        vae_file: vaeFile.trim() || undefined,
       };
     },
     [
@@ -2861,6 +2929,8 @@ export function ImagesPage({
       familyOverride,
       selectedGpu,
       gpuChoices,
+      textEncoderFiles,
+      vaeFile,
     ],
   );
 
@@ -2934,6 +3004,8 @@ export function ImagesPage({
           family_override: advanced.family_override,
           loras: bakeLoras.length > 0 ? bakeLoras : undefined,
           gpu_ids: advanced.gpu_ids,
+          // Only a single-file / GGUF transformer takes separate encoder / VAE files; same rule as the plan.
+          ...componentFileFields(opts.kind, advanced.text_encoder_file, advanced.vae_file),
         });
         await startRequest;
       } catch (err) {
@@ -3156,6 +3228,8 @@ export function ImagesPage({
         // The plan route preflights precision and sizes the file set against the card the load will
         // use, so a selection the load carries has to reach the plan.
         gpu_ids: advanced.gpu_ids,
+        // Same separate encoder / VAE files the load sends, so the plan skips the base copies it replaces.
+        ...componentFileFields(opts.kind, advanced.text_encoder_file, advanced.vae_file),
       }),
     [],
   );
@@ -4627,6 +4701,21 @@ export function ImagesPage({
           ] as [string, string][],
           nvfp4Diffusion,
         )}
+      />
+      <AdvancedTextField
+        label="Text encoder file(s)"
+        hint={COMPONENT_FILES_HINT}
+        multiline
+        placeholder="../text_encoders/clip_l.safetensors"
+        value={textEncoderFiles}
+        onValueChange={setTextEncoderFiles}
+      />
+      <AdvancedTextField
+        label="VAE file"
+        hint={COMPONENT_FILES_HINT}
+        placeholder="../vae/ae.safetensors"
+        value={vaeFile}
+        onValueChange={setVaeFile}
       />
       <AdvancedSelect
         label="Attention"

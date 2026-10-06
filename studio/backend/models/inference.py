@@ -4259,6 +4259,22 @@ class DiffusionLoadRequest(BaseModel):
     )
     # Referenced out, so resolved back in, or a caller handed a `ref:` base cannot load it.
     _resolve_the_base_handle = field_validator("base_repo")(resolve_inventory_handle)
+    text_encoder_file: Optional[Union[str, List[str]]] = Field(
+        None,
+        description = "Separate text-encoder file(s) to use instead of the base repo's, e.g. a ComfyUI "
+        "models/text_encoders file. One path or a list (FLUX.1: clip_l + t5xxl); each is matched to the "
+        "pipeline slot whose encoder class it fits. A local .safetensors path (relative paths resolve against "
+        "model_path, so ../text_encoders/x.safetensors works from a ComfyUI diffusion_models folder) or "
+        "owner/repo/path.safetensors under the same repo rule as model_path. Unquantized, scaled fp8 and "
+        "int8 (ConvRot) files load; other ComfyUI formats are refused. Only with a gguf / single_file load; "
+        "the base repo then supplies only configs and tokenizers for these encoders.",
+    )
+    vae_file: Optional[str] = Field(
+        None,
+        description = "Separate VAE file to use instead of the base repo's, e.g. a ComfyUI models/vae file "
+        "(ae.safetensors, qwen_image_vae.safetensors, wan_2.1_vae.safetensors). Same path rules as "
+        "text_encoder_file. Only with a gguf / single_file load.",
+    )
     family_override: Optional[str] = Field(
         None, description = "Force a family when it can't be inferred from the repo id"
     )
@@ -4401,6 +4417,31 @@ class DiffusionLoadRequest(BaseModel):
     def _normalize_attention_backend(cls, value):
         # The dispatcher accepts case/whitespace variants, but the Literal above is validated before any normaliser runs, so fold it here.
         return value.strip().lower() if isinstance(value, str) else value
+
+    @field_validator("text_encoder_file")
+    @classmethod
+    def _normalize_text_encoder_file(cls, value):
+        # One string or a list; blanks dropped, duplicates refused, at most one file per encoder slot.
+        if value is None:
+            return None
+        items = [value] if isinstance(value, str) else list(value)
+        items = [item.strip() for item in items if isinstance(item, str) and item.strip()]
+        if len(set(items)) != len(items):
+            raise ValueError("text_encoder_file lists the same file twice")
+        if len(items) > 4:
+            raise ValueError("at most 4 text_encoder_file entries (one per encoder slot)")
+        return items or None
+
+    @field_validator("vae_file")
+    @classmethod
+    def _blank_vae_file(cls, value):
+        return (value or "").strip() or None
+
+    def supplied_text_encoder_files(self) -> Optional[list[str]]:
+        value = self.text_encoder_file
+        if value is None:
+            return None
+        return [value] if isinstance(value, str) else list(value)
 
     @field_validator("loras")
     @classmethod
@@ -5020,6 +5061,11 @@ class DiffusionStatusResponse(BaseModel):
     )
     gguf_variant: Optional[str] = Field(
         None, description = "Selected GGUF quantisation variant (for example Q8_0)"
+    )
+    component_files: Optional[Dict[str, str]] = Field(
+        None,
+        description = "Supplied text-encoder / VAE files by pipeline component (e.g. text_encoder_2: "
+        "t5xxl_fp8_e4m3fn_scaled.safetensors); null when every companion came from the base repo",
     )
     cpu_offload: bool = Field(False, description = "Whether CPU offload is engaged")
     offload_policy: Optional[str] = Field(

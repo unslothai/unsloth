@@ -887,6 +887,24 @@ def require_media_references(request) -> None:
             raise HTTPException(status_code = 404, detail = "Model not found")
         elif Path(request.model_path).is_absolute():
             require_model_access(str(Path(request.model_path) / path))
+    # Separate text-encoder / VAE files: the same bar as the single-file checkpoint they ride beside.
+    supplied = getattr(request, "text_encoder_file", None)
+    supplied = [supplied] if isinstance(supplied, str) else list(supplied or ())
+    vae_file = getattr(request, "vae_file", None)
+    if isinstance(vae_file, str) and vae_file:
+        supplied.append(vae_file)
+    for reference in supplied:
+        if not isinstance(reference, str) or not reference.strip():
+            continue
+        path = Path(reference.strip()).expanduser()
+        if path.is_absolute():
+            require_model_access(str(path.resolve()))
+        elif reference.startswith((".", "~")) or len(path.parts) < 3:
+            if ".." in path.parts or not Path(request.model_path).is_absolute():
+                raise HTTPException(status_code = 404, detail = "Model not found")
+            require_model_access(str((Path(request.model_path) / path).resolve()))
+        else:
+            require_model_access("/".join(reference.strip().split("/")[:2]))
 
 
 def resident_components(status: dict, modality: str | None = None) -> list[str]:

@@ -10,6 +10,7 @@ import {
   readImageModel,
   rememberImageModel,
 } from "../src/features/images/image-model-recall.ts";
+import { splitComponentFileList } from "../src/features/images/component-files.ts";
 import { installLocalStorageFake, readSrc } from "./helpers/kit.ts";
 
 const { storage } = installLocalStorageFake();
@@ -59,6 +60,9 @@ test("recalling a quantized model carries the selected adapters into its load", 
       transformerCache: "auto",
       selectedGpu: "auto",
       gpuChoices: [],
+      textEncoderFiles: "",
+      vaeFile: "",
+      splitComponentFileList,
       busy: null,
       imagePresets: { hydrated: true },
       prompt: "a teapot",
