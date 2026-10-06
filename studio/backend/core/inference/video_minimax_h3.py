@@ -188,12 +188,8 @@ def h3_process_held_host_bytes() -> int:
 
 
 def h3_host_capacity_bytes() -> int:
-    """What the system can still hand out plus what this process already holds and the render reuses.
-
-    "Can still hand out" is the usable host RAM: system available capped by the headroom of any
-    enforcing cgroup (``utils.host_memory``), the same reader the pin budget sizes from. Under a
-    container or systemd ``MemoryMax`` the host-wide figure admitted renders the limit then
-    OOM-killed. The sum is capped at the cgroup limit, which is all the process can ever charge."""
+    """Usable host RAM (cgroup-capped) plus what this process already holds and the render reuses,
+    capped at the cgroup limit."""
     import psutil
     from utils import host_memory
 
@@ -209,18 +205,10 @@ def h3_host_capacity_bytes() -> int:
     return capacity
 
 
-# Host floor while the int8 conditioner streams too, for the hosted int8 conditioner + int8 / fp8 denoiser set.
-# Measured as the memory the render cannot give back, not as process RSS: RSS counts the mmap'd checkpoint pages,
-# which the kernel reclaims under a limit, so the old 66 GB RSS peak (70 with margin) refused renders that complete.
-# Bisecting a cgroup MemoryMax on main (Auto memory, 960x544, 124 frames, 12 and 16 GB cards, group-offload pinning on
-# and off): every cell from 38 to 70 GiB rendered; from 28 to 34 GiB some rendered and some were OOM-killed in the
-# first render (kills at 28, 30 and 34 GiB). The anon + shmem + kernel peak was 35 to 38.5 GiB with room and tracks
-# the limit below that. The floor is the highest kill point, 34 GiB (36.5 GB), plus a 3.5 GB (~10%) margin, which also
-# covers what a full Studio server holds beyond the bare backend measured. Below ~46 GiB the render slows sharply
-# (3 s/step at 52 GiB, 12 at 40 to 46, 40+ at 32 to 38 on a 12 GB card).
+# Streamed int8 conditioner + int8 / fp8 denoiser floor, measured as non-reclaimable memory (not RSS, which counts
+# mmap'd checkpoint pages the kernel reclaims under a limit): highest MemoryMax kill on main, 34 GiB, plus ~10% margin.
 H3_DIFFUSERS_HOST_RAM_STREAMED_SET_GB = 40.0
-# The previous RSS-based floor, kept for streamed conditioners larger than the measured set (bf16, or a bigger
-# denoiser), which were not re-measured.
+# RSS-based floor for streamed sets larger than the measured one (not re-measured).
 H3_DIFFUSERS_HOST_RAM_STREAMED_RSS_GB = 70.0
 
 
@@ -253,11 +241,12 @@ def estimate_h3_diffusers_host_ram_gb(
         return H3_DIFFUSERS_HOST_RAM_HIGH_VRAM_GB
     text_encoder = H3_TEXT_ENCODER_BF16_GB if text_encoder_gb is None else float(text_encoder_gb)
     transformer = H3_TRANSFORMER_BF16_GB if transformer_gb is None else float(transformer_gb)
-    if text_encoder_streamed and not transformer_streamed and _within_measured_streamed_set(
-        text_encoder, transformer
+    if (
+        text_encoder_streamed
+        and not transformer_streamed
+        and _within_measured_streamed_set(text_encoder, transformer)
     ):
-        # The conditioner and the denoiser both stream from page-cache-backed copies the kernel can reclaim, so the
-        # component sum overstates what the render holds; the measured floor is what it cannot give back.
+        # Both stream from reclaimable page cache, so the component sum overstates the floor.
         return H3_DIFFUSERS_HOST_RAM_STREAMED_SET_GB
     if transformer_streamed:
         transformer *= 2
@@ -270,10 +259,10 @@ def estimate_h3_diffusers_host_ram_gb(
 def _within_measured_streamed_set(text_encoder_gb: float, transformer_gb: float) -> bool:
     """Whether a streamed load is no larger than the set ``H3_DIFFUSERS_HOST_RAM_STREAMED_SET_GB`` was measured on."""
     from .video_minimax_h3_te import H3_TE_QUANT_RESIDENT_GB
-
-    return text_encoder_gb <= H3_TE_QUANT_RESIDENT_GB["int8"] + 1e-6 and transformer_gb <= max(
-        H3_TRANSFORMER_PREQUANT_GB.values()
-    ) + 1e-6
+    return (
+        text_encoder_gb <= H3_TE_QUANT_RESIDENT_GB["int8"] + 1e-6
+        and transformer_gb <= max(H3_TRANSFORMER_PREQUANT_GB.values()) + 1e-6
+    )
 
 
 def h3_host_ram_shortfall(

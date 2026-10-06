@@ -14323,11 +14323,7 @@ class LlamaCppBackend:
     def _cgroup_memory_budgets() -> list[tuple[int, int]]:
         """Memory this process can still charge to an enforcing cgroup.
 
-        ``psutil`` and ``/proc/meminfo`` expose host-wide availability in many
-        containers. ``utils.host_memory`` walks the process's cgroup plus its
-        ancestors (v2 and legacy v1) and pairs each limit with that directory's
-        usage; it is the one reader every host-RAM sizing site shares. An empty
-        list means no finite readable limit, so callers retain their host reading.
+        Delegates to ``utils.host_memory``; empty = no finite limit.
         """
         return _host_memory.cgroup_memory_budgets(_CGROUP_ROOT, _PROC_SELF_CGROUP)
 

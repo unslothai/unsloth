@@ -2586,9 +2586,7 @@ def get_system_info(
     memory_total = memory.total
     memory_available = memory.available
     memory_percent = memory.percent
-    # Under a container / systemd MemoryMax the host-wide reading overstates what this process can
-    # use: the picker's RAM tiers compare against available_gb, so publish the cgroup-capped figures
-    # (utils.host_memory, the reader the pin budget and the H3 guard size from). No limit, no change.
+    # The picker's RAM tiers compare against available_gb: publish the cgroup-capped view.
     try:
         from utils import host_memory
 

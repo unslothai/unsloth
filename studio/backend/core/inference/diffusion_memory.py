@@ -299,8 +299,7 @@ def _pin_host_weights(
         left -= size
     need = sum(chunks)
     if mode == "auto":
-        # Pinned pages are charged to an enforcing cgroup, so size from the usable host RAM
-        # (system available capped by the cgroup headroom) and the cgroup-capped total.
+        # Pinned pages are charged to an enforcing cgroup: size from the cgroup-capped readings.
         available_mib = _available_system_memory_mib()
         total_mib = _host_ram_capacity_mib()
         if available_mib is None or total_mib is None:
@@ -887,7 +886,6 @@ def _unified_reclaimable_memory_mib(free_mib: int, total_mib: int) -> tuple[int,
 def _available_system_memory_mib() -> Optional[int]:
     """Usable host RAM in MiB: system available capped by any enforcing cgroup's headroom."""
     from utils import host_memory
-
     try:
         from core.inference.llama_cpp import LlamaCppBackend
         return LlamaCppBackend._available_system_memory_mib()
@@ -898,7 +896,6 @@ def _available_system_memory_mib() -> Optional[int]:
 def _cgroup_available_memory_mib() -> Optional[int]:
     """What an enforcing cgroup will still let this process charge, else None."""
     from utils import host_memory
-
     try:
         from core.inference.llama_cpp import LlamaCppBackend
         return LlamaCppBackend._cgroup_available_memory_mib()
@@ -912,7 +909,6 @@ def _cgroup_available_memory_mib() -> Optional[int]:
 def _cgroup_memory_limit_mib() -> Optional[int]:
     """The capacity an enforcing cgroup allows, else None. Not the remainder above."""
     from utils import host_memory
-
     try:
         from core.inference.llama_cpp import LlamaCppBackend
         return LlamaCppBackend._cgroup_memory_limit_mib()
@@ -926,7 +922,6 @@ def _cgroup_memory_limit_mib() -> Optional[int]:
 def _host_ram_capacity_mib() -> Optional[int]:
     """Host RAM this process may ever charge, in MiB: system total capped by any cgroup limit."""
     from utils import host_memory
-
     return host_memory.usable_mib(_system_memory_mib()[0], _cgroup_memory_limit_mib())
 
 
@@ -3257,10 +3252,7 @@ def _storage_nbytes(tensor: Any, depth: int = 0) -> list[int]:
 
 
 def _pin_budget_mib() -> Optional[int]:
-    """Pinnable host MiB leaving ``max(4 GiB, 15%)`` free, or None if unreadable.
-
-    Same container sizing as _pin_host_weights: pinned pages are charged to an enforcing cgroup,
-    so both sides come from the shared usable-host-RAM reader (``utils.host_memory``)."""
+    """Pinnable host MiB leaving ``max(4 GiB, 15%)`` of the cgroup-capped total free, or None if unreadable."""
     total = _host_ram_capacity_mib()
     available = _available_system_memory_mib()
     if total is None or available is None:
