@@ -484,8 +484,7 @@ def test_failed_compaction_block_is_not_replayed_or_persisted(monkeypatch):
         if line.startswith("data:") and line[len("data:") :].strip() != "[DONE]"
     ]
     assert not any(
-        (payload.get("_toolEvent") or {}).get("type") == "compaction_block"
-        for payload in payloads
+        (payload.get("_toolEvent") or {}).get("type") == "compaction_block" for payload in payloads
     )
     native_blocks = [
         block
