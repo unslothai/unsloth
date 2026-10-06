@@ -7828,7 +7828,12 @@ class DiffusionBackend:
                     f"keep_{fmt}": backend is not None
                     for fmt, backend in (
                         ("nvfp4", comfy_block_backend("nvfp4", target, name)[0]),
-                        ("mxfp8", comfy_block_backend("mxfp8", target, name)[0]),
+                        (
+                            "mxfp8",
+                            comfy_block_backend(
+                                "mxfp8", target, name, dtype = getattr(target, "dtype", None)
+                            )[0],
+                        ),
                     )
                 },
             )

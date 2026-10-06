@@ -365,6 +365,13 @@ def test_nvfp4_without_an_input_scale_scales_activations_per_call(block_file):
     model = _load(path, dtype = torch.bfloat16, nvfp4_backend = "kept")
     assert model._unsloth_comfy_quant["nvfp4"] == 8
     assert {type(m).__name__ for m in model.modules() if hasattr(m, "wq")} == {"ComfyNVFP4DynamicLinear"}
+    from core.inference.diffusion_nvfp4_linear import is_nvfp4_flashinfer_linear
+    from core.inference.diffusion_nvfp4_protect import protect_controller, protect_layers
+
+    layers = [m for _n, m in protect_layers(model)]
+    assert len(layers) == 8 and all(is_nvfp4_flashinfer_linear(m) for m in layers)
+    # its own step controller, not the process-wide one
+    assert all(m.protect is layers[0].protect for m in layers) and layers[0].protect is not protect_controller()
 
 
 @pytest.mark.skipif(not _blackwell(), reason = "needs a Blackwell GPU")

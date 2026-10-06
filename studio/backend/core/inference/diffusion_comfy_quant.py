@@ -1155,6 +1155,11 @@ def load_comfy_quant_transformer(
             model._unsloth_nvfp4_backend = nvfp4_backend
         except Exception:  # noqa: BLE001 -- marker is best-effort
             pass
+        # As for Studio's own NVFP4 checkpoints: a per-model step-protect controller, so concurrent image and video
+        # renders never move each other's steps. (GEMM tuning happens on each shape's first call.)
+        from .diffusion_nvfp4_protect import attach_own_controller
+
+        attach_own_controller(model)
     model.eval()
     convrot = len(rotated) + sum(1 for v in native.values() if v[2])
     if logger is not None:
