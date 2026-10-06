@@ -747,7 +747,7 @@ export const he = {
     accounts: {
       title: "חשבונות",
       description:
-        "צור חשבונות Studio פרטיים. משתמשים חדשים יתחברו באמצעות קוד הגדרה חד-פעמי ויבחרו סיסמה.",
+        "צור חשבונות Unsloth פרטיים. משתמשים חדשים יתחברו באמצעות קוד הגדרה חד-פעמי ויבחרו סיסמה.",
       username: "שם משתמש",
       create: "צור חשבון",
       createDescription: "שתף קוד הגדרה כדי שיוכלו לבחור סיסמה משלהם.",
@@ -1284,7 +1284,7 @@ export const he = {
       exportTooOld:
         "גרסת ה-backend של Unsloth הפועלת ישנה מדי לייצוא יומנים. עדכן אותה והפעל מחדש.",
       exportForbidden:
-        "הורדת כל היומנים דורשת הפעלת Studio מחוברת. מפתח API אינו מספיק.",
+        "הורדת כל היומנים דורשת הפעלת Unsloth מחוברת. מפתח API אינו מספיק.",
       keywords:
         "debug debugging log logs error errors crash traceback stack trace troubleshoot diagnostics failed באג ניפוי שגיאות שגיאה קריסה תקלה",
     },
@@ -1731,7 +1731,7 @@ export const he = {
         action: "תקן התקנה",
         confirmTitle: "לתקן התקנה זו?",
         confirmDescription:
-          "עוצר את השרת ומריץ מחדש את תוכנית ההתקנה, אשר מתקינה מחדש את PyTorch עבור ה-GPU של מכונה זו. הצ'אטים וההגדרות יישמרו. התהליך עשוי להימשך מספר דקות.",
+          "עוצר את השרת ומריץ מחדש את תוכנית ההתקנה, אשר מתקינה מחדש את PyTorch עבור ה-GPU של מכונה זו בגרסה הנתמכת החדשה ביותר. הצ'אטים וההגדרות יישמרו. התהליך עשוי להימשך מספר דקות.",
         confirmAction: "תקן כעת",
       },
       resetPreferences: {
@@ -2368,7 +2368,7 @@ export const he = {
           "כלול ב-'במכשיר' גם קוונטיזציות שלא הורדו.",
         showMemoryBar: "הצג סרגל שימוש ב-VRAM",
         showMemoryBarDescription:
-          "מציג תרשים של שימוש ה-VRAM המוערך של כל מודל שהורד מתחת לשורה שלו: משקולות, מטמון KV בהקשר שבו הוא ייטען, ושריין טיוטה ספקולטיבית אם קיים.",
+          "הצג את ה-VRAM המוערך עבור משקולות המודל, ההקשר ופענוח ספקולטיבי.",
       },
       menu: {
         title: "תפריט צ'אט",
@@ -2413,9 +2413,9 @@ export const he = {
         "שחזר את הפרומפט, הטמפרטורה והגדרות נוספות שבהן השתמשת לאחרונה עם כל מודל.",
       autoCompact: "כווץ אוטומטית צ'אטים ארוכים",
       autoCompactDescription:
-        "כאשר צ'אט GGUF מקומי ממלא את אורך ההקשר שהגדרת, השמט סבבים ישנים יותר במקום להחזיר שגיאה. הדבר אינו מבוסס על VRAM פנוי.",
+        "סבבים ישנים יותר עוברים לארכיון הניתן לחיפוש כאשר צ'אט ממלא את ההקשר שלו.",
       autoCompactKeywords:
-        "compaction compact auto-compact context window truncate rolling checkpoint headroom כיווץ קיצוץ הקשר חלון",
+        "compaction compact auto-compact context window truncate rolling checkpoint headroom archive retrieval recall rag search כיווץ קיצוץ הקשר חלון ארכיון אחזור חיפוש",
       visibility: {
         collapsed: "מכווץ",
         auto: "מורחב בזמן ריצה",
@@ -2759,8 +2759,8 @@ export const he = {
       expired: "פג תוקף",
       today: "היום",
       created: "נוצר {value}",
-      used: "בשימוש {value}",
-      expires: "תוקף פג {value}",
+      used: "שימוש אחרון {value}",
+      expires: "יפוג {value}",
       actionsFor: "פעולות עבור {name}",
       copyPrefix: "העתק קידומת",
       copyFailed: "ההעתקה נכשלה",
@@ -3593,7 +3593,7 @@ export const he = {
     kvRate: "KV משוריין, כ-~{rate}/טוקן",
     oomLikely: "בהגדרות הנוכחיות סביר שתתרחש חריגת זיכרון (OOM)",
     tooLarge:
-      "גדול מנפח ה-VRAM, ייפרק ל-CPU. קוונטיזציה קטנה יותר תרוץ מהר יותר",
+      "גדול מנפח ה-VRAM, חלק ממנו יועבר ל-CPU. קוונטיזציה קטנה יותר תרוץ מהר יותר",
   },
   skills: {
     title: "מיומנויות",
