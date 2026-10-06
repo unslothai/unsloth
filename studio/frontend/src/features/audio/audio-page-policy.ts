@@ -3,6 +3,62 @@
 
 import type { ModelSelectorChangeMeta } from "@/features/model-picker/components/model-selector/types";
 import { nativeAudioCheckpointIsLoadable } from "../model-picker/components/model-selector/audio-picker-policy.ts";
+import {
+  AUDIO_CPP_MUSIC_AUDIO_TYPE,
+  AUDIO_CPP_MUSIC_MAX_SECONDS,
+  AUDIO_CPP_MUSIC_MIN_SECONDS,
+  AUDIO_CPP_SEP_AUDIO_TYPE,
+  AUDIO_CPP_TTS_AUDIO_TYPE,
+  type AudioCppRuntimeStatus,
+  audioCppDisplayName,
+  audioCppModelFor,
+} from "./audio-cpp-catalog.ts";
+
+/** Why the installed audio runtime cannot run this recommended speech or music model, or null
+ *  when it can or cannot be told (no status yet, a server that predates the runtime block, or a
+ *  repo the backend judges at load). Mirrors the backend's model_runtime_problem so a pick is
+ *  refused before its load returns 501. */
+export function audioCppRuntimeProblem(
+  id: string | null | undefined,
+  runtime: AudioCppRuntimeStatus | null | undefined,
+): string | null {
+  const model = audioCppModelFor(id);
+  if (!model || model.task === "asr" || !runtime) return null;
+  if (!runtime.available) {
+    return "The audio runtime is not installed. Run `unsloth studio update` to install it.";
+  }
+  if (model.needsEspeak && !runtime.espeak) {
+    return (
+      `${audioCppDisplayName(model.id)} needs an audio runtime built with eSpeak-ng, and the ` +
+      "installed one has none. Run `unsloth studio update` to install the Unsloth bundle."
+    );
+  }
+  return null;
+}
+
+/** GGUF music families whose prompt needs a description beside the lyrics: MiniMax Music 3
+ *  takes it as the caption and YuE2 as the style. The others fall back to the lyrics. */
+const DESCRIBED_MUSIC_FAMILIES = new Set(["minimax_music3", "yue2"]);
+
+/** Whether the loaded music model refuses to generate without a description. */
+export function musicNeedsDescription(
+  audioType?: string | null,
+  audioFamily?: string | null,
+): boolean {
+  return (
+    audioType === "minimax_music3" ||
+    (audioType === AUDIO_CPP_MUSIC_AUDIO_TYPE &&
+      DESCRIBED_MUSIC_FAMILIES.has(audioFamily ?? ""))
+  );
+}
+
+/** YuE2 can sing from its style description alone, so an empty lyrics field is an instrumental request. */
+export function musicLyricsOptional(
+  audioType?: string | null,
+  audioFamily?: string | null,
+): boolean {
+  return audioType === AUDIO_CPP_MUSIC_AUDIO_TYPE && audioFamily === "yue2";
+}
 
 export type AudioBusy =
   | "loading"
@@ -11,9 +67,65 @@ export type AudioBusy =
   | "transcribing"
   | null;
 
+export type AudioGenerationPhase =
+  | "preparing"
+  | "switching"
+  | "generating"
+  | "stopping"
+  | "finishing"
+  | null;
+
+export type AudioGenerationPresentation = {
+  status: string;
+  actionLabel: string;
+  canStop: boolean;
+};
+
+/** Project request-lifetime phases into truthful UI copy. Audio generation has no
+ *  browser-visible numeric progress, so these labels never imply a fraction or ETA. */
+export function audioGenerationPresentation(
+  phase: AudioGenerationPhase,
+  detail?: string | null,
+): AudioGenerationPresentation | null {
+  switch (phase) {
+    case "preparing":
+      return {
+        status: "Preparing audio…",
+        actionLabel: "Preparing…",
+        canStop: false,
+      };
+    case "switching":
+      return {
+        status: detail || "Switching model…",
+        actionLabel: "Stop",
+        canStop: true,
+      };
+    case "generating":
+      return {
+        status: "Generating audio…",
+        actionLabel: "Stop",
+        canStop: true,
+      };
+    case "stopping":
+      return {
+        status: "Stopping audio…",
+        actionLabel: "Stopping…",
+        canStop: false,
+      };
+    case "finishing":
+      return {
+        status: "Finishing audio…",
+        actionLabel: "Finishing…",
+        canStop: false,
+      };
+    case null:
+      return null;
+  }
+}
+
 export type AudioPickTask = "tts" | "stt" | null;
 export type AudioCreateMode = "speak" | "transcribe";
-export type SttEngine = "transformers" | "gguf" | "mtmd";
+export type SttEngine = "transformers" | "gguf" | "mtmd" | "audiocpp";
 
 const TTS_AUDIO_TYPES = new Set([
   "snac",
@@ -25,14 +137,28 @@ const TTS_AUDIO_TYPES = new Set([
   "moss_tts_nano",
   "higgs_tts3",
   "minimax_music3",
+  AUDIO_CPP_TTS_AUDIO_TYPE,
+  AUDIO_CPP_MUSIC_AUDIO_TYPE,
+  AUDIO_CPP_SEP_AUDIO_TYPE,
 ]);
-const GGUF_TTS_AUDIO_TYPES = new Set(["snac", "bicodec", "dac"]);
+// The GGUF runtime's speech and music load from a GGUF too, so a status may call them one.
+const GGUF_TTS_AUDIO_TYPES = new Set([
+  "snac",
+  "bicodec",
+  "dac",
+  AUDIO_CPP_TTS_AUDIO_TYPE,
+  AUDIO_CPP_MUSIC_AUDIO_TYPE,
+  AUDIO_CPP_SEP_AUDIO_TYPE,
+]);
 const NATIVE_TTS_AUDIO_TYPES = new Set([
   "higgs_tts2",
   "moss_tts_local",
   "moss_tts_nano",
   "higgs_tts3",
   "minimax_music3",
+  AUDIO_CPP_TTS_AUDIO_TYPE,
+  AUDIO_CPP_MUSIC_AUDIO_TYPE,
+  AUDIO_CPP_SEP_AUDIO_TYPE,
 ]);
 export const MOSS_TTS_FRAMES_PER_SECOND = 12.5;
 export const MOSS_TTS_DEFAULT_SECONDS = 15;
@@ -45,7 +171,7 @@ export const MINIMAX_MUSIC_MAX_FRAMES = 9000;
 export const MINIMAX_MUSIC_MAX_SECONDS =
   MINIMAX_MUSIC_MAX_FRAMES / MINIMAX_MUSIC_FRAMES_PER_SECOND;
 
-export type NativeAudioInstructionsKind = "scene" | "style" | "music";
+export type NativeAudioInstructionsKind = "scene" | "style" | "voice" | "music";
 
 export function nativeAudioInstructionsKind(
   audioType?: string | null,
@@ -56,10 +182,34 @@ export function nativeAudioInstructionsKind(
   if (audioType === "moss_tts_local") {
     return "style";
   }
-  if (audioType === "minimax_music3") {
+  // Forwarded as the runtime's instruction; families without one ignore it.
+  if (audioType === AUDIO_CPP_TTS_AUDIO_TYPE) {
+    return "voice";
+  }
+  if (
+    audioType === "minimax_music3" ||
+    audioType === AUDIO_CPP_MUSIC_AUDIO_TYPE
+  ) {
     return "music";
   }
   return null;
+}
+
+/** The music length range the loaded model honours. The GGUF runtime clamps tighter than the
+ *  MiniMax Music 3 pipeline; both take the same 25 frames per second. */
+export function musicDurationRange(requiresCuda: boolean): {
+  min: number;
+  max: number;
+} {
+  return requiresCuda
+    ? { min: 1, max: MINIMAX_MUSIC_MAX_SECONDS }
+    : { min: AUDIO_CPP_MUSIC_MIN_SECONDS, max: AUDIO_CPP_MUSIC_MAX_SECONDS };
+}
+
+/** Whether temperature and token length reach the model. GGUF runtime speech keeps each
+ *  family's own sampling and lets the server bound the length, so both would be ignored. */
+export function audioSamplingControlsApply(audioType?: string | null): boolean {
+  return audioType !== AUDIO_CPP_TTS_AUDIO_TYPE;
 }
 
 export function minimaxMusicFramesForSeconds(seconds: number): number {
@@ -135,6 +285,7 @@ type SttDownloadedStatus = {
   transformers?: { downloaded_models?: readonly string[] };
   gguf?: { downloaded_models?: readonly string[] };
   mtmd?: { downloaded_models?: readonly string[] };
+  audiocpp?: { downloaded_models?: readonly string[] };
 };
 
 export interface SttDownloadedArtifact {
@@ -143,9 +294,9 @@ export interface SttDownloadedArtifact {
   engine: SttEngine;
 }
 
-/** Engine-qualified picker artifacts for every locally loadable checkpoint. Whisper
- * uses one short key for distinct Transformers and whisper.cpp downloads, so engine
- * provenance must survive this boundary. */
+/** Engine-qualified picker artifacts for every locally loadable checkpoint. Whisper uses one
+ *  short key for distinct Transformers and whisper.cpp downloads, so engine provenance must
+ *  survive this boundary. */
 export function sttDownloadedArtifacts(
   status: SttDownloadedStatus,
   repoIdForSidecarKey: (sidecarKey: string, engine: SttEngine) => string,
@@ -157,6 +308,7 @@ export function sttDownloadedArtifacts(
     ["transformers", status.transformers],
     ["gguf", status.gguf],
     ["mtmd", status.mtmd],
+    ["audiocpp", status.audiocpp],
   ];
   for (const [engine, block] of blocks) {
     for (const sidecarKey of block?.downloaded_models ?? []) {
@@ -170,9 +322,8 @@ export function sttDownloadedArtifacts(
   return artifacts;
 }
 
-/** Catalog contracts win; uncurated ASR rows route from the inventory task in picker
- * metadata. Unknown and TTS-tagged community repos keep the main-slot path for
- * load-time capability validation. */
+/** Catalog contracts win; uncurated ASR rows route from the inventory task in picker metadata.
+ *  Unknown and TTS-tagged community repos keep the main-slot path for load-time validation. */
 export function resolveAudioPickTask(
   catalogTask: AudioPickTask,
   pipelineTag?: string | null,
@@ -183,15 +334,22 @@ export function resolveAudioPickTask(
   );
 }
 
-/** Generation can be cancelled as part of a mode transition. Model lifecycle
- * and transcription operations must settle before their controls disappear. */
-export function canTransitionAudioMode(busy: AudioBusy): boolean {
-  return busy === null || busy === "generating";
+/** Generation can be cancelled as part of a mode transition. Model lifecycle and transcription
+ *  operations must settle before their controls disappear. */
+export function canTransitionAudioMode(
+  busy: AudioBusy,
+  generationPhase: AudioGenerationPhase = busy === "generating"
+    ? "generating"
+    : null,
+): boolean {
+  return (
+    busy === null || (busy === "generating" && generationPhase === "generating")
+  );
 }
 
-/** A managed TTS completion owns auto-load only while the same staging generation is
- * selected in Speak. Downloads continue globally after ownership changes, but their
- * completion must not mutate the main slot. */
+/** A managed TTS completion owns auto-load only while the same staging generation is selected
+ *  in Speak. Downloads continue globally after ownership changes, but their completion must
+ *  not mutate the main slot. */
 export function stagedTtsLoadIsOwned(
   pendingGeneration: number | null,
   currentGeneration: number,
@@ -204,18 +362,47 @@ export function stagedTtsLoadIsOwned(
   );
 }
 
-/** Cached rows sometimes know only the quant label; remote staging always
- * supplies the exact filename. Both are valid backend GGUF selectors. */
+/** Cached rows sometimes know only the quant label; remote staging always supplies the exact
+ *  filename. Both are valid backend GGUF selectors. */
 export function exactGgufLoadSelector(
   meta: Pick<ModelSelectorChangeMeta, "ggufFilename" | "ggufVariant">,
 ): string | null {
   return meta.ggufFilename ?? meta.ggufVariant ?? null;
 }
 
+/** Whether a TTS pick loads through llama.cpp.
+ *
+ * A direct .gguf file and a GGUF repo id carry no variant filename, so the selector
+ * alone misses both. `meta.isGguf` wins where a caller has it; this covers the rest.
+ */
+export function isGgufTtsTarget({
+  repoId,
+  ggufFilename,
+  loadId,
+  isGguf,
+}: {
+  repoId: string;
+  ggufFilename?: string | null;
+  loadId?: string | null;
+  /** The catalog's own answer, when the caller has one. The tests below are
+   * name heuristics, blind to a GGUF repo whose ids do not spell it. */
+  isGguf?: boolean | null;
+}): boolean {
+  const endsWithGguf = (value: string | null | undefined): boolean =>
+    Boolean(value?.toLowerCase().endsWith(".gguf"));
+  return Boolean(
+    isGguf ||
+      ggufFilename ||
+      /(?:^|[-/])gguf(?:$|[-/])/i.test(repoId) ||
+      endsWithGguf(repoId) ||
+      endsWithGguf(loadId),
+  );
+}
+
 export type MacTtsPickAction = "allow" | "use-gguf-sibling" | "reject";
 
-/** MLX has no codec TTS decoder. Curated native PyTorch audio models bypass MLX;
- * other Mac picks still need GGUF or a family GGUF sibling. */
+/** MLX has no codec TTS decoder. Curated native PyTorch audio models bypass MLX; other Mac
+ *  picks still need GGUF or a family GGUF sibling. */
 export function macTtsPickAction({
   isMac,
   isGguf,
@@ -240,9 +427,8 @@ export interface AutoGgufVariant {
   partial?: boolean;
 }
 
-/** Prefer a complete cached quant, then the repo's declared default, then the first
- * exact file: instant Mac fallback when a runnable sibling is present, deterministic
- * otherwise. */
+/** Prefer a complete cached quant, then the repo's declared default, then the first exact file:
+ *  instant Mac fallback when a runnable sibling is present, deterministic otherwise. */
 export function selectAutoGgufVariant<T extends AutoGgufVariant>(
   variants: readonly T[],
   defaultVariant: string | null | undefined,
@@ -276,13 +462,39 @@ export function expectedGgufDownloadBytes(variant: AutoGgufVariant): number {
     : variant.size_bytes;
 }
 
-/** Fold a freshly fetched first page into the list already on screen.
- *
- * The page is authoritative for the newest `page.length` clips and any scrollback below
- * it is kept; replacing outright collapsed a paginated History on every delete and
- * generate, and reselected a different clip. `removedId` drops a clip this client just
- * deleted, which the page can no longer report. `hasMore` is the page's own report of
- * whether the server holds anything older. */
+/** The first `wanted` gallery rows fetched in pages of at most `maxPage`, merged into one page. */
+export async function fetchGalleryWindow<
+  C extends { id: string },
+  P extends { audio: C[]; has_more: boolean },
+  K,
+>(
+  fetchPage: (limit: number, cursor: K | null) => Promise<P>,
+  cursorOf: (page: P) => K | null,
+  wanted: number,
+  maxPage: number,
+  cancelled: () => boolean = () => false,
+): Promise<P> {
+  let page = await fetchPage(Math.min(wanted, maxPage), null);
+  const audio = [...page.audio];
+  const seen = new Set(audio.map((clip) => clip.id));
+  while (audio.length < wanted && page.has_more && !cancelled()) {
+    const cursor = cursorOf(page);
+    if (cursor === null) break;
+    page = await fetchPage(Math.min(maxPage, wanted - audio.length), cursor);
+    if (page.audio.length === 0) break;
+    for (const clip of page.audio) {
+      if (seen.has(clip.id)) continue;
+      seen.add(clip.id);
+      audio.push(clip);
+    }
+  }
+  return { ...page, audio };
+}
+
+/** Fold a freshly fetched first page into the list already on screen. The page is authoritative
+ *  for the newest `page.length` clips and any scrollback below it is kept; replacing outright
+ *  collapsed a paginated History on every delete and reselected a different clip.
+ *  `removedId` drops a clip this client just deleted; `hasMore` is the server's own report. */
 export function mergeGalleryPage<T extends { id: string }>(
   page: readonly T[],
   cached: readonly T[],
@@ -292,19 +504,18 @@ export function mergeGalleryPage<T extends { id: string }>(
   const inPage = new Set(page.map((clip) => clip.id));
   // An empty page means the server holds nothing: a clear from anywhere, not scrollback.
   if (page.length === 0) return { clips: [], stitched: false };
-  // A complete first page IS everything the server holds, so there is no scrollback to
-  // keep: a cached clip below it was deleted by another client or pruned by the size cap,
-  // and stitching it back rendered a row that could never be played again.
+  // A complete first page IS everything the server holds, so there is no scrollback to keep: a
+  // cached clip below it was deleted by another client or pruned by the size cap, and
+  // stitching it back rendered a row that could never be played again.
   if (hasMore === false) return { clips: [...page], stitched: false };
-  // The page is authoritative over the window it covers, so a cached clip inside that
-  // window and absent from the page was deleted by another client and must go. Only what
-  // sits BELOW the page's oldest entry is scrollback. Keying on the position of that
-  // entry, since a clip record carries no cursor of its own.
+  // The page is authoritative over the window it covers, so a cached clip inside that window and
+  // absent from the page was deleted by another client and must go. Only what sits BELOW the
+  // page's oldest entry is scrollback, keyed on that entry's position.
   const oldestInPage = cached.findIndex(
     (clip) => clip.id === page[page.length - 1].id,
   );
-  // Without that boundary the cache cannot prove where safe scrollback begins: an external archive
-  // can shift one unseen row into the page while every earlier row still overlaps.
+  // Without that boundary the cache cannot prove where safe scrollback begins: an external
+  // archive can shift one unseen row into the page while every earlier row still overlaps.
   if (oldestInPage === -1 && cached.length > 0) {
     return { clips: [...page], stitched: false };
   }
@@ -315,8 +526,7 @@ export function mergeGalleryPage<T extends { id: string }>(
   return { clips: [...page, ...tail], stitched: tail.length > 0 };
 }
 
-/** Match the gallery record returned by this generation, never another
- * client's concurrently persisted clip. */
+/** Match the gallery record returned by this generation, never another client's concurrently persisted clip. */
 export function persistedClipForGeneration<T extends { id: string }>(
   clipId: string | null | undefined,
   refreshed: readonly T[],
@@ -348,12 +558,13 @@ type SttResidencyStatus = SttEngineResidency & {
   transformers?: SttEngineResidency;
   gguf?: SttEngineResidency;
   mtmd?: SttEngineResidency;
+  audiocpp?: SttEngineResidency;
 };
 
-/** Resolve the resident model from the engine-aware status shape. The legacy top-level
- * fields mirror Transformers only, so reading them for Qwen3-ASR or whisper.cpp clears a
- * model that is actually ready. While the selected engine is pending, do not let an
- * older model on another engine steal the selector. */
+/** Resolve the resident model from the engine-aware status shape. The legacy top-level fields
+ *  mirror Transformers only, so reading them for Qwen3-ASR or whisper.cpp clears a model that
+ *  is actually ready. While the selected engine is pending, an older model on another engine
+ *  must not steal the selector. */
 export function resolveSttLoadedModel(
   status: SttResidencyStatus,
   selectedEngine: SttEngine | null,
@@ -369,19 +580,17 @@ export interface SttResidency {
   engine: SttEngine;
 }
 
-/** Resolve model and owning engine together; equal Whisper short keys do not
- * identify which runtime is resident. */
+/** Resolve model and owning engine together; equal Whisper short keys do not identify which runtime is resident. */
 export function resolveSttResidency(
   status: SttResidencyStatus,
   selectedEngine: SttEngine | null,
   preserveSelected: boolean,
 ): SttResidency | null {
-  // A whisper.cpp pick on a host without whisper-server is deliberately served, and
-  // loaded, through Transformers, so its residency lives in that block. Same fallback
-  // sttEngineStatusFor applies; the engine reported stays the selected one, because that
-  // is what the user picked and what the backend routes. Without this the refresh that
-  // completes the load found nothing (it runs while preserveSelected is true) and the
-  // Transcribe controls stayed disabled until the page was left and revisited.
+  // A whisper.cpp pick on a host without whisper-server is deliberately served through
+  // Transformers, so its residency lives in that block. The engine reported stays the selected
+  // one, since that is what the user picked and what the backend routes; the same
+  // sttEngineStatusFor fallback applies. Without this the refresh completing the load found
+  // nothing, since it runs while preserveSelected is true, and Transcribe stayed disabled.
   const selectedStatus =
     selectedEngine === "transformers" ||
     (selectedEngine === "gguf" && status.gguf?.available === false)
@@ -405,11 +614,14 @@ export function resolveSttResidency(
   if (status.mtmd?.loaded_model) {
     return { model: status.mtmd.loaded_model, engine: "mtmd" };
   }
+  if (status.audiocpp?.loaded_model) {
+    return { model: status.audiocpp.loaded_model, engine: "audiocpp" };
+  }
   return null;
 }
 
-/** Reconcile the picker selection with the sidecar's authoritative status.
- * Preserve a selection only while its load/download is genuinely pending. */
+/** Reconcile the picker selection with the sidecar's authoritative status. Preserve a selection
+ *  only while its load/download is genuinely pending. */
 export function reconcileSttSelection({
   selectedRepo,
   loadedModel,
@@ -442,12 +654,26 @@ export function reconcileSttSelection({
   return preservePending ? selectedRepo : null;
 }
 
-/** Permission prompts cannot be aborted, so freshness is checked immediately
- * after getUserMedia resolves and stale streams are stopped before recording. */
-export function micStreamRequestIsCurrent(
-  requestGeneration: number,
-  currentGeneration: number,
-  active: boolean,
-): boolean {
-  return active && requestGeneration === currentGeneration;
+/**
+ * The line said above Generate when the run will load or switch the model first, so the wait is
+ * expected: "Loads Kokoro for Speak, about 5 s". Null when nothing will load.
+ */
+export function modelLoadNote({
+  model,
+  page,
+  seconds,
+}: {
+  model: string | null;
+  page: string;
+  seconds?: number | null;
+}): string | null {
+  if (!model) return null;
+  const about =
+    seconds !== null &&
+    seconds !== undefined &&
+    Number.isFinite(seconds) &&
+    seconds > 0
+      ? `, about ${Math.max(1, Math.round(seconds))} s`
+      : "";
+  return `Loads ${model} for ${page}${about}`;
 }

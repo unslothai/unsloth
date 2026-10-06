@@ -4,9 +4,7 @@
 import os as _os
 import sys as _sys
 
-# Are we the `unsloth` console script, rather than a library import? Both the
-# stream guard below and the `-np<N>` rewrite further down are entry-point
-# behaviour and must not reach into a host application that imports us.
+# Entry-point-only behaviour (stream guard, -np<N> rewrite): must not reach a host that imports us.
 _entry_base = _os.path.basename(_sys.argv[0]).lower() if _sys.argv else ""
 _is_entry_point = _entry_base in {"unsloth", "unsloth.exe"}
 _windows_studio_mutation_entry = (
@@ -55,19 +53,39 @@ def _reconfigure_entry_point_streams():
 if _is_entry_point:
     _reconfigure_entry_point_streams()
 
+# Before typer and the command imports: notebooks run this right after `pip install --no-deps unsloth`.
+# `-m` alone could be a host package that imports us, so name the module it runs.
+_orig_argv = getattr(_sys, "orig_argv", [])
+_runs_unsloth_cli = "-munsloth_cli" in _orig_argv or any(
+    a == "-m" and b == "unsloth_cli" for a, b in zip(_orig_argv, _orig_argv[1:])
+)
+if (_is_entry_point or (_entry_base == "-m" and _runs_unsloth_cli)) and _sys.argv[1:2] == [
+    "install-kernels"
+]:
+    from unsloth_cli._install_kernels import main as _install_kernels_main
+    from unsloth_cli._ssl_keylog import drop_unwritable_ssl_keylog_file
+
+    # The availability probe and the installers open HTTPS clients.
+    drop_unwritable_ssl_keylog_file()
+    _sys.exit(_install_kernels_main(_sys.argv[2:]))
+
 from unsloth_cli._system_dir_guard import check_working_directory as _check_working_directory
 
-# Running from System32 or any subdir WILL cause errors if not prevented. A
-# command the folder cannot affect (the ones Unsloth Desktop spawns, issue #8510)
-# moves out of it; everything else stops in the callback below.
-#
-# Before the command imports, since unsloth_cli.commands.studio resolves
-# STUDIO_HOME at import time and a relative UNSLOTH_STUDIO_HOME would otherwise
-# be pinned to the folder we are leaving. The message waits for typer to render
-# it. A library import reaches the same check from the callback instead.
+# Running from System32 or a subdir breaks commands; move out before the command imports, since
+# commands.studio resolves STUDIO_HOME at import time (issue #8510).
+# A relative UNSLOTH_STUDIO_HOME would otherwise resolve against System32.
 _startup_guard = (
     _check_working_directory(_sys.argv[1:], _os.environ, _sys.platform) if _is_entry_point else None
 )
+
+from unsloth_cli._ssl_keylog import (
+    drop_unwritable_ssl_keylog_file as _drop_unwritable_ssl_keylog_file,
+)
+
+# After the move out of System32, so a relative path is judged where ssl will open it, and
+# before any command module builds an HTTPS client; the Studio backend's workers inherit it.
+if _is_entry_point:
+    _drop_unwritable_ssl_keylog_file()
 
 import typer
 from importlib.metadata import version as package_version, PackageNotFoundError
@@ -81,6 +99,7 @@ else:
     from unsloth_cli.commands.chat import chat
     from unsloth_cli.commands.start import start_app
     from unsloth_cli.commands.export import export, list_checkpoints
+    from unsloth_cli.commands.eval import evaluate as eval_command
     from unsloth_cli.commands.studio import (
         run as studio_run,
         studio_app,
@@ -106,18 +125,16 @@ def _prepare_entry_point():
     if _entry_point_prepared:
         return
     _reconfigure_entry_point_streams()
+    _drop_unwritable_ssl_keylog_file()
     _expand_attached_np_short()
-    # Set last, so a raise leaves the work retryable rather than silently
-    # skipped. Neither call can currently raise -- the first swallows everything
-    # and the second is pure argv manipulation -- but the ordering costs nothing.
+    # Set last, so a raise leaves the work retryable rather than silently skipped.
     _entry_point_prepared = True
 
 
-# Canonicalise `-np<N>` only under the `unsloth` console-script;
-# third-party scripts that import unsloth_cli keep their argv intact.
+# Canonicalise `-np<N>` only under the console-script; imports keep their argv intact.
 if _is_entry_point:
     _prepare_entry_point()
-del _entry_base, _is_entry_point
+del _entry_base, _is_entry_point, _orig_argv, _runs_unsloth_cli
 
 
 def show_version(value: bool):
@@ -176,8 +193,7 @@ def _invocation_args(ctx):
         return list(captured)
     if not ctx.invoked_subcommand:
         return _sys.argv[1:]
-    # No capture and no tail to read: assume it holds a path, so an invocation
-    # that cannot be read in full is refused rather than relocated.
+    # No capture and no tail: assume it holds a path, so refuse rather than relocate.
     return [ctx.invoked_subcommand, *(list(getattr(ctx, "args", None) or []) or ["..."])]
 
 
@@ -193,13 +209,11 @@ def main(
         help = "Show version and exit.",
     ),
 ):
-    # Consume the import-time result once: a host calling the app repeatedly can
-    # chdir between calls, so each later call is checked afresh.
+    # Consume the import-time result once: a host can chdir between repeated app() calls.
     global _startup_guard
     _guard, _startup_guard = _startup_guard, None
     if _guard is None:
-        # A host reaches this after commands.studio has resolved STUDIO_HOME at
-        # import time, so moving now would leave that cached root behind.
+        # A host reaches this after commands.studio cached STUDIO_HOME, so moving now strands that root.
         _guard = _check_working_directory(
             _invocation_args(ctx),
             _os.environ,
@@ -219,11 +233,13 @@ if not _windows_studio_mutation_entry:
     app.command()(inference)
     app.command()(chat)
     app.command()(export)
+    app.command("eval")(eval_command)
     app.command("list-checkpoints")(list_checkpoints)
     app.add_typer(
         start_app,
         name = "start",
-        help = "Start a coding agent (Claude, Codex, OpenClaw, OpenCode, Hermes, Pi) against Unsloth.",
+        help = "Start a coding agent (Claude, Codex, OpenClaw, OpenCode, Hermes, Pi, dsh, Vibe) "
+        "against Unsloth.",
     )
     # backwards-compatible hidden alias: `unsloth connect` routes to `unsloth start`.
     app.add_typer(
@@ -233,8 +249,7 @@ if not _windows_studio_mutation_entry:
         help = "Deprecated alias for `unsloth start`.",
     )
 
-    # top-level `unsloth run` aliases `unsloth studio run`; same context
-    # so unknown flags still pass through to llama-server.
+    # top-level `unsloth run` aliases `unsloth studio run`; same context so unknown flags pass through to llama-server.
     app.command(
         "run",
         context_settings = {
@@ -243,3 +258,18 @@ if not _windows_studio_mutation_entry:
         },
         help = "Alias for `unsloth studio run`.",
     )(studio_run)
+
+
+@app.command(
+    "install-kernels",
+    context_settings = {
+        "allow_extra_args": True,
+        "ignore_unknown_options": True,
+        "help_option_names": [],
+    },
+    help = "Install prebuilt xformers / flash-attn / causal_conv1d / mamba_ssm wheels matching the installed torch (all by default).",
+)
+def install_kernels(ctx: typer.Context):
+    # Listed for `unsloth --help`; the console script dispatches before typer is imported.
+    from unsloth_cli._install_kernels import main as _install_kernels_main
+    raise typer.Exit(code = _install_kernels_main(ctx.args))

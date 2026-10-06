@@ -53,6 +53,13 @@ export function getCptUiTargetModules(): readonly string[] {
   return CPT_UI_TARGET_MODULES;
 }
 
+/** all-linear is a chip outside CPT too: model defaults (Qwen3-VL, Qwen3.5, LFM2, ...) ship it. */
+const UI_TARGET_MODULES = ["all-linear", ...TARGET_MODULES] as const;
+
+export function getUiTargetModules(isCpt: boolean): readonly string[] {
+  return isCpt ? CPT_UI_TARGET_MODULES : UI_TARGET_MODULES;
+}
+
 export function isCptTargetModuleActive(
   targetModules: readonly string[],
   module: string,
@@ -132,6 +139,13 @@ export const LR_SCHEDULER_OPTIONS: ReadonlyArray<{
 export const LR_DEFAULT_LORA = 2e-4;
 export const LR_DEFAULT_FULL = 2e-5;
 export const LR_DEFAULT_CPT = 5e-5;
+
+// Also the advanced-settings summary's "unchanged" reference while CPT is selected.
+export const CPT_LORA_HYPERPARAMS = {
+  loraRank: 128,
+  loraAlpha: 32,
+  loraVariant: "rslora",
+} as const;
 
 export const DEFAULT_HYPERPARAMS = {
   epochs: 3,

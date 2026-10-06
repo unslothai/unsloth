@@ -15,10 +15,11 @@
 // message unreachable in the only cases it exists for.
 
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
 import test from "node:test";
 
-const src = await readFile(new URL("../src/app/routes/__root.tsx", import.meta.url), "utf8");
+import { readSrcAsync } from "./helpers/kit.ts";
+
+const src = await readSrcAsync("app/routes/__root.tsx");
 
 function lift(pattern: RegExp, what: string): string {
   const found = pattern.exec(src);

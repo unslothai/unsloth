@@ -24,6 +24,7 @@ if _BACKEND_DIR not in sys.path:
     sys.path.insert(0, _BACKEND_DIR)
 
 import routes.inference as inf  # noqa: E402
+from core.inference import local_model_resolver as resolver
 
 
 @pytest.fixture(autouse = True)
@@ -238,8 +239,6 @@ def test_a_deleted_model_leaves_the_listing_within_the_catalog_ttl(monkeypatch):
     cache can stay standing for the rest of its 30s TTL. Keying on the resolver
     generation is what stops the removed model being advertised for that window, which
     the per-request scan used to drop at once."""
-    from core.inference import local_model_resolver as resolver
-
     catalog = _catalog(2, "d")
     gone: set[str] = set()
 
@@ -260,8 +259,6 @@ def test_a_deleted_model_leaves_the_listing_within_the_catalog_ttl(monkeypatch):
 def test_an_additions_only_invalidation_also_refreshes_the_scan(monkeypatch):
     """A finished download invalidates additions-only, and a new quant must appear
     without waiting out the catalog TTL."""
-    from core.inference import local_model_resolver as resolver
-
     catalog = _catalog(1, "q")
     quants = {"/models/q0": ("Q4_K_M",)}
 
@@ -281,8 +278,6 @@ def test_an_additions_only_invalidation_also_refreshes_the_scan(monkeypatch):
 def test_an_invalidation_during_a_scan_is_not_stamped_in(monkeypatch):
     """The generation is read before the scan, so an invalidation that lands while the
     scan runs makes the stored entry stale rather than being cached as already seen."""
-    from core.inference import local_model_resolver as resolver
-
     catalog = _catalog(1, "r")
     state = {"racing": True}
 
@@ -305,8 +300,6 @@ def test_an_invalidation_during_a_scan_is_not_stamped_in(monkeypatch):
 def test_the_generation_only_moves_on_invalidation(monkeypatch):
     """A quiet process must still get the cache: if the generation drifted on its own,
     every request would rescan and the fix would undo the performance work."""
-    from core.inference import local_model_resolver as resolver
-
     before = resolver.index_generation()
     catalog = _catalog(3, "s")
     monkeypatch.setattr(
@@ -422,8 +415,6 @@ def test_a_generation_bump_while_waiting_for_the_lock_is_not_accepted(monkeypatc
     delete lands during that scan. The scanner stamps its entry with the generation it
     STARTED with, which is correct, so a waiter comparing against the value it captured
     before queueing would be handed rows examined before the delete."""
-    from core.inference import local_model_resolver as resolver
-
     catalog = _catalog(1, "w")
     scanned = {"n": 0}
 
@@ -485,8 +476,6 @@ def test_the_invalidation_helper_stays_off_the_event_loop():
 def test_a_hit_is_rejected_when_the_generation_moves_mid_read(monkeypatch):
     """Seqlock: generation, entry, generation. A delete completing between the first two
     reads was accepted anyway, and the lock-free path is where most requests land."""
-    from core.inference import local_model_resolver as resolver
-
     catalog = _catalog(1, "s")
     scanned = {"n": 0}
 

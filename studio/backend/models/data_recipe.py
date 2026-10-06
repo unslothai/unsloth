@@ -81,7 +81,6 @@ class SeedInspectUploadRequest(BaseModel):
     block_id: str | None = None
     file_ids: list[str] | None = None
     file_names: list[str] | None = None
-    # Shared fields
     preview_size: int = Field(default = 10, ge = 1, le = 50)
     seed_source_type: str | None = None
     unstructured_chunk_size: int | None = Field(default = None, ge = 1, le = 20000)
@@ -122,7 +121,7 @@ class UnstructuredFileUploadResponse(BaseModel):
     file_id: str
     filename: str
     size_bytes: int
-    status: str  # "ok" or "error"
+    status: str
     error: str | None = None
 
 

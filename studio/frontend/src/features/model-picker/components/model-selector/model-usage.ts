@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Tracks when each model was last loaded so the "Recent" sort can order by usage
-// (distinct from "Downloaded", which orders by the file's download date). Kept in
-// localStorage; ids are lowercased to match how the picker compares them.
+// Tracks when each model was last loaded so the "Recent" sort can order by usage, distinct from
+// "Downloaded", which orders by the file's download date. Kept in localStorage; ids are
+// lowercased to match how the picker compares them.
 
 import { useEffect, useState } from "react";
 

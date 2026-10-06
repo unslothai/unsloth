@@ -44,19 +44,16 @@
  */
 
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import test from "node:test";
-import { fileURLToPath } from "node:url";
 
 import ts from "typescript";
 
 import { openingTag } from "./helpers/tsx-ast.ts";
 
-const read = (rel: string): string =>
-  readFileSync(fileURLToPath(new URL(rel, import.meta.url)), "utf8");
+import { readText } from "./helpers/kit.ts";
 
 const parse = (rel: string): ts.SourceFile =>
-  ts.createSourceFile(rel, read(rel), ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
+  ts.createSourceFile(rel, readText(rel), ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
 
 /** Every string literal in the file, so a className built by `cn(...)` is covered too. */
 const stringLiterals = (source: ts.SourceFile): string[] => {
@@ -235,4 +232,11 @@ test("data-chat-model-notice is on the root element ChatModelNotice returns", ()
     "no return in chat-model-notice.tsx yields a root element carrying "
       + "data-chat-model-notice, so has-[>[data-chat-model-notice]] cannot match",
   );
+});
+
+test("index.css has no descendant-argument :has() on the panels that hold the thread", () => {
+  const css = readText("../src/index.css");
+  const offenders =
+    css.match(/(?:#chat-thread|\.chat-artifact-split|\.chat-thread-pane)[^{},]*:has\((?!\s*>)/g) ?? [];
+  assert.deepEqual(offenders, [], `descendant-argument :has() on a thread ancestor: ${offenders.join(" | ")}`);
 });

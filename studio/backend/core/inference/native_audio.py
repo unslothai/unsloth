@@ -25,6 +25,7 @@ remote-code security gates have run.
 from __future__ import annotations
 
 import gc
+from utils.gpu_memory_events import invalidates_gpu_memory as _invalidates_gpu_memory
 import io
 import json
 import logging
@@ -33,7 +34,7 @@ import sys
 import tempfile
 import threading
 from contextlib import contextmanager
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any, Optional, Tuple
 
 logger = logging.getLogger(__name__)
@@ -55,7 +56,10 @@ NATIVE_AUDIO_MODEL_TYPES = {
     "minimax_music3": "minimax_music3",
 }
 
-NATIVE_AUDIO_TYPES = frozenset(NATIVE_AUDIO_MODEL_TYPES.values())
+# audio.cpp speech and music models ride the same worker path; their weights run in audiocpp_server.
+from core.inference.audio_cpp_models import AUDIO_CPP_AUDIO_TYPES  # noqa: E402
+
+NATIVE_AUDIO_TYPES = frozenset(NATIVE_AUDIO_MODEL_TYPES.values()) | AUDIO_CPP_AUDIO_TYPES
 REMOTE_CODE_AUDIO_TYPES = frozenset(("moss_tts_local", "moss_tts_nano", "higgs_tts3"))
 PYTHON310_AUDIO_TYPES = frozenset(("higgs_tts2", "higgs_tts3", "minimax_music3"))
 MOSS_LOCAL_CODEC_REPO = "OpenMOSS-Team/MOSS-Audio-Tokenizer-v2"
@@ -92,20 +96,141 @@ def _minimax_lyrics_for_pipeline(lyrics: str) -> str:
     return "\n".join(normalized)
 
 
-_MINIMAX_DOWNLOAD_COMPONENTS = frozenset(
-    (
-        "condition_encoder",
-        "language_model",
-        "rvq_depth_decoder",
-        "scheduler",
-        "tokenizer",
-        "transformer",
-        "vocoder",
-    )
-)
+_MINIMAX_COMPONENT_SPECS = {
+    "condition_encoder": ("diffusers", "MiniMaxMusic3ConditionEncoder", "diffusion_pytorch_model"),
+    "language_model": ("transformers", "Qwen3ForCausalLM", "model"),
+    "rvq_depth_decoder": (
+        "diffusers",
+        "MiniMaxMusic3RVQDepthDecoder",
+        "diffusion_pytorch_model",
+    ),
+    "scheduler": ("diffusers", "FlowMatchEulerDiscreteScheduler", None),
+    "tokenizer": ("transformers", "Qwen2Tokenizer", None),
+    "transformer": (
+        "diffusers",
+        "MiniMaxMusic3Transformer1DModel",
+        "diffusion_pytorch_model",
+    ),
+    "vocoder": ("diffusers", "MiniMaxMusic3Vocoder", "diffusion_pytorch_model"),
+}
+_MINIMAX_DOWNLOAD_COMPONENTS = frozenset(_MINIMAX_COMPONENT_SPECS)
 _MOSS_CONFIG_COMPAT_LOCK = threading.Lock()
 _MOSS_NANO_SAVE_LOCK = threading.Lock()
 _MAX_AUDIO_METADATA_BYTES = 1_000_000
+_MAX_MINIMAX_TOKENIZER_BYTES = 32 * 1024 * 1024
+
+
+def _minimax_component_has_weights(directory: Path, weight_stem: str) -> bool:
+    try:
+        index_path = directory / f"{weight_stem}.safetensors.index.json"
+        indexes = (index_path,) if index_path.is_file() else ()
+    except OSError:
+        return False
+    for index_path in indexes:
+        try:
+            if (
+                index_path.stat().st_size <= 0
+                or index_path.stat().st_size > _MAX_AUDIO_METADATA_BYTES
+            ):
+                continue
+            index = json.loads(index_path.read_text(encoding = "utf-8-sig"))
+            weight_map = index.get("weight_map") if isinstance(index, dict) else None
+            if not isinstance(weight_map, dict) or not weight_map:
+                continue
+            shards = set(weight_map.values())
+            if not all(isinstance(shard, str) and shard for shard in shards):
+                continue
+            complete = True
+            for shard in shards:
+                posix = PurePosixPath(shard.replace("\\", "/"))
+                windows = PureWindowsPath(shard)
+                if (
+                    posix.is_absolute()
+                    or ".." in posix.parts
+                    or windows.is_absolute()
+                    or windows.drive
+                    or posix.suffix.lower() != ".safetensors"
+                ):
+                    complete = False
+                    break
+                target = directory.joinpath(*posix.parts)
+                if not target.is_file() or target.stat().st_size <= 0:
+                    complete = False
+                    break
+            if complete:
+                return True
+        except (OSError, TypeError, ValueError, RecursionError):
+            continue
+    if indexes:
+        return False
+    try:
+        weights = directory / f"{weight_stem}.safetensors"
+        return weights.is_file() and weights.stat().st_size > 0
+    except OSError:
+        return False
+
+
+def higgs_tts2_codec_local_complete(codec_path: str) -> bool:
+    try:
+        root = Path(codec_path).expanduser()
+        if root.is_file():
+            root = root.parent
+        config = _read_local_audio_metadata(root, "config.json", reject_oversized = True)
+        return str(
+            config.get("model_type") or ""
+        ).lower() == "higgs_audio_v2_tokenizer" and _minimax_component_has_weights(root, "model")
+    except (OSError, TypeError, ValueError, json.JSONDecodeError):
+        return False
+
+
+def minimax_music3_local_components_complete(model_path) -> bool:
+    try:
+        root = Path(model_path).expanduser()
+        if root.is_file():
+            root = root.parent
+        index = _read_local_audio_metadata(root, "modular_model_index.json")
+        for component in _MINIMAX_DOWNLOAD_COMPONENTS:
+            entry = index.get(component)
+            expected_library, expected_class, weight_stem = _MINIMAX_COMPONENT_SPECS[component]
+            metadata = (
+                next(
+                    (part for part in entry if isinstance(part, dict)),
+                    None,
+                )
+                if isinstance(entry, list)
+                else None
+            )
+            if (
+                not isinstance(entry, list)
+                or len(entry) < 3
+                or entry[:2] != [expected_library, expected_class]
+                or not isinstance(metadata, dict)
+                or metadata.get("subfolder") != component
+            ):
+                return False
+            directory = root / component
+            if weight_stem is not None:
+                if not _read_local_audio_metadata(directory, "config.json", reject_oversized = True):
+                    return False
+                if not _minimax_component_has_weights(directory, weight_stem):
+                    return False
+            elif component == "scheduler":
+                if not _read_local_audio_metadata(
+                    directory, "scheduler_config.json", reject_oversized = True
+                ):
+                    return False
+            elif not _read_local_audio_metadata(
+                directory, "tokenizer_config.json", reject_oversized = True
+            ) or not _read_local_audio_metadata(
+                directory,
+                "tokenizer.json",
+                reject_oversized = True,
+                max_bytes = _MAX_MINIMAX_TOKENIZER_BYTES,
+            ):
+                return False
+        return True
+    except (OSError, TypeError, ValueError):
+        return False
 
 
 class _AudioMetadataTooLarge(ValueError):
@@ -117,16 +242,17 @@ def _read_local_audio_metadata(
     filename: str,
     *,
     reject_oversized: bool = False,
+    max_bytes: int = _MAX_AUDIO_METADATA_BYTES,
 ) -> dict[str, Any]:
     metadata_path = path / filename
     if not metadata_path.is_file():
         return {}
     with metadata_path.open("rb") as handle:
-        raw = handle.read(_MAX_AUDIO_METADATA_BYTES + 1)
-    if len(raw) > _MAX_AUDIO_METADATA_BYTES:
+        raw = handle.read(max_bytes + 1)
+    if len(raw) > max_bytes:
         if reject_oversized:
             raise _AudioMetadataTooLarge(
-                f"{filename} exceeds the {_MAX_AUDIO_METADATA_BYTES}-byte security inspection limit."
+                f"{filename} exceeds the {max_bytes}-byte security inspection limit."
             )
         return {}
     value = json.loads(raw.decode("utf-8-sig"))
@@ -257,7 +383,31 @@ def _native_audio_type(model_name: str) -> Optional[str]:
     curated = NATIVE_AUDIO_MODEL_IDS.get(normalized.lower())
     if curated:
         return curated
+    audio_cpp_type = audio_cpp_audio_type(normalized)
+    if audio_cpp_type:
+        return audio_cpp_type
     return native_audio_type_from_local_path(normalized)
+
+
+def audio_cpp_audio_type(model_name: str) -> Optional[str]:
+    """The audio_type of an audio.cpp speech or music id, from the HF cache alone.
+
+    Only ids that name the umbrella repo, a legacy key, or a repo this process already
+    resolved are looked at, so an ordinary model name costs nothing here.
+    """
+    from core.inference.audio_cpp_models import looks_like_audio_cpp, resolve
+
+    if not looks_like_audio_cpp(model_name):
+        return None
+    try:
+        model = resolve(model_name, network = False)
+    except Exception:  # noqa: BLE001 - a probe never fails its caller
+        return None
+    return model.audio_type if model is not None else None
+
+
+def is_audio_cpp_audio_model(model_name: str) -> bool:
+    return audio_cpp_audio_type(model_name) is not None
 
 
 def is_native_audio_model(model_name: str) -> bool:
@@ -275,6 +425,11 @@ def native_audio_security_targets(
     hf_token: Optional[str] = None,
 ) -> list[str]:
     """Repositories whose code or weights are loaded for this audio model."""
+    from core.inference.audio_cpp_models import AUDIO_CPP_AUDIO_TYPES, looks_like_audio_cpp, repo_of
+
+    if audio_type in AUDIO_CPP_AUDIO_TYPES or looks_like_audio_cpp(model_name):
+        # An umbrella id names a subfolder; the weights, and so the scan, belong to the repo that holds it.
+        return [repo_of(model_name) or model_name]
     targets = [model_name]
     resolved_type = audio_type or _native_audio_type(model_name)
     if resolved_type == "moss_tts_local":
@@ -548,11 +703,17 @@ def native_audio_download_plan(model_name: str, hf_token: Optional[str] = None) 
     normalized = str(model_name or "").strip()
     if not normalized:
         raise ValueError("A model repository is required.")
+    from core.inference.audio_cpp_models import looks_like_audio_cpp
+
+    if looks_like_audio_cpp(normalized):
+        raise ValueError(
+            "This is a GGUF model: download it as a GGUF variant from the model picker or the Model Hub."
+        )
     local_checkpoint = Path(normalized).expanduser().exists()
     audio_type = _native_audio_type(normalized)
     if audio_type in PYTHON310_AUDIO_TYPES and sys.version_info < (3, 10):
         family = "Higgs TTS" if audio_type.startswith("higgs_") else "MiniMax Music 3"
-        raise ValueError(f"{family} requires Python 3.10 or newer in Studio.")
+        raise ValueError(f"{family} requires Python 3.10 or newer in Unsloth.")
     if local_checkpoint and audio_type is None:
         return {
             "entries": [],
@@ -671,10 +832,15 @@ def _as_wav_bytes(audio, sample_rate: int) -> bytes:
 class NativeAudioBackend:
     """One-model backend for the five curated native audio architectures."""
 
-    def __init__(self) -> None:
+    def __init__(self, device_preference: Optional[str] = None) -> None:
         import torch
 
-        if torch.cuda.is_available():
+        from core.inference.audio_device import audio_device_forces_cpu
+
+        self.device_preference = device_preference
+        if audio_device_forces_cpu(device_preference):
+            self.device = "cpu"
+        elif torch.cuda.is_available():
             self.device = "cuda"
         elif hasattr(torch, "xpu") and torch.xpu.is_available():
             self.device = "xpu"
@@ -688,7 +854,9 @@ class NativeAudioBackend:
         self.loading_models: set[str] = set()
 
     @staticmethod
-    def _token_kwargs(hf_token: Optional[str]) -> dict[str, str]:
+    def _token_kwargs(hf_token: Optional[str] | bool) -> dict[str, str | bool]:
+        if hf_token is False:
+            return {"token": False}
         token = str(hf_token or "").strip()
         return {"token": token} if token else {}
 
@@ -696,8 +864,12 @@ class NativeAudioBackend:
         import torch
 
         if self.device == "cuda":
-            if getattr(torch.version, "hip", None):
-                supports_bf16 = torch.cuda.is_bf16_supported()
+            from .rocm_bf16 import is_rocm_torch, rocm_bf16_supported
+            if is_rocm_torch(torch):
+                try:
+                    supports_bf16 = rocm_bf16_supported(torch)
+                except Exception:
+                    supports_bf16 = False
             else:
                 try:
                     major, _minor = torch.cuda.get_device_capability()
@@ -772,6 +944,7 @@ class NativeAudioBackend:
         torch.backends.cuda.enable_math_sdp(True)
         torch.backends.cuda.enable_cudnn_sdp(False)
 
+    @_invalidates_gpu_memory("audio load")
     def load_model(
         self,
         config,
@@ -798,6 +971,14 @@ class NativeAudioBackend:
                 "multi-GPU sharding is not supported yet."
             )
         if audio_type == "minimax_music3" and self.device != "cuda":
+            # Chosen, not missing: the generic message sends users hunting for a card.
+            from core.inference.audio_device import audio_device_forces_cpu
+            if audio_device_forces_cpu(self.device_preference):
+                raise RuntimeError(
+                    "MiniMax Music 3 cannot be loaded into CPU RAM: its official local "
+                    "runtime requires an NVIDIA CUDA GPU. Set the audio device back to "
+                    "Auto (or GPU) to load this model."
+                )
             raise RuntimeError(
                 "MiniMax Music 3 currently requires an NVIDIA CUDA GPU in its official "
                 "local runtime. It is not available on CPU, Apple Silicon, AMD, or Intel XPU."
@@ -810,7 +991,7 @@ class NativeAudioBackend:
                     "its official local runtime does not support AMD ROCm."
                 )
         if audio_type == "minimax_music3" and sys.version_info < (3, 10):
-            raise RuntimeError("MiniMax Music 3 requires Python 3.10 or newer in Studio.")
+            raise RuntimeError("MiniMax Music 3 requires Python 3.10 or newer in Unsloth.")
 
         if model_name in self.models:
             self.active_model_name = model_name
@@ -959,7 +1140,7 @@ class NativeAudioBackend:
         from diffusers import ModularPipeline
 
         token_kwargs = self._token_kwargs(hf_token)
-        pipeline = ModularPipeline.from_pretrained(source, **token_kwargs)
+        pipeline = ModularPipeline.from_pretrained(source, trust_remote_code = False, **token_kwargs)
         pipeline.load_components(
             pretrained_model_name_or_path = source,
             dtype = self._dtype(),
@@ -1306,6 +1487,7 @@ class NativeAudioBackend:
                 cancel_hook.remove()
         return audio, entry["sample_rate"]
 
+    @_invalidates_gpu_memory("audio unload")
     def unload_model(self, model_name: str) -> bool:
         entry = self.models.pop(model_name, None)
         if entry is not None:

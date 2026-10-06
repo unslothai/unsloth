@@ -330,15 +330,10 @@ def ensure_managed_environment_is_idle(studio_home: Path) -> None:
         if int(process.get("ProcessId") or -1) > 0
     }
 
-    # The updater may itself have been entered through the managed console shim,
-    # so exempt verified launcher ancestors only: a managed backend that starts
-    # an update as its child must still block replacement.
-    #
-    # venv\Scripts\python.exe is a redirector (bpo-34977): it starts base Python
-    # as a child and waits, so a venv launch arrives as python.exe -> us. Our
-    # image is then the base interpreter while sys.executable still names the
-    # redirector, which identifies our direct parent as that launcher rather
-    # than a live consumer. Exempt that one hop only; above it must be a shim.
+    # Exempt verified launcher ancestors only: a managed backend starting an update as its child must
+    # still block replacement.
+    # venv Scripts\python.exe is a redirector (bpo-34977), so exempt that one hop: our image is base
+    # Python while sys.executable names the shim.
     excluded_pids = {os.getpid()}
     descendant_pid = os.getpid()
     self_executable = (process_by_pid.get(os.getpid()) or {}).get("ExecutablePath")

@@ -61,15 +61,14 @@ def context():
             b = p.chromium.launch(args = ["--no-sandbox"])
         except Exception as exc:  # noqa: BLE001
             pytest.skip(f"chromium could not be launched: {exc}")
-        # The real harness's browser factory requests the same two. Without them the clipboard
-        # read-back throws and the reading is "could not be measured", which is exactly the
-        # NOT COMPARABLE outcome the scoring layer now produces rather than a pass.
+        # The real harness's browser factory requests the same two. Without them the clipboard read-back
+        # throws and the reading is "could not be measured", which is the NOT COMPARABLE outcome the
+        # scoring layer produces rather than a pass.
         ctx = b.new_context(permissions = ["clipboard-read", "clipboard-write"])
-        # `navigator.clipboard` DOES NOT EXIST outside a secure context, and `set_content` leaves
-        # the page on about:blank, which is not one. The reading came back as
-        # "Cannot read properties of undefined" rather than as an empty clipboard, which would have
-        # been easy to misread as "the copy did not work". Fulfilled from a route so no server is
-        # needed and no network is touched.
+        # `navigator.clipboard` DOES NOT EXIST outside a secure context, and `set_content` leaves the page
+        # on about:blank, which is not one. The reading came back as "Cannot read properties of undefined"
+        # rather than as an empty clipboard, which would have been easy to misread. Fulfilled from a route
+        # so no server is needed.
         ctx.grant_permissions(["clipboard-read", "clipboard-write"], origin = ORIGIN)
         yield ctx
         ctx.close()
@@ -105,8 +104,7 @@ def _page(context, mode: str, copy_from_store: bool):
 
 
 #: Exactly what scene/actions.select_all_copy does: focus the viewport, select its contents, then a
-#: REAL Control+C so the app's own copy handler runs. Anything else would be testing a different
-#: code path from the one the benchmark drives.
+#: REAL Control+C so the app's own copy handler runs.
 SELECT_JS = """
 async () => {
   const v = window.__sb.dom.viewport();
@@ -180,8 +178,8 @@ def test_the_handler_puts_the_whole_conversation_on_the_clipboard(context):
         page.close()
     assert got["mounted"] == WINDOW < got["total"] == MESSAGES
     assert _markers_present(got["clipboard"]) == TURNS, got["clipboard"][:400]
-    # The selection is still short, and that is correct: it can only cover mounted nodes. This is
-    # the reading the old alarm was wired to, and it is why the alarm had to be moved.
+    # The selection is still short, and that is correct: it can only cover mounted nodes. This is the
+    # reading the old alarm was wired to, and why the alarm had to be moved.
     assert got["selected_chars"] < got["clipboard_chars"]
 
 
@@ -226,6 +224,6 @@ def test_a_partial_selection_is_not_replaced_by_the_whole_conversation(context):
         assert clip != "SENTINEL"
         assert len(clip) < 1000, clip[:300]
     else:
-        # Chromium gave no selection for an off-screen row, so no copy was performed at all. Said
-        # out loud rather than passed silently: this run did not exercise the substitution guard.
+        # Chromium gave no selection for an off-screen row, so no copy was performed at all. Said out loud
+        # rather than passed silently: this run did not exercise the substitution guard.
         assert clip == "SENTINEL"

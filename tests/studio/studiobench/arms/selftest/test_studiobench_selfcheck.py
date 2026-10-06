@@ -35,8 +35,9 @@ from studiobench.instruments.selfcheck import (  # noqa: E402
 from studiobench.scoring.schema import EXCLUSION_REASONS, check_exclusion_reasons  # noqa: E402
 
 
-# ---------------------------------------------------------------------------------------
 # the injected stall
+
+
 # ---------------------------------------------------------------------------------------
 
 
@@ -58,8 +59,9 @@ def test_no_stall_reading_at_all_is_a_failure_not_a_pass():
     assert gate.measured.has_reading is False
 
 
-# ---------------------------------------------------------------------------------------
 # the injected input delay
+
+
 # ---------------------------------------------------------------------------------------
 
 
@@ -73,8 +75,9 @@ def test_an_input_path_that_does_not_move_is_not_measuring_input():
     assert "will not move when the app gets slower" in gate.detail
 
 
-# ---------------------------------------------------------------------------------------
 # scene contrast: the blindness check
+
+
 # ---------------------------------------------------------------------------------------
 
 
@@ -88,8 +91,9 @@ def test_an_instrument_that_cannot_tell_heavy_from_trivial_is_blind():
     assert "BLIND" in gate.detail
 
 
-# ---------------------------------------------------------------------------------------
 # longtask support
+
+
 # ---------------------------------------------------------------------------------------
 
 
@@ -109,8 +113,9 @@ def test_an_unreadable_support_list_is_recorded_and_not_guessed():
     assert gate.fatal is False
 
 
-# ---------------------------------------------------------------------------------------
 # the clock-pair control ratio
+
+
 # ---------------------------------------------------------------------------------------
 
 
@@ -124,8 +129,9 @@ def test_a_moving_control_ratio_means_the_measurement_moved():
     assert "the MEASUREMENT moved, not the page" in gate.detail
 
 
-# ---------------------------------------------------------------------------------------
 # three-clock agreement
+
+
 # ---------------------------------------------------------------------------------------
 
 
@@ -188,8 +194,9 @@ def test_clock_disagreement_is_a_declared_exclusion_reason():
     assert "clock_disagreement" in EXCLUSION_REASONS
 
 
-# ---------------------------------------------------------------------------------------
 # the whole gate set
+
+
 # ---------------------------------------------------------------------------------------
 
 
@@ -291,7 +298,7 @@ def test_the_injection_script_burns_only_on_sse_chunks():
 
     js = stream_cost_injection_init_script(3.0)
     assert 'indexOf("data:")' in js
-    # Queued, not inline: the burn has to land inside the measured chain whichever TextDecoder
-    # wrapper ended up outermost.
+    # Queued, not inline: the burn has to land inside the measured chain whichever TextDecoder wrapper
+    # ended up outermost.
     assert "queueMicrotask" in js
     assert "3.0" in js

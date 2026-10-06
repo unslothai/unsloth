@@ -12,6 +12,8 @@ model config or path containing ``ä ö ü → 世`` mojibakes or raises
 
 from __future__ import annotations
 
+import sys
+import subprocess
 import ast
 import importlib.util
 import json
@@ -22,10 +24,22 @@ from types import SimpleNamespace
 import pytest
 
 
+def _shared_setup_1(__file__):
+    import sys
+    backend = str(Path(__file__).resolve().parent.parent)
+    if backend not in sys.path:
+        sys.path.insert(0, backend)
+
+
 BACKEND_ROOT = Path(__file__).resolve().parent.parent
 
 # Not runtime source. Shipped plugins under plugins/*/src are, so only builds are skipped.
 _SKIPPED_DIRS = ("node_modules", "build", "tests", "__pycache__")
+
+# Vendored packages kept byte-identical to their wheel and pinned by per-file hashes
+# (vendor/README.md), mapped to the loader that gives their modules a UTF-8 `open`. They are
+# fixed there, not in place; test_vendored_laya_reads_utf8_config_under_a_non_utf8_locale checks it.
+_UTF8_BY_LOADER = {"vendor/laya": "core/systemone/laya_runtime.py"}
 
 # Path.open()'s signature is what tells it apart from other libraries' open(),
 # e.g. fitz.open(stream=...) and av.open(..., metadata_errors=...).
@@ -46,6 +60,10 @@ def _studio_sources() -> list[Path]:
         path
         for path in sorted(BACKEND_ROOT.rglob("*.py"))
         if not any(part in _SKIPPED_DIRS for part in path.relative_to(BACKEND_ROOT).parts)
+        and not any(
+            path.relative_to(BACKEND_ROOT).as_posix().startswith(prefix + "/")
+            for prefix in _UTF8_BY_LOADER
+        )
     ]
 
 
@@ -550,11 +568,7 @@ def test_an_undecodable_transport_marker_reads_as_unknown(tmp_path: Path) -> Non
     simply read as an unknown value and the caller safely purged and restarted
     the partial download; letting the error escape aborts the transfer instead.
     """
-    import sys
-
-    backend = str(Path(__file__).resolve().parent.parent)
-    if backend not in sys.path:
-        sys.path.insert(0, backend)
+    _shared_setup_1(__file__)
     from hub.utils import download_registry as registry
 
     marker = tmp_path / ".transport"
@@ -570,11 +584,7 @@ def test_a_torn_cache_ref_reads_as_not_cached(tmp_path: Path, monkeypatch) -> No
     offline embedding checks turn a raise into a 500. A refs/main holding a byte
     the codepage used to decode into a nonsense commit simply missed the snapshot
     dir before the pin; it has to keep missing it."""
-    import sys
-
-    backend = str(Path(__file__).resolve().parent.parent)
-    if backend not in sys.path:
-        sys.path.insert(0, backend)
+    _shared_setup_1(__file__)
     from utils import utils as backend_utils
 
     good_root = tmp_path / "good"
@@ -596,11 +606,7 @@ def test_a_torn_cache_ref_reads_as_not_cached(tmp_path: Path, monkeypatch) -> No
 def test_a_corrupt_pid_file_does_not_abort_shutdown(tmp_path: Path, monkeypatch) -> None:
     """_remove_pid_file runs first in _graceful_shutdown, so a raise there leaves
     the inference, export, training and tunnel children alive."""
-    import sys
-
-    backend = str(Path(__file__).resolve().parent.parent)
-    if backend not in sys.path:
-        sys.path.insert(0, backend)
+    _shared_setup_1(__file__)
     import run as studio_run
 
     pid_file = tmp_path / "studio.pid"
@@ -622,11 +628,7 @@ def test_a_corrupt_pid_file_does_not_abort_shutdown(tmp_path: Path, monkeypatch)
 def test_the_legacy_pid_record_is_handed_to_a_live_sibling(tmp_path: Path, monkeypatch) -> None:
     """Only one server owns studio.pid, so deleting it while a sibling still serves would leave
     that sibling unstoppable from an older CLI that reads no other file."""
-    import sys
-
-    backend = str(Path(__file__).resolve().parent.parent)
-    if backend not in sys.path:
-        sys.path.insert(0, backend)
+    _shared_setup_1(__file__)
     import run as studio_run
 
     pid_file = tmp_path / "studio.pid"
@@ -715,11 +717,7 @@ def test_an_undecodable_bootstrap_password_does_not_stop_startup(
     """ensure_default_admin calls _load_bootstrap_password for every existing
     admin and the lifespan calls that with no handler, so a raise here takes the
     whole backend down instead of ignoring an unusable file."""
-    import sys
-
-    backend = str(Path(__file__).resolve().parent.parent)
-    if backend not in sys.path:
-        sys.path.insert(0, backend)
+    _shared_setup_1(__file__)
     from auth import storage
 
     pw_file = tmp_path / ".bootstrap_password"
@@ -836,3 +834,40 @@ def test_an_unparseably_nested_document_is_discarded_not_raised(tmp_path: Path) 
         assert writer.has("id:1") and writer.has("id:2")
     finally:
         writer.close()
+
+
+def test_vendored_laya_reads_utf8_config_under_a_non_utf8_locale(tmp_path):
+    """The loader in _UTF8_BY_LOADER really makes vendored laya decode its JSON as UTF-8.
+
+    Run in a C locale with coercion and UTF-8 mode off, so a bare open() does not decode as
+    UTF-8. laya's tokenizer repair must still read a config holding non-ASCII special tokens
+    and write them back unchanged.
+    """
+    config = tmp_path / "tokenizer" / "tokenizer_config.json"
+    config.parent.mkdir()
+    config.write_text(
+        json.dumps(
+            {"tokenizer_class": None, "extra_special_tokens": ["ä", "世"]}, ensure_ascii = False
+        ),
+        encoding = "utf-8",
+    )
+    # C locale with coercion and UTF-8 mode off decodes a bare open() as ASCII on Linux and
+    # macOS; on Windows it stays the ANSI code page, which mis-decodes the same bytes instead of
+    # raising, and the exact-token assertions below catch that. A UTF-8 locale has nothing to test.
+    script = (
+        "import codecs, locale, sys\n"
+        "if codecs.lookup(locale.getencoding()).name == 'utf-8': sys.exit(3)\n"
+        f"sys.path.insert(0, {str(BACKEND_ROOT)!r})\n"
+        "from core.systemone import laya_runtime\n"
+        f"laya_runtime._laya().agent._fix_tokenizer_config({str(tmp_path)!r})\n"
+    )
+    env = {**os.environ, "LC_ALL": "C", "LANG": "C", "PYTHONCOERCECLOCALE": "0", "PYTHONUTF8": "0"}
+    run = subprocess.run(
+        [sys.executable, "-c", script], env = env, capture_output = True, text = True, encoding = "utf-8"
+    )
+    if run.returncode == 3:
+        pytest.skip("this platform's locale is UTF-8 even under LC_ALL=C")
+    assert run.returncode == 0, run.stderr[-3000:]
+    repaired = json.loads(config.read_text(encoding = "utf-8"))
+    assert repaired["tokenizer_class"] == "PreTrainedTokenizerFast"
+    assert repaired["extra_special_tokens"] == {"extra_0": "ä", "extra_1": "世"}

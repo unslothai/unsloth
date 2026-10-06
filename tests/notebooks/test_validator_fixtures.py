@@ -231,11 +231,8 @@ def _live_notebooks_dir(candidates: list[Path] | None = None) -> Path | None:
             Path("/mnt/disks/unslothai/ubuntu/workspace_12/notebooks"),
         ]
     for p in candidates:
-        # is_file() only swallows ENOENT/ENOTDIR; an unreadable candidate raises
-        # EACCES on Python <= 3.13 (3.14 suppresses it, gh-101357). These are
-        # absolute paths outside the repo, so on a shared machine one can belong
-        # to another user. The skipif decorators below call this at import time,
-        # so a raise here aborts collection of the whole file.
+        # is_file() only swallows ENOENT/ENOTDIR;
+        # an unreadable candidate raises EACCES on Python <= 3.13 (3.14 suppresses it, gh-101357).
         try:
             if (p / "update_all_notebooks.py").is_file():
                 return p

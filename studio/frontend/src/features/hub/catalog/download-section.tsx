@@ -1,7 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import type { AssetRuntime } from "./use-required-assets-download";
+import type { MediaStudioPage } from "../hooks/use-media-companion-bytes";
 import type { ModelInventoryFormat } from "../inventory";
+import type { HubModelRunSelection } from "../lib/model-run-selection";
 import { GgufDownloadCard } from "./gguf-download-card";
 import { SafetensorsDownloadCard } from "./safetensors-download-card";
 
@@ -12,8 +15,8 @@ export function DownloadSection({
   isPartial = false,
   partialTransport = null,
   partialResumable = false,
+  companionPrefetch = false,
   modelFormat,
-  canRun = true,
   isActive,
   activeQuant,
   preferredGgufFile = null,
@@ -25,13 +28,12 @@ export function DownloadSection({
   systemRamGb,
   cachePath,
   knownBytes,
-  onLoad,
-  onUseInChat,
-  onEject,
-  onTrain,
+  onRun,
+  runPending = false,
   onChange,
   showMemoryBar = true,
-  mediaRuntime = false,
+  mediaPage,
+  assetRuntime,
 }: {
   repoId: string;
   isGguf: boolean;
@@ -39,8 +41,8 @@ export function DownloadSection({
   isPartial?: boolean;
   partialTransport?: string | null;
   partialResumable?: boolean;
+  companionPrefetch?: boolean;
   modelFormat?: ModelInventoryFormat | null;
-  canRun?: boolean;
   isActive: boolean;
   activeQuant: string | null;
   preferredGgufFile?: string | null;
@@ -52,15 +54,14 @@ export function DownloadSection({
   systemRamGb?: number;
   cachePath?: string | null;
   knownBytes?: number | null;
-  onLoad: (opts: { ggufVariant?: string; expectedBytes?: number }) => void;
-  onUseInChat?: () => void;
-  onEject?: () => void;
-  onTrain?: () => void;
+  onRun?: (selection: HubModelRunSelection) => void;
+  runPending?: boolean;
   onChange?: () => void;
   /** False for diffusion / audio / video GGUFs, which do not load through
    *  llama.cpp and so have nothing the KV estimator can say about them. */
   showMemoryBar?: boolean;
-  mediaRuntime?: boolean;
+  mediaPage?: MediaStudioPage;
+  assetRuntime?: AssetRuntime;
 }) {
   if (isGguf || preferredGgufFile) {
     return (
@@ -69,7 +70,6 @@ export function DownloadSection({
         isActive={isActive}
         activeQuant={activeQuant}
         preferredFile={preferredGgufFile}
-
         preferredFileIntent={preferredGgufFileIntent}
         isLoadingThisModel={isLoadingThisModel}
         gpuGb={gpuGb}
@@ -77,32 +77,30 @@ export function DownloadSection({
         systemRamGb={systemRamGb}
         cachePath={cachePath}
         isPartial={isPartial}
-        onLoad={onLoad}
-        onUseInChat={onUseInChat}
-        onEject={onEject}
+        onRun={onRun}
+        runPending={runPending}
         onChange={onChange}
         showMemoryBar={showMemoryBar}
-        mediaRuntime={mediaRuntime}
+        mediaPage={mediaPage}
       />
     );
   }
   return (
     <SafetensorsDownloadCard
+      assetRuntime={assetRuntime}
       repoId={repoId}
       isDownloaded={isDownloaded}
       isPartial={isPartial}
       partialTransport={partialTransport}
       partialResumable={partialResumable}
+      companionPrefetch={companionPrefetch}
       modelFormat={modelFormat}
-      canRun={canRun}
       isActive={isActive}
       isLoadingThisModel={isLoadingThisModel}
       cachePath={cachePath}
       knownBytes={knownBytes}
-      onLoad={onLoad}
-      onUseInChat={onUseInChat}
-      onEject={onEject}
-      onTrain={onTrain}
+      onRun={onRun ? () => onRun({}) : undefined}
+      runPending={runPending}
       onChange={onChange}
     />
   );

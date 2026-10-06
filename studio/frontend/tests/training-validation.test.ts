@@ -9,7 +9,7 @@ import { registerBundlerResolver } from "./helpers/kit.ts";
 
 registerBundlerResolver();
 
-const { validateTrainingConfig } = await import(
+const { validateS3Source, validateTrainingConfig } = await import(
   "../src/features/training/lib/validation.ts"
 );
 
@@ -263,19 +263,17 @@ test("training validation allows audio-capable vision models on MLX with image d
 });
 
 test("training validation rejects unsupported LoRA variants on MLX", () => {
-  for (const loraVariant of ["loftq", "dora"] as const) {
-    assert.deepEqual(
-      validateTrainingConfig({ ...validConfig, loraVariant }, "mac"),
-      {
-        ok: false,
-        errorKey: "studio.params.notSupportedAppleSilicon",
-      },
-    );
-    assert.deepEqual(
-      validateTrainingConfig({ ...validConfig, loraVariant }, "linux"),
-      { ok: true, errorKey: null },
-    );
-  }
+  assert.deepEqual(
+    validateTrainingConfig({ ...validConfig, loraVariant: "loftq" }, "mac"),
+    {
+      ok: false,
+      errorKey: "studio.params.notSupportedAppleSilicon",
+    },
+  );
+  assert.deepEqual(
+    validateTrainingConfig({ ...validConfig, loraVariant: "loftq" }, "linux"),
+    { ok: true, errorKey: null },
+  );
   assert.deepEqual(
     validateTrainingConfig(
       { ...validConfig, trainingMethod: "full", loraVariant: "dora" },
@@ -283,6 +281,21 @@ test("training validation rejects unsupported LoRA variants on MLX", () => {
     ),
     { ok: true, errorKey: null },
   );
+});
+
+test("training validation accepts DoRA on MLX under an adapter method", () => {
+  for (const trainingMethod of ["lora", "qlora", "cpt"] as const) {
+    assert.deepEqual(
+      validateTrainingConfig(
+        { ...validConfig, trainingMethod, loraVariant: "dora" },
+        "mac",
+      ),
+      // cpt is refused on MLX for its own reason, not for DoRA.
+      trainingMethod === "cpt"
+        ? { ok: false, errorKey: "studio.params.notSupportedAppleSilicon" }
+        : { ok: true, errorKey: null },
+    );
+  }
 });
 
 test("training validation keeps CPT and embedding training available off MLX", () => {
@@ -308,5 +321,28 @@ test("training validation keeps CPT and embedding training available off MLX", (
       "linux",
     ),
     { ok: true, errorKey: null },
+  );
+});
+
+const s3Config = {
+  ...validConfig,
+  datasetSource: "s3" as const,
+  s3Config: { bucket: "my-bucket", region: "us-east-1", useIamRole: true },
+};
+
+test("an audio model can start from S3 (#4539: the audio is downloaded beside its manifest)", () => {
+  assert.deepEqual(
+    validateS3Source({ ...s3Config, modelType: "audio", isAudioModel: true }),
+    { ok: true, errorKey: null },
+  );
+});
+
+test("a vision model still cannot start from S3", () => {
+  assert.deepEqual(
+    validateS3Source({ ...s3Config, modelType: "vision", isVisionModel: true }),
+    {
+      ok: false,
+      errorKey: "studio.training.validation.s3MultimodalUnsupported",
+    },
   );
 });

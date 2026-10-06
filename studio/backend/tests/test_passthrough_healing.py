@@ -24,6 +24,7 @@ from core.inference.passthrough_healing import (  # noqa: E402
     StreamToolCallHealer,
     heal_gate,
     heal_openai_message,
+    nudge_enabled,
     nudge_messages,
     nudge_should_retry,
     response_has_promotable_calls,
@@ -465,6 +466,11 @@ LOOKUP_TOOL = {
     "function": {"name": "lookup", "parameters": {"type": "object", "properties": {}}},
 }
 LOOKUP_XML = '<tool_call>{"name":"lookup","arguments":{"q":"x"}}</tool_call>'
+OTHER_TOOL = {
+    "type": "function",
+    "function": {"name": "other", "parameters": {"type": "object", "properties": {}}},
+}
+OTHER_XML = '<tool_call>{"name":"other","arguments":{}}</tool_call>'
 
 
 def _payload(**kwargs):
@@ -699,6 +705,25 @@ class TestOpenaiNonStreamingRoute:
 
         asyncio.run(_run())
 
+    def test_forced_function_is_sent_as_its_one_tool_under_required(self, monkeypatch):
+        async def _run():
+            client, data = await _drive_non_streaming(
+                monkeypatch,
+                _payload(
+                    tools = [LOOKUP_TOOL, OTHER_TOOL],
+                    tool_choice = {"type": "function", "function": {"name": "lookup"}},
+                ),
+                [_upstream_message(OTHER_XML)],
+            )
+            (body,) = client.posts
+            assert [t["function"]["name"] for t in body["tools"]] == ["lookup"]
+            assert body["tool_choice"] == "required"
+            message = data["choices"][0]["message"]
+            assert message["content"] == OTHER_XML
+            assert "tool_calls" not in message
+
+        asyncio.run(_run())
+
     def test_mixed_declared_and_undeclared_promotes_and_keeps_text(self, monkeypatch):
         async def _run():
             rogue = '<tool_call>{"name":"rogue","arguments":{}}</tool_call>'
@@ -861,6 +886,61 @@ class TestNudgeRetryOpenai:
 
         asyncio.run(_run())
 
+    def test_expected_cancel_during_nudge_retry_is_not_absorbed(self, monkeypatch):
+        async def _run():
+            import routes.inference as inf_mod
+
+            class ImmediateClient:
+                async def post(self, *_args, **_kwargs):
+                    return httpx.Response(200, json = _upstream_message(GARBAGE_SIGNAL))
+
+                async def aclose(self):
+                    return None
+
+            class HangingClient:
+                def __init__(self):
+                    self.started = asyncio.Event()
+                    self.closed = asyncio.Event()
+
+                async def post(self, *_args, **_kwargs):
+                    self.started.set()
+                    await self.closed.wait()
+                    raise httpx.ReadError("client closed")
+
+                async def aclose(self):
+                    self.closed.set()
+
+            class Request:
+                async def is_disconnected(self):
+                    return False
+
+            hanging = HangingClient()
+            clients = iter((ImmediateClient(), hanging))
+            monkeypatch.setattr(
+                inf_mod,
+                "_cancelable_nonstreaming_client",
+                lambda: next(clients),
+            )
+            cancel_event = threading.Event()
+            task = asyncio.create_task(
+                inf_mod._openai_passthrough_non_streaming_upstream(
+                    _llama_backend(),
+                    _payload(nudge_tool_calls = True),
+                    "gguf",
+                    request = Request(),
+                    cancel_event = cancel_event,
+                )
+            )
+            await asyncio.wait_for(hanging.started.wait(), 0.2)
+            cancel_event.set()
+
+            with pytest.raises(inf_mod._NonStreamingRequestCancelled):
+                await asyncio.wait_for(task, 0.5)
+
+            assert hanging.closed.is_set()
+
+        asyncio.run(_run())
+
     def test_default_off_single_post(self, monkeypatch):
         async def _run():
             client, _ = await _drive_non_streaming(
@@ -982,6 +1062,37 @@ class TestNudgeRetryAnthropic:
             assert len(client.posts) == 1
 
         asyncio.run(_run())
+
+
+class TestAnthropicForcedToolChoice:
+    def test_forced_tool_is_sent_as_its_one_tool_under_required(self, monkeypatch):
+        import routes.inference as inf_mod
+        from routes.inference import _anthropic_passthrough_non_streaming
+
+        client = ScriptedClient([_upstream_message(OTHER_XML)])
+        monkeypatch.setattr(inf_mod, "_cancelable_nonstreaming_client", lambda: client)
+
+        async def _run():
+            response = await _anthropic_passthrough_non_streaming(
+                _llama_backend(),
+                [{"role": "user", "content": "hi"}],
+                [LOOKUP_TOOL, OTHER_TOOL],
+                0.7,
+                0.95,
+                None,
+                256,
+                "msg_test",
+                "gguf",
+                tool_choice = {"type": "function", "function": {"name": "lookup"}},
+            )
+            return json.loads(response.body)
+
+        data = asyncio.run(_run())
+
+        (body,) = client.posts
+        assert [t["function"]["name"] for t in body["tools"]] == ["lookup"]
+        assert body["tool_choice"] == "required"
+        assert "tool_use" not in [block["type"] for block in data["content"]]
 
 
 class TestAnthropicPassthroughHealingText:
@@ -1575,3 +1686,40 @@ class TestClientToolSchemaTyping:
         )
         assert _healed_arguments(call % ("WebFetch", "url")) == {"url": "x", "timeout": "30"}
         assert _healed_arguments(call % ("Grep", "pattern")) == {"pattern": "x", "timeout": 30}
+
+
+_SCHEMA = {"type": "object", "properties": {"city": {"type": "string"}}, "required": ["city"]}
+_CONTRACT = {"type": "json_schema", "json_schema": {"name": "c", "schema": _SCHEMA}}
+
+
+def test_a_contract_withdraws_both_post_decode_reinterpreters():
+    tools = [{"type": "function", "function": {"name": "lookup"}}]
+    assert heal_gate(True, tools) == {"lookup"}
+    assert heal_gate(True, tools, response_format = {"type": "text"}) == {"lookup"}
+    assert nudge_enabled(True, response_format = {"type": "text"}) is True
+    for constraining in (_CONTRACT, {"type": "json_object"}, {"type": "text", "x": 1}, True, "x"):
+        assert heal_gate(True, tools, response_format = constraining) is None, constraining
+        assert nudge_enabled(True, response_format = constraining) is False, constraining
+
+
+def test_every_post_decode_reinterpreter_is_handed_the_request_s_own_contract():
+    import ast
+    from pathlib import Path
+
+    names = ("heal_gate", "nudge_enabled")
+    forwards = ('body.get("response_format")', "_extract_response_format(payload)")
+    source = (Path(__file__).resolve().parents[1] / "routes/inference.py").read_text(
+        encoding = "utf-8"
+    )
+    calls, missing = [], []
+    for node in ast.walk(ast.parse(source)):
+        if not isinstance(node, ast.Call):
+            continue
+        if (getattr(node.func, "attr", None) or getattr(node.func, "id", None)) not in names:
+            continue
+        calls.append(node)
+        kwargs = {k.arg: ast.get_source_segment(source, k.value) or "" for k in node.keywords}
+        if kwargs.get("response_format") not in forwards:
+            missing.append(node.lineno)
+    assert len(calls) >= 9, f"expected 9 {names} sites, found {len(calls)}"
+    assert not missing, f"heal_gate/nudge_enabled not handed the contract at {missing}"

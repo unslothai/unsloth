@@ -3,15 +3,14 @@
 
 """Answer engine discovery probes with JSON, or with a 404, but never with the app.
 
-Probes for engine endpoints used to land on main.py's SPA catch-all, so ``GET /props``
-returned 200 and a page of HTML. That is worse than a 404: a probe reads the status
-before the body. Served here: ``/props``, ``/v1/props``, ``/version``. Everything else
-in llama-server's table gets an explicit 404, on its real method as well as GET.
+Probes for engine endpoints used to land on main.py's SPA catch-all, so ``GET /props`` returned 200 and a page
+of HTML. That is worse than a 404: a probe reads the status before the body. Served here: ``/props``,
+``/v1/props``, ``/version``. Everything else in llama-server's table gets an explicit 404, on its real method as
+well as GET.
 
-Deliberately NOT served: Ollama's ``/api/tags`` and ``/api/show``. Answering them makes
-a client select Ollama and then fail on ``/api/chat``, which Studio does not implement;
-the reporting user's client instead fell back to the OpenAI surface and worked.
-Advertising a protocol we do not have is the HTML 200 again, one layer up.
+Deliberately NOT served: Ollama's ``/api/tags`` and ``/api/show``. Answering them makes a client select Ollama
+and then fail on ``/api/chat``, which Studio does not implement; the reporting user's client instead fell back
+to the OpenAI surface and worked. Advertising a protocol we do not have is the HTML 200 again, one layer up.
 """
 
 from __future__ import annotations
@@ -139,9 +138,9 @@ def _server_props() -> dict:
     if public_id:
         props["model_path"] = public_id
 
-    # These describe the CHILD's route table and web UI, not ours: Studio launches with
-    # --metrics, so endpoint_metrics arrives true while public /metrics 404s here
-    # (tools/server/server-context.cpp puts all three flags in the payload).
+    # These describe the CHILD's route table and web UI, not ours: Studio launches with --metrics, so
+    # endpoint_metrics arrives true while public /metrics 404s here (tools/server/server-context.cpp puts all three
+    # flags in the payload).
     for _child_only in ("ui", "ui_settings", "cors_proxy_enabled"):
         props.pop(_child_only, None)
     props["endpoint_slots"] = False
@@ -158,7 +157,6 @@ def _server_props() -> dict:
             if n_ctx:
                 settings["n_ctx"] = int(n_ctx)
         if "total_slots" not in props:
-            # Not zero beside a model this response advertises as loaded.
             try:
                 slots = int(getattr(llama_backend, "effective_parallel_slots", 0) or 0)
             except Exception:  # noqa: BLE001
@@ -170,15 +168,32 @@ def _server_props() -> dict:
     return props
 
 
-# Slash forms too: FastAPI's redirect never fires, since the catch-all fully matches
-# "/props/" and returns index.html. routes/inference.py registers "/v1/models/" likewise.
+# Slash forms too: FastAPI's redirect never fires. The catch-all fully matches "/props/" and returns
+# index.html; routes/inference.py registers "/v1/models/" likewise.
 @router.get("/props", include_in_schema = False)
 @router.get("/props/", include_in_schema = False)
 @router.get("/v1/props", include_in_schema = False)
 @router.get("/v1/props/", include_in_schema = False)
 async def llama_props(current_subject: str = Depends(get_current_subject)):
-    """llama-server-compatible ``GET /props``."""
+    """llama-server-compatible ``GET /props``. The body reveals the resident model, so another account gets the same answer ``/api/inference/status`` gives it."""
+    if await asyncio.to_thread(_resident_hidden_from_caller):
+        from hub.services.models.account_access import hidden_resident_response
+        return hidden_resident_response()
     return await asyncio.to_thread(_server_props)
+
+
+def _resident_hidden_from_caller() -> bool:
+    from hub.services.models import account_access
+
+    if not account_access.managed_account():
+        return False
+    if account_access.resident_hidden("chat"):
+        return True
+    try:
+        slot = _inference()._loaded_slot_ident()
+    except Exception:  # noqa: BLE001 - a backend that cannot say has nothing to hide
+        return False
+    return bool(slot) and account_access.resident_hidden("chat", slot)
 
 
 @router.get("/version", include_in_schema = False)
@@ -186,8 +201,7 @@ async def llama_props(current_subject: str = Depends(get_current_subject)):
 async def studio_version(current_subject: str = Depends(get_current_subject)):
     """Bare /version only: Ollama spells it /api/version, and answering there is part
     of claiming to be Ollama."""
-    # Threaded like /props: the first call resolves the version, which shells out to git
-    # twice on a source checkout, and that must not sit on the event loop.
+    # Threaded like /props: the first call resolves the version.
     return {"version": await asyncio.to_thread(_studio_version)}
 
 
@@ -195,16 +209,13 @@ async def _probe_not_found():
     raise HTTPException(status_code = 404, detail = "API endpoint not found")
 
 
-# Without these a POST hit the GET-only catch-all and returned 405, reading as "exists,
-# wrong method". HEAD is here because Starlette does not admit it on a GET route
-# (measured, fastapi 0.141.1). GET stays with the catch-all so its asset lookup wins;
-# OPTIONS is untouched for CORS preflight.
+# Without these a POST hit the GET-only catch-all and returned 405, reading as "exists, wrong method". HEAD is
+# here because Starlette does not admit it on a GET route (measured, fastapi 0.141.1); GET stays with the catch-all
+# so its asset lookup wins, and OPTIONS is untouched for CORS preflight.
 _PROBE_DENIED_METHODS = ["HEAD", "POST", "PUT", "PATCH", "DELETE"]
 
 
-# Both forms of every path: no redirect rescues "POST /completion/", because the
-# catch-all is GET-only, so the slash form was a method mismatch and returned the 405
-# these routes exist to prevent.
+# Both forms of every path: no redirect rescues "POST /completion/"
 def _both_forms(path: str) -> tuple:
     return (path, path + "/")
 
@@ -238,11 +249,9 @@ for _slots_form in _both_forms("/slots/{id_slot}"):
 
 
 def add_get_denials(app) -> None:
-    """404 the engine paths on GET as well, for an app with no frontend mounted.
-
-    The GET denial normally comes from main.py's SPA catch-all, registered only when
-    setup_frontend() finds a build. In API-only mode there is none, so these paths
-    matched on method alone and answered 405, which a client reads as "endpoint exists".
+    """404 the engine paths on GET as well, for an app with no frontend mounted. The GET denial normally comes
+    from main.py's SPA catch-all, registered only when setup_frontend() finds a build. In API-only mode there is
+    none, so these paths matched on method alone and answered 405, which a client reads as "endpoint exists".
     """
     for path in sorted(_ENGINE_PROBE_PATHS) + sorted(_UNSERVED_V1_PROBE_PATHS):
         for form in _both_forms(f"/{path}"):

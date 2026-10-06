@@ -33,6 +33,7 @@ pass, but it is not a reading either, and a real difference elsewhere in the thr
 
 from __future__ import annotations
 
+import re
 import sys
 from pathlib import Path
 
@@ -67,7 +68,7 @@ _QUEUE_BUTTON_RUNNING = """
 </div>
 """
 
-#: The queued branch: `isQueueRunning && !thread.isRunning`, with the active item undispatched.
+#:The queued branch: `isQueueRunning && !thread.isRunning`, with the active item undispatched.
 _QUEUE_BUTTON_IDLE = """
 <button class="aui-composer-send ml-1.5 size-9 rounded-full" aria-label="Queue message">
   <span class="aui-sr-only">Queue message</span>
@@ -81,10 +82,10 @@ _STOP_BUTTON = """
 """
 
 #: The DISPATCHED queued branch: `isQueueRunning && !thread.isRunning` with `queueEntry.dispatched`,
-#: which renders a stop control the thread does not report itself running behind. Neither
-#: `stopButton()` nor `queueButton()` matches it, so on its own it reads exactly like a settled
-#: composer. `getPromptQueueUIItemsForRun` drops dispatched items, so the queue surface can be gone
-#: here too -- which is why this state has to be recognised from its own control.
+#: rendering a stop control the thread does not report itself running behind. Neither
+#: `stopButton()` nor `queueButton()` matches it, so on its own it reads like a settled composer,
+#: and `getPromptQueueUIItemsForRun` drops dispatched items so the queue surface can be gone too,
+#: which is why this state must be recognised from its own control.
 _STOP_QUEUED_BUTTON = """
 <button class="aui-composer-cancel ml-1.5 size-9 rounded-full" aria-label="Stop queued message">
   <span class="aui-sr-only">Stop queued message</span>
@@ -92,8 +93,8 @@ _STOP_QUEUED_BUTTON = """
 """
 
 #: `PromptQueueStack`, which renders inside the composer root whenever the run has an item left to
-#: show. An undispatched active item is always one of them, so this surface is up in every state
-#: that renders the queued-idle Queue button.
+#: show. An undispatched active item is always one, so this surface is up in every state that
+#: renders the queued-idle Queue button.
 _QUEUE_STACK = """
 <div aria-label="Prompt queue, 1 of 2">
   <div>a prompt that has not been dispatched</div>
@@ -155,9 +156,9 @@ BLIND = dict(
     queue_stack = False,
     statuses = [None, None, None, None],
 )
-#: The cost of reading the queue surface, pinned rather than left for a later reader to find: a
-#: queue run with a prompt still waiting, a reply genuinely streaming, and text in the composer.
-#: The surface is up and the Queue button is the only control, so the control is not armed.
+#: The cost of reading the queue surface, pinned rather than left for a later reader: a queue run
+#: with a prompt still waiting, a reply genuinely streaming, and text in the composer. The surface
+#: is up and the Queue button is the only control, so the control is not armed.
 QUEUED_AND_STREAMING_BLIND = dict(
     control = _QUEUE_BUTTON_RUNNING,
     queue_stack = True,
@@ -202,7 +203,7 @@ def _capture(
 ) -> dict:
     page.set_content(_page(tail = tail, **state))
     # After the content, not before it: `set_content` does not reliably run init scripts, and the
-    # symptom is `window.__sb` simply not existing, which reads like a broken instrument.
+    # symptom is `window.__sb` simply not existing.
     page.add_script_tag(content = _DOM_JS.read_text(encoding = "utf-8"))
     page.add_script_tag(content = _PARITY_JS.read_text(encoding = "utf-8"))
     got = page.evaluate("() => window.__sb.parity.capture()")
@@ -276,6 +277,26 @@ def test_what_reading_the_queue_surface_gives_up(page):
 # ── the fixtures are the app's markup, not the test's ────────────────
 
 
+#: The shipped English catalog. The probes below read the DOM in English, so this file is where
+#: "what the button says" actually lives now that #11117 routed the queue surface through `useT`.
+_EN_LOCALE = _THREAD_TSX.parents[2] / "i18n" / "locales" / "en.ts"
+
+
+def _en_string(key: str) -> str:
+    """`promptQueue.<key>` out of the shipped en.ts, or fail saying the key is gone.
+
+    A regex over the TypeScript rather than a parse: the catalog is a plain object literal of
+    string values, and the alternative is a Node dependency for a suite that is otherwise pure
+    Python. Narrow enough to be honest -- it matches the key at its own indent inside the file,
+    and a key that stops existing raises here instead of returning "" and passing a substring
+    check against everything.
+    """
+    src = _EN_LOCALE.read_text(encoding = "utf-8")
+    match = re.search(rf"(?m)^\s*{re.escape(key)}:\s*\"((?:[^\"\\]|\\.)*)\",?\s*$", src)
+    assert match, f"the en catalog no longer defines promptQueue.{key} ({_EN_LOCALE})"
+    return match.group(1)
+
+
 def test_the_shipped_composer_still_renders_the_two_queue_buttons():
     """The fixtures above are hand-written, so they can drift into asserting themselves.
 
@@ -283,26 +304,66 @@ def test_the_shipped_composer_still_renders_the_two_queue_buttons():
     names the queue surface, so this reads that out of the shipped TSX. If Unsloth stops rendering
     the queued-idle button the conflation is gone and this file should go with it; if it renames
     the queue surface, `dom.promptQueue()` goes quiet and the conflation is back.
+
+    Read through the CATALOG, not off an English literal in the TSX. #11117 localized the queue
+    view -- the label the composer renders became `t("promptQueue.queueButton")` and the queue
+    surface's accessible name became `t("promptQueue.regionLabel", ...)` -- and this file pinned
+    both as the English text that used to be inline, so it went red on a correct change. Worse,
+    the second of the two was hidden behind the first and would have come back one fix later.
+    The invariant that actually matters survived that change untouched and is what is asserted
+    now: the composer still picks between two DIFFERENT labels on `followUpBehavior`, the queue
+    surface still names itself, and the English those keys resolve to is still the English the
+    fixtures above and `dom.js`'s selector are written in.
     """
     if not _THREAD_TSX.exists():
         pytest.skip(f"the shipped composer is not in this checkout: {_THREAD_TSX}")
     src = _THREAD_TSX.read_text(encoding = "utf-8")
-    assert src.count('aria-label="Queue message"') == 2, (
+    assert src.count("aria-label={followUpLabel}") == 2, (
         "ComposerRightControls no longer renders the Queue button in exactly two places; "
         "re-read which of them can appear on an idle thread"
     )
-    assert "aria-label={`Prompt queue, ${current} of ${total}`}" in src, (
+    # The branch itself: one behaviour, two labels. A composer that stopped distinguishing them
+    # would render the same name for queue and steer and the fixtures would stop meaning anything.
+    assert re.search(
+        r'followUpBehavior === "queue"\s*\?\s*"promptQueue\.queueButton"\s*:\s*"promptQueue\.steerButton"',
+        src,
+    ), (
+        "the composer no longer picks its label from followUpBehavior between the queueButton "
+        "and steerButton keys; re-read what the two Queue buttons are now called"
+    )
+    queue_label, steer_label = _en_string("queueButton"), _en_string("steerButton")
+    assert queue_label != steer_label, (
+        f"the en catalog gives queue and steer the same label {queue_label!r}, so the two "
+        "composer states are indistinguishable to every probe that reads the accessible name"
+    )
+    # The English the fixtures and the scene probes are written in.
+    assert queue_label == "Queue message", queue_label
+    assert steer_label == "Steer response", steer_label
+
+    queue_src = (_THREAD_TSX.parent / "prompt-queue-list.tsx").read_text(encoding = "utf-8")
+    assert 'aria-label={t("promptQueue.regionLabel"' in queue_src, (
         "PromptQueueStack no longer names itself, so dom.promptQueue() matches nothing and the "
         "queued-idle interval is indistinguishable again"
+    )
+    # dom.js matches that name by a HARD-CODED English prefix, so the catalog and the selector
+    # have to agree or the probe goes quiet without anything failing. This is the coupling the
+    # localization pass could have broken silently; it did not, and now it cannot.
+    region_label = _en_string("regionLabel")
+    prefix = re.search(r'\[aria-label\^="([^"]*)"\]', _DOM_JS.read_text(encoding = "utf-8"))
+    assert prefix, "dom.js no longer selects the queue surface by an aria-label prefix"
+    assert region_label.startswith(prefix.group(1)), (
+        f"dom.js matches the queue surface on {prefix.group(1)!r} but the en catalog names it "
+        f"{region_label!r}, so dom.promptQueue() finds nothing and generating() silently "
+        "reads a queued-idle thread as streaming"
     )
     assert 'aria-label="Stop queued message"' in src
 
 
 # ── what the blind-probe refusal may NOT take out with it ────────────
 
-#: An overlay is walked from `document`, OUTSIDE `.aui-thread-root`. Its digest therefore carries
-#: neither the streamed message nor the composer, which is what makes it readable on a pair whose
-#: stream could not be placed.
+#: An overlay is walked from `document`, OUTSIDE `.aui-thread-root`, so its digest carries neither
+#: the streamed message nor the composer, which makes it readable on a pair whose stream could not
+#: be placed.
 _MENU = '<div role="menu"><div class="item">Rename</div></div>'
 _MENU_CHANGED = '<div role="menu"><div class="item">Rename thread</div></div>'
 #: The composer of a thread that is NOT generating. `_STOP_BUTTON` is the same composer generating.
@@ -396,12 +457,12 @@ def test_the_scaffold_is_not_an_independent_surface_and_here_is_why(page):
     )
 
 
-# ── the composer is not a rendering difference ───────────────────────
-#
-# The pair this whole change is about: one arm has finished its reply, the other is still writing
-# it. Its messages are withheld correctly. Its COMPOSER was not, because the dock is inside
-# `.aui-thread-root` and the scaffold therefore carries Stop on one arm and Send on the other.
+# The composer is not a rendering difference. The pair this change is about: one arm has finished
+# its reply, the other is still writing it. Its messages are withheld correctly; its COMPOSER was
+# not, because the dock is inside `.aui-thread-root` and the scaffold therefore carries Stop on
+# one arm and Send on the other.
 
+# ── the composer is not a rendering difference ───────────────────────
 _SETTLED_STATUSES = ["complete", "complete", "complete", "complete"]
 _STREAMING_STATUSES = ["complete", "complete", "complete", "running"]
 
@@ -613,16 +674,14 @@ def test_the_queued_idle_arm_against_a_settled_one_is_still_refused(page):
     assert P.compare(base, treat)["verdict"] == P.NOT_COMPARABLE
 
 
+# The style probe walks the run-state control too. `report` now collects the style verdict BEFORE
+# it buckets a structural refusal, because the computed-style probe is an independent reading,
+# and that makes its own reading of the composer swap visible for the first time: it walks the
+# Send and Stop buttons as SEPARATE selectors whose names go into its signature, so the pairs the
+# refusals exist to withhold arrived at the advisory line instead.
+
+
 # ── the style probe walks the run-state control too ──────────────────
-#
-# `report` now collects the style verdict BEFORE it buckets a structural refusal, because the
-# computed-style probe is an independent reading and the refusal is not about it. That makes the
-# probe's own reading of the composer swap visible for the first time, and the probe walks
-# `button[aria-label="Send message"]` and `button[aria-label="Stop generating"]` as SEPARATE
-# selectors whose names go into its signature. So the pairs the refusals above exist to withhold
-# arrived at the advisory line instead.
-
-
 def _capture_html_raw(page, html: str) -> dict:
     """`_capture_html`, keeping `styles.sig` so a test can say WHY the digest moved."""
     page.set_content(html)

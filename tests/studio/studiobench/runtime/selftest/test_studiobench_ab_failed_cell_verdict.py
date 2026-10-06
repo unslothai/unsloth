@@ -32,7 +32,7 @@ SIDES = [
     {"label": "treatment", "ref": "fix", "base_url": "http://127.0.0.1:5400", "owns": True},
 ]
 
-#: (rung, tokens, base p95, treatment p95). 10K regresses by 100%, 100K improves by 20%.
+#:(rung, tokens, base p95, treatment p95). 10K regresses by 100%, 100K improves by 20%.
 LADDER = (("10K", 10_000, 100.0, 200.0), ("100K", 100_000, 100.0, 80.0))
 
 
