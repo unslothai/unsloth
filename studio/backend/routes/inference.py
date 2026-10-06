@@ -6366,7 +6366,9 @@ async def _select_request_tools(
     elif sys.platform == "win32":
         # The isolated Windows Terminal runs cmd, not the host's Git Bash; say so in the schema.
         from core.inference.tools import apply_terminal_profile_for_request
-        tools = await asyncio.to_thread(apply_terminal_profile_for_request, tools)
+        tools = await asyncio.to_thread(
+            apply_terminal_profile_for_request, tools, getattr(payload, "sandbox_level", None)
+        )
     if mcp_allowed:
         tools = tools + await get_enabled_mcp_tools()
     # getattr: callers hand in lighter payload objects than the request models, not all of
@@ -27618,6 +27620,7 @@ async def _proxy_to_external_provider(
                     ),
                     timeout = payload.tool_call_timeout or 300,
                     permission_mode = payload.permission_mode or "auto",
+                    sandbox_level = payload.sandbox_level,
                     confirm_calls = _permission_mode_confirm(payload)
                     or _off_mode_sandbox_gate(payload, _ui_events),
                     bypass_permissions = bool(payload.bypass_permissions),
@@ -28041,6 +28044,7 @@ async def _proxy_to_external_provider(
                     ),
                     timeout = payload.tool_call_timeout or 300,
                     permission_mode = payload.permission_mode or "auto",
+                    sandbox_level = payload.sandbox_level,
                     confirm_calls = _permission_mode_confirm(payload)
                     or _off_mode_sandbox_gate(payload, _ui_events),
                     bypass_permissions = bool(payload.bypass_permissions),
@@ -30507,6 +30511,7 @@ async def produce_openai_chat_completions(
                     mcp_image = _mcp_image,
                     bypass_permissions = bool(payload.bypass_permissions),
                     permission_mode = payload.permission_mode,
+                    sandbox_level = payload.sandbox_level,
                     perf_callback = _gguf_perf_callback,
                     on_conversation_grew = _gguf_recost,
                     # Only the streaming path parks and reclaims, so only it can use a slot. An attached MCP
@@ -32609,6 +32614,7 @@ async def produce_openai_chat_completions(
                 mcp_image = _mcp_image,
                 bypass_permissions = bool(payload.bypass_permissions),
                 permission_mode = payload.permission_mode,
+                sandbox_level = payload.sandbox_level,
                 use_adapter = payload.use_adapter,
                 stats_holder = _sf_stats_holder,
                 reasoning_prefilled = _sf_reasoning_prefilled,
@@ -40085,7 +40091,11 @@ async def anthropic_count_tokens(
             openai_tools = apply_full_access_tool_descriptions(openai_tools)
         elif sys.platform == "win32":
             from core.inference.tools import apply_terminal_profile_for_request
-            openai_tools = await asyncio.to_thread(apply_terminal_profile_for_request, openai_tools)
+            openai_tools = await asyncio.to_thread(
+                apply_terminal_profile_for_request,
+                openai_tools,
+                getattr(payload, "sandbox_level", None),
+            )
         _count_nudge = _build_tool_action_nudge(
             tools = openai_tools,
             model_name = _llama_public_model_id(llama_backend, payload.model),
@@ -40855,7 +40865,11 @@ async def anthropic_messages(
             openai_tools = apply_full_access_tool_descriptions(openai_tools)
         elif sys.platform == "win32":
             from core.inference.tools import apply_terminal_profile_for_request
-            openai_tools = await asyncio.to_thread(apply_terminal_profile_for_request, openai_tools)
+            openai_tools = await asyncio.to_thread(
+                apply_terminal_profile_for_request,
+                openai_tools,
+                getattr(payload, "sandbox_level", None),
+            )
 
         server_tool_choice = openai_tool_choice
         if isinstance(server_tool_choice, dict):
@@ -40938,6 +40952,7 @@ async def anthropic_messages(
                 disable_parallel_tool_use = _disable_parallel,
                 bypass_permissions = bool(payload.bypass_permissions),
                 permission_mode = getattr(payload, "permission_mode", None),
+                sandbox_level = getattr(payload, "sandbox_level", None),
                 promote_reasoning_only = False,
                 perf_callback = _monitor_perf_callback(
                     monitor_id,
