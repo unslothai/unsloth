@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Free of app imports so the node test runner can load it directly.
+// free of app imports so the node test runner can load it directly.
 
 import {
   EDIT_SOURCE_MAX_SECONDS,
@@ -18,7 +18,7 @@ const SPEECH_WORKFLOWS: ReadonlySet<string> = new Set([
   "convert",
 ]);
 
-// Edit refuses a longer recording rather than cutting it.
+// edit refuses a longer recording rather than cutting it.
 function fitsEdit(durationS: number | null | undefined): boolean {
   return (
     durationS == null ||
@@ -26,7 +26,7 @@ function fitsEdit(durationS: number | null | undefined): boolean {
   );
 }
 
-/** Edit takes speech only, and its own results again; the other pages take any clip. */
+/** edit accepts only speech, including its own results; other pages accept any clip. */
 export function clipSendTargets(
   clip: {
     workflow?: string | null;
@@ -55,7 +55,7 @@ export const STEM_SEND_TARGETS: readonly SendTarget[] = [
   { id: "voice", workflow: "voice", label: "Save as voice…" },
 ];
 
-/** The text goes to Speak; Edit and Clone also need the audio it came from. */
+/** text goes to speak; edit and clone also require its source audio. */
 export function transcriptSendTargets({
   text,
   source,
@@ -68,7 +68,7 @@ export function transcriptSendTargets({
   if (!text.trim()) return [];
   const targets: AudioWorkflowId[] = ["speak"];
   if (!source) return targets;
-  // Edit cannot take a saved voice as its recording.
+  // edit cannot take a saved voice as its recording.
   if (source.kind !== "voice" && fitsEdit(duration)) targets.push("edit");
   targets.push("clone");
   return targets;

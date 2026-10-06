@@ -129,7 +129,6 @@ test("results show as a clip card with a waveform, never autoplaying", () => {
   assert.doesNotMatch(output + card, /autoPlay/);
   assert.match(output, /<ClipCard\s+\/\/[^\n]*\n\s*key=\{selectedClip\.id\}/);
   assert.match(card, /<Waveform\s+peaks=\{peaks\}/);
-  // A run in progress stands where its clip will appear, with Stop, and no second live region.
   assert.match(
     output,
     /\{pending \? \(\s*<PendingClipCard \{\.\.\.pending\} \/>/,
@@ -144,7 +143,7 @@ test("results show as a clip card with a waveform, never autoplaying", () => {
 
 test("Send to lists Audio pages from the shared workflow list", () => {
   const card = readSrc("features/audio/components/clip-card.tsx");
-  // Which pages a clip can go to is send-targets' call; the menu keeps page order.
+  // send-targets decides eligibility while the menu preserves page order
   assert.match(card, /AUDIO_WORKFLOWS\.filter\(\(tab\) => handlers\[tab\.id\]\)/);
   assert.match(
     host,
@@ -179,13 +178,12 @@ test("auto-selecting a page's history keeps another page's unsaved clip", () => 
 });
 
 test("Send to waits for a running task instead of stopping it and dropping the clip", () => {
-  // A switch mid-run stops the run, but the page stays busy until the stopped run settles, so the
-  // transcription was refused and the clip silently dropped.
+  // switching mid-run can reject transcription and drop the clip before the stopped run settles
   assert.match(
     host,
     /const runBusy = useCallback\(\(\) => \{\s*if \(busyRef\.current === null\) return false;\s*toast\.info\([^)]*\);\s*return true;/,
   );
-  // Every clip send goes through it, Transcribe included.
+  // Transcribe must use the same busy guard as every other target
   assert.match(
     host,
     /clipSendTargets\(clip, ttsWorkflow\)\.map\(\(id\) => \[\s*id,\s*\(\) => \{\s*if \(!runBusy\(\)\) handlers\[id\]\?\.\(\);/,

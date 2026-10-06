@@ -32,7 +32,6 @@ test("speech clips can be edited, and Edit takes its own results again", () => {
     "transcribe",
     "edit",
   ]);
-  // The other pages never list themselves.
   assert.ok(!clipSendTargets(clip("clone"), "clone").includes("clone"));
   assert.ok(!clipSendTargets(clip("convert"), "convert").includes("convert"));
 });
@@ -44,7 +43,7 @@ test("music is split into stems but not sent to speech Edit", () => {
     "separate",
     "transcribe",
   ]);
-  // Older clips carry only an audio type.
+  // older clips carry only an audio type
   assert.ok(
     !clipSendTargets(
       { audio_type: "minimax_music3", duration_s: 10 },
@@ -56,7 +55,7 @@ test("music is split into stems but not sent to speech Edit", () => {
 test("a clip longer than Edit takes is not offered to Edit", () => {
   assert.ok(clipSendTargets(clip("speak", 30.05), "speak").includes("edit"));
   assert.ok(!clipSendTargets(clip("speak", 31), "speak").includes("edit"));
-  // An unknown length is left to Edit's own check.
+  // an unknown length is left to Edit's own check
   assert.ok(clipSendTargets(clip("speak", null), "speak").includes("edit"));
 });
 
@@ -81,7 +80,6 @@ test("a transcript's text goes to Speak; Edit and Clone also need its audio", ()
     transcriptSendTargets({ text: "hello", source: null, duration: 12 }),
     ["speak"],
   );
-  // Edit cannot take a saved voice, nor a recording over its limit.
   assert.deepEqual(
     transcriptSendTargets({
       text: "hello",
@@ -94,7 +92,6 @@ test("a transcript's text goes to Speak; Edit and Clone also need its audio", ()
     transcriptSendTargets({ text: "hello", source: input, duration: 95 }),
     ["speak", "clone"],
   );
-  // No speech heard: nothing to send.
   assert.deepEqual(
     transcriptSendTargets({ text: "  ", source: input, duration: 3 }),
     [],
@@ -112,16 +109,13 @@ test("the Audio page wires every send, and waits out a running task first", () =
   );
   assert.match(host, /useAudioSeparateStore\.getState\(\)\.setSource\(\{/);
   assert.match(host, /sendClipToMusic\(clip, "edit", name\)/);
-  // Music keeps Edit in view while a sent clip waits there, whatever model is loaded.
   const music = readSrc("features/audio/hooks/use-music-generation.ts");
   assert.match(
     music,
     /return loaded && withWaitingEdit\(loaded, editWaiting\);/,
   );
   assert.match(host, /source: \{ clip_id: voiceClip\.id \}/);
-  // The page stays mounted off-route; like its other overlays, the dialog closes with it.
   assert.match(host, /<SaveVoiceDialog\s+open=\{active && savingVoice\}/);
-  // Sending a transcript never starts a transcription.
   const transcriptSend = host.slice(
     host.indexOf("const sendTranscriptHandlersFor"),
     host.indexOf("const handleUseTextAgain"),

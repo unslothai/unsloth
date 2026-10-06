@@ -13,7 +13,7 @@ import { useAudioMusicStore } from "../stores/audio-music-store";
 import { useAudioWorkspaceStore } from "../stores/audio-workspace-store";
 import { clipWorkflow } from "../workflows";
 
-// History is per page, so these only ever show on Music itself.
+// history is scoped per page, so these actions appear only on Music.
 const SEND_LABEL: Record<SendAction, string> = {
   edit: "Edit",
   extend: "Extend",

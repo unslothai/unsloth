@@ -519,7 +519,7 @@ export function TtsOutput({
     freshClipId: string | null;
     onFreshClipFocused: () => void;
     announcement: string;
-    /** A short tag after a clip's text, such as the voice a clone used. */
+    /** short tag after a clip's text, such as the voice a clone used. */
     clipBadge?: (
       clip: AudioGalleryClip,
       place: "selected" | "history",

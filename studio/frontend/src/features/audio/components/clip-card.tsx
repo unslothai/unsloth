@@ -19,7 +19,6 @@ import { Waveform } from "./waveform";
 
 export type ClipSendHandlers = Partial<Record<AudioWorkflowId, () => void>>;
 
-/** In page order; a page shows only when it has a handler. */
 export function SendToItems({ handlers }: { handlers: ClipSendHandlers }) {
   return AUDIO_WORKFLOWS.filter((tab) => handlers[tab.id]).map((tab) => (
     <DropdownMenuItem key={tab.id} onClick={handlers[tab.id]}>
@@ -50,7 +49,7 @@ export function ClipSendToMenu({ handlers }: { handlers: ClipSendHandlers }) {
 
 const CARD_CLASS = "w-full max-w-xl gap-3 px-5 py-4";
 
-/** Never autoplays; a clip a run just made takes focus on its play button once. */
+/** never autoplays; a new clip focuses its play button once. */
 export function ClipCard({
   title,
   model,
