@@ -37,7 +37,14 @@ def _write(path: Path, text: str) -> None:
     path.write_text(text, encoding = "utf-8")
 
 
-def _v2(root: Path, relative: str, *, limit, current = None, inactive_file = None) -> Path:
+def _v2(
+    root: Path,
+    relative: str,
+    *,
+    limit,
+    current = None,
+    inactive_file = None,
+) -> Path:
     d = root / relative.strip("/") if relative.strip("/") else root
     d.mkdir(parents = True, exist_ok = True)
     if limit is not None:
@@ -281,7 +288,6 @@ def test_pin_budget_without_a_limit_is_unchanged(fake_cgroup, host):
 
 def _h3_held(monkeypatch, held_gb: float) -> None:
     from core.inference import video_minimax_h3 as vmh3
-
     kb = int(held_gb * 1e9 / 1024)
     monkeypatch.setattr(vmh3, "_proc_status_kb", lambda fields: {"RssAnon": kb, "RssShmem": 0})
 
@@ -347,7 +353,6 @@ def test_h3_guard_admits_the_tier_under_a_limit_that_fits(fake_cgroup, host, mon
 
 def _system_memory(monkeypatch):
     import main
-
     monkeypatch.setattr(
         main,
         "_get_cached_system_gpu_info",
