@@ -33,7 +33,11 @@ def _shared_setup_1(monkeypatch):
     return observed
 
 
-def _shared_setup_2(monkeypatch, tmp_path, name = "Org/Embedder"):
+def _shared_setup_2(
+    monkeypatch,
+    tmp_path,
+    name = "Org/Embedder",
+):
     monkeypatch.setattr(
         "utils.hf_cache_settings.active_hf_hub_cache",
         lambda: str(tmp_path / "selected-hub"),
