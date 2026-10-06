@@ -802,7 +802,9 @@ def test_load_exclude_tokens_superset_ok(monkeypatch, tmp_path):
     assert _load(monkeypatch, tmp_path, fp8, scheme = "fp8") is not None
 
     int8 = _good_ckpt(scheme = "int8")
-    int8["metadata"]["exclude_name_tokens"] = list(exclude_tokens_for_scheme("int8")) + ["extra_bf16"]
+    int8["metadata"]["exclude_name_tokens"] = list(exclude_tokens_for_scheme("int8")) + [
+        "extra_bf16"
+    ]
     assert _load(monkeypatch, tmp_path, int8, scheme = "int8") is not None
 
 

@@ -2491,9 +2491,7 @@ def _validate_checkpoint(
         # The exclude set derives from scheme AND family, so use the recorded family: an artifact baked under an older
         # token list is rejected and re-quantised, not loaded crashing.
         expected = tuple(exclude_tokens_for_scheme(scheme, meta.get("family")))
-        if not isinstance(ckpt_excludes, (list, tuple)) or not set(expected) <= set(
-            ckpt_excludes
-        ):
+        if not isinstance(ckpt_excludes, (list, tuple)) or not set(expected) <= set(ckpt_excludes):
             _warn(
                 logger,
                 scheme,

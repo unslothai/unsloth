@@ -69,7 +69,11 @@ def test_nvfp4_rows_are_unchanged():
     assert ("nvfp4", "unsloth/Wan2.2-TI2V-5B-NVFP4") in detect_video_family(TI2V_5B).prequant_repos
     a14b = detect_video_family(T2V_A14B)
     assert ("nvfp4", "unsloth/Wan2.2-T2V-A14B-NVFP4") in a14b.prequant_repos
-    assert ("nvfp4", "transformer_2", "Wan2.2-T2V-A14B-transformer_2-NVFP4.pt") in a14b.prequant_filenames
+    assert (
+        "nvfp4",
+        "transformer_2",
+        "Wan2.2-T2V-A14B-transformer_2-NVFP4.pt",
+    ) in a14b.prequant_filenames
 
 
 @pytest.mark.parametrize(

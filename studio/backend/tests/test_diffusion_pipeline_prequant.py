@@ -379,7 +379,13 @@ def test_balanced_keeps_the_released_weights(monkeypatch):
     assert _settle(_settle_backend(monkeypatch), memory_mode = "balanced") is None
 
 
-def _forced_offload_backend(monkeypatch, *, scheme = "fp8", survives = True, native = None):
+def _forced_offload_backend(
+    monkeypatch,
+    *,
+    scheme = "fp8",
+    survives = True,
+    native = None,
+):
     """low_vram's whole-module plan: the denoiser is offloaded, and ``survives`` says whether its torchao weights
     survive that placement. ``native`` is the scheme the loader would serve torchao-free under offload."""
     backend = _settle_backend(monkeypatch, offload = "model", scheme = scheme)
@@ -421,9 +427,7 @@ def test_auto_under_a_whole_module_offload_never_walks_to_a_lower_rung(monkeypat
 
     backend = _forced_offload_backend(monkeypatch, scheme = "int8")
     monkeypatch.setattr(tq, "auto_scheme_candidates", lambda *_a, **_k: ("int8", "fp8"))
-    monkeypatch.setattr(
-        dmod, "torchao_survives_plan", lambda _plan, rung, **_k: rung == "fp8"
-    )
+    monkeypatch.setattr(dmod, "torchao_survives_plan", lambda _plan, rung, **_k: rung == "fp8")
     assert _settle(backend, memory_mode = "low_vram") == PIPELINE_SEED_DECLINED
 
 

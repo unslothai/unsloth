@@ -232,7 +232,9 @@ def test_explicit_fp8_runtime_quant_without_a_hosted_artifact(fake_runtime, monk
 
 @pytest.mark.parametrize("family", ["wan2.2-ti2v-5b", "wan2.2-t2v-a14b"])
 @pytest.mark.parametrize("tier_gib", [24, 48])
-def test_auto_seeds_the_hosted_artifact_only_where_it_would_quantise(fake_runtime, monkeypatch, family, tier_gib):
+def test_auto_seeds_the_hosted_artifact_only_where_it_would_quantise(
+    fake_runtime, monkeypatch, family, tier_gib
+):
     """Auto quantises a Wan DiT only where bf16 does not stay resident; there the hosted int8 is seeded instead of a
     runtime quantise, and where bf16 fits (the planner table) nothing is seeded."""
     spy = _spoof(monkeypatch, tier_gib = tier_gib)
