@@ -212,9 +212,7 @@ def test_non_stream_route_returns_json_or_upstream_error(monkeypatch, upstream_s
 
 
 @pytest.mark.parametrize("server_compaction_rejected", [False, True])
-def test_non_stream_route_reports_local_context_truncation(
-    monkeypatch, server_compaction_rejected
-):
+def test_non_stream_route_reports_local_context_truncation(monkeypatch, server_compaction_rejected):
     from routes import inference
 
     requests = []
@@ -237,16 +235,18 @@ def test_non_stream_route_reports_local_context_truncation(
             json = {
                 "id": "resp_route",
                 "status": "completed",
-                "output": [
-                    {"type": "message", "content": [{"type": "output_text", "text": "Hi"}]}
-                ],
+                "output": [{"type": "message", "content": [{"type": "output_text", "text": "Hi"}]}],
             },
         )
 
     truncation = {"dropped_messages": 2, "boundary_messages": 2, "fits": True}
 
-    def fit(messages, _payload, *, saved_transcript = True, tools = None):
-        assert saved_transcript is True
+    def fit(
+        messages,
+        _payload,
+        *,
+        tools = None,
+    ):
         assert tools is None
         return messages[-1:], truncation, 128
 

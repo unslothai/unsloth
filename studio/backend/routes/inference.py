@@ -27200,7 +27200,6 @@ def _fit_external_context(
     messages: list[dict],
     payload,
     *,
-    saved_transcript: bool = True,
     tools: Optional[list[dict]] = None,
 ) -> tuple[list[dict], Optional[dict], Optional[int]]:
     from core.inference.context_window import (
@@ -27251,8 +27250,7 @@ def _fit_external_context(
         return messages, None, max_tokens
     policy = _request_context_policy(payload)
     ratio = _request_compaction_headroom_ratio(payload)
-    # The saved boundary counts messages of the saved transcript, which a tool loop's working copy is not.
-    thread_id = payload.thread_id if saved_transcript else None
+    thread_id = payload.thread_id
     # No archive to search here, so a checkpoint reset may not start and the fit stays rolling.
     sticky, sticky_is_checkpoint = _sticky_compaction_state(
         thread_id,
@@ -28057,7 +28055,6 @@ async def _proxy_to_external_provider(
                 _fit_external_context,
                 messages,
                 payload,
-                saved_transcript = not run_studio_tool_loop,
                 tools = _external_fit_tools,
             )
             if truncation and truncation.get("dropped_messages"):

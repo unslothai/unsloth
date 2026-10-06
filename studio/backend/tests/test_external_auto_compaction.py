@@ -315,7 +315,7 @@ def test_a_short_chat_keeps_a_reply_cap_past_half_the_window():
     assert _truncations(chunks) == []
 
 
-def test_a_tool_round_does_not_replay_the_saved_transcript_boundary(monkeypatch):
+def test_a_tool_enabled_chat_starts_from_the_saved_boundary(monkeypatch):
     from core.inference import llama_cpp
 
     monkeypatch.setattr(
@@ -324,18 +324,24 @@ def test_a_tool_round_does_not_replay_the_saved_transcript_boundary(monkeypatch)
         lambda thread_id, *a, **k: (20 if thread_id else 0, False),
     )
     monkeypatch.setattr(llama_cpp, "_keeps_compaction_boundary", lambda thread_id: False)
-    payload = ChatCompletionRequest(
-        provider_type = "openrouter",
-        messages = _long_chat(),
+
+    async def connected(self) -> bool:
+        return False
+
+    # The tool loop polls for a disconnect and would stop before reaching the provider.
+    monkeypatch.setattr(Request, "is_disconnected", connected)
+    _, sent = _proxy(
+        "openrouter",
+        _long_chat(),
         thread_id = "saved-thread",
-        max_tokens = 256,
+        enable_tools = True,
+        enabled_tools = ["python"],
+        permission_mode = "off",
         context_overflow = "truncate_oldest",
         compaction_threshold = 6_000,
     )
-    saved, _, _ = ri._fit_external_context(_long_chat(), payload)
-    working, _, _ = ri._fit_external_context(_long_chat(), payload, saved_transcript = False)
-    assert len(_long_chat()) - len(saved) == 20
-    assert len(saved) < len(working) < len(_long_chat())
+    assert sent["tools"]
+    assert len(_long_chat()) - len(sent["messages"]) == 20
 
 
 def test_external_fit_reserves_image_embeddings():
