@@ -5726,7 +5726,11 @@ def snapshot_residual_lora_init(model, init_lora_weights):
         lora_A = getattr(module, "lora_A", None)
         if isinstance(lora_A, torch.nn.ModuleDict) and len(lora_A):
             module._unsloth_initial_lora = {
-                k: (lora_A[k].weight.detach().clone(), module.lora_B[k].weight.detach().clone())
+                k: (
+                    lora_A[k].weight.detach().clone(),
+                    module.lora_B[k].weight.detach().clone(),
+                    module.scaling[k],
+                )
                 for k in lora_A
             }
 
@@ -5741,7 +5745,9 @@ def lora_relative_to_original_base(model):
             initial = getattr(module, "_unsloth_initial_lora", None)
             if not initial:
                 continue
-            for k, (A0, B0) in initial.items():
+            for k, (A0, B0, scaling0) in initial.items():
+                # The base was rewritten with the init-time scaling; set_scale may have changed it since.
+                B0 = B0 * (scaling0 / module.scaling[k])
                 a, b = module.lora_A[k], module.lora_B[k]
                 swapped.append((a, a.weight, b, b.weight))
                 a.weight = torch.nn.Parameter(
