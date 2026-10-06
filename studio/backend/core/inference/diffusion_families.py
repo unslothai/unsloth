@@ -232,8 +232,7 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         pipeline_class = "FluxPipeline",
         transformer_class = "FluxTransformer2DModel",
         base_repo = "black-forest-labs/FLUX.1-schnell",
-        # ComfyUI ModelSamplingFlux fixed mu 1.15 for dev / Krea; schnell first (a dev GGUF may resolve to its base).
-        # Keys name the model, not bare "dev" / "schnell": local paths are substring-matched too.
+        # ComfyUI fixed mu 1.15 for dev / Krea; schnell first (a dev GGUF may resolve to its base). Keys name the model: paths match too.
         comfy_flow_shift_variants = tuple(
             (f"{prefix}-{model}", shift)
             for model, shift in (
