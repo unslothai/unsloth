@@ -692,23 +692,21 @@ def test_security_gates_run_before_ssm_install():
         assert min(gates) < min(ssm), f"{fn} must gate before installing SSM kernels"
 
 
-# ── drift guard vs the training worker (single source of truth) ───────────────
+# ── training worker shares these tables and pins ──────────────────────────────
 
 
-def test_constants_match_training_worker():
+def test_constants_shared_with_training_worker():
     try:
         from core.training import worker as tw
     except Exception as exc:  # pragma: no cover - only when training deps absent
         pytest.skip(f"training worker not importable here: {exc}")
+    from utils import kernel_install
 
-    assert set(ssm_runtime.SSM_MODEL_SUBSTRINGS) == set(tw._SSM_MODEL_SUBSTRINGS)
-    assert set(ssm_runtime.CAUSAL_CONV1D_MODEL_SUBSTRINGS) == set(
-        tw._CAUSAL_CONV1D_MODEL_SUBSTRINGS
-    )
-    assert ssm_runtime.MAMBA_SSM_PACKAGE_VERSION == tw._MAMBA_SSM_PACKAGE_VERSION
-    assert ssm_runtime.MAMBA_SSM_RELEASE_TAG == tw._MAMBA_SSM_RELEASE_TAG
-    assert ssm_runtime.CAUSAL_CONV1D_PACKAGE_VERSION == tw._CAUSAL_CONV1D_PACKAGE_VERSION
-    assert ssm_runtime.CAUSAL_CONV1D_RELEASE_TAG == tw._CAUSAL_CONV1D_RELEASE_TAG
+    assert tw._SSM_MODEL_SUBSTRINGS is ssm_runtime.SSM_MODEL_SUBSTRINGS
+    assert tw._CAUSAL_CONV1D_MODEL_SUBSTRINGS is ssm_runtime.CAUSAL_CONV1D_MODEL_SUBSTRINGS
+    assert tw.CAUSAL_CONV1D is ssm_runtime.CAUSAL_CONV1D is kernel_install.CAUSAL_CONV1D
+    assert tw.MAMBA_SSM is ssm_runtime.MAMBA_SSM is kernel_install.MAMBA_SSM
+    assert tw._hipcc_gcc_install_dir is ssm_runtime._hipcc_gcc_install_dir
 
     # detection must agree with the training worker across SSM + non-SSM names
     for name in (
