@@ -1,6 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
-//
 // Portions adapted from assistant-ui packages/ui/src/components/assistant-ui/image.tsx
 // MIT License, Copyright (c) 2025 AgentbaseAI Inc.
 // Source: https://github.com/assistant-ui/assistant-ui/blob/main/packages/ui/src/components/assistant-ui/image.tsx
@@ -13,22 +12,17 @@ import {
   isDownloadCancelled,
   urlToBlob,
 } from "@/lib/native-files";
+import { RefreshGlyph } from "@/lib/refresh-icon";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
 import type {
   ImageMessagePart,
   ImageMessagePartComponent,
 } from "@assistant-ui/react";
-import { Download01Icon } from "@hugeicons/core-free-icons";
+import { Copy01Icon, Download01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { type VariantProps, cva } from "class-variance-authority";
-import {
-  CopyIcon,
-  ImageIcon,
-  ImageOffIcon,
-  RefreshCwIcon,
-  ShieldAlertIcon,
-} from "lucide-react";
+import { ImageIcon, ImageOffIcon, ShieldAlertIcon } from "lucide-react";
 import {
   type ComponentProps,
   type PropsWithChildren,
@@ -383,7 +377,7 @@ function RegenerateButton({
       aria-label="Regenerate image"
       className="inline-flex size-7 items-center justify-center rounded hover:bg-muted disabled:opacity-50"
     >
-      <RefreshCwIcon
+      <RefreshGlyph
         className={cn("size-4", isRegenerating && "animate-spin")}
       />
     </button>
@@ -416,7 +410,7 @@ function ImageActions({ part, onRegenerate, className }: ImageActionsProps) {
         aria-label="Copy image"
         className="inline-flex size-7 items-center justify-center rounded hover:bg-muted"
       >
-        <CopyIcon className="size-4" />
+        <HugeiconsIcon icon={Copy01Icon} className="size-4" />
       </button>
       {onRegenerate && <RegenerateButton onRegenerate={onRegenerate} />}
     </div>

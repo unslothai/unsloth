@@ -25,7 +25,10 @@ import remend from "remend";
 import { parseMarkdownIntoBlocks } from "streamdown";
 
 import { stabilizeStreamingMarkdown } from "../src/components/assistant-ui/streaming-markdown.ts";
-import { IncrementalMarkdownCache } from "../src/components/assistant-ui/streaming-render-schedule.ts";
+import {
+  IncrementalMarkdownCache,
+  repairStreamingMarkdown,
+} from "../src/components/assistant-ui/streaming-render-schedule.ts";
 import { preprocessLaTeX } from "../src/lib/latex.ts";
 
 const processStreamingText = (text: string): string =>
@@ -69,6 +72,10 @@ const NAMED_CASES: Array<[string, string]> = [
   ["adjacent-spans", "`a $5` `b $6` `c $7`\n\n"],
   ["link-parens", "See [docs](https://e.com/a_(b)) and $5.\n\n"],
   ["list-with-math", "- rate \\(\\alpha\\)\n- budget $250\n- decay \\(\\lambda\\)\n\n"],
+  [
+    "list-with-escaped-dollar-math",
+    "- rate \\$\\alpha\\$\n- budget $250\n- decay \\$\\lambda\\$\n\n",
+  ],
   ["loose-list", "- item one\n\n  continued body $5\n\n- item two\n\n  more \\(x\\)\n\n"],
   ["blockquote", "> quoted \\(x\\) and $5\n> more\n\nafter\n\n"],
   ["setext", "Heading text\n===\n\nBody with $5.\n\n"],
@@ -169,7 +176,7 @@ function assertMatchesFullSplit(
     );
     assert.deepEqual(
       render.parseMarkdownIntoBlocks(render.markdown),
-      parseMarkdownIntoBlocks(remend(input)),
+      parseMarkdownIntoBlocks(repairStreamingMarkdown(input)),
       `block mismatch at prefix ${length} of ${name}: ${JSON.stringify(source.slice(0, 200))}`,
     );
   }

@@ -1,7 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { CPT_TARGET_MODULES, DEFAULT_HYPERPARAMS } from "@/config/training";
+import {
+  CPT_LORA_HYPERPARAMS,
+  DEFAULT_HYPERPARAMS,
+  resolveCptTargetModules,
+} from "@/config/training";
 import type {
   AdvancedSettingsBaseline,
   TrainingConfigState,
@@ -58,7 +62,10 @@ function countNonDefaultScalarSettings(
 ): number {
   return Object.entries(SCALAR_DEFAULTS).reduce((total, [rawKey, value]) => {
     const key = rawKey as keyof typeof SCALAR_DEFAULTS;
-    const expected = baselineValue(baseline, key, value);
+    const expected =
+      key === "trainOnCompletions" && state.trainingMethod === "cpt"
+        ? false
+        : baselineValue(baseline, key, value);
     return state[key] === expected ? total : total + 1;
   }, 0);
 }
@@ -70,10 +77,10 @@ function countNonDefaultLoraSettings(
   const isCpt = state.trainingMethod === "cpt";
   const loraDefaults = {
     loraRank: isCpt
-      ? 128
+      ? CPT_LORA_HYPERPARAMS.loraRank
       : baselineValue(baseline, "loraRank", DEFAULT_HYPERPARAMS.loraRank),
     loraAlpha: isCpt
-      ? 32
+      ? CPT_LORA_HYPERPARAMS.loraAlpha
       : baselineValue(baseline, "loraAlpha", DEFAULT_HYPERPARAMS.loraAlpha),
     loraDropout: baselineValue(
       baseline,
@@ -81,7 +88,7 @@ function countNonDefaultLoraSettings(
       DEFAULT_HYPERPARAMS.loraDropout,
     ),
     loraVariant: isCpt
-      ? "rslora"
+      ? CPT_LORA_HYPERPARAMS.loraVariant
       : baselineValue(baseline, "loraVariant", DEFAULT_HYPERPARAMS.loraVariant),
   } as const;
   const count = Object.entries(loraDefaults).reduce(
@@ -90,7 +97,13 @@ function countNonDefaultLoraSettings(
     0,
   );
   const defaultTargetModules = isCpt
-    ? CPT_TARGET_MODULES
+    ? resolveCptTargetModules(
+        baselineValue(
+          baseline,
+          "targetModules",
+          DEFAULT_HYPERPARAMS.targetModules,
+        ),
+      )
     : baselineValue(
         baseline,
         "targetModules",

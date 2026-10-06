@@ -24,8 +24,6 @@ from unsloth import import_fixes as IF
 
 
 # Base (no-extras) requirements as declared by two real transformers releases.
-# The names and floors differ between them, which is why the check reads them
-# from metadata instead of carrying a table that would rot.
 REQUIRES_4_57_6 = [
     "filelock",
     "huggingface-hub<1.0,>=0.34.0",
@@ -94,9 +92,6 @@ def _run_check(caplog):
     return _warnings(caplog)
 
 
-# ---------------------------------------------------------------- satisfied
-
-
 @pytest.mark.parametrize(
     "requires, installed",
     [
@@ -154,7 +149,7 @@ def test_violated_floor_is_reported_and_names_the_dependency(monkeypatch, caplog
         "regex": "2025.11.3",
         "tokenizers": "0.22.2",
         "typer": "0.15.1",
-        "safetensors": "0.7.0",  # the violation
+        "safetensors": "0.7.0",
         "tqdm": "4.67.3",
     }
     _install_env(monkeypatch, REQUIRES_5_14_1, installed)
@@ -310,9 +305,6 @@ def test_unreadable_metadata_is_still_silent(monkeypatch, caplog):
     assert _run_check(caplog) == []
 
 
-# --------------------------------------------------------- defensive silence
-
-
 @pytest.mark.parametrize(
     "requires, installed",
     [
@@ -379,7 +371,7 @@ def test_runs_against_the_real_environment_without_raising(caplog):
     assert isinstance(result, list)
     for entry in result:
         assert len(entry) == 3
-    IF.check_transformers_dependency_versions()  # must not raise
+    IF.check_transformers_dependency_versions()
 
 
 def test_check_is_registered_in_gpu_init():
@@ -399,7 +391,7 @@ def test_check_warns_rather_than_raises_on_a_violation(monkeypatch, caplog):
         ["safetensors>=0.8.0"],
         {"transformers": "5.15.0.dev0", "safetensors": "0.7.0"},
     )
-    IF.check_transformers_dependency_versions()  # no exception
+    IF.check_transformers_dependency_versions()  # must not raise
     assert len(_run_check(caplog)) == 1
 
 

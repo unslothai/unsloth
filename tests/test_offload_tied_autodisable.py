@@ -10,11 +10,17 @@ Every platform branch is driven explicitly, so the assertions hold on Linux,
 macOS, Windows and WSL alike: the host's own os.name never decides.
 """
 
-import ast, os
+import ast, os, types
 from contextlib import contextmanager
 
-import torch
-import torch.nn as nn
+import pytest
+from real_accelerator import has_real_cuda
+
+# Skip rather than error where torch is absent. Only `nn.Embedding` / `nn.Linear` / `torch.device` are wanted here, no
+# GPU, but a bare module-level import turns a machine without torch into a collection error, which aborts the whole
+# pytest session instead of leaving one skipped module behind.
+torch = pytest.importorskip("torch")
+nn = pytest.importorskip("torch.nn")
 
 HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 VISION = os.path.join(HERE, "unsloth", "models", "vision.py")
@@ -22,14 +28,34 @@ VISION = os.path.join(HERE, "unsloth", "models", "vision.py")
 _SRC = open(VISION, encoding = "utf-8").read()
 
 
+_DISTRIBUTED = [False]
+
+
 def _load(*names):
     mod = ast.parse(_SRC)
-    ns = {"torch": torch, "os": os}
+    # The sentinel lives in loader_utils;
+    # importing that module would drag in torch's CUDA stack, so mirror the one value these functions read.
+    # `is_distributed` is driven explicitly so the assertions never depend on whether the host happens to have
+    # torchrun's env vars set.
+    ns = {
+        "torch": torch,
+        "os": os,
+        "OFFLOAD_EMBEDDING_AUTO": "auto",
+        "is_distributed": lambda: _DISTRIBUTED[0],
+        # An unsloth_zoo without the reserve estimate: "auto" keeps the size rule tested below.
+        "_zoo_reserve_estimate": None,
+    }
     wanted = set(names)
     for node in mod.body:
         if isinstance(node, ast.FunctionDef) and node.name in wanted:
             exec(ast.get_source_segment(_SRC, node), ns)
             wanted.discard(node.name)
+        elif isinstance(node, ast.Assign) and getattr(node.targets[0], "id", "").startswith(
+            "_OFFLOAD_EMBEDDING_"
+        ):
+            # The size thresholds the auto decision reads; taken from the source so the
+            # tests below cannot drift from the shipped numbers.
+            exec(ast.get_source_segment(_SRC, node), ns)
     if wanted:
         raise AssertionError(f"not found in vision.py: {sorted(wanted)}")
     return ns
@@ -39,6 +65,7 @@ _NS = _load(
     "_embeddings_are_tied",
     "_offload_embedding_unsupported_platform",
     "_embedding_dispatch_device",
+    "_embedding_is_worth_offloading",
     "_resolve_offload_embedding",
 )
 resolve = _NS["_resolve_offload_embedding"]
@@ -119,15 +146,16 @@ def test_tied_model_disables_offload_instead_of_raising():
         assert resolve(_tied_model(), True) is False
 
 
-def test_opaque_model_leaves_request_alone():
-    # Cannot inspect it, so do not guess, and do not crash.
+def test_opaque_model_disables_offload():
+    # Used to return the request unchanged, which is the one answer that crashes: the caller
+    # acts on True by calling get_input_embeddings() unguarded, the same call that raised here.
     with _as_platform("posix"):
-        assert resolve(_Opaque(), True) is True
+        assert resolve(_Opaque(), True) is False
 
 
 def test_wsl_and_windows_disable_offload():
-    # Neither can offload, and the flag also gates the multi-device hook attach,
-    # so it has to read False rather than pass through.
+    # Neither can offload, and the flag also gates the multi-device hook attach, so it has to read False rather than
+    # pass through.
     for var in _WSL_VARS:
         with _as_platform("posix"):
             os.environ[var] = "1"
@@ -147,8 +175,8 @@ def test_wsl_and_windows_disable_offload():
 
 
 def test_platform_gate_lives_in_one_place():
-    # The offload block used to re-test os.name itself; the copies drifted apart
-    # and only Windows noticed. _resolve_offload_embedding owns it now.
+    # The offload block used to re-test os.name itself; the copies drifted apart and only Windows noticed.
+    # _resolve_offload_embedding owns it now.
     helper = _SRC[_SRC.index("def _offload_embedding_unsupported_platform(") :]
     helper = helper[: helper.index("\n\n\ndef ")]
     for probe in ('os.name == "nt"', "WSL_DISTRO_NAME", "WSL_INTEROP"):
@@ -160,7 +188,7 @@ def test_resolved_before_multidevice_hooks():
     # Hook attach returns early while offload_embedding is still True.
     call = _SRC.index("offload_embedding = _resolve_offload_embedding(")
     # Anchor on the indented CALL, not the module-level `def`.
-    hooks = _SRC.index("\n                _attach_bnb_multidevice_hooks(")
+    hooks = _SRC.index("\n                    _attach_bnb_multidevice_hooks(")
     assert call < hooks, "offload_embedding must be resolved before hook attach"
 
 
@@ -211,3 +239,268 @@ if __name__ == "__main__":
             fn()
             print(f"[PASS] {name}")
     print("all offload tied auto-disable tests passed")
+
+
+# --------------------------------------------------------------------------------------
+# `offload_embedding = "auto"`: the loader decides, and says nothing when it declines.
+# --------------------------------------------------------------------------------------
+
+worth_offloading = _NS["_embedding_is_worth_offloading"]
+MIN_BYTES = _NS["_OFFLOAD_EMBEDDING_MIN_BYTES"]
+MIN_FRACTION = _NS["_OFFLOAD_EMBEDDING_MIN_FRACTION"]
+
+
+class _FakeWeight:
+    def __init__(
+        self,
+        n_bytes,
+        device_type = "cuda",
+        index = 0,
+    ):
+        self._bytes = n_bytes
+        self.device = torch.device(
+            f"{device_type}:{index}" if device_type == "cuda" else device_type
+        )
+
+    def numel(self):
+        return self._bytes // 2
+
+    def element_size(self):
+        return 2
+
+    def data_ptr(self):
+        # Distinct per object, so the tied-weights check sees these as untied.
+        return id(self)
+
+
+class _FakeEmbedding:
+    def __init__(self, weight):
+        self.weight = weight
+
+
+@contextmanager
+def _card(total_bytes):
+    """Drive total device memory directly; no GPU is touched."""
+    saved = torch.cuda.get_device_properties
+    torch.cuda.get_device_properties = lambda index = 0: type(
+        "_Props", (), {"total_memory": total_bytes}
+    )()
+    try:
+        yield
+    finally:
+        torch.cuda.get_device_properties = saved
+
+
+def test_a_big_embedding_on_a_small_card_is_offloaded():
+    """Muse Glimmer's 202048 x 6656 embedding is 2.5 GiB, 16% of a 16 GB T4. Every one of
+    the four notebooks passed `offload_embedding = True` by hand for exactly this."""
+    with _card(16 * 2**30):
+        assert worth_offloading(_FakeEmbedding(_FakeWeight(int(2.5 * 2**30)))) is True
+
+
+def test_the_same_embedding_on_a_big_card_is_left_alone():
+    """3% of an 80 GB card. The PCIe traffic buys nothing there."""
+    with _card(80 * 2**30):
+        assert worth_offloading(_FakeEmbedding(_FakeWeight(int(2.5 * 2**30)))) is False
+
+
+def test_a_small_embedding_is_never_worth_the_traffic():
+    """Under the absolute floor even though it clears the fraction on a tiny card."""
+    with _card(4 * 2**30):
+        assert worth_offloading(_FakeEmbedding(_FakeWeight(MIN_BYTES // 2))) is False
+
+
+def test_anything_unmeasurable_declines():
+    """Not offloading is what every release before this did, so it is the safe answer."""
+    with _card(16 * 2**30):
+        assert worth_offloading(_FakeEmbedding(None)) is False
+        assert worth_offloading(_FakeEmbedding(_FakeWeight(4 * 2**30, "cpu"))) is False
+        assert worth_offloading(object()) is False
+
+
+def test_auto_declines_a_tied_model_without_printing(capsys):
+    """The tied decline explains why something a caller ASKED for is not happening. For a
+    default nobody set it would be an apology in front of every tied-embedding load."""
+    model = _tied_model()
+    with _as_platform("posix"):
+        assert resolve(model, "auto") is False
+    assert capsys.readouterr().out == ""
+
+
+def test_an_explicit_request_still_explains_itself(capsys):
+    model = _tied_model()
+    with _as_platform("posix"):
+        assert resolve(model, True) is False
+    assert "ties embed_tokens" in capsys.readouterr().out
+
+
+def _sized_model(n_bytes):
+    """An untied, undispatched model whose embedding is exactly `n_bytes` on cuda:0."""
+    return _Model(_FakeEmbedding(_FakeWeight(n_bytes)), _FakeEmbedding(_FakeWeight(8)))
+
+
+def test_auto_offloads_a_big_embedding_and_declines_a_small_one():
+    """`resolve` must actually consult the size test, not just default to yes: a blanket
+    yes would offload every model on every card and cost PCIe traffic for nothing."""
+    with _as_platform("posix"), _card(16 * 2**30):
+        assert resolve(_sized_model(int(2.5 * 2**30)), "auto") is True
+        assert resolve(_sized_model(64 * 2**20), "auto") is False
+
+
+def test_auto_declines_the_same_embedding_on_a_card_with_room():
+    with _as_platform("posix"), _card(80 * 2**30):
+        assert resolve(_sized_model(int(2.5 * 2**30)), "auto") is False
+
+
+def test_explicit_true_and_false_are_untouched_by_the_auto_default():
+    """Backwards compatibility: the size test only ever runs for `"auto"`."""
+    model = _untied_model()
+    with _as_platform("posix"), _card(80 * 2**30):
+        # 80 GB card, so `"auto"` would decline; an explicit True must not.
+        assert resolve(model, True) is True
+        assert resolve(model, False) is False
+
+
+@contextmanager
+def _under_ddp():
+    _DISTRIBUTED[0] = True
+    try:
+        yield
+    finally:
+        _DISTRIBUTED[0] = False
+
+
+def test_a_distributed_launch_declines_the_offload(capsys):
+    """The offload leaves embed_tokens on the CPU while the rest of the rank stays on CUDA.
+    Under full finetuning that parameter is trainable, and DDP wrapping with device_ids
+    refuses a module whose trainable parameters span both, so the run dies before step 1.
+    The old False default kept distributed callers away from this; the new one does not."""
+    with _as_platform("posix"), _card(16 * 2**30), _under_ddp():
+        assert resolve(_sized_model(int(2.5 * 2**30)), "auto") is False
+    assert capsys.readouterr().out == ""
+
+
+def test_a_distributed_launch_also_declines_an_explicit_request(capsys):
+    """Same veto for someone who asked outright, with the reason, as the other declines do.
+    It is a VRAM optimisation, not a correctness switch, so turning it off beats failing."""
+    with _as_platform("posix"), _card(16 * 2**30), _under_ddp():
+        assert resolve(_sized_model(int(2.5 * 2**30)), True) is False
+    assert "distributed launch" in capsys.readouterr().out
+
+
+def test_a_single_process_run_is_unaffected():
+    with _as_platform("posix"), _card(16 * 2**30):
+        assert resolve(_sized_model(int(2.5 * 2**30)), "auto") is True
+
+
+def test_auto_follows_free_memory_once_the_reserve_estimate_exists():
+    """With the estimate, `"auto"` never offloads on size alone; it waits for a memory shortfall
+    (`needed`, from offload_embedding_if_tight or the block swap planner)."""
+    _NS["_zoo_reserve_estimate"] = object()
+    try:
+        with _as_platform("posix"), _card(16 * 2**30):
+            big = _sized_model(int(2.5 * 2**30))
+            assert resolve(big, "auto") is False
+            assert resolve(big, "auto", needed = True) is True
+            assert resolve(big, True) is True
+    finally:
+        _NS["_zoo_reserve_estimate"] = None
+
+
+class _PerLayerModel(nn.Module):
+    """Tied input embedding plus a large per-layer table (Gemma 3n / 4 layout)."""
+
+    def __init__(self, device):
+        super().__init__()
+        self.embed_tokens = nn.Embedding(64, 8, device = device)
+        self.per_layer = nn.Embedding(64, 32, device = device)
+        self.lm_head = nn.Linear(8, 64, bias = False, device = device)
+        self.lm_head.weight = self.embed_tokens.weight
+
+    def get_input_embeddings(self):
+        return self.embed_tokens
+
+    def get_output_embeddings(self):
+        return self.lm_head
+
+
+def _spare_ns():
+    ns = _load(
+        "_embeddings_are_tied",
+        "_offload_embedding_unsupported_platform",
+        "_embedding_dispatch_device",
+        "_input_side_embeddings",
+        "_accelerator_device",
+        "offload_spare_embeddings",
+    )
+    ns["_EXTRA_EMBEDDING_MIN_BYTES"] = 64 * 32 * 4  # the per-layer table above, no bigger
+    moved = []
+    ns["offload_input_embedding"] = lambda model, embeddings: moved.extend(embeddings) or 1
+    return ns, moved
+
+
+@pytest.mark.skipif(not has_real_cuda(), reason = "needs a card to offload from")
+def test_tied_model_still_offloads_its_per_layer_table():
+    ns, moved = _spare_ns()
+    model = _PerLayerModel("cuda")
+    model.requires_grad_(False)
+    with _as_platform("posix"):
+        assert ns["offload_spare_embeddings"](model) == 1
+    assert moved == [model.per_layer]
+
+
+@pytest.mark.skipif(not has_real_cuda(), reason = "needs a card to offload from")
+def test_trainable_or_cpu_model_tables_stay():
+    ns, moved = _spare_ns()
+    model = _PerLayerModel("cuda")
+    with _as_platform("posix"):
+        # get_peft_model: a table still trainable is not offloaded.
+        assert ns["offload_spare_embeddings"](model, require_frozen = True) == 0
+    model = _PerLayerModel("cpu").requires_grad_(False)
+    with _as_platform("posix"):
+        # A model on the CPU has nothing to offload.
+        assert ns["offload_spare_embeddings"](model) == 0
+    assert moved == []
+
+
+class _HeadlessPerLayerModel(_PerLayerModel):
+    """AutoModel backbone: no output head."""
+
+    def get_output_embeddings(self):
+        return None
+
+
+@pytest.mark.skipif(not has_real_cuda(), reason = "needs a card to offload from")
+def test_headless_model_hooks_a_table_the_block_swap_load_left_on_cpu():
+    ns, moved = _spare_ns()
+    model = _HeadlessPerLayerModel("cuda").requires_grad_(False)
+    # The block swap load streamed the table to host without hooks; the backbone stays on the card.
+    model.per_layer.to("cpu")
+    with _as_platform("posix"):
+        assert ns["offload_spare_embeddings"](model) == 1
+    # Nothing ties the input embedding without a head, so it may go too.
+    assert any(m is model.per_layer for m in moved)
+    moved.clear()
+    model = _HeadlessPerLayerModel("cpu").requires_grad_(False)
+    with _as_platform("posix"):
+        assert ns["offload_spare_embeddings"](model) == 0
+    assert moved == []
+
+
+@pytest.mark.skipif(not has_real_cuda(), reason = "needs a card to offload from")
+def test_headless_streamed_table_returns_rows_to_the_decoder_card():
+    ns = _load(
+        "_embeddings_are_tied",
+        "_input_side_embeddings",
+        "_accelerator_device",
+        "offload_input_embedding",
+    )
+    ns["_EXTRA_EMBEDDING_MIN_BYTES"] = 64 * 32 * 4
+    hooked = []
+    ns["_install_offload_embedding_hooks"] = lambda emb, out, device: hooked.append((emb, device))
+    ns["_pin_device_to_decoder"] = ns["clean_gpu_cache"] = lambda *a: None
+    ns["gc"] = types.SimpleNamespace(collect = lambda: None)
+    model = _HeadlessPerLayerModel("cuda").requires_grad_(False)
+    model.per_layer.to("cpu")
+    ns["offload_input_embedding"](model, [model.per_layer])
+    assert [(e is model.per_layer, d.type) for e, d in hooked] == [(True, "cuda")]

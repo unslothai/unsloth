@@ -3,7 +3,7 @@
 
 """Device + dtype policy for the local diffusion backend.
 
-torch imported lazily so this stays importable in a no-torch runtime. Studio's hardware layer
+torch imported lazily so this stays importable in a no-torch runtime. Unsloth's hardware layer
 reports product backends (CUDA, XPU, MLX, CPU); diffusers runs on PyTorch devices, so Apple
 Silicon maps to MPS and ROCm to ``cuda``. Centralises that mapping plus the per-backend dtype and
 the capability flags optimisation paths key off.
@@ -29,7 +29,8 @@ class DiffusionDeviceTarget:
     supports_default_torch_compile: bool
     supports_pinned_transfer: bool
     supports_float64: bool = True
-    # Selected CUDA/ROCm physical index, kept OUT of ``device``: the memory, speed and attention policies compare that string against "cuda", so a "cuda:1" there disables them silently.
+    # Selected CUDA/ROCm physical index, kept OUT of ``device``: the memory, speed and attention policies compare that
+    # string against "cuda", so a "cuda:1" there disables them silently.
     ordinal: Optional[int] = None
 
     @property
@@ -146,6 +147,130 @@ def install_decoder_sync(
     return True
 
 
+VAE_BF16_DECODE_ENV = "UNSLOTH_VIDEO_VAE_BF16_DECODE"
+# RDNA3 / RDNA3.5 / RDNA4: bf16 WMMA. Measured on gfx1151 (Strix Halo); RDNA2 and older have no bf16 matrix path.
+_ROCM_BF16_DECODE_ARCH_PREFIXES = ("gfx11", "gfx12")
+
+
+def _rocm_bf16_decode_arch(torch: Any, target: DiffusionDeviceTarget) -> Optional[str]:
+    try:
+        index = target.ordinal if target.ordinal is not None else torch.cuda.current_device()
+        arch = str(getattr(torch.cuda.get_device_properties(index), "gcnArchName", "") or "")
+    except Exception:  # noqa: BLE001 -- unreadable arch: keep fp32
+        return None
+    return arch if arch.startswith(_ROCM_BF16_DECODE_ARCH_PREFIXES) else None
+
+
+def _as_float32(value: Any, torch: Any) -> Any:
+    if isinstance(value, torch.Tensor):
+        return value.float() if value.is_floating_point() else value
+    if isinstance(value, tuple):
+        return tuple(_as_float32(v, torch) for v in value)
+    if isinstance(value, list):
+        return [_as_float32(v, torch) for v in value]
+    sample = getattr(value, "sample", None)
+    if isinstance(sample, torch.Tensor):
+        value.sample = _as_float32(sample, torch)
+    return value
+
+
+_VAE_BF16_OFF = ("0", "false", "off", "no")
+_VAE_BF16_FORCE = ("1", "true", "on", "yes")
+VAE_BF16_DECODE_MODES = ("weights", "autocast")
+
+
+def _vae_bf16_decode_request(gate: str) -> tuple[str, bool]:
+    """(mode, forced) for a non-off UNSLOTH_VIDEO_VAE_BF16_DECODE; unknown values cast weights, "1" also forces."""
+    if gate in VAE_BF16_DECODE_MODES:
+        return gate, False
+    return "weights", gate in _VAE_BF16_FORCE
+
+
+def _cast_float_args(torch: Any, dtype: Any) -> Any:
+    def _hook(module: Any, args: tuple) -> tuple:
+        return tuple(
+            a.to(dtype)
+            if isinstance(a, torch.Tensor) and a.is_floating_point() and a.dtype != dtype
+            else a
+            for a in args
+        )
+
+    return _hook
+
+
+def install_rocm_vae_bf16_decode(
+    pipe: Any,
+    target: DiffusionDeviceTarget,
+    *,
+    logger: Any = None,
+) -> Optional[str]:
+    """Decode an fp32-pinned video VAE (Wan) in bf16 on ROCm gfx11 / gfx12; returns the mode engaged, else None.
+
+    fp32 runs Wan's 3D convs as im2col plus a small-tile fp32 GEMM without matrix cores (~385 s of a 1280x704x21 clip on
+    gfx1151); ComfyUI decodes this VAE in bf16 on these cards. "weights" (default) casts only ``post_quant_conv`` +
+    ``decoder``, so ``vae.dtype`` and image-to-video encodes stay fp32; "autocast" keeps fp32 weights. Both return fp32.
+    UNSLOTH_VIDEO_VAE_BF16_DECODE: 0 off, auto / weights / autocast pick the mode, 1 also allows any bf16 CUDA device."""
+    gate = os.environ.get(VAE_BF16_DECODE_ENV, "auto").strip().lower()
+    if gate in _VAE_BF16_OFF or target.device != "cuda":
+        return None
+    vae = getattr(pipe, "vae", None)
+    decode = getattr(vae, "decode", None)
+    if not callable(decode) or getattr(decode, "_unsloth_bf16_decode", False):
+        return None
+    # NVIDIA's fp16 decode (diffusion_speed) owns the decoder dtype and recasts it to fp32 on a non-finite output.
+    if getattr(vae, "_unsloth_half_decode", False):
+        return None
+    import torch
+
+    if getattr(vae, "dtype", None) is not torch.float32:
+        return None
+    mode, forced = _vae_bf16_decode_request(gate)
+    if forced:
+        if not torch.cuda.is_bf16_supported():
+            return None
+        arch = "forced"
+    else:
+        if target.backend != "rocm":
+            return None
+        arch = _rocm_bf16_decode_arch(torch, target)
+        if arch is None:
+            return None
+
+    parts = [
+        m
+        for m in (getattr(vae, "post_quant_conv", None), getattr(vae, "decoder", None))
+        if isinstance(m, torch.nn.Module)
+    ]
+    if mode == "weights" and not parts:
+        mode = "autocast"  # no separable decode half: cast nothing
+
+    if mode == "weights":
+        for part in parts:
+            part.to(torch.bfloat16)
+            # A path that reaches the decoder without vae.decode (a custom tiled / untiled decode) still gets bf16.
+            part.register_forward_pre_hook(_cast_float_args(torch, torch.bfloat16))
+
+        def _bf16_decode(z: Any, *args: Any, **kwargs: Any) -> Any:
+            if isinstance(z, torch.Tensor) and z.is_floating_point():
+                z = z.to(torch.bfloat16)
+            return _as_float32(decode(z, *args, **kwargs), torch)
+
+    else:
+
+        def _bf16_decode(*args: Any, **kwargs: Any) -> Any:
+            with torch.autocast(device_type = "cuda", dtype = torch.bfloat16):
+                out = decode(*args, **kwargs)
+            return _as_float32(out, torch)
+
+    _bf16_decode._unsloth_bf16_decode = True  # type: ignore[attr-defined]
+    _bf16_decode.__wrapped__ = decode  # type: ignore[attr-defined]
+    vae.decode = _bf16_decode
+    vae._unsloth_bf16_decode_mode = mode
+    if logger is not None:
+        logger.info("video.vae_decode: bf16 %s on %s", mode, arch)
+    return mode
+
+
 def _studio_device_is(studio_device: Any, device_type: Any, name: str) -> bool:
     """True if ``studio_device`` equals ``DeviceType.<name>`` (when that member exists)."""
     member = getattr(device_type, name, None)
@@ -188,9 +313,8 @@ def resolve_selected_cuda_ordinal(
         raise ValueError(f"GPU selection is unavailable on this host: {exc}") from exc
     allowed = resolve_requested_gpu_ids(wanted)
     visible = get_parent_visible_gpu_ids()
-    # Torch enumerates the parent-visible list in order, so its ordinal for a physical id is that
-    # id's position in the mask. Unmasked, the layer reports range(physical count) and this is
-    # the identity mapping.
+    # Torch enumerates the parent-visible list in order, so its ordinal for a physical id is that id's position in the
+    # mask. Unmasked, the layer reports range(physical count) and this is the identity mapping.
     ordinals = [visible.index(gpu_id) for gpu_id in allowed if gpu_id in visible]
     if not ordinals:
         raise ValueError(
@@ -224,9 +348,8 @@ def diffusion_device_scope(ordinal: Optional[int]):
     if ordinal is None:
         yield
         return
-    # Entering the context is what may fail on an unusable index; the BODY's exceptions have to
-    # travel untouched, or a yield-after-throw replaces the caller's real refusal with
-    # "generator didn't stop after throw()".
+    # Entering the context is what may fail on an unusable index; the BODY's exceptions have to travel untouched, or a
+    # yield-after-throw replaces the caller's real refusal with "generator didn't stop after throw()".
     try:
         import torch
         scope = torch.cuda.device(ordinal)
@@ -292,8 +415,8 @@ def placed_cuda_ordinal(target: DiffusionDeviceTarget) -> Optional[int]:
 def resolve_diffusion_device_target(*, ordinal: Optional[int] = None) -> DiffusionDeviceTarget:
     """Resolve the torch device + dtype + capability flags for diffusion.
 
-    Prefers Studio's hardware layer, else probes torch (CUDA -> XPU -> MPS -> CPU). On Apple
-    Silicon Studio may report MLX/CPU, but diffusers uses MPS, so those fall through to the MPS
+    Prefers Unsloth's hardware layer, else probes torch (CUDA -> XPU -> MPS -> CPU). On Apple
+    Silicon Unsloth may report MLX/CPU, but diffusers uses MPS, so those fall through to the MPS
     probe. Torch is optional: without it the native sd.cpp engine still runs, so a missing torch
     reports a torch-free CPU target instead of crashing ``/images/load`` before engine selection.
 
@@ -332,7 +455,6 @@ def resolve_diffusion_device_target(*, ordinal: Optional[int] = None) -> Diffusi
             return _cpu_target(torch)
         if _studio_device_is(studio_device, DeviceType, "XPU"):
             return _xpu_target(torch)
-        # MLX / CPU / else: diffusers uses MPS, so fall through to the torch probe (MPS over CPU).
 
     if torch.cuda.is_available():
         return _cuda_or_rocm_target(torch, is_rocm = is_rocm, ordinal = ordinal)
@@ -402,17 +524,18 @@ def _cuda_or_rocm_target(
     ordinal: Optional[int] = None,
 ) -> DiffusionDeviceTarget:
     if is_rocm:
-        # ROCm lacks NVIDIA's pre-Ampere bf16-emulation quirk, so is_bf16_supported() is trustworthy.
-        # It takes no device argument, so the selected card is asked by scoping the current device.
+        # is_bf16_supported() takes no device argument: scope the selected card current.
+        from .rocm_bf16 import rocm_bf16_supported
         try:
             with diffusion_device_scope(ordinal):
-                bf16_ok = bool(torch.cuda.is_bf16_supported())
+                bf16_ok = rocm_bf16_supported(torch, ordinal)
         except Exception:
             bf16_ok = False
         dtype = torch.bfloat16 if bf16_ok else torch.float16
     else:
-        # NVIDIA: bf16 needs Ampere+ (major >= 8), by capability NOT is_bf16_supported() (pre-Ampere cards emulate bf16 slowly but report it supported).
-        # Asked of the SELECTED card, since the argument-less form reports the current device, a different generation on a mixed box; still argument-less without a selection.
+        # NVIDIA: bf16 needs Ampere+ (major >= 8), by capability NOT is_bf16_supported() (pre-Ampere cards emulate bf16
+        # slowly but report it supported). Asked of the SELECTED card, since the argument-less form reports the current
+        # device, a different generation on a mixed box; still argument-less without a selection.
         try:
             major = (
                 torch.cuda.get_device_capability()
@@ -475,11 +598,13 @@ def _mps_or_cpu_target(torch: Any) -> DiffusionDeviceTarget:
         mps_available = False
 
     if mps_available:
-        # torch reads PYTORCH_MPS_HIGH_WATERMARK_RATIO once, at the first MPS allocation (the probe below), so relax it first or
-        # the allocator caps at ~1.7x recommendedMaxWorkingSet and can OOM a model that would fit. setdefault respects an override.
+        # torch reads PYTORCH_MPS_HIGH_WATERMARK_RATIO once, at the first MPS allocation (the probe below), so relax it
+        # first or the allocator caps at ~1.7x recommendedMaxWorkingSet and can OOM a model that would fit. setdefault
+        # respects an override.
         os.environ.setdefault("PYTORCH_MPS_HIGH_WATERMARK_RATIO", "0.0")
-        # Prefer bfloat16, else float32, NEVER silent float16: modern DiTs produce activations far outside fp16's range (Z-Image
-        # MLP peaks near 9e5 -> inf -> NaN -> black image). bf16 (macOS 14+) shares fp32's exponent range; older macOS uses fp32.
+        # Prefer bfloat16, else float32, NEVER silent float16: modern DiTs produce activations far outside fp16's
+        # range (Z-Image MLP peaks near 9e5 -> inf -> NaN -> black image). bf16 (macOS 14+) shares fp32's exponent
+        # range; older macOS uses fp32.
         dtype = torch.bfloat16 if _mps_supports_bfloat16(torch) else torch.float32
         return DiffusionDeviceTarget(
             device = "mps",

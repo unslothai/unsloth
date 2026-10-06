@@ -4,6 +4,7 @@
 import { authFetch } from "@/features/auth";
 import { apiUrl } from "@/lib/api-base";
 import { formatFastApiDetail } from "@/lib/format-fastapi-error";
+import { openStreamResponse } from "@/lib/open-stream-response";
 import { readSseJsonEvents } from "@/lib/sse-json-events";
 import type {
   DocumentUploadResult,
@@ -46,12 +47,13 @@ export function isRagClientError(error: unknown): boolean {
 
 async function ragRequest<T>(
   path: string,
-  init?: { method?: string; body?: object },
+  init?: { method?: string; body?: object; signal?: AbortSignal },
 ): Promise<T> {
   const response = await authFetch(`${RAG_BASE}${path}`, {
     method: init?.method,
     headers: init?.body ? { "Content-Type": "application/json" } : undefined,
     body: init?.body ? JSON.stringify(init.body) : undefined,
+    signal: init?.signal,
   });
   if (response.status === 204) {
     noteRagResponse(204, null);
@@ -108,17 +110,34 @@ export async function listKnowledgeBases(): Promise<KnowledgeBase[]> {
   return data.knowledgeBases ?? [];
 }
 
+/** Readers keep their own KB list; one that misses a delete keeps sending the deleted kb_id. */
+export const KNOWLEDGE_BASES_CHANGED_EVENT = "unsloth-knowledge-bases-changed";
+
+// Also on failure: a delete can fail because the row is already gone.
+function announceKnowledgeBasesChanged(): void {
+  if (typeof window === "undefined") return;
+  window.dispatchEvent(new Event(KNOWLEDGE_BASES_CHANGED_EVENT));
+}
+
+export function subscribeKnowledgeBasesChanged(
+  onChanged: () => void,
+): () => void {
+  if (typeof window === "undefined") return () => undefined;
+  window.addEventListener(KNOWLEDGE_BASES_CHANGED_EVENT, onChanged);
+  return () => window.removeEventListener(KNOWLEDGE_BASES_CHANGED_EVENT, onChanged);
+}
+
 export function createKnowledgeBase(payload: {
   name: string;
   description?: string;
 }): Promise<{ id: string; name: string }> {
-  return ragRequest("/knowledge-bases", {
+  return ragRequest<{ id: string; name: string }>("/knowledge-bases", {
     method: "POST",
     body: {
       name: payload.name,
       ...(payload.description ? { description: payload.description } : {}),
     },
-  });
+  }).finally(announceKnowledgeBasesChanged);
 }
 
 export function updateKnowledgeBase(
@@ -128,16 +147,17 @@ export function updateKnowledgeBase(
   const body: Record<string, unknown> = {};
   if (payload.name !== undefined) body.name = payload.name;
   if (payload.description !== undefined) body.description = payload.description;
-  return ragRequest(`/knowledge-bases/${encodeURIComponent(kbId)}`, {
-    method: "PATCH",
-    body,
-  });
+  return ragRequest<{ ok: boolean }>(
+    `/knowledge-bases/${encodeURIComponent(kbId)}`,
+    { method: "PATCH", body },
+  ).finally(announceKnowledgeBasesChanged);
 }
 
 export function deleteKnowledgeBase(kbId: string): Promise<{ ok: boolean }> {
-  return ragRequest(`/knowledge-bases/${encodeURIComponent(kbId)}`, {
-    method: "DELETE",
-  });
+  return ragRequest<{ ok: boolean }>(
+    `/knowledge-bases/${encodeURIComponent(kbId)}`,
+    { method: "DELETE" },
+  ).finally(announceKnowledgeBasesChanged);
 }
 
 export async function listKnowledgeBaseDocuments(
@@ -209,9 +229,8 @@ export function uploadProjectDocument(
   );
 }
 
-// Cached "does this project have indexed sources?" probe so the chat adapter can
-// auto-scope project chats without a round trip per message. The sources panel
-// invalidates on upload/delete.
+// Cached "does this project have indexed sources?" probe so the chat adapter can auto-scope project
+// chats without a round trip per message. The sources panel invalidates on upload/delete.
 const projectSourcesCache = new Map<string, { has: boolean; at: number }>();
 const PROJECT_SOURCES_TTL_MS = 30_000;
 
@@ -719,8 +738,8 @@ export async function deleteDocument(
   return result;
 }
 
-export function getJob(jobId: string): Promise<IndexJob> {
-  return ragRequest(`/jobs/${encodeURIComponent(jobId)}`);
+export function getJob(jobId: string, signal?: AbortSignal): Promise<IndexJob> {
+  return ragRequest(`/jobs/${encodeURIComponent(jobId)}`, { signal });
 }
 
 /** Longest gap between frames before a stream is treated as buffered by a proxy. */
@@ -730,7 +749,7 @@ async function openEventStream(
   url: string,
   signal: AbortSignal | undefined,
 ): Promise<ReadableStream<Uint8Array>> {
-  const response = await authFetch(url, signal ? { signal } : undefined);
+  const response = await openStreamResponse(authFetch, url, { signal });
   if (!response.ok) {
     const body = await response.json().catch(() => null);
     // also gated on the extension, and also not routed through ragRequest
@@ -741,28 +760,50 @@ async function openEventStream(
   return response.body;
 }
 
+// One budget for every RAG stream: HTTP/1.1 allows six connections per origin, so counting
+// only document jobs let folder syncs fill the pool and stall the upload POSTs anyway.
+// Both callers already poll when a stream throws.
+const MAX_RAG_STREAMS = 4;
+let activeRagStreams = 0;
+
+async function* boundedEventStream<T>(
+  path: string,
+  signal?: AbortSignal,
+  stallMs?: number,
+): AsyncGenerator<T> {
+  if (activeRagStreams >= MAX_RAG_STREAMS) {
+    throw new Error("RAG stream capacity reached");
+  }
+  activeRagStreams += 1;
+  try {
+    const body = await openEventStream(`${RAG_BASE}${path}`, signal);
+    yield* readSseJsonEvents<T>(body, stallMs);
+  } finally {
+    activeRagStreams -= 1;
+  }
+}
+
 // sse; returns on [DONE]. transport errors propagate so callers can poll getJob
-export async function* streamJobEvents(
+export function streamJobEvents(
   jobId: string,
   signal?: AbortSignal,
 ): AsyncGenerator<JobEvent> {
   // no stall bound: this consumer reads an early end as a finished job
-  const body = await openEventStream(
-    `${RAG_BASE}/jobs/${encodeURIComponent(jobId)}/events`,
+  return boundedEventStream<JobEvent>(
+    `/jobs/${encodeURIComponent(jobId)}/events`,
     signal,
   );
-  yield* readSseJsonEvents<JobEvent>(body);
 }
 
-export async function* streamFolderSyncJobEvents(
+export function streamFolderSyncJobEvents(
   jobId: string,
   signal?: AbortSignal,
 ): AsyncGenerator<FolderSyncJobEvent> {
-  const body = await openEventStream(
-    `${RAG_BASE}/linked-folder-jobs/${encodeURIComponent(jobId)}/events`,
+  return boundedEventStream<FolderSyncJobEvent>(
+    `/linked-folder-jobs/${encodeURIComponent(jobId)}/events`,
     signal,
+    SSE_STALL_MS,
   );
-  yield* readSseJsonEvents<FolderSyncJobEvent>(body, SSE_STALL_MS);
 }
 
 export function getPreviewTarget(
@@ -775,9 +816,8 @@ export function getPreviewTarget(
   );
 }
 
-// Signed URL (no bearer) so pdf.js can issue Range requests. Absolute because
-// consumers bypass authFetch, and a relative path under Tauri resolves against
-// the webview origin.
+// Signed URL (no bearer) so pdf.js can issue Range requests. Absolute because consumers bypass
+// authFetch, and a relative path under Tauri resolves against the webview origin.
 export async function getDocumentFileUrl(documentId: string): Promise<string> {
   const data = await ragRequest<{ url: string }>(
     `/documents/${encodeURIComponent(documentId)}/file-url`,

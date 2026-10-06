@@ -205,7 +205,7 @@ class TestTrainingRawSupport(unittest.TestCase):
         )
 
     def test_mlx_worker_asks_the_trainer_to_report_the_gradient_norm(self):
-        # What refills Studio's Gradient Norm chart on Apple Silicon; see the
+        # What refills Unsloth's Gradient Norm chart on Apple Silicon; see the
         # rationale at the opt-in site in worker.py.
         source = (_BACKEND_ROOT / "core" / "training" / "worker.py").read_text(encoding = "utf-8")
         self.assertIn('if "report_grad_norm" in _supported_fields:', source)
@@ -527,8 +527,23 @@ class TestTrainingRawSupport(unittest.TestCase):
         self.assertEqual(result.dataset[0]["text"], "hello<eos>")
         self.assertEqual(result.dataset[1]["text"], "world<eos>")
         self.assertTrue(
-            any("null or non-string 'text' values" in notice.message for notice in result.notices)
+            any(
+                "null, non-string or blank 'text' values" in notice.message
+                for notice in result.notices
+            )
         )
+
+    def test_prepare_raw_text_dataset_rejects_all_blank_rows_before_appending_eos(self):
+        dataset = Dataset.from_dict({"text": ["", "   "]})
+
+        with self.assertRaisesRegex(ValueError, "at least one non-blank string"):
+            prepare_raw_text_dataset(
+                dataset,
+                mode_label = "CPT",
+                split_name = "train",
+                eos_token = "<eos>",
+                append_eos = True,
+            )
 
 
 if __name__ == "__main__":
