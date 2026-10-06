@@ -1477,7 +1477,7 @@ def _systemone_response(request: Request) -> SystemOneSettingsResponse:
     from core.systemone import catalog, laya_runtime
     from routes.systemone import MCP_PATH
 
-    clef_reason = catalog.clef_unsupported_reason(wait = False)
+    clef_reason = catalog.clef_unavailable_reason(wait = False)
     enabled = systemone_settings.get_enabled()
     runtime = laya_runtime.status()
     configured = catalog.default_checkpoint()

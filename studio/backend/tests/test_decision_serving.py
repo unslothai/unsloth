@@ -342,7 +342,7 @@ def test_a_clef_fine_tune_serves_through_its_worker(home, client, clef):
     served = _clef_fine_tune(home, "clef_served_1")
     assert _listed(client) == [served]
     # The trainer's "Use in Decision API" names every run laya-ft:; the layout picks the prefix.
-    assert _put(client, enabled = True, model = "laya-ft:clef_served_1").status_code == 200
+    assert _put(client, enabled = True, model = "laya-ft:clef_served_1", device = "gpu").status_code == 200
     assert client.get("/api/settings/systemone").json()["model"] == served
 
     answer = _post(client).json()
@@ -476,7 +476,7 @@ def test_the_catalog_offers_the_stock_clef_models():
 @pytest.mark.parametrize("kind", ["mlx", "xpu", "cpu"])
 def test_clef_refuses_a_machine_without_an_nvidia_or_amd_gpu(home, client, clef, monkeypatch, kind):
     served = _clef_fine_tune(home, "clef_nogpu_1")
-    assert _put(client, enabled = True, model = served).status_code == 200
+    assert _put(client, enabled = True, model = served, device = "gpu").status_code == 200
     _spoof_device(monkeypatch, kind)
 
     refused = _post(client)
@@ -493,11 +493,40 @@ def test_clef_refuses_a_machine_without_an_nvidia_or_amd_gpu(home, client, clef,
 @pytest.mark.parametrize("kind", ["cuda", "rocm"])
 def test_clef_serves_on_nvidia_and_amd_gpus(home, client, clef, monkeypatch, kind):
     served = _clef_fine_tune(home, "clef_gpu_1")
-    assert _put(client, enabled = True, model = served).status_code == 200
+    assert _put(client, enabled = True, model = served, device = "gpu").status_code == 200
     _spoof_device(monkeypatch, kind)
     assert _post(client).status_code == 200
     models = client.get("/api/settings/systemone").json()["models"]
     assert all(m["available"] and m["unavailable_reason"] is None for m in models)
+
+
+def test_clef_needs_the_decision_api_device_set_to_gpu(home, client, clef, monkeypatch):
+    served = _clef_fine_tune(home, "clef_cpu_1")
+    # The device defaults to CPU, which Clef cannot serve on, so the pair is refused instead of stored.
+    refused = _put(client, enabled = True, model = served)
+    assert refused.status_code == 400 and catalog.CLEF_NEEDS_GPU_SETTING in refused.text
+    models = {m["name"]: m for m in client.get("/api/settings/systemone").json()["models"]}
+    for name in (served, "clef", "clef-flash"):
+        assert models[name]["available"] is False
+        assert models[name]["unavailable_reason"] == catalog.CLEF_NEEDS_GPU_SETTING
+    assert all(m["available"] for n, m in models.items() if n.startswith("laya"))
+
+    assert _put(client, enabled = True, model = served, device = "gpu").status_code == 200
+    assert _post(client).status_code == 200
+    models = client.get("/api/settings/systemone").json()["models"]
+    assert all(m["available"] and m["unavailable_reason"] is None for m in models)
+    # Back to CPU while Clef is configured is refused too, so no request silently takes the GPU.
+    back = _put(client, device = "cpu")
+    assert back.status_code == 400 and catalog.CLEF_NEEDS_GPU_SETTING in back.text
+    assert client.get("/api/settings/systemone").json()["device"] == "gpu"
+
+    # A device pinned by the environment bypasses the settings, so the runtime refuses on its own.
+    monkeypatch.setenv("UNSLOTH_SYSTEMONE_DEVICE", "cpu")
+    laya_runtime.unload()
+    refused = _post(client)
+    assert refused.status_code == 400
+    assert refused.json()["detail"]["message"] == catalog.CLEF_NEEDS_GPU_SETTING
+    assert len(clef.agents) == 1
 
 
 def test_a_failed_device_probe_does_not_refuse_clef(monkeypatch):

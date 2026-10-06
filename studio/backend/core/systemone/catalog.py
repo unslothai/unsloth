@@ -100,6 +100,24 @@ def clef_unsupported_reason(wait: bool = True) -> str | None:
         return None
 
 
+CLEF_NEEDS_GPU_SETTING = (
+    "Clef models run on the GPU only, and the Decision API device is set to CPU. "
+    "Switch it to GPU, or use a Laya model."
+)
+
+
+def clef_unavailable_reason(wait: bool = True) -> str | None:
+    """Why Clef cannot serve: no GPU on the machine, or the Decision API device set to CPU (the default).
+
+    Training keeps to clef_unsupported_reason: the serving device setting has no say over a run.
+    """
+    if (reason := clef_unsupported_reason(wait)) is not None:
+        return reason
+    from utils.systemone_settings import get_device
+
+    return None if get_device() == "gpu" else CLEF_NEEDS_GPU_SETTING
+
+
 def is_fine_tune_name(name: object) -> bool:
     return isinstance(name, str) and name.startswith(FINE_TUNE_PREFIXES)
 

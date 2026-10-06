@@ -97,9 +97,11 @@ def validate(
 ) -> dict[str, Any]:
     from core.systemone.catalog import (
         CHECKPOINTS,
+        CLEF_NEEDS_GPU_SETTING,
         decision_connections,
         fine_tune,
         parse_connection,
+        resolve,
     )
 
     values: dict[str, Any] = {}
@@ -138,6 +140,13 @@ def validate(
     local = parse_connection(get_model() if model is None else model) is None
     if serving and local and (reason := runtime_unavailable_reason()):
         raise ValueError(reason)
+    # Clef has no CPU path, so a Clef model and a CPU device are never stored together while serving.
+    active = enabled if enabled is not None else get_enabled()
+    if active and local:
+        chosen = resolve(get_model() if model is None else model)
+        wanted = get_device() if device is None else device
+        if getattr(chosen, "layout", None) == "clef" and wanted != "gpu":
+            raise ValueError(CLEF_NEEDS_GPU_SETTING)
     return values
 
 

@@ -646,9 +646,9 @@ def _misplaced() -> bool:
 def _clef_blocked_by_training(checkpoint: Checkpoint) -> None:
     if checkpoint.layout != "clef":
         return
-    from .catalog import clef_unsupported_reason
+    from .catalog import clef_unavailable_reason
 
-    if (reason := clef_unsupported_reason()) is not None:
+    if (reason := clef_unavailable_reason()) is not None:
         raise Unavailable(400, "api_usage_error", reason)
     if not _training_active():
         return
