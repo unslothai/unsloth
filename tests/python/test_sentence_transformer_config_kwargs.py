@@ -155,3 +155,13 @@ def test_bfloat16_pooling_is_unchanged():
         {"token_embeddings": tokens, "attention_mask": torch.ones(2, 5, dtype = torch.long)}
     )
     assert out["sentence_embedding"].dtype == torch.bfloat16
+
+
+def test_embedding_gemma2_text_only_is_force_float32():
+    try:
+        from transformers import EmbeddingGemma2Config
+    except ImportError:
+        pytest.skip("transformers has no EmbeddingGemma2")
+    # Dropping the towers removes the gemma4 sub-configs that used to match by accident.
+    config = EmbeddingGemma2Config(vision_config = None, audio_config = None)
+    assert _is_force_float32_config(config)
