@@ -1917,6 +1917,7 @@ export const ptBR = {
         cpu: "CPU",
         ram: "RAM",
         disk: "Disco",
+        modelsDisk: "Disco dos modelos",
         vram: "VRAM",
         cpuCores: "{logical} lógicos / {physical} físicos",
         currentLoad: "Carga atual",
@@ -2027,6 +2028,7 @@ export const ptBR = {
       storage: {
         title: "Armazenamento",
         systemDisk: "Disco do sistema",
+        modelsDisk: "Disco dos modelos",
         diskUsage: "{used} usados / {total}",
         diskFree: "{free} livres",
         modelsFolder: "Pasta de modelos",
