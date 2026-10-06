@@ -24062,7 +24062,6 @@ async def openai_audio_transcriptions(
     return JSONResponse(content = {"text": text})
 
 
-# openai-compatible translation to english via whisper's translate task, so local whisper only
 @router.post("/audio/translations")
 async def openai_audio_translations(
     request: Request,
@@ -24091,8 +24090,7 @@ async def openai_audio_translations(
     from core.inference.stt_sidecar import can_translate
 
     sidecar_model = None if model in (None, "", "whisper-1") else model
-    # Only Whisper has a translate task, and not every Whisper: the mtmd and audio.cpp engines and
-    # the turbo checkpoints would just transcribe.
+    # mtmd / audio.cpp engines and turbo checkpoints would just transcribe.
     if _stt_engine_for_model(sidecar_model) is not None or not can_translate(sidecar_model):
         raise HTTPException(
             status_code = 400,
@@ -35199,7 +35197,7 @@ def _stt_model_objects(created: int, catalog_at: Optional[float] = None) -> list
             "owned_by": _OWNED_BY,
             "task": _STT_MODEL_TASK,
             "loaded": model_id in loaded,
-            # Curated Whisper checkpoints are multilingual, so /v1/audio/translations takes all but turbo.
+            # Custom Whisper repos are not probed here, so only curated ones advertise translate.
             "audio_workflows": (
                 ["transcribe", "translate"]
                 if model_id in stt_sidecar.STT_MODELS.values()
