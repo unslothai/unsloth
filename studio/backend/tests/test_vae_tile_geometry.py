@@ -418,6 +418,10 @@ def _family_params():
 @pytest.mark.parametrize("family", _family_params())
 def test_tile_geometry(family):
     name, ratio, applied, grid, temporal = geometry(family)
+    # A blind recorder (tiling via narrow / split) must fail, not pass with no grid.
+    assert any(
+        len(t) >= 2 for t in grid.values()
+    ), f"{family}: {name} recorded no multi-tile grid on any canvas side; the probe no longer sees the tiling"
     kept = keep_stock()
     if name in kept:
         # because the image module keeps this VAE on diffusers' tiles on purpose, with a measurement: its reason stands
