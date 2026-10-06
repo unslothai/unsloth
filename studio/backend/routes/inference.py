@@ -28823,10 +28823,19 @@ def _sampling_thinking_mode(llama_backend, payload) -> Optional[bool]:
     return _think_parsing_expected(llama_backend, payload)
 
 
+def _client_sampling(payload) -> dict:
+    from utils.inference.inference_config import SAMPLING_FIELD_NAMES
+    return {
+        f: (getattr(payload, f) if f in payload.model_fields_set else None)
+        for f in SAMPLING_FIELD_NAMES
+    }
+
+
 def _fill_recommended_sampling_openai(
     payload,
     model_id,
     thinking = None,
+    explicit = None,
 ) -> None:
     """Apply per-model recommended sampling (and any operator UNSLOTH_SAMPLING_* pin) to a
     ChatCompletionRequest in place.
@@ -28834,14 +28843,13 @@ def _fill_recommended_sampling_openai(
     Only the sampling fields the client did NOT explicitly send (tracked via
     ``model_fields_set``) are overwritten, so a client that sets a field stays byte-identical
     unless an operator pins it. Fields with neither a recommendation nor a pin keep their
-    existing (schema-default) value.
+    existing (schema-default) value. A second fill must pass the first fill's ``explicit``:
+    setattr marks every field as set.
     """
-    from utils.inference.inference_config import resolve_effective_sampling, SAMPLING_FIELD_NAMES
+    from utils.inference.inference_config import resolve_effective_sampling
 
-    explicit = {
-        f: (getattr(payload, f) if f in payload.model_fields_set else None)
-        for f in SAMPLING_FIELD_NAMES
-    }
+    if explicit is None:
+        explicit = _client_sampling(payload)
     effective = resolve_effective_sampling(model_id, explicit, thinking = thinking)
     for field, value in effective.items():
         setattr(payload, field, value)
@@ -29854,10 +29862,12 @@ async def produce_openai_chat_completions(
         if using_gguf
         else getattr(backend, "active_model_name", None)
     ) or model_name
+    _client_sampling_fields = _client_sampling(payload)
     _fill_recommended_sampling_openai(
         payload,
         _reco_model_id,
         thinking = _sampling_thinking_mode(llama_backend, payload) if using_gguf else None,
+        explicit = _client_sampling_fields,
     )
 
     # ── Standard OpenAI function-calling pass-through (GGUF only) ────
@@ -32272,6 +32282,15 @@ async def produce_openai_chat_completions(
             _sf_template_tools,
             template = _sf_image_tpl,
             prefer_tool_use = False,
+        )
+
+    # The safetensors thinking mode is only known from the template classified above.
+    if _sf_features.get("supports_reasoning"):
+        _fill_recommended_sampling_openai(
+            payload,
+            _reco_model_id,
+            thinking = bool(_sf_parse_think),
+            explicit = _client_sampling_fields,
         )
 
     # A continued turn renders no generation prompt, so nothing is prefilled and the
