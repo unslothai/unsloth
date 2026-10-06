@@ -642,6 +642,16 @@ fn download_allowed(
     true
 }
 
+/// Tabs with no start inside the window hold nothing to limit: forgotten, so the map holds at
+/// most the tabs that started one in the last minute (bounded by the global cap), however many
+/// tabs come and go.
+fn forget_quiet_tabs(starts: &mut HashMap<String, VecDeque<Instant>>, now: Instant) {
+    starts.retain(|_, tab| {
+        tab.back()
+            .is_some_and(|start| now.duration_since(*start) < DOWNLOAD_WINDOW)
+    });
+}
+
 /// The page's suggested name made safe for a file name. Trailing dots and spaces go, as Windows
 /// drops them anyway (so `setup.exe.` is `setup.exe`).
 fn safe_download_name(suggested: &Path) -> String {
@@ -839,7 +849,7 @@ fn keep_staged(views: &Mutex<ViewsState>, id: &str) -> Result<String, String> {
         };
         match std::fs::hard_link(&staged, &target) {
             Ok(()) => {
-                remove_staged_name(staged);
+                remove_staged_file(staged);
                 views.lock().unwrap().staged.remove(id);
                 return Ok(target
                     .file_name()
@@ -855,10 +865,10 @@ fn keep_staged(views: &Mutex<ViewsState>, id: &str) -> Result<String, String> {
     release(format!("Couldn't keep {name}: its name keeps being taken"))
 }
 
-/// Drop the neutral name once a keep has published the file under its own. Windows can refuse for a
-/// moment (a scanner holding the new file), so it is retried in the background; it is only a second
-/// name for the kept file, never a second copy.
-fn remove_staged_name(path: PathBuf) {
+/// Delete a staged file nothing will ask about again (a kept file's neutral name, an abandoned or
+/// failed download). Windows can refuse for a moment (a scanner holding it), so it is retried in
+/// the background rather than left in Downloads with nothing to clean it up.
+fn remove_staged_file(path: PathBuf) {
     let gone = |result: std::io::Result<()>| match result {
         Ok(()) => true,
         Err(error) => error.kind() == std::io::ErrorKind::NotFound,
@@ -1238,13 +1248,10 @@ fn create_view<R: Runtime>(
                             download_starts_all,
                             ..
                         } = &mut *inner;
+                        let now = Instant::now();
+                        forget_quiet_tabs(download_starts, now);
                         let tab_starts = download_starts.entry(download_tab.clone()).or_default();
-                        if !download_allowed(
-                            in_flight,
-                            tab_starts,
-                            download_starts_all,
-                            Instant::now(),
-                        ) {
+                        if !download_allowed(in_flight, tab_starts, download_starts_all, now) {
                             None
                         } else {
                             let path = {
@@ -1366,7 +1373,7 @@ fn create_view<R: Runtime>(
                         if abandoned {
                             if let Some(entry) = inner.staged.remove(id) {
                                 drop(inner);
-                                let _ = std::fs::remove_file(entry.path);
+                                remove_staged_file(entry.path);
                             }
                             return true;
                         }
@@ -1376,7 +1383,7 @@ fn create_view<R: Runtime>(
                             }
                         } else if let Some(entry) = inner.staged.remove(id) {
                             // A failed download leaves nothing to keep.
-                            let _ = std::fs::remove_file(entry.path);
+                            remove_staged_file(entry.path);
                         }
                     }
                     let size = path
@@ -1892,7 +1899,7 @@ pub async fn browser_view_clear_data<R: Runtime>(
             account_switch.unwrap_or(false),
         );
         for file in abandoned {
-            let _ = std::fs::remove_file(file);
+            remove_staged_file(file);
         }
     }
     result
@@ -2517,11 +2524,26 @@ mod tests {
             let kept = dir.path().join("setup.exe");
             std::fs::write(&staged, b"payload").unwrap();
             std::fs::hard_link(&staged, &kept).unwrap();
-            remove_staged_name(staged.clone());
+            remove_staged_file(staged.clone());
             assert!(!staged.exists());
             assert_eq!(std::fs::read(&kept).unwrap(), b"payload");
             // Already gone is done, not retried.
-            remove_staged_name(staged);
+            remove_staged_file(staged);
+        }
+
+        #[test]
+        fn tabs_quiet_for_a_window_are_forgotten() {
+            let now = Instant::now();
+            let mut starts = HashMap::from([
+                ("old".to_string(), VecDeque::from([now - DOWNLOAD_WINDOW])),
+                (
+                    "recent".to_string(),
+                    VecDeque::from([now - Duration::from_secs(5)]),
+                ),
+                ("empty".to_string(), VecDeque::new()),
+            ]);
+            forget_quiet_tabs(&mut starts, now);
+            assert_eq!(starts.keys().collect::<Vec<_>>(), vec!["recent"]);
         }
 
         #[test]
