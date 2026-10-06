@@ -46,7 +46,12 @@ def _flex():
 
 def _causal_reference(q, k, v, scale):
     return torch.nn.functional.scaled_dot_product_attention(
-        q.float(), k.float(), v.float(), is_causal = True, scale = scale, enable_gqa = True,
+        q.float(),
+        k.float(),
+        v.float(),
+        is_causal = True,
+        scale = scale,
+        enable_gqa = True,
     ).transpose(1, 2)
 
 
@@ -56,7 +61,12 @@ def test_a_dropped_mask_runs_sdpa_is_causal(qkv):
     out, _ = _flex()(Causal(), q, k, v, None, scaling = D**-0.5)
     assert U.FLEX_MASKLESS_SDPA_STATS["sdpa"] == before["sdpa"] + 1
     reference = torch.nn.functional.scaled_dot_product_attention(
-        q, k, v, is_causal = True, scale = D**-0.5, enable_gqa = True,
+        q,
+        k,
+        v,
+        is_causal = True,
+        scale = D**-0.5,
+        enable_gqa = True,
     ).transpose(1, 2)
     assert torch.equal(out, reference)
 
@@ -88,7 +98,17 @@ def test_counters_do_not_mutate_while_compiling(qkv, monkeypatch):
 
 @pytest.mark.parametrize(
     "case",
-    ["mask", "softcap", "s_aux", "not_causal", "no_is_causal", "is_causal_false", "head_dim_512", "decode", "cache"],
+    [
+        "mask",
+        "softcap",
+        "s_aux",
+        "not_causal",
+        "no_is_causal",
+        "is_causal_false",
+        "head_dim_512",
+        "decode",
+        "cache",
+    ],
 )
 def test_everything_else_stays_on_flex(qkv, case):
     q, k, v = qkv
@@ -112,3 +132,25 @@ def test_everything_else_stays_on_flex(qkv, case):
     if case == "cache":
         q = q[:, :, : T // 2]
     assert U._maskless_causal_sdpa_forward(module, q, k, v, args, kwargs) is None
+
+
+def _softcap_call(T, requires_grad = False):
+    q, k, v = (torch.randn(1, n, T, D, device = "cuda", dtype = torch.bfloat16) for n in (H, KV, KV))
+    q.requires_grad_(requires_grad)
+    return _flex()(Causal(), q, k, v, None, scaling = D**-0.5, softcap = 1e4), q
+
+
+def test_a_fallback_mask_first_built_under_inference_mode_still_trains():
+    U._CAUSAL_BLOCK_MASKS.clear()
+    with torch.inference_mode():
+        _softcap_call(128)
+    (out, _), q = _softcap_call(128, requires_grad = True)
+    out.float().sum().backward()
+    assert q.grad is not None and torch.isfinite(q.grad).all()
+
+
+def test_the_fallback_mask_cache_is_bounded():
+    U._CAUSAL_BLOCK_MASKS.clear()
+    for T in range(128, 128 * 13, 128):
+        _softcap_call(T)
+    assert 0 < len(U._CAUSAL_BLOCK_MASKS) <= 8

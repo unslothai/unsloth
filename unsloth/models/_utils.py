@@ -714,10 +714,20 @@ def _causal_block_mask(query, key):
     block_mask = _CAUSAL_BLOCK_MASKS.get(cache_key)
     if block_mask is None:
         from torch.nn.attention.flex_attention import create_block_mask
-        block_mask = create_block_mask(
-            lambda b, h, q_idx, kv_idx: q_idx >= kv_idx,
-            None, None, query.shape[2], key.shape[2], device = query.device,
-        )
+
+        # Uncompiled builds materialize Q x KV (10 GB at 32k); inference tensors break a later backward.
+        with torch.inference_mode(False):
+            block_mask = create_block_mask(
+                lambda b, h, q_idx, kv_idx: q_idx >= kv_idx,
+                None,
+                None,
+                query.shape[2],
+                key.shape[2],
+                device = query.device,
+                _compile = True,
+            )
+        if len(_CAUSAL_BLOCK_MASKS) >= 8:
+            _CAUSAL_BLOCK_MASKS.pop(next(iter(_CAUSAL_BLOCK_MASKS)))
         _CAUSAL_BLOCK_MASKS[cache_key] = block_mask
     return block_mask
 
