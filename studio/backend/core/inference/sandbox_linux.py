@@ -398,7 +398,12 @@ def _preflight(bwrap: str, proc: tuple[str, ...]) -> "subprocess.CompletedProces
 
 
 class _PreflightInconclusive(Exception):
-    """The preflight could not run (timeout, missing `true`): not cached, the next read retries."""
+    """The preflight could not run (timeout, missing `true`): not cached, retried after a back-off."""
+
+
+# A wedged bwrap times out at 10 s a run: retry it this often, not on every identity read.
+_INCONCLUSIVE_RETRY_SECONDS = 300.0
+_inconclusive_until: "dict[tuple[str, int, int], float]" = {}
 
 
 @lru_cache(maxsize = 8)
@@ -416,9 +421,12 @@ def _fresh_proc_answer(identity: tuple[str, int, int]) -> bool:
 
 def _fresh_proc_refused(identity: tuple[str, int, int]) -> bool:
     """Only the /proc mount fails while the rest of bwrap works; any other failure is the probe's to report."""
+    if time.monotonic() < _inconclusive_until.get(identity, 0.0):
+        return False
     try:
         return _fresh_proc_answer(identity)
     except _PreflightInconclusive:
+        _inconclusive_until[identity] = time.monotonic() + _INCONCLUSIVE_RETRY_SECONDS
         return False
 
 
@@ -433,6 +441,7 @@ def empty_proc_layout(bwrap: str | None = None) -> bool:
 
 def forget_proc_layout() -> None:
     _fresh_proc_answer.cache_clear()
+    _inconclusive_until.clear()
 
 
 def profile_id() -> str:

@@ -2621,17 +2621,30 @@ def test_the_preflight_runs_a_nix_store_true_with_the_store_bound(monkeypatch):
     assert ("--ro-bind-try", "/nix/store", "/nix/store") in zip(argv, argv[1:], argv[2:])
 
 
-def test_an_inconclusive_preflight_is_retried_instead_of_cached(
-    monkeypatch, _no_proc_layout_left_behind
-):
-    refused = subprocess.CompletedProcess(
-        [], 1, "", "bwrap: Can't mount proc on /newroot/proc: Permission denied"
-    )
+def test_an_inconclusive_preflight_backs_off_then_retries(monkeypatch, _no_proc_layout_left_behind):
+    refused = subprocess.CompletedProcess([], 1, "", "bwrap: Can't mount proc on /newroot/proc: Permission denied")
     answers = iter([None, refused, subprocess.CompletedProcess([], 0, "", "")])
-    monkeypatch.setattr(sandbox_linux, "_preflight", lambda bwrap, proc: next(answers))
+    runs = []
+    monkeypatch.setattr(sandbox_linux, "_preflight", lambda bwrap, proc: runs.append(proc) or next(answers))
+    clock = [1000.0]
+    monkeypatch.setattr(sandbox_linux.time, "monotonic", lambda: clock[0])
     identity = ("/usr/bin/bwrap", 1, 1)
     assert sandbox_linux._fresh_proc_refused(identity) is False  # timed out: no verdict kept
+    assert sandbox_linux._fresh_proc_refused(identity) is False
+    assert len(runs) == 1, "a wedged bwrap is not rerun on every read"
+    clock[0] += sandbox_linux._INCONCLUSIVE_RETRY_SECONDS + 1
     assert sandbox_linux._fresh_proc_refused(identity) is True
+
+
+def test_a_reset_retries_an_inconclusive_preflight_at_once(monkeypatch, _no_proc_layout_left_behind):
+    answers = iter([None, subprocess.CompletedProcess([], 0, "", "")])
+    monkeypatch.setattr(sandbox_linux, "_preflight", lambda bwrap, proc: next(answers))
+    identity = ("/usr/bin/bwrap", 1, 1)
+    assert sandbox_linux._fresh_proc_refused(identity) is False
+    sandbox_linux.forget_proc_layout()
+    assert sandbox_linux._fresh_proc_refused(identity) is False
+    with pytest.raises(StopIteration):
+        next(answers)
 
 
 def test_a_forced_capability_check_re_decides_the_proc_layout(monkeypatch):
