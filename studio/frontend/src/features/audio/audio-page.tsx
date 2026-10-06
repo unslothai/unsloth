@@ -866,6 +866,10 @@ export function AudioPage({
     transcript: string;
   } | null>(null);
   const [savingVoice, setSavingVoice] = useState(false);
+  useEffect(() => {
+    if (!active) return;
+    return () => setSavingVoice(false);
+  }, [active]);
   const handleSaveVoice = useCallback((clip: AudioGalleryClip) => {
     setVoiceClip({
       id: clip.id,

@@ -116,6 +116,10 @@ test("the Audio page wires every send, and waits out a running task first", () =
   );
   assert.match(host, /source: \{ clip_id: voiceClip\.id \}/);
   assert.match(host, /<SaveVoiceDialog\s+open=\{active && savingVoice\}/);
+  assert.match(
+    host,
+    /useEffect\(\(\) => \{\s*if \(!active\) return;\s*return \(\) => setSavingVoice\(false\);\s*\}, \[active\]\);/,
+  );
   const transcriptSend = host.slice(
     host.indexOf("const sendTranscriptHandlersFor"),
     host.indexOf("const handleUseTextAgain"),
