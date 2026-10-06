@@ -1,9 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""FastModel passes load_in_4bit = False down to FastBaseModel whenever the caller hands it a
-quantization_config, and that config still quantizes the load. The "Switching to 16bit LoRA"
-notice must only fire when the load really is 16 bit."""
+"""FastModel passes load_in_4bit = False with a quantization_config that still quantizes: no 16bit notice then."""
 
 import subprocess
 import sys
