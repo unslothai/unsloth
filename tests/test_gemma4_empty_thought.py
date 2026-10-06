@@ -31,7 +31,7 @@ CHAT_TEMPLATES_PATH = os.path.join(
     "unsloth",
     "chat_templates.py",
 )
-_SOURCE = open(CHAT_TEMPLATES_PATH, encoding = "utf-8").read()
+_SOURCE = open(CHAT_TEMPLATES_PATH, encoding="utf-8").read()
 _TREE = ast.parse(_SOURCE)
 
 EMPTY = "<|channel>thought\n<channel|>"
@@ -44,8 +44,17 @@ def _load():
         "_gemma4_model_turn",
         "gemma4_empty_thought_template",
         "GEMMA4_TEMPLATE_NAMES",
+        "gemma4_empty_thought_ollama",
     }
-    namespace = {}
+    mappers = {}
+    exec(
+        open(
+            CHAT_TEMPLATES_PATH.replace("chat_templates.py", "ollama_template_mappers.py"),
+            encoding="utf-8",
+        ).read(),
+        mappers,
+    )
+    namespace = {"gemma4_ollama": mappers["OLLAMA_TEMPLATES"]["gemma-4"]}
     for node in _TREE.body:
         if isinstance(node, ast.Assign) and any(
             getattr(target, "id", None) in wanted_assign for target in node.targets
@@ -61,7 +70,7 @@ NS = _load()
 
 def _render(template, messages, **kwargs):
     # Same environment transformers renders chat templates with
-    env = ImmutableSandboxedEnvironment(trim_blocks = True, lstrip_blocks = True)
+    env = ImmutableSandboxedEnvironment(trim_blocks=True, lstrip_blocks=True)
     env.globals["raise_exception"] = lambda msg: (_ for _ in ()).throw(TemplateError(msg))
     ctx = {"messages": messages, "add_generation_prompt": False, "bos_token": "<bos>"}
     ctx.update(kwargs)
@@ -152,10 +161,10 @@ def test_multi_turn_with_system_prompt():
 
 def test_generation_prompt_matches_google_26b():
     msgs = [{"role": "user", "content": "Hi"}]
-    out = _render(NS["gemma4_empty_thought_template"], msgs, add_generation_prompt = True)
+    out = _render(NS["gemma4_empty_thought_template"], msgs, add_generation_prompt=True)
     assert out == f"<bos><|turn>user\nHi<turn|>\n<|turn>model\n{EMPTY}"
     out = _render(
-        NS["gemma4_empty_thought_template"], msgs, add_generation_prompt = True, enable_thinking = True
+        NS["gemma4_empty_thought_template"], msgs, add_generation_prompt=True, enable_thinking=True
     )
     assert out == "<bos><|turn>system\n<|think|>\n<turn|>\n<|turn>user\nHi<turn|>\n<|turn>model\n"
 
@@ -163,7 +172,7 @@ def test_generation_prompt_matches_google_26b():
 def test_training_text_is_prefix_consistent_with_generation_prompt():
     # The trained answer must sit exactly where generation continues from
     full = _render(NS["gemma4_empty_thought_template"], CONVO[:3])
-    prompt = _render(NS["gemma4_empty_thought_template"], CONVO[:2], add_generation_prompt = True)
+    prompt = _render(NS["gemma4_empty_thought_template"], CONVO[:2], add_generation_prompt=True)
     assert full == prompt + "Hello!<turn|>\n"
 
 
@@ -176,28 +185,54 @@ def test_list_content():
     assert out == f"<bos><|turn>user\n<|image|>What?<turn|>\n<|turn>model\n{EMPTY}A cat.<turn|>\n"
 
 
-@pytest.mark.parametrize(
-    "assistant",
-    [
+@pytest.mark.parametrize("key", ["reasoning_content", "reasoning"])
+def test_final_turn_reasoning_becomes_the_thought_channel(key):
+    # As the model's own template renders it, instead of dropping the chain of thought.
+    msgs = [
+        {"role": "user", "content": "2+2?"},
+        {"role": "assistant", "content": "4", key: "2+2=4"},
+    ]
+    out = _render(NS["gemma4_empty_thought_template"], msgs)
+    assert (
+        out
+        == "<bos><|turn>user\n2+2?<turn|>\n<|turn>model\n<|channel>thought\n2+2=4\n<channel|>4<turn|>\n"
+    )
+
+
+def test_reasoning_before_the_last_user_turn_is_dropped_like_the_model_template():
+    msgs = [
+        {"role": "user", "content": "2+2?"},
         {"role": "assistant", "content": "4", "reasoning_content": "2+2=4"},
-        {"role": "assistant", "content": "4", "reasoning": "2+2=4"},
-        {"role": "assistant", "content": "<|channel>thought\n2+2=4<channel|>4"},
-        {
-            "role": "assistant",
-            "content": [{"type": "text", "text": "<|channel>thought\nx<channel|>4"}],
-        },
+        {"role": "user", "content": "3+3?"},
+        {"role": "assistant", "content": "6"},
+    ]
+    out = _render(NS["gemma4_empty_thought_template"], msgs)
+    assert "2+2=4" not in out
+    assert out.count(EMPTY) == 2
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        "<|channel>thought\n2+2=4<channel|>4",
+        [{"type": "text", "text": "<|channel>thought\nx<channel|>4"}],
     ],
 )
-def test_turns_with_thinking_are_unchanged(assistant):
-    msgs = [{"role": "user", "content": "2+2?"}, assistant]
-    new = _render(NS["gemma4_empty_thought_template"], msgs)
-    old = _render(NS["gemma4_thinking_template"], msgs)
-    assert new == old == "<bos><|turn>user\n2+2?<turn|>\n<|turn>model\n4<turn|>\n"
+def test_inline_thoughts_are_stripped_and_get_the_empty_channel(content):
+    msgs = [{"role": "user", "content": "2+2?"}, {"role": "assistant", "content": content}]
+    out = _render(NS["gemma4_empty_thought_template"], msgs)
+    assert out == f"<bos><|turn>user\n2+2?<turn|>\n<|turn>model\n{EMPTY}4<turn|>\n"
+
+
+def test_ollama_generation_prompt_has_the_empty_channel():
+    ollama = NS["gemma4_empty_thought_ollama"]
+    assert '<|turn>model\n<|channel>thought\n<channel|>"""' in ollama
+    assert ollama.replace("<|channel>thought\n<channel|>", "", 1) == NS["gemma4_ollama"]
 
 
 def test_enable_thinking_is_unchanged():
-    new = _render(NS["gemma4_empty_thought_template"], CONVO, enable_thinking = True)
-    old = _render(NS["gemma4_thinking_template"], CONVO, enable_thinking = True)
+    new = _render(NS["gemma4_empty_thought_template"], CONVO, enable_thinking=True)
+    old = _render(NS["gemma4_thinking_template"], CONVO, enable_thinking=True)
     assert new == old
     assert EMPTY not in new
 

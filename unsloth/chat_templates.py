@@ -1072,29 +1072,32 @@ DEFAULT_SYSTEM_MESSAGE["gemma4-thinking"] = None
 
 # gemma-4-26B-A4B-it and gemma-4-31B-it open every non-thinking model turn with an empty thought channel,
 # but their own template only emits it in the generation prompt. Training text without it is
-# off-distribution (26B assistant loss 5.5 vs 1.3), so render it on model turns that carry no thinking.
+# off-distribution (26B assistant loss 5.5 vs 1.3). Every model turn gets one thought channel: the
+# message's reasoning on the final turn (as the model's own template renders it), else the empty one.
 # Picked in get_chat_template only when the model's own template primes the empty channel.
 _gemma4_model_turn = "{{ '<|turn>' + role + '\n' }}\n"
 gemma4_empty_thought_template = gemma4_thinking_template.replace(
     _gemma4_model_turn,
     _gemma4_model_turn + \
-"""    {%- if role == "model" and not thinking -%}
-        {%- set ns_text = namespace(text=message['content'] if message['content'] is string else '') -%}
-        {%- if message['content'] is not string and message['content'] is iterable -%}
-            {%- for item in message['content'] -%}
-                {%- if item['type'] == 'text' -%}
-                    {%- set ns_text.text = ns_text.text + item['text'] -%}
-                {%- endif -%}
-            {%- endfor -%}
-        {%- endif -%}
-        {%- if not (message.get('reasoning') or message.get('reasoning_content') or '<|channel>' in ns_text.text) -%}
+"""    {%- if role == "model" -%}
+        {%- set thinking_text = message.get('reasoning') or message.get('reasoning_content') -%}
+        {%- if thinking_text and loop.index0 > ns_turn.last_user_idx -%}
+            {{ '<|channel>thought\n' + thinking_text + '\n<channel|>' }}
+        {%- elif not thinking -%}
             {{ '<|channel>thought\n<channel|>' }}
         {%- endif -%}
     {%- endif -%}
 """,
     1,
+).replace(
+    "{%- for message in loop_messages -%}",
+    "{%- set ns_turn = namespace(last_user_idx=-1) -%}\n"
+    "{%- for m in loop_messages -%}{%- if m['role'] == 'user' -%}{%- set ns_turn.last_user_idx = loop.index0 -%}{%- endif -%}{%- endfor -%}\n"
+    "{%- for message in loop_messages -%}",
+    1,
 )
 assert gemma4_empty_thought_template != gemma4_thinking_template
+gemma4_empty_thought_ollama = gemma4_ollama.replace('<|turn>model\n"""', '<|turn>model\n<|channel>thought\n<channel|>"""', 1)
 GEMMA4_TEMPLATE_NAMES = ("gemma-4", "gemma4", "gemma-4-thinking", "gemma4-thinking",)
 
 
@@ -2003,6 +2006,7 @@ def get_chat_template(
                 "Adding <|channel>thought\\n<channel|> to assistant turns without thinking content."
             )
             chat_template = gemma4_empty_thought_template
+            ollama_modelfile = gemma4_empty_thought_ollama
 
         # The template can veto the eos mapping, but it must not force it back on: map_eos_token = False is
         # an explicit choice by the caller.
