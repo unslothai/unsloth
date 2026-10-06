@@ -389,13 +389,18 @@ export function ApiModelLoadControls({
         onValueChange={(value, meta) => {
           handlePick(value, meta);
         }}
-        onEject={(modelId) => {
-          if (modelId) {
-            ejectModel(modelId).then(() => onSettled());
-          } else {
-            onUnloadActive();
-          }
-        }}
+        // The page unload skips the runtime's load guard, so a replacement mid-load would land after it.
+        onEject={
+          modelLoading
+            ? undefined
+            : (modelId) => {
+                if (modelId) {
+                  ejectModel(modelId).then(() => onSettled());
+                } else {
+                  onUnloadActive();
+                }
+              }
+        }
         onFoldersChange={() => {
           refreshLocalModels();
         }}
