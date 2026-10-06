@@ -21005,6 +21005,10 @@ async def voice_load_model(
     # the other's server, and the first caller would be told its voice loaded.
     async with _voice_load_lock():
         voice_backend = get_voice_llama_backend()
+        # Replacing the slot stops whoever holds it: the same idle and hidden-resident checks /unload runs.
+        account_access.require_idle_other_accounts()
+        if voice_backend.is_active and account_access.resident_hidden("chat"):
+            raise HTTPException(status_code = 404, detail = "Model not found")
         # Read first: unload_model bumps it and load_model never does, so an unload that lands
         # anywhere in this request (resolution, preflight, the gap before the spawn, where the
         # cancel event it set gets cleared) is seen after the load.
@@ -21246,10 +21250,13 @@ async def voice_unload_model(current_subject: str = Depends(get_current_subject)
     # event that download loop polls, so the explicit unload is not lost on it.
     if not voice_backend.is_active and not voice_load_active():
         return {"status": "not_loaded"}
-    # One slot for every account: another account mid-generation keeps its voice, as /unload does.
+    # One slot for every account: another account mid-generation keeps its voice, as /unload does,
+    # and a resident the status hides from this account is not its to stop either.
     scope = account_access.account_scope()
     if scope is not None:
         require_no_foreign_generations(scope)
+    if voice_backend.is_active and account_access.resident_hidden("chat"):
+        raise HTTPException(status_code = 404, detail = "Model not found")
     model_id = voice_backend.model_identifier
     # Off the event loop, as /unload runs the chat slot's teardown: unload_model
     # waits on the llama-server subprocess, and a sync call would block every

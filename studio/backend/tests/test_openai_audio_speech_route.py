@@ -1383,6 +1383,54 @@ def test_voice_status_hides_another_accounts_resident(monkeypatch):
     assert shown["model"] == "C:/voices/private.gguf"
 
 
+def test_voice_unload_refuses_another_accounts_resident(monkeypatch):
+    """Any account could stop the singleton voice slot while the status hid it from them; /unload
+    answers 404 for a hidden chat resident, and this now does too."""
+    from fastapi import HTTPException
+
+    stopped = []
+    voice = type(
+        "Voice",
+        (),
+        {
+            "is_active": True,
+            "is_loaded": True,
+            "model_identifier": "C:/voices/private.gguf",
+            "unload_model": lambda self: stopped.append(True),
+        },
+    )()
+    monkeypatch.setattr(routes_module, "get_voice_llama_backend", lambda: voice)
+    monkeypatch.setattr(routes_module.account_access, "account_scope", lambda: None)
+    monkeypatch.setattr(routes_module.account_access, "resident_hidden", lambda *a, **k: True)
+    with pytest.raises(HTTPException) as refused:
+        asyncio.run(routes_module.voice_unload_model("s"))
+    assert refused.value.status_code == 404
+    assert stopped == []
+
+
+def test_voice_load_refuses_to_replace_another_accounts_resident(monkeypatch):
+    """A load replaced the singleton voice server another account had loaded."""
+    from fastapi import HTTPException
+
+    loads = []
+    voice = type(
+        "Voice",
+        (),
+        {"is_active": True, "is_loaded": True, "load_model": lambda self, *a, **k: loads.append(a)},
+    )()
+    monkeypatch.setattr(routes_module, "get_voice_llama_backend", lambda: voice)
+    monkeypatch.setattr(routes_module.account_access, "managed_account", lambda: False)
+    monkeypatch.setattr(
+        routes_module.account_access, "require_idle_other_accounts", lambda *a, **k: None
+    )
+    monkeypatch.setattr(routes_module.account_access, "resident_hidden", lambda *a, **k: True)
+    request = routes_module._VoiceLoadRequest(model_path = "x.gguf")
+    with pytest.raises(HTTPException) as refused:
+        asyncio.run(routes_module.voice_load_model(request, "s"))
+    assert refused.value.status_code == 404
+    assert loads == []
+
+
 def test_voice_loads_run_one_at_a_time():
     """Two loads for different voices both passed the already-loaded check, and the second then
     replaced the server the first had just reported as loaded."""
