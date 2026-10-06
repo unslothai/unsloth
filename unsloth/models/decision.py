@@ -650,10 +650,16 @@ def _clef_logits(
     return logits, questions
 
 
-def _decision_logits(model, tokenizer, items: list) -> tuple:
+def _decision_logits(
+    model,
+    tokenizer,
+    items: list,
+    batch_size = None,
+) -> tuple:
     pad_token_id = getattr(tokenizer, "tokenizer", tokenizer).pad_token_id
     if getattr(model, "is_clef", False):
-        return _clef_logits(model, items, pad_token_id)
+        # A run that lowered its batch to fit a 9B / 27B backbone scores in that batch too.
+        return _clef_logits(model, items, pad_token_id, batch_size or 4)
     return _logits(model, items, pad_token_id), items
 
 
@@ -834,6 +840,8 @@ def _load_clef(
     saved = folder / _DECISION_CONFIG
     if saved.is_file():
         config.update(json.loads(saved.read_text(encoding = "utf-8")), max_len = max_len)
+        # The parent run's training record does not describe the next fine-tune, as for Laya.
+        config.pop("training", None)
     adapter = _is_clef_adapter(folder)
     if adapter:
         # LoRA adapters over the base LLM: the base comes from where it was trained from.
@@ -1198,9 +1206,19 @@ def _clef_mixed_precision(model, args) -> None:
     elif args.fp16 and getattr(model._backbone(), "dtype", None) == torch.bfloat16:
         print("Unsloth: Clef is in bfloat16, so fp16 = True is switched to bf16 = True.")
         args.fp16, args.bf16 = False, True
-    # transformers 5 reads the accelerator's precision from here (4.x from fp16 / bf16).
+    elif not args.fp16 and not args.bf16:
+        # Train under the autocast evaluate and serving use, as Unsloth's trainers default a
+        # 16-bit model to: float32 norms (UNSLOTH_HIGH_PRECISION_LAYERNORM) next to 16-bit
+        # projections only run under it.
+        amp = _clef_amp_dtype(model, next(model.parameters()).device)
+        args.bf16 = amp == torch.bfloat16
+        args.fp16 = amp == torch.float16
+    precision = "bf16" if args.bf16 else "fp16" if args.fp16 else "no"
+    # transformers 5 reads the accelerator's precision from args.mixed_precision; 4.x from this
+    # variable, which TrainingArguments set before the switches above.
+    os.environ["ACCELERATE_MIXED_PRECISION"] = precision
     if hasattr(args, "mixed_precision"):
-        args.mixed_precision = "bf16" if args.bf16 else "fp16" if args.fp16 else "no"
+        args.mixed_precision = precision
 
 
 class _LengthGroupedBatches(torch.utils.data.Sampler):
@@ -1776,6 +1794,18 @@ class FastDecisionModel:
         if hasattr(model.encoder, "peft_config"):
             raise RuntimeError("Unsloth: You already added LoRA adapters to your model!")
         if getattr(model, "is_clef", False):
+            unsupported = {
+                "use_dora": use_dora,
+                "layers_to_transform": layers_to_transform,
+                "layers_pattern": layers_pattern,
+                "loftq_config": loftq_config,
+                "init_lora_weights": init_lora_weights is not True,
+            }
+            unsupported = [name for name, value in unsupported.items() if value]
+            if unsupported:
+                raise NotImplementedError(
+                    f"Unsloth: Clef LoRA does not support {', '.join(unsupported)} yet."
+                )
             return _clef_peft_model(
                 model,
                 r = r,
@@ -1969,16 +1999,26 @@ class FastDecisionModel:
         return _laya_decide(model, tokenizer, state, questions, predicted = True)["answers"]
 
     @staticmethod
-    def evaluate(model, tokenizer, items: list) -> dict:
-        logits, items = _decision_logits(model, tokenizer, items)
+    def evaluate(
+        model,
+        tokenizer,
+        items: list,
+        batch_size = None,
+    ) -> dict:
+        logits, items = _decision_logits(model, tokenizer, items, batch_size)
         return _metrics(logits, items, _served_temperatures(model.decision_config, logits, items))
 
     @staticmethod
-    def calibrate(model, tokenizer, items: list) -> dict:
+    def calibrate(
+        model,
+        tokenizer,
+        items: list,
+        batch_size = None,
+    ) -> dict:
         common = _laya().common
         config = model.decision_config
         fallback = [common.clamp_temperature(t) for t in config.get("temperature", [1.0] * 3)]
-        logits, items = _decision_logits(model, tokenizer, items)
+        logits, items = _decision_logits(model, tokenizer, items, batch_size)
         clef = getattr(model, "is_clef", False)
         if clef:
             return _calibrate_clef(config, logits, items)

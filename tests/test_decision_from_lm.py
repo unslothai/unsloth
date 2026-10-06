@@ -2,6 +2,7 @@
 # Copyright 2023-present Daniel Han-Chen & the Unsloth team. All rights reserved.
 
 import json
+import math
 import sys
 
 import pytest
@@ -11,6 +12,7 @@ torch = pytest.importorskip("torch")
 from transformers import TrainerCallback, TrainingArguments
 
 from unsloth import DecisionTrainer, FastDecisionModel
+from unsloth.models import decision
 from unsloth.models.decision_from_lm import default_head_config
 
 TINY_QWEN3 = "trl-internal-testing/tiny-Qwen3ForCausalLM"
@@ -257,7 +259,11 @@ def test_plain_lm_becomes_a_decision_model_that_trains_saves_and_reloads(base, t
         "records": [record["record"]],
     }
     device = next(model.parameters()).device
-    with torch.no_grad():
+    # Under the autocast evaluate and serving use: an earlier load in the process (any Clef checkpoint)
+    # leaves UNSLOTH_HIGH_PRECISION_LAYERNORM set, so this backbone has float32 norms beside bf16 weights.
+    amp_dtype = decision._clef_amp_dtype(model, device)
+    autocast = torch.autocast(device.type, dtype = amp_dtype, enabled = amp_dtype is not None)
+    with torch.no_grad(), autocast:
         model.eval()
         ours, _ = model(**{k: v.to(device) if torch.is_tensor(v) else v for k, v in batch.items()})
         theirs, _ = reloaded(
@@ -268,11 +274,15 @@ def test_plain_lm_becomes_a_decision_model_that_trains_saves_and_reloads(base, t
         )
     # Served logits: the save folds 1 / T into the head and stores the head and the merged backbone
     # in bf16, so the reloaded logits match ours / T up to bf16 rounding, which grows with their scale.
+    # Training is not bit-reproducible on GPU: over 30 B200 runs (trained with and without bf16
+    # autocast) the error reached 5.5% of the scale, failing a 3% bound 3 times; T stayed <= 0.87,
+    # where a fold left out or applied twice is off by >= 13%.
     ours, theirs = ours.float().cpu(), theirs.float().cpu()
     mask = ours > -1e3
     expected = ours[mask] / head_temperature
     error = (theirs[mask] - expected).abs().max().item()
-    assert error <= 0.03 * expected.abs().max().item() + 0.05, (error, expected, theirs[mask])
+    scale = expected.abs().max().item()
+    assert error <= 0.08 * scale + 0.05, (error, scale, head_temperature, expected, theirs[mask])
     if base == TINY_QWEN3_5:
         # The base repo has no joint_schema_model.py; Unsloth ships Cloudflare's, so their loader works.
         import importlib.util
@@ -295,6 +305,24 @@ def test_plain_lm_becomes_a_decision_model_that_trains_saves_and_reloads(base, t
             )[0]
         for row, z in enumerate(released_logits):
             assert int(z.argmax()) == int(theirs[row, : len(z)].argmax())
+
+
+def test_float32_norms_train_without_a_precision_flag(tmp_path, monkeypatch):
+    from real_accelerator import has_real_cuda
+
+    if not has_real_cuda():
+        pytest.skip("the CPU path loads without Unsloth's layernorm upcast")
+    # Gemma 3 / 4, gpt-oss and Qwen3.5 loads set this, and it stays set for the next load in the
+    # process, so a Qwen3 loaded after a Clef checkpoint gets float32 norms beside bf16 weights.
+    monkeypatch.setenv("UNSLOTH_HIGH_PRECISION_LAYERNORM", "1")
+    model, processor = FastDecisionModel.from_pretrained(
+        TINY_QWEN3, decision_head = "clef", head_config = {**HEAD, "hidden_size": 8}, max_seq_length = 512
+    )
+    norms = {p.dtype for n, p in model.encoder.named_parameters() if n.endswith("norm.weight")}
+    assert torch.float32 in norms, norms
+    items, _ = FastDecisionModel.build_dataset(_rows(16), processor, model)
+    losses = _train(model, processor, items, tmp_path, steps = 2)
+    assert len(losses) == 2 and all(map(math.isfinite, losses)), losses
 
 
 def test_head_init_must_match_the_backbone(tmp_path):

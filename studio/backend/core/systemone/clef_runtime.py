@@ -16,8 +16,9 @@ import multiprocessing as mp
 import os
 import sys
 import threading
+import time
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 _CTX = mp.get_context("spawn")
 _BACKEND_PATH = str(Path(__file__).resolve().parent.parent.parent)
@@ -122,7 +123,11 @@ class ClefAgent:
 
     device = "cuda"
 
-    def __init__(self, folder: Path):
+    def __init__(
+        self,
+        folder: Path,
+        cancelled: Callable[[], bool] | None = None,
+    ):
         self._lock = threading.Lock()
         self._broken: str | None = None
         self._conn, child = _CTX.Pipe()
@@ -141,7 +146,16 @@ class ClefAgent:
                 os.environ.pop("UNSLOTH_IS_PRESENT", None)
         child.close()
         try:
-            kind, payload = self._receive(LOAD_TIMEOUT_S)
+            # Polled in slices so a training run starting mid-load stops the worker before both need the GPU.
+            deadline = time.monotonic() + LOAD_TIMEOUT_S
+            while time.monotonic() < deadline and not self._conn.poll(1.0):
+                if cancelled is not None and cancelled():
+                    raise ClefWorkerError("A training run took the GPU while Clef loaded.")
+            if not self._conn.poll(0):
+                raise ClefWorkerError(
+                    f"The Clef worker did not answer within {LOAD_TIMEOUT_S:.0f}s"
+                )
+            kind, payload = self._receive(0)
         except BaseException:
             self.close()
             raise

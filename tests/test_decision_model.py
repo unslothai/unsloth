@@ -830,6 +830,47 @@ def test_clef_encoding_is_token_identical_to_cloudflares():
             ]
 
 
+@pytest.mark.parametrize(
+    "option",
+    [
+        {"use_dora": True},
+        {"layers_to_transform": [0]},
+        {"layers_pattern": "layers"},
+        {"loftq_config": {"loftq_bits": 4}},
+        {"init_lora_weights": "gaussian"},
+    ],
+)
+def test_clef_lora_refuses_options_it_would_drop(monkeypatch, option):
+    monkeypatch.setattr(decision, "_clef_peft_model", lambda model, **kwargs: "plain lora")
+    model = types.SimpleNamespace(is_clef = True, encoder = types.SimpleNamespace())
+    with pytest.raises(NotImplementedError, match = next(iter(option))):
+        FastDecisionModel.get_peft_model(model, **option)
+    assert FastDecisionModel.get_peft_model(model) == "plain lora"
+
+
+def test_clef_metrics_score_in_the_runs_batch_size(monkeypatch):
+    seen = []
+
+    def clef_logits(
+        model,
+        items,
+        pad_token_id,
+        batch_size = 4,
+    ):
+        seen.append(batch_size)
+        raise StopIteration
+
+    monkeypatch.setattr(decision, "_clef_logits", clef_logits)
+    model = types.SimpleNamespace(is_clef = True, decision_config = {})
+    tokenizer = types.SimpleNamespace(pad_token_id = 0)
+    for call in (FastDecisionModel.evaluate, FastDecisionModel.calibrate):
+        with pytest.raises(StopIteration):
+            call(model, tokenizer, [], batch_size = 1)
+    with pytest.raises(StopIteration):
+        FastDecisionModel.evaluate(model, tokenizer, [])
+    assert seen == [1, 1, 4]
+
+
 def test_clef_loads_scores_like_cloudflares_model_and_trains(clef_checkpoint, tmp_path):
     reference, _ = _clef_reference()
     model, processor = FastDecisionModel.from_pretrained(str(clef_checkpoint), max_seq_length = 512)
@@ -850,8 +891,10 @@ def test_clef_loads_scores_like_cloudflares_model_and_trains(clef_checkpoint, tm
         ours_same_dtype, _ = model(batch["input_ids"], batch["attention_mask"], batch["records"])
         model.head = fp32_head
     for row, z in enumerate(theirs):
-        assert torch.allclose(ours_same_dtype[row, : len(z)].float(), z, atol = 2e-2, rtol = 2e-2)
-        assert torch.allclose(ours[row, : len(z)].float(), z, atol = 0.1)
+        same = ours_same_dtype[row, : len(z)].float()
+        assert torch.allclose(same, z, atol = 2e-2, rtol = 2e-2), (row, (same - z).abs().max(), same, z)
+        fp32 = ours[row, : len(z)].float()
+        assert torch.allclose(fp32, z, atol = 0.1), (row, (fp32 - z).abs().max(), fp32, z)
 
     items, report = FastDecisionModel.build_dataset(_clef_rows(64), processor, model)
     assert report["skipped"] == 0 and len(items) == 64 and len(items[0]["targets"]) == 4
@@ -883,7 +926,7 @@ def test_clef_loads_scores_like_cloudflares_model_and_trains(clef_checkpoint, tm
     )
     trainer.train()
     after = FastDecisionModel.evaluate(model, processor, holdout)
-    assert min(losses[-5:]) < losses[0] and after["loss"] < before["loss"]
+    assert min(losses[-5:]) < losses[0] and after["loss"] < before["loss"], (losses, before, after)
     calibration = FastDecisionModel.calibrate(model, processor, holdout)
     assert "accuracy" in calibration
     # Fitted to the gold labels, so the calibrated confidence tracks being right.
@@ -892,9 +935,12 @@ def test_clef_loads_scores_like_cloudflares_model_and_trains(clef_checkpoint, tm
         decision.HEAD_TEMPERATURE_RANGE[0] <= head_temperature <= decision.HEAD_TEMPERATURE_RANGE[1]
     )
 
+    model.decision_config["training"] = {"steps": 30}
     model.save_pretrained_merged(str(tmp_path / "out"))
     assert (tmp_path / "out" / "joint_schema_model.py").is_file()
     reloaded, _ = FastDecisionModel.from_pretrained(str(tmp_path / "out"), max_seq_length = 512)
+    # The parent run's record stays on disk but does not describe the next fine-tune.
+    assert "training" not in reloaded.decision_config
     # The calibrated temperature over all questions is folded into the saved head; the per-type
     # temperatures are relative to it, so the reload serves the same probabilities.
     folded = reloaded.decision_config["folded_temperature"]
@@ -908,15 +954,18 @@ def test_clef_loads_scores_like_cloudflares_model_and_trains(clef_checkpoint, tm
         trained, _ = model(batch["input_ids"], batch["attention_mask"], batch["records"])
         again, _ = reloaded(batch["input_ids"], batch["attention_mask"], batch["records"])
         theirs = released(batch)[0]
-    # Saved in bf16, so the reload rounds the trained weights.
-    # Compared as served probabilities: the folded head is trained / folded, and a small folded
-    # temperature would magnify bf16 rounding if the logits were compared directly.
+    # Saved in bf16, so the reload rounds the trained weights. The folded head serves trained / folded,
+    # and training is not bit-reproducible on GPU, so folded (0.28 to 0.78 over 10 runs) and with it
+    # the logit scale vary per run; bf16 rounding grows with that scale, so the bound is relative to
+    # it. Over 10 B200 runs the error peaked at 1.6% of the scale (a fixed 0.02 bound on the served
+    # probabilities reached 0.018 in 15); a fold left out or applied twice is off by >= 20%.
     mask = trained > -1e3
-    served = torch.softmax((trained / folded).masked_fill(~mask, -1e4), -1)
-    reloaded_served = torch.softmax(again.masked_fill(~mask, -1e4), -1)
-    assert torch.allclose(served, reloaded_served, atol = 0.02)
+    expected = (trained / folded).float()[mask]
+    error = (again.float()[mask] - expected).abs().max().item()
+    scale = expected.abs().max().item()
+    assert error <= 0.03 * scale + 0.05, (error, scale, folded)
     for row, z in enumerate(theirs):
-        assert int(z.argmax()) == int(again[row, : len(z)].argmax())
+        assert int(z.argmax()) == int(again[row, : len(z)].argmax()), (row, z, again[row, : len(z)])
     # predict() serves the same calibrated answer from memory, the merged reload and the adapters.
     state = "the server is down again"
     ours = FastDecisionModel.predict(model, processor, state, QUESTIONS)
@@ -1265,6 +1314,34 @@ def test_a_clef_prompt_that_fits_exactly_is_not_truncated(monkeypatch):
         return decision._clef_truncated(None, natural, {}, encoded, size)
 
     assert (truncated(size - 1), truncated(size), truncated(size + 1)) == (False, False, True)
+
+
+@pytest.mark.parametrize("forced", [False, True])
+def test_clef_trains_under_the_autocast_it_evaluates_in(tmp_path, monkeypatch, forced):
+    # A previous trainer leaves fp16 in ACCELERATE_MIXED_PRECISION, which transformers 4.x reads.
+    monkeypatch.setenv("ACCELERATE_MIXED_PRECISION", "fp16")
+    monkeypatch.setattr(decision, "_amp_dtype", lambda device: torch.bfloat16)
+    model = torch.nn.Linear(1, 1)
+    model._unsloth_forced_float32 = forced
+    args = _args(tmp_path)
+    assert not args.bf16 and not args.fp16
+    decision._clef_mixed_precision(model, args)
+    expected = "no" if forced else "bf16"
+    assert args.bf16 == (not forced) and not args.fp16, (args.bf16, args.fp16)
+    assert decision.os.environ["ACCELERATE_MIXED_PRECISION"] == expected
+    assert getattr(args, "mixed_precision", expected) == expected
+
+
+def test_clef_trains_under_fp16_autocast_on_a_gpu_without_bf16(tmp_path, monkeypatch):
+    # A T4: evaluate and serving autocast fp16, so training does too.
+    monkeypatch.setenv("ACCELERATE_MIXED_PRECISION", "no")
+    monkeypatch.setattr(decision, "_amp_dtype", lambda device: torch.float16)
+    model = torch.nn.Linear(1, 1)
+    model._unsloth_forced_float32 = False
+    args = _args(tmp_path)
+    decision._clef_mixed_precision(model, args)
+    assert args.fp16 and not args.bf16, (args.bf16, args.fp16)
+    assert decision.os.environ["ACCELERATE_MIXED_PRECISION"] == "fp16"
 
 
 def test_clef_calibration_with_every_holdout_decision_from_one_row():

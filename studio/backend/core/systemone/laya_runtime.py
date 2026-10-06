@@ -361,7 +361,7 @@ def _load_checkpoint(checkpoint: Checkpoint):
         from .clef_runtime import ClefAgent, ClefWorkerError
 
         _evict()
-        agent = ClefAgent(root)
+        agent = ClefAgent(root, cancelled = _training_active)
         # Training may have started while this loaded, and Clef has no CPU fallback.
         if _training_active():
             agent.close()

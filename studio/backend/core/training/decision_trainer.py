@@ -465,7 +465,9 @@ def _run(event_queue: Any, stop_queue: Any, config: dict, output_dir: str) -> No
         status(
             f"Evaluating the base model on {_decision_count(eval_items):,} held-out decisions..."
         )
-        base_metrics = FastDecisionModel.evaluate(model, tokenizer, eval_items)
+        base_metrics = FastDecisionModel.evaluate(
+            model, tokenizer, eval_items, batch_size = config["batch_size"]
+        )
         logger.info("Base held-out metrics: %s", base_metrics)
     check_stop()
 
@@ -496,7 +498,9 @@ def _run(event_queue: Any, stop_queue: Any, config: dict, output_dir: str) -> No
     tuned_metrics = None
     if eval_items:
         status("Calibrating confidence...")
-        tuned_metrics = FastDecisionModel.calibrate(model, tokenizer, eval_items)
+        tuned_metrics = FastDecisionModel.calibrate(
+            model, tokenizer, eval_items, batch_size = config["batch_size"]
+        )
         logger.info("Fine-tuned held-out metrics: %s", tuned_metrics)
     # A cancel during calibration still saves nothing; a stop with save keeps the model.
     if stop["requested"] and not stop["save"]:
