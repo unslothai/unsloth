@@ -32,7 +32,7 @@ from utils.hardware import clear_gpu_cache
 
 from utils.models import is_vision_model, get_base_model_from_lora
 from utils.models.model_identity import restore_hf_cache_repo_identity
-from utils.models.model_config import detect_audio_type
+from utils.models.model_config import detect_audio_type, load_mlx_adapter_tokenizer
 from utils.paths import (
     ensure_dir,
     outputs_root,
@@ -40,6 +40,7 @@ from utils.paths import (
     resolve_output_dir,
 )
 from core.inference import get_inference_backend
+from core.export import q4nx
 from utils.paths.path_utils import any_not_appledouble_metadata, drop_appledouble_metadata
 
 # GPU/PyTorch-only imports, skipped on MLX and --no-torch installs so the module stays importable.
@@ -899,6 +900,8 @@ class ExportBackend:
                     local_files_only = local_files_only,
                     **_device_map_kw,
                 )
+                if _IS_MLX and adapter_config.exists():
+                    tokenizer = load_mlx_adapter_tokenizer(tokenizer, checkpoint_path)
 
             # Only for the multi-GPU map: a single-GPU host has no second placement to retry on.
             _offloaded = _cpu_offloaded_modules(model) if _device_map_kw else 0
@@ -1432,12 +1435,14 @@ class ExportBackend:
         hf_token: HfTokenArg = None,
         imatrix_file = None,
         private: bool = False,
+        npu_q4nx: bool = False,
     ) -> Tuple[bool, str, Optional[str]]:
         """Export the model in GGUF format.
 
         ``quantization_method`` is a single GGUF quant method ("Q4_K_M") or a list of them; a list
         produces one GGUF per quant from a single model load, since unsloth save_to_gguf loops
-        internally. ``imatrix_file`` is an importance matrix path or boolean.
+        internally. ``imatrix_file`` is an importance matrix path or boolean. ``npu_q4nx`` also
+        converts one Q4_0 / Q4_1 / Q4_K_M GGUF to FastFlowLM's Q4NX for the AMD Ryzen AI NPU.
         """
         if not _export_runtime_available():
             return False, _export_runtime_message(), None
@@ -1479,6 +1484,14 @@ class ExportBackend:
             if not quant_methods:
                 quant_methods = ["q4_k_m"]
             quant_method = quant_methods if len(quant_methods) > 1 else quant_methods[0]
+            if npu_q4nx and not save_directory:
+                return False, "The AMD NPU (Q4NX) export needs a local save directory.", None
+            if npu_q4nx and not any(q in q4nx.SOURCE_QUANTS for q in quant_methods):
+                return (
+                    False,
+                    "The AMD NPU (Q4NX) export needs a Q4_0, Q4_1 or Q4_K_M GGUF in the selection.",
+                    None,
+                )
 
             if save_directory:
                 save_directory = str(resolve_export_write_dir(save_directory))
@@ -1626,6 +1639,23 @@ class ExportBackend:
                 self._write_export_metadata(abs_save_dir)
                 output_path = str(Path(abs_save_dir).resolve())
 
+                if npu_q4nx:
+                    source = q4nx.source_gguf(exported_ggufs, quant_methods)
+                    try:
+                        if source is None:
+                            raise RuntimeError("no Q4_0, Q4_1 or Q4_K_M GGUF was written")
+                        with q4nx.staged_output(Path(abs_save_dir) / "npu-q4nx") as staging:
+                            q4nx.convert_gguf_to_q4nx(source, staging)
+                            self._write_q4nx_companions(staging, exported_config)
+                    except Exception as exception:
+                        logger.error(f"Q4NX conversion failed: {exception}")
+                        return (
+                            False,
+                            f"GGUF files were saved to {output_path}, but the AMD NPU (Q4NX) "
+                            f"conversion failed: {exception}",
+                            output_path,
+                        )
+
             if push_to_hub:
                 if not repo_id or not hf_token:
                     return (
@@ -1715,6 +1745,22 @@ class ExportBackend:
                     output_path,
                 )
             return False, f"GGUF export failed: {str(e)}", None
+
+    def _write_q4nx_companions(self, q4nx_dir: Path, config: Optional[bytes]) -> None:
+        """The tokenizer files FastFlowLM loads next to model.q4nx (see q4nx.CONFIG_FILES)."""
+        with tempfile.TemporaryDirectory(prefix = "_tmp_tokenizer_", dir = q4nx_dir) as scratch:
+            self.current_tokenizer.save_pretrained(scratch)
+            for name in q4nx.TOKENIZER_FILES:
+                # The converter rebuilds tokenizer.json from the GGUF; the HF one is what FLM ships.
+                if (Path(scratch) / name).is_file():
+                    shutil.copyfile(Path(scratch) / name, q4nx_dir / name)
+        # generation_config holds stop ids config.json lacks (Phi-4-mini's <|end|>, 200020).
+        generation = getattr(self.current_model, "generation_config", None)
+        q4nx.write_flm_tokenizer_config(
+            q4nx_dir,
+            json.loads(config) if config else None,
+            {"eos_token_id": getattr(generation, "eos_token_id", None)},
+        )
 
     def _save_mlx_adapter(
         self,

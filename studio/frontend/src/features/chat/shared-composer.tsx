@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// eslint-disable-next-line no-restricted-imports -- Keep the import-free payload helper independent of the picker UI.
-import { llamaCppConfigPayload } from "@/features/model-picker/model-config/llama-cpp-config";
 import { useChatArtifactsStore } from "./artifacts/store";
 import { mlxRuntimeStateFrom } from "./lib/mlx-runtime-state";
 import { offloadCountsFrom, offloadWarning } from "./lib/partial-offload";
@@ -111,7 +109,6 @@ import {
   FolderAddIcon,
   Image03Icon,
   McpServerIcon,
-  PencilRulerIcon,
   Scroll01Icon,
 } from "@hugeicons/core-free-icons";
 import { useNavigate } from "@tanstack/react-router";
@@ -206,12 +203,10 @@ import {
   shouldPinDiffusionPlacement,
 } from "./lib/gpu-placement";
 import {
-  loadedLlamaCppConfigFields,
-  managedGpuMemoryFields,
+  loadedGpuMemoryFields,
   type ReasoningEffort,
   reconcilePersistedGpuIds,
-  managedKvCacheFields,
-  managedSpeculativeSettings,
+  resolveLoadedSpeculativeSettings,
   resolvePreserveThinkingOnLoad,
   persistGpuMemoryModeOnLoad,
   resolveSpeculativeSettingsForLoad,
@@ -795,9 +790,6 @@ export function SharedComposer({
   const setImageToolsEnabled = useChatRuntimeStore(
     (s) => s.setImageToolsEnabled,
   );
-  const artifactsEnabled = useChatRuntimeStore((s) => s.artifactsEnabled);
-  const setArtifactsEnabled = useChatRuntimeStore((s) => s.setArtifactsEnabled);
-  const showCanvasMenuItem = useChatRuntimeStore((s) => s.showCanvasMenuItem);
   const mcpEnabledForChat = useChatRuntimeStore((s) => s.mcpEnabledForChat);
   const setMcpEnabledForChat = useChatRuntimeStore(
     (s) => s.setMcpEnabledForChat,
@@ -868,6 +860,7 @@ export function SharedComposer({
               selectedExternalProvider?.isReasoningModel === true,
             baseUrl: selectedExternalProvider?.baseUrl ?? null,
             apiType: selectedExternalProvider?.apiType,
+            reasoningConfig: selectedExternalProvider?.reasoningConfig,
           },
         )
       : null;
@@ -993,7 +986,6 @@ export function SharedComposer({
     (showImagePill ? 1 : 0) +
     (showRagPill && ragEnabled ? 1 : 0) +
     (showWebFetchPill ? 1 : 0) +
-    (artifactsEnabled ? 1 : 0) +
     (mcpEnabledForChat ? 1 : 0);
   // Under the count threshold the row still overflows on long labels, wrapping onto a second line
   // inside the action bar, so measuring collapses just enough to keep it beside send.
@@ -1750,9 +1742,6 @@ export function SharedComposer({
                   : ownConfig.reasoningBudgetMessage,
                 // Only when this panel has read the stored value: omitted, the load inherits it, which is what
                 // keeps CLI-set flags working.
-                ...llamaCppConfigPayload(ownConfig.llamaCppConfig, {
-                  isDiffusion: resolvedIsDiffusion === true,
-                }),
                 ...(ownConfig.llamaExtraArgs !== undefined
                   ? // biome-ignore lint/style/useNamingConvention: API schema
                     { llama_extra_args: ownConfig.llamaExtraArgs ?? [] }
@@ -1819,6 +1808,7 @@ export function SharedComposer({
         const loadRequestId = crypto.randomUUID();
         const resp = await loadModel({
           model_path: sel.id,
+          alongside: useChatRuntimeStore.getState().keepModelsLoaded,
           load_request_id: loadRequestId,
           hf_token: useChatRuntimeStore.getState().hfToken || null,
           max_seq_length: compareMaxSeqLength,
@@ -1830,6 +1820,7 @@ export function SharedComposer({
           chat_template_override: effectiveChatTemplateOverride,
           cache_type_kv: ownConfig.kvCacheDtype ?? null,
           mlx_kv_quant: ownConfig.mlxKvQuant ?? null,
+          mlx_int8_prefill: ownConfig.mlxInt8Prefill ?? false,
           speculative_type: effectiveSpeculativeType,
           spec_draft_n_max: effectiveSpecDraftNMax,
           reasoning_budget:
@@ -1852,9 +1843,6 @@ export function SharedComposer({
                 n_cpu_moe: effectiveNCpuMoe,
                 tensor_split: compareLoadKnobs.splitRatio ?? undefined,
                 gpu_ids: effectiveSelectedGpuIds ?? undefined,
-                ...llamaCppConfigPayload(ownConfig.llamaCppConfig, {
-                  isDiffusion: resolvedIsDiffusion === true,
-                }),
                 ...(ownConfig.llamaExtraArgs !== undefined
                   ? // biome-ignore lint/style/useNamingConvention: API schema
                     { llama_extra_args: ownConfig.llamaExtraArgs ?? [] }
@@ -1951,7 +1939,8 @@ export function SharedComposer({
           supportsPreserveThinking: resp.supports_preserve_thinking ?? false,
           preserveThinking: resolvePreserveThinkingOnLoad(resp),
           supportsTools: resp.supports_tools ?? false,
-          ...managedKvCacheFields(resp),
+          kvCacheDtype: resp.cache_type_kv ?? null,
+          loadedKvCacheDtype: resp.cache_type_kv ?? null,
           ...mlxRuntimeStateFrom(resp),
           // Click-time value, not the resolved echo (see the single-model load).
           nParallel: committedSlots,
@@ -1989,7 +1978,6 @@ export function SharedComposer({
             : clearedServerTuningState()),
           // What this pane's launch is running, for a later rollback: the status applier is held off for
           // the whole load, so a switch straight after would snapshot the other model's list.
-          ...loadedLlamaCppConfigFields(resp, ownConfig.llamaCppConfig),
           loadedLlamaExtraArgs:
             resp.requested_llama_extra_args !== undefined
               ? (resp.requested_llama_extra_args ?? [])
@@ -2011,7 +1999,7 @@ export function SharedComposer({
           loadedCustomContextLength: keepCustomCtx,
           // Adopt the load response's GPU-memory fields (mode/layers/MoE/split/pick plus loaded baselines)
           // so the GPU controls round-trip. The context group and native-path token/expiry clear below.
-          ...managedGpuMemoryFields(resp),
+          ...loadedGpuMemoryFields(resp),
           // Drives the GPU Memory controls' diffusion gate; set alongside the GPU fields on every load path
           // so the gate cannot read stale.
           loadedIsDiffusion: resp.is_diffusion ?? false,
@@ -2028,7 +2016,7 @@ export function SharedComposer({
           // lease. Clear any prior picked file's token/expiry so the reload path never sends a stale one.
           activeNativePathToken: null,
           activeNativePathExpiresAtMs: null,
-          ...managedSpeculativeSettings(resp),
+          ...resolveLoadedSpeculativeSettings(resp),
         });
         if (!targetIsGguf) {
           // Non-GGUF panes carry their context in params.maxSeqLength.
@@ -2566,19 +2554,6 @@ export function SharedComposer({
         </DropdownMenuSubContent>
       </DropdownMenuSub>
     ),
-    // Hidden by default; enabled from Settings > Chat > Canvas.
-    canvas: showCanvasMenuItem ? (
-      <DropdownMenuItem
-        className={artifactsEnabled ? "text-primary font-medium" : undefined}
-        onSelect={() => setArtifactsEnabled(!artifactsEnabled)}
-      >
-        <HugeiconsIcon icon={PencilRulerIcon} strokeWidth={2} />
-        Canvas
-        {artifactsEnabled ? (
-          <HugeiconsIcon icon={MenuTickIcon} strokeWidth={2} className="ml-auto" />
-        ) : null}
-      </DropdownMenuItem>
-    ) : null,
     projects: (
       <DropdownMenuSub>
         <DropdownMenuSubTrigger>
@@ -2703,6 +2678,7 @@ export function SharedComposer({
       <textarea
         {...skillMentions.inputProps}
         ref={textareaRef}
+        data-type-to-activate="composer"
         value={text}
         onChange={(e) => {
           // ALWAYS mirror the DOM value into React state, even during IME composition: the controlled `value`
@@ -3035,25 +3011,6 @@ export function SharedComposer({
               <span>Fetch</span>
             </button>
           )}
-          {artifactsEnabled ? (
-            <button
-              type="button"
-              onClick={() => setArtifactsEnabled(false)}
-              className="composer-pill-btn"
-              data-pill-label="Canvas"
-              data-active="true"
-              aria-label="Disable canvas"
-            >
-              <PillGlyph>
-                <HugeiconsIcon
-                  icon={PencilRulerIcon}
-                  className="size-[calc(15.5px*var(--ui-space-scale,1))]"
-                  strokeWidth={2}
-                />
-              </PillGlyph>
-              <span>Canvas</span>
-            </button>
-          ) : null}
           {mcpEnabledForChat ? <McpComposerButton side="top" /> : null}
           <SkillsComposerButton side="top" />
         </div>
@@ -3108,19 +3065,19 @@ export function SharedComposer({
                           setPreserveThinking(false);
                         }}
                       >
-                        <HugeiconsIcon
-                  icon={Tick02Icon}
-                  strokeWidth={2}
-                          className={cn(
-                            "unsloth-tick size-4",
-                            effectiveReasoningVisualEnabled && "opacity-0",
-                          )}
-                        />
                         {formatReasoningDisabledLabel(
                           effectiveSupportsReasoningOff,
                           isExternalOpenAIReasoning,
                           checkpoint,
                         )}
+                        <HugeiconsIcon
+                  icon={Tick02Icon}
+                  strokeWidth={2}
+                          className={cn(
+                            "unsloth-tick ms-auto size-4",
+                            effectiveReasoningVisualEnabled && "opacity-0",
+                          )}
+                        />
                       </DropdownMenuItem>
                     )}
                     {effectiveReasoningEffortLevels
@@ -3139,21 +3096,21 @@ export function SharedComposer({
                             }
                           }}
                         >
+                          {formatReasoningEffortLabel(
+                            level,
+                            externalSelection?.modelId,
+                          )}
                           <HugeiconsIcon
                   icon={Tick02Icon}
                   strokeWidth={2}
                             className={cn(
-                              "unsloth-tick size-4",
+                              "unsloth-tick ms-auto size-4",
                               !(
                                 effectiveReasoningVisualEnabled &&
                                 displayedEffort === level
                               ) && "opacity-0",
                             )}
                           />
-                          {formatReasoningEffortLabel(
-                            level,
-                            externalSelection?.modelId,
-                          )}
                         </DropdownMenuItem>
                       ))}
                   </>
@@ -3173,15 +3130,15 @@ export function SharedComposer({
                         }
                       }}
                     >
+                      Thinking
                       <HugeiconsIcon
                   icon={Tick02Icon}
                   strokeWidth={2}
                         className={cn(
-                          "unsloth-tick size-4",
+                          "unsloth-tick ms-auto size-4",
                           !effectiveReasoningEnabled && "opacity-0",
                         )}
                       />
-                      Thinking
                     </DropdownMenuItem>
                   )
                 )}
@@ -3199,15 +3156,15 @@ export function SharedComposer({
                       }
                     }}
                   >
+                    Preserve thinking
                     <HugeiconsIcon
                   icon={Tick02Icon}
                   strokeWidth={2}
                       className={cn(
-                        "unsloth-tick size-4",
+                        "unsloth-tick ms-auto size-4",
                         !preserveThinking && "opacity-0",
                       )}
                     />
-                    Preserve thinking
                   </DropdownMenuItem>
                 )}
               </NonModalDropdownMenu>

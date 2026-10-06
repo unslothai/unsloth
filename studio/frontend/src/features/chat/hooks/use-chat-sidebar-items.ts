@@ -6,7 +6,6 @@ import {
   CHAT_HISTORY_UPDATED_EVENT,
   notifyChatHistoryUpdated,
 } from "../api/chat-api";
-import { useChatArtifactsStore } from "../artifacts/store";
 import { useBookmarkedTurnsStore } from "../stores/bookmarked-turns-store";
 import { useChatRuntimeStore } from "../stores/chat-runtime-store";
 import type { ThreadRecord } from "../types";
@@ -348,10 +347,6 @@ export async function deleteChatItems(
 
   // Drop saved composer drafts so deleted threads leave no orphan keys.
   for (const id of threadIds) clearComposerDraft(id);
-
-  const artifactStore = useChatArtifactsStore.getState();
-  for (const id of threadIds) artifactStore.clearArtifactsForThread(id);
-  artifactStore.clearOrphanedArtifacts();
 
   // Optimistic tombstone: hide immediately; roll back on backend error.
   markChatThreadsDeleted(threadIds);

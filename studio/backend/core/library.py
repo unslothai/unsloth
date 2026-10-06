@@ -526,6 +526,12 @@ def _gallery_items(kind: str) -> list[dict]:
                     sidecar = path.with_suffix(".json").stat().st_size
                 except OSError:
                     pass
+                # A conversion keeps the recording it converted as {id}.source.wav beside its clip.
+                if sidecar is not None and kind == "audio":
+                    try:
+                        sidecar += path.with_name(f"{path.stem}.source.wav").stat().st_size
+                    except OSError:
+                        pass
             items.append(
                 _item(
                     f"{kind}:{record['id']}",
@@ -1156,6 +1162,7 @@ _SOURCES = (
 def list_items() -> list[dict]:
     """Every item with its overlay applied, newest activity first. A failing source is skipped so
     one broken store cannot empty the whole Library."""
+    generation = _LISTING.generation
     overlay = library_db.list_entries()
     items: list[dict] = []
     for source in _SOURCES:
@@ -1185,7 +1192,12 @@ def list_items() -> list[dict]:
         if entry and entry["name"]:
             item["name"] = entry["name"]
     try:
-        library_db.reconcile_entries(adopt, stale)
+        if adopt or stale:
+            with _replace_lock:
+                # A listing begun before a replace_file swap may have seen its new inode before the carry: not stale.
+                if _LISTING.generation != generation:
+                    stale = []
+                library_db.reconcile_entries(adopt, stale)
     except Exception:
         logger.warning("library.overlay_reconcile_failed", exc_info = True)
     items.sort(key = lambda item: item["updatedAt"], reverse = True)
@@ -1208,6 +1220,49 @@ def fingerprint(item_id: str) -> Optional[str]:
         return _fingerprint(os.stat(path))
     except (LookupError, ValueError, OSError):
         return None
+
+
+_replace_lock = threading.Lock()
+
+
+@contextlib.contextmanager
+def overlay_write():
+    """Held across a fingerprint check and the overlay write it guards, so an edit_file swap cannot
+    land between them and leave the write keyed to the file it replaced."""
+    with _replace_lock:
+        yield
+
+
+def replace_file(tmp: str, path: str) -> None:
+    """``os.replace(tmp, path)``, carrying the overlay row of the file it replaces over to the new
+    inode, which the listing would otherwise drop as a different file."""
+    with _replace_lock:
+        before = os.stat(path)
+        staged = os.stat(tmp)
+        os.replace(tmp, path)
+        _carry_overlay(path, before, staged)
+
+
+def _carry_overlay(path: str, before: os.stat_result, staged: os.stat_result) -> None:
+    old = _fingerprint(before)
+    try:
+        after = os.stat(path)
+        # A path made again since the swap is a different file, which starts fresh.
+        if not os.path.samestat(staged, after):
+            return
+        for item_id, entry in library_db.list_entries().items():
+            # NULL: a legacy row not yet adopted, which a listing racing this swap would adopt as the old inode.
+            if entry["fingerprint"] not in (old, None) or not item_id.startswith("sandbox:"):
+                continue
+            try:
+                listed = os.stat(_sandbox_path(item_id.partition(":")[2]))
+            except (LookupError, OSError):
+                continue
+            if os.path.samestat(listed, after):
+                library_db.carry_fingerprint(item_id, entry["fingerprint"], _fingerprint(after))
+                invalidate_listing()
+    except Exception:
+        logger.warning("library.overlay_carry_failed", exc_info = True)
 
 
 def safe_file_name(
@@ -1311,6 +1366,30 @@ def open_item(item_id: str) -> ItemFile:
             handle, safe_file_name(name), "files", safe_file_name(name, item_id = item_id)
         )
     raise ValueError("This item cannot be added to a project.")
+
+
+def project_item(item_id: str) -> ItemFile:
+    """What ``open_item`` gives a project copy, and also a chat attachment's image or clip, held in
+    its message rather than a file of its own: copied out to a temporary file first. LookupError
+    when the attachment is gone or holds no image or clip."""
+    kind, _, ref = item_id.partition(":")
+    if kind != "attachment":
+        return open_item(item_id)
+    from storage.studio_db import get_chat_attachment
+
+    mime_type, data = _attachment_media(ref)
+    message_id, attachment_id = _attachment_ref(ref)
+    record = get_chat_attachment(message_id, attachment_id) or {}
+    name = _named_for_type(str(record.get("name") or "Attachment"), mime_type)
+    handle = tempfile.TemporaryFile()
+    try:
+        handle.write(data)
+        handle.seek(0)
+    except BaseException:
+        handle.close()
+        raise
+    folder = "images" if mime_type.startswith("image/") else "videos"
+    return ItemFile(handle, safe_file_name(name), folder, safe_file_name(name, item_id = item_id))
 
 
 def local_path(item_id: str) -> Path:
@@ -2133,7 +2212,7 @@ _overlay_lock = threading.Lock()
 def mark_opened(item_id: str) -> bool:
     """Record that the item was just opened, kept for the file it is now. False when it is not
     there, or is a path whose file is gone."""
-    with _overlay_lock:
+    with _overlay_lock, overlay_write():
         found = fingerprint(item_id)
         if found is None and (path_derived(item_id) or not item_exists(item_id)):
             return False

@@ -1581,6 +1581,8 @@ def test_prequant_checkpoint_cached_reads_only_the_cache(monkeypatch, tmp_path):
     legacy.write_bytes(b"weights")
     source = _prequant_source()
     asked: list = []
+    absent: set = set()
+    no_exist = object()  # huggingface_hub's sentinel for a recorded 404
 
     def _cache(
         repo_id,
@@ -1588,6 +1590,8 @@ def test_prequant_checkpoint_cached_reads_only_the_cache(monkeypatch, tmp_path):
         cache_dir = None,
     ):
         asked.append((repo_id, filename, cache_dir))
+        if filename in absent:
+            return no_exist
         return str(tmp_path / filename) if (tmp_path / filename).is_file() else None
 
     monkeypatch.setattr("huggingface_hub.try_to_load_from_cache", _cache)
@@ -1596,7 +1600,7 @@ def test_prequant_checkpoint_cached_reads_only_the_cache(monkeypatch, tmp_path):
         lambda *a, **k: pytest.fail("the cache probe must never download"),
     )
 
-    assert prequant_checkpoint_cached(source, cache_dir = "/models/hub") is True
+    assert prequant_checkpoint_cached(source, cache_dir = "/models/hub", online = True) is True
     # The live root is asked first, and the model-name file resolves, so no legacy lookup.
     assert asked == [("unsloth/Z-Image-Turbo-FP8", "Z-Image-Turbo-FP8.pt", "/models/hub")]
 
@@ -1605,11 +1609,20 @@ def test_prequant_checkpoint_cached_reads_only_the_cache(monkeypatch, tmp_path):
     # most repos do not have yet, primary-only would report every existing .pt repo as "would
     # download several GB" and hand the pick to GGUF while its checkpoint sat in the cache. The
     # preference is unaffected: the downloader still asks for the better name first.
+    # It loads, though, only when the names ahead of it are absent from the Hub. Online and never
+    # asked about the model-name file, the load would download that one first, so this is a miss.
     ckpt.unlink()
-    assert prequant_checkpoint_cached(source) is True
+    assert prequant_checkpoint_cached(source, online = True) is False
+    # The resolver's own 404 on it left a .no_exist marker: now the legacy name is what loads.
+    absent.add("Z-Image-Turbo-FP8.pt")
+    assert prequant_checkpoint_cached(source, online = True) is True
+    # Offline the load walks to the cached legacy name whatever the Hub holds.
+    absent.clear()
+    assert prequant_checkpoint_cached(source, online = False) is True
     # Neither name cached -> same answer, for the ordinary reason.
     legacy.unlink()
-    assert prequant_checkpoint_cached(source) is False
+    assert prequant_checkpoint_cached(source, online = True) is False
+    assert prequant_checkpoint_cached(source, online = False) is False
 
 
 def test_a_live_root_hit_still_goes_through_the_hub_so_it_revalidates(monkeypatch, tmp_path):
@@ -2170,18 +2183,54 @@ def test_load_is_dropped_when_the_padding_cannot_be_proven(monkeypatch, tmp_path
 # ── fp8 activation scale floor ──────────────────────────────────────────────────
 
 
-def test_an_fp8_checkpoint_without_the_activation_floor_is_rejected():
-    # A checkpoint built before activation_value_lb bakes hp_value_lb=None into every quantised
-    # tensor, and stays broken however it is loaded: torchao's per-row activation quantiser divides
-    # by the row amax, so qwen's all-zero text rows give scale 0 and NaN. The metadata checks around
-    # this one all accept an absent field for back-compat, which is exactly wrong here, so the floor
-    # is read off the TENSORS instead. Measured: 412 of 512 rows non-finite without it, 0 with it.
+def test_an_fp8_checkpoint_without_the_activation_floor_is_detected():
+    # Pre-floor builds bake hp_value_lb=None (all-zero rows -> scale 0 -> NaN); read off the tensors, not metadata.
     floored = {"blocks.0.attn.to_q.weight": Float8Tensor(hp_value_lb = 1e-12)}
     unfloored = {"blocks.0.attn.to_q.weight": Float8Tensor(hp_value_lb = None)}
     assert pq._fp8_activation_floor_present(floored, None) is True
     assert pq._fp8_activation_floor_present(unfloored, None) is False
     # Zero is not a floor either: it is what an unclamped amax divide produces.
     assert pq._fp8_activation_floor_present({"w": Float8Tensor(hp_value_lb = 0.0)}, None) is False
+
+
+def test_an_fp8_checkpoint_without_the_floor_loads_with_the_runtime_floor(monkeypatch, tmp_path):
+    # The floor is not weight data, so a pre-floor artifact holds the runtime path's exact weights.
+    from core.inference.diffusion_transformer_quant import FP8_ACTIVATION_VALUE_LB
+
+    ckpt = _good_ckpt(scheme = "fp8")
+    shared = types.SimpleNamespace(hp_value_lb = None, hp_value_ub = None)
+    first, second, floored = Float8Tensor(), Float8Tensor(), Float8Tensor(hp_value_lb = 1e-9)
+    first.act_quant_kwargs = shared
+    second.act_quant_kwargs = shared  # a pickle may share one kwargs object between tensors
+    ckpt["state_dict"] = {
+        "a.weight": first,
+        "b.weight": second,
+        "c.weight": floored,
+        "d.bias": object(),
+    }
+    out = _load(monkeypatch, tmp_path, ckpt, scheme = "fp8")
+    assert out is not None
+    # a repaired load is not a failure: nothing for the status line to report
+    assert pq.last_prequant_failure() is None
+    assert first.act_quant_kwargs.hp_value_lb == FP8_ACTIVATION_VALUE_LB
+    assert second.act_quant_kwargs.hp_value_lb == FP8_ACTIVATION_VALUE_LB
+    assert first.act_quant_kwargs is not second.act_quant_kwargs
+    assert shared.hp_value_lb is None
+    assert (
+        floored.act_quant_kwargs.hp_value_lb == 1e-9
+    )  # an artifact's own floor is never rewritten
+
+
+def test_an_fp8_checkpoint_differing_in_more_than_the_floor_stays_refused(monkeypatch, tmp_path):
+    ckpt = _good_ckpt(scheme = "fp8")
+    capped = Float8Tensor(hp_value_lb = None)
+    capped.act_quant_kwargs.hp_value_ub = 1e4
+    ckpt["state_dict"] = {"a.weight": capped}
+    assert _load(monkeypatch, tmp_path, ckpt, scheme = "fp8") is None
+    assert "no activation scale floor" in (pq.last_prequant_failure() or "")
+    no_field = Float8Tensor()
+    no_field.act_quant_kwargs = types.SimpleNamespace()
+    assert pq._fp8_activation_floor_restorable({"a.weight": no_field}) is False
 
 
 def test_the_floor_check_ignores_dense_and_unreadable_state_dicts():
@@ -2293,6 +2342,11 @@ def test_the_fp8_invariants_cover_the_fp8_half_of_a_policy_checkpoint():
     unfloored = dict(ckpt)
     unfloored["state_dict"] = dict(ckpt["state_dict"])
     unfloored["state_dict"]["layers.0.feed_forward.w1.weight"] = Float8Tensor(hp_value_lb = None)
+    # The fp8 half without its floor is restorable (the load writes the runtime floor in), so it validates.
+    assert pq._validate_checkpoint(unfloored, "nvfp4", base, logger) is True
+    capped = Float8Tensor(hp_value_lb = None)
+    capped.act_quant_kwargs.hp_value_ub = 1.0
+    unfloored["state_dict"]["layers.0.feed_forward.w1.weight"] = capped
     assert pq._validate_checkpoint(unfloored, "nvfp4", base, logger) is False
     per_tensor = dict(ckpt)
     per_tensor["metadata"] = _policy_meta()
@@ -2494,7 +2548,7 @@ def test_a_cached_pickle_is_not_evidence_for_a_safetensors_artifact(monkeypatch)
     monkeypatch.setattr(
         pq,
         "cached_checkpoint_path",
-        lambda source, cache_dir = None, names = None: next(
+        lambda source, cache_dir = None, names = None, **kw: next(
             (v for k, v in cached.items() if names is None or k in names), None
         ),
     )
@@ -2803,4 +2857,42 @@ def test_the_download_plan_probes_with_the_user_token():
     from core.inference.diffusion import DiffusionBackend
 
     src = inspect.getsource(DiffusionBackend.download_plan)
-    assert '{**load_kwargs, "base_repo": base, "hf_token": hf_token}' in src
+    assert '"base_repo": base,' in src and '"hf_token": hf_token,' in src
+
+
+def test_a_full_fingerprint_pass_is_remembered_per_unchanged_file(monkeypatch, tmp_path):
+    import os
+
+    import core.inference.diffusion_compile_cache as cc
+    import core.inference.diffusion_prequant as pq
+
+    monkeypatch.setenv(cc._ENV_DIR, str(tmp_path / "cache"))
+    monkeypatch.delenv(pq.FINGERPRINT_MODE_ENV, raising = False)
+    ckpt_file = tmp_path / "w.safetensors"
+    ckpt_file.write_bytes(b"weights")
+    expected = {"a.weight": "x", "b.weight": "y"}
+    meta = {"fingerprint": {"modules": expected}}
+    calls: list = []
+
+    def fingerprint(state_dict, *, select = None):
+        calls.append(select)
+        return {"modules": dict(state_dict)}
+
+    monkeypatch.setattr(pq, "packed_weight_fingerprint", fingerprint)
+    assert pq._verify_packed_fingerprint(expected, meta, path = ckpt_file)
+    assert pq._verify_packed_fingerprint(expected, meta, path = ckpt_file)
+    assert len(calls) == 1  # the second load of the unchanged file skips the md5 pass
+    # A changed file (size / mtime) is checked in full again, and a mismatch is never remembered.
+    ckpt_file.write_bytes(b"weights, rebuilt")
+    os.utime(ckpt_file, ns = (1, 1))
+    assert not pq._verify_packed_fingerprint(
+        {"a.weight": "x", "b.weight": "z"}, meta, path = ckpt_file
+    )
+    assert not pq._verify_packed_fingerprint(
+        {"a.weight": "x", "b.weight": "z"}, meta, path = ckpt_file
+    )
+    assert len(calls) == 3
+    # Without a path (or outside full mode) nothing is remembered.
+    assert pq._verify_packed_fingerprint(expected, meta)
+    assert pq._verify_packed_fingerprint(expected, meta)
+    assert len(calls) == 5

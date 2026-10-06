@@ -1423,8 +1423,17 @@ test("light mode is the chatbox's background, under a slightly heavier shadow", 
       alpha: Number(hit[4]),
     };
   };
-  const from = shape(composer);
-  const to = shape(bar);
+  // The composer may read its shadow from a variable (it shares one with the toasts); compare the
+  // light value that variable holds, which is what the composer paints in light mode.
+  const resolved = (rule: string) => {
+    const ref = /box-shadow:\s*var\((--[\w-]+)\);/.exec(rule);
+    if (!ref) return rule;
+    const value = new RegExp(`\\s${ref[1]}:\\s*([^;]+);`).exec(cssRule(INDEX, ":root"));
+    assert.ok(value, `${ref[1]} has no light value in :root`);
+    return `box-shadow: ${value[1]};`;
+  };
+  const from = shape(resolved(composer));
+  const to = shape(resolved(bar));
   assert.ok(
     to.blur > from.blur,
     `blur ${to.blur} is not wider than ${from.blur}`,
@@ -1544,6 +1553,9 @@ test("the bar stays out of a backgrounded scope, and off the document origin", a
   // 22.25/28.25rem is exactly the previous short-counter width: fixed input + 12rem chrome.
   assert.match(surface[1], /(?:^|\s)w-\[calc\(22\.25rem\*var\(--ui-space-scale,1\)\)\](?:\s|$)/);
   assert.match(surface[1], /(?:^|\s)sm:w-\[calc\(28\.25rem\*var\(--ui-space-scale,1\)\)\](?:\s|$)/);
+  // With the chat/browser scope buttons it widens by their room (5.5rem), so the field keeps its width.
+  assert.match(surface[1], /(?:^|\s)data-scoped:w-\[calc\(27\.75rem\*var\(--ui-space-scale,1\)\)\](?:\s|$)/);
+  assert.match(surface[1], /(?:^|\s)sm:data-scoped:w-\[calc\(33\.75rem\*var\(--ui-space-scale,1\)\)\](?:\s|$)/);
   // Either form: the field's classes are the point, not whether they go
   // through cn().
   const input = /<input[\s\S]*?className=\{?(?:cn\()?\s*"([^"]*)"/.exec(

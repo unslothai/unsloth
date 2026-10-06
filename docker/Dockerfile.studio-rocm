@@ -60,10 +60,10 @@ RUN apt-get update \
  && curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
  && apt-get install -y --no-install-recommends nodejs \
  && rm -rf /var/lib/apt/lists/*
-RUN /opt/unsloth-venv/bin/uv pip install --python /opt/unsloth-venv/bin/python "jupyterlab==4.6.0"
+RUN /opt/unsloth-venv/bin/uv pip install --python /opt/unsloth-venv/bin/python "jupyterlab==4.6.4"
 COPY jupyter/unsloth_labext /opt/labext-src
 RUN cd /opt/labext-src \
- && /opt/unsloth-venv/bin/jlpm install \
+ && /opt/unsloth-venv/bin/jlpm install --immutable \
  && /opt/unsloth-venv/bin/jlpm build:prod
 
 FROM ${BASE_IMAGE}
@@ -85,6 +85,7 @@ ARG UNSLOTH_NOTEBOOKS_REF=main
 # $UNSLOTH_STUDIO_HOME/cache/uv, which would fill a volume on the home with wheels.
 ENV UNSLOTH_STUDIO_HOME=/opt/unsloth-studio \
     UNSLOTH_STUDIO_APP=/opt/unsloth-studio-app \
+    UNSLOTH_STUDIO_DOCUMENTS_HOME=/opt/unsloth-studio/documents \
     UV_CACHE_DIR=/opt/unsloth-studio-app/uv-cache \
     JUPYTER_PORT=8888 \
     UNSLOTH_STUDIO_PORT=8000 \
@@ -115,7 +116,7 @@ RUN set -eux \
  && BASE_TORCH="$(/opt/unsloth-venv/bin/python -c "from importlib.metadata import version; print(version('torch'))")" \
  && BASE_NUMPY="$(/opt/unsloth-venv/bin/python -c "from importlib.metadata import version; print(version('numpy'))")" \
  && /opt/unsloth-venv/bin/uv pip install --python /opt/unsloth-venv/bin/python \
-        "jupyterlab==4.6.0" "notebook==7.6.0" "ipywidgets==8.1.8" "matplotlib==3.11.0" \
+        "jupyterlab==4.6.4" "notebook==7.6.3" "ipywidgets==8.1.8" "matplotlib==3.11.0" \
         "soundfile==0.14.0" "evaluate==0.4.6" "jiwer==4.0.0" "tensorboard==2.20.0" \
         "langid==1.1.6" "easydict==1.13" "omegaconf==2.3.1" "einx==0.4.3" \
         "librosa==0.11.0" "ftfy==6.3.1" "decord==0.6.0" \
