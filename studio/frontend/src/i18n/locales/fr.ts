@@ -1208,14 +1208,17 @@ export const fr = {
       unsupportedArch: "Le bac à sable Windows (MXC) ne fonctionne que sous Windows x64, il n'est donc pas disponible sur ce PC.",
       unsupportedBuild: "Le bac à sable Windows (MXC) nécessite Windows 11 24H2 (build 26100) ou plus récent, il n'est donc pas disponible sur ce PC.",
       permissionsIntro: "Choisissez quand les outils demandent d'abord, et si Python et le Terminal s'exécutent aussi dans le bac à sable du système.",
+      permissionLabel: "Autorisations des outils",
+      levelPickerTitle: "Comment isoler le code ?",
+      levelOff: "Désactivé",
+      levelOffShort: "L'Accès complet désactive le bac à sable",
+      levelHighDetail: "Bac à sable du système. Python et le Terminal s'exécutent dans le bac à sable du système (bubblewrap, Seatbelt ou MXC) en plus des protections logicielles. Sans bac à sable du système fonctionnel, les appels risqués demandent d'abord.",
+      levelLowDetail: "Bac à sable logiciel. Python et le Terminal s'exécutent avec les seules protections logicielles, hors du bac à sable du système. Les appels risqués demandent d'abord, sauf en Accès complet.",
       levelLabel: "Sandbox",
       levelHigh: "Élevé",
       levelLow: "Faible",
-      levelHighShort: "Bac à sable du système",
-      levelLowShort: "Bac à sable logiciel",
-      levelHelp: "Faible : bac à sable logiciel. Élevé : bac à sable du système. En savoir plus dans Paramètres > Sandbox.",
-      levelHighDescription: "Élevé : bac à sable du système. Python et le Terminal s'exécutent dans le bac à sable du système (bubblewrap, Seatbelt ou MXC) en plus des protections logicielles. Sans bac à sable du système fonctionnel, les appels risqués demandent d'abord.",
-      levelLowDescription: "Faible : bac à sable logiciel. Python et le Terminal s'exécutent avec les seules protections logicielles, hors du bac à sable du système. Les appels risqués demandent d'abord, sauf en Accès complet.",
+      levelHighShort: "Python et le Terminal tournent aussi dans le bac à sable du système",
+      levelLowShort: "Bac à sable logiciel uniquement. Le code risqué demande d'abord",
       levelFullAccessNote: "L'Accès complet désactive le bac à sable. Ce réglage s'applique de nouveau quand vous choisissez un autre niveau.",
       learnMore: "En savoir plus",
       managedNote: "Le propriétaire de ce serveur Unsloth configure le bac à sable du système.",
@@ -2638,6 +2641,11 @@ export const fr = {
       exportFailed: "Impossible d’exporter les chats",
       description:
         "Gérez l'historique des discussions et les fichiers importés conservés sur cet appareil.",
+      manageFiles: {
+        label: "Gérer les fichiers",
+        description: "Recherchez, triez et organisez images, vidéos, audio et fichiers.",
+        action: "Ouvrir la bibliothèque",
+      },
       archivedChats: "Discussions archivées",
       archivedChatsDescription:
         "Consultez et gérez les discussions que vous avez archivées.",
@@ -2797,6 +2805,8 @@ export const fr = {
         modelMultilingual: "Multilingue",
         modelEnglish: "Anglais",
         modelTypedDecisions: "Décisions typées",
+        modelClefFlash: "Clef-flash",
+        modelClef: "Clef",
         recommended: "Recommandé",
         device: "Exécuter sur",
         deviceDescription: "Le GPU répond plus vite, mais garde sa mémoire réservée jusqu'au redémarrage.",
@@ -2806,11 +2816,13 @@ export const fr = {
         notDownloaded: "Non téléchargé · {size}",
         downloading: "Téléchargement…",
         downloaded: "Téléchargé · chargé à la première requête",
+        ready: "Prêt · chargé à la première requête",
         installing: "Installation…",
         loading: "Chargement…",
         loadedOn: "Chargé sur {device}",
         download: "Télécharger",
         downloadConfirmTitle: "Télécharger Laya {model} ?",
+        downloadConfirmTitleModel: "Télécharger {model} ?",
         downloadConfirmBody:
           "L'API de décision a besoin de ce modèle pour répondre aux requêtes. Environ {size}, téléchargé une seule fois dans votre cache Hugging Face.",
         unload: "Décharger",
@@ -2942,6 +2954,9 @@ export const fr = {
       datasetLabel: "Jeu de données",
       modelTooltip: "Le modèle de base que vous souhaitez affiner.",
       methodTooltip: "Comment le modèle est entraîné. LoRA et QLoRA mettent à jour de petits adaptateurs au lieu de tous les poids.",
+      checkpointLabel: "Checkpoint",
+      checkpointTooltip:
+        "Le checkpoint Laya à affiner. Multilingue convient à la plupart des jeux de données.",
       datasetTooltip: "Les données d'entraînement utilisées pour affiner le modèle.",
       hfTokenDescription:
         "Nécessaire pour les modèles et jeux de données restreints ou privés.",
@@ -3430,6 +3445,10 @@ export const fr = {
         learningRatePositive: "Saisissez un taux d'apprentissage supérieur à zéro.",
         embeddingLearningRateRange:
           "Saisissez un taux d'apprentissage des embeddings supérieur à 0 et inférieur à 1.",
+        decisionColumnsMissing:
+          "Les modèles de décision ont besoin des colonnes state, questions et gold (ou answers). Colonnes manquantes : {columns}.",
+        decisionOwnerOnly:
+          "Seul le propriétaire de Studio peut affiner des modèles de décision.",
         hfDatasetRequired:
           "Sélectionnez d'abord un jeu de données Hugging Face.",
         hfDatasetSplitRequired:
@@ -3584,6 +3603,10 @@ export const fr = {
       title: "Progression de l'entraînement",
       liveMetrics: "Métriques d'entraînement en direct",
       exportGguf: "Exporter en GGUF",
+      useInDecisionApi: "Utiliser dans l'API de décision",
+      decisionApiEnabled: "L'API de décision utilise maintenant {name}.",
+      decisionApiFailed:
+        "Impossible de passer l'API de décision sur ce modèle.",
       openConfig: "Ouvrir la configuration d'entraînement",
       configLabel: "Configuration d'entraînement",
       hyperparams: "Hyperparamètres",
@@ -3858,7 +3881,7 @@ export const fr = {
       videosTitle: "Aucune vidéo pour l'instant",
       videosDescription: "Les vidéos que vous importez ou générez apparaissent ici.",
       audioTitle: "Aucun audio pour l'instant",
-      audioDescription: "La voix que vous générez sur la page Audio apparaît ici.",
+      audioDescription: "La voix, la musique et les pistes que vous créez sur la page Audio apparaissent ici.",
       modelsTitle: "Aucun modèle affiné pour l'instant",
       modelsDescription: "Les modèles que vous entraînez ou exportez dans Unsloth apparaissent ici.",
       createFolder: "Créer un dossier",
@@ -3911,6 +3934,7 @@ export const fr = {
       source: "Source",
       fileType: "Type de fichier",
       clearFilters: "Effacer les filtres",
+      workflow: "Créé avec",
       uploaded: "Importés",
       sortAscending: "Croissant",
       sortDescending: "Décroissant",
@@ -3927,6 +3951,13 @@ export const fr = {
       sortName: "Nom",
       sortModified: "Modifié",
       sortSize: "Taille",
+    },
+    audio: {
+      play: "Lire {name}",
+      pause: "Mettre {name} en pause",
+      playFailed: "Impossible de lire {name}",
+      fromRun: "De la même génération",
+      downloadRun: "Tout télécharger",
     },
     create: {
       note: "Note",

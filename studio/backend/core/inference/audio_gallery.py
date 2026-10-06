@@ -517,7 +517,8 @@ def delete(audio_id: str) -> bool:
     if path is None:
         return False
     # only delete a pair we own; a foreign or orphan wav must not be destroyed by a guessed id
-    if _read_meta(_sidecar_path(audio_id)) is None:
+    meta = _read_meta(_sidecar_path(audio_id))
+    if meta is None:
         return False
     try:
         path.unlink()
@@ -530,7 +531,48 @@ def delete(audio_id: str) -> bool:
         pass
     _remove_source(audio_id)
     gallery_flags.forget(gallery_dir(), [audio_id])
+    # An Edit's hidden Original goes with the last clip that plays it.
+    original = str(meta.get("source_clip_id") or "")
+    if (
+        _ID_RE.match(original)
+        and (_read_meta(_sidecar_path(original)) or {}).get("role") == "source"
+        and original not in _sources_in_use(gallery_dir(), set())
+    ):
+        delete(original)
     return True
+
+
+def delete_group(group_id: str) -> int:
+    """Delete one run's active clips; archived ones are spared, as in clear()."""
+    if not group_id:
+        return 0
+    directory = gallery_dir()
+    # Locked and trusted like clear(): a racing archive or unreadable store never loses a clip.
+    with gallery_flags.exclusive(directory, require_file_lock = True):
+        flags = gallery_flags.read_trusted(directory)
+        try:
+            paths = _clip_wavs(directory)
+        except OSError:
+            return 0
+        removed: list[str] = []
+        for path in paths:
+            if (_read_meta(_sidecar_path(path.stem)) or {}).get(
+                "group_id"
+            ) != group_id or gallery_flags.is_archived(flags, path.stem):
+                continue
+            try:
+                path.unlink()
+            except OSError as exc:
+                logger.warning("audio_gallery.delete_failed: %s", exc)
+                continue
+            removed.append(path.stem)
+            try:
+                _sidecar_path(path.stem).unlink()
+            except OSError:
+                pass
+            _remove_source(path.stem)
+        gallery_flags.forget_locked(directory, removed)
+    return len(removed)
 
 
 def clear(include_archived: bool = False, workflow: Optional[str] = None) -> int:

@@ -37,6 +37,7 @@ export function useAudioHandoff({
     workflow?: string;
     audioType?: string;
     loadId?: string;
+    gguf?: boolean;
     item?: string;
   };
   const handledRouteModel = useRef<string | null>(null);
@@ -53,7 +54,7 @@ export function useAudioHandoff({
       void navigateSelf({ to: "/audio", search: {}, replace: true });
       return;
     }
-    const key = `${wanted}|${routeSearch.quant ?? ""}|${routeSearch.ggufQuant ?? ""}|${routeSearch.task ?? ""}|${routeSearch.audioType ?? ""}|${routeSearch.loadId ?? ""}|${routeSearch.workflow ?? ""}`;
+    const key = `${wanted}|${routeSearch.quant ?? ""}|${routeSearch.ggufQuant ?? ""}|${routeSearch.task ?? ""}|${routeSearch.audioType ?? ""}|${routeSearch.loadId ?? ""}|${routeSearch.gguf ? "gguf" : ""}|${routeSearch.workflow ?? ""}`;
     if (handledRouteModel.current === key) return;
     if (busyRef.current !== null) return;
     // Open the named page first: a staged or failed load otherwise left the user on another page.
@@ -79,6 +80,7 @@ export function useAudioHandoff({
       ggufVariant: routeSearch.ggufQuant ?? undefined,
       loadId: routeSearch.loadId ?? undefined,
       audioType: routeSearch.audioType ?? undefined,
+      isGguf: routeSearch.gguf ?? undefined,
       // Chat-to-Audio routing drops the inventory flag, so stage the exact forwarded GGUF.
       isDownloaded: routeSearch.loadId
         ? true
@@ -98,6 +100,7 @@ export function useAudioHandoff({
     routeSearch.workflow,
     routeSearch.audioType,
     routeSearch.loadId,
+    routeSearch.gguf,
     handleModelSelect,
     navigateSelf,
     transitionWorkflow,

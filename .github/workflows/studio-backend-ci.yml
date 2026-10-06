@@ -285,6 +285,15 @@ jobs:
             tests/test_media_auto_switch.py \
             tests/test_pr5624_regressions.py
 
+      - name: Decision model training tests
+        # Their worker imports unsloth, so unsloth_zoo is installed here, after the suite above ran
+        # without it. trl stays at Studio's pin, which keeps datasets at the studio.txt version.
+        if: matrix.scope == 'full' && matrix.shard == 'a-k'
+        working-directory: studio/backend
+        run: |
+          pip install unsloth_zoo "$(grep -m1 -E '^trl==' requirements/extras-no-deps.txt)"
+          python -m pytest -q --tb=short --timeout=330 tests/test_decision_training.py
+
       - name: Pre-3.12 branches, on the newest interpreter that takes them
         if: matrix.scope == 'floor-spot-check'
         working-directory: studio/backend

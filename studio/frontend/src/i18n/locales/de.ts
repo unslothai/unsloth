@@ -1208,14 +1208,17 @@ export const de = {
       unsupportedArch: "Die Windows-Sandbox (MXC) läuft nur unter x64-Windows und ist auf diesem PC daher nicht verfügbar.",
       unsupportedBuild: "Die Windows-Sandbox (MXC) braucht Windows 11 24H2 (Build 26100) oder neuer und ist auf diesem PC daher nicht verfügbar.",
       permissionsIntro: "Lege fest, wann Tools zuerst fragen und ob Python und Terminal zusätzlich in der OS-Sandbox laufen.",
+      permissionLabel: "Tool-Berechtigungen",
+      levelPickerTitle: "Wie soll Code abgeschottet werden?",
+      levelOff: "Deaktiviert",
+      levelOffShort: "Vollzugriff schaltet die Sandbox aus",
+      levelHighDetail: "OS-Sandboxing. Python und Terminal laufen zusätzlich zu den Software-Schutzmaßnahmen in der OS-Sandbox (bubblewrap, Seatbelt oder MXC). Ohne funktionierende OS-Sandbox fragen riskante Aufrufe zuerst.",
+      levelLowDetail: "Software-Sandboxing. Python und Terminal laufen nur mit den Software-Schutzmaßnahmen, außerhalb der OS-Sandbox. Riskante Aufrufe fragen zuerst, außer bei Vollzugriff.",
       levelLabel: "Sandbox",
       levelHigh: "Hoch",
       levelLow: "Niedrig",
-      levelHighShort: "OS-Sandboxing",
-      levelLowShort: "Software-Sandboxing",
-      levelHelp: "Niedrig: Software-Sandboxing. Hoch: OS-Sandboxing. Mehr dazu unter Einstellungen > Sandbox.",
-      levelHighDescription: "Hoch: OS-Sandboxing. Python und Terminal laufen zusätzlich zu den Software-Schutzmaßnahmen in der OS-Sandbox (bubblewrap, Seatbelt oder MXC). Ohne funktionierende OS-Sandbox fragen riskante Aufrufe zuerst.",
-      levelLowDescription: "Niedrig: Software-Sandboxing. Python und Terminal laufen nur mit den Software-Schutzmaßnahmen, außerhalb der OS-Sandbox. Riskante Aufrufe fragen zuerst, außer bei Vollzugriff.",
+      levelHighShort: "Python und Terminal laufen zusätzlich in der OS-Sandbox",
+      levelLowShort: "Nur Software-Sandboxing. Riskanter Code fragt zuerst",
       levelFullAccessNote: "Vollzugriff schaltet die Sandbox aus. Diese Einstellung gilt wieder, sobald du eine andere Stufe wählst.",
       learnMore: "Weitere Informationen",
       managedNote: "Der Besitzer dieses Unsloth-Servers richtet die OS-Sandbox ein.",
@@ -2640,6 +2643,11 @@ export const de = {
       exportFailed: "Chats konnten nicht exportiert werden",
       description:
         "Verwalten Sie Chatverlauf und hochgeladene Dateien, die auf diesem Gerät gespeichert sind.",
+      manageFiles: {
+        label: "Dateien verwalten",
+        description: "Bilder, Videos, Audio und Dateien suchen, sortieren und organisieren.",
+        action: "Bibliothek öffnen",
+      },
       archivedChats: "Archivierte Chats",
       archivedChatsDescription:
         "Zeigen Sie die von Ihnen archivierten Chats an und verwalten Sie sie.",
@@ -2796,6 +2804,8 @@ export const de = {
         modelMultilingual: "Multilingual",
         modelEnglish: "Englisch",
         modelTypedDecisions: "Typisierte Entscheidungen",
+        modelClefFlash: "Clef-flash",
+        modelClef: "Clef",
         recommended: "Empfohlen",
         device: "Ausführen auf",
         deviceDescription: "Die GPU antwortet schneller, hält ihren Speicher aber bis zum Neustart reserviert.",
@@ -2805,11 +2815,13 @@ export const de = {
         notDownloaded: "Nicht heruntergeladen · {size}",
         downloading: "Wird heruntergeladen…",
         downloaded: "Heruntergeladen · wird bei der ersten Anfrage geladen",
+        ready: "Bereit · wird bei der ersten Anfrage geladen",
         installing: "Wird installiert…",
         loading: "Wird geladen…",
         loadedOn: "Geladen auf {device}",
         download: "Herunterladen",
         downloadConfirmTitle: "Laya {model} herunterladen?",
+        downloadConfirmTitleModel: "{model} herunterladen?",
         downloadConfirmBody:
           "Die Entscheidungs-API braucht dieses Modell, um Anfragen zu beantworten. Etwa {size}, einmalig in deinen Hugging-Face-Cache geladen.",
         unload: "Entladen",
@@ -2938,6 +2950,9 @@ export const de = {
       datasetLabel: "Datensatz",
       modelTooltip: "Das Basismodell, das du feinabstimmen möchtest.",
       methodTooltip: "Wie das Modell trainiert wird. LoRA und QLoRA aktualisieren kleine Adapter statt aller Gewichte.",
+      checkpointLabel: "Checkpoint",
+      checkpointTooltip:
+        "Der Laya-Checkpoint, der feinabgestimmt wird. Multilingual passt zu den meisten Datensätzen.",
       datasetTooltip: "Die Trainingsdaten für die Feinabstimmung des Modells.",
       hfTokenDescription:
         "Erforderlich für zugriffsbeschränkte oder private Modelle und Datensätze.",
@@ -3420,6 +3435,10 @@ export const de = {
         learningRatePositive: "Geben Sie eine Lernrate größer als null ein.",
         embeddingLearningRateRange:
           "Geben Sie eine Embedding-Lernrate größer als 0 und kleiner als 1 ein.",
+        decisionColumnsMissing:
+          "Entscheidungsmodelle brauchen die Spalten state, questions und gold (oder answers). Es fehlen: {columns}.",
+        decisionOwnerOnly:
+          "Nur der Studio-Inhaber kann Entscheidungsmodelle feinabstimmen.",
         hfDatasetRequired:
           "Wählen Sie zuerst einen Hugging Face-Datensatz aus.",
         hfDatasetSplitRequired:
@@ -3573,6 +3592,10 @@ export const de = {
       title: "Trainingsfortschritt",
       liveMetrics: "Live-Trainingsmetriken",
       exportGguf: "Nach GGUF exportieren",
+      useInDecisionApi: "In der Entscheidungs-API verwenden",
+      decisionApiEnabled: "Die Entscheidungs-API verwendet jetzt {name}.",
+      decisionApiFailed:
+        "Die Entscheidungs-API konnte nicht auf dieses Modell umgestellt werden.",
       openConfig: "Trainingskonfiguration öffnen",
       configLabel: "Trainingskonfiguration",
       hyperparams: "Hyperparameter",
@@ -3847,7 +3870,7 @@ export const de = {
       videosTitle: "Noch keine Videos",
       videosDescription: "Videos, die Sie hochladen oder generieren, erscheinen hier.",
       audioTitle: "Noch kein Audio",
-      audioDescription: "Sprache, die Sie auf der Audio-Seite generieren, erscheint hier.",
+      audioDescription: "Sprache, Musik und Spuren, die Sie auf der Audio-Seite erstellen, erscheinen hier.",
       modelsTitle: "Noch keine feinabgestimmten Modelle",
       modelsDescription: "Modelle, die Sie in Unsloth trainieren oder exportieren, erscheinen hier.",
       createFolder: "Ordner erstellen",
@@ -3900,6 +3923,7 @@ export const de = {
       source: "Quelle",
       fileType: "Dateityp",
       clearFilters: "Filter zurücksetzen",
+      workflow: "Erstellt mit",
       uploaded: "Hochgeladen",
       sortAscending: "Aufsteigend",
       sortDescending: "Absteigend",
@@ -3916,6 +3940,13 @@ export const de = {
       sortName: "Name",
       sortModified: "Geändert",
       sortSize: "Größe",
+    },
+    audio: {
+      play: "{name} abspielen",
+      pause: "{name} pausieren",
+      playFailed: "{name} konnte nicht abgespielt werden",
+      fromRun: "Aus demselben Durchlauf",
+      downloadRun: "Alle herunterladen",
     },
     create: {
       note: "Notiz",

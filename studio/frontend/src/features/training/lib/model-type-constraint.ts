@@ -14,6 +14,8 @@ export function trainingModelMatchesTypeConstraint(
   switch (requiredType) {
     case "embeddings":
       return capabilities.isEmbedding === true;
+    case "decision":
+      return capabilities.isDecision === true;
     case "audio":
       return capabilities.isAudio === true;
     case "vision":
@@ -21,6 +23,7 @@ export function trainingModelMatchesTypeConstraint(
     case "text":
       return !(
         capabilities.isEmbedding ||
+        capabilities.isDecision ||
         capabilities.isAudio ||
         capabilities.isVision
       );

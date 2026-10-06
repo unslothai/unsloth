@@ -136,6 +136,8 @@ Set-Content -LiteralPath $leakFile -Encoding ascii -Value @(
     "private-pkg @ https://svc:TOKEN123@pkgs.corp.example/private-1.0-py3-none-any.whl")
 $script:TorchOverridesFile = $leakFile
 $env:UNSLOTH_KEPT_TORCH = "2.11.0"
+# No mirror fallback ran: nothing was saved, which must not stop the cleanup below.
+$script:MirrorEnvSaved = $null
 # Strip the `finally { ... }` wrapper and run the statements: Invoke-Expression uses this scope.
 $finallyBody = ($finallyText.Trim() -replace '(?s)^\{', '') -replace '(?s)\}$', ''
 try {
@@ -146,6 +148,23 @@ Check "temp overrides file removed" (-not (Test-Path -LiteralPath $leakFile))
 Check "kept-torch handoff still cleared" ($null -eq $env:UNSLOTH_KEPT_TORCH)
 Check "tracked path reset so a rerun cannot re-remove it" ($null -eq $script:TorchOverridesFile)
 Remove-Item -LiteralPath $leakFile -Force -ErrorAction SilentlyContinue
+
+Write-Host "outer finally hands the caller's mirror variables back, then still cleans up"
+$mirrorLeak = [System.IO.Path]::GetTempFileName()
+$script:TorchOverridesFile = $mirrorLeak
+$env:UNSLOTH_TEST_MIRROR_ADDED = "https://mirror.example/simple"
+$env:UNSLOTH_TEST_MIRROR_CALLER = "https://mirror.example/simple"
+$script:MirrorEnvSaved = @{ UNSLOTH_TEST_MIRROR_ADDED = $null; UNSLOTH_TEST_MIRROR_CALLER = "caller-value" }
+try {
+    try { throw "simulated terminating error mid-install" }
+    finally { Invoke-Expression $finallyBody }
+} catch { }
+Check "a variable the fallback added is removed" ($null -eq $env:UNSLOTH_TEST_MIRROR_ADDED)
+Check "a variable the caller had is restored" ($env:UNSLOTH_TEST_MIRROR_CALLER -eq "caller-value")
+Check "the overrides file is still removed after the mirror restore" (-not (Test-Path -LiteralPath $mirrorLeak))
+Remove-Item Env:UNSLOTH_TEST_MIRROR_CALLER -ErrorAction SilentlyContinue
+Remove-Item -LiteralPath $mirrorLeak -Force -ErrorAction SilentlyContinue
+$script:MirrorEnvSaved = $null
 
 Write-Host "and it deletes it in a scope built only from install.ps1's own top-level definitions"
 # The replay above runs in THIS scope, which was handed the guard by the Invoke-Expression higher

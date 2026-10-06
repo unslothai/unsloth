@@ -4056,6 +4056,14 @@ html[data-chat-font] .aui-root {
 		height: var(--ui-icon-size) !important;
 	}
 
+	/* "Sandbox High ›" chip: pill on hover or while open, same wash as menu rows. */
+	.sandbox-level-chip:is(:hover, :focus-visible, [data-highlighted], [data-state="open"]) {
+		background-color: rgb(0 0 0 / calc(0.06 * var(--contrast-wash-gain, 1)));
+	}
+	.dark .sandbox-level-chip:is(:hover, :focus-visible, [data-highlighted], [data-state="open"]) {
+		background-color: rgb(255 255 255 / calc(0.1 * var(--contrast-wash-gain, 1)));
+	}
+
 	/* Permission menu tick, 2px above the icons. Outranks the rule above. */
 	:is([data-slot="dropdown-menu-content"], .unsloth-plus-menu)
 		[data-slot="dropdown-menu-item"]
