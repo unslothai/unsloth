@@ -5,7 +5,11 @@ import pytest
 import torch
 
 import unsloth  # noqa: F401
-from unsloth.models._utils import _has_quantized_linears, validate_init_target_parameters
+from unsloth.models._utils import (
+    _has_quantized_linears,
+    validate_init_lora_weights,
+    validate_init_target_parameters,
+)
 
 
 class _UnslothNVFP4Linear(torch.nn.Linear):
@@ -49,6 +53,23 @@ def test_packed_mxfp4_linear_is_quantized():
     del layer.weight
     layer.register_buffer("weight_packed", torch.zeros(4, 2, dtype = torch.uint8))
     assert _has_quantized_linears(_model(layer), routed_ok = True)
+
+
+def test_olora_accepts_only_bitsandbytes_quantization():
+    # PEFT's olora_init dequantizes / requantizes bitsandbytes weights only.
+    bnb = torch.nn.Linear(4, 4)
+    Params4bit = type("Params4bit", (torch.nn.Parameter,), {})
+    bnb.weight = Params4bit(bnb.weight.data.to(torch.bfloat16), requires_grad = False)
+    validate_init_lora_weights("olora", _model(bnb))
+    with pytest.raises(ValueError, match = "quantized"):
+        validate_init_lora_weights("pissa", _model(bnb))
+    fp8 = torch.nn.Linear(4, 4)
+    fp8.weight = torch.nn.Parameter(fp8.weight.data.to(torch.float8_e4m3fn), requires_grad = False)
+    gptq = torch.nn.Module()
+    gptq.register_buffer("qweight", torch.zeros(4, 1, dtype = torch.int32))
+    for layer in (fp8, gptq):
+        with pytest.raises(ValueError, match = "quantized"):
+            validate_init_lora_weights("olora", _model(layer))
 
 
 def test_routed_compressed_linears_pass_except_for_mica():

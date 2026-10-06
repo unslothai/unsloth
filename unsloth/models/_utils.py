@@ -5833,7 +5833,11 @@ _INIT_LORA_WEIGHTS = (
 RESIDUAL_INIT_LORA_WEIGHTS = ("pissa", "olora", "corda", "loftq", "lora_ga")
 
 
-def _has_quantized_linears(model, routed_ok):
+def _has_quantized_linears(
+    model,
+    routed_ok,
+    bnb_ok = False,
+):
     for module in model.modules():
         routed = type(module).__name__ == "_UnslothNVFP4Linear" or getattr(
             module, "_unsloth_compressed_tensors_fp8", False
@@ -5851,6 +5855,8 @@ def _has_quantized_linears(model, routed_ok):
         weight = getattr(module, "weight", None)
         # FSDP-QLoRA packs Params4bit into a float quant_storage, so the dtype alone looks dense.
         if type(weight).__name__ in ("Params4bit", "Int8Params") or hasattr(weight, "quant_state"):
+            if bnb_ok:
+                continue
             return True
         if isinstance(weight, torch.Tensor) and weight.dtype not in (
             torch.float32,
@@ -5919,17 +5925,19 @@ def validate_init_lora_weights(
     elif name == "lora_ga":
         _require(hasattr(LoraLayer, "lora_ga_init"), "0.19.0")
 
-    # olora dequantizes + requantizes bnb weights itself; the others read or write the float weight.
-    # Routed compressed-tensors (NVFP4 / FP8) linears are densified by loader_utils for all but MiCA.
+    # olora dequantizes + requantizes bitsandbytes weights itself (only those); the others read or write
+    # the float weight. Routed compressed-tensors (NVFP4 / FP8) linears are densified by loader_utils for
+    # all but MiCA.
     base = name.split("_niter_")[0] if name is not None else None
     if base in (
         "pissa",
+        "olora",
         "corda",
         "loftq",
         "lora_ga",
         "mica",
         "orthogonal",
-    ) and _has_quantized_linears(model, routed_ok = base != "mica"):
+    ) and _has_quantized_linears(model, routed_ok = base != "mica", bnb_ok = base == "olora"):
         raise ValueError(
             f"Unsloth: `init_lora_weights = {init_lora_weights!r}` needs float32/float16/bfloat16 base weights, "
             "yet your model is quantized.\n"
