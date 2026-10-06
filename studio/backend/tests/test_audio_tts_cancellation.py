@@ -806,6 +806,8 @@ def test_gguf_speech_cut_at_max_tokens_is_reported(monkeypatch, stop_type, finis
         model_identifier = "unsloth/orpheus-3b-0.1-ft-GGUF"
         base_url = "http://127.0.0.1:8080"
         _auth_headers: dict = {}
+        _hf_variant = None
+        _gguf_path = None
 
     async def _noop_switch(*_args, **_kwargs):
         return None
@@ -814,7 +816,10 @@ def test_gguf_speech_cut_at_max_tokens_is_reported(monkeypatch, stop_type, finis
     monkeypatch.setattr(
         llama_cpp.LlamaCppBackend,
         "_codec_mgr",
-        types.SimpleNamespace(decode = lambda *_args, **_kwargs: (b"RIFFfake", 24000)),
+        types.SimpleNamespace(
+            decode = lambda *_args, **_kwargs: (b"RIFFfake", 24000),
+            has_codec = lambda _audio_type: True,
+        ),
     )
     monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: _Llama.__new__(_Llama))
     monkeypatch.setattr(inference_route, "_maybe_auto_switch_model", _noop_switch)
