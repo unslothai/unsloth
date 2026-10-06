@@ -2796,9 +2796,9 @@ def test_arch_to_task_agrees_with_the_loader_on_ambiguous_archs():
             loader_accepts = True
         except (ValueError, FileNotFoundError):
             loader_accepts = False
-        assert (
-            task == "text-to-image"
-        ) == loader_accepts, f"{fam.name}: picker task={task} but loader accepts={loader_accepts}"
+        assert (task == "text-to-image") == loader_accepts, (
+            f"{fam.name}: picker task={task} but loader accepts={loader_accepts}"
+        )
 
 
 def _clear_chat_delete_guards(monkeypatch):
@@ -3657,9 +3657,9 @@ def test_cached_repo_task_agrees_with_the_image_loader(monkeypatch):
             loader_accepts = True
         except (ValueError, FileNotFoundError, RuntimeError):
             loader_accepts = False
-        assert (
-            task == "text-to-image"
-        ) == loader_accepts, f"{repo_id}: picker task={task} but loader accepts={loader_accepts}"
+        assert (task == "text-to-image") == loader_accepts, (
+            f"{repo_id}: picker task={task} but loader accepts={loader_accepts}"
+        )
 
 
 def test_cached_picker_hides_a_family_this_diffusers_cannot_build(monkeypatch):
@@ -3796,9 +3796,9 @@ def test_every_shipped_video_family_resolves_on_this_diffusers():
     from core.inference.diffusion_families import family_pipeline_available
     from core.inference.video_families import _FAMILIES as _VIDEO_FAMILIES
     for fam in _VIDEO_FAMILIES:
-        assert family_pipeline_available(
-            fam
-        ), f"{fam.name}: {fam.pipeline_class} is not in diffusers"
+        assert family_pipeline_available(fam), (
+            f"{fam.name}: {fam.pipeline_class} is not in diffusers"
+        )
 
 
 def test_the_gguf_picker_and_the_image_loader_agree_on_an_old_diffusers(monkeypatch):
@@ -3821,9 +3821,9 @@ def test_the_gguf_picker_and_the_image_loader_agree_on_an_old_diffusers(monkeypa
                 loader_accepts = True
             except (ValueError, FileNotFoundError, RuntimeError):
                 loader_accepts = False
-            assert (
-                (task == "text-to-image") == loader_accepts
-            ), f"{repo_id} on {engine}: picker task={task} but loader accepts={loader_accepts}"
+            assert (task == "text-to-image") == loader_accepts, (
+                f"{repo_id} on {engine}: picker task={task} but loader accepts={loader_accepts}"
+            )
 
 
 def test_a_cancelled_siblings_resume_survives_the_local_listing(monkeypatch, tmp_path):
@@ -5056,9 +5056,9 @@ def test_a_moved_image_pipeline_the_picker_shows_is_one_the_loader_accepts(tmp_p
             loader_accepts = True
         except (ValueError, FileNotFoundError, RuntimeError):
             loader_accepts = False
-        assert (
-            task == "text-to-image"
-        ) == loader_accepts, f"{name}: picker task={task} but loader accepts={loader_accepts}"
+        assert (task == "text-to-image") == loader_accepts, (
+            f"{name}: picker task={task} but loader accepts={loader_accepts}"
+        )
     # A checkpoint whose NAME says it is a variant the matched family cannot run stays refused on
     # both sides: the index adds models whose name said nothing, it never overrules a name that
     # said no.
@@ -6644,3 +6644,33 @@ def test_the_video_page_probe_resolves_the_helper_it_imports():
     """The exact import that broke, asserted at its own call site."""
     from routes.models import _video_family_buildable
     assert callable(_video_family_buildable)
+
+
+def test_a_cached_gguf_row_names_its_audio_codec(monkeypatch, tmp_path):
+    """The voice picker kept only repos named like a TTS model, so a renamed SNAC voice the voice
+    slot would load never showed; the row now carries the codec read from the GGUF."""
+    rows = {}
+    for repo_id, codec in (("acme/custom-voice-GGUF", "snac"), ("acme/chat-GGUF", None)):
+        repo_dir = tmp_path / f"models--{repo_id.replace('/', '--')}"
+        gguf = _arch_gguf(repo_dir / "snapshots" / "main" / "model-Q4_K_M.gguf", "llama")
+        repo_info = _repo(
+            repo_id,
+            [],
+            repo_dir,
+            revisions = [
+                SimpleNamespace(
+                    files = [_file(gguf.name, gguf.stat().st_size)],
+                    snapshot_path = gguf.parent,
+                )
+            ],
+        )
+        monkeypatch.setattr(
+            models_route,
+            "_repo_gguf_audio_type",
+            lambda info, selected = None, codec = codec: codec,
+        )
+        monkeypatch.setattr(models_route, "_resolve_hf_cache_dir", lambda: tmp_path)
+        [rows[repo_id]] = models_route.cached_gguf_rows([SimpleNamespace(repos = [repo_info])])
+
+    assert rows["acme/custom-voice-GGUF"]["audio_type"] == "snac"
+    assert "audio_type" not in rows["acme/chat-GGUF"]

@@ -30081,8 +30081,7 @@ class LlamaCppBackend:
                         if self._memory_dio_flags and not _gate_dio:
                             cmd = self._drop_managed_dio(
                                 cmd,
-                                "the arch gate's surviving GPU(s) no longer confirm a "
-                                "full offload",
+                                "the arch gate's surviving GPU(s) no longer confirm a full offload",
                             )
                             self._memory_dio_applicable = _gate_applicable
                             self._record_memory_state(cmd, env)
@@ -41132,6 +41131,7 @@ class LlamaCppBackend:
     # then dereference a None _codec_mgr. Count the slots holding it and free on the
     # last release. Guarded because loads and unloads run on different threads.
     _codec_owners: int = 0
+    _codec_holders: "set" = set()
     _codec_owner_lock = _threading.Lock()
 
     def _claim_audio_codec(self) -> None:
@@ -41141,6 +41141,7 @@ class LlamaCppBackend:
                 return
             self._owns_codec = True
             LlamaCppBackend._codec_owners += 1
+            LlamaCppBackend._codec_holders.add(self)
 
     def _unload_audio_codec(self) -> None:
         """Release this slot's claim; free the shared codec once nobody holds it."""
@@ -41148,9 +41149,22 @@ class LlamaCppBackend:
             if self._owns_codec:
                 self._owns_codec = False
                 LlamaCppBackend._codec_owners = max(0, LlamaCppBackend._codec_owners - 1)
+                LlamaCppBackend._codec_holders.discard(self)
             if LlamaCppBackend._codec_owners > 0:
                 # Somebody else is still decoding through it. Never free it here:
                 # that is the whole point of counting.
+                remaining = list(LlamaCppBackend._codec_holders)
+                mgr = LlamaCppBackend._codec_mgr
+                devices = getattr(mgr, "_codec_devices", None) or {}
+                if not (
+                    remaining
+                    and any(d != "cpu" for d in devices.values())
+                    and all(h.holds_no_vram for h in remaining)
+                ):
+                    return
+                # Only zero-VRAM slots are left, and the codec the GPU slot loaded would hold
+                # VRAM nobody accounts for (training admission skips CPU-only slots).
+                LlamaCppBackend._rehome_codec_on_cpu(remaining)
                 return
             # Zero owners and a manager still installed means it was never claimed --
             # a load cancelled between constructing the manager and claiming it, which
@@ -41161,6 +41175,27 @@ class LlamaCppBackend:
         if mgr is None:
             return
         mgr.unload()
+        import torch
+
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+
+    @staticmethod
+    def _rehome_codec_on_cpu(holders: list) -> None:
+        from core.inference.audio_codecs import AudioCodecManager
+
+        with LlamaCppBackend._codec_decode_lock:
+            old = LlamaCppBackend._codec_mgr
+            fresh = AudioCodecManager()
+            for holder in holders:
+                fresh.load_codec(
+                    holder._audio_type,
+                    "cpu",
+                    model_repo_path = getattr(holder, "_codec_repo_path", None),
+                )
+            LlamaCppBackend._codec_mgr = fresh
+            if old is not None:
+                old.unload()
         import torch
 
         if torch.cuda.is_available():
@@ -41191,6 +41226,7 @@ class LlamaCppBackend:
             model_repo_path = resolve_bicodec_repo_path(local_files_only = hf_env_offline())
 
         LlamaCppBackend._codec_mgr.load_codec(audio_type, device, model_repo_path = model_repo_path)
+        self._codec_repo_path = model_repo_path
         self._claim_audio_codec()
         logger.info(f"Loaded audio codec for GGUF TTS: {audio_type}")
 

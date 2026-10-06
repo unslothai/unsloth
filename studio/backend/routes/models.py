@@ -29,6 +29,7 @@ from hub.services.models.catalog_classification import (
     _cached_repo_task,
     _is_sd_cpp_companion_repo,
     _local_model_task,
+    _repo_gguf_audio_type,
     _repo_gguf_task,
     _repo_has_pipeline_index,
     _repo_is_diffusers,
@@ -5100,6 +5101,10 @@ def cached_gguf_rows(cache_scans = None) -> list[dict]:
                     }
                     if load_id:
                         row["load_id"] = load_id
+                    # The voice picker lists GGUFs by codec, not by what the repo is named.
+                    audio_type = _repo_gguf_audio_type(repo_info, selected)
+                    if audio_type:
+                        row["audio_type"] = audio_type
                     if not rank[0]:
                         row["partial"] = True
                     # Keep the newest timestamp across duplicate caches; absent rows sort as oldest.

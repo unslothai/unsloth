@@ -514,9 +514,9 @@ def test_audio_response_timeout_cancels_and_drains_before_releasing(monkeypatch)
     with pytest.raises(RuntimeError, match = "Timeout waiting for audio generation"):
         orchestrator.generate_audio_response("hello")
 
-    assert cancel_state == [
-        "audio generation is in progress"
-    ], "timeout cancellation must occur under TTS exclusivity"
+    assert cancel_state == ["audio generation is in progress"], (
+        "timeout cancellation must occur under TTS exclusivity"
+    )
     assert orchestrator._worker_reserved_for is None
     assert orchestrator._active_cancel_events == []
     assert orchestrator._executing_cancel_events == []
@@ -938,3 +938,59 @@ def test_token_codec_speech_cut_at_max_tokens_is_reported(audio_type, last_token
     backend.generate_audio_response("A long paragraph.", max_new_tokens = 14)
 
     assert backend.last_generation_stats["truncated"] is truncated
+
+
+def test_a_gpu_codec_left_to_cpu_only_slots_moves_to_the_cpu(monkeypatch):
+    """The voice slot loaded the shared codec on the GPU; once it unloaded, a zero-VRAM chat
+    slot kept that codec alive, holding VRAM training admission does not count."""
+    import core.inference.audio_codecs as audio_codecs
+    from core.inference.llama_cpp import LlamaCppBackend
+
+    loaded, unloaded = [], []
+
+    class _Manager:
+        def __init__(self):
+            self._codec_devices = {}
+
+        def load_codec(
+            self,
+            audio_type,
+            device,
+            model_repo_path = None,
+        ):
+            self._codec_devices[audio_type] = device
+            loaded.append((audio_type, device, model_repo_path))
+
+        def unload(self):
+            unloaded.append(dict(self._codec_devices))
+
+    class _Slot(LlamaCppBackend):
+        def __init__(self, zero_vram):
+            self._owns_codec = False
+            self._zero_vram = zero_vram
+            self._audio_type = "snac"
+            self._codec_repo_path = None
+
+        @property
+        def holds_no_vram(self):
+            return self._zero_vram
+
+    monkeypatch.setattr(audio_codecs, "AudioCodecManager", _Manager)
+    monkeypatch.setattr(LlamaCppBackend, "_codec_owners", 0)
+    monkeypatch.setattr(LlamaCppBackend, "_codec_holders", set())
+    gpu_mgr = _Manager()
+    gpu_mgr.load_codec("snac", "cuda")
+    monkeypatch.setattr(LlamaCppBackend, "_codec_mgr", gpu_mgr)
+    voice, cpu_chat, gpu_chat = _Slot(False), _Slot(True), _Slot(False)
+    for slot in (voice, cpu_chat, gpu_chat):
+        slot._claim_audio_codec()
+    loaded.clear()
+
+    voice._unload_audio_codec()  # a GPU slot still holds it: nothing moves
+    assert LlamaCppBackend._codec_mgr is gpu_mgr and unloaded == []
+
+    gpu_chat._unload_audio_codec()  # only the zero-VRAM slot is left
+    assert loaded == [("snac", "cpu", None)]
+    assert unloaded == [{"snac": "cuda"}]
+    assert LlamaCppBackend._codec_mgr._codec_devices == {"snac": "cpu"}
+    assert LlamaCppBackend._codec_owners == 1

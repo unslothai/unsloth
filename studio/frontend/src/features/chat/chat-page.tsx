@@ -2913,6 +2913,7 @@ export function ChatPage({
     // refuses its codec. GGUF-only: the voice slot is a llama-server, so safetensors-only
     // checkpoints (e.g. Spark's LLM) can't load.
     const TTS_REPO_KEYWORDS = ["bicodec", "dac", "tts", "orpheus"];
+    const VOICE_SLOT_CODECS = new Set(["snac", "bicodec", "dac"]);
     const lower = (s: string) => s.toLowerCase();
     const toOption = (repoId: string, isGguf: boolean): LoraModelOption => ({
       id: repoId,
@@ -2922,10 +2923,15 @@ export function ChatPage({
 
     void authFetch("/api/models/cached-gguf")
       .then((r) => (r.ok ? r.json() : { cached: [] }))
-      .then((data: { cached: { repo_id: string; size_bytes?: number }[] }) => {
+      .then((data: { cached: { repo_id: string; audio_type?: string }[] }) => {
         setCachedGgufs(
           (data.cached ?? [])
-            .filter((c) => TTS_REPO_KEYWORDS.some((kw) => lower(c.repo_id).includes(kw)))
+            // the codec when the GGUF header names one; the repo name only as a fallback
+            .filter((c) =>
+              c.audio_type
+                ? VOICE_SLOT_CODECS.has(c.audio_type)
+                : TTS_REPO_KEYWORDS.some((kw) => lower(c.repo_id).includes(kw)),
+            )
             .map((c) => toOption(c.repo_id, true)),
         );
       })
