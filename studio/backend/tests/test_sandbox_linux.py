@@ -1217,7 +1217,9 @@ def test_a_wedged_cache_scan_is_waited_on_twice_then_skipped_at_once(monkeypatch
     component = tmp_path / "hub"
     component.mkdir()
     release = threading.Event()
-    monkeypatch.setattr(sandbox_linux, "_cache_hazard_memoized", lambda name, path: release.wait(30))
+    monkeypatch.setattr(
+        sandbox_linux, "_cache_hazard_memoized", lambda name, path: release.wait(30)
+    )
     monkeypatch.setattr(sandbox_linux, "_CACHE_INSPECT_SECONDS", 0.4)
     monkeypatch.setattr(sandbox_linux, "_cache_scan_pending", {})
     waits = []
@@ -2494,7 +2496,9 @@ def test_a_container_refusing_a_fresh_proc_gets_an_empty_one(tmp_path, _no_proc_
     assert "--proc /proc" in runs[0] and "--proc" not in runs[1]
 
 
-def test_the_preflight_reads_bwrap_errors_in_the_c_locale(tmp_path, monkeypatch, _no_proc_layout_left_behind):
+def test_the_preflight_reads_bwrap_errors_in_the_c_locale(
+    tmp_path, monkeypatch, _no_proc_layout_left_behind
+):
     # strerror follows the locale; the detector matches the English text.
     monkeypatch.setenv("LC_ALL", "de_DE.UTF-8")
     monkeypatch.setenv("LANG", "de_DE.UTF-8")
@@ -2588,8 +2592,12 @@ def test_the_two_proc_layouts_never_share_a_profile_or_a_cached_verdict(monkeypa
     assert seen[False][2] != seen[True][2]
 
 
-def test_an_inconclusive_preflight_is_retried_instead_of_cached(monkeypatch, _no_proc_layout_left_behind):
-    refused = subprocess.CompletedProcess([], 1, "", "bwrap: Can't mount proc on /newroot/proc: Permission denied")
+def test_an_inconclusive_preflight_is_retried_instead_of_cached(
+    monkeypatch, _no_proc_layout_left_behind
+):
+    refused = subprocess.CompletedProcess(
+        [], 1, "", "bwrap: Can't mount proc on /newroot/proc: Permission denied"
+    )
     answers = iter([None, refused, subprocess.CompletedProcess([], 0, "", "")])
     monkeypatch.setattr(sandbox_linux, "_preflight", lambda bwrap, proc: next(answers))
     identity = ("/usr/bin/bwrap", 1, 1)
