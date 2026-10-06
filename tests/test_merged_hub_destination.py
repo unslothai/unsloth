@@ -170,6 +170,7 @@ def saving(monkeypatch, tmp_path):
         raise_if_merging_mistral_format_view = lambda model, save_method: None,
         # Residual-init conversion (#6879) is a no-op without PiSSA-style snapshots.
         lora_relative_to_original_base = lambda model: contextlib.nullcontext(),
+        nullcontext = contextlib.nullcontext,
         logger = SimpleNamespace(warning_once = lambda *args: None),
         # save_method="lora" leaves this module for the adapter save rather than the merge,
         # so record the handover instead of re-implementing it.
