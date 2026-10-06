@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import errno
 import os
 import sys
 import time
@@ -875,12 +876,34 @@ def _is_port_free(host: str, port: int) -> bool:
         try:
             with socket.socket(family, socket.SOCK_STREAM) as s:
                 s.settimeout(0.25)
-                if s.connect_ex(sockaddr) == 0:
+                result = s.connect_ex(sockaddr)
+                if result == 0:
+                    return False
+                # Windows drops the SYN to a listener whose accept backlog is full, so that connect times out
+                # exactly like one to a free port. Anything but a refusal is settled by the listener table.
+                if result not in _CONNECT_REFUSED and _listener_collides(sockaddr[0], port):
                     return False
         except OSError:
             continue
 
     return True
+
+
+_CONNECT_REFUSED = {errno.ECONNREFUSED, 10061}  # WSAECONNREFUSED
+
+
+def _listener_collides(address: str, port: int) -> bool:
+    """Is some process listening on *port* at *address* or a wildcard? Best effort: no psutil means no."""
+    try:
+        import psutil
+        listeners = [
+            c.laddr[0]
+            for c in psutil.net_connections(kind = "tcp")
+            if c.status == psutil.CONN_LISTEN and c.laddr and c.laddr[1] == port
+        ]
+    except Exception:
+        return False
+    return any(_addresses_collide(listener, address, port) for listener in listeners)
 
 
 def _find_free_port(

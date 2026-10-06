@@ -468,6 +468,67 @@ def test_a_loopback_bind_is_not_free_while_another_process_holds_the_wildcard():
         assert run._is_port_free("127.0.0.1", port) is False
 
 
+@pytest.mark.skipif(sys.platform != "win32", reason = "Windows drops the SYN to a full backlog")
+def test_a_wildcard_listener_with_a_full_backlog_is_not_a_free_port():
+    # A listener that has stopped accepting still owns the port. Windows drops the SYN instead of
+    # refusing it, so the probe's connect times out the same way it does on a free port; the listener
+    # table is what tells the two apart.
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as listener:
+        listener.bind(("0.0.0.0", 0))
+        listener.listen(0)
+        port = listener.getsockname()[1]
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as filler:
+            filler.settimeout(2)
+            filler.connect(("127.0.0.1", port))
+
+            assert run._is_port_free("127.0.0.1", port) is False
+
+
+def test_a_timed_out_connect_is_settled_by_the_listener_table(monkeypatch):
+    monkeypatch.setattr(run, "sys", SimpleNamespace(platform = "win32"))
+    asked = []
+    monkeypatch.setattr(
+        run, "_listener_collides", lambda address, port: asked.append((address, port)) or True
+    )
+
+    class _ProbeSocket:
+        def __init__(self, *_args):
+            pass
+
+        def setsockopt(self, *_args):
+            pass
+
+        def bind(self, _sockaddr):
+            pass
+
+        def settimeout(self, _timeout):
+            pass
+
+        def connect_ex(self, _sockaddr):
+            return errno.EWOULDBLOCK
+
+        def close(self):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_exc):
+            pass
+
+    monkeypatch.setattr(
+        socket,
+        "getaddrinfo",
+        lambda *_args, **_kwargs: [
+            (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("127.0.0.1", 8888))
+        ],
+    )
+    monkeypatch.setattr(socket, "socket", _ProbeSocket)
+
+    assert run._is_port_free("127.0.0.1", 8888) is False
+    assert asked == [("127.0.0.1", 8888)]
+
+
 def test_a_free_loopback_port_is_reported_without_a_long_wait():
     # Every default launch probes 127.0.0.1, and Windows waits out the whole
     # connect timeout on a free port instead of refusing it.
@@ -1194,9 +1255,9 @@ def test_an_interrupt_leaves_the_marker_to_a_live_server_thread(tmp_path, monkey
         with pytest.raises(KeyboardInterrupt):
             run.run_server()
 
-        assert (
-            list(tmp_path.glob(run.STARTUP_MARKER_GLOB)) != []
-        ), "the sibling can no longer see it"
+        assert list(tmp_path.glob(run.STARTUP_MARKER_GLOB)) != [], (
+            "the sibling can no longer see it"
+        )
         assert run._OWN_STARTUP_MARKERS != []
     finally:
         stop.set()
