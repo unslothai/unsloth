@@ -737,3 +737,20 @@ def test_the_hosted_route_registers_studios_single_file_converters(monkeypatch):
     )
     mapping_fn, _ = cq._mapping(cls)
     assert callable(mapping_fn)
+
+
+def test_a_local_comfy_override_is_usable_only_for_an_image_family(tmp_path, monkeypatch):
+    """A local ComfyUI-format override reads its scheme from the header for an image family; a video family's loader
+    cannot read the layout, so planning must not count on it there."""
+    import core.inference.diffusion_prequant as pq
+    from core.inference.diffusion_families import detect_family
+    from core.inference.video_families import _FAMILIES as VIDEO_FAMILIES
+
+    path, _, _ = _fp8_file(tmp_path)
+    monkeypatch.setenv(pq.ALLOW_LOCAL_PREQUANT_PATH_ENV, str(tmp_path))
+    monkeypatch.setattr(pq, "restricted_prequant_load_supported", lambda *a, **k: True)
+    image = detect_family("Tongyi-MAI/Z-Image-Turbo")
+    assert pq.usable_prequant_source(image, "fp8", path_override = path) is not None
+    assert pq.usable_prequant_source(image, "int8", path_override = path) is None
+    video = next(f for f in VIDEO_FAMILIES if any(s == "fp8" for s, _r in (f.prequant_repos or ())))
+    assert pq.usable_prequant_source(video, "fp8", path_override = path) is None

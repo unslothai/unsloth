@@ -1524,6 +1524,17 @@ def usable_prequant_source(
             return None
         if local_prequant_scheme(src.location) != scheme:
             return None
+        if not _comfy_prequant_family(fam):
+            # only the image denoiser loader reads a ComfyUI-format file; anywhere else it would be refused at load
+            try:
+                from .diffusion_comfy_quant import scan_comfy_quant
+
+                from os.path import expanduser
+
+                if scan_comfy_quant(expanduser(src.location)) is not None:
+                    return None
+            except Exception:  # noqa: BLE001 -- unreadable: the scheme check above already decided
+                pass
     return src
 
 
