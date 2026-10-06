@@ -186,8 +186,18 @@ export function fileTitle(name: string): string {
   );
 }
 
-// Borderless: the floating toolbar shadow (index.css) separates it.
-const PILL = "bg-card dark:bg-accent";
+// Borderless: the floating toolbar shadow (index.css) separates it. Dark values live in
+// variables so dark: cannot outrank hover.
+const PILL_SURFACE = "bg-(--pill-bg) [--pill-bg:var(--card)] dark:[--pill-bg:var(--accent)]";
+// Hover and press shade the pill: darker in light mode, lighter in dark.
+const PILL = cn(
+  PILL_SURFACE,
+  "[--pill-hover:5%] [--pill-press:9%] dark:[--pill-hover:7%] dark:[--pill-press:12%]",
+  "transition-colors disabled:pointer-events-none",
+  "hover:bg-[color-mix(in_oklab,var(--pill-bg),var(--foreground)_var(--pill-hover))]",
+  "data-[state=open]:bg-[color-mix(in_oklab,var(--pill-bg),var(--foreground)_var(--pill-hover))]",
+  "active:bg-[color-mix(in_oklab,var(--pill-bg),var(--foreground)_var(--pill-press))]",
+);
 
 const TOOLBAR_BUTTON =
   "size-8 text-foreground disabled:hover:text-foreground disabled:opacity-30";
@@ -197,6 +207,8 @@ const NAV_BUTTON =
 const NAV_ICON = "size-4.5";
 // A true circle, glyph centred.
 const ANNOTATE_BUTTON = "size-8 shrink-0 rounded-full p-0 text-foreground";
+// The dashed box sits up-left of the glyph's centre, so nudge it to look centred.
+const ANNOTATE_GLYPH = "size-4.5 translate-x-[4%] translate-y-[4%]";
 const NAV_STROKE = 2;
 const URLBAR =
   "bg-[color-mix(in_oklab,var(--foreground)_calc(6%*var(--contrast-wash-gain,1)),transparent)] focus-within:bg-[color-mix(in_oklab,var(--foreground)_calc(9%*var(--contrast-wash-gain,1)),transparent)]";
@@ -266,7 +278,7 @@ function CircleButton(props: ButtonProps) {
       {...props}
       className={cn(
         PILL,
-        "size-8 hover:bg-card dark:hover:bg-accent",
+        "size-8",
         props.className,
       )}
     />
@@ -1351,7 +1363,7 @@ function AnnotatePageButton({ tab }: { tab: BrowserTab | undefined }) {
           "bg-primary/12 text-primary hover:bg-primary/18 hover:text-primary dark:bg-primary/20 dark:hover:bg-primary/25",
       )}
     >
-      <HugeiconsIcon icon={CursorRectangleSelection02Icon} strokeWidth={1.75} className="size-4.5" />
+      <HugeiconsIcon icon={CursorRectangleSelection02Icon} strokeWidth={1.75} className={ANNOTATE_GLYPH} />
     </IconButton>
   );
 }
@@ -1587,7 +1599,7 @@ function BrowserFileToolbar({
             <HugeiconsIcon
               icon={CursorRectangleSelection02Icon}
               strokeWidth={1.75}
-              className="size-4.5"
+              className={ANNOTATE_GLYPH}
             />
           </IconButton>
         ) : null}
@@ -1902,14 +1914,14 @@ function FloatingFileToolbar({
           }
           className={cn(
             PILL,
-            "size-9 rounded-full p-0 text-foreground hover:bg-card dark:hover:bg-accent",
+            "size-9 rounded-full p-0 text-foreground",
             annotating && "text-primary hover:text-primary",
           )}
         >
           <HugeiconsIcon
             icon={CursorRectangleSelection02Icon}
             strokeWidth={1.75}
-            className="size-4.5"
+            className={ANNOTATE_GLYPH}
           />
         </IconButton>
       ) : null}
@@ -1921,7 +1933,7 @@ function FloatingFileToolbar({
         <div
           role="tablist"
           aria-label={t("browser.file.viewMode")}
-          className={cn(PILL, "flex h-9 shrink-0 items-center gap-0.5 rounded-full p-0.5")}
+          className={cn(PILL_SURFACE, "flex h-9 shrink-0 items-center gap-0.5 rounded-full p-0.5")}
         >
           {(["preview", "source"] as const).map((mode) => (
             <Tooltip key={mode}>
@@ -2010,7 +2022,7 @@ function FloatingFileToolbar({
             .getState()
             .setZoom(tab.id, value === "fit" ? 1 : value)
         }
-        className={cn(PILL, "mr-0 hidden h-9 pr-2.5 hover:bg-card @[28rem]:flex dark:hover:bg-accent")}
+        className={cn(PILL, "mr-0 hidden h-9 pr-2.5 @[28rem]:flex")}
       />
       <CircleButton
         label={t("browser.download")}
