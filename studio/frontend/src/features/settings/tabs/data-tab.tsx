@@ -80,6 +80,7 @@ import {
   Download01Icon,
   FlimSlateIcon,
   Image03Icon,
+  LibrariesIcon,
   Tick02Icon,
   Upload01Icon,
 } from "@hugeicons/core-free-icons";
@@ -732,6 +733,25 @@ export function DataTab({ searchEntry }: { searchEntry?: string }) {
           {t("settings.data.description")}
         </p>
       </header>
+
+      <SettingsSection title={t("settings.data.manageFiles.label")} hideHeading>
+        <SettingsRow
+          label={t("settings.data.manageFiles.label")}
+          description={t("settings.data.manageFiles.description")}
+        >
+          <Button
+            variant="outline"
+            className="px-3.5"
+            onClick={() => {
+              useSettingsDialogStore.getState().closeDialog();
+              void navigate({ to: "/library", search: { show: "all" } });
+            }}
+          >
+            <HugeiconsIcon icon={LibrariesIcon} strokeWidth={1.75} className="size-4" />
+            {t("settings.data.manageFiles.action")}
+          </Button>
+        </SettingsRow>
+      </SettingsSection>
 
       <SettingsSection title={t("settings.data.chatsSection")}>
         <div
