@@ -479,6 +479,15 @@ test("reference transcription sends no language hint", () => {
   assert.doesNotMatch(hook, /\blanguage\s*[:,}]/);
 });
 
+test("a run whose clips carry no output role still selects its first clip, except an edit", () => {
+  const clone = readSrc("features/audio/hooks/use-clone-generation.ts");
+  const body = clone.slice(clone.indexOf("export async function showRunResult("));
+  assert.match(
+    body,
+    /response\.clips\.find\(\(item\) => item\.role === "output"\) \?\?\s*\(workflow === "edit" \? undefined : response\.clips\[0\]\)/,
+  );
+});
+
 test("a run's inline fallback clip stays on the page that started it", () => {
   const clone = readSrc("features/audio/hooks/use-clone-generation.ts");
   const body = clone.slice(clone.indexOf("export async function showRunResult("));

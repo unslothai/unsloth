@@ -561,11 +561,7 @@ def _clef_logits(
     from .clef import QUESTION_TYPES as CLEF_TYPES
 
     device = next(model.parameters()).device
-    # Never fp16 autocast: the gated delta net overflows in pure fp16, so a model on Unsloth's
-    # float32 path runs as Unsloth loaded it.
-    amp_dtype = _amp_dtype(device)
-    if amp_dtype != torch.bfloat16 or _clef_forced_float32(model):
-        amp_dtype = None
+    amp_dtype = _clef_amp_dtype(model, device)
     collate = ClefDataCollator(pad_token_id)
     # Clef numbers question types noul, choice, score; Laya's metrics use choice, score, noul.
     laya_type = {CLEF_TYPES[kind]: QUESTION_TYPES.index(kind) for kind in QUESTION_TYPES}
@@ -630,6 +626,13 @@ def _clef_forced_float32(model) -> bool:
     return bool(getattr(model, "_unsloth_forced_float32", False))
 
 
+def _clef_amp_dtype(model, device):
+    # Never fp16 autocast: the gated delta net overflows in pure fp16, so a model on Unsloth's
+    # float32 path runs as Unsloth loaded it. Serving uses this too, to match calibration.
+    amp_dtype = _amp_dtype(device)
+    return None if amp_dtype != torch.bfloat16 or _clef_forced_float32(model) else amp_dtype
+
+
 def _load_clef(
     folder,
     max_seq_length,
@@ -648,7 +651,9 @@ def _load_clef(
     fast = _device().type != "cpu"
     if fast:
         from .loader import FastModel
-        if load_in_4bit and kwargs.get("quantization_config") is None:
+
+        # FastModel drops load_in_4bit for full finetuning, but not an explicit quantization config.
+        if load_in_4bit and not full_finetuning and kwargs.get("quantization_config") is None:
             kwargs["quantization_config"] = _clef_bnb_config(dtype)
         # A float16 request (or a GPU without bfloat16) puts Qwen3.5 on Unsloth's float32 path,
         # which stores bfloat16 weights: the gated delta net NaNs in pure float16.
@@ -944,6 +949,11 @@ class DecisionTrainer(Trainer):
         if self.kl_weight:
             if not getattr(model, "is_clef", False):
                 raise NotImplementedError("Unsloth: kl_weight needs a Clef decision model.")
+            # The reference is the backbone with its adapters off, which full finetuning does not have.
+            if not hasattr(model.encoder, "disable_adapter"):
+                raise NotImplementedError(
+                    "Unsloth: kl_weight needs a LoRA Clef model, not full finetuning."
+                )
             self._reference_head = copy.deepcopy(model.head).requires_grad_(False)
         args.remove_unused_columns = False
         # The model trains on one GPU: no DataParallel, and the batch stays per_device_train_batch_size.
@@ -1202,8 +1212,8 @@ def _calibrate_clef(config: dict, logits, items) -> dict:
         }
     head, relative, fitted = fit(everything)
     half = {row: i % 2 for i, row in enumerate(sorted({item["row"] for item in items}))}
-    per_item = [1.0] * len(items)
-    for side in (0, 1):
+    per_item = [head * common.clamp_temperature(relative[item["qtype"]]) for item in items]
+    for side in (0, 1) if len(half) > 1 else ():
         side_head, side_relative, _ = fit(i for i in everything if half[items[i]["row"]] != side)
         for i in everything:
             if half[items[i]["row"]] == side:
@@ -1249,15 +1259,18 @@ def save_pretrained_merged(
                 f"Unsloth: {name} has NaN or values too large for float16, so the model cannot be saved."
             )
         weights[name] = value
+    encoder_config = self._unsloth_encoder_config
+    vocab = encoder.get_input_embeddings().num_embeddings
+    if json.loads(encoder_config).get("vocab_size") != vocab:
+        # A caller-grown tokenizer resized the embedding; the source config keeps its bytes otherwise.
+        encoder_config = json.dumps({**json.loads(encoder_config), "vocab_size": vocab}, indent = 2)
     del encoder, state
     config = json.dumps({**self.decision_config, "fine_tuned": True}, indent = 2)
 
     with _staging(Path(save_directory)) as staging:
         save_file(weights, str(staging / "model.safetensors"))
         (staging / "encoder").mkdir()
-        (staging / "encoder" / "config.json").write_text(
-            self._unsloth_encoder_config, encoding = "utf-8"
-        )
+        (staging / "encoder" / "config.json").write_text(encoder_config, encoding = "utf-8")
         tokenizer.save_pretrained(str(staging / "tokenizer"))
         _laya().agent._fix_tokenizer_config(str(staging))
         (staging / "rl_agent_config.json").write_text(config, encoding = "utf-8")

@@ -109,7 +109,6 @@ import {
   Folder01Icon,
   Folder02Icon,
   FlimSlateIcon,
-  InternetIcon,
   HelpCircleIcon,
   Image03Icon,
   InformationCircleIcon,
@@ -136,6 +135,7 @@ import {
   LeftToRightListBulletIcon,
   ArrowUpDownIcon,
   LayerIcon,
+  ApiIcon,
 } from "@hugeicons/core-free-icons";
 import {
   MessageCircleIcon,
@@ -148,7 +148,8 @@ import {
 } from "@/components/ui/tooltip";
 import { Tooltip as TooltipPrimitive } from "radix-ui";
 import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react";
-import { ArrowRightIcon, ChevronDown, GitBranchIcon, Moon } from "lucide-react";
+import { ArrowRightIcon, ChevronDown, Moon } from "lucide-react";
+import { ForkIcon } from "@/lib/fork-icon";
 import {
   Link,
   type NavigateOptions,
@@ -290,6 +291,8 @@ import {
 } from "@/features/chat";
 import { ShutdownDialog } from "@/components/shutdown-dialog";
 import { buildChatItemMarkdown } from "@/features/chat/prompt-storage/prompt-storage-dialog";
+import { useActiveChatMenuStore } from "@/features/chat/stores/active-chat-menu-store";
+import { PinnedPageRows, usePinnedPageCount } from "@/features/browser";
 import { translate, useT, type TranslationKey } from "@/i18n";
 
 const RECENT_SLOT_NUMBERS = [1, 2, 3, 4, 5, 6] as const;
@@ -1450,6 +1453,7 @@ export function AppSidebar() {
     [allChatItems, pinnedIdSet, sectionByChatId, organizeBy],
   );
   const [pinnedOpen, setPinnedOpen] = useState(true);
+  const pinnedPageCount = usePinnedPageCount();
   const [projectsOpen, setProjectsOpen] = useState(true);
   const [showAllProjects, setShowAllProjects] = useState(false);
   // Pinning a project moves its folder into the Pinned section, beside the pinned chats.
@@ -2853,7 +2857,7 @@ export function AppSidebar() {
     },
     // The monitor page, not the API keys dialog the profile menu opens.
     api: {
-      icon: InternetIcon,
+      icon: ApiIcon,
       label: t("shell.navigation.api"),
       active: pathname === "/api-monitor" || pathname.startsWith("/api-monitor/"),
       onClick: () => {
@@ -3589,6 +3593,69 @@ export function AppSidebar() {
     withActiveChat((item) => void copyChatSessionId(item));
   });
 
+  // The chat header's menu acts on the open chat through the same handlers as its row's menu and
+  // the chords above. Every render, so the handlers it calls are never stale.
+  useEffect(() => {
+    const item = activeChatItem;
+    if (!item) {
+      useActiveChatMenuStore.setState({ menu: null });
+      return;
+    }
+    const threadIds = getSidebarItemThreadIds(item);
+    const pinned = pinnedIdSet.has(item.id);
+    const unread = threadIds.some((threadId) => unreadThreadIds.has(threadId));
+    const generating = threadIds.some((threadId) => Boolean(runningByThreadId[threadId]));
+    const project = item.projectId ? projects.find((entry) => entry.id === item.projectId) : undefined;
+    // A pinned row is drawn under Pinned, so it has no section to leave, as in the row's menu.
+    const sectionId = pinned ? null : (sectionByChatId[item.id] ?? null);
+    const section = sectionId ? customSections.find((entry) => entry.id === sectionId) : undefined;
+    useActiveChatMenuStore.setState({
+      menu: {
+        item,
+        pinned,
+        unread,
+        canFork: canForkChatRow(item) && !generating && !forkInFlight,
+        projects: recentProjects
+          .filter((entry) => entry.id !== item.projectId)
+          .slice(0, MOVE_TO_MAX)
+          .map(({ id, name }) => ({ id, name })),
+        sections: recentSections
+          .filter((entry) => entry.id !== sectionId)
+          .slice(0, MOVE_TO_MAX)
+          .map(({ id, name }) => ({ id, name })),
+        project: item.projectId
+          ? { id: item.projectId, name: project?.name ?? "" }
+          : null,
+        section: section ? { id: section.id, name: section.name } : null,
+        rename: () => openRenameChat(item, false),
+        togglePin: () => togglePinnedChat(item.id),
+        toggleUnread: () =>
+          unread
+            ? clearThreadsUnread(threadIds)
+            : markThreadsUnread(threadIds, rowIdByThreadId),
+        fork: () => void forkChatFromRow(item),
+        moveToProject: (projectId) =>
+          projectId === null
+            ? void moveChatToProject(item, null)
+            : void moveChatToProjectFromMenu(item, projectId),
+        newProject: () => {
+          setProjectCreateMoveTarget(item);
+          setCreatingProject(true);
+        },
+        moveToSection: (id) => fileSectionTarget({ chatIds: [item.id] }, id),
+        newSection: () => setSectionDialog({ mode: "create", chatIds: [item.id] }),
+        copyMarkdown: () => void copyChatItemAsMarkdown(item),
+        copySessionId: () => void copyChatSessionId(item),
+        archive: () => void handleArchiveThread(item),
+        remove: () =>
+          confirmDeleteChats
+            ? openDeleteDialog({ kind: "chat", item })
+            : void deleteChatWithCleanup(item, { deleteFiles: alwaysDeleteChatFiles }),
+      },
+    });
+  });
+  useEffect(() => () => useActiveChatMenuStore.setState({ menu: null }), []);
+
   // These four walk the list, so holding them steps through it, the way an
   // arrow key does. The rest are one-shot and ignore auto-repeat.
   useShortcut("nextChat", () => goToChat((s) => adjacentChatItem(s, 1)), {
@@ -3916,7 +3983,8 @@ export function AppSidebar() {
   // them into decides where it goes.
   // Pinned: folders and chats in one list, in the order they were dropped into.
   function renderPinnedSection(): ReactNode {
-    if (isStudioRoute || showTrainingRecents || pinnedRows.length === 0) return null;
+    if (isStudioRoute || showTrainingRecents || (pinnedRows.length === 0 && pinnedPageCount === 0)) return null;
+    const firstPinnedRow = pinnedRows[0];
     return (
       <Collapsible open={pinnedOpen} onOpenChange={setPinnedOpen} asChild>
         {/* While open, the next section rides up over the tail strip below, so the strip adds
@@ -3933,11 +4001,9 @@ export function AppSidebar() {
               {
                 section: "pinned",
                 header: true,
-                row: {
-                  id: pinnedRows[0].id,
-                  kind: pinnedRows[0].kind,
-                  scope: PINNED_ORDER_SCOPE,
-                },
+                row: firstPinnedRow
+                  ? { id: firstPinnedRow.id, kind: firstPinnedRow.kind, scope: PINNED_ORDER_SCOPE }
+                  : undefined,
               },
               { closed: !pinnedOpen },
             )}
@@ -3976,6 +4042,8 @@ export function AppSidebar() {
                         sort: { value: pinnedSort, set: setPinnedSort },
                       }),
                 )}
+                {/* Pages pinned from a browser tab's menu, after the chats and folders. */}
+                <PinnedPageRows />
                 {/* The end of the list, as somewhere to aim. A folder last in Pinned runs its
                     block to the bottom of the section, so every pixel down there is inside it
                     and a chat meant to go after the folder was filed into it instead.
@@ -4523,7 +4591,7 @@ export function AppSidebar() {
               title="Copy this chat into a new one, from its last message"
               onSelect={() => void forkChatFromRow(item)}
             >
-              <GitBranchIcon strokeWidth={1.75} className="size-icon" />
+              <HugeiconsIcon icon={ForkIcon} strokeWidth={1.75} className="size-icon" />
               <span>Fork</span>
             </P.Item>
             {/* Projects and sections in one place: both are where the chat is kept. */}
@@ -5234,7 +5302,7 @@ export function AppSidebar() {
                         className="inline-flex size-[calc(30px*var(--ui-space-scale,1))] cursor-pointer items-center justify-center rounded-[10px] text-nav-icon-idle dark:text-nav-fg-muted transition-colors hover:bg-nav-surface-hover hover:text-black dark:hover:text-white focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                         aria-label={t("shell.aria.closeSidebar")}
                       >
-                        <HugeiconsIcon icon={LayoutAlignLeftIcon} strokeWidth={1.75} className="size-icon" />
+                        <HugeiconsIcon icon={PanelLeftIcon} strokeWidth={1.75} className="size-icon" />
                       </button>
                     </TooltipPrimitive.Trigger>
                     <TooltipContent
@@ -5249,7 +5317,8 @@ export function AppSidebar() {
               </div>
             </div>
             {!isMobile && (!usesDesktopTitlebar || usesNativeMacTitlebar) && (
-              <div className="relative z-10 hidden group-data-[collapsible=icon]:flex h-[calc(33px*var(--ui-space-scale,1))] items-center justify-center w-full">
+              // Level with the expanded header's 30px close button, so the toggle doesn't jump.
+              <div className="relative z-10 hidden group-data-[collapsible=icon]:flex h-[calc(33px*var(--ui-space-scale,1))] items-start justify-center w-full pt-[calc(1px*var(--ui-space-scale,1))]">
                 <Tooltip>
                   <TooltipPrimitive.Trigger asChild>
                     <button
@@ -5930,7 +5999,7 @@ export function AppSidebar() {
                         key={item.id}
                         onSelect={() => useSettingsDialogStore.getState().openDialog("api-keys")}
                       >
-                        <HugeiconsIcon icon={InternetIcon} strokeWidth={1.75} className="size-[calc(18px*var(--ui-space-scale,1))]" />
+                        <HugeiconsIcon icon={ApiIcon} strokeWidth={1.75} className="size-[calc(18px*var(--ui-space-scale,1))]" />
                         <span>{t("shell.navigation.api")}</span>
                       </DropdownMenuItem>
                     );

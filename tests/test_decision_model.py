@@ -436,6 +436,38 @@ def test_train_calibrate_save_and_serve(checkpoint, tmp_path, lora):
     assert all(torch.equal(weights[k], v.detach().cpu().half()) for k, v in expected.items())
 
 
+def test_a_resized_laya_vocabulary_saves_and_reloads(checkpoint, tmp_path):
+    model, tokenizer = FastDecisionModel.from_pretrained(
+        str(checkpoint), use_gradient_checkpointing = False
+    )
+    grown = model.encoder.get_input_embeddings().num_embeddings + 8
+    model.encoder.resize_token_embeddings(grown)
+    model.save_pretrained_merged(str(tmp_path / "out"), tokenizer)
+    reloaded, _ = FastDecisionModel.from_pretrained(str(tmp_path / "out"))
+    assert reloaded.encoder.get_input_embeddings().num_embeddings == grown
+
+
+def test_full_clef_finetuning_never_quantizes_the_backbone(tmp_path, monkeypatch):
+    from unsloth.models import loader
+
+    seen = []
+
+    class Captured(Exception):
+        pass
+
+    def capture(*args, **kwargs):
+        seen.append(kwargs)
+        raise Captured
+
+    monkeypatch.setattr(decision, "_device", lambda: torch.device("cuda"))
+    monkeypatch.setattr(loader.FastModel, "from_pretrained", capture)
+    for full in (True, False):
+        with pytest.raises(Captured):
+            decision._load_clef(tmp_path, None, torch.bfloat16, True, full, None, False, {})
+    assert seen[0].get("quantization_config") is None
+    assert seen[1].get("quantization_config") is not None
+
+
 def test_toy_task_beats_the_base_model(checkpoint, tmp_path, monkeypatch):
     # On CPU everywhere: the toy task plateaus near loss 0.45 and leaves it by step ~70 on CPU but
     # only after ~100 steps on a GPU (same curve otherwise, any precision), so 80 steps is a threshold
@@ -1076,6 +1108,14 @@ def test_a_failed_save_leaves_the_previous_clef_checkpoint_loadable(
     FastDecisionModel.from_pretrained(str(out), max_seq_length = 512)
 
 
+def test_kl_regularization_needs_a_lora_clef(clef_checkpoint, tmp_path):
+    model, processor = FastDecisionModel.from_pretrained(
+        str(clef_checkpoint), max_seq_length = 512, full_finetuning = True
+    )
+    with pytest.raises(NotImplementedError, match = "LoRA Clef"):
+        DecisionTrainer(model = model, args = _args(tmp_path), train_dataset = [], kl_weight = 0.1)
+
+
 @pytest.mark.skipif(not has_real_cuda(), reason = "Unsloth's float16 path for Qwen3.5 needs a GPU")
 @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
 def test_clef_trains_in_float16_and_bfloat16(clef_checkpoint, tmp_path, dtype):
@@ -1145,6 +1185,28 @@ def test_clef_calibration_fits_being_right_and_serves_through_the_head_temperatu
         config["head_temperature"]
         * decision._laya().common.clamp_temperature(config["temperature"][0])
     )
+
+
+def test_clef_autocasts_only_in_bfloat16_and_never_on_the_float32_path(monkeypatch):
+    model = torch.nn.Linear(1, 1)
+    cuda = torch.device("cuda")
+    monkeypatch.setattr(decision, "is_bfloat16_supported", lambda: True)
+    assert decision._clef_amp_dtype(model, cuda) == torch.bfloat16
+    model._unsloth_forced_float32 = True
+    assert decision._clef_amp_dtype(model, cuda) is None
+    model._unsloth_forced_float32 = False
+    monkeypatch.setattr(decision, "is_bfloat16_supported", lambda: False)
+    assert decision._clef_amp_dtype(model, cuda) is None
+    assert decision._clef_amp_dtype(model, torch.device("cpu")) is None
+
+
+def test_clef_calibration_with_every_holdout_decision_from_one_row():
+    # A holdout row with many questions passes the item minimum with nothing to cross-validate on.
+    logits = [torch.tensor([1.0, 0.0, -1.0]) for _ in range(12)]
+    items = [{"label": i % 3, "target": [1 / 3] * 3, "qtype": i % 3, "row": 0} for i in range(12)]
+    config = {"temperature": [1.0] * 3}
+    calibrated = decision._calibrate_clef(config, logits, items)
+    assert math.isfinite(calibrated["ece"]) and "head_temperature" in config
 
 
 def test_clef_save_keeps_the_source_tokenizer_files_byte_identical(clef_checkpoint, tmp_path):

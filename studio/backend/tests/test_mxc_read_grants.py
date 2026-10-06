@@ -279,6 +279,137 @@ def test_an_unreadable_identity_keeps_the_record_for_a_later_revoke(host, monkey
     assert ("revoke", os.path.normcase(venv)) not in host.calls
 
 
+def test_revocation_waits_for_a_running_workload_and_its_release_finishes_it(host, monkeypatch):
+    # On Windows a lease held open cannot be deleted; here an existing file stands in for that.
+    monkeypatch.setattr(mxc_read_grants, "_lease_is_live", lambda path: path.exists())
+    venv = _runtime(host)
+    mxc_read_grants.ensure([venv])
+    lease = mxc_read_grants.hold()
+    monkeypatch.setenv(mxc_read_grants.PERSISTENT_GRANTS_ENV, "0")
+    assert mxc_read_grants.revoke_recorded() == ()
+    assert mxc_read_grants.ensure([venv]) == ()
+    assert ("revoke", os.path.normcase(venv)) not in host.calls
+    assert _states() == {os.path.normcase(venv): "complete"}
+    lease.release()
+    assert host.calls[-1] == ("revoke", os.path.normcase(venv))
+    assert _record() == {}
+    lease.release()
+    assert host.calls.count(("revoke", os.path.normcase(venv))) == 1
+
+
+def test_release_keeps_the_grants_while_they_are_still_on(host, monkeypatch):
+    from core.inference import mxc_policy
+
+    monkeypatch.setattr(mxc_policy, "dacl_fallback_enabled", lambda: True)
+    venv = _runtime(host)
+    mxc_read_grants.ensure([venv])
+    mxc_read_grants.hold().release()
+    assert host.calls == [("grant", venv)]
+    assert _states() == {os.path.normcase(venv): "complete"}
+
+
+def test_a_lease_left_by_a_crashed_process_never_blocks_revocation(host, monkeypatch):
+    venv = _runtime(host)
+    mxc_read_grants.ensure([venv])
+    stale = mxc_read_grants._leases_dir() / "4242-crashed"
+    stale.parent.mkdir(parents = True, exist_ok = True)
+    stale.write_text("")
+    monkeypatch.setenv(mxc_read_grants.PERSISTENT_GRANTS_ENV, "0")
+    assert mxc_read_grants.revoke_recorded() == (os.path.normcase(venv),)
+    assert not stale.exists()
+
+
+def test_a_lease_waits_for_a_revocation_already_in_progress(host):
+    import threading
+
+    leases = []
+    with mxc_read_grants._transaction():
+        worker = threading.Thread(target = lambda: leases.append(mxc_read_grants.hold()))
+        worker.start()
+        worker.join(0.5)
+        assert worker.is_alive() and not leases
+    worker.join(10)
+    assert leases and leases[0] is not None
+    leases[0].release()
+
+
+def test_release_reads_the_switches_fresh_after_another_process_opts_out(host, monkeypatch):
+    from core.inference import mxc_policy
+    from storage import studio_db
+    from utils import account_context, mxc_isolation_settings as saved
+
+    store = {saved.DACL_SETTING_KEY: True, saved.GRANTS_SETTING_KEY: True}
+    monkeypatch.delenv(mxc_policy.DACL_FALLBACK_ENV, raising = False)
+    monkeypatch.setattr(studio_db, "get_app_settings", lambda keys: {k: store[k] for k in keys})
+    monkeypatch.setattr(account_context, "run_as", lambda _who, fn, *a, **k: fn(*a, **k))
+    monkeypatch.setattr(mxc_read_grants, "_lease_is_live", lambda path: path.exists())
+    saved.forget_cached_setting()
+    venv = _runtime(host)
+    lease = mxc_read_grants.hold_if_needed()
+    assert lease is not None and mxc_read_grants.ensure([venv]) == (venv,)
+    assert saved.persistent_grants_setting()  # cached "on" in this process
+    store[saved.GRANTS_SETTING_KEY] = False  # another Studio process turns it off, no local write
+    lease.release()
+    assert host.calls[-1] == ("revoke", os.path.normcase(venv))
+    assert _record() == {}
+    saved.forget_cached_setting()
+
+
+def test_a_lease_that_cannot_be_recorded_refuses_instead_of_running_unguarded(host):
+    blocker = mxc_read_grants._leases_dir()
+    blocker.parent.mkdir(parents = True, exist_ok = True)
+    blocker.write_text("")  # a file where the lease folder belongs
+    with pytest.raises(mxc_read_grants.ReadGrantError, match = "could not record"):
+        mxc_read_grants.hold()
+
+
+@pytest.mark.parametrize("dacl, grants", [(False, True), (True, False)])
+def test_a_lease_that_cannot_be_recorded_only_blocks_a_launch_that_needs_the_grants(
+    host, monkeypatch, dacl, grants
+):
+    from core.inference import mxc_policy
+
+    def refuse():
+        raise mxc_read_grants.ReadGrantError("could not record")
+
+    monkeypatch.setattr(mxc_read_grants, "hold", refuse)
+    monkeypatch.setattr(mxc_policy, "dacl_fallback_enabled", lambda: dacl)
+    monkeypatch.setattr(mxc_read_grants, "enabled", lambda: grants)
+    assert mxc_read_grants.hold_if_needed() is None
+    monkeypatch.setattr(mxc_policy, "dacl_fallback_enabled", lambda: True)
+    monkeypatch.setattr(mxc_read_grants, "enabled", lambda: True)
+    with pytest.raises(mxc_read_grants.ReadGrantError):
+        mxc_read_grants.hold_if_needed()
+
+
+def test_a_launch_during_a_deferred_revocation_keeps_the_grants_until_it_exits(host, monkeypatch):
+    from core.inference import mxc_policy
+
+    switch = {"on": True}
+    monkeypatch.setattr(mxc_policy, "dacl_fallback_enabled", lambda: True)
+    monkeypatch.setattr(mxc_read_grants, "enabled", lambda: switch["on"])
+    monkeypatch.setattr(mxc_read_grants, "_lease_is_live", lambda path: path.exists())
+    venv = _runtime(host)
+    first = mxc_read_grants.hold_if_needed()
+    mxc_read_grants.ensure([venv])
+    switch["on"] = False  # the owner turns the grants off while the first call runs
+    assert mxc_read_grants.revoke_recorded() == ()
+    second = mxc_read_grants.hold_if_needed()  # starts while the entries are still in place
+    assert second is not None
+    first.release()
+    assert ("revoke", os.path.normcase(venv)) not in host.calls
+    second.release()
+    assert host.calls[-1] == ("revoke", os.path.normcase(venv))
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason = "Windows refuses to delete a file held open")
+def test_an_open_lease_is_live_until_released(host):
+    lease = mxc_read_grants.hold()
+    assert mxc_read_grants._live_leases() == 1
+    lease.release()
+    assert mxc_read_grants._live_leases() == 0
+
+
 def test_a_replaced_folder_is_not_adopted_through_a_stale_record(host, tmp_path):
     venv = _runtime(host)
     mxc_read_grants.ensure([venv])

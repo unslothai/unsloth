@@ -613,13 +613,24 @@ def test_quantised_blocks_survive_group_offload_under_no_grad(
         offloaded(x)
 
 
+@pytest.mark.parametrize("offload_graphs", [True, False])
 @pytest.mark.parametrize(
     "offload_active, denoiser_offloaded, expected",
     [(False, None, False), (True, None, True), (True, False, False), (True, True, True)],
 )
-def test_graph_gate_follows_the_denoiser(monkeypatch, offload_active, denoiser_offloaded, expected):
+def test_graph_gate_follows_the_denoiser(
+    monkeypatch, offload_active, denoiser_offloaded, expected, offload_graphs
+):
+    """With offload graphs on, a moved denoiser is judged on everything else and armed after placement; with the
+    kill switch, a moved denoiser is refused as before."""
     from core.inference import diffusion_cuda_graph as dcg
     from core.inference import diffusion_speed
+
+    if offload_graphs:
+        monkeypatch.delenv(dcg.OFFLOAD_CUDA_GRAPH_ENV, raising = False)
+        expected = False
+    else:
+        monkeypatch.setenv(dcg.OFFLOAD_CUDA_GRAPH_ENV, "0")
 
     seen: list = []
 

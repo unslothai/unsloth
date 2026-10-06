@@ -3,11 +3,14 @@
 
 // Which tool panels a model gets. Free of JSX so the node test runner can load it.
 
+import type { AudioConvertCaps } from "@/features/chat/types/api";
 import type { AudioOptionSpec } from "../audio-options";
 import {
   type NativeAudioInstructionsKind,
   nativeAudioInstructionsKind,
 } from "../audio-page-policy";
+import { isMusicGenerationModel } from "../catalog";
+import { parseMusicCapabilities } from "../music/music-types";
 import type { AudioWorkflowId } from "../workflows";
 import type {
   AnyAudioToolPanel,
@@ -24,6 +27,12 @@ export function instructionsKindFor(
   return ctx.musicGeneration
     ? "music"
     : nativeAudioInstructionsKind(ctx.audioType);
+}
+
+/** The Music studio has its own description field, preview included; only a loaded music model
+ *  without studio modes (native MiniMax) keeps the old one. */
+export function legacyMusicDescription(ctx: AudioModelContext): boolean {
+  return ctx.audioMusic !== true && isMusicGenerationModel(null, ctx.audioType);
 }
 
 export function panelApplies(
@@ -56,6 +65,8 @@ export function audioModelContextFor(
     audio_workflows?: readonly string[] | null;
     audio_required_inputs?: readonly string[] | null;
     audio_reference_text?: string | null;
+    audio_convert?: AudioConvertCaps | null;
+    audio_music?: unknown;
   } | null,
   page: {
     musicGeneration: boolean;
@@ -81,6 +92,36 @@ export function audioModelContextFor(
       REFERENCE_TEXT_MODES.has(referenceText)
         ? (referenceText as AudioReferenceTextMode)
         : null,
+    audioMusic: parseMusicCapabilities(status?.audio_music) !== null,
+    convert: convertCapsOf(status?.audio_convert),
+  };
+}
+
+function convertCapsOf(value: unknown): AudioConvertCaps | null {
+  if (!isPlainObject(value)) return null;
+  const caps = value as Partial<AudioConvertCaps>;
+  const modes = Array.isArray(caps.modes)
+    ? caps.modes.filter((mode) => mode === "speech" || mode === "singing")
+    : [];
+  if (modes.length === 0) return null;
+  return {
+    modes,
+    target: caps.target === "builtin" ? "builtin" : "audio",
+    builtin_voices: Array.isArray(caps.builtin_voices)
+      ? caps.builtin_voices.filter(
+          (voice) =>
+            isPlainObject(voice) &&
+            typeof voice.id === "string" &&
+            typeof voice.label === "string",
+        )
+      : [],
+    pitch: isPlainObject(caps.pitch) ? caps.pitch : {},
+    style: caps.style === true,
+    route_reloads: caps.route_reloads === true,
+    source_max_seconds:
+      typeof caps.source_max_seconds === "number" && caps.source_max_seconds > 0
+        ? caps.source_max_seconds
+        : 300,
   };
 }
 
@@ -122,9 +163,10 @@ export function collectToolRequest(
   for (const panel of panels) {
     const value = panelValue(panel, values, specs);
     error ??= panel.validate?.(value, core, ctx) ?? null;
-    const part = panel.toRequest(value);
+    const part = panel.toRequest(value, ctx);
     if (part.options) patch.options = { ...patch.options, ...part.options };
     if (part.inputs) patch.inputs = { ...patch.inputs, ...part.inputs };
+    if (part.convert) patch.convert = { ...patch.convert, ...part.convert };
     for (const key of [
       "instructions",
       "language",

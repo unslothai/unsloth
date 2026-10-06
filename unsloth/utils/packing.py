@@ -53,6 +53,8 @@ _PACKED_INFO_CACHE: dict = {}
 # Cache per device for build_sdpa_packed_attention_mask to avoid repeated D2H sync across layers
 _SDPA_MASK_CACHE: dict = {}
 
+_SEGMENT_LENGTHS_CACHE: dict = {}
+
 # Cache per device for build_xformers_block_causal_mask to avoid repeated D2H sync across layers
 _XFORMERS_BLOCK_MASK_CACHE: dict = {}
 
@@ -689,6 +691,41 @@ def build_xformers_block_causal_mask(
     return mask
 
 
+def packed_block_mask(
+    length: int,
+    *,
+    dtype: torch.dtype,
+    device: torch.device,
+    sliding_window: Optional[int] = None,
+    is_causal: bool = True,
+) -> torch.Tensor:
+    """Additive (length, length) mask of one packed segment: causal and / or sliding window."""
+    block = torch.zeros((length, length), dtype = dtype, device = device)
+    if is_causal:
+        upper = torch.triu(torch.ones((length, length), device = device), diagonal = 1).bool()
+        block = block.masked_fill(upper, float("-inf"))
+    if sliding_window is not None and sliding_window > 0 and length > sliding_window:
+        idx = torch.arange(length, device = device)
+        dist = idx.unsqueeze(1) - idx.unsqueeze(0)
+        block = block.masked_fill(dist >= sliding_window, float("-inf"))
+    return block
+
+
+def packed_segment_lengths(
+    seq_info: Tuple[torch.Tensor, torch.Tensor, int], total_tokens: Optional[int] = None
+) -> Tuple[int, ...]:
+    """Segment lengths of a packed row, the pad tail as its own segment; one D2H sync per batch."""
+    seq_lengths = seq_info[0]
+    entry = _SEGMENT_LENGTHS_CACHE.get(seq_lengths.device)
+    if entry is not None and entry[0] is seq_lengths and entry[1] == total_tokens:
+        return entry[2]
+    lengths = _with_padding_segment(
+        tuple(int(length) for length in seq_lengths.tolist()), total_tokens
+    )
+    _SEGMENT_LENGTHS_CACHE[seq_lengths.device] = (seq_lengths, total_tokens, lengths)
+    return lengths
+
+
 def build_sdpa_packed_attention_mask(
     seq_info: Tuple[torch.Tensor, torch.Tensor, int],
     *,
@@ -720,16 +757,13 @@ def build_sdpa_packed_attention_mask(
     for length in lengths:
         if length <= 0:
             continue
-        block = torch.zeros((length, length), dtype = dtype, device = device)
-        if is_causal:
-            upper = torch.triu(torch.ones((length, length), device = device), diagonal = 1).bool()
-            block = block.masked_fill(upper, float("-inf"))
-        if sliding_window is not None and sliding_window > 0 and length > sliding_window:
-            idx = torch.arange(length, device = device)
-            dist = idx.unsqueeze(1) - idx.unsqueeze(0)
-            window_mask = dist >= sliding_window
-            block = block.masked_fill(window_mask, float("-inf"))
-        mask[offset : offset + length, offset : offset + length] = block
+        mask[offset : offset + length, offset : offset + length] = packed_block_mask(
+            length,
+            dtype = dtype,
+            device = device,
+            sliding_window = sliding_window,
+            is_causal = is_causal,
+        )
         offset += length
 
     result = mask.unsqueeze(0).unsqueeze(0)
@@ -825,6 +859,7 @@ def clear_packed_caches():
     _XFORMERS_MASK_CACHE.clear()
     _PACKED_INFO_CACHE.clear()
     _SDPA_MASK_CACHE.clear()
+    _SEGMENT_LENGTHS_CACHE.clear()
     _XFORMERS_BLOCK_MASK_CACHE.clear()
     _PADDED_CU_SEQLENS_CACHE.clear()
 

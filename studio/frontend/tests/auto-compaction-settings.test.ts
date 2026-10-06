@@ -119,3 +119,21 @@ test("a queued run keeps its own model's llama.cpp verdict after the picker move
     { context_overflow: "truncate_oldest" },
   );
 });
+
+test("MLX chats opt in on the backend's own report and honor disabling auto compaction", () => {
+  const options = { isGguf: false, isMlx: true, autoCompactEnabled: true };
+  assert.deepEqual(ggufCompactionRequestFields(options), {
+    context_overflow: "truncate_oldest",
+  });
+  assert.deepEqual(
+    ggufCompactionRequestFields({ ...options, autoCompactEnabled: false }),
+    { context_overflow: "error" },
+  );
+  // loadedIsMlx, not a catalog row, as isGguf goes through isServedByLlamaCpp.
+  const adapter = readSrc("features/chat/api/chat-adapter.ts");
+  assert.match(adapter, /isMlx: isMlxForCompaction/);
+  assert.match(
+    adapter,
+    /isMlxForCompaction =\s*!isExternalModelId\(params\.checkpoint\) && runtime\.loadedIsMlx === true/,
+  );
+});

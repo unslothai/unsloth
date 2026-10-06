@@ -81,14 +81,18 @@ def _decide(model, tokenizer, state, questions: dict[str, dict[str, Any]]) -> di
     import torch
 
     from unsloth.models.clef import encode_record, systemone_answer
-    from unsloth.models.decision import QUESTION_TYPES, _served_temperatures
+    from unsloth.models.decision import QUESTION_TYPES, _clef_amp_dtype, _served_temperatures
 
     encoded = encode_record(
         tokenizer, {"state": state, "questions": questions}, max_length = MAX_LENGTH
     )
     device = next(model.parameters()).device
     ids = torch.tensor([encoded.input_ids], device = device)
-    with torch.inference_mode(), torch.autocast(device.type, dtype = torch.bfloat16):
+    amp_dtype = _clef_amp_dtype(model, device)
+    with (
+        torch.inference_mode(),
+        torch.autocast(device.type, dtype = amp_dtype, enabled = amp_dtype is not None),
+    ):
         logits, _ = model(input_ids = ids, attention_mask = torch.ones_like(ids), records = [encoded])
     rows = [
         row[: len(question.option_ids)]
@@ -109,9 +113,19 @@ def _decide(model, tokenizer, state, questions: dict[str, dict[str, Any]]) -> di
     return {
         "answers": answers,
         "input_tokens": len(encoded.input_ids),
-        # encode_record cuts the state to fit, which only ever fills the budget exactly.
-        "truncated": len(encoded.input_ids) >= MAX_LENGTH,
+        "truncated": _truncated(tokenizer, state, questions, encoded),
     }
+
+
+def _truncated(tokenizer, state, questions, encoded) -> bool:
+    # A cut state fills the budget exactly, but so does one that fits exactly: one more token of
+    # room tells them apart, and is only spent on prompts at the limit.
+    if len(encoded.input_ids) < MAX_LENGTH:
+        return False
+    from unsloth.models.clef import encode_record
+
+    record = {"state": state, "questions": questions}
+    return len(encode_record(tokenizer, record, max_length = MAX_LENGTH + 1).input_ids) > MAX_LENGTH
 
 
 def run_clef_worker(conn, folder: str) -> None:
@@ -147,6 +161,7 @@ class ClefAgent:
 
     def __init__(self, folder: Path):
         self._lock = threading.Lock()
+        self._broken: str | None = None
         self._conn, child = _CTX.Pipe()
         env = os.environ.get("UNSLOTH_IS_PRESENT")
         os.environ["UNSLOTH_IS_PRESENT"] = "1"
@@ -162,7 +177,11 @@ class ClefAgent:
             if env is None:
                 os.environ.pop("UNSLOTH_IS_PRESENT", None)
         child.close()
-        kind, payload = self._receive(LOAD_TIMEOUT_S)
+        try:
+            kind, payload = self._receive(LOAD_TIMEOUT_S)
+        except BaseException:
+            self.close()
+            raise
         if kind != "ready":
             self.close()
             raise ClefWorkerError(payload)
@@ -180,8 +199,19 @@ class ClefAgent:
 
     def decide(self, state, questions: dict[str, dict[str, Any]]) -> dict[str, Any]:
         with self._lock:
-            self._conn.send(("decide", state, questions))
-            kind, payload = self._receive(DECIDE_TIMEOUT_S)
+            # After a timeout the late answer is still in the pipe, so the worker is never asked again.
+            if self._broken is not None:
+                raise ClefWorkerError(self._broken)
+            try:
+                self._conn.send(("decide", state, questions))
+                kind, payload = self._receive(DECIDE_TIMEOUT_S)
+            except (OSError, ValueError, ClefWorkerError) as exc:
+                self._broken = (
+                    str(exc)
+                    if isinstance(exc, ClefWorkerError)
+                    else (f"The Clef worker exited (code {self._process.exitcode})")
+                )
+                raise ClefWorkerError(self._broken) from None
         if kind == "invalid":
             raise ValueError(payload)
         if kind != "ok":

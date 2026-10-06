@@ -41,10 +41,41 @@ def mlx_inference_patches(monkeypatch, native_vlm_generation_context):
     monkeypatch.setattr(mlx_inference, "_vlm_generation_context", contextlib.nullcontext)
     module = types.ModuleType("unsloth_zoo.mlx.inference")
     for name in FUSIONS:
-        setattr(module, f"fused_{name}", contextlib.nullcontext)
+        setattr(module, f"fused_{name}", _neutral_scope)
+    for name, helper in PLAIN_HELPERS.items():
+        setattr(module, name, helper)
     module.__getattr__ = _neutral_zoo_helper
     monkeypatch.setitem(sys.modules, "unsloth_zoo.mlx.inference", module)
     return module
+
+
+def _neutral_scope(
+    model = None,
+    *_args,
+    **_kwargs,
+):
+    """A scope that does nothing and yields the model, whatever else zoo passes.
+
+    contextlib.nullcontext takes one argument, so it stood in only while every helper took just the
+    model. unsloth_zoo #1546 calls nax_quantized_linear(model, int8_prefill), and the stub raised
+    TypeError inside generation_mode on every macOS vision batch test.
+    """
+    return contextlib.nullcontext(model)
+
+
+def _fusion_modules(model, modules):
+    """zoo's own body (unsloth_zoo.mlx.inference): the modules a fusion scope walks."""
+    return (
+        modules
+        if modules is not None
+        else (model.named_modules() if hasattr(model, "named_modules") else ())
+    )
+
+
+# Helpers zoo imports from mlx.inference that are plain functions, not scopes, so the neutral
+# scope cannot stand in for them. unsloth_zoo #1565 made generate.py import _fusion_modules and
+# call tuple(_fusion_modules(model, None)); private names are otherwise refused below.
+PLAIN_HELPERS = {"_fusion_modules": _fusion_modules}
 
 
 def _neutral_zoo_helper(name):
@@ -56,7 +87,7 @@ def _neutral_zoo_helper(name):
     """
     if name.startswith("_") or name.startswith("fused_"):
         raise AttributeError(name)
-    return contextlib.nullcontext
+    return _neutral_scope
 
 
 @pytest.fixture
@@ -384,6 +415,87 @@ def test_an_unknown_zoo_helper_is_neutral_but_a_deleted_fusion_stays_missing(
     with pytest.raises(ImportError):
         from unsloth_zoo.mlx.inference import fused_moe_router  # noqa: F401
     assert not hasattr(mlx_inference_patches, "_private")
+
+
+@pytest.mark.parametrize(
+    "args, kwargs",
+    [((), {}), ((object(),), {}), ((object(), True), {}), ((object(),), {"int8_prefill": False})],
+)
+def test_every_stub_scope_takes_any_arguments_and_yields_the_model(
+    mlx_inference_patches, args, kwargs
+):
+    for name in [*(f"fused_{f}" for f in FUSIONS), "nax_quantized_linear", "some_future_helper"]:
+        with getattr(mlx_inference_patches, name)(*args, **kwargs) as active:
+            assert active is (args[0] if args else None), name
+
+
+def test_the_stub_accepts_every_call_zoo_makes_to_an_inference_helper(mlx_inference_patches):
+    """Read zoo's calls to the helpers it imports from mlx.inference and replay each one's shape
+    against the stub, so a new argument fails here on Linux, not only in the macOS job."""
+    import importlib.util
+
+    spec = importlib.util.find_spec("unsloth_zoo")
+    if spec is None or not spec.submodule_search_locations:
+        pytest.skip("unsloth_zoo source is not available")
+    imported = _zoo_inference_imports()
+    root = Path(next(iter(spec.submodule_search_locations))) / "mlx"
+    calls = []
+    for path in sorted(root.glob("*.py")):
+        for node in ast.walk(ast.parse(path.read_text(encoding = "utf-8"))):
+            if (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Name)
+                and node.func.id in imported
+            ):
+                calls.append((path.name, node))
+    if not calls:
+        pytest.skip("this unsloth_zoo calls no mlx.inference helper by name")
+    for filename, call in calls:
+        args = [object() for _ in call.args]
+        kwargs = {kw.arg: object() for kw in call.keywords if kw.arg}
+        helper = getattr(mlx_inference_patches, call.func.id)
+        if call.func.id in PLAIN_HELPERS:
+            # A plain function, not a scope: it only has to accept the call's shape.
+            helper(*args, **kwargs)
+            continue
+        with helper(*args, **kwargs):
+            pass
+
+
+def _without_docstring(body):
+    """The body minus a leading docstring only: any other bare expression (a call, a log line) is
+    behaviour, and dropping it would let the copy miss it."""
+    first = body[0] if body else None
+    if (
+        isinstance(first, ast.Expr)
+        and isinstance(first.value, ast.Constant)
+        and isinstance(first.value.value, str)
+    ):
+        return body[1:]
+    return body
+
+
+def test_each_plain_helper_stub_matches_zoos_body():
+    """A plain helper is not neutral, so the stub copies zoo's body; it must stay a copy."""
+    import importlib.util
+    import inspect
+    import textwrap
+
+    spec = importlib.util.find_spec("unsloth_zoo")
+    if spec is None or not spec.submodule_search_locations:
+        pytest.skip("unsloth_zoo source is not available")
+    source = (Path(next(iter(spec.submodule_search_locations))) / "mlx" / "inference.py").read_text(
+        encoding = "utf-8"
+    )
+    zoo = {n.name: n for n in ast.parse(source).body if isinstance(n, ast.FunctionDef)}
+    for name, helper in PLAIN_HELPERS.items():
+        if name not in zoo:
+            continue
+        ours = ast.parse(textwrap.dedent(inspect.getsource(helper))).body[0]
+        ours_body, zoo_body = (
+            [ast.dump(n) for n in _without_docstring(f.body)] for f in (ours, zoo[name])
+        )
+        assert ours_body == zoo_body, f"{name} no longer matches unsloth_zoo.mlx.inference"
 
 
 @pytest.mark.parametrize("feature", FUSIONS)
@@ -3336,6 +3448,118 @@ def test_reload_comparison_and_response_carry_the_resolved_setting():
     assert resp.mlx_kv_quant == "8" and resp.mlx_kv_quant_note == "n"
 
 
+def _int8_zoo(
+    module,
+    available = True,
+    events = None,
+):
+    events = [] if events is None else events
+
+    @contextmanager
+    def nax_quantized_linear(model, int8_prefill = None):
+        events.append(("int8", int8_prefill))
+        yield
+        events.append(("int8_exit", int8_prefill))
+
+    module.nax_quantized_linear = nax_quantized_linear
+    reason = "" if available else "no_eligible_projections"
+    verdict = SimpleNamespace(available = available, reason = reason)
+    module.int8_prefill_available = lambda m: verdict
+    return events
+
+
+def test_int8_prefill_reloads_on_change_and_reports_why_it_is_off(mlx_inference_patches):
+    from core.inference import mlx_inference
+    from models.inference import LoadRequest
+    from routes.inference import _mlx_runtime_settings_match
+
+    req = lambda **knobs: LoadRequest(model = "m", model_path = "m", **knobs)
+    entry = {"mlx_kv_quant_requested": "auto"}
+    be = SimpleNamespace(active_model_name = "m", models = {"m": entry})
+    assert _mlx_runtime_settings_match(be, req())
+    assert not _mlx_runtime_settings_match(be, req(mlx_int8_prefill = True))
+    be.models["m"]["mlx_int8_prefill_requested"] = True
+    assert _mlx_runtime_settings_match(be, req(mlx_int8_prefill = True))
+    assert not _mlx_runtime_settings_match(be, req())
+
+    from core.inference import orchestrator
+
+    assert "mlx_int8_prefill_requested" in orchestrator._MLX_RUNTIME_MIRROR_FIELDS
+    status = mlx_inference._int8_prefill_status
+    _int8_zoo(mlx_inference_patches)
+    mlx_inference_patches.nax_quantized_linear = lambda model: contextlib.nullcontext()
+    assert status(True, object())["reason"] == "unsupported_zoo"
+    _int8_zoo(mlx_inference_patches, available = False)
+    assert status(True, object())["reason"] == "no_eligible_projections"
+    _int8_zoo(mlx_inference_patches)
+    assert status(True, object())["active"] and status(False, object())["scope"] is None
+
+
+@pytest.mark.parametrize("requested,available", [(True, True), (True, False), (False, True)])
+def test_int8_prefill_is_the_outermost_scope_of_generation_only_when_active(
+    monkeypatch, mlx_inference_patches, requested, available
+):
+    from core.inference import mlx_inference
+
+    events = _int8_zoo(mlx_inference_patches, available = available)
+
+    @contextmanager
+    def fusion(_model):
+        events.append(("fusion", None))
+        yield
+
+    for name in FUSIONS:
+        monkeypatch.setattr(mlx_inference_patches, f"fused_{name}", fusion)
+    mlx_vlm = types.ModuleType("mlx_vlm")
+    mlx_vlm.prompt_utils = SimpleNamespace(
+        MODEL_CONFIG = {}, apply_chat_template = lambda *_a, **_k: "<image> prompt"
+    )
+
+    def stream(*_a, **_k):
+        events.append(("stream", None))
+        yield SimpleNamespace(text = "ok", prompt_tokens = 1, generation_tokens = 1)
+
+    mlx_vlm.stream_generate = stream
+    monkeypatch.setitem(sys.modules, "mlx_vlm", mlx_vlm)
+    monkeypatch.setattr(
+        "core.inference.chat_template_helpers.apply_chat_template_for_generation",
+        lambda *_a, **_k: "<image> prompt",
+    )
+    monkeypatch.setattr(
+        mlx_inference, "_temporary_mlx_adapter_state", lambda *_a, **_k: contextlib.nullcontext()
+    )
+    backend = mlx_inference.MLXInferenceBackend()
+    backend._model = SimpleNamespace(config = {"model_type": "generic_vlm"})
+    backend._processor = SimpleNamespace(chat_template = "template")
+    backend._is_vlm = backend._reads_vision = True
+    backend._int8_prefill = mlx_inference._int8_prefill_status(requested, backend._model)
+    args = ([{"role": "user", "content": [{"type": "image"}]}], [object()], 0.7, 0.9, 40, 0.01, 4)
+    assert list(backend._generate_vlm(*args, 1.0, None)) == ["ok"]
+
+    expected = [("int8", True)] + [("fusion", None)] * len(FUSIONS) + [("stream", None)]
+    assert events == (expected + [("int8_exit", True)] if requested and available else expected[1:])
+
+
+def test_a_batch_session_holds_int8_prefill_for_its_whole_life(monkeypatch, mlx_inference_patches):
+    from core.inference import mlx_inference
+
+    events = _int8_zoo(mlx_inference_patches)
+    engine = _batch_engine(monkeypatch)
+    monkeypatch.setattr(engine, "GenerationDefaults", SimpleNamespace, raising = False)
+    stream = SimpleNamespace(close = lambda: events.append(("close", None)))
+    built = lambda *a, **k: events.append(("stream", None)) or stream
+    monkeypatch.setattr(engine, "BatchStream", built, raising = False)
+    backend = mlx_inference.MLXInferenceBackend()
+    backend._model = backend._processor = object()
+    for requested in (True, False):
+        events.clear()
+        backend._int8_prefill = mlx_inference._int8_prefill_status(requested, backend._model)
+        mlx_inference._VisionBatchSession(backend, width = 2).close()
+        # Off is pinned too, or Zoo's own scopes would read UNSLOTH_MLX_INT8_PREFILL.
+        want = [("int8", requested), ("stream", None), ("close", None), ("int8_exit", requested)]
+        assert events == want
+
+
 def test_kv_quant_probe_reports_what_the_runtime_would_really_do(monkeypatch):
     """Attempt the conversion instead of predicting it from config or names.
 
@@ -4699,6 +4923,15 @@ _TOOL_TEMPLATE = (
     "{% if m.tool_calls %}<tool_call>{{ m.tool_calls[0].function.name }}</tool_call>{% endif %}"
     "{% endfor %}"
 )
+_DEFAULT_TOOL_TEMPLATE = (
+    "{% if messages[0]['role'] == 'system' %}{% set system = messages[0]['content'] %}"
+    "{% set rest = messages[1:] %}{% else %}{% set system = 'You are Qwen.' %}"
+    "{% set rest = messages %}{% endif %}{{ system }}"
+    "{% if tools %}{% for tool in tools %}{{ tool.function.name }}{% endfor %}{% endif %}"
+    "{% for message in rest %}{{ message['content'] }}"
+    "{% if message.tool_calls %}<tool_call>{{ message.tool_calls[0].function.name }}"
+    "</tool_call>{% endif %}{% endfor %}"
+)
 _NAMED_TOOL_TEMPLATE = {"default": _PLAIN_TEMPLATE, "tool_use": _TOOL_TEMPLATE}
 
 
@@ -5436,10 +5669,49 @@ def test_an_mlx_count_prices_the_current_date_the_completion_prepends(monkeypatc
 
     line = current_date_prompt_line(request = interactive)
     assert line, "the harness must actually produce a date line"
-    note = f"[Current date: {line.removeprefix('The current date is ')[:-1]}]"
-    assert backend.messages[-1]["content"].startswith(
-        note
-    ), f"the count dropped the date the completion adds: {backend.messages!r}"
+    assert (
+        backend.system == line
+    ), f"the count dropped the date the completion adds: {backend.system!r}"
+    assert backend.messages == [{"role": "user", "content": "hi"}]
+
+
+def test_an_mlx_client_tool_count_keeps_the_template_default_after_the_date(monkeypatch):
+    from starlette.datastructures import Headers
+
+    from routes import inference as route
+
+    monkeypatch.setattr(
+        route,
+        "_local_template_system_turn",
+        lambda _today, image = False, tools = False, controls = (): (
+            True,
+            "You are Qwen." if tools else "",
+        ),
+    )
+    interactive = SimpleNamespace(headers = Headers({}), query_params = {}, cookies = {})
+    backend = _RenderRecordingBackend()
+    _count_hi(
+        monkeypatch,
+        backend,
+        template = _DEFAULT_TOOL_TEMPLATE,
+        request = interactive,
+        enable_tools = False,
+        tools = [
+            {
+                "type": "function",
+                "function": {
+                    "name": "lookup",
+                    "description": "Look up a value.",
+                    "parameters": {"type": "object", "properties": {}},
+                },
+            }
+        ],
+    )
+    from routes.inference import current_date_prompt_line
+
+    line = current_date_prompt_line(request = interactive)
+    assert backend.system == ""
+    assert backend.messages[0] == {"role": "system", "content": f"{line}\n\nYou are Qwen."}
 
 
 def test_an_mlx_count_prices_the_archive_tool_and_its_compaction_nudge(monkeypatch):

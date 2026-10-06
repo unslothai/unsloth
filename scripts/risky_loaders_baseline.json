@@ -139,6 +139,14 @@
       "reason": "Module name comes from a fixed table or constant in this file, not from a model, request or download."
     },
     {
+      "file": "studio/backend/core/inference/diffusion_rocm_fused.py",
+      "rule": "dynamic-import",
+      "sink": "import_module",
+      "digest": "59e72c01edb14c86",
+      "count": 1,
+      "reason": "install_rope only imports a name already in _ROPE_FNS, which is built from the fixed _MODULES tuple of two diffusers Flux transformer modules."
+    },
+    {
       "file": "studio/backend/core/inference/diffusion_torchao_patches.py",
       "rule": "dynamic-import",
       "sink": "import_module",

@@ -262,6 +262,33 @@ def test_studio_loop_executes_and_replays_native_tool_calls(native, monkeypatch)
     assert api.active_generations.count() == 0
 
 
+def test_run_automatically_streams_arm_the_no_sandbox_gate(native, monkeypatch):
+    # Same rule as the llama.cpp and safetensors loops: a streaming UI chat in "off" arms the confirm
+    # gate, and the loop then asks only for a risky Python/Terminal call without OS isolation.
+    from core.inference import studio_tool_loop
+    from routes import managed_engine_chat
+
+    seen = []
+    original = managed_engine_chat.stream_with_studio_tools
+
+    def capture(*args, **kwargs):
+        seen.append(kwargs["policy"].confirm_calls)
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(managed_engine_chat, "stream_with_studio_tools", capture)
+    monkeypatch.setattr(studio_tool_loop, "execute_tool", lambda *a, **k: "3973")
+    run(
+        route_test._request(
+            enable_tools = True,
+            enabled_tools = ["python"],
+            permission_mode = "off",
+            max_tool_calls_per_message = 1,
+            stream = True,
+        )
+    )
+    assert seen == [True]
+
+
 @pytest.mark.parametrize(
     "choice", ["auto", "required", "none", {"type": "function", "function": {"name": "lookup"}}]
 )
@@ -555,10 +582,15 @@ def test_a_catalog_with_tool_choice_none_is_plain_chat(native):
 
 
 @pytest.mark.parametrize("tools", [False, True])
-def test_managed_messages_keep_the_current_date_note(native, monkeypatch, tools):
+def test_managed_messages_get_no_unrequested_date(native, monkeypatch, tools):
+    from core.inference import orchestrator
+
     backend, requests = native
+    monkeypatch.setattr(orchestrator, "peek_inference_backend", lambda: backend)
     monkeypatch.setattr(api, "_date_gate_blocks", lambda *a: False)
-    monkeypatch.setattr(api, "_current_date_parts", lambda *a: ("", "[DATE NOTE]"))
+    monkeypatch.setattr(
+        api, "current_date_prompt_line", lambda **_k: "The current date is 2026-08-15."
+    )
     seen = []
     plain = backend._responder
 
@@ -572,9 +604,12 @@ def test_managed_messages_keep_the_current_date_note(native, monkeypatch, tools)
             enable_tools = False, **({"tools": [route_test.LOOKUP_TOOL]} if tools else {})
         )
     )
-    messages = requests[-1]["messages"] if tools else seen[-1]
-    user = [m for m in messages if m["role"] == "user"][-1]
-    assert "[DATE NOTE]" in json.dumps(user["content"])
+    if tools:
+        sent = requests[-1]["messages"]
+    else:
+        sent = [*seen[-1], {"role": "system", "content": backend.calls[-1]["system_prompt"]}]
+    # vLLM/SGLang render a template Studio never sees, so no system turn is made up for it.
+    assert "2026-08-15" not in json.dumps(sent)
 
 
 @pytest.mark.parametrize("vision", [False, True])

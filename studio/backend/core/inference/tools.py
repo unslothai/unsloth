@@ -76,6 +76,7 @@ from core.inference.mcp_client import (
     is_studio_decisions,
     is_stdio,
     list_tools_async,
+    oauth_client_kwargs,
     parse_server_headers,
     parse_stdio_command,
     probe_timeout,
@@ -10180,10 +10181,11 @@ def _windows_system_cmd() -> str:
 def _terminal_profile(disable_sandbox: bool = False) -> str:
     """Which shell the Terminal runs: "bash", "cmd_isolated" or "cmd_fallback".
 
-    Git Bash cannot start inside MXC (microsoft/mxc#1061), so when the MXC probe names exactly that
-    failure and cmd.exe qualifies instead, Auto runs the Terminal isolated on cmd rather than
-    unsandboxed on bash. Only the MSYS verdict triggers the cmd probe, so hosts without a working MXC
-    pay nothing extra. Full access and UNSLOTH_MXC_TERMINAL_CMD=0 keep the host shell.
+    Git Bash cannot start inside MXC (microsoft/mxc#1061), so when bash fails the MXC probe and
+    cmd.exe qualifies instead, Auto runs the Terminal isolated on cmd rather than unsandboxed on bash.
+    Any bash failure counts, not only the MSYS verdict: on a freshly prepared host bash fails without
+    that signature while cmd passes. Only a failed bash probes cmd. Full access and
+    UNSLOTH_MXC_TERMINAL_CMD=0 keep the host shell.
     """
     if sys.platform != "win32":
         return "bash"
@@ -10192,14 +10194,12 @@ def _terminal_profile(disable_sandbox: bool = False) -> str:
     if disable_sandbox or os.environ.get("UNSLOTH_MXC_TERMINAL_CMD") == "0":
         return host_default
     try:
-        from . import mxc_probe
-
         if bash:
-            # Either MXC tier: BaseContainer hosts hit the same MSYS failure as the DACL tier.
+            # Either MXC tier: any bash failure tries cmd.
             verdict = os_sandbox.capability_snapshot(
                 execution_kind = "terminal", selected_executable = bash
             )
-            if verdict.available or verdict.reason != mxc_probe.MSYS_NAMESPACE_REASON:
+            if verdict.available:
                 return "bash"
         cmd = os_sandbox.capability_snapshot(
             execution_kind = "terminal", selected_executable = _windows_system_cmd()
@@ -10214,12 +10214,25 @@ def _terminal_profile(disable_sandbox: bool = False) -> str:
 _request_profile: list = [None, 0.0]
 _request_profile_lock = threading.Lock()
 _REQUEST_PROFILE_REFRESH_SECONDS = 240.0
+# Bumped by every reset: a refresh that started earlier must not publish the profile it computed.
+_request_profile_generation = 0
+
+
+def reset_terminal_profile_cache() -> None:
+    """Forget the advertised Terminal profile, so the next request re-checks it (isolation settings changed)."""
+    global _request_profile_generation
+    with _request_profile_lock:
+        _request_profile[:] = [None, 0.0]
+        _request_profile_generation += 1
 
 
 def _refresh_request_profile() -> str:
+    with _request_profile_lock:
+        generation = _request_profile_generation
     profile = _terminal_profile(False)
     with _request_profile_lock:
-        _request_profile[:] = [profile, time.monotonic()]
+        if generation == _request_profile_generation:
+            _request_profile[:] = [profile, time.monotonic()]
     return profile
 
 
@@ -13698,6 +13711,7 @@ async def get_enabled_mcp_tools() -> list[dict]:
                     headers = parse_server_headers(s),
                     timeout = probe_timeout(s["url"], bool(s.get("use_oauth"))),
                     use_oauth = bool(s.get("use_oauth")),
+                    **oauth_client_kwargs(s),
                 )
                 for s in uncached
             ),
@@ -14029,6 +14043,7 @@ def execute_tool(
             use_oauth = use_oauth,
             cancel_event = cancel_event,
             scope = mcp_scope,
+            **oauth_client_kwargs(server),
             config_check = _config_current,
             ui_resource_uri = tool_ui_resource_uri(mcp_tool_definition(server_id, tool_name)),
         )
@@ -15739,6 +15754,19 @@ def _redirect_hop(url: str, website_policy, deadline, cancel_event) -> tuple[str
     return None, host, pinned_ips
 
 
+def _is_bot_check(status: int, headers) -> bool:
+    """Whether a refusal came from a bot check (Cloudflare, DataDome, Akamai), not the site."""
+    if headers is None:
+        return False
+    if (headers.get("cf-mitigated") or "").lower() == "challenge":
+        return True
+    if headers.get("x-datadome") or headers.get("x-dd-b"):
+        return True
+    # Rate limits and outages behind these CDNs carry the same Server header.
+    server = (headers.get("Server") or "").lower()
+    return status == 403 and ("cloudflare" in server or "akamaighost" in server)
+
+
 def _fetch_url_raw(
     url: str,
     timeout: int = 30,
@@ -15747,8 +15775,15 @@ def _fetch_url_raw(
     cancel_event = None,
     website_policy: dict | None = None,
     raw_bytes_max: int | None = None,
+    post_data: bytes | None = None,
+    meta_out: dict | None = None,
 ) -> tuple[str | None, "str | bytes", str]:
     """Fetch a URL with SSRF protection; return ``(error, body_text, content_type)``.
+
+    ``post_data`` sends a urlencoded POST (kept on 307/308, dropped on other redirects).
+    ``meta_out`` receives the final ``url``, ``charset`` and ``filename`` (Content-Disposition) of a
+    successful binary-mode fetch, and
+    ``bot_check`` on HTTP errors.
 
     ``raw_bytes_max`` switches to binary mode: the body is returned as ``bytes`` untouched (no PDF
     or text handling) and refused past that many bytes. The same scheme, host, redirect and budget
@@ -15792,6 +15827,7 @@ def _fetch_url_raw(
         current_url = url
         current_host = canonical_host
         ua = random.choice(_USER_AGENTS)
+        pending_post = post_data
 
         for _hop in range(5):
             budget_error = _fetch_budget_exceeded(deadline, cancel_event)
@@ -15837,18 +15873,25 @@ def _fetch_url_raw(
             }
             if extra_headers:
                 headers.update(extra_headers)
-            req = urllib.request.Request(request_url, headers = headers)
+            if pending_post is not None:
+                headers.setdefault("Content-Type", "application/x-www-form-urlencoded")
+            req = urllib.request.Request(request_url, headers = headers, data = pending_post)
             try:
                 # Cap the socket timeout at the time left on the overall deadline so a single slow hop cannot outlast
                 # the whole fetch budget.
                 resp = opener.open(req, timeout = _fetch_hop_timeout(timeout, deadline))
             except _HTTPError as e:
                 if e.code not in (301, 302, 303, 307, 308):
+                    if meta_out is not None:
+                        meta_out["bot_check"] = _is_bot_check(e.code, e.headers)
                     return f"Failed to fetch URL: HTTP {e.code} {getattr(e, 'reason', '')}", "", ""
                 location = e.headers.get("Location")
                 if not location:
                     return "Failed to fetch URL: redirect missing Location header.", "", ""
                 current_url = urljoin(current_url, location)
+                # 307/308 keep the POST; other redirects turn it into a GET.
+                if e.code not in (307, 308):
+                    pending_post = None
                 hop_error, current_host, pinned_ips = _redirect_hop(
                     current_url,
                     website_policy,
@@ -15890,6 +15933,10 @@ def _fetch_url_raw(
             if raw_bytes_max is not None:
                 if len(raw_bytes) > raw_bytes_max:
                     return f"(content exceeds the {raw_bytes_max} byte limit)", "", content_type
+                if meta_out is not None:
+                    meta_out["url"] = current_url
+                    meta_out["charset"] = resp.headers.get_content_charset()
+                    meta_out["filename"] = resp.headers.get_filename()
                 return None, raw_bytes, content_type
             if not declared_pdf and len(raw_bytes) == max_bytes and _has_pdf_magic(raw_bytes):
                 tail_error, tail = _read_capped_body(
@@ -15908,6 +15955,8 @@ def _fetch_url_raw(
             if not refresh_url:
                 break
             current_url = refresh_url
+            # A refresh is a new GET, like a browser's.
+            pending_post = None
             hop_error, current_host, pinned_ips = _redirect_hop(
                 current_url,
                 website_policy,
@@ -20471,6 +20520,65 @@ def _split_frontend_suffix(text: str, name: "str | None") -> "tuple[str, str]":
     if not isinstance(body, str) or not text.startswith(body):
         return text, ""
     return body, text[len(body) :]
+
+
+MAX_TOOL_TEXT_CHARS = _env_int("UNSLOTH_TOOL_RESULT_HARD_CAP_CHARS", 256_000)
+_TOOL_TEXT_READERS = frozenset({"terminal", "python"})
+
+
+def _hard_cap_chars() -> int:
+    """Never below the window-aware cap plus its notice, so output `_truncate` already cut (and
+    spilled) passes through with its own spill reference intact."""
+    return max(MAX_TOOL_TEXT_CHARS, _MAX_OUTPUT_CHARS + 4_000)
+
+
+def _tool_text_notice_head() -> str:
+    return f"\n\n... (tool result truncated to {_hard_cap_chars():,} chars for the model;"
+
+
+def _tool_text_search_hint(path: str, readers: "frozenset[str]") -> str:
+    ways = []
+    if "terminal" in readers and _posix_tools_available():
+        ways += [f"grep -n 'pattern' {path}", f"sed -n '1,200p' {path}"]
+    elif "terminal" in readers:
+        ways.append(f'findstr /n "pattern" {path.replace("/", chr(92))}')
+    if "python" in readers:
+        ways.append(f"open({path!r}) in python")
+    return "Search it instead of re-running the call, e.g. " + ", or ".join(ways)
+
+
+def cap_tool_text(
+    text: str,
+    *,
+    session_id: "str | None" = None,
+    thread_id: "str | None" = None,
+    readers: "frozenset[str]" = frozenset(),
+) -> str:
+    """Unconditional floor (``UNSLOTH_TOOL_RESULT_HARD_CAP_CHARS``); spills when a reader tool exists."""
+    limit = _hard_cap_chars()
+    if len(text) <= limit:
+        return text
+    head = _head_whole_lines(text, limit)[0]
+    readers = readers & _TOOL_TEXT_READERS
+    if readers and session_id and _spill_scope(session_id, thread_id) is not None:
+        try:
+            workdir = _get_workdir(session_id)
+        except Exception:  # noqa: BLE001 -- no sandbox means the plain notice
+            logger.debug("tool text spill: no workdir", exc_info = True)
+            workdir = None
+        from .tool_loop_controller import redact_studio_credentials  # noqa: PLC0415
+
+        # Masked like the card and the model copy: the model reads this file.
+        spill, complete = _spill_full_output(
+            redact_studio_credentials(text), workdir, _spill_scope(session_id, thread_id)
+        )
+        if spill is not None:
+            return (
+                head
+                + f"{_tool_text_notice_head()} {_spill_phrase(spill, complete)} in the working "
+                f"directory. {_tool_text_search_hint(spill, readers)}.)"
+            )
+    return head + f"{_tool_text_notice_head()} the full output is not retained in model context.)"
 
 
 def _head_whole_lines(text: str, limit: int) -> "tuple[str, bool]":

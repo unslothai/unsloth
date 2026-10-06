@@ -159,6 +159,71 @@ def _is_model_directory_for_scan(path: Path, *, entry_limit: int | None) -> bool
     return has_config and _has_immediate_model_weight(path)
 
 
+_MAX_NESTED_SCAN_DEPTH = 8
+_MAX_NESTED_SCAN_DIRS = 500
+_MAX_NESTED_SCAN_ENTRIES = 20000
+# blobs: an Ollama store's content-addressed files, never a model folder.
+_NESTED_SCAN_SKIP_NAMES = frozenset({"ollama_links", "node_modules", "__pycache__", "blobs"})
+
+
+def _is_plain_dir_entry(entry: os.DirEntry) -> bool:
+    if not entry.is_dir(follow_symlinks = False):
+        return False
+    # A Windows junction is a directory to is_dir(follow_symlinks=False) before 3.12; other reparse
+    # points (OneDrive placeholders) are real folders and stay walkable.
+    tag = getattr(entry.stat(follow_symlinks = False), "st_reparse_tag", 0)
+    return tag != _IO_REPARSE_TAG_MOUNT_POINT
+
+
+def is_loadable_model_dir(path: Path) -> bool:
+    """A folder the scan lists as a loadable model. A config with no weights beside it is not one: its model may sit a level down."""
+    return _is_diffusers_pipeline_dir(path) or _has_immediate_model_weight(path)
+
+
+def nested_scan_roots(folder_path: Path) -> list[Path]:
+    """Sub-folders of a recursive scan folder to scan like the folder itself (#6371). Skips listed models, HF cache
+    repos, hidden folders, symlinks and junctions, so each model is reached once and the walk stays inside."""
+    # Same test _scan_models_dir uses to list the folder as one model; loose GGUFs beside sub-folders are not.
+    if _is_model_directory_for_scan(folder_path, entry_limit = _MAX_CUSTOM_FOLDER_ENTRIES):
+        return []
+    roots: list[Path] = []
+    visited = 0
+    stack: list[tuple[Path, int]] = [(folder_path, 0)]
+    while stack and len(roots) < _MAX_NESTED_SCAN_DIRS:
+        current, depth = stack.pop()
+        if depth >= _MAX_NESTED_SCAN_DEPTH:
+            continue
+        children: list[Path] = []
+        try:
+            with os.scandir(current) as entries:
+                for entry in entries:
+                    visited += 1
+                    if visited > _MAX_NESTED_SCAN_ENTRIES:
+                        break
+                    name = entry.name
+                    if (
+                        name.startswith((".", "models--", "datasets--", "spaces--"))
+                        or name in _NESTED_SCAN_SKIP_NAMES
+                    ):
+                        continue
+                    try:
+                        if not _is_plain_dir_entry(entry):
+                            continue
+                    except OSError:
+                        continue
+                    child = Path(entry.path)
+                    if not is_loadable_model_dir(child):
+                        children.append(child)
+        except OSError:
+            continue
+        children.sort()
+        roots.extend(children[: _MAX_NESTED_SCAN_DIRS - len(roots)])
+        stack.extend((child, depth + 1) for child in reversed(children))
+        if visited > _MAX_NESTED_SCAN_ENTRIES:
+            break
+    return roots
+
+
 def _resolve_hf_cache_dir() -> Path:
     from utils.hf_cache_settings import get_hf_cache_paths
     return get_hf_cache_paths().hub_cache
@@ -838,7 +903,9 @@ async def _collect_models_from_default_sources(
                 ("model", model_id, cache_dir) for _repo, model_id, _updated in discovered
             )
         # Carry the registered path: the status registry is keyed on the row, not on the normalized Path this scan walks.
-        custom_sources.append((folder_path, hf_caches, str(folder["path"])))
+        custom_sources.append(
+            (folder_path, hf_caches, str(folder["path"]), bool(folder.get("recursive")))
+        )
     try:
         variant_states = await asyncio.to_thread(
             download_manifest.build_variant_state_index,
@@ -871,14 +938,18 @@ async def _collect_models_from_default_sources(
         local_models += await _scan_source("Hermes", scan_hermes_dir, hermes_dir)
 
     hermes_identities = {_inventory_physical_identity(str(d)) for d in hermes_dirs}
-    for folder_path, hf_caches, row_path in custom_sources:
+    for folder_path, hf_caches, row_path, recursive in custom_sources:
         try:
+            nested_roots = (
+                tuple(await asyncio.to_thread(nested_scan_roots, folder_path)) if recursive else ()
+            )
             custom_models = await asyncio.to_thread(
                 _scan_custom_folder,
                 folder_path,
                 hf_caches = hf_caches,
                 variant_states = variant_states,
                 active_hub_cache = hf_cache_dir,
+                nested_roots = nested_roots,
             )
             if _inventory_physical_identity(str(folder_path)) in hermes_identities:
                 # Registering ~/.hermes/models was how Hermes downloads were listed before this scan;
@@ -913,12 +984,46 @@ async def _collect_models_from_default_sources(
     return local_models
 
 
+def _scan_row_key(row: LocalModelInfo) -> tuple[str, str, Optional[str]]:
+    return (row.path, row.model_format, row.format_variant)
+
+
+def _scan_nested_roots(
+    nested_roots: tuple[Path, ...],
+    *,
+    seen: set[tuple[str, str, Optional[str]]],
+    active_hub_cache: Optional[Path],
+) -> List[LocalModelInfo]:
+    """Rows under a recursive folder's nested roots, minus any the folder's own scan already listed."""
+    found: List[LocalModelInfo] = []
+    for root in nested_roots:
+        if len(found) >= _MAX_MODELS_PER_CUSTOM_FOLDER:
+            break
+        rows = _scan_models_dir(
+            root,
+            limit = _MAX_MODELS_PER_CUSTOM_FOLDER - len(found),
+            entry_limit = _MAX_CUSTOM_FOLDER_ENTRIES,
+        ) + _scan_hf_cache(
+            root,
+            entry_limit = _MAX_CUSTOM_FOLDER_ENTRIES,
+            active_cache = False,
+            active_hub_cache = active_hub_cache,
+        )
+        for row in rows:
+            key = _scan_row_key(row)
+            if key not in seen:
+                seen.add(key)
+                found.append(row)
+    return found
+
+
 def _scan_custom_folder(
     folder_path: Path,
     *,
     hf_caches: Optional[list[tuple[Path, Optional[list]]]] = None,
     variant_states: Optional[download_manifest.VariantStateIndex] = None,
     active_hub_cache: Optional[Path] = None,
+    nested_roots: tuple[Path, ...] = (),
 ) -> List[LocalModelInfo]:
     from utils.models.model_config import detect_gguf_model
 
@@ -957,6 +1062,16 @@ def _scan_custom_folder(
         if _is_supported(m)
         if not any(p in (".studio_links", "ollama_links") for p in Path(m.path).parts)
     ]
+    if nested_roots:
+        generic += [
+            m
+            for m in _scan_nested_roots(
+                nested_roots,
+                seen = {_scan_row_key(m) for m in generic},
+                active_hub_cache = active_hub_cache,
+            )
+            if _is_supported(m)
+        ]
     selectable = []
     for model in generic:
         if model.model_format != "gguf" or model.partial:
@@ -1013,6 +1128,30 @@ async def _load_custom_folders() -> list[dict]:
         return []
 
 
+def _merge_custom_rows_listed_natively(
+    custom_models: List[LocalModelInfo], native_models: List[LocalModelInfo]
+) -> tuple[list[LocalModelInfo], list[LocalModelInfo]]:
+    """A custom folder overlapping the models dir or LM Studio re-lists their models (#9164)."""
+    native: dict[tuple[str, str], LocalModelInfo] = {}
+    for model in native_models:
+        if model.source in ("models_dir", "lmstudio"):
+            native.setdefault((_inventory_physical_identity(model.path), model.model_format), model)
+    if not native:
+        return list(native_models), list(custom_models)
+    replaced: set[int] = set()
+    kept_custom: list[LocalModelInfo] = []
+    for model in custom_models:
+        twin = native.get((_inventory_physical_identity(model.path), model.model_format))
+        # A symlink below the scan root is a deliberate alias with its own settings (#10605), so it stays.
+        if twin is None or _local_model_path_is_symlink(_custom_alias_key(model)):
+            kept_custom.append(model)
+        elif twin.source == "lmstudio" and model.capabilities.can_train:
+            # The train picker refuses LM Studio rows, so the trainable custom row wins.
+            replaced.add(id(twin))
+            kept_custom.append(model)
+    return [m for m in native_models if id(m) not in replaced], kept_custom
+
+
 def _dedupe_local_models(local_models: List[LocalModelInfo]) -> list[LocalModelInfo]:
     deduped: dict[str, LocalModelInfo] = {}
     custom_models: list[LocalModelInfo] = []
@@ -1049,11 +1188,11 @@ def _dedupe_local_models(local_models: List[LocalModelInfo]) -> list[LocalModelI
         if prefer_candidate:
             deduped[key] = model
 
-    deduped_values = list(deduped.values()) + _dedupe_custom_local_models(custom_models)
-    custom_values = [model for model in deduped_values if model.source == "custom"]
+    native_values, custom_values = _merge_custom_rows_listed_natively(
+        _dedupe_custom_local_models(custom_models), list(deduped.values())
+    )
     return sorted(
-        [model for model in deduped_values if model.source != "custom"]
-        + gguf.suppress_grouped_gguf_file_rows(custom_values),
+        native_values + gguf.suppress_grouped_gguf_file_rows(custom_values),
         key = lambda item: item.updated_at or 0,
         reverse = True,
     )
@@ -1182,7 +1321,9 @@ async def list_local_models_response(models_dir: str = "./models") -> LocalModel
             _inventory_path_identity(models_dir),
             sources,
             tuple(
-                _inventory_path_identity(str(folder.get("path", ""))) for folder in custom_folders
+                _inventory_path_identity(str(folder.get("path", "")))
+                + ("\x00r" if folder.get("recursive") else "")
+                for folder in custom_folders
             ),
             epoch,
         )
@@ -1229,10 +1370,10 @@ def get_scan_folders_response() -> dict:
     return {"folders": annotate_scan_folders(folders)}
 
 
-def add_scan_folder_response(path: str) -> dict:
+def add_scan_folder_response(path: str, recursive: Optional[bool] = None) -> dict:
     path = _account_access().private_directory(path, "")
     try:
-        folder, inserted = add_scan_folder_with_status(_coerce_scan_folder_path(path))
+        folder, inserted = add_scan_folder_with_status(_coerce_scan_folder_path(path), recursive)
     except ValueError as e:
         logger.warning(
             "Scan folder rejected: %s (path=%s)", scrub_paths(e), short_path_for_log(path)

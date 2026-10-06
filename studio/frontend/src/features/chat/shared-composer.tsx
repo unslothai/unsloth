@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// eslint-disable-next-line no-restricted-imports -- Keep the import-free payload helper independent of the picker UI.
-import { llamaCppConfigPayload } from "@/features/model-picker/model-config/llama-cpp-config";
 import { useChatArtifactsStore } from "./artifacts/store";
 import { mlxRuntimeStateFrom } from "./lib/mlx-runtime-state";
 import { offloadCountsFrom, offloadWarning } from "./lib/partial-offload";
@@ -206,12 +204,10 @@ import {
   shouldPinDiffusionPlacement,
 } from "./lib/gpu-placement";
 import {
-  loadedLlamaCppConfigFields,
-  managedGpuMemoryFields,
+  loadedGpuMemoryFields,
   type ReasoningEffort,
   reconcilePersistedGpuIds,
-  managedKvCacheFields,
-  managedSpeculativeSettings,
+  resolveLoadedSpeculativeSettings,
   resolvePreserveThinkingOnLoad,
   persistGpuMemoryModeOnLoad,
   resolveSpeculativeSettingsForLoad,
@@ -1750,9 +1746,6 @@ export function SharedComposer({
                   : ownConfig.reasoningBudgetMessage,
                 // Only when this panel has read the stored value: omitted, the load inherits it, which is what
                 // keeps CLI-set flags working.
-                ...llamaCppConfigPayload(ownConfig.llamaCppConfig, {
-                  isDiffusion: resolvedIsDiffusion === true,
-                }),
                 ...(ownConfig.llamaExtraArgs !== undefined
                   ? // biome-ignore lint/style/useNamingConvention: API schema
                     { llama_extra_args: ownConfig.llamaExtraArgs ?? [] }
@@ -1831,6 +1824,7 @@ export function SharedComposer({
           chat_template_override: effectiveChatTemplateOverride,
           cache_type_kv: ownConfig.kvCacheDtype ?? null,
           mlx_kv_quant: ownConfig.mlxKvQuant ?? null,
+          mlx_int8_prefill: ownConfig.mlxInt8Prefill ?? false,
           speculative_type: effectiveSpeculativeType,
           spec_draft_n_max: effectiveSpecDraftNMax,
           reasoning_budget:
@@ -1853,9 +1847,6 @@ export function SharedComposer({
                 n_cpu_moe: effectiveNCpuMoe,
                 tensor_split: compareLoadKnobs.splitRatio ?? undefined,
                 gpu_ids: effectiveSelectedGpuIds ?? undefined,
-                ...llamaCppConfigPayload(ownConfig.llamaCppConfig, {
-                  isDiffusion: resolvedIsDiffusion === true,
-                }),
                 ...(ownConfig.llamaExtraArgs !== undefined
                   ? // biome-ignore lint/style/useNamingConvention: API schema
                     { llama_extra_args: ownConfig.llamaExtraArgs ?? [] }
@@ -1952,7 +1943,8 @@ export function SharedComposer({
           supportsPreserveThinking: resp.supports_preserve_thinking ?? false,
           preserveThinking: resolvePreserveThinkingOnLoad(resp),
           supportsTools: resp.supports_tools ?? false,
-          ...managedKvCacheFields(resp),
+          kvCacheDtype: resp.cache_type_kv ?? null,
+          loadedKvCacheDtype: resp.cache_type_kv ?? null,
           ...mlxRuntimeStateFrom(resp),
           // Click-time value, not the resolved echo (see the single-model load).
           nParallel: committedSlots,
@@ -1990,7 +1982,6 @@ export function SharedComposer({
             : clearedServerTuningState()),
           // What this pane's launch is running, for a later rollback: the status applier is held off for
           // the whole load, so a switch straight after would snapshot the other model's list.
-          ...loadedLlamaCppConfigFields(resp, ownConfig.llamaCppConfig),
           loadedLlamaExtraArgs:
             resp.requested_llama_extra_args !== undefined
               ? (resp.requested_llama_extra_args ?? [])
@@ -2012,7 +2003,7 @@ export function SharedComposer({
           loadedCustomContextLength: keepCustomCtx,
           // Adopt the load response's GPU-memory fields (mode/layers/MoE/split/pick plus loaded baselines)
           // so the GPU controls round-trip. The context group and native-path token/expiry clear below.
-          ...managedGpuMemoryFields(resp),
+          ...loadedGpuMemoryFields(resp),
           // Drives the GPU Memory controls' diffusion gate; set alongside the GPU fields on every load path
           // so the gate cannot read stale.
           loadedIsDiffusion: resp.is_diffusion ?? false,
@@ -2029,7 +2020,7 @@ export function SharedComposer({
           // lease. Clear any prior picked file's token/expiry so the reload path never sends a stale one.
           activeNativePathToken: null,
           activeNativePathExpiresAtMs: null,
-          ...managedSpeculativeSettings(resp),
+          ...resolveLoadedSpeculativeSettings(resp),
         });
         if (!targetIsGguf) {
           // Non-GGUF panes carry their context in params.maxSeqLength.
@@ -2704,6 +2695,7 @@ export function SharedComposer({
       <textarea
         {...skillMentions.inputProps}
         ref={textareaRef}
+        data-type-to-activate="composer"
         value={text}
         onChange={(e) => {
           // ALWAYS mirror the DOM value into React state, even during IME composition: the controlled `value`

@@ -71,6 +71,7 @@ export function ClipCard({
   status,
   focusOnMount = false,
   onFocused,
+  player,
 }: {
   title: string;
   model: string;
@@ -83,6 +84,8 @@ export function ClipCard({
   status?: string;
   focusOnMount?: boolean;
   onFocused?: () => void;
+  /** Replaces the waveform player, e.g. Edit's Original/Edited or Convert's Source/Converted compare. */
+  player?: ReactNode;
 }) {
   const focusPlay = (element: HTMLDivElement | null) => {
     if (!(element && focusOnMount && src)) return;
@@ -112,14 +115,16 @@ export function ClipCard({
         </Button>
         {menu}
       </div>
-      <div ref={focusPlay}>
-        <Waveform
-          peaks={peaks}
-          durationS={durationS}
-          src={src}
-          label={title || "audio clip"}
-        />
-      </div>
+      {player ?? (
+        <div ref={focusPlay}>
+          <Waveform
+            peaks={peaks}
+            durationS={durationS}
+            src={src}
+            label={title || "audio clip"}
+          />
+        </div>
+      )}
     </Card>
   );
 }
