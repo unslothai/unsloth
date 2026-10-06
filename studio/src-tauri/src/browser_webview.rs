@@ -875,7 +875,7 @@ fn discard_staged(views: &Mutex<ViewsState>, id: &str) -> Result<(), String> {
 
 /// Mark a download as from the internet, so Gatekeeper or SmartScreen checks it. Whether that
 /// worked (FAT, exFAT and some network drives keep no mark); None where there is no mark.
-fn mark_downloaded(path: &Path, url: &Url) -> Option<bool> {
+pub(crate) fn mark_downloaded(path: &Path, url: &Url) -> Option<bool> {
     #[cfg(target_os = "macos")]
     {
         use std::ffi::CString;

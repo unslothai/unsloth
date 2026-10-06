@@ -5,6 +5,7 @@ import { isTauri } from "@/lib/api-base";
 import { decodeDataUri, isDataUri } from "@/lib/data-uri";
 
 const NATIVE_FILE_NAME_HEADER = "x-unsloth-default-name";
+const NATIVE_FILE_SOURCE_HEADER = "x-unsloth-source-url";
 const NATIVE_FILE_SAVE_TOKEN_HEADER = "x-unsloth-save-token";
 const NATIVE_FILE_CHUNK_BYTES = 8 * 1024 * 1024;
 export class DownloadCancelledError extends Error {
@@ -88,6 +89,8 @@ export async function downloadFile(
   content: string | Blob | Uint8Array,
   filename: string,
   mimeType = "application/octet-stream",
+  /** A web page the file came from: the desktop app marks it as downloaded from the internet. */
+  sourceUrl?: string | null,
 ): Promise<void> {
   if (isTauri) {
     const { invoke } = await import("@tauri-apps/api/core");
@@ -100,6 +103,7 @@ export async function downloadFile(
     const savedPath = await invoke<string | null>("save_native_file", bytes, {
       headers: {
         [NATIVE_FILE_NAME_HEADER]: encodeNativeFilename(filename),
+        ...(sourceUrl ? { [NATIVE_FILE_SOURCE_HEADER]: encodeNativeFilename(sourceUrl) } : {}),
       },
     });
     if (savedPath === null) {

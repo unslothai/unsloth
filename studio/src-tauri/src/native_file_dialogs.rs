@@ -15,6 +15,8 @@ const MAX_TRAINING_CONFIG_BYTES: u64 = 1024 * 1024;
 /// pieces, and a piece has to fit in one IPC response.
 const MAX_CHAT_IMPORT_CHUNK_BYTES: usize = 8 * 1024 * 1024;
 const NATIVE_FILE_NAME_HEADER: &str = "x-unsloth-default-name";
+/// Where a browser panel save came from, so the file is marked as downloaded from the internet.
+const NATIVE_FILE_SOURCE_HEADER: &str = "x-unsloth-source-url";
 const NATIVE_FILE_SAVE_TOKEN_HEADER: &str = "x-unsloth-save-token";
 const MAX_NATIVE_FILE_SAVE_CHUNK_BYTES: usize = 8 * 1024 * 1024;
 const CHAT_IMPORT_EXTENSIONS: &[&str] = &["json", "jsonl", "ndjson", "csv", "md", "markdown"];
@@ -131,6 +133,13 @@ fn decode_default_file_name(encoded_name: &str) -> Result<String, String> {
     let name =
         String::from_utf8(bytes).map_err(|_| "Invalid native export filename.".to_string())?;
     Ok(default_file_name(&name))
+}
+
+/// A web source sent with a save; anything else (or malformed) marks nothing.
+fn decode_source_url(encoded: &str) -> Option<url::Url> {
+    let bytes = BASE64.decode(encoded).ok()?;
+    let url = url::Url::parse(&String::from_utf8(bytes).ok()?).ok()?;
+    matches!(url.scheme(), "http" | "https").then_some(url)
 }
 
 fn filter_extensions<const N: usize>(values: [&str; N]) -> Vec<String> {
@@ -449,6 +458,11 @@ pub async fn save_native_file(
         .to_str()
         .map_err(|_| "Invalid native export filename.".to_string())?;
     let file_name = decode_default_file_name(encoded_name)?;
+    let source = request
+        .headers()
+        .get(NATIVE_FILE_SOURCE_HEADER)
+        .and_then(|value| value.to_str().ok())
+        .and_then(decode_source_url);
     let content = invoke_body_bytes(request.body())
         .ok_or_else(|| "Native export content must be binary.".to_string())?;
     let (filter_name, extensions) = save_filter(&file_name);
@@ -467,7 +481,11 @@ pub async fn save_native_file(
         .map_err(|_| "Save dialog closed unexpectedly.".to_string())?
         .map(local_dialog_path)
         .transpose()?;
-    save_selected_file(selected_path, content.as_ref())
+    let saved = save_selected_file(selected_path, content.as_ref())?;
+    if let (Some(path), Some(source)) = (saved.as_deref(), source.as_ref()) {
+        crate::browser_webview::mark_downloaded(Path::new(path), source);
+    }
+    Ok(saved)
 }
 
 #[tauri::command]
@@ -1019,6 +1037,18 @@ pub async fn pick_native_training_config(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_web_sources_are_marked() {
+        let encode = |text: &str| BASE64.encode(text);
+        assert_eq!(
+            decode_source_url(&encode("https://example.com/a.exe")).map(|url| url.to_string()),
+            Some("https://example.com/a.exe".to_string())
+        );
+        assert!(decode_source_url(&encode("file:///etc/passwd")).is_none());
+        assert!(decode_source_url(&encode("not a url")).is_none());
+        assert!(decode_source_url("%%%").is_none());
+    }
     use std::time::{SystemTime, UNIX_EPOCH};
 
     fn temp_path(name: &str) -> PathBuf {
