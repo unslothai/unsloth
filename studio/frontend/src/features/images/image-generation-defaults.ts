@@ -29,6 +29,10 @@ const MODEL_DEFAULTS: Array<{
   { match: "qwen-image-21", steps: 25, guidance: 1 },
   { match: "qwen_image_21", steps: 25, guidance: 1 },
   { match: "qwenimage21", steps: 25, guidance: 1 },
+  // ComfyUI Image to Layers template, before the generic key.
+  { match: "qwen-image-layered", steps: 20, guidance: 2.5 },
+  { match: "qwen_image_layered", steps: 20, guidance: 2.5 },
+  { match: "qwenimagelayered", steps: 20, guidance: 2.5 },
   { match: "qwen-image-edit-2509", steps: 20, guidance: 4 },
   { match: "qwen-image-edit", steps: 40, guidance: 4 },
   { match: "qwen-image-2512", steps: 50, guidance: 4 },
