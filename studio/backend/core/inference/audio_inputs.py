@@ -220,6 +220,67 @@ def transcode(
     return {"duration_s": round(frames / rate, 3), "sample_rate": rate, "channels": channels}
 
 
+# /v1/audio/speech formats besides WAV: (container, encoder, media type, sample rate it needs).
+_SPEECH_ENCODINGS = {
+    "mp3": ("mp3", "mp3", "audio/mpeg", None),
+    "opus": ("ogg", "libopus", "audio/ogg", 48000),
+    "aac": ("adts", "aac", "audio/aac", None),
+    "flac": ("flac", "flac", "audio/flac", None),
+    "pcm": ("s16le", "pcm_s16le", "audio/pcm", None),
+}
+
+
+def speech_formats() -> list[str]:
+    """``wav`` plus each speech format whose encoder this FFmpeg build has."""
+    import av
+
+    formats = ["wav"]
+    for fmt, (_container, codec, _media_type, _rate) in _SPEECH_ENCODINGS.items():
+        try:
+            av.codec.Codec(codec, "w")
+        except Exception:  # noqa: BLE001 - not in this build
+            continue
+        formats.append(fmt)
+    return formats
+
+
+def encode_wav(wav_bytes: bytes, fmt: str) -> tuple[bytes, str]:
+    """A WAV re-encoded as ``fmt`` (a ``speech_formats`` name but wav); ``(bytes, media type)``.
+    ``pcm`` is 16-bit little-endian samples at the WAV's rate, with no header."""
+    import io
+
+    import av
+
+    container_format, codec, media_type, fixed_rate = _SPEECH_ENCODINGS[fmt]
+    out = io.BytesIO()
+    with _av_open(av, io.BytesIO(wav_bytes)) as src:
+        audio = src.streams.audio[0]
+        rate = fixed_rate or audio.rate
+        # A WAV with no channel mask reads as "1 channels", which no encoder takes.
+        layout = "stereo" if audio.channels == 2 else "mono"
+        with av.open(out, "w", format = container_format) as dst:
+            stream = dst.add_stream(codec, rate = rate, layout = layout)
+            stream.codec_context.open()  # sets frame_size, which mp3, aac and opus need
+            resampler = av.AudioResampler(
+                format = stream.format.name,
+                layout = layout,
+                rate = rate,
+                frame_size = stream.frame_size or None,
+            )
+
+            def mux(frames) -> None:
+                for frame in frames:
+                    for packet in stream.encode(frame):
+                        dst.mux(packet)
+
+            for frame in src.decode(audio):
+                frame.pts = None
+                mux(resampler.resample(frame))
+            mux(resampler.resample(None))
+            mux([None])
+    return out.getvalue(), media_type
+
+
 async def save_stream(
     chunks: AsyncIterable[bytes],
     name: Optional[str],

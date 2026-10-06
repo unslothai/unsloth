@@ -11821,6 +11821,52 @@ def test_speech_switch_admission(monkeypatch, audio_type, context, text, instruc
         assert len(recorder.calls) == 1
 
 
+@pytest.mark.parametrize(
+    "workflow, speech_type, workflows, admitted",
+    [
+        ("separate", None, ["separate"], True),
+        ("separate", None, [], False),
+        ("clone", "audiocpp_tts", ["speak"], False),
+        ("clone", "audiocpp_tts", ["speak", "clone"], True),
+    ],
+)
+def test_audio_workflow_switch_admission(monkeypatch, workflow, speech_type, workflows, admitted):
+    backend, recorder = _speech_case(monkeypatch, speech_type, gguf = False)
+    seen = []
+    monkeypatch.setattr(
+        inference_route, "_target_audio_workflows", lambda *a: seen.append(a) or workflows
+    )
+    call = inference_route._maybe_auto_switch_model(
+        "org/B-GGUF",
+        object(),
+        "tester",
+        require_speech = speech_type is not None,
+        require_audio_workflow = workflow,
+    )
+    if admitted:
+        asyncio.run(call)
+        assert len(recorder.calls) == 1
+    else:
+        with pytest.raises(HTTPException) as error:
+            asyncio.run(call)
+        assert error.value.status_code == 400
+        assert error.value.detail["error"]["param"] == "model"
+        # Refused before the resident model is evicted.
+        assert recorder.calls == [] and backend.model_identifier == "org/A-GGUF"
+    assert seen == [("/local/B", speech_type)]
+
+
+def test_target_audio_workflows_reads_audio_cpp_targets_from_the_cache(monkeypatch):
+    from core.inference import audio_cpp_models
+
+    sep = SimpleNamespace(workflows = {"separate": None})
+    monkeypatch.setattr(audio_cpp_models, "resolve", lambda target, network: sep)
+    workflows = inference_route._target_audio_workflows
+    assert workflows("audio-cpp/audio.cpp-gguf/HTDemucs-6stems-GGUF", None) == ["separate"]
+    assert workflows("/local/csm", "csm") == ["speak"]
+    assert workflows("/local/chat", None) == []
+
+
 @pytest.mark.parametrize("audio_type", ["snac", "bicodec", "dac", "higgs_tts2"])
 @pytest.mark.parametrize("token", [None, "caller-token"])
 def test_speech_switch_preserves_staged_assets_and_identity(monkeypatch, audio_type, token):
