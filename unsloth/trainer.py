@@ -33,7 +33,7 @@ from unsloth.utils import (
     enable_padding_free_metadata,
     enable_sample_packing,
 )
-from unsloth.utils.packing import patch_hybrid_linear_attention_varlen
+from unsloth.utils.packing import _stateful_mixer_kind, patch_hybrid_linear_attention_varlen
 from unsloth_zoo.training_utils import (
     unsloth_train as _unsloth_train,
 )
@@ -532,27 +532,12 @@ def _is_hybrid_linear_attention_model(model) -> bool:
         if any(hasattr(config, marker) for marker in _HYBRID_CONFIG_MARKERS):
             return True
 
-    # Module-level: a mixer carrying a recurrent gated-delta op plus a conv1d.
-    named_modules = getattr(model, "named_modules", None)
-    if named_modules is None:
+    # Module-level: any mixer carrying recurrent or causal-conv state (gated-delta, Mamba, short conv,
+    # lightning attention, RWKV), whether or not the varlen shim can serve it.
+    modules = getattr(model, "modules", None)
+    if modules is None:
         return False
-    seen = set()
-    for _, module in named_modules():
-        if id(module) in seen:
-            continue
-        seen.add(id(module))
-        cls = type(module).__name__
-        if not (
-            cls.endswith("GatedDeltaNet") or "LinearAttention" in cls or cls.endswith("Mamba2Mixer")
-        ):
-            continue
-        has_recurrent = any(
-            hasattr(module, attr)
-            for attr in ("chunk_gated_delta_rule", "recurrent_gated_delta_rule", "A_log")
-        )
-        if has_recurrent and hasattr(module, "conv1d"):
-            return True
-    return False
+    return any(_stateful_mixer_kind(module) is not None for module in modules())
 
 
 def _resolve_string_model_config(model_name, config_arg):

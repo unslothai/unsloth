@@ -504,7 +504,7 @@ def test_patch_hybrid_varlen_no_dispatch_aborts(monkeypatch):
     monkeypatch.setenv("UNSLOTH_EXPERIMENTAL_HYBRID_PACKING", "1")
     model = _hybrid_model_with_gdn(lambda self, hidden_states, **kw: hidden_states)
     assert patch_hybrid_linear_attention_varlen(model) is True
-    with pytest.raises(RuntimeError, match = "both invoked"):
+    with pytest.raises(RuntimeError, match = "were not invoked"):
         model(
             input_ids = torch.zeros(1, 6),
             packed_seq_lengths = torch.tensor([2, 1, 3], dtype = torch.int32),
@@ -519,7 +519,7 @@ def test_patch_hybrid_varlen_partial_dispatch_aborts(monkeypatch):
         lambda self, hidden_states, **kw: self.causal_conv1d_fn(hidden_states)
     )
     assert patch_hybrid_linear_attention_varlen(conv_only) is True
-    with pytest.raises(RuntimeError, match = "both invoked"):
+    with pytest.raises(RuntimeError, match = "were not invoked"):
         conv_only(
             input_ids = torch.zeros(1, 6),
             packed_seq_lengths = torch.tensor([2, 1, 3], dtype = torch.int32),
@@ -530,7 +530,7 @@ def test_patch_hybrid_varlen_partial_dispatch_aborts(monkeypatch):
         lambda self, hidden_states, **kw: self.chunk_gated_delta_rule(hidden_states)
     )
     assert patch_hybrid_linear_attention_varlen(scan_only) is True
-    with pytest.raises(RuntimeError, match = "both invoked"):
+    with pytest.raises(RuntimeError, match = "were not invoked"):
         scan_only(
             input_ids = torch.zeros(1, 6),
             packed_seq_lengths = torch.tensor([2, 1, 3], dtype = torch.int32),
@@ -556,6 +556,7 @@ class _FakeNemotronHMamba2Mixer(torch.nn.Module):
         super().__init__()
         self.conv1d = torch.nn.Conv1d(4, 4, 3, groups = 4)
         self.A_log = torch.nn.Parameter(torch.zeros(4))
+        self.dt_bias = torch.nn.Parameter(torch.zeros(4))
         self.mamba2_split_conv1d_scan_combined = _make_fake_mamba2_fused()
 
     def forward(self, hidden_states, **kwargs):
@@ -705,6 +706,7 @@ def test_patch_mamba2_varlen_rebinds_compiled_module_alias(monkeypatch):
     class _CompiledNemotronHMamba2Mixer(_FakeNemotronHMamba2Mixer):
         def __init__(self):
             super().__init__()
+            del self.mamba2_split_conv1d_scan_combined
             self.mamba2_split_conv1d_scan_combined = fused
 
         def forward(self, hidden_states, **fused_kwargs):
@@ -814,7 +816,6 @@ def cuda_kernels_forward(self, hidden_states, cache_params=None, attention_mask=
     class _HiddenNemotronHMamba2Mixer(_FakeNemotronHMamba2Mixer):
         def __init__(self):
             super().__init__()
-            del self.mamba2_split_conv1d_scan_combined
             self.cuda_kernels_forward = types.MethodType(ns["cuda_kernels_forward"], self)
 
         def forward(self, hidden_states, **kwargs):
@@ -827,7 +828,7 @@ def cuda_kernels_forward(self, hidden_states, cache_params=None, attention_mask=
 
     model = _HiddenModel()
     assert patch_hybrid_linear_attention_varlen(model) is True
-    with pytest.raises(RuntimeError, match = "varlen conv/scan wrappers were not both invoked"):
+    with pytest.raises(RuntimeError, match = "were not invoked"):
         model(
             input_ids = torch.zeros(1, 6, dtype = torch.long),
             packed_seq_lengths = torch.tensor([2, 1, 3], dtype = torch.int32),
@@ -1178,7 +1179,7 @@ def test_patch_mamba2_varlen_no_fused_dispatch_aborts(monkeypatch):
 
     model = _SilentModel()
     assert patch_hybrid_linear_attention_varlen(model) is True
-    with pytest.raises(RuntimeError, match = "not both invoked"):
+    with pytest.raises(RuntimeError, match = "were not invoked"):
         model(
             input_ids = torch.zeros(1, 6),
             packed_seq_lengths = torch.tensor([2, 1, 3], dtype = torch.int32),
@@ -2362,3 +2363,217 @@ def test_call_as_packed_mamba2_prefill_propagates_inner_type_error():
             cuda_kernels_forward, (torch.zeros(1), object(), torch.ones(1, 2)), {}
         )
     assert calls == [(None, None)]
+
+
+class _FakeMamba1Mixer(torch.nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.conv1d = torch.nn.Conv1d(4, 4, 3, groups = 4)
+        self.A_log = torch.nn.Parameter(torch.zeros(4, 2))
+        self.dt_proj = torch.nn.Linear(2, 4)
+
+
+class _FakeLfm2ShortConv(torch.nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.conv = torch.nn.Conv1d(4, 4, 3, groups = 4)
+        self.calls = []
+
+    def forward(
+        self,
+        hidden_states,
+        past_key_values = None,
+        attention_mask = None,
+        seq_idx = None,
+    ):
+        self.calls.append(seq_idx)
+        return hidden_states
+
+
+class _FakeFalconH1Mixer(_FakeNemotronHMamba2Mixer):
+    pass
+
+
+class _FakeMiniMaxLightningAttention(torch.nn.Module):
+    pass
+
+
+def _stateful_model(mixer):
+    model = _FakeMamba2Model()
+    model.mixer = mixer
+    return model
+
+
+def test_stateful_mixer_kind_by_structure():
+    kind = packing_module._stateful_mixer_kind
+    assert kind(_FakeNemotronHMamba2Mixer()) == "ssd"
+    assert kind(_FakeFalconH1Mixer()) == "ssd"  # name-independent
+    assert kind(_FakeMamba1Mixer()) == "unsupported"
+    assert kind(_FakeLfm2ShortConv()) == "short_conv"
+    assert kind(_FakeMiniMaxLightningAttention()) == "unsupported"
+    assert kind(torch.nn.Linear(2, 2)) is None
+
+
+@pytest.mark.parametrize("mixer_cls", [_FakeFalconH1Mixer, _FakeMamba1Mixer, _FakeLfm2ShortConv])
+def test_trainer_flags_every_stateful_mixer_as_hybrid(mixer_cls):
+    from unsloth.trainer import _is_hybrid_linear_attention_model
+    assert _is_hybrid_linear_attention_model(_stateful_model(mixer_cls())) is True
+
+
+@pytest.mark.parametrize("mixer_cls", [_FakeMamba1Mixer, _FakeMiniMaxLightningAttention])
+def test_patch_varlen_rejects_mixers_without_boundary_kernels(monkeypatch, mixer_cls):
+    monkeypatch.setenv("UNSLOTH_EXPERIMENTAL_HYBRID_PACKING", "1")
+    assert patch_hybrid_linear_attention_varlen(_stateful_model(mixer_cls())) is False
+
+
+def test_patch_varlen_injects_seq_idx_into_short_conv(monkeypatch):
+    monkeypatch.setenv("UNSLOTH_EXPERIMENTAL_HYBRID_PACKING", "1")
+    conv = _FakeLfm2ShortConv()
+
+    class _Lfm2Like(_FakeMamba2Model):
+        def __init__(self):
+            super().__init__()
+            self.mixer = conv
+
+        def forward(
+            self,
+            input_ids = None,
+            packed_seq_lengths = None,
+            use_cache = None,
+            **kwargs,
+        ):
+            return self.mixer(input_ids.float()[..., None].expand(-1, -1, 4))
+
+    model = _Lfm2Like()
+    assert patch_hybrid_linear_attention_varlen(model) is True
+    model(
+        input_ids = torch.zeros(1, 6, dtype = torch.long),
+        packed_seq_lengths = torch.tensor([2, 1, 3], dtype = torch.int32),
+        use_cache = False,
+    )
+    assert conv.calls[-1].tolist() == [[0, 0, 1, 2, 2, 2]]
+    model(input_ids = torch.zeros(1, 4, dtype = torch.long), use_cache = True)
+    assert conv.calls[-1] is None
+
+
+def _hub_wrapped(torch_function, implementation):
+    # Same closure shape as transformers' use_kernel_func_from_hub_with_fallback.
+    import functools
+    import inspect as _inspect
+
+    applicable_params = tuple(_inspect.signature(implementation).parameters)
+
+    @functools.wraps(torch_function)
+    def wrapped(*args, **kwargs):
+        kwargs = {k: v for k, v in kwargs.items() if k in applicable_params}
+        return implementation(*args, **kwargs)
+
+    return wrapped
+
+
+def _kwargs_gdn_model(name, accelerated):
+    # transformers >= 5.16 shape: forward(**kwargs) splats into module-level hub kernels.
+    import sys
+    import types
+
+    calls = {"conv": [], "scan": []}
+
+    def conv_ref(
+        x,
+        weight,
+        bias = None,
+        activation = None,
+        **kwargs,
+    ):
+        return x
+
+    def conv_fast(
+        x,
+        weight,
+        bias = None,
+        seq_idx = None,
+        activation = None,
+    ):
+        calls["conv"].append(seq_idx)
+        return x
+
+    def scan_ref(q, **kwargs):
+        return q
+
+    def scan_fast(
+        q,
+        cu_seqlens = None,
+        **kwargs,
+    ):
+        calls["scan"].append(cu_seqlens)
+        return q
+
+    modeling = types.ModuleType(name)
+    modeling.causal_conv1d_fn = _hub_wrapped(conv_ref, conv_fast if accelerated else conv_ref)
+    modeling.torch_chunk_gated_delta_rule = _hub_wrapped(
+        scan_ref, scan_fast if accelerated else scan_ref
+    )
+    exec(
+        "import torch\n"
+        "class FakeGatedDeltaNet(torch.nn.Module):\n"
+        "    def __init__(self):\n"
+        "        super().__init__()\n"
+        "        self.conv1d = torch.nn.Conv1d(4, 4, 3, groups = 4)\n"
+        "    def forward(self, hidden_states, **kwargs):\n"
+        "        x = causal_conv1d_fn(hidden_states, self.conv1d.weight, **kwargs)\n"
+        "        return torch_chunk_gated_delta_rule(x, cu_seqlens = kwargs.pop('cu_seq_lens_q', None), **kwargs)\n",
+        modeling.__dict__,
+    )
+    modeling.FakeGatedDeltaNet.__module__ = name
+    sys.modules[name] = modeling
+    model = _FakeMamba2Model()
+    model.mixer = modeling.FakeGatedDeltaNet()
+    return model, calls
+
+
+def test_patch_varlen_kwargs_mixer_injects_boundaries(monkeypatch):
+    monkeypatch.setenv("UNSLOTH_EXPERIMENTAL_HYBRID_PACKING", "1")
+    import sys
+
+    name = "fake_modeling_kwargs_gdn"
+    try:
+        model, calls = _kwargs_gdn_model(name, accelerated = True)
+        assert patch_hybrid_linear_attention_varlen(model) is True
+        model(
+            input_ids = torch.zeros(1, 6, dtype = torch.long),
+            packed_seq_lengths = torch.tensor([2, 1, 3], dtype = torch.int32),
+            use_cache = False,
+        )
+        assert calls["conv"][-1].tolist() == [[0, 0, 1, 2, 2, 2]]
+        assert calls["scan"][-1].tolist() == [0, 2, 3, 6]
+    finally:
+        sys.modules.pop(name, None)
+
+
+def test_patch_varlen_kwargs_mixer_rejects_torch_fallback(monkeypatch):
+    # The hub wrapper would silently drop seq_idx / cu_seqlens on the reference kernels.
+    monkeypatch.setenv("UNSLOTH_EXPERIMENTAL_HYBRID_PACKING", "1")
+    import sys
+
+    name = "fake_modeling_kwargs_gdn_ref"
+    try:
+        model, _ = _kwargs_gdn_model(name, accelerated = False)
+        assert patch_hybrid_linear_attention_varlen(model) is False
+    finally:
+        sys.modules.pop(name, None)
+
+
+def test_packed_mask_builder_gets_per_sequence_positions():
+    seen = []
+
+    def create_causal_mask(**kwargs):
+        seen.append(kwargs.get("position_ids"))
+
+    ns = {"create_causal_mask": create_causal_mask}
+    varlen = (torch.tensor([0, 2, 3, 6], dtype = torch.int32), torch.tensor([[0, 0, 1, 2, 2, 2]]))
+    packing_module._install_packed_mask_positions(ns, lambda: varlen)
+    ns["create_causal_mask"](inputs_embeds = None)
+    assert seen[-1].tolist() == [[0, 1, 0, 0, 1, 2]]
+    explicit = torch.arange(6)[None]
+    ns["create_causal_mask"](position_ids = explicit)
+    assert seen[-1] is explicit

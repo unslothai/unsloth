@@ -334,27 +334,77 @@ def _hybrid_reject(reason: str) -> bool:
     return False
 
 
-def _iter_gated_delta_modules(model):
-    modules, seen = [], set()
-    for module in model.modules():
-        if id(module) in seen:
+def _names_param(
+    module,
+    param,
+    methods = ("forward",),
+) -> bool:
+    # Decorated forwards can hide their signature; their kernel methods still name the parameter.
+    for method in methods:
+        fn = getattr(type(module), method, None)
+        try:
+            if fn is not None and param in inspect.signature(fn).parameters:
+                return True
+        except (TypeError, ValueError):
             continue
-        seen.add(id(module))
-        if type(module).__name__.endswith("GatedDeltaNet") and hasattr(module, "conv1d"):
-            modules.append(module)
-    return modules
+    return False
+
+
+_QKV_CONVS = ("q_conv1d", "k_conv1d", "v_conv1d")
+
+
+def _stateful_mixer_kind(module) -> Optional[str]:
+    """How a token mixer carries state across positions: "gated_delta" / "ssd" (Mamba2-style
+    chunked scan) / "short_conv" take boundary metadata, "unsupported" leaks with no kernel
+    fix (Mamba1 selective scan, lightning attention, RWKV), None is stateless."""
+    name = type(module).__name__
+    if name.endswith("GatedDeltaNet"):
+        if hasattr(module, "conv1d"):
+            return "gated_delta"
+        convs = [getattr(module, c, None) for c in _QKV_CONVS]
+        if all(c is not None and _names_param(c, "cu_seqlens") for c in convs):
+            return "gated_delta_qkv"
+        return "unsupported"
+    if hasattr(module, "A_log"):
+        # Mamba2 / SSD mixers learn dt_bias; Mamba1 projects dt through dt_proj.
+        if hasattr(module, "conv1d") and hasattr(module, "dt_bias"):
+            return "ssd"
+        return "unsupported"
+    if "ShortConv" in name:
+        methods = ("forward", "cuda_kernels_forward", "slow_forward")
+        return "short_conv" if _names_param(module, "seq_idx", methods) else "unsupported"
+    if "LightningAttention" in name or (name.startswith("Rwkv") and hasattr(module, "time_decay")):
+        return "unsupported"
+    return None
+
+
+def _iter_stateful_mixers(model):
+    """(module, kind) for every stateful mixer, outermost first; submodules of a gated-delta
+    mixer (its own short convs) are owned by that mixer's shim."""
+    found, owned = [], set()
+    for module in model.modules():
+        if id(module) in owned:
+            continue
+        kind = _stateful_mixer_kind(module)
+        if kind is None:
+            continue
+        found.append((module, kind))
+        owned.update(id(m) for m in module.modules())
+    return found
+
+
+def _iter_gated_delta_modules(model):
+    return [
+        m for m, kind in _iter_stateful_mixers(model) if kind in ("gated_delta", "gated_delta_qkv")
+    ]
 
 
 def _iter_mamba2_modules(model):
-    modules, seen = [], set()
-    for module in model.modules():
-        if id(module) in seen:
-            continue
-        seen.add(id(module))
-        name = type(module).__name__
-        if name.endswith("Mamba2Mixer") and hasattr(module, "conv1d") and hasattr(module, "A_log"):
-            modules.append(module)
-    return modules
+    return [m for m, kind in _iter_stateful_mixers(model) if kind == "ssd"]
+
+
+def _iter_short_conv_modules(model):
+    return [m for m, kind in _iter_stateful_mixers(model) if kind == "short_conv"]
 
 
 def _callable_accepts_named_seq_idx(fn) -> Optional[str]:
@@ -368,12 +418,7 @@ def _callable_accepts_named_seq_idx(fn) -> Optional[str]:
     return "mamba2 fused kernel does not accept seq_idx"
 
 
-_MAMBA2_NAMESPACE_SUBSTR = (
-    "unsloth_compiled",
-    "nemotron",
-    "mamba_ssm",
-    "modeling_nemotron",
-)
+_MAMBA2_NAMESPACE_SUBSTR = ("unsloth_compiled", "mamba_ssm")
 
 
 _MAMBA2_KERNEL_GLOBALS = (
@@ -473,14 +518,11 @@ def _call_as_packed_mamba2_prefill(fn, args, kwargs):
 _MAMBA2_MASK_CLEAR_NAMES = ("cuda_kernels_forward",)
 
 
-def _is_mamba2_mask_clear_name(name: str) -> bool:
+def _is_mamba2_mask_clear_name(name: str, classes = ()) -> bool:
+    # Unsloth's compiler names hoisted methods "<Class>_<method>".
     if name in _MAMBA2_MASK_CLEAR_NAMES:
         return True
-    if name.endswith("Mamba2Mixer_cuda_kernels_forward"):
-        return True
-    if name.endswith("Mamba2Mixer_forward") and not name.endswith("torch_forward"):
-        return True
-    return False
+    return any(name in (f"{c}_cuda_kernels_forward", f"{c}_forward") for c in classes)
 
 
 def _wrap_clear_attention_mask(fn, varlen_getter):
@@ -497,11 +539,15 @@ def _wrap_clear_attention_mask(fn, varlen_getter):
     return wrapped
 
 
-def _install_mamba2_mask_clear(namespace, varlen_getter) -> None:
+def _install_mamba2_mask_clear(
+    namespace,
+    varlen_getter,
+    classes = (),
+) -> None:
     if not isinstance(namespace, dict):
         return
     for name, value in list(namespace.items()):
-        if not _is_mamba2_mask_clear_name(name) or not callable(value):
+        if not _is_mamba2_mask_clear_name(name, classes) or not callable(value):
             continue
         namespace[name] = _wrap_clear_attention_mask(value, varlen_getter)
 
@@ -565,11 +611,15 @@ def _hybrid_varlen_kernels_available(gated_delta_modules) -> Optional[str]:
     if not gated_delta_modules:
         return "no gated-delta modules found"
     for module in gated_delta_modules:
+        # Split q/k/v short convs were checked for cu_seqlens by _stateful_mixer_kind.
+        split_convs = _stateful_mixer_kind(module) == "gated_delta_qkv"
         conv = getattr(module, "_unsloth_varlen_orig_conv", None) or getattr(
             module,
             "causal_conv1d_fn",
             None,
         )
+        if split_convs:
+            conv = getattr(module, "q_conv1d").forward
         scan = getattr(module, "_unsloth_varlen_orig_scan", None) or getattr(
             module,
             "chunk_gated_delta_rule",
@@ -584,7 +634,7 @@ def _hybrid_varlen_kernels_available(gated_delta_modules) -> Optional[str]:
         ).startswith("torch_"):
             return "pure-torch kernel fallback in use"
         try:
-            if "seq_idx" not in inspect.signature(conv).parameters:
+            if not split_convs and "seq_idx" not in inspect.signature(conv).parameters:
                 return "conv kernel does not accept seq_idx"
             if "cu_seqlens" not in inspect.signature(scan).parameters:
                 return "scan kernel does not accept cu_seqlens"
@@ -617,7 +667,12 @@ def _mamba2_kernel_globals(module) -> dict:
 
 
 def _hybrid_varlen_dispatched(module) -> bool:
-    if type(module).__name__.endswith("Mamba2Mixer"):
+    if getattr(module, "_unsloth_varlen_kwargs_mode", False):
+        return bool(getattr(module, "_unsloth_varlen_kwargs_hit", False))
+    kind = _stateful_mixer_kind(module)
+    if kind == "short_conv":
+        return bool(getattr(module, "_unsloth_varlen_conv_hit", False))
+    if kind == "ssd":
         if getattr(module, "_unsloth_varlen_fused_hit", False):
             return True
         return bool(
@@ -646,7 +701,7 @@ def _varlen_seq_idx_applies(seq_idx, args, kwargs) -> bool:
             if isinstance(arg, torch.Tensor):
                 tensor = arg
                 break
-    if tensor is None or tensor.dim() < 2:
+    if tensor is None or tensor.dim() < 2 or seq_idx.shape[0] != tensor.shape[0]:
         return False
     # causal_conv1d_fn takes (batch, dim, seqlen), the others (batch, seqlen, ...).
     return total in (tensor.shape[1], tensor.shape[-1])
@@ -744,6 +799,178 @@ def _wrap_mamba2_mixer_forward(module, varlen_getter = None):
     module._unsloth_mamba2_forward_wrapped = True
 
 
+# transformers >= 5.16 mixers splat **kwargs into module-level kernels wrapped by
+# use_kernel_func_from_hub_with_fallback; each must bind an accelerated kernel taking this boundary.
+_KWARGS_KERNELS = {
+    "causal_conv1d_fn": "seq_idx",
+    "mamba2_split_conv1d_scan_combined": "seq_idx",
+    "mamba2_chunk_scan": "seq_idx",
+    "torch_chunk_gated_delta_rule": "cu_seqlens",
+}
+_KWARGS_TRACE: list = [None]
+
+
+def _hub_closure(fn) -> dict:
+    fn = getattr(fn, "_unsloth_varlen_probe_of", fn)
+    try:
+        return inspect.getclosurevars(fn).nonlocals
+    except (TypeError, ValueError):
+        return {}
+
+
+def _is_kwargs_mixer(module) -> bool:
+    if hasattr(module, "cuda_kernels_forward") or "causal_conv1d_fn" in vars(module):
+        return False
+    try:
+        params = inspect.signature(module.forward).parameters.values()
+    except (TypeError, ValueError):
+        return False
+    if not any(p.kind == inspect.Parameter.VAR_KEYWORD for p in params):
+        return False
+    globs = getattr(inspect.getmodule(type(module)), "__dict__", {})
+    return "implementation" in _hub_closure(globs.get("causal_conv1d_fn"))
+
+
+def _kwargs_kernels_available(modules) -> Optional[str]:
+    for module in modules:
+        globs = getattr(inspect.getmodule(type(module)), "__dict__", {})
+        kernels = {n: globs[n] for n in _KWARGS_KERNELS if callable(globs.get(n))}
+        if "causal_conv1d_fn" not in kernels:
+            return f"{type(module).__name__}: no module-level conv kernel"
+        for name, fn in kernels.items():
+            closure = _hub_closure(fn)
+            # The hub wrapper drops kwargs its bound implementation does not name, silently.
+            impl = closure.get("implementation")
+            if impl is None or impl is closure.get("torch_function"):
+                return f"{name} has no accelerated kernel"
+            if _KWARGS_KERNELS[name] not in closure.get("applicable_params", ()):
+                return f"{name} kernel does not accept {_KWARGS_KERNELS[name]}"
+    return None
+
+
+def _install_kwargs_probes(namespace) -> None:
+    if not isinstance(namespace, dict):
+        return
+    for name, param in _KWARGS_KERNELS.items():
+        fn = namespace.get(name)
+        if not callable(fn) or getattr(fn, "_unsloth_varlen_probe_of", None) is not None:
+            continue
+
+        @wraps(fn)
+        def probe(
+            *args,
+            _fn = fn,
+            _param = param,
+            **kwargs,
+        ):
+            if _KWARGS_TRACE[0] is not None:
+                _KWARGS_TRACE[0].append(kwargs.get(_param) is not None)
+            return _fn(*args, **kwargs)
+
+        probe._unsloth_varlen_probe_of = fn
+        namespace[name] = probe
+
+
+def _wrap_kwargs_mixer_forward(module) -> None:
+    forward_orig = module.forward
+
+    @wraps(forward_orig)
+    def forward(*args, **kwargs):
+        varlen = getattr(module, "_unsloth_varlen", None)
+        if varlen is None or not _varlen_seq_idx_applies(varlen[1], args, kwargs):
+            return forward_orig(*args, **kwargs)
+        if kwargs.get("seq_idx") is None:
+            kwargs["seq_idx"] = varlen[1]
+        if kwargs.get("cu_seq_lens_q") is None:
+            kwargs["cu_seq_lens_q"] = varlen[0]
+        outer, _KWARGS_TRACE[0] = _KWARGS_TRACE[0], []
+        try:
+            out = forward_orig(*args, **kwargs)
+        finally:
+            trace, _KWARGS_TRACE[0] = _KWARGS_TRACE[0], outer
+        # Every boundary-capable kernel this mixer ran must have received the boundary.
+        if trace and all(trace):
+            module._unsloth_varlen_kwargs_hit = True
+        return out
+
+    module.forward = forward
+    module._unsloth_varlen_kwargs_mode = True
+
+
+_MASK_BUILDERS = ("create_causal_mask", "create_sliding_window_causal_mask")
+
+
+def _packed_position_ids(varlen):
+    cu_seqlens, seq_idx = varlen
+    if seq_idx.shape[0] != 1:
+        return None
+    seg = seq_idx[0].long()
+    pos = torch.arange(seg.numel(), device = seg.device) - cu_seqlens.to(seg.device).long()[seg]
+    return pos[None]
+
+
+def _install_packed_mask_positions(namespace, varlen_getter) -> None:
+    """Some hybrids (GraniteMoeHybrid) build the attention mask without position_ids, so attention
+    would span packed sequences; hand the builder per-sequence positions while packed."""
+    if not isinstance(namespace, dict):
+        return
+    for name in _MASK_BUILDERS:
+        fn = namespace.get(name)
+        if not callable(fn) or getattr(fn, "_unsloth_packed_positions", False):
+            continue
+
+        @wraps(fn)
+        def build(
+            *args,
+            _fn = fn,
+            **kwargs,
+        ):
+            varlen = varlen_getter()
+            if varlen is not None and kwargs.get("position_ids") is None:
+                kwargs["position_ids"] = _packed_position_ids(varlen)
+            return _fn(*args, **kwargs)
+
+        build._unsloth_packed_positions = True
+        namespace[name] = build
+
+
+def _wrap_qkv_conv_forward(conv, owner) -> None:
+    # fla ShortConvolution resets at cu_seqlens; the owning mixer holds the packed boundaries.
+    forward_orig = conv.forward
+
+    @wraps(forward_orig)
+    def forward(*args, **kwargs):
+        varlen = getattr(owner, "_unsloth_varlen", None)
+        if varlen is not None and kwargs.get("cu_seqlens") is None:
+            if _varlen_seq_idx_applies(varlen[1], args, kwargs):
+                kwargs["cu_seqlens"] = varlen[0]
+        if kwargs.get("cu_seqlens") is not None:
+            owner._unsloth_varlen_conv_hit = True
+        return forward_orig(*args, **kwargs)
+
+    conv.forward = forward
+
+
+def _wrap_short_conv_forward(module) -> None:
+    # Short-conv mixers (LFM2) reset their conv at seq_idx boundaries on both kernel and torch paths.
+    forward_orig = module.forward
+
+    @wraps(forward_orig)
+    def forward(*args, **kwargs):
+        varlen = getattr(module, "_unsloth_varlen", None)
+        if (
+            varlen is not None
+            and kwargs.get("seq_idx") is None
+            and _varlen_seq_idx_applies(varlen[1], args, kwargs)
+        ):
+            kwargs["seq_idx"] = varlen[1]
+        if kwargs.get("seq_idx") is not None:
+            module._unsloth_varlen_conv_hit = True
+        return forward_orig(*args, **kwargs)
+
+    module.forward = forward
+
+
 def _varlen_from_position_ids(position_ids):
     """(cu_seqlens int32[n+1], seq_idx int32[1,T]) for a flattened padding-free
     batch, else None. Padding-free position_ids reset to 0 at each sequence start;
@@ -833,11 +1060,24 @@ def patch_hybrid_linear_attention_varlen(model) -> bool:
     Gated by UNSLOTH_EXPERIMENTAL_HYBRID_PACKING, fail-closed, idempotent. True when active."""
     if not _hybrid_packing_enabled():
         return False
-    gated_delta_modules = _iter_gated_delta_modules(model)
-    mamba2_modules = _iter_mamba2_modules(model)
-    hybrid_modules = gated_delta_modules + mamba2_modules
+    mixers = _iter_stateful_mixers(model)
+    unsupported = sorted({type(m).__name__ for m, kind in mixers if kind == "unsupported"})
+    if unsupported:
+        return _hybrid_reject(f"no varlen kernel path for {unsupported}")
+    gated_delta_modules = [m for m, kind in mixers if kind in ("gated_delta", "gated_delta_qkv")]
+    mamba2_modules = [m for m, kind in mixers if kind == "ssd"]
+    short_conv_modules = [m for m, kind in mixers if kind == "short_conv"]
+    hybrid_modules = gated_delta_modules + mamba2_modules + short_conv_modules
     if not hybrid_modules:
-        return _hybrid_reject("no gated-delta or mamba2 modules found")
+        return _hybrid_reject("no stateful mixers found")
+    kwargs_modules = [
+        m
+        for m in gated_delta_modules + mamba2_modules
+        if getattr(m, "_unsloth_varlen_kwargs_mode", False) or _is_kwargs_mixer(m)
+    ]
+    kwargs_ids = {id(m) for m in kwargs_modules}
+    gated_delta_modules = [m for m in gated_delta_modules if id(m) not in kwargs_ids]
+    mamba2_modules = [m for m in mamba2_modules if id(m) not in kwargs_ids]
 
     # Idempotency: an already fully-patched model stays active without re-validation.
     if getattr(model, "_unsloth_varlen_forward_wrapped", False) and all(
@@ -845,6 +1085,10 @@ def patch_hybrid_linear_attention_varlen(model) -> bool:
     ):
         return True
 
+    if kwargs_modules:
+        reason = _kwargs_kernels_available(kwargs_modules)
+        if reason is not None:
+            return _hybrid_reject(reason)
     if gated_delta_modules:
         reason = _hybrid_varlen_kernels_available(gated_delta_modules)
         if reason is not None:
@@ -858,9 +1102,15 @@ def patch_hybrid_linear_attention_varlen(model) -> bool:
     for module in gated_delta_modules:
         if getattr(module, "_unsloth_varlen_wrapped", False):
             continue
-        conv_orig, scan_orig = module.causal_conv1d_fn, module.chunk_gated_delta_rule
-        module._unsloth_varlen_orig_conv = conv_orig
+        scan_orig = module.chunk_gated_delta_rule
         module._unsloth_varlen_orig_scan = scan_orig
+        if _stateful_mixer_kind(module) == "gated_delta_qkv":
+            for conv_name in _QKV_CONVS:
+                _wrap_qkv_conv_forward(getattr(module, conv_name), module)
+            conv_orig = None
+        else:
+            conv_orig = module.causal_conv1d_fn
+            module._unsloth_varlen_orig_conv = conv_orig
 
         @wraps(conv_orig)
         def conv_fn(
@@ -890,13 +1140,29 @@ def patch_hybrid_linear_attention_varlen(model) -> bool:
                     kwargs["cu_seqlens"] = varlen[0]
             return _orig(*args, **kwargs)
 
-        module.causal_conv1d_fn = conv_fn
+        if conv_orig is not None:
+            module.causal_conv1d_fn = conv_fn
         module.chunk_gated_delta_rule = scan_fn
         module._unsloth_varlen = None
         module._unsloth_varlen_wrapped = True
 
-    wrapped_fused: dict[int, Any] = {}
     varlen_slot: list = [None]
+    for ns in _iter_mamba2_install_namespaces(hybrid_modules):
+        _install_packed_mask_positions(ns, lambda: varlen_slot[0])
+    for ns in _iter_mamba2_install_namespaces(kwargs_modules):
+        _install_kwargs_probes(ns)
+    for module in kwargs_modules:
+        if not getattr(module, "_unsloth_varlen_wrapped", False):
+            _wrap_kwargs_mixer_forward(module)
+            module._unsloth_varlen = None
+            module._unsloth_varlen_wrapped = True
+    for module in short_conv_modules:
+        if not getattr(module, "_unsloth_varlen_wrapped", False):
+            _wrap_short_conv_forward(module)
+            module._unsloth_varlen = None
+            module._unsloth_varlen_wrapped = True
+
+    wrapped_fused: dict[int, Any] = {}
 
     def _ensure_mamba2_fused_wrapped(fn):
         if fn is None:
@@ -939,12 +1205,14 @@ def patch_hybrid_linear_attention_varlen(model) -> bool:
             wrapped_real = _ensure_mamba2_fused_wrapped(_ssm_fused)
         source = _mamba2_kernel_globals(mamba2_modules[0])
 
+        classes = {type(m).__name__ for m in mamba2_modules}
+
         def packed():
             return varlen_slot[0]
 
         for ns in _iter_mamba2_install_namespaces(mamba2_modules):
             _force_install_mamba2_fused(ns, wrapped_real, source)
-            _install_mamba2_mask_clear(ns, packed)
+            _install_mamba2_mask_clear(ns, packed, classes)
             _install_mamba2_seq_idx_fallbacks(ns, mamba2_modules, varlen_slot)
 
     # Refresh the boundary stash on the outermost forward, once per step and outside gradient-checkpoint
@@ -976,6 +1244,7 @@ def patch_hybrid_linear_attention_varlen(model) -> bool:
                     module._unsloth_varlen_conv_hit = False
                     module._unsloth_varlen_scan_hit = False
                     module._unsloth_varlen_fused_hit = False
+                    module._unsloth_varlen_kwargs_hit = False
             varlen_slot[0] = varlen
             try:
                 out = forward_orig(*args, **kwargs)
@@ -993,11 +1262,11 @@ def patch_hybrid_linear_attention_varlen(model) -> bool:
                     _hybrid_reject("varlen kernels not dispatched (dispatch changed?)")
                     raise RuntimeError(
                         "Unsloth: experimental hybrid packing cannot continue because the "
-                        "varlen conv/scan wrappers were not both invoked for "
+                        "varlen boundary kernels were not invoked for "
                         f"{sorted(set(missing))}. Unset UNSLOTH_EXPERIMENTAL_HYBRID_PACKING "
                         "to train these models on the padded path.\n"
                         + _mamba2_handshake_debug(
-                            [m for m in hybrid_modules if type(m).__name__.endswith("Mamba2Mixer")]
+                            [m for m in hybrid_modules if _stateful_mixer_kind(m) == "ssd"]
                             or hybrid_modules
                         )
                     )
