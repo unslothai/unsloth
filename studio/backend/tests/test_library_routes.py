@@ -529,14 +529,15 @@ def test_a_path_made_again_right_after_an_edit_starts_fresh(client, signed_in, m
     from core.inference.tools import execute_tool
 
     monkeypatch.setattr(library, "_SOURCES", (library._sandbox_items,))
-    _directory, path = _sandbox_chat("report.txt", b"teh report\n")
+    directory, path = _sandbox_chat("report.txt", b"teh report\n")
     _patch(client, id = _SANDBOX_ID, name = "Q3 report", favorite = True)
+    # Linux keeps no birth time, so a recreated file reusing a freed inode passes for it: keep both allocated.
+    os.link(path, os.path.join(directory, ".held"))
     replace = os.replace
 
     def replace_then_recreate(src, dst):
         replace(src, dst)
         if os.path.basename(dst) == "report.txt":
-            # Made beside it first: a file made after the remove can reuse the freed inode on Linux.
             other = dst + ".other"
             Path(other).write_bytes(b"someone else\n")
             replace(other, dst)
