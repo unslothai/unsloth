@@ -22617,8 +22617,7 @@ async def generate_audio(
         from fastapi.exceptions import RequestValidationError
         from pydantic import ValidationError
 
-        # Speaking in a saved voice is a Speak run with that voice as the reference. Built
-        # before the monitor opens a row, like /v1/audio/speech, so a bad request is no failure.
+        # Built before the monitor opens a row, so a bad request records no failure.
         try:
             run = AudioRunRequest(
                 workflow = "speak",
