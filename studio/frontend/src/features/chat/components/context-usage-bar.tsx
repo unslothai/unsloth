@@ -68,8 +68,14 @@ export const ContextUsageBar: FC<
     : input;
   const { percent, advice, face, compactFace } = state;
   const severity = getSeverityColor(percent ?? 0);
-  // Mono text, so widths are exact in ch. Full: padding, face, and the gap and bar. Compact: an icon button.
-  const fullWidth = `calc(${face.length}ch + ${percent !== null ? 23 : 5} * var(--spacing))`;
+  // Half a ch either side of the slash, 1ch narrower than " / ".
+  const slash = face.indexOf(" / ");
+  const faceWidth = slash >= 0 ? face.length - 1 : face.length;
+  // Mono text, so widths are exact in ch. Full: padding, face, and the gap and ring. Compact: an icon button.
+  const fullWidth =
+    percent !== null
+      ? `calc(${faceWidth}ch + var(--icon-size) + 7 * var(--spacing))`
+      : `calc(${faceWidth}ch + 5 * var(--spacing))`;
   const compactWidth =
     compactFace === null ? "calc(30px * var(--ui-space-scale, 1))" : `calc(${compactFace.length}ch + 5 * var(--spacing))`;
   const hover = "rounded-[10px] transition-colors group-hover:bg-chat-icon-bg-hover";
@@ -99,8 +105,8 @@ export const ContextUsageBar: FC<
             }}
             className={cn(
               "group grid h-full items-center justify-self-end overflow-hidden rounded-[10px] text-chat-icon-fg tabular-nums whitespace-nowrap hover:text-chat-icon-fg-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
-              // ring and bar track
-              "[--track:rgb(0_0_0_/_calc(0.1*var(--contrast-wash-gain,1)))] dark:[--track:rgb(255_255_255_/_calc(0.15*var(--contrast-wash-gain,1)))]",
+              // ring track
+              "[--track:rgb(0_0_0_/_calc(0.14*var(--contrast-wash-gain,1)))] dark:[--track:rgb(255_255_255_/_calc(0.2*var(--contrast-wash-gain,1)))]",
             )}
           >
             {/* Exactly one of these has width, matching the button's. */}
@@ -121,15 +127,18 @@ export const ContextUsageBar: FC<
               style={{ width: "clamp(0px, (100% - var(--full) + 1px) * 999, var(--full))" }}
             >
               <span className={cn("flex h-full w-(--full) items-center gap-2 px-2.5", hover)}>
-                <span>{face}</span>
-                {percent !== null ? (
-                  <span className="h-1.5 w-16 shrink-0 overflow-hidden rounded-full bg-(--track)">
-                    <span
-                      className={cn("block h-full rounded-full transition-all", severity.bar)}
-                      style={{ width: `${percent}%` }}
-                    />
-                  </span>
-                ) : null}
+                <span>
+                  {slash >= 0 ? (
+                    <>
+                      {face.slice(0, slash)}
+                      <span className="mx-[0.25ch]">/</span>
+                      {face.slice(slash + 3)}
+                    </>
+                  ) : (
+                    face
+                  )}
+                </span>
+                {percent !== null ? <UsageRing percent={percent} stroke={severity.stroke} /> : null}
               </span>
             </span>
           </button>

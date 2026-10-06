@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// When the chat header is squeezed, the context bar shrinks to a ring.
+// The context usage shows its counts beside a ring; squeezed, the ring alone.
 
 import assert from "node:assert/strict";
 import test from "node:test";
@@ -28,4 +28,11 @@ test("the header shrinks the context bar before the model name", () => {
   const page = readSrc("features/chat/chat-page.tsx");
   assert.match(page, /"pointer-events-auto flex min-w-0 items-center gap-1"/);
   assert.match(page, /ml-auto flex min-w-min max-w-max grow basis-0 items-center gap-1 \*:shrink-0/);
+});
+
+test("both faces draw the ring, not the line", () => {
+  const bar = readSrc("features/chat/components/context-usage-bar.tsx");
+  assert.match(bar, /\{compactFace === null \? \(\s*<span[^>]*>\s*<UsageRing /);
+  assert.match(bar, /\{percent !== null \? <UsageRing percent=\{percent\} stroke=\{severity\.stroke\} \/> : null\}/);
+  assert.doesNotMatch(bar, /style=\{\{ width: `\$\{percent\}%` \}\}/);
 });
