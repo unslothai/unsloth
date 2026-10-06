@@ -24193,10 +24193,10 @@ def _audio_cpp_runtime_status() -> dict:
         or os.environ.get("UNSLOTH_SKIP_AUDIO_CPP_INSTALL") == "1"
     )
     try:
+        managed_dir = audio_cpp_server.managed_audio_cpp_dir().resolve()
         managed = not setup_skips and (
-            Path(binary)
-            .resolve()
-            .is_relative_to(audio_cpp_server.managed_audio_cpp_dir().resolve())
+            Path(binary).resolve().is_relative_to(managed_dir)
+            and (managed_dir / ".unsloth-studio-owned").is_file()
         )
         ladder = _audio_cpp_release_ladder() if managed else []
     except Exception as exc:  # noqa: BLE001 - cannot tell is not outdated

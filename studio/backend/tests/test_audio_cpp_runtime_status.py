@@ -99,6 +99,8 @@ def _managed(
     """a Studio-managed install of ``record`` and the releases setup would install."""
     for name in _SETUP_SKIPS:
         monkeypatch.delenv(name, raising = False)
+    tmp_path.mkdir(parents = True, exist_ok = True)
+    (tmp_path / ".unsloth-studio-owned").touch()
     _patch(monkeypatch, binary = str(tmp_path / "audiocpp_server"), record = record, espeak = True)
     monkeypatch.setattr(audio_cpp_server, "managed_audio_cpp_dir", lambda: tmp_path)
     monkeypatch.setattr(inference, "_audio_cpp_release_ladder", lambda: ladder)
@@ -159,6 +161,18 @@ def test_managed_install_without_a_tag_is_not_flagged(monkeypatch, tmp_path):
     _managed(monkeypatch, tmp_path, {})
     status = inference._audio_cpp_runtime_status()
     assert status["release_tag"] is None and status["outdated"] is False
+
+
+def test_managed_path_without_ownership_marker_is_not_flagged(monkeypatch, tmp_path):
+    _managed(
+        monkeypatch,
+        tmp_path,
+        {"published_repo": "unslothai/audio.cpp", "release_tag": "v0.8.0-unsloth.1"},
+    )
+    (tmp_path / ".unsloth-studio-owned").unlink()
+    status = inference._audio_cpp_runtime_status()
+    assert status["available"] is True
+    assert status["expected_tag"] is None and status["outdated"] is False
 
 
 def test_user_configured_binary_is_never_outdated(monkeypatch, tmp_path):
