@@ -199,9 +199,10 @@ def test_a_target_the_family_cannot_take_is_refused(family, target, match):
         acc.convert_request(_model(family), mode = "speech", source = SOURCE, target = target)
 
 
-def test_meanvc2_sends_audio_voice_ref_and_seed():
+@pytest.mark.parametrize("family", ["meanvc2", "tone_color_vc"])
+def test_a_reference_family_sends_audio_voice_ref_and_seed(family):
     request = acc.convert_request(
-        _model("meanvc2"), mode = "speech", source = SOURCE, target = TARGET, pitch = 4, seed = 7
+        _model(family), mode = "speech", source = SOURCE, target = TARGET, pitch = 4, seed = 7
     )
     assert request == {"audio": SOURCE, "voice_ref": TARGET, "seed": "7"}
 
@@ -412,6 +413,9 @@ def test_status_fields_describe_convert_per_family():
     assert chatterbox["audio_convert"]["pitch"] == {}
     assert chatterbox["audio_convert_rules"] == {"source_rate": 16000, "target_rate": 24000}
     assert acb.model_info_fields(_model("meanvc2"))["audio_convert"]["pitch"] == {}
+    tone_color = acb.model_info_fields(_model("tone_color_vc"))
+    assert tone_color["audio_workflow_tasks"] == {"convert": "vc"}
+    assert tone_color["audio_convert_rules"] == {"source_rate": 22050, "target_rate": 22050}
 
     kokoro = acb.model_info_fields(_model("kokoro_tts"))
     assert kokoro["audio_convert"] is None and kokoro["audio_options_by_workflow"] is None

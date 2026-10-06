@@ -261,7 +261,7 @@ def encode_wav(wav_bytes: bytes, fmt: str) -> tuple[bytes, str]:
         layout = "stereo" if audio.channels == 2 and fmt != "pcm" else "mono"
         with av.open(out, "w", format = container_format) as dst:
             stream = dst.add_stream(codec, rate = rate, layout = layout)
-            stream.codec_context.open()  # sets frame_size, which mp3, aac and opus need
+            stream.codec_context.open(strict = True)  # sets frame_size, which mp3, aac and opus need
             resampler = av.AudioResampler(
                 format = stream.format.name,
                 layout = layout,

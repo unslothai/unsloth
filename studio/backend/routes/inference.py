@@ -24556,26 +24556,67 @@ def _account_stt_status(status):
     return status
 
 
+_AUDIO_CPP_RUNTIME_MISSING = {
+    "available": False,
+    "espeak": False,
+    "backend": None,
+    "release_tag": None,
+    "expected_tag": None,
+    "outdated": False,
+}
+
+
+def _audio_cpp_release_ladder() -> list:
+    studio_dir = str(Path(__file__).resolve().parents[2])
+    if studio_dir not in sys.path:
+        sys.path.insert(0, studio_dir)
+    import install_audio_cpp_prebuilt
+
+    return install_audio_cpp_prebuilt._release_ladder()
+
+
 def _audio_cpp_runtime_status() -> dict:
-    """What the installed audio.cpp runtime can run, so the Audio page can mark rows before a load."""
     try:
         from core.inference import audio_cpp_server
 
         binary = audio_cpp_server.find_audio_cpp_server_binary()
         if binary is None:
-            return {"available": False, "espeak": False, "backend": None, "release_tag": None}
+            return dict(_AUDIO_CPP_RUNTIME_MISSING)
         record = audio_cpp_server.read_install_record(binary)
         backend = record.get("backend")
         release_tag = record.get("release_tag")
-        return {
+        status = {
             "available": True,
             "espeak": audio_cpp_server.binary_has_espeak(binary),
             "backend": backend if isinstance(backend, str) else None,
             "release_tag": release_tag if isinstance(release_tag, str) else None,
+            "expected_tag": None,
+            "outdated": False,
         }
     except Exception as exc:  # noqa: BLE001 - a status poll must not fail on a probe
         logger.debug("audio.cpp runtime probe failed: %s", exc)
-        return {"available": False, "espeak": False, "backend": None, "release_tag": None}
+        return dict(_AUDIO_CPP_RUNTIME_MISSING)
+    # only the managed tree is updatable; setup skips it under any of these, whatever the path.
+    setup_skips = (
+        os.environ.get("AUDIOCPP_SERVER_PATH")
+        or os.environ.get("UNSLOTH_AUDIO_CPP_PATH")
+        or os.environ.get("UNSLOTH_SKIP_AUDIO_CPP_INSTALL") == "1"
+    )
+    try:
+        managed_dir = audio_cpp_server.managed_audio_cpp_dir().resolve()
+        managed = not setup_skips and (
+            Path(binary).resolve().is_relative_to(managed_dir)
+            and (managed_dir / ".unsloth-studio-owned").is_file()
+        )
+        ladder = _audio_cpp_release_ladder() if managed else []
+    except Exception as exc:  # noqa: BLE001 - cannot tell is not outdated
+        logger.debug("audio.cpp release lookup failed: %s", exc)
+        ladder = []
+    # a None tag tracks the latest release, so an installed release cannot be compared.
+    if status["release_tag"] and ladder and all(tag for _, tag in ladder):
+        status["expected_tag"] = ladder[0][1]
+        status["outdated"] = (record.get("published_repo"), release_tag) not in ladder
+    return status
 
 
 @studio_router.get("/audio/stt/status")
@@ -32879,6 +32920,21 @@ async def produce_openai_chat_completions(
     _sf_mcp_allowed = (
         payload.tool_choice != "none" and bool(payload.mcp_enabled) and _sf_cli_policy is not False
     )
+    # tool_choice asked directly: _tool_loop_unusable weighs it against GGUF's tools.
+    _sf_recall_loop_usable = (
+        payload.tool_choice != "none"
+        and not _tool_loop_unusable
+        and not _has_client_tool_contract
+        and not _response_format_constrains_decoding(payload)
+        and (_ui_events or not _confirm_gate_would_prompt(payload, ("search_conversation",)))
+    )
+    # GGUF parity: a checkpointed thread reopens the loop with search_conversation alone.
+    _sf_recall_reopens_loop = (
+        _sf_fit_overflow is not None
+        and not (_sf_tools_on or _sf_mcp_allowed)
+        and _sf_recall_loop_usable
+        and _checkpoint_recall_may_enable_tools(payload)
+    )
 
     # Named templates may expose native reasoning only in their ``tool_use``
     # branch. Use a truthy placeholder for Unsloth-managed tools, whose concrete
@@ -32886,7 +32942,7 @@ async def produce_openai_chat_completions(
     # A withdrawn catalogue renders plain here too, so the probe and the completion agree on
     # which branch the conversation is in.
     _sf_server_tool_intent = payload.tool_choice != "none" and bool(
-        _sf_tools_on or _explicit_studio_tool_loop_requested(payload)
+        _sf_tools_on or _sf_recall_reopens_loop or _explicit_studio_tool_loop_requested(payload)
     )
     # Detection only: this picks which branch of a named template is READ, never what is
     # rendered (the catalogue is withdrawn above and in _sf_tools_to_use), so it must not
@@ -33048,7 +33104,7 @@ async def produce_openai_chat_completions(
     # _sf_cli_policy / _sf_tools_on / _sf_mcp_allowed are resolved above, before
     # the response protocol is classified, so both use the same decision.
     _sf_use_tools = (
-        (_sf_tools_on or _sf_mcp_allowed)
+        (_sf_tools_on or _sf_mcp_allowed or _sf_recall_reopens_loop)
         and _sf_features.get("supports_tools", False)
         # An attachment used to withdraw the tools: the loop had no way to carry
         # a picture. It has one now, so only a model that cannot read images does.
@@ -33943,44 +33999,71 @@ async def produce_openai_chat_completions(
                 **kw,
             )
 
-    def generate(messages_override = None, choice_index = 0):
-        base_kwargs = (
-            gen_kwargs
-            if messages_override is None
-            else {**gen_kwargs, "messages": messages_override}
-        )
-
-        if choice_index:
-            base_kwargs = {**base_kwargs, "seed": _choice_seed(payload.seed, choice_index)}
-
-        def _run():
-            generation_kwargs = base_kwargs
-            # The count cannot price pictures or video, so those prompts are left alone.
-            if _sf_fit_overflow and all(
-                base_kwargs.get(key) is None for key in ("image", "images", "video")
-            ):
-                fitted = backend.compact_chat_context(
-                    base_kwargs.get("messages") or [],
-                    system_prompt = base_kwargs.get("system_prompt") or "",
-                    tools = base_kwargs.get("tools"),
-                    context_overflow = _sf_fit_overflow,
-                    context_policy = _request_context_policy(payload),
-                    compaction_headroom_ratio = _request_compaction_headroom_ratio(payload),
-                    max_tokens = effective_max_tokens,
-                    thread_id = payload.thread_id,
-                    cancel_event = cancel_event,
-                    enable_thinking = base_kwargs.get("enable_thinking"),
-                    reasoning_effort = base_kwargs.get("reasoning_effort"),
-                    preserve_thinking = base_kwargs.get("preserve_thinking"),
-                    continue_final_message = bool(base_kwargs.get("continue_final_message", False)),
+    # A plain reset needs the next turn to reopen the loop, which renders the tool branch.
+    # A vision model renders text turns through its processor body too (Qwen2.5-VL drops tools, #7066).
+    _sf_recall_tpl = (_sf_model_info.get("chat_template_info") or {}).get("processor_template")
+    _sf_recall_reachable = (
+        _sf_fit_overflow is not None
+        and _sf_recall_loop_usable
+        and not _sf_is_gptoss
+        and bool(
+            (
+                _sf_rendered_features(backend, _sf_model_info, ({},))[0]
+                if _sf_recall_tpl is None
+                else _detect_safetensors_features(
+                    backend, _sf_recall_tpl, tools = ({},), prefer_tool_use = False
                 )
+            ).get("supports_tools")
+        )
+    )
+
+    _sf_fit_cache: dict = {}
+
+    def _sf_fit_request():
+        # On the generation thread, once: every choice and retry starts from this prompt.
+        if "kwargs" in _sf_fit_cache:
+            return _sf_fit_cache["kwargs"], ()
+        fitted_kwargs, events = gen_kwargs, ()
+        # The count cannot price pictures or video, so those prompts are left alone.
+        if _sf_fit_overflow and all(
+            gen_kwargs.get(key) is None for key in ("image", "images", "video")
+        ):
+            fitted = backend.compact_chat_context(
+                gen_kwargs.get("messages") or [],
+                system_prompt = gen_kwargs.get("system_prompt") or "",
+                tools = gen_kwargs.get("tools"),
+                context_overflow = _sf_fit_overflow,
+                context_policy = _request_context_policy(payload),
+                compaction_headroom_ratio = _request_compaction_headroom_ratio(payload),
+                max_tokens = effective_max_tokens,
+                thread_id = payload.thread_id,
+                cancel_event = cancel_event,
+                enable_thinking = gen_kwargs.get("enable_thinking"),
+                reasoning_effort = gen_kwargs.get("reasoning_effort"),
+                preserve_thinking = gen_kwargs.get("preserve_thinking"),
+                continue_final_message = bool(gen_kwargs.get("continue_final_message", False)),
+                recall_reachable = _sf_recall_reachable,
+            )
+            fitted_kwargs = {
+                **gen_kwargs,
+                "messages": fitted["messages"],
+                "system_prompt": fitted["system_prompt"],
+            }
+            events = fitted.get("events") or ()
+        _sf_fit_cache["kwargs"] = fitted_kwargs
+        return fitted_kwargs, events
+
+    def generate(messages_override = None, choice_index = 0):
+        def _run():
+            generation_kwargs, events = _sf_fit_request()
+            yield from events
+            if messages_override is not None:
+                generation_kwargs = {**generation_kwargs, "messages": messages_override}
+            if choice_index:
                 generation_kwargs = {
-                    **base_kwargs,
-                    "messages": fitted["messages"],
-                    "system_prompt": fitted["system_prompt"],
+                    **generation_kwargs,
+                    "seed": _choice_seed(payload.seed, choice_index),
                 }
-                for event in fitted.get("events") or ():
-                    yield event
             yield from _sf_raw_generate(generation_kwargs)
 
         return _run()
@@ -34260,15 +34343,17 @@ async def produce_openai_chat_completions(
             _prompt_details = None
             _last_stats = None
 
+            def _note_fit(event):
+                if event.get("type") == "context_truncated":
+                    _sf_context_truncation_holder["value"] = _accumulate_context_truncation(
+                        None, event
+                    )
+
             def _drain_generate(messages_override = None, choice_index = 0):
                 final = ""
                 for token in generate(messages_override, choice_index = choice_index):
                     if isinstance(token, dict):
-                        if token.get("type") == "context_truncated":
-                            # Choices and retries refit one prompt: report a fit, not their sum.
-                            _sf_context_truncation_holder["value"] = _accumulate_context_truncation(
-                                None, token
-                            )
+                        _note_fit(token)
                         continue
                     if isinstance(token, GenStreamError):
                         return token
@@ -34288,11 +34373,14 @@ async def produce_openai_chat_completions(
                 _finished = set()
 
                 def _drain_batch():
+                    fitted_kwargs, fit_events = _sf_fit_request()
+                    for event in fit_events:
+                        _note_fit(event)
                     for event in backend.generate_chat_batch(
                         rows = rows,
                         cancel_event = cancel_event,
                         stats_holder = batch_stats,
-                        **gen_kwargs,
+                        **fitted_kwargs,
                     ):
                         if isinstance(event, GenStreamError):
                             return event
@@ -34412,7 +34500,8 @@ async def produce_openai_chat_completions(
                             try:
                                 # Mark the owning turn before the correction is appended,
                                 # or the reverse scan attaches the picture to it (#10092).
-                                _nudge_base = gen_kwargs["messages"]
+                                # The fitted prompt: the retry extends it and is not refitted.
+                                _nudge_base = _sf_fit_request()[0]["messages"]
                                 if _sf_renders_image or _video_clip is not None:
                                     from core.inference.chat_template_helpers import (
                                         messages_with_attached_image as _nudge_attach,

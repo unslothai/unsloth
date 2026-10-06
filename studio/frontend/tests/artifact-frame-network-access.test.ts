@@ -520,7 +520,7 @@ test("the blocked alert scopes direction to its locale", () => {
   };
   source.forEachChild(visit);
   assert.ok(alert, "blocked alert not found");
-  assert.match(alert, /dir=\{locale === "ar" \? "rtl" : "ltr"\}/);
+  assert.match(alert, /dir=\{locale === "ar" \|\| locale === "he" \? "rtl" : "ltr"\}/);
 });
 
 test("the climbing blocked count stays outside the assertive live region", () => {
