@@ -43,19 +43,12 @@ def _fast_enabled() -> bool:
 _COMPILED = {}
 
 
-# Compiling the head costs minutes in every process, even with a warm Inductor cache (Dynamo
-# re-traces; new size buckets autotune mid-run), and saves ~0.07 s per batch of 8 on Qwen3.5-2B
-# (B200: 0.40 -> 0.33 s/step; compile +356 s warm, +1043 s cold), so it pays off from ~5000 forwards.
-CLEF_COMPILE_MIN_FORWARDS = 5000
+# The head runs eagerly unless UNSLOTH_CLEF_COMPILE=1: compiling it costs 7-20 minutes in every
+# process (warm Inductor cache included) and Qwen3.5-2B steps are no faster compiled (L4, G4).
 
 
-def _compile_supported(device, head = None) -> bool:
-    # UNSLOTH_CLEF_COMPILE: "1" always, "0" never, unset / "auto" when DecisionTrainer judged the
-    # run long enough (head._unsloth_compile_run); a training loop of its own always compiles.
-    choice = os.environ.get("UNSLOTH_CLEF_COMPILE", "auto")
-    if choice == "0" or device.type != "cuda":
-        return False
-    if choice != "1" and getattr(head, "_unsloth_compile_run", None) is False:
+def _compile_supported(device) -> bool:
+    if os.environ.get("UNSLOTH_CLEF_COMPILE") != "1" or device.type != "cuda":
         return False
     try:
         from torch.utils._triton import has_triton
@@ -64,9 +57,9 @@ def _compile_supported(device, head = None) -> bool:
     return has_triton()
 
 
-def _compiled_logits(device, head = None):
+def _compiled_logits(device):
     # Training only: one fullgraph compile with dynamic shapes; inference stays eager.
-    if not _compile_supported(device, head):
+    if not _compile_supported(device):
         return None
     if "function" not in _COMPILED:
         _COMPILED["function"] = torch.compile(batched_logits, fullgraph = True, dynamic = True)
@@ -507,7 +500,7 @@ class JointSchemaHead(ReferenceJointSchemaHead):
         training = self.training and torch.is_grad_enabled()
         checkpoint = training and os.environ.get("UNSLOTH_CLEF_CHECKPOINT", "1") != "0"
         chunk = int(os.environ.get("UNSLOTH_CLEF_CHUNK", "2048"))
-        function = _compiled_logits(hidden_states.device, self) if training else None
+        function = _compiled_logits(hidden_states.device) if training else None
         args = (self, hidden_states, output_embedding_weight, layout, checkpoint, chunk)
         with _torch_checkpoint(checkpoint):
             if function is not None:

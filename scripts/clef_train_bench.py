@@ -6,8 +6,8 @@
 python scripts/clef_train_bench.py --model Cloudflare/clef-flash --load-in-4bit --seq-len 8192
 python scripts/clef_train_bench.py --model tiny --fast off --dtype fp16
 
---fast on|off sets UNSLOTH_CLEF_FAST (Unsloth's batched, chunked, checkpointed and compiled head
-vs the per-record head). Whatever the arm, the first batch's head is also run both ways on the same
+--fast on|off sets UNSLOTH_CLEF_FAST (Unsloth's batched, chunked and checkpointed head, compiled
+too under UNSLOTH_CLEF_COMPILE=1, vs the per-record head). Whatever the arm, the first batch's head is also run both ways on the same
 hidden states, so `parity` compares the two heads' logits and gradients in this process.
 """
 

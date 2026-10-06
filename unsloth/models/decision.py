@@ -1367,30 +1367,6 @@ class DecisionTrainer(Trainer):
             return super()._load_best_model()
         _load_clef_checkpoint(self.model, Path(self.state.best_model_checkpoint))
 
-    def train(self, *args, **kwargs):
-        head = getattr(self.model, "head", None) if getattr(self.model, "is_clef", False) else None
-        if head is None:
-            return super().train(*args, **kwargs)
-        from .clef import CLEF_COMPILE_MIN_FORWARDS
-
-        # Forward passes this run makes; a short run skips the head's cold compile (minutes).
-        forwards = self.args.max_steps * self.args.gradient_accumulation_steps
-        if forwards <= 0 and self.train_dataset is not None:
-            batches = math.ceil(len(self.train_dataset) / self.args.train_batch_size)
-            forwards = int(batches * self.args.num_train_epochs)
-        previous = getattr(head, "_unsloth_compile_run", None)
-        head._unsloth_compile_run = forwards >= CLEF_COMPILE_MIN_FORWARDS
-        if not head._unsloth_compile_run and os.environ.get("UNSLOTH_CLEF_COMPILE") != "1":
-            print(
-                f"Unsloth: the Clef head runs eagerly for this run of {forwards:,} forward passes: "
-                f"compiling it pays off from about {CLEF_COMPILE_MIN_FORWARDS:,}. "
-                "UNSLOTH_CLEF_COMPILE=1 compiles it anyway."
-            )
-        try:
-            return super().train(*args, **kwargs)
-        finally:
-            head._unsloth_compile_run = previous
-
     def _get_train_sampler(self, train_dataset = None):
         dataset = self.train_dataset if train_dataset is None else train_dataset
         # With one micro-batch per step, length grouping would make each step one question type.
