@@ -432,6 +432,16 @@ def load_comfy_quant_transformer(
             if key.endswith(old):
                 state[key[: -len(old)] + new] = state.pop(key)
 
+    keep_fp32 = getattr(transformer_cls, "_keep_in_fp32_modules", None) or []
+    if isinstance(keep_fp32, str):
+        keep_fp32 = [keep_fp32]
+    # fp16: _keep_in_fp32_modules names diffusers keys (Wan time_embedder, scale_shift_table), so every layer goes
+    # through the converter first and dtypes are decided on the converted names.
+    fp16_keep = dtype == torch.float16 and bool(keep_fp32)
+
+    def _dtype_for(key: str) -> Any:
+        return torch.float32 if fp16_keep and any(m in key.split(".") for m in keep_fp32) else dtype
+
     int8_sources: list = []  # (layer, codes, scale)
     dequantized = 0
     for layer in scan.layers.values():
@@ -440,20 +450,15 @@ def load_comfy_quant_transformer(
         state.pop(layer.name + ".input_scale", None)
         if layer.format in FP8_FORMATS and codes.dtype == torch.uint8:
             codes = codes.view(getattr(torch, layer.format))
-        if layer.format == INT8_TENSORWISE and int8_backend:
+        if (layer.format == INT8_TENSORWISE and int8_backend) or fp16_keep:
             int8_sources.append((layer, codes, scale))
             state[layer.name + ".weight"] = None  # placeholder, tagged below
         else:
             state[layer.name + ".weight"] = _dequant(codes, scale, layer.group, dtype)
             dequantized += 1
 
-    keep_fp32 = getattr(transformer_cls, "_keep_in_fp32_modules", None) or []
-    if isinstance(keep_fp32, str):
-        keep_fp32 = [keep_fp32]
     for key, value in list(state.items()):
-        if value is None or not value.is_floating_point() or value.dtype == dtype:
-            continue
-        if dtype == torch.float16 and any(m in key.split(".") for m in keep_fp32):
+        if fp16_keep or value is None or not value.is_floating_point() or value.dtype == dtype:
             continue
         state[key] = value.to(dtype)
     for index, (layer, codes, _scale) in enumerate(int8_sources):
@@ -499,10 +504,10 @@ def load_comfy_quant_transformer(
         k for k, v in converted.items() if torch.is_tensor(v) and v.dtype == torch.float64
     ]:
         segments = _decode_rows(name, converted[name], int8_sources)
-        sources = {int8_sources[i][0].group for i, _r, _n in segments}
+        sources = {(int8_sources[i][0].format, int8_sources[i][0].group) for i, _r, _n in segments}
         if len(sources) != 1:
-            raise ValueError(f"{name}: rows from layers with different ConvRot groups")
-        group = sources.pop()
+            raise ValueError(f"{name}: rows from layers of different formats or ConvRot groups")
+        fmt, group = sources.pop()
         codes = torch.cat([int8_sources[i][1][r : r + n] for i, r, n in segments])
         scale = torch.cat(
             [
@@ -510,7 +515,11 @@ def load_comfy_quant_transformer(
                 for i, r, n in segments
             ]
         )
-        converted[name] = (codes, scale, group)
+        converted[name] = (codes, scale, group, fmt)
+    if fp16_keep:
+        for key, value in list(converted.items()):
+            if torch.is_tensor(value) and value.is_floating_point():
+                converted[key] = value.to(_dtype_for(key))
 
     from .diffusion_transformer_quant import (
         DEFAULT_MIN_LINEAR_FEATURES,
@@ -528,19 +537,25 @@ def load_comfy_quant_transformer(
     for name, value in list(converted.items()):
         if not isinstance(value, tuple):
             continue
-        codes, scale, group = value
+        codes, scale, group, fmt = value
         fqn = name[: -len(".weight")] if name.endswith(".weight") else name
         module = modules.get(fqn)
         weight = None
-        if module is not None and name.endswith(".weight") and filter_fn(module, fqn):
+        if (
+            int8_backend
+            and fmt == INT8_TENSORWISE
+            and module is not None
+            and name.endswith(".weight")
+            and filter_fn(module, fqn)
+        ):
             if int8_backend == "native":
-                native[fqn] = value
+                native[fqn] = (codes, scale, group)
                 del converted[name]
                 built += 1
                 continue
             weight = _int8_tensor(name, codes, scale, dtype)
         if weight is None:
-            converted[name] = _dequant(codes, scale, group, dtype)
+            converted[name] = _dequant(codes, scale, group, _dtype_for(name))
             dequantized += 1
             continue
         converted[name] = weight

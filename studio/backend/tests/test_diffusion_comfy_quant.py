@@ -402,6 +402,31 @@ def test_native_backend_keeps_codes_and_computes_the_dense_product(comfy_file):
     assert type(block.adaLN_modulation[0]) is nn.Linear
 
 
+def test_fp16_keeps_fp32_modules_by_their_converted_names(comfy_file):
+    # Wan: ComfyUI's time_embedding.0 becomes diffusers' time_embedder only after conversion
+    path, dense, _ = comfy_file
+
+    class _KeepOut(_Tiny):
+        _keep_in_fp32_modules = ["to_out"]
+
+    model = cq.load_comfy_quant_transformer(
+        _KeepOut,
+        path,
+        cq.refuse_comfy_quant(path),
+        {"torch_dtype": torch.float16, "config": "base/repo", "subfolder": "transformer"},
+        int8_backend = None,
+        family = "z-image",
+    )
+    for b, block in enumerate(model.blocks):
+        assert block.to_out.weight.dtype == torch.float32
+        assert block.to_out.bias.dtype == torch.float32
+        assert torch.equal(block.to_out.bias, dense.blocks[b].to_out.bias)
+        assert _cos(block.to_out.weight, dense.blocks[b].to_out.weight) > 0.9999
+        assert block.to_q.weight.dtype == torch.float16
+        assert block.adaLN_modulation[0].bias.dtype == torch.float16
+    assert model.norm.weight.dtype == torch.float16
+
+
 def test_fp8_layers_dequantize_with_their_scale(tmp_path, monkeypatch):
     monkeypatch.setattr(cq, "_mapping", lambda cls: (_convert, _sfm()))
     torch.manual_seed(1)
