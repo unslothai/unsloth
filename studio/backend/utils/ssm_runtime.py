@@ -220,7 +220,6 @@ def _emit(status_cb: StatusCb, message: str) -> None:
         logger.debug("ssm_runtime status callback raised", exc_info = True)
 
 
-# Module-level seam for tests; the shared helper does the work.
 _hipcc_gcc_install_dir = hipcc_gcc_install_dir
 
 
@@ -312,7 +311,6 @@ def _install_kernel(
                 logger.info("Installed prebuilt %s wheel", display_name)
                 return True
             if outcome == "rejected":
-                # Source-build to match the local ABI.
                 logger.warning(
                     "%s wheel installed but not importable; building from source",
                     display_name,

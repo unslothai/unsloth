@@ -398,9 +398,6 @@ def test_capability_probe_takes_the_best_visible_gpu():
     assert "max(torch.cuda.get_device_capability(i)" in seen["check"] and seen["timeout"]
 
 
-# Shared pieces used by Studio setup, the training worker and the SSM runtime.
-
-
 def test_pinned_kernels_match_the_wheel_utils_pins():
     from utils import wheel_utils
 

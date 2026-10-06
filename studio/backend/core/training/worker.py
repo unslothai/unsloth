@@ -1185,7 +1185,6 @@ def _model_wants_causal_conv1d(model_name: str) -> bool:
     return any(key in name for key in _CAUSAL_CONV1D_MODEL_SUBSTRINGS)
 
 
-# Module-level seam for tests; the shared helper does the work.
 _hipcc_gcc_install_dir = hipcc_gcc_install_dir
 
 
