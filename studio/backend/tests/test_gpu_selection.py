@@ -187,6 +187,32 @@ class TestResolveRequestedGpuIds(_GpuCacheResetMixin, unittest.TestCase):
         _, after_invalidate = self._uuid_mask_ids("GPU-aaa1", "", returncode = 9)
         self.assertEqual(after_invalidate, 1)
 
+    def test_cross_vendor_inventory_follows_uuid_mask_order(self):
+        inventory = {
+            "devices": [
+                {"index": 0, "name": "GPU Zero", "memory_total_gb": 24.0},
+                {"index": 1, "name": "GPU One", "memory_total_gb": 24.0},
+            ]
+        }
+        with (
+            patch.dict(
+                os.environ,
+                {"CUDA_VISIBLE_DEVICES": "GPU-b,GPU-a", "CUDA_DEVICE_ORDER": "PCI_BUS_ID"},
+                clear = True,
+            ),
+            patch(
+                "core.inference.llama_cpp.LlamaCppBackend._visible_devices_mask",
+                return_value = {0, 1},
+            ),
+            patch("utils.hardware.nvidia.resolve_uuid_mask", return_value = [1, 0]),
+            patch("utils.hardware.nvidia.get_physical_gpu_inventory", return_value = inventory),
+            patch(
+                "utils.hardware.nvidia.get_visible_gpu_utilization", return_value = {"devices": []}
+            ),
+        ):
+            devices = _hw_module._nvidia_inference_devices()
+        self.assertEqual([d["index"] for d in devices], [1, 0])
+
     def test_unresolvable_uuid_mask_stays_unresolved(self):
         smi = "0, GPU-aaa1\n1, GPU-aaa2\n"
         for mask in ("GPU-aaa", "GPU-bbb", "MIG-aaa1", "0,GPU-aaa1", "GPU-aaa1,GPU-aaa1"):
