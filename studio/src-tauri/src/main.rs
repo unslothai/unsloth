@@ -31,6 +31,7 @@ mod native_path_policy;
 mod preflight;
 mod process;
 mod process_identity;
+mod shell_path;
 mod staged_update;
 mod update;
 mod webview_permissions;
@@ -2173,7 +2174,7 @@ fn main() {
     // Fix PATH for GUI apps (macOS .app bundles, Linux AppImage, Windows)
     // GUI apps don't inherit shell dotfile PATH — this spawns the user's
     // login shell to source .zshrc/.bashrc/.profile and sets PATH properly.
-    let _ = fix_path_env::fix();
+    shell_path::fix_path();
 
     setup_logging();
     log_panics();

@@ -10,7 +10,7 @@ import type {
   S3Config,
   TrainingMethod,
 } from "@/types/training";
-import type { BackendModelConfig } from "../api/models-api";
+import type { BackendModelConfig, DecisionCheckpoint } from "../api/models-api";
 
 export type LoraVariant = "lora" | "rslora" | "loftq" | "dora";
 
@@ -66,6 +66,14 @@ export interface TrainingConfigState {
   modelKnownCached: boolean;
   modelLocalPath: string | null;
   modelFormat: ModelInventoryFormat | null;
+  modelSubfolder: string | null;
+  decisionCheckpoints: DecisionCheckpoint[] | null;
+  /** "clef" for Cloudflare Clef (Qwen3.5 backbone, QLoRA allowed), "laya" otherwise. */
+  decisionLayout: "laya" | "clef" | null;
+  settingsBeforeDecision: {
+    trainingMethod: TrainingMethod;
+    datasetStreaming: boolean;
+  } | null;
   projectName: string;
   trainingMethod: TrainingMethod;
   trainingMethodProvenance: TrainingMethodProvenance;
@@ -193,6 +201,7 @@ export interface TrainingConfigActions {
     dataset: string,
     localPath: string | null,
   ) => void;
+  setModelSubfolder: (subfolder: string | null) => void;
   setProjectName: (value: string) => void;
   ensureModelDefaultsLoaded: () => void;
   ensureDatasetChecked: () => void;

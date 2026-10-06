@@ -157,7 +157,7 @@ import {
   useState,
   useSyncExternalStore,
 } from "react";
-import { audioWorkflowForPick } from "../../../audio/route-search.ts";
+import { audioPickSearch } from "../../../audio/route-search.ts";
 import { useChatPickerInventory } from "../../inventory/use-chat-picker-inventory";
 import {
   type CommunityModelPolicy,
@@ -2655,10 +2655,13 @@ const DIFFUSION_TASKS: ReadonlySet<string> = new Set([
   ...VIDEO_GEN_TASKS,
 ]);
 
-// Speech pipeline tasks: owned by the Audio page. TTS picks load there; ASR picks map to the dictation sidecar.
+// Audio pipeline tasks: owned by the Audio page. TTS, music and separation picks load there; ASR picks map
+// to the dictation sidecar.
 export const AUDIO_GEN_TASKS = [
   "text-to-speech",
   "automatic-speech-recognition",
+  "text-to-audio",
+  "audio-to-audio",
 ] as const;
 
 // Diffusion GGUF archs the Images backend cannot assemble yet. The backend tags them with this
@@ -4119,6 +4122,7 @@ export function HubModelPicker({
         tags?: string[];
         libraryName?: string | null;
         audioType?: string | null;
+        taskFromGgufArch?: boolean;
       }
     >();
     for (const r of [
@@ -4153,15 +4157,18 @@ export function HubModelPicker({
       });
     }
     for (const c of cachedGguf) {
+      // Only the audio runtime's header classifier tags a GGUF text-to-audio, so it is runnable.
+      const taskFromGgufArch = c.task === "text-to-audio" ? true : undefined;
       const existing = map.get(c.repo_id);
       if (existing) {
         map.set(c.repo_id, {
           ...existing,
           audioType: existing.audioType ?? c.audio_type,
+          taskFromGgufArch,
         });
         continue;
       }
-      map.set(c.repo_id, { audioType: c.audio_type });
+      map.set(c.repo_id, { audioType: c.audio_type, taskFromGgufArch });
     }
     return map;
   }, [
@@ -4612,7 +4619,7 @@ export function HubModelPicker({
         ) {
           // Loading it here would evict the chat model for a repo neither surface can run.
           toast.error(
-            `${id} is not a speech model Unsloth can run yet. The Audio page lists the families it supports.`,
+            `${id} is not an audio model Unsloth can run yet. The Audio page lists the families it supports.`,
             { duration: 7000 },
           );
           return;
@@ -4620,27 +4627,10 @@ export function HubModelPicker({
         if (page) {
           void navigateToPage({
             to: `/${page}`,
-            // `quant` is used verbatim as the gguf filename, so a label like "Q4_K_M" rides ggufQuant
-            // instead; dropping it made every non-curated GGUF repo arrive as a bare repo id.
+            // pickedTask, not meta.pipelineTag: a cached row carries no tag to forward.
             search:
               page === "audio"
-                ? {
-                    model: id,
-                    quant: meta.ggufFilename ?? undefined,
-                    ggufQuant: meta.ggufFilename
-                      ? undefined
-                      : (meta.ggufVariant ?? undefined),
-                    // pickedTask, not meta.pipelineTag: a cached row carries no tag to forward.
-                    task: pickedTask ?? undefined,
-                    audioType: meta.audioType ?? undefined,
-                    loadId: meta.loadId ?? undefined,
-                    workflow:
-                      audioWorkflowForPick({
-                        id,
-                        task: pickedTask,
-                        audioType: meta.audioType,
-                      }) ?? undefined,
-                  }
+                ? audioPickSearch(id, { ...meta, task: pickedTask })
                 : diffusionRouteSearch(id, meta),
           });
           return;
