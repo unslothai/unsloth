@@ -476,19 +476,34 @@ pub fn browser_download_decide(
     ask: bool,
 ) -> Result<(), String> {
     crate::native_intents::ensure_main_window(&webview)?;
-    {
-        let state = app.state::<BrowserDownloads>();
-        let mut pending = state.pending.lock().unwrap();
-        let entry = pending
-            .get_mut(&id)
-            .ok_or_else(|| "Unknown download.".to_string())?;
-        entry.decision = Some(if allow {
-            Decision::Allow { ask }
-        } else {
-            Decision::Deny
-        });
-    }
+    let decision = if allow {
+        Decision::Allow { ask }
+    } else {
+        Decision::Deny
+    };
+    decide(
+        &mut app.state::<BrowserDownloads>().pending.lock().unwrap(),
+        &id,
+        decision,
+    )?;
     settle(&app, &id);
+    Ok(())
+}
+
+/// Record the one answer a download gets. A second is refused: after ANSWER_TIMEOUT has denied
+/// it, a late click on Download must not allow it after all.
+fn decide(
+    pending: &mut HashMap<String, Pending>,
+    id: &str,
+    decision: Decision,
+) -> Result<(), String> {
+    let entry = pending
+        .get_mut(id)
+        .ok_or_else(|| "Unknown download.".to_string())?;
+    if entry.decision.is_some() {
+        return Err("This download was already answered.".to_string());
+    }
+    entry.decision = Some(decision);
     Ok(())
 }
 
@@ -672,6 +687,27 @@ mod tests {
         write_json(&file, &folder).unwrap();
         let read: FolderFile = serde_json::from_slice(&fs::read(&file).unwrap()).unwrap();
         assert_eq!(read.path, dir.path());
+    }
+
+    #[test]
+    fn a_download_is_answered_once() {
+        let mut pending = HashMap::new();
+        pending.insert(
+            "a".to_string(),
+            Pending {
+                tab_id: "t".into(),
+                url: Url::parse("https://example.com/f.zip").unwrap(),
+                name: "f.zip".into(),
+                staged: PathBuf::from("f.zip"),
+                decision: None,
+                finished: None,
+            },
+        );
+        // The timeout denies it; the prompt's Download click comes later and changes nothing.
+        decide(&mut pending, "a", Decision::Deny).unwrap();
+        assert!(decide(&mut pending, "a", Decision::Allow { ask: false }).is_err());
+        assert_eq!(pending["a"].decision, Some(Decision::Deny));
+        assert!(decide(&mut pending, "b", Decision::Deny).is_err());
     }
 
     #[test]

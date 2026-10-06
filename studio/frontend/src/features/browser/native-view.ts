@@ -123,9 +123,10 @@ function onDownloadPrompt(event: Extract<NativeEvent, { kind: "downloadPrompt" }
   const decided =
     entry?.kind === "web" ? approveDownload(url, name, site || entry.from || entry.url) : Promise.resolve(false);
   void decided
-    .then((allow) => {
+    .then(async (allow) => {
+      // Refused once the download's prompt has expired (denied): then nothing is downloading.
+      await decideNativeDownload(id, allow, useBrowserPrefsStore.getState().askWhereToSave);
       if (allow) toast(t("browser.native.downloading", { name }));
-      return decideNativeDownload(id, allow, useBrowserPrefsStore.getState().askWhereToSave);
     })
     .catch(() => undefined);
 }

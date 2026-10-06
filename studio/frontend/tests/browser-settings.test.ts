@@ -287,7 +287,8 @@ test("a site's download answer is remembered, changed and forgotten, per account
   assert.equal(name, accountDatabaseName("unsloth_browser_download_sites"));
   assert.notEqual(name, "unsloth_browser_download_sites");
   assert.ok(data.has(name!));
-  assert.ok(!(data.get("unsloth_browser_prefs") ?? "").includes("example.com"));
+  const prefs = JSON.parse(data.get("unsloth_browser_prefs") ?? "{}") as { state?: Record<string, unknown> };
+  assert.equal(prefs.state?.downloadSites, undefined);
   assert.equal(useBrowserPrefsStore.getState().askBeforeDownloading, true);
   sites.setSite("example.com", null);
 });
