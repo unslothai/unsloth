@@ -61,9 +61,9 @@ REVIEWED_VENDORED_OFFENDERS = {
     "studio/backend/vendor/laya/agent.py:47: open()",
     "studio/backend/vendor/laya/agent.py:156: open()",
 }
+# keyed on path + expression, not line, so unrelated edits above it do not break the scan.
 REVIEWED_NON_FILE_OPEN = (
     "studio/backend/core/inference/audio_inputs.py",
-    264,
     "stream.codec_context.open()",
 )
 GUARDED_METHODS = {"read_text", "write_text"}
@@ -312,7 +312,7 @@ def _is_test_path(path: Path) -> bool:
 
 
 def _is_reviewed_non_file_open(label: str, call: ast.Call) -> bool:
-    return (label, call.lineno, ast.unparse(call)) == REVIEWED_NON_FILE_OPEN
+    return (label, ast.unparse(call)) == REVIEWED_NON_FILE_OPEN
 
 
 def _offenders(tree: ast.Module, label: str):
@@ -431,8 +431,8 @@ def test_skips_only_the_reviewed_pyav_codec_open():
     pyav = "\n" * 263 + "stream.codec_context.open()\n"
     path = "studio/backend/core/inference/audio_inputs.py"
     assert not _offenders_in(pyav, path)
+    assert not _offenders_in("\n" + pyav, path)
     assert _offenders_in(pyav, "studio/backend/core/inference/other.py")
-    assert _offenders_in("\n" + pyav, path)
     assert _offenders_in("\n" * 263 + "config.codec_context.open()\n", path)
 
 
