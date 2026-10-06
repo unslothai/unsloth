@@ -1230,6 +1230,7 @@ _GENERATION_DEFAULTS: tuple[tuple[str, int, float], ...] = (
     # ComfyUI's Image to Layers template: 20 steps, cfg 2.5.
     ("qwen-image-layered", 20, 2.5),
     ("qwen_image_layered", 20, 2.5),
+    ("qwenimagelayered", 20, 2.5),
     # 2509 template: 20 / 4; the generic key is the 2511 recipe (the family base).
     ("qwen-image-edit-2509", 20, 4.0),
     ("qwen-image-edit", 40, 4.0),
