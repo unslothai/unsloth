@@ -511,6 +511,7 @@ class ChatSettingsPayload(BaseModel):
     confirmToolCalls: Optional[bool] = None
     # "full" (Full access) is session-only by design and never persisted.
     permissionMode: Optional[Literal["ask", "auto", "off"]] = None
+    sandboxLevel: Optional[Literal["high", "low"]] = None
     ragSource: Optional[
         Annotated[
             Union[ChatRagThreadSource, ChatRagKnowledgeBaseSource],

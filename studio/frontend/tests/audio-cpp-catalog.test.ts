@@ -16,6 +16,7 @@ import {
   AUDIO_CPP_MUSIC_MIN_SECONDS,
   AUDIO_CPP_REPO,
   AUDIO_CPP_STT_KEYS,
+  AUDIO_CPP_UNOFFERED_FOLDERS,
   audioCppDictationModelFor,
   audioCppDisplayName,
   audioCppModelFor,
@@ -130,6 +131,25 @@ test("recommended ids are unique and name their Hub repo or package folder", () 
   assert.equal(audioCppModelFor(""), null);
   assert.equal(audioCppSizeLabel(57.6 * 1024 * 1024), "58 MB");
   assert.equal(audioCppSizeLabel(2358.4 * 1024 * 1024), "2.3 GB");
+});
+
+test("folders of the shared repo the pickers leave out are never seeded and say why", () => {
+  assert.equal(Object.keys(AUDIO_CPP_UNOFFERED_FOLDERS).length, 19);
+  for (const [folder, reason] of Object.entries(AUDIO_CPP_UNOFFERED_FOLDERS)) {
+    assert.equal(audioCppModelFor(`${AUDIO_CPP_REPO}/${folder}`), null, folder);
+    assert.match(folder, /-GGUF$/);
+    assert.ok(reason.trim(), folder);
+  }
+  // Single-language transcription models say so; the rest are multilingual.
+  for (const [folder, languages] of [
+    ["Granite-Speech-5.0-470M-TurboCTC-GGUF", ["en"]],
+    ["Kroko-ASR-GGUF", ["en"]],
+    ["Niagara-ASR-GGUF", ["en"]],
+    ["Hviske-v5.3-GGUF", ["da"]],
+    ["GigaAM-ASR-GGUF", undefined],
+  ] as const) {
+    assert.deepEqual(audioCppModelFor(`${AUDIO_CPP_REPO}/${folder}`)?.languages, languages, folder);
+  }
 });
 
 test("recommended models are plain GGUF Audio rows named as on the Hub", () => {

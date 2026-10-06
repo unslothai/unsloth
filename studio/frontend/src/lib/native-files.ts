@@ -4,7 +4,7 @@
 import { isTauri } from "@/lib/api-base";
 import { decodeDataUri, isDataUri } from "@/lib/data-uri";
 
-const NATIVE_FILE_NAME_HEADER = "x-unsloth-default-name";
+export const NATIVE_FILE_NAME_HEADER = "x-unsloth-default-name";
 const NATIVE_FILE_SAVE_TOKEN_HEADER = "x-unsloth-save-token";
 const NATIVE_FILE_CHUNK_BYTES = 8 * 1024 * 1024;
 export class DownloadCancelledError extends Error {
@@ -18,7 +18,7 @@ export function isDownloadCancelled(error: unknown): boolean {
   return error instanceof DownloadCancelledError;
 }
 
-function encodeNativeFilename(filename: string): string {
+export function encodeNativeFilename(filename: string): string {
   const bytes = new TextEncoder().encode(filename);
   let binary = "";
   for (const byte of bytes) {

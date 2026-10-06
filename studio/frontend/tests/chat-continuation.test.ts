@@ -33,6 +33,7 @@ const {
   joinContinuation,
   modeAllowsContinuation,
   noteRunStartedThisSession,
+  providerCompactionContinuationFields,
   readContinuationRequest,
   readIncompleteInfo,
   readTextThoughtSignature,
@@ -478,6 +479,52 @@ test("a continuation request is read only when it carries text", () => {
   );
   assert.equal(readContinuationRequest({}), null);
   assert.equal(readContinuationRequest(undefined), null);
+});
+
+test("a continuation carries a complete provider compaction tuple", () => {
+  const fields = {
+    providerCompaction: {
+      type: "compaction",
+      content: "summary",
+      encrypted_content: "opaque",
+    },
+    providerCompactionAfterToolCalls: 0,
+    providerCompactionProviderType: "anthropic",
+    providerCompactionModelId: "claude-opus-4-7",
+    providerCompactionConnectionKey: "v1:connection-a",
+  };
+  assert.deepEqual(
+    providerCompactionContinuationFields({ custom: fields }),
+    fields,
+  );
+  assert.deepEqual(
+    readContinuationRequest({
+      custom: {
+        unslothContinuation: { partial: "half an answer", ...fields },
+      },
+    }),
+    { partial: "half an answer", ...fields },
+  );
+  assert.deepEqual(
+    readContinuationRequest({
+      custom: {
+        unslothContinuation: {
+          partial: "half an answer",
+          ...fields,
+          providerCompactionModelId: undefined,
+        },
+      },
+    }),
+    { partial: "half an answer" },
+  );
+  assert.match(
+    THREAD,
+    /\.\.\.providerCompactionContinuationFields\(metadata\)/,
+  );
+  assert.match(
+    CHAT_ADAPTER,
+    /const continuationCompaction = continuation[\s\S]*providerCompactionForTarget\([\s\S]*content: continuationCompaction/,
+  );
 });
 
 test("a turn that called a tool cannot be continued", () => {

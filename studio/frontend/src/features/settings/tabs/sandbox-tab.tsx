@@ -5,18 +5,26 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Spinner } from "@/components/ui/spinner";
 import { Switch } from "@/components/ui/switch";
+import { useIsAccountOwner } from "@/features/auth";
 import {
+  PermissionModeDropdown,
+  SandboxSetupDialog,
   type SandboxSetupJob,
   type SandboxSetupOperation,
   forgetSandboxCapability,
   loadSandboxSetup,
+  pickSandboxLevel,
+  sandboxSwitchState,
   startSandboxSetup,
+  useActivePermissionMode,
+  useChatRuntimeStore,
+  useSandboxCapability,
 } from "@/features/chat";
 import { type TranslationKey, useT } from "@/i18n";
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import { RefreshIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useRef, useState } from "react";
 import { toast } from "sonner";
 import {
   type HostPrepJob,
@@ -31,6 +39,7 @@ import {
 import { isSettingsRouteAbsent } from "../api/settings-route-absent";
 import { SettingsRow } from "../components/settings-row";
 import { SettingsSection } from "../components/settings-section";
+import { useSettingsDialogStore } from "../stores/settings-dialog-store";
 import {
   HOST_PREP_POLL_MS,
   type HostPrepStatus,
@@ -97,7 +106,116 @@ function ToolRow({
   );
 }
 
+/** Per account, so every account sees it; the OS sandbox sections below are the owner's. */
+function PermissionsSection() {
+  const t = useT();
+  const permissionsRef = useRef<HTMLElement | null>(null);
+  const activePermission = useActivePermissionMode();
+  const sandboxLevel = useChatRuntimeStore((s) => s.sandboxLevel);
+  const setSandboxLevel = useChatRuntimeStore((s) => s.setSandboxLevel);
+  const capability = useSandboxCapability(sandboxLevel === "high");
+  const { checked, disabled } = sandboxSwitchState(
+    sandboxLevel,
+    activePermission.value,
+    capability,
+  );
+  const [setupOpen, setSetupOpen] = useState(false);
+  const levelDescriptionId = useId();
+  const scrollTarget = useSettingsDialogStore((s) => s.scrollTarget);
+  const consumeScrollTarget = useSettingsDialogStore((s) => s.consumeScrollTarget);
+
+  useEffect(() => {
+    if (scrollTarget !== "sandbox-permissions") return;
+    const frame = window.requestAnimationFrame(() => {
+      permissionsRef.current?.scrollIntoView({ block: "start", behavior: "smooth" });
+      consumeScrollTarget("sandbox-permissions");
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [consumeScrollTarget, scrollTarget]);
+
+  const levelDescription = disabled
+    ? t("settings.sandbox.levelFullAccessNote")
+    : checked
+      ? t("settings.sandbox.levelHighDescription")
+      : t("settings.sandbox.levelLowDescription");
+
+  return (
+    <SettingsSection
+      ref={permissionsRef}
+      title={t("settings.general.permissions.sectionTitle")}
+      description={t("settings.sandbox.permissionsIntro")}
+    >
+      {/* The selected level, explained in full. */}
+      <SettingsRow
+        label={t(`settings.general.permissions.names.${activePermission.value}`)}
+        description={t(`settings.general.permissions.details.${activePermission.value}`)}
+      >
+        <PermissionModeDropdown sandboxControls={false} />
+      </SettingsRow>
+      <SettingsRow
+        label={t("settings.sandbox.levelLabel")}
+        description={<span id={levelDescriptionId}>{levelDescription}</span>}
+      >
+        <span className="flex items-center gap-2">
+          <span className="text-xs text-muted-foreground">
+            {checked ? t("settings.sandbox.levelHigh") : t("settings.sandbox.levelLow")}
+          </span>
+          <Switch
+            checked={checked}
+            disabled={disabled}
+            aria-label={t("settings.sandbox.levelLabel")}
+            aria-describedby={levelDescriptionId}
+            onCheckedChange={(next) =>
+              void pickSandboxLevel(next ? "high" : "low", setSandboxLevel, () =>
+                setSetupOpen(true),
+              )
+            }
+          />
+        </span>
+      </SettingsRow>
+      {/* Its own instance: the chat-page root dialog is not mounted on every page. */}
+      <SandboxSetupDialog
+        open={setupOpen}
+        onOpenChange={setSetupOpen}
+        onLearnMore={() =>
+          permissionsRef.current?.scrollIntoView({ block: "start", behavior: "smooth" })
+        }
+      />
+    </SettingsSection>
+  );
+}
+
 export function SandboxTab() {
+  const t = useT();
+  const isOwner = useIsAccountOwner();
+  return (
+    <div className="settings-page">
+      <header className="flex min-w-0 flex-col gap-1">
+        <h1
+          data-settings-label={t("settings.sandbox.title")}
+          className="text-xl font-semibold font-heading"
+        >
+          {t("settings.sandbox.title")}
+        </h1>
+        <p
+          data-settings-label={t("settings.sandbox.description")}
+          className="text-xs text-muted-foreground"
+        >
+          {t("settings.sandbox.description")}
+        </p>
+      </header>
+      <PermissionsSection />
+      {/* Not mounted for managed accounts, so none of the owner-only sandbox routes are called. */}
+      {isOwner ? (
+        <OsSandboxSections />
+      ) : (
+        <p className="text-xs text-muted-foreground">{t("settings.sandbox.managedNote")}</p>
+      )}
+    </div>
+  );
+}
+
+function OsSandboxSections() {
   const t = useT();
   const [status, setStatus] = useState<SandboxStatus | null>(null);
   const [job, setJob] = useState<HostPrepJob | null>(null);
@@ -332,22 +450,7 @@ export function SandboxTab() {
   const setupRunning = setupJob?.state === "running";
 
   return (
-    <div className="settings-page">
-      <header className="flex min-w-0 flex-col gap-1">
-        <h1
-          data-settings-label={t("settings.sandbox.title")}
-          className="text-xl font-semibold font-heading"
-        >
-          {t("settings.sandbox.title")}
-        </h1>
-        <p
-          data-settings-label={t("settings.sandbox.description")}
-          className="text-xs text-muted-foreground"
-        >
-          {t("settings.sandbox.description")}
-        </p>
-      </header>
-
+    <>
       {absent ? (
         <p className="text-sm text-muted-foreground">
           {t("settings.sandbox.unsupported")}
@@ -647,6 +750,6 @@ export function SandboxTab() {
           ) : null}
         </>
       )}
-    </div>
+    </>
   );
 }

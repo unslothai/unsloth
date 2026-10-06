@@ -139,6 +139,7 @@ def _run(
     messages = None,
     supports_vision = False,
     mcp_image = None,
+    continue_final_message = False,
     **policy_kwargs,
 ):
     policy_fields = {
@@ -163,6 +164,7 @@ def _run(
                 thread_id = "t1",
                 tool_choice = tool_choice,
                 supports_vision = supports_vision,
+                continue_final_message = continue_final_message,
             ),
             policy = ToolLoopPolicy(**policy_fields),
             cancel_event = cancel_event,
@@ -246,6 +248,92 @@ def test_structured_call_executes_and_continues(executed):
     follow_up = transport.requests[1]["messages"]
     assert [message["role"] for message in follow_up[-2:]] == ["assistant", "tool"]
     assert follow_up[-1]["content"] == "RESULT<web_search>"
+
+
+def test_provider_compaction_replaces_history_before_tool_follow_up(executed):
+    transport = FakeTransport(
+        [
+            [
+                _sse(
+                    {},
+                    _toolEvent = {
+                        "type": "compaction_block",
+                        "encrypted_content": "opaque-current",
+                    },
+                ),
+                _sse(
+                    {
+                        "tool_calls": [
+                            {
+                                "index": 0,
+                                "id": "call_a",
+                                "function": {
+                                    "name": "web_search",
+                                    "arguments": '{"query":"current"}',
+                                },
+                            }
+                        ]
+                    }
+                ),
+                _sse(finish = "tool_calls"),
+                _DONE,
+            ],
+            [_sse({"content": "Done."}), _sse(finish = "stop"), _DONE],
+        ]
+    )
+    # ExternalProviderClient synthesizes this control frame after sanitizing the provider stream.
+    transport.sanitizes_provider_frames = True
+    _run(
+        transport,
+        messages = [
+            {"role": "system", "content": "Keep this instruction."},
+            {"role": "user", "content": "old question"},
+            {"role": "assistant", "content": "old answer"},
+            {"role": "user", "content": "current question"},
+        ],
+    )
+
+    follow_up = transport.requests[1]["messages"]
+    assert follow_up[0] == {"role": "system", "content": "Keep this instruction."}
+    assert follow_up[1] == {
+        "role": "assistant",
+        "content": "",
+        "extra_content": {"openai_responses_compaction": "opaque-current"},
+    }
+    serialized = json.dumps(follow_up)
+    assert "old question" not in serialized
+    assert "current question" not in serialized
+    assert [message["role"] for message in follow_up[-2:]] == ["assistant", "tool"]
+
+
+def test_a_resumed_reply_does_not_merge_over_the_compaction_it_follows(executed):
+    summary = {"type": "compaction", "content": "Earlier conversation summary"}
+    native = {"anthropic": {"content": [summary, {"type": "text", "text": " rest"}]}}
+    call = {"index": 0, "id": "call_a", "function": {"name": "web_search", "arguments": "{}"}}
+    transport = FakeTransport(
+        [
+            [
+                _sse({}, _toolEvent = {"type": "compaction_block", "content": summary["content"]}),
+                _sse({"content": " rest", "extra_content": native, "tool_calls": [call]}),
+                _sse(finish = "tool_calls"),
+                _DONE,
+            ],
+            [_sse({"content": "Done."}), _sse(finish = "stop"), _DONE],
+        ]
+    )
+    transport.sanitizes_provider_frames = True
+    _run(
+        transport,
+        messages = [
+            {"role": "user", "content": "question"},
+            {"role": "assistant", "content": "A partial"},
+        ],
+        continue_final_message = True,
+    )
+
+    follow_up = transport.requests[1]["messages"]
+    assert [message["role"] for message in follow_up] == ["assistant", "assistant", "tool"]
+    assert follow_up[0]["extra_content"]["anthropic"]["content"] == [summary]
 
 
 def test_a_conversation_search_here_gets_the_active_branch(executed):

@@ -4690,6 +4690,16 @@ def _get_parent_visible_gpu_spec() -> Dict[str, Any]:
     try:
         numeric_ids = [int(value) for value in tokens]
     except ValueError:
+        # nvidia-smi indices are PCI order, so they only name the same cards a numeric mask written back to a child would under PCI_BUS_ID (#8873).
+        if not _is_rocm_spec and os.environ.get("CUDA_DEVICE_ORDER") == "PCI_BUS_ID":
+            from . import nvidia
+            resolved_ids = nvidia.resolve_uuid_mask(cuda_visible)
+            if resolved_ids is not None:
+                return {
+                    "raw": cuda_visible,
+                    "numeric_ids": resolved_ids,
+                    "supports_explicit_gpu_ids": True,
+                }
         return {
             "raw": cuda_visible,
             "numeric_ids": None,
@@ -6028,8 +6038,13 @@ def _nvidia_inference_devices() -> list[Dict[str, Any]]:
         return []
     if allowed is not None:
         # visible_ordinal is the child's numbering, which follows the mask's order.
-        order = [int(x) for x in os.environ["CUDA_VISIBLE_DEVICES"].split(",") if x.strip()]
-        rows.sort(key = lambda row: order.index(row["index"]))
+        try:
+            order = [int(x) for x in os.environ["CUDA_VISIBLE_DEVICES"].split(",") if x.strip()]
+        except ValueError:
+            order = nvidia.resolve_uuid_mask(os.environ["CUDA_VISIBLE_DEVICES"].strip()) or []
+        rows.sort(
+            key = lambda row: order.index(row["index"]) if row["index"] in order else len(order)
+        )
     usage = nvidia.get_visible_gpu_utilization([row["index"] for row in rows])
     usage_by_index = {d.get("index"): d for d in usage.get("devices") or []}
     devices = []

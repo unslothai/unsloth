@@ -124,6 +124,7 @@ from ._utils import (
     arm_gradient_checkpointing,
     resolve_training_gradient_checkpointing,
     set_module_gradient_checkpointing,
+    _is_seq2seq_lm_config,
 )
 from ._utils import *
 from ._uma_safetensors import is_integrated_unified_memory_gpu
@@ -201,7 +202,6 @@ from unsloth_zoo.patching_utils import patch_model_and_tokenizer
 from unsloth_zoo.training_utils import prepare_model_for_training
 
 from unsloth_zoo.utils import Version
-from transformers import __version__ as transformers_version
 
 import types
 import functools
@@ -4174,9 +4174,12 @@ class FastBaseModel:
 
         if isinstance(model, (PeftModelForCausalLM, PeftModelForSeq2SeqLM)):
             raise RuntimeError("Unsloth: You already added LoRA adapters to your model!")
+        if task_type == TaskType.CAUSAL_LM and _is_seq2seq_lm_config(
+            getattr(model, "config", None)
+        ):
+            # Also multimodal encoder-decoders (T5Gemma2), which load through the VLM path.
+            task_type = TaskType.SEQ_2_SEQ_LM
         if _is_text_seq2seq_config(getattr(model, "config", None)):
-            if task_type == TaskType.CAUSAL_LM:
-                task_type = TaskType.SEQ_2_SEQ_LM
             # No vision tower: FastLanguageModel's finetune_vision_layers=False must not filter the encoder out.
             finetune_vision_layers = True
             # get_peft_regex misses T5's q/k/v/o/wi/wo and BART's fc1/fc2, so list the Linear leaves (minus the LM head) ourselves.
