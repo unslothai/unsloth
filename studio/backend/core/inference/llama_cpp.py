@@ -4474,8 +4474,11 @@ def _auto_mode_drops_mtp(
 # MLA archs whose MTP context covers only the NextN block instead of duplicating the
 # trunk KV: glm5next holds 4+3 MiB over one layer where its trunk holds 48+36 over
 # twelve. That one fact is why Auto keeps MTP (gate below) and why the fit must not
-# reserve the copy (_estimate_mtp_overhead_bytes). Not "glm5-next": no NextN graph.
-_MLA_MTP_FAST_ARCHS = frozenset({"glm5next"})
+# reserve the copy (_estimate_mtp_overhead_bytes). "glm5-next" is the upstream name
+# (ggml-org/llama.cpp#27773); Unsloth prebuilts carry its NextN graph, sized the same
+# (239+179 MiB at 244480 cells). Stock builds without it exit "failed to create MTP
+# context", which the launch retries without speculative decoding.
+_MLA_MTP_FAST_ARCHS = frozenset({"glm5next", "glm5-next"})
 
 
 def _arch_has_fast_mla_mtp(architecture: Optional[str]) -> bool:
@@ -31394,6 +31397,7 @@ class LlamaCppBackend:
                         _arch_unsupported
                         or "failed to measure draft model memory" in _lo
                         or "failed to measure mtp context memory" in _lo
+                        or "failed to create mtp context" in _lo
                         or "failed to create llama_context" in _lo
                     ):
                         _retry_reason = (
