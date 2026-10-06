@@ -340,5 +340,22 @@ def test_windows_probe_sets_the_error_mode_before_loading_ggml(tmp_path, monkeyp
     assert "ggml-vulkan load failed" in capsys.readouterr().err
 
 
+@pytest.mark.skipif(sys.platform != "win32", reason = "real kernel32 error mode")
+def test_windows_probe_sets_the_real_process_error_mode(tmp_path):
+    probe_script = Path(__file__).resolve().parents[1] / "core" / "inference" / "_vulkan_probe.py"
+    code = (
+        "import ctypes, runpy, sys\n"
+        "k = ctypes.WinDLL('kernel32'); k.SetErrorMode(0)\n"
+        f"sys.argv = ['_vulkan_probe.py', {str(tmp_path)!r}]\n"
+        f"g = runpy.run_path({str(probe_script)!r})\n"
+        "rc = g['main']()\n"
+        "print(rc, k.GetErrorMode() & 1)\n"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", code], capture_output = True, text = True, timeout = 60
+    )
+    assert result.stdout.split() == ["1", "1"], (result.stdout, result.stderr)
+
+
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-v"]))
