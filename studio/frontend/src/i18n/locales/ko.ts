@@ -2506,6 +2506,11 @@ export const ko = {
       exportFailed: "채팅을 내보내지 못했습니다",
       description:
         "이 기기에 저장된 채팅 기록과 업로드한 파일을 관리합니다.",
+      manageFiles: {
+        label: "파일 관리",
+        description: "이미지, 동영상, 오디오, 파일을 검색, 정렬, 정리합니다.",
+        action: "라이브러리 열기",
+      },
       archivedChats: "보관된 채팅",
       archivedChatsDescription: "보관한 채팅을 확인하고 관리합니다.",
       archivedImages: "보관된 이미지",

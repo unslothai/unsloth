@@ -2716,6 +2716,11 @@ export const sv = {
         description: "Sök, sortera och ordna bilder, videor, ljud och filer.",
         action: "Öppna biblioteket",
       },
+      manageFiles: {
+        label: "Hantera filer",
+        description: "Sök, sortera och organisera bilder, videor, ljud och filer.",
+        action: "Öppna biblioteket",
+      },
       archivedChats: "Arkiverade chattar",
       archivedChatsDescription:
         "Visa och hantera chattar som du har arkiverat.",

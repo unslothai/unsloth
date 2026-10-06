@@ -2508,6 +2508,11 @@ export const it = {
       exportFailed: "Impossibile esportare le chat",
       description:
         "Gestisci la cronologia delle chat e i file caricati su questo dispositivo.",
+      manageFiles: {
+        label: "Gestisci file",
+        description: "Cerca, ordina e organizza immagini, video, audio e file.",
+        action: "Apri libreria",
+      },
       archivedChats: "Chat archiviate",
       archivedChatsDescription:
         "Visualizza e gestisci le chat che hai archiviato.",

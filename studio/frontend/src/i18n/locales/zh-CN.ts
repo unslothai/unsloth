@@ -2468,6 +2468,11 @@ export const zhCN = {
       backToData: "返回数据",
       exportFailed: "无法导出聊天",
       description: "管理此设备上保存的聊天记录和上传的文件。",
+      manageFiles: {
+        label: "管理文件",
+        description: "搜索、排序和整理图片、视频、音频和文件。",
+        action: "打开资料库",
+      },
       archivedChats: "已归档的聊天",
       archivedChatsDescription: "查看和管理你归档的聊天。",
       archivedImages: "已归档的图片",

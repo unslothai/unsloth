@@ -2553,6 +2553,11 @@ export const de = {
       exportFailed: "Chats konnten nicht exportiert werden",
       description:
         "Verwalten Sie Chatverlauf und hochgeladene Dateien, die auf diesem Gerät gespeichert sind.",
+      manageFiles: {
+        label: "Dateien verwalten",
+        description: "Bilder, Videos, Audio und Dateien suchen, sortieren und organisieren.",
+        action: "Bibliothek öffnen",
+      },
       archivedChats: "Archivierte Chats",
       archivedChatsDescription:
         "Zeigen Sie die von Ihnen archivierten Chats an und verwalten Sie sie.",

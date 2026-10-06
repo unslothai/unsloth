@@ -2486,6 +2486,11 @@ export const ja = {
       exportFailed: "チャットをエクスポートできませんでした",
       description:
         "このデバイスに保存されているチャット履歴とアップロード済みファイルを管理します。",
+      manageFiles: {
+        label: "ファイルを管理",
+        description: "画像、動画、音声、ファイルを検索、並べ替え、整理します。",
+        action: "ライブラリを開く",
+      },
       archivedChats: "アーカイブ済みチャット",
       archivedChatsDescription: "アーカイブしたチャットを表示・管理します。",
       archivedImages: "アーカイブ済み画像",
