@@ -375,6 +375,8 @@ def _preflight(bwrap: str, proc: tuple[str, ...]) -> "subprocess.CompletedProces
             stdin = subprocess.DEVNULL,
             stdout = subprocess.DEVNULL,
             stderr = subprocess.PIPE,
+            # The detector matches English strerror text.
+            env = {**os.environ, "LC_ALL": "C", "LANG": "C", "LANGUAGE": ""},
             text = True,
             encoding = "utf-8",
             errors = "replace",
@@ -385,14 +387,29 @@ def _preflight(bwrap: str, proc: tuple[str, ...]) -> "subprocess.CompletedProces
         return None
 
 
+class _PreflightInconclusive(Exception):
+    """The preflight could not run (timeout, missing `true`): not cached, the next read retries."""
+
+
 @lru_cache(maxsize = 8)
-def _fresh_proc_refused(identity: tuple[str, int, int]) -> bool:
-    """Only the /proc mount fails while the rest of bwrap works; any other failure is the probe's to report."""
+def _fresh_proc_answer(identity: tuple[str, int, int]) -> bool:
     fresh = _preflight(identity[0], ("--proc", "/proc"))
-    if fresh is None or fresh.returncode == 0 or not proc_mount_refused(fresh.stderr):
+    if fresh is None:
+        raise _PreflightInconclusive
+    if fresh.returncode == 0 or not proc_mount_refused(fresh.stderr):
         return False
     without = _preflight(identity[0], ())
-    return without is not None and without.returncode == 0
+    if without is None:
+        raise _PreflightInconclusive
+    return without.returncode == 0
+
+
+def _fresh_proc_refused(identity: tuple[str, int, int]) -> bool:
+    """Only the /proc mount fails while the rest of bwrap works; any other failure is the probe's to report."""
+    try:
+        return _fresh_proc_answer(identity)
+    except _PreflightInconclusive:
+        return False
 
 
 def empty_proc_layout(bwrap: str | None = None) -> bool:
@@ -405,7 +422,7 @@ def empty_proc_layout(bwrap: str | None = None) -> bool:
 
 
 def forget_proc_layout() -> None:
-    _fresh_proc_refused.cache_clear()
+    _fresh_proc_answer.cache_clear()
 
 
 def profile_id() -> str:
@@ -413,7 +430,10 @@ def profile_id() -> str:
 
 
 def limitations() -> tuple[str, ...]:
-    return (*LIMITATIONS, "no_process_filesystem") if empty_proc_layout() else LIMITATIONS
+    # /dev/fd and /dev/std{in,out,err} link into /proc/self/fd, so they dangle too (no `<(...)`).
+    if empty_proc_layout():
+        return (*LIMITATIONS, "no_process_filesystem", "no_dev_fd_links")
+    return LIMITATIONS
 
 
 def _host_mount_points() -> tuple[str, ...]:
@@ -603,8 +623,9 @@ CACHE_MISSING = "does not exist"
 CACHE_STILL_CHECKING = "is still being checked; it will be shared once the check finishes"
 
 # Retain timed-out workers until they finish, preventing a thread leak on a wedged path.
-# path -> (worker, its answer list): a later launch joins the same check instead of giving up.
-_cache_scan_pending: "dict[str, tuple[threading.Thread, list]]" = {}
+# path -> (worker, its answer list, give-up time): a later launch joins the same check instead of giving up,
+# but only until the give-up time, so a wedged mount costs two waits in total, not one per launch.
+_cache_scan_pending: "dict[str, tuple[threading.Thread, list, float]]" = {}
 # Request threads must reserve and remove workers atomically.
 _cache_scan_lock = threading.Lock()
 
@@ -646,10 +667,11 @@ def _cache_hazard_within_deadline(name: str, path: str) -> "str | None":
         if pending is None:
             worker = threading.Thread(target = check, name = f"unsloth-cache-scan-{name}", daemon = True)
             # Start under the lock, or another caller can replace the not-yet-alive worker.
-            pending = _cache_scan_pending[path] = (worker, answer)
+            give_up = time.monotonic() + 2 * _CACHE_INSPECT_SECONDS
+            pending = _cache_scan_pending[path] = (worker, answer, give_up)
             worker.start()
-    worker, answer = pending
-    worker.join(_CACHE_INSPECT_SECONDS)
+    worker, answer, give_up = pending
+    worker.join(max(0.0, min(_CACHE_INSPECT_SECONDS, give_up - time.monotonic())))
     if not answer:
         return CACHE_STILL_CHECKING
     with _cache_scan_lock:
@@ -808,7 +830,9 @@ def prepare(plan: ToolLaunchPlan) -> PreparedSandboxLaunch:
 
     # --disable-userns writes /proc/sys/user/max_user_namespaces inside, which an empty /proc lacks:
     # there the seccomp filter refuses nested user namespaces instead, as on bwrap 0.6.1.
-    disable_userns = not empty_proc_layout(bwrap) and _bwrap_supports(bwrap, "--disable-userns")
+    # One read per launch: a reset between two reads could mix --disable-userns with an empty /proc.
+    empty_proc = empty_proc_layout(bwrap)
+    disable_userns = not empty_proc and _bwrap_supports(bwrap, "--disable-userns")
     try:
         seccomp = sandbox_seccomp.filter_file(block_userns = not disable_userns)
     except RuntimeError as exc:
@@ -835,7 +859,7 @@ def prepare(plan: ToolLaunchPlan) -> PreparedSandboxLaunch:
             "ALL",
             "--seccomp",
             str(seccomp.fileno()),
-            *(("--tmpfs", "/proc") if empty_proc_layout(bwrap) else ("--proc", "/proc")),
+            *(("--tmpfs", "/proc") if empty_proc else ("--proc", "/proc")),
             "--dev",
             "/dev",
             "--dir",

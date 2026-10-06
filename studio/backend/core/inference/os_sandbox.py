@@ -833,6 +833,11 @@ def capability_snapshot(
             selected_executable = selected_executable,
             cancel_event = cancel_event,
         )
+    if force and sys.platform == "linux":
+        # A forced re-check (Settings > Refresh) also re-decides the /proc layout, which joins the identity.
+        from .sandbox_linux import forget_proc_layout
+
+        forget_proc_layout()
     identity = _runtime_identity()
     if sys.platform == "linux":
         from . import sandbox_linux

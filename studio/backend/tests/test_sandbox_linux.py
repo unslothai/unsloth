@@ -1213,6 +1213,26 @@ def test_a_wedged_cache_path_is_not_re_scanned_by_every_later_launch(tmp_path, m
     assert len(started) == first, "a second launch started another worker on the same path"
 
 
+def test_a_wedged_cache_scan_is_waited_on_twice_then_skipped_at_once(monkeypatch, tmp_path):
+    component = tmp_path / "hub"
+    component.mkdir()
+    release = threading.Event()
+    monkeypatch.setattr(sandbox_linux, "_cache_hazard_memoized", lambda name, path: release.wait(30))
+    monkeypatch.setattr(sandbox_linux, "_CACHE_INSPECT_SECONDS", 0.4)
+    monkeypatch.setattr(sandbox_linux, "_cache_scan_pending", {})
+    waits = []
+    try:
+        for _ in range(4):
+            start = time.monotonic()
+            hazard = sandbox_linux._cache_hazard_within_deadline("hub", str(component))
+            waits.append(time.monotonic() - start)
+            assert hazard == sandbox_linux.CACHE_STILL_CHECKING
+    finally:
+        release.set()
+    assert waits[0] >= 0.35 and waits[1] >= 0.3, waits
+    assert max(waits[2:]) < 0.1, f"later launches still wait on the wedged scan: {waits}"
+
+
 def test_revalidating_a_cached_verdict_on_a_wedged_mount_is_bounded_too(monkeypatch, tmp_path):
     """A memo hit re-stats every directory the walk saw, which blocks on a stalled NFS/FUSE cache just like the walk."""
     component = tmp_path / "hub"
@@ -2474,6 +2494,22 @@ def test_a_container_refusing_a_fresh_proc_gets_an_empty_one(tmp_path, _no_proc_
     assert "--proc /proc" in runs[0] and "--proc" not in runs[1]
 
 
+def test_the_preflight_reads_bwrap_errors_in_the_c_locale(tmp_path, monkeypatch, _no_proc_layout_left_behind):
+    # strerror follows the locale; the detector matches the English text.
+    monkeypatch.setenv("LC_ALL", "de_DE.UTF-8")
+    monkeypatch.setenv("LANG", "de_DE.UTF-8")
+    fake = tmp_path / "bwrap"
+    fake.write_text(
+        "#!/bin/sh\n"
+        'for a in "$@"; do if [ "$a" = "--proc" ]; then\n'
+        '  if [ "$LC_ALL" = C ]; then echo "bwrap: Can\'t mount proc on /newroot/proc: Permission denied" >&2;\n'
+        '  else echo "bwrap: Can\'t mount proc on /newroot/proc: Keine Berechtigung" >&2; fi; exit 1\n'
+        "fi; done\nexit 0\n"
+    )
+    fake.chmod(0o755)
+    assert sandbox_linux.empty_proc_layout(str(fake)) is True
+
+
 @pytest.mark.parametrize(
     "fresh_proc,without_proc",
     [
@@ -2547,9 +2583,49 @@ def test_the_two_proc_layouts_never_share_a_profile_or_a_cached_verdict(monkeypa
             sandbox_linux.bwrap_identity(),
         )
     assert seen[False][0] == sandbox_linux.PROFILE_ID != seen[True][0]
-    assert "no_process_filesystem" in seen[True][1]
-    assert "no_process_filesystem" not in seen[False][1]
+    assert {"no_process_filesystem", "no_dev_fd_links"} <= set(seen[True][1])
+    assert not {"no_process_filesystem", "no_dev_fd_links"} & set(seen[False][1])
     assert seen[False][2] != seen[True][2]
+
+
+def test_an_inconclusive_preflight_is_retried_instead_of_cached(monkeypatch, _no_proc_layout_left_behind):
+    refused = subprocess.CompletedProcess([], 1, "", "bwrap: Can't mount proc on /newroot/proc: Permission denied")
+    answers = iter([None, refused, subprocess.CompletedProcess([], 0, "", "")])
+    monkeypatch.setattr(sandbox_linux, "_preflight", lambda bwrap, proc: next(answers))
+    identity = ("/usr/bin/bwrap", 1, 1)
+    assert sandbox_linux._fresh_proc_refused(identity) is False  # timed out: no verdict kept
+    assert sandbox_linux._fresh_proc_refused(identity) is True
+
+
+def test_a_forced_capability_check_re_decides_the_proc_layout(monkeypatch):
+    if sys.platform != "linux":
+        pytest.skip("Linux layout only")
+    from core.inference import os_sandbox
+
+    class Forgot(Exception):
+        pass
+
+    def forget():
+        raise Forgot
+
+    monkeypatch.setattr(sandbox_linux, "forget_proc_layout", forget)
+    with pytest.raises(Forgot):
+        os_sandbox.capability_snapshot(force = True, execution_kind = "python")
+
+
+def test_one_launch_reads_the_proc_layout_once(tmp_path, monkeypatch):
+    if sandbox_linux.shutil.which("bwrap") is None:
+        pytest.skip("bubblewrap is not installed on this host")
+    answers = iter([True, False, False, False])
+    monkeypatch.setattr(sandbox_linux, "empty_proc_layout", lambda *_a: next(answers))
+    monkeypatch.setattr(sandbox_linux, "_bwrap_supports", lambda _bwrap, _option: True)
+    launch = sandbox_linux.prepare(_plan(tmp_path))
+    try:
+        argv = launch.argv
+        tmpfs = [argv[i + 1] for i, token in enumerate(argv) if token == "--tmpfs"]
+        assert "--disable-userns" not in argv and "/proc" in tmpfs and "--proc" not in argv
+    finally:
+        launch.cleanup()
 
 
 def test_resetting_the_probe_forgets_the_proc_layout(tmp_path, _no_proc_layout_left_behind):
@@ -2669,7 +2745,7 @@ def test_a_launch_finding_a_check_in_progress_waits_for_its_answer(
         sandbox_linux.CACHE_STILL_CHECKING
     )
     assert started.wait(5)
-    monkeypatch.setattr(sandbox_linux, "_CACHE_INSPECT_SECONDS", 10.0)
-    threading.Timer(0.3, release.set).start()
+    # Finishes inside the second launch's wait (the walk's budget is two waits).
+    threading.Timer(0.05, release.set).start()
     assert sandbox_linux._cache_hazard_within_deadline("hub", str(component)) is None
     assert walks == [str(component)]
