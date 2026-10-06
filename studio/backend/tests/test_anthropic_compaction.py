@@ -520,7 +520,11 @@ def test_build_external_messages_passes_compaction_for_anthropic_only():
             {
                 "role": "assistant",
                 "content": [
-                    {"type": "compaction", "content": "prior summary"},
+                    {
+                        "type": "compaction",
+                        "content": "prior summary",
+                        "encrypted_content": "opaque-compaction",
+                    },
                     {"type": "text", "text": "answer"},
                 ],
             }
@@ -529,7 +533,11 @@ def test_build_external_messages_passes_compaction_for_anthropic_only():
     out = _build_external_messages(msgs, supports_vision = True, provider_type = "anthropic")
     assert len(out) == 1
     parts = out[0]["content"]
-    assert parts[0] == {"type": "compaction", "content": "prior summary"}
+    assert parts[0] == {
+        "type": "compaction",
+        "content": "prior summary",
+        "encrypted_content": "opaque-compaction",
+    }
     assert parts[1] == {"type": "text", "text": "answer"}
 
 
@@ -594,7 +602,11 @@ def test_build_external_messages_non_vision_anthropic_keeps_compaction():
             {
                 "role": "assistant",
                 "content": [
-                    {"type": "compaction", "content": "prior summary"},
+                    {
+                        "type": "compaction",
+                        "content": "prior summary",
+                        "encrypted_content": "opaque-compaction",
+                    },
                     {"type": "text", "text": "answer"},
                 ],
             }
@@ -602,7 +614,11 @@ def test_build_external_messages_non_vision_anthropic_keeps_compaction():
     ]
     out = _build_external_messages(msgs, supports_vision = False, provider_type = "anthropic")
     parts = out[0]["content"]
-    assert {"type": "compaction", "content": "prior summary"} in parts
+    assert {
+        "type": "compaction",
+        "content": "prior summary",
+        "encrypted_content": "opaque-compaction",
+    } in parts
     # Non-anthropic + non-vision -> compaction stripped, text collapsed
     # back to a string.
     out2 = _build_external_messages(msgs, supports_vision = False, provider_type = "deepseek")
@@ -617,7 +633,8 @@ def test_compaction_delta_summary_reaches_the_tool_event(monkeypatch):
             b'"content_block":{"type":"compaction","content":null}}\n\n'
             b"event: content_block_delta\n"
             b'data: {"type":"content_block_delta","index":0,'
-            b'"delta":{"type":"compaction_delta","content":"User is planning a trip."}}\n\n'
+            b'"delta":{"type":"compaction_delta","content":"User is planning a trip.",'
+            b'"encrypted_content":"opaque-compaction"}}\n\n'
             b"event: content_block_stop\n"
             b'data: {"type":"content_block_stop","index":0}\n\n'
             b"event: message_stop\n"
@@ -648,7 +665,13 @@ def test_compaction_delta_summary_reaches_the_tool_event(monkeypatch):
         for line in lines
         if line.startswith("data:") and "compaction_block" in line
     ]
-    assert [event["content"] for event in events] == ["User is planning a trip."]
+    assert events == [
+        {
+            "type": "compaction_block",
+            "content": "User is planning a trip.",
+            "encrypted_content": "opaque-compaction",
+        }
+    ]
 
 
 def _replay(monkeypatch, model: str, threshold) -> dict:
@@ -677,7 +700,11 @@ def _replay(monkeypatch, model: str, threshold) -> dict:
                 {
                     "role": "assistant",
                     "content": [
-                        {"type": "compaction", "content": "PRIOR SUMMARY"},
+                        {
+                            "type": "compaction",
+                            "content": "PRIOR SUMMARY",
+                            "encrypted_content": "opaque-compaction",
+                        },
                         {"type": "text", "text": "answer"},
                     ],
                 },
@@ -699,7 +726,11 @@ def _replay(monkeypatch, model: str, threshold) -> dict:
 def test_a_replayed_compaction_block_keeps_its_beta_with_auto_compact_off(monkeypatch):
     captured = _replay(monkeypatch, "claude-sonnet-4-6", None)
     assistant = captured["body"]["messages"][1]
-    assert assistant["content"][0] == {"type": "compaction", "content": "PRIOR SUMMARY"}
+    assert assistant["content"][0] == {
+        "type": "compaction",
+        "content": "PRIOR SUMMARY",
+        "encrypted_content": "opaque-compaction",
+    }
     assert "compact-2026-01-12" in captured["headers"].get("anthropic-beta", "")
     assert "context_management" not in captured["body"]
 

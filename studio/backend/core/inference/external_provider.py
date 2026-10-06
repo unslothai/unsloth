@@ -2532,7 +2532,11 @@ class ExternalProviderClient:
                             and summary
                             and _anthropic_supports_compaction(model)
                         ):
-                            anthropic_parts.append({"type": "compaction", "content": summary})
+                            compaction = {"type": "compaction", "content": summary}
+                            encrypted = part.get("encrypted_content")
+                            if isinstance(encrypted, str) and encrypted:
+                                compaction["encrypted_content"] = encrypted
+                            anthropic_parts.append(compaction)
                             compaction_replayed = True
                     elif part.get("type") == "image_url":
                         url = part.get("image_url", {}).get("url", "")
@@ -3410,6 +3414,9 @@ class ExternalProviderClient:
                                 current_compaction = {
                                     "content": seed if isinstance(seed, str) else "",
                                 }
+                                encrypted = content_block.get("encrypted_content")
+                                if isinstance(encrypted, str) and encrypted:
+                                    current_compaction["encrypted_content"] = encrypted
 
                         elif event_type == "content_block_delta":
                             delta = event.get("delta", {})
@@ -3477,6 +3484,9 @@ class ExternalProviderClient:
                                 summary = delta.get("content")
                                 if isinstance(summary, str):
                                     current_compaction["content"] += summary
+                                encrypted = delta.get("encrypted_content")
+                                if isinstance(encrypted, str) and encrypted:
+                                    current_compaction["encrypted_content"] = encrypted
                             elif delta_type == "citations_delta":
                                 cit = delta.get("citation")
                                 if isinstance(cit, dict):
@@ -3602,7 +3612,7 @@ class ExternalProviderClient:
                                 yield _emit_tool_event(
                                     {
                                         "type": "compaction_block",
-                                        "content": current_compaction["content"],
+                                        **current_compaction,
                                     }
                                 )
                                 current_compaction = None

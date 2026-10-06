@@ -3,6 +3,7 @@
 
 import assert from "node:assert/strict";
 import test from "node:test";
+import ts from "typescript";
 import {
   apiCompactionRequestFields,
   ggufCompactionRequestFields,
@@ -199,5 +200,30 @@ test("a provider compaction is kept on the turn and replayed only to API models"
   assert.match(
     adapter,
     /isExternalRequest\s*\?\s*withProviderCompaction\(message, serialized\)\s*:\s*serialized/,
+  );
+});
+
+test("provider compaction persistence keeps summary and encrypted state together", () => {
+  const adapter = readSrc("features/chat/api/chat-adapter.ts");
+  const start = adapter.indexOf("function providerCompactionPart(");
+  assert.ok(start >= 0);
+  const declaration = adapter.slice(start, adapter.indexOf("\n}", start) + 2);
+  const providerCompactionPart = new Function(
+    `${ts.transpileModule(declaration, {
+      compilerOptions: { target: ts.ScriptTarget.ES2022 },
+    }).outputText}; return providerCompactionPart;`,
+  )() as (value: unknown) => unknown;
+
+  assert.deepEqual(
+    providerCompactionPart({
+      type: "compaction_block",
+      content: "Earlier conversation summary",
+      encrypted_content: "opaque-compaction",
+    }),
+    {
+      type: "compaction",
+      content: "Earlier conversation summary",
+      encrypted_content: "opaque-compaction",
+    },
   );
 });

@@ -1283,13 +1283,14 @@ function providerCompactionPart(
 ): ProviderCompactionContentPart | null {
   if (!value || typeof value !== "object") return null;
   const { content, encrypted_content } = value as Record<string, unknown>;
+  const compaction: ProviderCompactionContentPart = { type: "compaction" };
   if (typeof content === "string" && content) {
-    return { type: "compaction", content };
+    compaction.content = content;
   }
   if (typeof encrypted_content === "string" && encrypted_content) {
-    return { type: "compaction", encrypted_content };
+    compaction.encrypted_content = encrypted_content;
   }
-  return null;
+  return compaction.content || compaction.encrypted_content ? compaction : null;
 }
 
 /** The provider drops what came before its compaction, so it leads the turn that produced it. */

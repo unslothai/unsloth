@@ -26937,7 +26937,10 @@ def _build_external_messages(
                         # Anthropic stream helper forwards this as a native
                         # `compaction` block; every other provider would 400 on
                         # the unknown part, so gate by provider_type.
-                        parts.append({"type": "compaction", "content": part.content})
+                        compaction = {"type": "compaction", "content": part.content}
+                        if part.content and part.encrypted_content:
+                            compaction["encrypted_content"] = part.encrypted_content
+                        parts.append(compaction)
                 entry: dict[str, Any] = {"role": msg.role, "content": parts, **replay}
                 if msg.role == "assistant" and msg.tool_calls:
                     _tcs = _filter_tool_calls(msg.tool_calls)
@@ -26974,7 +26977,10 @@ def _build_external_messages(
                     ):
                         preserved.append(_rp)
                     elif p.type == "compaction" and anthropic:
-                        preserved.append({"type": "compaction", "content": p.content})
+                        compaction = {"type": "compaction", "content": p.content}
+                        if p.content and p.encrypted_content:
+                            compaction["encrypted_content"] = p.encrypted_content
+                        preserved.append(compaction)
                 if msg.role == "assistant" and not preserved and not replay:
                     continue
                 if len(preserved) == 1 and preserved[0]["type"] == "text":
