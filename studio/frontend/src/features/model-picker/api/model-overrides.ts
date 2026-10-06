@@ -15,6 +15,7 @@ import {
 } from "../model-config/model-identity";
 import {
   DEFAULT_PER_MODEL_CONFIG,
+  normalizeMlxKvQuant,
   type PerModelConfig,
   deletePerModelConfigsForOverrideKeys,
   normalizePerModelConfig,
@@ -24,6 +25,9 @@ const OVERRIDES_URL = "/api/settings/openai-auto-switch/overrides";
 
 /** One model's stored launch config, as the backend persists it. */
 export interface ApiModelOverride {
+  engine_parallelism?: "tensor" | "pipeline" | "data";
+  engine_precision?: "auto" | "bf16" | "fp16" | "int4" | "int8" | "fp8";
+  engine?: "auto" | "vllm" | "sglang";
   // biome-ignore lint/style/useNamingConvention: API schema
   llama_extra_args?: string[];
   // biome-ignore lint/style/useNamingConvention: API schema
@@ -33,7 +37,10 @@ export interface ApiModelOverride {
   // biome-ignore lint/style/useNamingConvention: API schema
   kv_cache_dtype?: string;
   // biome-ignore lint/style/useNamingConvention: API schema
+  mlx_kv_quant?: string;
   mlx_kv_bits?: number;
+  // biome-ignore lint/style/useNamingConvention: API schema
+  mlx_int8_prefill?: boolean;
   // biome-ignore lint/style/useNamingConvention: API schema
   speculative_type?: string;
   // biome-ignore lint/style/useNamingConvention: API schema
@@ -269,6 +276,22 @@ export async function fetchLoadExtraArgs(
   return resolvedFrom(resolved ?? {});
 }
 
+/** The row as a settings panel applies it. llama-server arguments reach a GGUF load alone, and
+ *  hydrating them into another model's config would count a list it cannot show as a change. */
+export function panelOverrideRow(
+  override: ApiModelOverride | null,
+  isGguf: boolean,
+): ApiModelOverride | null {
+  if (!override || isGguf) {
+    return override;
+  }
+  return presentOverride(
+    Object.fromEntries(
+      Object.entries(override).filter(([key]) => key !== "llama_extra_args"),
+    ),
+  );
+}
+
 /** Translate one server-resolved override into the picker's config shape. The row is
  *  authoritative for the fields it CARRIES and only those: an absent field is not evidence
  *  the user chose the default, since a failed PUT, a refused value and an old row all leave
@@ -293,8 +316,14 @@ export function fromApiOverride(
   // auto-switch max_seq_length first. So a row stating either field owns both.
   const serverStatesPin =
     override.custom_context_length != null || override.max_seq_length != null;
+  const serverStatesKvQuant =
+    "mlx_kv_quant" in override || "mlx_kv_bits" in override;
   const normalized = normalizePerModelConfig({
     ...DEFAULT_PER_MODEL_CONFIG,
+    engine: override.engine ?? "auto",
+    engineParallelism: override.engine_parallelism ?? local.engineParallelism ?? "tensor",
+    enginePrecision:
+      override.engine_precision ?? local.enginePrecision ?? "auto",
     customContextLength: serverStatesPin
       ? (override.custom_context_length ?? null)
       : local.customContextLength,
@@ -302,7 +331,9 @@ export function fromApiOverride(
       ? (override.max_seq_length ?? null)
       : local.maxSeqLength,
     kvCacheDtype: override.kv_cache_dtype ?? local.kvCacheDtype,
-    mlxKvBits: override.mlx_kv_bits ?? local.mlxKvBits,
+    mlxKvQuant: serverStatesKvQuant
+      ? normalizeMlxKvQuant(override.mlx_kv_quant, override.mlx_kv_bits)
+      : (local.mlxKvQuant ?? null),
     speculativeType: override.speculative_type ?? local.speculativeType,
     specDraftNMax: override.spec_draft_n_max ?? local.specDraftNMax,
     specDraftCacheDtype:
@@ -319,6 +350,7 @@ export function fromApiOverride(
     // Both are stored only when true, so an absent one is a gap like any other.
     tensorParallel: override.tensor_parallel ?? local.tensorParallel,
     disableVision: override.disable_vision ?? local.disableVision,
+    mlxInt8Prefill: override.mlx_int8_prefill ?? local.mlxInt8Prefill,
     chatTemplateOverride:
       override.chat_template_override ?? local.chatTemplateOverride,
     llamaExtraArgs: extraArgs,
@@ -346,7 +378,14 @@ export function toApiOverride(config: PerModelConfig | null): ApiModelOverride {
   if (!config) {
     return {};
   }
-  const payload: ApiModelOverride = {};
+  // Engine fields are always sent, defaults included: the server keeps a stored engine choice
+  // when the field is absent, so omitting "auto" could never clear an earlier "vllm". It stores
+  // only non-default values, so an all-default save still leaves no row.
+  const payload: ApiModelOverride = {
+    engine: config.engine ?? "auto",
+    engine_precision: config.enginePrecision ?? "auto",
+    engine_parallelism: config.engineParallelism ?? "tensor",
+  };
   if (config.maxSeqLength && config.maxSeqLength > 0) {
     payload.max_seq_length = config.maxSeqLength;
   }
@@ -357,8 +396,8 @@ export function toApiOverride(config: PerModelConfig | null): ApiModelOverride {
     payload.kv_cache_dtype = config.kvCacheDtype;
   }
   // Travels beside kv_cache_dtype, or an API auto-switch loads a remembered MLX model at full precision.
-  if (config.mlxKvBits != null) {
-    payload.mlx_kv_bits = config.mlxKvBits;
+  if (config.mlxKvQuant) {
+    payload.mlx_kv_quant = config.mlxKvQuant;
   }
   if (config.speculativeType) {
     payload.speculative_type = config.speculativeType;
@@ -402,6 +441,9 @@ export function toApiOverride(config: PerModelConfig | null): ApiModelOverride {
   }
   if (config.disableVision) {
     payload.disable_vision = true;
+  }
+  if (config.mlxInt8Prefill) {
+    payload.mlx_int8_prefill = true;
   }
   if (config.chatTemplateOverride?.trim()) {
     payload.chat_template_override = config.chatTemplateOverride;

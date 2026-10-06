@@ -85,7 +85,7 @@ export function RecipeStudioHeader({
   }
 
   return (
-    <div className="grid grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center gap-4 border-b px-4 py-3">
+    <div className="grid grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center gap-4 border-b px-4 py-3 max-sm:grid-cols-[minmax(0,1fr)_auto] max-sm:gap-x-2 max-sm:gap-y-2.5 max-sm:px-3">
       <div className="flex min-w-0 items-center gap-3">
         <div
           className="flex size-8 shrink-0 items-center justify-center rounded-lg corner-squircle border border-border/70 bg-muted/20"
@@ -122,14 +122,14 @@ export function RecipeStudioHeader({
             {STATUS_MESSAGE_CLASS[saveTone]}
           </Badge>
           <span
-            className="hidden max-w-[12rem] truncate text-xs text-muted-foreground sm:inline"
+            className="hidden max-w-[calc(12rem*var(--ui-space-scale,1))] truncate text-xs text-muted-foreground sm:inline"
             title={savedAtLabel}
           >
             {savedAtLabel}
           </span>
         </div>
       </div>
-      <div data-tour="recipe-views" className="justify-self-center">
+      <div data-tour="recipe-views" className="justify-self-center max-sm:order-last max-sm:col-span-2">
         <Tabs value={activeView} onValueChange={handleViewValueChange}>
           <TabsList>
             {supportsEasyMode && (

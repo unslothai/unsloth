@@ -35,7 +35,7 @@ export function InfoHint({ children }: { children: ReactNode }) {
         align="center"
         sideOffset={6}
         collisionPadding={12}
-        className="[&_span>svg]:hidden! duration-0 max-w-[240px] text-left"
+        className="[&_span>svg]:hidden! duration-0 max-w-[calc(240px*var(--ui-space-scale,1))] text-left"
       >
         {children}
       </TooltipContent>

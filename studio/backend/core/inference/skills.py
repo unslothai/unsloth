@@ -7,6 +7,7 @@ import errno
 import json
 import logging
 import os
+import shutil
 import stat
 import tempfile
 import threading
@@ -59,6 +60,10 @@ class SkillNotFoundError(SkillError):
     pass
 
 
+class SkillExistsError(SkillError):
+    pass
+
+
 def _normalize_skill_name(name: str) -> str:
     if not isinstance(name, str) or not name.strip():
         raise SkillError("Skill name must be a non-empty string.")
@@ -100,6 +105,29 @@ def _require_unlinked_agent_path(base: Path, *paths: Path) -> None:
             raise SkillError("Agent Skills directory is missing or unsafe.") from exc
 
 
+def _agents_base(home: Optional[Path]) -> tuple[Path, Optional[Path]]:
+    if home is not None:
+        return home, None
+    if is_owner_context():
+        return _owner_home(), None
+    return workspace_root(), Path(_MANAGED_SKILLS_DIR)
+
+
+def _agents_ancestors(base: Path, root: Optional[Path]) -> tuple[Path, ...]:
+    if root is None:
+        return (base / ".agents", base / ".agents" / "skills")
+    return (base / root,)
+
+
+def _agents_root_linked(home: Optional[Path]) -> bool:
+    base, root = _agents_base(home)
+    try:
+        base = base.resolve(strict = True)
+    except OSError:
+        return False
+    return any(_is_linked_path(path) for path in _agents_ancestors(base, root))
+
+
 def _write_new_skill_manifest(
     base: Path,
     name: str,
@@ -108,15 +136,8 @@ def _write_new_skill_manifest(
     root: Optional[Path] = None,
 ) -> None:
     base = base.resolve(strict = True)
-    if root is None:
-        # The owner's home: ~/.agents/skills, both levels checked.
-        agents = base / ".agents"
-        root = agents / "skills"
-        ancestors: tuple[Path, ...] = (agents, root)
-    else:
-        # A managed account's private workspace: <workspace>/skills.
-        root = base / root
-        ancestors = (root,)
+    ancestors = _agents_ancestors(base, root)
+    root = ancestors[-1]
     _require_unlinked_agent_path(base, *ancestors)
     root.mkdir(mode = 0o700, parents = True, exist_ok = True)
     _require_unlinked_agent_path(base, *ancestors)
@@ -260,14 +281,14 @@ def _read_limited(
     return raw
 
 
-def _parse_skill_markdown(raw: bytes, parent_name: Optional[str] = None) -> dict:
+def _split_skill_markdown(raw: bytes) -> tuple[dict, str]:
     if len(raw) > MAX_SKILL_MD_BYTES:
         raise SkillError("SKILL.md exceeds the 512 KB limit.")
     try:
-        text = raw.decode("utf-8")
+        text = raw.decode("utf-8-sig")
     except UnicodeDecodeError as exc:
         raise SkillError("SKILL.md must be UTF-8 text.") from exc
-    lines = text.splitlines()
+    lines = text.splitlines(keepends = True)
     if not lines or lines[0].strip() != "---":
         raise SkillError("SKILL.md must start with YAML frontmatter.")
     # Exact match: an indented `---` inside a block scalar is YAML content, not the closer.
@@ -277,7 +298,7 @@ def _parse_skill_markdown(raw: bytes, parent_name: Optional[str] = None) -> dict
     if closing is None:
         raise SkillError("SKILL.md YAML frontmatter is not closed.")
     try:
-        frontmatter = yaml.safe_load("\n".join(lines[1:closing]))
+        frontmatter = yaml.safe_load("".join(lines[1:closing]))
     except (
         yaml.YAMLError,
         AttributeError,
@@ -290,6 +311,11 @@ def _parse_skill_markdown(raw: bytes, parent_name: Optional[str] = None) -> dict
         raise SkillError("SKILL.md contains invalid YAML frontmatter.") from exc
     if not isinstance(frontmatter, dict):
         raise SkillError("SKILL.md frontmatter must be a mapping.")
+    return frontmatter, "".join(lines[closing + 1 :])
+
+
+def _parse_skill_markdown(raw: bytes, parent_name: Optional[str] = None) -> dict:
+    frontmatter, _ = _split_skill_markdown(raw)
 
     name = _normalize_skill_name(frontmatter.get("name"))
     if parent_name is not None and name != parent_name:
@@ -485,6 +511,8 @@ def _discover(home: Optional[Path]) -> list[tuple[dict, Optional[Path], Optional
     overrides = _load_overrides()
     found: list[tuple[dict, Optional[Path], Optional[os.stat_result]]] = []
     selected: dict[str, dict] = {}
+    # A linked Agents root makes every skill under it read-only, like a linked entry.
+    agents_linked = _agents_root_linked(home)
     for source, root in _skill_roots(home):
         try:
             candidates = _candidate_dirs(root)
@@ -499,6 +527,7 @@ def _discover(home: Optional[Path]) -> list[tuple[dict, Optional[Path], Optional
                         "enabled": False,
                         "valid": False,
                         "shadowed": False,
+                        "linked": False,
                         "error": str(exc),
                     },
                     None,
@@ -514,6 +543,7 @@ def _discover(home: Optional[Path]) -> list[tuple[dict, Optional[Path], Optional
                 "enabled": False,
                 "valid": False,
                 "shadowed": False,
+                "linked": _is_linked_path(candidate) or (source == "agents" and agents_linked),
             }
             try:
                 metadata, skill_dir = _validate_skill_dir(candidate)
@@ -595,14 +625,7 @@ def set_skill_enabled(
         return {**record, "enabled": enabled}
 
 
-def create_skill(
-    name: str,
-    description: str,
-    instructions: str,
-    *,
-    home: Optional[Path] = None,
-) -> dict:
-    normalized = _normalize_skill_name(name)
+def _validate_draft(description: str, instructions: str) -> str:
     if not isinstance(description, str) or not description.strip() or len(description) > 1024:
         raise SkillError("Skill description must be 1-1024 characters.")
     if not isinstance(instructions, str) or not instructions.strip():
@@ -613,21 +636,28 @@ def create_skill(
         raise SkillError("Skill instructions must be valid UTF-8 text.") from exc
     if len(instruction_bytes) > MAX_SKILL_INSTRUCTIONS_BYTES:
         raise SkillError("Skill instructions exceed the 256 KB limit.")
+    return description.strip()
 
-    frontmatter = yaml.safe_dump(
-        {"name": normalized, "description": description.strip()},
-        allow_unicode = True,
-        sort_keys = False,
-    )
-    manifest = f"---\n{frontmatter}---\n\n{instructions.strip()}\n".encode("utf-8")
+
+def _render_manifest(frontmatter: dict, instructions: str) -> bytes:
+    dumped = yaml.safe_dump(frontmatter, allow_unicode = True, sort_keys = False)
+    return f"---\n{dumped}---\n\n{instructions.strip()}\n".encode("utf-8")
+
+
+def create_skill(
+    name: str,
+    description: str,
+    instructions: str,
+    *,
+    home: Optional[Path] = None,
+) -> dict:
+    normalized = _normalize_skill_name(name)
+    description = _validate_draft(description, instructions)
+    manifest = _render_manifest({"name": normalized, "description": description}, instructions)
     metadata = _parse_skill_markdown(manifest, normalized)
 
-    if home is not None:
-        base, root = home, None
-    elif is_owner_context():
-        base, root = _owner_home(), None
-    else:
-        base, root = workspace_root(), Path(_MANAGED_SKILLS_DIR)
+    base, root = _agents_base(home)
+    if root is not None:
         # A fresh account's workspace may not exist yet; its own private root is safe to make.
         base.mkdir(mode = 0o700, parents = True, exist_ok = True)
     with _LOCK:
@@ -645,7 +675,7 @@ def create_skill(
             try:
                 _write_new_skill_manifest(base, normalized, manifest, root = root)
             except FileExistsError as exc:
-                raise SkillError(f"Skill '{normalized}' already exists.") from exc
+                raise SkillExistsError(f"Skill '{normalized}' already exists.") from exc
             except OSError as exc:
                 raise SkillError(f"Could not create skill '{normalized}'.") from exc
         except Exception:
@@ -666,6 +696,120 @@ def create_skill(
         "shadowed": False,
         "path": f"{display}/{normalized}/SKILL.md",
     }
+
+
+def _editable_skill(
+    name: str, *, home: Optional[Path]
+) -> tuple[dict, Path, Optional[os.stat_result]]:
+    """A plain, unlinked directory in the Agents root; anything else is read-only."""
+    record, skill_dir, identity = _selected_skill(name, home = home)
+    if record["source"] != "agents":
+        raise SkillError(
+            f"Skill '{record['name']}' is not in the Agents folder, so it cannot be changed here."
+        )
+    base, root = _agents_base(home)
+    try:
+        base = base.resolve(strict = True)
+    except OSError as exc:
+        raise SkillError("Agent Skills directory is missing or unsafe.") from exc
+    # Same check as create_skill: a linked root would send the write outside it.
+    ancestors = _agents_ancestors(base, root)
+    _require_unlinked_agent_path(base, *ancestors)
+    entry = ancestors[-1] / record["name"]
+    if record["linked"] or _is_linked_path(entry) or skill_dir != entry:
+        raise SkillError(f"Skill '{record['name']}' is a link, so it cannot be changed here.")
+    if identity is not None and not os.path.samestat(
+        os.stat(skill_dir, follow_symlinks = False), identity
+    ):
+        raise SkillError("Skill directory changed after it was selected.")
+    return record, skill_dir, identity
+
+
+def _replace_skill_manifest(skill_dir: Path, manifest: bytes, identity) -> None:
+    target = skill_dir / "SKILL.md"
+    if _is_linked_path(target):
+        raise SkillError("Skill resources cannot use symbolic links or reparse points.")
+    fd, temporary = tempfile.mkstemp(prefix = ".SKILL-", suffix = ".md", dir = skill_dir)
+    try:
+        with os.fdopen(fd, "wb") as handle:
+            handle.write(manifest)
+            handle.flush()
+            os.fsync(handle.fileno())
+        if identity is not None and not os.path.samestat(
+            os.stat(skill_dir, follow_symlinks = False), identity
+        ):
+            raise SkillError("Skill directory changed while the manifest was being written.")
+        os.replace(temporary, target)
+    except Exception:
+        try:
+            os.unlink(temporary)
+        except OSError:
+            pass
+        raise
+
+
+def read_skill_manifest(name: str, *, home: Optional[Path] = None) -> dict:
+    with _LOCK:
+        record, skill_dir, identity = _selected_skill(name, home = home)
+        raw = _read_limited(
+            skill_dir / "SKILL.md", MAX_SKILL_MD_BYTES, contained_in = skill_dir, identity = identity
+        )
+        _, body = _split_skill_markdown(raw)
+        display = {
+            "agents": "~/.agents/skills" if is_owner_context() else _MANAGED_SKILLS_DIR,
+            "claude": "~/.claude/skills",
+        }.get(record["source"])
+        return {
+            **record,
+            "instructions": body.strip(),
+            **({"path": f"{display}/{record['name']}/SKILL.md"} if display else {}),
+        }
+
+
+def update_skill(
+    name: str,
+    description: str,
+    instructions: str,
+    *,
+    home: Optional[Path] = None,
+) -> dict:
+    description = _validate_draft(description, instructions)
+    with _LOCK:
+        record, skill_dir, identity = _editable_skill(name, home = home)
+        raw = _read_limited(
+            skill_dir / "SKILL.md", MAX_SKILL_MD_BYTES, contained_in = skill_dir, identity = identity
+        )
+        frontmatter, _ = _split_skill_markdown(raw)
+        manifest = _render_manifest(
+            {**frontmatter, "name": record["name"], "description": description}, instructions
+        )
+        metadata = _parse_skill_markdown(manifest, record["name"])
+        try:
+            _replace_skill_manifest(skill_dir, manifest, identity)
+        except OSError as exc:
+            raise SkillError(f"Could not save skill '{record['name']}'.") from exc
+        return {**record, **metadata}
+
+
+def delete_skill(name: str, *, home: Optional[Path] = None) -> dict:
+    with _LOCK:
+        record, skill_dir, _ = _editable_skill(name, home = home)
+        try:
+            shutil.rmtree(skill_dir)
+        except OSError as exc:
+            raise SkillError(f"Could not delete skill '{record['name']}'.") from exc
+        # A stale disable would otherwise apply to the next skill made by hand under this name.
+        overrides = _load_overrides()
+        if overrides.pop(record["name"], None) is not None:
+            try:
+                _save_overrides(overrides)
+            except OSError as exc:
+                logger.warning(
+                    "Deleted skill %s but could not clear its enable override: %s",
+                    record["name"],
+                    exc,
+                )
+        return record
 
 
 def format_skill_catalog(
@@ -723,18 +867,12 @@ def _normalize_resource_path(resource: str) -> PurePosixPath:
     return path
 
 
-def read_skill_resource(
+def _read_enabled_skill_text(
     name: str,
-    resource: str = "SKILL.md",
-    offset: int = 0,
+    resource: str,
     *,
-    page_chars: int = MAX_SKILL_PAGE_CHARS,
     home: Optional[Path] = None,
-) -> str:
-    if isinstance(offset, bool) or not isinstance(offset, int) or offset < 0:
-        raise SkillError("Skill resource offset must be a non-negative integer.")
-    if isinstance(page_chars, bool) or not isinstance(page_chars, int) or page_chars <= 0:
-        raise SkillError("Skill resource page size must be a positive integer.")
+):
     with _LOCK:
         record, skill_dir, identity = _selected_skill(name, home = home)
         if not record["enabled"]:
@@ -770,17 +908,40 @@ def read_skill_resource(
             raise SkillError("Skill resources must be UTF-8 text.") from exc
         if "\x00" in content:
             raise SkillError("Skill resources must be UTF-8 text, not binary data.")
-        if offset > len(content):
-            raise SkillError("Skill resource offset is past the end of the file.")
-        end = min(offset + min(page_chars, MAX_SKILL_PAGE_CHARS), len(content))
-        normalized = path.as_posix()
-        result = (
-            f"Skill: {record['name']}\nResource: {normalized}\n"
-            f"Characters: {offset}-{end} of {len(content)}\n\n{content[offset:end]}"
+        return record, path.as_posix(), content
+
+
+def read_skill_instructions(name: str, *, home: Optional[Path] = None) -> str:
+    """One secure snapshot, complete or refused; unlike resource reads this is not a page."""
+    _, _, content = _read_enabled_skill_text(name, "SKILL.md", home = home)
+    if len(content.encode("utf-8")) > MAX_SKILL_MD_BYTES:
+        raise SkillError("Skill manifest exceeds the instruction size limit.")
+    return content
+
+
+def read_skill_resource(
+    name: str,
+    resource: str = "SKILL.md",
+    offset: int = 0,
+    *,
+    page_chars: int = MAX_SKILL_PAGE_CHARS,
+    home: Optional[Path] = None,
+) -> str:
+    if isinstance(offset, bool) or not isinstance(offset, int) or offset < 0:
+        raise SkillError("Skill resource offset must be a non-negative integer.")
+    if isinstance(page_chars, bool) or not isinstance(page_chars, int) or page_chars <= 0:
+        raise SkillError("Skill resource page size must be a positive integer.")
+    record, normalized, content = _read_enabled_skill_text(name, resource, home = home)
+    if offset > len(content):
+        raise SkillError("Skill resource offset is past the end of the file.")
+    end = min(offset + min(page_chars, MAX_SKILL_PAGE_CHARS), len(content))
+    result = (
+        f"Skill: {record['name']}\nResource: {normalized}\n"
+        f"Characters: {offset}-{end} of {len(content)}\n\n{content[offset:end]}"
+    )
+    if end < len(content):
+        result += (
+            "\n\nResource continues. Call read_skill again with "
+            f'name="{record["name"]}", resource="{normalized}", offset={end}.'
         )
-        if end < len(content):
-            result += (
-                "\n\nResource continues. Call read_skill again with "
-                f'name="{record["name"]}", resource="{normalized}", offset={end}.'
-            )
-        return result
+    return result

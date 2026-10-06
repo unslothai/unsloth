@@ -9,7 +9,7 @@
 import type { PerModelConfig } from "./per-model-config";
 
 // Serialize the GPU knobs with the store's "absent == default" coalescing: mode auto, gpuLayers
-// Auto (< 0), nCpuMoe 0, and null or absent GPU picks as automatic.
+// Auto (< 0), nCpuMoe 0, null or absent GPU picks as automatic, and no split as the default one.
 export function gpuFieldsSignature(config: PerModelConfig): string {
   const gpuSelection =
     config.selectedGpuIds == null
@@ -27,6 +27,7 @@ export function gpuFieldsSignature(config: PerModelConfig): string {
     config.gpuLayers == null || config.gpuLayers < 0 ? -1 : config.gpuLayers,
     config.nCpuMoe ?? 0,
     gpuSelection,
+    (config.tensorSplit ?? []).join(","),
   ].join("|");
 }
 
@@ -47,10 +48,14 @@ export function loadedConfigSignature(
     return "none";
   }
   return [
+    config.engine ?? "auto",
+    config.enginePrecision ?? "auto",
+    config.engineParallelism ?? "tensor",
     config.customContextLength ?? "",
     config.maxSeqLength ?? "",
     config.kvCacheDtype ?? "",
-    config.mlxKvBits ?? "",
+    config.mlxKvQuant ?? "",
+    config.mlxInt8Prefill ? "1" : "0",
     config.speculativeType ?? "",
     config.specDraftNMax ?? "",
     config.specDraftCacheDtype ?? "",
@@ -67,6 +72,9 @@ export function loadedConfigSignature(
     config.chatTemplateOverride == null
       ? ""
       : `${config.chatTemplateOverride.length}:${hashString(config.chatTemplateOverride)}`,
+    config.llamaExtraArgs == null
+      ? ""
+      : `${config.llamaExtraArgs.length}:${hashString(config.llamaExtraArgs.join("\u0000"))}`,
     gpuFieldsSignature(config),
   ].join("|");
 }

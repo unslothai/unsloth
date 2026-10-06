@@ -24,6 +24,8 @@ import sys
 
 # ggml_backend_dev_type enum (ggml-backend.h): CPU=0, GPU=1, IGPU=2, ...
 _GGML_BACKEND_DEVICE_TYPE_IGPU = 2
+# winbase.h
+_SEM_FAILCRITICALERRORS = 0x0001
 
 
 def _igpu_flags_and_names(base, lib, count: int) -> tuple[list[bool], list[str], list[bool]]:
@@ -118,6 +120,12 @@ def main() -> int:
         base_name, vk_name = "ggml-base.dll", "ggml-vulkan.dll"
         try:
             _dll_dir = os.add_dll_directory(bindir)
+        except Exception:
+            pass
+        # Else a pre-1.1 vulkan-1.dll pops a modal "Entry point not found" box instead of failing CDLL (as ggml's dl_load_library).
+        try:
+            kernel32 = ctypes.WinDLL("kernel32")
+            kernel32.SetErrorMode(kernel32.GetErrorMode() | _SEM_FAILCRITICALERRORS)
         except Exception:
             pass
     else:

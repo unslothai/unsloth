@@ -52,7 +52,14 @@ Check "the source-build .git probe stops on a denied checkout" (
     $setupText -match '\$llamaGitState -eq "Denied"')
 Check "the ownership guard stops on a denied root instead of returning" (
     $setupText -match '\$pathState = Get-PathState -Path \$Path -PathType Container' -and
-    $setupText -match '\$StudioHomeIsCustom -and \$pathState -eq "Denied"')
+    $setupText -match '\$isCustomRoot -and \$pathState -eq "Denied"')
+# The guard now takes the flag as a parameter, because the runtime children beside studio\ under
+# a master root are owned even when the Studio home itself is the legacy one. With no override
+# it must still be the script-level flag this file's other checks are about, or the guard would
+# be reading something nothing sets.
+Check "the guard's flag defaults to the script-level one" (
+    $setupText -match '\$isCustomRoot = \$StudioHomeIsCustom' -and
+    $setupText -match 'if \(\$null -ne \$IsCustom\) \{ \$isCustomRoot = \[bool\]\$IsCustom \}')
 Check "guidance says an app reinstall does not reset the folder" (
     $setupText -match 'reinstalling Unsloth Studio, to any drive, reuses it' -and
     $setupText -match 'Reinstalling the app does not reset it\.')
@@ -445,6 +452,28 @@ if ($assertSrc -and $markSrc) {
         try { $null = Assert-StudioOwnedOrAbsent -Path $nfUnowned -Label "whisper.cpp install" -NonFatal }
         catch { $threw = $true; $thrownBy = $_.Exception.Message }
         Check "-NonFatal does not excuse an unowned tree" ($threw -and $thrownBy -eq "EXIT-SETUP")
+
+        # A non-directory at a runtime path under a user-chosen root. install_llama_prebuilt's
+        # activate_install_tree moves aside whatever Path.exists() finds, so a Container-only
+        # probe let a user's file be displaced by the install that followed.
+        $nfFile = Join-Path $nfRoot "llama.cpp"
+        Set-Content -LiteralPath $nfFile -Value "mine"
+        $nfLink = Join-Path $nfRoot "node"
+        New-Item -ItemType SymbolicLink -Path $nfLink -Target (Join-Path $nfRoot "gone") -ErrorAction SilentlyContinue | Out-Null
+        foreach ($shape in @(@("a regular file", $nfFile), @("a dangling link", $nfLink))) {
+            if (-not (Get-Item -LiteralPath $shape[1] -Force -ErrorAction SilentlyContinue)) { continue }
+            $threw = $false
+            $thrownBy = $null
+            try { $null = Assert-StudioOwnedOrAbsent -Path $shape[1] -Label "llama.cpp install" -NonFatal }
+            catch { $threw = $true; $thrownBy = $_.Exception.Message }
+            Check "$($shape[0]) at a custom runtime path stops setup" ($threw -and $thrownBy -eq "EXIT-SETUP")
+            # The legacy default home keeps the behaviour it had: only a chosen root is the
+            # user's directory, and setup.sh draws the line in the same place.
+            $threw = $false
+            try { $null = Assert-StudioOwnedOrAbsent -Path $shape[1] -Label "llama.cpp install" -IsCustom $false }
+            catch { $threw = $true }
+            Check "$($shape[0]) at a default runtime path is left to the caller" (-not $threw)
+        }
     } finally {
         Set-NfDenied $false
         Remove-Item -Recurse -Force -LiteralPath $nfRoot -ErrorAction SilentlyContinue
@@ -458,7 +487,7 @@ $installPath = [System.IO.Path]::Combine($repoRoot, "install.ps1")
 $preflightFns = @("Test-AccessDeniedError", "Get-PathState", "Get-LlamaCppInstallReadState",
                   "Get-PathDenialDetail", "Get-SecuritySoftwareNote",
                   "Write-PathAccessDenied", "Get-CanonicalDir",
-                  "Test-StudioHomeIsCustom", "Get-ManagedLlamaCppDir",
+                  "Test-StudioHomeIsCustom", "Get-MasterRootOverride", "Get-ManagedLlamaCppDir",
                   "Invoke-ManagedLlamaCppPreflight")
 $preflightSrc = @()
 foreach ($fn in $preflightFns) {
@@ -466,6 +495,31 @@ foreach ($fn in $preflightFns) {
     Check "install.ps1 defines $fn" ($null -ne $src)
     if ($src) { $preflightSrc += $src }
 }
+# Anything the lifted bodies call that install.ps1 defines and the lift then leaves behind,
+# other than the stubs the harness supplies. A missing helper does not announce itself: the
+# child dies on the first call, every Write-Host after it is lost, and the assertions below
+# fail as though the preflight had resolved the wrong directory. This is how
+# Get-MasterRootOverride was missed. The test is "install.ps1 defines it", not "this session
+# can resolve it": Get-SecuritySoftwareNote reaches Get-CimInstance and Get-MpPreference, which
+# exist on the Windows host that runs the preflight and on no Linux runner, so resolvability
+# would report those two as unlifted helpers here and nothing at all there.
+$harnessStubs = @("step", "substep", "Write-StudioLine")
+$preflightCalls = @()
+foreach ($src in $preflightSrc) {
+    $tokens = [System.Management.Automation.PSParser]::Tokenize($src, [ref]$null)
+    foreach ($t in $tokens) {
+        if ($t.Type -eq "Command" -and $t.Content -match "^(Get|Test|Invoke|Write|Set|New)-[A-Za-z]+$") {
+            $preflightCalls += $t.Content
+        }
+    }
+}
+$unlifted = @($preflightCalls | Sort-Object -Unique | Where-Object {
+    $_ -notin $preflightFns -and $_ -notin $harnessStubs -and
+    $null -ne (Get-FunctionSource -Path $installPath -Name $_)
+})
+Check ("the preflight lifts every install.ps1 helper it calls" +
+       $(if ($unlifted.Count) { " (not lifted: " + ($unlifted -join ", ") + ")" } else { "" })) `
+      ($unlifted.Count -eq 0)
 if ($preflightSrc.Count -eq $preflightFns.Count) {
     $preflightHarness = @"
 `$ErrorActionPreference = "Stop"
@@ -494,9 +548,11 @@ if (`$args[2] -eq "env") { `$env:UNSLOTH_LOCAL_LLAMA_CPP_DIR = `$dir }
 # A build supplied from inside the managed tree goes with it when the tree is
 # moved or deleted, so the tree is not ours to touch either.
 if (`$args[2] -eq "nested") { `$env:UNSLOTH_LOCAL_LLAMA_CPP_DIR = Join-Path `$dir "custom" }
-# Renaming needs DELETE on the folder plus write on its parent. Taking either
-# away is the denial that the move cannot recover, and the one the guidance is
-# still written for.
+# On POSIX, renaming needs write and execute on the PARENT, so taking write off the
+# parent is the denial the move cannot recover. On Windows the read deny applied to
+# every mode already refuses the rename, and denying DELETE alone does not (measured),
+# so this mode is the same as the one above there -- which is why the checks that read
+# it are written per platform.
 if (`$args[2] -eq "unmovable") {
     if (`$onWindows) { icacls `$dir /deny "`$env:USERDOMAIN\`${env:USERNAME}:(DE)" *>`$null }
     else { chmod 500 (Split-Path -Parent `$dir) }
@@ -565,13 +621,30 @@ else { chmod 755 `$dir 2>`$null }
     if ($out -notmatch "CAN_DENY: True") {
         Write-Host "  SKIP  cannot deny access on this host (running as root/admin?) -- preflight denial checks skipped" -ForegroundColor Yellow
     } else {
-        # A cache we own and can still rename is recovered rather than reported:
-        # renaming needs DELETE plus write on the parent, and neither is read
-        # access, so this clears denials takeown and icacls cannot.
-        Check "a denied cache that can be renamed is moved aside, not reported" (
-            $out -match "DENIED_VERDICT: continue")
-        Check "the moved cache leaves the original path free for the reinstall" (
-            $out -match "ASIDE_COUNT: 1" -and $out -match "ORIGINAL_EXISTS: False")
+        # A cache we own and can still rename is recovered rather than reported.
+        # Whether it CAN be renamed is not the same question on both platforms, and
+        # the answer was measured rather than reasoned about (windows-latest, denying
+        # each shape on the folder itself, then renaming it):
+        #
+        #   (OI)(CI)(RX)  refused    (OI)(CI)(R)  refused    (RX)  refused    (DE)  SUCCEEDED
+        #
+        # So on Windows every read denial refuses the rename -- the open asks for
+        # SYNCHRONIZE and any read deny removes it -- and denying DELETE, which sounds
+        # like the blocker, does not stop it. The recovery therefore cannot fire on
+        # Windows for the denial this harness creates, and asserting that it does was
+        # asserting something the platform does not allow. On POSIX the rename needs
+        # only write and execute on the parent, so the recovery is real there.
+        if ($onWindows) {
+            Check "a denied cache that cannot be renamed is reported, not moved aside" (
+                $out -match "DENIED_VERDICT: stop")
+            Check "the refused rename leaves nothing behind beside the original" (
+                $out -match "ASIDE_COUNT: 0" -and $out -match "ORIGINAL_EXISTS: True")
+        } else {
+            Check "a denied cache that can be renamed is moved aside, not reported" (
+                $out -match "DENIED_VERDICT: continue")
+            Check "the moved cache leaves the original path free for the reinstall" (
+                $out -match "ASIDE_COUNT: 1" -and $out -match "ORIGINAL_EXISTS: False")
+        }
 
         # Everything below is the tree the move cannot rescue, which is what the
         # guidance was always written for.

@@ -131,7 +131,7 @@ def test_the_generated_password_is_printed_once_studio_writes_it(tmp_path: Path)
     assert "60 minutes" in res.stdout, "the change-it-or-shut-down window is not explained"
     assert "Unsloth container ready" in res.stdout
     assert (
-        "Studio      http://localhost:8000   username: unsloth   password: s3cret pass"
+        "Unsloth     http://localhost:8000   username: unsloth   password: s3cret pass"
         in res.stdout
     )
 

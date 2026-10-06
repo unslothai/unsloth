@@ -26,7 +26,7 @@ test("token counting waits for the initial skills discovery", () => {
   assert.match(CHAT_ADAPTER_SOURCE, /await settleSkillsForText\(""\);/);
   assert.match(
     CHAT_ADAPTER_SOURCE,
-    /const hasEnabledSkills = getSkillsSnapshot\(\)\.skills\.some\(/,
+    /const hasEnabledSkills = skillToolsOffered\(\s*getSkillsSnapshot\(\)\.skills,\s*codeToolsEnabled,\s*\);/,
   );
 });
 
@@ -62,6 +62,10 @@ test("request building waits for skills and preserves the launcher tool catalog"
   assert.match(
     payloadBuilder,
     /if \(supportsStudioToolsForThisTurn\) \{\s*await settleSkillsForText\(lastUserText\(outboundMessages\)\);/,
+  );
+  assert.match(
+    payloadBuilder,
+    /const hasEnabledSkills = skillToolsOffered\(\s*getSkillsSnapshot\(\)\.skills,\s*codeToolsEnabled,\s*\);/,
   );
   assert.match(
     payloadBuilder,

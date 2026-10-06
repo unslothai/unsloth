@@ -34,8 +34,20 @@ SHARED_FUNCTIONS = (
     "Write-PathAccessDenied",
     "Get-CanonicalDir",
     "Test-StudioHomeIsCustom",
+    "Get-MasterRootOverride",
     "Get-ManagedLlamaCppDir",
     "Invoke-ManagedLlamaCppPreflight",
+    "Test-MirrorConfigured",
+    "Start-MirrorProbe",
+    "Wait-MirrorProbe",
+    "Get-MirrorDnsServers",
+    "Test-MirrorInChina",
+    "Invoke-MirrorFallback",
+    "Get-MirrorName",
+    "Set-MirrorEnv",
+    "Pop-MirrorSpare",
+    "Use-MirrorSpare",
+    "Get-MirrorFailedHost",
 )
 
 
@@ -216,11 +228,12 @@ def test_a_custom_studio_home_is_never_called_a_cache_we_own() -> None:
     """Do not call an unreadable custom Unsloth home a managed cache."""
     body = _function_source(INSTALL_PS1, "Invoke-ManagedLlamaCppPreflight")
     # Use the same predicate for path selection and ownership wording.
-    assert "$homeIsCustom = Test-StudioHomeIsCustom" in body
+    # A master root counts as custom too: it moves llama.cpp out of the default location.
+    assert "$homeIsCustom = (Test-StudioHomeIsCustom) -or [bool](Get-MasterRootOverride)" in body
     assert "-OwnershipUnverified:$homeIsCustom" in body
     assert (
         'Exit-PathAccessDenied -Path $LlamaCppDir -Label "llama.cpp install"'
-        " -OwnershipUnverified:$StudioHomeIsCustom" in SETUP_PS1
+        " -OwnershipUnverified:$RuntimeRootIsCustom" in SETUP_PS1
     )
 
 
@@ -293,6 +306,9 @@ def test_both_entrypoints_resolve_and_reuse_the_same_managed_directory() -> None
     assert "$LlamaCppDir =" not in phase
 
 
+_LABELS_OUR_OWN_DIRECTORY = re.compile(r'icacls\.exe "\$dir"(?: /setintegritylevel\b| 2>&1)')
+
+
 def test_the_installer_never_repairs_permissions_by_itself() -> None:
     """Print ACL repair commands but never run them."""
     # Match direct, chained, captured, and delegated invocation forms.
@@ -304,7 +320,31 @@ def test_the_installer_never_repairs_permissions_by_itself() -> None:
             code = line.split("#", 1)[0].strip()
             if "takeown" not in code and "icacls" not in code:
                 continue
+            if _LABELS_OUR_OWN_DIRECTORY.search(code):
+                continue
             assert not invocation.search(code), f"{label}: {line.strip()}"
+
+
+def test_the_label_exemption_is_narrow() -> None:
+    """The exemption must not cover an ACL change on anything but our own new directory.
+
+    Without this, widening it to `icacls` would read as a passing test while the rule it is
+    carved out of stopped applying at all.
+    """
+    forbidden = (
+        'icacls.exe "$LlamaCppDir" /setintegritylevel (OI)(CI)H',
+        'icacls.exe "$dir" /grant "$env:USERNAME:(F)"',
+        'takeown.exe /f "$dir"',
+        '& icacls "$StudioHome" /reset',
+    )
+    for line in forbidden:
+        assert not _LABELS_OUR_OWN_DIRECTORY.search(line), line
+    assert _LABELS_OUR_OWN_DIRECTORY.search(
+        '$null = & icacls.exe "$dir" /setintegritylevel "(OI)(CI)H" 2>&1'
+    )
+    assert _LABELS_OUR_OWN_DIRECTORY.search(
+        '$labelled = ("$(& icacls.exe "$dir" 2>&1)" -match "S-1-16-12288")'
+    )
 
 
 def test_setup_sh_reports_a_denied_default_home_cache() -> None:
@@ -388,12 +428,23 @@ def test_the_security_software_holding_the_folder_is_named() -> None:
 
 
 def test_a_denied_cache_is_moved_aside_only_when_it_is_ours_to_move() -> None:
-    """Renaming needs DELETE on the folder plus write on its parent, neither of
-    which is read access, so it recovers denials takeown and icacls do not. It is
-    only allowed for the tree the guidance already tells the user to delete."""
+    """The move is a bare rename, and only for the tree the guidance tells the user to delete.
+
+    Directory.Move rather than Move-Item, which is not a style choice. Move-Item falls back
+    to copy-then-delete when the rename is refused: it creates the aside folder, then dies on
+    the unreadable contents, leaving a stray llama.cpp.denied-* beside the original on every
+    run. Measured on windows-latest, denying each shape on the folder itself, every read
+    denial ((OI)(CI)(RX), (OI)(CI)(R), (RX)) refuses the rename while (DE) alone does not, so
+    on Windows this recovery cannot fire and must at least leave nothing behind. On POSIX the
+    rename needs only write and execute on the parent, so it recovers there.
+    """
     for text in (INSTALL_PS1, SETUP_PS1):
         body = _function_source(text, "Invoke-ManagedLlamaCppPreflight")
-        assert "Move-Item -LiteralPath $dir -Destination $asideDir" in body
+        assert "[System.IO.Directory]::Move($dir, $asideDir)" in body
+        # The fallback that litters must not come back, by any route. Code only: the
+        # comment above the call names Move-Item to say why it is not used.
+        code = "\n".join(line.split("#", 1)[0] for line in body.splitlines())
+        assert "Move-Item" not in code
         guard = "if (-not $userSupplied -and -not $homeIsCustom -and -not $isLink) {"
         assert guard in body
         # Setup never makes this a link, so a link is the user's own arrangement

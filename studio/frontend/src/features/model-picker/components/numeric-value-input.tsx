@@ -53,6 +53,8 @@ export const NumericValueInput = forwardRef<
     ariaLabel?: string;
     size?: number;
     disabled?: boolean;
+    /** Take the width from `className` instead of the value's length. */
+    fixedWidth?: boolean;
   }
 >(function NumericValueInput(
   {
@@ -67,6 +69,7 @@ export const NumericValueInput = forwardRef<
     ariaLabel,
     size: sizeAttr,
     disabled = false,
+    fixedWidth = false,
   },
   ref,
 ) {
@@ -156,10 +159,14 @@ export const NumericValueInput = forwardRef<
       inputMode="decimal"
       disabled={disabled}
       size={sizeAttr}
-      style={{
-        boxSizing: "content-box",
-        width: `calc(${Math.max(displayed.length, 4)}ch + 2px)`,
-      }}
+      style={
+        fixedWidth
+          ? undefined
+          : {
+              boxSizing: "content-box",
+              width: `calc(${Math.max(displayed.length, 4)}ch + 2px)`,
+            }
+      }
       value={displayed}
       aria-label={ariaLabel}
       onFocus={(e) => {

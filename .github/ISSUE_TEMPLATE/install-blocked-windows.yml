@@ -1,5 +1,5 @@
 name: "Windows: antivirus or security software blocked the installer"
-description: The installer, updater or Studio was blocked, quarantined or deleted by security software on Windows
+description: The installer, updater or Unsloth Studio was blocked, quarantined or deleted by security software on Windows
 title: "[Blocked] "
 # Every one of these must exist in the repository. GitHub does not error on an unknown label, it
 # silently drops it -- so a typo here costs the triage label the form exists to attach, and nothing

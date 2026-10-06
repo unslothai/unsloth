@@ -135,6 +135,15 @@ def _store_reducers() -> str:
     )
 
 
+def _status_poll_adoption_tail() -> str:
+    """The status sync's setCheckpoint-plus-recount tail, verbatim (API / CLI loads hydrate here)."""
+    return slice_between(
+        read(RUNTIME),
+        "        setCheckpoint(checkpointId, statusRes.gguf_variant);",
+        "      }\n    } else if (\n      !chatActiveModel &&",
+    )
+
+
 def _resident_fast_path() -> str:
     """The adoption tail of loadModel's already-resident branch, verbatim.
 
@@ -147,8 +156,11 @@ def _resident_fast_path() -> str:
     """
     return slice_between(
         read(RUNTIME),
-        "          const confirmedStatus = await getInferenceStatus().catch(() => null);",
-        "      const lifecycleLease = useChatRuntimeStore",
+        "          const confirmedStatus = await readPickStatus();",
+        # The lease claim, which the tail must not run into: the pick here never starts a load.
+        # `lifecycleLease` sits inside a bounded retry loop, so its own declaration is the first
+        # line that is about the load this tail does not start rather than about the adoption.
+        "      let lifecycleLease: ModelLifecycleLease | null = null;",
     )
 
 
@@ -512,9 +524,15 @@ export async function adoptResidentModel(props: any): Promise<void> {
   // The residency decision, which this file does not measure: the caller seeds the
   // status it wants adopted. resident-model-match.test.ts covers the real predicate.
   const adoptable = (_status: any): boolean => true;
-  const bailIfLoadInFlight = (): boolean => false;
+  // The superseded-pick guards the tail sits behind: nothing here supersedes the pick, so the
+  // epoch still matches the id it was minted with and no rival holds the picker entry.
+  let modelSelectionIntentEpoch = 0;
+  const loadIntentId = 0;
+  const rivalLoadStarted = (): boolean => false;
+  let pendingReplacementRollback: any = null;
   const restorePreviousConfig = (): void => {};
   const getInferenceStatus = async (): Promise<any> => props.residentStatus;
+  const readPickStatus = async (): Promise<any> => props.residentStatus;
   const reconcilePersistedGpuIds = (ids: any): any => ids;
   const sameGpuSelection = (a: any, b: any): boolean =>
     JSON.stringify(a ?? null) === JSON.stringify(b ?? null);
@@ -548,6 +566,27 @@ __FAST_PATH__
 """
 
 
+HARNESS_STATUS_POLL = """
+
+export async function adoptServerStatus(statusRes: any): Promise<void> {
+  const selectedCheckpoint: string = state.params?.checkpoint ?? "";
+  const checkpointId: string | null =
+    statusRes.model_identifier ?? statusRes.active_model ?? null;
+  const previousGgufVariant: string | null = state.activeGgufVariant ?? null;
+  const { setCheckpoint } = useChatRuntimeStore.getState();
+  const applyActiveModelStatusToStore = (status: any, _options: any): void => {
+    set({
+      loadedContextLength: status.is_gguf ? (status.context_length ?? null) : null,
+    });
+  };
+  const syncModelCapabilities = (_id: string, _status: any): void => {};
+  if (checkpointId) {
+__STATUS_POLL_TAIL__
+  }
+}
+"""
+
+
 def _rendered_effects(effects: list[tuple[list[str], str]]) -> str:
     blocks = []
     for deps, body in effects:
@@ -572,6 +611,9 @@ export async function hydrateThreadUsage(props: any): Promise<void> {
   // The loader is created per pane; a compare pane carries a pairId and never owns the bar.
   const modelType: string = props.modelType ?? "base";
   const pairId = props.pairId ?? undefined;
+  // The thread's stored messages, which the loader reads into `msgs` above the sliced block.
+  // The block prices them with `estimateContextUsage` when nothing saved is usable (#9475).
+  const msgs: any[] = props.messages ?? [];
   // Read once, as the loader does, just above the sliced block.
   const store = useChatRuntimeStore.getState();
 __RESTORE__
@@ -585,8 +627,17 @@ def _harness_source() -> str:
         "__RECOUNT_EFFECTS__", _rendered_effects(_thread_recount_effects())
     )
     resident = HARNESS_RESIDENT.replace("__FAST_PATH__", _resident_fast_path())
+    status_poll = HARNESS_STATUS_POLL.replace("__STATUS_POLL_TAIL__", _status_poll_adoption_tail())
     history = HARNESS_HISTORY.replace("__RESTORE__", _history_usage_restore())
-    return prelude + _message_order_body() + _refresh_module_body() + render + resident + history
+    return (
+        prelude
+        + _message_order_body()
+        + _refresh_module_body()
+        + render
+        + resident
+        + status_poll
+        + history
+    )
 
 
 def _run(script: str) -> dict:
@@ -1416,6 +1467,148 @@ def test_history_hydration_keeps_saved_usage_it_restored(
     ), "the completion half of an exact total must survive hydration"
 
 
+# 400 characters of text is 100 tokens at the estimator's 4 characters a token.
+STORED_TURN = (
+    '[{ id: "u1", parentId: null, role: "user", createdAt: 1, '
+    'content: [{ type: "text", text: "x".repeat(400) }] }]'
+)
+
+
+@pytest.mark.parametrize(
+    ("saved", "expect_shown"),
+    [
+        # Nothing usable restored: the bar shows the text estimate until the recount answers.
+        ("null", {"totalTokens": 100, "completionTokens": 0, "estimated": True}),
+        (
+            '{ totalTokens: 900, promptTokens: 700, completionTokens: 200, modelId: "other" }',
+            {"totalTokens": 100, "completionTokens": 0, "estimated": True},
+        ),
+        # Exact totals for this model win over the estimate, and nothing is recounted.
+        (
+            "{ totalTokens: 900, promptTokens: 700, completionTokens: 200, "
+            'modelId: "unsloth/gguf-model" }',
+            {"totalTokens": 900, "completionTokens": 200, "estimated": None},
+        ),
+    ],
+    ids = ["nothing_saved", "saved_is_another_model", "saved_matches_the_model"],
+)
+def test_history_hydration_shows_an_estimate_until_the_recount_lands(saved, expect_shown):
+    """#9475: a reopened thread with no usable saved usage shows an estimate of its stored
+    messages at once, instead of an empty bar for as long as the recount takes. The estimate
+    is the loader's own `msgs`, so the harness has to hand them in: without that binding the
+    sliced block threw a ReferenceError and every history case here went red."""
+    out = _run(
+        textwrap.dedent(
+            f"""
+            // @ts-nocheck
+            import {{ hydrateThreadUsage, seed, snapshot, world }} from "./harness.ts";
+            {LOADED_MODEL}
+            seed({{
+              activeThreadId: "thread-a",
+              contextUsage: null,
+              contextUsageByThreadId: {{}},
+            }});
+            let release;
+            world.countGate = new Promise((resolve) => {{ release = resolve; }});
+            await hydrateThreadUsage({{
+              remoteId: "thread-a",
+              savedUsage: {saved},
+              messages: {STORED_TURN},
+            }});
+            const shown = snapshot().contextUsage;
+            release();
+            await new Promise((resolve) => setTimeout(resolve, 30));
+            console.log(JSON.stringify({{
+              shown,
+              counts: world.countedMessages.length,
+              settled: snapshot().contextUsage,
+            }}));
+            """
+        )
+    )
+    shown = out["shown"] or {}
+    assert {key: shown.get(key) for key in expect_shown} == expect_shown, (
+        "the bar must show the restored usage, or the estimate when none is usable, "
+        "before the recount answers"
+    )
+    if expect_shown["estimated"]:
+        assert out["counts"] == 1, "an estimate is a placeholder; the recount still has to run"
+        settled = out["settled"] or {}
+        assert settled.get("totalTokens") == 12 and not settled.get(
+            "estimated"
+        ), "the recount's exact count must replace the estimate"
+    else:
+        assert out["counts"] == 0
+
+
+_SIMPLE_BINDING = re.compile(r"\b(?:const|let)\s+([A-Za-z_$][\w$]*)")
+_PATTERN_START = re.compile(r"\b(?:const|let)\s*([{\[])")
+
+
+def _declared_names(code: str) -> set[str]:
+    """Names `const` / `let` bind in `code`, destructured ones included.
+
+    `const { remoteId } = ...` binds `remoteId`, `{ a: b }` binds `b`, `{ a = 1 }` and `...rest`
+    bind `a` and `rest`. Nested patterns are flattened, which can only over-collect.
+    """
+    names = set(_SIMPLE_BINDING.findall(code))
+    for start in _PATTERN_START.finditer(code):
+        depth, end = 0, start.start(1)
+        for end in range(start.start(1), len(code)):
+            if code[end] in "{[":
+                depth += 1
+            elif code[end] in "}]":
+                depth -= 1
+            if depth == 0:
+                break
+        for part in re.split(r"[,{}\[\]]", code[start.start(1) : end + 1]):
+            part = part.split("=", 1)[0].strip().removeprefix("...")
+            if ":" in part:
+                part = part.split(":", 1)[1].strip()
+            if re.fullmatch(r"[A-Za-z_$][\w$]*", part):
+                names.add(part)
+    return names
+
+
+def test_declared_names_reads_destructuring():
+    code = "const { remoteId, threadId: tid, mode = 1, ...rest } = x; let [first, , third] = y; const a = 1;"
+    assert _declared_names(code) == {"remoteId", "tid", "mode", "rest", "first", "third", "a"}
+
+
+def test_the_harness_binds_every_loader_local_the_history_restore_reads() -> None:
+    """The restore block is sliced out of the middle of the history adapter's `load()`, so any
+    local it reads from above the slice has to be declared by `hydrateThreadUsage` instead.
+    Imported helpers are followed in from the studio sources by `run_harness`; locals are not.
+    #9475 made the block read the loader's `msgs`, and the replay threw `msgs is not defined`
+    in every history-hydration case on main."""
+    provider = read(PROVIDER)
+    restore = _history_usage_restore()
+    start = provider.index(restore)
+    loader = provider.rindex("async load() {", 0, start)
+    above = provider[loader:start]
+    declared_above = _declared_names(above)
+    assert (
+        {"msgs", "savedUsage", "store"} <= declared_above
+    ), "could not read the loader's locals above the restore; this guard would check nothing"
+    # Code only: the comments in the block name words like "message" that are locals elsewhere.
+    code = re.sub(r"//[^\n]*", "", restore)
+    declared_in_slice = _declared_names(code)
+    read_from_above = sorted(
+        name
+        for name in declared_above - declared_in_slice
+        if re.search(rf"(?<![\w$.]){re.escape(name)}\b", code)
+    )
+    assert {"msgs", "remoteId"} <= set(
+        read_from_above
+    ), "the guard no longer sees the restore read `msgs` and the destructured `remoteId`"
+    bound = _declared_names(HARNESS_HISTORY)
+    missing = [name for name in read_from_above if name not in bound]
+    assert not missing, (
+        f"the history restore reads the loader locals {missing}, which hydrateThreadUsage does "
+        "not declare: the replay would throw a ReferenceError. Bind them from `props`."
+    )
+
+
 def test_deep_research_recounts_before_the_model_decides():
     """Arming Deep Research no longer guarantees a server-side research run.
 
@@ -1725,6 +1918,50 @@ def test_adopting_the_resident_gguf_reprices_the_open_thread():
     assert (out["contextUsage"] or {}).get("totalTokens") == 62, (
         "adopting the resident GGUF must reprice the open thread: setCheckpoint has "
         "already blanked the external provider's usage"
+    )
+    assert (out["cached"] or {}).get("totalTokens") == 62
+
+
+def test_status_poll_adoption_reprices_when_a_local_checkpoint_is_already_selected():
+    """#10337: an API-loaded GGUF already selected in Studio left the bar blank until the next reply."""
+    out = _run(
+        textwrap.dedent(
+            """
+            // @ts-nocheck
+            import { adoptServerStatus, seed, snapshot, world } from "./harness.ts";
+            world.storedMessages["thread-a"] = [
+              { id: "m1", role: "user", createdAt: 1, content: [{ type: "text", text: "hi" }], metadata: {} },
+              { id: "m2", role: "assistant", createdAt: 2, content: [{ type: "text", text: "yo" }], metadata: {} },
+            ];
+            seed({
+              params: { checkpoint: "unsloth/gguf-model", systemPrompt: "", systemVariables: "" },
+              loadedContextLength: 8192,
+              activeThreadId: "thread-a",
+              contextUsage: null,
+              contextUsageByThreadId: {},
+            });
+
+            await adoptServerStatus({
+              active_model: "unsloth/gguf-model",
+              gguf_variant: null,
+              is_gguf: true,
+              context_length: 8192,
+            });
+            await new Promise((resolve) => setTimeout(resolve, 30));
+
+            const after = snapshot();
+            console.log(JSON.stringify({
+              counts: world.countedMessages.length,
+              contextUsage: after.contextUsage,
+              cached: after.contextUsageByThreadId["thread-a"] ?? null,
+            }));
+            """
+        )
+    )
+    assert out["counts"] == 1
+    assert (out["contextUsage"] or {}).get("totalTokens") == 62, (
+        "adopting a resident GGUF through the status poll must reprice the open "
+        "thread even when Studio already had that checkpoint selected"
     )
     assert (out["cached"] or {}).get("totalTokens") == 62
 

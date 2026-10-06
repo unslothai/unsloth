@@ -17,6 +17,7 @@ const QUEUED_SETTING_KEYS = [
   "preserveThinking",
   "toolsEnabled",
   "codeToolsEnabled",
+  "codeToolsDeclinedUnderFullAccess",
   "imageToolsEnabled",
   "artifactsEnabled",
   "mcpEnabledForChat",
@@ -39,13 +40,12 @@ const QUEUED_SETTING_KEYS = [
   // queued against. Without this an Ollama or native-path GGUF, which reports no quant and
   // no .gguf suffix, reads as non-GGUF and loses its compaction policy.
   "loadedIsGguf",
+  "loadedIsMlx",
   "autoHealToolCalls",
   "nudgeToolCalls",
   "maxToolCallsPerMessage",
   "toolCallTimeout",
   "autoCompactEnabled",
-  "contextPolicy",
-  "compactionHeadroomRatio",
 ] as const;
 
 type ChatRuntimeState = ReturnType<typeof useChatRuntimeStore.getState>;

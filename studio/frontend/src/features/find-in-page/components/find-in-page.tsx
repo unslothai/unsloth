@@ -10,9 +10,12 @@ import { useT } from "@/i18n";
 
 import {
   isImeComposing,
-  isSurfaceBackgrounded,
   useShortcut,
+  useShortcutAvailable,
 } from "@/features/settings";
+import { Z_LAYER } from "@/lib/z-layers";
+import { Search01Icon } from "@hugeicons/core-free-icons";
+import { HugeiconsIcon } from "@hugeicons/react";
 import {
   type ReactNode,
   Suspense,
@@ -23,7 +26,10 @@ import {
   useRef,
   useState,
 } from "react";
+import { createPortal } from "react-dom";
 import { FIND_SCOPE_ATTRIBUTE } from "../lib/find-attributes.ts";
+import { isFindScopeBackgrounded } from "../lib/find-backgrounded.ts";
+import { findTarget, findTargetHolding, onFindRequest } from "../lib/find-targets.ts";
 
 const DISMISSIBLE_SURFACE_SELECTOR =
   '[data-slot="popover-content"], [role="menu"], [role="listbox"]';
@@ -85,7 +91,7 @@ function FindBarLoading({
   useEffect(() => {
     const onEscape = (event: KeyboardEvent) => {
       if (event.key !== "Escape" || isImeComposing(event)) return;
-      if (isSurfaceBackgrounded(`[${FIND_SCOPE_ATTRIBUTE}]`)) return;
+      if (isFindScopeBackgrounded()) return;
       if (hasOpenDismissibleSurface()) return;
       event.preventDefault();
       event.stopPropagation();
@@ -103,8 +109,14 @@ function FindBarLoading({
       role="search"
       aria-busy="true"
       aria-label={t("shell.find.label")}
-      className="find-bar-surface fixed top-[calc(var(--studio-content-top-inset,0px)+3.5rem)] right-4 z-50 flex h-13 max-w-[calc(100vw-2rem)] items-center rounded-full px-5"
+      className="find-bar-surface fixed top-[calc(var(--studio-content-top-inset,0px)+3.5rem)] right-4 z-50 flex h-13 max-w-[calc(100vw-2rem)] items-center gap-1 rounded-full pr-5 pl-4.5"
     >
+      <HugeiconsIcon
+        icon={Search01Icon}
+        strokeWidth={1.75}
+        aria-hidden={true}
+        className="mr-1.5 size-[calc(18px*var(--ui-space-scale,1))] shrink-0 text-muted-foreground"
+      />
       <input
         ref={inputRef}
         type="text"
@@ -139,6 +151,8 @@ export function FindInPage({ enabled = true }: { enabled?: boolean }) {
   // unmounting the shell drops it without keeping a module-global user value.
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
+  /** What the bar searches: the chat (null), or a find target such as the browser's page. */
+  const [scope, setScope] = useState<string | null>(null);
   const [focusToken, setFocusToken] = useState(0);
   const loadingSelectionRef = useRef<{
     start: number;
@@ -188,8 +202,13 @@ export function FindInPage({ enabled = true }: { enabled?: boolean }) {
     [],
   );
   const originRef = useRef<HTMLElement | null>(null);
-  const requestFocus = useCallback(() => {
+  const requestFocus = useCallback((targetId?: string | null) => {
     const active = document.activeElement;
+    // Searches where the reader is: the page while focus is in the browser, else the chat. Pressed
+    // again from the bar's own field, it keeps searching what it was.
+    if (targetId !== undefined) setScope(targetId);
+    else if (!(active instanceof Element && active.closest('[role="search"]')))
+      setScope(findTargetHolding(active)?.id ?? null);
     if (
       originRef.current === null &&
       active instanceof HTMLElement &&
@@ -245,53 +264,76 @@ export function FindInPage({ enabled = true }: { enabled?: boolean }) {
     });
   }, []);
 
+  // The browser asks for its page from its menu, or when the chord is pressed inside the page.
+  useEffect(
+    () =>
+      onFindRequest((targetId) => {
+        if (enabled && (targetId === null || findTarget(targetId)?.available())) requestFocus(targetId);
+      }),
+    [enabled, requestFocus],
+  );
+
   // The chord works from text fields, including the composer and an already-open find input.
-  useShortcut("findInPage", requestFocus, {
+  useShortcut("findInPage", () => requestFocus(), {
     enabled,
     // A modal backgrounds the shell and owns the chord while its surface is active.
-    claims: () => !isSurfaceBackgrounded(`[${FIND_SCOPE_ATTRIBUTE}]`),
+    claims: () => !isFindScopeBackgrounded(),
   });
 
+  // False while a modal is open.
+  const foreground = useShortcutAvailable("findInPage", true);
+
   if (!enabled || !open) return null;
-  return (
-    <LazyImportBoundary
-      fallback={
-        <LazyImportFailure
-          message={t("settings.dialog.panelFailed")}
-          reloadLabel={t("settings.dialog.panelReload")}
-          dismissLabel={t("common.close")}
-          onDismiss={close}
-          testId="find-in-page-load-failure"
-          className="fixed top-3 right-3 z-[100] max-w-xs rounded-xl border border-border bg-popover p-4 text-popover-foreground shadow-lg"
-        />
-      }
+  // Top layer, outside any stacking context. Hidden (not unmounted) under a modal so it returns as it was.
+  return createPortal(
+    <div
+      data-find-bar-layer=""
+      hidden={!foreground}
+      className="fixed top-0 right-0"
+      style={{ zIndex: Z_LAYER.WINDOW_BARS }}
     >
-      <Suspense
+      <LazyImportBoundary
         fallback={
-          <FindBarLoading
-            query={query}
-            setQuery={setQuery}
-            close={close}
-            focusToken={focusToken}
-            rememberSelection={rememberLoadingSelection}
-            queueStep={queueLoadingStep}
-            beginComposition={beginLoadingComposition}
-            endComposition={endLoadingComposition}
+          <LazyImportFailure
+            message={t("settings.dialog.panelFailed")}
+            reloadLabel={t("settings.dialog.panelReload")}
+            dismissLabel={t("common.close")}
+            onDismiss={close}
+            testId="find-in-page-load-failure"
+            className="fixed top-3 right-3 z-[100] max-w-xs rounded-xl border border-border bg-popover p-4 text-popover-foreground shadow-lg"
           />
         }
       >
-        <FindBarAfterComposition handoffBlock={handoffBlock}>
-          <FindBar
-            query={query}
-            setQuery={setQuery}
-            close={close}
-            focusToken={focusToken}
-            restoreSelection={restoreLoadingSelection}
-            pendingSteps={pendingSteps}
-            clearPendingSteps={clearPendingSteps}
-          />
-        </FindBarAfterComposition>
-      </Suspense>
-    </LazyImportBoundary>
+        <Suspense
+          fallback={
+            <FindBarLoading
+              query={query}
+              setQuery={setQuery}
+              close={close}
+              focusToken={focusToken}
+              rememberSelection={rememberLoadingSelection}
+              queueStep={queueLoadingStep}
+              beginComposition={beginLoadingComposition}
+              endComposition={endLoadingComposition}
+            />
+          }
+        >
+          <FindBarAfterComposition handoffBlock={handoffBlock}>
+            <FindBar
+              query={query}
+              setQuery={setQuery}
+              scope={scope}
+              setScope={setScope}
+              close={close}
+              focusToken={focusToken}
+              restoreSelection={restoreLoadingSelection}
+              pendingSteps={pendingSteps}
+              clearPendingSteps={clearPendingSteps}
+            />
+          </FindBarAfterComposition>
+        </Suspense>
+      </LazyImportBoundary>
+    </div>,
+    document.body,
   );
 }
