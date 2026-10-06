@@ -513,6 +513,7 @@ def test_a_module_is_kept_only_while_fresh():
     assert browser_mod._fresh_for("max-age=60, s-maxage=5", None) == 5
     assert browser_mod._fresh_for("max-age=99999999", None) == browser_mod._MODULE_CACHE_TTL_S
 
+
 def test_inlined_modules_stay_within_the_page_limit(monkeypatch):
     _modules(
         monkeypatch,

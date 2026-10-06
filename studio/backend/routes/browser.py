@@ -75,9 +75,7 @@ _MODULE_SCRIPT_RE = re.compile(r"<script\b" + _TAG_BODY + r"\s*</script\s*>", re
 # One attribute of a start tag, read as the HTML tokenizer does: a name, then an optional value,
 # quoted or bare. Quoted values are skipped whole, so an attribute named inside another's value
 # (onerror="this.src='x'") isn't taken for the real one. A stray "/" matches on its own.
-_TAG_ATTR_RE = re.compile(
-    r"""([^\s/>][^\s/>=]*)(?:\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]*)))?|/"""
-)
+_TAG_ATTR_RE = re.compile(r"""([^\s/>][^\s/>=]*)(?:\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]*)))?|/""")
 # Dropped from an inlined tag: they only concern fetching the file.
 _FETCH_ATTRS = frozenset({"src", "integrity", "crossorigin"})
 # Static or dynamic imports and re-exports resolve against the module's own URL.
