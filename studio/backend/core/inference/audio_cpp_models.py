@@ -569,7 +569,6 @@ _CLONE_FAMILIES: tuple[AudioCppFamily, ...] = (
     ),
     AudioCppFamily("voxcpm2", "tts", clone = CloneSpec("optional")),
     AudioCppFamily("fish_audio", "tts", clone = CloneSpec("required")),
-    # Speak and clone in one tts session; the rule is how the runtime treats reference_text.
     AudioCppFamily("breeze_tts", "tts", clone = CloneSpec("required")),
     AudioCppFamily("omnivoice", "tts", clone = CloneSpec("required")),
     AudioCppFamily("voxcpm1", "tts", clone = CloneSpec("required")),
