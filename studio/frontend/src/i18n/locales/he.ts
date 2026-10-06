@@ -2851,6 +2851,8 @@ export const he = {
         modelMultilingual: "רב-לשוני",
         modelEnglish: "אנגלית",
         modelTypedDecisions: "החלטות מוגדרות-טיפוס",
+        modelClefFlash: "Clef-flash",
+        modelClef: "Clef",
         recommended: "מומלץ",
         device: "הרץ על",
         deviceDescription:
@@ -2861,11 +2863,13 @@ export const he = {
         notDownloaded: "לא הורד · {size}",
         downloading: "מוריד…",
         downloaded: "הורד · נטען בבקשה הראשונה",
+        ready: "מוכן · נטען בבקשה הראשונה",
         installing: "מתקין…",
         loading: "טוען…",
         loadedOn: "נטען על {device}",
         download: "הורדה",
         downloadConfirmTitle: "להוריד את Laya {model}?",
+        downloadConfirmTitleModel: "להוריד את {model}?",
         downloadConfirmBody:
           "ה-Decision API זקוק למודל זה כדי לענות לבקשות. כ-{size}, יורד פעם אחת למטמון של Hugging Face.",
         unload: "פריקה",
@@ -2986,6 +2990,9 @@ export const he = {
       configDescription: "שמור וטען תצורות",
       modelLabel: "מודל",
       modelTooltip: "מודל הבסיס שברצונך לבצע לו כוונון עדין.",
+      checkpointLabel: "נקודת ביקורת",
+      checkpointTooltip:
+        "נקודת הביקורת של Laya לכוונון עדין. הגרסה הרב-לשונית מתאימה לרוב מערכי הנתונים.",
       methodLabel: "שיטה",
       methodTooltip:
         "האופן שבו המודל מאומן. LoRA ו-QLoRA מעדכנים מתאמים (Adapters) קטנים במקום את כל המשקולות.",
@@ -3432,6 +3439,10 @@ export const he = {
         learningRatePositive: "הזן קצב למידה הגדול מאפס.",
         embeddingLearningRateRange:
           "הזן קצב למידה לשיבוצים הגדול מ-0 וקטן מ-1.",
+        decisionColumnsMissing:
+          "מודלי החלטה צריכים את העמודות state, questions ו-gold (או answers). חסרות: {columns}.",
+        decisionOwnerOnly:
+          "רק הבעלים של Studio יכול לבצע כוונון עדין למודלי החלטה.",
         hfDatasetRequired: "בחר תחילה מערך נתונים מ-Hugging Face.",
         hfDatasetSplitRequired: "בחר או הזן תחילה פיצול אימון.",
         localDatasetRequired: "בחר תחילה מערך נתונים מקומי.",
@@ -3588,6 +3599,10 @@ export const he = {
       title: "התקדמות אימון",
       liveMetrics: "מדדי אימון בזמן אמת",
       exportGguf: "ייצא ל-GGUF",
+      useInDecisionApi: "השתמש ב-Decision API",
+      decisionApiEnabled: "ה-Decision API מגיש כעת את {name}.",
+      decisionApiFailed:
+        "לא ניתן היה להעביר את ה-Decision API למודל הזה.",
       openConfig: "פתח תצורת אימון",
       configLabel: "תצורת אימון",
       hyperparams: "היפר-פרמטרים",
@@ -3934,6 +3949,7 @@ export const he = {
       source: "מקור",
       fileType: "סוג קובץ",
       clearFilters: "נקה מסננים",
+      workflow: "נוצר באמצעות",
       uploaded: "הועלו",
       generated: "נוצרו",
       documents: "מסמכים",
@@ -3950,6 +3966,13 @@ export const he = {
       sortSize: "גודל",
       sortAscending: "סדר עולה",
       sortDescending: "סדר יורד",
+    },
+    audio: {
+      play: "נגן את {name}",
+      pause: "השהה את {name}",
+      playFailed: "לא ניתן לנגן את {name}",
+      fromRun: "מאותה הרצה",
+      downloadRun: "הורד הכול",
     },
     create: {
       note: "פתק",
