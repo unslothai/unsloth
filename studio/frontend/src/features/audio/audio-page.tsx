@@ -839,7 +839,10 @@ export function AudioPage({
             .setTranscript(text.trim(), selection.id);
         },
         clone: () => {
-          if (selection && transitionWorkflow("clone")) adoptReference(selection);
+          if (!(selection && transitionWorkflow("clone"))) return;
+          adoptReference(selection);
+          // Typed text for an earlier reference would otherwise survive the new recording.
+          useAudioCloneStore.getState().applyTranscript(selection, text.trim());
         },
       };
       return Object.fromEntries(

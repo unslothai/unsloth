@@ -228,3 +228,19 @@ test("a reference longer than the 30 s cut brings no transcript, since only 30 s
   });
   assert.equal(store().referenceText, "Hi.");
 });
+
+test("a transcript sent with its recording replaces words typed for another", () => {
+  const store = () => useAudioCloneStore.getState();
+  const sent = {
+    kind: "clip" as const,
+    id: "sent1",
+    name: "take.wav",
+    durationS: 3,
+    transcript: "the sent words",
+  };
+  store().setReferenceText("typed for the old clip");
+  store().adoptReference(sent);
+  assert.equal(store().referenceText, "typed for the old clip");
+  store().applyTranscript(sent, "the sent words");
+  assert.equal(store().referenceText, "the sent words");
+});
