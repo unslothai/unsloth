@@ -547,9 +547,8 @@ def delete_group(group_id: str) -> int:
     if not group_id:
         return 0
     directory = gallery_dir()
-    # Locked like clear(): an archive landing between the flag read and the unlink is not lost.
+    # Locked and trusted like clear(): a racing archive or unreadable store never loses a clip.
     with gallery_flags.exclusive(directory, require_file_lock = True):
-        # Trusted, as clear() reads it: an unreadable store must not pass for "nothing archived".
         flags = gallery_flags.read_trusted(directory)
         try:
             paths = _clip_wavs(directory)
