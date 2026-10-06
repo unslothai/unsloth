@@ -17084,7 +17084,8 @@ def _web_search(
                     logger.debug("Independent Wikipedia search failed", exc_info = True)
             if cancel_event is not None and cancel_event.is_set():
                 return "Search cancelled."
-        if not results and last_error is not None:
+        # A tier that answered with only blocked results outranks an earlier tier's exception.
+        if not results and last_error is not None and not rejected_results:
             raise last_error
         if not results:
             return _empty_result_with_requested_images(

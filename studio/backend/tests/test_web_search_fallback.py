@@ -339,3 +339,16 @@ def test_setup_time_preserves_primary_budget_but_bounds_failed_import_fallback(
         assert "Title: Primary" in result
         assert provider.calls[0][2] == 3
         provider.wiki.assert_not_called()
+
+
+@pytest.mark.parametrize("failing", ["wikipedia", "google"])
+def test_blocked_tier_answer_outranks_other_tier_error(provider, failing):
+    def respond(client, query, **kwargs):
+        if kwargs["backend"] == failing:
+            raise RuntimeError("provider failed")
+        return [{"title": "Blocked", "href": "https://blocked.example/page", "body": "Blocked"}]
+
+    provider.respond = respond
+    provider.wiki.return_value = []
+    result = tools._web_search("query", website_policy = {"blockedDomains": ["blocked.example"]})
+    assert result.startswith(tools.EMPTY_SEARCH_RESULTS[1])
