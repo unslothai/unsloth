@@ -77,18 +77,21 @@ def _uuid_visible_ordinal_map(
 
 
 _UUID_MASK_TTL_S = 30.0
-_uuid_mask_cache: dict[str, tuple[float, Optional[list[int]]]] = {}
+_uuid_mask_cache: dict[tuple[str, int], tuple[float, Optional[list[int]]]] = {}
 
 
 def resolve_uuid_mask(parent_cuda_visible_devices: str) -> Optional[list[int]]:
     """Physical nvidia-smi indices for a full-GPU UUID mask, in mask order; None if any token is unresolvable."""
     # gpu_query never caches a failure, and the parent GPU spec is read on every poll and load:
     # without this a hung nvidia-smi costs its full timeout per call.
-    hit = _uuid_mask_cache.get(parent_cuda_visible_devices)
+    # Keyed on the static generation so invalidate_static() (eGPU hotplug, driver reset) drops it too.
+    key = (parent_cuda_visible_devices, gpu_query._static_gen)
+    hit = _uuid_mask_cache.get(key)
     if hit is not None and time.monotonic() - hit[0] < _UUID_MASK_TTL_S:
         return None if hit[1] is None else list(hit[1])
     ids = _query_uuid_mask(parent_cuda_visible_devices)
-    _uuid_mask_cache[parent_cuda_visible_devices] = (time.monotonic(), ids)
+    _uuid_mask_cache.clear()
+    _uuid_mask_cache[key] = (time.monotonic(), ids)
     return None if ids is None else list(ids)
 
 

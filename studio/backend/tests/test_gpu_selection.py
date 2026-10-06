@@ -181,6 +181,11 @@ class TestResolveRequestedGpuIds(_GpuCacheResetMixin, unittest.TestCase):
         _, first = self._uuid_mask_ids("GPU-aaa1", "", returncode = 9)
         _, again = self._uuid_mask_ids("GPU-aaa1", "", returncode = 9)
         self.assertEqual((first, again), (1, 0))
+        from utils.hardware import gpu_query
+
+        gpu_query.invalidate_static("test")
+        _, after_invalidate = self._uuid_mask_ids("GPU-aaa1", "", returncode = 9)
+        self.assertEqual(after_invalidate, 1)
 
     def test_unresolvable_uuid_mask_stays_unresolved(self):
         smi = "0, GPU-aaa1\n1, GPU-aaa2\n"
