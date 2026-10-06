@@ -938,24 +938,26 @@ export function writeDocxBreaksAndCheckboxes(archive: Uint8Array): Uint8Array {
     };
     const isOn = (flag: Element | undefined, ns: string) =>
       flag !== undefined && !["0", "false", "off"].includes(flag.getAttributeNS(ns, "val") ?? "");
-    const boxes: [Element, boolean][] = [];
+    // [anchor, checked, inRun]: a legacy field's glyph goes inside its run, before the fldChar.
+    const boxes: [Element, boolean, boolean][] = [];
     for (const box of Array.from(doc.getElementsByTagNameNS(W14_NAMESPACE, "checkbox"))) {
       const sdt = box.parentNode?.parentNode as Element | null;
       if ((box.parentNode as Element).localName === "sdtPr" && sdt?.localName === "sdt") {
-        boxes.push([sdt, isOn(childElements(box, W14_NAMESPACE, "checked")[0], W14_NAMESPACE)]);
+        boxes.push([sdt, isOn(childElements(box, W14_NAMESPACE, "checked")[0], W14_NAMESPACE), false]);
       }
     }
     for (const box of Array.from(doc.getElementsByTagNameNS(w, "checkBox"))) {
       const fldChar = box.parentNode?.parentNode as Element | null;
       if (fldChar?.localName === "fldChar" && fldChar.parentNode) {
         const flag = childElements(box, w, "checked")[0] ?? childElements(box, w, "default")[0];
-        boxes.push([fldChar.parentNode as Element, isOn(flag, w)]);
+        boxes.push([fldChar, isOn(flag, w), true]);
       }
     }
-    for (const [anchor, checked] of boxes) {
-      const run = doc.createElementNS(w, tag("r"));
-      run.appendChild(text(checked ? "☒" : "☐"));
-      anchor.parentNode?.insertBefore(run, anchor);
+    for (const [anchor, checked, inRun] of boxes) {
+      const glyph = text(checked ? "☒" : "☐");
+      const node = inRun ? glyph : doc.createElementNS(w, tag("r"));
+      if (!inRun) node.appendChild(glyph);
+      anchor.parentNode?.insertBefore(node, anchor);
     }
     // Page and column breaks too: mammoth's raw text drops every break, gluing the words either side.
     const breaks = [

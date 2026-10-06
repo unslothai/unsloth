@@ -1453,6 +1453,9 @@ test("a Word file keeps its line breaks and which boxes are ticked", async () =>
       box("0", "☐", " Diabetic") +
       field('<w:default w:val="0"/><w:checked/>', " Allergies") +
       field('<w:default w:val="0"/>', " Pregnant") +
+      '<w:p><w:r><w:t xml:space="preserve">Consent </w:t><w:fldChar w:fldCharType="begin"><w:ffData><w:checkBox><w:checked/></w:checkBox></w:ffData></w:fldChar></w:r>' +
+      '<w:r><w:instrText xml:space="preserve"> FORMCHECKBOX </w:instrText></w:r>' +
+      `<w:r><w:fldChar w:fldCharType="end"/></w:r>${run(" given")}</w:p>` +
       "</w:body></w:document>",
   );
   const globals = globalThis as { DOMParser?: unknown; XMLSerializer?: unknown };
@@ -1469,7 +1472,7 @@ test("a Word file keeps its line breaks and which boxes are ticked", async () =>
       "Jane Doe\n42 Elm Street\nSpringfield, IL 62704\n\n" +
         "Summary\nDetails\n\n" +
         "Built APIs\nLed team of 5\n\n" +
-        "☒ Smoker\n\n☐ Diabetic\n\n☒ Allergies\n\n☐ Pregnant\n\n",
+        "☒ Smoker\n\n☐ Diabetic\n\n☒ Allergies\n\n☐ Pregnant\n\nConsent ☒ given\n\n",
     );
   } finally {
     Object.assign(globals, original);
