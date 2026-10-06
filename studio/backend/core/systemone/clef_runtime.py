@@ -166,7 +166,11 @@ class ClefAgent:
             if env is None:
                 os.environ.pop("UNSLOTH_IS_PRESENT", None)
         child.close()
-        kind, payload = self._receive(LOAD_TIMEOUT_S)
+        try:
+            kind, payload = self._receive(LOAD_TIMEOUT_S)
+        except BaseException:
+            self.close()
+            raise
         if kind != "ready":
             self.close()
             raise ClefWorkerError(payload)
