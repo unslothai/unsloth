@@ -8655,6 +8655,12 @@ _voice_load_locks: dict[asyncio.AbstractEventLoop, asyncio.Lock] = {}
 _voice_loading_account: list[Optional[str]] = [None]
 
 
+def _voice_server_alive(voice) -> bool:
+    """is_loaded never notices a child that exited after a good load (an OOM, a crash)."""
+    process = getattr(voice, "_process", None)
+    return process is not None and process.poll() is None
+
+
 def _voice_load_lock() -> asyncio.Lock:
     loop = asyncio.get_running_loop()
     lock = _voice_load_locks.get(loop)
@@ -21093,6 +21099,7 @@ async def voice_load_model(
             # as /load dedupes) so changing either in the UI forces a relaunch.
             if (
                 voice_backend.is_loaded
+                and _voice_server_alive(voice_backend)
                 and voice_backend.model_identifier
                 and voice_backend.model_identifier.lower() == config.identifier.lower()
                 and (not config.gguf_variant or voice_backend.hf_variant == config.gguf_variant)
@@ -21295,7 +21302,7 @@ async def voice_slot_status(current_subject: str = Depends(get_current_subject))
     # chat status does (a local voice's identifier is its absolute path).
     if voice_backend.is_active and account_access.resident_hidden("chat"):
         return account_access.hidden_resident_response()
-    loaded = voice_backend.is_loaded
+    loaded = voice_backend.is_loaded and _voice_server_alive(voice_backend)
     return {
         "loaded": loaded,
         "loading": voice_backend.is_active and not loaded,

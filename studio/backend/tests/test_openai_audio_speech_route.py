@@ -1372,7 +1372,12 @@ def test_voice_status_hides_another_accounts_resident(monkeypatch):
     voice = type(
         "Voice",
         (),
-        {"is_active": True, "is_loaded": True, "model_identifier": "C:/voices/private.gguf"},
+        {
+            "is_active": True,
+            "is_loaded": True,
+            "model_identifier": "C:/voices/private.gguf",
+            "_process": SimpleNamespace(poll = lambda: None),
+        },
     )()
     monkeypatch.setattr(routes_module, "get_voice_llama_backend", lambda: voice)
     monkeypatch.setattr(routes_module.account_access, "resident_hidden", lambda *a, **k: True)
@@ -1462,6 +1467,31 @@ def test_voice_unload_leaves_another_accounts_load_in_flight(monkeypatch):
         asyncio.run(routes_module.voice_unload_model("s"))
     assert refused.value.status_code == 404
     assert stopped == []
+
+
+def test_a_voice_server_that_exited_is_not_reported_or_reused_as_loaded(monkeypatch):
+    """is_loaded stayed true after the voice llama-server died, so /voice/status said loaded and
+    /voice/load answered already_loaded instead of relaunching it."""
+    import inspect
+
+    dead = SimpleNamespace(poll = lambda: 1)
+    voice = SimpleNamespace(
+        is_active = True,
+        is_loaded = True,
+        _process = dead,
+        model_identifier = "unsloth/orpheus-3b-0.1-ft-GGUF",
+        _audio_type = "snac",
+    )
+    monkeypatch.setattr(routes_module, "get_voice_llama_backend", lambda: voice)
+    monkeypatch.setattr(routes_module.account_access, "resident_hidden", lambda *a, **k: False)
+    status = asyncio.run(routes_module.voice_slot_status("s"))
+    assert status["loaded"] is False and status["model"] is None
+
+    source = inspect.getsource(routes_module.voice_load_model)
+    fast_path = source[
+        source.index("voice_backend.is_loaded") : source.index('"status": "already_loaded"')
+    ]
+    assert "_voice_server_alive(voice_backend)" in fast_path
 
 
 def test_voice_loads_run_one_at_a_time():
