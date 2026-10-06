@@ -2403,7 +2403,6 @@ export const hi = {
       importFromSourceDescription:
         "अपने {source} वार्तालाप प्रोजेक्ट के अनुसार समूहित करके Studio में कॉपी करें।",
       importingAction: "इंपोर्ट हो रहा है...",
-      importSourceNoChats: "कोई {source} वार्तालाप नहीं मिला।",
       importedSourceOneChat: "{source} से 1 वार्तालाप इंपोर्ट किया गया।",
       importedSourceChatCount:
         "{source} से {count} वार्तालाप इंपोर्ट किए गए।",

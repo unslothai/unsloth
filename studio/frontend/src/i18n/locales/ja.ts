@@ -2378,7 +2378,6 @@ export const ja = {
       importFromSourceDescription:
         "{source} の会話をプロジェクトごとにまとめて Studio にコピーします。",
       importingAction: "インポート中...",
-      importSourceNoChats: "{source} の会話が見つかりませんでした。",
       importedSourceOneChat: "{source} から 1 件の会話をインポートしました。",
       importedSourceChatCount:
         "{source} から {count} 件の会話をインポートしました。",

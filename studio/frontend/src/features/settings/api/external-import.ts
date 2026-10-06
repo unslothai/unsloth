@@ -18,47 +18,30 @@ export type ExternalImportStatus = {
 };
 
 export type ExternalImportResult = {
-  projects: number;
-  chats: number;
   newChats: number;
-  messages: number;
-  skipped: number;
   warnings: string[];
 };
 
-type ApiExternalImportResult = Omit<ExternalImportResult, "newChats"> & {
-  // biome-ignore lint/style/useNamingConvention: API schema
-  new_chats: number;
-};
-
-export async function loadExternalImportStatus(
-  source: ExternalImportSource,
-): Promise<ExternalImportStatus> {
-  const res = await authFetch(`/api/import/${source}/status`);
+async function request<T>(path: string, init?: RequestInit): Promise<T> {
+  const res = await authFetch(path, init);
   if (!res.ok) {
-    throw new Error(
-      await readFastApiError(
-        res,
-        `Failed to read ${EXTERNAL_IMPORT_LABELS[source]} data`,
-      ),
-    );
+    throw new Error(await readFastApiError(res, "External import failed"));
   }
   return res.json();
+}
+
+export function loadExternalImportStatus(
+  source: ExternalImportSource,
+): Promise<ExternalImportStatus> {
+  return request(`/api/import/${source}/status`);
 }
 
 export async function importExternalChats(
   source: ExternalImportSource,
 ): Promise<ExternalImportResult> {
-  const res = await authFetch(`/api/import/${source}`, { method: "POST" });
-  if (!res.ok) {
-    throw new Error(
-      await readFastApiError(
-        res,
-        `Import from ${EXTERNAL_IMPORT_LABELS[source]} failed`,
-      ),
-    );
-  }
-  const { new_chats: newChats, ...rest }: ApiExternalImportResult =
-    await res.json();
-  return { ...rest, newChats };
+  const result = await request<{ new_chats: number; warnings: string[] }>(
+    `/api/import/${source}`,
+    { method: "POST" },
+  );
+  return { newChats: result.new_chats, warnings: result.warnings };
 }

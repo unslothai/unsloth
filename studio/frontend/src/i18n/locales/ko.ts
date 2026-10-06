@@ -2392,7 +2392,6 @@ export const ko = {
       importFromSourceDescription:
         "{source}의 대화를 프로젝트별로 묶어 Studio로 복사합니다.",
       importingAction: "가져오는 중...",
-      importSourceNoChats: "{source} 대화를 찾을 수 없습니다.",
       importedSourceOneChat: "{source}에서 대화 1개를 가져왔습니다.",
       importedSourceChatCount: "{source}에서 대화 {count}개를 가져왔습니다.",
       sourceUpToDate: "{source} 대화가 이미 최신 상태입니다.",

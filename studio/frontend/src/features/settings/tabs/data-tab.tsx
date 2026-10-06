@@ -98,7 +98,6 @@ import {
   importExternalChats,
   loadExternalImportStatus,
 } from "../api/external-import";
-import { describeExternalImportToast } from "../lib/external-import-toast";
 import { ArchivedChatsView } from "../components/archived-chats-dialog";
 import {
   type ArchivedMediaKind,
@@ -467,21 +466,22 @@ export function DataTab({ searchEntry }: { searchEntry?: string }) {
       notifyChatProjectsUpdated();
       setCount(await countAllChats().catch(() => count));
       await refreshExternalStatus(source);
-      const label = EXTERNAL_IMPORT_LABELS[source];
-      const shown = describeExternalImportToast(result, {
-        none: t("settings.chat.importSourceNoChats", { source: label }),
-        upToDate: t("settings.chat.sourceUpToDate", { source: label }),
-        one: t("settings.chat.importedSourceOneChat", { source: label }),
-        many: t("settings.chat.importedSourceChatCount", {
-          count: result.newChats,
-          source: label,
-        }),
-        partial: t("settings.chat.importedSourcePartial", { source: label }),
-      });
-      if (shown.kind === "warning") {
-        toast.warning(shown.title, { description: shown.description });
+      const vars = { source: EXTERNAL_IMPORT_LABELS[source] };
+      if (result.warnings.length > 0) {
+        toast.warning(t("settings.chat.importedSourcePartial", vars), {
+          description: result.warnings.join("\n"),
+        });
+      } else if (result.newChats === 0) {
+        toast.success(t("settings.chat.sourceUpToDate", vars));
       } else {
-        toast.success(shown.title);
+        toast.success(
+          result.newChats === 1
+            ? t("settings.chat.importedSourceOneChat", vars)
+            : t("settings.chat.importedSourceChatCount", {
+                ...vars,
+                count: result.newChats,
+              }),
+        );
       }
     } catch (error) {
       toast.error(t("settings.chat.importFailed"), {

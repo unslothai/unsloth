@@ -2356,7 +2356,6 @@ export const zhCN = {
       importFromSourceDescription:
         "将你在 {source} 中的对话按项目分组复制到 Studio。",
       importingAction: "导入中...",
-      importSourceNoChats: "未找到 {source} 对话。",
       importedSourceOneChat: "已从 {source} 导入 1 个对话。",
       importedSourceChatCount: "已从 {source} 导入 {count} 个对话。",
       sourceUpToDate: "{source} 对话已是最新。",

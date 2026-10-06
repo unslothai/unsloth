@@ -2397,7 +2397,6 @@ export const ar = {
       importFromSourceDescription:
         "انسخ محادثاتك في {source} إلى Studio، مجمّعة حسب المشروع.",
       importingAction: "جارٍ الاستيراد...",
-      importSourceNoChats: "لم يُعثر على محادثات {source}.",
       importedSourceOneChat: "تم استيراد محادثة واحدة من {source}.",
       importedSourceChatCount:
         "تم استيراد المحادثات من {source}. العدد: {count}.",

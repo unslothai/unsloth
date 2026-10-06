@@ -2432,7 +2432,6 @@ export const en = {
       importFromSourceDescription:
         "Copy your {source} conversations into Studio, grouped by the project they belong to.",
       importingAction: "Importing...",
-      importSourceNoChats: "No {source} conversations found.",
       importedSourceOneChat: "Imported 1 conversation from {source}.",
       importedSourceChatCount: "Imported {count} conversations from {source}.",
       sourceUpToDate: "{source} conversations are already up to date.",

@@ -2413,7 +2413,6 @@ export const ptBR = {
       importFromSourceDescription:
         "Copie suas conversas do {source} para o Studio, agrupadas por projeto.",
       importingAction: "Importando...",
-      importSourceNoChats: "Nenhuma conversa do {source} encontrada.",
       importedSourceOneChat: "1 conversa importada do {source}.",
       importedSourceChatCount:
         "{count} conversas importadas do {source}.",

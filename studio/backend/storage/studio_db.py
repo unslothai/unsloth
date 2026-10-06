@@ -798,7 +798,6 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         CREATE TABLE IF NOT EXISTS external_import_sessions (
             source TEXT NOT NULL,
             session_id TEXT NOT NULL,
-            transcript_updated_at INTEGER NOT NULL,
             turns_imported INTEGER NOT NULL,
             PRIMARY KEY (source, session_id)
         ) WITHOUT ROWID
@@ -2564,18 +2563,8 @@ def _reparent_surviving_forks(conn: sqlite3.Connection, deleted_ids: set[str]) -
         )
 
 
-def lift_chat_thread_tombstone(thread_id: str) -> None:
-    """Forget a deleted thread id so a later import can recreate it."""
-    conn = get_connection()
-    try:
-        conn.execute("DELETE FROM chat_thread_tombstones WHERE id = ?", (thread_id,))
-        conn.commit()
-    finally:
-        conn.close()
-
-
 def lift_all_chat_thread_tombstones() -> None:
-    """Lift all at once: one at a time, later chats would see a nonempty history and stay deleted."""
+    """Forget every deleted thread id, so an import into an emptied Studio can recreate them."""
     conn = get_connection()
     try:
         conn.execute("DELETE FROM chat_thread_tombstones")
@@ -5445,43 +5434,30 @@ def upsert_chat_legacy_imports(legacy_thread_ids: list[str]) -> tuple[int, int]:
         conn.close()
 
 
-def get_external_import_mark(source: str, session_id: str) -> Optional[dict]:
-    """How far an imported session was brought over, or None if it never was."""
+def get_external_import_mark(source: str, session_id: str) -> Optional[int]:
+    """How many turns of an imported session were brought over, or None if it never was."""
     conn = get_connection()
     try:
         row = conn.execute(
-            """
-            SELECT transcript_updated_at, turns_imported
-            FROM external_import_sessions WHERE source = ? AND session_id = ?
-            """,
+            "SELECT turns_imported FROM external_import_sessions WHERE source = ? AND session_id = ?",
             (source, session_id),
         ).fetchone()
-        if row is None:
-            return None
-        return {
-            "transcriptUpdatedAt": row["transcript_updated_at"],
-            "turnsImported": row["turns_imported"],
-        }
+        return None if row is None else row["turns_imported"]
     finally:
         conn.close()
 
 
-def record_external_import_mark(
-    source: str, session_id: str, transcript_updated_at: int, turns: int
-) -> None:
-    """Record an imported session as brought over through its first *turns* messages."""
+def record_external_import_mark(source: str, session_id: str, turns: int) -> None:
     conn = get_connection()
     try:
         conn.execute(
             """
-            INSERT INTO external_import_sessions
-                (source, session_id, transcript_updated_at, turns_imported)
-            VALUES (?, ?, ?, ?)
+            INSERT INTO external_import_sessions (source, session_id, turns_imported)
+            VALUES (?, ?, ?)
             ON CONFLICT(source, session_id) DO UPDATE SET
-                transcript_updated_at = excluded.transcript_updated_at,
                 turns_imported = MAX(excluded.turns_imported, external_import_sessions.turns_imported)
             """,
-            (source, session_id, int(transcript_updated_at), int(turns)),
+            (source, session_id, int(turns)),
         )
         conn.commit()
     finally:

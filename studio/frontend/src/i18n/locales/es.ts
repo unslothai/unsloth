@@ -2426,7 +2426,6 @@ export const es = {
       importFromSourceDescription:
         "Copia tus conversaciones de {source} a Studio, agrupadas por proyecto.",
       importingAction: "Importando...",
-      importSourceNoChats: "No se encontraron conversaciones de {source}.",
       importedSourceOneChat: "Se importó 1 conversación desde {source}.",
       importedSourceChatCount:
         "Se importaron {count} conversaciones desde {source}.",

@@ -2408,7 +2408,6 @@ export const ru = {
       importFromSourceDescription:
         "Скопируйте свои диалоги из {source} в Studio с группировкой по проектам.",
       importingAction: "Импорт…",
-      importSourceNoChats: "Диалоги {source} не найдены.",
       importedSourceOneChat: "Импортирован 1 диалог из {source}.",
       importedSourceChatCount: "Импортировано диалогов из {source}: {count}.",
       sourceUpToDate: "Диалоги {source} уже актуальны.",
