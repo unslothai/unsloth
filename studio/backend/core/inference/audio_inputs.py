@@ -226,7 +226,8 @@ _SPEECH_ENCODINGS = {
     "opus": ("ogg", "libopus", "audio/ogg", 48000),
     "aac": ("adts", "aac", "audio/aac", None),
     "flac": ("flac", "flac", "audio/flac", None),
-    "pcm": ("s16le", "pcm_s16le", "audio/pcm", None),
+    # OpenAI's pcm is 24 kHz 16-bit mono; its clients assume that rate.
+    "pcm": ("s16le", "pcm_s16le", "audio/pcm", 24000),
 }
 
 
@@ -246,7 +247,7 @@ def speech_formats() -> list[str]:
 
 def encode_wav(wav_bytes: bytes, fmt: str) -> tuple[bytes, str]:
     """A WAV re-encoded as ``fmt`` (a ``speech_formats`` name but wav); ``(bytes, media type)``.
-    ``pcm`` is 16-bit little-endian samples at the WAV's rate, with no header."""
+    ``pcm`` is 24 kHz 16-bit little-endian mono samples, with no header."""
     import io
 
     import av
@@ -257,7 +258,7 @@ def encode_wav(wav_bytes: bytes, fmt: str) -> tuple[bytes, str]:
         audio = src.streams.audio[0]
         rate = fixed_rate or audio.rate
         # A WAV with no channel mask reads as "1 channels", which no encoder takes.
-        layout = "stereo" if audio.channels == 2 else "mono"
+        layout = "stereo" if audio.channels == 2 and fmt != "pcm" else "mono"
         with av.open(out, "w", format = container_format) as dst:
             stream = dst.add_stream(codec, rate = rate, layout = layout)
             stream.codec_context.open()  # sets frame_size, which mp3, aac and opus need
@@ -476,7 +477,12 @@ def sweep(
         for path in directory.iterdir():
             name = path.name
             age = now - _mtime(path)
-            if name.startswith(".") and name.endswith(".tmp") and age > _STALE_TMP_SECONDS:
+            # .wav: a timed transcription's prepared upload, left behind only by a crash.
+            if (
+                name.startswith(".")
+                and name.endswith((".tmp", ".wav"))
+                and age > _STALE_TMP_SECONDS
+            ):
                 path.unlink(missing_ok = True)
             elif name.startswith(("c-", "v-")) and name.endswith(".wav") and age > ttl:
                 path.unlink(missing_ok = True)
