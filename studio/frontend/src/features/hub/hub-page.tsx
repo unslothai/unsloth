@@ -1530,6 +1530,9 @@ export function ModelsPage() {
             mediaPage === "audio"
               ? audioPickSearch(selectedModel.hubRepoId, {
                   ...selection,
+                  // The Hub lists one file per quant label (Yue2's Q4_0 row names the iOS build), which
+                  // the audio runtime may not run; the label lets it resolve its own variant.
+                  ggufFilename: undefined,
                   task: taskForMediaPick(
                     selectedModel.pipelineTag,
                     selectedModel.task,

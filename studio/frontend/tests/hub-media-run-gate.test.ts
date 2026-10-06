@@ -214,6 +214,26 @@ test("the Hub forwards the row's audio type into the Audio handoff", async () =>
   );
   assert.match(
     src,
-    /audioPickSearch\([\s\S]{0,400}audioType: selectedModel\.audioType/,
+    /audioPickSearch\([\s\S]{0,800}audioType: selectedModel\.audioType/,
   );
+});
+
+test("the Hub hands Audio the quant label, not the Hub listing's filename", async () => {
+  const { readFile } = await import("node:fs/promises");
+  const src = await readFile(
+    new URL("../src/features/hub/hub-page.tsx", import.meta.url),
+    "utf8",
+  );
+  assert.match(src, /audioPickSearch\([\s\S]{0,400}ggufFilename: undefined/);
+  const { audioPickSearch } = await import(
+    "../src/features/audio/route-search.ts"
+  );
+  const search = audioPickSearch("audio-cpp/Yue2-3B-GGUF", {
+    ggufVariant: "Q4_0",
+    ggufFilename: undefined,
+    task: "text-to-audio",
+  });
+  assert.equal(search.quant, undefined);
+  assert.equal(search.ggufQuant, "Q4_0");
+  assert.equal(search.workflow, "music");
 });
