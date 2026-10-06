@@ -14631,6 +14631,30 @@ def test_guidance_scale_families_get_no_injected_negative(fake_runtime, tmp_path
     assert backend._state.pipe.last_kwargs["negative_prompt"] is None
 
 
+def test_flux_neither_receives_nor_reports_a_negative_prompt(fake_runtime, tmp_path, monkeypatch):
+    diffusers = sys.modules["diffusers"]
+    monkeypatch.setattr(diffusers, "FluxPipeline", _FakePipeline, raising = False)
+    monkeypatch.setattr(diffusers, "FluxTransformer2DModel", _FakeTransformer, raising = False)
+    _no_cache(monkeypatch)
+    backend = _loaded_backend(tmp_path, family_override = "flux.1")
+    assert backend.status()["supports_negative_prompt"] is False
+    out = backend.generate(
+        prompt = "a sloth", negative_prompt = "blurry", steps = 4, guidance = 3.5
+    )
+    assert backend._state.pipe.last_kwargs["negative_prompt"] is None
+    assert out["negative_prompt"] is None
+
+
+def test_cfg_family_reports_the_negative_prompt_it_applied(fake_runtime, tmp_path):
+    backend = _loaded_backend(tmp_path)
+    assert backend.status()["supports_negative_prompt"] is True
+    out = backend.generate(
+        prompt = "a sloth", negative_prompt = "blurry", steps = 4, guidance = 4.0
+    )
+    assert backend._state.pipe.last_kwargs["negative_prompt"] == "blurry"
+    assert out["negative_prompt"] == "blurry"
+
+
 class _IdeogramScheduleFakePipe(_FakePipe):
     def __call__(
         self,

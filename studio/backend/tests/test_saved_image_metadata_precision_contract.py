@@ -509,6 +509,33 @@ def test_the_persisted_recipe_records_the_engaged_build_not_the_load_request(eng
         )
 
 
+def test_the_recipe_records_only_the_negative_prompt_the_backend_applied(
+    engaged_client, monkeypatch
+):
+    client, backend, saved = engaged_client
+    load = client.post(
+        "/api/inference/images/load",
+        json = {"model_path": "unsloth/Z-Image-Turbo-GGUF", "gguf_filename": "z-image-Q4_K_M.gguf"},
+    )
+    assert load.status_code == 200, load.text
+    body = {"prompt": "a sloth", "negative_prompt": "text, watermark", "guidance": 4.0, "seed": 7}
+
+    gen = client.post("/api/inference/images/generate", json = body)
+    assert gen.status_code == 200, gen.text
+    assert saved[-1]["negative_prompt"] is None
+    assert gen.json()["images"][0].get("negative_prompt") is None
+
+    ignoring = backend.generate
+    monkeypatch.setattr(
+        backend,
+        "generate",
+        lambda **kw: {**ignoring(**kw), "negative_prompt": kw["negative_prompt"]},
+    )
+    gen = client.post("/api/inference/images/generate", json = body)
+    assert gen.status_code == 200, gen.text
+    assert saved[-1]["negative_prompt"] == "text, watermark"
+
+
 def test_the_openai_route_persists_the_same_build(engaged_client):
     """The other supported way to make an image.
 

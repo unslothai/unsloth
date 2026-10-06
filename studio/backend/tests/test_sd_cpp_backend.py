@@ -2121,6 +2121,26 @@ def test_status_native_reports_supports_controlnet_false():
     assert b.status()["supports_controlnet"] is False
 
 
+def test_native_negative_prompt_reaches_sd_cli_only_when_cfg_runs():
+    klein = _loaded_backend("flux.2-klein")
+    assert klein.status()["supports_negative_prompt"] is True
+    kw = dict(
+        prompt = "a fox", negative_prompt = "text", width = 256, height = 256, steps = 4, seed = 1
+    )
+    out = klein.generate(guidance = 4.0, **kw)
+    assert klein._engine.calls[-1][1].negative_prompt == "text"
+    assert out["negative_prompt"] == "text"
+    out = klein.generate(guidance = 1.0, **kw)
+    assert klein._engine.calls[-1][1].negative_prompt is None
+    assert out["negative_prompt"] is None
+
+    flux = _loaded_backend("flux.1")
+    assert flux.status()["supports_negative_prompt"] is False
+    out = flux.generate(guidance = 3.5, **kw)
+    assert flux._engine.calls[-1][1].negative_prompt is None
+    assert out["negative_prompt"] is None
+
+
 def test_a_cached_community_repack_is_reused_instead_of_re_downloading_the_mirror(
     monkeypatch, tmp_path
 ):

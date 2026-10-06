@@ -5101,6 +5101,12 @@ class DiffusionStatusResponse(BaseModel):
         "picker's enabled state). Diffusers only, for families with a ControlNet pipeline; False "
         "for the native engine, GGUF-via-diffusers, and torchao fp8/int8 dense.",
     )
+    supports_negative_prompt: bool = Field(
+        True,
+        description = "Whether the loaded model applies a negative prompt on this engine "
+        "(drives the Negative prompt field). False for FLUX and Ideogram 4 on diffusers, and "
+        "for FLUX.1 / Kontext / FLUX.2-dev on the native engine.",
+    )
     # Additive per-control provenance {control: {value, source, reason}}; null when nothing is loaded. Declared explicitly so pydantic extra='ignore' keeps it.
     resolved: Optional[Dict[str, DiffusionResolvedControl]] = Field(
         None,
