@@ -405,8 +405,7 @@ def test_a_chat_moved_out_of_its_project_stays_where_it_was_put(claude_home):
 
 
 def test_a_chat_deleted_here_is_not_resurrected(claude_home):
-    # A second conversation stays, so this is a targeted delete rather than
-    # an empty Studio, which Import from Claude Code treats as a blank slate.
+    # Another chat remains, so this is a targeted delete.
     write_session(claude_home, "-Users-me-app", "session-two", [user_record("u9", "Keep me", T0)])
     import_claude_chats()
     thread_id = thread_id_for("session-one")
@@ -467,8 +466,7 @@ def test_a_late_tool_result_reaches_an_already_imported_call(claude_home):
 
 
 def test_an_append_on_an_earlier_branch_still_arrives(claude_home):
-    # A DFS flatten would insert the new turn in the middle of the list, so
-    # the ledger slice would miss it and resync an old tail instead.
+    # A DFS flatten would put the new turn mid-list and the ledger slice would miss it.
     branched = [
         user_record("u1", "try this", T0),
         assistant_record("a1", [text_block("first")], T1, parent = "u1"),
@@ -517,9 +515,7 @@ def test_a_deleted_empty_project_is_not_recreated_for_moved_chats(claude_home):
 
 
 def test_an_interrupted_first_import_writes_its_messages_on_retry(claude_home):
-    # upsert_chat_thread can commit before the messages and the ledger mark.
-    # The retry then sees a shell thread with no mark, which used to skip the
-    # body and record the session as already imported.
+    # Shell thread with no mark (interrupted import) must still be filled in.
     import_claude_chats()
     thread_id = thread_id_for("session-one")
     studio_db.sync_chat_messages(thread_id, [], prune_missing = True)
@@ -541,8 +537,6 @@ def test_an_interrupted_first_import_writes_its_messages_on_retry(claude_home):
 
 
 def test_a_chat_no_longer_in_studio_is_imported_whole_again(claude_home):
-    # The ledger outlives the chats it describes -- a cleared history, a rolled
-    # back database -- and must not leave those conversations half imported.
     studio_db.record_external_import_mark("claude", "session-one", 2**62, 99)
     summary = import_claude_chats()
     assert summary.messages == 2

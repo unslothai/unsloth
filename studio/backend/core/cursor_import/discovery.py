@@ -1,20 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Find the agent transcripts Cursor keeps on disk.
-
-Cursor files a session under ``~/.cursor/projects/<slug>/agent-transcripts``,
-where the slug is the absolute path of the folder that was open, with its
-separators turned into dashes. That encoding is one-way: ``/a/b-c`` and
-``/a/b/c`` both dash to ``a-b-c``. Reading it back is therefore a question for
-the filesystem (:func:`resolve_state_slug`), and one it cannot always answer --
-the folder may have been renamed or deleted since. A slug that no longer names a
-folder still lists, because its transcripts are intact and the history is the
-part being imported.
-
-Nothing here reads file contents: discovery answers "which conversations exist",
-and :mod:`core.cursor_import.transcripts` reads them.
-"""
+"""Discover Cursor agent transcripts under ``~/.cursor/projects``."""
 
 from __future__ import annotations
 
@@ -24,25 +11,18 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 
-# Same override the rest of Studio uses for a relocated home, so tests and
-# non-default Cursor installs point both at one place.
 CURSOR_HOME_ENV = "UNSLOTH_CURSOR_HOME"
 
 _STATE_DIR = "projects"
 _TRANSCRIPTS_DIR = "agent-transcripts"
 _SUBAGENTS_DIR = "subagents"
 
-# The window Cursor opens with no folder. It is not a project, but its agent
-# sessions are real work, so it imports under a name that says what it is.
 NO_FOLDER_SLUG = "empty-window"
 _NO_FOLDER_NAME = "No folder open"
 
-# Cursor's own bookkeeping directories, which hold no session worth importing.
 _INTERNAL_SLUG_PREFIXES = (".",)
 
-# Ceiling on the directory probes one slug may cost. A slug of N tokens has
-# 2**(N-1) readings; the filesystem prunes almost all of them immediately, and
-# this stops a pathological name from walking the disk.
+# A slug of N tokens has 2**(N-1) readings; caps directory probes per slug.
 _RESOLVE_BUDGET = 4096
 
 
@@ -65,21 +45,14 @@ def _resolve_roots(first_token: str) -> list[Path]:
     """Where a slug's first token starts from on this platform."""
     if os.name != "nt":
         return [Path("/")]
-    # A Windows slug begins with the drive ("C:" or, on a filesystem that cannot
-    # store a colon, "C"). Anything else is unresolvable rather than guessed at.
+    # Windows slugs start with the drive, "C:" or "C".
     if re.fullmatch(r"[A-Za-z]:?", first_token):
         return [Path(f"{first_token[0]}:{os.sep}")]
     return []
 
 
 def resolve_state_slug(slug: str, *, budget: int = _RESOLVE_BUDGET) -> Optional[Path]:
-    """The folder a state directory name denotes, when the disk says so plainly.
-
-    Every grouping of the dash-separated tokens is a possible path; the ones
-    that exist are the candidates. A single candidate is the answer. None means
-    the folder is gone or the name is genuinely ambiguous, and the caller then
-    names the project from the slug rather than from a guess.
-    """
+    """The unique existing folder a slug denotes; None if gone or ambiguous."""
     tokens = [token for token in slug.split("-") if token]
     if not tokens:
         return None
@@ -92,8 +65,6 @@ def resolve_state_slug(slug: str, *, budget: int = _RESOLVE_BUDGET) -> Optional[
         if index == len(tokens):
             found.append(base)
             return
-        # Longest token group first: a folder whose own name contains a dash is
-        # the likelier reading, so the common case settles in one descent.
         for end in range(len(tokens), index, -1):
             if spent >= budget or len(found) > 1:
                 return
@@ -108,13 +79,7 @@ def resolve_state_slug(slug: str, *, budget: int = _RESOLVE_BUDGET) -> Optional[
 
 
 def find_transcripts(state_dir: Path) -> tuple[list[Path], int]:
-    """Session transcripts, plus how many subagent transcripts were passed over.
-
-    A session is a directory named for its id holding ``<id>.jsonl``; delegated
-    runs live in a ``subagents/`` directory beside it. Those are counted and
-    left alone -- they are turns inside a session that already imports, so
-    replaying them as their own conversations would double the history.
-    """
+    """Session transcripts plus a count of skipped subagent ones (importing those would duplicate history)."""
     root = state_dir / _TRANSCRIPTS_DIR
     if not root.is_dir():
         return [], 0
@@ -123,7 +88,7 @@ def find_transcripts(state_dir: Path) -> tuple[list[Path], int]:
     subagents = 0
     for entry in sorted(root.iterdir()):
         if entry.is_file() and entry.suffix == ".jsonl":
-            # Flat layout: tolerated so an older state directory still imports.
+            # Older flat layout.
             transcripts.append(entry)
             continue
         if not entry.is_dir():
@@ -151,7 +116,6 @@ class CursorWorkspace:
 
 
 def _last_used_ms(transcripts: list[Path], state_dir: Path) -> int:
-    """When this project was last worked in, from its newest transcript."""
     stamps = []
     for path in transcripts:
         try:
@@ -171,10 +135,7 @@ def _workspace_name(slug: str, project_path: Optional[Path]) -> str:
         return _NO_FOLDER_NAME
     if project_path is not None and project_path.name:
         return project_path.name
-    # No folder to read a name from. The last token is not it either: nothing in
-    # the slug says which tokens were one folder's name, and taking one leaves
-    # projects called "fr" or "web". What can be dropped honestly is the home
-    # directory the path started with, leaving the part that identifies it.
+    # The last token is not the folder name (dashes are ambiguous); strip only the home prefix.
     try:
         home_prefix = f"{state_slug(Path.home().resolve())}-"
     except (OSError, RuntimeError):
@@ -185,12 +146,7 @@ def _workspace_name(slug: str, project_path: Optional[Path]) -> str:
 
 
 def read_workspace(state_dir: Path, *, resolve_paths: bool = True) -> Optional[CursorWorkspace]:
-    """Inventory one state directory, or None when it holds no conversation.
-
-    ``resolve_paths`` off skips the filesystem search that turns a slug back
-    into a folder, which is the expensive half; the count is the same, only the
-    names are less pretty. The status probe uses it, the import does not.
-    """
+    """None when it holds no conversation; ``resolve_paths=False`` skips the costly slug search."""
     slug = state_dir.name
     if slug.startswith(_INTERNAL_SLUG_PREFIXES):
         return None

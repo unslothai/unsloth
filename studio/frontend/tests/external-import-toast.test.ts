@@ -1,9 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// The Settings row used to toast success even when the backend listed unread
-// transcripts in `warnings`. The toast has to switch kind and surface those
-// lines, or a partial import reads as a complete one.
+// A partial import (non-empty `warnings`) must not toast as success.
 
 import assert from "node:assert/strict";
 import test from "node:test";

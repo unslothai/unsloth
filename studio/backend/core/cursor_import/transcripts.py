@@ -1,20 +1,10 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Turn a Cursor agent transcript into Studio chat messages.
+"""Convert a Cursor agent transcript into Studio chat messages.
 
-A transcript is JSONL where each line is either a turn --
-``{"role": "user"|"assistant", "message": {"content": [parts]}}`` -- or a session
-event such as ``{"type": "turn_ended"}``. Turn parts are ``text`` or ``tool_use``
-(name plus input); Cursor keeps no tool results and no per-line timestamps in
-this file.
-
-Two consequences shape the mapping. Tool calls are imported without a ``result``,
-which the existing conversation import already does for the same reason (a
-ShareGPT file has no results either), so the UI has a shape it can render. And
-because the file carries no clock, message times are spread from the file's own
-creation time, one millisecond per message, which is what the frontend importer
-does with ``baseTs + idx``: the ordering is real even though the spacing is not.
+Cursor stores no tool results or per-line timestamps, so calls import without
+``result`` and times are file creation + 1 ms per message (as the frontend does).
 """
 
 from __future__ import annotations
@@ -26,9 +16,6 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Optional
 
-# Cursor wraps the real prompt in <user_query> and injects context blocks around
-# it. Importing the injected blocks would train and display Cursor's harness
-# rather than the conversation, so the query is preferred when present.
 _USER_QUERY = re.compile(r"<user_query>(.*?)</user_query>", re.DOTALL)
 _INJECTED_BLOCKS = (
     "image_files",
@@ -38,8 +25,6 @@ _INJECTED_BLOCKS = (
     "environment_details",
     "timestamp",
 )
-# A thinking block Cursor withholds from the transcript. It marks where reasoning
-# happened but carries none of it, so it is dropped rather than shown as content.
 _REDACTED = re.compile(r"^[ \t]*\[REDACTED\][ \t]*$", re.MULTILINE)
 _BLANK_RUN = re.compile(r"\n{3,}")
 
@@ -69,13 +54,11 @@ class CursorTranscript:
 def _strip_injected(text: str) -> str:
     for tag in _INJECTED_BLOCKS:
         text = re.sub(rf"<{tag}>.*?</{tag}>", "", text, flags = re.DOTALL)
-        # Some blocks are emitted self-closing or unterminated at a turn's end.
         text = re.sub(rf"</?{tag}\s*/?>", "", text)
     return text
 
 
 def clean_user_text(text: str) -> str:
-    """The prompt the user actually typed, without Cursor's injected context."""
     queries = _USER_QUERY.findall(text)
     if queries:
         joined = "\n\n".join(query.strip() for query in queries if query.strip())
@@ -85,7 +68,6 @@ def clean_user_text(text: str) -> str:
 
 
 def clean_assistant_text(text: str) -> str:
-    """Assistant prose with withheld thinking markers removed."""
     return _BLANK_RUN.sub("\n\n", _REDACTED.sub("", text)).strip()
 
 
@@ -95,7 +77,7 @@ def _text_of(part: dict) -> str:
 
 
 def _message_id(session_id: str, index: int) -> str:
-    """Stable per (session, position) so re-importing updates instead of piling up."""
+    """Stable so re-importing updates instead of duplicating."""
     digest = hashlib.sha1(f"{session_id}:{index}".encode("utf-8")).hexdigest()
     return f"cursor-{digest[:16]}"
 
@@ -145,7 +127,7 @@ def _user_parts(content: Any) -> list[dict]:
 
 
 def _title_from(text: str) -> str:
-    """First line of the opening prompt, matching the frontend's fallback title."""
+    """Matches the frontend's fallback title."""
     first_line = next((line.strip() for line in text.splitlines() if line.strip()), "")
     if not first_line:
         return _DEFAULT_TITLE
@@ -155,7 +137,6 @@ def _title_from(text: str) -> str:
 
 
 def _file_times_ms(path: Path) -> tuple[int, int]:
-    """``(created, modified)`` in epoch milliseconds, from the transcript file."""
     info = path.stat()
     created = getattr(info, "st_birthtime", None) or info.st_ctime
     modified = max(info.st_mtime, created)
@@ -168,12 +149,6 @@ def read_transcript(
     *,
     session_id: Optional[str] = None,
 ) -> CursorTranscript:
-    """Parse one transcript file into a thread's worth of messages.
-
-    A line that is not JSON, or not a turn, is counted and skipped: session
-    events are expected, and a half-written last line is normal for a session
-    that is still open.
-    """
     resolved_session = session_id or path.stem
     created_ms, updated_ms = _file_times_ms(path)
 
@@ -211,8 +186,6 @@ def read_transcript(
                 )
                 tool_calls += calls
             if not parts:
-                # An empty turn carries nothing to show and would render as a
-                # blank bubble; the frontend importer drops these too.
                 skipped += 1
                 continue
             turns.append((role, parts))

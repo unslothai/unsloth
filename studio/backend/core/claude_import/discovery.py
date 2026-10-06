@@ -1,20 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Find the session transcripts Claude Code keeps on disk.
-
-Claude Code files a session under ``~/.claude/projects/<encoded-path>/<id>.jsonl``,
-where the directory name is the absolute path of the folder it was run in with
-its separators turned into dashes (``/Users/me/app`` becomes
-``-Users-me-app``). As with Cursor, that encoding is one-way -- ``/a/b-c`` and
-``/a/b/c`` collapse to the same name -- so reading it back is a filesystem
-question, and one that cannot always be answered once the folder is gone. A
-project whose folder no longer resolves still imports, named from its encoded
-path, because the history is the part being brought over.
-
-Nothing here reads file contents: discovery answers "which sessions exist", and
-:mod:`core.claude_import.transcripts` reads them.
-"""
+"""Discover Claude Code session transcripts under ``~/.claude/projects``."""
 
 from __future__ import annotations
 
@@ -23,13 +10,10 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 
-# Same override the rest of Studio uses for a relocated home, so tests and
-# non-default Claude installs point both at one place.
 CLAUDE_HOME_ENV = "UNSLOTH_CLAUDE_HOME"
 
 _PROJECTS_DIR = "projects"
 
-# Claude Code's own bookkeeping directories hold no session worth importing.
 _INTERNAL_PREFIXES = (".",)
 
 
@@ -53,14 +37,7 @@ def find_sessions(project_dir: Path) -> list[Path]:
 
 
 def _project_name(encoded: str) -> str:
-    """A readable name for a project whose folder could not be resolved.
-
-    The encoded path's leading separators became leading dashes, and dashes
-    inside a real folder name are indistinguishable from separators, so the
-    exact path is unrecoverable. Dropping the empty leading tokens and rejoining
-    with slashes gives back a path-shaped name (``Users/me/app``) that still
-    identifies the project, which the bare last token would not.
-    """
+    """Path-shaped name (``Users/me/app``); the dash encoding is lossy, so this is not the real path."""
     tokens = [token for token in encoded.split("-") if token]
     return "/".join(tokens) if tokens else encoded
 

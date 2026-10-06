@@ -101,8 +101,7 @@ def test_names_a_project_from_its_slug_when_the_folder_is_gone(cursor_home, monk
 
     names = {w.slug: w.name for w in discovery.list_cursor_workspaces()}
 
-    # The folder is gone, so the home prefix comes off and what identifies the
-    # project stays. Taking the last token alone would call this one "ago".
+    # Last token alone would give "ago".
     assert names["Users-me-deleted-long-ago"] == "deleted-long-ago"
 
 
@@ -220,8 +219,6 @@ def test_a_second_import_updates_rather_than_duplicates(cursor_home):
     assert summary.chats == 1
     # Nothing new arrived, which is what lets the UI say "up to date".
     assert summary.new_chats == 0
-    # Untouched sessions are not rewritten either, so a second import over a
-    # large history is mostly a read.
     assert summary.messages == 0
     assert len(studio_db.list_chat_projects()) == 1
     assert len(studio_db.list_chat_threads()) == 1
@@ -255,8 +252,6 @@ def test_a_chat_continued_here_does_not_drop_back_down_the_sidebar(cursor_home):
 
     import_cursor_chats()
 
-    # Sidebar order comes from updatedAt, so the transcript's mtime must not
-    # overwrite the more recent turn the user added in Studio.
     assert studio_db.get_chat_thread(thread_id)["updatedAt"] == later
 
 
@@ -273,9 +268,7 @@ def test_a_chat_moved_out_of_its_project_stays_where_it_was_put(cursor_home):
 def test_state_only_studio_knows_about_survives_a_re_import(cursor_home):
     import_cursor_chats()
     thread_id = thread_id_for("session-one")
-    # A chat continued here can hold a code-execution container and a fork
-    # origin. The transcript knows about neither, and a full upsert nulls every
-    # column it is not handed.
+    # A full upsert nulls every column it is not handed.
     studio_db.update_chat_thread(
         thread_id,
         {
@@ -320,9 +313,7 @@ def test_a_message_deleted_here_is_not_recreated(cursor_home):
 
 
 def test_an_interrupted_first_import_writes_its_messages_on_retry(cursor_home):
-    # upsert_chat_thread can commit before the messages and the ledger mark.
-    # The retry then sees a shell thread with no mark, which used to skip the
-    # body and record the session as already imported.
+    # Shell thread with no mark (interrupted import) must still be filled in.
     import_cursor_chats()
     thread_id = thread_id_for("session-one")
     studio_db.sync_chat_messages(thread_id, [], prune_missing = True)
@@ -368,8 +359,6 @@ def test_a_pre_ledger_import_does_not_rewrite_existing_messages(cursor_home):
 
 
 def test_a_chat_no_longer_in_studio_is_imported_whole_again(cursor_home):
-    # The ledger outlives the chats it describes -- a cleared history, a rolled
-    # back database -- and must not leave those conversations half imported.
     studio_db.record_external_import_mark("cursor", "session-one", 2**62, 99)
 
     summary = import_cursor_chats()
@@ -412,8 +401,7 @@ def test_a_renamed_project_keeps_the_name_the_user_gave_it(cursor_home):
 
 
 def test_a_chat_deleted_after_an_import_is_not_brought_back(cursor_home):
-    # A second conversation stays, so this is a targeted delete rather than
-    # an empty Studio, which Import from Cursor treats as a blank slate.
+    # Another chat remains, so this is a targeted delete.
     write_transcript(cursor_home, "Users-me-app", "session-two", [turn("user", "Keep me")])
     import_cursor_chats()
     thread_id = thread_id_for("session-one")
@@ -463,8 +451,7 @@ def test_an_appended_turn_hangs_off_the_last_message_the_user_kept(cursor_home):
 
 def test_appended_turns_arrive_even_when_the_file_mtime_does_not_move(cursor_home):
     import_cursor_chats()
-    # A ledger that already saw a newer clock than the file will have, the
-    # situation on a filesystem that preserves mtime across appends.
+    # Filesystem that does not bump mtime on append.
     studio_db.record_external_import_mark("cursor", "session-one", 2**62, 2)
     write_transcript(
         cursor_home,
@@ -516,8 +503,6 @@ def test_a_session_shared_with_the_no_folder_window_lands_in_the_real_project(cu
 
     thread = studio_db.get_chat_thread(thread_id_for("shared-session"))
     assert thread["projectId"] == project_id_for("Users-me-app")
-    # One conversation, imported once, and no empty project left behind for the
-    # window that only held a copy of it.
     assert summary.chats == 2
     assert len(studio_db.list_chat_projects()) == 1
 

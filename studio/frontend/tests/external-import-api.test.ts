@@ -1,9 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// The settings row decides what to say from new_chats, which crosses the wire
-// in snake_case: a missed rename reads as undefined and turns every import into
-// "already up to date".
+// new_chats is snake_case on the wire; a missed rename reads as "already up to date".
 
 import assert from "node:assert/strict";
 import { register } from "node:module";
@@ -11,8 +9,7 @@ import test from "node:test";
 
 import { installLocalStorageFake } from "./helpers/kit.ts";
 
-// The settings API modules reach authFetch through the auth barrel, which
-// re-exports login-page.tsx. See helpers/auth-stub.mjs.
+// See helpers/auth-stub.mjs.
 register("./helpers/settings-api-resolver.mjs", import.meta.url);
 installLocalStorageFake();
 

@@ -792,11 +792,7 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         ) WITHOUT ROWID
         """
     )
-    # How far each imported session (Cursor, Claude Code, ...) has been brought
-    # over. Deleting a message drops the only other record of it, so without
-    # this a re-import cannot tell a turn the user removed from one the tool
-    # has since appended, and would write it back. One table, keyed by source:
-    # Cursor used to have its own, and those rows are folded in below.
+    # Import ledger: without it a re-import cannot tell a turn deleted in Studio from a newly appended one.
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS external_import_sessions (
@@ -2569,12 +2565,7 @@ def _reparent_surviving_forks(conn: sqlite3.Connection, deleted_ids: set[str]) -
 
 
 def lift_chat_thread_tombstone(thread_id: str) -> None:
-    """Forget a deleted thread id so a later import can recreate it.
-
-    Used when Studio has no chats left -- a clear-all, or a wiped database --
-    so Import from Cursor / Claude Code can start from a blank history. A
-    targeted delete while other chats remain is left tombstoned.
-    """
+    """Forget a deleted thread id so a later import can recreate it."""
     conn = get_connection()
     try:
         conn.execute("DELETE FROM chat_thread_tombstones WHERE id = ?", (thread_id,))
@@ -2584,13 +2575,7 @@ def lift_chat_thread_tombstone(thread_id: str) -> None:
 
 
 def lift_all_chat_thread_tombstones() -> None:
-    """Forget every deleted thread id. An empty Studio is a blank slate.
-
-    Lifting one tombstone and then importing that chat would leave the rest
-    skipped: the next transcript would see a nonempty history and treat its
-    own tombstone as a targeted delete. Clearing them all first is what lets
-    Import from Cursor / Claude Code bring the whole history back.
-    """
+    """Lift all at once: one at a time, later chats would see a nonempty history and stay deleted."""
     conn = get_connection()
     try:
         conn.execute("DELETE FROM chat_thread_tombstones")
