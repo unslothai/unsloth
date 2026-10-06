@@ -4314,7 +4314,13 @@ class DiffusionBackend:
                 (
                     lambda companions, transformer_files: self._dense_quant_prefetch_needed(
                         fam,
-                        {**load_kwargs, "base_repo": base, "hf_token": hf_token},
+                        {
+                            **load_kwargs,
+                            "repo_id": repo_id,
+                            "gguf_filename": gguf_filename,
+                            "base_repo": base,
+                            "hf_token": hf_token,
+                        },
                         companion_files = companions,
                         transformer_files = transformer_files,
                     )

@@ -145,3 +145,37 @@ def test_other_families_never_differ_from_base():
     assert not transformer_variant_differs_from_base(
         fam, fam.base_repo, "qwen-image-edit-2509-Q6_K.gguf"
     )
+
+
+@pytest.mark.parametrize(
+    "gguf_filename, stages_transformer",
+    [("qwen-image-edit-2509-Q4_K_M.gguf", False), ("qwen-image-edit-2511-Q4_K_M.gguf", True)],
+)
+def test_download_plan_skips_the_2511_transformer_for_a_variant(
+    monkeypatch, gguf_filename, stages_transformer
+):
+    import core.inference.diffusion as dmod
+
+    monkeypatch.setattr(dmod, "_resolve_base_repo", lambda *a, **k: "Qwen/Qwen-Image-Edit-2511")
+    monkeypatch.setattr(dmod, "_assert_base_repo_accessible", lambda *a, **k: None)
+    monkeypatch.setattr(
+        dmod.DiffusionBackend, "_te_prequant_plan_files", staticmethod(lambda *a, **k: {})
+    )
+    monkeypatch.setattr(
+        dmod.DiffusionBackend, "_dense_quant_prefetch_decision", lambda self, *a, **k: True
+    )
+    asked = []
+
+    def estimate(
+        *a,
+        include_transformer = False,
+        **k,
+    ):
+        asked.append(include_transformer((), ("transformer/x.safetensors",)))
+        return 0, []
+
+    monkeypatch.setattr(dmod.DiffusionBackend, "_estimate_download_bytes", staticmethod(estimate))
+    dmod.DiffusionBackend().download_plan(
+        "unsloth/Qwen-Image-Edit-GGUF", gguf_filename = gguf_filename, transformer_quant = "fp8"
+    )
+    assert asked == [stages_transformer]
