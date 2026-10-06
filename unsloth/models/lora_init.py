@@ -105,8 +105,7 @@ def randomized_svd(
             _orthonormalize_(Y, False, failures, householder)
     with _tf32(False):
         torch.matmul(A.mT, Y, out = Z)  # Z = (Q^T A)^T, N x q
-    # From q = 128, eigh of [[0, R2], [R2^T, 0]] (eigenvalues +-sigma) beats cuSOLVER's fp32 SVD on speed
-    # and accuracy (~60x); below it the SVD has less launch latency.
+    # From q = 128, eigh of [[0, R2], [R2^T, 0]] (eigenvalues +-sigma) beats cuSOLVER's fp32 SVD (~60x accuracy).
     Q2, R2 = torch.linalg.qr(Z)
     try:
         if q < 128:
@@ -123,7 +122,6 @@ def randomized_svd(
             Ur = X[:q].div_(torch.linalg.vector_norm(X[:q], dim = 0).clamp_min_(tiny))
             Vr = X[q:].div_(torch.linalg.vector_norm(X[q:], dim = 0).clamp_min_(tiny))
     except torch.linalg.LinAlgError:
-        # Non-finite R2 from a CholeskyQR breakdown (rank-deficient W).
         if _safe:
             raise
         return randomized_svd(W, rank, n_oversamples, n_iter, final_passes, generator, _safe = True)
@@ -171,7 +169,6 @@ def mica_basis(W, r):
     if L[r - 1] <= 1e-12 * L[-1]:
         U = torch.linalg.svd(A, full_matrices = False)[0]
         return U[:, -r:].float().contiguous()
-    # eigh is ascending; flip so columns match svd's U[:, -r:] order.
     V = V[:, :r].flip(1)
     if wide:
         return V.float().contiguous()
@@ -194,7 +191,6 @@ def _pissa_init(self, adapter_name, init_lora_weights):
     ):
         return _ORIGINAL["pissa_init"](self, adapter_name, init_lora_weights)
     if init_lora_weights == "pissa":
-        # Stands in for PEFT's exact SVD: within 1.0005x of the optimal rank-r error on LLM weights.
         n_iter, n_oversamples = 6, None
     else:
         parts = init_lora_weights.split("_niter_")

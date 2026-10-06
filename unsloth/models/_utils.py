@@ -5673,8 +5673,7 @@ def _has_quantized_linears(model, routed_ok):
 
 
 def validate_init_target_parameters(init_lora_weights, target_parameters):
-    # PEFT's ParamWrapper reads get_base_layer().weight, which fused expert modules lack, and refuses every
-    # LoRA variant (MiCA); both fail mid get_peft_model, after earlier layers were already wrapped.
+    # PEFT's ParamWrapper reads a .weight fused experts lack and refuses MiCA, failing mid get_peft_model.
     if not target_parameters or not isinstance(init_lora_weights, str):
         return
     if init_lora_weights.split("_niter_")[0] in (
