@@ -289,18 +289,22 @@ def _h3_held(monkeypatch, held_gb: float) -> None:
 def test_h3_guard_capacity_is_capped_by_the_cgroup(fake_cgroup, host, monkeypatch):
     from core.inference import video_minimax_h3 as vmh3
 
-    _h3_held(monkeypatch, 40.0)
+    _h3_held(monkeypatch, 30.0)
     fake_cgroup.membership("0::/s.scope\n")
-    # 58 GiB limit, the server already charges 45 GiB (40 GB of it the reusable model).
-    _v2(fake_cgroup.root, "s.scope", limit = 58 * GIB, current = 45 * GIB)
+    # 58 GiB limit, the server already charges 35 GiB (30 GB of it the reusable model).
+    _v2(fake_cgroup.root, "s.scope", limit = 58 * GIB, current = 35 * GIB)
     capacity = vmh3.h3_host_capacity_bytes()
-    assert capacity == 13 * GIB + int(40.0 * 1e9 / 1024) * 1024
+    assert capacity == 23 * GIB + int(30.0 * 1e9 / 1024) * 1024
     assert capacity <= 58 * GIB
-    # The 12 GB tier with the int8 conditioner streamed needs 70 GB: more than 58 GiB can ever give.
-    message = vmh3.h3_host_ram_shortfall(
-        11.0, text_encoder_gb = 27.2, transformer_gb = 20.3, text_encoder_streamed = True
-    )
-    assert message is not None and "70 GB" in message
+    kw = dict(text_encoder_gb = 27.2, transformer_gb = 20.3, text_encoder_streamed = True)
+    # main renders the 12 GB streamed set inside 58 GiB, so the guard admits it there.
+    assert vmh3.h3_host_ram_shortfall(11.0, **kw) is None
+    # Below the measured floor the cgroup is what refuses, not the 1.2 TiB the host reports.
+    floor = vmh3.H3_DIFFUSERS_HOST_RAM_STREAMED_SET_GB
+    small = int((floor - 2.0) * 1e9)
+    _v2(fake_cgroup.root, "s.scope", limit = small, current = 35 * GIB)
+    message = vmh3.h3_host_ram_shortfall(11.0, **kw)
+    assert message is not None and f"{floor:.0f} GB" in message
 
 
 def test_h3_guard_capacity_never_exceeds_the_limit(fake_cgroup, host, monkeypatch):
@@ -361,10 +365,14 @@ def test_api_system_memory_reports_the_cgroup_view(fake_cgroup, host, monkeypatc
     assert memory["total_gb"] == 58.0
     assert memory["available_gb"] == 56.0
     assert memory["percent_used"] == pytest.approx(3.4, abs = 0.05)
-    # The picker admits the H3 Diffusers row only when available RAM reaches the tier: 58 GiB cannot.
     tiers = vmh3.h3_diffusers_fit_tiers()
     if tiers:
-        assert memory["available_gb"] < tiers[0]["system_ram_gb"]
+        # The picker's RAM tier is the guard's floor: 58 GiB admits the H3 row, as the guard admits the render.
+        assert memory["available_gb"] >= tiers[0]["system_ram_gb"]
+        floor_gib = tiers[0]["system_ram_gb"]
+        _v2(fake_cgroup.root, "s.scope", limit = int((floor_gib - 1) * GIB), current = 0)
+        # A limit under the floor withdraws the row, while the host still reports 1.2 TiB free.
+        assert _system_memory(monkeypatch)["available_gb"] < floor_gib
 
 
 def test_api_system_memory_without_a_limit_is_unchanged(fake_cgroup, host, monkeypatch):
