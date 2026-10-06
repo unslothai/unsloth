@@ -110,7 +110,10 @@ import {
 import { parseParamCountB } from "@/lib/model-size";
 import { createLoadingToastIcon, toast } from "@/lib/toast";
 import { notifyPromptQueueRunFailed } from "../utils/prompt-queue-boundary";
-import { providerCompactionPart } from "../utils/provider-compaction";
+import {
+  providerCompactionMatchesTarget,
+  providerCompactionPart,
+} from "../utils/provider-compaction";
 import {
   adoptPreStreamRunReservation,
   findPreStreamRunReservation,
@@ -159,6 +162,7 @@ import {
   providerModelTakesMcpImages,
   supportsProviderPromptCacheTtl,
   supportsProviderPromptCaching,
+  toExternalBackendProviderType,
 } from "../external-providers";
 
 import {
@@ -1302,10 +1306,20 @@ function providerCompactionAssistant(
 function withProviderCompaction(
   message: RunMessage,
   serialized: SerializedMessage[],
+  target: { providerType: string | undefined; modelId: string | undefined },
 ): SerializedMessage[] {
   const custom = (
     message as { metadata?: { custom?: Record<string, unknown> } }
   ).metadata?.custom;
+  if (
+    !providerCompactionMatchesTarget(
+      custom,
+      target.providerType,
+      target.modelId,
+    )
+  ) {
+    return serialized;
+  }
   const compaction = providerCompactionPart(
     custom?.providerCompaction,
   );
@@ -5106,7 +5120,12 @@ export function createOpenAIStreamAdapter(
         .flatMap((message) => {
           const serialized = toOpenAIMessages(message, replayReasoning);
           return isExternalRequest
-            ? withProviderCompaction(message, serialized)
+            ? withProviderCompaction(message, serialized, {
+                providerType: toExternalBackendProviderType(
+                  externalProvider?.providerType,
+                ),
+                modelId: externalSelection?.modelId,
+              })
             : serialized;
         })
         .filter((message): message is NonNullable<typeof message> =>
@@ -5655,6 +5674,8 @@ export function createOpenAIStreamAdapter(
       let contextTruncation: OpenAIChatChunk["context_truncated"];
       let providerCompaction: ProviderCompactionContentPart | undefined;
       let providerCompactionAfterToolCalls: number | undefined;
+      let providerCompactionProviderType: string | undefined;
+      let providerCompactionModelId: string | undefined;
 
       const liveAssistantContent = () =>
         buildAssistantContent(mergeContinuation(cumulativeText));
@@ -5670,6 +5691,8 @@ export function createOpenAIStreamAdapter(
         contextTruncation,
         providerCompaction,
         providerCompactionAfterToolCalls,
+        providerCompactionProviderType,
+        providerCompactionModelId,
         // A legacy (browser-tool / attachment / incognito) run that ends because you closed the tab has no
         // server-side run to resume from, so its last streamed yield is what persists. Mark it an interruption
         // — partial kept + Resume — instead of a silent blank/ambiguous state. Durable runs keep "cancelled":
@@ -7084,6 +7107,11 @@ export function createOpenAIStreamAdapter(
                   const nextCompaction = providerCompactionPart(toolEvent);
                   if (nextCompaction) {
                     providerCompaction = nextCompaction;
+                    providerCompactionProviderType =
+                      toExternalBackendProviderType(
+                        externalProvider?.providerType,
+                      );
+                    providerCompactionModelId = externalSelection?.modelId;
                     // Compaction items arrive before the provider content they introduce. Remember
                     // how much of this stored run preceded it so replay does not put a later marker
                     // ahead of earlier Studio tool rounds that the marker already summarizes.
@@ -8418,6 +8446,8 @@ export function createOpenAIStreamAdapter(
               contextTruncation,
               providerCompaction,
               providerCompactionAfterToolCalls,
+              providerCompactionProviderType,
+              providerCompactionModelId,
               incomplete: finalIncompleteReason
                 ? { reason: finalIncompleteReason }
                 : undefined,
@@ -8589,6 +8619,8 @@ export function createOpenAIStreamAdapter(
                 contextTruncation,
                 providerCompaction,
                 providerCompactionAfterToolCalls,
+                providerCompactionProviderType,
+                providerCompactionModelId,
                 // Unfinished too, so it also offers Continue -- unless the provider already
                 // said why the model stopped.
                 incomplete: {

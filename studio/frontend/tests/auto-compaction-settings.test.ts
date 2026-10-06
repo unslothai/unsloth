@@ -199,14 +199,13 @@ test("a provider compaction is kept on the turn and replayed only to API models"
   assert.match(adapter, /providerCompaction,\n/);
   assert.match(
     adapter,
-    /isExternalRequest\s*\?\s*withProviderCompaction\(message, serialized\)\s*:\s*serialized/,
+    /isExternalRequest\s*\?\s*withProviderCompaction\(message, serialized, \{[\s\S]*providerType: toExternalBackendProviderType\([\s\S]*externalProvider\?\.providerType,[\s\S]*modelId: externalSelection\?\.modelId,/,
   );
 });
 
 test("provider compaction persistence keeps summary and encrypted state together", async () => {
-  const { providerCompactionPart } = await import(
-    "../src/features/chat/utils/provider-compaction.ts"
-  );
+  const { providerCompactionMatchesTarget, providerCompactionPart } =
+    await import("../src/features/chat/utils/provider-compaction.ts");
 
   assert.deepEqual(
     providerCompactionPart({
@@ -219,6 +218,26 @@ test("provider compaction persistence keeps summary and encrypted state together
       content: "Earlier conversation summary",
       encrypted_content: "opaque-compaction",
     },
+  );
+  const origin = {
+    providerCompactionProviderType: "anthropic",
+    providerCompactionModelId: "claude-opus-4-7",
+  };
+  assert.equal(
+    providerCompactionMatchesTarget(origin, "anthropic", "claude-opus-4-7"),
+    true,
+  );
+  assert.equal(
+    providerCompactionMatchesTarget(origin, "openai", "gpt-5.4"),
+    false,
+  );
+  assert.equal(
+    providerCompactionMatchesTarget(origin, "anthropic", "claude-sonnet-5"),
+    false,
+  );
+  assert.equal(
+    providerCompactionMatchesTarget({}, "anthropic", "claude-opus-4-7"),
+    false,
   );
 });
 

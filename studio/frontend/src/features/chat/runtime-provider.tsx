@@ -1601,9 +1601,21 @@ function scheduleGenerationRecovery(
                 };
               }
               if (recoveredProviderCompaction) {
+                const sourceProviderType = update.run.requestPayload.provider_type;
+                const sourceModelId =
+                  update.run.requestPayload.external_model ??
+                  update.run.requestPayload.model;
                 currentMetadata = {
                   ...currentMetadata,
                   ...recoveredProviderCompaction,
+                  providerCompactionProviderType:
+                    typeof sourceProviderType === "string"
+                      ? sourceProviderType
+                      : undefined,
+                  providerCompactionModelId:
+                    typeof sourceModelId === "string"
+                      ? sourceModelId
+                      : undefined,
                 };
               }
               if (chunk.quote_cut === true) quoteCut = true;

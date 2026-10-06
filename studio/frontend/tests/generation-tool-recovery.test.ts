@@ -470,7 +470,12 @@ async function recoverRun(
     assistantMessageId: "msg",
     status: options.stallBefore ? "running" : "completed",
     lastEventSeq: options.stallBefore ?? payloads.length,
-    requestPayload: { model: "test", session_id: "saved-session" },
+    requestPayload: {
+      model: "claude-test",
+      provider_type: "anthropic",
+      external_model: "claude-test",
+      session_id: "saved-session",
+    },
     createdAt: 1,
     startedAt: 1,
     completedAt: 100,
@@ -601,6 +606,8 @@ test("the recovery scheduler persists provider compaction metadata", async () =>
     encrypted_content: "opaque-compaction",
   });
   assert.equal(metadata?.providerCompactionAfterToolCalls, 1);
+  assert.equal(metadata?.providerCompactionProviderType, "anthropic");
+  assert.equal(metadata?.providerCompactionModelId, "claude-test");
 });
 
 test("reopening a run that finished without the tab saves and renders only its end", async () => {

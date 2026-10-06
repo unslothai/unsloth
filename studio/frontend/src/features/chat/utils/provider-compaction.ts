@@ -31,6 +31,20 @@ export function providerCompactionPart(
   return compaction.content || compaction.encrypted_content ? compaction : null;
 }
 
+export function providerCompactionMatchesTarget(
+  metadata: unknown,
+  providerType: string | undefined,
+  modelId: string | undefined,
+): boolean {
+  const custom = record(metadata);
+  return (
+    typeof providerType === "string" &&
+    typeof modelId === "string" &&
+    custom?.providerCompactionProviderType === providerType &&
+    custom.providerCompactionModelId === modelId
+  );
+}
+
 /** Count only persisted calls that the OpenAI replay serializer will retain. */
 export function providerCompactionReplayToolCallCount(
   values: readonly unknown[],
