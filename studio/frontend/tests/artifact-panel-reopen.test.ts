@@ -101,3 +101,10 @@ test("Request edits stays in overlays, staging the prompt for the visible compos
   const stage = read("../src/features/browser/stage-edits.ts");
   assert.match(stage, /stageFixPrompt\(prompt\);\s*if \(!browserPanelAvailable\(\)\) useBrowserStore\.getState\(\)\.closePanel\(\);/);
 });
+
+test("a project's browser overlay stages Request edits in the project composer", () => {
+  const page = read("../src/features/chat/chat-page.tsx");
+  const landing = page.slice(page.indexOf("function ProjectLanding"));
+  assert.match(landing, /useStagedFixPrompt\(\s*useChatArtifactsStore\(\(state\) => state\.pendingFixPrompt\),\s*active,\s*\);/);
+  assert.match(page, /useStagedFixPrompt\(pendingFixPrompt, chatActive\);/);
+});

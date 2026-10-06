@@ -330,6 +330,28 @@ function focusableIn(container: HTMLElement): HTMLElement[] {
   );
 }
 
+/** Puts a staged fix prompt in this view's composer once it is on screen. */
+function useStagedFixPrompt(pendingFixPrompt: string | null, active: boolean): void {
+  const aui = useAui();
+  useEffect(() => {
+    if (!pendingFixPrompt || !active) return;
+    useChatArtifactsStore.getState().clearFixPrompt();
+    const composer = aui.composer();
+    const current = composer.getState().text;
+    composer.setText(
+      current.trim().length > 0
+        ? `${current}\n\n${pendingFixPrompt}`
+        : pendingFixPrompt,
+    );
+    // Focus the composer after the overlay returns focus to its opener.
+    window.setTimeout(() => {
+      document
+        .querySelector<HTMLTextAreaElement>(COMPOSER_INPUT_SELECTOR)
+        ?.focus();
+    }, 0);
+  }, [pendingFixPrompt, aui, active]);
+}
+
 // Compare keeps the base view mounted but hidden; the overlay owns the browser then, so it runs once.
 const BrowserOverlaidContext = createContext(false);
 
@@ -577,23 +599,7 @@ const SingleContent = memo(function SingleContent({
       useBrowserStore.setState({ requestEdits: null, sendAnnotations: null, attachToChat: null });
     };
   }, [chatActive, isMobile, aui]);
-  useEffect(() => {
-    if (!pendingFixPrompt || !chatActive) return;
-    useChatArtifactsStore.getState().clearFixPrompt();
-    const composer = aui.composer();
-    const current = composer.getState().text;
-    composer.setText(
-      current.trim().length > 0
-        ? `${current}\n\n${pendingFixPrompt}`
-        : pendingFixPrompt,
-    );
-    // Focus the composer after the overlay returns focus to its opener.
-    window.setTimeout(() => {
-      document
-        .querySelector<HTMLTextAreaElement>(COMPOSER_INPUT_SELECTOR)
-        ?.focus();
-    }, 0);
-  }, [pendingFixPrompt, aui, chatActive]);
+  useStagedFixPrompt(pendingFixPrompt, chatActive);
   const openResearchRunId = useResearchRunStore((state) => state.openRunId);
   const closeResearchPanel = useResearchRunStore((state) => state.closePanel);
   useEffect(() => {
@@ -1840,6 +1846,11 @@ function ProjectLanding({
   const navigate = useNavigate();
   // Gates body-portaled surfaces so they cannot linger or act while the landing is off-route.
   const active = useChatActive();
+  // The browser shows over a project, so its Request edits lands in this composer.
+  useStagedFixPrompt(
+    useChatArtifactsStore((state) => state.pendingFixPrompt),
+    active,
+  );
   const wasActiveRef = useRef(active);
   const activeThreadId = useChatRuntimeStore((s) => s.activeThreadId);
   // Captured in render, not an effect: the shared provider's ThreadNewChatSwitch is an earlier
