@@ -349,3 +349,51 @@ def test_source_size_snaps_like_the_diffusers_engine_and_fits_an_oversized_sourc
     )
     assert (w, h) == (2048, 1536)
     assert Image.open(io.BytesIO(blobs[0])).size == (2048, 1536)
+
+
+@pytest.mark.parametrize(
+    "size,expected", [((64, 64), (256, 256)), ((200, 100), (512, 256)), ((100, 300), (256, 768))]
+)
+def test_a_source_below_the_minimum_side_is_scaled_up_not_refused(size, expected):
+    # The diffusers engine edits a small source at its own size; the native size check would refuse it, and an
+    # edit-only call has no width / height to change, so the source is scaled up to the minimum side.
+    w, h, blobs = bk._native_condition_images(
+        QWEN_EDIT,
+        _png(size),
+        None,
+        None,
+        None,
+        None,
+        full_fidelity = False,
+        pad_to_output = False,
+        source_sized = True,
+    )
+    assert (w, h) == expected
+    assert Image.open(io.BytesIO(blobs[0])).size == expected
+
+
+def test_an_uncached_projector_fails_an_offline_edit_only_load(monkeypatch, tmp_path):
+    # An edit-only family has no workflow without its projector, so a cache-only load must not succeed without it.
+    from huggingface_hub.errors import LocalEntryNotFoundError
+
+    import utils.hf_xet_fallback as xet
+
+    cached = tmp_path / "Qwen2.5-VL-7B-Instruct-Q4_K_M.gguf"
+    cached.write_bytes(b"")
+
+    def _download(repo_id, filename, token, **kwargs):
+        if filename == "mmproj-F16.gguf":
+            raise LocalEntryNotFoundError("Cannot find the requested files in the disk cache")
+        return str(cached)
+
+    monkeypatch.setattr(xet, "hf_hub_download_with_xet_fallback", _download)
+    repo = "unsloth/Qwen2.5-VL-7B-Instruct-GGUF"
+    assets = [(repo, cached.name, "qwen2vl"), (repo, "mmproj-F16.gguf", "llm_vision")]
+    with pytest.raises(RuntimeError, match = "mmproj-F16.gguf"):
+        SdCppDiffusionBackend(engine = None)._fetch_assets(
+            assets, None, local_files_only = True, vision_optional = False
+        )
+    # The unified family's text-to-image load keeps skipping it.
+    assert SdCppDiffusionBackend(engine = None)._fetch_assets(
+        assets, None, local_files_only = True
+    ) == {"qwen2vl": str(cached)}
