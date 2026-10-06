@@ -41682,31 +41682,59 @@ class LlamaCppBackend:
             trust_env = False,
             verify = _local_ssl_context(),
         ) as client:
-            with client.stream("POST", f"{self.base_url}/completion", json = payload) as resp:
-                if resp.status_code != 200:
-                    raise RuntimeError(f"llama-server returned {resp.status_code}")
-                for line in resp.iter_lines():
-                    # A forced swap cancels live generations; leaving the block closes the stream.
-                    if cancel_event is not None and cancel_event.is_set():
-                        return
-                    if not line or not line.startswith("data:"):
-                        continue
-                    try:
-                        obj = _json.loads(line[len("data:") :].strip())
-                    except _json.JSONDecodeError:
-                        continue
-                    for p in obj.get("completion_probabilities", []) or []:
-                        if "id" in p:
-                            ids.append(p["id"])
-                            since_decode += 1
-                    if since_decode >= DECODE_EVERY:
-                        since_decode = 0
-                        with LlamaCppBackend._codec_decode_lock:
-                            pcm = _decode_emit(final = False)
-                        if pcm:
-                            yield pcm
-                    if obj.get("stop"):
-                        break
+            if cancel_event is not None and cancel_event.is_set():
+                return
+            finished = threading.Event()
+            watcher: Optional[threading.Thread] = None
+            if cancel_event is not None:
+
+                def _close_when_cancelled() -> None:
+                    while not finished.wait(0.05):
+                        if cancel_event.is_set():
+                            # close() can't wake a read blocked in recv() during prefill; a
+                            # socket shutdown does, as on the chat stream.
+                            with contextlib.suppress(Exception):
+                                LlamaCppBackend._shutdown_active_httpx_sockets(client)
+                            with contextlib.suppress(Exception):
+                                client.close()
+                            return
+
+                watcher = threading.Thread(target = _close_when_cancelled, daemon = True)
+                watcher.start()
+            try:
+                with client.stream("POST", f"{self.base_url}/completion", json = payload) as resp:
+                    if resp.status_code != 200:
+                        raise RuntimeError(f"llama-server returned {resp.status_code}")
+                    for line in resp.iter_lines():
+                        # A forced swap cancels live generations; leaving the block closes the stream.
+                        if cancel_event is not None and cancel_event.is_set():
+                            return
+                        if not line or not line.startswith("data:"):
+                            continue
+                        try:
+                            obj = _json.loads(line[len("data:") :].strip())
+                        except _json.JSONDecodeError:
+                            continue
+                        for p in obj.get("completion_probabilities", []) or []:
+                            if "id" in p:
+                                ids.append(p["id"])
+                                since_decode += 1
+                        if since_decode >= DECODE_EVERY:
+                            since_decode = 0
+                            with LlamaCppBackend._codec_decode_lock:
+                                pcm = _decode_emit(final = False)
+                            if pcm:
+                                yield pcm
+                        if obj.get("stop"):
+                            break
+            except Exception:
+                if cancel_event is not None and cancel_event.is_set():
+                    return
+                raise
+            finally:
+                finished.set()
+                if watcher is not None:
+                    watcher.join(timeout = 0.5)
         with LlamaCppBackend._codec_decode_lock:
             pcm = _decode_emit(final = True)
         if pcm:

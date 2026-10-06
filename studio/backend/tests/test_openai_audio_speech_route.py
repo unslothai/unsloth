@@ -1712,3 +1712,57 @@ def test_the_streaming_backend_stops_reading_once_cancelled(monkeypatch):
     out = list(backend.generate_audio_response_stream("hi", "snac", cancel_event = cancel))
     assert out == []
     assert read == [0, 1]
+
+
+def test_a_cancel_wakes_a_stream_read_blocked_in_prefill(monkeypatch):
+    """The cancel check only ran between SSE lines, so a read blocked in prefill sat out its
+    300 s timeout past the forced swap's drain window."""
+    import contextlib
+    import threading
+    import time
+
+    import httpx
+
+    import core.inference.llama_cpp as llama_cpp
+    from core.inference.llama_cpp import LlamaCppBackend
+
+    cancel, shut = threading.Event(), threading.Event()
+
+    class _Response:
+        status_code = 200
+
+        def iter_lines(self):
+            shut.wait(10)  # recv() blocked until the socket is shut down
+            raise httpx.ReadError("socket shut down")
+
+    class _Client:
+        def __init__(self, *a, **k):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def close(self):
+            pass
+
+        @contextlib.contextmanager
+        def stream(self, *a, **k):
+            yield _Response()
+
+    monkeypatch.setattr(llama_cpp.httpx, "Client", _Client)
+    monkeypatch.setattr(
+        LlamaCppBackend, "_shutdown_active_httpx_sockets", staticmethod(lambda client: shut.set())
+    )
+    monkeypatch.setattr(LlamaCppBackend, "_codec_mgr", SimpleNamespace(has_codec = lambda _t: True))
+    monkeypatch.setattr(LlamaCppBackend, "_auth_headers", {}, raising = False)
+    monkeypatch.setattr(LlamaCppBackend, "base_url", "http://127.0.0.1:1", raising = False)
+    backend = LlamaCppBackend.__new__(LlamaCppBackend)
+
+    threading.Timer(0.2, cancel.set).start()
+    start = time.monotonic()
+    out = list(backend.generate_audio_response_stream("hi", "snac", cancel_event = cancel))
+    assert out == []
+    assert time.monotonic() - start < 2
