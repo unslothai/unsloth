@@ -99,7 +99,16 @@ def test_explicit_whisper_model_passes_through(monkeypatch):
     assert calls[0]["model"] == "large-v3"
 
 
-@pytest.mark.parametrize("model", ["qwen3-asr-0.6b", "audio-cpp/audio.cpp-gguf/Qwen3-ASR-0.6B"])
+@pytest.mark.parametrize(
+    "model",
+    [
+        "qwen3-asr-0.6b",
+        "audio-cpp/audio.cpp-gguf/Qwen3-ASR-0.6B",
+        # Fine-tuned for transcription only: it answers in the source language.
+        "large-v3-turbo",
+        "unsloth/whisper-large-v3-turbo",
+    ],
+)
 def test_models_without_a_translate_task_are_refused_before_any_work(monkeypatch, model):
     cli, calls = _make_client(monkeypatch)
     resp = _post(cli, data = {"model": model})

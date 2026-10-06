@@ -343,6 +343,12 @@ def resolve_model_repo(model_id: str) -> str:
     return STT_MODELS.get(resolved, resolved)
 
 
+def can_translate(model: Optional[str]) -> bool:
+    """Whether Whisper's translate task works on this id. The turbo checkpoints were fine-tuned for transcription
+    only and answer in the source language when asked to translate."""
+    return "turbo" not in (model or DEFAULT_STT_MODEL).lower()
+
+
 def _is_whisper_config(config: object) -> bool:
     """True when Hub/local config metadata identifies a Whisper ASR model."""
     if not isinstance(config, dict):

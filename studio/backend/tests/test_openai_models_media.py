@@ -445,15 +445,17 @@ def test_stt_models_list_downloaded_and_loaded(monkeypatch):
 
 
 def test_stt_rows_name_their_workflows(monkeypatch):
-    # Only the curated Whisper checkpoints are known multilingual, so only they offer translate.
+    # Only the curated Whisper checkpoints are known multilingual, so only they offer translate, and turbo
+    # was fine-tuned for transcription only.
     _stt(
         monkeypatch,
-        downloaded = ("small",),
+        downloaded = ("small", "large-v3-turbo"),
         mtmd_downloaded = ("qwen3-asr-0.6b",),
         whisper_loaded = "org/whisper-custom",
     )
     assert {o["id"]: o["audio_workflows"] for o in inf._stt_model_objects(7)} == {
         "unsloth/whisper-small": ["transcribe", "translate"],
+        "unsloth/whisper-large-v3-turbo": ["transcribe"],
         "qwen3-asr-0.6b": ["transcribe"],
         "org/whisper-custom": ["transcribe"],
     }
