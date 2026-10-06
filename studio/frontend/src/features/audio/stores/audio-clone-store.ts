@@ -11,7 +11,7 @@ import {
 const AUDIO_CLONE_STORAGE_KEY = "unsloth_audio_clone_v1";
 
 // Clone sends the reference's first 30 s, so a longer clip's full text would not match it.
-function referenceTranscript(next: AudioSourceSelection | null): string {
+export function referenceTranscript(next: AudioSourceSelection | null): string {
   if (!next || (next.durationS ?? 0) > REFERENCE_MAX_SECONDS) return "";
   return next.transcript || "";
 }

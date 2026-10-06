@@ -35,6 +35,7 @@ import {
   type SeparateGeneration,
 } from "../hooks/use-separate-generation";
 import { useStemSources } from "../hooks/use-stem-sources";
+import { STEM_SEND_TARGETS } from "../send-targets";
 import {
   SEPARATE_MAX_SECONDS,
   separatePresentation,
@@ -293,11 +294,6 @@ async function downloadGroup(group: SeparationGroup) {
   }
 }
 
-const SEND_TARGETS: readonly SendTarget[] = [
-  { id: "transcribe", workflow: "transcribe", label: "Transcribe" },
-  { id: "clone", workflow: "clone", label: "Clone (as reference)" },
-];
-
 /** Keyed by group so each one starts from its own clock. */
 function SelectedSeparation({
   group,
@@ -343,7 +339,7 @@ function SelectedSeparation({
         stems={stems}
         autoFocus={autoFocus}
         active={active}
-        sendTargets={SEND_TARGETS}
+        sendTargets={STEM_SEND_TARGETS}
         onDownloadStem={(clipId) => {
           const clip = group.stems.find((item) => item.id === clipId);
           const src = sources.srcById[clipId];

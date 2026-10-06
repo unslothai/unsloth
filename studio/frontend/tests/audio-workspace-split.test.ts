@@ -142,12 +142,10 @@ test("results show as a clip card with a waveform, never autoplaying", () => {
   assert.doesNotMatch(card, /aria-live/);
 });
 
-test("Send to lists the other Audio pages from the shared workflow list", () => {
+test("Send to lists Audio pages from the shared workflow list", () => {
   const card = readSrc("features/audio/components/clip-card.tsx");
-  assert.match(
-    card,
-    /AUDIO_WORKFLOWS\.filter\(\s*\(tab\) => tab\.id !== current && handlers\[tab\.id\],?\s*\)/,
-  );
+  // Which pages a clip can go to is send-targets' call; the menu keeps page order.
+  assert.match(card, /AUDIO_WORKFLOWS\.filter\(\(tab\) => handlers\[tab\.id\]\)/);
   assert.match(
     host,
     /if \(!transitionWorkflow\("transcribe"\)\) return;[\s\S]{0,200}?useAudioTranscribeStore\.setState\(\{\s*source: \{\s*kind: "clip",\s*id: clip\.id,/,
@@ -185,7 +183,12 @@ test("Send to waits for a running task instead of stopping it and dropping the c
   // transcription was refused and the clip silently dropped.
   assert.match(
     host,
-    /transcribe: \(\) => \{[\s\S]*?if \(busyRef\.current !== null\) \{\s*toast\.info\([^)]*\);\s*return;\s*\}\s*if \(!transitionWorkflow\("transcribe"\)\) return;/,
+    /const runBusy = useCallback\(\(\) => \{\s*if \(busyRef\.current === null\) return false;\s*toast\.info\([^)]*\);\s*return true;/,
+  );
+  // Every clip send goes through it, Transcribe included.
+  assert.match(
+    host,
+    /clipSendTargets\(clip, ttsWorkflow\)\.map\(\(id\) => \[\s*id,\s*\(\) => \{\s*if \(!runBusy\(\)\) handlers\[id\]\?\.\(\);/,
   );
 });
 

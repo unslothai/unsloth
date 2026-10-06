@@ -296,7 +296,7 @@ test("host and page wiring for Separate", () => {
   // A stem sent to Transcribe mid-run would be dropped when the run stops.
   assert.match(
     host,
-    /target\.workflow === "transcribe"\) \{[\s\S]*?busyRef\.current !== null[\s\S]*?return;[\s\S]*?if \(!transitionWorkflow\("transcribe"\)\) return;[\s\S]*?useAudioTranscribeStore\.setState\(\{\s*source: \{\s*kind: "clip",\s*id: clip\.id/,
+    /const handleSendStem = useCallback\([\s\S]*?if \(runBusy\(\)\) return;[\s\S]*?target\.workflow === "transcribe"\) \{\s*if \(!transitionWorkflow\("transcribe"\)\) return;[\s\S]*?useAudioTranscribeStore\.setState\(\{\s*source: \{\s*kind: "clip",\s*id: clip\.id/,
   );
   // A separation that a refresh missed falls back on the Separate page.
   const generation = readSrc("features/audio/hooks/use-separate-generation.ts");

@@ -27,12 +27,13 @@ const SEND_ICON = {
 export function sendClipToMusic(
   clip: AudioGalleryClip,
   action: SendAction,
+  name = clip.prompt || "Generated clip",
 ): void {
   useAudioMusicStore.getState().pushClipToEdit(
     {
       kind: "clip",
       id: clip.id,
-      name: clip.prompt || "Generated clip",
+      name,
       durationS: clip.duration_s,
       transcript: null,
       language: null,
