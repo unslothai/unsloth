@@ -227,7 +227,21 @@ def test_inline_thoughts_are_stripped_and_get_the_empty_channel(content):
 def test_ollama_generation_prompt_has_the_empty_channel():
     ollama = NS["gemma4_empty_thought_ollama"]
     assert '<|turn>model\n<|channel>thought\n<channel|>"""' in ollama
-    assert ollama.replace("<|channel>thought\n<channel|>", "", 1) == NS["gemma4_ollama"]
+
+
+def test_ollama_history_assistant_turns_have_the_empty_channel():
+    # Ollama re-renders .Messages on every request, so earlier assistant turns
+    # must carry the channel too, under Gemma 4's "model" role.
+    ollama = NS["gemma4_empty_thought_ollama"]
+    branch = (
+        '<|turn>{{ if eq .Role "assistant" }}model\n<|channel>thought\n<channel|>'
+        "{{ else }}{{ .Role }}\n{{ end }}{{ .Content }}"
+    )
+    assert branch in ollama
+    restored = ollama.replace(branch, "<|turn>{{ .Role }}\n{{ .Content }}", 1).replace(
+        '<|turn>model\n<|channel>thought\n<channel|>"""', '<|turn>model\n"""', 1
+    )
+    assert restored == NS["gemma4_ollama"]
 
 
 def test_enable_thinking_is_unchanged():
