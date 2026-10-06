@@ -449,6 +449,17 @@ def _mapping(transformer_cls: Any) -> tuple[Any, Any]:
     name = sfm._get_single_file_loadable_mapping_class(transformer_cls)
     entry = sfm.SINGLE_FILE_LOADABLE_CLASSES.get(name or "")
     if not entry:
+        # The single-file branch registers Studio's converters for classes diffusers lacks (Qwen-Image-2.1) just
+        # before its own call; the hosted prequant route reaches here without passing through it.
+        try:
+            from .diffusion import _register_unregistered_single_file_classes
+
+            _register_unregistered_single_file_classes()
+        except Exception:  # noqa: BLE001 -- nothing more to register: refused below
+            pass
+        name = sfm._get_single_file_loadable_mapping_class(transformer_cls)
+        entry = sfm.SINGLE_FILE_LOADABLE_CLASSES.get(name or "")
+    if not entry:
         raise ValueError(f"{transformer_cls.__name__} has no single-file converter")
     return entry["checkpoint_mapping_fn"], sfm
 

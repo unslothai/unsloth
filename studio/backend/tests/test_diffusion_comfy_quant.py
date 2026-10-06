@@ -718,3 +718,22 @@ def test_the_row_map_is_traced_on_narrow_tags_and_falls_back_to_full_width(comfy
     monkeypatch.setattr(cq, "_mapping", lambda cls: (_drops_columns, _sfm()))
     with pytest.raises(ValueError, match = "column count"):
         _load(path, int8_backend = "torchao")
+
+
+def test_the_hosted_route_registers_studios_single_file_converters(monkeypatch):
+    """Qwen-Image-2.1's converter is Studio's own, registered by the single-file branch right before its call. The
+    hosted prequant route never passes through there, so the row map must register it itself (it used to fail with
+    "has no single-file converter" and fall back to quantizing the dense weights)."""
+    diffusers = pytest.importorskip("diffusers")
+    cls = getattr(diffusers, "QwenImage21Transformer2DModel", None)
+    if cls is None:
+        pytest.skip("this diffusers has no QwenImage21Transformer2DModel")
+    from diffusers.loaders import single_file_model as sfm
+
+    monkeypatch.setattr(
+        sfm,
+        "SINGLE_FILE_LOADABLE_CLASSES",
+        {k: v for k, v in sfm.SINGLE_FILE_LOADABLE_CLASSES.items() if k != cls.__name__},
+    )
+    mapping_fn, _ = cq._mapping(cls)
+    assert callable(mapping_fn)
