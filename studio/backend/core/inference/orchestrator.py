@@ -2055,7 +2055,6 @@ class InferenceOrchestrator:
         # the scan is refused here rather than started from the tree being replaced.
         if getattr(config, "audio_cpp", None) is not None:
             from core.inference.audio_cpp_server import UPDATE_IN_PROGRESS
-
             if UPDATE_IN_PROGRESS.is_set():
                 self.loading_models.discard(model_name)
                 raise RuntimeError("The audio runtime is being updated. Try again in a moment.")
