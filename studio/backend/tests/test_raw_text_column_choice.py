@@ -31,3 +31,13 @@ def test_raw_text_keeps_the_first_column_when_no_column_is_longer():
         Dataset.from_dict({"content": ["101", "102"], "source": ["corpus", "corpus"]})
     )
     assert list(result.dataset["text"]) == ["101", "102"]
+
+
+def test_raw_text_uses_the_requested_column_without_the_choice_warning():
+    result = prepare_raw_text_dataset(
+        Dataset.from_dict({"title": ["A much longer title"], "body": ["Short."]}),
+        text_column = "body",
+    )
+    assert list(result.dataset["text"]) == ["Short."]
+    assert result.source_column == "body"
+    assert not any("auto-selecting" in notice.message for notice in result.notices)

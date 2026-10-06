@@ -28,6 +28,7 @@ class RawTextNotice:
 class RawTextPreparationResult:
     dataset: Dataset
     notices: list[RawTextNotice]
+    source_column: str = "text"
 
 
 def resolve_column_names(dataset) -> list[str]:
@@ -144,10 +145,12 @@ def prepare_raw_text_dataset(
     split_name: str | None = None,
     eos_token: str | None = None,
     append_eos: bool = False,
+    text_column: str | None = None,
 ) -> RawTextPreparationResult:
     notices: list[RawTextNotice] = []
     mode_title = mode_label.capitalize()
     split_scope = _split_scope(split_name)
+    renamed_col = "text"
 
     col_names = resolve_column_names(dataset)
     if "text" not in col_names:
@@ -159,8 +162,12 @@ def prepare_raw_text_dataset(
             )
 
         text_cols = _text_columns(dataset, string_cols)
-        renamed_col = _pick_text_column(dataset, text_cols)
-        if len(text_cols) > 1:
+        # An eval split reuses the train split's column: per-split word counts can disagree.
+        if text_column in string_cols:
+            renamed_col = text_column
+        else:
+            renamed_col = _pick_text_column(dataset, text_cols)
+        if len(text_cols) > 1 and renamed_col != text_column:
             notices.append(
                 RawTextNotice(
                     message = (
@@ -210,4 +217,4 @@ def prepare_raw_text_dataset(
 
             dataset = dataset.map(_append_eos)
 
-    return RawTextPreparationResult(dataset = dataset, notices = notices)
+    return RawTextPreparationResult(dataset = dataset, notices = notices, source_column = renamed_col)

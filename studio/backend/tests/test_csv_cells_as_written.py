@@ -163,6 +163,26 @@ def test_cpt_csv_trains_the_body_column_and_keeps_the_warning(trainer, tmp_path)
     assert any("auto-selecting 'body'" in w for w in trainer.training_progress.warnings)
 
 
+def test_cpt_eval_csv_uses_the_column_the_train_csv_chose(trainer, tmp_path):
+    train = tmp_path / "train.csv"
+    train.write_text(
+        "title,body\nA,The first post has a long body.\nB,The second post has a body.\n"
+    )
+    eval_ = tmp_path / "eval.csv"
+    eval_.write_text("title,body\nA much longer title than the body,Short.\n")
+
+    dataset_info, eval_dataset = trainer.load_and_format_dataset(
+        None,
+        local_datasets = [str(train)],
+        local_eval_datasets = [str(eval_)],
+        eval_steps = 10,
+        is_cpt = True,
+    )
+
+    assert list(dataset_info["dataset"]["text"])[0] == "The first post has a long body.</s>"
+    assert list(eval_dataset["text"]) == ["Short.</s>"]
+
+
 def test_cpt_csv_with_an_id_column_trains_the_text_without_a_column_warning(trainer, tmp_path):
     path = tmp_path / "docs.csv"
     path.write_text("id,passage\n1,The first document.\n2,The second document.\n")

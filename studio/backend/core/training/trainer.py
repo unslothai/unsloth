@@ -2761,6 +2761,8 @@ class UnslothTrainer:
             def _raw_mode_label() -> str:
                 return "CPT" if is_cpt else "raw text"
 
+            raw_text_column = {}
+
             def _apply_raw_text_prep(ds: Dataset, split_name: str) -> Dataset:
                 try:
                     result = prepare_raw_text_dataset(
@@ -2769,6 +2771,7 @@ class UnslothTrainer:
                         split_name = split_name,
                         eos_token = getattr(self.tokenizer, "eos_token", None),
                         append_eos = True,
+                        text_column = raw_text_column.get("train"),
                     )
                 except ValueError as exc:
                     error_msg = str(exc)
@@ -2785,6 +2788,7 @@ class UnslothTrainer:
                     else:
                         logger.info(f"{notice.message}\n")
 
+                raw_text_column.setdefault(split_name, result.source_column)
                 return result.dataset
 
             # S3 datasets download to a local temp dir, then use the local-file path below.
