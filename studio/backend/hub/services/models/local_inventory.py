@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import re
 import stat
 from pathlib import Path
 from typing import List, NamedTuple, Optional
@@ -224,16 +225,38 @@ def nested_scan_roots(folder_path: Path) -> list[Path]:
     return roots
 
 
+_SHARD_EVIDENCE_RE = re.compile(r"-\d+-of-\d+\.|\.index\.json$", re.IGNORECASE)
+_PAYLOAD_SUFFIXES = (".safetensors", ".bin", ".gguf", ".pt", ".pth")
+
+
+def _payload_may_be_torn(scan_path: Path) -> bool:
+    """Cheap gate before the full judge: only a numbered shard, an index or an empty weight file can make a folder short."""
+    for _dirpath, _dirnames, filenames in os.walk(scan_path):
+        for name in filenames:
+            if _SHARD_EVIDENCE_RE.search(name):
+                return True
+            if name.lower().endswith(_PAYLOAD_SUFFIXES):
+                try:
+                    if os.stat(os.path.join(_dirpath, name)).st_size <= 0:
+                        return True
+                except OSError:
+                    return True
+    return False
+
+
 def _apply_payload_partial(scan_path: Path, rows: List[LocalModelInfo]) -> List[LocalModelInfo]:
     """Local folders carry no downloader markers, so the payload is the only partial evidence. ``unknown`` is skipped: a diffusers pipeline keeps its weights in component subdirs and would read as short a shard."""
     if not rows or not scan_path.is_dir():
         return rows
     formats = {row.model_format for row in rows}
+    judged = formats - {"unknown"}
+    if not judged or not _payload_may_be_torn(scan_path):
+        return rows
     return _apply_format_aware_partial(
         rows,
-        snapshot_partial = bool(formats - {"gguf", "unknown"})
+        snapshot_partial = bool(judged - {"gguf"})
         and not hf_cache_scan.snapshot_holds_a_complete_payload(scan_path, quants = False),
-        gguf_partial = "gguf" in formats
+        gguf_partial = "gguf" in judged
         and not hf_cache_scan.snapshot_holds_a_complete_payload(scan_path, quants = True),
     )
 

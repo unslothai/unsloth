@@ -7976,6 +7976,20 @@ def test_an_unsharded_local_dir_stays_whole(tmp_path, scan):
     assert rows[0].partial is False
 
 
+@_LOCAL_SCANNERS
+def test_a_whole_folder_with_no_shard_evidence_is_not_judged(tmp_path, scan):
+    # consolidated.safetensors is never opened by from_pretrained; the full judge would call this folder torn.
+    model_dir = tmp_path / "Mistral-Native"
+    model_dir.mkdir()
+    (model_dir / "config.json").write_text('{"model_type": "mistral"}', encoding = "utf-8")
+    (model_dir / "params.json").write_text("{}", encoding = "utf-8")
+    (model_dir / "consolidated.safetensors").write_bytes(b"weights")
+
+    rows = scan(tmp_path)
+
+    assert [r.partial for r in rows] == [False]
+
+
 def test_a_models_dir_pointed_straight_at_a_short_model_is_partial(tmp_path):
     model_dir = _write_sharded_safetensors(tmp_path / "Short", total = 4, present = 1)
 
