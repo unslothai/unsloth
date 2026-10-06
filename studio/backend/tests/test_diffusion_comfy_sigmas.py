@@ -184,7 +184,12 @@ def test_flux1_dev_1024_is_unchanged():
 
 def test_local_path_containing_dev_keeps_the_shipped_schedule():
     fam = detect_family("black-forest-labs/FLUX.1-schnell")
-    for path in ("/home/dev/models/flux", "/home/devon/flux-local", "D:\\dev\\krea\\flux"):
+    for path in (
+        "/home/dev/models/flux",
+        "/home/devon/flux-local",
+        "D:\\dev\\krea\\flux",
+        "C:\\Users\\krea-dev\\models\\flux",
+    ):
         assert (
             comfy_flow_shift_for(fam, None, path, path, "black-forest-labs/FLUX.1-schnell") is None
         ), path
