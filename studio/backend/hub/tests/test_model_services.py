@@ -8007,6 +8007,33 @@ def test_a_cached_verdict_follows_the_files(tmp_path):
     assert scan() == [False]
 
 
+@pytest.mark.parametrize("parts", [1, 3], ids = ["torn", "whole"])
+@pytest.mark.parametrize("under_publisher", [False, True], ids = ["loose", "publisher"])
+def test_a_loose_split_gguf_is_judged_on_its_siblings(tmp_path, parts, under_publisher):
+    folder = tmp_path / "pub" if under_publisher else tmp_path
+    folder.mkdir(exist_ok = True)
+    for i in range(parts):
+        (folder / f"Muse-Q4_K_M-{i + 1:05d}-of-00003.gguf").write_bytes(b"quant")
+
+    for scan in (local_inventory._scan_models_dir, local_inventory._scan_lmstudio_dir):
+        if under_publisher and scan is local_inventory._scan_models_dir:
+            continue
+        rows = scan(tmp_path)
+        assert rows and all(r.partial is (parts < 3) for r in rows)
+
+
+@pytest.mark.parametrize("suffix", [".ckpt", ".h5", ".msgpack", ".npz"])
+def test_an_empty_checkpoint_of_any_recognised_suffix_is_partial(tmp_path, suffix):
+    model_dir = tmp_path / "Legacy"
+    model_dir.mkdir()
+    (model_dir / "config.json").write_text('{"model_type": "qwen3"}', encoding = "utf-8")
+    (model_dir / f"model{suffix}").write_bytes(b"")
+
+    rows = local_inventory._scan_models_dir(tmp_path)
+
+    assert [r.partial for r in rows] == [True]
+
+
 def test_a_models_dir_pointed_straight_at_a_short_model_is_partial(tmp_path):
     model_dir = _write_sharded_safetensors(tmp_path / "Short", total = 4, present = 1)
 

@@ -228,7 +228,7 @@ def nested_scan_roots(folder_path: Path) -> list[Path]:
 
 
 _SHARD_EVIDENCE_RE = re.compile(r"-\d+-of-\d+\.|\.index\.json$", re.IGNORECASE)
-_PAYLOAD_SUFFIXES = (".safetensors", ".bin", ".gguf", ".pt", ".pth")
+_PAYLOAD_SUFFIXES = (".safetensors", ".gguf", *model_common._LOCAL_CHECKPOINT_EXTENSIONS)
 _PAYLOAD_VERDICT_CACHE_MAX = 4096
 _payload_verdicts: "OrderedDict[str, tuple[tuple, bool]]" = OrderedDict()
 _payload_verdicts_lock = threading.Lock()
@@ -280,7 +280,15 @@ def _weights_complete(scan_path: Path, fingerprint: tuple) -> bool:
 
 def _apply_payload_partial(scan_path: Path, rows: List[LocalModelInfo]) -> List[LocalModelInfo]:
     """Local folders carry no downloader markers, so only the payload shows a torn download. ``unknown`` is skipped: a diffusers pipeline's weights live in component subdirs."""
-    if not rows or not scan_path.is_dir():
+    if not rows:
+        return rows
+    if scan_path.is_file():
+        # A loose split quant: llama-server opens its sibling parts, so a missing one fails the load.
+        from utils.models.model_config import colocated_split_shards
+        if colocated_split_shards(scan_path)[1]:
+            return rows
+        return _apply_format_aware_partial(rows, snapshot_partial = False, gguf_partial = True)
+    if not scan_path.is_dir():
         return rows
     judged = {row.model_format for row in rows} - {"unknown"}
     if not judged:
@@ -684,13 +692,12 @@ def _scan_lmstudio_dir(lm_dir: Path, *, entry_limit: int | None = None) -> List[
                         updated_at = child.stat().st_mtime
                     except OSError:
                         updated_at = None
-                    found.extend(
-                        _classify_local_path(
-                            child,
-                            "lmstudio",
-                            updated_at = updated_at,
-                        )
+                    rows = _classify_local_path(
+                        child,
+                        "lmstudio",
+                        updated_at = updated_at,
                     )
+                    found.extend(_apply_payload_partial(child, rows))
                 continue
 
             # A child that is itself a model dir is surfaced directly, not as a publisher; a diffusers pipeline counts, or its component subdirs are walked as models.
@@ -739,14 +746,13 @@ def _scan_lmstudio_dir(lm_dir: Path, *, entry_limit: int | None = None) -> List[
                             updated_at = model_dir.stat().st_mtime
                         except OSError:
                             updated_at = None
-                        found.extend(
-                            _classify_local_path(
-                                model_dir,
-                                "lmstudio",
-                                model_id = f"{child.name}/{model_dir.stem}",
-                                updated_at = updated_at,
-                            )
+                        rows = _classify_local_path(
+                            model_dir,
+                            "lmstudio",
+                            model_id = f"{child.name}/{model_dir.stem}",
+                            updated_at = updated_at,
                         )
+                        found.extend(_apply_payload_partial(model_dir, rows))
                 except OSError:
                     continue
             if exhausted:
