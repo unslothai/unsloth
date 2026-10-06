@@ -769,7 +769,6 @@ _TRUSTED_NON_GGUF_REPOS = frozenset(
         "qwen/qwen-image",
         "qwen/qwen-image-2512",
         "qwen/qwen-image-edit-2511",
-        # Qwen-Image-Layered: the family base and the base_model tag of unsloth/Qwen-Image-Layered-GGUF.
         "qwen/qwen-image-layered",
         # Qwen-Image-2.1: the family's own base_repo, and a family whose base is not listed here is
         # not a family at all. Detection resolves it, the version gate passes once the pinned main
@@ -1426,14 +1425,9 @@ def _dequantize_gguf_outside_linears(
     dtype: Any,
     logger: Any = None,
 ) -> int:
-    """Dequantise every GGUF-packed parameter that does not sit in one of the quantizer's linears.
-
-    diffusers' GGUF quantizer swaps only ``nn.Linear`` layers for its dequantising ``GGUFLinear``; any other module
-    reads ``self.weight`` directly, so a weight stored in a packed type (BF16 counts: numpy has no bf16, so it stays
-    raw bytes too) reaches the forward as bytes. Qwen-Image-Layered is the case in hand: its
-    ``time_text_embed.addition_t_embedding`` is an ``nn.Embedding(2, 3072)`` stored BF16 in every public GGUF, and the
-    first step dies with "size of tensor a (3072) must match ... b (6144)". These are embedding tables and norms, a
-    few KB, so they are kept dense at the compute dtype. A model with none is untouched. Returns the count."""
+    """Dequantise GGUF-packed params outside GGUFLinear (only those dequantise per forward; numpy has no bf16, so BF16
+    stays raw bytes too). Qwen-Image-Layered's BF16 addition_t_embedding otherwise fails the first step with 3072 vs
+    6144. A few KB, kept dense at ``dtype``. Returns the count."""
     try:
         import torch
         from diffusers.quantizers.gguf.utils import (
@@ -9803,8 +9797,6 @@ class DiffusionBackend:
                             kwargs["guidance_schedule"] = None
                 layer_count = int(getattr(fam, "layer_count", 0) or 0)
                 if layer_count:
-                    # Decomposition: the pipeline sizes its working canvas from this area bucket and the input's
-                    # aspect ratio, and returns ``layers`` RGBA images per input.
                     if "layers" in call_params:
                         kwargs["layers"] = layer_count
                     if "resolution" in call_params:
@@ -9863,8 +9855,8 @@ class DiffusionBackend:
                         kwargs["control_mode"] = cn_mode
 
                 # Per-forward chunks: the whole job list in ONE forward by default, bounded by an explicit batch_size
-                # cap; the OOM backoff below halves a failed chunk. A layered pipeline groups its decoded layers per
-                # prompt with a stride that is only right for one input, so it renders one decomposition per forward.
+                # cap; the OOM backoff below halves a failed chunk. Layered: one input per forward (the pipeline's
+                # per-prompt layer stride is only right for one).
                 chunks = [[job] for job in jobs] if layer_count else chunk_jobs(jobs, batch_size)
 
                 try:
@@ -9887,8 +9879,7 @@ class DiffusionBackend:
                         else 0
                     )
                     if layer_count:
-                        # Every decomposition denoises layers + 1 frames beside the encoded input, all at the canvas
-                        # size: the frames past the first are extra tokens on top of the output-sized one.
+                        # layers + 1 extra canvas-sized frames beside the output-sized one.
                         guard_condition_pixels += (layer_count + 1) * guard_width * guard_height
                     # past what the measured placement reserved: stream resident groups again for this call
                     extra_mib = measured_request_extra_mib(
@@ -10224,8 +10215,7 @@ class DiffusionBackend:
                         if cancel.is_set():
                             raise RuntimeError(DIFFUSION_CANCELLED_MSG)
                         if layer_count:
-                            # One list of RGBA layers per input: each layer is its own output image, and every layer
-                            # of a decomposition carries that decomposition's seed.
+                            # One list of layers per input; each layer is an output image with its input's seed.
                             for (_, s), layers_out in zip(chunk, out):
                                 images.extend(layers_out)
                                 per_image_seeds.extend(s for _ in layers_out)

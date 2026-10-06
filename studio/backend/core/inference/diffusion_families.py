@@ -105,11 +105,9 @@ class DiffusionFamily:
     # True when the text-to-image pipeline also follows edit instructions over ``image`` (Qwen-Image-2.1), at the
     # requested size. Never inferred from ``reference``: a reference family is not necessarily trained to edit.
     unified_edit: bool = False
-    # Image decomposition (Qwen-Image-Layered): the number of RGBA layers one call splits the input image into, each
-    # returned as its own output image. 0 = not a layered family.
+    # Qwen-Image-Layered: RGBA layers per input (each an output image); 0 = not layered.
     layer_count: int = 0
-    # The layered pipeline's ``resolution`` area bucket (640 or 1024), which sets the working size from the input
-    # image's aspect ratio. Only read when ``layer_count`` is set.
+    # The pipeline's ``resolution`` area bucket (640 or 1024).
     layer_resolution: int = 640
     # Condition images per call, INCLUDING the init image; overflow is refused, never sliced.
     max_condition_images: int = 4
@@ -366,11 +364,8 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         fp16_incompatible = True,
     ),
     DiffusionFamily(
-        # Qwen image decomposition: QwenImageLayeredPipeline splits one input image into RGBA layers. The same 60-block
-        # MMDiT as qwen-image plus an extra timestep condition and layer-aware RoPE (``use_additional_t_cond`` /
-        # ``use_layer3d_rope`` in the base's transformer config, which a GGUF pick reads through ``config=``), and its
-        # own RGBA VAE. Its own entry, so the name outranks "qwen-image" in detect_family and the layered keyword
-        # guard no longer refuses it.
+        # qwen-image's DiT plus use_additional_t_cond / use_layer3d_rope (read from the base config for a GGUF) and an
+        # RGBA VAE. Listed before qwen-image so the name outranks it.
         name = "qwen-image-layered",
         filter_reduction_configs_archs = _REDUCTION_RACE_ARCHS,
         # ComfyUI's Image to Layers template: ModelSamplingAuraFlow 1, 2 layers, the input scaled to 640.
@@ -382,10 +377,8 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         base_repo = "Qwen/Qwen-Image-Layered",
         cfg_kwarg = "true_cfg_scale",
         aliases = ("qwen_image_layered", "qwenimagelayered"),
-        # The pipeline IS the decomposition pipeline: an input image is required and there is no text-to-image.
         edit = True,
         max_condition_images = 1,
-        # The VAE encodes and decodes 4 channels, so the input keeps its alpha.
         condition_image_mode = "RGBA",
         # same DiT as qwen-image
         fp16_incompatible = True,
