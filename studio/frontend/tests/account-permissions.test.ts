@@ -256,7 +256,7 @@ for (const [name, mode, level, banner, shown] of [
       onRequestSandboxSetup() {},
       sandboxBanner: banner,
     });
-    const [, after] = menu.props.children as [StubElement[], StubElement | null];
-    assert.equal(after !== null && after !== false, shown);
+    const [, after] = menu.props.children as [StubElement[], StubElement | null | false];
+    assert.equal(Boolean(after), shown);
   });
 }
