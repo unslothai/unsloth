@@ -90,6 +90,7 @@ test("voice conversion models list on Convert only; Chatterbox and Vevo2 on Clon
     ["RVC-GGUF", ["convert"]],
     ["SeedVC-MLX-GGUF", ["convert"]],
     ["MeanVC2-GGUF", ["convert"]],
+    ["Tone-Color-VC-GGUF", ["convert"]],
     ["Chatterbox-GGUF", ["clone", "convert"]],
     ["Vevo2-GGUF", ["clone", "edit", "convert"]],
   ] as const) {
@@ -291,7 +292,12 @@ test("the clone-only name hint follows the backend's speaks=False families", asy
 });
 
 test("Hub search rows for conversion families outside the catalog list on Convert", () => {
-  for (const id of ["someone/RVC-v2-GGUF", "x/Seed-VC-GGUF", "x/MeanVC2-GGUF"]) {
+  for (const id of [
+    "someone/RVC-v2-GGUF",
+    "x/Seed-VC-GGUF",
+    "x/MeanVC2-GGUF",
+    "x/Tone-Color-VC-GGUF",
+  ]) {
     const row = { id, task: "text-to-speech" };
     assert.equal(audioRowMatchesWorkflow(row, "convert"), true, id);
     assert.equal(audioRowMatchesWorkflow(row, "clone"), false, id);
@@ -340,6 +346,10 @@ test("every seeded audio GGUF lists on exactly the pages it runs on", () => {
   }
   assert.deepEqual(listed("Fish-Audio-S2-Pro-GGUF"), ["speak", "clone"]);
   assert.deepEqual(listed("MioTTS-1.7B-GGUF"), ["clone"]);
+  assert.deepEqual(listed("OmniVoice-GGUF"), ["speak", "clone"]);
+  assert.deepEqual(listed("DotTTS-Edit-GGUF"), ["speak", "clone", "edit"]);
+  assert.deepEqual(listed("DramaBox-GGUF"), ["speak"]);
+  assert.deepEqual(listed("Tone-Color-VC-GGUF"), ["convert"]);
   assert.deepEqual(listed("FireRedTTS3-Instruct-GGUF"), ["clone"]);
   assert.deepEqual(listed("MOSS-VoiceGenerator-GGUF"), ["speak"]);
   assert.deepEqual(listed("HeartMuLa-GGUF"), ["music"]);

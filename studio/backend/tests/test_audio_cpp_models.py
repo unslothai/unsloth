@@ -524,6 +524,15 @@ _CLONE_TABLE = {
     "firered_audio": ("tts", False, "optional"),
     "vevo2": ("tts", False, "unused"),
     "miotts": ("tts", False, "unused"),
+    "breeze_tts": ("tts", True, "required"),
+    "omnivoice": ("tts", True, "required"),
+    "voxcpm1": ("tts", True, "required"),
+    "dots_tts": ("tts", True, "optional"),
+    "higgs_audio_tts": ("tts", True, "optional"),
+    "moss_tts_local": ("tts", True, "unused"),
+    "moss_tts_nano": ("tts", True, "unused"),
+    "irodori_tts": ("tts", True, "unused"),
+    "pocket_tts": ("tts", True, "unused"),
 }
 
 
@@ -534,6 +543,7 @@ _CONVERT_TABLE = {
     "meanvc2": ("vc", {"speech": "vc"}, "audio", 16000),
     "chatterbox": ("clon", {"speech": "vc"}, "audio", 16000),
     "vevo2": ("tts", {"speech": "vc", "singing": "svc"}, "audio", 24000),
+    "tone_color_vc": ("vc", {"speech": "vc"}, "audio", 22050),
 }
 
 
@@ -613,10 +623,13 @@ def test_edit_families_bind_the_edit_workflow():
     edit_names = ["DotTTS-Edit-GGUF", "dots-tts-edit-q8_0.gguf"]
     dots_edit = acm.family_policy("dots_tts", names = edit_names)
     binding = dots_edit.workflows["edit"]
-    assert list(dots_edit.workflows) == ["speak", "edit"]
+    assert list(dots_edit.workflows) == ["speak", "clone", "edit"]
     assert (binding.server_task, binding.endpoint) == ("tts", "tasks")
     for names in (["DotTTS-MF-GGUF"], ["DotTTS-SOAR-GGUF"], []):
-        assert list(acm.family_policy("dots_tts", names = names).workflows) == ["speak"], names
+        assert list(acm.family_policy("dots_tts", names = names).workflows) == [
+            "speak",
+            "clone",
+        ], names
     vevo2, firered = acm.FAMILIES["vevo2"], acm.FAMILIES["firered_audio"]
     assert list(firered.workflows) == ["clone", "edit"]
     # Vevo2 also converts a voice.

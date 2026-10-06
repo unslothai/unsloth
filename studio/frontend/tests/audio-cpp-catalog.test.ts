@@ -135,7 +135,7 @@ test("recommended ids are unique and name their Hub repo or package folder", () 
 });
 
 test("folders of the shared repo the pickers leave out are never seeded and say why", () => {
-  assert.equal(Object.keys(AUDIO_CPP_UNOFFERED_FOLDERS).length, 19);
+  assert.equal(Object.keys(AUDIO_CPP_UNOFFERED_FOLDERS).length, 18);
   for (const [folder, reason] of Object.entries(AUDIO_CPP_UNOFFERED_FOLDERS)) {
     assert.equal(audioCppModelFor(`${AUDIO_CPP_REPO}/${folder}`), null, folder);
     assert.match(folder, /-GGUF$/);
@@ -188,6 +188,7 @@ test("voice conversion models are seeded with the pages they run on", () => {
     ["RVC-GGUF", ["convert"], "Voice conversion"],
     ["SeedVC-MLX-GGUF", ["convert"], "Voice conversion"],
     ["MeanVC2-GGUF", ["convert"], "Voice conversion"],
+    ["Tone-Color-VC-GGUF", ["convert"], "Voice conversion"],
     ["Chatterbox-GGUF", ["clone", "convert"], "Voice cloning and conversion"],
     ["Vevo2-GGUF", ["clone", "edit", "convert"], "Voice cloning and conversion"],
     ["IndexTTS2-GGUF", ["clone"], "Voice cloning"],
