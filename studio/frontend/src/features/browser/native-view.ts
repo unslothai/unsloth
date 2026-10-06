@@ -12,9 +12,12 @@ import type { InterpolationValues } from "@/i18n";
 import { openExternalLink } from "@/lib/open-link";
 import { toast } from "@/lib/toast";
 import { hostOf } from "./address";
+import { approveDownload } from "./download-approval";
 import { proxiedFavicon } from "./favicon";
 import { useBrowserHistoryStore } from "./history-store";
+import { decideNativeDownload } from "./native-downloads";
 import { callNative as call, nativeClearing, onNativeViewsClosed } from "./native-support";
+import { useBrowserPrefsStore } from "./prefs-store";
 import { type BrowserTab, currentEntry, entryKey, useBrowserStore } from "./store";
 
 export { clearNativeBrowsingData, useNativeBrowser } from "./native-support";
@@ -45,7 +48,8 @@ type NativeEvent =
       done: boolean;
       success: boolean;
       downloadId: string | null;
-    };
+    }
+  | { kind: "downloadPrompt"; tabId: string; url: string; name: string; id: string };
 
 type Bounds = { x: number; y: number; width: number; height: number; viewportWidth: number };
 
@@ -165,6 +169,16 @@ function onNativeEvent(event: NativeEvent): void {
         onClick: () => openExternalLink(event.url),
       });
       break;
+    case "downloadPrompt": {
+      // The file downloads into staging meanwhile; it reaches the download folder only if allowed.
+      const { id, url, name } = event;
+      void approveDownload(url, name).then((allow) => {
+        const ask = useBrowserPrefsStore.getState().askWhereToSave;
+        if (allow) toast(t("browser.native.downloading", { name }));
+        return decideNativeDownload(id, allow, ask);
+      });
+      break;
+    }
     case "download":
       if (!event.done) {
         toast(t("browser.native.downloading", { name: event.name }));

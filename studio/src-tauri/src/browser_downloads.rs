@@ -1,18 +1,24 @@
-//! Paths of files saved from the browser panel, so Download history can reveal them or flag
-//! them deleted. The webview only gets opaque ids.
+//! Browser panel downloads: the folder they go to, the approval a site download waits for, and
+//! where each one landed so Download history can reveal it. The webview only gets opaque ids.
 
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
-use tauri::{AppHandle, Manager, Runtime, State};
+use tauri::{AppHandle, Manager, Runtime, State, Url};
+use tauri_plugin_dialog::DialogExt;
 
 /// Well past MAX_DOWNLOADS in history-store.ts. The history forgets ids it drops, so only orphans
 /// (a tab closed mid-download) build up toward this, not rows the history still shows.
 const MAX_ENTRIES: usize = 1000;
 const ID_BYTES: usize = 16;
 const FILE_NAME: &str = "browser-downloads.json";
+const FOLDER_FILE_NAME: &str = "browser-download-folder.json";
+const STAGING_DIR: &str = "browser-download-staging";
+const ASK_HEADER: &str = "x-unsloth-ask";
 
 #[derive(Clone, Serialize, Deserialize, PartialEq, Debug)]
 struct Entry {
@@ -20,10 +26,30 @@ struct Entry {
     path: PathBuf,
 }
 
-/// Loaded from disk on first use, newest last.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Decision {
+    Allow { ask: bool },
+    Deny,
+}
+
+/// A page download held in staging until the user answers and it finishes.
+struct Pending {
+    tab_id: String,
+    url: Url,
+    name: String,
+    staged: PathBuf,
+    decision: Option<Decision>,
+    finished: Option<bool>,
+}
+
 #[derive(Default)]
 pub struct BrowserDownloads {
+    /// Loaded from disk on first use, newest last.
     entries: Mutex<Option<Vec<Entry>>>,
+    pending: Mutex<HashMap<String, Pending>>,
+    /// The folder chosen in Settings; loaded on first use, None for the system Downloads.
+    folder: Mutex<Option<Option<PathBuf>>>,
+    staging_cleared: AtomicBool,
 }
 
 pub fn new_browser_downloads() -> BrowserDownloads {
@@ -35,6 +61,18 @@ pub fn new_browser_downloads() -> BrowserDownloads {
 pub struct SavedDownload {
     id: String,
     name: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DownloadFolder {
+    path: String,
+    custom: bool,
+}
+
+#[derive(Serialize, Deserialize)]
+struct FolderFile {
+    path: PathBuf,
 }
 
 fn store_path<R: Runtime>(app: &AppHandle<R>) -> Option<PathBuf> {
@@ -69,15 +107,15 @@ fn load(path: Option<&Path>) -> Vec<Entry> {
         .unwrap_or_default()
 }
 
-/// Written to a temp file and renamed, so a crash never leaves half a list.
-fn save(path: Option<&Path>, entries: &[Entry]) {
+/// Written to a temp file and renamed, so a crash never leaves half a file.
+fn save(path: Option<&Path>, value: &impl Serialize) {
     let Some(path) = path else {
         return;
     };
     let Some(parent) = path.parent() else {
         return;
     };
-    let Ok(bytes) = serde_json::to_vec(entries) else {
+    let Ok(bytes) = serde_json::to_vec(value) else {
         return;
     };
     let _ = fs::create_dir_all(parent).and_then(|()| {
@@ -100,7 +138,7 @@ fn with_entries<R: Runtime, T>(
     let entries = guard.get_or_insert_with(|| load(path.as_deref()));
     let (result, changed) = change(entries);
     if changed {
-        save(path.as_deref(), entries);
+        save(path.as_deref(), &*entries);
     }
     result
 }
@@ -129,7 +167,8 @@ fn path_of(entries: &[Entry], id: &str) -> Option<PathBuf> {
         .map(|entry| entry.path.clone())
 }
 
-/// Save a panel file where the user picks, like `save_native_file`, and remember it.
+/// Save a panel file, in the download folder or where the user picks (the `x-unsloth-ask`
+/// header), and remember it.
 #[tauri::command]
 pub async fn browser_download_save(
     webview: tauri::Webview,
@@ -137,8 +176,19 @@ pub async fn browser_download_save(
     request: tauri::ipc::Request<'_>,
 ) -> Result<Option<SavedDownload>, String> {
     crate::native_intents::ensure_main_window(&webview)?;
-    let Some(path) = crate::native_file_dialogs::save_request_with_dialog(&app, &request).await?
-    else {
+    let ask = request
+        .headers()
+        .get(ASK_HEADER)
+        .is_some_and(|value| value.as_bytes() == b"1");
+    let folder = download_folder(&app)?;
+    let saved = if ask {
+        crate::native_file_dialogs::save_request_with_dialog(&app, &request, Some(&folder)).await?
+    } else {
+        Some(crate::native_file_dialogs::save_request_in(
+            &request, &folder,
+        )?)
+    };
+    let Some(path) = saved else {
         return Ok(None);
     };
     let name = path
@@ -204,6 +254,276 @@ pub fn browser_download_forget(
     Ok(())
 }
 
+fn folder_file<R: Runtime>(app: &AppHandle<R>) -> Option<PathBuf> {
+    app.path()
+        .app_local_data_dir()
+        .ok()
+        .map(|dir| dir.join(FOLDER_FILE_NAME))
+}
+
+/// The chosen folder while it still exists.
+fn custom_folder<R: Runtime>(app: &AppHandle<R>) -> Option<PathBuf> {
+    let state = app.state::<BrowserDownloads>();
+    let mut guard = state.folder.lock().unwrap();
+    let folder = guard.get_or_insert_with(|| {
+        folder_file(app)
+            .and_then(|path| fs::read(path).ok())
+            .and_then(|bytes| serde_json::from_slice::<FolderFile>(&bytes).ok())
+            .map(|file| file.path)
+    });
+    folder.clone().filter(|path| path.is_dir())
+}
+
+/// Where downloads go: the folder chosen in Settings, else the system Downloads folder.
+pub(crate) fn download_folder<R: Runtime>(app: &AppHandle<R>) -> Result<PathBuf, String> {
+    if let Some(folder) = custom_folder(app) {
+        return Ok(folder);
+    }
+    let folder = app
+        .path()
+        .download_dir()
+        .ok()
+        .or_else(dirs::home_dir)
+        .ok_or_else(|| "Could not find a Downloads folder.".to_string())?;
+    // XDG can name a Downloads folder that was never created.
+    fs::create_dir_all(&folder)
+        .map_err(|error| format!("Failed to prepare {}: {error}", folder.display()))?;
+    Ok(folder)
+}
+
+fn folder_info<R: Runtime>(app: &AppHandle<R>) -> Result<DownloadFolder, String> {
+    Ok(DownloadFolder {
+        path: crate::native_file_dialogs::display_path(&download_folder(app)?),
+        custom: custom_folder(app).is_some(),
+    })
+}
+
+fn set_folder<R: Runtime>(app: &AppHandle<R>, folder: Option<PathBuf>) {
+    let file = folder_file(app);
+    match &folder {
+        Some(path) => save(file.as_deref(), &FolderFile { path: path.clone() }),
+        None => {
+            if let Some(file) = file {
+                let _ = fs::remove_file(file);
+            }
+        }
+    }
+    *app.state::<BrowserDownloads>().folder.lock().unwrap() = Some(folder);
+}
+
+#[tauri::command]
+pub fn browser_download_folder(
+    webview: tauri::Webview,
+    app: AppHandle,
+) -> Result<DownloadFolder, String> {
+    crate::native_intents::ensure_main_window(&webview)?;
+    folder_info(&app)
+}
+
+/// Pick the download folder in the system's folder dialog; the webview never names a path.
+#[tauri::command]
+pub async fn browser_download_folder_pick(
+    webview: tauri::Webview,
+    app: AppHandle,
+) -> Result<Option<DownloadFolder>, String> {
+    crate::native_intents::ensure_main_window(&webview)?;
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    app.dialog()
+        .file()
+        .set_title("Choose download location")
+        .set_directory(download_folder(&app)?)
+        .pick_folder(move |path| {
+            let _ = tx.send(path);
+        });
+    let Some(picked) = rx.await.map_err(|_| "Dialog closed".to_string())? else {
+        return Ok(None);
+    };
+    let path = picked
+        .into_path()
+        .map_err(|_| "Only local folders are supported.".to_string())?;
+    set_folder(&app, Some(path));
+    folder_info(&app).map(Some)
+}
+
+/// Back to the system Downloads folder.
+#[tauri::command]
+pub fn browser_download_folder_reset(
+    webview: tauri::Webview,
+    app: AppHandle,
+) -> Result<DownloadFolder, String> {
+    crate::native_intents::ensure_main_window(&webview)?;
+    set_folder(&app, None);
+    folder_info(&app)
+}
+
+/// A fresh folder for one page download to land in until it is approved, with its id. The
+/// staging folder is emptied on first use, dropping any a quit left behind.
+pub(crate) fn staging_dir<R: Runtime>(app: &AppHandle<R>) -> Option<(String, PathBuf)> {
+    let root = app.path().app_cache_dir().ok()?.join(STAGING_DIR);
+    let state = app.state::<BrowserDownloads>();
+    if !state.staging_cleared.swap(true, Ordering::SeqCst) {
+        let _ = fs::remove_dir_all(&root);
+    }
+    let id = new_id();
+    let dir = root.join(&id);
+    fs::create_dir_all(&dir).ok()?;
+    Some((id, dir))
+}
+
+/// Hold a staged page download until `browser_download_decide` answers for it.
+pub(crate) fn add_pending<R: Runtime>(
+    app: &AppHandle<R>,
+    id: String,
+    tab_id: String,
+    url: Url,
+    staged: PathBuf,
+) {
+    let name = staged
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let pending = Pending {
+        tab_id,
+        url,
+        name,
+        staged,
+        decision: None,
+        finished: None,
+    };
+    app.state::<BrowserDownloads>()
+        .pending
+        .lock()
+        .unwrap()
+        .insert(id, pending);
+}
+
+/// The staged download at `staged` finished.
+pub(crate) fn finished<R: Runtime>(app: &AppHandle<R>, staged: &Path, success: bool) {
+    let id = {
+        let state = app.state::<BrowserDownloads>();
+        let mut pending = state.pending.lock().unwrap();
+        let Some((id, entry)) = pending.iter_mut().find(|(_, entry)| entry.staged == staged) else {
+            return;
+        };
+        entry.finished = Some(success);
+        id.clone()
+    };
+    settle(app, &id);
+}
+
+/// Allow or refuse a page download; `ask` picks its place in a save dialog.
+#[tauri::command]
+pub fn browser_download_decide(
+    webview: tauri::Webview,
+    app: AppHandle,
+    id: String,
+    allow: bool,
+    ask: bool,
+) -> Result<(), String> {
+    crate::native_intents::ensure_main_window(&webview)?;
+    {
+        let state = app.state::<BrowserDownloads>();
+        let mut pending = state.pending.lock().unwrap();
+        let entry = pending
+            .get_mut(&id)
+            .ok_or_else(|| "Unknown download.".to_string())?;
+        entry.decision = Some(if allow {
+            Decision::Allow { ask }
+        } else {
+            Decision::Deny
+        });
+    }
+    settle(&app, &id);
+    Ok(())
+}
+
+/// Once a download is both answered and finished, move it out of staging or drop it.
+fn settle<R: Runtime>(app: &AppHandle<R>, id: &str) {
+    let entry = {
+        let state = app.state::<BrowserDownloads>();
+        let mut pending = state.pending.lock().unwrap();
+        match pending.get(id) {
+            Some(entry) if entry.decision.is_some() && entry.finished.is_some() => {
+                pending.remove(id)
+            }
+            _ => None,
+        }
+    };
+    let Some(entry) = entry else {
+        return;
+    };
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        let staging = entry.staged.parent().map(Path::to_path_buf);
+        let result = match (entry.decision, entry.finished) {
+            (Some(Decision::Allow { ask }), Some(true)) => deliver(&app, &entry, ask).await,
+            (Some(Decision::Allow { .. }), _) => Err("failed".to_string()),
+            _ => Ok(None),
+        };
+        if let Some(staging) = staging {
+            let _ = fs::remove_dir_all(staging);
+        }
+        match result {
+            Ok(Some((path, download_id))) => crate::browser_webview::emit_download_done(
+                &app,
+                &entry.tab_id,
+                &entry.url,
+                &path,
+                Some(download_id),
+            ),
+            Ok(None) => {}
+            Err(_) => crate::browser_webview::emit_download_failed(
+                &app,
+                &entry.tab_id,
+                &entry.url,
+                &entry.name,
+            ),
+        }
+    });
+}
+
+/// Move an approved download to its place; None if the save dialog was cancelled.
+async fn deliver<R: Runtime>(
+    app: &AppHandle<R>,
+    entry: &Pending,
+    ask: bool,
+) -> Result<Option<(PathBuf, String)>, String> {
+    let folder = download_folder(app)?;
+    let target = if ask {
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        app.dialog()
+            .file()
+            .set_title("Save download")
+            .set_directory(&folder)
+            .set_file_name(&entry.name)
+            .save_file(move |path| {
+                let _ = tx.send(path);
+            });
+        let Some(picked) = rx.await.map_err(|_| "Dialog closed".to_string())? else {
+            return Ok(None);
+        };
+        picked
+            .into_path()
+            .map_err(|_| "Only local paths are supported.".to_string())?
+    } else {
+        crate::native_file_dialogs::unique_destination(&folder, &entry.name)?
+    };
+    move_file(&entry.staged, &target)?;
+    crate::browser_webview::mark_downloaded(&target, &entry.url);
+    let id = record(app, target.clone());
+    Ok(Some((target, id)))
+}
+
+/// Rename, or copy where the target is on another volume.
+fn move_file(from: &Path, to: &Path) -> Result<(), String> {
+    if fs::rename(from, to).is_ok() {
+        return Ok(());
+    }
+    fs::copy(from, to)
+        .map(|_| ())
+        .map_err(|error| format!("Failed to save {}: {error}", to.display()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -230,6 +550,18 @@ mod tests {
             path_of(&entries, &entries[MAX_ENTRIES - 1].id.clone()),
             Some(PathBuf::from(format!("/tmp/{}", MAX_ENTRIES - 1)))
         );
+    }
+
+    #[test]
+    fn a_staged_download_moves_to_its_target() {
+        let dir = tempfile::tempdir().unwrap();
+        let from = dir.path().join("staged.zip");
+        let to = dir.path().join("out").join("file.zip");
+        fs::write(&from, b"zip").unwrap();
+        fs::create_dir_all(to.parent().unwrap()).unwrap();
+        move_file(&from, &to).unwrap();
+        assert_eq!(fs::read(&to).unwrap(), b"zip");
+        assert!(!from.exists());
     }
 
     #[test]

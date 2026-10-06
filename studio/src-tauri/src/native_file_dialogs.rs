@@ -442,16 +442,14 @@ pub async fn save_native_file(
     request: tauri::ipc::Request<'_>,
 ) -> Result<Option<String>, String> {
     crate::native_intents::ensure_main_window(&webview)?;
-    Ok(save_request_with_dialog(&app, &request)
+    Ok(save_request_with_dialog(&app, &request, None)
         .await?
         .map(|path| saved_file_name(&path)))
 }
 
-/// Save the request body where the user picks; None if cancelled. Keep the path off the webview.
-pub(crate) async fn save_request_with_dialog(
-    app: &AppHandle,
-    request: &tauri::ipc::Request<'_>,
-) -> Result<Option<PathBuf>, String> {
+fn request_file<'a>(
+    request: &'a tauri::ipc::Request<'_>,
+) -> Result<(String, Cow<'a, [u8]>), String> {
     let encoded_name = request
         .headers()
         .get(NATIVE_FILE_NAME_HEADER)
@@ -461,17 +459,32 @@ pub(crate) async fn save_request_with_dialog(
     let file_name = decode_default_file_name(encoded_name)?;
     let content = invoke_body_bytes(request.body())
         .ok_or_else(|| "Native export content must be binary.".to_string())?;
+    Ok((file_name, content))
+}
+
+/// Save the request body where the user picks, starting in `directory`; None if cancelled.
+/// Keep the path off the webview.
+pub(crate) async fn save_request_with_dialog(
+    app: &AppHandle,
+    request: &tauri::ipc::Request<'_>,
+    directory: Option<&Path>,
+) -> Result<Option<PathBuf>, String> {
+    let (file_name, content) = request_file(request)?;
     let (filter_name, extensions) = save_filter(&file_name);
     let extension_refs = extensions.iter().map(String::as_str).collect::<Vec<_>>();
     let (tx, rx) = tokio::sync::oneshot::channel();
-    app.dialog()
+    let mut dialog = app
+        .dialog()
         .file()
         .set_title("Save Unsloth export")
         .set_file_name(file_name)
-        .add_filter(filter_name, &extension_refs)
-        .save_file(move |path| {
-            let _ = tx.send(path);
-        });
+        .add_filter(filter_name, &extension_refs);
+    if let Some(directory) = directory {
+        dialog = dialog.set_directory(directory);
+    }
+    dialog.save_file(move |path| {
+        let _ = tx.send(path);
+    });
     let selected_path = rx
         .await
         .map_err(|_| "Save dialog closed unexpectedly.".to_string())?
@@ -561,6 +574,17 @@ pub fn cancel_native_file_save(
     crate::native_intents::ensure_main_window(&webview)?;
     registry.cancel(&token);
     Ok(())
+}
+
+/// Save the request body in `directory` under a free name, without a dialog.
+pub(crate) fn save_request_in(
+    request: &tauri::ipc::Request<'_>,
+    directory: &Path,
+) -> Result<PathBuf, String> {
+    let (file_name, content) = request_file(request)?;
+    let path = unique_destination(directory, &file_name)?;
+    save_selected_file(Some(path), content.as_ref())?
+        .ok_or_else(|| "Failed to save the file.".to_string())
 }
 
 /// Save a backend URL by streaming it to the chosen path.
@@ -711,7 +735,7 @@ fn log_archive_directory() -> Result<PathBuf, String> {
 /// an issue. Best effort by nature -- another process can take the name between the check
 /// and the rename -- but it removes the case that actually happens, which is the same
 /// user pressing the button again.
-fn unique_destination(directory: &Path, file_name: &str) -> Result<PathBuf, String> {
+pub(crate) fn unique_destination(directory: &Path, file_name: &str) -> Result<PathBuf, String> {
     let candidate = directory.join(file_name);
     if !candidate.exists() {
         return Ok(candidate);
@@ -873,7 +897,7 @@ fn strip_verbatim_prefix(text: String) -> String {
 }
 
 /// The absolute, symlink-resolved path to show the user.
-fn display_path(path: &Path) -> String {
+pub(crate) fn display_path(path: &Path) -> String {
     let resolved = fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
     strip_verbatim_prefix(resolved.display().to_string())
 }

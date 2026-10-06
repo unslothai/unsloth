@@ -236,6 +236,13 @@ enum BrowserEvent {
         /// A finished download's handle for Download history (browser_downloads.rs).
         download_id: Option<String>,
     },
+    /// A page download waits in staging for the user to allow it (`browser_download_decide`).
+    DownloadPrompt {
+        tab_id: String,
+        url: String,
+        name: String,
+        id: String,
+    },
 }
 
 #[derive(Deserialize)]
@@ -519,6 +526,53 @@ fn emit<R: Runtime>(app: &AppHandle<R>, event: BrowserEvent) {
     let _ = app.emit_to(MAIN_WEBVIEW, EVENT, event);
 }
 
+/// A page download reached its place; the path itself stays here.
+pub(crate) fn emit_download_done<R: Runtime>(
+    app: &AppHandle<R>,
+    tab_id: &str,
+    url: &Url,
+    path: &Path,
+    download_id: Option<String>,
+) {
+    emit(
+        app,
+        BrowserEvent::Download {
+            tab_id: tab_id.to_string(),
+            url: url.to_string(),
+            name: path
+                .file_name()
+                .map(|name| name.to_string_lossy().into_owned())
+                .unwrap_or_default(),
+            path: None,
+            size: std::fs::metadata(path).ok().map(|m| m.len()),
+            done: true,
+            success: true,
+            download_id,
+        },
+    );
+}
+
+pub(crate) fn emit_download_failed<R: Runtime>(
+    app: &AppHandle<R>,
+    tab_id: &str,
+    url: &Url,
+    name: &str,
+) {
+    emit(
+        app,
+        BrowserEvent::Download {
+            tab_id: tab_id.to_string(),
+            url: url.to_string(),
+            name: name.to_string(),
+            path: None,
+            size: None,
+            done: true,
+            success: false,
+            download_id: None,
+        },
+    );
+}
+
 pub(crate) fn view<R: Runtime>(app: &AppHandle<R>, tab_id: &str) -> Result<Webview<R>, String> {
     let label = label_for(tab_id)?;
     app.get_webview(&label).ok_or_else(|| "no such tab".into())
@@ -666,7 +720,7 @@ fn download_destination(dir: &Path, suggested: &Path, reserved: &HashSet<&Path>)
 }
 
 /// Mark a download as from the internet, so Gatekeeper or SmartScreen checks it.
-fn mark_downloaded(path: &Path, url: &Url) {
+pub(crate) fn mark_downloaded(path: &Path, url: &Url) {
     #[cfg(target_os = "macos")]
     {
         use std::ffi::CString;
@@ -864,7 +918,6 @@ fn create_view<R: Runtime>(
     let window_app = app.clone();
     let window_tab = tab.clone();
     let download_tab = tab.clone();
-    let downloads_dir = app.path().download_dir().ok();
 
     #[cfg(target_os = "macos")]
     let (initial, deferred) = (Url::parse("about:blank").unwrap(), Some(url));
@@ -963,52 +1016,35 @@ fn create_view<R: Runtime>(
             let app = webview.app_handle();
             match event {
                 DownloadEvent::Requested { url, destination } => {
-                    let Some(dir) = downloads_dir.as_deref() else {
+                    // Lands in staging until the user allows it (browser_downloads.rs).
+                    let Some((id, staging)) = crate::browser_downloads::staging_dir(app) else {
                         return false;
                     };
-                    // Picked and recorded under one lock, so two downloads can't take one name.
                     let path = {
                         let state = app.state::<BrowserViews>();
                         let mut inner = state.inner.lock().unwrap();
                         // macOS reports no path when a download finishes, so two of one URL at
-                        // once couldn't be told apart (and quarantined right): one at a time.
-                        if cfg!(target_os = "macos") && inner.downloads.contains_key(url.as_str()) {
-                            return false;
-                        }
+                        // once couldn't be told apart: one at a time.
+                        let busy =
+                            cfg!(target_os = "macos") && inner.downloads.contains_key(url.as_str());
                         let in_flight = inner.downloads.values().map(Vec::len).sum();
                         let starts = inner
                             .download_starts
                             .entry(download_tab.clone())
                             .or_default();
-                        if !download_allowed(in_flight, starts, Instant::now()) {
+                        if busy || !download_allowed(in_flight, starts, Instant::now()) {
                             drop(inner);
-                            emit(
-                                app,
-                                BrowserEvent::Download {
-                                    tab_id: download_tab.clone(),
-                                    url: url.to_string(),
-                                    name: destination
-                                        .file_name()
-                                        .map(|name| name.to_string_lossy().into_owned())
-                                        .unwrap_or_default(),
-                                    path: None,
-                                    size: None,
-                                    done: true,
-                                    success: false,
-                                    download_id: None,
-                                },
-                            );
+                            let _ = std::fs::remove_dir_all(&staging);
+                            if !busy {
+                                let name = destination
+                                    .file_name()
+                                    .map(|name| name.to_string_lossy().into_owned())
+                                    .unwrap_or_default();
+                                emit_download_failed(app, &download_tab, &url, &name);
+                            }
                             return false;
                         }
-                        let path = {
-                            let reserved: HashSet<&Path> = inner
-                                .downloads
-                                .values()
-                                .flatten()
-                                .map(PathBuf::as_path)
-                                .collect();
-                            download_destination(dir, destination, &reserved)
-                        };
+                        let path = download_destination(&staging, destination, &HashSet::new());
                         inner
                             .downloads
                             .entry(url.to_string())
@@ -1020,18 +1056,21 @@ fn create_view<R: Runtime>(
                         .file_name()
                         .map(|name| name.to_string_lossy().into_owned())
                         .unwrap_or_default();
-                    *destination = path;
+                    *destination = path.clone();
+                    crate::browser_downloads::add_pending(
+                        app,
+                        id.clone(),
+                        download_tab.clone(),
+                        url.clone(),
+                        path,
+                    );
                     emit(
                         app,
-                        BrowserEvent::Download {
+                        BrowserEvent::DownloadPrompt {
                             tab_id: download_tab.clone(),
                             url: url.to_string(),
                             name,
-                            path: None,
-                            size: None,
-                            done: false,
-                            success: false,
-                            download_id: None,
+                            id,
                         },
                     );
                     true
@@ -1051,34 +1090,9 @@ fn create_view<R: Runtime>(
                         }
                         recorded
                     };
-                    let path = path.or(recorded);
-                    let download_id = match (success, path.as_deref()) {
-                        (true, Some(saved)) => {
-                            mark_downloaded(saved, &url);
-                            Some(crate::browser_downloads::record(app, saved.to_path_buf()))
-                        }
-                        _ => None,
-                    };
-                    emit(
-                        app,
-                        BrowserEvent::Download {
-                            tab_id: download_tab.clone(),
-                            url: url.to_string(),
-                            name: path
-                                .as_deref()
-                                .and_then(|p| p.file_name())
-                                .map(|name| name.to_string_lossy().into_owned())
-                                .unwrap_or_default(),
-                            size: path
-                                .as_deref()
-                                .and_then(|p| std::fs::metadata(p).ok())
-                                .map(|m| m.len()),
-                            path: path.map(|p| p.to_string_lossy().into_owned()),
-                            done: true,
-                            success,
-                            download_id,
-                        },
-                    );
+                    if let Some(staged) = path.or(recorded) {
+                        crate::browser_downloads::finished(app, &staged, success);
+                    }
                     true
                 }
                 _ => false,

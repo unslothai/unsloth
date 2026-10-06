@@ -11,6 +11,7 @@ import { SidebarInset, SidebarProvider } from "@/components/ui/sidebar";
 import { fetchDeviceType, usePlatformStore } from "@/config/env";
 import { videoNavHint } from "@/config/hardware-verdict";
 import { ApiMonitorOverlay } from "@/features/api-monitor/api-monitor-overlay";
+import { DownloadApprovalDialog } from "@/features/browser";
 import {
   AUTH_SESSION_CLEARED_EVENT,
   AUTH_SESSION_STORED_EVENT,
@@ -682,6 +683,7 @@ function RootLayout() {
       {!isAuthFlowRoute && <ApiMonitorOverlay />}
       <HfTokenWarningDialog />
       <RemoteCodeConsentDialog />
+      <DownloadApprovalDialog />
       <TransformersUpgradeDialog />
       <LlmCompressorConsentDialog />
       {/* At the root, not under /chat: a swap can start from the Hub too. */}

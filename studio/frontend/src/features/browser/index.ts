@@ -8,6 +8,13 @@ import { type FileViewMode, type OpenFileInput, useBrowserStore } from "./store"
 export { ClearBrowsingDataDialog } from "./clear-data-dialog";
 export { BrowserToggleButton } from "./browser-toggle";
 export { canAskWhereToSave, saveLinkAs } from "./downloads";
+export { DownloadApprovalDialog } from "./download-approval";
+export {
+  type DownloadFolder,
+  nativeDownloadFolder,
+  pickNativeDownloadFolder,
+  resetNativeDownloadFolder,
+} from "./native-downloads";
 export { BookmarksFileError, exportBookmarksFile, importBookmarksFile } from "./bookmarks-io";
 export { MAX_BOOKMARKS } from "./bookmarks-store";
 export { canScreenshot } from "./screenshot-support";
@@ -20,6 +27,7 @@ export {
   type AnnotationScreenshots,
   type BookmarksToolbarMode,
   DEFAULT_ZOOM_STEPS,
+  type DownloadSiteDecision,
   HISTORY_RETENTION_DAYS,
   useBrowserPrefsStore,
 } from "./prefs-store";

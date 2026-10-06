@@ -13,6 +13,8 @@ import { Switch } from "@/components/ui/switch";
 import {
   type AnnotationScreenshots,
   type BookmarksToolbarMode,
+  type DownloadFolder,
+  type DownloadSiteDecision,
   ClearBrowsingDataDialog,
   DEFAULT_ZOOM_STEPS,
   HISTORY_RETENTION_DAYS,
@@ -24,6 +26,9 @@ import {
   canScreenshot,
   exportBookmarksFile,
   importBookmarksFile,
+  nativeDownloadFolder,
+  pickNativeDownloadFolder,
+  resetNativeDownloadFolder,
   useBrowserPrefsStore,
   useBrowserStore,
   useNativeBrowser,
@@ -33,6 +38,8 @@ import { type TranslationKey, useLocale, useT } from "@/i18n";
 import { isTauri } from "@/lib/api-base";
 import { isDownloadCancelled } from "@/lib/native-files";
 import { toast } from "@/lib/toast";
+import { Cancel01Icon } from "@hugeicons/core-free-icons";
+import { HugeiconsIcon } from "@hugeicons/react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { SettingsRow } from "../components/settings-row";
 import { SettingsSection } from "../components/settings-section";
@@ -45,6 +52,95 @@ const RETENTION_LABELS: Record<number, TranslationKey> = {
   7: "browser.retention.days7",
   1: "browser.retention.days1",
 };
+
+/** Desktop app: where downloads go, picked in the system's folder dialog. */
+function DownloadLocationRow() {
+  const t = useT();
+  const [folder, setFolder] = useState<DownloadFolder | null>(null);
+  useEffect(() => {
+    let live = true;
+    nativeDownloadFolder().then(
+      (current) => live && setFolder(current),
+      () => undefined,
+    );
+    return () => {
+      live = false;
+    };
+  }, []);
+  const failed = (error: unknown) => toast.error(error instanceof Error ? error.message : String(error));
+  const change = () =>
+    pickNativeDownloadFolder().then((picked) => picked && setFolder(picked), failed);
+  const reset = () => resetNativeDownloadFolder().then(setFolder, failed);
+  return (
+    <SettingsRow
+      label={t("browser.downloadLocationSetting")}
+      description={
+        <span className="break-all">
+          {folder ? (folder.custom ? folder.path : t("browser.downloadLocationDefault")) : null}
+        </span>
+      }
+    >
+      <div className="flex gap-2">
+        {folder?.custom ? (
+          <Button variant="ghost" size="sm" onClick={reset}>
+            {t("browser.downloadLocationReset")}
+          </Button>
+        ) : null}
+        <Button variant="outline" size="sm" onClick={change}>
+          {t("browser.downloadLocationChange")}
+        </Button>
+      </div>
+    </SettingsRow>
+  );
+}
+
+/** Sites with a remembered download answer, each changeable or removable. */
+function DownloadSiteRows() {
+  const t = useT();
+  const sites = useBrowserPrefsStore((state) => state.downloadSites);
+  const { setDownloadSite } = useBrowserPrefsStore.getState();
+  const hosts = Object.keys(sites).sort();
+  return (
+    <SettingsRow
+      label={t("browser.downloadSitesSetting")}
+      description={t("browser.downloadSitesSettingDescription")}
+      below={
+        hosts.length > 0 ? (
+          <ul className="flex w-full flex-col divide-y divide-border/60 rounded-lg border border-border/80">
+            {hosts.map((host) => (
+              <li key={host} className="flex items-center gap-3 py-1.5 pl-3 pr-1.5">
+                <span className="min-w-0 flex-1 truncate text-sm text-foreground">{host}</span>
+                <Select
+                  value={sites[host]}
+                  onValueChange={(value) => setDownloadSite(host, value as DownloadSiteDecision)}
+                >
+                  <SelectTrigger className="w-40" aria-label={t("browser.downloadSitesFor", { host })}>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="allow">{t("browser.downloadSiteAllow")}</SelectItem>
+                    <SelectItem value="block">{t("browser.downloadSiteBlock")}</SelectItem>
+                  </SelectContent>
+                </Select>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="size-8"
+                  aria-label={t("browser.downloadSitesRemove", { host })}
+                  onClick={() => setDownloadSite(host, null)}
+                >
+                  <HugeiconsIcon icon={Cancel01Icon} strokeWidth={1.75} className="size-4" />
+                </Button>
+              </li>
+            ))}
+          </ul>
+        ) : (
+          <span className="w-full text-xs text-muted-foreground">{t("browser.downloadSitesNone")}</span>
+        )
+      }
+    />
+  );
+}
 
 export function BrowserTab() {
   const t = useT();
@@ -65,6 +161,7 @@ export function BrowserTab() {
   const historyRetentionDays = useBrowserPrefsStore((state) => state.historyRetentionDays);
   const saveDownloadHistory = useBrowserPrefsStore((state) => state.saveDownloadHistory);
   const askWhereToSave = useBrowserPrefsStore((state) => state.askWhereToSave);
+  const askBeforeDownloading = useBrowserPrefsStore((state) => state.askBeforeDownloading);
   const annotationScreenshots = useBrowserPrefsStore((state) => state.annotationScreenshots);
   const {
     setOpenLinksInBrowser,
@@ -82,6 +179,7 @@ export function BrowserTab() {
     setHistoryRetentionDays,
     setSaveDownloadHistory,
     setAskWhereToSave,
+    setAskBeforeDownloading,
     setAnnotationScreenshots,
   } = useBrowserPrefsStore.getState();
   const [clearOpen, setClearOpen] = useState(false);
@@ -353,22 +451,31 @@ export function BrowserTab() {
       </SettingsSection>
 
       <SettingsSection title={t("browser.downloadsTitle")}>
-        {/* Web only: the desktop app asks for saved files, but page downloads go to Downloads. */}
-        {isTauri ? null : (
-          <SettingsRow
-            label={t("browser.askWhereToSaveSetting")}
-            description={t(
-              canAsk ? "browser.askWhereToSaveSettingDescription" : "browser.askWhereToSaveUnsupported",
-            )}
-          >
-            <Switch
-              aria-label={t("browser.askWhereToSaveSetting")}
-              checked={canAsk && askWhereToSave}
-              disabled={!canAsk}
-              onCheckedChange={setAskWhereToSave}
-            />
-          </SettingsRow>
-        )}
+        {isTauri ? <DownloadLocationRow /> : null}
+        <SettingsRow
+          label={t("browser.askWhereToSaveSetting")}
+          description={t(
+            canAsk ? "browser.askWhereToSaveSettingDescription" : "browser.askWhereToSaveUnsupported",
+          )}
+        >
+          <Switch
+            aria-label={t("browser.askWhereToSaveSetting")}
+            checked={canAsk && askWhereToSave}
+            disabled={!canAsk}
+            onCheckedChange={setAskWhereToSave}
+          />
+        </SettingsRow>
+        <SettingsRow
+          label={t("browser.askBeforeDownloadingSetting")}
+          description={t("browser.askBeforeDownloadingSettingDescription")}
+        >
+          <Switch
+            aria-label={t("browser.askBeforeDownloadingSetting")}
+            checked={askBeforeDownloading}
+            onCheckedChange={setAskBeforeDownloading}
+          />
+        </SettingsRow>
+        <DownloadSiteRows />
         <SettingsRow
           label={t("browser.saveDownloadHistorySetting")}
           description={t("browser.saveDownloadHistorySettingDescription")}

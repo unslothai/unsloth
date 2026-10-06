@@ -271,3 +271,14 @@ test("a page the reader set to 100% keeps it after a fetched file", async () => 
   assert.equal(zoom(), 1);
   useBrowserPrefsStore.getState().setDefaultZoom(1);
 });
+
+test("a site's download answer is remembered, changed and forgotten", () => {
+  const prefs = useBrowserPrefsStore.getState();
+  prefs.setDownloadSite("example.com", "allow");
+  prefs.setDownloadSite("example.org", "block");
+  assert.deepEqual(useBrowserPrefsStore.getState().downloadSites, { "example.com": "allow", "example.org": "block" });
+  prefs.setDownloadSite("example.com", "block");
+  prefs.setDownloadSite("example.org", null);
+  assert.deepEqual(useBrowserPrefsStore.getState().downloadSites, { "example.com": "block" });
+  assert.equal(useBrowserPrefsStore.getState().askBeforeDownloading, true);
+});
