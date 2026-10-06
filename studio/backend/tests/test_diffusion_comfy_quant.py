@@ -682,3 +682,39 @@ def test_resident_size_is_priced_from_the_header_not_the_name(tmp_path, comfy_fi
         fp8_path, fp8_scan, keep_int8 = False, keep_fp8 = False
     )
     assert cq.comfy_resident_mib(str(tmp_path / "missing.safetensors"), keep_int8 = True, keep_fp8 = True) is None
+
+
+def test_the_row_map_is_traced_on_narrow_tags_and_falls_back_to_full_width(comfy_file, monkeypatch):
+    """The fast pass hands the converter 4-column tags; a converter that needs the real width (here: one that
+    reshapes by it) gets a second, full-width pass and the same result; one that drops columns is refused."""
+    pytest.importorskip("torchao")
+    path, _, tensors = comfy_file
+    widths = []
+
+    def _spy(checkpoint = None, config = None, **kw):
+        widths.append(checkpoint["blocks.0.qkv.weight"].shape[1])
+        return _convert(checkpoint = checkpoint, config = config, **kw)
+
+    monkeypatch.setattr(cq, "_mapping", lambda cls: (_spy, _sfm()))
+    fast = _load(path, int8_backend = "torchao")
+    assert widths == [cq._NARROW_TAG_COLUMNS]
+
+    def _needs_width(checkpoint = None, config = None, **kw):
+        w = checkpoint["blocks.0.qkv.weight"]
+        checkpoint["blocks.0.qkv.weight"] = w.reshape(-1, DIM)  # only valid at the real width
+        return _convert(checkpoint = checkpoint, config = config, **kw)
+
+    monkeypatch.setattr(cq, "_mapping", lambda cls: (_needs_width, _sfm()))
+    full = _load(path, int8_backend = "torchao")
+    for a, b in zip(fast.state_dict().values(), full.state_dict().values()):
+        a, b = getattr(a, "qdata", a), getattr(b, "qdata", b)
+        assert torch.equal(a, b)
+
+    def _drops_columns(checkpoint = None, config = None, **kw):
+        out = _convert(checkpoint = checkpoint, config = config, **kw)
+        out["blocks.0.to_out.weight"] = out["blocks.0.to_out.weight"].chunk(2, dim = 1)[0]
+        return out
+
+    monkeypatch.setattr(cq, "_mapping", lambda cls: (_drops_columns, _sfm()))
+    with pytest.raises(ValueError, match = "column count"):
+        _load(path, int8_backend = "torchao")

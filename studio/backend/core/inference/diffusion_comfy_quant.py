@@ -83,6 +83,8 @@ _LEGACY_RENAME = {".scale_weight": ".weight_scale", ".scale_input": ".input_scal
 
 # Row tag: key index * 2**24 + row, exact in float64 for any real checkpoint.
 _TAG = float(1 << 24)
+# Tag width of the fast pass: enough columns to see a splice (first / middle / last differ), none of the real width.
+_NARROW_TAG_COLUMNS = 4
 _MAX_HEADER_BYTES = 256 * 1024 * 1024
 
 
@@ -451,8 +453,9 @@ def _mapping(transformer_cls: Any) -> tuple[Any, Any]:
     return entry["checkpoint_mapping_fn"], sfm
 
 
-def _decode_rows(name: str, tagged: Any, sources: list) -> list:
-    """``[(source index, first row, n rows)]`` for a converted int8 weight, or raise."""
+def _decode_rows(name: str, tagged: Any, sources: list, width: Optional[int] = None) -> list:
+    """``[(source index, first row, n rows)]`` for a converted int8 weight, or raise. ``width``: the tag width
+    the weights were given (None: their real column count)."""
     import torch
 
     if tagged.dtype != torch.float64 or tagged.dim() != 2 or tagged.numel() == 0:
@@ -461,19 +464,23 @@ def _decode_rows(name: str, tagged: Any, sources: list) -> list:
     for j in (tagged.shape[1] // 2, tagged.shape[1] - 1):
         if not torch.equal(col, tagged[:, j]):
             raise ValueError(f"{name}: the converter mixed columns of an int8 weight")
-    if not torch.equal(col, col.floor()) or bool((col < 0).any()):
-        raise ValueError(f"{name}: the converter transformed int8 weight values")
-    ids = (col / _TAG).floor().long()
-    rows = (col - ids.double() * _TAG).long()
+    # Decoded in Python from one list: a handful of tiny tensor ops per weight costs more than the whole decode
+    # on a busy many-core host (each op wakes the intra-op thread pool).
     segments: list = []
-    for i, r in zip(ids.tolist(), rows.tolist()):
+    for value in col.tolist():
+        if value < 0 or value != int(value):
+            raise ValueError(f"{name}: the converter transformed int8 weight values")
+        i, r = divmod(int(value), int(_TAG))
         if i >= len(sources) or r >= sources[i][1].shape[0]:
             raise ValueError(f"{name}: an int8 row does not decode to a source row")
         if segments and segments[-1][0] == i and segments[-1][1] + segments[-1][2] == r:
             segments[-1][2] += 1
         else:
             segments.append([i, r, 1])
-    if any(tagged.shape[1] != sources[i][1].shape[1] for i, _r, _n in segments):
+    if any(
+        tagged.shape[1] != (sources[i][1].shape[1] if width is None else width)
+        for i, _r, _n in segments
+    ):
         raise ValueError(f"{name}: the converter changed an int8 weight's column count")
     return segments
 
@@ -733,10 +740,6 @@ def load_comfy_quant_transformer(
         if dtype == torch.float16 and any(m in key.split(".") for m in keep_fp32):
             continue
         state[key] = value.to(dtype)
-    for index, (layer, codes, _scale) in enumerate(sources):
-        rows = torch.arange(codes.shape[0], dtype = torch.float64) + index * _TAG
-        state[layer.name + ".weight"] = rows.view(-1, 1).expand(codes.shape)
-
     from accelerate import init_empty_weights
 
     mapping_fn, sfm = _mapping(transformer_cls)
@@ -759,32 +762,52 @@ def load_comfy_quant_transformer(
     with init_empty_weights():
         model = transformer_cls.from_config(config)
     wanted = model.state_dict()
-    if sfm._should_convert_state_dict_to_diffusers(wanted, state):
-        converted = mapping_fn(
-            config = config,
-            checkpoint = dict(state),
-            **sfm._get_mapping_function_kwargs(mapping_fn, **kwargs),
-        )
-    else:
-        converted = dict(state)
-    del state
 
-    for name in [
-        k for k, v in converted.items() if torch.is_tensor(v) and v.dtype == torch.float64
-    ]:
-        segments = _decode_rows(name, converted[name], sources)
-        kinds = {(sources[i][0].format, sources[i][0].group) for i, _r, _n in segments}
-        if len(kinds) != 1:
-            raise ValueError(f"{name}: rows from layers of different formats or ConvRot groups")
-        fmt, group = kinds.pop()
-        codes = torch.cat([sources[i][1][r : r + n] for i, r, n in segments])
-        scale = torch.cat(
-            [
-                sources[i][2].reshape(-1, 1).expand(sources[i][1].shape[0], 1)[r : r + n]
-                for i, r, n in segments
-            ]
-        )
-        converted[name] = (codes, scale, group, fmt)
+    def _convert_tagged(width: Optional[int]) -> dict:
+        # Each kept weight becomes float64 row tags (constant along a row), ``width`` columns wide (None: the real
+        # width). The converter's output tags say which source rows every diffusers weight is made of.
+        for index, (layer, codes, _scale) in enumerate(sources):
+            rows = torch.arange(codes.shape[0], dtype = torch.float64) + index * _TAG
+            cols = codes.shape[1] if width is None else width
+            state[layer.name + ".weight"] = rows.view(-1, 1).expand(codes.shape[0], cols)
+        if sfm._should_convert_state_dict_to_diffusers(wanted, state):
+            out = mapping_fn(
+                config = config,
+                checkpoint = dict(state),
+                **sfm._get_mapping_function_kwargs(mapping_fn, **kwargs),
+            )
+        else:
+            out = dict(state)
+        for name in [k for k, v in out.items() if torch.is_tensor(v) and v.dtype == torch.float64]:
+            segments = _decode_rows(name, out[name], sources, width = width)
+            kinds = {(sources[i][0].format, sources[i][0].group) for i, _r, _n in segments}
+            if len(kinds) != 1:
+                raise ValueError(f"{name}: rows from layers of different formats or ConvRot groups")
+            fmt, group = kinds.pop()
+            parts = [sources[i][1][r : r + n] for i, r, n in segments]
+            # one segment (a split or renamed layer) is a row slice of a contiguous tensor: no copy
+            codes = parts[0] if len(parts) == 1 else torch.cat(parts)
+            scale = torch.cat(
+                [
+                    sources[i][2].reshape(-1, 1).expand(sources[i][1].shape[0], 1)[r : r + n]
+                    for i, r, n in segments
+                ]
+            )
+            if name in wanted and tuple(wanted[name].shape) != tuple(codes.shape):
+                raise ValueError(
+                    f"{name}: rebuilt as {tuple(codes.shape)}, the model expects {tuple(wanted[name].shape)}"
+                )
+            out[name] = (codes, scale, group, fmt)
+        return out
+
+    try:
+        # Narrow tags first: full-width float64 copies of every fused weight cost tens of seconds on a large DiT.
+        # Anything the narrow pass cannot prove (a converter that reads or slices columns) reruns at full width,
+        # whose checks are the authority.
+        converted = _convert_tagged(_NARROW_TAG_COLUMNS if sources else None)
+    except Exception:  # noqa: BLE001 -- the full-width pass raises the real refusal
+        converted = _convert_tagged(None)
+    del state
 
     min_features = DEFAULT_MIN_LINEAR_FEATURES if min_features is None else int(min_features)
     schemes = {INT8_TENSORWISE: TQ_INT8, FP8_E4M3: TQ_FP8}
