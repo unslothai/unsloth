@@ -1368,6 +1368,7 @@ export const ar = {
         studioVoiceDescription:
           "الأصوات المحفوظة في قسم الصوت تحتاج إلى نموذج استنساخ",
         studioVoiceDefault: "صوت النموذج نفسه",
+        studioVoiceSaved: "صوت محفوظ",
         speedLabel: "السرعة",
         pitchLabel: "طبقة الصوت",
         volumeLabel: "مستوى الصوت",

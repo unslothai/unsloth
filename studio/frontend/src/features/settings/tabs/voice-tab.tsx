@@ -1467,7 +1467,7 @@ export function VoiceTab() {
                   )}
                 >
                   <Select
-                    value={hasSelectedStudioVoice ? ttsStudioVoiceId : "model"}
+                    value={ttsStudioVoiceId || "model"}
                     onValueChange={(value) =>
                       setTtsStudioVoiceId(value === "model" ? "" : value)
                     }
@@ -1489,6 +1489,12 @@ export function VoiceTab() {
                           {voice.name}
                         </SelectItem>
                       ))}
+                      {/* Until the list loads, or if it fails, keep the stored choice visible. */}
+                      {ttsStudioVoiceId && !hasSelectedStudioVoice ? (
+                        <SelectItem value={ttsStudioVoiceId}>
+                          {t("settings.voice.readAloud.studioVoiceSaved")}
+                        </SelectItem>
+                      ) : null}
                     </SelectContent>
                   </Select>
                 </SettingsRow>

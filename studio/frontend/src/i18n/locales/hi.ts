@@ -1373,6 +1373,7 @@ export const hi = {
         studioVoiceDescription:
           "ऑडियो में सहेजी गई आवाज़ों के लिए क्लोनिंग मॉडल चाहिए",
         studioVoiceDefault: "मॉडल की अपनी आवाज़",
+        studioVoiceSaved: "सहेजी गई आवाज़",
         speedLabel: "गति",
         pitchLabel: "पिच",
         volumeLabel: "वॉल्यूम",

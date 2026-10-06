@@ -1379,6 +1379,7 @@ export const fr = {
         studioVoiceDescription:
           "Les voix enregistrées dans Audio nécessitent un modèle de clonage",
         studioVoiceDefault: "Voix propre du modèle",
+        studioVoiceSaved: "Voix enregistrée",
         speedLabel: "Vitesse",
         pitchLabel: "Hauteur",
         volumeLabel: "Volume",

@@ -1377,6 +1377,7 @@ export const es = {
         studioVoiceDescription:
           "Las voces guardadas en Audio requieren un modelo de clonación",
         studioVoiceDefault: "Voz propia del modelo",
+        studioVoiceSaved: "Voz guardada",
         speedLabel: "Velocidad",
         pitchLabel: "Tono",
         volumeLabel: "Volumen",

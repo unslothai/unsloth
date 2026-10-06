@@ -1357,6 +1357,7 @@ export const zhCN = {
         voiceDescription: "此设备上效果最好的音色",
         studioVoiceDescription: "音频中保存的音色需要克隆模型",
         studioVoiceDefault: "模型自带音色",
+        studioVoiceSaved: "已保存的音色",
         speedLabel: "语速",
         pitchLabel: "音调",
         volumeLabel: "音量",

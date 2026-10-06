@@ -1456,6 +1456,27 @@ def test_read_aloud_speaks_in_a_saved_voice(stub, tmp_path, persist):
     assert len(_history(tmp_path, ALICE)) == (1 if persist else 0)
 
 
+def test_a_saved_voice_keeps_the_request_settings(stub):
+    backend = stub["use"](
+        "audio-cpp/audio.cpp-gguf/VoxCPM2-GGUF",
+        _clone_info(workflows = ("speak", "clone"), reference_text = "optional"),
+    )
+    voice = _voice(ALICE, _input(ALICE))
+    with _client(ALICE) as client:
+        response = _generate(
+            client, voice_id = voice["id"], seed = 7, audio_language = "English", max_tokens = 50
+        )
+        empty = client.post(
+            "/api/inference/audio/generate",
+            json = {"messages": [{"role": "user", "content": ""}], "voice_id": voice["id"]},
+        )
+    assert response.status_code == 200, response.text
+    (call,) = backend.calls
+    assert (call["seed"], call["language"]) == (7, "English")
+    assert call["max_new_tokens"] <= 50
+    assert empty.status_code == 422, empty.text
+
+
 def test_read_aloud_voice_refusals(stub):
     voice = _voice(ALICE, _input(ALICE))
     with _client(BOB) as client:

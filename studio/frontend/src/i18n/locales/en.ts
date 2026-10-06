@@ -1413,6 +1413,7 @@ export const en = {
         voiceDescription: "Best voices on this device",
         studioVoiceDescription: "Voices saved in Audio need a cloning model",
         studioVoiceDefault: "Model's own voice",
+        studioVoiceSaved: "Saved voice",
         speedLabel: "Speed",
         pitchLabel: "Pitch",
         volumeLabel: "Volume",

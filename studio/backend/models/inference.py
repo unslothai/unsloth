@@ -5318,7 +5318,10 @@ class AudioGenerateRequest(ChatCompletionRequest):
     voice_id: Optional[str] = Field(
         None,
         pattern = _AUDIO_ID_PATTERN,
-        description = "[x-unsloth] A saved voice to speak in; the loaded model must clone.",
+        description = (
+            "[x-unsloth] A saved voice to speak in, as the Audio page's Speak does; the loaded "
+            "model must clone. Language, instructions, options, seed and the token cap apply."
+        ),
     )
     persist: bool = Field(
         True, description = "[x-unsloth] Keep the clip in Audio history. Read aloud sends false."

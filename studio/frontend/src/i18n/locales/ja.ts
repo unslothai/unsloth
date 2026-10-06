@@ -1371,6 +1371,7 @@ export const ja = {
         voiceDescription: "このデバイスで最適な音声",
         studioVoiceDescription: "音声に保存したボイスにはクローン対応モデルが必要です",
         studioVoiceDefault: "モデル自身の音声",
+        studioVoiceSaved: "保存したボイス",
         speedLabel: "速度",
         pitchLabel: "ピッチ",
         volumeLabel: "音量",

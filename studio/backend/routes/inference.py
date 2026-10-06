@@ -22490,13 +22490,23 @@ async def generate_audio(
 
     async def generate():
         if voice_id:
+            from fastapi.exceptions import RequestValidationError
+            from pydantic import ValidationError
+
             # Speaking in a saved voice is a Speak run with that voice as the reference.
-            run = AudioRunRequest(
-                workflow = "speak",
-                text = text,
-                inputs = AudioRunInputs(reference = AudioSourceRef(voice_id = voice_id)),
-                max_tokens = payload.max_tokens,
-            )
+            try:
+                run = AudioRunRequest(
+                    workflow = "speak",
+                    text = text,
+                    language = payload.audio_language,
+                    instructions = payload.audio_instructions,
+                    inputs = AudioRunInputs(reference = AudioSourceRef(voice_id = voice_id)),
+                    options = payload.audio_options,
+                    seed = payload.seed,
+                    max_tokens = _effective_max_tokens(payload),
+                )
+            except ValidationError as exc:
+                raise RequestValidationError(exc.errors()) from None
             return await _speak(run, request, current_subject, persist = persist, **tts_kwargs)
         wav_bytes, sample_rate, model_name, audio_type = await _generate_tts_wav(
             text, payload, request, current_subject, **tts_kwargs

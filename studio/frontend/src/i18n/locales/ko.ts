@@ -1368,6 +1368,7 @@ export const ko = {
         voiceDescription: "이 기기에서 가장 좋은 음성",
         studioVoiceDescription: "오디오에 저장된 음성은 복제 모델이 필요합니다",
         studioVoiceDefault: "모델 자체 음성",
+        studioVoiceSaved: "저장된 음성",
         speedLabel: "속도",
         pitchLabel: "음높이",
         volumeLabel: "볼륨",

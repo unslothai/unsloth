@@ -100,6 +100,18 @@ test("a deleted saved voice goes back to the model's own voice", async () => {
   assert.deepEqual(setVoiceIds, [""]);
 });
 
+test("a 404 that is not about the voice keeps the choice", async () => {
+  const { adapter, setVoiceIds } = load("8f2c", {
+    status: 404,
+    body: { detail: "Model not found" },
+  });
+  await assert.rejects(
+    adapter.generateStudioTtsAudio("hello"),
+    /Model not found/,
+  );
+  assert.deepEqual(setVoiceIds, []);
+});
+
 test("a model that cannot clone says how to fix it, and keeps the choice", async () => {
   const { adapter, setVoiceIds } = load("8f2c", {
     status: 400,
@@ -142,6 +154,12 @@ test("the voice setting persists and Settings lists saved voices for the studio 
   assert.match(
     tab,
     /setTtsStudioVoiceId\(value === "model" \? "" : value\)[\s\S]*?studioVoiceDefault[\s\S]*?savedVoices\.map\(/,
+  );
+  // The stored choice stays visible while the list is loading or failed to load.
+  assert.match(tab, /value=\{ttsStudioVoiceId \|\| "model"\}/);
+  assert.match(
+    tab,
+    /\{ttsStudioVoiceId && !hasSelectedStudioVoice \? \(\s*<SelectItem value=\{ttsStudioVoiceId\}>\s*\{t\("settings\.voice\.readAloud\.studioVoiceSaved"\)\}/,
   );
 });
 

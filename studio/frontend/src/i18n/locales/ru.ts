@@ -1373,6 +1373,7 @@ export const ru = {
         studioVoiceDescription:
           "Для голосов, сохранённых в Аудио, нужна модель клонирования",
         studioVoiceDefault: "Собственный голос модели",
+        studioVoiceSaved: "Сохранённый голос",
         speedLabel: "Скорость",
         pitchLabel: "Высота тона",
         volumeLabel: "Громкость",

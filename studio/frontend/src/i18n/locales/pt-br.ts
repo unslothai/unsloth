@@ -1375,6 +1375,7 @@ export const ptBR = {
         studioVoiceDescription:
           "Vozes salvas em Áudio exigem um modelo de clonagem",
         studioVoiceDefault: "Voz própria do modelo",
+        studioVoiceSaved: "Voz salva",
         speedLabel: "Velocidade",
         pitchLabel: "Tom",
         volumeLabel: "Volume",

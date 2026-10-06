@@ -245,7 +245,9 @@ export async function generateStudioTtsAudio(
         "No speech model is loaded. Open Audio and load one in Speak, then try again.",
       );
     }
-    if (ttsStudioVoiceId && response.status === 404) {
+    // Only this 404 is about the voice; another one (a model hidden from the account) must not
+    // drop the user's choice.
+    if (ttsStudioVoiceId && /saved voice no longer exists/i.test(detail)) {
       useVoiceSettingsStore.getState().setTtsStudioVoiceId("");
       throw new Error(
         "The saved voice for read aloud no longer exists. Read aloud now uses the model's own voice.",

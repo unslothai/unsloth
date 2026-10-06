@@ -1380,6 +1380,7 @@ export const de = {
         studioVoiceDescription:
           "In Audio gespeicherte Stimmen erfordern ein Klonmodell",
         studioVoiceDefault: "Eigene Stimme des Modells",
+        studioVoiceSaved: "Gespeicherte Stimme",
         speedLabel: "Geschwindigkeit",
         pitchLabel: "Tonhöhe",
         volumeLabel: "Lautstärke",
