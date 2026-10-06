@@ -31,7 +31,6 @@ export interface ThreadScopedSettings {
   imageToolsEnabled?: boolean;
   webFetchToolsEnabled?: boolean;
   deepResearchEnabled?: boolean;
-  artifactsEnabled?: boolean;
   mcpEnabledForChat?: boolean;
   permissionMode?: ThreadPermissionMode;
   ragEnabled?: boolean;
@@ -86,7 +85,6 @@ const THREAD_SCOPED_BOOLEAN_KEYS = [
   "imageToolsEnabled",
   "webFetchToolsEnabled",
   "deepResearchEnabled",
-  "artifactsEnabled",
   "mcpEnabledForChat",
   "ragEnabled",
 ] as const satisfies readonly (keyof ThreadScopedSettings)[];

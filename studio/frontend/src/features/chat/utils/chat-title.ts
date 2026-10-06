@@ -7,6 +7,10 @@ import {
 } from "../external-providers";
 import { encryptProviderApiKey } from "../api/providers-api";
 import {
+  type CustomReasoningConfig,
+  normalizeCustomReasoningConfig,
+} from "../custom-reasoning";
+import {
   type ExternalProviderConfig,
   getExternalProviderApiKey,
   isCustomProviderType,
@@ -211,6 +215,7 @@ export interface ExternalRoutingFields {
   external_model: string;
   provider_base_url: string | null;
   provider_api_type: "chat_completions" | "responses";
+  provider_reasoning_config?: CustomReasoningConfig;
   encrypted_api_key?: string;
 }
 
@@ -269,12 +274,19 @@ export async function buildExternalRoutingFields(
   options: { forceRefreshPublicKey?: boolean } = {},
 ): Promise<ExternalRoutingFields> {
   const { provider, modelId, apiKey } = connection;
+  const reasoningConfig =
+    provider.providerType === "custom" &&
+    (provider.backendProviderType === undefined || provider.backendProviderType === "custom") &&
+    provider.apiType !== "responses" && !provider.decisionsOnly
+      ? normalizeCustomReasoningConfig(provider.reasoningConfig)
+      : undefined;
   return {
     provider_id: provider.id,
     provider_type: toExternalBackendProviderType(provider.providerType),
     external_model: modelId,
     provider_base_url: provider.baseUrl || null,
     provider_api_type: provider.apiType ?? "chat_completions",
+    ...(reasoningConfig?.enabled ? { provider_reasoning_config: reasoningConfig } : {}),
     ...(apiKey
       ? {
           encrypted_api_key: await encryptProviderApiKey(
@@ -336,6 +348,7 @@ function titleReasoningCaps(connection: ResolvedExternalConnection) {
     isReasoningProvider: provider.isReasoningModel === true,
     baseUrl: provider.baseUrl ?? null,
     apiType: provider.apiType,
+    reasoningConfig: provider.reasoningConfig,
   });
 }
 

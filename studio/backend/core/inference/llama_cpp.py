@@ -10687,7 +10687,14 @@ class LlamaCppBackend:
         try:
             return [int(x.strip()) for x in cvd.split(",") if x.strip()]
         except ValueError:
+            pass
+        # A resolvable CUDA UUID mask, else the GPU auto-pick escapes the mask onto hidden cards (#8873).
+        try:
+            from utils.hardware.hardware import _get_parent_visible_gpu_spec
+            spec = _get_parent_visible_gpu_spec()
+        except Exception:
             return None
+        return spec["numeric_ids"] if spec.get("raw") == cvd.strip() else None
 
     @staticmethod
     def _visibility_mask_is_unmappable() -> bool:
@@ -12445,7 +12452,15 @@ class LlamaCppBackend:
         try:
             return set(int(x.strip()) for x in raw.split(",") if x.strip())
         except ValueError:
-            return None
+            if (
+                env_name != "CUDA_VISIBLE_DEVICES"
+                or os.environ.get("CUDA_DEVICE_ORDER") != "PCI_BUS_ID"
+            ):
+                return None
+        from utils.hardware import nvidia
+
+        ids = nvidia.resolve_uuid_mask(raw.strip())
+        return set(ids) if ids is not None else None
 
     @staticmethod
     def _vulkan_pin_args(gpu_indices: Optional[Iterable[int]]) -> list[str]:

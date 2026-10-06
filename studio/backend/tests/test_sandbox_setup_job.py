@@ -186,6 +186,22 @@ def test_no_polkit_agent_is_a_named_failure(monkeypatch, env):
     assert job.state == "failed" and "authentication agent" in job.note
 
 
+def test_a_remote_start_never_raises_a_password_prompt_here(monkeypatch, env):
+    # The route allowed it for root or passwordless sudo; detection may have moved on to pkexec since.
+    pkexec = env["fake"]("pkexec")
+    _linux_plan(monkeypatch, "pkexec", pkexec)
+    with pytest.raises(job_mod.SetupUnavailable, match = "password prompt"):
+        job_mod.start(plan_mod.LINUX_INSTALL, interactive = False)
+    assert env["recorded"]() == [] and job_mod.current() is None
+
+
+@pytest.mark.parametrize("elevation", ["root", "sudo"])
+def test_a_remote_start_runs_when_nothing_prompts(monkeypatch, env, elevation):
+    _linux_plan(monkeypatch, elevation, env["fake"]("sudo") if elevation == "sudo" else None)
+    commands, _env = job_mod._commands(plan_mod.detect(), interactive = False)
+    assert len(commands) == len(_STEPS)
+
+
 def test_no_elevation_means_no_job(monkeypatch, env):
     plan = plan_mod.SetupPlan(platform = "linux", manual_command = "sudo apt-get install -y bubblewrap")
     monkeypatch.setattr(plan_mod, "detect", lambda *a, **k: plan)
