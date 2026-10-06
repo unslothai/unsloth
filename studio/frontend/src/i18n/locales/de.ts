@@ -2707,6 +2707,7 @@ export const de = {
         placeholderModel: "Noch kann kein heruntergeladenes Modell dieses Beispiel ausführen, daher ist das gezeigte Modell nur ein Platzhalter. Lade zuerst eines auf der Audio-Seite herunter.",
         autoSwitchOff:
           "Das Modell wird nur per Name geladen, wenn der automatische Modellwechsel an ist. Schalte ihn ein oder lade das Modell zuerst auf seiner Audio-Seite.",
+        useViaApi: "Per API nutzen",
       },
       decisionApi: {
         title: "Entscheidungs-API",

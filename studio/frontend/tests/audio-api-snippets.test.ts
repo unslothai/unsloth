@@ -243,6 +243,14 @@ test("music and clone-only models never speak, and an unknown repo uses the fami
   assert.equal(S.pickAudioApiModel([], "transcribe"), null);
 });
 
+test("a page's model is used only where it can run the example", () => {
+  assert.ok(S.audioApiModelFits(cpp("HTDemucs-GGUF"), "separate"));
+  // A separator left loaded while the Speak page is open.
+  assert.ok(!S.audioApiModelFits(cpp("HTDemucs-GGUF"), "speak"));
+  assert.ok(!S.audioApiModelFits(cpp("Kokoro-82M-GGUF"), "clone"));
+  assert.ok(S.audioApiModelFits("unsloth/orpheus-3b-0.1-ft", "speak"));
+});
+
 test("each Audio page opens the example for its workflow", () => {
   assert.deepEqual(S.audioApiExampleFor("speak"), { tab: "speak", run: null });
   assert.deepEqual(S.audioApiExampleFor("transcribe"), {

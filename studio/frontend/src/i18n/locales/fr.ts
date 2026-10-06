@@ -2708,6 +2708,7 @@ export const fr = {
         placeholderModel: "Aucun modèle téléchargé ne peut encore exécuter cet exemple : le modèle affiché n'est qu'un exemple. Téléchargez-en un d'abord sur la page Audio.",
         autoSwitchOff:
           "Le modèle ne se charge par son nom que si le changement automatique de modèle est activé. Activez-le, ou chargez d'abord le modèle sur sa page Audio.",
+        useViaApi: "Utiliser via l'API",
       },
       decisionApi: {
         title: "API de décision",

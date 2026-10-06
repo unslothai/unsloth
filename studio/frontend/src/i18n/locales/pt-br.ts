@@ -2679,6 +2679,7 @@ export const ptBR = {
         placeholderModel: "Nenhum modelo baixado consegue rodar este exemplo ainda, então o modelo mostrado é só ilustrativo. Baixe um antes na página Áudio.",
         autoSwitchOff:
           "O modelo só é carregado pelo nome com a troca automática de modelo ativada. Ative-a ou carregue antes o modelo na página de Áudio dele.",
+        useViaApi: "Usar via API",
       },
       decisionApi: {
         title: "API de decisões",

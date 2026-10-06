@@ -2698,6 +2698,7 @@ export const es = {
         placeholderModel: "Aún no hay ningún modelo descargado que pueda ejecutar este ejemplo, así que el modelo que aparece es provisional. Descarga uno primero en la página Audio.",
         autoSwitchOff:
           "El modelo solo se carga por su nombre con el cambio automático de modelo activado. Actívalo o carga antes el modelo en su página de Audio.",
+        useViaApi: "Usar por API",
       },
       decisionApi: {
         title: "API de decisiones",

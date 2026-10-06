@@ -2613,6 +2613,7 @@ export const zhCN = {
         placeholderModel: "还没有能运行此示例的已下载模型，因此显示的模型只是示意。请先在音频页面下载一个模型。",
         autoSwitchOff:
           "只有开启模型自动切换时，才会按名称加载模型。请开启它，或先在该模型的音频页面加载模型。",
+        useViaApi: "通过 API 使用",
       },
       decisionApi: {
         title: "决策 API",

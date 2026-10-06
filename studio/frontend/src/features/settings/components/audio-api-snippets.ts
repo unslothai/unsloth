@@ -66,6 +66,15 @@ export const AUDIO_API_PLACEHOLDER_MODELS: Record<AudioApiExample, string> = {
   edit: folder("DotTTS-Edit-GGUF"),
 };
 
+/** False for a catalog model that cannot run the example, such as a separator left loaded. */
+export function audioApiModelFits(
+  id: string,
+  example: AudioApiExample,
+): boolean {
+  const known = audioCppModelFor(id);
+  return !known || audioCppWorkflowsFor(known).includes(example);
+}
+
 // /v1/models gives a task, not workflows, so the audio.cpp catalog says what each model does.
 // Models it does not know fall back to the family hints the Audio pages use.
 function canRun(model: AudioApiModel, example: AudioApiExample): boolean {

@@ -2698,6 +2698,7 @@ export const en = {
           "No downloaded model can run this example yet, so the model shown is a stand-in. Download one on the Audio page first.",
         autoSwitchOff:
           "The model loads by name only while Model auto-switch is on. Turn it on, or load the model on its Audio page first.",
+        useViaApi: "Use via API",
       },
       decisionApi: {
         title: "Decision API",

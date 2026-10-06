@@ -9,12 +9,13 @@ import { Tick02Icon } from "@/lib/tick-icon";
 import { cn } from "@/lib/utils";
 import { Copy01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { type ReactNode, useEffect, useMemo, useState } from "react";
+import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import { loadOpenAIAutoSwitchSettings } from "../api/openai-auto-switch";
 import {
   type AudioApiModel,
   listOpenAIAudioModels,
 } from "../api/openai-models";
+import { useSettingsDialogStore } from "../stores/settings-dialog-store";
 import { useSettingsPanelPrefsStore } from "../stores/settings-panel-prefs-store";
 import {
   AUDIO_API_PLACEHOLDER_MODELS,
@@ -25,6 +26,8 @@ import {
   type AudioApiOs,
   type AudioApiTab,
   type AudioRunWorkflow,
+  audioApiExampleFor,
+  audioApiModelFits,
   buildAudioApiSnippet,
   pickAudioApiModel,
 } from "./audio-api-snippets";
@@ -117,6 +120,60 @@ export function AudioApiExamples({
   // Audio requests load the model they name only with Model auto-switch on. null: unknown.
   const [autoSwitch, setAutoSwitch] = useState<boolean | null>(null);
   const [copied, setCopied] = useState(false);
+  // An Audio page's own model, shown for its example until the user changes the example.
+  const [pageModel, setPageModel] = useState<{
+    example: AudioApiExample;
+    model: string;
+  } | null>(null);
+  const sectionRef = useRef<HTMLElement | null>(null);
+  const audioApiRequested = useSettingsDialogStore((s) => s.audioApiRequested);
+  const scrollTarget = useSettingsDialogStore((s) => s.scrollTarget);
+
+  // "Use via API" on an Audio page: show its workflow and model.
+  useEffect(() => {
+    if (!audioApiRequested) return;
+    const next = audioApiExampleFor(audioApiRequested.workflow);
+    setTab(next.tab);
+    if (next.run) setRun(next.run);
+    setPageModel(
+      audioApiRequested.model
+        ? {
+            example:
+              next.tab === "workflows" ? (next.run ?? "separate") : next.tab,
+            model: audioApiRequested.model,
+          }
+        : null,
+    );
+    useSettingsDialogStore.getState().consumeAudioApiRequest();
+  }, [audioApiRequested]);
+
+  useEffect(() => {
+    if (scrollTarget !== "api-keys-audio-api") return;
+    const section = sectionRef.current;
+    if (!section) return;
+    // The sections above load their own data and grow after this mounts, so keep the card
+    // at the top while they settle, until the user scrolls. Consumed only then: clearing
+    // the target re-runs this effect, whose cleanup would stop the pinning straight away.
+    const pin = () => section.scrollIntoView({ block: "start" });
+    const observer = new ResizeObserver(pin);
+    observer.observe(section.parentElement ?? section);
+    const release = () => {
+      observer.disconnect();
+      useSettingsDialogStore
+        .getState()
+        .consumeScrollTarget("api-keys-audio-api");
+    };
+    const timer = window.setTimeout(release, 1500);
+    const events = ["wheel", "touchmove", "keydown"] as const;
+    for (const name of events) {
+      window.addEventListener(name, release, { passive: true });
+    }
+    return () => {
+      observer.disconnect();
+      window.clearTimeout(timer);
+      for (const name of events) window.removeEventListener(name, release);
+    };
+  }, [scrollTarget]);
 
   // One fetch: unlike the chat examples, these never follow what is resident.
   useEffect(() => {
@@ -138,7 +195,13 @@ export function AudioApiExamples({
   const base =
     useTunnel && cloudflareUrl ? cloudflareUrl : (serverUrl ?? origin);
   const example: AudioApiExample = tab === "workflows" ? run : tab;
-  const picked = models ? pickAudioApiModel(models, example) : null;
+  const picked =
+    pageModel?.example === example &&
+    audioApiModelFits(pageModel.model, example)
+      ? pageModel.model
+      : models
+        ? pickAudioApiModel(models, example)
+        : null;
   const model = picked ?? AUDIO_API_PLACEHOLDER_MODELS[example];
   const snippet = useMemo(
     () =>
@@ -170,8 +233,9 @@ export function AudioApiExamples({
 
   return (
     <section
+      ref={sectionRef}
       data-settings-label={t("settings.apiKeys.audioApi.title")}
-      className="flex min-w-0 max-w-full flex-col"
+      className="flex min-w-0 max-w-full scroll-mt-6 flex-col"
     >
       <h2 className="settings-heading mb-1 text-sm font-semibold">
         {t("settings.apiKeys.audioApi.title")}
