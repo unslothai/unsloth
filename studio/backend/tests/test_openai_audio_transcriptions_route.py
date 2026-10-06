@@ -1030,6 +1030,14 @@ def test_audio_cpp_refuses_what_the_model_cannot_add(monkeypatch, tmp_path, caps
     assert calls == [] and prepared == []
 
 
+@pytest.mark.parametrize("fmt", ["json", "text", "diarized_json"])
+def test_audio_cpp_granularities_need_verbose_json(monkeypatch, tmp_path, fmt):
+    cli, calls, prepared = _audio_cpp(monkeypatch, tmp_path)
+    resp = _post(cli, data = {"response_format": fmt, "timestamp_granularities[]": "word"})
+    assert (resp.status_code, resp.json()["error"]["param"]) == (400, "timestamp_granularities")
+    assert calls == [] and prepared == []
+
+
 def test_diarized_json_on_whisper_is_refused_before_any_work(monkeypatch):
     cli, calls = _make_client(monkeypatch)
     resp = _post(cli, data = {"response_format": "diarized_json"})
