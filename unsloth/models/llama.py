@@ -3899,6 +3899,8 @@ class FastLlamaModel:
                 _n = max(1, min(int(finetune_last_n_layers), _total_layers))
                 layers_to_transform = list(range(_total_layers - _n, _total_layers))
 
+        validate_init_target_parameters(init_lora_weights, target_parameters)
+
         arguments = dict(
             r = r,
             lora_alpha = lora_alpha,

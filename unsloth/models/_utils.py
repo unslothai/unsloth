@@ -76,6 +76,7 @@ __all__ = [
     "patch_fast_lora",
     "validate_loftq_config",
     "validate_init_lora_weights",
+    "validate_init_target_parameters",
     "RESIDUAL_INIT_LORA_WEIGHTS",
     "snapshot_residual_lora_init",
     "lora_relative_to_original_base",
@@ -5647,6 +5648,47 @@ _INIT_LORA_WEIGHTS = (
 RESIDUAL_INIT_LORA_WEIGHTS = ("pissa", "olora", "corda", "loftq", "lora_ga")
 
 
+def _has_quantized_linears(model, routed_ok):
+    for module in model.modules():
+        if not isinstance(module, torch.nn.Linear):
+            continue
+        routed = type(module).__name__ == "_UnslothNVFP4Linear" or getattr(
+            module, "_unsloth_compressed_tensors_fp8", False
+        )
+        if routed:
+            if not routed_ok:
+                return True
+            continue
+        weight = getattr(module, "weight", None)
+        if isinstance(weight, torch.Tensor) and weight.dtype not in (
+            torch.float32,
+            torch.float16,
+            torch.bfloat16,
+        ):
+            return True
+    return False
+
+
+def validate_init_target_parameters(init_lora_weights, target_parameters):
+    # PEFT's ParamWrapper reads get_base_layer().weight, which fused expert modules lack (AttributeError
+    # mid get_peft_model, after earlier layers were already rewritten).
+    if not target_parameters or not isinstance(init_lora_weights, str):
+        return
+    if init_lora_weights.split("_niter_")[0] in (
+        "pissa",
+        "olora",
+        "orthogonal",
+        "corda",
+        "loftq",
+        "lora_ga",
+    ):
+        raise ValueError(
+            f"Unsloth: `init_lora_weights = {init_lora_weights!r}` cannot initialize fused MoE expert "
+            f"parameters ({target_parameters}).\n"
+            "Pass `target_parameters = []` to apply it to the other layers only, or use another init."
+        )
+
+
 def validate_init_lora_weights(
     init_lora_weights,
     model,
@@ -5686,8 +5728,16 @@ def validate_init_lora_weights(
         _require(hasattr(LoraLayer, "lora_ga_init"), "0.19.0")
 
     # olora dequantizes + requantizes bnb weights itself; the others read or write the float weight.
-    quantized = getattr(getattr(model, "config", None), "quantization_config", None) is not None
-    if quantized and name in ("pissa", "corda", "loftq", "lora_ga", "mica", "orthogonal"):
+    # Routed compressed-tensors (NVFP4 / FP8) linears are densified by loader_utils for all but MiCA.
+    base = name.split("_niter_")[0] if name is not None else None
+    if base in (
+        "pissa",
+        "corda",
+        "loftq",
+        "lora_ga",
+        "mica",
+        "orthogonal",
+    ) and _has_quantized_linears(model, routed_ok = base != "mica"):
         raise ValueError(
             f"Unsloth: `init_lora_weights = {init_lora_weights!r}` needs float32/float16/bfloat16 base weights, "
             "yet your model is quantized.\n"

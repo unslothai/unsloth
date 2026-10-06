@@ -4005,6 +4005,8 @@ class FastBaseModel:
                 n = max(1, min(int(finetune_last_n_layers), _total_layers))
                 layers_to_transform = list(range(_total_layers - n, _total_layers))
 
+        validate_init_target_parameters(init_lora_weights, target_parameters)
+
         local_variables = {
             **locals(),
             **kwargs,
