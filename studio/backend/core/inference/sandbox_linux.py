@@ -364,7 +364,11 @@ def _preflight(bwrap: str, proc: tuple[str, ...]) -> "subprocess.CompletedProces
     """The launch's namespaces, /proc and system binds in its order, running only `true`."""
     # NixOS has no FHS `true`: run the store file itself, with the store bound as launches bind it.
     found = next(
-        (p for p in ("/usr/bin/true", "/bin/true", "/run/current-system/sw/bin/true") if os.path.isfile(p)),
+        (
+            p
+            for p in ("/usr/bin/true", "/bin/true", "/run/current-system/sw/bin/true")
+            if os.path.isfile(p)
+        ),
         None,
     )
     if found is None:

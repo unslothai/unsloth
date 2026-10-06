@@ -2595,11 +2595,26 @@ def test_the_two_proc_layouts_never_share_a_profile_or_a_cached_verdict(monkeypa
 def test_the_preflight_runs_a_nix_store_true_with_the_store_bound(monkeypatch):
     nix_true = "/nix/store/abc-coreutils/bin/true"
     real_isfile, real_isdir, real_realpath = os.path.isfile, os.path.isdir, os.path.realpath
-    monkeypatch.setattr(os.path, "isfile", lambda p: p == "/run/current-system/sw/bin/true" or (real_isfile(p) and p not in ("/usr/bin/true", "/bin/true")))
+    monkeypatch.setattr(
+        os.path,
+        "isfile",
+        lambda p: p == "/run/current-system/sw/bin/true"
+        or (real_isfile(p) and p not in ("/usr/bin/true", "/bin/true")),
+    )
     monkeypatch.setattr(os.path, "isdir", lambda p: p == sandbox_linux._NIX_STORE or real_isdir(p))
-    monkeypatch.setattr(os.path, "realpath", lambda p, **kw: nix_true if p == "/run/current-system/sw/bin/true" else real_realpath(p, **kw))
+    monkeypatch.setattr(
+        os.path,
+        "realpath",
+        lambda p, **kw: nix_true
+        if p == "/run/current-system/sw/bin/true"
+        else real_realpath(p, **kw),
+    )
     seen = []
-    monkeypatch.setattr(sandbox_linux.subprocess, "run", lambda argv, **kw: seen.append(argv) or subprocess.CompletedProcess(argv, 0, "", ""))
+    monkeypatch.setattr(
+        sandbox_linux.subprocess,
+        "run",
+        lambda argv, **kw: seen.append(argv) or subprocess.CompletedProcess(argv, 0, "", ""),
+    )
     assert sandbox_linux._preflight("/usr/bin/bwrap", ("--proc", "/proc")) is not None
     argv = seen[0]
     assert argv[-1] == nix_true
