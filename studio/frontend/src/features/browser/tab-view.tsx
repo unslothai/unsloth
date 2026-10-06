@@ -289,6 +289,8 @@ function WebPage({
             // Asked for the page that sent the tab here, else the address asked for (not where it
             // redirected): another site's remembered "allow" must not cover it.
             void saveBrowserDownload({ blob: page.blob, name, contentType: page.contentType, url: page.url, site: entry.from ?? url });
+            // A page's link to a file leaves that page showing, as in a browser.
+            if (entry.kind === "web" && entry.from) useBrowserStore.getState().leaveDownload(tab.id, entry);
           }
         }
       })

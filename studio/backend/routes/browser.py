@@ -86,11 +86,14 @@ _FETCH_ATTRS = frozenset({"src", "integrity", "crossorigin"})
 _MODULE_IMPORT_RE = re.compile(r"""(?<![\w$.])(?:import\b\s*[{*("'`\w$./]|from\s*["'`/])""")
 _MAX_AGE_RE = re.compile(r"(?:^|[\s,])(s-maxage|max-age)\s*=\s*\"?(\d+)", re.IGNORECASE)
 _SCRIPT_OPEN_RE = re.compile(r"<script", re.IGNORECASE)
-# Where markup stops being markup: a comment, or an element whose content is text (raw text and
-# RCDATA, noscript as scripting is on, and script itself). A script tag written inside one is
-# shown or ignored, not run.
+# Where markup stops being markup: a comment, an element whose content is text (raw text and
+# RCDATA, noscript as scripting is on, and script itself), or another tag, whose quoted
+# attribute values may hold "<script ...>" as text. A script tag written inside one is shown or
+# ignored, not run.
 _INERT_START_RE = re.compile(
     r"<!--|<(script|style|textarea|title|xmp|iframe|noembed|noframes|noscript|plaintext)\b"
+    + _TAG_BODY
+    + r"|<[a-z][^\s/>]*"
     + _TAG_BODY,
     re.IGNORECASE,
 )
@@ -1302,6 +1305,10 @@ def _fetch_module(
         return None
     if error is not None or not isinstance(body, bytes):
         return None
+    # Redirected to plain http: code anyone on the network could have changed. The frame's
+    # upgrade-insecure-requests would not run it that way either.
+    if not str(meta.get("url") or url).lower().startswith("https://"):
+        return None
     code = None
     allow_origin = (meta.get("allow_origin") or "").strip()
     # A host that lets any origin load it works from the sandbox as it is, and the browser
@@ -1320,15 +1327,19 @@ def _fetch_module(
 
 
 def _inert_spans(page: str) -> list[tuple[int, int]]:
-    """Spans of ``page`` that are text, not markup, in order: comments, and the content of
-    raw-text elements. Read front to back as the parser does, so a "<style" inside a script's
-    code or a comment doesn't open one."""
+    """Spans of ``page`` that are text, not markup, in order: comments, the content of raw-text
+    elements, and other tags (their attribute values). Read front to back as the parser does, so
+    a "<style" inside a script's code or a comment doesn't open one."""
     spans: list[tuple[int, int]] = []
     at = 0
     while match := _INERT_START_RE.search(page, at):
-        if match.group(1) is None:
+        if match.group(0).startswith("<!--"):
             close = page.find("-->", match.end())
             end = len(page) if close < 0 else close + 3
+            spans.append((match.start(), end))
+        elif match.group(1) is None:
+            # Any other tag: a script tag can only be text inside it.
+            end = match.end()
             spans.append((match.start(), end))
         else:
             name = match.group(1).lower()

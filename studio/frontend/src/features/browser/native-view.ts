@@ -115,10 +115,13 @@ function listenOnce(): void {
  *  Always answered: an unanswered download would sit in staging until the app quits. */
 function onDownloadPrompt(event: Extract<NativeEvent, { kind: "downloadPrompt" }>, tab: BrowserTab | undefined): void {
   const { id, url, site, name } = event;
+  const entry = tab ? currentEntry(tab) : null;
   // The page that started it is the site asking, as in a browser (blob: and data: downloads have
   // no site of their own). Taken when it started: the tab may show another site by now, whose
-  // remembered answer must not cover this one.
-  const decided = tab && currentEntry(tab).kind === "web" ? approveDownload(url, name, site) : Promise.resolve(false);
+  // remembered answer must not cover this one. Before the view showed a page of its own (site
+  // ""), it is the page that opened the tab, else the address the tab was sent to.
+  const decided =
+    entry?.kind === "web" ? approveDownload(url, name, site || entry.from || entry.url) : Promise.resolve(false);
   void decided
     .then((allow) => {
       if (allow) toast(t("browser.native.downloading", { name }));
@@ -175,11 +178,12 @@ function onNativeEvent(event: NativeEvent): void {
       newTabTimes = newTabTimes.filter((time) => now - time < NEW_TAB_WINDOW_MS);
       if (newTabTimes.length < NEW_TABS_PER_WINDOW) {
         newTabTimes.push(now);
-        store.openUrl(event.url, { newTab: true });
+        // The opener asks for any download the new tab turns out to be.
+        store.openUrl(event.url, { newTab: true, from: shownUrl(tab) });
       } else {
         prompt(t("browser.native.externalPrompt", { host: hostOf(shownUrl(tab)), url: event.url }), {
           label: t("browser.native.open"),
-          onClick: () => store.openUrl(event.url, { newTab: true }),
+          onClick: () => store.openUrl(event.url, { newTab: true, from: shownUrl(tab) }),
         });
       }
       break;

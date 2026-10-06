@@ -124,6 +124,9 @@ const MAX_HISTORY = 50;
 const cacheLimit = cacheLimits(reportedDeviceMemory());
 const pageCache = new PageCache<BrowserEntry>(cacheLimit.maxPages, cacheLimit.maxTotalBytes);
 
+// The entry each page-driven navigation left, while it is still the one before it.
+const sentFrom = new WeakMap<BrowserEntry, BrowserEntry>();
+
 const entryIds = new WeakMap<BrowserEntry, number>();
 let nextEntryId = 0;
 
@@ -295,6 +298,9 @@ type BrowserState = {
     request: { url: string; method?: "GET" | "POST"; body?: string; from?: string },
     options?: { replace?: boolean },
   ) => void;
+  /** A page sent the tab to `entry`, which turned out to be a file to download: back to that
+   *  page, as a browser stays on it, and out of history. Nothing if the tab has moved on. */
+  leaveDownload: (tabId: string, entry: BrowserEntry) => void;
   goBack: (tabId: string) => void;
   goForward: (tabId: string) => void;
   reload: (tabId: string) => void;
@@ -537,15 +543,24 @@ export const useBrowserStore = create<BrowserState>((set, get) => {
     navigate: (tabId, request, options) => {
       if (!isWeb(request.url)) return;
       set((state) => ({
-        tabs: patchTab(state.tabs, tabId, (tab) =>
-          pushEntry(
-            tab,
-            webEntry(request.url, request.method, request.body, request.from),
-            options?.replace ?? (nativeWebHistory && currentEntry(tab).kind === "web"),
-          ),
-        ),
+        tabs: patchTab(state.tabs, tabId, (tab) => {
+          const replace = options?.replace ?? (nativeWebHistory && currentEntry(tab).kind === "web");
+          const entry = webEntry(request.url, request.method, request.body, request.from);
+          if (request.from && !replace) sentFrom.set(entry, currentEntry(tab));
+          return pushEntry(tab, entry, replace);
+        }),
       }));
     },
+    leaveDownload: (tabId, entry) =>
+      set((state) => ({
+        tabs: patchTab(state.tabs, tabId, (tab) => {
+          const previous = tab.history[tab.index - 1];
+          if (currentEntry(tab) !== entry || !previous || sentFrom.get(entry) !== previous) return tab;
+          const history = tab.history.filter((candidate) => candidate !== entry);
+          pageCache.delete(entry);
+          return moveTo({ ...tab, history }, tab.index - 1);
+        }),
+      })),
     goBack: (tabId) =>
       set((state) => ({
         tabs: patchTab(state.tabs, tabId, (tab) => (tab.index > 0 ? moveTo(tab, tab.index - 1) : tab)),

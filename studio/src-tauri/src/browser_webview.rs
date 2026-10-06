@@ -154,6 +154,10 @@ struct ViewsState {
     polling: bool,
     /** Tabs the reader muted; macOS mutes each page they load, Windows the view once. */
     muted: HashSet<String>,
+    /// Tabs whose view shows a page it loaded itself, since it opened or the app last sent it to
+    /// an address. Until then a download comes from the address asked for (or the page that
+    /// opened the tab), not from whatever the view holds (about:blank, or the address itself).
+    committed: HashSet<String>,
 }
 
 pub fn new_browser_views() -> BrowserViews {
@@ -241,7 +245,8 @@ enum BrowserEvent {
         tab_id: String,
         url: String,
         /// The page showing when the download started: the site a remembered answer is for,
-        /// whatever the tab shows by the time the prompt is handled.
+        /// whatever the tab shows by the time the prompt is handled. "" when the view had not
+        /// shown a page of its own yet.
         site: String,
         name: String,
         id: String,
@@ -940,12 +945,15 @@ fn create_view<R: Runtime>(
             }
             let url = payload.url().to_string();
             let loading = matches!(payload.event(), PageLoadEvent::Started);
-            app.state::<BrowserViews>()
-                .inner
-                .lock()
-                .unwrap()
-                .urls
-                .insert(load_tab.clone(), url.clone());
+            {
+                let state = app.state::<BrowserViews>();
+                let mut inner = state.inner.lock().unwrap();
+                inner.urls.insert(load_tab.clone(), url.clone());
+                // Started is a commit (WebKit) or content loading (WebView2): never a download.
+                if loading {
+                    inner.committed.insert(load_tab.clone());
+                }
+            }
             emit(
                 app,
                 BrowserEvent::Load {
@@ -1067,10 +1075,19 @@ fn create_view<R: Runtime>(
                         url.clone(),
                         path,
                     );
-                    let site = webview
-                        .url()
-                        .map(|page| page.to_string())
-                        .unwrap_or_default();
+                    // The page that started it; "" before the view has shown one of its own,
+                    // when the frontend knows better (the tab's address, or its opener).
+                    let committed = app
+                        .state::<BrowserViews>()
+                        .inner
+                        .lock()
+                        .unwrap()
+                        .committed
+                        .contains(&download_tab);
+                    let site = match webview.url() {
+                        Ok(page) if committed => page.to_string(),
+                        _ => String::new(),
+                    };
                     emit(
                         app,
                         BrowserEvent::DownloadPrompt {
@@ -1318,9 +1335,16 @@ pub fn browser_view_navigate<R: Runtime>(
 ) -> Result<(), String> {
     require_main(&webview)?;
     let url = parse_page_url(&url)?;
-    view(webview.app_handle(), &tab_id)?
-        .navigate(url)
-        .map_err(|error| error.to_string())
+    let page = view(webview.app_handle(), &tab_id)?;
+    // Sent by the app (address bar, bookmark): not a download the last page started.
+    webview
+        .state::<BrowserViews>()
+        .inner
+        .lock()
+        .unwrap()
+        .committed
+        .remove(&tab_id);
+    page.navigate(url).map_err(|error| error.to_string())
 }
 
 #[tauri::command]
@@ -1451,6 +1475,7 @@ pub fn browser_view_close<R: Runtime>(
     {
         let mut inner = state.inner.lock().unwrap();
         inner.urls.remove(&tab_id);
+        inner.committed.remove(&tab_id);
         inner.download_starts.remove(&tab_id);
         // `muted` stays: a pruned view reopens muted; unmuting is what forgets it.
         if inner.shown.as_deref() == Some(tab_id.as_str()) {
@@ -1477,6 +1502,7 @@ pub async fn browser_view_clear_data<R: Runtime>(
         {
             let mut inner = state.inner.lock().unwrap();
             inner.urls.clear();
+            inner.committed.clear();
             set_shown(&state, &mut inner, None);
         }
         for page in browser_views(&app) {

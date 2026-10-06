@@ -611,3 +611,30 @@ def test_the_page_limit_is_counted_in_bytes(monkeypatch):
     monkeypatch.setattr(browser_mod, "_MAX_BROWSER_HTML_BYTES", 220)
     out = browser_mod._inline_module_scripts(page, "https://example.com/")
     assert "m" * 50 in out and len(out.encode()) <= 220
+
+
+@pytest.mark.parametrize(
+    "page",
+    [
+        """<div data-example='<script type="module" src="/m.js"></script>'>x</div>""",
+        """<a title="a > b" data-x='<script type=module src=/m.js></script>'>x</a>""",
+        """<img alt="<script type='module' src='/m.js'></script>">""",
+    ],
+)
+def test_a_module_tag_inside_an_attribute_value_is_left_alone(monkeypatch, page):
+    fetched = _modules(
+        monkeypatch, {"https://example.com/m.js": (None, b"ready()", "text/javascript")}
+    )
+    assert browser_mod._inline_module_scripts(page, "https://example.com/") == page
+    assert fetched == []
+
+
+def test_a_module_redirected_to_plain_http_keeps_its_tag(monkeypatch):
+    # Inlined, code fetched over http would run as if it came over https.
+    def fake_fetch(url, **kwargs):
+        kwargs["meta_out"]["url"] = "http://example.com/m.js"
+        return None, b"ready()", "text/javascript"
+
+    monkeypatch.setattr(browser_mod, "_fetch_url_raw", fake_fetch)
+    page = '<p class="a">x</p><script type="module" src="/m.js"></script>'
+    assert browser_mod._inline_module_scripts(page, "https://example.com/") == page
