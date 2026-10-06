@@ -345,6 +345,27 @@ def test_visible_void_hr_still_renders():
     assert "---" in out
 
 
+@pytest.mark.parametrize(
+    "html, expected",
+    [
+        (
+            "<ul>\n<li>\n<p>First item</p>\n</li>\n<li>\n<p>Second item</p>\n</li>\n</ul>",
+            "* First item\n\n* Second item",
+        ),
+        ("<ol><li><p>One</p></li><li><div>Two</div></li></ol>", "1. One\n\n2. Two"),
+        ("<ul><li><p>a</p><ul><li><p>b</p></li></ul></li></ul>", "* a\n\n  * b"),
+        ("<ul><li></li><p>outside</p></ul>", "*\n\noutside"),
+    ],
+)
+def test_block_opening_list_item_stays_on_marker_line(html, expected):
+    assert html_to_markdown(html) == expected
+
+
+def test_empty_header_does_not_consume_the_list_marker():
+    html = "<ul><li><header></header><p>text text text</p></li></ul>"
+    assert html_to_markdown(html, main_content = True) == "* text text text"
+
+
 # ── html_to_markdown: main-content scoping ───────────────────────
 
 
@@ -1610,6 +1631,47 @@ def test_fetch_url_raw_deadline_aborts_slow_body(monkeypatch):
     )
     assert err == "Failed to fetch URL: timed out."
     assert body == ""
+
+
+def test_read_capped_body_deadline_bounds_a_real_socket_drip():
+    # A buffered read(n) keeps receiving until n bytes arrive, so only a real socket shows
+    # whether a server sending one byte at a time can outlast the deadline.
+    import socket
+    import threading
+    import urllib.request
+
+    from core.inference.tools import _read_capped_body
+
+    server = socket.create_server(("127.0.0.1", 0))
+    stop = threading.Event()
+
+    def _drip():
+        conn, _ = server.accept()
+        with conn:
+            conn.recv(4096)
+            conn.sendall(b"HTTP/1.1 200 OK\r\nContent-Length: 1000000\r\n\r\n")
+            try:
+                while not stop.is_set():
+                    conn.sendall(b"x")
+                    time.sleep(0.05)
+            except OSError:
+                pass
+
+    threading.Thread(target = _drip, daemon = True).start()
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    resp = opener.open(f"http://127.0.0.1:{server.getsockname()[1]}/", timeout = 15)
+    started = time.monotonic()
+    try:
+        err, _body = _read_capped_body(resp, 1_000_000, 15, started + 0.5, None)
+    except TimeoutError:
+        err = "timed out"
+    finally:
+        stop.set()
+        resp.close()
+        server.close()
+
+    assert err is not None
+    assert time.monotonic() - started < 5
 
 
 def test_resolve_with_budget_aborts_on_slow_resolver(monkeypatch):

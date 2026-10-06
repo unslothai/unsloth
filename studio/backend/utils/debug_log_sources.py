@@ -193,6 +193,30 @@ def resolve_source_id(source_id: str) -> Optional[Path]:
     return None
 
 
+def source_id_for_path(
+    raw: Optional[str], sources: Optional[list[LogSource]] = None
+) -> Optional[str]:
+    """The opaque id of the source a WRITER's own spelling of a path names, if any."""
+    if not isinstance(raw, str) or not raw.strip():
+        return None
+    wanted = set()
+    for expand in (False, True):
+        try:
+            spelling = Path(raw.strip())
+            wanted.add(_identity(os.path.realpath(spelling.expanduser() if expand else spelling)))
+        except (OSError, ValueError, RuntimeError):
+            pass
+    if not wanted:
+        return None
+    for source in list_sources() if sources is None else sources:
+        try:
+            if _identity(os.path.realpath(source.realpath)) in wanted:
+                return source.id
+        except (OSError, ValueError):
+            continue
+    return None
+
+
 def default_source_id() -> Optional[str]:
     """The active server session if we have one, else the newest log we found."""
     sources = list_sources()

@@ -130,14 +130,68 @@ def _extract_helper(name):
 _normalize_save_method = _extract_helper("_normalize_save_method")
 
 
+_PROBE_PACKAGE = "_unsloth_st_source_probe"
+
+
+def _probe_package():
+    """A package for the exec'd body to resolve its deferred relative imports against.
+
+    #11067 put `from ..save import _is_adapter_save_method` inside `_save_pretrained_merged`,
+    deferred on purpose: a module-scope bind out of `unsloth.save` closes an import cycle.
+    `exec` with a bare globals dict has no `__name__` and no `__package__`, so a relative
+    import there raises `KeyError: "'__name__' not in globals"`, and every test that calls the
+    body died on it rather than on anything it was checking.
+
+    Satisfying it by importing unsloth would give up what this file is for: it reads the two
+    closures out of the source precisely so the assertions run without an unsloth import. So
+    stand up a package that owns the same relative path and put the REAL helper in it, pulled
+    from unsloth/save.py by source the way `_normalize_save_method` already is. The import
+    statement then executes for real and binds the shipped function, so a change to that
+    function's behaviour still reaches these tests.
+
+    Registered under a name of our own rather than "unsloth", so this cannot shadow the real
+    package for anything else in the session.
+    """
+    import sys
+    import types
+
+    if _PROBE_PACKAGE in sys.modules:
+        return
+
+    root = types.ModuleType(_PROBE_PACKAGE)
+    root.__path__ = []
+    models = types.ModuleType(f"{_PROBE_PACKAGE}.models")
+    models.__path__ = []
+    save = types.ModuleType(f"{_PROBE_PACKAGE}.save")
+    # By source, not by import, for the same reason as everything else in this file.
+    save_src = SAVE_PY.read_text(encoding = "utf-8")
+    helper = [
+        n
+        for n in ast.parse(save_src).body
+        if isinstance(n, ast.FunctionDef) and n.name == "_is_adapter_save_method"
+    ]
+    assert helper, "_is_adapter_save_method is gone from save.py; the deferred import cannot bind"
+    exec(ast.get_source_segment(save_src, helper[0]), save.__dict__)
+
+    sys.modules[_PROBE_PACKAGE] = root
+    sys.modules[f"{_PROBE_PACKAGE}.models"] = models
+    sys.modules[f"{_PROBE_PACKAGE}.save"] = save
+
+
 def _extract(i):
     """Exec one closure body standalone so it can actually be called."""
     src = ST_PY.read_text(encoding = "utf-8")
     node = _defs("_save_pretrained_merged", ST_PY)[i]
     import textwrap
 
+    _probe_package()
     branding = []
     ns = {
+        # The package coordinates of unsloth/models/sentence_transformer.py, mirrored onto the
+        # probe package: `from ..save import ...` in the body resolves one level up from
+        # `<probe>.models`, which is where the extracted helper was just installed.
+        "__name__": f"{_PROBE_PACKAGE}.models.sentence_transformer",
+        "__package__": f"{_PROBE_PACKAGE}.models",
         "os": __import__("os"),
         "print": lambda *a, **k: None,
         "_normalize_save_method": _normalize_save_method,
@@ -147,6 +201,27 @@ def _extract(i):
     }
     exec(textwrap.dedent(ast.get_source_segment(src, node)), ns)
     return ns["_save_pretrained_merged"], branding
+
+
+def test_the_deferred_import_binds_the_shipped_helper():
+    """The harness above must resolve that import for real, not paper over it.
+
+    A stub returning a constant would make the "lora" tests pass while testing nothing, which
+    is the failure mode worth guarding: the point of routing through the real
+    `_is_adapter_save_method` is that its spelling rules ("LoRA", "lora ") are the ones the
+    shipped code applies.
+    """
+    _probe_package()
+    import sys
+
+    helper = sys.modules[f"{_PROBE_PACKAGE}.save"]._is_adapter_save_method
+    for accepted in ("lora", "LoRA", "lora ", " LORA"):
+        assert helper(accepted), f"the shipped helper no longer accepts {accepted!r}"
+    for refused in ("merged_16bit", "lora_adapter", None, 1):
+        assert not helper(refused), f"the shipped helper now accepts {refused!r}"
+    # And it is the shipped source, not a copy that can drift from it.
+    save_src = SAVE_PY.read_text(encoding = "utf-8")
+    assert "def _is_adapter_save_method(save_method):" in save_src
 
 
 class _Tok:
@@ -268,14 +343,57 @@ def test_no_modules_fallback_still_does_a_16bit_merge(tmp_path):
     assert st.inner.merged
 
 
-def test_the_forwarding_path_still_accepts_lora(tmp_path):
-    """With modules.json present the merge understands every method, so the
-    refusal above must not leak into this branch."""
+def test_the_forwarding_path_refuses_lora_for_its_own_reason(tmp_path):
+    """Both branches refuse "lora", and the two refusals must stay distinct.
+
+    This test used to assert that the forwarding path ACCEPTED "lora", on the premise that
+    with modules.json present the merge understands every method. unsloth#11067 retired that
+    premise: `save_pretrained_merged` writes a loadable SentenceTransformer, and an
+    adapter-only save has no base weights for one, so it now refuses here too. Before that,
+    "lora" matched no branch in merge_and_overwrite_lora and fell through to a 16bit merge,
+    which happened to write something loadable for a request that asked for adapters.
+
+    The invariant the old test was really protecting survives the change and is what is
+    checked now: the no_modules refusal must not leak into this branch. Both raise, so a
+    bare `pytest.raises` would no longer notice if one wrongly borrowed the other's reason,
+    which is why the two messages are pinned apart rather than merely asserted non-empty.
+    """
     fn, _ = _extract(1)
     st = _FakeST(no_modules = False)
-    fn(st, str(tmp_path), None, "lora")
-    assert st.inner.forwarded["save_method"] == "lora"
-    assert not st.inner.merged
+    with pytest.raises(NotImplementedError) as raised:
+        fn(st, str(tmp_path), None, "lora")
+
+    message = str(raised.value)
+    # Its own reason: no base weights for a loadable SentenceTransformer, plus the two ways
+    # out. Not the no_modules reason, which is about falling back to merge_and_unload.
+    assert "adapter" in message
+    assert "merged_16bit" in message
+    assert "no modules.json was found" not in message, (
+        "the no_modules refusal leaked into the branch that HAS modules.json; the two "
+        "conditions are different and a user told the wrong one looks for the wrong file"
+    )
+    # Refused before anything is touched, exactly as the no_modules branch is.
+    assert not st.inner.merged, "must refuse BEFORE merging the adapters away"
+    assert st.saved == [], "and before writing a half-finished directory"
+    assert st.inner.forwarded is None, "and without forwarding the unsupported method on"
+
+
+def test_the_two_lora_refusals_do_not_share_a_message(tmp_path):
+    """Written because the check above can only see one of the pair at a time.
+
+    If both branches were ever collapsed onto one message, each test would still pass on its
+    own substring while the distinction that makes the advice actionable was gone.
+    """
+    fn, _ = _extract(1)
+    messages = []
+    for no_modules in (True, False):
+        with pytest.raises(NotImplementedError) as raised:
+            fn(_FakeST(no_modules = no_modules), str(tmp_path), None, "lora")
+        messages.append(str(raised.value))
+    assert messages[0] != messages[1], (
+        "both 'lora' refusals now say the same thing, so the message no longer tells the "
+        "user whether modules.json was the problem"
+    )
 
 
 # ---- spellings mean the same thing as in unsloth_save_model ----------------

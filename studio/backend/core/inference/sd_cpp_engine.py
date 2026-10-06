@@ -836,7 +836,7 @@ class SdCppEngine:
         # shutdown sweep has taken its snapshot, and sd-cli would then keep running with
         # nothing left to reap it, holding VRAM past the app.
         if is_process_shutting_down():
-            raise SdCppCancelled("Studio is shutting down; not starting sd-cli.")
+            raise SdCppCancelled("Unsloth is shutting down; not starting sd-cli.")
         proc = subprocess.Popen(
             cmd,
             stdout = subprocess.PIPE,
@@ -860,7 +860,7 @@ class SdCppEngine:
         if is_process_shutting_down():
             logger.info("shutdown began during the spawn; killing the new sd-cli")
             _terminate(proc)
-            raise SdCppCancelled("Studio is shutting down; not starting sd-cli.")
+            raise SdCppCancelled("Unsloth is shutting down; not starting sd-cli.")
         # Drain stdout on a reader thread so the timeout holds even when the child hangs WITHOUT printing (a plain `for
         # line in proc.stdout` blocks until EOF). Lines, then a None sentinel, go to a queue the main loop polls against
         # a wall-clock deadline. iter_sd_cpp_records also splits sd-cli's in-place progress redraws, which carry no

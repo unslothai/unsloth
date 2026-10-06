@@ -58,6 +58,7 @@ from hub.utils.hf_tokens import (
 from utils.native_path_leases import child_env_without_native_path_secret
 from utils.prebuilt.update_flow import resolves_into_studio_app_tree
 from utils.native_tls import inline_gate_source, vendor_dir
+from utils.happy_eyeballs import inline_activation_source
 from utils.child_stdio import utf8_child_env
 from utils.hf_cache_settings import get_hf_cache_paths
 from utils.subprocess_compat import (
@@ -117,31 +118,57 @@ def _hf_proxy_opener(url: str):
     import urllib.request
 
     try:
-        from utils.utils import hf_proxy_for_endpoint, hf_proxy_usable_by_urllib
+        from utils.utils import (
+            AuthSafeRedirectHandler,
+            hf_proxy_for_endpoint,
+            hf_proxy_usable_by_urllib,
+        )
 
         proxy = hf_proxy_for_endpoint(url)
         scheme = urllib.parse.urlparse(url).scheme or "https"
         if proxy:
             if not hf_proxy_usable_by_urllib(proxy):
                 return None
-            return urllib.request.build_opener(urllib.request.ProxyHandler({scheme: proxy}))
+            return urllib.request.build_opener(
+                urllib.request.ProxyHandler({scheme: proxy}), AuthSafeRedirectHandler()
+            )
         if any(urllib.request.getproxies().get(key) for key in (scheme, "all")):
             # The Hub client bypasses the proxy for this host; force a direct opener so
             # urllib's coarser NO_PROXY parsing cannot send the request through it anyway.
-            return urllib.request.build_opener(urllib.request.ProxyHandler({}))
+            return urllib.request.build_opener(
+                urllib.request.ProxyHandler({}), AuthSafeRedirectHandler()
+            )
     except Exception:
         pass
     return None
 
 
-def _hf_urlopen(req, timeout: int):
-    """``urlopen`` through the same proxy huggingface_hub would use for this request."""
+def _hf_json(url: str, hf_token: str | None):
+    """GET a JSON file from the Hub, once more without the token if the Hub refuses it (#11551)."""
     import urllib.request
+
+    from hub.utils.hf_tokens import call_with_anonymous_retry
+
+    def read(token):
+        headers = {"User-Agent": "unsloth-studio"}
+        if isinstance(token, str) and token:
+            headers["Authorization"] = f"Bearer {token}"
+        with _hf_urlopen(urllib.request.Request(url, headers = headers), timeout = 10) as resp:
+            return json.loads(resp.read().decode())
+
+    # No token sends none here (not the ambient one).
+    return call_with_anonymous_retry(read, hf_token or False)
+
+
+def _hf_urlopen(req, timeout: int):
+    """``urlopen`` through the same proxy huggingface_hub would use for this request,
+    with redirects that cannot carry the Authorization header off-origin."""
+    from utils.utils import auth_safe_open
 
     opener = _hf_proxy_opener(req.full_url)
     if opener is not None:
         return opener.open(req, timeout = timeout)
-    return urllib.request.urlopen(req, timeout = timeout)
+    return auth_safe_open(req, timeout = timeout)
 
 
 def hf_endpoint_unreachable(
@@ -771,13 +798,8 @@ def _remote_lora_base(model_name: str, hf_token: str | None = None) -> str | Non
     import urllib.request
 
     url = _hf_raw_url(model_name, "adapter_config.json")
-    headers = {"User-Agent": "unsloth-studio"}
-    if hf_token:
-        headers["Authorization"] = f"Bearer {hf_token}"
     try:
-        req = urllib.request.Request(url, headers = headers)
-        with _hf_urlopen(req, timeout = 10) as resp:
-            cfg = json.loads(resp.read().decode())
+        cfg = _hf_json(url, hf_token)
         base = cfg.get("base_model_name_or_path")
         if base:
             logger.info("Resolved remote LoRA adapter '%s' → base model '%s'", model_name, base)
@@ -834,16 +856,12 @@ def _check_tokenizer_config_needs_v5(model_name: str, hf_token: str | None = Non
         return False
 
     # --- Fall back to fetching from HuggingFace ---
+    import urllib.error
     import urllib.request
 
     url = _hf_raw_url(model_name, "tokenizer_config.json")
-    headers = {"User-Agent": "unsloth-studio"}
-    if hf_token:
-        headers["Authorization"] = f"Bearer {hf_token}"
     try:
-        req = urllib.request.Request(url, headers = headers)
-        with _hf_urlopen(req, timeout = 10) as resp:
-            data = json.loads(resp.read().decode())
+        data = _hf_json(url, hf_token)
         tokenizer_class = data.get("tokenizer_class", "")
         result = tokenizer_class in _TRANSFORMERS_5_TOKENIZER_CLASSES
         if result:
@@ -854,6 +872,34 @@ def _check_tokenizer_config_needs_v5(model_name: str, hf_token: str | None = Non
             )
         _tokenizer_class_cache[cache_key] = result
         return result
+    except urllib.error.HTTPError as exc:
+        # 401/403/404 are legitimate misses: a gated repo read without a token is
+        # normal, not a mirror fault. Anything else means the endpoint answered but
+        # failed, the signature of a mirror that does not proxy /resolve/ paths.
+        if exc.code in (401, 403, 404):
+            logger.debug(
+                "tokenizer_config.json not readable for '%s' at %s: %s", model_name, url, exc
+            )
+        else:
+            logger.warning(
+                "HTTP %s fetching tokenizer_config.json for '%s' from %s; "
+                "if HF_ENDPOINT is set to a mirror, verify it proxies /resolve/ paths",
+                exc.code,
+                model_name,
+                url,
+            )
+        _tokenizer_class_cache[cache_key] = False
+        return False
+    except urllib.error.URLError as exc:
+        logger.warning(
+            "Connection error fetching tokenizer_config.json for '%s' from %s: %s; "
+            "if HF_ENDPOINT is set to a mirror, verify it is reachable",
+            model_name,
+            url,
+            exc,
+        )
+        _tokenizer_class_cache[cache_key] = False
+        return False
     except Exception as exc:
         logger.debug("Could not fetch tokenizer_config.json for '%s': %s", model_name, exc)
         _tokenizer_class_cache[cache_key] = False
@@ -964,13 +1010,8 @@ def _load_config_json(model_name: str, hf_token: str | None = None) -> dict | No
     import urllib.request
 
     url = _hf_raw_url(model_name, "config.json")
-    headers = {"User-Agent": "unsloth-studio"}
-    if hf_token:
-        headers["Authorization"] = f"Bearer {hf_token}"
     try:
-        req = urllib.request.Request(url, headers = headers)
-        with _hf_urlopen(req, timeout = 10) as resp:
-            cfg = json.loads(resp.read().decode())
+        cfg = _hf_json(url, hf_token)
         _config_json_cache[cache_key] = cfg
         return cfg
     except urllib.error.HTTPError as exc:
@@ -978,7 +1019,16 @@ def _load_config_json(model_name: str, hf_token: str | None = None) -> dict | No
         if exc.code in (401, 403, 404):
             logger.debug("config.json access denied for '%s': %s", model_name, exc)
             return None
-        logger.debug("Could not fetch config.json for '%s': %s", model_name, exc)
+        # 5xx: debug here hides a broken mirror behind a later transformers crash.
+        logger.warning(
+            "HTTP %s fetching config.json for '%s' from %s; "
+            "if HF_ENDPOINT is set to a mirror, verify it proxies /resolve/ paths",
+            exc.code,
+            model_name,
+            url,
+        )
+        # Transient: serve the hub cache uncached so the next call retries the network,
+        # but never another caller's cached private metadata.
         return None if cache_denied else _config_json_from_hf_cache(model_name)
     except Exception as exc:
         logger.debug("Could not fetch config.json for '%s': %s", model_name, exc)
@@ -1479,6 +1529,7 @@ _TRUSTSTORE_VENDOR = """
     + repr(vendor_dir())
     + "\n"
     + inline_gate_source()
+    + inline_activation_source()
     + r"""
 target_dir, model_name = sys.argv[1], sys.argv[2]
 if target_dir:  # empty = probe the ambient (default-tier) transformers, no sidecar prepend
@@ -3777,13 +3828,14 @@ def _ensure_venv_llmcompressor_exists() -> bool:
     return False
 
 
-def llmcompressor_shadow_pythonpath() -> str | None:
-    """Provision (lazily) the llm-compressor-main shadow and return its sys.path entry, or None.
-
-    Returns None when the shadow is disabled (UNSLOTH_DISABLE_LLMCOMPRESSOR_MAIN), offline, or
-    provisioning failed - callers then fall back to the fail-fast path.
-    """
+def llmcompressor_shadow_pythonpath(*, allow_provision: bool = False) -> str | None:
+    """Return the llm-compressor-main shadow's sys.path entry, provisioning a missing one only with
+    allow_provision (the user's consent), or None (disabled, offline, not consented, failed)."""
     if _llmcompressor_main_disabled():
+        return None
+    if _llmcompressor_shadow_is_valid():
+        return _VENV_LLMCOMPRESSOR_DIR
+    if not allow_provision:
         return None
     if _ensure_venv_llmcompressor_exists():
         return _VENV_LLMCOMPRESSOR_DIR

@@ -97,6 +97,14 @@ export function isSandboxToolResult(
   );
 }
 
+/** Whether a python/terminal call's card shows a created-files row. */
+export function hasCreatedFiles(toolName: unknown, result: unknown): boolean {
+  if (typeof toolName !== "string" || !SANDBOX_FILE_TOOLS.has(toolName)) return false;
+  if (!isSandboxToolResult(result)) return false;
+  const { files } = result as { files?: unknown[] | null };
+  return Array.isArray(files) && files.length > 0;
+}
+
 /** Ids a path segment can carry: ASGI decodes %2F before it matches a route. */
 const PATH_SAFE_SESSION = /^[A-Za-z0-9_-]{1,64}$/;
 
@@ -175,6 +183,35 @@ export function decodeSegment(segment: string): string {
  * honestly instead of silently fetching another chat's file (or another route).
  */
 export function sandboxFileForSrc(src: string): string | null {
+  const file = sandboxPathForSrc(src);
+  if (file === null) return null;
+  const name = file.slice(file.lastIndexOf("/") + 1);
+  const ext = name.slice(name.lastIndexOf(".")).toLowerCase();
+  // A `.csv` is a download card, not an `<img>`; leave it to the file cards.
+  return SANDBOX_INLINE_IMAGE_EXTS.has(ext) ? file : null;
+}
+
+// What a one-segment link must end in to be a file, since `example.tech` is a site.
+const LINK_FILE_EXTS = new Set(
+  ("csv tsv json jsonl txt md markdown html htm pdf png jpg jpeg gif webp svg bmp py ipynb js ts sh " +
+    "yaml yml toml xml log xlsx xls docx doc pptx odt ods zip tar gz parquet wav mp3 mp4 webm mov").split(" "),
+);
+// A first segment shaped like a domain (`docs.museum/report.pdf`, `пример.рф`) or an IPv4 address, not a folder.
+const HOST_SEGMENT_RE = /^(?:(?:[\p{L}\p{N}-]+\.)+(?:\p{L}{2,}|xn--[a-z\d-]+)|\d{1,3}(?:\.\d{1,3}){3})(?::\d+)?$/iu;
+
+/** Sandbox file a markdown link targets (`outputs/report.csv`); needs an extension, so `#intro` stays a link. */
+export function sandboxFileForHref(href: string): string | null {
+  const trimmed = href.trim();
+  if (trimmed.startsWith("#") || /^www\./i.test(trimmed)) return null;
+  const file = sandboxPathForSrc(href);
+  const ext = file && /[^/]\.([A-Za-z0-9]{1,8})$/.exec(file)?.[1]?.toLowerCase();
+  if (!file || !ext) return null;
+  const [first, ...rest] = file.split("/");
+  if (rest.length === 0) return LINK_FILE_EXTS.has(ext) ? file : null;
+  return HOST_SEGMENT_RE.test(first ?? "") ? null : file;
+}
+
+function sandboxPathForSrc(src: string): string | null {
   const trimmed = src.trim();
   if (!trimmed || HAS_SCHEME_RE.test(trimmed) || PROTOCOL_RELATIVE_RE.test(trimmed)) {
     return null;
@@ -198,11 +235,7 @@ export function sandboxFileForSrc(src: string): string | null {
     return null;
   }
   const parts = decoded.filter((segment) => segment !== ".");
-  const name = parts[parts.length - 1] ?? "";
-  const ext = name.slice(name.lastIndexOf(".")).toLowerCase();
-  // A `.csv` is a download card, not an `<img>`; leave it to the file cards.
-  if (!SANDBOX_INLINE_IMAGE_EXTS.has(ext)) return null;
-  return parts.join("/");
+  return parts.length > 0 ? parts.join("/") : null;
 }
 
 /**
@@ -256,4 +289,15 @@ export function sandboxFilePath(sessionId: string, filename: string): string {
     .join("/");
   const { prefix, query } = sandboxRoutePrefix(sessionId);
   return `${prefix}/${path}${query}`;
+}
+
+/** Route URL for a link to a tool-written file (a bare relative path would be blocked); null otherwise. */
+export function markdownSandboxLinkHref(
+  href: string,
+  ctx: { threadId: string | undefined; projectId: string | null | undefined },
+): string | null {
+  const file = sandboxFileForHref(href);
+  if (file === null) return null;
+  const sessionId = sandboxSessionInSrc(href) ?? sandboxSessionIdFor(ctx.threadId, ctx.projectId);
+  return sessionId ? sandboxFilePath(sessionId, file) : null;
 }
