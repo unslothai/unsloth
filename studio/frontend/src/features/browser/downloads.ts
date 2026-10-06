@@ -107,11 +107,16 @@ export async function saveLinkAs(url: string): Promise<void> {
   let target: SaveHandle | null | undefined;
   if (asksWhereToSave()) {
     const quick = await Promise.race([
-      pending.catch(() => null),
+      pending.then(
+        (download) => ({ download }),
+        (error: unknown) => ({ error }),
+      ),
       new Promise<null>((resolve) => setTimeout(() => resolve(null), RESOLVE_BEFORE_ASK_MS)),
     ]);
+    // A link that already failed has nothing to save: report it without asking for a name.
+    if (quick && "error" in quick) throw quick.error;
     try {
-      target = await pickSaveTarget(quick?.name ?? fileNameFromUrl(url));
+      target = await pickSaveTarget(quick?.download.name ?? fileNameFromUrl(url));
     } catch (error) {
       // No save after all: stop the fetch, which the backend drops on disconnect.
       controller.abort();
