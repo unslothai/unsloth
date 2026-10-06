@@ -455,6 +455,10 @@ interface ServerUsage {
   prompt_tokens: number;
   completion_tokens: number;
   total_tokens: number;
+  // Tool-loop turns: the context after the turn (final pass's prompt + its
+  // completion). total_tokens instead sums every pass's completion for the
+  // turn's throughput, which a context bar would read as past the window.
+  context_tokens?: number;
   // cache_creation is Anthropic's cache-write count, cache_write_tokens OpenRouter's.
   prompt_tokens_details?: {
     cached_tokens?: number;
@@ -8281,7 +8285,9 @@ export function createOpenAIStreamAdapter(
           const usage = {
             promptTokens: meta.usage.prompt_tokens,
             completionTokens: meta.usage.completion_tokens,
-            totalTokens: meta.usage.total_tokens,
+            // The bar prices the context, not the turn: a tool loop's
+            // total_tokens bills every pass's completion against it.
+            totalTokens: meta.usage.context_tokens ?? meta.usage.total_tokens,
             cachedTokens,
             cacheWriteTokens,
           };
@@ -8465,7 +8471,9 @@ export function createOpenAIStreamAdapter(
                 ? {
                     promptTokens: meta.usage.prompt_tokens,
                     completionTokens: meta.usage.completion_tokens,
-                    totalTokens: meta.usage.total_tokens,
+                    // Same rule as the live write: price the context, not the turn.
+                    totalTokens:
+                      meta.usage.context_tokens ?? meta.usage.total_tokens,
                     cachedTokens,
                     cacheWriteTokens,
                     modelId: params.checkpoint,

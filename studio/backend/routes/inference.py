@@ -1474,6 +1474,9 @@ def _openai_stream_usage_chunk(
             completion_tokens = _completion_tokens,
             total_tokens = _total_tokens,
             prompt_tokens_details = _prompt_tokens_details(_usage.get("prompt_tokens_details")),
+            # Dropped by pydantic if not passed: the context-meter figure the
+            # tool loop computes, absent on single-pass streams.
+            context_tokens = _usage.get("context_tokens"),
         ),
         timings = stream_timings,
     )
