@@ -832,7 +832,11 @@ export function AudioPage({
           if (transitionWorkflow("speak")) setPrompt(text);
         },
         edit: () => {
-          if (selection && transitionWorkflow("edit")) adoptEditSource(selection);
+          if (!(selection && transitionWorkflow("edit"))) return;
+          adoptEditSource(selection);
+          useAudioEditStore
+            .getState()
+            .setTranscript(text.trim(), selection.id);
         },
         clone: () => {
           if (selection && transitionWorkflow("clone")) adoptReference(selection);

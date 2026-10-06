@@ -125,6 +125,10 @@ test("the Audio page wires every send, and waits out a running task first", () =
     host.indexOf("const handleUseTextAgain"),
   );
   assert.doesNotMatch(transcriptSend, /runTranscription|handleTranscribe/);
+  assert.match(
+    transcriptSend,
+    /adoptEditSource\(selection\);\s*useAudioEditStore\s*\.getState\(\)\s*\.setTranscript\(text\.trim\(\), selection\.id\);/,
+  );
 
   const menu = readSrc("features/audio/pages/tts-workspace.tsx");
   assert.match(menu, /onClick=\{\(\) => onSaveVoice\(clip\)\}/);
