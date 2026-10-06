@@ -102,6 +102,7 @@ const DICTATION_LANGUAGES: { value: string; label: string }[] = [
   { value: "ru-RU", label: "Русский" },
   { value: "hi-IN", label: "हिन्दी" },
   { value: "ar-SA", label: "العربية" },
+  { value: "he-IL", label: "עברית" },
 ];
 
 // Keep spoken preview content independent of the interface locale. The system
