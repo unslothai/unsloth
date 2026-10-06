@@ -36,6 +36,15 @@ export function audioCppRuntimeProblem(
   return null;
 }
 
+/** setup keeps the old managed runtime when it cannot reach the release. */
+export function audioCppRuntimeUpdate(
+  runtime: AudioCppRuntimeStatus | null | undefined,
+): { installed: string; expected: string } | null {
+  if (!runtime?.available || !runtime.outdated) return null;
+  if (!runtime.release_tag || !runtime.expected_tag) return null;
+  return { installed: runtime.release_tag, expected: runtime.expected_tag };
+}
+
 /** GGUF music families whose prompt needs a description beside the lyrics: MiniMax Music 3
  *  takes it as the caption and YuE2 as the style. The others fall back to the lyrics. */
 const DESCRIBED_MUSIC_FAMILIES = new Set(["minimax_music3", "yue2"]);

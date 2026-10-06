@@ -24280,26 +24280,67 @@ def _account_stt_status(status):
     return status
 
 
+_AUDIO_CPP_RUNTIME_MISSING = {
+    "available": False,
+    "espeak": False,
+    "backend": None,
+    "release_tag": None,
+    "expected_tag": None,
+    "outdated": False,
+}
+
+
+def _audio_cpp_release_ladder() -> list:
+    studio_dir = str(Path(__file__).resolve().parents[2])
+    if studio_dir not in sys.path:
+        sys.path.insert(0, studio_dir)
+    import install_audio_cpp_prebuilt
+
+    return install_audio_cpp_prebuilt._release_ladder()
+
+
 def _audio_cpp_runtime_status() -> dict:
-    """What the installed audio.cpp runtime can run, so the Audio page can mark rows before a load."""
     try:
         from core.inference import audio_cpp_server
 
         binary = audio_cpp_server.find_audio_cpp_server_binary()
         if binary is None:
-            return {"available": False, "espeak": False, "backend": None, "release_tag": None}
+            return dict(_AUDIO_CPP_RUNTIME_MISSING)
         record = audio_cpp_server.read_install_record(binary)
         backend = record.get("backend")
         release_tag = record.get("release_tag")
-        return {
+        status = {
             "available": True,
             "espeak": audio_cpp_server.binary_has_espeak(binary),
             "backend": backend if isinstance(backend, str) else None,
             "release_tag": release_tag if isinstance(release_tag, str) else None,
+            "expected_tag": None,
+            "outdated": False,
         }
     except Exception as exc:  # noqa: BLE001 - a status poll must not fail on a probe
         logger.debug("audio.cpp runtime probe failed: %s", exc)
-        return {"available": False, "espeak": False, "backend": None, "release_tag": None}
+        return dict(_AUDIO_CPP_RUNTIME_MISSING)
+    # only the managed tree is updatable; setup skips it under any of these, whatever the path.
+    setup_skips = (
+        os.environ.get("AUDIOCPP_SERVER_PATH")
+        or os.environ.get("UNSLOTH_AUDIO_CPP_PATH")
+        or os.environ.get("UNSLOTH_SKIP_AUDIO_CPP_INSTALL") == "1"
+    )
+    try:
+        managed_dir = audio_cpp_server.managed_audio_cpp_dir().resolve()
+        managed = not setup_skips and (
+            Path(binary).resolve().is_relative_to(managed_dir)
+            and (managed_dir / ".unsloth-studio-owned").is_file()
+        )
+        ladder = _audio_cpp_release_ladder() if managed else []
+    except Exception as exc:  # noqa: BLE001 - cannot tell is not outdated
+        logger.debug("audio.cpp release lookup failed: %s", exc)
+        ladder = []
+    # a None tag tracks the latest release, so an installed release cannot be compared.
+    if status["release_tag"] and ladder and all(tag for _, tag in ladder):
+        status["expected_tag"] = ladder[0][1]
+        status["outdated"] = (record.get("published_repo"), release_tag) not in ladder
+    return status
 
 
 @studio_router.get("/audio/stt/status")
