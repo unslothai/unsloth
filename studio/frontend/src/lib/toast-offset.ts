@@ -7,6 +7,8 @@ const HEADER_TOP_OFFSET = 52;
 const DESKTOP_TITLEBAR_HEIGHT = 34;
 
 export const CHAT_SETTINGS_INSET_VAR = "--studio-chat-settings-inset";
+// Set by the desktop browser panel while its native page sits at the right edge, which toasts can't draw over.
+export const BROWSER_PAGE_INSET_VAR = "--studio-browser-page-inset";
 // Only the widest card scales with --ui-space-scale; the download panel and rail gutters do not.
 const CORNER_CARD_MAX_WIDTH = 448;
 const DOWNLOAD_PANEL_WIDTH = 400;
@@ -66,7 +68,7 @@ export function insetPastChatSettings(offset: ToastOffset): {
 } {
   return {
     top: offset.top,
-    right: `calc(${offset.right}px + var(${CHAT_SETTINGS_INSET_VAR}, 0px))`,
+    right: `calc(${offset.right}px + var(${CHAT_SETTINGS_INSET_VAR}, 0px) + var(${BROWSER_PAGE_INSET_VAR}, 0px))`,
   };
 }
 

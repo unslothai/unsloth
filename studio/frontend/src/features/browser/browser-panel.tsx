@@ -256,7 +256,7 @@ function IconButton({
           )}
         </button>
       </TooltipTrigger>
-      <TooltipContent side="bottom" className="tooltip-compact">
+      <TooltipContent side="top" className="tooltip-compact">
         {shortcut ? (
           <span className="flex items-center gap-1.5">
             {label}
@@ -884,7 +884,7 @@ function SiteIdentity({ address, tab }: { address: string; tab: BrowserTab | und
               </button>
             </PopoverTrigger>
           </TooltipTrigger>
-          <TooltipContent side="bottom" className="tooltip-compact">
+          <TooltipContent side="top" className="tooltip-compact">
             {label}
           </TooltipContent>
         </Tooltip>
@@ -1019,7 +1019,7 @@ function ZoomBadge({ tab }: { tab: BrowserTab | undefined }) {
           {new Intl.NumberFormat(locale, { style: "percent", maximumFractionDigits: 0 }).format(zoom)}
         </button>
       </TooltipTrigger>
-      <TooltipContent side="bottom" className="tooltip-compact">
+      <TooltipContent side="top" className="tooltip-compact">
         {label}
       </TooltipContent>
     </Tooltip>
@@ -1212,7 +1212,7 @@ function PanelMenu({ tab, children }: { tab: BrowserTab | undefined; children?: 
               </button>
             </DropdownMenuTrigger>
           </TooltipTrigger>
-          <TooltipContent side="bottom" className="tooltip-compact">
+          <TooltipContent side="top" className="tooltip-compact">
             {t("browser.more")}
           </TooltipContent>
         </Tooltip>
@@ -1632,7 +1632,7 @@ function BrowserFileToolbar({
                 {errorBadge}
               </button>
             </TooltipTrigger>
-            <TooltipContent side="bottom" className="tooltip-compact">
+            <TooltipContent side="top" className="tooltip-compact">
               {consoleLabel}
             </TooltipContent>
           </Tooltip>

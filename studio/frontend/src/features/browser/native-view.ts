@@ -3,7 +3,8 @@
 
 /**
  * Desktop app web pages: a native view per tab (src-tauri/src/browser_webview.rs) over its placeholder,
- * so bot checks work. It sits above the DOM, so it hides while a menu or dialog covers it.
+ * so bot checks work. It sits above the DOM, so it hides while a menu or dialog covers it, leaving
+ * a snapshot of itself on the placeholder.
  */
 
 import { getLocale, translate } from "@/i18n";
@@ -11,17 +12,22 @@ import type { TranslationKey } from "@/i18n";
 import type { InterpolationValues } from "@/i18n";
 import { openExternalLink } from "@/lib/open-link";
 import { toast } from "@/lib/toast";
+import { BROWSER_PAGE_INSET_VAR } from "@/lib/toast-offset";
 import { hostOf } from "./address";
 import { proxiedFavicon } from "./favicon";
 import { useBrowserHistoryStore } from "./history-store";
 import { callNative as call, nativeClearing, onNativeViewsClosed } from "./native-support";
-import { type BrowserTab, currentEntry, entryKey, useBrowserStore } from "./store";
+import { type BrowserEntry, type BrowserTab, currentEntry, entryKey, useBrowserStore } from "./store";
 
 export { clearNativeBrowsingData, useNativeBrowser } from "./native-support";
 
 const EVENT = "unsloth-browser";
 const MAX_VIEWS = 4;
 const DOCK_GAP = 8;
+// The page stays drawn over the menu while it's captured: past this, hide it without a snapshot.
+const SNAPSHOT_WAIT_MS = 250;
+// Sonner's toast width plus its edge offsets: the column toasts need beside the page.
+const TOAST_COLUMN = 380;
 // Catches moves that resize nothing.
 const RECHECK_MS = 300;
 // Pages can open tabs without a click here: a few a minute across all pages, then the user decides.
@@ -244,10 +250,10 @@ export async function nativeFind(tabId: string, query: string, backwards: boolea
   return call<boolean>("browser_view_find", { tabId, query, backwards }).catch(() => false);
 }
 
-// Studio UI that covers the panel. Not tooltips, or every hover would blank the page; toasts only
-// when they carry an action (a mailto: or popup prompt), which would be unclickable under the page.
+// Studio UI that covers the panel. Not tooltips, or every hover would hide the page (the toolbar's
+// open upward, clear of it). Toasts move beside a page at the right edge; one still over it hides it.
 const OVERLAY_SELECTOR =
-  '[data-radix-popper-content-wrapper], [role="dialog"], [role="alertdialog"], [data-slot$="-overlay"], [data-sonner-toast]:has([data-action])';
+  '[data-radix-popper-content-wrapper], [role="dialog"], [role="alertdialog"], [data-slot$="-overlay"], [data-sonner-toast]';
 
 function intersects(a: DOMRect, b: DOMRect): boolean {
   return a.left < b.right && b.left < a.right && a.top < b.bottom && b.top < a.bottom;
@@ -281,19 +287,34 @@ function visibleRect(element: HTMLElement): DOMRect | null {
   return new DOMRect(rect.left, rect.top, rect.width, bottom - rect.top);
 }
 
-type Desired = { tabId: string; url: string; entry: number; zoom: number; bounds: Bounds } | null;
+type Desired =
+  | { tabId: string; url: string; entry: number; zoom: number; bounds: Bounds }
+  | { tabId: string; covered: true }
+  | null;
+
+function placeholder(tabId: string): HTMLElement | null {
+  return document.querySelector<HTMLElement>(`[data-native-page="${CSS.escape(tabId)}"]`);
+}
+
+let toastInset: string | null = null;
+
+// Toasts can't draw over the page: while it fills the right edge, they move into the column beside it.
+function insetToasts(rect: DOMRect | null): void {
+  const room = rect && rect.right >= window.innerWidth - 2 && rect.left >= TOAST_COLUMN;
+  const next = room ? `${Math.round(window.innerWidth - rect.left)}px` : null;
+  if (next === toastInset) return;
+  toastInset = next;
+  const style = document.documentElement.style;
+  if (next) style.setProperty(BROWSER_PAGE_INSET_VAR, next);
+  else style.removeProperty(BROWSER_PAGE_INSET_VAR);
+}
 
 function desiredView(): Desired {
-  const state = useBrowserStore.getState();
-  if (!state.open) return null;
-  const tab = state.tabs.find((candidate) => candidate.id === state.activeTabId);
-  if (!tab || tab.nativeError) return null;
-  const entry = currentEntry(tab);
-  if (entry.kind !== "web") return null;
-  const element = document.querySelector<HTMLElement>(`[data-native-page="${CSS.escape(tab.id)}"]`);
-  if (!element || element.offsetParent === null) return null;
-  const rect = visibleRect(element);
-  if (!rect || covered(rect)) return null;
+  const page = pageRect();
+  insetToasts(page?.rect ?? null);
+  if (!page) return null;
+  const { tab, entry, rect } = page;
+  if (covered(rect)) return { tabId: tab.id, covered: true };
   return {
     tabId: tab.id,
     url: entry.url,
@@ -307,6 +328,20 @@ function desiredView(): Desired {
       viewportWidth: window.innerWidth,
     },
   };
+}
+
+/** Where the active tab's web page goes on screen, if it shows one. */
+function pageRect(): { tab: BrowserTab; entry: Extract<BrowserEntry, { kind: "web" }>; rect: DOMRect } | null {
+  const state = useBrowserStore.getState();
+  if (!state.open) return null;
+  const tab = state.tabs.find((candidate) => candidate.id === state.activeTabId);
+  if (!tab || tab.nativeError) return null;
+  const entry = currentEntry(tab);
+  if (entry.kind !== "web") return null;
+  const element = placeholder(tab.id);
+  if (!element || element.offsetParent === null) return null;
+  const rect = visibleRect(element);
+  return rect ? { tab, entry, rect } : null;
 }
 
 function pruneViews(shown: string | null): void {
@@ -345,8 +380,44 @@ export function whenNativeViewShown(tabId: string, timeoutMs = 1500): Promise<bo
   });
 }
 
+// The page as it was when a menu hid it, painted on its placeholder so the panel doesn't go blank.
+let snapshot: { element: HTMLElement; url: string } | null = null;
+let shownBounds: Bounds | null = null;
+
+function clearSnapshot(): void {
+  if (!snapshot) return;
+  const { style } = snapshot.element;
+  for (const property of ["background-image", "background-position", "background-size", "background-repeat"]) {
+    style.removeProperty(property);
+  }
+  URL.revokeObjectURL(snapshot.url);
+  snapshot = null;
+}
+
+async function paintSnapshot(tabId: string): Promise<void> {
+  const bounds = shownBounds;
+  const element = placeholder(tabId);
+  if (shownView !== tabId || !bounds || !element) return;
+  const started = generation;
+  const png = await Promise.race([
+    call<ArrayBuffer>("browser_capture", { tabId }).catch(() => null),
+    new Promise<null>((resolve) => setTimeout(() => resolve(null), SNAPSHOT_WAIT_MS)),
+  ]);
+  if (!png?.byteLength || !element.isConnected || started !== generation) return;
+  const url = URL.createObjectURL(new Blob([png], { type: "image/png" }));
+  // The view can be trimmed short of its placeholder (by the chat dock): line the picture up with it.
+  const box = element.getBoundingClientRect();
+  element.style.backgroundImage = `url(${url})`;
+  element.style.backgroundPosition = `${bounds.x - box.left}px ${bounds.y - box.top}px`;
+  element.style.backgroundSize = `${bounds.width}px ${bounds.height}px`;
+  element.style.backgroundRepeat = "no-repeat";
+  snapshot = { element, url };
+}
+
 async function applyView(desired: Desired): Promise<void> {
-  if (!desired) {
+  if (!desired || "covered" in desired) {
+    clearSnapshot();
+    if (desired) await paintSnapshot(desired.tabId);
     setShownView(null);
     await call("browser_view_show", { tabId: null });
     return;
@@ -364,6 +435,8 @@ async function applyView(desired: Desired): Promise<void> {
   try {
     await call("browser_view_show", { tabId, url: resumed?.entry === entry ? resumed.url : url, bounds });
     if (stale()) return;
+    clearSnapshot();
+    shownBounds = bounds;
     setShownView(tabId);
     // A new address for an existing view. Recorded once it went through, so Retry tries again.
     if (existed && loaded !== entry) {
@@ -435,9 +508,7 @@ export function startNativeViews(): () => void {
     frame = 0;
     const desired = desiredView();
     pruneViews(desired?.tabId ?? null);
-    const element = desired
-      ? document.querySelector<HTMLElement>(`[data-native-page="${CSS.escape(desired.tabId)}"]`)
-      : null;
+    const element = desired ? placeholder(desired.tabId) : null;
     if (element !== resized) {
       if (resized) resizeObserver.unobserve(resized);
       if (element) resizeObserver.observe(element);
@@ -470,6 +541,8 @@ export function startNativeViews(): () => void {
     generation += 1;
     pending = null;
     setShownView(null);
+    clearSnapshot();
+    insetToasts(null);
     for (const tabId of [...views.keys()]) closeView(tabId);
   };
 }
