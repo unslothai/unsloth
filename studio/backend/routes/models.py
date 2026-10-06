@@ -905,6 +905,8 @@ def collect_local_models(
         *sources.known_hf_caches,
         legacy_hf,
         hf_default,
+        # oMLX also serves models--* repos kept under its own roots.
+        *sources.omlx_dirs,
     ):
         cache_real = _safe_resolve(cache_dir)
         if cache_real is None:

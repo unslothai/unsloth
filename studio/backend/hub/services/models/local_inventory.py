@@ -890,6 +890,12 @@ async def _collect_models_from_default_sources(
             continue
         seen_hf.add(key)
         hf_sources.append(("previous HF cache", previous_cache, False))
+    # oMLX also serves models--* repos kept under its own roots.
+    for omlx_dir in omlx_dirs:
+        key = os.path.normcase(str(omlx_dir.resolve(strict = False)))
+        if key not in seen_hf:
+            seen_hf.add(key)
+            hf_sources.append(("oMLX HF cache", omlx_dir, False))
 
     discovered_sources = []
     custom_sources = []

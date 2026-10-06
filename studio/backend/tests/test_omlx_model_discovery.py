@@ -320,3 +320,14 @@ def test_resolver_index_scans_omlx_roots(monkeypatch, tmp_path):
     resolver._build_index()
 
     assert ("omlx", str(model)) in [(i.source, i.path) for i in seen]
+
+
+def test_hf_cache_repos_under_an_omlx_root_are_listed(collector, tmp_path):
+    active = tmp_path / "active"
+    active.mkdir()
+    external = tmp_path / "external-hub"
+    _write_hf_cache_repo(external, "mlx-community", "External-4bit")
+
+    rows = collector(active, external)
+
+    assert [(m.source, m.model_id) for m in rows] == [("hf_cache", "mlx-community/External-4bit")]
