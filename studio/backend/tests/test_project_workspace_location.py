@@ -20,6 +20,7 @@ from utils.paths.storage_roots import (
     _windows_documents_dir,
     documents_root,
     project_workspaces_root,
+    shared_project_workspaces_root,
 )
 
 
@@ -83,6 +84,9 @@ def test_the_studio_images_keep_project_folders_on_the_studio_volume(
     monkeypatch.setenv("HOME", str(tmp_path / "root"))
 
     assert project_workspaces_root().is_relative_to(image_env["UNSLOTH_STUDIO_HOME"])
+    # The owner gets no OS confinement and its project root is a silent tool root, so it must not
+    # contain the base the managed accounts' `Accounts/<id>/Projects` live under.
+    assert not shared_project_workspaces_root().is_relative_to(project_workspaces_root())
 
 
 def _probe_payload():
