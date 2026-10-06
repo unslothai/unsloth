@@ -3,6 +3,7 @@
 mod app_layout;
 mod app_menu;
 mod browser_capture;
+mod browser_downloads;
 mod browser_proxy;
 mod browser_webview;
 mod commands;
@@ -30,6 +31,7 @@ mod native_path_policy;
 mod preflight;
 mod process;
 mod process_identity;
+mod shell_path;
 mod staged_update;
 mod update;
 mod webview_permissions;
@@ -842,6 +844,44 @@ fn setup_custom_titlebar(app: &tauri::App) -> Result<(), Box<dyn std::error::Err
         std::io::Error::new(std::io::ErrorKind::NotFound, "main window not found")
     })?;
     window.set_decorations(false)?;
+    Ok(())
+}
+
+// tao reapplies the config's `resizable: false` on the first configure, wiping setResizable calls made while hidden
+#[cfg(target_os = "linux")]
+fn keep_resizable_across_first_configure(
+    app: &tauri::App,
+) -> Result<(), Box<dyn std::error::Error>> {
+    use gtk::prelude::*;
+    use std::cell::{Cell, RefCell};
+    use std::rc::Rc;
+
+    let window = app.get_webview_window("main").ok_or_else(|| {
+        std::io::Error::new(std::io::ErrorKind::NotFound, "main window not found")
+    })?;
+    let gtk_window = window.gtk_window()?;
+    let requested: Rc<Cell<Option<bool>>> = Rc::default();
+    let handlers: Rc<RefCell<Vec<glib::SignalHandlerId>>> = Rc::default();
+
+    let seen = requested.clone();
+    // "event" fires before tao's configure-event handler; unrealized configures skip that handler, so refresh each time
+    let before = gtk_window.connect_event(move |window, event| {
+        if event.event_type() == gdk::EventType::Configure {
+            seen.set(Some(window.is_resizable()));
+        }
+        glib::Propagation::Proceed
+    });
+    let owned = handlers.clone();
+    let after = gtk_window.connect_configure_event(move |window, _| {
+        if let Some(resizable) = requested.take() {
+            window.set_resizable(resizable);
+            for id in owned.borrow_mut().drain(..) {
+                window.disconnect(id);
+            }
+        }
+        false
+    });
+    handlers.borrow_mut().extend([before, after]);
     Ok(())
 }
 
@@ -2134,7 +2174,7 @@ fn main() {
     // Fix PATH for GUI apps (macOS .app bundles, Linux AppImage, Windows)
     // GUI apps don't inherit shell dotfile PATH — this spawns the user's
     // login shell to source .zshrc/.bashrc/.profile and sets PATH properly.
-    let _ = fix_path_env::fix();
+    shell_path::fix_path();
 
     setup_logging();
     log_panics();
@@ -2200,7 +2240,9 @@ fn main() {
         .manage(desktop_updater::new_desktop_update_state())
         .manage(new_close_to_tray_state())
         .manage(native_file_dialogs::ChatImportRegistry::default())
+        .manage(native_file_dialogs::NativeSaveRegistry::default())
         .manage(browser_webview::new_browser_views())
+        .manage(browser_downloads::new_browser_downloads())
         .invoke_handler(tauri::generate_handler![
             app_menu::set_app_menu_actions,
             browser_webview::browser_view_supported,
@@ -2213,6 +2255,10 @@ fn main() {
             browser_webview::browser_view_clear_data,
             browser_webview::browser_view_mute,
             browser_capture::browser_capture,
+            browser_downloads::browser_download_save,
+            browser_downloads::browser_download_reveal,
+            browser_downloads::browser_download_exists,
+            browser_downloads::browser_download_forget,
             browser_capture::browser_view_print,
             set_training_active,
             set_renderer_activity,
@@ -2251,6 +2297,10 @@ fn main() {
             native_clipboard::read_native_clipboard_files,
             native_clipboard::read_native_clipboard_png,
             native_file_dialogs::save_native_file,
+            native_file_dialogs::begin_native_file_save,
+            native_file_dialogs::append_native_file_save_chunk,
+            native_file_dialogs::finish_native_file_save,
+            native_file_dialogs::cancel_native_file_save,
             native_file_dialogs::save_native_file_from_url,
             native_file_dialogs::download_logs_to_downloads,
             native_file_dialogs::pick_native_chat_import,
@@ -2313,6 +2363,8 @@ fn main() {
             setup_custom_titlebar(app)?;
             #[cfg(target_os = "linux")]
             setup_linux_media_permissions(app)?;
+            #[cfg(target_os = "linux")]
+            keep_resizable_across_first_configure(app)?;
             #[cfg(all(windows, not(debug_assertions)))]
             setup_windows_browser_guards(app)?;
             #[cfg(target_os = "macos")]

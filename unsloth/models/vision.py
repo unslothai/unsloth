@@ -124,6 +124,7 @@ from ._utils import (
     arm_gradient_checkpointing,
     resolve_training_gradient_checkpointing,
     set_module_gradient_checkpointing,
+    _is_seq2seq_lm_config,
 )
 from ._utils import *
 from ._uma_safetensors import is_integrated_unified_memory_gpu
@@ -201,7 +202,6 @@ from unsloth_zoo.patching_utils import patch_model_and_tokenizer
 from unsloth_zoo.training_utils import prepare_model_for_training
 
 from unsloth_zoo.utils import Version
-from transformers import __version__ as transformers_version
 
 import types
 import functools
@@ -1086,6 +1086,10 @@ VLLM_SUPPORTED_VLM = [
     # reaches this gate even for the text-only checkpoints.
     "qwen3_5",
     "idefics3",
+    # Exact-membership gate: "qwen3_5" does not match qwen3_5_moe.
+    "qwen3_5_moe",
+    "gemma4",
+    "gemma4_text",
 ]
 
 
@@ -1097,6 +1101,29 @@ def _zoo_supports_idefics3_fast_inference():
             "model.text_model.layers.{kk}.self_attn.q_proj"
             in get_model_layer_config()["standard_layers"]
         )
+    except Exception:
+        return False
+
+
+# Need an unsloth_zoo that rebuilds MoE blocks from vLLM.
+VLLM_ZOO_MOE_VLM = ("qwen3_5_moe", "gemma4", "gemma4_text")
+# Dense Gemma-4 shares the model type but aborts in vLLM's audio-encoder profiling, and in
+# 4-bit hits a bnb loader vLLM >= 0.28 moved out of tree. Only MoE checkpoints pass.
+VLLM_MOE_ONLY_VLM = ("gemma4", "gemma4_text")
+
+
+def _is_sparse_moe_config(config):
+    text_config = getattr(config, "text_config", None) or config
+    return bool(
+        getattr(text_config, "num_experts", None) or getattr(text_config, "enable_moe_block", False)
+    )
+
+
+def _zoo_supports_moe_fast_inference():
+    # Older unsloth_zoo releases leave every expert a 1-wide placeholder in the training model.
+    try:
+        from unsloth_zoo.empty_model import extract_moe_layers  # noqa: F401
+        return True
     except Exception:
         return False
 
@@ -2908,6 +2935,27 @@ class FastBaseModel:
                     "Unsloth: Idefics3 fast_inference needs a newer unsloth_zoo. "
                     "Please run `pip install --upgrade unsloth_zoo`."
                 )
+        # Outside the VLM block: text_only = True has is_vlm_config False.
+        if (
+            fast_inference
+            and any(arch in VLLM_MOE_ONLY_VLM for arch in model_types)
+            and not _is_sparse_moe_config(auto_config)
+        ):
+            raise RuntimeError(
+                f"Unsloth: fast_inference = True is only supported for the MoE {model_type_arch} "
+                "checkpoints (such as gemma-4-26B-A4B), not the dense ones yet. "
+                "Please set fast_inference = False."
+            )
+        if (
+            fast_inference
+            and any(arch in VLLM_ZOO_MOE_VLM for arch in model_types)
+            and _is_sparse_moe_config(auto_config)
+            and not _zoo_supports_moe_fast_inference()
+        ):
+            raise RuntimeError(
+                f"Unsloth: {model_type_arch} fast_inference needs a newer unsloth_zoo. "
+                "Please run `pip install --upgrade unsloth_zoo`."
+            )
 
         if any(arch in VLLM_NON_LORA_VLM for arch in model_types):
             # mllama is still only in vllm v0, and vLLM V0 does not support LoRA on multimodal models. TODO: revisit once vLLM V1 supports Llama 3.2 (mllama).
@@ -3329,7 +3377,11 @@ class FastBaseModel:
         elif load_in_16bit:
             bnb_config = None
         elif not load_in_4bit and not load_in_8bit and not full_finetuning:
-            print("Unsloth: QLoRA and full finetuning all not selected. Switching to 16bit LoRA.")
+            # FastModel passes load_in_4bit = False with a quantization_config, which still quantizes.
+            if user_quantization_config is None:
+                print(
+                    "Unsloth: QLoRA and full finetuning all not selected. Switching to 16bit LoRA."
+                )
 
         if full_finetuning:
             os.environ["UNSLOTH_ENABLE_FULL_FINETUNING"] = "1"
@@ -3615,6 +3667,27 @@ class FastBaseModel:
                         load_in_4bit,
                         load_in_8bit,
                         load_in_16bit,
+                    )
+
+                from unsloth_zoo.utils import get_quant_type
+
+                # Mirrors load_vllm's bnb loader test, so prequantized bnb-4bit is refused too.
+                if (
+                    (
+                        load_in_4bit
+                        or load_in_8bit
+                        or str(model_name).lower().endswith("-bnb-4bit")
+                        or get_quant_type(model_config) == "bitsandbytes"
+                    )
+                    and any(arch in VLLM_ZOO_MOE_VLM for arch in model_types)
+                    and _is_sparse_moe_config(model_config)
+                ):
+                    raise NotImplementedError(
+                        f"Unsloth: fast_inference = True does not support bitsandbytes weights (load_in_4bit / load_in_8bit = True "
+                        "or a prequantized bnb-4bit checkpoint) for the sparse MoE "
+                        f"model {model_type_arch}: vLLM's bitsandbytes MoE experts cannot be shared with the "
+                        "training model, and vLLM does not serve LoRA on bitsandbytes MoE experts.\n"
+                        "Load in 16-bit (load_in_4bit = False, load_in_8bit = False), or set fast_inference = False."
                     )
 
                 allowed_args = inspect.getfullargspec(load_vllm).args
@@ -4105,9 +4178,12 @@ class FastBaseModel:
 
         if isinstance(model, (PeftModelForCausalLM, PeftModelForSeq2SeqLM)):
             raise RuntimeError("Unsloth: You already added LoRA adapters to your model!")
+        if task_type == TaskType.CAUSAL_LM and _is_seq2seq_lm_config(
+            getattr(model, "config", None)
+        ):
+            # Also multimodal encoder-decoders (T5Gemma2), which load through the VLM path.
+            task_type = TaskType.SEQ_2_SEQ_LM
         if _is_text_seq2seq_config(getattr(model, "config", None)):
-            if task_type == TaskType.CAUSAL_LM:
-                task_type = TaskType.SEQ_2_SEQ_LM
             # No vision tower: FastLanguageModel's finetune_vision_layers=False must not filter the encoder out.
             finetune_vision_layers = True
             # get_peft_regex misses T5's q/k/v/o/wi/wo and BART's fc1/fc2, so list the Linear leaves (minus the LM head) ourselves.
@@ -4266,7 +4342,7 @@ class FastBaseModel:
         max_seq_length = model.max_seq_length
         # Passing loftq_config = None gives an error.
         loftq_config = validate_loftq_config(
-            loftq_config, lora_dropout, bias, init_lora_weights, model
+            loftq_config, lora_dropout, bias, init_lora_weights, model, r
         )
 
         # Prefer the caller's ORIGINAL explicit leaf list over the scoped regex so an attention-only request does not train experts, but only while MLP and language families are both in scope: with finetune_mlp_modules or finetune_language_layers False the scoped regex already dropped the experts.
@@ -4357,6 +4433,8 @@ class FastBaseModel:
                 n = max(1, min(int(finetune_last_n_layers), _total_layers))
                 layers_to_transform = list(range(_total_layers - n, _total_layers))
 
+        validate_init_target_parameters(init_lora_weights, target_parameters)
+
         local_variables = {
             **locals(),
             **kwargs,
@@ -4430,7 +4508,13 @@ class FastBaseModel:
 
             _LoraModel._create_and_replace = _patched_car
 
-        model = _get_peft_model(model, lora_config)
+        from .lora_init import fast_lora_init, record_fast_pissa
+
+        with fast_lora_init() as fast:
+            model = _get_peft_model(model, lora_config)
+        if fast["pissa"]:
+            record_fast_pissa(model)
+        snapshot_residual_lora_init(model, init_lora_weights)
 
         # PEFT may have wrapped an endpoint this load repaired; the hook stays on base_layer and the adapter branch reads the caller's tensor.
         try:
@@ -4556,6 +4640,7 @@ class FastBaseModel:
             float32_mixed_precision = float32_mixed_precision,
             patch_modules_to_save = True,
         )
+        freeze_peft_variant_weights(model)
         if full_finetuning:
             # prepare_model_for_training re-enabled every parameter, a kept wrapper's siblings too.
             _freeze_unused_siblings(model)

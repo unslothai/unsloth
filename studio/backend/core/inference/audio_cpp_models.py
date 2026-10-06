@@ -569,6 +569,15 @@ _CLONE_FAMILIES: tuple[AudioCppFamily, ...] = (
     ),
     AudioCppFamily("voxcpm2", "tts", clone = CloneSpec("optional")),
     AudioCppFamily("fish_audio", "tts", clone = CloneSpec("required")),
+    AudioCppFamily("breeze_tts", "tts", clone = CloneSpec("required")),
+    AudioCppFamily("omnivoice", "tts", clone = CloneSpec("required")),
+    AudioCppFamily("voxcpm1", "tts", clone = CloneSpec("required")),
+    AudioCppFamily("dots_tts", "tts", clone = CloneSpec("optional")),
+    AudioCppFamily("higgs_audio_tts", "tts", clone = CloneSpec("optional")),
+    # MOSS ignores a transcript; Irodori refuses one ("unknown Irodori-TTS request option").
+    AudioCppFamily("moss_tts_local", "tts", clone = CloneSpec("unused")),
+    AudioCppFamily("moss_tts_nano", "tts", clone = CloneSpec("unused")),
+    AudioCppFamily("irodori_tts", "tts", clone = CloneSpec("unused")),
     AudioCppFamily("echo_tts", "tts", server_task = "clon", speaks = False, clone = CloneSpec("unused")),
     AudioCppFamily(
         "confucius4_tts", "tts", server_task = "clon", speaks = False, clone = CloneSpec("unused")
@@ -677,6 +686,13 @@ _CONVERT_FAMILIES: tuple[AudioCppFamily, ...] = (
         speaks = False,
         convert = ConvertSpec(source_rate = 16000, target_rate = 16000),
     ),
+    AudioCppFamily(
+        "tone_color_vc",
+        "tts",
+        server_task = "vc",
+        speaks = False,
+        convert = ConvertSpec(source_rate = 22050, target_rate = 22050),
+    ),
 )
 
 
@@ -695,7 +711,9 @@ _FAMILY_LIST: tuple[AudioCppFamily, ...] = (
     AudioCppFamily("kitten_tts", "tts", needs_espeak = True),
     AudioCppFamily("piper_tts", "tts", needs_espeak = True),
     AudioCppFamily("inflect_v2", "tts", needs_espeak = True),
-    AudioCppFamily("pocket_tts", "tts", request_defaults = {"voice": "alba"}),
+    AudioCppFamily(
+        "pocket_tts", "tts", request_defaults = {"voice": "alba"}, clone = CloneSpec("unused")
+    ),
     AudioCppFamily("supertonic", "tts", request_defaults = {"voice": "F1"}),
     AudioCppFamily("qwen3_tts", "tts"),
     *_CLONE_FAMILIES,
@@ -703,20 +721,13 @@ _FAMILY_LIST: tuple[AudioCppFamily, ...] = (
     *(
         AudioCppFamily(name, "tts")
         for name in (
-            "moss_tts_nano",
-            "moss_tts_local",
             "moss_tts_v15",
             "moss_ttsd",
             "chatterbox_turbo",
-            "voxcpm1",
             "neutts",
             "magpie_tts",
-            "higgs_audio_tts",
-            "irodori_tts",
-            "breeze_tts",
-            "dots_tts",
+            # Its spec lists clone, but from a short reference clip it may not keep the voice.
             "dramabox",
-            "omnivoice",
             "vibevoice",
             "glm_tts",
             "outetts",
@@ -1569,19 +1580,20 @@ def _single_file_variants(files: Sequence[RepoFile], folder: str) -> list[AudioC
         rel = gguf.path[len(prefix) :] if gguf.path.startswith(prefix) else gguf.path
         sub = rel.rpartition("/")[0]
         rows.append((gguf, sub, quant_label(rel)))
-    groups: dict[str, list[str]] = {}
-    for gguf, sub, quant in rows:
-        k = f"{sub}/{quant}" if sub else quant
-        groups.setdefault(k.lower(), []).append(Path(gguf.path).name[: -len(".gguf")])
+    # Several models at one quant in one place (Moonshine tiny/small/medium): key each by its distinct words.
+    seen: set[tuple[str, str]] = set()
+    crowded: set[str] = set()
+    for _gguf, sub, quant in rows:
+        if (sub, quant.lower()) in seen:
+            crowded.add(sub)
+        seen.add((sub, quant.lower()))
+    models = {sub: {_model_stem(g.path) for g, s, _q in rows if s == sub} for sub in crowded}
     variants = []
     for gguf, sub, quant in rows:
         key = f"{sub}/{quant}" if sub else quant
         label = None
-        stems = groups[key.lower()]
-        if len(stems) > 1:
-            # Several files at one quant in one place (Moonshine tiny, small and medium): the words their
-            # names do not share tell them apart, and name the row like a sub-folder would.
-            scope = _distinct_part(Path(gguf.path).name[: -len(".gguf")], stems)
+        if sub in crowded:
+            scope = _distinct_part(_model_stem(gguf.path), models[sub])
             key = f"{sub}/{scope}/{quant}" if sub else f"{scope}/{quant}"
             label = f"{quant} · {scope}"
         elif sub:
@@ -1597,11 +1609,21 @@ def _single_file_variants(files: Sequence[RepoFile], folder: str) -> list[AudioC
     return variants
 
 
+def _model_stem(path: str) -> str:
+    """A GGUF's file name without its quant: ``irodori-tts-v4.1-anime-q8_0.gguf`` -> ``irodori-tts-v4.1-anime``."""
+    stem = Path(path).name[: -len(".gguf")]
+    matches = list(_QUANT_RE.finditer(stem))
+    if not matches:
+        return stem
+    last = matches[-1]
+    return (stem[: last.start()] + stem[last.end() :]).strip("-_.") or stem
+
+
 def _distinct_part(stem: str, stems: Sequence[str]) -> str:
-    """The words of ``stem`` its siblings do not share: ``moonshine-streaming-tiny-q8_0`` among
-    ``...-small-q8_0`` gives ``tiny``. The whole stem when nothing is left."""
-    split = [re.split(r"[-_.]", s) for s in stems]
-    words = re.split(r"[-_.]", stem)
+    """The words of ``stem`` its siblings do not share: ``moonshine-streaming-tiny`` among
+    ``...-small`` gives ``tiny``. Dots stay inside a word (``v4.1``). The whole stem when nothing is left."""
+    split = [re.split(r"[-_]", s) for s in stems]
+    words = re.split(r"[-_]", stem)
     head = 0
     while all(len(w) > head for w in split) and len({w[head].lower() for w in split}) == 1:
         head += 1
@@ -1637,7 +1659,9 @@ def _variant_rank(variant: AudioCppVariant) -> tuple:
     scope_rank = (
         0 if not sub else (1 + _PREFERRED_SCOPES.index(sub) if sub in _PREFERRED_SCOPES else 10)
     )
-    quant = quant_label(variant.main_file)
+    # Q8_0_V2 is a Q8_0 re-export and FP32 is F32 under another name.
+    quant = re.sub(r"_V\d+$", "", quant_label(variant.main_file))
+    quant = {"FP32": "F32", "FP16": "F16"}.get(quant, quant)
     quant_rank = (
         _QUANT_PREFERENCE.index(quant) if quant in _QUANT_PREFERENCE else len(_QUANT_PREFERENCE)
     )
@@ -1650,12 +1674,15 @@ def _variant_rank(variant: AudioCppVariant) -> tuple:
 
 
 def match_variant(
-    variants: Sequence[AudioCppVariant], wanted: Optional[str]
+    variants: Sequence[AudioCppVariant],
+    wanted: Optional[str],
+    folder: str = "",
 ) -> Optional[AudioCppVariant]:
     """The variant ``wanted`` names: its key, its file, or a quant that picks one row.
 
     A bare quant shared by several rows (ACE-Step ``turbo/Q8_0`` and ``base/Q8_0``) picks the default
-    ordering's first, which is what the folder row loads by default.
+    ordering's first, which is what the folder row loads by default. ``folder`` is the row's folder in
+    the repo, whose own name never counts as a scope word.
     """
     text = (wanted or "").strip().replace("\\", "/")
     if not text:
@@ -1681,10 +1708,14 @@ def match_variant(
     scoped = [v for v in variants if v.key.lower().startswith(low + "/")]
     if scoped:
         return sorted(scoped, key = _variant_rank)[0]
-    return _match_by_words(variants, low)
+    return _match_by_words(variants, low, folder)
 
 
-def _match_by_words(variants: Sequence[AudioCppVariant], low: str) -> Optional[AudioCppVariant]:
+def _match_by_words(
+    variants: Sequence[AudioCppVariant],
+    low: str,
+    folder: str = "",
+) -> Optional[AudioCppVariant]:
     """A key named by the words of its file (``tiny/Q8_0`` or ``tiny``), whatever the listing keyed it.
 
     Which rows need a name beyond their quant depends on the listing: with only Moonshine tiny in
@@ -1698,10 +1729,21 @@ def _match_by_words(variants: Sequence[AudioCppVariant], low: str) -> Optional[A
     scopes = parts[:-1] if quant else parts
     if not scopes:
         return None
+
+    prefix = f"{folder}/".lower() if folder else ""
+
+    def named(path: str, scope: str) -> bool:
+        # Scope words run together below the row's folder: ``multilingual-ctc`` is not ``multilingual-large-ctc``,
+        # and ``Irodori-TTS-v4-Small-GGUF`` does not make every file in it ``v4-small``.
+        path = path.lower()
+        path = path[len(prefix) :] if prefix and path.startswith(prefix) else path
+        words = "-".join(re.split(r"[-_./]", path))
+        return f"-{'-'.join(re.split(r'[-_.]', scope))}-" in f"-{words}-"
+
     matches = [
         v
         for v in variants
-        if all(scope in re.split(r"[-_./]", v.main_file.lower()) for scope in scopes)
+        if all(named(v.main_file, scope) for scope in scopes)
         and (quant is None or quant_label(v.main_file).lower() == quant)
     ]
     return sorted(matches, key = _variant_rank)[0] if matches else None
@@ -2262,10 +2304,11 @@ def _resolve_uncached(
     network: bool,
     tags: tuple[str, ...],
 ) -> Optional[AudioCppModel]:
+    from_hub = False
     if ref.local_path:
         files = [RepoFile(Path(ref.local_path).name, _size(ref.local_path))]
     else:
-        files, _from_hub = list_files(ref.repo_id, ref.folder, hf_token, network = network)
+        files, from_hub = list_files(ref.repo_id, ref.folder, hf_token, network = network)
     files = [f for f in files if not _SKIP_FILE_RE.search(f.path)]
     ggufs = [f for f in files if f.path.lower().endswith(".gguf")]
     if not ggufs:
@@ -2326,27 +2369,32 @@ def _resolve_uncached(
         )
         variants = [AudioCppVariant(quant_label(ggufs[0].path), (ggufs[0],), ggufs[0].path)]
     default = variants[0]
-    chosen = match_variant(variants, wanted) if wanted else default
+    chosen = match_variant(variants, wanted, ref.folder) if wanted else default
     if (
         chosen is not None
         and wanted
-        and "/" not in chosen.key
+        and (not from_hub or "/" not in chosen.key)
         and chosen.key.lower() != wanted.lower()
     ):
-        # A partial cache listing named the row by quant alone; keep the name the full listing gives
-        # it (``tiny/Q8_0``), so status and /gguf-variants agree on the variant that is loaded.
+        # A cache-only listing keys the row more loosely (``Q8_0``, ``ctc/F16``): keep the full listing's key.
         text = wanted.strip().strip("/")
         head, _, tail = text.rpartition("/")
-        scope = head if tail.lower() == chosen.key.lower() else ""
-        if not scope and re.fullmatch(r"[A-Za-z0-9]+", text) and not _is_quant(text):
+        quant = chosen.key.rpartition("/")[2]
+        scope = head if tail.lower() == quant.lower() else ""
+        if (
+            not scope
+            and "/" not in chosen.key
+            and re.fullmatch(r"[A-Za-z0-9]+", text)
+            and not _is_quant(text)
+        ):
             scope = text  # a bare sub-variant name ("tiny"), not a quant or a file stem
         if scope:
             chosen = AudioCppVariant(
-                f"{scope}/{chosen.key}",
+                f"{scope}/{quant}",
                 chosen.files,
                 chosen.primary,
                 dict(chosen.session_options),
-                f"{chosen.key} · {scope.rsplit('/', 1)[-1]}",
+                f"{quant} · {scope.rsplit('/', 1)[-1]}",
             )
     if chosen is None:
         unsupported = unsupported or (
@@ -2455,6 +2503,24 @@ def package_variant_files(names: Iterable[str]) -> Optional[dict[str, tuple[str,
         if found:
             return found
     return None
+
+
+def companion_files(path: str, names: Iterable[str]) -> tuple[str, ...]:
+    """The umbrella files the model GGUF at ``path`` loads beside it (MioTTS's MioCodec), from the
+    umbrella's listing ``names``. A pure function of the names, for the GGUF download planner."""
+    folder, sep, _ = path.partition("/")
+    policy = FAMILIES.get(family_from_names((folder,)) or "") if sep else None
+    if policy is None or not policy.companions:
+        return ()
+    names = list(names)
+    found = []
+    for companion in policy.companions:
+        sub = companion.id[len(_UMBRELLA_PREFIX) :]
+        files = [RepoFile(name, 0) for name in names if name.startswith(f"{sub}/")]
+        variant = match_variant(_single_file_variants(files, sub), companion.variant, sub)
+        if variant is not None:
+            found.append(variant.primary)
+    return tuple(found)
 
 
 def download_target(

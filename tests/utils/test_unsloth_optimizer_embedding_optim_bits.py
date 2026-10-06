@@ -38,9 +38,10 @@ def _optimizer(model, embedding_learning_rate):
     trainer.get_decay_parameter_names = MethodType(Trainer.get_decay_parameter_names, trainer)
     trainer.get_optimizer_cls_and_kwargs = Trainer.get_optimizer_cls_and_kwargs
     trainer.optimizer_cls_and_kwargs = None
+    # No model argument: Transformers 4.x's create_optimizer takes none; both use trainer.model.
     if embedding_learning_rate is None:
-        return Trainer.create_optimizer(trainer, model)
-    return UnslothTrainer.create_optimizer(trainer, model)
+        return Trainer.create_optimizer(trainer)
+    return UnslothTrainer.create_optimizer(trainer)
 
 
 @pytest.mark.parametrize("embedding_learning_rate", [None, 5e-5])

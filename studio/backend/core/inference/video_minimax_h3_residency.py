@@ -503,8 +503,16 @@ def install_h3_stream_prefetch(
     top, blocks = h3_offload_groups(transformer)
     if not blocks:
         return 0
-    depth = h3_stream_prefetch_depth([group_payload_bytes(g) for g in blocks], prefetch_depth())
     from .diffusion_memory import _pinned_memory_capped
+
+    if not _pinned_memory_capped() and any(getattr(g, "low_cpu_mem_usage", False) for g in blocks):
+        # Unpinned host copies: the prefetcher would pin a fresh copy per onload, two blocks ahead (more host RAM, no speed-up).
+        if logger is not None:
+            logger.info(
+                "video.h3_prefetch: left to diffusers' onload (the streamed blocks have unpinned host copies)"
+            )
+        return 0
+    depth = h3_stream_prefetch_depth([group_payload_bytes(g) for g in blocks], prefetch_depth())
 
     if _pinned_memory_capped():
         depth = 1  # each in-flight group is pinned on the fly; diffusers' own path holds two near a ~1 GiB cap

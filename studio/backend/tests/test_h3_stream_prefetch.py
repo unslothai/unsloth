@@ -120,6 +120,7 @@ def _h3_streamed(
     prefetch = True,
     outside_inference = True,
     pin_top = True,
+    unpinned = False,
 ):
     """What the H3 load does at a capped tier: stream groups with record_stream, pinned top group, prefetch."""
     import inspect
@@ -142,6 +143,8 @@ def _h3_streamed(
     kwargs["record_stream"] = True
     if "non_blocking" in params:
         kwargs["non_blocking"] = True
+    if unpinned:
+        kwargs["low_cpu_mem_usage"] = True
     apply_group_offloading(net, **kwargs)
     if outside_inference:
         # what stream_prequantized_module does for torchao v1 int8: every group move outside inference_mode
@@ -325,12 +328,32 @@ def test_top_pin_kill_switch_keeps_diffusers_top_group(monkeypatch):
 
 
 def test_capped_pinned_host_prefetches_one_ahead(monkeypatch):
-    """Windows / WSL2 pin each in-flight group on the fly under a ~1 GiB cap: one ahead, as diffusers holds."""
+    """Windows / WSL2 pin each in-flight group on the fly under a ~1 GiB cap: one ahead, as diffusers holds. Their
+    streamed blocks have unpinned host copies, which elsewhere keep diffusers' onload."""
     _cuda()
     import core.inference.diffusion_memory as dm
     from core.inference.diffusion_offload_prefetch import module_prefetcher
 
     monkeypatch.setattr(dm, "_pinned_memory_capped", lambda: True)
     net = _DiT().eval()
-    assert _h3_streamed(net, monkeypatch) == 1 + len(net.transformer_blocks)
+    assert _h3_streamed(net, monkeypatch, unpinned = True) == 1 + len(net.transformer_blocks)
     assert module_prefetcher(net).depth == 1
+
+
+def test_unpinned_streamed_blocks_keep_diffusers_onload(monkeypatch):
+    """A host whose pin budget refused the denoiser streams it from unpinned copies; the prefetcher would pin a fresh
+    copy of every streamed tensor per onload, so diffusers' own onload keeps them."""
+    _cuda()
+    import core.inference.diffusion_memory as dm
+    from core.inference.diffusion_offload_prefetch import module_prefetcher
+
+    monkeypatch.setattr(dm, "_pinned_memory_capped", lambda: False)
+    torch.manual_seed(0)
+    net = _DiT().eval()
+    ref = copy.deepcopy(net).cuda()
+    assert _h3_streamed(net, monkeypatch, unpinned = True) == 0
+    assert module_prefetcher(net) is None
+    x = torch.randn(16, 64, device = "cuda")
+    with torch.no_grad():
+        for _ in range(2):
+            assert torch.equal(net(x), ref(x))

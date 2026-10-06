@@ -5204,8 +5204,6 @@ _MAX_PATH_SCAN_CHARS = 2048
 _MAX_TERMINAL_SCAN_CHARS = 4096
 # Each pass doubles resolved alias hops; leftover work after the cap fails closed.
 _MAX_SHELL_ASSIGN_EXPAND_PASSES = 16
-# A glob needs one of these to expand into anything but itself; used to skip the glob scans outright.
-_GLOB_META_RE = re.compile(r"[?*\[]")
 # Where the memoised node list is parked on a parsed tree (see _tree_nodes).
 _TREE_NODES_ATTR = "_unsloth_walk_nodes"
 
@@ -5949,12 +5947,32 @@ def _cmd_reading(command: str) -> str:
     return _CMD_CONTROL_RE.sub(" & ", text)
 
 
+# The request's sandbox level while a call is classified: Low runs the Terminal on the host shell,
+# so the classifier must not probe for (or assume) the isolated cmd profile.
+_classifying_sandbox_level: "ContextVar[str | None]" = ContextVar(
+    "unsloth_classifying_sandbox_level", default = None
+)
+
+
+@contextlib.contextmanager
+def classifying_under(sandbox_level: "str | None"):
+    token = _classifying_sandbox_level.set(sandbox_level)
+    try:
+        yield
+    finally:
+        _classifying_sandbox_level.reset(token)
+
+
+# Both run the command through cmd.exe: the isolated one inside MXC, the fallback on a host without Git Bash.
+_CMD_PROFILES = ("cmd_isolated", "cmd_fallback")
+
+
 def _reads_differently_under_cmd(command: str) -> bool:
-    """True when the isolated cmd Terminal will run ``command`` and cmd would split it unlike bash."""
+    """True when cmd.exe will run ``command`` and would split it unlike bash."""
     return (
         sys.platform == "win32"
         and _cmd_reading(command) != command
-        and _terminal_profile() == "cmd_isolated"
+        and _terminal_profile(_classifying_sandbox_level.get() == "low") in _CMD_PROFILES
     )
 
 
@@ -7448,9 +7466,6 @@ _OPENSSL_NETWORK_RE = re.compile(
 # -c/eval it runs an unscreened payload. Paired with the var-executed-as-command test so `echo "${a[@]}"` is left
 # alone.
 _ARRAY_EXPANSION_RE = re.compile(r"\$\{\w+\[[@*]\]\}")
-# A wrapper's bare duration/count argument (timeout 5 rm, timeout 1.5s rm) that precedes the real command, so it is
-# not mistaken for the command itself.
-_WRAPPER_DURATION_RE = re.compile(r"\d+(?:\.\d+)?[smhd]?$")
 # Non-shell interpreters running an inline program (python -c, node -e, php -r): the terminal path never screens that
 # program the way the python tool does. sh/bash -c are omitted, the hard-block already recursing into their payloads.
 _INLINE_CODE_INTERPRETERS = frozenset(
@@ -10251,7 +10266,9 @@ def _profile_for_request() -> str:
     return profile
 
 
-def apply_terminal_profile_for_request(tools: list[dict]) -> list[dict]:
+def apply_terminal_profile_for_request(
+    tools: list[dict], sandbox_level: "str | None" = None
+) -> list[dict]:
     """Sandboxed requests only: advertise the shell _bash_exec will pick for this request. Only the
     first call can block on the MXC probe, so async callers run it in a worker thread; later calls
     reuse the last profile and refresh it in the background. A list without the Terminal never probes."""
@@ -10260,7 +10277,8 @@ def apply_terminal_profile_for_request(tools: list[dict]) -> list[dict]:
         for t in tools or ()
     ):
         return tools
-    return apply_terminal_profile_description(tools, _profile_for_request())
+    profile = _terminal_profile(True) if sandbox_level == "low" else _profile_for_request()
+    return apply_terminal_profile_description(tools, profile)
 
 
 def _shell_argv(command: str, workdir: str, confinement) -> "tuple[list[str], str | None]":
@@ -12140,7 +12158,9 @@ def _edit_file_write(
                     "was being prepared; nothing was written. Read it again and "
                     "redo the edit against the current contents."
                 )
-        os.replace(tmp, path)
+        from core import library
+
+        library.replace_file(tmp, path)
         tmp = ""
     except OSError as exc:
         return f"Error: cannot write '{os.path.basename(path)}': {exc}"
@@ -15777,8 +15797,12 @@ def _fetch_url_raw(
     raw_bytes_max: int | None = None,
     post_data: bytes | None = None,
     meta_out: dict | None = None,
+    host_headers = None,
 ) -> tuple[str | None, "str | bytes", str]:
     """Fetch a URL with SSRF protection; return ``(error, body_text, content_type)``.
+
+    ``host_headers(host)`` adds headers for one hop, chosen by the host that hop goes to, so a
+    redirect to another site does not carry them.
 
     ``post_data`` sends a urlencoded POST (kept on 307/308, dropped on other redirects).
     ``meta_out`` receives the final ``url``, ``charset`` and ``filename`` (Content-Disposition) of a
@@ -15873,6 +15897,8 @@ def _fetch_url_raw(
             }
             if extra_headers:
                 headers.update(extra_headers)
+            if host_headers is not None:
+                headers.update(host_headers(current_host))
             if pending_post is not None:
                 headers.setdefault("Content-Type", "application/x-www-form-urlencoded")
             req = urllib.request.Request(request_url, headers = headers, data = pending_post)
@@ -22165,7 +22191,8 @@ def _bash_exec(
         return _STUDIO_CREDENTIAL_BLOCKED
 
     # Chosen once, so the blocklist, env and argv all agree on the shell that will run this call.
-    profile = _terminal_profile(disable_sandbox)
+    # Sandbox Low runs on the host shell: cmd is only picked to stay inside MXC.
+    profile = _terminal_profile(disable_sandbox or tool_execution_mode == "software")
     if profile == "cmd_isolated":
         # Models often end a command with a newline; cmd /s /c cannot carry one.
         command = command.strip()
@@ -22174,9 +22201,9 @@ def _bash_exec(
 
     # Block dangerous commands (skipped when the sandbox is disabled)
     if not disable_sandbox:
-        if profile == "cmd_isolated":
+        if profile in _CMD_PROFILES:
             # The cmd lexer misses separators glued to a word (a&powershell), cmd drops ^ escapes and
-            # ' does not quote, so screen every reading; defence in depth, MXC is the boundary.
+            # ' does not quote, so screen every reading.
             unescaped = command.replace("^", "")
             blocked = set().union(
                 *(

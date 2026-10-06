@@ -23,7 +23,7 @@ from utils.subprocess_compat import windows_hidden_subprocess_kwargs
 _logger = logging.getLogger(__name__)
 
 FLASH_ATTN_RELEASE_BASE_URL = "https://github.com/Dao-AILab/flash-attention/releases/download"
-# Pinned wheels, kept in lockstep with core/training/worker.py by tests/test_ssm_runtime.py.
+# Pinned wheels; utils.kernel_install wraps them for the training worker, SSM runtime and CLI.
 CAUSAL_CONV1D_PACKAGE_VERSION = "1.6.1"
 CAUSAL_CONV1D_RELEASE_TAG = "v1.6.1.post4"
 CAUSAL_CONV1D_RELEASE_BASE_URL = "https://github.com/Dao-AILab/causal-conv1d/releases/download"

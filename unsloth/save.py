@@ -13,7 +13,7 @@
 from unsloth_zoo.utils import Version
 from importlib.metadata import version as importlib_version
 from unsloth_zoo.hf_utils import dtype_from_config, HAS_TORCH_DTYPE
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from unsloth_zoo.llama_cpp import (
     convert_to_gguf,
     quantize_gguf,
@@ -60,7 +60,6 @@ import subprocess
 import traceback
 import psutil
 import re
-from transformers.models.llama.modeling_llama import logger
 from .models.loader_utils import (
     get_model_name,
     _resolve_hub_repo_cached_file,
@@ -68,7 +67,7 @@ from .models.loader_utils import (
     _tokenizer_revision,
     _tokenizer_wants_local_only,
 )
-from .models._utils import _convert_torchao_model
+from .models._utils import _convert_torchao_model, lora_relative_to_original_base
 from .models.mistral_format import raise_if_merging_mistral_format_view
 from .ollama_template_mappers import OLLAMA_TEMPLATES, MODEL_TO_OLLAMA_TEMPLATE_MAPPER
 from .device_type import clean_gpu_cache
@@ -5155,16 +5154,8 @@ def unsloth_convert_lora_to_ggml_and_save_locally(
     return _unsloth_save_lora_gguf(self, tokenizer, save_directory, outtype = outtype)
 
 
-from .models.loader_utils import (
-    get_model_name,
-    _resolve_hub_repo_cached_file,
-    _tokenizer_cache_dir,
-    _tokenizer_wants_local_only,
-)
-
 # Imported lazily at the two call sites: an older zoo, before its bitsandbytes import became optional, would otherwise break `import unsloth` on a host without bnb.
 from unsloth_zoo.llama_cpp import (
-    install_llama_cpp,
     convert_to_gguf as _convert_to_gguf,
 )
 
@@ -5711,19 +5702,22 @@ def unsloth_generic_save(
         _prewarm_base_model_hub_cache(model, save_method = save_method, token = token)
         from unsloth_zoo.saving_utils import merge_and_overwrite_lora
 
-        merge_and_overwrite_lora(
-            get_model_name,
-            model = model,
-            tokenizer = tokenizer,
-            save_directory = save_directory,
-            push_to_hub = push_to_hub,
-            private = private,
-            token = token,
-            save_method = save_method,
-            output_dtype = None,
-            low_disk_space_usage = True,
-            use_temp_file = False,
-        )
+        # merged_4bit merges into the loaded (already residual) weights, so it needs no conversion.
+        in_place = save_method in ("merged_4bit", "forced_merged_4bit")
+        with nullcontext() if in_place else lora_relative_to_original_base(model):
+            merge_and_overwrite_lora(
+                get_model_name,
+                model = model,
+                tokenizer = tokenizer,
+                save_directory = save_directory,
+                push_to_hub = push_to_hub,
+                private = private,
+                token = token,
+                save_method = save_method,
+                output_dtype = None,
+                low_disk_space_usage = True,
+                use_temp_file = False,
+            )
 
     if push_to_hub and datasets:
         try:

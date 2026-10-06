@@ -164,7 +164,7 @@ export function notifyChatHistoryUpdated(
   }
 }
 
-function notifyChatProjectsUpdated(): void {
+export function notifyChatProjectsUpdated(): void {
   notifyChatHistoryUpdated();
   if (typeof window !== "undefined") {
     window.dispatchEvent(new Event(CHAT_PROJECTS_UPDATED_EVENT));
@@ -648,7 +648,7 @@ export interface LocalModelInfo {
   id: string;
   display_name: string;
   path: string;
-  source: "models_dir" | "hf_cache" | "lmstudio" | "ollama" | "hermes" | "custom";
+  source: "models_dir" | "hf_cache" | "lmstudio" | "omlx" | "ollama" | "hermes" | "custom";
   model_id?: string | null;
   // Backend-detected weights format ("gguf" when known), for folders whose name lacks -GGUF.
   model_format?: string | null;

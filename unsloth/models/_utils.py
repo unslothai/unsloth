@@ -75,6 +75,12 @@ __all__ = [
     "set_task_config_attr",
     "patch_fast_lora",
     "validate_loftq_config",
+    "validate_init_lora_weights",
+    "validate_init_target_parameters",
+    "RESIDUAL_INIT_LORA_WEIGHTS",
+    "snapshot_residual_lora_init",
+    "lora_relative_to_original_base",
+    "freeze_peft_variant_weights",
     "RaiseUninitialized",
     "fast_inference_setup",
     "patch_peft_fast_inference",
@@ -654,6 +660,118 @@ def _flex_call_needs_backward(query, key, value):
         return False
 
 
+# unsloth_zoo drops the causal mask of unpadded, cache-free batches; route that None to SDPA is_causal.
+# Kill switch: UNSLOTH_FLEX_MASKLESS_SDPA=0.
+_FLEX_MASKLESS_SDPA_ENABLED = os.environ.get("UNSLOTH_FLEX_MASKLESS_SDPA", "1") != "0"
+FLEX_MASKLESS_SDPA_STATS = {"sdpa": 0, "flex": 0}
+
+
+def _dropped_causal_mask(module, query, key, args, kwargs):
+    """A flex call whose causal mask unsloth_zoo dropped (stock flex reads None as bidirectional)."""
+    attention_mask = args[0] if len(args) > 0 else kwargs.get("attention_mask", None)
+    if attention_mask is not None:
+        return False
+    # Vision callers pass None meaning bidirectional, and is_causal=False is a per-call override.
+    if getattr(module, "is_causal", None) is not True or kwargs.get("is_causal", None) is False:
+        return False
+    if not (hasattr(query, "dim") and query.dim() == 4 and key.dim() == 4):
+        return False
+    return query.shape[2] >= 2 and query.shape[2] == key.shape[2]
+
+
+# Model types the resolver loaded without SDPA support (class opt-out or exclusion list). Keyed by
+# model_type, not config identity: from_pretrained deep-copies the config it was given.
+_NO_SDPA_MODEL_TYPES = set()
+
+
+def _remember_no_sdpa_config(config):
+    for attention_config in _iter_attention_configs(config):
+        model_type = _config_get(attention_config, "model_type", None)
+        if isinstance(model_type, str) and model_type:
+            _NO_SDPA_MODEL_TYPES.add(model_type.lower())
+
+
+def _maskless_causal_sdpa_accepts(config):
+    """False when some decoder layer could not take the SDPA reroute, so unsloth_zoo keeps the mask."""
+    for attention_config in _text_attention_configs(config) + [config]:
+        model_type = (_config_get(attention_config, "model_type", None) or "").lower()
+        if model_type in _NO_SDPA_MODEL_TYPES:
+            return False
+        if _is_sdpa_excluded(_config_get(attention_config, "model_type", None) or ""):
+            return False
+        if _config_get(attention_config, "attn_logit_softcapping", None) is not None:
+            return False
+    head_dim = _text_attention_head_dim(config)
+    return head_dim is None or head_dim <= 256
+
+
+def _maskless_causal_sdpa_forward(module, query, key, value, args, kwargs):
+    """SDPA is_causal output for a dropped causal mask, else None (the call stays on flex)."""
+    if not _dropped_causal_mask(module, query, key, args, kwargs):
+        return None
+    if _is_sdpa_excluded(_config_get(getattr(module, "config", None), "model_type", None) or ""):
+        return None
+    # flex positional order: attention_mask, scaling, softcap, s_aux.
+    if any(arg is not None for arg in args[2:]):
+        return None
+    if kwargs.get("softcap", None) is not None or kwargs.get("s_aux", None) is not None:
+        return None
+    if kwargs.get("position_bias", None) is not None:
+        return None
+    # SDPA has flash / cuDNN kernels only up to head_dim 256; above that flex is faster.
+    if query.shape[-1] > 256:
+        return None
+    try:
+        from transformers.modeling_utils import ALL_ATTENTION_FUNCTIONS
+        sdpa_forward = ALL_ATTENTION_FUNCTIONS["sdpa"]
+    except Exception:
+        return None
+    scaling = args[1] if len(args) > 1 else kwargs.get("scaling", None)
+    return sdpa_forward(
+        module,
+        query,
+        key,
+        value,
+        None,
+        dropout = kwargs.get("dropout", 0.0),
+        scaling = scaling,
+        is_causal = True,
+    )
+
+
+_CAUSAL_BLOCK_MASKS = {}
+
+
+def _causal_block_mask(query, key):
+    """The causal BlockMask unsloth_zoo dropped, for calls that cannot go to SDPA."""
+    cache_key = (query.shape[2], key.shape[2], query.device)
+    block_mask = _CAUSAL_BLOCK_MASKS.get(cache_key)
+    if block_mask is None:
+        from torch.nn.attention.flex_attention import create_block_mask
+
+        # Uncompiled builds materialize Q x KV; inference tensors break a later backward.
+        with torch.inference_mode(False):
+            block_mask = create_block_mask(
+                lambda b, h, q_idx, kv_idx: q_idx >= kv_idx,
+                None,
+                None,
+                query.shape[2],
+                key.shape[2],
+                device = query.device,
+                _compile = True,
+            )
+        if len(_CAUSAL_BLOCK_MASKS) >= 8:
+            _CAUSAL_BLOCK_MASKS.pop(next(iter(_CAUSAL_BLOCK_MASKS)))
+        _CAUSAL_BLOCK_MASKS[cache_key] = block_mask
+    return block_mask
+
+
+def _count_flex_reroute(path):
+    # A Python counter mutated inside a compiled region makes Dynamo recompile every call.
+    if not torch.compiler.is_compiling():
+        FLEX_MASKLESS_SDPA_STATS[path] += 1
+
+
 def _wrap_flex_attention_forward(flex_attention_forward):
     """Add kernel_options to a registered `flex_attention` function: block sizes above head_dim
     256, and the main flex kernel for calls that need a backward."""
@@ -662,6 +780,19 @@ def _wrap_flex_attention_forward(flex_attention_forward):
 
     @functools.wraps(flex_attention_forward)
     def unsloth_flex_attention_forward(module, query, key, value, *args, **kwargs):
+        if _FLEX_MASKLESS_SDPA_ENABLED and _dropped_causal_mask(module, query, key, args, kwargs):
+            output = _maskless_causal_sdpa_forward(module, query, key, value, args, kwargs)
+            if output is not None:
+                _count_flex_reroute("sdpa")
+                return output
+            # Softcap, sinks or head_dim > 256: stay on flex, but never with a None mask.
+            _count_flex_reroute("flex")
+            if len(args) > 0:
+                args = (_causal_block_mask(query, key),) + tuple(args[1:])
+            else:
+                kwargs["attention_mask"] = _causal_block_mask(query, key)
+        elif _FLEX_MASKLESS_SDPA_ENABLED:
+            _count_flex_reroute("flex")
         try:
             # Some vision callers reuse the interface with a non-4D query.
             kernel_options = (
@@ -687,6 +818,10 @@ def _wrap_flex_attention_forward(flex_attention_forward):
         return flex_attention_forward(module, query, key, value, *args, **kwargs)
 
     unsloth_flex_attention_forward._unsloth_flex_kernel_options = True
+    unsloth_flex_attention_forward._unsloth_maskless_causal_sdpa = _FLEX_MASKLESS_SDPA_ENABLED
+    unsloth_flex_attention_forward._unsloth_maskless_causal_sdpa_accepts = (
+        _maskless_causal_sdpa_accepts
+    )
     unsloth_flex_attention_forward._unsloth_original_forward = flex_attention_forward
     return unsloth_flex_attention_forward
 
@@ -2264,6 +2399,8 @@ def resolve_attention_implementation(
         supports_sdpa = model_class is not None and getattr(model_class, "_supports_sdpa", False)
     if _is_sdpa_excluded(model_type) or _declares_no_sdpa(model_class):
         supports_sdpa = False
+    if not supports_sdpa:
+        _remember_no_sdpa_config(config)
     supports_flash_attention = _model_class_supports_flash_attention(
         model_class
     ) and not _is_flash_excluded(model_type)
@@ -2544,6 +2681,7 @@ _ROOT_AUX_PREFETCH_PATTERNS = (
 _ADAPTER_PREFETCH_PATTERNS = (
     "adapter_config.json",
     "adapter_model*",
+    "unsloth_lora_init.json",  # lora_init.SIDECAR: which PiSSA algorithm rebuilds the residual base
 )
 
 
@@ -3866,9 +4004,6 @@ def has_internet(
         return False
 
 
-import psutil
-
-
 def _get_statistics(statistics = None, force_download = True):
     # Basic stats on which environment is in use: a README.md is downloaded from HF, all data public, so broken envs can be detected. Disable with UNSLOTH_DISABLE_STATISTICS.
     n_cpus = psutil.cpu_count(logical = False)
@@ -4812,6 +4947,28 @@ def patch_fla_autotuner_fast_path():
     CachedAutotuner.run = run
 
 
+def _is_seq2seq_lm_config(config):
+    # Both halves: Voxtral / Qwen2-Audio are Seq2SeqLM-mapped but decoder-only, Whisper is encoder-decoder but SpeechSeq2Seq.
+    if config is None or not getattr(config, "is_encoder_decoder", False):
+        return False
+    try:
+        from transformers import AutoModelForSeq2SeqLM
+        return type(config) in AutoModelForSeq2SeqLM._model_mapping
+    except Exception:
+        return False
+
+
+def _make_seq2seq_aware_get_batch_samples(original):
+    def _unsloth_get_batch_samples_dispatch(self, *args, **kwargs):
+        # Seq2Seq labels are unshifted, so the causal labels[..., 1:] token count drops one per row and inflates the GA loss.
+        if _is_seq2seq_lm_config(getattr(self.model, "config", None)):
+            return original(self, *args, **kwargs)
+        return _unsloth_get_batch_samples(self, *args, **kwargs)
+
+    _unsloth_get_batch_samples_dispatch.__name__ = "_unsloth_get_batch_samples"
+    return _unsloth_get_batch_samples_dispatch
+
+
 def patch_gradient_accumulation_fix(Trainer):
     # Fixes "Output 0 of UnslothFusedLossBackward is a view and is being modified inplace" and gradient accumulation.
     import inspect
@@ -4833,7 +4990,9 @@ def patch_gradient_accumulation_fix(Trainer):
             raise NotImplementedError("Unsloth: Please make a Github issue immediately!!")
         else:
             if Trainer.get_batch_samples.__name__ != "_unsloth_get_batch_samples":
-                Trainer.get_batch_samples = _unsloth_get_batch_samples
+                Trainer.get_batch_samples = _make_seq2seq_aware_get_batch_samples(
+                    Trainer.get_batch_samples
+                )
 
             if not hasattr(Trainer, "_old_compute_loss"):
                 # Fix transformers 4.57.0 raising "Output 0 of UnslothFusedLossBackward is a view and is being modified inplace".
@@ -5659,7 +5818,237 @@ for function in ("__reduce__", "__reduce_ex__", "__getstate__", "__setstate__"):
         pass
 
 
-def validate_loftq_config(loftq_config, lora_dropout, bias, init_lora_weights, model):
+_INIT_LORA_WEIGHTS = (
+    "gaussian",
+    "eva",
+    "olora",
+    "pissa",
+    "corda",
+    "loftq",
+    "orthogonal",
+    "lora_ga",
+    "mica",
+)
+# Inits that rewrite the base weight to W - scaling * B @ A (save_pretrained_merged must not use the original W).
+RESIDUAL_INIT_LORA_WEIGHTS = ("pissa", "olora", "corda", "loftq", "lora_ga")
+
+
+def _has_quantized_linears(
+    model,
+    routed_ok,
+    bnb_ok = False,
+):
+    for module in model.modules():
+        routed = type(module).__name__ == "_UnslothNVFP4Linear" or getattr(
+            module, "_unsloth_compressed_tensors_fp8", False
+        )
+        if routed:
+            if not routed_ok:
+                return True
+            continue
+        # No dense .weight: GPTQ / AWQ (qweight), HQQ (W_q), packed MXFP4 / INT4 (weight_packed).
+        if any(hasattr(module, name) for name in ("qweight", "qzeros", "W_q", "weight_packed")):
+            return True
+        if not isinstance(module, torch.nn.Linear):
+            continue
+        weight = getattr(module, "weight", None)
+        # FSDP-QLoRA packs Params4bit into a float quant_storage, so the dtype alone looks dense.
+        if type(weight).__name__ in ("Params4bit", "Int8Params") or hasattr(weight, "quant_state"):
+            if bnb_ok:
+                continue
+            return True
+        if isinstance(weight, torch.Tensor) and weight.dtype not in (
+            torch.float32,
+            torch.float16,
+            torch.bfloat16,
+        ):
+            return True
+    return False
+
+
+def validate_init_target_parameters(init_lora_weights, target_parameters):
+    # PEFT's ParamWrapper reads a .weight fused experts lack and refuses MiCA, failing mid get_peft_model.
+    if not target_parameters or not isinstance(init_lora_weights, str):
+        return
+    if init_lora_weights.split("_niter_")[0] in (
+        "pissa",
+        "olora",
+        "orthogonal",
+        "corda",
+        "loftq",
+        "lora_ga",
+        "mica",
+    ):
+        raise ValueError(
+            f"Unsloth: `init_lora_weights = {init_lora_weights!r}` cannot initialize fused MoE expert "
+            f"parameters ({target_parameters}).\n"
+            "Pass `target_parameters = []` to apply it to the other layers only, or use another init."
+        )
+
+
+def validate_init_lora_weights(
+    init_lora_weights,
+    model,
+    r = None,
+):
+    if type(init_lora_weights) is bool:
+        return
+    name = init_lora_weights if isinstance(init_lora_weights, str) else None
+    if name is not None and name.startswith("pissa_niter_"):
+        if not name[len("pissa_niter_") :].isdigit():
+            raise ValueError(
+                f"Unsloth: `init_lora_weights = {name!r}` must be `pissa_niter_<non-negative int>`."
+            )
+        name = "pissa"
+    if name not in _INIT_LORA_WEIGHTS:
+        raise ValueError(
+            "Unsloth: `init_lora_weights` must be True, False, `pissa_niter_<int>` or one of "
+            f"{list(_INIT_LORA_WEIGHTS)}, got {init_lora_weights!r}."
+        )
+    import peft
+    from peft.tuners.lora import LoraLayer
+
+    def _require(supported, version):
+        if not supported:
+            raise RuntimeError(
+                f"Unsloth: Your PEFT version of {peft.__version__} does not support "
+                f"`init_lora_weights = {init_lora_weights!r}`.\n"
+                f"Please install PEFT {version} or higher: `pip install --upgrade peft`"
+            )
+
+    if name == "mica":
+        try:
+            from peft.tuners.lora.variants import MiCALinearVariant
+        except ImportError:
+            _require(False, "0.20.0")
+    elif name == "lora_ga":
+        _require(hasattr(LoraLayer, "lora_ga_init"), "0.19.0")
+
+    # PEFT's olora handles bitsandbytes only; loader_utils densifies routed NVFP4 / FP8 for all but MiCA.
+    base = name.split("_niter_")[0] if name is not None else None
+    if base in (
+        "pissa",
+        "olora",
+        "corda",
+        "loftq",
+        "lora_ga",
+        "mica",
+        "orthogonal",
+    ) and _has_quantized_linears(model, routed_ok = base != "mica", bnb_ok = base == "olora"):
+        raise ValueError(
+            f"Unsloth: `init_lora_weights = {init_lora_weights!r}` needs float32/float16/bfloat16 base weights, "
+            "yet your model is quantized.\n"
+            "Reload your model with `load_in_4bit = False` and `load_in_8bit = False`."
+        )
+    if name == "orthogonal" and r is not None and r % 2 != 0:
+        raise ValueError(
+            f"Unsloth: `init_lora_weights = 'orthogonal'` needs an even rank, got r = {r}."
+        )
+    if name in ("corda", "lora_ga"):
+        attr = "eigens" if name == "corda" else "_peft_loraga_grad"
+        if not any(hasattr(module, attr) for module in model.modules()):
+            preprocess = (
+                "peft.tuners.lora.corda.preprocess_corda"
+                if name == "corda"
+                else "peft.preprocess_loraga"
+            )
+            # lora_ga silently falls back to the default init without it.
+            raise ValueError(
+                f"Unsloth: `init_lora_weights = {name!r}` needs `{preprocess}(model, lora_config, ...)` "
+                "to be run on the model before `get_peft_model`."
+            )
+    if name == "eva":
+        logger.warning_once(
+            "Unsloth: `init_lora_weights = 'eva'` only zeroes lora_B. Call "
+            "`peft.initialize_lora_eva_weights(model, dataloader)` after `get_peft_model` to run EVA."
+        )
+
+
+def _lora_factors(module):
+    """(adapter, A holder, A attr, B holder, B attr): Linear / Conv keep factors as `.weight` of lora_A / lora_B
+    modules, Embedding as entries of the lora_embedding_A / lora_embedding_B ParameterDicts."""
+    lora_A = getattr(module, "lora_A", None)
+    if isinstance(lora_A, torch.nn.ModuleDict):
+        for k in lora_A:
+            yield k, lora_A[k], "weight", module.lora_B[k], "weight"
+    lora_embedding_A = getattr(module, "lora_embedding_A", None)
+    if isinstance(lora_embedding_A, torch.nn.ParameterDict):
+        for k in lora_embedding_A:
+            yield k, lora_embedding_A, k, module.lora_embedding_B, k
+
+
+def snapshot_residual_lora_init(model, init_lora_weights):
+    if not isinstance(init_lora_weights, str):
+        return
+    if init_lora_weights.split("_niter_")[0] not in RESIDUAL_INIT_LORA_WEIGHTS:
+        return
+    # The scale the base rewrite used: LoftQ fits B0 @ A0 to W - Q unscaled, the others subtract s * B0 @ A0.
+    unscaled = init_lora_weights == "loftq"
+    for module in model.modules():
+        initial = {
+            k: (
+                getattr(a, a_name).detach().clone(),
+                getattr(b, b_name).detach().clone(),
+                1.0 if unscaled else module.scaling[k],
+            )
+            for k, a, a_name, b, b_name in _lora_factors(module)
+        }
+        if initial:
+            module._unsloth_initial_lora = initial
+
+
+@contextlib.contextmanager
+def lora_relative_to_original_base(model):
+    # Merge reads the original W: s0 * [B * s / s0, -B0] @ [A; A0] (PEFT's path_initial_model_for_weight_conversion).
+    swapped = []
+    try:
+        for module in model.modules():
+            initial = getattr(module, "_unsloth_initial_lora", None)
+            if not initial:
+                continue
+            for k, a, a_name, b, b_name in list(_lora_factors(module)):
+                if k not in initial:
+                    continue
+                A0, B0, scaling0 = initial[k]
+                if not scaling0:
+                    continue  # lora_alpha = 0: the base rewrite was a no-op
+                A, B = getattr(a, a_name), getattr(b, b_name)
+                swapped.append((module, k, module.scaling[k], a, a_name, A, b, b_name, B))
+                B_new = B.detach() * (module.scaling[k] / scaling0)
+                module.scaling[k] = scaling0
+                setattr(
+                    a,
+                    a_name,
+                    torch.nn.Parameter(torch.cat([A.detach(), A0.to(A)], 0), requires_grad = False),
+                )
+                setattr(
+                    b,
+                    b_name,
+                    torch.nn.Parameter(torch.cat([B_new, -B0.to(B_new)], 1), requires_grad = False),
+                )
+        yield
+    finally:
+        for module, k, scaling, a, a_name, A, b, b_name, B in swapped:
+            module.scaling[k] = scaling
+            setattr(a, a_name, A)
+            setattr(b, b_name, B)
+
+
+def freeze_peft_variant_weights(model):
+    # prepare_model_for_training re-enables every lora_A/lora_B; PEFT variants such as MiCA freeze lora_B.
+    for module in model.modules():
+        if getattr(module, "frozen_peft_weight_names", None):
+            module._freeze_non_trainable_peft_weights()
+
+
+def validate_loftq_config(
+    loftq_config,
+    lora_dropout,
+    bias,
+    init_lora_weights,
+    model,
+    r = None,
+):
     from peft import LoraConfig
 
     if loftq_config is None:
@@ -5680,15 +6069,7 @@ def validate_loftq_config(loftq_config, lora_dropout, bias, init_lora_weights, m
             f"Unsloth will patch all other layers, except LoRA matrices, causing a performance hit."
         )
 
-    if not (
-        type(init_lora_weights) is bool
-        or init_lora_weights == "gaussian"
-        or init_lora_weights == "loftq"
-        or init_lora_weights == "corda"
-    ):
-        raise ValueError(
-            'Unsloth: `init_lora_weights` must be either [True, False, "gaussian", "loftq", "corda"].'
-        )
+    validate_init_lora_weights(init_lora_weights, model, r)
 
     if init_lora_weights == "loftq":
         if not SUPPORTS_LOFTQ:
@@ -5706,12 +6087,6 @@ def validate_loftq_config(loftq_config, lora_dropout, bias, init_lora_weights, m
                 "We shall use `loftq_config = LoftQConfig(loftq_bits = 4, loftq_iter = 1)`."
             )
             loftq_config = LoftQConfig(loftq_bits = 4, loftq_iter = 1)
-
-        if hasattr(model.config, "quantization_config"):
-            raise ValueError(
-                "Unsloth: You are using `loftq` init, yet `load_in_4bit = True` was set.\n"
-                "Reload your model without any quantization by setting `load_in_4bit = False`."
-            )
 
     return loftq_config
 
