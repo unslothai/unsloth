@@ -13,12 +13,14 @@ import { de } from "./locales/de.ts";
 import { en } from "./locales/en.ts";
 import { es } from "./locales/es.ts";
 import { fr } from "./locales/fr.ts";
+import { he } from "./locales/he.ts";
 import { hi } from "./locales/hi.ts";
 import { it } from "./locales/it.ts";
 import { ja } from "./locales/ja.ts";
 import { ko } from "./locales/ko.ts";
 import { ptBR } from "./locales/pt-br.ts";
 import { ru } from "./locales/ru.ts";
+import { sv } from "./locales/sv.ts";
 import { zhCN } from "./locales/zh-CN.ts";
 
 type Tree = { readonly [k: string]: string | Tree };
@@ -112,8 +114,10 @@ const overlays: Record<string, Tree> = {
   es: es as unknown as Tree,
   hi: hi as unknown as Tree,
   ar: ar as unknown as Tree,
+  he: he as unknown as Tree,
   fr: fr as unknown as Tree,
   ru: ru as unknown as Tree,
+  sv: sv as unknown as Tree,
   de: de as unknown as Tree,
   ko: ko as unknown as Tree,
   it: it as unknown as Tree,

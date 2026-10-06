@@ -50,6 +50,7 @@ def load(
     engine: str,
     request_cancel_event: Optional[threading.Event] = None,
     device: Optional[str] = None,
+    **options,
 ) -> None:
     """Make ``model`` resident on ``engine``, then release every idle other engine.
 
@@ -72,11 +73,11 @@ def load(
         if _model_is_downloaded(engine, model):
             unload(others, wait = False)
             sidecar_for(engine).load(
-                model, request_cancel_event = request_cancel_event, device = device
+                model, request_cancel_event = request_cancel_event, device = device, **options
             )
         else:
             sidecar_for(engine).load(
-                model, request_cancel_event = request_cancel_event, device = device
+                model, request_cancel_event = request_cancel_event, device = device, **options
             )
             unload(others, wait = False)
 

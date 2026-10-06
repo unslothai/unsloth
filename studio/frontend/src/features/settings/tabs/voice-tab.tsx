@@ -12,12 +12,14 @@ import {
   Select,
   SelectContent,
   SelectItem,
+  SelectSeparator,
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
 import { Slider } from "@/components/ui/slider";
 import { Spinner } from "@/components/ui/spinner";
 import { Switch } from "@/components/ui/switch";
+import { useAudioVoicesStore } from "@/features/audio/stores/audio-voices-store";
 import {
   type SttDownloadStatus,
   StudioModelDictationAdapter,
@@ -100,8 +102,10 @@ const DICTATION_LANGUAGES: { value: string; label: string }[] = [
   { value: "it-IT", label: "Italiano" },
   { value: "pt-BR", label: "Português (Brasil)" },
   { value: "ru-RU", label: "Русский" },
+  { value: "sv-SE", label: "Svenska" },
   { value: "hi-IN", label: "हिन्दी" },
   { value: "ar-SA", label: "العربية" },
+  { value: "he-IL", label: "עברית" },
 ];
 
 // Keep spoken preview content independent of the interface locale. The system
@@ -433,6 +437,12 @@ export function VoiceTab() {
   const setTtsEngine = useVoiceSettingsStore((s) => s.setTtsEngine);
   const ttsVoiceURI = useVoiceSettingsStore((s) => s.ttsVoiceURI);
   const setTtsVoiceURI = useVoiceSettingsStore((s) => s.setTtsVoiceURI);
+  const ttsStudioVoiceId = useVoiceSettingsStore((s) => s.ttsStudioVoiceId);
+  const setTtsStudioVoiceId = useVoiceSettingsStore(
+    (s) => s.setTtsStudioVoiceId,
+  );
+  const savedVoices = useAudioVoicesStore((s) => s.voices);
+  const savedVoicesListed = useAudioVoicesStore((s) => s.loaded && !s.error);
   const ttsProviderId = useVoiceSettingsStore((s) => s.ttsProviderId);
   const setTtsProviderId = useVoiceSettingsStore((s) => s.setTtsProviderId);
   const ttsProviderModel = useVoiceSettingsStore((s) => s.ttsProviderModel);
@@ -505,6 +515,28 @@ export function VoiceTab() {
     StudioSpeechSynthesisAdapter.systemVoicesSupported();
   const effectiveTtsEngine: TtsEngine =
     ttsEngine === "system" && !systemTtsSupported ? "studio" : ttsEngine;
+
+  // Voices saved on the Audio page since the last visit show up without a reload.
+  useEffect(() => {
+    if (effectiveTtsEngine === "studio") {
+      void useAudioVoicesStore.getState().refresh();
+    }
+  }, [effectiveTtsEngine]);
+
+  // A deleted voice would otherwise stay selected and every read aloud would fail on it.
+  const hasSelectedStudioVoice = savedVoices.some(
+    (voice) => voice.id === ttsStudioVoiceId,
+  );
+  useEffect(() => {
+    if (ttsStudioVoiceId && savedVoicesListed && !hasSelectedStudioVoice) {
+      setTtsStudioVoiceId("");
+    }
+  }, [
+    hasSelectedStudioVoice,
+    savedVoicesListed,
+    setTtsStudioVoiceId,
+    ttsStudioVoiceId,
+  ]);
 
   // Local STT stays on-demand. Track its phase without fetching model weights.
   type SttPhase =
@@ -1405,30 +1437,70 @@ export function VoiceTab() {
                 </SettingsRow>
               </>
             ) : effectiveTtsEngine === "studio" ? (
-              <SettingsRow
-                label={t("settings.voice.readAloud.modelLabel")}
-                description={t("settings.voice.readAloud.modelDescription")}
-              >
-                {/* The row named the model selector but offered no way to reach it. */}
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={() => {
-                    useSettingsDialogStore.getState().closeDialog();
-                    // Audio keeps the mode it was left in, so name the TTS task.
-                    void navigate({
-                      to: "/audio",
-                      search: { task: "text-to-speech" },
-                    });
-                  }}
+              <>
+                <SettingsRow
+                  label={t("settings.voice.readAloud.modelLabel")}
+                  description={t("settings.voice.readAloud.modelDescription")}
                 >
-                  <HugeiconsIcon
-                    icon={AudioWave01Icon}
-                    className="mr-1.5 size-3.5"
-                  />
-                  {t("settings.voice.readAloud.openAudioAction")}
-                </Button>
-              </SettingsRow>
+                  {/* The row named the model selector but offered no way to reach it. */}
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => {
+                      useSettingsDialogStore.getState().closeDialog();
+                      // Audio keeps the mode it was left in, so name the TTS task.
+                      void navigate({
+                        to: "/audio",
+                        search: { task: "text-to-speech" },
+                      });
+                    }}
+                  >
+                    <HugeiconsIcon
+                      icon={AudioWave01Icon}
+                      className="mr-1.5 size-3.5"
+                    />
+                    {t("settings.voice.readAloud.openAudioAction")}
+                  </Button>
+                </SettingsRow>
+                <SettingsRow
+                  label={t("settings.voice.readAloud.voiceLabel")}
+                  description={t(
+                    "settings.voice.readAloud.studioVoiceDescription",
+                  )}
+                >
+                  <Select
+                    value={ttsStudioVoiceId || "model"}
+                    onValueChange={(value) =>
+                      setTtsStudioVoiceId(value === "model" ? "" : value)
+                    }
+                  >
+                    <SelectTrigger
+                      aria-label={t("settings.voice.readAloud.voiceLabel")}
+                      className="min-w-56 max-w-72"
+                      size="sm"
+                    >
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent className="max-h-[min(--spacing(72),var(--radix-select-content-available-height))]">
+                      <SelectItem value="model">
+                        {t("settings.voice.readAloud.studioVoiceDefault")}
+                      </SelectItem>
+                      {savedVoices.length > 0 ? <SelectSeparator /> : null}
+                      {savedVoices.map((voice) => (
+                        <SelectItem key={voice.id} value={voice.id}>
+                          {voice.name}
+                        </SelectItem>
+                      ))}
+                      {/* Until the list loads, or if it fails, keep the stored choice visible. */}
+                      {ttsStudioVoiceId && !hasSelectedStudioVoice ? (
+                        <SelectItem value={ttsStudioVoiceId}>
+                          {t("settings.voice.readAloud.studioVoiceSaved")}
+                        </SelectItem>
+                      ) : null}
+                    </SelectContent>
+                  </Select>
+                </SettingsRow>
+              </>
             ) : (
               <SettingsRow
                 label={t("settings.voice.readAloud.voiceLabel")}

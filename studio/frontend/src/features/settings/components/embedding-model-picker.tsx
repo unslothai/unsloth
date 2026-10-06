@@ -23,6 +23,9 @@ const EMBEDDING_TASKS: readonly PipelineType[] = [
   "sentence-similarity",
   "feature-extraction",
 ];
+/** Listed first on the empty search, ahead of unsloth's embedders by downloads, where a new
+ *  release would sit at the bottom. The older embeddinggemma-300m follows it from the listing. */
+const PINNED_EMBEDDING_MODELS: readonly string[] = ["unsloth/embeddinggemma-2"];
 type EmbeddingModelPickerProps = {
   value: string;
   /** Fires once, on a pick. Typing is a search, not a selection. */
@@ -100,6 +103,7 @@ export function EmbeddingModelPicker({
     excludeGguf: true,
     enabled: open && !disabled,
     ownerScope: debouncedQuery ? "all" : "unsloth",
+    priorityIds: PINNED_EMBEDDING_MODELS,
   });
 
   const items = useMemo(() => {

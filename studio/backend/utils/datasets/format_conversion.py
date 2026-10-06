@@ -236,8 +236,9 @@ def convert_chatml_to_alpaca(
         instructions = []
         outputs = []
         inputs = []
+        column_systems = examples.get("system") or [None] * len(chatml_data)
 
-        for convo in chatml_data:
+        for convo, column_system in zip(chatml_data, column_systems):
             turns = []
             for msg in convo or []:
                 role = roles.get(msg.get("role") or msg.get("from"))
@@ -248,6 +249,13 @@ def convert_chatml_to_alpaca(
                     turns[-1][1] = f"{turns[-1][1]}\n\n{content}"
                 else:
                     turns.append([role, content])
+            # A separate system column fills in only when the conversation has no leading system turn.
+            if (
+                isinstance(column_system, str)
+                and column_system.strip()
+                and not (turns and turns[0][0] == "system")
+            ):
+                turns.insert(0, ["system", column_system])
 
             system = ""
             context = []

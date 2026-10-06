@@ -150,6 +150,7 @@ import {
 } from "@/features/generation-presets";
 import { getHfToken, hfApiToken } from "@/features/hub/stores/hf-token-store";
 import { formatBytes, formatEta } from "@/features/hub/lib/format";
+import { generatePhaseLabel, sameGenerateProgress } from "@/lib/media-generate-phase";
 import { ChevronDown } from "lucide-react";
 import { NegativePromptField } from "@/components/negative-prompt-field";
 import { cn } from "@/lib/utils";
@@ -572,12 +573,7 @@ function formatTimestamp(epochSeconds: number): string {
 }
 
 function genStepLabel(p: DiffusionGenerateProgress): string {
-  // Text encoding happens before the first scheduler tick, so step 0 means "working, not denoising yet".
-  if (p.step === 0) return "Preparing (text encoding + warmup)…";
-  if (p.phase === "decode") return "Decoding…";
-  const base = `Step ${p.step}/${p.total_steps}`;
-  const eta = p.eta_seconds != null ? formatEta(p.eta_seconds) : "";
-  return eta ? `${base} · ~${eta}` : base;
+  return generatePhaseLabel({ ...p, total: p.total_steps }, { formatEta });
 }
 
 // Settling a generation whose POST response was lost: the backend keeps denoising, so poll until it goes idle.
@@ -1507,6 +1503,9 @@ export function ImagesPage({
   const [allowOversized, setAllowOversized] = usePersistedToggle(
     "unsloth_images_allow_oversized",
   );
+  // Live latent preview while denoising, on by default: only the opt-out is stored.
+  const [livePreviewOff, setLivePreviewOff] = usePersistedToggle("unsloth_images_live_preview_off");
+  const livePreview = !livePreviewOff;
   const oversizedOnce = useRef(false);
   // Queued: "Generate anyway" is clickable before the refused run releases busy.
   const [oversizedRetryQueued, setOversizedRetryQueued] = useState(false);
@@ -1574,6 +1573,7 @@ export function ImagesPage({
   const [thumbById, setThumbById] = useState<Record<string, string>>(() =>
     galleryCache.thumbById.toRecord(),
   );
+  const [srcErrors, setSrcErrors] = useState<Record<string, boolean>>({});
   // Guards a "load more" so a fast scroll cannot fire several at once.
   const loadingMore = useRef(false);
   // Observer root for loading thumbnails near the visible strip.
@@ -1888,6 +1888,9 @@ export function ImagesPage({
   );
   const selectedSrc = selected ? srcById[selected.id] : undefined;
   const selectedThumb = selected ? thumbById[selected.id] : undefined;
+  // The in-flight run's live preview, when the backend streams one and the toggle is on.
+  const livePreviewSrc =
+    busy === "generating" && livePreview ? (genStep?.preview ?? undefined) : undefined;
   const [viewerId, setViewerId] = useState<string | null>(null);
   const viewerImage = viewerId ? (images.find((image) => image.id === viewerId) ?? null) : null;
   const viewerSrc = viewerImage ? srcById[viewerImage.id] : undefined;
@@ -1905,6 +1908,12 @@ export function ImagesPage({
   const ensureSrc = useCallback(async (image: GalleryImage) => {
     if (galleryCache.srcById.has(image.id) || galleryCache.inflight.has(image.id)) return;
     galleryCache.inflight.add(image.id);
+    setSrcErrors((prev) => {
+      if (!prev[image.id]) return prev;
+      const next = { ...prev };
+      delete next[image.id];
+      return next;
+    });
     try {
       const { url, bytes } = await fetchGalleryObjectUrl(image.url);
       if (galleryCache.deleted.has(image.id)) {
@@ -1927,7 +1936,9 @@ export function ImagesPage({
         return next;
       });
     } catch {
-      // Leave it without a src; the tile shows a placeholder.
+      if (!galleryCache.deleted.has(image.id)) {
+        setSrcErrors((prev) => ({ ...prev, [image.id]: true }));
+      }
     } finally {
       galleryCache.inflight.delete(image.id);
     }
@@ -2077,6 +2088,12 @@ export function ImagesPage({
       galleryCache.srcById.delete(id); // revokes the URL with the entry
       galleryCache.thumbById.delete(id);
       galleryCache.deleted.add(id);
+      setSrcErrors((prev) => {
+        if (!prev[id]) return prev;
+        const next = { ...prev };
+        delete next[id];
+        return next;
+      });
       setSrcById((prev) => {
         const next = { ...prev };
         delete next[id];
@@ -2651,7 +2668,7 @@ export function ImagesPage({
           return;
         }
         setGenStep((prev) => {
-          if (prev && prev.step === p.step && prev.eta_seconds === p.eta_seconds && prev.phase === p.phase) return prev;
+          if (prev && sameGenerateProgress(prev, p)) return prev;
           return p;
         });
       } catch {
@@ -4232,7 +4249,7 @@ export function ImagesPage({
         // Skip the state update (and re-render) when nothing the bar shows moved.
         setGenStep((prev) => {
           if (!p.active) return null;
-          if (prev && prev.step === p.step && prev.eta_seconds === p.eta_seconds && prev.phase === p.phase) return prev;
+          if (prev && sameGenerateProgress(prev, p)) return prev;
           return p;
         });
       } catch {
@@ -4291,6 +4308,7 @@ export function ImagesPage({
             strength: condStrength,
             upscale: condUpscale,
             allow_oversized: allowOversizedSent ? true : undefined,
+            live_preview: livePreview,
             ...condFields,
             // Drop empty and zero-weight rows and trim hand-typed repo ids, so the recipe records only
             // adapters that applied. Gated on loraCapable, since a restore can leave adapters in state.
@@ -4377,7 +4395,7 @@ export function ImagesPage({
       setGenStep(null);
       setStopping(false);
     }
-  }, [allowOversized, prompt, negativePrompt, width, height, steps, guidance, seed, batchSize, count, workflow, initImage, maskImage, strength, extendPct, extendSides, upscaleFactor, upscaleStrength, referenceImages, loras, loraCapable, controlnetCapable, controlnetId, controlImage, controlType, controlStrength, ensureSrc, loadGallery, refreshStatus, unifiedEdit, localizedMode, localizedLayer, maxExtras, referenceResolution, conditioning, editSize, editSizing, sizeLimits]);
+  }, [allowOversized, livePreview, prompt, negativePrompt, width, height, steps, guidance, seed, batchSize, count, workflow, initImage, maskImage, strength, extendPct, extendSides, upscaleFactor, upscaleStrength, referenceImages, loras, loraCapable, controlnetCapable, controlnetId, controlImage, controlType, controlStrength, ensureSrc, loadGallery, refreshStatus, unifiedEdit, localizedMode, localizedLayer, maxExtras, referenceResolution, conditioning, editSize, editSizing, sizeLimits]);
 
   // Stop the in-flight generation. Latch FIRST, so a multi-run request stops even if the POST
   // races the run that is already finishing.
@@ -4612,7 +4630,7 @@ export function ImagesPage({
       />
       <AdvancedSelect
         label="Attention"
-        hint="Attention kernel. Auto upgrades to cuDNN fused attention on NVIDIA when a speed profile is active. sage is INT8 attention: fast (10-40%) but can black-frame some families (Qwen, Wan), so it never engages automatically."
+        hint="Attention kernel. Auto upgrades to cuDNN fused attention on NVIDIA when a speed profile is active. sage is INT8 attention (SageAttention 2; without a local install Studio fetches the Hugging Face kernels-hub build, which runs on Ampere, Ada and Hopper GPUs, and any other GPU keeps the default): fast (10-40%) but can black-frame some families (Qwen, Wan), so it never engages automatically."
         badge={<ResolvedBadge status={status} controlKey="attention_backend" />}
         value={attentionBackend}
         onValueChange={(v) => setAttentionBackend(v as typeof attentionBackend)}
@@ -4657,7 +4675,7 @@ export function ImagesPage({
       )}
       <AdvancedSelect
         label="Step cache"
-        hint="First-Block-Cache reuses the transformer tail across steps for many-step models (~1.4x, small quality cost). Auto turns it on only on the Max speed tier at 20+ steps, re-checked per image. Static skip extrapolates every other middle step on a fixed schedule (12+ steps) and keeps the CUDA graph; never picked by Auto."
+        hint="Static skip extrapolates middle steps on a fixed schedule (12+ steps) and keeps the compile and CUDA graph. Auto uses it for text-to-image, at or above the step count it was measured at, on the models where it stayed close to the full render: Qwen-Image, Qwen-Image-2.1, FLUX.1 Krea dev, FLUX.2 klein base 4B on every speed tier but Off/Eager, and FLUX.1 dev and HunyuanImage 2.1 on Max only. First-Block-Cache reuses the transformer tail across steps (~1.4x, larger quality cost); Auto turns it on for other many-step models on Max only. UNSLOTH_DIFFUSION_AUTO_STEP_SKIP=0 stops Auto from picking Static skip."
         badge={<ResolvedBadge status={status} controlKey="transformer_cache" />}
         value={transformerCache}
         onValueChange={(v) => setTransformerCache(v as typeof transformerCache)}
@@ -4685,6 +4703,17 @@ export function ImagesPage({
           checked={allowOversized}
           onCheckedChange={setAllowOversized}
           aria-label={ALLOW_OVERSIZED_LABEL}
+        />
+      </div>
+      <div className="flex items-center justify-between">
+        <span className="flex items-center gap-1 text-xs font-medium text-muted-foreground">
+          Live preview
+          <InfoHint>Show a rough preview of the image while it denoises. Costs no measurable speed and never changes the final image.</InfoHint>
+        </span>
+        <Switch
+          checked={livePreview}
+          onCheckedChange={(on) => setLivePreviewOff(!on)}
+          aria-label="Live preview"
         />
       </div>
       <LoadedBuildSummary status={status} />
@@ -5251,6 +5280,7 @@ export function ImagesPage({
 
             <Field label={workflow === "edit" ? "Instruction" : "Prompt"}>
               <Textarea
+                data-type-to-activate="prompt"
                 rows={4}
                 className={cn(IMAGE_PROMPT_BOX, "min-h-32")}
                 placeholder={
@@ -5553,7 +5583,17 @@ export function ImagesPage({
             </MediaViewer>
           )}
           <div className="hover-scrollbar relative flex flex-1 items-center justify-center overflow-auto p-6 px-10 @[50rem]:pt-[calc(60px*var(--ui-space-scale,1))]">
-            {selected && selectedSrc ? (
+            {livePreviewSrc ? (
+              // Live latent preview: a small projection of the image being denoised, scaled up to the
+              // requested size (the aspect comes from the preview itself). The finished image replaces it.
+              <img
+                src={livePreviewSrc}
+                alt="Live preview of the image being generated"
+                data-testid="images-live-preview"
+                style={{ maxWidth: width, maxHeight: height }}
+                className="size-full object-contain shadow-sm"
+              />
+            ) : selected && selectedSrc ? (
               <>
                 <img
                   src={selectedSrc}
@@ -5631,24 +5671,45 @@ export function ImagesPage({
                   />
                 </div>
               </>
-            ) : selected && selectedThumb ? (
-              // Match the original's display size while loading; actions require the original.
-              // Leave the box unpainted because object-contain can leave empty space.
-              <>
-                <img
-                  src={selectedThumb}
-                  alt={selected.prompt}
-                  style={{ maxWidth: selected.width, maxHeight: selected.height }}
-                  className="size-full object-contain"
-                />
-                <Spinner className="absolute size-8 text-muted-foreground" />
-              </>
             ) : selected ? (
-              // The selected record's blob is still loading; spin in place.
-              <div className="flex flex-col items-center gap-3 text-muted-foreground">
-                <Spinner className="size-8" />
-                <p className="text-sm">Loading…</p>
-              </div>
+              <>
+                {selectedThumb && (
+                  <img
+                    src={selectedThumb}
+                    alt={selected.prompt}
+                    style={{ maxWidth: selected.width, maxHeight: selected.height }}
+                    className="size-full object-contain"
+                  />
+                )}
+                <div className="absolute bottom-4 right-4 flex items-center gap-0.5 rounded-xl bg-background/80 p-1 shadow-lg ring-1 ring-border backdrop-blur [&_[data-slot=button]]:border-0 [&_[data-slot=button]:focus-visible]:bg-muted">
+                  {srcErrors[selected.id] ? (
+                    <>
+                      <span role="alert" className="sr-only">Full-resolution download failed.</span>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="gap-1.5"
+                        title="Full-resolution download failed. Retry downloading."
+                        onClick={() => void ensureSrc(selected)}
+                      >
+                        <HugeiconsIcon icon={Refresh01Icon} className="size-4" />
+                        Retry download
+                      </Button>
+                    </>
+                  ) : (
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      className="gap-1.5"
+                      disabled
+                      title="Loading full-resolution image…"
+                    >
+                      <Spinner className="size-4" label="Loading full-resolution image" />
+                      Loading image…
+                    </Button>
+                  )}
+                </div>
+              </>
             ) : busy === "generating" ? null : (
               <div className="flex flex-col items-center gap-3 text-muted-foreground">
                 {/* Same icon as the Images nav item. */}
@@ -5666,7 +5727,7 @@ export function ImagesPage({
               <div
                 className={cn(
                   "pointer-events-none absolute flex justify-center px-4",
-                  selectedSrc ? "inset-x-0 bottom-4" : "inset-0 items-center",
+                  selectedSrc || livePreviewSrc ? "inset-x-0 bottom-4" : "inset-0 items-center",
                 )}
               >
                 <div className="w-72 max-w-full rounded-xl bg-background/85 p-3 shadow-lg ring-1 ring-border backdrop-blur">
@@ -5702,8 +5763,12 @@ export function ImagesPage({
               {/* In-progress generation: a placeholder tile at the front so past images stay browsable while
                   the new one renders. */}
               {busy === "generating" && (
-                <div className="flex size-16 shrink-0 animate-pulse items-center justify-center rounded-lg bg-muted/50 ring-2 ring-primary/30">
-                  <Spinner className="size-5 text-muted-foreground" />
+                <div className="flex size-16 shrink-0 animate-pulse items-center justify-center overflow-hidden rounded-lg bg-muted/50 ring-2 ring-primary/30">
+                  {livePreviewSrc ? (
+                    <img src={livePreviewSrc} alt="" className="size-full object-cover" />
+                  ) : (
+                    <Spinner className="size-5 text-muted-foreground" />
+                  )}
                 </div>
               )}
               {/* The tile is a wrapper, not a button: the actions menu must be the select button's SIBLING,

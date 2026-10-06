@@ -113,3 +113,22 @@ def test_fast_linear_forward_decode_matches_peft(adapters):
         got = fast_linear_forward(block.q_proj, X, out = out)
         torch.testing.assert_close(got, block.q_proj(X), rtol = 2e-2, atol = 2e-2)
         assert got.data_ptr() == out.data_ptr()
+
+
+@pytest.mark.parametrize("q_len", [1, 5])
+def test_fast_linear_forward_applies_dora_magnitude(q_len):
+    from peft import LoraConfig, get_peft_model
+    from unsloth.kernels import fast_linear_forward
+
+    torch.manual_seed(3407)
+    cfg = LoraConfig(
+        r = 4, lora_alpha = 8, target_modules = ["q_proj"], init_lora_weights = False, use_dora = True
+    )
+    block = get_peft_model(_Block(), cfg).to("cuda", torch.bfloat16).base_model.model
+    X = torch.randn(1, q_len, H, device = "cuda", dtype = torch.bfloat16)
+    with torch.no_grad():
+        # A trained magnitude no longer equals the row norms DoRA starts from.
+        block.q_proj.lora_magnitude_vector["default"].weight.mul_(1.5)
+        torch.testing.assert_close(
+            fast_linear_forward(block.q_proj, X), block.q_proj(X), rtol = 2e-2, atol = 2e-2
+        )

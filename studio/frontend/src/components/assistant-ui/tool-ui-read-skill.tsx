@@ -40,6 +40,17 @@ const ReadSkillToolUIImpl: ToolCallMessagePartComponent = ({
     toolArgText((args as { resource?: unknown })?.resource) || "SKILL.md";
   const isRunning = status?.type === "running";
   const resultText = result == null ? "" : stringifyToolResult(result);
+  const isPreload = (args as { _studio_skill_load?: unknown })?._studio_skill_load === true;
+  const preloadLoaded = resultText.startsWith("Complete SKILL.md read");
+  const label = isPreload
+    ? isRunning
+      ? `Loading ${name}…`
+      : preloadLoaded
+        ? `Loaded ${name} · ${resource}`
+        : `Skill not loaded · ${name}`
+    : isRunning
+      ? `Reading ${name}…`
+      : `Read ${name} · ${resource}`;
   const hasText = useAuiState(({ message }) =>
     message.content.some(
       (part) =>
@@ -58,7 +69,7 @@ const ReadSkillToolUIImpl: ToolCallMessagePartComponent = ({
       awaitingApproval={awaitingApproval}
     >
       <ToolFallbackTrigger
-        toolName={isRunning ? `Reading ${name}…` : `Read ${name} · ${resource}`}
+        toolName={label}
         status={status}
         icon={SkillIcon}
       />

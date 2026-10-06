@@ -140,8 +140,9 @@ def test_detect_family_matches_reject_and_alias_by_segment():
     # Supported edit families still resolve (edit / kontext are whole tokens).
     assert detect_family("unsloth/Qwen-Image-Edit-2511-GGUF").name == "qwen-image-edit"
     assert detect_family("unsloth/FLUX.1-Kontext-dev-GGUF").name == "flux.1-kontext"
+    assert detect_family("unsloth/Qwen-Image-Layered-GGUF").name == "qwen-image-layered"
     # Unsupported variants sharing only a base arch keyword still reject.
-    assert detect_family("unsloth/Qwen-Image-Layered-GGUF") is None
+    assert detect_family("unsloth/FLUX.1-dev-Layered-GGUF") is None
     assert detect_family("unsloth/Qwen-Image-2512-Inpaint") is None
 
 
@@ -153,7 +154,10 @@ def test_detect_family_edit_keyword_scoped_to_basename():
     assert detect_family_for_pick("/models/edit", "Z-Image-Turbo-Q4.gguf").name == "z-image"
     assert detect_family_for_pick("/models/inpaint", "qwen-image-2512-Q4.gguf").name == "qwen-image"
     # A genuinely unsupported variant keyword in the FILENAME still rejects.
-    assert detect_family_for_pick("/models/misc", "Qwen-Image-Layered-Q4.gguf") is None
+    assert detect_family_for_pick("/models/misc", "Z-Image-Turbo-Layered-Q4.gguf") is None
+    assert detect_family_for_pick("/models/misc", "Qwen-Image-Layered-Q4.gguf").name == (
+        "qwen-image-layered"
+    )
 
 
 def test_detect_family_override():
@@ -1214,7 +1218,9 @@ def test_dense_speed_auto_defers_compile_to_third_generation(fake_runtime, tmp_p
     monkeypatch.setattr(
         dmod,
         "select_attention_backend",
-        lambda target, requested, speed_active = False: ("_native_cudnn" if speed_active else None),
+        lambda target, requested, speed_active = False, family = None, speed_unset = False: (
+            "_native_cudnn" if speed_active else None
+        ),
     )
     monkeypatch.setattr(dmod.compile_cache, "begin", lambda **k: None)
 
@@ -1404,6 +1410,8 @@ def test_deferred_speed_preserves_explicit_attention(fake_runtime, tmp_path, mon
         target,
         requested,
         speed_active = False,
+        family = None,
+        speed_unset = False,
     ):
         if requested in (None, "", "auto"):
             return "_native_cudnn" if speed_active else None
@@ -2082,6 +2090,129 @@ def test_edit_family_uses_own_pipeline_and_requires_image(fake_runtime, tmp_path
         backend.generate(prompt = "make it night", steps = 8)
 
 
+@pytest.mark.parametrize(
+    "gguf_filename, expected",
+    [
+        ("qwen-image-edit-2509-Q6_K.gguf", {"zero_cond_t": False}),
+        ("qwen_image_edit_2509_Q4_K_M.gguf", {"zero_cond_t": False}),
+        ("qwen-image-edit-Q4_K_M.gguf", {"zero_cond_t": False}),
+        ("qwen-image-edit-2511-Q4_K_M.gguf", {}),
+        ("model.gguf", {}),
+    ],
+)
+def test_qwen_edit_gguf_builds_on_its_variant_config(
+    fake_runtime, tmp_path, gguf_filename, expected
+):
+    """2509 / original Edit override the 2511 companion's zero_cond_t; 2511 and unnamed files do not."""
+    (tmp_path / gguf_filename).write_bytes(b"x")
+    backend = DiffusionBackend()
+    _load_into(
+        backend,
+        tmp_path,
+        gguf_filename = gguf_filename,
+        base_repo = "Qwen/Qwen-Image-Edit-2511",
+        family_override = "qwen-image-edit",
+    )
+    assert _FakeTransformer.last["config"].endswith("/Qwen-Image-Edit-2511")
+    assert {k: v for k, v in _FakeTransformer.last.items() if k == "zero_cond_t"} == expected
+
+
+def test_non_qwen_edit_gguf_gets_no_config_override(fake_runtime, tmp_path):
+    (tmp_path / "qwen-image-2512-Q4_K_M.gguf").write_bytes(b"x")
+    backend = DiffusionBackend()
+    _load_into(
+        backend, tmp_path, gguf_filename = "qwen-image-2512-Q4_K_M.gguf", family_override = "qwen-image"
+    )
+    assert "zero_cond_t" not in _FakeTransformer.last
+
+
+def test_qwen_edit_display_repo_id_names_the_variant(fake_runtime, tmp_path):
+    (tmp_path / "model.gguf").write_bytes(b"x")
+    _load_into(
+        DiffusionBackend(),
+        tmp_path,
+        gguf_filename = "model.gguf",
+        display_repo_id = "unsloth/Qwen-Image-Edit-2509-GGUF",
+        base_repo = "Qwen/Qwen-Image-Edit-2511",
+        family_override = "qwen-image-edit",
+    )
+    assert _FakeTransformer.last.get("zero_cond_t") is False
+
+
+def _qwen_edit_dense_route(backend, monkeypatch):
+    from core.inference import diffusion as dmod
+
+    _force_cuda_target(backend, monkeypatch)
+    monkeypatch.setattr(dmod, "dense_transformer_supported", lambda target: True)
+    monkeypatch.setattr(
+        dmod, "select_transformer_quant_scheme", lambda target, mode, family = None, **_kw: "fp8"
+    )
+    attempted = []
+
+    def fake_dense_load(self, *a, **k):
+        attempted.append(k.get("base") if "base" in k else a[2])
+        return None, None
+
+    monkeypatch.setattr(DiffusionBackend, "_load_dense_quant_pipeline", fake_dense_load)
+    return attempted
+
+
+@pytest.mark.parametrize(
+    "gguf_filename, takes_dense",
+    [("qwen-image-edit-2509-Q6_K.gguf", False), ("qwen-image-edit-2511-Q4_K_M.gguf", True)],
+)
+def test_qwen_edit_variant_gguf_never_runs_the_2511_dense_transformer(
+    fake_runtime, tmp_path, monkeypatch, allow_precision_fallback, gguf_filename, takes_dense
+):
+    backend = DiffusionBackend()
+    attempted = _qwen_edit_dense_route(backend, monkeypatch)
+    (tmp_path / gguf_filename).write_bytes(b"x")
+    _load_into(
+        backend,
+        tmp_path,
+        gguf_filename = gguf_filename,
+        base_repo = "Qwen/Qwen-Image-Edit-2511",
+        family_override = "qwen-image-edit",
+        transformer_quant = "fp8",
+    )
+    assert bool(attempted) is takes_dense
+    assert _FakeTransformer.last["path"].endswith(gguf_filename)
+
+
+def test_qwen_edit_variant_gguf_refuses_a_pinned_quant(fake_runtime, tmp_path, monkeypatch):
+    backend = DiffusionBackend()
+    attempted = _qwen_edit_dense_route(backend, monkeypatch)
+    (tmp_path / "qwen-image-edit-2509-Q6_K.gguf").write_bytes(b"x")
+    with pytest.raises(RuntimeError, match = "different transformer"):
+        _load_into(
+            backend,
+            tmp_path,
+            gguf_filename = "qwen-image-edit-2509-Q6_K.gguf",
+            base_repo = "Qwen/Qwen-Image-Edit-2511",
+            family_override = "qwen-image-edit",
+            transformer_quant = "fp8",
+        )
+    assert attempted == []
+
+
+def test_qwen_edit_variant_gguf_with_baked_loras_fails_instead_of_silent_drop(
+    fake_runtime, tmp_path, monkeypatch
+):
+    backend = DiffusionBackend()
+    attempted = _qwen_edit_dense_route(backend, monkeypatch)
+    (tmp_path / "qwen-image-edit-2509-Q6_K.gguf").write_bytes(b"x")
+    with pytest.raises(RuntimeError, match = "LoRA adapters could not be applied"):
+        _load_into(
+            backend,
+            tmp_path,
+            gguf_filename = "qwen-image-edit-2509-Q6_K.gguf",
+            base_repo = "Qwen/Qwen-Image-Edit-2511",
+            family_override = "qwen-image-edit",
+            loras = [("adapter", 1.0)],
+        )
+    assert attempted == []
+
+
 def test_load_pipeline_kind_uses_from_pretrained(fake_runtime):
     """A full-pipeline (no single-file) load on an unsloth/* repo builds the pipe with
     pipeline_cls.from_pretrained(repo_id) -- NO single-file transformer build, NO GGUF
@@ -2359,10 +2490,15 @@ def test_resolve_base_repo_maps_a_mirrored_card_tag_back_to_the_vendor_id(monkey
     )
 
 
-def test_detect_family_rejects_layered():
-    # Qwen-Image-Layered needs a dedicated pipeline (additional_t_cond), so reject at load, not at the first step.
-    assert detect_family("unsloth/Qwen-Image-Layered-GGUF") is None
-    assert detect_family("unsloth/qwen_image_layered") is None
+def test_detect_family_routes_layered_to_its_own_pipeline():
+    # Qwen-Image-Layered needs a dedicated pipeline (additional_t_cond), so it resolves to its own family rather than
+    # to qwen-image; a layered variant of a family without one is still rejected at load.
+    assert (
+        detect_family("unsloth/Qwen-Image-Layered-GGUF").pipeline_class
+        == "QwenImageLayeredPipeline"
+    )
+    assert detect_family("unsloth/qwen_image_layered").name == "qwen-image-layered"
+    assert detect_family("unsloth/FLUX.1-Layered") is None
 
 
 def test_failed_load_rolls_back_eager_patches(fake_runtime, tmp_path, monkeypatch):
@@ -2477,7 +2613,7 @@ def test_load_unknown_family_raises():
 
 # load_progress state machine (no threads / network / real cache)
 
-from core.inference.diffusion import _LoadingState, _LoadState  # noqa: E402
+from core.inference.diffusion import _LoadingState  # noqa: E402
 
 
 def test_load_progress_idle_and_ready():
@@ -3046,6 +3182,9 @@ def test_unload_cancels_pipeline_construction(
         if phase.startswith("dense"):
             mp.setattr(diff_mod, "dense_transformer_supported", lambda target: True)
             mp.setattr(diff_mod, "select_transformer_quant_scheme", lambda *a, **k: "int8")
+            # Z-Image declares its rotated INT8 artifact, so an auto GGUF pick (dense_fallback) would decline the
+            # uncached hosted pre-quant and never reach the dense attempt this phase parks in. Treat it as cached.
+            mp.setattr(diff_mod, "_uncached_prequant_repo", lambda *a, **k: None)
             mp.setattr(
                 backend,
                 "_dense_transformer_resident_bytes",
@@ -14420,3 +14559,158 @@ def test_diffusion_status_response_keeps_the_gguf_a_swap_replaced():
     ]
     assert dumped["replaced"] == "gguf:m-Q4_K_M.gguf"
     assert dumped["artifact"] == "prequant:o/r/f.safetensors"
+
+
+class _T5WordTokenizer:
+    def __call__(
+        self,
+        text,
+        add_special_tokens = True,
+        **_,
+    ):
+        return {"input_ids": [5] * len(text.split()) + ([1] if add_special_tokens else [])}
+
+
+class _FluxFakePipe(_FakePipe):
+    def __init__(self):
+        super().__init__()
+        self.tokenizer_2 = _T5WordTokenizer()
+
+    def __call__(
+        self,
+        *,
+        prompt = None,
+        max_sequence_length = 512,
+        **kwargs,
+    ):
+        return super().__call__(prompt = prompt, max_sequence_length = max_sequence_length, **kwargs)
+
+
+def test_generate_passes_flux1_t5_length_like_comfy(fake_runtime, tmp_path, monkeypatch):
+    diffusers = sys.modules["diffusers"]
+    monkeypatch.setattr(diffusers, "FluxPipeline", _FakePipeline, raising = False)
+    monkeypatch.setattr(diffusers, "FluxTransformer2DModel", _FakeTransformer, raising = False)
+    _no_cache(monkeypatch)
+    backend = _loaded_backend(tmp_path, family_override = "flux.1")
+    pipe = _FluxFakePipe()
+    object.__setattr__(backend._state, "pipe", pipe)
+    backend.generate(prompt = "a sloth on a branch", steps = 4, guidance = 0.0)
+    assert pipe.last_kwargs["max_sequence_length"] == 256
+    backend.generate(prompt = " ".join(["w"] * 320), steps = 4, guidance = 0.0)
+    assert pipe.last_kwargs["max_sequence_length"] == 512
+
+
+def test_generate_leaves_t5_length_alone_off_flux1(fake_runtime, tmp_path):
+    backend = _loaded_backend(tmp_path, family_override = "z-image")
+    pipe = _FluxFakePipe()
+    object.__setattr__(backend._state, "pipe", pipe)
+    backend.generate(prompt = "a sloth", steps = 4, guidance = 0.0)
+    assert pipe.last_kwargs["max_sequence_length"] == 512  # pipeline default, nothing passed
+
+
+def test_qwen_true_cfg_gets_an_empty_negative_like_comfy(fake_runtime, tmp_path, monkeypatch):
+    """A blank negative must not silently turn Qwen-Image true CFG off."""
+    diffusers = sys.modules["diffusers"]
+    monkeypatch.setattr(diffusers, "QwenImagePipeline", _FakePipeline, raising = False)
+    monkeypatch.setattr(diffusers, "QwenImageTransformer2DModel", _FakeTransformer, raising = False)
+    _no_cache(monkeypatch)
+    backend = _loaded_backend(tmp_path, family_override = "qwen-image")
+    backend.generate(prompt = "a sloth", steps = 4, guidance = 4.0)
+    call = backend._state.pipe.last_kwargs
+    assert call["true_cfg_scale"] == 4.0 and call["negative_prompt"] == ""
+    # An explicit negative is kept; guidance <= 1 never asks for CFG.
+    backend.generate(prompt = "a sloth", negative_prompt = "blurry", steps = 4, guidance = 4.0)
+    assert backend._state.pipe.last_kwargs["negative_prompt"] == "blurry"
+    backend.generate(prompt = "a sloth", steps = 4, guidance = 1.0)
+    assert backend._state.pipe.last_kwargs["negative_prompt"] is None
+
+
+def test_guidance_scale_families_get_no_injected_negative(fake_runtime, tmp_path):
+    backend = _loaded_backend(tmp_path)  # z-image: guidance_scale, its own CFG handling
+    backend.generate(prompt = "a sloth", steps = 4, guidance = 4.0)
+    assert backend._state.pipe.last_kwargs["negative_prompt"] is None
+
+
+class _IdeogramScheduleFakePipe(_FakePipe):
+    def __call__(
+        self,
+        *,
+        prompt = None,
+        mu = 0.0,
+        std = 1.5,
+        guidance_schedule = "card",
+        **kwargs,
+    ):
+        return super().__call__(
+            prompt = prompt, mu = mu, std = std, guidance_schedule = guidance_schedule, **kwargs
+        )
+
+
+def test_generate_ideogram_defaults_follow_comfy_template(fake_runtime, tmp_path):
+    """Ideogram 4 ComfyUI preset; other guidance stays constant, explicit 48 / 7 keeps the card taper."""
+    backend = DiffusionBackend()
+    _load_ideogram(backend, tmp_path)
+    pipe = _IdeogramScheduleFakePipe()
+    object.__setattr__(backend._state, "pipe", pipe)
+    backend.generate(prompt = "a sloth", width = 1024, height = 1024, steps = 20, guidance = 7.0)
+    call = pipe.last_kwargs
+    assert call["guidance_scale"] is None
+    assert call["guidance_schedule"] == [7.0] * 17 + [3.0] * 3
+    assert (call["mu"], call["std"]) == (0.0, 1.75)
+    backend.generate(prompt = "a sloth", width = 512, height = 512, steps = 20, guidance = 7.0)
+    assert pipe.last_kwargs["guidance_schedule"] == [7.0] * 14 + [3.0] * 6
+    backend.generate(prompt = "a sloth", width = 1024, height = 1024, steps = 20, guidance = 5.0)
+    call = pipe.last_kwargs
+    assert call["guidance_scale"] == 5.0 and call["guidance_schedule"] is None
+    assert (call["mu"], call["std"]) == (0.0, 1.75)
+    backend.generate(prompt = "a sloth", steps = 48, guidance = 7.0)
+    call = pipe.last_kwargs
+    assert call["guidance_schedule"] == "card" and (call["mu"], call["std"]) == (0.0, 1.5)
+
+
+def test_generate_ideogram_step_count_picks_its_comfy_preset(fake_runtime, tmp_path):
+    # 48 steps at another guidance keeps the Quality preset (std 1.5, the pipeline default), 12 is Turbo.
+    backend = DiffusionBackend()
+    _load_ideogram(backend, tmp_path)
+    pipe = _IdeogramScheduleFakePipe()
+    object.__setattr__(backend._state, "pipe", pipe)
+    backend.generate(prompt = "a sloth", steps = 48, guidance = 5.0)
+    call = pipe.last_kwargs
+    assert call["guidance_scale"] == 5.0 and (call["mu"], call["std"]) == (0.0, 1.5)
+    backend.generate(prompt = "a sloth", width = 1024, height = 1024, steps = 12, guidance = 7.0)
+    call = pipe.last_kwargs
+    assert (call["mu"], call["std"]) == (0.5, 1.75)
+    assert len(call["guidance_schedule"]) == 12 and call["guidance_schedule"][-1] == 3.0
+
+
+class _ShiftSchedulerConfig(dict):
+    pass
+
+
+class _ShiftFakeScheduler:
+    def __init__(self, **config):
+        self.config = _ShiftSchedulerConfig(config)
+
+    @classmethod
+    def from_config(cls, config, **overrides):
+        return cls(**{**config, **overrides})
+
+
+class _QwenShiftFakePipeline(_FakePipeline):
+    @classmethod
+    def from_pretrained(cls, base, **kwargs):
+        pipe = super().from_pretrained(base, **kwargs)
+        pipe.scheduler = _ShiftFakeScheduler(
+            shift = 1.0, use_dynamic_shifting = True, shift_terminal = 0.02
+        )
+        return pipe
+
+
+def test_qwen_load_samples_at_comfy_static_shift(fake_runtime, tmp_path, monkeypatch):
+    diffusers = sys.modules["diffusers"]
+    monkeypatch.setattr(diffusers, "QwenImagePipeline", _QwenShiftFakePipeline, raising = False)
+    monkeypatch.setattr(diffusers, "QwenImageTransformer2DModel", _FakeTransformer, raising = False)
+    _no_cache(monkeypatch)
+    backend = _loaded_backend(tmp_path, family_override = "qwen-image")
+    cfg = backend._state.pipe.scheduler.config
+    assert (cfg["shift"], cfg["use_dynamic_shifting"], cfg["shift_terminal"]) == (3.1, False, None)

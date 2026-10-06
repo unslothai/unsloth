@@ -11,12 +11,6 @@ import re
 from collections.abc import Callable
 from typing import Any, Optional
 
-from utils.current_date_prompt_settings import (
-    CURRENT_DATE_PROMPT_LINE_RE,
-    CURRENT_DATE_UPDATE_NOTE_RE,
-    CURRENT_DATE_UPDATE_PREFIX,
-)
-
 _OMITTED_TOOL_EXCHANGE = "[Earlier tool exchange omitted from the rolling context window.]"
 _UNPRICED_MEDIA_TYPES = frozenset(
     ("image_url", "input_audio", "audio", "input_image", "input_video", "video_url")
@@ -139,95 +133,6 @@ def evicted_messages(before: list[dict], after: list[dict]) -> list[dict]:
     byte-identical."""
     kept = {id(message) for message in after}
     return [message for message in before if id(message) not in kept]
-
-
-_DATE_NOTE_SEARCH_RE = re.compile(
-    rf"{re.escape(CURRENT_DATE_UPDATE_PREFIX)}[0-9]{{4}}-[0-9]{{2}}-[0-9]{{2}}\]"
-)
-
-
-def _first_text_index(content: Any) -> Optional[int]:
-    if isinstance(content, str):
-        return -1 if content.strip() else None
-    if isinstance(content, list):
-        return next(
-            (
-                index
-                for index, part in enumerate(content)
-                if isinstance(part, dict)
-                and isinstance(part.get("text"), str)
-                and part["text"].strip()
-            ),
-            None,
-        )
-    return None
-
-
-def _texts(message: dict) -> list[str]:
-    content = message.get("content")
-    if isinstance(content, str):
-        return [content]
-    if isinstance(content, list):
-        return [
-            p["text"] for p in content if isinstance(p, dict) and isinstance(p.get("text"), str)
-        ]
-    return []
-
-
-def _is_folded_tool_text(text: str) -> bool:
-    if not text.lstrip().startswith("{"):
-        return False
-    try:
-        parsed = json.loads(text)
-    except ValueError:
-        return False
-    return isinstance(parsed, dict) and "tool_response" in parsed
-
-
-def keep_date_note(messages: list[dict], fitted: list[dict]) -> Optional[tuple[dict, Any]]:
-    """Move the evicted first turn's date note onto the oldest kept user turn."""
-    first = next(
-        (
-            message
-            for message in messages
-            if isinstance(message, dict)
-            and message.get("role") == "user"
-            and _first_text_index(message.get("content")) is not None
-        ),
-        None,
-    )
-    if first is None or any(message is first for message in fitted):
-        return None
-    index = _first_text_index(first["content"])
-    note = CURRENT_DATE_UPDATE_NOTE_RE.match(
-        first["content"] if index == -1 else first["content"][index]["text"]
-    )
-    if note is None or any(
-        CURRENT_DATE_PROMPT_LINE_RE.search(text) or _DATE_NOTE_SEARCH_RE.search(text)
-        for message in fitted
-        for text in _texts(message)
-    ):
-        return None
-    for message in fitted:
-        index = _first_text_index(message.get("content")) if message.get("role") == "user" else None
-        if index is None:
-            continue
-        content = message["content"]
-        text = content if index == -1 else content[index]["text"]
-        if _is_folded_tool_text(text):
-            continue
-        noted = f"{note.group(0).strip()}\n\n{text}"
-        # in place, so identity-based eviction bookkeeping still sees the same turn.
-        if index == -1:
-            message["content"] = noted
-        else:
-            message["content"] = [
-                *content[:index],
-                {**content[index], "text": noted},
-                *content[index + 1 :],
-            ]
-        return message, content
-    return None
 
 
 def truncate_oldest_messages(
