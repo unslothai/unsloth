@@ -1846,6 +1846,7 @@ def _native_condition_images(
     from PIL import Image
 
     from core.inference.diffusion_conditioning import (
+        MIN_OUTPUT_SIDE,
         check_output_size,
         decode_condition_images,
         match_source_size,
@@ -1858,10 +1859,14 @@ def _native_condition_images(
         # A source larger than the family renders is scaled down to fit (aspect kept) rather than refused.
         max_side = int(getattr(fam, "max_output_side", 2048) or 2048)
         max_pixels = int(getattr(fam, "max_output_pixels", 2048 * 2048) or 2048 * 2048)
-        fit = min(1.0, max_side / float(max(sw, sh)), math.sqrt(max_pixels / float(sw * sh)))
+        # A source below the minimum side is scaled up to it: the diffusers engine edits it at its own size, which
+        # sd.cpp's size check would refuse, and the caller has no width / height to change.
+        up = max(1.0, MIN_OUTPUT_SIDE / float(min(sw, sh)))
+        fit = min(up, max_side / float(max(sw, sh)), math.sqrt(max_pixels / float(sw * sh)))
         # The diffusers engine's own snap (``_snap_to_multiple``): nearest multiple, Python rounding.
-        width = max(multiple, int(round(sw * fit / multiple)) * multiple)
-        height = max(multiple, int(round(sh * fit / multiple)) * multiple)
+        floor = -(-MIN_OUTPUT_SIDE // multiple) * multiple if up > 1.0 else multiple
+        width = max(floor if sw <= sh else multiple, int(round(sw * fit / multiple)) * multiple)
+        height = max(floor if sh <= sw else multiple, int(round(sh * fit / multiple)) * multiple)
         width = min(width, max_side // multiple * multiple)
         height = min(height, max_side // multiple * multiple)
         while width * height > max_pixels:
@@ -2896,6 +2901,8 @@ class SdCppDiffusionBackend:
                 hf_token,
                 cancel_event = cancel_event,
                 local_files_only = local_files_only,
+                # An edit-only family cannot run at all without its projector, so a missing one fails the load.
+                vision_optional = not getattr(fam, "edit", False),
             )
 
             files = SdCppModelFiles(
@@ -3488,6 +3495,7 @@ class SdCppDiffusionBackend:
         hf_token: Optional[str],
         cancel_event: Optional[threading.Event] = None,
         local_files_only: bool = False,
+        vision_optional: bool = True,
     ) -> dict[str, str]:
         """Download every asset (cancellable via this load's own ``cancel_event``, so a replacement
         load cannot un-cancel this pull), returning kind -> local path. ``local_files_only``
@@ -3531,7 +3539,7 @@ class SdCppDiffusionBackend:
                     # (unreachable) online case rather than relabelled, so nothing changes when the flag is off.
                     if not local_files_only:
                         raise
-                    if kind == "llm_vision":
+                    if kind == "llm_vision" and vision_optional:
                         # Only editing reads the projector, and edit is offered only when it is loaded. A
                         # Qwen-Image-2.1 GGUF cached before the projector was listed still loads for
                         # text-to-image; opening it from the Images page fetches the projector.
