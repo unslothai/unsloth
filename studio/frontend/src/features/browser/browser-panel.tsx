@@ -192,7 +192,7 @@ const PILL_SURFACE = "bg-(--pill-bg) [--pill-bg:var(--card)] dark:[--pill-bg:var
 // Hover and press shade the pill: darker in light mode, lighter in dark.
 const PILL = cn(
   PILL_SURFACE,
-  "[--pill-hover:5%] [--pill-press:9%] dark:[--pill-hover:7%] dark:[--pill-press:12%]",
+  "[--pill-hover:8%] [--pill-press:12%] dark:[--pill-hover:7%] dark:[--pill-press:12%]",
   "transition-colors disabled:pointer-events-none",
   "hover:bg-[color-mix(in_oklab,var(--pill-bg),var(--foreground)_var(--pill-hover))]",
   "data-[state=open]:bg-[color-mix(in_oklab,var(--pill-bg),var(--foreground)_var(--pill-hover))]",
