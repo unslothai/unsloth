@@ -374,6 +374,7 @@ export function SeparateOutput({
   fallbackClip,
   handleDownloadFallbackClip,
   handleDeleteClip,
+  handleDeleteGroup,
   handleArchiveClip,
   handleTogglePin,
   handleClearGallery,
@@ -392,6 +393,7 @@ export function SeparateOutput({
   | "fallbackClip"
   | "handleDownloadFallbackClip"
   | "handleDeleteClip"
+  | "handleDeleteGroup"
   | "handleArchiveClip"
   | "handleTogglePin"
   | "hasMore"
@@ -460,7 +462,16 @@ export function SeparateOutput({
     if (last) await handleArchiveClip(last.id);
   };
   const deleteGroup = async (group: SeparationGroup) => {
-    for (const clip of group.stems) await handleDeleteClip(clip.id);
+    // A clip saved without a run is a group of one.
+    const groupId = group.stems[0]?.group_id;
+    if (!groupId) {
+      for (const clip of group.stems) await handleDeleteClip(clip.id);
+      return;
+    }
+    await handleDeleteGroup(
+      groupId,
+      group.stems.map((clip) => clip.id),
+    );
   };
 
   return (

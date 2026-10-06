@@ -9,6 +9,7 @@ import { StarPointedIcon } from "@/lib/hugeicons-derived";
 import { HugeiconsIcon } from "@hugeicons/react";
 import type { ReactNode } from "react";
 import type { LibraryFolder, LibraryItem } from "../api";
+import { audioSummary } from "../audio-items";
 import { modelLabelKey } from "../file-kind";
 import { formatActivityTime, formatCardTime, formatItemCount, formatSize } from "../format";
 import type { LibrarySortKey, LibrarySortState } from "../settings-store";
@@ -288,6 +289,11 @@ export function LibraryList({
                 {item.model && (
                   <span className="shrink-0 text-muted-foreground text-sm">
                     {t(modelLabelKey(item)!)}
+                  </span>
+                )}
+                {item.audio && (
+                  <span className="shrink-0 text-muted-foreground text-sm tabular-nums">
+                    {audioSummary(item).join(" · ")}
                   </span>
                 )}
                 {favoriteMarks && item.favorite && (

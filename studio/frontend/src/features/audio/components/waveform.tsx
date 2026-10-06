@@ -36,6 +36,7 @@ export function Waveform({
   overlay,
   controlRef,
   onPositionChange,
+  onError,
 }: {
   /** 0..1; null draws a flat placeholder while decoding. */
   peaks: readonly number[] | null;
@@ -47,6 +48,7 @@ export function Waveform({
   overlay?: ReactNode;
   controlRef?: Ref<WaveformControl>;
   onPositionChange?: (seconds: number, playing: boolean) => void;
+  onError?: () => void;
 }) {
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const [playing, setPlaying] = useState(false);
@@ -177,6 +179,7 @@ export function Waveform({
           className="hidden"
           onPlay={() => setPlaying(true)}
           onPause={() => setPlaying(false)}
+          onError={onError}
           onEnded={() => {
             setPlaying(false);
             setPosition(0);
