@@ -2469,6 +2469,16 @@ export const ptBR = {
       importingChats: "Importando chats: {count} até agora ({percent}%)...",
       importedChatCountPartial: "{count} conversas importadas para Recentes; {failed} não puderam ser salvas.",
       importFailed: "Falha na importação.",
+      importFromSource: "Importar do {source}",
+      importFromSourceDescription:
+        "Copie suas conversas do {source} para o Studio, agrupadas por projeto.",
+      importingAction: "Importando...",
+      importedSourceOneChat: "1 conversa importada do {source}.",
+      importedSourceChatCount:
+        "{count} conversas importadas do {source}.",
+      sourceUpdated: "{count} novas mensagens adicionadas do {source}.",
+      sourceUpToDate: "As conversas do {source} já estão atualizadas.",
+      importedSourcePartial: "Algumas conversas do {source} não puderam ser importadas.",
       clearHistory: "Limpar histórico de chat",
       clearHistoryDescription: "Exclui o histórico de chat deste dispositivo.",
       clearAction: "Limpar",

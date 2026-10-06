@@ -2459,6 +2459,16 @@ export const hi = {
       importingChats: "चैट इंपोर्ट हो रही हैं: अब तक {count} ({percent}%)...",
       importedChatCountPartial: "{count} बातचीत Recents में इंपोर्ट की गईं; {failed} सेव नहीं हो सकीं।",
       importFailed: "इंपोर्ट विफल रहा।",
+      importFromSource: "{source} से इंपोर्ट करें",
+      importFromSourceDescription:
+        "अपने {source} वार्तालाप प्रोजेक्ट के अनुसार समूहित करके Studio में कॉपी करें।",
+      importingAction: "इंपोर्ट हो रहा है...",
+      importedSourceOneChat: "{source} से 1 वार्तालाप इंपोर्ट किया गया।",
+      importedSourceChatCount:
+        "{source} से {count} वार्तालाप इंपोर्ट किए गए।",
+      sourceUpdated: "{source} से {count} नए संदेश जोड़े गए।",
+      sourceUpToDate: "{source} वार्तालाप पहले से अद्यतित हैं।",
+      importedSourcePartial: "कुछ {source} वार्तालाप इंपोर्ट नहीं हो सके।",
       clearHistory: "चैट इतिहास साफ़ करें",
       clearHistoryDescription: "इस डिवाइस से चैट इतिहास हटाएं।",
       clearAction: "साफ़ करें",
