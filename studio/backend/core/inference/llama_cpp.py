@@ -12452,7 +12452,10 @@ class LlamaCppBackend:
         try:
             return set(int(x.strip()) for x in raw.split(",") if x.strip())
         except ValueError:
-            return None
+            if env_name != "CUDA_VISIBLE_DEVICES":
+                return None
+        ids = LlamaCppBackend._resolve_visible_physical_ids()
+        return set(ids) if ids is not None else None
 
     @staticmethod
     def _vulkan_pin_args(gpu_indices: Optional[Iterable[int]]) -> list[str]:

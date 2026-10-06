@@ -164,6 +164,12 @@ class TestResolveRequestedGpuIds(_GpuCacheResetMixin, unittest.TestCase):
                 mask, smi, probe = LlamaCppBackend._resolve_visible_physical_ids
             )
             self.assertEqual(ids, [1, 0])
+            allowed, _ = self._uuid_mask_ids(
+                mask,
+                smi,
+                probe = lambda: LlamaCppBackend._visible_devices_mask("CUDA_VISIBLE_DEVICES"),
+            )
+            self.assertEqual(allowed, {0, 1})
             ids, _ = self._uuid_mask_ids(
                 "GPU-ffff", smi, probe = LlamaCppBackend._resolve_visible_physical_ids
             )
