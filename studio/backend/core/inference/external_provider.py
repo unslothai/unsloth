@@ -3610,15 +3610,22 @@ class ExternalProviderClient:
                                 )
                                 current_code_exec_use = None
                             elif current_compaction is not None:
-                                # End of a compaction block: emit a synthetic tool_event so the chat adapter persists
-                                # it onto the assistant message for next-turn round-trip.
+                                # Anthropic can fail compaction when tools are defined and returns content:null. That
+                                # block is a no-op even when it carries encrypted state: replaying it would discard
+                                # the live history. OpenAI's encrypted-only item uses a different translator below.
                                 compaction_blocks_seen += 1
-                                yield _emit_tool_event(
-                                    {
-                                        "type": "compaction_block",
-                                        **current_compaction,
-                                    }
-                                )
+                                summary = current_compaction.get("content")
+                                if isinstance(summary, str) and summary:
+                                    yield _emit_tool_event(
+                                        {
+                                            "type": "compaction_block",
+                                            **current_compaction,
+                                        }
+                                    )
+                                else:
+                                    # Do not let message_delta replay the failed native block through
+                                    # extra_content either; the rest of this turn still has to follow full history.
+                                    replay_blocks.pop(block_index, None)
                                 current_compaction = None
                             elif current_code_exec_result is not None:
                                 # End of a code-execution result block -- format the inner result into the text

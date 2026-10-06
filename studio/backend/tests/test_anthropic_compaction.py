@@ -431,6 +431,75 @@ def test_compaction_block_emitted_as_tool_event(monkeypatch):
     assert "Here is my answer." in content_text, content_text
 
 
+def test_failed_compaction_block_is_not_replayed_or_persisted(monkeypatch):
+    def http_handler(request: httpx.Request) -> httpx.Response:
+        body = (
+            b"event: message_start\n"
+            b'data: {"type":"message_start","message":{"usage":{}}}\n\n'
+            b"event: content_block_start\n"
+            b'data: {"type":"content_block_start","index":0,'
+            b'"content_block":{"type":"compaction","content":null,'
+            b'"encrypted_content":"opaque-failed"}}\n\n'
+            b"event: content_block_stop\n"
+            b'data: {"type":"content_block_stop","index":0}\n\n'
+            b"event: message_delta\n"
+            b'data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},'
+            b'"usage":{"input_tokens":100,"output_tokens":1}}\n\n'
+            b"event: message_stop\n"
+            b'data: {"type":"message_stop"}\n\n'
+        )
+        return httpx.Response(200, content = body, headers = {"content-type": "text/event-stream"})
+
+    monkeypatch.setattr(
+        ep_mod,
+        "_http_client",
+        httpx.AsyncClient(transport = httpx.MockTransport(http_handler)),
+    )
+    client = _make_client()
+    lines = _async_collect(
+        client._stream_anthropic(
+            messages = [{"role": "user", "content": "hi"}],
+            model = "claude-opus-4-7",
+            temperature = 0.7,
+            top_p = 0.95,
+            max_tokens = 1024,
+            compaction_threshold = 150_000,
+            tools = [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "terminal",
+                        "description": "Run a command",
+                        "parameters": {"type": "object", "properties": {}},
+                    },
+                }
+            ],
+        )
+    )
+    _drive(client.close())
+
+    payloads = [
+        json.loads(line[len("data:") :])
+        for line in lines
+        if line.startswith("data:") and line[len("data:") :].strip() != "[DONE]"
+    ]
+    assert not any(
+        (payload.get("_toolEvent") or {}).get("type") == "compaction_block"
+        for payload in payloads
+    )
+    native_blocks = [
+        block
+        for payload in payloads
+        for choice in payload.get("choices") or []
+        for block in (
+            ((choice.get("delta") or {}).get("extra_content") or {})
+            .get("anthropic", {})
+            .get("content", [])
+        )
+    ]
+    assert not any(block.get("type") == "compaction" for block in native_blocks)
+
+
 def test_compaction_block_round_trips_through_outbound_messages(monkeypatch):
     # The next turn's outbound body must forward a persisted
     # {type:"compaction", content:"..."} block verbatim so the API recognises the state.
