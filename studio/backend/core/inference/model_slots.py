@@ -289,6 +289,28 @@ def unload_idle() -> int:
     return len(evict_these(idle))
 
 
+def audio_cpp_model_names(orchestrator) -> list[str]:
+    """The audio.cpp models an orchestrator holds or is loading: their servers run from the managed tree."""
+    from core.inference.audio_cpp_models import AUDIO_CPP_AUDIO_TYPES, looks_like_audio_cpp
+
+    held = [
+        name
+        for name, entry in list((getattr(orchestrator, "models", None) or {}).items())
+        if isinstance(entry, dict) and entry.get("audio_type") in AUDIO_CPP_AUDIO_TYPES
+    ]
+    loading = [
+        name
+        for name in list(getattr(orchestrator, "loading_models", None) or ())
+        if name not in held and looks_like_audio_cpp(name)
+    ]
+    return held + loading
+
+
+def unload_audio_cpp_slots(strict: bool = False) -> int:
+    """Drop every slot holding or loading an audio.cpp model, for the audio.cpp runtime swap."""
+    return _drop_where(lambda slot, filling: bool(audio_cpp_model_names(slot.orchestrator)), strict)
+
+
 def unload_llama_slots(strict: bool = False) -> int:
     """Drop every slot running or starting a llama-server, a GGUF load still filling one included."""
     return _drop_where(

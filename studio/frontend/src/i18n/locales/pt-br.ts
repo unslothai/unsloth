@@ -1588,6 +1588,9 @@ export const ptBR = {
         showWhisperUpdates: "Notificações de atualização do whisper.cpp",
         showWhisperUpdatesDescription:
           "Notifica quando uma versão mais recente do whisper.cpp está disponível para modelos de fala para texto. Desative se você nunca transcreve áudio.",
+        showAudioCppUpdates: "Notificações de atualização do audio.cpp",
+        showAudioCppUpdatesDescription:
+          "Notifica quando o runtime do audio.cpp precisa de uma atualização para as páginas de Áudio. Desative se você nunca usa Áudio.",
       },
       startup: {
         sectionTitle: "Inicialização",

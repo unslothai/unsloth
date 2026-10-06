@@ -9,6 +9,7 @@ import {
   useLlamaUpdateCheck,
 } from "@/hooks/use-llama-update-check";
 import {
+  useShowAudioCppUpdateBanner,
   useShowLlamaUpdateBanner,
   useShowWhisperUpdateBanner,
 } from "@/hooks/use-llama-update-pref";
@@ -115,6 +116,7 @@ export function LlamaUpdateBanner({
 }: LlamaUpdateBannerProps): ReactElement | null {
   const showLlamaBannerPref = useShowLlamaUpdateBanner();
   const showWhisperBannerPref = useShowWhisperUpdateBanner();
+  const showAudioCppBannerPref = useShowAudioCppUpdateBanner();
   const [changelogVersion, setChangelogVersion] = useState<string | null>(null);
   // Not gated on showBannerPref: this hook instance is the app-wide listener
   // for a cross-tab reload_required resync (the settings-sheet's own instance
@@ -134,20 +136,31 @@ export function LlamaUpdateBanner({
     {
       llama: Boolean(status?.llama.update_available) || migrationPending,
       whisper: Boolean(status?.whisper?.update_available),
+      audio: Boolean(status?.audio?.update_available),
     },
-    { llama: showLlamaBannerPref, whisper: showWhisperBannerPref },
+    {
+      llama: showLlamaBannerPref,
+      whisper: showWhisperBannerPref,
+      audio: showAudioCppBannerPref,
+    },
   );
   // Its own release pair and download size, not the ones the backend put at the
   // top level: those are llama's whatever the card shows.
   const offer =
-    component === "whisper.cpp" ? status?.whisper : status?.llama;
+    component === "whisper.cpp"
+      ? status?.whisper
+      : component === "audio.cpp"
+        ? status?.audio
+        : status?.llama;
   const sizeBytes = offer?.update_size_bytes ?? null;
   const latestTag = offer?.latest_tag ?? null;
   const installedTag = offer?.installed_tag ?? null;
 
   async function handleUpdate() {
-    // Read before applying: the status refreshes as the job runs.
-    const migrating = migrationPending;
+    // Read before applying: the status refreshes as the job runs. An audio.cpp update
+    // that could not reach the release keeps the old runtime, so only the job's own
+    // message says which happened, as for a migration.
+    const migrating = migrationPending || component === "audio.cpp";
     const result = await apply();
     if (result?.ok) {
       const updatedTag =
@@ -170,7 +183,11 @@ export function LlamaUpdateBanner({
 
   // Muted by the component the card shows.
   const livePref =
-    component === "whisper.cpp" ? showWhisperBannerPref : showLlamaBannerPref;
+    component === "whisper.cpp"
+      ? showWhisperBannerPref
+      : component === "audio.cpp"
+        ? showAudioCppBannerPref
+        : showLlamaBannerPref;
   // Held across a chained apply, which renames the card mid-job. An error counts
   // as in flight so a failed phase keeps its retry on screen.
   const jobState = status?.job.state;

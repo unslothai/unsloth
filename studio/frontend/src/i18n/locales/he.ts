@@ -1679,6 +1679,9 @@ export const he = {
         showWhisperUpdates: "התראות עדכון של whisper.cpp",
         showWhisperUpdatesDescription:
           "הודע כאשר גרסת build חדשה יותר של whisper.cpp זמינה עבור מודלים של המרת דיבור לטקסט. כבה אם אינך מתמלל אודיו אף פעם.",
+        showAudioCppUpdates: "התראות עדכון של audio.cpp",
+        showAudioCppUpdatesDescription:
+          "הודע כאשר סביבת הריצה של audio.cpp צריכה עדכון עבור דפי האודיו. כבה אם אינך משתמש באודיו אף פעם.",
       },
       startup: {
         sectionTitle: "הפעלה",

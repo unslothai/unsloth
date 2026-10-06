@@ -1584,6 +1584,9 @@ export const ru = {
         showWhisperUpdates: "Уведомления об обновлениях whisper.cpp",
         showWhisperUpdatesDescription:
           "Уведомлять о доступности новой сборки whisper.cpp для моделей распознавания речи. Отключите, если вы не расшифровываете аудио.",
+        showAudioCppUpdates: "Уведомления об обновлениях audio.cpp",
+        showAudioCppUpdatesDescription:
+          "Уведомлять, когда среде выполнения audio.cpp нужно обновление для страниц «Аудио». Отключите, если вы не пользуетесь аудио.",
       },
       startup: {
         sectionTitle: "Автозапуск",

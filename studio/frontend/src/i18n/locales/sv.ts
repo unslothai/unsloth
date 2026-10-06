@@ -1741,6 +1741,9 @@ export const sv = {
         showWhisperUpdates: "Aviseringar om whisper.cpp-uppdateringar",
         showWhisperUpdatesDescription:
           "Avisera när en nyare whisper.cpp-version finns för tal-till-text-modeller. Stäng av om du aldrig transkriberar ljud.",
+        showAudioCppUpdates: "Aviseringar om audio.cpp-uppdateringar",
+        showAudioCppUpdatesDescription:
+          "Avisera när audio.cpp-körmiljön behöver uppdateras för ljudsidorna. Stäng av om du aldrig använder ljud.",
       },
       startup: {
         sectionTitle: "Start",

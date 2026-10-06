@@ -4,7 +4,7 @@
 // Stays mounted across tab switches (__root.tsx), so `active` gates polling, popovers and the recorder.
 
 import { TestTubeOutlineIcon } from "@/lib/hugeicons-derived";
-import { Alert02Icon, SparklesIcon } from "@hugeicons/core-free-icons";
+import { SparklesIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { LibraryPageLink } from "@/components/media-page-link";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -43,6 +43,7 @@ import {
   audioGenerationPresentation,
 } from "./audio-page-policy";
 import { clipReference } from "./audio-run-request";
+import { AudioRuntimeUpdateNotice } from "./components/audio-runtime-update-notice";
 import { AudioActiveProvider } from "./components/audio-source-input";
 import {
   audioModelLabel,
@@ -1705,29 +1706,13 @@ export function AudioPage({
                   {capabilityLine}
                 </p>
                 {runtimeUpdate ? (
-                  <p
-                    role="status"
-                    className="mt-1 flex items-start gap-1.5 text-ui-12 leading-snug text-foreground"
-                  >
-                    <HugeiconsIcon
-                      icon={Alert02Icon}
-                      className="mt-0.5 size-3.5 shrink-0 text-muted-foreground"
-                    />
-                    <span>
-                      Your audio runtime is{" "}
-                      <span className="whitespace-nowrap">
-                        {runtimeUpdate.installed}
-                      </span>
-                      ; this Studio expects{" "}
-                      <span className="whitespace-nowrap">
-                        {runtimeUpdate.expected}
-                      </span>
-                      . Some models may not work until you update. Stop Studio,{" "}
-                      run{" "}
-                      <code className="font-mono">unsloth studio update</code>,
-                      then start Studio again.
-                    </span>
-                  </p>
+                  <AudioRuntimeUpdateNotice
+                    update={runtimeUpdate}
+                    onUpdated={() => {
+                      void refreshStatus();
+                      void refreshSttStatus();
+                    }}
+                  />
                 ) : null}
               </div>
 

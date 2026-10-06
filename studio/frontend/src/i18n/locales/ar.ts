@@ -1580,6 +1580,9 @@ export const ar = {
         showWhisperUpdates: "إشعارات تحديث whisper.cpp",
         showWhisperUpdatesDescription:
           "التنبيه عند توفر إصدار أحدث من whisper.cpp لنماذج تحويل الكلام إلى نص. أوقف التشغيل إذا كنت لا تفرّغ الصوت.",
+        showAudioCppUpdates: "إشعارات تحديث audio.cpp",
+        showAudioCppUpdatesDescription:
+          "التنبيه عندما تحتاج بيئة تشغيل audio.cpp إلى تحديث لتشغيل صفحات الصوت. أوقف التشغيل إذا كنت لا تستخدم الصوت أبدًا.",
       },
       startup: {
         sectionTitle: "بدء التشغيل",

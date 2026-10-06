@@ -1583,6 +1583,9 @@ export const hi = {
         showWhisperUpdates: "whisper.cpp अपडेट सूचनाएं",
         showWhisperUpdatesDescription:
           "स्पीच-टू-टेक्स्ट मॉडल के लिए जब कोई नया whisper.cpp बिल्ड उपलब्ध हो तो सूचित करें। यदि आप ऑडियो ट्रांसक्राइब नहीं करते हैं तो बंद कर दें।",
+        showAudioCppUpdates: "audio.cpp अपडेट सूचनाएं",
+        showAudioCppUpdatesDescription:
+          "जब ऑडियो पेजों के लिए audio.cpp रनटाइम को अपडेट की ज़रूरत हो तो सूचित करें। यदि आप कभी ऑडियो का उपयोग नहीं करते हैं तो बंद कर दें।",
       },
       startup: {
         sectionTitle: "स्टार्टअप",

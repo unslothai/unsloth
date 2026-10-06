@@ -10,6 +10,7 @@ import {
   MINIMAX_MUSIC_MAX_FRAMES,
   MINIMAX_MUSIC_MAX_SECONDS,
   audioGenerationPresentation,
+  audioRuntimeNoticeMode,
   canTransitionAudioMode,
   exactGgufLoadSelector,
   expectedGgufDownloadBytes,
@@ -846,4 +847,18 @@ test("trained speech checkpoints are offered only on Speak and Music", () => {
     host,
     /ttsWorkflow !== "speak" && ttsWorkflow !== "music"\s*\?\s*\[\]\s*:\s*trainedTtsModels\.filter\(/,
   );
+});
+
+test("the outdated-runtime notice offers the in-app update only to the owner", () => {
+  const mode = (isOwner: boolean, offered: boolean, applying = false) =>
+    audioRuntimeNoticeMode({ isOwner, offered, applying });
+  assert.equal(mode(true, true), "update");
+  // A running job, started here or from the update card.
+  assert.equal(mode(true, true, true), "updating");
+  assert.equal(mode(true, false, true), "updating");
+  // A skipped offer (checks disabled, no bundle, no installer) or an older backend.
+  assert.equal(mode(true, false), "cli");
+  // POST /api/llama/update is owner-only.
+  assert.equal(mode(false, true), "ask_owner");
+  assert.equal(mode(false, false, true), "ask_owner");
 });

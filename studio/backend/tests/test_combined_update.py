@@ -23,6 +23,7 @@ _BACKEND = Path(__file__).resolve().parents[1]
 if str(_BACKEND) not in sys.path:
     sys.path.insert(0, str(_BACKEND))
 
+import utils.audio_cpp_update as aupd  # noqa: E402
 import utils.llama_cpp_freshness as freshness  # noqa: E402
 import utils.llama_cpp_update as upd  # noqa: E402
 import utils.whisper_cpp_freshness as wfresh  # noqa: E402
@@ -176,6 +177,12 @@ def _clean_state(monkeypatch, tmp_path):
     # Never hit the network in these tests.
     monkeypatch.setattr(freshness, "_fetch_latest_release_tag", lambda repo, timeout = 5.0: None)
     monkeypatch.setattr(wfresh, "_fetch_latest_release_tag", lambda repo, timeout = 5.0: None)
+    # A dev box may hold a real managed audio.cpp; tests that want the phase opt in with _setup_audio.
+    monkeypatch.setattr(
+        aupd,
+        "chained_phase_plan",
+        lambda: {"status": None, "update_available": False, "skip_reason": "not_installed", "phase": None},
+    )
     yield
     freshness.reset_caches()
     wfresh.reset_caches()
@@ -238,6 +245,48 @@ def _patch_whisper_phase(
         }
 
     monkeypatch.setattr(wupd, "run_chained_phase", _run)
+
+
+_AUDIO_STATUS = {
+    "installed_tag": "v0.8.2-audio8-perf-hotfix-unsloth.1",
+    "latest_tag": "v0.9.0-unsloth.1",
+    "update_size_bytes": None,
+}
+
+
+def _setup_audio(
+    monkeypatch,
+    events,
+    *,
+    error = None,
+    reload_required = False,
+):
+    """An offered audio.cpp phase whose runs are recorded instead of installing."""
+    plans = []
+
+    def _plan():
+        plans.append("audio")
+        return {
+            "status": dict(_AUDIO_STATUS),
+            "update_available": True,
+            "skip_reason": None,
+            "phase": {"to_tag": "v0.9.0-unsloth.1"},
+        }
+
+    def _run(phase, set_progress):
+        events.append("audio")
+        if error is not None:
+            raise RuntimeError(error)
+        set_progress(0.5)
+        return {
+            "to_tag": "v0.9.0-unsloth.1",
+            "reload_required": reload_required,
+            "message": "Updated audio.cpp to v0.9.0-unsloth.1.",
+        }
+
+    monkeypatch.setattr(aupd, "chained_phase_plan", _plan)
+    monkeypatch.setattr(aupd, "run_chained_phase", _run)
+    return plans
 
 
 def _wait_for_job():
@@ -989,3 +1038,174 @@ def test_an_incompatible_release_that_slips_past_the_pre_flight_still_errors(mon
 
     with pytest.raises(wupd._flow.InstallerExit):
         wupd.run_chained_phase_after_llama(_slim_phase(), lambda _f: None)
+
+
+# --- audio.cpp: the third phase ---
+
+
+def test_status_union_audio_only_surfaces_update(monkeypatch, tmp_path):
+    _setup_llama(monkeypatch, tmp_path, installed = "b9518", latest = "b9518")
+    _setup_whisper(monkeypatch, tmp_path, installed = "v1.9.2-unsloth.1", latest = "v1.9.2-unsloth.1")
+    _setup_audio(monkeypatch, [])
+    st = upd.get_update_status(force_refresh = True)
+    assert LEGACY_STATUS_FIELDS <= set(st)
+    assert st["update_available"] is True
+    assert st["llama_update_available"] is False
+    assert st["update_component"] == "audio"
+    assert st["audio"] == {**_AUDIO_STATUS, "update_available": True, "skip_reason": None}
+    # The top-level version fields keep their llama meaning.
+    assert st["installed_tag"] == "b9518"
+
+
+def test_status_llama_keeps_the_card_name_over_audio(monkeypatch, tmp_path):
+    _setup_llama(monkeypatch, tmp_path)
+    _setup_audio(monkeypatch, [])
+    st = upd.get_update_status(force_refresh = True)
+    assert st["update_component"] == "llama"
+    assert st["audio"]["update_available"] is True
+
+
+def test_status_whisper_keeps_the_card_name_over_audio(monkeypatch, tmp_path):
+    _setup_llama(monkeypatch, tmp_path, installed = "b9518", latest = "b9518")
+    _setup_whisper(monkeypatch, tmp_path)
+    _setup_audio(monkeypatch, [])
+    assert upd.get_update_status(force_refresh = True)["update_component"] == "whisper"
+
+
+def test_status_survives_audio_probe_failure(monkeypatch, tmp_path):
+    _setup_llama(monkeypatch, tmp_path)
+
+    def _boom():
+        raise RuntimeError("probe exploded")
+
+    monkeypatch.setattr(aupd, "chained_phase_plan", _boom)
+    st = upd.get_update_status(force_refresh = True)
+    assert st["audio"] is None
+    assert st["update_available"] is True
+    assert st["update_component"] == "llama"
+
+
+def test_status_skipped_audio_does_not_flip_union(monkeypatch, tmp_path):
+    _setup_llama(monkeypatch, tmp_path, installed = "b9518", latest = "b9518")
+    _setup_whisper(monkeypatch, tmp_path, installed = "v1.9.2-unsloth.1", latest = "v1.9.2-unsloth.1")
+    st = upd.get_update_status(force_refresh = True)
+    assert st["update_available"] is False
+    assert st["update_component"] is None
+    assert st["audio"]["skip_reason"] == "not_installed"
+
+
+def test_apply_audio_only_runs_only_the_audio_phase(monkeypatch, tmp_path):
+    _setup_llama(monkeypatch, tmp_path, installed = "b9518", latest = "b9518")
+    _setup_whisper(monkeypatch, tmp_path, installed = "v1.9.2-unsloth.1", latest = "v1.9.2-unsloth.1")
+    events = []
+    _patch_llama_installer(monkeypatch, on_start = lambda cmd: events.append("llama"))
+    _patch_whisper_phase(monkeypatch, events)
+    _setup_audio(monkeypatch, events)
+
+    res = upd.start_update()
+    assert res["started"] is True, res
+    assert "audio.cpp" in res["job"]["message"]
+    job = _wait_for_job()
+    assert job["state"] == "success", job
+    assert events == ["audio"]
+    assert job["phases"]["llama"]["state"] == "skipped"
+    assert job["phases"]["whisper"]["state"] == "skipped"
+    assert job["phases"]["audio"]["state"] == "success"
+    assert job["phases"]["audio"]["to_tag"] == "v0.9.0-unsloth.1"
+    assert "Updated audio.cpp to v0.9.0-unsloth.1." in job["message"]
+    assert job["progress"] == 1.0
+
+
+def test_apply_runs_llama_then_whisper_then_audio(monkeypatch, tmp_path):
+    llama_dir = _setup_llama(monkeypatch, tmp_path)
+    _setup_whisper(monkeypatch, tmp_path)
+    (tmp_path / "install_whisper_prebuilt.py").write_text("stub")
+    events = []
+    _patch_llama_installer(
+        monkeypatch,
+        on_start = lambda cmd: (events.append("llama"), _write_llama_install(llama_dir, "b9518")),
+    )
+    _patch_whisper_phase(monkeypatch, events)
+    _setup_audio(monkeypatch, events)
+
+    assert upd.start_update()["started"] is True
+    job = _wait_for_job()
+    assert job["state"] == "success", job
+    assert events == ["llama", "whisper", "audio"]
+    # The legacy to_tag still names the llama build.
+    assert job["to_tag"] == "b9518"
+
+
+def test_apply_llama_failure_aborts_audio(monkeypatch, tmp_path):
+    _setup_llama(monkeypatch, tmp_path)
+    events = []
+    _patch_llama_installer(monkeypatch, returncode = 2, lines = ["boom: disk full\n"])
+    _setup_audio(monkeypatch, events)
+
+    assert upd.start_update()["started"] is True
+    job = _wait_for_job()
+    assert job["state"] == "error", job
+    assert events == []
+    assert job["phases"]["audio"]["state"] == "skipped"
+    assert job["phases"]["audio"]["reason"] == "aborted"
+
+
+def test_apply_audio_failure_keeps_llama_partial_success(monkeypatch, tmp_path):
+    llama_dir = _setup_llama(monkeypatch, tmp_path)
+    events = []
+    _patch_llama_installer(
+        monkeypatch,
+        on_start = lambda cmd: (events.append("llama"), _write_llama_install(llama_dir, "b9518")),
+    )
+    _setup_audio(monkeypatch, events, error = "sha256 mismatch")
+
+    assert upd.start_update()["started"] is True
+    job = _wait_for_job()
+    assert job["state"] == "error", job
+    assert events == ["llama", "audio"]
+    assert "Updated llama.cpp to b9518." in job["message"]
+    assert "audio.cpp update failed." in job["message"]
+    assert "sha256 mismatch" in (job["error"] or "")
+    assert job["phases"]["llama"]["state"] == "success"
+    assert job["phases"]["audio"]["state"] == "error"
+
+
+def test_audio_unload_raises_the_job_reload_flag(monkeypatch, tmp_path):
+    # Unlike the dictation sidecars, an audio.cpp model in the main slot is a server model change.
+    _setup_llama(monkeypatch, tmp_path, installed = "b9518", latest = "b9518")
+    _setup_audio(monkeypatch, [], reload_required = True)
+    assert upd.start_update()["started"] is True
+    job = _wait_for_job()
+    assert job["state"] == "success", job
+    assert job["reload_required"] is True
+
+
+def test_backend_switch_never_plans_audio(monkeypatch, tmp_path):
+    plans = _setup_audio(monkeypatch, [])
+    monkeypatch.setattr(
+        upd,
+        "_plan_llama_phase",
+        lambda backend_request = None: {
+            "skip_reason": "already_selected",
+            "refusal": {
+                "started": False,
+                "reason": "already_selected",
+                "message": "llama.cpp is already set to cpu.",
+            },
+        },
+    )
+    monkeypatch.setattr(upd, "_repair_pairing_plan_or_empty", lambda *a, **k: {})
+    monkeypatch.setattr(upd, "_env_backend_override", lambda: None)
+    res = upd.start_backend_switch("cpu")
+    assert res["started"] is False
+    assert res["reason"] == "already_selected"
+    assert plans == []
+
+
+def test_update_checks_disabled_refuses_before_planning_audio(monkeypatch, tmp_path):
+    plans = _setup_audio(monkeypatch, [])
+    monkeypatch.setenv("UNSLOTH_DISABLE_UPDATE_CHECK", "1")
+    res = upd.start_update()
+    assert res["started"] is False
+    assert res["reason"] == "update_checks_disabled"
+    assert plans == []

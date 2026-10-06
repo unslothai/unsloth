@@ -26,6 +26,7 @@ export const SETTINGS_SEARCH_INDEX: Record<SettingsTab, TranslationKey[]> = {
     "settings.general.notifications.sectionTitle",
     "settings.general.notifications.showLlamaUpdates",
     "settings.general.notifications.showWhisperUpdates",
+    "settings.general.notifications.showAudioCppUpdates",
     "settings.general.previewSharing.sectionTitle",
     "settings.general.previewSharing.enableLabel",
     "settings.general.previewSharing.revokeLabel",

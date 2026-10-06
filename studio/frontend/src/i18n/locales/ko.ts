@@ -1577,6 +1577,9 @@ export const ko = {
         showWhisperUpdates: "whisper.cpp 업데이트 알림",
         showWhisperUpdatesDescription:
           "음성 인식 모델을 위한 최신 whisper.cpp 빌드가 있으면 알립니다. 오디오를 전사하지 않는다면 끄세요.",
+        showAudioCppUpdates: "audio.cpp 업데이트 알림",
+        showAudioCppUpdatesDescription:
+          "오디오 페이지에 필요한 audio.cpp 런타임 업데이트가 있으면 알립니다. 오디오를 사용하지 않는다면 끄세요.",
       },
       startup: {
         sectionTitle: "시작",

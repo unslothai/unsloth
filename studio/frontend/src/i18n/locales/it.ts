@@ -1578,6 +1578,9 @@ export const it = {
         showWhisperUpdates: "Notifiche di aggiornamento di whisper.cpp",
         showWhisperUpdatesDescription:
           "Avvisa quando è disponibile una build più recente di whisper.cpp per i modelli di trascrizione vocale. Disattiva le notifiche se non trascrivi mai l'audio.",
+        showAudioCppUpdates: "Notifiche di aggiornamento di audio.cpp",
+        showAudioCppUpdatesDescription:
+          "Avvisa quando il runtime di audio.cpp deve essere aggiornato per le pagine Audio. Disattiva le notifiche se non usi mai Audio.",
       },
       startup: {
         sectionTitle: "Avvio",

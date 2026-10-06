@@ -664,12 +664,7 @@ class AudioCppSttSidecar:
 
     @contextmanager
     def update_maintenance(self) -> Iterator[bool]:
-        """Block new loads while the managed audio.cpp tree is replaced.
-
-        The runtime is pinned in source and replaced only by setup, which runs while Studio is
-        stopped, so nothing calls this today. It is kept so an in-app updater can reuse the
-        whisper.cpp update flow unchanged.
-        """
+        """Block new loads while utils.audio_cpp_update replaces the managed audio.cpp tree."""
         self._update_in_progress = True
         try:
             with self._lock:
