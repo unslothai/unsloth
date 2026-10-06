@@ -94,7 +94,11 @@ def _studio_sigmas(shipped, shift, width, height, steps):
     return _diffusers_sigmas(pipe.scheduler.config, width, height, steps)
 
 
-def _close(a, b, tol = 1e-9):
+def _close(
+    a,
+    b,
+    tol = 1e-9,
+):
     return len(a) == len(b) and all(abs(x - y) <= tol for x, y in zip(a, b))
 
 
@@ -143,6 +147,11 @@ def test_qwen_image_21_gguf_and_prequant_ids_resolve_the_same_shift():
         (None, "unsloth/FLUX.1-Krea-dev-FP8", "black-forest-labs/FLUX.1-Krea-dev"),
         # A dev GGUF whose base fell back to the family's schnell repo: the file name decides.
         ("flux1-dev-Q4_K_M.gguf", "unsloth/FLUX.1-dev-GGUF", "black-forest-labs/FLUX.1-schnell"),
+        (
+            "flux1-krea-dev-Q8_0.gguf",
+            "unsloth/FLUX.1-Krea-dev-GGUF",
+            "black-forest-labs/FLUX.1-schnell",
+        ),
     ],
 )
 def test_flux1_dev_variants_use_comfy_fixed_mu(ids, monkeypatch):
@@ -173,11 +182,23 @@ def test_flux1_dev_1024_is_unchanged():
     )
 
 
+def test_local_path_containing_dev_keeps_the_shipped_schedule():
+    fam = detect_family("black-forest-labs/FLUX.1-schnell")
+    for path in ("/home/dev/models/flux", "/home/devon/flux-local", "D:\\dev\\krea\\flux"):
+        assert (
+            comfy_flow_shift_for(fam, None, path, path, "black-forest-labs/FLUX.1-schnell") is None
+        ), path
+
+
 @pytest.mark.parametrize(
     "ids",
     [
         (None, "black-forest-labs/FLUX.1-schnell", "black-forest-labs/FLUX.1-schnell"),
-        ("flux1-schnell-Q4_K_M.gguf", "unsloth/FLUX.1-schnell-GGUF", "black-forest-labs/FLUX.1-schnell"),
+        (
+            "flux1-schnell-Q4_K_M.gguf",
+            "unsloth/FLUX.1-schnell-GGUF",
+            "black-forest-labs/FLUX.1-schnell",
+        ),
         (None, "unsloth/FLUX.1-schnell-NVFP4", "black-forest-labs/FLUX.1-schnell"),
     ],
 )
@@ -202,8 +223,14 @@ def test_families_already_matching_comfy_are_unchanged():
     fam = detect_family("Qwen/Qwen-Image-Edit-2511")
     assert comfy_flow_shift_for(fam, None, "Qwen/Qwen-Image-Edit-2511") == 3.1
     assert comfy_flow_shift_for(fam, None, "Qwen/Qwen-Image-Edit-2509") == 3.0
-    assert comfy_flow_shift_for(detect_family("Qwen/Qwen-Image-Layered"), "Qwen/Qwen-Image-Layered") == 1.0
-    assert comfy_flow_shift_for(detect_family("Tongyi-MAI/Z-Image-Turbo"), "Tongyi-MAI/Z-Image-Turbo") == 3.0
+    assert (
+        comfy_flow_shift_for(detect_family("Qwen/Qwen-Image-Layered"), "Qwen/Qwen-Image-Layered")
+        == 1.0
+    )
+    assert (
+        comfy_flow_shift_for(detect_family("Tongyi-MAI/Z-Image-Turbo"), "Tongyi-MAI/Z-Image-Turbo")
+        == 3.0
+    )
     # FLUX.2 dev / klein: ComfyUI's Flux2Scheduler is the same token-count mu as diffusers, so the
     # shipped scheduler stays.
     for repo in ("black-forest-labs/FLUX.2-dev", "black-forest-labs/FLUX.2-klein-4B"):
@@ -213,7 +240,11 @@ def test_families_already_matching_comfy_are_unchanged():
 @pytest.mark.parametrize("value", ["0", "false", "off", "no", " 0 "])
 def test_kill_switch_keeps_the_shipped_scheduler(value, monkeypatch):
     monkeypatch.setenv(COMFY_SIGMAS_ENV, value)
-    for shipped, shift in ((_Q21, flux_mu_shift(0.69)), (_FLUX1_DEV, flux_mu_shift(1.15)), (_Q21, 3.1)):
+    for shipped, shift in (
+        (_Q21, flux_mu_shift(0.69)),
+        (_FLUX1_DEV, flux_mu_shift(1.15)),
+        (_Q21, 3.1),
+    ):
         sched = _FakeScheduler(**shipped)
         pipe = types.SimpleNamespace(scheduler = sched)
         assert apply_comfy_flow_shift(pipe, shift) is False
