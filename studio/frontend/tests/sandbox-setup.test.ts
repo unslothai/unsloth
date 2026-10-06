@@ -813,6 +813,23 @@ test("the High popup names the missing OS sandbox and offers Install, Learn more
   assert.equal(popup.opened.length, 1, "Settings scrolls itself; it opens nothing");
 });
 
+test("the High popup stays short: no probe reason, no command block, a one-line Windows note", () => {
+  const noElevation = sandboxPopup(
+    capability({ canRunSetup: false, setupAction: null, setupBlocked: "no_elevation" }),
+  ).render();
+  noElevation.button("sandboxSetup.copyCommand");
+  for (const verbose of ["denied", "apt-get install -y bubblewrap", "sandboxSetup.runInTerminal", "sandboxSetup.commandHint"]) {
+    assert.ok(!noElevation.texts.includes(verbose), `popup shows ${verbose}`);
+  }
+
+  const windows = sandboxPopup(
+    capability({ platform: "windows", backend: "mxc-processcontainer", setupAction: "windows-setup", needsConsent: true }),
+  ).render();
+  windows.button("sandboxSetup.windowsSetup");
+  assert.ok(windows.texts.includes("sandboxSetup.windowsNote"));
+  assert.ok(!windows.texts.includes("settings.sandbox.disclosure"));
+});
+
 test("an install that makes the OS sandbox pass turns High on", () => {
   const source = readFileSync(
     new URL("../src/features/chat/sandbox-setup-dialog.tsx", import.meta.url),

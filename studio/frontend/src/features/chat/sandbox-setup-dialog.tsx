@@ -192,7 +192,8 @@ function SandboxSetupContent({
 
   const copy = async () => {
     if (await copyToClipboard(view.command)) {
-      toast.success(t("sandboxSetup.copied"));
+      // The command itself stays out of the popup; Settings > Sandbox shows it in full.
+      toast.success(t("sandboxSetup.copiedRunIt"));
     } else {
       toast.error(t("sandboxSetup.copyFailed"));
     }
@@ -221,15 +222,10 @@ function SandboxSetupContent({
             {t("sandboxSetup.checking")}
           </p>
         ) : null}
-        {capability?.reason ? (
-          <p className={`${NOTE_CLASS} text-muted-foreground`}>
-            {capability.reason}
-          </p>
-        ) : null}
         {view.showConsent ? (
           <div className="flex flex-col gap-2">
             <p className={`${NOTE_CLASS} text-muted-foreground`}>
-              {t("settings.sandbox.disclosure")}
+              {t("sandboxSetup.windowsNote")}
             </p>
             <label className="flex items-center gap-2 text-sm">
               <Checkbox
@@ -280,24 +276,10 @@ function SandboxSetupContent({
         {actionError ? (
           <p className={`${NOTE_CLASS} text-destructive`}>{actionError}</p>
         ) : null}
-        {view.showOwnerOnly && !view.command ? (
+        {view.showOwnerOnly ? (
           <p className={`${NOTE_CLASS} text-muted-foreground`}>
             {t("sandboxSetup.ownerOnly")}
           </p>
-        ) : null}
-        {view.command ? (
-          <div className="flex min-w-0 flex-col gap-1">
-            <p className={`${NOTE_CLASS} text-muted-foreground`}>
-              {view.showOwnerOnly
-                ? t("sandboxSetup.ownerOnly")
-                : view.showRunInTerminal
-                  ? t("sandboxSetup.runInTerminal")
-                  : t("sandboxSetup.commandHint")}
-            </p>
-            <pre className="max-h-40 overflow-auto whitespace-pre-wrap break-all rounded-md bg-muted px-2 py-1.5 font-mono text-ui-11">
-              {view.command}
-            </pre>
-          </div>
         ) : null}
       </div>
 
@@ -320,7 +302,12 @@ function SandboxSetupContent({
           </Button>
         ) : null}
         {view.command ? (
-          <Button size="sm" variant="outline" onClick={() => void copy()}>
+          <Button
+            size="sm"
+            variant="outline"
+            title={view.command}
+            onClick={() => void copy()}
+          >
             {t("sandboxSetup.copyCommand")}
           </Button>
         ) : null}

@@ -573,8 +573,12 @@ def exercise_permission_mode_controls(page, shoot):
     switch.click()
     setup = page.get_by_role("alertdialog")
     expect(setup.get_by_role("heading", name = "OS sandbox is not available")).to_be_visible()
-    expect(setup).to_contain_text("apt-get install -y bubblewrap")
+    # The command rides on Copy command (and Settings > Sandbox), not as a block of text in the popup.
+    expect(setup).not_to_contain_text("apt-get install -y bubblewrap")
     expect(setup.get_by_role("button", name = "Copy command")).to_be_visible()
+    expect(setup.get_by_role("button", name = "Copy command")).to_have_attribute(
+        "title", re.compile(r"apt-get install -y bubblewrap")
+    )
     expect(setup.get_by_role("button", name = "Learn more")).to_be_visible()
     if setup.get_by_role("button", name = "Install sandbox").count() != 0:
         fail("setup popup offered Install sandbox to a request the server did not allow")
