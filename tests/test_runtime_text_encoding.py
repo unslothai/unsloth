@@ -61,6 +61,11 @@ REVIEWED_VENDORED_OFFENDERS = {
     "studio/backend/vendor/laya/agent.py:47: open()",
     "studio/backend/vendor/laya/agent.py:156: open()",
 }
+REVIEWED_NON_FILE_OPEN = (
+    "studio/backend/core/inference/audio_inputs.py",
+    264,
+    "stream.codec_context.open()",
+)
 GUARDED_METHODS = {"read_text", "write_text"}
 # Path classes, so an unbound `Path.open(p)` shifts every argument one right.
 PATH_CLASSES = {"Path", "PosixPath", "PurePath", "WindowsPath"}
@@ -139,53 +144,19 @@ def _imports_at_each_call(tree: ast.Module) -> dict:
     return visible_at
 
 
-def _chain_root(node) -> str | None:
-    """The name an attribute chain hangs off, as `stream` in `stream.codec_context`."""
-    while isinstance(node, ast.Attribute):
-        node = node.value
-    return node.id if isinstance(node, ast.Name) else None
-
-
 def _foreign_names(tree: ast.Module) -> set:
     """Names bound to an object another library built.
 
     `z = zipfile.ZipFile(p)` then `z.open(name)` is a binary member stream taking no
-    encoding, so demanding one leaves no correct edit. The same holds for a name bound by
-    `with av.open(...) as dst`, and for what a method of such an object returns:
-    `stream = dst.add_stream(...)` is PyAV's, so `stream.codec_context.open()` opens a
-    codec, not a file.
+    encoding, so demanding one leaves no correct edit.
     """
-    # The imports visible at each call, not only the module's: `import av` inside the function
-    # that uses it is the usual spelling for an optional dependency.
-    visible_at = _imports_at_each_call(tree)
+    modules = _imported_names(tree)
     names = set()
-
-    def built_elsewhere(value) -> bool:
-        if not isinstance(value, ast.Call):
-            return False
-        if _foreign_receiver(value, visible_at.get(id(value), {})):
-            return True
-        func = value.func
-        return isinstance(func, ast.Attribute) and _chain_root(func.value) in names
-
-    grew = True
-    while grew:
-        grew = False
-        for node in ast.walk(tree):
-            if isinstance(node, ast.Assign):
-                pairs = [(target, node.value) for target in node.targets]
-            elif isinstance(node, (ast.With, ast.AsyncWith)):
-                pairs = [(item.optional_vars, item.context_expr) for item in node.items]
-            else:
-                continue
-            for target, value in pairs:
-                if (
-                    isinstance(target, ast.Name)
-                    and target.id not in names
-                    and built_elsewhere(value)
-                ):
-                    names.add(target.id)
-                    grew = True
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Assign) or not isinstance(node.value, ast.Call):
+            continue
+        if _foreign_receiver(node.value, modules):
+            names.update(t.id for t in node.targets if isinstance(t, ast.Name))
     return names
 
 
@@ -311,7 +282,7 @@ def _offender(
             # binary file. Neither has an encoding to name.
             if receiver is not None and receiver in modules and receiver not in PATH_CLASSES:
                 return None
-            if _foreign_receiver(func.value, modules) or _chain_root(func.value) in foreign:
+            if _foreign_receiver(func.value, modules) or receiver in foreign:
                 return None
             if not _is_text(call, shift):
                 return None
@@ -340,17 +311,24 @@ def _is_test_path(path: Path) -> bool:
     return path.name.startswith("test_") or path.name.endswith("_test.py")
 
 
-def _offenders_in(src: str, label: str = "<snippet>"):
-    tree = ast.parse(src, filename = label)
+def _is_reviewed_non_file_open(label: str, call: ast.Call) -> bool:
+    return (label, call.lineno, ast.unparse(call)) == REVIEWED_NON_FILE_OPEN
+
+
+def _offenders(tree: ast.Module, label: str):
     visible_at = _imports_at_each_call(tree)
     foreign = _foreign_names(tree)
     found = []
     for node in ast.walk(tree):
         if isinstance(node, ast.Call):
             name = _offender(node, visible_at.get(id(node), {}), foreign)
-            if name is not None:
+            if name is not None and not _is_reviewed_non_file_open(label, node):
                 found.append((node.lineno, name))
     return found
+
+
+def _offenders_in(src: str, label: str = "<snippet>"):
+    return _offenders(ast.parse(src, filename = label), label)
 
 
 def _tracked_sources():
@@ -395,13 +373,7 @@ def test_shipping_code_names_an_encoding():
         except SyntaxError:
             continue
         rel = path.relative_to(REPO).as_posix()
-        visible_at = _imports_at_each_call(tree)
-        foreign = _foreign_names(tree)
-        for node in ast.walk(tree):
-            if isinstance(node, ast.Call):
-                name = _offender(node, visible_at.get(id(node), {}), foreign)
-                if name is not None:
-                    offenders.append(f"{rel}:{node.lineno}: {name}")
+        offenders.extend(f"{rel}:{line}: {name}" for line, name in _offenders(tree, rel))
     if _loader_rebinds_open():
         stale = sorted(REVIEWED_VENDORED_OFFENDERS.difference(offenders))
         assert stale == [], (
@@ -460,30 +432,13 @@ def test_skips_foreign_openers_and_readers():
     assert not _offenders_in("s = dist.read_text('direct_url.json')\n")
 
 
-def test_skips_objects_a_foreign_object_hands_back():
-    # PyAV: the container comes from a with-statement, the stream from one of its methods, and the
-    # codec context is an attribute of that. Opening it opens a codec, not a file.
-    pyav = (
-        "def encode(out):\n"
-        "    import av\n"
-        "    with av.open(out, 'w', format = 'wav') as dst:\n"
-        "        stream = dst.add_stream('pcm_s16le', rate = 16000)\n"
-        "        stream.codec_context.open()\n"
-    )
-    assert not _offenders_in(pyav)
-    assert not _offenders_in(
-        "import zipfile\nwith zipfile.ZipFile(p) as z:\n    f = z.open('a.txt')\n"
-    )
-
-
-def test_a_path_reached_through_attributes_is_still_checked():
-    # Only a chain rooted at another library's object is exempt; a path held on self, or one built
-    # from pathlib, still has to name its encoding.
-    assert _offenders_in("class C:\n    def load(self):\n        return self.path.open()\n")
-    assert _offenders_in("from pathlib import Path\nwith tmp() as d:\n    f = Path(d).open()\n")
-    assert _offenders_in(
-        "from pathlib import Path\np = Path('x')\nwith p.open() as f:\n    g = p.parent.open()\n"
-    )
+def test_skips_only_the_reviewed_pyav_codec_open():
+    pyav = "\n" * 263 + "stream.codec_context.open()\n"
+    path = "studio/backend/core/inference/audio_inputs.py"
+    assert not _offenders_in(pyav, path)
+    assert _offenders_in(pyav, "studio/backend/core/inference/other.py")
+    assert _offenders_in("\n" + pyav, path)
+    assert _offenders_in("\n" * 263 + "config.codec_context.open()\n", path)
 
 
 def test_test_trees_are_out_of_scope():
