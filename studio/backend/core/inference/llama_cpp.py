@@ -36276,7 +36276,6 @@ class LlamaCppBackend:
         confirm_tool_calls: bool = False,
         bypass_permissions: bool = False,
         permission_mode: Optional[str] = None,
-        sandbox_level: Optional[str] = None,
         promote_reasoning_only: bool = True,
         perf_callback: Optional[Callable[[dict], None]] = None,
         reasoning_provenance: Optional[dict] = None,
@@ -36296,6 +36295,7 @@ class LlamaCppBackend:
         thinking_budget_tokens: Optional[int] = None,
         mcp_image = None,
         instruction_anchor_ids = None,
+        sandbox_level: Optional[str] = None,
     ) -> Generator[dict, None, None]:
         """
         Agentic loop: let the model call tools, execute them, and continue.
