@@ -22,7 +22,6 @@ def _ready() -> bool:
         return False
     try:
         from torchao.quantization import Int8DynamicActivationInt8WeightConfig
-
         Int8DynamicActivationInt8WeightConfig(version = 2, set_inductor_config = False)
     except Exception:  # noqa: BLE001
         return False
@@ -44,7 +43,6 @@ def _restore(monkeypatch):
 
 def test_stock_prepare_qkv_fingerprint_matches_installed_diffusers():
     from core.inference.diffusion_qwenimage21_rope import _FINGERPRINTS, _digest
-
     assert _digest(getattr(qmod, qf._PREPARE)) in _FINGERPRINTS[qf._PREPARE]
 
 
@@ -68,7 +66,6 @@ def _block(rotate: bool = True):
     names = [n for n, m in blk.named_modules() if isinstance(m, torch.nn.Linear)]
     if rotate:
         from core.inference.diffusion_convrot import rotate_linears_, warm_rotation_cache
-
         rotate_linears_(blk, names, GROUP)
         warm_rotation_cache(blk, "cuda", torch.bfloat16)
     from torchao.quantization import Int8DynamicActivationInt8WeightConfig, quantize_
@@ -139,7 +136,9 @@ def test_compiled_block_stays_within_the_compile_floor(monkeypatch):
     real_linear = i8f.int8_linear
 
     def counting(module, x):
-        traced.append(module.out_features)  # runs at trace time: proves the compiled graph took the fused QKV
+        traced.append(
+            module.out_features
+        )  # runs at trace time: proves the compiled graph took the fused QKV
         return real_linear(module, x)
 
     monkeypatch.setattr(i8f, "int8_linear", counting)

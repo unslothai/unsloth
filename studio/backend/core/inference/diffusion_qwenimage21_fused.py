@@ -82,7 +82,6 @@ def _rotated_group(linears: list) -> int:
 
 def _plain(lin: Any) -> bool:
     from .diffusion_int8_fused import _I8_GEMM_MARK, _plain_int8_weight
-
     d = getattr(lin, "__dict__", {})
     return "forward" not in d and _I8_GEMM_MARK not in d and _plain_int8_weight(lin.weight)
 
@@ -117,12 +116,7 @@ def _make_prepare(stock: Any, mod: Any) -> Any:
     from .diffusion_int8_fused import int8_linear
 
     def _qwenimage21_prepare_qkv(
-        attn,
-        hidden_states,
-        rotary_emb,
-        layer_cache,
-        kv_cache_mode,
-        cache_write_slice,
+        attn, hidden_states, rotary_emb, layer_cache, kv_cache_mode, cache_write_slice
     ):
         fused = _qkv_intact(attn) if torch.compiler.is_compiling() else None
         if fused is None:
@@ -179,7 +173,6 @@ def _out_forward(self: Any, x: Any) -> Any:
 def _patch_prepare(logger: Any = None) -> bool:
     try:
         import importlib
-
         mod = importlib.import_module(_MODULE)
     except Exception:  # noqa: BLE001 - diffusers without Qwen-Image 2.1
         return False
@@ -201,7 +194,11 @@ def _patch_prepare(logger: Any = None) -> bool:
     return True
 
 
-def install(transformer: Any, logger: Any = None, offload_active: bool = False) -> dict:
+def install(
+    transformer: Any,
+    logger: Any = None,
+    offload_active: bool = False,
+) -> dict:
     """Before the first compile; deferred to the first forward when the weights are not on the GPU yet."""
     result = {"fused_qkv": 0, "out": 0}
     if q21_convrot_fused_disabled():
@@ -267,7 +264,6 @@ def uninstall(transformer: Any = None) -> None:
     """Restore the stock QKV helper; drop the fused Linears (the per-row views stay valid) and the to_out forwards."""
     if transformer is not None:
         from .diffusion_int8_fused import cancel_first_call
-
         cancel_first_call(transformer, "q21_convrot_fused")
     with _LOCK:
         stock = _STATE.pop("stock", None)

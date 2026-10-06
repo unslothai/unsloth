@@ -2923,7 +2923,13 @@ def _own_names(names):
             {"UNSLOTH_DIFFUSION_INT8_CONVROT": "1"},
             "Qwen-Image-2.1-INT8-ConvRot.safetensors",
         ),
-        ("Qwen/Qwen-Image-2.1", "qwen-image-2.1", "int8", {}, "Qwen-Image-2.1-INT8-ConvRot.safetensors"),
+        (
+            "Qwen/Qwen-Image-2.1",
+            "qwen-image-2.1",
+            "int8",
+            {},
+            "Qwen-Image-2.1-INT8-ConvRot.safetensors",
+        ),
         (
             "Qwen/Qwen-Image-2.1",
             "qwen-image-2.1",

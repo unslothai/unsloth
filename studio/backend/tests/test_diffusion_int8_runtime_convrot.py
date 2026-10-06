@@ -601,7 +601,13 @@ def test_qwen_image_21_offline_default_still_loads_the_cached_plain_artifact(mon
     )
     asked = []
 
-    def _dl(repo_id, filename, token = None, cache_dir = None, local_files_only = False):
+    def _dl(
+        repo_id,
+        filename,
+        token = None,
+        cache_dir = None,
+        local_files_only = False,
+    ):
         asked.append(filename)
         raise LocalEntryNotFoundError("connection error")
 
