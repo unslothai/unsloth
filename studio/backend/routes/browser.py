@@ -81,7 +81,11 @@ _TAG_ATTR_RE = re.compile(
 # Dropped from an inlined tag: they only concern fetching the file.
 _FETCH_ATTRS = frozenset({"src", "integrity", "crossorigin"})
 # Static or dynamic imports and re-exports resolve against the module's own URL.
-_MODULE_IMPORT_RE = re.compile(r"""(?<![\w$.])(?:import\b\s*[{*("'`\w$.]|from\s*["'`])""")
+# A comment may sit between the keyword and what follows (import /* chunk */ ("./a.js")), so "/"
+# counts too: after "import", a reserved word, it can only start one. After "from", which needn't
+# be a keyword, it may be division; keeping such a tag external is only the safe side.
+_MODULE_IMPORT_RE = re.compile(r"""(?<![\w$.])(?:import\b\s*[{*("'`\w$./]|from\s*["'`/])""")
+_MAX_AGE_RE = re.compile(r"(?:^|[\s,])(s-maxage|max-age)\s*=\s*\"?(\d+)", re.IGNORECASE)
 _SCRIPT_OPEN_RE = re.compile(r"<script", re.IGNORECASE)
 _HTML_COMMENT_RE = re.compile(r"<!--.*?(?:-->|$)", re.DOTALL)
 # The JavaScript MIME types a module script may be served as (WHATWG MIME Sniffing).
@@ -99,7 +103,8 @@ _MODULE_TIMEOUT_S = 8
 # Separate from _FETCH_POOL, whose workers wait on these.
 _MODULE_POOL = ThreadPoolExecutor(max_workers = 4, thread_name_prefix = "browser-module")
 # Answers for recently seen module tags (code to inline, or None to keep the tag), so each page
-# of a site doesn't fetch its bundles again. Failed fetches aren't kept.
+# of a site doesn't fetch its bundles again: (expiry, code), kept only as long as the response
+# says it stays fresh, and at most _MODULE_CACHE_TTL_S. Failed fetches aren't kept.
 _MODULE_CACHE: "OrderedDict[tuple[str, str, bool], tuple[float, Optional[str]]]" = OrderedDict()
 _MODULE_CACHE_LOCK = threading.Lock()
 _MODULE_CACHE_TTL_S = 600
@@ -1203,25 +1208,42 @@ def _integrity_ok(body: bytes, integrity: str) -> bool:
     return any(hmac.compare_digest(digest, value) for value in hashes[algorithm])
 
 
+def _fresh_for(cache_control: Optional[str], age: Optional[str]) -> float:
+    """Seconds a response may be reused, from its headers: none unless they give a lifetime.
+
+    This cache is shared, so ``private`` and ``no-cache`` (always revalidate) rule it out too.
+    """
+    directives = (cache_control or "").lower()
+    if any(word in directives for word in ("no-store", "no-cache", "private")):
+        return 0
+    lifetimes = dict((name.lower(), int(value)) for name, value in _MAX_AGE_RE.findall(directives))
+    lifetime = lifetimes.get("s-maxage", lifetimes.get("max-age", 0))
+    try:
+        lifetime -= max(int(age or 0), 0)
+    except ValueError:
+        pass
+    return float(min(max(lifetime, 0), _MODULE_CACHE_TTL_S))
+
+
 def _module_cached(key: tuple[str, str, bool]) -> tuple[bool, Optional[str]]:
     with _MODULE_CACHE_LOCK:
         hit = _MODULE_CACHE.get(key)
-        if hit is None or time.monotonic() - hit[0] > _MODULE_CACHE_TTL_S:
+        if hit is None or time.monotonic() >= hit[0]:
             return False, None
         _MODULE_CACHE.move_to_end(key)
         return True, hit[1]
 
 
-def _cache_module(key: tuple[str, str, bool], code: Optional[str]) -> None:
+def _cache_module(key: tuple[str, str, bool], code: Optional[str], fresh_for: float) -> None:
     global _module_cache_chars
     size = len(code or "")
-    if size > _MODULE_CACHE_CHARS // 4:
+    if fresh_for <= 0 or size > _MODULE_CACHE_CHARS // 4:
         return
     with _MODULE_CACHE_LOCK:
         old = _MODULE_CACHE.pop(key, None)
         if old is not None:
             _module_cache_chars -= len(old[1] or "")
-        _MODULE_CACHE[key] = (time.monotonic(), code)
+        _MODULE_CACHE[key] = (time.monotonic() + fresh_for, code)
         _module_cache_chars += size
         while (
             len(_MODULE_CACHE) > _MODULE_CACHE_ENTRIES or _module_cache_chars > _MODULE_CACHE_CHARS
@@ -1273,7 +1295,7 @@ def _fetch_module(
             "<!--" in text and _SCRIPT_OPEN_RE.search(text)
         ):
             code = re.sub(r"</(script)", r"<\\/\1", text, flags = re.IGNORECASE)
-    _cache_module(key, code)
+    _cache_module(key, code, _fresh_for(meta.get("cache_control"), meta.get("age")))
     return code
 
 

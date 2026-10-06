@@ -303,8 +303,8 @@ test("a remembered answer settles the site's other waiting downloads", async () 
   answerDownload(useApprovalStore.getState().queue[0], false, true);
   assert.equal(await first, false);
   assert.equal(await second, false);
-  assert.deepEqual(useApprovalStore.getState().queue.map((request) => request.host), ["b.example"]);
-  assert.equal(useDownloadSitesStore.getState().sites["a.example"], "block");
+  assert.deepEqual(useApprovalStore.getState().queue.map((request) => request.origin), ["https://b.example"]);
+  assert.equal(useDownloadSitesStore.getState().sites["https://a.example"], "block");
   // Not remembered: only the one asked about is answered.
   const fourth = approveDownload("https://b.example/4.zip", "4.zip");
   answerDownload(useApprovalStore.getState().queue[0], true, false);
@@ -312,24 +312,73 @@ test("a remembered answer settles the site's other waiting downloads", async () 
   assert.equal(useApprovalStore.getState().queue.length, 1);
   answerDownload(useApprovalStore.getState().queue[0], true, false);
   assert.equal(await fourth, true);
-  assert.equal(useDownloadSitesStore.getState().sites["b.example"], undefined);
-  useDownloadSitesStore.getState().setSite("a.example", null);
+  assert.equal(useDownloadSitesStore.getState().sites["https://b.example"], undefined);
+  useDownloadSitesStore.getState().setSite("https://a.example", null);
 });
 
-test("a blob: download's answer is never remembered for every site", async () => {
+test("download answers are kept per origin, never for every site", async () => {
   const { approveDownload, answerDownload, useApprovalStore } = await import(
     "../src/features/browser/download-approval-queue.ts"
   );
   const { useDownloadSitesStore } = await import("../src/features/browser/download-sites-store.ts");
   const blob = approveDownload("blob:https://a.example/uuid", "file.bin", "blob:https://a.example/uuid");
   const request = useApprovalStore.getState().queue[0];
-  assert.equal(request.host, "");
+  assert.equal(request.origin, "");
   answerDownload(request, true, true);
   assert.equal(await blob, true);
   assert.deepEqual(useDownloadSitesStore.getState().sites, {});
   // From a page, the page's site is the one remembered.
   const paged = approveDownload("blob:https://cdn.example/uuid", "file.bin", "https://a.example/page");
-  assert.equal(useApprovalStore.getState().queue[0].host, "a.example");
+  assert.equal(useApprovalStore.getState().queue[0].origin, "https://a.example");
+  answerDownload(useApprovalStore.getState().queue[0], true, true);
+  assert.equal(await paged, true);
+  assert.deepEqual(useDownloadSitesStore.getState().sites, { "https://a.example": "allow" });
+  // Another scheme, port or subdomain is another site: it is asked about again.
+  const { downloadSiteOf } = await import("../src/features/browser/download-approval-queue.ts");
+  assert.equal(downloadSiteOf("https://www.a.example/x"), "https://www.a.example");
+  assert.equal(downloadSiteOf("http://a.example:8443/x"), "http://a.example:8443");
+  const other = approveDownload("http://a.example:8443/f.zip", "f.zip");
+  assert.equal(useApprovalStore.getState().queue.length, 1);
   answerDownload(useApprovalStore.getState().queue[0], false, false);
-  assert.equal(await paged, false);
+  assert.equal(await other, false);
+  assert.equal(await approveDownload("https://a.example/g.zip", "g.zip"), true);
+  useDownloadSitesStore.getState().setSite("https://a.example", null);
+});
+
+test("a download whose click has expired waits for Save rather than skip the save dialog", async () => {
+  const picked: string[] = [];
+  const written: Blob[] = [];
+  let active = false;
+  // Chromium's picker refuses to open without a recent click.
+  Object.assign(globalThis, {
+    showSaveFilePicker: async ({ suggestedName }: { suggestedName: string }) => {
+      if (!active) throw new DOMException("Must be handling a user gesture", "SecurityError");
+      picked.push(suggestedName);
+      return {
+        name: suggestedName,
+        createWritable: async () => ({ write: async (data: Blob) => void written.push(data), close: async () => {} }),
+      };
+    },
+  });
+  Object.defineProperty(globalThis, "navigator", { value: { userActivation: { get isActive() { return active; } } }, configurable: true });
+  const { saveBrowserDownload } = await import("../src/features/browser/downloads.ts");
+  const prefs = useBrowserPrefsStore.getState();
+  prefs.setAskWhereToSave(true);
+  prefs.setAskBeforeDownloading(false);
+  (globalThis as { __toasts?: unknown[] }).__toasts = [];
+  const blob = new Blob(["x"]);
+  await saveBrowserDownload({ blob, name: "setup.dmg", contentType: "application/octet-stream", url: "https://a.example/setup.dmg" });
+  const toasts = (globalThis as { __toasts?: { message: string; options?: { action?: { onClick: () => void } } }[] }).__toasts!;
+  assert.equal(toasts.length, 1);
+  assert.equal(toasts[0].message, "browser.downloadPrompt.ready");
+  assert.deepEqual(picked, []);
+  // The Save click is a fresh one: the dialog opens and the file is written there.
+  active = true;
+  toasts[0].options!.action!.onClick();
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.deepEqual(picked, ["setup.dmg"]);
+  assert.equal(written.length, 1);
+  prefs.setAskWhereToSave(false);
+  prefs.setAskBeforeDownloading(true);
+  delete (globalThis as { showSaveFilePicker?: unknown }).showSaveFilePicker;
 });

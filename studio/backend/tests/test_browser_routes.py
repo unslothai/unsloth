@@ -355,6 +355,8 @@ def _modules(
     monkeypatch,
     scripts,
     allow_origin = None,
+    cache_control = None,
+    age = None,
 ):
     """Serve each URL in `scripts` as (error, body, content_type); return the URLs fetched."""
     fetched = []
@@ -363,6 +365,7 @@ def _modules(
         fetched.append(url)
         if allow_origin is not None:
             kwargs["meta_out"]["allow_origin"] = allow_origin
+        kwargs["meta_out"].update(cache_control = cache_control, age = age)
         return scripts.get(url, ("Failed to fetch URL: HTTP 404", "", ""))
 
     monkeypatch.setattr(browser_mod, "_fetch_url_raw", fake_fetch)
@@ -397,6 +400,10 @@ def test_self_contained_module_scripts_are_inlined(monkeypatch):
         (None, b'export * from "./c.js"', "text/javascript"),
         # Resolves against the module's own URL, which inlining would change to the page's.
         (None, b'new Worker(new URL("./w.js", import.meta.url))', "text/javascript"),
+        # A comment between the keyword and the specifier is still an import.
+        (None, b'import /* webpackChunkName: "lazy" */ ("./chunk.js")', "text/javascript"),
+        (None, b'import//x\n("./chunk.js")', "text/javascript"),
+        (None, b'export { a } from /* re-export */ "./a.js"', "text/javascript"),
         (None, b'x="<!--";y="<script>"', "text/javascript"),
         (None, b"a()", "text/plain"),
         ("Failed to fetch URL: HTTP 404", "", ""),
@@ -466,13 +473,45 @@ def test_modules_any_origin_may_load_keep_their_tag(monkeypatch):
 
 def test_a_module_is_fetched_once_for_many_pages(monkeypatch):
     fetched = _modules(
-        monkeypatch, {"https://example.com/m.js": (None, b"ready()", "text/javascript")}
+        monkeypatch,
+        {"https://example.com/m.js": (None, b"ready()", "text/javascript")},
+        cache_control = "public, max-age=31536000, immutable",
     )
     page = '<script type="module" src="/m.js"></script>'
     for _ in range(3):
         assert "ready()" in browser_mod._inline_module_scripts(page, "https://example.com/")
     assert fetched == ["https://example.com/m.js"]
 
+
+@pytest.mark.parametrize(
+    "cache_control, age",
+    [
+        (None, None),
+        ("private, max-age=0", None),
+        ("max-age=600, no-cache", None),
+        ("no-store", None),
+        ("public, max-age=300", "300"),
+        ("private, max-age=600", None),
+    ],
+)
+def test_a_module_the_host_says_to_recheck_is_fetched_again(monkeypatch, cache_control, age):
+    # As a browser would revalidate it: a deploy at the same URL must show on the next load.
+    fetched = _modules(
+        monkeypatch,
+        {"https://example.com/m.js": (None, b"ready()", "text/javascript")},
+        cache_control = cache_control,
+        age = age,
+    )
+    page = '<script type="module" src="/m.js"></script>'
+    for _ in range(2):
+        assert "ready()" in browser_mod._inline_module_scripts(page, "https://example.com/")
+    assert fetched == ["https://example.com/m.js"] * 2
+
+
+def test_a_module_is_kept_only_while_fresh():
+    assert browser_mod._fresh_for("public, max-age=60", "20") == 40
+    assert browser_mod._fresh_for("max-age=60, s-maxage=5", None) == 5
+    assert browser_mod._fresh_for("max-age=99999999", None) == browser_mod._MODULE_CACHE_TTL_S
 
 def test_inlined_modules_stay_within_the_page_limit(monkeypatch):
     _modules(

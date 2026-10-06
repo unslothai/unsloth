@@ -185,6 +185,8 @@ export const ru = {
       cancel: "Отмена",
       download: "Загрузить",
       blocked: "Загрузка с {host} заблокирована.",
+      ready: "Файл {name} готов к сохранению",
+      save: "Сохранить",
     },
     saveDownloadHistorySetting: "Хранить историю загрузок",
     saveDownloadHistorySettingDescription: "Показывать файлы, загруженные из браузера, в истории загрузок.",

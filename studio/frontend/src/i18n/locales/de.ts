@@ -185,6 +185,8 @@ export const de = {
       cancel: "Abbrechen",
       download: "Herunterladen",
       blocked: "Ein Download von {host} wurde blockiert.",
+      ready: "{name} kann gespeichert werden",
+      save: "Speichern",
     },
     saveDownloadHistorySetting: "Downloadverlauf behalten",
     saveDownloadHistorySettingDescription: "Aus dem Browser heruntergeladene Dateien unter Downloadverlauf auflisten.",

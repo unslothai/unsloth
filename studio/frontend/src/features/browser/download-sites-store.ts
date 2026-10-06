@@ -12,21 +12,21 @@ import { accountDatabaseName } from "@/lib/account-transition";
 export type DownloadSiteDecision = "allow" | "block";
 
 interface DownloadSitesState {
-  /** Remembered answers by host. */
+  /** Remembered answers by origin (`https://example.com`). */
   sites: Record<string, DownloadSiteDecision>;
   /** Remember a site's answer, or forget it with null. */
-  setSite: (host: string, decision: DownloadSiteDecision | null) => void;
+  setSite: (origin: string, decision: DownloadSiteDecision | null) => void;
 }
 
 export const useDownloadSitesStore = create<DownloadSitesState>()(
   persist(
     (set) => ({
       sites: {},
-      setSite: (host, decision) =>
+      setSite: (origin, decision) =>
         set((state) => {
           const sites = { ...state.sites };
-          if (decision) sites[host] = decision;
-          else delete sites[host];
+          if (decision) sites[origin] = decision;
+          else delete sites[origin];
           return { sites };
         }),
     }),

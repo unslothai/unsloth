@@ -185,6 +185,8 @@ export const ptBR = {
       cancel: "Cancelar",
       download: "Baixar",
       blocked: "Um download de {host} foi bloqueado.",
+      ready: "{name} está pronto para salvar",
+      save: "Salvar",
     },
     saveDownloadHistorySetting: "Manter histórico de downloads",
     saveDownloadHistorySettingDescription: "Lista os arquivos baixados do navegador em Histórico de downloads.",

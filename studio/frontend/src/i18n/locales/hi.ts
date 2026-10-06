@@ -185,6 +185,8 @@ export const hi = {
       cancel: "रद्द करें",
       download: "डाउनलोड करें",
       blocked: "{host} से एक डाउनलोड ब्लॉक किया गया।",
+      ready: "{name} सहेजने के लिए तैयार है",
+      save: "सहेजें",
     },
     saveDownloadHistorySetting: "डाउनलोड इतिहास रखें",
     saveDownloadHistorySettingDescription: "ब्राउज़र से डाउनलोड की गई फ़ाइलों को डाउनलोड इतिहास में दिखाएँ।",

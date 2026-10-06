@@ -41,7 +41,7 @@ export function DownloadApprovalDialog() {
             {request ? t("browser.downloadPrompt.description", { host: request.label, name: request.name }) : null}
           </AlertDialogDescription>
         </AlertDialogHeader>
-        {request?.host ? (
+        {request?.origin ? (
           <label htmlFor={checkboxId} className="flex cursor-pointer items-center gap-2 text-sm text-foreground">
             <Checkbox id={checkboxId} checked={remember} onCheckedChange={(checked) => setRemember(checked === true)} />
             {t("browser.downloadPrompt.remember")}

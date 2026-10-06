@@ -186,6 +186,8 @@ export const ja = {
       cancel: "キャンセル",
       download: "ダウンロード",
       blocked: "{host} からのダウンロードをブロックしました。",
+      ready: "{name} を保存できます",
+      save: "保存",
     },
     saveDownloadHistorySetting: "ダウンロード履歴を保持",
     saveDownloadHistorySettingDescription: "ブラウザからダウンロードしたファイルをダウンロード履歴に表示します。",

@@ -185,6 +185,8 @@ export const fr = {
       cancel: "Annuler",
       download: "Télécharger",
       blocked: "Un téléchargement depuis {host} a été bloqué.",
+      ready: "{name} est prêt à être enregistré",
+      save: "Enregistrer",
     },
     saveDownloadHistorySetting: "Conserver l'historique des téléchargements",
     saveDownloadHistorySettingDescription: "Lister les fichiers téléchargés depuis le navigateur dans l'historique des téléchargements.",

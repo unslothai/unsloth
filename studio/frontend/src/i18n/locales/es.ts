@@ -185,6 +185,8 @@ export const es = {
       cancel: "Cancelar",
       download: "Descargar",
       blocked: "Se bloqueó una descarga de {host}.",
+      ready: "{name} está listo para guardar",
+      save: "Guardar",
     },
     saveDownloadHistorySetting: "Conservar el historial de descargas",
     saveDownloadHistorySettingDescription: "Lista los archivos que descargas del navegador en Historial de descargas.",

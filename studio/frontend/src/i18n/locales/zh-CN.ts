@@ -185,6 +185,8 @@ export const zhCN = {
       cancel: "取消",
       download: "下载",
       blocked: "已阻止来自 {host} 的下载。",
+      ready: "{name} 已可保存",
+      save: "保存",
     },
     saveDownloadHistorySetting: "保留下载记录",
     saveDownloadHistorySettingDescription: "在下载记录中列出从浏览器下载的文件。",

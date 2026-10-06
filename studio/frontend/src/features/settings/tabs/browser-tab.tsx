@@ -100,22 +100,23 @@ function DownloadSiteRows() {
   const t = useT();
   const sites = useDownloadSitesStore((state) => state.sites);
   const { setSite: setDownloadSite } = useDownloadSitesStore.getState();
-  const hosts = Object.keys(sites).sort();
+  // Origins, as they are kept (https://example.com).
+  const origins = Object.keys(sites).sort();
   return (
     <SettingsRow
       label={t("browser.downloadSitesSetting")}
       description={t("browser.downloadSitesSettingDescription")}
       below={
-        hosts.length > 0 ? (
+        origins.length > 0 ? (
           <ul className="flex w-full flex-col divide-y divide-border/60 rounded-lg border border-border/80">
-            {hosts.map((host) => (
-              <li key={host} className="flex items-center gap-3 py-1.5 pl-3 pr-1.5">
-                <span className="min-w-0 flex-1 truncate text-sm text-foreground">{host}</span>
+            {origins.map((origin) => (
+              <li key={origin} className="flex items-center gap-3 py-1.5 pl-3 pr-1.5">
+                <span className="min-w-0 flex-1 truncate text-sm text-foreground">{origin}</span>
                 <Select
-                  value={sites[host]}
-                  onValueChange={(value) => setDownloadSite(host, value as DownloadSiteDecision)}
+                  value={sites[origin]}
+                  onValueChange={(value) => setDownloadSite(origin, value as DownloadSiteDecision)}
                 >
-                  <SelectTrigger className="w-40" aria-label={t("browser.downloadSitesFor", { host })}>
+                  <SelectTrigger className="w-40" aria-label={t("browser.downloadSitesFor", { host: origin })}>
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
@@ -127,8 +128,8 @@ function DownloadSiteRows() {
                   variant="ghost"
                   size="icon"
                   className="size-8"
-                  aria-label={t("browser.downloadSitesRemove", { host })}
-                  onClick={() => setDownloadSite(host, null)}
+                  aria-label={t("browser.downloadSitesRemove", { host: origin })}
+                  onClick={() => setDownloadSite(origin, null)}
                 >
                   <HugeiconsIcon icon={Cancel01Icon} strokeWidth={1.75} className="size-4" />
                 </Button>

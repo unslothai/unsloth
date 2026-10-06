@@ -182,6 +182,8 @@ export const en = {
       cancel: "Cancel",
       download: "Download",
       blocked: "Blocked a download from {host}.",
+      ready: "{name} is ready to save",
+      save: "Save",
     },
     saveDownloadHistorySetting: "Keep download history",
     saveDownloadHistorySettingDescription: "List files you download from the browser under Download history.",

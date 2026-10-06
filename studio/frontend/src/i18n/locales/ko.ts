@@ -185,6 +185,8 @@ export const ko = {
       cancel: "취소",
       download: "다운로드",
       blocked: "{host}의 다운로드를 차단했습니다.",
+      ready: "{name}을(를) 저장할 수 있습니다",
+      save: "저장",
     },
     saveDownloadHistorySetting: "다운로드 기록 유지",
     saveDownloadHistorySettingDescription: "브라우저에서 다운로드한 파일을 다운로드 기록에 표시합니다.",

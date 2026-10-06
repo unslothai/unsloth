@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { getLocale, translate } from "@/i18n";
 import { isTauri } from "@/lib/api-base";
 import { DownloadCancelledError, downloadFile, isDownloadCancelled } from "@/lib/native-files";
 import { toast } from "@/lib/toast";
@@ -61,11 +62,30 @@ function approved(url: string | null, name: string): Promise<boolean> {
 /** Save a file from the panel and add it to the download history. A file from a website
  *  waits for approval first. `target` is a save location already picked (approval included),
  *  or null for none; left out, the dialog opens here when Settings asks. */
-export async function saveBrowserDownload(
+export async function saveBrowserDownload(download: BrowserDownload, target?: SaveHandle | null): Promise<void> {
+  if (target === undefined) {
+    if (!(await approved(download.url, download.name))) return;
+    // The save dialog opens only right after a click, and one that finished later (a slow file,
+    // or one nobody was asked about) would save without it: wait for a click on Save instead.
+    if (saveNeedsClick()) {
+      const locale = getLocale();
+      toast(translate("browser.downloadPrompt.ready", { name: download.name }, locale), {
+        action: {
+          label: translate("browser.downloadPrompt.save", {}, locale),
+          onClick: () => void writeDownload(download, undefined),
+        },
+      });
+      return;
+    }
+  }
+  await writeDownload(download, target);
+}
+
+/** Write an approved download where Settings says, and add it to the download history. */
+async function writeDownload(
   { blob, name, contentType, url }: BrowserDownload,
-  target?: SaveHandle | null,
+  target: SaveHandle | null | undefined,
 ): Promise<void> {
-  if (target === undefined && !(await approved(url, name))) return;
   let saved: { id: string; name: string } | null = null;
   let picked: SaveHandle | null = null;
   try {

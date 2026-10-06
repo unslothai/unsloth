@@ -184,6 +184,8 @@ export const it = {
       cancel: "Annulla",
       download: "Scarica",
       blocked: "Bloccato un download da {host}.",
+      ready: "{name} è pronto per il salvataggio",
+      save: "Salva",
     },
     saveDownloadHistorySetting: "Conserva la cronologia dei download",
     saveDownloadHistorySettingDescription: "Elenca i file scaricati dal browser in Cronologia download.",

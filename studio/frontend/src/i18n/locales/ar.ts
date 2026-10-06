@@ -185,6 +185,8 @@ export const ar = {
       cancel: "إلغاء",
       download: "تنزيل",
       blocked: "تم حظر تنزيل من {host}.",
+      ready: "{name} جاهز للحفظ",
+      save: "حفظ",
     },
     saveDownloadHistorySetting: "الاحتفاظ بسجل التنزيلات",
     saveDownloadHistorySettingDescription: "إدراج الملفات التي تنزّلها من المتصفح ضمن سجل التنزيلات.",
