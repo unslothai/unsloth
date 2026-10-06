@@ -142,16 +142,31 @@ export const SETTINGS_SEARCH_INDEX: Record<SettingsTab, TranslationKey[]> = {
     "settings.chat.artifacts.title",
     "settings.chat.artifacts.collapseHtmlBlocks",
     "settings.chat.artifacts.allowNetworkAccess",
+    "browser.tabsTitle",
+    "browser.switchToNewTabsSetting",
+    "browser.defaultZoomSetting",
     "browser.addressBarTitle",
     "browser.searchEngineSetting",
     "browser.showFullUrlSetting",
+    "browser.newTabPageTitle",
+    "browser.showSuggestedSetting",
+    "browser.showRecentsSetting",
+    "browser.hiddenSuggestionsSetting",
     "browser.bookmarksTitle",
     "browser.bookmarksToolbarSetting",
     "browser.bookmarks.showEditor",
+    "browser.importBookmarksSetting",
+    "browser.downloadsTitle",
+    "browser.askWhereToSaveSetting",
+    "browser.saveDownloadHistorySetting",
     "browser.browsingDataTitle",
+    "browser.saveHistorySetting",
+    "browser.historyRetentionSetting",
     "browser.historySetting",
     "browser.downloadsSetting",
     "browser.clearDataSetting",
+    "browser.annotationsTitle",
+    "browser.annotationScreenshotsSetting",
   ],
   library: [
     "settings.library.storageSection",
@@ -349,6 +364,10 @@ export function createSettingsSearchIndex({
     ],
     about: SETTINGS_SEARCH_INDEX.about.filter(
       (key) => key !== "settings.about.updates",
+    ),
+    // The row is web only.
+    browser: SETTINGS_SEARCH_INDEX.browser.filter(
+      (key) => key !== "browser.askWhereToSaveSetting",
     ),
   };
 }

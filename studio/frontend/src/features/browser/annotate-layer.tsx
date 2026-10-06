@@ -22,8 +22,11 @@ import {
   useState,
 } from "react";
 import { annotateScript } from "./api";
+import { canScreenshot } from "./screenshot-support";
+import { screenshotPage } from "./capture";
 import { type AnnotateEvent, type AnnotateRect, MAX_MARKS } from "./frame-message";
 import { frameRect, onFrameAnnotate, sendFrameCommand } from "./page-frame";
+import { useBrowserPrefsStore } from "./prefs-store";
 import { useBrowserStore } from "./store";
 
 // The blocks a click marks whole. Anything else marks the nearest element that holds text itself.
@@ -34,6 +37,16 @@ const MAX_QUOTE_CHARS = 280;
 const PAD = 5;
 const DRAG_THRESHOLD = 4;
 const BUBBLE = 28;
+
+/** A screenshot of the marked page when Settings asks for one; failures just skip it. */
+async function annotationScreenshot(page: HTMLElement | null): Promise<File[]> {
+  if (useBrowserPrefsStore.getState().annotationScreenshots !== "always" || !page || !canScreenshot()) return [];
+  const { tabs, annotateTabId } = useBrowserStore.getState();
+  const tab = tabs.find((candidate) => candidate.id === annotateTabId);
+  if (!tab) return [];
+  const blob = await screenshotPage(tab, page).catch(() => null);
+  return blob ? [new File([blob], "Annotated page.png", { type: "image/png" })] : [];
+}
 
 type Annotation = {
   id: number;
@@ -241,10 +254,11 @@ export function AnnotateLayer({
     if (outgoing.length === 0 || !sendAnnotations || sending) return;
     // One at a time: a second click while staging would add the annotations twice.
     setSending(true);
-    const sent = await sendAnnotations({
-      file: fileName,
-      items: outgoing.map(({ quote, request }) => ({ quote, request })),
-    }).finally(() => setSending(false));
+    const files = await annotationScreenshot(page);
+    const sent = await sendAnnotations(
+      { file: fileName, items: outgoing.map(({ quote, request }) => ({ quote, request })) },
+      files,
+    ).finally(() => setSending(false));
     if (sent) exit();
   };
 
@@ -604,6 +618,7 @@ function CommentForm({
   return (
     <form
       data-annotate-ui=""
+      data-annotate-chrome=""
       onSubmit={(event) => {
         event.preventDefault();
         onSave();
@@ -699,6 +714,7 @@ function AnnotateBar({
     <div
       ref={barRef}
       data-annotate-ui=""
+      data-annotate-chrome=""
       className={cn(
         "pointer-events-auto absolute bottom-5 left-1/2 flex h-12 items-center gap-1 rounded-2xl pr-1.5 pl-2.5 text-ui-15",
         SURFACE,
@@ -766,7 +782,8 @@ export function WebAnnotateLayer({
   tabId,
   title,
   url,
-}: { tabId: string; title: string; url: string }) {
+  page,
+}: { tabId: string; title: string; url: string; page: HTMLElement | null }) {
   const t = useT();
   const layerRef = useRef<HTMLDivElement | null>(null);
   const inputRef = useRef<HTMLInputElement | null>(null);
@@ -825,11 +842,11 @@ export function WebAnnotateLayer({
     if (outgoing.length === 0 || !sendAnnotations || sending) return;
     // One at a time: a second click while staging would add the annotations twice.
     setSending(true);
-    const sent = await sendAnnotations({
-      file: title || url,
-      url,
-      items: outgoing.map(({ quote, request }) => ({ quote, request })),
-    }).finally(() => setSending(false));
+    const files = await annotationScreenshot(page);
+    const sent = await sendAnnotations(
+      { file: title || url, url, items: outgoing.map(({ quote, request }) => ({ quote, request })) },
+      files,
+    ).finally(() => setSending(false));
     if (sent) exit();
   };
 

@@ -484,6 +484,7 @@ function messageHasImage(message: MessageRecord): boolean {
 function sendDocumentAnnotations(
   aui: ReturnType<typeof useAui>,
   annotations: DocumentAnnotations,
+  files: File[] = [],
 ): Promise<boolean> {
   const composer = aui.composer();
   const drafted = () => {
@@ -493,8 +494,21 @@ function sendDocumentAnnotations(
   // Text or files the user staged are their next message: the annotations join it unsent.
   const before = drafted();
   const hasDraft = before.text || before.attachments > 0;
-  return composer
-    .addAttachment(createAnnotationsFile(annotations))
+  // Extra files first, after the draft check, so they don't count as a draft. They're optional:
+  // one the model can't take (a screenshot on a text-only model) is skipped.
+  let extras = 0;
+  return files
+    .reduce(
+      (staged, file) =>
+        staged.then(() =>
+          composer.addAttachment(file).then(
+            () => void extras++,
+            () => undefined,
+          ),
+        ),
+      Promise.resolve(),
+    )
+    .then(() => composer.addAttachment(createAnnotationsFile(annotations)))
     .then(() => {
       const form = [
         ...document.querySelectorAll<HTMLFormElement>("form.aui-composer-root"),
@@ -513,7 +527,7 @@ function sendDocumentAnnotations(
       requestAnimationFrame(() =>
         requestAnimationFrame(() => {
           const now = drafted();
-          if (now.text || now.attachments > 1) return;
+          if (now.text || now.attachments > 1 + extras) return;
           form.requestSubmit();
         }),
       );
@@ -582,7 +596,7 @@ const SingleContent = memo(function SingleContent({
     setInAppLinkHandler(openUrlInBrowser);
     useBrowserStore.setState({
       requestEdits: (prompt) => useChatArtifactsStore.getState().stageFixPrompt(prompt),
-      sendAnnotations: (annotations) => sendDocumentAnnotations(aui, annotations),
+      sendAnnotations: (annotations, files) => sendDocumentAnnotations(aui, annotations, files),
       attachToChat: (file) =>
         aui
           .composer()
