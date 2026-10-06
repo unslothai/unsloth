@@ -248,15 +248,10 @@ const TABS: TabDef[] = [
     iconComponent: MicIcon,
   },
   {
-    id: "library",
-    labelKey: "shell.navigation.library",
-    icon: LibrariesIcon,
+    id: "browser",
+    labelKey: "browser.settingsTitle",
+    icon: InternetIcon,
     badgeKey: "common.new",
-  },
-  {
-    id: "data",
-    labelKey: "settings.tabs.data",
-    icon: DatabaseSettingIcon,
   },
   {
     id: "keyboard-shortcuts",
@@ -264,9 +259,14 @@ const TABS: TabDef[] = [
     icon: EnergyRectangleIcon,
   },
   {
-    id: "browser",
-    labelKey: "browser.settingsTitle",
-    icon: InternetIcon,
+    id: "data",
+    labelKey: "settings.tabs.data",
+    icon: DatabaseSettingIcon,
+  },
+  {
+    id: "library",
+    labelKey: "shell.navigation.library",
+    icon: LibrariesIcon,
   },
   {
     id: "debugging",

@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import type { TransformersUpgradeInfo } from "@/features/transformers-upgrade";
+import type { CustomReasoningConfig } from "../custom-reasoning";
 
 export type CpuFallbackReason = "vulkan_startup_crash";
 
@@ -735,6 +736,7 @@ export interface OpenAIChatCompletionsRequest {
   encrypted_api_key?: string;
   provider_base_url?: string | null;
   provider_api_type?: "chat_completions" | "responses";
+  provider_reasoning_config?: CustomReasoningConfig;
   /** Boolean toggle for OpenAI/Anthropic ephemeral cache_control. For Gemini the backend also accepts
    *  a cached-content resource name, forwarded as `generationConfig.cachedContent`. */
   enable_prompt_caching?: boolean | string | null;

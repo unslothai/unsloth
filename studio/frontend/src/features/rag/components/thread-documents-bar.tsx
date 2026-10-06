@@ -16,6 +16,7 @@ import {
   Folder02Icon,
 } from "@hugeicons/core-free-icons";
 import { Tick02Icon } from "@/lib/tick-icon";
+import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import { useAui } from "@assistant-ui/react";
 import { cn } from "@/lib/utils";
 import {
@@ -310,6 +311,26 @@ function AttachFilesButton({
   );
 }
 
+const ATTACHMENT_TARGETS: {
+  value: ProjectAttachmentTarget;
+  icon: typeof Folder02Icon;
+  title: string;
+  description: string;
+}[] = [
+  {
+    value: "project",
+    icon: Folder02Icon,
+    title: "The project",
+    description: "Every chat in this project can use them",
+  },
+  {
+    value: "thread",
+    icon: AttachmentIcon,
+    title: "This chat only",
+    description: "Other chats in the project won't see them",
+  },
+];
+
 /** Picks whether new attachments go to the project (shared with every chat in it)
  * or to this chat alone. Only a project chat has the choice. */
 function AttachmentTargetMenu({
@@ -321,49 +342,64 @@ function AttachmentTargetMenu({
   sharesWithProject: boolean;
   onSelect: (target: ProjectAttachmentTarget) => void;
 }) {
+  const current = sharesWithProject ? "project" : "thread";
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild={true}>
+        {/* Caret and resting fill so it reads as a picker. */}
         <button
           type="button"
           disabled={disabled}
           aria-label="Choose where attached files go"
           title="Choose where attached files go"
-          className="composer-pill-btn shrink-0 -translate-y-px !text-foreground/60 px-2"
+          className="composer-pill-btn attachment-target-pill shrink-0 -translate-y-px gap-1 !text-foreground/70 pl-3 pr-1.5"
         >
-          <span className="text-ui-11">
+          <span className="text-ui-12">
             {sharesWithProject ? "Project" : "This chat"}
           </span>
+          <HugeiconsIcon
+            icon={ChevronDownStandardIcon}
+            strokeWidth={1.5}
+            className="composer-pill-caret size-[calc(14px*var(--ui-space-scale,1))]"
+          />
         </button>
       </DropdownMenuTrigger>
-      <DropdownMenuContent align="start" className="unsloth-plus-menu w-64">
+      <DropdownMenuContent
+        align="start"
+        className="unsloth-plus-menu w-[calc(328px*var(--ui-space-scale,1))]"
+      >
         <DropdownMenuLabel>New files go to</DropdownMenuLabel>
-        <DropdownMenuItem onSelect={() => onSelect("project")}>
-          <HugeiconsIcon
-            icon={sharesWithProject ? Tick02Icon : Folder02Icon}
-            strokeWidth={1.75}
-            className="size-icon"
-          />
-          <span className="flex flex-col">
-            <span>The project</span>
-            <span className="text-ui-11 text-muted-foreground">
-              Every chat in this project can use them
+        {ATTACHMENT_TARGETS.map((target) => (
+          <DropdownMenuItem
+            key={target.value}
+            onSelect={() => onSelect(target.value)}
+            className="items-start"
+          >
+            {/* Icon aligns with the title line. */}
+            <span className="flex h-[1lh] shrink-0 items-center">
+              <HugeiconsIcon
+                icon={target.icon}
+                strokeWidth={1.75}
+                className="size-icon"
+              />
             </span>
-          </span>
-        </DropdownMenuItem>
-        <DropdownMenuItem onSelect={() => onSelect("thread")}>
-          <HugeiconsIcon
-            icon={sharesWithProject ? AttachmentIcon : Tick02Icon}
-            strokeWidth={1.75}
-            className="size-icon"
-          />
-          <span className="flex flex-col">
-            <span>This chat only</span>
-            <span className="text-ui-11 text-muted-foreground">
-              Other chats in the project won't see them
+            <span className="flex min-w-0 flex-1 flex-col gap-0.5">
+              <span>{target.title}</span>
+              <span className="text-ui-12 leading-snug text-muted-foreground">
+                {target.description}
+              </span>
             </span>
-          </span>
-        </DropdownMenuItem>
+            {/* Tick centred on the row. */}
+            <HugeiconsIcon
+              icon={Tick02Icon}
+              strokeWidth={2}
+              className={cn(
+                "unsloth-tick shrink-0 self-center",
+                current !== target.value && "opacity-0",
+              )}
+            />
+          </DropdownMenuItem>
+        ))}
       </DropdownMenuContent>
     </DropdownMenu>
   );
@@ -739,22 +775,25 @@ export function ThreadDocumentsBar({
     <>
       {kbDialog}
       <div className="mb-2 flex w-full flex-row items-start gap-1.5 pl-0.5 pr-1.5 pt-0.5 pb-1">
-        <AttachFilesButton
-          disabled={busy}
-          compact={chipCount > 0}
-          sharesWithProject={sharesWithProject}
-          onClick={handleAddDocs}
-        />
-        {/* Only a project chat has two scopes to choose between. */}
-        {projectId ? (
-          <AttachmentTargetMenu
+        {/* Centred together; the row stays top-aligned for chips. */}
+        <div className="flex shrink-0 items-center gap-1.5">
+          <AttachFilesButton
             disabled={busy}
+            compact={chipCount > 0}
             sharesWithProject={sharesWithProject}
-            onSelect={(target) =>
-              setThreadProjectAttachmentTarget(effectiveThreadId, target)
-            }
+            onClick={handleAddDocs}
           />
-        ) : null}
+          {/* Only a project chat has two scopes to choose between. */}
+          {projectId ? (
+            <AttachmentTargetMenu
+              disabled={busy}
+              sharesWithProject={sharesWithProject}
+              onSelect={(target) =>
+                setThreadProjectAttachmentTarget(effectiveThreadId, target)
+              }
+            />
+          ) : null}
+        </div>
         <input
           ref={fileInputRef}
           type="file"
