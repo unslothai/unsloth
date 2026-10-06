@@ -3,9 +3,11 @@
 
 import type { useNavigate } from "@tanstack/react-router";
 import { zipSync } from "fflate";
+import { usePlatformStore } from "@/config/env";
 import {
   isTtsAudioType,
   trainedTtsCheckpointIsLoadable,
+  trainedTtsCheckpointIsRunnableOnMac,
 } from "@/features/audio/audio-page-policy";
 import { audioWorkflowForAudioType } from "@/features/audio/workflows";
 import { getAuthSessionEpoch } from "@/features/auth";
@@ -207,7 +209,10 @@ export async function chatWithModel(
     const { audio_type: audioType, export_type: exportType } = scanned;
     if (
       isTtsAudioType(audioType, exportType === "gguf") &&
-      trainedTtsCheckpointIsLoadable(audioType, exportType)
+      trainedTtsCheckpointIsLoadable(audioType, exportType) &&
+      // The Audio page's picker hides what the Mac runtime cannot run; never load it from here.
+      (usePlatformStore.getState().deviceType !== "mac" ||
+        trainedTtsCheckpointIsRunnableOnMac(audioType, exportType))
     ) {
       void navigate({
         to: "/audio",

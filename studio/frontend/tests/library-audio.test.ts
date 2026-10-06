@@ -115,13 +115,14 @@ test("View in Audio opens the clip's own workflow instead of passing through Spe
   assert.match(origin, /isAudioWorkflowId\(workflow\) \? \{ \.\.\.search, workflow \} : search/);
 });
 
-function chatWithModelFor(lora: { audio_type: string; export_type: string }) {
+function chatWithModelFor(lora: { audio_type: string; export_type: string }, deviceType = "linux") {
   const navigations: unknown[] = [];
   const toasts: unknown[] = [];
   const { chatWithModel } = loadWithStubs<{
     chatWithModel: (navigate: (to: unknown) => Promise<void>, item: unknown) => Promise<void>;
   }>(new URL("../src/features/library/actions.ts", import.meta.url), {
     fflate: {},
+    "@/config/env": { usePlatformStore: { getState: () => ({ deviceType }) } },
     "@/features/audio/audio-page-policy": policy,
     "@/features/audio/workflows": workflows,
     "@/features/auth": { getAuthSessionEpoch: () => 0 },
@@ -158,6 +159,14 @@ test("Chat with a speech fine-tune loads it on its Audio page with its audio typ
   const other = await chatWithModelFor({ audio_type: "whisper", export_type: "lora" });
   assert.deepEqual(other.navigations, [{ to: "/audio" }]);
   assert.deepEqual(other.toasts, ["library.toast.speechModel"]);
+});
+
+test("Chat with on a Mac skips a fine-tune the Audio page cannot run there", async () => {
+  const music = await chatWithModelFor({ audio_type: "minimax_music3", export_type: "merged" }, "mac");
+  assert.deepEqual(music.navigations, [{ to: "/audio" }]);
+  assert.deepEqual(music.toasts, ["library.toast.speechModel"]);
+  const merged = await chatWithModelFor({ audio_type: "moss_tts_local", export_type: "merged" }, "mac");
+  assert.equal((merged.navigations[0] as { search?: { loadId?: string } }).search?.loadId, "/out/my-voice");
 });
 
 test("the preview plays clips with the Audio page's waveform and stops a card that is playing", () => {
