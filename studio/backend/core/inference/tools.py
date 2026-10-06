@@ -10251,7 +10251,9 @@ def _profile_for_request() -> str:
     return profile
 
 
-def apply_terminal_profile_for_request(tools: list[dict]) -> list[dict]:
+def apply_terminal_profile_for_request(
+    tools: list[dict], sandbox_level: "str | None" = None
+) -> list[dict]:
     """Sandboxed requests only: advertise the shell _bash_exec will pick for this request. Only the
     first call can block on the MXC probe, so async callers run it in a worker thread; later calls
     reuse the last profile and refresh it in the background. A list without the Terminal never probes."""
@@ -10260,7 +10262,8 @@ def apply_terminal_profile_for_request(tools: list[dict]) -> list[dict]:
         for t in tools or ()
     ):
         return tools
-    return apply_terminal_profile_description(tools, _profile_for_request())
+    profile = _terminal_profile(True) if sandbox_level == "low" else _profile_for_request()
+    return apply_terminal_profile_description(tools, profile)
 
 
 def _shell_argv(command: str, workdir: str, confinement) -> "tuple[list[str], str | None]":
@@ -22165,7 +22168,8 @@ def _bash_exec(
         return _STUDIO_CREDENTIAL_BLOCKED
 
     # Chosen once, so the blocklist, env and argv all agree on the shell that will run this call.
-    profile = _terminal_profile(disable_sandbox)
+    # Sandbox Low runs on the host shell: cmd is only picked to stay inside MXC.
+    profile = _terminal_profile(disable_sandbox or tool_execution_mode == "software")
     if profile == "cmd_isolated":
         # Models often end a command with a newline; cmd /s /c cannot carry one.
         command = command.strip()

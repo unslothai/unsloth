@@ -74,23 +74,48 @@ def normalize_tool_permissions(
 OS_SANDBOXED_TOOLS = frozenset({"python", "terminal"})
 
 
-def off_mode_still_gates(name: str) -> bool:
+SANDBOX_LEVELS = ("high", "low")
+
+
+def normalize_sandbox_level(value: Optional[str]) -> str:
+    """Absent reads as "high"; anything else is a caller bug, so it never silently loosens to "low"."""
+    if value is None:
+        return "high"
+    level = str(value).strip().lower()
+    if level not in SANDBOX_LEVELS:
+        raise ValueError(f"sandbox_level must be 'high' or 'low', not {value!r}")
+    return level
+
+
+def runs_without_os_sandbox(name: str, sandbox_level: Optional[str]) -> bool:
+    """Low: Python and Terminal run on software safeguards only, so they never claim OS isolation."""
+    return name in OS_SANDBOXED_TOOLS and sandbox_level == "low"
+
+
+def off_mode_still_gates(name: str, sandbox_level: Optional[str] = None) -> bool:
     """Whether "off" must still ask for this tool. Cached only; unknown counts as not isolated."""
     if name not in OS_SANDBOXED_TOOLS:
         return False
+    if runs_without_os_sandbox(name, sandbox_level):
+        return True
     from core.inference.os_sandbox import cached_tool_isolation
 
     return cached_tool_isolation(name) is not True
 
 
 def tool_call_may_prompt(
-    *, confirm_tool_calls: bool, bypass_permissions: bool, permission_mode: Optional[str], name: str
+    *,
+    confirm_tool_calls: bool,
+    bypass_permissions: bool,
+    permission_mode: Optional[str],
+    name: str,
+    sandbox_level: Optional[str] = None,
 ) -> bool:
     """Before the arguments are known: whether a call to ``name`` could stop and ask."""
     if not confirm_tool_calls or bypass_permissions:
         return False
     if permission_mode == "off":
-        return off_mode_still_gates(name)
+        return off_mode_still_gates(name, sandbox_level)
     if permission_mode == "auto":
         from core.inference.tools import is_always_safe_tool
         return not is_always_safe_tool(name)
@@ -106,6 +131,7 @@ def needs_tool_confirmation(
     arguments,
     is_high_risk = None,
     never_needs = None,
+    sandbox_level: Optional[str] = None,
 ) -> bool:
     if is_high_risk is None or never_needs is None:
         from core.inference import tools
@@ -114,7 +140,7 @@ def needs_tool_confirmation(
     if not confirm_tool_calls or bypass_permissions or never_needs(name):
         return False
     if permission_mode == "off":
-        return off_mode_still_gates(name) and is_high_risk(name, arguments)
+        return off_mode_still_gates(name, sandbox_level) and is_high_risk(name, arguments)
     if permission_mode == "auto":
         return is_high_risk(name, arguments)
     return True
@@ -129,6 +155,7 @@ def requires_os_isolation(
     arguments,
     prompted: bool,
     is_high_risk = None,
+    sandbox_level: Optional[str] = None,
 ) -> bool:
     """Whether this call must launch with tool_execution_mode="required" (no software fallback).
 
@@ -136,7 +163,7 @@ def requires_os_isolation(
     """
     if prompted or not confirm_tool_calls or bypass_permissions or permission_mode != "off":
         return False
-    if name not in OS_SANDBOXED_TOOLS:
+    if name not in OS_SANDBOXED_TOOLS or runs_without_os_sandbox(name, sandbox_level):
         return False
     if is_high_risk is None:
         from core.inference.tools import is_high_risk_tool_call as is_high_risk
