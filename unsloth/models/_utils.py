@@ -5745,10 +5745,10 @@ def lora_relative_to_original_base(model):
                 a, b = module.lora_A[k], module.lora_B[k]
                 swapped.append((a, a.weight, b, b.weight))
                 a.weight = torch.nn.Parameter(
-                    torch.cat([a.weight.detach(), A0.to(a.weight.dtype)], 0), requires_grad = False
+                    torch.cat([a.weight.detach(), A0.to(a.weight)], 0), requires_grad = False
                 )
                 b.weight = torch.nn.Parameter(
-                    torch.cat([b.weight.detach(), -B0.to(b.weight.dtype)], 1), requires_grad = False
+                    torch.cat([b.weight.detach(), -B0.to(b.weight)], 1), requires_grad = False
                 )
         yield
     finally:

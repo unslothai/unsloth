@@ -73,12 +73,17 @@ def randomized_svd(
     m, n = W.shape
     A = W if m >= n else W.mT
     A = A.float()
+    scale = None
+    if _safe:
+        # rocSOLVER's geqrf / gesvd square entries without LAPACK's scaling and overflow above ~1e19.
+        scale = A.abs().amax().clamp_min_(torch.finfo(torch.float32).tiny)
+        A = A / scale
     M, N = A.shape
     rank = min(rank, N)
     q = min(rank + (max(rank, 10) if n_oversamples is None else n_oversamples), N)
     Z = torch.randn(N, q, device = A.device, dtype = A.dtype, generator = generator)
     failures = []
-    # Below q = 32 one Householder QR beats CholeskyQR's ~8 launches, and cannot fail (no check sync).
+    # Below q = 32 one Householder QR beats CholeskyQR's ~8 launches.
     householder = _safe or q < 32
 
     def _power(k):
@@ -107,7 +112,8 @@ def randomized_svd(
         try:
             Ur, S, Vrh = torch.linalg.svd(R2)
         except torch.linalg.LinAlgError:
-            # Non-finite R2 from a CholeskyQR breakdown; the Householder rerun cannot reach here.
+            if _safe:
+                raise
             return randomized_svd(
                 W, rank, n_oversamples, n_iter, final_passes, generator, _safe = True
             )
@@ -125,7 +131,9 @@ def randomized_svd(
     # A^T ~= Z Y^T = Q2 Ur S Vr^T Y^T, so A ~= (Y Vr) S (Q2 Ur)^T.
     V = Q2 @ Ur
     U = Y @ Vr
-    if not householder:
+    if scale is not None:
+        S = S * scale
+    if not _safe:
         bad = torch.stack(failures).ne(0).any() if failures else S.new_zeros((), dtype = torch.bool)
         bad = bad | ~torch.isfinite(S).all() | ~torch.isfinite(U).all() | ~torch.isfinite(V).all()
         if bad.item():

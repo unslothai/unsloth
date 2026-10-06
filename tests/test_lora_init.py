@@ -77,6 +77,27 @@ def test_randomized_svd_adversarial_finite_and_near_optimal(name, rank):
     assert (S.double().cpu() - S0[:rank]).abs().max() <= 1e-4 * S0[0] + 1e-30
 
 
+@pytest.mark.parametrize("name", ["column_scales", "row_scales", "one_huge_entry"])
+@pytest.mark.parametrize("rank", [4, 16])
+def test_randomized_svd_survives_unscaled_solver_norms(monkeypatch, name, rank):
+    # rocSOLVER's geqrf / gesvd return NaN where a squared column norm overflows fp32 (gfx1151).
+    qr, svd = torch.linalg.qr, torch.linalg.svd
+
+    def overflows(X):
+        return X.dtype == torch.float32 and not torch.isfinite(X.pow(2).sum(-2)).all()
+
+    def unscaled_qr(X, *args, **kwargs):
+        out = qr(X, *args, **kwargs)
+        return torch.return_types.linalg_qr((out.Q * float("nan"), out.R)) if overflows(X) else out
+
+    def unscaled_svd(X, *args, **kwargs):
+        return svd(X * float("nan") if overflows(X) else X, *args, **kwargs)
+
+    monkeypatch.setattr(torch.linalg, "qr", unscaled_qr)
+    monkeypatch.setattr(torch.linalg, "svd", unscaled_svd)
+    test_randomized_svd_adversarial_finite_and_near_optimal(name, rank)
+
+
 def test_randomized_svd_is_fp32_only(monkeypatch):
     # Nothing may run in float64: consumer GPUs run it at 1/64 rate.
     calls = []
