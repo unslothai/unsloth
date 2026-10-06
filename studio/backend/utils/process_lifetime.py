@@ -379,6 +379,21 @@ def _reset_after_fork() -> None:
     _spawner = None
 
 
+def _free_thread_local_native_caches() -> None:
+    """Before a fork, free the per-thread FFmpeg scaler PyAV 19+ keeps for every thread that ever reformatted a frame.
+
+    A preexec_fn child runs PyOS_AfterFork_Child, which frees the other threads' state. A reformatter freed there
+    waits on FFmpeg slice threads that do not exist in the child, so the child never execs and the spawner (and every
+    launch queued behind it) blocks forever. Swapping the cache frees them here, where those threads still run; the
+    next reformat on each thread rebuilds its own."""
+    frame = sys.modules.get("av.video.frame")
+    if isinstance(getattr(frame, "_thread_local", None), threading.local):
+        try:
+            frame._thread_local = threading.local()
+        except Exception:  # noqa: BLE001 - a fork hook must never raise
+            pass
+
+
 def _adopt_fork_reset() -> None:
     """Register the child-side reset once, lazily. Best-effort like the rest of
     this module: os.register_at_fork is POSIX-only and absent on Windows."""
@@ -387,7 +402,7 @@ def _adopt_fork_reset() -> None:
         return
     _fork_reset_installed = True
     try:
-        os.register_at_fork(after_in_child = _reset_after_fork)
+        os.register_at_fork(before = _free_thread_local_native_caches, after_in_child = _reset_after_fork)
     except (AttributeError, RuntimeError):
         pass
 
@@ -469,6 +484,8 @@ def child_popen_kwargs(preexec_fn: Optional[Callable[[], None]] = None) -> dict:
     ``**child_popen_kwargs()`` alongside the caller's existing kwargs.
     """
     if _is_linux():
+        # A preexec_fn child runs Python before exec; spawns outside the spawner need the pre-fork hook too.
+        _adopt_fork_reset()
         # os.getpid() runs in the spawner, so the child tells real reparenting
         # apart from a parent that is pid 1 (see _pdeathsig_preexec).
         return {"preexec_fn": compose_preexec(preexec_fn, os.getpid())}

@@ -240,6 +240,89 @@ def test_pdeathsig_child_dies_when_parent_sigkilled(tmp_path):
         proc.kill()
 
 
+def test_a_fork_frees_other_threads_pyav_reformatters_in_the_parent(monkeypatch):
+    """PyAV 19+ caches a scaler per thread; one freed in a preexec child waits on FFmpeg threads it does not have."""
+    import threading
+    import types
+
+    freed_in = []
+
+    class Scaler:
+        def __del__(self):
+            freed_in.append(os.getpid())
+
+    frame = types.ModuleType("av.video.frame")
+    frame._thread_local = threading.local()
+    monkeypatch.setitem(sys.modules, "av.video.frame", frame)
+    cached, stop = threading.Event(), threading.Event()
+
+    def video_worker():
+        frame._thread_local.reformatter = Scaler()
+        cached.set()
+        stop.wait()  # an idle pool thread keeps its cache
+
+    worker = threading.Thread(target = video_worker, daemon = True)
+    worker.start()
+    try:
+        cached.wait(5)
+        pl._free_thread_local_native_caches()
+        # Freed now, in this process, though the thread that cached it is still alive.
+        assert freed_in == [os.getpid()]
+        assert isinstance(frame._thread_local, threading.local)
+    finally:
+        stop.set()
+        worker.join(5)
+
+
+def test_the_pre_fork_hook_is_registered_with_the_child_reset(monkeypatch):
+    monkeypatch.setattr(pl, "_fork_reset_installed", False)
+    registered = []
+    monkeypatch.setattr(os, "register_at_fork", lambda **kw: registered.append(kw))
+    monkeypatch.setattr(pl, "_is_linux", lambda: True)
+    pl.child_popen_kwargs()
+    assert registered == [
+        {"before": pl._free_thread_local_native_caches, "after_in_child": pl._reset_after_fork}
+    ]
+
+
+@pytest.mark.skipif(not IS_LINUX, reason = "the preexec_fn spawn path is Linux-only")
+def test_a_spawn_after_a_video_reformat_still_execs(tmp_path):
+    """A pool thread that reformatted one frame used to hang every later preexec_fn spawn before exec."""
+    pytest.importorskip("av")
+    pytest.importorskip("numpy")
+    script = tmp_path / "spawn_after_reformat.py"
+    script.write_text(
+        "import os, signal, subprocess, sys, threading\n"
+        f"sys.path.insert(0, {str(_BACKEND)!r})\n"
+        "import av, numpy as np\n"
+        "from utils.process_lifetime import child_popen_kwargs, spawn_on_lifetime_thread\n"
+        "ready, stop = threading.Event(), threading.Event()\n"
+        "def video_worker():\n"
+        "    frame = av.VideoFrame.from_ndarray(np.zeros((720, 1280, 3), dtype = np.uint8), format = 'rgb24')\n"
+        "    frame.reformat(format = 'yuv420p', width = 640, height = 360)\n"
+        "    ready.set()\n"
+        "    stop.wait()\n"
+        "threading.Thread(target = video_worker, daemon = True).start()\n"
+        "ready.wait()\n"
+        "box = []\n"
+        "spawn = lambda: box.append(spawn_on_lifetime_thread(lambda: subprocess.Popen(['true'], **child_popen_kwargs())))\n"
+        "t = threading.Thread(target = spawn, daemon = True)\n"
+        "t.start()\n"
+        "t.join(30)\n"
+        "if t.is_alive():\n"
+        "    print('hung', flush = True)\n"
+        "    # The stuck child never reached PDEATHSIG, so it would outlive this script.\n"
+        "    for tid in os.listdir('/proc/self/task'):\n"
+        "        for kid in open(f'/proc/self/task/{tid}/children').read().split():\n"
+        "            os.kill(int(kid), signal.SIGKILL)\n"
+        "    os._exit(3)\n"
+        "print('exit', box[0].wait(), flush = True)\n"
+    )
+    # The hang is in a child that never execs, so bound the whole scenario from outside.
+    result = subprocess.run([sys.executable, str(script)], capture_output = True, text = True, timeout = 120)
+    assert result.stdout.strip() == "exit 0", result.stdout + result.stderr
+
+
 @pytest.mark.skipif(sys.platform != "win32", reason = "Windows Job Object")
 def test_windows_job_kills_child_when_parent_dies(tmp_path):
     # Real kill-on-job-close: the parent installs the job and assigns itself, a
