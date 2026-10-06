@@ -2466,6 +2466,25 @@ def _normalize_permission_mode(value: Any) -> Any:
     return value
 
 
+def _normalize_sandbox_level(value: Any) -> Any:
+    # Unlike permission_mode, an unknown level is a 422: degrading it either way would guess at
+    # the isolation the user picked. Absent or null is "high", today's behaviour.
+    if value is None:
+        return "high"
+    if isinstance(value, str):
+        return value.strip().lower()
+    return value
+
+
+_SANDBOX_LEVEL_DESCRIPTION = (
+    "[x-unsloth] Sandbox level for the Python and Terminal tools. 'high' (default) runs them "
+    "in the OS sandbox when it works and on software safeguards otherwise. 'low' runs them on "
+    "software safeguards only, so on a streaming UI chat 'off' still asks before their "
+    "high-risk calls; elsewhere 'off' never prompts, as before. Full access overrides both. "
+    "Case-insensitive; any other value is rejected."
+)
+
+
 class SandboxAttachment(BaseModel):
     sha256: str = Field(..., pattern = r"^[0-9a-f]{64}$")
     name: str = Field(..., max_length = 1024)
@@ -2728,6 +2747,10 @@ class ChatCompletionRequest(BaseModel):
             "mode cannot prompt and runs the loop. An unrecognized value (e.g. from a "
             "newer client) is treated as 'ask'."
         ),
+    )
+    sandbox_level: Literal["high", "low"] = Field(
+        "high",
+        description = _SANDBOX_LEVEL_DESCRIPTION,
     )
     auto_heal_tool_calls: Optional[bool] = Field(
         True,
@@ -3098,6 +3121,11 @@ class ChatCompletionRequest(BaseModel):
     def _map_thinking_to_enable_thinking(self) -> "ChatCompletionRequest":
         return resolve_thinking_onto_enable_thinking(self)
 
+    @field_validator("sandbox_level", mode = "before")
+    @classmethod
+    def _coerce_sandbox_level(cls, value: Any) -> Any:
+        return _normalize_sandbox_level(value)
+
     @field_validator("permission_mode", mode = "before")
     @classmethod
     def _coerce_permission_mode(cls, value: Any) -> Any:
@@ -3221,6 +3249,10 @@ class ChatCountTokensRequest(ReasoningControlsRequest):
         "a pending turn under a retrieval scope is countable. A count that omits this prices a "
         "prompt the completion will not send, or declines one it could have priced.",
     )
+    sandbox_level: Literal["high", "low"] = Field(
+        "high",
+        description = _SANDBOX_LEVEL_DESCRIPTION,
+    )
     bypass_permissions: Optional[bool] = Field(
         None,
         description = "[x-unsloth] Equivalent of permission_mode='full'. Declared explicitly (not "
@@ -3238,6 +3270,11 @@ class ChatCountTokensRequest(ReasoningControlsRequest):
         description = "[x-unsloth] Tool-call budget the completion would send. Zero suppresses the "
         "tool loop, so a count that never sees it prices a catalog the relay does not render.",
     )
+
+    @field_validator("sandbox_level", mode = "before")
+    @classmethod
+    def _coerce_sandbox_level(cls, value: Any) -> Any:
+        return _normalize_sandbox_level(value)
 
     @field_validator("permission_mode", mode = "before")
     @classmethod
@@ -4040,6 +4077,10 @@ class AnthropicMessagesRequest(BaseModel):
         None,
         description = "[x-unsloth] Permission level for local tool calls: 'ask' pauses every call, 'auto' ('Approve for me') only pauses calls detected as high risk, 'off' ('Run automatically') never pauses while Python and Terminal run in the OS sandbox and otherwise pauses their high-risk calls in a streaming UI chat, 'full' equals bypass_permissions=true. Unset defaults to 'auto' for the per-call gate; a non-streaming request without an explicit mode runs the loop. An unrecognized value (e.g. from a newer client) is treated as 'ask'. Declared explicitly so omitted requests default to None instead of raising AttributeError.",
     )
+    sandbox_level: Literal["high", "low"] = Field(
+        "high",
+        description = _SANDBOX_LEVEL_DESCRIPTION,
+    )
     auto_heal_tool_calls: Optional[bool] = Field(
         True,
         description = "[x-unsloth] Auto-detect and fix malformed tool calls from model output (mirrors the Chat Completions field; applies to the client-tool passthrough).",
@@ -4104,6 +4145,11 @@ class AnthropicMessagesRequest(BaseModel):
         normalized["messages"] = normalized_messages
         normalized["system"] = _merge_anthropic_system(normalized.get("system"), system_additions)
         return normalized
+
+    @field_validator("sandbox_level", mode = "before")
+    @classmethod
+    def _coerce_sandbox_level(cls, value: Any) -> Any:
+        return _normalize_sandbox_level(value)
 
     @field_validator("permission_mode", mode = "before")
     @classmethod

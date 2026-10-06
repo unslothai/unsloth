@@ -13,7 +13,12 @@ import {
   setupRowView,
 } from "../src/features/settings/tabs/sandbox-tab-state.ts";
 import * as tabState from "../src/features/settings/tabs/sandbox-tab-state.ts";
-import { loadWithStubs } from "./helpers/module-stubs.ts";
+import { readFileSync } from "node:fs";
+import {
+  loadWithStubs,
+  stubJsxRuntime,
+  type StubElement,
+} from "./helpers/module-stubs.ts";
 
 type Call = { url: string; init?: RequestInit };
 
@@ -245,13 +250,6 @@ const pickModule = loadWithStubs<PickModule>(
   },
 );
 
-test("re-picking Run automatically without a sandbox is the way back to setup", () => {
-  assert.equal(pickModule.samePickIsIgnored("off", "off", true), false);
-  assert.equal(pickModule.samePickIsIgnored("off", "off", false), true);
-  assert.equal(pickModule.samePickIsIgnored("auto", "auto", true), true);
-  assert.equal(pickModule.samePickIsIgnored("ask", "auto", true), false);
-});
-
 function deferred<T>() {
   let resolve!: (value: T) => void;
   const promise = new Promise<T>((r) => {
@@ -260,112 +258,85 @@ function deferred<T>() {
   return { promise, resolve };
 }
 
-test("a slow capability read does not undo a mode picked while it was in flight", async () => {
-  let mode: string = "auto";
+test("switching to Low applies at once and reads nothing", async () => {
   const applied: string[] = [];
-  let dialogs = 0;
-  const read = deferred<SandboxCapability | null>();
-  const pending = pickModule.pickSandboxedMode(
-    (next) => {
-      applied.push(next);
-      mode = next;
-    },
-    () => dialogs++,
-    () => mode as never,
-    () => read.promise,
+  await pickModule.pickSandboxLevel(
+    "low",
+    (level) => applied.push(level),
+    () => assert.fail("no popup for Low"),
+    async () => assert.fail("no read for Low"),
   );
-  mode = "ask";
-  read.resolve(null);
-  await pending;
-  assert.deepEqual(applied, []);
-  assert.equal(dialogs, 0);
+  assert.deepEqual(applied, ["low"]);
 });
 
-test("a mode change that ends back on the same mode still cancels a pending pick", async () => {
-  // auto -> (pick off, read pending) -> ask -> auto: the old read must not act.
-  let mode: string = "auto";
-  const applied: string[] = [];
-  let dialogs = 0;
-  const listeners = new Set<() => void>();
-  const setMode = (next: string) => {
-    mode = next;
-    for (const listener of listeners) listener();
-  };
-  const read = deferred<SandboxCapability | null>();
-  const pending = pickModule.pickSandboxedMode(
-    (next) => {
-      applied.push(next);
-      mode = next;
-    },
-    () => dialogs++,
-    () => mode as never,
-    () => read.promise,
-    (onChange) => {
-      listeners.add(onChange);
-      return () => listeners.delete(onChange);
-    },
-  );
-  setMode("ask");
-  setMode("auto");
-  read.resolve(capability({ pythonOsIsolated: false }));
-  await pending;
-  assert.deepEqual(applied, []);
-  assert.equal(dialogs, 0);
-  assert.equal(listeners.size, 0);
-});
-
-test("only the latest pick acts; a missing sandbox opens the setup instead of applying", async () => {
-  let mode: string = "auto";
-  const applied: string[] = [];
-  let dialogs = 0;
-  const set = (next: string) => {
-    applied.push(next);
-    mode = next;
-  };
-  const first = deferred<SandboxCapability | null>();
-  const older = pickModule.pickSandboxedMode(
-    set as never,
-    () => dialogs++,
-    () => mode as never,
-    () => first.promise,
-  );
-  const newer = pickModule.pickSandboxedMode(
-    set as never,
-    () => dialogs++,
-    () => mode as never,
-    async () => capability({ pythonOsIsolated: false }),
-  );
-  await newer;
-  first.resolve(null);
-  await older;
-  assert.equal(dialogs, 1);
-  assert.deepEqual(applied, []);
-  await pickModule.pickSandboxedMode(
-    set as never,
-    () => dialogs++,
-    () => mode as never,
-    async () =>
-      capability({ pythonOsIsolated: true, terminalOsIsolated: true }),
-  );
-  assert.deepEqual(applied, ["off"]);
-});
-
-test("a sandbox already known to work applies Run automatically without a fresh probe", async () => {
+test("switching to High with a working OS sandbox applies it; a known one skips the read", async () => {
   const applied: string[] = [];
   let reads = 0;
-  await pickModule.pickSandboxedMode(
-    (next) => applied.push(next),
-    () => assert.fail("no setup dialog"),
-    () => "auto" as never,
+  await pickModule.pickSandboxLevel(
+    "high",
+    (level) => applied.push(level),
+    () => assert.fail("no popup"),
     async () => {
       reads++;
       return null;
     },
-    undefined,
     () => capability({ pythonOsIsolated: true, terminalOsIsolated: true }),
   );
-  assert.deepEqual(applied, ["off"]);
+  await pickModule.pickSandboxLevel(
+    "high",
+    (level) => applied.push(level),
+    () => assert.fail("no popup"),
+    async () => capability({ pythonOsIsolated: true, terminalOsIsolated: true }),
+  );
+  assert.deepEqual(applied, ["high", "high"]);
   assert.equal(reads, 0);
+});
+
+test("switching to High without an OS sandbox opens the popup instead of applying", async () => {
+  const applied: string[] = [];
+  let popups = 0;
+  await pickModule.pickSandboxLevel(
+    "high",
+    (level) => applied.push(level),
+    () => popups++,
+    async () => capability({ pythonOsIsolated: true }),
+  );
+  assert.deepEqual(applied, []);
+  assert.equal(popups, 1);
+});
+
+test("an answer still unknown applies High; the backend still checks every call", async () => {
+  const applied: string[] = [];
+  await pickModule.pickSandboxLevel(
+    "high",
+    (level) => applied.push(level),
+    () => assert.fail("no popup while unknown"),
+    async () => capability({ pythonOsIsolated: true, backend: "unknown" }),
+  );
+  await pickModule.pickSandboxLevel(
+    "high",
+    (level) => applied.push(level),
+    () => assert.fail("no popup for an older server"),
+    async () => null,
+  );
+  assert.deepEqual(applied, ["high", "high"]);
+});
+
+test("a switch made while a High check is in flight wins over that check", async () => {
+  const applied: string[] = [];
+  let popups = 0;
+  const read = deferred<SandboxCapability | null>();
+  const pending = pickModule.pickSandboxLevel(
+    "high",
+    (level) => applied.push(level),
+    () => popups++,
+    () => read.promise,
+  );
+  await pickModule.pickSandboxLevel("low", (level) => applied.push(level), () => popups++);
+  read.resolve(capability({ pythonOsIsolated: false }));
+  await pending;
+  assert.deepEqual(applied, ["low"]);
+  assert.equal(popups, 0);
 });
 
 type SetupState = typeof import("../src/features/chat/sandbox-setup-state.ts");
@@ -695,32 +666,6 @@ test("a failed install shows the job's command; a running one keeps the button",
   assert.equal(running.installDisabled, true);
 });
 
-test("a capability still unknown applies the mode instead of offering an install", async () => {
-  let mode: string = "auto";
-  const applied: string[] = [];
-  let dialogs = 0;
-  const set = (next: string) => {
-    applied.push(next);
-    mode = next;
-  };
-  await pickModule.pickSandboxedMode(
-    set as never,
-    () => dialogs++,
-    () => mode as never,
-    async () => capability({ pythonOsIsolated: true, backend: "unknown" }),
-  );
-  assert.deepEqual(applied, ["off"]);
-  assert.equal(dialogs, 0);
-  mode = "auto";
-  await pickModule.pickSandboxedMode(
-    set as never,
-    () => dialogs++,
-    () => mode as never,
-    async () => capability({ pythonOsIsolated: true }),
-  );
-  assert.equal(dialogs, 1);
-});
-
 test("an older capability read that finishes last never replaces a newer one", async () => {
   const replies: Array<(response: Response) => void> = [];
   const { api } = loadCapabilityApi(
@@ -746,4 +691,151 @@ test("an older capability read that finishes last never replaces a newer one", a
   replies[2](json(LINUX_UNAVAILABLE));
   await stale;
   assert.equal(api.cachedSandboxCapability(), null);
+});
+
+function sandboxPopup(capabilityNow: SandboxCapability | null) {
+  const levels: string[] = [];
+  const opened: [string, unknown][] = [];
+  const state = { sandboxLevel: "low", setSandboxLevel: (level: string) => levels.push(level) };
+  const store = Object.assign(
+    (selector: (s: unknown) => unknown) => selector(state),
+    { getState: () => state },
+  );
+  const dialog = loadWithStubs<{
+    SandboxSetupDialog: (props: {
+      open: boolean;
+      onOpenChange: (open: boolean) => void;
+      onLearnMore?: () => void;
+    }) => StubElement;
+  }>(new URL("../src/features/chat/sandbox-setup-dialog.tsx", import.meta.url), {
+    "react/jsx-runtime": stubJsxRuntime(),
+    react: {
+      // The capability read has answered.
+      useState: (initial: unknown) => [initial === null ? capabilityNow : initial, () => {}],
+      useRef: (current: unknown) => ({ current }),
+      useEffect: () => {},
+      useCallback: (fn: unknown) => fn,
+    },
+    sonner: { toast: { success() {}, error() {} } },
+    zustand: {
+      create: (init: (set: unknown) => unknown) => {
+        const value = init(() => {});
+        return Object.assign((selector: (s: unknown) => unknown) => selector(value), {
+          getState: () => value,
+        });
+      },
+    },
+    "@/components/ui/alert-dialog": {
+      AlertDialog: "AlertDialog",
+      AlertDialogContent: "AlertDialogContent",
+      AlertDialogDescription: "AlertDialogDescription",
+      AlertDialogFooter: "AlertDialogFooter",
+      AlertDialogHeader: "AlertDialogHeader",
+      AlertDialogTitle: "AlertDialogTitle",
+    },
+    "@/components/ui/button": { Button: "Button" },
+    "@/components/ui/checkbox": { Checkbox: "Checkbox" },
+    "@/components/ui/spinner": { Spinner: "Spinner" },
+    "@/features/settings": {
+      useSettingsDialogStore: (selector: (s: unknown) => unknown) =>
+        selector({
+          openDialog: (tab: string, options?: { scrollTarget?: string }) => {
+            opened.push([tab, options?.scrollTarget]);
+          },
+        }),
+    },
+    "@/i18n": { useT: () => (key: string) => key },
+    "@/lib/copy-to-clipboard": { copyToClipboard: async () => true },
+    "./api/sandbox-capability": {
+      forgetSandboxCapability() {},
+      loadSandboxSetup: async () => setupJob({ state: "idle" as never }),
+      loadSettledSandboxCapability: async () => capabilityNow,
+      sandboxReady: (c: SandboxCapability) => c.pythonOsIsolated && c.terminalOsIsolated,
+      startSandboxSetup: async () => setupJob(),
+    },
+    "./sandbox-setup-state": setupState,
+    "./stores/chat-runtime-store": { useChatRuntimeStore: store },
+  });
+  const render = (props: { onLearnMore?: () => void } = {}) => {
+    const closes: boolean[] = [];
+    const root = dialog.SandboxSetupDialog({
+      open: true,
+      onOpenChange: (open) => closes.push(open),
+      ...props,
+    });
+    const inner = root.props.children as StubElement;
+    const content = (inner.type as (p: unknown) => StubElement)(inner.props);
+    const all: StubElement[] = [];
+    const walk = (node: unknown) => {
+      if (Array.isArray(node)) return node.forEach(walk);
+      if (node && typeof node === "object" && "props" in node) {
+        all.push(node as StubElement);
+        walk((node as StubElement).props.children);
+      }
+    };
+    walk(content);
+    const text = (el: StubElement) =>
+      ([] as unknown[]).concat(el.props.children).filter((c) => typeof c === "string").join("");
+    const button = (key: string) => {
+      const hit = all.find((el) => el.type === "Button" && text(el) === key);
+      assert.ok(hit, `no ${key} button`);
+      return hit.props.onClick as () => void;
+    };
+    const title = all.find((el) => el.type === "AlertDialogTitle");
+    return { closes, button, title: title ? text(title) : "", texts: all.map(text) };
+  };
+  return { render, levels, opened };
+}
+
+test("the High popup names the missing OS sandbox and offers Install, Learn more and Use Low", async () => {
+  const popup = sandboxPopup(capability());
+  const view = popup.render();
+  assert.equal(view.title, "sandboxSetup.levelTitle");
+  view.button("sandboxSetup.install");
+  view.button("sandboxSetup.copyCommand");
+  assert.ok(!view.texts.includes("sandboxSetup.useAnyway"));
+
+  view.button("sandboxSetup.useLow")();
+  assert.deepEqual(popup.levels, ["low"]);
+  assert.deepEqual(view.closes, [false]);
+
+  const other = popup.render();
+  other.button("settings.sandbox.learnMore")();
+  await new Promise((resolve) => setTimeout(resolve, 5));
+  assert.deepEqual(other.closes, [false]);
+  assert.deepEqual(popup.opened, [["sandbox", "sandbox-permissions"]]);
+
+  let learned = 0;
+  const inSettings = popup.render({ onLearnMore: () => learned++ });
+  inSettings.button("settings.sandbox.learnMore")();
+  await new Promise((resolve) => setTimeout(resolve, 5));
+  assert.equal(learned, 1);
+  assert.equal(popup.opened.length, 1, "Settings scrolls itself; it opens nothing");
+});
+
+test("the High popup stays short: no probe reason, no command block, a one-line Windows note", () => {
+  const noElevation = sandboxPopup(
+    capability({ canRunSetup: false, setupAction: null, setupBlocked: "no_elevation" }),
+  ).render();
+  noElevation.button("sandboxSetup.copyCommand");
+  for (const verbose of ["denied", "apt-get install -y bubblewrap", "sandboxSetup.runInTerminal", "sandboxSetup.commandHint"]) {
+    assert.ok(!noElevation.texts.includes(verbose), `popup shows ${verbose}`);
+  }
+
+  const windows = sandboxPopup(
+    capability({ platform: "windows", backend: "mxc-processcontainer", setupAction: "windows-setup", needsConsent: true }),
+  ).render();
+  windows.button("sandboxSetup.windowsSetup");
+  assert.ok(windows.texts.includes("sandboxSetup.windowsNote"));
+  assert.ok(!windows.texts.includes("settings.sandbox.disclosure"));
+});
+
+test("an install that makes the OS sandbox pass turns High on", () => {
+  const source = readFileSync(
+    new URL("../src/features/chat/sandbox-setup-dialog.tsx", import.meta.url),
+    "utf8",
+  );
+  const finish = source.slice(source.indexOf("const finish = useCallback("), source.indexOf("useEffect(() => {\n    if (job?.state"));
+  assert.match(finish, /if \(next && sandboxReady\(next\)\) \{\s*if \(useChatRuntimeStore\.getState\(\)\.sandboxLevel === levelAtOpen\.current\) \{\s*setSandboxLevel\("high"\);/);
+  assert.doesNotMatch(source, /setPermissionMode/);
 });

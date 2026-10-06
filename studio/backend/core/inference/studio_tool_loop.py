@@ -402,6 +402,7 @@ class ToolLoopPolicy:
     # Called when a provider turn ends, however it ended. Headerless only: clears the stripper's withheld-call flag,
     # which the wire cannot always close because a turn may end on [DONE] alone.
     on_provider_turn_end: Callable[[], None] | None = None
+    sandbox_level: str = "high"
 
 
 def _split_top_level_json_objects(text: str) -> tuple[list[str], str]:
@@ -1351,8 +1352,10 @@ async def stream_with_studio_tools(
     from state.tool_policy import (
         account_tool_stream,
         needs_tool_confirmation,
+        normalize_sandbox_level,
         normalize_tool_permissions,
         requires_os_isolation,
+        runs_without_os_sandbox,
     )
 
     permission_mode, bypass_permissions = normalize_tool_permissions(
@@ -1361,6 +1364,7 @@ async def stream_with_studio_tools(
     scoped_tool_stream = account_tool_stream(stream_tool_execution)
     confirm_tool_calls = policy.confirm_calls
     rag_scope = policy.rag_scope
+    sandbox_level = normalize_sandbox_level(policy.sandbox_level)
 
     from core.inference.skill_mentions import load_mentioned_skills
 
@@ -1868,6 +1872,7 @@ async def stream_with_studio_tools(
                 arguments = arguments,
                 is_high_risk = is_high_risk_tool_call,
                 never_needs = never_needs_approval,
+                sandbox_level = sandbox_level,
             )
             # Sending the user's image always asks, whatever the permission mode.
             image_share = (
@@ -1884,6 +1889,7 @@ async def stream_with_studio_tools(
                 arguments = arguments,
                 prompted = needs_confirmation,
                 is_high_risk = is_high_risk_tool_call,
+                sandbox_level = sandbox_level,
             )
             approval_id = new_approval_id() if needs_confirmation else ""
             decision_slot = (
@@ -1989,6 +1995,10 @@ async def stream_with_studio_tools(
                 # Run unasked only because the OS sandbox was on: refuse if it is not any more.
                 if strict and accepts_kwarg(execute_tool, "tool_execution_mode"):
                     kwargs["tool_execution_mode"] = "required"
+                elif runs_without_os_sandbox(call.tool_name, sandbox_level) and accepts_kwarg(
+                    execute_tool, "tool_execution_mode"
+                ):
+                    kwargs["tool_execution_mode"] = "software"
                 # Provider loops share the local catalogue selector, so search_conversation is advertised here too
                 # once a thread has an archive and needs the same branch: the stored rows are the whole DAG, and Retry
                 # leaves the replaced response in them.

@@ -2109,6 +2109,7 @@ export async function buildLocalTokenCountExtras(
     bypassPermissions,
     deepResearchEnabled,
     permissionMode,
+    sandboxLevel,
     maxToolCallsPerMessage,
     ragAutoInject,
     ragAutoInjectMinScore,
@@ -2125,6 +2126,7 @@ export async function buildLocalTokenCountExtras(
     return {
       enable_tools: false,
       bypass_permissions: bypassPermissions,
+      sandbox_level: sandboxLevel,
       ...threadField,
     };
   }
@@ -2153,6 +2155,7 @@ export async function buildLocalTokenCountExtras(
     return {
       enable_tools: false,
       bypass_permissions: bypassPermissions,
+      sandbox_level: sandboxLevel,
       ...threadField,
     };
   }
@@ -2164,6 +2167,7 @@ export async function buildLocalTokenCountExtras(
     // Ask holds first-pass retrieval behind the gate, so the count prices a pending RAG
     // turn rather than declining one the completion never retrieves for.
     permission_mode: permissionMode,
+    sandbox_level: sandboxLevel,
     // Off suppresses the loop, and the relay renders no schemas or nudge: same zero.
     max_tool_calls_per_message: maxToolCallsPerMessage,
     // Full access swaps the python/terminal descriptions and adds a nudge
@@ -6539,6 +6543,7 @@ export function createOpenAIStreamAdapter(
                     ],
                     mcp_enabled: mcpEnabledForChat,
                     permission_mode: permissionMode,
+                    sandbox_level: runtime.sandboxLevel,
                     ...(permissionMode === "auto" || permissionMode === "off"
                       ? {}
                       : { confirm_tool_calls: permissionMode === "ask" }),
@@ -6727,7 +6732,9 @@ export function createOpenAIStreamAdapter(
             // no pill lit. "auto" OMITS confirm_tool_calls (an explicit true would force a stream and
             // defeat the safe-only exception); "off" omits it too, since an explicit false opts out of
             // its risky-call prompt without an OS sandbox; "ask" sends true, full sends false.
+            // sandbox_level "low" runs Python/Terminal on software safeguards only; Full access overrides it.
             permission_mode: permissionMode,
+            sandbox_level: runtime.sandboxLevel,
             ...(permissionMode === "auto" || permissionMode === "off"
               ? {}
               : { confirm_tool_calls: permissionMode === "ask" }),
