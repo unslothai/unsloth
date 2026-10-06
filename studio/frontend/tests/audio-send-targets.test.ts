@@ -131,7 +131,7 @@ test("the Audio page wires every send, and waits out a running task first", () =
   );
   assert.match(
     transcriptSend,
-    /adoptReference\(selection\);[^]*?useAudioCloneStore\.getState\(\)\.applyTranscript\(selection, text\.trim\(\)\);/,
+    /adoptReference\(selection\);[^]*?useAudioCloneStore\s*\.getState\(\)\s*\.applyTranscript\(selection, referenceTranscript\(selection\)\.trim\(\)\);/,
   );
 
   const menu = readSrc("features/audio/pages/tts-workspace.tsx");
