@@ -8,15 +8,21 @@
 import contextlib
 import importlib.util
 import os
+from typing import Optional
 
 import torch
 import torch.nn as nn
 
-__all__ = ["compiled_encoder"]
+__all__ = ["compiled_encoder", "pad_length"]
 
 # Forward passes a run needs before compiling pays for itself even from a cold cache: 38 ms (LoRA) and
 # 16 ms (full) saved per micro-batch of 8 on an L4 against 55-88 s of compiling (22-34 s warm).
 COMPILE_MIN_FORWARDS = 4000
+# Static shapes launch far cheaper than dynamic ones on short decisions, one graph per 64-token bucket
+# (G4: full fine-tune 0.528 -> 0.482 s/step at 2 x 16). Past STATIC_MAX_LEN there are too many buckets
+# to compile, so long-context data keeps dynamic shapes.
+STATIC_MULTIPLE = 64
+STATIC_MAX_LEN = 1024
 
 
 def _encoder_sdpa(module, query, key, value, attention_mask, dropout = 0.0, scaling = None, **kwargs):
@@ -43,6 +49,30 @@ def _compilable_attention(model, enabled: bool):
         yield
     finally:
         config._attn_implementation = original
+
+
+def _compile_static(function):
+    return torch.compile(function, dynamic = False)
+
+
+def _training_only(layer, compiled):
+    # Evaluation batches have arbitrary lengths, which static graphs would compile one by one.
+    def call(*args, **kwargs):
+        return compiled(*args, **kwargs) if layer.training else layer._call_impl(*args, **kwargs)
+
+    return call
+
+
+@contextlib.contextmanager
+def _recompile_limit(limit: int):
+    config = torch._dynamo.config
+    name = "recompile_limit" if hasattr(config, "recompile_limit") else "cache_size_limit"
+    original = getattr(config, name)
+    setattr(config, name, max(original, limit))
+    try:
+        yield
+    finally:
+        setattr(config, name, original)
 
 
 def _encoder_layers(model):
@@ -100,6 +130,7 @@ def compiled_encoder(
     model,
     forwards: int,
     amp_dtype = None,
+    max_length: Optional[int] = None,
 ):
     """Compile each Laya encoder layer for one training run, and run eagerly again afterwards.
 
@@ -109,9 +140,16 @@ def compiled_encoder(
     layers = _encoder_layers(model)
     if not (layers and _wants_compile(model, forwards)):
         layers = []
-    with _compilable_attention(model, bool(layers)):
+    static = bool(layers) and max_length is not None and max_length <= STATIC_MAX_LEN
+    # Every bucket compiles once with and once without grad (the KL reference forward), plus slack.
+    buckets = -(-max_length // STATIC_MULTIPLE) if static else 0
+    with _compilable_attention(model, bool(layers)), _recompile_limit(2 * buckets + 8):
         for layer in layers:
-            layer.compile(dynamic = True)
+            if static:
+                layer._compiled_call_impl = _training_only(layer, _compile_static(layer._call_impl))
+            else:
+                layer.compile(dynamic = True)
+        model.__dict__["_unsloth_pad_multiple"] = STATIC_MULTIPLE if static else 0
         if layers:
             try:
                 _warm_up(model, amp_dtype)
@@ -119,6 +157,7 @@ def compiled_encoder(
                 for layer in layers:
                     layer._compiled_call_impl = None
                 torch._dynamo.reset()
+                model.__dict__["_unsloth_pad_multiple"] = 0
                 print(
                     f"Unsloth: compiling the Laya encoder failed ({type(error).__name__}), training eagerly."
                 )
@@ -129,3 +168,19 @@ def compiled_encoder(
         finally:
             for layer in layers:
                 layer._compiled_call_impl = None
+            model.__dict__["_unsloth_pad_multiple"] = 0
+
+
+def pad_length(model, inputs: dict) -> dict:
+    # Pads a training batch to the static bucket; padded positions are masked keys and never
+    # gathered, so the loss is unchanged.
+    multiple = model.__dict__.get("_unsloth_pad_multiple", 0)
+    extra = -inputs["input_ids"].shape[1] % multiple if multiple and model.training else 0
+    if extra:
+        pad = model.encoder.config.pad_token_id or 0
+        inputs = {
+            **inputs,
+            "input_ids": torch.nn.functional.pad(inputs["input_ids"], (0, extra), value = pad),
+            "attention_mask": torch.nn.functional.pad(inputs["attention_mask"], (0, extra)),
+        }
+    return inputs

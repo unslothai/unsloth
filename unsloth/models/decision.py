@@ -31,7 +31,7 @@ from ._utils import (
     is_bfloat16_supported,
 )
 from .loader_utils import is_distributed
-from ._decision_fast import compiled_encoder
+from ._decision_fast import compiled_encoder, pad_length
 
 TRAIN_MAX_LEN, TRAIN_HEAD_MAX_LEN = 1024, 256
 HOLDOUT_MAX = 400
@@ -1060,7 +1060,11 @@ class DecisionTrainer(Trainer):
             batches = math.ceil(len(self.train_dataset) / self.args.train_batch_size)
             forwards = int(batches * self.args.num_train_epochs)
         amp_dtype = torch.bfloat16 if self.args.bf16 else torch.float16 if self.args.fp16 else None
-        with compiled_encoder(self.model, forwards, amp_dtype):
+        try:
+            max_length = max(len(item["input_ids"]) for item in self.train_dataset)
+        except (TypeError, KeyError, ValueError):
+            max_length = None
+        with compiled_encoder(self.model, forwards, amp_dtype, max_length):
             return super().train(*args, **kwargs)
 
     def _get_train_sampler(self, train_dataset = None):
@@ -1081,6 +1085,7 @@ class DecisionTrainer(Trainer):
     ):
         target = inputs.pop("target")
         ordinal = inputs.pop("ordinal", None)
+        inputs = pad_length(model, inputs)
         with _no_cudnn_attention():
             logits, _ = model(**inputs)
         mask = inputs["marker_mask"]

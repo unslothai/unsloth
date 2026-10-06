@@ -446,8 +446,9 @@ def test_long_runs_compile_the_encoder_layers_and_leave_them_eager(
     )
     model = FastDecisionModel.get_peft_model(model, r = 4, lora_alpha = 8)
     items, _ = FastDecisionModel.build_dataset([_row(i) for i in range(8)], tokenizer, model)
-    compiled = []
+    compiled, static = [], []
     monkeypatch.setattr(torch.nn.Module, "compile", lambda self, **kw: compiled.append((self, kw)))
+    monkeypatch.setattr(_decision_fast, "_compile_static", lambda fn: static.append(fn) or fn)
     layers = _decision_fast._encoder_layers(model)
     assert len(layers) == 2
     trainer = DecisionTrainer(model = model, args = _args(tmp_path, max_steps = 1), train_dataset = items)
@@ -460,6 +461,11 @@ def test_long_runs_compile_the_encoder_layers_and_leave_them_eager(
     assert _decision_fast._wants_compile(model, _decision_fast.COMPILE_MIN_FORWARDS)
     assert not _decision_fast._wants_compile(model, _decision_fast.COMPILE_MIN_FORWARDS - 1)
     monkeypatch.setenv("UNSLOTH_DECISION_COMPILE", "1")
+    trainer.train()
+    # The test decisions are short, so each layer compiles once for static 64-token buckets.
+    assert not compiled and len(static) == len(layers)
+    assert all(layer._compiled_call_impl is None for layer in layers)
+    monkeypatch.setattr(_decision_fast, "STATIC_MAX_LEN", 0)
     trainer.train()
     assert [m for m, _ in compiled] == layers and all(kw == {"dynamic": True} for _, kw in compiled)
     assert all(layer._compiled_call_impl is None for layer in layers)
@@ -483,6 +489,7 @@ def test_a_failing_compile_trains_eagerly(checkpoint, tmp_path, monkeypatch):
         self._compiled_call_impl = broken
 
     monkeypatch.setattr(torch.nn.Module, "compile", compile)
+    monkeypatch.setattr(fast, "_compile_static", lambda fn: broken)
     monkeypatch.setenv("UNSLOTH_DECISION_COMPILE", "1")
     trainer = DecisionTrainer(model = model, args = _args(tmp_path, max_steps = 2), train_dataset = items)
     trainer.train()
@@ -1345,3 +1352,72 @@ def test_compiled_layers_use_plain_sdpa_and_put_the_attention_back(checkpoint):
     ours, _ = _decision_fast._encoder_sdpa(module, q, k, v, mask, scaling = 0.5)
     reference, _ = sdpa_attention_forward(module, q, k, v, mask, scaling = 0.5)
     torch.testing.assert_close(ours, reference)
+
+
+def test_static_length_padding_leaves_the_loss_unchanged(checkpoint, tmp_path):
+    from unsloth.models import _decision_fast
+
+    model, tokenizer = FastDecisionModel.from_pretrained(
+        str(checkpoint), full_finetuning = True, use_gradient_checkpointing = False
+    )
+    for module in model.modules():
+        if isinstance(module, torch.nn.Dropout):
+            module.p = 0.0
+        if isinstance(module, torch.nn.MultiheadAttention):
+            module.dropout = 0.0
+    items, _ = FastDecisionModel.build_dataset([_row(i) for i in range(4)], tokenizer, model)
+    trainer = DecisionTrainer(
+        model = model, args = _args(tmp_path), train_dataset = items, processing_class = tokenizer
+    )
+    device = next(model.parameters()).device
+    batch = DecisionDataCollator(tokenizer.pad_token_id)(items)
+    assert batch["input_ids"].shape[1] % _decision_fast.STATIC_MULTIPLE
+    losses = []
+    for multiple in (0, _decision_fast.STATIC_MULTIPLE):
+        model._unsloth_pad_multiple = multiple
+        inputs = {k: v.to(device) for k, v in batch.items()}
+        padded = _decision_fast.pad_length(model, dict(inputs))
+        assert padded["input_ids"].shape[1] % (multiple or 1) == 0
+        with torch.no_grad():
+            losses.append(trainer.compute_loss(model, inputs))
+    model._unsloth_pad_multiple = 0
+    torch.testing.assert_close(losses[0], losses[1])
+
+
+def test_static_compiled_layers_run_eagerly_outside_training():
+    from unsloth.models import _decision_fast
+
+    calls = []
+    layer = torch.nn.Linear(2, 2)
+    call = _decision_fast._training_only(
+        layer, lambda *a, **k: calls.append("compiled") or layer._call_impl(*a, **k)
+    )
+    x = torch.randn(1, 2)
+    call(x)
+    layer.eval()
+    call(x)
+    assert calls == ["compiled"]
+
+
+@pytest.mark.parametrize("max_length, static", [(634, True), (4096, False), (None, False)])
+def test_short_data_compiles_static_buckets_and_long_data_dynamic(
+    checkpoint, monkeypatch, max_length, static
+):
+    from unsloth.models import _decision_fast
+
+    monkeypatch.setenv("UNSLOTH_DECISION_COMPILE", "1")
+    monkeypatch.setattr(_decision_fast, "_warm_up", lambda model, amp_dtype: None)
+    model, _ = FastDecisionModel.from_pretrained(
+        str(checkpoint), full_finetuning = True, use_gradient_checkpointing = False
+    )
+    layers = _decision_fast._encoder_layers(model)
+    limit = torch._dynamo.config.recompile_limit
+    with _decision_fast.compiled_encoder(model, 10, None, max_length) as compiled:
+        assert compiled
+        assert model._unsloth_pad_multiple == (_decision_fast.STATIC_MULTIPLE if static else 0)
+        assert all(layer._compiled_call_impl is not None for layer in layers)
+        assert all((layer._compiled_call_impl.__name__ == "call") == static for layer in layers)
+        assert (torch._dynamo.config.recompile_limit > limit) == (static and limit < 28)
+    assert all(layer._compiled_call_impl is None for layer in layers)
+    assert model._unsloth_pad_multiple == 0
+    assert torch._dynamo.config.recompile_limit == limit
