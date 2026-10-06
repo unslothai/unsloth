@@ -577,3 +577,18 @@ def test_the_capability_names_the_empty_proc_layout_it_was_probed_with(monkeypat
     capability = os_sandbox.capability_snapshot(force = True)
     assert capability.available and capability.profile_id == f"{sandbox_linux.PROFILE_ID}-emptyproc"
     assert "no_process_filesystem" in capability.limitations
+
+
+def test_the_startup_probe_scans_the_model_caches_before_any_tool_call(monkeypatch):
+    # The warm-up probe runs the real prepare, so a launch later reuses (or joins) this scan.
+    if sys.platform != "linux" or shutil.which("bwrap") is None:
+        pytest.skip("the cache scan is part of the bubblewrap launch")
+    from core.inference import sandbox_linux
+
+    scanned = []
+    monkeypatch.setattr(
+        sandbox_linux, "_model_cache_binds", lambda workdir: scanned.append(workdir) or {}
+    )
+    sandbox_probe.reset_probe_cache()
+    sandbox_probe.probe(sandbox_linux, force = True)
+    assert len(scanned) == 1
