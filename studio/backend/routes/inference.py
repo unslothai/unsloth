@@ -28422,12 +28422,16 @@ async def _npu_chat_completions(payload, request: Request, current_subject: str)
             ),
         )
 
-    _fill_recommended_sampling_openai(payload, upstream.model)
     _normalize_chat_reasoning_controls(payload)
     if not upstream.supports_reasoning:
         payload.enable_thinking = False
     elif payload.enable_thinking is None:
         payload.enable_thinking = payload.reasoning_effort != "none"
+    _fill_recommended_sampling_openai(
+        payload,
+        upstream.model,
+        thinking = payload.enable_thinking if upstream.supports_reasoning else None,
+    )
 
     wants_stream = bool(payload.stream)
     relay = _NpuStreamRelay(upstream.public_model, _normalize_stop_sequences(payload.stop))
