@@ -6075,15 +6075,15 @@ const ReasoningToggle: FC<{ side?: "top" | "bottom" }> = ({
                   setPreserveThinking(false);
                 }}
               >
+                None
                 <HugeiconsIcon
                   icon={Tick02Icon}
                   strokeWidth={2}
                   className={cn(
-                    "unsloth-tick size-4",
+                    "unsloth-tick ms-auto size-4",
                     effectiveReasoningVisualEnabled && "opacity-0",
                   )}
                 />
-                None
               </DropdownMenuItem>
             )}
             {effectiveReasoningEffortLevels
@@ -6108,18 +6108,18 @@ const ReasoningToggle: FC<{ side?: "top" | "bottom" }> = ({
                     }
                   }}
                 >
+                  {formatEffortLabel(level)}
                   <HugeiconsIcon
                   icon={Tick02Icon}
                   strokeWidth={2}
                     className={cn(
-                      "unsloth-tick size-4",
+                      "unsloth-tick ms-auto size-4",
                       !(
                         effectiveReasoningVisualEnabled &&
                         displayedEffort === level
                       ) && "opacity-0",
                     )}
                   />
-                  {formatEffortLabel(level)}
                 </DropdownMenuItem>
               ))}
           </>
@@ -6139,15 +6139,15 @@ const ReasoningToggle: FC<{ side?: "top" | "bottom" }> = ({
                 }
               }}
             >
+              Thinking
               <HugeiconsIcon
                   icon={Tick02Icon}
                   strokeWidth={2}
                 className={cn(
-                  "unsloth-tick size-4",
+                  "unsloth-tick ms-auto size-4",
                   !effectiveReasoningEnabled && "opacity-0",
                 )}
               />
-              Thinking
             </DropdownMenuItem>
           )
         )}
@@ -6165,15 +6165,15 @@ const ReasoningToggle: FC<{ side?: "top" | "bottom" }> = ({
               }
             }}
           >
+            Preserve thinking
             <HugeiconsIcon
                   icon={Tick02Icon}
                   strokeWidth={2}
               className={cn(
-                "unsloth-tick size-4",
+                "unsloth-tick ms-auto size-4",
                 !preserveThinking && "opacity-0",
               )}
             />
-            Preserve thinking
           </DropdownMenuItem>
         )}
       </NonModalDropdownMenu>
@@ -8382,7 +8382,7 @@ const DeleteMessageMenuItem: FC = () => {
 };
 
 const MORE_MENU_CONTENT_CLASS =
-  "aui-action-bar-more-content z-50 min-w-32 max-h-(--radix-dropdown-menu-content-available-height) flex flex-col overflow-hidden rounded-[21px] bg-popover px-[calc(9px*var(--ui-space-scale,1))] py-2 text-popover-foreground shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] dark:shadow-[0_8px_28px_-6px_var(--background)]";
+  "aui-action-bar-more-content dropdown-surface z-50 min-w-32 max-h-(--radix-dropdown-menu-content-available-height) flex flex-col overflow-hidden rounded-[21px] bg-popover px-[calc(9px*var(--ui-space-scale,1))] py-2 text-popover-foreground shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)]";
 
 const ForkMessageMenuItem: FC = () => {
   const { forkMessage, forkDisabled } = useForkMessageAction();

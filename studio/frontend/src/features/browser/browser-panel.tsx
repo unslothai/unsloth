@@ -870,7 +870,7 @@ function SiteIdentity({ address, tab }: { address: string; tab: BrowserTab | und
             {label}
           </TooltipContent>
         </Tooltip>
-        <PopoverContent align="start" sideOffset={8} className="w-80 gap-0 rounded-[14px] p-1.5">
+        <PopoverContent align="start" sideOffset={8} className="browser-menu w-80 gap-0 rounded-[14px] p-1.5">
           {view === "site" ? (
             <>
               <div className="flex min-w-0 items-center gap-2.5 px-3 py-2">
@@ -1187,7 +1187,7 @@ function PanelMenu({ tab }: { tab: BrowserTab | undefined }) {
         <DropdownMenuContent
           align="end"
           sideOffset={6}
-          className="min-w-72 rounded-[20px] p-1.5 [&_[data-slot=dropdown-menu-separator]]:mx-3 [&_[data-slot=dropdown-menu-separator]]:my-1.5"
+          className="browser-menu min-w-72 rounded-[20px] p-1.5 [&_[data-slot=dropdown-menu-separator]]:mx-3 [&_[data-slot=dropdown-menu-separator]]:my-1.5"
           onCloseAutoFocus={(event) => {
             if (!keepFocus.current) return;
             keepFocus.current = false;
@@ -1261,7 +1261,7 @@ function PanelMenu({ tab }: { tab: BrowserTab | undefined }) {
           <DropdownMenuSeparator />
           <DropdownMenuSub>
             <DropdownMenuSubTrigger>{t("browser.pages.bookmarks")}</DropdownMenuSubTrigger>
-            <DropdownMenuSubContent className="min-w-60 rounded-[20px] p-1.5 [&_[data-slot=dropdown-menu-separator]]:mx-3 [&_[data-slot=dropdown-menu-separator]]:my-1.5">
+            <DropdownMenuSubContent className="browser-menu min-w-60 rounded-[20px] p-1.5 [&_[data-slot=dropdown-menu-separator]]:mx-3 [&_[data-slot=dropdown-menu-separator]]:my-1.5">
               <DropdownMenuItem
                 disabled={!webUrl}
                 onSelect={() => {
@@ -1498,7 +1498,7 @@ function FileToolbar({
         <DropdownMenuContent
           align="start"
           sideOffset={6}
-          className="w-80 max-w-[calc(100vw-2rem)] rounded-[20px] p-1.5 [&_[data-slot=dropdown-menu-separator]]:mx-3 [&_[data-slot=dropdown-menu-separator]]:my-1.5"
+          className="browser-menu w-80 max-w-[calc(100vw-2rem)] rounded-[20px] p-1.5 [&_[data-slot=dropdown-menu-separator]]:mx-3 [&_[data-slot=dropdown-menu-separator]]:my-1.5"
         >
           <div className="flex items-start gap-3 px-3 py-2 text-sm">
             <KindIcon
@@ -1519,7 +1519,7 @@ function FileToolbar({
               />
               {t("browser.file.openIn")}
             </DropdownMenuSubTrigger>
-            <DropdownMenuSubContent className="min-w-52 rounded-[20px] p-1.5">
+            <DropdownMenuSubContent className="browser-menu min-w-52 rounded-[20px] p-1.5">
               <DropdownMenuItem onSelect={openInNewChat}>
                 <HugeiconsIcon
                   icon={BubbleChatAddIcon}
@@ -1732,6 +1732,7 @@ function FileToolbar({
       <ScaleMenu
         value={tab.zoom}
         scales={ATTACHMENT_PAGE_SCALES}
+        contentClassName="browser-menu"
         onChange={(value) =>
           useBrowserStore
             .getState()
