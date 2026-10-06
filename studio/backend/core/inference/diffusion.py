@@ -5680,7 +5680,8 @@ class DiffusionBackend:
                             f"{base} has a different transformer than this GGUF, so only the GGUF "
                             "itself can run it"
                         )
-                    if transformer_quant_pinned is None:
+                    # Baking adapters needs the dense build; staying on auto lets the load fail loudly below.
+                    if transformer_quant_pinned is None and not _has_active_lora(loras):
                         transformer_quant = "off"
                     else:
                         transformer_quant_decline_status = RESOLVED_UNSUPPORTED

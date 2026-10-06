@@ -2191,6 +2191,24 @@ def test_qwen_edit_variant_gguf_refuses_a_pinned_quant(fake_runtime, tmp_path, m
     assert attempted == []
 
 
+def test_qwen_edit_variant_gguf_with_baked_loras_fails_instead_of_silent_drop(
+    fake_runtime, tmp_path, monkeypatch
+):
+    backend = DiffusionBackend()
+    attempted = _qwen_edit_dense_route(backend, monkeypatch)
+    (tmp_path / "qwen-image-edit-2509-Q6_K.gguf").write_bytes(b"x")
+    with pytest.raises(RuntimeError, match = "LoRA adapters could not be applied"):
+        _load_into(
+            backend,
+            tmp_path,
+            gguf_filename = "qwen-image-edit-2509-Q6_K.gguf",
+            base_repo = "Qwen/Qwen-Image-Edit-2511",
+            family_override = "qwen-image-edit",
+            loras = [("adapter", 1.0)],
+        )
+    assert attempted == []
+
+
 def test_load_pipeline_kind_uses_from_pretrained(fake_runtime):
     """A full-pipeline (no single-file) load on an unsloth/* repo builds the pipe with
     pipeline_cls.from_pretrained(repo_id) -- NO single-file transformer build, NO GGUF

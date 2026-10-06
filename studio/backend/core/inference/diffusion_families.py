@@ -1247,10 +1247,11 @@ def transformer_config_overrides_for(fam: Any, *identifiers: Optional[str]) -> d
 def transformer_variant_differs_from_base(
     fam: Any, base: Optional[str], *identifiers: Optional[str]
 ) -> bool:
-    """True when the checkpoint names another variant than ``base``, whose transformer/ is then a different model."""
+    """True when the checkpoint and ``base`` name different variants, so ``base``'s transformer/ is another
+    model. A base naming no variant (a local directory) is unknown, not different."""
     rows = getattr(fam, "transformer_config_variants", ())
-    picked = _first_variant(rows, (*identifiers, base))
-    return picked is not None and picked != _first_variant(rows, (base,))
+    base_row = _first_variant(rows, (base,))
+    return base_row is not None and _first_variant(rows, identifiers) not in (None, base_row)
 
 
 def default_generation_params(*identifiers: Optional[str]) -> tuple[int, float]:

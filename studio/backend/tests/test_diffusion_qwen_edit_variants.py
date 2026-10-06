@@ -130,6 +130,7 @@ def test_comfy_style_names_pick_their_shift(gguf_filename, shift):
         ("Qwen/Qwen-Image-Edit-2511", "qwen-image-edit-2511-Q4_K_M.gguf", False),
         ("Qwen/Qwen-Image-Edit-2511", "model.gguf", False),
         ("Qwen/Qwen-Image-Edit-2509", "qwen-image-edit-2509-Q6_K.gguf", False),
+        ("/models/qwen-edit-pipeline", "qwen-image-edit-2509-Q6_K.gguf", False),
     ],
 )
 def test_variant_differs_from_base(base, gguf_filename, differs):
