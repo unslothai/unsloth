@@ -110,6 +110,7 @@ test("an audio model the Audio page runs opens there, the rest keep their chat R
     hubModelRunsOnAudioPage(
       model,
       taskForMediaPick(model.pipelineTag, model.task),
+      true,
     );
   // A cached audio runtime GGUF carries its header task and no Hub tag.
   assert.equal(
@@ -184,5 +185,28 @@ test("an audio model the Audio page runs opens there, the rest keep their chat R
       hubRepoId: "unsloth/orpheus-3b-0.1-ft",
     }),
     false,
+  );
+  // A chat-only host cannot load a non-GGUF checkpoint on the Audio page either: Run stays hidden there.
+  const orpheus = audio({
+    hubRepoId: "unsloth/orpheus-3b-0.1-ft",
+    pipelineTag: "text-to-speech",
+  });
+  assert.equal(
+    hubModelRunsOnAudioPage(orpheus, "text-to-speech", false),
+    false,
+  );
+  // A GGUF still opens Audio there.
+  assert.equal(
+    hubModelRunsOnAudioPage(
+      audio({
+        id: "x/ACE-GGUF",
+        hubRepoId: "x/ACE-GGUF",
+        isGguf: true,
+        task: "text-to-audio",
+      }),
+      "text-to-audio",
+      false,
+    ),
+    true,
   );
 });

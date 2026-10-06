@@ -119,12 +119,15 @@ function createHandoffMeta(
 export function hubModelRunsOnAudioPage(
   model: SelectedModelView,
   task: string | null,
+  nonGgufRuntimeAvailable: boolean,
 ): boolean {
   // A filesystem row has no Hub id for the Audio handoff, so it keeps its chat Run.
   const id = model.hubRepoId;
   if (!id || !routableToMediaPage(model.kind, model.localSource)) return false;
   // The shared GGUF audio repo holds many models; the Audio page lists them one by one.
   if (id.toLowerCase() === AUDIO_CPP_REPO.toLowerCase()) return false;
+  // A host that cannot load a non-GGUF checkpoint cannot load it on the Audio page either.
+  if (!model.isGguf && !nonGgufRuntimeAvailable) return false;
   if (audioWorkflowForPick({ id, task }) === null) return false;
   return audioPickIsRoutable({
     id,

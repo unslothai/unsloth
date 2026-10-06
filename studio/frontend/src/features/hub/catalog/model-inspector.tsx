@@ -557,15 +557,17 @@ export const ModelInspector = memo(function ModelInspector({
   // not describe their load.
   const mediaTask = taskForMediaPick(model.pipelineTag, model.task);
   const mediaPage = studioPageForTask(mediaTask ?? undefined);
+  const nonGgufRuntimeAvailable =
+    !chatOnlyMeasured && unslothSupport.status !== "unsupported";
   const audioPage =
-    mediaPage === undefined && hubModelRunsOnAudioPage(model, mediaTask);
+    mediaPage === undefined &&
+    hubModelRunsOnAudioPage(model, mediaTask, nonGgufRuntimeAvailable);
   const runsOnMediaRuntime = mediaPage !== undefined || audioPage;
   const runEligible = isHubModelRunEligible({
     model,
     isDataset,
     mediaRuntime: runsOnMediaRuntime,
-    nonGgufRuntimeAvailable:
-      !chatOnlyMeasured && unslothSupport.status !== "unsupported",
+    nonGgufRuntimeAvailable,
   });
   const runAction =
     runEligible && onRun
