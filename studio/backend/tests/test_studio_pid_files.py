@@ -484,6 +484,26 @@ def test_a_wildcard_listener_with_a_full_backlog_is_not_a_free_port():
             assert run._is_port_free("127.0.0.1", port) is False
 
 
+@pytest.mark.parametrize(
+    ("listener", "family", "address", "collides"),
+    [
+        ("0.0.0.0", socket.AF_INET, "127.0.0.1", True),
+        ("127.0.0.1", socket.AF_INET, "127.0.0.1", True),
+        ("192.168.1.5", socket.AF_INET, "127.0.0.1", False),
+        ("::", socket.AF_INET6, "127.0.0.1", False),  # a v6-only wildcard shares the port with IPv4
+        ("::", socket.AF_INET6, "::1", True),
+    ],
+)
+def test_only_a_listener_of_the_same_family_takes_the_port(
+    monkeypatch, listener, family, address, collides
+):
+    psutil = pytest.importorskip("psutil")
+    row = SimpleNamespace(status = psutil.CONN_LISTEN, family = family, laddr = (listener, 8888))
+    monkeypatch.setattr(psutil, "net_connections", lambda kind: [row])
+
+    assert run._listener_collides(address, 8888) is collides
+
+
 def test_a_timed_out_connect_is_settled_by_the_listener_table(monkeypatch):
     monkeypatch.setattr(run, "sys", SimpleNamespace(platform = "win32"))
     asked = []

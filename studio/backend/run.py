@@ -893,13 +893,20 @@ _CONNECT_REFUSED = {errno.ECONNREFUSED, 10061}  # WSAECONNREFUSED
 
 
 def _listener_collides(address: str, port: int) -> bool:
-    """Is some process listening on *port* at *address* or a wildcard? Best effort: no psutil means no."""
+    """Is some process listening on *port* at *address* or at its family's wildcard? Best effort: no psutil
+    means no. Only the same family counts: a v6-only ``::`` listener shares a port with an IPv4 bind."""
+    import socket
+
+    family = socket.AF_INET6 if ":" in address else socket.AF_INET
     try:
         import psutil
         listeners = [
             c.laddr[0]
             for c in psutil.net_connections(kind = "tcp")
-            if c.status == psutil.CONN_LISTEN and c.laddr and c.laddr[1] == port
+            if c.status == psutil.CONN_LISTEN
+            and c.family == family
+            and c.laddr
+            and c.laddr[1] == port
         ]
     except Exception:
         return False
