@@ -259,9 +259,7 @@ def test_collect_local_models_keeps_a_parked_copy_behind_a_weightless_cache_row(
     snapshot = _complete_gguf_repo(parked, "Org/Model-GGUF")
 
     _pin_single_cache(monkeypatch, tmp_path, active)
-    monkeypatch.setattr(
-        "storage.studio_db.list_scan_folders", lambda: [{"path": str(parked)}]
-    )
+    monkeypatch.setattr("storage.studio_db.list_scan_folders", lambda: [{"path": str(parked)}])
 
     rows = models_route.collect_local_models(tmp_path / "models")
 
@@ -296,9 +294,7 @@ def test_collect_local_models_keeps_the_cache_label_for_a_folder_registered_over
     _complete_gguf_repo(active, "Org/Model-GGUF")
 
     _pin_single_cache(monkeypatch, tmp_path, active)
-    monkeypatch.setattr(
-        "storage.studio_db.list_scan_folders", lambda: [{"path": str(active)}]
-    )
+    monkeypatch.setattr("storage.studio_db.list_scan_folders", lambda: [{"path": str(active)}])
 
     rows = models_route.collect_local_models(tmp_path / "models")
 
@@ -317,12 +313,8 @@ def test_collect_local_models_keeps_the_cache_label_for_a_folder_over_a_known_ca
     _complete_gguf_repo(known, "Org/Model-GGUF")
 
     _pin_single_cache(monkeypatch, tmp_path, active)
-    monkeypatch.setattr(
-        "utils.hf_cache_settings.known_hf_hub_caches", lambda: [active, known]
-    )
-    monkeypatch.setattr(
-        "storage.studio_db.list_scan_folders", lambda: [{"path": str(known)}]
-    )
+    monkeypatch.setattr("utils.hf_cache_settings.known_hf_hub_caches", lambda: [active, known])
+    monkeypatch.setattr("storage.studio_db.list_scan_folders", lambda: [{"path": str(known)}])
 
     rows = models_route.collect_local_models(tmp_path / "models")
 

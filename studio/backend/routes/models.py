@@ -894,9 +894,7 @@ def _merge_scan_folder_row(
         if m.source == "hf_cache" and not any(
             path_is_same_or_child(Path(m.path), root) for root in configured_cache_roots
         ):
-            return m.model_copy(
-                update = {"source": "custom", "model_id": None, "active_cache": None}
-            )
+            return m.model_copy(update = {"source": "custom", "model_id": None, "active_cache": None})
         return m
     return m.model_copy(update = {"source": "custom"})
 
@@ -1108,9 +1106,7 @@ def collect_local_models(
                 custom_identities.add(_compat_inventory_path_identity(m.path))
         # Keep an already-attributed source: a registered ~/.ollama/models (or a folder shadowing the HF
         # cache) must not re-stamp its rows as generic custom entries.
-        local_models += [
-            _merge_scan_folder_row(m, configured_cache_roots) for m in custom_models
-        ]
+        local_models += [_merge_scan_folder_row(m, configured_cache_roots) for m in custom_models]
 
     # A registered oMLX root (the pre-scan workaround) lists its models as custom rows too; keep
     # those (the train picker refuses oMLX rows).
