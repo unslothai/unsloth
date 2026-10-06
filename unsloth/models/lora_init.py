@@ -133,7 +133,8 @@ def randomized_svd(
     U = Y @ Vr
     if scale is not None:
         S = S * scale
-    if not _safe:
+    # cuSOLVER's Householder QR cannot fail on finite input; ROCm's can overflow, and CPU syncs for free.
+    if not _safe and (not householder or A.device.type != "cuda" or torch.version.hip is not None):
         bad = torch.stack(failures).ne(0).any() if failures else S.new_zeros((), dtype = torch.bool)
         bad = bad | ~torch.isfinite(S).all() | ~torch.isfinite(U).all() | ~torch.isfinite(V).all()
         if bad.item():

@@ -95,6 +95,7 @@ def test_randomized_svd_survives_unscaled_solver_norms(monkeypatch, name, rank):
 
     monkeypatch.setattr(torch.linalg, "qr", unscaled_qr)
     monkeypatch.setattr(torch.linalg, "svd", unscaled_svd)
+    monkeypatch.setattr(torch.version, "hip", "7.0", raising = False)
     test_randomized_svd_adversarial_finite_and_near_optimal(name, rank)
 
 
