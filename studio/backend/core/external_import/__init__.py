@@ -206,15 +206,18 @@ def _pending_messages(source: Source, transcript: Transcript, existing: bool) ->
         # No rows and no mark = shell thread from an interrupted import.
         return [] if stored else list(transcript.messages)
     pending = transcript.messages[turns:]
-    if not pending:
-        return pending
-    # Hang new turns off the nearest ancestor still in Studio, so a deleted parent does not orphan them.
-    stored_ids = {message["id"] for message in stored}
+    # Hang each new turn off its nearest ancestor that exists, so a parent deleted in Studio
+    # does not orphan it (the frontend refuses a thread with a missing parent).
+    present = {message["id"] for message in stored}
     by_id = {message["id"]: message for message in transcript.messages}
-    parent = pending[0].get("parentId")
-    while parent and parent not in stored_ids:
-        parent = by_id.get(parent, {}).get("parentId")
-    return [{**pending[0], "parentId": parent}, *pending[1:]]
+    reseated = []
+    for message in pending:
+        parent = message.get("parentId")
+        while parent and parent not in present:
+            parent = by_id.get(parent, {}).get("parentId")
+        reseated.append({**message, "parentId": parent})
+        present.add(message["id"])
+    return reseated
 
 
 def _late_tool_results(transcript: Transcript) -> list[dict]:

@@ -552,3 +552,24 @@ def test_a_managed_account_cannot_reach_the_owners_histories(
     assert managed.get(f"/api/import/{source}/status").json()["available"] is False
     assert managed.post(f"/api/import/{source}").status_code == 403
     assert studio_db.list_chat_threads() == []
+
+
+def test_every_appended_branch_is_reparented_past_a_deleted_message(claude_home):
+    path = _session(
+        claude_home,
+        records = [
+            c_user("u1", "one"),
+            c_asst("a1", [{"type": "text", "text": "A"}], parent = "u1"),
+        ],
+    )
+    run_import(claude.SOURCE)
+    tid = thread_id_for(claude.SOURCE, "s1")
+    studio_db.sync_chat_messages(tid, _messages(claude.SOURCE, "s1")[:1], prune_missing = True)
+    # Two rewinds off the deleted reply.
+    _append(path, [c_user("u2", "two", parent = "a1"), c_user("u3", "three", parent = "a1")])
+    run_import(claude.SOURCE)
+
+    rows = _messages(claude.SOURCE, "s1")
+    ids = {m["id"] for m in rows}
+    assert len(rows) == 3
+    assert all(m["parentId"] is None or m["parentId"] in ids for m in rows)
