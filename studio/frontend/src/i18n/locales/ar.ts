@@ -258,6 +258,13 @@ export const ar = {
       canvas: "اللوحة",
     },
     pages: {
+      searchDownloads: "البحث في سجل التنزيلات",
+      clearAll: "مسح الكل",
+      deleted: "محذوف",
+      showInFinder: "إظهار في Finder",
+      showInExplorer: "إظهار في المستكشف",
+      showInFolder: "إظهار في المجلد",
+      revealFailed: "تعذّر إظهار {name} في مجلده.",
       history: "السجل",
       downloads: "التنزيلات",
       bookmarks: "الإشارات المرجعية",

@@ -258,6 +258,13 @@ export const fr = {
       canvas: "Canevas",
     },
     pages: {
+      searchDownloads: "Rechercher dans l'historique des téléchargements",
+      clearAll: "Tout effacer",
+      deleted: "Supprimé",
+      showInFinder: "Afficher dans le Finder",
+      showInExplorer: "Afficher dans l'Explorateur",
+      showInFolder: "Afficher dans le dossier",
+      revealFailed: "Impossible d'afficher {name} dans son dossier.",
       history: "Historique",
       downloads: "Téléchargements",
       bookmarks: "Marque-pages",

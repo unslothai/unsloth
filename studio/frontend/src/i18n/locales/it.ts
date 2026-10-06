@@ -257,6 +257,13 @@ export const it = {
       canvas: "Canvas",
     },
     pages: {
+      searchDownloads: "Cerca nella cronologia dei download",
+      clearAll: "Cancella tutto",
+      deleted: "Eliminato",
+      showInFinder: "Mostra nel Finder",
+      showInExplorer: "Mostra in Esplora file",
+      showInFolder: "Mostra nella cartella",
+      revealFailed: "Impossibile mostrare {name} nella sua cartella.",
       history: "Cronologia",
       downloads: "Download",
       bookmarks: "Segnalibri",

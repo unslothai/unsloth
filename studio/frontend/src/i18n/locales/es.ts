@@ -258,6 +258,13 @@ export const es = {
       canvas: "Lienzo",
     },
     pages: {
+      searchDownloads: "Buscar en el historial de descargas",
+      clearAll: "Borrar todo",
+      deleted: "Eliminado",
+      showInFinder: "Mostrar en Finder",
+      showInExplorer: "Mostrar en el Explorador",
+      showInFolder: "Mostrar en la carpeta",
+      revealFailed: "No se pudo mostrar {name} en su carpeta.",
       history: "Historial",
       downloads: "Descargas",
       bookmarks: "Marcadores",

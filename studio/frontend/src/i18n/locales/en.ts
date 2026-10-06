@@ -255,6 +255,13 @@ export const en = {
       canvas: "Canvas",
     },
     pages: {
+      searchDownloads: "Search download history",
+      clearAll: "Clear all",
+      deleted: "Deleted",
+      showInFinder: "Show in Finder",
+      showInExplorer: "Show in Explorer",
+      showInFolder: "Show in folder",
+      revealFailed: "Couldn't show {name} in its folder.",
       history: "History",
       downloads: "Downloads",
       bookmarks: "Bookmarks",

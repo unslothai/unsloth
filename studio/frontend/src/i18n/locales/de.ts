@@ -258,6 +258,13 @@ export const de = {
       canvas: "Canvas",
     },
     pages: {
+      searchDownloads: "Downloadverlauf durchsuchen",
+      clearAll: "Alle löschen",
+      deleted: "Gelöscht",
+      showInFinder: "Im Finder anzeigen",
+      showInExplorer: "Im Explorer anzeigen",
+      showInFolder: "Im Ordner anzeigen",
+      revealFailed: "{name} konnte nicht im Ordner angezeigt werden.",
       history: "Verlauf",
       downloads: "Downloads",
       bookmarks: "Lesezeichen",

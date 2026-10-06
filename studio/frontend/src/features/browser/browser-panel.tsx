@@ -118,7 +118,6 @@ import {
   ExitFullViewIcon,
   PadlockIcon,
   PadlockOpenIcon,
-  SplitPaneIcon,
 } from "./icons";
 import {
   hasNativeView,
@@ -706,7 +705,7 @@ function TabStrip({
       />
       <IconButton
         label={t("browser.close")}
-        icon={SplitPaneIcon}
+        icon={Cancel01Icon}
         onClick={closePanel}
         className="size-8 rounded-[10px] bg-[color-mix(in_oklab,var(--foreground)_calc(6%*var(--contrast-wash-gain,1)),transparent)] text-foreground"
       />

@@ -259,6 +259,13 @@ export const ja = {
       canvas: "キャンバス",
     },
     pages: {
+      searchDownloads: "ダウンロード履歴を検索",
+      clearAll: "すべて消去",
+      deleted: "削除済み",
+      showInFinder: "Finder に表示",
+      showInExplorer: "エクスプローラーで表示",
+      showInFolder: "フォルダに表示",
+      revealFailed: "{name} をフォルダに表示できませんでした。",
       history: "履歴",
       downloads: "ダウンロード",
       bookmarks: "ブックマーク",

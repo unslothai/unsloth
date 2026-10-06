@@ -258,6 +258,13 @@ export const ru = {
       canvas: "Холст",
     },
     pages: {
+      searchDownloads: "Поиск в истории загрузок",
+      clearAll: "Очистить всё",
+      deleted: "Удалён",
+      showInFinder: "Показать в Finder",
+      showInExplorer: "Показать в проводнике",
+      showInFolder: "Показать в папке",
+      revealFailed: "Не удалось показать {name} в папке.",
       history: "История",
       downloads: "Загрузки",
       bookmarks: "Закладки",

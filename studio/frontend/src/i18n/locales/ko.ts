@@ -258,6 +258,13 @@ export const ko = {
       canvas: "캔버스",
     },
     pages: {
+      searchDownloads: "다운로드 기록 검색",
+      clearAll: "모두 지우기",
+      deleted: "삭제됨",
+      showInFinder: "Finder에서 보기",
+      showInExplorer: "탐색기에서 보기",
+      showInFolder: "폴더에서 보기",
+      revealFailed: "{name}을(를) 폴더에서 표시할 수 없습니다.",
       history: "방문 기록",
       downloads: "다운로드",
       bookmarks: "북마크",

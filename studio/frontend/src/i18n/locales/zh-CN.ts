@@ -258,6 +258,13 @@ export const zhCN = {
       canvas: "画布",
     },
     pages: {
+      searchDownloads: "搜索下载记录",
+      clearAll: "全部清除",
+      deleted: "已删除",
+      showInFinder: "在访达中显示",
+      showInExplorer: "在资源管理器中显示",
+      showInFolder: "在文件夹中显示",
+      revealFailed: "无法在文件夹中显示 {name}。",
       history: "历史记录",
       downloads: "下载",
       bookmarks: "书签",

@@ -3,6 +3,7 @@
 mod app_layout;
 mod app_menu;
 mod browser_capture;
+mod browser_downloads;
 mod browser_proxy;
 mod browser_webview;
 mod commands;
@@ -2239,6 +2240,7 @@ fn main() {
         .manage(new_close_to_tray_state())
         .manage(native_file_dialogs::ChatImportRegistry::default())
         .manage(browser_webview::new_browser_views())
+        .manage(browser_downloads::new_browser_downloads())
         .invoke_handler(tauri::generate_handler![
             app_menu::set_app_menu_actions,
             browser_webview::browser_view_supported,
@@ -2251,6 +2253,10 @@ fn main() {
             browser_webview::browser_view_clear_data,
             browser_webview::browser_view_mute,
             browser_capture::browser_capture,
+            browser_downloads::browser_download_save,
+            browser_downloads::browser_download_reveal,
+            browser_downloads::browser_download_exists,
+            browser_downloads::browser_download_forget,
             browser_capture::browser_view_print,
             set_training_active,
             set_renderer_activity,

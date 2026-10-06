@@ -258,6 +258,13 @@ export const ptBR = {
       canvas: "Canvas",
     },
     pages: {
+      searchDownloads: "Pesquisar histórico de downloads",
+      clearAll: "Limpar tudo",
+      deleted: "Excluído",
+      showInFinder: "Mostrar no Finder",
+      showInExplorer: "Mostrar no Explorador",
+      showInFolder: "Mostrar na pasta",
+      revealFailed: "Não foi possível mostrar {name} na pasta.",
       history: "Histórico",
       downloads: "Downloads",
       bookmarks: "Favoritos",

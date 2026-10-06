@@ -258,6 +258,13 @@ export const hi = {
       canvas: "कैनवस",
     },
     pages: {
+      searchDownloads: "डाउनलोड इतिहास खोजें",
+      clearAll: "सभी साफ़ करें",
+      deleted: "हटाया गया",
+      showInFinder: "Finder में दिखाएँ",
+      showInExplorer: "Explorer में दिखाएँ",
+      showInFolder: "फ़ोल्डर में दिखाएँ",
+      revealFailed: "{name} को उसके फ़ोल्डर में नहीं दिखाया जा सका।",
       history: "हिस्ट्री",
       downloads: "डाउनलोड",
       bookmarks: "बुकमार्क",
