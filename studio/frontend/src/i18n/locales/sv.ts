@@ -2647,6 +2647,15 @@ export const sv = {
       importedChatCountPartial:
         "Importerade {count} konversationer till Senaste; {failed} kunde inte sparas.",
       importFailed: "Importen misslyckades.",
+      importFromSource: "Importera från {source}",
+      importFromSourceDescription:
+        "Kopiera dina {source}-konversationer till Studio, grupperade efter projektet de hör till.",
+      importingAction: "Importerar...",
+      importedSourceOneChat: "Importerade 1 konversation från {source}.",
+      importedSourceChatCount: "Importerade {count} konversationer från {source}.",
+      sourceUpdated: "Lade till {count} nya meddelanden från {source}.",
+      sourceUpToDate: "{source}-konversationerna är redan uppdaterade.",
+      importedSourcePartial: "Vissa {source}-konversationer kunde inte importeras.",
       clearHistory: "Rensa chatthistorik",
       clearHistoryDescription: "Ta bort chatthistorik från denna enhet.",
       clearAction: "Rensa",

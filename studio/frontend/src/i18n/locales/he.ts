@@ -2564,6 +2564,15 @@ export const he = {
       importedChatCountPartial:
         "יובאו {count} שיחות אל 'אחרונים'; שמירת {failed} נכשלה.",
       importFailed: "הייבוא נכשל.",
+      importFromSource: "ייבוא מ-{source}",
+      importFromSourceDescription:
+        "העתק את השיחות שלך מ-{source} אל Studio, מקובצות לפי הפרויקט שאליו הן שייכות.",
+      importingAction: "מייבא...",
+      importedSourceOneChat: "שיחה אחת יובאה מ-{source}.",
+      importedSourceChatCount: "{count} שיחות יובאו מ-{source}.",
+      sourceUpdated: "נוספו {count} הודעות חדשות מ-{source}.",
+      sourceUpToDate: "השיחות מ-{source} כבר מעודכנות.",
+      importedSourcePartial: "לא ניתן היה לייבא חלק מהשיחות מ-{source}.",
       clearHistory: "ניקוי היסטוריית צ'אט",
       clearHistoryDescription: "מחק את היסטוריית הצ'אט ממכשיר זה.",
       clearAction: "נקה",
