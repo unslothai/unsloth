@@ -196,7 +196,7 @@ def _unload_audio_cpp_models() -> bool:
 
 def _failure_message(exc: _flow.InstallerExit, env: dict) -> str:
     if exc.returncode == _EXIT_BUSY:
-        return "The audio runtime is in use by another Studio or setup run. Close it and try again."
+        return "The audio runtime is in use by another Unsloth Studio or setup run. Close it and try again."
     text = str(exc)
     if _flow.is_github_rate_limit_text(text):
         advice = _flow.github_rate_limit_advice(_flow.github_token_present(env))

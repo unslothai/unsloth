@@ -288,7 +288,7 @@ def test_a_kept_tree_still_asks_for_a_reload_after_an_unload(run_env, monkeypatc
 
 def test_a_busy_install_says_the_runtime_is_in_use(run_env):
     run_env.installer(error = update_flow.InstallerExit(3, "installer exited 3: error: busy"))
-    with pytest.raises(RuntimeError, match = "in use by another Studio or setup run"):
+    with pytest.raises(RuntimeError, match = "in use by another Unsloth Studio or setup run"):
         aupd.run_chained_phase(run_env.phase, lambda fraction: None)
 
 

@@ -78,22 +78,21 @@ export function AudioRuntimeUpdateNotice({
       <div className="grid justify-items-start gap-1.5">
         <span>
           Your audio runtime is{" "}
-          <span className="whitespace-nowrap">{update.installed}</span>; this
-          Studio expects{" "}
-          <span className="whitespace-nowrap">{update.expected}</span>.{" "}
+          <span className="whitespace-nowrap">{update.installed}</span>; Unsloth
+          expects <span className="whitespace-nowrap">{update.expected}</span>.{" "}
           {mode === "ask_owner" ? (
             <>
-              Some models may not work until it is updated. Ask the Studio owner
-              to update it.
+              Some models may not work until it is updated. Ask the Unsloth
+              Studio owner to update it.
             </>
           ) : mode === "updating" || mode === "checking" ? null : (
             <>Some models may not work until you update. </>
           )}
           {mode === "cli" ? (
             <>
-              Stop Studio, run{" "}
+              Stop Unsloth Studio, run{" "}
               <code className="font-mono">unsloth studio update</code>, then
-              start Studio again.
+              start it again.
             </>
           ) : null}
         </span>

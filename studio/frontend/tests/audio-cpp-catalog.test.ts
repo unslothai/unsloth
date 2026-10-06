@@ -600,7 +600,7 @@ test("an outdated managed runtime names both releases; anything else shows no no
   const notice = readText("../src/features/audio/components/audio-runtime-update-notice.tsx");
   assert.match(
     notice,
-    /Stop Studio, run\{" "\}\s*<code className="font-mono">unsloth studio update<\/code>, then\s*start Studio again\./,
+    /Stop Unsloth Studio, run\{" "\}\s*<code className="font-mono">unsloth studio update<\/code>, then\s*start it again\./,
   );
 });
 
