@@ -33293,8 +33293,7 @@ async def produce_openai_chat_completions(
             )
 
     # A plain reset needs the next turn to reopen the loop, which renders the tool branch.
-    # A vision model renders even a text turn through its processor body, which can drop
-    # tools the tokenizer body renders (Qwen2.5-VL, #7066).
+    # A vision model renders text turns through its processor body too (Qwen2.5-VL drops tools, #7066).
     _sf_recall_tpl = (_sf_model_info.get("chat_template_info") or {}).get("processor_template")
     _sf_recall_reachable = (
         _sf_fit_overflow is not None
