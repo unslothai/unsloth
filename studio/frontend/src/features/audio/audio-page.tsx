@@ -1708,10 +1708,9 @@ export function AudioPage({
                 {runtimeUpdate ? (
                   <AudioRuntimeUpdateNotice
                     update={runtimeUpdate}
-                    onUpdated={() => {
-                      void refreshStatus();
-                      void refreshSttStatus();
-                    }}
+                    onUpdated={() =>
+                      Promise.all([refreshStatus(), refreshSttStatus()])
+                    }
                   />
                 ) : null}
               </div>

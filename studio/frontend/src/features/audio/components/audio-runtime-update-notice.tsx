@@ -7,7 +7,7 @@ import { useLlamaUpdateCheck } from "@/hooks/use-llama-update-check";
 import { toast } from "@/lib/toast";
 import { Alert02Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { type ReactElement, useEffect, useRef } from "react";
+import { type ReactElement, useEffect, useRef, useState } from "react";
 import { audioRuntimeNoticeMode } from "../audio-page-policy";
 
 /** The managed audio runtime is not the release this Studio pins. The owner updates it in place
@@ -18,29 +18,39 @@ export function AudioRuntimeUpdateNotice({
   onUpdated,
 }: {
   update: { installed: string; expected: string };
-  onUpdated: () => void;
+  onUpdated: () => Promise<unknown>;
 }): ReactElement {
   const isOwner = useIsAccountOwner();
   const { status, applying, apply } = useLlamaUpdateCheck({
     enabled: isOwner,
   });
-  const mode = audioRuntimeNoticeMode({
-    isOwner,
-    offered: Boolean(status?.audio?.update_available),
-    applying,
-    checked: status !== null,
-  });
-  // The card or another tab can run the job too, so refresh whenever a job this notice followed
-  // settles, not only after its own Update: a stale notice would send the owner to the CLI.
+  const offered = Boolean(status?.audio?.update_available);
+  // Refresh the page once a job this notice followed settles (the card can run it too), or when
+  // the offer disappears without one (another tab updated): a stale notice would send the owner
+  // to the CLI. The offer is gone as soon as the job lands, so stay on "updating" until the page
+  // has re-read the runtime.
   const followedJob = useRef(false);
+  const wasOffered = useRef(false);
+  const [refreshing, setRefreshing] = useState(false);
   useEffect(() => {
     if (applying) {
       followedJob.current = true;
-    } else if (followedJob.current) {
-      followedJob.current = false;
-      onUpdated();
+      return;
     }
-  }, [applying, onUpdated]);
+    const offerWithdrawn = wasOffered.current && !offered;
+    wasOffered.current = offered;
+    if (followedJob.current || offerWithdrawn) {
+      followedJob.current = false;
+      setRefreshing(true);
+      void onUpdated().finally(() => setRefreshing(false));
+    }
+  }, [applying, offered, onUpdated]);
+  const mode = audioRuntimeNoticeMode({
+    isOwner,
+    offered,
+    applying: applying || refreshing,
+    checked: status !== null,
+  });
 
   async function handleUpdate() {
     const result = await apply();

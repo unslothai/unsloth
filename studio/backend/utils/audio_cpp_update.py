@@ -184,8 +184,10 @@ def _unload_audio_cpp_models() -> bool:
         main = None
     if main is not None:
         for name in model_slots.audio_cpp_model_names(main):
-            main.unload_model(name)
             unloaded = True
+            # A failed unload can leave the worker's server running from the tree being replaced.
+            if not main.unload_model(name):
+                raise RuntimeError(f"{name} did not unload")
     # A kept server that survived would run from, or lock, the tree being replaced.
     if model_slots.unload_audio_cpp_slots(strict = True):
         unloaded = True

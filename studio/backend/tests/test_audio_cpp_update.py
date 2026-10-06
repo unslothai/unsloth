@@ -19,6 +19,7 @@ from utils.prebuilt import update_flow
 
 # A Studio pinned one release past the installed one, so the tests do not depend on the real pin.
 _LADDER = [("unslothai/audio.cpp", "v0.9.1-unsloth.1"), ("0xShug0/audio.cpp", "v0.9.1")]
+_real_unload = aupd._unload_audio_cpp_models
 _SETUP_SKIPS = ("AUDIOCPP_SERVER_PATH", "UNSLOTH_AUDIO_CPP_PATH", "UNSLOTH_SKIP_AUDIO_CPP_INSTALL")
 
 
@@ -364,6 +365,17 @@ def test_a_main_slot_audio_cpp_model_is_unloaded(slots):
     )
     assert aupd._unload_audio_cpp_models() is True
     assert slots.main.unloaded == ["kokoro"]
+
+
+def test_a_failed_unload_stops_the_update_before_the_install(run_env, slots, monkeypatch):
+    # The run_env fixture stubs the unload; put the real one back to drive the orchestrator.
+    monkeypatch.setattr(aupd, "_unload_audio_cpp_models", _real_unload)
+    slots.main = _Orchestrator({"kokoro": {"audio_type": AUDIO_CPP_TTS_AUDIO_TYPE}})
+    slots.main.unload_model = lambda name: False
+    with pytest.raises(RuntimeError, match = "kokoro did not unload") as info:
+        aupd.run_chained_phase(run_env.phase, lambda fraction: None)
+    assert info.value.reload_required is True
+    assert "install" not in run_env.events
 
 
 def test_a_main_slot_chat_model_is_left_alone(slots):

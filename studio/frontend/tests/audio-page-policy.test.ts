@@ -866,13 +866,16 @@ test("the outdated-runtime notice offers the in-app update only to the owner", (
   assert.equal(mode(false, false, true), "ask_owner");
 });
 
-// A job started from the update card (or another tab) settles without this
-// notice's own click, so the page must refresh from the followed job.
-test("the outdated-runtime notice refreshes the page when a followed job settles", () => {
+// The card, or another tab, can run the update without this notice's own click,
+// so the page refreshes from the followed job or from the offer disappearing,
+// and stays on "updating" until that refresh has re-read the runtime.
+test("the outdated-runtime notice refreshes the page however the update ran", () => {
   const notice = readSrc("features/audio/components/audio-runtime-update-notice.tsx");
+  assert.match(notice, /const offerWithdrawn = wasOffered\.current && !offered;/);
   assert.match(
     notice,
-    /if \(applying\) \{\s*followedJob\.current = true;\s*\} else if \(followedJob\.current\) \{\s*followedJob\.current = false;\s*onUpdated\(\);/,
+    /if \(followedJob\.current \|\| offerWithdrawn\) \{\s*followedJob\.current = false;\s*setRefreshing\(true\);\s*void onUpdated\(\)\.finally\(\(\) => setRefreshing\(false\)\);/,
   );
+  assert.match(notice, /applying: applying \|\| refreshing,/);
   assert.doesNotMatch(notice, /toast\.success\([^;]*;\s*onUpdated\(\)/);
 });
