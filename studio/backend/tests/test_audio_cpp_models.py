@@ -732,11 +732,16 @@ def test_umbrella_keys_saved_settings_name_stay_the_same():
     ) == ["19m/F32", "38m/F32"]
     assert _keys(
         "Samsone-GGUF",
-        *(f"samsone-{size}-{quant}.gguf" for size in ("99m", "134m", "356m") for quant in ("q8_0", "bf16")),
+        *(
+            f"samsone-{size}-{quant}.gguf"
+            for size in ("99m", "134m", "356m")
+            for quant in ("q8_0", "bf16")
+        ),
     ) == ["134m/Q8_0", "356m/Q8_0", "99m/Q8_0", "134m/BF16", "356m/BF16", "99m/BF16"]
-    assert _keys(
-        "UniverSR-GGUF", "universr-audio-orig.gguf", "universr-speech-orig.gguf"
-    ) == ["audio/orig", "speech/orig"]
+    assert _keys("UniverSR-GGUF", "universr-audio-orig.gguf", "universr-speech-orig.gguf") == [
+        "audio/orig",
+        "speech/orig",
+    ]
     assert _keys(
         "ACE-Step1.5-GGUF",
         "turbo/ace-step-1.5-turbo-q8_0.gguf",

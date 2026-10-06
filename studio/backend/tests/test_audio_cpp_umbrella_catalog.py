@@ -130,7 +130,9 @@ CATALOG = Path(__file__).resolve().parents[2] / "frontend/src/features/audio/aud
 
 @pytest.fixture(autouse = True)
 def pinned_runtime(monkeypatch):
-    monkeypatch.setattr(acm, "runtime_knows_family", lambda family: family in AUDIO_CPP_SPEC_FAMILIES)
+    monkeypatch.setattr(
+        acm, "runtime_knows_family", lambda family: family in AUDIO_CPP_SPEC_FAMILIES
+    )
 
 
 @pytest.mark.parametrize("folder", sorted(UMBRELLA))

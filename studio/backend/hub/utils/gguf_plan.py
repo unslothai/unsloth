@@ -327,7 +327,9 @@ def _with_audio_cpp_extras(plan: GgufVariantPlan, siblings: Sequence) -> GgufVar
         if isinstance(name := getattr(sibling, "rfilename", None), str)
     }
     wanted = {
-        name for name in by_name if name.startswith(prefix) and name.lower().endswith(".safetensors")
+        name
+        for name in by_name
+        if name.startswith(prefix) and name.lower().endswith(".safetensors")
     }
     try:
         from core.inference.audio_cpp_models import companion_files
