@@ -577,6 +577,8 @@ export function ApiMonitorPage(): ReactElement {
   const serverUrl = usePlatformStore((s) => s.serverUrl);
   const cloudflareUrl = usePlatformStore((s) => s.cloudflareUrl);
   const [unloading, setUnloading] = useState(false);
+  // A picker load in flight would land after the raw unload, which has no lifecycle guard.
+  const modelLoading = useChatRuntimeStore((s) => s.modelLoading);
   const [unloadError, setUnloadError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -756,7 +758,7 @@ export function ApiMonitorPage(): ReactElement {
             variant="outline"
             size="sm"
             onClick={() => void unloadActiveModel()}
-            disabled={unloading || !data?.active_model}
+            disabled={unloading || modelLoading || !data?.active_model}
             title={
               data?.active_model
                 ? `Unload ${data.active_model} and free its VRAM`
