@@ -267,6 +267,20 @@ def test_a_cached_laya_checkpoint_starts_without_the_hub(
     assert result.cached_model_pin is None
 
 
+def test_a_cached_sibling_subfolder_does_not_stand_in_for_the_requested_one(hub_cache, monkeypatch):
+    from utils.models import model_config
+
+    _cache_laya(hub_cache, "multilingual")
+    monkeypatch.setenv("HF_HUB_CACHE", str(hub_cache))
+    monkeypatch.setenv("HF_HUB_OFFLINE", "1")
+    monkeypatch.setattr(model_config, "cache_reads_authorized", lambda *args, **kwargs: True)
+
+    assert model_config.decision_layout(LAYA_REPO, subfolder = "multilingual") == "laya"
+    assert model_config.decision_layout(LAYA_REPO) == "laya"
+    # Only multilingual is cached, so the English checkpoint is not a decision model the cache can serve.
+    assert model_config.decision_layout(LAYA_REPO, subfolder = "typed-decisions") is None
+
+
 @pytest.mark.parametrize(("hub_state", "status"), [("offline", 409), ("unreachable", 503)])
 def test_an_uncached_laya_checkpoint_still_needs_the_hub(
     route, hub_cache, monkeypatch, hub_state, status
