@@ -4,13 +4,13 @@
 // Free of app imports so the node test runner and the sidebar can load it directly.
 
 import {
-  AiVoiceIcon,
+  ArrowDataTransferHorizontalIcon,
+  Copy01Icon,
   MusicNote03Icon,
   QuillWrite01Icon,
-  SpeechToTextIcon,
   SplitIcon,
-  UserSwitchIcon,
-  VoiceIdIcon,
+  TextIcon,
+  VolumeHighIcon,
 } from "@hugeicons/core-free-icons";
 import type { IconSvgElement } from "@hugeicons/react";
 import { AUDIO_CPP_MUSIC_AUDIO_TYPE } from "./audio-cpp-catalog.ts";
@@ -39,7 +39,7 @@ export const AUDIO_WORKFLOWS: ReadonlyArray<{
     id: "speak",
     label: "Speak",
     heading: "Text to speech",
-    icon: AiVoiceIcon,
+    icon: VolumeHighIcon,
     hint: "Turn text into speech with a built-in or designed voice",
     slot: "speak",
     createTrain: true,
@@ -48,7 +48,7 @@ export const AUDIO_WORKFLOWS: ReadonlyArray<{
     id: "clone",
     label: "Clone",
     heading: "Clone a voice",
-    icon: VoiceIdIcon,
+    icon: Copy01Icon,
     hint: "Speak in the voice from a short recording",
     slot: "speak",
     createTrain: true,
@@ -66,7 +66,7 @@ export const AUDIO_WORKFLOWS: ReadonlyArray<{
     id: "convert",
     label: "Convert",
     heading: "Convert voice",
-    icon: UserSwitchIcon,
+    icon: ArrowDataTransferHorizontalIcon,
     hint: "Make a recording sound like another voice",
     slot: "speak",
     createTrain: false,
@@ -93,7 +93,7 @@ export const AUDIO_WORKFLOWS: ReadonlyArray<{
     id: "transcribe",
     label: "Transcribe",
     heading: "Transcribe",
-    icon: SpeechToTextIcon,
+    icon: TextIcon,
     hint: "Turn speech into text",
     slot: "transcribe",
     createTrain: true,
