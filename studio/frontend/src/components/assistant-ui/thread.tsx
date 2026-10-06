@@ -176,6 +176,7 @@ import {
   isContinuableContent,
   isProviderReportedReason,
   modeAllowsContinuation,
+  providerCompactionContinuationFields,
   readContinuationSource,
   readIncompleteInfo,
   readTextThoughtSignature,
@@ -7506,6 +7507,7 @@ function useContinuation() {
       partial,
       ...(carriedReasoning ? { reasoning: carriedReasoning, reasoningDuration } : {}),
       ...(thoughtSignature ? { thoughtSignature } : {}),
+      ...providerCompactionContinuationFields(metadata),
     };
     return aui.thread().startRun({
       parentId: parent,
@@ -7513,7 +7515,15 @@ function useContinuation() {
         custom: { [CONTINUATION_RUN_CONFIG_KEY]: request },
       },
     });
-  }, [aui, messageId, partial, carriedReasoning, reasoningDuration, thoughtSignature]);
+  }, [
+    aui,
+    messageId,
+    partial,
+    carriedReasoning,
+    reasoningDuration,
+    thoughtSignature,
+    metadata,
+  ]);
 
   return {
     messageId,

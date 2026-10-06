@@ -23,8 +23,9 @@ from loggers import get_logger
 
 logger = get_logger(__name__)
 
-ToolExecutionMode = Literal["auto", "required", "full"]
-TOOL_EXECUTION_MODES = ("auto", "required", "full")
+# "software" is Sandbox Low: software safeguards without the OS sandbox, never Full access.
+ToolExecutionMode = Literal["auto", "required", "full", "software"]
+TOOL_EXECUTION_MODES = ("auto", "required", "full", "software")
 PUBLIC_TOOL_EXECUTION_MODES = ("auto", "required")
 
 PROFILE_VERSION = "unsloth-sandbox-v1"
@@ -1065,6 +1066,20 @@ def _software_only_limitations() -> tuple[str, ...]:
     return tuple(limitations)
 
 
+def _software_launch(plan: ToolLaunchPlan, record: ToolExecutionRecord) -> PreparedSandboxLaunch:
+    return PreparedSandboxLaunch(
+        argv = plan.argv,
+        workdir = plan.workdir,
+        env = plan.env,
+        preexec_fn = plan.preexec_fn,
+        backend = "software-safeguards",
+        timeout_seconds = plan.timeout_seconds,
+        close_fds = plan.close_fds,
+        terminate_descendants = plan.terminate_descendants,
+        execution_record = record,
+    )
+
+
 def prepare_tool_launch(plan: ToolLaunchPlan) -> PreparedSandboxLaunch:
     """Unavailable hosts fall back in auto; unsafe workdirs and build failures refuse."""
     if plan.cancel_event is not None and plan.cancel_event.is_set():
@@ -1099,6 +1114,27 @@ def prepare_tool_launch(plan: ToolLaunchPlan) -> PreparedSandboxLaunch:
             ),
         )
 
+    if plan.requested_mode == "software":
+        # Chosen, not a fallback: no probe, so a host with a working OS sandbox is not checked for it.
+        return _software_launch(
+            plan,
+            ToolExecutionRecord(
+                requested_mode = plan.requested_mode,
+                effective_mode = "software_safeguards",
+                environment = sys.platform,
+                backend = "software-safeguards",
+                profile_id = "software-safeguards-v1",
+                probe_generation = "",
+                os_isolation = False,
+                retained_safeguards = tuple(
+                    item
+                    for item in _SOFTWARE_SAFEGUARDS
+                    if item != "timeout" or plan.timeout_seconds is not None
+                ),
+                limitations = _software_only_limitations(),
+            ),
+        )
+
     # Taken before the check: a reset while it runs must not be undone by this launch's answer.
     generation = tool_isolation_generation()
     capability = capability_snapshot(
@@ -1124,16 +1160,9 @@ def prepare_tool_launch(plan: ToolLaunchPlan) -> PreparedSandboxLaunch:
                 f"OS_ISOLATION_UNAVAILABLE: {capability.reason}",
                 remediation = capability.remediation,
             )
-        return PreparedSandboxLaunch(
-            argv = plan.argv,
-            workdir = plan.workdir,
-            env = plan.env,
-            preexec_fn = plan.preexec_fn,
-            backend = "software-safeguards",
-            timeout_seconds = plan.timeout_seconds,
-            close_fds = plan.close_fds,
-            terminate_descendants = plan.terminate_descendants,
-            execution_record = _record(
+        return _software_launch(
+            plan,
+            _record(
                 plan,
                 capability,
                 effective_mode = "software_safeguards",

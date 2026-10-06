@@ -148,6 +148,8 @@ from .diffusion_memory import (
     refine_memory_plan_for_components,
     refine_plan_from_loaded_weights,
     release_resident_groups,
+    resident_group_mib,
+    hook_resident_denoiser,
     measured_request_extra_mib,
     settled_snapshot_device_memory,
     snapshot_device_memory,
@@ -9967,6 +9969,11 @@ class DiffusionBackend:
                         condition_pixels = guard_condition_pixels,
                     )
                     if extra_mib > 0:
+                        releasable_mib = resident_group_mib(state.pipe)
+                        if guard_condition_pixels > 0 and extra_mib > releasable_mib:
+                            # The guard credits a conditioned request nothing the load reserved: hook the resident
+                            # transformer so this request can stream part of it.
+                            hook_resident_denoiser(state.pipe, guard_target.torch_device, logger)
                         restore_resident = release_resident_groups(state.pipe, extra_mib, logger)
                     guard_kwargs = dict(
                         # NOT the settled snapshot the load uses: that one calls empty_cache(), which is right once

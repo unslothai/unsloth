@@ -1937,6 +1937,11 @@ def _sticky_compaction_state(
             # Only a SUCCEEDED fit describes a boundary, but an explicit failure still rules.
             if not truncation.get("fits"):
                 return 0, False
+            # A provider-generated summary boundary is display metadata, not a local-fit epoch. On a provider/model
+            # switch the opaque summary is deliberately withheld, so replaying its boundary here would discard the
+            # original turns without retaining their summary.
+            if truncation.get("summarized") is True:
+                return 0, False
             # A boundary is valid only under the fit that will consume it, and the two
             # directions fail differently.
             #
@@ -36310,6 +36315,7 @@ class LlamaCppBackend:
         thinking_budget_tokens: Optional[int] = None,
         mcp_image = None,
         instruction_anchor_ids = None,
+        sandbox_level: Optional[str] = None,
     ) -> Generator[dict, None, None]:
         """
         Agentic loop: let the model call tools, execute them, and continue.
@@ -36347,14 +36353,17 @@ class LlamaCppBackend:
         from state.tool_policy import (
             account_tool_stream,
             needs_tool_confirmation,
+            normalize_sandbox_level,
             normalize_tool_permissions,
             requires_os_isolation,
+            runs_without_os_sandbox,
             tool_call_may_prompt,
         )
 
         permission_mode, bypass_permissions = normalize_tool_permissions(
             permission_mode, bypass_permissions
         )
+        sandbox_level = normalize_sandbox_level(sandbox_level)
         stream_tool_execution = account_tool_stream(stream_tool_execution)
 
         if not self.is_loaded:
@@ -37464,6 +37473,7 @@ class LlamaCppBackend:
                                                 bypass_permissions = bypass_permissions,
                                                 permission_mode = permission_mode,
                                                 name = current_name,
+                                                sandbox_level = sandbox_level,
                                             )
                                             # A text-preview card still streams while gated;
                                             # hiding it blanks the chat.
@@ -37613,6 +37623,7 @@ class LlamaCppBackend:
                                                                 bypass_permissions = False,
                                                                 permission_mode = "off",
                                                                 name = _sniffed,
+                                                                sandbox_level = sandbox_level,
                                                             )
                                                         )
                                                         and not has_text_only_provisional_card(
@@ -38611,6 +38622,7 @@ class LlamaCppBackend:
                         arguments = decision.arguments,
                         is_high_risk = is_high_risk_tool_call,
                         never_needs = never_needs_approval,
+                        sandbox_level = sandbox_level,
                     )
                     # Sending the user's image always asks, whatever the permission mode.
                     image_share = mcp_image_share(decision.tool_name, decision.arguments, mcp_image)
@@ -38623,6 +38635,7 @@ class LlamaCppBackend:
                         arguments = decision.arguments,
                         prompted = needs_confirm,
                         is_high_risk = is_high_risk_tool_call,
+                        sandbox_level = sandbox_level,
                     )
                     approval_id = new_approval_id() if needs_confirm else ""
                     decision_slot = (
@@ -38992,6 +39005,10 @@ class LlamaCppBackend:
                             # Run unasked only because the OS sandbox was on: refuse if it is not any more.
                             if _strict and accepts_kwarg(execute_tool, "tool_execution_mode"):
                                 kwargs["tool_execution_mode"] = "required"
+                            elif runs_without_os_sandbox(
+                                _decision.tool_name, sandbox_level
+                            ) and accepts_kwarg(execute_tool, "tool_execution_mode"):
+                                kwargs["tool_execution_mode"] = "software"
                             # Same branch the forced recall is filtered against, so a
                             # model-initiated search cannot reach a sibling response the
                             # forced recall correctly refused.

@@ -100,6 +100,7 @@ const DICTATION_LANGUAGES: { value: string; label: string }[] = [
   { value: "it-IT", label: "Italiano" },
   { value: "pt-BR", label: "Português (Brasil)" },
   { value: "ru-RU", label: "Русский" },
+  { value: "sv-SE", label: "Svenska" },
   { value: "hi-IN", label: "हिन्दी" },
   { value: "ar-SA", label: "العربية" },
   { value: "he-IL", label: "עברית" },

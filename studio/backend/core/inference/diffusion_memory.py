@@ -2802,6 +2802,144 @@ def release_resident_groups(
         return None
 
 
+def resident_group_mib(pipe: Any) -> int:
+    """MiB an oversized request could release: every resident offload group of the pipeline's components."""
+    total = 0
+    for module in (getattr(pipe, "components", {}) or {}).values():
+        if not getattr(module, "_unsloth_resident_room", None):
+            continue
+        for group in _offload_groups(module) or []:
+            if getattr(group, "_unsloth_resident", False):
+                total += int(getattr(group, "_unsloth_resident_bytes", 0))
+    return total >> 20
+
+
+def hook_resident_denoiser(
+    pipe: Any,
+    device: Any,
+    logger: Any = None,
+) -> bool:
+    """Give a hookless resident torchao transformer block-level offload hooks, every group kept resident, so
+    release_resident_groups can stream part of it. On demand, not at load: hooks at load recompile every load's second
+    render. True when installed."""
+    transformer = getattr(pipe, "transformer", None)
+    if (
+        transformer is None
+        or _offload_groups(transformer)
+        or not _pipe_denoisers_hold_torchao(pipe)
+    ):
+        return False
+    import torch
+
+    onload = torch.device(device)
+    if onload.type != "cuda":
+        return False
+    dit_mib = _module_host_mib(transformer)
+    # the load's _torchao_stream_pinnable rule: unpinned, the apply copies the whole transformer to pageable host RAM
+    if not _streamed_pin_plan(dit_mib, 0)[0]:
+        if logger is not None:
+            logger.info(
+                "diffusion.memory: the resident transformer keeps no offload hooks (%d MiB cannot be pinned)",
+                dit_mib,
+            )
+        return False
+    torch_hooks = _module_forward_hook_ids(transformer)
+    try:
+        import inspect
+
+        from diffusers.hooks import apply_group_offloading
+
+        install_group_offload_buffer_restore()
+        install_group_offload_hooks_eager()
+        gkwargs: dict[str, Any] = {
+            "onload_device": onload,
+            "offload_device": torch.device("cpu"),
+            "offload_type": "block_level",
+            "num_blocks_per_group": DEFAULT_GROUP_BLOCKS,
+            "use_stream": True,
+        }
+        params = inspect.signature(apply_group_offloading).parameters
+        for name in ("non_blocking", "record_stream"):
+            if name in params:
+                gkwargs[name] = True
+        if "low_cpu_mem_usage" in params:
+            gkwargs["low_cpu_mem_usage"] = False
+        pinned_mib = [0]
+        apply_group_offloading(
+            transformer, **_torchao_group_offload_kwargs(transformer, gkwargs, pinned_mib)
+        )
+        if not _pin_top_level_group(transformer, logger, pinned_mib):
+            _skip_top_level_copy_back(transformer, logger)
+        if gkwargs.get("record_stream"):
+            install_group_prefetch(transformer, onload, logger)
+        kept = _keep_groups_resident(transformer, dit_mib + 1, onload, logger)
+        # the helper reports its own failure as 0 MiB kept: anything still streamed is a failed install
+        if not all(getattr(g, "_unsloth_resident", False) for g in _offload_groups(transformer)):
+            raise RuntimeError("not every offload group stayed resident")
+    except Exception as exc:  # noqa: BLE001 - the guard still refuses what cannot fit
+        # the apply already moved the weights to their host copies: back to the card, as before the call
+        _remove_group_offload_hooks(transformer)
+        _drop_module_forward_hooks_since(transformer, torch_hooks)
+        from .diffusion_offload_prefetch import PREFETCHER_ATTR
+
+        for attr in (PREFETCHER_ATTR, "_unsloth_stream_state"):
+            transformer.__dict__.pop(attr, None)
+        _return_module_tensors(transformer, onload)
+        if logger is not None:
+            logger.warning("diffusion.memory: resident transformer left without hooks (%s)", exc)
+        return False
+    if logger is not None:
+        logger.info(
+            "diffusion.memory: the resident transformer takes offload hooks (%d MiB kept resident) so this request "
+            "can stream part of it",
+            kept,
+        )
+    return True
+
+
+_FORWARD_HOOK_DICTS = (
+    "_forward_pre_hooks",
+    "_forward_pre_hooks_with_kwargs",
+    "_forward_hooks",
+    "_forward_hooks_with_kwargs",
+    "_forward_hooks_always_called",
+)
+
+
+def _module_forward_hook_ids(module: Any) -> dict[str, set]:
+    return {name: set(getattr(module, name, None) or ()) for name in _FORWARD_HOOK_DICTS}
+
+
+def _drop_module_forward_hooks_since(module: Any, before: dict[str, set]) -> None:
+    """Remove the torch forward hooks registered on ``module`` after ``before`` was taken (the group prefetcher's)."""
+    for name, ids in before.items():
+        hooks = getattr(module, name, None)
+        if hooks is not None:
+            for key in set(hooks) - ids:
+                hooks.pop(key, None)
+
+
+def _return_module_tensors(module: Any, onload: Any) -> None:
+    """Move ``module``'s weights back to ``onload`` after its hooks are gone. A torchao weight on its host copy can
+    still report the card (``Module.to`` skips or fails on it), so its inner tensors move under a new wrapper."""
+    import torch
+    from diffusers.hooks import group_offloading as go
+
+    is_torchao = getattr(go, "_is_torchao_tensor", lambda t: False)
+    for t in [*module.parameters(), *module.buffers()]:
+        if _placed_on(t, onload.type, is_torchao):
+            continue
+        if is_torchao(t):
+            names, ctx = t.__tensor_flatten__()
+            moved = type(t).__tensor_unflatten__(
+                {name: getattr(t, name).to(onload) for name in names}, ctx, t.size(), t.stride()
+            )
+            go._swap_torchao_tensor(t, moved)
+        else:
+            t.data = t.data.to(onload)
+    torch.cuda.synchronize(onload)
+
+
 def _is_text_encoder_module(pipe: Any, module: Any) -> bool:
     for name, component in (getattr(pipe, "components", {}) or {}).items():
         if component is module:

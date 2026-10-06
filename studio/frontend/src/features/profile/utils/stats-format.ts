@@ -202,6 +202,11 @@ const PROFILE_COUNT_TEMPLATES = {
       other: "{value} шага",
     },
   },
+  sv: {
+    token: { one: "{value} token", other: "{value} tokens" },
+    message: { one: "{value} meddelande", other: "{value} meddelanden" },
+    step: { one: "{value} steg", other: "{value} steg" },
+  },
   hi: {
     token: { one: "{value} टोकन", other: "{value} टोकन" },
     message: { one: "{value} संदेश", other: "{value} संदेश" },
