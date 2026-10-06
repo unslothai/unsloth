@@ -3648,6 +3648,28 @@ def _note_offline_retry(error, retry_error):
         pass
 
 
+# Set per load (family branches in FastModel.from_pretrained, the compiler's norm check) and read only during it. Left set, a later load of another family gets float32 norms beside 16 bit projections and fails with "float != BFloat16".
+LOAD_SCOPED_ENV_VARS = ("UNSLOTH_HIGH_PRECISION_LAYERNORM",)
+
+
+def _restore_load_scoped_env(fn):
+    """Restore LOAD_SCOPED_ENV_VARS to their pre-load values when the load returns or raises."""
+
+    @functools.wraps(fn)
+    def _wrapper(*args, **kwargs):
+        saved = {name: os.environ.get(name) for name in LOAD_SCOPED_ENV_VARS}
+        try:
+            return fn(*args, **kwargs)
+        finally:
+            for name, value in saved.items():
+                if value is None:
+                    os.environ.pop(name, None)
+                else:
+                    os.environ[name] = value
+
+    return _wrapper
+
+
 def _offline_aware_load(fn):
     """Decide offline ONCE (local_files_only kwarg or env) and force it around the whole load. If we started online and hit a network error, retry once forced-offline. The network-up online path is unchanged: no window, no retry."""
 

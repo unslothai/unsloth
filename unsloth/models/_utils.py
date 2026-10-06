@@ -5650,6 +5650,29 @@ def patch_fast_lora():
     peft.tuners.lora.bnb.Linear4bit.forward = fast_lora_forward
 
 
+# Model types whose norms the compiler's check upcast to float32. The check runs only on a modeling file's first compile, so a later load of the same family replays it from here.
+_HIGH_PRECISION_LAYERNORM_MODEL_TYPES = set()
+
+
+def _start_layernorm_check():
+    # The compiler ORs its check into the inherited value, so clear it to see this type's own answer.
+    prior = os.environ.get("UNSLOTH_HIGH_PRECISION_LAYERNORM")
+    os.environ["UNSLOTH_HIGH_PRECISION_LAYERNORM"] = "0"
+    return prior
+
+
+def _finish_layernorm_check(model_type, prior):
+    detected = os.environ.get("UNSLOTH_HIGH_PRECISION_LAYERNORM", "0") == "1"
+    if detected:
+        _HIGH_PRECISION_LAYERNORM_MODEL_TYPES.add(model_type)
+    if detected or prior == "1" or model_type in _HIGH_PRECISION_LAYERNORM_MODEL_TYPES:
+        os.environ["UNSLOTH_HIGH_PRECISION_LAYERNORM"] = "1"
+    elif prior is None:
+        os.environ.pop("UNSLOTH_HIGH_PRECISION_LAYERNORM", None)
+    else:
+        os.environ["UNSLOTH_HIGH_PRECISION_LAYERNORM"] = prior
+
+
 def unsloth_compile_transformers(
     dtype,
     model_name,
@@ -5712,6 +5735,7 @@ def unsloth_compile_transformers(
     _run_temporary_patches("pre_compile")
 
     for model_type in model_types:
+        prior_high_precision = _start_layernorm_check()
         _unsloth_compile_transformers(
             model_type,
             sdpa_dynamic_mask = sdpa_dynamic_mask,
@@ -5740,6 +5764,7 @@ def unsloth_compile_transformers(
             return_logits = return_logits,
             supports_sdpa = supports_sdpa,
         )
+        _finish_layernorm_check(model_type, prior_high_precision)
     _run_temporary_patches("post_compile")
     return model_types, supports_sdpa[0]
 
