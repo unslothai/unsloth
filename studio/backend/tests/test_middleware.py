@@ -163,7 +163,6 @@ class TestMaxBodyMiddleware:
             ), path
         from utils.upload_limits import AUDIO_INPUT_MAX_BYTES
 
-        # The audio upload streams to disk under its own cap on both mounts.
         for path in ("/v1/audio/inputs", "/api/inference/audio/inputs"):
             assert path in main_module._BODY_UPLOAD_PASSTHROUGH_EXACT_PATHS, path
             assert main_module._get_upload_passthrough_request_max_bytes(path) == (

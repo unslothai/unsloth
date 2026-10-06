@@ -1916,7 +1916,6 @@ def test_a_named_model_is_switched_to_with_the_workflow_it_must_run(stub, switch
         )
         unnamed = _run(client, inputs = {"reference": {"voice_id": voice["id"]}})
     assert [r.status_code for r in (clone, speak, unnamed)] == [200, 200, 200]
-    # Speaking in a saved voice is a clone, so the target must clone.
     assert switches == [
         (QWEN3_BASE, "clone"),
         (QWEN3_BASE, "clone"),
