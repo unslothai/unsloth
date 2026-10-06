@@ -452,8 +452,7 @@ def run_attention(
     q_len = context.q_len
     head_dim = context.head_dim
     kv_seq_len = context.kv_seq_len
-    # Eval-mode forwards can still backpropagate (LoRA-GA calibration); the inference-only xformers
-    # GQA layout has no backward kernel.
+    # Eval forwards can backpropagate (LoRA-GA calibration); xformers' inference GQA layout cannot.
     requires_grad = context.requires_grad or (
         torch.is_grad_enabled() and (Q.requires_grad or K.requires_grad or V.requires_grad)
     )

@@ -266,7 +266,6 @@ def test_a_stale_marker_does_not_follow_a_later_ordinary_save(tmp_path):
 
     _save_fast_pissa(tmp_path)
     assert lora_init.adapter_used_fast_pissa(str(tmp_path))
-    # PEFT overwrites config + weights in place and leaves the old marker file behind.
     base = torch.nn.Sequential(torch.nn.Linear(64, 48, bias = False))
     get_peft_model(base, LoraConfig(r = 4, target_modules = ["0"])).save_pretrained(str(tmp_path))
     assert (tmp_path / lora_init.SIDECAR).is_file()
@@ -349,7 +348,6 @@ def test_swap_state_is_per_call():
         first["pissa"] = True
     with lora_init.fast_lora_init(force = True) as second:
         assert not second["pissa"]
-    # A caller reading its flag after the lock is released is unaffected by later swaps.
     assert first["pissa"]
 
 
@@ -378,9 +376,7 @@ def test_merge_conversion_matches_the_live_adapter(alpha):
 
 @pytest.mark.parametrize("layer", ["linear", "embedding"])
 def test_untrained_residual_init_merges_back_to_the_original_weight(layer):
-    # PEFT keeps Embedding factors in lora_embedding_A / _B (LoftQ embeddings on PEFT 0.18 / 0.19);
-    # the conversion must cancel the initial factors there too. Factors set by hand: PEFT >= 0.20's
-    # Embedding.loftq_init call is broken, and the conversion only reads the snapshot.
+    # Factors set by hand: PEFT >= 0.20's Embedding.loftq_init is broken (0.18 / 0.19 reach this).
     from peft import LoraConfig, get_peft_model
     from unsloth.models._utils import lora_relative_to_original_base, snapshot_residual_lora_init
 

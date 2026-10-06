@@ -57,7 +57,6 @@ def _load(*names, **env):
     """Exec the named top-level functions against `env` and return the namespace."""
     # save.py imports this from models.mistral_format (#12144) and calls it on every merge and
     # GGUF path; none of these fixtures is a Mistral-format view, so it never refuses here.
-    # The residual-init conversion (#6879) is a no-op without PiSSA-style snapshots.
     namespace = {
         "raise_if_merging_mistral_format_view": lambda model, save_method: None,
         "lora_relative_to_original_base": lambda model: contextlib.nullcontext(),
@@ -358,7 +357,6 @@ def test_every_other_method_still_merges(monkeypatch, tmp_path, save_method):
     assert calls["adapter"] == []
     assert len(calls["merge"]) == 1
     assert len(calls["prewarm"]) == 1
-    # merged_4bit merges the loaded residual weights in place; the others re-read the original base.
     assert len(calls["convert"]) == (save_method != "merged_4bit_forced")
 
 

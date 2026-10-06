@@ -5846,8 +5846,7 @@ def _has_quantized_linears(
             if not routed_ok:
                 return True
             continue
-        # Packed weights without a dense .weight: GPTQ / AWQ (qweight), HQQ (W_q), and our own
-        # MXFP4 / compressed-tensors INT4 linears (weight_packed), several of them not nn.Linear.
+        # No dense .weight: GPTQ / AWQ (qweight), HQQ (W_q), packed MXFP4 / INT4 (weight_packed).
         if any(hasattr(module, name) for name in ("qweight", "qzeros", "W_q", "weight_packed")):
             return True
         if not isinstance(module, torch.nn.Linear):
@@ -5925,9 +5924,7 @@ def validate_init_lora_weights(
     elif name == "lora_ga":
         _require(hasattr(LoraLayer, "lora_ga_init"), "0.19.0")
 
-    # olora dequantizes + requantizes bitsandbytes weights itself (only those); the others read or write
-    # the float weight. Routed compressed-tensors (NVFP4 / FP8) linears are densified by loader_utils for
-    # all but MiCA.
+    # PEFT's olora handles bitsandbytes only; loader_utils densifies routed NVFP4 / FP8 for all but MiCA.
     base = name.split("_niter_")[0] if name is not None else None
     if base in (
         "pissa",
@@ -6002,8 +5999,7 @@ def snapshot_residual_lora_init(model, init_lora_weights):
 
 @contextlib.contextmanager
 def lora_relative_to_original_base(model):
-    # Training saw W - s0 * B0 @ A0 but the merge reads the original W: merge s0 * [B * s / s0, -B0] @ [A; A0]
-    # (PEFT's path_initial_model_for_weight_conversion). s0 is the rewrite's scale; set_scale may change s.
+    # Merge reads the original W: s0 * [B * s / s0, -B0] @ [A; A0] (PEFT's path_initial_model_for_weight_conversion).
     swapped = []
     try:
         for module in model.modules():

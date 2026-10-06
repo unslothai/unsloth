@@ -168,7 +168,6 @@ def saving(monkeypatch, tmp_path):
         _is_qwen3_5_vlm = lambda model: False,
         # A Mistral-format view (#12144) refuses merged saves; these fixtures are not one.
         raise_if_merging_mistral_format_view = lambda model, save_method: None,
-        # Residual-init conversion (#6879) is a no-op without PiSSA-style snapshots.
         lora_relative_to_original_base = lambda model: contextlib.nullcontext(),
         nullcontext = contextlib.nullcontext,
         logger = SimpleNamespace(warning_once = lambda *args: None),

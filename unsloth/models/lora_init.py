@@ -58,8 +58,7 @@ def _orthonormalize_(Y, shift, failures, householder):
 
 @functools.lru_cache(maxsize = 8)
 def _sketch(N, q):
-    # One seeded CPU draw per shape: a reloaded adapter re-runs this init (PEFT's from_pretrained) and must
-    # rebuild the same residual on any device; LLM spectra decay too slowly for the sketch not to matter.
+    # Seeded CPU draw: reloading re-runs this init and must rebuild the same residual on any device.
     return torch.randn(N, q, dtype = torch.float32, generator = torch.Generator().manual_seed(3407))
 
 
@@ -119,8 +118,7 @@ def randomized_svd(
     with _tf32(False):
         torch.matmul(A.mT, Y, out = Z)  # Z = (Q^T A)^T, N x q
     # From q = 128, eigh of [[0, R2], [R2^T, 0]] (eigenvalues +-sigma) beats cuSOLVER's fp32 SVD (~60x accuracy).
-    # cuSOLVER's syevd and rocSOLVER's gesvd can refuse degenerate R2 (rank 0 / 1), so the safe rerun
-    # solves the q x q problem with LAPACK.
+    # cuSOLVER syevd / rocSOLVER gesvd refuse degenerate R2 (rank 0 / 1): the safe rerun uses LAPACK.
     Q2, R2 = torch.linalg.qr(Z)
     try:
         if q < 128 or _safe:
@@ -234,8 +232,7 @@ def _pissa_init(self, adapter_name, init_lora_weights):
         parts = init_lora_weights.split("_niter_")
         if len(parts) != 2:
             return _ORIGINAL["pissa_init"](self, adapter_name, init_lora_weights)
-        # PEFT's svd_lowrank(q = r, niter = N). The width must not depend on the device: loading the
-        # adapter re-runs this, possibly elsewhere, and must rebuild the same residual.
+        # PEFT's svd_lowrank(q = r, niter = N), device-independent so reloads rebuild the same residual.
         n_iter, n_oversamples = int(parts[-1]), 0
     _STATE["pissa"] = True
     self._unsloth_fast_pissa = getattr(self, "_unsloth_fast_pissa", set()) | {adapter_name}
@@ -336,8 +333,7 @@ def record_fast_pissa(model):
     def save_pretrained(save_directory, *args, **kwargs):
         out = original(save_directory, *args, **kwargs)
         if kwargs.get("is_main_process", True):
-            # Only adapters that took the fast path: another PiSSA adapter added through plain PEFT must
-            # reload with PEFT's initializer. PEFT saves "default" at the root, others in a subfolder.
+            # Only fast-path adapters; PEFT saves "default" at the root, others in a subfolder.
             fast = set()
             for module in model.modules():
                 fast |= getattr(module, "_unsloth_fast_pissa", set())
@@ -345,8 +341,7 @@ def record_fast_pissa(model):
                 folder = save_directory if name == "default" else os.path.join(save_directory, name)
                 weights = _adapter_weights(folder)
                 if weights is not None:
-                    # The digest ties the marker to these weights: a later ordinary save into the same
-                    # folder (PEFT leaves unknown files behind) no longer matches it.
+                    # Digest: a later ordinary save into this folder leaves the marker but not a match.
                     with open(os.path.join(folder, SIDECAR), "w", encoding = "utf-8") as f:
                         json.dump(
                             {"pissa": "unsloth_randomized_svd", "sha256": _sha256(weights)}, f
@@ -394,8 +389,7 @@ def adapter_used_fast_pissa(path, **hub_kwargs):
     try:
         sidecar = hf_hub_download(path, SIDECAR, **hub_kwargs)
     except LocalEntryNotFoundError:
-        # Offline, an uncached marker means the adapter has none (the prefetch fetches it). Online, the
-        # Hub could not be reached: guessing would silently rebuild the wrong residual base.
+        # Offline: uncached = absent (the prefetch fetches it). Online: unreachable Hub, never guess.
         if hub_kwargs.get("local_files_only") or constants.HF_HUB_OFFLINE:
             return False
         raise
@@ -409,8 +403,7 @@ def adapter_used_fast_pissa(path, **hub_kwargs):
     return False
 
 
-# Calibration hooks added after compilation are not guarded on (skip_nnmodule_hook_guards), so compiled
-# modules silently skip them: CorDA then divides by a zero sample count.
+# Compiled modules skip hooks added later (skip_nnmodule_hook_guards): CorDA then divides by zero.
 def _calibration_functions():
     found = []
     try:
