@@ -397,6 +397,7 @@ export function ApiModelLoadControls({
                 if (modelId) {
                   ejectModel(modelId).then(() => onSettled());
                 } else {
+                  setPendingDownload(null);
                   onUnloadActive();
                 }
               }
