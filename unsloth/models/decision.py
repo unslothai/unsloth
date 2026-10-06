@@ -942,6 +942,11 @@ class DecisionTrainer(Trainer):
         if self.kl_weight:
             if not getattr(model, "is_clef", False):
                 raise NotImplementedError("Unsloth: kl_weight needs a Clef decision model.")
+            # The reference is the backbone with its adapters off, which full finetuning does not have.
+            if not hasattr(model.encoder, "disable_adapter"):
+                raise NotImplementedError(
+                    "Unsloth: kl_weight needs a LoRA Clef model, not full finetuning."
+                )
             self._reference_head = copy.deepcopy(model.head).requires_grad_(False)
         args.remove_unused_columns = False
         # The model trains on one GPU: no DataParallel, and the batch stays per_device_train_batch_size.

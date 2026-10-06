@@ -1076,6 +1076,14 @@ def test_a_failed_save_leaves_the_previous_clef_checkpoint_loadable(
     FastDecisionModel.from_pretrained(str(out), max_seq_length = 512)
 
 
+def test_kl_regularization_needs_a_lora_clef(clef_checkpoint, tmp_path):
+    model, processor = FastDecisionModel.from_pretrained(
+        str(clef_checkpoint), max_seq_length = 512, full_finetuning = True
+    )
+    with pytest.raises(NotImplementedError, match = "LoRA Clef"):
+        DecisionTrainer(model = model, args = _args(tmp_path), train_dataset = [], kl_weight = 0.1)
+
+
 @pytest.mark.skipif(not has_real_cuda(), reason = "Unsloth's float16 path for Qwen3.5 needs a GPU")
 @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
 def test_clef_trains_in_float16_and_bfloat16(clef_checkpoint, tmp_path, dtype):
