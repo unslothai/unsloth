@@ -28052,12 +28052,15 @@ async def _proxy_to_external_provider(
     if payload.compaction_threshold and _rolling_context_policy(payload) is not None:
 
         async def _external_context_fitter(messages):
+            nonlocal _external_truncation
             fitted, truncation, fallback_max_tokens = await asyncio.to_thread(
                 _fit_external_context,
                 messages,
                 payload,
                 tools = _external_fit_tools,
             )
+            if truncation and truncation.get("dropped_messages"):
+                _external_truncation = truncation
             truncation_line = None
             if (
                 truncation
@@ -28403,6 +28406,13 @@ async def _proxy_to_external_provider(
         error_message = (
             _monitor_openai_error_message(content) if isinstance(content, dict) else None
         )
+        if (
+            not error_message
+            and isinstance(content, dict)
+            and _external_truncation
+            and _external_truncation.get("dropped_messages")
+        ):
+            content["context_truncated"] = _external_truncation
         retry_after_header = None
         if error_message:
             api_monitor.fail(monitor_id, error_message)
