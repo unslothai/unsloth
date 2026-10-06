@@ -15,8 +15,6 @@ const MIRRORED_BOOLEAN_KEYS = [
   "imageToolsEnabled",
   "webFetchToolsEnabled",
   "deepResearchEnabled",
-  "artifactsEnabled",
-  "showCanvasMenuItem",
   "searchImages",
   "mcpEnabledForChat",
   "confirmToolCalls",

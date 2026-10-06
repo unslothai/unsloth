@@ -263,7 +263,7 @@ def test_research_presentation_is_integrated() -> None:
     assert "MutationObserver" in activity
     assert "[overflow-anchor:none]" in activity
     assert 'behavior: "smooth"' not in activity
-    assert "collapsible={showArtifactPanel || showBrowserPanel}" in page
+    assert "collapsible={showBrowserPanel}" in page
     assert "(!artifactLayoutActive || browserFullView) &&" in page
     assert '? "30%"' in page
     assert '? "58%"' in page

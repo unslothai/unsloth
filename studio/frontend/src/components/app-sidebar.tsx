@@ -240,7 +240,7 @@ import type {
   SidebarNavItemPref,
 } from "@/features/settings";
 import { useEffectiveProfile, UserAvatar } from "@/features/profile";
-import { resolveNavRowState } from "@/components/nav-row-state";
+import { placeNavRows, resolveNavRowState } from "@/components/nav-row-state";
 import { createNavigationCoalescer } from "@/components/sidebar-navigation";
 import { fetchDeviceType, usePlatformStore } from "@/config/env";
 import { videoNavHint } from "@/config/hardware-verdict";
@@ -961,6 +961,7 @@ function AudioMoreSubmenu({
   badge,
   spinner,
   onIntent,
+  onOpen,
   onPick,
   contentProps,
 }: {
@@ -972,6 +973,7 @@ function AudioMoreSubmenu({
   badge?: string;
   spinner?: boolean;
   onIntent?: () => void;
+  onOpen: () => void;
   onPick: (id: AudioWorkflowId) => void;
   contentProps: ComponentProps<typeof DropdownMenuSubContent>;
 }) {
@@ -985,6 +987,12 @@ function AudioMoreSubmenu({
         title={tooltip}
         onPointerEnter={disabled ? undefined : onIntent}
         onFocus={disabled ? undefined : onIntent}
+        // A click opens Audio itself; hover and the keyboard still open the workflows.
+        onClick={(event) => {
+          if (disabled) return;
+          event.preventDefault();
+          onOpen();
+        }}
         className={cn("gap-2.5", active && "bg-accent/60")}
       >
         <HugeiconsIcon icon={icon} strokeWidth={1.75} />
@@ -994,7 +1002,7 @@ function AudioMoreSubmenu({
           <Spinner className="size-3.5 shrink-0 text-muted-foreground" />
         )}
       </DropdownMenuSubTrigger>
-      <DropdownMenuSubContent {...contentProps} className="w-44 p-1">
+      <DropdownMenuSubContent {...contentProps} className="sidebar-more-menu w-44 p-1">
         {AUDIO_WORKFLOWS.map((tab) => (
           <DropdownMenuItem
             key={tab.id}
@@ -2872,14 +2880,11 @@ export function AppSidebar() {
   // The Projects row repeats the section, so it only earns its place while the section is absent.
   const navRowPinned = (item: SidebarNavItemPref) =>
     sidebarNavRowPinned(item, sidebarNavAuto, { projectsSectionShowing });
-  const unpinnedNavIds = sidebarNav
-    .filter((item) => !navRowPinned(item))
-    .map((item) => item.id);
-  // More needs two or more rows to be worth a click; with exactly one unpinned, the menu and that row are both dropped.
-  const overflowNavIds = unpinnedNavIds.length > 1 ? unpinnedNavIds : [];
-  const inlineNavIds = sidebarNav
-    .filter((item) => navRowPinned(item))
-    .map((item) => item.id);
+  // Audio steps out of More while its page is open: a pin for the visit, never saved.
+  const { inline: inlineNavIds, overflow: overflowNavIds } = placeNavRows(
+    sidebarNav.map((item) => ({ id: item.id, pinned: navRowPinned(item) })),
+    navRows.audio.active ? "audio" : null,
+  );
   // The mobile sheet shows labels regardless of the desktop pin state.
   const sidebarRowsLabelled = isMobile || sidebarState !== "collapsed";
   // Mirrors ImagesWorkflowList's own test: it decides which row owns the highlight.
@@ -5293,12 +5298,13 @@ export function AppSidebar() {
                     )}
                   </TooltipContent>
                 </Tooltip>
-                {!isMobile && !usesDesktopTitlebar && (
+                {/* On narrow screens this closes the sidebar sheet. */}
+                {(isMobile || !usesDesktopTitlebar) && (
                   <Tooltip>
                     <TooltipPrimitive.Trigger asChild>
                       <button
                         type="button"
-                        onClick={togglePinned}
+                        onClick={isMobile ? () => setOpenMobile(false) : togglePinned}
                         className="inline-flex size-[calc(30px*var(--ui-space-scale,1))] cursor-pointer items-center justify-center rounded-[10px] text-nav-icon-idle dark:text-nav-fg-muted transition-colors hover:bg-nav-surface-hover hover:text-black dark:hover:text-white focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                         aria-label={t("shell.aria.closeSidebar")}
                       >
@@ -5309,6 +5315,7 @@ export function AppSidebar() {
                       side="bottom"
                       sideOffset={6}
                       className="tooltip-compact"
+                      hidden={isMobile}
                     >
                       {t("shell.aria.closeSidebar")}
                     </TooltipContent>
@@ -5568,7 +5575,7 @@ export function AppSidebar() {
                       side="right"
                       align="start"
                       sideOffset={6}
-                      className="w-48 p-1"
+                      className="sidebar-more-menu w-48 p-1"
                       {...moreHover.content}
                       // The trigger handles its own presses.
                       onPointerDownOutside={(event) => {
@@ -5604,6 +5611,10 @@ export function AppSidebar() {
                               tooltip={rowState.tooltip}
                               spinner={rowState.spinner}
                               onIntent={row.onIntent}
+                              onOpen={() => {
+                                setMoreOpen(false);
+                                row.onClick();
+                              }}
                               onPick={pickAudioWorkflow}
                               contentProps={{
                                 ...sidebarSubmenuOffsets,
@@ -5951,13 +5962,13 @@ export function AppSidebar() {
               side="top"
               align="center"
               sideOffset={8}
-              className="app-user-menu sidebar-menu menu-soft-surface-up ring-0 w-[round(calc(16rem*var(--ui-space-scale,1)),1px)] rounded-[20px] border border-transparent px-2.5 py-2.5 font-heading dark:border-[rgb(255_255_255_/_calc(0.05*var(--contrast-edge-gain,1)))]"
+              className="app-user-menu sidebar-menu menu-soft-surface-up ring-0 w-[round(calc(16rem*var(--ui-space-scale,1)),1px)] rounded-[20px] border border-[rgb(0_0_0_/_calc(0.05*var(--contrast-edge-gain,1)))] px-2.5 py-2.5 font-heading dark:border-transparent"
               trigger={(triggerRef) => (
                 <SidebarMenuButton
                   ref={triggerRef}
                   size="lg"
                   aria-label={t("shell.accountMenu", { name: displayTitle })}
-                  className="sidebar-nav-btn !h-[calc(44px*var(--ui-space-scale,1))] -my-[calc(3px*var(--ui-space-scale,1))] gap-[calc(9px*var(--ui-space-scale,1))] pl-2 pr-[calc(45px*var(--ui-space-scale,1))] py-[calc(3px*var(--ui-space-scale,1))] rounded-[14px] group-data-[collapsible=icon]:!size-[calc(34px*var(--ui-space-scale,1))] group-data-[collapsible=icon]:!rounded-full group-data-[collapsible=icon]:!p-0 group-data-[collapsible=icon]:mx-auto group-data-[collapsible=icon]:justify-center"
+                  className="sidebar-nav-btn app-user-trigger !h-[calc(44px*var(--ui-space-scale,1))] -my-[calc(3px*var(--ui-space-scale,1))] gap-[calc(9px*var(--ui-space-scale,1))] pl-2 pr-[calc(45px*var(--ui-space-scale,1))] py-[calc(3px*var(--ui-space-scale,1))] rounded-[14px] group-data-[collapsible=icon]:!size-[calc(34px*var(--ui-space-scale,1))] group-data-[collapsible=icon]:!rounded-full group-data-[collapsible=icon]:!p-0 group-data-[collapsible=icon]:mx-auto group-data-[collapsible=icon]:justify-center"
                 >
                   <div className="flex shrink-0 items-center">
                     <UserAvatar

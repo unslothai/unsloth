@@ -408,6 +408,153 @@ def test_a_sandbox_file_that_is_gone_takes_no_rename_a_later_file_would_inherit(
     assert _items(client)[0][_SANDBOX_A]["name"] == "a.txt"
 
 
+def test_a_sandbox_file_the_model_edits_keeps_its_name_star_and_folder(
+    client, signed_in, monkeypatch
+):
+    from core.inference.tools import execute_tool
+
+    monkeypatch.setattr(library, "_SOURCES", (library._sandbox_items,))
+    _directory, path = _sandbox_chat("report.txt", b"teh report\n")
+    folder = _folder(client, "Reports", None)
+    _patch(client, id = _SANDBOX_ID, name = "Q3 report", favorite = True, folderId = folder)
+    result = execute_tool(
+        "edit_file",
+        {"path": "report.txt", "edits": [{"old_string": "teh", "new_string": "the"}]},
+        session_id = "t-lib",
+    )
+    assert Path(path).read_bytes() == b"the report\n", result
+    library.invalidate_listing()
+    item = _items(client)[0][_SANDBOX_ID]
+    assert (item["name"], item["favorite"], item["folderId"]) == ("Q3 report", True, folder)
+    assert _favorites(client) == [_SANDBOX_ID]
+
+
+def test_a_listing_during_an_edit_does_not_drop_the_files_name_star_and_folder(
+    client, signed_in, monkeypatch
+):
+    import contextvars
+    import threading
+
+    from core.inference.tools import execute_tool
+
+    monkeypatch.setattr(library, "_SOURCES", (library._sandbox_items,))
+    _directory, path = _sandbox_chat("report.txt", b"teh report\n")
+    _patch(client, id = _SANDBOX_ID, name = "Q3 report", favorite = True)
+    carry = library_db.carry_fingerprint
+    listings = []
+
+    def list_then_carry(*args):
+        library.invalidate_listing()
+        listing = threading.Thread(
+            target = contextvars.copy_context().run, args = (library.list_items,)
+        )
+        listing.start()
+        listing.join(timeout = 1)
+        listings.append(listing)
+        carry(*args)
+
+    monkeypatch.setattr(library_db, "carry_fingerprint", list_then_carry)
+    execute_tool(
+        "edit_file",
+        {"path": "report.txt", "edits": [{"old_string": "teh", "new_string": "the"}]},
+        session_id = "t-lib",
+    )
+    for listing in listings:
+        listing.join(timeout = 10)
+    assert Path(path).read_bytes() == b"the report\n"
+    library.invalidate_listing()
+    item = _items(client)[0][_SANDBOX_ID]
+    assert (item["name"], item["favorite"]) == ("Q3 report", True)
+
+
+def test_a_folder_move_during_an_edit_keeps_the_files_name_and_star(client, signed_in, monkeypatch):
+    import threading
+
+    from core.inference.tools import execute_tool
+
+    monkeypatch.setattr(library, "_SOURCES", (library._sandbox_items,))
+    _sandbox_chat("report.txt", b"teh report\n")
+    _patch(client, id = _SANDBOX_ID, name = "Q3 report", favorite = True)
+    folder = _folder(client, "Reports", None)
+    carry = library_db.carry_fingerprint
+    moves = []
+
+    def move_then_carry(*args):
+        move = threading.Thread(
+            target = _patch, args = (client,), kwargs = {"id": _SANDBOX_ID, "folderId": folder}
+        )
+        move.start()
+        move.join(timeout = 1)
+        moves.append(move)
+        carry(*args)
+
+    monkeypatch.setattr(library_db, "carry_fingerprint", move_then_carry)
+    execute_tool(
+        "edit_file",
+        {"path": "report.txt", "edits": [{"old_string": "teh", "new_string": "the"}]},
+        session_id = "t-lib",
+    )
+    for move in moves:
+        move.join(timeout = 10)
+    library.invalidate_listing()
+    item = _items(client)[0][_SANDBOX_ID]
+    assert (item["name"], item["favorite"], item["folderId"]) == ("Q3 report", True, folder)
+
+
+def test_a_legacy_row_keeps_its_name_and_star_through_an_edit_a_cached_listing_saw(
+    client, signed_in, monkeypatch
+):
+    from core.inference.tools import execute_tool
+
+    monkeypatch.setattr(library, "_SOURCES", (library._remembered("_sandbox_items", 60.0),))
+    _sandbox_chat("report.txt", b"teh report\n")
+    _patch(client, id = _SANDBOX_ID, name = "Q3 report", favorite = True)
+    _items(client)
+    conn = library_db.get_connection()
+    conn.execute("UPDATE library_entries SET fingerprint = NULL WHERE item_id = ?", (_SANDBOX_ID,))
+    conn.commit()
+    conn.close()
+    execute_tool(
+        "edit_file",
+        {"path": "report.txt", "edits": [{"old_string": "teh", "new_string": "the"}]},
+        session_id = "t-lib",
+    )
+    _items(client)
+    library.invalidate_listing()
+    item = _items(client)[0][_SANDBOX_ID]
+    assert (item["name"], item["favorite"]) == ("Q3 report", True)
+
+
+def test_a_path_made_again_right_after_an_edit_starts_fresh(client, signed_in, monkeypatch):
+    from core.inference.tools import execute_tool
+
+    monkeypatch.setattr(library, "_SOURCES", (library._sandbox_items,))
+    directory, path = _sandbox_chat("report.txt", b"teh report\n")
+    _patch(client, id = _SANDBOX_ID, name = "Q3 report", favorite = True)
+    # Linux keeps no birth time, so a recreated file reusing a freed inode passes for it: keep both allocated.
+    os.link(path, os.path.join(directory, ".held"))
+    replace = os.replace
+
+    def replace_then_recreate(src, dst):
+        replace(src, dst)
+        if os.path.basename(dst) == "report.txt":
+            other = dst + ".other"
+            Path(other).write_bytes(b"someone else\n")
+            replace(other, dst)
+
+    monkeypatch.setattr(os, "replace", replace_then_recreate)
+    execute_tool(
+        "edit_file",
+        {"path": "report.txt", "edits": [{"old_string": "teh", "new_string": "the"}]},
+        session_id = "t-lib",
+    )
+    monkeypatch.setattr(os, "replace", replace)
+    assert Path(path).read_bytes() == b"someone else\n"
+    library.invalidate_listing()
+    item = _items(client)[0][_SANDBOX_ID]
+    assert (item["name"], item["favorite"]) == ("report.txt", False)
+
+
 def test_a_sandbox_delete_takes_only_the_file_it_was_listed_as(client, signed_in, monkeypatch):
     monkeypatch.setattr(library, "_SOURCES", (library._sandbox_items,))
     _directory, path = _sandbox_chat("a.txt", b"listed")

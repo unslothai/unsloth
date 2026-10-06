@@ -130,9 +130,6 @@ export const SETTINGS_SEARCH_INDEX: Record<SettingsTab, TranslationKey[]> = {
     "settings.chat.thinking.visibility",
     "settings.chat.tools.visibility",
     "settings.chat.tools.foldIntoThinking",
-    "settings.chat.artifacts.title",
-    "settings.chat.artifacts.collapseHtmlBlocks",
-    "settings.chat.artifacts.allowNetworkAccess",
     "settings.chat.webSearch.images",
     "settings.chat.modelDisclaimer",
     "settings.chat.inlineEditResponse",
@@ -142,6 +139,9 @@ export const SETTINGS_SEARCH_INDEX: Record<SettingsTab, TranslationKey[]> = {
     "browser.linksTitle",
     "browser.openLinksSetting",
     "browser.openFilesSetting",
+    "settings.chat.artifacts.title",
+    "settings.chat.artifacts.collapseHtmlBlocks",
+    "settings.chat.artifacts.allowNetworkAccess",
     "browser.addressBarTitle",
     "browser.searchEngineSetting",
     "browser.showFullUrlSetting",
@@ -173,6 +173,7 @@ export const SETTINGS_SEARCH_INDEX: Record<SettingsTab, TranslationKey[]> = {
   ],
   // Chat data management moved to the Data tab; keep these rows findable there.
   data: [
+    "settings.data.manageFiles.label",
     "settings.data.fineTuneExport",
     "settings.data.archivedChats",
     "settings.data.archiveAllChats",
