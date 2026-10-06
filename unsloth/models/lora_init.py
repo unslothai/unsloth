@@ -235,6 +235,7 @@ def _pissa_init(self, adapter_name, init_lora_weights):
         # adapter re-runs this, possibly elsewhere, and must rebuild the same residual.
         n_iter, n_oversamples = int(parts[-1]), 0
     _STATE["pissa"] = True
+    self._unsloth_fast_pissa = getattr(self, "_unsloth_fast_pissa", set()) | {adapter_name}
     W = transpose(weight.to(torch.float32), self.fan_in_fan_out)
     U, S, Vh = randomized_svd(W, r, n_oversamples = n_oversamples, n_iter = n_iter)
     scaling = self.scaling[adapter_name]
@@ -327,9 +328,15 @@ def record_fast_pissa(model):
     def save_pretrained(save_directory, *args, **kwargs):
         out = original(save_directory, *args, **kwargs)
         if kwargs.get("is_main_process", True):
-            for root, _, files in os.walk(save_directory):
-                if "adapter_config.json" in files:
-                    with open(os.path.join(root, SIDECAR), "w", encoding = "utf-8") as f:
+            # Only adapters that took the fast path: another PiSSA adapter added through plain PEFT must
+            # reload with PEFT's initializer. PEFT saves "default" at the root, others in a subfolder.
+            fast = set()
+            for module in model.modules():
+                fast |= getattr(module, "_unsloth_fast_pissa", set())
+            for name in fast:
+                folder = save_directory if name == "default" else os.path.join(save_directory, name)
+                if os.path.isfile(os.path.join(folder, "adapter_config.json")):
+                    with open(os.path.join(folder, SIDECAR), "w", encoding = "utf-8") as f:
                         json.dump({"pissa": "unsloth_randomized_svd"}, f)
         return out
 

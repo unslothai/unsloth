@@ -206,22 +206,24 @@ def test_fast_init_kill_switch_and_force(monkeypatch):
 
 
 def test_fast_pissa_saves_record_their_algorithm(tmp_path):
-    import json
+    from peft import LoraConfig, get_peft_model
 
-    class _Model:
-        def save_pretrained(self, save_directory, **kwargs):
-            for sub in ("", "second"):
-                (tmp_path / sub).mkdir(exist_ok = True)
-                (tmp_path / sub / "adapter_config.json").write_text("{}")
+    def config():
+        return LoraConfig(r = 4, target_modules = ["0"], init_lora_weights = "pissa")
 
-    model = _Model()
+    base = torch.nn.Sequential(torch.nn.Linear(64, 48, bias = False))
     assert not lora_init.adapter_used_fast_pissa(str(tmp_path))
+    with lora_init.fast_lora_init() as fast:
+        model = get_peft_model(base, config())
+    assert fast["pissa"]
     lora_init.record_fast_pissa(model)
     lora_init.record_fast_pissa(model)
+    # A second PiSSA adapter through plain PEFT must keep PEFT's initializer on reload.
+    model.add_adapter("plain", config())
     model.save_pretrained(str(tmp_path))
-    for sub in ("", "second"):
-        assert json.loads((tmp_path / sub / lora_init.SIDECAR).read_text())["pissa"]
+    assert (tmp_path / "plain" / "adapter_config.json").is_file()
     assert lora_init.adapter_used_fast_pissa(str(tmp_path))
+    assert not lora_init.adapter_used_fast_pissa(str(tmp_path / "plain"))
 
 
 def test_sketch_ignores_default_dtype():
