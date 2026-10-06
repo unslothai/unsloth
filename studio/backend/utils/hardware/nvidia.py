@@ -6,6 +6,7 @@ import platform
 import shutil
 import subprocess
 import threading
+import time
 from typing import Any, Optional
 
 from loggers import get_logger
@@ -75,8 +76,23 @@ def _uuid_visible_ordinal_map(
     return visible_ordinals
 
 
+_UUID_MASK_TTL_S = 30.0
+_uuid_mask_cache: dict[str, tuple[float, Optional[list[int]]]] = {}
+
+
 def resolve_uuid_mask(parent_cuda_visible_devices: str) -> Optional[list[int]]:
     """Physical nvidia-smi indices for a full-GPU UUID mask, in mask order; None if any token is unresolvable."""
+    # gpu_query never caches a failure, and the parent GPU spec is read on every poll and load:
+    # without this a hung nvidia-smi costs its full timeout per call.
+    hit = _uuid_mask_cache.get(parent_cuda_visible_devices)
+    if hit is not None and time.monotonic() - hit[0] < _UUID_MASK_TTL_S:
+        return None if hit[1] is None else list(hit[1])
+    ids = _query_uuid_mask(parent_cuda_visible_devices)
+    _uuid_mask_cache[parent_cuda_visible_devices] = (time.monotonic(), ids)
+    return None if ids is None else list(ids)
+
+
+def _query_uuid_mask(parent_cuda_visible_devices: str) -> Optional[list[int]]:
     try:
         result = gpu_query.run_nvidia_smi(
             ["nvidia-smi", "--query-gpu=index,uuid", "--format=csv,noheader"],

@@ -33,6 +33,7 @@ from utils.hardware import (
     prepare_gpu_selection,
     resolve_requested_gpu_ids,
 )
+from utils.hardware import nvidia
 import utils.hardware.hardware as _hw_module
 
 _BACKEND_ROOT = Path(__file__).resolve().parent.parent
@@ -106,6 +107,7 @@ class _GpuCacheResetMixin:
     def tearDown(self):
         _hw_module._physical_gpu_count = None
         _hw_module._visible_gpu_count = None
+        nvidia._uuid_mask_cache.clear()
 
 
 class TestResolveRequestedGpuIds(_GpuCacheResetMixin, unittest.TestCase):
@@ -174,6 +176,11 @@ class TestResolveRequestedGpuIds(_GpuCacheResetMixin, unittest.TestCase):
                 "GPU-ffff", smi, probe = LlamaCppBackend._resolve_visible_physical_ids
             )
             self.assertIsNone(ids)
+
+    def test_failed_uuid_resolution_is_not_retried_every_call(self):
+        _, first = self._uuid_mask_ids("GPU-aaa1", "", returncode = 9)
+        _, again = self._uuid_mask_ids("GPU-aaa1", "", returncode = 9)
+        self.assertEqual((first, again), (1, 0))
 
     def test_unresolvable_uuid_mask_stays_unresolved(self):
         smi = "0, GPU-aaa1\n1, GPU-aaa2\n"
