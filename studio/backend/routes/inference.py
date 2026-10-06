@@ -4264,10 +4264,15 @@ async def artifact_preview_frame(allow_network: bool = False):
 # Chat HTML opened in the user's own browser, at a one-off URL. Same CSP as the in-app frame, so
 # the page keeps an opaque origin and the network setting.
 _ARTIFACT_PAGE_TTL_SECONDS = 60 * 60
-_ARTIFACT_PAGE_MAX_PAGES = 32
 _ARTIFACT_PAGE_MAX_BYTES = 8 * 1024 * 1024
+# Per account, so one account cannot evict another's pages; the totals only bound memory.
+_ARTIFACT_PAGE_MAX_PAGES = 32
+_ARTIFACT_PAGE_MAX_SUBJECT_BYTES = 64 * 1024 * 1024
+_ARTIFACT_PAGE_MAX_TOTAL_PAGES = 512
+_ARTIFACT_PAGE_MAX_TOTAL_BYTES = 512 * 1024 * 1024
 _ARTIFACT_PAGE_SANDBOX = "sandbox allow-scripts allow-modals allow-popups allow-pointer-lock"
-_artifact_pages: dict[str, tuple[float, bytes, bool]] = {}
+# token -> (created, body, allow_network, subject), oldest first.
+_artifact_pages: dict[str, tuple[float, bytes, bool, str]] = {}
 # Storage and randomUUID fallbacks for the opaque origin, as in _ARTIFACT_PREVIEW_FRAME_HTML.
 _ARTIFACT_PAGE_PRELUDE = """<script>(() => {
   const memory = () => { const data = new Map(); return {
@@ -4288,11 +4293,10 @@ _ARTIFACT_PAGE_PRELUDE = """<script>(() => {
       (+c ^ (randomByte() & (15 >> (+c / 4)))).toString(16));
   }
 })();</script>"""
-# Inserted after <head>, else <html>, else the doctype: before the doctype means quirks mode.
-_ARTIFACT_PAGE_PRELUDE_AT = tuple(
-    _re.compile(pattern, _re.IGNORECASE)
-    for pattern in (r"<head\b[^>]*>", r"<html\b[^>]*>", r"<!doctype[^>]*>")
-)
+# Inserted after a leading doctype (before it means quirks mode), else first. Never after a later
+# "<head>": that text may sit in a comment or a script string. The parser opens the head for the
+# script and folds a later <html>'s attributes into the root.
+_ARTIFACT_PAGE_PRELUDE_AT = _re.compile(r"\A\ufeff?(?:\s|<!--.*?-->)*<!doctype[^>]*>", _re.IGNORECASE | _re.DOTALL)
 
 
 def _artifact_page_csp(allow_network: bool) -> str:
@@ -4308,20 +4312,33 @@ def _artifact_page_csp(allow_network: bool) -> str:
 
 
 def _artifact_page_with_prelude(html: str) -> str:
-    at = 0
-    for pattern in _ARTIFACT_PAGE_PRELUDE_AT:
-        match = pattern.search(html, 0, 4096)
-        if match:
-            at = match.end()
-            break
+    match = _ARTIFACT_PAGE_PRELUDE_AT.match(html)
+    at = match.end() if match else 0
     return html[:at] + _ARTIFACT_PAGE_PRELUDE + html[at:]
 
 
-def _prune_artifact_pages(now: float) -> None:
-    for token, (created, _, _) in list(_artifact_pages.items()):
+def _prune_artifact_pages(now: float, subject: str, incoming: int) -> None:
+    """Drop expired pages, then the oldest until `incoming` bytes fit the subject's and the total budget."""
+    for token, (created, *_) in list(_artifact_pages.items()):
         if now - created > _ARTIFACT_PAGE_TTL_SECONDS:
             _artifact_pages.pop(token, None)
-    while len(_artifact_pages) >= _ARTIFACT_PAGE_MAX_PAGES:
+
+    def mine() -> list[str]:
+        return [token for token, entry in _artifact_pages.items() if entry[3] == subject]
+
+    def size(tokens) -> int:
+        return sum(len(_artifact_pages[token][1]) for token in tokens)
+
+    own = mine()
+    while own and (
+        len(own) >= _ARTIFACT_PAGE_MAX_PAGES
+        or size(own) + incoming > _ARTIFACT_PAGE_MAX_SUBJECT_BYTES
+    ):
+        _artifact_pages.pop(own.pop(0))
+    while _artifact_pages and (
+        len(_artifact_pages) >= _ARTIFACT_PAGE_MAX_TOTAL_PAGES
+        or size(_artifact_pages) + incoming > _ARTIFACT_PAGE_MAX_TOTAL_BYTES
+    ):
         _artifact_pages.pop(next(iter(_artifact_pages)))
 
 
@@ -4339,9 +4356,9 @@ async def create_artifact_preview_page(
     if len(body) > _ARTIFACT_PAGE_MAX_BYTES:
         raise HTTPException(status_code = 413, detail = "This page is too large to open")
     now = time.monotonic()
-    _prune_artifact_pages(now)
+    _prune_artifact_pages(now, current_subject, len(body))
     token = _secrets.token_urlsafe(24)
-    _artifact_pages[token] = (now, body, request.allow_network)
+    _artifact_pages[token] = (now, body, request.allow_network, current_subject)
     return {"path": f"/api/inference/artifact-preview-page/{token}"}
 
 
@@ -4357,7 +4374,7 @@ async def artifact_preview_page(token: str):
             media_type = "text/plain; charset=utf-8",
             headers = {"Cache-Control": "no-store"},
         )
-    _, body, allow_network = entry
+    _, body, allow_network, _ = entry
     return Response(
         content = body,
         media_type = "text/html; charset=utf-8",

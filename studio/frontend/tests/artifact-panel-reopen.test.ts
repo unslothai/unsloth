@@ -71,3 +71,19 @@ test("the browser over the chat is a modal: focus moves in, is trapped, and Esca
   // Menus, fields and annotating keep their own Escape.
   assert.match(overlay, /event\.defaultPrevented \|\| typing \|\| useBrowserStore\.getState\(\)\.annotateTabId !== null/);
 });
+
+test("compare's hidden base view leaves the browser to the overlay, so a page runs once", () => {
+  const page = read("../src/features/chat/chat-page.tsx");
+  assert.match(page, /const showBrowserPanel = !showResearchPanel && !isMobile && !browserOverlaid && browserOpen;/);
+  assert.match(page, /<BrowserOverlaidContext\.Provider value=\{baseBackgrounded\}>/);
+  assert.match(page, /const showBrowserOverlay =\s*active && browserOpen && \(view\.mode === "compare" \|\| isMobile\);/);
+});
+
+test("Request edits stays in overlays, staging the prompt for the visible composer", () => {
+  const panel = read("../src/features/browser/browser-panel.tsx");
+  assert.doesNotMatch(panel, /\{requestEdits \|\| canAnnotate \? \(/);
+  assert.equal(panel.match(/\(requestEdits \?\? stageEditsPrompt\)\(/g)?.length, 2);
+  assert.match(read("../src/features/browser/file-view.tsx"), /onFixWithModel=\{requestEdits \?\? stageEditsPrompt\}/);
+  const stage = read("../src/features/browser/stage-edits.ts");
+  assert.match(stage, /stageFixPrompt\(prompt\);\s*if \(!browserPanelAvailable\(\)\) useBrowserStore\.getState\(\)\.closePanel\(\);/);
+});

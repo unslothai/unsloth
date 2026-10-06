@@ -9,22 +9,16 @@ import {
   ArtifactHtmlFrame,
   attachmentTextLanguage,
   truncateAttachmentPreviewText,
-  useChatArtifactsStore,
 } from "@/features/chat";
 import { useT } from "@/i18n";
 import { MAX_HIGHLIGHT_CHARS } from "@/lib/markdown-plugins";
 import { cn } from "@/lib/utils";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { HTML_NAME, TEXT_NAME, TEXT_TYPE, mediaKind, textFileKind } from "./file-kind";
-import { browserPanelAvailable } from "./panel-availability";
+import { stageEditsPrompt } from "./stage-edits";
 import { DEFAULT_FILE_VIEW, useBrowserStore } from "./store";
 
 // With no chat beside the browser, stage the fix and close the overlay so the composer shows.
-function stageFix(prompt: string): void {
-  useChatArtifactsStore.getState().stageFixPrompt(prompt);
-  if (!browserPanelAvailable()) useBrowserStore.getState().closePanel();
-}
-
 // The preview shows at most 200,000 chars (4 bytes each at most): a 50 MB body is never decoded whole.
 const MAX_TEXT_BYTES = 1024 * 1024;
 
@@ -138,7 +132,7 @@ function TextFile({
             consoleOpen={view.consoleOpen}
             onConsoleOpenChange={tabId ? onConsoleOpenChange : undefined}
             onOutputCountChange={tabId ? onOutputCountChange : undefined}
-            onFixWithModel={requestEdits ?? stageFix}
+            onFixWithModel={requestEdits ?? stageEditsPrompt}
           />
         </div>
         ) : null}

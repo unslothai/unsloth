@@ -130,10 +130,12 @@ import {
   type CSSProperties,
   type KeyboardEvent as ReactKeyboardEvent,
   type ReactElement,
+  createContext,
   lazy,
   memo,
   Suspense,
   useCallback,
+  useContext,
   useEffect,
   useMemo,
   useRef,
@@ -322,6 +324,9 @@ function focusableIn(container: HTMLElement): HTMLElement[] {
     (element) => element.getAttribute("aria-hidden") !== "true" && element.tabIndex !== -1,
   );
 }
+
+// Compare keeps the base view mounted but hidden; the overlay owns the browser then, so it runs once.
+const BrowserOverlaidContext = createContext(false);
 
 /** The browser over the chat, where it cannot sit beside it. A modal: focus moves in, stays in, and returns on close. */
 function BrowserOverlay(): ReactElement {
@@ -623,7 +628,8 @@ const SingleContent = memo(function SingleContent({
       openResearchThreadId === (threadId ?? activeThreadId),
   );
   const showResearchPanel = researchMatchesThread && !isMobile;
-  const showBrowserPanel = !showResearchPanel && !isMobile && browserOpen;
+  const browserOverlaid = useContext(BrowserOverlaidContext);
+  const showBrowserPanel = !showResearchPanel && !isMobile && !browserOverlaid && browserOpen;
   const browserFullView =
     useBrowserStore((state) => state.fullView) && showBrowserPanel;
   const chatDock = useBrowserStore((state) => state.chatDock);
@@ -4772,6 +4778,7 @@ export function ChatPage({
             }
             inert={baseBackgrounded || undefined}
           >
+            <BrowserOverlaidContext.Provider value={baseBackgrounded}>
             <ChatActiveContext.Provider value={active && !baseBackgrounded}>
               <ChatRuntimeProvider
                 modelType="base"
@@ -4813,6 +4820,7 @@ export function ChatPage({
                 )}
               </ChatRuntimeProvider>
             </ChatActiveContext.Provider>
+            </BrowserOverlaidContext.Provider>
           </div>
         ) : null}
         {view.mode === "compare" ? (

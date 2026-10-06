@@ -100,6 +100,7 @@ import {
 } from "react";
 import { fileNameFromUrl, hostOf, resolveAddress } from "./address";
 import { OtherSurfaceError, canPrintFrames, canScreenshot, printPage, screenshotPage } from "./capture";
+import { stageEditsPrompt } from "./stage-edits";
 import { type BrowserDownload, saveBrowserDownload } from "./downloads";
 import { BROWSER_FIND_TARGET, registerBrowserFind } from "./find";
 import { ClearBrowsingDataDialog } from "./clear-data-dialog";
@@ -1581,28 +1582,26 @@ function BrowserFileToolbar({
         }
       />
       <div className="flex shrink-0 items-center gap-0.5">
-        {requestEdits || canAnnotate ? (
-          <IconButton
-            label={t("browser.file.requestEdits")}
-            // Without a chat to send marks to, stages a prompt naming the file.
-            onClick={() =>
-              canAnnotate
-                ? toggleAnnotating()
-                : requestEdits?.(t("browser.file.requestEditsPrompt", { name: entry.name }))
-            }
-            className={cn(
-              ANNOTATE_BUTTON,
-              annotating &&
-                "bg-primary/12 text-primary hover:bg-primary/18 hover:text-primary dark:bg-primary/20 dark:hover:bg-primary/25",
-            )}
-          >
-            <HugeiconsIcon
-              icon={CursorRectangleSelection02Icon}
-              strokeWidth={1.75}
-              className={ANNOTATE_GLYPH}
-            />
-          </IconButton>
-        ) : null}
+        <IconButton
+          label={t("browser.file.requestEdits")}
+          // Without a chat to send marks to, stages a prompt naming the file.
+          onClick={() =>
+            canAnnotate
+              ? toggleAnnotating()
+              : (requestEdits ?? stageEditsPrompt)(t("browser.file.requestEditsPrompt", { name: entry.name }))
+          }
+          className={cn(
+            ANNOTATE_BUTTON,
+            annotating &&
+              "bg-primary/12 text-primary hover:bg-primary/18 hover:text-primary dark:bg-primary/20 dark:hover:bg-primary/25",
+          )}
+        >
+          <HugeiconsIcon
+            icon={CursorRectangleSelection02Icon}
+            strokeWidth={1.75}
+            className={ANNOTATE_GLYPH}
+          />
+        </IconButton>
         {kind === "html" ? (
           <Tooltip>
             <TooltipTrigger asChild={true}>
@@ -1900,31 +1899,29 @@ function FloatingFileToolbar({
           ) : null}
         </DropdownMenuContent>
       </DropdownMenu>
-      {requestEdits || canAnnotate ? (
-        // A true circle, glyph centred; the label is its tooltip.
-        <IconButton
-          label={t("browser.file.requestEdits")}
-          // Without a chat to send marks to, stages a prompt naming the file.
-          onClick={() =>
-            canAnnotate
-              ? toggleAnnotating()
-              : requestEdits?.(
-                  t("browser.file.requestEditsPrompt", { name: entry.name }),
-                )
-          }
-          className={cn(
-            PILL,
-            "size-9 rounded-full p-0 text-foreground",
-            annotating && "text-primary hover:text-primary",
-          )}
-        >
-          <HugeiconsIcon
-            icon={CursorRectangleSelection02Icon}
-            strokeWidth={1.75}
-            className={ANNOTATE_GLYPH}
-          />
-        </IconButton>
-      ) : null}
+      {/* A true circle, glyph centred; the label is its tooltip. */}
+      <IconButton
+        label={t("browser.file.requestEdits")}
+        // Without a chat to send marks to, stages a prompt naming the file.
+        onClick={() =>
+          canAnnotate
+            ? toggleAnnotating()
+            : (requestEdits ?? stageEditsPrompt)(
+                t("browser.file.requestEditsPrompt", { name: entry.name }),
+              )
+        }
+        className={cn(
+          PILL,
+          "size-9 rounded-full p-0 text-foreground",
+          annotating && "text-primary hover:text-primary",
+        )}
+      >
+        <HugeiconsIcon
+          icon={CursorRectangleSelection02Icon}
+          strokeWidth={1.75}
+          className={ANNOTATE_GLYPH}
+        />
+      </IconButton>
       <span
         aria-hidden={true}
         className="min-w-0 flex-1 pointer-events-none!"

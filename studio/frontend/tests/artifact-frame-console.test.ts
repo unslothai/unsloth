@@ -252,7 +252,8 @@ test("the source view hides the frame instead of unmounting it", () => {
 test("the Fix button stages text in the composer and never sends it", () => {
   assert.match(frameSource, /onFixWithModel\(buildCanvasFixPrompt\(title, errors\)\)/);
   assert.doesNotMatch(frameSource, /\.send\(/);
-  assert.match(readBrowserSource("file-view.tsx"), /stageFixPrompt\(prompt\);/);
+  assert.match(readBrowserSource("file-view.tsx"), /onFixWithModel=\{requestEdits \?\? stageEditsPrompt\}/);
+  assert.match(readBrowserSource("stage-edits.ts"), /stageFixPrompt\(prompt\);/);
   const pageSource = readFileSync(
     fileURLToPath(new URL("../src/features/chat/chat-page.tsx", import.meta.url)),
     "utf8",
