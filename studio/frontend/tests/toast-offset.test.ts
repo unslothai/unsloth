@@ -129,7 +129,7 @@ test("the header offset follows the UI font size, the titlebar does not", () => 
 test("desktop toasts shift left by the open Run settings panel", () => {
   assert.deepEqual(insetPastChatSettings({ top: 52, right: 12 }), {
     top: 52,
-    right: "calc(12px + var(--studio-chat-settings-inset, 0px) + var(--studio-browser-page-inset, 0px))",
+    right: "calc(12px + max(var(--studio-chat-settings-inset, 0px), var(--studio-browser-page-inset, 0px)))",
   });
 });
 

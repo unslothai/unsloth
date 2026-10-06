@@ -12,7 +12,7 @@ import type { TranslationKey } from "@/i18n";
 import type { InterpolationValues } from "@/i18n";
 import { openExternalLink } from "@/lib/open-link";
 import { toast } from "@/lib/toast";
-import { BROWSER_PAGE_INSET_VAR } from "@/lib/toast-offset";
+import { BROWSER_PAGE_INSET_VAR, CHAT_SETTINGS_INSET_VAR } from "@/lib/toast-offset";
 import { hostOf } from "./address";
 import { proxiedFavicon } from "./favicon";
 import { useBrowserHistoryStore } from "./history-store";
@@ -298,13 +298,16 @@ function placeholder(tabId: string): HTMLElement | null {
 
 let toastInset: string | null = null;
 
-// Toasts can't draw over the page: while it fills the right edge, they move into the column beside it.
+// Toasts can't draw over the page: while it reaches the right edge (or the Run settings panel there),
+// they move into the column left of it.
 function insetToasts(rect: DOMRect | null): void {
-  const room = rect && rect.right >= window.innerWidth - 2 && rect.left >= TOAST_COLUMN;
+  const style = document.documentElement.style;
+  // Inline, as watchChatSettingsInset sets it; unset while the panel is closed or the row is too narrow.
+  const settings = Number.parseFloat(style.getPropertyValue(CHAT_SETTINGS_INSET_VAR)) || 0;
+  const room = rect && rect.right >= window.innerWidth - settings - 2 && rect.left >= TOAST_COLUMN;
   const next = room ? `${Math.round(window.innerWidth - rect.left)}px` : null;
   if (next === toastInset) return;
   toastInset = next;
-  const style = document.documentElement.style;
   if (next) style.setProperty(BROWSER_PAGE_INSET_VAR, next);
   else style.removeProperty(BROWSER_PAGE_INSET_VAR);
 }

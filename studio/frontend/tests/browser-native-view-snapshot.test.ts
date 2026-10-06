@@ -22,14 +22,21 @@ const rect = (x: number, y: number, width: number, height: number) =>
     width,
     height,
   }) as DOMRect;
+let pageBox = rect(500, 100, 500, 600);
 const placeholder = {
   style: {} as Record<string, string> & {
     removeProperty: (name: string) => void;
   },
   offsetParent: {},
   isConnected: true,
-  getBoundingClientRect: () => rect(500, 100, 500, 600),
+  getBoundingClientRect: () => pageBox,
   closest: () => null,
+};
+const rootVars = new Map<string, string>();
+const rootStyle = {
+  getPropertyValue: (name: string) => rootVars.get(name) ?? "",
+  setProperty: (name: string, value: string) => rootVars.set(name, value),
+  removeProperty: (name: string) => rootVars.delete(name),
 };
 placeholder.style.removeProperty = (name) => {
   delete placeholder.style[
@@ -44,7 +51,7 @@ Object.assign(globalThis, {
     removeEventListener: noop,
   }),
   document: {
-    documentElement: { style: { setProperty: noop, removeProperty: noop } },
+    documentElement: { style: rootStyle },
     body: {},
     querySelector: (selector: string) =>
       selector.startsWith("[data-native-page") ? placeholder : null,
@@ -151,5 +158,33 @@ test("a menu that closes and reopens while the page is captured keeps the snapsh
     );
   } finally {
     stop();
+  }
+});
+
+test("toasts move left of a page that sits beside the Run settings panel", async () => {
+  const stop = startNativeViews();
+  try {
+    pageBox = rect(500, 100, 500, 600);
+    await frame();
+    assert.equal(rootVars.get("--studio-browser-page-inset"), "500px");
+
+    // Something other than the settings panel fills the edge: the page isn't where toasts go.
+    pageBox = rect(400, 100, 300, 600);
+    await frame();
+    assert.equal(rootVars.has("--studio-browser-page-inset"), false);
+
+    // The settings panel (300px) at the window edge, with the page left of it.
+    rootVars.set("--studio-chat-settings-inset", "300px");
+    await frame();
+    assert.equal(rootVars.get("--studio-browser-page-inset"), "600px");
+
+    // No room for a toast column left of the page: no inset, so a toast over it hides it instead.
+    pageBox = rect(200, 100, 500, 600);
+    await frame();
+    assert.equal(rootVars.has("--studio-browser-page-inset"), false);
+  } finally {
+    stop();
+    rootVars.clear();
+    pageBox = rect(500, 100, 500, 600);
   }
 });
