@@ -26,7 +26,7 @@ from .chat_templates import (
     get_tokenizer_chat_template,
     DEFAULT_ALPACA_TEMPLATE,
 )
-from .cells import cell_text
+from .cells import cell_text, cell_turns
 from .raw_text import prepare_raw_text_dataset
 from .vlm_processing import generate_smart_vlm_instruction
 from .data_collators import DeepSeekOCRDataCollator, VLMDataCollator
@@ -202,13 +202,7 @@ def _apply_user_mapping(
             for chatml_role in _CHATML_ROLE_ORDER:
                 for col in role_groups[chatml_role]:
                     if col in examples:
-                        content = examples[col][i]
-                        convo.append(
-                            {
-                                "role": chatml_role,
-                                "content": cell_text(content),
-                            }
-                        )
+                        convo.extend(cell_turns(examples[col][i], chatml_role))
             conversations.append(convo)
         return {"conversations": conversations}
 
@@ -527,9 +521,11 @@ def format_dataset(
                             for target_role in ["system", "user", "assistant"]:
                                 for col_name, role in custom_mapping.items():
                                     if role == target_role and col_name in examples:
-                                        text = cell_text(examples[col_name][i])
-                                        if text.strip():
-                                            convo.append({"role": role, "content": text})
+                                        convo.extend(
+                                            turn
+                                            for turn in cell_turns(examples[col_name][i], role)
+                                            if turn["content"].strip()
+                                        )
                             conversations.append(convo)
 
                         return {"conversations": conversations, **preserved_columns}
