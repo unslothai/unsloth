@@ -2413,6 +2413,10 @@ html[data-chat-font] .aui-root {
 		   button on the outer side, which at small font sizes sits closer than the extra. The floor follows the
 		   browser's Interface Scale, as browser zoom would, but not the UI font size. */
 		position: relative;
+		/* Room above and below for the part of the target past the box. In one row with the action buttons this
+		   sits inside the row's height and moves nothing; when the picker wraps onto its own row, the row grows
+		   to hold it instead of the target reaching across the row gap into the actions above. */
+		margin-block: calc(var(--aui-chevron-extra) / 2);
 		@apply inline-flex size-[calc(20px*var(--ui-space-scale,1))] shrink-0 cursor-pointer items-center justify-center rounded-full p-0 text-chat-icon-fg transition-colors hover:text-black active:text-black dark:hover:text-white dark:active:text-white focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-30 disabled:hover:text-chat-icon-fg dark:disabled:hover:text-chat-icon-fg;
 	}
 	.aui-branch-chevron-btn::before {

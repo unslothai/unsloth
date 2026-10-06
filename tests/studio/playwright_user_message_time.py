@@ -159,6 +159,10 @@ async def check(url):
                 # The browser's 50% Interface Scale, its floor, at the smallest font: every token shrinks,
                 # so a target clamped at 24px reaches past the gap and over its neighbour.
                 (375, "en", ".75", 0.5),
+                # 200% Interface Scale at the smallest font: the target grows past the box above and below,
+                # and once the picker wraps onto its own row that reaches across the row gap.
+                (375, "en", ".75", 2),
+                (320, "en", ".75", 2),
                 # A narrow custom chat font at the smallest UI font, where each chevron's target reaches
                 # furthest toward the count: the two must still not meet over it.
                 (375, "en", ".75", 1, "narrow count"),
