@@ -457,7 +457,7 @@ def test_mlx_training_arguments_normalize_optim_and_object_aliases():
     with pytest.warns(RuntimeWarning, match = "save_strategy"):
         args = unsloth._coerce_mlx_training_args(ArgsObject())
 
-    assert args.optim == "adamw"
+    assert args.optim == "adamw_8bit"
     assert args.eval_steps == 0
     assert args.lr_scheduler_type == "cosine"
     assert args.max_seq_length == 321

@@ -679,7 +679,7 @@ export function RecipeStudioPage({
         nodesConnectable={canvasInteractive}
         elementsSelectable={canvasInteractive}
         fitView={false}
-        className="h-full w-full rounded-t-none"
+        className="@container/canvas h-full w-full rounded-t-none"
       >
         <LayoutControls
           direction={layoutDirection}

@@ -1029,6 +1029,24 @@ _API_KEY_PBKDF2_ITERATIONS = 100_000
 DESKTOP_SECRET_PREFIX = "desktop-"
 _DESKTOP_SECRET_HASH_KEY = "desktop_secret_hash"
 _DESKTOP_SECRET_CREATED_AT_KEY = "desktop_secret_created_at"
+# `token_urlsafe(48)` is exactly 64 unpadded URL-safe characters, and no other shape can be behind a
+# stored hash. Keep in sync with the CLI minter (unsloth_cli/commands/studio.py) and the `desktop-`
+# alternation in core/inference/tool_loop_controller.py.
+_DESKTOP_SECRET_BODY = re.compile(r"\A[A-Za-z0-9_-]{64}\Z")
+
+
+def desktop_secret_is_well_formed(raw_secret: str) -> bool:
+    """Whether a candidate has the one shape :func:`create_desktop_secret` mints.
+
+    Syntactic only: a candidate that passes this still has to match the stored hash. It is separate
+    from validation, and cheap, because the desktop shell posts a deliberately invalid secret to
+    /api/auth/desktop-login to learn from the 401 that the backend is one it can manage. That probe
+    must cost no KDF and no rate-limit budget, or a live app throttles itself out of its own
+    backend.
+    """
+    if not isinstance(raw_secret, str) or not raw_secret.startswith(DESKTOP_SECRET_PREFIX):
+        return False
+    return _DESKTOP_SECRET_BODY.match(raw_secret[len(DESKTOP_SECRET_PREFIX) :]) is not None
 
 
 def _pbkdf2_api_key(raw_key: str) -> str:
@@ -1479,7 +1497,9 @@ def validate_desktop_secret_with_credential(raw_secret: str) -> Optional[Tuple[s
     transaction so the returned secret is the credential version the desktop secret was checked
     against; a reset landing mid-request then invalidates the tokens minted from it rather than
     blessing them."""
-    if not raw_secret.startswith(DESKTOP_SECRET_PREFIX):
+    # Shape before KDF: this runs for unauthenticated callers, so anything spent before an
+    # attacker-chosen string can be rejected is theirs to spend.
+    if not desktop_secret_is_well_formed(raw_secret):
         return None
 
     secret_hash = _pbkdf2_desktop_secret(raw_secret)

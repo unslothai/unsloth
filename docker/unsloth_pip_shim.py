@@ -130,6 +130,7 @@ _VALUE_FLAGS = {
     "--only-final",
     "--requirements-from-script",
     "--uploaded-prior-to",
+    "--output-format",
 }
 _REQ_FILE_FLAGS = {"-r", "--requirement", "--requirements"}
 _CONSTRAINT_FILE_FLAGS = {"-c", "--constraint", "--constraints"}

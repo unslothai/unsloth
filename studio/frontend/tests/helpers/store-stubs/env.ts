@@ -10,3 +10,5 @@ export const usePlatformStore = {
     deviceType = next.deviceType;
   },
 };
+
+export async function fetchDeviceType(_options?: { force?: boolean }): Promise<void> {}

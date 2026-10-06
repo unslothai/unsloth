@@ -25,6 +25,7 @@ import {
 } from "@/components/ui/select";
 import { Slider } from "@/components/ui/slider";
 import { Switch } from "@/components/ui/switch";
+import { NumericValueInput } from "@/features/model-picker/components/numeric-value-input";
 import { type TranslationKey, useT } from "@/i18n";
 import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import { toast } from "@/lib/toast";
@@ -49,6 +50,7 @@ import {
   MAX_IMPORTED_FONTS,
   MAX_TOTAL_IMPORTED_FONT_DATA_URL_LENGTH,
   type ReduceMotionSetting,
+  type SentAttachmentsSetting,
   UI_FONT_SIZE_RANGE,
   isDefaultCustomization,
   useAppearanceCustomStore,
@@ -63,6 +65,7 @@ import {
   usePalette,
   useTheme,
 } from "../stores/theme-store";
+import { COLOR_THEMES } from "../lib/color-themes";
 import { ColorPickerSwatch } from "./color-picker";
 import { normalizeSizeInputDraft } from "./size-input-value";
 
@@ -74,20 +77,7 @@ type DefaultModeColors = { [K in keyof CustomModeColors]: string };
 const PALETTE_DEFAULT_COLORS: Record<
   Palette,
   Record<ResolvedTheme, DefaultModeColors>
-> = {
-  standard: {
-    light: { accent: "#17b88b", background: "#fefefd", foreground: "#262626" },
-    dark: { accent: "#17b88b", background: "#181818", foreground: "#ececec" },
-  },
-  classic: {
-    light: { accent: "#339cff", background: "#ffffff", foreground: "#1a1c1f" },
-    dark: { accent: "#4dabff", background: "#181818", foreground: "#ececec" },
-  },
-  minimal: {
-    light: { accent: "#171717", background: "#ffffff", foreground: "#171717" },
-    dark: { accent: "#ededed", background: "#181818", foreground: "#ededed" },
-  },
-};
+> = COLOR_THEMES;
 
 /**
  * Color override control for the CURRENTLY ACTIVE resolved mode. Only the
@@ -266,11 +256,13 @@ function FontSelect({
   defaultFont,
   onCommit,
   ariaLabel,
+  className,
 }: {
   value: string | null;
   defaultFont: string;
   onCommit: (next: string | null) => void;
   ariaLabel: string;
+  className?: string;
 }) {
   const t = useT();
   const defaultLabel = `${defaultFont} (${t("settings.appearance.custom.fontDefault")})`;
@@ -334,7 +326,10 @@ function FontSelect({
           type="button"
           aria-label={ariaLabel}
           aria-expanded={open}
-          className="flex h-8 w-48 cursor-pointer items-center justify-between gap-1.5 rounded-full border border-border bg-background px-3.5 text-xs outline-none transition-colors hover:bg-accent/50 focus-visible:border-ring dark:focus-visible:border-transparent dark:focus-visible:bg-white/[0.12] dark:border-transparent dark:bg-white/[0.06] dark:hover:bg-white/10"
+          className={cn(
+            "flex h-8 w-48 cursor-pointer items-center justify-between gap-1.5 rounded-full border border-border bg-background px-3.5 text-xs outline-none transition-colors hover:bg-accent/50 focus-visible:border-ring dark:focus-visible:border-transparent dark:focus-visible:bg-[rgb(255_255_255_/_calc(0.12*var(--contrast-wash-gain,1)))] dark:border-transparent dark:bg-[rgb(255_255_255_/_calc(0.06*var(--contrast-wash-gain,1)))] dark:hover:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))]",
+            className,
+          )}
         >
           <span
             className="min-w-0 truncate"
@@ -476,7 +471,7 @@ function FontSelect({
   );
 }
 
-export function UiFontRow() {
+export function UiFontRow({ className }: { className?: string }) {
   const t = useT();
   const uiFont = useAppearanceCustomStore((s) => s.customization.uiFont);
   const patch = useAppearanceCustomStore((s) => s.patch);
@@ -486,11 +481,12 @@ export function UiFontRow() {
       defaultFont={DEFAULT_FONT_NAMES.ui}
       onCommit={(next) => patch({ uiFont: next })}
       ariaLabel={t("settings.appearance.custom.uiFont.label")}
+      className={className}
     />
   );
 }
 
-export function HeadingFontRow() {
+export function HeadingFontRow({ className }: { className?: string }) {
   const t = useT();
   const headingFont = useAppearanceCustomStore(
     (s) => s.customization.headingFont,
@@ -502,11 +498,12 @@ export function HeadingFontRow() {
       defaultFont={DEFAULT_FONT_NAMES.heading}
       onCommit={(next) => patch({ headingFont: next })}
       ariaLabel={t("settings.appearance.custom.headingFont.label")}
+      className={className}
     />
   );
 }
 
-export function ChatFontRow() {
+export function ChatFontRow({ className }: { className?: string }) {
   const t = useT();
   const chatFont = useAppearanceCustomStore((s) => s.customization.chatFont);
   const patch = useAppearanceCustomStore((s) => s.patch);
@@ -516,11 +513,12 @@ export function ChatFontRow() {
       defaultFont={DEFAULT_FONT_NAMES.chat}
       onCommit={(next) => patch({ chatFont: next })}
       ariaLabel={t("settings.appearance.custom.chatFont.label")}
+      className={className}
     />
   );
 }
 
-export function CodeFontRow() {
+export function CodeFontRow({ className }: { className?: string }) {
   const t = useT();
   const codeFont = useAppearanceCustomStore((s) => s.customization.codeFont);
   const patch = useAppearanceCustomStore((s) => s.patch);
@@ -530,6 +528,7 @@ export function CodeFontRow() {
       defaultFont={DEFAULT_FONT_NAMES.code}
       onCommit={(next) => patch({ codeFont: next })}
       ariaLabel={t("settings.appearance.custom.codeFont.label")}
+      className={className}
     />
   );
 }
@@ -800,7 +799,8 @@ function SizeInput({
     onCommit(normalized.value);
   };
   return (
-    <div className="flex items-center gap-1.5">
+    // Tagged so settings search can land on a size input nested in its font row.
+    <div data-settings-label={ariaLabel} className="flex items-center gap-1.5">
       <Input
         type="number"
         inputMode="numeric"
@@ -918,23 +918,65 @@ export function ChatWidthSelect() {
   );
 }
 
+const SENT_ATTACHMENTS_OPTIONS: SentAttachmentsSetting[] = ["auto", "list", "chips"];
+
+export function SentAttachmentsSelect() {
+  const t = useT();
+  const value = useAppearanceCustomStore((s) => s.customization.sentAttachments);
+  const patch = useAppearanceCustomStore((s) => s.patch);
+  return (
+    <Select
+      value={value}
+      onValueChange={(next) => {
+        if (next === "auto" || next === "list" || next === "chips") {
+          patch({ sentAttachments: next });
+        }
+      }}
+    >
+      <SelectTrigger
+        className="w-40"
+        aria-label={t("settings.appearance.custom.sentAttachments.label")}
+      >
+        <SelectValue />
+      </SelectTrigger>
+      <SelectContent>
+        {SENT_ATTACHMENTS_OPTIONS.map((option) => (
+          <SelectItem key={option} value={option}>
+            {t(`settings.appearance.custom.sentAttachments.${option}`)}
+          </SelectItem>
+        ))}
+      </SelectContent>
+    </Select>
+  );
+}
+
+/** Run settings track and field, sized like the other controls in the column. */
 export function ContrastSliderRow() {
   const t = useT();
   const contrast = useAppearanceCustomStore((s) => s.customization.contrast);
   const patch = useAppearanceCustomStore((s) => s.patch);
   return (
-    <div className="flex w-48 items-center gap-3">
+    <div className="flex w-64 items-center gap-3">
       <Slider
         value={[contrast]}
         min={0}
         max={100}
-        step={5}
+        step={1}
         onValueChange={(values: number[]) => patch({ contrast: values[0] })}
+        className="panel-slider"
         aria-label={t("settings.appearance.custom.contrast.label")}
       />
-      <span className="w-8 text-right text-xs tabular-nums text-muted-foreground">
-        {contrast}
-      </span>
+      <NumericValueInput
+        value={contrast}
+        min={0}
+        max={100}
+        step={1}
+        onChange={(value) => patch({ contrast: value })}
+        ariaLabel={t("settings.appearance.custom.contrast.label")}
+        className="panel-field h-8 w-[calc(84px*var(--ui-space-scale,1))] shrink-0"
+        fixedWidth={true}
+        size={4}
+      />
     </div>
   );
 }

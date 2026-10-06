@@ -133,3 +133,49 @@ def test_the_helper_behaviour_suite_runs():
     )
     assert proc.returncode == 0, proc.stdout + proc.stderr
     assert _VERDICT in proc.stdout, proc.stdout
+
+
+def test_an_8dot3_alias_is_only_used_once_it_resolves():
+    """A space-free 8.3 name is not necessarily a name that resolves (issue #11290).
+
+    `GetShortPathName` / the FSO `ShortPath` property can hand back a short form that the
+    volume never actually created, so "contains no space" is not sufficient validation:
+    uv is then pointed at a file it cannot open, and the same alias is what the installer
+    later hands to Remove-Item. Require the alias to exist before it is used.
+    """
+    text = INSTALL_PS1.read_text(encoding = "utf-8")
+    body = text[text.index(f"function {HELPER}") :]
+    body = body[: body.index("\n    function ")]
+    # [^)]* so the assertion pins the CHECK, not the argument list: the guard also has to carry
+    # -ErrorAction SilentlyContinue, because under the installer's "Stop" a bare Test-Path in an
+    # ACL-denied directory throws instead of returning false (install.ps1:3277).
+    assert re.search(r"-and \(Test-Path -LiteralPath \$short -PathType Leaf\b[^)]*\)", body), (
+        f"{HELPER} accepts an 8.3 short path on 'contains no space' alone, so an alias that "
+        "does not resolve is handed to uv and later to Remove-Item"
+    )
+    assert re.search(r"Test-Path -LiteralPath \$short[^)]*-ErrorAction SilentlyContinue\)", body), (
+        f"{HELPER} queries the filesystem without -ErrorAction SilentlyContinue, so an unreadable "
+        "directory aborts the install instead of rejecting the alias"
+    )
+
+
+def test_get_uv_safe_path_queries_the_filesystem_safely():
+    """The alias check must not turn an unreadable directory into a failed install (#11290).
+
+    That the alias has to resolve is already pinned by
+    tests/studio/install/test_woa_torch_index_persistence.py. What is asserted here is the other
+    half: under the installer's ``$ErrorActionPreference = "Stop"`` a bare ``Test-Path`` inside an
+    ACL-denied directory raises UnauthorizedAccessException rather than returning false, and none
+    of these guards sits inside a ``try``. Without -ErrorAction SilentlyContinue the guard aborts
+    the install on a path it was only supposed to reject. install.ps1 line 3277 uses the same
+    idiom for the same reason.
+    """
+    guard = r"Test-Path -LiteralPath \$short\b[^)]*-ErrorAction SilentlyContinue\)"
+    for path in (INSTALL_PS1, REPO_ROOT / "studio" / "setup.ps1"):
+        text = path.read_text(encoding = "utf-8")
+        start = text.index("function Get-UvSafePath")
+        body = text[start : text.index("\n}", start)]
+        assert re.search(guard, body), (
+            f"{path.name}: Get-UvSafePath probes the filesystem without -ErrorAction "
+            "SilentlyContinue, so an unreadable directory aborts the install"
+        )

@@ -1,6 +1,6 @@
 # Unsloth Docker Image
 
-Fine-tune and run LLMs, vision, audio and diffusion models with no setup. Every image carries the training stack (PyTorch 2.11 with CUDA 12.8, [Unsloth](https://github.com/unslothai/unsloth), unsloth-zoo, bitsandbytes, TRL, PEFT, plus xformers on `linux/amd64`), JupyterLab with the [Unsloth notebooks](https://github.com/unslothai/notebooks), and prebuilt llama.cpp. The `latest` image adds whisper.cpp for Unsloth Studio's speech-to-text.
+Fine-tune and run LLMs, vision, audio and diffusion models with no setup. Every image carries the training stack (PyTorch 2.11 with CUDA 12.8, [Unsloth](https://github.com/unslothai/unsloth), unsloth-zoo, bitsandbytes, TRL, PEFT, plus xformers on `linux/amd64`), JupyterLab with the [Unsloth notebooks](https://github.com/unslothai/notebooks), and prebuilt llama.cpp. The `latest` image adds whisper.cpp for Unsloth Studio's speech-to-text and audio.cpp (CUDA build on `linux/amd64`) for its text-to-speech, music and transcription models.
 
 Source: [`docker/`](https://github.com/unslothai/unsloth/tree/main/docker). Guide: [docs.unsloth.ai](https://docs.unsloth.ai/get-started/install/docker).
 
@@ -62,7 +62,7 @@ docker rm -f unsloth     # stop and delete the container
 docker ps -a             # find it again, running or not
 ```
 
-`docker rm -f` deletes the container, not your work: models stay in the Hugging Face cache, your files in the directory you mounted, and Unsloth Studio's accounts and chats on the `unsloth-studio` volume, so the next container with the same `-v unsloth-studio:/opt/unsloth-studio` resumes where this one left off, password included. Only what was written inside the container is lost. `docker volume rm unsloth-studio` discards the Unsloth Studio data too, and cannot be undone.
+`docker rm -f` deletes the container, not your work: models stay in the Hugging Face cache, your files in the directory you mounted, and Unsloth Studio's accounts, chats and project folders on the `unsloth-studio` volume, so the next container with the same `-v unsloth-studio:/opt/unsloth-studio` resumes where this one left off, password included. Only what was written inside the container is lost, which includes the folders of projects created by an image from before project folders moved to the volume: those keep their old place under `/root/Documents`, so copy their files out before removing the container. `docker volume rm unsloth-studio` discards the Unsloth Studio data too, and cannot be undone.
 
 These take a container, not an image, so `docker stop unsloth/unsloth` fails with "No such container". Use the `NAMES` or `CONTAINER ID` column of `docker ps -a`; without `--name`, Docker assigns a random one.
 
@@ -102,13 +102,12 @@ docker run --rm -e UNSLOTH_ALLOW_CPU=1 unsloth/unsloth:core python -c "import un
 | `latest`, `studio` | Unsloth Studio web UI + JupyterLab + notebooks + key-only SSH | Most users. Train and chat in the browser. |
 | `core` | Training stack + JupyterLab + notebooks, no Unsloth Studio | Notebooks, scripts, CI, slimmer pulls. |
 | `nightly-<YYYY.MM.DD>`, `core-nightly-<YYYY.MM.DD>` | The same two images, one immutable pin per daily rebuild, kept 60 days | Reproducible runs. |
-| `<version>`, `core-<version>` | Release builds | Pin a release. |
 
-`latest` and `core` are rebuilt daily and on every release tag, not on every merge to `main`. Both are multi-arch: `linux/amd64` and `linux/arm64` (GH200, DGX Spark).
+`latest` and `core` are rebuilt daily, not on every merge to `main`. Both are multi-arch: `linux/amd64` and `linux/arm64` (GH200, DGX Spark).
 
 ## Supported GPUs
 
-Turing (T4, RTX 20) through Blackwell (B200, GB200, RTX 50, RTX PRO 6000) run precompiled SASS: `sm_70 sm_75 sm_80 sm_86 sm_90 sm_100 sm_120` on `linux/amd64`, `sm_80 sm_90 sm_90a sm_100 sm_100a sm_120 sm_120a` on `linux/arm64`. SASS is forward-compatible within a major version, so Ada runs the `sm_86` binaries, B300 and GB300 the `sm_100` ones, and GB10 (DGX Spark) the `sm_120` ones. A source build inside the image compiles for `7.5;8.0;8.6;8.9;9.0;10.0;12.0+PTX`.
+Turing (T4, RTX 20) through Blackwell (B200, GB200, RTX 50, RTX PRO 6000) run precompiled SASS: `sm_75 sm_80 sm_86 sm_90 sm_100 sm_120` on `linux/amd64`, `sm_80 sm_90 sm_90a sm_100 sm_100a sm_120 sm_120a` on `linux/arm64`. SASS is forward-compatible within a major version, so Ada runs the `sm_86` binaries, B300 and GB300 the `sm_100` ones, and GB10 (DGX Spark) the `sm_120` ones. A source build inside the image compiles for `7.5;8.0;8.6;8.9;9.0;10.0;12.0+PTX`.
 
 Drivers: 570.26 or newer for CUDA 12.8 on every GPU, 580 or newer for B300, GB300 and GB10. On `linux/arm64` the bundled llama.cpp is a CUDA 13 build, because upstream ships no CUDA 12 one there, so training works from 570 but GGUF export and Unsloth Studio chat need 580.
 
@@ -150,7 +149,7 @@ The working directory is `/workspace`. Mount what you want to keep:
 |---|---|
 | `/workspace/host` | Your files. Mount your project directory here. |
 | `/workspace/.cache/huggingface` | Model downloads. Mount your host HF cache to reuse it. |
-| `/opt/unsloth-studio` | Unsloth Studio's accounts, chats, outputs, exports and runs (`latest`). Use a named volume: without one, `docker rm` loses them. |
+| `/opt/unsloth-studio` | Unsloth Studio's accounts, chats, project folders, outputs, exports and runs (`latest`). Use a named volume: without one, `docker rm` loses them. |
 | `/workspace/.cache/triton` | Compiled kernels. Optional, speeds up restarts. |
 | `/workspace/unsloth-notebooks` | The synced notebooks. Your edits are kept across refreshes. |
 | `/workspace/Unsloth Notebooks` | The same notebooks grouped by topic, rebuilt on each start. |

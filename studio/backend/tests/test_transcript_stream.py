@@ -30,6 +30,74 @@ def test_progress_and_saved_result(monkeypatch):
     asyncio.run(scenario())
 
 
+def test_phases_are_never_throttled(monkeypatch):
+    monkeypatch.setattr(transcript_stream.transcript_gallery, "save", lambda result, title: {})
+
+    async def transcribe(progress):
+        # 50 ms apart: a text update this close to the last one would be throttled away.
+        for phase in ("loading", "transcribing"):
+            progress({"text": "", "phase": phase})
+            await asyncio.sleep(0.05)
+        return {"text": "done", "model": "moss"}
+
+    async def collect(stream):
+        return [json.loads(line) async for line in stream]
+
+    events = asyncio.run(collect(transcript_stream.stream_transcript(transcribe, "clip")))
+    assert [e["phase"] for e in events if "phase" in e] == ["loading", "transcribing"]
+
+
+def test_back_to_back_phases_all_reach_the_client(monkeypatch):
+    """A sidecar that loads within one tick reports "loading" and "transcribing" from its worker
+    thread back to back, and may finish right after. Both phases have to reach the client, in order,
+    ahead of the result: with a latest-wins queue of one, "transcribing" evicted "loading" whenever
+    both landed before the reader ran, which is what made the source-route test flaky under xdist."""
+    monkeypatch.setattr(transcript_stream.transcript_gallery, "save", lambda result, title: {})
+
+    def worker(progress):
+        progress({"text": "", "phase": "loading"})
+        progress({"text": "", "phase": "transcribing"})
+
+    async def transcribe(progress):
+        await asyncio.to_thread(worker, progress)
+        return {"text": "done", "model": "moss"}
+
+    async def collect(stream):
+        return [json.loads(line) async for line in stream]
+
+    for _ in range(20):
+        events = asyncio.run(collect(transcript_stream.stream_transcript(transcribe, "clip")))
+        assert [e["phase"] for e in events if "phase" in e] == ["loading", "transcribing"]
+        assert events[-1]["type"] == "complete"
+
+
+def test_every_queued_phase_reaches_a_client_that_yields_between_chunks(monkeypatch):
+    """StreamingResponse awaits each chunk's send, so the generator is suspended between yields. A
+    reader still running then could take a queued update off the deque mid-drain and drop it."""
+    monkeypatch.setattr(transcript_stream.transcript_gallery, "save", lambda result, title: {})
+    phases = ("loading", "downloading_aligner", "transcribing")
+
+    def worker(progress):
+        for phase in phases:
+            progress({"text": "", "phase": phase})
+
+    async def transcribe(progress):
+        await asyncio.to_thread(worker, progress)
+        return {"text": "done", "model": "moss"}
+
+    async def collect(stream):
+        events = []
+        async for line in stream:
+            events.append(json.loads(line))
+            await asyncio.sleep(0)
+        return events
+
+    for _ in range(20):
+        events = asyncio.run(collect(transcript_stream.stream_transcript(transcribe, "clip")))
+        assert [e["phase"] for e in events if "phase" in e] == list(phases)
+        assert events[-1]["type"] == "complete"
+
+
 def test_save_failure_returns_complete_text(monkeypatch):
     async def transcribe(progress):
         return {"text": "keep this", "model": "tiny"}
@@ -85,7 +153,9 @@ def test_transformers_progress_uses_existing_audio_windows(monkeypatch):
 
         def transcribe_window(self, pcm, kwargs, cancel):
             self.calls += 1
-            return f"part {self.calls}"
+            previous = kwargs.get("_stt_previous_text")
+            text = f"{previous} part {self.calls}" if previous else f"part {self.calls}"
+            return text, len(pcm) // 4
 
     worker = Worker()
     sidecar = WhisperSttSidecar()

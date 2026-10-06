@@ -31,7 +31,10 @@ _GEMMA4_GGUF_RE = re.compile(r"^unsloth/gemma-4-.+-gguf$", re.IGNORECASE)
 # Google ships two distinct gemma-4 chat templates: E2B/E4B omit the empty "<|channel>thought<channel|>" block on
 # enable_thinking=false, while the 12b/26B-A4B/31B family emits it. Route the two GGUF families to the matching
 # bundled template so each keeps its model's intended behavior.
-_GEMMA4_EDGE_GGUF_RE = re.compile(r"^unsloth/gemma-4-e[24]b-it-gguf$", re.IGNORECASE)
+# The QAT repos (gemma-4-E4B-it-qat-GGUF, plus the -qat-mobile builds) are the same edge models under a longer name.
+# Without the optional suffix they fell through to the standard template and got the empty thought block on
+# thinking-off, so the Think toggle did nothing (#12708).
+_GEMMA4_EDGE_GGUF_RE = re.compile(r"^unsloth/gemma-4-e[24]b-it(?:-qat(?:-mobile)?)?-gguf$", re.IGNORECASE)
 
 _GEMMA4_TEMPLATE_FILE = "gemma-4.jinja"
 _GEMMA4_EDGE_TEMPLATE_FILE = "gemma-4-edge.jinja"

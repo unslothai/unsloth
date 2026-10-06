@@ -63,7 +63,7 @@ export function StopRunningChatsDialog() {
           </AlertDialogDescription>
         </AlertDialogHeader>
         {shown.length > 0 && (
-          <ul className="max-h-40 overflow-y-auto rounded-md border bg-muted/40 px-3 py-2 text-sm">
+          <ul className="max-h-40 overflow-y-auto scroll-rounded rounded-md border bg-muted/40 px-3 py-2 text-sm">
             {shown.map((title) => (
               <li key={title} className="truncate py-0.5">
                 {title}

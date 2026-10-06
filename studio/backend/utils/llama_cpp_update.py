@@ -518,9 +518,9 @@ def _backend_options(resolved: Optional[dict], assets: Optional[dict] = None) ->
 def _selection_applied(
     backend_request: str, installed_backend: Optional[str], options: list[dict]
 ) -> bool:
-    """Whether the recorded choice still describes the installed backend. A concrete choice is applied by definition: the installer records it only on an install that honoured it. ``auto`` is the one that drifts (a GPU or driver appearing after an automatic CPU install makes detection resolve elsewhere) and re-applying it is offered exactly then."""
+    """Whether the recorded choice still describes the installed backend. A concrete choice used to be applied by definition, since the installer recorded it only on an install that honoured it; it now PRESERVES a request the install could not honour (#11143: a Vulkan choice that landed the ROCm bundle used to be erased to "auto", which destroyed the setting and made every later update re-detect), so a concrete choice is applied only when it is the backend that actually landed. Unknown installed backend contradicts nothing and stays applied. ``auto`` is the one that drifts (a GPU or driver appearing after an automatic CPU install makes detection resolve elsewhere) and re-applying it is offered exactly then."""
     if backend_request != "auto":
-        return True
+        return installed_backend is None or installed_backend == backend_request
     auto = next((option for option in options if option["backend"] == "auto"), None)
     if not auto or not auto.get("available"):
         return True
@@ -638,6 +638,7 @@ def _run_llama_phase(
 ) -> dict:
     """The llama phase of a chained update: put the backend into a maintenance state, run the installer for the latest prebuilt, then refresh caches so the next load uses the new build. Returns {to_tag, reload_required, message}; raises on failure. pin_release_tag pins the installer to that exact published release instead of letting it re-resolve "latest" (see start_update)."""
     backend = None
+    marked = []
     model_was_active = False
     mtmd_guard = ExitStack()
     # The installer exits 0 for a transient failure it answered by keeping the tree, so success no longer implies a new release. Read as the post-install check reads it.
@@ -662,6 +663,20 @@ def _run_llama_phase(
                         backend.unload_model()
             except Exception as exc:
                 logger.debug("llama update: load coordination failed", error = str(exc))
+        from core.inference import model_slots
+
+        # Each kept model's in-flight load drains under its own lock, as the primary's did above.
+        for slot in list(model_slots.slots):
+            with slot.llama._serial_load_lock:
+                slot.llama._llama_update_in_progress = True
+            marked.append(slot.llama)
+        try:
+            if model_slots.unload_llama_slots(strict = True):
+                model_was_active = True
+        except RuntimeError:
+            # A kept server that survived would run from, or lock, the tree being replaced.
+            model_was_active = True
+            raise
 
         # The mtmd dictation sidecar serves Qwen3-ASR from this same llama-server out of this same tree, so a live one locks the exe on Windows and a concurrent load would start against a half-swapped install.
         model_was_active = _block_mtmd_sidecar(mtmd_guard) or model_was_active
@@ -829,11 +844,14 @@ def _run_llama_phase(
         raise
     finally:
         mtmd_guard.close()
-        if backend is not None:
-            try:
-                backend._llama_update_in_progress = False
-            except Exception:  # pragma: no cover - defensive
-                pass
+        # A kept slot serving a non-GGUF model stays loaded through the update; its llama backend
+        # must not stay refused once the update is done.
+        for llama in (backend, *marked):
+            if llama is not None:
+                try:
+                    llama._llama_update_in_progress = False
+                except Exception:  # pragma: no cover - defensive
+                    pass
 
 
 def _block_mtmd_sidecar(stack: ExitStack) -> bool:
