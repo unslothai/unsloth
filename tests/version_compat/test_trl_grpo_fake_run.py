@@ -54,7 +54,20 @@ def _stub_module(name: str, attrs: dict | None = None) -> None:
     sys.modules[name] = m
 
 
-_stub_module("torchcodec")
+# Stand-in for torchcodec only when it is not installed, and shaped like the package: datasets
+# (5.x) does `from torchcodec.decoders import AudioDecoder, VideoDecoder` whenever its find_spec
+# probe saw torchcodec and the name is in sys.modules. A bare module answered that probe and then
+# failed the submodule import ("'torchcodec' is not a package") in every later test that built a
+# Dataset, and it also shadowed a real, working torchcodec in the lanes that install one.
+if "torchcodec" not in sys.modules and importlib.util.find_spec("torchcodec") is None:
+
+    class _NoDecoder:
+        pass
+
+    _stub_module("torchcodec")
+    sys.modules["torchcodec"].__path__ = []
+    _stub_module("torchcodec.decoders", {"AudioDecoder": _NoDecoder, "VideoDecoder": _NoDecoder})
+    sys.modules["torchcodec"].decoders = sys.modules["torchcodec.decoders"]
 
 
 def _trl_version():
