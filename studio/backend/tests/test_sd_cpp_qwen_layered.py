@@ -179,3 +179,36 @@ def test_oneshot_collects_every_numbered_layer_file(monkeypatch):
     assert argv.count("--ref-image") == 1 and argv[argv.index("--width") + 1] == "640"
     assert [im.getpixel((0, 0)) for im in out["images"]] == colors[1:]
     assert out["seeds"] == [9] * layers
+
+
+@pytest.mark.parametrize("size", [(500, 521), (770, 500), (901, 603), (768, 768)])
+def test_off_grid_source_gets_the_same_canvas_as_the_diffusers_engine(size):
+    # The diffusers engine snaps the source to 16 px before the pipeline picks its canvas (500x521 -> 608x672, not
+    # the 640x640 the raw size gives), so the native engine must pick from the snapped size too.
+    from core.inference.diffusion import _layered_canvas, _snap_to_multiple
+
+    buf = io.BytesIO()
+    Image.new("RGBA", size, (10, 20, 30, 255)).save(buf, format = "PNG")
+    src = "data:image/png;base64," + base64.b64encode(buf.getvalue()).decode()
+    w, h, _blobs = bk._native_condition_images(
+        LAYERED,
+        src,
+        None,
+        None,
+        None,
+        None,
+        full_fidelity = True,
+        pad_to_output = False,
+        source_sized = True,
+    )
+    assert (w, h) == _layered_canvas(LAYERED, _snap_to_multiple(Image.new("RGB", size), 16).size)
+
+
+def test_layered_needs_a_build_that_carries_layered_support(tmp_path):
+    # Layered landed upstream in master-744; an older reused build must not be picked for it.
+    old = tmp_path / "sd-cli-old"
+    old.write_bytes(b"stable-diffusion.cpp qwen_image_2_1 --ref-image")
+    new = tmp_path / "sd-cli-new"
+    new.write_bytes(b"stable-diffusion.cpp --qwen-image-layers qwen_image_layers")
+    assert not bk.sd_cpp_binary_runs_family(str(old), LAYERED)
+    assert bk.sd_cpp_binary_runs_family(str(new), LAYERED)

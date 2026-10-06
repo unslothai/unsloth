@@ -429,6 +429,8 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         sd_cpp_sampling_method = "euler",
         # The same schedule as the diffusers route above: ComfyUI's AuraFlow shift, which sd.cpp's flow shift is.
         sd_cpp_flow_shift = 1.0,
+        # Layered support landed upstream in master-744 (556f04b); an older reused build has no such literal.
+        sd_cpp_arch_marker = "qwen_image_layers",
     ),
     DiffusionFamily(
         name = "qwen-image",

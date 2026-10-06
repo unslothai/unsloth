@@ -1885,7 +1885,10 @@ def _native_condition_images(
     if source_sized and _layer_count(fam):
         # A layered family decomposes at its own canvas, whatever the source's size: resize the source to it, as the
         # layered pipeline does before encoding.
-        width, height = _layered_canvas_size(fam, images[0].size)
+        # The diffusers engine snaps the source to the 16 px grid before the pipeline picks its canvas; same here.
+        sw, sh = images[0].size
+        snapped = (max(16, int(round(sw / 16)) * 16), max(16, int(round(sh / 16)) * 16))
+        width, height = _layered_canvas_size(fam, snapped)
         if images[0].size != (width, height):
             images[0] = images[0].resize((width, height), Image.LANCZOS)
     elif source_sized:
