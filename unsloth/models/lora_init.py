@@ -181,7 +181,8 @@ def mica_basis(W, r):
     A = W.to(torch.float64)
     wide = out_features <= in_features
     L, V = torch.linalg.eigh(A @ A.T if wide else A.T @ A)
-    if L[r - 1] <= 1e-12 * L[-1]:
+    # L ascends: L[0] is the smallest divisor below.
+    if L[0] <= 1e-12 * L[-1]:
         U = torch.linalg.svd(A, full_matrices = False)[0]
         return U[:, -r:].float().contiguous()
     V = V[:, :r].flip(1)

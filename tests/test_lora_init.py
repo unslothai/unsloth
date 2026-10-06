@@ -129,6 +129,17 @@ def test_mica_basis_matches_fp64_svd(shape):
     assert torch.nn.functional.cosine_similarity(B.double(), U, dim = 0).abs().min() > 0.999
 
 
+@pytest.mark.parametrize("shape", [(96, 48), (48, 96)])
+def test_mica_basis_rank_deficient_is_finite(shape):
+    # One dead input / output dimension: a single zero eigenvalue, below the r smallest's largest.
+    W = _weight(*shape)
+    W[:, 0] = 0
+    W[0] = 0
+    B = lora_init.mica_basis(W.float(), 8).double()
+    assert torch.isfinite(B).all()
+    torch.testing.assert_close(B.T @ B, torch.eye(8, dtype = B.dtype), atol = 1e-4, rtol = 0)
+
+
 class _Model(torch.nn.Module):
     def __init__(self, W):
         super().__init__()
