@@ -231,11 +231,9 @@ def _pissa_init(self, adapter_name, init_lora_weights):
         parts = init_lora_weights.split("_niter_")
         if len(parts) != 2:
             return _ORIGINAL["pissa_init"](self, adapter_name, init_lora_weights)
-        # PEFT's svd_lowrank(q = r, niter = N); r/4 oversampling only pays off from r = 64 with TF32.
-        tf32 = (
-            weight.device.type != "cuda" or torch.cuda.get_device_capability(weight.device)[0] >= 8
-        )
-        n_iter, n_oversamples = int(parts[-1]), (r // 4 if r >= 64 and tf32 else 0)
+        # PEFT's svd_lowrank(q = r, niter = N). The width must not depend on the device: loading the
+        # adapter re-runs this, possibly elsewhere, and must rebuild the same residual.
+        n_iter, n_oversamples = int(parts[-1]), 0
     _STATE["pissa"] = True
     W = transpose(weight.to(torch.float32), self.fan_in_fan_out)
     U, S, Vh = randomized_svd(W, r, n_oversamples = n_oversamples, n_iter = n_iter)

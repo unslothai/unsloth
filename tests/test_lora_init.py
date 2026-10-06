@@ -254,3 +254,21 @@ def test_packed_quantized_base_is_refused():
     layer.weight = Params4bit(layer.weight.data.to(torch.bfloat16), requires_grad = False)
     with pytest.raises(TypeError, match = "load_in_4bit = False"):
         lora_init._check_float_weight(layer.weight, "pissa")
+
+
+def test_pissa_niter_width_is_device_independent(monkeypatch):
+    # Loading re-runs the init, possibly on another device: the sketch width must not depend on it.
+    seen = []
+    real = lora_init.randomized_svd
+
+    def spy(W, rank, **kwargs):
+        seen.append(kwargs["n_oversamples"])
+        return real(W, rank, **kwargs)
+
+    monkeypatch.setattr(lora_init, "randomized_svd", spy)
+    model = torch.nn.Sequential(torch.nn.Linear(160, 160))
+    with lora_init.fast_lora_init(force = True):
+        get_peft_model(
+            model, LoraConfig(r = 64, target_modules = ["0"], init_lora_weights = "pissa_niter_4")
+        )
+    assert seen == [0]
