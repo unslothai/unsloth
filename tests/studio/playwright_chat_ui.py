@@ -399,7 +399,11 @@ def exercise_permission_mode_controls(page, shoot):
     #
     # So: wait for the level to actually be ON the installation before reloading and asserting on it. Assert what was
     # achieved, not what was commanded.
-    def expect_server_mode(expected, timeout_ms = 15_000, key = "permissionMode"):
+    def expect_server_mode(
+        expected,
+        timeout_ms = 15_000,
+        key = "permissionMode",
+    ):
         deadline = time.monotonic() + timeout_ms / 1000.0
         seen = "<never read>"
         while True:
