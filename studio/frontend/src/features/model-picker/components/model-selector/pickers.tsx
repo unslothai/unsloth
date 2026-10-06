@@ -52,6 +52,8 @@ import type {
   LocalModelInfo,
 } from "@/features/chat";
 import type { ProviderApiType } from "@/features/chat/api/providers-api";
+// eslint-disable-next-line no-restricted-imports -- Connection contract has no React dependencies.
+import type { CustomReasoningConfig } from "@/features/chat/custom-reasoning";
 import { normalizeGgufVisionCapability } from "@/features/chat/utils/model-vision-capability";
 import {
   DotTag,
@@ -4847,6 +4849,18 @@ export function HubModelPicker({
       ),
     [externalProviders],
   );
+  const externalReasoningConfigById = useMemo(
+    () =>
+      new Map(
+        externalProviders.map((provider) => [
+          provider.id,
+          provider.backendProviderType === "custom" && !provider.decisionsOnly
+            ? provider.reasoningConfig
+            : undefined,
+        ]),
+      ),
+    [externalProviders],
+  );
   // A provider catalogue arrives after first paint and decides most of the marks, so re-read it.
   const catalogVersion = useSyncExternalStore(
     subscribeModelCatalog,
@@ -4876,6 +4890,7 @@ export function HubModelPicker({
     apiType?: ProviderApiType;
     baseUrl: string | null;
     isReasoningProvider: boolean;
+    reasoningConfig?: CustomReasoningConfig;
   } | null>(null);
   const [settingsModel, setSettingsModel] = useState<{
     model: ExternalModelOption;
@@ -4883,6 +4898,7 @@ export function HubModelPicker({
     apiType?: ProviderApiType;
     baseUrl: string | null;
     isReasoningProvider: boolean;
+    reasoningConfig?: CustomReasoningConfig;
     connectionMaxOutputTokens: number | null;
   } | null>(null);
 
@@ -6167,6 +6183,7 @@ export function HubModelPicker({
                 baseUrl,
                 isReasoningProvider:
                   externalReasoningFlagById.get(model.providerId) === true,
+                reasoningConfig: externalReasoningConfigById.get(model.providerId),
                 connectionMaxOutputTokens:
                   externalMaxOutputById.get(model.providerId) ?? null,
               })
@@ -6199,6 +6216,7 @@ export function HubModelPicker({
                     baseUrl,
                     isReasoningProvider:
                       externalReasoningFlagById.get(model.providerId) === true,
+                    reasoningConfig: externalReasoningConfigById.get(model.providerId),
                   }),
               },
               {
@@ -8496,6 +8514,7 @@ export function HubModelPicker({
           apiType={settingsModel.apiType}
           baseUrl={settingsModel.baseUrl}
           isReasoningProvider={settingsModel.isReasoningProvider}
+          reasoningConfig={settingsModel.reasoningConfig}
           connectionMaxOutputTokens={settingsModel.connectionMaxOutputTokens}
         />
       ) : null}
@@ -8512,6 +8531,7 @@ export function HubModelPicker({
           apiType={infoModel.apiType}
           baseUrl={infoModel.baseUrl}
           isReasoningProvider={infoModel.isReasoningProvider}
+          reasoningConfig={infoModel.reasoningConfig}
         />
       ) : null}
     </CapabilityScope.Provider>

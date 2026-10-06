@@ -864,6 +864,7 @@ export function SharedComposer({
               selectedExternalProvider?.isReasoningModel === true,
             baseUrl: selectedExternalProvider?.baseUrl ?? null,
             apiType: selectedExternalProvider?.apiType,
+            reasoningConfig: selectedExternalProvider?.reasoningConfig,
           },
         )
       : null;
