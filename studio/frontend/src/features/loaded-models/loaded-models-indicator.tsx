@@ -12,6 +12,7 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
+import { useAudioWorkspaceStore } from "@/features/audio/stores/audio-workspace-store";
 import { hasAuthToken, mustChangePassword } from "@/features/auth";
 import { useSettingsDialogStore } from "@/features/settings";
 import { usePersistedToggle } from "@/hooks/use-persisted-toggle";
@@ -88,7 +89,7 @@ function LoadedModelRow({
   onOpen: () => void;
 }) {
   const label = shortModelLabel(entry.name);
-  const target = loadedModelTarget(entry.source, entry.workflow);
+  const target = loadedModelTarget(entry.source, entry.workflows);
   return (
     <div className="flex items-center gap-2 rounded-[14px] px-1.5 py-1 transition-colors hover:bg-[color-mix(in_oklab,var(--foreground)_calc(4%*var(--contrast-wash-gain,1)),transparent)]">
       {/* Only the label half is the link: the eject button cannot nest inside it. */}
@@ -184,7 +185,11 @@ export function LoadedModelsIndicator({
   const navigate = useNavigate();
   const openEntry = useCallback(
     (entry: LoadedModelEntry) => {
-      const target = loadedModelTarget(entry.source, entry.workflow);
+      const target = loadedModelTarget(
+        entry.source,
+        entry.workflows,
+        useAudioWorkspaceStore.getState().workflow,
+      );
       if (target.open === "settings") {
         // Read on click, not at render: the settings barrel reaches back here
         // through the General tab, so the binding is only safe once both

@@ -625,7 +625,7 @@ test("an audio model in the chat slot opens its Audio workflow, named for what i
       inferenceStatus({ active_model: "m/x", is_audio: true, ...overrides }),
     );
     return {
-      target: loadedModelTarget(entry.source, entry.workflow),
+      target: loadedModelTarget(entry.source, entry.workflows),
       label: loadedModelKindLabel(entry),
     };
   };
@@ -660,6 +660,11 @@ test("an audio model in the chat slot opens its Audio workflow, named for what i
     audio("music"),
   );
   assert.deepEqual(row({ audio_type: "csm" }).target, audio("speak"));
+  // The first workflow names the row and is where the Audio page opens.
+  assert.deepEqual(
+    row({ audio_type: "audiocpp_tts", audio_workflows: ["speak", "edit"] }),
+    { target: audio("speak"), label: "Speech" },
+  );
   // The GGUF audio runtime reports is_gguf false; its rows still read GGUF.
   const [sep] = describeInferenceStatus(
     inferenceStatus({
@@ -673,4 +678,29 @@ test("an audio model in the chat slot opens its Audio workflow, named for what i
   assert.equal(sep.detail, "GGUF · Q8_0");
   // Whisper in the chat slot is still Chat's.
   assert.equal(row({ audio_type: "whisper" }).target.label, "Chat");
+});
+
+// Switching the Audio page's workflow stops a generation running on it, and the card only navigates.
+test("an Audio page already on a workflow the model runs is left there", () => {
+  const [row] = describeInferenceStatus(
+    inferenceStatus({
+      active_model: "audio-cpp/audio.cpp-gguf/DotTTS-Edit-GGUF",
+      is_audio: true,
+      audio_type: "audiocpp_tts",
+      audio_workflows: ["speak", "edit"],
+    }),
+  );
+  assert.deepEqual(row.workflows, ["speak", "edit"]);
+  assert.deepEqual(loadedModelTarget(row.source, row.workflows, "edit"), {
+    open: "route",
+    to: "/audio",
+    label: "Audio",
+  });
+  // A workflow the model does not run still opens its first one.
+  assert.deepEqual(loadedModelTarget(row.source, row.workflows, "music"), {
+    open: "route",
+    to: "/audio",
+    search: { workflow: "speak" },
+    label: "Audio",
+  });
 });

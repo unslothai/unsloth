@@ -39,8 +39,8 @@ export type LoadedModelEntry = {
   name: string;
   /** One short line: quantisation, family, device. */
   detail: string;
-  /** Only on a `tts` row: the Audio page workflow that runs the model. */
-  workflow?: AudioWorkflowId;
+  /** Only on a `tts` row: the Audio page workflows that run the model, first one first. */
+  workflows?: AudioWorkflowId[];
   /** Only on `source: "stt"`: its unload takes an engine, not a model id. */
   sttEngine?: SttEngine;
   /** Cached by the chat runtime but not active, so no status flags describe it. */
@@ -93,13 +93,19 @@ export type LoadedModelTarget =
 
 export function loadedModelTarget(
   source: LoadedModelSource,
-  workflow?: AudioWorkflowId,
+  workflows?: readonly AudioWorkflowId[],
+  currentAudioWorkflow?: AudioWorkflowId,
 ): LoadedModelTarget {
-  if (source === "chat" && workflow) {
+  if (source === "chat" && workflows?.length) {
+    // An Audio page already on a workflow this model runs stays there: switching it would
+    // also stop a generation running on that workflow.
+    if (currentAudioWorkflow && workflows.includes(currentAudioWorkflow)) {
+      return { open: "route", to: "/audio", label: "Audio" };
+    }
     return {
       open: "route",
       to: "/audio",
-      search: { workflow },
+      search: { workflow: workflows[0] },
       label: "Audio",
     };
   }
@@ -131,10 +137,11 @@ const AUDIO_WORKFLOW_KIND_LABELS: Partial<Record<AudioWorkflowId, string>> = {
 };
 
 export function loadedModelKindLabel(
-  entry: Pick<LoadedModelEntry, "kind" | "workflow">,
+  entry: Pick<LoadedModelEntry, "kind" | "workflows">,
 ): string {
+  const workflow = entry.workflows?.[0];
   return (
-    (entry.workflow && AUDIO_WORKFLOW_KIND_LABELS[entry.workflow]) ??
+    (workflow && AUDIO_WORKFLOW_KIND_LABELS[workflow]) ??
     LOADED_MODEL_KIND_LABELS[entry.kind]
   );
 }
@@ -188,6 +195,9 @@ export function describeInferenceStatus(
       audioType !== "whisper" &&
       audioType !== "audio_vlm";
     const isStt = Boolean(status.is_audio) && audioType === "whisper";
+    const audioWorkflows = (status.audio_workflows ?? []).filter(
+      isAudioWorkflowId,
+    );
     // The GGUF audio runtime reports is_gguf false, but it serves GGUFs too.
     const runtime =
       status.is_gguf || AUDIO_CPP_AUDIO_TYPES.has(audioType ?? "")
@@ -202,9 +212,10 @@ export function describeInferenceStatus(
       // An older backend sends no workflows: the audio type still tells Music from Speak.
       ...(isTts
         ? {
-            workflow:
-              status.audio_workflows?.find(isAudioWorkflowId) ??
-              audioWorkflowForAudioType(audioType),
+            workflows:
+              audioWorkflows.length > 0
+                ? audioWorkflows
+                : [audioWorkflowForAudioType(audioType)],
           }
         : {}),
       name: active,
