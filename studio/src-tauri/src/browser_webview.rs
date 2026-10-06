@@ -754,6 +754,91 @@ fn dangerous_download(name: &str) -> bool {
 }
 
 /// A neutral, non-executable name for a dangerous download until the reader keeps it.
+/// Dangerous downloads waiting on Keep or Discard (or still downloading) at once.
+const MAX_STAGED: usize = 10;
+const STAGED_LIST: &str = "browser-staged-downloads.json";
+
+/// Whether a file name is one `staged_destination` makes.
+fn is_staged_name(name: &str) -> bool {
+    name.strip_prefix("Unconfirmed ")
+        .and_then(|rest| rest.strip_suffix(".download"))
+        .is_some_and(|hex| hex.len() == 16 && hex.bytes().all(|b| b.is_ascii_hexdigit()))
+}
+
+fn staged_list_path<R: Runtime>(app: &AppHandle<R>) -> Option<PathBuf> {
+    app.path()
+        .app_local_data_dir()
+        .ok()
+        .map(|dir| dir.join(STAGED_LIST))
+}
+
+static STAGED_LIST_LOCK: Mutex<()> = Mutex::new(());
+
+fn read_staged_list(list: &Path) -> Vec<PathBuf> {
+    std::fs::read(list)
+        .ok()
+        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+        .unwrap_or_default()
+}
+
+fn write_staged_list(list: &Path, paths: &[PathBuf]) {
+    let (Some(parent), Ok(bytes)) = (list.parent(), serde_json::to_vec(paths)) else {
+        return;
+    };
+    let _ = std::fs::create_dir_all(parent).and_then(|()| {
+        let mut temporary = tempfile::NamedTempFile::new_in(parent)?;
+        std::io::Write::write_all(&mut temporary, &bytes)?;
+        temporary
+            .persist(list)
+            .map(|_| ())
+            .map_err(|error| error.error)
+    });
+}
+
+/// Noted on disk when staged, so a staged file the app quit or crashed on is deleted next launch:
+/// nothing can keep it once its prompt is gone.
+fn remember_staged<R: Runtime>(app: &AppHandle<R>, path: &Path) {
+    let Some(list) = staged_list_path(app) else {
+        return;
+    };
+    let _guard = STAGED_LIST_LOCK.lock().unwrap();
+    let mut paths = read_staged_list(&list);
+    paths.push(path.to_path_buf());
+    write_staged_list(&list, &paths);
+}
+
+/// Delete the staged files a previous run left (kept or discarded ones are already gone). Only
+/// paths the app noted, and only under the name it gave them.
+fn remove_staged_leftovers(paths: &[PathBuf]) {
+    for path in paths {
+        let ours = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(is_staged_name);
+        let plain = std::fs::symlink_metadata(path).is_ok_and(|meta| meta.file_type().is_file());
+        if ours && plain {
+            let _ = std::fs::remove_file(path);
+        }
+    }
+}
+
+/// Once per run, before this run stages anything.
+fn clean_staged_leftovers<R: Runtime>(app: &AppHandle<R>) {
+    static DONE: std::sync::Once = std::sync::Once::new();
+    DONE.call_once(|| {
+        let Some(list) = staged_list_path(app) else {
+            return;
+        };
+        let _guard = STAGED_LIST_LOCK.lock().unwrap();
+        let paths = read_staged_list(&list);
+        if paths.is_empty() {
+            return;
+        }
+        remove_staged_leftovers(&paths);
+        write_staged_list(&list, &[]);
+    });
+}
+
 fn staged_destination(dir: &Path, reserved: &HashSet<&Path>) -> Option<PathBuf> {
     (0..8)
         .map(|_| {
@@ -786,7 +871,8 @@ enum StagedState {
     },
     /// A keep is moving it; neither keep nor discard may start.
     Claimed,
-    /// Its account was signed out while it downloaded: deleted when it finishes, never offered.
+    /// Its account was signed out while it downloaded or was being kept: deleted when that ends,
+    /// never offered.
     Abandoned,
 }
 
@@ -819,9 +905,7 @@ fn keep_staged(views: &Mutex<ViewsState>, id: &str) -> Result<PathBuf, String> {
         (entry.path.clone(), entry.name.clone(), marked)
     };
     let release = |error: String| {
-        if let Some(entry) = views.lock().unwrap().staged.get_mut(id) {
-            entry.state = StagedState::Ready { marked };
-        }
+        release_staged(views, id, marked);
         Err(error)
     };
     match std::fs::symlink_metadata(&staged) {
@@ -888,6 +972,22 @@ fn remove_staged_file(path: PathBuf) {
     });
 }
 
+/// Back to ready after a keep or discard failed, unless an account switch abandoned it meanwhile:
+/// then it is deleted, never left for the next account.
+fn release_staged(views: &Mutex<ViewsState>, id: &str, marked: Option<bool>) {
+    let mut inner = views.lock().unwrap();
+    match inner.staged.get_mut(id) {
+        Some(entry) if matches!(entry.state, StagedState::Abandoned) => {
+            if let Some(entry) = inner.staged.remove(id) {
+                drop(inner);
+                remove_staged_file(entry.path);
+            }
+        }
+        Some(entry) => entry.state = StagedState::Ready { marked },
+        None => {}
+    }
+}
+
 /// Delete a finished staged download. Never one still downloading or being kept.
 fn discard_staged(views: &Mutex<ViewsState>, id: &str) -> Result<(), String> {
     let (path, marked) = {
@@ -905,9 +1005,7 @@ fn discard_staged(views: &Mutex<ViewsState>, id: &str) -> Result<(), String> {
     match std::fs::remove_file(&path) {
         // Back to ready, so the reader can try again (Windows: another process holds it).
         Err(error) if error.kind() != std::io::ErrorKind::NotFound => {
-            if let Some(entry) = views.lock().unwrap().staged.get_mut(id) {
-                entry.state = StagedState::Ready { marked };
-            }
+            release_staged(views, id, marked);
             Err(format!("Couldn't delete the download: {error}"))
         }
         _ => {
@@ -1122,6 +1220,7 @@ fn create_view<R: Runtime>(
     let window_tab = tab.clone();
     let download_tab = tab.clone();
     let downloads_dir = app.path().download_dir().ok();
+    clean_staged_leftovers(&app);
     let view_epoch = app
         .state::<BrowserViews>()
         .inner
@@ -1245,6 +1344,8 @@ fn create_view<R: Runtime>(
                             return false;
                         }
                         let in_flight = inner.downloads.values().map(Vec::len).sum();
+                        // Unanswered prompts stay until answered: a page can't pile up more.
+                        let full = dangerous && inner.staged.len() >= MAX_STAGED;
                         let ViewsState {
                             download_starts,
                             download_starts_all,
@@ -1253,7 +1354,9 @@ fn create_view<R: Runtime>(
                         let now = Instant::now();
                         forget_quiet_tabs(download_starts, now);
                         let tab_starts = download_starts.entry(download_tab.clone()).or_default();
-                        if !download_allowed(in_flight, tab_starts, download_starts_all, now) {
+                        if full
+                            || !download_allowed(in_flight, tab_starts, download_starts_all, now)
+                        {
                             None
                         } else {
                             let path = {
@@ -1310,6 +1413,9 @@ fn create_view<R: Runtime>(
                         );
                         return false;
                     };
+                    if id.is_some() {
+                        remember_staged(app, &path);
+                    }
                     *destination = path;
                     emit(
                         app,
@@ -1841,11 +1947,12 @@ fn abandon_staged(inner: &mut ViewsState) -> Vec<PathBuf> {
             files.push(entry.path.clone());
             false
         }
-        StagedState::Downloading => {
+        // A keep or discard under way finishes as asked; if it fails, the file is deleted.
+        StagedState::Downloading | StagedState::Claimed => {
             entry.state = StagedState::Abandoned;
             true
         }
-        StagedState::Claimed | StagedState::Abandoned => true,
+        StagedState::Abandoned => true,
     });
     files
 }
@@ -2392,6 +2499,8 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = staged_destination(dir.path(), &HashSet::new()).unwrap();
         let name = path.file_name().unwrap().to_str().unwrap();
+        // So a leftover from a quit or crash is recognised next launch.
+        assert!(is_staged_name(name));
         let hex = name
             .strip_prefix("Unconfirmed ")
             .and_then(|rest| rest.strip_suffix(".download"))
@@ -2560,6 +2669,37 @@ mod tests {
             assert_eq!(std::fs::read(&kept).unwrap(), b"payload");
             // Already gone is done, not retried.
             remove_staged_file(staged);
+        }
+
+        #[test]
+        fn a_switch_during_a_failed_keep_deletes_the_file() {
+            let dir = tempfile::tempdir().unwrap();
+            let staged = dir.path().join("Unconfirmed 11.download");
+            std::fs::write(&staged, b"x").unwrap();
+            let views = Mutex::new(ViewsState::default());
+            let id = stage(&views, &staged, "a.exe", StagedState::Claimed);
+            assert!(forget_account_downloads(&mut views.lock().unwrap()).is_empty());
+            release_staged(&views, &id, Some(true));
+            assert!(!staged.exists());
+            assert!(views.lock().unwrap().staged.is_empty());
+        }
+
+        #[test]
+        fn leftovers_are_only_the_app_s_own_staged_files() {
+            let dir = tempfile::tempdir().unwrap();
+            let ours = dir.path().join("Unconfirmed 0123456789abcdef.download");
+            let kept = dir.path().join("Unconfirmed fedcba9876543210.download");
+            let theirs = dir.path().join("report.pdf");
+            let lookalike = dir.path().join("Unconfirmed 123.download");
+            for file in [&ours, &theirs, &lookalike] {
+                std::fs::write(file, b"x").unwrap();
+            }
+            remove_staged_leftovers(&[ours.clone(), kept, theirs.clone(), lookalike.clone()]);
+            assert!(!ours.exists());
+            assert!(theirs.exists() && lookalike.exists());
+            let list = dir.path().join("list.json");
+            write_staged_list(&list, &[ours.clone()]);
+            assert_eq!(read_staged_list(&list), vec![ours]);
         }
 
         #[test]

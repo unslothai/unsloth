@@ -263,6 +263,34 @@
     {
       "name": "windows10.0-kb5005565-x64.msu",
       "dangerous": true
+    },
+    {
+      "name": "tool.pyw",
+      "dangerous": true
+    },
+    {
+      "name": "report.DOCM",
+      "dangerous": true
+    },
+    {
+      "name": "budget.xlsm",
+      "dangerous": true
+    },
+    {
+      "name": "deck.pptm",
+      "dangerous": true
+    },
+    {
+      "name": "addin.xlam",
+      "dangerous": true
+    },
+    {
+      "name": "train.py",
+      "dangerous": false
+    },
+    {
+      "name": "report.docx",
+      "dangerous": false
     }
   ]
 }
