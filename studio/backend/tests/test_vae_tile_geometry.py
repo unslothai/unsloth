@@ -259,7 +259,16 @@ def _sides(family: str) -> list[int]:
     return sorted({v for wh in fam.resolution_presets for v in wh})
 
 
-def build_vae(config: dict, overrides: bool = True):
+# The loader each kind goes through: a family gets only the overrides its own loader installs.
+LOADERS = {"image": "diffusion.py", "video": "video.py"}
+
+
+def overrides_for(kind: str) -> list[str]:
+    src = (INFERENCE / LOADERS[kind]).read_text(encoding = "utf-8", errors = "replace")
+    return [m for m in tile_override_modules()[0] if re.search(rf"\.{m}\b", src)]
+
+
+def build_vae(config: dict, kind: str | None = None):
     cfg = {k: v for k, v in config.items() if not k.startswith("_")}
     cls = _vae_class(config["_class_name"])
     if cls is None:
@@ -270,7 +279,7 @@ def build_vae(config: dict, overrides: bool = True):
         vae = cls.from_config(cfg)
     vae.enable_tiling()
     applied = []
-    for mod in tile_override_modules()[0] if overrides else ():
+    for mod in overrides_for(kind) if kind else ():
         if importlib.import_module(f"core.inference.{mod}").install(vae):
             applied.append(mod)
     for name in ("decoder", "post_quant_conv"):
@@ -353,7 +362,7 @@ def _tile_key(vae, applied, video: bool) -> tuple:
 def geometry(family: str):
     """(VAE class, ratio, overrides applied, {side px: tiles}, temporal problem or None) for ``family``."""
     kind, config = _family_configs()[family]
-    vae, applied = build_vae(config)
+    vae, applied = build_vae(config, kind)
     ratio = _ratio(vae)
     video = _is_5d(vae)
     other = max(1, MIN_SIDE // ratio)
@@ -432,6 +441,12 @@ def test_tile_geometry(family):
     assert not msgs, "\n".join(msgs)
 
 
+def test_overrides_follow_the_loader():
+    assert "diffusion_vae_tiling" in overrides_for("image")
+    assert "diffusion_vae_tiling" not in overrides_for("video")
+    assert "video_ltx2_vae_tiles" in overrides_for("video")
+
+
 def test_check_axis_flags_each_threshold():
     ok = Floor(32, 16, 16, "test")
     assert check_axis([(0, 64)], ok) == []
@@ -451,7 +466,7 @@ def test_check_axis_flags_each_threshold():
 
 
 def test_probe_reads_the_stock_grid():
-    vae, applied = build_vae({"_class_name": "AutoencoderKLWan", "z_dim": 16}, overrides = False)
+    vae, applied = build_vae({"_class_name": "AutoencoderKLWan", "z_dim": 16})
     assert applied == []
     tiles = probe_axis(vae, {"z_dim": 16}, 64, 8, True)
     assert tiles == [(0, 32), (24, 56), (48, 64)]
