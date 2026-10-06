@@ -457,3 +457,95 @@ def test_the_loader_refuses_what_the_scan_refuses(tmp_path):
         cq.load_comfy_quant_transformer(
             _Tiny, path, scan, {"config": "base/repo"}, int8_backend = None
         )
+
+
+def _fp8_comfy_file(tmp_path, monkeypatch):
+    """A ComfyUI fp8_scaled file of ``_Tiny`` (fused qkv, one per-tensor scale per source layer)."""
+    monkeypatch.setattr(cq, "_mapping", lambda cls: (_convert, _sfm()))
+    torch.manual_seed(2)
+    dense = _Tiny()
+    tensors = {"norm.weight": dense.norm.weight.detach().clone(), "norm.bias": dense.norm.bias.detach().clone()}
+    for b, block in enumerate(dense.blocks):
+        layers = {
+            f"blocks.{b}.qkv": (
+                torch.cat([block.to_q.weight, block.to_k.weight, block.to_v.weight]).detach(),
+                torch.cat([block.to_q.bias, block.to_k.bias, block.to_v.bias]).detach(),
+            ),
+            f"blocks.{b}.out": (block.to_out.weight.detach(), block.to_out.bias.detach()),
+            f"blocks.{b}.adaLN_modulation.0": (
+                block.adaLN_modulation[0].weight.detach(),
+                block.adaLN_modulation[0].bias.detach(),
+            ),
+        }
+        for name, (weight, bias) in layers.items():
+            scale = weight.abs().max().float() / 448.0
+            tensors[f"{name}.weight"] = (weight / scale).to(torch.float8_e4m3fn)
+            tensors[f"{name}.weight_scale"] = scale.reshape(())
+            tensors[f"{name}.input_scale"] = torch.ones(())
+            tensors[f"{name}.bias"] = bias.clone()
+            tensors[f"{name}.comfy_quant"] = _conf(format = "float8_e4m3fn")
+    return _save(tmp_path / "tiny_fp8_scaled.safetensors", tensors), dense, tensors
+
+
+def test_fp8_runtime_keeps_codes_and_per_tensor_scales(tmp_path, monkeypatch):
+    """fp8 layers become Studio's own torchao fp8 weights with the file's codes; the scalar scale is per row."""
+    pytest.importorskip("torchao")
+    path, dense, tensors = _fp8_comfy_file(tmp_path, monkeypatch)
+    try:
+        model = cq.load_comfy_quant_transformer(
+            _Tiny,
+            path,
+            cq.refuse_comfy_quant(path),
+            {"torch_dtype": torch.bfloat16, "config": "base/repo", "subfolder": "transformer"},
+            int8_backend = None,
+            fp8_backend = "torchao",
+            family = "wan2.2-ti2v-5b",
+            # torchao builds its fp8 template only on an fp8-capable device
+            target = types.SimpleNamespace(
+                torch_device = "cuda" if torch.cuda.is_available() else "cpu"
+            ),
+        )
+    except Exception as exc:  # noqa: BLE001 -- a torchao without a CPU fp8 quantize cannot build the template
+        pytest.skip(f"torchao fp8 template unavailable here: {exc}")
+    info = model._unsloth_comfy_quant
+    # 2 blocks x (q, k, v, out) kept as fp8; adaLN is 512 -> 1024 and passes the fp8 filter too
+    assert info["fp8"] == 10 and info["fp8_backend"] == "torchao" and info["int8"] == 0
+    assert model._unsloth_runtime_quant == "fp8"
+    for b, block in enumerate(model.blocks):
+        q = tensors[f"blocks.{b}.qkv.weight"]
+        s = tensors[f"blocks.{b}.qkv.weight_scale"]
+        for i, part in enumerate(("to_q", "to_k", "to_v")):
+            weight = getattr(block, part).weight
+            assert torch.equal(weight.qdata.view(torch.uint8), q[i * DIM : (i + 1) * DIM].view(torch.uint8))
+            assert weight.scale.shape == (DIM, 1) and bool((weight.scale == s).all())
+            deq = weight.qdata.float() * weight.scale
+            assert _cos(deq, getattr(dense.blocks[b], part).weight) > 0.999
+        assert torch.equal(block.to_q.bias.float(), dense.blocks[b].to_q.bias.to(torch.bfloat16).float())
+
+
+def test_fp8_without_a_backend_still_dequantizes(tmp_path, monkeypatch):
+    path, dense, _ = _fp8_comfy_file(tmp_path, monkeypatch)
+    model = _load(path)
+    assert "fp8" not in model._unsloth_comfy_quant
+    assert model._unsloth_comfy_quant["dequantized"] == 6
+    assert _cos(model.blocks[1].to_v.weight, dense.blocks[1].to_v.weight) > 0.999
+
+
+def test_comfy_fp8_backend_follows_studio_fp8_rules(monkeypatch):
+    import core.inference.diffusion_transformer_quant as tq
+
+    target = types.SimpleNamespace(device = "cuda", dtype = torch.bfloat16)
+    monkeypatch.setattr(tq, "native_quant_scheme", lambda *a, **k: None)
+    monkeypatch.setattr(tq, "select_transformer_quant_scheme", lambda t, s, **k: s)
+    assert cq.comfy_fp8_backend(target, "wan2.2-ti2v-5b") == "torchao"
+    # Studio keeps fp8 on a resident DiT only
+    assert cq.comfy_fp8_backend(target, "wan2.2-ti2v-5b", offload = True) is None
+    monkeypatch.setenv(cq.COMFY_FP8_ENV, "0")
+    assert cq.comfy_fp8_backend(target, "wan2.2-ti2v-5b") is None
+    monkeypatch.delenv(cq.COMFY_FP8_ENV)
+    monkeypatch.setattr(tq, "select_transformer_quant_scheme", lambda *a, **k: None)
+    assert cq.comfy_fp8_backend(target, "wan2.2-ti2v-5b") is None
+    # the torchao-free host builds its own fp8 twin, so a ComfyUI fp8 file dequantizes there
+    monkeypatch.setattr(tq, "native_quant_scheme", lambda *a, **k: "fp8")
+    monkeypatch.setattr(tq, "select_transformer_quant_scheme", lambda t, s, **k: s)
+    assert cq.comfy_fp8_backend(target, "wan2.2-ti2v-5b") is None

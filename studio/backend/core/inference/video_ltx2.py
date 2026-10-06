@@ -1075,6 +1075,75 @@ def _build_from_config(
     return model.to(torch_dtype)
 
 
+def ltx23_is_dit_key(key: str) -> bool:
+    """Whether a combined-checkpoint key belongs to the DiT (not the connectors, VAEs or vocoder)."""
+    return _checkpoint_group(key)[0] == "dit"
+
+
+def ltx23_is_dit_or_connector_key(key: str) -> bool:
+    """The keys a single-file DiT plan prices: the connectors stay in, as for a bf16 file."""
+    return _checkpoint_group(key)[0] in ("dit", "connectors")
+
+
+def _ltx23_pre_convert(state: dict[str, Any]) -> dict[str, Any]:
+    """Bare DiT keys with the 2.3-only prefixes renamed, as ``load_ltx23_transformer`` does before the converter."""
+    out: dict[str, Any] = {}
+    for key, value in state.items():
+        bare = key[len(_DIT_PREFIX) :] if key.startswith(_DIT_PREFIX) else key
+        for old, new in _TRANSFORMER_PRERENAME:
+            if bare.startswith(old):
+                bare = new + bare[len(old) :]
+                break
+        out[bare] = value
+    return out
+
+
+def load_ltx23_comfy_transformer(
+    checkpoint_path: Path | str,
+    scan: Any,
+    *,
+    base_repo: str,
+    torch_dtype: Any,
+    hf_token: Optional[str],
+    cache_dir: Optional[str] = None,
+    local_files_only: bool = False,
+    int8_backend: Optional[str] = None,
+    fp8_backend: Optional[str] = None,
+    family: Optional[str] = None,
+    target: Any = None,
+    logger: Any = None,
+) -> Any:
+    """The LTX-2.3 DiT of a ComfyUI-quantized single file, for ``load_ltx23_pipeline(transformer_override=...)``.
+
+    Reads only the DiT keys (the assembly reads the connectors, VAEs and vocoder from the same file), applies the
+    2.3 pre-rename and the stock converter, and keeps int8 / fp8 codes where ``load_comfy_quant_transformer`` can."""
+    from diffusers import LTX2VideoTransformer3DModel
+
+    from .diffusion_comfy_quant import load_comfy_quant_transformer
+
+    return load_comfy_quant_transformer(
+        LTX2VideoTransformer3DModel,
+        str(checkpoint_path),
+        scan,
+        {
+            "torch_dtype": torch_dtype,
+            "config": base_repo,
+            "subfolder": "transformer",
+            "token": hf_token,
+            "cache_dir": cache_dir,
+            "local_files_only": local_files_only,
+            **LTX_2_3_TRANSFORMER_CONFIG_OVERRIDES,
+        },
+        int8_backend = int8_backend,
+        fp8_backend = fp8_backend,
+        family = family,
+        target = target,
+        logger = logger,
+        keep_key = ltx23_is_dit_key,
+        pre_convert = _ltx23_pre_convert,
+    )
+
+
 def load_ltx23_transformer(
     dit_state: dict[str, Any],
     *,
