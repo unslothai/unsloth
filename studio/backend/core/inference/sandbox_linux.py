@@ -398,7 +398,7 @@ def _preflight(bwrap: str, proc: tuple[str, ...]) -> "subprocess.CompletedProces
 
 
 class _PreflightInconclusive(Exception):
-    """The preflight could not run (timeout, missing `true`): not cached, retried after a back-off."""
+    """The preflight could not run or failed before /proc: not cached, retried after a back-off."""
 
 
 # A wedged bwrap times out at 10 s a run: retry it this often, not on every identity read.
@@ -411,8 +411,11 @@ def _fresh_proc_answer(identity: tuple[str, int, int]) -> bool:
     fresh = _preflight(identity[0], ("--proc", "/proc"))
     if fresh is None:
         raise _PreflightInconclusive
-    if fresh.returncode == 0 or not proc_mount_refused(fresh.stderr):
+    if fresh.returncode == 0:
         return False
+    if not proc_mount_refused(fresh.stderr):
+        # bwrap failed before /proc (e.g. a uid map AppArmor still denies): the layout is unknown until that is fixed.
+        raise _PreflightInconclusive
     without = _preflight(identity[0], ())
     if without is None:
         raise _PreflightInconclusive

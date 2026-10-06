@@ -2649,6 +2649,24 @@ def test_an_inconclusive_preflight_backs_off_then_retries(monkeypatch, _no_proc_
     assert sandbox_linux._fresh_proc_refused(identity) is True
 
 
+def test_a_failure_before_proc_is_retried_once_the_host_is_fixed(
+    monkeypatch, _no_proc_layout_left_behind
+):
+    """An AppArmor uid-map denial says nothing about /proc; repaired by hand, a masked /proc must still be found."""
+    uid_map = subprocess.CompletedProcess([], 1, "", "bwrap: setting up uid map: Permission denied")
+    refused = subprocess.CompletedProcess(
+        [], 1, "", "bwrap: Can't mount proc on /newroot/proc: Permission denied"
+    )
+    answers = iter([uid_map, refused, subprocess.CompletedProcess([], 0, "", "")])
+    monkeypatch.setattr(sandbox_linux, "_preflight", lambda bwrap, proc: next(answers))
+    clock = [1000.0]
+    monkeypatch.setattr(sandbox_linux.time, "monotonic", lambda: clock[0])
+    identity = ("/usr/bin/bwrap", 1, 1)
+    assert sandbox_linux._fresh_proc_refused(identity) is False
+    clock[0] += sandbox_linux._INCONCLUSIVE_RETRY_SECONDS + 1
+    assert sandbox_linux._fresh_proc_refused(identity) is True
+
+
 def test_a_reset_retries_an_inconclusive_preflight_at_once(
     monkeypatch, _no_proc_layout_left_behind
 ):
