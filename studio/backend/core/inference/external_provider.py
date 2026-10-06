@@ -3435,11 +3435,17 @@ class ExternalProviderClient:
                                 elif delta_type == "citations_delta":
                                     replay.setdefault("citations", []).append(delta["citation"])
                                 elif delta_type == "compaction_delta":
+                                    content = delta.get("content")
+                                    if isinstance(content, str):
+                                        prior = replay.get("content")
+                                        replay["content"] = (
+                                            prior if isinstance(prior, str) else ""
+                                        ) + content
                                     replay.update(
                                         {
                                             key: value
                                             for key, value in delta.items()
-                                            if key != "type"
+                                            if key not in ("type", "content")
                                         }
                                     )
                             if delta_type == "thinking_delta":

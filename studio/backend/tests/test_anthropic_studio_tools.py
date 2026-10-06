@@ -427,7 +427,14 @@ def test_tool_follow_up_replays_native_compaction_once(monkeypatch):
     summary = {"content": "Earlier conversation summary", "encrypted_content": "opaque-compaction"}
     first_turn = [
         *_block(
-            0, {"type": "compaction", "content": None}, {"type": "compaction_delta", **summary}
+            0,
+            {"type": "compaction", "content": None},
+            {"type": "compaction_delta", "content": "Earlier conversation "},
+            {
+                "type": "compaction_delta",
+                "content": "summary",
+                "encrypted_content": summary["encrypted_content"],
+            },
         ),
         *_block(
             1,
