@@ -808,10 +808,10 @@ def _clef_forced_float32(model) -> bool:
 
 
 def _clef_amp_dtype(model, device):
-    # Never fp16 autocast: the gated delta net overflows in pure fp16, so a model on Unsloth's
-    # float32 path runs as Unsloth loaded it. Serving uses this too, to match calibration.
-    amp_dtype = _amp_dtype(device)
-    return None if amp_dtype != torch.bfloat16 or _clef_forced_float32(model) else amp_dtype
+    # As _clef_mixed_precision trains: a model on Unsloth's float32 path (Qwen3.5 without bf16,
+    # whose gated delta net overflows in fp16) runs as loaded; any other autocasts, fp16 on a T4,
+    # where its fp32 norms would otherwise feed fp16 Linears. Serving uses this, to match calibration.
+    return None if _clef_forced_float32(model) else _amp_dtype(device)
 
 
 def _load_clef(

@@ -1232,7 +1232,7 @@ def test_clef_calibration_fits_being_right_and_serves_through_the_head_temperatu
     )
 
 
-def test_clef_autocasts_only_in_bfloat16_and_never_on_the_float32_path(monkeypatch):
+def test_clef_autocasts_as_it_trains_and_never_on_the_float32_path(monkeypatch):
     model = torch.nn.Linear(1, 1)
     cuda = torch.device("cuda")
     monkeypatch.setattr(decision, "is_bfloat16_supported", lambda: True)
@@ -1240,8 +1240,12 @@ def test_clef_autocasts_only_in_bfloat16_and_never_on_the_float32_path(monkeypat
     model._unsloth_forced_float32 = True
     assert decision._clef_amp_dtype(model, cuda) is None
     model._unsloth_forced_float32 = False
+    # A T4: an fp16 model autocasts like its fp16 training, else its fp32 norms meet fp16 Linears.
     monkeypatch.setattr(decision, "is_bfloat16_supported", lambda: False)
+    assert decision._clef_amp_dtype(model, cuda) == torch.float16
+    model._unsloth_forced_float32 = True
     assert decision._clef_amp_dtype(model, cuda) is None
+    model._unsloth_forced_float32 = False
     assert decision._clef_amp_dtype(model, torch.device("cpu")) is None
 
 
