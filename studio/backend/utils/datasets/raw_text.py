@@ -157,7 +157,7 @@ def prepare_raw_text_dataset(
     text_column: str | None = None,
 ) -> RawTextPreparationResult:
     notices: list[RawTextNotice] = []
-    mode_title = mode_label.capitalize()
+    mode_title = mode_label[:1].upper() + mode_label[1:]
     split_scope = _split_scope(split_name)
     renamed_col = "text"
 

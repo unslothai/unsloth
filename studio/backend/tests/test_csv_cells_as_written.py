@@ -160,7 +160,10 @@ def test_cpt_csv_trains_the_body_column_and_keeps_the_warning(trainer, tmp_path)
         "The first post has a long body of text.</s>",
         "The second post has an even longer body of text.</s>",
     ]
-    assert any("auto-selecting 'body'" in w for w in trainer.training_progress.warnings)
+    assert any(
+        w.startswith("CPT:") and "auto-selecting 'body'" in w
+        for w in trainer.training_progress.warnings
+    )
 
 
 def test_cpt_eval_csv_uses_the_column_the_train_csv_chose(trainer, tmp_path):
