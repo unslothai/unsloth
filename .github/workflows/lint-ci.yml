@@ -292,11 +292,8 @@ jobs:
         # duplicate that was already in the file is printed and ignored while one
         # this PR introduced fails. Comparing added LINES instead would miss the
         # case where the new copy is inserted ABOVE the old one, since the finding
-        # is reported at the second, unchanged definition. That tolerance was there
-        # for a backlog of 37 pre-existing findings on main; the backlog is now zero
-        # and the whole-tree step below holds it there, so this step keeps doing the
-        # one job it is good at -- naming the PR that introduces a duplicate, on a
-        # diff, without waiting on a full-tree scan.
+        # is reported at the second, unchanged definition. The whole-tree step below
+        # catches pre-existing ones.
         if: github.event_name == 'pull_request'
         env:
           GH_TOKEN: ${{ github.token }}
@@ -339,12 +336,8 @@ jobs:
             --before "$MERGE_BASE" --after "$HEAD_SHA" "${CHANGED[@]}"
 
       - name: Duplicate definitions (whole tree)
-        # The diff-scoped step above is one-way on its own: it stops new damage but
-        # can never confirm the old damage is gone, because a finding it did not
-        # introduce is printed and passed. The backlog is zero as of this step
-        # landing, so scan the whole tree and keep it there. Same paths as the ruff
-        # step, plus scripts/. Stdlib-only AST walk over ~2k files, sub-second, and
-        # it runs on push as well as on a PR so a direct commit cannot reopen it.
+        # The diff-scoped step passes pre-existing findings, so the backlog regrew
+        # to 38 while it was the only gate. Runs on push too.
         run: |
           python scripts/lint_duplicate_definitions.py \
             unsloth unsloth_cli studio scripts tests cli.py unsloth-cli.py
