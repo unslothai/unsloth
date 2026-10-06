@@ -128,7 +128,9 @@ def test_fast_pissa_preserves_output(init):
         @ layer.lora_A["default"].weight.double().cpu()
     )
     Ue, Se, Vhe = torch.linalg.svd(W, full_matrices = False)
-    assert (W - BA).norm() / (W - (Ue[:, :8] * Se[:8]) @ Vhe[:8]).norm() < 1.001
+    # "pissa" stands in for an exact SVD; pissa_niter_N keeps PEFT's svd_lowrank accuracy class.
+    bound = 1.001 if init == "pissa" else 1.05
+    assert (W - BA).norm() / (W - (Ue[:, :8] * Se[:8]) @ Vhe[:8]).norm() < bound
 
 
 def test_kill_switch(monkeypatch):
