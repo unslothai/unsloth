@@ -148,8 +148,9 @@ function useFrameMessages(tabId: string, origin: string | null) {
   );
 }
 
-// Stands in for the app's name while translating, so the name can be set in bold.
+// Stands in for the app name while translating, so it can be a link.
 const APP_MARK = "\u0000";
+const DESKTOP_APP_URL = "https://github.com/unslothai/unsloth";
 
 function PageError({
   url,
@@ -181,9 +182,15 @@ function PageError({
                   index === 0
                     ? [part]
                     : [
-                        <strong key={index} className="font-semibold text-foreground">
+                        <a
+                          key={index}
+                          href={DESKTOP_APP_URL}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="font-semibold text-foreground underline decoration-border underline-offset-2 transition-colors hover:decoration-foreground"
+                        >
                           {t("browser.error.desktopApp")}
-                        </strong>,
+                        </a>,
                         part,
                       ],
                 )

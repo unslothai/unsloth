@@ -4,6 +4,7 @@
 import { create } from "zustand";
 import { type StateStorage, createJSONStorage, persist } from "zustand/middleware";
 import { accountDatabaseName } from "@/lib/account-transition";
+import { forgetNativeDownloads } from "./native-downloads";
 import { useBrowserPrefsStore } from "./prefs-store";
 
 export type HistoryItem = { id: string; url: string; title: string; visitedAt: number };
@@ -14,6 +15,8 @@ export type DownloadItem = {
   size: number;
   contentType: string;
   downloadedAt: number;
+  /** Desktop app id for the saved file (native-downloads.ts). */
+  nativeId?: string;
 };
 
 const MAX_HISTORY = 1000;
@@ -111,7 +114,10 @@ export const useBrowserHistoryStore = create<BrowserHistoryState>()(
         }),
       recordDownload: (item) =>
         set((state) => {
-          if (!useBrowserPrefsStore.getState().saveDownloadHistory) return state;
+          if (!useBrowserPrefsStore.getState().saveDownloadHistory) {
+            if (item.nativeId) forgetNativeDownloads([item.nativeId]);
+            return state;
+          }
           // A page picks these: bounded like a visit, keeping the download without an overlong address.
           const entry = {
             ...item,
@@ -121,13 +127,24 @@ export const useBrowserHistoryStore = create<BrowserHistoryState>()(
             id: newId(),
             downloadedAt: Date.now(),
           };
-          return { downloads: [entry, ...state.downloads].slice(0, MAX_DOWNLOADS) };
+          const downloads = [entry, ...state.downloads];
+          const dropped = downloads.slice(MAX_DOWNLOADS).flatMap((item) => (item.nativeId ? [item.nativeId] : []));
+          forgetNativeDownloads(dropped);
+          return { downloads: downloads.slice(0, MAX_DOWNLOADS) };
         }),
       removeVisit: (id) => set((state) => ({ history: state.history.filter((item) => item.id !== id) })),
       removeVisits: (ids) => set((state) => ({ history: state.history.filter((item) => !ids.has(item.id)) })),
-      removeDownload: (id) => set((state) => ({ downloads: state.downloads.filter((item) => item.id !== id) })),
+      removeDownload: (id) =>
+        set((state) => {
+          const nativeId = state.downloads.find((item) => item.id === id)?.nativeId;
+          if (nativeId) forgetNativeDownloads([nativeId]);
+          return { downloads: state.downloads.filter((item) => item.id !== id) };
+        }),
       clearHistory: () => set({ history: [], icons: {} }),
-      clearDownloads: () => set({ downloads: [] }),
+      clearDownloads: () => {
+        forgetNativeDownloads();
+        set({ downloads: [] });
+      },
       pruneHistory: () =>
         set((state) => {
           const cutoff = retentionCutoff();

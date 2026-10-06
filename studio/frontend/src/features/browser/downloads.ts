@@ -7,6 +7,7 @@ import { toast } from "@/lib/toast";
 import { fileNameFromUrl, withBaseUrl } from "./address";
 import { fetchBrowserPage } from "./api";
 import { useBrowserHistoryStore } from "./history-store";
+import { saveNativeDownload } from "./native-downloads";
 import { useBrowserPrefsStore } from "./prefs-store";
 
 export type BrowserDownload = { blob: Blob; name: string; contentType: string; url: string | null };
@@ -44,14 +45,27 @@ async function saveWithPicker(blob: Blob, name: string): Promise<boolean> {
 
 /** Save a file from the panel and add it to the download history. */
 export async function saveBrowserDownload({ blob, name, contentType, url }: BrowserDownload): Promise<void> {
+  let saved: { id: string; name: string } | null = null;
   try {
-    const asked = canAskWhereToSave() && useBrowserPrefsStore.getState().askWhereToSave;
-    if (!(asked && (await saveWithPicker(blob, name)))) await downloadFile(blob, name, contentType || undefined);
+    if (isTauri) {
+      // The app keeps the path so Download history can reveal it.
+      saved = await saveNativeDownload(blob, name);
+      if (!saved) return;
+    } else {
+      const asked = canAskWhereToSave() && useBrowserPrefsStore.getState().askWhereToSave;
+      if (!(asked && (await saveWithPicker(blob, name)))) await downloadFile(blob, name, contentType || undefined);
+    }
   } catch (error) {
     if (!isDownloadCancelled(error)) toast.error(error instanceof Error ? error.message : String(error));
     return;
   }
-  useBrowserHistoryStore.getState().recordDownload({ name, url, size: blob.size, contentType });
+  useBrowserHistoryStore.getState().recordDownload({
+    name: saved?.name || name,
+    url,
+    size: blob.size,
+    contentType,
+    nativeId: saved?.id,
+  });
 }
 
 /** Save what a link points at, fetched through the panel's proxy so any site works. */
