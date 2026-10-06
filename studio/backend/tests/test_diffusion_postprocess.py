@@ -114,7 +114,7 @@ def test_device_path_actually_runs(monkeypatch, channels):
 
 @pytest.mark.parametrize(
     "case",
-    ["cpu_tensor", "no_normalize", "partial_denormalize", "grayscale", "integer", "nan"],
+    ["cpu_tensor", "no_normalize", "partial_denormalize", "grayscale", "integer"],
 )
 def test_uncovered_inputs_return_none_for_the_stock_path(case):
     proc = VaeImageProcessor(do_normalize = case != "no_normalize")
@@ -127,11 +127,13 @@ def test_uncovered_inputs_return_none_for_the_stock_path(case):
         image = torch.empty(2, 1, 8, 8, device = device)
     elif case == "integer":
         image = torch.empty(2, 3, 8, 8, device = device, dtype = torch.uint8)
-    if case == "nan":
-        if not torch.cuda.is_available():
-            pytest.skip("needs a CUDA device")
-        image = torch.full((1, 3, 8, 8), float("nan"), device = "cuda")
     assert dp.to_pil_on_device(proc, image, do_denormalize) is None
+
+
+@needs_cuda
+def test_nan_input_returns_none_for_the_stock_path():
+    image = torch.full((1, 3, 8, 8), float("nan"), device = "cuda")
+    assert dp.to_pil_on_device(VaeImageProcessor(), image) is None
 
 
 def test_stock_path_still_serves_other_output_types_and_cpu():
