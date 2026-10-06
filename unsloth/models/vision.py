@@ -3377,7 +3377,11 @@ class FastBaseModel:
         elif load_in_16bit:
             bnb_config = None
         elif not load_in_4bit and not load_in_8bit and not full_finetuning:
-            print("Unsloth: QLoRA and full finetuning all not selected. Switching to 16bit LoRA.")
+            # FastModel passes load_in_4bit = False with a quantization_config, which still quantizes.
+            if user_quantization_config is None:
+                print(
+                    "Unsloth: QLoRA and full finetuning all not selected. Switching to 16bit LoRA."
+                )
 
         if full_finetuning:
             os.environ["UNSLOTH_ENABLE_FULL_FINETUNING"] = "1"
