@@ -175,7 +175,6 @@ def test_user_configured_binary_is_never_outdated(monkeypatch, tmp_path):
     assert status["expected_tag"] is None and status["outdated"] is False
 
 
-
 @pytest.mark.parametrize(
     "name, value",
     [
@@ -196,6 +195,7 @@ def test_managed_binary_is_not_outdated_when_setup_skips_it(monkeypatch, tmp_pat
     status = inference._audio_cpp_runtime_status()
     assert status["available"] is True
     assert status["expected_tag"] is None and status["outdated"] is False
+
 
 def test_release_lookup_error_is_not_outdated(monkeypatch, tmp_path):
     _managed(
