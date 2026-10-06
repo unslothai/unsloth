@@ -156,5 +156,3 @@ export function useAudioHandoff({
     navigateSelf,
   };
 }
-
-export type AudioHandoff = ReturnType<typeof useAudioHandoff>;

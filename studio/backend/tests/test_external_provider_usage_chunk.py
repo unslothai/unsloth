@@ -55,6 +55,26 @@ def test_build_usage_chunk_anthropic_shape():
     assert usage["prompt_tokens_details"]["cached_tokens"] == 18901
 
 
+def test_build_usage_chunk_anthropic_includes_compaction_iteration_tokens():
+    line = _build_usage_chunk(
+        "chatcmpl-compaction",
+        "anthropic",
+        {
+            "input_tokens": 23_000,
+            "output_tokens": 1_000,
+            "compaction_input_tokens": 180_000,
+            "compaction_output_tokens": 3_500,
+        },
+    )
+    assert line is not None
+    usage = json.loads(line[len("data: ") :])["usage"]
+    assert usage["prompt_tokens"] == 203_000
+    assert usage["completion_tokens"] == 4_500
+    assert usage["total_tokens"] == 207_500
+    assert usage["compaction_input_tokens"] == 180_000
+    assert usage["compaction_output_tokens"] == 3_500
+
+
 def test_build_usage_chunk_openai_shape():
     line = _build_usage_chunk(
         "chatcmpl-y",
