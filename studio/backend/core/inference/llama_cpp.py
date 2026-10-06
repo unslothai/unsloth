@@ -4479,6 +4479,8 @@ def _auto_mode_drops_mtp(
 # (239+179 MiB at 244480 cells). Stock builds without it exit "failed to create MTP
 # context", which the launch retries without speculative decoding.
 _MLA_MTP_FAST_ARCHS = frozenset({"glm5next", "glm5-next"})
+# Smallest context Auto shrinks to so a fast MLA head still launches (see the drafter probe).
+_FAST_MTP_MIN_CTX = 65536
 
 
 def _arch_has_fast_mla_mtp(architecture: Optional[str]) -> bool:
@@ -26075,6 +26077,20 @@ class LlamaCppBackend:
                                     / (1024 * 1024)
                                     <= _budget_w
                                 ):
+                                    # A NextN-only head (GLM-5.3-Flash) is the model's main
+                                    # decode speedup, not an extra, so Auto does pay for it in
+                                    # context, down to _FAST_MTP_MIN_CTX.
+                                    if _arch_has_fast_mla_mtp(
+                                        getattr(self, "_architecture", None)
+                                    ) and _ctx_w >= min(_ctx_wo, _FAST_MTP_MIN_CTX):
+                                        _both_fit_somewhere = True
+                                        logger.info(
+                                            "Auto: keeping the embedded MTP head; context %d -> %d "
+                                            "so it fits (%.1f GB budget).",
+                                            _ctx_wo,
+                                            _ctx_w,
+                                            _budget_w / 1024,
+                                        )
                                     break
                         if _target_fits_somewhere and not _both_fit_somewhere:
                             _spec_dropped_no_vram = True
