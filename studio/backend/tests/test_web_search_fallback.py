@@ -109,7 +109,7 @@ FALLBACK_RESULT = [
 
 @pytest.fixture
 def provider(monkeypatch):
-    """Control provider responses without making network calls or depending on ddgs's lazy proxy."""
+    """controls provider responses without network calls or ddgs's lazy proxy."""
     state = SimpleNamespace(calls = [], respond = lambda client, query, **kwargs: PRIMARY_RESULT)
 
     class DDGS:
@@ -152,7 +152,6 @@ def test_primary_success_keeps_full_provider_timeout(provider, search_clock, tim
 @pytest.mark.parametrize("blocked", [False, True])
 def test_primary_late_success_is_not_replaced(provider, search_clock, blocked):
     def respond(client, query, **kwargs):
-        # A valid answer in the last five seconds of the normal 300-second budget.
         if client.timeout < 298:
             raise TimeoutError("provider needed 298 seconds")
         search_clock.now += 298

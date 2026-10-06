@@ -1,11 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Built-in text search runs an approved allowlist, tier by tier, and never reaches Yandex.
-
-Drives the real DDGS engine selector through ``execute_tool``; only each engine's own ``search`` is
-replaced, so the tier strings really are resolved by ddgs and a fan-out cannot hide.
-"""
+"""uses the real DDGS selector so fan-out cannot hide tier-resolution errors."""
 
 from types import SimpleNamespace
 
@@ -62,7 +58,7 @@ class _Recorder:
 def engine_calls(monkeypatch):
     from ddgs.ddgs import DDGS
 
-    # 9.14.4 defines _get_network_client; a DHT cache hit would skip the engines entirely.
+    # disable the 9.14.4 DHT cache because a hit skips every engine.
     if callable(getattr(DDGS, "_get_network_client", None)):
         monkeypatch.setattr(DDGS, "_get_network_client", lambda self: None)
     monkeypatch.setattr(tools, "_wikipedia_search", lambda *args: [])
@@ -74,8 +70,7 @@ def _names(recorder):
 
 
 def _require_two_tiers():
-    """Skip rather than go red if an upstream release ever leaves fewer than two resolvable tiers.
-    Both pins resolve two: 9.14.4 all three members, 9.8.0 yahoo alone."""
+    """skip if upstream resolves fewer than two tiers; 9.14.4 has every tier-two engine and 9.8.0 only Yahoo."""
     resolved = tools._resolve_engine_tiers(ENGINES["text"])
     if len(resolved) < 2:
         pytest.skip(f"installed ddgs resolves only {len(resolved)} tier(s): {resolved}")
@@ -173,7 +168,7 @@ def test_disabled_engines_are_dropped_from_a_tier(monkeypatch, engine_calls):
 
 
 def test_the_caller_timeout_is_one_budget_for_both_tiers(monkeypatch, engine_calls):
-    """Tier 2 inherits what is LEFT of the timeout: a fresh copy doubles what the caller asked for."""
+    """tier 2 must receive the remaining timeout because a fresh budget doubles the caller's limit."""
     from ddgs.ddgs import DDGS
 
     budgets = []
@@ -196,17 +191,17 @@ def test_the_caller_timeout_is_one_budget_for_both_tiers(monkeypatch, engine_cal
         try:
             return real_text(self, *args, **kwargs)
         finally:
-            # Advance only Studio's clock, keeping actual ddgs engine selection deterministic.
+            # advance only Studio's clock so ddgs engine selection stays deterministic.
             clock.now += 1
 
     monkeypatch.setattr(DDGS, "text", timed_text)
-    # Timeout belongs to the executor, not the model-provided tool arguments.
+    # timeout belongs to the executor, not the model-provided tool arguments.
     result = tools.execute_tool("web_search", {"query": "unsloth"}, timeout = 3)
 
     assert "URL:" in result
     assert searched_tiers == tools._resolve_engine_tiers(ENGINES["text"])
     assert set(_names(engine_calls)) & set(TIER2), "the second tier must actually run"
-    # Initial client, first tier, second tier: the latter gets the two seconds left.
+    # the initial client and first tier get three seconds; the second tier gets the two seconds left.
     assert budgets == [3, 3, 2]
 
 

@@ -16916,9 +16916,8 @@ def _empty_result_with_requested_images(
 
 
 def _wikipedia_search(query, max_results, timeout, deadline, cancel_event, website_policy):
-    """Search English Wikipedia independently of ddgs, using the guarded HTTP fetcher."""
-    # ddgs already includes Wikipedia, but its engine uses a one-result OpenSearch lookup.
-    # Full-text search here can recover from that lookup or the ddgs integration failing.
+    """search English Wikipedia independently of ddgs through the guarded HTTP fetcher."""
+    # ddgs uses a one-result Wikipedia lookup, so full-text search recovers misses and failures.
     from html import unescape
 
     params = urllib.parse.urlencode(
@@ -16977,11 +16976,7 @@ def _web_search(
     include_images: bool = False,
     image_queries = None,
 ) -> str:
-    """Search the web through the approved engine tiers and return formatted results. If ``url`` is provided,
-    fetches that page directly instead of searching. ``include_images`` adds image results registered
-    server-side and offered to the model as ``[[img:<id>]]`` tokens, with a frontend-only
-    envelope appended: one picture per ``image_queries`` subject when the model named them, else
-    a handful for the query. ``image_queries`` alone (no query) is a pure image lookup."""
+    """search approved tiers, fetch a URL, or return registered ``[[img:<id>]]`` images alone."""
     # Direct URL fetch mode.
     if url and url.strip():
         fetch_timeout = 60 if timeout is None else min(timeout, 60)
@@ -16996,8 +16991,7 @@ def _web_search(
     if subjects and not (query and query.strip()):
         if not include_images:
             return IMAGE_SEARCH_DISABLED
-        # Ahead of the try below, so this one has to carry its own guard: execute_tool returns a string for every
-        # input, and a raise here would escape _web_search.
+        # guard here because execute_tool requires a string result and this is outside the try.
         found = _image_search_or_none(subjects, timeout, cancel_event, website_policy)
         if found is None:
             return "No images found for: " + ", ".join(subjects)
@@ -17005,20 +16999,19 @@ def _web_search(
 
     if not query or not query.strip():
         return "No query provided."
-    # Preserve the existing blocking provider call; discard its result after a disconnect.
+    # DDGS.text() is blocking, so cancellation is checked before and after the call.
     if cancel_event is not None and cancel_event.is_set():
         return "Search cancelled."
     try:
         from .web_access_policy import check_url_access, scope_search_query
 
         effective_query = scope_search_query(query, website_policy)
-        # Ask for more candidates when policy restricts domains: allowed hits may rank below blocked ones.
-        # Check the domain lists, not the dict; an unrestricted normalized policy is also truthy.
+        # overfetch for allowed hits below blocked ones; normalized policy remains truthy.
         restricted = any(
             (website_policy or {}).get(key) for key in ("allowedDomains", "blockedDomains")
         )
         wanted = max_results * _POLICY_OVERFETCH if restricted else max_results
-        # Bound fallback even if importing or resolving ddgs fails before its normal budget starts.
+        # bound fallback even if importing or resolving ddgs fails before its normal budget starts.
         deadline = time.monotonic() + timeout if timeout else None
         client, results, last_error = None, [], None
         rejected_results = False
@@ -17030,14 +17023,10 @@ def _web_search(
             engine_tiers = _resolve_engine_tiers(ENGINES.get("text", {}))
             if not engine_tiers:
                 raise RuntimeError("no approved search engine is available.")
-            # As before, the primary budget starts after imports and engine resolution succeed.
-            # Resetting here preserves that budget; the earlier deadline covers setup failures.
-            # Reserving time for Wikipedia would cut off otherwise successful slow searches.
+            # reset after setup to keep the primary budget; the earlier deadline bounds fallback.
             deadline = time.monotonic() + timeout if timeout else None
             client = DDGS(timeout = timeout)
-            # ddgs applies timeout per client. Give each tier only the remaining shared budget,
-            # rather than restarting it; retain the successful client for automatic image search.
-            # ddgs raises on an empty sweep, so an exception must also advance to the next tier.
+            # DDGS uses per-client timeouts; tiers share one budget and images reuse the client.
             for backend in engine_tiers:
                 if cancel_event is not None and cancel_event.is_set():
                     return "Search cancelled."
@@ -17084,7 +17073,7 @@ def _web_search(
                     logger.debug("Independent Wikipedia search failed", exc_info = True)
             if cancel_event is not None and cancel_event.is_set():
                 return "Search cancelled."
-        # A tier that answered with only blocked results outranks an earlier tier's exception.
+        # blocked results take precedence over earlier tier exceptions.
         if not results and last_error is not None and not rejected_results:
             raise last_error
         if not results:
@@ -17131,7 +17120,7 @@ def _web_search(
             'the url parameter (e.g. {"url": "<URL>"}).'
         )
         if include_images and subjects:
-            # The model named what it will show: one picture per subject, no generic pile.
+            # named subjects require one image each rather than a generic image batch.
             found = _image_search_or_none(subjects, timeout, cancel_event, website_policy)
             if found is not None:
                 text += "\n\n---\n\n" + found
@@ -17144,13 +17133,12 @@ def _web_search(
                 website_policy,
             )
         elif subjects:
-            # Replayed history keeps teaching the parameter; say so, don't drop it.
+            # replayed history must retain the disabled-search reminder.
             text += "\n\n---\n\n" + IMAGE_SEARCH_DISABLED
         return text
     except Exception as e:
         failure = _search_failure_message(e, timeout)
-        # ddgs signals an empty sweep by RAISING, so that exit is an empty result too and owes the named subjects
-        # their pictures. A genuine failure keeps its message alone: pictures under an error read as a partial answer.
+        # ddgs raises on an empty sweep; attach requested images only to empty results, not genuine errors.
         if failure == EMPTY_SEARCH_RESULTS[0]:
             return _empty_result_with_requested_images(
                 failure,
