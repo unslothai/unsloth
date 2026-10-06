@@ -155,7 +155,6 @@ export function ArtifactCard({
     openArtifactInBrowser(artifact, "preview");
   }, [artifact, autoOpen, isStreaming]);
 
-  // The page <title> names the card and its tab.
   const pageTitle = htmlDocumentTitle(artifact.code) ?? displayFallbackTitle(artifact.title);
   const filename = getArtifactFilename({ title: pageTitle });
   const showing = shownView !== null;

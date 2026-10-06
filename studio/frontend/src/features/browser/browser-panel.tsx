@@ -1539,7 +1539,6 @@ function BrowserFileToolbar({
       <AddressBar
         key={tab.id}
         tab={tab}
-        // No icon, just the edge padding.
         leading={<span aria-hidden={true} className="w-1.5 shrink-0" />}
         actions={
           <>
