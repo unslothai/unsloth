@@ -3,13 +3,14 @@
 
 """Where a project's workspace folder lands, and what happens when it cannot.
 
-Project workspaces are the only thing Studio writes into the user's Documents,
+Project workspaces are the only thing Unsloth writes into the user's Documents,
 so a Documents folder it guesses wrong about breaks project creation and
 nothing else. On Windows that guess is wrong by default whenever OneDrive's
 Known Folder Move has repointed Documents at the synced copy.
 """
 
 import os
+import re
 from pathlib import Path
 
 import pytest
@@ -19,6 +20,7 @@ from utils.paths.storage_roots import (
     _windows_documents_dir,
     documents_root,
     project_workspaces_root,
+    shared_project_workspaces_root,
 )
 
 
@@ -68,6 +70,25 @@ def test_the_projects_override_wins_outright(tmp_path, monkeypatch):
     assert project_workspaces_root() == tmp_path / "projects"
 
 
+@pytest.mark.parametrize("dockerfile", ["Dockerfile.studio", "Dockerfile.studio-rocm"])
+def test_the_studio_images_keep_project_folders_on_the_studio_volume(
+    dockerfile, tmp_path, monkeypatch
+):
+    text = (Path(__file__).resolve().parents[3] / "docker" / dockerfile).read_text(encoding = "utf-8")
+    block = text[text.index("ENV UNSLOTH_STUDIO_HOME=") :]
+    image_env = dict(re.findall(r"(\w+)=(\S+)", block[: block.index("\n\n")]))
+    for name in ("UNSLOTH_STUDIO_DOCUMENTS_HOME", "UNSLOTH_STUDIO_PROJECTS_HOME"):
+        monkeypatch.delenv(name, raising = False)
+    for name, value in image_env.items():
+        monkeypatch.setenv(name, value)
+    monkeypatch.setenv("HOME", str(tmp_path / "root"))
+
+    assert project_workspaces_root().is_relative_to(image_env["UNSLOTH_STUDIO_HOME"])
+    # The owner gets no OS confinement and its project root is a silent tool root, so it must not
+    # contain the base the managed accounts' `Accounts/<id>/Projects` live under.
+    assert not shared_project_workspaces_root().is_relative_to(project_workspaces_root())
+
+
 def _probe_payload():
     from routes import chat_history
     return chat_history.ChatProject(
@@ -103,7 +124,7 @@ def test_the_workspace_error_carries_the_folder_it_could_not_make(tmp_path, monk
 
 
 def test_creating_a_project_says_which_folder_failed(tmp_path, monkeypatch):
-    """A folder Studio cannot create is the one failure this route has.
+    """A folder Unsloth cannot create is the one failure this route has.
 
     It used to surface as a bare 500, which says nothing about which folder or
     what to do, and the folder is one the user can move.

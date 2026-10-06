@@ -8,7 +8,11 @@ import {
   CollapsibleTrigger,
 } from "@/components/ui/collapsible";
 import { usePlatformStore } from "@/config/env";
-import { CPT_TARGET_MODULES, TARGET_MODULES } from "@/config/training";
+import {
+  getUiTargetModules,
+  isCptTargetModuleActive,
+  toggleCptTargetModule,
+} from "@/config/training";
 import {
   isTrainingLoraVariantSupportedOnDevice,
   useTrainingConfigStore,
@@ -54,6 +58,10 @@ export function LoraParamsSection(): ReactElement | null {
   const [open, setOpen] = useState(true);
   const isCpt = store.trainingMethod === "cpt";
   const showVisionLora = store.isVisionModel && store.isDatasetImage === true;
+  // `isVisionModel` can go stale, so this blocks only a NEW selection;
+  // the backend settles an existing one.
+  const doraNeedsVisionOff =
+    deviceType === "mac" && showVisionLora && store.finetuneVisionLayers;
 
   if (!isAdapterMethod(store.trainingMethod)) {
     return null;
@@ -188,8 +196,11 @@ export function LoraParamsSection(): ReactElement | null {
                 {t("studio.params.targetModules")}
               </span>
               <div className="flex flex-wrap gap-1.5">
-                {(isCpt ? CPT_TARGET_MODULES : TARGET_MODULES).map((module) => {
-                  const active = store.targetModules.includes(module);
+                {getUiTargetModules(isCpt).map((module) => {
+                  const active = isCptTargetModuleActive(
+                    store.targetModules,
+                    module,
+                  );
                   return (
                     <button
                       key={module}
@@ -197,11 +208,7 @@ export function LoraParamsSection(): ReactElement | null {
                       aria-pressed={active}
                       onClick={() =>
                         store.setTargetModules(
-                          active
-                            ? store.targetModules.filter(
-                                (candidate) => candidate !== module,
-                              )
-                            : [...store.targetModules, module],
+                          toggleCptTargetModule(store.targetModules, module),
                         )
                       }
                       className={`cursor-pointer rounded-full border px-2.5 py-0.5 text-ui-11 font-mono transition-colors ${selectableOptionStateClassName(active)} ${
@@ -246,11 +253,13 @@ export function LoraParamsSection(): ReactElement | null {
                 store.trainingMethod,
                 deviceType,
               );
+              const needsVisionOff =
+                option.value === "dora" && doraNeedsVisionOff;
               return (
                 <button
                   key={option.value}
                   type="button"
-                  disabled={unsupportedOnMlx}
+                  disabled={unsupportedOnMlx || needsVisionOff}
                   aria-pressed={store.loraVariant === option.value}
                   onClick={() => store.setLoraVariant(option.value)}
                   className={`flex-1 corner-squircle rounded-[14px] border px-3 py-2 text-left transition-colors cursor-pointer disabled:cursor-not-allowed disabled:opacity-60 ${selectableOptionStateClassName(store.loraVariant === option.value)}`}
@@ -259,7 +268,9 @@ export function LoraParamsSection(): ReactElement | null {
                   <p className="text-ui-10 text-muted-foreground">
                     {unsupportedOnMlx
                       ? t("studio.params.notSupportedAppleSilicon")
-                      : option.desc}
+                      : needsVisionOff
+                        ? t("studio.params.doraNeedsVisionLayersOff")
+                        : option.desc}
                   </p>
                 </button>
               );

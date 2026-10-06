@@ -52,7 +52,7 @@ def uv_safe_path(path: object) -> str:
         if not os.path.isfile(s):
             return s
         tmp_dir = tempfile.mkdtemp(prefix = "unsloth_uv_")
-        if " " in tmp_dir:  # e.g. TMPDIR itself has a space
+        if " " in tmp_dir:
             shutil.rmtree(tmp_dir, ignore_errors = True)
             return s
         source_name = os.path.basename(s) or "uv_args.txt"

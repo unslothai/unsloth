@@ -2,7 +2,6 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import test from "node:test";
 import {
   sttEngineForRepoId,
@@ -11,19 +10,16 @@ import {
 } from "../src/features/audio/stt-artifacts.ts";
 import { detectCapabilities } from "../src/features/model-picker/components/model-selector/model-capabilities.ts";
 
-const pageSource = readFileSync(
-  new URL("../src/features/audio/audio-page.tsx", import.meta.url),
-  "utf8",
-);
-const catalogSource = readFileSync(
-  new URL("../src/features/audio/catalog.ts", import.meta.url),
-  "utf8",
-);
+import { readSrc } from "./helpers/kit.ts";
+import { readAudioWorkspaceSource } from "./helpers/audio-workspace.ts";
+
+const pageSource = readAudioWorkspaceSource();
+const catalogSource = readSrc("features/audio/catalog.ts");
 
 test("Hub discovery follows the active audio mode", () => {
   assert.match(
     pageSource,
-    /speak: \["text-to-speech"\],[\s\S]*transcribe: \["automatic-speech-recognition"\]/,
+    /speak: \["text-to-speech", "text-to-audio"\],[\s\S]*transcribe: \["automatic-speech-recognition"\]/,
   );
   assert.match(pageSource, /task=\{HUB_TASKS_BY_MODE\[mode\]\}/);
 });

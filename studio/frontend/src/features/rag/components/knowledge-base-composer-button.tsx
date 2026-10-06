@@ -1,11 +1,14 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { XIcon } from "lucide-react";
+import {
+  ChevronDownIcon,
+  XIcon,
+} from "lucide-react";
 import { Tick02Icon } from "@/lib/tick-icon";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { FileDatabaseIcon } from "@hugeicons/core-free-icons";
-import { type FC, useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 import {
   DropdownMenu,
@@ -18,29 +21,15 @@ import {
 import { useRagToolDisabled } from "@/features/chat/hooks/use-rag-tool-disabled";
 import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
 
-import { listKnowledgeBases } from "../api/rag-api";
+import {
+  listKnowledgeBases,
+  subscribeKnowledgeBasesChanged,
+} from "../api/rag-api";
 import type { KnowledgeBase } from "../types/rag";
 import { KnowledgeBaseDialog } from "./knowledge-base-dialog";
 
-// Matches the Thinking/MCP pill chevron.
-const ArrowDownStandardIcon: FC<{ className?: string }> = ({ className }) => (
-  <svg
-    className={className}
-    viewBox="0 0 24 24"
-    fill="none"
-    stroke="currentColor"
-    strokeWidth={1.5}
-    strokeLinecap="round"
-    strokeLinejoin="round"
-    xmlns="http://www.w3.org/2000/svg"
-    aria-hidden={true}
-  >
-    <path d="M5.99977 9.00005L11.9998 15L17.9998 9" />
-  </svg>
-);
-
-// Picks the retrieval source. Shown whenever retrieval is on; dims but stays
-// interactive (so it can be turned off) while the loaded model can't run it.
+// Matches the Thinking/MCP pill chevron. Picks the retrieval source. Shown whenever retrieval is
+// on; dims but stays interactive (so it can be turned off) while the loaded model can't run it.
 export function KnowledgeBaseComposerButton({
   side = "bottom",
 }: {
@@ -57,20 +46,24 @@ export function KnowledgeBaseComposerButton({
   const [menuOpen, setMenuOpen] = useState(false);
   const [dialogOpen, setDialogOpen] = useState(false);
 
+  // Refreshes overlap; an older answer landing last would restore a deleted KB.
+  const latestRefreshRef = useRef(0);
   const refresh = useCallback(async () => {
+    const request = ++latestRefreshRef.current;
     try {
       const rows = await listKnowledgeBases();
-      setKbs(rows);
+      if (request === latestRefreshRef.current) setKbs(rows);
     } catch {
       // Keep prior state on failure.
     } finally {
-      setKbsLoaded(true);
+      if (request === latestRefreshRef.current) setKbsLoaded(true);
     }
   }, []);
 
   // Load on mount so newly created KBs show up.
   useEffect(() => {
     void refresh();
+    return subscribeKnowledgeBasesChanged(() => void refresh());
   }, [refresh]);
 
   // If the selected KB was deleted, fall back to thread source so we never send a
@@ -127,12 +120,12 @@ export function KnowledgeBaseComposerButton({
               <HugeiconsIcon
                 icon={FileDatabaseIcon}
                 strokeWidth={2}
-                className="size-[15px]"
+                className="size-[calc(15px*var(--ui-space-scale,1))]"
               />
               <XIcon className="composer-pill-x" />
             </span>
             <span>RAG</span>
-            <ArrowDownStandardIcon className="composer-pill-caret size-[15px]" />
+            <ChevronDownIcon strokeWidth={1.5} className="composer-pill-caret size-[calc(15px*var(--ui-space-scale,1))]" />
           </button>
         </DropdownMenuTrigger>
         <DropdownMenuContent
@@ -140,7 +133,7 @@ export function KnowledgeBaseComposerButton({
           align="start"
           sideOffset={2}
           avoidCollisions={true}
-          className="unsloth-plus-menu mcp-menu w-[232px]"
+          className="unsloth-plus-menu mcp-menu w-[calc(232px*var(--ui-space-scale,1))]"
         >
           <DropdownMenuLabel>Retrieve from</DropdownMenuLabel>
           <DropdownMenuItem
@@ -196,10 +189,7 @@ export function KnowledgeBaseComposerButton({
       </DropdownMenu>
       <KnowledgeBaseDialog
         open={dialogOpen}
-        onOpenChange={(next) => {
-          setDialogOpen(next);
-          if (!next) void refresh();
-        }}
+        onOpenChange={setDialogOpen}
       />
     </>
   );

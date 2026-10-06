@@ -3,7 +3,8 @@
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { openLink } from "@/lib/open-link";
+import { copyToClipboard } from "@/lib/copy-to-clipboard";
+import { openExternalLink } from "@/lib/open-link";
 import { useEffect, useRef, useState } from "react";
 import {
   cancelCodexOAuthFlow,
@@ -103,7 +104,8 @@ export function OpenAICodexConnect({
       const url = next.authorization_url || next.verification_url;
       if (url) {
         if (!isTrustedCodexAuthUrl(url)) throw new Error("The authorization URL was not trusted.");
-        openLink(url);
+        // Sign-in needs the provider's cookies, which the browser panel does not keep.
+        openExternalLink(url);
       }
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "Authorization failed.");
@@ -168,19 +170,19 @@ export function OpenAICodexConnect({
 
   const visibleError = error || (flow?.status === "error" ? flow.message || "Authorization failed." : "");
   return (
-    <section className="space-y-3 rounded-[8px] border border-border/70 bg-background/45 p-4">
+    <section className="space-y-3 rounded-lg border border-border/70 bg-background/45 p-4">
       <div>
         <p className="text-sm font-medium">ChatGPT subscription</p>
         <p className="text-xs text-muted-foreground">
           {connected
-            ? "Connected securely on this Studio installation."
+            ? "Connected securely on this Unsloth installation."
             : authStatus === "reauthorization_required"
               ? "Your saved authorization is no longer valid. Reconnect to continue."
               : "Authorize in your system browser. Tokens never enter browser storage."}
         </p>
       </div>
       {flow?.method === "device" && flow.status === "pending" ? (
-        <div className="space-y-2 text-sm">
+        <div data-reload-snapshot-sensitive className="space-y-2 text-sm">
           <p>Enter this code in ChatGPT:</p>
           <code className="block w-fit rounded bg-muted px-3 py-2 font-mono text-base">{flow.user_code}</code>
           <p className="text-xs text-muted-foreground">Device login may need to be enabled in ChatGPT security or workspace settings.</p>
@@ -189,7 +191,7 @@ export function OpenAICodexConnect({
             type="button"
             size="sm"
             variant="outline"
-            onClick={() => void navigator.clipboard.writeText(flow.user_code || "")}
+            onClick={() => void copyToClipboard(flow.user_code || "")}
           >
             Copy code
           </Button>
@@ -203,7 +205,7 @@ export function OpenAICodexConnect({
         <div className="space-y-2">
           <p className="text-xs text-muted-foreground">If the browser cannot return automatically, paste the complete localhost callback URL.</p>
           <div className="flex gap-2">
-            <Input value={callbackUrl} onChange={(event) => setCallbackUrl(event.target.value)} placeholder="http://localhost:1455/auth/callback?..." />
+            <Input data-reload-snapshot-sensitive value={callbackUrl} onChange={(event) => setCallbackUrl(event.target.value)} placeholder="http://localhost:1455/auth/callback?..." />
             <Button type="button" variant="outline" disabled={busy || !callbackUrl.trim()} onClick={() => void complete()}>Complete</Button>
           </div>
         </div>

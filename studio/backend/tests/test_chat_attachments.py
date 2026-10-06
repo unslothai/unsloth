@@ -26,7 +26,7 @@ PNG_DATA_URL = "data:image/png;base64," + base64.b64encode(PNG_BYTES).decode("as
 def _reset_studio_db(tmp_path, monkeypatch):
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
     monkeypatch.setenv("UNSLOTH_STUDIO_PROJECTS_HOME", str(tmp_path / "Projects"))
-    monkeypatch.setattr(studio_db, "_schema_ready", False)
+    monkeypatch.setattr(studio_db, "_schema_ready", set())
 
 
 def _thread(
@@ -364,14 +364,32 @@ def test_attachment_file_serves_text_parts(tmp_path, monkeypatch):
         "type": "document",
         "name": "notes.txt",
         "content": [
-            {"type": "text", "text": "first"},
-            {"type": "text", "text": "second"},
+            {"type": "text", "text": "<attachment name=notes.txt>\nfirst\n</attachment>"},
+            {"type": "text", "text": "[PDF: notes.pdf]\nsecond"},
+            {"type": "text", "text": "third"},
         ],
     }
     _seed(tmp_path, monkeypatch, [attachment])
     response = chat_history.get_attachment_file("msg-1", "att-txt", current_subject = "unsloth")
-    assert response.body.decode("utf-8") == "first\nsecond"
+    assert response.body.decode("utf-8") == "first\nsecond\nthird"
     assert response.media_type.startswith("text/plain")
+
+
+def test_attachment_file_unwraps_a_pasted_text_attachment(tmp_path, monkeypatch):
+    attachment = {
+        "id": "att-paste",
+        "type": "document",
+        "name": "Pasted text",
+        "content": [
+            {
+                "type": "text",
+                "text": "<pasted_text name=Pasted text bytes=11>\nhello\nworld\n</pasted_text>",
+            }
+        ],
+    }
+    _seed(tmp_path, monkeypatch, [attachment])
+    response = chat_history.get_attachment_file("msg-1", "att-paste", current_subject = "unsloth")
+    assert response.body.decode("utf-8") == "hello\nworld"
 
 
 def test_attachment_file_no_content_is_404(tmp_path, monkeypatch):
@@ -460,6 +478,35 @@ def test_audio_attachment_file_serves_bytes(tmp_path, monkeypatch):
     response = chat_history.get_attachment_file("msg-1", "att-audio", current_subject = "unsloth")
     assert response.body == WAV_BYTES
     assert response.media_type == "audio/wav"
+
+
+@pytest.mark.parametrize(
+    "mime_type, served", [("video/mp4", "video/mp4"), ("video/webm;codecs=vp9", "video/webm")]
+)
+def test_video_attachment_file_serves_bytes_and_lists_with_size(
+    tmp_path, monkeypatch, mime_type, served
+):
+    clip = b"\0\0\0\x18ftypmp42" * 100
+    attachment = {
+        "id": "att-video",
+        "type": "file",
+        "name": "clip",
+        "contentType": mime_type,
+        "content": [
+            {
+                "type": "file",
+                "filename": "clip",
+                "data": base64.b64encode(clip).decode("ascii"),
+                "mimeType": mime_type,
+            }
+        ],
+        "status": {"type": "complete"},
+    }
+    _seed(tmp_path, monkeypatch, [attachment])
+    response = chat_history.get_attachment_file("msg-1", "att-video", current_subject = "unsloth")
+    assert response.body == clip
+    assert response.media_type == served
+    assert abs(studio_db.list_chat_attachments()[0]["sizeBytes"] - len(clip)) <= 2
 
 
 def test_audio_attachment_media_type_from_format(tmp_path, monkeypatch):
@@ -632,3 +679,63 @@ def test_png_data_url_keeps_its_media_type(tmp_path, monkeypatch):
     image_id = _content_part_id_for("msg-cmp", "image")
     response = chat_history.get_attachment_file("msg-cmp", image_id, current_subject = "unsloth")
     assert response.media_type == "image/png"
+
+
+def test_a_sweep_never_creates_the_originals_folder(tmp_path, monkeypatch):
+    from core import chat_originals
+
+    _reset_studio_db(tmp_path, monkeypatch)
+    assert chat_originals.sweep(force = True) == 0
+    assert not chat_originals.originals_dir().exists()
+
+
+def test_a_sweep_rechecks_a_stale_snapshot_before_removing(tmp_path, monkeypatch):
+    from core import chat_originals
+
+    _reset_studio_db(tmp_path, monkeypatch)
+    sha256, size = chat_originals.save([b"%PDF-1.4 kept"])
+    path = chat_originals.originals_dir() / sha256
+    os.utime(path, (0, 0))
+    studio_db.upsert_chat_thread(_thread())
+    attachment = {
+        "id": "att-1",
+        "type": "document",
+        "name": "a.pdf",
+        "contentType": "application/pdf",
+        "content": [{"type": "text", "text": "x"}],
+        "original": {"sha256": sha256, "sizeBytes": size},
+    }
+    studio_db.upsert_chat_message(_message("msg-1", attachments = [attachment]))
+    monkeypatch.setattr(studio_db, "referenced_chat_original_hashes", lambda: set())
+    assert chat_originals.sweep(force = True) == 0
+    assert path.is_file()
+    studio_db.delete_chat_threads(["thread-1"])
+    assert chat_originals.sweep(force = True) == 1
+    assert not path.exists()
+
+
+def test_originals_upload_takes_any_name_and_caps_tool_only_files_higher(tmp_path, monkeypatch):
+    import io
+
+    from fastapi import UploadFile
+
+    from core import chat_originals
+
+    _reset_studio_db(tmp_path, monkeypatch)
+    monkeypatch.setattr(chat_originals, "MAX_BYTES", 4)
+    monkeypatch.setattr(chat_originals, "TOOL_ONLY_MAX_BYTES", 8)
+
+    def upload(name: str, data: bytes) -> dict:
+        file = UploadFile(io.BytesIO(data), filename = name)
+        return chat_history.upload_attachment_original(file, current_subject = "unsloth")
+
+    assert upload("data.csv", b"a,b")["sizeBytes"] == 3
+    assert upload("t.PARQUET", b"12345678")["sizeBytes"] == 8
+    for name, data in (("a.pdf", b"12345"), ("notes.rtf", b"12345"), ("t.parquet", b"123456789")):
+        with pytest.raises(HTTPException) as refused:
+            upload(name, data)
+        assert refused.value.status_code == 413, name
+
+
+def test_rtf_label_is_stripped_from_the_stored_text():
+    assert chat_history._attachment_body_text("[RTF: notes.rtf]\nhello") == "hello"

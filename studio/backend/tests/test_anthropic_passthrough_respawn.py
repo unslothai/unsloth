@@ -27,7 +27,7 @@ sys.path.insert(0, _backend)
 import routes.inference as inf_mod
 from routes.inference import (
     _anthropic_passthrough_non_streaming,
-    _anthropic_passthrough_retry_url,
+    _passthrough_retry_url,
     _anthropic_passthrough_stream,
 )
 
@@ -98,8 +98,7 @@ def _install_stream_transport(monkeypatch, calls):
         if str(request.url).startswith(_DEAD):
             raise httpx.ConnectError("connection refused")
         content = (
-            f"data: {json.dumps({'choices': [{'delta': {'content': 'hi'}}]})}\n\n"
-            "data: [DONE]\n\n"
+            f"data: {json.dumps({'choices': [{'delta': {'content': 'hi'}}]})}\n\ndata: [DONE]\n\n"
         )
         return httpx.Response(
             200,
@@ -136,7 +135,7 @@ async def _run_stream(backend):
     return "".join(chunks)
 
 
-async def _run_non_streaming(backend):
+async def _run_non_streaming(backend, **kwargs):
     return await _anthropic_passthrough_non_streaming(
         backend,
         [{"role": "user", "content": "hi"}],
@@ -147,6 +146,7 @@ async def _run_non_streaming(backend):
         16,
         "msg_1",
         "test-model",
+        **kwargs,
     )
 
 
@@ -156,7 +156,7 @@ async def _run_non_streaming(backend):
 def test_retry_url_rebuilds_from_the_respawned_base_url():
     backend = _Backend()
 
-    url = asyncio.run(_anthropic_passthrough_retry_url(backend, httpx.ConnectError("x")))
+    url = asyncio.run(_passthrough_retry_url(backend, httpx.ConnectError("x")))
 
     assert url == f"{_FRESH}/v1/chat/completions"
     assert backend.respawn_calls == 1
@@ -165,7 +165,7 @@ def test_retry_url_rebuilds_from_the_respawned_base_url():
 def test_retry_url_is_none_when_nothing_respawned():
     backend = _Backend(respawn_ok = False)
 
-    url = asyncio.run(_anthropic_passthrough_retry_url(backend, httpx.ConnectError("x")))
+    url = asyncio.run(_passthrough_retry_url(backend, httpx.ConnectError("x")))
 
     assert url is None
 
@@ -174,7 +174,7 @@ def test_retry_url_defers_to_the_mtp_crash_recovery():
     # An MTP+tensor crash schedules its own reload; retrying would race it.
     backend = _Backend(mtp_handled = True)
 
-    url = asyncio.run(_anthropic_passthrough_retry_url(backend, httpx.ConnectError("x")))
+    url = asyncio.run(_passthrough_retry_url(backend, httpx.ConnectError("x")))
 
     assert url is None
     assert backend.respawn_calls == 0
@@ -183,7 +183,7 @@ def test_retry_url_defers_to_the_mtp_crash_recovery():
 def test_retry_url_tolerates_a_backend_without_respawn_hooks():
     backend = SimpleNamespace(base_url = _DEAD)
 
-    url = asyncio.run(_anthropic_passthrough_retry_url(backend, httpx.ConnectError("x")))
+    url = asyncio.run(_passthrough_retry_url(backend, httpx.ConnectError("x")))
 
     assert url is None
 
@@ -223,6 +223,79 @@ def test_non_streaming_does_not_retry_an_mtp_crash(monkeypatch):
         asyncio.run(_run_non_streaming(backend))
 
     assert backend.respawn_calls == 0
+
+
+def test_non_streaming_cancel_after_respawn_retry_is_not_a_transport_error(monkeypatch):
+    class CancelAfterRespawnClient:
+        def __init__(self):
+            self.urls = []
+            self.retry_started = asyncio.Event()
+            self.closed = asyncio.Event()
+
+        async def post(self, url, **_kwargs):
+            self.urls.append(url)
+            if len(self.urls) == 1:
+                raise httpx.ConnectError("connection refused")
+            self.retry_started.set()
+            await self.closed.wait()
+            raise httpx.ReadError("client closed")
+
+        async def aclose(self):
+            self.closed.set()
+
+    async def _run():
+        client = CancelAfterRespawnClient()
+        monkeypatch.setattr(inf_mod, "_cancelable_nonstreaming_client", lambda: client)
+        backend = _Backend()
+        cancel_event = threading.Event()
+        task = asyncio.create_task(
+            _run_non_streaming(
+                backend,
+                request = _Request(),
+                cancel_event = cancel_event,
+            )
+        )
+        await asyncio.wait_for(client.retry_started.wait(), 0.2)
+        cancel_event.set()
+
+        with pytest.raises(inf_mod._NonStreamingRequestCancelled):
+            await asyncio.wait_for(task, 0.5)
+
+        assert client.urls == [f"{_DEAD}/v1/chat/completions", f"{_FRESH}/v1/chat/completions"]
+        assert client.closed.is_set()
+
+    asyncio.run(_run())
+
+
+def test_non_streaming_cancel_wins_response_race(monkeypatch):
+    async def _run():
+        cancel_event = threading.Event()
+
+        class RacingClient(_FakeNonStreamingClient):
+            async def post(self, url, **_kwargs):
+                self.urls.append(url)
+                cancel_event.set()
+                return httpx.Response(
+                    200,
+                    json = {
+                        "choices": [{"message": {"content": "too late"}, "finish_reason": "stop"}],
+                        "usage": {"prompt_tokens": 2, "completion_tokens": 2},
+                    },
+                )
+
+        client = RacingClient()
+        monkeypatch.setattr(inf_mod, "_cancelable_nonstreaming_client", lambda: client)
+
+        with pytest.raises(inf_mod._NonStreamingRequestCancelled):
+            await _run_non_streaming(
+                _Backend(),
+                request = _Request(),
+                cancel_event = cancel_event,
+            )
+
+        assert client.closed
+
+    asyncio.run(_run())
 
 
 # ── Streaming ─────────────────────────────────────────────────

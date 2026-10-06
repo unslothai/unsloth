@@ -174,6 +174,10 @@ def test_revision_survives_when_the_repo_is_unchanged():
     assert gate("my-branch", "myorg/my-ft", "myorg/my-ft") == "my-branch"
 
 
+def test_revision_survives_a_spelling_only_change():
+    assert _load_gate()("release", "unsloth/Qwen3-30B-A3B", "unsloth/qwen3-30b-a3b") == "release"
+
+
 @pytest.mark.parametrize(
     "model_name, old_model_name",
     [
@@ -183,8 +187,8 @@ def test_revision_survives_when_the_repo_is_unchanged():
     ],
 )
 def test_revision_is_dropped_once_the_repo_is_remapped(model_name, old_model_name):
-    # The ref only exists on the repo the caller named: elsewhere it 404s or, worse,
-    # resolves a same-named branch on a different repo.
+    # The ref only exists on the repo the caller named: elsewhere it 404s or, worse, resolves a same-named branch on a
+    # different repo.
     assert _load_gate()("abc123", model_name, old_model_name) is None
 
 
@@ -263,7 +267,6 @@ def test_both_loader_paths_gate_before_and_after_resolution():
             keyword = _revision_kwarg(probe)
             if keyword is None:
                 continue  # the PEFT base-model probe deliberately pins nothing
-            # adapter_revision is the same gated value, taken before the vLLM drop.
             assert getattr(keyword.value, "id", None) in (
                 "base_revision",
                 "adapter_revision",
@@ -463,6 +466,12 @@ def test_a_remapped_plain_load_drops_the_tokenizer_pin_too():
     the ref mismatch the gate exists to prevent. Only a PEFT adapter is a separate repo."""
     gate = _load_tokenizer_gate()
     assert gate("org/model", "unsloth/model-bnb-4bit", "org/model", "v2", None) is None
+
+
+def test_a_case_only_tokenizer_name_keeps_the_model_ref():
+    gate = _load_tokenizer_gate()
+    requested, resolved = "unsloth/qwen3-30b-a3b", "unsloth/Qwen3-30B-A3B"
+    assert gate(requested, resolved, requested, "v2", "v2") == "v2"
 
 
 def test_a_plain_load_gives_the_tokenizer_the_model_ref():

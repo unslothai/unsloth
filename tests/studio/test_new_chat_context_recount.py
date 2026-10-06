@@ -35,10 +35,11 @@ REFRESH = source_path("studio/frontend/src/features/chat/utils/refresh-context-u
 PROVIDER = source_path("studio/frontend/src/features/chat/runtime-provider.tsx")
 STORE = source_path("studio/frontend/src/features/chat/stores/chat-runtime-store.ts")
 RUNTIME = source_path("studio/frontend/src/features/chat/hooks/use-chat-model-runtime.ts")
+MESSAGE_ORDER = source_path("studio/frontend/src/features/chat/utils/message-order.ts")
 
 TEMP = WORKDIR / "temp" / "new_chat_context_recount"
 
-SOURCES = (REFRESH, PROVIDER, STORE, RUNTIME)
+SOURCES = (REFRESH, PROVIDER, STORE, RUNTIME, MESSAGE_ORDER)
 
 # Every name the emulator can supply to a sliced dependency array.
 BOUND_NAMES = {
@@ -46,19 +47,42 @@ BOUND_NAMES = {
     "aui",
     "checkpoint",
     "enabled",
-    "ggufContextLength",
+    "loadedContextLength",
     "isLoading",
+    "mainThreadId",
     "runActive",
     "modelLoading",
+    "newThreadSwitchStateRef",
     "nonce",
+    "paused",
 }
 
 
 def _refresh_module_body() -> str:
-    """Everything in refresh-context-usage.ts after its import block, verbatim."""
+    """Everything in refresh-context-usage.ts after its import block, verbatim.
+
+    The marker is one import, not the last one: anything sorting after
+    "./chat-history-storage" follows it. Those lines are dropped rather than replayed,
+    because the harness supplies those modules itself and an `import` inside harness.ts
+    would resolve against the temp directory, where they do not exist.
+    """
     text = read(REFRESH)
     marker = 'from "./chat-history-storage";'
-    return text[text.index(marker) + len(marker) :]
+    rest = text[text.index(marker) + len(marker) :]
+    lines = rest.split("\n")
+    while lines and (not lines[0].strip() or lines[0].startswith("import ")):
+        lines.pop(0)
+    return "\n" + "\n".join(lines)
+
+
+def _message_order_body() -> str:
+    """message-order.ts verbatim: it takes no imports of its own.
+
+    refresh-context-usage.ts used to carry its own copy of `orderBySelectedBranch`, so
+    the replayed body defined it. Now that it imports the shared one, the harness has to
+    supply it or the recount prices the wrong branch.
+    """
+    return read(MESSAGE_ORDER)
 
 
 def _component_effects(start: str, end: str) -> list[tuple[list[str], str]]:
@@ -82,7 +106,7 @@ def _new_chat_effects() -> list[tuple[list[str], str]]:
 def _thread_recount_effects() -> list[tuple[list[str], str]]:
     return _component_effects(
         "function ThreadContextUsageRecount(",
-        "\n// Exposes the current thread's cancelRun()",
+        "\nfunction CancelRegistrar(",
     )
 
 
@@ -92,9 +116,11 @@ def _store_reducers() -> str:
     checkpoint = slice_between(
         text,
         "setCheckpoint: (modelId, ggufVariant, options) =>",
-        "  // Re-apply the incoming thread's own usage",
+        "  setActiveThreadId: (activeThreadId) =>",
     )
-    active = slice_between(text, "setActiveThreadId: (activeThreadId) =>", "setActiveProjectId:")
+    active = slice_between(
+        text, "setActiveThreadId: (activeThreadId) =>", "applyThreadScopedSettings:"
+    )
     usage = slice_between(text, "setContextUsage: (contextUsage) =>", "setThreadContextUsage:")
     thread_usage = slice_between(text, "setThreadContextUsage: (threadId, usage) =>", "}));")
     return (
@@ -106,6 +132,15 @@ def _store_reducers() -> str:
         + usage.strip()
         + "\n  "
         + thread_usage.strip()
+    )
+
+
+def _status_poll_adoption_tail() -> str:
+    """The status sync's setCheckpoint-plus-recount tail, verbatim (API / CLI loads hydrate here)."""
+    return slice_between(
+        read(RUNTIME),
+        "        setCheckpoint(checkpointId, statusRes.gguf_variant);",
+        "      }\n    } else if (\n      !chatActiveModel &&",
     )
 
 
@@ -121,8 +156,11 @@ def _resident_fast_path() -> str:
     """
     return slice_between(
         read(RUNTIME),
-        "          const confirmedStatus = await getInferenceStatus().catch(() => null);",
-        "      // Block queue materialization before taking the cancellation snapshot.",
+        "          const confirmedStatus = await readPickStatus();",
+        # The lease claim, which the tail must not run into: the pick here never starts a load.
+        # `lifecycleLease` sits inside a bounded retry loop, so its own declaration is the first
+        # line that is about the load this tail does not start rather than about the adoption.
+        "      let lifecycleLease: ModelLifecycleLease | null = null;",
     )
 
 
@@ -130,8 +168,8 @@ def _history_usage_restore() -> str:
     """The history loader's saved-usage restore and its recount call, verbatim."""
     return slice_between(
         read(PROVIDER),
-        "        // Window check applies only when a local GGUF window is known; external",
-        "        // If any message has a stored parentId, reconstruct the tree so",
+        "        const localLimit = store.loadedIsGguf ? store.loadedContextLength : null;",
+        "        const hasParentIds = msgs.some((m) => m.parentId != null);",
     )
 
 
@@ -144,6 +182,7 @@ export const world: any = {
   countedMessages: [] as any[][],
   countedModel: undefined as string | undefined,
   switchedToNewThread: 0,
+  clearedAttachments: 0,
   promptQueueStops: 0,
   // Set to { value: x } to stand in for a non-conforming 200 on the count path. Wrapped
   // so that { value: undefined } means "the reply omits input_tokens" rather than "no
@@ -159,7 +198,7 @@ const state: any = {
   contextUsageByThreadId: {},
   params: { checkpoint: "", systemPrompt: "", systemVariables: "", maxTokens: 4096 },
   activeGgufVariant: null,
-  ggufContextLength: null,
+  loadedContextLength: null,
   modelLoading: false,
   runningByThreadId: {},
   // The subset decoding on the local llama-server: the recount must not share it with a decode.
@@ -203,6 +242,14 @@ function getReplayedParams(
 }
 function getReplayStatePatch(): any {
   return {};
+}
+// The open chat's own sampling, laid back over the replay by the sliced
+// setCheckpoint. No thread-scoped snapshot is ever seeded here -- this file is
+// about the context window, not about which chat pinned a temperature -- so
+// nothing is held and the replay passes through untouched. The real restore is
+// covered by studio/frontend/tests/thread-scoped-pairing-invariants.test.ts.
+function restoreThreadScopedParams(params: any): any {
+  return params;
 }
 function saveLastExternalCheckpoint(_id: string | null): void {}
 function saveBool(_key: string, _value: boolean): void {}
@@ -273,6 +320,26 @@ function findLatestUserAudioBase64(_messages: any): string | null {
   return null;
 }
 
+// refresh-context-usage.ts declines to price a prompt carrying video, the same way
+// it declines audio and images. The emulator replays that module's body with its
+// imports stripped, so every name it imports has to exist here or the bail throws
+// a ReferenceError and the recount never runs -- which is what happened: adding
+// this import took `counts` to 0 and read as "the empty New Chat view must be
+// priced exactly once" failing on a pricing bug. See
+// test_the_harness_stubs_every_name_refresh_context_usage_imports.
+function findLatestUserVideoBase64(_messages: any): string | null {
+  return null;
+}
+
+// refresh-context-usage.ts declines to price a prompt carrying video, the same way
+// it declines audio and images. The emulator replays that module's body with its
+// imports stripped, so every name it imports has to exist here or the bail throws
+// a ReferenceError and the recount never runs -- which is what happened: adding
+// this import took `counts` to 0 and read as "the empty New Chat view must be
+// priced exactly once" failing on a pricing bug. See
+// test_the_harness_stubs_every_name_refresh_context_usage_imports.
+
+
 // The real predicate's rule, so a test can put an image on a branch and see it declined.
 function messagesContainImage(messages: any): boolean {
   const isImage = (p: any) => p?.type === "image" && Boolean(p?.image);
@@ -286,9 +353,10 @@ function messagesContainImage(messages: any): boolean {
 }
 
 // The adapter's own prompt build is exercised by the request tests; here it only has
-// to turn the reconstructed branch into something countable.
-async function buildOutboundMessagesForTokenCount(messages: any): Promise<any[]> {
-  return messages.map((m: any) => ({ role: m.role, content: "x" }));
+// to turn the reconstructed branch into something countable. Same shape
+// refreshContextUsage spreads into countChatInputTokens.
+async function buildLocalTokenCountHistory(messages: any): Promise<{ messages: any[] }> {
+  return { messages: messages.map((m: any) => ({ role: m.role, content: "x" })) };
 }
 
 async function buildLocalTokenCountExtras(): Promise<Record<string, unknown>> {
@@ -329,6 +397,14 @@ const auiFixture: any = {
       world.switchedToNewThread += 1;
     },
   }),
+  // The switch clears a staged attachment before moving on, so the composer has to
+  // exist here: a missing one throws inside the effect and the recount below it
+  // never runs, which reads as a pricing bug rather than a missing stub.
+  composer: () => ({
+    clearAttachments: async () => {
+      world.clearedAttachments += 1;
+    },
+  }),
 };
 
 // ---- PRELUDE ENDS: verbatim studio source follows ----
@@ -361,14 +437,14 @@ export function renderThreadContextUsageRecount(props: any = {}): void {
   // Read through the store the way the component's selectors do.
   const activeThreadId = state.activeThreadId;
   const checkpoint = state.params.checkpoint;
-  const ggufContextLength = state.ggufContextLength;
+  const loadedContextLength = state.loadedContextLength;
   const modelLoading = state.modelLoading;
   const runActive = Object.values(state.runningByThreadId ?? {}).some(Boolean);
   const scope: any = {
     activeThreadId,
     checkpoint,
     enabled,
-    ggufContextLength,
+    loadedContextLength,
     modelLoading,
     runActive,
   };
@@ -379,23 +455,48 @@ __RECOUNT_EFFECTS__
 }
 
 const renderedDeps: any[] = [];
+const newThreadSwitchStateRef: any = {
+  // attempt mirrors the real ref: the effect reads `attempt + 1`, so omitting it makes
+  // every attempt NaN and NaN !== NaN skips the deferred clear the switch armed.
+  current: { activeNonce: null, hasSwitched: false, attempt: 0, pendingSavedThreadIds: [] },
+};
+
+export function leaveNewChatForSavedThread(): void {
+  newThreadSwitchStateRef.current.activeNonce = null;
+  renderedDeps.length = 0;
+}
+
+export function markImplicitNewChatUsed(): void {
+  newThreadSwitchStateRef.current.hasSwitched = true;
+}
 
 export function renderNewChatSwitch(props: any): void {
   const aui = auiFixture;
   const isLoading = props.isLoading;
   const nonce = props.nonce;
+  // Compare keeps the shared provider mounted but stood down; the recount tests are
+  // all about the view the user is looking at, so it defaults to on screen.
+  const paused = props.paused ?? false;
+  // The stale-switch correction reads it. Defaulting to a runtime-made id keeps that
+  // effect inert here: these tests are about the recount, and a local id is what a
+  // `?new=` view actually holds.
+  const mainThreadId = props.mainThreadId ?? "__LOCALID_recount";
+
   // The component reads these through useChatRuntimeStore selectors, so a
   // re-render sees whatever the store holds right now.
   const checkpoint = state.params.checkpoint;
-  const ggufContextLength = state.ggufContextLength;
+  const loadedContextLength = state.loadedContextLength;
   const modelLoading = state.modelLoading;
   const runActive = Object.values(state.runningByThreadId ?? {}).some(Boolean);
   const scope: any = {
     aui,
     isLoading,
+    mainThreadId,
+    newThreadSwitchStateRef,
     nonce,
+    paused,
     checkpoint,
-    ggufContextLength,
+    loadedContextLength,
     modelLoading,
     runActive,
   };
@@ -423,16 +524,22 @@ export async function adoptResidentModel(props: any): Promise<void> {
   // The residency decision, which this file does not measure: the caller seeds the
   // status it wants adopted. resident-model-match.test.ts covers the real predicate.
   const adoptable = (_status: any): boolean => true;
-  const bailIfLoadInFlight = (): boolean => false;
+  // The superseded-pick guards the tail sits behind: nothing here supersedes the pick, so the
+  // epoch still matches the id it was minted with and no rival holds the picker entry.
+  let modelSelectionIntentEpoch = 0;
+  const loadIntentId = 0;
+  const rivalLoadStarted = (): boolean => false;
+  let pendingReplacementRollback: any = null;
   const restorePreviousConfig = (): void => {};
   const getInferenceStatus = async (): Promise<any> => props.residentStatus;
+  const readPickStatus = async (): Promise<any> => props.residentStatus;
   const reconcilePersistedGpuIds = (ids: any): any => ids;
   const sameGpuSelection = (a: any, b: any): boolean =>
     JSON.stringify(a ?? null) === JSON.stringify(b ?? null);
   // The real hydration writes the whole status; the recount only reads the window.
   const applyActiveModelStatusToStore = (status: any, _options: any): void => {
     set({
-      ggufContextLength: status.is_gguf ? (status.context_length ?? null) : null,
+      loadedContextLength: status.is_gguf ? (status.context_length ?? null) : null,
     });
   };
   const syncModelCapabilities = (_id: string, _status: any): void => {};
@@ -455,6 +562,27 @@ export async function adoptResidentModel(props: any): Promise<void> {
       !(await readServerWideReloadHints())
     ) {
 __FAST_PATH__
+}
+"""
+
+
+HARNESS_STATUS_POLL = """
+
+export async function adoptServerStatus(statusRes: any): Promise<void> {
+  const selectedCheckpoint: string = state.params?.checkpoint ?? "";
+  const checkpointId: string | null =
+    statusRes.model_identifier ?? statusRes.active_model ?? null;
+  const previousGgufVariant: string | null = state.activeGgufVariant ?? null;
+  const { setCheckpoint } = useChatRuntimeStore.getState();
+  const applyActiveModelStatusToStore = (status: any, _options: any): void => {
+    set({
+      loadedContextLength: status.is_gguf ? (status.context_length ?? null) : null,
+    });
+  };
+  const syncModelCapabilities = (_id: string, _status: any): void => {};
+  if (checkpointId) {
+__STATUS_POLL_TAIL__
+  }
 }
 """
 
@@ -483,6 +611,9 @@ export async function hydrateThreadUsage(props: any): Promise<void> {
   // The loader is created per pane; a compare pane carries a pairId and never owns the bar.
   const modelType: string = props.modelType ?? "base";
   const pairId = props.pairId ?? undefined;
+  // The thread's stored messages, which the loader reads into `msgs` above the sliced block.
+  // The block prices them with `estimateContextUsage` when nothing saved is usable (#9475).
+  const msgs: any[] = props.messages ?? [];
   // Read once, as the loader does, just above the sliced block.
   const store = useChatRuntimeStore.getState();
 __RESTORE__
@@ -496,23 +627,67 @@ def _harness_source() -> str:
         "__RECOUNT_EFFECTS__", _rendered_effects(_thread_recount_effects())
     )
     resident = HARNESS_RESIDENT.replace("__FAST_PATH__", _resident_fast_path())
+    status_poll = HARNESS_STATUS_POLL.replace("__STATUS_POLL_TAIL__", _status_poll_adoption_tail())
     history = HARNESS_HISTORY.replace("__RESTORE__", _history_usage_restore())
-    return prelude + _refresh_module_body() + render + resident + history
+    return (
+        prelude
+        + _message_order_body()
+        + _refresh_module_body()
+        + render
+        + resident
+        + status_poll
+        + history
+    )
 
 
 def _run(script: str) -> dict:
     require_node(SOURCES)
-    return run_harness(TEMP, _harness_source(), script)
+    return run_harness(TEMP, _harness_source(), script, sources = SOURCES)
 
 
 # The status response that hydrates a resident GGUF; neither field survives a reload.
 LOADED_MODEL = """
     seed({
       params: { checkpoint: "unsloth/gguf-model", systemPrompt: "", systemVariables: "" },
-      ggufContextLength: 8192,
+      loadedContextLength: 8192,
       modelLoading: false,
     });
 """
+
+
+def test_the_harness_stubs_every_name_refresh_context_usage_imports() -> None:
+    """A new import in the real module must not silently zero the recount.
+
+    `_refresh_module_body()` replays that file with its import block stripped, so an
+    imported name this harness does not define becomes a ReferenceError the moment the
+    replayed code reaches it. The failure does not look like a missing stub: the effect
+    bails, `counts` stays 0, and it reads as a pricing bug that is not there. Not
+    hypothetical: #9056 added `findLatestUserVideoBase64` and took 41 tests here red.
+    """
+    text = read(REFRESH)
+    # The single braced import list this module takes from ../api/chat-adapter.
+    block = re.search(r"import \{(.*?)\} from \"\.\./api/chat-adapter\";", text, re.S)
+    assert block, "could not find the chat-adapter import block in refresh-context-usage.ts"
+    imported = [
+        name.strip()
+        for name in block.group(1).split(",")
+        if name.strip() and not name.strip().startswith("type ")
+    ]
+    assert imported, "parsed an empty import list; this guard would check nothing"
+
+    with open(__file__, encoding = "utf-8") as handle:
+        harness = handle.read()
+    missing = [
+        name
+        for name in imported
+        if f"function {name}(" not in harness and f"const {name} =" not in harness
+    ]
+    assert not missing, (
+        f"refresh-context-usage.ts imports {missing}, which this harness does not "
+        "define. The replayed module body would throw a ReferenceError and the "
+        "recount would silently report 0. Add a stub next to "
+        "findLatestUserAudioBase64."
+    )
 
 
 @pytest.mark.parametrize(
@@ -609,6 +784,151 @@ def test_a_new_chat_prices_its_empty_prompt_against_a_resident_gguf(
     assert out["promptQueueStops"] == 1, "hydration must not re-stop the prompt queue"
 
 
+def test_a_backgrounded_new_chat_view_neither_opens_a_thread_nor_prices_one():
+    """#8908: compare keeps this provider mounted so a project run stays attached.
+
+    Mounted is not on screen. While it is paused the switch must leave the shared
+    single-chat state to the view the user is actually looking at -- no new thread,
+    no blanked active thread, no count -- and must do all of it once the pause lifts,
+    not skip it as already done.
+    """
+    out = _run(
+        textwrap.dedent(
+            f"""
+            // @ts-nocheck
+            import {{ renderNewChatSwitch, seed, snapshot, world }} from "./harness.ts";
+            {LOADED_MODEL}
+            seed({{ activeThreadId: "thread-on-screen" }});
+
+            renderNewChatSwitch({{ isLoading: false, nonce: "n1", paused: true }});
+            await new Promise((resolve) => setTimeout(resolve, 30));
+            const paused = {{
+              switched: world.switchedToNewThread,
+              counts: world.countedMessages.length,
+              activeThreadId: snapshot().activeThreadId,
+              contextUsage: snapshot().contextUsage,
+            }};
+
+            // Compare closes: the view is back on screen and owes both.
+            renderNewChatSwitch({{ isLoading: false, nonce: "n1", paused: false }});
+            await new Promise((resolve) => setTimeout(resolve, 30));
+            console.log(JSON.stringify({{
+              paused,
+              switched: world.switchedToNewThread,
+              counts: world.countedMessages.length,
+              activeThreadId: snapshot().activeThreadId,
+              contextUsage: snapshot().contextUsage,
+            }}));
+            """
+        )
+    )
+    assert out["paused"]["switched"] == 0, "a paused switch must not open a thread"
+    assert out["paused"]["counts"] == 0, "a paused switch must not price a prompt"
+    assert (
+        out["paused"]["activeThreadId"] == "thread-on-screen"
+    ), "a paused switch must not blank the active thread the visible view is using"
+    assert out["paused"]["contextUsage"] is None
+    assert out["switched"] == 1, "releasing the pause must open the new thread"
+    assert out["activeThreadId"] is None
+    assert out["counts"] == 1, "releasing the pause must price the empty prompt once"
+    assert out["contextUsage"] is not None
+
+
+def test_a_staged_attachment_is_cleared_only_when_the_switch_moves_on():
+    """switchToNewThread() reuses the uninitialized new thread, so its composer is the
+    same one the last New Chat used. With one provider shared across the project and
+    single views, an unsent attachment would otherwise follow the user into the next
+    view and be filed with the chat created there. The first switch has nothing to
+    carry, so it must not clear a composer the user is still filling."""
+    out = _run(
+        textwrap.dedent(
+            f"""
+            // @ts-nocheck
+            import {{ renderNewChatSwitch, seed, world }} from "./harness.ts";
+            {LOADED_MODEL}
+            renderNewChatSwitch({{ isLoading: false, nonce: "n1" }});
+            await new Promise((resolve) => setTimeout(resolve, 30));
+            const first = {{
+              switched: world.switchedToNewThread,
+              cleared: world.clearedAttachments,
+            }};
+
+            // A re-render that changes nothing must not clear anything either.
+            renderNewChatSwitch({{ isLoading: false, nonce: "n1" }});
+            await new Promise((resolve) => setTimeout(resolve, 30));
+            const again = {{
+              switched: world.switchedToNewThread,
+              cleared: world.clearedAttachments,
+            }};
+
+            // New Chat, or the next project's landing: a different nonce.
+            renderNewChatSwitch({{ isLoading: false, nonce: "n2" }});
+            await new Promise((resolve) => setTimeout(resolve, 30));
+            console.log(JSON.stringify({{
+              first,
+              again,
+              switched: world.switchedToNewThread,
+              cleared: world.clearedAttachments,
+            }}));
+            """
+        )
+    )
+    assert out["first"] == {
+        "switched": 1,
+        "cleared": 0,
+    }, "the first switch has no outgoing composer to clear"
+    assert out["again"] == {
+        "switched": 1,
+        "cleared": 0,
+    }, "a re-render at the same nonce must not switch or clear again"
+    assert out["switched"] == 2
+    assert out["cleared"] == 1, "moving to another nonce must not carry the attachment"
+
+
+def test_the_first_nonce_switch_clears_an_implicit_new_chat_attachment():
+    out = _run(
+        textwrap.dedent(
+            f"""
+            // @ts-nocheck
+            import {{ markImplicitNewChatUsed, renderNewChatSwitch, seed, world }} from "./harness.ts";
+            {LOADED_MODEL}
+            markImplicitNewChatUsed();
+            renderNewChatSwitch({{ isLoading: false, nonce: "n1" }});
+            await new Promise((resolve) => setTimeout(resolve, 30));
+            console.log(JSON.stringify({{
+              switched: world.switchedToNewThread,
+              cleared: world.clearedAttachments,
+            }}));
+            """
+        )
+    )
+    assert out["switched"] == 1
+    assert out["cleared"] == 1, "a staged implicit-chat attachment must not follow the nonce"
+
+
+def test_back_to_the_same_new_chat_nonce_switches_after_a_saved_thread():
+    out = _run(
+        textwrap.dedent(
+            f"""
+            // @ts-nocheck
+            import {{ leaveNewChatForSavedThread, renderNewChatSwitch, seed, world }} from "./harness.ts";
+            {LOADED_MODEL}
+            renderNewChatSwitch({{ isLoading: false, nonce: "n1" }});
+            await new Promise((resolve) => setTimeout(resolve, 30));
+            leaveNewChatForSavedThread();
+            renderNewChatSwitch({{ isLoading: false, nonce: "n1" }});
+            await new Promise((resolve) => setTimeout(resolve, 30));
+            console.log(JSON.stringify({{
+              switched: world.switchedToNewThread,
+              cleared: world.clearedAttachments,
+            }}));
+            """
+        )
+    )
+    assert out["switched"] == 2, "Back to the same nonce must restore the new thread"
+    assert out["cleared"] == 1, "the reused new-thread composer must lose its attachment"
+
+
 @pytest.mark.parametrize(
     "reply",
     ["undefined", "null", '"1670"', "NaN", "Infinity", "{}"],
@@ -644,7 +964,7 @@ def test_a_count_that_is_not_a_finite_number_never_reaches_the_bar(reply):
 NO_LOCAL_MODEL = """
     seed({
       params: { checkpoint: "", systemPrompt: "", systemVariables: "" },
-      ggufContextLength: null,
+      loadedContextLength: null,
     });
 """
 
@@ -822,7 +1142,6 @@ def test_a_loaded_model_reprices_the_open_thread(world_setup, expected_sent, cou
     [
         # Sent mid-count then stopped before any usage, so the snapshot guard cannot see the turn.
         pytest.param(True, None, id = "a_turn_arrives_mid_count"),
-        # Control: the branch the count priced is still the one on screen.
         pytest.param(False, 62, id = "branch_unchanged"),
     ],
 )
@@ -886,11 +1205,11 @@ def test_a_turn_sent_while_counting_drops_the_count(send_a_turn, expected_total)
 @pytest.mark.parametrize(
     ("running", "grew", "expected_total"),
     [
-        # A run that BEGINS after the count was issued. The entry gate cannot catch this one: it
-        # ran when the thread was idle, so only the publish guard is left to drop the total.
+        # A run that BEGINS after the count was issued. The entry gate cannot catch this one: it ran when the thread was
+        # idle, so only the publish guard is left to drop the total.
         (True, True, None),
-        # Stopped before the count returned, so runningByThreadId is already false and the
-        # usage snapshot is still equal: only the content makes the branch look different.
+        # Stopped before the count returned, so runningByThreadId is already false and the usage snapshot is still
+        # equal: only the content makes the branch look different.
         (False, True, None),
         (False, False, 62),
     ],
@@ -1148,10 +1467,155 @@ def test_history_hydration_keeps_saved_usage_it_restored(
     ), "the completion half of an exact total must survive hydration"
 
 
-def test_deep_research_declines_the_recount():
-    """With Deep Research on, the next send creates a server-side research run instead of posting
-    this history, and the research reply carries no usage to correct a guess with. Counting would
-    put a total on the bar describing a request that is never made, and leave it there."""
+# 400 characters of text is 100 tokens at the estimator's 4 characters a token.
+STORED_TURN = (
+    '[{ id: "u1", parentId: null, role: "user", createdAt: 1, '
+    'content: [{ type: "text", text: "x".repeat(400) }] }]'
+)
+
+
+@pytest.mark.parametrize(
+    ("saved", "expect_shown"),
+    [
+        # Nothing usable restored: the bar shows the text estimate until the recount answers.
+        ("null", {"totalTokens": 100, "completionTokens": 0, "estimated": True}),
+        (
+            '{ totalTokens: 900, promptTokens: 700, completionTokens: 200, modelId: "other" }',
+            {"totalTokens": 100, "completionTokens": 0, "estimated": True},
+        ),
+        # Exact totals for this model win over the estimate, and nothing is recounted.
+        (
+            "{ totalTokens: 900, promptTokens: 700, completionTokens: 200, "
+            'modelId: "unsloth/gguf-model" }',
+            {"totalTokens": 900, "completionTokens": 200, "estimated": None},
+        ),
+    ],
+    ids = ["nothing_saved", "saved_is_another_model", "saved_matches_the_model"],
+)
+def test_history_hydration_shows_an_estimate_until_the_recount_lands(saved, expect_shown):
+    """#9475: a reopened thread with no usable saved usage shows an estimate of its stored
+    messages at once, instead of an empty bar for as long as the recount takes. The estimate
+    is the loader's own `msgs`, so the harness has to hand them in: without that binding the
+    sliced block threw a ReferenceError and every history case here went red."""
+    out = _run(
+        textwrap.dedent(
+            f"""
+            // @ts-nocheck
+            import {{ hydrateThreadUsage, seed, snapshot, world }} from "./harness.ts";
+            {LOADED_MODEL}
+            seed({{
+              activeThreadId: "thread-a",
+              contextUsage: null,
+              contextUsageByThreadId: {{}},
+            }});
+            let release;
+            world.countGate = new Promise((resolve) => {{ release = resolve; }});
+            await hydrateThreadUsage({{
+              remoteId: "thread-a",
+              savedUsage: {saved},
+              messages: {STORED_TURN},
+            }});
+            const shown = snapshot().contextUsage;
+            release();
+            await new Promise((resolve) => setTimeout(resolve, 30));
+            console.log(JSON.stringify({{
+              shown,
+              counts: world.countedMessages.length,
+              settled: snapshot().contextUsage,
+            }}));
+            """
+        )
+    )
+    shown = out["shown"] or {}
+    assert {key: shown.get(key) for key in expect_shown} == expect_shown, (
+        "the bar must show the restored usage, or the estimate when none is usable, "
+        "before the recount answers"
+    )
+    if expect_shown["estimated"]:
+        assert out["counts"] == 1, "an estimate is a placeholder; the recount still has to run"
+        settled = out["settled"] or {}
+        assert settled.get("totalTokens") == 12 and not settled.get(
+            "estimated"
+        ), "the recount's exact count must replace the estimate"
+    else:
+        assert out["counts"] == 0
+
+
+_SIMPLE_BINDING = re.compile(r"\b(?:const|let)\s+([A-Za-z_$][\w$]*)")
+_PATTERN_START = re.compile(r"\b(?:const|let)\s*([{\[])")
+
+
+def _declared_names(code: str) -> set[str]:
+    """Names `const` / `let` bind in `code`, destructured ones included.
+
+    `const { remoteId } = ...` binds `remoteId`, `{ a: b }` binds `b`, `{ a = 1 }` and `...rest`
+    bind `a` and `rest`. Nested patterns are flattened, which can only over-collect.
+    """
+    names = set(_SIMPLE_BINDING.findall(code))
+    for start in _PATTERN_START.finditer(code):
+        depth, end = 0, start.start(1)
+        for end in range(start.start(1), len(code)):
+            if code[end] in "{[":
+                depth += 1
+            elif code[end] in "}]":
+                depth -= 1
+            if depth == 0:
+                break
+        for part in re.split(r"[,{}\[\]]", code[start.start(1) : end + 1]):
+            part = part.split("=", 1)[0].strip().removeprefix("...")
+            if ":" in part:
+                part = part.split(":", 1)[1].strip()
+            if re.fullmatch(r"[A-Za-z_$][\w$]*", part):
+                names.add(part)
+    return names
+
+
+def test_declared_names_reads_destructuring():
+    code = "const { remoteId, threadId: tid, mode = 1, ...rest } = x; let [first, , third] = y; const a = 1;"
+    assert _declared_names(code) == {"remoteId", "tid", "mode", "rest", "first", "third", "a"}
+
+
+def test_the_harness_binds_every_loader_local_the_history_restore_reads() -> None:
+    """The restore block is sliced out of the middle of the history adapter's `load()`, so any
+    local it reads from above the slice has to be declared by `hydrateThreadUsage` instead.
+    Imported helpers are followed in from the studio sources by `run_harness`; locals are not.
+    #9475 made the block read the loader's `msgs`, and the replay threw `msgs is not defined`
+    in every history-hydration case on main."""
+    provider = read(PROVIDER)
+    restore = _history_usage_restore()
+    start = provider.index(restore)
+    loader = provider.rindex("async load() {", 0, start)
+    above = provider[loader:start]
+    declared_above = _declared_names(above)
+    assert (
+        {"msgs", "savedUsage", "store"} <= declared_above
+    ), "could not read the loader's locals above the restore; this guard would check nothing"
+    # Code only: the comments in the block name words like "message" that are locals elsewhere.
+    code = re.sub(r"//[^\n]*", "", restore)
+    declared_in_slice = _declared_names(code)
+    read_from_above = sorted(
+        name
+        for name in declared_above - declared_in_slice
+        if re.search(rf"(?<![\w$.]){re.escape(name)}\b", code)
+    )
+    assert {"msgs", "remoteId"} <= set(
+        read_from_above
+    ), "the guard no longer sees the restore read `msgs` and the destructured `remoteId`"
+    bound = _declared_names(HARNESS_HISTORY)
+    missing = [name for name in read_from_above if name not in bound]
+    assert not missing, (
+        f"the history restore reads the loader locals {missing}, which hydrateThreadUsage does "
+        "not declare: the replay would throw a ReferenceError. Bind them from `props`."
+    )
+
+
+def test_deep_research_recounts_before_the_model_decides():
+    """Arming Deep Research no longer guarantees a server-side research run.
+
+    The model first receives the ordinary chat turn and may answer directly, so the bar must price
+    that request just like any other send. A later tool handoff replaces the reply with research
+    state, but cannot justify hiding the context estimate before the model decides.
+    """
     out = _run(
         textwrap.dedent(
             f"""
@@ -1167,8 +1631,8 @@ def test_deep_research_declines_the_recount():
             """
         )
     )
-    assert out["counts"] == 0, "a research turn must not be priced as a chat completion"
-    assert out["contextUsage"] is None
+    assert out["counts"] == 1, "the model-decision turn must be priced before it can hand off"
+    assert out["contextUsage"] is not None
 
 
 def test_an_image_branch_is_declined_before_it_is_sent():
@@ -1425,7 +1889,7 @@ def test_adopting_the_resident_gguf_reprices_the_open_thread():
             // On an external provider, showing the usage that provider's last turn wrote.
             seed({
               params: { checkpoint: "openai:gpt-4o", systemPrompt: "", systemVariables: "" },
-              ggufContextLength: null,
+              loadedContextLength: null,
               activeThreadId: "thread-a",
               contextUsage: { promptTokens: 900, completionTokens: 30, totalTokens: 930, cachedTokens: 0 },
             });
@@ -1454,6 +1918,50 @@ def test_adopting_the_resident_gguf_reprices_the_open_thread():
     assert (out["contextUsage"] or {}).get("totalTokens") == 62, (
         "adopting the resident GGUF must reprice the open thread: setCheckpoint has "
         "already blanked the external provider's usage"
+    )
+    assert (out["cached"] or {}).get("totalTokens") == 62
+
+
+def test_status_poll_adoption_reprices_when_a_local_checkpoint_is_already_selected():
+    """#10337: an API-loaded GGUF already selected in Studio left the bar blank until the next reply."""
+    out = _run(
+        textwrap.dedent(
+            """
+            // @ts-nocheck
+            import { adoptServerStatus, seed, snapshot, world } from "./harness.ts";
+            world.storedMessages["thread-a"] = [
+              { id: "m1", role: "user", createdAt: 1, content: [{ type: "text", text: "hi" }], metadata: {} },
+              { id: "m2", role: "assistant", createdAt: 2, content: [{ type: "text", text: "yo" }], metadata: {} },
+            ];
+            seed({
+              params: { checkpoint: "unsloth/gguf-model", systemPrompt: "", systemVariables: "" },
+              loadedContextLength: 8192,
+              activeThreadId: "thread-a",
+              contextUsage: null,
+              contextUsageByThreadId: {},
+            });
+
+            await adoptServerStatus({
+              active_model: "unsloth/gguf-model",
+              gguf_variant: null,
+              is_gguf: true,
+              context_length: 8192,
+            });
+            await new Promise((resolve) => setTimeout(resolve, 30));
+
+            const after = snapshot();
+            console.log(JSON.stringify({
+              counts: world.countedMessages.length,
+              contextUsage: after.contextUsage,
+              cached: after.contextUsageByThreadId["thread-a"] ?? null,
+            }));
+            """
+        )
+    )
+    assert out["counts"] == 1
+    assert (out["contextUsage"] or {}).get("totalTokens") == 62, (
+        "adopting a resident GGUF through the status poll must reprice the open "
+        "thread even when Studio already had that checkpoint selected"
     )
     assert (out["cached"] or {}).get("totalTokens") == 62
 
@@ -1488,7 +1996,7 @@ DEEP_LINK_HYDRATING_AFTER_THE_LOADER = """
     // /api/inference/status answers while the thread is still not active.
     seed({
       params: { checkpoint: "unsloth/gguf-model", systemPrompt: "", systemVariables: "" },
-      ggufContextLength: 8192,
+      loadedContextLength: 8192,
       modelLoading: false,
     });
     renderThreadContextUsageRecount();
@@ -1662,7 +2170,6 @@ def test_an_output_only_audio_gguf_is_never_recounted(model_flags, expected_coun
     [
         # Decoding on the local llama-server: the count would share the process with generation.
         ('{ "thread-a": true }', 0),
-        # A different thread, still the same llama-server.
         ('{ "thread-b": true }', 0),
         # Control: an idle server is what the count is for.
         ("{}", 1),
@@ -1713,7 +2220,7 @@ def test_the_count_is_retried_once_the_run_finishes():
     recount = slice_between(
         src,
         "function ThreadContextUsageRecount(",
-        "\n// Exposes the current thread's cancelRun()",
+        "\nfunction CancelRegistrar(",
     )
     assert "runningByThreadId" in recount, "the effect must observe decoding"
     deps = re.search(r"\}, \[([^\]]*)\]\);", recount, re.S)
