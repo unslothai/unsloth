@@ -22,7 +22,10 @@ shell test lands somewhere the discovery cannot see it, or if a skip is added
 without a reason next to it.
 """
 
+import os
 import re
+import shutil
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -382,3 +385,60 @@ class TestWindowsPowerShellStepsAreGated:
             f"only {found} Windows PowerShell steps found on multi-OS jobs; the walk above is "
             f"looking in the wrong place"
         )
+
+
+@pytest.mark.skipif(
+    os.name != "posix" or not all(shutil.which(x) for x in ("bash", "xargs", "timeout")),
+    reason = "the Linux shell-suite runner needs bash, xargs and timeout",
+)
+class TestParallelShellResults:
+    def run_step(self, tmp_path, suites):
+        directory = tmp_path / "tests" / "sh"
+        directory.mkdir(parents = True)
+        for name, body in suites.items():
+            (directory / name).write_text(body)
+        return subprocess.run(
+            ["bash", "-c", _shell_step_script()],
+            cwd = tmp_path,
+            env = {**os.environ, "RUNNER_TEMP": str(tmp_path)},
+            capture_output = True,
+            text = True,
+            timeout = 15,
+        )
+
+    def test_a_failure_does_not_hide_other_suite_results(self, tmp_path):
+        result = self.run_step(
+            tmp_path,
+            {
+                "test_a.sh": "echo first-failure; exit 7",
+                "test_b.sh": "echo second-success",
+                "test_c with spaces.sh": "echo third-success",
+                "test_install_rollback_lifecycle.sh": "echo should-not-run; exit 99",
+            },
+        )
+        assert result.returncode == 1
+        assert "first-failure" in result.stdout
+        assert "second-success" in result.stdout
+        assert "third-success" in result.stdout
+        assert "test_a.sh exited 7" in result.stdout
+        assert "should-not-run" not in result.stdout
+        assert "ran 3 shell installer test files" in result.stdout
+
+    def test_empty_discovery_fails(self, tmp_path):
+        result = self.run_step(tmp_path, {})
+        assert result.returncode != 0
+        assert "no shell tests discovered under tests/sh" in result.stdout
+
+    def test_four_suites_can_reach_a_barrier_together(self, tmp_path):
+        body = """touch "${0##*/}.ready"
+for attempt in $(seq 1 100); do
+    count=$(find . -maxdepth 1 -name '*.ready' | wc -l)
+    [ "$count" -eq 4 ] && exit 0
+    sleep 0.02
+done
+echo "the other suites never reached the barrier"
+exit 1
+"""
+        result = self.run_step(tmp_path, {f"test_{i}.sh": body for i in range(4)})
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert "ran 4 shell installer test files" in result.stdout
