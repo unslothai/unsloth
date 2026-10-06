@@ -8,8 +8,9 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use tauri::{AppHandle, Manager, Runtime, State};
 
-/// Matches MAX_DOWNLOADS in history-store.ts.
-const MAX_ENTRIES: usize = 200;
+/// Well past MAX_DOWNLOADS in history-store.ts. The history forgets ids it drops, so only orphans
+/// (a tab closed mid-download) build up toward this, not rows the history still shows.
+const MAX_ENTRIES: usize = 1000;
 const ID_BYTES: usize = 16;
 const FILE_NAME: &str = "browser-downloads.json";
 

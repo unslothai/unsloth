@@ -141,3 +141,31 @@ test("a fetched file shows at 100% and the next page returns to the default zoom
   assert.equal(zoom(), 1.25);
   useBrowserPrefsStore.getState().setDefaultZoom(1);
 });
+
+test("expired visits take their sites' icons with them", () => {
+  const now = Date.now();
+  useBrowserPrefsStore.getState().setHistoryRetentionDays(0);
+  useBrowserHistoryStore.setState({
+    history: [
+      { id: "new", url: "https://www.kept.com/a", title: "Kept", visitedAt: now - DAY_MS },
+      { id: "old", url: "https://gone.com/b", title: "Gone", visitedAt: now - 40 * DAY_MS },
+    ],
+    icons: { "kept.com": "https://kept.com/icon.png", "gone.com": "https://gone.com/icon.png" },
+  });
+  useBrowserPrefsStore.getState().setHistoryRetentionDays(30);
+  assert.deepEqual(useBrowserHistoryStore.getState().icons, { "kept.com": "https://kept.com/icon.png" });
+  useBrowserPrefsStore.getState().setHistoryRetentionDays(0);
+});
+
+test("a page opened from a new tab uses the current default zoom", async () => {
+  const { useBrowserStore } = await import("../src/features/browser/store.ts");
+  useBrowserStore.getState().newTab();
+  const tabId = useBrowserStore.getState().activeTabId ?? "";
+  useBrowserPrefsStore.getState().setDefaultZoom(1.5);
+  useBrowserStore.getState().navigate(tabId, { url: "https://example.com/" });
+  assert.equal(useBrowserStore.getState().tabs.find((tab) => tab.id === tabId)?.zoom, 1.5);
+  useBrowserStore.getState().setZoom(tabId, 2);
+  useBrowserStore.getState().navigate(tabId, { url: "https://example.org/" });
+  assert.equal(useBrowserStore.getState().tabs.find((tab) => tab.id === tabId)?.zoom, 2, "a zoomed page keeps it");
+  useBrowserPrefsStore.getState().setDefaultZoom(1);
+});

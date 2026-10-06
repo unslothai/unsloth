@@ -4,6 +4,7 @@
 import { create } from "zustand";
 import { type StateStorage, createJSONStorage, persist } from "zustand/middleware";
 import { accountDatabaseName } from "@/lib/account-transition";
+import { hostOf } from "./address";
 import { forgetNativeDownloads } from "./native-downloads";
 import { useBrowserPrefsStore } from "./prefs-store";
 
@@ -30,6 +31,12 @@ const PERSIST_DELAY_MS = 1000;
 const DAY_MS = 24 * 60 * 60 * 1000;
 
 /** Visits before this are past the kept period; 0 keeps them all. */
+/** Icons of hosts with a kept visit; the rest are history too. */
+function iconsFor(history: HistoryItem[], icons: Record<string, string>): Record<string, string> {
+  const hosts = new Set(history.map((visit) => hostOf(visit.url)));
+  return Object.fromEntries(Object.entries(icons).filter(([host]) => hosts.has(host)));
+}
+
 function retentionCutoff(): number {
   const days = useBrowserPrefsStore.getState().historyRetentionDays;
   return days > 0 ? Date.now() - days * DAY_MS : 0;
@@ -106,13 +113,14 @@ export const useBrowserHistoryStore = create<BrowserHistoryState>()(
           const title = fullTitle.slice(0, MAX_TITLE_CHARS);
           const cutoff = retentionCutoff();
           const kept = cutoff ? state.history.filter((visit) => visit.visitedAt >= cutoff) : state.history;
+          const icons = kept.length < state.history.length ? iconsFor(kept, state.icons) : state.icons;
           const [latest, ...rest] = kept;
           // A reload or title update of the same page is one visit.
           if (latest?.url === url) {
-            return { history: [{ ...latest, title: title || latest.title, visitedAt: Date.now() }, ...rest] };
+            return { history: [{ ...latest, title: title || latest.title, visitedAt: Date.now() }, ...rest], icons };
           }
           const item = { id: newId(), url, title, visitedAt: Date.now() };
-          return { history: [item, ...kept].slice(0, MAX_HISTORY) };
+          return { history: [item, ...kept].slice(0, MAX_HISTORY), icons };
         }),
       recordDownload: (item) =>
         set((state) => {
@@ -151,7 +159,8 @@ export const useBrowserHistoryStore = create<BrowserHistoryState>()(
         set((state) => {
           const cutoff = retentionCutoff();
           if (!cutoff || state.history.every((visit) => visit.visitedAt >= cutoff)) return state;
-          return { history: state.history.filter((visit) => visit.visitedAt >= cutoff) };
+          const history = state.history.filter((visit) => visit.visitedAt >= cutoff);
+          return { history, icons: iconsFor(history, state.icons) };
         }),
     }),
     {

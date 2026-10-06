@@ -313,7 +313,16 @@ type BrowserState = {
 const patchTab = (tabs: BrowserTab[], tabId: string, update: (tab: BrowserTab) => BrowserTab) =>
   tabs.map((tab) => (tab.id === tabId ? update(tab) : tab));
 
+/** A web page opened from a new tab, a history page or an unzoomed file starts at the default zoom. */
+function zoomFor(tab: BrowserTab, entry: BrowserEntry): number {
+  const from = tab.history[tab.index];
+  if (entry.kind !== "web" || !from) return tab.zoom;
+  const unzoomedFile = from.kind === "file" && Math.abs(tab.zoom - 1) < 0.001;
+  return from.kind === "newtab" || from.kind === "internal" || unzoomedFile ? defaultZoom() : tab.zoom;
+}
+
 function pushEntry(tab: BrowserTab, entry: BrowserEntry, replace = false): BrowserTab {
+  const zoom = zoomFor(tab, entry);
   const history = tab.history.slice(0, replace ? tab.index : tab.index + 1);
   history.push(entry);
   if (history.length > MAX_HISTORY) history.splice(0, history.length - MAX_HISTORY);
@@ -328,6 +337,7 @@ function pushEntry(tab: BrowserTab, entry: BrowserEntry, replace = false): Brows
     loading: entry.kind === "web",
     openKey: null,
     nativeError: null,
+    zoom,
   };
 }
 

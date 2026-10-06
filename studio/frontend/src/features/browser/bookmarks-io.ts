@@ -47,7 +47,8 @@ export function parseBookmarksHtml(html: string): { url: string; title: string; 
         url,
         title: link.textContent?.trim() || url,
         folder: toolbar ? "toolbar" : "other",
-        addedAt: Number.isFinite(added) && added > 0 ? added * 1000 : undefined,
+        // Out of Date's range, it would throw when the Bookmarks page formats it.
+        addedAt: added > 0 && !Number.isNaN(new Date(added * 1000).getTime()) ? added * 1000 : undefined,
       },
     ];
   });

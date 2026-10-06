@@ -2,7 +2,6 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { useLocale, useT } from "@/i18n";
-import { isTauri } from "@/lib/api-base";
 import { cn } from "@/lib/utils";
 import {
   ArrowDown01Icon,
@@ -19,6 +18,7 @@ import { type ReactNode, useMemo, useState } from "react";
 import { hostOf } from "./address";
 import { type HistoryItem, useBrowserHistoryStore } from "./history-store";
 import { LinkContextMenu, MenuRow } from "./link-context-menu";
+import { useNativeBrowser } from "./native-support";
 import { useBrowserPrefsStore } from "./prefs-store";
 import { SiteFavicon } from "./site-favicon";
 import { useBrowserStore } from "./store";
@@ -46,9 +46,6 @@ const OTHER_SITES: Site[] = [
 
 const KNOWN_SITES = [...UNSLOTH_SITES, ...OTHER_SITES];
 
-// Cloudflare blocks Unsloth's sites in the web build's proxy, so only the desktop app suggests them.
-const DEFAULT_SITES = isTauri ? KNOWN_SITES : OTHER_SITES;
-
 const SUGGESTED_COUNT = 4;
 const RECENTS_PER_PAGE = 5;
 
@@ -56,6 +53,7 @@ const RECENTS_PER_PAGE = 5;
 function suggestedSites(
   history: HistoryItem[],
   hidden: readonly string[],
+  defaults: Site[],
 ): Site[] {
   const byHost = new Map<string, { site: Site; visits: number }>();
   for (const item of history) {
@@ -77,7 +75,7 @@ function suggestedSites(
     .sort((a, b) => b.visits - a.visits)
     .map((site) => site.site);
   const hosts = new Set(sites.map((site) => hostOf(site.url)));
-  for (const site of DEFAULT_SITES)
+  for (const site of defaults)
     if (!hosts.has(hostOf(site.url))) sites.push(site);
   const off = new Set(hidden);
   return sites
@@ -212,9 +210,11 @@ export function NewTabPage({ tabId }: { tabId: string }) {
   const hidden = useBrowserPrefsStore((state) => state.hiddenSuggestions);
   const showSuggested = useBrowserPrefsStore((state) => state.showSuggestedSites);
   const showRecents = useBrowserPrefsStore((state) => state.showRecentPages);
+  // Cloudflare blocks Unsloth's sites in the proxied view, so only native views suggest them.
+  const native = useNativeBrowser((state) => state.enabled);
   const sites = useMemo(
-    () => suggestedSites(history, hidden),
-    [history, hidden],
+    () => suggestedSites(history, hidden, native ? KNOWN_SITES : OTHER_SITES),
+    [history, hidden, native],
   );
   const recents = useMemo(() => recentPages(history), [history]);
   // A recent stands for its page, so taking it off takes every visit to that page.
