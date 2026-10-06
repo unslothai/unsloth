@@ -860,6 +860,76 @@ def test_voice_embeddings_ride_with_the_gguf_they_sit_beside():
     assert english.download_size_bytes == 15
 
 
+GIGAAM_FILES = (
+    *(
+        f"gigaam-{name}-f16.gguf"
+        for name in (
+            "multilingual-ctc",
+            "multilingual-large-ctc",
+            "v3-ctc",
+            "v3-e2e-ctc",
+            "v3-e2e-rnnt",
+            "v3-rnnt",
+        )
+    ),
+    "gigaam-multilingual-ctc-f32.gguf",
+    "gigaam-multilingual-large-ctc-f32.gguf",
+)
+GIGAAM_SPEC = {"family": "gigaam_asr", "tasks": ["asr"]}
+
+
+@pytest.mark.parametrize(
+    "folder, spec, published, cached",
+    [
+        ("GigaAM-ASR-GGUF", GIGAAM_SPEC, GIGAAM_FILES, GIGAAM_FILES[2:3]),
+        ("GigaAM-ASR-GGUF", GIGAAM_SPEC, GIGAAM_FILES, (GIGAAM_FILES[0], GIGAAM_FILES[1])),
+        (
+            "Irodori-TTS-v4-Small-GGUF",
+            {"family": "irodori_tts", "tasks": ["tts"]},
+            (
+                "irodori-tts-v4-small-f16.gguf",
+                "irodori-tts-v4.1-anime-q8_0.gguf",
+                "irodori-tts-v4-small-q8_0.gguf",
+            ),
+            ("irodori-tts-v4-small-q8_0.gguf", "irodori-tts-v4.1-anime-q8_0.gguf"),
+        ),
+    ],
+)
+def test_a_hub_variant_key_loads_its_file_from_a_partial_cache(
+    hub, folder, spec, published, cached
+):
+    # STT loads and offline loads list only the cache, where the downloaded files alone name the rows.
+    online = acm._single_file_variants(
+        [RepoFile(f"{folder}/{name}", 1) for name in published], folder
+    )
+    snap = _snapshot(hub)
+    for name in cached:
+        _put(snap, f"{folder}/{name}", _gguf_bytes(family = spec["family"], spec = spec))
+    for name in cached:
+        key = next(v.key for v in online if v.primary == f"{folder}/{name}")
+        acm.forget()
+        model = acm.resolve(f"{AUDIO_CPP_REPO}/{folder}", key, network = False)
+        assert model.unsupported is None, key
+        assert model.variant.primary == f"{folder}/{name}"
+        assert model.variant.key == key
+
+
+def test_the_folder_name_never_names_a_variant(hub):
+    # Irodori-TTS-v4-Small-GGUF carries the words of v4-small: with only the anime model cached,
+    # v4-small/Q8_0 is missing, not the anime file under that name.
+    folder = "Irodori-TTS-v4-Small-GGUF"
+    spec = {"family": "irodori_tts", "tasks": ["tts"]}
+    _put(
+        _snapshot(hub),
+        f"{folder}/irodori-tts-v4.1-anime-q8_0.gguf",
+        _gguf_bytes(family = "irodori_tts", spec = spec),
+    )
+    model = acm.resolve(f"{AUDIO_CPP_REPO}/{folder}", "v4-small/Q8_0", network = False)
+    assert "not found" in model.unsupported
+    anime = acm.resolve(f"{AUDIO_CPP_REPO}/{folder}", "v4.1-anime/Q8_0", network = False)
+    assert anime.unsupported is None and anime.variant.key == "v4.1-anime/Q8_0"
+
+
 MIOCODEC_Q8 = "MioCodec-25Hz-44.1kHz-v2-GGUF/miocodec-25hz-44khz-v2-q8_0.gguf"
 
 
