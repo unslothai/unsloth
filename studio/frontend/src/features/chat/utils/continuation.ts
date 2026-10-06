@@ -384,6 +384,7 @@ export type ContinuationRequest = {
   providerCompactionAfterToolCalls?: number;
   providerCompactionProviderType?: string;
   providerCompactionModelId?: string;
+  providerCompactionConnectionKey?: string;
 };
 
 type ProviderCompactionContinuationFields = Pick<
@@ -392,6 +393,7 @@ type ProviderCompactionContinuationFields = Pick<
   | "providerCompactionAfterToolCalls"
   | "providerCompactionProviderType"
   | "providerCompactionModelId"
+  | "providerCompactionConnectionKey"
 >;
 
 function providerCompactionFields(
@@ -403,12 +405,14 @@ function providerCompactionFields(
         providerCompactionAfterToolCalls?: unknown;
         providerCompactionProviderType?: unknown;
         providerCompactionModelId?: unknown;
+        providerCompactionConnectionKey?: unknown;
       }
     | undefined;
   const compaction = providerCompactionPart(fields?.providerCompaction);
   const boundary = fields?.providerCompactionAfterToolCalls;
   const providerType = fields?.providerCompactionProviderType;
   const modelId = fields?.providerCompactionModelId;
+  const connectionKey = fields?.providerCompactionConnectionKey;
   if (
     !compaction ||
     !Number.isInteger(boundary) ||
@@ -416,7 +420,9 @@ function providerCompactionFields(
     typeof providerType !== "string" ||
     !providerType ||
     typeof modelId !== "string" ||
-    !modelId
+    !modelId ||
+    typeof connectionKey !== "string" ||
+    !connectionKey
   ) {
     return {};
   }
@@ -425,6 +431,7 @@ function providerCompactionFields(
     providerCompactionAfterToolCalls: boundary as number,
     providerCompactionProviderType: providerType,
     providerCompactionModelId: modelId,
+    providerCompactionConnectionKey: connectionKey,
   };
 }
 
@@ -451,6 +458,7 @@ export function readContinuationRequest(
         providerCompactionAfterToolCalls?: unknown;
         providerCompactionProviderType?: unknown;
         providerCompactionModelId?: unknown;
+        providerCompactionConnectionKey?: unknown;
       }
     | undefined;
   const partial = typeof request?.partial === "string" ? request.partial : "";

@@ -491,6 +491,7 @@ test("a continuation carries a complete provider compaction tuple", () => {
     providerCompactionAfterToolCalls: 0,
     providerCompactionProviderType: "anthropic",
     providerCompactionModelId: "claude-opus-4-7",
+    providerCompactionConnectionKey: "v1:connection-a",
   };
   assert.deepEqual(
     providerCompactionContinuationFields({ custom: fields }),

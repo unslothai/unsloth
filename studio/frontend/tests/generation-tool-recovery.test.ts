@@ -23,9 +23,10 @@ const { createGenerationToolRecovery } = await import(
 const { RUN_CHECKPOINT_INTERVAL_MS } = await import(
   "../src/features/chat/utils/run-checkpoint-scheduler.ts"
 );
-const { providerCompactionReplayToolCallCount } = await import(
-  "../src/features/chat/utils/provider-compaction.ts"
-);
+const {
+  providerCompactionConnectionKey,
+  providerCompactionReplayToolCallCount,
+} = await import("../src/features/chat/utils/provider-compaction.ts");
 
 const start = (id = "call_0") => ({
   type: "tool_start",
@@ -472,7 +473,10 @@ async function recoverRun(
     lastEventSeq: options.stallBefore ?? payloads.length,
     requestPayload: {
       model: "claude-test",
+      provider_id: "provider-a",
       provider_type: "anthropic",
+      provider_base_url: "https://api.anthropic.com/v1",
+      provider_api_type: "chat_completions",
       external_model: "claude-test",
       session_id: "saved-session",
     },
@@ -484,6 +488,7 @@ async function recoverRun(
     ...recovery,
     ...parser,
     createGenerationToolRecovery,
+    providerCompactionConnectionKey,
     RUN_CHECKPOINT_INTERVAL_MS,
     generationRecoveries,
     useChatRuntimeStore: { getState: () => runtime },
@@ -608,6 +613,14 @@ test("the recovery scheduler persists provider compaction metadata", async () =>
   assert.equal(metadata?.providerCompactionAfterToolCalls, 1);
   assert.equal(metadata?.providerCompactionProviderType, "anthropic");
   assert.equal(metadata?.providerCompactionModelId, "claude-test");
+  assert.equal(
+    metadata?.providerCompactionConnectionKey,
+    providerCompactionConnectionKey(
+      "provider-a",
+      "https://api.anthropic.com/v1",
+      "chat_completions",
+    ),
+  );
 });
 
 test("reopening a run that finished without the tab saves and renders only its end", async () => {

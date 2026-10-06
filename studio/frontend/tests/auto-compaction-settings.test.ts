@@ -204,7 +204,11 @@ test("a provider compaction is kept on the turn and replayed only to API models"
 });
 
 test("provider compaction persistence keeps summary and encrypted state together", async () => {
-  const { providerCompactionForTarget, providerCompactionPart } =
+  const {
+    providerCompactionConnectionKey,
+    providerCompactionForTarget,
+    providerCompactionPart,
+  } =
     await import("../src/features/chat/utils/provider-compaction.ts");
 
   assert.deepEqual(
@@ -219,6 +223,12 @@ test("provider compaction persistence keeps summary and encrypted state together
       encrypted_content: "opaque-compaction",
     },
   );
+  const connectionKey = providerCompactionConnectionKey(
+    "provider-a",
+    "https://first.openai.azure.com/openai/v1",
+    "responses",
+  );
+  assert.ok(connectionKey);
   const origin = {
     providerCompaction: {
       type: "compaction",
@@ -227,21 +237,63 @@ test("provider compaction persistence keeps summary and encrypted state together
     },
     providerCompactionProviderType: "anthropic",
     providerCompactionModelId: "claude-opus-4-7",
+    providerCompactionConnectionKey: connectionKey,
   };
   assert.deepEqual(
-    providerCompactionForTarget(origin, "anthropic", "claude-opus-4-7"),
+    providerCompactionForTarget(
+      origin,
+      "anthropic",
+      "claude-opus-4-7",
+      connectionKey,
+    ),
     origin.providerCompaction,
   );
   assert.equal(
-    providerCompactionForTarget(origin, "openai", "gpt-5.4"),
+    providerCompactionForTarget(origin, "openai", "gpt-5.4", connectionKey),
     null,
   );
   assert.equal(
-    providerCompactionForTarget(origin, "anthropic", "claude-sonnet-5"),
+    providerCompactionForTarget(
+      origin,
+      "anthropic",
+      "claude-sonnet-5",
+      connectionKey,
+    ),
     null,
   );
   assert.equal(
-    providerCompactionForTarget({}, "anthropic", "claude-opus-4-7"),
+    providerCompactionForTarget(
+      {},
+      "anthropic",
+      "claude-opus-4-7",
+      connectionKey,
+    ),
+    null,
+  );
+  assert.equal(
+    providerCompactionForTarget(
+      origin,
+      "anthropic",
+      "claude-opus-4-7",
+      providerCompactionConnectionKey(
+        "provider-b",
+        "https://first.openai.azure.com/openai/v1",
+        "responses",
+      ),
+    ),
+    null,
+  );
+  assert.equal(
+    providerCompactionForTarget(
+      origin,
+      "anthropic",
+      "claude-opus-4-7",
+      providerCompactionConnectionKey(
+        "provider-a",
+        "https://second.openai.azure.com/openai/v1",
+        "responses",
+      ),
+    ),
     null,
   );
 });

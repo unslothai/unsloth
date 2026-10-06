@@ -16,6 +16,27 @@ function record(value: unknown): Record<string, unknown> | null {
     : null;
 }
 
+/** Opaque, stable identity for one saved connection at one endpoint. The endpoint itself stays out of message
+ * metadata, while a provider edit changes the key and invalidates provider-owned compaction state. */
+export function providerCompactionConnectionKey(
+  providerId: unknown,
+  baseUrl: unknown,
+  apiType: unknown,
+): string | undefined {
+  if (typeof providerId !== "string" || !providerId) return undefined;
+  const identity = JSON.stringify([
+    providerId,
+    typeof baseUrl === "string" ? baseUrl.trim() : "",
+    typeof apiType === "string" && apiType ? apiType : "chat_completions",
+  ]);
+  let hash = 14_695_981_039_346_656_037n;
+  for (let index = 0; index < identity.length; index += 1) {
+    hash ^= BigInt(identity.charCodeAt(index));
+    hash = BigInt.asUintN(64, hash * 1_099_511_628_211n);
+  }
+  return `v1:${hash.toString(16).padStart(16, "0")}`;
+}
+
 export function providerCompactionPart(
   value: unknown,
 ): ProviderCompactionContentPart | null {
@@ -35,13 +56,16 @@ function providerCompactionMatchesTarget(
   metadata: unknown,
   providerType: string | undefined,
   modelId: string | undefined,
+  connectionKey: string | undefined,
 ): boolean {
   const custom = record(metadata);
   return (
     typeof providerType === "string" &&
     typeof modelId === "string" &&
+    typeof connectionKey === "string" &&
     custom?.providerCompactionProviderType === providerType &&
-    custom.providerCompactionModelId === modelId
+    custom.providerCompactionModelId === modelId &&
+    custom.providerCompactionConnectionKey === connectionKey
   );
 }
 
@@ -49,8 +73,16 @@ export function providerCompactionForTarget(
   metadata: unknown,
   providerType: string | undefined,
   modelId: string | undefined,
+  connectionKey: string | undefined,
 ): ProviderCompactionContentPart | null {
-  if (!providerCompactionMatchesTarget(metadata, providerType, modelId)) {
+  if (
+    !providerCompactionMatchesTarget(
+      metadata,
+      providerType,
+      modelId,
+      connectionKey,
+    )
+  ) {
     return null;
   }
   return providerCompactionPart(record(metadata)?.providerCompaction);

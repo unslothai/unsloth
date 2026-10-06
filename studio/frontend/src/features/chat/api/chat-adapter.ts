@@ -111,6 +111,7 @@ import { parseParamCountB } from "@/lib/model-size";
 import { createLoadingToastIcon, toast } from "@/lib/toast";
 import { notifyPromptQueueRunFailed } from "../utils/prompt-queue-boundary";
 import {
+  providerCompactionConnectionKey,
   providerCompactionForTarget,
   providerCompactionPart,
 } from "../utils/provider-compaction";
@@ -1306,7 +1307,11 @@ function providerCompactionAssistant(
 function withProviderCompaction(
   message: RunMessage,
   serialized: SerializedMessage[],
-  target: { providerType: string | undefined; modelId: string | undefined },
+  target: {
+    providerType: string | undefined;
+    modelId: string | undefined;
+    connectionKey: string | undefined;
+  },
 ): SerializedMessage[] {
   const custom = (
     message as { metadata?: { custom?: Record<string, unknown> } }
@@ -1315,6 +1320,7 @@ function withProviderCompaction(
     custom,
     target.providerType,
     target.modelId,
+    target.connectionKey,
   );
   const assistant = providerCompactionAssistant(
     serialized,
@@ -4984,6 +4990,12 @@ export function createOpenAIStreamAdapter(
       }
       const externalProvider =
         externalRouting.kind === "external" ? externalRouting.provider : null;
+      const providerCompactionTargetConnectionKey =
+        providerCompactionConnectionKey(
+          externalProvider?.id,
+          externalProvider?.baseUrl,
+          externalProvider?.apiType,
+        );
 
       const externalUsesStudioTools =
         providerModelSupportsStudioTools(
@@ -5118,6 +5130,7 @@ export function createOpenAIStreamAdapter(
                   externalProvider?.providerType,
                 ),
                 modelId: externalSelection?.modelId,
+                connectionKey: providerCompactionTargetConnectionKey,
               })
             : serialized;
         })
@@ -5176,6 +5189,7 @@ export function createOpenAIStreamAdapter(
             continuation,
             toExternalBackendProviderType(externalProvider?.providerType),
             externalSelection?.modelId,
+            providerCompactionTargetConnectionKey,
           )
         : null;
       // The run's messages stop at the user turn, so the partial is appended here for the backend to resume.
@@ -5693,6 +5707,10 @@ export function createOpenAIStreamAdapter(
         continuationCompaction
           ? continuation?.providerCompactionModelId
           : undefined;
+      let providerCompactionOriginConnectionKey: string | undefined =
+        continuationCompaction
+          ? continuation?.providerCompactionConnectionKey
+          : undefined;
 
       const liveAssistantContent = () =>
         buildAssistantContent(mergeContinuation(cumulativeText));
@@ -5710,6 +5728,7 @@ export function createOpenAIStreamAdapter(
         providerCompactionAfterToolCalls,
         providerCompactionProviderType,
         providerCompactionModelId,
+        providerCompactionConnectionKey: providerCompactionOriginConnectionKey,
         // A legacy (browser-tool / attachment / incognito) run that ends because you closed the tab has no
         // server-side run to resume from, so its last streamed yield is what persists. Mark it an interruption
         // — partial kept + Resume — instead of a silent blank/ambiguous state. Durable runs keep "cancelled":
@@ -7129,6 +7148,8 @@ export function createOpenAIStreamAdapter(
                         externalProvider?.providerType,
                       );
                     providerCompactionModelId = externalSelection?.modelId;
+                    providerCompactionOriginConnectionKey =
+                      providerCompactionTargetConnectionKey;
                     // Compaction items arrive before the provider content they introduce. Remember
                     // how much of this stored run preceded it so replay does not put a later marker
                     // ahead of earlier Studio tool rounds that the marker already summarizes.
@@ -8465,6 +8486,8 @@ export function createOpenAIStreamAdapter(
               providerCompactionAfterToolCalls,
               providerCompactionProviderType,
               providerCompactionModelId,
+              providerCompactionConnectionKey:
+                providerCompactionOriginConnectionKey,
               incomplete: finalIncompleteReason
                 ? { reason: finalIncompleteReason }
                 : undefined,
@@ -8638,6 +8661,8 @@ export function createOpenAIStreamAdapter(
                 providerCompactionAfterToolCalls,
                 providerCompactionProviderType,
                 providerCompactionModelId,
+                providerCompactionConnectionKey:
+                  providerCompactionOriginConnectionKey,
                 // Unfinished too, so it also offers Continue -- unless the provider already
                 // said why the model stopped.
                 incomplete: {
