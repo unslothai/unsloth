@@ -80,7 +80,6 @@ def test_compiled_flex_mask_has_no_graph_breaks_and_matches_eager():
         traced = compiled(config, embeds, attention_mask, position_ids)
         assert torch.equal(eager.to_dense(), traced.to_dense())
         assert torch.equal(_elements(eager, length), _elements(traced, length))
-    # Packed records never see each other.
     assert not _elements(traced, 200)[0, 100:160, :100].any()
 
 
