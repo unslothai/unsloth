@@ -174,17 +174,54 @@ async def check(url):
                   const viewport = document.querySelector('.aui-thread-viewport').getBoundingClientRect();
                   const rects = [...document.querySelectorAll('.aui-user-message-footer button')].map(e => {
                     const r = e.getBoundingClientRect();
-                    return {x:r.x, right:r.right, y:r.y, bottom:r.bottom, width:r.width, timestamp:e.classList.contains('aui-user-message-time-trigger')};
+                    // The target is the box plus a positioned ::before, if the control extends it with one.
+                    let t = {x:r.x, right:r.right, y:r.y, bottom:r.bottom};
+                    const before = getComputedStyle(e, '::before');
+                    if (before.content !== 'none' && before.position === 'absolute') {
+                      const left = r.x + e.clientLeft, top = r.y + e.clientTop;
+                      t = {
+                        x: Math.min(t.x, left + parseFloat(before.left)),
+                        right: Math.max(t.right, left + e.clientWidth - parseFloat(before.right)),
+                        y: Math.min(t.y, top + parseFloat(before.top)),
+                        bottom: Math.max(t.bottom, top + e.clientHeight - parseFloat(before.bottom)),
+                      };
+                    }
+                    // The middle of every edge of the target has to reach this control when pressed, not
+                    // whatever is painted over it there. Not the corners: hit testing follows a round
+                    // control's border-radius.
+                    const missed = [];
+                    for (const [fx, fy] of [[0.5, 0.5], [0, 0.5], [1, 0.5], [0.5, 0], [0.5, 1]]) {
+                      const px = t.x + 0.5 + fx * (t.right - t.x - 1), py = t.y + 0.5 + fy * (t.bottom - t.y - 1);
+                      const hit = document.elementFromPoint(px, py);
+                      if (!hit || hit.closest('button') !== e) missed.push([px, py, hit && hit.className]);
+                    }
+                    const cs = getComputedStyle(e);
+                    return {...t, width:t.right - t.x, height:t.bottom - t.y, missed,
+                      box:{width:r.width, height:r.height, padding:[cs.paddingTop, cs.paddingRight, cs.paddingBottom, cs.paddingLeft]},
+                      chevron:e.classList.contains('aui-branch-chevron-btn'),
+                      timestamp:e.classList.contains('aui-user-message-time-trigger')};
                   });
                   return {left:viewport.left, right:viewport.right, rects};
                 }""")
                 for rect in geometry["rects"]:
                     assert rect["x"] >= geometry["left"] - 1, geometry
                     assert rect["right"] <= geometry["right"] + 1, geometry
+                    assert not rect["missed"], (
+                        "part of this target does not reach it",
+                        rect,
+                        geometry,
+                    )
                     if not rect["timestamp"]:
                         # 24 CSS px at the user's chosen Interface Scale, like browser zoom.
                         assert rect["width"] >= 24 * interface - 0.01, geometry
-                # No two controls share pixels: in an overlap the later one in the DOM wins the
+                        assert rect["height"] >= 24 * interface - 0.01, geometry
+                    if rect["chevron"]:
+                        # The visible box is what draws the focus ring: square and unpadded keeps the ring
+                        # a circle centred on the glyph, however far the target reaches past it.
+                        box = rect["box"]
+                        assert abs(box["width"] - box["height"]) <= 0.01, rect
+                        assert set(box["padding"]) == {"0px"}, rect
+                # No two targets share pixels: in an overlap the later one in the DOM wins the
                 # click, so a press on the edge of one control would trigger its neighbour.
                 # A narrow or large layout wraps the picker onto its own row, so compare boxes, not x alone.
                 rects = geometry["rects"]
