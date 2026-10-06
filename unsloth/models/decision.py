@@ -197,8 +197,9 @@ def _amp_dtype(device):
 def _no_cudnn_attention():
     # cuDNN SDPA rebuilds its bf16 plan for every new sequence length, about 100x slower steps on a B200.
     from torch.nn.attention import SDPBackend, sdpa_kernel
-
-    return sdpa_kernel([SDPBackend.FLASH_ATTENTION, SDPBackend.EFFICIENT_ATTENTION, SDPBackend.MATH])
+    return sdpa_kernel(
+        [SDPBackend.FLASH_ATTENTION, SDPBackend.EFFICIENT_ATTENTION, SDPBackend.MATH]
+    )
 
 
 def _gradient_checkpointing(model, use_gradient_checkpointing) -> None:
@@ -226,7 +227,10 @@ def _lean_lora_forward(self, x, *args, **kwargs):
         or self.merged
         or args
         or kwargs
-        or (not torch.is_autocast_enabled(x.device.type) and x.dtype != self.lora_A[adapter].weight.dtype)
+        or (
+            not torch.is_autocast_enabled(x.device.type)
+            and x.dtype != self.lora_A[adapter].weight.dtype
+        )
     ):
         return self._unsloth_peft_forward(x, *args, **kwargs)
     # PEFT's maths without its per-call checks, its round trip of x through the fp32 adapter

@@ -1240,7 +1240,9 @@ def test_decision_forward_never_picks_cudnn_attention(checkpoint, tmp_path):
         model = model, args = _args(tmp_path), train_dataset = items, processing_class = tokenizer
     )
     device = next(model.parameters()).device
-    batch = {k: v.to(device) for k, v in DecisionDataCollator(tokenizer.pad_token_id)(items).items()}
+    batch = {
+        k: v.to(device) for k, v in DecisionDataCollator(tokenizer.pad_token_id)(items).items()
+    }
     trainer.compute_loss(model, batch)
     decision._logits(model, items, tokenizer.pad_token_id)
     assert cudnn and not any(cudnn)
@@ -1265,7 +1267,9 @@ def test_checkpointed_recompute_never_picks_cudnn_attention(checkpoint, tmp_path
         model = model, args = _args(tmp_path), train_dataset = items, processing_class = tokenizer
     )
     device = next(model.parameters()).device
-    batch = {k: v.to(device) for k, v in DecisionDataCollator(tokenizer.pad_token_id)(items).items()}
+    batch = {
+        k: v.to(device) for k, v in DecisionDataCollator(tokenizer.pad_token_id)(items).items()
+    }
     trainer.accelerator.backward(trainer.compute_loss(model, batch))
     assert len(cudnn) == 2 and not any(cudnn)
 
@@ -1320,7 +1324,9 @@ def test_lean_lora_forward_matches_peft(checkpoint, scaling):
             # The dtype the model trains in on this GPU: fp16 on a T4, which cannot run bf16.
             with torch.autocast(device.type, dtype = decision._amp_dtype(device), enabled = enabled):
                 out = forward(x)
-            grads = torch.autograd.grad(out.float().square().sum(), [x, layer.lora_A["default"].weight])
+            grads = torch.autograd.grad(
+                out.float().square().sum(), [x, layer.lora_A["default"].weight]
+            )
             outputs.append((out, *grads))
         for lean, peft in zip(*outputs):
             assert lean.dtype == peft.dtype and torch.equal(lean, peft)

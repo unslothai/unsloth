@@ -25,7 +25,16 @@ STATIC_MULTIPLE = 64
 STATIC_MAX_LEN = 1024
 
 
-def _encoder_sdpa(module, query, key, value, attention_mask, dropout = 0.0, scaling = None, **kwargs):
+def _encoder_sdpa(
+    module,
+    query,
+    key,
+    value,
+    attention_mask,
+    dropout = 0.0,
+    scaling = None,
+    **kwargs,
+):
     # transformers' SDPA attention without unsloth_zoo's wrappers, which carry a __module__ that
     # torch 2.11's dynamo cannot guard, so the compiled layers fell back to eager on Linux.
     out = torch.nn.functional.scaled_dot_product_attention(
