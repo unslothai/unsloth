@@ -1958,6 +1958,20 @@ def test_a_v1_run_is_monitored_and_its_clips_are_served_under_v1(stub):
     )
 
 
+def test_a_bad_v1_generate_in_a_saved_voice_opens_no_monitor_row(stub):
+    from core.inference.api_monitor import api_monitor
+
+    voice = _voice(ALICE, _input(ALICE))
+    api_monitor.clear()
+    with _v1(ALICE) as client:
+        response = client.post(
+            "/v1/audio/generate",
+            json = {"messages": [{"role": "user", "content": ""}], "voice_id": voice["id"]},
+        )
+    assert 400 <= response.status_code < 500, response.text
+    assert api_monitor.snapshot(include_details = False) == []
+
+
 @pytest.mark.parametrize("as_object", [False, True])
 def test_speech_in_a_saved_voice_clones_with_its_transcript(stub, tmp_path, as_object):
     voice = _voice(ALICE, _input(ALICE), transcript = "Okay, I'm Cemo.")
