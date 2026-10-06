@@ -3774,7 +3774,12 @@ def decision_layout(
 ) -> Optional[str]:
     """ "laya", "clef" or None for a model that is not a decision model."""
     if is_local_path(model_name):
-        return _folder_decision_layout(Path(normalize_path(model_name)))
+        folder = Path(normalize_path(model_name))
+        # The subfolder first, as on the Hub; an escaping one is refused later by request validation.
+        nested = None
+        if subfolder and not Path(subfolder).is_absolute() and ".." not in Path(subfolder).parts:
+            nested = _folder_decision_layout(folder / subfolder)
+        return nested or _folder_decision_layout(folder)
     from utils.utils import hf_cache_snapshot_dir, hf_env_offline
 
     prefix = f"{subfolder}/" if subfolder else ""

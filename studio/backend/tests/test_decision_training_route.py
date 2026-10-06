@@ -521,6 +521,14 @@ def test_a_caller_cannot_claim_a_layout_or_a_clef_subfolder(route, device, tmp_p
     assert "model_subfolder" in refused.value.detail
 
 
+def test_a_local_clef_in_a_subfolder_is_detected_as_clef(route, device, tmp_path):
+    _clef_folder(tmp_path / "parent" / "clef")
+    request = _request(model_name = str(tmp_path / "parent"), model_subfolder = "clef")
+    with pytest.raises(HTTPException) as refused:
+        route._validate_decision_request(request)
+    assert "Clef repos hold one checkpoint" in refused.value.detail
+
+
 def test_a_hub_clef_repo_is_a_decision_model(route, device):
     from utils.models import model_config
 
