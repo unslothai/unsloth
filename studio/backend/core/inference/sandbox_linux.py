@@ -808,7 +808,9 @@ def prepare(plan: ToolLaunchPlan) -> PreparedSandboxLaunch:
     tmp_runtime_paths = tuple(path for path in runtime_paths if _within(path, "/tmp"))
     workdir_runtime_paths = _runtime_paths_under(workdir)
 
-    disable_userns = _bwrap_supports(bwrap, "--disable-userns")
+    # --disable-userns writes /proc/sys/user/max_user_namespaces inside, which an empty /proc lacks:
+    # there the seccomp filter refuses nested user namespaces instead, as on bwrap 0.6.1.
+    disable_userns = not empty_proc_layout(bwrap) and _bwrap_supports(bwrap, "--disable-userns")
     try:
         seccomp = sandbox_seccomp.filter_file(block_userns = not disable_userns)
     except RuntimeError as exc:

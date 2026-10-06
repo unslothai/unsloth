@@ -2513,6 +2513,29 @@ def test_the_launch_mounts_an_empty_private_proc_never_the_hosts(tmp_path, monke
         launch.cleanup()
 
 
+@pytest.mark.parametrize("empty", [True, False])
+def test_an_empty_proc_blocks_nested_user_namespaces_with_seccomp(tmp_path, monkeypatch, empty):
+    # Colab: --disable-userns fails with "cannot open /proc/sys/user/max_user_namespaces".
+    if sandbox_linux.shutil.which("bwrap") is None:
+        pytest.skip("bubblewrap is not installed on this host")
+    monkeypatch.setattr(sandbox_linux, "empty_proc_layout", lambda *_a: empty)
+    monkeypatch.setattr(sandbox_linux, "_bwrap_supports", lambda _bwrap, _option: True)
+    built = []
+    real_filter = sandbox_linux.sandbox_seccomp.filter_file
+
+    def filter_file(**kwargs):
+        built.append(kwargs["block_userns"])
+        return real_filter(**kwargs)
+
+    monkeypatch.setattr(sandbox_linux.sandbox_seccomp, "filter_file", filter_file)
+    launch = sandbox_linux.prepare(_plan(tmp_path))
+    try:
+        assert ("--disable-userns" in launch.argv) is not empty
+        assert built == [empty]
+    finally:
+        launch.cleanup()
+
+
 def test_the_two_proc_layouts_never_share_a_profile_or_a_cached_verdict(monkeypatch):
     if sandbox_linux.shutil.which("bwrap") is None:
         pytest.skip("bubblewrap is not installed on this host")
