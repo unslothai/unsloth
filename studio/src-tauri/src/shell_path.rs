@@ -43,10 +43,10 @@ fn path_from_output(stdout: &[u8]) -> Option<String> {
 }
 
 #[cfg(not(windows))]
-fn read_login_shell_path(shell: &str) -> Option<String> {
+fn read_login_shell_path(shell: &str, command: &str) -> Option<String> {
     let mut cmd = std::process::Command::new(shell);
     cmd.arg("-ilc")
-        .arg(probe_command(shell))
+        .arg(command)
         // Oh My Zsh's auto-update prompt can block the shell forever.
         .env("DISABLE_AUTO_UPDATE", "true");
     if let Some(home) = dirs::home_dir() {
@@ -57,6 +57,19 @@ fn read_login_shell_path(shell: &str) -> Option<String> {
         return None;
     }
     path_from_output(&out.stdout)
+}
+
+/// A shell missing from NON_POSIX_SHELLS (Plan 9 rc, a renamed fish) rejects the probe:
+/// fall back to the old command rather than lose PATH.
+#[cfg(not(windows))]
+fn login_shell_path(shell: &str) -> Option<String> {
+    let probe = probe_command(shell);
+    read_login_shell_path(shell, &probe).or_else(|| {
+        let old = env_command();
+        (probe != old)
+            .then(|| read_login_shell_path(shell, &old))
+            .flatten()
+    })
 }
 
 /// Best effort: on any failure PATH stays as the process inherited it.
@@ -76,7 +89,7 @@ pub fn fix_path() {
             "/bin/sh"
         };
         let shell = std::env::var("SHELL").unwrap_or_else(|_| default_shell.into());
-        if let Some(path) = read_login_shell_path(&shell) {
+        if let Some(path) = login_shell_path(&shell) {
             std::env::set_var("PATH", path);
         }
     }
@@ -115,6 +128,27 @@ mod tests {
         );
         assert_eq!(path_from_output(out.as_bytes()).as_deref(), Some("/a:/b=c"));
         assert_eq!(path_from_output(b"no delimiter"), None);
+    }
+
+    /// A shell that cannot parse the probe still yields PATH through the old command.
+    #[cfg(not(windows))]
+    #[test]
+    fn a_shell_rejecting_the_probe_falls_back() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("unsloth-12678-fb-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let shell = dir.join("notposix");
+        std::fs::write(
+            &shell,
+            "#!/bin/sh\ncase \"$2\" in if*) exit 2 ;; esac\nPATH=/from/fallback:$PATH exec /bin/sh -c \"$2\"\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&shell, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let shell = shell.to_str().unwrap();
+        assert_eq!(read_login_shell_path(shell, &probe_command(shell)), None);
+        let path = login_shell_path(shell).unwrap_or_default();
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(path.starts_with("/from/fallback:"), "{path:?}");
     }
 
     #[cfg(not(windows))]
