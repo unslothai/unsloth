@@ -6947,7 +6947,7 @@ export function HubModelPicker({
                   : "Search Unsloth models"
               }
               data-model-picker-search-input={true}
-              className="field-soft h-(--picker-control-h) border-0 pl-8 pr-8"
+              className="field-soft h-(--picker-control-h) border-0 pl-8 pr-8 text-sm"
             />
             {isLoading && (
               <Spinner className="pointer-events-none absolute right-2.5 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
@@ -8462,7 +8462,7 @@ export function HubModelPicker({
             <button
               type="button"
               onClick={() => (ejectsAll ? onEjectAll?.() : onEject())}
-              className="pointer-events-auto inline-flex items-center justify-center gap-2 rounded-md bg-popover px-3 py-2 text-ui-13 font-medium text-destructive shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] transition-colors hover:bg-[color-mix(in_srgb,var(--destructive)_12%,var(--popover))] dark:bg-[color-mix(in_srgb,var(--foreground)_10%,var(--sidebar))] dark:shadow-none dark:hover:bg-[color-mix(in_srgb,var(--destructive)_22%,var(--sidebar))]"
+              className="pointer-events-auto inline-flex items-center justify-center gap-2 rounded-md bg-popover px-3 py-2 text-ui-13 font-medium text-destructive shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] transition-colors hover:bg-[color-mix(in_srgb,var(--foreground)_8%,var(--popover))] dark:bg-sidebar-accent dark:shadow-none dark:hover:bg-[color-mix(in_srgb,var(--foreground)_8%,var(--sidebar-accent))]"
               title={ejectsAll ? "Eject all models" : "Eject model"}
             >
               <HugeiconsIcon icon={RemoveCircleIcon} className="size-3.5" />
