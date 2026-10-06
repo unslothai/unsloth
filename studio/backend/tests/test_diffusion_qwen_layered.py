@@ -160,7 +160,12 @@ def test_layered_family_contract():
     # ComfyUI's Image to Layers template: 20 steps, cfg 2.5, ModelSamplingAuraFlow 1, 2 layers at 640.
     assert (fam.layer_count, fam.layer_resolution) == (2, 640)
     assert comfy_flow_shift_for(fam, "unsloth/Qwen-Image-Layered-GGUF") == 1.0
-    for name in ("unsloth/Qwen-Image-Layered-GGUF", "Qwen/Qwen-Image-Layered"):
+    for name in (
+        "unsloth/Qwen-Image-Layered-GGUF",
+        "Qwen/Qwen-Image-Layered",
+        "local/qwen_image_layered",
+        "local/qwenimagelayered-q4",
+    ):
         assert default_generation_params(name) == (20, 2.5)
     # Families without a layered pipeline stay at 0.
     assert detect_family("unsloth/Qwen-Image-Edit-2511-GGUF").layer_count == 0
