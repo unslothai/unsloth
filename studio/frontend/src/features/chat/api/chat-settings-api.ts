@@ -5,6 +5,7 @@ import { authFetch } from "@/features/auth";
 import type { ChatPresetSource } from "../presets/preset-policy";
 import type {
   PermissionMode,
+  SandboxLevel,
   RagAutoInject,
   RagMode,
   RagSource,
@@ -55,12 +56,11 @@ export interface PersistedChatSettings {
   deepResearchEnabled?: boolean;
   researchWebsitePolicy?: ResearchWebsitePolicy;
   researchModelTimeoutSeconds?: number;
-  artifactsEnabled?: boolean;
-  showCanvasMenuItem?: boolean;
   mcpEnabledForChat?: boolean;
   confirmToolCalls?: boolean;
   /** "full" (Full access) is session-only and never leaves the browser. */
   permissionMode?: Exclude<PermissionMode, "full">;
+  sandboxLevel?: SandboxLevel;
   ragSource?: RagSource;
   ragMode?: RagMode;
   ragTopK?: number;

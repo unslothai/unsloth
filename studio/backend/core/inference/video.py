@@ -56,6 +56,7 @@ from .diffusion_attention import (
     select_attention_backend,
 )
 from .diffusion_flow_shift import apply_comfy_flow_shift
+from .diffusion_comfy_quant import load_comfy_quant_transformer, refuse_comfy_quant
 from .diffusion_prequant import scoped_local_files_only
 from .diffusion_cache import (
     FBCACHE_MIN_STEPS,
@@ -6115,7 +6116,24 @@ class VideoBackend:
                     text_encoder_device = ltx23_te_device,
                 )
             else:
-                transformer = transformer_cls.from_single_file(str(checkpoint_path), **sf_kwargs)
+                comfy_scan = (
+                    refuse_comfy_quant(str(checkpoint_path)) if kind == "single_file" else None
+                )
+                if comfy_scan is not None:
+                    # Dequantized on load: a single-file video load never engages the int8 runtime.
+                    transformer = load_comfy_quant_transformer(
+                        transformer_cls,
+                        str(checkpoint_path),
+                        comfy_scan,
+                        sf_kwargs,
+                        int8_backend = None,
+                        family = fam.name,
+                        logger = logger,
+                    )
+                else:
+                    transformer = transformer_cls.from_single_file(
+                        str(checkpoint_path), **sf_kwargs
+                    )
                 pipe = pipeline_cls.from_pretrained(
                     _base_local_dir or base, transformer = transformer, **pipe_kwargs
                 )

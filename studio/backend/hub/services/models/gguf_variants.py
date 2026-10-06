@@ -1095,16 +1095,27 @@ async def _audio_cpp_variants_answer(
     from core.inference import audio_cpp_files
 
     def _details():
+        companions = [
+            audio_cpp_models.resolve(c.id, c.variant, hf_token, network = network)
+            for c in model.companions
+        ]
+        companions_cached = all(
+            c is not None and audio_cpp_files.cached_files(c) is not None for c in companions
+        )
+        companion_bytes = sum(c.variant.size_bytes for c in companions if c is not None)
         rows = []
         for variant in model.variants:
-            downloaded = audio_cpp_files.cached_files(model.with_variant(variant)) is not None
+            downloaded = (
+                companions_cached
+                and audio_cpp_files.cached_files(model.with_variant(variant)) is not None
+            )
             rows.append(
                 GgufVariantDetail(
                     filename = variant.main_file,
                     quant = variant.key,
                     display_label = variant.label,
                     size_bytes = variant.size_bytes,
-                    download_size_bytes = variant.size_bytes,
+                    download_size_bytes = variant.size_bytes + companion_bytes,
                     downloaded = downloaded,
                 )
             )

@@ -396,3 +396,166 @@ def test_capability_probe_takes_the_best_visible_gpu():
 
     assert kernel_install._gpu_capability(run) == (9, 0)
     assert "max(torch.cuda.get_device_capability(i)" in seen["check"] and seen["timeout"]
+
+
+def test_pinned_kernels_match_the_wheel_utils_pins():
+    from utils import wheel_utils
+
+    cc1d, mamba = kernel_install.CAUSAL_CONV1D, kernel_install.MAMBA_SSM
+    assert (cc1d.package_version, cc1d.release_tag, cc1d.release_base_url) == (
+        wheel_utils.CAUSAL_CONV1D_PACKAGE_VERSION,
+        wheel_utils.CAUSAL_CONV1D_RELEASE_TAG,
+        wheel_utils.CAUSAL_CONV1D_RELEASE_BASE_URL,
+    )
+    assert (mamba.package_version, mamba.release_tag, mamba.release_base_url) == (
+        wheel_utils.MAMBA_SSM_PACKAGE_VERSION,
+        wheel_utils.MAMBA_SSM_RELEASE_TAG,
+        wheel_utils.MAMBA_SSM_RELEASE_BASE_URL,
+    )
+    assert (cc1d.import_name, cc1d.pypi_name, mamba.import_name, mamba.pypi_name) == (
+        "causal_conv1d",
+        "causal-conv1d",
+        "mamba_ssm",
+        "mamba-ssm",
+    )
+    url = cc1d.wheel_url(_env("2.10.0+cu128", "12.8"))
+    assert url.startswith(f"{_CC1D}/causal_conv1d-1.6.1+cu12torch2.10")
+    assert kernel_install.resolve_wheel_url("causal_conv1d", _env("2.10.0+cu128", "12.8")) == url
+
+
+def _ok(code):
+    return SimpleNamespace(returncode = code, stdout = f"out{code}")
+
+
+@pytest.mark.parametrize(
+    "attempts, verified, outcome, failed",
+    [
+        ([("uv", 0)], True, "installed", []),
+        ([("uv", 1), ("pip", 0)], True, "installed", ["uv"]),
+        ([("uv", 0)], False, "rejected", []),
+        ([("uv", 1), ("pip", 1)], True, "failed", ["uv", "pip"]),
+    ],
+)
+def test_install_prebuilt_outcomes(attempts, verified, outcome, failed):
+    seen, failures, verifies = {}, [], []
+
+    def install(url, **kwargs):
+        seen["url"], seen["kwargs"] = url, kwargs
+        return [(installer, _ok(code)) for installer, code in attempts]
+
+    result = kernel_install.install_prebuilt(
+        "https://example.invalid/k.whl",
+        install = install,
+        verify = lambda: verifies.append(1) or verified,
+        on_failed = lambda installer, result: failures.append(installer),
+        use_uv = True,
+    )
+    assert result == outcome
+    assert failures == failed
+    assert len(verifies) == (outcome != "failed")
+    # Only what the caller passed is forwarded, so each caller's installer flags stay its own.
+    assert seen == {
+        "url": "https://example.invalid/k.whl",
+        "kwargs": {"python_executable": sys.executable, "use_uv": True},
+    }
+
+
+@pytest.mark.parametrize(
+    "use_uv, is_hip, reinstall, expected",
+    [
+        (
+            True,
+            False,
+            False,
+            ["uv", "pip", "install", "--python", "PY", "--no-build-isolation", "--no-deps", "k==1"],
+        ),
+        (
+            True,
+            True,
+            True,
+            [
+                "uv",
+                "pip",
+                "install",
+                "--python",
+                "PY",
+                "--no-build-isolation",
+                "--no-deps",
+                "--reinstall",
+                "--no-cache",
+                "k==1",
+            ],
+        ),
+        (
+            False,
+            False,
+            False,
+            [
+                "PY",
+                "-m",
+                "pip",
+                "install",
+                "--no-build-isolation",
+                "--no-deps",
+                "--no-cache-dir",
+                "k==1",
+            ],
+        ),
+        (
+            False,
+            True,
+            True,
+            [
+                "PY",
+                "-m",
+                "pip",
+                "install",
+                "--no-build-isolation",
+                "--no-deps",
+                "--no-cache-dir",
+                "--force-reinstall",
+                "k==1",
+            ],
+        ),
+    ],
+)
+def test_source_build_command(use_uv, is_hip, reinstall, expected):
+    cmd = kernel_install.source_build_command(
+        "k==1", use_uv = use_uv, is_hip = is_hip, reinstall = reinstall
+    )
+    assert cmd == [sys.executable if part == "PY" else part for part in expected]
+
+
+def test_source_build_run_kwargs(monkeypatch):
+    monkeypatch.delenv("HIPCC_COMPILE_FLAGS_APPEND", raising = False)
+    kwargs, gcc = kernel_install.source_build_run_kwargs(
+        is_hip = False, gcc_install_dir = lambda: pytest.fail("non-HIP never looks for gcc")
+    )
+    assert gcc is None and "timeout" not in kwargs
+    assert kwargs["encoding"] == "utf-8" and kwargs["stderr"] == subprocess.STDOUT
+
+    kwargs, gcc = kernel_install.source_build_run_kwargs(
+        is_hip = True, gcc_install_dir = lambda: "/usr/lib/gcc/x86_64-linux-gnu/13"
+    )
+    assert gcc == "/usr/lib/gcc/x86_64-linux-gnu/13" and kwargs["timeout"] == 1800
+    assert kwargs["env"]["HIPCC_COMPILE_FLAGS_APPEND"] == f"--gcc-install-dir={gcc}"
+    assert kwargs["env"]["PYTHONIOENCODING"] == "utf-8"
+
+    monkeypatch.setenv("HIPCC_COMPILE_FLAGS_APPEND", "--gcc-install-dir=/mine")
+    kwargs, gcc = kernel_install.source_build_run_kwargs(
+        is_hip = True, gcc_install_dir = lambda: pytest.fail("an explicit dir is respected")
+    )
+    assert gcc is None and kwargs["env"]["HIPCC_COMPILE_FLAGS_APPEND"] == "--gcc-install-dir=/mine"
+
+
+@pytest.mark.parametrize(
+    "use_uv, system, expected",
+    [
+        (True, False, ["uv", "pip", "uninstall", "--python", "PY", "k"]),
+        (True, True, ["uv", "pip", "uninstall", "--system", "--python", "PY", "k"]),
+        (False, True, ["PY", "-m", "pip", "uninstall", "-y", "k"]),
+    ],
+)
+def test_uninstall_command(use_uv, system, expected):
+    cmd = kernel_install.uninstall_command("k", use_uv = use_uv, uv_needs_system = system)
+    assert cmd == [sys.executable if part == "PY" else part for part in expected]

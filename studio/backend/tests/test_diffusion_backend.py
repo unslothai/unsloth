@@ -2090,6 +2090,129 @@ def test_edit_family_uses_own_pipeline_and_requires_image(fake_runtime, tmp_path
         backend.generate(prompt = "make it night", steps = 8)
 
 
+@pytest.mark.parametrize(
+    "gguf_filename, expected",
+    [
+        ("qwen-image-edit-2509-Q6_K.gguf", {"zero_cond_t": False}),
+        ("qwen_image_edit_2509_Q4_K_M.gguf", {"zero_cond_t": False}),
+        ("qwen-image-edit-Q4_K_M.gguf", {"zero_cond_t": False}),
+        ("qwen-image-edit-2511-Q4_K_M.gguf", {}),
+        ("model.gguf", {}),
+    ],
+)
+def test_qwen_edit_gguf_builds_on_its_variant_config(
+    fake_runtime, tmp_path, gguf_filename, expected
+):
+    """2509 / original Edit override the 2511 companion's zero_cond_t; 2511 and unnamed files do not."""
+    (tmp_path / gguf_filename).write_bytes(b"x")
+    backend = DiffusionBackend()
+    _load_into(
+        backend,
+        tmp_path,
+        gguf_filename = gguf_filename,
+        base_repo = "Qwen/Qwen-Image-Edit-2511",
+        family_override = "qwen-image-edit",
+    )
+    assert _FakeTransformer.last["config"].endswith("/Qwen-Image-Edit-2511")
+    assert {k: v for k, v in _FakeTransformer.last.items() if k == "zero_cond_t"} == expected
+
+
+def test_non_qwen_edit_gguf_gets_no_config_override(fake_runtime, tmp_path):
+    (tmp_path / "qwen-image-2512-Q4_K_M.gguf").write_bytes(b"x")
+    backend = DiffusionBackend()
+    _load_into(
+        backend, tmp_path, gguf_filename = "qwen-image-2512-Q4_K_M.gguf", family_override = "qwen-image"
+    )
+    assert "zero_cond_t" not in _FakeTransformer.last
+
+
+def test_qwen_edit_display_repo_id_names_the_variant(fake_runtime, tmp_path):
+    (tmp_path / "model.gguf").write_bytes(b"x")
+    _load_into(
+        DiffusionBackend(),
+        tmp_path,
+        gguf_filename = "model.gguf",
+        display_repo_id = "unsloth/Qwen-Image-Edit-2509-GGUF",
+        base_repo = "Qwen/Qwen-Image-Edit-2511",
+        family_override = "qwen-image-edit",
+    )
+    assert _FakeTransformer.last.get("zero_cond_t") is False
+
+
+def _qwen_edit_dense_route(backend, monkeypatch):
+    from core.inference import diffusion as dmod
+
+    _force_cuda_target(backend, monkeypatch)
+    monkeypatch.setattr(dmod, "dense_transformer_supported", lambda target: True)
+    monkeypatch.setattr(
+        dmod, "select_transformer_quant_scheme", lambda target, mode, family = None, **_kw: "fp8"
+    )
+    attempted = []
+
+    def fake_dense_load(self, *a, **k):
+        attempted.append(k.get("base") if "base" in k else a[2])
+        return None, None
+
+    monkeypatch.setattr(DiffusionBackend, "_load_dense_quant_pipeline", fake_dense_load)
+    return attempted
+
+
+@pytest.mark.parametrize(
+    "gguf_filename, takes_dense",
+    [("qwen-image-edit-2509-Q6_K.gguf", False), ("qwen-image-edit-2511-Q4_K_M.gguf", True)],
+)
+def test_qwen_edit_variant_gguf_never_runs_the_2511_dense_transformer(
+    fake_runtime, tmp_path, monkeypatch, allow_precision_fallback, gguf_filename, takes_dense
+):
+    backend = DiffusionBackend()
+    attempted = _qwen_edit_dense_route(backend, monkeypatch)
+    (tmp_path / gguf_filename).write_bytes(b"x")
+    _load_into(
+        backend,
+        tmp_path,
+        gguf_filename = gguf_filename,
+        base_repo = "Qwen/Qwen-Image-Edit-2511",
+        family_override = "qwen-image-edit",
+        transformer_quant = "fp8",
+    )
+    assert bool(attempted) is takes_dense
+    assert _FakeTransformer.last["path"].endswith(gguf_filename)
+
+
+def test_qwen_edit_variant_gguf_refuses_a_pinned_quant(fake_runtime, tmp_path, monkeypatch):
+    backend = DiffusionBackend()
+    attempted = _qwen_edit_dense_route(backend, monkeypatch)
+    (tmp_path / "qwen-image-edit-2509-Q6_K.gguf").write_bytes(b"x")
+    with pytest.raises(RuntimeError, match = "different transformer"):
+        _load_into(
+            backend,
+            tmp_path,
+            gguf_filename = "qwen-image-edit-2509-Q6_K.gguf",
+            base_repo = "Qwen/Qwen-Image-Edit-2511",
+            family_override = "qwen-image-edit",
+            transformer_quant = "fp8",
+        )
+    assert attempted == []
+
+
+def test_qwen_edit_variant_gguf_with_baked_loras_fails_instead_of_silent_drop(
+    fake_runtime, tmp_path, monkeypatch
+):
+    backend = DiffusionBackend()
+    attempted = _qwen_edit_dense_route(backend, monkeypatch)
+    (tmp_path / "qwen-image-edit-2509-Q6_K.gguf").write_bytes(b"x")
+    with pytest.raises(RuntimeError, match = "LoRA adapters could not be applied"):
+        _load_into(
+            backend,
+            tmp_path,
+            gguf_filename = "qwen-image-edit-2509-Q6_K.gguf",
+            base_repo = "Qwen/Qwen-Image-Edit-2511",
+            family_override = "qwen-image-edit",
+            loras = [("adapter", 1.0)],
+        )
+    assert attempted == []
+
+
 def test_load_pipeline_kind_uses_from_pretrained(fake_runtime):
     """A full-pipeline (no single-file) load on an unsloth/* repo builds the pipe with
     pipeline_cls.from_pretrained(repo_id) -- NO single-file transformer build, NO GGUF
@@ -2490,7 +2613,7 @@ def test_load_unknown_family_raises():
 
 # load_progress state machine (no threads / network / real cache)
 
-from core.inference.diffusion import _LoadingState, _LoadState  # noqa: E402
+from core.inference.diffusion import _LoadingState  # noqa: E402
 
 
 def test_load_progress_idle_and_ready():
