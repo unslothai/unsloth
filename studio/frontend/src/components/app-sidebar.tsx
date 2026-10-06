@@ -5298,12 +5298,13 @@ export function AppSidebar() {
                     )}
                   </TooltipContent>
                 </Tooltip>
-                {!isMobile && !usesDesktopTitlebar && (
+                {/* On narrow screens this closes the sidebar sheet. */}
+                {(isMobile || !usesDesktopTitlebar) && (
                   <Tooltip>
                     <TooltipPrimitive.Trigger asChild>
                       <button
                         type="button"
-                        onClick={togglePinned}
+                        onClick={isMobile ? () => setOpenMobile(false) : togglePinned}
                         className="inline-flex size-[calc(30px*var(--ui-space-scale,1))] cursor-pointer items-center justify-center rounded-[10px] text-nav-icon-idle dark:text-nav-fg-muted transition-colors hover:bg-nav-surface-hover hover:text-black dark:hover:text-white focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                         aria-label={t("shell.aria.closeSidebar")}
                       >
@@ -5314,6 +5315,7 @@ export function AppSidebar() {
                       side="bottom"
                       sideOffset={6}
                       className="tooltip-compact"
+                      hidden={isMobile}
                     >
                       {t("shell.aria.closeSidebar")}
                     </TooltipContent>
