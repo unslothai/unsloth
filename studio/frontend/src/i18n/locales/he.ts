@@ -890,7 +890,7 @@ export const he = {
       lastVisited: "ביקור אחרון",
     },
     tabs: {
-      sandbox: "Sandbox",
+      sandbox: "ארגז חול",
       accounts: "חשבונות",
       general: "כללי",
       profile: "פרופיל",
@@ -1165,13 +1165,13 @@ export const he = {
       },
     },
     sandbox: {
-      title: "Sandbox",
+      title: "ארגז חול",
       description:
         "האם קריאות לכלי Python ו-Terminal רצות בתוך sandbox של מערכת ההפעלה במחשב זה.",
       toolsSection: "מחשב זה",
       refresh: "רענון",
       python: "Python",
-      terminal: "Terminal",
+      terminal: "מסוף",
       osIsolation: "Sandbox של מערכת ההפעלה ({backend})",
       softwareSafeguards: "אמצעי הגנה בתוכנה",
       noReason:
@@ -2078,7 +2078,7 @@ export const he = {
             "בדיקות העדכונים מושבתות (UNSLOTH_DISABLE_UPDATE_CHECK=1), ולכן לא מתבצע חיפוש של ה-backends הזמינים.",
         },
         llamaBackendKeywords:
-          "llama.cpp backend gguf inference cuda rocm hip vulkan metal cpu gpu accelerator prebuilt switch engine custom path folder directory llama-server executable binary",
+          "llama.cpp backend gguf inference cuda rocm hip vulkan metal cpu gpu accelerator prebuilt switch engine custom path folder directory llama-server executable binary הסקה מאיץ החלפה מנוע מותאם בנייה",
       },
       modelMemory: {
         title: "זיכרון מודל",
@@ -2105,7 +2105,7 @@ export const he = {
         loadError: "טעינת הגדרות זיכרון המודל נכשלה",
         saveError: "שמירת הגדרות זיכרון המודל נכשלה",
         modelMemoryKeywords:
-          "mlock memlock ulimit vram gpu memory ram resident residency pin pinned page lock locked keep loaded unload idle mmap no-mmap load-mode swap paging",
+          "mlock memlock ulimit vram gpu memory ram resident residency pin pinned page lock locked keep loaded unload idle mmap no-mmap load-mode swap paging זיכרון קיבוע נעילה תושב השאר טעון פריקה סרק החלפה דפדוף",
       },
       storage: {
         title: "אחסון",
@@ -2245,8 +2245,8 @@ export const he = {
         copySetupCommand: "העתק פקודת הגדרת תת-סוכן",
         usagePrompt: "לאחר מכן ב-{agent}, הקלד:",
         copyUsagePrompt: "העתק פרומפט שימוש בתת-סוכן",
-        defaultPrompt: "Spawn a local agent to implement this function.",
-        opencodePrompt: "@unsloth find the cause of this test failure",
+        defaultPrompt: "הפעל סוכן מקומי כדי לממש את הפונקציה הזו.",
+        opencodePrompt: "@unsloth מצא את הסיבה לכישלון הבדיקה הזו",
       },
       quickstart: {
         title: "בנה פקודה",
@@ -2758,7 +2758,7 @@ export const he = {
       revokeAction: 'בטל את "{name}"',
       revoking: "מבטל...",
       decisionApi: {
-        title: "Decision API",
+        title: "ממשק API להחלטות",
         description:
           "ענה על שאלות כן/לא, רב-ברירה ודירוג לגבי טקסט באמצעות מודל במחשב זה או מודל החלטות מ'חיבורים'. עובד עם TypeSafe SDK.",
         enable: "הגש בקשות",
@@ -2944,7 +2944,7 @@ export const he = {
       epochFew: "{count} תקופות (Epochs)",
       epochMany: "{count} תקופות (Epochs)",
       epochs: "{count} תקופות (Epochs)",
-      batch: "Batch",
+      batch: "אצווה",
       context: "הקשר",
       lr: "LR",
       hardware: "חומרה",
@@ -3041,18 +3041,18 @@ export const he = {
       vramTightBadge: "גבולי",
       vramNeeds: "דורש כ-~{est}GB VRAM (ב-GPU: {total}GiB)",
       vramTight: "~{est}GB VRAM (גבולי על {total}GiB)",
-      vramApprox: "~{est}GB VRAM",
+      vramApprox: "כ-{est}GB VRAM",
     },
     methods: {
       qlora: {
         label: "QLoRA",
         hint: "קוונטיזציה של 4-bit. השימוש הנמוך ביותר ב-VRAM, המהיר ביותר להתחלה.",
-        note: "4-bit",
+        note: "4 ביט",
       },
       lora: {
         label: "LoRA",
         hint: "מתאמים של 16-bit. איזון בין איכות לזיכרון.",
-        note: "16-bit",
+        note: "16 ביט",
       },
       full: {
         label: "כוונון עדין מלא (Full fine-tune)",
@@ -3278,7 +3278,7 @@ export const he = {
       targetModules: "מודולי יעד (Target Modules)",
       enableLora: "הפעל LoRA",
       trainWithLora: "אמן באמצעות LoRA",
-      stableRank: "Stable Rank",
+      stableRank: "דרגה יציבה",
       memoryEfficient: "חסכוני בזיכרון",
       weightDecomposed: "פירוק משקולות (Weight-Decomposed)",
       notSupportedAppleSilicon: "אינו נתמך ב-Apple Silicon",
@@ -3325,7 +3325,7 @@ export const he = {
         "חלק מסך כל צעדי האימון בין הערכות (0-1). הגדר 0 כדי להשבית הערכה. לדוגמה 0.01 = הערכה בכל 1% מהצעדים.",
       seed: "גרעין אקראיות (Seed)",
       seedTooltip: "גרעין אקראי לשחזור מדויק של תוצאות.",
-      gradCheckpoint: "Grad Checkpoint",
+      gradCheckpoint: "נקודות ביקורת לגרדיאנט",
       gradCheckpointTooltip:
         "פשרה בין זמן חישוב לזיכרון על ידי חישוב מחדש של אקטיבציות.",
       none: "ללא",
@@ -3493,7 +3493,7 @@ export const he = {
       evalLoss: "Loss הערכה",
       learningRate: "קצב למידה",
       lr: "LR",
-      gradNorm: "Grad Norm",
+      gradNorm: "נורמת הגרדיאנט",
       gradientNorm: "נורמת גרדיאנט",
       step: "צעד {step}",
       averageValue: "ממוצע {value}",
@@ -3526,7 +3526,7 @@ export const he = {
       stepProgress: "צעד {current} / {total}",
       loss: "Loss",
       lr: "LR",
-      gradNorm: "Grad Norm",
+      gradNorm: "נורמת הגרדיאנט",
       project: "פרויקט",
       model: "מודל",
       method: "שיטה",
