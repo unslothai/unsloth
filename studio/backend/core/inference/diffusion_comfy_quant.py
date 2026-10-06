@@ -658,7 +658,7 @@ def _apply_key_map(state: dict, kept: list, key_map: Any) -> dict:
 
     sources = {
         layer.name + ".weight": (codes, scale, layer.group, layer.format)
-        for layer, codes, scale in kept
+        for layer, codes, scale, *_extra in kept
     }
 
     def take(value: Any, rows: Any) -> Any:
@@ -996,7 +996,8 @@ def load_comfy_quant_transformer(
             codes, scale = decode_layer(layer.format, codes, scale)
         elif layer.format in FP8_FORMATS and codes.dtype == torch.uint8:
             codes = codes.view(getattr(torch, layer.format))
-        if backends.get(layer.format) or fp16_keep:
+        # A key-mapped (original-layout) family moves rows whole, which the tiled block scales do not survive.
+        if (backends.get(layer.format) or fp16_keep) and not (extra is not None and key_map is not None):
             sources.append((layer, codes, scale, extra))
             state[layer.name + ".weight"] = None  # placeholder, tagged below
         elif extra is not None:
