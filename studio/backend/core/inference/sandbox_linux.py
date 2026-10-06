@@ -362,11 +362,17 @@ def proc_mount_refused(stderr: str) -> bool:
 
 def _preflight(bwrap: str, proc: tuple[str, ...]) -> "subprocess.CompletedProcess | None":
     """The launch's namespaces, /proc and system binds in its order, running only `true`."""
-    true = next((p for p in ("/usr/bin/true", "/bin/true") if os.path.isfile(p)), None)
-    if true is None:
+    # NixOS has no FHS `true`: run the store file itself, with the store bound as launches bind it.
+    found = next(
+        (p for p in ("/usr/bin/true", "/bin/true", "/run/current-system/sw/bin/true") if os.path.isfile(p)),
+        None,
+    )
+    if found is None:
         return None
+    true = os.path.realpath(found)
     argv = [bwrap, "--unshare-user", "--unshare-pid", *proc, "--dev", "/dev"]
-    for root in _SYSTEM_ROOTS:
+    roots = _SYSTEM_ROOTS + ((_NIX_STORE,) if _within(true, _NIX_STORE) else ())
+    for root in roots:
         if os.path.isdir(root):
             argv += ["--ro-bind-try", root, root]
     try:
