@@ -1,22 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2023-present Daniel Han-Chen & the Unsloth team. All rights reserved.
 
-"""Gemma-4 26B-A4B-it / 31B-it train with an empty thought channel on non-thinking model turns.
+"""Gemma-4 26B / 31B empty thought channel on non-thinking model turns; E2B / E4B unchanged.
 
-Their own chat_template.jinja ends with
-
-    {{- '<|turn>model\\n' -}}
-    {%- if not enable_thinking -%}
-        {{- '<|channel>thought\\n<channel|>' -}}
-    {%- endif -%}
-
-so every non-thinking answer they generate follows `<|channel>thought\\n<channel|>`, but the
-history loop never renders it, nor did Unsloth's gemma-4 / gemma-4-thinking templates. SFT text
-then lacks the block and 26B starts at an assistant loss of 5.5 instead of 1.3. E2B / E4B's own
-template has no such primer and must render exactly as before.
-
-Importing unsloth needs a GPU, so the template statements and the detector are pulled out of
-the source with ast, as tests/test_get_chat_template_processor.py does.
+unsloth import needs a GPU, so template code is pulled out via ast.
 """
 
 import ast
@@ -61,7 +48,6 @@ NS = _load()
 
 
 def _render(template, messages, **kwargs):
-    # Same environment transformers renders chat templates with
     env = ImmutableSandboxedEnvironment(trim_blocks = True, lstrip_blocks = True)
     env.globals["raise_exception"] = lambda msg: (_ for _ in ()).throw(TemplateError(msg))
     ctx = {"messages": messages, "add_generation_prompt": False, "bos_token": "<bos>"}
@@ -106,9 +92,6 @@ CONVO = [
 ]
 
 
-# ---------- detection ----------
-
-
 def test_detects_26b_31b_template():
     assert NS["_gemma4_wants_empty_thought"](_Holder(GOOGLE_26B_TAIL))
 
@@ -122,8 +105,7 @@ def test_ignores_missing_or_non_string_templates():
 
 
 def test_ignores_unsloth_thinking_template():
-    # Unsloth's gemma-4-thinking primes the generation prompt for every size: re-calling
-    # get_chat_template on an E2B tokenizer that already carries it must not switch.
+    # Re-calling get_chat_template on an E2B tokenizer already carrying it must not switch.
     tmpl = "{{ bos_token }}" + NS["gemma4_thinking_template"]
     assert not NS["_gemma4_wants_empty_thought"](_Holder(tmpl))
 
@@ -135,9 +117,6 @@ def test_detects_own_output_on_recall():
 
 def test_processor_dict_template():
     assert NS["_gemma4_wants_empty_thought"](_Holder({"default": GOOGLE_26B_TAIL}))
-
-
-# ---------- rendering ----------
 
 
 def test_multi_turn_with_system_prompt():
@@ -162,7 +141,6 @@ def test_generation_prompt_matches_google_26b():
 
 
 def test_training_text_is_prefix_consistent_with_generation_prompt():
-    # The trained answer must sit exactly where generation continues from
     full = _render(NS["gemma4_empty_thought_template"], CONVO[:3])
     prompt = _render(NS["gemma4_empty_thought_template"], CONVO[:2], add_generation_prompt = True)
     assert full == prompt + "Hello!<turn|>\n"
@@ -179,7 +157,6 @@ def test_list_content():
 
 @pytest.mark.parametrize("key", ["reasoning_content", "reasoning"])
 def test_final_turn_reasoning_becomes_the_thought_channel(key):
-    # As the model's own template renders it, instead of dropping the chain of thought.
     msgs = [
         {"role": "user", "content": "2+2?"},
         {"role": "assistant", "content": "4", key: "2+2=4"},
@@ -222,8 +199,6 @@ def test_ollama_generation_prompt_has_the_empty_channel():
 
 
 def test_ollama_history_assistant_turns_have_the_empty_channel():
-    # Ollama re-renders .Messages on every request, so earlier assistant turns
-    # must carry the channel too, under Gemma 4's "model" role.
     ollama = NS["gemma4_empty_thought_ollama"]
     assert '{{- if eq .Role "assistant" }}<|turn>model\n' + EMPTY + "{{ .Content }}" in ollama
     assert "<|turn>assistant" not in ollama

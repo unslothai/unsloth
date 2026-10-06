@@ -1070,11 +1070,8 @@ DEFAULT_SYSTEM_MESSAGE["gemma-4-thinking"] = None
 CHAT_TEMPLATES["gemma4-thinking"] = (gemma4_thinking_template, gemma4_template_eos_token, False, gemma4_ollama,)
 DEFAULT_SYSTEM_MESSAGE["gemma4-thinking"] = None
 
-# gemma-4-26B-A4B-it and gemma-4-31B-it open every non-thinking model turn with an empty thought channel,
-# but their own template only emits it in the generation prompt. Training text without it is
-# off-distribution (26B assistant loss 5.5 vs 1.3). Every model turn gets one thought channel: the
-# message's reasoning on the final turn (as the model's own template renders it), else the empty one.
-# Picked in get_chat_template only when the model's own template primes the empty channel.
+# 26B-A4B / 31B generate after an empty thought channel but their template omits it in history;
+# training without it is off-distribution (26B loss 5.5 vs 1.3). Final-turn reasoning fills it instead.
 _gemma4_model_turn = "{{ '<|turn>' + role + '\n' }}\n"
 gemma4_empty_thought_template = gemma4_thinking_template.replace(
     _gemma4_model_turn,
@@ -1097,8 +1094,7 @@ gemma4_empty_thought_template = gemma4_thinking_template.replace(
     1,
 )
 assert gemma4_empty_thought_template != gemma4_thinking_template
-# Ollama re-renders the whole history every request, so every assistant turn
-# (under Gemma 4's "model" role) and the generation prompt get the empty channel.
+# Ollama re-renders history each request, so every assistant turn gets the channel too.
 gemma4_empty_thought_ollama = '''
 FROM {__FILE_LOCATION__}
 TEMPLATE """{{- range $i, $_ := .Messages }}
@@ -1119,13 +1115,12 @@ GEMMA4_TEMPLATE_NAMES = ("gemma-4", "gemma4", "gemma-4-thinking", "gemma4-thinki
 
 
 def _gemma4_wants_empty_thought(*holders):
-    # Content based, so it also covers future sizes: the model's own template primes the
-    # non-thinking generation prompt with an empty thought channel (E2B / E4B do not).
+    # Content based: the model's own template primes the empty channel (E2B / E4B do not).
     for holder in holders:
         template = getattr(holder, "chat_template", None)
         if isinstance(template, dict): template = template.get("default")
         if not isinstance(template, str): continue
-        # Our own gemma-4-thinking template primes the generation prompt for every size
+        # Unsloth's gemma-4-thinking primes it for every size
         if template.endswith(gemma4_thinking_template): continue
         if "<|channel>thought\\n<channel|>" in template or "<|channel>thought\n<channel|>" in template:
             return True
