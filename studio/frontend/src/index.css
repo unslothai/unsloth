@@ -230,6 +230,9 @@
 	--ease-out-quart: cubic-bezier(0.165, 0.84, 0.44, 1);
 	--ease-out-cubic: cubic-bezier(0.215, 0.61, 0.355, 1);
 
+	/* Composer shadow, shared by toasts; palettes may override it. */
+	--composer-shadow: 0 2px 8px -2px rgba(0, 0, 0, 0.16);
+
 	/* Slightly warm off white; every page (and the chat surface) shares it. */
 	--background: #fefefd;
 	--foreground-base: oklch(0.2686 0 0);
@@ -443,6 +446,8 @@
 	--background: #181818;
 	--foreground-base: #dfdfdf;
 	--card-base: #272727;
+	/* Page-coloured: sets the composer off the messages behind it. */
+	--composer-shadow: 0 4px 20px 4px var(--background);
 	--card-foreground-base: #dfdfdf;
 	--popover-base: #272727;
 	--popover-foreground-base: #dfdfdf;
@@ -767,10 +772,9 @@
 	--sidebar-surface: var(--background);
 }
 
-/* Neon Cyberpunk light: yellow edge glow on the composer. */
-:root[data-palette="neon-cyberpunk"]:not(.dark)
-	:is(.chat-composer-surface, .unsloth-composer-surface) {
-	box-shadow:
+/* Neon Cyberpunk light: yellow edge glow on the composer and toasts. */
+:root[data-palette="neon-cyberpunk"]:not(.dark) {
+	--composer-shadow:
 		0 0 0 1px rgb(230 210 0 / 0.7),
 		0 0 26px -6px rgb(252 238 10 / 0.8),
 		0 2px 8px -2px rgb(0 0 0 / 0.1);
@@ -782,10 +786,9 @@
 		0 0 32px -4px rgb(252 238 10 / 0.9),
 		0 2px 8px -2px rgb(0 0 0 / 0.1);
 }
-/* Neon Cyberpunk: cyan edge glow on the dark composer. */
-:root[data-palette="neon-cyberpunk"].dark
-	:is(.chat-composer-surface, .unsloth-composer-surface) {
-	box-shadow:
+/* Neon Cyberpunk: cyan edge glow on the dark composer and toasts. */
+:root[data-palette="neon-cyberpunk"].dark {
+	--composer-shadow:
 		0 0 0 1px rgb(0 240 255 / 0.35),
 		0 0 28px -8px rgb(0 240 255 / 0.45),
 		0 4px 20px 4px var(--background);
@@ -3129,15 +3132,12 @@ html[data-chat-font] .aui-root {
 		font-family: var(--font-sans);
 		background-clip: padding-box;
 		background-color: #ffffff;
-		/* Gemini-style composer shadow. */
-		box-shadow: 0 2px 8px -2px rgba(0, 0, 0, 0.16);
+		box-shadow: var(--composer-shadow);
 		transition: box-shadow 0.1s;
 	}
 
 	.dark .chat-composer-surface {
 		background-color: var(--card);
-		/* Page-coloured shadow, like the + menu: sets the composer off the messages behind it. */
-		box-shadow: 0 4px 20px 4px var(--background);
 	}
 
 	.composer-pill-btn {
@@ -3281,19 +3281,12 @@ html[data-chat-font] .aui-root {
 		font-family: var(--font-sans);
 		background-clip: padding-box;
 		background-color: #ffffff;
-		/* Gemini-style composer shadow. */
-		box-shadow: 0 2px 8px -2px rgba(0, 0, 0, 0.16);
+		box-shadow: var(--composer-shadow);
 		transition: box-shadow 0.1s;
-	}
-
-	.unsloth-composer-surface:focus-within {
-		box-shadow: 0 2px 8px -2px rgba(0, 0, 0, 0.16);
 	}
 
 	.dark .unsloth-composer-surface {
 		background-color: var(--card);
-		/* Page-coloured shadow, like the + menu: sets the composer off the messages behind it. */
-		box-shadow: 0 4px 20px 4px var(--background);
 	}
 
 	/* Keep the expand/collapse width swap instant. A transition on width (e.g.
@@ -4612,15 +4605,13 @@ html[data-chat-font] .aui-root {
 	}
 }
 
-/* No border line; a soft layered shadow lifts the toast off the page.
+/* No border line; the composer's shadow lifts the toast off the page.
    !important because Sonner injects its base rules at runtime. */
 [data-sonner-toast][data-styled='true'] {
 	padding: calc(16px * var(--ui-space-scale, 1)) calc(20px * var(--ui-space-scale, 1)) calc(18px * var(--ui-space-scale, 1)) !important;
 	align-items: start !important;
 	gap: calc(12px * var(--ui-space-scale, 1)) !important;
-	box-shadow:
-		0 1px 2px rgba(0, 0, 0, 0.04),
-		0 8px 24px -6px rgba(0, 0, 0, 0.14) !important;
+	box-shadow: var(--composer-shadow) !important;
 }
 
 /* Icon starts at the first line's cap height, never above the text. */
@@ -4719,11 +4710,9 @@ html[data-chat-font] .aui-root {
 	padding-bottom: calc(22px * var(--ui-space-scale, 1)) !important;
 }
 
-/* Dark toasts share the chatbox surface color (.chat-composer-surface
-   uses var(--card) in dark); the composer shadow lifts them off the page. */
+/* Dark toasts share the composer's surface colour. */
 .dark [data-sonner-toast][data-styled='true'] {
 	background-color: var(--card) !important;
-	box-shadow: 0 4px 20px 4px var(--background) !important;
 }
 
 /* Selectable toast text; non-selectable toast buttons. */
