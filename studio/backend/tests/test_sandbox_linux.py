@@ -1222,17 +1222,26 @@ def test_a_wedged_cache_scan_is_waited_on_twice_then_skipped_at_once(monkeypatch
     )
     monkeypatch.setattr(sandbox_linux, "_CACHE_INSPECT_SECONDS", 0.4)
     monkeypatch.setattr(sandbox_linux, "_cache_scan_pending", {})
-    waits = []
+    # A fake clock that a join advances by its timeout: the waits are read off the joins, not timed.
+    now = [100.0]
+    joins = []
+    real_thread = threading.Thread
+
+    class Worker(real_thread):
+        def join(self, timeout = None):
+            joins.append(round(timeout, 6))
+            now[0] += timeout
+            super().join(0)
+
+    monkeypatch.setattr(sandbox_linux.threading, "Thread", Worker)
+    monkeypatch.setattr(sandbox_linux.time, "monotonic", lambda: now[0])
     try:
         for _ in range(4):
-            start = time.monotonic()
             hazard = sandbox_linux._cache_hazard_within_deadline("hub", str(component))
-            waits.append(time.monotonic() - start)
             assert hazard == sandbox_linux.CACHE_STILL_CHECKING
     finally:
         release.set()
-    assert waits[0] >= 0.35 and waits[1] >= 0.3, waits
-    assert max(waits[2:]) < 0.1, f"later launches still wait on the wedged scan: {waits}"
+    assert joins == [0.4, 0.4, 0.0, 0.0], f"later launches still wait on the wedged scan: {joins}"
 
 
 def test_revalidating_a_cached_verdict_on_a_wedged_mount_is_bounded_too(monkeypatch, tmp_path):
