@@ -39,13 +39,13 @@ def llama_cpp():
     except Exception as exc:  # missing optional studio dep on a bare checkout
         pytest.skip(f"llama_cpp not importable here: {exc}")
     finally:
-        # Do not leave studio/backend on sys.path: it shadows generic top-level names
-        # (utils, state, models, hub, auth, storage) for every later test.
+        # Do not leave studio/backend on sys.path: it shadows generic top-level names (utils, state, models, hub,
+        # auth, storage) for every later test.
         if sys.path and sys.path[0] == backend:
             sys.path.pop(0)
-    # The dedupe comparators consult the Metal device, so on a Mac (and on the macos
-    # runners, which are paravirtual) they would normalize the request to the CPU pin and
-    # stop matching these fixtures. A private copy, so pinning cannot leak into the app.
+    # The dedupe comparators consult the Metal device, so on a Mac (and on the macos runners, which are paravirtual)
+    # they would normalize the request to the CPU pin and stop it matching these fixtures. A private copy, so pinning
+    # cannot leak into the app.
     module._metal_device_is_paravirtual = lambda: False
     return module
 

@@ -23,12 +23,11 @@ from pathlib import Path
 from typing import Any, Callable, Optional
 
 
-# The engine matching the tester's desktop webview family. Unsloth ships as a Tauri app, so the
-# thing a user actually looks at is a system webview, not the browser they happen to have.
-#   Windows -> WebView2, which is Chromium: `channel="msedge"` is the closest available.
-#   macOS   -> WKWebView, which is WebKit.
-#   Linux   -> WebKitGTK. Playwright's `webkit` is NOT WebKitGTK; it is a different embedding of
-#              the same engine, so it is labelled A PROXY and never as the real thing.
+# The engine matching the tester's desktop webview family. Unsloth ships as a Tauri app, so what a
+# user looks at is a system webview, not the browser they happen to have: Windows -> WebView2,
+# which is Chromium, so `channel="msedge"` is the closest available; macOS -> WKWebView, which is
+# WebKit; Linux -> WebKitGTK, which Playwright's `webkit` is NOT (a different embedding of the same
+# engine), so it is labelled A PROXY.
 def default_engine() -> tuple[str, dict, str]:
     system = platform.system()
     if system == "Windows":
@@ -118,9 +117,9 @@ def launch(
         browser = factory.launch(headless = headless)
     context = browser.new_context(
         viewport = {"width": viewport[0], "height": viewport[1]},
-        # Clipboard read is what proves the Copy action actually copied. Without it the action
-        # still runs and the assertion reports that it could not be proved, which is the honest
-        # outcome rather than a pass.
+        # Clipboard read is what proves the Copy action actually copied. Without it the action still runs
+        # and the assertion reports that it could not be proved, which is the honest outcome rather than a
+        # pass.
         permissions = ["clipboard-read", "clipboard-write"] if chosen == "chromium" else None,
     )
     if robust is not None:
@@ -131,11 +130,11 @@ def launch(
     for script in init_scripts or []:
         context.add_init_script(script)
     page = context.new_page()
-    # A GLOBAL CEILING on Playwright's actionability waits. The default is 30 seconds, which is
-    # longer than most of this suite's slot budgets: one action waiting out the default on an
-    # element that is present but not visible overran a 9-second slot by more than three times,
-    # and the scheduler cannot intervene because the action still holds its own window. Actions
-    # that legitimately need longer pass an explicit timeout.
+    # A GLOBAL CEILING on Playwright's actionability waits. The default is 30 seconds, longer than most
+    # of this suite's slot budgets: one action waiting out the default on an element that is present
+    # but not visible overran a 9-second slot by more than three times, and the scheduler cannot
+    # intervene because the action still holds its own window. Actions that legitimately need longer
+    # pass an explicit timeout.
     page.set_default_timeout(8000)
     cdp = None
     if chosen == "chromium":

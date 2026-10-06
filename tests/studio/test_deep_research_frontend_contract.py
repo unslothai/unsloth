@@ -125,9 +125,9 @@ def test_research_handoff_transition_honors_the_original_run_stop() -> None:
 
 
 def test_research_reasoning_effort_is_clamped_to_the_loaded_model() -> None:
-    # A level the loaded model lacks is dropped by llama.cpp, so the durable run would silently
-    # fall back to the template default. Must use the same helper and levels as normal local
-    # chat so the two paths cannot drift apart again.
+    # A level the loaded model lacks is dropped by llama.cpp, so the durable run would silently fall back to the
+    # template default. Must use the same helper and levels as normal local chat so the two paths cannot drift
+    # apart again.
     adapter = source("features/chat/api/chat-adapter.ts")
     inference_request = source("features/chat/research-inference-request.ts")
     assert "buildResearchInferenceRequest({" in adapter
@@ -143,10 +143,14 @@ def test_research_presave_keeps_the_follow_up_parent() -> None:
         "const createdRun = await createResearchRun({", 1
     )[0]
 
-    assert "const userMessageIndex = messages.indexOf(userMessage);" in presave
+    assert "const userMessageIndex = rawMessages.indexOf(userMessage);" in presave
     assert "const userMessageParentId =" in presave
-    assert "userMessageIndex > 0 ? messages[userMessageIndex - 1]!.id : null" in presave
-    assert "parentId: storedUserMessage?.parentId ?? userMessageParentId" in presave
+    assert "userMessageIndex > 0 ? rawMessages[userMessageIndex - 1]!.id : null" in presave
+    # A stored null is an edited root; `??` would reparent it under the predecessor.
+    assert "storedUserMessage && storedUserMessage.parentId !== undefined" in presave
+    assert "? storedUserMessage.parentId" in presave
+    assert ": userMessageParentId," in presave
+    assert "parentId: storedUserMessage?.parentId ?? userMessageParentId" not in presave
     assert "parentId: storedUserMessage?.parentId ?? null" not in presave
 
 
@@ -155,7 +159,7 @@ def test_research_metadata_and_server_merge_are_persisted() -> None:
     runtime = source("features/chat/runtime-provider.tsx")
     assert "researchRunId: run.id" in adapter
     assert "serverManaged: true" in adapter
-    assert "getResearchThreadState(remoteId)" in runtime
+    assert re.search(r"getResearchThreadState\(\s*remoteId,?\s*\)", runtime)
     assert "preserveServerManaged" in runtime
     assert "sameResearchRun" in runtime
     assert "existingRevision > incomingRevision" in runtime
@@ -181,16 +185,22 @@ def test_research_presentation_is_integrated() -> None:
     assert "<ResearchMessage />" in thread
     assert "if (researchRunId) return null" in thread
     assert "!researchRunId &&" in thread
-    assert "if (researchRunId || ownsResearchMessage)" in thread
+    # A research message has no Delete. Since #12735 Delete is a More-menu item whose hook reports
+    # `hidden` for research messages, and the item renders nothing when hidden; before that the
+    # bar's button returned null on the same condition. Either spelling, the gate must be there.
+    delete_hook = thread.split("function useDeleteMessage()", 1)[1].split("\n}\n", 1)[0]
+    assert re.search(
+        r"hidden:\s*Boolean\(\s*researchRunId\s*\|\|\s*ownsResearchMessage\s*\)", delete_hook
+    )
+    delete_item = thread.split("const DeleteMessageMenuItem: FC = () => {", 1)[1].split(
+        "\n};\n", 1
+    )[0]
+    assert re.search(r"if\s*\(\s*hidden\s*\)\s*\{?\s*return null", delete_item)
     assert "ResearchMessageRunIdContext = createContext<string | null>(null)" in thread
     assert "researchReplyOwnsRun(boundResearchAssistantMessageId, messageId)" in thread
     assert "<ResearchMessageRunIdContext.Provider value={researchRunId}>" in thread
     assert "useContext(ResearchMessageRunIdContext)" in thread
-    # A prompt whose reply is a research message loses its edit and delete controls. Ownership is
-    # a question about the whole repository, not the visible message list: a reply can sit on a
-    # branch the view is not showing. It used to be one export per user message (quadratic in
-    # thread length); the answer is now shared across the thread, so what is pinned here is the
-    # question and its scope rather than the expression that computed it.
+    # A prompt whose reply is a research message loses its edit and delete controls.
     owners = source("components/assistant-ui/research-reply-owners.ts")
     assert "researchReplyOwners(" in thread
     assert "() => aui.thread().export().messages" in thread
@@ -253,8 +263,8 @@ def test_research_presentation_is_integrated() -> None:
     assert "MutationObserver" in activity
     assert "[overflow-anchor:none]" in activity
     assert 'behavior: "smooth"' not in activity
-    assert "collapsible={showArtifactPanel}" in page
-    assert "!artifactLayoutActive &&" in page
+    assert "collapsible={showArtifactPanel || showBrowserPanel}" in page
+    assert "(!artifactLayoutActive || browserFullView) &&" in page
     assert '? "30%"' in page
     assert '? "58%"' in page
     assert "key={openResearchRunId}" in page
@@ -265,13 +275,12 @@ def test_research_presentation_is_integrated() -> None:
         1
     ].split("setActiveThreadId:", 1)[0]
     assert "saveBool(CHAT_DEEP_RESEARCH_ENABLED_KEY, false)" in checkpoint_update
-    # #8686 put a chat-scoped override in front of the global read here, so the literal
-    # `const permissionMode = loadPermissionMode();` this used to pin is gone. The read
-    # itself is the contract, and it is still per call: toggling deep research re-resolves
-    # the permission level, taking the chat's own level when it has one and the persisted
-    # global otherwise, rather than reusing a stale value. Scoped to the setter, because
-    # over the whole file this would also match the initial-state constant, which is a
-    # different property and would keep passing if this read were dropped.
+    # #8686 put a chat-scoped override in front of the global read here, so the literal `const permissionMode =
+    # loadPermissionMode();` this used to pin is gone. The read itself is the contract, and it is still per call:
+    # toggling deep research re-resolves the permission level, taking the chat's own level when it has one and the
+    # persisted global otherwise, rather than reusing a stale value. Scoped to the setter, because over the whole file
+    # this would also match the initial-state constant, which is a different property and would keep passing if this
+    # read were dropped.
     deep_research_update = store.split("setDeepResearchEnabled: (deepResearchEnabled) =>", 1)[
         1
     ].split("setResearchWebsitePolicy:", 1)[0]
@@ -345,9 +354,9 @@ def test_settled_terminal_research_never_stays_disconnected() -> None:
 
 
 def test_replayed_history_never_borrows_another_attempts_step_result() -> None:
-    # A retry deletes the previous attempt's research_plan_steps rows but keeps its events, and
-    # the SSE route attaches the live run snapshot to every replayed event. Matching a replayed
-    # step only by position would show the newest attempt's evidence inside the older one.
+    # A retry deletes the previous attempt's research_plan_steps rows but keeps its events, and the SSE route attaches
+    # the live run snapshot to every replayed event. Matching a replayed step only by position would show the newest
+    # attempt's evidence inside the older one.
     coordinator = source("features/chat/stores/research-run-store.ts")
 
     assert "const snapshotIsSameAttempt = attempt === (event.run.retryCount ?? 0);" in coordinator
@@ -394,7 +403,8 @@ def test_the_handoff_is_keyed_on_the_result_the_backend_writes() -> None:
     # asks the user nothing and the turn hangs there.
     assert "if (event.awaiting_confirmation === true) {\n      return false;" in helper
 
-    # The clamp is the endpoint's own limit; a longer question 422s the whole handoff.
+    # The clamp is the endpoint's own limit;
+    # a longer question 422s the whole handoff.
     routes = (ROOT / "studio" / "backend" / "routes" / "research_runs.py").read_text(
         encoding = "utf-8"
     )
@@ -427,7 +437,7 @@ def test_the_handoff_uses_the_turn_that_asked_for_it() -> None:
 def test_a_local_model_without_tools_cannot_consume_research_without_classifying() -> None:
     adapter = source("features/chat/api/chat-adapter.ts")
     fallback = adapter.split("if (\n        deepResearchArmed &&", 1)[1].split(
-        "// Project sources auto-scope", 1
+        "      const ragProjectId = await resolveProjectId(", 1
     )[0]
 
     assert "!supportsTools" in fallback

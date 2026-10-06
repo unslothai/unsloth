@@ -46,7 +46,7 @@ BASE_URL = "http://127.0.0.1:1"
 THREAD_URL = f"{BASE_URL}/chat?thread=t1"
 NEW_CHAT_URL = f"{BASE_URL}/chat?new=studiobench"
 
-#: The length of the seeded thread, and the marker the seeder wrote into its last user turn.
+#:The length of the seeded thread, and the marker the seeder wrote into its last user turn.
 TOTAL = 18
 MARKER = "studiobench turn 8: continue with unit 3"
 
@@ -80,13 +80,13 @@ REBUILD = (
 )
 
 #: A rebuild that never arrives: the store keeps declaring eighteen messages and the thread stops
-#: at three of them, settled, with the end of the conversation nowhere on screen. The exact shape
-#: the old condition scored as a fast, successful re-open.
+#: at three, settled, with the end of the conversation nowhere on screen. The exact shape the old
+#: condition scored as a fast, successful re-open.
 STALLED = (_Frame(mounted = 3, elements = 1_200, scroll_height = 2_000, spans = 0, marker = False),)
 
-#: A correctly windowed rebuild: a window of six rows out of eighteen, anchored at the end, with
-#: the last user turn among them. `full` conditions would refuse this forever, which is why the
-#: action picks its mode from the mount it left rather than assuming one.
+#: A correctly windowed rebuild: six rows out of eighteen, anchored at the end, with the last user
+#: turn among them. `full` conditions would refuse this forever, which is why the action picks its
+#: mode from the mount it left.
 WINDOWED = (
     _Frame(mounted = 2, elements = 900, scroll_height = 11_800, spans = 0, marker = False),
     _Frame(mounted = 6, elements = 3_400, scroll_height = 12_400, spans = 2_100, marker = True),
@@ -119,8 +119,6 @@ class _ThreadPage:
         self.step = 0
         self.goto_calls: list[str] = []
         self.probes = 0
-
-    # ── what the page would report ──────────────────────────────────
 
     @property
     def frame(self) -> _Frame:
@@ -169,8 +167,6 @@ class _ThreadPage:
             "pinning": False,
         }
 
-    # ── the Playwright surface the action uses ──────────────────────
-
     def evaluate(
         self,
         script,
@@ -186,9 +182,9 @@ class _ThreadPage:
             return MARKER if self.phase != "gone" else None
         if "pre span" in script:
             return self.frame.spans if self.phase == "rebuild" else 0
-        # The hit-test spread and the hover target, both of which report "no reachable point" for
-        # an unclickable control. Returning None here is what sends `_click_or_navigate` down the
-        # branch under test rather than into an off-centre click.
+        # The hit-test spread and the hover target, both of which report "no reachable point" for an
+        # unclickable control. Returning None sends `_click_or_navigate` down the branch under test
+        # rather than into an off-centre click.
         return None
 
     def query_selector(self, selector):
@@ -208,8 +204,8 @@ class _ThreadPage:
 
     def wait_for_timeout(self, _ms):
         # A REAL, TINY SLEEP. The readiness wait is bounded on the monotonic clock, so a poll that
-        # returned instantly would spin thousands of times inside the timeout instead of walking
-        # the scripted frames.
+        # returned instantly would spin thousands of times inside the timeout instead of walking the
+        # scripted frames.
         time.sleep(0.002)
         if self.phase == "rebuild":
             self.step += 1
@@ -425,12 +421,12 @@ def test_a_thread_whose_end_cannot_be_identified_is_refused_before_it_is_touched
     assert page.phase == "thread" and page.goto_calls == []
 
 
+#: How long the centre click burns before it gives up. `_click_or_navigate` passes `timeout = 2000`
+#: to Playwright and the hit-target check retries for the whole of it against a control it cannot
+#: hit at the centre. Scaled down here; what is asserted is that the timings do not contain it, at
+#: whatever size.
 # ── defect three: the harness's own retry, billed to the rebuild ────
 
-#: How long the centre click burns before it gives up. `_click_or_navigate` passes
-#: `timeout = 2000` to Playwright, and the hit-target check retries for the whole of it against a
-#: control it cannot hit at the centre. Scaled down here so the test is fast; what is asserted is
-#: that the timings do not contain it, at whatever size it is.
 RETRY_MS = 400
 
 

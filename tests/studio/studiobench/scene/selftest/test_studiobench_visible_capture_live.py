@@ -40,9 +40,9 @@ if str(_STUDIO_TESTS) not in sys.path:
 _DOM_JS = _STUDIO_TESTS / "studiobench" / "scene" / "dom.js"
 _PARITY_JS = _STUDIO_TESTS / "studiobench" / "scene" / "parity.js"
 
-#: A thread of tall messages in a short viewport, so only a few are ever on screen at once. Each
-#: message publishes `aria-posinset`, which is how a windowed arm states thread position; the
-#: capture keys on it so a window and a full mount are comparable.
+#: A thread of tall messages in a short viewport, so only a few are ever on screen. Each message
+#: publishes `aria-posinset`, which is how a windowed arm states thread position, and the capture
+#: keys on it so a window and a full mount are comparable.
 FIXTURE = """
 <!doctype html><meta charset="utf-8">
 <style>
@@ -108,7 +108,7 @@ def page(browser):
     pg.set_content(FIXTURE)
     # `add_script_tag` after the content, not `add_init_script` before it: Playwright's
     # `set_content` does not always run init scripts, and the symptom is `window.__sb` simply not
-    # existing, which reads like a broken instrument rather than a mis-ordered fixture.
+    # existing, which reads like a broken instrument.
     pg.add_script_tag(content = _DOM_JS.read_text(encoding = "utf-8"))
     pg.add_script_tag(content = _PARITY_JS.read_text(encoding = "utf-8"))
     yield pg
@@ -119,7 +119,7 @@ def _watch(page) -> None:
     got = page.evaluate("() => window.__sb.parityVisible.watch()")
     assert got.get("visible_attempted") is True, got
     # IntersectionObserver's first delivery is asynchronous, so give it a frame before anything
-    # scrolls. Without this the initial viewport contents are attributed to whatever came next.
+    # scrolls, or the initial viewport contents are attributed to whatever came next.
     page.wait_for_timeout(120)
 
 
@@ -306,20 +306,17 @@ def test_a_row_mounted_during_the_action_is_still_picked_up_cheaply(page):
     assert 3 in got["ever_visible"], got["ever_visible"]
 
 
+# Where the virtualizer publishes its ordinals is not a UI change. `runtime/readiness.py` accepts
+# `aria-posinset` / `aria-setsize` on the `[data-role]` message OR on an ancestor row wrapper,
+# walking with `closest()`, because the ordinal belongs on whichever element is the member of
+# the set.
+# The visible-region digest then read every attribute on the message, so an arm taking that
+# option differed from the fully mounted arm on EVERY message while the rendered content was
+# identical. Auto-mode parity was unusable for a DOM shape the gate explicitly permits, and a
+# wall of identical non-findings buries anything real.
+
+
 # ── where the virtualizer publishes its ordinals is not a UI change ──
-#
-# `runtime/readiness.py` accepts `aria-posinset` / `aria-setsize` on the `[data-role]` message OR on
-# an ancestor row wrapper -- it walks with `closest()`, because the ordinal belongs on whichever
-# element is the member of the set, and refusing the first option would refuse a correctly
-# implemented arm for putting the attribute in a place the gate itself calls right.
-#
-# The visible-region digest then read every attribute on the message, so an arm that took that
-# option differed from the fully mounted arm on EVERY message -- which publishes neither attribute
-# anywhere -- while the rendered content was identical. Auto-mode parity was unusable for a DOM
-# shape the gate explicitly permits, and a wall of differences that are all the same non-finding
-# buries anything real underneath it.
-
-
 def _arm_html(ordinals: str, suffix: str = "") -> str:
     """One thread of twenty messages, with the virtualization ordinals published `on_the_message`,
     `on_the_row` wrapper, or `nowhere` -- which is what the shipped build does."""
@@ -423,20 +420,17 @@ def test_a_real_rendering_difference_is_still_caught(browser):
     assert verdict["verdict"] == P.DIFFER, verdict
 
 
-# ── a rebuilt row is at its own position, not at the end of a lifetime count ──
-#
-# `thread_reopen` leaves the thread and comes back, and a FULLY MOUNTED arm answers that by
-# removing every message row and creating a new one for every message inside the same document.
-# Those rebuilt rows publish no `aria-posinset` -- only a windowed arm publishes one -- so their
-# ordinal comes from the fallback, and the fallback used to be a LIFETIME counter of observed
-# nodes. It already stood at N, so the rebuilt rows were stamped N+1..2N while the windowed arm on
-# the other side of the A/B stamped its real 1..N. `compare_visible` compares the two sets of
-# ordinals first, found them disjoint, and reported "the two arms put DIFFERENT MESSAGES on
-# screen" -- a hard visible-difference verdict -- for a rebuild that was identical.
+# A rebuilt row is at its own position, not at the end of a lifetime count. `thread_reopen`
+# leaves the thread and comes back, and a FULLY MOUNTED arm removes every message row and
+# creates a new one inside the same document. Those rebuilt rows publish no `aria-posinset`, so
+# their ordinal came from a LIFETIME counter already standing at N: they were stamped N+1..2N
+# while the windowed arm stamped its real 1..N, so `compare_visible` found the two ordinal sets
+# disjoint and reported a hard visible difference for a rebuild that was identical.
 
 
 #: The shipped shape: every message mounted, and NOTHING publishing a virtualization ordinal.
 #: `__rebuild()` is the thread_reopen rebuild, in one commit, in the same document.
+# ── a rebuilt row is at its own position, not at the end of a lifetime count ──
 REBUILD_FIXTURE = """
 <!doctype html><meta charset="utf-8">
 <style>
@@ -606,15 +600,13 @@ def test_the_structural_digest_still_sees_the_ordinals(browser):
     assert all(numbered[i] != plain[i] for i in numbered), (numbered, plain)
 
 
+#: An EMPTY viewport, so a row appended to it is on screen immediately. `__churn` mounts and
+#: unmounts a row inside ONE task, which is how a row comes to be observed while detached: the
+#: MutationObserver batch runs after both operations, so the node is in `addedNodes` and no
+#: longer among the document's messages and has no position the instrument can honestly claim.
+#: `__remount` hands THE SAME NODE back, as a virtualizer that recycles rows does.
 # ── a recycled node, and the ordinal it used to be denied ──────────────────
 
-
-#: An EMPTY viewport, so a row appended to it is on screen immediately. `__churn` mounts a row and
-#: unmounts it inside ONE task, which is how a row comes to be observed while detached: the
-#: MutationObserver batch runs after both operations, the node is in `addedNodes` and is no longer
-#: among the document's messages, so it has no position the instrument can honestly claim.
-#: `__remount` then hands THE SAME NODE back, which is what a virtualizer that recycles its rows
-#: does on the next scroll step.
 RECYCLE_FIXTURE = """
 <!doctype html><meta charset="utf-8">
 <style>
@@ -674,9 +666,9 @@ def test_a_recycled_row_is_placed_when_it_finally_mounts(browser):
     assert got["ever_visible"] == [1], got
 
 
-#: A row that is RENUMBERED IN PLACE. It stays connected, stays intersecting, and is handed to
-#: another message -- which is what a virtualizer that recycles its row nodes does, and it is not a
-#: childList mutation, so nothing about it reaches a childList-only observer.
+#: A row that is RENUMBERED IN PLACE: it stays connected, stays intersecting, and is handed to
+#: another message, as a virtualizer that recycles row nodes does. It is not a childList
+#: mutation, so nothing about it reaches a childList-only observer.
 RENUMBER_FIXTURE = """
 <!doctype html><meta charset="utf-8">
 <style>
@@ -728,7 +720,7 @@ def test_a_row_renumbered_in_place_is_restamped_and_reported(browser):
     assert "42" in got["messages"], got["messages"]
     assert got["unplaced_rows"] == 0, got
     # A LEGITIMATE RENUMBER IS NOT A COLLISION. One node holds one position at a time here, so the
-    # collision counter added for the two-rows-one-ordinal case must not fire on this, or a correct
+    # collision counter added for the two-rows-one-ordinal case must not fire, or a correct
     # recycling virtualizer would be refused on every action it recycles a row in.
     assert got["ordinal_collisions"] == 0, got
 
@@ -793,8 +785,8 @@ def test_two_rows_sharing_a_thread_position_are_counted_rather_than_overwritten(
         got = _capture_with_ghost(browser, before = before)
         assert got["ordinal_collisions"] == 1, (before, got)
         assert got["collided_ordinals"] == [1], (before, got)
-        # The counter is not derived from the arithmetic, and this is why: two of the three rows
-        # on screen are filed under one key, so the map still holds two entries.
+        # The counter is not derived from the arithmetic, and this is why: two of the three rows on
+        # screen are filed under one key, so the map still holds two entries.
         assert set(got["messages"]) == {"1", "2"}, got["messages"]
 
 
@@ -834,8 +826,8 @@ def test_losing_the_thread_outranks_the_collision_refusal(browser):
 
     ghosted = _capture_with_ghost(browser, before = True)
     assert ghosted["ordinal_collisions"] == 1, ghosted
-    # The other arm ended with nothing on screen at all, which is the 100K `model_change` shape:
-    # 12 mounted messages to 0, never recovered.
+    # The other arm ended with nothing on screen at all, the 100K `model_change` shape: 12 mounted
+    # messages to 0, never recovered.
     empty = dict(ghosted)
     empty["messages"] = {}
     empty["ordinal_collisions"] = 0

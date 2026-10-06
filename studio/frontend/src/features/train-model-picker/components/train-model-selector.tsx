@@ -59,7 +59,12 @@ import { toast } from "@/lib/toast";
 import { cn, formatCompact } from "@/lib/utils";
 import { buildModelVramMap } from "@/lib/vram";
 import type { ModelType, TrainingMethod } from "@/types/training";
-import { ArrowDown01Icon, ChipIcon } from "@hugeicons/core-free-icons";
+import {
+  ChipIcon,
+} from "@hugeicons/core-free-icons";
+import {
+  ChevronDownIcon,
+} from "lucide-react";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useCallback, useMemo, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
@@ -100,6 +105,8 @@ function localModelSourceLabelKey(source: LocalSource): TranslationKey {
       return "studio.modelPicker.sourceLmStudio";
     case "ollama":
       return "studio.modelPicker.sourceOllama";
+    case "hermes":
+      return "studio.modelPicker.sourceHermes";
     case "custom":
       return "studio.modelPicker.sourceCustomFolder";
     default:
@@ -771,7 +778,7 @@ export function TrainModelSelector({
           }`}
           className={cn(
             PICKER_TRIGGER_CLASS,
-            "w-full min-w-[180px] justify-between",
+            "w-full min-w-[calc(180px*var(--ui-space-scale,1))] justify-between",
           )}
         >
           <span className="flex min-w-0 items-center gap-1.5">
@@ -789,8 +796,7 @@ export function TrainModelSelector({
               {display ?? t("studio.modelPicker.selectModel")}
             </span>
           </span>
-          <HugeiconsIcon
-            icon={ArrowDown01Icon}
+          <ChevronDownIcon
             strokeWidth={1.25}
             className="size-3.5 shrink-0 text-muted-foreground"
           />

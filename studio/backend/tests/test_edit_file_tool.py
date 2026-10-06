@@ -7,6 +7,7 @@ Pinned here: a miss or an ambiguous match fails loudly and writes nothing, and
 the file's encoding, line endings and mode survive an edit.
 """
 
+import json
 import os
 import stat
 import sys
@@ -38,6 +39,20 @@ def workdir(tmp_path, monkeypatch):
 
 
 def _edit(**arguments) -> str:
+    """Call edit_file, accepting the single-edit spelling these tests were written in.
+
+    The tool now takes an ``edits`` array so several changes to one file cost one call
+    instead of one call each. Every case below is about one edit, and what it asserts --
+    matching, uniqueness, encoding, containment, receipts -- is unchanged by the batching,
+    so the shape is adapted here rather than restating 50 call sites.
+    """
+    if "edits" not in arguments:
+        edit = {
+            key: arguments.pop(key)
+            for key in ("old_string", "new_string", "replace_all")
+            if key in arguments
+        }
+        arguments["edits"] = [edit]
     return execute_tool("edit_file", arguments, session_id = "t")
 
 
@@ -414,13 +429,21 @@ class TestThirdReviewFindings:
         # /dev/null stats as zero bytes, so measuring size alone sent it down
         # the create branch, whose rename would have swapped the character
         # device for a regular file.
+        # Spelled as `edits`, not adapted through `_edit`: this one passes
+        # `disable_sandbox`, and the batched shape is what the tool now accepts. With the
+        # old top-level spelling the call is refused for a missing `edits` array, which
+        # also starts with "Error:" -- so the assertion below held while the device-node
+        # guard was never reached.
         result = execute_tool(
             "edit_file",
-            {"path": "/dev/null", "old_string": "", "new_string": "x\n"},
+            {"path": "/dev/null", "edits": [{"old_string": "", "new_string": "x\n"}]},
             session_id = "t",
             disable_sandbox = True,
         )
         assert result.startswith("Error:")
+        # The refusal the GUARD produces, not the one a malformed call produces: pinned
+        # so this cannot go green again on an argument rejection.
+        assert "already exists" in result
         assert stat.S_ISCHR(os.stat("/dev/null").st_mode)
 
     @pytest.mark.parametrize("path,old", [("app.py", "TODO"), ("fresh.py", "")])
@@ -495,7 +518,7 @@ class TestFullAccessEscapesTheWorkdir:
         outside.write_text("x = 1\n")
         result = execute_tool(
             "edit_file",
-            {"path": str(outside), "old_string": "x = 1", "new_string": "x = 2"},
+            {"path": str(outside), "edits": [{"old_string": "x = 1", "new_string": "x = 2"}]},
             session_id = "t",
             disable_sandbox = True,
         )
@@ -537,7 +560,7 @@ class TestCreationLeavesNothingBehindWhenTheWriteFails:
         try:
             result = execute_tool(
                 "edit_file",
-                {"path": "report.py", "old_string": "", "new_string": body},
+                {"path": "report.py", "edits": [{"old_string": "", "new_string": body}]},
                 session_id = "t",
             )
         finally:
@@ -552,14 +575,14 @@ class TestCreationLeavesNothingBehindWhenTheWriteFails:
         try:
             execute_tool(
                 "edit_file",
-                {"path": "report.py", "old_string": "", "new_string": body},
+                {"path": "report.py", "edits": [{"old_string": "", "new_string": body}]},
                 session_id = "t",
             )
         finally:
             self._restore(saved)
         retry = execute_tool(
             "edit_file",
-            {"path": "report.py", "old_string": "", "new_string": body},
+            {"path": "report.py", "edits": [{"old_string": "", "new_string": body}]},
             session_id = "t",
         )
         assert not retry.startswith("Error:")
@@ -585,13 +608,18 @@ class TestCreationLeavesNothingBehindWhenTheWriteFails:
             return handle
 
         monkeypatch.setattr(os, "fdopen", failing)
+        # As above: the top-level spelling is refused before the write is attempted, so
+        # the simulated ENOSPC and its cleanup were never exercised.
         result = execute_tool(
             "edit_file",
-            {"path": "notes.py", "old_string": "", "new_string": "print('hi')\n"},
+            {"path": "notes.py", "edits": [{"old_string": "", "new_string": "print('hi')\n"}]},
             session_id = "t",
         )
         monkeypatch.undo()
         assert result.startswith("Error:")
+        assert (
+            "No space left on device" in result
+        ), "the write was never attempted, so the cleanup was not exercised"
         assert not (workdir / "notes.py").exists()
 
     def test_a_failed_create_does_not_remove_someone_elses_file(self, workdir):
@@ -600,9 +628,383 @@ class TestCreationLeavesNothingBehindWhenTheWriteFails:
         target.write_text("x = 1\n")
         result = execute_tool(
             "edit_file",
-            {"path": "keep.py", "old_string": "", "new_string": "y = 2\n"},
+            {"path": "keep.py", "edits": [{"old_string": "", "new_string": "y = 2\n"}]},
             session_id = "t",
         )
         assert result.startswith("Error:")
         assert "already exists" in result
         assert target.read_text() == "x = 1\n"
+
+
+class TestBatchedEdits:
+    """Several changes to one file in one call.
+
+    The point is token cost, not convenience: every extra call replays the whole
+    conversation and leaves an assistant turn plus a tool result in the window for good.
+    llama.cpp's own edit_file takes an `edits` array for the same reason.
+    """
+
+    def _edits(self, path, edits):
+        return execute_tool("edit_file", {"path": path, "edits": edits}, session_id = "t")
+
+    def test_several_edits_land_in_one_call(self, workdir):
+        target = workdir / "a.py"
+        target.write_text("alpha\nbeta\ngamma\n")
+        result = self._edits(
+            "a.py",
+            [
+                {"old_string": "alpha", "new_string": "A"},
+                {"old_string": "gamma", "new_string": "G"},
+            ],
+        )
+        assert target.read_text() == "A\nbeta\nG\n"
+        assert "2 replacements" in result
+
+    def test_every_old_string_matches_the_original_not_the_running_result(self, workdir):
+        """The model copied each snippet out of the file it read, so that is what they match."""
+        target = workdir / "a.py"
+        target.write_text("one\ntwo\n")
+        self._edits(
+            "a.py",
+            [
+                {"old_string": "one", "new_string": "two"},
+                {"old_string": "two", "new_string": "three"},
+            ],
+        )
+        # The second edit takes the ORIGINAL "two", not the one the first just wrote.
+        assert target.read_text() == "two\nthree\n"
+
+    def test_one_bad_edit_writes_none_of_them(self, workdir):
+        """A half-applied batch is worse than a refused one: the model cannot tell which half."""
+        target = workdir / "a.py"
+        target.write_text("alpha\nbeta\n")
+        result = self._edits(
+            "a.py",
+            [
+                {"old_string": "alpha", "new_string": "A"},
+                {"old_string": "nowhere", "new_string": "B"},
+            ],
+        )
+        assert result.startswith("Error:")
+        assert "edit 2" in result
+        assert target.read_text() == "alpha\nbeta\n"
+
+    def test_overlapping_edits_are_refused(self, workdir):
+        target = workdir / "a.py"
+        target.write_text("hello world\n")
+        result = self._edits(
+            "a.py",
+            [
+                {"old_string": "hello world", "new_string": "x"},
+                {"old_string": "world", "new_string": "y"},
+            ],
+        )
+        assert result.startswith("Error:")
+        assert "overlap" in result
+        assert target.read_text() == "hello world\n"
+
+    def test_an_ambiguous_entry_names_which_one(self, workdir):
+        target = workdir / "a.py"
+        target.write_text("v = 1\nv = 1\nkeep\n")
+        result = self._edits(
+            "a.py",
+            [
+                {"old_string": "keep", "new_string": "kept"},
+                {"old_string": "v = 1", "new_string": "v = 2"},
+            ],
+        )
+        assert "edit 2" in result
+        assert "2 places" in result
+        assert target.read_text() == "v = 1\nv = 1\nkeep\n"
+
+    def test_replace_all_is_per_entry(self, workdir):
+        target = workdir / "a.py"
+        target.write_text("v = 1\nv = 1\nw = 1\n")
+        result = self._edits(
+            "a.py",
+            [
+                {"old_string": "v = 1", "new_string": "v = 2", "replace_all": True},
+                {"old_string": "w = 1", "new_string": "w = 2"},
+            ],
+        )
+        assert target.read_text() == "v = 2\nv = 2\nw = 2\n"
+        assert "3 replacements" in result
+
+    def test_creation_cannot_be_batched_with_edits(self, workdir):
+        """An empty old_string writes the whole file, so there is nothing to edit beside it."""
+        result = self._edits(
+            "new.py",
+            [
+                {"old_string": "", "new_string": "x = 1\n"},
+                {"old_string": "x", "new_string": "y"},
+            ],
+        )
+        assert result.startswith("Error:")
+        assert not (workdir / "new.py").exists()
+
+    def test_an_empty_edits_array_says_what_to_send(self, workdir):
+        (workdir / "a.py").write_text("x = 1\n")
+        result = execute_tool("edit_file", {"path": "a.py", "edits": []}, session_id = "t")
+        assert result.startswith("Error:")
+        assert "edits" in result
+
+    def test_a_large_replace_all_batch_stays_linear(self, workdir):
+        """Rebuilding the string per replacement is quadratic; this caught that at 10s."""
+        target = workdir / "big.py"
+        target.write_text("v = 1\n" * 40000)
+        started = time.monotonic()
+        result = self._edits(
+            "big.py", [{"old_string": "v = 1", "new_string": "v = 2", "replace_all": True}]
+        )
+        assert not result.startswith("Error:")
+        assert time.monotonic() - started < 2.0
+        assert target.read_text() == "v = 2\n" * 40000
+
+
+class TestBatchSize:
+    """Each entry costs a full scan of a file that may be 16 MiB, so entries x size is
+    the real work. Unbounded, a model-generated batch of a few thousand one-line edits
+    turns one call into gigabytes of repeated scanning and holds the worker for minutes.
+    """
+
+    def test_a_batch_over_the_limit_is_refused_before_anything_is_written(self, workdir):
+        from core.inference.tools import _MAX_EDITS_PER_CALL
+
+        target = workdir / "a.py"
+        target.write_text("x = 1\n", encoding = "utf-8")
+        edits = [
+            {"old_string": f"line{i}", "new_string": f"L{i}"}
+            for i in range(_MAX_EDITS_PER_CALL + 1)
+        ]
+
+        result = _edit(path = "a.py", edits = edits)
+
+        assert result.startswith("Error:")
+        assert "over the limit" in result
+        assert "nothing was written" in result
+        assert target.read_text(encoding = "utf-8") == "x = 1\n"
+
+    def test_a_batch_at_the_limit_is_still_applied(self, workdir):
+        from core.inference.tools import _MAX_EDITS_PER_CALL
+
+        target = workdir / "a.py"
+        # Zero-padded and terminated: a bare "line1" is also a prefix of "line10", which
+        # the tool correctly refuses as ambiguous. That is the fixture's problem, not the
+        # batching's.
+        target.write_text(
+            "".join(f"line{i:03d}=0\n" for i in range(_MAX_EDITS_PER_CALL)),
+            encoding = "utf-8",
+        )
+        edits = [
+            {"old_string": f"line{i:03d}=0", "new_string": f"line{i:03d}=1"}
+            for i in range(_MAX_EDITS_PER_CALL)
+        ]
+
+        result = _edit(path = "a.py", edits = edits)
+
+        assert not result.startswith("Error:")
+        assert "line000=1" in target.read_text(encoding = "utf-8")
+
+    def test_a_lone_replace_all_never_enumerates_its_matches(self, workdir):
+        """A single entry has nothing to overlap with, so it needs no spans.
+
+        Enumerating cost roughly 16 million tuples plus a sort on a 16 MiB file of a
+        one-character pattern. Bounding it instead would have broken the large
+        replace_all cases this tool is expected to do, so the enumeration itself goes.
+        """
+        from core.inference.tools import _MAX_MATCH_SPANS
+
+        target = workdir / "a.txt"
+        target.write_text("a" * (_MAX_MATCH_SPANS + 5), encoding = "utf-8")
+
+        result = _edit(path = "a.txt", old_string = "a", new_string = "b", replace_all = True)
+
+        assert not result.startswith("Error:")
+        assert target.read_text(encoding = "utf-8") == "b" * (_MAX_MATCH_SPANS + 5)
+
+    def test_a_batched_entry_is_bounded_because_it_still_needs_spans(self, workdir):
+        """Overlap detection across entries is what the spans are for, so a batch cannot
+        take the lone-entry shortcut and is bounded instead."""
+        from core.inference.tools import _MAX_MATCH_SPANS
+
+        target = workdir / "a.txt"
+        original = "a" * (_MAX_MATCH_SPANS + 5) + "\nZZZ\n"
+        target.write_text(original, encoding = "utf-8")
+
+        result = _edit(
+            path = "a.txt",
+            edits = [
+                {"old_string": "a", "new_string": "b", "replace_all": True},
+                {"old_string": "ZZZ", "new_string": "YYY"},
+            ],
+        )
+
+        assert result.startswith("Error:")
+        assert "over the limit" in result
+        assert "nothing was written" in result
+        assert target.read_text(encoding = "utf-8") == original
+
+    def test_a_replace_all_within_the_bound_still_works(self, workdir):
+        target = workdir / "a.txt"
+        target.write_text("a b a b a", encoding = "utf-8")
+
+        result = _edit(path = "a.txt", old_string = "a", new_string = "c", replace_all = True)
+
+        assert not result.startswith("Error:")
+        assert target.read_text(encoding = "utf-8") == "c b c b c"
+
+
+class TestEmptyPatternSafety:
+    def test_a_batched_empty_old_string_is_refused_not_scanned(self, workdir):
+        """The refusal is the point, and so is the speed of it.
+
+        A zero-length pattern cannot advance `find(old, start + len(old))`, so reaching
+        the span scan with one would spin rather than answer. `_edit_file` rejects it
+        first; this pins that, and `_edit_file_apply_all` carries its own guard so a
+        future caller cannot reintroduce the hang.
+        """
+        target = workdir / "f.py"
+        target.write_text("hello world\n")
+
+        result = _edit(
+            path = "f.py",
+            edits = [
+                {"old_string": "hello", "new_string": "hi"},
+                {"old_string": "", "new_string": "x", "replace_all": True},
+            ],
+        )
+
+        assert "empty 'old_string'" in result
+        assert target.read_text() == "hello world\n", "a refused batch wrote anyway"
+
+    def test_the_span_scanner_refuses_an_empty_pattern_on_its_own(self):
+        """Called directly, because the tool never lets one through."""
+        from core.inference.tools import _edit_file_apply_all
+
+        _after, _total, _old, _new, _at, error = _edit_file_apply_all(
+            "hello world\n", [("hello", "hi", False), ("", "x", True)], "f.py"
+        )
+
+        assert "empty 'old_string'" in error
+
+
+class TestReplayedReceipt:
+    """Prevent copied compaction receipts from overwriting file content (#11839)."""
+
+    @staticmethod
+    def _replayed(path: str, old: str, new: str) -> dict:
+        from core.inference.context_window import compact_completed_tool_arguments
+
+        arguments = {"path": path, "edits": [{"old_string": old, "new_string": new}]}
+        messages = [
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "c1",
+                        "type": "function",
+                        "function": {"name": "edit_file", "arguments": json.dumps(arguments)},
+                    }
+                ],
+            },
+            {"role": "tool", "tool_call_id": "c1", "content": f"Edited {path} (1 replacement)"},
+        ]
+        fitted, compacted = compact_completed_tool_arguments(messages)
+        assert compacted == 1
+        return json.loads(fitted[0]["tool_calls"][0]["function"]["arguments"])
+
+    def test_a_replayed_call_sent_back_writes_nothing(self, workdir):
+        target = workdir / "PortalManager.java"
+        original = "class A {\n    private static final int PARTNER_TRIES = 8;\n}\n"
+        target.write_text(original)
+        replayed = self._replayed(
+            "PortalManager.java", "    private static final int PARTNER_TRIES = 8;", "x" * 1100
+        )
+        assert "chars of arguments you sent" in replayed["edits"][0]["new_string"]
+
+        result = execute_tool("edit_file", replayed, session_id = "t")
+
+        assert result.startswith("Error:")
+        assert "edits[0].new_string" in result
+        assert target.read_text() == original
+
+    def test_one_receipt_in_a_batch_of_real_edits_stops_the_whole_batch(self, workdir):
+        target = workdir / "a.py"
+        target.write_text("a = 1\nb = 2\n")
+
+        result = _edit(
+            path = "a.py",
+            edits = [
+                {"old_string": "a = 1", "new_string": "a = 10"},
+                {
+                    "old_string": "b = 2",
+                    "new_string": "<410 chars of arguments you sent, elided to save room; "
+                    "the call already ran. Not tool output>",
+                },
+            ],
+        )
+
+        assert result.startswith("Error:")
+        assert "edits[1].new_string" in result
+        assert target.read_text() == "a = 1\nb = 2\n"
+
+    def test_text_that_only_quotes_a_receipt_is_still_written(self, workdir):
+        target = workdir / "t.py"
+        target.write_text("RECEIPT = None\n")
+        quoted = (
+            'RECEIPT = "<12 chars of arguments you sent, elided to save room; '
+            'the call already ran. Not tool output>"'
+        )
+
+        result = _edit(path = "t.py", old_string = "RECEIPT = None", new_string = quoted)
+
+        assert "1 replacement" in result
+        assert target.read_text() == quoted + "\n"
+
+    def test_a_file_the_receipt_already_damaged_can_be_repaired(self, workdir):
+        receipt = (
+            "<1081 chars of arguments you sent, already written to PortalManager.java; "
+            "elided to save room. Not tool output; the file on disk holds it.>"
+        )
+        target = workdir / "PortalManager.java"
+        target.write_text(f"class A {{\n{receipt}\n}}\n")
+
+        result = _edit(
+            path = "PortalManager.java",
+            old_string = receipt,
+            new_string = "    private static final int PARTNER_TRIES = 32;",
+        )
+
+        assert "1 replacement" in result
+        assert (
+            target.read_text() == "class A {\n    private static final int PARTNER_TRIES = 32;\n}\n"
+        )
+
+    def test_a_receipt_copied_into_old_string_still_writes_nothing(self, workdir):
+        target = workdir / "a.py"
+        target.write_text("a = 1\n")
+
+        result = _edit(
+            path = "a.py",
+            old_string = "<410 chars of arguments you sent, elided to save room; "
+            "the call already ran. Not tool output>",
+            new_string = "a = 2",
+        )
+
+        assert "was not found" in result
+        assert target.read_text() == "a = 1\n"
+
+    def test_other_tools_refuse_it_before_running(self, workdir):
+        result = execute_tool(
+            "python",
+            {
+                "code": "<1500 chars of arguments you sent, elided to save room; "
+                "the call already ran. Not tool output>"
+            },
+            session_id = "t",
+        )
+
+        assert result.startswith("Error:")
+        assert "'code'" in result
+        assert "nothing ran" in result

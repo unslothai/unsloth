@@ -12,16 +12,15 @@ export function hasGgufSource(x: {
   );
 }
 
-/** A local-disk model id: Unix absolute (/), relative (./ ../), tilde (~/),
- *  Windows drive (C:\) or UNC (\\server). Shared so the loader and the
- *  hub-repo predicate classify ids identically. */
+/** A local-disk model id: Unix absolute, relative, tilde, Windows drive or UNC. Shared so the
+ *  loader and the hub-repo predicate classify ids identically. */
 export function isLocalModelPath(id: string): boolean {
   return /^(\/|\.{1,2}[\\/]|~[\\/]|[A-Za-z]:[\\/]|\\\\)/.test(id);
 }
 
-/** An uncached HF hub repo we can download as a full snapshot (non-GGUF
- *  safetensors / MLX). Excludes GGUF sources, local paths, native files, LoRA,
- *  and external provider models so none are mis-routed into a snapshot. */
+/** An uncached HF hub repo we can download as a full snapshot (non-GGUF safetensors / MLX).
+ *  Excludes GGUF sources, local paths, native files, LoRA and external provider models so none
+ *  are mis-routed into a snapshot. */
 export function isDownloadableHubRepo(x: {
   id: string;
   source?: string;
@@ -39,9 +38,9 @@ export function isDownloadableHubRepo(x: {
   );
 }
 
-/** A pick the Hub download manager must fetch first: an uncached snapshot repo, or a Hub
- *  GGUF whose quant is not on disk. Everything else loads directly, so a caller that
- *  cannot prove a Hub pick is missing must leave `source` unset. */
+/** A pick the Hub download manager must fetch first: an uncached snapshot repo, or a Hub GGUF
+ *  whose quant is not on disk. Everything else loads directly, so a caller that cannot prove a
+ *  Hub pick is missing must leave `source` unset. */
 export function wantsDownloadManagerStaging(x: {
   id: string;
   source?: string;

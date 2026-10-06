@@ -12,7 +12,7 @@ import { fileURLToPath } from "node:url";
 const SRC = fileURLToPath(new URL("../src/", import.meta.url));
 
 const TAG_NAME = /^<([A-Za-z0-9_.]+)/;
-const GUARD = /<MenuDismissGuard\s*\/>/;
+const GUARD = /<MenuDismissGuard\b(?=[^>]*\btriggerRef=\{)[^>]*\/>/;
 
 /** Explicit non-modal menus that intentionally remain unguarded. */
 const UNGUARDED = new Map<string, string>([
@@ -22,6 +22,12 @@ const UNGUARDED = new Map<string, string>([
       "leaves, so an unconditional swallow eats an ordinary click on the nav row the pointer was " +
       "heading for. A press pins it open too, and that path could take one, but the flyout has " +
       "been non-modal since #6763 rather than since #8992, so it is a defect of its own.",
+  ],
+  [
+    "features/browser/browser-toggle.tsx <DropdownMenu>",
+    "the chat header's new tab menu opens on POINTER ENTER and closes 200ms after the pointer " +
+      "leaves, so a swallow would eat the click the pointer was heading for. A press on its " +
+      "button opens a tab rather than the menu, so no press ever opens it.",
   ],
 ]);
 
@@ -133,7 +139,7 @@ test("the element scan does not confuse a tag with one that merely starts the sa
     "<DropdownMenu modal={false}>",
     "  <DropdownMenuTrigger />",
     "</DropdownMenu>",
-    "<MenuDismissGuard />",
+    "<MenuDismissGuard triggerRef={triggerRef} />",
   ].join("\n");
   const { tag, body } = element(source, source.indexOf("modal={false}"));
   assert.equal(tag, "DropdownMenu");
@@ -157,7 +163,7 @@ test("the guard component is what mounts the watcher", () => {
   );
   assert.match(
     guard,
-    /useDismissingClickGuard\(\)/,
-    "MenuDismissGuard must install the document watcher, or every mount above is decoration",
+    /useDismissingClickGuard\(triggerRef\)/,
+    "MenuDismissGuard must give the document watcher its trigger, or every mount above loses focus restoration",
   );
 });

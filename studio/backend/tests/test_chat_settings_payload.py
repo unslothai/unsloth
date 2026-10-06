@@ -131,6 +131,11 @@ def test_unset_fields_stay_out_of_the_merge():
     assert payload.model_dump(exclude_unset = True) == {"ragTopK": 5}
 
 
+def test_max_tool_calls_off_survives_the_payload():
+    payload = ChatSettingsPayload.model_validate({"maxToolCallsPerMessage": 0})
+    assert payload.model_dump(exclude_unset = True) == {"maxToolCallsPerMessage": 0}
+
+
 @pytest.mark.parametrize(
     "payload",
     [
@@ -150,8 +155,12 @@ def test_unset_fields_stay_out_of_the_merge():
         {"researchModelTimeoutSeconds": 9},
         {"researchModelTimeoutSeconds": -1},
         {"researchModelTimeoutSeconds": 365 * 24 * 3600 + 1},
-        # bool subclasses int, so False would persist as the 0 "unlimited" sentinel.
+        # bool subclasses int, so False would persist as the 0 sentinel.
         {"researchModelTimeoutSeconds": False},
+        {"maxToolCallsPerMessage": False},
+        {"maxToolCallsPerMessage": True},
+        {"maxToolCallsPerMessage": -1},
+        {"toolCallTimeout": 0},
         {"unknownSetting": True},
     ],
 )
@@ -206,6 +215,31 @@ def test_the_rejection_detail_can_be_rendered_as_json():
         put_settings({"ragAutoInjectMinScore": float("nan")}, current_subject = "t")
     assert excinfo.value.status_code == 400
     json.dumps(excinfo.value.detail, allow_nan = False)
+
+
+def test_auto_compact_settings_round_trip():
+    payload = ChatSettingsPayload.model_validate(
+        {
+            "autoCompactEnabled": False,
+            "contextPolicy": "rolling",
+            "compactionHeadroomRatio": 0.05,
+        }
+    )
+    assert payload.model_dump(exclude_unset = True) == {
+        "autoCompactEnabled": False,
+        "contextPolicy": "rolling",
+        "compactionHeadroomRatio": 0.05,
+    }
+
+
+def test_auto_compact_settings_can_inherit_the_server_policy():
+    payload = ChatSettingsPayload.model_validate({"contextPolicy": "inherit"})
+    assert payload.model_dump(exclude_unset = True) == {"contextPolicy": "inherit"}
+
+
+def test_compaction_headroom_ratio_is_bounded():
+    with pytest.raises(ValidationError):
+        ChatSettingsPayload.model_validate({"compactionHeadroomRatio": 1.5})
 
 
 def test_a_sampling_seed_survives_the_payload():

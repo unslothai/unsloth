@@ -15,7 +15,7 @@ function Card({
       data-slot="card"
       data-size={size}
       className={cn(
-        "ring-foreground/10 bg-card corner-squircle text-card-foreground gap-6 overflow-hidden rounded-4xl py-6 text-sm ring-1 has-[>img:first-child]:pt-0 data-[size=sm]:gap-4 data-[size=sm]:py-4 *:[img:first-child]:rounded-t-xl *:[img:last-child]:rounded-b-xl group/card  flex flex-col",
+        "ring-[color-mix(in_oklab,var(--foreground)_calc(10%*var(--contrast-edge-gain,1)),transparent)] bg-card corner-squircle text-card-foreground gap-6 overflow-hidden rounded-4xl py-6 text-sm ring-1 has-[>img:first-child]:pt-0 data-[size=sm]:gap-4 data-[size=sm]:py-4 *:[img:first-child]:rounded-t-xl *:[img:last-child]:rounded-b-xl group/card  flex flex-col",
         className,
       )}
       {...props}

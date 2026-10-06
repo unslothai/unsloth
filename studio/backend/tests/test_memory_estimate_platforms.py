@@ -3,47 +3,39 @@
 
 """The Load-Model memory estimate across every platform and accelerator Unsloth ships on.
 
-``tests/test_memory_estimate.py`` proves the arithmetic on one host. This file asks the
-other question: does the SAME number come out, and does it stay internally consistent,
-when the host underneath changes? The estimate reads three host-shaped seams --
-``sys.platform``, the probed inference inventory, and whether the llama.cpp build is
-Vulkan -- and each of them moves a different arm of the placement split.
+``test_memory_estimate.py`` proves the arithmetic on one host; this file asks whether
+the same number comes out, and stays internally consistent, when the host changes. The
+estimate reads three host-shaped seams -- ``sys.platform``, the probed inference
+inventory, and whether the llama.cpp build is Vulkan -- and each moves a different arm
+of the placement split. The matrix is the four platforms by six accelerators, driven
+through the real route on synthetic headers; nothing downloads, loads or launches.
 
-The matrix is the Cartesian product of the four platforms and six accelerators, run
-through the real ``POST /api/inference/estimate-memory`` handler on synthetic GGUF
-headers. Nothing here downloads, loads, allocates or launches anything.
+Not "the number equals N", which a self-consistent wrong estimator also passes. The
+properties such an estimator cannot satisfy:
 
-What is asserted per cell is deliberately not "the number equals N". A wrong estimator
-that is self-consistent still passes that. These are the properties a wrong-but-
-self-consistent estimator cannot satisfy:
-
-* the itemization SUMS to the total, exactly, in integers -- see ``_itemized_sum``, and
-  read its comment before trusting the PR body's "four items";
-* ``gpu_bytes <= total_bytes``, on every cell, always;
-* ``weights_bytes`` does not move when the context slider does. This is the load-bearing
-  one: the weights term is obtained by SUBTRACTING the context term out of
-  ``_estimate_gguf_required_gb``, so any drift here means the two arms of that
-  subtraction stopped naming the same bytes;
-* ``kv_bytes`` is non-decreasing in ``n_ctx``;
+* the itemization SUMS to the total exactly, in integers (see ``_itemized_sum``);
+* ``gpu_bytes <= total_bytes``, every cell;
+* ``weights_bytes`` does not move with the context slider. The load-bearing one: the
+  weights term is the context term SUBTRACTED out of ``_estimate_gguf_required_gb``, so
+  drift here means the two arms stopped naming the same bytes;
+* ``kv_bytes`` non-decreasing in ``n_ctx``;
 * ``drafter_runtime_gpu_bytes <= drafter_runtime_bytes``;
-* no field is ever negative;
+* no negative field;
 * a probed-empty inventory reports ``gpu_bytes == 0``;
-* moving bytes off the GPU never shrinks the TOTAL. On unified memory that is the whole
-  claim: an offloaded byte is not a freed byte;
-* ``layer_count`` survives an unsizable KV, or ``--gpu-layers 0`` reads as a fully
-  GPU-resident load.
+* moving bytes off the GPU never shrinks the TOTAL -- on unified memory that is the
+  whole claim, since an offloaded byte is not a freed byte;
+* ``layer_count`` survives an unsizable KV, or ``--gpu-layers 0`` reads fully resident.
 
-And one tripwire, asserted on every cell: nothing in this path may reach
-``LlamaCppBackend._apple_metal_memory_budget_bytes``. It contains a bare
-``import mlx.core``, which on macOS after torch has been imported aborts the process at
-the C level -- an abort no surrounding ``try``/``except`` can catch. A settings panel
-that fires on every slider tick must never be able to take the server down, so this is
-checked per cell rather than reasoned about.
+Plus one tripwire per cell: nothing here may reach
+``LlamaCppBackend._apple_metal_memory_budget_bytes``, whose bare ``import mlx.core``
+aborts the process at the C level on macOS once torch is imported -- an abort no
+``try``/``except`` catches. A panel firing on every slider tick must not be able to
+take the server down, so it is checked rather than reasoned about.
 
-The honest limit of this file: it runs on Linux. ``sys.platform``, ``platform.system()``
-and ``platform.machine()`` are moved; the kernel, the filesystem semantics, the real
-Metal/HIP/Vulkan runtimes and the real device probes are not. It is branch coverage of
-the estimator's host-shaped decisions, not a substitute for the per-OS CI matrix.
+The honest limit: this runs on Linux. ``sys.platform``, ``platform.system()`` and
+``platform.machine()`` are moved; the kernel, filesystem semantics, the real
+Metal/HIP/Vulkan runtimes and the real device probes are not. Branch coverage of the
+estimator's host-shaped decisions, not a substitute for the per-OS CI matrix.
 """
 
 from __future__ import annotations
@@ -168,13 +160,12 @@ _UPSTREAM_ACCELERATORS = {
 #
 #   amd-rocm      -- a HIP build. NOT Vulkan: the ROCm prebuilt carries a hipBLAS ggml
 #                    lib, so _is_vulkan_backend is False and the devices enumerate
-#                    through the torch/CUDA-shaped path exactly as NVIDIA's do.
-#   apple-unified -- Metal. One device, because that is what the /api/system probe
-#                    reports on Apple Silicon: get_backend_visible_gpu_info's MLX arm
-#                    (utils/hardware/hardware.py:4526) emits a single index-0 device
-#                    whose "VRAM" is the machine's unified RAM. Modelling Apple as an
-#                    empty inventory would have quietly turned this into a second
-#                    cpu-only cell and asserted nothing about unified memory at all.
+#                    through the torch/CUDA-shaped path as NVIDIA's do.
+#   apple-unified -- Metal, one device, which is what /api/system reports on Apple
+#                    Silicon: get_backend_visible_gpu_info's MLX arm emits a single
+#                    index-0 device whose "VRAM" is the machine's unified RAM. An empty
+#                    inventory here would be a second cpu-only cell asserting nothing
+#                    about unified memory.
 ACCELERATORS = [
     ("nvidia-single", *_UPSTREAM_ACCELERATORS["nvidia-single"]),
     ("nvidia-multi", *_UPSTREAM_ACCELERATORS["nvidia-multi"]),
@@ -191,17 +182,15 @@ _CPU_ONLY = "cpu-only"
 def _reachable(platform_label: str, accelerator_label: str) -> bool:
     """Whether this (platform, accelerator) pair can physically exist.
 
-    Exactly one exclusion, and it is stated rather than dropped: apple-unified means
-    Apple Silicon's Metal unified memory, which only exists under Darwin. There is no
-    Apple-unified Windows, Linux or WSL2 host. (Asahi Linux does run on Apple Silicon,
-    but Studio's own is_apple_silicon() is `platform.system() == "Darwin"`, so on Asahi
-    the estimate takes the Linux arm -- which is the linux/cpu-only cell already here.)
+    One exclusion, stated rather than dropped: apple-unified is Apple Silicon's Metal
+    unified memory, which only exists under Darwin. (Asahi Linux runs on Apple Silicon,
+    but Studio's is_apple_silicon() is `platform.system() == "Darwin"`, so there the
+    estimate takes the Linux arm, already covered by linux/cpu-only.)
 
-    Everything else is kept, including the three discrete-vendor cells on macOS. Those
-    are legacy shapes (Intel Mac with an eGPU, or a CUDA build predating macOS 10.14),
-    and the reason to keep them is that the estimator contains NO code that forbids
-    them: what those cells really assert is "Darwin plus a non-empty probed inventory",
-    which is the shape a Mac reports, and dropping them would drop that coverage.
+    Everything else is kept, including the three discrete-vendor cells on macOS --
+    legacy shapes, an Intel Mac with an eGPU or a pre-10.14 CUDA build, and the
+    estimator contains no code forbidding them. What they assert is "Darwin plus a
+    non-empty probed inventory", which is the shape a Mac reports.
     """
     return accelerator_label != _UNIFIED or platform_label == "macos"
 
@@ -301,24 +290,20 @@ def _apply_cell(monkeypatch, platform_row, accelerator_row) -> None:
     ):
         monkeypatch.delenv(inherited, raising = False)
 
-    # The llama-server binary. Pinned for two reasons, and the second one is the
-    # interesting one:
+    # The llama-server binary, pinned for two reasons; the second is the interesting one:
     #
-    #  * determinism. ``_tensor_latches_allow_a_split`` resolves the binary and then
-    #    asks two in-process latches about it. Left unpinned, whether a cell consults
-    #    those latches at all depends on whether the runner happens to have llama.cpp
-    #    installed, which is not a property of the cell.
+    #  * determinism. ``_tensor_latches_allow_a_split`` resolves the binary before asking
+    #    two in-process latches about it, so unpinned, whether a cell consults them at
+    #    all depends on whether the runner has llama.cpp installed.
     #  * the Windows cells could not reach them otherwise. ``_find_llama_server_binary``
-    #    ends at ``shutil.which``, and CPython's ``shutil.which`` calls
-    #    ``_winapi.NeedCurrentDirectoryForExePath`` under ``sys.platform == "win32"``
-    #    (shutil.py, ``_win_path_needs_curdir``). On a Linux interpreter ``_winapi`` is
-    #    None, so the lookup raises AttributeError, the caller's fail-open ``except``
-    #    swallows it, and every Windows cell silently skipped the latch check while
-    #    still reporting a pass. That is an artifact of simulating win32 on Linux, not
-    #    a product bug -- a real Windows host has ``_winapi`` -- but it is exactly the
-    #    kind of quiet hole that makes a green matrix mean nothing, so the seam is
-    #    moved above it. test_platform_matrix_the_tensor_latch_lookup_runs_on_every_cell
-    #    holds it open.
+    #    ends at ``shutil.which``, which calls
+    #    ``_winapi.NeedCurrentDirectoryForExePath`` under ``sys.platform == "win32"``.
+    #    On a Linux interpreter ``_winapi`` is None, so it raises AttributeError, the
+    #    caller's fail-open ``except`` swallows it, and every Windows cell skipped the
+    #    latch check while reporting a pass. An artifact of simulating win32 on Linux
+    #    rather than a product bug, but exactly the quiet hole that makes a green matrix
+    #    mean nothing, so the seam is moved above it.
+    #    test_platform_matrix_the_tensor_latch_lookup_runs_on_every_cell holds it open.
     monkeypatch.setattr(
         LlamaCppBackend,
         "_find_llama_server_binary",

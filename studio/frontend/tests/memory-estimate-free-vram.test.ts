@@ -107,6 +107,43 @@ test("two shared devices of different sizes report the larger, not their sum", (
   assert.ok(Math.abs(mixed - usableFreeVramGb(40, 40, 1)) < 0.01);
 });
 
+test("partial APUs retain each reserved segment beside one shared pool", () => {
+  const apu = {
+    memoryFreeGb: 100,
+    memoryTotalGb: 100,
+    sharedMemory: true,
+    sharedMemoryHostBackedGb: 92,
+  };
+  assert.equal(aggregateUsableFreeVramGb([apu], 0.8), 80);
+  assert.equal(aggregateUsableFreeVramGb([apu, apu], 0.8), 108);
+});
+
+test("busy partial APUs do not repeat the currently free shared pool", () => {
+  const apu = {
+    memoryFreeGb: 50,
+    memoryTotalGb: 100,
+    sharedMemory: true,
+    sharedMemoryHostBackedGb: 92,
+  };
+  assert.equal(aggregateUsableFreeVramGb([apu, apu], 0.8), 50);
+});
+
+test("a smaller partial APU does not cap a larger shared aperture", () => {
+  const large = {
+    memoryFreeGb: 100,
+    memoryTotalGb: 100,
+    sharedMemory: true,
+    sharedMemoryHostBackedGb: 92,
+  };
+  const small = {
+    memoryFreeGb: 20,
+    memoryTotalGb: 20,
+    sharedMemory: true,
+    sharedMemoryHostBackedGb: 12,
+  };
+  assert.equal(aggregateUsableFreeVramGb([large, small], 0.8), 96);
+});
+
 test("the VRAM Budget reserve is applied per device inside the aggregate", () => {
   // _select_gpus' own example: a 24 GB card with 10 GB free at an 80% budget offers
   // 10 - (1 - 0.8) * 24 = 5.2, not 8.

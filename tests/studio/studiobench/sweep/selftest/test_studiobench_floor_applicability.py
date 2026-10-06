@@ -45,7 +45,7 @@ from tests.studio.studiobench.runtime.types import Recorder
 from tests.studio.studiobench.scoring import payload_rules
 from tests.studio.studiobench.sweep import floor_table
 
-#: The corpus every payload here is recorded on. Real, from `outputs/rp/sbench_T_null`.
+#:The corpus every payload here is recorded on. Real, from `outputs/rp/sbench_T_null`.
 CORPUS = "ac9d5d8e37be2a3844deed559fde6070247ad2322377295fb383b60b5eec5a0c"
 
 
@@ -129,9 +129,9 @@ def _write(
     return out / "payload.jsonl"
 
 
-#: Real 100K `close_ms` readings. Base then treatment, `outputs/rp/sbench_T_campaign`.
+#:Real 100K `close_ms` readings. Base then treatment, `outputs/rp/sbench_T_campaign`.
 RESULT_100K = ((897.6, 631.4), (665.6, 515.5), (665.6, 498.8), (682.1, 532.3))
-#: Real 100K `close_ms` readings from the null control, `outputs/rp/sbench_T_null`.
+#:Real 100K `close_ms` readings from the null control, `outputs/rp/sbench_T_null`.
 NULL_100K = ((681.4, 564.7), (565.7, 515.7), (532.0, 515.1), (498.8, 498.8))
 #: Real 500K `close_ms` readings from the null control, `outputs/rp/sbench_C_null`. Every one of
 #: these cells is censored: the open settle blew its budget, so the action failed and the harness
@@ -235,8 +235,8 @@ def test_the_result_is_not_labelled_as_the_censored_one(tmp_path, capsys):
 def test_the_same_result_scores_normally_against_a_whole_floor(tmp_path, capsys):
     """NOT A REFUSAL OF EVERYTHING. Identical result, a null control that censored nothing."""
     floors = floor_table.summarise([_null(tmp_path, censored = False)])
-    # The whole-ladder floor is 67.5%, which this -24.8% result does not clear, so the verdict
-    # under it is VOID -- itself the point: the censored floor turned a VOID into a `faster`.
+    # The whole-ladder floor is 67.5%, which this -24.8% result does not clear, so the verdict under it
+    # is VOID, itself the point: the censored floor turned a VOID into a `faster`.
     floor_table.render([_result(tmp_path)], "t", floors = floors)
     row = next(
         line for line in capsys.readouterr().out.splitlines() if line.strip().startswith(METRIC)

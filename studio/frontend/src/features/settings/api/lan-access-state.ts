@@ -11,10 +11,16 @@ export type LanAccessStatus = {
   publicUrls: string[];
   error: string | null;
   autoStart: boolean;
+
+  portConfigurationSupported: boolean;
+  configuredPort: number | null;
+  activePort: number | null;
   managedBy: LanAccessOwner;
   canStart: boolean;
   canStop: boolean;
   blockReason: string | null;
+  bindHost: string | null;
+  wildcardBind: boolean;
   servesWebUi: boolean;
   keylessLanEligible: boolean;
   keylessScope: LanKeylessScope;
@@ -29,6 +35,11 @@ export type ApiLanAccessStatus = {
   error?: string | null;
   // biome-ignore lint/style/useNamingConvention: API schema
   auto_start: boolean;
+
+  // biome-ignore lint/style/useNamingConvention: API schema
+  configured_port?: number | null;
+  // biome-ignore lint/style/useNamingConvention: API schema
+  active_port?: number | null;
   // biome-ignore lint/style/useNamingConvention: API schema
   managed_by?: LanAccessOwner;
   // biome-ignore lint/style/useNamingConvention: API schema
@@ -37,6 +48,10 @@ export type ApiLanAccessStatus = {
   can_stop: boolean;
   // biome-ignore lint/style/useNamingConvention: API schema
   block_reason?: string | null;
+  // biome-ignore lint/style/useNamingConvention: API schema
+  bind_host?: string | null;
+  // biome-ignore lint/style/useNamingConvention: API schema
+  wildcard_bind?: boolean;
   // biome-ignore lint/style/useNamingConvention: API schema
   serves_web_ui?: boolean;
   // biome-ignore lint/style/useNamingConvention: API schema
@@ -61,10 +76,20 @@ export function normalizeLanAccessStatus(
     publicUrls: Array.isArray(status.public_urls) ? status.public_urls : [],
     error: status.error ?? null,
     autoStart: status.auto_start,
+
+    portConfigurationSupported: Object.hasOwn(status, "configured_port"),
+    configuredPort:
+      typeof status.configured_port === "number"
+        ? status.configured_port
+        : null,
+    activePort:
+      typeof status.active_port === "number" ? status.active_port : null,
     managedBy: status.managed_by ?? null,
     canStart: status.can_start,
     canStop: status.can_stop,
     blockReason: status.block_reason ?? null,
+    bindHost: status.bind_host ?? null,
+    wildcardBind: status.wildcard_bind === true,
     // absent on a backend that predates the field, where the web UI is served
     servesWebUi: status.serves_web_ui !== false,
     keylessLanEligible: status.keyless_lan_eligible === true,
@@ -106,6 +131,20 @@ export function lanAccessAutoStartReadOnly(
   return status === null || status.blockReason === "colab";
 }
 
+export function lanAccessPortReadOnly(status: LanAccessStatus | null): boolean {
+  return (
+    status === null ||
+    !status.portConfigurationSupported ||
+    status.state === "online" ||
+    status.blockReason === "colab"
+  );
+}
+
+export function validLanAccessPort(value: string): boolean {
+  const port = Number(value);
+  return Number.isInteger(port) && port >= 1 && port <= 65535;
+}
+
 export function lanAccessStopDisconnectsOrigin(
   urls: string[],
   browserOrigin: string,
@@ -125,11 +164,23 @@ export function lanAccessStopDisconnectsOrigin(
   });
 }
 
+// the backend owns wildcard classification so the message follows its flag
+function launchManagedMessage(status: LanAccessStatus): string {
+  if (status.wildcardBind) {
+    const option = status.bindHost ? ` (--host ${status.bindHost})` : "";
+    return `This launch binds every network interface${option}, so Unsloth is on the network already.`;
+  }
+  if (!status.bindHost) {
+    return "This launch already puts Unsloth on the network.";
+  }
+  return `This launch binds ${status.bindHost} (--host ${status.bindHost}), so Unsloth is on the network already.`;
+}
+
 export function lanAccessBlockMessage(
-  reason: string | null,
+  status: LanAccessStatus | null,
   isDesktop: boolean,
 ): string | null {
-  switch (reason) {
+  switch (status?.blockReason) {
     case "server_starting":
       return "Unsloth is still starting.";
     case "admin_password_change_required":
@@ -137,7 +188,7 @@ export function lanAccessBlockMessage(
         ? "Set a remote password before putting this server on the network."
         : "Change the administrator password before putting this server on the network. In the desktop app, run unsloth studio reset-password.";
     case "launch_managed":
-      return "This launch already binds every network interface (-H 0.0.0.0), so Unsloth is on the network already.";
+      return launchManagedMessage(status);
     case "secure_launch":
       return "This launch used --secure, which serves only through the Cloudflare link and keeps the raw port closed. Relaunch without --secure to use LAN access.";
     case "colab":
@@ -147,12 +198,17 @@ export function lanAccessBlockMessage(
   }
 }
 
-export function lanAccessErrorMessage(error: string | null): string | null {
+export function lanAccessErrorMessage(
+  error: string | null,
+  configuredPort: number | null = null,
+): string | null {
   switch (error) {
     case "no_lan_address":
       return "No network address found. Connect this machine to Wi-Fi or a wired network, then try again.";
     case "bind_failed":
-      return "Could not open Unsloth's port on this machine's network addresses.";
+      return configuredPort === null
+        ? "Could not open any automatic LAN port from 8888 to 8908."
+        : `Port ${configuredPort} is unavailable. Stop the app using it or choose another custom port.`;
     case "listener_start_failed":
       return "The network listener did not start. Check the logs for details.";
     case "stop_timed_out":

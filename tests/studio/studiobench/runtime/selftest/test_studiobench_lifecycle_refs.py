@@ -48,8 +48,8 @@ def _git(
             "GIT_COMMITTER_NAME": "studiobench",
             "GIT_COMMITTER_EMAIL": "studiobench@example.invalid",
             # No user or system git config: an `init.defaultBranch`, a `commit.gpgsign` or a
-            # `clone.defaultRemoteName` on the machine running the tests would otherwise decide
-            # what this repository looks like.
+            # `clone.defaultRemoteName` on the machine running the tests would otherwise decide what this
+            # repository looks like.
             "GIT_CONFIG_GLOBAL": os.devnull,
             "GIT_CONFIG_SYSTEM": os.devnull,
             "HOME": str(cwd),
@@ -70,8 +70,8 @@ def _origin(tmp_path: Path) -> tuple[Path, str, str]:
     (origin / "install.sh").write_text("second\n")
     _git("commit", "-am", "second", cwd = origin)
     second = _git("rev-parse", "HEAD", cwd = origin).stdout.strip()
-    # A bare mirror, because a fetch from a non-bare checkout of the same branch is a special case
-    # and the real remote is a server.
+    # A bare mirror, because a fetch from a non-bare checkout of the same branch is a special case and
+    # the real remote is a server.
     bare = tmp_path / "origin.git"
     _git("clone", "--bare", str(origin), str(bare), cwd = tmp_path)
     return bare, first, second

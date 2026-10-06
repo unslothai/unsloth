@@ -4,8 +4,8 @@
 import { Button } from "@/components/ui/button";
 import { useNativeFileDrop } from "@/features/native-intents";
 import type { NativeIntent } from "@/features/native-intents";
+import { FolderPlusIcon } from "@/lib/hugeicons-derived";
 import { cn } from "@/lib/utils";
-import { FolderAddIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useCallback, useEffect, useRef } from "react";
 import {
@@ -14,9 +14,10 @@ import {
   listProjectDocuments,
   subscribeProjectSourcesUpdated,
 } from "../api/rag-api";
-import { RAG_UPLOAD_ACCEPT, isLinkedFolderManaged } from "../types/rag";
+import { isLinkedFolderManaged } from "../types/rag";
 import { DocumentStatusChip } from "./document-status-chip";
 import { LinkedFoldersManager } from "./linked-folders-manager";
+import { RAG_SOURCE_UPLOAD_ACCEPT } from "./source-drop-policy";
 import {
   type RagUploadItem,
   fileItems,
@@ -82,10 +83,9 @@ export function ProjectSourcesPanel({ projectId }: { projectId: string }) {
     void refresh({ quiet: true });
   }, [projectId, refresh]);
 
-  // External mutators (sidebar/thread saves, deletes elsewhere) announce when
-  // they are done; refresh the mounted list so a source saved from a chat shows
-  // up here without a remount. The list only polls while a row it already knows
-  // is indexing, so nothing else would ever fetch it.
+  // External mutators (sidebar/thread saves, deletes elsewhere) announce when they are done;
+  // refresh the mounted list so a source saved from a chat shows up here without a remount. The
+  // list only polls while a row it already knows is indexing, so nothing else would ever fetch it.
   useEffect(
     () =>
       subscribeProjectSourcesUpdated(projectId, () => {
@@ -105,7 +105,7 @@ export function ProjectSourcesPanel({ projectId }: { projectId: string }) {
   } = useNativeFileDrop({
     onFiles: handleFiles,
     onNativeIntents: handleNativeIntents,
-    accept: RAG_UPLOAD_ACCEPT,
+    accept: RAG_SOURCE_UPLOAD_ACCEPT,
     disabled: uploading,
     disabledReason: "Wait for the current upload to finish, then drop again.",
   });
@@ -116,7 +116,7 @@ export function ProjectSourcesPanel({ projectId }: { projectId: string }) {
         ref={fileInputRef}
         type="file"
         multiple={true}
-        accept={RAG_UPLOAD_ACCEPT}
+        accept={RAG_SOURCE_UPLOAD_ACCEPT}
         className="hidden"
         onChange={(e) => {
           const files = Array.from(e.target.files ?? []);
@@ -140,7 +140,7 @@ export function ProjectSourcesPanel({ projectId }: { projectId: string }) {
         >
           <span className="flex size-12 items-center justify-center rounded-full bg-muted text-muted-foreground">
             <HugeiconsIcon
-              icon={FolderAddIcon}
+              icon={FolderPlusIcon}
               strokeWidth={1.75}
               className="size-6"
             />
@@ -196,6 +196,7 @@ export function ProjectSourcesPanel({ projectId }: { projectId: string }) {
                 filename={doc.filename}
                 status={doc.status}
                 progress={doc.progress}
+                stage={doc.stage}
                 error={doc.error}
                 onRemove={
                   doc.id.startsWith("pending_") || isLinkedFolderManaged(doc)

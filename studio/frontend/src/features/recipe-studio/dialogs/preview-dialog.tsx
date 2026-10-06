@@ -10,7 +10,6 @@ import {
 } from "@/components/ui/collapsible";
 import {
   Dialog,
-  DialogContent,
   DialogFooter,
   DialogHeader,
   DialogTitle,
@@ -30,6 +29,7 @@ import { type ReactElement, type ReactNode, useState } from "react";
 import type { RecipeExecutionKind } from "../execution-types";
 import type { RecipeRunSettings } from "../stores/recipe-executions";
 import { FieldLabel } from "./shared/field-label";
+import { RecipeDialogContent } from "./shared/recipe-dialog-content";
 
 type RunDialogProps = {
   open: boolean;
@@ -645,24 +645,28 @@ function RunDialogBody({
       </Collapsible>
 
       {errors.length > 0 && (
-        <div className="max-h-44 space-y-2 overflow-y-auto rounded-2xl border border-destructive/30 bg-destructive/5 p-4 shadow-border">
-          <div className="flex items-center gap-2">
-            <HugeiconsIcon
-              icon={AlertCircleIcon}
-              className="size-4 text-destructive"
-            />
-            <Badge
-              variant="outline"
-              className="rounded-full text-ui-10 text-destructive"
-            >
-              Before you run
-            </Badge>
+        // Scrolls an inner viewport: the shadow would not survive the clip .scroll-rounded takes in
+        // Firefox. The surface padding keeps the scrollbar clear of the curve. 11rem in all, as before.
+        <div className="overflow-hidden rounded-2xl border border-destructive/30 bg-destructive/5 py-3 shadow-border">
+          <div className="max-h-38 space-y-2 overflow-y-auto px-4 py-1">
+            <div className="flex items-center gap-2">
+              <HugeiconsIcon
+                icon={AlertCircleIcon}
+                className="size-4 text-destructive"
+              />
+              <Badge
+                variant="outline"
+                className="rounded-full text-ui-10 text-destructive"
+              >
+                Before you run
+              </Badge>
+            </div>
+            {errors.map((error) => (
+              <p key={error} className="break-words text-xs text-destructive">
+                {error}
+              </p>
+            ))}
           </div>
-          {errors.map((error) => (
-            <p key={error} className="break-words text-xs text-destructive">
-              {error}
-            </p>
-          ))}
         </div>
       )}
 
@@ -712,19 +716,16 @@ export function RunDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent
+      <RecipeDialogContent
         container={container}
-        position="absolute"
-        overlayPosition="absolute"
-        overlayClassName="bg-transparent"
-        className="corner-squircle max-h-[650px] overflow-y-auto overflow-x-hidden border-border/70 bg-background/95 sm:max-w-2xl shadow-border backdrop-blur-xl"
+        className="border-border/70 bg-background/95 backdrop-blur-xl"
       >
         <RunDialogBody
           key={draftKey}
           {...contentProps}
           onClose={() => onOpenChange(false)}
         />
-      </DialogContent>
+      </RecipeDialogContent>
     </Dialog>
   );
 }
