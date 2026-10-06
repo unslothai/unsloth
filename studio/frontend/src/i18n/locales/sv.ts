@@ -2699,6 +2699,11 @@ export const sv = {
       exportFailed: "Det gick inte att exportera chattarna",
       description:
         "Hantera chatthistorik och uppladdade filer som lagras på denna enhet.",
+      manageFiles: {
+        label: "Hantera filer",
+        description: "Sök, sortera och ordna bilder, videor, ljud och filer.",
+        action: "Öppna biblioteket",
+      },
       archivedChats: "Arkiverade chattar",
       archivedChatsDescription:
         "Visa och hantera chattar som du har arkiverat.",
