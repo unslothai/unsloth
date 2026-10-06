@@ -521,6 +521,12 @@ def test_a_caller_cannot_claim_a_layout_or_a_clef_subfolder(route, device, tmp_p
     assert "model_subfolder" in refused.value.detail
 
 
+def test_a_decision_run_is_planned_on_the_one_gpu_it_uses(route, device, tmp_path):
+    request = _request(model_name = str(_laya_folder(tmp_path / "laya")), gpu_ids = [2, 3])
+    route._validate_decision_request(request)
+    assert request.gpu_ids == [2]
+
+
 def test_a_local_clef_in_a_subfolder_is_detected_as_clef(route, device, tmp_path):
     _clef_folder(tmp_path / "parent" / "clef")
     request = _request(model_name = str(tmp_path / "parent"), model_subfolder = "clef")
