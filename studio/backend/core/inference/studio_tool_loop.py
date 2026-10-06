@@ -1333,6 +1333,7 @@ async def stream_with_studio_tools(
     """Stream a provider, execute requested Unsloth tools, continue to a final answer."""
     conversation = [dict(message) for message in run.messages]
     openai_compaction: tuple[list[dict[str, Any]], str] | None = None
+    resumes_partial = run.continue_final_message
     # The image parts this run appends, so its cap never counts a caller's own
     # attachments. Run-scoped, not turn-scoped: the cap is across the whole loop,
     # and seeded with what promotion already put in the conversation.
@@ -1663,6 +1664,8 @@ async def stream_with_studio_tools(
                 *system_messages,
                 compaction_message,
             ]
+            # The partial this run resumed is inside the compaction now, and merging over the item would discard it.
+            resumes_partial = False
 
         # Both of these mean the turn ended before the model finished saying what it wanted: "length" hit the token
         # ceiling, "content_filter" had the output cut by the provider's own filter. Either way a call collected so
@@ -1762,7 +1765,7 @@ async def stream_with_studio_tools(
                         stalled_message,
                         # A resumed partial is the same turn as what the model just added, so merge rather than
                         # append: appending puts a turn boundary mid-sentence.
-                        continue_final_message = run.continue_final_message,
+                        continue_final_message = resumes_partial,
                     )
                 _append_user_turn(conversation, reprompt_to_act_message(tool_hint))
                 continue
@@ -2112,7 +2115,7 @@ async def stream_with_studio_tools(
             append_assistant_turn(
                 conversation,
                 assistant_message,
-                continue_final_message = run.continue_final_message,
+                continue_final_message = resumes_partial,
             )
         conversation.extend(tool_messages)
         # Deferred to after the results so a no-op never splits a call from them, and merged into a trailing user turn
