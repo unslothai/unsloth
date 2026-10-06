@@ -209,7 +209,7 @@ export function isConvertOnlyFamilyId(id: string | null | undefined): boolean {
   return CONVERT_ONLY_FAMILY_HINT.test(id ?? "");
 }
 
-/** Legacy Settings > Voice keys; the backend still maps each to its folder id (and variant). */
+/** Settings > Voice keys; the backend maps each to its folder id (and variant). */
 export interface AudioCppDictationModel {
   key: string;
   id: string;
@@ -237,6 +237,7 @@ export const AUDIO_CPP_DICTATION_MODELS = [
   dictation("audiocpp-canary-180m-flash", "Canary-180M-Flash-GGUF", 237.9),
   dictation("audiocpp-moonshine-tiny", "Moonshine-Streaming-GGUF", 57.6, "tiny"),
   dictation("audiocpp-moonshine-small", "Moonshine-Streaming-GGUF", 286.7, "small"),
+  dictation("audiocpp-moonshine-medium", "Moonshine-Streaming-GGUF", 301.0, "medium"),
   dictation(
     "audiocpp-nemotron-3.5-asr-0.6b",
     "Nemotron-3.5-ASR-Streaming-0.6B-GGUF",

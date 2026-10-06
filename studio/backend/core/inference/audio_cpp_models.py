@@ -1094,8 +1094,8 @@ def family_policy(
     return policy
 
 
-# Legacy dictation keys and the sub-folder ids of earlier builds, mapped to the folder row and
-# the variant they named. Saved settings keep working through these.
+# Dictation keys Settings saves and the sub-folder ids of earlier builds, mapped to the folder row
+# and the variant they name. Saved settings keep working through these.
 _LEGACY_KEYS: dict[str, tuple[str, Optional[str]]] = {
     "audiocpp-kokoro-82m": ("Kokoro-82M-GGUF", None),
     "audiocpp-kitten-tts-mini": ("KittenTTS-GGUF", None),
@@ -1117,6 +1117,7 @@ _LEGACY_KEYS: dict[str, tuple[str, Optional[str]]] = {
     "audiocpp-canary-180m-flash": ("Canary-180M-Flash-GGUF", None),
     "audiocpp-moonshine-tiny": ("Moonshine-Streaming-GGUF", "tiny/Q8_0"),
     "audiocpp-moonshine-small": ("Moonshine-Streaming-GGUF", "small/Q8_0"),
+    "audiocpp-moonshine-medium": ("Moonshine-Streaming-GGUF", "medium/Q8_0"),
     "audiocpp-nemotron-3.5-asr-0.6b": ("Nemotron-3.5-ASR-Streaming-0.6B-GGUF", None),
 }
 _LEGACY_SUBFOLDER_VARIANTS = {

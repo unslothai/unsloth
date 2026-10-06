@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { isTauri } from "@/lib/api-base";
+import { isAudioCppFolderId } from "../../audio/audio-cpp-catalog";
 import { create } from "zustand";
 import { createJSONStorage, persist } from "zustand/middleware";
 import {
@@ -43,7 +44,8 @@ export function isSttModelId(value: string): boolean {
   const normalized = value.trim();
   return (
     (STT_MODELS as readonly string[]).includes(normalized) ||
-    HF_REPO_ID.test(normalized)
+    HF_REPO_ID.test(normalized) ||
+    isAudioCppFolderId(normalized)
   );
 }
 
