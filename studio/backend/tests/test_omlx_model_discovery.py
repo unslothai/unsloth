@@ -62,6 +62,7 @@ def _write_hf_cache_repo(cache: Path, org: str, name: str) -> Path:
 def home(monkeypatch, tmp_path):
     monkeypatch.setattr(storage_roots.Path, "home", staticmethod(lambda: tmp_path))
     monkeypatch.delenv("OMLX_BASE_PATH", raising = False)
+    monkeypatch.delenv("OMLX_MODEL_DIR", raising = False)
     return tmp_path
 
 
@@ -129,6 +130,15 @@ def test_base_path_env_overrides_bootstrap_and_default(home, monkeypatch):
     (moved / "models").mkdir(parents = True)
     monkeypatch.setenv("OMLX_BASE_PATH", str(moved))
     assert storage_roots.omlx_model_dirs() == [moved / "models"]
+
+
+def test_model_dir_env_overrides_settings(home, monkeypatch):
+    first, second, saved = home / "a", home / "b", home / "saved"
+    for d in (first, second, saved):
+        d.mkdir()
+    _write_settings(home / ".omlx", {"model_dirs": [str(saved)]})
+    monkeypatch.setenv("OMLX_MODEL_DIR", f"{first}, {second}")
+    assert storage_roots.omlx_model_dirs() == [first, second]
 
 
 def test_macos_bootstrap_file_moves_the_base(home):
@@ -251,5 +261,38 @@ def test_omlx_root_registered_as_a_scan_folder_is_listed_once(monkeypatch, tmp_p
     )
     rows = local_inventory._filter_and_dedupe_local_models(rows)
 
-    # Trainable, so the custom twin wins as it does over LM Studio rows.
-    assert [(row.source, row.path) for row in rows] == [("custom", str(model))]
+    assert [(row.source, row.path) for row in rows] == [("omlx", str(model))]
+
+
+def test_compat_omlx_root_registered_as_a_scan_folder_is_listed_once(tmp_path):
+    root = tmp_path / ".omlx" / "models"
+    model = _write_mlx_model(root, "mlx-community", "Qwen3-4bit")
+    empty = tmp_path / "_empty"
+    empty.mkdir()
+    sources = models_route._CompatLocalInventorySources(
+        empty, empty, empty, (), (), omlx_dirs = (root,)
+    )
+
+    rows = models_route.collect_local_models(
+        empty, custom_folders = [{"path": str(root)}], sources = sources
+    )
+
+    assert [(row.source, row.path) for row in rows] == [("omlx", str(model))]
+
+
+def test_resolver_index_scans_omlx_roots(monkeypatch, tmp_path):
+    # MLX weights are servable only on Apple Silicon, so assert the scan feeds the index.
+    import core.inference.local_model_resolver as resolver
+    import utils.paths as utils_paths
+
+    root = tmp_path / "omlx"
+    model = _write_mlx_model(root, "mlx-community", "OnlyInOmlx-4bit")
+    monkeypatch.setattr(utils_paths, "omlx_model_dirs", lambda: [root])
+    seen = []
+    monkeypatch.setattr(
+        resolver, "_local_servable_entry", lambda _id, info: seen.append(info) and None
+    )
+
+    resolver._build_index()
+
+    assert ("omlx", str(model)) in [(i.source, i.path) for i in seen]

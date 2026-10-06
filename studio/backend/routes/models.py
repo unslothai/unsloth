@@ -971,6 +971,10 @@ def collect_local_models(
     # Scan user-added custom folders (per-folder cap).
     _MAX_MODELS_PER_FOLDER = 200
     hermes_identities = {_compat_inventory_path_identity(str(d)) for d in sources.hermes_dirs}
+    # A registered oMLX root (the pre-scan workaround) must not list its models twice.
+    omlx_identities = {
+        _compat_inventory_path_identity(m.path) for m in local_models if m.source == "omlx"
+    }
     for folder in custom_folders:
         folder_path = Path(folder["path"])
         try:
@@ -1032,6 +1036,12 @@ def collect_local_models(
                     m
                     for m in custom_models
                     if _compat_inventory_path_identity(m.path) not in staged
+                ]
+            if omlx_identities:
+                custom_models = [
+                    m
+                    for m in custom_models
+                    if _compat_inventory_path_identity(m.path) not in omlx_identities
                 ]
             if len(custom_models) < _MAX_MODELS_PER_FOLDER:
                 custom_models += _scan_ollama_dir(

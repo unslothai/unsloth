@@ -708,7 +708,9 @@ def omlx_model_dirs() -> list[Path]:
     root stays: its ``models--*`` walk cannot see oMLX's flat folders beside those repos.
     """
     base = _omlx_base_path()
-    candidates: list[str | Path] = _omlx_configured_dirs(base) or [base / "models"]
+    # oMLX applies OMLX_MODEL_DIR (comma-separated) over settings.json.
+    env_dirs = [d.strip() for d in os.environ.get("OMLX_MODEL_DIR", "").split(",") if d.strip()]
+    candidates: list[str | Path] = env_dirs or _omlx_configured_dirs(base) or [base / "models"]
     lmstudio = set()
     for path in lmstudio_model_dirs():
         try:

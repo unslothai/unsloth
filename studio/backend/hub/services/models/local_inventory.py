@@ -1163,8 +1163,8 @@ def _merge_custom_rows_listed_natively(
         # A symlink below the scan root is a deliberate alias with its own settings (#10605), so it stays.
         if twin is None or _local_model_path_is_symlink(_custom_alias_key(model)):
             kept_custom.append(model)
-        elif twin.source in ("lmstudio", "omlx") and model.capabilities.can_train:
-            # The train picker refuses LM Studio and oMLX rows, so the trainable custom row wins.
+        elif twin.source == "lmstudio" and model.capabilities.can_train:
+            # The train picker refuses LM Studio rows, so the trainable custom row wins.
             replaced.add(id(twin))
             kept_custom.append(model)
     return [m for m in native_models if id(m) not in replaced], kept_custom
