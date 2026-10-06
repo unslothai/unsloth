@@ -4612,15 +4612,13 @@ html[data-chat-font] .aui-root {
 	}
 }
 
-/* No border line; a soft layered shadow lifts the toast off the page.
+/* No border line; the composer's shadow lifts the toast off the page.
    !important because Sonner injects its base rules at runtime. */
 [data-sonner-toast][data-styled='true'] {
 	padding: calc(16px * var(--ui-space-scale, 1)) calc(20px * var(--ui-space-scale, 1)) calc(18px * var(--ui-space-scale, 1)) !important;
 	align-items: start !important;
 	gap: calc(12px * var(--ui-space-scale, 1)) !important;
-	box-shadow:
-		0 1px 2px rgba(0, 0, 0, 0.04),
-		0 8px 24px -6px rgba(0, 0, 0, 0.14) !important;
+	box-shadow: 0 2px 8px -2px rgba(0, 0, 0, 0.16) !important;
 }
 
 /* Icon starts at the first line's cap height, never above the text. */
@@ -4719,8 +4717,7 @@ html[data-chat-font] .aui-root {
 	padding-bottom: calc(22px * var(--ui-space-scale, 1)) !important;
 }
 
-/* Dark toasts share the chatbox surface color (.chat-composer-surface
-   uses var(--card) in dark); the composer shadow lifts them off the page. */
+/* Dark toasts share the composer's surface colour and page-coloured shadow. */
 .dark [data-sonner-toast][data-styled='true'] {
 	background-color: var(--card) !important;
 	box-shadow: 0 4px 20px 4px var(--background) !important;
