@@ -4,13 +4,13 @@
 // Free of app imports so the node test runner and the sidebar can load it directly.
 
 import {
-  ArrowDataTransferHorizontalIcon,
+  ArrowReloadHorizontalIcon,
+  ClosedCaptionIcon,
   Copy01Icon,
-  MusicNote03Icon,
-  QuillWrite01Icon,
+  Edit03Icon,
+  MusicThreeIcon,
+  SpeechIcon,
   SplitIcon,
-  TextIcon,
-  VolumeHighIcon,
 } from "@hugeicons/core-free-icons";
 import type { IconSvgElement } from "@hugeicons/react";
 import { AUDIO_CPP_MUSIC_AUDIO_TYPE } from "./audio-cpp-catalog.ts";
@@ -39,7 +39,7 @@ export const AUDIO_WORKFLOWS: ReadonlyArray<{
     id: "speak",
     label: "Speak",
     heading: "Text to speech",
-    icon: VolumeHighIcon,
+    icon: SpeechIcon,
     hint: "Turn text into speech with a built-in or designed voice",
     slot: "speak",
     createTrain: true,
@@ -57,7 +57,7 @@ export const AUDIO_WORKFLOWS: ReadonlyArray<{
     id: "edit",
     label: "Edit",
     heading: "Edit speech",
-    icon: QuillWrite01Icon,
+    icon: Edit03Icon,
     hint: "Change words in a recording, same voice",
     slot: "speak",
     createTrain: false,
@@ -66,7 +66,7 @@ export const AUDIO_WORKFLOWS: ReadonlyArray<{
     id: "convert",
     label: "Convert",
     heading: "Convert voice",
-    icon: ArrowDataTransferHorizontalIcon,
+    icon: ArrowReloadHorizontalIcon,
     hint: "Make a recording sound like another voice",
     slot: "speak",
     createTrain: false,
@@ -75,7 +75,7 @@ export const AUDIO_WORKFLOWS: ReadonlyArray<{
     id: "music",
     label: "Music",
     heading: "Create music",
-    icon: MusicNote03Icon,
+    icon: MusicThreeIcon,
     hint: "Songs, instrumentals and sound effects",
     slot: "speak",
     createTrain: false,
@@ -93,7 +93,7 @@ export const AUDIO_WORKFLOWS: ReadonlyArray<{
     id: "transcribe",
     label: "Transcribe",
     heading: "Transcribe",
-    icon: TextIcon,
+    icon: ClosedCaptionIcon,
     hint: "Turn speech into text",
     slot: "transcribe",
     createTrain: true,
