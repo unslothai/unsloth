@@ -1230,23 +1230,28 @@ def replace_file(tmp: str, path: str) -> None:
     inode, which the listing would otherwise drop as a different file."""
     with _replace_lock:
         before = os.stat(path)
+        staged = os.stat(tmp)
         os.replace(tmp, path)
-        _carry_overlay(path, before)
+        _carry_overlay(path, before, staged)
 
 
-def _carry_overlay(path: str, before: os.stat_result) -> None:
+def _carry_overlay(path: str, before: os.stat_result, staged: os.stat_result) -> None:
     old = _fingerprint(before)
     try:
         after = os.stat(path)
+        # A path made again since the swap is a different file, which starts fresh.
+        if not os.path.samestat(staged, after):
+            return
         for item_id, entry in library_db.list_entries().items():
-            if entry["fingerprint"] != old or not item_id.startswith("sandbox:"):
+            # NULL: a legacy row not yet adopted, which a listing racing this swap would adopt as the old inode.
+            if entry["fingerprint"] not in (old, None) or not item_id.startswith("sandbox:"):
                 continue
             try:
                 listed = os.stat(_sandbox_path(item_id.partition(":")[2]))
             except (LookupError, OSError):
                 continue
             if os.path.samestat(listed, after):
-                library_db.carry_fingerprint(item_id, old, _fingerprint(after))
+                library_db.carry_fingerprint(item_id, entry["fingerprint"], _fingerprint(after))
                 invalidate_listing()
     except Exception:
         logger.warning("library.overlay_carry_failed", exc_info = True)

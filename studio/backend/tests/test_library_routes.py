@@ -468,6 +468,57 @@ def test_a_listing_during_an_edit_does_not_drop_the_files_name_star_and_folder(
     assert (item["name"], item["favorite"]) == ("Q3 report", True)
 
 
+def test_a_legacy_row_keeps_its_name_and_star_through_an_edit_a_cached_listing_saw(
+    client, signed_in, monkeypatch
+):
+    from core.inference.tools import execute_tool
+
+    monkeypatch.setattr(library, "_SOURCES", (library._remembered("_sandbox_items", 60.0),))
+    _sandbox_chat("report.txt", b"teh report\n")
+    _patch(client, id = _SANDBOX_ID, name = "Q3 report", favorite = True)
+    _items(client)
+    conn = library_db.get_connection()
+    conn.execute("UPDATE library_entries SET fingerprint = NULL WHERE item_id = ?", (_SANDBOX_ID,))
+    conn.commit()
+    conn.close()
+    execute_tool(
+        "edit_file",
+        {"path": "report.txt", "edits": [{"old_string": "teh", "new_string": "the"}]},
+        session_id = "t-lib",
+    )
+    _items(client)
+    library.invalidate_listing()
+    item = _items(client)[0][_SANDBOX_ID]
+    assert (item["name"], item["favorite"]) == ("Q3 report", True)
+
+
+def test_a_path_made_again_right_after_an_edit_starts_fresh(client, signed_in, monkeypatch):
+    from core.inference.tools import execute_tool
+
+    monkeypatch.setattr(library, "_SOURCES", (library._sandbox_items,))
+    _directory, path = _sandbox_chat("report.txt", b"teh report\n")
+    _patch(client, id = _SANDBOX_ID, name = "Q3 report", favorite = True)
+    replace = os.replace
+
+    def replace_then_recreate(src, dst):
+        replace(src, dst)
+        if os.path.basename(dst) == "report.txt":
+            os.remove(dst)
+            Path(dst).write_bytes(b"someone else\n")
+
+    monkeypatch.setattr(os, "replace", replace_then_recreate)
+    execute_tool(
+        "edit_file",
+        {"path": "report.txt", "edits": [{"old_string": "teh", "new_string": "the"}]},
+        session_id = "t-lib",
+    )
+    monkeypatch.setattr(os, "replace", replace)
+    assert Path(path).read_bytes() == b"someone else\n"
+    library.invalidate_listing()
+    item = _items(client)[0][_SANDBOX_ID]
+    assert (item["name"], item["favorite"]) == ("report.txt", False)
+
+
 def test_a_sandbox_delete_takes_only_the_file_it_was_listed_as(client, signed_in, monkeypatch):
     monkeypatch.setattr(library, "_SOURCES", (library._sandbox_items,))
     _directory, path = _sandbox_chat("a.txt", b"listed")
