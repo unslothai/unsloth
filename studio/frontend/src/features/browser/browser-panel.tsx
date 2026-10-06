@@ -102,7 +102,7 @@ import { fileNameFromUrl, hostOf, resolveAddress } from "./address";
 import { OtherSurfaceError, canPrintFrames, printPage, screenshotPage } from "./capture";
 import { canScreenshot } from "./screenshot-support";
 import { stageEditsPrompt } from "./stage-edits";
-import { type BrowserDownload, saveBrowserDownload } from "./downloads";
+import { type BrowserDownload, saveBrowserDownload, saveNeedsClick } from "./downloads";
 import { BROWSER_FIND_TARGET, registerBrowserFind } from "./find";
 import { ClearBrowsingDataDialog } from "./clear-data-dialog";
 import { SiteFavicon } from "./site-favicon";
@@ -1159,6 +1159,13 @@ async function takeScreenshot(tab: BrowserTab, page: HTMLElement, t: ReturnType<
   const attach = useBrowserStore.getState().attachToChat;
   if (attach && (await attach(new File([blob], name, { type: "image/png" })))) {
     toast.success(t("browser.screenshot.added"), {
+      action: { label: t("browser.screenshot.save"), onClick: () => void saveBrowserDownload(download) },
+    });
+    return;
+  }
+  // The share prompt outlasts the click, so the save dialog needs a fresh one.
+  if (saveNeedsClick()) {
+    toast.success(t("browser.screenshot.taken"), {
       action: { label: t("browser.screenshot.save"), onClick: () => void saveBrowserDownload(download) },
     });
     return;

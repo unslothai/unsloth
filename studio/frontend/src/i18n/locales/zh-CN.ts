@@ -231,6 +231,7 @@ export const zhCN = {
     },
     screenshot: {
       added: "截图已添加到聊天",
+      taken: "已截取屏幕截图",
       save: "保存",
       failed: "无法截取屏幕截图",
       otherSurface: "请共享此标签页以截取页面",

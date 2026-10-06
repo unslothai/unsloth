@@ -231,6 +231,7 @@ export const ptBR = {
     },
     screenshot: {
       added: "Captura de tela adicionada ao chat",
+      taken: "Captura de tela feita",
       save: "Salvar",
       failed: "Não foi possível fazer a captura de tela",
       otherSurface: "Compartilhe esta aba para capturar a página",

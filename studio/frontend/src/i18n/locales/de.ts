@@ -231,6 +231,7 @@ export const de = {
     },
     screenshot: {
       added: "Screenshot zum Chat hinzugefügt",
+      taken: "Screenshot aufgenommen",
       save: "Speichern",
       failed: "Screenshot konnte nicht aufgenommen werden",
       otherSurface: "Teile diesen Tab, um einen Screenshot der Seite aufzunehmen",

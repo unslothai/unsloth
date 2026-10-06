@@ -231,6 +231,7 @@ export const fr = {
     },
     screenshot: {
       added: "Capture d'écran ajoutée au chat",
+      taken: "Capture d'écran effectuée",
       save: "Enregistrer",
       failed: "Impossible de faire la capture d'écran",
       otherSurface: "Partagez cet onglet pour capturer la page",

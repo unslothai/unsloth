@@ -230,6 +230,7 @@ export const it = {
     },
     screenshot: {
       added: "Screenshot aggiunto alla chat",
+      taken: "Screenshot acquisito",
       save: "Salva",
       failed: "Impossibile acquisire lo screenshot",
       otherSurface: "Condividi questa scheda per acquisire la pagina",

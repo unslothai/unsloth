@@ -32,6 +32,12 @@ function asksWhereToSave(): boolean {
   return !isTauri && saveFilePicker() !== null && useBrowserPrefsStore.getState().askWhereToSave;
 }
 
+/** True when Settings asks where to save but the click that started this has expired,
+ *  so the dialog can't open without another one. */
+export function saveNeedsClick(): boolean {
+  return asksWhereToSave() && !navigator.userActivation?.isActive;
+}
+
 /** The browser's save dialog when Settings asks for it; null when off or it can't open
  *  (e.g. no recent click). Throws DownloadCancelledError if the reader cancels. */
 async function pickSaveTarget(name: string): Promise<SaveHandle | null> {

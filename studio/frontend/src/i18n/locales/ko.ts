@@ -231,6 +231,7 @@ export const ko = {
     },
     screenshot: {
       added: "스크린샷을 채팅에 추가했습니다",
+      taken: "스크린샷을 찍었습니다",
       save: "저장",
       failed: "스크린샷을 찍을 수 없습니다",
       otherSurface: "페이지 스크린샷을 찍으려면 이 탭을 공유하세요",
