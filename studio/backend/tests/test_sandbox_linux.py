@@ -1214,14 +1214,17 @@ def test_a_wedged_cache_path_is_not_re_scanned_by_every_later_launch(tmp_path, m
     # reads a slow first-launch worker as a second one. Wait until every worker either
     # launch started has reached the scan, then compare workers to paths.
     workers = [
-        t for t in threading.enumerate()
+        t
+        for t in threading.enumerate()
         if t not in before and t.name.startswith("unsloth-cache-scan-")
     ]
     deadline = time.monotonic() + 15
     while len(started) < len(workers) and time.monotonic() < deadline:
         time.sleep(0.05)
     assert started, "no cache scan was started"
-    assert len(started) == len(set(started)), "a second launch started another worker on the same path"
+    assert len(started) == len(
+        set(started)
+    ), "a second launch started another worker on the same path"
     assert len(workers) == len(started)
 
 
