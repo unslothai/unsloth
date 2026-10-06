@@ -354,9 +354,17 @@ def _load_checkpoint(checkpoint: Checkpoint):
 
     root = _checkpoint_dir(checkpoint)
     if checkpoint.layout == "clef":
-        from .clef_runtime import ClefAgent
+        from .clef_runtime import ClefAgent, ClefWorkerError
+
         _evict()
-        return ClefAgent(root), "cuda"
+        agent = ClefAgent(root)
+        # Training may have started while this loaded, and Clef has no CPU fallback.
+        if _training_active():
+            agent.close()
+            raise ClefWorkerError(
+                f"{checkpoint.name} needs the GPU, which a training run took while it loaded."
+            )
+        return agent, "cuda"
     _laya()
 
     # Evict only once the new checkpoint is on disk, so a long or failed download leaves the resident model serving.

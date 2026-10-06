@@ -358,6 +358,55 @@ def test_a_clef_fine_tune_serves_through_its_worker(home, client, clef):
     assert clef.agents[1].closed
 
 
+def test_a_clef_load_that_training_overtakes_frees_the_gpu(home, clef, monkeypatch):
+    from core.systemone import clef_runtime
+
+    # The loader thread outlives the request that started it, so no later request evicts it.
+    checkpoint = catalog.resolve(_clef_fine_tune(home, "clef_overtaken_1"))
+    real = clef_runtime.ClefAgent
+
+    def overtaken(folder):
+        agent = real(folder)
+        clef.training = True
+        return agent
+
+    monkeypatch.setattr(clef_runtime, "ClefAgent", overtaken)
+    laya_runtime._load(checkpoint)
+    assert clef.agents[0].closed
+    assert laya_runtime._agent is None and laya_runtime._device_name is None
+
+
+def test_a_clef_worker_that_never_reports_ready_is_stopped(monkeypatch):
+    from core.systemone import clef_runtime
+
+    calls = []
+
+    class Process:
+        exitcode = None
+
+        def __init__(self, **kwargs):
+            self.child = kwargs["args"][0]
+
+        def start(self):
+            # A live child holds its own end of the pipe, so the parent sees silence, not EOF.
+            self.fd = os.dup(self.child.fileno())
+
+        def join(self, timeout = None):
+            calls.append("join")
+
+        def is_alive(self):
+            return "kill" not in calls
+
+        def kill(self):
+            calls.append("kill")
+
+    monkeypatch.setattr(clef_runtime._CTX, "Process", Process)
+    monkeypatch.setattr(clef_runtime, "LOAD_TIMEOUT_S", 0.01)
+    with pytest.raises(clef_runtime.ClefWorkerError, match = "did not answer"):
+        clef_runtime.ClefAgent("unused")
+    assert "kill" in calls
+
+
 def test_the_catalog_offers_the_stock_clef_models():
     for name, repo in (("clef", "Cloudflare/clef"), ("clef-flash", "Cloudflare/clef-flash")):
         checkpoint = catalog.CHECKPOINTS[name]
@@ -413,3 +462,48 @@ def test_settings_never_wait_on_device_detection(monkeypatch):
     assert catalog.clef_unsupported_reason(wait = False) is None
     monkeypatch.setattr(hardware, "DEVICE", hardware.DeviceType.MLX)
     assert catalog.clef_unsupported_reason(wait = False) == catalog.CLEF_NEEDS_GPU
+
+
+def _clef_agent(conn):
+    import threading
+
+    from core.systemone import clef_runtime
+
+    agent = object.__new__(clef_runtime.ClefAgent)
+    agent._lock, agent._broken, agent._conn = threading.Lock(), None, conn
+    agent._process = SimpleNamespace(exitcode = 1)
+    return agent
+
+
+def test_a_timed_out_clef_worker_is_never_asked_again(monkeypatch):
+    from core.systemone import clef_runtime
+
+    class Conn:
+        sent = 0
+
+        def send(self, message):
+            self.sent += 1
+
+        def poll(self, timeout):
+            return self.sent > 1  # the first answer comes late, after its request timed out
+
+        def recv(self):
+            return ("ok", {"answers": "for the request that timed out"})
+
+    monkeypatch.setattr(clef_runtime, "DECIDE_TIMEOUT_S", 0.01)
+    conn = Conn()
+    agent = _clef_agent(conn)
+    for _ in range(2):
+        with pytest.raises(clef_runtime.ClefWorkerError, match = "did not answer"):
+            agent.decide("state", {})
+    assert conn.sent == 1
+
+
+def test_a_clef_worker_that_died_after_loading_is_a_worker_error():
+    from core.systemone import clef_runtime
+    class Conn:
+        def send(self, message):
+            raise BrokenPipeError(32, "Broken pipe")
+
+    with pytest.raises(clef_runtime.ClefWorkerError, match = "exited"):
+        _clef_agent(Conn()).decide("state", {})
