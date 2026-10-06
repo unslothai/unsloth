@@ -24187,8 +24187,10 @@ def _audio_cpp_runtime_status() -> dict:
         return dict(_AUDIO_CPP_RUNTIME_MISSING)
     # Only the tree setup manages: a binary the user pointed Studio at is theirs to update.
     try:
-        managed = Path(binary).resolve().is_relative_to(
-            audio_cpp_server.managed_audio_cpp_dir().resolve()
+        managed = (
+            Path(binary)
+            .resolve()
+            .is_relative_to(audio_cpp_server.managed_audio_cpp_dir().resolve())
         )
         ladder = _audio_cpp_release_ladder() if managed else []
     except Exception as exc:  # noqa: BLE001 - cannot tell is not outdated

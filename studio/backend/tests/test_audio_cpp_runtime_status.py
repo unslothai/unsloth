@@ -83,11 +83,15 @@ def test_malformed_record_fields_are_dropped(monkeypatch):
     assert status["backend"] is None and status["release_tag"] is None
 
 
-
 _LADDER = [("unslothai/audio.cpp", "v0.9.0-unsloth.1"), ("0xShug0/audio.cpp", "v0.9.0")]
 
 
-def _managed(monkeypatch, tmp_path, record, ladder = _LADDER):
+def _managed(
+    monkeypatch,
+    tmp_path,
+    record,
+    ladder = _LADDER,
+):
     """A Studio-managed install of ``record`` and the releases setup would install."""
     _patch(monkeypatch, binary = str(tmp_path / "audiocpp_server"), record = record, espeak = True)
     monkeypatch.setattr(audio_cpp_server, "managed_audio_cpp_dir", lambda: tmp_path)
@@ -188,6 +192,7 @@ def test_release_ladder_comes_from_the_installer(monkeypatch):
     ladder = inference._audio_cpp_release_ladder()
     assert ladder[0] == (installer.DEFAULT_REPO, installer.DEFAULT_TAG)
     assert (installer.UPSTREAM_FALLBACK_REPO, installer.UPSTREAM_FALLBACK_TAG) in ladder
+
 
 def test_stt_status_payload_includes_runtime_block(monkeypatch):
     _patch(
