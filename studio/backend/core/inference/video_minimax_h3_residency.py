@@ -506,9 +506,7 @@ def install_h3_stream_prefetch(
     from .diffusion_memory import _pinned_memory_capped
 
     if not _pinned_memory_capped() and any(getattr(g, "low_cpu_mem_usage", False) for g in blocks):
-        # Unpinned host copies (the pin budget refused the denoiser): the prefetcher pins a fresh copy of every
-        # streamed tensor per onload, two blocks ahead, and the server held 10 to 14 GiB more host RAM than with
-        # diffusers' own onload, at the same speed.
+        # Unpinned host copies: the prefetcher would pin a fresh copy per onload, two blocks ahead (more host RAM, no speed-up).
         if logger is not None:
             logger.info(
                 "video.h3_prefetch: left to diffusers' onload (the streamed blocks have unpinned host copies)"
