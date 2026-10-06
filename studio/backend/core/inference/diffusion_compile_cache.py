@@ -352,7 +352,9 @@ def _tensor_signature(tensor: Any, depth: int = 0) -> str:
         # torchao's newer subclasses (Int8Tensor, Float8Tensor) declare their fields.
         for name in data_names:
             value = getattr(tensor, name, None)
-            inner.append(f"{name}={_tensor_signature(value, depth + 1) if value is not None else None}")
+            inner.append(
+                f"{name}={_tensor_signature(value, depth + 1) if value is not None else None}"
+            )
         for attr in ("tensor_attribute_names", "optional_tensor_attribute_names"):
             for name in getattr(cls, attr, None) or ():
                 if name in ("block_size", "shape"):
@@ -389,7 +391,9 @@ def _weight_signature(module: Any, weight: Any) -> str:
     fwd = module.__dict__.get("forward") if hasattr(module, "__dict__") else None
     if fwd is not None:
         func = getattr(fwd, "__func__", fwd)
-        parts.append(f"fwd={getattr(func, '__module__', '')}.{getattr(func, '__qualname__', type(func).__name__)}")
+        parts.append(
+            f"fwd={getattr(func, '__module__', '')}.{getattr(func, '__qualname__', type(func).__name__)}"
+        )
     return "/".join(parts)
 
 
@@ -415,7 +419,6 @@ def graph_variant(transformer: Any) -> dict[str, Any]:
         variant["weights"] = f"unavailable: {type(exc).__name__}"
     try:
         from .diffusion_convrot import CONVROT_ATTR  # noqa: PLC0415
-
         rotation = getattr(transformer, CONVROT_ATTR, None)
         if isinstance(rotation, dict):
             variant["rotation"] = {k: rotation[k] for k in sorted(rotation)}
