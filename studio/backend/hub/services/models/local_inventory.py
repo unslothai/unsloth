@@ -235,7 +235,7 @@ _payload_verdicts_lock = threading.Lock()
 
 
 def _payload_evidence(scan_path: Path) -> tuple[bool, bool, tuple]:
-    """One walk: whether weights / quants show any sign of being torn (a numbered shard, an index, an empty weight file), and a fingerprint of every file that changes whenever the judge's inputs could."""
+    """Whether weights / quants could be torn (numbered shard, index, empty weight), plus a fingerprint of every file."""
     weights = quants = False
     fingerprint = []
     for dirpath, _dirnames, filenames in os.walk(scan_path):
@@ -262,7 +262,7 @@ def _payload_evidence(scan_path: Path) -> tuple[bool, bool, tuple]:
 
 
 def _weights_complete(scan_path: Path, fingerprint: tuple) -> bool:
-    # Rescanned on every listing; the files are the judge's only input, so an unchanged fingerprint keeps the verdict. Quants are not cached: their judge also reads the account's scan folders.
+    # Files are the judge's only input. Quants are not cached: their judge also reads the account's scan folders.
     key = os.path.abspath(scan_path)
     with _payload_verdicts_lock:
         hit = _payload_verdicts.get(key)
@@ -279,7 +279,7 @@ def _weights_complete(scan_path: Path, fingerprint: tuple) -> bool:
 
 
 def _apply_payload_partial(scan_path: Path, rows: List[LocalModelInfo]) -> List[LocalModelInfo]:
-    """Local folders carry no downloader markers, so the payload is the only partial evidence. ``unknown`` is skipped: a diffusers pipeline keeps its weights in component subdirs and would read as short a shard."""
+    """Local folders carry no downloader markers, so only the payload shows a torn download. ``unknown`` is skipped: a diffusers pipeline's weights live in component subdirs."""
     if not rows or not scan_path.is_dir():
         return rows
     judged = {row.model_format for row in rows} - {"unknown"}

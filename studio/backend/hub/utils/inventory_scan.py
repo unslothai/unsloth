@@ -1092,7 +1092,7 @@ def _index_cannot_serve_its_shards(
 
 
 def _read_index_shards(index_path: Path):
-    """The shards *index_path* names when every one is a non-empty file and each numbered set is whole, else False. Independent of the family judged, so one parse serves every caller."""
+    """The shards *index_path* names if each is a non-empty file and every numbered set is whole, else False."""
     try:
         if not index_path.is_file() or index_path.stat().st_size <= 0:
             return False
