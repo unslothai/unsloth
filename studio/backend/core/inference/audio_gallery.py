@@ -546,19 +546,34 @@ def delete_group(group_id: str) -> int:
     """Delete one run's active clips; archived ones are spared, as in clear()."""
     if not group_id:
         return 0
-    try:
-        paths = _clip_wavs(gallery_dir())
-    except OSError:
-        return 0
-    # Trusted, as clear() reads it: an unreadable store must not pass for "nothing archived".
-    flags = gallery_flags.read_trusted(gallery_dir())
-    members = [
-        path.stem
-        for path in paths
-        if (_read_meta(_sidecar_path(path.stem)) or {}).get("group_id") == group_id
-        and not gallery_flags.is_archived(flags, path.stem)
-    ]
-    return sum(delete(audio_id) for audio_id in members)
+    directory = gallery_dir()
+    # Locked like clear(): an archive landing between the flag read and the unlink is not lost.
+    with gallery_flags.exclusive(directory, require_file_lock = True):
+        # Trusted, as clear() reads it: an unreadable store must not pass for "nothing archived".
+        flags = gallery_flags.read_trusted(directory)
+        try:
+            paths = _clip_wavs(directory)
+        except OSError:
+            return 0
+        removed: list[str] = []
+        for path in paths:
+            if (_read_meta(_sidecar_path(path.stem)) or {}).get(
+                "group_id"
+            ) != group_id or gallery_flags.is_archived(flags, path.stem):
+                continue
+            try:
+                path.unlink()
+            except OSError as exc:
+                logger.warning("audio_gallery.delete_failed: %s", exc)
+                continue
+            removed.append(path.stem)
+            try:
+                _sidecar_path(path.stem).unlink()
+            except OSError:
+                pass
+            _remove_source(path.stem)
+        gallery_flags.forget_locked(directory, removed)
+    return len(removed)
 
 
 def clear(include_archived: bool = False, workflow: Optional[str] = None) -> int:

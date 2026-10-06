@@ -1045,3 +1045,36 @@ def test_the_group_route_refuses_with_an_unreadable_store():
         asyncio.run(delete_gallery_audio_group("g1", current_subject = "tester"))
     assert excinfo.value.status_code == 503
     assert gallery.audio_path(stem["id"]) is not None
+
+
+def test_an_archive_racing_a_group_delete_is_never_lost(monkeypatch):
+    import threading
+
+    from core.inference import gallery_flags
+
+    stems = [
+        gallery.save(_wav(), _meta(workflow = "separate", group_id = "g1", role = r))
+        for r in ("vocals", "drums")
+    ]
+    target = stems[1]["id"]
+    archived: list = []
+    real_read_trusted = gallery_flags.read_trusted
+
+    def read_then_archive(directory):
+        flags = real_read_trusted(directory)
+        worker = threading.Thread(
+            target = lambda: archived.append(gallery.set_flags(target, archived = True))
+        )
+        worker.start()
+        worker.join(timeout = 0.5)
+        return flags
+
+    monkeypatch.setattr(gallery_flags, "read_trusted", read_then_archive)
+    gallery.delete_group("g1")
+    monkeypatch.setattr(gallery_flags, "read_trusted", real_read_trusted)
+    for _ in range(50):
+        if archived:
+            break
+        threading.Event().wait(0.1)
+    # The archive either lands first and spares the stem, or waits and finds it gone.
+    assert archived and (archived[0] is None) == (gallery.audio_path(target) is None)
