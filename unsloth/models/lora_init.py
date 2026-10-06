@@ -102,19 +102,29 @@ def randomized_svd(
             _orthonormalize_(Y, False, failures, householder)
     with _tf32(False):
         torch.matmul(A.mT, Y, out = Z)  # Z = (Q^T A)^T, N x q
-    # Z = Q2 R2 (Householder, backward stable), then the SVD of the q x q R2 from the eigenpairs of
-    # [[0, R2], [R2^T, 0]] (eigenvalues +-sigma, so nothing is squared): faster and ~60x more accurate
-    # than cuSOLVER's fp32 SVD at q = 256.
+    # Z = Q2 R2 (Householder, backward stable), then the SVD of the q x q R2. From q = 128 the eigenpairs
+    # of [[0, R2], [R2^T, 0]] (eigenvalues +-sigma, nothing squared) are faster and ~60x more accurate
+    # than cuSOLVER's fp32 SVD; below it cuSOLVER's SVD has ~3x less launch latency.
     Q2, R2 = torch.linalg.qr(Z)
-    J = R2.new_zeros(2 * q, 2 * q)
-    J[:q, q:] = R2
-    J[q:, :q] = R2.mT
-    L, X = torch.linalg.eigh(J)
-    X = X[:, -rank:].flip(1)
-    S = L[-rank:].flip(0).clamp_min_(0)
-    tiny = torch.finfo(torch.float32).tiny
-    Ur = X[:q].div_(torch.linalg.vector_norm(X[:q], dim = 0).clamp_min_(tiny))
-    Vr = X[q:].div_(torch.linalg.vector_norm(X[q:], dim = 0).clamp_min_(tiny))
+    if q < 128:
+        try:
+            Ur, S, Vrh = torch.linalg.svd(R2)
+        except torch.linalg.LinAlgError:
+            # Non-finite R2 from a CholeskyQR breakdown; the Householder rerun cannot reach here.
+            return randomized_svd(
+                W, rank, n_oversamples, n_iter, final_passes, generator, _safe = True
+            )
+        Ur, S, Vr = Ur[:, :rank], S[:rank], Vrh[:rank].mT
+    else:
+        J = R2.new_zeros(2 * q, 2 * q)
+        J[:q, q:] = R2
+        J[q:, :q] = R2.mT
+        L, X = torch.linalg.eigh(J)
+        X = X[:, -rank:].flip(1)
+        S = L[-rank:].flip(0).clamp_min_(0)
+        tiny = torch.finfo(torch.float32).tiny
+        Ur = X[:q].div_(torch.linalg.vector_norm(X[:q], dim = 0).clamp_min_(tiny))
+        Vr = X[q:].div_(torch.linalg.vector_norm(X[q:], dim = 0).clamp_min_(tiny))
     # A^T ~= Z Y^T = Q2 Ur S Vr^T Y^T, so A ~= (Y Vr) S (Q2 Ur)^T.
     V = Q2 @ Ur
     U = Y @ Vr
@@ -185,10 +195,13 @@ def _pissa_init(self, adapter_name, init_lora_weights):
         parts = init_lora_weights.split("_niter_")
         if len(parts) != 2:
             return _ORIGINAL["pissa_init"](self, adapter_name, init_lora_weights)
-        # Same iteration count as PEFT's svd_lowrank(q = r, niter = N) and faster for every N. Below
-        # r = 64 the matmuls are launch-bound, so extra columns cost more than they buy: sketch width r,
-        # PEFT's accuracy. From r = 64 a r/4 oversampled sketch is still faster and ~2x more accurate.
-        n_iter, n_oversamples = int(parts[-1]), (r // 4 if r >= 64 else 0)
+        # Same iteration count as PEFT's svd_lowrank(q = r, niter = N). Below r = 64, and on GPUs
+        # without TF32 (T4, sm < 8.0), extra columns cost more than they buy: sketch width r, PEFT's
+        # accuracy. Otherwise a r/4 oversampled sketch is still faster and ~2x more accurate.
+        tf32 = (
+            weight.device.type != "cuda" or torch.cuda.get_device_capability(weight.device)[0] >= 8
+        )
+        n_iter, n_oversamples = int(parts[-1]), (r // 4 if r >= 64 and tf32 else 0)
     W = transpose(weight.to(torch.float32), self.fan_in_fan_out)
     U, S, Vh = randomized_svd(W, r, n_oversamples = n_oversamples, n_iter = n_iter)
     scaling = self.scaling[adapter_name]
