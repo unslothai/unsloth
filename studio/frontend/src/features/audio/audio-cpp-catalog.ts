@@ -152,8 +152,7 @@ export const AUDIO_CPP_MODELS: readonly AudioCppModel[] = [
   { id: folder("Voxtral-Mini-4B-Realtime-2602-GGUF"), task: "asr" },
 ];
 
-/** Folders of the shared repo the pickers leave out, and why. The tests and the nightly catalog
- *  check read this, so a folder the repo adds fails the check until it lands in one of the lists. */
+/** Shared-repo folders the pickers leave out, and why; the nightly catalog check fails on an unclassified folder. */
 export const AUDIO_CPP_UNOFFERED_FOLDERS: Readonly<Record<string, string>> = {
   "CrisperWhisper2.0-GGUF": "needs a newer audio runtime",
   "KugelAudio-0-Open-GGUF": "needs a newer audio runtime",

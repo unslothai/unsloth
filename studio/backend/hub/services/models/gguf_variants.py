@@ -1095,7 +1095,6 @@ async def _audio_cpp_variants_answer(
     from core.inference import audio_cpp_files
 
     def _details():
-        # A model that loads another beside it (MioTTS's MioCodec) downloads it with every variant.
         companions = [
             audio_cpp_models.resolve(c.id, c.variant, hf_token, network = network)
             for c in model.companions

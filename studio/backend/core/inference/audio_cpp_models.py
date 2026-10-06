@@ -1569,8 +1569,7 @@ def _single_file_variants(files: Sequence[RepoFile], folder: str) -> list[AudioC
         rel = gguf.path[len(prefix) :] if gguf.path.startswith(prefix) else gguf.path
         sub = rel.rpartition("/")[0]
         rows.append((gguf, sub, quant_label(rel)))
-    # Several files at one quant in one place (Moonshine tiny, small and medium) hold several models:
-    # every row there is named by the words its model's name does not share, like a sub-folder would.
+    # Several models at one quant in one place (Moonshine tiny/small/medium): key each by its distinct words.
     seen: set[tuple[str, str]] = set()
     crowded: set[str] = set()
     for _gguf, sub, quant in rows:
@@ -1723,9 +1722,8 @@ def _match_by_words(
     prefix = f"{folder}/".lower() if folder else ""
 
     def named(path: str, scope: str) -> bool:
-        # A scope of several words (``v3-ctc``, ``v4.1-anime``) runs together in the file's name, so
-        # ``multilingual-ctc`` does not pick ``multilingual-large-ctc``. The row's folder is left out:
-        # ``Irodori-TTS-v4-Small-GGUF`` must not make every file in it ``v4-small``.
+        # Scope words run together below the row's folder: ``multilingual-ctc`` is not ``multilingual-large-ctc``,
+        # and ``Irodori-TTS-v4-Small-GGUF`` does not make every file in it ``v4-small``.
         path = path.lower()
         path = path[len(prefix) :] if prefix and path.startswith(prefix) else path
         words = "-".join(re.split(r"[-_./]", path))
@@ -2367,9 +2365,7 @@ def _resolve_uncached(
         and (not from_hub or "/" not in chosen.key)
         and chosen.key.lower() != wanted.lower()
     ):
-        # A partial cache listing names the row by quant alone, or by the words that tell the cached
-        # files apart (``ctc/F16`` for ``v3-ctc/F16``); keep the name the full listing gives it
-        # (``tiny/Q8_0``), so status and /gguf-variants agree on the variant that is loaded.
+        # A cache-only listing keys the row more loosely (``Q8_0``, ``ctc/F16``): keep the full listing's key.
         text = wanted.strip().strip("/")
         head, _, tail = text.rpartition("/")
         quant = chosen.key.rpartition("/")[2]
