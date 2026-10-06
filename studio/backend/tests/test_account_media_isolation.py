@@ -79,6 +79,8 @@ def _client(account):
 
     app.dependency_overrides[get_current_subject] = subject
     app.dependency_overrides[authenticated_via_api_key] = lambda: False
+    # Mounted like main.py: the audio file, input and voice routes are on both.
+    app.include_router(inference.router, prefix = "/api/inference")
     app.include_router(inference.studio_router, prefix = "/api/inference")
     app.include_router(video.router, prefix = "/api/inference")
     app.include_router(video.openai_router, prefix = "/v1")

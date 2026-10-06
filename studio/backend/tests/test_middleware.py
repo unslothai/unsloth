@@ -161,6 +161,13 @@ class TestMaxBodyMiddleware:
             assert main_module._get_upload_passthrough_request_max_bytes(path + "/") == (
                 upload_request_limit_bytes(STT_AUDIO_RAW_MAX_BYTES)
             ), path
+        from utils.upload_limits import AUDIO_INPUT_MAX_BYTES
+
+        for path in ("/v1/audio/inputs", "/api/inference/audio/inputs"):
+            assert path in main_module._BODY_UPLOAD_PASSTHROUGH_EXACT_PATHS, path
+            assert main_module._get_upload_passthrough_request_max_bytes(path) == (
+                AUDIO_INPUT_MAX_BYTES
+            ), path
         from utils.upload_limits import (
             VIDEO_INPUT_REFERENCE_JSON_MAX_BYTES,
             VIDEO_INPUT_REFERENCE_MAX_BYTES,

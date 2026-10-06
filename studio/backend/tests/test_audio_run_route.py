@@ -203,7 +203,6 @@ def test_a_clone_run_hands_the_worker_an_account_path_and_saves_the_clip(stub, t
         {"voice_ref": "/etc/passwd"},
         {"file": "x.wav"},
         {"url": "http://x"},
-        {"model": "other/model"},
         {"inputs": {"reference": {"path": "/etc/passwd"}}},
         {"inputs": {"reference": {"input_id": "a" * 32, "voice_ref": "/etc/passwd"}}},
         {"inputs": {"reference": {"input_id": "a" * 32}, "voice_ref": "/x.wav"}},
@@ -1809,3 +1808,173 @@ def test_a_convert_expiry_names_the_side_that_expired():
     assert _convert_role_error(gone, "target").detail == CONVERT_EXPIRED_DETAIL["target"]
     other = AudioInputError(404, "That clip is gone.")
     assert _convert_role_error(other, "target") is other
+
+
+def _v1(account):
+    from utils.api_errors import install_api_error_handlers
+
+    client = _client(account)
+    install_api_error_handlers(client.app)
+    client.app.include_router(inference.router, prefix = "/v1")
+    return client
+
+
+@pytest.fixture
+def switches(stub, monkeypatch):
+    seen = []
+
+    async def record(model, *_args, **kwargs):
+        seen.append((model, kwargs.get("require_audio_workflow")))
+
+    monkeypatch.setattr(inference, "_maybe_auto_switch_model", record)
+    return seen
+
+
+def test_a_named_model_is_switched_to_with_the_workflow_it_must_run(stub, switches):
+    voice = _voice(ALICE, _input(ALICE), transcript = "hi")
+    with _client(ALICE) as client:
+        clone = _run(client, model = QWEN3_BASE, inputs = {"reference": {"voice_id": voice["id"]}})
+        speak = _run(
+            client,
+            workflow = "speak",
+            model = QWEN3_BASE,
+            inputs = {"reference": {"voice_id": voice["id"]}},
+        )
+        unnamed = _run(client, inputs = {"reference": {"voice_id": voice["id"]}})
+    assert [r.status_code for r in (clone, speak, unnamed)] == [200, 200, 200]
+    assert switches == [
+        (QWEN3_BASE, "clone"),
+        (QWEN3_BASE, "clone"),
+        (inference._RELOAD_ONLY_MODEL, "clone"),
+    ]
+
+
+def test_a_named_separation_model_is_switched_to_before_the_track_is_read(sep, switches):
+    with _client(ALICE) as client:
+        response = _separate(client, {"input_id": _input(ALICE)}, model = HTDEMUCS_6)
+    assert response.status_code == 200, response.text
+    assert switches == [(HTDEMUCS_6, "separate")]
+
+
+def test_a_v1_run_is_monitored_and_its_clips_are_served_under_v1(stub):
+    from core.inference.api_monitor import api_monitor
+
+    voice = _voice(ALICE, _input(ALICE), transcript = "hi")
+    body = {
+        "workflow": "clone",
+        "text": "Hello.",
+        "inputs": {"reference": {"voice_id": voice["id"]}},
+    }
+    api_monitor.clear()
+    with _v1(ALICE) as client:
+        studio = client.post("/api/inference/audio/run", json = body)
+        assert api_monitor.snapshot(include_details = False) == []
+        api = client.post("/v1/audio/run", json = body)
+        assert api.status_code == 200, api.text
+        url = api.json()["clips"][0]["url"]
+        assert url.startswith("/v1/audio/gallery/")
+        assert client.get(url).content[:4] == b"RIFF"
+    assert studio.json()["clips"][0]["url"].startswith("/api/inference/audio/gallery/")
+    (row,) = api_monitor.snapshot(include_details = False)
+    assert (row["endpoint"], row["status"], row["model"]) == (
+        "/v1/audio/run",
+        "completed",
+        QWEN3_BASE,
+    )
+
+
+@pytest.mark.parametrize("as_object", [False, True])
+def test_speech_in_a_saved_voice_clones_with_its_transcript(stub, tmp_path, as_object):
+    voice = _voice(ALICE, _input(ALICE), transcript = "Okay, I'm Cemo.")
+    ref = {"id": voice["id"]} if as_object else voice["id"]
+    with _v1(ALICE) as client:
+        response = client.post("/v1/audio/speech", json = {"input": "Hello.", "voice": ref})
+    assert response.status_code == 200, response.text
+    assert response.content[:4] == b"RIFF"
+    (call,) = stub["backend"].calls
+    assert (call["workflow"], call["reference_text"]) == ("speak", "Okay, I'm Cemo.")
+    assert Path(call["audio_inputs"]["reference"]).name.startswith(f"v-{voice['id']}.")
+    (meta,) = [json.loads(p.read_text()) for p in _gallery_root(tmp_path).glob("*.json")]
+    assert (meta["voice_id"], meta["workflow"]) == (voice["id"], "speak")
+
+
+def test_speech_clones_a_reference_and_refuses_it_beside_a_saved_voice(stub):
+    input_id = _input(ALICE)
+    voice = _voice(ALICE, input_id)
+    reference = {"reference": {"input_id": input_id}, "reference_text": "Hi there."}
+    with _v1(ALICE) as client:
+        both = client.post(
+            "/v1/audio/speech", json = {"input": "Hello.", "voice": voice["id"], **reference}
+        )
+        clone = client.post(
+            "/v1/audio/speech", json = {"input": "Hello.", "voice": "alloy", **reference}
+        )
+    assert (both.status_code, both.json()["error"]["param"]) == (400, "reference")
+    assert clone.status_code == 200, clone.text
+    (call,) = stub["backend"].calls
+    assert (call["workflow"], call["reference_text"]) == ("clone", "Hi there.")
+    assert Path(call["audio_inputs"]["reference"]).name.startswith(f"{input_id}.24000.mono")
+
+
+def test_speech_uses_a_builtin_speaker_the_model_lists(stub):
+    voices = {"name": "voice", "type": "enum", "values": ["Ryan", "Vivian"]}
+    backend = stub["use"](QWEN3_BASE, {**_speak_info(), "audio_options": [voices]})
+    with _v1(ALICE) as client:
+        for body in (
+            {"voice": "Ryan"},
+            {"voice": "alloy"},
+            {"voice": "Ryan", "audio_options": {"voice": "Vivian"}},
+        ):
+            response = client.post("/v1/audio/speech", json = {"input": "Hello.", **body})
+            assert response.status_code == 200, response.text
+    assert [call.get("audio_options") for call in backend.calls] == [
+        {"voice": "Ryan"},
+        None,
+        {"voice": "Vivian"},
+    ]
+
+
+@pytest.mark.parametrize(
+    "fmt, media_type, magic",
+    [
+        ("mp3", "audio/mpeg", (b"ID3", b"\xff\xfb", b"\xff\xf3")),
+        ("flac", "audio/flac", (b"fLaC",)),
+        ("opus", "audio/ogg", (b"OggS",)),
+        ("aac", "audio/aac", (b"\xff\xf1", b"\xff\xf9")),
+    ],
+)
+def test_speech_encodes_each_format_and_history_keeps_the_wav(
+    stub, tmp_path, fmt, media_type, magic
+):
+    stub["use"](QWEN3_BASE, _speak_info())
+    with _v1(ALICE) as client:
+        response = client.post("/v1/audio/speech", json = {"input": "Hello.", "response_format": fmt})
+    assert response.status_code == 200, response.text
+    assert response.headers["content-type"] == media_type
+    assert response.content.startswith(magic)
+    (clip,) = _gallery_root(tmp_path).glob("*.wav")
+    assert clip.read_bytes() == _wav()
+
+
+@pytest.mark.parametrize("rate, channels", [(24000, 1), (44100, 2)])
+def test_speech_pcm_is_openais_24k_mono_samples(stub, monkeypatch, rate, channels):
+    stub["use"](QWEN3_BASE, _speak_info())
+    buf = io.BytesIO()
+    with wave.open(buf, "wb") as w:
+        w.setnchannels(channels)
+        w.setsampwidth(2)
+        w.setframerate(rate)
+        w.writeframes(b"\x01\x00" * rate * channels)
+    monkeypatch.setattr(
+        _Backend, "generate_audio_response", lambda self, **kw: (buf.getvalue(), rate)
+    )
+    with _v1(ALICE) as client:
+        response = client.post(
+            "/v1/audio/speech", json = {"input": "Hello.", "response_format": "pcm"}
+        )
+    assert response.status_code == 200, response.text
+    assert response.headers["content-type"] == "audio/pcm"
+    # One second of audio: 24000 two-byte mono samples, whatever the model's rate and layout.
+    assert abs(len(response.content) - 48000) <= 2 * 64
+    if (rate, channels) == (24000, 1):
+        assert response.content == buf.getvalue()[44:]
