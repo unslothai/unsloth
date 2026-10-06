@@ -120,6 +120,7 @@ import {
   clipWorkflow,
   loadedModelRunsWorkflow,
   slotForWorkflow,
+  workflowForLoadedModel,
 } from "./workflows";
 
 const SPEAKERS_MODEL_REPO = `${AUDIO_CPP_REPO}/MOSS-Transcribe-Diarize-GGUF`;
@@ -715,8 +716,16 @@ export function AudioPage({
   useEffect(() => {
     if (adoptedLoadedModel.current || status === null) return;
     adoptedLoadedModel.current = true;
-    if (modeRef.current === "speak" && ttsLoaded && musicGeneration) {
-      useAudioWorkspaceStore.getState().adoptWorkflow("music");
+    // A reload opens the loaded model's page (HTDemucs opens Separate); a link or tab pick still wins.
+    if (modeRef.current === "speak" && ttsLoaded) {
+      const workspace = useAudioWorkspaceStore.getState();
+      workspace.adoptWorkflow(
+        workflowForLoadedModel({
+          current: workspace.workflow,
+          audioWorkflows: status.audio_workflows,
+          music: musicGeneration,
+        }),
+      );
     }
   }, [status, ttsLoaded, musicGeneration]);
 

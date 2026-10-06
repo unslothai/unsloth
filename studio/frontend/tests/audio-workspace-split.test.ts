@@ -46,7 +46,12 @@ test("a loaded model opens the page that fits it", () => {
     slot,
     /const loadedWorkflow = workflowForLoadedModel\(\{\s*current: useAudioWorkspaceStore\.getState\(\)\.workflow,\s*audioWorkflows: res\.audio_workflows,\s*music: isMusicGenerationModel\(repoId, res\.audio_type\),\s*\}\);[\s\S]{0,200}?rememberModel\(loadedWorkflow, repoId\);\s*if \(modeRef\.current === "speak"\) workspace\.commitWorkflow\(loadedWorkflow\);/,
   );
-  assert.match(host, /adoptWorkflow\("music"\)/);
+  // A reload adopts the loaded model's page (HTDemucs opens Separate), not only Music.
+  assert.match(
+    host,
+    /if \(modeRef\.current === "speak" && ttsLoaded\) \{\s*const workspace = useAudioWorkspaceStore\.getState\(\);\s*workspace\.adoptWorkflow\(\s*workflowForLoadedModel\(\{\s*current: workspace\.workflow,\s*audioWorkflows: status\.audio_workflows,\s*music: musicGeneration,/,
+  );
+  assert.doesNotMatch(host, /adoptWorkflow\("music"\)/);
 });
 
 test("?workflow= names the page ahead of ?task=, and both go through the workflow gate", () => {

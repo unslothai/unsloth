@@ -253,10 +253,6 @@ export function audioCppModelSpeaks(id: string | null | undefined): boolean {
   return !model || audioCppWorkflowsFor(model).includes("speak");
 }
 
-export function audioCppModelsForTask(task: AudioCppTask): AudioCppModel[] {
-  return AUDIO_CPP_MODELS.filter((model) => model.task === task);
-}
-
 /** Music length the backend clamps to, whatever max_tokens asks for. */
 export const AUDIO_CPP_MUSIC_MIN_SECONDS = 5;
 export const AUDIO_CPP_MUSIC_MAX_SECONDS = 240;
