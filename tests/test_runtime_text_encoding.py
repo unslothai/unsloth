@@ -64,7 +64,7 @@ REVIEWED_VENDORED_OFFENDERS = {
 # keyed on path + expression, not line, so unrelated edits above it do not break the scan.
 REVIEWED_NON_FILE_OPEN = (
     "studio/backend/core/inference/audio_inputs.py",
-    "stream.codec_context.open()",
+    "stream.codec_context.open(strict=True)",
 )
 GUARDED_METHODS = {"read_text", "write_text"}
 # path classes, so an unbound `Path.open(p)` shifts every argument one right.
@@ -267,9 +267,6 @@ def _offender(
                 return None
             return None if _names_encoding(call) else f"{func.attr}()"
         if func.attr == "open":
-            # PyAV's CodecContext.open() starts an encoder; it never takes a file.
-            if isinstance(func.value, ast.Attribute) and func.value.attr == "codec_context":
-                return None
             if receiver is not None and _origin_root(receiver, modules) in BUILTIN_OPEN_MODULES:
                 return (
                     None if not _is_text(call, 1) or _names_encoding(call) else f"{receiver}.open()"
@@ -426,18 +423,17 @@ def test_skips_unknown_modes():
 def test_skips_foreign_openers_and_readers():
     assert not _offenders_in("import fitz\nd = fitz.open(stream = b, filetype = 'pdf')\n")
     assert not _offenders_in("import tarfile\nt = tarfile.open(p, 'r:gz')\n")
-    assert not _offenders_in("stream.codec_context.open()\n")
     # importlib.metadata Distribution.read_text takes a positional filename.
     assert not _offenders_in("s = dist.read_text('direct_url.json')\n")
 
 
 def test_skips_only_the_reviewed_pyav_codec_open():
-    pyav = "\n" * 263 + "stream.codec_context.open()\n"
+    pyav = "\n" * 263 + "stream.codec_context.open(strict = True)\n"
     path = "studio/backend/core/inference/audio_inputs.py"
     assert not _offenders_in(pyav, path)
     assert not _offenders_in("\n" + pyav, path)
     assert _offenders_in(pyav, "studio/backend/core/inference/other.py")
-    assert _offenders_in("\n" * 263 + "config.codec_context.open()\n", path)
+    assert _offenders_in("\n" * 263 + "config.codec_context.open(strict = True)\n", path)
 
 
 def test_test_trees_are_out_of_scope():
