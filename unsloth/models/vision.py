@@ -696,6 +696,7 @@ def _set_generate_param(
     name,
     value,
     overwrite = True,
+    force = False,
 ):
     # Sets a generate() parameter that is also a recognized GenerationConfig field
     # (e.g. pad_token_id, cache_implementation, compile_config). Setting such a field
@@ -707,12 +708,13 @@ def _set_generate_param(
     # overwrite=False preserves an already-set (non-None) value on the caller's config.
     caller_generation_config = kwargs.get("generation_config")
     if caller_generation_config is not None:
+        # Never leave the raw kwarg behind. It used to win the merge, so carry the
+        # caller's value onto the config unless this call forces its own.
+        caller_value = kwargs.pop(name, None)
+        if caller_value is not None and not force:
+            value, overwrite = caller_value, True
         if overwrite or getattr(caller_generation_config, name, None) is None:
             setattr(caller_generation_config, name, value)
-        # Always drop a same-named raw kwarg here, even one the caller supplied
-        # directly alongside generation_config: leaving it is the exact leftover
-        # this helper exists to prevent.
-        kwargs.pop(name, None)
     else:
         kwargs[name] = value
 
@@ -1921,7 +1923,7 @@ def unsloth_base_fast_generate(self, *args, **kwargs):
         default_pad_token_id = config_pad_token_id
 
     _set_generate_param(
-        kwargs, "pad_token_id", kwargs.pop("pad_token_id", default_pad_token_id), overwrite = False
+        kwargs, "pad_token_id", kwargs.get("pad_token_id", default_pad_token_id), overwrite = False
     )
 
     try:
@@ -1955,7 +1957,7 @@ def unsloth_base_fast_generate(self, *args, **kwargs):
     if _uses_flash_attention_for_generation(self.config):
         # Pin the literal "dynamic": None is merged back to the model default, and a static cache still arrives via kwargs or the caller's generation_config (TRL); skip it when the caller passed a cache.
         if kwargs.get("past_key_values") is None:
-            _set_generate_param(kwargs, "cache_implementation", "dynamic")
+            _set_generate_param(kwargs, "cache_implementation", "dynamic", force = True)
         try:
             with _get_inference_mode_context_manager(self), autocaster:
                 return self._old_generate(*args, **kwargs)
@@ -2028,6 +2030,7 @@ def unsloth_base_fast_generate(self, *args, **kwargs):
         kwargs,
         "cache_implementation",
         dynamic_implementation if force_dynamic_cache else cache_implementation,
+        force = force_dynamic_cache,
     )
     if cache_implementation is not None:
         _set_generate_param(kwargs, "compile_config", compile_config)

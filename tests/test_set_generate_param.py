@@ -74,6 +74,35 @@ def test_no_leftover_kwarg_is_ever_left_alongside_an_explicit_config():
         assert "compile_config" not in kwargs
 
 
+def test_a_raw_kwarg_next_to_a_config_still_wins_and_moves_onto_it():
+    # transformers applies kwargs after the config merge, so the caller's value won before.
+    generation_config = SimpleNamespace(pad_token_id = 7)
+    kwargs = {"generation_config": generation_config, "pad_token_id": 99}
+    set_generate_param(kwargs, "pad_token_id", kwargs.get("pad_token_id", 0), overwrite = False)
+    assert "pad_token_id" not in kwargs
+    assert generation_config.pad_token_id == 99
+
+    generation_config = SimpleNamespace(cache_implementation = None, compile_config = None)
+    kwargs = {
+        "generation_config": generation_config,
+        "cache_implementation": "offloaded",
+        "compile_config": "mine",
+    }
+    set_generate_param(kwargs, "cache_implementation", "static")
+    set_generate_param(kwargs, "compile_config", "computed")
+    assert kwargs == {"generation_config": generation_config}
+    assert generation_config.cache_implementation == "offloaded"
+    assert generation_config.compile_config == "mine"
+
+
+def test_a_forced_value_beats_a_raw_kwarg_next_to_a_config():
+    generation_config = SimpleNamespace(cache_implementation = "static")
+    kwargs = {"generation_config": generation_config, "cache_implementation": "static"}
+    set_generate_param(kwargs, "cache_implementation", "dynamic", force = True)
+    assert "cache_implementation" not in kwargs
+    assert generation_config.cache_implementation == "dynamic"
+
+
 if __name__ == "__main__":
     tests = [
         value
