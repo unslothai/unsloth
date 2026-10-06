@@ -575,6 +575,19 @@ def test_full_clef_finetuning_never_quantizes_the_backbone(tmp_path, monkeypatch
     assert seen[1].get("quantization_config") is not None
 
 
+def test_the_compile_warm_up_leaves_the_rng_where_it_was(checkpoint, monkeypatch):
+    from unsloth.models import _decision_fast as fast
+
+    model, _ = FastDecisionModel.from_pretrained(str(checkpoint), use_gradient_checkpointing = False)
+    monkeypatch.setattr(torch.nn.Module, "compile", lambda self, **kw: None)
+    monkeypatch.setattr(fast, "_wants_compile", lambda model, forwards: True)
+    torch.manual_seed(0)
+    before = torch.get_rng_state()
+    with fast.compiled_encoder(model, 10**6) as compiled:
+        assert compiled
+        assert torch.equal(torch.get_rng_state(), before)
+
+
 def test_toy_task_beats_the_base_model(checkpoint, tmp_path, monkeypatch):
     # On CPU everywhere: the toy task plateaus near loss 0.45 and leaves it by step ~70 on CPU but
     # only after ~100 steps on a GPU (same curve otherwise, any precision), so 80 steps is a threshold

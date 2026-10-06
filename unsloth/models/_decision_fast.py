@@ -49,9 +49,6 @@ def _warm_up(model, amp_dtype) -> None:
     # Fails here, not mid-run, on a platform Inductor cannot serve; RNG and gradients are restored.
     device = next(model.parameters()).device
     vocab = int(getattr(model.encoder.config, "vocab_size", 1000))
-    ids = torch.randint(5, min(vocab, 1000), (2, 64), device = device)
-    mask = torch.ones_like(ids)
-    mask[1, 48:] = 0
     params = [p for p in model.parameters() if p.requires_grad]
     grads = [p.grad for p in params]
     training = model.training
@@ -59,6 +56,9 @@ def _warm_up(model, amp_dtype) -> None:
     try:
         model.train()
         with torch.random.fork_rng(devices = devices):
+            ids = torch.randint(5, min(vocab, 1000), (2, 64), device = device)
+            mask = torch.ones_like(ids)
+            mask[1, 48:] = 0
             with torch.autocast(device.type, dtype = amp_dtype, enabled = amp_dtype is not None):
                 h = model.encoder(input_ids = ids, attention_mask = mask).last_hidden_state
             if h.requires_grad:
