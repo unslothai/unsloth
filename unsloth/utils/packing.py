@@ -964,11 +964,22 @@ def _wrap_short_conv_forward(module) -> None:
             and _varlen_seq_idx_applies(varlen[1], args, kwargs)
         ):
             kwargs["seq_idx"] = varlen[1]
-        if kwargs.get("seq_idx") is not None:
+        outer, _KWARGS_TRACE[0] = _KWARGS_TRACE[0], []
+        try:
+            out = forward_orig(*args, **kwargs)
+        finally:
+            trace, _KWARGS_TRACE[0] = _KWARGS_TRACE[0], outer
+        # A probed (hub) conv kernel must itself have received seq_idx; the torch fallback drops it.
+        if kwargs.get("seq_idx") is not None and all(trace):
             module._unsloth_varlen_conv_hit = True
-        return forward_orig(*args, **kwargs)
+        return out
 
     module.forward = forward
+
+
+def _uses_hub_conv(module) -> bool:
+    globs = getattr(inspect.getmodule(type(module)), "__dict__", {})
+    return "implementation" in _hub_closure(globs.get("causal_conv1d_fn"))
 
 
 def _varlen_from_position_ids(position_ids):
@@ -1057,10 +1068,13 @@ def _hybrid_varlen_metadata(kwargs):
 
 def patch_hybrid_linear_attention_varlen(model) -> bool:
     """Feed seq_idx / cu_seqlens to hybrid mixers so packing resets state at sequence boundaries.
-    Gated by UNSLOTH_EXPERIMENTAL_HYBRID_PACKING, fail-closed, idempotent. True when active."""
-    if not _hybrid_packing_enabled():
-        return False
+    Gated by UNSLOTH_EXPERIMENTAL_HYBRID_PACKING (short-conv-only models pack without it), fail-closed,
+    idempotent. True when active."""
     mixers = _iter_stateful_mixers(model)
+    # Short-conv-only models (LFM2) reset at seq_idx on both kernel and torch paths, so they pack by default.
+    short_conv_only = bool(mixers) and all(kind == "short_conv" for _, kind in mixers)
+    if not (_hybrid_packing_enabled() or short_conv_only):
+        return False
     unsupported = sorted({type(m).__name__ for m, kind in mixers if kind == "unsupported"})
     if unsupported:
         return _hybrid_reject(f"no varlen kernel path for {unsupported}")
@@ -1085,8 +1099,9 @@ def patch_hybrid_linear_attention_varlen(model) -> bool:
     ):
         return True
 
-    if kwargs_modules:
-        reason = _kwargs_kernels_available(kwargs_modules)
+    hub_short_convs = [m for m in short_conv_modules if _uses_hub_conv(m)]
+    if kwargs_modules or hub_short_convs:
+        reason = _kwargs_kernels_available(kwargs_modules + hub_short_convs)
         if reason is not None:
             return _hybrid_reject(reason)
     if gated_delta_modules:
@@ -1149,7 +1164,7 @@ def patch_hybrid_linear_attention_varlen(model) -> bool:
     varlen_slot: list = [None]
     for ns in _iter_mamba2_install_namespaces(hybrid_modules):
         _install_packed_mask_positions(ns, lambda: varlen_slot[0])
-    for ns in _iter_mamba2_install_namespaces(kwargs_modules):
+    for ns in _iter_mamba2_install_namespaces(kwargs_modules + hub_short_convs):
         _install_kwargs_probes(ns)
     for module in kwargs_modules:
         if not getattr(module, "_unsloth_varlen_wrapped", False):

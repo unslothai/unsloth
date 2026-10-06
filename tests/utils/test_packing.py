@@ -2577,3 +2577,39 @@ def test_packed_mask_builder_gets_per_sequence_positions():
     explicit = torch.arange(6)[None]
     ns["create_causal_mask"](position_ids = explicit)
     assert seen[-1] is explicit
+
+
+def test_short_conv_only_model_packs_without_flag(monkeypatch):
+    monkeypatch.delenv("UNSLOTH_EXPERIMENTAL_HYBRID_PACKING", raising = False)
+    assert patch_hybrid_linear_attention_varlen(_stateful_model(_FakeLfm2ShortConv())) is True
+    assert patch_hybrid_linear_attention_varlen(_FakeMamba2Model()) is False
+
+
+def test_short_conv_rejects_hub_conv_bound_to_torch_fallback(monkeypatch):
+    # transformers >= 5.16 LFM2 routes through the hub conv; its torch fallback drops seq_idx.
+    monkeypatch.delenv("UNSLOTH_EXPERIMENTAL_HYBRID_PACKING", raising = False)
+    import sys
+    import types
+
+    def conv_ref(
+        x,
+        weight,
+        bias = None,
+        activation = None,
+        **kwargs,
+    ):
+        return x
+
+    name = "fake_modeling_lfm2_ref"
+    modeling = types.ModuleType(name)
+    modeling.causal_conv1d_fn = _hub_wrapped(conv_ref, conv_ref)
+    modeling._Base = _FakeLfm2ShortConv
+    exec("class Lfm2ShortConv(_Base):\n    pass\n", modeling.__dict__)
+    modeling.Lfm2ShortConv.__module__ = name
+    sys.modules[name] = modeling
+    try:
+        assert (
+            patch_hybrid_linear_attention_varlen(_stateful_model(modeling.Lfm2ShortConv())) is False
+        )
+    finally:
+        sys.modules.pop(name, None)
