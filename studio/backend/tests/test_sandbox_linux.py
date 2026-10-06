@@ -1233,7 +1233,7 @@ def test_revalidating_a_cached_verdict_on_a_wedged_mount_is_bounded_too(monkeypa
         release.set()
 
     assert time.monotonic() - start < 10
-    assert hazard is not None and "wedged" in hazard, hazard
+    assert hazard == sandbox_linux.CACHE_STILL_CHECKING, hazard
 
 
 def test_a_runtime_entry_whose_target_leaves_the_workdir_gets_no_rule(tmp_path, monkeypatch):
@@ -1435,7 +1435,7 @@ def test_a_hazardous_cache_drops_the_component_rather_than_failing_the_launch(
     workdir.mkdir()
     launch = sandbox_linux.prepare(_plan(workdir))
     try:
-        assert "HF_HOME" not in launch.argv
+        assert os.path.realpath(host / "hub") not in launch.argv
     finally:
         launch.cleanup()
 
@@ -2541,3 +2541,115 @@ def test_resetting_the_probe_forgets_the_proc_layout(tmp_path, _no_proc_layout_l
     assert sandbox_linux.empty_proc_layout(fake) is True
     assert len(record.read_text().splitlines()) == 4, "the layout was not checked again"
 
+
+class _Warnings:
+    def __init__(self):
+        self.warnings = []
+
+    def warning(self, msg, *args, **_kw):
+        self.warnings.append(msg % args if args else msg)
+
+    def __getattr__(self, _name):
+        return lambda *_a, **_k: None
+
+
+@pytest.fixture
+def cache_log(monkeypatch):
+    log = _Warnings()
+    monkeypatch.setattr(sandbox_linux, "logger", log)
+    monkeypatch.setattr(sandbox_linux, "_cache_warned", {})
+    monkeypatch.setattr(sandbox_linux, "_cache_scan_pending", {})
+    sandbox_linux.reset_cache_verdicts()
+    yield log
+    sandbox_linux.reset_cache_verdicts()
+
+
+def test_a_cache_folder_a_fresh_hf_home_lacks_is_created_and_shared(
+    tmp_path, monkeypatch, cache_log
+):
+    cache = tmp_path / "hostcache"
+    (cache / "hub").mkdir(parents = True)
+    _share_cache_paths(monkeypatch, cache)
+    binds = sandbox_linux._model_cache_binds(str(tmp_path / "session"))
+    for name in ("hub", "datasets", "assets", "xet"):
+        assert name in binds and os.path.isdir(cache / name), name
+    assert cache_log.warnings == []
+
+
+def test_a_cache_folder_that_cannot_be_created_is_skipped_quietly(tmp_path, monkeypatch, cache_log):
+    cache = tmp_path / "hostcache"
+    (cache / "hub").mkdir(parents = True)
+    _share_cache_paths(monkeypatch, cache)
+    real = os.makedirs
+
+    def refuse(path, *a, **k):
+        if os.path.basename(path) == "datasets":
+            raise PermissionError(13, "Permission denied", path)
+        return real(path, *a, **k)
+
+    monkeypatch.setattr(sandbox_linux.os, "makedirs", refuse)
+    binds = sandbox_linux._model_cache_binds(str(tmp_path / "session"))
+    assert "datasets" not in binds and "hub" in binds
+    assert cache_log.warnings == []
+
+
+def test_a_cache_entry_that_is_not_a_folder_still_warns(tmp_path, monkeypatch, cache_log):
+    cache = tmp_path / "hostcache"
+    (cache / "hub").mkdir(parents = True)
+    (cache / "datasets").write_text("not a folder")
+    _share_cache_paths(monkeypatch, cache)
+    binds = sandbox_linux._model_cache_binds(str(tmp_path / "session"))
+    assert "datasets" not in binds
+    assert cache_log.warnings == [
+        "Not sharing the datasets cache into the sandbox: it is not a directory"
+    ]
+
+
+def test_the_same_cache_warning_is_logged_once_a_minute(tmp_path, monkeypatch, cache_log):
+    cache = tmp_path / "hostcache"
+    (cache / "hub").mkdir(parents = True)
+    (cache / "datasets").write_text("not a folder")
+    _share_cache_paths(monkeypatch, cache)
+    session = str(tmp_path / "session")
+    clock = [1000.0]
+    monkeypatch.setattr(sandbox_linux.time, "monotonic", lambda: clock[0])
+    sandbox_linux._model_cache_binds(session)
+    clock[0] += 30
+    sandbox_linux._model_cache_binds(session)
+    assert len(cache_log.warnings) == 1
+    clock[0] += sandbox_linux._CACHE_WARNING_SECONDS
+    sandbox_linux._model_cache_binds(session)
+    assert len(cache_log.warnings) == 2
+
+
+def test_a_launch_finding_a_check_in_progress_waits_for_its_answer(
+    tmp_path, monkeypatch, cache_log
+):
+    component = tmp_path / "hub"
+    component.mkdir()
+    started = threading.Event()
+    release = threading.Event()
+    walks = []
+
+    def slow(
+        name,
+        path,
+        witness = None,
+    ):
+        walks.append(path)
+        started.set()
+        release.wait(30)
+        return None
+
+    monkeypatch.setattr(sandbox_linux, "_inspect_cache_component", slow)
+    monkeypatch.setattr(sandbox_linux, "_CACHE_INSPECT_SECONDS", 0.2)
+    # The first launch gives up while the walk is still going (a busy host), leaving it pending.
+    assert sandbox_linux._cache_hazard_within_deadline("hub", str(component)) == (
+        sandbox_linux.CACHE_STILL_CHECKING
+    )
+    assert started.wait(5)
+    monkeypatch.setattr(sandbox_linux, "_CACHE_INSPECT_SECONDS", 10.0)
+    threading.Timer(0.3, release.set).start()
+    # The next launch joins that walk and uses its answer instead of giving up at once.
+    assert sandbox_linux._cache_hazard_within_deadline("hub", str(component)) is None
+    assert walks == [str(component)]

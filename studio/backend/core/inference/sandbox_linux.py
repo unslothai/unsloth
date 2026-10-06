@@ -600,8 +600,12 @@ def _inspect_cache_component(
     return cache_share_hazard(path, witness)
 
 
+CACHE_MISSING = "does not exist"
+CACHE_STILL_CHECKING = "is still being checked; it will be shared once the check finishes"
+
 # Retain timed-out workers until they finish, preventing a thread leak on a wedged path.
-_cache_scan_pending: "dict[str, threading.Thread]" = {}
+# path -> (worker, its answer list): a later launch joins the same check instead of giving up.
+_cache_scan_pending: "dict[str, tuple[threading.Thread, list]]" = {}
 # Request threads must reserve and remove workers atomically.
 _cache_scan_lock = threading.Lock()
 
@@ -637,25 +641,33 @@ def _cache_hazard_within_deadline(name: str, path: str) -> "str | None":
 
     with _cache_scan_lock:
         pending = _cache_scan_pending.get(path)
-        if pending is not None:
-            if pending.is_alive():
-                return "was still being inspected when a previous launch gave up (a wedged mount?)"
+        if pending is not None and not pending[0].is_alive():
             del _cache_scan_pending[path]
-        worker = threading.Thread(target = check, name = f"unsloth-cache-scan-{name}", daemon = True)
-        # Start under the lock, or another caller can replace the not-yet-alive worker.
-        _cache_scan_pending[path] = worker
-        worker.start()
+            pending = None
+        if pending is None:
+            worker = threading.Thread(target = check, name = f"unsloth-cache-scan-{name}", daemon = True)
+            # Start under the lock, or another caller can replace the not-yet-alive worker.
+            pending = _cache_scan_pending[path] = (worker, answer)
+            worker.start()
+    worker, answer = pending
     worker.join(_CACHE_INSPECT_SECONDS)
     if not answer:
-        return f"could not be inspected within {_CACHE_INSPECT_SECONDS:.0f}s (a wedged mount?)"
+        return CACHE_STILL_CHECKING
     with _cache_scan_lock:
         # By identity: another caller may already have replaced it.
-        if _cache_scan_pending.get(path) is worker:
+        if _cache_scan_pending.get(path) is pending:
             del _cache_scan_pending[path]
     return answer[0]
 
 
 def _cache_hazard_memoized(name: str, path: str) -> "str | None":
+    if not os.path.lexists(path):
+        # A fresh HF home has no datasets/ or assets/ yet; create it so the sandbox shares it too.
+        try:
+            os.makedirs(path, exist_ok = True)
+        except OSError as exc:
+            logger.debug("could not create the %s cache at %s: %s", name, path, exc)
+            return CACHE_MISSING
     signature = _cache_component_signature(path)
     now = time.monotonic()
     with _cache_scan_lock:
@@ -675,6 +687,21 @@ def _cache_hazard_memoized(name: str, path: str) -> "str | None":
         with _cache_scan_lock:
             _cache_verdicts[path] = (now + _CACHE_VERDICT_TTL_SECONDS, signature, witness, verdict)
     return verdict
+
+
+# Every launch asks; one warning per cache and reason a minute is enough.
+_CACHE_WARNING_SECONDS = 60.0
+_cache_warned: "dict[tuple[str, str], float]" = {}
+
+
+def _warn_not_shared(name: str, hazard: str) -> None:
+    now = time.monotonic()
+    with _cache_scan_lock:
+        last = _cache_warned.get((name, hazard))
+        if last is not None and now - last < _CACHE_WARNING_SECONDS:
+            return
+        _cache_warned[(name, hazard)] = now
+    logger.warning("Not sharing the %s cache into the sandbox: it %s", name, hazard)
 
 
 def _model_cache_binds(workdir: str) -> dict[str, str]:
@@ -716,8 +743,10 @@ def _model_cache_binds(workdir: str) -> dict[str, str]:
             continue
         # Writable caches need the workdir's host-channel checks, including nested bind mounts.
         hazard = _cache_hazard_within_deadline(name, path)
+        if hazard == CACHE_MISSING:
+            continue
         if hazard is not None:
-            logger.warning("Not sharing the %s cache into the sandbox: it %s", name, hazard)
+            _warn_not_shared(name, hazard)
             continue
         binds[name] = path
     return binds
