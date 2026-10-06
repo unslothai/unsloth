@@ -24,6 +24,7 @@ const QUEUED_SETTING_KEYS = [
   "confirmToolCalls",
   "bypassPermissions",
   "permissionMode",
+  "sandboxLevel",
   "webFetchToolsEnabled",
   "deepResearchEnabled",
   "researchWebsitePolicy",

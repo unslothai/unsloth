@@ -2082,6 +2082,7 @@ export async function buildLocalTokenCountExtras(
     return {
       enable_tools: false,
       bypass_permissions: bypassPermissions,
+      sandbox_level: sandboxLevel,
       ...threadField,
     };
   }
@@ -2111,6 +2112,7 @@ export async function buildLocalTokenCountExtras(
     return {
       enable_tools: false,
       bypass_permissions: bypassPermissions,
+      sandbox_level: sandboxLevel,
       ...threadField,
     };
   }

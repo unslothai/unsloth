@@ -5512,9 +5512,9 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       };
     }),
   setSandboxLevel: (sandboxLevel) =>
-    set(() => {
+    set((state) => {
       saveString(CHAT_SANDBOX_LEVEL_KEY, sandboxLevel);
-      return { sandboxLevel };
+      return { sandboxLevel, queuedSettingsEpoch: state.queuedSettingsEpoch + 1 };
     }),
   setPermissionMode: (permissionMode) =>
     set((state) => {

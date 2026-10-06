@@ -193,3 +193,25 @@ test("the old general-permissions link opens Permissions under Settings > Sandbo
   assert.equal(dialog.getState().scrollTarget, "general-hub");
   dialog.getState().closeDialog();
 });
+
+test("a queued run keeps the level it was queued under, and a switch invalidates the queue", async () => {
+  const { snapshotQueuedChatRunSettings } = await import(
+    "../src/features/chat/utils/queued-chat-run-settings.ts"
+  );
+  useChatRuntimeStore.getState().setSandboxLevel("high");
+  const queued = snapshotQueuedChatRunSettings(useChatRuntimeStore.getState());
+  assert.equal(queued.sandboxLevel, "high");
+  const epoch = useChatRuntimeStore.getState().queuedSettingsEpoch;
+  useChatRuntimeStore.getState().setSandboxLevel("low");
+  assert.equal(useChatRuntimeStore.getState().queuedSettingsEpoch, epoch + 1);
+  assert.equal(queued.sandboxLevel, "high");
+  useChatRuntimeStore.getState().setSandboxLevel("high");
+});
+
+test("every token count body carries sandbox_level, also when no tool is selected", () => {
+  const start = ADAPTER.indexOf("export async function buildLocalTokenCountExtras");
+  const countExtras = ADAPTER.slice(start, ADAPTER.indexOf("\n}\n", start));
+  const bodies = [...countExtras.matchAll(/return \{\n([\s\S]*?)\n\s*\};/g)].map((m) => m[1]);
+  assert.equal(bodies.length, 3);
+  for (const body of bodies) assert.match(body, /sandbox_level: sandboxLevel,/);
+});
