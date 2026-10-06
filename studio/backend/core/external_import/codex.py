@@ -43,14 +43,18 @@ def _meta(path: Path) -> dict:
     return payload if isinstance(payload, dict) else {}
 
 
-def list_projects(home: Path) -> list[SourceProject]:
+def _rollouts(home: Path) -> list[Path]:
     root = home / "sessions"
     if not root.is_dir():
         return []
+    return sorted(
+        p for p in root.rglob("rollout-*.jsonl*") if p.name.endswith((".jsonl", ".jsonl.zst"))
+    )
+
+
+def list_projects(home: Path) -> list[SourceProject]:
     by_cwd: dict[str, list[Path]] = {}
-    for path in sorted(root.rglob("rollout-*.jsonl*")):
-        if not path.name.endswith((".jsonl", ".jsonl.zst")):
-            continue
+    for path in _rollouts(home):
         meta = _meta(path)
         # Subagent threads repeat work their parent already shows.
         source = meta.get("source")
@@ -147,4 +151,6 @@ SOURCE = Source(
     default_home = ".codex",
     list_projects = list_projects,
     read_transcript = read_transcript,
+    # Counts subagent rollouts too: the probe only decides whether to show the row.
+    count_sessions = lambda home: len(_rollouts(home)),
 )

@@ -65,6 +65,14 @@ class Source:
     default_home: str
     list_projects: Callable[[Path], list[SourceProject]]
     read_transcript: Callable[[Path, str, str], Transcript]
+    # Cheaper than list_projects for the status probe that runs whenever Settings > Data opens.
+    count_sessions: Optional[Callable[[Path], int]] = None
+
+    def session_count(self) -> int:
+        home = self.home()
+        if self.count_sessions is not None:
+            return self.count_sessions(home)
+        return sum(len(project.sessions) for project in self.list_projects(home))
 
     def home(self, override: Optional[Path] = None) -> Path:
         if override is not None:

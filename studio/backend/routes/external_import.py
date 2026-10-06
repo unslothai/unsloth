@@ -24,7 +24,6 @@ SourceKey = Literal["cursor", "claude", "codex"]
 
 class ExternalImportStatus(BaseModel):
     available: bool = False
-    projects: int = 0
     chats: int = 0
 
 
@@ -42,14 +41,12 @@ def external_import_status(source: SourceKey, current_subject: str = Depends(get
     # The host home is the owner's: a managed account never sees its histories.
     if not is_owner_context():
         return ExternalImportStatus()
-    spec = sources()[source]
     try:
-        projects = spec.list_projects(spec.home())
+        chats = sources()[source].session_count()
     except OSError as exc:
         logger.warning("external_import_status_failed", source = source, error = str(exc))
         return ExternalImportStatus()
-    chats = sum(len(p.sessions) for p in projects)
-    return ExternalImportStatus(available = bool(chats), projects = len(projects), chats = chats)
+    return ExternalImportStatus(available = bool(chats), chats = chats)
 
 
 @router.post("/{source}", response_model = ExternalImportResult, dependencies = [OwnerOnly])

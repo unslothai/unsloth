@@ -16,7 +16,6 @@ export const EXTERNAL_IMPORT_LABELS: Record<ExternalImportSource, string> = {
 
 export type ExternalImportStatus = {
   available: boolean;
-  projects: number;
   chats: number;
 };
 

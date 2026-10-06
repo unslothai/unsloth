@@ -508,11 +508,7 @@ def client():
 
 def test_routes_report_status_and_import(client, claude_home, cursor_home, codex_home):
     _session(claude_home)
-    assert client.get("/api/import/claude/status").json() == {
-        "available": True,
-        "projects": 1,
-        "chats": 1,
-    }
+    assert client.get("/api/import/claude/status").json() == {"available": True, "chats": 1}
     assert client.get("/api/import/cursor/status").json()["available"] is False
     assert client.get("/api/import/codex/status").json()["available"] is False
     body = client.post("/api/import/claude").json()
@@ -607,3 +603,10 @@ def test_codex_cwds_that_only_differ_in_punctuation_stay_apart(codex_home):
     _rollout(codex_home, cwd = "/work/a-b", sid = "a")
     _rollout(codex_home, cwd = "/work/a/b", sid = "b")
     assert len(codex.list_projects(codex_home)) == 2
+
+
+def test_codex_status_counts_rollouts_without_opening_them(codex_home, monkeypatch):
+    _rollout(codex_home, sid = "a")
+    _rollout(codex_home, sid = "b")
+    monkeypatch.setattr(codex, "_meta", lambda path: pytest.fail("status must not parse rollouts"))
+    assert codex.SOURCE.session_count() == 2

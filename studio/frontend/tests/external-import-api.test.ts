@@ -35,7 +35,7 @@ const { importExternalChats, loadExternalImportStatus } = await import(
 test("the client hits each source's routes and maps new_chats", async () => {
   calls = [];
   nextStatus = 200;
-  nextBody = { available: true, projects: 3, chats: 42 };
+  nextBody = { available: true, chats: 42 };
   assert.deepEqual(await loadExternalImportStatus("cursor"), nextBody);
 
   nextBody = {
