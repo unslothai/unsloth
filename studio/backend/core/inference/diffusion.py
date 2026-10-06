@@ -69,6 +69,8 @@ from .diffusion_families import (
     resolve_base_repo,
     resolve_local_gguf_child,
     supported_family_names,
+    transformer_config_overrides_for,
+    transformer_variant_differs_from_base,
 )
 from .diffusion_compat import (
     assert_flux2_pick_compatible,
@@ -2593,6 +2595,14 @@ class DiffusionBackend:
         speed = kwargs.get("speed_mode")
         if speed is not None and str(speed).strip().lower() == SPEED_OFF:
             return False
+        if transformer_variant_differs_from_base(
+            fam,
+            kwargs.get("base_repo"),
+            kwargs.get("gguf_filename"),
+            kwargs.get("repo_id"),
+            kwargs.get("display_repo_id"),
+        ):
+            return False
         try:
             # A definite-offload policy skips the dense build, so widening wastes a multi-GB pull with no GGUF
             # fallback.
@@ -4371,7 +4381,13 @@ class DiffusionBackend:
                 (
                     lambda companions, transformer_files: self._dense_quant_prefetch_needed(
                         fam,
-                        {**load_kwargs, "base_repo": base, "hf_token": hf_token},
+                        {
+                            **load_kwargs,
+                            "repo_id": repo_id,
+                            "gguf_filename": gguf_filename,
+                            "base_repo": base,
+                            "hf_token": hf_token,
+                        },
                         companion_files = companions,
                         transformer_files = transformer_files,
                     )
@@ -5727,6 +5743,25 @@ class DiffusionBackend:
                 # repo's transformer/ shards, since the fallback would pull them HERE, inside the load lock, after
                 # eviction, where unload cannot preempt it and progress already reported 100%.
                 dense_fallback_allowed = bool(_transformer_prefetched)
+                # 2509 / original Edit GGUFs resolve to the 2511 base, whose transformer/ is another model.
+                if (
+                    kind == "gguf"
+                    and normalize_transformer_quant(transformer_quant) is not None
+                    and transformer_variant_differs_from_base(
+                        fam, base, gguf_filename, repo_id, display_repo_id
+                    )
+                ):
+                    dense_declined = True
+                    if transformer_quant_decline is None:
+                        transformer_quant_decline = (
+                            f"{base} has a different transformer than this GGUF, so only the GGUF "
+                            "itself can run it"
+                        )
+                    # Baking adapters needs the dense build; staying on auto lets the load fail loudly below.
+                    if transformer_quant_pinned is None and not _has_active_lora(loras):
+                        transformer_quant = "off"
+                    else:
+                        transformer_quant_decline_status = RESOLVED_UNSUPPORTED
                 # Set when an offloading GGUF pick loads the pre-quantised checkpoint instead (diffusion_gguf_route).
                 gguf_offload_placement: Optional[Any] = None
                 gguf_offload_scheme: Optional[str] = None
@@ -6680,6 +6715,10 @@ class DiffusionBackend:
                                 # it, so without the flag this branch reaches the Hub on a load nobody asked for. The
                                 # pipeline assembly below was already guarded; this call was not.
                                 "local_files_only": local_files_only,
+                                # config is the family base's (2511); 2509 / original Edit lack its zero_cond_t
+                                **transformer_config_overrides_for(
+                                    fam, gguf_filename, repo_id, display_repo_id, base
+                                ),
                             }
                             # Before the prefix shim below, which wraps whatever entry it finds and
                             # finds nothing for a class that is not registered yet.
@@ -7275,7 +7314,9 @@ class DiffusionBackend:
                     self._raise_if_load_cancelled(_load_token)
                     # Before from_pipe copies the scheduler.
                     apply_comfy_flow_shift(
-                        pipe, comfy_flow_shift_for(fam, gguf_filename, repo_id, base), logger
+                        pipe,
+                        comfy_flow_shift_for(fam, gguf_filename, repo_id, display_repo_id, base),
+                        logger,
                     )
                     # Before the speed optims, so the fused batched tile decode does not replace it.
                     try:

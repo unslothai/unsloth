@@ -2862,7 +2862,7 @@ def test_the_download_plan_probes_with_the_user_token():
     from core.inference.diffusion import DiffusionBackend
 
     src = inspect.getsource(DiffusionBackend.download_plan)
-    assert '{**load_kwargs, "base_repo": base, "hf_token": hf_token}' in src
+    assert '"base_repo": base,' in src and '"hf_token": hf_token,' in src
 
 
 def test_a_full_fingerprint_pass_is_remembered_per_unchanged_file(monkeypatch, tmp_path):

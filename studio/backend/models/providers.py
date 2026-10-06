@@ -5,9 +5,41 @@
 
 from typing import Literal, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field, StrictBool, ValidationError
 
 ProviderApiType = Literal["chat_completions", "responses", "systemone"]
+
+
+class ProviderReasoningConfig(BaseModel):
+    """Explicit Custom Chat Completions wire dialect, never inferred from the URL."""
+
+    model_config = ConfigDict(extra = "forbid")
+
+    enabled: StrictBool
+    style: Literal[
+        "reasoning_effort", "reasoning", "thinking", "chat_template_kwargs.enable_thinking"
+    ]
+
+
+def normalize_provider_reasoning_config(value) -> Optional[dict]:
+    """Treat absent or corrupt persisted/internal configuration as unconfigured."""
+    if isinstance(value, ProviderReasoningConfig):
+        value = value.model_dump()
+    try:
+        return ProviderReasoningConfig.model_validate(value).model_dump()
+    except (ValidationError, TypeError, ValueError):
+        return None
+
+
+def validate_provider_reasoning_contract(provider_type: str, api_type: str, config) -> None:
+    if config is None:
+        return
+    if provider_type != "custom":
+        raise ValueError("reasoning_config is supported only for Custom connections.")
+    normalized = normalize_provider_reasoning_config(config)
+    if normalized and normalized["enabled"] and api_type != "chat_completions":
+        raise ValueError("Enabled Custom reasoning requires the Chat Completions API.")
+
 
 MAX_JSON_SAFE_INTEGER = 9_007_199_254_740_991
 
@@ -54,6 +86,7 @@ class ProviderCreate(BaseModel):
     """Request to create a saved provider configuration."""
 
     api_type: ProviderApiType = "chat_completions"
+    reasoning_config: Optional[ProviderReasoningConfig] = None
 
     provider_type: str = Field(..., description = "Provider type from the registry")
     display_name: str = Field(..., description = "User-chosen label (e.g. 'My OpenAI Key')")
@@ -87,6 +120,7 @@ class ProviderUpdate(BaseModel):
     """Request to update a saved provider configuration."""
 
     api_type: Optional[ProviderApiType] = None
+    reasoning_config: Optional[ProviderReasoningConfig] = None
 
     display_name: Optional[str] = Field(None, description = "New display name")
     base_url: Optional[str] = Field(None, description = "New base URL")
@@ -128,6 +162,7 @@ class ProviderResponse(BaseModel):
     """A saved provider configuration (returned by list/get endpoints)."""
 
     api_type: ProviderApiType = "chat_completions"
+    reasoning_config: Optional[ProviderReasoningConfig] = None
 
     id: str = Field(..., description = "Unique provider config ID")
     provider_type: str = Field(..., description = "Provider type (e.g. 'openai')")
