@@ -825,6 +825,47 @@ def test_clef_encoding_is_token_identical_to_cloudflares():
             ]
 
 
+@pytest.mark.parametrize(
+    "option",
+    [
+        {"use_dora": True},
+        {"layers_to_transform": [0]},
+        {"layers_pattern": "layers"},
+        {"loftq_config": {"loftq_bits": 4}},
+        {"init_lora_weights": "gaussian"},
+    ],
+)
+def test_clef_lora_refuses_options_it_would_drop(monkeypatch, option):
+    monkeypatch.setattr(decision, "_clef_peft_model", lambda model, **kwargs: "plain lora")
+    model = types.SimpleNamespace(is_clef = True, encoder = types.SimpleNamespace())
+    with pytest.raises(NotImplementedError, match = next(iter(option))):
+        FastDecisionModel.get_peft_model(model, **option)
+    assert FastDecisionModel.get_peft_model(model) == "plain lora"
+
+
+def test_clef_metrics_score_in_the_runs_batch_size(monkeypatch):
+    seen = []
+
+    def clef_logits(
+        model,
+        items,
+        pad_token_id,
+        batch_size = 4,
+    ):
+        seen.append(batch_size)
+        raise StopIteration
+
+    monkeypatch.setattr(decision, "_clef_logits", clef_logits)
+    model = types.SimpleNamespace(is_clef = True, decision_config = {})
+    tokenizer = types.SimpleNamespace(pad_token_id = 0)
+    for call in (FastDecisionModel.evaluate, FastDecisionModel.calibrate):
+        with pytest.raises(StopIteration):
+            call(model, tokenizer, [], batch_size = 1)
+    with pytest.raises(StopIteration):
+        FastDecisionModel.evaluate(model, tokenizer, [])
+    assert seen == [1, 1, 4]
+
+
 def test_clef_loads_scores_like_cloudflares_model_and_trains(clef_checkpoint, tmp_path):
     reference, _ = _clef_reference()
     model, processor = FastDecisionModel.from_pretrained(str(clef_checkpoint), max_seq_length = 512)
@@ -887,9 +928,12 @@ def test_clef_loads_scores_like_cloudflares_model_and_trains(clef_checkpoint, tm
         decision.HEAD_TEMPERATURE_RANGE[0] <= head_temperature <= decision.HEAD_TEMPERATURE_RANGE[1]
     )
 
+    model.decision_config["training"] = {"steps": 30}
     model.save_pretrained_merged(str(tmp_path / "out"))
     assert (tmp_path / "out" / "joint_schema_model.py").is_file()
     reloaded, _ = FastDecisionModel.from_pretrained(str(tmp_path / "out"), max_seq_length = 512)
+    # The parent run's record stays on disk but does not describe the next fine-tune.
+    assert "training" not in reloaded.decision_config
     # The calibrated temperature over all questions is folded into the saved head; the per-type
     # temperatures are relative to it, so the reload serves the same probabilities.
     folded = reloaded.decision_config["folded_temperature"]
