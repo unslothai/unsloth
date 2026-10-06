@@ -252,3 +252,24 @@ def test_head_init_warm_starts_from_a_matching_head(tmp_path):
 def test_unknown_decision_head_is_refused():
     with pytest.raises(ValueError, match = "decision_head"):
         FastDecisionModel.from_pretrained(TINY_QWEN3, decision_head = "pointer")
+
+
+def test_backbone_stays_on_one_device_unless_the_caller_places_it(monkeypatch):
+    from unsloth.models import decision, decision_from_lm, loader
+
+    seen = []
+
+    class Captured(Exception):
+        pass
+
+    def capture(*args, **kwargs):
+        seen.append(kwargs.get("device_map"))
+        raise Captured
+
+    monkeypatch.setattr(decision, "_device", lambda: torch.device("cuda"))
+    monkeypatch.setattr(loader.FastModel, "from_pretrained", capture)
+    index = torch.cuda.current_device() if torch.cuda.is_available() else 0
+    for kwargs in ({}, {"device_map": "auto"}):
+        with pytest.raises(Captured):
+            decision_from_lm._load_backbone(TINY_QWEN3, 64, None, False, False, None, False, kwargs)
+    assert seen == [{"": f"cuda:{index}"}, "auto"]
