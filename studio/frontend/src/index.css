@@ -4325,10 +4325,16 @@ html[data-chat-font] .aui-root {
 		width: 0 !important;
 	}
 
-	/* Chat thread: code slightly smaller by default; step up when the thread column is wide. */
+	/* Chat code is 12px at any width (CODE_FONT_SIZE_RANGE.default); the header steps up when wide. */
 	.aui-thread-root [data-streamdown="code-block"] {
-		font-size: calc(0.8125rem * var(--ui-font-scale, 1));
+		font-size: calc(0.75rem * var(--ui-font-scale, 1));
 		line-height: 1.55;
+	}
+
+	/* The body's text-sm would otherwise override the size above. */
+	.aui-thread-root [data-streamdown="code-block-body"] {
+		font-size: inherit;
+		line-height: inherit;
 	}
 
 	.aui-thread-root [data-streamdown="code-block-header"] {
@@ -4336,10 +4342,6 @@ html[data-chat-font] .aui-root {
 	}
 
 	@container (min-width: 36rem) {
-		.aui-thread-root [data-streamdown="code-block"] {
-			font-size: calc(0.875rem * var(--ui-font-scale, 1));
-		}
-
 		.aui-thread-root [data-streamdown="code-block-header"] {
 			font-size: calc(0.75rem * var(--ui-font-scale, 1));
 		}
