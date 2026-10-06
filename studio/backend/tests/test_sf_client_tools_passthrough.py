@@ -1682,6 +1682,29 @@ def test_a_plain_mlx_fit_may_reset_only_where_the_loop_can_reopen(
     assert [fit["recall_reachable"] for fit in backend.fits] == [reachable]
 
 
+@pytest.mark.parametrize(
+    "tokenizer_body, processor_body, reachable",
+    [(_WITH_TOOLS, _TURNS, False), (_TURNS, _WITH_TOOLS, True)],
+    ids = ["processor_drops_tools", "processor_renders_tools"],
+)
+def test_a_vision_model_is_asked_about_the_body_its_text_turn_renders(
+    monkeypatch, tokenizer_body, processor_body, reachable
+):
+    import routes.inference as inf
+
+    backend = _FittedToolLoopBackend(_fixed("done"))
+    backend.models["sf-model"]["is_mlx"] = True
+    classify = inf._detect_safetensors_features
+    _install(monkeypatch, backend)
+    backend.models["sf-model"]["chat_template_info"] = {
+        "template": tokenizer_body,
+        "processor_template": processor_body,
+    }
+    monkeypatch.setattr(inf, "_detect_safetensors_features", classify)
+    _serve(monkeypatch, stream = False, enable_tools = False, context_overflow = "truncate_oldest")
+    assert [fit["recall_reachable"] for fit in backend.fits] == [reachable]
+
+
 class _TrimmingBackend(_FittedToolLoopBackend):
     """Fits by keeping only the newest message."""
 
