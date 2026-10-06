@@ -8037,6 +8037,24 @@ def test_an_empty_loose_gguf_is_partial(tmp_path, names):
         assert rows and all(r.partial for r in rows if r.model_format == "gguf")
 
 
+@pytest.mark.parametrize("target_parts", [2, 1], ids = ["whole-target", "torn-target"])
+def test_a_symlinked_split_gguf_is_judged_on_its_target_set(tmp_path, target_parts):
+    store = tmp_path / "store"
+    store.mkdir()
+    for i in range(target_parts):
+        (store / f"Muse-Q4-{i + 1:05d}-of-00002.gguf").write_bytes(b"quant")
+    models = tmp_path / "models"
+    models.mkdir()
+    try:
+        (models / "Muse-Q4-00001-of-00002.gguf").symlink_to(store / "Muse-Q4-00001-of-00002.gguf")
+    except (OSError, NotImplementedError):
+        pytest.skip("symlinks unavailable")
+
+    rows = local_inventory._scan_models_dir(models)
+
+    assert [r.partial for r in rows] == [target_parts < 2]
+
+
 @pytest.mark.parametrize("suffix", [".ckpt", ".h5", ".msgpack", ".npz"])
 def test_an_empty_checkpoint_of_any_recognised_suffix_is_partial(tmp_path, suffix):
     model_dir = tmp_path / "Legacy"

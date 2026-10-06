@@ -286,12 +286,20 @@ def _apply_payload_partial(scan_path: Path, rows: List[LocalModelInfo]) -> List[
         # A loose quant, split or not: llama-server opens every part, so a missing or empty one fails the load.
         from utils.models.model_config import colocated_split_shards
 
-        shards, complete = colocated_split_shards(scan_path)
+        candidates = [scan_path]
         try:
-            if complete and all(shard.stat().st_size > 0 for shard in shards):
-                return rows
+            if scan_path.is_symlink():
+                # Same fallback as _local_gguf_load_path: a lone link loads from its target's set.
+                candidates.append(scan_path.resolve())
         except OSError:
             pass
+        for candidate in candidates:
+            shards, complete = colocated_split_shards(candidate)
+            try:
+                if complete and all(shard.stat().st_size > 0 for shard in shards):
+                    return rows
+            except OSError:
+                continue
         return _apply_format_aware_partial(rows, snapshot_partial = False, gguf_partial = True)
     if not scan_path.is_dir():
         return rows
