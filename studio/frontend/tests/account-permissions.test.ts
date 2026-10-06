@@ -79,6 +79,7 @@ function permissionUi(
       "react/jsx-runtime": stubJsxRuntime(),
       react: {
         useEffect: (effect: () => void) => effect(),
+        useLayoutEffect: (effect: () => void) => effect(),
         // The capability hook starts at null; the menu sees the stubbed answer.
         useState: (initial: unknown) => [initial === null ? capability : initial, () => {}],
         useId: () => "id",

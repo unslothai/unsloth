@@ -4,7 +4,7 @@
 import { ChevronDown, Hand, ShieldCheck } from "lucide-react";
 import { DropdownMenu as DropdownMenuPrimitive } from "radix-ui";
 import type { ComponentType } from "react";
-import { useEffect, useId, useRef, useState } from "react";
+import { useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import { useFullAccessAllowed } from "@/features/auth/account-session";
 import { useSettingsDialogStore } from "@/features/settings";
 import { useT } from "@/i18n";
@@ -164,9 +164,9 @@ function SandboxLevelMenuPicker({ onOsSandboxMissing }: { onOsSandboxMissing?: (
   const activeOption = SANDBOX_LEVEL_OPTIONS.find((option) => option.value === active)!;
   const descriptionId = useId();
   const chipRef = useRef<HTMLDivElement | null>(null);
-  // Measured on open: puts the picker a small gap right of the menu, tops aligned.
   const [offsets, setOffsets] = useState({ side: SANDBOX_PICKER_GAP, align: 0 });
-  const pickerRef = useRef<HTMLDivElement | null>(null);
+  // State, not a ref: the portal mounts the picker a render after `open` flips.
+  const [picker, setPicker] = useState<HTMLDivElement | null>(null);
   // Ours, not Radix's: it closes a submenu once the pointer or focus leaves it.
   const [open, setOpen] = useState(false);
 
@@ -175,28 +175,39 @@ function SandboxLevelMenuPicker({ onOsSandboxMissing }: { onOsSandboxMissing?: (
     if (!open) return;
     const onPointerDown = (event: PointerEvent) => {
       const target = event.target as Node;
-      if (pickerRef.current?.contains(target) || chipRef.current?.contains(target)) return;
+      if (picker?.contains(target) || chipRef.current?.contains(target)) return;
       setOpen(false);
     };
     document.addEventListener("pointerdown", onPointerDown, true);
     return () => document.removeEventListener("pointerdown", onPointerDown, true);
-  }, [open]);
+  }, [open, picker]);
+
+  // Places the picker a gap clear of the menu, tops aligned. Radix applies one sideOffset to
+  // whichever side it lands on, so pick the side here: right if it fits, else left.
+  useLayoutEffect(() => {
+    const chip = chipRef.current;
+    const menu = chip?.closest<HTMLElement>('[role="menu"]');
+    if (!open || !chip || !menu || !picker) return;
+    const chipBox = chip.getBoundingClientRect();
+    const menuBox = menu.getBoundingClientRect();
+    const width = picker.offsetWidth;
+    const fitsRight = menuBox.right + SANDBOX_PICKER_GAP + width <= window.innerWidth;
+    const fitsLeft = menuBox.left - SANDBOX_PICKER_GAP - width >= 0;
+    setOffsets({
+      side:
+        !fitsRight && fitsLeft
+          ? chipBox.left - menuBox.left + SANDBOX_PICKER_GAP
+          : menuBox.right - chipBox.right + SANDBOX_PICKER_GAP,
+      align: menuBox.top - chipBox.top,
+    });
+  }, [open, picker]);
 
   return (
     <DropdownMenuPrimitive.Sub
       open={open}
+      // Close requests are ignored; see the pointerdown effect.
       onOpenChange={(next) => {
-        const chip = chipRef.current;
-        const menu = chip?.closest<HTMLElement>('[role="menu"]');
-        // Close requests are ignored; see the effect above.
-        if (!next || !chip || !menu) return;
-        const chipBox = chip.getBoundingClientRect();
-        const menuBox = menu.getBoundingClientRect();
-        setOffsets({
-          side: menuBox.right - chipBox.right + SANDBOX_PICKER_GAP,
-          align: menuBox.top - chipBox.top,
-        });
-        setOpen(true);
+        if (next) setOpen(true);
       }}
     >
       <DropdownMenuPrimitive.SubTrigger
@@ -226,7 +237,7 @@ function SandboxLevelMenuPicker({ onOsSandboxMissing }: { onOsSandboxMissing?: (
         </span>
       </DropdownMenuPrimitive.SubTrigger>
       <DropdownMenuSubContent
-        ref={pickerRef}
+        ref={setPicker}
         sideOffset={offsets.side}
         alignOffset={offsets.align}
         onKeyDown={(event) => {

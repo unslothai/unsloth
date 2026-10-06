@@ -69,7 +69,9 @@ test("the menu heading carries a Sandbox chip that opens the level picker, Learn
   // Controlled: stays open until a click outside the picker, the chip, or ArrowLeft.
   assert.match(label, /<DropdownMenuPrimitive\.Sub\s+open=\{open\}/);
   assert.match(label, /addEventListener\("pointerdown", onPointerDown, true\)/);
-  assert.match(label, /if \(!next \|\| !chip \|\| !menu\) return;/);
+  assert.match(label, /if \(next\) setOpen\(true\);/);
+  // Offset for the side it lands on: left when only the left fits.
+  assert.match(label, /!fitsRight && fitsLeft\s*\?\s*chipBox\.left - menuBox\.left \+ SANDBOX_PICKER_GAP/);
   assert.match(label, /icon=\{ChevronRightStandardIcon\}/);
   assert.doesNotMatch(label, /<Switch\b|CheckboxItem/);
   assert.match(label, /<DropdownMenuSubContent[\s\S]*?className="unsloth-plus-menu\b/);
