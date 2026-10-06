@@ -1569,19 +1569,21 @@ def _single_file_variants(files: Sequence[RepoFile], folder: str) -> list[AudioC
         rel = gguf.path[len(prefix) :] if gguf.path.startswith(prefix) else gguf.path
         sub = rel.rpartition("/")[0]
         rows.append((gguf, sub, quant_label(rel)))
-    groups: dict[str, list[str]] = {}
-    for gguf, sub, quant in rows:
-        k = f"{sub}/{quant}" if sub else quant
-        groups.setdefault(k.lower(), []).append(Path(gguf.path).name[: -len(".gguf")])
+    # Several files at one quant in one place (Moonshine tiny, small and medium) hold several models:
+    # every row there is named by the words its model's name does not share, like a sub-folder would.
+    seen: set[tuple[str, str]] = set()
+    crowded: set[str] = set()
+    for _gguf, sub, quant in rows:
+        if (sub, quant.lower()) in seen:
+            crowded.add(sub)
+        seen.add((sub, quant.lower()))
+    models = {sub: {_model_stem(g.path) for g, s, _q in rows if s == sub} for sub in crowded}
     variants = []
     for gguf, sub, quant in rows:
         key = f"{sub}/{quant}" if sub else quant
         label = None
-        stems = groups[key.lower()]
-        if len(stems) > 1:
-            # Several files at one quant in one place (Moonshine tiny, small and medium): the words their
-            # names do not share tell them apart, and name the row like a sub-folder would.
-            scope = _distinct_part(Path(gguf.path).name[: -len(".gguf")], stems)
+        if sub in crowded:
+            scope = _distinct_part(_model_stem(gguf.path), models[sub])
             key = f"{sub}/{scope}/{quant}" if sub else f"{scope}/{quant}"
             label = f"{quant} · {scope}"
         elif sub:
@@ -1597,11 +1599,21 @@ def _single_file_variants(files: Sequence[RepoFile], folder: str) -> list[AudioC
     return variants
 
 
+def _model_stem(path: str) -> str:
+    """A GGUF's file name without its quant: ``irodori-tts-v4.1-anime-q8_0.gguf`` -> ``irodori-tts-v4.1-anime``."""
+    stem = Path(path).name[: -len(".gguf")]
+    matches = list(_QUANT_RE.finditer(stem))
+    if not matches:
+        return stem
+    last = matches[-1]
+    return (stem[: last.start()] + stem[last.end() :]).strip("-_.") or stem
+
+
 def _distinct_part(stem: str, stems: Sequence[str]) -> str:
-    """The words of ``stem`` its siblings do not share: ``moonshine-streaming-tiny-q8_0`` among
-    ``...-small-q8_0`` gives ``tiny``. The whole stem when nothing is left."""
-    split = [re.split(r"[-_.]", s) for s in stems]
-    words = re.split(r"[-_.]", stem)
+    """The words of ``stem`` its siblings do not share: ``moonshine-streaming-tiny`` among
+    ``...-small`` gives ``tiny``. Dots stay inside a word (``v4.1``). The whole stem when nothing is left."""
+    split = [re.split(r"[-_]", s) for s in stems]
+    words = re.split(r"[-_]", stem)
     head = 0
     while all(len(w) > head for w in split) and len({w[head].lower() for w in split}) == 1:
         head += 1
@@ -1637,7 +1649,9 @@ def _variant_rank(variant: AudioCppVariant) -> tuple:
     scope_rank = (
         0 if not sub else (1 + _PREFERRED_SCOPES.index(sub) if sub in _PREFERRED_SCOPES else 10)
     )
-    quant = quant_label(variant.main_file)
+    # Q8_0_V2 is a Q8_0 re-export and FP32 is F32 under another name.
+    quant = re.sub(r"_V\d+$", "", quant_label(variant.main_file))
+    quant = {"FP32": "F32", "FP16": "F16"}.get(quant, quant)
     quant_rank = (
         _QUANT_PREFERENCE.index(quant) if quant in _QUANT_PREFERENCE else len(_QUANT_PREFERENCE)
     )
@@ -2455,6 +2469,24 @@ def package_variant_files(names: Iterable[str]) -> Optional[dict[str, tuple[str,
         if found:
             return found
     return None
+
+
+def companion_files(path: str, names: Iterable[str]) -> tuple[str, ...]:
+    """The umbrella files the model GGUF at ``path`` loads beside it (MioTTS's MioCodec), from the
+    umbrella's listing ``names``. A pure function of the names, for the GGUF download planner."""
+    folder, sep, _ = path.partition("/")
+    policy = FAMILIES.get(family_from_names((folder,)) or "") if sep else None
+    if policy is None or not policy.companions:
+        return ()
+    names = list(names)
+    found = []
+    for companion in policy.companions:
+        sub = companion.id[len(_UMBRELLA_PREFIX) :]
+        files = [RepoFile(name, 0) for name in names if name.startswith(f"{sub}/")]
+        variant = match_variant(_single_file_variants(files, sub), companion.variant)
+        if variant is not None:
+            found.append(variant.primary)
+    return tuple(found)
 
 
 def download_target(
