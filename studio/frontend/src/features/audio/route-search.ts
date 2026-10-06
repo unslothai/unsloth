@@ -37,6 +37,8 @@ export interface AudioRouteSearch {
   task?: string;
   audioType?: string;
   loadId?: string;
+  /** The pick is a GGUF: an id without a GGUF suffix otherwise reads as a Transformers checkpoint. */
+  gguf?: boolean;
   item?: string;
   workflow?: AudioWorkflowId;
 }
@@ -60,6 +62,7 @@ export function validateAudioSearch(
     ...(typeof search.loadId === "string" && search.loadId.trim()
       ? { loadId: search.loadId }
       : {}),
+    ...(search.gguf === true || search.gguf === "true" ? { gguf: true } : {}),
     ...(typeof search.item === "string" ? { item: search.item } : {}),
     ...(isAudioWorkflowId(search.workflow)
       ? { workflow: search.workflow }
@@ -111,6 +114,7 @@ export function audioPickSearch(
     task?: string | null;
     audioType?: string | null;
     loadId?: string | null;
+    isGguf?: boolean | null;
   },
 ): AudioRouteSearch {
   return {
@@ -122,6 +126,7 @@ export function audioPickSearch(
     task: pick.task ?? undefined,
     audioType: pick.audioType ?? undefined,
     loadId: pick.loadId ?? undefined,
+    gguf: pick.isGguf ? true : undefined,
     workflow:
       audioWorkflowForPick({
         id,

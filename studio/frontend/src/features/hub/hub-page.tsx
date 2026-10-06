@@ -1535,6 +1535,7 @@ export function ModelsPage() {
                     selectedModel.task,
                   ),
                   audioType: selectedModel.audioType,
+                  isGguf: selectedModel.isGguf,
                   loadId: selectedModel.loadId,
                 })
               : diffusionRouteSearch(selectedModel.hubRepoId, selection),

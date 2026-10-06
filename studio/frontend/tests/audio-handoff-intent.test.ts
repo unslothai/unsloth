@@ -116,7 +116,10 @@ test("a chat pick opens on the workflow its model runs in", () => {
   );
   assert.equal(audioWorkflowForPick({ id: "x/y", task: null }), null);
   const clone = (folder: string) =>
-    audioWorkflowForPick({ id: `audio-cpp/audio.cpp-gguf/${folder}`, task: "text-to-speech" });
+    audioWorkflowForPick({
+      id: `audio-cpp/audio.cpp-gguf/${folder}`,
+      task: "text-to-speech",
+    });
   assert.equal(clone("Qwen3-TTS-12Hz-0.6B-Base-GGUF"), "clone");
   assert.equal(clone("VoxCPM2-GGUF"), "speak");
 });
@@ -130,7 +133,10 @@ test("the chat picker routes music and separation rows to Audio with their workf
   const pickers = readSrc(
     "features/model-picker/components/model-selector/pickers.tsx",
   );
-  assert.match(pickers, /audioPickSearch\(id, \{ \.\.\.meta, task: pickedTask \}\)/);
+  assert.match(
+    pickers,
+    /audioPickSearch\(id, \{ \.\.\.meta, task: pickedTask \}\)/,
+  );
   const tasks = pickers.match(/export const AUDIO_GEN_TASKS = \[([^\]]*)\]/);
   assert.ok(tasks);
   assert.match(tasks[1], /"text-to-audio"/);
@@ -144,6 +150,7 @@ test("a pick's Audio search names its file, quant label, load and workflow", () 
       ggufVariant: "Q8_0",
       task: "text-to-audio",
       loadId: "/cache/snap",
+      isGguf: true,
     }),
     {
       model: "audio-cpp/audio.cpp-gguf/ACE-Step1.5-GGUF",
@@ -152,6 +159,7 @@ test("a pick's Audio search names its file, quant label, load and workflow", () 
       task: "text-to-audio",
       audioType: undefined,
       loadId: "/cache/snap",
+      gguf: true,
       workflow: "music",
     },
   );
@@ -167,7 +175,10 @@ test("a pick's Audio search names its file, quant label, load and workflow", () 
 
 test("a routed audio-to-audio pick opens Separate", () => {
   assert.equal(
-    audioWorkflowForPick({ id: "someone/BSRoformer-GGUF", task: "audio-to-audio" }),
+    audioWorkflowForPick({
+      id: "someone/BSRoformer-GGUF",
+      task: "audio-to-audio",
+    }),
     "separate",
   );
 });
@@ -213,4 +224,35 @@ test("a chat pick of an uncatalogued clone-only family opens Clone", () => {
     audioWorkflowForPick({ id: "x/Kokoro-82M-GGUF", task: "text-to-speech" }),
     "speak",
   );
+});
+
+test("a GGUF pick keeps its format through the Audio route", async () => {
+  const { audioPickSearch, validateAudioSearch } = await import(
+    "../src/features/audio/route-search.ts"
+  );
+  const search = audioPickSearch("someone/parakeet-audiocpp", {
+    task: "automatic-speech-recognition",
+    isGguf: true,
+    ggufVariant: "Q8_0",
+  });
+  assert.equal(search.gguf, true);
+  assert.equal(validateAudioSearch({ ...search }).gguf, true);
+  assert.equal(validateAudioSearch({ gguf: "true" }).gguf, true);
+  assert.equal(validateAudioSearch({ gguf: "1" }).gguf, undefined);
+  assert.equal(
+    audioPickSearch("org/whisper-small", {
+      task: "automatic-speech-recognition",
+    }).gguf,
+    undefined,
+  );
+  const { readFile } = await import("node:fs/promises");
+  const handoff = await readFile(
+    new URL(
+      "../src/features/audio/hooks/use-audio-handoff.ts",
+      import.meta.url,
+    ),
+    "utf8",
+  );
+  // Without it the slot picks the STT engine from the repo name alone.
+  assert.match(handoff, /isGguf: routeSearch\.gguf/);
 });
